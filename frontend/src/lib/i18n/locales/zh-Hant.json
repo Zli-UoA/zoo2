@@ -139,8 +139,7 @@
     "candidates": "成員建議",
     "usersLoading": "正在載入使用者…",
     "usersError": "無法載入使用者。",
-    "usersEmpty": "找不到符合的使用者。",
-    "back": "返回頻道"
+    "usersEmpty": "找不到符合的使用者。"
   },
   "moderation": {
     "archived": "已封存",
@@ -273,6 +272,13 @@
     "download": "下載{{name}}",
     "downloadShort": "下載",
     "downloadError": "無法下載檔案。",
+    "downloadSaved": "已儲存為 {{name}}。",
+    "downloadDestinationUnsupported": "無法儲存到此位置。請選擇其他資料夾，或在設定的「下載」中變更儲存位置。",
+    "downloadTooMany": "同時儲存的數量已達上限。請等待其他下載完成後再試。",
+    "downloading": "正在下載",
+    "saving": "正在儲存…",
+    "cancelDownload": "取消下載 {{name}}",
+    "cancelDownloadShort": "取消",
     "retry": "重試",
     "sensitive": "敏感圖片",
     "markSensitive": "將圖片標記為敏感內容",
@@ -294,7 +300,8 @@
       "to": "收件者",
       "cc": "副本",
       "date": "日期"
-    }
+    },
+    "downloadDestinationUnsupportedAskEveryTimeOff": "無法儲存到此位置。請在設定的「下載」中變更儲存位置，或開啟「每次儲存時確認」。"
   },
   "threads": {
     "title": "子討論",
@@ -329,6 +336,10 @@
     "participants_other": "參與者 {{count}} 人",
     "participantsMore": "另有 {{count}} 人",
     "participantsEmpty": "沒有參與者",
+    "threadStarter": "討論串發起人",
+    "participantsSearch": "搜尋姓名",
+    "participantsFilterPartial": "僅在已載入的前 {{loaded}} 人中篩選（另有 {{count}} 人無法搜尋）。",
+    "participantsDescription": "已加入此討論串的人。",
     "joinToReply": "參與後才能回覆此討論串。",
     "reopenAndJoin": "重新開啟並參與"
   },
@@ -493,6 +504,19 @@
     "desktopTitle": "通知",
     "desktopValue": "系統通知",
     "desktopDescription": "應用程式會透過系統通知提醒你被提及與收到私訊。若在系統設定中關閉了 zoo2 的通知，請在那裡也將其開啟。"
+  },
+  "downloads": {
+    "desktopTitle": "下載",
+    "desktopDescription": "附件檔案的儲存位置。可以選擇每次儲存時確認位置，或儲存到預先設定的資料夾。",
+    "askEveryTime": "每次儲存時確認",
+    "noFolder": "未選擇資料夾",
+    "chooseFolder": "選擇資料夾",
+    "resetDirectory": "清除資料夾並每次儲存時確認",
+    "olderAppValue": "應用程式預設儲存位置",
+    "olderAppDescription": "此版本的應用程式會將附件儲存到應用程式決定的位置。若要變更儲存位置，請更新應用程式。",
+    "loadError": "無法讀取儲存位置的設定。",
+    "retry": "重新載入",
+    "error": "無法變更下載設定，請再試一次。"
   },
   "mfm": {
     "suggestions": "MFM 候選",
@@ -1878,9 +1902,7 @@
     "filters": {
       "label": "篩選",
       "from": "傳送者",
-      "anyone": "所有人",
       "in": "頻道",
-      "anywhere": "所有頻道",
       "period": "日期",
       "anytime": "不限",
       "last7": "過去 7 天",
@@ -1890,7 +1912,16 @@
       "after": "開始日期",
       "before": "結束日期",
       "reversed": "開始日期不能晚於結束日期。",
-      "reset": "重設條件"
+      "reset": "重設條件",
+      "me": "{{name}}（我）",
+      "searchPeople": "依名稱搜尋",
+      "searchChannels": "搜尋頻道",
+      "noMatches": "找不到",
+      "clearSelection": "取消選取",
+      "selectedCount": "{{label}}：{{count}} 個",
+      "max": "最多可選取 {{count}} 個",
+      "mine": "我參與的",
+      "noBots": "排除機器人"
     }
   },
   "catchUp": {

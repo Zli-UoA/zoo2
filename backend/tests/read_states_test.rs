@@ -250,3 +250,89 @@ async fn server_read_states_are_private_persistent_and_monotonic() -> anyhow::Re
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn archived_channels_are_left_out_of_the_read_state_list() -> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db, config));
+    let owner = Uuid::new_v4().to_string();
+    let reader = Uuid::new_v4().to_string();
+    for actor in [&owner, &reader] {
+        assert_eq!(request(&app, "POST", "/api/users", actor, json!({"id":actor,"user_name":format!("read_{}",Uuid::new_v4().simple()),"display_name":"Reader"})).await.0, StatusCode::OK);
+    }
+    let channel = Uuid::new_v4().to_string();
+    assert_eq!(request(&app, "POST", "/api/channels", &owner, json!({"id":channel,"channel_name":format!("read_{}",Uuid::new_v4().simple()),"is_private":false})).await.0, StatusCode::OK);
+    for (method, path, actor, body) in [
+        (
+            "POST",
+            format!("/api/channels/{channel}/join"),
+            &reader,
+            Value::Null,
+        ),
+        (
+            "POST",
+            "/api/messages".to_string(),
+            &owner,
+            json!({"id":Uuid::new_v4().to_string(),"channel_id":channel,"content":"hello"}),
+        ),
+    ] {
+        assert_eq!(
+            request(&app, method, &path, actor, body).await.0,
+            StatusCode::OK
+        );
+    }
+    for query in ["", "?details=1"] {
+        let (_, listed) = request(
+            &app,
+            "GET",
+            &format!("/api/channel-read-states{query}"),
+            &reader,
+            Value::Null,
+        )
+        .await;
+        assert_eq!(state_for(&listed, &channel)["has_unread"], true);
+    }
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            &format!("/api/channels/{channel}/archive"),
+            &owner,
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    for query in ["", "?details=1"] {
+        let (_, listed) = request(
+            &app,
+            "GET",
+            &format!("/api/channel-read-states{query}"),
+            &reader,
+            Value::Null,
+        )
+        .await;
+        assert!(
+            listed
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| row["channel_id"].as_str() != Some(channel.as_str())),
+            "archived channel must not be listed"
+        );
+    }
+    // The single-channel form still answers so an archived channel can be opened and read.
+    let (status, _) = request(
+        &app,
+        "GET",
+        &format!("/api/channels/{channel}/read-state"),
+        &reader,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    Ok(())
+}

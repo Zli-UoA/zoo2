@@ -44,6 +44,8 @@ kubecampは1ジョブごとの使い捨てPodです。7台の補充は毎分のC
 
 frontendの `check` は型チェック中に2GiBのRunnerとの通信が途絶えたため、`large-runs-on` を使います。ローカルでも型チェックの子プロセスの最大RSSは約1.5GiBで、Runner自体のメモリも必要です。Storybookを含む `browser-test` も、1CPU・2GiB制約で直列化・heap制限でもOOMを再現したため `large-runs-on` を使います。どちらもDockerは不要ですが、必要なメモリを持つHosted、またはARC（Runner limit 6GiB）を選びます。テスト内容や失敗条件は維持します。
 
+なお、`frontend/vite.config.ts` の `browser` プロジェクトは Linux の `chromium-headless-shell` でアニメーション停止時に `requestAnimationFrame` が停滞する問題を避けるため、`CHROME_BIN` 未指定時（CI 等）はフル Chromium（`channel: "chromium"`）を使います（Linux の `nix develop` では、`browser` と `storybook` が `CHROME_BIN` の Nix 版 Chromium を使います。`vrt` は常に、`storybook` は `CHROME_BIN` 未指定時に、既存の基準画像・設定に合わせて既定の `chromium-headless-shell` を使います）。
+
 ## kubecamp固定と自動選択
 
 軽量処理は `zli-kubecamp-no-docker` に固定し、selectorを待たずに起動する。全7台がbusyならkubecampで順番待ちし、ARCやHostedへは切り替えない。fork PRはHostedを使う。

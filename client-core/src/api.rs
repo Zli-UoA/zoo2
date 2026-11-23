@@ -71,13 +71,17 @@ pub enum SearchKind {
 }
 
 /// `GET /api/search` の絞り込み。期間は `YYYY-MM-DD`（UTC のその日の 0 時）か、オフセット付きの時刻
-/// （RFC 3339。端末の日付の 0 時）。`after` は含み、`before` は含まない。
+/// （RFC 3339。端末の日付の 0 時）。`after` は含み、`before` は含まない。送信者とチャンネルは、どれか
+/// （空なら絞らない。最大 20 個）。`exclude_bots` はボット（アプリ）の投稿を除き、`involving_me` は自分が
+/// 参加中の会話（所属するチャンネル・DM、参加しているスレッド、メンションされたスレッド）に絞る。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SearchFilters {
-    pub user_id: Option<String>,
-    pub channel_id: Option<String>,
+    pub user_ids: Vec<String>,
+    pub channel_ids: Vec<String>,
     pub after: Option<String>,
     pub before: Option<String>,
+    pub exclude_bots: bool,
+    pub involving_me: bool,
 }
 
 impl SearchKind {
@@ -534,15 +538,23 @@ impl ApiClient {
         cursor: Option<&str>,
     ) -> Result<SearchPage> {
         let mut path = format!("/api/search?type={}&q={}", kind.as_query(), segment(query));
+        let user_ids = (!filters.user_ids.is_empty()).then(|| filters.user_ids.join(","));
+        let channel_ids = (!filters.channel_ids.is_empty()).then(|| filters.channel_ids.join(","));
         for (name, value) in [
-            ("user_id", &filters.user_id),
-            ("channel_id", &filters.channel_id),
+            ("user_id", &user_ids),
+            ("channel_id", &channel_ids),
             ("after", &filters.after),
             ("before", &filters.before),
         ] {
             if let Some(value) = value {
                 path.push_str(&format!("&{name}={}", segment(value)));
             }
+        }
+        if filters.exclude_bots {
+            path.push_str("&exclude_bots=true");
+        }
+        if filters.involving_me {
+            path.push_str("&involving_me=true");
         }
         if let Some(cursor) = cursor {
             path.push_str(&format!("&cursor={}", segment(cursor)));
@@ -1150,7 +1162,9 @@ mod tests {
             .and(wiremock::matchers::query_param("type", "files"))
             .and(wiremock::matchers::query_param("q", "会議 資料&x"))
             .and(wiremock::matchers::query_param("cursor", "{\"m\":1}"))
-            .and(wiremock::matchers::query_param("user_id", "u1"))
+            .and(wiremock::matchers::query_param("user_id", "u1,u2"))
+            .and(wiremock::matchers::query_param("exclude_bots", "true"))
+            .and(wiremock::matchers::query_param("involving_me", "true"))
             .and(wiremock::matchers::query_param("after", "2026-11-01"))
             .and(header("X-Dev-User", "u1"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"items":[
@@ -1166,8 +1180,10 @@ mod tests {
                 SearchKind::Files,
                 "会議 資料&x",
                 &SearchFilters {
-                    user_id: Some("u1".into()),
+                    user_ids: vec!["u1".into(), "u2".into()],
                     after: Some("2026-11-01".into()),
+                    exclude_bots: true,
+                    involving_me: true,
                     ..Default::default()
                 },
                 Some("{\"m\":1}"),

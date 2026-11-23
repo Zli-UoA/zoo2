@@ -3,6 +3,8 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { toast } from "sonner";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { AttachmentDownloadError } from "../../../lib/api/attachments";
+import { DESKTOP_PROTOCOL_VERSION, resetDesktopForTest } from "../../../lib/desktop";
+import { resetDesktopDownloadsForTest } from "../../../lib/desktopDownloads";
 import { LocaleProvider } from "../../i18n/LocaleProvider";
 import { MessageAttachments } from "./MessageAttachments";
 import type { AttachmentUrlState } from "../../../hooks/useAttachments";
@@ -18,6 +20,9 @@ vi.mock("../../../hooks/useAttachments", () => ({
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  resetDesktopForTest();
+  resetDesktopDownloadsForTest();
 });
 
 function textAttachment() {
@@ -177,4 +182,43 @@ it("shows the HTTP status when the signed URL returns an error", async () => {
   );
   // 403 の応答は再試行でも同じなので、2回取得する。
   expect(fetchMock).toHaveBeenCalledTimes(2);
+});
+
+it("asks for another folder when the save destination cannot save without overwriting", async () => {
+  (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {
+    invoke: vi.fn(async (cmd: string) => {
+      if (cmd === "zoo_session") {
+        return {
+          protocol: DESKTOP_PROTOCOL_VERSION,
+          ui: "remote",
+          api_base_url: "https://zli.chat",
+          state: { state: "ready" },
+        };
+      }
+      if (cmd === "zoo_download_settings") return { ask_every_time: true, directory: null };
+      if (cmd === "zoo_download_begin") {
+        throw { code: "unsupported_destination", message: "この保存先には保存できません" };
+      }
+      throw new Error(`command ${cmd} not found`);
+    }),
+    transformCallback: vi.fn(),
+  };
+  resetDesktopForTest();
+  link.state = {
+    url: "https://files.test/notes.txt",
+    status: "ready",
+    expiresAt: null,
+    reload: vi.fn(),
+    getFreshUrl: vi.fn(),
+  };
+  const toastError = vi.spyOn(toast, "error").mockReturnValue("download-error");
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  renderDownload();
+  const button = screen.getByRole("button", { name: "notes.txtをダウンロード" });
+  fireEvent.click(button);
+  await waitFor(() => expect(toastError).toHaveBeenCalled(), { timeout: 5_000 });
+  expect(toastError).toHaveBeenCalledWith(
+    "この保存先には保存できません。別のフォルダーを選ぶか、設定の「ダウンロード」で保存先を変えてください。",
+  );
+  expect(button).not.toBeDisabled();
 });

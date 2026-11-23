@@ -169,29 +169,55 @@ vi.mock("../../layout/shell-context", () => ({
 vi.mock("./MessageList", () => ({
   MessageList: ({
     reactions,
+    currentUserId,
+    viewerId,
   }: {
     reactions: Map<string, { userNames?: Record<string, string> }[]>;
-  }) => <div>{reactions.get("old-root")?.[0]?.userNames?.alice}</div>,
+    currentUserId: string | null;
+    viewerId?: string | null;
+  }) => (
+    <div
+      data-testid="message-list-mock"
+      data-current-user-id={currentUserId ?? ""}
+      data-viewer-id={viewerId ?? ""}
+    >
+      {reactions.get("old-root")?.[0]?.userNames?.alice}
+    </div>
+  ),
 }));
 vi.mock("./ThreadPane", () => ({
   ThreadPane: ({
     root,
     replies,
+    targetMessageId,
     readOnly,
     isMember,
     onSendReply,
     onPickReaction,
     onRequestDelete,
+    currentUserId,
+    viewerId,
+    mentionUserId,
   }: {
     root: { content: string };
     replies: { id: string; content: string }[];
+    targetMessageId?: string;
     readOnly?: boolean;
     isMember?: boolean;
     onSendReply: (content: string) => Promise<boolean>;
     onPickReaction?: (id: string) => void;
     onRequestDelete?: (id: string) => void;
+    currentUserId: string | null;
+    viewerId?: string | null;
+    mentionUserId?: string | null;
   }) => (
-    <div>
+    <div
+      data-testid="thread-pane-mock"
+      data-target-message-id={targetMessageId ?? ""}
+      data-current-user-id={currentUserId ?? ""}
+      data-viewer-id={viewerId ?? ""}
+      data-mention-user-id={mentionUserId ?? ""}
+    >
       {root.content}
       {replies.map((reply) => (
         <p key={reply.id}>
@@ -254,6 +280,28 @@ beforeEach(() => {
 });
 
 describe("links and threads whose rows are older than the loaded range", () => {
+  it.each([
+    { isMember: true, readOnly: false, actionId: "alice", mentionId: "alice" },
+    { isMember: true, readOnly: true, actionId: "", mentionId: "alice" },
+    { isMember: false, readOnly: false, actionId: "alice", mentionId: "" },
+  ])(
+    "keeps membership-based mentions separate from participant identity: $isMember / $readOnly",
+    async ({ isMember, readOnly, actionId, mentionId }) => {
+      render(
+        <LocaleProvider>
+          <MessagePane channelId="general" isMember={isMember} readOnly={readOnly} />
+        </LocaleProvider>,
+      );
+      const list = await screen.findByTestId("message-list-mock");
+      expect(list.dataset.currentUserId).toBe(actionId);
+      expect(list.dataset.viewerId).toBe(mentionId);
+      const thread = await screen.findByTestId("thread-pane-mock");
+      expect(thread.dataset.currentUserId).toBe(actionId);
+      expect(thread.dataset.viewerId).toBe("alice");
+      expect(thread.dataset.mentionUserId).toBe(mentionId);
+    },
+  );
+
   it("keeps older replies visible after an archived thread is reopened", async () => {
     fixture.root.thread_archive_at = new Date().toISOString();
     fixture.replies = [40, 10].map((days) => ({
@@ -287,6 +335,18 @@ describe("links and threads whose rows are older than the loaded range", () => {
       expect(screen.getByText("Reply 10 days ago")).toBeTruthy();
     });
   });
+  it("passes the viewer id to an archived thread while keeping the action id null", async () => {
+    fixture.root.thread_archive_at = new Date().toISOString();
+    render(
+      <LocaleProvider>
+        <MessagePane channelId="general" isMember />
+      </LocaleProvider>,
+    );
+    const threadPane = await screen.findByTestId("thread-pane-mock");
+    // 編集・削除などは止めたまま、メンバーのダイアログの「あなた」の印には閲覧者の ID を使う。
+    expect(threadPane.dataset.currentUserId).toBe("");
+    expect(threadPane.dataset.viewerId).toBe("alice");
+  });
   it("opens the thread of a linked reply once the reply row is loaded", async () => {
     const reply = { ...fixture.root, id: "old-reply", parent_id: "old-root" };
     const { rerender } = render(pane("old-reply"));
@@ -294,6 +354,37 @@ describe("links and threads whose rows are older than the loaded range", () => {
     fixture.targetRows = [reply];
     rerender(pane("old-reply"));
     await waitFor(() => expect(fixture.openThread).toHaveBeenCalledWith("old-root"));
+    expect(fixture.closeThread).not.toHaveBeenCalled();
+  });
+
+  it("passes targetMessageId to ThreadPane only for replies in the active thread", async () => {
+    const { rerender } = render(pane("old-root"));
+    const paneEl = await screen.findByTestId("thread-pane-mock");
+    expect(paneEl.getAttribute("data-target-message-id")).toBe("");
+
+    fixture.targetRows = [{ ...fixture.root, id: "unloaded-reply", parent_id: "old-root" }];
+    rerender(pane("unloaded-reply"));
+    await waitFor(() => {
+      expect(screen.getByTestId("thread-pane-mock").getAttribute("data-target-message-id")).toBe(
+        "unloaded-reply",
+      );
+    });
+  });
+
+  it("passes targetMessageId to ThreadPane when opening a surviving reply under a deleted root", async () => {
+    const reply = {
+      ...fixture.root,
+      id: "surviving-reply",
+      content: "Surviving reply",
+      parent_id: fixture.root.id,
+      deleted_at: null,
+    };
+    fixture.root.deleted_at = "2020-01-02 00:00:00.000";
+    fixture.replies = [reply];
+    fixture.targetRows = [reply];
+    render(pane("surviving-reply"));
+    const paneEl = await screen.findByTestId("thread-pane-mock");
+    expect(paneEl.getAttribute("data-target-message-id")).toBe("surviving-reply");
     expect(fixture.closeThread).not.toHaveBeenCalled();
   });
 

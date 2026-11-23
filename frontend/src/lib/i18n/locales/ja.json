@@ -139,8 +139,7 @@
     "candidates": "メンバー候補",
     "usersLoading": "ユーザーを読み込み中…",
     "usersError": "ユーザー取得に失敗しました。",
-    "usersEmpty": "該当するユーザーがいません。",
-    "back": "チャンネルに戻る"
+    "usersEmpty": "該当するユーザーがいません。"
   },
   "moderation": {
     "archived": "アーカイブ済み",
@@ -273,6 +272,14 @@
     "download": "{{name}}をダウンロード",
     "downloadShort": "ダウンロード",
     "downloadError": "ダウンロードできませんでした。",
+    "downloadSaved": "{{name}}を保存しました。",
+    "downloadDestinationUnsupported": "この保存先には保存できません。別のフォルダーを選ぶか、設定の「ダウンロード」で保存先を変えてください。",
+    "downloadDestinationUnsupportedAskEveryTimeOff": "この保存先には保存できません。設定の「ダウンロード」で保存先を変えるか、「保存のたびに確認する」をオンにしてください。",
+    "downloadTooMany": "同時に保存できる件数の上限に達しました。ほかの保存が終わってから、もう一度お試しください。",
+    "downloading": "ダウンロード中",
+    "saving": "保存しています…",
+    "cancelDownload": "{{name}}のダウンロードを中止",
+    "cancelDownloadShort": "中止",
     "retry": "再試行",
     "sensitive": "センシティブな画像",
     "markSensitive": "画像をセンシティブとして投稿",
@@ -329,6 +336,10 @@
     "participants_other": "参加者 {{count}}人",
     "participantsMore": "ほか {{count}}人",
     "participantsEmpty": "参加者はいません",
+    "threadStarter": "スレ主",
+    "participantsSearch": "名前で検索",
+    "participantsFilterPartial": "読み込んだ先頭{{loaded}}人の中から絞り込んでいます（ほか {{count}}人は検索できません）。",
+    "participantsDescription": "このスレッドに参加している人です。",
     "joinToReply": "参加するとこのスレッドに返信できます。",
     "reopenAndJoin": "再Openして参加する"
   },
@@ -493,6 +504,19 @@
     "desktopTitle": "通知",
     "desktopValue": "OS の通知",
     "desktopDescription": "メンションや DM を、アプリが OS の通知で知らせます。OS の設定で zoo2 の通知を止めている場合は、そちらもオンにしてください。"
+  },
+  "downloads": {
+    "desktopTitle": "ダウンロード",
+    "desktopDescription": "添付ファイルの保存先です。保存のたびに場所を確認するか、あらかじめ決めたフォルダーへ保存するかを選べます。",
+    "askEveryTime": "保存のたびに確認する",
+    "noFolder": "フォルダー未選択",
+    "chooseFolder": "フォルダーを選ぶ",
+    "resetDirectory": "保存先フォルダーを消して毎回確認する",
+    "olderAppValue": "アプリの既定の保存先",
+    "olderAppDescription": "この版のアプリでは、アプリが決めた保存先に保存されます。保存先を変えるには、アプリを更新してください。",
+    "loadError": "保存先の設定を読み込めませんでした。",
+    "retry": "再読み込み",
+    "error": "保存先の設定を変更できませんでした。もう一度お試しください。"
   },
   "mfm": {
     "suggestions": "MFMの候補",
@@ -1878,9 +1902,7 @@
     "filters": {
       "label": "絞り込み",
       "from": "送信者",
-      "anyone": "すべての人",
       "in": "チャンネル",
-      "anywhere": "すべてのチャンネル",
       "period": "期間",
       "anytime": "指定なし",
       "last7": "過去 7 日間",
@@ -1890,7 +1912,16 @@
       "after": "開始日",
       "before": "終了日",
       "reversed": "開始日は終了日と同じか、それより前にしてください。",
-      "reset": "条件をリセット"
+      "reset": "条件をリセット",
+      "me": "{{name}}（自分）",
+      "searchPeople": "名前で探す",
+      "searchChannels": "チャンネル名で探す",
+      "noMatches": "見つかりません",
+      "clearSelection": "選択を外す",
+      "selectedCount": "{{label}}: {{count}} 件",
+      "max": "選べるのは {{count}} 件までです",
+      "mine": "自分が参加中",
+      "noBots": "ボットを除く"
     }
   },
   "catchUp": {

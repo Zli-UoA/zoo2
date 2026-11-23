@@ -320,6 +320,58 @@ export const MobilePinned: Story = {
   globals: { viewport: { value: "mobile" } },
 };
 
+// スレッドのあるチャンネルをピン留めすると、ピン留めの行の下にも同じスレッドのツリーを出す
+// （通常のチャンネル一覧の行のツリーはそのまま残る）。DM にはツリーを出さない。
+export const PinnedThreads: Story = {
+  parameters: {
+    a11y: { test: "error" },
+    collections: {
+      ...storyCollections,
+      userPinnedChannels: [
+        {
+          user_id: "user-alice",
+          channel_id: threadRoot.channel_id,
+          position: 0,
+          created_at: pinnedAt,
+          updated_at: pinnedAt,
+        },
+      ],
+    },
+    msw: {
+      handlers: [
+        http.get("*/api/channel-pins", () =>
+          HttpResponse.json({
+            pins: [
+              {
+                user_id: "user-alice",
+                channel_id: threadRoot.channel_id,
+                position: 0,
+                created_at: pinnedAt,
+                updated_at: pinnedAt,
+              },
+            ],
+            version: 1,
+          }),
+        ),
+        http.get("*/api/threads", () =>
+          HttpResponse.json({ items: [threadEntry], next_cursor: null }),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const section = await canvas.findByRole("region", { name: "ピン留め" });
+    await expect(
+      await within(section).findByRole("link", { name: /リリースノートの下書き/ }),
+    ).toBeVisible();
+    // 通常のチャンネル一覧にも、同じスレッドが残る。
+    await expect(
+      await canvas.findAllByRole("link", { name: /リリースノートの下書き/ }),
+    ).toHaveLength(2);
+  }),
+};
+
 export const PinnedReorderError: Story = {
   args: { channels: [...storyChannels, dm] },
   parameters: {

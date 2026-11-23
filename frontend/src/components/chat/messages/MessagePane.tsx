@@ -903,6 +903,15 @@ export function MessagePane({
     );
   }, [pendingDeleteId, run, messagesCollection, isArchivedMessage, isUnderDeletedRoot]);
 
+  const threadTargetMessageId =
+    resolvedTargetId &&
+    threadPaneRoot &&
+    resolvedTargetId !== threadPaneRoot.id &&
+    (threadReplies.some((reply) => reply.id === resolvedTargetId) ||
+      (target?.id === resolvedTargetId && target.parent_id === threadPaneRoot.id))
+      ? resolvedTargetId
+      : undefined;
+
   return (
     <MessageDecryptionsProvider
       decryptions={decryptions}
@@ -948,6 +957,7 @@ export function MessagePane({
             isLoading={messagesQuery.isLoading}
             isError={messagesQuery.isError}
             currentUserId={readOnly ? null : currentUserId}
+            viewerId={isMember ? currentUserId : null}
             canModerate={canModerate}
             editingId={editingId}
             editingText={editingText}
@@ -1034,7 +1044,7 @@ export function MessagePane({
           <ThreadPane
             commands={commandSuggestions.commands}
             onRequestCommands={commandSuggestions.load}
-            targetMessageId={resolvedTargetId}
+            targetMessageId={threadTargetMessageId}
             mentionUsers={mentionUsers}
             mentionMemberIds={mentionMemberIds}
             key={threadPaneRoot.id}
@@ -1068,6 +1078,8 @@ export function MessagePane({
             isLoading={threadQuery.isLoading}
             isError={threadQuery.isError}
             currentUserId={readOnly || threadIsArchived || !threadRoot ? null : currentUserId}
+            viewerId={currentUserId}
+            mentionUserId={isMember ? currentUserId : null}
             canModerate={canModerate && !threadIsArchived && !!threadRoot}
             reactions={reactionGroups}
             attachments={attachmentsByMessage}

@@ -153,6 +153,8 @@ pub enum SidebarItem {
     Thread {
         channel_id: String,
         id: String,
+        /// ピン留めの行の下に出すスレッドか。通常の一覧にも同じスレッドが出るので、選択位置を区別する。
+        pinned: bool,
     },
     MoreThreads {
         archived: bool,
@@ -694,6 +696,7 @@ impl App {
                     selected = Some(SidebarItem::Thread {
                         channel_id: first.channel_id.clone(),
                         id: first.id.clone(),
+                        pinned: false,
                     });
                 }
                 self.thread_has_additional_pages[scope] = append || threads.len() > 100;
@@ -769,12 +772,18 @@ impl App {
                 message,
             } => self.global_search.fail(generation, message),
             AppEvent::ThreadLeft(id) => {
+                // 退出の応答を待つあいだにカーソルを動かしていても、同じ行に残す（行が消えて添字がずれるため）。
+                let selected = self.selected_sidebar_item();
                 self.active_threads.retain(|thread| thread.id != id);
                 self.archived_threads.retain(|thread| thread.id != id);
+                self.restore_sidebar_selection(selected);
                 self.threads_requested_at = [Some(Instant::now()); 2];
                 self.refresh_threads();
             }
             AppEvent::ThreadRedirected { from, to } => {
+                // 一覧にない `from` の一時の行が消える（`to` が一覧にあれば、その行が代わりになる）と、
+                // 添字がずれるので、カーソルは同じ行に残す。
+                let selected = self.selected_sidebar_item();
                 if let Some(thread) = self.thread.as_mut().filter(|t| t.root_id == from) {
                     thread.root_id = to.clone();
                     thread.selected = None;
@@ -784,8 +793,11 @@ impl App {
                 if self.target == Target::Reply(from) {
                     self.target = Target::Reply(to);
                 }
+                self.restore_sidebar_selection(selected);
             }
             AppEvent::ThreadsChanged { reopened } => {
+                // 再Openしたスレッドの行が増えて添字がずれるので、カーソルは同じ行に残す。
+                let selected = self.selected_sidebar_item();
                 if let Some(id) = reopened {
                     self.locally_reopened_threads.insert(
                         id.clone(),
@@ -797,6 +809,7 @@ impl App {
                         .insert(id.clone(), (false, Instant::now()));
                     self.ensure_active_thread(&id);
                 }
+                self.restore_sidebar_selection(selected);
                 // 書き込み前の一覧で、確定済みの状態を上書きしない。
                 self.threads_requested_at = [Some(Instant::now()); 2];
                 self.refresh_threads();
@@ -1100,45 +1113,65 @@ impl App {
         !archived
     }
 
+    /// チャンネルの下に出すスレッドの行。通常の一覧とピン留めで、同じスレッドを同じ並びで出す。
+    /// 参加していないチャンネルは、閲覧中の1件だけを出す。
+    fn thread_rows(&self, channel_id: &str, pinned: bool) -> Vec<SidebarItem> {
+        let joined = self
+            .store
+            .channel(channel_id)
+            .is_some_and(|channel| !channel.is_dm)
+            && self.store.is_member(channel_id, &self.me.id);
+        let row = |id: &str| SidebarItem::Thread {
+            channel_id: channel_id.to_owned(),
+            id: id.to_owned(),
+            pinned,
+        };
+        let mut rows: Vec<SidebarItem> = self
+            .threads()
+            .filter(|thread| {
+                joined
+                    && thread.channel_id == channel_id
+                    && !self.thread_is_archived(channel_id, &thread.id)
+            })
+            .map(|thread| row(&thread.id))
+            .collect();
+        if self.current.as_deref() == Some(channel_id)
+            && let Some(thread) = &self.thread
+        {
+            let selected = row(&thread.root_id);
+            if !rows.contains(&selected)
+                && self.store.message(channel_id, &thread.root_id).is_some()
+                && !self.thread_is_archived(channel_id, &thread.root_id)
+                && !self.store.replies(channel_id, &thread.root_id).is_empty()
+            {
+                rows.push(selected);
+            }
+        }
+        rows
+    }
+
     pub fn sidebar_items(&self) -> Vec<SidebarItem> {
         let mut items = Vec::new();
         // ピン留めは先頭に出す。アーカイブ中は通常の一覧だけに残す（アンアーカイブで戻る）。
+        // 通常のチャンネルには、通常の一覧と同じスレッドを下に出す（DM には出さない）。
         for pin in self.store.pinned_channels() {
             let visible = self.store.channel(&pin.channel_id).is_some_and(|channel| {
                 channel.deleted_at.is_none() && channel.archive_at.is_none()
             });
             if visible {
                 items.push(SidebarItem::Pinned(pin.channel_id.clone()));
+                let is_dm = self
+                    .store
+                    .channel(&pin.channel_id)
+                    .is_some_and(|channel| channel.is_dm);
+                if !is_dm {
+                    items.extend(self.thread_rows(&pin.channel_id, true));
+                }
             }
         }
         for channel in self.store.channels() {
             items.push(SidebarItem::Channel(channel.id.clone()));
-            let joined = !channel.is_dm && self.store.is_member(&channel.id, &self.me.id);
-            for thread in self.threads().filter(|thread| {
-                joined
-                    && thread.channel_id == channel.id
-                    && !self.thread_is_archived(&channel.id, &thread.id)
-            }) {
-                items.push(SidebarItem::Thread {
-                    channel_id: channel.id.clone(),
-                    id: thread.id.clone(),
-                });
-            }
-            if self.current.as_deref() == Some(channel.id.as_str())
-                && let Some(thread) = &self.thread
-            {
-                let selected = SidebarItem::Thread {
-                    channel_id: channel.id.clone(),
-                    id: thread.root_id.clone(),
-                };
-                if !items.contains(&selected)
-                    && self.store.message(&channel.id, &thread.root_id).is_some()
-                    && !self.thread_is_archived(&channel.id, &thread.root_id)
-                    && !self.store.replies(&channel.id, &thread.root_id).is_empty()
-                {
-                    items.push(selected);
-                }
-            }
+            items.extend(self.thread_rows(&channel.id, false));
         }
         for archived in [false, true] {
             if !archived
@@ -1149,6 +1182,11 @@ impl App {
             }
         }
         items
+    }
+
+    /// カーソルがある行。一時のスレッドの行が増減する操作の前に控えて、あとで `restore_sidebar_selection` に渡す。
+    fn selected_sidebar_item(&self) -> Option<SidebarItem> {
+        self.sidebar_items().get(self.sidebar_index).cloned()
     }
 
     fn restore_sidebar_selection(&mut self, selected: Option<SidebarItem>) {
@@ -1611,7 +1649,8 @@ impl App {
         let Some((generation, query, kind, cursor)) = self.global_search.start(append) else {
             return;
         };
-        // `from:@名前`・`in:#チャンネル`・`after:`・`before:` を絞り込みにする（名前は同期済みの一覧で引く）。
+        // `from:@名前`・`in:#チャンネル`（複数可）・`after:`・`before:`・`with:me`・`-is:bot` を絞り込みにする
+        // （名前は同期済みの一覧で引く）。
         let parsed = global_search::parse_modifiers(&query);
         // 日付は端末の暦の日として、その 0 時で区切る。
         let tz = self
@@ -1623,15 +1662,17 @@ impl App {
         let mut filters = crate::api::SearchFilters {
             after: midnight(parsed.after),
             before: midnight(parsed.before),
+            exclude_bots: parsed.no_bots,
+            involving_me: parsed.with_me,
             ..Default::default()
         };
-        if let Some(name) = &parsed.from {
+        for name in &parsed.from {
             match self
                 .store
                 .users()
                 .find(|user| user.user_name.eq_ignore_ascii_case(name))
             {
-                Some(user) => filters.user_id = Some(user.id.clone()),
+                Some(user) => filters.user_ids.push(user.id.clone()),
                 None => {
                     self.global_search
                         .fail(generation, format!("@{name} という人は見つかりません"));
@@ -1639,14 +1680,14 @@ impl App {
                 }
             }
         }
-        if let Some(name) = &parsed.channel {
+        for name in &parsed.channels {
             match self
                 .store
                 .channels()
                 .into_iter()
                 .find(|channel| !channel.is_dm && channel.channel_name.eq_ignore_ascii_case(name))
             {
-                Some(channel) => filters.channel_id = Some(channel.id.clone()),
+                Some(channel) => filters.channel_ids.push(channel.id.clone()),
                 None => {
                     self.global_search.fail(
                         generation,
@@ -1655,6 +1696,13 @@ impl App {
                     return;
                 }
             }
+        }
+        if filters.user_ids.len() > 20 || filters.channel_ids.len() > 20 {
+            self.global_search.fail(
+                generation,
+                "from: と in: は、それぞれ 20 個まで書けます".into(),
+            );
+            return;
         }
         if parsed.terms.is_empty() {
             self.global_search.fail(
@@ -1957,7 +2005,7 @@ impl App {
                         .map(|channel| self.store.channel_label(channel, &self.me.id))
                         .unwrap_or_default(),
                     SidebarItem::MoreThreads { .. } => return false,
-                    SidebarItem::Thread { channel_id, id } => self
+                    SidebarItem::Thread { channel_id, id, .. } => self
                         .thread_content(channel_id, id)
                         .unwrap_or_default()
                         .to_owned(),
@@ -2066,23 +2114,31 @@ impl App {
         };
         if let Some(root_id) = root_id {
             self.typing_poll.wake();
+            // 一覧にないスレッドを開くと、その下に一時の行が増えるので、カーソルは同じ行に残す。
+            let selected = self.selected_sidebar_item();
             self.thread = Some(ThreadView {
                 root_id,
                 selected: None,
                 scroll: 0,
                 inner_scroll: 0,
             });
+            self.restore_sidebar_selection(selected);
             self.focus = Focus::Thread;
         }
     }
 
     fn activate_sidebar(&mut self) {
-        match self.sidebar_items().get(self.sidebar_index).cloned() {
+        match self.selected_sidebar_item() {
             Some(SidebarItem::Channel(channel_id) | SidebarItem::Pinned(channel_id)) => {
+                // カーソルは `open_channel` が、押した行に残す。
                 self.open_channel(channel_id);
                 self.focus = Focus::Messages;
             }
-            Some(SidebarItem::Thread { channel_id, id }) => {
+            Some(SidebarItem::Thread {
+                channel_id,
+                id,
+                pinned,
+            }) => {
                 self.open_channel(channel_id);
                 self.thread = Some(ThreadView {
                     root_id: id.clone(),
@@ -2090,9 +2146,11 @@ impl App {
                     scroll: 0,
                     inner_scroll: 0,
                 });
+                // 開いた行（ピン留めの下か通常の一覧か）に、カーソルを残す。
                 self.restore_sidebar_selection(Some(SidebarItem::Thread {
                     channel_id: self.current.clone().unwrap_or_default(),
                     id: id.clone(),
+                    pinned,
                 }));
                 self.focus = Focus::Thread;
                 self.poll_typing();
@@ -2106,6 +2164,9 @@ impl App {
     }
 
     pub fn open_channel(&mut self, channel_id: String) {
+        // 別チャンネルの、一覧にないスレッドを閲覧中は、一時の行（ピン留めの下を含む）が出ている。
+        // チャンネルを開くとスレッドが閉じてその行が消え、添字がずれるので、カーソルは同じ行に残す。
+        let selected = self.selected_sidebar_item();
         if self.current.as_deref() != Some(channel_id.as_str()) {
             let previous: Vec<_> = self
                 .subscriptions
@@ -2143,6 +2204,7 @@ impl App {
         self.subscribe(ShapeId::Messages(channel_id.clone()));
 
         self.current = Some(channel_id);
+        self.restore_sidebar_selection(selected);
         self.poll_typing();
     }
 
@@ -2158,7 +2220,10 @@ impl App {
     /// スレッドを閉じる。返信を書きかけていたら、送り先をチャンネルに戻す。
     fn close_thread(&mut self) {
         self.typing_poll.wake();
+        // 一覧にないスレッドを閉じると、その下の一時の行が消えるので、カーソルは同じ行に残す。
+        let selected = self.selected_sidebar_item();
         self.thread = None;
+        self.restore_sidebar_selection(selected);
         self.focus = Focus::Messages;
         if matches!(self.target, Target::Reply(_)) {
             self.target = Target::Channel;
@@ -3085,6 +3150,7 @@ mod tests {
         assert!(!app.sidebar_items().contains(&SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "root".into(),
+            pinned: false,
         }));
         let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
             .await

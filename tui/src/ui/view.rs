@@ -286,7 +286,7 @@ fn draw_global_search(frame: &mut Frame, app: &App) {
             Span::raw(" "),
             kind(SearchKind::Files, "ファイル"),
             Span::styled(
-                "   絞り込み: from:@名前 in:#チャンネル after:/before:YYYY-MM-DD",
+                "   絞り込み: from:@名前 in:#チャンネル after:/before:YYYY-MM-DD with:me -is:bot",
                 DIM,
             ),
         ]),
@@ -524,7 +524,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         .iter()
         .enumerate()
         .filter_map(|(index, item)| {
-            if let SidebarItem::Thread { id, channel_id } = item {
+            if let SidebarItem::Thread { id, channel_id, .. } = item {
                 let thread = app.threads().find(|thread| thread.id == *id);
                 let archived = app.thread_is_archived(channel_id, id);
                 let content = app.thread_content(channel_id, id)?;
@@ -1370,6 +1370,7 @@ mod tests {
         let selected = SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "r1".into(),
+            pinned: false,
         };
         assert!(!app.sidebar_items().contains(&selected));
         press(&mut app, KeyCode::Esc);
@@ -1396,6 +1397,7 @@ mod tests {
         let row = SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "empty".into(),
+            pinned: false,
         };
         assert!(app.thread.is_some());
         assert!(!app.sidebar_items().contains(&row));
@@ -1426,6 +1428,7 @@ mod tests {
         let row = SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "r1".into(),
+            pinned: false,
         };
         assert!(!app.sidebar_items().contains(&row));
         app.current = Some("c1".into());
@@ -1468,6 +1471,7 @@ mod tests {
         let row = SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "r1".into(),
+            pinned: false,
         };
         assert!(!app.sidebar_items().contains(&row));
         app.current = Some("c1".into());
@@ -1545,6 +1549,484 @@ mod tests {
         assert_eq!(items[1], SidebarItem::Pinned("c1".into()));
         assert_eq!(items[2], SidebarItem::Channel("c1".into()));
         assert!(render(&mut app).contains("★"));
+    }
+
+    fn pin_c1(app: &mut App) {
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::UserPinnedChannels,
+            batch(vec![(
+                "p1",
+                json!({
+                    "user_id": "u1", "channel_id": "c1", "position": "0",
+                    "created_at": "2026-11-11 00:00:00",
+                    "updated_at": "2026-11-11 00:00:00"
+                }),
+            )]),
+        ));
+        app.active_threads.push(ThreadSummary {
+            id: "m1".into(),
+            channel_id: "c1".into(),
+            content: "hello".into(),
+            thread_archive_at: None,
+            reply_count: 1,
+        });
+    }
+
+    #[tokio::test]
+    async fn pinned_channels_show_their_threads_like_the_channel_list() {
+        let mut app = app();
+        pin_c1(&mut app);
+        let thread = |pinned| SidebarItem::Thread {
+            channel_id: "c1".into(),
+            id: "m1".into(),
+            pinned,
+        };
+        let items = app.sidebar_items();
+        // ピン留めの行の下にも、通常の一覧と同じスレッドを出す。通常の一覧のスレッドも残る。
+        assert_eq!(items[0], SidebarItem::Pinned("c1".into()));
+        assert_eq!(items[1], thread(true));
+        assert_eq!(items[2], SidebarItem::Channel("c1".into()));
+        assert_eq!(items[3], thread(false));
+        // 閲覧中のスレッドは、どちらの行の下にも残る。
+        app.current = Some("c1".into());
+        app.thread = Some(crate::ui::app::ThreadView {
+            root_id: "m1".into(),
+            selected: None,
+            scroll: 0,
+            inner_scroll: 0,
+        });
+        let items = app.sidebar_items();
+        assert_eq!(
+            items.iter().filter(|item| **item == thread(true)).count(),
+            1
+        );
+        assert_eq!(
+            items.iter().filter(|item| **item == thread(false)).count(),
+            1
+        );
+        assert_eq!(render(&mut app).matches("hello (1)").count(), 2);
+    }
+
+    #[tokio::test]
+    async fn opening_a_pinned_thread_keeps_the_cursor_on_the_pinned_row() {
+        for pinned in [true, false] {
+            let mut app = app();
+            pin_c1(&mut app);
+            let row = SidebarItem::Thread {
+                channel_id: "c1".into(),
+                id: "m1".into(),
+                pinned,
+            };
+            app.focus = Focus::Sidebar;
+            app.sidebar_index = app
+                .sidebar_items()
+                .iter()
+                .position(|item| *item == row)
+                .unwrap();
+            press(&mut app, KeyCode::Enter);
+            assert_eq!(app.focus, Focus::Thread);
+            assert_eq!(
+                app.thread.as_ref().map(|thread| thread.root_id.as_str()),
+                Some("m1")
+            );
+            // 開いたあとも、カーソルは押した行（ピン留めの下か通常の一覧か）にある。
+            assert_eq!(app.sidebar_items()[app.sidebar_index], row, "{pinned}");
+        }
+    }
+
+    /// 別チャンネル (c2) の、一覧にないスレッド (r1) の一時の行。ピン留めの下にも、通常の一覧の下にも出る。
+    fn temporary_row(pinned: bool) -> SidebarItem {
+        SidebarItem::Thread {
+            channel_id: "c2".into(),
+            id: "r1".into(),
+            pinned,
+        }
+    }
+
+    /// c2（参加済み）に、返信のあるスレッド r1 がある。一覧 (`active_threads`) には載せない。
+    /// `viewing` なら c2 を開いて r1 を閲覧中にして、c2 の下に一時の行を出す。
+    fn app_with_unlisted_c2_thread(pin_c2: bool, viewing: bool) -> App {
+        let mut app = app();
+        let feed =
+            |app: &mut App, id: ShapeId, rows| app.on_shape(ShapeEvent::Batch(id, batch(rows)));
+        feed(
+            &mut app,
+            ShapeId::ChannelUsers,
+            vec![("m2", json!({ "user_id": "u1", "channel_id": "c2" }))],
+        );
+        feed(
+            &mut app,
+            ShapeId::Messages("c2".into()),
+            vec![
+                (
+                    "r1",
+                    json!({ "id": "r1", "user_id": "u2", "channel_id": "c2",
+                               "content": "root", "created_at": "2026-11-01 03:00:00" }),
+                ),
+                (
+                    "r2",
+                    json!({ "id": "r2", "user_id": "u1", "channel_id": "c2", "content": "reply",
+                               "created_at": "2026-11-01 03:01:00", "parent_id": "r1" }),
+                ),
+            ],
+        );
+        if pin_c2 {
+            feed(
+                &mut app,
+                ShapeId::UserPinnedChannels,
+                vec![(
+                    "p2",
+                    json!({
+                        "user_id": "u1", "channel_id": "c2", "position": "0",
+                        "created_at": "2026-11-11 00:00:00",
+                        "updated_at": "2026-11-11 00:00:00"
+                    }),
+                )],
+            );
+        }
+        app.current = Some("c2".into());
+        if viewing {
+            app.thread = Some(crate::ui::app::ThreadView {
+                root_id: "r1".into(),
+                selected: None,
+                scroll: 0,
+                inner_scroll: 0,
+            });
+        }
+        app
+    }
+
+    fn put_cursor_on(app: &mut App, row: &SidebarItem) {
+        app.sidebar_index = app
+            .sidebar_items()
+            .iter()
+            .position(|item| item == row)
+            .unwrap();
+    }
+
+    fn cursor_row(app: &App) -> SidebarItem {
+        app.sidebar_items()[app.sidebar_index].clone()
+    }
+
+    // 一時のスレッドの行が増減しても、カーソルは同じ行に残る。
+    // ピン留めの下の行は c1 より前にあるので、増減すると、c1 の添字がずれる。
+
+    #[tokio::test]
+    async fn opening_a_channel_keeps_the_cursor_when_a_temporary_thread_row_disappears() {
+        for pin_c2 in [true, false] {
+            let mut app = app_with_unlisted_c2_thread(pin_c2, true);
+            let before = app.sidebar_items();
+            assert!(before.contains(&temporary_row(false)), "{pin_c2}");
+            assert_eq!(before.contains(&temporary_row(true)), pin_c2, "{pin_c2}");
+
+            let target = SidebarItem::Channel("c1".into());
+            app.focus = Focus::Sidebar;
+            put_cursor_on(&mut app, &target);
+            press(&mut app, KeyCode::Enter);
+
+            assert_eq!(app.current.as_deref(), Some("c1"));
+            assert!(app.thread.is_none());
+            assert_eq!(app.focus, Focus::Messages);
+            let after = app.sidebar_items();
+            assert!(
+                !after.contains(&temporary_row(false)) && !after.contains(&temporary_row(true))
+            );
+            assert_eq!(cursor_row(&app), target, "{pin_c2}");
+        }
+    }
+
+    #[tokio::test]
+    async fn closing_a_thread_keeps_the_cursor_when_a_temporary_thread_row_disappears() {
+        for pin_c2 in [true, false] {
+            let mut app = app_with_unlisted_c2_thread(pin_c2, true);
+            // c1 の行にカーソルを置いたまま、スレッドへ戻って Esc で閉じる。
+            let target = SidebarItem::Channel("c1".into());
+            put_cursor_on(&mut app, &target);
+            app.focus = Focus::Thread;
+            press(&mut app, KeyCode::Esc);
+
+            assert!(app.thread.is_none());
+            assert_eq!(app.focus, Focus::Messages);
+            assert!(!app.sidebar_items().contains(&temporary_row(true)));
+            assert_eq!(cursor_row(&app), target, "{pin_c2}");
+        }
+    }
+
+    #[tokio::test]
+    async fn opening_a_thread_keeps_the_cursor_when_a_temporary_thread_row_appears() {
+        for pin_c2 in [true, false] {
+            let mut app = app_with_unlisted_c2_thread(pin_c2, false);
+            assert!(!app.sidebar_items().contains(&temporary_row(true)));
+            let target = SidebarItem::Channel("c1".into());
+            put_cursor_on(&mut app, &target);
+            // メッセージ欄で、返信のあるメッセージを選んで Enter でスレッドを開く。
+            app.focus = Focus::Messages;
+            app.selected = Some("r1".into());
+            press(&mut app, KeyCode::Enter);
+
+            assert_eq!(app.focus, Focus::Thread);
+            assert_eq!(
+                app.thread.as_ref().map(|thread| thread.root_id.as_str()),
+                Some("r1")
+            );
+            assert_eq!(
+                app.sidebar_items().contains(&temporary_row(true)),
+                pin_c2,
+                "{pin_c2}"
+            );
+            assert_eq!(cursor_row(&app), target, "{pin_c2}");
+        }
+    }
+
+    #[tokio::test]
+    async fn restoring_a_failed_draft_keeps_the_cursor_when_a_temporary_thread_row_disappears() {
+        let mut app = app_with_unlisted_c2_thread(true, true);
+        let target = SidebarItem::Channel("c1".into());
+        put_cursor_on(&mut app, &target);
+        app.focus = Focus::Sidebar;
+        // 別のチャンネル (c1) の送れなかった本文を戻すと、c1 を開き、c2 のスレッドは閉じる。
+        app.on_app_event(AppEvent::RestoreDraft {
+            channel_id: "c1".into(),
+            target: Target::Channel,
+            content: "戻す本文".into(),
+            edit_base: None,
+        });
+        press(&mut app, KeyCode::Char('R'));
+
+        assert_eq!(app.current.as_deref(), Some("c1"));
+        assert_eq!(app.composer.lines(), ["戻す本文"]);
+        assert!(!app.sidebar_items().contains(&temporary_row(true)));
+        assert_eq!(cursor_row(&app), target);
+    }
+
+    #[tokio::test]
+    async fn leaving_a_thread_keeps_the_cursor_when_thread_rows_disappear() {
+        for pinned in [true, false] {
+            let mut app = app();
+            if pinned {
+                pin_c1(&mut app);
+            } else {
+                app.active_threads.push(ThreadSummary {
+                    id: "m1".into(),
+                    channel_id: "c1".into(),
+                    content: "hello".into(),
+                    thread_archive_at: None,
+                    reply_count: 1,
+                });
+            }
+            let target = SidebarItem::Channel("c1".into());
+            put_cursor_on(&mut app, &target);
+            let before = app.sidebar_items().len();
+            // 退出の応答を待つあいだに動かしたカーソルは、スレッドの行が消えても、同じ行に残る。
+            // ピン留めの下の行は c1 より前にあるので、消えると c1 の添字がずれる。
+            app.on_app_event(AppEvent::ThreadLeft("m1".into()));
+
+            assert!(app.sidebar_items().len() < before, "{pinned}");
+            assert!(
+                app.sidebar_items()
+                    .iter()
+                    .all(|item| !matches!(item, SidebarItem::Thread { .. }))
+            );
+            assert_eq!(cursor_row(&app), target, "{pinned}");
+        }
+    }
+
+    #[tokio::test]
+    async fn reopening_a_thread_keeps_the_cursor_when_a_thread_row_appears() {
+        for pinned in [true, false] {
+            let mut app = app();
+            if pinned {
+                pin_c1(&mut app);
+            } else {
+                app.active_threads.push(ThreadSummary {
+                    id: "m1".into(),
+                    channel_id: "c1".into(),
+                    content: "hello".into(),
+                    thread_archive_at: None,
+                    reply_count: 1,
+                });
+            }
+            // m1 はアーカイブ済みで、一覧には出ていない。
+            let mut archived = app.active_threads.remove(0);
+            archived.thread_archive_at = Some("2026-11-10T00:00:00".into());
+            app.archived_threads.push(archived);
+            assert!(
+                app.sidebar_items()
+                    .iter()
+                    .all(|item| !matches!(item, SidebarItem::Thread { .. }))
+            );
+            let target = SidebarItem::Channel("c2".into());
+            put_cursor_on(&mut app, &target);
+
+            // 再Openすると、c1 の下に行が増える。c2 の添字がずれても、カーソルは c2 に残る。
+            app.on_app_event(AppEvent::ThreadsChanged {
+                reopened: Some("m1".into()),
+            });
+
+            assert!(
+                app.sidebar_items()
+                    .iter()
+                    .any(|item| matches!(item, SidebarItem::Thread { .. })),
+                "{pinned}"
+            );
+            assert_eq!(cursor_row(&app), target, "{pinned}");
+        }
+    }
+
+    #[tokio::test]
+    async fn redirecting_a_thread_keeps_the_cursor_when_a_temporary_thread_row_disappears() {
+        for pin_c2 in [true, false] {
+            let mut app = app_with_unlisted_c2_thread(pin_c2, true);
+            // 返信先は、一覧にあるスレッド r0。閲覧中の r1 は一覧になく、一時の行が出ている。
+            app.active_threads.push(ThreadSummary {
+                id: "r0".into(),
+                channel_id: "c2".into(),
+                content: "listed".into(),
+                thread_archive_at: None,
+                reply_count: 1,
+            });
+            let temporary = |pinned| SidebarItem::Thread {
+                channel_id: "c2".into(),
+                id: "r1".into(),
+                pinned,
+            };
+            assert!(app.sidebar_items().contains(&temporary(false)), "{pin_c2}");
+            let target = SidebarItem::Channel("c1".into());
+            put_cursor_on(&mut app, &target);
+
+            // 返信すると、バックエンドは返信先を親 r0 に正規化する。r1 の行は消え、r0 の行が代わりになる。
+            app.on_app_event(AppEvent::ThreadRedirected {
+                from: "r1".into(),
+                to: "r0".into(),
+            });
+
+            assert_eq!(
+                app.thread.as_ref().map(|thread| thread.root_id.as_str()),
+                Some("r0")
+            );
+            let after = app.sidebar_items();
+            assert!(!after.contains(&temporary(false)) && !after.contains(&temporary(true)));
+            assert_eq!(cursor_row(&app), target, "{pin_c2}");
+        }
+    }
+
+    #[tokio::test]
+    async fn pinned_dms_and_archived_threads_have_no_thread_rows() {
+        let mut app = app();
+        pin_c1(&mut app);
+        app.archived_threads.push(ThreadSummary {
+            id: "m1".into(),
+            channel_id: "c1".into(),
+            content: "hello".into(),
+            thread_archive_at: Some("2026-11-10T00:00:00".into()),
+            reply_count: 1,
+        });
+        // アーカイブ済みは、ピン留めの下にも出さない。
+        app.active_threads.clear();
+        assert!(
+            app.sidebar_items()
+                .iter()
+                .all(|item| !matches!(item, SidebarItem::Thread { .. }))
+        );
+        // 参加していないチャンネルは、ピン留めしても、スレッドを出さない（通常の一覧と同じ）。
+        app.active_threads.push(ThreadSummary {
+            id: "m2".into(),
+            channel_id: "c2".into(),
+            content: "secret".into(),
+            thread_archive_at: None,
+            reply_count: 1,
+        });
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::UserPinnedChannels,
+            batch(vec![(
+                "p2",
+                json!({
+                    "user_id": "u1", "channel_id": "c2", "position": "1",
+                    "created_at": "2026-11-11 00:00:00",
+                    "updated_at": "2026-11-11 00:00:00"
+                }),
+            )]),
+        ));
+        assert!(
+            app.sidebar_items()
+                .iter()
+                .all(|item| !matches!(item, SidebarItem::Thread { .. }))
+        );
+
+        // 参加済みの DM をピン留めして、その DM で、返信のあるスレッドを閲覧中にしても、ピン留めの下にスレッドの行を
+        // 出さない。DM の除外は、未参加による除外とは別の条件なので、参加済みの DM で確かめる
+        // （通常の一覧の DM の下には、閲覧中のスレッドが出る。ピン留めの下には出さない）
+        let feed =
+            |app: &mut App, id: ShapeId, rows| app.on_shape(ShapeEvent::Batch(id, batch(rows)));
+        feed(
+            &mut app,
+            ShapeId::Channels,
+            vec![(
+                "d1",
+                json!({ "id": "d1", "channel_name": "dm:u1:u2", "is_private": "t", "is_dm": "t" }),
+            )],
+        );
+        feed(
+            &mut app,
+            ShapeId::ChannelUsers,
+            vec![("dm-m", json!({ "user_id": "u1", "channel_id": "d1" }))],
+        );
+        feed(
+            &mut app,
+            ShapeId::Messages("d1".into()),
+            vec![
+                (
+                    "dr1",
+                    json!({ "id": "dr1", "user_id": "u2", "channel_id": "d1",
+                               "content": "dm root", "created_at": "2026-11-01 03:00:00" }),
+                ),
+                (
+                    "dr2",
+                    json!({ "id": "dr2", "user_id": "u1", "channel_id": "d1", "content": "dm reply",
+                               "created_at": "2026-11-01 03:01:00", "parent_id": "dr1" }),
+                ),
+            ],
+        );
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::UserPinnedChannels,
+            batch(vec![(
+                "p3",
+                json!({
+                    "user_id": "u1", "channel_id": "d1", "position": "2",
+                    "created_at": "2026-11-11 00:00:00",
+                    "updated_at": "2026-11-11 00:00:00"
+                }),
+            )]),
+        ));
+        app.active_threads.push(ThreadSummary {
+            id: "dr1".into(),
+            channel_id: "d1".into(),
+            content: "dm root".into(),
+            thread_archive_at: None,
+            reply_count: 1,
+        });
+        app.current = Some("d1".into());
+        app.thread = Some(crate::ui::app::ThreadView {
+            root_id: "dr1".into(),
+            selected: None,
+            scroll: 0,
+            inner_scroll: 0,
+        });
+        let items = app.sidebar_items();
+        assert!(items.contains(&SidebarItem::Pinned("d1".into())));
+        // 設定が、閲覧中のスレッドの行を出す経路に届いていることの確認（通常の一覧の DM の下には出る）
+        assert!(items.contains(&SidebarItem::Thread {
+            channel_id: "d1".into(),
+            id: "dr1".into(),
+            pinned: false,
+        }));
+        assert!(
+            !items.iter().any(|item| matches!(
+                item,
+                SidebarItem::Thread { channel_id, pinned: true, .. } if channel_id == "d1"
+            )),
+            "{items:?}"
+        );
     }
 
     #[tokio::test]
@@ -1655,6 +2137,7 @@ mod tests {
         let row = SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "m1".into(),
+            pinned: false,
         };
         assert!(!app.sidebar_items().contains(&row));
         app.on_app_event(AppEvent::Threads {
@@ -1714,6 +2197,7 @@ mod tests {
                 let row = SidebarItem::Thread {
                     channel_id: "c1".into(),
                     id: "m1".into(),
+                    pinned: false,
                 };
                 assert!(app.sidebar_items().contains(&row));
                 let mut snapshot = batch(vec![(
@@ -1789,6 +2273,7 @@ mod tests {
             let row = SidebarItem::Thread {
                 channel_id: "c1".into(),
                 id: "m1".into(),
+                pinned: false,
             };
             app.focus = Focus::Messages;
             app.selected = Some("m1".into());
@@ -1883,6 +2368,7 @@ mod tests {
             let row = SidebarItem::Thread {
                 channel_id: "c1".into(),
                 id: "m1".into(),
+                pinned: false,
             };
             assert!(app.sidebar_items().contains(&row));
             if root_exists {
@@ -2044,6 +2530,7 @@ mod tests {
             let row = SidebarItem::Thread {
                 channel_id: "c1".into(),
                 id: "m1".into(),
+                pinned: false,
             };
             assert!(app.sidebar_items().contains(&row));
             if archived {
@@ -2200,6 +2687,7 @@ mod tests {
         let row = SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "m1".into(),
+            pinned: false,
         };
         assert!(app.thread.is_none());
         assert!(!app.sidebar_items().contains(&row));
@@ -2250,6 +2738,7 @@ mod tests {
         let row = SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "m1".into(),
+            pinned: false,
         };
         assert!(!app.sidebar_items().contains(&row));
         assert!(!app.thread_is_archived("c1", "m1"));
@@ -2567,7 +3056,8 @@ mod tests {
             app.sidebar_items()[app.sidebar_index],
             SidebarItem::Thread {
                 channel_id: "c1".into(),
-                id: "older".into()
+                id: "older".into(),
+                pinned: false,
             }
         );
         assert!(render(&mut app).contains("Older thread"));

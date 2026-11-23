@@ -139,8 +139,7 @@
     "candidates": "成员建议",
     "usersLoading": "正在加载用户…",
     "usersError": "无法加载用户。",
-    "usersEmpty": "找不到匹配的用户。",
-    "back": "返回频道"
+    "usersEmpty": "找不到匹配的用户。"
   },
   "moderation": {
     "archived": "已归档",
@@ -273,6 +272,13 @@
     "download": "下载{{name}}",
     "downloadShort": "下载",
     "downloadError": "无法下载文件。",
+    "downloadSaved": "已保存为 {{name}}。",
+    "downloadDestinationUnsupported": "无法保存到此位置。请选择其他文件夹，或在设置的“下载”中更改保存位置。",
+    "downloadTooMany": "同时保存的数量已达上限。请等待其他下载完成后再试。",
+    "downloading": "正在下载",
+    "saving": "正在保存…",
+    "cancelDownload": "取消下载 {{name}}",
+    "cancelDownloadShort": "取消",
     "retry": "重试",
     "sensitive": "敏感图片",
     "markSensitive": "将图片标记为敏感内容",
@@ -294,7 +300,8 @@
       "to": "收件人",
       "cc": "抄送",
       "date": "日期"
-    }
+    },
+    "downloadDestinationUnsupportedAskEveryTimeOff": "无法保存到此位置。请在设置的“下载”中更改保存位置，或开启“每次保存时确认”。"
   },
   "threads": {
     "title": "子线程",
@@ -329,6 +336,10 @@
     "participants_other": "参与者 {{count}} 人",
     "participantsMore": "另有 {{count}} 人",
     "participantsEmpty": "没有参与者",
+    "threadStarter": "讨论串发起人",
+    "participantsSearch": "搜索姓名",
+    "participantsFilterPartial": "仅在已加载的前 {{loaded}} 人中筛选（另有 {{count}} 人无法搜索）。",
+    "participantsDescription": "已加入此讨论串的人。",
     "joinToReply": "参与后才能回复此讨论串。",
     "reopenAndJoin": "重新打开并参与"
   },
@@ -493,6 +504,19 @@
     "desktopTitle": "通知",
     "desktopValue": "系统通知",
     "desktopDescription": "应用会通过系统通知提醒你被提及和收到私信。如果在系统设置中关闭了 zoo2 的通知，请在那里也将其打开。"
+  },
+  "downloads": {
+    "desktopTitle": "下载",
+    "desktopDescription": "附件文件的保存位置。可以选择每次保存时确认位置，或保存到预先设置的文件夹。",
+    "askEveryTime": "每次保存时确认",
+    "noFolder": "未选择文件夹",
+    "chooseFolder": "选择文件夹",
+    "resetDirectory": "清除文件夹并每次保存时确认",
+    "olderAppValue": "应用默认保存位置",
+    "olderAppDescription": "此版本的应用会将附件保存到应用决定的位置。若要更改保存位置，请更新应用。",
+    "loadError": "无法读取保存位置的设置。",
+    "retry": "重新加载",
+    "error": "无法更改下载设置，请重试。"
   },
   "mfm": {
     "suggestions": "MFM 候选",
@@ -1878,9 +1902,7 @@
     "filters": {
       "label": "筛选",
       "from": "发送者",
-      "anyone": "所有人",
       "in": "频道",
-      "anywhere": "所有频道",
       "period": "日期",
       "anytime": "不限",
       "last7": "过去 7 天",
@@ -1890,7 +1912,16 @@
       "after": "开始日期",
       "before": "结束日期",
       "reversed": "开始日期不能晚于结束日期。",
-      "reset": "重置条件"
+      "reset": "重置条件",
+      "me": "{{name}}（我）",
+      "searchPeople": "按名称搜索",
+      "searchChannels": "搜索频道",
+      "noMatches": "没有找到",
+      "clearSelection": "取消选择",
+      "selectedCount": "{{label}}：{{count}} 个",
+      "max": "最多可选择 {{count}} 个",
+      "mine": "我参与的",
+      "noBots": "排除机器人"
     }
   },
   "catchUp": {

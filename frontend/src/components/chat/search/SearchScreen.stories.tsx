@@ -340,10 +340,34 @@ export const Files: Story = {
 export const Filters: Story = {
   play: playForImplementation(async () => {
     const region = await results();
-    await userEvent.selectOptions(region.getByRole("combobox", { name: "送信者" }), "user-alice");
-    await waitFor(() => expect(requests.at(-1)!.searchParams.get("user_id")).toBe("user-alice"));
-    await userEvent.selectOptions(region.getByRole("combobox", { name: "チャンネル" }), general.id);
+    // 送信者は検索欄で探し、複数を選べる（どれかに当たる）。
+    await userEvent.click(region.getByRole("button", { name: "送信者" }));
+    await userEvent.type(await screen.findByRole("searchbox", { name: "名前で探す" }), "bo");
+    await expect(screen.queryByRole("checkbox", { name: /Alice/ })).toBeNull();
+    await userEvent.click(screen.getByRole("checkbox", { name: /Bob/ }));
+    await waitFor(() => expect(requests.at(-1)!.searchParams.get("user_id")).toBe("user-bob"));
+    await userEvent.clear(screen.getByRole("searchbox", { name: "名前で探す" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: /Alice/ }));
+    await waitFor(() =>
+      expect(requests.at(-1)!.searchParams.get("user_id")).toBe("user-bob,user-alice"),
+    );
+    await userEvent.keyboard("{Escape}");
+    await expect(region.getByRole("button", { name: "送信者: 2 件" })).toBeVisible();
+    await userEvent.click(region.getByRole("button", { name: "チャンネル" }));
+    await userEvent.click(
+      await screen.findByRole("checkbox", { name: new RegExp(general.channel_name) }),
+    );
     await waitFor(() => expect(requests.at(-1)!.searchParams.get("channel_id")).toBe(general.id));
+    await userEvent.keyboard("{Escape}");
+    // 自分が参加中の会話と、ボットを除くのは切り替え。
+    await userEvent.click(region.getByRole("button", { name: "自分が参加中" }));
+    await waitFor(() => expect(requests.at(-1)!.searchParams.get("involving_me")).toBe("true"));
+    await userEvent.click(region.getByRole("button", { name: "ボットを除く" }));
+    await waitFor(() => expect(requests.at(-1)!.searchParams.get("exclude_bots")).toBe("true"));
+    await expect(region.getByRole("button", { name: "ボットを除く" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
     await userEvent.selectOptions(region.getByRole("combobox", { name: "期間" }), "last7");
     await waitFor(() => expect(requests.at(-1)!.searchParams.get("after")).toMatch(/^\d{4}-/));
     await userEvent.selectOptions(region.getByRole("combobox", { name: "期間" }), "custom");
@@ -351,10 +375,26 @@ export const Filters: Story = {
     // リセットすると条件のない検索に戻る（最初の結果は手元にあるので取り直さない）。
     const before = requests.length;
     await userEvent.click(region.getByRole("button", { name: "条件をリセット" }));
-    await waitFor(() => expect(region.getByRole("combobox", { name: "送信者" })).toHaveValue(""));
+    await waitFor(() => expect(region.getByRole("button", { name: "送信者" })).toBeVisible());
+    await expect(region.getByRole("button", { name: "自分が参加中" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
     await expect(region.getByRole("combobox", { name: "期間" })).toHaveValue("anytime");
     await expect(region.queryByRole("button", { name: "条件をリセット" })).toBeNull();
     await expect(requests).toHaveLength(before);
+  }),
+};
+
+/** 送信者の一覧。自分を先頭に、アイコン付きで出す（画面の確認用に開いたままにする）。 */
+export const FromPicker: Story = {
+  play: playForImplementation(async () => {
+    const region = await results();
+    await userEvent.click(region.getByRole("button", { name: "送信者" }));
+    const list = await screen.findByRole("list", { name: "送信者" });
+    await expect(within(list).getAllByRole("checkbox").length).toBeGreaterThan(1);
+    await userEvent.type(screen.getByRole("searchbox", { name: "名前で探す" }), "該当なし");
+    await expect(screen.getByText("見つかりません")).toBeVisible();
   }),
 };
 

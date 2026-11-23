@@ -45,6 +45,10 @@ notify-rust = { version = "4", features = ["preview-macos-un"] }
 # 通話のため、WebKitGTK の WebRTC を有効にする (window.rs の enable_webrtc)。
 webkit2gtk = { version = "2", features = ["v2_38"] }
 
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+# 既存のファイルを置き換えずに移す (renameat2 / renamex_np)。
+libc = "0.2"
+
 [target.'cfg(target_os = "windows")'.dependencies]
 # WinRT トースト通知 (クリック・操作ボタン・閉じる)、AUMID 登録、Inno Setup インストーラー起動に使う。
 windows = { version = "0.62", features = [
@@ -55,6 +59,7 @@ windows = { version = "0.62", features = [
     "Win32_Security",
     "Win32_System_Com",
     "Win32_System_Registry",
+    "Win32_Storage_FileSystem",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }

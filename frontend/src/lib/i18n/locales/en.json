@@ -139,8 +139,7 @@
     "candidates": "Member suggestions",
     "usersLoading": "Loading users…",
     "usersError": "Failed to load users.",
-    "usersEmpty": "No matching users.",
-    "back": "Back to channel"
+    "usersEmpty": "No matching users."
   },
   "moderation": {
     "archived": "Archived",
@@ -273,6 +272,14 @@
     "download": "Download {{name}}",
     "downloadShort": "Download",
     "downloadError": "Could not download the file.",
+    "downloadSaved": "Saved as {{name}}.",
+    "downloadDestinationUnsupported": "This folder cannot be used to save the file. Choose another folder, or change the save location in Settings > Downloads.",
+    "downloadDestinationUnsupportedAskEveryTimeOff": "This folder cannot be used to save the file. Change the save location in Settings > Downloads, or turn on \"Ask where to save each time\".",
+    "downloadTooMany": "Too many downloads are running at once. Wait for the other downloads to finish, then try again.",
+    "downloading": "Downloading",
+    "saving": "Saving…",
+    "cancelDownload": "Cancel downloading {{name}}",
+    "cancelDownloadShort": "Cancel",
     "retry": "Try again",
     "sensitive": "Sensitive image",
     "markSensitive": "Mark images as sensitive",
@@ -329,6 +336,10 @@
     "participants_other": "{{count}} participants",
     "participantsMore": "and {{count}} more",
     "participantsEmpty": "No participants",
+    "threadStarter": "Thread starter",
+    "participantsSearch": "Search by name",
+    "participantsFilterPartial": "Searching only the first {{loaded}} people loaded ({{count}} more can't be searched).",
+    "participantsDescription": "People who have joined this thread.",
     "joinToReply": "Join the thread to reply.",
     "reopenAndJoin": "Reopen and join"
   },
@@ -493,6 +504,19 @@
     "desktopTitle": "Notifications",
     "desktopValue": "System notifications",
     "desktopDescription": "The app shows mentions and DMs as system notifications. If notifications for zoo2 are turned off in your system settings, turn them on there as well."
+  },
+  "downloads": {
+    "desktopTitle": "Downloads",
+    "desktopDescription": "Where the app saves attachments. Choose whether to confirm the location each time, or save to a folder you set in advance.",
+    "askEveryTime": "Ask where to save each time",
+    "noFolder": "No folder selected",
+    "chooseFolder": "Choose folder",
+    "resetDirectory": "Clear folder and ask each time",
+    "olderAppValue": "The app's default folder",
+    "olderAppDescription": "This version of the app saves attachments to the folder chosen by the app. Update the app to change where files are saved.",
+    "loadError": "Could not load the save location settings.",
+    "retry": "Reload",
+    "error": "Could not change the download settings. Please try again."
   },
   "mfm": {
     "suggestions": "MFM suggestions",
@@ -1878,9 +1902,7 @@
     "filters": {
       "label": "Filters",
       "from": "From",
-      "anyone": "Anyone",
       "in": "In",
-      "anywhere": "All channels",
       "period": "Date",
       "anytime": "Any time",
       "last7": "Last 7 days",
@@ -1890,7 +1912,16 @@
       "after": "From date",
       "before": "To date",
       "reversed": "The start date must be on or before the end date.",
-      "reset": "Reset filters"
+      "reset": "Reset filters",
+      "me": "{{name}} (you)",
+      "searchPeople": "Search by name",
+      "searchChannels": "Search channels",
+      "noMatches": "No matches",
+      "clearSelection": "Clear selection",
+      "selectedCount": "{{label}}: {{count}}",
+      "max": "You can choose up to {{count}}",
+      "mine": "Involving me",
+      "noBots": "Exclude bots"
     }
   },
   "catchUp": {

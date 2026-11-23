@@ -11,6 +11,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent,
   type ReactNode,
 } from "react";
@@ -251,6 +252,8 @@ export type CustomEmojiOption = {
   category: string;
   aliases: string[];
   url: string;
+  width?: number | null;
+  height?: number | null;
 };
 
 /** Workspace custom emoji plus account avatars, filtered by `query`. */
@@ -276,6 +279,24 @@ export function useCustomEmojiSearch(query: string) {
 }
 
 type CustomEmojiSearch = ReturnType<typeof useCustomEmojiSearch>;
+
+/**
+ * Reserve picker image dimensions from metadata before decode while still letting the
+ * decoded image's natural (post-EXIF) aspect ratio take over once loaded.
+ */
+function customEmojiImageStyle(emoji: CustomEmojiOption): CSSProperties | undefined {
+  if (
+    typeof emoji.width !== "number" ||
+    !Number.isFinite(emoji.width) ||
+    emoji.width <= 0 ||
+    typeof emoji.height !== "number" ||
+    !Number.isFinite(emoji.height) ||
+    emoji.height <= 0
+  ) {
+    return undefined;
+  }
+  return { aspectRatio: `auto ${emoji.width} / ${emoji.height}` };
+}
 
 function CustomEmojiGroups({
   search,
@@ -311,6 +332,7 @@ function CustomEmojiGroups({
                       src={imageUrl(e.url)}
                       alt={`:${e.name}:`}
                       className="h-7 w-auto max-w-40 object-contain"
+                      style={customEmojiImageStyle(e)}
                     />
                   )}
                 </Button>

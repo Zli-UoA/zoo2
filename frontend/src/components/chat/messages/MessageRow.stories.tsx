@@ -439,6 +439,61 @@ export const EncryptedDecrypted: Story = {
 
 const storyUserNames = new Map(storyUsers.map((user) => [user.id, user.user_name]));
 
+export const MentionedMessage: Story = {
+  decorators: [
+    (Story) => (
+      <MentionUserNamesContext.Provider value={new Map([["user-viewer", "amesyu"]])}>
+        <Story />
+      </MentionUserNamesContext.Provider>
+    ),
+  ],
+  args: {
+    isOwn: true,
+    item: {
+      ...item,
+      message: {
+        ...item.message,
+        user_id: "user-viewer",
+        user_name: "amesyu",
+        display_name: "amesyu",
+        content: "@amesyu 確認をお願いします。",
+      },
+    },
+    mentionUserId: "user-viewer",
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const row = [...canvasElement.querySelectorAll("div")].find((element) =>
+      element.classList.contains("group/row"),
+    );
+    await expect(row).toBeDefined();
+    await waitFor(async () => {
+      await expect(getComputedStyle(row!).backgroundColor).toMatch(/(?:,|\/)\s*0\.08\)$/);
+    });
+    await expect(getComputedStyle(row!, "::before").width).toBe("3px");
+    const swatch = document.createElement("span");
+    swatch.style.color = "var(--mention)";
+    row!.append(swatch);
+    const mentionColor = getComputedStyle(swatch).color;
+    swatch.remove();
+    await expect(getComputedStyle(row!, "::before").backgroundColor).toBe(mentionColor);
+  }),
+};
+
+export const MentionedChannelMessage: Story = {
+  ...MentionedMessage,
+  args: {
+    ...MentionedMessage.args,
+    item: {
+      ...item,
+      message: {
+        ...item.message,
+        user_id: "user-viewer",
+        content: "@channel 確認をお願いします。",
+      },
+    },
+  },
+};
+
 /**
  * 暗号化メッセージのメンションは、復号した `mentions` だけで表示する。本文に `@bob` や `@channel` が
  * あっても、`mentions` になければメンションとして表示しない（docs/e2ee.md の「Megolm の平文」）。
