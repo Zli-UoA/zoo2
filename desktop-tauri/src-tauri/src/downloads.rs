@@ -2666,7 +2666,8 @@ fn finish_entry_with(
     }
     // `.part` を開いたハンドルを確定後まで持ち、保存先が本当にこのハンドルの
     // ファイルかを確認する。Windows ではパスを再解決しない改名を使う。
-    let (saved_result, moved_file) = if entry.deduplicate {
+    // `_` は Windows 以外で検証に使わないため。Windows では移動ハンドルとして使う。
+    let (saved_result, _moved_file) = if entry.deduplicate {
         (
             move_unique(&file, &entry.part, &entry.final_path),
             Some(file),
@@ -2692,7 +2693,7 @@ fn finish_entry_with(
         source_meta.len(),
         source_file_id,
         &saved,
-        moved_file.as_ref(),
+        _moved_file.as_ref(),
     );
     #[cfg(not(windows))]
     let verified = post_move_file_matches(&source_meta, &saved);
