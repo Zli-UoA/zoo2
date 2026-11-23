@@ -342,6 +342,8 @@
       "file": "src/components/chat/messages/MessageRow.stories.tsx",
       "states": [
         "Default",
+        "MentionedMessage",
+        "MentionedChannelMessage",
         "EncryptedBeforeEncryptionRow",
         "EncryptedUnencryptedAfterEncryptedRow",
         "OwnMessage",

@@ -200,6 +200,7 @@ export function CatchUpMessagePage({
         isLoading={feed.isLoading}
         isError={feed.isError}
         currentUserId={null}
+        viewerId={currentUserId}
         editingId={null}
         editingText=""
         onEditingTextChange={() => {}}
