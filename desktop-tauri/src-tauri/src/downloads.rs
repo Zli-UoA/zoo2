@@ -2213,11 +2213,24 @@ fn mark_of_the_web(_path: &Path) -> bool {
 }
 
 #[cfg(windows)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 struct WindowsFileId {
     volume: u64,
     file_id: [u8; 16],
+    /// `FileIdInfo` の ID は移動後も安定する。`GetFileInformationByHandle` の
+    /// フォールバック ID はディレクトリエントリに由来するため移動で変わり得る。
+    stable_across_move: bool,
 }
+
+#[cfg(windows)]
+impl PartialEq for WindowsFileId {
+    fn eq(&self, other: &Self) -> bool {
+        self.volume == other.volume && self.file_id == other.file_id
+    }
+}
+
+#[cfg(windows)]
+impl Eq for WindowsFileId {}
 
 #[cfg(windows)]
 fn windows_file_id_from_handle(file: &std::fs::File) -> Option<WindowsFileId> {
@@ -2245,6 +2258,7 @@ fn windows_file_id_from_handle(file: &std::fs::File) -> Option<WindowsFileId> {
         return Some(WindowsFileId {
             volume: info.VolumeSerialNumber,
             file_id: info.FileId.Identifier,
+            stable_across_move: true,
         });
     }
     // FAT32/exFAT など、FileIdInfo に対応していないファイルシステムでは、
@@ -2263,6 +2277,7 @@ fn windows_file_id_from_handle(file: &std::fs::File) -> Option<WindowsFileId> {
     Some(WindowsFileId {
         volume: by_handle.dwVolumeSerialNumber as u64,
         file_id,
+        stable_across_move: false,
     })
 }
 
@@ -2302,6 +2317,7 @@ fn windows_file_id_from_path(path: &Path) -> Option<WindowsFileId> {
         return Some(WindowsFileId {
             volume: info.VolumeSerialNumber,
             file_id: info.FileId.Identifier,
+            stable_across_move: true,
         });
     }
     // FAT32/exFAT など、FileIdInfo に対応していないファイルシステムでは、
@@ -2320,6 +2336,7 @@ fn windows_file_id_from_path(path: &Path) -> Option<WindowsFileId> {
     Some(WindowsFileId {
         volume: by_handle.dwVolumeSerialNumber as u64,
         file_id,
+        stable_across_move: false,
     })
 }
 
@@ -2374,6 +2391,43 @@ fn same_file_as_path(source: &std::fs::Metadata, path: &Path) -> bool {
 
 #[cfg(not(any(unix, windows)))]
 fn same_file_as_path(_source: &std::fs::Metadata, _path: &Path) -> bool {
+    true
+}
+
+/// 移動後の保存先を確認する。Windows のフォールバック ID は移動で変わり得るため、
+/// そのときは ID の比較ではなく、再解析ポイントを辿らない通常ファイルであることと
+/// サイズの一致だけを確かめる。
+#[cfg(windows)]
+fn post_move_file_matches(
+    source: &std::fs::Metadata,
+    source_file_id: Option<WindowsFileId>,
+    saved: &Path,
+) -> bool {
+    let Some(source_file_id) = source_file_id else {
+        return false;
+    };
+    let Ok(saved_meta) = std::fs::symlink_metadata(saved) else {
+        return false;
+    };
+    if !saved_meta.is_file() {
+        return false;
+    }
+    if !source_file_id.stable_across_move {
+        return windows_file_id_from_path(saved).is_some() && saved_meta.len() == source.len();
+    }
+    let Some(saved_id) = windows_file_id_from_path(saved) else {
+        return false;
+    };
+    source_file_id == saved_id
+}
+
+#[cfg(unix)]
+fn post_move_file_matches(source: &std::fs::Metadata, saved: &Path) -> bool {
+    same_file_as_path(source, saved)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn post_move_file_matches(_source: &std::fs::Metadata, _saved: &Path) -> bool {
     true
 }
 
@@ -2511,7 +2565,7 @@ fn finish_entry_with(
                 .context(format!("保存できません: {}", entry.final_path.display()))
         }
     })?;
-    if !same_saved_file(
+    if !post_move_file_matches(
         &source_meta,
         #[cfg(windows)]
         source_file_id,
@@ -2527,7 +2581,7 @@ fn finish_entry_with(
             source_file_id,
         );
         return Err(anyhow!(
-            "保存先の確認に失敗しました。もう一度お試しください: {}",
+            "保存先の確認に失敗しました。保存先にファイルが残っている場合は削除してから、もう一度お試しください: {}",
             saved.display()
         ));
     }
@@ -3126,6 +3180,29 @@ mod tests {
             source_id,
         );
         assert!(other.exists());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn post_move_check_ignores_an_unstable_fallback_id() {
+        let dir = temp_dir();
+        let source_path = dir.join("source.bin");
+        let payload = vec![7u8; 16];
+        std::fs::write(&source_path, &payload).unwrap();
+        let source = std::fs::metadata(&source_path).unwrap();
+        let stable_id = {
+            let file = std::fs::File::open(&source_path).unwrap();
+            windows_file_id_from_handle(&file).expect("id")
+        };
+        let mut fallback_id = stable_id;
+        fallback_id.stable_across_move = false;
+
+        let saved = dir.join("saved.bin");
+        std::fs::rename(&source_path, &saved).unwrap();
+        assert!(post_move_file_matches(&source, Some(fallback_id), &saved));
+        assert!(post_move_file_matches(&source, Some(stable_id), &saved));
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
