@@ -19,6 +19,7 @@ final class CallStore {
     private(set) var activeChannelIDs: Set<String> = []
     private var activeCallsGeneration = UUID()
     private var revokedChannelIDs: Set<String> = []
+    private var withheldInvitations: [CallInvitation] = []
     private(set) var ready = false
     private(set) var peerStates: [String: CallPeerState] = [:]
     private(set) var heartbeatRetrying = false
@@ -105,7 +106,18 @@ final class CallStore {
     }
 
     func isChannelRevoked(_ id: String) -> Bool { revokedChannelIDs.contains(id) }
-    func authorizeChannel(_ id: String) { revokedChannelIDs.remove(id) }
+    func authorizeChannel(_ id: String) {
+        guard active, revokedChannelIDs.remove(id) != nil else { return }
+        let restored = withheldInvitations.filter {
+            $0.channel_id == id && $0.status == "pending" && (ZooDate.parse($0.expires_at) ?? .distantPast) > .now
+        }
+        withheldInvitations.removeAll { $0.channel_id == id }
+        invitations.append(contentsOf: restored.filter { $0.invitee_id == userID })
+        outgoingInvitations.append(contentsOf: restored.filter {
+            $0.inviter_id == userID && cancelledInvitationExpirations[$0.id] == nil
+        })
+        onInvitationsChanged?(invitations)
+    }
 
     func revokeChannel(_ id: String) {
         revokedChannelIDs.insert(id)
@@ -115,7 +127,11 @@ final class CallStore {
         invitations.removeAll { $0.channel_id == id }
         outgoingInvitations.removeAll { $0.channel_id == id }
         submittedInvitations.removeAll { $0.channel_id == id }
-        if channel?.id == id { finish() }
+        withheldInvitations.removeAll { $0.channel_id == id }
+        if channel?.id == id {
+            finish()
+            error = "この会話にアクセスできなくなったため、通話を終了しました。"
+        }
         onInvitationsChanged?(invitations)
     }
 
@@ -512,6 +528,7 @@ final class CallStore {
             do {
                 try await client.observeCallInvitations { [weak self] values in
                     guard let self, active, !Task.isCancelled else { return }
+                    withheldInvitations = values.filter { revokedChannelIDs.contains($0.channel_id) }
                     invitations = values.filter { $0.invitee_id == userID && $0.status == "pending" && !revokedChannelIDs.contains($0.channel_id) }
                     onInvitationsChanged?(invitations)
                     cancelledInvitationExpirations = cancelledInvitationExpirations.filter { $0.value > .now }
@@ -526,6 +543,7 @@ final class CallStore {
             } catch {
                 guard active, !Task.isCancelled else { return }
                 invitations = []
+                withheldInvitations = []
                 outgoingInvitations.removeAll { (ZooDate.parse($0.expires_at) ?? .distantPast) <= .now }
                 if case ZooError.expiredSession = error { onExpiredSession?(); return }
             }
@@ -541,6 +559,7 @@ final class CallStore {
                 try await client.answerCallInvitation(id: invitation.id, accept: false)
                 guard active, !Task.isCancelled else { return }
                 invitations.removeAll { $0.id == invitation.id }
+                withheldInvitations.removeAll { $0.id == invitation.id }
                 return
             } catch {
                 guard active, !Task.isCancelled else { return }
@@ -624,6 +643,7 @@ final class CallStore {
             cancelledInvitationExpirations[invitation.id] = ZooDate.parse(invitation.expires_at) ?? .now.addingTimeInterval(30)
             outgoingInvitations.removeAll { $0.id == invitation.id }
             submittedInvitations.removeAll { $0.id == invitation.id }
+            withheldInvitations.removeAll { $0.id == invitation.id }
         } catch {
             guard active, sessionID == session, !Task.isCancelled else { return }
             invitationError = "呼び出しを取り消せませんでした。もう一度お試しください。"
@@ -634,6 +654,7 @@ final class CallStore {
     func shutdown() {
         recovery?.cancel()
         active = false; finish(); invitations = []; outgoingInvitations = []; cancelledInvitationExpirations = [:]
+        withheldInvitations = []
         activeChannelIDs = []
         error = nil; showingCall = false
     }

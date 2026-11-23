@@ -477,16 +477,41 @@ struct CallStoreTests {
         #expect(store.invitations.map(\.channel_id) == [other.id] && notified == [other.id])
         #expect(!store.activeChannelIDs.contains(channel.id))
         #expect(store.ready && store.channel?.id == other.id)
+        #expect(store.error == nil)
         await deliverInvitations(rows, client: client)
         await store.refreshActiveCalls()
         #expect(store.invitations.map(\.channel_id) == [other.id])
         #expect(!store.activeChannelIDs.contains(channel.id))
         store.revokeChannel(other.id)
         #expect(store.channel == nil && !store.ready)
+        #expect(store.error == "この会話にアクセスできなくなったため、通話を終了しました。" && store.retryChannel == nil)
         #expect(store.start(channel: channel) == nil)
         store.authorizeChannel(channel.id)
+        #expect(store.invitations.map(\.channel_id) == [channel.id] && notified == [channel.id])
         await deliverInvitations(rows, client: client)
         #expect(store.invitations.map(\.channel_id) == [channel.id])
+    }
+
+    @Test("再認可時に期限切れ・処理済みの招待を復元しない")
+    func reauthorizationDoesNotRestoreExpiredInvitations() async throws {
+        let client = FakeCallClient()
+        let store = CallStore(client: client, userID: "me", makeMedia: { FakeCallMedia() }, permission: { true })
+        defer { store.shutdown() }
+        store.revokeChannel(channel.id)
+        client.invitationRows = [
+            CallInvitation(id: "expired", channel_id: channel.id, inviter_id: "caller", invitee_id: "me",
+                           status: "pending", expires_at: Date.distantPast.ISO8601Format()),
+            CallInvitation(id: "answered", channel_id: channel.id, inviter_id: "caller", invitee_id: "me",
+                           status: "accepted", expires_at: Date.now.addingTimeInterval(30).ISO8601Format()),
+            CallInvitation(id: "outgoing", channel_id: channel.id, inviter_id: "me", invitee_id: "other",
+                           status: "pending", expires_at: Date.now.addingTimeInterval(30).ISO8601Format())
+        ]
+        let task = await observeInvitations(client, store: store)
+        defer { task.cancel(); client.invitationUpdates.continuation.finish() }
+        #expect(store.invitations.isEmpty && store.outgoingInvitations.isEmpty)
+        store.authorizeChannel(channel.id)
+        #expect(store.invitations.isEmpty)
+        #expect(store.outgoingInvitations.map(\.id) == ["outgoing"])
     }
 
     @Test("チャンネルの招待候補から自分・bot・無効な人・参加者・呼び出し中の人を除く")

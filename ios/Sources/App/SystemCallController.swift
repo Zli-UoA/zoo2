@@ -52,6 +52,7 @@ final class SystemCallController: NSObject {
     private var retired: [UUID: (until: Date, hidesBanner: Bool)] = [:]
     private var expiry: Task<Void, Never>?
     private var invitationSync: Task<Void, Never>?
+    private var incomingChannel: (callID: UUID, task: Task<Channel, Error>)?
     private(set) var answering: Task<Void, Never>?
     private var answerAction: CXAnswerCallAction?
     private var pendingAnswerError: (userID: String, message: String)?
@@ -78,7 +79,8 @@ final class SystemCallController: NSObject {
 
     var incomingNotification: IncomingCall? {
         guard incomingReported, phase == .ringing, let current,
-              let workspace, workspace.active, current.canAnswer(userID: workspace.user.id) else { return nil }
+              let workspace, workspace.active, !workspace.calls.isChannelRevoked(current.channelID),
+              current.canAnswer(userID: workspace.user.id) else { return nil }
         return current
     }
 
@@ -167,6 +169,7 @@ final class SystemCallController: NSObject {
 
     var watchCall: WatchCall? {
         guard let workspace, workspace.active, let callID else { return nil }
+        if let current, workspace.calls.isChannelRevoked(current.channelID) { return nil }
         if let current, phase == .ringing {
             guard incomingReported, current.canAnswer(userID: workspace.user.id) else { return nil }
             return WatchCall(id: callID, title: String(current.callerName.prefix(80)), phase: .incoming,
@@ -351,7 +354,9 @@ final class SystemCallController: NSObject {
         if let current {
             let present = invitations.contains { UUID(uuidString: $0.id) == current.id }
             if phase == .ringing, observedInShape, !present { end(reason: .remoteEnded) }
-            else if phase == .ringing, !present { validateUnseenCall(current, workspace: workspace) }
+            else if phase == .ringing, !present, !workspace.calls.isChannelRevoked(current.channelID) {
+                validateUnseenCall(current, workspace: workspace)
+            }
             else { observedInShape = observedInShape || present }
         }
         guard foreground || pendingNotification != nil, !isManagingCall, workspace.calls.channel == nil else { return }
@@ -386,7 +391,7 @@ final class SystemCallController: NSObject {
             return
         }
         retired = retired.filter { $0.value.until > .now }
-        let available = !revoked && !isManagingCall && workspace?.calls.channel == nil && retired[call.id] == nil
+        let available = !isManagingCall && workspace?.calls.channel == nil && retired[call.id] == nil
         if available {
             pendingAnswerError = nil
             current = call; phase = .ringing; observedInShape = false
@@ -429,21 +434,46 @@ final class SystemCallController: NSObject {
     }
 
     private func wake() {
-        guard let session, let call = current else { return }
+        guard let call = current, session != nil || workspace != nil else { return }
         Task { [weak self] in
-            let workspace = await session.prepareForIncomingCall()
-            guard let self, current?.id == call.id else { return }
-            guard let workspace, call.userID.caseInsensitiveCompare(workspace.user.id) == .orderedSame,
-                  !workspace.calls.isChannelRevoked(call.channelID),
+            guard let self else { return }
+            let workspace: WorkspaceStore?
+            if let connected = self.workspace, connected.active { workspace = connected }
+            else { workspace = await session?.prepareForIncomingCall() }
+            guard current?.id == call.id else { return }
+            guard let workspace, workspace.active, call.userID.caseInsensitiveCompare(workspace.user.id) == .orderedSame,
                   phase != .ringing || call.expiresAt > .now else {
                 end(reason: .failed); return
             }
+            connect(workspace)
+            if workspace.calls.isChannelRevoked(call.channelID) {
+                do {
+                    let channel = try await loadIncomingChannel(call, workspace: workspace)
+                    guard current?.id == call.id else { return }
+                    guard self.workspace === workspace, workspace.active, channel.canCall,
+                          phase != .ringing || call.expiresAt > .now else { end(reason: .failed); return }
+                    workspace.calls.authorizeChannel(call.channelID)
+                } catch {
+                    guard current?.id == call.id else { return }
+                    end(reason: .failed); return
+                }
+            }
+            guard current?.id == call.id else { return }
             let update = CXCallUpdate()
             update.remoteHandle = CXHandle(type: .generic, value: call.callerName)
             update.localizedCallerName = call.callerName
             provider.reportCall(with: call.id, updated: update)
-            connect(workspace)
+            onWatchStateChanged?()
+            resumeNotificationAction()
         }
+    }
+
+    private func loadIncomingChannel(_ call: IncomingCall, workspace: WorkspaceStore) async throws -> Channel {
+        if let incomingChannel, incomingChannel.callID == call.id { return try await incomingChannel.task.value }
+        // 着信の再認可と直後の応答が重なっても、同じ権限確認を共有する。
+        let task = Task { try await loadChannel(workspace.client, call.channelID) }
+        incomingChannel = (call.id, task)
+        return try await task.value
     }
 
     @discardableResult
@@ -498,6 +528,7 @@ final class SystemCallController: NSObject {
         outgoingConnected = false
         outgoingStart?.resume(throwing: CancellationError()); outgoingStart = nil
         expiry?.cancel(); expiry = nil
+        incomingChannel?.task.cancel(); incomingChannel = nil
         answering?.cancel(); answering = nil
         answerAction?.fail(); answerAction = nil
         validation?.cancel(); validation = nil
@@ -664,13 +695,15 @@ extension SystemCallController: @preconcurrency PKPushRegistryDelegate, @preconc
             }
             connect(workspace)
             do {
-                let channel = try await loadChannel(workspace.client, call.channelID)
+                let channel = try await loadIncomingChannel(call, workspace: workspace)
                 try Task.checkCancellation()
                 guard current?.id == call.id else { return }
                 guard call.canAnswer(userID: workspace.user.id) else { end(reason: .unanswered); return }
                 guard self.workspace === workspace, workspace.active, workspace.calls.channel == nil else {
                     end(reason: .failed); return
                 }
+                guard channel.canCall else { end(reason: .failed); return }
+                workspace.calls.authorizeChannel(call.channelID)
                 updateAudio(.prepare(active: audioActivated))
                 guard workspace.calls.start(channel: channel, invitationID: call.invitation.id, systemAudio: true) != nil else {
                     end(reason: .failed); return

@@ -10,19 +10,27 @@ struct NativeChatClient: ChatClient {
     func channels() async throws -> [Channel] {
         guard let sync else { return try await api.get("api/channels") }
         var version = sync.revocationVersion(for: "workspace:channels")
-        let channels = try await shapes.snapshot("api/shapes/channels", as: Channel.self)
-        let previous = try await sync.load("workspace:channels", as: [Channel].self) ?? []
+        let knownRevision = sync.knownChannelsRevision
+        let channels = try await shapes.snapshot("api/shapes/channels", as: Channel.self, restoreCached: false)
+        let cached = try await sync.load("workspace:channels", as: [Channel].self) ?? []
         try sync.checkRevocationVersion(version)
+        try sync.checkKnownChannelsRevision(knownRevision)
+        var previous = Dictionary(cached.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+        previous.merge(sync.knownChannels) { _, current in current }
         let available = Dictionary(channels.filter { $0.deleted_at == nil }.map { ($0.id, $0) },
                                    uniquingKeysWith: { _, new in new })
-        for channel in previous where channel.deleted_at == nil {
+        for channel in previous.values where channel.deleted_at == nil {
             let current = available[channel.id]
             if current == nil || (channel.encrypted != true && current?.encrypted == true) {
                 version = try await sync.revokeChannel(channel.id, retaining: current)
                 try sync.checkRevocationVersion(version)
+                try sync.checkKnownChannelsRevision(knownRevision)
             }
         }
+        sync.rememberChannels(channels)
+        let storedRevision = sync.knownChannelsRevision
         try await sync.storeRecovery(channels, key: "workspace:channels", revocationVersion: version)
+        try sync.checkKnownChannelsRevision(storedRevision)
         return channels
     }
     func channel(id: String) async throws -> Channel {
@@ -36,6 +44,7 @@ struct NativeChatClient: ChatClient {
                     try await sync.authorizeChannel(id, version: version)
                 } else { try await sync.revokeChannel(id, retaining: channel.deleted_at == nil ? channel : nil) }
                 try sync.check()
+                sync.rememberChannels([channel])
             }
             return channel
         } catch {
@@ -60,10 +69,13 @@ struct NativeChatClient: ChatClient {
     func cachedWorkspace() async throws -> CachedWorkspace? {
         guard let sync else { return nil }
         let version = sync.revocationVersion(for: "workspace:channels")
+        let knownRevision = sync.knownChannelsRevision
         guard let channels = try await sync.load("workspace:channels", as: [Channel].self),
               let people = try await sync.load("workspace:people", as: [Person].self) else { return nil }
         let states = try await sync.load("rest:api/channel-read-states", as: [ChannelReadState].self) ?? []
         try sync.checkRevocationVersion(version)
+        try sync.checkKnownChannelsRevision(knownRevision)
+        sync.rememberChannels(channels)
         return CachedWorkspace(channels: channels, people: people, readStates: states)
     }
 

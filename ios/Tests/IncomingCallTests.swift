@@ -19,7 +19,11 @@ private final class FakeCallReporting: SystemCallReporting {
     var connecting: [UUID] = []
     var connected: [UUID] = []
     var names: [String] = []
-    func reportCall(with UUID: UUID, updated update: CXCallUpdate) { names.append(update.localizedCallerName ?? "") }
+    var onUpdate: (() -> Void)?
+    func reportCall(with UUID: UUID, updated update: CXCallUpdate) {
+        names.append(update.localizedCallerName ?? "")
+        onUpdate?()
+    }
     func reportOutgoingCall(with UUID: UUID, startedConnectingAt dateStartedConnecting: Date?) { connecting.append(UUID) }
     func reportOutgoingCall(with UUID: UUID, connectedAt dateConnected: Date?) { connected.append(UUID) }
     func reportNewIncomingCall(with UUID: UUID, update: CXCallUpdate, completion: @escaping @Sendable ((any Error)?) -> Void) {
@@ -446,6 +450,7 @@ struct IncomingCallTests {
         context.workspace.revokeChannel(context.call.channelID)
         #expect(!context.controller.isManagingCall)
         #expect(context.reporting.ended.contains(context.call.id))
+        context.harness.stub { _ in (403, [:], Data()) }
         var latePayload = payload
         latePayload["channel_id"] = context.call.channelID
         latePayload["user_id"] = context.call.userID
@@ -461,6 +466,42 @@ struct IncomingCallTests {
         #expect(context.reporting.incoming.last == late.id)
         #expect(context.reporting.incomingNames.last == "Zooの通話")
         #expect(context.reporting.ended.contains(late.id) && !context.controller.isManagingCall)
+    }
+
+    @Test("再招待直後の着信は再認可し、確認中の応答と同じ取得を共有する", arguments: [false, true])
+    func reauthorizesIncomingCall(answerDuringValidation: Bool) async throws {
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        let updated = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish(); updated.continuation.finish() }
+        var requests = 0
+        let context = try AnswerContext(payload: payload, loadChannel: { client, id in
+            requests += 1
+            started.continuation.yield(())
+            for await _ in release.stream { break }
+            return try await client.channel(id: id)
+        })
+        defer { context.close() }
+        context.calls.revokeChannel(context.call.channelID)
+        context.reporting.onUpdate = { updated.continuation.yield(()) }
+        context.reporting.onEnd = { [weak context] in updated.continuation.finish(); context?.progress.continuation.yield("終了") }
+        await context.receive()
+        var start = started.stream.makeAsyncIterator()
+        try #require(await start.next() != nil)
+        #expect(context.reporting.incomingNames == ["Zooの通話"])
+        #expect(context.controller.incomingNotification == nil && context.reporting.ended.isEmpty)
+        let action = RecordingAnswerAction(call: context.call.id)
+        if answerDuringValidation { context.controller.provider(context.native, perform: action) }
+        release.continuation.finish()
+        var update = updated.stream.makeAsyncIterator()
+        try #require(await update.next() != nil)
+        #expect(!context.calls.isChannelRevoked(context.call.channelID))
+        #expect(context.reporting.names.last == context.call.callerName && context.reporting.ended.isEmpty)
+        if !answerDuringValidation { context.controller.provider(context.native, perform: action) }
+        var progress = context.progress.stream.makeAsyncIterator()
+        #expect(await progress.next() == "入室")
+        #expect(context.calls.ready && action.results == [true])
+        #expect(requests == 1)
+        context.reporting.onEnd = nil
     }
 
     @Test("Watchの通知・アプリからの応答は音声を先に準備し、バックグラウンドで入室してCallKitへ完了を返す",

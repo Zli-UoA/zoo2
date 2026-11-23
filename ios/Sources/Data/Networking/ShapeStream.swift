@@ -161,12 +161,13 @@ struct ShapeStream {
         prefix + path + query.sorted { $0.key < $1.key }.map { "|\($0.key)=\($0.value)" }.joined()
     }
 
-    func snapshot<T: Decodable & Sendable>(_ path: String, query: [String: String] = [:], as type: T.Type) async throws -> [T] {
+    func snapshot<T: Decodable & Sendable>(_ path: String, query: [String: String] = [:], as type: T.Type,
+                                          restoreCached: Bool = true) async throws -> [T] {
         let key = cacheKey(path, query: query, prefix: "snapshot:")
         let version = query["channel_id"].flatMap { sync?.channelVersion($0) }
         let revocationVersion = sync?.revocationVersion(for: path)
         var state = try await sync?.load(key, as: ShapeState.self) ?? ShapeState()
-        var cached: [T]? = state.isLive ? try await decodeShapeRows(state.rows, as: type) : nil
+        var cached: [T]? = restoreCached && state.isLive ? try await decodeShapeRows(state.rows, as: type) : nil
         try sync?.check(channelID: query["channel_id"], channelVersion: version)
         try sync?.checkRevocationVersion(revocationVersion)
         state.isLive = false

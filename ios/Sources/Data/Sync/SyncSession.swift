@@ -9,6 +9,8 @@ final class SyncSession {
     private var channelVersions: [String: UUID] = [:]
     private var revocationVersion = UUID()
     private var channelRevocation: Task<Void, Error>?
+    private(set) var knownChannels: [String: Channel] = [:]
+    private(set) var knownChannelsRevision = UUID()
     var onChannelRevoked: (@MainActor (String, Channel?) -> Void)?
     var onChannelAuthorized: (@MainActor (String) -> Void)?
 
@@ -53,6 +55,15 @@ final class SyncSession {
 
     func isRevoked(_ id: String) -> Bool { revokedChannels.contains(id) }
 
+    func rememberChannels(_ channels: [Channel]) {
+        for channel in channels { knownChannels[channel.id] = channel.deleted_at == nil ? channel : nil }
+        knownChannelsRevision = UUID()
+    }
+
+    func checkKnownChannelsRevision(_ expected: UUID) throws {
+        guard knownChannelsRevision == expected else { throw SyncInvalidation.resources }
+    }
+
     func revocationVersion(for path: String) -> UUID? {
         let key = path.hasPrefix("api/") ? "snapshot:" + path : path
         return SyncCache.revocationResources.contains(key) ? revocationVersion : nil
@@ -92,6 +103,7 @@ final class SyncSession {
         let version = UUID()
         channelVersions[id] = version
         revocationVersion = UUID()
+        knownChannels[id] = channel
         onChannelRevoked?(id, channel)
         let previous = channelRevocation
         let revocationVersion = revocationVersion
@@ -122,6 +134,7 @@ final class SyncSession {
 
     func close() -> Task<Void, Error> {
         active = false
+        knownChannels = [:]
         return Task { try await cache.revoke(lease) }
     }
 }
