@@ -140,7 +140,7 @@ impl AppState {
         let call_sfu = crate::call_sfu::CallSfuConfig::from_env()
             .ok()
             .flatten()
-            .map(|cfg| crate::call_sfu::CallSfu::new(cfg, http_client.clone()));
+            .map(crate::call_sfu::CallSfu::new);
         if let Some(sfu) = &call_sfu {
             call_registry.set_sfu_wakers(sfu.departures_wake.clone(), sfu.bridge_wake.clone());
             sfu.start_departure_worker(db.clone());

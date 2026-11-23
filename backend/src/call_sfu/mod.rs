@@ -50,7 +50,14 @@ pub struct CallSfu {
 }
 
 impl CallSfu {
-    pub fn new(config: CallSfuConfig, http: reqwest::Client) -> Self {
+    /// SFU の API は Bearer を付けて呼ぶので、リダイレクトを追わない専用のクライアントを使う
+    /// （送り先の検査は `config::require_secure_api_url`）。
+    pub fn new(config: CallSfuConfig) -> Self {
+        let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(5))
+            .build()
+            .expect("reqwest client");
         let cloudflare =
             cloudflare::CloudflareRealtime::new(http.clone(), config.cloudflare.clone());
         let livekit = config
@@ -160,35 +167,63 @@ struct Departure {
 /// 何度試しても閉じられないもの（相手側でもう消えたものなど）は、この回数で諦める。
 const MAX_DEPARTURE_ATTEMPTS: i32 = 5;
 const DEPARTURE_BATCH: i64 = 50;
+/// SFU ごとに同時に出す要求の数。
+const DEPARTURE_CONCURRENCY: usize = 8;
+/// 確保の期限。worker が途中で止まっても、この時間の後にほかの worker（再起動後を含む）が取り直す。
+/// 1 件は最長で約 20 秒（Cloudflare は照会と close の 2 回、各 10 秒）なので、
+/// `DEPARTURE_BATCH / DEPARTURE_CONCURRENCY` 回分（約 140 秒）より長くする。
+const DEPARTURE_CLAIM_SECS: i64 = 300;
+/// 失敗した行を、次に試すまでの間隔。
+const DEPARTURE_RETRY_SECS: i64 = 15;
 
 /// 退出した人の SFU の音声を止める。
 ///
-/// 探索：`call_sfu_departures` の主キー順に最大 `DEPARTURE_BATCH` 行。行は処理したら消すので、
-/// 表の大きさは「まだ閉じていない退出」の数に比例し、履歴は残らない。
+/// 1. 短い 1 文で、処理する行を確保する（`claimed_until` を先に延ばす）。行ロックは、この文の中でだけ持つ。
+/// 2. ロックもトランザクションも持たずに、SFU ごとに同時数を限って API を呼ぶ。
+/// 3. 終わった行は消し、失敗した行は `attempts` を増やして、`DEPARTURE_RETRY_SECS` 後まで確保を残す。
+///
+/// LiveKit の設定がないときは、LiveKit の行を確保しない（設定を戻せば、残っていた行を処理する）。
+///
+/// 探索：主キー順に、確保の済んでいない行を最大 `DEPARTURE_BATCH` 行。読み飛ばすのは、ほかの worker が
+/// 確保中の行（worker の数 × `DEPARTURE_BATCH` 以下）、再試行を待つ行、LiveKit が無効のときの LiveKit の行。
+/// 行は処理したら消すので、表の大きさは「まだ閉じていない退出」の数に比例し、履歴は残らない。
 async fn drain_departures(sfu: &CallSfu, db: &mut toasty::Db) -> Result<usize, AppError> {
-    let mut tx = db.transaction().await?;
     let rows = toasty::sql::query(format!(
-        "SELECT json_build_object(
-             'id', id, 'session_id', session_id, 'sfu_id', sfu_id, 'sfu_room', sfu_room,
-             'cf_session_id', cf_session_id, 'attempts', attempts
-         )::text
-         FROM call_sfu_departures
-         ORDER BY id
-         LIMIT {DEPARTURE_BATCH}
-         FOR UPDATE SKIP LOCKED"
+        "WITH picked AS (
+             SELECT id FROM call_sfu_departures
+             WHERE (claimed_until IS NULL OR claimed_until < statement_timestamp())
+               AND ($1::boolean OR sfu_id <> 'livekit')
+             ORDER BY id
+             LIMIT {DEPARTURE_BATCH}
+             FOR UPDATE SKIP LOCKED
+         )
+         UPDATE call_sfu_departures d
+         SET claimed_until = statement_timestamp() + interval '{DEPARTURE_CLAIM_SECS} seconds'
+         FROM picked
+         WHERE d.id = picked.id
+         RETURNING json_build_object(
+             'id', d.id, 'session_id', d.session_id, 'sfu_id', d.sfu_id, 'sfu_room', d.sfu_room,
+             'cf_session_id', d.cf_session_id, 'attempts', d.attempts
+         )::text"
     ))
-    .exec(&mut tx)
+    .bind(sfu.livekit.is_some().to_string())
+    .exec(&mut *db)
     .await?;
     let departures: Vec<Departure> = rows_json(rows);
     if departures.is_empty() {
-        tx.commit().await?;
         return Ok(0);
     }
 
+    // SFU ごとに枠を分け、片方の応答待ちで、もう片方の後始末を止めない。
+    let (livekit, cloudflare): (Vec<_>, Vec<_>) = departures
+        .into_iter()
+        .partition(|d| d.sfu_id == SFU_LIVEKIT);
+    let (lk_results, cf_results) =
+        tokio::join!(close_all(sfu, livekit), close_all(sfu, cloudflare));
+
     let mut done = Vec::new();
     let mut retry = Vec::new();
-    for d in &departures {
-        let result = close_departed(sfu, d).await;
+    for (d, result) in lk_results.into_iter().chain(cf_results) {
         match result {
             Ok(()) => done.push(d.id),
             Err(e) if d.attempts + 1 >= MAX_DEPARTURE_ATTEMPTS => {
@@ -206,21 +241,41 @@ async fn drain_departures(sfu: &CallSfu, db: &mut toasty::Db) -> Result<usize, A
             "DELETE FROM call_sfu_departures WHERE id = ANY(string_to_array($1, ',')::bigint[])",
         )
         .bind(join_ids(&done))
-        .exec(&mut tx)
+        .exec(&mut *db)
         .await?;
     }
     if !retry.is_empty() {
-        toasty::sql::statement(
-            "UPDATE call_sfu_departures SET attempts = attempts + 1
-             WHERE id = ANY(string_to_array($1, ',')::bigint[])",
-        )
+        toasty::sql::statement(format!(
+            "UPDATE call_sfu_departures
+             SET attempts = attempts + 1,
+                 claimed_until = statement_timestamp() + interval '{DEPARTURE_RETRY_SECS} seconds'
+             WHERE id = ANY(string_to_array($1, ',')::bigint[])"
+        ))
         .bind(join_ids(&retry))
-        .exec(&mut tx)
+        .exec(&mut *db)
         .await?;
     }
-    tx.commit().await?;
     // 失敗だけが残ったときは、すぐに繰り返さない。
     Ok(done.len())
+}
+
+async fn close_all(
+    sfu: &CallSfu,
+    departures: Vec<Departure>,
+) -> Vec<(Departure, Result<(), AppError>)> {
+    use futures_util::StreamExt;
+    let sfu = sfu.clone();
+    futures_util::stream::iter(departures)
+        .map(move |d| {
+            let sfu = sfu.clone();
+            async move {
+                let result = close_departed(&sfu, &d).await;
+                (d, result)
+            }
+        })
+        .buffer_unordered(DEPARTURE_CONCURRENCY)
+        .collect()
+        .await
 }
 
 fn join_ids(ids: &[i64]) -> String {
@@ -235,8 +290,14 @@ async fn close_departed(sfu: &CallSfu, d: &Departure) -> Result<(), AppError> {
         sfu.cloudflare.close_session(cf).await?;
     }
     if d.sfu_id == SFU_LIVEKIT
-        && let (Some(lk), Some(room)) = (&sfu.livekit, &d.sfu_room)
+        && let Some(room) = &d.sfu_room
     {
+        // LiveKit の行は、LiveKit の設定があるときだけ確保する（`drain_departures`）。
+        let Some(lk) = &sfu.livekit else {
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "LiveKit is not configured"
+            )));
+        };
         lk.remove_participant(room, &d.session_id.to_string())
             .await?;
     }

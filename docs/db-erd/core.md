@@ -119,6 +119,7 @@ erDiagram
       text sfu_room
       text cf_session_id
       integer attempts
+      timestamptz claimed_until
       timestamptz created_at
     }
     call_sfu_tracks {

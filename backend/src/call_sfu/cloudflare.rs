@@ -188,19 +188,22 @@ impl CloudflareRealtime {
     }
 
     /// 指定した m-line の track を閉じる。
+    ///
+    /// HTTP 200 でも、track ごとに失敗が返ることがある。すべての mid が閉じた（既に閉じていたものを含む）
+    /// ときだけ成功にし、それ以外は試し直せるようにエラーを返す（`check_closed`）。
     pub async fn close_tracks(&self, session_id: &str, mids: &[String]) -> Result<(), AppError> {
         if mids.is_empty() {
             return Ok(());
         }
         let tracks: Vec<_> = mids.iter().map(|m| json!({ "mid": m })).collect();
-        let _: serde_json::Value = self
+        let res: TracksResponse = self
             .send(
                 self.http
                     .put(self.url(&format!("sessions/{session_id}/tracks/close")))
                     .json(&json!({ "tracks": tracks, "force": true })),
             )
             .await?;
-        Ok(())
+        check_closed(mids, &res)
     }
 
     /// セッションの track をすべて強制的に閉じる（退出・キックの後始末）。
@@ -215,6 +218,50 @@ impl CloudflareRealtime {
             .filter_map(|t| t.mid)
             .collect();
         self.close_tracks(session_id, &mids).await
+    }
+}
+
+/// `tracks/close` の応答で、要求した mid がすべて閉じたかを確かめる。
+///
+/// `close_track_error` は「track がない、または既に閉じている」なので成功に数える。ほかのエラーと、
+/// 結果が返らなかった mid は未完了（https://developers.cloudflare.com/realtime/sfu/observability/error-codes/）。
+pub fn check_closed(mids: &[String], res: &TracksResponse) -> Result<(), AppError> {
+    let mut pending = Vec::new();
+    for mid in mids {
+        let result = res
+            .tracks
+            .iter()
+            .find(|t| t.mid.as_deref() == Some(mid.as_str()));
+        match result.map(|t| t.error_code.as_deref()) {
+            Some(None | Some("close_track_error")) => {}
+            Some(Some(code)) => pending.push(format!("{mid}:{code}")),
+            None => pending.push(format!("{mid}:missing")),
+        }
+    }
+    if pending.is_empty() {
+        Ok(())
+    } else {
+        tracing::warn!(pending = %pending.join(","), "Cloudflare Realtime did not close some tracks");
+        Err(AppError::BadGateway(
+            "Cloudflare Realtime did not close some tracks".into(),
+        ))
+    }
+}
+
+/// push した track が受け付けられたか。`mid` の結果があり、`errorCode` がないこと。
+pub fn check_pushed(res: &TracksResponse, mid: &str) -> Result<(), AppError> {
+    match res.tracks.iter().find(|t| t.mid.as_deref() == Some(mid)) {
+        Some(t) if t.error_code.is_none() => Ok(()),
+        Some(t) => {
+            let code = t.error_code.as_deref().unwrap_or("");
+            tracing::warn!(code, "Cloudflare Realtime rejected the pushed track");
+            Err(AppError::BadGateway(format!(
+                "Cloudflare Realtime error: {code}"
+            )))
+        }
+        None => Err(AppError::BadGateway(
+            "Cloudflare Realtime returned no result for the pushed track".into(),
+        )),
     }
 }
 
@@ -319,6 +366,54 @@ mod tests {
         assert!(validate_audio_offer_mid(&offer(sdp), "2").is_err());
         let video = "v=0\r\nm=audio 9 X 111\r\na=mid:0\r\nm=video 9 X 96\r\na=mid:1\r\n";
         assert!(validate_audio_offer_mid(&offer(video), "0").is_err());
+    }
+
+    fn tracks(json: serde_json::Value) -> TracksResponse {
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn close_counts_already_closed_as_done() {
+        let mids = vec!["0".to_string(), "1".to_string()];
+        let ok = tracks(json!({ "tracks": [
+            { "mid": "0" },
+            { "mid": "1", "errorCode": "close_track_error", "errorDescription": "already closed" },
+        ]}));
+        assert!(check_closed(&mids, &ok).is_ok());
+    }
+
+    #[test]
+    fn close_retries_failed_or_missing_mids() {
+        let mids = vec!["0".to_string(), "1".to_string(), "2".to_string()];
+        let failed = tracks(json!({ "tracks": [
+            { "mid": "0" },
+            { "mid": "1", "errorCode": "close_track_error" },
+            { "mid": "2", "errorCode": "internal_error" },
+        ]}));
+        assert!(check_closed(&mids, &failed).is_err());
+        let missing = tracks(json!({ "tracks": [{ "mid": "0" }, { "mid": "1" }] }));
+        assert!(check_closed(&mids, &missing).is_err());
+        assert!(check_closed(&mids, &tracks(json!({}))).is_err());
+    }
+
+    #[test]
+    fn push_needs_a_result_without_error() {
+        assert!(
+            check_pushed(
+                &tracks(json!({ "tracks": [{ "mid": "0", "trackName": "t" }] })),
+                "0"
+            )
+            .is_ok()
+        );
+        assert!(
+            check_pushed(
+                &tracks(json!({ "tracks": [{ "mid": "0", "errorCode": "invalid_params" }] })),
+                "0"
+            )
+            .is_err()
+        );
+        assert!(check_pushed(&tracks(json!({ "tracks": [{ "mid": "1" }] })), "0").is_err());
+        assert!(check_pushed(&tracks(json!({})), "0").is_err());
     }
 
     #[test]

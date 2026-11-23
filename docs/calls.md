@@ -1,6 +1,6 @@
 # 音声通話と呼び出し
 
-チャンネルの通話は、少人数のあいだは WebRTC対応クライアント同士の P2P（WebRTC のメッシュ、最大 6 人）です。人数が増えると、SFU（LiveKit と Cloudflare Realtime）に切り替わり、定員も増えます（[通話の SFU](calls-sfu.md)）。シグナリングは SSE（`GET /api/channels/{id}/call/stream`）で、参加者は `call_presence` に置きます。このページは、通話の中で相手を呼び出す「招待」と、呼ばれた側の着信通知をまとめます。実装は `backend/src/routes/calls.rs` と `backend/src/call_invites.rs` です。
+チャンネルの通話は、少人数のあいだは WebRTC対応クライアント同士の P2P（WebRTC のメッシュ、最大 6 人）です。SFU が有効（`CALL_SFUS_JSON` を設定）で、在室の人数が `CALL_SFU_THRESHOLD`（既定 4）を超え、在室の全員が SFU に対応していると申告している（`GET /call/stream?sfu=1`）ときだけ、SFU（LiveKit と Cloudflare Realtime）に切り替わり、定員も `CALL_SFU_MAX_PARTICIPANTS`（既定 50）に増えます（[通話の SFU](calls-sfu.md)）。SFU が無効なとき、または対応していないクライアント（iOS など）が在室しているときは、人数が増えても定員 6 人の mesh のままです。SFU の部屋には iOS は入れないので、SFU の部屋への呼び出しでは iOS の着信を送りません。シグナリングは SSE（`GET /api/channels/{id}/call/stream`）で、参加者は `call_presence` に置きます。このページは、通話の中で相手を呼び出す「招待」と、呼ばれた側の着信通知をまとめます。実装は `backend/src/routes/calls.rs` と `backend/src/call_invites.rs` です。
 
 ## 呼び出しの流れ
 

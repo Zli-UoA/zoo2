@@ -100,6 +100,41 @@ async fn open_stream(
 }
 
 async fn count(db: &mut toasty::Db, sql: &str, bind: &str) -> anyhow::Result<i64> {
+    Ok(text(db, sql, bind).await?.parse()?)
+}
+
+/// Cloudflare の `tracks/new`・`tracks/close` の代わり。要求した track ごとに結果を返す。mid が "9" の
+/// track だけは失敗（`internal_error`）にする。
+struct EchoTracks {
+    answer: bool,
+}
+
+impl wiremock::Respond for EchoTracks {
+    fn respond(&self, req: &wiremock::Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
+        let tracks: Vec<Value> = body["tracks"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|t| {
+                let mid = t["mid"].as_str().unwrap_or("0").to_string();
+                if mid == "9" {
+                    json!({"mid": mid, "errorCode": "internal_error", "errorDescription": "Backend error"})
+                } else {
+                    json!({"mid": mid, "trackName": t["trackName"]})
+                }
+            })
+            .collect();
+        let mut res = json!({"tracks": tracks, "requiresImmediateRenegotiation": false});
+        if self.answer {
+            res["sessionDescription"] = json!({"type": "answer", "sdp": "v=0\r\n"});
+        }
+        ResponseTemplate::new(200).set_body_json(res)
+    }
+}
+
+async fn text(db: &mut toasty::Db, sql: &str, bind: &str) -> anyhow::Result<String> {
     let rows = toasty::sql::query(format!("SELECT ({sql})::text"))
         .bind(bind.to_string())
         .exec(db)
@@ -110,7 +145,7 @@ async fn count(db: &mut toasty::Db, sql: &str, bind: &str) -> anyhow::Result<i64
     let Some(toasty::stmt::Value::String(s)) = rec.fields.into_iter().next() else {
         anyhow::bail!("not a string");
     };
-    Ok(s.parse()?)
+    Ok(s)
 }
 
 #[tokio::test]
@@ -129,11 +164,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         .await;
     Mock::given(method("POST"))
         .and(path_regex(r"^/apps/app/sessions/[^/]+/tracks/new$"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "sessionDescription": {"type": "answer", "sdp": "v=0\r\n"},
-            "tracks": [{"mid": "0", "trackName": "t"}],
-            "requiresImmediateRenegotiation": false
-        })))
+        .respond_with(EchoTracks { answer: true })
         .mount(&cf)
         .await;
     Mock::given(method("GET"))
@@ -145,7 +176,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         .await;
     Mock::given(method("PUT"))
         .and(path_regex(r"^/apps/app/sessions/[^/]+/tracks/close$"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"tracks": []})))
+        .respond_with(EchoTracks { answer: false })
         .mount(&cf)
         .await;
     Mock::given(method("POST"))
@@ -171,7 +202,9 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         std::env::set_var("LIVEKIT_API_KEY", "key");
         std::env::set_var("LIVEKIT_API_SECRET", "0123456789abcdef0123456789abcdef");
         std::env::set_var("SFU_BRIDGE_TOKEN", BRIDGE_TOKEN);
+        // .env の値に左右されないよう、閾値と定員を固定する。
         std::env::set_var("CALL_SFU_THRESHOLD", "4");
+        std::env::set_var("CALL_SFU_MAX_PARTICIPANTS", "50");
         std::env::remove_var("ACTIVITYPUB_CLOUDFLARE_TUNNEL");
     }
 
@@ -284,6 +317,27 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         joined["token"]
             .as_str()
             .is_some_and(|t| t.split('.').count() == 3)
+    );
+    // 同じ LiveKit のルームにつなぎ直すだけなら、新しい接続を切らないよう、後始末を記録しない。
+    let (status, joined) = request(
+        &app,
+        &users[0],
+        "POST",
+        &format!("/api/channels/{channel}/call/sfu/join"),
+        Some(json!({"session_id": sessions[0]})),
+        Some(LAN_IP),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    assert_eq!(joined["sfu"], "livekit");
+    assert_eq!(
+        count(
+            &mut db,
+            "SELECT count(*) FROM call_sfu_departures WHERE channel_id = $1",
+            &channel
+        )
+        .await?,
+        0
     );
 
     // fallback なら Cloudflare。
@@ -461,6 +515,27 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    // Cloudflare が track ごとに失敗を返したら、一覧に載せない。
+    let failing = json!({"type": "offer", "sdp": "v=0\r\nm=audio 9 X 111\r\na=mid:0\r\nm=audio 9 X 111\r\na=mid:9\r\n"});
+    let (status, _) = bridge(
+        "POST",
+        "/internal/sfu-bridge/cf/publish",
+        Some(json!({
+            "channel_id": channel, "bridge_epoch": bridge_epoch, "cf_session_id": "cf-bridge-2",
+            "speaker_session_id": sessions[0], "offer": failing, "mid": "9"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(
+        text(
+            &mut db,
+            "SELECT cf_session_id FROM call_sfu_tracks WHERE channel_id = $1 AND source = 'bridge'",
+            &channel
+        )
+        .await?,
+        "cf-bridge"
+    );
     // Cloudflare の人は LiveKit の話者をできない。
     let (status, _) = bridge(
         "POST",
@@ -507,6 +582,15 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     );
 
     // Cloudflare の人が退出すると、トラックが消え、worker が Cloudflare のセッションを閉じる。
+    let left_cf_session = text(
+        &mut db,
+        &format!(
+            "SELECT cf_session_id FROM call_presence WHERE channel_id = $1 AND session_id = '{}'",
+            sessions[1]
+        ),
+        &channel,
+    )
+    .await?;
     let (status, _) = request(
         &app,
         &users[1],
@@ -544,14 +628,23 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         closed,
         "departure worker did not close the Cloudflare session"
     );
-    let closes = cf
+    // 退出した人のセッションを、force で閉じたこと（共有 DB のほかの退出への要求と区別する）。
+    let close_path = format!("/apps/app/sessions/{left_cf_session}/tracks/close");
+    let closed_left = cf
         .received_requests()
         .await
         .unwrap_or_default()
         .into_iter()
-        .filter(|r| r.url.path().ends_with("/tracks/close"))
-        .count();
-    assert!(closes >= 1);
+        .any(|r| {
+            r.method == wiremock::http::Method::PUT
+                && r.url.path() == close_path
+                && serde_json::from_slice::<Value>(&r.body)
+                    .is_ok_and(|b| b["force"] == true && b["tracks"] == json!([{"mid": "0"}]))
+        });
+    assert!(
+        closed_left,
+        "the departed Cloudflare session {left_cf_session} was not force-closed"
+    );
 
     // LiveKit の人が退出すると、RemoveParticipant を呼ぶ。
     let (status, _) = request(
@@ -564,10 +657,24 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     )
     .await?;
     assert_eq!(status, StatusCode::OK);
+    // 退出した人のルームと identity を指定して、RemoveParticipant を呼んだこと。
+    let expected = json!({
+        "room": format!("call-{channel}-{epoch_mesh}"),
+        "identity": sessions[0].to_string(),
+    });
     let mut removed = false;
     for _ in 0..60 {
-        if !lk.received_requests().await.unwrap_or_default().is_empty() {
-            removed = true;
+        removed = lk
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .any(|r| {
+                r.method == wiremock::http::Method::POST
+                    && r.url.path() == "/twirp/livekit.RoomService/RemoveParticipant"
+                    && serde_json::from_slice::<Value>(&r.body).is_ok_and(|b| b == expected)
+            });
+        if removed {
             break;
         }
         tokio::time::sleep(Duration::from_millis(250)).await;

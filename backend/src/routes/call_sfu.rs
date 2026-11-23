@@ -181,34 +181,12 @@ async fn join(
     // 割り当ては、チャンネル行のロックの下で決める（bridge がないときの「部屋に Cloudflare の人がいるか」を
     // 入室と直列化するため）。
     let mut tx = db.transaction().await?;
-    toasty::sql::query("SELECT 1 FROM channels WHERE id = $1 FOR UPDATE")
-        .bind(channel_id.clone())
-        .exec(&mut tx)
-        .await?;
+    lock_channel(&mut tx, &channel_id).await?;
     let me = own_presence(&mut tx, &channel_id, body.session_id, &user.id, true).await?;
     let (Some(RoomMode::Sfu), Some(epoch)) = (me.mode, me.epoch) else {
         return Err(AppError::Conflict("Call is not in SFU mode".into()));
     };
-    let others = toasty::sql::query(
-        "SELECT json_build_object(
-             'cloudflare', count(*) FILTER (WHERE sfu_id = 'cloudflare'),
-             'livekit', count(*) FILTER (WHERE sfu_id = 'livekit'))::text
-         FROM call_presence
-         WHERE channel_id = $1 AND session_id <> $2::uuid AND expires_at > statement_timestamp()",
-    )
-    .bind(channel_id.clone())
-    .bind(body.session_id.to_string())
-    .exec(&mut tx)
-    .await?;
-    #[derive(Deserialize, Default)]
-    struct Counts {
-        cloudflare: i64,
-        livekit: i64,
-    }
-    let counts = rows_json::<Counts>(others)
-        .into_iter()
-        .next()
-        .unwrap_or_default();
+    let counts = count_others(&mut tx, &channel_id, body.session_id).await?;
     let choice = crate::call_sfu::choose_sfu(
         lan_client,
         sfu.livekit.is_some(),
@@ -217,19 +195,17 @@ async fn join(
         counts.cloudflare > 0,
     );
 
-    // 前の割り当て（fallback・やり直し）の後始末は、退出と同じ worker に任せる。
-    let previous_cf = me.cf_session_id.clone();
-    let previous_livekit_room = (me.sfu_id.as_deref() == Some(SFU_LIVEKIT))
-        .then(|| me.sfu_room.clone())
-        .flatten();
-
-    let target = if choice == SFU_LIVEKIT {
+    let (target, departed) = if choice == SFU_LIVEKIT {
         let lk = sfu
             .livekit
             .as_ref()
             .expect("choose_sfu returns livekit only when enabled");
         let room = livekit::room_name(&channel_id, epoch);
         let token = lk.participant_token(&room, &body.session_id.to_string(), &me.display_name)?;
+        // 前の割り当ての後始末は、新しい割り当てと同じトランザクションで記録する（退出と同じ worker が処理する）。
+        let departed =
+            record_previous_assignment(&mut tx, &channel_id, body.session_id, &me, Some(&room))
+                .await?;
         set_assignment(
             &mut tx,
             &channel_id,
@@ -241,17 +217,27 @@ async fn join(
         .await?;
         bump_tracks(&mut tx, &channel_id).await?;
         tx.commit().await?;
-        JoinTarget::Livekit {
-            url: lk.ws_url().to_string(),
-            token,
-        }
+        (
+            JoinTarget::Livekit {
+                url: lk.ws_url().to_string(),
+                token,
+            },
+            departed,
+        )
     } else {
         // Cloudflare の API は、ロックを持ったまま呼ばない。
         tx.commit().await?;
         let cf_session = sfu.cloudflare.new_session().await?;
         let mut tx = db.transaction().await?;
-        // 呼んでいるあいだに退出していたら、作ったセッションは使わない（何も流れないので放置してよい）。
-        own_presence(&mut tx, &channel_id, body.session_id, &user.id, true).await?;
+        // ロックを取り直す。呼んでいるあいだに退出していたら、作ったセッションは使わない
+        // （何も流れないので放置してよい）。割り当ても、ロックを外していたあいだに変わりうるので読み直す。
+        lock_channel(&mut tx, &channel_id).await?;
+        let me = own_presence(&mut tx, &channel_id, body.session_id, &user.id, true).await?;
+        if me.epoch != Some(epoch) || me.mode != Some(RoomMode::Sfu) {
+            return Err(AppError::Conflict("Call room changed while joining".into()));
+        }
+        let departed =
+            record_previous_assignment(&mut tx, &channel_id, body.session_id, &me, None).await?;
         set_assignment(
             &mut tx,
             &channel_id,
@@ -262,6 +248,8 @@ async fn join(
         )
         .await?;
         bump_tracks(&mut tx, &channel_id).await?;
+        // ロックを外していたあいだに LiveKit に入った人も数えるため、取り直したロックの下で数え直す。
+        let counts = count_others(&mut tx, &channel_id, body.session_id).await?;
         if !sfu.bridge_enabled() && counts.livekit > 0 {
             // bridge がないので、LiveKit の人にも Cloudflare に移ってもらう。
             let event = CallDistributedEvent::SfuReassign {
@@ -271,26 +259,9 @@ async fn join(
             notify_in(&mut tx, &event).await?;
         }
         tx.commit().await?;
-        JoinTarget::Cloudflare
+        (JoinTarget::Cloudflare, departed)
     };
-
-    if previous_cf.is_some() || previous_livekit_room.is_some() {
-        let mut db = state.db.clone();
-        toasty::sql::statement(
-            "INSERT INTO call_sfu_departures (channel_id, session_id, sfu_id, sfu_room, cf_session_id)
-             VALUES ($1, $2::uuid, $3, NULLIF($4, ''), NULLIF($5, ''))",
-        )
-        .bind(channel_id.clone())
-        .bind(body.session_id.to_string())
-        .bind(if previous_livekit_room.is_some() {
-            SFU_LIVEKIT
-        } else {
-            SFU_CLOUDFLARE
-        })
-        .bind(previous_livekit_room.unwrap_or_default())
-        .bind(previous_cf.unwrap_or_default())
-        .exec(&mut db)
-        .await?;
+    if departed {
         sfu.departures_wake.notify_one();
     }
 
@@ -306,6 +277,86 @@ async fn join(
     }))
 }
 
+/// チャンネル行のロック。入室と SFU の割り当てを、このロックで直列化する。
+async fn lock_channel(tx: &mut toasty::Transaction<'_>, channel_id: &str) -> Result<(), AppError> {
+    toasty::sql::query("SELECT 1 FROM channels WHERE id = $1 FOR UPDATE")
+        .bind(channel_id.to_string())
+        .exec(&mut *tx)
+        .await?;
+    Ok(())
+}
+
+#[derive(Deserialize, Default)]
+struct Counts {
+    cloudflare: i64,
+    livekit: i64,
+}
+
+/// 自分以外の在室者を、割り当て先ごとに数える。探索は call_presence の主キーの先頭（channel_id）で、
+/// その部屋の在室者（定員以下）だけ。
+async fn count_others(
+    tx: &mut toasty::Transaction<'_>,
+    channel_id: &str,
+    session_id: Uuid,
+) -> Result<Counts, AppError> {
+    let rows = toasty::sql::query(
+        "SELECT json_build_object(
+             'cloudflare', count(*) FILTER (WHERE sfu_id = 'cloudflare'),
+             'livekit', count(*) FILTER (WHERE sfu_id = 'livekit'))::text
+         FROM call_presence
+         WHERE channel_id = $1 AND session_id <> $2::uuid AND expires_at > statement_timestamp()",
+    )
+    .bind(channel_id.to_string())
+    .bind(session_id.to_string())
+    .exec(&mut *tx)
+    .await?;
+    Ok(rows_json::<Counts>(rows)
+        .into_iter()
+        .next()
+        .unwrap_or_default())
+}
+
+/// 前の割り当て（fallback・やり直し）の後始末を `call_sfu_departures` に記録する。新しい割り当てと同じ
+/// トランザクションで呼ぶので、どちらかだけが残ることはない。記録したら `true`。
+///
+/// `new_livekit_room` は、新しい割り当てが LiveKit のときのルーム名。同じルームに同じ identity
+/// （`session_id`）でつなぎ直すだけなら、新しい接続を切ってしまうので、LiveKit の後始末はしない。
+async fn record_previous_assignment(
+    tx: &mut toasty::Transaction<'_>,
+    channel_id: &str,
+    session_id: Uuid,
+    previous: &PresenceRow,
+    new_livekit_room: Option<&str>,
+) -> Result<bool, AppError> {
+    let previous_livekit_room = (previous.sfu_id.as_deref() == Some(SFU_LIVEKIT))
+        .then_some(previous.sfu_room.as_deref())
+        .flatten()
+        .filter(|room| Some(*room) != new_livekit_room);
+    let previous_cf = previous.cf_session_id.as_deref();
+    if previous_livekit_room.is_none() && previous_cf.is_none() {
+        return Ok(false);
+    }
+    toasty::sql::statement(
+        "INSERT INTO call_sfu_departures (channel_id, session_id, sfu_id, sfu_room, cf_session_id)
+         VALUES ($1, $2::uuid, $3, NULLIF($4, ''), NULLIF($5, ''))",
+    )
+    .bind(channel_id.to_string())
+    .bind(session_id.to_string())
+    .bind(if previous_livekit_room.is_some() {
+        SFU_LIVEKIT
+    } else {
+        SFU_CLOUDFLARE
+    })
+    .bind(previous_livekit_room.unwrap_or_default().to_string())
+    .bind(previous_cf.unwrap_or_default().to_string())
+    .exec(&mut *tx)
+    .await?;
+    Ok(true)
+}
+
+/// 割り当てを変える。呼ぶ前に、同じトランザクションで presence の行をロックしておく（`own_presence` の
+/// `lock`）。`register_track` も同じ行をロックしてから登録するので、古い割り当てで登録したトラックが、
+/// ここで消したあとに残ることはない。
 async fn set_assignment(
     tx: &mut toasty::Transaction<'_>,
     channel_id: &str,
@@ -314,14 +365,6 @@ async fn set_assignment(
     room: Option<&str>,
     cf_session: Option<&str>,
 ) -> Result<(), AppError> {
-    // 割り当てが変わったら、前の SFU に出していたトラックは消す。
-    toasty::sql::statement(
-        "DELETE FROM call_sfu_tracks WHERE channel_id = $1 AND session_id = $2::uuid",
-    )
-    .bind(channel_id.to_string())
-    .bind(session_id.to_string())
-    .exec(&mut *tx)
-    .await?;
     toasty::sql::statement(
         "UPDATE call_presence SET sfu_id = $3, sfu_room = NULLIF($4, ''), cf_session_id = NULLIF($5, '')
          WHERE channel_id = $1 AND session_id = $2::uuid",
@@ -332,6 +375,14 @@ async fn set_assignment(
     // toasty は NULL の型を推定できないので、空文字を NULL として渡す。
     .bind(room.unwrap_or_default().to_string())
     .bind(cf_session.unwrap_or_default().to_string())
+    .exec(&mut *tx)
+    .await?;
+    // 割り当てが変わったら、前の SFU に出していたトラックは消す。
+    toasty::sql::statement(
+        "DELETE FROM call_sfu_tracks WHERE channel_id = $1 AND session_id = $2::uuid",
+    )
+    .bind(channel_id.to_string())
+    .bind(session_id.to_string())
     .exec(&mut *tx)
     .await?;
     Ok(())
@@ -388,51 +439,95 @@ async fn cf_publish(
         .cloudflare
         .push_track(&cf, &body.offer, &mid, &track_name)
         .await?;
+    // Cloudflare が受け付けなかったトラックは、一覧に載せない。
+    crate::call_sfu::cloudflare::check_pushed(&res, &mid)?;
     register_track(
         &state,
         &channel_id,
         body.session_id,
-        "direct",
+        TrackSource::Direct,
         &cf,
         &track_name,
-        None,
     )
     .await?;
     Ok(Json(res))
 }
 
+/// 登録するトラックの種類と、登録してよい条件。
+enum TrackSource {
+    /// 話者のクライアントが push したもの。話者の割り当てが、push に使った Cloudflare セッションのままのこと。
+    Direct,
+    /// LiveKit の話者を bridge が push したもの。話者がまだ LiveKit にいること。
+    Bridge { bridge_epoch: i64 },
+}
+
+/// push したトラックを一覧に載せる。
+///
+/// 話者の presence の行をロックして、割り当てを確かめてから書く。`set_assignment` も同じ行をロックするので、
+/// push のあいだに割り当てが変わっていれば 409 を返し、古いセッションのトラックを載せない
+/// （古いセッションは、割り当ての変更で `call_sfu_departures` に記録され、worker が閉じる）。
 async fn register_track(
     state: &AppState,
     channel_id: &str,
     speaker: Uuid,
-    source: &str,
+    source: TrackSource,
     cf_session: &str,
     track_name: &str,
-    bridge_epoch: Option<i64>,
 ) -> Result<(), AppError> {
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    // 話す人がもう退出していれば、外部キーで失敗する前に何もしない。
-    let inserted = toasty::sql::query(
-        "INSERT INTO call_sfu_tracks (channel_id, session_id, source, cf_session_id, track_name, bridge_epoch)
-         SELECT $1, $2::uuid, $3, $4, $5, NULLIF($6, '')::bigint
-         WHERE EXISTS (SELECT 1 FROM call_presence WHERE channel_id = $1 AND session_id = $2::uuid)
-         ON CONFLICT (channel_id, session_id, source) DO UPDATE
-           SET cf_session_id = EXCLUDED.cf_session_id, track_name = EXCLUDED.track_name,
-               bridge_epoch = EXCLUDED.bridge_epoch
-         RETURNING session_id::text",
+    // 探索：call_presence の主キーで 1 行。
+    let rows = toasty::sql::query(
+        "SELECT json_build_object('sfu_id', sfu_id, 'cf_session_id', cf_session_id)::text
+         FROM call_presence
+         WHERE channel_id = $1 AND session_id = $2::uuid AND expires_at > statement_timestamp()
+         FOR UPDATE",
     )
     .bind(channel_id.to_string())
     .bind(speaker.to_string())
-    .bind(source.to_string())
+    .exec(&mut tx)
+    .await?;
+    #[derive(Deserialize)]
+    struct Assignment {
+        sfu_id: Option<String>,
+        cf_session_id: Option<String>,
+    }
+    let Some(current) = rows_json::<Assignment>(rows).into_iter().next() else {
+        return Err(AppError::NotFound("Call session not found".into()));
+    };
+    let (source_name, bridge_epoch) = match source {
+        TrackSource::Direct => {
+            if current.sfu_id.as_deref() != Some(SFU_CLOUDFLARE)
+                || current.cf_session_id.as_deref() != Some(cf_session)
+            {
+                return Err(AppError::Conflict(
+                    "The SFU assignment changed while publishing".into(),
+                ));
+            }
+            ("direct", None)
+        }
+        TrackSource::Bridge { bridge_epoch } => {
+            if current.sfu_id.as_deref() != Some(SFU_LIVEKIT) {
+                return Err(AppError::Conflict("Speaker is not on LiveKit".into()));
+            }
+            ("bridge", Some(bridge_epoch))
+        }
+    };
+    toasty::sql::statement(
+        "INSERT INTO call_sfu_tracks (channel_id, session_id, source, cf_session_id, track_name, bridge_epoch)
+         VALUES ($1, $2::uuid, $3, $4, $5, NULLIF($6, '')::bigint)
+         ON CONFLICT (channel_id, session_id, source) DO UPDATE
+           SET cf_session_id = EXCLUDED.cf_session_id, track_name = EXCLUDED.track_name,
+               bridge_epoch = EXCLUDED.bridge_epoch",
+    )
+    .bind(channel_id.to_string())
+    .bind(speaker.to_string())
+    .bind(source_name.to_string())
     .bind(cf_session.to_string())
     .bind(track_name.to_string())
     .bind(bridge_epoch.map(|e| e.to_string()).unwrap_or_default())
     .exec(&mut tx)
     .await?;
-    if inserted.is_empty() {
-        return Err(AppError::NotFound("Call session not found".into()));
-    }
     bump_tracks(&mut tx, channel_id).await?;
     tx.commit().await?;
     Ok(())
@@ -701,6 +796,11 @@ async fn load_bridge_rooms(state: &AppState) -> Result<Vec<BridgeRoomState>, App
                      'id', t.session_id::text || ':' || t.source,
                      'session_id', t.session_id, 'source', t.source) ORDER BY t.session_id)
                  FROM call_sfu_tracks t
+                 CROSS JOIN LATERAL (
+                     SELECT 1 FROM call_presence tp
+                     WHERE tp.channel_id = t.channel_id AND tp.session_id = t.session_id
+                       AND tp.expires_at > statement_timestamp()
+                     LIMIT 1) live
                  WHERE t.channel_id = r.channel_id AND t.source = 'direct'), '[]'::json)
          )::text
          FROM rooms
@@ -774,14 +874,16 @@ async fn bridge_cf_publish(
         .cloudflare
         .push_track(&body.cf_session_id, &body.offer, &body.mid, &track_name)
         .await?;
+    crate::call_sfu::cloudflare::check_pushed(&res, &body.mid)?;
     register_track(
         &state,
         &body.channel_id,
         body.speaker_session_id,
-        "bridge",
+        TrackSource::Bridge {
+            bridge_epoch: body.bridge_epoch,
+        },
         &body.cf_session_id,
         &track_name,
-        Some(body.bridge_epoch),
     )
     .await?;
     Ok(Json(res))

@@ -7,8 +7,15 @@ use serde_json::json;
 use super::config::LiveKitConfig;
 use crate::error::AppError;
 
-/// 参加用トークンの有効期限。入室の直前に発行し、接続後の再接続はクライアント SDK が更新トークンで行う。
-pub const JOIN_TOKEN_TTL_SECS: u64 = 5 * 60;
+/// 参加者のトークンの有効期限。`sfu/join` の応答ですぐに接続するので短くする。
+///
+/// セルフホストの LiveKit では、`RemoveParticipant` が発行済みのトークンを無効にしない。退出・キックの後に
+/// 手元のトークンで入り直せる時間を、この長さまでに抑える。接続後の再接続は、クライアント SDK が LiveKit
+/// サーバーから受け取る更新トークンで行うので、この期限には縛られない（残る時間窓は docs/calls-sfu.md）。
+pub const JOIN_TOKEN_TTL_SECS: u64 = 60;
+/// sfu-bridge のトークンの有効期限。bridge は退出させる対象ではなく、rooms の long-poll（最大 25 秒）の
+/// たびに新しいトークンを受け取る。
+pub const BRIDGE_TOKEN_TTL_SECS: u64 = 5 * 60;
 const ADMIN_TOKEN_TTL_SECS: u64 = 60;
 
 #[derive(Debug, Serialize, Default)]
@@ -130,7 +137,7 @@ impl LiveKit {
         self.sign(
             Some(&identity),
             Some("bridge"),
-            JOIN_TOKEN_TTL_SECS,
+            BRIDGE_TOKEN_TTL_SECS,
             VideoGrant {
                 room: Some(room.to_string()),
                 room_join: true,
@@ -191,7 +198,7 @@ mod tests {
             reqwest::Client::new(),
             LiveKitConfig {
                 ws_url: "wss://lk".into(),
-                api_url: "http://lk".into(),
+                api_url: "http://127.0.0.1:7880".into(),
                 api_key: "key".into(),
                 api_secret: "0123456789abcdef0123456789abcdef".into(),
                 lan_egress: vec![Cidr::parse("10.0.0.0/8").unwrap()],

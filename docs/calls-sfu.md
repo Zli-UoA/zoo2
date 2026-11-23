@@ -13,13 +13,15 @@
 
 - 部屋の状態は `call_rooms(channel_id, mode, epoch, track_version)` に置く。`mode` は `mesh` か `sfu`。
 - 在室が 0 人の部屋に入ると、`mesh` に戻して `epoch` を進める。LiveKit のルーム名は `call-{channel_id}-{epoch}`。
-- 入室のたびに、チャンネル行のロックの下で、次の 2 つを満たすか調べる。満たせば `sfu` に切り替える。
+- 入室のたびに、チャンネル行のロックの下で、次の 2 つを満たすか調べる。満たせば `sfu` に切り替える。SFU が無効（`CALL_SFUS_JSON` が空）なら切り替えない。
   - 在室の人数が `CALL_SFU_THRESHOLD`（既定 4）を超えている。
   - 在室の全員が SFU に対応している。
+- 空室の判定、定員の判定、切り替えの判定は、どれも入室のトランザクションの開始時刻（`transaction_timestamp()`）で在室を数える。途中で期限の切れた人を、ある判定では在室、別の判定では不在と数えないため。
 - 切り替えは、入室と同じトランザクションで `mode_changed` を通知する。切り替えたあと、人数が減っても `mesh` には戻さない（空になるまで）。
 - SFU に対応しているかは、クライアントが `GET /call/stream?sfu=1` で申告する。対応していないクライアント（iOS、古い Android や Web）がいる間は `mesh` のままで、定員も 6 人のまま。
 - `sfu` の部屋に対応していないクライアントが入ろうとしたら、409 `CALL_SFU_UNSUPPORTED` を返す。
-- 定員は `capacity(mode)`。`mesh` は 6、`sfu` は `CALL_SFU_MAX_PARTICIPANTS`（既定 50）。呼び出しの空きの計算も同じ定員を使う。
+- iOS は SFU の部屋に入れない。そのため、`sfu` の部屋への呼び出しでは、iOS の着信（VoIP）を送らない（`apns/calls.rs`。送る時点の mode で判定する）。Web・Android への通知は送る。呼び出しのあとで部屋が `sfu` に切り替わった場合は、iOS には着信が届いていて、応答して入ろうとすると 409 になる。
+- 定員は `capacity(mode)`。`mesh` は 6、`sfu` は `CALL_SFU_MAX_PARTICIPANTS`（既定 50、6 以上）。呼び出しの空きの計算も同じ定員を使う。SFU の定員を mesh 以上にするのは、mesh のときに予約した呼び出しの席が、切り替えで足りなくならないようにするため。
 - 入室した人の SSE には、`room_state` の `mode` と `epoch` が入る。自分の入室で切り替わったときは、`mode_changed` が `room_state` より先に届くことがある。
 
 ## SFU の割り当て
@@ -28,23 +30,31 @@
 
 1. `CF-Connecting-IP`（`activitypub/client_ip.rs` の信頼の条件で読む）が `lan_egress_cidrs`（LAN の出口のグローバル IP。IPv4・IPv6）に入っていれば LiveKit。
 2. それ以外、IP がわからないとき、`fallback`、`cloudflare_only` のときは Cloudflare。
-3. bridge が無効のときは、部屋に Cloudflare の人が 1 人でもいれば Cloudflare にする。あとから Cloudflare の人が入ったら、`sfu_reassign` で LiveKit の人に移ってもらう。
+3. bridge が無効のときは、部屋に Cloudflare の人が 1 人でもいれば Cloudflare にする。あとから Cloudflare の人が入ったら、`sfu_reassign` で LiveKit の人に移ってもらう。LiveKit の人数は、Cloudflare のセッションを作ったあと、チャンネル行のロックを取り直して数え直す（セッションを作るあいだに LiveKit に入った人を見落とさないため）。
+
+- 割り当てを変えたとき（fallback、やり直し）は、前の割り当ての後始末を、新しい割り当てと同じトランザクションで `call_sfu_departures` に記録する。同じ LiveKit のルームに同じ identity でつなぎ直すだけのときは記録しない（記録すると、worker の `RemoveParticipant` が新しい接続を切る）。
 
 - ブラウザーから LAN のプライベート IP を測ること（RTT probe）はしない。公開サイトからプライベート IP へのアクセスは、ブラウザーが制限する（Private Network Access）。
 - LiveKit に割り当てられても、8 秒で ICE がつながらなければ、クライアントは `fallback: true` で join し直す。
-- LiveKit の JWT（HS256、有効期限 5 分）の権限は次のとおり。`roomAdmin` と `roomCreate` は付けない。
+- LiveKit の JWT（HS256）の権限は次のとおり。`roomAdmin` と `roomCreate` は付けない。
   - 部屋に入れる（`roomJoin`）。部屋は 1 つに固定。
   - publish はマイクだけ（`canPublishSources: [microphone]`）。データは publish できない（`canPublishData: false`）。
   - identity は通話の `session_id`。
+  - 有効期限は 60 秒（sfu-bridge のトークンは 5 分）。`sfu/join` の応答ですぐに接続するので短くしている。接続したあとの再接続には、クライアント SDK が LiveKit サーバーから受け取る更新トークンを使う。
+- セルフホストの LiveKit では、`RemoveParticipant` で外しても、発行済みのトークンは無効にならない。退出・キックのあとに残る時間窓は次のとおり。運用上の制約として受け入れている。
+  - backend が発行したトークン：発行から最長 60 秒、同じルームに入り直せる。
+  - 接続中に LiveKit サーバーから受け取った更新トークン：その有効期限（LiveKit サーバーが決める）まで入り直せる。
+  - 入り直したあとは、次に `RemoveParticipant` が呼ばれるまで外れない（presence はないので、backend は新しいトークンを発行しない）。
 - Cloudflare の代理は `cf/publish`、`cf/pull`、`cf/answer` の 3 つだけ。
-  - `cf/publish` は、音声の m-line が 1 本だけの offer を受け付ける。
+  - `cf/publish` は、音声の m-line が 1 本だけの offer を受け付ける。Cloudflare がその track に `errorCode` を返したら、一覧に載せずに 502 を返す（sfu-bridge の publish も同じ）。
+  - push のあいだに割り当てが変わっていたら（別の Cloudflare セッションに移った、など）、409 を返し、古いセッションの track を一覧に載せない。登録は話者の presence の行をロックしてから確かめ、割り当ての変更も同じ行をロックするので、両者は直列になる。古いセッションは、割り当ての変更で記録した後始末で閉じる。
   - `cf/pull` は、backend が配るトラックの id（`{session_id}:{direct|bridge}`）で指定する。backend が同じ部屋の行に引き直すので、クライアントは Cloudflare のセッション ID や track 名を指定できない。
   - app secret は backend だけが持つ。
 
 ## トラック一覧
 
 - Cloudflare にある音声は `call_sfu_tracks` に置く。`direct` は話者のクライアントが push したもの、`bridge` は LiveKit の話者を bridge が push したもの。
-- 話者の presence が消えると、外部キーで一緒に消える。
+- 話者の presence が消えると、外部キーで一緒に消える。期限が切れて、まだ消されていない presence のトラックは、一覧に入れない。
 - 一覧が変わると `call_rooms.track_version` を進め、`sfu_tracks_changed`（`channel_id`・`epoch`・`version` だけ）を `pg_notify` する。一覧そのものは NOTIFY の上限（8000 バイト）を超えるので載せない。
 - 通知を受けた各レプリカが DB から一覧を読み、SSE の `sfu_tracks` で配る。クライアントは、手元より古い `version` を捨てる。
 
@@ -52,9 +62,11 @@
 
 - `call_presence` の DELETE のトリガー（`record_call_sfu_departures`）が、SFU に割り当てた人の退出を `call_sfu_departures` に記録する。退出、sweep、キック、チャンネル削除のどの経路でも記録される。
 - backend の worker（`CallSfu::start_departure_worker`）は、記録を見て次を呼び、退出した人が音声を送ることも受けることもできないようにする。
-  - Cloudflare：`GET /sessions/{id}` と `tracks/close`（force）
+  - Cloudflare：`GET /sessions/{id}` と `tracks/close`（force）。応答の track ごとの結果を見て、閉じた mid と既に閉じていた mid（`close_track_error`）だけを成功に数える。ほかのエラーや結果のない mid があれば失敗にする。
   - LiveKit：`RemoveParticipant`
-- 失敗したものは 5 回まで試し直す。
+- worker は、短い 1 文で行を確保して（`claimed_until` を 5 分先にする。`FOR UPDATE SKIP LOCKED`）、トランザクションもロックも持たずに API を呼ぶ。SFU ごとに同時 8 件まで。worker が途中で止まっても、確保の期限のあとに別の worker が取り直す。
+- 失敗したものは、15 秒あけて 5 回まで試し直す。
+- LiveKit の設定がないときは、LiveKit の行を確保しない（消さずに残す）。設定を戻せば処理する。
 
 ## sfu-bridge
 
@@ -80,18 +92,29 @@
 
 ## 設定
 
-設定は zoo2-infra の PR で入れる。`CALL_SFUS_JSON` が空のあいだは、今までどおり mesh だけで動く。
+設定は zoo2-infra の PR で入れる（[zoo2-infra の docs/calls-sfu.md](https://github.com/Zli-UoA/zoo2-infra/blob/main/docs/calls-sfu.md)）。`CALL_SFUS_JSON` が空のあいだは、今までどおり mesh だけで動く。
 
-| 変数 | 必須 | 内容 |
-| --- | --- | --- |
-| `CALL_SFUS_JSON` | 任意 | `{"cloudflare":{"api_base"?},"livekit"?:{"ws_url","api_url","lan_egress_cidrs":[…]},"bridge"?:bool}`。空なら SFU は無効 |
-| `CF_REALTIME_APP_ID`・`CF_REALTIME_APP_SECRET` | `CALL_SFUS_JSON` があれば必須 | Cloudflare Realtime の app（Secret） |
-| `LIVEKIT_API_KEY`・`LIVEKIT_API_SECRET` | `livekit` があれば必須 | secret は 32 文字以上（Secret） |
-| `SFU_BRIDGE_TOKEN` | `bridge: true` なら必須 | 32 文字以上。backend と sfu-bridge で同じ値（Secret） |
-| `CALL_SFU_THRESHOLD` | 任意 | 既定 4。6 未満 |
-| `CALL_SFU_MAX_PARTICIPANTS` | 任意 | 既定 50 |
+| 変数 | 必須 | 内容 | zoo2-infra での置き場所 |
+| --- | --- | --- | --- |
+| `CALL_SFUS_JSON` | 任意 | `{"cloudflare":{"api_base"?},"livekit"?:{"ws_url","api_url","lan_egress_cidrs":[…]},"bridge"?:bool}`。空なら SFU は無効 | backend の Deployment の `env`（`overlays/production/app/backend.yaml`） |
+| `CF_REALTIME_APP_ID`・`CF_REALTIME_APP_SECRET` | `CALL_SFUS_JSON` があれば必須 | Cloudflare Realtime の app | Secret `zoo2-cf-realtime` のキー `CF_REALTIME_APP_ID`・`CF_REALTIME_APP_SECRET`（手で作る sops の Secret、`overlays/production/app/zoo2-cf-realtime.sops.yaml`） |
+| `LIVEKIT_API_KEY`・`LIVEKIT_API_SECRET` | `livekit` があれば必須 | secret は 32 文字以上 | Secret `zoo2-livekit` のキー `LIVEKIT_API_KEY`・`LIVEKIT_API_SECRET`（OpenTofu の出力から CI が作る sops の Secret。LiveKit と共有） |
+| `SFU_BRIDGE_TOKEN` | `bridge: true` なら必須 | 32 文字以上。backend と sfu-bridge で同じ値 | Secret `zoo2-sfu-bridge` のキー `SFU_BRIDGE_TOKEN`（OpenTofu の出力から CI が作る sops の Secret。sfu-bridge と共有） |
+| `CALL_SFU_THRESHOLD` | 任意 | 既定 4。6 未満 | backend の Deployment の `env` |
+| `CALL_SFU_MAX_PARTICIPANTS` | 任意 | 既定 50。6（mesh の定員）以上 | backend の Deployment の `env` |
 
-一部だけの設定（`CALL_SFUS_JSON` がないのに Secret だけある、など）は、起動時のエラーにする。
+起動時に次をエラーにする（一部だけの設定）。
+
+- `CALL_SFUS_JSON` が空なのに、`CF_REALTIME_APP_ID`・`CF_REALTIME_APP_SECRET`・`LIVEKIT_API_KEY`・`LIVEKIT_API_SECRET`・`SFU_BRIDGE_TOKEN` のどれかがある。
+- `CALL_SFUS_JSON` があるのに、`CF_REALTIME_APP_ID` か `CF_REALTIME_APP_SECRET` がない。
+- `livekit` がないのに `LIVEKIT_API_KEY` か `LIVEKIT_API_SECRET` がある。`livekit` があるのに、どちらかがない。
+- `bridge: true` でないのに `SFU_BRIDGE_TOKEN` がある。`bridge: true` なのに、`SFU_BRIDGE_TOKEN` か `livekit` がない。
+
+URL の条件も起動時に確かめる。
+
+- `livekit.ws_url` は `wss://`。参加者のトークンをこの URL で送るため。`ws://` はループバック（`localhost`・`127.0.0.1`・`::1`。テスト用）だけ許す。
+- `cloudflare.api_base` と `livekit.api_url` は `https://`。Cloudflare の app secret と LiveKit の管理用 JWT を Bearer で送るため。`http://` は、ループバックと、クラスタ内の Service の名前（`<service>.<namespace>.svc`・`<service>.<namespace>.svc.cluster.local`）だけ許す。本番の `livekit.api_url` は `http://livekit.zoo2.svc.cluster.local:7880`（Twirp をクラスタ内から呼ぶ。経路の扱いは backend の内部 API の平文 HTTP と同じ。zoo2-infra の docs/calls-sfu.md）。
+- SFU の API を呼ぶ HTTP クライアントはリダイレクトを追わない。リダイレクト先に Bearer を送らないため。
 
 LiveKit を有効にするときは、frontend の `CSP_CONNECT_SRC` に LiveKit の `wss://` のオリジン（例：`wss://livekit.zli.chat`）を足す。Web の CSP の `connect-src` は `https:` しか許していないので、足さないと LiveKit のシグナリング（WebSocket）がはじかれ、全員が Cloudflare に移る。
 

@@ -1405,8 +1405,9 @@ async fn call_stream(
          SELECT $1, $2::uuid, $3, $4, $5, false, $6, statement_timestamp() + interval '{CALL_PRESENCE_TTL_SECONDS} seconds',
                 $7::boolean
          WHERE (
+             -- 在室の判定は、部屋の準備（prepare_room_for_join）と SFU への切り替えと同じ時点で行う。
              SELECT count(*) FROM call_presence
-             WHERE channel_id = $1 AND expires_at > statement_timestamp()
+             WHERE channel_id = $1 AND expires_at > transaction_timestamp()
          ) + (
              -- 呼び出し中の人と、応答してまだ入室していない人（自分以外）の席は空けておく。招待は空きの
              -- 数までしか作らないので、招待されていない人が先に入って、呼ばれた人が入れなくなることを防ぐ。
@@ -1625,7 +1626,7 @@ async fn call_stream(
     }
     if ch.is_dm && first_in_room {
         match call_invites::create_dm_invites(&mut db, sfu, &channel_id, &user.id).await {
-            Ok(created) => push::dispatch_call_invites(state.db.clone(), created),
+            Ok(created) => push::dispatch_call_invites(state.db.clone(), created, sfu.is_some()),
             Err(e) => tracing::warn!("Failed to create DM call invites: {e}"),
         }
     }
@@ -2063,7 +2064,8 @@ pub async fn room_mode(
 /// Cloudflare Realtime のトラック一覧と、その版。部屋がなければ `None`。
 ///
 /// 探索：`call_rooms` を主キーで 1 行、`call_sfu_tracks` を主キーの先頭（channel_id）で、
-/// その部屋の在室者 × source（最大 2）行。在室は定員（`CALL_SFU_MAX_PARTICIPANTS`）以下。
+/// その部屋の在室者 × source（最大 2）行と、トラックごとに `call_presence` を主キーで 1 行。
+/// 在室は定員（`CALL_SFU_MAX_PARTICIPANTS`）以下。
 pub async fn load_sfu_tracks(
     executor: &mut dyn toasty::Executor,
     channel_id: &str,
@@ -2076,7 +2078,15 @@ pub async fn load_sfu_tracks(
                      'id', t.session_id::text || ':' || t.source,
                      'session_id', t.session_id,
                      'source', t.source) ORDER BY t.session_id, t.source)
-                 FROM call_sfu_tracks t WHERE t.channel_id = r.channel_id), '[]'::json)
+                 FROM call_sfu_tracks t
+                 -- 期限の切れた（まだ消されていない）話者のトラックは、新しい通話の一覧に入れない。
+                 -- LIMIT で半結合への展開を止め、トラックごとに call_presence の主キーで 1 行だけ引く。
+                 CROSS JOIN LATERAL (
+                     SELECT 1 FROM call_presence p
+                     WHERE p.channel_id = t.channel_id AND p.session_id = t.session_id
+                       AND p.expires_at > statement_timestamp()
+                     LIMIT 1) live
+                 WHERE t.channel_id = r.channel_id), '[]'::json)
          )::text
          FROM call_rooms r WHERE r.channel_id = $1",
     )
@@ -2097,6 +2107,10 @@ pub async fn load_sfu_tracks(
 
 /// SFU の入室処理（チャンネル行をロックしたトランザクションの中）。部屋の mode を決め、
 /// 対応していないクライアントが SFU モードの部屋に入るのを断る。戻り値は (mode, epoch)。
+///
+/// 在室の判定は、この関数、定員つきの INSERT、`maybe_switch_to_sfu` のすべてで `transaction_timestamp()`
+/// を基準にする。文ごとの時刻（`statement_timestamp()`）だと、そのあいだに期限の切れた人を、部屋の準備では
+/// 在室、定員や切り替えでは不在と数えてしまい、空の部屋を古い epoch のまま使うことがある。
 async fn prepare_room_for_join(
     tx: &mut toasty::Transaction<'_>,
     sfu: Option<&CallSfu>,
@@ -2115,7 +2129,7 @@ async fn prepare_room_for_join(
                       CASE WHEN empty THEN r.epoch + 1 ELSE r.epoch END
                FROM (SELECT NOT EXISTS (
                          SELECT 1 FROM call_presence
-                         WHERE channel_id = $1 AND expires_at > statement_timestamp()) AS empty) e)
+                         WHERE channel_id = $1 AND expires_at > transaction_timestamp()) AS empty) e)
          RETURNING json_build_object('mode', r.mode, 'epoch', r.epoch, 'track_version', r.track_version)::text",
     )
     .bind(channel_id.to_string())
@@ -2156,7 +2170,7 @@ async fn maybe_switch_to_sfu(
         "UPDATE call_rooms r SET mode = 'sfu'
          FROM (SELECT count(*) AS n, bool_and(sfu_capable) AS all_capable
                FROM call_presence
-               WHERE channel_id = $1 AND expires_at > statement_timestamp()) live
+               WHERE channel_id = $1 AND expires_at > transaction_timestamp()) live
          WHERE r.channel_id = $1 AND r.mode = 'mesh'
            AND live.n > {} AND live.all_capable
          RETURNING json_build_object('mode', r.mode, 'epoch', r.epoch, 'track_version', r.track_version)::text",

@@ -33,6 +33,8 @@ CREATE TABLE call_sfu_tracks (
 );
 
 -- Sessions that left while assigned to an SFU. A backend worker closes their SFU media and deletes the row.
+-- claimed_until: a worker claims rows in a short statement and calls the SFU APIs outside any transaction.
+-- Another worker can take the row after this time (crashed worker), and failed rows wait until it to retry.
 CREATE TABLE call_sfu_departures (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   channel_id text NOT NULL,
@@ -41,6 +43,7 @@ CREATE TABLE call_sfu_departures (
   sfu_room text,
   cf_session_id text,
   attempts integer NOT NULL DEFAULT 0,
+  claimed_until timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 

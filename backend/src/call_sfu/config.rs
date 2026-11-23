@@ -115,7 +115,13 @@ impl CallSfuConfig {
     pub fn from_lookup(lookup: &dyn Fn(&str) -> Option<String>) -> Result<Option<Self>, String> {
         let Some(json) = secret("CALL_SFUS_JSON", lookup) else {
             // SFU を使わないのに秘密の値だけがあるのは設定ミス。
-            for name in ["CF_REALTIME_APP_ID", "LIVEKIT_API_KEY", "SFU_BRIDGE_TOKEN"] {
+            for name in [
+                "CF_REALTIME_APP_ID",
+                "CF_REALTIME_APP_SECRET",
+                "LIVEKIT_API_KEY",
+                "LIVEKIT_API_SECRET",
+                "SFU_BRIDGE_TOKEN",
+            ] {
                 if secret(name, lookup).is_some() {
                     return Err(format!("{name} is set but CALL_SFUS_JSON is empty"));
                 }
@@ -139,14 +145,17 @@ impl CallSfuConfig {
             .unwrap_or_else(|| DEFAULT_CF_API_BASE.to_string())
             .trim_end_matches('/')
             .to_string();
-        require_http(&api_base, "cloudflare.api_base", false)?;
+        require_secure_api_url(&api_base, "cloudflare.api_base")?;
 
         let livekit = match raw.livekit {
             None => {
                 if secret("LIVEKIT_API_KEY", lookup).is_some()
                     || secret("LIVEKIT_API_SECRET", lookup).is_some()
                 {
-                    return Err("LIVEKIT_API_KEY is set but CALL_SFUS_JSON has no livekit".into());
+                    return Err(
+                        "LIVEKIT_API_KEY or LIVEKIT_API_SECRET is set but CALL_SFUS_JSON has no livekit"
+                            .into(),
+                    );
                 }
                 None
             }
@@ -164,11 +173,19 @@ impl CallSfuConfig {
                     return Err("LIVEKIT_API_SECRET must be at least 32 characters".into());
                 }
                 let ws_url = lk.ws_url.trim().trim_end_matches('/').to_string();
-                if !(ws_url.starts_with("wss://") || ws_url.starts_with("ws://")) {
-                    return Err("livekit.ws_url must start with wss:// or ws://".into());
+                // 参加用トークンをこの URL で送るので、平文の ws:// はループバック（テスト）だけ許す。
+                let ws_ok = ws_url.starts_with("wss://")
+                    || ws_url
+                        .strip_prefix("ws://")
+                        .is_some_and(|rest| is_loopback_host(url_host(rest)));
+                if !ws_ok {
+                    return Err(
+                        "livekit.ws_url must start with wss:// (ws:// is allowed only for loopback)"
+                            .into(),
+                    );
                 }
                 let api_url = lk.api_url.trim().trim_end_matches('/').to_string();
-                require_http(&api_url, "livekit.api_url", false)?;
+                require_secure_api_url(&api_url, "livekit.api_url")?;
                 if lk.lan_egress_cidrs.is_empty() {
                     return Err("livekit.lan_egress_cidrs must not be empty".into());
                 }
@@ -219,8 +236,12 @@ impl CallSfuConfig {
                 crate::routes::calls::MAX_CALL_PARTICIPANTS
             ));
         }
-        if max_participants <= threshold {
-            return Err("CALL_SFU_MAX_PARTICIPANTS must be greater than CALL_SFU_THRESHOLD".into());
+        // SFU の定員が mesh より小さいと、mesh のときに予約した呼び出しの席が、切り替えで足りなくなる。
+        if max_participants < crate::routes::calls::MAX_CALL_PARTICIPANTS {
+            return Err(format!(
+                "CALL_SFU_MAX_PARTICIPANTS must be at least the mesh capacity ({})",
+                crate::routes::calls::MAX_CALL_PARTICIPANTS
+            ));
         }
 
         Ok(Some(Self {
@@ -237,15 +258,54 @@ impl CallSfuConfig {
     }
 }
 
-fn require_http(url: &str, field: &str, https_only: bool) -> Result<(), String> {
-    let ok = url.starts_with("https://") || (!https_only && url.starts_with("http://"));
-    if ok {
-        Ok(())
-    } else if https_only {
-        Err(format!("{field} must start with https://"))
-    } else {
-        Err(format!("{field} must start with http:// or https://"))
+/// Bearer（Cloudflare の app secret、LiveKit の管理 JWT）を付けて送る URL の検査。
+///
+/// https を必須にする。平文の http は、ループバック（テスト）と、クラスタ内の Service の名前
+/// （`*.svc`・`*.svc.cluster.local`。LiveKit の Twirp はクラスタ内から呼ぶ。docs/calls-sfu.md）だけ許す。
+/// クライアントはリダイレクトを追わない（`CallSfu::new`）ので、送り先がこの検査の外に変わることもない。
+fn require_secure_api_url(url: &str, field: &str) -> Result<(), String> {
+    if url.starts_with("https://") {
+        return Ok(());
     }
+    if let Some(rest) = url.strip_prefix("http://") {
+        let host = url_host(rest);
+        if is_loopback_host(host) || is_cluster_internal_host(host) {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "{field} must start with https:// (http:// is allowed only for loopback and *.svc / *.svc.cluster.local)"
+    ))
+}
+
+/// `scheme://` より後ろから、ホスト名を取り出す（ポート・パス・userinfo を除く。IPv6 は角かっこを外す）。
+fn url_host(rest: &str) -> &str {
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host_port = authority.rsplit('@').next().unwrap_or("");
+    if let Some(v6) = host_port.strip_prefix('[') {
+        return v6.split(']').next().unwrap_or("");
+    }
+    host_port.split(':').next().unwrap_or("")
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .is_ok_and(|ip| ip.to_canonical().is_loopback())
+}
+
+fn is_cluster_internal_host(host: &str) -> bool {
+    let host = host.to_ascii_lowercase();
+    let host = host.trim_end_matches('.');
+    // `<service>.<namespace>.svc` か `<service>.<namespace>.svc.cluster.local`。
+    let name = host
+        .strip_suffix(".svc.cluster.local")
+        .or_else(|| host.strip_suffix(".svc"));
+    name.is_some_and(|n| {
+        let labels: Vec<&str> = n.split('.').collect();
+        labels.len() == 2 && labels.iter().all(|l| !l.is_empty())
+    })
 }
 
 /// IPv4 / IPv6 の CIDR。
@@ -274,10 +334,21 @@ impl Cidr {
                 .filter(|p| *p <= max)
                 .ok_or_else(|| format!("Invalid CIDR prefix in '{text}'"))?,
         };
-        Ok(Self {
-            addr: addr.to_canonical(),
-            prefix,
-        })
+        // IPv4 射影アドレス（`::ffff:a.b.c.d`）は、照合する IP と同じく IPv4 にそろえる。
+        // prefix も IPv4 の長さに直す（`::ffff:192.0.2.0/120` は `192.0.2.0/24`）。96 未満は IPv4 の
+        // 範囲を越えるので受け付けない。
+        if let (IpAddr::V6(_), IpAddr::V4(v4)) = (addr, addr.to_canonical()) {
+            if prefix < 96 {
+                return Err(format!(
+                    "Invalid CIDR '{text}': IPv4-mapped addresses need a prefix of 96 or more"
+                ));
+            }
+            return Ok(Self {
+                addr: IpAddr::V4(v4),
+                prefix: prefix - 96,
+            });
+        }
+        Ok(Self { addr, prefix })
     }
 
     pub fn contains(&self, ip: IpAddr) -> bool {
@@ -358,7 +429,7 @@ mod tests {
 
     #[test]
     fn livekit_and_bridge() {
-        let json = r#"{"cloudflare":{},"bridge":true,"livekit":{"ws_url":"wss://livekit.example/","api_url":"http://livekit:7880","lan_egress_cidrs":["203.0.113.4","2001:db8::/48"]}}"#;
+        let json = r#"{"cloudflare":{},"bridge":true,"livekit":{"ws_url":"wss://livekit.example/","api_url":"http://livekit.zoo2.svc.cluster.local:7880","lan_egress_cidrs":["203.0.113.4","2001:db8::/48"]}}"#;
         let cfg = CallSfuConfig::from_lookup(&lookup(&[
             ("CALL_SFUS_JSON", json),
             ("CF_REALTIME_APP_ID", "app"),
@@ -442,5 +513,106 @@ mod tests {
         assert!(all.contains("8.8.8.8".parse().unwrap()));
         assert!(Cidr::parse("192.0.2.0/33").is_err());
         assert!(Cidr::parse("nope").is_err());
+    }
+
+    #[test]
+    fn mapped_ipv6_cidr_uses_the_ipv4_prefix() {
+        let mapped = Cidr::parse("::ffff:192.0.2.0/120").unwrap();
+        assert_eq!(mapped, Cidr::parse("192.0.2.0/24").unwrap());
+        assert!(mapped.contains("192.0.2.200".parse().unwrap()));
+        assert!(mapped.contains("::ffff:192.0.2.7".parse().unwrap()));
+        assert!(!mapped.contains("192.0.3.1".parse().unwrap()));
+        assert!(!mapped.contains("8.8.8.8".parse().unwrap()));
+        let host = Cidr::parse("::ffff:203.0.113.4").unwrap();
+        assert!(host.contains("203.0.113.4".parse().unwrap()));
+        assert!(!host.contains("203.0.113.5".parse().unwrap()));
+        let all = Cidr::parse("::ffff:0.0.0.0/96").unwrap();
+        assert!(all.contains("198.51.100.1".parse().unwrap()));
+        assert!(Cidr::parse("::ffff:192.0.2.0/95").is_err());
+        assert!(Cidr::parse("::ffff:192.0.2.0/129").is_err());
+    }
+
+    fn with_livekit(ws_url: &str, api_url: &str) -> Result<Option<CallSfuConfig>, String> {
+        let json = format!(
+            r#"{{"cloudflare":{{}},"livekit":{{"ws_url":"{ws_url}","api_url":"{api_url}","lan_egress_cidrs":["10.0.0.0/8"]}}}}"#
+        );
+        CallSfuConfig::from_lookup(&lookup(&[
+            ("CALL_SFUS_JSON", &json),
+            ("CF_REALTIME_APP_ID", "app"),
+            ("CF_REALTIME_APP_SECRET", "secret"),
+            ("LIVEKIT_API_KEY", "key"),
+            ("LIVEKIT_API_SECRET", SECRET32),
+        ]))
+    }
+
+    #[test]
+    fn livekit_ws_url_must_be_wss_except_loopback() {
+        assert!(with_livekit("wss://livekit.example", "https://lk.example").is_ok());
+        assert!(with_livekit("ws://127.0.0.1:7880", "https://lk.example").is_ok());
+        assert!(with_livekit("ws://localhost:7880", "https://lk.example").is_ok());
+        assert!(with_livekit("ws://[::1]:7880", "https://lk.example").is_ok());
+        let err = with_livekit("ws://livekit.example", "https://lk.example").unwrap_err();
+        assert!(err.contains("livekit.ws_url"));
+        assert!(with_livekit("ws://127.0.0.1.example", "https://lk.example").is_err());
+        assert!(with_livekit("ws://localhost@evil.example", "https://lk.example").is_err());
+    }
+
+    #[test]
+    fn bearer_urls_must_be_https_except_loopback_and_cluster() {
+        let ok = |api_url: &str| with_livekit("wss://lk", api_url).is_ok();
+        assert!(ok("https://lk.example"));
+        assert!(ok("http://127.0.0.1:7880"));
+        assert!(ok("http://livekit.zoo2.svc.cluster.local:7880"));
+        assert!(ok("http://livekit.zoo2.svc:7880"));
+        assert!(!ok("http://livekit.example"));
+        assert!(!ok("http://livekit.zoo2.svc.cluster.local.evil.example"));
+        assert!(!ok("http://svc.cluster.local"));
+        assert!(!ok("http://a.b.c.svc.cluster.local"));
+        assert!(!ok("ftp://livekit"));
+
+        let cf = |api_base: &str| {
+            CallSfuConfig::from_lookup(&lookup(&[
+                (
+                    "CALL_SFUS_JSON",
+                    &format!(r#"{{"cloudflare":{{"api_base":"{api_base}"}}}}"#),
+                ),
+                ("CF_REALTIME_APP_ID", "app"),
+                ("CF_REALTIME_APP_SECRET", "secret"),
+            ]))
+        };
+        assert!(cf("http://127.0.0.1:9000/v1").is_ok());
+        let err = cf("http://rtc.example/v1").unwrap_err();
+        assert!(err.contains("cloudflare.api_base"));
+    }
+
+    #[test]
+    fn leftover_secrets_without_json_are_errors() {
+        for name in [
+            "CF_REALTIME_APP_ID",
+            "CF_REALTIME_APP_SECRET",
+            "LIVEKIT_API_KEY",
+            "LIVEKIT_API_SECRET",
+            "SFU_BRIDGE_TOKEN",
+        ] {
+            let err = CallSfuConfig::from_lookup(&lookup(&[(name, "x")])).unwrap_err();
+            assert!(err.contains(name), "{name}: {err}");
+        }
+    }
+
+    #[test]
+    fn sfu_capacity_must_fit_mesh_capacity() {
+        let base = [
+            ("CALL_SFUS_JSON", r#"{"cloudflare":{}}"#),
+            ("CF_REALTIME_APP_ID", "app"),
+            ("CF_REALTIME_APP_SECRET", "secret"),
+            ("CALL_SFU_THRESHOLD", "4"),
+        ];
+        let mut vars = base.to_vec();
+        vars.push(("CALL_SFU_MAX_PARTICIPANTS", "5"));
+        let err = CallSfuConfig::from_lookup(&lookup(&vars)).unwrap_err();
+        assert!(err.contains("CALL_SFU_MAX_PARTICIPANTS"));
+        let mut vars = base.to_vec();
+        vars.push(("CALL_SFU_MAX_PARTICIPANTS", "6"));
+        assert!(CallSfuConfig::from_lookup(&lookup(&vars)).is_ok());
     }
 }

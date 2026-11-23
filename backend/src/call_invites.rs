@@ -458,7 +458,7 @@ pub async fn create(
         &ids,
     )
     .await?;
-    push::dispatch_call_invites(state.db.clone(), created.clone());
+    push::dispatch_call_invites(state.db.clone(), created.clone(), state.call_sfu.is_some());
 
     Ok(Json(serde_json::json!({
         "invites": created

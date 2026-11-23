@@ -48,11 +48,27 @@ async fn call_payload(
     Ok(Some(serde_json::from_str(body)?))
 }
 
-pub(crate) fn dispatch_call_invites(db: toasty::Db, invites: Vec<CallInvitePush>) {
+/// iOS への着信（VoIP）を送る。`sfu_enabled` のとき、SFU モードの部屋への招待は送らない。
+///
+/// iOS は SFU に対応しておらず、SFU の部屋には入れない（409 `CALL_SFU_UNSUPPORTED`、docs/calls-sfu.md）。
+/// 着信を鳴らしても応答できないので、iOS の端末には知らせない（Web・Android の通知は今までどおり送る）。
+pub(crate) fn dispatch_call_invites(
+    db: toasty::Db,
+    invites: Vec<CallInvitePush>,
+    sfu_enabled: bool,
+) {
     tokio::spawn(async move {
         let result: anyhow::Result<()> = async {
             let configs = delivery_configs()?;
             if configs.is_empty() {
+                return Ok(());
+            }
+            let invites = if sfu_enabled {
+                without_sfu_rooms(db.clone(), invites).await?
+            } else {
+                invites
+            };
+            if invites.is_empty() {
                 return Ok(());
             }
             let client = client()?;
@@ -67,6 +83,35 @@ pub(crate) fn dispatch_call_invites(db: toasty::Db, invites: Vec<CallInvitePush>
             tracing::warn!("VoIP通知の設定を読み取れませんでした");
         }
     });
+}
+
+/// SFU モードの部屋への招待を除く。探索：招待のチャンネル（1 回の招待では 1 つ）ごとに、
+/// `call_rooms` を主キーで 1 行。
+async fn without_sfu_rooms(
+    mut db: toasty::Db,
+    invites: Vec<CallInvitePush>,
+) -> anyhow::Result<Vec<CallInvitePush>> {
+    let mut sfu_channels = std::collections::HashMap::<String, bool>::new();
+    let mut kept = Vec::with_capacity(invites.len());
+    for invite in invites {
+        let is_sfu = match sfu_channels.get(&invite.channel_id) {
+            Some(v) => *v,
+            None => {
+                let rows = toasty::sql::query(
+                    "SELECT 1 FROM call_rooms WHERE channel_id = $1 AND mode = 'sfu'",
+                )
+                .bind(invite.channel_id.as_str())
+                .exec(&mut db)
+                .await?;
+                sfu_channels.insert(invite.channel_id.clone(), !rows.is_empty());
+                !rows.is_empty()
+            }
+        };
+        if !is_sfu {
+            kept.push(invite);
+        }
+    }
+    Ok(kept)
 }
 
 async fn deliver_calls<F, Fut>(db: toasty::Db, invites: Vec<CallInvitePush>, send: F)
