@@ -19,7 +19,8 @@ actor SyncCache {
     private var revokedPermissions: Set<String> = []
     private var permissionsDirectory: URL?
     static let revocationResources = ["shape:api/shapes/notifications", "snapshot:api/shapes/notifications",
-                                      "shape:api/shapes/channels", "snapshot:api/shapes/channels", "workspace:channels"]
+                                      "shape:api/shapes/channels", "snapshot:api/shapes/channels", "workspace:channels",
+                                      "rest:api/channel-read-states", "rest:api/channel-pins"]
     private var beforeSave: (@Sendable () throws -> Void)?
     private var beforeDelete: (@Sendable () throws -> Void)?
     private var attachmentFiles: AttachmentDiskCache?

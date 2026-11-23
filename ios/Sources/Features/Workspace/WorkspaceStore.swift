@@ -610,7 +610,7 @@ final class WorkspaceStore {
     }
 
     func report(_ error: Error) {
-        guard active, !Task.isCancelled, !(error is CancellationError) else { return }
+        guard active, !Task.isCancelled, !(error is CancellationError), !(error is SyncInvalidation) else { return }
         if case ZooError.expiredSession = error { onExpiredSession?() }
         else { self.error = error.localizedDescription }
     }

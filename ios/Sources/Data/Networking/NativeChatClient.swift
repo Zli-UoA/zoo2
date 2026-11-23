@@ -50,8 +50,7 @@ struct NativeChatClient: ChatClient {
     }
     func person(id: String) async throws -> Person { try await api.get("api/users/\(try segment(id))") }
     func readStates(allowCached: Bool) async throws -> [ChannelReadState] {
-        if allowCached { return try await cachedGet("api/channel-read-states") }
-        return try await api.get("api/channel-read-states")
+        try await cachedGet("api/channel-read-states", allowCached: allowCached)
     }
 
     func cachedWorkspace() async throws -> CachedWorkspace? {
@@ -64,15 +63,35 @@ struct NativeChatClient: ChatClient {
         return CachedWorkspace(channels: channels, people: people, readStates: states)
     }
 
-    func cachedGet<T: Codable & Sendable>(_ path: String, query: [String: String] = [:]) async throws -> T {
-        let key = "rest:" + path + query.sorted { $0.key < $1.key }.map { "|\($0.key)=\($0.value)" }.joined()
+    func cachedGet<T: Codable & Sendable>(_ path: String, query: [String: String] = [:],
+                                         channelID: String? = nil, allowCached: Bool = true) async throws -> T {
+        // 旧形式の会話単位の行には権限タグがないため、新しい名前空間だけを読む。
+        let key = (channelID == nil ? "rest:" : "channel-rest:") + path
+            + query.sorted { $0.key < $1.key }.map { "|\($0.key)=\($0.value)" }.joined()
+        let version = channelID.flatMap { sync?.channelVersion($0) }
+        let revocationVersion = sync?.revocationVersion(for: key)
+        try sync?.check(channelID: channelID, channelVersion: version)
         do {
             let data = try await api.data(path, query: query)
             guard let value = try await Optional(data).asyncDecode(T.self) else { throw ZooError.invalidResponse }
-            try await sync?.storeRecovery(value, key: key)
+            try sync?.check(channelID: channelID, channelVersion: version)
+            try sync?.checkRevocationVersion(revocationVersion)
+            if allowCached {
+                try await sync?.storeRecovery(value, key: key, channelID: channelID, channelVersion: version,
+                                              revocationVersion: revocationVersion)
+            }
             return value
         } catch {
-            if isOfflineFailure(error), let value = try await sync?.load(key, as: T.self) { return value }
+            try sync?.check(channelID: channelID, channelVersion: version)
+            try sync?.checkRevocationVersion(revocationVersion)
+            if case ZooError.rejected(let status, _) = error, status == 403 || status == 404, let channelID {
+                try await sync?.revokeChannel(channelID)
+            }
+            if allowCached, isOfflineFailure(error), let value = try await sync?.load(key, as: T.self) {
+                try sync?.check(channelID: channelID, channelVersion: version)
+                try sync?.checkRevocationVersion(revocationVersion)
+                return value
+            }
             throw error
         }
     }
@@ -90,8 +109,7 @@ struct NativeChatClient: ChatClient {
     }
     func readState(channelID: String, allowCached: Bool) async throws -> ChannelReadState {
         let path = "api/channels/\(try segment(channelID))/read-state"
-        if allowCached { return try await cachedGet(path) }
-        return try await api.get(path)
+        return try await cachedGet(path, channelID: channelID, allowCached: allowCached)
     }
     func attachmentURL(id: String) async throws -> URL {
         let result: Envelope<AttachmentDownload> = try await api.get("api/attachments/\(try segment(id))/url")

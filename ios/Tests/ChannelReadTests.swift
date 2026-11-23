@@ -311,10 +311,17 @@ struct ChannelReadTests {
         let lease = try await cache.activate(connection: SyncCache.connectionKey(harness.api.settings), user: user)
         let sync = SyncSession(cache: cache, lease: lease)
         let state = ChannelReadState(channel_id: readChannel.id, has_unread: false, last_read_at: nil)
-        try await sync.store(state, key: "rest:api/channels/\(readChannel.id)/read-state")
-        try await sync.store([state], key: "rest:api/channel-read-states")
-        harness.stub { _ in throw URLError(.notConnectedToInternet) }
         let client = NativeChatClient(api: harness.api, sync: sync)
+        harness.stub { request in
+            if request.url?.path == "/api/channel-read-states" {
+                return (200, [:], try JSONEncoder().encode([state]))
+            }
+            #expect(request.url?.path == "/api/channels/\(readChannel.id)/read-state")
+            return (200, [:], try JSONEncoder().encode(state))
+        }
+        _ = try await client.readState(channelID: readChannel.id)
+        _ = try await client.readStates()
+        harness.stub { _ in throw URLError(.notConnectedToInternet) }
         #expect(try await !client.readState(channelID: readChannel.id).has_unread)
         #expect(try await client.readStates().count == 1)
         await #expect(throws: (any Error).self) { _ = try await client.readState(channelID: readChannel.id, allowCached: false) }
