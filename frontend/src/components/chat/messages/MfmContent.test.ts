@@ -260,8 +260,8 @@ describe("MfmContent", () => {
     });
     // メンションの表示（bg-brand-muted）は alice と channel の 2 つだけ。
     expect(html.match(/bg-brand-muted/g)).toHaveLength(2);
-    expect(html).toContain("alice</span>");
-    expect(html).toContain("channel</span>");
+    expect(html).toContain("@alice</span>");
+    expect(html).toContain("@channel</span>");
     expect(html).toContain(" @bob ");
     expect(html).toContain(" @here ");
     // 外部のアカウントはメンションにもリンクにもしない。

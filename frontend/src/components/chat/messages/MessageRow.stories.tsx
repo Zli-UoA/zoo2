@@ -464,7 +464,7 @@ export const EncryptedMentions: Story = {
   play: playForImplementation(async ({ canvasElement }) => {
     const body = canvasElement.querySelector(".mfm-body");
     await expect(body?.querySelectorAll(".bg-brand-muted")).toHaveLength(1);
-    await expect(body?.querySelector(".bg-brand-muted")).toHaveTextContent("alice");
+    await expect(body?.querySelector(".bg-brand-muted")).toHaveTextContent("@alice");
     await expect(body).toHaveTextContent("@bob さんと @channel にも共有します。");
   }),
 };
