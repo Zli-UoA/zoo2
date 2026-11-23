@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
-    matchers::{method, path, path_regex},
+    matchers::{body_partial_json, method, path, path_regex},
 };
 
 const BRIDGE_TOKEN: &str = "bridge-token-0123456789abcdef0123456789";
@@ -29,15 +29,31 @@ async fn request(
     body: Option<Value>,
     ip: Option<&str>,
 ) -> anyhow::Result<(StatusCode, Value)> {
-    let mut req = Request::builder()
+    request_with(app, actor, method, uri, body, ip, &[]).await
+}
+
+/// テスト用のヘッダー（`X-Test-Gate-*` など）を付けて呼ぶ。
+async fn request_with(
+    app: &Router,
+    actor: &str,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+    ip: Option<&str>,
+    extra: &[(String, String)],
+) -> anyhow::Result<(StatusCode, Value)> {
+    let mut builder = Request::builder()
         .method(method)
         .uri(uri)
         .header("X-Dev-User", actor)
-        .header("content-type", "application/json")
-        .body(match body {
-            Some(body) => Body::from(serde_json::to_vec(&body)?),
-            None => Body::empty(),
-        })?;
+        .header("content-type", "application/json");
+    for (k, v) in extra {
+        builder = builder.header(k.as_str(), v.as_str());
+    }
+    let mut req = builder.body(match body {
+        Some(body) => Body::from(serde_json::to_vec(&body)?),
+        None => Body::empty(),
+    })?;
     if let Some(ip) = ip {
         let addr: SocketAddr = format!("{ip}:5000").parse()?;
         req.extensions_mut().insert(ConnectInfo(addr));
@@ -200,11 +216,25 @@ async fn bridge_call(
     uri: &str,
     body: Option<Value>,
 ) -> (StatusCode, Value) {
-    let req = Request::builder()
+    bridge_call_with(app, method, uri, body, Vec::new()).await
+}
+
+async fn bridge_call_with(
+    app: Router,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+    extra: Vec<(String, String)>,
+) -> (StatusCode, Value) {
+    let mut builder = Request::builder()
         .method(method)
         .uri(uri)
         .header("authorization", format!("Bearer {BRIDGE_TOKEN}"))
-        .header("content-type", "application/json")
+        .header("content-type", "application/json");
+    for (k, v) in &extra {
+        builder = builder.header(k.as_str(), v.as_str());
+    }
+    let req = builder
         .body(match body {
             Some(b) => Body::from(serde_json::to_vec(&b).unwrap()),
             None => Body::empty(),
@@ -217,6 +247,44 @@ async fn bridge_call(
         status,
         serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
     )
+}
+
+/// テスト用の一時停止（backend の `X-Test-Gate-*`）。`headers` を要求に付け、`reached` で到着を待ち、
+/// `release` で先に進める。
+struct Gate {
+    reached: String,
+    wait: String,
+}
+
+impl Gate {
+    fn new() -> Self {
+        let id = uuid::Uuid::new_v4();
+        Self {
+            reached: format!("sfu-reached-{id}"),
+            wait: format!("sfu-wait-{id}"),
+        }
+    }
+
+    fn headers(&self) -> Vec<(String, String)> {
+        vec![
+            ("X-Test-Gate-Reached".into(), self.reached.clone()),
+            ("X-Test-Gate-Wait".into(), self.wait.clone()),
+            ("X-Test-Gate-Wait-Ms".into(), "20000".into()),
+        ]
+    }
+
+    async fn reached(&self) -> anyhow::Result<()> {
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            backend::routes::messages::test_gate(&self.reached).notified(),
+        )
+        .await?;
+        Ok(())
+    }
+
+    fn release(&self) {
+        backend::routes::messages::test_gate(&self.wait).notify_one();
+    }
 }
 
 async fn request_count(server: &MockServer) -> usize {
@@ -412,6 +480,11 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
             .is_some_and(|t| t.split('.').count() == 3)
     );
     // 同じ LiveKit のルームにつなぎ直すだけなら、新しい接続を切らないよう、後始末を記録しない。
+    // worker は入り直した人の行を、RemoveParticipant を呼ばずに消すので、worker が動いていると、誤って
+    // 記録した行も見えなくなる。worker の確保を止めてから join し、行が作られないことを確かめる。
+    backend::call_sfu::pause_departure_worker_for_test(true);
+    // 止める直前に確保を始めた worker の文が、終わるのを待つ（その文は、このあとの行を見ない）。
+    tokio::time::sleep(Duration::from_millis(200)).await;
     let (status, joined) = request(
         &app,
         &users[0],
@@ -430,10 +503,11 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
             &channel
         )
         .await?,
-        0
+        0,
+        "re-joining the same LiveKit room recorded a departure"
     );
-    // 誤って後始末を記録していれば、worker がすぐに処理して行を消すので、件数だけでは確かめられない。
-    // worker を起こして待ち、このルームと identity への RemoveParticipant が届いていないことも確かめる。
+    backend::call_sfu::pause_departure_worker_for_test(false);
+    // worker を戻して起こし、このルームと identity への RemoveParticipant が届いていないことも確かめる。
     let sfu = state.call_sfu.clone().expect("sfu");
     let lk_room = format!("call-{channel}-{epoch_mesh}");
     let lk_identity = sessions[0].to_string();
@@ -626,43 +700,38 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     .await?;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
-    // push の応答を待つあいだに割り当てが変わったら（fallback で新しい Cloudflare セッションへ）、
-    // その push は 409 で、古いセッションのトラックは一覧に載らない。
+    // push の応答を受けたあと、登録の前に割り当てが変わったら（fallback で新しい Cloudflare セッションへ）、
+    // その push は 409 で、古いセッションのトラックは一覧に載らない。順序は backend の test gate で固定する
+    // （Cloudflare の応答のあと、register_track の前で止める）。
     let publish_uri = format!("/api/channels/{channel}/call/sfu/cf/publish");
     let join_uri = format!("/api/channels/{channel}/call/sfu/join");
     let old_cf2 = text(&mut db, &cf_of(sessions[2]), &channel).await?;
-    let delayed_path = format!("/apps/app/sessions/{old_cf2}/tracks/new");
-    Mock::given(method("POST"))
-        .and(path(delayed_path.as_str()))
-        .respond_with(EchoTracks {
-            answer: true,
-            delay: Some(Duration::from_millis(1500)),
-        })
-        .with_priority(1)
-        .mount(&cf)
-        .await;
+    let publish_path = format!("/apps/app/sessions/{old_cf2}/tracks/new");
+    // 同じパスには先の pull も届いているので、ここから後の要求だけを見る。
+    let before_publish = request_count(&cf).await;
+    let gate = Gate::new();
     let pending = {
         let app = app.clone();
         let user = users[2].clone();
         let uri = publish_uri.clone();
         let body = json!({"session_id": sessions[2], "offer": offer});
-        tokio::spawn(async move { request(&app, &user, "POST", &uri, Some(body), None).await })
+        let headers = gate.headers();
+        tokio::spawn(async move {
+            request_with(&app, &user, "POST", &uri, Some(body), None, &headers).await
+        })
     };
-    // push が Cloudflare に届いてから、割り当てを変える。
-    let mut reached = false;
-    for _ in 0..40 {
-        reached = cf
-            .received_requests()
-            .await
-            .unwrap_or_default()
-            .iter()
-            .any(|r| r.url.path() == delayed_path);
-        if reached {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    assert!(reached, "the delayed publish did not reach Cloudflare");
+    gate.reached().await?;
+    // 止まっている publish は、古いセッションへの push（location: local）を済ませている。
+    let pushed_old = cf
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .skip(before_publish)
+        .filter(|r| r.method == wiremock::http::Method::POST && r.url.path() == publish_path)
+        .filter_map(|r| serde_json::from_slice::<Value>(&r.body).ok())
+        .any(|b| b["tracks"][0]["location"] == "local");
+    assert!(pushed_old, "the paused publish did not push to {old_cf2}");
     let (status, joined) = request(
         &app,
         &users[2],
@@ -676,6 +745,11 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     assert_eq!(joined["sfu"], "cloudflare");
     let new_cf2 = text(&mut db, &cf_of(sessions[2]), &channel).await?;
     assert_ne!(new_cf2, old_cf2);
+    assert!(
+        !pending.is_finished(),
+        "the publish did not wait at the gate"
+    );
+    gate.release();
     let (status, body) = pending.await??;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(
@@ -1042,24 +1116,20 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     assert!(epoch4 > epoch3);
     assert_eq!(count(&mut db, bridge_tracks_sql, &channel).await?, 0);
 
-    // (b') register_track が FOR SHARE を持ったまま書いているあいだは、登録はその commit を待ち、
-    // commit のあとに書かれた行も消す（register_track の中と同じ文を、テストのトランザクションで再現する）。
-    let mut holder = db.clone();
-    let mut tx = holder.transaction().await?;
-    let rows = toasty::sql::query("SELECT epoch::text FROM call_sfu_bridge WHERE id = 1 FOR SHARE")
-        .exec(&mut tx)
-        .await?;
-    assert_eq!(rows.len(), 1);
-    toasty::sql::statement(
-        "INSERT INTO call_sfu_tracks (channel_id, session_id, source, cf_session_id, track_name, bridge_epoch)
-         VALUES ($1, $2::uuid, 'bridge', 'cf-bridge-4', $3, $4::bigint)",
-    )
-    .bind(channel.as_str())
-    .bind(sessions[0].to_string())
-    .bind(format!("{}-bridge", sessions[0]))
-    .bind(epoch4.to_string())
-    .exec(&mut tx)
-    .await?;
+    // (b') 本番の register_track が、epoch を確かめて FOR SHARE を持ったまま、書く前で止まっているあいだは、
+    // 新しい bridge の登録は終わらない。publish の commit のあと、登録はそのトラックを消す。
+    let gate = Gate::new();
+    let mut publishing = tokio::spawn(bridge_call_with(
+        app.clone(),
+        "POST",
+        "/internal/sfu-bridge/cf/publish",
+        Some(json!({
+            "channel_id": channel, "bridge_epoch": epoch4, "cf_session_id": "cf-bridge-4",
+            "speaker_session_id": sessions[0], "offer": speaker_offer, "mid": "1"
+        })),
+        gate.headers(),
+    ));
+    gate.reached().await?;
     let mut registering = tokio::spawn(bridge_call(
         app.clone(),
         "POST",
@@ -1071,10 +1141,15 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         !registering.is_finished(),
         "register did not wait for the FOR SHARE lock of register_track"
     );
-    tx.commit().await?;
+    assert_eq!(count(&mut db, bridge_tracks_sql, &channel).await?, 0);
+    gate.release();
+    let (status, body) = tokio::time::timeout(Duration::from_secs(10), &mut publishing).await??;
+    // epoch を確かめた時点では最新だったので、publish は成功する。
+    assert_eq!(status, StatusCode::OK, "{body}");
     let (status, reg5) = tokio::time::timeout(Duration::from_secs(10), &mut registering).await??;
     assert_eq!(status, StatusCode::OK);
     assert!(reg5["bridge_epoch"].as_i64().unwrap() > epoch4);
+    // 登録は publish の commit を待ってから消すので、epoch4 のトラックは残らない。
     assert_eq!(count(&mut db, bridge_tracks_sql, &channel).await?, 0);
 
     // Cloudflare の人が退出すると、トラックが消え、worker が Cloudflare のセッションを閉じる。
@@ -1172,16 +1247,19 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     // ほかの検査の件数に入らないよう、別のチャンネル ID で記録する（call_sfu_departures に外部キーはない）。
     let hang_channel = format!("hang-{}", uuid::Uuid::new_v4());
     let hang_cf = format!("cf-hang-{}", uuid::Uuid::new_v4());
+    // mock は 60 秒たつまで応答しない。backend の Cloudflare の呼び出しは 10 秒で打ち切るので、
+    // 行を記録してから 10 秒のあいだは、その呼び出しは必ず処理中のまま。
     Mock::given(method("GET"))
         .and(path(format!("/apps/app/sessions/{hang_cf}")))
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_json(json!({"tracks": []}))
-                .set_delay(Duration::from_secs(30)),
+                .set_delay(Duration::from_secs(60)),
         )
         .with_priority(1)
         .mount(&cf)
         .await;
+    let cf_recorded_at = tokio::time::Instant::now();
     toasty::sql::statement(
         "INSERT INTO call_sfu_departures (channel_id, session_id, sfu_id, cf_session_id)
          VALUES ($1, $2::uuid, 'cloudflare', $3)",
@@ -1220,9 +1298,10 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     .exec(&mut db)
     .await?;
     sfu.departures_wake.notify_one();
-    let started = tokio::time::Instant::now();
+    // RemoveParticipant は、Cloudflare の呼び出しが打ち切られうる時刻（記録から 10 秒）より前に届く。
+    let cf_deadline = cf_recorded_at + Duration::from_secs(9);
     let mut removed_while_hanging = false;
-    while started.elapsed() < Duration::from_secs(5) {
+    while tokio::time::Instant::now() < cf_deadline {
         if remove_participant_calls(&lk, 0, &hang_room, &hang_identity).await > 0 {
             removed_while_hanging = true;
             break;
@@ -1233,16 +1312,20 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         removed_while_hanging,
         "a LiveKit departure waited for a hanging Cloudflare close"
     );
-    // Cloudflare の行は、まだ応答待ち（または再試行待ち）で残っている。
+    // Cloudflare の行は、まだ処理中（確保した直後のまま）。失敗して再試行を待つ行なら、attempts が増え、
+    // claimed_until は 15 秒先になる。確保中なら attempts は 0 で、claimed_until は 5 分先。
     assert_eq!(
-        count(
+        text(
             &mut db,
-            "SELECT count(*) FROM call_sfu_departures WHERE channel_id = $1 AND sfu_id = 'cloudflare'",
+            "SELECT attempts::text || ':' || (claimed_until > statement_timestamp() + interval '60 seconds')::text
+             FROM call_sfu_departures WHERE channel_id = $1 AND sfu_id = 'cloudflare'",
             &hang_channel
         )
         .await?,
-        1
+        "0:true",
+        "the Cloudflare close was no longer in flight"
     );
+    assert!(tokio::time::Instant::now() < cf_recorded_at + Duration::from_secs(10));
     toasty::sql::statement("DELETE FROM call_sfu_departures WHERE channel_id = $1")
         .bind(hang_channel.as_str())
         .exec(&mut db)
@@ -1376,11 +1459,278 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         reassigned,
         "the LiveKit participant did not get sfu_reassign: {buf}"
     );
+    // 退出の worker は、入り直しの確認から RemoveParticipant の応答まで、チャンネル行の FOR SHARE を持つ。
+    // そのあいだ、同じチャンネルの join（チャンネル行の FOR UPDATE のあとで LiveKit のトークンを出す）は待つ。
+    // 確認のあとに入り直した人の新しい接続を、RemoveParticipant が切らないため。
+    // いまの割り当てとは別のルーム（入り直していない）にする。
+    let epoch2 = count(
+        &mut db,
+        "SELECT epoch FROM call_rooms WHERE channel_id = $1",
+        &channel2,
+    )
+    .await?;
+    let old_room = format!("call-{channel2}-{}", epoch2 + 100);
+    Mock::given(method("POST"))
+        .and(path("/twirp/livekit.RoomService/RemoveParticipant"))
+        .and(body_partial_json(json!({"room": old_room})))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({}))
+                .set_delay(Duration::from_millis(2000)),
+        )
+        .with_priority(1)
+        .mount(&lk)
+        .await;
+    let lk_before = request_count(&lk).await;
+    toasty::sql::statement(
+        "INSERT INTO call_sfu_departures (channel_id, session_id, sfu_id, sfu_room)
+         VALUES ($1, $2::uuid, 'livekit', $3)",
+    )
+    .bind(channel2.as_str())
+    .bind(sessions2[0].to_string())
+    .bind(old_room.as_str())
+    .exec(&mut db)
+    .await?;
+    sfu.departures_wake.notify_one();
+    let mut removing = false;
+    for _ in 0..100 {
+        removing = remove_participant_calls(&lk, lk_before, &old_room, &sessions2[0].to_string())
+            .await
+            > 0;
+        if removing {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(removing, "the worker did not call RemoveParticipant");
+    let removal_seen = tokio::time::Instant::now();
+    let (status, joined) = request(
+        &app2,
+        &users[0],
+        "POST",
+        &join2_uri,
+        Some(json!({"session_id": sessions2[0]})),
+        Some(LAN_IP),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    // RemoveParticipant の応答（届いてから 2 秒）までは、join は終わらない。
+    assert!(
+        removal_seen.elapsed() >= Duration::from_millis(1500),
+        "join was not serialized with RemoveParticipant: {:?}",
+        removal_seen.elapsed()
+    );
     drop(streams2);
     toasty::sql::statement("DELETE FROM call_presence WHERE channel_id = $1")
         .bind(channel2.as_str())
         .exec(&mut db)
         .await?;
 
+    Ok(())
+}
+
+/// `join_latency` の 1 回分の並べ方。
+#[derive(Clone, Copy, Debug)]
+enum JoinMode {
+    /// 同じ部屋の N 人が同時に join する（チャンネル行のロックを取り合う）。
+    SameRoomConcurrent,
+    /// 同じ部屋の N 人が 1 人ずつ join する（待ちなし）。
+    SameRoomSequential,
+    /// N 個の別々の部屋で 1 人ずつ、同時に join する（ロックは取り合わず、接続のプールなどは共有する）。
+    SeparateRoomsConcurrent,
+}
+
+/// 部屋を用意して join を出し、要求ごとの時間を返す。部屋は SFU にするため 5 人で入る。
+async fn join_round(
+    app: &Router,
+    db: &mut toasty::Db,
+    n: usize,
+    mode: JoinMode,
+) -> anyhow::Result<Vec<Duration>> {
+    let rooms = match mode {
+        JoinMode::SeparateRoomsConcurrent => n,
+        _ => 1,
+    };
+    let per_room = match mode {
+        JoinMode::SeparateRoomsConcurrent => 5,
+        _ => n,
+    };
+    // (チャンネル, ユーザー, セッション) の、join を出す人。
+    let mut joiners = Vec::new();
+    let mut streams = Vec::new();
+    let mut channels = Vec::new();
+    for _ in 0..rooms {
+        let channel = uuid::Uuid::new_v4().to_string();
+        let users: Vec<String> = (0..per_room)
+            .map(|_| uuid::Uuid::new_v4().to_string())
+            .collect();
+        for (i, id) in users.iter().enumerate() {
+            toasty::sql::statement(
+                "INSERT INTO users (id, user_name, display_name) VALUES ($1, $1, $2)",
+            )
+            .bind(id.as_str())
+            .bind(format!("Bench{i}"))
+            .exec(&mut *db)
+            .await?;
+        }
+        toasty::sql::statement(
+            "INSERT INTO channels (id, channel_name, created_user_id, is_private) VALUES ($1, $1, $2, false)",
+        )
+        .bind(channel.as_str())
+        .bind(users[0].as_str())
+        .exec(&mut *db)
+        .await?;
+        let sessions: Vec<uuid::Uuid> = (0..per_room).map(|_| uuid::Uuid::new_v4()).collect();
+        for i in 0..per_room {
+            let (status, _, stream) =
+                open_stream(app, &users[i], &channel, sessions[i], true).await?;
+            assert_eq!(status, StatusCode::OK, "stream {i}");
+            streams.push(stream);
+        }
+        let join_count = if rooms == 1 { per_room } else { 1 };
+        for i in 0..join_count {
+            joiners.push((channel.clone(), users[i].clone(), sessions[i]));
+        }
+        channels.push(channel);
+    }
+    let join_one = |k: usize| {
+        let app = app.clone();
+        let (channel, user, session) = joiners[k].clone();
+        // 半分は LAN（LiveKit）、半分は Cloudflare。
+        let ip = if k.is_multiple_of(2) {
+            Some(LAN_IP)
+        } else {
+            None
+        };
+        async move {
+            let uri = format!("/api/channels/{channel}/call/sfu/join");
+            let started = std::time::Instant::now();
+            let (status, body) = request(
+                &app,
+                &user,
+                "POST",
+                &uri,
+                Some(json!({"session_id": session})),
+                ip,
+            )
+            .await?;
+            anyhow::ensure!(status == StatusCode::OK, "{status} {body}");
+            Ok::<_, anyhow::Error>(started.elapsed())
+        }
+    };
+    let mut lat = Vec::new();
+    match mode {
+        JoinMode::SameRoomSequential => {
+            for k in 0..joiners.len() {
+                lat.push(join_one(k).await?);
+            }
+        }
+        _ => {
+            let tasks: Vec<_> = (0..joiners.len())
+                .map(|k| tokio::spawn(join_one(k)))
+                .collect();
+            for t in tasks {
+                lat.push(t.await??);
+            }
+        }
+    }
+    drop(streams);
+    for channel in &channels {
+        toasty::sql::statement("DELETE FROM call_presence WHERE channel_id = $1")
+            .bind(channel.as_str())
+            .exec(&mut *db)
+            .await?;
+    }
+    lat.sort();
+    Ok(lat)
+}
+
+/// `sfu/join` の待ち時間の計測（手で実行する。`cargo test --test call_sfu_test -- --ignored join_latency --nocapture`）。
+///
+/// 1 つの SFU の部屋に N 人を入れ、全員の `sfu/join` を同時に出したとき・1 人ずつ出したとき、N 個の別々の
+/// 部屋で同時に出したときの、要求ごとの時間を比べる。join はチャンネル行を FOR UPDATE でロックするので、
+/// 「同じ部屋で同時」と「別々の部屋で同時」の差が、チャンネル行のロック待ち。半分は LAN（LiveKit）、
+/// 半分は Cloudflare（セッションを作る mock の遅延 0 / 100 ミリ秒）。DB は共有の DB をそのまま使う。
+/// 各条件を 3 回測り、最初に 1 回、捨てる回（接続の準備）を入れる。
+#[tokio::test]
+#[ignore]
+async fn join_latency() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let base_state = AppState::new(db.clone(), config.clone());
+    for _ in 0..50 {
+        if base_state.call_registry.is_listening() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    base_state.call_registry.set_db(db.clone()).await;
+    let lk = MockServer::start().await;
+
+    let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+    let mut report = Vec::new();
+    for delay_ms in [0u64, 100] {
+        let cf = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/apps/app/sessions/new$"))
+            .respond_with(SlowNewSession(Duration::from_millis(delay_ms)))
+            .mount(&cf)
+            .await;
+        let json = json!({
+            "cloudflare": {"api_base": cf.uri()},
+            "livekit": {
+                "ws_url": "wss://livekit.example",
+                "api_url": lk.uri(),
+                "lan_egress_cidrs": [format!("{LAN_IP}/32")]
+            },
+            "bridge": true
+        })
+        .to_string();
+        let cfg = backend::call_sfu::CallSfuConfig::from_lookup(&|name| match name {
+            "CALL_SFUS_JSON" => Some(json.clone()),
+            "CF_REALTIME_APP_ID" => Some("app".into()),
+            "CF_REALTIME_APP_SECRET" => Some("secret".into()),
+            "LIVEKIT_API_KEY" => Some("key".into()),
+            "LIVEKIT_API_SECRET" => Some("0123456789abcdef0123456789abcdef".into()),
+            "SFU_BRIDGE_TOKEN" => Some(BRIDGE_TOKEN.into()),
+            _ => None,
+        })
+        .map_err(anyhow::Error::msg)?
+        .expect("sfu config");
+        let mut state = base_state.clone();
+        state.call_sfu = Some(backend::call_sfu::CallSfu::new(cfg));
+        let app = create_router(state);
+        // 捨てる回。
+        join_round(&app, &mut db, 10, JoinMode::SameRoomConcurrent).await?;
+
+        for n in [20usize, 50] {
+            for mode in [
+                JoinMode::SameRoomConcurrent,
+                JoinMode::SeparateRoomsConcurrent,
+                JoinMode::SameRoomSequential,
+            ] {
+                let mut all = Vec::new();
+                for _ in 0..3 {
+                    all.extend(join_round(&app, &mut db, n, mode).await?);
+                }
+                all.sort();
+                let pick =
+                    |q: f64| all[((all.len() as f64 * q).ceil() as usize).clamp(1, all.len()) - 1];
+                report.push(format!(
+                    "cf_delay={delay_ms}ms n={n} {mode:?}: samples={} p50={:.1}ms p95={:.1}ms max={:.1}ms",
+                    all.len(),
+                    ms(pick(0.5)),
+                    ms(pick(0.95)),
+                    ms(*all.last().unwrap()),
+                ));
+            }
+        }
+    }
+    for line in &report {
+        println!("{line}");
+    }
     Ok(())
 }

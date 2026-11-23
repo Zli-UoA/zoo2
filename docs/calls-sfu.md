@@ -67,7 +67,8 @@
 - backend の worker（`CallSfu::start_departure_worker`）は、記録を見て次を呼び、退出した人が音声を送ることも受けることもできないようにする。
   - Cloudflare：`GET /sessions/{id}` と `tracks/close`（force）。応答の track ごとの結果を見て、閉じた mid と既に閉じていた mid（`close_track_error`）だけを成功に数える。ほかのエラーや結果のない mid があれば失敗にする。
   - LiveKit：`RemoveParticipant`。呼ぶ前に、その `session_id` の presence を主キーで読み、いま同じルームに割り当てられていれば（退出のあと、同じ session_id で入り直した）、呼ばずに済んだものとする。新しい接続を切らないため。
-- worker は、短い 1 文で行を確保して（`claimed_until` を 5 分先にする。`FOR UPDATE SKIP LOCKED`）、トランザクションもロックも持たずに API を呼ぶ。確保と処理のループは SFU ごとに分かれていて（確保も `sfu_id` で絞る）、片方の API が遅くても、もう片方の後始末は待たない。SFU ごとに同時 8 件まで。worker が途中で止まっても、確保の期限のあとに別の worker が取り直す。
+    - 確認と `RemoveParticipant` は、チャンネル行を `FOR SHARE` でロックしたまま行う。join は同じ行を `FOR UPDATE` でロックしてから LiveKit のトークンを発行するので、確認のあとに入り直した人のトークンは、`RemoveParticipant` の応答のあとにしか出ない。ロックのあいだはそのチャンネルの入室と join が待つので、`RemoveParticipant` は 3 秒で打ち切り、失敗として再試行する。
+- worker は、短い 1 文で行を確保して（`claimed_until` を 5 分先にする。`FOR UPDATE SKIP LOCKED`）、確保した行のロックは持たずに API を呼ぶ。確保と処理のループは SFU ごとに分かれていて（確保も `sfu_id` で絞る）、片方の API が遅くても、もう片方の後始末は待たない。SFU ごとに同時 8 件まで。worker が途中で止まっても、確保の期限のあとに別の worker が取り直す。
 - 失敗したものは、15 秒あけて 5 回まで試し直す。
 - LiveKit の設定がないときは、LiveKit の行を確保しない（消さずに残す）。設定を戻せば処理する。
 
@@ -124,6 +125,24 @@ URL の条件も起動時に確かめる。URL は、接続に使う HTTP クラ
 LiveKit を有効にするときは、frontend の `CSP_CONNECT_SRC` に LiveKit の `wss://` のオリジン（例：`wss://livekit.zli.chat`）を足す。Web の CSP の `connect-src` は `https:` しか許していないので、足さないと LiveKit のシグナリング（WebSocket）がはじかれ、全員が Cloudflare に移る。
 
 sfu-bridge の環境変数：`BACKEND_INTERNAL_URL`（クラスタ内の backend）、`SFU_BRIDGE_TOKEN`、`HEALTH_ADDR`（既定 `:8080`、`/healthz`）。イメージは `ghcr.io/zli-uoa/zoo2-sfu-bridge`（`infra/Dockerfile-sfu-bridge-deploy`）。
+
+## 既知の制約
+
+メンテナーの判断で、次は既知の制約として扱う（#671 のレビュー）。
+
+- **iOS の着信**：iOS は SFU に対応していない。フォアグラウンドの iOS は呼び出しを Electric の shape から読んで着信を出すので、SFU の部屋への呼び出しでも着信が出て、応答すると 409 `CALL_SFU_UNSUPPORTED` になる。
+- **LiveKit のトークン**：`RemoveParticipant` はセルフホストでは発行済みのトークンを失効させない。退出した人は、手元のトークンの期限（参加用は 60 秒、接続中に受け取った更新トークンはその期限）まで入り直せる。
+- **クラスタ内の平文の HTTP**：次の 2 つの経路は、クラスタ内の Service 名への HTTP を許している。
+  - backend から LiveKit の Twirp（`RemoveParticipant` の管理トークン）
+  - sfu-bridge から backend の内部 API（`SFU_BRIDGE_TOKEN`）
+
+## 有効にする前に確かめること
+
+- **段階 1（Cloudflare）**：Preview で Cloudflare を有効にし、同時に入室させて、チャンネル行のロック待ちと join の API 全体の p50・p95・最大を測る。結果は、その段階の PR に記録する。手元の目安は、`call_sfu_test` の `join_latency`（`#[ignore]`）で測った値で、#671 の本文にある。
+- **段階 3（LiveKit）**：
+  - backend から LiveKit への経路が通るノード、そこにアクセスできる主体、盗聴の防ぎ方（平文を受け入れるか、TLS にするか）を確かめる。
+  - セルフホストの LiveKit で、`revoke_token_ts` が効くか、退出後に手元のトークンで入り直せるかを確かめる。
+- **段階 4（bridge）**：sfu-bridge から backend への平文の経路を受け入れるか、暗号化するかを決める。
 
 ## プライバシー
 

@@ -443,11 +443,48 @@ struct PublishBody {
     offer: SessionDescription,
 }
 
+/// テスト用の一時停止。開発用の認証が有効なときだけ、ヘッダーで指定できる（`routes::messages` の
+/// test gate と同じヘッダー）。`X-Test-Gate-Reached` の gate に到着を知らせ、`X-Test-Gate-Wait` の gate が
+/// 開くまで（最長 `X-Test-Gate-Wait-Ms`、既定 1000 ミリ秒）待つ。競合の順序を固定するテストに使う。
+struct PauseGate {
+    reached: Option<String>,
+    wait: String,
+    timeout_ms: u64,
+}
+
+impl PauseGate {
+    fn from_headers(state: &AppState, headers: &HeaderMap) -> Option<Self> {
+        if !state.config.dev_auth_enabled {
+            return None;
+        }
+        let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+        header("X-Test-Gate-Wait").map(|wait| Self {
+            wait: wait.to_string(),
+            reached: header("X-Test-Gate-Reached").map(str::to_string),
+            timeout_ms: header("X-Test-Gate-Wait-Ms")
+                .and_then(|ms| ms.parse::<u64>().ok())
+                .map_or(1000, |ms| ms.min(30_000)),
+        })
+    }
+
+    async fn pause(gate: Option<&Self>) {
+        let Some(gate) = gate else {
+            return;
+        };
+        if let Some(reached) = &gate.reached {
+            crate::routes::messages::test_gate(reached).notify_one();
+        }
+        let wait = crate::routes::messages::test_gate(&gate.wait);
+        let _ = tokio::time::timeout(Duration::from_millis(gate.timeout_ms), wait.notified()).await;
+    }
+}
+
 /// マイクの音声を Cloudflare に push する。SDP は音声 1 本だけ。
 async fn cf_publish(
     State(state): State<AppState>,
     user: AuthUser,
     Path(channel_id): Path<String>,
+    headers: HeaderMap,
     Json(body): Json<PublishBody>,
 ) -> Result<Json<TracksResponse>, AppError> {
     let sfu = sfu(&state)?;
@@ -460,6 +497,8 @@ async fn cf_publish(
         .await?;
     // Cloudflare が受け付けなかったトラックは、一覧に載せない。
     crate::call_sfu::cloudflare::check_pushed(&res, &mid)?;
+    // テスト：Cloudflare の応答のあと、登録の前で止める（そのあいだに割り当てを変える）。
+    PauseGate::pause(PauseGate::from_headers(&state, &headers).as_ref()).await;
     register_track(
         &state,
         &channel_id,
@@ -467,6 +506,7 @@ async fn cf_publish(
         TrackSource::Direct,
         &cf,
         &track_name,
+        None,
     )
     .await?;
     Ok(Json(res))
@@ -503,6 +543,7 @@ async fn register_track(
     source: TrackSource,
     cf_session: &str,
     track_name: &str,
+    pause: Option<&PauseGate>,
 ) -> Result<(), AppError> {
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
@@ -552,6 +593,8 @@ async fn register_track(
                     "A newer sfu-bridge is registered".into(),
                 ));
             }
+            // テスト：epoch を確かめたあと、FOR SHARE を持ったまま、書く前で止める。
+            PauseGate::pause(pause).await;
             ("bridge", Some(bridge_epoch))
         }
     };
@@ -952,6 +995,7 @@ async fn bridge_cf_publish(
         },
         &body.cf_session_id,
         &track_name,
+        PauseGate::from_headers(&state, &headers).as_ref(),
     )
     .await?;
     Ok(Json(res))
