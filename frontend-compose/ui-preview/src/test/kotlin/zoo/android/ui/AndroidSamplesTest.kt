@@ -344,7 +344,9 @@ class AndroidSamplesTest {
                         }
                     check(marked("…次の会議") == listOf("会議", "資料")) { marked("…次の会議").toString() }
                     check(marked("会議資料_2026") == listOf("会議", "資料")) { marked("会議資料_2026").toString() }
-                    ui.onNodeWithText("すべて").assertIsSelected()
+                    // The kind is the first filter: "all" by default, shown but not filled.
+                    ui.onNodeWithTag("search-filter-type").assertTextEquals("すべて").assertIsNotSelected()
+                        .assertHeightIsEqualTo(48.dp)
                     ui.onNodeWithText("運営 · スレッドの返信", useUnmergedTree = true).assertIsDisplayed()
                     ui.onNodeWithText("1.2 MB", useUnmergedTree = true).assertIsDisplayed()
                     ui.onNodeWithTag("global-search-results").performScrollToNode(hasText("さらに古い結果を検索"))
@@ -353,7 +355,7 @@ class AndroidSamplesTest {
                     ui.onNodeWithTag("global-search-results").performScrollToIndex(0)
                 }
                 if (name == "search-files") {
-                    ui.onNodeWithText("ファイル").assertIsSelected()
+                    ui.onNodeWithTag("search-filter-type").assertTextEquals("ファイル").assertIsSelected()
                     ui.onNodeWithText("2025-12 まで検索しました").assertIsDisplayed()
                     ui.onNodeWithText("さらに古い結果を検索").assertDoesNotExist()
                 }
@@ -475,7 +477,10 @@ class AndroidSamplesTest {
         ui.onNode(isSelectable() and hasText("検索")).performClick()
         ui.runOnIdle { screen = searchResults }
         ui.onNodeWithTag("global-search-field").performTextReplacement("会議")
+        ui.onNodeWithTag("search-filter-type").performClick()
+        ui.onNode(hasText("すべて") and isSelected()).assertExists()
         ui.onNodeWithText("メッセージ").performClick()
+        ui.onNodeWithText("メッセージ").assertDoesNotExist()
         ui.onNodeWithText("みずき", useUnmergedTree = true).performClick()
         ui.onNodeWithTag("global-search-results").performScrollToNode(hasText("さらに古い結果を検索"))
         ui.onNodeWithText("さらに古い結果を検索").performClick()

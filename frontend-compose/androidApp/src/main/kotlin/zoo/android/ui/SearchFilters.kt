@@ -8,12 +8,15 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.ModalBottomSheet
@@ -32,12 +35,14 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.paneTitle
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import zoo.GlobalSearchType
 import zoo.MAX_SEARCH_FILTER_IDS
 
 /** A sender or channel to filter by (Web's `SearchFilterOption`). */
@@ -70,11 +75,14 @@ internal enum class SearchFilterFlag { Mine, NoBots }
 private const val SHOWN = 50
 
 /**
- * The row of filters under the kinds (Web's filter group without the period): the senders and channels
- * open a sheet with a field and checkboxes, "involving me" and "exclude bots" switch on each tap.
+ * The row of filters under the field (Web's kinds and filter group without the period): the kind opens a
+ * menu ("all" by default), the senders and channels a sheet with a field and checkboxes, "involving me"
+ * and "exclude bots" switch on each tap.
  */
 @Composable
-internal fun SearchFilterRow(state: SearchFilterState, colors: AndroidColors, dispatch: (AndroidUiAction) -> Unit) {
+internal fun SearchFilterRow(
+    state: SearchFilterState, type: GlobalSearchType, colors: AndroidColors, dispatch: (AndroidUiAction) -> Unit,
+) {
     var open by rememberSaveable { mutableStateOf<SearchFilterField?>(null) }
     val fromLabel = androidLabel("globalSearch.filters.from", "送信者")
     val inLabel = androidLabel("globalSearch.filters.in", "チャンネル")
@@ -85,6 +93,7 @@ internal fun SearchFilterRow(state: SearchFilterState, colors: AndroidColors, di
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        TypeChip(type, colors) { dispatch(AndroidUiAction.SelectSearchType(it)) }
         FilterChip(summary(fromLabel, state.from, state.people), state.from.isNotEmpty(), UiIcon.Person, colors,
             Modifier.testTag("search-filter-from")) { open = SearchFilterField.From }
         FilterChip(summary(inLabel, state.inChannels, state.channels), state.inChannels.isNotEmpty(), UiIcon.Channels, colors,
@@ -145,6 +154,47 @@ private fun FilterChip(text: String, on: Boolean, icon: UiIcon, colors: AndroidC
         .semantics { selected = on },
         contentAlignment = Alignment.Center) {
         ChipFace(text, on, icon, colors, Modifier)
+    }
+}
+
+internal val GlobalSearchType.fallback: String
+    get() = when (this) {
+        GlobalSearchType.All -> "すべて"
+        GlobalSearchType.Messages -> "メッセージ"
+        GlobalSearchType.Files -> "ファイル"
+    }
+
+/**
+ * The kind, as a chip showing the chosen one: "all" is the default and leaves it unfilled; the others fill
+ * it like a filter in use. One kind at a time, so a menu instead of a sheet.
+ */
+@Composable
+private fun TypeChip(type: GlobalSearchType, colors: AndroidColors, select: (GlobalSearchType) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        FilterChip(androidLabel(type.labelKey, type.fallback), type != GlobalSearchType.All, UiIcon.Document, colors,
+            Modifier.testTag("search-filter-type")) { expanded = true }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, containerColor = colors.background) {
+            Column(Modifier.selectableGroup()) {
+                for (kind in GlobalSearchType.entries) {
+                    val chosen = kind == type
+                    DropdownMenuItem(
+                        text = {
+                            Text(androidLabel(kind.labelKey, kind.fallback), color = colors.foreground,
+                                fontWeight = if (chosen) AndroidWeights.emphasis else AndroidWeights.label)
+                        },
+                        // The chosen kind keeps its check; the others keep the same indent.
+                        leadingIcon = {
+                            Box(Modifier.size(AndroidControlSize.inlineIcon)) {
+                                if (chosen) UiGlyph(UiIcon.Check, colors.foreground, AndroidControlSize.inlineIcon)
+                            }
+                        },
+                        onClick = { expanded = false; if (!chosen) select(kind) },
+                        modifier = Modifier.semantics { selected = chosen; role = Role.RadioButton },
+                    )
+                }
+            }
+        }
     }
 }
 

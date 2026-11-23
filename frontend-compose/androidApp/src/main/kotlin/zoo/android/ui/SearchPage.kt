@@ -6,8 +6,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -26,10 +24,8 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -97,22 +93,7 @@ internal fun ColumnScope.SearchPage(screen: AndroidScreen.Search, colors: Androi
         SearchField(state.text, colors, submit = { dispatch(AndroidUiAction.SubmitSearch) }) {
             dispatch(AndroidUiAction.SearchMessages(it))
         }
-        Row(Modifier.fillMaxWidth().selectableGroup()) {
-            for (kind in GlobalSearchType.entries) {
-                val selected = kind == state.type
-                Box(
-                    Modifier.weight(1f).heightIn(min = AndroidControlSize.target).clip(CircleShape)
-                        .background(if (selected) colors.inputSurface else Color.Transparent)
-                        .selectable(selected, role = Role.Tab) { dispatch(AndroidUiAction.SelectSearchType(kind)) },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(androidLabel(kind.labelKey, kind.fallback), color = if (selected) colors.foreground else colors.secondary,
-                        fontSize = 15.sp, fontWeight = if (selected) AndroidWeights.emphasis else AndroidWeights.label,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-            }
-        }
-        SearchFilterRow(state.filters, colors, dispatch)
+        SearchFilterRow(state.filters, state.type, colors, dispatch)
         Text(androidLabel("globalSearch.encryptedNote", "暗号化されたチャンネルは検索の対象外です。"),
             color = colors.secondary, fontSize = 13.sp)
     }
@@ -321,10 +302,3 @@ private fun problemText(problem: SearchQueryProblem): String = when (problem) {
     SearchQueryProblem.TooManyTerms -> androidLabel("globalSearch.tooManyTerms", "検索できる語は {{max}} 個までです。語を減らしてください。")
     SearchQueryProblem.TermTooLong -> androidLabel("globalSearch.termTooLong", "1 つの語は {{max}} 文字までです。語を短くしてください。")
 }.replace("{{max}}", problem.max.toString())
-
-private val GlobalSearchType.fallback: String
-    get() = when (this) {
-        GlobalSearchType.All -> "すべて"
-        GlobalSearchType.Messages -> "メッセージ"
-        GlobalSearchType.Files -> "ファイル"
-    }
