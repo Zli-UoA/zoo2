@@ -1334,7 +1334,7 @@ function MessageScrollViewport({
                 ) : null}
                 <MessageRow
                   item={item}
-                  mentionUserId={viewerId ?? currentUserId}
+                  mentionUserId={viewerId === undefined ? currentUserId : viewerId}
                   reactions={
                     item.message.display_data
                       ? (groupReactions(item.message.display_data.reactions, currentUserId).get(

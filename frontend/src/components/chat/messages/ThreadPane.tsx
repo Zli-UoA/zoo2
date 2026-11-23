@@ -461,7 +461,7 @@ export function ThreadPane({
         ) : (
           <MessageRow
             item={{ message: root, isGroupStart: true, isGroupEnd: true, showDateSeparator: false }}
-            mentionUserId={viewerId ?? currentUserId}
+            mentionUserId={viewerId === undefined ? currentUserId : viewerId}
             isOwn={!!currentUserId && root.user_id === currentUserId}
             canDelete={canModerate || (!!currentUserId && root.user_id === currentUserId)}
             isEditing={editingId === root.id}
@@ -539,7 +539,7 @@ export function ThreadPane({
               >
                 <MessageRow
                   item={item}
-                  mentionUserId={viewerId ?? currentUserId}
+                  mentionUserId={viewerId === undefined ? currentUserId : viewerId}
                   isOwn={!!currentUserId && item.message.user_id === currentUserId}
                   canDelete={
                     canModerate || (!!currentUserId && item.message.user_id === currentUserId)

@@ -52,36 +52,42 @@ function render(item: MessageItem, isOwn = false, props: Partial<MessageRowProps
 }
 
 describe("MessageRow", () => {
-  it("highlights a viewer's mention resolved from the viewer ID", () => {
-    const html = renderToStaticMarkup(
-      createElement(MentionUserNamesContext.Provider, {
-        value: new Map([["user-alice", "alice"]]),
-        children: createElement(LocaleProvider, {
-          children: createElement(MessageRow, {
-            item: buildItem({ content: "@alice @bob" }),
-            mentionUserId: "user-alice",
-            isOwn: false,
-            isEditing: false,
-            editingText: "",
-            onEditingTextChange: noop,
-            onStartEdit: noop,
-            onCancelEdit: noop,
-            onSaveEdit: noop,
-            onRequestDelete: noop,
-            reactions: [],
-            kitchenCatalog: null,
-            canReact: false,
-            onReaction: noop,
-            onPickReaction: noop,
+  it.each([
+    { authorId: "user-bob", highlighted: true },
+    { authorId: "user-alice", highlighted: false },
+  ])(
+    "highlights read-only mentions only from another author: $authorId",
+    ({ authorId, highlighted }) => {
+      const html = renderToStaticMarkup(
+        createElement(MentionUserNamesContext.Provider, {
+          value: new Map([["user-alice", "alice"]]),
+          children: createElement(LocaleProvider, {
+            children: createElement(MessageRow, {
+              item: buildItem({ user_id: authorId, content: "@alice @bob" }),
+              mentionUserId: "user-alice",
+              // Read-only views disable actions even for the viewer's own messages.
+              isOwn: false,
+              isEditing: false,
+              editingText: "",
+              onEditingTextChange: noop,
+              onStartEdit: noop,
+              onCancelEdit: noop,
+              onSaveEdit: noop,
+              onRequestDelete: noop,
+              reactions: [],
+              kitchenCatalog: null,
+              canReact: false,
+              onReaction: noop,
+              onPickReaction: noop,
+            }),
           }),
         }),
-      }),
-    );
-    expect(html).toContain("bg-[#f0b232]/[0.08]");
-    expect(html).toContain("before:w-[3px]");
-    expect(html.match(/bg-brand-muted/g)).toHaveLength(2);
-    expect(html).not.toContain("bg-primary");
-  });
+      );
+      expect(html.includes("bg-[#f0b232]/[0.08]")).toBe(highlighted);
+      expect(html.match(/bg-brand-muted/g)).toHaveLength(2);
+      expect(html).not.toContain("bg-primary");
+    },
+  );
 
   it("keeps the full text fallback out of the feed when the app provides a card", () => {
     const html = renderToStaticMarkup(

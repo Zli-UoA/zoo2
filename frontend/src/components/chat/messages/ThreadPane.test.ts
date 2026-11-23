@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 vi.mock("../../layout/useMediaQuery", () => ({ useMediaQuery: () => true }));
 
 import { LocaleProvider } from "../../i18n/LocaleProvider";
+import { MentionUserNamesContext } from "../../../lib/e2ee/messageDecryption";
 import type { FeedMessage } from "./messageFormat";
 import { ThreadPane, type ThreadPaneProps } from "./ThreadPane";
 
@@ -28,34 +29,61 @@ function noop() {}
 
 function render(props: Partial<ThreadPaneProps> = {}): string {
   return renderToStaticMarkup(
-    createElement(LocaleProvider, {
-      children: createElement(ThreadPane, {
-        root: message(),
-        replies: [],
-        isLoading: false,
-        isError: false,
-        currentUserId: "user-1",
-        reactions: new Map(),
-        kitchenCatalog: null,
-        canReact: false,
-        onReaction: noop,
-        onPickReaction: noop,
-        editingId: null,
-        editingText: "",
-        onEditingTextChange: noop,
-        onStartEdit: noop,
-        onCancelEdit: noop,
-        onSaveEdit: noop,
-        onRequestDelete: noop,
-        onSendReply: async () => true,
-        onClose: noop,
-        ...props,
+    createElement(MentionUserNamesContext.Provider, {
+      value: new Map([["user-1", "alice"]]),
+      children: createElement(LocaleProvider, {
+        children: createElement(ThreadPane, {
+          root: message(),
+          replies: [],
+          isLoading: false,
+          isError: false,
+          currentUserId: "user-1",
+          reactions: new Map(),
+          kitchenCatalog: null,
+          canReact: false,
+          onReaction: noop,
+          onPickReaction: noop,
+          editingId: null,
+          editingText: "",
+          onEditingTextChange: noop,
+          onStartEdit: noop,
+          onCancelEdit: noop,
+          onSaveEdit: noop,
+          onRequestDelete: noop,
+          onSendReply: async () => true,
+          onClose: noop,
+          ...props,
+        }),
       }),
     }),
   );
 }
 
 describe("ThreadPane", () => {
+  it.each([
+    { currentUserId: "user-1", viewerId: undefined, count: 2 },
+    { currentUserId: "user-1", viewerId: null, count: 0 },
+    { currentUserId: null, viewerId: "user-1", count: 2 },
+  ])(
+    "keeps mention identity separate from actions: $currentUserId / $viewerId",
+    ({ currentUserId, viewerId, count }) => {
+      const html = render({
+        currentUserId,
+        viewerId,
+        root: message({ user_id: "user-2", content: "@alice root" }),
+        replies: [
+          message({
+            id: "reply-1",
+            user_id: "user-2",
+            content: "@alice reply",
+            parent_id: "root-1",
+          }),
+        ],
+      });
+      expect(html.match(/bg-\[#f0b232\]\/\[0\.08\]/g) ?? []).toHaveLength(count);
+    },
+  );
+
   it("shows the root message and the reply count", () => {
     const html = render({
       replies: [
