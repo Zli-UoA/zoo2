@@ -70,7 +70,9 @@
 
 ## sfu-bridge
 
-- 起動のたびに `POST /internal/sfu-bridge/register` で epoch（ミリ秒の時刻）を受け取る。backend は、それより古い bridge のトラックを消す。
+- 起動のたびに `POST /internal/sfu-bridge/register` で epoch（ミリ秒の時刻）を受け取る。backend は最新の epoch を `call_sfu_bridge` に記録し、それより古い bridge のトラックを消す。
+- 古い epoch の bridge からの push（`/internal/sfu-bridge/cf/publish`）は 409 にして、一覧に載せない。古い bridge が止まる前に書いた行が、新しい bridge の行を上書きしないようにするため。
+- bridge は 1 レプリカで、更新は `Recreate` にする（zoo2-infra）。2 つが重なって動くと、Cloudflare の話者の声が LiveKit に 2 重に届く。
 - `GET /internal/sfu-bridge/rooms?bridge_epoch=…&since=…` を long-poll する。返るのは、LiveKit と Cloudflare の両方に人がいる部屋の一覧と、部屋ごとの LiveKit のトークン。変化がなければ最大 25 秒待つ。
 - 部屋ごとに LiveKit に `bridge:{epoch}` として入り（hidden にはしない）、Cloudflare のセッションを 1 つ持つ。
   - LiveKit の話者の声：Cloudflare に push する（`/internal/sfu-bridge/cf/publish`、track 名は `{session_id}-bridge`）。

@@ -35,6 +35,13 @@ CREATE TABLE call_sfu_tracks (
 -- Sessions that left while assigned to an SFU. A backend worker closes their SFU media and deletes the row.
 -- claimed_until: a worker claims rows in a short statement and calls the SFU APIs outside any transaction.
 -- Another worker can take the row after this time (crashed worker), and failed rows wait until it to retry.
+-- The newest registered sfu-bridge. Tracks pushed by an older bridge are rejected, so a bridge that
+-- outlives its replacement cannot overwrite the new bridge's rows.
+CREATE TABLE call_sfu_bridge (
+  id smallint PRIMARY KEY CHECK (id = 1),
+  epoch bigint NOT NULL
+);
+
 CREATE TABLE call_sfu_departures (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   channel_id text NOT NULL,

@@ -453,6 +453,17 @@ async fn cf_publish(
     Ok(Json(res))
 }
 
+/// 1 列目が text の行を 1 つ読む。
+fn first_text(rows: Vec<toasty::stmt::Value>) -> Option<String> {
+    rows.into_iter().find_map(|row| match row {
+        toasty::stmt::Value::Record(rec) => match rec.fields.into_iter().next() {
+            Some(toasty::stmt::Value::String(s)) => Some(s),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
 /// 登録するトラックの種類と、登録してよい条件。
 enum TrackSource {
     /// 話者のクライアントが push したもの。話者の割り当てが、push に使った Cloudflare セッションのままのこと。
@@ -509,6 +520,18 @@ async fn register_track(
         TrackSource::Bridge { bridge_epoch } => {
             if current.sfu_id.as_deref() != Some(SFU_LIVEKIT) {
                 return Err(AppError::Conflict("Speaker is not on LiveKit".into()));
+            }
+            // 新しい bridge が登録されたあとの、古い bridge の push は載せない。登録（`bridge_register`）は
+            // この行を更新するので、FOR SHARE で登録と直列にする。探索：主キーで 1 行。
+            let rows = toasty::sql::query(
+                "SELECT epoch::text FROM call_sfu_bridge WHERE id = 1 FOR SHARE",
+            )
+            .exec(&mut tx)
+            .await?;
+            if first_text(rows).and_then(|e| e.parse::<i64>().ok()) != Some(bridge_epoch) {
+                return Err(AppError::Conflict(
+                    "A newer sfu-bridge is registered".into(),
+                ));
             }
             ("bridge", Some(bridge_epoch))
         }
@@ -667,8 +690,23 @@ async fn bridge_register(
     headers: HeaderMap,
 ) -> Result<Json<Value>, AppError> {
     bridge_auth(&state, &headers)?;
-    let epoch = jiff::Timestamp::now().as_millisecond();
     let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    // 最新の epoch を記録する。古い bridge の `register_track` は、この行の FOR SHARE を持ったまま書くので、
+    // ここはその commit を待つ。そのあとの DELETE は新しいスナップショットで読むので、待った間の行も消せる。
+    // epoch は時刻だが、時計が戻っても前より大きくする。探索：主キーで 1 行。
+    let rows = toasty::sql::query(
+        "INSERT INTO call_sfu_bridge (id, epoch)
+         VALUES (1, (extract(epoch FROM clock_timestamp()) * 1000)::bigint)
+         ON CONFLICT (id) DO UPDATE
+           SET epoch = GREATEST(call_sfu_bridge.epoch + 1, EXCLUDED.epoch)
+         RETURNING epoch::text",
+    )
+    .exec(&mut tx)
+    .await?;
+    let epoch: i64 = first_text(rows)
+        .and_then(|e| e.parse().ok())
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("sfu-bridge epoch was not recorded")))?;
     // 探索：source = 'bridge' の行（bridge が中継中の話者の数）だけ。
     let rows = toasty::sql::query(
         "WITH gone AS (
@@ -688,9 +726,10 @@ async fn bridge_register(
          FROM bumped",
     )
     .bind(epoch.to_string())
-    .exec(&mut db)
+    .exec(&mut tx)
     .await?;
     let _ = rows;
+    tx.commit().await?;
     Ok(Json(json!({ "bridge_epoch": epoch })))
 }
 

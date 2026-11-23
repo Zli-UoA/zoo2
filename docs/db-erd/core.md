@@ -111,6 +111,10 @@ erDiagram
       bigint track_version
     }
     call_rooms |o--o| channels : call_rooms_channel_id_fkey
+    call_sfu_bridge {
+      smallint id PK
+      bigint epoch
+    }
     call_sfu_departures {
       bigint id PK
       text channel_id

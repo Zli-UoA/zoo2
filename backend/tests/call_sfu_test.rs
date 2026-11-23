@@ -570,7 +570,30 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     assert_eq!(polled.0, StatusCode::OK);
 
     // 新しい bridge が登録すると、前の bridge のトラックは消える。
-    let (_, _) = bridge("POST", "/internal/sfu-bridge/register", None).await;
+    let (_, reg2) = bridge("POST", "/internal/sfu-bridge/register", None).await;
+    assert!(reg2["bridge_epoch"].as_i64().unwrap() > bridge_epoch);
+    assert_eq!(
+        count(
+            &mut db,
+            "SELECT count(*) FROM call_sfu_tracks WHERE channel_id = $1 AND source = 'bridge'",
+            &channel
+        )
+        .await?,
+        0
+    );
+    // 前の bridge がまだ動いていても、その push は一覧に載らない。
+    let (status, _) = bridge(
+        "POST",
+        "/internal/sfu-bridge/cf/publish",
+        Some(json!({
+            "channel_id": channel, "bridge_epoch": bridge_epoch, "cf_session_id": "cf-bridge",
+            "speaker_session_id": sessions[0],
+            "offer": {"type": "offer", "sdp": "v=0\r\nm=audio 9 X 111\r\na=mid:0\r\nm=audio 9 X 111\r\na=mid:1\r\n"},
+            "mid": "1"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(
         count(
             &mut db,
