@@ -22,12 +22,6 @@ struct GlobalSearchContent: View {
 
     var body: some View {
         AppList {
-            Picker("検索する種類", selection: Binding(get: { search.kind }, set: { search.select($0) })) {
-                ForEach(GlobalSearchKind.allCases) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .listRowSeparator(.hidden)
-            .accessibilityIdentifier("global-search-kind")
             SearchFilterBar(workspace: workspace, search: search)
             Text("暗号化されたチャンネルは検索の対象外です。")
                 .font(.caption).foregroundStyle(.secondary)

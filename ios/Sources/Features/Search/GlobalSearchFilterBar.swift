@@ -22,6 +22,7 @@ struct SearchFilterBar: View {
         VStack(alignment: .leading, spacing: 8) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
+                    kindMenu
                     chip(label("送信者", count: filters.senders.count), active: !filters.senders.isEmpty, symbol: "person") {
                         picker = .senders
                     }
@@ -82,6 +83,23 @@ struct SearchFilterBar: View {
             .foregroundStyle(active ? AppDesign.selectionForeground : .primary)
             .background(active ? AppDesign.selectionBackground : AppDesign.surface, in: Capsule())
             .contentShape(Capsule())
+    }
+
+    private var kindMenu: some View {
+        Menu {
+            ForEach(GlobalSearchKind.allCases) { kind in
+                Button {
+                    search.select(kind)
+                } label: {
+                    if search.kind == kind { Label(kind.title, systemImage: "checkmark") } else { Text(kind.title) }
+                }
+            }
+        } label: {
+            chipLabel(search.kind.title, active: search.kind != .all, symbol: search.kind == .files ? "doc" : "text.bubble")
+        }
+        .accessibilityLabel("検索する種類")
+        .accessibilityValue(search.kind.title)
+        .accessibilityIdentifier("global-search-kind")
     }
 
     private func periodMenu(_ filters: SearchFilters) -> some View {
