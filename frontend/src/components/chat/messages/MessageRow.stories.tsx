@@ -439,6 +439,30 @@ export const EncryptedDecrypted: Story = {
 
 const storyUserNames = new Map(storyUsers.map((user) => [user.id, user.user_name]));
 
+export const MentionedMessage: Story = {
+  decorators: [
+    (Story) => (
+      <MentionUserNamesContext.Provider value={new Map([["user-viewer", "amesyu"]])}>
+        <Story />
+      </MentionUserNamesContext.Provider>
+    ),
+  ],
+  args: {
+    item: {
+      ...item,
+      message: { ...item.message, content: "@amesyu 確認をお願いします。" },
+    },
+    mentionUserId: "user-viewer",
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const row = [...canvasElement.querySelectorAll("div")].find((element) =>
+      element.classList.contains("group/row"),
+    );
+    await expect(row).toHaveClass("bg-[#f0b232]/[0.08]");
+    await expect(row).toHaveClass("before:w-[3px]");
+  }),
+};
+
 /**
  * 暗号化メッセージのメンションは、復号した `mentions` だけで表示する。本文に `@bob` や `@channel` が
  * あっても、`mentions` になければメンションとして表示しない（docs/e2ee.md の「Megolm の平文」）。

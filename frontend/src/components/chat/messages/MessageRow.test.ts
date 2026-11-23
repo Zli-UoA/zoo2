@@ -77,9 +77,10 @@ describe("MessageRow", () => {
         }),
       }),
     );
-    expect(html.match(/bg-primary/g)).toHaveLength(1);
+    expect(html).toContain("bg-[#f0b232]/[0.08]");
+    expect(html).toContain("before:w-[3px]");
     expect(html.match(/bg-brand-muted/g)).toHaveLength(1);
-    expect(html).toContain("underline");
+    expect(html).not.toContain("bg-primary");
   });
 
   it("keeps the full text fallback out of the feed when the app provides a card", () => {

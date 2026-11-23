@@ -27,7 +27,7 @@ import {
   ShieldAlertIcon,
 } from "lucide-react";
 import { MfmContent } from "./MfmContent";
-import { decryptedMentionAllowlist, type MentionAllowlist } from "./mentions";
+import { decryptedMentionAllowlist, isAllowedMention, type MentionAllowlist } from "./mentions";
 import { LinkPreviews } from "./LinkPreviews.tsx";
 import { previewUrls } from "./linkPreviews";
 
@@ -52,7 +52,13 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../../
 import { Textarea } from "../../ui/textarea";
 import { Dialog, DialogContent, DialogTitle } from "../../ui/dialog";
 import { normalizeUtcTimestamp } from "../../../lib/timestamps";
-import { authorLabel, formatDateSeparator, formatTime, fullTimestamp } from "./messageFormat";
+import {
+  authorLabel,
+  formatDateSeparator,
+  formatTime,
+  fullTimestamp,
+  messageTextSegments,
+} from "./messageFormat";
 import type { MessageItem } from "./messageGrouping";
 import { EncryptedMessageAttachments } from "./EncryptedMessageAttachments";
 import { MessageAttachments } from "./MessageAttachments";
@@ -176,7 +182,6 @@ export function MessageBody({
   emojis,
   previews = "auto",
   mentions,
-  me,
   components,
 }: {
   emojis?: Record<string, DisplayEmoji>;
@@ -190,7 +195,6 @@ export function MessageBody({
   previews?: "auto" | "manual";
   /** 暗号化メッセージで、メンションとして表示してよい `@name`（{@link MfmContent} の `mentions`）。 */
   mentions?: MentionAllowlist;
-  me?: string;
 }) {
   // 部品は MessageAppContent が描画する。本文を隠すフラグがあれば、本文は出さない
   // 読めない部品（`{}` など）は、ないものとして旧形式の表示に戻す（MessageAppContent と同じ判定）
@@ -210,7 +214,7 @@ export function MessageBody({
   return (
     <>
       <div className="mfm-body whitespace-pre-wrap break-words text-sm leading-relaxed">
-        <MfmContent content={content} emojis={emojis} mentions={mentions} me={me} />
+        <MfmContent content={content} emojis={emojis} mentions={mentions} />
         {editedAt ? <EditedIndicator at={editedAt} /> : null}
       </div>
       {previews === "manual" ? (
@@ -366,6 +370,14 @@ export function MessageRow({
         : undefined,
     [decryptedMentions, mentionUserNames],
   );
+  const isMentioned =
+    !!mentionMe &&
+    messageTextSegments(bodyText).some(
+      (segment) =>
+        segment.kind === "mention" &&
+        segment.value === `@${mentionMe}` &&
+        (!mentionAllowlist || isAllowedMention(segment.value, mentionAllowlist)),
+    );
 
   async function copyRawMessage() {
     // メニューを出さない状態でも、ほかの経路から呼ばれたときに空文字列で上書きしない。
@@ -465,6 +477,8 @@ export function MessageRow({
         onClick={openSheetOnTap}
         className={cn(
           "group/row relative flex gap-3 rounded-lg px-3 transition-colors hover:bg-muted/60 focus-within:bg-muted/60",
+          isMentioned &&
+            "bg-[#f0b232]/[0.08] before:absolute before:inset-y-0 before:left-0 before:w-[3px] before:bg-[#f0b232] before:content-['']",
           item.isGroupStart ? "pt-1.5" : "pt-0",
           item.isGroupEnd ? "pb-1.5" : "pb-0",
         )}
@@ -578,7 +592,6 @@ export function MessageRow({
                     editedAt={message.updated_at}
                     previews={resolvedDecryption ? "manual" : "auto"}
                     mentions={mentionAllowlist}
-                    me={mentionMe}
                   />
                 </>
               )}

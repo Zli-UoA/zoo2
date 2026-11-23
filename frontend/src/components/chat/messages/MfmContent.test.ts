@@ -270,14 +270,6 @@ describe("MfmContent", () => {
     // mentions を渡さない（平文のメッセージ）ときは、今までどおり本文の @name をすべて表示する。
     expect(render("@alice @bob").match(/bg-brand-muted/g)).toHaveLength(2);
   });
-  it("highlights only exact self mentions when the viewer is known", () => {
-    const selfMention = render("@alice @Alice @channel @here", { me: "alice" });
-    expect(selfMention.match(/bg-primary/g)).toHaveLength(1);
-    expect(selfMention).toContain("自分宛て");
-    expect(render("@Alice", { me: "alice" })).not.toContain("bg-primary");
-    expect(render("@alice@example.com", { me: "alice" })).not.toContain("bg-primary");
-    expect(render("@alice")).not.toContain("bg-primary");
-  });
   it("renders remote mentions, hashtags and search without automatically fetching external services", () => {
     expect(render("@alice@example.com")).toContain('href="https://example.com/@alice"');
     expect(render("#猫")).toBe("#猫");
