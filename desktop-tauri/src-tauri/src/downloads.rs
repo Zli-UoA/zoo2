@@ -1858,16 +1858,15 @@ fn destination_identity_available(_file: &std::fs::File) -> bool {
 }
 
 /// 事前検査の目印も、本番と同じハンドル経由の改名で移せるかを確かめる。
+/// Windows では作成したハンドルをクローズせずに渡す（パスで開き直すと、
+/// その間に入れ替わった別のファイルを移してしまうおそれがあるため）。
 #[cfg(windows)]
-fn rename_probe_with_handle(from: &Path, to: &Path) -> std::io::Result<()> {
-    let file = open_for_rename(from, false)?;
-    let result = rename_handle_no_replace(&file, to);
-    drop(file);
-    result
+fn rename_probe_with_handle(file: &File, _from: &Path, to: &Path) -> std::io::Result<()> {
+    rename_handle_no_replace(file, to)
 }
 
 #[cfg(not(windows))]
-fn rename_probe_with_handle(from: &Path, to: &Path) -> std::io::Result<()> {
+fn rename_probe_with_handle(_file: &File, from: &Path, to: &Path) -> std::io::Result<()> {
     rename_no_replace(from, to)
 }
 
@@ -1896,7 +1895,7 @@ fn prepare_part_with(
     part: &Path,
     final_path: &Path,
     deduplicate: bool,
-    rename: impl Fn(&Path, &Path) -> std::io::Result<()>,
+    rename: impl Fn(&File, &Path, &Path) -> std::io::Result<()>,
     hard_link: impl Fn(&Path, &Path) -> std::io::Result<()>,
     identity_available: impl Fn(&std::fs::File) -> bool,
 ) -> Result<(File, Vec<JournalEntry>)> {
@@ -1943,8 +1942,8 @@ fn prepare_part_with(
 fn check_destination_with(
     part: &Path,
     journal: &Arc<Journal>,
-    rename: impl Fn(&Path, &Path) -> std::io::Result<()>,
-    hard_link: impl Fn(&Path, &Path) -> std::io::Result<()>,
+    rename: impl Fn(&File, &Path, &Path) -> std::io::Result<()>,
+    _hard_link: impl Fn(&Path, &Path) -> std::io::Result<()>,
 ) -> Result<()> {
     let probe = part.with_extension("probe");
     let moved = part.with_extension("probe-moved");
@@ -1952,56 +1951,93 @@ fn check_destination_with(
     // 記録だけが先に残っても、掃除は目印（[`PROBE_MARKER`]）のあるものしか消さない。
     journal.record(&probe)?;
 
-    let (created, moved_created, outcome) =
-        match OpenOptions::new().write(true).create_new(true).open(&probe) {
-            Ok(mut file) => {
-                let created = true;
-                let write_result = file.write_all(PROBE_MARKER);
-                drop(file);
-                let (moved_created, outcome) = if let Err(err) = write_result {
-                    if let Err(remove_err) = std::fs::remove_file(&probe)
-                        && remove_err.kind() != std::io::ErrorKind::NotFound
-                    {
-                        return Err(anyhow::Error::new(err)
-                            .context(format!("検査用ファイルを片付けられません: {}", remove_err)));
-                    }
-                    (false, Err(err.into()))
-                } else {
-                    // .probe-moved は rename 前に記録する。rename 成功直後に落ちても、
-                    // 起動時の掃除で回収できるようにする。
-                    match journal.record(&moved) {
-                        Ok(()) => match rename(&probe, &moved) {
-                            Ok(()) => (true, Ok(())),
-                            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                                (false, Err(err.into()))
-                            }
-                            Err(err) if is_unsupported(&err) => match hard_link(&probe, &moved) {
-                                Ok(()) => (true, Ok(())),
-                                Err(link) => {
-                                    let err = if is_unsupported_destination(&link) {
-                                        anyhow::Error::new(UnsupportedDestination)
-                                            .context(format!("ハードリンクも作れません: {link}"))
-                                    } else {
-                                        link.into()
-                                    };
-                                    (false, Err(err))
-                                }
-                            },
-                            Err(err) => (false, Err(err.into())),
-                        },
-                        Err(err) => (false, Err(err)),
-                    }
-                };
-                (created, moved_created, outcome)
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                (false, false, Err(err.into()))
-            }
-            Err(err) => (false, false, Err(err.into())),
-        };
+    // Windows では、作成したハンドルを目印の書き込みから改名、片付けまで手放さない。
+    // パスで開き直すと、その間に名前が差し替わった別のファイルを移してしまう。
+    let mut probe_file: Option<File> = None;
+    let mut moved_file: Option<File> = None;
+    let mut moved_created = false;
 
-    let probe_cleaned = discard_probe(journal, &probe, created);
-    let moved_cleaned = discard_probe(journal, &moved, moved_created);
+    let outcome: Result<()> = match open_for_rename(&probe, true) {
+        Ok(file) => {
+            probe_file = Some(file);
+            if let Err(err) = probe_file
+                .as_mut()
+                .expect("ファイルを開いた直後")
+                .write_all(PROBE_MARKER)
+            {
+                Err(err.into())
+            } else {
+                // .probe-moved は rename 前に記録する。rename 成功直後に落ちても、
+                // 起動時の掃除で回収できるようにする。
+                match journal.record(&moved) {
+                    Err(err) => Err(err),
+                    Ok(()) => {
+                        let result = rename(
+                            probe_file.as_ref().expect("ファイルを開いた直後"),
+                            &probe,
+                            &moved,
+                        );
+                        match result {
+                            Ok(()) => {
+                                moved_created = true;
+                                // ここからは移動先のファイルを同じハンドルで消す。
+                                moved_file = probe_file.take();
+                                Ok(())
+                            }
+                            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                                Err(err.into())
+                            }
+                            Err(err) if is_unsupported(&err) => {
+                                #[cfg(windows)]
+                                {
+                                    // ハンドルから改名できない保存先では、パスを使う
+                                    // ハードリンクに逃がさず、検査を失敗させる。
+                                    Err(anyhow::Error::new(UnsupportedDestination).context(
+                                        format!(
+                                            "検査用ファイルをハンドルから改名できません: {err}"
+                                        ),
+                                    ))
+                                }
+                                #[cfg(not(windows))]
+                                {
+                                    match _hard_link(&probe, &moved) {
+                                        Ok(()) => {
+                                            moved_created = true;
+                                            Ok(())
+                                        }
+                                        Err(link) => {
+                                            let err = if is_unsupported_destination(&link) {
+                                                anyhow::Error::new(UnsupportedDestination).context(
+                                                    format!("ハードリンクも作れません: {link}"),
+                                                )
+                                            } else {
+                                                link.into()
+                                            };
+                                            Err(err)
+                                        }
+                                    }
+                                }
+                            }
+                            Err(err) => Err(err.into()),
+                        }
+                    }
+                }
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Err(err.into()),
+        Err(err) => Err(err.into()),
+    };
+
+    // 改名が成功していれば、`probe` という名前はもうこのファイルのものではない。
+    // パスから消すと、その間に別のファイルが置かれていても消してしまう。
+    let probe_cleaned = if moved_file.is_some() {
+        journal.forget(&probe);
+        Ok(())
+    } else {
+        let ours = probe_file.is_some();
+        discard_probe_file(journal, &probe, ours, probe_file.take())
+    };
+    let moved_cleaned = discard_probe_file(journal, &moved, moved_created, moved_file.take());
     match (outcome, probe_cleaned, moved_cleaned) {
         (Ok(()), Ok(()), Ok(())) => Ok(()),
         (Err(err), _, _) => Err(err),
@@ -2028,6 +2064,52 @@ fn discard_probe(journal: &Arc<Journal>, path: &Path, ours: bool) -> Result<()> 
         }
         Err(err) => Err(err.into()),
     }
+}
+
+/// 開いたハンドルがあれば、パスではなくハンドルから削除する。Windows ではパスが
+/// 差し替わっていても、自分が開いたファイルだけを消せる。消せなければパスは触らず、
+/// 記録を残して起動時の掃除に任せる。
+fn discard_probe_file(
+    journal: &Arc<Journal>,
+    path: &Path,
+    ours: bool,
+    file: Option<File>,
+) -> Result<()> {
+    #[cfg(windows)]
+    if ours && let Some(file) = file {
+        mark_delete_on_close(&file)
+            .map_err(|err| anyhow::Error::new(err).context("検査用ファイルを消せません"))?;
+        journal.forget(path);
+        return Ok(());
+    }
+    #[cfg(not(windows))]
+    drop(file);
+    discard_probe(journal, path, ours)
+}
+
+/// ハンドルを閉じるときにファイルを消すよう印を付ける。
+#[cfg(windows)]
+fn mark_delete_on_close(file: &File) -> std::io::Result<()> {
+    use std::{mem::size_of, os::windows::io::AsRawHandle, ptr};
+
+    use windows::Win32::{
+        Foundation::HANDLE,
+        Storage::FileSystem::{
+            FILE_DISPOSITION_INFO, FileDispositionInfo, SetFileInformationByHandle,
+        },
+    };
+
+    let info = FILE_DISPOSITION_INFO { DeleteFile: true };
+    // SAFETY: `info` は呼び出しの間生きており、サイズも構造体のものを渡す。
+    unsafe {
+        SetFileInformationByHandle(
+            HANDLE(file.as_raw_handle()),
+            FileDispositionInfo,
+            ptr::from_ref(&info).cast(),
+            size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
+    }
+    .map_err(|err| std::io::Error::from_raw_os_error(err.code().0 & 0xFFFF))
 }
 
 /// 保存先が、原子性を保った「上書きしない移動」に対応していないことを表すエラー。
@@ -2232,7 +2314,7 @@ fn open_for_rename(path: &Path, create_new: bool) -> std::io::Result<File> {
 /// パスをもう一度解決しないため、確認したハンドルと同じファイルだけを確定できる。
 #[cfg(windows)]
 fn rename_handle_no_replace(file: &File, target: &Path) -> std::io::Result<()> {
-    use std::mem::size_of;
+    use std::mem::{offset_of, size_of};
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::{
         Foundation::HANDLE,
@@ -2240,18 +2322,23 @@ fn rename_handle_no_replace(file: &File, target: &Path) -> std::io::Result<()> {
     };
 
     let wide = wide_extended_path(target); // NUL 終端を含む
-    // `FileNameLength` は終端 NUL を含めない長さ（ドキュメント上 NUL は不要）。
+    // `FileNameLength` は終端 NUL を含めない長さ。ただし API に渡すバッファーには
+    // NUL も入れて渡す必要があるため、確保とコピーは NUL 込みの長さで行う。
     let name_bytes = (wide.len() - 1) * size_of::<u16>();
-    let header = size_of::<FILE_RENAME_INFO>() - size_of::<u16>();
-    let words = (header + name_bytes + size_of::<u64>() - 1) / size_of::<u64>();
+    let buffer_bytes = offset_of!(FILE_RENAME_INFO, FileName) + wide.len() * size_of::<u16>();
+    let words = (buffer_bytes + size_of::<u64>() - 1) / size_of::<u64>();
     let mut buffer = vec![0u64; words];
-    // SAFETY: buffer は 8 バイト境界にあり、構造体と名前を入れる十分な大きさがある。
+    // SAFETY: buffer は 8 バイト境界にあり、構造体と名前（終端 NUL を含む）を
+    // 入れる十分な大きさがある。
     unsafe {
         let info = buffer.as_mut_ptr() as *mut FILE_RENAME_INFO;
         (*info).Anonymous.ReplaceIfExists = false;
         (*info).RootDirectory = HANDLE::default();
         (*info).FileNameLength = name_bytes as u32;
-        std::ptr::copy_nonoverlapping(wide.as_ptr(), (*info).FileName.as_mut_ptr(), wide.len());
+        // `FileName` は [u16; 1] なので、そのフィールドへの参照からポインターを取ると
+        // 1 要素分の来歴しかない。`addr_of_mut!` で割り当て全体の来歴を保つ。
+        let name = std::ptr::addr_of_mut!((*info).FileName).cast::<u16>();
+        std::ptr::copy_nonoverlapping(wide.as_ptr(), name, wide.len());
         SetFileInformationByHandle(
             HANDLE(file.as_raw_handle()),
             FileRenameInfo,
@@ -3887,7 +3974,7 @@ mod tests {
             &part,
             &target,
             true,
-            |_, _| Err(std::io::Error::from(std::io::ErrorKind::Unsupported)),
+            |_, _, _| Err(std::io::Error::from(std::io::ErrorKind::Unsupported)),
             |_, _| Err(std::io::Error::from(std::io::ErrorKind::Unsupported)),
             |_| true,
         )
@@ -3915,18 +4002,39 @@ mod tests {
         let moved = part.with_extension("probe-moved");
 
         // 「既にあれば失敗する移動」が使えないなら、ハードリンクで確かめる。
-        let linked = std::cell::Cell::new(false);
-        check_destination_with(
-            &part,
-            &journal,
-            |_, _| Err(std::io::Error::from(std::io::ErrorKind::Unsupported)),
-            |from, to| {
-                linked.set(true);
-                std::fs::hard_link(from, to)
-            },
-        )
-        .unwrap();
-        assert!(linked.get());
+        // Windows ではハンドルから改名できない時点で検査を失敗させ、パスを使う
+        // ハードリンクには逃がさない。
+        #[cfg(not(windows))]
+        {
+            let linked = std::cell::Cell::new(false);
+            check_destination_with(
+                &part,
+                &journal,
+                |_, _, _| Err(std::io::Error::from(std::io::ErrorKind::Unsupported)),
+                |from, to| {
+                    linked.set(true);
+                    std::fs::hard_link(from, to)
+                },
+            )
+            .unwrap();
+            assert!(linked.get());
+        }
+        #[cfg(windows)]
+        {
+            let linked = std::cell::Cell::new(false);
+            let err = check_destination_with(
+                &part,
+                &journal,
+                |_, _, _| Err(std::io::Error::from(std::io::ErrorKind::Unsupported)),
+                |from, to| {
+                    linked.set(true);
+                    std::fs::hard_link(from, to)
+                },
+            )
+            .unwrap_err();
+            assert!(err.downcast_ref::<UnsupportedDestination>().is_some());
+            assert!(!linked.get(), "ハンドルで改名できないならパスは使わない");
+        }
         assert!(!probe.exists());
         assert!(!moved.exists());
         assert!(journal.snapshot().is_empty());
@@ -3937,7 +4045,7 @@ mod tests {
         let err = check_destination_with(
             &part,
             &journal,
-            |_, _| Err(std::io::Error::from(std::io::ErrorKind::Unsupported)),
+            |_, _, _| Err(std::io::Error::from(std::io::ErrorKind::Unsupported)),
             |_, _| Err(std::io::Error::from(std::io::ErrorKind::Unsupported)),
         )
         .unwrap_err();
@@ -3950,8 +4058,8 @@ mod tests {
         let err = check_destination_with(
             &part,
             &journal,
+            |_, _, _| Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
             |_, _| Err(std::io::Error::from(std::io::ErrorKind::Unsupported)),
-            |_, _| Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
         )
         .unwrap_err();
         assert!(err.downcast_ref::<UnsupportedDestination>().is_none());
@@ -3976,7 +4084,7 @@ mod tests {
                 &part,
                 &target,
                 deduplicate,
-                rename_no_replace,
+                |_, from, to| rename_no_replace(from, to),
                 |from, to| std::fs::hard_link(from, to),
                 |_| false,
             )
@@ -4005,9 +4113,12 @@ mod tests {
         symlink(&victim, &probe).unwrap();
 
         let journal = Arc::new(journal);
-        let err = check_destination_with(&part, &journal, rename_no_replace, |from, to| {
-            std::fs::hard_link(from, to)
-        })
+        let err = check_destination_with(
+            &part,
+            &journal,
+            |_, from, to| rename_no_replace(from, to),
+            |from, to| std::fs::hard_link(from, to),
+        )
         .unwrap_err();
         assert!(err.downcast_ref::<UnsupportedDestination>().is_none());
         assert_eq!(
