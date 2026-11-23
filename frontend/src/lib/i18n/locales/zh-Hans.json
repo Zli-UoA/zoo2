@@ -1902,9 +1902,7 @@
     "filters": {
       "label": "筛选",
       "from": "发送者",
-      "anyone": "所有人",
       "in": "频道",
-      "anywhere": "所有频道",
       "period": "日期",
       "anytime": "不限",
       "last7": "过去 7 天",
@@ -1914,7 +1912,16 @@
       "after": "开始日期",
       "before": "结束日期",
       "reversed": "开始日期不能晚于结束日期。",
-      "reset": "重置条件"
+      "reset": "重置条件",
+      "me": "{{name}}（我）",
+      "searchPeople": "按名称搜索",
+      "searchChannels": "搜索频道",
+      "noMatches": "没有找到",
+      "clearSelection": "取消选择",
+      "selectedCount": "{{label}}：{{count}} 个",
+      "max": "最多可选择 {{count}} 个",
+      "mine": "我参与的",
+      "noBots": "排除机器人"
     }
   },
   "catchUp": {

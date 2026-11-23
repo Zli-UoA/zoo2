@@ -7,19 +7,35 @@ import type { DisplayEmoji, MessageDisplayData } from "../../../lib/electric/typ
 export const SEARCH_KINDS = ["all", "messages", "files"] as const;
 export type SearchKind = (typeof SEARCH_KINDS)[number];
 
-/** 絞り込み。送信者（`user_id`）・チャンネル（`channel_id`）・期間（UTC の `YYYY-MM-DD`）。 */
+/** 送信者・チャンネルの絞り込みで一度に選べる数（サーバーの `MAX_FILTER_IDS`）。 */
+export const MAX_SEARCH_FILTER_IDS = 20;
+
+/**
+ * 絞り込み。送信者（`user_id`）・チャンネル（`channel_id`）はどれか（複数可）、期間は端末の暦の日
+ * （`YYYY-MM-DD`）。`noBots` はボット（アプリ）の投稿を除き、`mine` は自分が参加中の会話（所属する
+ * チャンネル・DM、参加しているスレッド、メンションされたスレッド）に絞る。
+ */
 export interface SearchFilters {
-  from?: string;
-  in?: string;
+  from?: string[];
+  in?: string[];
   /** この日を含む。 */
   after?: string;
   /** この日を含まない。 */
   before?: string;
+  noBots?: boolean;
+  mine?: boolean;
 }
 
-export interface SearchRouteParams extends SearchFilters {
+/** URL での形。送信者とチャンネルはカンマ区切り、フラグは `1`。 */
+export interface SearchRouteParams {
   q?: string;
   type?: Exclude<SearchKind, "all">;
+  from?: string;
+  in?: string;
+  after?: string;
+  before?: string;
+  nobots?: "1";
+  mine?: "1";
 }
 
 type SearchAuthor = NonNullable<MessageDisplayData["author"]>;
@@ -71,25 +87,73 @@ export function parseSearchRouteParams(search: Record<string, unknown>): SearchR
         ? String(search.q)
         : "";
   const q = normalizeSearchQuery(raw);
-  const text = (value: unknown) => (typeof value === "string" && value ? value : undefined);
+  const ids = (value: unknown) => {
+    const list = splitIds(typeof value === "string" ? value : "");
+    return list.length ? list.join(",") : undefined;
+  };
   const day = (value: unknown) =>
     typeof value === "string" && isSearchDay(value) ? value : undefined;
-  return {
+  // ルーターは `1` を数値として読む。
+  const flag = (value: unknown) =>
+    value === "1" || value === 1 || value === true ? ("1" as const) : undefined;
+  const params: SearchRouteParams = {
     q: q || undefined,
     type: search.type === "files" || search.type === "messages" ? search.type : undefined,
-    from: text(search.from),
-    in: text(search.in),
+    from: ids(search.from),
+    in: ids(search.in),
     after: day(search.after),
     before: day(search.before),
+    nobots: flag(search.nobots),
+    mine: flag(search.mine),
   };
+  for (const key of Object.keys(params) as (keyof SearchRouteParams)[]) {
+    if (params[key] === undefined) delete params[key];
+  }
+  return params;
+}
+
+/** カンマ区切りの ID を、重複と空を除いて最大 [`MAX_SEARCH_FILTER_IDS`] 個にする。 */
+function splitIds(value: string): string[] {
+  const out: string[] = [];
+  for (const id of value.split(",").map((part) => part.trim())) {
+    if (id && !out.includes(id)) out.push(id);
+  }
+  return out.slice(0, MAX_SEARCH_FILTER_IDS);
 }
 
 export function searchFiltersOf(params: SearchRouteParams): SearchFilters {
-  return { from: params.from, in: params.in, after: params.after, before: params.before };
+  const list = (value: string | undefined) => (value ? splitIds(value) : undefined);
+  return {
+    from: list(params.from),
+    in: list(params.in),
+    after: params.after,
+    before: params.before,
+    noBots: params.nobots === "1" || undefined,
+    mine: params.mine === "1" || undefined,
+  };
+}
+
+/** 絞り込みを URL の形にする（既定値は出さない）。 */
+export function searchRouteFilters(filters: SearchFilters) {
+  return {
+    from: filters.from?.length ? filters.from.join(",") : undefined,
+    in: filters.in?.length ? filters.in.join(",") : undefined,
+    after: filters.after || undefined,
+    before: filters.before || undefined,
+    nobots: filters.noBots ? ("1" as const) : undefined,
+    mine: filters.mine ? ("1" as const) : undefined,
+  };
 }
 
 export function hasSearchFilters(filters: SearchFilters): boolean {
-  return !!(filters.from || filters.in || filters.after || filters.before);
+  return !!(
+    filters.from?.length ||
+    filters.in?.length ||
+    filters.after ||
+    filters.before ||
+    filters.noBots ||
+    filters.mine
+  );
 }
 
 /** 期間の選択肢。`custom` は日付を指定する。 */
@@ -185,8 +249,10 @@ export function searchRequestPath(
   filters: SearchFilters = {},
 ): string {
   const params = new URLSearchParams({ q: query, type: kind });
-  if (filters.from) params.set("user_id", filters.from);
-  if (filters.in) params.set("channel_id", filters.in);
+  if (filters.from?.length) params.set("user_id", filters.from.join(","));
+  if (filters.in?.length) params.set("channel_id", filters.in.join(","));
+  if (filters.noBots) params.set("exclude_bots", "true");
+  if (filters.mine) params.set("involving_me", "true");
   if (filters.after) params.set("after", localMidnight(filters.after));
   if (filters.before) params.set("before", localMidnight(filters.before));
   if (cursor) params.set("cursor", cursor);

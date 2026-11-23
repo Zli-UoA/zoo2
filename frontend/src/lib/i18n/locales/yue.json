@@ -1902,9 +1902,7 @@
     "filters": {
       "label": "篩選",
       "from": "傳送者",
-      "anyone": "所有人",
       "in": "頻道",
-      "anywhere": "所有頻道",
       "period": "日期",
       "anytime": "唔限",
       "last7": "過去 7 日",
@@ -1914,7 +1912,16 @@
       "after": "開始日期",
       "before": "結束日期",
       "reversed": "開始日期唔可以遲過結束日期。",
-      "reset": "重設條件"
+      "reset": "重設條件",
+      "me": "{{name}}（我）",
+      "searchPeople": "用名搵",
+      "searchChannels": "搵頻道",
+      "noMatches": "搵唔到",
+      "clearSelection": "取消揀選",
+      "selectedCount": "{{label}}：{{count}} 個",
+      "max": "最多可以揀 {{count}} 個",
+      "mine": "我有參與嘅",
+      "noBots": "唔包機械人"
     }
   },
   "catchUp": {
