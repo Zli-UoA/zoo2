@@ -72,6 +72,8 @@ export interface ThreadPaneProps {
    * 省略時は `currentUserId` を使う。
    */
   viewerId?: string | null;
+  /** 行のメンション強調に使う ID。null は強調を無効にし、省略時は閲覧者の ID を使う。 */
+  mentionUserId?: string | null;
   canModerate?: boolean;
   isArchived?: boolean;
   readOnly?: boolean;
@@ -147,6 +149,7 @@ export function ThreadPane({
   isError,
   currentUserId,
   viewerId,
+  mentionUserId = viewerId === undefined ? currentUserId : viewerId,
   canModerate = false,
   isArchived = false,
   readOnly = false,
@@ -461,7 +464,7 @@ export function ThreadPane({
         ) : (
           <MessageRow
             item={{ message: root, isGroupStart: true, isGroupEnd: true, showDateSeparator: false }}
-            mentionUserId={viewerId === undefined ? currentUserId : viewerId}
+            mentionUserId={mentionUserId}
             isOwn={!!currentUserId && root.user_id === currentUserId}
             canDelete={canModerate || (!!currentUserId && root.user_id === currentUserId)}
             isEditing={editingId === root.id}
@@ -539,7 +542,7 @@ export function ThreadPane({
               >
                 <MessageRow
                   item={item}
-                  mentionUserId={viewerId === undefined ? currentUserId : viewerId}
+                  mentionUserId={mentionUserId}
                   isOwn={!!currentUserId && item.message.user_id === currentUserId}
                   canDelete={
                     canModerate || (!!currentUserId && item.message.user_id === currentUserId)

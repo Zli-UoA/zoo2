@@ -64,12 +64,15 @@ describe("ThreadPane", () => {
     { currentUserId: "user-1", viewerId: undefined, count: 2 },
     { currentUserId: "user-1", viewerId: null, count: 0 },
     { currentUserId: null, viewerId: "user-1", count: 2 },
+    { currentUserId: null, viewerId: "user-1", mentionUserId: null, count: 0 },
+    { currentUserId: null, viewerId: null, mentionUserId: "user-1", count: 2 },
   ])(
     "keeps mention identity separate from actions: $currentUserId / $viewerId",
-    ({ currentUserId, viewerId, count }) => {
+    ({ currentUserId, viewerId, mentionUserId, count }) => {
       const html = render({
         currentUserId,
         viewerId,
+        mentionUserId,
         root: message({ user_id: "user-2", content: "@alice root" }),
         replies: [
           message({
