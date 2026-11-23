@@ -30,7 +30,6 @@ struct WorkspaceView: View {
             case .createDirectMessage: PeopleView(workspace: workspace)
             case .draftDirectMessage(let content): PeopleView(workspace: workspace, draftContent: content)
             case .browseChannels: ChannelBrowser(workspace: workspace)
-            case .search: GlobalSearchView(workspace: workspace)
             case .channelDetails(let channel): ChannelDetailsView(channel: channel, workspace: workspace)
             case .messageActions(let action):
                 if let message = action.store.message(id: action.message.id) {
@@ -100,6 +99,9 @@ struct WorkspaceView: View {
             }
             Tab("DM", systemImage: "bubble.left.and.bubble.right.fill", value: WorkspaceTab.directMessages) {
                 chatStack(path: $workspace.dmPath, directMessages: true)
+            }
+            Tab("検索", systemImage: "magnifyingglass", value: WorkspaceTab.search) {
+                GlobalSearchScreen(workspace: workspace)
             }
             Tab("通知", systemImage: "bell.fill", value: WorkspaceTab.notifications) {
                 NavigationStack {

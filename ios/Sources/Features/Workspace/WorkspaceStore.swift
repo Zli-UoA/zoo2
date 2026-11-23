@@ -2,11 +2,11 @@ import Foundation
 import Observation
 
 enum WorkspaceTab: Hashable {
-    case channels, directMessages, notifications, profile
+    case channels, directMessages, search, notifications, profile
 }
 
 enum WorkspaceSheet: Identifiable {
-    case createChannel, createDirectMessage, browseChannels, profile, search
+    case createChannel, createDirectMessage, browseChannels, profile
     case draftDirectMessage(String)
     case channelDetails(Channel)
     case messageActions(MessageActionSheet)
@@ -18,7 +18,6 @@ enum WorkspaceSheet: Identifiable {
         case .draftDirectMessage: "draft-dm"
         case .browseChannels: "browse-channels"
         case .profile: "profile"
-        case .search: "search"
         case .channelDetails(let channel): "details-\(channel.id)"
         case .messageActions(let sheet): sheet.id.uuidString
         }
@@ -126,7 +125,7 @@ final class WorkspaceStore {
         switch selectedTab {
         case .channels: channelPath
         case .directMessages: dmPath
-        case .notifications, .profile: []
+        case .search, .notifications, .profile: []
         }
     }
     @ObservationIgnored var onExpiredSession: (() -> Void)?

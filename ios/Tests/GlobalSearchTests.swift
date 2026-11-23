@@ -190,4 +190,78 @@ struct GlobalSearchTests {
                                           .thread(channelID: Self.channelID, parentID: Self.parentID, focusComposer: false)])
         #expect(workspace.conversation(for: channel).focusedMessageID == Self.replyID)
     }
+
+    private static func tokyo() -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Tokyo")!
+        return calendar
+    }
+
+    @Test("期間は端末の暦の日の0時を、オフセット付きで送る")
+    func resolvesPeriods() throws {
+        let calendar = Self.tokyo()
+        let now = try #require(calendar.date(from: DateComponents(year: 2026, month: 11, day: 24, hour: 15)))
+        var filters = SearchFilters()
+        #expect(filters.resolved(now: now, calendar: calendar).after == nil)
+        filters.period = .last7
+        #expect(filters.resolved(now: now, calendar: calendar).after == "2026-11-18T00:00:00+09:00")
+        filters.period = .last30
+        #expect(filters.resolved(now: now, calendar: calendar).after == "2026-10-26T00:00:00+09:00")
+        filters.period = .custom
+        filters.customAfter = try #require(calendar.date(from: DateComponents(year: 2026, month: 11, day: 1, hour: 20)))
+        filters.customEnd = try #require(calendar.date(from: DateComponents(year: 2026, month: 11, day: 30, hour: 3)))
+        let custom = filters.resolved(now: now, calendar: calendar)
+        #expect(custom.after == "2026-11-01T00:00:00+09:00" && custom.before == "2026-12-01T00:00:00+09:00")
+        filters.customAfter = try #require(calendar.date(from: DateComponents(year: 2026, month: 12, day: 2)))
+        #expect(filters.hasReversedDays(calendar: calendar))
+        #expect(filters.resolved(now: now, calendar: calendar).after == nil)
+    }
+
+    @Test("絞り込みを送り、変えると取得し直す")
+    func sendsFiltersAndRefetches() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let requests = Mutex<[[String: String]]>([])
+        harness.stub { request in
+            let items = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            requests.withLock { $0.append(Dictionary(items.map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { $1 })) }
+            return (200, [:], Self.page([Self.messageJSON("m1")]))
+        }
+        let search = store(harness)
+        search.text = "会議"
+        search.submit()
+        await search.inflight?.value
+        var filters = SearchFilters()
+        filters.senders = ["u1", "u2"]
+        filters.channels = ["c1"]
+        filters.involvingMe = true
+        filters.excludeBots = true
+        search.setFilters(filters)
+        await search.inflight?.value
+        let sent = try #require(requests.withLock { $0.last })
+        #expect(sent["user_id"] == "u1,u2" && sent["channel_id"] == "c1")
+        #expect(sent["involving_me"] == "true" && sent["exclude_bots"] == "true")
+        #expect(requests.withLock { $0.count } == 2 && requests.withLock { $0[0]["user_id"] } == nil)
+        search.setFilters(SearchFilters())
+        await search.inflight?.value
+        #expect(requests.withLock { $0.count } == 3 && requests.withLock { $0[2]["involving_me"] } == nil)
+    }
+
+    @Test("開始日が終了日より後なら取得し直さない")
+    func reversedDaysDoNotSearch() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let calls = Mutex(0)
+        harness.stub { _ in calls.withLock { $0 += 1 }; return (200, [:], Self.page([])) }
+        let search = store(harness)
+        search.text = "a"
+        search.submit()
+        await search.inflight?.value
+        var filters = SearchFilters()
+        filters.period = .custom
+        filters.customAfter = Date()
+        filters.customEnd = Date(timeIntervalSinceNow: -3 * 86400)
+        search.setFilters(filters)
+        #expect(search.inflight == nil && calls.withLock { $0 } == 1)
+    }
 }

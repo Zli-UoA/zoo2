@@ -16,6 +16,8 @@ struct TabletWorkspaceView: View {
                 TabletConversations(workspace: workspace, directMessages: false)
             case .directMessages:
                 TabletConversations(workspace: workspace, directMessages: true)
+            case .search:
+                GlobalSearchScreen(workspace: workspace)
             case .notifications:
                 NavigationStack {
                     InboxView(store: workspace.inbox, workspace: workspace, isActive: scenePhase == .active,
@@ -37,31 +39,14 @@ struct TabletWorkspaceView: View {
                 .frame(height: 44).accessibilityHidden(true)
             destination("チャンネル", symbol: "number", tab: .channels)
             destination("DM", symbol: "bubble.left.and.bubble.right.fill", tab: .directMessages)
+            destination("検索", symbol: "magnifyingglass", tab: .search)
             destination("通知", symbol: "bell.fill", tab: .notifications)
-            searchButton
             Spacer(minLength: 16)
             destination("プロフィール", symbol: "person.crop.circle.fill", tab: .profile)
         }
         .padding(.horizontal, 8).padding(.vertical, 12)
         .frame(width: 88)
         .background(AppDesign.surface)
-    }
-
-    private var searchButton: some View {
-        Button {
-            workspace.presentedSheet = .search
-        } label: {
-            VStack(spacing: 6) {
-                Image(systemName: "text.magnifyingglass").font(.title3)
-                Text("検索").font(.caption2).lineLimit(2).minimumScaleFactor(0.8)
-            }
-            .frame(maxWidth: .infinity, minHeight: 58)
-            .foregroundStyle(.secondary)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("全文検索")
-        .accessibilityIdentifier("ipad-global-search")
     }
 
     private func destination(_ title: String, symbol: String, tab: WorkspaceTab) -> some View {

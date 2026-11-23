@@ -1,20 +1,16 @@
 import SwiftUI
 
-struct GlobalSearchView: View {
+struct GlobalSearchScreen: View {
     let workspace: WorkspaceStore
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             GlobalSearchContent(workspace: workspace, search: workspace.search) { item in
-                dismiss()
                 Task { _ = await workspace.openSearchResult(item.destination) }
             }
+            .safeAreaInset(edge: .top, spacing: 0) { CallBanner(workspace: workspace) }
             .navigationTitle("検索")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { Button("閉じる") { dismiss() } }
-            }
         }
     }
 }
@@ -32,6 +28,7 @@ struct GlobalSearchContent: View {
             .pickerStyle(.segmented)
             .listRowSeparator(.hidden)
             .accessibilityIdentifier("global-search-kind")
+            SearchFilterBar(workspace: workspace, search: search)
             Text("暗号化されたチャンネルは検索の対象外です。")
                 .font(.caption).foregroundStyle(.secondary)
                 .listRowSeparator(.hidden)

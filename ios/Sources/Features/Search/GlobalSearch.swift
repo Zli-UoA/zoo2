@@ -73,8 +73,11 @@ struct SearchPage: Decodable, Sendable {
 }
 
 extension NativeChatClient {
-    func search(q: String, type: GlobalSearchKind, cursor: String?, limit: Int) async throws -> SearchPage {
-        var query = ["q": q, "type": type.apiValue, "limit": String(limit)]
+    func search(q: String, type: GlobalSearchKind, cursor: String?, limit: Int, filters: SearchRequestFilters) async throws -> SearchPage {
+        var query = filters.queryItems
+        query["q"] = q
+        query["type"] = type.apiValue
+        query["limit"] = String(limit)
         query["cursor"] = cursor
         let bytes = try await api.data("api/search", query: query)
         return try JSONDecoder().decode(SearchPage.self, from: bytes)
@@ -117,6 +120,7 @@ final class GlobalSearchStore {
     private let client: any ChatClient
     var text = ""
     private(set) var kind: GlobalSearchKind = .all
+    private(set) var filters = SearchFilters()
     private(set) var phase: Phase = .idle
     private(set) var items: [SearchItem] = []
     private(set) var nextCursor: String?
@@ -129,6 +133,8 @@ final class GlobalSearchStore {
     @ObservationIgnored private var failedCursor: String??
     @ObservationIgnored private var active = true
     @ObservationIgnored private var requestedText = ""
+    /// 続きのページでも、検索の開始時に決めた期間の境界を送る。
+    @ObservationIgnored private var requestFilters = SearchRequestFilters()
 
     init(client: any ChatClient) { self.client = client }
 
@@ -162,6 +168,13 @@ final class GlobalSearchStore {
         start(cursor: nil)
     }
 
+    func setFilters(_ newFilters: SearchFilters) {
+        guard newFilters != filters else { return }
+        filters = newFilters
+        guard hasSubmitted, !newFilters.hasReversedDays() else { return }
+        start(cursor: nil)
+    }
+
     func loadOlder() {
         guard active, canLoadOlder, let cursor = nextCursor else { return }
         start(cursor: cursor)
@@ -181,6 +194,7 @@ final class GlobalSearchStore {
         cancel()
         clearResults()
         text = ""
+        filters = SearchFilters()
         requestedText = ""
         validationError = nil
         phase = .idle
@@ -211,21 +225,22 @@ final class GlobalSearchStore {
     private func start(cursor: String?) {
         cancel()
         let request = requestID
-        let query = requestedText, kind = kind
         failedCursor = nil
         if cursor == nil {
+            requestFilters = filters.resolved()
             clearResults()
             phase = .loading
         } else {
             loadingOlder = true
             phase = .loaded
         }
+        let query = requestedText, kind = kind, sent = requestFilters
         inflight = Task { [weak self] in
-            await self?.fetch(request: request, query: query, kind: kind, cursor: cursor)
+            await self?.fetch(request: request, query: query, kind: kind, cursor: cursor, filters: sent)
         }
     }
 
-    private func fetch(request: UUID, query: String, kind: GlobalSearchKind, cursor: String?) async {
+    private func fetch(request: UUID, query: String, kind: GlobalSearchKind, cursor: String?, filters: SearchRequestFilters) async {
         let timer = Task { [weak self] in
             try? await Task.sleep(for: Self.timeout)
             guard !Task.isCancelled else { return }
@@ -233,7 +248,7 @@ final class GlobalSearchStore {
         }
         defer { timer.cancel() }
         do {
-            let page = try await client.search(q: query, type: kind, cursor: cursor, limit: Self.pageLimit)
+            let page = try await client.search(q: query, type: kind, cursor: cursor, limit: Self.pageLimit, filters: filters)
             guard requestID == request, !Task.isCancelled else { return }
             if let next = page.next_cursor, next == cursor { throw ZooError.invalidResponse }
             var seen = Set(items.map(\.rowID))
