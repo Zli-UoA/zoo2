@@ -13,7 +13,9 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -63,13 +65,42 @@ func configFromEnv() (config, error) {
 	if cfg.backendURL == "" {
 		return cfg, errors.New("BACKEND_INTERNAL_URL is required")
 	}
-	if !strings.HasPrefix(cfg.backendURL, "http://") && !strings.HasPrefix(cfg.backendURL, "https://") {
-		return cfg, errors.New("BACKEND_INTERNAL_URL must start with http:// or https://")
+	if err := checkBackendURL(cfg.backendURL); err != nil {
+		return cfg, err
 	}
 	if len(cfg.token) < 32 {
 		return cfg, errors.New("SFU_BRIDGE_TOKEN must be at least 32 characters")
 	}
 	return cfg, nil
+}
+
+// checkBackendURL は BACKEND_INTERNAL_URL を確かめる。要求には Bearer トークンを付けるので、
+// http はクラスタ内（*.svc、*.svc.cluster.local）とループバックの宛先だけ許し、それ以外は https にする。
+func checkBackendURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return errors.New("BACKEND_INTERNAL_URL must be an absolute http(s) URL")
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if isClusterInternalHost(u.Hostname()) {
+			return nil
+		}
+		return errors.New("BACKEND_INTERNAL_URL must use https:// unless the host is cluster-internal (*.svc, *.svc.cluster.local) or loopback")
+	default:
+		return errors.New("BACKEND_INTERNAL_URL must start with http:// or https://")
+	}
+}
+
+func isClusterInternalHost(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	if host == "localhost" || strings.HasSuffix(host, ".svc") || strings.HasSuffix(host, ".svc.cluster.local") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func serveHealth(ctx context.Context, addr string, h *health) {

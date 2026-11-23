@@ -20,7 +20,12 @@ type backendAPI struct {
 }
 
 func newBackendAPI(base, token string) *backendAPI {
-	return &backendAPI{base: base, token: token, http: &http.Client{Timeout: 40 * time.Second}}
+	return &backendAPI{base: base, token: token, http: &http.Client{
+		Timeout: 40 * time.Second,
+		// リダイレクトには従わない。従うと、Authorization ヘッダーが別の宛先（http を含む）へ送られうる。
+		// 3xx は do でエラーにする。
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}}
 }
 
 type sessionDescription struct {
