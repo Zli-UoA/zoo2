@@ -275,6 +275,7 @@ describe("MfmContent", () => {
     expect(selfMention.match(/bg-primary/g)).toHaveLength(1);
     expect(selfMention).toContain("自分宛て");
     expect(render("@Alice", { me: "alice" })).not.toContain("bg-primary");
+    expect(render("@alice@example.com", { me: "alice" })).not.toContain("bg-primary");
     expect(render("@alice")).not.toContain("bg-primary");
   });
   it("renders remote mentions, hashtags and search without automatically fetching external services", () => {

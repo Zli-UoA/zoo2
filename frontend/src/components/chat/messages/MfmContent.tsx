@@ -95,7 +95,7 @@ function text(
 }
 
 function isSelfMention(token: string, me?: string): boolean {
-  return !!me && token.slice(1).split("@", 1)[0] === me;
+  return !!me && token === `@${me}`;
 }
 
 // Custom emoji live in an operator-managed same-origin registry, not on an arbitrary remote host.
