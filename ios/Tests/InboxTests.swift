@@ -192,13 +192,17 @@ struct InboxTests {
         #expect(state.withLock { $0.acknowledgements } == 1)
     }
 
-    @Test("全既読後の履歴照合が失敗しても未読件数を更新し、照合だけを再試行する", arguments: [false, true])
-    func markAllRefreshesCountAfterReconciliationFailure(visible: Bool) async throws {
+    @Test("全既読後の履歴照合が失敗しても未読件数を更新し、照合だけを再試行する", arguments: [false, true], [false, true])
+    func markAllRefreshesCountAfterReconciliationFailure(visible: Bool, waiting: Bool) async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
         let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
-        defer { started.continuation.finish(); release.continuation.finish() }
-        let state = Mutex((acknowledgements: 0, read: false, failCheck: true, heads: 0))
+        let headStarted = AsyncStream<Void>.makeStream(), releaseHead = AsyncStream<Void>.makeStream()
+        defer {
+            started.continuation.finish(); release.continuation.finish()
+            headStarted.continuation.finish(); releaseHead.continuation.finish()
+        }
+        let state = Mutex((acknowledgements: 0, read: false, failCheck: true, heads: 0, holdHead: waiting))
         harness.stub { request in
             switch request.url?.path {
             case "/api/shapes/notifications":
@@ -215,7 +219,14 @@ struct InboxTests {
                 let old = checking || request.url?.query?.contains("before=") == true
                 let current = state.withLock { value in
                     if !old { value.heads += 1 }
-                    return value
+                    let snapshot = value
+                    if !old, value.read { value.holdHead = false }
+                    return snapshot
+                }
+                if !old, current.read, current.holdHead {
+                    headStarted.continuation.yield(())
+                    var iterator = releaseHead.stream.makeAsyncIterator()
+                    _ = await iterator.next()
                 }
                 if checking, current.failCheck { return (500, [:], Data()) }
                 let row: [String: Any] = ["id": old ? "old" : "new", "actor_id": "https://remote.test/user/member",
@@ -239,6 +250,23 @@ struct InboxTests {
             await inbox.refresh()
         }
         release.continuation.finish()
+        if waiting {
+            var headIterator = headStarted.stream.makeAsyncIterator()
+            try #require(await headIterator.next() != nil)
+            state.withLock { $0.failCheck = false }
+            let refreshing = Task { await inbox.refresh() }
+            defer { refreshing.cancel() }
+            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+            while inbox.pendingRefreshCount == 0, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
+            try #require(inbox.pendingRefreshCount == 1)
+            releaseHead.continuation.finish()
+            await marking.value
+            await refreshing.value
+            #expect(inbox.error == nil && inbox.unreadCount == 0)
+            #expect(try #require(inbox.entries.first { $0.noticeID == "old" }).isUnread == false)
+            #expect(state.withLock { $0.acknowledgements } == 1)
+            return
+        }
         await marking.value
         #expect(inbox.unreadCount == 0)
         #expect(state.withLock { $0.heads } == (visible ? 3 : 2))

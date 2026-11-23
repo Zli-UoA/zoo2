@@ -32,6 +32,7 @@ final class InboxStore {
     @ObservationIgnored private var fetchWaiters: [CheckedContinuation<Void, Never>] = []
     var pendingRefreshCount: Int { fetchWaiters.count }
     @ObservationIgnored private var refreshRequested = false
+    @ObservationIgnored private var readReconciliationRequested = false
     @ObservationIgnored private var moreRequested = false
     @ObservationIgnored private var pendingMore: Task<Void, Never>?
     @ObservationIgnored private var pendingReadIDs: Set<String> = []
@@ -134,6 +135,7 @@ final class InboxStore {
 
     private func refreshFederation(reconcileReads: Bool = true) async {
         guard active, !Task.isCancelled else { return }
+        readReconciliationRequested = readReconciliationRequested || reconcileReads
         if fetching {
             refreshRequested = true
             await withCheckedContinuation { fetchWaiters.append($0) }
@@ -168,7 +170,10 @@ final class InboxStore {
                 if denied(error) { clearFederation(); render() }
                 federationError = "連合通知を取得できません。再読み込みしてください。"
             }
-            if reconcileReads { await reconcilePendingReadIDs() }
+            if readReconciliationRequested {
+                readReconciliationRequested = false
+                await reconcilePendingReadIDs()
+            }
             waitingForFederation = false
         } while refreshRequested && active && !Task.isCancelled
         finishFetch()
