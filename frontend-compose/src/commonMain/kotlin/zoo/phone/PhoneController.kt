@@ -314,7 +314,10 @@ class PhoneController(
                     put("session_id", session)
                 }
                 obj("id" to id, "ok" to true, "data" to api("/api/channels/${channel.encodeURLPathPart()}/call/sfu/$op", "POST", body))
-            } catch (cancel: CancellationException) { throw cancel }
+            }
+            // api() の 15 秒の制限は CancellationException の派生なので、先に失敗の返信にする（エンジンの待機を終わらせる）。
+            catch (_: TimeoutCancellationException) { obj("id" to id, "ok" to false) }
+            catch (cancel: CancellationException) { throw cancel }
             catch (_: Exception) { obj("id" to id, "ok" to false) }
             if (epoch == callEpoch) runCatching { dm?.command("rtc.sfu.reply", reply) }
         }

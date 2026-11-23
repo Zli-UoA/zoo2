@@ -261,6 +261,8 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   );
   const sfuStartSeqRef = useRef(0);
   const latestSfuTracksRef = useRef<{ tracks: unknown[]; version: number } | null>(null);
+  // アダプタを作る前（join の応答待ちなど）に届いた sfu_reassign。LiveKit の応答のあとで Cloudflare に移る。
+  const sfuReassignPendingRef = useRef(false);
   const remoteAudioElements = () => {
     const list: HTMLAudioElement[] = [];
     for (const entry of peersRef.current.values()) if (entry.audio) list.push(entry.audio);
@@ -364,6 +366,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     closeSfu();
     roomModeRef.current = "mesh";
     latestSfuTracksRef.current = null;
+    sfuReassignPendingRef.current = false;
     for (const entry of peersRef.current.values()) {
       entry.cleanupAudio?.();
       entry.pc.close();
@@ -741,8 +744,9 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         }
         return null;
       };
-      // SFU のアダプタも、送信側の 1 つとして差し替える。
-      const sfuAdapter = sfuAdapterRef.current;
+      // SFU のアダプタも、送信側の 1 つとして差し替える。mesh の差し替えを待つあいだに作られたアダプタも
+      // 対象にするため、差し替える直前に読む（それより後に作られたものは startSfu が今のマイクにそろえる）。
+      let sfuAdapter: SfuAdapter | null = null;
       let sfuReplaced = false;
       const revertSfu = async () => {
         if (sfuReplaced && sfuAdapter && oldTrack) {
@@ -755,7 +759,8 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
           await sender.replaceTrack(newTrack);
           replaced.push(sender);
         }
-        if (sfuAdapter && !isStale() && sfuAdapterRef.current === sfuAdapter) {
+        sfuAdapter = isStale() ? null : sfuAdapterRef.current;
+        if (sfuAdapter) {
           await sfuAdapter.replaceMicTrack(newTrack);
           sfuReplaced = true;
         }
@@ -962,8 +967,17 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         callGenerationRef.current !== gen ||
         sfuStartSeqRef.current !== seq ||
         sessionIdRef.current !== mySessionId;
-      const mic = localStreamRef.current?.getAudioTracks()[0];
-      if (!mic) return;
+      // マイクは切り替わることがあるので、使う直前に今のものを読む。
+      const currentMic = () => localStreamRef.current?.getAudioTracks()[0];
+      // SFU につながらないまま（mesh も張らない）にしないよう、通話を終えて参加し直せる状態にする。
+      const failSfu = (message: string) => {
+        if (isStale()) return;
+        void leaveCall({ silent: true });
+        setError(message);
+        toast.error(message);
+        setConnectionState("error");
+      };
+      if (!currentMic()) return;
 
       let joined: unknown;
       try {
@@ -975,10 +989,19 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         if (isStale()) return;
         console.error("Failed to join the call SFU", err);
         reportWebrtcEvent({ state: "sfu_join_failed" });
-        toast.error(t("call.connectError"));
+        failSfu(t("call.connectError"));
         return;
       }
-      if (isStale() || !isSfuJoinResponse(joined)) return;
+      if (isStale()) return;
+      if (!isSfuJoinResponse(joined)) {
+        reportWebrtcEvent({ state: "sfu_join_failed" });
+        failSfu(t("call.connectError"));
+        return;
+      }
+      const fallbackToCloudflare = () => {
+        reportWebrtcEvent({ state: "sfu_fallback" });
+        void startSfuRef.current(channelId, mySessionId, gen, true);
+      };
 
       const callbacks: SfuAdapterCallbacks = {
         onRemoteAudio: (sid, stream) => {
@@ -989,11 +1012,10 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
           if (isStale()) return;
           console.warn("Call SFU connection failed", reason);
           if (sfuAdapterRef.current?.kind === "livekit") {
-            reportWebrtcEvent({ state: "sfu_fallback" });
-            void startSfuRef.current(channelId, mySessionId, gen, true);
+            fallbackToCloudflare();
           } else {
             reportWebrtcEvent({ state: "sfu_failed" });
-            toast.error(t("call.disconnected"));
+            failSfu(t("call.disconnected"));
           }
         },
       };
@@ -1025,35 +1047,63 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
           ? { tracks: latest.tracks.filter(isSfuTrackInfo), version: latest.version }
           : { tracks: joined.tracks, version: joined.version };
       let adapter: SfuAdapter;
+      let createdMic: MediaStreamTrack;
       if (joined.sfu === "livekit") {
         // livekit-client は大きいので、LiveKit に割り当てられたときだけ読み込む。
-        const { LiveKitAdapter } = await import("./sfu/livekit-adapter");
+        // 読み込めなければ、LiveKit につながらなかったときと同じく Cloudflare でやり直す。
+        let LiveKitAdapter: typeof import("./sfu/livekit-adapter").LiveKitAdapter;
+        try {
+          ({ LiveKitAdapter } = await import("./sfu/livekit-adapter"));
+        } catch (err) {
+          if (isStale()) return;
+          console.error("Failed to load the LiveKit adapter", err);
+          fallbackToCloudflare();
+          return;
+        }
         if (isStale()) return;
+        const mic = currentMic();
+        if (!mic) return;
+        createdMic = mic;
         adapter = new LiveKitAdapter(joined.url, joined.token, mic, callbacks);
       } else {
+        const mic = currentMic();
+        if (!mic) return;
+        createdMic = mic;
         adapter = new CfRealtimeAdapter(mySessionId, mic, cfApi, callbacks, initial);
       }
       sfuAdapterRef.current = adapter;
+      if (joined.sfu === "livekit" && sfuReassignPendingRef.current) {
+        // 応答を待つあいだに sfu_reassign が届いていた。Cloudflare で join し直す。
+        sfuReassignPendingRef.current = false;
+        void startSfuRef.current(channelId, mySessionId, gen, false);
+        return;
+      }
+      if (joined.sfu === "cloudflare") sfuReassignPendingRef.current = false;
       try {
+        // Cloudflare は ICE・DTLS がつながるまで待つ（LiveKit の connect も同じ）。
         await adapter.start();
       } catch (err) {
         if (isStale()) return;
         console.error("Failed to connect to the call SFU", err);
         if (adapter.kind === "livekit") {
-          reportWebrtcEvent({ state: "sfu_fallback" });
-          void startSfuRef.current(channelId, mySessionId, gen, true);
+          fallbackToCloudflare();
         } else {
           reportWebrtcEvent({ state: "sfu_failed" });
-          toast.error(t("call.connectError"));
+          failSfu(t("call.connectError"));
         }
         return;
       }
       if (isStale()) return;
+      // 生成から接続までのあいだにマイクが切り替わっていたら、今のマイクにそろえる。
+      const mic = currentMic();
+      if (mic && mic !== createdMic) await adapter.replaceMicTrack(mic).catch(() => {});
+      if (isStale()) return;
       if (isMutedRef.current) await adapter.setMuted(true).catch(() => {});
+      if (isStale()) return;
       // SFU で送れるようになったので、mesh を閉じる。
       closeMeshPeers();
     },
-    [apiClient, attachSfuAudio, closeMeshPeers, closeSfu, detachSfuAudio, t],
+    [apiClient, attachSfuAudio, closeMeshPeers, closeSfu, detachSfuAudio, leaveCall, t],
   );
   startSfuRef.current = startSfu;
 
@@ -1239,8 +1289,12 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
           }
           if (eventType === "sfu_reassign") {
             // bridge がないので、LiveKit から Cloudflare に移る。
-            if (sfuAdapterRef.current?.kind === "livekit") {
+            const adapter = sfuAdapterRef.current;
+            if (adapter?.kind === "livekit") {
               void startSfu(channelId, mySessionId, currentGen, false);
+            } else if (!adapter && roomModeRef.current === "sfu") {
+              // アダプタを作る前（join の応答待ち・LiveKit の読み込み中）なら、覚えておいて作ったあとに移る。
+              sfuReassignPendingRef.current = true;
             }
             return;
           }

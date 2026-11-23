@@ -25,6 +25,10 @@ export interface CfRealtimeApi {
 }
 
 const CF_ICE_SERVERS: RTCIceServer[] = [{ urls: "stun:stun.cloudflare.com:3478" }];
+/** 経路の候補を集め終わるまでの上限。Cloudflare は trickle ICE を受けないので、集め終わった SDP を送る。 */
+export const CF_ICE_GATHERING_TIMEOUT_MS = 10_000;
+/** answer を受けてから ICE と DTLS がつながるまでの上限。 */
+export const CF_CONNECT_TIMEOUT_MS = 15_000;
 
 /** Opus の DTX（無音のあいだ送らない）を有効にする。 */
 export function enableOpusDtx(sdp: string): string {
@@ -34,6 +38,11 @@ export function enableOpusDtx(sdp: string): string {
   const fmtp = new RegExp(`(a=fmtp:${pt} [^\\r\\n]*)`);
   if (!fmtp.test(sdp)) return sdp;
   return sdp.replace(fmtp, (line) => (/usedtx=/.test(line) ? line : `${line};usedtx=1`));
+}
+
+/** トラックの Cloudflare での track 名（backend が publish で付ける名前）。 */
+export function trackNameOf(track: SfuTrackInfo): string {
+  return track.source === "bridge" ? `${track.session_id}-bridge` : track.session_id;
 }
 
 /** Cloudflare の track 名から話者の session_id を得る（bridge が出したものは `-bridge` が付く）。 */
@@ -48,15 +57,22 @@ export class CfRealtimeAdapter implements SfuAdapter {
   private queue: Promise<void> = Promise.resolve();
   private version = -1;
   /** pull 済みのトラック id → 話者。 */
-  private pulled = new Map<string, string>();
+  private pulled = new Map<string, { speaker: string; trackName: string; generation: number }>();
+  private generation = 0;
   /** m-line（mid）→ 話者。 */
   private midSpeaker = new Map<string, string>();
   private closed = false;
+  /** start() が終わって、つながったあと。これより前の失敗は start() の失敗として返す。 */
+  private connected = false;
+  /** close() で止める待機。 */
+  private waiters = new Set<(err: Error) => void>();
+  /** start() の途中で、交渉が続けられなくなった。 */
+  private startFailure: Error | null = null;
   private pendingInitial: { tracks: SfuTrackInfo[]; version: number } | null;
 
   constructor(
     private readonly selfSessionId: string,
-    private readonly mic: MediaStreamTrack,
+    private mic: MediaStreamTrack,
     private readonly api: CfRealtimeApi,
     private readonly callbacks: SfuAdapterCallbacks,
     initial: { tracks: SfuTrackInfo[]; version: number },
@@ -70,7 +86,7 @@ export class CfRealtimeAdapter implements SfuAdapter {
       this.callbacks.onRemoteAudio(speaker, stream);
     });
     this.pc.addEventListener("connectionstatechange", () => {
-      if (this.closed) return;
+      if (this.closed || !this.connected) return;
       if (this.pc.connectionState === "failed") this.callbacks.onFailed("cloudflare_failed");
     });
     this.pendingInitial = initial;
@@ -87,13 +103,83 @@ export class CfRealtimeAdapter implements SfuAdapter {
     return run;
   }
 
-  start(): Promise<void> {
+  /** close() でも終わる待機。時間切れは失敗にする。 */
+  private wait(
+    subscribe: (resolve: () => void, reject: (err: Error) => void) => () => void,
+    timeoutMs: number,
+    timeoutMessage: string,
+  ): Promise<void> {
+    if (this.closed) return Promise.reject(new Error("Closed"));
+    return new Promise<void>((resolve, reject) => {
+      let unsubscribe = () => {};
+      const finish = (err?: Error) => {
+        clearTimeout(timer);
+        this.waiters.delete(finish);
+        unsubscribe();
+        if (err) reject(err);
+        else resolve();
+      };
+      const timer = setTimeout(() => finish(new Error(timeoutMessage)), timeoutMs);
+      this.waiters.add(finish);
+      unsubscribe = subscribe(
+        () => finish(),
+        (err) => finish(err),
+      );
+    });
+  }
+
+  /** 経路の候補を集め終わるのを待つ（Cloudflare には候補をあとから送れない）。 */
+  private waitForIceGathering(): Promise<void> {
+    return this.wait(
+      (resolve) => {
+        const check = () => {
+          if (this.pc.iceGatheringState === "complete") resolve();
+        };
+        this.pc.addEventListener("icegatheringstatechange", check);
+        check();
+        return () => this.pc.removeEventListener("icegatheringstatechange", check);
+      },
+      CF_ICE_GATHERING_TIMEOUT_MS,
+      "Cloudflare ICE gathering timed out",
+    );
+  }
+
+  /** ICE と DTLS がつながるのを待つ。 */
+  private waitForConnected(): Promise<void> {
+    return this.wait(
+      (resolve, reject) => {
+        const check = () => {
+          const state = this.pc.connectionState;
+          if (state === "connected") resolve();
+          else if (state === "failed" || state === "closed")
+            reject(new Error(`Cloudflare connection ${state}`));
+        };
+        this.pc.addEventListener("connectionstatechange", check);
+        check();
+        return () => this.pc.removeEventListener("connectionstatechange", check);
+      },
+      CF_CONNECT_TIMEOUT_MS,
+      "Cloudflare connection timed out",
+    );
+  }
+
+  /** 候補を集め終えた local description の SDP。 */
+  private async gatheredLocalSdp(): Promise<string> {
+    await this.waitForIceGathering();
+    const sdp = this.pc.localDescription?.sdp;
+    if (!sdp) throw new Error("No local description");
+    return sdp;
+  }
+
+  /** マイクを publish し、Cloudflare とつながるまで待つ。つながらなければ reject する。 */
+  async start(): Promise<void> {
     const run = this.enqueue(async () => {
       const transceiver = this.pc.addTransceiver(this.mic, { direction: "sendonly" });
       this.sender = transceiver.sender;
       const offer = await this.pc.createOffer();
-      const sdp = enableOpusDtx(offer.sdp ?? "");
-      await this.pc.setLocalDescription({ type: "offer", sdp });
+      await this.pc.setLocalDescription({ type: "offer", sdp: enableOpusDtx(offer.sdp ?? "") });
+      const sdp = await this.gatheredLocalSdp();
+      if (this.closed) return;
       const res = await this.api.publish({ type: "offer", sdp });
       if (this.closed) return;
       if (!res.sessionDescription) throw new Error("Cloudflare returned no answer");
@@ -102,56 +188,89 @@ export class CfRealtimeAdapter implements SfuAdapter {
     const initial = this.pendingInitial;
     this.pendingInitial = null;
     if (initial) this.updateTracks(initial.tracks, initial.version);
-    return run;
+    await run;
+    if (this.closed) throw new Error("Closed");
+    await this.waitForConnected();
+    if (this.startFailure) throw this.startFailure;
+    this.connected = true;
   }
 
   updateTracks(tracks: SfuTrackInfo[], version: number): void {
     if (version < this.version) return;
     this.version = version;
-    const wanted = new Map<string, string>();
+    const wanted = new Map<string, SfuTrackInfo>();
     for (const t of tracks) {
       if (t.session_id === this.selfSessionId) continue;
-      wanted.set(t.id, t.session_id);
+      wanted.set(t.id, t);
     }
     // Map は走査中に今の要素を消してもよい。
-    for (const [id, speaker] of this.pulled) {
+    for (const [id, entry] of this.pulled) {
       if (!wanted.has(id)) {
         this.pulled.delete(id);
-        this.callbacks.onRemoteGone(speaker);
+        this.callbacks.onRemoteGone(entry.speaker);
       }
     }
     const toPull = [...wanted.keys()].filter((id) => !this.pulled.has(id));
     if (toPull.length === 0) return;
-    for (const id of toPull) this.pulled.set(id, wanted.get(id)!);
+    // 登録ごとに世代を付ける。古い pull の失敗が、あとで同じ id に付けた登録を消さないようにする。
+    const generation = ++this.generation;
+    for (const id of toPull) {
+      const t = wanted.get(id)!;
+      this.pulled.set(id, { speaker: t.session_id, trackName: trackNameOf(t), generation });
+    }
+    const isMine = (id: string) => this.pulled.get(id)?.generation === generation;
+    // 失敗した id を、次の一覧の更新で pull し直せるようにする（自分の世代の登録だけ）。
+    const release = (ids: string[]) => {
+      for (const id of ids) if (isMine(id)) this.pulled.delete(id);
+    };
     void this.enqueue(async () => {
-      // キューで待っているあいだに一覧から消えたものは pull しない。
-      const ids = toPull.filter((id) => this.pulled.has(id));
+      // キューで待っているあいだに一覧から消えたもの・登録し直されたものは pull しない。
+      const ids = toPull.filter(isMine);
       if (ids.length === 0) return;
       let res: CfTracksResponse;
       try {
         res = await this.api.pull(ids);
       } catch (err) {
-        // 次の一覧の更新で、もう一度 pull する。
-        for (const id of ids) this.pulled.delete(id);
+        release(ids);
         throw err;
       }
       if (this.closed) return;
+      // Cloudflare はトラックごとに失敗を返せる。成功したものは残し、失敗したもの・結果のないものだけ戻す。
+      const succeeded = new Set<string>();
       for (const t of res.tracks ?? []) {
         if (t.mid && t.trackName && !t.errorCode) {
           this.midSpeaker.set(t.mid, speakerOfTrackName(t.trackName));
+          succeeded.add(t.trackName);
         }
       }
+      release(ids.filter((id) => !succeeded.has(this.pulled.get(id)?.trackName ?? "")));
       if (res.requiresImmediateRenegotiation && res.sessionDescription) {
-        await this.pc.setRemoteDescription(res.sessionDescription as RTCSessionDescriptionInit);
-        const answer = await this.pc.createAnswer();
-        await this.pc.setLocalDescription(answer);
-        await this.api.answer({ type: "answer", sdp: answer.sdp ?? "" });
+        try {
+          await this.pc.setRemoteDescription(res.sessionDescription as RTCSessionDescriptionInit);
+          const answer = await this.pc.createAnswer();
+          await this.pc.setLocalDescription(answer);
+          // answer も、候補を集め終えてから送る。
+          const sdp = await this.gatheredLocalSdp();
+          if (this.closed) return;
+          await this.api.answer({ type: "answer", sdp });
+        } catch (err) {
+          // answer を返せないと Cloudflare のセッションが先へ進めないので、接続の失敗として扱う。
+          if (!this.closed) {
+            if (this.connected) this.callbacks.onFailed("cloudflare_renegotiation_failed");
+            else this.startFailure ??= err instanceof Error ? err : new Error(String(err));
+          }
+          throw err;
+        }
       }
     });
   }
 
   async replaceMicTrack(track: MediaStreamTrack): Promise<void> {
-    if (!this.sender) throw new Error("Microphone is not published yet");
+    if (!this.sender) {
+      // まだ publish していなければ、publish するトラックを差し替える。
+      this.mic = track;
+      return;
+    }
     await this.sender.replaceTrack(track);
   }
 
@@ -167,7 +286,11 @@ export class CfRealtimeAdapter implements SfuAdapter {
 
   close(): void {
     this.closed = true;
-    for (const speaker of new Set(this.pulled.values())) this.callbacks.onRemoteGone(speaker);
+    // Set は走査中に今の要素を消してもよい。
+    for (const finish of this.waiters) finish(new Error("Closed"));
+    const speakers = new Set<string>();
+    for (const entry of this.pulled.values()) speakers.add(entry.speaker);
+    for (const speaker of speakers) this.callbacks.onRemoteGone(speaker);
     this.pulled.clear();
     this.pc.close();
   }

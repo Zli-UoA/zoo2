@@ -49,11 +49,23 @@ async function switchToSfu() {
   if (sfuMode) return;
   sfuMode = true;
   // mesh のマイクを複製して使い、SFU につながったら mesh を閉じる。
-  const mic = media?.micTrack()?.clone();
-  if (!mic) throw new Error("Microphone unavailable");
+  const source = media?.micTrack();
+  const mic = source?.clone();
+  if (!source || !mic) {
+    emit("failed");
+    return;
+  }
+  // 複製にもミュートの状態を引き継ぐ。
+  mic.enabled = source.enabled;
   const next = new AndroidSfuCall(session, mic, emit, [...participants.values()]);
   sfu = next;
-  await next.start();
+  try {
+    await next.start();
+  } catch {
+    // つながらなければ、通話の失敗にする（mesh は閉じていない）。
+    if (sfu === next) emit("failed");
+    return;
+  }
   if (sfu !== next) return;
   if (audioLevelTimer !== undefined) clearTimeout(audioLevelTimer);
   media?.close();
@@ -63,7 +75,8 @@ async function switchToSfu() {
 async function dispatch(event: string, data: Record<string, unknown>) {
   trackParticipants(event, data);
   if ((event === "room_state" || event === "mode_changed") && data.mode === "sfu") {
-    await switchToSfu();
+    // 接続の成立まで待つので、ここでは待たない（Kotlin の rtc.event の時間制限と、後続のイベントを止めないため）。
+    void switchToSfu();
     return;
   }
   if (sfuMode) sfu?.event(event, data);

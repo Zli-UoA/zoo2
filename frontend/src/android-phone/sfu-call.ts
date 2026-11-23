@@ -81,6 +81,7 @@ export class AndroidSfuCall {
       },
       initial,
     );
+    // start() は Cloudflare と ICE・DTLS までつながってから終わる（つながらなければ reject）。
     await this.adapter.start();
     if (!this.closed) this.emit("connected");
   }
@@ -125,6 +126,8 @@ export class AndroidSfuCall {
   }
 
   mute(muted: boolean) {
+    // join の応答待ちでアダプタがまだなくても、送るマイク（複製）に反映する。
+    this.mic.enabled = !muted;
     void this.adapter?.setMuted(muted);
   }
 

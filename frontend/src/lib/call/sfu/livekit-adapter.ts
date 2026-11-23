@@ -33,7 +33,7 @@ export class LiveKitAdapter implements SfuAdapter {
   constructor(
     private readonly url: string,
     private readonly token: string,
-    private readonly mic: MediaStreamTrack,
+    private mic: MediaStreamTrack,
     private readonly callbacks: SfuAdapterCallbacks,
   ) {
     this.room = new Room({
@@ -70,12 +70,17 @@ export class LiveKitAdapter implements SfuAdapter {
       maxRetries: 0,
     });
     if (this.closed) return;
-    const publication = await this.room.localParticipant.publishTrack(this.mic, {
+    const published = this.mic;
+    const publication = await this.room.localParticipant.publishTrack(published, {
       source: Track.Source.Microphone,
       dtx: true,
       red: true,
     });
     this.localTrack = (publication.track as LocalAudioTrack | undefined) ?? null;
+    // publish 中にマイクが切り替わっていたら、今のマイクに差し替える。
+    if (this.localTrack && this.mic !== published) {
+      await this.localTrack.replaceTrack(this.mic, { userProvidedTrack: true });
+    }
   }
 
   updateTracks(): void {
@@ -83,7 +88,9 @@ export class LiveKitAdapter implements SfuAdapter {
   }
 
   async replaceMicTrack(track: MediaStreamTrack): Promise<void> {
-    if (!this.localTrack) throw new Error("Microphone is not published yet");
+    // まだ publish していなければ、start() が publish するトラックを差し替える。
+    this.mic = track;
+    if (!this.localTrack) return;
     await this.localTrack.replaceTrack(track, { userProvidedTrack: true });
   }
 
@@ -101,6 +108,7 @@ export class LiveKitAdapter implements SfuAdapter {
     this.closed = true;
     for (const speaker of new Set(this.speakers.values())) this.callbacks.onRemoteGone(speaker);
     this.speakers.clear();
-    void this.room.disconnect();
+    // マイクは通話側のもの（Cloudflare に移るときも使う）なので、切断で止めない。
+    void this.room.disconnect(false);
   }
 }

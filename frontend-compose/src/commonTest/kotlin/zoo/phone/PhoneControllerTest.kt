@@ -22,6 +22,7 @@ class PhoneControllerTest {
         var permission = true
         var heartbeatTimeout = false
         var signalTimeouts = 0
+        var sfuTimeout = false
         var streamTimeout = false
         var phoneStreamTimeout = false
         var pendingAccept: CompletableDeferred<JsonElement>? = null
@@ -41,6 +42,7 @@ class PhoneControllerTest {
                 path.endsWith("/authorize") -> { check(authorize); obj("data" to obj("revision" to revision)) }
                 path.endsWith("/accept") -> pendingAccept?.await() ?: obj("ok" to true, "channel_id" to "dm")
                 path.endsWith("/call/heartbeat") && heartbeatTimeout -> { delay(20_000); obj() }
+                path.contains("/call/sfu/") && sfuTimeout -> { delay(20_000); obj() }
                 path.endsWith("/call/signal") && signalTimeouts > 0 -> { signalTimeouts--; delay(20_000); obj() }
                 path.endsWith("/command") -> {
                     val action = body?.text("action").orEmpty(); phoneActions.add(action)
@@ -222,6 +224,19 @@ class PhoneControllerTest {
         f.events["dm"]!!("sfu_request", obj("id" to 2, "op" to "../../admin", "body" to obj())); runCurrent()
         assertFalse(f.requests.any { it.contains("admin") })
         assertEquals(false, f.payloads.last().flag("ok"))
+        f.controller.close()
+    }
+    @Test fun timedOutSfuRequestsAreRepliedAsFailures() = runTest {
+        val f = Fixture(backgroundScope); f.controller.callDm("dm", "Bob"); runCurrent()
+        f.streamEvent!!("room_state", obj("participants" to JsonArray(emptyList()))); runCurrent()
+        f.sfuTimeout = true
+        f.events["dm"]!!("sfu_request", obj("id" to 3, "op" to "cf/pull", "body" to obj("track_ids" to JsonArray(emptyList())))); runCurrent()
+        assertNotEquals("rtc.sfu.reply", f.commands.last())
+        advanceTimeBy(15_001); runCurrent()
+        assertEquals("rtc.sfu.reply", f.commands.last())
+        assertEquals(false, f.payloads.last().flag("ok"))
+        // 要求の失敗だけで、通話は続く。
+        assertNotNull(f.controller.call)
         f.controller.close()
     }
     @Test fun earlySignalsAreBufferedUntilTheInitialRoomState() = runTest {
