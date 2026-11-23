@@ -333,9 +333,9 @@ struct SendZooSchemaMessageIntent: AppIntent {
             let person = try await actions.resolve(recipient)
             Self.logger.notice("DMの宛先を解決し、送信確認を要求します。")
             try await requestConfirmation(dialog: "Zooで\(person.name)（@\(person.user_name)）さんに「\(text)」を送信しますか？")
-            let epoch = workspace.revocationGeneration
+            let generations = workspace.channelRevocationGenerations
             let message = try await actions.send(text, to: recipient)
-            guard workspace.active, workspace.revocationGeneration == epoch else { return .result(value: []) }
+            guard workspace.isChannelAccessCurrent(message.channel_id, since: generations) else { return .result(value: []) }
             let result = ZooSentMessage(message, recipient: recipient, workspace: workspace)
             ZooSentMessageStore.shared.remember(result, in: workspace)
             Self.logger.notice("Siri AIからの送信が完了しました。")

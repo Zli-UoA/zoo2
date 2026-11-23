@@ -225,8 +225,8 @@ struct ShortcutActionsTests {
         }
     }
 
-    @Test("DM作成中に失効・ログアウトしたら送信しない", arguments: [false, true])
-    func logoutWhileResolvingDM(logout: Bool) async throws {
+    @Test("DM作成中の失効・ログアウトを照合し、別会話の失効では送信する", arguments: ["対象", "ログアウト", "別会話"])
+    func logoutWhileResolvingDM(reason: String) async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
         let peer = peer, channel = channel
@@ -239,7 +239,10 @@ struct ShortcutActionsTests {
                 for await _ in release.stream { break }
                 return (200, [:], try Self.envelope(channel))
             }
-            Issue.record("ログアウト後に送信してはいけません")
+            if reason == "別会話", request.url?.path == "/api/messages" {
+                return (200, [:], try Self.envelope(Message(id: "accepted", user_id: "me", channel_id: channel.id, content: "本文", created_at: "2026-11-20T00:00:00Z")))
+            }
+            Issue.record("対象会話の失効・ログアウト後に送信してはいけません")
             return (500, [:], Data())
         }
         let workspace = WorkspaceStore(client: harness.client, user: user, recentEmojiDefaults: nil)
@@ -255,15 +258,21 @@ struct ShortcutActionsTests {
             Issue.record("対象の通信が開始されずに送信処理が終了しました。")
             return
         }
-        if logout { workspace.shutdown() } else { workspace.revokeChannel(channel.id) }
+        if reason == "ログアウト" { workspace.shutdown() }
+        else { workspace.revokeChannel(reason == "対象" ? channel.id : "other") }
         release.continuation.yield(())
-        if logout { await #expect(throws: ZooError.self) { try await pending.value } }
-        else { await #expect(throws: CancellationError.self) { try await pending.value } }
-        #expect(workspace.dmPath.isEmpty)
+        if reason == "別会話" {
+            #expect(try await pending.value.id == "accepted")
+            #expect(workspace.dmPath == [.channel(channel.id)])
+        } else {
+            if reason == "ログアウト" { await #expect(throws: ZooError.self) { try await pending.value } }
+            else { await #expect(throws: CancellationError.self) { try await pending.value } }
+            #expect(workspace.dmPath.isEmpty)
+        }
     }
 
-    @Test("送信中に失効・ログアウトしても送信成功は保持し、会話は復活させない", arguments: [false, true])
-    func logoutWhileSending(logout: Bool) async throws {
+    @Test("送信成功は保持し、対象会話の失効時だけ結果の表示を止める", arguments: ["対象", "ログアウト", "別会話"])
+    func logoutWhileSending(reason: String) async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
         let peer = peer, channel = channel, user = user
@@ -294,11 +303,15 @@ struct ShortcutActionsTests {
             Issue.record("対象の通信が開始されずに送信処理が終了しました。")
             return
         }
-        if logout { workspace.shutdown() }
-        else { workspace.revokeChannel(channel.id) }
+        let generations = workspace.channelRevocationGenerations
+        if reason == "ログアウト" { workspace.shutdown() }
+        else { workspace.revokeChannel(reason == "対象" ? channel.id : "other") }
         release.continuation.yield(())
-        #expect(try await pending.value.id == "accepted")
-        #expect(workspace.dmPath.isEmpty && workspace.channels.isEmpty)
+        let message = try await pending.value
+        #expect(message.id == "accepted")
+        #expect(workspace.isChannelAccessCurrent(message.channel_id, since: generations) == (reason == "別会話"))
+        if reason == "別会話" { #expect(workspace.dmPath == [.channel(channel.id)] && workspace.channels.contains(where: { $0.id == channel.id })) }
+        else { #expect(workspace.dmPath.isEmpty && workspace.channels.isEmpty) }
     }
 
     @Test("Siriの下書き作成は送信せず、既存の入力を上書きしない",

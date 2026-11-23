@@ -5,6 +5,8 @@ enum ElectricReadResult: Sendable { case complete, longPolling }
 func isSSETransportFailure(_ error: Error) -> Bool {
     if let error = error as? URLError { return error.code != .cancelled }
     if case ZooError.invalidResponse = error { return true }
+    // 認証切れ・権限喪失は即座に伝え、SSEだけを拒否するプロキシでは別の転送方式を試す。
+    if case ZooError.rejected(let status, _) = error { return ![401, 403, 404].contains(status) }
     return error is DecodingError
 }
 

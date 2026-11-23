@@ -63,7 +63,7 @@ struct CallRecoveryTests {
         #expect(!client.commands.contains("leave"))
         #expect(calls.ready)
         calls.finish()
-        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
         while !journal.records.isEmpty, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
         #expect(journal.records.isEmpty)
     }

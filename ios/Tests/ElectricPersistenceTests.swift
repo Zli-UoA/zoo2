@@ -1158,6 +1158,48 @@ struct PersistentSyncIntegrationTests {
         }
     }
 
+    @Test("SSEの拒否からロングポーリングへ戻り、認証切れ・権限喪失は直ちに伝える",
+          arguments: [401, 403, 404, 405, 429, 503], [false, true])
+    func rejectedSSE(status: Int, messages: Bool) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let sync = try await session(harness)
+        var state = MessageSyncState()
+        state.shape.handle = "h"; state.shape.offset = "100_0"; state.shape.isLive = true
+        state.windows["root"] = MessageWindow(parentID: nil, limit: 50, hasMore: false)
+        if messages { try await sync.store(state, key: "messages-v1:" + syncChannel, channelID: syncChannel) }
+        else { try await sync.store(state.shape, key: "shape:api/shapes/messages|channel_id=" + syncChannel, channelID: syncChannel) }
+        let requests = Mutex((sse: 0, plain: 0))
+        harness.stub { request in
+            if request.value(forHTTPHeaderField: "Accept") == "text/event-stream" {
+                requests.withLock { $0.sse += 1 }
+                return (status, [:], Data())
+            }
+            let count = requests.withLock { $0.plain += 1; return $0.plain }
+            if !messages || count > 1 { throw URLError(.cancelled) }
+            return (200, ["electric-handle": "h", "electric-offset": "100_0", "electric-up-to-date": "true"],
+                    Data(#"[{"headers":{"control":"up-to-date"}}]"#.utf8))
+        }
+        let fallback = ![401, 403, 404].contains(status)
+        do {
+            if messages {
+                try await MessageSync(api: harness.api, sync: sync, channelID: syncChannel).observe(MessageFeedRequest()) { _ in }
+            } else {
+                try await ShapeStream(api: harness.api, sync: sync).observe("api/shapes/messages", query: ["channel_id": syncChannel], as: Message.self) { _ in }
+            }
+            Issue.record("終了させた同期が正常完了しました。")
+        } catch ZooError.expiredSession { #expect(status == 401) }
+        catch ZooError.rejected(let code, _) { #expect(code == status && [403, 404].contains(status)) }
+        catch is CancellationError { #expect(fallback) }
+        catch let error as URLError { #expect(fallback && error.code == .cancelled) }
+        let counts = requests.withLock { $0 }
+        #expect(counts.sse == (fallback ? 3 : 1))
+        #expect(counts.plain == (messages ? 1 : 0) + (fallback ? 1 : 0))
+        if status == 403 || status == 404 {
+            #expect(throws: CancellationError.self) { try sync.check(channelID: syncChannel) }
+        }
+    }
+
     @Test("SSEはup-to-dateまでまとめ、未完了の末尾を公開しない")
     func sseBatch() async throws {
         let harness = try ChatHarness()

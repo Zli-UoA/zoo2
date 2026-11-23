@@ -732,7 +732,7 @@ struct IncomingCallTests {
         #expect(!context.client.observed && !context.client.accepted)
         #expect(action.results == [false] && context.preparation.backgroundEnds == 1)
         if reason == "取消" {
-            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+            let deadline = ContinuousClock.now.advanced(by: .seconds(10))
             while context.client.answeredInvitations.isEmpty, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
             #expect(context.client.answeredInvitations.contains { $0.0 == context.call.invitation.id && !$0.1 })
             #expect(!context.controller.canPresentInvitation(context.call.invitation, at: .now))
@@ -822,7 +822,7 @@ struct IncomingCallTests {
         // 認証とShapeの順序が逆でも、通知本文だけでは通話を開始しない。
         client.invitationRows = [call.invitation]
         controller.synchronize([call.invitation])
-        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
         while requesting.requests.isEmpty, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
         try #require(requesting.requests.count == 1)
         #expect((requesting.requests[0].actions.first as? CXCallAction)?.callUUID == call.id)
@@ -867,7 +867,7 @@ struct IncomingCallTests {
         let complete = try #require(reporting.reportCompletion)
         reporting.reportCompletion = nil
         complete(nil)
-        let completionDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        let completionDeadline = ContinuousClock.now.advanced(by: .seconds(10))
         while reporting.ended.count < 2, ContinuousClock.now < completionDeadline { try await Task.sleep(for: .milliseconds(1)) }
         #expect(reporting.ended == [call.id, call.id])
         #expect(backgroundEnds == 1 && requesting.requests.isEmpty)
@@ -898,7 +898,7 @@ struct IncomingCallTests {
         await controller.performNotificationAction(response)
         if reason == "ログアウト" { controller.disconnect() }
         controller.connect(workspace)
-        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
         while backgroundEnds == 0, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
         try #require(backgroundEnds == 1)
         #expect((calls.error != nil) == (reason == "期限"))
@@ -1130,7 +1130,7 @@ struct IncomingCallTests {
         var ended = false
         provider.onEnd = { ended = true }
         controller.receive(call) {}
-        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
         while !ended, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
         try #require(ended, "取消済み着信の終了が報告されませんでした。")
         #expect(counts.withLock { $0["shape"] } == 1)

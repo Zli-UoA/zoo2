@@ -88,9 +88,9 @@ struct ShortcutActions {
     @discardableResult
     func send(_ content: String, to recipient: ShortcutRecipient) async throws -> Message {
         try Self.validateMessage(content)
-        let epoch = workspace.revocationGeneration
+        let generations = workspace.channelRevocationGenerations
         let channel = try await directMessage(to: recipient)
-        guard workspace.revocationGeneration == epoch else { throw CancellationError() }
+        guard workspace.isChannelAccessCurrent(channel.id, since: generations) else { throw CancellationError() }
         guard channel.canPost else { throw ZooError.auth("暗号化された会話にはSiriから送信できません。") }
         let message: Message
         do {
@@ -101,7 +101,7 @@ struct ShortcutActions {
             throw error
         }
         // サーバーで成立した送信を失敗に変えず、ログアウト後の画面遷移だけを抑止する。
-        if workspace.active, !Task.isCancelled, workspace.revocationGeneration == epoch { workspace.addAndOpen(channel) }
+        if !Task.isCancelled, workspace.isChannelAccessCurrent(channel.id, since: generations) { workspace.addAndOpen(channel) }
         return message
     }
 

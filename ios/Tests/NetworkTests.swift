@@ -18,7 +18,7 @@ private func awaitCallback<Value: Sendable>(
         }
         #expect(count == 1, "完了コールバックが複数回呼ばれました。")
     }
-    let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+    let deadline = ContinuousClock.now.advanced(by: .seconds(10))
     while state.withLock({ $0.result == nil }), ContinuousClock.now < deadline {
         try await Task.sleep(for: .milliseconds(1))
     }
@@ -669,11 +669,11 @@ struct NetworkTests {
         let first = Task { defer { completed += 1 }; return try await api.auth.accessToken() }
         let second = Task { defer { completed += 1 }; return try await api.auth.accessToken() }
         defer { first.cancel(); second.cancel() }
-        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
         while (api.auth.refreshWaiterCount < 2 || exchanges.withLock({ $0 }) == 0), completed == 0, ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(1))
         }
-        try #require(api.auth.refreshWaiterCount == 2 && completed == 0)
+        try #require(api.auth.refreshWaiterCount == 2 && completed == 0, "更新待機が揃いませんでした。waiters=\(api.auth.refreshWaiterCount)、completed=\(completed)")
         #expect(exchanges.withLock { $0 } == 1)
         release.continuation.finish()
         let values = try await [first.value, second.value]

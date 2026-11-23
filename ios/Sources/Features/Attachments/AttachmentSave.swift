@@ -79,17 +79,17 @@ final class AttachmentSaveState {
         isSaving = true
         presentsFileExport = destination == .files
         let client = workspace.client
-        let epoch = workspace.revocationGeneration
+        let generations = workspace.channelRevocationGenerations
         // 開始済みの保存は、スクロールやプレビューを閉じる操作で中断しない。
         task = Task { [self, weak workspace] in
             notice = nil
             defer { isSaving = false; task = nil }
             do {
                 if destination == .photos { try await AttachmentPhotoLibrary.authorize() }
-                guard workspace?.active == true, workspace?.revocationGeneration == epoch else { throw CancellationError() }
+                guard workspace?.isChannelAccessCurrent(channelID, since: generations) == true else { throw CancellationError() }
                 let file = try await DownloadedAttachment.download(attachment, client: client, channelID: channelID)
                 try Task.checkCancellation()
-                guard workspace?.active == true, workspace?.revocationGeneration == epoch else { throw CancellationError() }
+                guard workspace?.isChannelAccessCurrent(channelID, since: generations) == true else { throw CancellationError() }
                 if destination == .photos {
                     try await AttachmentPhotoLibrary.save(file, attachment: attachment)
                     notice = Notice(title: "保存しました", message: "写真に保存しました。")

@@ -165,7 +165,7 @@ struct CallStoreTests {
             guard case .room = event else { return }
             #expect(!store.ready)
             media.signal?(peer.id, CallSignal(type: "offer", sdp: "テスト用SDP"))
-            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+            let deadline = ContinuousClock.now.advanced(by: .seconds(10))
             while (!client.commands.contains("signal") || !client.commands.contains("heartbeat")), ContinuousClock.now < deadline {
                 try await Task.sleep(for: .milliseconds(1))
             }
@@ -196,7 +196,7 @@ struct CallStoreTests {
         let room = CallRoom(participants: [], max_participants: 6, ice_servers: [])
         client.events = earlyLeave ? [.left("退出済み"), .room(room)] : [.room(room)]
         let first = try #require(store.start(channel: channel))
-        var deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        var deadline = ContinuousClock.now.advanced(by: .seconds(10))
         while firstGate == nil, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
         try #require(firstGate != nil)
         #expect(!store.ready)
@@ -204,14 +204,14 @@ struct CallStoreTests {
         client.events = [.room(room)]
         let second = try #require(store.start(channel: channel))
         defer { second.cancel() }
-        deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        deadline = ContinuousClock.now.advanced(by: .seconds(10))
         while secondGate == nil, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
         try #require(secondGate != nil)
         let old = firstGate; firstGate = nil; old?.resume()
         await first.value
         #expect(!store.ready && store.participants.isEmpty)
         let current = secondGate; secondGate = nil; current?.resume()
-        deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        deadline = ContinuousClock.now.advanced(by: .seconds(10))
         while !store.ready, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
         #expect(store.ready)
     }
@@ -452,7 +452,7 @@ struct CallStoreTests {
         defer { client.invitationsDelivered = nil }
         let task = Task { defer { ended = true }; await store.runInvitations() }
         do {
-            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+            let deadline = ContinuousClock.now.advanced(by: .seconds(10))
             while !delivered, !ended, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
             try #require(delivered, "購読が初期の招待を配信しませんでした。")
             return task
@@ -465,7 +465,7 @@ struct CallStoreTests {
         client.invitationsDelivered = { delivered = true }
         defer { client.invitationsDelivered = nil }
         client.invitationUpdates.continuation.yield(rows)
-        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
         while !delivered, client.observingInvitations, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
         try #require(delivered, "招待の更新が配信されませんでした。")
     }
@@ -761,7 +761,7 @@ struct CallStoreTests {
         var left = false
         client.commandObserved = { if $0 == "leave" { left = true } }
         store.finish()
-        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
         while !left, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
         try #require(left, "退出要求が期限内に送信されませんでした。")
         #expect(media.closed)

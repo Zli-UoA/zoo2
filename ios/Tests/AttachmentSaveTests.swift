@@ -80,8 +80,8 @@ struct AttachmentSaveTests {
         await #expect(throws: CancellationError.self) { try await task.value }
     }
 
-    @Test("保存先へ渡す前に失効・ログアウトしたファイルは書き出しへ公開しない", arguments: [false, true])
-    func invalidationBeforeExport(logout: Bool) async throws {
+    @Test("対象会話の失効・ログアウトでは保存を止め、別会話の失効では完了する", arguments: ["対象", "ログアウト", "別会話"])
+    func invalidationBeforeExport(reason: String) async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
         let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
@@ -103,10 +103,16 @@ struct AttachmentSaveTests {
         defer { saving.cancel(); completion.cancel(); state.dismissFileExport() }
         var iterator = started.stream.makeAsyncIterator()
         try #require(await iterator.next() != nil)
-        if logout { workspace.shutdown() } else { workspace.revokeChannel("channel") }
+        if reason == "ログアウト" { workspace.shutdown() }
+        else { workspace.revokeChannel(reason == "対象" ? "channel" : "other") }
         release.continuation.finish()
         await saving.value
-        #expect(state.exportedFile == nil && !state.isSaving && state.notice != nil)
+        #expect(!state.isSaving)
+        if reason == "別会話" {
+            let file = try #require(state.exportedFile)
+            #expect(try Data(contentsOf: file.url) == Data("失効前の添付".utf8))
+            #expect(state.notice == nil)
+        } else { #expect(state.exportedFile == nil && state.notice != nil) }
     }
 
     private func stubDownload(_ harness: ChatHarness, status: Int = 200) {

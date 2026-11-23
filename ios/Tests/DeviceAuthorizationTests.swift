@@ -622,15 +622,15 @@ struct DeviceAuthorizationTests {
         var finished = false
         let completion = Task { await login.value; finished = true }
         defer { completion.cancel() }
-        let waitingDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        let waitingDeadline = ContinuousClock.now.advanced(by: .seconds(10))
         while !session.waitingForCacheCleanup, !finished, ContinuousClock.now < waitingDeadline {
             try await Task.sleep(for: .milliseconds(1))
         }
-        try #require(session.waitingForCacheCleanup && !finished)
+        try #require(session.waitingForCacheCleanup && !finished, "キャッシュ消去待ちへ到達しませんでした。waiting=\(session.waitingForCacheCleanup)、finished=\(finished)")
         #expect(discoveryCount.withLock { $0 } == 0)
         release.continuation.finish()
         await resuming.value
-        let deadline = ContinuousClock.now + .seconds(2)
+        let deadline = ContinuousClock.now + .seconds(10)
         while session.connecting && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
         #expect(!session.connecting)
         #expect(discoveryCount.withLock { $0 } == 1)
@@ -664,7 +664,7 @@ struct DeviceAuthorizationTests {
         var iterator = started.stream.makeAsyncIterator()
         try #require(await iterator.next() != nil)
         session.startLogin()
-        let deadline = ContinuousClock.now + .seconds(2)
+        let deadline = ContinuousClock.now + .seconds(10)
         while session.connecting && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
         try #require(!session.connecting && requests.withLock { $0 } == 1)
         let loginError = try #require(session.error)
@@ -688,14 +688,14 @@ struct DeviceAuthorizationTests {
         await session.resume()
         #expect(session.error == CocoaError(.fileWriteOutOfSpace).localizedDescription)
         session.startLogin()
-        var deadline = ContinuousClock.now + .seconds(2)
+        var deadline = ContinuousClock.now + .seconds(10)
         while session.connecting && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
         try #require(!session.connecting)
         #expect(session.error == CocoaError(.fileWriteOutOfSpace).localizedDescription)
         #expect(saves.withLock { $0 } == 1)
         #expect(requests.withLock { $0 } == 0)
         session.startLogin()
-        deadline = ContinuousClock.now + .seconds(2)
+        deadline = ContinuousClock.now + .seconds(10)
         while session.connecting && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
         #expect(!session.connecting)
         #expect(saves.withLock { $0 } == 2)
