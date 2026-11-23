@@ -7,11 +7,11 @@
 | 処理 | 探索の上限 | 主な索引 |
 | --- | --- | --- |
 | 一覧 | 応答・メモリは 1 ページ K_page ≤ 200（既定 50）。本文を含まないため、応答サイズは K_page × メタデータ分。SQL は 2 つに分かれる: (1) `order_token` の集約 (ページ継続時の並び競合検出) がチャンネルの有効ノート K 行全体、(2) ページ読み取りが O(log N + K)。`idx_channel_notes_channel_position` は (channel_id, position) で id を含まないため、走査のあと (position, id) の Incremental Sort を挟む。after が空でないページも `CASE WHEN $2 = ''` は (position, id) への直接シークにならず、同じチャンネルの K ≤ 500 範囲内の走査になる | `idx_channel_notes_channel_position` |
-| 削除済み一覧 | 応答・メモリは 1 ページ K_page ≤ 200（既定 50）。SQL の走査は対象チャンネルの 24 時間以内の削除済み D 行以内（O(log N + D)）。索引側の `deleted_at >= …- 24 hours` 条件が範囲を絞り、after 付きでも CASE はその範囲内のフィルタになる | `idx_channel_notes_expired`、`idx_channel_notes_deleted_at` |
+| 削除済み一覧 | 応答・メモリは 1 ページ K_page ≤ 200（既定 50）。先頭ページと継続ページ（after 付き）で SQL を分け、継続ページでは `(deleted_at, id) > ($2::timestamp(3), $3)` を `CASE` で包まず直接 `WHERE` に置くため、custom plan・generic plan の両方でカーソル位置から索引走査を開始できる（O(log N + K_page)〜O(log N + D)） | `idx_channel_notes_expired`、`idx_channel_notes_deleted_at` |
 | 単一取得 | O(log N + K)。generic plan でも K 行以内 | 主キー、`channel_id` 索引 |
 | 作成 | 有効ノート数の確認が O(K)（上限判定）、最大位置の取得が O(log K + 1)、INSERT 1 行。最大 position が `i32::MAX` のときだけ、有効ノート K 行の `(position, id)` 連番への詰め直し (O(K log K)) が追加で走る。E2EE trigger は `channels` の主キー | 有効ノートの部分索引、`Channel_pkey` |
 | 更新・削除 | 主キーと `channel_id` で 1 行。generic plan でも K 行以内 | 主キー、`channel_id` 索引 |
-| 復元 | 期限内の削除済み D 行以内から対象を探し、位置を後ろへずらす K 行以内。ずらしで `i32::MAX` 行に当たるときだけ、有効ノート (復元済みを含む) K 行の `(position, id)` 連番への詰め直しが置き換わる | `idx_channel_notes_expired`、有効ノートの部分索引 |
+| 復元 | 期限内の削除済み D 行以内から対象を探し、位置を後ろへずらす K 行以内。ずらしで `i32::MAX` 行に当たるときだけ、有効ノート (復元済みを含む) K 行の `(position, (id <> $2), id)` 連番への詰め直しが置き換わる | `idx_channel_notes_expired`、有効ノートの部分索引 |
 | 並べ替え | 現在順序の読み取りが ORDER BY 込みで K 行、更新は有効ノート K 行。API 全体は要求順のソートを含め最悪 O(K log K) | 有効ノートの部分索引 |
 | 期限切れ削除 | 1 回の page は C=100 チャンネル。各チャンネルの存在確認は期限切れ索引で `LIMIT 1` の点検索（返却 0〜1 行）。削除は候補 B=100 行を読み、その中の未ロック行を削除する。ロック済み行は走査を延ばさず、次の回転で再訪する | `idx_channel_notes_expired`、主キー |
 | 暗号化 trigger | 対象チャンネルの有効ノート K 行と復元可能ノートの存在確認。返却は 0〜1 行 | `idx_channel_notes_channel_updated` |
@@ -20,7 +20,7 @@ N はどの処理の探索上限にも入れない。無関係なチャンネル
 
 ## 検証結果
 
-PostgreSQL 16.15、JIT 無効。ローカルの使い捨て DB（`initdb -E UTF8 --locale=C`）で、Rust の統合テストから `EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, FORMAT JSON)` を実行した。probe は本番と同じ位置にパラメーターを置き、対象 ID を `EXECUTE` の引数で渡す。単独 30 回は custom plan（バインド値で計画）、8 同時×30 回は `force_generic_plan`（値を参照しない計画）で、初回も捨てない。API は実際の Axum Router を in-process で呼び、認証・プール待ち・トランザクション・シリアライズを含む。HTTP ネットワークとブラウザー描画は含まない。debug build の参考値である。有効ノート一覧の probe は本番と同じ SQL（メタデータ列 + `order_token` を出す `ordering` CTE）を使う。
+PostgreSQL 16.15、JIT 無効。ローカルの使い捨て DB（`initdb -E UTF8 --locale=C`）で、Rust の統合テストから `EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, FORMAT JSON)` を実行した。probe は本番と同じ位置にパラメーターを置き、対象 ID を `EXECUTE` の引数で渡す。単独 30 回は custom plan（バインド値で計画）、8 同時×30 回は `force_generic_plan`（値を参照しない計画）で、初回も捨てない。API は実際の Axum Router を in-process で呼び、認証・プール待ち・トランザクション・シリアライズを含む。HTTP ネットワークとブラウザー描画は含まない。debug build の参考値である。有効ノート一覧の probe は本番と同じ SQL（メタデータ列 + `order_token` を出す `ordering` CTE + 外側の `ORDER BY page.position, page.id`）を使う。
 
 ### fixture
 
@@ -32,7 +32,7 @@ PostgreSQL 16.15、JIT 無効。ローカルの使い捨て DB（`initdb -E UTF8
 
 ### SQL の走査量と論理バッファ
 
-行数は関係ごとの Actual Rows と除外行に loops を掛けた合計。論理バッファは hit+read。値は全サンプルの最大。`work()` が合否に使うのは「各条件の絶対上限（ノート系 256 行、cleanup page 2,048 行）」と「`Temp Written Blocks == 0`（ディスク退避なし）」で、custom plan (同時 1) と generic plan (同時 8) の両サンプルに適用する。論理バッファと中間行・ソート入力は記録値であり、合否の上限ではない (compare-channel-notes-work.py が 2 規模間の比率で別途検証する)。
+行数は関係ごとの Actual Rows と除外行に loops を掛けた合計。論理バッファは hit+read。`work()` が合否に使うのは「各条件の絶対上限（ノート系 256 行、cleanup page 2,048 行）」と「`Temp Written Blocks == 0`（ディスク退避なし）」で、custom plan (同時 1) と generic plan (同時 8) の両サンプルに適用し、`work.json` には deep page の 2 条件を含む全 15 条件を `/custom` と `/generic` の計 30 エントリに分けて記録する。論理バッファと中間行・ソート入力は記録値であり、合否の上限ではない (`compare-channel-notes-work.py` が 30 エントリすべてについて 2 規模間の比率で別途検証する)。
 
 | 条件 | 30 万件 行数 / ブロック | 100 万件 行数 / ブロック |
 | --- | ---: | ---: |

@@ -63,7 +63,7 @@ pub(super) async fn process(
     team: &str,
     slack_channel: &str,
     zoo_channel: &str,
-    slack_private: bool,
+    slack_private: &mut bool,
     lease_token: &str,
     db: &mut toasty::Db,
 ) -> Result<(), SyncError> {
@@ -258,7 +258,7 @@ async fn apply(
     team: &str,
     slack_channel: &str,
     zoo_channel: &str,
-    slack_private: bool,
+    slack_private: &mut bool,
     lease_token: &str,
     ts: &str,
     group: &[&Row],
@@ -341,6 +341,20 @@ async fn apply(
             }
         }
     }
+    let current_slack_private = if *slack_private {
+        true
+    } else {
+        let info = slack
+            .get("conversations.info", &[("channel", slack_channel)])
+            .await?;
+        let channel = &info["channel"];
+        ["is_private", "is_im", "is_mpim", "is_group"]
+            .iter()
+            .any(|k| channel[*k] == true)
+    };
+    // バッチの残り・`recheck::run`・`store` も同じ値を使う。途中で非公開に変わった
+    // Slack チャンネルを、以降のヒントで取り直したり、公開の取り込み先へ書いたりしない。
+    *slack_private |= current_slack_private;
     if let Some(message) = &message
         && message.is_importable()
     {
@@ -387,8 +401,8 @@ async fn apply(
     }
     // 同期の途中で取り込み先が暗号化に切り替わったら (#367)、平文を書かない。次の同期は、暗号化チャンネルを取らない
     super::worker::ensure_plaintext_allowed(&mut tx, zoo_channel).await?;
-    // 同期の途中で取り込み先が公開に変わったら、非公開の Slack チャンネルの内容を書かない
-    super::sync::ensure_private_target(&mut tx, zoo_channel, slack_private).await?;
+    // 同期の途中で取り込み先が公開に変わったり、Slack チャンネルが非公開に変わったりしたら、非公開の Slack チャンネルの内容を公開の取り込み先に書かない
+    super::sync::ensure_private_target(&mut tx, zoo_channel, *slack_private).await?;
     // 保存のトランザクションで 1 回だけ、削除済みの親への返信を許可する。このあとの
     // `insert_message` が、範囲外のスレッドの返信の挿入と、既存返信のスレッドへの再接続の
     // 両方を行う (`zoo.slack_import` の設定はトランザクションの終わりで自動的に戻る)。
@@ -960,13 +974,14 @@ mod tests {
             })
             .collect();
         let group_refs: Vec<&Row> = group.iter().collect();
+        let mut slack_private = true;
         let applied = apply(
             &mut slack,
             &mut ctx,
             &team,
             "C1",
             &channel,
-            true,
+            &mut slack_private,
             &lease_token,
             reply_ts,
             &group_refs,
@@ -1030,13 +1045,14 @@ mod tests {
             app_id: None,
         };
 
+        let mut slack_private = true;
         process(
             &mut slack,
             &mut ctx,
             &team,
             "C1",
             &channel,
-            true,
+            &mut slack_private,
             &lease_token,
             &mut db,
         )

@@ -4,11 +4,15 @@ use crate::models::{
 };
 
 pub async fn init_db(database_url: &str) -> Result<toasty::Db, toasty::Error> {
-    init_db_with_pool(
-        database_url,
-        max_pool_size(std::env::var("DB_MAX_POOL_SIZE").ok()),
-    )
-    .await
+    init_db_with_pool(database_url, configured_max_pool_size()).await
+}
+
+/// 環境変数 `DB_MAX_POOL_SIZE` から決めた接続プールの上限。
+///
+/// 競合テストは `init_db_with_pool` にこの値以上を渡し、環境の設定で
+/// 同時接続が足りなくならないようにする。
+pub fn configured_max_pool_size() -> usize {
+    max_pool_size(std::env::var("DB_MAX_POOL_SIZE").ok())
 }
 
 /// Create a pool with an explicit size. Integration tests use this when they

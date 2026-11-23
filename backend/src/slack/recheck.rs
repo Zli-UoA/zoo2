@@ -106,7 +106,7 @@ pub(super) async fn run(
             // `conversations.history` が 429 になるので、`Retry-After` を守って、この回を終える
             // (再確認は、上で 5 分後に回したので、待ちのあとの通常の同期は、再確認に妨げられない)
             match error {
-                SyncError::RateLimited(_) => Err(error),
+                SyncError::RateLimited(_) | SyncError::TargetChanged => Err(error),
                 _ => Ok(()),
             }
         }

@@ -684,7 +684,7 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
         )
         .await?;
     let channel = &info["channel"];
-    let slack_private = ["is_private", "is_im", "is_mpim", "is_group"]
+    let mut slack_private = ["is_private", "is_im", "is_mpim", "is_group"]
         .iter()
         .any(|k| channel[*k] == true);
     if slack_private && !task.private {
@@ -759,7 +759,7 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
             task.team_id.as_str(),
             task.slack_channel_id.as_str(),
             task.channel_id.as_str(),
-            slack_private,
+            &mut slack_private,
             task.token.as_str(),
             &mut db,
         )

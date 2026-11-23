@@ -173,11 +173,27 @@ async fn thread_operation(
         )
         .await?;
     }
-    let root = crate::apps::one(&mut tx,
-        "SELECT json_build_object('id',r.id,'channel_id',r.channel_id)::text FROM messages requested JOIN messages r ON r.id=CASE WHEN (SELECT phase FROM thread_rollout WHERE id)='collecting' OR ((SELECT phase FROM thread_rollout WHERE id)='normalizing' AND NOT EXISTS(SELECT 1 FROM thread_migration_completed done WHERE done.thread_id=thread_root(requested.id))) THEN requested.id ELSE thread_root(requested.id) END WHERE requested.id=$1 AND requested.deleted_at IS NULL AND r.deleted_at IS NULL",
-        &[&id]).await?;
+    let root_query = if operation == "read" {
+        "SELECT json_build_object('id',r.id,'channel_id',r.channel_id,'root_deleted',r.deleted_at IS NOT NULL)::text \
+         FROM messages requested \
+         JOIN messages r ON r.id=CASE WHEN (SELECT phase FROM thread_rollout WHERE id)='collecting' OR ((SELECT phase FROM thread_rollout WHERE id)='normalizing' AND NOT EXISTS(SELECT 1 FROM thread_migration_completed done WHERE done.thread_id=thread_root(requested.id))) THEN requested.id ELSE thread_root(requested.id) END \
+         WHERE requested.id=$1 \
+           AND ( \
+             (requested.deleted_at IS NULL AND (r.deleted_at IS NULL OR r.id<>requested.id)) \
+             OR (requested.id=r.id AND r.deleted_at IS NOT NULL AND EXISTS( \
+               SELECT 1 FROM messages reply WHERE reply.parent_id=r.id AND reply.channel_id=r.channel_id AND reply.deleted_at IS NULL \
+             )) \
+           )"
+    } else {
+        "SELECT json_build_object('id',r.id,'channel_id',r.channel_id,'root_deleted',false)::text \
+         FROM messages requested \
+         JOIN messages r ON r.id=CASE WHEN (SELECT phase FROM thread_rollout WHERE id)='collecting' OR ((SELECT phase FROM thread_rollout WHERE id)='normalizing' AND NOT EXISTS(SELECT 1 FROM thread_migration_completed done WHERE done.thread_id=thread_root(requested.id))) THEN requested.id ELSE thread_root(requested.id) END \
+         WHERE requested.id=$1 AND requested.deleted_at IS NULL AND r.deleted_at IS NULL"
+    };
+    let root = crate::apps::one(&mut tx, root_query, &[&id]).await?;
     let root_id = root["id"].as_str().unwrap();
     let channel_id = root["channel_id"].as_str().unwrap();
+    let root_deleted = root["root_deleted"].as_bool().unwrap_or(false);
     let actor = crate::apps::events::Actor {
         user: auth.clone(),
         principal: None,
@@ -194,13 +210,16 @@ async fn thread_operation(
             .await?;
     }
     // Same lock as the reply trigger and archive worker. Reading needs no write lock.
-    let lock = if operation == "read" {
-        ""
+    let status = if operation == "read" {
+        Value::Null
     } else {
-        " FOR NO KEY UPDATE"
+        crate::apps::one(
+            &mut tx,
+            "SELECT json_build_object('archived',thread_archive_at IS NOT NULL)::text FROM messages WHERE id=$1 AND deleted_at IS NULL FOR NO KEY UPDATE",
+            &[root_id],
+        )
+        .await?
     };
-    let status = crate::apps::one(&mut tx, &format!(
-        "SELECT json_build_object('archived',thread_archive_at IS NOT NULL)::text FROM messages WHERE id=$1 AND deleted_at IS NULL{lock}"), &[root_id]).await?;
     let changed = match operation {
         "join" => {
             if status["archived"] == true {
@@ -219,9 +238,9 @@ async fn thread_operation(
         _ => Vec::new(),
     };
     let mut row = crate::apps::one(&mut tx,
-        "SELECT json_build_object('id',m.id,'channel_id',m.channel_id,'thread_archive_at',m.thread_archive_at,'membership',CASE WHEN p.user_id IS NULL THEN 'none' WHEN p.left_at IS NULL THEN 'joined' ELSE 'left' END)::text FROM messages m LEFT JOIN thread_participants p ON p.thread_id=m.id AND p.user_id=$2 WHERE m.id=$1",
+        "SELECT json_build_object('id',m.id,'channel_id',m.channel_id,'thread_archive_at',m.thread_archive_at,'root_deleted',m.deleted_at IS NOT NULL,'membership',CASE WHEN p.user_id IS NULL THEN 'none' WHEN p.left_at IS NULL THEN 'joined' ELSE 'left' END)::text FROM messages m LEFT JOIN thread_participants p ON p.thread_id=m.id AND p.user_id=$2 WHERE m.id=$1",
         &[root_id,&auth.id]).await?;
-    row["can_participate"] = json!(channel["member"] == true);
+    row["can_participate"] = json!(!root_deleted && channel["member"] == true);
     let txid = if changed.is_empty() {
         None
     } else {

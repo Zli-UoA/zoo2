@@ -918,17 +918,25 @@ fn profile_display_name(profile: Option<&SlackUser>) -> Option<&str> {
     })
 }
 
-/// What a later archive entry (or a `users.info` profile) contributes at the
-/// identity level: any non-empty `name` / `display_name` / `real_name` / avatar.
-/// A sparse entry (`{"id":"U1"}` with everything blank) contributes nothing.
-fn profile_contributes_identity(profile: Option<&SlackUser>) -> bool {
+/// What a later archive entry (or a `users.info` profile) contributes to name
+/// fields: any non-empty `name` / `display_name` / `real_name`. An avatar-only
+/// or bot-flag-only entry contributes no name and must not let a message
+/// `fallback_name` overwrite a `"profile"`-sourced row's stored names.
+fn profile_contributes_name(profile: Option<&SlackUser>) -> bool {
     profile.is_some_and(|p| {
         !p.name.trim().is_empty()
             || !p.profile.display_name.trim().is_empty()
             || !p.profile.real_name.trim().is_empty()
             || !p.real_name.trim().is_empty()
-            || p.profile.image_72.starts_with("https://")
     })
+}
+
+/// What a later archive entry (or a `users.info` profile) contributes at the
+/// identity level: any non-empty `name` / `display_name` / `real_name` / avatar.
+/// A sparse entry (`{"id":"U1"}` with everything blank) contributes nothing.
+fn profile_contributes_identity(profile: Option<&SlackUser>) -> bool {
+    profile_contributes_name(profile)
+        || profile.is_some_and(|p| p.profile.image_72.starts_with("https://"))
 }
 
 /// Whether a profile contributes anything at all: identity fields or the bot
@@ -981,46 +989,40 @@ fn merged_placeholder_refresh<'a>(
         .filter(|url| url.starts_with("https://"));
     let is_bot =
         stored.is_bot || profile.is_some_and(|p| p.is_bot) || stored.slack_id.starts_with('B');
-    // An entry without identity fields (sparse `{"id":"U1"}` or bot-flag-only
-    // `{"id":"U1","is_bot":true}`) must not let a message fallback overwrite a
-    // `"profile"`-sourced row's workspace-wide identity values or downgrade its
-    // `profile_source`; it may only propagate `is_bot`.
-    if stored.profile_source == "profile" && !profile_contributes_identity(profile) {
-        return PlaceholderRefresh {
-            handle: if stored.name.is_empty() {
-                stored.slack_id
-            } else {
-                stored.name
-            },
-            display: stored.display_name.to_string(),
-            real_name: stored.real_name,
-            avatar: stored.avatar_url,
-            is_bot,
-            profile_source: stored.profile_source,
+    // An entry without name fields (sparse `{"id":"U1"}`, bot-flag-only
+    // `{"id":"U1","is_bot":true}`, or avatar-only `{"id":"U1","profile":{"image_72":"https://..."}}`)
+    // must not let a message fallback overwrite a `"profile"`-sourced row's
+    // workspace-wide name/display_name/real_name or downgrade its `profile_source`;
+    // it may only update `avatar` and `is_bot`.
+    let allowed_fallback =
+        if stored.profile_source == "profile" && !profile_contributes_name(profile) {
+            None
+        } else {
+            fallback_name
         };
-    }
     let handle = profile_name
-        .or(fallback_name)
+        .or(allowed_fallback)
         .filter(|name| !name.is_empty())
         .unwrap_or(if stored.name.is_empty() {
             stored.slack_id
         } else {
             stored.name
         });
-    let display = match profile_display.or(fallback_name) {
+    let display = match profile_display.or(allowed_fallback) {
         Some(candidate) => sanitize_for_display_name(candidate, handle),
         None => stored.display_name.to_string(),
     };
     let real_name = profile_real_name.unwrap_or(stored.real_name);
     let avatar = profile_avatar.unwrap_or(stored.avatar_url);
-    let profile_source = if profile_contributes_identity(profile) {
-        "profile"
-    } else if fallback_name.is_some() {
-        "fallback"
-    } else {
-        // The entry provides nothing: keep whatever the row already says.
-        stored.profile_source
-    };
+    let profile_source =
+        if stored.profile_source == "profile" || profile_contributes_identity(profile) {
+            "profile"
+        } else if fallback_name.is_some() {
+            "fallback"
+        } else {
+            // The entry provides nothing: keep whatever the row already says.
+            stored.profile_source
+        };
     PlaceholderRefresh {
         handle,
         display,
@@ -2663,8 +2665,6 @@ const NO_USER_TOKEN_NOTE: &str = "no linked user with files:read yet";
 /// 1 行の取得に使うトークン (ユーザー → Bot の順)。値は復号したもので、ログやエラーに出さない
 struct FileTokens {
     tokens: Vec<String>,
-    /// `tokens` のうち、先頭から数えたユーザーのトークンの数 (残りは Bot)
-    users: usize,
     /// ユーザーのトークンを使える行か。連携が増えれば取れる見込みがあるのは、この行だけ
     eligible: bool,
     /// 同じワークスペースに、`files:read` を持つ連携が 1 人でもいるか (使える行だけ調べる)。
@@ -2752,13 +2752,11 @@ async fn file_tokens(s: &AppState, file: &PendingFile) -> Result<FileTokens, App
             }
         }
     }
-    let users = tokens.len();
     if let Some(bot) = s.config.slack.import_bot_token.as_deref() {
         tokens.push(bot.to_string());
     }
     Ok(FileTokens {
         tokens,
-        users,
         eligible,
         workspace_has_links,
         decrypt_failed,
@@ -4601,8 +4599,7 @@ mod tests {
             Ok(())
         }
         .await;
-        cleanup_result?;
-        result
+        finish_with_cleanup(result, cleanup_result)
     }
 
     #[tokio::test]
@@ -5198,6 +5195,20 @@ mod tests {
         assert_eq!(merged.display, "Profile Display");
         assert_eq!(merged.real_name, "Profile Real");
         assert_eq!(merged.avatar, "https://avatars.example/profile.png");
+        assert_eq!(merged.profile_source, "profile");
+
+        // An avatar-only entry updates the avatar URL without letting a message
+        // fallback overwrite the `"profile"`-sourced row's handle or display name.
+        let avatar_only = slack_user_profile(serde_json::json!({
+            "id":"U1",
+            "profile":{"image_72":"https://avatars.example/new-avatar.png"}
+        }));
+        let merged =
+            merged_placeholder_refresh(&profile_row, Some(&avatar_only), Some("avatar-fallback"));
+        assert_eq!(merged.handle, "profile-handle");
+        assert_eq!(merged.display, "Profile Display");
+        assert_eq!(merged.real_name, "Profile Real");
+        assert_eq!(merged.avatar, "https://avatars.example/new-avatar.png");
         assert_eq!(merged.profile_source, "profile");
 
         // A real profile still replaces the fallback as before.

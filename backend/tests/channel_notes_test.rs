@@ -4,6 +4,7 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
+use futures_util::FutureExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -887,12 +888,6 @@ async fn api_update_and_direct_sql_update_do_not_deadlock() -> anyhow::Result<()
             &[&channel],
         )
         .await?;
-    direct_tx
-        .execute(
-            "UPDATE channel_notes SET title = 'direct' WHERE id = $1",
-            &[&note_id],
-        )
-        .await?;
 
     let api = app.clone();
     let actor = owner.clone();
@@ -910,6 +905,29 @@ async fn api_update_and_direct_sql_update_do_not_deadlock() -> anyhow::Result<()
     let observer = tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(observer.1);
     wait_until_blocked_by(&observer.0, direct_pid).await?;
+    let waiting_on_advisory: bool = observer
+        .0
+        .query_one(
+            "SELECT EXISTS ( \
+               SELECT 1 FROM pg_stat_activity \
+               WHERE direct_pid = ANY(pg_blocking_pids(pid)) \
+                 AND query LIKE '%pg_advisory_xact_lock%' \
+             ) FROM (SELECT $1::int AS direct_pid) AS p",
+            &[&direct_pid],
+        )
+        .await?
+        .get(0);
+    assert!(
+        waiting_on_advisory,
+        "API must wait on pg_advisory_xact_lock before touching channel_notes rows"
+    );
+
+    direct_tx
+        .execute(
+            "UPDATE channel_notes SET title = 'direct' WHERE id = $1",
+            &[&note_id],
+        )
+        .await?;
 
     direct_tx.commit().await?;
     let (status, body) = tokio::time::timeout(std::time::Duration::from_secs(10), update).await??;
@@ -1830,7 +1848,18 @@ async fn expired_note_cleanup_scans_past_one_hundred_busy_channels() -> anyhow::
             .await?;
     }
 
-    let deleted = backend::routes::channel_notes::purge_expired_notes(&db).await?;
+    let purge_result = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        backend::routes::channel_notes::purge_expired_notes(&db),
+    )
+    .await;
+    let deleted = match purge_result {
+        Ok(res) => res?,
+        Err(_) => {
+            let _ = blocker.rollback().await;
+            anyhow::bail!("purge_expired_notes timed out waiting on locked channels");
+        }
+    };
     assert!(
         (1..=100).contains(&deleted),
         "cleanup must reach later channels without exceeding its per-pass cap, got {deleted}"
@@ -4633,177 +4662,289 @@ async fn empty_id_notes_continue_across_page_boundaries() -> anyhow::Result<()> 
     let (mut client, driver) =
         tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(driver);
-    // 直接 SQL はノートロック契約に従う限り任意の text id (空文字を含む) を書ける。
-    // 空の id をページ境界に置き、カーソル "<token> <position> " (末尾の空白と空 id)
-    // で次ページに継続できることを確認する。
-    client
-        .batch_execute(&format!(
-            "INSERT INTO channel_notes (id, channel_id, title, content, position, version, created_user_id, created_at, updated_at) \
-             VALUES ('', '{channel}', 'empty', 'body', 0, 1, '{owner}', now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC'), \
-                    ('z', '{channel}', 'z', 'body', 0, 1, '{owner}', now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC'), \
-                    ('m', '{channel}', 'm', 'body', 1, 1, '{owner}', now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC');"
-        ))
-        .await?;
 
-    let collection = format!("/api/channels/{channel}/notes");
-    let (status, body) = request(&app, "GET", &collection, &owner, Value::Null).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let page = body["data"].as_array().unwrap();
-    assert_eq!(page.len(), 3, "{body}");
-    assert_eq!(page[0]["id"], "", "the empty id sorts first at position 0");
-    assert_eq!(page[1]["id"], "z");
-    assert_eq!(page[2]["id"], "m");
-    let token = page[0]["order_token"].as_str().unwrap().to_owned();
+    // 空でない兄弟ノートは、別のテストや別のチャンネルの行と衝突しない id にする。
+    // 空の id は DB 全体で 1 つだけなので、このテストの入力としてだけ使う。
+    let z_id = format!("z_{channel}");
+    let m_id = format!("m_{channel}");
+    let dm_id = format!("dm_{channel}");
+    let dz_id = format!("dz_{channel}");
 
-    let (status, body) = request(
-        &app,
-        "GET",
-        &format!("{collection}?limit=1"),
-        &owner,
-        Value::Null,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["data"].as_array().unwrap()[0]["id"], "");
+    // 予期しない panic でも後片付けを必ず走らせ、空 id の行を残さない。
+    let outcome = std::panic::AssertUnwindSafe(async {
+        let page_ids = |body: &Value| -> anyhow::Result<Vec<String>> {
+            body["data"]
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("response data is not an array: {body}"))?
+                .iter()
+                .map(|note| {
+                    note["id"]
+                        .as_str()
+                        .map(str::to_owned)
+                        .ok_or_else(|| anyhow::anyhow!("note is missing a string id: {note}"))
+                })
+                .collect()
+        };
+        // 直接 SQL はノートロック契約に従う限り任意の text id (空文字を含む) を書ける。
+        // 空の id をページ境界に置き、カーソル "<token> <position> " (末尾の空白と空 id)
+        // で次ページに継続できることを確認する。
+        client
+            .batch_execute(&format!(
+                "INSERT INTO channel_notes (id, channel_id, title, content, position, version, created_user_id, created_at, updated_at) \
+                 VALUES ('', '{channel}', 'empty', 'body', 0, 1, '{owner}', now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC'), \
+                        ('{z_id}', '{channel}', 'z', 'body', 0, 1, '{owner}', now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC'), \
+                        ('{m_id}', '{channel}', 'm', 'body', 1, 1, '{owner}', now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC');"
+            ))
+            .await?;
 
-    // カーソル "<token> 0 " の id 部分は空文字。区切りはあるため 400 ではなく継続する。
-    let (status, body) = request(
-        &app,
-        "GET",
-        &format!("{collection}?limit=1&after={token}%200%20"),
-        &owner,
-        Value::Null,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(
-        body["data"].as_array().unwrap()[0]["id"],
-        "z",
-        "the empty-id cursor continues at the next id at the same position: {body}"
-    );
-    let (status, body) = request(
-        &app,
-        "GET",
-        &format!("{collection}?limit=1&after={token}%200%20z"),
-        &owner,
-        Value::Null,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["data"].as_array().unwrap()[0]["id"], "m");
-    // id 区切りそのものが欠けたカーソルは 400。
-    let (status, body) = request(
-        &app,
-        "GET",
-        &format!("{collection}?limit=1&after={token}%200"),
-        &owner,
-        Value::Null,
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        let collection = format!("/api/channels/{channel}/notes");
+        let (status, body) = request(&app, "GET", &collection, &owner, Value::Null).await;
+        anyhow::ensure!(status == StatusCode::OK, "{body}");
+        let page = page_ids(&body)?;
+        anyhow::ensure!(page.len() == 3, "{body}");
+        anyhow::ensure!(
+            page.first().is_some_and(String::is_empty),
+            "the empty id sorts first at position 0: {body}"
+        );
+        anyhow::ensure!(
+            page.get(1).is_some_and(|id| id == &z_id),
+            "the z note sorts second at position 0: {body}"
+        );
+        anyhow::ensure!(
+            page.get(2).is_some_and(|id| id == &m_id),
+            "the m note sorts last at position 1: {body}"
+        );
+        let token = body["data"]
+            .as_array()
+            .and_then(|page| page.first())
+            .and_then(|note| note["order_token"].as_str())
+            .ok_or_else(|| anyhow::anyhow!("missing order_token on the first note: {body}"))?
+            .to_owned();
 
-    // 削除済み一覧も同じ扱いにする。id は主キーで空文字は DB 全体に 1 つしか置けない
-    // ため、このノートを削除済みへ移して再利用し、同じ deleted_at の 2 件を追加する。
-    // 1 つの batch_execute は単一トランザクションで実行されるため、3 件の deleted_at
-    // (now() 基準) が一致し、(deleted_at, id) 順は id の比較で決まる。
-    client
-        .batch_execute(&format!(
-            "UPDATE channel_notes SET deleted_at = now() AT TIME ZONE 'UTC' - interval '1 hour', version = version + 1, updated_at = now() AT TIME ZONE 'UTC' \
-               WHERE id = '' AND channel_id = '{channel}'; \
-             INSERT INTO channel_notes (id, channel_id, title, content, position, deleted_at, version, created_user_id, created_at, updated_at) \
-             VALUES ('dm', '{channel}', 'dm', 'body', 0, now() AT TIME ZONE 'UTC' - interval '1 hour', 1, '{owner}', now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC'), \
-                    ('dz', '{channel}', 'dz', 'body', 0, now() AT TIME ZONE 'UTC' - interval '1 hour', 1, '{owner}', now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC');"
-        ))
-        .await?;
-    let deleted_collection = format!("{collection}/deleted");
-    let (status, body) = request(&app, "GET", &deleted_collection, &owner, Value::Null).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let page = body["data"].as_array().unwrap();
-    assert_eq!(page.len(), 3, "{body}");
-    assert_eq!(page[0]["id"], "");
-    assert_eq!(page[1]["id"], "dm");
-    assert_eq!(page[2]["id"], "dz");
-    let deleted_at = page[0]["deleted_at"].as_str().unwrap().to_owned();
-    assert_eq!(
-        deleted_at.len(),
-        23,
-        "the deleted list emits the fixed millisecond deleted_at used by cursors"
-    );
-
-    let (status, body) = request(
-        &app,
-        "GET",
-        &format!("{deleted_collection}?limit=1"),
-        &owner,
-        Value::Null,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["data"].as_array().unwrap()[0]["id"], "");
-    // カーソル "<deleted_at> " (空 id) で次ページに継続する。
-    let (status, body) = request(
-        &app,
-        "GET",
-        &format!("{deleted_collection}?limit=1&after={deleted_at}%20"),
-        &owner,
-        Value::Null,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(
-        body["data"].as_array().unwrap()[0]["id"],
-        "dm",
-        "the empty-id deleted cursor continues at the next id: {body}"
-    );
-    let (status, body) = request(
-        &app,
-        "GET",
-        &format!("{deleted_collection}?limit=1&after={deleted_at}%20dm"),
-        &owner,
-        Value::Null,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["data"].as_array().unwrap()[0]["id"], "dz");
-    let (status, body) = request(
-        &app,
-        "GET",
-        &format!("{deleted_collection}?limit=1&after={deleted_at}"),
-        &owner,
-        Value::Null,
-    )
-    .await;
-    assert_eq!(
-        status,
-        StatusCode::BAD_REQUEST,
-        "a deleted cursor without the id separator is rejected: {body}"
-    );
-
-    // 空の id は DB 全体で一意なため、後続のテスト実行のために片付ける。
-    let cleanup = client.transaction().await?;
-    cleanup
-        .execute("SET LOCAL zoo.suppress_app_events = 'on'", &[])
-        .await?;
-    cleanup
-        .execute(
-            "DELETE FROM channel_user WHERE channel_id = $1",
-            &[&channel],
+        let (status, body) = request(
+            &app,
+            "GET",
+            &format!("{collection}?limit=1"),
+            &owner,
+            Value::Null,
         )
-        .await?;
-    cleanup
-        .execute(
-            "DELETE FROM app_deliveries WHERE channel_id = $1",
-            &[&channel],
+        .await;
+        anyhow::ensure!(status == StatusCode::OK, "{body}");
+        anyhow::ensure!(
+            page_ids(&body)?.first().is_some_and(String::is_empty),
+            "the first active page starts with the empty id: {body}"
+        );
+
+        // カーソル "<token> 0 " の id 部分は空文字。区切りはあるため 400 ではなく継続する。
+        let (status, body) = request(
+            &app,
+            "GET",
+            &format!("{collection}?limit=1&after={token}%200%20"),
+            &owner,
+            Value::Null,
         )
-        .await?;
-    cleanup
-        .execute("DELETE FROM channels WHERE id = $1", &[&channel])
-        .await?;
-    cleanup
-        .execute("DELETE FROM users WHERE id = $1", &[&owner])
-        .await?;
-    cleanup.commit().await?;
-    Ok(())
+        .await;
+        anyhow::ensure!(status == StatusCode::OK, "{body}");
+        anyhow::ensure!(
+            page_ids(&body)?.first().is_some_and(|id| id == &z_id),
+            "the empty-id cursor continues at the next id at the same position: {body}"
+        );
+        let (status, body) = request(
+            &app,
+            "GET",
+            &format!("{collection}?limit=1&after={token}%200%20z_{channel}"),
+            &owner,
+            Value::Null,
+        )
+        .await;
+        anyhow::ensure!(status == StatusCode::OK, "{body}");
+        anyhow::ensure!(
+            page_ids(&body)?.first().is_some_and(|id| id == &m_id),
+            "the cursor continues at the last id: {body}"
+        );
+        // id 区切りそのものが欠けたカーソルは 400。
+        let (status, body) = request(
+            &app,
+            "GET",
+            &format!("{collection}?limit=1&after={token}%200"),
+            &owner,
+            Value::Null,
+        )
+        .await;
+        anyhow::ensure!(status == StatusCode::BAD_REQUEST, "{body}");
+
+        // 削除済み一覧も同じ扱いにする。id は主キーで空文字は DB 全体に 1 つしか置けない
+        // ため、このノートを削除済みへ移して再利用し、同じ deleted_at の 2 件を追加する。
+        // 1 つの batch_execute は単一トランザクションで実行されるため、3 件の deleted_at
+        // (now() 基準) が一致し、(deleted_at, id) 順は id の比較で決まる。
+        client
+            .batch_execute(&format!(
+                "UPDATE channel_notes SET deleted_at = now() AT TIME ZONE 'UTC' - interval '1 hour', version = version + 1, updated_at = now() AT TIME ZONE 'UTC' \
+                   WHERE id = '' AND channel_id = '{channel}'; \
+                 INSERT INTO channel_notes (id, channel_id, title, content, position, deleted_at, version, created_user_id, created_at, updated_at) \
+                 VALUES ('{dm_id}', '{channel}', 'dm', 'body', 0, now() AT TIME ZONE 'UTC' - interval '1 hour', 1, '{owner}', now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC'), \
+                        ('{dz_id}', '{channel}', 'dz', 'body', 0, now() AT TIME ZONE 'UTC' - interval '1 hour', 1, '{owner}', now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC');"
+            ))
+            .await?;
+        let deleted_collection = format!("{collection}/deleted");
+        let (status, body) = request(&app, "GET", &deleted_collection, &owner, Value::Null).await;
+        anyhow::ensure!(status == StatusCode::OK, "{body}");
+        let page = page_ids(&body)?;
+        anyhow::ensure!(page.len() == 3, "{body}");
+        anyhow::ensure!(
+            page.first().is_some_and(String::is_empty),
+            "the empty id sorts first in the deleted list: {body}"
+        );
+        anyhow::ensure!(
+            page.get(1).is_some_and(|id| id == &dm_id),
+            "the dm note sorts second: {body}"
+        );
+        anyhow::ensure!(
+            page.get(2).is_some_and(|id| id == &dz_id),
+            "the dz note sorts last: {body}"
+        );
+        let deleted_at = body["data"]
+            .as_array()
+            .and_then(|page| page.first())
+            .and_then(|note| note["deleted_at"].as_str())
+            .ok_or_else(|| anyhow::anyhow!("missing deleted_at on the first deleted note: {body}"))?
+            .to_owned();
+        anyhow::ensure!(
+            deleted_at.len() == 23,
+            "the deleted list emits the fixed millisecond deleted_at used by cursors"
+        );
+
+        let (status, body) = request(
+            &app,
+            "GET",
+            &format!("{deleted_collection}?limit=1"),
+            &owner,
+            Value::Null,
+        )
+        .await;
+        anyhow::ensure!(status == StatusCode::OK, "{body}");
+        anyhow::ensure!(
+            page_ids(&body)?.first().is_some_and(String::is_empty),
+            "the first deleted page starts with the empty id: {body}"
+        );
+        // カーソル "<deleted_at> " (空 id) で次ページに継続する。
+        let (status, body) = request(
+            &app,
+            "GET",
+            &format!("{deleted_collection}?limit=1&after={deleted_at}%20"),
+            &owner,
+            Value::Null,
+        )
+        .await;
+        anyhow::ensure!(status == StatusCode::OK, "{body}");
+        anyhow::ensure!(
+            page_ids(&body)?.first().is_some_and(|id| id == &dm_id),
+            "the empty-id deleted cursor continues at the next id: {body}"
+        );
+        let (status, body) = request(
+            &app,
+            "GET",
+            &format!("{deleted_collection}?limit=1&after={deleted_at}%20dm_{channel}"),
+            &owner,
+            Value::Null,
+        )
+        .await;
+        anyhow::ensure!(status == StatusCode::OK, "{body}");
+        anyhow::ensure!(
+            page_ids(&body)?.first().is_some_and(|id| id == &dz_id),
+            "the deleted cursor continues at the last id: {body}"
+        );
+        let (status, body) = request(
+            &app,
+            "GET",
+            &format!("{deleted_collection}?limit=1&after={deleted_at}"),
+            &owner,
+            Value::Null,
+        )
+        .await;
+        anyhow::ensure!(
+            status == StatusCode::BAD_REQUEST,
+            "a deleted cursor without the id separator is rejected: {body}"
+        );
+        Ok::<(), anyhow::Error>(())
+    })
+    .catch_unwind()
+    .await;
+    let test_result: anyhow::Result<()> = match outcome {
+        Ok(result) => result,
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("non-string panic payload");
+            Err(anyhow::anyhow!(
+                "empty-id pagination test panicked: {message}"
+            ))
+        }
+    };
+
+    // 空の id は DB 全体で一意なため、アサーションや panic の後も必ず片付ける。
+    // ほかのチャンネル・ユーザーの行は消さず、このテストが作った行だけを消す。
+    let cleanup_result: anyhow::Result<()> = async {
+        let cleanup = client.transaction().await?;
+        cleanup
+            .execute("SET LOCAL zoo.suppress_app_events = 'on'", &[])
+            .await?;
+        // 直接 SQL の削除もノートロック契約に従い、チャンネルの advisory lock と
+        // `channels` の共有ロックを先に取ってから `channel_notes` を触る。
+        cleanup
+            .query_one(
+                "SELECT pg_advisory_xact_lock(hashtextextended('channel-notes:' || $1, 0))",
+                &[&channel],
+            )
+            .await?;
+        cleanup
+            .execute(
+                "SELECT 1 FROM channels WHERE id = $1 FOR SHARE",
+                &[&channel],
+            )
+            .await?;
+        cleanup
+            .execute(
+                "DELETE FROM channel_notes WHERE channel_id = $1",
+                &[&channel],
+            )
+            .await?;
+        cleanup
+            .execute(
+                "DELETE FROM channel_user WHERE channel_id = $1",
+                &[&channel],
+            )
+            .await?;
+        // 既定チャンネルへの参加行は ON DELETE RESTRICT でユーザー削除を拒否する。
+        // このテストで作ったユーザーの参加行だけを先に消す。
+        cleanup
+            .execute("DELETE FROM channel_user WHERE user_id = $1", &[&owner])
+            .await?;
+        cleanup
+            .execute(
+                "DELETE FROM app_deliveries WHERE channel_id = $1",
+                &[&channel],
+            )
+            .await?;
+        cleanup
+            .execute("DELETE FROM channels WHERE id = $1", &[&channel])
+            .await?;
+        cleanup
+            .execute("DELETE FROM users WHERE id = $1", &[&owner])
+            .await?;
+        cleanup.commit().await?;
+        Ok(())
+    }
+    .await;
+    match (test_result, cleanup_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(err), Ok(())) | (Ok(()), Err(err)) => Err(err),
+        (Err(test_err), Err(cleanup_err)) => Err(anyhow::anyhow!(
+            "{test_err:#}; cleanup failed: {cleanup_err:#}"
+        )),
+    }
 }
 
 #[tokio::test]
@@ -4878,7 +5019,7 @@ async fn extreme_positions_are_compacted_on_create_and_restore() -> anyhow::Resu
     );
 
     // 復元: 位置ずらし (position + 1) が i32::MAX 行に当たるときも連番へ詰め直す。
-    // 復元ノートを含む全体を (position, id) 順に振り直すため、復元ノートの相対位置も保たれる。
+    // 同じ position に既存の有効ノートがある場合、復元対象ノート (ID が大きくても) を先に置く。
     let restore_channel = Uuid::new_v4().to_string();
     let created = request(
         &app,
@@ -4893,14 +5034,14 @@ async fn extreme_positions_are_compacted_on_create_and_restore() -> anyhow::Resu
     )
     .await;
     assert_eq!(created.0, StatusCode::OK, "{}", created.1);
-    let first_id = format!("max-pos-restore-first-{}", Uuid::new_v4().simple());
-    let middle_id = format!("max-pos-restore-middle-{}", Uuid::new_v4().simple());
-    let last_id = format!("max-pos-restore-last-{}", Uuid::new_v4().simple());
+    let first_id = format!("a-active-at-zero-{}", Uuid::new_v4().simple());
+    let restored_at_zero_id = format!("z-restored-at-zero-{}", Uuid::new_v4().simple());
+    let last_id = format!("m-last-at-max-{}", Uuid::new_v4().simple());
     client
         .batch_execute(&format!(
             "INSERT INTO channel_notes (id, channel_id, title, content, position, deleted_at, version, created_user_id, created_at, updated_at) \
              VALUES ('{first_id}', '{restore_channel}', 'first', 'body', 0, NULL, 1, '{owner}', now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC'), \
-                    ('{middle_id}', '{restore_channel}', 'middle', 'body', 1, now() AT TIME ZONE 'UTC' - interval '1 hour', 1, '{owner}', now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC'), \
+                    ('{restored_at_zero_id}', '{restore_channel}', 'restored', 'body', 0, now() AT TIME ZONE 'UTC' - interval '1 hour', 1, '{owner}', now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC'), \
                     ('{last_id}', '{restore_channel}', 'last', 'body', 2147483647, NULL, 1, '{owner}', now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC');"
         ))
         .await?;
@@ -4908,15 +5049,15 @@ async fn extreme_positions_are_compacted_on_create_and_restore() -> anyhow::Resu
     let (status, body) = request(
         &app,
         "POST",
-        &format!("{restore_collection}/{middle_id}/restore"),
+        &format!("{restore_collection}/{restored_at_zero_id}/restore"),
         &owner,
         Value::Null,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{}", body);
     assert_eq!(
-        body["data"]["position"], 1,
-        "the restored note keeps its rank between its neighbors: {body}"
+        body["data"]["position"], 0,
+        "the restored note precedes the existing note at the same position even when compaction runs: {body}"
     );
     let (status, body) = request(&app, "GET", &restore_collection, &owner, Value::Null).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -4933,8 +5074,8 @@ async fn extreme_positions_are_compacted_on_create_and_restore() -> anyhow::Resu
         .collect();
     assert_eq!(
         order,
-        vec![(0, first_id), (1, middle_id), (2, last_id)],
-        "restore compacts the whole active set (restored note included) preserving relative order: {body}"
+        vec![(0, restored_at_zero_id), (1, first_id), (2, last_id)],
+        "restore compacts the whole active set placing the restored note before existing notes at the same position: {body}"
     );
     Ok(())
 }

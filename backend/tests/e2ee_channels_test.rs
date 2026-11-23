@@ -1401,6 +1401,7 @@ async fn member_additions_wait_for_a_device_deletion_bump() {
 async fn encrypted_dm_and_channel_add_do_not_deadlock_on_member_user_row() -> anyhow::Result<()> {
     let env = env().await;
     let alice = env.user().await;
+    let carol = env.user().await;
     // 既定チャンネルへの自動参加があると、暗号化チャンネルへの追加が 2 件目の
     // 非 DM 所属になって 23514 で拒否され、ロック順と無関係に失敗する。
     let bob = env.user_without_default_channels().await;
@@ -1409,7 +1410,7 @@ async fn encrypted_dm_and_channel_add_do_not_deadlock_on_member_user_row() -> an
         &[&bob],
     )
     .await?;
-    let target = env.encrypted_channel(&alice, &[]).await;
+    let target = env.encrypted_channel(&carol, &[]).await;
     dotenvy::dotenv().ok();
     dotenvy::from_filename("../.env").ok();
     let config = Config::from_env();
@@ -1448,7 +1449,7 @@ async fn encrypted_dm_and_channel_add_do_not_deadlock_on_member_user_row() -> an
 
     let add = {
         let app = env.app.clone();
-        let actor = alice.clone();
+        let actor = carol.clone();
         let path = format!("/api/channels/{target}/users");
         let body = json!({"user_id": bob});
         tokio::spawn(async move { request(&app, "POST", &path, &actor, body).await })

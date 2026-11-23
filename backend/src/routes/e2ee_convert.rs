@@ -189,9 +189,11 @@ async fn try_encrypt(
                  WHERE g.channel_id = cu.channel_id AND g.bot_user_id = cu.user_id)),
            'webhooks', EXISTS (SELECT 1 FROM channel_webhooks WHERE channel_id = $1),
            'encrypted_dm', $2 <> '' AND EXISTS (SELECT 1 FROM channels WHERE channel_name = $2),
-           'channel_notes', EXISTS (SELECT 1 FROM channel_notes
-             WHERE channel_id = $1
-               AND (deleted_at IS NULL OR deleted_at >= (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours')))::text",
+           'channel_notes', (EXISTS (SELECT 1 FROM channel_notes
+             WHERE channel_id = $1 AND deleted_at IS NULL)
+             OR EXISTS (SELECT 1 FROM channel_notes
+               WHERE channel_id = $1
+                 AND deleted_at >= (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours')))::text",
         &[id, renamed.as_deref().unwrap_or("")],
     )
     .await?

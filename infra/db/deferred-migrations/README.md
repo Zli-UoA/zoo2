@@ -42,8 +42,13 @@ dropped together with the moved file.
 （`infra/db/migrations/20261129020001_guest_membership_no_key_update.sql` の
 `CREATE OR REPLACE FUNCTION app_guest_membership_rules()`）を再実行すれば、
 トリガー定義は常にロックしない版へ戻り、`atlas_schema_revisions_deferred` の
-記録はそのまま残る（記録の削除は不要）。新バックエンドへ戻すときは、deferred
-移行を `--allow-dirty` 付きで再適用すればよい。バックエンドのロールバック中は、
+記録はそのまま残る（記録の削除は不要）。ただし、`20261129020009` の適用記録が
+残った状態では `atlas migrate apply --allow-dirty` を再実行しても既適用とみなされ
+SQL が再実行されないため、切り戻し後に新バックエンドへ再移行するときは、旧版が
+すべて停止したことを確認してから `infra/db/deferred-migrations/20261129020009_guest_membership_lock_order.sql`
+の `CREATE OR REPLACE FUNCTION app_guest_membership_rules()` を直接実行し、
+`SELECT pg_get_functiondef('app_guest_membership_rules()'::regprocedure);` で常時
+`users` 行をロックする定義に戻ったことを確認すること。バックエンドのロールバック中は、
 暗号化チャンネルへの所属追加とユーザー無効化が並行して 40P01 で中止され得る
 点も `infra/README.md` の段階デプロイの節と同様に扱うこと。
 

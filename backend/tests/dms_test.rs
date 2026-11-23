@@ -542,7 +542,20 @@ async fn reopening_plain_dm_does_not_deadlock_with_concurrent_e2ee_conversion() 
         .uri(format!("/api/channels/{channel_id}/leave"))
         .header("X-Dev-User", &actor)
         .body(Body::empty())?;
-    assert_eq!(app.clone().oneshot(leave).await?.status(), StatusCode::OK);
+    let leave_response = match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        app.clone().oneshot(leave),
+    )
+    .await
+    {
+        Ok(res) => res?,
+        Err(_) => {
+            convert.abort();
+            let _ = blocker.rollback().await;
+            anyhow::bail!("leave request timed out while waiting during DM conversion");
+        }
+    };
+    assert_eq!(leave_response.status(), StatusCode::OK);
 
     let reopen_app = app.clone();
     let reopen_actor = actor.clone();

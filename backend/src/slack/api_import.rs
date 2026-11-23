@@ -97,7 +97,11 @@ mod tests {
             .await?
             .get(0);
         anyhow::ensure!(database.contains("test"), "refusing non-test database");
-        let db = crate::db::init_db(&database_url).await?;
+        let db = crate::db::init_db_with_pool(
+            &database_url,
+            crate::db::configured_max_pool_size().max(2),
+        )
+        .await?;
         let mut fixture_teams = Vec::new();
         let test_result: anyhow::Result<()> = async {
             for (case, paths) in [
@@ -343,6 +347,190 @@ mod tests {
             anyhow::ensure!(resolved == vec![member_id], "fixed API import resolved the wrong member: {resolved:?}");
             Ok(())
         }.await;
+        cleanup_fixture(&db, &team, &creator_id).await?;
+        test_result
+    }
+
+    /// API 取り込み (`resolve_members`) は `lock_links` (付け替えとの直列化) を
+    /// users 行のロックやプレースホルダ作成より前に取る。この直列化があるため、本番の
+    /// 取り込みと付け替え (`reassign`・`reconcile_team`) は users 行のロック区間で
+    /// 重ならない。リンクロックを別トランザクションに持たせて取り込みを止め、その間に
+    /// プレースホルダも users 行も書かれていないことを確認する
+    /// (users 行ロックの順序そのものは、E2EE のメンバー追加・退出との組合せで
+    /// `slack_link_test` の `reconcile_team_user_row_locks_in_sorted_order_do_not_deadlock_with_lock_membership_users`
+    /// が検証する)。
+    #[ignore = "requires an explicitly configured disposable SLACK_IMPORT_TEST_DATABASE_URL"]
+    #[tokio::test]
+    async fn resolve_members_waits_for_the_link_lock_before_touching_user_rows()
+    -> anyhow::Result<()> {
+        dotenvy::dotenv().ok();
+        dotenvy::from_filename("../.env").ok();
+        let database_url = std::env::var("SLACK_IMPORT_TEST_DATABASE_URL")?;
+        let (mut guard, guard_driver) =
+            tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+        tokio::spawn(guard_driver);
+        let database: String = guard
+            .query_one("SELECT current_database()", &[])
+            .await?
+            .get(0);
+        anyhow::ensure!(
+            database.contains("test"),
+            "refusing non-test database `{database}`"
+        );
+        let db = crate::db::init_db(&database_url).await?;
+        let team = format!("TLINK{}", uuid::Uuid::new_v4().simple());
+        let slack_id = format!(
+            "U{}",
+            uuid::Uuid::new_v4()
+                .simple()
+                .to_string()
+                .to_ascii_uppercase()
+        );
+        let member_id = super::super::user_id(&team, &slack_id);
+        let creator_id = uuid::Uuid::new_v4().to_string();
+        let mut setup_db = db.clone();
+        let mut setup = setup_db.transaction().await?;
+        toasty::sql::statement(
+            "INSERT INTO users(id,user_name,display_name) VALUES($1,$2,'Creator')",
+        )
+        .bind(creator_id.as_str())
+        .bind(format!(
+            "link_lock_creator_{}",
+            uuid::Uuid::new_v4().simple()
+        ))
+        .exec(&mut setup)
+        .await?;
+        setup.commit().await?;
+        let mut tasks = tokio::task::JoinSet::new();
+        let test_result: anyhow::Result<()> = async {
+            // 本体の外でリンクロックを持ち、取り込みをそこで止める。
+            let guard_pid: i32 = guard
+                .query_one("SELECT pg_backend_pid()", &[])
+                .await?
+                .get(0);
+            let guard_tx = guard.transaction().await?;
+            guard_tx
+                .query_one(
+                    "SELECT pg_advisory_xact_lock(hashtextextended('slack-link',0))",
+                    &[],
+                )
+                .await?;
+
+            let resolve_db = db.clone();
+            let resolve_team = team.clone();
+            let resolve_slack = slack_id.clone();
+            let resolve_creator = creator_id.clone();
+            let (pid_tx, pid_rx) = tokio::sync::oneshot::channel::<i32>();
+            tasks.spawn(async move {
+                let mut db = resolve_db;
+                let mut tx = db.transaction().await?;
+                let pid: i32 = query(
+                    &mut tx,
+                    "SELECT json_build_object('pid',pg_backend_pid())::text",
+                    &[],
+                )
+                .await?[0]["pid"]
+                    .as_i64()
+                    .unwrap() as i32;
+                let _ = pid_tx.send(pid);
+                let mut ctx = Context {
+                    team: resolve_team,
+                    users: HashMap::new(),
+                    profiles: HashMap::new(),
+                    fallback_names: HashMap::new(),
+                    channel_names: HashMap::new(),
+                    files: FilePolicy {
+                        token: false,
+                        max_size: 0,
+                        base_url: String::new(),
+                    },
+                    app_id: None,
+                };
+                let resolved = super::resolve_members(
+                    &mut ctx,
+                    &mut tx,
+                    std::slice::from_ref(&resolve_slack),
+                    &resolve_creator,
+                )
+                .await?;
+                tx.commit().await?;
+                Ok::<Vec<String>, anyhow::Error>(
+                    resolved.into_iter().map(|user| user.id).collect(),
+                )
+            });
+            let resolve_pid = pid_rx.await?;
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let waiting: bool = guard_tx
+                        .query_one(
+                            "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock' AND $2=ANY(pg_blocking_pids(pid)))",
+                            &[&resolve_pid, &guard_pid],
+                        )
+                        .await?
+                        .get(0);
+                    if waiting {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Ok::<_, anyhow::Error>(())
+            })
+            .await??;
+            // リンクロックで止まっている間、プレースホルダの users 行はまだ作られていない。
+            // これが保証されないと、付け替えと取り込みが users 行のロック区間で重なる。
+            let placeholders_during_wait: i64 = guard_tx
+                .query_one("SELECT count(*) FROM users WHERE id=$1", &[&member_id])
+                .await?
+                .get(0);
+            anyhow::ensure!(
+                placeholders_during_wait == 0,
+                "resolve_members must wait for the link lock before creating the placeholder"
+            );
+            // ロックを放し、取り込みが通ってプレースホルダを作るのを確認する。
+            guard_tx.rollback().await?;
+            let joined = tokio::time::timeout(Duration::from_secs(5), tasks.join_next()).await?
+                .ok_or_else(|| anyhow::anyhow!("resolve task exited without a result"))?
+                .map_err(anyhow::Error::from)?;
+            let resolved = joined?;
+            anyhow::ensure!(
+                resolved == vec![member_id.clone()],
+                "resolve_members resolved the wrong member: {resolved:?}"
+            );
+            let placeholders_after: i64 = guard
+                .query_one("SELECT count(*) FROM users WHERE id=$1", &[&member_id])
+                .await?
+                .get(0);
+            anyhow::ensure!(
+                placeholders_after == 1,
+                "resolve_members must create the placeholder after acquiring the link lock"
+            );
+            Ok(())
+        }
+        .await;
+        // 本体がどの時点で失敗しても、止まっていた取り込みタスクを中断して終了を待ってから
+        // 後片付けする (リンクロック側のトランザクションは本体の終了で必ず破棄されるので、
+        // 待ちは残らない)。終了を確かめられないままユーザー行を消すと、タスクと競合する。
+        if !tasks.is_empty() {
+            tasks.abort_all();
+        }
+        let tasks_terminated = if tasks.is_empty() {
+            true
+        } else {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while tasks.join_next().await.is_some() {}
+            })
+            .await
+            .is_ok()
+        };
+        if !tasks_terminated {
+            let test_error = match test_result {
+                Ok(()) => "test failed".to_owned(),
+                Err(error) => format!("{error:#}"),
+            };
+            return Err(anyhow::anyhow!(
+                "{test_error}; cleanup skipped because a background task did not terminate within 5s"
+            ));
+        }
         cleanup_fixture(&db, &team, &creator_id).await?;
         test_result
     }

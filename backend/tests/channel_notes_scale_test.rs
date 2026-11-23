@@ -80,8 +80,8 @@ async fn measure(
     output: &Option<std::path::PathBuf>,
     metrics: &mut serde_json::Map<String, Value>,
 ) -> anyhow::Result<()> {
-    let mut max = None;
-    for concurrency in [1, 8] {
+    for (concurrency, plan_kind) in [(1, "custom"), (8, "generic")] {
+        let mut plan_max = None;
         let mut tasks = tokio::task::JoinSet::new();
         for _ in 0..concurrency {
             let url = url.to_owned();
@@ -131,31 +131,32 @@ async fn measure(
         }
         while let Some(value) = tasks.join_next().await {
             let value = value??;
-            max = Some(match max {
+            plan_max = Some(match plan_max {
                 Some(previous) => merge_work(previous, value),
                 None => value,
             });
         }
+        let plan_max = plan_max.expect("measurement");
+        let key = format!("{name}/{plan_kind}");
+        eprintln!(
+            "{key}/{}: rows={} blocks={}",
+            if bound > 512.0 { "cleanup" } else { "note" },
+            plan_max["relations"]
+                .as_object()
+                .unwrap()
+                .values()
+                .map(|value| value.as_f64().unwrap_or(0.))
+                .sum::<f64>(),
+            plan_max["logical_blocks"]
+        );
+        if let Some(dir) = output {
+            std::fs::write(
+                dir.join(format!("{name}_{plan_kind}.json")),
+                serde_json::to_vec_pretty(&plan_max)?,
+            )?;
+        }
+        metrics.insert(key, plan_max);
     }
-    let max = max.expect("measurement");
-    eprintln!(
-        "{name}/{}: rows={} blocks={}",
-        if bound > 512.0 { "cleanup" } else { "note" },
-        max["relations"]
-            .as_object()
-            .unwrap()
-            .values()
-            .map(|value| value.as_f64().unwrap_or(0.))
-            .sum::<f64>(),
-        max["logical_blocks"]
-    );
-    if let Some(dir) = output {
-        std::fs::write(
-            dir.join(format!("{name}.json")),
-            serde_json::to_vec_pretty(&max)?,
-        )?;
-    }
-    metrics.insert(name.into(), max);
     Ok(())
 }
 
@@ -271,14 +272,12 @@ async fn channel_notes_work_is_bounded_by_channel_notes_not_history() -> anyhow:
     let active_note = format!("note-{target_active}-0");
     let deleted_note = format!("note-{target_deleted}-0");
     let mut metrics = serde_json::Map::new();
-    // Deep-page conditions are recorded separately from the 13 cross-scale
-    // conditions in work.json: compare-channel-notes-work.py pins the
-    // work.json condition set, and the deep probes are additionally checked
-    // here by the same absolute bounds at both scales and both plan modes.
-    let mut deep_metrics = serde_json::Map::new();
     // Probes bind the target ids as parameters, exactly like the production
     // statements: custom samples (concurrency 1) plan with the bound values and
-    // generic samples (concurrency 8) plan without them.
+    // generic samples (concurrency 8) plan without them. All 15 conditions
+    // (including the 2 deep-page conditions) are recorded per plan mode in
+    // work.json so compare-channel-notes-work.py compares both plans and
+    // deep-page conditions across scales.
     // The active list returns metadata only; the ordering CTE computes the
     // channel-wide order token in the same statement (K <= 500 active notes).
     let list = "WITH ordering AS (\
@@ -295,7 +294,8 @@ async fn channel_notes_work_is_bounded_by_channel_notes_not_history() -> anyhow:
         ) \
         SELECT page.id, page.channel_id, page.title, page.position, page.version, \
                page.created_user_id, page.created_at, page.updated_at, ordering.order_token \
-        FROM ordering LEFT JOIN page ON true";
+        FROM ordering LEFT JOIN page ON true \
+        ORDER BY page.position, page.id";
     measure(
         &url,
         "notes_list",
@@ -326,31 +326,39 @@ async fn channel_notes_work_is_bounded_by_channel_notes_not_history() -> anyhow:
         &[target_active.as_str(), "40", active_note_40.as_str(), "10"],
         256.,
         &output,
-        &mut deep_metrics,
+        &mut metrics,
     )
     .await?;
-    let list_deleted = "SELECT id, channel_id, title, content, position, version, created_user_id, \
+    let list_deleted_first = "SELECT id, channel_id, title, content, position, version, created_user_id, \
                 to_char(created_at, 'YYYY-MM-DD') || 'T' || to_char(created_at, 'HH24:MI:SS.MS'), \
                 to_char(updated_at, 'YYYY-MM-DD') || 'T' || to_char(updated_at, 'HH24:MI:SS.MS'), \
                 to_char(deleted_at, 'YYYY-MM-DD') || 'T' || to_char(deleted_at, 'HH24:MI:SS.MS') \
          FROM channel_notes \
          WHERE channel_id = $1 AND deleted_at IS NOT NULL \
            AND deleted_at >= (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours' \
-           AND (CASE WHEN $2 = '' THEN true ELSE (deleted_at, id) > ($2::timestamp(3), $3) END) \
-         ORDER BY deleted_at, id LIMIT $4::integer";
+         ORDER BY deleted_at, id LIMIT $2::integer";
     measure(
         &url,
         "notes_list_deleted",
-        list_deleted,
-        &[target_deleted.as_str(), "", "", "50"],
+        list_deleted_first,
+        &[target_deleted.as_str(), "50"],
         256.,
         &output,
         &mut metrics,
     )
     .await?;
     // The deleted-list deep page continues after the 46th of the 50 in-window
-    // tombstones. The cursor datetime is read from the fixture itself so the
-    // probe binds the exact millisecond text the API would emit.
+    // tombstones using the dedicated continuation SQL (`(deleted_at, id) > (...)`
+    // directly in WHERE without a CASE wrapper).
+    let list_deleted_after = "SELECT id, channel_id, title, content, position, version, created_user_id, \
+                to_char(created_at, 'YYYY-MM-DD') || 'T' || to_char(created_at, 'HH24:MI:SS.MS'), \
+                to_char(updated_at, 'YYYY-MM-DD') || 'T' || to_char(updated_at, 'HH24:MI:SS.MS'), \
+                to_char(deleted_at, 'YYYY-MM-DD') || 'T' || to_char(deleted_at, 'HH24:MI:SS.MS') \
+         FROM channel_notes \
+         WHERE channel_id = $1 AND deleted_at IS NOT NULL \
+           AND deleted_at >= (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours' \
+           AND (deleted_at, id) > ($2::timestamp(3), $3) \
+         ORDER BY deleted_at, id LIMIT $4::integer";
     let deleted_note_45 = format!("note-{target_deleted}-45");
     let deep_deleted_at: String = client
         .query_one(
@@ -363,7 +371,7 @@ async fn channel_notes_work_is_bounded_by_channel_notes_not_history() -> anyhow:
     measure(
         &url,
         "notes_list_deleted_deep",
-        list_deleted,
+        list_deleted_after,
         &[
             target_deleted.as_str(),
             deep_deleted_at.as_str(),
@@ -372,7 +380,7 @@ async fn channel_notes_work_is_bounded_by_channel_notes_not_history() -> anyhow:
         ],
         256.,
         &output,
-        &mut deep_metrics,
+        &mut metrics,
     )
     .await?;
     let show = "SELECT id, channel_id, title, content, position, deleted_at, version, created_user_id, created_at, updated_at \
@@ -505,8 +513,9 @@ async fn channel_notes_work_is_bounded_by_channel_notes_not_history() -> anyhow:
         &mut metrics,
     )
     .await?;
-    let encrypt_check = "SELECT EXISTS (SELECT 1 FROM channel_notes WHERE channel_id = $1 \
-         AND (deleted_at IS NULL OR deleted_at >= (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours'))";
+    let encrypt_check = "SELECT (EXISTS (SELECT 1 FROM channel_notes WHERE channel_id = $1 AND deleted_at IS NULL) \
+         OR EXISTS (SELECT 1 FROM channel_notes WHERE channel_id = $1 \
+           AND deleted_at >= (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours'))";
     measure(
         &url,
         "notes_encrypt_check",
@@ -519,13 +528,6 @@ async fn channel_notes_work_is_bounded_by_channel_notes_not_history() -> anyhow:
     .await?;
     if let Some(dir) = &output {
         std::fs::write(dir.join("work.json"), serde_json::to_vec_pretty(&metrics)?)?;
-        // The deep-page conditions keep the cross-scale condition set of
-        // work.json unchanged; their numbers live here for the performance
-        // record and the same absolute bounds already ran at both scales.
-        std::fs::write(
-            dir.join("deep.json"),
-            serde_json::to_vec_pretty(&deep_metrics)?,
-        )?;
     }
     Ok(())
 }

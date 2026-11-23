@@ -471,19 +471,39 @@ async fn ensure_note_capacity(
 async fn compact_active_note_positions(
     tx: &mut toasty::Transaction<'_>,
     channel_id: &str,
+    prioritize_note_id: Option<&str>,
 ) -> Result<i32, AppError> {
-    let rows = toasty::sql::query(
-        "WITH compacted AS (\
-             SELECT id, (ROW_NUMBER() OVER (ORDER BY position, id) - 1)::int AS position \
-             FROM channel_notes WHERE channel_id = $1 AND deleted_at IS NULL\
-         ) \
-         UPDATE channel_notes SET position = compacted.position \
-         FROM compacted WHERE channel_notes.id = compacted.id \
-         RETURNING compacted.position",
-    )
-    .bind(channel_id)
-    .exec(tx)
-    .await?;
+    let rows = match prioritize_note_id {
+        Some(restored_id) => {
+            toasty::sql::query(
+                "WITH compacted AS (\
+                     SELECT id, (ROW_NUMBER() OVER (ORDER BY position, (id <> $2), id) - 1)::int AS position \
+                     FROM channel_notes WHERE channel_id = $1 AND deleted_at IS NULL\
+                 ) \
+                 UPDATE channel_notes SET position = compacted.position \
+                 FROM compacted WHERE channel_notes.id = compacted.id \
+                 RETURNING compacted.position",
+            )
+            .bind(channel_id)
+            .bind(restored_id)
+            .exec(tx)
+            .await?
+        }
+        None => {
+            toasty::sql::query(
+                "WITH compacted AS (\
+                     SELECT id, (ROW_NUMBER() OVER (ORDER BY position, id) - 1)::int AS position \
+                     FROM channel_notes WHERE channel_id = $1 AND deleted_at IS NULL\
+                 ) \
+                 UPDATE channel_notes SET position = compacted.position \
+                 FROM compacted WHERE channel_notes.id = compacted.id \
+                 RETURNING compacted.position",
+            )
+            .bind(channel_id)
+            .exec(tx)
+            .await?
+        }
+    };
     // 行数 = 連番の個数 = 新しい末尾位置 + 1。上限 500 件のため i32 に収まる。
     // position 列は integer だが、::int を付けない window 関数の結果は bigint で
     // 返り得るため、両方の表現を受け付ける。
@@ -602,7 +622,8 @@ async fn list(
          ) \
          SELECT page.id, page.channel_id, page.title, page.position, page.version, \
                 page.created_user_id, page.created_at, page.updated_at, ordering.order_token \
-         FROM ordering LEFT JOIN page ON true",
+         FROM ordering LEFT JOIN page ON true \
+         ORDER BY page.position, page.id",
     )
     .bind(channel_id.as_str())
     .bind(after_position.as_str())
@@ -759,24 +780,43 @@ async fn list_deleted(
     // The eligibility predicate and response body must share one PostgreSQL
     // statement snapshot. Separate SELECTs under READ COMMITTED can combine a
     // pre-delete body with a post-delete eligibility check.
-    let rows = toasty::sql::query(
-        "SELECT id, channel_id, title, content, position, version, created_user_id, \
-                to_char(created_at, 'YYYY-MM-DD') || 'T' || to_char(created_at, 'HH24:MI:SS.MS'), \
-                to_char(updated_at, 'YYYY-MM-DD') || 'T' || to_char(updated_at, 'HH24:MI:SS.MS'), \
-                to_char(deleted_at, 'YYYY-MM-DD') || 'T' || to_char(deleted_at, 'HH24:MI:SS.MS') \
-         FROM channel_notes \
-         WHERE channel_id = $1 AND deleted_at IS NOT NULL \
-           AND deleted_at >= (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours' \
-           AND (CASE WHEN $2 = '' THEN true \
-                     ELSE (deleted_at, id) > ($2::timestamp(3), $3) END) \
-         ORDER BY deleted_at, id LIMIT $4",
-    )
-    .bind(channel_id.as_str())
-    .bind(after_deleted_at.as_str())
-    .bind(after_id.as_str())
-    .bind(limit)
-    .exec(&mut tx)
-    .await?;
+    // 先頭ページと継続ページの SQL を分ける。CASE の内側に置いた行比較は generic plan で
+    // 索引の開始条件にならないため、継続ページでは `(deleted_at, id) > (...)` を直接
+    // WHERE に置いてカーソル位置から索引走査を開始させる。
+    let rows = if after_deleted_at.is_empty() {
+        toasty::sql::query(
+            "SELECT id, channel_id, title, content, position, version, created_user_id, \
+                    to_char(created_at, 'YYYY-MM-DD') || 'T' || to_char(created_at, 'HH24:MI:SS.MS'), \
+                    to_char(updated_at, 'YYYY-MM-DD') || 'T' || to_char(updated_at, 'HH24:MI:SS.MS'), \
+                    to_char(deleted_at, 'YYYY-MM-DD') || 'T' || to_char(deleted_at, 'HH24:MI:SS.MS') \
+             FROM channel_notes \
+             WHERE channel_id = $1 AND deleted_at IS NOT NULL \
+               AND deleted_at >= (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours' \
+             ORDER BY deleted_at, id LIMIT $2",
+        )
+        .bind(channel_id.as_str())
+        .bind(limit)
+        .exec(&mut tx)
+        .await?
+    } else {
+        toasty::sql::query(
+            "SELECT id, channel_id, title, content, position, version, created_user_id, \
+                    to_char(created_at, 'YYYY-MM-DD') || 'T' || to_char(created_at, 'HH24:MI:SS.MS'), \
+                    to_char(updated_at, 'YYYY-MM-DD') || 'T' || to_char(updated_at, 'HH24:MI:SS.MS'), \
+                    to_char(deleted_at, 'YYYY-MM-DD') || 'T' || to_char(deleted_at, 'HH24:MI:SS.MS') \
+             FROM channel_notes \
+             WHERE channel_id = $1 AND deleted_at IS NOT NULL \
+               AND deleted_at >= (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours' \
+               AND (deleted_at, id) > ($2::timestamp(3), $3) \
+             ORDER BY deleted_at, id LIMIT $4",
+        )
+        .bind(channel_id.as_str())
+        .bind(after_deleted_at.as_str())
+        .bind(after_id.as_str())
+        .bind(limit)
+        .exec(&mut tx)
+        .await?
+    };
     let result: Vec<NoteResponse> = rows
         .into_iter()
         .map(|row| {
@@ -1003,7 +1043,7 @@ async fn restore(
         }
     };
     if position_overflow {
-        compact_active_note_positions(&mut tx, &channel_id).await?;
+        compact_active_note_positions(&mut tx, &channel_id, Some(&note_id)).await?;
     } else {
         toasty::sql::query(
             "UPDATE channel_notes SET position = position + 1          WHERE channel_id = $1 AND deleted_at IS NULL AND position >= $2 AND id <> $3",
@@ -1060,7 +1100,7 @@ async fn create(
     };
     let position = match max_position.checked_add(1) {
         Some(next) => next,
-        None => compact_active_note_positions(&mut tx, &channel_id).await?,
+        None => compact_active_note_positions(&mut tx, &channel_id, None).await?,
     };
     let note = toasty::create!(ChannelNote {
         id: id.as_str(),

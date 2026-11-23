@@ -345,3 +345,202 @@ async fn rollout_http_keeps_legacy_threads_readable_and_isolates_phases() -> any
     fixture.cleanup().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn deleted_parent_threads_remain_readable_via_reply_without_exposing_body_or_allowing_normal_replies()
+-> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    let fixture = thread_db::ThreadDb::new().await?;
+    let mut db = init_db(&fixture.config.database_url).await?;
+    toasty::sql::statement("UPDATE thread_rollout SET phase='ready'")
+        .exec(&mut db)
+        .await?;
+    let app = create_router(AppState::new(db.clone(), fixture.config.clone()));
+    let owner = uuid::Uuid::new_v4().to_string();
+    let reader = uuid::Uuid::new_v4().to_string();
+    let outsider = uuid::Uuid::new_v4().to_string();
+    for user in [&owner, &reader, &outsider] {
+        ok(
+            &app,
+            user,
+            "POST",
+            "/api/users",
+            json!({"id":user,"user_name":user,"display_name":user}),
+        )
+        .await?;
+    }
+    let channel = uuid::Uuid::new_v4().to_string();
+    ok(
+        &app,
+        &owner,
+        "POST",
+        "/api/channels",
+        json!({"id":channel,"channel_name":channel,"is_private":false}),
+    )
+    .await?;
+    ok(
+        &app,
+        &reader,
+        "POST",
+        &format!("/api/channels/{channel}/join"),
+        json!({}),
+    )
+    .await?;
+
+    let deleted_root = uuid::Uuid::new_v4().to_string();
+    let orphan_deleted_root = uuid::Uuid::new_v4().to_string();
+    let imported_reply = uuid::Uuid::new_v4().to_string();
+    let deleted_reply = uuid::Uuid::new_v4().to_string();
+    {
+        let mut tx = db.transaction().await?;
+        toasty::sql::statement("SET LOCAL zoo.slack_import = 'on'")
+            .exec(&mut tx)
+            .await?;
+        toasty::sql::statement(
+            "INSERT INTO messages(id,user_id,channel_id,content,deleted_at) \
+             VALUES($1,$2,$3,'Secret deleted parent body',now() AT TIME ZONE 'UTC'), \
+                   ($4,$2,$3,'Deleted parent without replies',now() AT TIME ZONE 'UTC')",
+        )
+        .bind(deleted_root.as_str())
+        .bind(owner.as_str())
+        .bind(channel.as_str())
+        .bind(orphan_deleted_root.as_str())
+        .exec(&mut tx)
+        .await?;
+        toasty::sql::statement(
+            "INSERT INTO messages(id,user_id,channel_id,content,parent_id) \
+             VALUES($1,$2,$3,'Imported reply under deleted parent',$4)",
+        )
+        .bind(imported_reply.as_str())
+        .bind(owner.as_str())
+        .bind(channel.as_str())
+        .bind(deleted_root.as_str())
+        .exec(&mut tx)
+        .await?;
+        toasty::sql::statement(
+            "INSERT INTO messages(id,user_id,channel_id,content,parent_id,deleted_at) \
+             VALUES($1,$2,$3,'Deleted reply',$4,now() AT TIME ZONE 'UTC')",
+        )
+        .bind(deleted_reply.as_str())
+        .bind(owner.as_str())
+        .bind(channel.as_str())
+        .bind(deleted_root.as_str())
+        .exec(&mut tx)
+        .await?;
+        tx.commit().await?;
+    }
+
+    // Channel readers can resolve the thread from the surviving reply or deleted root
+    // as a contentless placeholder (`root_deleted: true`), without leaking the deleted body.
+    for target in [&imported_reply, &deleted_root] {
+        let detail = ok(
+            &app,
+            &reader,
+            "GET",
+            &format!("/api/threads/{target}"),
+            Value::Null,
+        )
+        .await?;
+        assert_eq!(detail["data"]["id"], deleted_root);
+        assert_eq!(detail["data"]["channel_id"], channel);
+        assert_eq!(detail["data"]["root_deleted"], true);
+        assert_eq!(detail["data"]["can_participate"], false);
+        assert!(detail["data"].get("content").is_none());
+    }
+
+    // A deleted reply or a deleted root without surviving replies still returns 404.
+    assert_eq!(
+        call(
+            &app,
+            &reader,
+            "GET",
+            &format!("/api/threads/{deleted_reply}"),
+            Value::Null
+        )
+        .await?
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            &app,
+            &reader,
+            "GET",
+            &format!("/api/threads/{orphan_deleted_root}"),
+            Value::Null
+        )
+        .await?
+        .0,
+        StatusCode::NOT_FOUND
+    );
+
+    // Normal replies and thread mutations against a deleted parent remain rejected.
+    assert_eq!(
+        call(
+            &app,
+            &reader,
+            "POST",
+            "/api/messages",
+            json!({"id":uuid::Uuid::new_v4().to_string(),"channel_id":channel,"parent_id":deleted_root,"content":"Normal reply"}),
+        )
+        .await?
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            &app,
+            &reader,
+            "POST",
+            "/api/messages",
+            json!({"id":uuid::Uuid::new_v4().to_string(),"channel_id":channel,"parent_id":imported_reply,"content":"Normal nested reply"}),
+        )
+        .await?
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            &app,
+            &reader,
+            "POST",
+            &format!("/api/threads/{imported_reply}/join"),
+            json!({}),
+        )
+        .await?
+        .0,
+        StatusCode::NOT_FOUND
+    );
+
+    // Private channels still reject nonmembers on GET /api/threads/{id}.
+    toasty::sql::statement("UPDATE channels SET is_private=true WHERE id=$1")
+        .bind(channel.as_str())
+        .exec(&mut db)
+        .await?;
+    assert_eq!(
+        call(
+            &app,
+            &outsider,
+            "GET",
+            &format!("/api/threads/{imported_reply}"),
+            Value::Null
+        )
+        .await?
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        ok(
+            &app,
+            &reader,
+            "GET",
+            &format!("/api/threads/{imported_reply}"),
+            Value::Null
+        )
+        .await?["data"]["root_deleted"],
+        true
+    );
+
+    fixture.cleanup().await?;
+    Ok(())
+}

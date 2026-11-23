@@ -449,34 +449,6 @@ async fn slack_sync_holds_mapping_until_message_save_commits() -> anyhow::Result
         }
         Ok::<(), anyhow::Error>(())
     }).await;
-    let residue = guard
-        .query_one(
-            "SELECT (SELECT count(*) FROM users WHERE id IN ($1,$2)) \
-         +(SELECT count(*) FROM channels WHERE id IN ($3,$4,$5)) \
-         +(SELECT count(*) FROM slack_channels WHERE team_id IN ($6,$7)) \
-         +(SELECT count(*) FROM slack_channel_syncs WHERE team_id IN ($6,$7)) \
-         +(SELECT count(*) FROM slack_users WHERE team_id = $6 AND slack_user_id = 'U1') \
-         +(SELECT count(*) FROM slack_user_links WHERE user_id IN ($1,$2)) \
-         +(SELECT count(*) FROM channel_user WHERE channel_id IN ($3,$4,$5)) \
-         +(SELECT count(*) FROM messages WHERE channel_id IN ($3,$4,$5)) \
-         +(SELECT count(*) FROM pg_trigger WHERE tgname=$8) \
-         +(SELECT count(*) FROM pg_proc WHERE proname=$9) \
-         +(SELECT count(*) FROM pg_class WHERE relname=$10)",
-            &[
-                &user,
-                &other_user,
-                &old_channel,
-                &new_channel,
-                &other_channel,
-                &team,
-                &other_team,
-                &trigger,
-                &function,
-                &gate_table,
-            ],
-        )
-        .await
-        .map(|row| row.get::<_, i64>(0));
     let test_result: anyhow::Result<()> = match outcome {
         Ok(result) => result,
         Err(payload) => {
@@ -488,18 +460,61 @@ async fn slack_sync_holds_mapping_until_message_save_commits() -> anyhow::Result
             Err(anyhow::anyhow!("slack sync race test panicked: {message}"))
         }
     };
+    let cleanup_timed_out = cleanup.is_err();
     let cleanup_result: anyhow::Result<()> = match cleanup {
         Ok(inner) => inner,
         Err(elapsed) => Err(anyhow::anyhow!("fixture cleanup timed out: {elapsed}")),
     };
-    let residue_result: anyhow::Result<()> = match residue {
-        Ok(0) => Ok(()),
-        Ok(count) => Err(anyhow::anyhow!(
-            "test fixture residue remains after cleanup: {count}"
-        )),
-        Err(error) => Err(anyhow::anyhow!(
-            "checking the test fixture residue failed: {error}"
-        )),
+    // 残行の確認は後片付けが期限内に終わったときだけ行う。タイムアウトなら guard は
+    // まだ後片付けの途中なので、同じ接続で残行を数えると無期限に待ってしまう。
+    // 後片付けの失敗でテストは既に失敗になるので、確認を省略しても問題は隠れない。
+    let residue_result: anyhow::Result<()> = if cleanup_timed_out {
+        Err(anyhow::anyhow!(
+            "skipped the fixture residue check because cleanup timed out"
+        ))
+    } else {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            guard.query_one(
+                "SELECT (SELECT count(*) FROM users WHERE id IN ($1,$2)) \
+             +(SELECT count(*) FROM channels WHERE id IN ($3,$4,$5)) \
+             +(SELECT count(*) FROM slack_channels WHERE team_id IN ($6,$7)) \
+             +(SELECT count(*) FROM slack_channel_syncs WHERE team_id IN ($6,$7)) \
+             +(SELECT count(*) FROM slack_users WHERE team_id = $6 AND slack_user_id = 'U1') \
+             +(SELECT count(*) FROM slack_user_links WHERE user_id IN ($1,$2)) \
+             +(SELECT count(*) FROM channel_user WHERE channel_id IN ($3,$4,$5)) \
+             +(SELECT count(*) FROM messages WHERE channel_id IN ($3,$4,$5)) \
+             +(SELECT count(*) FROM pg_trigger WHERE tgname=$8) \
+             +(SELECT count(*) FROM pg_proc WHERE proname=$9) \
+             +(SELECT count(*) FROM pg_class WHERE relname=$10)",
+                &[
+                    &user,
+                    &other_user,
+                    &old_channel,
+                    &new_channel,
+                    &other_channel,
+                    &team,
+                    &other_team,
+                    &trigger,
+                    &function,
+                    &gate_table,
+                ],
+            ),
+        )
+        .await
+        {
+            Ok(Ok(row)) if row.get::<_, i64>(0) == 0 => Ok(()),
+            Ok(Ok(row)) => Err(anyhow::anyhow!(
+                "test fixture residue remains after cleanup: {}",
+                row.get::<_, i64>(0)
+            )),
+            Ok(Err(error)) => Err(anyhow::anyhow!(
+                "checking the test fixture residue failed: {error}"
+            )),
+            Err(elapsed) => Err(anyhow::anyhow!(
+                "checking the test fixture residue timed out: {elapsed}"
+            )),
+        }
     };
     // 本体の失敗・パニックを優先して報告する (後片付けの失敗に上書きされない)。
     // 本体が成功していても、後片付け・残行の確認だけの失敗でテストは失敗する。

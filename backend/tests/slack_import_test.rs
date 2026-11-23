@@ -1596,7 +1596,13 @@ async fn run_private_zip_visibility_race(
                 Some(match result {
                     Ok(Err(error)) => format!("injected S3 cleanup failure: {error}"),
                     Err(_) => "injected S3 cleanup failure: timed out after 5s".to_string(),
-                    Ok(Ok(_)) => "injected S3 cleanup failure did not fail".to_string(),
+                    // A successful DeleteObject against an invalid bucket means the
+                    // error injection is broken. The prefix must not satisfy the
+                    // callers' `starts_with("injected S3 cleanup failure")`
+                    // assertions, so the failure is reported as an unexpected
+                    // injection success while the real cleanup below still runs.
+                    Ok(Ok(_)) => "unexpected S3 error injection success: DeleteObject on invalid bucket did not fail"
+                        .to_string(),
                 })
             }
             CleanupFailure::S3Timeout => {

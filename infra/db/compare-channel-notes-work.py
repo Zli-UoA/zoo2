@@ -6,7 +6,7 @@ from pathlib import Path
 
 small = json.loads((Path(sys.argv[1]) / 'work.json').read_text())
 large = json.loads((Path(sys.argv[2]) / 'work.json').read_text())
-assert small.keys() == large.keys() and len(small) == 13, 'missing query conditions'
+assert small.keys() == large.keys() and len(small) == 30, 'missing query conditions'
 
 
 def compare(name, before, after):

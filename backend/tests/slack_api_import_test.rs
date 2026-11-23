@@ -508,7 +508,11 @@ async fn api_import_racing_slack_link_adds_the_linked_user_to_the_channel() -> a
     config.slack.oauth_redirect_url = Some("https://zoo.example/api/slack/oauth/callback".into());
     config.slack.token_encryption_key = Some(base64::engine::general_purpose::STANDARD.encode(key));
     config.slack.api_base_url = slack.uri();
-    let db = init_db(&config.database_url).await?;
+    let db = backend::db::init_db_with_pool(
+        &config.database_url,
+        backend::db::configured_max_pool_size().max(2),
+    )
+    .await?;
     let state = AppState::new(db, config.clone());
     let app = create_router(state.clone());
     let alice = create_user(&app, "api_link_race_alice").await?;
@@ -752,6 +756,7 @@ async fn api_import_waits_for_the_zip_target_lock_before_checking_the_mapping() 
     // A zoo channel that the racing ZIP import already committed as the target
     // mapping for this Slack channel while holding the target lock.
     let zip_target = uuid::Uuid::new_v4().to_string();
+    let mut import_terminated = true;
     let result: anyhow::Result<()> = async {
         sql(
             &state,
@@ -845,11 +850,18 @@ async fn api_import_waits_for_the_zip_target_lock_before_checking_the_mapping() 
                 Ok(joined) => joined??,
                 Err(_) => {
                     import_task.abort();
-                    let _ = tokio::time::timeout(
+                    if tokio::time::timeout(
                         std::time::Duration::from_secs(5),
                         &mut import_task,
                     )
-                    .await;
+                    .await
+                    .is_err()
+                    {
+                        import_terminated = false;
+                        anyhow::bail!(
+                            "the API import did not finish within 10s after the ZIP target lock was released, and abort termination timed out after 5s"
+                        );
+                    }
                     anyhow::bail!(
                         "the API import did not finish within 10s after the ZIP target lock was released"
                     );
@@ -896,14 +908,26 @@ async fn api_import_waits_for_the_zip_target_lock_before_checking_the_mapping() 
         // 観測や統合に失敗したときは、後片付けの前に必ず止めて終わるまで待つ
         // (成功時は完了済み。JoinHandle は完了後に再び待つと panic するので、
         // まだ動いているときだけ abort して待つ)。
-        if inner.is_err() && !import_task.is_finished() {
+        if !import_task.is_finished()
+            && let Err(error) = &inner
+        {
             import_task.abort();
-            let _ =
-                tokio::time::timeout(std::time::Duration::from_secs(5), &mut import_task).await;
+            if tokio::time::timeout(std::time::Duration::from_secs(5), &mut import_task)
+                .await
+                .is_err()
+            {
+                import_terminated = false;
+                return Err(anyhow::anyhow!(
+                    "{error:#}; aborted import_task did not terminate within 5s, skipping cleanup"
+                ));
+            }
         }
         inner
     }
     .await;
+    if !import_terminated {
+        return result;
+    }
     // Clean up only the rows this test created, even after a failure: the
     // mapping, the ZIP target channel, the Slack link rows, and the placeholder
     // (if a failed import left one behind). Cleanup failures are collected so
