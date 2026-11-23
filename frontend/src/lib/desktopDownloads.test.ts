@@ -471,9 +471,14 @@ describe("desktopDownloads chunk offsets", () => {
     desktop.finish.mockResolvedValue("C:\\Downloads\\u1");
     const chunkSize = 256 * 1024;
     const bytes = new Uint8Array(chunkSize * 2 + 10);
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(bytes, {
-      headers: { "content-length": String(bytes.length) },
-    })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(bytes, {
+          headers: { "content-length": String(bytes.length) },
+        }),
+      ),
+    );
 
     await downloadUrlToDesktop("u1", "big.bin", async () => "https://example.com/big.bin");
 
