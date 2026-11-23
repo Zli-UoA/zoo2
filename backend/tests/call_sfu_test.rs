@@ -287,6 +287,55 @@ impl Gate {
     }
 }
 
+/// LiveKit のルームの、接続中の identity を持つ mock。`RemoveParticipant` は受けたときには反映せず
+/// （応答は `delay` だけ保留する）、`apply_late` を呼んだときに反映する。backend が打ち切ったあとに LiveKit が
+/// 古い要求を処理する状況を再現する。
+#[derive(Clone, Default)]
+struct LiveKitRoomState {
+    connected: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    received: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl LiveKitRoomState {
+    fn connect(&self, identity: &str) {
+        self.connected.lock().unwrap().insert(identity.to_string());
+    }
+
+    fn is_connected(&self, identity: &str) -> bool {
+        self.connected.lock().unwrap().contains(identity)
+    }
+
+    /// 受けた RemoveParticipant を、いま反映する（遅れて処理された）。
+    fn apply_late(&self) {
+        let received = std::mem::take(&mut *self.received.lock().unwrap());
+        let mut connected = self.connected.lock().unwrap();
+        for identity in received {
+            connected.remove(&identity);
+        }
+    }
+}
+
+struct LateRemove {
+    state: LiveKitRoomState,
+    delay: Duration,
+}
+
+impl wiremock::Respond for LateRemove {
+    fn respond(&self, req: &wiremock::Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
+        if let Some(identity) = body["identity"].as_str() {
+            self.state
+                .received
+                .lock()
+                .unwrap()
+                .push(identity.to_string());
+        }
+        ResponseTemplate::new(200)
+            .set_body_json(json!({}))
+            .set_delay(self.delay)
+    }
+}
+
 /// LiveKit の JWT の `sub`（identity）。
 fn token_sub(token: &str) -> String {
     use base64::Engine;
@@ -1269,8 +1318,9 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
 
     // 割り当てを変えたあとの RemoveParticipant が遅れて LiveKit に届いても（backend が打ち切ったあとに LiveKit が
     // 処理した場合を含む）、外れるのは前の割り当ての identity だけで、入り直した人の新しい identity は外れない。
-    // 前の identity への応答は、mock が 60 秒保留する。backend の LiveKit の呼び出しは 10 秒で打ち切るので、
-    // 応答は返らないまま打ち切られる（そのあと LiveKit がその要求を処理しうる状況）。
+    // このルームへの RemoveParticipant は、接続中の identity を持つ mock が受ける。応答は 60 秒保留し、
+    // backend の LiveKit の呼び出しは 10 秒で打ち切る。要求の反映（identity を外す）は、打ち切りのあとに
+    // テストが `apply_late` で行う（LiveKit が古い要求を遅れて処理した状況）。
     let lk_room2 = format!("call-{channel}-{epoch_mesh}");
     let (status, joined) = request(
         &app,
@@ -1284,14 +1334,15 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     assert_eq!(status, StatusCode::OK, "{joined}");
     assert_eq!(joined["sfu"], "livekit");
     let first_identity = token_sub(joined["token"].as_str().unwrap());
+    let room_state = LiveKitRoomState::default();
+    room_state.connect(&first_identity);
     Mock::given(method("POST"))
         .and(path("/twirp/livekit.RoomService/RemoveParticipant"))
-        .and(body_partial_json(json!({"identity": first_identity})))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({}))
-                .set_delay(Duration::from_secs(60)),
-        )
+        .and(body_partial_json(json!({"room": lk_room2})))
+        .respond_with(LateRemove {
+            state: room_state.clone(),
+            delay: Duration::from_secs(60),
+        })
         .with_priority(1)
         .mount(&lk)
         .await;
@@ -1334,6 +1385,9 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     let second_identity = token_sub(joined["token"].as_str().unwrap());
     assert_ne!(second_identity, first_identity);
     assert!(second_identity.starts_with(&format!("{}.", sessions[3])));
+    // 新しいトークンで LiveKit につなぐ。前の identity の削除は、まだ反映されていない。
+    room_state.connect(&second_identity);
+    assert!(room_state.is_connected(&first_identity));
     // join が終わった時点で、前の identity の RemoveParticipant はまだ応答待ち（打ち切りの前）。
     let departure_state = format!(
         "SELECT attempts::text || ':' || (claimed_until > statement_timestamp() + interval '60 seconds')::text
@@ -1355,6 +1409,16 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     assert!(timed_out, "the removal did not time out");
+    // 打ち切られたあとに、LiveKit が受けていた要求を処理する。
+    room_state.apply_late();
+    assert!(
+        !room_state.is_connected(&first_identity),
+        "the late removal was not applied to the old identity"
+    );
+    assert!(
+        room_state.is_connected(&second_identity),
+        "the late removal disconnected the new identity"
+    );
     // 打ち切られた要求（LiveKit があとで処理しうるもの）も、ほかの要求も、前の identity だけを指す。
     assert!(remove_participant_calls(&lk, lk_before, &lk_room2, &first_identity).await >= 1);
     assert_eq!(
@@ -1741,7 +1805,8 @@ async fn join_round(
 /// join の SQL はその接続で初めて実行する。
 ///
 /// join の時間とは別に、要求ごとの記録先（`X-Test-Join-Timings`。ほかのテストの要求は混ざらない）に、
-/// 段階ごとの時間を出す：begin（プールからの取得と BEGIN）、lock（チャンネル行の FOR UPDATE の文）、
+/// 段階ごとの時間を出す：acquire（プールからの接続の取得）、begin_sql（BEGIN の往復）、lock（チャンネル行の
+/// FOR UPDATE の文）、
 /// rtt（ロックのあと同じ接続での `SELECT 1`。SQL の往復だけ）、wait（lock − rtt。ロック待ちの目安）。
 /// Cloudflare の join はロックを 2 回取るので、lock 系のサンプルは join より多い。
 #[tokio::test]
@@ -1808,9 +1873,10 @@ async fn join_latency() -> anyhow::Result<()> {
                     all: &mut Vec<Duration>,
                     t: &mut backend::routes::call_sfu::JoinTimings| {
             format!(
-                "{label}\n  join  {}\n  begin {}\n  lock  {}\n  rtt   {}\n  wait  {}",
+                "{label}\n  join      {}\n  acquire   {}\n  begin_sql {}\n  lock      {}\n  rtt       {}\n  wait      {}",
                 summary(all),
-                summary(&mut t.begin),
+                summary(&mut t.acquire),
+                summary(&mut t.begin_sql),
                 summary(&mut t.lock),
                 summary(&mut t.round_trip),
                 summary(&mut t.lock_wait),

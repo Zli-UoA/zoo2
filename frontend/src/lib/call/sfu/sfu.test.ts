@@ -44,7 +44,9 @@ describe("speaker mapping", () => {
 });
 
 describe("SpeakerTracks", () => {
-  const stream = () => ({}) as MediaStream;
+  // 中身で区別できるよう、呼ぶたびに別の id を持たせる。
+  let streamId = 0;
+  const stream = () => ({ id: `stream-${++streamId}` }) as unknown as MediaStream;
 
   it("keeps the new identity's audio when the old identity's track goes away", () => {
     const onRemoteAudio = vi.fn();
@@ -73,6 +75,24 @@ describe("SpeakerTracks", () => {
     onRemoteAudio.mockClear();
     tracks.unsubscribed("TR_new");
     expect(onRemoteAudio).toHaveBeenCalledWith("sess-1", oldStream);
+    expect(onRemoteGone).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the latest remaining track, not the oldest", () => {
+    const onRemoteAudio = vi.fn();
+    const onRemoteGone = vi.fn();
+    const tracks = new SpeakerTracks({ onRemoteAudio, onRemoteGone });
+    const a1 = stream();
+    const a2 = stream();
+    const a3 = stream();
+    tracks.subscribed("TR_a1", "a", a1);
+    tracks.subscribed("TR_a2", "a", a2);
+    tracks.subscribed("TR_a3", "a", a3);
+    onRemoteAudio.mockClear();
+    tracks.unsubscribed("TR_a3");
+    expect(onRemoteAudio).toHaveBeenCalledTimes(1);
+    expect(onRemoteAudio).toHaveBeenCalledWith("a", a2);
+    expect(onRemoteAudio).not.toHaveBeenCalledWith("a", a1);
     expect(onRemoteGone).not.toHaveBeenCalled();
   });
 

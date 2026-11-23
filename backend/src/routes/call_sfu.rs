@@ -183,9 +183,10 @@ async fn join(
 
     // 割り当ては、チャンネル行のロックの下で決める（bridge がないときの「部屋に Cloudflare の人がいるか」を
     // 入室と直列化するため）。
-    let begin = std::time::Instant::now();
-    let mut tx = db.transaction().await?;
-    JoinTimingKey::record(timings.as_ref(), JoinPhase::Begin, begin);
+    // 接続の取得と BEGIN を分けて計測できるよう、接続を取ってからトランザクションを始める
+    // （`Db::transaction` と同じ）。Cloudflare の API を呼ぶ前には、この接続をプールに返す。
+    let mut conn = acquire(&db, timings.as_ref()).await?;
+    let mut tx = begin(&mut conn, timings.as_ref()).await?;
     lock_channel(&mut tx, &channel_id, timings.as_ref()).await?;
     let me = own_presence(&mut tx, &channel_id, body.session_id, &user.id, true).await?;
     let (Some(RoomMode::Sfu), Some(epoch)) = (me.mode, me.epoch) else {
@@ -237,6 +238,7 @@ async fn join(
             bump_tracks(&mut tx, &channel_id).await?;
         }
         tx.commit().await?;
+        drop(conn);
         (
             JoinTarget::Livekit {
                 url: lk.ws_url().to_string(),
@@ -245,12 +247,12 @@ async fn join(
             departed,
         )
     } else {
-        // Cloudflare の API は、ロックを持ったまま呼ばない。
+        // Cloudflare の API は、ロックも接続も持ったまま呼ばない。
         tx.commit().await?;
+        drop(conn);
         let cf_session = sfu.cloudflare.new_session().await?;
-        let begin = std::time::Instant::now();
-        let mut tx = db.transaction().await?;
-        JoinTimingKey::record(timings.as_ref(), JoinPhase::Begin, begin);
+        let mut conn = acquire(&db, timings.as_ref()).await?;
+        let mut tx = begin(&mut conn, timings.as_ref()).await?;
         // ロックを取り直す。呼んでいるあいだに退出していたら、作ったセッションは使わない
         // （何も流れないので放置してよい）。割り当ても、ロックを外していたあいだに変わりうるので読み直す。
         lock_channel(&mut tx, &channel_id, timings.as_ref()).await?;
@@ -306,6 +308,28 @@ async fn join(
     }))
 }
 
+/// 接続のプールから接続を取る（計測するときは、その時間を残す）。
+async fn acquire(
+    db: &toasty::Db,
+    timings: Option<&JoinTimingKey>,
+) -> Result<toasty::Connection, AppError> {
+    let started = std::time::Instant::now();
+    let conn = db.connection().await?;
+    JoinTimingKey::record(timings, JoinPhase::Acquire, started);
+    Ok(conn)
+}
+
+/// 取った接続でトランザクションを始める（計測するときは、BEGIN の往復の時間を残す）。
+async fn begin<'a>(
+    conn: &'a mut toasty::Connection,
+    timings: Option<&JoinTimingKey>,
+) -> Result<toasty::Transaction<'a>, AppError> {
+    let started = std::time::Instant::now();
+    let tx = conn.transaction().await?;
+    JoinTimingKey::record(timings, JoinPhase::BeginSql, started);
+    Ok(tx)
+}
+
 /// チャンネル行のロック。入室と SFU の割り当てを、このロックで直列化する。
 async fn lock_channel(
     tx: &mut toasty::Transaction<'_>,
@@ -341,16 +365,20 @@ struct JoinTimingKey(String);
 /// 記録する段階。
 #[derive(Clone, Copy)]
 enum JoinPhase {
-    /// トランザクションの開始（接続のプールからの取得と BEGIN）。
-    Begin,
+    /// 接続のプールからの取得。
+    Acquire,
+    /// BEGIN の往復。
+    BeginSql,
 }
 
 /// 記録先ごとの、段階ごとの時間。
 #[doc(hidden)]
 #[derive(Default, Debug, Clone)]
 pub struct JoinTimings {
-    /// トランザクションの開始（接続のプールからの取得と BEGIN の往復）。
-    pub begin: Vec<Duration>,
+    /// 接続のプールからの取得（空きを待つ時間を含む）。
+    pub acquire: Vec<Duration>,
+    /// BEGIN の往復。
+    pub begin_sql: Vec<Duration>,
     /// チャンネル行の FOR UPDATE の文（ロック待ちと SQL の往復）。
     pub lock: Vec<Duration>,
     /// ロックのあと、同じ接続での `SELECT 1`（SQL の往復だけ）。
@@ -380,7 +408,8 @@ impl JoinTimingKey {
         };
         let elapsed = started.elapsed();
         key.push(|t| match phase {
-            JoinPhase::Begin => t.begin.push(elapsed),
+            JoinPhase::Acquire => t.acquire.push(elapsed),
+            JoinPhase::BeginSql => t.begin_sql.push(elapsed),
         });
     }
 
