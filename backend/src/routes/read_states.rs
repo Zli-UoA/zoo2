@@ -101,7 +101,9 @@ pub fn states_sql(single: bool, details: bool) -> String {
     let scope = match single {
         true => "c.id = $2".to_string(),
         false => {
-            "EXISTS (SELECT 1 FROM channel_user cu WHERE cu.channel_id = c.id AND cu.user_id = $1)"
+            // Archived channels are read-only, so their leftover unread never belongs in the
+            // sidebar or the catch-up queue. The single-channel form stays available for them.
+            "c.archive_at IS NULL AND EXISTS (SELECT 1 FROM channel_user cu WHERE cu.channel_id = c.id AND cu.user_id = $1)"
                 .to_string()
         }
     };

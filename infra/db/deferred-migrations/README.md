@@ -1,6 +1,6 @@
 # Deferred migrations
 
-`20261130030009_guest_membership_lock_order.sql` replaces
+`20261201010009_guest_membership_lock_order.sql` replaces
 `app_guest_membership_rules()` with the version that always locks the `users`
 row (`FOR NO KEY UPDATE`) before checking the single-channel guest rule.
 
@@ -39,13 +39,13 @@ dropped together with the moved file.
 へロールバックすると、適用を遅らせたのと同じデッドロック (SQLSTATE 40P01) が
 再現する。バックエンドを旧版へ戻す必要がある場合は、先にこの移行の効果を戻すこと。
 同じ DB に対して canonical 側の条件付き定義
-（`infra/db/migrations/20261130030001_guest_membership_no_key_update.sql` の
+（`infra/db/migrations/20261201010001_guest_membership_no_key_update.sql` の
 `CREATE OR REPLACE FUNCTION app_guest_membership_rules()`）を再実行すれば、
 トリガー定義は常にロックしない版へ戻り、`atlas_schema_revisions_deferred` の
-記録はそのまま残る（記録の削除は不要）。ただし、`20261130030009` の適用記録が
+記録はそのまま残る（記録の削除は不要）。ただし、`20261201010009` の適用記録が
 残った状態では `atlas migrate apply --allow-dirty` を再実行しても既適用とみなされ
 SQL が再実行されないため、切り戻し後に新バックエンドへ再移行するときは、旧版が
-すべて停止したことを確認してから `infra/db/deferred-migrations/20261130030009_guest_membership_lock_order.sql`
+すべて停止したことを確認してから `infra/db/deferred-migrations/20261201010009_guest_membership_lock_order.sql`
 の `CREATE OR REPLACE FUNCTION app_guest_membership_rules()` を直接実行し、
 `SELECT pg_get_functiondef('app_guest_membership_rules()'::regprocedure);` で常時
 `users` 行をロックする定義に戻ったことを確認すること。バックエンドのロールバック中は、

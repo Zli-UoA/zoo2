@@ -588,3 +588,151 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
     fixture.cleanup().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn search_filters_by_many_people_and_channels_bots_and_my_conversations() -> anyhow::Result<()>
+{
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let fixture = thread_db::ThreadDb::new().await?;
+    let config = fixture.config.clone();
+    let db = init_db(&config.database_url).await?;
+    let (sql, connection) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(connection);
+    let app = create_router(AppState::new(db, config));
+
+    let [alice, bob, carol, bot] = [0; 4].map(|_| uuid::Uuid::new_v4().to_string());
+    for (id, name) in [
+        (&alice, "alice"),
+        (&bob, "bob"),
+        (&carol, "carol"),
+        (&bot, "bot"),
+    ] {
+        let (status, _) = call(&app, "POST", "/api/users", id, Some(json!({
+            "id": id, "user_name": format!("{name}_{}", uuid::Uuid::new_v4().simple()), "display_name": name,
+        }))).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    sql.batch_execute(&format!(
+        "UPDATE users SET is_bot = true WHERE id = '{bot}';"
+    ))
+    .await?;
+    let channel = |owner: String| {
+        let app = app.clone();
+        async move {
+            let id = uuid::Uuid::new_v4().to_string();
+            let (status, body) = call(&app, "POST", "/api/channels", &owner, Some(json!({
+                "id": id, "channel_name": format!("f-{}", uuid::Uuid::new_v4().simple()), "is_private": false,
+            }))).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            id
+        }
+    };
+    // alice は mine に所属し、other には所属しない（公開なので見える）。
+    let mine = channel(alice.clone()).await;
+    let other = channel(bob.clone()).await;
+    let m = |n: u8| format!("00000000-0000-4000-9000-{n:012}");
+    let insert = |id: &str, user: &str, channel: &str, parent: Option<&str>, ago: u8| {
+        format!(
+            "INSERT INTO messages (id, user_id, channel_id, parent_id, content, created_at) \
+             VALUES ('{id}', '{user}', '{channel}', {parent}, '絞り込みの記録', LOCALTIMESTAMP - interval '{ago} minutes');",
+            parent = parent.map_or("NULL".into(), |p| format!("'{p}'")),
+        )
+    };
+    sql.batch_execute(
+        &[
+            insert(&m(1), &alice, &mine, None, 1),
+            insert(&m(2), &carol, &mine, None, 2),
+            insert(&m(3), &bot, &mine, None, 3),
+            // other: alice が参加するスレッド（親と返信）、alice へのメンション、関係のない投稿。
+            insert(&m(4), &bob, &other, None, 4),
+            insert(&m(5), &bob, &other, Some(&m(4)), 5),
+            insert(&m(6), &bob, &other, None, 6),
+            insert(&m(7), &bob, &other, None, 7),
+            // メンションされたスレッドの返信も入る。
+            insert(&m(8), &carol, &other, Some(&m(6)), 8),
+            // 所属しないチャンネルで、本文で alice にメンションした投稿（通知はメンバーにしか作られない）。
+            insert(&m(9), &carol, &other, None, 9),
+        ]
+        .concat(),
+    )
+    .await?;
+    sql.batch_execute(&format!(
+        "UPDATE messages SET content = content || ' @' || (SELECT user_name FROM users WHERE id = '{alice}') WHERE id = '{}';",
+        m(9)
+    ))
+    .await?;
+    sql.batch_execute(&format!(
+        "INSERT INTO thread_participants (thread_id, user_id) VALUES ('{t}', '{alice}') ON CONFLICT DO NOTHING;
+         INSERT INTO notifications (id, user_id, actor_id, channel_id, message_id, notification_type)
+           VALUES ('{n}', '{alice}', '{bob}', '{other}', '{mention}', 'mention');",
+        t = m(4),
+        n = uuid::Uuid::new_v4(),
+        mention = m(6),
+    ))
+    .await?;
+    let find = |extra: String| {
+        let (app, alice) = (app.clone(), alice.clone());
+        async move {
+            let mut got = ids(&search(
+                &app,
+                &alice,
+                &format!("type=messages&q={}&limit=50{extra}", q("絞り込み")),
+            )
+            .await);
+            got.sort();
+            got
+        }
+    };
+    let sorted = |ns: &[u8]| {
+        let mut v: Vec<String> = ns.iter().map(|&n| m(n)).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(
+        find(String::new()).await,
+        sorted(&[1, 2, 3, 4, 5, 6, 7, 8, 9])
+    );
+    // 送信者とチャンネルは、複数のどれか。
+    assert_eq!(
+        find(format!("&user_id={alice},{carol}")).await,
+        sorted(&[1, 2, 8, 9])
+    );
+    assert_eq!(
+        find(format!("&channel_id={mine},{other}&user_id={bot}")).await,
+        sorted(&[3])
+    );
+    // ボットを除く。
+    assert_eq!(
+        find("&exclude_bots=true".into()).await,
+        sorted(&[1, 2, 4, 5, 6, 7, 8, 9])
+    );
+    // 自分が参加中の会話: 所属チャンネル、参加しているスレッド、メンションされたスレッド（通知）、
+    // 所属しないチャンネルの本文のメンション。
+    assert_eq!(
+        find("&involving_me=true".into()).await,
+        sorted(&[1, 2, 3, 4, 5, 6, 8, 9])
+    );
+    assert_eq!(
+        find(format!(
+            "&involving_me=true&exclude_bots=true&channel_id={other}"
+        ))
+        .await,
+        sorted(&[4, 5, 6, 8, 9])
+    );
+    // 指定できる数には上限がある。
+    let many: Vec<String> = (0..21).map(|i| format!("u{i}")).collect();
+    let (status, _) = call(
+        &app,
+        "GET",
+        &format!("/api/search?q=x&user_id={}", many.join(",")),
+        &alice,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    fixture.cleanup().await?;
+    Ok(())
+}

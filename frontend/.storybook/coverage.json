@@ -226,6 +226,7 @@
         "RejectedThenNavigate",
         "NarrowLateHit",
         "Filters",
+        "FromPicker",
         "LoadOlder",
         "Files",
         "SwitchKind",
@@ -342,6 +343,8 @@
       "file": "src/components/chat/messages/MessageRow.stories.tsx",
       "states": [
         "Default",
+        "MentionedMessage",
+        "MentionedChannelMessage",
         "EncryptedBeforeEncryptionRow",
         "EncryptedUnencryptedAfterEncryptedRow",
         "OwnMessage",
@@ -589,6 +592,33 @@
     {
       "file": "src/components/desktop/DesktopNotificationSelect.stories.tsx",
       "states": ["On", "TurnOff", "Off", "OlderApp"]
+    },
+    {
+      "file": "src/components/desktop/DownloadProgressButton.stories.tsx",
+      "states": [
+        "Idle",
+        "Preparing",
+        "Downloading",
+        "UnknownSize",
+        "Finishing",
+        "Complete",
+        "WithLabel",
+        "FinishingWithLabel",
+        "Pending"
+      ]
+    },
+    {
+      "file": "src/components/desktop/DesktopDownloadSettings.stories.tsx",
+      "states": [
+        "AskEveryTime",
+        "SaveToFolder",
+        "ToggleOff",
+        "ChooseFolder",
+        "ResetFolder",
+        "OlderApp",
+        "LoadError",
+        "LongPath"
+      ]
     },
     {
       "file": "src/components/pwa/AppUpdateNotice.stories.tsx",
@@ -1186,6 +1216,12 @@
       "story": "src/components/chat/search/SearchScreen.stories.tsx"
     },
     {
+      "file": "src/components/chat/search/SearchFilterPicker.tsx",
+      "story": "src/components/chat/search/SearchScreen.stories.tsx",
+      "composed": true,
+      "reason": "FiltersとFromPickerで、送信者・チャンネルの検索欄、アイコン付きの複数選択、該当なしを実描画する。"
+    },
+    {
       "file": "src/components/chat/search/SearchResultRow.tsx",
       "story": "src/components/chat/search/SearchScreen.stories.tsx",
       "composed": true,
@@ -1378,6 +1414,14 @@
     {
       "file": "src/components/desktop/DesktopNotificationSelect.tsx",
       "story": "src/components/desktop/DesktopNotificationSelect.stories.tsx"
+    },
+    {
+      "file": "src/components/desktop/DownloadProgressButton.tsx",
+      "story": "src/components/desktop/DownloadProgressButton.stories.tsx"
+    },
+    {
+      "file": "src/components/desktop/DesktopDownloadSettings.tsx",
+      "story": "src/components/desktop/DesktopDownloadSettings.stories.tsx"
     },
     {
       "file": "src/components/desktop/DesktopBridge.tsx",

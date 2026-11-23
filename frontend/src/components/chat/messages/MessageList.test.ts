@@ -5,8 +5,57 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it, vi } from "vite-plus/test";
 
 import { LocaleProvider, useLocale } from "../../i18n/LocaleProvider";
+import { MentionUserNamesContext } from "../../../lib/e2ee/messageDecryption";
 import { MessageList } from "./MessageList";
 import type { FeedMessage } from "./messageFormat";
+
+it.each([
+  { currentUserId: "viewer", viewerId: undefined, highlighted: true },
+  { currentUserId: null, viewerId: "viewer", highlighted: true },
+  { currentUserId: "viewer", viewerId: null, highlighted: false },
+])(
+  "passes mention identity through the list: $currentUserId / $viewerId",
+  ({ currentUserId, viewerId, highlighted }) => {
+    const noop = () => {};
+    const html = renderToStaticMarkup(
+      createElement(MentionUserNamesContext.Provider, {
+        value: new Map([["viewer", "alice"]]),
+        children: createElement(LocaleProvider, {
+          children: createElement(MessageList, {
+            messages: [
+              {
+                id: "mention-1",
+                user_id: "other",
+                content: "@alice hello",
+                created_at: "2026-01-02 00:00:00.000",
+                parent_id: null,
+                display_name: "Bob",
+              },
+            ],
+            isLoading: false,
+            isError: false,
+            currentUserId,
+            viewerId,
+            editingId: null,
+            editingText: "",
+            onEditingTextChange: noop,
+            onStartEdit: noop,
+            onCancelEdit: noop,
+            onSaveEdit: noop,
+            onRequestDelete: noop,
+            reactions: new Map(),
+            kitchenCatalog: null,
+            canReact: false,
+            onReaction: noop,
+            onPickReaction: noop,
+          }),
+        }),
+      }),
+    );
+    expect(html).toContain("@alice");
+    expect(html.includes("bg-mention/[0.08]")).toBe(highlighted);
+  },
+);
 
 async function flush(action: () => unknown) {
   await act(async () => {

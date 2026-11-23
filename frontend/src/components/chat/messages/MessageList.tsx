@@ -66,6 +66,8 @@ interface MessageListProps {
   isWritePending?: boolean;
   isError: boolean;
   currentUserId: string | null;
+  /** 操作権限を伴わない閲覧者 ID。読み取り専用表示でメンションを判定する。 */
+  viewerId?: string | null;
   canModerate?: boolean;
   editingId: string | null;
   editingText: string;
@@ -164,6 +166,7 @@ interface MessageScrollViewportProps {
   markRead: () => void;
   firstEncryptedIndex: number;
   currentUserId: string | null;
+  viewerId?: string | null;
   canModerate: boolean;
   editingId: string | null;
   editingText: string;
@@ -200,6 +203,7 @@ export function MessageList({
   isWritePending = false,
   isError,
   currentUserId,
+  viewerId,
   canModerate = false,
   editingId,
   editingText,
@@ -355,6 +359,7 @@ export function MessageList({
           markRead={markRead}
           firstEncryptedIndex={firstEncryptedIndex}
           currentUserId={currentUserId}
+          viewerId={viewerId}
           canModerate={canModerate}
           editingId={editingId}
           editingText={editingText}
@@ -401,6 +406,7 @@ function MessageScrollViewport({
   markRead,
   firstEncryptedIndex,
   currentUserId,
+  viewerId,
   canModerate,
   editingId,
   editingText,
@@ -1328,6 +1334,7 @@ function MessageScrollViewport({
                 ) : null}
                 <MessageRow
                   item={item}
+                  mentionUserId={viewerId === undefined ? currentUserId : viewerId}
                   reactions={
                     item.message.display_data
                       ? (groupReactions(item.message.display_data.reactions, currentUserId).get(

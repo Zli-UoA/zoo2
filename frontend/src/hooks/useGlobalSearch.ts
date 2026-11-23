@@ -199,12 +199,23 @@ export function useGlobalSearch(query: string, kind: SearchKind, filters: Search
   const { config } = useCollections();
   const { currentUserId } = useCurrentUser();
   const enabled = !!currentUserId && query.length > 0;
-  const { from, in: channel, after, before } = filters;
-  const key = JSON.stringify([currentUserId, kind, query, from, channel, after, before]);
+  const { from, in: channel, after, before, noBots, mine } = filters;
+  const key = JSON.stringify([
+    currentUserId,
+    kind,
+    query,
+    from ?? [],
+    channel ?? [],
+    after,
+    before,
+    !!noBots,
+    !!mine,
+  ]);
   const entry = useMemo(
-    () =>
-      enabled ? entryFor(config, key, query, kind, { from, in: channel, after, before }) : null,
-    [enabled, config, key, query, kind, from, channel, after, before],
+    () => (enabled ? entryFor(config, key, query, kind, filters) : null),
+    // 絞り込みの中身は key に入れてある（配列は描画ごとに作り直されるので、key で比べる）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [enabled, config, key, query, kind],
   );
   const state = useSyncExternalStore(
     entry?.subscribe ?? noSubscribe,

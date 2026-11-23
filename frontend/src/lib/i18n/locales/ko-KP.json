@@ -272,6 +272,13 @@
     "download": "{{name}} 내려받기",
     "downloadShort": "내려받기",
     "downloadError": "내려받지 못했습니다.",
+    "downloadSaved": "{{name}}(으)로 저장했습니다.",
+    "downloadDestinationUnsupported": "이 저장 위치에는 저장할 수 없습니다. 다른 폴더를 선택하거나 설정의 \"내려받기\"에서 저장 위치를 변경하십시오.",
+    "downloadTooMany": "동시에 내려받을 수 있는 수가 넘었습니다. 다른 내려받기가 끝난 다음에 다시 시도하십시오.",
+    "downloading": "내려받는 중",
+    "saving": "저장 중…",
+    "cancelDownload": "{{name}} 내려받기 취소",
+    "cancelDownloadShort": "취소",
     "retry": "다시 시도",
     "sensitive": "민감한 화상",
     "markSensitive": "화상을 민감한 내용으로 표시",
@@ -293,7 +300,8 @@
       "to": "받는 사람",
       "cc": "참조",
       "date": "날자"
-    }
+    },
+    "downloadDestinationUnsupportedAskEveryTimeOff": "이 저장 위치에는 저장할 수 없습니다. 설정의 \"내려받기\"에서 저장 위치를 변경하거나, \"내려받을 때마다 확인\"을 켜십시오."
   },
   "threads": {
     "title": "타래",
@@ -496,6 +504,19 @@
     "desktopTitle": "알림",
     "desktopValue": "체계 알림",
     "desktopDescription": "언급과 DM을 앱이 체계 알림으로 알려줍니다. 체계 설정에서 zoo2 알림을 꺼두었다면 그쪽도 켜주십시오."
+  },
+  "downloads": {
+    "desktopTitle": "내려받기",
+    "desktopDescription": "첨부 파일을 보관할 위치입니다. 내려받을 때마다 위치를 확인하거나, 미리 정한 폴더에 보관할 수 있습니다.",
+    "askEveryTime": "내려받을 때마다 확인",
+    "noFolder": "폴더 미선택",
+    "chooseFolder": "폴더 선택",
+    "resetDirectory": "보관 폴더를 지우고 내려받을 때마다 확인",
+    "olderAppValue": "프로그램의 기본 보관 위치",
+    "olderAppDescription": "이 판의 프로그램에서는 프로그램이 정한 위치에 보관합니다. 보관 위치를 바꾸려면 프로그램을 갱신하십시오.",
+    "loadError": "보관 위치 설정을 읽지 못했습니다.",
+    "retry": "다시 읽기",
+    "error": "보관 위치 설정을 바꾸지 못했습니다. 다시 시도해 주십시오."
   },
   "mfm": {
     "suggestions": "MFM 후보",
@@ -1881,9 +1902,7 @@
     "filters": {
       "label": "거르기",
       "from": "보낸 사람",
-      "anyone": "모든 사람",
       "in": "통로",
-      "anywhere": "모든 통로",
       "period": "기간",
       "anytime": "지정하지 않음",
       "last7": "지난 7일",
@@ -1893,7 +1912,16 @@
       "after": "시작날자",
       "before": "마감날자",
       "reversed": "시작일은 종료일과 같거나 그 이전이여야 합니다.",
-      "reset": "조건 초기화"
+      "reset": "조건 초기화",
+      "me": "{{name}} (나)",
+      "searchPeople": "이름으로 찾기",
+      "searchChannels": "통로 이름으로 찾기",
+      "noMatches": "찾을수 없습니다",
+      "clearSelection": "선택 해제",
+      "selectedCount": "{{label}}: {{count}}개",
+      "max": "최대 {{count}}개까지 선택할수 있습니다",
+      "mine": "내가 참가중",
+      "noBots": "보트 제외"
     }
   },
   "catchUp": {
