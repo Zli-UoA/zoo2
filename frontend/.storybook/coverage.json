@@ -343,6 +343,7 @@
       "states": [
         "Default",
         "MentionedMessage",
+        "MentionedChannelMessage",
         "EncryptedBeforeEncryptionRow",
         "EncryptedUnencryptedAfterEncryptedRow",
         "OwnMessage",

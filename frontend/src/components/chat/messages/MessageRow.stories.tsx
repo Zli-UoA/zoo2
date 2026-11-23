@@ -448,9 +448,16 @@ export const MentionedMessage: Story = {
     ),
   ],
   args: {
+    isOwn: true,
     item: {
       ...item,
-      message: { ...item.message, content: "@amesyu 確認をお願いします。" },
+      message: {
+        ...item.message,
+        user_id: "user-viewer",
+        user_name: "amesyu",
+        display_name: "amesyu",
+        content: "@amesyu 確認をお願いします。",
+      },
     },
     mentionUserId: "user-viewer",
   },
@@ -458,9 +465,28 @@ export const MentionedMessage: Story = {
     const row = [...canvasElement.querySelectorAll("div")].find((element) =>
       element.classList.contains("group/row"),
     );
-    await expect(row).toHaveClass("bg-[#f0b232]/[0.08]");
-    await expect(row).toHaveClass("before:w-[3px]");
+    await expect(row).toBeDefined();
+    await waitFor(async () => {
+      await expect(getComputedStyle(row!).backgroundColor).toMatch(/(?:,|\/)\s*0\.08\)$/);
+    });
+    await expect(getComputedStyle(row!, "::before").width).toBe("3px");
+    await expect(getComputedStyle(row!, "::before").backgroundColor).toBe("rgb(240, 178, 50)");
   }),
+};
+
+export const MentionedChannelMessage: Story = {
+  ...MentionedMessage,
+  args: {
+    ...MentionedMessage.args,
+    item: {
+      ...item,
+      message: {
+        ...item.message,
+        user_id: "user-viewer",
+        content: "@channel 確認をお願いします。",
+      },
+    },
+  },
 };
 
 /**

@@ -53,20 +53,23 @@ function render(item: MessageItem, isOwn = false, props: Partial<MessageRowProps
 
 describe("MessageRow", () => {
   it.each([
-    { authorId: "user-bob", highlighted: true },
-    { authorId: "user-alice", highlighted: false },
+    { authorId: "user-bob", content: "@alice @bob", highlighted: true },
+    { authorId: "user-alice", content: "@alice @bob", highlighted: true },
+    { authorId: "user-alice", content: "@channel", highlighted: true },
+    { authorId: "user-alice", content: "@here", highlighted: true },
+    { authorId: "user-alice", content: "@bob", highlighted: false },
+    { authorId: "user-alice", content: "@Alice", highlighted: false },
   ])(
-    "highlights read-only mentions only from another author: $authorId",
-    ({ authorId, highlighted }) => {
+    "highlights mentions independently of the author: $authorId / $content",
+    ({ authorId, content, highlighted }) => {
       const html = renderToStaticMarkup(
         createElement(MentionUserNamesContext.Provider, {
           value: new Map([["user-alice", "alice"]]),
           children: createElement(LocaleProvider, {
             children: createElement(MessageRow, {
-              item: buildItem({ user_id: authorId, content: "@alice @bob" }),
+              item: buildItem({ user_id: authorId, content }),
               mentionUserId: "user-alice",
-              // Read-only views disable actions even for the viewer's own messages.
-              isOwn: false,
+              isOwn: authorId === "user-alice",
               isEditing: false,
               editingText: "",
               onEditingTextChange: noop,
@@ -84,7 +87,6 @@ describe("MessageRow", () => {
         }),
       );
       expect(html.includes("bg-[#f0b232]/[0.08]")).toBe(highlighted);
-      expect(html.match(/bg-brand-muted/g)).toHaveLength(2);
       expect(html).not.toContain("bg-primary");
     },
   );

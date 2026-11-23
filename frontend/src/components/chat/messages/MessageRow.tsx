@@ -360,10 +360,7 @@ export function MessageRow({
     resolvedDecryption?.status === "decrypted" ? resolvedDecryption.body : message.content;
   // 暗号化メッセージのメンションは、本文の `@name` ではなく、復号した `mentions` だけで表示する。
   const mentionUserNames = useMentionUserNames();
-  const mentionMe =
-    mentionUserId && message.user_id !== mentionUserId
-      ? mentionUserNames.get(mentionUserId)
-      : undefined;
+  const mentionMe = mentionUserId ? mentionUserNames.get(mentionUserId) : undefined;
   const decryptedMentions =
     resolvedDecryption?.status === "decrypted" ? resolvedDecryption.mentions : undefined;
   const mentionAllowlist = useMemo(
@@ -378,7 +375,8 @@ export function MessageRow({
     messageTextSegments(bodyText).some(
       (segment) =>
         segment.kind === "mention" &&
-        segment.value === `@${mentionMe}` &&
+        (segment.value === `@${mentionMe}` ||
+          ["@channel", "@here"].includes(segment.value.toLowerCase())) &&
         (!mentionAllowlist || isAllowedMention(segment.value, mentionAllowlist)),
     );
 
@@ -479,9 +477,10 @@ export function MessageRow({
         onPointerDown={rememberTouchStart}
         onClick={openSheetOnTap}
         className={cn(
-          "group/row relative flex gap-3 rounded-lg px-3 transition-colors hover:bg-muted/60 focus-within:bg-muted/60",
-          isMentioned &&
-            "bg-[#f0b232]/[0.08] before:absolute before:inset-y-0 before:left-0 before:w-[3px] before:bg-[#f0b232] before:content-['']",
+          "group/row relative flex gap-3 rounded-lg px-3 transition-colors",
+          isMentioned
+            ? "bg-[#f0b232]/[0.08] before:absolute before:inset-y-0 before:left-0 before:w-[3px] before:bg-[#f0b232] before:content-[''] hover:bg-[#f0b232]/[0.12] focus-within:bg-[#f0b232]/[0.12]"
+            : "hover:bg-muted/60 focus-within:bg-muted/60",
           item.isGroupStart ? "pt-1.5" : "pt-0",
           item.isGroupEnd ? "pb-1.5" : "pb-0",
         )}
