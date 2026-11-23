@@ -10,7 +10,7 @@ import "../../styles.css";
 import { LocaleProvider } from "../../components/i18n/LocaleProvider";
 import { ChannelBrowserDialog } from "../../components/chat/ChannelBrowserDialog";
 import { ChannelSidebar } from "../../components/chat/ChannelSidebar";
-import { MembersPanel } from "../../components/chat/MembersPanel";
+import { ChannelMembersDialog } from "../../components/chat/ChannelMembersDialog";
 import { MessageList } from "../../components/chat/messages/MessageList";
 import { Composer } from "../../components/chat/messages/Composer";
 import { MessageRow } from "../../components/chat/messages/MessageRow";
@@ -442,20 +442,19 @@ describe("catalog surfaces", () => {
     await expect(page).toMatchScreenshot("channel-sidebar-mobile-light");
   });
 
-  it("members panel desktop light", async () => {
+  it("channel members dialog desktop light", async () => {
     await renderScreen(
       { theme: "light", width: 1440, height: 900 },
-      <div className="flex h-screen justify-end bg-background">
-        <MembersPanel
-          channel={storyChannels.find(
-            (channel) => channel.id === "00000000-0000-4000-8000-000000000001",
-          )!}
-          className="flex w-80 border-l"
-        />
-      </div>,
+      <ChannelMembersDialog
+        open
+        onOpenChange={noop}
+        channel={storyChannels.find(
+          (channel) => channel.id === "00000000-0000-4000-8000-000000000001",
+        )!}
+      />,
     );
     await screen.findByText("Alice");
-    await expect(page).toMatchScreenshot("members-panel-desktop-light");
+    await expect(page).toMatchScreenshot("channel-members-dialog-desktop-light");
   });
 
   it("channel browser dialog desktop light", async () => {
