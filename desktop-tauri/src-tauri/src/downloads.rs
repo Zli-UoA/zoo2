@@ -1909,12 +1909,18 @@ fn prepare_part_with(
                 .with_context(|| format!("書き込み用のファイルを作れません: {}", part.display()));
         }
     };
+    // 上書きの承認の有無に関係なく、確定前の確認に使う ID が取れない保存先は、
+    // 本文を転送する前に断る。
+    if !identity_available(&file) {
+        drop(file);
+        journal.remove_part(part);
+        return Err(anyhow::Error::new(UnsupportedDestination)
+            .context("保存先のファイル ID を取得できません")
+            .context(format!("保存できません: {}", final_path.display())));
+    }
     // 上書きの承認が無い保存は、確定時に既存のファイルを置き換えない。置き換えない
     // 移動を持たない保存先なら、本文を読み始める前に断る。
-    if deduplicate
-        && let Err(err) =
-            check_destination_with(part, journal, &rename, &hard_link, &identity_available)
-    {
+    if deduplicate && let Err(err) = check_destination_with(part, journal, &rename, &hard_link) {
         drop(file);
         journal.remove_part(part);
         return Err(err.context(format!("保存できません: {}", final_path.display())));
@@ -1925,13 +1931,11 @@ fn prepare_part_with(
 /// この保存先で、既存のファイルを置き換えずに `.part` を確定できるかを、本文を読み始める
 /// 前に確かめる。目印を書いた短い検査用のファイルを作り、確定と同じ順（「既にあれば
 /// 失敗する移動」、使えなければハードリンク）で別の名前へ移す。`.part` は動かさない。
-/// 確定後の確認に必要なファイル ID が取れることもここで確かめる。
 fn check_destination_with(
     part: &Path,
     journal: &Arc<Journal>,
     rename: impl Fn(&Path, &Path) -> std::io::Result<()>,
     hard_link: impl Fn(&Path, &Path) -> std::io::Result<()>,
-    identity_available: impl Fn(&std::fs::File) -> bool,
 ) -> Result<()> {
     let probe = part.with_extension("probe");
     let moved = part.with_extension("probe-moved");
@@ -1944,8 +1948,6 @@ fn check_destination_with(
             Ok(mut file) => {
                 let created = true;
                 let write_result = file.write_all(PROBE_MARKER);
-                // 本文を転送し終えてから確定で失敗しないよう、事前に ID が取れることを確かめる。
-                let identity_ok = identity_available(&file);
                 drop(file);
                 let (moved_created, outcome) = if let Err(err) = write_result {
                     if let Err(remove_err) = std::fs::remove_file(&probe)
@@ -1955,13 +1957,6 @@ fn check_destination_with(
                             .context(format!("検査用ファイルを片付けられません: {}", remove_err)));
                     }
                     (false, Err(err.into()))
-                } else if !identity_ok {
-                    // どちらの方法でも ID を取れない保存先では、確定の確認だけが失敗する。
-                    (
-                        false,
-                        Err(anyhow::Error::new(UnsupportedDestination)
-                            .context("保存先のファイル ID を取得できません")),
-                    )
                 } else {
                     // .probe-moved は rename 前に記録する。rename 成功直後に落ちても、
                     // 起動時の掃除で回収できるようにする。
@@ -2393,7 +2388,8 @@ fn same_file_as_path(_source: &std::fs::Metadata, _path: &Path) -> bool {
 
 /// 移動後の保存先を確認する。`FileIdInfo` が使えないファイルシステムでは ID が
 /// 移動で変わり得るため、そのときは ID の比較ではなく、再解析ポイントを辿らない
-/// 通常ファイルであること、サイズ、作成日時、更新日時の一致を確かめる。
+/// 通常ファイルであることとサイズの一致だけを確かめる。同じサイズの差し替えは
+/// 検出できないので、確認に失敗した保存先の名前は削除しない。
 #[cfg(windows)]
 fn post_move_file_matches(
     source: &std::fs::Metadata,
@@ -2410,16 +2406,9 @@ fn post_move_file_matches(
         return false;
     }
     if !source_file_id.stable_across_move {
-        return windows_file_id_from_path(saved).is_some()
-            && saved_meta.len() == source.len()
-            && matches!(
-                (source.created(), saved_meta.created()),
-                (Ok(source_time), Ok(saved_time)) if source_time == saved_time
-            )
-            && matches!(
-                (source.modified(), saved_meta.modified()),
-                (Ok(source_time), Ok(saved_time)) if source_time == saved_time
-            );
+        // フォールバック ID は移動で変わることがあり、トンネリングで作成日時も
+        // 復元され得る。どちらも同一性の根拠にせず、通常ファイルとサイズだけを見る。
+        return windows_file_id_from_path(saved).is_some() && saved_meta.len() == source.len();
     }
     let Some(saved_id) = windows_file_id_from_path(saved) else {
         return false;
@@ -2435,34 +2424,6 @@ fn post_move_file_matches(source: &std::fs::Metadata, saved: &Path) -> bool {
 #[cfg(not(any(unix, windows)))]
 fn post_move_file_matches(_source: &std::fs::Metadata, _saved: &Path) -> bool {
     true
-}
-
-/// 移動前に控えた、こちらのファイルだけを消すための根拠。
-#[cfg(windows)]
-fn saved_file_basis(meta: &std::fs::Metadata) -> Option<(u64, std::time::SystemTime)> {
-    Some((meta.len(), meta.created().ok()?))
-}
-
-#[cfg(not(windows))]
-fn saved_file_basis(_meta: &std::fs::Metadata) -> Option<(u64, std::time::SystemTime)> {
-    // Unix では inode の不一致は差し替えを意味するので、保存先の名前を触らない。
-    None
-}
-
-/// 確定後の確認に失敗したとき、移動前に控えたサイズと作成日時が一致するファイルだけ消す。
-/// 失敗した確認をもう一度呼ぶのではなく、別の根拠で判断する。
-/// パスの差し替えで別のファイルが置かれていた場合は触らない。
-fn remove_saved_file_if_ours(saved: &Path, basis: Option<(u64, std::time::SystemTime)>) {
-    let Some((length, created)) = basis else {
-        return;
-    };
-    let Ok(meta) = std::fs::symlink_metadata(saved) else {
-        return;
-    };
-    if !meta.is_file() || meta.len() != length || meta.created().ok() != Some(created) {
-        return;
-    }
-    let _ = std::fs::remove_file(saved);
 }
 
 fn finish_entry(entry: Pending) -> Result<PathBuf> {
@@ -2566,9 +2527,6 @@ fn finish_entry_with(
             ));
         }
     }
-    // 移動前の値を控えておく。確認が失敗した後の再判定は同じ結果になるので、
-    // 削除の判断には使わない。
-    let saved_basis = saved_file_basis(&source_meta);
     let saved = if entry.deduplicate {
         move_unique(&entry.part, &entry.final_path)
     } else {
@@ -2591,9 +2549,8 @@ fn finish_entry_with(
         &saved,
     ) {
         let _ = std::fs::remove_file(&entry.part);
-        // 確認に失敗したファイルを保存先に残すと、画面は失敗なのに添付だけが見える状態になる。
-        // ただし差し替えられた可能性もあるので、移動前に控えた根拠が一致するときだけ消す。
-        remove_saved_file_if_ours(&saved, saved_basis);
+        // 確認に失敗した保存先の名前は触らない。差し替えられていた場合に、
+        // こちらのファイルだと断定できずに他人のファイルを消すおそれがあるため。
         return Err(anyhow!(
             "保存先の確認に失敗しました。保存先にファイルが残っている場合は削除してから、もう一度お試しください: {}",
             saved.display()
@@ -3161,53 +3118,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    #[cfg(windows)]
-    #[test]
-    fn failed_finish_only_removes_a_saved_file_it_owns() {
-        let dir = temp_dir();
-        let source_path = dir.join("source.bin");
-        std::fs::write(&source_path, b"new").unwrap();
-        let source = std::fs::metadata(&source_path).unwrap();
-        let basis = Some(saved_file_basis(&source).expect("作成日時が取れる"));
-
-        // 自分が移したファイル（ハードリンクで同一）は消す。
-        let ours = dir.join("ours.bin");
-        std::fs::hard_link(&source_path, &ours).unwrap();
-        remove_saved_file_if_ours(&ours, basis);
-        assert!(!ours.exists());
-
-        // 別のファイルが同じ名前に置かれていた場合は触らない。
-        let other = dir.join("other.bin");
-        std::fs::write(&other, b"other").unwrap();
-        remove_saved_file_if_ours(&other, basis);
-        assert!(other.exists());
-
-        // 長さは同じでも作成日時が違えば消さない。
-        let replaced = dir.join("replaced.bin");
-        std::fs::write(&replaced, b"new").unwrap();
-        remove_saved_file_if_ours(&replaced, Some((3, std::time::SystemTime::UNIX_EPOCH)));
-        assert!(replaced.exists());
-
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn failed_finish_never_removes_a_saved_file() {
-        let dir = temp_dir();
-        let source_path = dir.join("source.bin");
-        std::fs::write(&source_path, b"new").unwrap();
-        let source = std::fs::metadata(&source_path).unwrap();
-        assert!(saved_file_basis(&source).is_none());
-
-        let ours = dir.join("ours.bin");
-        std::fs::hard_link(&source_path, &ours).unwrap();
-        remove_saved_file_if_ours(&ours, saved_file_basis(&source));
-        assert!(ours.exists(), "根拠がなければ触らない");
-
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
     #[test]
     fn file_id_from_index_keeps_byte_order_and_zero_padding() {
         assert_eq!(
@@ -3239,7 +3149,8 @@ mod tests {
         assert!(post_move_file_matches(&source, Some(fallback_id), &saved));
         assert!(post_move_file_matches(&source, Some(stable_id), &saved));
 
-        // サイズ違い、同じサイズの別ファイル、別 ID、通常ファイルでない場合は失敗する。
+        // サイズ違いと通常ファイルでない場合は失敗する。フォールバック経路では
+        // 同じサイズの別ファイルを時刻で見分けないため、その比較はしない。
         let shorter = dir.join("shorter.bin");
         std::fs::write(&shorter, b"short").unwrap();
         assert!(!post_move_file_matches(
@@ -3248,17 +3159,14 @@ mod tests {
             &shorter
         ));
 
+        // 安定 ID が読めて別の ID なら失敗する。
         let different = dir.join("different.bin");
-        std::fs::write(&different, &payload).unwrap();
-        assert!(!post_move_file_matches(
-            &source,
-            Some(fallback_id),
-            &different
-        ));
+        std::fs::write(&different, b"other").unwrap();
         let different_id = {
             let file = std::fs::File::open(&different).unwrap();
             windows_file_id_from_handle(&file).expect("id")
         };
+        assert_ne!(different_id, stable_id);
         assert!(!post_move_file_matches(&source, Some(different_id), &saved));
 
         let folder = dir.join("folder");
@@ -3742,7 +3650,6 @@ mod tests {
                 linked.set(true);
                 std::fs::hard_link(from, to)
             },
-            |_| true,
         )
         .unwrap();
         assert!(linked.get());
@@ -3758,7 +3665,6 @@ mod tests {
             &journal,
             |_, _| Err(std::io::Error::from(std::io::ErrorKind::Unsupported)),
             |_, _| Err(std::io::Error::from(std::io::ErrorKind::Unsupported)),
-            |_| true,
         )
         .unwrap_err();
         assert!(err.downcast_ref::<UnsupportedDestination>().is_some());
@@ -3772,7 +3678,6 @@ mod tests {
             &journal,
             |_, _| Err(std::io::Error::from(std::io::ErrorKind::Unsupported)),
             |_, _| Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
-            |_| true,
         )
         .unwrap_err();
         assert!(err.downcast_ref::<UnsupportedDestination>().is_none());
@@ -3783,21 +3688,29 @@ mod tests {
     }
 
     #[test]
-    fn check_destination_refuses_a_destination_without_file_ids() {
+    fn prepare_part_refuses_a_destination_without_file_ids() {
         let dir = temp_dir();
         let journal = Arc::new(Journal::load(Some(dir.join("download_parts.json"))));
         let target = dir.join("x.txt");
         let part = part_path(&target, "0123456789abcdef");
-        let probe = part.with_extension("probe");
-        let moved = part.with_extension("probe-moved");
 
-        // ID が取れない保存先では、本文を転送する前に断り、検査用の名前も残さない。
-        let err = check_destination_with(&part, &journal, |_, _| Ok(()), |_, _| Ok(()), |_| false)
+        // 上書きの承認の有無にかかわらず、ID が取れない保存先は本文を転送する前に断り、
+        // `.part` も記録も残さない。
+        for deduplicate in [true, false] {
+            let err = prepare_part_with(
+                &journal,
+                &part,
+                &target,
+                deduplicate,
+                rename_no_replace,
+                |from, to| std::fs::hard_link(from, to),
+                |_| false,
+            )
             .unwrap_err();
-        assert!(err.downcast_ref::<UnsupportedDestination>().is_some());
-        assert!(!probe.exists());
-        assert!(!moved.exists());
-        assert!(journal.snapshot().is_empty());
+            assert!(err.downcast_ref::<UnsupportedDestination>().is_some());
+            assert!(!part.exists());
+            assert!(journal.snapshot().is_empty());
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -3818,13 +3731,9 @@ mod tests {
         symlink(&victim, &probe).unwrap();
 
         let journal = Arc::new(journal);
-        let err = check_destination_with(
-            &part,
-            &journal,
-            rename_no_replace,
-            |from, to| std::fs::hard_link(from, to),
-            |_| true,
-        )
+        let err = check_destination_with(&part, &journal, rename_no_replace, |from, to| {
+            std::fs::hard_link(from, to)
+        })
         .unwrap_err();
         assert!(err.downcast_ref::<UnsupportedDestination>().is_none());
         assert_eq!(
