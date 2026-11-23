@@ -474,7 +474,6 @@ impl Inline<'_> {
             icon.avatar_url = profile.avatar_url.clone();
             icon.avatar_fallback = Some(account_initial(profile));
             vec![
-                Span::styled("@".to_owned(), style),
                 icon,
                 Span::styled(
                     format!(
@@ -489,7 +488,7 @@ impl Inline<'_> {
                 ),
             ]
         } else {
-            vec![Span::styled(format!("@{name}"), style)]
+            vec![Span::styled(name.to_owned(), style)]
         };
         Some((name.len() + 1, spans))
     }
@@ -762,7 +761,7 @@ mod tests {
             ]
         );
         let styled = spans("hi @alice and @bob and a@b");
-        assert!(styled.contains(&("@alice".into(), MENTION.reversed())));
+        assert!(styled.contains(&("alice".into(), MENTION.reversed())));
         assert!(styled.contains(&("@bob".into(), MENTION)));
         assert!(!styled.iter().any(|(text, _)| text == "@b"));
     }
@@ -815,7 +814,7 @@ mod tests {
         let text: String = spans.iter().map(|span| span.content.as_str()).collect();
         assert!(text.contains("AuthZ Name"));
         assert!(text.contains(":@unknown:"));
-        assert!(text.contains(":@alice: @alice"));
+        assert!(text.contains(":@alice: alice"));
         assert!(text.ends_with(":@alice:"));
         assert_eq!(resolve_emoji(":@alice:"), Some(":@alice:".to_owned()));
     }

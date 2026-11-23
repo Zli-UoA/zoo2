@@ -68,6 +68,6 @@ mod tests {
     fn converts_core_mfm_styles_to_ratatui_lines() {
         let lines = render("hi **@alice** `code`", Some("alice"));
         assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0].to_string(), "hi @alice code");
+        assert_eq!(lines[0].to_string(), "hi alice code");
     }
 }

@@ -27,7 +27,7 @@ export function useMfmAccounts() {
 export function AccountGlyph({ name, mention = false }: { name: string; mention?: boolean }) {
   const account = useMfmAccounts().get(name);
   if (!account || ["channel", "here"].includes(name.toLowerCase()))
-    return <>{mention ? `@${name}` : `:@${name}:`}</>;
+    return <>{mention ? name : `:@${name}:`}</>;
   const label = account.display_name || account.username;
   const url = account.avatar_url;
   const safeUrl = url && (/^https?:\/\//i.test(url) || /^\/(?!\/)/.test(url)) ? url : undefined;
@@ -36,7 +36,6 @@ export function AccountGlyph({ name, mention = false }: { name: string; mention?
       className="inline-flex max-w-full items-baseline gap-0.5 align-baseline"
       title={`@${account.username}`}
     >
-      {mention ? "@" : null}
       <span
         role="img"
         aria-label={mention ? undefined : `:@${name}:`}

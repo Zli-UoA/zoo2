@@ -182,7 +182,7 @@ describe("暗号化メッセージのメンション", () => {
       }),
     );
     expect(html.match(/bg-brand-muted/g)).toHaveLength(1);
-    expect(html).toContain("@alice</span>");
+    expect(html).toContain("alice</span>");
     expect(html).toContain(" @bob @channel");
     expect(html).not.toContain("carol");
   });

@@ -51,6 +51,7 @@ export const AuthZAccounts: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByRole("img", { name: ":@alice:" })).toBeVisible();
     await expect(canvas.getByText("AuthZの表示名")).toBeVisible();
+    await expect(canvasElement).toHaveTextContent("メンション AuthZの表示名");
     await waitFor(() =>
       expect(
         canvas.getByRole("img", { name: ":@alice:" }).querySelector("img")?.naturalWidth ?? 0,
