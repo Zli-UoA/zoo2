@@ -4046,6 +4046,41 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn a_successful_probe_rename_keeps_a_replacement_at_the_old_name() {
+        let dir = temp_dir();
+        let journal = Arc::new(Journal::load(Some(dir.join("download_parts.json"))));
+        let target = dir.join("x.txt");
+        let part = part_path(&target, "0123456789abcdef");
+        std::fs::write(&part, b"").unwrap();
+        let probe = part.with_extension("probe");
+        let moved = part.with_extension("probe-moved");
+
+        // 改名と同じハンドル経由で移した直後に、旧名へ別のファイルが置かれる競合を再現する。
+        // 片付けがパスではなくハンドルに結び付いていれば、旧名のファイルは残る。
+        check_destination_with(
+            &part,
+            &journal,
+            |file, from, to| {
+                rename_handle_no_replace(file, to)?;
+                std::fs::write(from, b"other")
+            },
+            |_, _| unreachable!("Windows ではハードリンクに逃げない"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read(&probe).unwrap(),
+            b"other",
+            "旧名のファイルを消さない"
+        );
+        assert!(!moved.exists(), "移動先の検査ファイルだけを消す");
+        assert!(journal.snapshot().is_empty());
+        assert_eq!(std::fs::read(&part).unwrap(), b"", "`.part` は動かさない");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn prepare_part_refuses_a_destination_without_file_ids() {
         let dir = temp_dir();
