@@ -103,10 +103,31 @@ async fn count(db: &mut toasty::Db, sql: &str, bind: &str) -> anyhow::Result<i64
     Ok(text(db, sql, bind).await?.parse()?)
 }
 
+/// Cloudflare の `sessions/new` の代わり。要求ごとに新しいセッション ID を返す（ID が同じだと、
+/// 別の人のセッションを閉じても区別できない）。
+struct NewSession;
+
+impl wiremock::Respond for NewSession {
+    fn respond(&self, _req: &wiremock::Request) -> ResponseTemplate {
+        ResponseTemplate::new(201)
+            .set_body_json(json!({ "sessionId": format!("cf-{}", uuid::Uuid::new_v4()) }))
+    }
+}
+
+/// 応答を遅らせる `sessions/new`（セッションを作るあいだに、ほかの人が入る場合）。
+struct SlowNewSession(Duration);
+
+impl wiremock::Respond for SlowNewSession {
+    fn respond(&self, req: &wiremock::Request) -> ResponseTemplate {
+        NewSession.respond(req).set_delay(self.0)
+    }
+}
+
 /// Cloudflare の `tracks/new`・`tracks/close` の代わり。要求した track ごとに結果を返す。mid が "9" の
-/// track だけは失敗（`internal_error`）にする。
+/// track だけは失敗（`internal_error`）にする。`delay` は応答を遅らせる（push のあいだの割り当ての変更）。
 struct EchoTracks {
     answer: bool,
+    delay: Option<Duration>,
 }
 
 impl wiremock::Respond for EchoTracks {
@@ -130,8 +151,76 @@ impl wiremock::Respond for EchoTracks {
         if self.answer {
             res["sessionDescription"] = json!({"type": "answer", "sdp": "v=0\r\n"});
         }
-        ResponseTemplate::new(200).set_body_json(res)
+        let res = ResponseTemplate::new(200).set_body_json(res);
+        match self.delay {
+            Some(d) => res.set_delay(d),
+            None => res,
+        }
     }
+}
+
+/// LiveKit の mock が受けた、`room` と `identity` を指定した RemoveParticipant の数。`skip` 件目より後だけを見る。
+async fn remove_participant_calls(
+    lk: &MockServer,
+    skip: usize,
+    room: &str,
+    identity: &str,
+) -> usize {
+    let expected = json!({ "room": room, "identity": identity });
+    lk.received_requests()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .skip(skip)
+        .filter(|r| {
+            r.method == wiremock::http::Method::POST
+                && r.url.path() == "/twirp/livekit.RoomService/RemoveParticipant"
+                && serde_json::from_slice::<Value>(&r.body).is_ok_and(|b| b == expected)
+        })
+        .count()
+}
+
+/// Cloudflare の mock が受けた、`cf_session` の `tracks/close`。`skip` 件目より後だけを見る。
+async fn close_calls(cf: &MockServer, skip: usize, cf_session: &str) -> Vec<Value> {
+    let close_path = format!("/apps/app/sessions/{cf_session}/tracks/close");
+    cf.received_requests()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .skip(skip)
+        .filter(|r| r.method == wiremock::http::Method::PUT && r.url.path() == close_path)
+        .filter_map(|r| serde_json::from_slice::<Value>(&r.body).ok())
+        .collect()
+}
+
+/// sfu-bridge の内部 API を呼ぶ。`tokio::spawn` に渡せるよう、Router を値で受け取る。
+async fn bridge_call(
+    app: Router,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", format!("Bearer {BRIDGE_TOKEN}"))
+        .header("content-type", "application/json")
+        .body(match body {
+            Some(b) => Body::from(serde_json::to_vec(&b).unwrap()),
+            None => Body::empty(),
+        })
+        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
+    let status = res.status();
+    let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    (
+        status,
+        serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+async fn request_count(server: &MockServer) -> usize {
+    server.received_requests().await.unwrap_or_default().len()
 }
 
 async fn text(db: &mut toasty::Db, sql: &str, bind: &str) -> anyhow::Result<String> {
@@ -157,14 +246,15 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     let lk = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path_regex(r"^/apps/app/sessions/new$"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
-            "sessionId": format!("cf-{}", uuid::Uuid::new_v4())
-        })))
+        .respond_with(NewSession)
         .mount(&cf)
         .await;
     Mock::given(method("POST"))
         .and(path_regex(r"^/apps/app/sessions/[^/]+/tracks/new$"))
-        .respond_with(EchoTracks { answer: true })
+        .respond_with(EchoTracks {
+            answer: true,
+            delay: None,
+        })
         .mount(&cf)
         .await;
     Mock::given(method("GET"))
@@ -176,7 +266,10 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         .await;
     Mock::given(method("PUT"))
         .and(path_regex(r"^/apps/app/sessions/[^/]+/tracks/close$"))
-        .respond_with(EchoTracks { answer: false })
+        .respond_with(EchoTracks {
+            answer: false,
+            delay: None,
+        })
         .mount(&cf)
         .await;
     Mock::given(method("POST"))
@@ -339,6 +432,52 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         .await?,
         0
     );
+    // 誤って後始末を記録していれば、worker がすぐに処理して行を消すので、件数だけでは確かめられない。
+    // worker を起こして待ち、このルームと identity への RemoveParticipant が届いていないことも確かめる。
+    let sfu = state.call_sfu.clone().expect("sfu");
+    let lk_room = format!("call-{channel}-{epoch_mesh}");
+    let lk_identity = sessions[0].to_string();
+    sfu.departures_wake.notify_one();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(
+        remove_participant_calls(&lk, 0, &lk_room, &lk_identity).await,
+        0,
+        "re-joining the same LiveKit room must not remove the participant"
+    );
+
+    // 退出の後始末が残っていても（退出してすぐ、同じ session_id で同じルームに入り直した）、worker は
+    // いまの接続を切らずに、その行を済んだものとして消す。
+    toasty::sql::statement(
+        "INSERT INTO call_sfu_departures (channel_id, session_id, sfu_id, sfu_room)
+         VALUES ($1, $2::uuid, 'livekit', $3)",
+    )
+    .bind(channel.as_str())
+    .bind(lk_identity.as_str())
+    .bind(lk_room.as_str())
+    .exec(&mut db)
+    .await?;
+    sfu.departures_wake.notify_one();
+    let mut drained = false;
+    for _ in 0..40 {
+        if count(
+            &mut db,
+            "SELECT count(*) FROM call_sfu_departures WHERE channel_id = $1",
+            &channel,
+        )
+        .await?
+            == 0
+        {
+            drained = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(drained, "the departure worker did not process the row");
+    assert_eq!(
+        remove_participant_calls(&lk, 0, &lk_room, &lk_identity).await,
+        0,
+        "the worker removed a participant that re-joined the same room"
+    );
 
     // fallback なら Cloudflare。
     let (status, joined) = request(
@@ -365,6 +504,21 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     .await?;
     assert_eq!(status, StatusCode::OK, "{joined}");
     assert_eq!(joined["sfu"], "cloudflare");
+    // Cloudflare のセッションは参加者ごとに別。
+    let cf_of = |sid: uuid::Uuid| {
+        format!(
+            "SELECT cf_session_id FROM call_presence WHERE channel_id = $1 AND session_id = '{sid}'"
+        )
+    };
+    let cf_tracks_of = |sid: uuid::Uuid| {
+        format!(
+            "SELECT count(*) FROM call_sfu_tracks WHERE channel_id = $1 AND session_id = '{sid}'"
+        )
+    };
+    assert_ne!(
+        text(&mut db, &cf_of(sessions[1]), &channel).await?,
+        text(&mut db, &cf_of(sessions[2]), &channel).await?
+    );
 
     // 他人のセッションでは join できない。
     let (status, _) = request(
@@ -428,6 +582,29 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     )
     .await?;
     assert_eq!(status, StatusCode::OK);
+    // pull は、聞く人のセッションに、話す人のセッションと track 名を指定して出す。
+    let subscriber_cf = text(&mut db, &cf_of(sessions[2]), &channel).await?;
+    let publisher_cf = text(&mut db, &cf_of(sessions[1]), &channel).await?;
+    let pull_path = format!("/apps/app/sessions/{subscriber_cf}/tracks/new");
+    let pulled = cf
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| r.method == wiremock::http::Method::POST && r.url.path() == pull_path)
+        .filter_map(|r| serde_json::from_slice::<Value>(&r.body).ok())
+        .any(|b| {
+            b["tracks"]
+                == json!([{
+                    "location": "remote",
+                    "sessionId": publisher_cf,
+                    "trackName": sessions[1].to_string(),
+                }])
+        });
+    assert!(
+        pulled,
+        "the pull did not target {subscriber_cf} with the track of {publisher_cf}"
+    );
     let (status, _) = request(
         &app,
         &users[1],
@@ -448,6 +625,103 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     )
     .await?;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // push の応答を待つあいだに割り当てが変わったら（fallback で新しい Cloudflare セッションへ）、
+    // その push は 409 で、古いセッションのトラックは一覧に載らない。
+    let publish_uri = format!("/api/channels/{channel}/call/sfu/cf/publish");
+    let join_uri = format!("/api/channels/{channel}/call/sfu/join");
+    let old_cf2 = text(&mut db, &cf_of(sessions[2]), &channel).await?;
+    let delayed_path = format!("/apps/app/sessions/{old_cf2}/tracks/new");
+    Mock::given(method("POST"))
+        .and(path(delayed_path.as_str()))
+        .respond_with(EchoTracks {
+            answer: true,
+            delay: Some(Duration::from_millis(1500)),
+        })
+        .with_priority(1)
+        .mount(&cf)
+        .await;
+    let pending = {
+        let app = app.clone();
+        let user = users[2].clone();
+        let uri = publish_uri.clone();
+        let body = json!({"session_id": sessions[2], "offer": offer});
+        tokio::spawn(async move { request(&app, &user, "POST", &uri, Some(body), None).await })
+    };
+    // push が Cloudflare に届いてから、割り当てを変える。
+    let mut reached = false;
+    for _ in 0..40 {
+        reached = cf
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .any(|r| r.url.path() == delayed_path);
+        if reached {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(reached, "the delayed publish did not reach Cloudflare");
+    let (status, joined) = request(
+        &app,
+        &users[2],
+        "POST",
+        &join_uri,
+        Some(json!({"session_id": sessions[2], "fallback": true})),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    assert_eq!(joined["sfu"], "cloudflare");
+    let new_cf2 = text(&mut db, &cf_of(sessions[2]), &channel).await?;
+    assert_ne!(new_cf2, old_cf2);
+    let (status, body) = pending.await??;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        count(&mut db, &cf_tracks_of(sessions[2]), &channel).await?,
+        0,
+        "a publish to the old Cloudflare session was registered"
+    );
+
+    // push が先に終わってから割り当てが変わったら、古いトラックは消える。
+    let (status, published) = request(
+        &app,
+        &users[2],
+        "POST",
+        &publish_uri,
+        Some(json!({"session_id": sessions[2], "offer": offer})),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{published}");
+    assert_eq!(
+        text(
+            &mut db,
+            &format!(
+                "SELECT cf_session_id FROM call_sfu_tracks WHERE channel_id = $1 AND session_id = '{}'",
+                sessions[2]
+            ),
+            &channel
+        )
+        .await?,
+        new_cf2
+    );
+    let (status, joined) = request(
+        &app,
+        &users[2],
+        "POST",
+        &join_uri,
+        Some(json!({"session_id": sessions[2], "fallback": true})),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    assert_eq!(
+        count(&mut db, &cf_tracks_of(sessions[2]), &channel).await?,
+        0,
+        "the track of the old Cloudflare session was not deleted"
+    );
 
     // bridge：トークンがなければ 401。LiveKit と Cloudflare の両方に人がいる部屋が返る。
     let (status, _) = request(
@@ -503,6 +777,85 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         .clone();
     assert_eq!(room["livekit_sessions"], json!([sessions[0]]));
     assert_eq!(room["cloudflare_tracks"][0]["id"], track_id);
+    // 公開の世代（rev）は、Cloudflare のセッションと track 名から作る。
+    let rev_sql = format!(
+        "SELECT left(md5(cf_session_id || '/' || track_name), 12) FROM call_sfu_tracks
+         WHERE channel_id = $1 AND session_id = '{}' AND source = 'direct'",
+        sessions[1]
+    );
+    let rev1 = text(&mut db, &rev_sql, &channel).await?;
+    assert_eq!(room["cloudflare_tracks"][0]["rev"], rev1.as_str());
+    // long-poll：同じ revision なら、変化があるまで応答を保留する。
+    let since = rooms["revision"].as_str().unwrap().to_string();
+    let mut held = {
+        let app = app.clone();
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/internal/sfu-bridge/rooms?bridge_epoch={bridge_epoch}&since={since}"
+            ))
+            .header("authorization", format!("Bearer {BRIDGE_TOKEN}"))
+            .body(Body::empty())?;
+        tokio::spawn(async move {
+            let res = app.oneshot(req).await.unwrap();
+            let status = res.status();
+            let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+            (
+                status,
+                serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
+            )
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(
+        !held.is_finished(),
+        "the long-poll returned without a change"
+    );
+    // 同じ id のまま、別の Cloudflare セッションで公開し直すと、rev と revision が変わる（bridge が pull し直す）。
+    let (status, joined) = request(
+        &app,
+        &users[1],
+        "POST",
+        &join_uri,
+        Some(json!({"session_id": sessions[1], "fallback": true})),
+        Some(LAN_IP),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    let (status, published) = request(
+        &app,
+        &users[1],
+        "POST",
+        &publish_uri,
+        Some(json!({"session_id": sessions[1], "offer": offer})),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{published}");
+    let rev2 = text(&mut db, &rev_sql, &channel).await?;
+    assert_ne!(rev2, rev1);
+    // 保留していた long-poll が、新しい revision で返る（期限の 25 秒より前に）。
+    // （割り当ての変更でトラックが消えた時点で返ることもあるので、中身は次の読み取りで確かめる。）
+    let (status, woke) = tokio::time::timeout(Duration::from_secs(10), &mut held).await??;
+    assert_eq!(status, StatusCode::OK);
+    assert_ne!(woke["revision"].as_str(), Some(since.as_str()));
+    let (status, rooms) = bridge(
+        "GET",
+        &format!("/internal/sfu-bridge/rooms?bridge_epoch={bridge_epoch}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_ne!(rooms["revision"].as_str(), Some(since.as_str()));
+    let room = rooms["rooms"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["channel_id"] == channel.as_str())
+        .expect("room needs a bridge")
+        .clone();
+    assert_eq!(room["cloudflare_tracks"][0]["id"], track_id);
+    assert_eq!(room["cloudflare_tracks"][0]["rev"], rev2.as_str());
     // LiveKit の人の声を、bridge が Cloudflare に push する。
     let two = json!({"type": "offer", "sdp": "v=0\r\nm=audio 9 X 111\r\na=mid:0\r\nm=audio 9 X 111\r\na=mid:1\r\n"});
     let (status, _) = bridge(
@@ -556,19 +909,35 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         .await?,
         2
     );
-    // 同じ revision なら待つ（ここでは変化が来るまで待たずに期限で返る場合もある）。
-    let revision = rooms["revision"].as_str().unwrap().to_string();
-    let polled = tokio::time::timeout(
-        Duration::from_secs(30),
-        bridge(
-            "GET",
-            &format!("/internal/sfu-bridge/rooms?bridge_epoch={bridge_epoch}&since={revision}"),
-            None,
-        ),
+    // 中継中の話者が、同じ LiveKit のルームへの join を再送しても、bridge のトラックは残り、版も進まない。
+    let version_sql = "SELECT track_version FROM call_rooms WHERE channel_id = $1";
+    let version_before = count(&mut db, version_sql, &channel).await?;
+    let (status, joined) = request(
+        &app,
+        &users[0],
+        "POST",
+        &join_uri,
+        Some(json!({"session_id": sessions[0]})),
+        Some(LAN_IP),
     )
     .await?;
-    assert_eq!(polled.0, StatusCode::OK);
-
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    assert_eq!(joined["sfu"], "livekit");
+    assert_eq!(
+        count(&mut db, &cf_tracks_of(sessions[0]), &channel).await?,
+        1,
+        "re-joining the same LiveKit room deleted the bridge track"
+    );
+    assert_eq!(count(&mut db, version_sql, &channel).await?, version_before);
+    // join の応答の一覧にも rev が入る。
+    let tracks = joined["tracks"].as_array().expect("tracks");
+    assert_eq!(tracks.len(), 2, "{joined}");
+    assert!(
+        tracks
+            .iter()
+            .all(|t| t["rev"].as_str().is_some_and(|r| r.len() == 12)),
+        "{joined}"
+    );
     // 新しい bridge が登録すると、前の bridge のトラックは消える。
     let (_, reg2) = bridge("POST", "/internal/sfu-bridge/register", None).await;
     assert!(reg2["bridge_epoch"].as_i64().unwrap() > bridge_epoch);
@@ -582,7 +951,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         0
     );
     // 前の bridge がまだ動いていても、その push は一覧に載らない。
-    let (status, _) = bridge(
+    let (status, stale) = bridge(
         "POST",
         "/internal/sfu-bridge/cf/publish",
         Some(json!({
@@ -593,7 +962,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(status, StatusCode::CONFLICT, "{stale}");
     assert_eq!(
         count(
             &mut db,
@@ -603,6 +972,110 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         .await?,
         0
     );
+
+    // 古い bridge の push と、新しい bridge の登録が重なったとき（register_track の FOR SHARE と、
+    // bridge_register の更新で直列になる）。
+    let bridge_tracks_sql =
+        "SELECT count(*) FROM call_sfu_tracks WHERE channel_id = $1 AND source = 'bridge'";
+    let epoch2 = reg2["bridge_epoch"].as_i64().unwrap();
+    let speaker_offer = json!({"type": "offer", "sdp": "v=0\r\nm=audio 9 X 111\r\na=mid:0\r\nm=audio 9 X 111\r\na=mid:1\r\n"});
+    // (a) Cloudflare の応答を待つあいだに新しい bridge が登録したら、その push は 409 で、一覧に残らない。
+    let slow_cf = format!("cf-bridge-slow-{}", uuid::Uuid::new_v4());
+    let slow_path = format!("/apps/app/sessions/{slow_cf}/tracks/new");
+    Mock::given(method("POST"))
+        .and(path(slow_path.as_str()))
+        .respond_with(EchoTracks {
+            answer: true,
+            delay: Some(Duration::from_millis(1500)),
+        })
+        .with_priority(1)
+        .mount(&cf)
+        .await;
+    let pending = tokio::spawn(bridge_call(
+        app.clone(),
+        "POST",
+        "/internal/sfu-bridge/cf/publish",
+        Some(json!({
+            "channel_id": channel, "bridge_epoch": epoch2, "cf_session_id": slow_cf,
+            "speaker_session_id": sessions[0], "offer": speaker_offer, "mid": "1"
+        })),
+    ));
+    let mut reached = false;
+    for _ in 0..40 {
+        reached = cf
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .any(|r| r.url.path() == slow_path);
+        if reached {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        reached,
+        "the delayed bridge publish did not reach Cloudflare"
+    );
+    let (status, reg3) = bridge("POST", "/internal/sfu-bridge/register", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let epoch3 = reg3["bridge_epoch"].as_i64().unwrap();
+    assert!(epoch3 > epoch2);
+    let (status, body) = pending.await?;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(count(&mut db, bridge_tracks_sql, &channel).await?, 0);
+
+    // (b) push の登録が先に終わったら、あとの登録がそのトラックを消す。
+    let (status, body) = bridge(
+        "POST",
+        "/internal/sfu-bridge/cf/publish",
+        Some(json!({
+            "channel_id": channel, "bridge_epoch": epoch3, "cf_session_id": "cf-bridge-3",
+            "speaker_session_id": sessions[0], "offer": speaker_offer, "mid": "1"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(count(&mut db, bridge_tracks_sql, &channel).await?, 1);
+    let (_, reg4) = bridge("POST", "/internal/sfu-bridge/register", None).await;
+    let epoch4 = reg4["bridge_epoch"].as_i64().unwrap();
+    assert!(epoch4 > epoch3);
+    assert_eq!(count(&mut db, bridge_tracks_sql, &channel).await?, 0);
+
+    // (b') register_track が FOR SHARE を持ったまま書いているあいだは、登録はその commit を待ち、
+    // commit のあとに書かれた行も消す（register_track の中と同じ文を、テストのトランザクションで再現する）。
+    let mut holder = db.clone();
+    let mut tx = holder.transaction().await?;
+    let rows = toasty::sql::query("SELECT epoch::text FROM call_sfu_bridge WHERE id = 1 FOR SHARE")
+        .exec(&mut tx)
+        .await?;
+    assert_eq!(rows.len(), 1);
+    toasty::sql::statement(
+        "INSERT INTO call_sfu_tracks (channel_id, session_id, source, cf_session_id, track_name, bridge_epoch)
+         VALUES ($1, $2::uuid, 'bridge', 'cf-bridge-4', $3, $4::bigint)",
+    )
+    .bind(channel.as_str())
+    .bind(sessions[0].to_string())
+    .bind(format!("{}-bridge", sessions[0]))
+    .bind(epoch4.to_string())
+    .exec(&mut tx)
+    .await?;
+    let mut registering = tokio::spawn(bridge_call(
+        app.clone(),
+        "POST",
+        "/internal/sfu-bridge/register",
+        None,
+    ));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        !registering.is_finished(),
+        "register did not wait for the FOR SHARE lock of register_track"
+    );
+    tx.commit().await?;
+    let (status, reg5) = tokio::time::timeout(Duration::from_secs(10), &mut registering).await??;
+    assert_eq!(status, StatusCode::OK);
+    assert!(reg5["bridge_epoch"].as_i64().unwrap() > epoch4);
+    assert_eq!(count(&mut db, bridge_tracks_sql, &channel).await?, 0);
 
     // Cloudflare の人が退出すると、トラックが消え、worker が Cloudflare のセッションを閉じる。
     let left_cf_session = text(
@@ -614,6 +1087,11 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         &channel,
     )
     .await?;
+    // 残る人のセッション。退出の後始末で閉じてはいけない。
+    let staying_cf_session = text(&mut db, &cf_of(sessions[2]), &channel).await?;
+    assert_ne!(staying_cf_session, left_cf_session);
+    // leave より後に届いた要求だけを見る。
+    let cf_before_leave = request_count(&cf).await;
     let (status, _) = request(
         &app,
         &users[1],
@@ -652,24 +1130,23 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         "departure worker did not close the Cloudflare session"
     );
     // 退出した人のセッションを、force で閉じたこと（共有 DB のほかの退出への要求と区別する）。
-    let close_path = format!("/apps/app/sessions/{left_cf_session}/tracks/close");
-    let closed_left = cf
-        .received_requests()
+    let closed_left = close_calls(&cf, cf_before_leave, &left_cf_session)
         .await
-        .unwrap_or_default()
         .into_iter()
-        .any(|r| {
-            r.method == wiremock::http::Method::PUT
-                && r.url.path() == close_path
-                && serde_json::from_slice::<Value>(&r.body)
-                    .is_ok_and(|b| b["force"] == true && b["tracks"] == json!([{"mid": "0"}]))
-        });
+        .any(|b| b["force"] == true && b["tracks"] == json!([{"mid": "0"}]));
     assert!(
         closed_left,
         "the departed Cloudflare session {left_cf_session} was not force-closed"
     );
+    assert!(
+        close_calls(&cf, cf_before_leave, &staying_cf_session)
+            .await
+            .is_empty(),
+        "the Cloudflare session of a participant who stayed was closed"
+    );
 
-    // LiveKit の人が退出すると、RemoveParticipant を呼ぶ。
+    // LiveKit の人が退出すると、RemoveParticipant を呼ぶ。leave より後に届いた要求だけを見る。
+    let lk_before_leave = request_count(&lk).await;
     let (status, _) = request(
         &app,
         &users[0],
@@ -681,28 +1158,95 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     .await?;
     assert_eq!(status, StatusCode::OK);
     // 退出した人のルームと identity を指定して、RemoveParticipant を呼んだこと。
-    let expected = json!({
-        "room": format!("call-{channel}-{epoch_mesh}"),
-        "identity": sessions[0].to_string(),
-    });
     let mut removed = false;
     for _ in 0..60 {
-        removed = lk
-            .received_requests()
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .any(|r| {
-                r.method == wiremock::http::Method::POST
-                    && r.url.path() == "/twirp/livekit.RoomService/RemoveParticipant"
-                    && serde_json::from_slice::<Value>(&r.body).is_ok_and(|b| b == expected)
-            });
+        removed = remove_participant_calls(&lk, lk_before_leave, &lk_room, &lk_identity).await > 0;
         if removed {
             break;
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     assert!(removed, "LiveKit RemoveParticipant was not called");
+
+    // Cloudflare の close が応答待ちのままでも、LiveKit の後始末は待たない（SFU ごとに確保と処理を分ける）。
+    // ほかの検査の件数に入らないよう、別のチャンネル ID で記録する（call_sfu_departures に外部キーはない）。
+    let hang_channel = format!("hang-{}", uuid::Uuid::new_v4());
+    let hang_cf = format!("cf-hang-{}", uuid::Uuid::new_v4());
+    Mock::given(method("GET"))
+        .and(path(format!("/apps/app/sessions/{hang_cf}")))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"tracks": []}))
+                .set_delay(Duration::from_secs(30)),
+        )
+        .with_priority(1)
+        .mount(&cf)
+        .await;
+    toasty::sql::statement(
+        "INSERT INTO call_sfu_departures (channel_id, session_id, sfu_id, cf_session_id)
+         VALUES ($1, $2::uuid, 'cloudflare', $3)",
+    )
+    .bind(hang_channel.as_str())
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(hang_cf.as_str())
+    .exec(&mut db)
+    .await?;
+    sfu.departures_wake.notify_one();
+    // Cloudflare の行が確保され、応答待ちになるまで待つ。
+    let mut hanging = false;
+    for _ in 0..40 {
+        hanging = cf
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .any(|r| r.url.path() == format!("/apps/app/sessions/{hang_cf}"));
+        if hanging {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(hanging, "the Cloudflare departure was not claimed");
+    // そのあとに記録した LiveKit の行は、Cloudflare の応答（最長 10 秒で打ち切り）を待たずに処理される。
+    let hang_room = format!("call-{hang_channel}-1");
+    let hang_identity = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement(
+        "INSERT INTO call_sfu_departures (channel_id, session_id, sfu_id, sfu_room)
+         VALUES ($1, $2::uuid, 'livekit', $3)",
+    )
+    .bind(hang_channel.as_str())
+    .bind(hang_identity.as_str())
+    .bind(hang_room.as_str())
+    .exec(&mut db)
+    .await?;
+    sfu.departures_wake.notify_one();
+    let started = tokio::time::Instant::now();
+    let mut removed_while_hanging = false;
+    while started.elapsed() < Duration::from_secs(5) {
+        if remove_participant_calls(&lk, 0, &hang_room, &hang_identity).await > 0 {
+            removed_while_hanging = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        removed_while_hanging,
+        "a LiveKit departure waited for a hanging Cloudflare close"
+    );
+    // Cloudflare の行は、まだ応答待ち（または再試行待ち）で残っている。
+    assert_eq!(
+        count(
+            &mut db,
+            "SELECT count(*) FROM call_sfu_departures WHERE channel_id = $1 AND sfu_id = 'cloudflare'",
+            &hang_channel
+        )
+        .await?,
+        1
+    );
+    toasty::sql::statement("DELETE FROM call_sfu_departures WHERE channel_id = $1")
+        .bind(hang_channel.as_str())
+        .exec(&mut db)
+        .await?;
 
     // 全員が退出すると、次の入室で mesh に戻り、epoch が進む。
     drop(streams);
@@ -722,6 +1266,121 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     assert_eq!(room["mode"], "mesh");
     assert_eq!(room["epoch"].as_i64(), Some(epoch_mesh + 1));
     assert_eq!(room["max_participants"], 6);
+
+    // bridge がないとき：Cloudflare のセッションを作るあいだ（ロックを外している）に LAN の人が LiveKit に
+    // 入っても、取り直したロックの下で数え直し、LiveKit の人に sfu_reassign を送る。
+    // 同じ registry と DB で、bridge を無効にし、Cloudflare の sessions/new を遅らせた SFU を使う。
+    let slow_cf = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path_regex(r"^/apps/app/sessions/new$"))
+        .respond_with(SlowNewSession(Duration::from_millis(1500)))
+        .mount(&slow_cf)
+        .await;
+    let no_bridge = json!({
+        "cloudflare": {"api_base": slow_cf.uri()},
+        "livekit": {
+            "ws_url": "wss://livekit.example",
+            "api_url": lk.uri(),
+            "lan_egress_cidrs": [format!("{LAN_IP}/32")]
+        }
+    })
+    .to_string();
+    let no_bridge_cfg = backend::call_sfu::CallSfuConfig::from_lookup(&|name| match name {
+        "CALL_SFUS_JSON" => Some(no_bridge.clone()),
+        "CF_REALTIME_APP_ID" => Some("app".into()),
+        "CF_REALTIME_APP_SECRET" => Some("secret".into()),
+        "LIVEKIT_API_KEY" => Some("key".into()),
+        "LIVEKIT_API_SECRET" => Some("0123456789abcdef0123456789abcdef".into()),
+        _ => None,
+    })
+    .map_err(anyhow::Error::msg)?
+    .expect("sfu config");
+    let mut state2 = state.clone();
+    state2.call_sfu = Some(backend::call_sfu::CallSfu::new(no_bridge_cfg));
+    assert!(!state2.call_sfu.as_ref().unwrap().bridge_enabled());
+    let app2 = create_router(state2);
+    let channel2 = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement(
+        "INSERT INTO channels (id, channel_name, created_user_id, is_private) VALUES ($1, $1, $2, false)",
+    )
+    .bind(channel2.as_str())
+    .bind(users[0].as_str())
+    .exec(&mut db)
+    .await?;
+    let sessions2: Vec<uuid::Uuid> = (0..5).map(|_| uuid::Uuid::new_v4()).collect();
+    let mut streams2 = Vec::new();
+    for i in 0..5 {
+        let (status, _, stream) =
+            open_stream(&app2, &users[i], &channel2, sessions2[i], true).await?;
+        assert_eq!(status, StatusCode::OK, "join {i}");
+        streams2.push(stream.expect("stream"));
+    }
+    let join2_uri = format!("/api/channels/{channel2}/call/sfu/join");
+    // Cloudflare の人の join（sessions/new が遅い）。
+    let cf_join = {
+        let app = app2.clone();
+        let user = users[1].clone();
+        let uri = join2_uri.clone();
+        let body = json!({"session_id": sessions2[1]});
+        tokio::spawn(async move { request(&app, &user, "POST", &uri, Some(body), None).await })
+    };
+    let mut creating = false;
+    for _ in 0..40 {
+        creating = !slow_cf
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .is_empty();
+        if creating {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(creating, "the Cloudflare join did not reach sessions/new");
+    // そのあいだに LAN の人が入ると、部屋にはまだ Cloudflare の人がいないので LiveKit になる。
+    let (status, joined) = request(
+        &app2,
+        &users[0],
+        "POST",
+        &join2_uri,
+        Some(json!({"session_id": sessions2[0]})),
+        Some(LAN_IP),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    assert_eq!(joined["sfu"], "livekit");
+    assert!(
+        !cf_join.is_finished(),
+        "the Cloudflare join was not pending"
+    );
+    let (status, joined) = cf_join.await??;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    assert_eq!(joined["sfu"], "cloudflare");
+    // LiveKit の人の SSE に sfu_reassign が届く。
+    let lk_stream = &mut streams2[0];
+    let mut buf = String::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let reassigned = loop {
+        if buf
+            .split("\n\n")
+            .any(|ev| ev.lines().any(|l| l.trim() == "event: sfu_reassign"))
+        {
+            break true;
+        }
+        match tokio::time::timeout_at(deadline, lk_stream.next()).await {
+            Ok(Some(chunk)) => buf.push_str(&String::from_utf8(chunk?.to_vec())?),
+            _ => break false,
+        }
+    };
+    assert!(
+        reassigned,
+        "the LiveKit participant did not get sfu_reassign: {buf}"
+    );
+    drop(streams2);
+    toasty::sql::statement("DELETE FROM call_presence WHERE channel_id = $1")
+        .bind(channel2.as_str())
+        .exec(&mut db)
+        .await?;
 
     Ok(())
 }

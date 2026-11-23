@@ -1477,6 +1477,10 @@ CREATE TABLE call_sfu_departures (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- The departure worker claims each SFU's rows separately (sfu_id = $1 ORDER BY id), so rows of one SFU
+-- (e.g. LiveKit rows kept while LiveKit is disabled) are never scanned by the other SFU's claim.
+CREATE INDEX idx_call_sfu_departures_sfu ON call_sfu_departures (sfu_id, id);
+
 -- Every path that deletes call_presence (leave, sweep, kick, channel delete) records SFU departures here,
 -- bumps the room's track list version, and wakes the backends.
 CREATE FUNCTION record_call_sfu_departures() RETURNS trigger LANGUAGE plpgsql AS $$

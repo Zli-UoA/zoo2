@@ -120,6 +120,9 @@ pub struct SfuTrackInfo {
     pub id: String,
     pub session_id: Uuid,
     pub source: String,
+    /// 公開の世代。Cloudflare のセッションと track 名から作る（`left(md5(cf_session_id || '/' || track_name), 12)`）。
+    /// 同じ `id` のまま別のセッションで公開し直すと変わるので、pull する側は、変わったら pull し直す。
+    pub rev: String,
 }
 
 #[derive(Debug, Clone)]
@@ -2077,7 +2080,9 @@ pub async fn load_sfu_tracks(
                  SELECT json_agg(json_build_object(
                      'id', t.session_id::text || ':' || t.source,
                      'session_id', t.session_id,
-                     'source', t.source) ORDER BY t.session_id, t.source)
+                     'source', t.source,
+                     'rev', left(md5(t.cf_session_id || '/' || t.track_name), 12))
+                     ORDER BY t.session_id, t.source)
                  FROM call_sfu_tracks t
                  -- 期限の切れた（まだ消されていない）話者のトラックは、新しい通話の一覧に入れない。
                  -- LIMIT で半結合への展開を止め、トラックごとに call_presence の主キーで 1 行だけ引く。

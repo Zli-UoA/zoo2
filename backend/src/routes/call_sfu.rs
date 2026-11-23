@@ -206,16 +206,20 @@ async fn join(
         let departed =
             record_previous_assignment(&mut tx, &channel_id, body.session_id, &me, Some(&room))
                 .await?;
-        set_assignment(
+        // 同じルームへの割り当てを出し直すだけなら、bridge が出しているトラックを残し、版も進めない。
+        if set_assignment(
             &mut tx,
             &channel_id,
             body.session_id,
+            &me,
             SFU_LIVEKIT,
             Some(&room),
             None,
         )
-        .await?;
-        bump_tracks(&mut tx, &channel_id).await?;
+        .await?
+        {
+            bump_tracks(&mut tx, &channel_id).await?;
+        }
         tx.commit().await?;
         (
             JoinTarget::Livekit {
@@ -238,16 +242,20 @@ async fn join(
         }
         let departed =
             record_previous_assignment(&mut tx, &channel_id, body.session_id, &me, None).await?;
-        set_assignment(
+        // Cloudflare のセッションは毎回新しいので、割り当ては必ず変わる。
+        if set_assignment(
             &mut tx,
             &channel_id,
             body.session_id,
+            &me,
             SFU_CLOUDFLARE,
             None,
             Some(&cf_session),
         )
-        .await?;
-        bump_tracks(&mut tx, &channel_id).await?;
+        .await?
+        {
+            bump_tracks(&mut tx, &channel_id).await?;
+        }
         // ロックを外していたあいだに LiveKit に入った人も数えるため、取り直したロックの下で数え直す。
         let counts = count_others(&mut tx, &channel_id, body.session_id).await?;
         if !sfu.bridge_enabled() && counts.livekit > 0 {
@@ -357,14 +365,25 @@ async fn record_previous_assignment(
 /// 割り当てを変える。呼ぶ前に、同じトランザクションで presence の行をロックしておく（`own_presence` の
 /// `lock`）。`register_track` も同じ行をロックしてから登録するので、古い割り当てで登録したトラックが、
 /// ここで消したあとに残ることはない。
+///
+/// `previous` は、ロックして読んだ今の割り当て。新しい割り当てと同じなら（同じ LiveKit のルームへの
+/// join の再送）、何もしない。トラックを消すと、LiveKit の購読が変わらない bridge は push し直さないので、
+/// あとから来た Cloudflare の人がその話者を pull できなくなる。割り当てを変えたら `true`。
 async fn set_assignment(
     tx: &mut toasty::Transaction<'_>,
     channel_id: &str,
     session_id: Uuid,
+    previous: &PresenceRow,
     sfu_id: &str,
     room: Option<&str>,
     cf_session: Option<&str>,
-) -> Result<(), AppError> {
+) -> Result<bool, AppError> {
+    if previous.sfu_id.as_deref() == Some(sfu_id)
+        && previous.sfu_room.as_deref() == room
+        && previous.cf_session_id.as_deref() == cf_session
+    {
+        return Ok(false);
+    }
     toasty::sql::statement(
         "UPDATE call_presence SET sfu_id = $3, sfu_room = NULLIF($4, ''), cf_session_id = NULLIF($5, '')
          WHERE channel_id = $1 AND session_id = $2::uuid",
@@ -385,7 +404,7 @@ async fn set_assignment(
     .bind(session_id.to_string())
     .exec(&mut *tx)
     .await?;
-    Ok(())
+    Ok(true)
 }
 
 async fn notify_in(
@@ -594,12 +613,20 @@ async fn resolve_tracks(
         return Ok(Vec::new());
     }
     // 探索：主キー (channel_id, session_id, source) で、指定した数（最大 MAX_PULL_TRACKS）だけ。
+    // 話者の presence もトラックごとに 1 行ずつ引き、一覧と同じく、期限の切れた（まだ消されていない）話者の
+    // トラックは pull させない。
     let mut db = state.db.clone();
     let rows = toasty::sql::query(
         "SELECT json_build_object('session_id', t.cf_session_id, 'track_name', t.track_name)::text
          FROM jsonb_array_elements($2::jsonb) k
          JOIN call_sfu_tracks t
-           ON t.channel_id = $1 AND t.session_id = (k->>0)::uuid AND t.source = k->>1",
+           ON t.channel_id = $1 AND t.session_id = (k->>0)::uuid AND t.source = k->>1
+         -- LIMIT で結合への展開を止め、トラックごとに引く（全体の在室者を期限の索引で読まない）。
+         CROSS JOIN LATERAL (
+             SELECT 1 FROM call_presence p
+             WHERE p.channel_id = t.channel_id AND p.session_id = t.session_id
+               AND p.expires_at > statement_timestamp()
+             LIMIT 1) live",
     )
     .bind(channel_id.to_string())
     .bind(Value::Array(keys).to_string())
@@ -833,7 +860,9 @@ async fn load_bridge_rooms(state: &AppState) -> Result<Vec<BridgeRoomState>, App
              'cloudflare_tracks', COALESCE((
                  SELECT json_agg(json_build_object(
                      'id', t.session_id::text || ':' || t.source,
-                     'session_id', t.session_id, 'source', t.source) ORDER BY t.session_id)
+                     'session_id', t.session_id, 'source', t.source,
+                     'rev', left(md5(t.cf_session_id || '/' || t.track_name), 12))
+                     ORDER BY t.session_id)
                  FROM call_sfu_tracks t
                  CROSS JOIN LATERAL (
                      SELECT 1 FROM call_presence tp

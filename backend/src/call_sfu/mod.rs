@@ -91,22 +91,48 @@ impl CallSfu {
     }
 
     /// 退出の後始末の worker を起動する。
+    ///
+    /// SFU ごとに、確保と処理のループを分ける。片方の API が遅くても（Cloudflare の close が応答待ちのまま、
+    /// など）、もう片方の行の確保と処理は待たない。LiveKit の設定がないときは、LiveKit のループを起動しない
+    /// （行は消さずに残り、設定を戻せば処理する）。
     pub fn start_departure_worker(&self, db: toasty::Db) {
+        let mut wakes = vec![self.spawn_departure_loop(db.clone(), SFU_CLOUDFLARE)];
+        if self.livekit.is_some() {
+            wakes.push(self.spawn_departure_loop(db, SFU_LIVEKIT));
+        }
+        // `departures_wake` の 1 回の通知で、すべてのループを起こす。
+        let wake = self.departures_wake.clone();
+        tokio::spawn(async move {
+            loop {
+                wake.notified().await;
+                for w in &wakes {
+                    w.notify_one();
+                }
+            }
+        });
+    }
+
+    fn spawn_departure_loop(&self, db: toasty::Db, sfu_id: &'static str) -> Arc<Notify> {
+        let wake = Arc::new(Notify::new());
         let sfu = self.clone();
+        let woken = wake.clone();
         tokio::spawn(async move {
             loop {
                 let mut db = db.clone();
-                match drain_departures(&sfu, &mut db).await {
+                match drain_departures(&sfu, &mut db, sfu_id).await {
                     Ok(n) if n > 0 => continue,
                     Ok(_) => {}
-                    Err(e) => tracing::warn!("Failed to close departed SFU sessions: {e}"),
+                    Err(e) => {
+                        tracing::warn!(sfu_id, "Failed to close departed SFU sessions: {e}")
+                    }
                 }
                 tokio::select! {
-                    _ = sfu.departures_wake.notified() => {}
+                    _ = woken.notified() => {}
                     _ = tokio::time::sleep(Duration::from_secs(15)) => {}
                 }
             }
         });
+        wake
     }
 }
 
@@ -157,6 +183,7 @@ pub fn rows_json<T: DeserializeOwned>(rows: Vec<toasty::stmt::Value>) -> Vec<T> 
 #[derive(Debug, Clone, Deserialize)]
 struct Departure {
     id: i64,
+    channel_id: String,
     session_id: Uuid,
     sfu_id: String,
     sfu_room: Option<String>,
@@ -176,23 +203,26 @@ const DEPARTURE_CLAIM_SECS: i64 = 300;
 /// 失敗した行を、次に試すまでの間隔。
 const DEPARTURE_RETRY_SECS: i64 = 15;
 
-/// 退出した人の SFU の音声を止める。
+/// `sfu_id` の SFU に割り当てていた人の、退出の後始末をする。
 ///
-/// 1. 短い 1 文で、処理する行を確保する（`claimed_until` を先に延ばす）。行ロックは、この文の中でだけ持つ。
-/// 2. ロックもトランザクションも持たずに、SFU ごとに同時数を限って API を呼ぶ。
+/// 1. 短い 1 文で、その SFU の行を確保する（`claimed_until` を先に延ばす）。行ロックは、この文の中でだけ持つ。
+/// 2. ロックもトランザクションも持たずに、同時数を限って API を呼ぶ。
 /// 3. 終わった行は消し、失敗した行は `attempts` を増やして、`DEPARTURE_RETRY_SECS` 後まで確保を残す。
 ///
-/// LiveKit の設定がないときは、LiveKit の行を確保しない（設定を戻せば、残っていた行を処理する）。
-///
-/// 探索：主キー順に、確保の済んでいない行を最大 `DEPARTURE_BATCH` 行。読み飛ばすのは、ほかの worker が
-/// 確保中の行（worker の数 × `DEPARTURE_BATCH` 以下）、再試行を待つ行、LiveKit が無効のときの LiveKit の行。
-/// 行は処理したら消すので、表の大きさは「まだ閉じていない退出」の数に比例し、履歴は残らない。
-async fn drain_departures(sfu: &CallSfu, db: &mut toasty::Db) -> Result<usize, AppError> {
+/// 探索：主キー順に、その SFU の確保の済んでいない行を最大 `DEPARTURE_BATCH` 行。読み飛ばすのは、
+/// ほかの SFU の未処理の行、ほかの worker が確保中の行（worker の数 × `DEPARTURE_BATCH` 以下）、再試行を
+/// 待つ行で、どれも「まだ閉じていない退出」の数以下。行は処理したら消すので、表の大きさは
+/// 「まだ閉じていない退出」の数に比例し、履歴は残らない。
+async fn drain_departures(
+    sfu: &CallSfu,
+    db: &mut toasty::Db,
+    sfu_id: &str,
+) -> Result<usize, AppError> {
     let rows = toasty::sql::query(format!(
         "WITH picked AS (
              SELECT id FROM call_sfu_departures
-             WHERE (claimed_until IS NULL OR claimed_until < statement_timestamp())
-               AND ($1::boolean OR sfu_id <> 'livekit')
+             WHERE sfu_id = $1
+               AND (claimed_until IS NULL OR claimed_until < statement_timestamp())
              ORDER BY id
              LIMIT {DEPARTURE_BATCH}
              FOR UPDATE SKIP LOCKED
@@ -202,11 +232,11 @@ async fn drain_departures(sfu: &CallSfu, db: &mut toasty::Db) -> Result<usize, A
          FROM picked
          WHERE d.id = picked.id
          RETURNING json_build_object(
-             'id', d.id, 'session_id', d.session_id, 'sfu_id', d.sfu_id, 'sfu_room', d.sfu_room,
+             'id', d.id, 'channel_id', d.channel_id, 'session_id', d.session_id, 'sfu_id', d.sfu_id, 'sfu_room', d.sfu_room,
              'cf_session_id', d.cf_session_id, 'attempts', d.attempts
          )::text"
     ))
-    .bind(sfu.livekit.is_some().to_string())
+    .bind(sfu_id.to_string())
     .exec(&mut *db)
     .await?;
     let departures: Vec<Departure> = rows_json(rows);
@@ -214,16 +244,11 @@ async fn drain_departures(sfu: &CallSfu, db: &mut toasty::Db) -> Result<usize, A
         return Ok(0);
     }
 
-    // SFU ごとに枠を分け、片方の応答待ちで、もう片方の後始末を止めない。
-    let (livekit, cloudflare): (Vec<_>, Vec<_>) = departures
-        .into_iter()
-        .partition(|d| d.sfu_id == SFU_LIVEKIT);
-    let (lk_results, cf_results) =
-        tokio::join!(close_all(sfu, livekit), close_all(sfu, cloudflare));
+    let results = close_all(sfu, db, departures).await;
 
     let mut done = Vec::new();
     let mut retry = Vec::new();
-    for (d, result) in lk_results.into_iter().chain(cf_results) {
+    for (d, result) in results {
         match result {
             Ok(()) => done.push(d.id),
             Err(e) if d.attempts + 1 >= MAX_DEPARTURE_ATTEMPTS => {
@@ -261,15 +286,18 @@ async fn drain_departures(sfu: &CallSfu, db: &mut toasty::Db) -> Result<usize, A
 
 async fn close_all(
     sfu: &CallSfu,
+    db: &toasty::Db,
     departures: Vec<Departure>,
 ) -> Vec<(Departure, Result<(), AppError>)> {
     use futures_util::StreamExt;
     let sfu = sfu.clone();
+    let db = db.clone();
     futures_util::stream::iter(departures)
         .map(move |d| {
             let sfu = sfu.clone();
+            let mut db = db.clone();
             async move {
-                let result = close_departed(&sfu, &d).await;
+                let result = close_departed(&sfu, &mut db, &d).await;
                 (d, result)
             }
         })
@@ -285,23 +313,48 @@ fn join_ids(ids: &[i64]) -> String {
         .join(",")
 }
 
-async fn close_departed(sfu: &CallSfu, d: &Departure) -> Result<(), AppError> {
+async fn close_departed(sfu: &CallSfu, db: &mut toasty::Db, d: &Departure) -> Result<(), AppError> {
     if let Some(cf) = &d.cf_session_id {
         sfu.cloudflare.close_session(cf).await?;
     }
     if d.sfu_id == SFU_LIVEKIT
         && let Some(room) = &d.sfu_room
     {
-        // LiveKit の行は、LiveKit の設定があるときだけ確保する（`drain_departures`）。
+        // LiveKit の行は、LiveKit の設定があるときだけ確保する（`start_departure_worker`）。
         let Some(lk) = &sfu.livekit else {
             return Err(AppError::Internal(anyhow::anyhow!(
                 "LiveKit is not configured"
             )));
         };
+        // 同じ session_id で、同じルームに入り直していたら（退出のあとの再入室、割り当てのやり直し）、
+        // RemoveParticipant は新しい接続を切ってしまうので呼ばない。この行は済んだものとして消す。
+        if rejoined_livekit_room(db, d, room).await? {
+            return Ok(());
+        }
         lk.remove_participant(room, &d.session_id.to_string())
             .await?;
     }
     Ok(())
+}
+
+/// 退出した session_id が、いま同じ LiveKit のルームに割り当てられているか。
+/// 探索：call_presence の主キー (channel_id, session_id) で 1 行。
+async fn rejoined_livekit_room(
+    db: &mut toasty::Db,
+    d: &Departure,
+    room: &str,
+) -> Result<bool, AppError> {
+    let rows = toasty::sql::query(
+        "SELECT 1 FROM call_presence
+         WHERE channel_id = $1 AND session_id = $2::uuid
+           AND sfu_id = 'livekit' AND sfu_room = $3 AND expires_at > statement_timestamp()",
+    )
+    .bind(d.channel_id.clone())
+    .bind(d.session_id.to_string())
+    .bind(room.to_string())
+    .exec(db)
+    .await?;
+    Ok(!rows.is_empty())
 }
 
 #[cfg(test)]

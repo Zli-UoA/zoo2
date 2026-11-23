@@ -174,10 +174,9 @@ impl CallSfuConfig {
                 }
                 let ws_url = lk.ws_url.trim().trim_end_matches('/').to_string();
                 // 参加用トークンをこの URL で送るので、平文の ws:// はループバック（テスト）だけ許す。
-                let ws_ok = ws_url.starts_with("wss://")
-                    || ws_url
-                        .strip_prefix("ws://")
-                        .is_some_and(|rest| is_loopback_host(url_host(rest)));
+                let ws = parse_url(&ws_url, "livekit.ws_url")?;
+                let ws_ok = ws.scheme() == "wss"
+                    || (ws.scheme() == "ws" && is_loopback_host(url_host(&ws)));
                 if !ws_ok {
                     return Err(
                         "livekit.ws_url must start with wss:// (ws:// is allowed only for loopback)"
@@ -264,28 +263,47 @@ impl CallSfuConfig {
 /// （`*.svc`・`*.svc.cluster.local`。LiveKit の Twirp はクラスタ内から呼ぶ。docs/calls-sfu.md）だけ許す。
 /// クライアントはリダイレクトを追わない（`CallSfu::new`）ので、送り先がこの検査の外に変わることもない。
 fn require_secure_api_url(url: &str, field: &str) -> Result<(), String> {
-    if url.starts_with("https://") {
-        return Ok(());
-    }
-    if let Some(rest) = url.strip_prefix("http://") {
-        let host = url_host(rest);
-        if is_loopback_host(host) || is_cluster_internal_host(host) {
-            return Ok(());
+    let parsed = parse_url(url, field)?;
+    match parsed.scheme() {
+        "https" => return Ok(()),
+        "http" => {
+            let host = url_host(&parsed);
+            if is_loopback_host(host) || is_cluster_internal_host(host) {
+                return Ok(());
+            }
         }
+        _ => {}
     }
     Err(format!(
         "{field} must start with https:// (http:// is allowed only for loopback and *.svc / *.svc.cluster.local)"
     ))
 }
 
-/// `scheme://` より後ろから、ホスト名を取り出す（ポート・パス・userinfo を除く。IPv6 は角かっこを外す）。
-fn url_host(rest: &str) -> &str {
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let host_port = authority.rsplit('@').next().unwrap_or("");
-    if let Some(v6) = host_port.strip_prefix('[') {
-        return v6.split(']').next().unwrap_or("");
+/// URL を、接続に使う HTTP クライアント（reqwest）と同じ WHATWG の解釈で読む。
+///
+/// 自前で文字列を区切ると、検査したホストと実際の接続先がずれる（`http://evil.example\@livekit.zoo2.svc`
+/// は、WHATWG では `\` が `/` と同じ区切りなので、接続先は `evil.example`）。`\` は、解釈が実装ごとに
+/// ずれやすいので受け付けない。userinfo（`user:pass@`）も、Bearer の送り先には要らないので受け付けない。
+fn parse_url(url: &str, field: &str) -> Result<reqwest::Url, String> {
+    if url.contains('\\') {
+        return Err(format!("{field} must not contain a backslash"));
     }
-    host_port.split(':').next().unwrap_or("")
+    let parsed = reqwest::Url::parse(url).map_err(|e| format!("Invalid URL in {field}: {e}"))?;
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(format!("{field} must not contain userinfo"));
+    }
+    if parsed.host_str().is_none_or(str::is_empty) {
+        return Err(format!("{field} must have a host"));
+    }
+    Ok(parsed)
+}
+
+/// 解釈済みの URL のホスト名（IPv6 は角かっこを外す）。
+fn url_host(url: &reqwest::Url) -> &str {
+    let host = url.host_str().unwrap_or("");
+    host.strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host)
 }
 
 fn is_loopback_host(host: &str) -> bool {
@@ -555,6 +573,9 @@ mod tests {
         assert!(err.contains("livekit.ws_url"));
         assert!(with_livekit("ws://127.0.0.1.example", "https://lk.example").is_err());
         assert!(with_livekit("ws://localhost@evil.example", "https://lk.example").is_err());
+        // WHATWG では `\` が区切りなので、接続先は evil.example になる。
+        assert!(with_livekit(r"ws://evil.example\\@localhost:7880", "https://lk.example").is_err());
+        assert!(with_livekit("ws://user@127.0.0.1:7880", "https://lk.example").is_err());
     }
 
     #[test]
@@ -569,6 +590,12 @@ mod tests {
         assert!(!ok("http://svc.cluster.local"));
         assert!(!ok("http://a.b.c.svc.cluster.local"));
         assert!(!ok("ftp://livekit"));
+        // reqwest（WHATWG）の解釈では、接続先は evil.example。
+        assert!(!ok(r"http://evil.example\\@livekit.zoo2.svc:7880"));
+        assert!(!ok(r"https://lk.example\\path"));
+        assert!(!ok("http://evil.example@livekit.zoo2.svc:7880"));
+        assert!(!ok("http://livekit.zoo2.svc:7880@evil.example"));
+        assert!(!ok("http://[::1"));
 
         let cf = |api_base: &str| {
             CallSfuConfig::from_lookup(&lookup(&[
@@ -583,6 +610,28 @@ mod tests {
         assert!(cf("http://127.0.0.1:9000/v1").is_ok());
         let err = cf("http://rtc.example/v1").unwrap_err();
         assert!(err.contains("cloudflare.api_base"));
+        let err = cf(r"http://evil.example\\@127.0.0.1:9000/v1").unwrap_err();
+        assert!(err.contains("cloudflare.api_base"));
+    }
+
+    #[test]
+    fn url_check_uses_the_whatwg_host() {
+        // 検査に使う解釈が、接続に使う reqwest と同じであること。
+        let url = reqwest::Url::parse(r"http://evil.example\@livekit.zoo2.svc:7880").unwrap();
+        assert_eq!(url_host(&url), "evil.example");
+        assert!(parse_url(r"http://evil.example\@livekit.zoo2.svc:7880", "f").is_err());
+        assert!(
+            require_secure_api_url(r"http://evil.example\@livekit.zoo2.svc:7880", "f").is_err()
+        );
+        // レビューでの例。接続先は external.example なので、ループバックとして許してはいけない。
+        let url = reqwest::Url::parse(r"http://external.example\@localhost:8080").unwrap();
+        assert_eq!(url_host(&url), "external.example");
+        assert!(require_secure_api_url(r"http://external.example\@localhost:8080", "f").is_err());
+        assert!(require_secure_api_url("http://[::1]:7880", "f").is_ok());
+        assert!(require_secure_api_url("http://LIVEKIT.ZOO2.SVC:7880", "f").is_ok());
+        assert!(require_secure_api_url("http://livekit.zoo2.svc.:7880", "f").is_ok());
+        assert!(require_secure_api_url("http://evil.example?x=@livekit.zoo2.svc", "f").is_err());
+        assert!(require_secure_api_url("http://evil.example#@livekit.zoo2.svc", "f").is_err());
     }
 
     #[test]
