@@ -1,7 +1,7 @@
 import { SensitiveMedia } from "../../ui/sensitive-media";
 import { MediaPreview } from "../../ui/media-preview";
 import { useTranslation } from "react-i18next";
-import { DownloadIcon, LoaderCircleIcon, PaperclipIcon } from "lucide-react";
+import { LoaderCircleIcon, PaperclipIcon } from "lucide-react";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -12,9 +12,21 @@ import {
   mediaPreviewKind,
   shouldRefreshAttachmentUrl,
 } from "../../../lib/attachments";
+import {
+  DesktopDownloadDestinationError,
+  DesktopDownloadLimitError,
+  desktopDownloadSettings,
+} from "../../../lib/desktop";
+import {
+  DesktopDownloadCancelledError,
+  cancelDesktopDownload,
+  desktopDownloadsAvailable,
+  downloadUrlToDesktop,
+  useDesktopDownloadState,
+} from "../../../lib/desktopDownloads";
 import { useAttachmentUrl, type AttachmentUrlState } from "../../../hooks/useAttachments";
 import { useLocale } from "../../i18n/LocaleProvider";
-import { Button } from "../../ui/button";
+import { DownloadProgressButton } from "../../desktop/DownloadProgressButton";
 
 export function MessageAttachments({ attachments }: { attachments: AttachmentMetadata[] }) {
   if (attachments.length === 0) {
@@ -150,51 +162,83 @@ function AttachmentDownloadButton({
 }) {
   const { t } = useTranslation();
   const [downloading, setDownloading] = useState(false);
+  const desktopState = useDesktopDownloadState(attachment.id);
+
+  function reportFailure(error: unknown) {
+    // 失敗の理由（URL・通信・HTTP）と状態コードを、問い合わせ時に追えるように残す。
+    console.error("添付のダウンロードに失敗しました", {
+      attachmentId: attachment.id,
+      reason: error instanceof AttachmentDownloadError ? error.reason : "unknown",
+      status: error instanceof AttachmentDownloadError ? error.status : null,
+      error,
+    });
+    if (error instanceof DesktopDownloadDestinationError) {
+      // 保存先が上書きしない保存に対応していない。確認なし保存では同じ保存先へ
+      // 戻るため、設定変更を案内する。
+      void desktopDownloadSettings()
+        .then((settings) => {
+          toast.error(
+            settings?.ask_every_time === false
+              ? t("attachments.downloadDestinationUnsupportedAskEveryTimeOff")
+              : t("attachments.downloadDestinationUnsupported"),
+          );
+        })
+        .catch(() => toast.error(t("attachments.downloadDestinationUnsupported")));
+      return;
+    }
+    if (error instanceof DesktopDownloadLimitError) {
+      // 同時保存の上限。ほかの保存が終われば再試行できる。
+      toast.error(t("attachments.downloadTooMany"));
+      return;
+    }
+    toast.error(
+      t("attachments.downloadError"),
+      error instanceof AttachmentDownloadError && error.reason === "http" && error.status
+        ? { description: `HTTP ${error.status}` }
+        : undefined,
+    );
+  }
 
   async function download() {
-    if (downloading) {
+    if (downloading || desktopState) {
       return;
     }
     setDownloading(true);
     try {
-      await downloadAttachmentWithRetry(state.getFreshUrl, attachment.file_name);
+      // デスクトップ版では OS の保存ダイアログと保存先の設定を使う。古い版のアプリでは
+      // コマンドがないので、ブラウザーの保存に戻す。
+      if (await desktopDownloadsAvailable()) {
+        const savedName = await downloadUrlToDesktop(
+          attachment.id,
+          attachment.file_name,
+          state.getFreshUrl,
+          { size: Number(attachment.file_size) },
+        );
+        // 同じ名前が既にあったときは番号が足されるので、実際の名前を伝える。
+        if (savedName) toast.success(t("attachments.downloadSaved", { name: savedName }));
+      } else {
+        await downloadAttachmentWithRetry(state.getFreshUrl, attachment.file_name);
+      }
     } catch (error) {
-      // 失敗の理由（URL・通信・HTTP）と状態コードを、問い合わせ時に追えるように残す。
-      console.error("添付のダウンロードに失敗しました", {
-        attachmentId: attachment.id,
-        reason: error instanceof AttachmentDownloadError ? error.reason : "unknown",
-        status: error instanceof AttachmentDownloadError ? error.status : null,
-        error,
-      });
-      toast.error(
-        t("attachments.downloadError"),
-        error instanceof AttachmentDownloadError && error.reason === "http" && error.status
-          ? { description: `HTTP ${error.status}` }
-          : undefined,
-      );
+      if (!(error instanceof DesktopDownloadCancelledError)) reportFailure(error);
     } finally {
       setDownloading(false);
     }
   }
 
-  const label = t("attachments.download", { name: attachment.file_name });
   return (
-    <Button
-      type="button"
-      variant="ghost"
-      size={showLabel ? "sm" : "icon-sm"}
-      className={showLabel ? "shrink-0 gap-1 text-xs" : "text-muted-foreground"}
-      aria-label={label}
-      title={label}
-      disabled={downloading}
-      onClick={() => void download()}
-    >
-      {downloading ? (
-        <LoaderCircleIcon className="size-4 animate-spin" aria-hidden="true" />
-      ) : (
-        <DownloadIcon className="size-4" aria-hidden="true" />
-      )}
-      {showLabel ? t("attachments.downloadShort") : null}
-    </Button>
+    <DownloadProgressButton
+      state={desktopState}
+      pending={downloading}
+      showLabel={showLabel}
+      downloadLabel={t("attachments.download", { name: attachment.file_name })}
+      downloadShortLabel={t("attachments.downloadShort")}
+      cancelLabel={t("attachments.cancelDownload", { name: attachment.file_name })}
+      cancelShortLabel={t("attachments.cancelDownloadShort")}
+      finishingLabel={t("attachments.saving")}
+      progressLabel={t("attachments.downloading")}
+      onDownload={() => void download()}
+      onCancel={() => cancelDesktopDownload(attachment.id)}
+    />
   );
 }

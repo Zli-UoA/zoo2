@@ -591,6 +591,33 @@
       "states": ["On", "TurnOff", "Off", "OlderApp"]
     },
     {
+      "file": "src/components/desktop/DownloadProgressButton.stories.tsx",
+      "states": [
+        "Idle",
+        "Preparing",
+        "Downloading",
+        "UnknownSize",
+        "Finishing",
+        "Complete",
+        "WithLabel",
+        "FinishingWithLabel",
+        "Pending"
+      ]
+    },
+    {
+      "file": "src/components/desktop/DesktopDownloadSettings.stories.tsx",
+      "states": [
+        "AskEveryTime",
+        "SaveToFolder",
+        "ToggleOff",
+        "ChooseFolder",
+        "ResetFolder",
+        "OlderApp",
+        "LoadError",
+        "LongPath"
+      ]
+    },
+    {
       "file": "src/components/pwa/AppUpdateNotice.stories.tsx",
       "states": ["Available", "Mobile"]
     },
@@ -1378,6 +1405,14 @@
     {
       "file": "src/components/desktop/DesktopNotificationSelect.tsx",
       "story": "src/components/desktop/DesktopNotificationSelect.stories.tsx"
+    },
+    {
+      "file": "src/components/desktop/DownloadProgressButton.tsx",
+      "story": "src/components/desktop/DownloadProgressButton.stories.tsx"
+    },
+    {
+      "file": "src/components/desktop/DesktopDownloadSettings.tsx",
+      "story": "src/components/desktop/DesktopDownloadSettings.stories.tsx"
     },
     {
       "file": "src/components/desktop/DesktopBridge.tsx",
