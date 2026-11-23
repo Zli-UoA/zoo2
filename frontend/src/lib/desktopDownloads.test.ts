@@ -57,6 +57,17 @@ function started(id = "d1", prompted = false) {
   return { status: "started" as const, id, path: `C:\\Downloads\\${id}`, prompted };
 }
 
+/** 読み取りの区切りに依存せず、全書き込みの位置と総バイト数を検証する。 */
+function expectCumulativeOffsets(expectedBytes: number) {
+  const calls = desktop.write.mock.calls as Array<[string, Uint8Array, number]>;
+  let offset = 0;
+  for (const [, bytes, at] of calls) {
+    expect(at).toBe(offset);
+    offset += bytes.byteLength;
+  }
+  expect(offset).toBe(expectedBytes);
+}
+
 function blobResponse(bytes: number[], contentType = "text/plain") {
   return new Response(new Uint8Array(bytes), {
     headers: { "content-length": String(bytes.length), "content-type": contentType },
@@ -482,8 +493,8 @@ describe("desktopDownloads chunk offsets", () => {
 
     await downloadUrlToDesktop("u1", "big.bin", async () => "https://example.com/big.bin");
 
-    const offsets = desktop.write.mock.calls.map((call) => call[2]);
-    expect(offsets).toEqual([0, chunkSize, chunkSize * 2]);
+    expect(desktop.write.mock.calls.length).toBeGreaterThan(1);
+    expectCumulativeOffsets(bytes.byteLength);
     expect(desktop.finish).toHaveBeenCalledWith("u1");
   });
 
@@ -501,8 +512,8 @@ describe("desktopDownloads chunk offsets", () => {
 
     await downloadBlobToDesktop("b1", "big.bin", async () => blob);
 
-    const offsets = desktop.write.mock.calls.map((call) => call[2]);
-    expect(offsets).toEqual([0, chunkSize, chunkSize * 2]);
+    expect(desktop.write.mock.calls.length).toBeGreaterThan(1);
+    expectCumulativeOffsets(part1.byteLength + part2.byteLength);
     expect(desktop.finish).toHaveBeenCalledWith("b1");
   });
 });

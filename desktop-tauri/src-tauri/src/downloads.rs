@@ -2253,9 +2253,13 @@ fn windows_file_id_from_handle(file: &std::fs::File) -> Option<WindowsFileId> {
     if unsafe { GetFileInformationByHandle(handle, &mut by_handle) }.is_err() {
         return None;
     }
+    // 64-bit のファイル ID を下位 8 バイトへ格納する。nFileIndexLow / nFileIndexHigh は
+    // どちらも u32 なので、u64 に組み合わせてからコピーする。残りはゼロのまま。
     let mut file_id = [0u8; 16];
-    file_id[..8].copy_from_slice(&by_handle.nFileIndexLow.to_le_bytes());
-    file_id[8..].copy_from_slice(&by_handle.nFileIndexHigh.to_le_bytes());
+    file_id[..8].copy_from_slice(
+        &((u64::from(by_handle.nFileIndexHigh) << 32) | u64::from(by_handle.nFileIndexLow))
+            .to_le_bytes(),
+    );
     Some(WindowsFileId {
         volume: by_handle.dwVolumeSerialNumber as u64,
         file_id,
@@ -2306,9 +2310,13 @@ fn windows_file_id_from_path(path: &Path) -> Option<WindowsFileId> {
     if unsafe { GetFileInformationByHandle(handle, &mut by_handle) }.is_err() {
         return None;
     }
+    // 64-bit のファイル ID を下位 8 バイトへ格納する。nFileIndexLow / nFileIndexHigh は
+    // どちらも u32 なので、u64 に組み合わせてからコピーする。残りはゼロのまま。
     let mut file_id = [0u8; 16];
-    file_id[..8].copy_from_slice(&by_handle.nFileIndexLow.to_le_bytes());
-    file_id[8..].copy_from_slice(&by_handle.nFileIndexHigh.to_le_bytes());
+    file_id[..8].copy_from_slice(
+        &((u64::from(by_handle.nFileIndexHigh) << 32) | u64::from(by_handle.nFileIndexLow))
+            .to_le_bytes(),
+    );
     Some(WindowsFileId {
         volume: by_handle.dwVolumeSerialNumber as u64,
         file_id,
@@ -2367,6 +2375,24 @@ fn same_file_as_path(source: &std::fs::Metadata, path: &Path) -> bool {
 #[cfg(not(any(unix, windows)))]
 fn same_file_as_path(_source: &std::fs::Metadata, _path: &Path) -> bool {
     true
+}
+
+/// 確定後の確認に失敗したとき、こちらが移したファイルだけを消す。
+/// パスの差し替えで別のファイルが置かれていた場合は触らない。
+fn remove_saved_file_if_ours(
+    saved: &Path,
+    source: &std::fs::Metadata,
+    #[cfg(windows)] source_file_id: Option<WindowsFileId>,
+) {
+    if !same_saved_file(
+        source,
+        #[cfg(windows)]
+        source_file_id,
+        saved,
+    ) {
+        return;
+    }
+    let _ = std::fs::remove_file(saved);
 }
 
 fn finish_entry(entry: Pending) -> Result<PathBuf> {
@@ -2492,7 +2518,14 @@ fn finish_entry_with(
         &saved,
     ) {
         let _ = std::fs::remove_file(&entry.part);
-        // 確定後の同一性確認に失敗した場合、保存先を消さず失敗を返す。
+        // 確認に失敗したファイルを保存先に残すと、画面は失敗なのに添付だけが見える状態になる。
+        // ただし差し替えられた可能性もあるので、もう一度同一性を確かめられるときだけ消す。
+        remove_saved_file_if_ours(
+            &saved,
+            &source_meta,
+            #[cfg(windows)]
+            source_file_id,
+        );
         return Err(anyhow!(
             "保存先の確認に失敗しました。もう一度お試しください: {}",
             saved.display()
@@ -3057,6 +3090,43 @@ mod tests {
         let err = finish_entry(entry).unwrap_err().to_string();
         assert!(err.contains("確認できません"));
         assert!(!target.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn failed_finish_only_removes_a_saved_file_it_owns() {
+        let dir = temp_dir();
+        let source_path = dir.join("source.bin");
+        std::fs::write(&source_path, b"new").unwrap();
+        let source = std::fs::metadata(&source_path).unwrap();
+        #[cfg(windows)]
+        let source_id = {
+            let file = std::fs::File::open(&source_path).unwrap();
+            windows_file_id_from_handle(&file)
+        };
+
+        // 自分が移したファイル（ハードリンクで同一）は消す。
+        let ours = dir.join("ours.bin");
+        std::fs::hard_link(&source_path, &ours).unwrap();
+        remove_saved_file_if_ours(
+            &ours,
+            &source,
+            #[cfg(windows)]
+            source_id,
+        );
+        assert!(!ours.exists());
+
+        // 別のファイルが同じ名前に置かれていた場合は触らない。
+        let other = dir.join("other.bin");
+        std::fs::write(&other, b"other").unwrap();
+        remove_saved_file_if_ours(
+            &other,
+            &source,
+            #[cfg(windows)]
+            source_id,
+        );
+        assert!(other.exists());
+
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
