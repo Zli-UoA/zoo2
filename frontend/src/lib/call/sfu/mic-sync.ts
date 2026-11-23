@@ -16,6 +16,11 @@ export interface SfuMicSync {
    * 差し替えの失敗はそのまま返す（キューは止めない）。
    */
   sync(adapter: SfuAdapter): Promise<MediaStreamTrack | null>;
+  /**
+   * アダプタを閉じた。閉じたアダプタの差し替えは解決しないまま残ることがあるので、
+   * 待っている処理と予約済みの処理を null で終え、キューを次へ進める。
+   */
+  closed(adapter: SfuAdapter): void;
 }
 
 export function createSfuMicSync(options: {
@@ -26,12 +31,26 @@ export function createSfuMicSync(options: {
 }): SfuMicSync {
   let queue: Promise<unknown> = Promise.resolve();
   const sent = new WeakMap<SfuAdapter, MediaStreamTrack>();
+  // アダプタごとの「閉じた」合図。閉じたら解決する
+  const closeSignals = new WeakMap<SfuAdapter, { promise: Promise<null>; release: () => void }>();
+  const closeSignal = (adapter: SfuAdapter) => {
+    let signal = closeSignals.get(adapter);
+    if (!signal) {
+      let release = () => {};
+      const promise = new Promise<null>((resolve) => {
+        release = () => resolve(null);
+      });
+      signal = { promise, release };
+      closeSignals.set(adapter, signal);
+    }
+    return signal;
+  };
   return {
     created(adapter, track) {
       sent.set(adapter, track);
     },
     sync(adapter) {
-      const run = queue.then(async () => {
+      const step = queue.then(async () => {
         if (options.currentAdapter() !== adapter) return null;
         const mic = options.desiredMic();
         if (!mic) return null;
@@ -40,8 +59,14 @@ export function createSfuMicSync(options: {
         sent.set(adapter, mic);
         return mic;
       });
+      // 前の処理や自分の差し替えが閉じたアダプタで止まっても、閉じた時点で終える。
+      // 同じアダプタへの処理は、閉じるまでは予約順に 1 件ずつ実行される
+      const run = Promise.race([step, closeSignal(adapter).promise]);
       queue = run.catch(() => {});
       return run;
+    },
+    closed(adapter) {
+      closeSignal(adapter).release();
     },
   };
 }

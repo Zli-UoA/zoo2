@@ -132,4 +132,41 @@ describe("createSfuMicSync", () => {
     await expect(sync.sync(adapter)).resolves.toBeNull();
     expect(state.calls).toEqual(["C", "B"]);
   });
+
+  it("releases syncs waiting on a closed adapter and lets the next adapter proceed", async () => {
+    const [a, b, c] = [mic("A"), mic("B"), mic("C")];
+    const mics = micState(a);
+    const old = fakeAdapter(a);
+    let current: SfuAdapter | null = old.adapter;
+    const sync = createSfuMicSync({
+      currentAdapter: () => current,
+      desiredMic: () => (mics.pending ?? mics.current) as unknown as MediaStreamTrack,
+    });
+    sync.created(old.adapter, a as unknown as MediaStreamTrack);
+
+    // 旧アダプタの差し替えが解決しないまま、同じアダプタへのそろえ直しも予約される
+    mics.pending = b;
+    const switching = sync.sync(old.adapter);
+    const resync = sync.sync(old.adapter);
+    await old.flush();
+    expect(old.pendingCount()).toBe(1);
+
+    // 閉じたら、待っている切替と予約済みのそろえ直しを終える
+    current = null;
+    sync.closed(old.adapter);
+    await expect(switching).resolves.toBeNull();
+    await expect(resync).resolves.toBeNull();
+    mics.pending = null;
+    mics.current = c;
+
+    // 次のアダプタは旧アダプタの差し替えを待たずに今のマイクへそろう
+    const next = fakeAdapter(b);
+    current = next.adapter;
+    sync.created(next.adapter, b as unknown as MediaStreamTrack);
+    const nextSync = sync.sync(next.adapter);
+    await next.finishNext();
+    await expect(nextSync).resolves.toBe(c);
+    expect(next.state.sending).toBe(c);
+    expect(old.state.calls).toEqual(["B"]);
+  });
 });

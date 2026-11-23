@@ -5,6 +5,8 @@ import {
   createAudioOffer,
   answerAudioOffer,
   applyAudioAnswer,
+  closePeerConnection,
+  replaceSenderTrack,
 } from "./rtc-audio";
 import { visiblePoll } from "../visiblePoll";
 import {
@@ -368,9 +370,11 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     const adapter = sfuAdapterRef.current;
     sfuAdapterRef.current = null;
     adapter?.close();
+    // 閉じたアダプタの差し替えを待っている切替・そろえ直しを解放する
+    if (adapter) sfuMicSync.closed(adapter);
     for (const entry of sfuAudioRef.current.values()) entry.cleanup();
     sfuAudioRef.current.clear();
-  }, []);
+  }, [sfuMicSync]);
 
   const cleanupPeers = useCallback(() => {
     closeSfu();
@@ -379,7 +383,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     sfuReassignPendingRef.current = false;
     for (const entry of peersRef.current.values()) {
       entry.cleanupAudio?.();
-      entry.pc.close();
+      closePeerConnection(entry.pc);
     }
     peersRef.current.clear();
     pendingEarlyCandidatesRef.current.clear();
@@ -403,6 +407,10 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       }
       localStreamRef.current = null;
     }
+    // 退出した通話の切替先マイクを、次の通話の送信に使わないよう解除して止める
+    // （切替の処理は、閉じた接続から解放されたあとで古い通話の要求として破棄する）
+    pendingMicTrackRef.current?.stop();
+    pendingMicTrackRef.current = null;
   }, []);
 
   // Provider アンマウント時のクリーンアップ
@@ -622,7 +630,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       const existing = peersRef.current.get(targetSessionId);
       if (existing) {
         existing.cleanupAudio?.();
-        existing.pc.close();
+        closePeerConnection(existing.pc);
       }
 
       const pc = createAudioPeer(iceServers);
@@ -738,7 +746,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       // 送信側へ渡す前にミュート状態を設定し、置換待ち中のミュート操作も新トラックへ反映する
       newTrack.enabled = !isMutedRef.current;
       pendingMicTrackRef.current = newTrack;
-      const replaced: RTCRtpSender[] = [];
+      const replaced: { pc: RTCPeerConnection; sender: RTCRtpSender }[] = [];
       const isStale = () =>
         callGenerationRef.current !== gen || localStreamRef.current !== oldStream;
       const clearPending = () => {
@@ -748,12 +756,19 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       // 世代が変われば isStale() で中止するので、別通話のピアには触れない
       const done = new Set<RTCRtpSender>();
       const nextSender = () => {
-        for (const entry of peersRef.current.values()) {
-          const sender = entry.pc.getSenders().find((s) => s.track?.kind === "audio");
-          if (sender && !done.has(sender)) return sender;
+        for (const { pc } of peersRef.current.values()) {
+          const sender = pc.getSenders().find((s) => s.track?.kind === "audio");
+          if (sender && !done.has(sender)) return { pc, sender };
         }
         return null;
       };
+      // 閉じた接続の差し替えは解決しないことがあるので、閉じたら待たずに次へ進む
+      const revertMesh = () =>
+        Promise.all(
+          replaced.map(({ pc, sender }) =>
+            replaceSenderTrack(pc, sender, oldTrack).catch(() => {}),
+          ),
+        );
       // SFU のアダプタも、送信側の 1 つとして差し替える。mesh の差し替えを待つあいだに作られたアダプタも
       // 対象にするため、差し替える直前に読む（それより後に作られたものは startSfu が今のマイクにそろえる）。
       // 差し替えは接続後のそろえ直しと同じキューで行い、送るマイクは実行時点の最新を読む。
@@ -763,17 +778,16 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         if (adapter) await sfuMicSync.sync(adapter).catch(() => {});
       };
       try {
-        for (let sender = nextSender(); sender && !isStale(); sender = nextSender()) {
-          done.add(sender);
-          await sender.replaceTrack(newTrack);
-          replaced.push(sender);
+        for (let next = nextSender(); next && !isStale(); next = nextSender()) {
+          done.add(next.sender);
+          if (await replaceSenderTrack(next.pc, next.sender, newTrack)) replaced.push(next);
         }
         const sfuAdapter = isStale() ? null : sfuAdapterRef.current;
         if (sfuAdapter) await sfuMicSync.sync(sfuAdapter);
       } catch (err) {
         console.error("Failed to replace mic track", err);
         // 置換済みの送信側を旧トラックへ戻し、旧マイクを維持する
-        await Promise.all(replaced.map((sender) => sender.replaceTrack(oldTrack).catch(() => {})));
+        await revertMesh();
         clearPending();
         await revertSfu();
         stopNewStream();
@@ -784,7 +798,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       clearPending();
       // 置換待ちの間に退出・通話切替があった場合は、新しいストリームを破棄する
       if (isStale()) {
-        await Promise.all(replaced.map((sender) => sender.replaceTrack(oldTrack).catch(() => {})));
+        await revertMesh();
         await revertSfu();
         stopNewStream();
         return true;
@@ -953,7 +967,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   const closeMeshPeers = useCallback(() => {
     for (const entry of peersRef.current.values()) {
       entry.cleanupAudio?.();
-      entry.pc.close();
+      closePeerConnection(entry.pc);
     }
     peersRef.current.clear();
     pendingEarlyCandidatesRef.current.clear();
@@ -974,8 +988,10 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         callGenerationRef.current !== gen ||
         sfuStartSeqRef.current !== seq ||
         sessionIdRef.current !== mySessionId;
-      // マイクは切り替わることがあるので、使う直前に今のものを読む。
-      const currentMic = () => localStreamRef.current?.getAudioTracks()[0];
+      // マイクは切り替わることがあるので、使う直前に今のものを読む。切替中なら切替先で作り、
+      // 切替が失敗したときは、切替の処理が同じキューで使用中のマイクへ戻す。
+      const currentMic = () =>
+        pendingMicTrackRef.current ?? localStreamRef.current?.getAudioTracks()[0];
       // SFU につながらないまま（mesh も張らない）にしないよう、通話を終えて参加し直せる状態にする。
       const failSfu = (message: string) => {
         if (isStale()) return;
@@ -1366,7 +1382,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
               const entry = peersRef.current.get(leftSid);
               if (entry) {
                 entry.cleanupAudio?.();
-                entry.pc.close();
+                closePeerConnection(entry.pc);
                 peersRef.current.delete(leftSid);
               }
               pendingEarlyCandidatesRef.current.delete(leftSid);
@@ -1545,12 +1561,12 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
                 try {
                   const offer = await pc.createOffer();
                   if (callGenerationRef.current !== currentGen) {
-                    pc.close();
+                    closePeerConnection(pc);
                     return;
                   }
                   await pc.setLocalDescription(offer);
                   if (callGenerationRef.current !== currentGen) {
-                    pc.close();
+                    closePeerConnection(pc);
                     return;
                   }
                   await sendSignalWithRetry(channelId, mySessionId, p.session_id, {
@@ -1558,7 +1574,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
                     sdp: offer.sdp,
                   });
                   if (callGenerationRef.current !== currentGen) {
-                    pc.close();
+                    closePeerConnection(pc);
                     return;
                   }
                 } catch (offerErr) {
