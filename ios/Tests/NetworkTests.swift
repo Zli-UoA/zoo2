@@ -126,7 +126,8 @@ struct TokenVaultTests {
             Issue.record("ログアウト記録の削除失敗を通知しませんでした。")
         } catch ZooError.auth(let message) {
             #expect(message.contains("認証情報は削除しましたが"))
-            #expect(message.contains("再度ログインしてください"))
+            #expect(message.contains("再インストールしてください"))
+            #expect(message.contains("下書きも削除されます"))
         }
         var deletionStatus: OSStatus?
         #expect(try TokenVault.load(account, deleteItem: { query in

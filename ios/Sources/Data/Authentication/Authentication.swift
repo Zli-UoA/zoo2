@@ -87,7 +87,7 @@ enum TokenVault {
         do { try removeMarker(marker) }
         catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile { }
         catch {
-            throw ZooError.auth("認証情報は削除しましたが、ログアウト記録を削除できませんでした。端末のロック状態と空き容量を確認してから、再度ログインしてください。")
+            throw ZooError.auth("認証情報は削除しましたが、ログアウト記録を削除できませんでした。端末のロック解除と空き容量の確認後に再試行してください。解消しない場合は、必要な未送信データを控え、Zooを削除して再インストールしてください。端末内のキャッシュと下書きも削除されます。")
         }
     }
 }
