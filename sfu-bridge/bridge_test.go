@@ -129,6 +129,7 @@ func TestUpdateWhileConnectingAllowsSpeakers(t *testing.T) {
 	b := newRoomBridge(context.Background(), nil, 1, roomState{ChannelID: "c", LivekitSessions: []string{"a"}})
 	defer b.close()
 	// 接続中に届いた、一覧にない話者のトラックは取っておく（転送しない）。
+	b.markSubscribed(nil)
 	b.pushToCloudflare("b", nil)
 	b.mu.Lock()
 	allowedA, parked := b.lkSpeakers["a"], len(b.parked["b"])
@@ -143,11 +144,11 @@ func TestUpdateWhileConnectingAllowsSpeakers(t *testing.T) {
 	if !allowedB || latest != 2 {
 		t.Fatal("update while connecting must record the latest list")
 	}
-	b.unpark("b", nil)
+	b.unsubscribe("b", nil)
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if len(b.parked) != 0 {
-		t.Fatal("unpark must drop the track")
+	if len(b.parked) != 0 || len(b.subscribed) != 0 {
+		t.Fatal("unsubscribe must drop the track")
 	}
 }
 
@@ -238,6 +239,7 @@ func TestPublishFailureFailsBridge(t *testing.T) {
 	b := readyBridge(t, f)
 	b.mu.Lock()
 	b.parked["a"] = []*webrtc.TrackRemote{nil}
+	b.subscribed[nil] = true
 	b.mu.Unlock()
 	// 一覧に載ると、取っておいたトラックを push する。cf/publish が 500 を返すので、中継は失敗になる。
 	b.update(roomState{ChannelID: "c", LivekitSessions: []string{"a"}})
@@ -354,5 +356,34 @@ func TestMissingRevIsEmpty(t *testing.T) {
 	}
 	if len(r.CloudflareTracks) != 1 || r.CloudflareTracks[0].Rev != "" {
 		t.Fatalf("unexpected: %+v", r.CloudflareTracks)
+	}
+}
+
+func TestUnsubscribedBeforePushIsNotRelayed(t *testing.T) {
+	f := &fakeBackend{}
+	b := readyBridge(t, f)
+	// OnTrackSubscribed が goroutine を起こしたが、動く前に OnTrackUnsubscribed が来た。
+	b.markSubscribed(nil)
+	b.unsubscribe("b", nil)
+	b.pushToCloudflare("b", nil)
+	b.mu.Lock()
+	parked := len(b.parked)
+	b.mu.Unlock()
+	if parked != 0 {
+		t.Fatal("an unsubscribed track must not be parked")
+	}
+	// 話者が一覧に載っても push しない（cf/publish を呼ばない）。
+	b.update(roomState{ChannelID: "c", LivekitSessions: []string{"b"}})
+	b.pushToCloudflare("b", nil)
+	b.relayToCloudflare("b", nil)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, p := range f.paths {
+		if p == "/internal/sfu-bridge/cf/publish" {
+			t.Fatal("an unsubscribed track must not be published")
+		}
+	}
+	if b.failed() {
+		t.Fatal("the bridge must not fail")
 	}
 }

@@ -76,6 +76,9 @@ type roomBridge struct {
 	lkSpeakers map[string]bool
 	// parked は、一覧にまだいない LiveKit の話者の購読済みトラック。一覧に載ったら push する。
 	parked map[string][]*webrtc.TrackRemote
+	// subscribed は購読中の LiveKit のトラック。購読と購読の解除のコールバックの中で、すぐに入れ外しする。
+	// push の goroutine は、これを見てから取っておく・push する。goroutine が動く前に解除されたトラックを中継しないため。
+	subscribed map[*webrtc.TrackRemote]bool
 }
 
 func newRoomBridge(parent context.Context, api *backendAPI, bridgeEpoch int64, r roomState) *roomBridge {
@@ -89,6 +92,7 @@ func newRoomBridge(parent context.Context, api *backendAPI, bridgeEpoch int64, r
 		midSpeaker: map[string]string{},
 		lkSpeakers: map[string]bool{},
 		parked:     map[string][]*webrtc.TrackRemote{},
+		subscribed: map[*webrtc.TrackRemote]bool{},
 	}
 	// 購読より先に、最初の一覧の LiveKit の話者を入れておく。
 	b.setLivekitSpeakersLocked(r)
@@ -177,10 +181,12 @@ func (b *roomBridge) connect(r roomState) error {
 				if track.Kind() != webrtc.RTPCodecTypeAudio || strings.HasPrefix(rp.Identity(), "bridge:") {
 					return
 				}
+				// 購読の記録は、goroutine を起こす前にここで入れる。
+				b.markSubscribed(track)
 				go b.pushToCloudflare(rp.Identity(), track)
 			},
 			OnTrackUnsubscribed: func(track *webrtc.TrackRemote, _ *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-				b.unpark(rp.Identity(), track)
+				b.unsubscribe(rp.Identity(), track)
 			},
 		},
 		OnDisconnected: func() { b.fail(errors.New("livekit disconnected")) },
@@ -200,6 +206,11 @@ func (b *roomBridge) connect(r roomState) error {
 // pushToCloudflare は LiveKit の話者の声を Cloudflare に push する。
 func (b *roomBridge) pushToCloudflare(speaker string, track *webrtc.TrackRemote) {
 	b.mu.Lock()
+	if !b.subscribed[track] {
+		// goroutine が動く前に購読が解除された。取っておかず、中継もしない。
+		b.mu.Unlock()
+		return
+	}
 	allowed := b.lkSpeakers[speaker]
 	if !allowed {
 		// backend の一覧にまだいない人の声は中継しない。トラックは取っておき、一覧に載ったら sync が push する。
@@ -213,10 +224,18 @@ func (b *roomBridge) pushToCloudflare(speaker string, track *webrtc.TrackRemote)
 	b.relayToCloudflare(speaker, track)
 }
 
-// unpark は、購読をやめたトラックを取っておいた分から外す。
-func (b *roomBridge) unpark(speaker string, track *webrtc.TrackRemote) {
+// markSubscribed は購読したトラックを記録する。OnTrackSubscribed の中で、goroutine を起こす前に呼ぶ。
+func (b *roomBridge) markSubscribed(track *webrtc.TrackRemote) {
+	b.mu.Lock()
+	b.subscribed[track] = true
+	b.mu.Unlock()
+}
+
+// unsubscribe は、購読をやめたトラックを購読中から外し、取っておいた分からも外す。
+func (b *roomBridge) unsubscribe(speaker string, track *webrtc.TrackRemote) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	delete(b.subscribed, track)
 	tracks := b.parked[speaker]
 	for i, t := range tracks {
 		if t == track {
@@ -232,6 +251,13 @@ func (b *roomBridge) unpark(speaker string, track *webrtc.TrackRemote) {
 }
 
 func (b *roomBridge) relayToCloudflare(speaker string, track *webrtc.TrackRemote) {
+	b.mu.Lock()
+	subscribed := b.subscribed[track]
+	b.mu.Unlock()
+	if !subscribed {
+		// 取っておいたあと、push する前に購読が解除された。
+		return
+	}
 	local, err := webrtc.NewTrackLocalStaticRTP(opusCapability, "audio", speaker)
 	if err != nil {
 		b.fail(err)
