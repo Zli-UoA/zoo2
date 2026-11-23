@@ -48,6 +48,12 @@ final class ChannelThreads {
     func refresh() async { await fetch(append: false) }
     func loadMore() async { await fetch(append: true) }
 
+    func revokeChannel(_ id: String) {
+        requestID = UUID()
+        byChannel[id] = nil
+        loading = false
+    }
+
     func shutdown() {
         active = false
         requestID = UUID()

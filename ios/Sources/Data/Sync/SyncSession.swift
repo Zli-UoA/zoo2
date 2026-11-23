@@ -9,7 +9,8 @@ final class SyncSession {
     private var channelVersions: [String: UUID] = [:]
     private var revocationVersion = UUID()
     private var channelRevocation: Task<Void, Error>?
-    var onChannelRevoked: (@MainActor (String) -> Void)?
+    var onChannelRevoked: (@MainActor (String, Channel?) -> Void)?
+    var onChannelAuthorized: (@MainActor (String) -> Void)?
 
     init(cache: SyncCache, lease: SyncLease) { self.cache = cache; self.lease = lease }
 
@@ -69,6 +70,7 @@ final class SyncSession {
         try check()
         guard channelVersion(id) == version else { throw CancellationError() }
         revokedChannels.remove(id)
+        onChannelAuthorized?(id)
     }
 
     func store<T: Encodable & Sendable>(_ value: T, key: String, channelID: String? = nil,
@@ -85,12 +87,12 @@ final class SyncSession {
     }
 
     @discardableResult
-    func revokeChannel(_ id: String) async throws -> UUID {
+    func revokeChannel(_ id: String, retaining channel: Channel? = nil) async throws -> UUID {
         revokedChannels.insert(id)
         let version = UUID()
         channelVersions[id] = version
         revocationVersion = UUID()
-        onChannelRevoked?(id)
+        onChannelRevoked?(id, channel)
         let previous = channelRevocation
         let revocationVersion = revocationVersion
         let revocation = Task { [cache, lease] in

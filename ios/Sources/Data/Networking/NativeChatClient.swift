@@ -13,10 +13,14 @@ struct NativeChatClient: ChatClient {
         let channels = try await shapes.snapshot("api/shapes/channels", as: Channel.self)
         let previous = try await sync.load("workspace:channels", as: [Channel].self) ?? []
         try sync.checkRevocationVersion(version)
-        let accessible = Set(channels.filter { $0.deleted_at == nil && $0.encrypted != true }.map(\.id))
-        for channel in previous where channel.deleted_at == nil && channel.encrypted != true && !accessible.contains(channel.id) {
-            version = try await sync.revokeChannel(channel.id)
-            try sync.checkRevocationVersion(version)
+        let available = Dictionary(channels.filter { $0.deleted_at == nil }.map { ($0.id, $0) },
+                                   uniquingKeysWith: { _, new in new })
+        for channel in previous where channel.deleted_at == nil {
+            let current = available[channel.id]
+            if current == nil || (channel.encrypted != true && current?.encrypted == true) {
+                version = try await sync.revokeChannel(channel.id, retaining: current)
+                try sync.checkRevocationVersion(version)
+            }
         }
         try await sync.storeRecovery(channels, key: "workspace:channels", revocationVersion: version)
         return channels
@@ -30,7 +34,7 @@ struct NativeChatClient: ChatClient {
                 guard sync.channelVersion(id) == version else { throw CancellationError() }
                 if channel.deleted_at == nil, channel.encrypted != true {
                     try await sync.authorizeChannel(id, version: version)
-                } else { try await sync.revokeChannel(id) }
+                } else { try await sync.revokeChannel(id, retaining: channel.deleted_at == nil ? channel : nil) }
                 try sync.check()
             }
             return channel
@@ -108,8 +112,10 @@ struct NativeChatClient: ChatClient {
         try await shapes.snapshot("api/shapes/channel_users", query: ["channel_id": try segment(channelID)], as: ChannelMembership.self)
     }
     func readState(channelID: String, allowCached: Bool) async throws -> ChannelReadState {
-        let path = "api/channels/\(try segment(channelID))/read-state"
-        return try await cachedGet(path, channelID: channelID, allowCached: allowCached)
+        let id = try segment(channelID)
+        if sync?.isRevoked(id) == true { _ = try await channel(id: id) }
+        let path = "api/channels/\(id)/read-state"
+        return try await cachedGet(path, channelID: id, allowCached: allowCached)
     }
     func attachmentURL(id: String) async throws -> URL {
         let result: Envelope<AttachmentDownload> = try await api.get("api/attachments/\(try segment(id))/url")

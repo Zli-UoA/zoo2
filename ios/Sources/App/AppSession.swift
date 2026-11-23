@@ -172,7 +172,8 @@ final class AppSession {
         let journal = KeychainCallSessionJournal(account: SyncCache.connectionKey(api.settings) + ":" + user.id)
         let calls = CallStore(client: client, userID: user.id, sessionJournal: Self.isUITesting ? nil : journal)
         let workspace = WorkspaceStore(client: client, user: user, calls: calls)
-        sync.onChannelRevoked = { [weak workspace] id in workspace?.inbox.revokeChannel(id) }
+        sync.onChannelRevoked = { [weak workspace] id, channel in workspace?.revokeChannel(id, retaining: channel) }
+        sync.onChannelAuthorized = { [weak workspace] id in workspace?.calls.authorizeChannel(id) }
         workspace.onExpiredSession = { [weak self] in
             self?.logout()
             if self?.error == nil { self?.error = ZooError.expiredSession.localizedDescription }

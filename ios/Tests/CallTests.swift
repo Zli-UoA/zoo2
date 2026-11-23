@@ -454,6 +454,41 @@ struct CallStoreTests {
         client.invitationsDelivered = nil
     }
 
+    @Test("会話の失効で招待と通話表示を消し、遅い更新も拒否し、別会話の通話は維持する")
+    func revokesOnlyTargetChannel() async throws {
+        let client = FakeCallClient()
+        let other = Channel(id: "other", channel_name: "別の会話", is_private: false, is_dm: false)
+        let store = try await connected(client, channel: other)
+        defer { store.shutdown() }
+        let rows = [channel.id, other.id].map {
+            CallInvitation(id: $0, channel_id: $0, inviter_id: "caller", invitee_id: "me",
+                           status: "pending", expires_at: Date.now.addingTimeInterval(30).ISO8601Format())
+        }
+        client.invitationRows = rows
+        client.activeCallRows = [ActiveCallSummary(channel_id: channel.id, participant_count: 1),
+                                 ActiveCallSummary(channel_id: other.id, participant_count: 1)]
+        await store.refreshActiveCalls()
+        let task = await observeInvitations(client, store: store)
+        defer { task.cancel(); client.invitationUpdates.continuation.finish() }
+        try #require(store.invitations.count == 2)
+        var notified: [String] = []
+        store.onInvitationsChanged = { notified = $0.map(\.channel_id) }
+        store.revokeChannel(channel.id)
+        #expect(store.invitations.map(\.channel_id) == [other.id] && notified == [other.id])
+        #expect(!store.activeChannelIDs.contains(channel.id))
+        #expect(store.ready && store.channel?.id == other.id)
+        await deliverInvitations(rows, client: client)
+        await store.refreshActiveCalls()
+        #expect(store.invitations.map(\.channel_id) == [other.id])
+        #expect(!store.activeChannelIDs.contains(channel.id))
+        store.revokeChannel(other.id)
+        #expect(store.channel == nil && !store.ready)
+        #expect(store.start(channel: channel) == nil)
+        store.authorizeChannel(channel.id)
+        await deliverInvitations(rows, client: client)
+        #expect(store.invitations.map(\.channel_id) == [channel.id])
+    }
+
     @Test("チャンネルの招待候補から自分・bot・無効な人・参加者・呼び出し中の人を除く")
     func invitationCandidates() async throws {
         let client = FakeCallClient()
@@ -753,6 +788,16 @@ struct CallStoreTests {
         #expect(client.accepted && client.observed)
         #expect(store.ready && media.started)
         #expect(store.channel?.id == encrypted.id)
+        let workspace = WorkspaceStore(client: PreviewChatClient(), user: Person(id: "me", user_name: "me", display_name: "あなた"),
+                                       recentEmojiDefaults: nil, calls: store)
+        defer { workspace.shutdown() }
+        workspace.addAndOpen(encrypted)
+        workspace.revokeChannel(encrypted.id, retaining: encrypted)
+        #expect(store.ready && store.channel?.id == encrypted.id && !media.closed)
+        #expect(workspace.channels == [encrypted])
+        workspace.revokeChannel(encrypted.id)
+        #expect(store.channel == nil && !store.ready && media.closed)
+
     }
 
     @Test("削除・アーカイブ済みのチャンネルでは着信に応答しない", arguments: [true, false])

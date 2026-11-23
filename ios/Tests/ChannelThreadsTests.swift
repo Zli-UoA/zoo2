@@ -5,6 +5,38 @@ import Testing
 @MainActor
 @Suite("参加中のスレッド一覧")
 struct ChannelThreadsTests {
+    @Test("会話の失効時にスレッド本文を消し、待機中の一覧で復活させない")
+    func revocationDropsLateThreads() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let threads = ChannelThreads(client: harness.client)
+        defer { threads.shutdown() }
+        let page = Data(#"{"items":[{"id":"a","channel_id":"revoked","content":"失効対象の本文","reply_count":1},{"id":"b","channel_id":"other","content":"別の会話","reply_count":1}],"next_cursor":null}"#.utf8)
+        harness.stub { _ in (200, [:], page) }
+        await threads.refresh()
+        try #require(threads.byChannel["revoked"]?.count == 1)
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish() }
+        harness.stub { _ in
+            started.continuation.yield(())
+            for await _ in release.stream { break }
+            return (200, [:], page)
+        }
+        let pending = Task {
+            defer { started.continuation.finish() }
+            await threads.refresh()
+        }
+        defer { pending.cancel() }
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        threads.revokeChannel("revoked")
+        #expect(threads.byChannel["revoked"] == nil && !threads.loading)
+        release.continuation.finish()
+        await pending.value
+        #expect(threads.byChannel["revoked"] == nil)
+        #expect(threads.byChannel["other"]?.map(\.id) == ["b"])
+    }
+
     @Test("カーソルで次ページを追加し、更新時は読み込んだ範囲から消えたスレッドを除く")
     func expandedRange() async throws {
         let harness = try ChatHarness()

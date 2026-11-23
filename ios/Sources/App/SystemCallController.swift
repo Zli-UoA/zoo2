@@ -342,6 +342,10 @@ final class SystemCallController: NSObject {
         }
     }
 
+    func revokeChannel(_ id: String) {
+        if current?.channelID == id { end(reason: .remoteEnded) }
+    }
+
     func synchronize(_ invitations: [CallInvitation]) {
         guard let workspace else { return }
         if let current {
@@ -367,7 +371,8 @@ final class SystemCallController: NSObject {
         let duplicate = current?.id == call.id
         if duplicate && !mustReport { completion(); return }
         let update = CXCallUpdate()
-        let caller = workspace.flatMap { $0.active && call.canAnswer(userID: $0.user.id) ? call.callerName : nil } ?? "Zooの通話"
+        let revoked = workspace?.calls.isChannelRevoked(call.channelID) == true
+        let caller = workspace.flatMap { $0.active && !revoked && call.canAnswer(userID: $0.user.id) ? call.callerName : nil } ?? "Zooの通話"
         update.remoteHandle = CXHandle(type: .generic, value: caller)
         update.localizedCallerName = caller
         update.supportsHolding = false; update.supportsGrouping = false
@@ -381,7 +386,7 @@ final class SystemCallController: NSObject {
             return
         }
         retired = retired.filter { $0.value.until > .now }
-        let available = !isManagingCall && workspace?.calls.channel == nil && retired[call.id] == nil
+        let available = !revoked && !isManagingCall && workspace?.calls.channel == nil && retired[call.id] == nil
         if available {
             pendingAnswerError = nil
             current = call; phase = .ringing; observedInShape = false
@@ -429,6 +434,7 @@ final class SystemCallController: NSObject {
             let workspace = await session.prepareForIncomingCall()
             guard let self, current?.id == call.id else { return }
             guard let workspace, call.userID.caseInsensitiveCompare(workspace.user.id) == .orderedSame,
+                  !workspace.calls.isChannelRevoked(call.channelID),
                   phase != .ringing || call.expiresAt > .now else {
                 end(reason: .failed); return
             }

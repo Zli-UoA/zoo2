@@ -132,6 +132,7 @@ final class WorkspaceStore {
     private(set) var active = true
     private var destinationGeneration = UUID()
     private var channelGeneration = UUID()
+    private var revocationGeneration = UUID()
     private var resolvedAuthors: [String: Person] = [:]
     @ObservationIgnored private var readStateRevision = UUID()
     @ObservationIgnored private var readListRevision = UUID()
@@ -203,6 +204,7 @@ final class WorkspaceStore {
             readListRevision = UUID()
             joinedChannelIDs = Set(states.map(\.channel_id))
             let visibleIDs = Set(self.channels.map(\.id))
+            for id in visibleIDs { calls.authorizeChannel(id) }
             channelWrites = channelWrites.filter { visibleIDs.contains($0.key) }
             channelPath.removeAll { !visibleIDs.contains($0.channelID) }
             dmPath.removeAll { !visibleIDs.contains($0.channelID) }
@@ -282,13 +284,14 @@ final class WorkspaceStore {
 
     func loadPins() async {
         guard active else { return }
+        let epoch = revocationGeneration
         do {
             let result = try await client.channelPins()
             try Task.checkCancellation()
-            guard active else { return }
+            guard active, revocationGeneration == epoch else { return }
             applyPins(result)
         } catch {
-            guard active, !Task.isCancelled else { return }
+            guard active, revocationGeneration == epoch, !Task.isCancelled else { return }
             if case ZooError.expiredSession = error { report(error) }
             else { pinsError = "ピン留めを取得できませんでした。" }
         }
@@ -308,32 +311,33 @@ final class WorkspaceStore {
         guard active, !updatingPin, channel.deleted_at == nil, !pinned || channel.archive_at == nil else { return }
         updatingPin = true
         pinUpdateError = nil
+        let epoch = revocationGeneration
         defer { updatingPin = false }
         do {
             if pinsVersion == nil {
                 let latest = try await client.channelPins()
                 try Task.checkCancellation()
-                guard active else { return }
+                guard active, revocationGeneration == epoch else { return }
                 applyPins(latest)
             }
             for attempt in 0..<2 {
                 try Task.checkCancellation()
-                guard active, let version = pinsVersion else { return }
+                guard active, revocationGeneration == epoch, let version = pinsVersion else { return }
                 do {
                     let result = try await client.setChannelPinned(id: channel.id, pinned: pinned, expectedVersion: version)
                     try Task.checkCancellation()
-                    guard active else { return }
+                    guard active, revocationGeneration == epoch else { return }
                     applyPins(result)
                     return
                 } catch ZooError.rejected(409, _) where attempt == 0 {
                     let latest = try await client.channelPins()
                     try Task.checkCancellation()
-                    guard active else { return }
+                    guard active, revocationGeneration == epoch else { return }
                     applyPins(latest)
                 }
             }
         } catch {
-            guard active, !Task.isCancelled, !(error is CancellationError) else { return }
+            guard active, revocationGeneration == epoch, !Task.isCancelled, !(error is CancellationError) else { return }
             switch error {
             case ZooError.expiredSession: report(error)
             case ZooError.rejected(409, _): pinUpdateError = "別の端末でピン留めが変更されました。もう一度お試しください。"
@@ -607,6 +611,52 @@ final class WorkspaceStore {
             if destinationGeneration == epoch, requiredVisit == nil || requiredVisit == tabVisit { report(error) }
             return false
         }
+    }
+
+    func revokeChannel(_ id: String, retaining channel: Channel? = nil) {
+        guard active else { return }
+        channelGeneration = UUID()
+        revocationGeneration = UUID()
+        destinationGeneration = UUID()
+        readStateRevision = UUID()
+        channelReadRevisions[id] = UUID()
+        channels.removeAll { $0.id == id }
+        if let channel {
+            channels.append(channel)
+            channels.sort { $0.channel_name.localizedStandardCompare($1.channel_name) == .orderedAscending }
+        }
+        channelWrites[id] = nil
+        conversations.removeValue(forKey: id)?.shutdown()
+        channelPath.removeAll { $0.channelID == id }
+        dmPath.removeAll { $0.channelID == id }
+        if lastChannelID == id { lastChannelID = nil }
+        unread.remove(id)
+        readUpdateError = nil
+        joinedChannelIDs.remove(id)
+        pinnedChannelIDs.removeAll { $0 == id }
+        pinsVersion = nil
+        memberRequests[id]?.cancel()
+        channelMembers[id] = nil
+        memberErrors[id] = nil
+        groupMembers[id] = nil
+        inbox.revokeChannel(id)
+        threads.revokeChannel(id)
+        videoPlayback.stop(in: id)
+        if channel == nil {
+            calls.revokeChannel(id)
+            systemCalls?.revokeChannel(id)
+        } else { calls.authorizeChannel(id) }
+        switch presentedSheet {
+        case .channelDetails(let channel) where channel.id == id: presentedSheet = nil
+        case .messageActions(let sheet) where sheet.store.channel.id == id: presentedSheet = nil
+        default: break
+        }
+        if attachmentPickerTarget?.store.channel.id == id {
+            attachmentPickerTarget = nil
+            showingPhotos = false
+            showingFiles = false
+        }
+        if composerFocusRequest?.channelID == id { composerFocusRequest = nil }
     }
 
     func report(_ error: Error) {

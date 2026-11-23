@@ -18,6 +18,7 @@ final class CallStore {
     private(set) var participants: [CallParticipant] = []
     private(set) var activeChannelIDs: Set<String> = []
     private var activeCallsGeneration = UUID()
+    private var revokedChannelIDs: Set<String> = []
     private(set) var ready = false
     private(set) var peerStates: [String: CallPeerState] = [:]
     private(set) var heartbeatRetrying = false
@@ -103,6 +104,21 @@ final class CallStore {
         activeChannelIDs.contains(channelID) || (ready && channel?.id == channelID)
     }
 
+    func isChannelRevoked(_ id: String) -> Bool { revokedChannelIDs.contains(id) }
+    func authorizeChannel(_ id: String) { revokedChannelIDs.remove(id) }
+
+    func revokeChannel(_ id: String) {
+        revokedChannelIDs.insert(id)
+        activeCallsGeneration = UUID()
+        activeChannelIDs.remove(id)
+        if retryChannel?.id == id { retryChannel = nil }
+        invitations.removeAll { $0.channel_id == id }
+        outgoingInvitations.removeAll { $0.channel_id == id }
+        submittedInvitations.removeAll { $0.channel_id == id }
+        if channel?.id == id { finish() }
+        onInvitationsChanged?(invitations)
+    }
+
     func refreshActiveCalls() async {
         guard active, !Task.isCancelled else { return }
         let generation = UUID()
@@ -119,7 +135,7 @@ final class CallStore {
             let calls = try await client.activeCalls()
             try Task.checkCancellation()
             guard active, activeCallsGeneration == generation else { return }
-            activeChannelIDs = Set(calls.filter { $0.participant_count > 0 }.map(\.channel_id))
+            activeChannelIDs = Set(calls.filter { $0.participant_count > 0 && !revokedChannelIDs.contains($0.channel_id) }.map(\.channel_id))
         } catch {
             guard active, !Task.isCancelled, activeCallsGeneration == generation else { return }
             activeChannelIDs = []
@@ -138,7 +154,8 @@ final class CallStore {
     func start(channel: Channel, invitationID: String? = nil, systemAudio: Bool = false,
                initialMuted: Bool = false, initialSpeaker: Bool = false,
                requiresLiveActivity: Bool = false) -> Task<Void, Never>? {
-        guard active, self.channel == nil, channel.canCall, canStart?(systemAudio) != false else { return nil }
+        guard active, self.channel == nil, channel.canCall, !revokedChannelIDs.contains(channel.id),
+              canStart?(systemAudio) != false else { return nil }
         onWillStart?()
         let callID = UUID()
         let session = callID.uuidString.lowercased()
@@ -495,11 +512,12 @@ final class CallStore {
             do {
                 try await client.observeCallInvitations { [weak self] values in
                     guard let self, active, !Task.isCancelled else { return }
-                    invitations = values.filter { $0.invitee_id == userID && $0.status == "pending" }
+                    invitations = values.filter { $0.invitee_id == userID && $0.status == "pending" && !revokedChannelIDs.contains($0.channel_id) }
                     onInvitationsChanged?(invitations)
                     cancelledInvitationExpirations = cancelledInvitationExpirations.filter { $0.value > .now }
                     outgoingInvitations = values.filter {
                         $0.inviter_id == userID && $0.status == "pending" && cancelledInvitationExpirations[$0.id] == nil
+                            && !revokedChannelIDs.contains($0.channel_id)
                     }
                     let receivedIDs = Set(values.map(\.id))
                     if inviting { invitationsSeenWhileSending.formUnion(receivedIDs) }

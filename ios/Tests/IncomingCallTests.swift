@@ -435,6 +435,34 @@ struct IncomingCallTests {
          "caller_name": "発信者", "expires_at": Date.now.addingTimeInterval(30).ISO8601Format()]
     }
 
+    @Test("会話の権限失効で対象の標準着信を終了し、遅いVoIPも名前を表示せず終了する")
+    func channelRevocationEndsIncomingCall() async throws {
+        let context = try AnswerContext(payload: payload)
+        defer { context.close() }
+        await context.receive()
+        try #require(context.controller.incomingInvitationID == context.call.id)
+        context.workspace.revokeChannel("別の会話")
+        #expect(context.controller.incomingInvitationID == context.call.id)
+        context.workspace.revokeChannel(context.call.channelID)
+        #expect(!context.controller.isManagingCall)
+        #expect(context.reporting.ended.contains(context.call.id))
+        var latePayload = payload
+        latePayload["channel_id"] = context.call.channelID
+        latePayload["user_id"] = context.call.userID
+        let late = try #require(IncomingCall(payload: latePayload))
+        let ended = AsyncStream<Void>.makeStream()
+        defer { ended.continuation.finish() }
+        context.reporting.onEnd = { ended.continuation.yield(()) }
+        await withCheckedContinuation { continuation in
+            context.controller.receive(late, mustReport: true) { continuation.resume() }
+        }
+        var iterator = ended.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        #expect(context.reporting.incoming.last == late.id)
+        #expect(context.reporting.incomingNames.last == "Zooの通話")
+        #expect(context.reporting.ended.contains(late.id) && !context.controller.isManagingCall)
+    }
+
     @Test("Watchの通知・アプリからの応答は音声を先に準備し、バックグラウンドで入室してCallKitへ完了を返す",
           arguments: [true, false], [true, false])
     func answersInBackground(fromNotification: Bool, audioActivatesFirst: Bool) async throws {

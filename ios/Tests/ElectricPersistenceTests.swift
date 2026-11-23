@@ -604,6 +604,8 @@ struct PersistentSyncIntegrationTests {
         let workspace = WorkspaceStore(client: client, user: syncUser, recentEmojiDefaults: nil)
         defer { workspace.shutdown() }
         let channel = Channel(id: syncChannel, channel_name: "非公開の会話", is_private: true, is_dm: false)
+        workspace.addAndOpen(channel)
+        sync.onChannelRevoked = { [weak workspace] id, channel in workspace?.revokeChannel(id, retaining: channel) }
         try await sync.store([channel], key: "workspace:channels")
         try await sync.store([syncUser], key: "workspace:people")
         #expect(try await client.cachedWorkspace()?.channels == [channel])
@@ -632,6 +634,7 @@ struct PersistentSyncIntegrationTests {
         var iterator = started.stream.makeAsyncIterator()
         try #require(await iterator.next() != nil)
         await #expect(throws: ZooError.self) { _ = try await client.channel(id: syncChannel) }
+        #expect(workspace.channels.isEmpty && workspace.channelPath.isEmpty)
         #expect(try await client.cachedWorkspace() == nil)
         release.continuation.finish()
         if workspaceRefresh {
@@ -676,10 +679,34 @@ struct PersistentSyncIntegrationTests {
         #expect(sync.isRevoked(syncChannel))
         #expect(try await sync.load("channel-rest:" + path, as: ChannelReadState.self) == nil)
         harness.stub { _ in throw URLError(.notConnectedToInternet) }
-        await #expect(throws: CancellationError.self) { _ = try await client.readState(channelID: syncChannel, allowCached: true) }
+        await #expect(throws: URLError.self) { _ = try await client.readState(channelID: syncChannel, allowCached: true) }
         let restarted = SyncSession(cache: sync.cache, lease: try await sync.cache.activate(connection: SyncCache.connectionKey(harness.api.settings), user: syncUser))
         let afterRestart = NativeChatClient(api: harness.api, sync: restarted)
         await #expect(throws: URLError.self) { _ = try await afterRestart.readState(channelID: syncChannel, allowCached: true) }
+    }
+
+    @Test("再招待後の最初の既読位置取得で権限を確認し直す", arguments: [false, true])
+    func readStateReauthorizesReinvitedChannel(allowCached: Bool) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let sync = try await session(harness)
+        try await sync.revokeChannel(syncChannel)
+        var authorized: [String] = []
+        sync.onChannelAuthorized = { authorized.append($0) }
+        let paths = Mutex<[String]>([])
+        harness.stub { request in
+            let path = request.url?.path ?? ""
+            paths.withLock { $0.append(path) }
+            if path == "/api/channels/" + syncChannel {
+                return (200, [:], try JSONEncoder().encode(Channel(id: syncChannel, channel_name: "再招待", is_private: true, is_dm: false)))
+            }
+            #expect(path == "/api/channels/" + syncChannel + "/read-state")
+            return (200, [:], try JSONEncoder().encode(ChannelReadState(channel_id: syncChannel, has_unread: true, last_read_at: nil)))
+        }
+        let value = try await NativeChatClient(api: harness.api, sync: sync).readState(channelID: syncChannel, allowCached: allowCached)
+        #expect(value.has_unread && value.channel_id == syncChannel)
+        #expect(!sync.isRevoked(syncChannel) && authorized == [syncChannel])
+        #expect(paths.withLock { $0 } == ["/api/channels/" + syncChannel, "/api/channels/" + syncChannel + "/read-state"])
     }
 
     @Test("既読位置の取得中に権限が失効したら成功応答もオフライン復元も返さない", arguments: [false, true], [false, true])
@@ -749,18 +776,65 @@ struct PersistentSyncIntegrationTests {
         #expect(try await client.cachedGet(path) as JSONValue == .array([]))
     }
 
-    @Test("削除された会話の失効後も今回取得した許可済みの一覧を保存する")
-    func storesDirectoryAfterOwnRevocations() async throws {
+    @Test("一覧自身の失効で旧画面を消し、次の更新では許可された暗号化行も表示する", arguments: [false, true])
+    func storesDirectoryAfterOwnRevocations(encrypted: Bool) async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
         let sync = try await session(harness)
-        try await sync.store([Channel(id: syncChannel, channel_name: "削除前", is_private: true, is_dm: false)], key: "workspace:channels")
+        let initial = Channel(id: syncChannel, channel_name: "変更前", is_private: true, is_dm: false)
+        try await sync.store([initial], key: "workspace:channels")
         try await sync.store([syncUser], key: "workspace:people")
-        harness.stub { _ in (200, ["electric-handle": "fresh", "electric-offset": "2_0", "electric-up-to-date": "true"], Data("[]".utf8)) }
+        var protected = initial
+        protected.encrypted = true
+        let expected = encrypted ? [protected] : []
+        let row = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(protected))
+        let events: [JSONValue] = encrypted
+            ? [.object(["key": .string("channel"), "headers": .object(["operation": .string("insert")]), "value": row])] : []
+        harness.stub { request in
+            let bytes = request.url?.path == "/api/shapes/channels" ? try JSONEncoder().encode(events) : Data("[]".utf8)
+            return (200, ["electric-handle": "fresh", "electric-offset": "2_0", "electric-up-to-date": "true"], bytes)
+        }
         let client = NativeChatClient(api: harness.api, sync: sync)
-        #expect(try await client.channels().isEmpty)
+        let workspace = WorkspaceStore(client: client, user: syncUser, recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        workspace.addAndOpen(initial)
+        sync.onChannelRevoked = { [weak workspace] id, channel in workspace?.revokeChannel(id, retaining: channel) }
+        await workspace.refresh()
+        #expect(workspace.channels == expected && workspace.channelPath.isEmpty)
         #expect(sync.isRevoked(syncChannel))
-        #expect(try await client.cachedWorkspace()?.channels == [])
+        #expect(try await client.cachedWorkspace()?.channels == expected)
+        await workspace.refresh()
+        #expect(workspace.hasLoaded && workspace.error == nil)
+        #expect(workspace.channels == expected)
+    }
+
+    @Test("暗号化済み会話が一覧から消えるか削除された場合も通話の権限を失効させる", arguments: [false, true])
+    func revokesMissingEncryptedDirectoryChannel(deleted: Bool) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let sync = try await session(harness)
+        var initial = Channel(id: syncChannel, channel_name: "暗号化済み", is_private: true, is_dm: false)
+        initial.encrypted = true
+        try await sync.store([initial], key: "workspace:channels")
+        var removed = initial
+        removed.deleted_at = "2026-11-23 10:00:00"
+        let row = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(removed))
+        let events: [JSONValue] = deleted
+            ? [.object(["key": .string("channel"), "headers": .object(["operation": .string("insert")]), "value": row])] : []
+        harness.stub { _ in
+            (200, ["electric-handle": "fresh", "electric-offset": "2_0", "electric-up-to-date": "true"],
+             try JSONEncoder().encode(events))
+        }
+        let client = NativeChatClient(api: harness.api, sync: sync)
+        let workspace = WorkspaceStore(client: client, user: syncUser, recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        workspace.addAndOpen(initial)
+        sync.onChannelRevoked = { [weak workspace] id, channel in workspace?.revokeChannel(id, retaining: channel) }
+        #expect(!workspace.calls.isChannelRevoked(syncChannel))
+        _ = try await client.channels()
+        #expect(sync.isRevoked(syncChannel))
+        #expect(workspace.channels.isEmpty && workspace.channelPath.isEmpty)
+        #expect(workspace.calls.isChannelRevoked(syncChannel))
     }
 
     @Test("会話取得中の失効やログアウト後に古い成功応答を返さない", arguments: [false, true])
@@ -801,7 +875,7 @@ struct PersistentSyncIntegrationTests {
         }
         let client = NativeChatClient(api: harness.api, sync: sync)
         let inbox = InboxStore(client: client, userID: syncUser.id)
-        sync.onChannelRevoked = { [weak inbox] id in inbox?.revokeChannel(id) }
+        sync.onChannelRevoked = { [weak inbox] id, _ in inbox?.revokeChannel(id) }
         await inbox.refresh()
         #expect(inbox.entries.count == 1)
         let oldVersion = sync.revocationVersion(for: "api/shapes/notifications")
