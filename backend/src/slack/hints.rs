@@ -400,6 +400,7 @@ async fn apply(
                             slack_channel,
                             zoo_channel,
                             "",
+                            true,
                             full.as_ref().unwrap_or(message),
                         )
                         .await?;

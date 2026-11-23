@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { ArrowLeftIcon, LogOutIcon, UsersIcon, XIcon } from "lucide-react";
+import { ArrowLeftIcon, UsersIcon, XIcon } from "lucide-react";
 import { type KeyboardEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { CommandSuggestion } from "./composerSuggestions";
@@ -8,7 +8,6 @@ import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import type { AttachmentRow } from "../../../lib/electric/types";
 import { groupReactions, type ReactionGroup } from "../../../lib/emoji/reactions";
 import { Button } from "../../ui/button";
-import { AppAvatar } from "../AppIdentity";
 import type { ThreadParticipant } from "../../../hooks/useThreadMembership";
 import { PaneHeader } from "../../layout/PaneHeader";
 import { useMediaQuery } from "../../layout/useMediaQuery";
@@ -17,6 +16,11 @@ import type { TypingUser } from "../../../hooks/useTyping";
 import { TypingIndicator } from "./TypingIndicator";
 import { Composer } from "./Composer";
 import { JoinPrompt } from "./JoinPrompt";
+import {
+  ThreadParticipantsDialog,
+  type ThreadParticipantsAction,
+  type ThreadParticipantsStatus,
+} from "./ThreadParticipantsDialog";
 import { MessageRow } from "./MessageRow";
 import type { FeedMessage } from "./messageFormat";
 import { buildMessageItems } from "./messageGrouping";
@@ -159,7 +163,6 @@ export function ThreadPane({
   onClose,
 }: ThreadPaneProps) {
   const { t } = useTranslation();
-  const [participantsOpen, setParticipantsOpen] = useState(false);
   // 狭幅（sm 未満）は absolute のオーバーレイ。ダイアログとして扱うのはこのときだけ。
   // 広幅の sm:static なサイドペインは従来どおりインラインのままにする。
   const isWidePane = useMediaQuery("(min-width: 640px)");
@@ -184,6 +187,41 @@ export function ThreadPane({
     }
   }, [needsJoin, membershipError]);
   const joinThread = isArchived ? (onReopenAndJoinThread ?? onJoinThread) : onJoinThread;
+  // 参加者は、ヘッダーの人数ボタンから開く、中央のダイアログに出す。参加・退出の操作もそこに置く。
+  const [participantsOpen, setParticipantsOpen] = useState(false);
+  const participantsStatus: ThreadParticipantsStatus =
+    readOnly || !isMember
+      ? null
+      : membership === "joined"
+        ? "joined"
+        : membership === "none" || membership === "left"
+          ? "notJoined"
+          : "checking";
+  // 参加ボタンの出し方は、入力欄の代わりの案内（`ThreadJoinPrompt`）と同じ。アーカイブ済みの再Openは
+  // 投稿権限が要るので、権限がないときは出さない。
+  // 人数をまだ読み込めていなくても、自分の参加状態が確定していれば、参加・退出の操作のために出す。
+  // どちらも未確定（読み込み中）のあいだは、押しても何も出せないので出さない。
+  const showParticipants =
+    participantCount !== undefined ||
+    participantsStatus === "joined" ||
+    participantsStatus === "notJoined";
+  // ダイアログを描画しない間は、開いた状態も残さない。残すと、狭幅のペインが Escape・Tab を扱わないままになり、
+  // あとで人数や参加状態が戻ったときに、操作なしでダイアログが開いてしまう。
+  useEffect(() => {
+    if (!showParticipants) setParticipantsOpen(false);
+  }, [showParticipants]);
+  const participantsAction: ThreadParticipantsAction | null =
+    participantsStatus === "joined"
+      ? onLeaveThread
+        ? { kind: "leave", onClick: onLeaveThread, disabled: membershipPending || isOffline }
+        : null
+      : participantsStatus === "notJoined" && joinThread && !(isArchived && postingForbidden)
+        ? {
+            kind: isArchived ? "reopenAndJoin" : "join",
+            onClick: joinThread,
+            disabled: membershipPending || isOffline,
+          }
+        : null;
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasTargetInReplies = Boolean(
     targetMessageId && replies.some((reply) => reply.id === targetMessageId),
@@ -272,6 +310,9 @@ export function ThreadPane({
 
   function handlePaneKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (isWidePane) return;
+    // メンバーのダイアログが開いているあいだは、キー操作はそちらのもの。開いた直後で、まだ
+    // フォーカスがダイアログへ移っていないときの Escape で、ペインごと閉じないようにする。
+    if (participantsOpen) return;
     // 削除確認やリアクションピッカーなど、子のダイアログが Escape を処理する場合は干渉しない。
     if ((event.target as HTMLElement).closest('[role="dialog"]') !== event.currentTarget) return;
     if (event.key === "Escape") {
@@ -336,30 +377,20 @@ export function ThreadPane({
         {isArchived ? (
           <span className="text-xs text-muted-foreground">{t("moderation.archived")}</span>
         ) : null}
-        {participantCount !== undefined ? (
+        {showParticipants ? (
           <Button
             variant="ghost"
             size="sm"
-            id="thread-participants-toggle"
-            aria-expanded={participantsOpen}
-            aria-controls={participantsOpen ? "thread-participants" : undefined}
-            aria-label={t("threads.participants", { count: participantCount })}
-            onClick={() => setParticipantsOpen((value) => !value)}
+            aria-haspopup="dialog"
+            aria-label={
+              participantCount === undefined
+                ? t("members.title")
+                : t("threads.participants", { count: participantCount })
+            }
+            onClick={() => setParticipantsOpen(true)}
           >
             <UsersIcon aria-hidden="true" />
-            <span className="tabular-nums">{participantCount}</span>
-          </Button>
-        ) : null}
-        {!readOnly && isMember && membership === "joined" && onLeaveThread ? (
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label={t("threads.leave")}
-            title={t("threads.leave")}
-            disabled={membershipPending || isOffline}
-            onClick={onLeaveThread}
-          >
-            <LogOutIcon />
+            <span className="tabular-nums">{participantCount ?? "…"}</span>
           </Button>
         ) : null}
         <Button
@@ -373,9 +404,22 @@ export function ThreadPane({
         </Button>
       </PaneHeader>
 
-      {participantCount !== undefined && participantsOpen ? (
-        <ThreadParticipants count={participantCount} participants={participants ?? []} />
+      {showParticipants ? (
+        <ThreadParticipantsDialog
+          open={participantsOpen}
+          onOpenChange={setParticipantsOpen}
+          count={participantCount}
+          participants={participants ?? []}
+          creatorId={root.user_id}
+          currentUserId={currentUserId}
+          status={participantsStatus}
+          action={participantsAction}
+          // ペイン側の表示と同じ条件（メンバーでない人・読み取り専用には、参加・退出の操作がないので出さない）。
+          membershipError={!readOnly && isMember && membershipError}
+          onMembershipRetry={onMembershipRetry}
+        />
       ) : null}
+
       {!readOnly &&
       isMember &&
       ((isArchived && onReopenThread && !postingForbidden) || membershipError) ? (
@@ -585,49 +629,6 @@ export function ThreadPane({
       onKeyDown={handlePaneKeyDown}
     >
       {paneContent}
-    </div>
-  );
-}
-
-function ThreadParticipants({
-  count,
-  participants,
-}: {
-  count: number;
-  participants: ThreadParticipant[];
-}) {
-  const { t } = useTranslation();
-  return (
-    <div className="border-b px-3 py-2">
-      <ul
-        id="thread-participants"
-        aria-label={t("threads.participants", { count })}
-        className="max-h-40 overflow-y-auto text-xs"
-      >
-        {participants.length === 0 ? (
-          <li className="text-muted-foreground">{t("threads.participantsEmpty")}</li>
-        ) : (
-          participants.map((participant) => {
-            const label = participant.display_name || participant.user_name;
-            return (
-              <li key={participant.id} className="flex items-center gap-2 py-0.5">
-                <AppAvatar label={label} src={participant.avatar_url} size="sm" aria-hidden />
-                <span className="min-w-0 flex-1 truncate">{label}</span>
-                {label !== participant.user_name ? (
-                  <span className="max-w-[40%] shrink-0 truncate text-muted-foreground">
-                    @{participant.user_name}
-                  </span>
-                ) : null}
-              </li>
-            );
-          })
-        )}
-        {count > participants.length ? (
-          <li className="text-muted-foreground">
-            {t("threads.participantsMore", { count: count - participants.length })}
-          </li>
-        ) : null}
-      </ul>
     </div>
   );
 }
