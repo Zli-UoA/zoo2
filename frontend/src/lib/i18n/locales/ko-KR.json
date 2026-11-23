@@ -139,8 +139,7 @@
     "candidates": "멤버 후보",
     "usersLoading": "사용자를 불러오는 중…",
     "usersError": "사용자를 불러오지 못했습니다.",
-    "usersEmpty": "해당하는 사용자가 없습니다.",
-    "back": "채널로 돌아가기"
+    "usersEmpty": "해당하는 사용자가 없습니다."
   },
   "moderation": {
     "archived": "보관됨",

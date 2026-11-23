@@ -1,7 +1,7 @@
 import { Input } from "../ui/input";
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
-import { ArrowLeftIcon, SearchIcon, ShieldAlertIcon, UserMinusIcon } from "lucide-react";
+import { SearchIcon, ShieldAlertIcon, UserMinusIcon } from "lucide-react";
 import { useId, useMemo, useState, type ChangeEvent, type KeyboardEvent } from "react";
 
 import { canKickChannelMember } from "../../hooks/channelPermissions";
@@ -25,12 +25,17 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "../ui/dialog";
 import { inputClassName } from "../ui/input-styles";
-import { ScrollArea } from "../ui/scroll-area";
 import { Skeleton } from "../ui/skeleton";
 import { AppAvatar } from "./AppIdentity";
 import { MemberRow } from "./MemberRow";
-import { PaneHeader } from "../layout/PaneHeader";
 import {
   filterMemberCandidates,
   sortChannelMembers,
@@ -46,10 +51,13 @@ function nowIso(): string {
 }
 
 /**
- * チャンネルのメンバー一覧と参加・退出・追加。
+ * チャンネルのメンバー一覧と参加・退出・追加。スレッドのメンバー（`ThreadParticipantsDialog`）や、
+ * ほかのポップアウト（チャンネルを探す・設定）と同じ、画面の中央に出すダイアログで表示する。
+ * 画面幅によらず同じダイアログで、右ペイン・狭幅の全画面には出さない。
  *
- * `channel_user` の Shape は `getCollections()` が 1 本だけ作るため、パネルが複数
- * あっても購読は増えない。権限はバックエンドの `add_channel_user` / `leave_channel`
+ * 中身は閉じているあいだマウントしない（`DialogContent` は閉じると描画しない）ため、開くまで
+ * 暗号化の配布先などを取得しない。`channel_user` の Shape は `getCollections()` が 1 本だけ作るため、
+ * 開いても購読は増えない。権限はバックエンドの `add_channel_user` / `leave_channel`
  * と同じ条件を UI 側でも守る（非公開は参加者のみ閲覧、追加は作成者か公開の既存
  * メンバー、退出は本人のみ）。
  *
@@ -57,15 +65,25 @@ function nowIso(): string {
  * ユーザー名で絞り込んだ候補を選ぶ combobox にしている。選択した時点で
  * `channel_user` に追加する（重複ガードは既存どおり残す）。
  */
-export function MembersPanel({
+export function ChannelMembersDialog({
   channel,
-  className,
-  onBack,
+  open,
+  onOpenChange,
 }: {
   channel: ChannelRow;
-  className?: string;
-  onBack?: () => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
 }) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <ChannelMembersContent channel={channel} />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ChannelMembersContent({ channel }: { channel: ChannelRow }) {
   const { t } = useTranslation();
   const { locale } = useLocale();
   const { channelUsers } = useCollections();
@@ -245,53 +263,37 @@ export function MembersPanel({
     );
   }
 
+  const memberCount = !canViewMembers
+    ? "—"
+    : membersQuery.isLoading
+      ? "…"
+      : members.filter((member) => !userMap.get(member.user_id)?.is_bot).length;
+
   return (
-    <section
-      // デスクトップは main の外にあるため、常に名前付きランドマークにする。
-      // モバイルの全画面表示でも同じ役割を持つ。
-      role="region"
-      aria-label={t("members.title")}
-      className={cn("min-h-0 flex-col bg-background", className)}
-      onKeyDown={handlePanelKeyDown}
-    >
-      <PaneHeader className="justify-between gap-2">
-        {onBack ? (
-          <>
-            <Button
-              autoFocus
-              variant="ghost"
-              size="icon-lg"
-              onClick={onBack}
-              aria-label={t("members.back")}
-            >
-              <ArrowLeftIcon />
-            </Button>
-            <div className="min-w-0 flex-1">
-              <h1 className="text-sm font-semibold">{t("members.title")}</h1>
-              <p className="truncate text-xs text-muted-foreground">#{channel.channel_name}</p>
-            </div>
-          </>
-        ) : (
-          <h3 className="text-sm font-semibold">{t("members.title")}</h3>
-        )}
-        <span className="rounded bg-muted px-2 py-0.5 text-xs tabular-nums text-muted-foreground">
-          {!canViewMembers
-            ? "—"
-            : membersQuery.isLoading
-              ? "…"
-              : members.filter((member) => !userMap.get(member.user_id)?.is_bot).length}
-        </span>
-      </PaneHeader>
+    // 候補のポップアップを開いているあいだの Escape は、ポップアップだけを閉じる（handlePanelKeyDown）。
+    <div className="contents" onKeyDown={handlePanelKeyDown}>
+      <DialogHeader>
+        <DialogTitle className="flex items-center gap-2">
+          {t("members.title")}
+          <span className="rounded bg-muted px-2 py-0.5 text-xs font-normal tabular-nums text-muted-foreground">
+            {memberCount}
+          </span>
+        </DialogTitle>
+        <DialogDescription className="truncate">#{channel.channel_name}</DialogDescription>
+      </DialogHeader>
 
       {canViewMembers ? (
         <>
           {isArchived ? (
-            <p className="border-b bg-muted/40 px-4 py-2 text-xs text-muted-foreground">
+            <p className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
               {t("moderation.archivedMembersHelp")}
             </p>
           ) : null}
-          <ScrollArea className="min-h-0 flex-1">
-            <ul className="flex flex-col gap-0.5 p-2">
+          <div>
+            <ul
+              aria-label={t("members.title")}
+              className="flex max-h-[min(20rem,50dvh)] min-h-0 flex-col gap-0.5 overflow-y-auto"
+            >
               {membersQuery.isLoading
                 ? SKELETON_ROWS.map((row) => (
                     <li key={row} className="flex items-center gap-2.5 px-2 py-1.5">
@@ -360,49 +362,53 @@ export function MembersPanel({
                   })}
             </ul>
             {!membersQuery.isLoading && members.length === 0 ? (
-              <p className="px-4 py-3 text-xs text-muted-foreground">{t("members.empty")}</p>
+              <p className="px-2 py-3 text-xs text-muted-foreground">{t("members.empty")}</p>
             ) : null}
             {membersQuery.isError ? (
-              <p className="px-4 py-3 text-xs text-destructive">{t("members.loadError")}</p>
+              <p className="px-2 py-3 text-xs text-destructive">{t("members.loadError")}</p>
             ) : null}
-          </ScrollArea>
+          </div>
 
-          <div className="flex flex-col gap-2 border-t p-3">
+          <div className="flex flex-col gap-2 border-t pt-3">
             {canAddMember ? (
-              <div className="relative">
-                <SearchIcon
-                  aria-hidden="true"
-                  className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
-                />
-                <Input
-                  className={cn(inputClassName(), "w-full pl-8")}
-                  placeholder={t("members.search")}
-                  value={query}
-                  onChange={handleQueryChange}
-                  onKeyDown={handleQueryKeyDown}
-                  // ダイアログを開いた直後の自動フォーカスでは候補を開かない。
-                  // 入力（onChange）か明示的なクリック、矢印キーで開く。
-                  onClick={openCandidateList}
-                  onBlur={closeCandidateList}
-                  disabled={busy}
-                  role="combobox"
-                  aria-label={t("members.addLabel")}
-                  aria-expanded={isCandidateListOpen}
-                  aria-controls={candidateListId}
-                  aria-autocomplete="list"
-                  aria-activedescendant={
-                    isCandidateListOpen && candidates[activeIndex]
-                      ? candidateOptionId(candidates[activeIndex].id)
-                      : undefined
-                  }
-                  autoComplete="off"
-                />
+              <div>
+                <div className="relative">
+                  <SearchIcon
+                    aria-hidden="true"
+                    className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
+                  />
+                  <Input
+                    className={cn(inputClassName(), "w-full pl-8")}
+                    placeholder={t("members.search")}
+                    value={query}
+                    onChange={handleQueryChange}
+                    onKeyDown={handleQueryKeyDown}
+                    // ダイアログを開いた直後の自動フォーカスでは候補を開かない。
+                    // 入力（onChange）か明示的なクリック、矢印キーで開く。
+                    onClick={openCandidateList}
+                    onBlur={closeCandidateList}
+                    disabled={busy}
+                    role="combobox"
+                    aria-label={t("members.addLabel")}
+                    aria-expanded={isCandidateListOpen}
+                    aria-controls={candidateListId}
+                    aria-autocomplete="list"
+                    aria-activedescendant={
+                      isCandidateListOpen && candidates[activeIndex]
+                        ? candidateOptionId(candidates[activeIndex].id)
+                        : undefined
+                    }
+                    autoComplete="off"
+                  />
+                </div>
                 {isCandidateListOpen ? (
                   <ul
                     id={candidateListId}
                     role="listbox"
                     aria-label={t("members.candidates")}
-                    className="absolute inset-x-0 bottom-full z-20 mb-1 max-h-64 overflow-y-auto rounded-lg border bg-popover p-1 shadow-md"
+                    // ダイアログは小さい画面で中身ごとスクロールするため、候補は重ねずに入力欄の下へ並べる
+                    // （重ねると、メンバーが少ないときにダイアログの上端で切れる）。
+                    className="mt-1 max-h-48 overflow-y-auto rounded-lg border bg-popover p-1"
                   >
                     {usersQuery.isLoading ? (
                       <li role="presentation" className="px-2 py-1.5 text-xs text-muted-foreground">
@@ -454,7 +460,8 @@ export function MembersPanel({
               </div>
             ) : null}
             <div className="flex items-center justify-between gap-2">
-              <span className="text-xs text-muted-foreground">
+              {/* 参加・退出の成功で文言が変わる。フォーカスを動かさずに、変化を通知する。 */}
+              <span role="status" className="text-xs text-muted-foreground">
                 {currentUserLoading
                   ? t("members.checking")
                   : isMember
@@ -498,7 +505,7 @@ export function MembersPanel({
           </div>
         </>
       ) : (
-        <div className="flex flex-1 items-center justify-center p-6">
+        <div className="flex items-center justify-center py-6">
           <p className="text-center text-xs text-muted-foreground">{t("members.private")}</p>
         </div>
       )}
@@ -530,6 +537,6 @@ export function MembersPanel({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </section>
+    </div>
   );
 }

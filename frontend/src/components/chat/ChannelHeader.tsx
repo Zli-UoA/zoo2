@@ -249,8 +249,9 @@ export function ChannelHeader({
             size="sm"
             // sm 未満ではラベルが非表示になりアイコンだけになるため、タッチ時は縦横とも 44px 以上にする。
             className="[@media(hover:none)]:min-h-11 [@media(hover:none)]:min-w-11"
-            onClick={shell.toggleMembers}
-            aria-expanded={shell.membersOpen}
+            // スレッドの人数ボタンと同じく、画面中央のダイアログを開く。
+            onClick={() => shell.setMembersOpen(true)}
+            aria-haspopup="dialog"
             aria-label={
               memberCount === undefined || memberCount === null
                 ? t("members.title")
