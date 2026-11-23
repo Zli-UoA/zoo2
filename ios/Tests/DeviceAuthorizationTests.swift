@@ -584,6 +584,115 @@ struct DeviceAuthorizationTests {
         #expect(attempts.withLock { $0 } == 2)
     }
 
+    @Test("未ログイン時の通知解除が終わるまで新しいログインを開始しない")
+    func loginWaitsForSignedOutCleanup() async throws {
+        let transport = transport(), receipts = PreviewPushReceiptStore()
+        try receipts.save(PushReceipt(server: settings.server, account: "利用者", token: "aabb",
+                                      environment: "sandbox", secret: "解除用テスト値"))
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        let discoveryCount = Mutex(0)
+        let session = AppSession(settings: settings, transport: transport, notificationStore: receipts,
+                                 previewKeys: InMemoryNotificationPreviewKeys())
+        defer {
+            release.continuation.finish(); started.continuation.finish(); session.logout()
+            transport.session.invalidateAndCancel(); StubProtocol.install(nil, id: stubID)
+        }
+        stub { request in
+            if request.url?.path == "/api/push/apns/revoke" {
+                started.continuation.yield(())
+                for await _ in release.stream { break }
+                return (200, [:], Data(#"{"ok":true}"#.utf8))
+            }
+            #expect(request.url?.path == "/.well-known/openid-configuration")
+            discoveryCount.withLock { $0 += 1 }
+            return (400, [:], Data())
+        }
+        let resuming = Task {
+            defer { started.continuation.finish() }
+            await session.resume()
+        }
+        defer { resuming.cancel() }
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        session.startLogin()
+        // ログインの別タスクにも実行機会を与え、解除待ちを飛ばす回帰を検出する。
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(session.connecting)
+        #expect(discoveryCount.withLock { $0 } == 0)
+        release.continuation.finish()
+        await resuming.value
+        let deadline = ContinuousClock.now + .seconds(2)
+        while session.connecting && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(!session.connecting)
+        #expect(discoveryCount.withLock { $0 } == 1)
+    }
+
+    @Test("古い起動のキャッシュ読出し失敗は新しいログインのエラーを上書きしない")
+    func staleResumeDoesNotOverwriteLoginError() async throws {
+        let transport = transport(), cache = try await SyncCache.open(inMemory: true)
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        let opens = Mutex(0), requests = Mutex(0)
+        let session = AppSession(settings: settings, transport: transport, notificationStore: PreviewPushReceiptStore(),
+                                 previewKeys: InMemoryNotificationPreviewKeys(), openSyncCache: {
+            let attempt = opens.withLock { $0 += 1; return $0 }
+            if attempt == 1 {
+                started.continuation.yield(())
+                for await _ in release.stream { break }
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            return cache
+        })
+        defer {
+            release.continuation.finish(); started.continuation.finish(); session.logout()
+            transport.session.invalidateAndCancel(); StubProtocol.install(nil, id: stubID)
+        }
+        stub { _ in requests.withLock { $0 += 1 }; return (400, [:], Data()) }
+        let resuming = Task {
+            defer { started.continuation.finish() }
+            await session.resume()
+        }
+        defer { resuming.cancel() }
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        session.startLogin()
+        let deadline = ContinuousClock.now + .seconds(2)
+        while session.connecting && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        try #require(!session.connecting && requests.withLock { $0 } == 1)
+        let loginError = try #require(session.error)
+        #expect(loginError != CocoaError(.fileReadCorruptFile).localizedDescription)
+        release.continuation.finish()
+        await resuming.value
+        #expect(session.error == loginError)
+    }
+
+    @Test("起動の後処理失敗は次のログインに一度だけ伝わり、その次の再試行は進む")
+    func cleanupFailureIsConsumedOnce() async throws {
+        let transport = transport(), saves = Mutex(0), requests = Mutex(0)
+        let cache = try await SyncCache.open(inMemory: true, beforeSave: {
+            let attempt = saves.withLock { $0 += 1; return $0 }
+            if attempt == 1 { throw CocoaError(.fileWriteOutOfSpace) }
+        })
+        let session = AppSession(settings: settings, transport: transport, notificationStore: PreviewPushReceiptStore(),
+                                 previewKeys: InMemoryNotificationPreviewKeys(), syncCache: cache)
+        defer { session.logout(); transport.session.invalidateAndCancel(); StubProtocol.install(nil, id: stubID) }
+        stub { _ in requests.withLock { $0 += 1 }; return (400, [:], Data()) }
+        await session.resume()
+        #expect(session.error == CocoaError(.fileWriteOutOfSpace).localizedDescription)
+        session.startLogin()
+        var deadline = ContinuousClock.now + .seconds(2)
+        while session.connecting && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        try #require(!session.connecting)
+        #expect(session.error == CocoaError(.fileWriteOutOfSpace).localizedDescription)
+        #expect(saves.withLock { $0 } == 1)
+        #expect(requests.withLock { $0 } == 0)
+        session.startLogin()
+        deadline = ContinuousClock.now + .seconds(2)
+        while session.connecting && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(!session.connecting)
+        #expect(saves.withLock { $0 } == 2)
+        #expect(requests.withLock { $0 } == 1)
+    }
+
     @Test("復元した認証が失効していたら端末登録を解除する")
     func expiredRestoreRevokesPushReceipt() async throws {
         let transport = transport()

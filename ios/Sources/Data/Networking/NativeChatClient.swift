@@ -9,11 +9,16 @@ struct NativeChatClient: ChatClient {
 
     func channels() async throws -> [Channel] {
         guard let sync else { return try await api.get("api/channels") }
+        var version = sync.revocationVersion(for: "workspace:channels")
         let channels = try await shapes.snapshot("api/shapes/channels", as: Channel.self)
         let previous = try await sync.load("workspace:channels", as: [Channel].self) ?? []
+        try sync.checkRevocationVersion(version)
         let accessible = Set(channels.filter { $0.deleted_at == nil && $0.encrypted != true }.map(\.id))
-        for channel in previous where !accessible.contains(channel.id) { try await sync.revokeChannel(channel.id) }
-        try await sync.storeRecovery(channels, key: "workspace:channels")
+        for channel in previous where channel.deleted_at == nil && channel.encrypted != true && !accessible.contains(channel.id) {
+            version = try await sync.revokeChannel(channel.id)
+            try sync.checkRevocationVersion(version)
+        }
+        try await sync.storeRecovery(channels, key: "workspace:channels", revocationVersion: version)
         return channels
     }
     func channel(id: String) async throws -> Channel {
@@ -50,10 +55,12 @@ struct NativeChatClient: ChatClient {
     }
 
     func cachedWorkspace() async throws -> CachedWorkspace? {
-        guard let sync,
-              let channels = try await sync.load("workspace:channels", as: [Channel].self),
+        guard let sync else { return nil }
+        let version = sync.revocationVersion(for: "workspace:channels")
+        guard let channels = try await sync.load("workspace:channels", as: [Channel].self),
               let people = try await sync.load("workspace:people", as: [Person].self) else { return nil }
         let states = try await sync.load("rest:api/channel-read-states", as: [ChannelReadState].self) ?? []
+        try sync.checkRevocationVersion(version)
         return CachedWorkspace(channels: channels, people: people, readStates: states)
     }
 

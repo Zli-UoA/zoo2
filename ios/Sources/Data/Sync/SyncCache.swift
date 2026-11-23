@@ -14,11 +14,12 @@ actor SyncCache {
     private var recordVersions: [String: UUID] = [:]
     private var channelVersions: [String: UUID] = [:]
     private var blockedChannels: Set<String> = []
-    private var notificationVersions: [String: UUID] = [:]
+    private var revocationVersions: [String: UUID] = [:]
     private var memoryPermissions: Set<String> = []
     private var revokedPermissions: Set<String> = []
     private var permissionsDirectory: URL?
-    private static let notificationResources = ["shape:api/shapes/notifications", "snapshot:api/shapes/notifications"]
+    static let revocationResources = ["shape:api/shapes/notifications", "snapshot:api/shapes/notifications",
+                                      "shape:api/shapes/channels", "snapshot:api/shapes/channels", "workspace:channels"]
     private var beforeSave: (@Sendable () throws -> Void)?
     private var beforeDelete: (@Sendable () throws -> Void)?
     private var attachmentFiles: AttachmentDiskCache?
@@ -89,7 +90,7 @@ actor SyncCache {
 
     private func permissionScopes(resource: String, channelID: String?) -> [String] {
         var scopes = channelID.map { ["channel:" + $0] } ?? []
-        if Self.notificationResources.contains(resource) { scopes.append("resource:" + resource) }
+        if Self.revocationResources.contains(resource) { scopes.append("resource:" + resource) }
         return scopes
     }
 
@@ -129,7 +130,7 @@ actor SyncCache {
         leases[account] = lease.generation
         channelVersions = channelVersions.filter { !$0.key.hasPrefix(account + ":") }
         blockedChannels = blockedChannels.filter { !$0.hasPrefix(account + ":") }
-        notificationVersions[account] = nil
+        revocationVersions[account] = nil
         return lease
     }
 
@@ -151,11 +152,11 @@ actor SyncCache {
     }
 
     func store(_ payload: Data, resource: String, channelID: String? = nil, channelVersion: UUID? = nil,
-               notificationVersion: UUID? = nil, lease: SyncLease) throws {
+               revocationVersion: UUID? = nil, lease: SyncLease) throws {
         try check(lease)
-        if let notificationVersion {
-            if let current = notificationVersions[lease.account], current != notificationVersion { throw SyncInvalidation.notifications }
-            notificationVersions[lease.account] = notificationVersion
+        if let revocationVersion {
+            if let current = revocationVersions[lease.account], current != revocationVersion { throw SyncInvalidation.resources }
+            revocationVersions[lease.account] = revocationVersion
         }
         if let channelID {
             let key = lease.account + ":" + channelID
@@ -233,17 +234,17 @@ actor SyncCache {
         channelVersions[key] = version
     }
 
-    func revokeChannel(_ channelID: String, version: UUID = UUID(), notificationVersion: UUID = UUID(), lease: SyncLease) throws {
+    func revokeChannel(_ channelID: String, version: UUID = UUID(), revocationVersion: UUID = UUID(), lease: SyncLease) throws {
         guard leases[lease.account] == lease.generation else { throw CancellationError() }
         let account = lease.account
         let key = account + ":" + channelID
         channelVersions[key] = version
         blockedChannels.insert(key)
-        notificationVersions[account] = notificationVersion
-        let ids = Self.notificationResources.map { account + "|" + $0 }
+        revocationVersions[account] = revocationVersion
+        let ids = Self.revocationResources.map { account + "|" + $0 }
         var failure: (any Error)?
         // 保存時に作った許可を先に消し、容量不足で失効記録を書けなくても再起動後の読出しを拒否する。
-        for scope in ["channel:" + channelID] + Self.notificationResources.map({ "resource:" + $0 }) {
+        for scope in ["channel:" + channelID] + Self.revocationResources.map({ "resource:" + $0 }) {
             do { try removePermission(scope, account: account) }
             catch { if failure == nil { failure = error } }
         }
@@ -295,7 +296,7 @@ actor SyncCache {
         try modelContext.delete(model: CachedSyncRecord.self, where: #Predicate { $0.account == account })
         channelVersions = channelVersions.filter { !$0.key.hasPrefix(account + ":") }
         blockedChannels = blockedChannels.filter { !$0.hasPrefix(account + ":") }
-        notificationVersions[account] = nil
+        revocationVersions[account] = nil
     }
 
     private func check(_ lease: SyncLease) throws {

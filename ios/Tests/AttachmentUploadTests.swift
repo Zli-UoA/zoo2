@@ -618,6 +618,16 @@ struct AttachmentUploadTests {
         release.continuation.yield(())
         await task.value
         #expect(store.messages.isEmpty)
-        if !archive { #expect(!FileManager.default.fileExists(atPath: copied.path)) }
+        if archive {
+            #expect(store.sendErrors["root"]?.contains("この会話には投稿できません。") == true)
+            harness.stub { request in
+                #expect(request.url?.path == "/api/messages")
+                return (200, [:], try Self.envelope(Self.message(request)))
+            }
+            store.update(channel)
+            await store.send()
+            #expect(store.messages.count == 1)
+            #expect(store.sendErrors["root"] == nil)
+        } else { #expect(!FileManager.default.fileExists(atPath: copied.path)) }
     }
 }

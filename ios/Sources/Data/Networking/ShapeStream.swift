@@ -164,11 +164,11 @@ struct ShapeStream {
     func snapshot<T: Decodable & Sendable>(_ path: String, query: [String: String] = [:], as type: T.Type) async throws -> [T] {
         let key = cacheKey(path, query: query, prefix: "snapshot:")
         let version = query["channel_id"].flatMap { sync?.channelVersion($0) }
-        let notificationVersion = sync?.notificationVersion(for: path)
+        let revocationVersion = sync?.revocationVersion(for: path)
         var state = try await sync?.load(key, as: ShapeState.self) ?? ShapeState()
         var cached: [T]? = state.isLive ? try await decodeShapeRows(state.rows, as: type) : nil
         try sync?.check(channelID: query["channel_id"], channelVersion: version)
-        try sync?.checkNotificationVersion(notificationVersion)
+        try sync?.checkRevocationVersion(revocationVersion)
         state.isLive = false
         do {
             while !Task.isCancelled {
@@ -180,16 +180,16 @@ struct ShapeStream {
                 if state.offset == "-1" { cached = nil }
                 if state.isLive || state.offset == "-1" {
                     try await sync?.storeRecovery(state, key: key, channelID: query["channel_id"], channelVersion: version,
-                                          notificationVersion: notificationVersion)
+                                          revocationVersion: revocationVersion)
                 }
-                try sync?.checkNotificationVersion(notificationVersion)
+                try sync?.checkRevocationVersion(revocationVersion)
                 if let values = result.values { return values }
                 if state.offset == "-1" { try await Task.sleep(for: .milliseconds(250)) }
             }
             throw CancellationError()
         } catch {
             try sync?.check(channelID: query["channel_id"], channelVersion: version)
-            try sync?.checkNotificationVersion(notificationVersion)
+            try sync?.checkRevocationVersion(revocationVersion)
             if isOfflineFailure(error), let cached { return cached }
             if case ZooError.rejected(let status, _) = error, status == 403 || status == 404 {
                 if let channelID = query["channel_id"] { try await sync?.revokeChannel(channelID) }
@@ -203,12 +203,12 @@ struct ShapeStream {
                                           restoreCached: Bool = true, receive: @MainActor ([T]?) -> Void) async throws {
         let key = cacheKey(path, query: query, prefix: "shape:")
         let version = query["channel_id"].flatMap { sync?.channelVersion($0) }
-        let notificationVersion = sync?.notificationVersion(for: path)
+        let revocationVersion = sync?.revocationVersion(for: path)
         var state = try await sync?.load(key, as: ShapeState.self) ?? ShapeState()
         if state.isLive && restoreCached {
             let rows = try await decodeShapeRows(state.rows, as: type)
             try sync?.check(channelID: query["channel_id"], channelVersion: version)
-            try sync?.checkNotificationVersion(notificationVersion)
+            try sync?.checkRevocationVersion(revocationVersion)
             receive(rows)
         }
         var sseFailures = 0
@@ -225,9 +225,9 @@ struct ShapeStream {
                         let result = try await applyShape(pendingState, data: data, response: response, as: type)
                         if result.state.isLive || result.state.offset == "-1" {
                             try await sync?.store(result.state, key: key, channelID: query["channel_id"], channelVersion: version,
-                                                  notificationVersion: notificationVersion)
+                                                  revocationVersion: revocationVersion)
                         }
-                        try sync?.checkNotificationVersion(notificationVersion)
+                        try sync?.checkRevocationVersion(revocationVersion)
                         state = result.state
                         if let snapshot = result.values { receive(snapshot) }
                         else if state.offset == "-1" { receive(nil) }
@@ -245,7 +245,7 @@ struct ShapeStream {
             throw CancellationError()
         } catch {
             try sync?.check(channelID: query["channel_id"], channelVersion: version)
-            try sync?.checkNotificationVersion(notificationVersion)
+            try sync?.checkRevocationVersion(revocationVersion)
             if case ZooError.rejected(let status, _) = error, status == 403 || status == 404 {
                 if let channelID = query["channel_id"] { try await sync?.revokeChannel(channelID) }
                 else if let sync { try await sync.cache.remove(key, lease: sync.lease) }

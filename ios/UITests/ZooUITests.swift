@@ -1525,7 +1525,9 @@ final class ZooUITests: XCTestCase {
         // 履歴の追加で配列の添字が変わるため、同じ投稿の識別子を基準に検証する。
         let anchor = list.staticTexts[candidate.identifier]
         let originalY = anchor.frame.minY
-        app.buttons["preview-release-history"].tap()
+        let resume = app.buttons["preview-release-history"]
+        XCTAssertTrue(resume.wait(for: \.isEnabled, toEqual: true, timeout: 5))
+        resume.tap()
         XCTAssertTrue(loading.waitForNonExistence(timeout: 8))
         XCTAssertTrue(anchor.isHittable)
         XCTAssertEqual(anchor.frame.minY, originalY, accuracy: 4, "追加取得でも読んでいた位置を維持する")

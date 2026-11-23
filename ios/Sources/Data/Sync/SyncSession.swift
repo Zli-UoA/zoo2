@@ -7,7 +7,7 @@ final class SyncSession {
     private(set) var active = true
     private var revokedChannels: Set<String> = []
     private var channelVersions: [String: UUID] = [:]
-    private var notificationVersion = UUID()
+    private var revocationVersion = UUID()
     private var channelRevocation: Task<Void, Error>?
     var onChannelRevoked: (@MainActor (String) -> Void)?
 
@@ -21,12 +21,20 @@ final class SyncSession {
 
     func load<T: Decodable & Sendable>(_ key: String, as type: T.Type) async throws -> T? {
         try check()
+        let version = revocationVersion(for: key)
+        // 世代だけが更新され、永続キャッシュの削除がまだ待機中の一覧を読まない。
+        if version != nil {
+            _ = await channelRevocation?.result
+            try check()
+            try checkRevocationVersion(version)
+        }
         let cached = try await cache.loadVersioned(key, lease: lease)
         let data = cached?.payload
         try check()
         do {
             let value = try await data.asyncDecode(type)
             try check()
+            try checkRevocationVersion(version)
             return value
         } catch is DecodingError {
             // キャッシュはサーバーから再構築できるため、旧形式の値で同期を止めない。
@@ -44,12 +52,13 @@ final class SyncSession {
 
     func isRevoked(_ id: String) -> Bool { revokedChannels.contains(id) }
 
-    func notificationVersion(for path: String) -> UUID? {
-        path == "api/shapes/notifications" ? notificationVersion : nil
+    func revocationVersion(for path: String) -> UUID? {
+        let key = path.hasPrefix("api/") ? "snapshot:" + path : path
+        return SyncCache.revocationResources.contains(key) ? revocationVersion : nil
     }
 
-    func checkNotificationVersion(_ expected: UUID?) throws {
-        if let expected, expected != notificationVersion { throw SyncInvalidation.notifications }
+    func checkRevocationVersion(_ expected: UUID?) throws {
+        if let expected, expected != revocationVersion { throw SyncInvalidation.resources }
     }
 
     func authorizeChannel(_ id: String, version: UUID) async throws {
@@ -63,29 +72,30 @@ final class SyncSession {
     }
 
     func store<T: Encodable & Sendable>(_ value: T, key: String, channelID: String? = nil,
-                                        channelVersion expectedVersion: UUID? = nil, notificationVersion: UUID? = nil) async throws {
+                                        channelVersion expectedVersion: UUID? = nil, revocationVersion: UUID? = nil) async throws {
         try check(channelID: channelID, channelVersion: expectedVersion)
-        try checkNotificationVersion(notificationVersion)
+        try checkRevocationVersion(revocationVersion)
         let data = try await encodeSyncValue(value)
         try check(channelID: channelID, channelVersion: expectedVersion)
-        try checkNotificationVersion(notificationVersion)
+        try checkRevocationVersion(revocationVersion)
         try await cache.store(data, resource: key, channelID: channelID, channelVersion: expectedVersion,
-                              notificationVersion: notificationVersion, lease: lease)
+                              revocationVersion: revocationVersion, lease: lease)
         try check(channelID: channelID, channelVersion: expectedVersion)
-        try checkNotificationVersion(notificationVersion)
+        try checkRevocationVersion(revocationVersion)
     }
 
-    func revokeChannel(_ id: String) async throws {
+    @discardableResult
+    func revokeChannel(_ id: String) async throws -> UUID {
         revokedChannels.insert(id)
         let version = UUID()
         channelVersions[id] = version
-        notificationVersion = UUID()
+        revocationVersion = UUID()
         onChannelRevoked?(id)
         let previous = channelRevocation
-        let notificationVersion = notificationVersion
+        let revocationVersion = revocationVersion
         let revocation = Task { [cache, lease] in
             _ = await previous?.result
-            try await cache.revokeChannel(id, version: version, notificationVersion: notificationVersion, lease: lease)
+            try await cache.revokeChannel(id, version: version, revocationVersion: revocationVersion, lease: lease)
         }
         channelRevocation = revocation
         do { try await revocation.value }
@@ -94,15 +104,16 @@ final class SyncSession {
             try check()
             if error is CancellationError || error is SyncInvalidation { throw error }
         }
+        return revocationVersion
     }
 
     func storeRecovery<T: Encodable & Sendable>(_ value: T, key: String, channelID: String? = nil,
-                                               channelVersion: UUID? = nil, notificationVersion: UUID? = nil) async throws {
+                                               channelVersion: UUID? = nil, revocationVersion: UUID? = nil) async throws {
         do { try await store(value, key: key, channelID: channelID, channelVersion: channelVersion,
-                             notificationVersion: notificationVersion) }
+                             revocationVersion: revocationVersion) }
         catch {
             try check(channelID: channelID, channelVersion: channelVersion)
-            try checkNotificationVersion(notificationVersion)
+            try checkRevocationVersion(revocationVersion)
             if error is CancellationError || error is SyncInvalidation { throw error }
         }
     }

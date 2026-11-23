@@ -18,6 +18,7 @@ final class AppSession {
     private var connection: (task: Task<Void, Never>, interactive: Bool)?
     private var generation = UUID()
     private var syncCache: SyncCache?
+    private let openSyncCache: @Sendable () async throws -> SyncCache
     private var syncSession: SyncSession?
     private var cacheCleanup: Task<Void, Error>?
     private var needsCacheCleanup = false
@@ -26,8 +27,10 @@ final class AppSession {
 
     init(settings: ConnectionSettings = ConnectionSettings(), transport: HTTPTransport = HTTPTransport(),
          notificationStore: any PushReceiptStore = KeychainPushReceiptStore(),
-         previewKeys: any NotificationPreviewKeyStorage = NotificationPreviewKeyStore(), syncCache: SyncCache? = nil) {
+         previewKeys: any NotificationPreviewKeyStorage = NotificationPreviewKeyStore(), syncCache: SyncCache? = nil,
+         openSyncCache: @escaping @Sendable () async throws -> SyncCache = { try await SyncCache.open(inMemory: AppSession.isUITesting) }) {
         self.syncCache = syncCache
+        self.openSyncCache = openSyncCache
         authentication = Authentication(settings: settings, transport: transport)
         api = APIClient(settings: settings, auth: authentication, transport: transport)
         notifications = NotificationController(transport: transport, receiptStore: notificationStore, previewKeys: previewKeys)
@@ -114,7 +117,7 @@ final class AppSession {
             try Task.checkCancellation()
             guard generation == epoch else { return }
             cacheCleanup = nil
-            if syncCache == nil { syncCache = try await SyncCache.open(inMemory: Self.isUITesting) }
+            if syncCache == nil { syncCache = try await openSyncCache() }
             guard let syncCache else { throw ZooError.invalidResponse }
             if needsCacheCleanup {
                 try await syncCache.forget(connection: SyncCache.connectionKey(api.settings))
@@ -232,7 +235,7 @@ final class AppSession {
                     if workspace != nil { logout() }
                     else if !Self.isUITesting { SiriVocabulary.update(nil) }
                     epoch = generation
-                    if syncCache == nil { syncCache = try await SyncCache.open(inMemory: Self.isUITesting) }
+                    if syncCache == nil { syncCache = try await openSyncCache() }
                     guard generation == epoch, !connecting else { return }
                     let previous = cacheCleanup
                     let cleanup = Task { [self] in

@@ -5,4 +5,4 @@ struct SyncLease: Sendable {
     let generation: UUID
 }
 
-enum SyncInvalidation: Error { case notifications }
+enum SyncInvalidation: Error { case resources }

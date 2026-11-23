@@ -82,7 +82,7 @@ struct SyncCacheTests {
         await #expect(throws: CancellationError.self) { try await cache.load("messages", lease: other) }
     }
 
-    @Test("通知削除の保存が失敗しても再起動後に隠し、新しい通知を保存した後はオフラインで復元する")
+    @Test("一覧削除の保存が失敗しても再起動後に隠し、新しい一覧の保存後はオフラインで復元する")
     func revocationSurvivesFailedSaveAndRestart() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -93,7 +93,8 @@ struct SyncCacheTests {
             if fails.withLock({ $0 }) { throw CocoaError(.fileWriteOutOfSpace) }
         })
         let lease = try await cache.activate(connection: "connection", user: syncUser)
-        let resources = ["shape:api/shapes/notifications", "snapshot:api/shapes/notifications"]
+        let resources = ["shape:api/shapes/notifications", "snapshot:api/shapes/notifications",
+                         "shape:api/shapes/channels", "snapshot:api/shapes/channels", "workspace:channels"]
         for resource in resources { try await cache.store(Data("失効前の通知".utf8), resource: resource, lease: lease) }
         try await cache.store(Data("別の情報".utf8), resource: "other", lease: lease)
         fails.withLock { $0 = true }
@@ -432,8 +433,8 @@ struct PersistentSyncIntegrationTests {
         let sync = try await session(harness)
         let tasks = (0..<20).map { id in Task { try await sync.revokeChannel("channel-\(id)") } }
         for task in tasks { try await task.value }
-        let version = try #require(sync.notificationVersion(for: "api/shapes/notifications"))
-        try await sync.store([String](), key: "snapshot:api/shapes/notifications", notificationVersion: version)
+        let version = try #require(sync.revocationVersion(for: "api/shapes/notifications"))
+        try await sync.store([String](), key: "snapshot:api/shapes/notifications", revocationVersion: version)
         #expect(try await sync.load("snapshot:api/shapes/notifications", as: [String].self) == [])
     }
 
@@ -590,6 +591,66 @@ struct PersistentSyncIntegrationTests {
         #expect(try await sync.load("messages", as: String.self) == "復旧後")
     }
 
+    @Test("権限失効前に開始した一覧で起動用キャッシュを戻さず、新しい一覧なら再開できる")
+    func rejectsLateWorkspaceDirectory() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let sync = try await session(harness)
+        let client = NativeChatClient(api: harness.api, sync: sync)
+        let channel = Channel(id: syncChannel, channel_name: "非公開の会話", is_private: true, is_dm: false)
+        try await sync.store([channel], key: "workspace:channels")
+        try await sync.store([syncUser], key: "workspace:people")
+        #expect(try await client.cachedWorkspace()?.channels == [channel])
+        let oldVersion = sync.revocationVersion(for: "workspace:channels")
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish() }
+        let row = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(channel))
+        harness.stub { request in
+            if request.url?.path == "/api/channels/" + syncChannel { return (403, [:], Data()) }
+            #expect(request.url?.path == "/api/shapes/channels")
+            started.continuation.yield(())
+            for await _ in release.stream { break }
+            let events: [JSONValue] = [.object(["key": .string("channel"), "headers": .object(["operation": .string("insert")]), "value": row])]
+            return (200, ["electric-handle": "h", "electric-offset": "1_0", "electric-up-to-date": "true"], try JSONEncoder().encode(events))
+        }
+        let pending = Task {
+            defer { started.continuation.finish() }
+            return try await client.channels()
+        }
+        defer { pending.cancel() }
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        await #expect(throws: ZooError.self) { _ = try await client.channel(id: syncChannel) }
+        #expect(try await client.cachedWorkspace() == nil)
+        release.continuation.finish()
+        await #expect(throws: SyncInvalidation.self) { _ = try await pending.value }
+        await #expect(throws: SyncInvalidation.self) {
+            try await sync.storeRecovery([channel], key: "workspace:channels", revocationVersion: oldVersion)
+        }
+        await #expect(throws: SyncInvalidation.self) {
+            try await sync.cache.store(JSONEncoder().encode([channel]), resource: "workspace:channels", revocationVersion: oldVersion, lease: sync.lease)
+        }
+        #expect(try await client.cachedWorkspace() == nil)
+        #expect(try await sync.load("snapshot:api/shapes/channels", as: ShapeState.self) == nil)
+        harness.stub { _ in (200, ["electric-handle": "fresh", "electric-offset": "2_0", "electric-up-to-date": "true"], Data("[]".utf8)) }
+        #expect(try await client.channels().isEmpty)
+        #expect(try await client.cachedWorkspace()?.channels == [])
+    }
+
+    @Test("削除された会話の失効後も今回取得した許可済みの一覧を保存する")
+    func storesDirectoryAfterOwnRevocations() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let sync = try await session(harness)
+        try await sync.store([Channel(id: syncChannel, channel_name: "削除前", is_private: true, is_dm: false)], key: "workspace:channels")
+        try await sync.store([syncUser], key: "workspace:people")
+        harness.stub { _ in (200, ["electric-handle": "fresh", "electric-offset": "2_0", "electric-up-to-date": "true"], Data("[]".utf8)) }
+        let client = NativeChatClient(api: harness.api, sync: sync)
+        #expect(try await client.channels().isEmpty)
+        #expect(sync.isRevoked(syncChannel))
+        #expect(try await client.cachedWorkspace()?.channels == [])
+    }
+
     @Test("会話取得中の失効やログアウト後に古い成功応答を返さない", arguments: [false, true])
     func rejectsLateChannel(logout: Bool) async throws {
         let harness = try ChatHarness()
@@ -631,7 +692,7 @@ struct PersistentSyncIntegrationTests {
         sync.onChannelRevoked = { [weak inbox] id in inbox?.revokeChannel(id) }
         await inbox.refresh()
         #expect(inbox.entries.count == 1)
-        let oldVersion = sync.notificationVersion(for: "api/shapes/notifications")
+        let oldVersion = sync.revocationVersion(for: "api/shapes/notifications")
         harness.stub { _ in
             started.continuation.yield(())
             for await _ in release.stream { break }
@@ -651,7 +712,7 @@ struct PersistentSyncIntegrationTests {
         for key in ["shape:api/shapes/notifications", "snapshot:api/shapes/notifications"] {
             #expect(try await sync.load(key, as: ShapeState.self) == nil)
             await #expect(throws: SyncInvalidation.self) {
-                try await sync.cache.store(Data(), resource: key, notificationVersion: oldVersion, lease: sync.lease)
+                try await sync.cache.store(Data(), resource: key, revocationVersion: oldVersion, lease: sync.lease)
             }
         }
     }
