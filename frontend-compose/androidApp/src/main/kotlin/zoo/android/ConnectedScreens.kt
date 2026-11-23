@@ -174,7 +174,12 @@ internal fun ConnectedScreens(
         searchRoute?.let(search::followRoute)?.let { state.searchText = it }
     }
     LaunchedEffect(searching) {
-        if (searching) search.refreshIfStale()
+        if (!searching) return@LaunchedEffect
+        // Back from an opened result, the route still names the shown words, so `followRoute` changes nothing.
+        // Drop words typed but not yet searched when leaving; otherwise they would replace the kept list and
+        // its position. In-screen `replace` keeps `searching`, so the words being edited stay.
+        searchRoute?.let { state.searchText = it.query }
+        search.refreshIfStale()
     }
     LaunchedEffect(searching, state.searchText) {
         // Wait for typing to pause: each request may scan 12 months.
