@@ -57,6 +57,7 @@ struct MessageList: View {
     @State private var readStateLoaded = false
     @State private var readStateError = false
     @State private var readRetry = 0
+    @State private var appliedReadRequest: ReadRequest?
     @State private var renderCache = MessageRenderCache()
     @State private var scrollPosition = ScrollPosition(idType: String.self)
     @State private var contentFits = false
@@ -346,15 +347,24 @@ struct MessageList: View {
                     .accessibilityIdentifier("read-save-error")
             }
         }
-        .task(id: readRetry) {
-            guard parentID == nil, !readStateLoaded else { return }
+        .task(id: ReadRequest(retry: readRetry, generation: store.accessGeneration, blocked: store.blocked)) {
+            guard parentID == nil else { return }
+            let epoch = store.accessGeneration
+            let request = ReadRequest(retry: readRetry, generation: epoch, blocked: store.blocked)
+            guard appliedReadRequest != request || !readStateLoaded else { return }
+            appliedReadRequest = request
+            initialReadState = nil
+            readStateLoaded = false
+            positionedInitialMessages = false
             readStateError = false
+            guard !store.blocked else { return }
             do {
                 let state = try await workspace.client.readState(channelID: store.channel.id)
                 try Task.checkCancellation()
+                guard epoch == store.accessGeneration else { return }
                 initialReadState = state
             } catch {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, epoch == store.accessGeneration else { return }
                 readStateError = true
                 if case ZooError.expiredSession = error { workspace.report(error) }
             }
@@ -373,6 +383,12 @@ struct MessageList: View {
         .onChange(of: selectedActionsAvailable) { _, available in
             if !available, selectedMessage != nil { workspace.presentedSheet = nil }
         }
+    }
+
+    private struct ReadRequest: Equatable {
+        let retry: Int
+        let generation: UUID
+        let blocked: Bool
     }
 
     private func timelineDivider(_ title: String, color: Color) -> some View {

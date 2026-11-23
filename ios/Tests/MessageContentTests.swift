@@ -184,9 +184,9 @@ struct MessageEmojiImageTests {
         let workspace = WorkspaceStore(client: client, user: client.currentUser, recentEmojiDefaults: nil)
         await workspace.loadEmojis()
         let message = Message(id: "m", user_id: "u", channel_id: "c", content: ":hana: :remote:", created_at: "",
-                              display_data: MessageDisplayData(emojis: ["sakura": DisplayEmoji(url: "/stamp.png"),
+                              display_data: MessageDisplayData(emojis: ["sakura": DisplayEmoji(url: "/message-stamp.png"),
                                                                         "remote": DisplayEmoji(url: "https://other.invalid/stamp.png")]))
-        #expect(workspace.emojiImageURL(for: ":hana:", message: message)?.absoluteString == "https://ui.test.invalid/stamp.png")
+        #expect(workspace.emojiImageURL(for: ":hana:", message: message)?.absoluteString == "https://ui.test.invalid/message-stamp.png")
         #expect(workspace.emojiImageURL(for: ":remote:", message: message)?.absoluteString == "https://other.invalid/stamp.png")
         #expect(workspace.emojiImageURL(for: ":missing:", message: message) == nil)
     }

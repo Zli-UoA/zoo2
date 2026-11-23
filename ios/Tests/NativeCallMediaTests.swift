@@ -166,6 +166,8 @@ struct NativeCallMediaTests {
         var restartSenders: Set<Bool> = []
         var heldSignals: [(Bool, CallSignal)] = []
         var releasedCollision = false
+        var dropsFirstRestartAnswer = false
+        var droppedRestartAnswer = false
 
         init(restart: Bool, simultaneous: Bool = false) {
             first = NativeCallMedia(connectionTimeout: .seconds(restart ? 2 : 10), restartTimeout: .seconds(3))
@@ -226,6 +228,10 @@ struct NativeCallMediaTests {
         }
 
         private func deliver(_ fromFirst: Bool, _ signal: CallSignal) async throws {
+            if dropsFirstRestartAnswer, offers == 2, !fromFirst {
+                if signal.type == "answer" { droppedRestartAnswer = true; return }
+                if signal.type == "candidate" { return }
+            }
             if signal.type == "candidate", !releaseCandidates { return }
             try await (fromFirst ? second : first).handle(.signal(fromFirst ? firstID : secondID, signal))
         }
@@ -277,6 +283,19 @@ struct NativeCallMediaTests {
             .first { $0.hasPrefix("a=ice-ufrag:") }?.dropFirst("a=ice-ufrag:".count).trimmingCharacters(in: .whitespacesAndNewlines))
         let candidate = try #require(sent.firstIndex { $0.type == "candidate" && $0.candidate?.candidate.contains("ufrag " + ufrag) == true })
         #expect(restart < candidate)
+    }
+
+    @Test("最初のICE再起動の応答を失っても同じofferの再送で接続できる")
+    func retriesUnansweredRestart() async throws {
+        let pair = Pair(restart: true)
+        pair.dropsFirstRestartAnswer = true
+        defer { pair.close() }
+        try await pair.start()
+        try await pair.waitForConnection()
+        try #require(pair.offerSDPs.count >= 3)
+        #expect(pair.droppedRestartAnswer)
+        #expect(pair.offerSDPs[1] == pair.offerSDPs[2])
+        #expect(!pair.failure)
     }
 
     @Test("両端が同時にICE再接続してもoffer衝突から復帰する")

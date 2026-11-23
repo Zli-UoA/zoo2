@@ -96,9 +96,10 @@ final class CallStore {
         diagnostics = result
     }
 
-    func retry() {
-        guard let retryChannel, channel == nil else { return }
-        start(channel: retryChannel, initialMuted: retryMuted, initialSpeaker: retrySpeaker)
+    @discardableResult
+    func retry() -> Task<Void, Never>? {
+        guard let retryChannel, channel == nil else { return nil }
+        return start(channel: retryChannel, initialMuted: retryMuted, initialSpeaker: retrySpeaker)
     }
 
     func hasActiveCall(in channelID: String) -> Bool {

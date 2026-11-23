@@ -34,6 +34,7 @@ struct NativeChatClient: ChatClient {
         for channel in previous.values where channel.deleted_at == nil {
             let current = available[channel.id]
             if current == nil || (channel.encrypted != true && current?.encrypted == true) {
+                try sync.checkRevocationVersion(version)
                 version = try await sync.revokeChannel(channel.id, retaining: current)
                 try sync.checkRevocationVersion(version)
                 try sync.checkKnownChannelsRevision(knownRevision)

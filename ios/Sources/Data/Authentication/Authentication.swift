@@ -114,6 +114,7 @@ final class Authentication {
     private var tokens: TokenSet?
     private var loadedTokens = false
     private var refreshTask: Task<TokenSet, Error>?
+    private(set) var refreshWaiterCount = 0
     private var pendingTokens: TokenSet?
     private let saveToken: (TokenSet, String) throws -> Void
     private var generation = UUID()
@@ -329,6 +330,8 @@ final class Authentication {
             }
             refreshTask = task
         }
+        refreshWaiterCount += 1
+        defer { refreshWaiterCount -= 1 }
         do {
             let fresh = try await task.value
             try Task.checkCancellation()

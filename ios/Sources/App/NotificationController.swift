@@ -8,7 +8,8 @@ final class NotificationController {
     private(set) var status = "通知は無効です"
     private(set) var enabled = false
     private(set) var registrationFailed = false
-    private(set) var sendingTest = false
+    private var sendingTestID: UUID?
+    var sendingTest: Bool { sendingTestID != nil }
     var testStatus: String? { testAttempt?.received == true ? "この端末でテスト通知を受信しました。" : testFeedback }
     var destination: PushDestination?
     private let registration: PushRegistration
@@ -45,6 +46,7 @@ final class NotificationController {
     }
 
     func connect(api: APIClient, userID: String) {
+        sendingTestID = nil
         generation = UUID()
         registeredReceipt = nil
         testFeedback = nil
@@ -89,6 +91,7 @@ final class NotificationController {
         } catch { if epoch == generation { status = error.localizedDescription } }
     }
     func disable() {
+        sendingTestID = nil
         generation = UUID()
         registeredReceipt = nil
         saveTestAttempt(nil)
@@ -173,10 +176,10 @@ final class NotificationController {
         guard canSendTest, !sendingTest, let api, let account, let registeredReceipt else { return }
         let epoch = generation
         let id = UUID()
-        sendingTest = true
+        sendingTestID = id
         saveTestAttempt(TestAttempt(id: id))
         testFeedback = nil
-        defer { sendingTest = false }
+        defer { if sendingTestID == id { sendingTestID = nil } }
         do {
             try await LivePushBackend(api: api, transport: transport).sendTest(to: registeredReceipt, account: account, id: id)
             if epoch == generation { testFeedback = "テスト通知を送信しました。" }
@@ -191,6 +194,7 @@ final class NotificationController {
         }
     }
     func logout() {
+        sendingTestID = nil
         generation = UUID()
         registeredReceipt = nil
         saveTestAttempt(nil)

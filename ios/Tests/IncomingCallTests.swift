@@ -695,20 +695,26 @@ struct IncomingCallTests {
         let requests = AsyncStream<CheckedContinuation<Channel, Never>>.makeStream()
         defer { requests.continuation.finish() }
         let incoming = payload
+        var heldResponse: CheckedContinuation<Channel, Never>?
+        let fallback = Channel(id: try #require(incoming["channel_id"]), channel_name: "着信先", is_private: false, is_dm: false)
+        func releaseResponse() {
+            let pending = heldResponse; heldResponse = nil
+            pending?.resume(returning: fallback)
+        }
+        defer { releaseResponse() }
         let context = try AnswerContext(payload: incoming, loadChannel: { _, id in
             #expect(id == incoming["channel_id"])
             // 取消を無視する取得処理から成功値が戻っても、応答準備を再開しないことを調べる。
-            return await withCheckedContinuation { requests.continuation.yield($0) }
+            return await withCheckedContinuation { heldResponse = $0; requests.continuation.yield($0) }
         })
         defer { context.close() }
-        let channel = Channel(id: context.call.channelID, channel_name: "着信先", is_private: false, is_dm: false)
         await context.receive()
         let action = try await context.requestAnswer()
         context.controller.provider(context.native, perform: action)
         let preparation = try #require(context.controller.answering)
         let expire = try #require(context.preparation.expiration)
         var pending = requests.stream.makeAsyncIterator()
-        let response = try #require(await pending.next())
+        _ = try #require(await pending.next())
         switch reason {
         case "期限切れ": expire()
         case "取消": context.controller.provider(context.native, perform: CXEndCallAction(call: context.call.id))
@@ -717,7 +723,7 @@ struct IncomingCallTests {
         #expect(action.results == [false] && !context.controller.isManagingCall)
         #expect(context.preparation.backgroundEnds == 1 && !context.client.observed)
         #expect(preparation.isCancelled)
-        response.resume(returning: channel)
+        releaseResponse()
         await preparation.value
         #expect(!context.controller.isManagingCall && context.calls.channel == nil && !context.media.started)
         #expect(!context.client.observed && !context.client.accepted)
@@ -1114,13 +1120,16 @@ struct IncomingCallTests {
             user: Person(id: call.userID, user_name: "user", display_name: "利用者"), recentEmojiDefaults: nil)
         let provider = FakeCallReporting()
         let controller = SystemCallController(provider: provider, configureAudio: {}, updateAudio: { _ in })
+        defer { provider.onEnd = nil; controller.disconnect(); workspace.shutdown() }
         controller.setForeground(false)
         controller.connect(workspace)
         #expect(counts.withLock { $0["shape"] } == 0)
-        await withCheckedContinuation { continuation in
-            provider.onEnd = { provider.onEnd = nil; continuation.resume() }
-            controller.receive(call) {}
-        }
+        var ended = false
+        provider.onEnd = { ended = true }
+        controller.receive(call) {}
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !ended, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
+        try #require(ended, "取消済み着信の終了が報告されませんでした。")
         #expect(counts.withLock { $0["shape"] } == 1)
         #expect(counts.withLock { $0["pending"] } == 1)
         #expect(!controller.isManagingCall && provider.ended == [call.id])

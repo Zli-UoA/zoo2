@@ -52,6 +52,7 @@ struct ChannelReadTests {
             if request.httpMethod == "GET" {
                 #expect(request.url?.path == "/api/shapes/messages")
                 let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+                try #require(Set(query.map(\.name)).count == query.count, "クエリ項目名が重複しています。")
                 let values = Dictionary(uniqueKeysWithValues: query.map { ($0.name, $0.value ?? "") })
                 #expect(values["channel_id"] == readChannel.id)
                 #expect(values["log"] == "changes_only")

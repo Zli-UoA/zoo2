@@ -402,8 +402,10 @@ final class PreviewChatClient: ChatClient {
         }
         while !Task.isCancelled {
             let manualIncoming = ProcessInfo.processInfo.arguments.contains("--uitesting-long-history")
-            if let incomingReply, manualIncoming ? PreviewTestControl.shared.incomingReleased : ContinuousClock.now >= incomingReply.at {
+            var delivered = false
+            if let incomingReply, incomingReply.channelID == channelID, manualIncoming ? PreviewTestControl.shared.incomingReleased : ContinuousClock.now >= incomingReply.at {
                 self.incomingReply = nil
+                delivered = true
                 let replyContent = ProcessInfo.processInfo.arguments.contains("--uitesting-short-thread")
                     ? "別の端末からの返信\n追加の確認事項です。\n返信が増えても\n最新の内容を\n入力欄の上に\n表示します。" : "別の端末からの返信"
                 allMessages.append(Message(id: UUID().uuidString.lowercased(), user_id: colleague.id, channel_id: incomingReply.channelID,
@@ -414,7 +416,7 @@ final class PreviewChatClient: ChatClient {
                                            display_data: MessageDisplayData(reactions: [])))
             }
             receive(allMessages.filter { $0.channel_id == channelID })
-            if manualIncoming, PreviewTestControl.shared.incomingReleased, incomingReply == nil {
+            if manualIncoming, delivered {
                 PreviewTestControl.shared.incomingDelivered = true
             }
             try await Task.sleep(for: .milliseconds(200))

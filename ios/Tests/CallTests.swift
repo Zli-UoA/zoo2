@@ -14,7 +14,7 @@ func waitForCallDelivery(_ client: FakeCallClient, start: () -> Task<Void, Never
     }
     defer { completion.cancel() }
     var iterator = delivered.stream.makeAsyncIterator()
-    let received = await iterator.next()
+    let received: Void? = await iterator.next()
     try Task.checkCancellation()
     try #require(received != nil, "ルームを受信する前に接続処理が終了しました。")
 }
@@ -25,6 +25,8 @@ struct CallProtocolTests {
     func events() throws {
         var parser = CallEventParser()
         #expect(try parser.feed(": keepalive") == nil)
+        #expect(try parser.feed("") == nil)
+        _ = try parser.feed("event: room_state")
         #expect(try parser.feed("") == nil)
         _ = try parser.feed("event: participant_left")
         _ = try parser.feed("data: {\"session_id\":\"session\"}")
@@ -70,6 +72,7 @@ final class FakeCallClient: CallClient {
     var beforeCancelResult: (@MainActor () async -> Void)?
     var invitationRows: [CallInvitation] = []
     var invitationsDelivered: (@MainActor () -> Void)?
+    private(set) var observingInvitations = false
     let invitationUpdates = AsyncStream<[CallInvitation]>.makeStream()
 
     func activeCalls() async throws -> [ActiveCallSummary] {
@@ -96,6 +99,8 @@ final class FakeCallClient: CallClient {
         if let failure { throw failure }
     }
     func observeCallInvitations(receive: @MainActor ([CallInvitation]) -> Void) async throws {
+        observingInvitations = true
+        defer { observingInvitations = false }
         receive(invitationRows)
         invitationsDelivered?()
         for await rows in invitationUpdates.stream {
@@ -298,7 +303,7 @@ struct CallStoreTests {
         await store.start(channel: channel)?.value
         #expect(client.sessions.count == 1 && store.retryChannel?.id == channel.id)
         client.failStream = false
-        await withCheckedContinuation { done in client.delivered = { done.resume() }; store.retry() }
+        try await waitForCallDelivery(client) { store.retry() }
         #expect(client.sessions.count == 2 && Set(client.sessions).count == 2)
         #expect(store.ready && store.error == nil && store.retryChannel == nil)
         #expect(store.connectionStatus == "参加者を待機中")
@@ -316,7 +321,7 @@ struct CallStoreTests {
         await store.start(channel: channel)?.value
         #expect(store.retryChannel != nil)
         client.failStream = false
-        await withCheckedContinuation { done in client.delivered = { done.resume() }; store.retry() }
+        try await waitForCallDelivery(client) { store.retry() }
         #expect(store.ready && store.muted && media.mutedWhenHandlingRoom == true)
         #expect(client.commandBodies.contains { $0.0 == "state" && $0.1["is_muted"] == .bool(true) && $0.1["session_id"] == .string(client.sessions.last!) })
     }
@@ -436,22 +441,28 @@ struct CallStoreTests {
         return store
     }
 
-    private func observeInvitations(_ client: FakeCallClient, store: CallStore) async -> Task<Void, Never> {
-        var task: Task<Void, Never>!
-        await withCheckedContinuation { continuation in
-            client.invitationsDelivered = { continuation.resume() }
-            task = Task { await store.runInvitations() }
-        }
-        client.invitationsDelivered = nil
-        return task
+    private func observeInvitations(_ client: FakeCallClient, store: CallStore) async throws -> Task<Void, Never> {
+        var delivered = false, ended = false
+        client.invitationsDelivered = { delivered = true }
+        defer { client.invitationsDelivered = nil }
+        let task = Task { defer { ended = true }; await store.runInvitations() }
+        do {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+            while !delivered, !ended, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
+            try #require(delivered, "購読が初期の招待を配信しませんでした。")
+            return task
+        } catch { task.cancel(); throw error }
     }
 
-    private func deliverInvitations(_ rows: [CallInvitation], client: FakeCallClient) async {
-        await withCheckedContinuation { continuation in
-            client.invitationsDelivered = { continuation.resume() }
-            client.invitationUpdates.continuation.yield(rows)
-        }
-        client.invitationsDelivered = nil
+    private func deliverInvitations(_ rows: [CallInvitation], client: FakeCallClient) async throws {
+        try #require(client.observingInvitations, "招待の購読が終了しています。")
+        var delivered = false
+        client.invitationsDelivered = { delivered = true }
+        defer { client.invitationsDelivered = nil }
+        client.invitationUpdates.continuation.yield(rows)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !delivered, client.observingInvitations, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
+        try #require(delivered, "招待の更新が配信されませんでした。")
     }
 
     @Test("会話の失効で招待と通話表示を消し、遅い更新も拒否し、別会話の通話は維持する")
@@ -468,7 +479,7 @@ struct CallStoreTests {
         client.activeCallRows = [ActiveCallSummary(channel_id: channel.id, participant_count: 1),
                                  ActiveCallSummary(channel_id: other.id, participant_count: 1)]
         await store.refreshActiveCalls()
-        let task = await observeInvitations(client, store: store)
+        let task = try await observeInvitations(client, store: store)
         defer { task.cancel(); client.invitationUpdates.continuation.finish() }
         try #require(store.invitations.count == 2)
         var notified: [String] = []
@@ -478,7 +489,7 @@ struct CallStoreTests {
         #expect(!store.activeChannelIDs.contains(channel.id))
         #expect(store.ready && store.channel?.id == other.id)
         #expect(store.error == nil)
-        await deliverInvitations(rows, client: client)
+        try await deliverInvitations(rows, client: client)
         await store.refreshActiveCalls()
         #expect(store.invitations.map(\.channel_id) == [other.id])
         #expect(!store.activeChannelIDs.contains(channel.id))
@@ -488,7 +499,7 @@ struct CallStoreTests {
         #expect(store.start(channel: channel) == nil)
         store.authorizeChannel(channel.id)
         #expect(store.invitations.map(\.channel_id) == [channel.id] && notified == [channel.id])
-        await deliverInvitations(rows, client: client)
+        try await deliverInvitations(rows, client: client)
         #expect(store.invitations.map(\.channel_id) == [channel.id])
     }
 
@@ -506,7 +517,7 @@ struct CallStoreTests {
             CallInvitation(id: "outgoing", channel_id: channel.id, inviter_id: "me", invitee_id: "other",
                            status: "pending", expires_at: Date.now.addingTimeInterval(30).ISO8601Format())
         ]
-        let task = await observeInvitations(client, store: store)
+        let task = try await observeInvitations(client, store: store)
         defer { task.cancel(); client.invitationUpdates.continuation.finish() }
         #expect(store.invitations.isEmpty && store.outgoingInvitations.isEmpty)
         store.authorizeChannel(channel.id)
@@ -528,7 +539,7 @@ struct CallStoreTests {
         client.invitationRows = [invitation("pending", invitee: "pending"), invitation("joined", invitee: "joined"),
                                  invitation("expired", invitee: "expired", expiry: now.addingTimeInterval(-1)),
                                  invitation("elsewhere", invitee: "elsewhere", channelID: "other")]
-        let task = await observeInvitations(client, store: store)
+        let task = try await observeInvitations(client, store: store)
         defer { task.cancel() }
         var members = ["me", "joined", "pending", "expired", "elsewhere"].map { Person(id: $0, user_name: $0, display_name: $0) }
         members += [Person(id: "bot", user_name: "bot", display_name: "bot", is_bot: true),
@@ -572,19 +583,21 @@ struct CallStoreTests {
         defer { client.beforeInviteResult = nil }
         let store = try await connected(client)
         defer { store.shutdown() }
-        let task = await observeInvitations(client, store: store)
+        let task = try await observeInvitations(client, store: store)
         defer { task.cancel() }
         let invitation = CallInvitation(id: "invite", channel_id: channel.id, inviter_id: "me", invitee_id: "other",
                                         status: "pending", expires_at: Date.now.addingTimeInterval(30).ISO8601Format())
         client.inviteResult = [CreatedCallInvitation(id: "invite", invitee_id: "other")]
         client.beforeInviteResult = {
-            await deliverInvitations([invitation], client: client)
-            if endsBeforeResponse { await deliverInvitations([], client: client) }
+            do {
+                try await deliverInvitations([invitation], client: client)
+                if endsBeforeResponse { try await deliverInvitations([], client: client) }
+            } catch { Issue.record(error) }
         }
         let members = [Person(id: "other", user_name: "other", display_name: "相手")]
         #expect(await store.invite(userIDs: ["other"], members: members, channelID: channel.id))
         #expect(store.pendingOutgoing().count == (endsBeforeResponse ? 0 : 1))
-        await deliverInvitations([], client: client)
+        try await deliverInvitations([], client: client)
         #expect(store.pendingOutgoing().isEmpty)
     }
 
@@ -594,7 +607,7 @@ struct CallStoreTests {
         defer { client.beforeInviteResult = nil }
         let store = try await connected(client)
         defer { store.shutdown() }
-        let task = await observeInvitations(client, store: store)
+        let task = try await observeInvitations(client, store: store)
         defer { task.cancel() }
         let invitation = CallInvitation(id: "invite", channel_id: channel.id, inviter_id: "me", invitee_id: "other",
                                         status: "pending", expires_at: Date.now.addingTimeInterval(30).ISO8601Format())
@@ -607,9 +620,9 @@ struct CallStoreTests {
         #expect(!(await store.invite(userIDs: ["other"], members: members, channelID: channel.id)))
         #expect(client.inviteRequests.count == 1 && store.pendingOutgoing().count == 1)
         #expect(store.pendingOutgoing(at: .now.addingTimeInterval(31)).isEmpty)
-        await deliverInvitations([invitation], client: client)
+        try await deliverInvitations([invitation], client: client)
         #expect(store.pendingOutgoing().count == 1)
-        await deliverInvitations([], client: client)
+        try await deliverInvitations([], client: client)
         #expect(store.pendingOutgoing().isEmpty)
     }
 
@@ -618,17 +631,17 @@ struct CallStoreTests {
         let client = FakeCallClient()
         let store = try await connected(client)
         defer { store.shutdown() }
-        let task = await observeInvitations(client, store: store)
+        let task = try await observeInvitations(client, store: store)
         defer { task.cancel() }
         let members = [Person(id: "other", user_name: "other", display_name: "相手")]
         client.inviteResult = [CreatedCallInvitation(id: "invite", invitee_id: "other")]
         #expect(await store.invite(userIDs: ["other"], members: members, channelID: channel.id))
         let invitation = try #require(store.pendingOutgoing().first)
         await store.cancelInvitation(invitation)
-        await deliverInvitations([invitation], client: client)
+        try await deliverInvitations([invitation], client: client)
         #expect(store.pendingOutgoing().isEmpty && store.invitationSlots() == 6)
         #expect(store.invitationCandidates(members: members).map(\.id) == ["other"])
-        await deliverInvitations([], client: client)
+        try await deliverInvitations([], client: client)
         client.inviteResult = [CreatedCallInvitation(id: "new-invite", invitee_id: "other")]
         #expect(await store.invite(userIDs: ["other"], members: members, channelID: channel.id))
         #expect(store.pendingOutgoing().map(\.id) == ["new-invite"])
@@ -653,18 +666,18 @@ struct CallStoreTests {
         let client = FakeCallClient()
         let store = try await connected(client)
         defer { client.beforeCancelResult = nil; store.shutdown() }
-        let observing = await observeInvitations(client, store: store)
+        let observing = try await observeInvitations(client, store: store)
         defer { observing.cancel() }
         let invitation = CallInvitation(id: "invite", channel_id: channel.id, inviter_id: "me", invitee_id: "other",
                                         status: "pending", expires_at: Date.now.addingTimeInterval(30).ISO8601Format())
-        await deliverInvitations([invitation], client: client)
+        try await deliverInvitations([invitation], client: client)
         client.beforeCancelResult = {
             store.finish()
             do { try await waitForCallDelivery(client) { store.start(channel: channel) } }
             catch { Issue.record(error) }
         }
         await store.cancelInvitation(invitation)
-        await deliverInvitations([invitation], client: client)
+        try await deliverInvitations([invitation], client: client)
         #expect(store.ready && store.pendingOutgoing().isEmpty)
         #expect(client.cancelledInvitations == [invitation.id])
     }
@@ -710,7 +723,7 @@ struct CallStoreTests {
         let invitation = CallInvitation(id: "invite", channel_id: channel.id, inviter_id: "me", invitee_id: "other",
                                         status: "pending", expires_at: Date.now.addingTimeInterval(30).ISO8601Format())
         client.invitationRows = [invitation]
-        let task = await observeInvitations(client, store: store)
+        let task = try await observeInvitations(client, store: store)
         defer { task.cancel() }
         client.inviteFailure = URLError(.notConnectedToInternet)
         await store.cancelInvitation(invitation)
@@ -739,10 +752,13 @@ struct CallStoreTests {
         #expect(media.participantIDs.isEmpty && store.participants.isEmpty)
         store.toggleMute()
         #expect(media.muted)
-        await withCheckedContinuation { continuation in
-            client.commandObserved = { if $0 == "leave" { continuation.resume() } }
-            store.finish()
-        }
+        defer { client.commandObserved = nil; store.shutdown() }
+        var left = false
+        client.commandObserved = { if $0 == "leave" { left = true } }
+        store.finish()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !left, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
+        try #require(left, "退出要求が期限内に送信されませんでした。")
         #expect(media.closed)
         #expect(store.channel == nil)
         #expect(!store.ready)
@@ -848,9 +864,11 @@ struct CallStoreTests {
         await store.start(channel: channel)?.value
         #expect(store.error != nil && media.closed)
         #expect(store.channel == nil)
-        store.shutdown()
-        store.start(channel: channel)
-        #expect(store.channel == nil)
+        defer { store.shutdown() }
+        client.failStream = false
+        try await waitForCallDelivery(client) { store.start(channel: channel) }
+        #expect(store.ready && store.channel?.id == channel.id)
+        #expect(client.sessions.count == 2)
     }
 }
 
@@ -900,8 +918,8 @@ struct NativeCallAPITests {
         try await harness.client.cancelCallInvitation(id: "22222222-2222-4222-8222-222222222222")
     }
 
-    @Test("SSEの改行境界を保ち、認証付きで初期状態と退出を受け取る")
-    func stream() async throws {
+    @Test("SSEの各改行形式で認証付きの初期状態と退出を受け取る", arguments: ["\n", "\r\n", "\r"])
+    func stream(newline: String) async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
         harness.stub { request in
@@ -909,7 +927,8 @@ struct NativeCallAPITests {
             #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-access")
             #expect(request.url?.query?.contains("session_id=") == true)
             let events = "event: room_state\r\ndata: {\"participants\":[],\"max_participants\":6,\"ice_servers\":[]}\r\n\r\n: keepalive\n\nevent: participant_left\ndata: {\"session_id\":\"remote\"}\n\n"
-            return (200, ["Content-Type": "text/event-stream"], Data(events.utf8))
+            let normalized = events.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\n", with: newline)
+            return (200, ["Content-Type": "text/event-stream"], Data(normalized.utf8))
         }
         var received: [String] = []
         do {

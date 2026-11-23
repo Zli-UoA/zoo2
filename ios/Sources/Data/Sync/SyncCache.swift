@@ -113,6 +113,8 @@ actor SyncCache {
     }
 
     func activate(connection: String, user: Person) throws -> SyncLease {
+        // 取り消された復元が、後続ログインのleaseや保存済みアカウントを変更しない。
+        try Task.checkCancellation()
         let account = connection + ":" + user.id
         let data = try JSONEncoder().encode(user)
         let rows = try modelContext.fetch(FetchDescriptor<CachedSyncAccount>(predicate: #Predicate { $0.connection == connection }))

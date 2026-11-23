@@ -465,9 +465,11 @@ struct DeviceAuthorizationTests {
         session.startLogin()
         #expect(session.notifications.destination == destination)
         session.cancelLogin()
-        session.startLogin()
+        let retry = try #require(session.startLogin())
+        let completion = Task { await retry.value; requested.continuation.finish() }
+        defer { completion.cancel() }
         var iterator = requested.stream.makeAsyncIterator()
-        _ = await iterator.next()
+        try #require(await iterator.next() != nil)
         session.cancelLogin()
         #expect(!session.connecting)
         #expect(session.deviceAuthorization == nil)
@@ -614,10 +616,15 @@ struct DeviceAuthorizationTests {
         defer { resuming.cancel() }
         var iterator = started.stream.makeAsyncIterator()
         try #require(await iterator.next() != nil)
-        session.startLogin()
-        // ログインの別タスクにも実行機会を与え、解除待ちを飛ばす回帰を検出する。
-        try await Task.sleep(for: .milliseconds(50))
-        #expect(session.connecting)
+        let login = try #require(session.startLogin())
+        var finished = false
+        let completion = Task { await login.value; finished = true }
+        defer { completion.cancel() }
+        let waitingDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !session.waitingForCacheCleanup, !finished, ContinuousClock.now < waitingDeadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        try #require(session.waitingForCacheCleanup && !finished)
         #expect(discoveryCount.withLock { $0 } == 0)
         release.continuation.finish()
         await resuming.value

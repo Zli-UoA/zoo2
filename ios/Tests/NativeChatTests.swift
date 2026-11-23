@@ -370,10 +370,12 @@ struct NativeChatTests {
         let store = ConversationStore(channel: channel, client: harness.client, userID: Self.userID)
         var acknowledged = false
         store.onRead = { acknowledged = true }
-        let task = Task { await store.markRead(through: "22222222-2222-4222-8222-222222222222") }
+        let task = Task {
+            defer { started.continuation.finish() }
+            await store.markRead(through: "22222222-2222-4222-8222-222222222222") }
         defer { task.cancel() }
         var iterator = started.stream.makeAsyncIterator()
-        _ = await iterator.next()
+        try #require(await iterator.next() != nil)
         task.cancel()
         release.continuation.yield(())
         await task.value
@@ -398,10 +400,12 @@ struct NativeChatTests {
         store.onRead = { acknowledgements += 1 }
         withObservationTracking { _ = store.readError } onChange: { failed.continuation.yield(()) }
         let messageID = "22222222-2222-4222-8222-222222222222"
-        let task = Task { await store.markRead(through: messageID) }
+        let task = Task {
+            defer { failed.continuation.finish() }
+            await store.markRead(through: messageID) }
         defer { task.cancel() }
         var iterator = failed.stream.makeAsyncIterator()
-        _ = await iterator.next()
+        try #require(await iterator.next() != nil)
         #expect(store.readError != nil)
         task.cancel()
         await task.value
@@ -467,10 +471,12 @@ struct NativeChatTests {
         let workspace = WorkspaceStore(client: harness.client, user: Person(id: Self.userID, user_name: "you", display_name: "あなた"))
         await workspace.refresh()
         #expect(workspace.unread.contains(Self.channelID))
-        let refresh = Task { await workspace.refresh() }
+        let refresh = Task {
+            defer { started.continuation.finish() }
+            await workspace.refresh() }
         defer { refresh.cancel() }
         var iterator = started.stream.makeAsyncIterator()
-        _ = await iterator.next()
+        try #require(await iterator.next() != nil)
         await workspace.conversation(for: channel).markRead(through: "22222222-2222-4222-8222-222222222222")
         #expect(!workspace.unread.contains(Self.channelID))
         release.continuation.yield(())
@@ -507,7 +513,9 @@ struct NativeChatTests {
             else { await store.delete(message) }
         }
         store.drafts["root"] = "最初の送信"
-        let first = Task { await perform() }
+        let first = Task {
+            defer { started.continuation.finish() }
+            await perform() }
         defer { first.cancel() }
         var iterator = started.stream.makeAsyncIterator()
         try #require(await iterator.next() == 1)
@@ -517,7 +525,9 @@ struct NativeChatTests {
         store.update(channel)
         #expect(store.sending.isEmpty && !store.mutationInProgress)
         store.drafts["root"] = "次の送信"
-        let second = Task { await perform() }
+        let second = Task {
+            defer { started.continuation.finish() }
+            await perform() }
         defer { second.cancel() }
         let deadline = ContinuousClock.now.advanced(by: .seconds(2))
         while requests.withLock({ $0 }) < 2, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
@@ -575,8 +585,8 @@ struct NativeChatTests {
         }
     }
 
-    @Test("送信失敗で下書きを保持し、同じ ID で再送する")
-    func retryIsIdempotent() async throws {
+    @Test("送信失敗後にアクセス世代が変わっても同じIDで再送する", arguments: [false, true])
+    func retryIsIdempotent(revoked: Bool) async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
         let ids = Mutex<[String]>([])
@@ -594,6 +604,12 @@ struct NativeChatTests {
         await store.send()
         #expect(store.drafts["root"] == "失敗しても消えない本文")
         #expect(store.sendErrors["root"] != nil)
+        if revoked {
+            var encrypted = channel
+            encrypted.encrypted = true
+            store.update(encrypted)
+            store.update(channel)
+        }
         await store.send()
         #expect(store.drafts["root"] == "")
         #expect(store.messages.count == 1)
@@ -617,9 +633,11 @@ struct NativeChatTests {
         }
         let store = ConversationStore(channel: channel, client: harness.client, userID: Self.userID)
         store.drafts["root"] = "最初の本文"
-        let task = Task { await store.send() }
+        let task = Task {
+            defer { started.continuation.finish() }
+            await store.send() }
         var iterator = started.stream.makeAsyncIterator()
-        _ = await iterator.next()
+        try #require(await iterator.next() != nil)
         store.drafts["root"] = "次の本文"
         release.continuation.yield(())
         await task.value
@@ -646,9 +664,11 @@ struct NativeChatTests {
         }
         let store = ConversationStore(channel: channel, client: harness.client, userID: Self.userID)
         store.drafts["root"] = "送信中"
-        let task = Task { await store.send() }
+        let task = Task {
+            defer { started.continuation.finish() }
+            await store.send() }
         var iterator = started.stream.makeAsyncIterator()
-        _ = await iterator.next()
+        try #require(await iterator.next() != nil)
         store.shutdown()
         release.continuation.yield(())
         await task.value
@@ -873,9 +893,11 @@ struct NativeChatTests {
         let user = Person(id: Self.userID, user_name: "you", display_name: "あなた")
         let workspace = WorkspaceStore(client: harness.client, user: user)
         workspace.selectedTab = .notifications
-        let open = Task { await workspace.openInboxMessage(channelID: Self.channelID, messageID: nil) }
+        let open = Task {
+            defer { started.continuation.finish() }
+            return await workspace.openInboxMessage(channelID: Self.channelID, messageID: nil) }
         var iterator = started.stream.makeAsyncIterator()
-        _ = await iterator.next()
+        try #require(await iterator.next() != nil)
         workspace.selectedTab = .directMessages
         release.continuation.yield(())
         #expect(await open.value == false)
@@ -943,19 +965,23 @@ struct NativeChatTests {
             let message = try Self.sentMessage(request)
             sending.continuation.yield(())
             var iterator = releaseSend.stream.makeAsyncIterator()
-            _ = await iterator.next()
+            try #require(await iterator.next() != nil)
             return (200, [:], try Self.envelope(message))
         }
         let store = ConversationStore(channel: channel, client: harness.client, userID: Self.userID)
-        let stream = Task { await store.run() }
+        let stream = Task {
+            defer { polling.continuation.finish() }
+            await store.run() }
         defer { stream.cancel() }
         var poll = polling.stream.makeAsyncIterator()
-        _ = await poll.next()
+        try #require(await poll.next() != nil)
         #expect(store.messages.count == 1)
         store.drafts["root"] = "権限変更直前の投稿"
-        let send = Task { await store.send() }
+        let send = Task {
+            defer { sending.continuation.finish() }
+            await store.send() }
         var sendStarted = sending.stream.makeAsyncIterator()
-        _ = await sendStarted.next()
+        try #require(await sendStarted.next() != nil)
         revoke.continuation.yield(())
         await stream.value
         #expect(store.blocked)
@@ -985,9 +1011,11 @@ struct NativeChatTests {
             return (200, [:], Data("[]".utf8))
         }
         let workspace = WorkspaceStore(client: harness.client, user: Person(id: Self.userID, user_name: "you", display_name: "あなた"))
-        let refresh = Task { await workspace.refresh() }
+        let refresh = Task {
+            defer { waiting.continuation.finish() }
+            await workspace.refresh() }
         var iterator = waiting.stream.makeAsyncIterator()
-        _ = await iterator.next()
+        try #require(await iterator.next() != nil)
         workspace.addAndOpen(channel)
         release.continuation.yield(())
         await refresh.value

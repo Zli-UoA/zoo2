@@ -225,7 +225,7 @@ struct ShapeStream {
                         if sync != nil { pendingState.isLive = false }
                         let result = try await applyShape(pendingState, data: data, response: response, as: type)
                         if result.state.isLive || result.state.offset == "-1" {
-                            try await sync?.store(result.state, key: key, channelID: query["channel_id"], channelVersion: version,
+                            try await sync?.storeRecovery(result.state, key: key, channelID: query["channel_id"], channelVersion: version,
                                                   revocationVersion: revocationVersion)
                         }
                         try sync?.checkRevocationVersion(revocationVersion)

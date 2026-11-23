@@ -32,6 +32,22 @@ private func subsetData(_ numbers: [Int], parent: String? = nil) throws -> Data 
 
 @Suite("SwiftDataの同期キャッシュ", .timeLimit(.minutes(1)))
 struct SyncCacheTests {
+    @Test("取消済みの古い復元は現在のアカウントとキャッシュを変更しない")
+    func cancelledActivationPreservesCurrentAccount() async throws {
+        let cache = try await SyncCache.open(inMemory: true)
+        let current = Person(id: "current", user_name: "current", display_name: "現在の利用者")
+        let lease = try await cache.activate(connection: "connection", user: current)
+        let data = Data("現在の保存済み会話".utf8)
+        try await cache.store(data, resource: "messages", lease: lease)
+        let stale = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await cache.activate(connection: "connection", user: syncUser)
+        }
+        await #expect(throws: CancellationError.self) { _ = try await stale.value }
+        #expect(try await cache.profile(connection: "connection") == current)
+        #expect(try await cache.load("messages", lease: lease) == data)
+    }
+
     @Test("旧形式の削除では読出し後に保存された行を消さない")
     func removesOnlyTheReadRevision() async throws {
         let cache = try await SyncCache.open(inMemory: true)
@@ -411,8 +427,8 @@ struct PersistentSyncIntegrationTests {
         return SyncSession(cache: cache, lease: lease)
     }
 
-    @Test("ライブ一覧はディスク保存が失敗しても返す")
-    func snapshotSurvivesPersistenceFailure() async throws {
+    @Test("初回とライブの一覧はディスク保存が失敗しても返す", arguments: [false, true])
+    func snapshotSurvivesPersistenceFailure(observe: Bool) async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
         let fail = Mutex(false)
@@ -426,8 +442,38 @@ struct PersistentSyncIntegrationTests {
             let events: [JSONValue] = [.object(["key": .string("k1"), "headers": .object(["operation": .string("insert")]), "value": .object(syncRow(1))])]
             return (200, ["electric-handle": "h", "electric-offset": "1_0", "electric-up-to-date": "true"], try JSONEncoder().encode(events))
         }
-        let values = try await ShapeStream(api: harness.api, sync: sync).snapshot("api/shapes/messages", query: ["channel_id": syncChannel], as: Message.self)
-        #expect(values.count == 1)
+        let shapes = ShapeStream(api: harness.api, sync: sync)
+        if observe {
+            let received = AsyncStream<[Message]>.makeStream()
+            let task = Task {
+                defer { received.continuation.finish() }
+                try await shapes.observe("api/shapes/messages", query: ["channel_id": syncChannel], as: Message.self) {
+                    if let rows = $0 { received.continuation.yield(rows) }
+                }
+            }
+            defer { task.cancel(); received.continuation.finish() }
+            var iterator = received.stream.makeAsyncIterator()
+            #expect(try #require(await iterator.next()).count == 1)
+            #expect(try #require(await iterator.next()).count == 1)
+            task.cancel()
+            _ = await task.result
+        } else {
+            let values = try await shapes.snapshot("api/shapes/messages", query: ["channel_id": syncChannel], as: Message.self)
+            #expect(values.count == 1)
+        }
+    }
+
+    @Test("閉じたセッションの遅い失効通知はワークスペースへ届かない")
+    func closedSessionDoesNotRevokeWorkspace() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let sync = try await session(harness)
+        var callbacks = 0
+        sync.onChannelRevoked = { _, _ in callbacks += 1 }
+        try await sync.close().value
+        await #expect(throws: CancellationError.self) { try await sync.revokeChannel(syncChannel) }
+        #expect(callbacks == 0)
+        #expect(sync.knownChannels.isEmpty)
     }
 
     @Test("複数チャンネルの同時失効後も最新の通知世代で保存できる")
@@ -1050,8 +1096,13 @@ struct PersistentSyncIntegrationTests {
             for await _ in release.stream { break }
             return (200, [:], try JSONEncoder().encode(Channel(id: syncChannel, channel_name: "失効前", is_private: true, is_dm: false)))
         }
-        let pending = Task { try await NativeChatClient(api: harness.api, sync: sync).channel(id: syncChannel) }
-        for await _ in started.stream { break }
+        let pending = Task {
+            defer { started.continuation.finish() }
+            return try await NativeChatClient(api: harness.api, sync: sync).channel(id: syncChannel)
+        }
+        defer { pending.cancel(); release.continuation.finish(); started.continuation.finish() }
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
         if logout { try await sync.close().value }
         else { try await sync.revokeChannel(syncChannel) }
         release.continuation.yield(())
@@ -1087,10 +1138,13 @@ struct PersistentSyncIntegrationTests {
         }
         var published = false
         let pending = Task {
+            defer { started.continuation.finish() }
             if observe { try await client.observeInbox { _ in published = true } }
             else { _ = try await client.channelNoticeSnapshot(); published = true }
         }
-        for await _ in started.stream { break }
+        defer { pending.cancel(); release.continuation.finish(); started.continuation.finish() }
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
         try await sync.revokeChannel(syncChannel)
         #expect(inbox.entries.isEmpty)
         release.continuation.yield(())

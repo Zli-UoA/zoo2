@@ -24,13 +24,11 @@ final class SyncSession {
 
     func load<T: Decodable & Sendable>(_ key: String, as type: T.Type) async throws -> T? {
         try check()
-        let version = revocationVersion(for: key)
-        // 世代だけが更新され、永続キャッシュの削除がまだ待機中の一覧を読まない。
-        if version != nil {
-            _ = await channelRevocation?.result
-            try check()
-            try checkRevocationVersion(version)
-        }
+        let version = revocationVersion
+        // 永続削除前の読み取りと、デコード中の失効を会話単位の値でも遮断する。
+        _ = await channelRevocation?.result
+        try check()
+        try checkRevocationVersion(version)
         let cached = try await cache.loadVersioned(key, lease: lease)
         let data = cached?.payload
         try check()
@@ -77,6 +75,9 @@ final class SyncSession {
         try check()
         guard channelVersion(id) == version else { throw CancellationError() }
         guard revokedChannels.contains(id) else { return }
+        _ = await channelRevocation?.result
+        try check()
+        guard channelVersion(id) == version else { throw CancellationError() }
         try await cache.authorizeChannel(id, version: version, lease: lease)
         try check()
         guard channelVersion(id) == version else { throw CancellationError() }
@@ -99,6 +100,7 @@ final class SyncSession {
 
     @discardableResult
     func revokeChannel(_ id: String, retaining channel: Channel? = nil) async throws -> UUID {
+        try check()
         revokedChannels.insert(id)
         let version = UUID()
         channelVersions[id] = version
@@ -134,6 +136,8 @@ final class SyncSession {
 
     func close() -> Task<Void, Error> {
         active = false
+        onChannelRevoked = nil
+        onChannelAuthorized = nil
         knownChannels = [:]
         return Task { try await cache.revoke(lease) }
     }

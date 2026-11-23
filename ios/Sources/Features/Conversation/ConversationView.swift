@@ -61,10 +61,7 @@ struct ConversationView: View {
         .navigationTitle(parentID == nil ? workspace.name(for: store.channel) : "スレッド")
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: workspace.composerFocusRequest?.id, initial: true) { _, _ in
-            guard let request = workspace.composerFocusRequest, isVisible,
-                  request.channelID == store.channel.id, request.parentID == parentID else { return }
-            composerFocused = store.canPost
-            workspace.composerFocusRequest = nil
+            consumeFocusRequest()
         }
         .toolbar {
             if parentID == nil {
@@ -128,7 +125,10 @@ struct ConversationView: View {
                 .frame(width: 0, height: 0)
             }
         }
-        .onChange(of: isVisible && store.canPost) { _, _ in requestInitialFocus() }
+        .onChange(of: isVisible && store.canPost) { _, _ in
+            requestInitialFocus()
+            consumeFocusRequest()
+        }
         .onChange(of: isVisible && parentID == nil ? store.focusedThreadID : nil, initial: true) { _, target in
             if let target { workspace.openThread(target, in: store, focusComposer: false) }
         }
@@ -136,6 +136,13 @@ struct ConversationView: View {
             if unavailable { workspace.closeThread(route) }
         }
     }
+    private func consumeFocusRequest() {
+        guard let request = workspace.composerFocusRequest, isVisible, store.canPost,
+              request.channelID == store.channel.id, request.parentID == parentID else { return }
+        composerFocused = true
+        workspace.composerFocusRequest = nil
+    }
+
     private func requestInitialFocus() {
         guard focusComposerOnAppear, threadDidAppear, isVisible, store.canPost, !didRequestInitialFocus else { return }
         didRequestInitialFocus = true

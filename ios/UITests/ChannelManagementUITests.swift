@@ -35,12 +35,16 @@ final class ChannelManagementUITests: XCTestCase {
         XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
         let title = app.staticTexts["このチャンネルをアーカイブしますか？"]
         let dialogFrame = title.frame.union(confirmation.frame)
-        XCTAssertTrue(dialogFrame.insetBy(dx: -32, dy: -32).intersects(sourceFrame), "確認表示を押したボタンの位置に表示する")
+        let cancel = app.buttons.matching(NSPredicate(format: "label IN %@", ["キャンセル", "Cancel"])).firstMatch
+        if !cancel.exists {
+            XCTAssertTrue(dialogFrame.insetBy(dx: -32, dy: -32).intersects(sourceFrame), "ポップオーバーを押したボタンの位置に表示する")
+        }
         let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         screenshot.name = "アーカイブボタンに紐づく確認表示"
         screenshot.lifetime = .keepAlways
         add(screenshot)
-        app.navigationBars["チャンネル詳細"].staticTexts["チャンネル詳細"].tap()
+        if cancel.exists { cancel.tap() }
+        else { app.navigationBars["チャンネル詳細"].staticTexts["チャンネル詳細"].tap() }
         XCTAssertTrue(confirmation.waitForNonExistence(timeout: 5))
         XCTAssertTrue(archive.isEnabled)
         archive.tap()

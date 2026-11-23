@@ -181,10 +181,10 @@ final class ConversationStore {
         do {
             let files = try await load()
             try Task.checkCancellation()
-            guard canPost, epoch == accessGeneration else { return }
+            guard active, !blocked, epoch == accessGeneration else { return }
             draftAttachments[key, default: []].append(contentsOf: files)
         } catch {
-            guard canPost, epoch == accessGeneration, !Task.isCancelled else { return }
+            guard active, !blocked, epoch == accessGeneration, !Task.isCancelled else { return }
             sendErrors[key] = "ファイルを追加できませんでした。\(error.localizedDescription)"
         }
     }
@@ -210,7 +210,6 @@ final class ConversationStore {
         importingAttachments = []
         draftAttachments = [:]
         uploadedAttachmentIDs = [:]
-        pendingSends = [:]
         uploadStatus = [:]
         sending = []
         mutationInProgress = false
@@ -456,20 +455,22 @@ final class ConversationStore {
         } catch { if epoch == accessGeneration { reportMutation(error) }; return false }
     }
 
-    func delete(_ message: Message) async {
-        guard canPost, message.user_id == userID, !mutationInProgress else { return }
+    @discardableResult
+    func delete(_ message: Message) async -> Bool {
+        guard canPost, message.user_id == userID, !mutationInProgress else { return false }
         let epoch = accessGeneration
         mutationInProgress = true
         defer { if epoch == accessGeneration { mutationInProgress = false } }
         do {
             try await client.delete(id: message.id)
             try Task.checkCancellation()
-            guard active, epoch == accessGeneration else { return }
+            guard active, epoch == accessGeneration else { return false }
             deletedIDs.insert(message.id)
             localWrites[message.id] = nil
             messages.removeAll { $0.id == message.id }
             actionError = nil
-        } catch { if epoch == accessGeneration { reportMutation(error) } }
+            return true
+        } catch { if epoch == accessGeneration { reportMutation(error) }; return false }
     }
 
     private func reportMutation(_ error: Error) {

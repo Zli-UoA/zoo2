@@ -101,6 +101,7 @@ struct CallEventParser {
     mutating func feed(_ line: String) throws -> CallEvent? {
         if line.isEmpty {
             defer { name = ""; data = []; byteCount = 0 }
+            guard !data.isEmpty else { return nil }
             return try CallEvent.decode(name: name, data: Data(data.joined(separator: "\n").utf8))
         }
         byteCount += line.utf8.count

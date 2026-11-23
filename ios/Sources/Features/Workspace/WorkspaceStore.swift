@@ -496,6 +496,7 @@ final class WorkspaceStore {
 
     func addAndOpen(_ channel: Channel, joined: Bool = true, members: [String]? = nil) {
         guard active else { return }
+        destinationGeneration = UUID()
         channelGeneration = UUID()
         if let index = channels.firstIndex(where: { $0.id == channel.id }) { channels[index] = channel }
         else { channels.append(channel) }

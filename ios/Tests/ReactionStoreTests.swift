@@ -72,9 +72,10 @@ struct ReactionStoreTests {
             _ = await iterator.next()
             return (200, [:], data)
         }
-        let write = Task { await store.toggleReaction(messageID: messageID, emoji: "👍") }
+        let write = Task { defer { entered.continuation.finish() }; await store.toggleReaction(messageID: messageID, emoji: "👍") }
+        defer { write.cancel(); entered.continuation.finish() }
         var iterator = entered.stream.makeAsyncIterator()
-        _ = await iterator.next()
+        try #require(await iterator.next() != nil)
         #expect(store.isReactionPending(messageID: messageID, emoji: "👍"))
         await store.toggleReaction(messageID: messageID, emoji: "👍")
         store.shutdown()
@@ -104,9 +105,10 @@ struct ReactionStoreTests {
             }
             return (200, ["electric-offset": "0_1", "electric-handle": "reactions"], Data(events.utf8))
         }
-        let stream = Task { await store.runReactions() }
+        let stream = Task { defer { polling.continuation.finish() }; await store.runReactions() }
+        defer { stream.cancel(); polling.continuation.finish() }
         var iterator = polling.stream.makeAsyncIterator()
-        _ = await iterator.next()
+        try #require(await iterator.next() != nil)
         #expect(store.canReact(to: messageID))
         var archived = channel
         archived.archive_at = "2026-11-18"
@@ -152,9 +154,10 @@ struct ReactionStoreTests {
             }
             return (200, ["electric-offset": "0_1", "electric-handle": "messages"], Data(events.utf8))
         }
-        let stream = Task { await store.run() }
+        let stream = Task { defer { polling.continuation.finish() }; await store.run() }
+        defer { stream.cancel(); polling.continuation.finish() }
         var iterator = polling.stream.makeAsyncIterator()
-        _ = await iterator.next()
+        try #require(await iterator.next() != nil)
         #expect(store.reactions(for: messageID).isEmpty)
         #expect(store.reactionResyncTicket == nil)
         stream.cancel()

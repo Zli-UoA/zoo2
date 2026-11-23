@@ -163,12 +163,14 @@ struct InboxFeed {
             }
         }
         var oldest: Date?
+        var fetchedMirrors: Set<String> = []
         for row in federated {
             let isUnread = !row.is_read && !acknowledged.contains(row.id)
             let date = ZooDate.parse(row.created_at) ?? .distantPast
             oldest = min(date, oldest ?? date)
             if row.actor_id.hasPrefix("local:"), let post = row.post_id,
                let mirror = mirrors["\(row.kind):\(row.actor_id.dropFirst(6)):\(post)"] {
+                fetchedMirrors.insert(mirror.key)
                 if isUnread {
                     grouped[mirror.key]?.unreadIDs.append(row.id)
                     if mirror.unread { unread -= 1 }
@@ -187,7 +189,7 @@ struct InboxFeed {
                                       reaction: row.displayReaction, pendingFollow: row.pending, noticeID: row.id,
                                       activityID: row.activity_id, joinedContext: nil)
         }
-        entries = grouped.values.filter { !more || $0.createdAt >= (oldest ?? .distantPast) }
+        entries = grouped.values.filter { !more || fetchedMirrors.contains($0.id) || $0.createdAt >= (oldest ?? .distantPast) }
             .sorted { ($0.createdAt, $0.id) > ($1.createdAt, $1.id) }
         unreadCount = max(0, unread)
     }

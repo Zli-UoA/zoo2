@@ -42,6 +42,7 @@ final class InboxStore {
     @ObservationIgnored private var readChannelIDs: Set<String> = []
     @ObservationIgnored private var pendingReads: Set<String> = []
     private(set) var markingAll = false
+    private(set) var refreshRevision = UUID()
     @ObservationIgnored private var responding: Set<String> = []
     @ObservationIgnored private var runID = UUID()
     @ObservationIgnored private var channelRevision = 0
@@ -117,6 +118,7 @@ final class InboxStore {
             }
         }
         await remote
+        if active, !Task.isCancelled, channelError == nil, federationError == nil { refreshRevision = UUID() }
     }
 
     private func receiveChannel(_ rows: [ChannelNotice]?) {
@@ -311,6 +313,7 @@ final class InboxStore {
         headIDs = head
         federationUnread = page.unread_count
         countRevision = UUID()
+        readRevision += 1
     }
 
     func setVisible(_ entry: InboxEntry, visible: Bool) {

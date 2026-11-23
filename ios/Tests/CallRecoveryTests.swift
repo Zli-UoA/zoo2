@@ -62,11 +62,9 @@ struct CallRecoveryTests {
         await calls.refreshActiveCalls()
         #expect(!client.commands.contains("leave"))
         #expect(calls.ready)
-        let left = AsyncStream<Void>.makeStream()
-        client.beforeActiveCallsResult = { left.continuation.yield(()) }
         calls.finish()
-        for await _ in left.stream { break }
-        left.continuation.finish()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !journal.records.isEmpty, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
         #expect(journal.records.isEmpty)
     }
 
@@ -151,7 +149,10 @@ struct CallRecoveryTests {
         let client = FakeCallClient()
         let started = AsyncStream<Void>.makeStream()
         let release = AsyncStream<Void>.makeStream()
-        client.beforeCommand = { _ in
+        var blockedLeave = false
+        client.beforeCommand = { action in
+            guard action == "leave", !blockedLeave else { return }
+            blockedLeave = true
             started.continuation.yield(())
             for await _ in release.stream { break }
         }

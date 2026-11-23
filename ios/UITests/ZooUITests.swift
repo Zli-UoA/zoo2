@@ -1295,7 +1295,7 @@ final class ZooUITests: XCTestCase {
         message.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.1)).press(forDuration: 0.8)
         XCTAssertTrue(app.buttons["message-action-edit"].waitForExistence(timeout: 5))
         app.buttons["message-action-edit"].tap()
-        let editor = app.textFields["edit-message-input"]
+        let editor = app.descendants(matching: .any).matching(identifier: "edit-message-input").firstMatch
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
         XCTAssertEqual(editor.value as? String, original)
         app.buttons["save-message-edit"].tap()
@@ -1538,6 +1538,32 @@ final class ZooUITests: XCTestCase {
     }
 
     @MainActor
+    func testReturningFromThreadPreservesHistoryPosition() {
+        let app = launchWorkspace(longHistory: true)
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let list = app.scrollViews["message-list"]
+        XCTAssertTrue(app.staticTexts["履歴 60"].waitForExistence(timeout: 10))
+        list.swipeDown(velocity: .slow)
+        list.swipeDown(velocity: .slow)
+        let rows = list.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "履歴 "))
+        guard let candidate = rows.allElementsBoundByIndex.first(where: {
+            $0.isHittable && $0.frame.minY > list.frame.minY + 40 && $0.frame.maxY < list.frame.maxY - 40
+        }) else { XCTFail("読み返す投稿が表示されていません。"); return }
+        let anchor = app.staticTexts[candidate.identifier]
+        let originalY = anchor.frame.minY
+        openActions(for: anchor, in: app)
+        app.buttons["message-action-reply"].tap()
+        let thread = app.navigationBars["スレッド"]
+        XCTAssertTrue(thread.waitForExistence(timeout: 5))
+        if app.keyboards.firstMatch.waitForExistence(timeout: 2) { app.buttons["dismiss-composer-keyboard"].tap() }
+        thread.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.navigationBars["一般"].waitForExistence(timeout: 5))
+        XCTAssertTrue(anchor.wait(for: \.isHittable, toEqual: true, timeout: 5))
+        XCTAssertEqual(anchor.frame.minY, originalY, accuracy: 4)
+        capture(app, name: "スレッドから戻っても読み返し位置を維持")
+    }
+
+    @MainActor
     func testHistoryRemainsScrollableAfterKeyboardDismissal() {
         let app = launchWorkspace(longHistory: true)
         app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
@@ -1637,14 +1663,14 @@ final class ZooUITests: XCTestCase {
         openActions(for: message, in: app)
         XCTAssertTrue(app.buttons["message-action-delete"].exists)
         app.buttons["message-action-edit"].tap()
-        let field = app.textFields["edit-message-input"]
+        let field = app.descendants(matching: .any).matching(identifier: "edit-message-input").firstMatch
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         field.tap()
         field.typeText("（編集確認）")
         app.buttons["save-message-edit"].tap()
-        XCTAssertTrue(message.waitForExistence(timeout: 5))
-        XCTAssertTrue(message.label.contains("編集確認"))
-        XCTAssertTrue(app.staticTexts["編集済み"].exists)
+        let edited = NSPredicate(format: "label CONTAINS %@", "編集確認")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: edited, object: message)], timeout: 5), .completed)
+        XCTAssertTrue(app.staticTexts["編集済み"].waitForExistence(timeout: 5))
     }
 
     @MainActor

@@ -7,6 +7,7 @@ final class AppSession {
     private(set) var userID: String?
     private(set) var workspace: WorkspaceStore?
     var connecting: Bool { connection != nil }
+    private(set) var waitingForCacheCleanup = false
     var restoring: Bool { connection?.interactive == false }
     private(set) var isStarting = true
     private(set) var deviceAuthorization: DeviceAuthorizationPrompt?
@@ -76,10 +77,11 @@ final class AppSession {
         #endif
     }
 
-    func startLogin() {
-        guard !connecting, userID == nil else { return }
+    @discardableResult
+    func startLogin() -> Task<Void, Never>? {
+        guard !connecting, userID == nil else { return nil }
         notifications.discardAccountNotifications()
-        beginConnection(interactive: true)
+        return beginConnection(interactive: true)
     }
 
     @discardableResult
@@ -109,7 +111,13 @@ final class AppSession {
             }
         }
         do {
-            do { try await cacheCleanup?.value }
+            do {
+                if let cacheCleanup {
+                    waitingForCacheCleanup = true
+                    defer { if generation == epoch { waitingForCacheCleanup = false } }
+                    try await cacheCleanup.value
+                }
+            }
             catch {
                 if generation == epoch { cacheCleanup = nil }
                 throw error
@@ -117,7 +125,12 @@ final class AppSession {
             try Task.checkCancellation()
             guard generation == epoch else { return }
             cacheCleanup = nil
-            if syncCache == nil { syncCache = try await openSyncCache() }
+            if syncCache == nil {
+                let opened = try await openSyncCache()
+                try Task.checkCancellation()
+                guard generation == epoch else { return }
+                syncCache = opened
+            }
             guard let syncCache else { throw ZooError.invalidResponse }
             if needsCacheCleanup {
                 try await syncCache.forget(connection: SyncCache.connectionKey(api.settings))
@@ -159,6 +172,8 @@ final class AppSession {
     }
 
     private func installWorkspace(_ user: Person, cache: SyncCache, epoch: UUID) async throws {
+        try Task.checkCancellation()
+        guard generation == epoch else { throw CancellationError() }
         let lease = try await cache.activate(connection: SyncCache.connectionKey(api.settings), user: user)
         guard generation == epoch, !Task.isCancelled else {
             try await cache.revoke(lease)
@@ -193,6 +208,7 @@ final class AppSession {
         generation = UUID()
         connection?.task.cancel()
         connection = nil
+        waitingForCacheCleanup = false
         deviceAuthorization = nil
         error = nil
     }
@@ -236,7 +252,12 @@ final class AppSession {
                     if workspace != nil { logout() }
                     else if !Self.isUITesting { SiriVocabulary.update(nil) }
                     epoch = generation
-                    if syncCache == nil { syncCache = try await openSyncCache() }
+                    if syncCache == nil {
+                        let opened = try await openSyncCache()
+                        try Task.checkCancellation()
+                        guard generation == epoch else { return }
+                        syncCache = opened
+                    }
                     guard generation == epoch, !connecting else { return }
                     let previous = cacheCleanup
                     let cleanup = Task { [self] in

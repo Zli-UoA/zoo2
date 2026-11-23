@@ -206,6 +206,10 @@ struct ChatPresentationAPITests {
         #expect(workspace.pinUpdateError != nil)
         #expect(!workspace.updatingPin)
         #expect(writes.withLock { $0 } == (status == 409 ? 2 : 1))
+        harness.stub { _ in (200, [:], Data(#"{"data":{"pins":[],"version":2},"txid":"2"}"#.utf8)) }
+        await workspace.setChannelPinned(channel, pinned: false)
+        #expect(workspace.pinnedChannelIDs.isEmpty)
+        #expect(workspace.pinUpdateError == nil && !workspace.updatingPin)
     }
 
     @Test("ピンの非Envelope応答と署名URLのEnvelope応答を使い分ける")

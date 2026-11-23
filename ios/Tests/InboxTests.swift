@@ -38,7 +38,7 @@ struct InboxTests {
         let inbox = InboxStore(client: harness.client, userID: "u")
         defer { inbox.shutdown() }
         await inbox.refresh()
-        let refreshing = Task { await inbox.refresh() }
+        let refreshing = Task { defer { started.continuation.finish() }; await inbox.refresh() }
         defer { refreshing.cancel() }
         var iterator = started.stream.makeAsyncIterator()
         try #require(await iterator.next() != nil)
@@ -77,7 +77,7 @@ struct InboxTests {
         }
         let inbox = InboxStore(client: harness.client, userID: "u")
         defer { inbox.shutdown() }
-        let first = Task { await inbox.refresh() }
+        let first = Task { defer { started.continuation.finish() }; await inbox.refresh() }
         defer { first.cancel() }
         var iterator = started.stream.makeAsyncIterator()
         try #require(await iterator.next() != nil)
@@ -168,7 +168,7 @@ struct InboxTests {
         let inbox = InboxStore(client: harness.client, userID: "u")
         defer { inbox.shutdown() }
         await inbox.refresh()
-        let marking = Task { await inbox.markAllRead() }
+        let marking = Task { defer { acknowledged.continuation.finish(); checked.continuation.finish() }; await inbox.markAllRead() }
         defer { marking.cancel() }
         var ackIterator = acknowledged.stream.makeAsyncIterator()
         try #require(await ackIterator.next() != nil)
@@ -243,7 +243,7 @@ struct InboxTests {
         defer { inbox.shutdown() }
         await inbox.refresh()
         #expect(inbox.unreadCount == 3)
-        let marking = Task { await inbox.markAllRead() }
+        let marking = Task { defer { started.continuation.finish(); headStarted.continuation.finish() }; await inbox.markAllRead() }
         defer { marking.cancel() }
         var iterator = started.stream.makeAsyncIterator()
         try #require(await iterator.next() != nil)
@@ -320,7 +320,7 @@ struct InboxTests {
         await inbox.refresh()
         await inbox.loadMore()
         let newest = try #require(inbox.entries.first { $0.noticeID == "new" })
-        let marking = Task { await inbox.markRead(newest) }
+        let marking = Task { defer { started.continuation.finish() }; await inbox.markRead(newest) }
         defer { marking.cancel() }
         var iterator = started.stream.makeAsyncIterator()
         try #require(await iterator.next() != nil)
@@ -344,8 +344,8 @@ struct InboxTests {
         #expect(row.display?.message?.content == "こんにちは")
     }
 
-    @Test("同じ投稿へのスタンプと連合の重複通知をまとめ、取得済みの時間範囲を表示する")
-    func groupedFeed() throws {
+    @Test("同じ投稿への重複通知は日時が前後しても取得済みのグループを表示する", arguments: ["12:00:00", "12:00:03"])
+    func groupedFeed(mirrorTime: String) throws {
         var rows = [("first", "alice", "12:00:02"), ("next", "bob", "12:00:01"), ("old", "alice", "11:59:59")].map { id, actor, time in
             ChannelNotice(id: id, user_id: "u", actor_id: actor, channel_id: "c", message_id: id == "old" ? "other" : "m",
                           notification_type: "reaction", created_at: "2026-11-18T" + time + "Z", is_read: false, display: nil)
@@ -353,7 +353,7 @@ struct InboxTests {
         rows.append(ChannelNotice(id: "read-duplicate", user_id: "u", actor_id: "alice", channel_id: "c", message_id: "m",
                                   notification_type: "reaction", created_at: "2026-11-18T12:00:00Z", is_read: true, display: nil))
         let mirror = FederatedNotice(id: "f", actor_id: "local:alice", display_name: "花", avatar: nil, kind: "like",
-                                     activity_id: "activity", post_id: "m", content: nil, created_at: "2026-11-18T12:00:00Z",
+                                     activity_id: "activity", post_id: "m", content: nil, created_at: "2026-11-18T" + mirrorTime + "Z",
                                      is_read: false, pending: false, reaction: "👍")
         let feed = InboxFeed(channels: rows, federated: [mirror], federatedUnread: 2, more: true,
                              acknowledged: [], server: "https://ui.test.invalid")

@@ -25,7 +25,7 @@ final class TypingUITests: XCTestCase {
         app.buttons["preview-end-typing"].tap()
         XCTAssertTrue(indicator.waitForNonExistence(timeout: 10))
         XCTAssertTrue(latest.isHittable)
-        XCTAssertLessThanOrEqual(latest.frame.maxY, app.textFields["reply-input"].frame.minY)
+        XCTAssertLessThanOrEqual(latest.frame.maxY, app.descendants(matching: .any).matching(identifier: "reply-input").firstMatch.frame.minY)
         capture(app, name: "入力者が消えた後の最新返信")
     }
 
@@ -39,7 +39,7 @@ final class TypingUITests: XCTestCase {
         let indicator = app.staticTexts["typing-indicator"]
         XCTAssertTrue(indicator.waitForExistence(timeout: 5))
         XCTAssertEqual(indicator.label, "さくらが入力中…")
-        let input = app.textFields["message-input"]
+        let input = app.descendants(matching: .any).matching(identifier: "message-input").firstMatch
         XCTAssertLessThanOrEqual(indicator.frame.maxY, input.frame.minY)
         input.tap()
         input.typeText("入力中の表示を確認")
@@ -50,9 +50,9 @@ final class TypingUITests: XCTestCase {
         let replies = app.buttons["thread-replies-22222222-2222-4222-8222-222222222222"]
         XCTAssertTrue(replies.waitForExistence(timeout: 5))
         replies.tap()
-        XCTAssertTrue(app.textFields["reply-input"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "reply-input").firstMatch.waitForExistence(timeout: 5))
         XCTAssertTrue(indicator.wait(for: \.label, toEqual: "あおいが入力中…", timeout: 5))
-        XCTAssertLessThanOrEqual(indicator.frame.maxY, app.textFields["reply-input"].frame.minY)
+        XCTAssertLessThanOrEqual(indicator.frame.maxY, app.descendants(matching: .any).matching(identifier: "reply-input").firstMatch.frame.minY)
         capture(app, name: "スレッドの入力中表示")
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(indicator.wait(for: \.label, toEqual: "さくらが入力中…", timeout: 5))
@@ -62,7 +62,7 @@ final class TypingUITests: XCTestCase {
         XCTAssertEqual(indicator.label, "さくらが入力中…")
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.buttons["channel-55555555-5555-4555-8555-555555555555"].tap()
-        XCTAssertTrue(app.textFields["message-input"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "message-input").firstMatch.waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["channel-details"].wait(for: \.label, toEqual: "開発の詳細", timeout: 5))
         XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "が入力中")).firstMatch.exists,
                        "別の会話に入力中の表示を持ち越さない")

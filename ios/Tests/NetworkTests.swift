@@ -439,13 +439,15 @@ struct NetworkTests {
         await controller.received(token: Data([0xaa]))?.value
         #expect(keys.load() != nil)
         waitForResponse.withLock { $0 = true }
-        let renewal = controller.received(token: Data([0xaa]))
+        let renewal = try #require(controller.received(token: Data([0xaa])))
+        let completion = Task { await renewal.value; started.continuation.finish() }
+        defer { renewal.cancel(); completion.cancel() }
         var iterator = started.stream.makeAsyncIterator()
-        _ = await iterator.next()
+        try #require(await iterator.next() != nil)
         controller.logout()
         #expect(keys.load() == nil)
         release.continuation.yield(())
-        await renewal?.value
+        await renewal.value
         #expect(keys.load() == nil)
         await controller.revokeRegistration().value
         #expect(try receipts.load()?.revocationPending == true)
@@ -652,24 +654,32 @@ struct NetworkTests {
 
     @Test func testRefreshIsSharedAcrossConcurrentRequests() async throws {
         let api = try client(expired: true)
-        defer { try? api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
-        await confirmation("トークン交換が1回だけ行われる") { refreshed in
-            stub { request in
-                if request.url?.path == "/.well-known/openid-configuration" {
-                    return Self.discoveryResponse
-                }
-                #expect(request.url?.path == "/token")
-                refreshed()
-                return Self.tokenResponse
-            }
-            async let first = api.auth.accessToken()
-            async let second = api.auth.accessToken()
-            do {
-                let values = try await [first, second]
-                #expect(values == ["renewed", "renewed"])
-                #expect(try TokenVault.load(api.settings.storageKey)?.refresh == "rotated")
-            } catch { Issue.record(error) }
+        let release = AsyncStream<Void>.makeStream()
+        let exchanges = Mutex(0)
+        defer { release.continuation.finish(); try? api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
+        stub { request in
+            if request.url?.path == "/.well-known/openid-configuration" { return Self.discoveryResponse }
+            #expect(request.url?.path == "/token")
+            let count = exchanges.withLock { $0 += 1; return $0 }
+            guard count == 1 else { Issue.record("更新トークンの交換が重複しました。"); throw ZooError.invalidResponse }
+            for await _ in release.stream { break }
+            return Self.tokenResponse
         }
+        var completed = 0
+        let first = Task { defer { completed += 1 }; return try await api.auth.accessToken() }
+        let second = Task { defer { completed += 1 }; return try await api.auth.accessToken() }
+        defer { first.cancel(); second.cancel() }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while (api.auth.refreshWaiterCount < 2 || exchanges.withLock({ $0 }) == 0), completed == 0, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        try #require(api.auth.refreshWaiterCount == 2 && completed == 0)
+        #expect(exchanges.withLock { $0 } == 1)
+        release.continuation.finish()
+        let values = try await [first.value, second.value]
+        #expect(values == ["renewed", "renewed"])
+        #expect(exchanges.withLock { $0 } == 1)
+        #expect(try TokenVault.load(api.settings.storageKey)?.refresh == "rotated")
     }
 
     @Test("更新トークンがなくても実際の有効期限まではアクセストークンを使う")

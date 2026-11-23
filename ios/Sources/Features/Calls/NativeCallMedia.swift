@@ -84,6 +84,7 @@ final class NativeCallMedia: NSObject, CallMedia {
         let connection: RTCPeerConnection
         var candidates: [CallSignal.Candidate] = []
         var lastAnswer: (offer: String, answer: String)?
+        var lastOffer: String?
         var state: CallPeerState = .connecting
         var recovery: Task<Void, Never>?
         var recoveryID = UUID()
@@ -297,6 +298,7 @@ final class NativeCallMedia: NSObject, CallMedia {
     }
 
     private func sendDescription(_ id: String, peer: Peer, type: String, sdp: String) {
+        if type == "offer" { peer.lastOffer = sdp }
         signal?(id, CallSignal(type: type, sdp: sdp))
         peer.sendingDescription = false
         // シグナル送信は直列。SDPのPOSTが成功するまで新しいICE候補を対向に送らない。
@@ -319,8 +321,10 @@ final class NativeCallMedia: NSObject, CallMedia {
                           peer.recoveryID == recoveryID else { return }
                     peer.recovery = nil
                     if peer.connection.connectionState == .connected { return }
+                    let pendingOffer = peer.restartCount > 0 && peer.connection.signalingState == .haveLocalOffer
+                        ? peer.lastOffer : nil
                     guard peer.restartCount < 2, peer.connection.remoteDescription != nil,
-                          peer.connection.signalingState == .stable else {
+                          peer.connection.signalingState == .stable || pendingOffer != nil else {
                         peer.state = .failed
                         onPeerState?(id, .failed)
                         failed?()
@@ -328,6 +332,13 @@ final class NativeCallMedia: NSObject, CallMedia {
                     }
                     peer.state = .reconnecting
                     onPeerState?(id, .reconnecting)
+                    if let pendingOffer {
+                        // 応答を失った交渉は同じofferを再送し、対向の保存済みanswerを受け取る。
+                        peer.restartCount += 1
+                        sendDescription(id, peer: peer, type: "offer", sdp: pendingOffer)
+                        scheduleRecovery(id, delay: restartTimeout)
+                        return
+                    }
                     peer.sendingDescription = true
                     defer {
                         if generation == epoch, peers[id] === peer, peer.sendingDescription {

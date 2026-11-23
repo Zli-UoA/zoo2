@@ -23,13 +23,14 @@ struct EditMessageView: View {
                     Text("メッセージは 40,000 文字以内で入力してください。")
                         .font(.caption).foregroundStyle(.red)
                 }
+                if store.mutationInProgress && !saving { ProgressView("ほかの変更を保存しています…") }
                 if let error = store.actionError { Text(error).foregroundStyle(.red) }
             }
             .navigationTitle("メッセージを編集").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { AppCloseButton { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") { saving = true }.disabled(saving || !store.validContent(content))
+                    Button("保存") { saving = true }.disabled(saving || store.mutationInProgress || !store.validContent(content))
                         .keyboardShortcut("s", modifiers: .command)
                         .accessibilityIdentifier("save-message-edit")
                 }

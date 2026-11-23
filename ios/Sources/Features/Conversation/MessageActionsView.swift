@@ -63,9 +63,9 @@ struct MessageActionsView: View {
         .presentationDragIndicator(.visible)
         .alert("メッセージを削除しますか？", isPresented: $confirmingDelete) {
             Button("削除", role: .destructive) {
-                dismiss()
-                Task { await store.delete(message) }
+                Task { if await store.delete(message) { dismiss() } }
             }
+            .disabled(store.mutationInProgress || !canEdit)
             Button("キャンセル", role: .cancel) {}
         }
         .onChange(of: store.canReact(to: message.id)) { _, allowed in
@@ -88,6 +88,8 @@ struct MessageActionsView: View {
     private var actions: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
+                if store.mutationInProgress { ProgressView("変更を保存しています…") }
+                if let error = store.actionError { Text(error).foregroundStyle(.red) }
                 if store.canPost {
                     stampBar
                         .disabled(!store.canReact(to: message.id))
@@ -126,6 +128,7 @@ struct MessageActionsView: View {
                         Divider()
                         Button(role: .destructive) { confirmingDelete = true } label: { actionLabel("メッセージを削除", icon: "trash") }
                             .foregroundStyle(.red)
+                            .disabled(store.mutationInProgress)
                             .accessibilityIdentifier("message-action-delete")
                     }
                 }

@@ -46,6 +46,7 @@ struct ChannelThreadsTests {
             harness.stub { request in
                 #expect(request.url?.path == "/api/threads")
                 let params = URLComponents(url: try #require(request.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+                try #require(Set(params.map(\.name)).count == params.count, "クエリ項目名が重複しています。")
                 #expect(Dictionary(uniqueKeysWithValues: params.map { ($0.name, $0.value ?? "") }) == query)
                 return (200, [:], Data(page.utf8))
             }

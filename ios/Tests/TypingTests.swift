@@ -197,7 +197,10 @@ struct TypingStoreTests {
         let client = TypingStub()
         var complete: CheckedContinuation<Void, Never>?
         client.write = { active in
-            if active { await withCheckedContinuation { complete = $0 } }
+            if active {
+                guard complete == nil else { Issue.record("開始通知が重複しました。"); return }
+                await withCheckedContinuation { complete = $0 }
+            }
         }
         let store = store(client, interval: .zero)
         let task = Task { await store.run(parentID: "スレッド") }

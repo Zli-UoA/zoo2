@@ -35,10 +35,12 @@ extension NativeChatClient {
         var parser = CallEventParser()
         // AsyncBytes.lines は空行を省略するため、SSE のイベント境界をバイト列から保つ。
         var line: [UInt8] = []
+        var previousWasCR = false
         for try await byte in bytes {
             try Task.checkCancellation()
-            if byte == 10 {
-                if line.last == 13 { line.removeLast() }
+            if previousWasCR && byte == 10 { previousWasCR = false; continue }
+            previousWasCR = byte == 13
+            if byte == 10 || byte == 13 {
                 guard let text = String(bytes: line, encoding: .utf8) else { throw ZooError.invalidResponse }
                 line.removeAll(keepingCapacity: true)
                 if let event = try parser.feed(text) { try await receive(event) }

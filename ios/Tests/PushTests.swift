@@ -17,16 +17,21 @@ private final class StubPushBackend: PushBackend {
     let server = "https://zli.chat"
     var subscribed: [PushReceipt] = []
     var revoked: [PushReceipt] = []
+    var subscribing = false
+    var revokedDuringSubscribe = false
     var failSubscribe = false
     var failRevoke = false
     var beforeSubscribe: (() async -> Void)?
     var beforeRevoke: (() async -> Void)?
     func subscribe(_ receipt: PushReceipt) async throws {
         subscribed.append(receipt)
+        subscribing = true
+        defer { subscribing = false }
         await beforeSubscribe?()
         if failSubscribe { throw URLError(.networkConnectionLost) }
     }
     func revoke(_ receipt: PushReceipt) async throws {
+        revokedDuringSubscribe = revokedDuringSubscribe || subscribing
         revoked.append(receipt)
         await beforeRevoke?()
         if failRevoke { throw URLError(.notConnectedToInternet) }
@@ -86,6 +91,7 @@ final class PushTests: XCTestCase {
         release.continuation.finish()
         await logout.value
         XCTAssertNil(store.receipt)
+        XCTAssertFalse(backend.revokedDuringSubscribe)
         XCTAssertEqual(backend.revoked.map(\.secret), backend.subscribed.map(\.secret))
     }
 
