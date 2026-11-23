@@ -25,13 +25,7 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "../ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
 import { inputClassName } from "../ui/input-styles";
 import { Skeleton } from "../ui/skeleton";
 import { AppAvatar } from "./AppIdentity";
