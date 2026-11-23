@@ -3367,6 +3367,61 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn fallback_id_still_requires_the_moved_handle_and_size() {
+        let dir = temp_dir();
+        let part = dir.join(".zoo-0123456789abcdb.part");
+        let payload = vec![7u8; 16];
+        let mut file = open_for_rename(&part, true).unwrap();
+        file.write_all(&payload).unwrap();
+        file.sync_all().unwrap();
+        let real_id = windows_file_id_from_handle(&file).expect("id");
+        // FileIdInfo が使えないボリュームの移動前 ID を再現する。
+        let fallback = WindowsFileId {
+            stable_across_move: false,
+            ..real_id
+        };
+
+        let saved = dir.join("saved.bin");
+        rename_handle_no_replace(&file, &saved).unwrap();
+
+        assert!(post_move_file_matches(
+            payload.len() as u64,
+            Some(fallback),
+            &saved,
+            Some(&file),
+        ));
+        assert!(!post_move_file_matches(
+            payload.len() as u64,
+            Some(fallback),
+            &saved,
+            None,
+        ));
+        assert!(!post_move_file_matches(
+            payload.len() as u64 + 1,
+            Some(fallback),
+            &saved,
+            Some(&file),
+        ));
+
+        // 同じサイズの別ファイルでも、移動ハンドルと保存先が違えば成功にしない。
+        let other = dir.join("other.bin");
+        std::fs::write(&other, &payload).unwrap();
+        assert!(!post_move_file_matches(
+            payload.len() as u64,
+            Some(fallback),
+            &other,
+            Some(&file),
+        ));
+        // 確認に失敗しても保存先の名前は残る。
+        assert!(saved.is_file());
+        assert_eq!(std::fs::read(&saved).unwrap(), payload);
+
+        drop(file);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn windows_file_id_distinguishes_same_size_replacement() {
         let dir = temp_dir();
         let a = dir.join("a.bin");
@@ -3785,6 +3840,35 @@ mod tests {
         assert!(err.downcast_ref::<UnsupportedDestination>().is_some());
         assert!(!target.exists());
         assert!(!part.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn finish_keeps_a_replaced_saved_file_when_verification_fails() {
+        let dir = temp_dir();
+        let target = dir.join("x.txt");
+        let entry = pending(&target, "0123456789abcda", true, 1024);
+        let part = entry.part.clone();
+        {
+            use std::io::Write;
+            let mut slot = entry.file.lock().unwrap();
+            slot.as_mut().unwrap().write_all(b"new").unwrap();
+        }
+
+        // 確定の直後に同じ名前が別のinodeへ差し替えられた状況を再現する。
+        let err = finish_entry_with(entry, |_, moved_from, saved_as| {
+            std::fs::rename(moved_from, saved_as)?;
+            let replacement = saved_as.with_extension("replacement");
+            std::fs::write(&replacement, b"replaced")?;
+            std::fs::rename(&replacement, saved_as)?;
+            Ok(saved_as.to_path_buf())
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("確認に失敗"));
+        assert!(!part.exists());
+        assert!(target.is_file());
+        assert_eq!(std::fs::read(&target).unwrap(), b"replaced");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
