@@ -287,6 +287,17 @@ impl Gate {
     }
 }
 
+/// LiveKit の JWT の `sub`（identity）。
+fn token_sub(token: &str) -> String {
+    use base64::Engine;
+    let payload = token.split('.').nth(1).expect("jwt payload");
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .expect("base64url");
+    let claims: Value = serde_json::from_slice(&bytes).expect("claims");
+    claims["sub"].as_str().expect("sub").to_string()
+}
+
 async fn request_count(server: &MockServer) -> usize {
     server.received_requests().await.unwrap_or_default().len()
 }
@@ -479,12 +490,17 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
             .as_str()
             .is_some_and(|t| t.split('.').count() == 3)
     );
+    // identity は割り当てごとの `{session_id}.{n}`。
+    let lk_identity = token_sub(joined["token"].as_str().unwrap());
+    assert!(
+        lk_identity.starts_with(&format!("{}.", sessions[0])),
+        "{lk_identity}"
+    );
     // 同じ LiveKit のルームにつなぎ直すだけなら、新しい接続を切らないよう、後始末を記録しない。
     // worker は入り直した人の行を、RemoveParticipant を呼ばずに消すので、worker が動いていると、誤って
     // 記録した行も見えなくなる。worker の確保を止めてから join し、行が作られないことを確かめる。
-    backend::call_sfu::pause_departure_worker_for_test(true);
-    // 止める直前に確保を始めた worker の文が、終わるのを待つ（その文は、このあとの行を見ない）。
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // 戻ったときには、確保の文を実行中の worker はいない（実行中の確保が終わるまで待つ）。
+    backend::call_sfu::pause_departure_worker_for_test(true).await;
     let (status, joined) = request(
         &app,
         &users[0],
@@ -496,6 +512,8 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     .await?;
     assert_eq!(status, StatusCode::OK, "{joined}");
     assert_eq!(joined["sfu"], "livekit");
+    // 同じ割り当ての出し直しなので、identity も同じ。
+    assert_eq!(token_sub(joined["token"].as_str().unwrap()), lk_identity);
     assert_eq!(
         count(
             &mut db,
@@ -506,11 +524,10 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         0,
         "re-joining the same LiveKit room recorded a departure"
     );
-    backend::call_sfu::pause_departure_worker_for_test(false);
+    backend::call_sfu::pause_departure_worker_for_test(false).await;
     // worker を戻して起こし、このルームと identity への RemoveParticipant が届いていないことも確かめる。
     let sfu = state.call_sfu.clone().expect("sfu");
     let lk_room = format!("call-{channel}-{epoch_mesh}");
-    let lk_identity = sessions[0].to_string();
     sfu.departures_wake.notify_one();
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(
@@ -519,15 +536,17 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         "re-joining the same LiveKit room must not remove the participant"
     );
 
-    // 退出の後始末が残っていても（退出してすぐ、同じ session_id で同じルームに入り直した）、worker は
-    // いまの接続を切らずに、その行を済んだものとして消す。
+    // 同じ session_id の、前の割り当ての後始末が残っていても（退出してすぐ、同じルームに入り直した）、
+    // worker が外すのは前の identity だけで、いまの identity の接続は外さない。
+    let old_identity = format!("{}.0000000000000000", sessions[0]);
     toasty::sql::statement(
-        "INSERT INTO call_sfu_departures (channel_id, session_id, sfu_id, sfu_room)
-         VALUES ($1, $2::uuid, 'livekit', $3)",
+        "INSERT INTO call_sfu_departures (channel_id, session_id, sfu_id, sfu_room, livekit_identity)
+         VALUES ($1, $2::uuid, 'livekit', $3, $4)",
     )
     .bind(channel.as_str())
-    .bind(lk_identity.as_str())
+    .bind(sessions[0].to_string())
     .bind(lk_room.as_str())
+    .bind(old_identity.as_str())
     .exec(&mut db)
     .await?;
     sfu.departures_wake.notify_one();
@@ -548,9 +567,14 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     }
     assert!(drained, "the departure worker did not process the row");
     assert_eq!(
+        remove_participant_calls(&lk, 0, &lk_room, &old_identity).await,
+        1,
+        "the worker did not remove the old identity"
+    );
+    assert_eq!(
         remove_participant_calls(&lk, 0, &lk_room, &lk_identity).await,
         0,
-        "the worker removed a participant that re-joined the same room"
+        "the worker removed the identity of the current assignment"
     );
 
     // fallback なら Cloudflare。
@@ -1243,6 +1267,86 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     }
     assert!(removed, "LiveKit RemoveParticipant was not called");
 
+    // 割り当てを変えたあとの RemoveParticipant が遅れて LiveKit に届いても（打ち切り後に LiveKit が処理した
+    // 場合を含む）、外れるのは前の割り当ての identity だけで、入り直した人の新しい identity は外れない。
+    let lk_room2 = format!("call-{channel}-{epoch_mesh}");
+    let (status, joined) = request(
+        &app,
+        &users[3],
+        "POST",
+        &join_uri,
+        Some(json!({"session_id": sessions[3]})),
+        Some(LAN_IP),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    assert_eq!(joined["sfu"], "livekit");
+    let first_identity = token_sub(joined["token"].as_str().unwrap());
+    // 前の identity の RemoveParticipant は、応答を 2 秒遅らせる（そのあいだに入り直す）。
+    Mock::given(method("POST"))
+        .and(path("/twirp/livekit.RoomService/RemoveParticipant"))
+        .and(body_partial_json(json!({"identity": first_identity})))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({}))
+                .set_delay(Duration::from_millis(2000)),
+        )
+        .with_priority(1)
+        .mount(&lk)
+        .await;
+    let lk_before = request_count(&lk).await;
+    // fallback で Cloudflare に移る（前の LiveKit の割り当ての後始末が記録される）。
+    let (status, joined) = request(
+        &app,
+        &users[3],
+        "POST",
+        &join_uri,
+        Some(json!({"session_id": sessions[3], "fallback": true})),
+        Some(LAN_IP),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    assert_eq!(joined["sfu"], "cloudflare");
+    sfu.departures_wake.notify_one();
+    let mut removing = false;
+    for _ in 0..100 {
+        removing = remove_participant_calls(&lk, lk_before, &lk_room2, &first_identity).await > 0;
+        if removing {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(removing, "the worker did not remove the old identity");
+    // RemoveParticipant の応答を待たずに（ロックはないので待たされない）、同じルームに入り直す。
+    let started = tokio::time::Instant::now();
+    let (status, joined) = request(
+        &app,
+        &users[3],
+        "POST",
+        &join_uri,
+        Some(json!({"session_id": sessions[3]})),
+        Some(LAN_IP),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    assert_eq!(joined["sfu"], "livekit");
+    assert!(
+        started.elapsed() < Duration::from_millis(1500),
+        "join waited for RemoveParticipant: {:?}",
+        started.elapsed()
+    );
+    let second_identity = token_sub(joined["token"].as_str().unwrap());
+    assert_ne!(second_identity, first_identity);
+    assert!(second_identity.starts_with(&format!("{}.", sessions[3])));
+    // 遅れた応答が返ったあとも、外す要求は前の identity だけで、新しい identity への要求はない。
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_eq!(
+        remove_participant_calls(&lk, lk_before, &lk_room2, &second_identity).await,
+        0,
+        "a late removal targeted the new identity"
+    );
+    assert!(remove_participant_calls(&lk, lk_before, &lk_room2, &first_identity).await >= 1);
+
     // Cloudflare の close が応答待ちのままでも、LiveKit の後始末は待たない（SFU ごとに確保と処理を分ける）。
     // ほかの検査の件数に入らないよう、別のチャンネル ID で記録する（call_sfu_departures に外部キーはない）。
     let hang_channel = format!("hang-{}", uuid::Uuid::new_v4());
@@ -1459,67 +1563,6 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         reassigned,
         "the LiveKit participant did not get sfu_reassign: {buf}"
     );
-    // 退出の worker は、入り直しの確認から RemoveParticipant の応答まで、チャンネル行の FOR SHARE を持つ。
-    // そのあいだ、同じチャンネルの join（チャンネル行の FOR UPDATE のあとで LiveKit のトークンを出す）は待つ。
-    // 確認のあとに入り直した人の新しい接続を、RemoveParticipant が切らないため。
-    // いまの割り当てとは別のルーム（入り直していない）にする。
-    let epoch2 = count(
-        &mut db,
-        "SELECT epoch FROM call_rooms WHERE channel_id = $1",
-        &channel2,
-    )
-    .await?;
-    let old_room = format!("call-{channel2}-{}", epoch2 + 100);
-    Mock::given(method("POST"))
-        .and(path("/twirp/livekit.RoomService/RemoveParticipant"))
-        .and(body_partial_json(json!({"room": old_room})))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({}))
-                .set_delay(Duration::from_millis(2000)),
-        )
-        .with_priority(1)
-        .mount(&lk)
-        .await;
-    let lk_before = request_count(&lk).await;
-    toasty::sql::statement(
-        "INSERT INTO call_sfu_departures (channel_id, session_id, sfu_id, sfu_room)
-         VALUES ($1, $2::uuid, 'livekit', $3)",
-    )
-    .bind(channel2.as_str())
-    .bind(sessions2[0].to_string())
-    .bind(old_room.as_str())
-    .exec(&mut db)
-    .await?;
-    sfu.departures_wake.notify_one();
-    let mut removing = false;
-    for _ in 0..100 {
-        removing = remove_participant_calls(&lk, lk_before, &old_room, &sessions2[0].to_string())
-            .await
-            > 0;
-        if removing {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert!(removing, "the worker did not call RemoveParticipant");
-    let removal_seen = tokio::time::Instant::now();
-    let (status, joined) = request(
-        &app2,
-        &users[0],
-        "POST",
-        &join2_uri,
-        Some(json!({"session_id": sessions2[0]})),
-        Some(LAN_IP),
-    )
-    .await?;
-    assert_eq!(status, StatusCode::OK, "{joined}");
-    // RemoveParticipant の応答（届いてから 2 秒）までは、join は終わらない。
-    assert!(
-        removal_seen.elapsed() >= Duration::from_millis(1500),
-        "join was not serialized with RemoveParticipant: {:?}",
-        removal_seen.elapsed()
-    );
     drop(streams2);
     toasty::sql::statement("DELETE FROM call_presence WHERE channel_id = $1")
         .bind(channel2.as_str())
@@ -1651,7 +1694,8 @@ async fn join_round(
 /// 部屋で同時に出したときの、要求ごとの時間を比べる。join はチャンネル行を FOR UPDATE でロックするので、
 /// 「同じ部屋で同時」と「別々の部屋で同時」の差が、チャンネル行のロック待ち。半分は LAN（LiveKit）、
 /// 半分は Cloudflare（セッションを作る mock の遅延 0 / 100 ミリ秒）。DB は共有の DB をそのまま使う。
-/// 各条件を 3 回測り、最初に 1 回、捨てる回（接続の準備）を入れる。
+/// 各条件を 3 回測る。最初の回（10 人、接続の準備を含む）は cold として分けて出す。join の時間とは別に、
+/// チャンネル行の FOR UPDATE にかかった時間（`record_lock_waits_for_test`）も出す。
 #[tokio::test]
 #[ignore]
 async fn join_latency() -> anyhow::Result<()> {
@@ -1671,6 +1715,17 @@ async fn join_latency() -> anyhow::Result<()> {
     let lk = MockServer::start().await;
 
     let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+    let summary = |all: &mut Vec<Duration>| {
+        all.sort();
+        let pick = |q: f64| all[((all.len() as f64 * q).ceil() as usize).clamp(1, all.len()) - 1];
+        format!(
+            "samples={} p50={:.1}ms p95={:.1}ms max={:.1}ms",
+            all.len(),
+            ms(pick(0.5)),
+            ms(pick(0.95)),
+            ms(*all.last().unwrap()),
+        )
+    };
     let mut report = Vec::new();
     for delay_ms in [0u64, 100] {
         let cf = MockServer::start().await;
@@ -1703,8 +1758,15 @@ async fn join_latency() -> anyhow::Result<()> {
         let mut state = base_state.clone();
         state.call_sfu = Some(backend::call_sfu::CallSfu::new(cfg));
         let app = create_router(state);
-        // 捨てる回。
-        join_round(&app, &mut db, 10, JoinMode::SameRoomConcurrent).await?;
+        // 最初の回（接続の準備を含む）。ほかとは分けて出す。
+        backend::routes::call_sfu::record_lock_waits_for_test(true);
+        let mut cold = join_round(&app, &mut db, 10, JoinMode::SameRoomConcurrent).await?;
+        let mut cold_lock = backend::routes::call_sfu::record_lock_waits_for_test(false);
+        report.push(format!(
+            "cf_delay={delay_ms}ms n=10 cold SameRoomConcurrent: join {} / lock {}",
+            summary(&mut cold),
+            summary(&mut cold_lock),
+        ));
 
         for n in [20usize, 50] {
             for mode in [
@@ -1713,18 +1775,16 @@ async fn join_latency() -> anyhow::Result<()> {
                 JoinMode::SameRoomSequential,
             ] {
                 let mut all = Vec::new();
+                backend::routes::call_sfu::record_lock_waits_for_test(true);
                 for _ in 0..3 {
                     all.extend(join_round(&app, &mut db, n, mode).await?);
                 }
-                all.sort();
-                let pick =
-                    |q: f64| all[((all.len() as f64 * q).ceil() as usize).clamp(1, all.len()) - 1];
+                // チャンネル行の FOR UPDATE にかかった時間（Cloudflare の join は 2 回取る）。
+                let mut lock = backend::routes::call_sfu::record_lock_waits_for_test(false);
                 report.push(format!(
-                    "cf_delay={delay_ms}ms n={n} {mode:?}: samples={} p50={:.1}ms p95={:.1}ms max={:.1}ms",
-                    all.len(),
-                    ms(pick(0.5)),
-                    ms(pick(0.95)),
-                    ms(*all.last().unwrap()),
+                    "cf_delay={delay_ms}ms n={n} {mode:?}: join {} / lock {}",
+                    summary(&mut all),
+                    summary(&mut lock),
                 ));
             }
         }

@@ -101,6 +101,7 @@ erDiagram
       text sfu_id
       text sfu_room
       text cf_session_id
+      text livekit_identity
     }
     call_presence }o--o| channels : call_presence_channel_id_fkey
     call_presence }o--o| users : call_presence_user_id_fkey
@@ -122,6 +123,7 @@ erDiagram
       text sfu_id
       text sfu_room
       text cf_session_id
+      text livekit_identity
       integer attempts
       timestamptz claimed_until
       timestamptz created_at

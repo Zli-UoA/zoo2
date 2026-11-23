@@ -387,3 +387,21 @@ func TestUnsubscribedBeforePushIsNotRelayed(t *testing.T) {
 		t.Fatal("the bridge must not fail")
 	}
 }
+
+func TestSessionOfIdentity(t *testing.T) {
+	sid := "6f1c1a2e-0000-4000-8000-000000000001"
+	cases := map[string]string{
+		sid + ".0123456789abcdef": sid,
+		sid + ".a.b":              sid,
+		sid:                       sid,
+	}
+	for identity, want := range cases {
+		if got := sessionOfIdentity(identity); got != want {
+			t.Errorf("sessionOfIdentity(%q) = %q, want %q", identity, got, want)
+		}
+	}
+	// 割り当てが変わって identity が変わっても、一覧の同じ session_id として扱う。
+	if sessionOfIdentity(sid+".1") != sessionOfIdentity(sid+".2") {
+		t.Error("identities of the same session differ")
+	}
+}

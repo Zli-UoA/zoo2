@@ -1,8 +1,9 @@
 /**
  * LiveKit（zoo2 の k8s、LAN の中だけ）につなぐアダプタ（docs/calls-sfu.md）。
  *
- * 参加者の identity は call の session_id。sfu-bridge（identity が `bridge:` で始まる）が Cloudflare の人の声を
- * publish するときは、トラック名がその人の session_id になる。
+ * 参加者の identity は割り当てごとの `{session_id}.{n}`（入り直すたびに n が変わる。backend の
+ * `livekit::participant_identity`）で、最初の `.` より前が call の session_id。sfu-bridge（identity が `bridge:` で
+ * 始まる）が Cloudflare の人の声を publish するときは、トラック名がその人の session_id になる。
  */
 import {
   type LocalAudioTrack,
@@ -19,8 +20,11 @@ import type { SfuAdapter, SfuAdapterCallbacks } from "./types";
 /** この時間で ICE がつながらなければ、Cloudflare でやり直す（LAN の外にいるなど）。 */
 export const LIVEKIT_CONNECT_TIMEOUT_MS = 8000;
 
+/** LiveKit の参加者とトラックから、話者の session_id を求める。 */
 export function speakerOf(participantIdentity: string, trackName: string): string {
-  return participantIdentity.startsWith("bridge:") ? trackName : participantIdentity;
+  if (participantIdentity.startsWith("bridge:")) return trackName;
+  const dot = participantIdentity.indexOf(".");
+  return dot < 0 ? participantIdentity : participantIdentity.slice(0, dot);
 }
 
 export class LiveKitAdapter implements SfuAdapter {

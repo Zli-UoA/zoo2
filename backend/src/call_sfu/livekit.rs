@@ -3,6 +3,7 @@
 
 use serde::Serialize;
 use serde_json::json;
+use uuid::Uuid;
 
 use super::config::LiveKitConfig;
 use crate::error::AppError;
@@ -49,6 +50,16 @@ struct Claims<'a> {
     nbf: u64,
     exp: u64,
     video: VideoGrant,
+}
+
+/// 割り当てごとの LiveKit の identity（`{session_id}.{n}`）。`n` は割り当てのたびに新しい値。
+///
+/// 退出の後始末は、その割り当ての identity だけを RemoveParticipant で外す。同じ session_id で入り直した人は
+/// 別の identity になるので、古い後始末の要求が遅れて LiveKit に届いても、新しい接続は切れない。
+/// クライアントと sfu-bridge は、最初の `.` より前を session_id として読む（session_id は UUID で `.` を含まない）。
+pub fn participant_identity(session_id: &str) -> String {
+    let n = Uuid::new_v4().simple().to_string();
+    format!("{session_id}.{}", &n[..16])
 }
 
 /// 通話ごとの LiveKit のルーム名。
@@ -107,15 +118,16 @@ impl LiveKit {
         .map_err(|e| AppError::Internal(anyhow::anyhow!("LiveKit token: {e}")))
     }
 
-    /// 人間の参加者のトークン。マイクの publish と購読だけを許す。identity は call の session_id。
+    /// 人間の参加者のトークン。マイクの publish と購読だけを許す。identity は割り当ての identity
+    /// （`participant_identity`）。
     pub fn participant_token(
         &self,
         room: &str,
-        session_id: &str,
+        identity: &str,
         display_name: &str,
     ) -> Result<String, AppError> {
         self.sign(
-            Some(session_id),
+            Some(identity),
             Some(display_name),
             JOIN_TOKEN_TTL_SECS,
             VideoGrant {
@@ -244,6 +256,15 @@ mod tests {
         let claims = decode(&lk().bridge_token("call-c1-3", 7).unwrap());
         assert_eq!(claims["sub"], "bridge:7");
         assert!(claims["video"].get("hidden").is_none());
+    }
+
+    #[test]
+    fn participant_identity_is_new_for_each_assignment() {
+        let sid = "6f1c1a2e-0000-4000-8000-000000000001";
+        let a = participant_identity(sid);
+        let b = participant_identity(sid);
+        assert_ne!(a, b);
+        assert_eq!(a.split_once('.').map(|(s, _)| s), Some(sid));
     }
 
     #[test]

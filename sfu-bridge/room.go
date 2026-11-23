@@ -183,10 +183,10 @@ func (b *roomBridge) connect(r roomState) error {
 				}
 				// 購読の記録は、goroutine を起こす前にここで入れる。
 				b.markSubscribed(track)
-				go b.pushToCloudflare(rp.Identity(), track)
+				go b.pushToCloudflare(sessionOfIdentity(rp.Identity()), track)
 			},
 			OnTrackUnsubscribed: func(track *webrtc.TrackRemote, _ *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-				b.unsubscribe(rp.Identity(), track)
+				b.unsubscribe(sessionOfIdentity(rp.Identity()), track)
 			},
 		},
 		OnDisconnected: func() { b.fail(errors.New("livekit disconnected")) },
@@ -201,6 +201,16 @@ func (b *roomBridge) connect(r roomState) error {
 		return context.Canceled
 	}
 	return nil
+}
+
+// sessionOfIdentity は LiveKit の参加者の identity から、通話の session_id を取り出す。
+// identity は割り当てごとの `{session_id}.{n}`（backend の livekit::participant_identity）で、session_id は UUID なので
+// `.` を含まない。backend の一覧（livekit_sessions）と push の speaker_session_id は session_id で扱う。
+func sessionOfIdentity(identity string) string {
+	if i := strings.IndexByte(identity, '.'); i >= 0 {
+		return identity[:i]
+	}
+	return identity
 }
 
 // pushToCloudflare は LiveKit の話者の声を Cloudflare に push する。

@@ -67,6 +67,7 @@ struct PresenceRow {
     sfu_id: Option<String>,
     sfu_room: Option<String>,
     cf_session_id: Option<String>,
+    livekit_identity: Option<String>,
     mode: Option<RoomMode>,
     epoch: Option<i64>,
 }
@@ -83,7 +84,8 @@ async fn own_presence(
     let rows = toasty::sql::query(format!(
         "SELECT json_build_object(
              'display_name', p.display_name, 'sfu_id', p.sfu_id, 'sfu_room', p.sfu_room,
-             'cf_session_id', p.cf_session_id, 'mode', r.mode, 'epoch', r.epoch)::text
+             'cf_session_id', p.cf_session_id, 'livekit_identity', p.livekit_identity,
+             'mode', r.mode, 'epoch', r.epoch)::text
          FROM call_presence p
          LEFT JOIN call_rooms r ON r.channel_id = p.channel_id
          WHERE p.channel_id = $1 AND p.session_id = $2::uuid AND p.user_id = $3
@@ -201,10 +203,18 @@ async fn join(
             .as_ref()
             .expect("choose_sfu returns livekit only when enabled");
         let room = livekit::room_name(&channel_id, epoch);
-        let token = lk.participant_token(&room, &body.session_id.to_string(), &me.display_name)?;
+        // 同じルームへの割り当てを出し直すだけ（join の再送）なら、identity も同じにする（つないでいる接続は
+        // そのまま）。それ以外は新しい identity にする（退出の後始末は、前の identity だけを外す）。
+        let identity = match (&me.sfu_id, &me.sfu_room, &me.livekit_identity) {
+            (Some(sfu_id), Some(r), Some(identity)) if sfu_id == SFU_LIVEKIT && *r == room => {
+                identity.clone()
+            }
+            _ => livekit::participant_identity(&body.session_id.to_string()),
+        };
+        let token = lk.participant_token(&room, &identity, &me.display_name)?;
         // 前の割り当ての後始末は、新しい割り当てと同じトランザクションで記録する（退出と同じ worker が処理する）。
         let departed =
-            record_previous_assignment(&mut tx, &channel_id, body.session_id, &me, Some(&room))
+            record_previous_assignment(&mut tx, &channel_id, body.session_id, &me, Some(&identity))
                 .await?;
         // 同じルームへの割り当てを出し直すだけなら、bridge が出しているトラックを残し、版も進めない。
         if set_assignment(
@@ -212,9 +222,12 @@ async fn join(
             &channel_id,
             body.session_id,
             &me,
-            SFU_LIVEKIT,
-            Some(&room),
-            None,
+            Assignment {
+                sfu_id: SFU_LIVEKIT,
+                room: Some(&room),
+                cf_session: None,
+                livekit_identity: Some(&identity),
+            },
         )
         .await?
         {
@@ -248,9 +261,12 @@ async fn join(
             &channel_id,
             body.session_id,
             &me,
-            SFU_CLOUDFLARE,
-            None,
-            Some(&cf_session),
+            Assignment {
+                sfu_id: SFU_CLOUDFLARE,
+                room: None,
+                cf_session: Some(&cf_session),
+                livekit_identity: None,
+            },
         )
         .await?
         {
@@ -287,11 +303,30 @@ async fn join(
 
 /// チャンネル行のロック。入室と SFU の割り当てを、このロックで直列化する。
 async fn lock_channel(tx: &mut toasty::Transaction<'_>, channel_id: &str) -> Result<(), AppError> {
+    let started = std::time::Instant::now();
     toasty::sql::query("SELECT 1 FROM channels WHERE id = $1 FOR UPDATE")
         .bind(channel_id.to_string())
         .exec(&mut *tx)
         .await?;
+    if LOCK_WAIT_RECORDING.load(std::sync::atomic::Ordering::Relaxed) {
+        LOCK_WAITS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(started.elapsed());
+    }
     Ok(())
+}
+
+/// テスト用：`lock_channel`（チャンネル行の FOR UPDATE）にかかった時間を記録するか。本番では使わない。
+static LOCK_WAIT_RECORDING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static LOCK_WAITS: std::sync::Mutex<Vec<Duration>> = std::sync::Mutex::new(Vec::new());
+
+/// テスト用（join の計測）：`on` なら、ここから `lock_channel` の時間を記録する。今までに記録した分を返して空にする。
+#[doc(hidden)]
+pub fn record_lock_waits_for_test(on: bool) -> Vec<Duration> {
+    LOCK_WAIT_RECORDING.store(on, std::sync::atomic::Ordering::Relaxed);
+    std::mem::take(&mut *LOCK_WAITS.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 #[derive(Deserialize, Default)]
@@ -327,26 +362,28 @@ async fn count_others(
 /// 前の割り当て（fallback・やり直し）の後始末を `call_sfu_departures` に記録する。新しい割り当てと同じ
 /// トランザクションで呼ぶので、どちらかだけが残ることはない。記録したら `true`。
 ///
-/// `new_livekit_room` は、新しい割り当てが LiveKit のときのルーム名。同じルームに同じ identity
-/// （`session_id`）でつなぎ直すだけなら、新しい接続を切ってしまうので、LiveKit の後始末はしない。
+/// `new_livekit_identity` は、新しい割り当てが LiveKit のときの identity。前と同じ identity（同じルームへの
+/// join の再送）なら、つないでいる接続を切ってしまうので、LiveKit の後始末はしない。記録するのは前の
+/// identity で、worker はその identity だけを外す。
 async fn record_previous_assignment(
     tx: &mut toasty::Transaction<'_>,
     channel_id: &str,
     session_id: Uuid,
     previous: &PresenceRow,
-    new_livekit_room: Option<&str>,
+    new_livekit_identity: Option<&str>,
 ) -> Result<bool, AppError> {
-    let previous_livekit_room = (previous.sfu_id.as_deref() == Some(SFU_LIVEKIT))
-        .then_some(previous.sfu_room.as_deref())
-        .flatten()
-        .filter(|room| Some(*room) != new_livekit_room);
+    let previous_on_livekit = previous.sfu_id.as_deref() == Some(SFU_LIVEKIT)
+        && (previous.livekit_identity.is_none()
+            || previous.livekit_identity.as_deref() != new_livekit_identity);
+    let previous_livekit_room = previous.sfu_room.as_deref().filter(|_| previous_on_livekit);
     let previous_cf = previous.cf_session_id.as_deref();
     if previous_livekit_room.is_none() && previous_cf.is_none() {
         return Ok(false);
     }
     toasty::sql::statement(
-        "INSERT INTO call_sfu_departures (channel_id, session_id, sfu_id, sfu_room, cf_session_id)
-         VALUES ($1, $2::uuid, $3, NULLIF($4, ''), NULLIF($5, ''))",
+        "INSERT INTO call_sfu_departures
+           (channel_id, session_id, sfu_id, sfu_room, cf_session_id, livekit_identity)
+         VALUES ($1, $2::uuid, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''))",
     )
     .bind(channel_id.to_string())
     .bind(session_id.to_string())
@@ -357,6 +394,12 @@ async fn record_previous_assignment(
     })
     .bind(previous_livekit_room.unwrap_or_default().to_string())
     .bind(previous_cf.unwrap_or_default().to_string())
+    .bind(
+        previous_livekit_room
+            .and(previous.livekit_identity.as_deref())
+            .unwrap_or_default()
+            .to_string(),
+    )
     .exec(&mut *tx)
     .await?;
     Ok(true)
@@ -374,18 +417,24 @@ async fn set_assignment(
     channel_id: &str,
     session_id: Uuid,
     previous: &PresenceRow,
-    sfu_id: &str,
-    room: Option<&str>,
-    cf_session: Option<&str>,
+    new: Assignment<'_>,
 ) -> Result<bool, AppError> {
+    let Assignment {
+        sfu_id,
+        room,
+        cf_session,
+        livekit_identity,
+    } = new;
     if previous.sfu_id.as_deref() == Some(sfu_id)
         && previous.sfu_room.as_deref() == room
         && previous.cf_session_id.as_deref() == cf_session
+        && previous.livekit_identity.as_deref() == livekit_identity
     {
         return Ok(false);
     }
     toasty::sql::statement(
-        "UPDATE call_presence SET sfu_id = $3, sfu_room = NULLIF($4, ''), cf_session_id = NULLIF($5, '')
+        "UPDATE call_presence SET sfu_id = $3, sfu_room = NULLIF($4, ''), cf_session_id = NULLIF($5, ''),
+             livekit_identity = NULLIF($6, '')
          WHERE channel_id = $1 AND session_id = $2::uuid",
     )
     .bind(channel_id.to_string())
@@ -394,6 +443,7 @@ async fn set_assignment(
     // toasty は NULL の型を推定できないので、空文字を NULL として渡す。
     .bind(room.unwrap_or_default().to_string())
     .bind(cf_session.unwrap_or_default().to_string())
+    .bind(livekit_identity.unwrap_or_default().to_string())
     .exec(&mut *tx)
     .await?;
     // 割り当てが変わったら、前の SFU に出していたトラックは消す。
@@ -405,6 +455,14 @@ async fn set_assignment(
     .exec(&mut *tx)
     .await?;
     Ok(true)
+}
+
+/// 新しい割り当て（`set_assignment`）。
+struct Assignment<'a> {
+    sfu_id: &'a str,
+    room: Option<&'a str>,
+    cf_session: Option<&'a str>,
+    livekit_identity: Option<&'a str>,
 }
 
 async fn notify_in(

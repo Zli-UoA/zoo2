@@ -183,11 +183,12 @@ pub fn rows_json<T: DeserializeOwned>(rows: Vec<toasty::stmt::Value>) -> Vec<T> 
 #[derive(Debug, Clone, Deserialize)]
 struct Departure {
     id: i64,
-    channel_id: String,
     session_id: Uuid,
     sfu_id: String,
     sfu_room: Option<String>,
     cf_session_id: Option<String>,
+    /// その割り当ての LiveKit の identity（`livekit::participant_identity`）。
+    livekit_identity: Option<String>,
     attempts: i32,
 }
 
@@ -204,32 +205,40 @@ const DEPARTURE_CLAIM_SECS: i64 = 300;
 const DEPARTURE_RETRY_SECS: i64 = 15;
 
 /// テスト用：退出の後始末の worker が、行を確保しないようにする。本番では使わない。
-static DEPARTURES_PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// worker は確保の文のあいだ読み取りのロックを持ち、止める側は書き込みのロックで値を変える。
+static DEPARTURES_PAUSED: tokio::sync::RwLock<bool> = tokio::sync::RwLock::const_new(false);
 
 /// テスト用：`true` のあいだ、退出の後始末の worker は新しく行を確保しない（すでに確保した行は処理する）。
 /// worker が処理して消すと見えなくなる行（誤って記録した後始末）を、テストが確かめるために使う。
+///
+/// 戻ったときには、確保の文を実行中の worker はいない（書き込みのロックは、実行中の確保が終わるまで待つ）。
+/// そのあとに始まる確保は、止めたことを必ず見る。
 #[doc(hidden)]
-pub fn pause_departure_worker_for_test(paused: bool) {
-    DEPARTURES_PAUSED.store(paused, std::sync::atomic::Ordering::SeqCst);
+pub async fn pause_departure_worker_for_test(paused: bool) {
+    *DEPARTURES_PAUSED.write().await = paused;
 }
 
 /// `sfu_id` の SFU に割り当てていた人の、退出の後始末をする。
 ///
 /// 1. 短い 1 文で、その SFU の行を確保する（`claimed_until` を先に延ばす）。行ロックは、この文の中でだけ持つ。
-/// 2. 確保した行のロックは持たずに、同時数を限って API を呼ぶ（LiveKit の RemoveParticipant だけは、
-///    入り直しと直列にするため、チャンネル行の FOR SHARE を短く持つ。`close_departed`）。
+/// 2. ロックもトランザクションも持たずに、同時数を限って API を呼ぶ。
 /// 3. 終わった行は消し、失敗した行は `attempts` を増やして、`DEPARTURE_RETRY_SECS` 後まで確保を残す。
 ///
-/// 探索：idx_call_sfu_departures_sfu (sfu_id, id) で、その SFU の行だけを id 順に読み、確保の済んでいない行を
-/// 最大 `DEPARTURE_BATCH` 行。読み飛ばすのは、その SFU の、ほかの worker が確保中の行（worker の数 ×
-/// `DEPARTURE_BATCH` 以下）と再試行を待つ行で、ほかの SFU の行は読まない。行は処理したら消すので、表の大きさは
-/// 「まだ閉じていない退出」の数に比例し、履歴は残らない。
+/// 探索：その SFU の、確保の済んでいない行を id 順に最大 `DEPARTURE_BATCH` 行。読む行数の上限は、
+/// `DEPARTURE_BATCH` ＋ その SFU の確保中・再試行待ちの行 ＋ ほかの worker が行ロック中で読み飛ばす行
+/// （SKIP LOCKED。worker の数 × `DEPARTURE_BATCH` 以下）＋ 主キーで読む計画のときは、それより古い
+/// ほかの SFU の行。この SFU の行が少ないときは idx_call_sfu_departures_sfu (sfu_id, id) を使い、ほかの SFU の
+/// 行は読まない。この SFU の行が多いときは主キー順の計画になることがあり、そのときは先に並ぶほかの SFU の
+/// 行を除外しながら読む（その数は、ほかの SFU のまだ閉じていない退出の数以下）。行は処理したら消すので、
+/// 表の大きさは「まだ閉じていない退出」の数に比例し、履歴は残らない。
 async fn drain_departures(
     sfu: &CallSfu,
     db: &mut toasty::Db,
     sfu_id: &str,
 ) -> Result<usize, AppError> {
-    if DEPARTURES_PAUSED.load(std::sync::atomic::Ordering::SeqCst) {
+    // テスト用の一時停止。確保の文が終わるまで読み取りのロックを持つ。
+    let paused = DEPARTURES_PAUSED.read().await;
+    if *paused {
         return Ok(0);
     }
     // sfu_id は、パラメーターでなく定数として SQL に書く。パラメーターだと、汎用の計画（generic plan）が
@@ -253,18 +262,20 @@ async fn drain_departures(
          FROM picked
          WHERE d.id = picked.id
          RETURNING json_build_object(
-             'id', d.id, 'channel_id', d.channel_id, 'session_id', d.session_id, 'sfu_id', d.sfu_id, 'sfu_room', d.sfu_room,
-             'cf_session_id', d.cf_session_id, 'attempts', d.attempts
+             'id', d.id, 'session_id', d.session_id, 'sfu_id', d.sfu_id, 'sfu_room', d.sfu_room,
+             'cf_session_id', d.cf_session_id, 'livekit_identity', d.livekit_identity,
+             'attempts', d.attempts
          )::text"
     ))
     .exec(&mut *db)
     .await?;
+    drop(paused);
     let departures: Vec<Departure> = rows_json(rows);
     if departures.is_empty() {
         return Ok(0);
     }
 
-    let results = close_all(sfu, db, departures).await;
+    let results = close_all(sfu, departures).await;
 
     let mut done = Vec::new();
     let mut retry = Vec::new();
@@ -306,18 +317,15 @@ async fn drain_departures(
 
 async fn close_all(
     sfu: &CallSfu,
-    db: &toasty::Db,
     departures: Vec<Departure>,
 ) -> Vec<(Departure, Result<(), AppError>)> {
     use futures_util::StreamExt;
     let sfu = sfu.clone();
-    let db = db.clone();
     futures_util::stream::iter(departures)
         .map(move |d| {
             let sfu = sfu.clone();
-            let mut db = db.clone();
             async move {
-                let result = close_departed(&sfu, &mut db, &d).await;
+                let result = close_departed(&sfu, &d).await;
                 (d, result)
             }
         })
@@ -333,7 +341,7 @@ fn join_ids(ids: &[i64]) -> String {
         .join(",")
 }
 
-async fn close_departed(sfu: &CallSfu, db: &mut toasty::Db, d: &Departure) -> Result<(), AppError> {
+async fn close_departed(sfu: &CallSfu, d: &Departure) -> Result<(), AppError> {
     if let Some(cf) = &d.cf_session_id {
         sfu.cloudflare.close_session(cf).await?;
     }
@@ -346,57 +354,14 @@ async fn close_departed(sfu: &CallSfu, db: &mut toasty::Db, d: &Departure) -> Re
                 "LiveKit is not configured"
             )));
         };
-        // 同じ session_id で、同じルームに入り直していたら（退出のあとの再入室、割り当てのやり直し）、
-        // RemoveParticipant は新しい接続を切ってしまうので呼ばない。この行は済んだものとして消す。
-        //
-        // 確かめてから呼ぶまでのあいだに入り直されないよう、チャンネル行を FOR SHARE でロックしたまま、
-        // 確認と RemoveParticipant をする。LiveKit のトークンは、join がチャンネル行を FOR UPDATE で
-        // ロックした下で割り当てを書いて発行するので、join はこの後始末の前（確認で見つかる）か後
-        // （トークンを受け取るのは RemoveParticipant の応答のあと）のどちらかになる。ロックのあいだは、その
-        // チャンネルの入室と join が待つので、LiveKit の呼び出しは `LIVEKIT_REMOVE_UNDER_LOCK` で打ち切り、
-        // 打ち切ったら失敗として再試行する。
-        let mut tx = db.transaction().await?;
-        toasty::sql::query("SELECT 1 FROM channels WHERE id = $1 FOR SHARE")
-            .bind(d.channel_id.clone())
-            .exec(&mut tx)
-            .await?;
-        if rejoined_livekit_room(&mut tx, d, room).await? {
-            tx.commit().await?;
-            return Ok(());
-        }
-        let removed = tokio::time::timeout(
-            LIVEKIT_REMOVE_UNDER_LOCK,
-            lk.remove_participant(room, &d.session_id.to_string()),
-        )
-        .await;
-        tx.commit().await?;
-        removed
-            .map_err(|_| AppError::BadGateway("LiveKit: RemoveParticipant timed out".into()))??;
+        // 外すのは、その割り当ての identity だけ。identity は割り当てごとに新しいので、同じ session_id で
+        // 入り直した人（新しい identity）の接続は、この要求が遅れて届いても切れない。ロックは持たない。
+        // identity のない行は、identity が session_id だったころの割り当て。
+        let session_identity = d.session_id.to_string();
+        let identity = d.livekit_identity.as_deref().unwrap_or(&session_identity);
+        lk.remove_participant(room, identity).await?;
     }
     Ok(())
-}
-
-/// チャンネル行のロックを持ったまま、LiveKit の RemoveParticipant を待つ上限。
-const LIVEKIT_REMOVE_UNDER_LOCK: Duration = Duration::from_secs(3);
-
-/// 退出した session_id が、いま同じ LiveKit のルームに割り当てられているか。
-/// 探索：call_presence の主キー (channel_id, session_id) で 1 行。
-async fn rejoined_livekit_room(
-    executor: &mut dyn toasty::Executor,
-    d: &Departure,
-    room: &str,
-) -> Result<bool, AppError> {
-    let rows = toasty::sql::query(
-        "SELECT 1 FROM call_presence
-         WHERE channel_id = $1 AND session_id = $2::uuid
-           AND sfu_id = 'livekit' AND sfu_room = $3 AND expires_at > statement_timestamp()",
-    )
-    .bind(d.channel_id.clone())
-    .bind(d.session_id.to_string())
-    .bind(room.to_string())
-    .exec(executor)
-    .await?;
-    Ok(!rows.is_empty())
 }
 
 #[cfg(test)]

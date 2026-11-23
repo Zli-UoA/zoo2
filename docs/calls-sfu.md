@@ -33,7 +33,7 @@
 2. それ以外、IP がわからないとき、`fallback`、`cloudflare_only` のときは Cloudflare。
 3. bridge が無効のときは、部屋に Cloudflare の人が 1 人でもいれば Cloudflare にする。あとから Cloudflare の人が入ったら、`sfu_reassign` で LiveKit の人に移ってもらう。LiveKit の人数は、Cloudflare のセッションを作ったあと、チャンネル行のロックを取り直して数え直す（セッションを作るあいだに LiveKit に入った人を見落とさないため）。
 
-- 割り当てを変えたとき（fallback、やり直し）は、前の割り当ての後始末を、新しい割り当てと同じトランザクションで `call_sfu_departures` に記録する。同じ LiveKit のルームに同じ identity でつなぎ直すだけのときは記録しない（記録すると、worker の `RemoveParticipant` が新しい接続を切る）。
+- 割り当てを変えたとき（fallback、やり直し）は、前の割り当ての後始末を、新しい割り当てと同じトランザクションで `call_sfu_departures` に記録する。記録するのは前の割り当ての LiveKit の identity で、worker はその identity だけを外す。同じ LiveKit のルームへの割り当てを出し直すだけ（join の再送）のときは、identity も同じにして記録しない（記録すると、worker の `RemoveParticipant` がつないでいる接続を切る）。
 - 同じ LiveKit のルームへの割り当てを出し直すだけ（join の再送）のときは、割り当てを書き換えず、トラックも消さず、`track_version` も進めない。bridge が出している、その話者のトラックを残すため（LiveKit の購読が変わらないと、bridge は push し直さない）。
 
 - ブラウザーから LAN のプライベート IP を測ること（RTT probe）はしない。公開サイトからプライベート IP へのアクセスは、ブラウザーが制限する（Private Network Access）。
@@ -41,7 +41,7 @@
 - LiveKit の JWT（HS256）の権限は次のとおり。`roomAdmin` と `roomCreate` は付けない。
   - 部屋に入れる（`roomJoin`）。部屋は 1 つに固定。
   - publish はマイクだけ（`canPublishSources: [microphone]`）。データは publish できない（`canPublishData: false`）。
-  - identity は通話の `session_id`。
+  - identity は割り当てごとの `{session_id}.{n}`（`n` は割り当てのたびに新しい値。`call_presence.livekit_identity`）。クライアントと sfu-bridge は、最初の `.` より前を `session_id` として読む（`session_id` は UUID で `.` を含まない）。同じルームへの join の再送では、同じ identity のトークンを出す。
   - 有効期限は 60 秒（sfu-bridge のトークンは 5 分）。`sfu/join` の応答ですぐに接続するので短くしている。接続したあとの再接続には、クライアント SDK が LiveKit サーバーから受け取る更新トークンを使う。
 - セルフホストの LiveKit では、`RemoveParticipant` で外しても、発行済みのトークンは無効にならない。退出・キックのあとに残る時間窓は次のとおり。運用上の制約として受け入れている。
   - backend が発行したトークン：発行から最長 60 秒、同じルームに入り直せる。
@@ -66,9 +66,8 @@
 - `call_presence` の DELETE のトリガー（`record_call_sfu_departures`）が、SFU に割り当てた人の退出を `call_sfu_departures` に記録する。退出、sweep、キック、チャンネル削除のどの経路でも記録される。
 - backend の worker（`CallSfu::start_departure_worker`）は、記録を見て次を呼び、退出した人が音声を送ることも受けることもできないようにする。
   - Cloudflare：`GET /sessions/{id}` と `tracks/close`（force）。応答の track ごとの結果を見て、閉じた mid と既に閉じていた mid（`close_track_error`）だけを成功に数える。ほかのエラーや結果のない mid があれば失敗にする。
-  - LiveKit：`RemoveParticipant`。呼ぶ前に、その `session_id` の presence を主キーで読み、いま同じルームに割り当てられていれば（退出のあと、同じ session_id で入り直した）、呼ばずに済んだものとする。新しい接続を切らないため。
-    - 確認と `RemoveParticipant` は、チャンネル行を `FOR SHARE` でロックしたまま行う。join は同じ行を `FOR UPDATE` でロックしてから LiveKit のトークンを発行するので、確認のあとに入り直した人のトークンは、`RemoveParticipant` の応答のあとにしか出ない。ロックのあいだはそのチャンネルの入室と join が待つので、`RemoveParticipant` は 3 秒で打ち切り、失敗として再試行する。
-- worker は、短い 1 文で行を確保して（`claimed_until` を 5 分先にする。`FOR UPDATE SKIP LOCKED`）、確保した行のロックは持たずに API を呼ぶ。確保と処理のループは SFU ごとに分かれていて（確保も `sfu_id` で絞る）、片方の API が遅くても、もう片方の後始末は待たない。SFU ごとに同時 8 件まで。worker が途中で止まっても、確保の期限のあとに別の worker が取り直す。
+  - LiveKit：`RemoveParticipant`。外すのは、記録した割り当ての identity（`call_sfu_departures.livekit_identity`）だけ。同じ `session_id` で入り直した人は新しい identity になるので、要求が遅れて LiveKit に届いても（打ち切ったあとに LiveKit が処理した場合を含む）、新しい接続は切れない。そのため、入り直しの確認やロックは要らない。identity のない行（identity が `session_id` だったころの割り当て）は、`session_id` を外す。
+- worker は、短い 1 文で行を確保して（`claimed_until` を 5 分先にする。`FOR UPDATE SKIP LOCKED`）、トランザクションもロックも持たずに API を呼ぶ。確保と処理のループは SFU ごとに分かれていて（確保も `sfu_id` で絞る）、片方の API が遅くても、もう片方の後始末は待たない。SFU ごとに同時 8 件まで。worker が途中で止まっても、確保の期限のあとに別の worker が取り直す。
 - 失敗したものは、15 秒あけて 5 回まで試し直す。
 - LiveKit の設定がないときは、LiveKit の行を確保しない（消さずに残す）。設定を戻せば処理する。
 

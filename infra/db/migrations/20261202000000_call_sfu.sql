@@ -3,7 +3,8 @@ ALTER TABLE call_presence
   ADD COLUMN sfu_capable boolean NOT NULL DEFAULT false,
   ADD COLUMN sfu_id text,
   ADD COLUMN sfu_room text,
-  ADD COLUMN cf_session_id text;
+  ADD COLUMN cf_session_id text,
+  ADD COLUMN livekit_identity text;
 
 -- sfu-bridge looks up rooms that have LiveKit participants (docs/calls-sfu.md).
 CREATE INDEX idx_call_presence_livekit ON call_presence (channel_id) WHERE sfu_id = 'livekit';
@@ -49,6 +50,7 @@ CREATE TABLE call_sfu_departures (
   sfu_id text NOT NULL,
   sfu_room text,
   cf_session_id text,
+  livekit_identity text,
   attempts integer NOT NULL DEFAULT 0,
   claimed_until timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()
@@ -63,8 +65,9 @@ CREATE INDEX idx_call_sfu_departures_sfu ON call_sfu_departures (sfu_id, id);
 CREATE FUNCTION record_call_sfu_departures() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE room record;
 BEGIN
-  INSERT INTO call_sfu_departures (channel_id, session_id, sfu_id, sfu_room, cf_session_id)
-  SELECT channel_id, session_id, sfu_id, sfu_room, cf_session_id FROM departed_presence WHERE sfu_id IS NOT NULL;
+  INSERT INTO call_sfu_departures (channel_id, session_id, sfu_id, sfu_room, cf_session_id, livekit_identity)
+  SELECT channel_id, session_id, sfu_id, sfu_room, cf_session_id, livekit_identity
+  FROM departed_presence WHERE sfu_id IS NOT NULL;
   IF FOUND THEN
     FOR room IN
       UPDATE call_rooms r SET track_version = r.track_version + 1

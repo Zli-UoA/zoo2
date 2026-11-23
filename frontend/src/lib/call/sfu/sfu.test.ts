@@ -33,6 +33,14 @@ describe("speaker mapping", () => {
     expect(speakerOf("bridge:12", "sess-1")).toBe("sess-1");
     expect(speakerOf("sess-2", "mic")).toBe("sess-2");
   });
+
+  it("reads the session id before the first dot of a LiveKit identity", () => {
+    const sid = "6f1c1a2e-0000-4000-8000-000000000001";
+    expect(speakerOf(`${sid}.0123456789abcdef`, "mic")).toBe(sid);
+    expect(speakerOf(`${sid}.a.b`, "mic")).toBe(sid);
+    // 割り当てが変わって identity が変わっても、同じ話者として扱う。
+    expect(speakerOf(`${sid}.1`, "mic")).toBe(speakerOf(`${sid}.2`, "mic"));
+  });
 });
 
 describe("isSfuJoinResponse", () => {
