@@ -273,6 +273,42 @@ describe("ThreadPane のダイアログ挙動", () => {
     const searchStatus = (dialog: HTMLElement) => within(dialog).getAllByRole("status")[0]!;
     const joinStatus = (dialog: HTMLElement) => within(dialog).getAllByRole("status")[1]!;
 
+    it("アーカイブ済み・読み取り専用で操作用の ID が null でも、閲覧者の ID で自分に「あなた」の印を付ける", async () => {
+      await page.viewport(1280, 900);
+      for (const extra of [{ isArchived: true }, { readOnly: true }]) {
+        const { unmount } = render(
+          <LocaleProvider>
+            <ThreadPane
+              {...paneProps({
+                root: message({ user_id: "user-2", user_name: "bob", display_name: null }),
+                replies: [message({ id: "reply-1", parent_id: "root-1", content: "a reply" })],
+                membership: "joined",
+                participantCount: participants.length,
+                participants,
+                // MessagePane と同じく、操作を止めるために currentUserId は null にする。
+                currentUserId: null,
+                viewerId: "user-1",
+                ...extra,
+              })}
+            />
+          </LocaleProvider>,
+        );
+        await userEvent.click(
+          screen.getByRole("button", { name: `参加者 ${participants.length}人` }),
+        );
+        const dialog = await screen.findByRole("dialog", { name: /メンバー/ }, SLOW);
+        const rows = within(
+          within(dialog).getByRole("list", { name: `参加者 ${participants.length}人` }),
+        ).getAllByRole("listitem");
+        expect(rows.map((row) => row.textContent)).toEqual([
+          expect.stringMatching(/^.*bob.*スレ主$/),
+          expect.stringMatching(/^.*Alice.*あなた$/),
+          expect.stringMatching(/Carol/),
+        ]);
+        unmount();
+      }
+    });
+
     it("検索結果の 0 件は、常設のライブリージョン（role=status）で伝え、入力欄のフォーカスは動かさない", async () => {
       await page.viewport(1280, 900);
       render(<MembersHarness />);
