@@ -76,7 +76,7 @@ function text(
         <span
           className={
             isSelfMention(segment.value, me)
-              ? "rounded bg-primary px-0.5 font-medium text-primary-foreground"
+              ? "rounded bg-primary px-0.5 font-medium text-primary-foreground underline decoration-2 underline-offset-2"
               : "rounded bg-brand-muted px-0.5 font-medium text-brand-muted-foreground"
           }
         >
@@ -90,9 +90,10 @@ function text(
 }
 
 function isSelfMention(token: string, me?: string): boolean {
+  if (!me) return false;
   const normalized = token.toLowerCase();
-  const name = token.slice(1).split("@", 1)[0]?.toLowerCase();
-  return normalized === "@channel" || normalized === "@here" || (!!me && name === me.toLowerCase());
+  const name = token.slice(1).split("@", 1)[0];
+  return normalized === "@channel" || normalized === "@here" || name === me;
 }
 
 // Custom emoji live in an operator-managed same-origin registry, not on an arbitrary remote host.

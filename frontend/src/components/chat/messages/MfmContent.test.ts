@@ -261,10 +261,11 @@ describe("MfmContent", () => {
   it("暗号化メッセージでは、復号した mentions にある @name だけをメンションとして表示する", () => {
     const html = render("@alice @bob **@channel** @here @carol@example.com", {
       mentions: { userNames: new Set(["alice"]), channel: true, here: false },
+      me: "alice",
     });
-    // ユーザー宛ては通常色、全体宛ては現在のユーザーにも届くため強調する。
-    expect(html.match(/bg-brand-muted/g)).toHaveLength(1);
-    expect(html.match(/bg-primary/g)).toHaveLength(1);
+    // 許可された自分宛てと全体宛てだけ強調し、許可リスト外のメンションは表示しない。
+    expect(html.match(/bg-brand-muted/g)).toBeNull();
+    expect(html.match(/bg-primary/g)).toHaveLength(2);
     expect(html).toContain("@alice</span>");
     expect(html).toContain("@channel</span>");
     expect(html).toContain(" @bob ");
@@ -275,8 +276,11 @@ describe("MfmContent", () => {
     // mentions を渡さない（平文のメッセージ）ときは、今までどおり本文の @name をすべて表示する。
     expect(render("@alice @bob").match(/bg-brand-muted/g)).toHaveLength(2);
   });
-  it("matches the current user's mention without regard to case", () => {
-    expect(render("@ALICE", { me: "alice" })).toContain("bg-primary");
+  it("highlights own mentions only with a current user and exact username casing", () => {
+    expect(render("@alice", { me: "alice" })).toContain("bg-primary");
+    expect(render("@Alice", { me: "alice" })).not.toContain("bg-primary");
+    expect(render("@channel @here")).not.toContain("bg-primary");
+    expect(render("@channel @here", { me: "alice" }).match(/bg-primary/g)).toHaveLength(2);
   });
   it("renders remote mentions, hashtags and search without automatically fetching external services", () => {
     expect(render("@alice@example.com")).toContain('href="https://example.com/@alice"');
