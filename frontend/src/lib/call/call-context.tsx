@@ -53,6 +53,7 @@ import {
 import { reportWebrtcEvent } from "../telemetry/capture";
 import { apiPath } from "../api/path";
 import { CfRealtimeAdapter, type CfTracksResponse } from "./sfu/cf-realtime-adapter";
+import { createSfuMicSync, type SfuMicSync } from "./sfu/mic-sync";
 import {
   isSfuJoinResponse,
   isSfuTrackInfo,
@@ -260,6 +261,15 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     new Map(),
   );
   const sfuStartSeqRef = useRef(0);
+  // SFU へ渡すマイクの差し替え（切替と接続後のそろえ直し）を 1 件ずつ、実行時点のマイクで行う。
+  // 切替中は切替先（置換待ちの新トラック）を、それ以外は使用中のマイクを送る
+  const [sfuMicSync] = useState<SfuMicSync>(() =>
+    createSfuMicSync({
+      currentAdapter: () => sfuAdapterRef.current,
+      desiredMic: () =>
+        pendingMicTrackRef.current ?? localStreamRef.current?.getAudioTracks()[0] ?? null,
+    }),
+  );
   const latestSfuTracksRef = useRef<{ tracks: unknown[]; version: number } | null>(null);
   // アダプタを作る前（join の応答待ちなど）に届いた sfu_reassign。LiveKit の応答のあとで Cloudflare に移る。
   const sfuReassignPendingRef = useRef(false);
@@ -746,12 +756,11 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       };
       // SFU のアダプタも、送信側の 1 つとして差し替える。mesh の差し替えを待つあいだに作られたアダプタも
       // 対象にするため、差し替える直前に読む（それより後に作られたものは startSfu が今のマイクにそろえる）。
-      let sfuAdapter: SfuAdapter | null = null;
-      let sfuReplaced = false;
+      // 差し替えは接続後のそろえ直しと同じキューで行い、送るマイクは実行時点の最新を読む。
+      // 戻すときは、置換待ちを解除してから同じキューで使用中のマイクにそろえ直す。新トラックは、SFU がそれを使わなくなってから止める。
       const revertSfu = async () => {
-        if (sfuReplaced && sfuAdapter && oldTrack) {
-          await sfuAdapter.replaceMicTrack(oldTrack).catch(() => {});
-        }
+        const adapter = sfuAdapterRef.current;
+        if (adapter) await sfuMicSync.sync(adapter).catch(() => {});
       };
       try {
         for (let sender = nextSender(); sender && !isStale(); sender = nextSender()) {
@@ -759,17 +768,14 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
           await sender.replaceTrack(newTrack);
           replaced.push(sender);
         }
-        sfuAdapter = isStale() ? null : sfuAdapterRef.current;
-        if (sfuAdapter) {
-          await sfuAdapter.replaceMicTrack(newTrack);
-          sfuReplaced = true;
-        }
+        const sfuAdapter = isStale() ? null : sfuAdapterRef.current;
+        if (sfuAdapter) await sfuMicSync.sync(sfuAdapter);
       } catch (err) {
         console.error("Failed to replace mic track", err);
         // 置換済みの送信側を旧トラックへ戻し、旧マイクを維持する
         await Promise.all(replaced.map((sender) => sender.replaceTrack(oldTrack).catch(() => {})));
-        await revertSfu();
         clearPending();
+        await revertSfu();
         stopNewStream();
         if (isStale()) return true;
         toast.error(t("call.micSwitchFailed"));
@@ -783,6 +789,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         stopNewStream();
         return true;
       }
+      // 置換待ちの解除と使用中のストリームの更新は同期的に続けて行い、キューの次の処理が旧マイクを読まないようにする。
       // 置換待ちの間のミュート操作を取りこぼさないよう、切替直前に最新状態を反映する
       newTrack.enabled = !isMutedRef.current;
       localVolumeCleanupRef.current?.();
@@ -794,7 +801,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       activeMicIdRef.current = deviceId;
       return true;
     },
-    [effectiveUserId, t, updateSpeakingUser],
+    [effectiveUserId, sfuMicSync, t, updateSpeakingUser],
   );
 
   // 連続した切替が同じ旧ストリームを参照して競合しないよう、1 件ずつ実行する
@@ -1047,7 +1054,6 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
           ? { tracks: latest.tracks.filter(isSfuTrackInfo), version: latest.version }
           : { tracks: joined.tracks, version: joined.version };
       let adapter: SfuAdapter;
-      let createdMic: MediaStreamTrack;
       if (joined.sfu === "livekit") {
         // livekit-client は大きいので、LiveKit に割り当てられたときだけ読み込む。
         // 読み込めなければ、LiveKit につながらなかったときと同じく Cloudflare でやり直す。
@@ -1063,13 +1069,13 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         if (isStale()) return;
         const mic = currentMic();
         if (!mic) return;
-        createdMic = mic;
         adapter = new LiveKitAdapter(joined.url, joined.token, mic, callbacks);
+        sfuMicSync.created(adapter, mic);
       } else {
         const mic = currentMic();
         if (!mic) return;
-        createdMic = mic;
         adapter = new CfRealtimeAdapter(mySessionId, mic, cfApi, callbacks, initial);
+        sfuMicSync.created(adapter, mic);
       }
       sfuAdapterRef.current = adapter;
       if (joined.sfu === "livekit" && sfuReassignPendingRef.current) {
@@ -1095,15 +1101,15 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       }
       if (isStale()) return;
       // 生成から接続までのあいだにマイクが切り替わっていたら、今のマイクにそろえる。
-      const mic = currentMic();
-      if (mic && mic !== createdMic) await adapter.replaceMicTrack(mic).catch(() => {});
+      // 切替の差し替えと同じキューで行い、順番が来た時点のマイクを読む（古いマイクで上書きしない）。
+      await sfuMicSync.sync(adapter).catch(() => {});
       if (isStale()) return;
       if (isMutedRef.current) await adapter.setMuted(true).catch(() => {});
       if (isStale()) return;
       // SFU で送れるようになったので、mesh を閉じる。
       closeMeshPeers();
     },
-    [apiClient, attachSfuAudio, closeMeshPeers, closeSfu, detachSfuAudio, leaveCall, t],
+    [apiClient, attachSfuAudio, closeMeshPeers, closeSfu, detachSfuAudio, leaveCall, sfuMicSync, t],
   );
   startSfuRef.current = startSfu;
 
