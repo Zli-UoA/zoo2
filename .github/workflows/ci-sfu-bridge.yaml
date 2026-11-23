@@ -8,20 +8,29 @@ on:
       - "sfu-bridge/**"
       - "infra/Dockerfile-sfu-bridge-deploy*"
       - ".github/workflows/ci-sfu-bridge.yaml"
+      - ".github/workflows/select-runner.yaml"
   push:
     branches: [main]
     paths:
       - "sfu-bridge/**"
       - "infra/Dockerfile-sfu-bridge-deploy*"
       - ".github/workflows/ci-sfu-bridge.yaml"
+      - ".github/workflows/select-runner.yaml"
 permissions:
   contents: read
 concurrency:
   group: sfu-bridge-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
+  runner:
+    uses: ./.github/workflows/select-runner.yaml
+    secrets:
+      runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
+
   test:
-    runs-on: ubuntu-latest
+    needs: runner
+    # golang のコンテナで動かすので、Docker のある実行先を使う。
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     timeout-minutes: 15
     container: golang:1.26.8-bookworm
     defaults:
