@@ -115,6 +115,30 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
 @MainActor
 @Suite("通話中の認証情報保存")
 struct TokenVaultTests {
+    @Test("認証情報の削除後に記録削除だけが失敗した場合は案内を表示し、復旧後に再ログインできる")
+    func failedMarkerRemovalReportsRecovery() throws {
+        let account = "marker-test-" + UUID().uuidString
+        defer { try? TokenVault.delete(account) }
+        let token = TokenSet(access: "test-access", refresh: nil, expires: .now.addingTimeInterval(3600))
+        try TokenVault.save(token, account: account)
+        do {
+            try TokenVault.delete(account, removeMarker: { _ in throw CocoaError(.fileWriteNoPermission) })
+            Issue.record("ログアウト記録の削除失敗を通知しませんでした。")
+        } catch ZooError.auth(let message) {
+            #expect(message.contains("認証情報は削除しましたが"))
+            #expect(message.contains("再度ログインしてください"))
+        }
+        var deletionStatus: OSStatus?
+        #expect(try TokenVault.load(account, deleteItem: { query in
+            let status = SecItemDelete(query)
+            deletionStatus = status
+            return status
+        }) == nil)
+        #expect(deletionStatus == errSecItemNotFound)
+        try TokenVault.save(token, account: account)
+        #expect(try TokenVault.load(account)?.access == token.access)
+    }
+
     @Test("Keychain削除失敗後は旧トークンを復元せず、削除を再試行する")
     func failedLogoutIsRemembered() throws {
         let account = "logout-test-" + UUID().uuidString

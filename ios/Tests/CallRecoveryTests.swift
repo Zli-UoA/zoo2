@@ -148,7 +148,6 @@ struct CallRecoveryTests {
         let journal = MemoryCallSessionJournal()
         try journal.record(previous)
         let client = FakeCallClient()
-        let entered = AsyncStream<Void>.makeStream()
         let started = AsyncStream<Void>.makeStream()
         let release = AsyncStream<Void>.makeStream()
         client.beforeCommand = { _ in
@@ -156,13 +155,11 @@ struct CallRecoveryTests {
             for await _ in release.stream { break }
         }
         client.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
-        client.delivered = { entered.continuation.yield(()) }
         let calls = store(client, journal: journal, recoveryWaitLimit: .milliseconds(10))
-        defer { calls.shutdown(); entered.continuation.finish(); started.continuation.finish(); release.continuation.finish() }
+        defer { calls.shutdown(); started.continuation.finish(); release.continuation.finish() }
         let recovery = Task { await calls.refreshActiveCalls() }
         for await _ in started.stream { break }
-        calls.start(channel: channel, invitationID: "invitation")
-        for await _ in entered.stream { break }
+        try await waitForCallDelivery(client) { calls.start(channel: channel, invitationID: "invitation") }
         #expect(calls.ready && client.accepted && journal.records.contains(previous))
         let recovered = AsyncStream<Void>.makeStream()
         journal.didSave = { if !journal.records.contains(previous) { recovered.continuation.yield(()) } }

@@ -132,13 +132,13 @@ final class InboxStore {
         receiveChannel(channelRows.filter { $0.channel_id != id })
     }
 
-    private func refreshFederation() async {
+    private func refreshFederation(reconcileReads: Bool = true) async {
         guard active, !Task.isCancelled else { return }
         if fetching {
             refreshRequested = true
             await withCheckedContinuation { fetchWaiters.append($0) }
             guard active, !Task.isCancelled else { return }
-            if refreshRequested { await refreshFederation() }
+            if refreshRequested { await refreshFederation(reconcileReads: reconcileReads) }
             return
         }
         fetching = true
@@ -149,21 +149,26 @@ final class InboxStore {
                 let page = try await client.federatedNotices(before: nil)
                 let head = Set(page.items.map(\.id))
                 let ids = page.next_cursor == nil ? [] : Array(visibleFederatedIDs.subtracting(head).sorted().prefix(100))
-                let checked = ids.isEmpty ? [] : try await client.federatedNotices(ids: ids)
+                var checked: [FederatedNotice] = []
+                var checkError: (any Error)?
+                do { checked = ids.isEmpty ? [] : try await client.federatedNotices(ids: ids) }
+                catch { checkError = error }
                 guard active, !Task.isCancelled else { break }
                 if revision != readRevision {
                     refreshRequested = true
                     continue
                 }
-                mergeHead(page, head: head, checkedIDs: Set(ids), checked: checked)
-                federationError = nil
+                // 履歴照合の失敗時も、先頭行と件数は同じ応答から一緒に更新する。
+                mergeHead(page, head: head, checkedIDs: checkError == nil ? Set(ids) : [], checked: checked)
                 render()
+                if let checkError { throw checkError }
+                federationError = nil
             } catch {
                 guard active, !Task.isCancelled, !handleExpiry(error) else { break }
                 if denied(error) { clearFederation(); render() }
                 federationError = "連合通知を取得できません。再読み込みしてください。"
             }
-            await reconcilePendingReadIDs()
+            if reconcileReads { await reconcilePendingReadIDs() }
             waitingForFederation = false
         } while refreshRequested && active && !Task.isCancelled
         finishFetch()
@@ -363,8 +368,8 @@ final class InboxStore {
             pendingReadIDs.formUnion(Set(federationRows.map(\.id)).subtracting(ids))
             actionError = nil
             await reconcilePendingReadIDs()
-            guard pendingReadIDs.isEmpty else { return }
-            await refreshFederation()
+            // 履歴照合の失敗は保持し、全既読後の件数は先頭ページから更新する。
+            await refreshFederation(reconcileReads: false)
         } catch {
             if active, !handleExpiry(error) { actionError = "すべての通知を既読にできませんでした。" }
         }

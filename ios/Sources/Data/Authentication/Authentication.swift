@@ -68,7 +68,8 @@ enum TokenVault {
         guard status == errSecSuccess else { throw ZooError.auth("ログイン情報を安全に保存できませんでした。") }
     }
 
-    static func delete(_ account: String, deleteItem: (CFDictionary) -> OSStatus = SecItemDelete) throws {
+    static func delete(_ account: String, deleteItem: (CFDictionary) -> OSStatus = SecItemDelete,
+                       removeMarker: (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }) throws {
         let marker = logoutMarker(account)
         var markerError: Error?
         do {
@@ -83,8 +84,11 @@ enum TokenVault {
             }
             throw ZooError.auth("ログイン情報を削除できませんでした。端末のロックを解除し、再度ログアウトまたはログインしてください。")
         }
-        do { try FileManager.default.removeItem(at: marker) }
+        do { try removeMarker(marker) }
         catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile { }
+        catch {
+            throw ZooError.auth("認証情報は削除しましたが、ログアウト記録を削除できませんでした。端末のロック状態と空き容量を確認してから、再度ログインしてください。")
+        }
     }
 }
 

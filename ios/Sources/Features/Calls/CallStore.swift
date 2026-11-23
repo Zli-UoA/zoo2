@@ -211,6 +211,8 @@ final class CallStore {
                             try await engine.handle(.left(id))
                             guard sessionID == session, !Task.isCancelled else { throw CancellationError() }
                         }
+                        // 初期メディアが生成するofferの送信先を、処理開始前に登録する。
+                        participants = initial.participants
                         try await engine.handle(.room(initial))
                         guard sessionID == session, !Task.isCancelled else { throw CancellationError() }
                         iceServerKinds = Array(Set(room.ice_servers.flatMap(\.urls).compactMap {
@@ -218,7 +220,6 @@ final class CallStore {
                             return ["stun", "turn", "turns"].contains(kind) ? kind.uppercased() : nil
                         })).sorted()
                         maxParticipants = min(6, max(1, room.max_participants))
-                        participants = initial.participants
                         for pending in early {
                             try await receive(pending, session: session)
                             guard sessionID == session, !Task.isCancelled else { throw CancellationError() }

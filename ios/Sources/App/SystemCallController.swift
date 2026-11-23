@@ -49,7 +49,7 @@ final class SystemCallController: NSObject {
     private var outgoingStart: CheckedContinuation<Void, Error>?
     private var phase = Phase.ringing
     private var observedInShape = false
-    private var retired: [UUID: Date] = [:]
+    private var retired: [UUID: (until: Date, hidesBanner: Bool)] = [:]
     private var expiry: Task<Void, Never>?
     private var invitationSync: Task<Void, Never>?
     private(set) var answering: Task<Void, Never>?
@@ -70,8 +70,8 @@ final class SystemCallController: NSObject {
     var isManagingCall: Bool { callID != nil }
     var incomingInvitationID: UUID? { current?.id }
     func canPresentInvitation(_ invitation: CallInvitation, at date: Date) -> Bool {
-        guard let id = UUID(uuidString: invitation.id), (ZooDate.parse(invitation.expires_at) ?? .distantPast) > date,
-              (retired[id] ?? .distantPast) <= date else { return false }
+        guard let id = UUID(uuidString: invitation.id), (ZooDate.parse(invitation.expires_at) ?? .distantPast) > date else { return false }
+        if let retired = retired[id], retired.until > date, retired.hidesBanner { return false }
         return current == nil || current?.id == id
     }
     var onWatchStateChanged: (() -> Void)?
@@ -351,7 +351,7 @@ final class SystemCallController: NSObject {
             else { observedInShape = observedInShape || present }
         }
         guard foreground || pendingNotification != nil, !isManagingCall, workspace.calls.channel == nil else { return }
-        retired = retired.filter { $0.value > .now }
+        retired = retired.filter { $0.value.until > .now }
         for invitation in invitations {
             if let pendingNotification, UUID(uuidString: invitation.id) != pendingNotification.response.callID { continue }
             guard let call = IncomingCall(invitation: invitation,
@@ -380,7 +380,7 @@ final class SystemCallController: NSObject {
             }
             return
         }
-        retired = retired.filter { $0.value > .now }
+        retired = retired.filter { $0.value.until > .now }
         let available = !isManagingCall && workspace?.calls.channel == nil && retired[call.id] == nil
         if available {
             pendingAnswerError = nil
@@ -406,7 +406,7 @@ final class SystemCallController: NSObject {
                 if error != nil {
                     if available, self.current?.id == call.id {
                         if self.pendingNotification != nil { self.failNotificationAction() }
-                        self.clear()
+                        self.clear(hidesBanner: false)
                     }
                     return
                 }
@@ -478,11 +478,14 @@ final class SystemCallController: NSObject {
         endBackgroundTask(task)
     }
 
-    private func clear() {
+    private func clear(hidesBanner: Bool = true) {
         clearNotificationAction()
         pendingAnswerError = nil
         finishAnswerBackgroundTask()
-        if let current { retired[current.id] = max(current.expiresAt, .now.addingTimeInterval(60)) }
+        if let current {
+            // 報告失敗の再通知は抑えつつ、未拒否の招待はアプリ内で操作できるようにする。
+            retired[current.id] = (max(current.expiresAt, .now.addingTimeInterval(60)), hidesBanner)
+        }
         current = nil
         incomingReported = false
         outgoingID = nil

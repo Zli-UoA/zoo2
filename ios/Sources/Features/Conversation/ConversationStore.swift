@@ -334,16 +334,22 @@ final class ConversationStore {
         let snapshot = remoteMessages
         var rows = Dictionary(snapshot.filter { $0.channel_id == channel.id }.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
         for (id, local) in localWrites {
-            if let remote = rows[id], remote.deleted_at != nil ||
-                (ZooDate.parse(remote.updated_at ?? remote.created_at) ?? .distantPast) >
-                (ZooDate.parse(local.updated_at ?? local.created_at) ?? .distantPast) ||
-                (remote.content == local.content && remote.updated_at == local.updated_at && remote.created_at == local.created_at) {
-                localWrites[id] = nil
-            } else {
-                var message = local
-                if message.display_data == nil { message.display_data = rows[id]?.display_data }
-                rows[id] = message
+            if let remote = rows[id] {
+                let remoteUpdated = ZooDate.parse(remote.updated_at ?? remote.created_at)
+                let localUpdated = ZooDate.parse(local.updated_at ?? local.created_at)
+                let remoteCreated = ZooDate.parse(remote.created_at)
+                let localCreated = ZooDate.parse(local.created_at)
+                let acknowledged = remote.content == local.content &&
+                    remoteUpdated != nil && remoteUpdated == localUpdated &&
+                    remoteCreated != nil && remoteCreated == localCreated
+                if remote.deleted_at != nil || acknowledged || (remoteUpdated ?? .distantPast) > (localUpdated ?? .distantPast) {
+                    localWrites[id] = nil
+                    continue
+                }
             }
+            var message = local
+            if message.display_data == nil { message.display_data = rows[id]?.display_data }
+            rows[id] = message
         }
         for id in deletedIDs {
             // 別フィードでの欠落を削除確認にせず、明示的な墓標かストア終了まで保持する。

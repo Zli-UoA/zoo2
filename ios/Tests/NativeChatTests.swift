@@ -523,7 +523,8 @@ struct NativeChatTests {
     @Test("同一時刻の古い同期行で編集結果を戻さず、取得範囲の変更後も削除結果を保つ", arguments: [false, true])
     func preservesLocalMutationAcrossStaleFeeds(deleting: Bool) async throws {
         let original = Message(id: "22222222-2222-4222-8222-222222222222", user_id: Self.userID, channel_id: Self.channelID,
-                               content: "編集前", created_at: "2026-11-18T09:00:00Z", updated_at: "2026-11-18T09:00:00Z")
+                               content: "編集前", created_at: "2026-11-18T09:00:00Z", updated_at: "2026-11-18T09:00:00Z",
+                               display_data: MessageDisplayData(reply_count: 0))
         var changed = original
         changed.content = "編集後"
         let updated = changed
@@ -543,7 +544,18 @@ struct NativeChatTests {
         try await harness.receive([ConversationHistoryHarness.insert(original)])
         #expect(harness.store.message(id: original.id)?.content == (deleting ? nil : updated.content))
         if !deleting {
-            try await harness.receive([ConversationHistoryHarness.insert(updated)])
+            var acknowledged = updated
+            acknowledged.created_at = "2026-11-18 09:00:00"
+            acknowledged.updated_at = "2026-11-18 09:00:00.000+00:00"
+            acknowledged.display_data?.reply_count = 3
+            let created = try #require(ZooDate.parse(updated.created_at))
+            let modifiedText = try #require(updated.updated_at)
+            let acknowledgedModifiedText = try #require(acknowledged.updated_at)
+            let modified = try #require(ZooDate.parse(modifiedText))
+            #expect(try #require(ZooDate.parse(acknowledged.created_at)) == created)
+            #expect(try #require(ZooDate.parse(acknowledgedModifiedText)) == modified)
+            try await harness.receive([ConversationHistoryHarness.insert(acknowledged)])
+            #expect(harness.store.message(id: original.id)?.display_data?.reply_count == 3)
             var newer = updated
             newer.content = "別端末の編集"
             newer.updated_at = "2026-11-18T09:00:01Z"

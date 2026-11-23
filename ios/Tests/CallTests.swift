@@ -14,8 +14,9 @@ func waitForCallDelivery(_ client: FakeCallClient, start: () -> Task<Void, Never
     }
     defer { completion.cancel() }
     var iterator = delivered.stream.makeAsyncIterator()
-    try #require(await iterator.next() != nil, "ルームを受信する前に接続処理が終了しました。")
+    let received = await iterator.next()
     try Task.checkCancellation()
+    try #require(received != nil, "ルームを受信する前に接続処理が終了しました。")
 }
 
 @Suite("通話プロトコル")
@@ -147,6 +148,30 @@ final class FakeCallMedia: CallMedia {
 @MainActor @Suite("通話のライフサイクル", .timeLimit(.minutes(1)))
 struct CallStoreTests {
     private var channel: Channel { Channel(id: "11111111-1111-4111-8111-111111111111", channel_name: "一般", is_private: false, is_dm: false) }
+
+    @Test("初期メディアの処理中に生成したofferを既存参加者へ送信する")
+    func initialOfferReachesExistingParticipant() async throws {
+        let client = FakeCallClient(), media = FakeCallMedia()
+        let peer = CallParticipant(session_id: "peer", user_id: "other", user_name: "相手", display_name: "相手", is_muted: false)
+        client.events = [.room(CallRoom(participants: [peer], max_participants: 6, ice_servers: []))]
+        let store = CallStore(client: client, userID: "me", makeMedia: { media }, permission: { true })
+        defer { media.beforeHandle = nil; store.shutdown() }
+        media.beforeHandle = { event in
+            guard case .room = event else { return }
+            #expect(!store.ready)
+            media.signal?(peer.id, CallSignal(type: "offer", sdp: "テスト用SDP"))
+            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+            while !client.commands.contains("signal"), ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(1))
+            }
+            try #require(client.commands.contains("signal"), "メディア初期化の完了前でもofferを送信する")
+            #expect(!store.ready)
+        }
+        try await waitForCallDelivery(client) { store.start(channel: channel) }
+        let sent = try #require(client.commandBodies.first { $0.0 == "signal" })
+        #expect(sent.1["target_session_id"] == .string(peer.id))
+        #expect(store.ready && store.participants.map(\.id) == [peer.id])
+    }
 
     @Test("初期メディアの待機中は準備完了にせず、終了した処理で次の通話を上書きしない", arguments: [false, true])
     func initialMediaBelongsToSession(earlyLeave: Bool) async throws {
@@ -382,7 +407,7 @@ struct CallStoreTests {
     func lateActiveCallsAreIgnored(shutdown: Bool) async throws {
         let client = FakeCallClient()
         let store = CallStore(client: client, userID: "me")
-        defer { store.shutdown() }
+        defer { client.beforeActiveCallsResult = nil; store.shutdown() }
         client.activeCallRows = [ActiveCallSummary(channel_id: channel.id, participant_count: 1)]
         client.beforeActiveCallsResult = {
             if shutdown { store.shutdown() }

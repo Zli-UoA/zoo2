@@ -192,6 +192,113 @@ struct InboxTests {
         #expect(state.withLock { $0.acknowledgements } == 1)
     }
 
+    @Test("全既読後の履歴照合が失敗しても未読件数を更新し、照合だけを再試行する", arguments: [false, true])
+    func markAllRefreshesCountAfterReconciliationFailure(visible: Bool) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish() }
+        let state = Mutex((acknowledgements: 0, read: false, failCheck: true, heads: 0))
+        harness.stub { request in
+            switch request.url?.path {
+            case "/api/shapes/notifications":
+                return (200, ["electric-handle": "notices", "electric-offset": "1_0", "electric-up-to-date": "true"], Data("[]".utf8))
+            case "/api/notifications/read-all":
+                state.withLock { $0.acknowledgements += 1 }
+                started.continuation.yield(())
+                var iterator = release.stream.makeAsyncIterator()
+                _ = await iterator.next()
+                state.withLock { $0.read = true }
+                return (200, [:], Data("{}".utf8))
+            default:
+                let checking = request.url?.path == "/api/activitypub/notifications/entries"
+                let old = checking || request.url?.query?.contains("before=") == true
+                let current = state.withLock { value in
+                    if !old { value.heads += 1 }
+                    return value
+                }
+                if checking, current.failCheck { return (500, [:], Data()) }
+                let row: [String: Any] = ["id": old ? "old" : "new", "actor_id": "https://remote.test/user/member",
+                    "display_name": "メンバー", "kind": "reply", "activity_id": old ? "old" : "new",
+                    "created_at": old ? "2026-11-18T09:00:00Z" : "2026-11-18T10:00:00Z", "is_read": current.read, "pending": false]
+                return (200, [:], try JSONSerialization.data(withJSONObject: ["items": [row], "unread_count": current.read ? 0 : 3,
+                    "next_cursor": old ? NSNull() as Any : "new" as Any]))
+            }
+        }
+        let inbox = InboxStore(client: harness.client, userID: "u")
+        defer { inbox.shutdown() }
+        await inbox.refresh()
+        #expect(inbox.unreadCount == 3)
+        let marking = Task { await inbox.markAllRead() }
+        defer { marking.cancel() }
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        await inbox.loadMore()
+        if visible {
+            inbox.setVisible(try #require(inbox.entries.first { $0.noticeID == "old" }), visible: true)
+            await inbox.refresh()
+        }
+        release.continuation.finish()
+        await marking.value
+        #expect(inbox.unreadCount == 0)
+        #expect(state.withLock { $0.heads } == (visible ? 3 : 2))
+        #expect(inbox.error?.hasPrefix("全既読は完了しましたが") == true)
+        #expect(try #require(inbox.entries.first { $0.noticeID == "old" }).isUnread)
+        state.withLock { $0.failCheck = false }
+        await inbox.refresh()
+        #expect(inbox.error == nil && inbox.unreadCount == 0)
+        #expect(try #require(inbox.entries.first { $0.noticeID == "old" }).isUnread == false)
+        #expect(state.withLock { $0.acknowledgements } == 1)
+    }
+
+    @Test("過去行の照合失敗後も先頭行の既読応答で未読件数を二重に減らさない")
+    func headReadStateMatchesCountAfterHistoryFailure() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish() }
+        let read = Mutex(false)
+        harness.stub { request in
+            switch request.url?.path {
+            case "/api/shapes/notifications":
+                return (200, ["electric-handle": "notices", "electric-offset": "1_0", "electric-up-to-date": "true"], Data("[]".utf8))
+            case "/api/notifications/read":
+                read.withLock { $0 = true }
+                started.continuation.yield(())
+                var iterator = release.stream.makeAsyncIterator()
+                _ = await iterator.next()
+                return (200, [:], Data("{}".utf8))
+            case "/api/activitypub/notifications/entries":
+                return (500, [:], Data())
+            default:
+                let old = request.url?.query?.contains("before=") == true
+                let acknowledged = read.withLock { $0 }
+                let row: [String: Any] = ["id": old ? "old" : "new", "actor_id": "https://remote.test/user/member",
+                    "display_name": "メンバー", "kind": "reply", "activity_id": old ? "old" : "new",
+                    "created_at": old ? "2026-11-18T09:00:00Z" : "2026-11-18T10:00:00Z", "is_read": !old && acknowledged, "pending": false]
+                return (200, [:], try JSONSerialization.data(withJSONObject: ["items": [row], "unread_count": acknowledged ? 2 : 3,
+                    "next_cursor": old ? NSNull() as Any : "new" as Any]))
+            }
+        }
+        let inbox = InboxStore(client: harness.client, userID: "u")
+        defer { inbox.shutdown() }
+        await inbox.refresh()
+        await inbox.loadMore()
+        let newest = try #require(inbox.entries.first { $0.noticeID == "new" })
+        let marking = Task { await inbox.markRead(newest) }
+        defer { marking.cancel() }
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        inbox.setVisible(try #require(inbox.entries.first { $0.noticeID == "old" }), visible: true)
+        await inbox.refresh()
+        #expect(inbox.error != nil)
+        #expect(inbox.unreadCount == 2)
+        #expect(try #require(inbox.entries.first { $0.noticeID == "new" }).isUnread == false)
+        release.continuation.finish()
+        await marking.value
+        #expect(inbox.unreadCount == 2)
+    }
+
     @Test("Electric の文字列化された既読値とメッセージの抜粋を読み取る")
     func shape() throws {
         let json = """

@@ -131,12 +131,17 @@ struct ShortcutActionsTests {
         inactive.is_deactivated = true
         let inactiveData = try JSONEncoder().encode(inactive)
         let peerID = peer.id
+        let requestedPeople = Mutex<[String]>([])
         harness.stub { request in
-            if request.url?.path == "/api/users/\(peerID)" { return (200, [:], inactiveData) }
+            if request.url?.path == "/api/users/\(peerID)" {
+                requestedPeople.withLock { $0.append(peerID) }
+                return (200, [:], inactiveData)
+            }
             Issue.record("無効になった宛先への送信を開始してはいけません")
             return (500, [:], Data())
         }
         await #expect(throws: ZooError.self) { try await actions.send("本文", to: target) }
+        #expect(requestedPeople.withLock { $0 } == [peerID])
         try await sync.close().value
     }
 

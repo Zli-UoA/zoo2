@@ -877,6 +877,7 @@ struct IncomingCallTests {
         let call = try #require(IncomingCall(payload: payload))
         await withCheckedContinuation { continuation in controller.receive(call) { continuation.resume() } }
         #expect(!controller.isManagingCall)
+        #expect(controller.canPresentInvitation(call.invitation, at: .now))
         #expect(!controller.answer(call.invitation))
         #expect(!controller.decline(call.invitation))
     }
