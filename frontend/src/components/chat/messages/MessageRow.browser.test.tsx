@@ -469,7 +469,7 @@ describe("MessageRow", () => {
     renderRow(buildItem(), true, { onStartEdit });
     screen.getByRole("button", { name: "その他の操作" }).focus();
     await userEvent.keyboard("{Enter}");
-    const item = screen.getByRole("menuitem", { name: "編集" });
+    const item = screen.getByRole("menuitem", { name: "メッセージを編集" });
     // タッチの pointerDown の後に項目をactivateしても、操作シートは開かない。
     fireEvent.pointerDown(item, { pointerType: "touch", clientX: 10, clientY: 10 });
     await userEvent.click(item);
@@ -555,7 +555,7 @@ describe("MessageRow", () => {
     trigger.focus();
     expect(document.activeElement).toBe(trigger);
     await userEvent.keyboard("{Enter}");
-    const edit = screen.getByRole("menuitem", { name: "編集" });
+    const edit = screen.getByRole("menuitem", { name: "メッセージを編集" });
     edit.focus();
     await userEvent.keyboard("{Enter}");
     expect(onStartEdit).toHaveBeenCalledOnce();
@@ -653,7 +653,7 @@ describe("MessageRow", () => {
     renderRow(buildItem(), false, { canDelete: true, onRequestDelete });
     screen.getByRole("button", { name: "その他の操作" }).focus();
     await userEvent.keyboard("{Enter}");
-    expect(screen.queryByRole("menuitem", { name: "編集" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "メッセージを編集" })).toBeNull();
     await userEvent.click(screen.getByRole("menuitem", { name: "削除" }));
     expect(onRequestDelete).toHaveBeenCalledOnce();
   });
@@ -876,7 +876,7 @@ describe("more menu order", () => {
     expect(await menuLabels()).toEqual([
       "リアクションを追加",
       "スレッドを開く",
-      "編集",
+      "メッセージを編集",
       "原文をコピー",
       "メッセージリンクをコピー",
       "Appでメッセージを操作",

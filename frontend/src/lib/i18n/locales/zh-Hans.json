@@ -225,6 +225,7 @@
     "compose": "输入消息",
     "send": "发送",
     "edit": "编辑",
+    "editMessage": "编辑消息",
     "delete": "删除",
     "more": "更多操作",
     "actions": "操作消息",

@@ -825,7 +825,7 @@ export function MessageRow({
                   <>
                     <DropdownMenuItem className={touchHitArea} onClick={onStartEdit}>
                       <PencilIcon />
-                      {t("messages.edit")}
+                      {t("messages.editMessage")}
                     </DropdownMenuItem>
                   </>
                 ) : null}

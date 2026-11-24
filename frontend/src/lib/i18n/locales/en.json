@@ -225,6 +225,7 @@
     "compose": "Write a message",
     "send": "Send",
     "edit": "Edit",
+    "editMessage": "Edit message",
     "delete": "Delete",
     "more": "More actions",
     "actions": "Message actions",

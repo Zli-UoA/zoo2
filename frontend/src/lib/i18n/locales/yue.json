@@ -225,6 +225,7 @@
     "compose": "輸入訊息",
     "send": "傳送",
     "edit": "編輯",
+    "editMessage": "編輯訊息",
     "delete": "刪除",
     "more": "更多操作",
     "actions": "操作訊息",

@@ -225,6 +225,7 @@
     "compose": "통보문 보내기",
     "send": "보내기",
     "edit": "편집",
+    "editMessage": "통보문 편집",
     "delete": "삭제",
     "more": "다른 조작",
     "actions": "메시지 조작",
