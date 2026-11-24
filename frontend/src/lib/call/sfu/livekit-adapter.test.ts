@@ -122,4 +122,21 @@ describe("LiveKitAdapter mute", () => {
     // 止めるのは複製だけ。
     expect(clones[0].stopped).toBe(true);
   });
+
+  it("stops sending from the clone when muted while publishing", async () => {
+    state.log = [];
+    let release = () => {};
+    state.publishGate = new Promise<void>((resolve) => (release = resolve));
+    const { mic, clones } = fakeMic(true);
+    const adapter = new LiveKitAdapter("wss://x", "t", mic, noCallbacks);
+    const started = adapter.start();
+    await vi.waitFor(() => expect(state.log).toEqual(["publish muted=false"]));
+    // publish が終わる前にミュートしたら、その時点で複製の送信を止める。
+    await adapter.setMuted(true);
+    expect(clones[0].enabled).toBe(false);
+    release();
+    await started;
+    expect(state.log).toEqual(["publish muted=false", "mute"]);
+    adapter.close();
+  });
 });

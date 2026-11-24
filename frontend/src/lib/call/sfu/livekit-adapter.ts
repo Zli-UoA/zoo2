@@ -177,7 +177,12 @@ export class LiveKitAdapter implements SfuAdapter {
 
   async setMuted(muted: boolean): Promise<void> {
     this.muted = muted;
-    if (!this.localTrack) return;
+    if (!this.localTrack) {
+      // publish の途中（SDK は完了の前に送信を設定する）。複製の送信を直接止める・戻す。SDK のミュートの状態は、
+      // publish が終わったところで start() が合わせる。
+      if (this.ownMic) this.ownMic.enabled = !muted;
+      return;
+    }
     if (muted) await this.localTrack.mute();
     else await this.localTrack.unmute();
   }
