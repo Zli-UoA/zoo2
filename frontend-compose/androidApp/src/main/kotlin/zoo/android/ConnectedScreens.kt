@@ -526,5 +526,6 @@ internal fun ConnectedScreens(
             dismissButton = { DialogAction("キャンセル", UiIcon.Close) { state.overlay = "channel-settings" } },
         )
     }
-
+    // 他のユーザーの検証（届いた要求と、自分から始めた検証）は、どの画面にいても前面に出す。
+    VerificationHost(session, platform)
 }

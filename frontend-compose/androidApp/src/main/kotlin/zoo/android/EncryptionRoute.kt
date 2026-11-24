@@ -213,6 +213,32 @@ internal fun EncryptionRoute(
                 }
                 Text(session.t("e2ee.devices.deleteIsNotRevocation"), color = colors.secondary, fontSize = 14.sp)
             }
+            val sas = manager.sas
+            if (status is E2eeStatus.Unlocked && sas != null) {
+                // 他のユーザーの検証：暗号化チャンネル（削除されていないもの）を共有する相手（Web の `DevicesSettings`）。
+                val channels by session.repo.channels.rows.collectAsState()
+                val members by session.repo.members.rows.collectAsState()
+                val users by session.repo.users.rows.collectAsState()
+                val peers = remember(channels, members, users) {
+                    val encrypted = channels.filter { it.flag("encrypted") && !it.present("deleted_at") }.map { it.text("id") }.toSet()
+                    val ids = members.filter { it.text("channel_id") in encrypted }.map { it.text("user_id") }
+                        .filter { it != session.config.userId }.distinct()
+                    ids.map { id -> id to (users.firstOrNull { it.text("id") == id }?.let(::author)?.ifBlank { null } ?: id) }
+                        .sortedBy { it.second }
+                }
+                Text(session.t("e2ee.verification.title"), color = colors.foreground, fontWeight = AndroidWeights.label)
+                Text(session.t("e2ee.verification.description"), color = colors.secondary, fontSize = 14.sp)
+                if (peers.isEmpty()) Text(session.t("e2ee.verification.empty"), color = colors.secondary, fontSize = 14.sp)
+                peers.forEach { (id, name) ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        Text(name, Modifier.weight(1f), color = colors.foreground)
+                        TextAction(session.t("e2ee.sas.start"), colors, enabled, icon = UiIcon.Check, style = TextActionStyle.Neutral) {
+                            perform { sas.request(id) }
+                        }
+                    }
+                }
+            }
         }
     }
     rename?.let { device ->
