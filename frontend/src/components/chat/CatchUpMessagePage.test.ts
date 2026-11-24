@@ -7,6 +7,7 @@ import { CatchUpMessagePage } from "./CatchUpMessagePage";
 
 const mocks = vi.hoisted(() => ({
   messages: [] as Array<{ id: string; user_id: string; created_at: string }>,
+  feedLoading: false,
   reactions: [] as MessageReactionRow[],
   reactionsLoading: false,
   reactionsError: false,
@@ -37,7 +38,7 @@ vi.mock("sonner", () => ({
 vi.mock("../../hooks/useRealtime", () => ({
   useMessageFeed: () => ({
     data: mocks.messages,
-    isLoading: false,
+    isLoading: mocks.feedLoading,
     isError: false,
     isInitialSyncLoading: false,
     hasOlder: mocks.hasOlder,
@@ -122,6 +123,7 @@ vi.mock("./messages/ReactionPicker", () => ({
 afterEach(() => {
   cleanup();
   mocks.messages = [];
+  mocks.feedLoading = false;
   mocks.reactions = [];
   mocks.reactionsLoading = false;
   mocks.reactionsError = false;
@@ -160,6 +162,13 @@ it("passes the viewer and reaction handlers without enabling edit, delete or thr
 it.each([
   { label: "readOnly", props: { readOnly: true }, setup: () => {} },
   {
+    label: "messages loading",
+    props: {},
+    setup: () => {
+      mocks.feedLoading = true;
+    },
+  },
+  {
     label: "reactions loading",
     props: {},
     setup: () => {
@@ -187,6 +196,35 @@ it.each([
   if (mocks.reactionsError) {
     expect(screen.getByText("reactions.fetchError")).toBeTruthy();
   }
+});
+
+it("re-enables reacting once the message feed finishes loading", () => {
+  mocks.feedLoading = true;
+  mocks.messages = [message("m1", "2026-01-01T10:00:00Z")];
+  const onBoundaryMessage = vi.fn();
+
+  const view = render(
+    createElement(CatchUpMessagePage, {
+      channelId: "c1",
+      firstUnreadAt: null,
+      onBoundaryMessage,
+    }),
+  );
+  expect(mocks.messageList.mock.calls.at(-1)?.[0]).toEqual(
+    expect.objectContaining({ canReact: false }),
+  );
+
+  mocks.feedLoading = false;
+  view.rerender(
+    createElement(CatchUpMessagePage, {
+      channelId: "c1",
+      firstUnreadAt: null,
+      onBoundaryMessage,
+    }),
+  );
+  expect(mocks.messageList.mock.calls.at(-1)?.[0]).toEqual(
+    expect.objectContaining({ canReact: true }),
+  );
 });
 
 it("adds and toggles reactions via ReactionPicker without moving the read boundary", async () => {

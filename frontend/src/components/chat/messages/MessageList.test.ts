@@ -126,6 +126,70 @@ it.each([
   },
 );
 
+it.each([
+  { label: "active row", threadArchiveAt: null, archived: false },
+  { label: "archived thread root", threadArchiveAt: "2026-01-03T00:00:00Z", archived: true },
+])("disables row reactions on $label", ({ threadArchiveAt, archived }) => {
+  localStorage.setItem("zoo-locale", "ja");
+  const noop = () => {};
+  try {
+    const html = renderToStaticMarkup(
+      createElement(LocaleProvider, {
+        children: createElement(MessageList, {
+          messages: [
+            {
+              id: "react-archived",
+              user_id: "other",
+              content: "hello",
+              created_at: "2026-01-02 00:00:00.000",
+              parent_id: null,
+              thread_archive_at: threadArchiveAt,
+              display_name: "Bob",
+              display_data: {
+                emojis: {},
+                attachments: [],
+                reply_count: 0,
+                reactions: [
+                  {
+                    id: "r1",
+                    message_id: "react-archived",
+                    user_id: "other",
+                    emoji: "👍",
+                    created_at: "2026-01-02 00:00:00.000",
+                    user_name: "bob",
+                    display_name: "Bob",
+                  },
+                ],
+              },
+            },
+          ],
+          isLoading: false,
+          isError: false,
+          currentUserId: null,
+          viewerId: "viewer",
+          editingId: null,
+          editingText: "",
+          onEditingTextChange: noop,
+          onStartEdit: noop,
+          onCancelEdit: noop,
+          onSaveEdit: noop,
+          onRequestDelete: noop,
+          reactions: new Map(),
+          kitchenCatalog: null,
+          canReact: true,
+          onReaction: noop,
+          onPickReaction: noop,
+        }),
+      }),
+    );
+    expect(html.includes('aria-disabled="true"')).toBe(archived);
+    expect(html.includes('aria-disabled="false"')).toBe(!archived);
+    expect(html.includes('disabled=""')).toBe(archived);
+  } finally {
+    localStorage.clear();
+  }
+});
+
 async function flush(action: () => unknown) {
   await act(async () => {
     action();

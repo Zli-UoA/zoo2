@@ -65,7 +65,7 @@ export function CatchUpMessagePage({
     currentUserId,
     users: usersQuery.data,
     usersLoading: usersQuery.isLoading,
-    readOnly,
+    readOnly: readOnly || feed.isLoading,
   });
   const attachmentsQuery = useMessageAttachments(
     channelId,

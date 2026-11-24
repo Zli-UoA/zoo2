@@ -1344,7 +1344,7 @@ function MessageScrollViewport({
                       : (reactions.get(item.message.id) ?? [])
                   }
                   kitchenCatalog={kitchenCatalog}
-                  canReact={canReact}
+                  canReact={canReact && !item.message.thread_archive_at}
                   onReaction={(emoji) => onReaction(item.message.id, emoji)}
                   onPickReaction={() => onPickReaction(item.message.id)}
                   isOwn={!!currentUserId && item.message.user_id === currentUserId}
