@@ -104,6 +104,30 @@ it("saves a preview body through the desktop download commands", async () => {
   expect(saved).toHaveBeenCalledWith("saved.txtを保存しました。");
 });
 
+it("does not pass encoded content-length as save size limit", async () => {
+  const base = desktopInvoke();
+  let releaseBegin!: (value: unknown) => void;
+  const beginning = new Promise<unknown>((resolve) => (releaseBegin = resolve));
+  const invoke = vi.fn((cmd: string) => (cmd === "zoo_download_begin" ? beginning : base(cmd)));
+  mockDesktop(invoke);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      async () =>
+        new Response("", { headers: { "content-length": "12", "content-encoding": "gzip" } }),
+    ),
+  );
+  renderButton();
+  fireEvent.click(await screen.findByRole("button", { name: "report.txtをダウンロード" }));
+  await waitFor(() =>
+    expect(invoke).toHaveBeenCalledWith("zoo_download_begin", {
+      begin: { file_name: "report.txt" },
+    }),
+  );
+  releaseBegin({ status: "started", id: "dl", path: "/tmp/report.txt", prompted: true });
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("zoo_download_finish", { id: "dl" }));
+});
+
 it("refreshes a signed URL that expires while the save dialog is open", async () => {
   const expired = "https://files.test/expired";
   const fresh = "https://files.test/fresh";

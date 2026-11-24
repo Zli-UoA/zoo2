@@ -1,6 +1,5 @@
 import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import type { AttachmentUrlResolver } from "../../lib/api/attachments";
 import { mediaPreviewKind } from "../../lib/attachments";
 import { imageAspectRatio, type ImageMetadata } from "../../lib/imageMetadata";
 import { PreviewDownloadButton } from "../desktop/PreviewDownloadButton";
@@ -22,7 +21,6 @@ export function MediaPreview({
   onError,
   onOpen,
   footer,
-  resolveUrl,
   initialOpen = false,
   embedded = false,
   depth = 0,
@@ -38,7 +36,6 @@ export function MediaPreview({
   onOpen?: () => void;
   footer?: ReactNode;
   /** 署名付き URL を更新できるときは、保存ボタンへ渡す。 */
-  resolveUrl?: AttachmentUrlResolver;
   initialOpen?: boolean;
   /** The native host already provides the preview window and close control. */
   embedded?: boolean;
@@ -55,14 +52,7 @@ export function MediaPreview({
   };
   const downloadFooter =
     footer ??
-    (src ? (
-      <PreviewDownloadButton
-        id={`preview:${name}:${src}`}
-        name={name}
-        src={src}
-        resolveUrl={resolveUrl}
-      />
-    ) : null);
+    (src ? <PreviewDownloadButton id={`preview:${name}:${src}`} name={name} src={src} /> : null);
   function renderMedia(expanded: boolean) {
     if (error)
       return (

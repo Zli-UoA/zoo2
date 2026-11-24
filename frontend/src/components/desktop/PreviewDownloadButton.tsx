@@ -57,9 +57,17 @@ export function PreviewDownloadButton({
         void response.body?.cancel().catch(() => {});
         throw new AttachmentDownloadError("http", { status: response.status });
       }
+      const encoding = response.headers.get("content-encoding");
       const raw = response.headers.get("content-length");
       const parsed = raw ? Number(raw) : Number.NaN;
-      const size = Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : undefined;
+      // Content-Encoding がある場合、Content-Length は圧縮後のサイズであり、
+      // 展開後の本体サイズとは一致しないことがある。Rust 側の保存上限に誤った値を渡さない。
+      const size =
+        !encoding || encoding === "identity"
+          ? Number.isFinite(parsed) && parsed > 0
+            ? Math.floor(parsed)
+            : undefined
+          : undefined;
       // 保存先のダイアログの間は本文を読まない。接続を止めて、転送は保存時に開き直す。
       await response.body?.cancel().catch(() => {});
       return { size };
