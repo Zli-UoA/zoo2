@@ -2216,7 +2216,24 @@ A の QR を B が読み取る場合です（B の QR を A が読み取る場�
   - `importScripts` の失敗は握りつぶさず、install を失敗させる。読めたスクリプトだけが更新の検査の対象になるので、握りつぶすと、復号できない Service Worker が `sw.js` の次の変更まで残るため（ローリング更新で、古い Pod が `/sw-push.js` に HTML を返したときなど）。失敗した install は、次の登録や更新の検査でやり直す。
   - wasm（zoo-crypto と wa-sqlite）は、install で専用のキャッシュ（`zoo-push-wasm-v1`）に保存し、Push を受けたときに初めてコンパイルする。デプロイで wasm の名前（ハッシュ）が変わっても、動いている Service Worker の `sw-push.js` が指す wasm を返せる。新しい Service Worker の activate で、今の 2 つ以外を消す。キャッシュになければ取りに行き、1 つ 8 秒で諦める。nginx は wasm も gzip で圧縮する（`infra/frontend-nginx.conf`）。
 - 本物の Service Worker での確かめは `frontend/src/sw/push.browser.test.ts`（Chromium）。
-- 【決定】（#365）Android は、まだ Push の受信（FCM）がなく、#365 の時点では暗号ストアと端末の登録（#359）もなかったので、#365 では扱わず、[#510](https://github.com/Zli-UoA/zoo2/issues/510) に分けた。Android で Push を受けるようにするときは、同じ `e2ee` を受け取り、Android の暗号ストアの受信用セッション（UniFFI の `InboundSessionStore`）で、Web と同じく書き戻さずに復号する。
+- 【決定】（#365）Android は、#365 の時点では Push の受信（FCM）も暗号ストアと端末の登録（#359）もなかったので、#365 では扱わず、[#510](https://github.com/Zli-UoA/zoo2/issues/510) に分けた（[Android の Push の復号](#android-の-push-の復号510)）。
+
+### Android の Push の復号（#510）
+
+【決定】（#510）Android の暗号化チャンネルの Push も、Web と同じく、サーバーが平文を持たないまま、受け取った端末が自分の暗号ストアで復号して本文を出します。
+
+- 送り方：FCM の data（`backend/src/push/fcm.rs`）に、Web Push と同じ `e2ee`（`recipient_id` と、zoo-crypto の `EncryptedMessage` と同じ形の `message`）を、JSON の文字列で入れる（FCM の data の値は文字列だけ）。`body` は Web と同じく「新しいメッセージ」。どれもサーバーが元から持つ値で、Push のために新しくサーバーに渡る値はない。
+  - FCM の data は、Web Push と違って RFC 8291 で暗号化しないので、Google には `e2ee` の中身（チャンネル、メッセージ、送信者の ID、epoch、Megolm の暗号文）が見える。本文は Megolm の暗号文のままで読めない。タイトル（送信者の名前）、チャンネル名、通知の種類は、平文チャンネルと同じく今までも data に入っている。
+  - 上限：data を JSON にした長さが 4096 バイトを超えるなら、`e2ee` を外して送る（Web Push の `encrypt_fitting` と同じ考え方。`fitting_message`）。外しても超えるなら送らない（今までどおり）。
+- 受け取り方（`frontend-compose` の `androidApp` の `EncryptedPush.kt`、`ZooMessagingService`）。
+  1. `binding` が今の端末の登録と一致し（今ログインしているユーザーで）、`e2ee.recipient_id` がそのユーザーと一致するときだけ復号する。`e2ee` の形が違えば復号しない（Web の `parsePushE2ee` と同じ規則）。
+  2. 暗号ストアの選び方は、ログインしたときと同じ接続先とユーザー（`CryptoStoreFiles.android`）。
+  3. 同じプロセスでアプリが暗号ストアを開いていれば、そのストアで復号する（画面の表示と同じく版の記録で照合し、古い版や同じ版で中身が違うと分かった本文は出さない）。開いていなければ、ディレクトリーの印を取るあいだに `state.json` と保存鍵を読むだけにして印を返し、読んだ写しからメモリーだけで復号する（`CryptoStore.decryptForNotification`）。写しは書き戻さず、保存鍵を開けなくても暗号ストアを作り直さない。そのため、この経路ではリプレイと古い版の検出が効かない（Web の Service Worker の写しと同じ）。
+  4. 通知の本文は、復号した `content.body` の先頭 240 文字（コードポイント）。送信者の確かさは通知には出さず、通知から開いた画面で示す。
+  5. `binding` は、本文を出す直前（`showPushNotification` の中）にもう一度確かめる。
+- 戻し方：`e2ee` がない、復号できない（暗号ストアがない、保存鍵を開けない、鍵が届いていない、照合に失敗した、宛先が今のユーザーでない）なら「新しいメッセージ」のまま出す。サーバーには何も送らない。
+- アプリが動いているあいだは、同期した通知（`AndroidNotifications`）が同じ通知を出し直す。通知の行には暗号文がないので、Push で端末が復号した本文が出ていれば、その本文を残す（通知の extras の `zoo.push.decrypted`。サーバーの data からは読まない）。
+- 異常系のテストは、`NotificationDecryptionTest`（開いているストアと写しからの復号、書き戻さないこと、鍵が届いていない・照合に失敗したときに出さないこと、保存鍵がなくても作り直さないこと）、`EncryptedPushTest`（`e2ee` の読み取り、宛先の確認、240 文字）、backend の `push::fcm` のテスト（`e2ee` を入れること、上限を超えたら外すこと）。
 
 ### Playwright の E2E（[#363](https://github.com/Zli-UoA/zoo2/issues/363)）
 
@@ -2315,7 +2332,7 @@ A の QR を B が読み取る場合です（B の QR を A が読み取る場�
 | [#363](https://github.com/Zli-UoA/zoo2/issues/363) | Playwright の E2E テスト（仮想認証器 `hasPrf: true`） | #362 |
 | [#364](https://github.com/Zli-UoA/zoo2/issues/364) | 暗号化した添付（実装したら添付の禁止を外す） | #361 |
 | [#365](https://github.com/Zli-UoA/zoo2/issues/365) | Push 通知を Service Worker で復号する | #361 |
-| [#510](https://github.com/Zli-UoA/zoo2/issues/510) | Android の Push 通知を復号する（#365 から分けた） | #359、#365 |
+| [#510](https://github.com/Zli-UoA/zoo2/issues/510) | Android の Push 通知を復号する（#365 から分けた。[Android の Push の復号](#android-の-push-の復号510)） | #359、#365 |
 | [#366](https://github.com/Zli-UoA/zoo2/issues/366) | Bot を端末として参加させる（メンバーの許可、`e2ee:device`、`/api/apps/v1/e2ee/...`、`sdk/src/e2ee.ts`、`examples/e2ee-echo-bot`。[Bot の端末](#bot-の端末)） | #361 |
 | [#367](https://github.com/Zli-UoA/zoo2/issues/367) | 既存のプライベートチャンネルを暗号化に切り替える。Slack 取り込みの worker が、暗号化されたチャンネルへ平文を書かないようにする（【決定】worker 側の検査。[既存のチャンネルの暗号化](#既存のチャンネルの暗号化)） | #361 |
 | [#368](https://github.com/Zli-UoA/zoo2/issues/368) | 他のユーザーの絵文字 SAS 検証（共通部分と Web。Compose Android と TUI は、それぞれの #362 のあと） | #362 |

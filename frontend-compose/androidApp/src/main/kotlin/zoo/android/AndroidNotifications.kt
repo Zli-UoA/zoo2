@@ -102,6 +102,9 @@ internal class AndroidNotifications(
         PendingIntent.getBroadcast(activity, 0, intent(id, name), PendingIntent.FLAG_UPDATE_CURRENT or
             if (mutable) PendingIntent.FLAG_MUTABLE else PendingIntent.FLAG_IMMUTABLE)
 
+    private fun isEncryptedNotification(row: Row): Boolean =
+        app.repo.channels.rows.value.find { it.text("id") == row.text("channel_id") }?.flag("encrypted") == true
+
     private fun canReply(row: Row): Boolean {
         val channel = app.repo.channels.rows.value.find { it.text("id") == row.text("channel_id") }
         return channel != null && !channel.flag("encrypted") && !channel.present("archive_at") &&
@@ -133,7 +136,9 @@ internal class AndroidNotifications(
         val channel = data.nested("channel").text("channel_name")
         val kind = row.text("notification_type")
         val channelId = notificationChannel(row)
-        val body = notificationBody(row) { key, name -> app.t(key, "actor" to name) }
+        // 暗号化チャンネルは、Push で端末が復号した本文が出ていれば、それを残す（サーバーは本文を持たない。#510）。
+        val decrypted = if (isEncryptedNotification(row)) preservedDecryptedBody(manager, notificationTag(app.config.userId, id)) else null
+        val body = decrypted ?: notificationBody(row) { key, name -> app.t(key, "actor" to name) }
         val avatar = avatars[notificationAvatar(row)]
         val image = previewImage(row)
         val picture = image?.let { pictures[it.text("id")] }
@@ -163,6 +168,7 @@ internal class AndroidNotifications(
             .setAutoCancel(true).setOnlyAlertOnce(true)
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .setCategory(Notification.CATEGORY_MESSAGE)
+            .setExtras(android.os.Bundle().apply { decrypted?.let { putString(PUSH_DECRYPTED_BODY, it) } })
             .setDeleteIntent(action(id, "dismiss"))
             .addAction(Notification.Action.Builder(null, app.t("notifications.read"), action(id, "read")).build())
         if (kind != "reaction" && !actions.hasReplied(id) && canReply(row)) {

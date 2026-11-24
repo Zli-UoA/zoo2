@@ -337,7 +337,8 @@ class ZooMessagingService : FirebaseMessagingService() {
     override fun onNewToken(token: String) { AndroidPushRegistration.tokenChanged() }
 
     override fun onMessageReceived(message: RemoteMessage) {
-        val posted = showPushNotification(this, message.data) ?: return
+        // 暗号化チャンネルの通知は、端末の暗号ストアで復号できたら本文を置き換える（#510）。
+        val posted = showPushNotification(this, message.data, decryptPushBody(this, message.data)) ?: return
         if (posted.avatarUrl == null && posted.imageUrl == null) return
         runBlocking {
             val client = HttpClient(OkHttp) {
@@ -359,6 +360,17 @@ class ZooMessagingService : FirebaseMessagingService() {
 
 private const val PUSH_RENDER = "zoo.push.render"
 
+/**
+ * 端末で復号した暗号化チャンネルの本文（#510）。アプリが動いていて同期した通知で同じ通知を出し直すとき、
+ * サーバーの本文（「新しいメッセージ」）で上書きしないために使う（[preservedDecryptedBody]）。
+ */
+internal const val PUSH_DECRYPTED_BODY = "zoo.push.decrypted"
+
+/** 同じ通知に、Push で端末が復号した本文が出ていれば返す。 */
+internal fun preservedDecryptedBody(manager: NotificationManager, tag: String): String? =
+    manager.activeNotifications.firstOrNull { it.tag == tag && it.id == 0 }
+        ?.notification?.extras?.getString(PUSH_DECRYPTED_BODY)
+
 internal data class PostedPush(
     val binding: String,
     val user: String,
@@ -369,7 +381,7 @@ internal data class PostedPush(
     val build: (Bitmap?, Bitmap?) -> Notification,
 )
 
-internal fun showPushNotification(context: Context, data: Map<String, String>): PostedPush? =
+internal fun showPushNotification(context: Context, data: Map<String, String>, decryptedBody: String? = null): PostedPush? =
     synchronized(PushBinding.lock) {
         val binding = data["binding"] ?: return@synchronized null
         val user = data["userId"] ?: return@synchronized null
@@ -397,7 +409,7 @@ internal fun showPushNotification(context: Context, data: Map<String, String>): 
         }
         val intent = store.openIntent(user, id, path) ?: return@synchronized null
         val title = data["title"].orEmpty().take(200)
-        val body = data["body"].orEmpty().take(2000)
+        val body = decryptedBody ?: data["body"].orEmpty().take(2000)
         val conversation = data["channelName"].orEmpty().take(120)
         val actor = data["actor"].orEmpty().take(120).ifBlank { title.ifBlank { "Zoo" } }
         val timestamp = System.currentTimeMillis()
@@ -422,7 +434,10 @@ internal fun showPushNotification(context: Context, data: Map<String, String>): 
                 .setLargeIcon(avatar)
                 .setGroup("zoo:$user:$group")
                 .setGroupAlertBehavior(Notification.GROUP_ALERT_CHILDREN)
-                .setExtras(Bundle().apply { putString(PUSH_RENDER, render) })
+                .setExtras(Bundle().apply {
+                    putString(PUSH_RENDER, render)
+                    decryptedBody?.let { putString(PUSH_DECRYPTED_BODY, it) }
+                })
                 .setContentIntent(PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
                 .setAutoCancel(true).setOnlyAlertOnce(true).setVisibility(Notification.VISIBILITY_PRIVATE)
                 .setCategory(Notification.CATEGORY_MESSAGE).build()
