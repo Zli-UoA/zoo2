@@ -1,11 +1,55 @@
 import type { ReactNode } from "react";
-import { render as renderComponent, screen, fireEvent, waitFor } from "@testing-library/react";
+import {
+  render as renderComponent,
+  screen,
+  fireEvent,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { expect, it } from "vite-plus/test";
+import { expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser/context";
 import pdfUrl from "../../../.storybook/fixtures/media.pdf?url";
 import { MediaPreview } from "./media-preview";
 import "../../styles.css";
+import { DESKTOP_PROTOCOL_VERSION, resetDesktopForTest } from "../../lib/desktop";
+import { resetDesktopDownloadsForTest } from "../../lib/desktopDownloads";
+import { afterEach } from "vite-plus/test";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  resetDesktopForTest();
+  resetDesktopDownloadsForTest();
+});
+
+function mockDesktop(invoke: (cmd: string, args?: unknown) => Promise<unknown>) {
+  (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {
+    invoke,
+    transformCallback: vi.fn(),
+  };
+  resetDesktopForTest();
+}
+
+function desktopInvoke() {
+  return vi.fn(async (cmd: string) => {
+    if (cmd === "zoo_session")
+      return {
+        protocol: DESKTOP_PROTOCOL_VERSION,
+        ui: "remote",
+        api_base_url: "https://zli.chat",
+        state: { state: "ready" },
+      };
+    if (cmd === "zoo_download_settings") return { ask_every_time: true, directory: null };
+    if (cmd === "zoo_download_begin")
+      return { status: "started", id: "dl", path: "/tmp/report.txt", prompted: true };
+    if (cmd === "zoo_download_finish") return "saved.txt";
+    if (cmd === "zoo_download_write" || cmd === "zoo_download_cancel") return undefined;
+    throw new Error(`command ${cmd} not found`);
+  });
+}
+
 import { LocaleProvider } from "../i18n/LocaleProvider";
 
 const render = (element: ReactNode) => renderComponent(<LocaleProvider>{element}</LocaleProvider>);
@@ -136,6 +180,96 @@ it("does not jump while IME composition is active", async () => {
     () => expect(screen.getByRole("button", { name: "前のページ" })).not.toBeDisabled(),
     { timeout: 10_000 },
   );
+});
+
+it("does not share save state across same-named previews with unknown src", async () => {
+  const base = desktopInvoke();
+  let resolveFinish = (_name: string) => {};
+  const finishing = new Promise<string>((resolve) => {
+    resolveFinish = resolve;
+  });
+  const invoke = vi.fn((cmd) => (cmd === "zoo_download_finish" ? finishing : base(cmd)));
+  mockDesktop(invoke);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      async () => new Response(new Uint8Array([1, 2, 3]), { headers: { "content-length": "3" } }),
+    ),
+  );
+
+  const { rerender } = render(
+    <>
+      <MediaPreview name="sample.txt" src={null} contentType="text/plain" />
+      <MediaPreview name="sample.txt" src={null} contentType="text/plain" />
+    </>,
+  );
+  rerender(
+    <>
+      <MediaPreview name="sample.txt" src="https://files.test/a.txt" contentType="text/plain" />
+      <MediaPreview name="sample.txt" src="https://files.test/b.txt" contentType="text/plain" />
+    </>,
+  );
+
+  const openButtons = screen.getAllByRole("button", { name: /sample.txt/ });
+  fireEvent.click(openButtons.find(b => b.getAttribute("aria-label")?.includes("プレビュー")) ?? openButtons[0]);
+  let dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "sample.txtをダウンロード" }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("zoo_download_finish", { id: "dl" }));
+  fireEvent.click(within(dialog).getByRole("button", { name: /閉じる/ }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+  fireEvent.click(openButtons[1]);
+  dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByRole("button", { name: "sample.txtをダウンロード" })).not.toBeNull();
+  expect(invoke.mock.calls.filter(([cmd]) => cmd === "zoo_download_begin")).toHaveLength(1);
+  resolveFinish("saved.txt");
+});
+
+it("shares save state when saveId is provided", async () => {
+  const base = desktopInvoke();
+  let resolveFinish = (_name: string) => {};
+  const finishing = new Promise<string>((resolve) => {
+    resolveFinish = resolve;
+  });
+  const invoke = vi.fn((cmd) => (cmd === "zoo_download_finish" ? finishing : base(cmd)));
+  mockDesktop(invoke);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      async () => new Response(new Uint8Array([1, 2, 3]), { headers: { "content-length": "3" } }),
+    ),
+  );
+
+  render(
+    <>
+      <MediaPreview
+        name="sample.txt"
+        src="https://files.test/a.txt"
+        contentType="text/plain"
+        saveId="shared:sample"
+      />
+      <MediaPreview
+        name="sample.txt"
+        src="https://files.test/b.txt"
+        contentType="text/plain"
+        saveId="shared:sample"
+      />
+    </>,
+  );
+
+  const openButtons = screen.getAllByRole("button", { name: /sample.txt/ });
+  fireEvent.click(openButtons.find(b => b.getAttribute("aria-label")?.includes("プレビュー")) ?? openButtons[0]);
+  let dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "sample.txtをダウンロード" }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("zoo_download_finish", { id: "dl" }));
+  fireEvent.click(within(dialog).getByRole("button", { name: /閉じる/ }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+  fireEvent.click(openButtons[1]);
+  dialog = await screen.findByRole("dialog");
+  expect(within(dialog).queryByRole("button", { name: "sample.txtをダウンロード" })).toBeNull();
+  expect(invoke.mock.calls.filter(([cmd]) => cmd === "zoo_download_begin")).toHaveLength(1);
+  resolveFinish("saved.txt");
 });
 
 it("treats keyCode 229 without a recent composition as a normal Enter", async () => {

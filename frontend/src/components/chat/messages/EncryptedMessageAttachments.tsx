@@ -256,7 +256,6 @@ function EncryptedPreview({ attachment }: { attachment: AttachmentInfo }) {
       height={attachment.height ?? null}
       loading={state.status === "loading"}
       onRetry={retry}
-      saveId={`encrypted:${attachment.attachment_id}`}
       footer={
         state.status === "ready" ? (
           <EncryptedDownloadButton attachment={attachment} blob={state.blob} showLabel />
