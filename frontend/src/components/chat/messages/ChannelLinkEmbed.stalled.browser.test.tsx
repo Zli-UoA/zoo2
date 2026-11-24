@@ -25,6 +25,7 @@ const query = vi.hoisted(() => ({
 }));
 vi.mock("../../../hooks/useThread", () => ({
   useLinkedMessageRows: () => query.current,
+  useChannelHasCiphertext: () => false,
 }));
 
 const directory: ChannelDirectory = {
@@ -144,6 +145,17 @@ it("取得を始めていない（画面から遠い）間は、時間がたっ�
   await advance(LINK_LOAD_TIMEOUT_MS * 3);
   expect(screen.getByRole("status")).toBeInTheDocument();
   expect(screen.queryByText("リンク先を読み込めませんでした")).toBeNull();
+});
+
+it("チャンネルの一覧の同期を待っている間は、時間がたっても、読み込めなかったと書かない", async () => {
+  // 一覧にないチャンネルは、同期が終わるまで、メッセージの取得を始められない。取得の失敗ではない。
+  const waiting: ChannelDirectory = { ready: false, byId: new Map() };
+  mount(() => <ChannelLinkEmbed target={target} directory={waiting} />);
+  await screen.findByRole("status");
+  await advance(LINK_LOAD_TIMEOUT_MS * 3);
+  expect(screen.getByRole("status")).toBeInTheDocument();
+  expect(screen.queryByText("リンク先を読み込めませんでした")).toBeNull();
+  expect(screen.queryByText("メッセージを表示できません")).toBeNull();
 });
 
 it("取得が終われば、時間がたっても、読み込めなかったとは書かない", async () => {

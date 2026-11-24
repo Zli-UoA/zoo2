@@ -1,5 +1,5 @@
 import { useState, useSyncExternalStore } from "react";
-import { useLinkedMessageRows } from "../../../hooks/useThread";
+import { useChannelHasCiphertext, useLinkedMessageRows } from "../../../hooks/useThread";
 import {
   encryptedChannelsVersion,
   encryptionSendState,
@@ -133,8 +133,9 @@ export function resolveChannelLinkInfo({
  * リンク先の状態を購読する。{@link ChannelDirectory} のある画面（アプリのシェルの中）で使う。
  *
  * `enabled` が false の間は、メッセージを取得せず `loading` のまま。画面の近くに来た行だけが取得する。
- * 一度取得を始めたら、そのあと `enabled` が false に戻っても、取得したリンク先の表示は保つ
- * （画面から遠ざかったときに、表示が枠へ戻って、行の大きさが変わらないように）。
+ * 一度取得を始めたリンク先は、そのあと `enabled` が false に戻っても、表示を保つ
+ * （画面から遠ざかったときに、表示が枠へ戻って、行の大きさが変わらないように）。リンク先が変わったら、
+ * 新しいリンク先は、また `enabled` になるまで取得しない。
  * メッセージを取得するのは、チャンネルが見られるときだけ。リアクション・添付の Shape は購読しない
  * （表示しないため）。
  */
@@ -143,21 +144,30 @@ export function useChannelLinkInfo(
   directory: ChannelDirectory,
   enabled = true,
 ): ChannelLinkInfo {
-  const [started, setStarted] = useState(enabled);
-  if (enabled && !started) setStarted(true);
   const messageId = linkedMessageId(target);
+  // 取得を始めたリンク先。リンク先が変わったら（同じ要素が別のリンクに使い回されたとき）、新しいリンク先は
+  // 近くに来るまで取得しない。同じリンク先に戻ったときは、取得済みのものをそのまま使う。
+  const targetKey = `${target.channelId}\n${messageId ?? ""}`;
+  const [startedKeys, setStartedKeys] = useState<ReadonlySet<string>>(
+    () => new Set(enabled ? [targetKey] : []),
+  );
+  if (enabled && !startedKeys.has(targetKey)) setStartedKeys(new Set(startedKeys).add(targetKey));
+  const started = enabled || startedKeys.has(targetKey);
   const channel = directory.byId.get(target.channelId);
   // 暗号化の格下げの判定（docs/e2ee.md の「暗号化の格下げを防ぐ」）。チャンネルを開いたときに覚えた
   // 記録と、`edm:` の名前で、サーバーが `encrypted = false` を配っても暗号化として扱う。
   // `ciphertext` のある行は、`toLinkedMessage` が行ごとに判定する。
   useSyncExternalStore(subscribeEncryptedChannels, encryptedChannelsVersion, () => 0);
+  // 同じチャンネルの別の行に暗号文があれば、その行が対象でなくても、暗号化チャンネルとして扱う
+  // （`MessagePane` が、表示中の行で判定するのと同じ。読み込み済みの行だけを見て、要求は出さない）。
+  const channelHasCiphertext = useChannelHasCiphertext(started && channel ? channel.id : null);
   const downgraded = channel
     ? encryptionSendState({
         channelId: channel.id,
         encrypted: channel.encrypted,
         known: "unavailable",
         channelName: channel.name,
-        hasCiphertext: false,
+        hasCiphertext: channelHasCiphertext,
       }).downgraded
     : false;
   const query = useLinkedMessageRows(started && channel ? channel.id : null, messageId);

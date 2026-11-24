@@ -79,7 +79,10 @@ const dm = channel({
 /** 自分が参加していない非公開チャンネルは、一覧にも来ない（ここにだけ置いて、一覧から外す）。 */
 const hidden = channel({ id: "c-hidden", channel_name: "秘密の計画", is_private: true });
 
-const visibleChannels = [general, projects, sealed, dm];
+/** サーバーが `encrypted = false` を配っているが、暗号文のある行を含むチャンネル（格下げ）。 */
+const downgraded = channel({ id: "c-downgraded", channel_name: "downgraded" });
+
+const visibleChannels = [general, projects, sealed, dm, downgraded];
 
 const storyMessages: MessageData[] = [
   message({ id: "m-1", channel_id: general.id, content: "テスト" }),
@@ -126,11 +129,11 @@ const storyMessages: MessageData[] = [
       badge: "",
     }),
   }),
-  // サーバーが `encrypted = false` を配るチャンネルにある、暗号文の行。平文の `content` は出さない。
+  // 格下げされたチャンネルの、暗号文の行と、その隣の平文の行（サーバーが差し込んだ行かもしれない）。
   message({
     id: "m-cipher",
-    channel_id: general.id,
-    content: "差し込まれた平文",
+    channel_id: downgraded.id,
+    content: "",
     ciphertext: {
       algorithm: "m.megolm.v1.aes-sha2",
       sender_key: "key",
@@ -139,7 +142,12 @@ const storyMessages: MessageData[] = [
       ciphertext: "AwgA",
     },
   }),
-  message({ id: "m-hidden", channel_id: hidden.id, content: "見えてはいけない" }),
+  message({
+    id: "m-plain-sibling",
+    channel_id: downgraded.id,
+    content: "暗号文の隣の平文",
+    created_at: ts(31),
+  }),
 ];
 
 const withDirectory =
@@ -231,14 +239,19 @@ export const Encrypted: Story = {
   }),
 };
 
-/** 暗号文のある行は、チャンネルが平文として配られていても、本文を出さず暗号化と書く（格下げ対策）。 */
+/**
+ * 暗号文のある行を含むチャンネルは、`encrypted = false` が配られていても、暗号化チャンネルとして扱う
+ * （格下げ対策）。暗号文の行も、その隣の平文の行も、本文を出さず暗号化と書く。
+ */
 export const CiphertextInPlainChannel: Story = {
-  args: { content: url("c-general?message=m-cipher") },
+  args: {
+    content: `${url("c-downgraded?message=m-cipher")}\n${url("c-downgraded?message=m-plain-sibling")}`,
+  },
   play: settled(async (canvas, root) => {
     await expect(
-      canvas.getByRole("link", { name: /このメッセージは暗号化されています/ }),
-    ).toBeVisible();
-    await expect(root.textContent).not.toContain("差し込まれた平文");
+      canvas.getAllByRole("link", { name: /このメッセージは暗号化されています/ }),
+    ).toHaveLength(2);
+    await expect(root.textContent).not.toContain("暗号文の隣の平文");
   }),
 };
 

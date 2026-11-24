@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -10,7 +10,8 @@ import {
   storyUsers,
 } from "../../.storybook/fixtures";
 import { CollectionsProvider } from "../lib/electric/collections-context";
-import { useLinkedMessageRows } from "./useThread";
+import type { MessageRow } from "../lib/electric/types";
+import { useChannelHasCiphertext, useLinkedMessageRows } from "./useThread";
 
 const channelId = storyMessages[0]!.channel_id;
 const messageId = storyMessages[0]!.id;
@@ -107,5 +108,81 @@ describe("useLinkedMessageRows", () => {
     });
     await waitFor(() => expect(second.result.current.data?.length).toBe(1));
     expect(second.result.current.collection).not.toBe(collection);
+  });
+});
+
+describe("useChannelHasCiphertext", () => {
+  const cipherRow: MessageRow = {
+    id: "message-cipher",
+    channel_id: channelId,
+    user_id: "user-alice",
+    content: "",
+    created_at: "2026-01-02 09:30:00.000",
+    updated_at: null,
+    deleted_at: null,
+    parent_id: null,
+    ciphertext: {
+      algorithm: "m.megolm.v1.aes-sha2",
+      sender_key: "key",
+      device_id: "device",
+      session_id: "session",
+      ciphertext: "AwgA",
+    },
+  };
+
+  it("暗号文のある行が読み込まれていなければ false", () => {
+    const { wrapper: Wrapper } = wrapper();
+    const { result } = renderHook(() => useChannelHasCiphertext(channelId), { wrapper: Wrapper });
+    expect(result.current).toBe(false);
+  });
+
+  it("暗号文のある行が読み込まれていれば、対象の行でなくても true", () => {
+    const bundle = createStoryCollections({
+      users: storyUsers,
+      channels: storyChannels,
+      messages: [...storyMessages, cipherRow],
+    });
+    const { result } = renderHook(() => useChannelHasCiphertext(channelId), {
+      wrapper: ({ children }: { children: ReactNode }) =>
+        createElement(CollectionsProvider, { value: bundle, children }),
+    });
+    expect(result.current).toBe(true);
+  });
+
+  it("暗号文のある行があとから読み込まれたら、true に変わる", async () => {
+    const { wrapper: Wrapper, bundle } = wrapper();
+    const { result } = renderHook(() => useChannelHasCiphertext(channelId), { wrapper: Wrapper });
+    expect(result.current).toBe(false);
+    await act(async () => {
+      bundle.messages(channelId).insert(cipherRow);
+    });
+    await waitFor(() => expect(result.current).toBe(true));
+  });
+
+  it("別のチャンネルの暗号文は見ない", () => {
+    const other = storyChannels.find((channel) => channel.id !== channelId)!;
+    const bundle = createStoryCollections({
+      users: storyUsers,
+      channels: storyChannels,
+      messages: [...storyMessages, { ...cipherRow, channel_id: other.id }],
+    });
+    const { result } = renderHook(() => useChannelHasCiphertext(channelId), {
+      wrapper: ({ children }: { children: ReactNode }) =>
+        createElement(CollectionsProvider, { value: bundle, children }),
+    });
+    expect(result.current).toBe(false);
+  });
+
+  it("チャンネルが決まらない間は、コレクションに触れず false", () => {
+    const { wrapper: Wrapper, bundle } = wrapper();
+    const original = bundle.messages;
+    let touched = 0;
+    bundle.messages = ((id: string) => {
+      touched += 1;
+      return original(id);
+    }) as typeof bundle.messages;
+    const { result } = renderHook(() => useChannelHasCiphertext(null), { wrapper: Wrapper });
+    expect(result.current).toBe(false);
+    expect(touched).toBe(0);
   });
 });

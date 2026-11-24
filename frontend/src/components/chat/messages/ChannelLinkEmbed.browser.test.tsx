@@ -104,6 +104,8 @@ const edm = channel({
   is_dm: true,
 });
 const recorded = channel({ id: "c-recorded", channel_name: "recorded", is_private: true });
+/** `encrypted = false` が配られているが、暗号文のある行を含むチャンネル（格下げ）。 */
+const downgraded = channel({ id: "c-downgraded", channel_name: "downgraded" });
 
 const ciphertext = {
   algorithm: "m.megolm.v1.aes-sha2" as const,
@@ -123,11 +125,12 @@ const cardJson = JSON.stringify({
 });
 
 const messages: MessageRow[] = [
+  message({ id: "m-cipher", channel_id: "c-downgraded", content: "", ciphertext }),
   message({
-    id: "m-cipher",
-    channel_id: "c-general",
-    content: "差し込まれた平文",
-    ciphertext,
+    id: "m-plain-sibling",
+    channel_id: "c-downgraded",
+    content: "暗号文の隣の平文",
+    created_at: ts(31),
   }),
   message({ id: "m-edm", channel_id: "c-edm", content: "edm の平文" }),
   message({ id: "m-recorded", channel_id: "c-recorded", content: "記録済みの平文" }),
@@ -199,7 +202,7 @@ interface SetupOptions {
 
 function setup({
   content,
-  visible = [general, secretMember, sealed, dm],
+  visible = [general, secretMember, sealed, dm, downgraded],
   ready = true,
   hiddenRows = [],
   previews = "auto",
@@ -219,6 +222,7 @@ function setup({
       dm,
       edm,
       recorded,
+      downgraded,
       channel({ id: "c-hidden", channel_name: "秘密の計画", is_private: true }),
     ],
     messages: [...messages, ...hiddenRows],
@@ -417,14 +421,27 @@ describe("暗号化の格下げ対策", () => {
   const hiddenText = (text: string) => expect(document.body.textContent).not.toContain(text);
 
   it("暗号文のある行は、チャンネルが平文でも、本文を出さずに暗号化と書く", async () => {
-    setup({ content: link("c-general", "?message=m-cipher") });
+    setup({ content: link("c-downgraded", "?message=m-cipher") });
     const embed = await screen.findByRole("link", { name: /このメッセージは暗号化されています/ });
     expect(within(embed).getByText("アメシュ")).toBeInTheDocument();
-    hiddenText("差し込まれた平文");
-    // 暗号文のない行は、同じチャンネルでも本文を出す。
   });
 
-  it("暗号文のない行は、同じチャンネルでも本文を出す", async () => {
+  it("同じチャンネルの別の行に暗号文があれば、平文の行も、本文を出さずに暗号化と書く", async () => {
+    // 対象の行は平文（サーバーが差し込んだ行かもしれない）。読み込み済みの行に暗号文があるので、
+    // `MessagePane` と同じく、チャンネルを格下げされた暗号化チャンネルとして扱う。
+    setup({ content: link("c-downgraded", "?message=m-plain-sibling") });
+    expect(
+      await screen.findByRole("link", { name: /このメッセージは暗号化されています/ }),
+    ).toBeInTheDocument();
+    hiddenText("暗号文の隣の平文");
+  });
+
+  it("チャンネルのリンクも、暗号文のある行を含むチャンネルを暗号化チャンネルと示す", async () => {
+    setup({ content: link("c-downgraded") });
+    expect(await screen.findByText("暗号化チャンネル")).toBeInTheDocument();
+  });
+
+  it("暗号文のないチャンネルの行は、本文を出す", async () => {
     setup({ content: link("c-general", "?message=m-general") });
     expect(await screen.findByRole("link", { name: /アメシュ.*テスト/ })).toBeInTheDocument();
     expect(screen.queryByText("このメッセージは暗号化されています")).toBeNull();
@@ -710,11 +727,11 @@ describe("操作", () => {
 
 describe("画面の近くに来るまで取得しない", () => {
   /** 画面から遠い位置（スクロール枠の 3000px 下）に、`children` を置く。 */
-  async function renderFar(children: ReactNode) {
+  async function renderFar(children: ReactNode, visible: ChannelRow[] = [general]) {
     const bundle = createStoryCollections({
       currentUserId: "u-alice",
       users,
-      channels: [general],
+      channels: [general, secretMember],
       messages,
     });
     const messagesFor = vi.fn(bundle.messages);
@@ -726,7 +743,7 @@ describe("画面の近くに来るまで取得しない", () => {
       component: () => (
         <LocaleProvider>
           <CollectionsProvider value={bundle}>
-            <MfmChannelsProvider channels={[general]}>
+            <MfmChannelsProvider channels={visible}>
               <div data-testid="pane" style={{ height: 200, overflowY: "auto" }}>
                 <div style={{ height: 3000 }} />
                 {children}
@@ -785,6 +802,38 @@ describe("画面の近くに来るまで取得しない", () => {
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(screen.getByRole("link", { name: /アメシュ.*テスト/ })).toBeInTheDocument();
     expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("同じ要素が別のリンクに使い回されたら、新しいリンク先は、近くに来るまで取得しない", async () => {
+    let setContent: (content: string) => void = () => {};
+    function Switchable() {
+      const [content, set] = useState(link("c-general", "?message=m-general"));
+      setContent = set;
+      return <MfmContent content={content} />;
+    }
+    const { pane, messagesFor } = await renderFar(<Switchable />, [general, secretMember]);
+    pane.scrollTop = 3000;
+    expect(await screen.findByRole("link", { name: "アメシュさん: #general" })).toBeInTheDocument();
+
+    // 画面から遠ざかったまま、同じ要素が別のチャンネルのリンクになる（本文の編集など）。
+    pane.scrollTop = 0;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await act(async () => setContent(link("c-secret", "?message=m-secret")));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    // 新しいリンク先は、取得せず、URL のまま。
+    expect(messagesFor).not.toHaveBeenCalledWith("c-secret");
+    expect(screen.getByRole("link").textContent).toContain("/channels/c-secret?message=m-secret");
+
+    // 近くに来たら取得する。
+    pane.scrollTop = 3000;
+    expect(await screen.findByRole("link", { name: "アメシュさん: #secret" })).toBeInTheDocument();
+    expect(messagesFor).toHaveBeenCalledWith("c-secret");
+
+    // 取得済みのリンク先に戻ったら、遠くにいても、取得済みの表示のまま。
+    pane.scrollTop = 0;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await act(async () => setContent(link("c-general", "?message=m-general")));
+    expect(await screen.findByRole("link", { name: "アメシュさん: #general" })).toBeInTheDocument();
   });
 
   it("一度表示した短い表示は、画面から遠ざかっても、URL に戻らない", async () => {

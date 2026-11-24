@@ -5,7 +5,7 @@ import {
   useLiveInfiniteQuery,
   useLiveQuery,
 } from "@tanstack/react-db";
-import { useMemo } from "react";
+import { useCallback, useMemo, useSyncExternalStore } from "react";
 
 import { useCollections } from "../lib/electric/collections-context";
 import { messageFeedQuery } from "../lib/electric/messageFeed";
@@ -123,6 +123,37 @@ export function useLinkedMessageRows(channelId: string | null, messageId: string
       ? linkedMessageQuery({ messages: messages(channelId), users }, messageId)
       : null;
   return useLiveQuery(() => query);
+}
+
+/**
+ * この端末が読み込んでいる、そのチャンネルの行に、暗号文のある行があるか。暗号化の格下げの検出
+ * （`encryptionSendState` の `hasCiphertext`、`MessagePane` は表示中の行で判定する）に使う。
+ *
+ * 要求は出さない。メッセージリンクの埋め込みは対象の 1 件しか取らないので、同じチャンネルの別の行は、
+ * チャンネルを開いて読み込んだ分だけが見える。変更の購読は、行を取らずに変更だけを受ける
+ * （`useOptimisticDisplay` と同じ。on-demand のコレクションで、全行を取る要求にしないため）。
+ * `channelId` が `null` のときは、見ない。
+ */
+export function useChannelHasCiphertext(channelId: string | null): boolean {
+  const { messages } = useCollections();
+  const collection = channelId ? messages(channelId) : null;
+  const subscribe = useCallback(
+    (onChange: () => void) => {
+      if (!collection) return () => {};
+      const handle = collection.subscribeChanges(onChange, { includeInitialState: false });
+      return () => handle.unsubscribe();
+    },
+    [collection],
+  );
+  return useSyncExternalStore(
+    subscribe,
+    () => {
+      if (!collection) return false;
+      for (const row of collection.values()) if (row.ciphertext != null) return true;
+      return false;
+    },
+    () => false,
+  );
 }
 
 /** スレッドの親を、メイン一覧の範囲とは関係なく取る。 */
