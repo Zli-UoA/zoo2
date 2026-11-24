@@ -35,11 +35,12 @@ export const CF_PULL_RETRY_MAX_ATTEMPTS = 4;
 
 /**
  * pull の要求そのものが失敗したとき、backend が Cloudflare に送る前に断ったと分かる HTTP の状態。
- * 400・403・404 は track id の検証・権限・対象なし、409 は自分のセッションがもう Cloudflare に割り当てられて
- * いない（backend はそのセッションで pull しない）。これ以外（5xx・時間切れ・通信の失敗・状態の分からない失敗）は、
- * Cloudflare が購読と offer を作ったか分からないので、同じセッションで pull し直さない。
+ * 400・403・404 は track id の検証・権限・対象なし。これ以外（409・5xx・時間切れ・通信の失敗・状態の分からない
+ * 失敗）は、Cloudflare が購読と offer を作ったか分からないので、同じセッションで pull し直さない。409 は、pull を
+ * 送る前（割り当てがもう Cloudflare でない）にも、送ったあと（そのあいだに割り当てが変わった）にも返るので、
+ * 区別できない。どちらでも、このセッションはもう自分の割り当てではないので、接続し直す。
  */
-const CF_PULL_REJECTED_STATUSES = new Set([400, 403, 404, 409]);
+const CF_PULL_REJECTED_STATUSES = new Set([400, 403, 404]);
 
 /** pull の失敗が「Cloudflare に届く前に断られた」と分かるか。状態を持たない失敗は分からないものとする。 */
 export function isPullRejectedBeforeApply(err: unknown): boolean {

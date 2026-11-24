@@ -483,7 +483,7 @@ describe("CfRealtimeAdapter", () => {
     setup();
     vi.useFakeTimers();
     const pull = vi.fn<(ids: string[]) => Promise<CfTracksResponse>>(async () => {
-      throw rejectedBeforeApply(409);
+      throw rejectedBeforeApply(404);
     });
     const api: CfRealtimeApi = {
       publish: async () => ({ sessionDescription: { type: "answer", sdp: "a" } }),
@@ -668,9 +668,10 @@ describe("CfRealtimeAdapter", () => {
 
 describe("isPullRejectedBeforeApply", () => {
   it("accepts only statuses the backend returns before calling Cloudflare", () => {
-    for (const status of [400, 403, 404, 409])
+    for (const status of [400, 403, 404])
       expect(isPullRejectedBeforeApply(rejectedBeforeApply(status))).toBe(true);
-    for (const status of [500, 502, 504])
+    // 409 は Cloudflare に送ったあとにも返る（割り当てが変わった）ので、結果が分からないものとする。
+    for (const status of [409, 500, 502, 504])
       expect(isPullRejectedBeforeApply(rejectedBeforeApply(status))).toBe(false);
     expect(isPullRejectedBeforeApply(new Error("network"))).toBe(false);
     expect(isPullRejectedBeforeApply(undefined)).toBe(false);

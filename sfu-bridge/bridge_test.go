@@ -161,6 +161,8 @@ type fakeBackend struct {
 	closeSpk   [][]string
 	pullResp   tracksResponse
 	pullStatus int
+	// closeFails は、失敗させる close の残りの回数。
+	closeFails int
 }
 
 func (f *fakeBackend) handler(w http.ResponseWriter, r *http.Request) {
@@ -175,6 +177,11 @@ func (f *fakeBackend) handler(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewEncoder(w).Encode(f.pullResp)
 	case "/internal/sfu-bridge/cf/close":
+		if f.closeFails > 0 {
+			f.closeFails--
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
 		var body struct {
 			ChannelID string   `json:"channel_id"`
 			Mids      []string `json:"mids"`
@@ -500,5 +507,73 @@ func TestUnpushClosesUnderNegotiateWithChannel(t *testing.T) {
 	}
 	if _, ok := b.pushed["a"]; ok {
 		t.Fatal("unpush must forget the push")
+	}
+}
+
+func TestFailedCloseIsRetried(t *testing.T) {
+	old := closeRetryInterval
+	closeRetryInterval = 10 * time.Millisecond
+	t.Cleanup(func() { closeRetryInterval = old })
+	f := &fakeBackend{closeFails: 1}
+	b := readyBridge(t, f)
+	b.negotiate.Lock()
+	b.closeMidsLocked([]string{"4"}, []string{"a"})
+	b.negotiate.Unlock()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		f.mu.Lock()
+		n := len(f.closed)
+		f.mu.Unlock()
+		if n == 1 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.closed) != 1 || f.closed[0][0] != "4" || len(f.closeSpk[0]) != 1 || f.closeSpk[0][0] != "a" {
+		t.Fatalf("the failed close must be retried with its speaker: %v %v", f.closed, f.closeSpk)
+	}
+}
+
+func TestRetriedCloseKeepsRepushedSpeaker(t *testing.T) {
+	old := closeRetryInterval
+	closeRetryInterval = time.Hour
+	t.Cleanup(func() { closeRetryInterval = old })
+	f := &fakeBackend{closeFails: 1}
+	b := readyBridge(t, f)
+	b.negotiate.Lock()
+	b.closeMidsLocked([]string{"4"}, []string{"a"})
+	// やり直す前に、同じ話者を push し直した。
+	b.mu.Lock()
+	b.pushed["a"] = &pushedTrack{mid: "6"}
+	b.mu.Unlock()
+	b.retryPendingClosesLocked()
+	b.negotiate.Unlock()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.closed) != 1 || f.closed[0][0] != "4" || len(f.closeSpk[0]) != 0 {
+		t.Fatalf("the retry must close the mid but keep the re-pushed speaker's row: %v %v", f.closed, f.closeSpk)
+	}
+}
+
+func TestUnpushKeepsRepushedSpeaker(t *testing.T) {
+	f := &fakeBackend{}
+	b := readyBridge(t, f)
+	local, err := webrtc.NewTrackLocalStaticRTP(opusCapability, "audio", "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr, err := b.pc.AddTransceiverFromTrack(local, webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionSendonly})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 古い push（mid 4）を止める前に、同じ話者の新しい push（mid 6）が済んでいる。
+	b.pushed["a"] = &pushedTrack{mid: "6"}
+	b.unpush("a", "4", tr)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.closed) != 1 || f.closed[0][0] != "4" || len(f.closeSpk[0]) != 0 {
+		t.Fatalf("closing the old push must not remove the new push's row: %v %v", f.closed, f.closeSpk)
 	}
 }

@@ -79,7 +79,25 @@ type roomBridge struct {
 	// subscribed は購読中の LiveKit のトラック。購読と購読の解除のコールバックの中で、すぐに入れ外しする。
 	// push の goroutine は、これを見てから取っておく・push する。goroutine が動く前に解除されたトラックを中継しないため。
 	subscribed map[*webrtc.TrackRemote]bool
+	// pendingCloses は、失敗した close（Cloudflare の mid と、一覧から外す話者）。b.negotiate の下で読み書きし、
+	// 間をあけて送り直す（retryPendingClosesLocked）。closeRetry は、予約したやり直しのタイマー。
+	pendingCloses []pendingClose
+	closeRetry    *time.Timer
+	closeAttempts int
 }
+
+// pendingClose は、送り直す close。
+type pendingClose struct {
+	mids     []string
+	speakers []string
+}
+
+// close のやり直しの間隔と回数の上限。上限を超えた分は記録して捨てる（mid はセッションを閉じれば消え、
+// 一覧の行は次の bridge の登録で消える）。
+const closeRetryMaxAttempts = 10
+
+// closeRetryInterval はテストで短くする。
+var closeRetryInterval = 5 * time.Second
 
 func newRoomBridge(parent context.Context, api *backendAPI, bridgeEpoch int64, r roomState) *roomBridge {
 	ctx, cancel := context.WithCancel(parent)
@@ -345,18 +363,88 @@ func (b *roomBridge) unpush(speaker, mid string, transceiver *webrtc.RTPTranscei
 	}
 	// stopMidsLocked と同じく、送信を止めてから Cloudflare 側を閉じる。
 	_ = transceiver.Stop()
-	b.closeMidsLocked([]string{mid}, []string{speaker})
+	b.closeMidsLocked([]string{mid}, b.notRepushedLocked([]string{speaker}))
+}
+
+// notRepushedLocked は、speakers のうち、いま push していない話者を返す。b.mu を外してから b.negotiate を取る
+// までに、同じ話者を push し直していれば（publishLocal も b.negotiate の下）、一覧の行は新しい公開のものなので、
+// close で外さない。b.negotiate を持って呼ぶ。
+func (b *roomBridge) notRepushedLocked(speakers []string) []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var out []string
+	for _, s := range speakers {
+		if _, ok := b.pushed[s]; !ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // closeMidsLocked は Cloudflare 側の mid を閉じる。speakers は push を閉じる話者（pull だけなら nil）。
 // 失敗は記録だけする。mid はセッションを閉じれば消え、話者のトラックは backend が close の前に一覧から外す。
 // b.negotiate を持って呼ぶ。
 func (b *roomBridge) closeMidsLocked(mids, speakers []string) {
+	if !b.sendCloseLocked(pendingClose{mids: mids, speakers: speakers}) {
+		b.scheduleCloseRetryLocked()
+	}
+}
+
+// sendCloseLocked は close を送る。失敗したら pendingCloses に取っておき、false を返す。b.negotiate を持って呼ぶ。
+func (b *roomBridge) sendCloseLocked(c pendingClose) bool {
 	ctx, cancel := context.WithTimeout(b.ctx, negotiateTimeout)
 	defer cancel()
-	if err := b.api.cfClose(ctx, b.channelID, b.cfSession, mids, speakers); err != nil && b.ctx.Err() == nil {
-		b.log().Warn("closing Cloudflare tracks failed", "mids", mids, "error", err)
+	err := b.api.cfClose(ctx, b.channelID, b.cfSession, c.mids, c.speakers)
+	if err == nil {
+		return true
 	}
+	if b.ctx.Err() != nil {
+		return true
+	}
+	b.log().Warn("closing Cloudflare tracks failed; will retry", "mids", c.mids, "error", err)
+	b.pendingCloses = append(b.pendingCloses, c)
+	return false
+}
+
+// scheduleCloseRetryLocked は、取っておいた close のやり直しを予約する。b.negotiate を持って呼ぶ。
+func (b *roomBridge) scheduleCloseRetryLocked() {
+	if b.closeRetry != nil || len(b.pendingCloses) == 0 {
+		return
+	}
+	if b.closeAttempts >= closeRetryMaxAttempts {
+		b.log().Error("giving up closing Cloudflare tracks", "pending", len(b.pendingCloses))
+		b.pendingCloses = nil
+		return
+	}
+	b.closeAttempts++
+	b.closeRetry = time.AfterFunc(closeRetryInterval, func() {
+		b.negotiate.Lock()
+		defer b.negotiate.Unlock()
+		b.closeRetry = nil
+		if b.ctx.Err() != nil {
+			return
+		}
+		b.retryPendingClosesLocked()
+	})
+}
+
+// retryPendingClosesLocked は、取っておいた close を送り直す。そのあいだに同じ話者を push し直していれば、
+// その話者は一覧から外さない（新しい公開の行を消さない）。b.negotiate を持って呼ぶ。
+func (b *roomBridge) retryPendingClosesLocked() {
+	pending := b.pendingCloses
+	b.pendingCloses = nil
+	ok := true
+	for _, c := range pending {
+		c.speakers = b.notRepushedLocked(c.speakers)
+		if !b.sendCloseLocked(c) {
+			ok = false
+		}
+	}
+	if ok {
+		b.closeAttempts = 0
+		return
+	}
+	b.scheduleCloseRetryLocked()
 }
 
 func drainRTCP(sender *webrtc.RTPSender) {
