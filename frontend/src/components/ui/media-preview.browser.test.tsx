@@ -211,7 +211,9 @@ it("does not share save state across same-named previews with unknown src", asyn
   );
 
   const openButtons = screen.getAllByRole("button", { name: /sample.txt/ });
-  fireEvent.click(openButtons.find(b => b.getAttribute("aria-label")?.includes("プレビュー")) ?? openButtons[0]);
+  fireEvent.click(
+    openButtons.find((b) => b.getAttribute("aria-label")?.includes("プレビュー")) ?? openButtons[0],
+  );
   let dialog = await screen.findByRole("dialog");
   fireEvent.click(within(dialog).getByRole("button", { name: "sample.txtをダウンロード" }));
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("zoo_download_finish", { id: "dl" }));
@@ -258,7 +260,9 @@ it("shares save state when saveId is provided", async () => {
   );
 
   const openButtons = screen.getAllByRole("button", { name: /sample.txt/ });
-  fireEvent.click(openButtons.find(b => b.getAttribute("aria-label")?.includes("プレビュー")) ?? openButtons[0]);
+  fireEvent.click(
+    openButtons.find((b) => b.getAttribute("aria-label")?.includes("プレビュー")) ?? openButtons[0],
+  );
   let dialog = await screen.findByRole("dialog");
   fireEvent.click(within(dialog).getByRole("button", { name: "sample.txtをダウンロード" }));
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("zoo_download_finish", { id: "dl" }));
