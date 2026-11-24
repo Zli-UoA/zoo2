@@ -140,15 +140,97 @@ class SasVerificationTest {
         assertEquals(SasErrorCode.SEND_FAILED, bob.entry(txn).error)
         alice.receive() // mac → done
         assertTrue(alice.entry(txn).view.phase != SasPhase.DONE)
-        bob.receive() // done
 
-        // 次の確認で、届かなかった done だけを送り直す（受け付けられた mac は送り直さない）。
+        // 次の確認で、届かなかった done だけを送り直す（受け付けられた mac は送り直さない）。Alice の done を受け取る前に
+        // 確かめるので、送り直したのは expire。
         bob.sas.expire()
         assertNull(bob.entry(txn).error)
         val resent = alice.receive()
         assertEquals(1, resent.verifications.size)
+        bob.receive() // done
         assertEquals(SasPhase.DONE, alice.await(txn) { it.save == SasSaveState.SAVED }.view.phase)
         assertEquals(SasPhase.DONE, bob.await(txn) { it.save == SasSaveState.SAVED }.view.phase)
+    }
+
+    @Test
+    fun cancellingTheSendKeepsTheUndeliveredMessage() = runBlocking<Unit> {
+        val alice = world.device(ALICE, "alice")
+        val bob = world.device(BOB, "bob")
+        val txn = compare(alice, bob)
+        alice.sas.confirm(txn, CompletableDeferred("alice-reauth"))
+        bob.receive() // mac
+        var sends = 0
+        world.refuseSend = { caller -> caller == BOB && ++sends == 2 }
+        bob.sas.confirm(txn, CompletableDeferred("bob-reauth")) // done は届かない
+        world.refuseSend = null
+        alice.receive() // mac → done
+
+        // Alice の done を受け取ると、届かなかった done を送り直す。その送信の途中で処理を取り消す。
+        world.sendGate = CompletableDeferred()
+        val job = bob.receiveInBackground()
+        world.sendEntered.await()
+        job.cancel()
+        job.join()
+        world.sendGate = null
+
+        // 取り出した done は捨てずに残り、次の確認で送り直す。
+        bob.sas.expire()
+        assertEquals(1, alice.receive().verifications.size)
+        assertEquals(SasPhase.DONE, alice.await(txn) { it.save == SasSaveState.SAVED }.view.phase)
+        // 取り消しで始まらなかった Bob の保存も、確認のときに始める。
+        assertEquals(SasPhase.DONE, bob.await(txn) { it.save == SasSaveState.SAVED }.view.phase)
+    }
+
+    @Test
+    fun messageWhoseResponseWasLostIsResentWithTheSameTxnIdAndArrivesOnce() = runBlocking<Unit> {
+        val alice = world.device(ALICE, "alice")
+        val bob = world.device(BOB, "bob")
+        val txn = compare(alice, bob)
+        alice.sas.confirm(txn, CompletableDeferred("alice-reauth"))
+        bob.receive() // mac
+        // Bob の done はキューに入ったが、応答をなくした。
+        var sends = 0
+        world.loseResponse = { caller -> caller == BOB && ++sends == 2 }
+        bob.sas.confirm(txn, CompletableDeferred("bob-reauth"))
+        world.loseResponse = null
+        assertEquals(SasErrorCode.SEND_FAILED, bob.entry(txn).error)
+
+        // 同じ txn_id と暗号文で送り直すので、サーバーがまとめ、Alice には mac と done が 1 回ずつ届く。
+        bob.sas.expire()
+        assertNull(bob.entry(txn).error)
+        val received = alice.receive()
+        assertEquals(2, received.verifications.size)
+        bob.receive() // done
+        val aliceDone = alice.await(txn) { it.save == SasSaveState.SAVED }
+        assertEquals(SasPhase.DONE, aliceDone.view.phase)
+        assertNull(aliceDone.error)
+        assertEquals(SasPhase.DONE, bob.await(txn) { it.save == SasSaveState.SAVED }.view.phase)
+    }
+
+    @Test
+    fun verificationMessageOfARowWhoseSaveFailedIsDeliveredOnRetry() = runBlocking<Unit> {
+        val alice = world.device(ALICE, "alice")
+        val bob = world.device(BOB, "bob")
+        val txn = alice.sas.request(BOB)
+        // 届いた行は ack するまでサーバーに残る（同じ行がもう一度届く）。
+        val rows = synchronized(world) { world.inbox.remove("$BOB|${bob.store.deviceId}").orEmpty() }
+        val keys = world.keysQuery(BOB, rows.map { it.senderUserId })
+        val deviceKeys = keys.getValue("device_keys").jsonObject
+        val signatures = keys.getValue("signatures") as kotlinx.serialization.json.JsonArray
+        val original = CryptoStore.directorySync
+        try {
+            // 復号して印を付けたが、保存を確かめられなかった（印と Olm の状態はメモリーに残る）。
+            CryptoStore.directorySync = { throw java.io.IOException("sync failed") }
+            assertFailsWith<java.io.IOException> { bob.store.processToDevice(rows, deviceKeys, signatures, keys) }
+        } finally {
+            CryptoStore.directorySync = original
+        }
+        // 次の同期では復号し直せないが、残した検証のメッセージを、保存を確かめてから渡す。
+        val retry = bob.store.processToDevice(rows, deviceKeys, signatures, keys)
+        assertEquals(rows.map { it.id }, retry.processed)
+        assertEquals(1, retry.verifications.size)
+        bob.sas.handleMessages(retry.verifications).join()
+        assertEquals(SasPhase.INCOMING, bob.entry(txn).view.phase)
     }
 
     @Test

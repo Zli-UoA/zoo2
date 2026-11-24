@@ -56,6 +56,19 @@ internal class SasWorld : AutoCloseable {
     @Volatile
     var refuseSend: ((caller: String) -> Boolean)? = null
 
+    /** 置くと、送信ユーザーを渡して真を返した `sendToDevice` を、キューに入れたあとで応答をなくした（例外）ことにする。 */
+    @Volatile
+    var loseResponse: ((caller: String) -> Boolean)? = null
+
+    /** 置くと、`sendToDevice` はこれが終わるまで待つ（待ち始めたら [sendEntered] を終える）。 */
+    @Volatile
+    var sendGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+    val sendEntered = kotlinx.coroutines.CompletableDeferred<Unit>()
+
+    /** 受け付けた `(送信端末, txn_id, 宛先ユーザー, 宛先端末)`。 */
+    private val toDeviceTxns = mutableSetOf<List<String>>()
+    var sendRequests = 0
+
     /** 失敗させる `keys/query` の残りの回数。 */
     var failKeysQuery = 0
     var keysQueries = 0
@@ -113,18 +126,31 @@ internal class SasWorld : AutoCloseable {
         }
 
         override suspend fun sendToDevice(deviceId: String, messages: JsonObject): List<Pair<String, String>> =
-            synchronized(this@SasWorld) {
+            sendToDevice(deviceId, java.util.UUID.randomUUID().toString(), messages)
+
+        /** 実際のサーバーと同じく、同じ送信端末・`txn_id`・宛先の再送は 1 件にまとめる。 */
+        override suspend fun sendToDevice(deviceId: String, txnId: String, messages: JsonObject): List<Pair<String, String>> {
+            sendGate?.let { gate ->
+                sendEntered.complete(Unit)
+                gate.await()
+            }
+            val lost = synchronized(this@SasWorld) {
+                sendRequests++
                 if (refuseSend?.invoke(caller) == true) {
-                    return@synchronized messages.flatMap { (user, targets) -> targets.jsonObject.keys.map { user to it } }
+                    return messages.flatMap { (user, targets) -> targets.jsonObject.keys.map { user to it } }
                 }
                 for ((user, targets) in messages) {
                     for ((target, content) in targets.jsonObject) {
+                        if (!toDeviceTxns.add(listOf(deviceId, txnId, user, target))) continue
                         val box = inbox.getOrPut("$user|$target") { mutableListOf() }
                         box += ToDeviceRow("$caller-${box.size}-${System.nanoTime()}", caller, "m.room.encrypted", content.jsonObject)
                     }
                 }
-                emptyList()
+                loseResponse?.invoke(caller) == true
             }
+            if (lost) throw java.io.IOException("応答をなくしました")
+            return emptyList()
+        }
 
         override suspend fun uploadPins(pins: JsonArray, replace: Boolean, reauth: String?) = synchronized(this@SasWorld) {
             if (replace && reauth == null) throw ApiException(403, buildJsonObject { put("code", "E2EE_REAUTH_REQUIRED") })
@@ -183,6 +209,15 @@ internal class SasWorld : AutoCloseable {
             store.acknowledged(result.processed)
             if (result.verifications.isNotEmpty()) sas.handleMessages(result.verifications).join()
             result
+        }
+
+        /** [receive] と同じく処理するが、検証のメッセージの処理を待たずに、その [kotlinx.coroutines.Job] を返す。 */
+        fun receiveInBackground(): kotlinx.coroutines.Job {
+            val rows = synchronized(this@SasWorld) { inbox.remove("$user|${store.deviceId}").orEmpty() }
+            val keys = keysQuery(user, rows.map { it.senderUserId })
+            val result = store.processToDevice(rows, keys.getValue("device_keys").jsonObject, keys.getValue("signatures") as JsonArray, keys)
+            store.acknowledged(result.processed)
+            return sas.handleMessages(result.verifications)
         }
 
         /** この端末あての to-device が届くまで待つ（裏で送るメッセージを待つため）。 */

@@ -7,7 +7,6 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -268,6 +267,9 @@ class E2eeRevocation(
     /** 手順の途中で [dispose] が呼ばれた（手順が終わったら秘密を捨てる）。 */
     @Volatile
     private var disposeRequested = false
+
+    /** [dispose] の要求と、手順の終わりの確認とロックの解放を、互いに割り込ませない。 */
+    private val disposeGuard = Any()
 
     /** 進めている失効（[begin] か [resume] で作る）。 */
     private var revocation: Revocation? = null
@@ -563,7 +565,11 @@ class E2eeRevocation(
         // 記録し直す。クロス署名鍵の保存のあとは、自分の鍵と記録も新しい鍵にそろえる（飛ばすと、端末に古い鍵が残る）。
         if (stored != null && STAGE_ORDER.indexOf(summary.stage) > STAGE_ORDER.indexOf(stored.stage)) {
             if (summary.atLeast(RevocationStage.CROSS_SIGNING_SAVED) && !stored.atLeast(RevocationStage.CROSS_SIGNING_SAVED)) {
-                secretsRevision = api.secretStorage().secretsRevision()
+                // 読み直した SSSS がこの失効の内容のときだけ、その `secrets_revision` で適用する（別の端末が書き換えて
+                // いたら、鍵と revision の組が崩れるので、適用せずに止める）。
+                val current = api.secretStorage()
+                if (!revocation.secretStorageMatches(current.toString())) throw RevocationException.Conflict("E2EE_SSSS_CONFLICT")
+                secretsRevision = current.secretsRevision()
                 withContext(io) { store.applyRevocation(revocation, secretsRevision) }
             } else {
                 save()
@@ -738,10 +744,13 @@ class E2eeRevocation(
      * 行う）。
      */
     fun dispose() {
-        if (!lock.tryLock()) {
-            disposeRequested = true
-            // 待っているあいだに手順が終わっていたら、ここで捨てる。
-            if (!lock.tryLock()) return
+        // 手順の終わり（要求の確認とロックの解放）と同じ [disposeGuard] の中で行う。ロックを取れなければ、持っている
+        // 手順はまだ確認の前なので、要求を残せば必ずその手順が捨てる。
+        synchronized(disposeGuard) {
+            if (!lock.tryLock()) {
+                disposeRequested = true
+                return
+            }
         }
         try {
             release()
@@ -761,15 +770,22 @@ class E2eeRevocation(
      * [lock] を取って `block` を行う。行っているあいだに [dispose] が呼ばれたら、終わったあとに秘密を捨てる
      * （終了の要求がなければ、通信に失敗しても同じ鍵で続けられるよう残す）。捨てる前に次の手順が来たら、先に捨てる。
      */
-    private suspend fun <T> locked(block: suspend () -> T): T =
-        lock.withLock {
+    private suspend fun <T> locked(block: suspend () -> T): T {
+        lock.lock()
+        try {
             if (disposeRequested) release()
-            try {
-                block()
-            } finally {
-                if (disposeRequested) release()
+            return block()
+        } finally {
+            // 要求の確認とロックの解放のあいだに dispose が入らないよう、まとめて行う。
+            synchronized(disposeGuard) {
+                try {
+                    if (disposeRequested) release()
+                } finally {
+                    lock.unlock()
+                }
             }
         }
+    }
 
     private fun discard() {
         revocation?.close()

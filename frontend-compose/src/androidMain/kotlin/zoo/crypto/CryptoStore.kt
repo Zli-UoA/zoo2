@@ -204,6 +204,12 @@ class CryptoStore private constructor(
 ) : AutoCloseable {
     val changes = kotlinx.coroutines.flow.MutableStateFlow(0L)
     private val outboundOlm = mutableMapOf<String, String>()
+
+    /**
+     * 処理済みの印を付けたが、保存に失敗した行の検証のメッセージ（行の ID ごと）。印と Olm の状態はメモリーに残る
+     * ので、次の同期でその行を保存し直したときに渡す（同じプロセスのあいだだけ）。
+     */
+    private val unsavedVerifications = mutableMapOf<String, VerificationMessage>()
     private val loadedInbound = mutableSetOf<String>()
     private var closed = false
 
@@ -334,10 +340,20 @@ class CryptoStore private constructor(
         // あとで同期に失敗しても、開き直すと新しい state.json を読めることがある）ので、返す前に
         // 保存し直して、同期を確かめてから ack させる。
         var unsaved = false
+        // 保存を確かめた行の数（processed の先頭から）。
+        var confirmed = 0
+        // 前の処理で印を付けたが保存できなかった行の検証のメッセージ。保存を確かめたら渡す。
+        val waiting = mutableListOf<String>()
+        fun saved() {
+            waiting.forEach { id -> unsavedVerifications.remove(id)?.let(verifications::add) }
+            waiting.clear()
+            unsaved = false
+        }
         try {
             for (row in rows) {
                 if (row.id in state.processedToDevice) {
                     unsaved = true
+                    if (row.id in unsavedVerifications) waiting += row.id
                 } else {
                     var verification: VerificationMessage? = null
                     if (row.type == "m.room.encrypted") {
@@ -357,24 +373,27 @@ class CryptoStore private constructor(
                     try {
                         save()
                     } catch (failure: Throwable) {
-                        verification?.destroy()
+                        // 復号で Olm の状態は進み、印もメモリーに残る（次の保存で確定しうる）ので、もう復号し直せない。
+                        // 検証のメッセージは捨てずに残し、この行を保存し直したときに渡す。
+                        verification?.let { unsavedVerifications[row.id] = it }
                         throw failure
                     }
-                    // 保存できた行の検証のメッセージだけを渡す。
+                    saved()
                     verification?.let(verifications::add)
-                    unsaved = false
                 }
                 processed += row.id
+                if (!unsaved) confirmed = processed.size
             }
-            if (unsaved) save()
+            if (unsaved) {
+                save()
+                saved()
+                confirmed = processed.size
+            }
         } catch (failure: Exception) {
-            // 前の行は処理済みとして保存したので、もう復号できない。後の行の保存に失敗しても、保存できた行（検証の
-            // メッセージを含む）は返して渡し、ack させる。失敗した行は返さない（ack せず、次の同期で試し直す）。
-            // 印を付けただけで保存を確かめていない行（unsaved）があるときと、保存できた行がないときは投げる。
-            if (unsaved || processed.isEmpty()) {
-                verifications.forEach { it.destroy() }
-                throw failure
-            }
+            // 前の行は処理済みとして保存したので、もう復号できない。後の行の保存に失敗しても、保存を確かめた行（検証の
+            // メッセージを含む）は返して渡し、ack させる。確かめていない行は返さない（ack せず、次の同期で試し直す）。
+            if (confirmed == 0) throw failure
+            return ToDeviceResult(processed.take(confirmed), roomKeys, dropped, newOlmSessions, verifiedRoomKeys, verifications)
         }
         return ToDeviceResult(processed, roomKeys, dropped, newOlmSessions, verifiedRoomKeys, verifications)
     }
@@ -1179,6 +1198,8 @@ class CryptoStore private constructor(
         if (closed) return
         closed = true
         storageKey.fill(0)
+        unsavedVerifications.values.forEach { it.destroy() }
+        unsavedVerifications.clear()
         pendingUploads.values.forEach { it.upload.close() }
         pendingUploads.clear()
         backupState?.close()

@@ -49,6 +49,12 @@ interface SasApi {
      */
     suspend fun sendToDevice(deviceId: String, messages: JsonObject): List<Pair<String, String>>
 
+    /**
+     * `txnId` を指定した `POST /api/e2ee/to_device`（宛先は 100 端末まで）。応答が分からなかった送信を同じ `txn_id` と
+     * 内容で送り直すため（サーバーは同じ送信端末・`txn_id`・宛先を 1 件にまとめる）。入れられなかった宛先を返す。
+     */
+    suspend fun sendToDevice(deviceId: String, txnId: String, messages: JsonObject): List<Pair<String, String>>
+
     /** `POST /api/e2ee/tofu_pins`。`replace: true` には直前の再認証が要る。 */
     suspend fun uploadPins(pins: JsonArray, replace: Boolean, reauth: String?)
 
@@ -123,6 +129,9 @@ val SAS_EXPIRE_INTERVAL: Duration = 5.seconds
 
 /** 検証の期限（10 分）。これより古い未処理のメッセージは捨てる。 */
 private const val SAS_TIMEOUT_MS = 10 * 60 * 1000L
+
+/** 1 回の to-device の送信に入れる宛先の端末の上限（サーバーの上限）。 */
+internal const val TO_DEVICE_BATCH = 100
 
 private const val REQUEST_TYPE = "m.key.verification.request"
 
@@ -296,6 +305,13 @@ class SasController(
         val queuedAt: Long,
     ) {
         val target: Pair<String, String> = device.userId() to device.deviceId()
+
+        /**
+         * 一度送った（応答がなかったか、`undelivered` だった）ときの `txn_id` と暗号文。送り直すときは同じものを送る
+         * （サーバーは同じ送信端末・`txn_id`・宛先を 1 件にまとめるので、届いていたら二重に届かない）。
+         */
+        var txnId: String? = null
+        var encrypted: JsonElement? = null
     }
 
     private val verifications = SasVerifications()
@@ -446,6 +462,11 @@ class SasController(
                 }
             }
         }
+        // 終わったのに保存を始めていない検証（保存を始める前に処理が取り消された）は、ここで始める。
+        val idle = synchronized(lock) {
+            entryMap.values.filter { it.view.phase == SasPhase.DONE && it.save == SasSaveState.IDLE }.map { it.view.transactionId }
+        }
+        idle.forEach { scope.launch { save(it) } }
         if (synchronized(lock) { entryMap.isEmpty() }) return
         serial {
             val updates = withContext(io) { verifications.expire(now()) }
@@ -594,26 +615,19 @@ class SasController(
 
     /**
      * `items` を送り、送れなかった分を [unsent] に残す（次の期限の確認で送り直す）。送れた分と、残せない分（検証を
-     * 忘れた、止めた）の端末は閉じる。残した分があれば、画面に [SasErrorCode.SEND_FAILED] を出す。
+     * 忘れた、止めた）の端末は閉じる。残した分があれば、画面に [SasErrorCode.SEND_FAILED] を出す。送っている途中で
+     * 取り消されたら、届いたと分かった分だけを外し、残りを [unsent] に戻す（止めたあとなら閉じる）。
      */
     private suspend fun deliver(txnId: String, items: List<PendingSend>) {
+        val delivered = mutableSetOf<PendingSend>()
         val undelivered =
             try {
-                send(items)
+                send(items, delivered)
             } catch (failure: CancellationException) {
-                items.forEach { it.device.destroy() }
+                keepUnsent(txnId, items.filter { it !in delivered }, items)
                 throw failure
             }
-        val kept = synchronized(lock) {
-            if (undelivered.isNotEmpty() && !disposed && entryMap.containsKey(txnId)) {
-                unsent[txnId] = undelivered
-                true
-            } else {
-                false
-            }
-        }
-        val keep = if (kept) undelivered.toSet() else emptySet()
-        items.filter { it !in keep }.forEach { it.device.destroy() }
+        val kept = keepUnsent(txnId, undelivered, items)
         patch(txnId) {
             when {
                 kept -> it.copy(error = SasErrorCode.SEND_FAILED)
@@ -624,18 +638,36 @@ class SasController(
         if (kept) ensureTicker()
     }
 
+    /** `undelivered` を [unsent] の先頭に戻し（戻せなければ閉じる）、`items` の残りの端末を閉じる。戻したかを返す。 */
+    private fun keepUnsent(txnId: String, undelivered: List<PendingSend>, items: List<PendingSend>): Boolean {
+        val kept = synchronized(lock) {
+            if (undelivered.isNotEmpty() && !disposed && entryMap.containsKey(txnId)) {
+                unsent[txnId] = undelivered + unsent[txnId].orEmpty()
+                true
+            } else {
+                false
+            }
+        }
+        val keep = if (kept) undelivered.toSet() else emptySet()
+        items.filter { it !in keep }.forEach { it.device.destroy() }
+        return kept
+    }
+
     /**
      * 送るメッセージを、宛先の端末ごとに Olm で暗号化して送る。送信用の Olm セッションは鍵の配布と同じものを使い
      * 回し、ない端末は先に `keys/claim` で払い出す。1 つの要求には 1 つの端末あてに 1 件しか入れられないので、
-     * メッセージごとに分け、この順に送る。送れなかった分を、送る順に返す（ある端末に送れなかったら、その端末あての
-     * 後のメッセージは送らずに返す。同じ端末あての順を守るため）。
+     * メッセージごとに分け、この順に送る。一度送ったものは、同じ `txn_id` と暗号文で送り直す。送れなかった分を、送る
+     * 順に返す（ある端末に送れなかったら、その端末あての後のメッセージは送らずに返す。同じ端末あての順を守るため）。
+     * 届いたと分かった分は、そのつど `delivered` に入れる（取り消されたときに、送り直さないため）。
      */
-    private suspend fun send(items: List<PendingSend>): List<PendingSend> {
+    private suspend fun send(items: List<PendingSend>, delivered: MutableSet<PendingSend>): List<PendingSend> {
         if (items.isEmpty()) return emptyList()
         val store = store()
         val claimed =
             try {
-                val needs = withContext(io) { items.distinctBy { it.target }.map { it.device }.filter { store.needsOlm(it) } }
+                val needs = withContext(io) {
+                    items.filter { it.encrypted == null }.distinctBy { it.target }.map { it.device }.filter { store.needsOlm(it) }
+                }
                 if (needs.isEmpty()) JsonObject(emptyMap())
                 else api.claimKeys(buildJsonObject {
                     needs.groupBy { it.userId() }.forEach { (user, devices) ->
@@ -648,58 +680,65 @@ class SasController(
                 return items
             }
         val failed = mutableSetOf<Pair<String, String>>()
-        val undelivered = mutableListOf<PendingSend>()
+        val undelivered = mutableSetOf<PendingSend>()
         for (group in items.groupBy { it.message }.values) {
-            val encryptedFor = mutableListOf<PendingSend>()
-            val messages = buildJsonObject {
-                group.groupBy { it.target.first }.forEach { (user, targets) ->
-                    val forUser = buildJsonObject {
-                        for (item in targets) {
-                            if (item.target in failed) {
-                                undelivered += item
-                                continue
-                            }
-                            val key = ((claimed[user] as? JsonObject)?.get(item.target.second) as? JsonObject)?.values?.firstOrNull()
-                            val encrypted: JsonElement? =
-                                try {
-                                    withContext(io) { store.encryptVerification(item.device, item.eventType, item.content, key?.toString()) }
-                                } catch (failure: CancellationException) {
-                                    throw failure
-                                } catch (_: Exception) {
-                                    null
-                                }
-                            if (encrypted == null) {
-                                // ワンタイム鍵もフォールバック鍵も払い出されなかった端末。
-                                failed += item.target
-                                undelivered += item
-                            } else {
-                                put(item.target.second, encrypted)
-                                encryptedFor += item
-                            }
-                        }
+            for (item in group) {
+                if (item.target in failed) {
+                    undelivered += item
+                    continue
+                }
+                if (item.encrypted != null) continue
+                val key = ((claimed[item.target.first] as? JsonObject)?.get(item.target.second) as? JsonObject)?.values?.firstOrNull()
+                item.encrypted =
+                    try {
+                        withContext(io) { store.encryptVerification(item.device, item.eventType, item.content, key?.toString()) }
+                    } catch (failure: CancellationException) {
+                        throw failure
+                    } catch (_: Exception) {
+                        null
                     }
-                    if (forUser.isNotEmpty()) put(user, forUser)
-                }
-            }
-            if (messages.isEmpty()) continue
-            val refused =
-                try {
-                    api.sendToDevice(store.deviceId, messages).toSet()
-                } catch (failure: CancellationException) {
-                    throw failure
-                } catch (_: Exception) {
-                    // 応答がなければ、届いたか分からない。届かなかったものとして送り直す（同じ段のメッセージの重複は、
-                    // 相手の検証が受け付けないだけで、取りやめにはならない）。
-                    null
-                }
-            for (item in encryptedFor) {
-                if (refused == null || item.target in refused) {
+                if (item.encrypted == null) {
+                    // ワンタイム鍵もフォールバック鍵も払い出されなかった端末。
                     failed += item.target
                     undelivered += item
                 }
             }
+            // 前に送った分は前の `txn_id` ごとに、新しく暗号化した分は新しい `txn_id`（100 端末ずつ）で送る。
+            val ready = group.filter { it.target !in failed && it.encrypted != null }
+            val requests = ready.filter { it.txnId != null }.groupBy { it.txnId!! }.values.toMutableList()
+            ready.filter { it.txnId == null }.chunked(TO_DEVICE_BATCH).forEach { chunk ->
+                val id = java.util.UUID.randomUUID().toString()
+                chunk.forEach { it.txnId = id }
+                requests += chunk
+            }
+            for (request in requests) {
+                val messages = buildJsonObject {
+                    request.groupBy { it.target.first }.forEach { (user, targets) ->
+                        put(user, buildJsonObject { targets.forEach { put(it.target.second, it.encrypted!!) } })
+                    }
+                }
+                val refused =
+                    try {
+                        api.sendToDevice(store.deviceId, request.first().txnId!!, messages).toSet()
+                    } catch (failure: CancellationException) {
+                        throw failure
+                    } catch (_: Exception) {
+                        // 応答がなければ、届いたか分からない。同じ `txn_id` と暗号文で送り直す（届いていればサーバーが
+                        // まとめるので、二重には届かない）。
+                        null
+                    }
+                for (item in request) {
+                    if (refused == null || item.target in refused) {
+                        failed += item.target
+                        undelivered += item
+                    } else {
+                        delivered += item
+                    }
+                }
+            }
         }
-        return undelivered
+        // 送る順（メッセージの順）にそろえて返す。
+        return items.filter { it in undelivered }
     }
 
     private suspend fun save(txnId: String) {

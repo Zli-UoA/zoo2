@@ -251,33 +251,44 @@ class ZooE2eeApi(private val api: ZooApi) : E2eeApi, E2eeRevocationApi, SasApi {
             (devices as? JsonObject).orEmpty().entries.map { (device, content) -> Triple(user, device, content) }
         }
         val undelivered = mutableListOf<Pair<String, String>>()
-        for (chunk in entries.chunked(100)) {
+        for (chunk in entries.chunked(TO_DEVICE_BATCH)) {
             val batch = buildJsonObject {
                 chunk.groupBy { it.first }.forEach { (user, targets) ->
                     put(user, buildJsonObject { targets.forEach { put(it.second, it.third) } })
                 }
             }
-            val response =
-                data(
-                    call(
-                        "/api/e2ee/to_device",
-                        "POST",
-                        buildJsonObject {
-                            put("device_id", deviceId)
-                            put("txn_id", java.util.UUID.randomUUID().toString())
-                            put("type", "m.room.encrypted")
-                            put("messages", batch)
-                        },
-                    )
-                )
-            (response["undelivered"] as? JsonArray).orEmpty().forEach { target ->
-                val row = target as? JsonObject ?: return@forEach
-                val user = (row["user_id"] as? JsonPrimitive)?.contentOrNull ?: return@forEach
-                val device = (row["device_id"] as? JsonPrimitive)?.contentOrNull ?: return@forEach
-                undelivered += user to device
-            }
+            undelivered += postToDevice(deviceId, java.util.UUID.randomUUID().toString(), batch)
         }
         return undelivered
+    }
+
+    override suspend fun sendToDevice(deviceId: String, txnId: String, messages: JsonObject): List<Pair<String, String>> {
+        val count = messages.values.sumOf { (it as? JsonObject)?.size ?: 0 }
+        require(count <= TO_DEVICE_BATCH) { "1 回の送信の宛先は $TO_DEVICE_BATCH 端末までです" }
+        return postToDevice(deviceId, txnId, messages)
+    }
+
+    /** `POST /api/e2ee/to_device` を 1 回送り、`undelivered` の宛先を返す。 */
+    private suspend fun postToDevice(deviceId: String, txnId: String, batch: JsonObject): List<Pair<String, String>> {
+        val response =
+            data(
+                call(
+                    "/api/e2ee/to_device",
+                    "POST",
+                    buildJsonObject {
+                        put("device_id", deviceId)
+                        put("txn_id", txnId)
+                        put("type", "m.room.encrypted")
+                        put("messages", batch)
+                    },
+                )
+            )
+        return (response["undelivered"] as? JsonArray).orEmpty().mapNotNull { target ->
+            val row = target as? JsonObject ?: return@mapNotNull null
+            val user = (row["user_id"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
+            val device = (row["device_id"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
+            user to device
+        }
     }
 
     override suspend fun uploadPins(pins: JsonArray, replace: Boolean, reauth: String?) {

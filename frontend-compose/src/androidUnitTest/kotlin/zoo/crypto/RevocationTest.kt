@@ -483,6 +483,51 @@ class RevocationTest {
     }
 
     @Test
+    fun failedLocalSaveAfterUploadingCrossSigningKeysIsAppliedWhenResumedFromTheScreen() = runBlocking<Unit> {
+        val (first, recoveryKey) = world.setUp()
+        first.revocation.openSecretStorage(UnlockMethod.Recovery(recoveryKey))
+        val begun = first.revocation.begin(RevocationScope.DEVICE_ONLY, emptyList())
+        val blocker = java.io.File(java.io.File(world.root, "first"), "state.json.tmp")
+        server.after = Pair<String, suspend () -> Unit>("POST /api/e2ee/cross_signing/keys", { blocker.mkdirs() })
+        assertFailsWith<IOException> { first.revocation.continueRevocation(token) }
+        blocker.delete()
+
+        // 画面からの再開（アプリを開き直し、SSSS を開け直して resume）では、記録した段（SSSS の保存のあと）から続ける。
+        // 同じ鍵の送り直しはサーバーが変えずに受け付けるので、そのあと自分の鍵と記録を新しい鍵にそろえる。
+        first.restart()
+        first.revocation.openSecretStorage(UnlockMethod.Recovery(recoveryKey))
+        val resumed = assertIs<RevocationResume.Resumed>(first.revocation.resume(begun.revocationId))
+        assertEquals(RevocationStage.SECRET_STORAGE_SAVED, resumed.summary.stage)
+        val selfSigning = keyOf(server.selfSigning)
+        first.revocation.continueRevocation(token)
+        assertEquals(selfSigning, keyOf(server.selfSigning))
+        assertEquals(begun.revocationId, keyOf(server.selfSigning))
+        assertNull(first.revocation.status())
+        assertIs<E2eeStatus.Unlocked>(first.setup.loadStatus())
+    }
+
+    @Test
+    fun reapplyStopsWhenTheSecretStorageWasRewrittenByAnotherDevice() = runBlocking<Unit> {
+        val (first, recoveryKey) = world.setUp()
+        first.revocation.openSecretStorage(UnlockMethod.Recovery(recoveryKey))
+        first.revocation.begin(RevocationScope.DEVICE_ONLY, emptyList())
+        val blocker = java.io.File(java.io.File(world.root, "first"), "state.json.tmp")
+        server.after = Pair<String, suspend () -> Unit>("POST /api/e2ee/cross_signing/keys", { blocker.mkdirs() })
+        assertFailsWith<IOException> { first.revocation.continueRevocation(token) }
+        blocker.delete()
+        val ownKeys = first.store.secretsRevision
+        // 別の端末が SSSS の秘密を書き換えた（版も進んだ）。
+        server.secrets.clear()
+        server.revision += 1
+
+        // 読み直した SSSS がこの失効の内容でないので、自分の鍵に適用せずに止める。
+        val conflict = assertFailsWith<RevocationException.Conflict> { first.revocation.continueRevocation(token) }
+        assertEquals("E2EE_SSSS_CONFLICT", conflict.code)
+        assertEquals(ownKeys, first.store.secretsRevision)
+        assertEquals(RevocationStage.SECRET_STORAGE_SAVED, first.revocation.status()!!.stage)
+    }
+
+    @Test
     fun disposeWhileRunningReleasesTheSecretsAfterTheStepEnds() = runBlocking<Unit> {
         val (first, recoveryKey) = world.setUp()
         first.revocation.openSecretStorage(UnlockMethod.Recovery(recoveryKey))

@@ -269,8 +269,13 @@ internal class FakeRevocationServer(val userId: String) : E2eeRevocationApi {
 
     override suspend fun uploadCrossSigningKeys(body: JsonObject, reauth: String?) {
         handle("POST", "/api/e2ee/cross_signing/keys", reauth) {
-            requireReauth(reauth)
             checkExpectedDefaultKey(body)
+            // 送った鍵がどれも今と同じなら、何も変えずに受け付ける（応答をなくした再送。実際のサーバーと同じく、
+            // expected_keys の照合と再認証より先に判定する）。
+            val provided = listOf("master_key" to master, "self_signing_key" to selfSigning, "user_signing_key" to userSigning)
+                .filter { (field, _) -> field in body }
+            if (provided.isNotEmpty() && provided.all { (field, current) -> body[field] == current }) return@handle
+            requireReauth(reauth)
             val expected = body["expected_keys"] as? JsonObject ?: JsonObject(emptyMap())
             if (expected.textOrNull("master") != keyOf(master) ||
                 expected.textOrNull("self_signing") != keyOf(selfSigning) ||
