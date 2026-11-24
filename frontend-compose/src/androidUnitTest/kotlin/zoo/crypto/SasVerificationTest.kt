@@ -10,6 +10,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
@@ -167,11 +168,18 @@ class SasVerificationTest {
 
         // Alice の done を受け取ると、届かなかった done を送り直す。その送信の途中で処理を取り消す。
         world.sendGate = CompletableDeferred()
-        val job = bob.receiveInBackground()
-        world.sendEntered.await()
-        job.cancel()
-        job.join()
-        world.sendGate = null
+        var job: kotlinx.coroutines.Job? = null
+        try {
+            val started = bob.receiveInBackground()
+            job = started
+            kotlinx.coroutines.withTimeout(30.seconds) { world.sendEntered.await() }
+            started.cancel()
+            kotlinx.coroutines.withTimeout(30.seconds) { started.join() }
+        } finally {
+            job?.cancel()
+            world.sendGate?.complete(Unit)
+            world.sendGate = null
+        }
 
         // 取り出した done は捨てずに残り、次の確認で送り直す。
         bob.sas.expire()
@@ -191,6 +199,7 @@ class SasVerificationTest {
         // Bob の done はキューに入ったが、応答をなくした。
         var sends = 0
         world.loseResponse = { caller -> caller == BOB && ++sends == 2 }
+        val before = synchronized(world) { world.sendAttempts.size }
         bob.sas.confirm(txn, CompletableDeferred("bob-reauth"))
         world.loseResponse = null
         assertEquals(SasErrorCode.SEND_FAILED, bob.entry(txn).error)
@@ -198,6 +207,13 @@ class SasVerificationTest {
         // 同じ txn_id と暗号文で送り直すので、サーバーがまとめ、Alice には mac と done が 1 回ずつ届く。
         bob.sas.expire()
         assertNull(bob.entry(txn).error)
+        // expire が送り直したのは done の 1 回だけで、txn_id も暗号文も初めの送信と同じ（mac は送り直さない）。
+        val attempts = synchronized(world) { world.sendAttempts.drop(before).filter { it.caller == BOB } }
+        assertEquals(3, attempts.size)
+        val (mac, done, resent) = attempts
+        assertTrue(mac.txnId != done.txnId)
+        assertEquals(done.txnId, resent.txnId)
+        assertEquals(done.messages, resent.messages)
         val received = alice.receive()
         assertEquals(2, received.verifications.size)
         bob.receive() // done
@@ -230,6 +246,20 @@ class SasVerificationTest {
         assertEquals(rows.map { it.id }, retry.processed)
         assertEquals(1, retry.verifications.size)
         bob.sas.handleMessages(retry.verifications).join()
+        assertEquals(SasPhase.INCOMING, bob.entry(txn).view.phase)
+    }
+
+    @Test
+    fun messageArrivingWhileTheStoreIsUnavailableIsKeptAndProcessedLater() = runBlocking<Unit> {
+        val alice = world.device(ALICE, "alice")
+        val bob = world.device(BOB, "bob")
+        val txn = alice.sas.request(BOB)
+        // つなぎ直しのあいだに届いた要求は、捨てずに残す（もう復号し直せない）。
+        bob.ready.value = null
+        bob.receive()
+        assertTrue(bob.sas.entries.value.isEmpty())
+        bob.ready.value = bob.store
+        bob.sas.expire()
         assertEquals(SasPhase.INCOMING, bob.entry(txn).view.phase)
     }
 

@@ -455,8 +455,18 @@ class SasController(
             serial {
                 for (txnId in synchronized(lock) { unsent.keys.toList() }) {
                     val retry = synchronized(lock) { unsent.remove(txnId).orEmpty() }
-                    val (live, expired) = retry.partition { now() - it.queuedAt <= SAS_TIMEOUT_MS }
-                    expired.forEach { it.device.destroy() }
+                    // 期限を過ぎたものは捨てる。捨てた端末あての後のメッセージも、順を守れないので捨てる（`mac` を捨てて
+                    // `done` だけを送らない）。
+                    val dead = mutableSetOf<Pair<String, String>>()
+                    val live = mutableListOf<PendingSend>()
+                    for (item in retry) {
+                        if (item.target in dead || now() - item.queuedAt > SAS_TIMEOUT_MS) {
+                            dead += item.target
+                            item.device.destroy()
+                        } else {
+                            live += item
+                        }
+                    }
                     if (live.isNotEmpty()) deliver(txnId, live)
                     else patch(txnId) { if (it.error == SasErrorCode.SEND_FAILED) it.copy(error = null) else it }
                 }
@@ -555,14 +565,27 @@ class SasController(
                 }
                 keysQuery = cached
             }
+            // 暗号ストアを使えない（Shape のつなぎ直しのあいだ）なら、鍵を取れなかったときと同じく、この検証の
+            // メッセージを届いた順のまま残す（捨てると、Olm のメッセージは 2 回は復号できないので完了できない）。
+            val store = ready.value
+            if (store == null) {
+                held += txnId
+                remaining += pending.removeFirst()
+                continue
+            }
             pending.removeFirst()
             try {
-                val store = store()
-                val update = withContext(io) { verifications.receive(store, message, keysQuery, now()) }
-                if (update != null) {
-                    val id = update.view.transactionId
+                // 受け付けた結果は、戻る前に取り消されても登録する（検証の状態は進んでいる）。送信は登録のあとに行う。
+                var update: SasUpdate? = null
+                try {
+                    withContext(io) { update = verifications.receive(store, message, keysQuery, now()) }
+                } finally {
+                    update?.let { register(it) }
+                }
+                update?.let { received ->
+                    val id = received.view.transactionId
                     patch(id) { if (it.error == SasErrorCode.RECEIVE_FAILED) it.copy(error = null) else it }
-                    apply(update)
+                    flush(id)
                 }
             } catch (failure: CancellationException) {
                 throw failure
@@ -578,7 +601,13 @@ class SasController(
         serial {
             patch(txnId) { it.copy(busy = true, error = null) }
             try {
-                withContext(io) { task() }?.let { apply(it) }
+                var update: SasUpdate? = null
+                try {
+                    withContext(io) { update = task() }
+                } finally {
+                    update?.let { register(it) }
+                }
+                update?.let { flush(it.view.transactionId) }
             } catch (failure: CancellationException) {
                 throw failure
             } catch (failure: Exception) {
@@ -591,21 +620,38 @@ class SasController(
 
     /** 状態を出し、送るメッセージを送る。検証が終わったら保存を始める。 */
     private suspend fun apply(update: SasUpdate) {
+        register(update)
+        flush(update.view.transactionId)
+    }
+
+    /**
+     * 進めた検証の表示を出し、送るメッセージを送信待ち（[unsent] の後ろ。前に送れなかった分の後）に入れる。中断しない
+     * （取り消されても、進めた状態と送る内容を失わないため）。宛先の端末は PendingSend が持つ。
+     */
+    private fun register(update: SasUpdate) {
         val txnId = update.view.transactionId
-        synchronized(lock) {
+        val dropped = synchronized(lock) {
             val current = entryMap[txnId]
             entryMap[txnId] = current?.copy(view = update.view) ?: SasEntry(update.view)
-        }
-        publish()
-        // 前に送れなかった分を先に、今回の分をその後に送る（同じ端末あての順を守る）。宛先の端末は PendingSend が持つ。
-        val fresh = synchronized(lock) {
-            update.outgoing.flatMap { out ->
+            val fresh = update.outgoing.flatMap { out ->
                 val message = messageSeq++
                 out.devices.map { PendingSend(it, out.eventType, out.content, message, now()) }
             }
+            if (disposed) {
+                fresh
+            } else {
+                if (fresh.isNotEmpty()) unsent[txnId] = unsent[txnId].orEmpty() + fresh
+                emptyList()
+            }
         }
-        val retry = synchronized(lock) { unsent.remove(txnId).orEmpty() }
-        if (retry.isNotEmpty() || fresh.isNotEmpty()) deliver(txnId, retry + fresh)
+        dropped.forEach { it.device.destroy() }
+        publish()
+    }
+
+    /** 送信待ちを送り（前に送れなかった分から順に）、検証が終わっていたら保存を始める。 */
+    private suspend fun flush(txnId: String) {
+        val items = synchronized(lock) { unsent.remove(txnId).orEmpty() }
+        if (items.isNotEmpty()) deliver(txnId, items)
         val entry = synchronized(lock) { entryMap[txnId] }
         if (entry != null && entry.view.phase == SasPhase.DONE && entry.save == SasSaveState.IDLE) {
             // 再認証を待つので、処理の列の外で保存する。
@@ -662,7 +708,8 @@ class SasController(
      */
     private suspend fun send(items: List<PendingSend>, delivered: MutableSet<PendingSend>): List<PendingSend> {
         if (items.isEmpty()) return emptyList()
-        val store = store()
+        // 暗号ストアを使えない（Shape のつなぎ直しのあいだ）なら、何も送らずにすべて送り直しに回す。
+        val store = ready.value ?: return items
         val claimed =
             try {
                 val needs = withContext(io) {
@@ -677,7 +724,9 @@ class SasController(
             } catch (failure: CancellationException) {
                 throw failure
             } catch (_: Exception) {
-                return items
+                // 払い出せなくても、暗号化済みのものと、今の Olm セッションで暗号化できるものは送る（セッションのない
+                // 端末は下で暗号化できず、その端末あての後のメッセージも待たせる）。
+                JsonObject(emptyMap())
             }
         val failed = mutableSetOf<Pair<String, String>>()
         val undelivered = mutableSetOf<PendingSend>()
@@ -747,7 +796,8 @@ class SasController(
         val (theirUserId, reauth) =
             synchronized(lock) {
                 val entry = entryMap[txnId] ?: return
-                if (entry.view.phase != SasPhase.DONE || entry.save == SasSaveState.SAVING) return
+                // 保存中と保存済みは始めない（LOGIN・REAUTH・FAILED からの再試行は行う）。
+                if (entry.view.phase != SasPhase.DONE || entry.save == SasSaveState.SAVING || entry.save == SasSaveState.SAVED) return
                 val reauth = reauths[txnId]
                 entryMap[txnId] =
                     if (reauth == null) {

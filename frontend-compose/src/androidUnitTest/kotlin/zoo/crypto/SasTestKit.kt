@@ -67,7 +67,10 @@ internal class SasWorld : AutoCloseable {
 
     /** 受け付けた `(送信端末, txn_id, 宛先ユーザー, 宛先端末)`。 */
     private val toDeviceTxns = mutableSetOf<List<String>>()
-    var sendRequests = 0
+    /** `sendToDevice` の試み（送信ユーザー、`txn_id`、宛先ごとの暗号文）。届けなかったものも含む。 */
+    class SendAttempt(val caller: String, val txnId: String, val messages: JsonObject)
+
+    val sendAttempts = mutableListOf<SendAttempt>()
 
     /** 失敗させる `keys/query` の残りの回数。 */
     var failKeysQuery = 0
@@ -135,7 +138,7 @@ internal class SasWorld : AutoCloseable {
                 gate.await()
             }
             val lost = synchronized(this@SasWorld) {
-                sendRequests++
+                sendAttempts += SendAttempt(caller, txnId, messages)
                 if (refuseSend?.invoke(caller) == true) {
                     return messages.flatMap { (user, targets) -> targets.jsonObject.keys.map { user to it } }
                 }
@@ -195,7 +198,9 @@ internal class SasWorld : AutoCloseable {
             opened += it
             synchronized(this@SasWorld) { devices.getOrPut(user) { mutableListOf() } += this }
         }
-        val sas = SasController(api(user), MutableStateFlow(store), lifetime, now = { now }, expireInterval = expireInterval)
+        /** 登録を終えた暗号ストア（`null` にすると、Shape のつなぎ直しのあいだと同じく使えなくなる）。 */
+        val ready = MutableStateFlow<CryptoStore?>(store)
+        val sas = SasController(api(user), ready, lifetime, now = { now }, expireInterval = expireInterval)
             .also { controllers += it }
 
         /**
