@@ -413,3 +413,99 @@ it("restores progress after remounting the same preview", async () => {
     expect(within(dialog).getByRole("button", { name: "sample.txtをダウンロード" })).not.toBeNull(),
   );
 });
+
+it("does not share save state across same-named previews with unknown src", async () => {
+  const base = desktopInvoke();
+  let resolveFinish!: (name: string) => void;
+  const finishing = new Promise<string>((resolve) => {
+    resolveFinish = resolve;
+  });
+  const invoke = vi.fn((cmd: string) => (cmd === "zoo_download_finish" ? finishing : base(cmd)));
+  mockDesktop(invoke);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      async () => new Response(new Uint8Array([1, 2, 3]), { headers: { "content-length": "3" } }),
+    ),
+  );
+
+  const { rerender } = render(
+    <LocaleProvider>
+      <div>
+        <MediaPreview name="sample.txt" src={null} contentType="text/plain" />
+        <MediaPreview name="sample.txt" src={null} contentType="text/plain" />
+      </div>
+    </LocaleProvider>,
+  );
+  rerender(
+    <LocaleProvider>
+      <div>
+        <MediaPreview name="sample.txt" src="https://files.test/a.txt" contentType="text/plain" />
+        <MediaPreview name="sample.txt" src="https://files.test/b.txt" contentType="text/plain" />
+      </div>
+    </LocaleProvider>,
+  );
+
+  const openButtons = screen.getAllByRole("button", { name: "sample.txtをプレビュー" });
+  fireEvent.click(openButtons[0]);
+  let dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "sample.txtをダウンロード" }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("zoo_download_finish", { id: "dl" }));
+  fireEvent.click(within(dialog).getByRole("button", { name: /閉じる/ }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+  fireEvent.click(openButtons[1]);
+  dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByRole("button", { name: "sample.txtをダウンロード" })).not.toBeNull();
+  expect(invoke.mock.calls.filter(([cmd]) => cmd === "zoo_download_begin")).toHaveLength(1);
+  resolveFinish("saved.txt");
+});
+
+it("shares save state when saveId is provided to MediaPreview", async () => {
+  const base = desktopInvoke();
+  let resolveFinish!: (name: string) => void;
+  const finishing = new Promise<string>((resolve) => {
+    resolveFinish = resolve;
+  });
+  const invoke = vi.fn((cmd: string) => (cmd === "zoo_download_finish" ? finishing : base(cmd)));
+  mockDesktop(invoke);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      async () => new Response(new Uint8Array([1, 2, 3]), { headers: { "content-length": "3" } }),
+    ),
+  );
+
+  render(
+    <LocaleProvider>
+      <div>
+        <MediaPreview
+          name="sample.txt"
+          src="https://files.test/a.txt"
+          contentType="text/plain"
+          saveId="shared:sample"
+        />
+        <MediaPreview
+          name="sample.txt"
+          src="https://files.test/b.txt"
+          contentType="text/plain"
+          saveId="shared:sample"
+        />
+      </div>
+    </LocaleProvider>,
+  );
+
+  const openButtons = screen.getAllByRole("button", { name: "sample.txtをプレビュー" });
+  fireEvent.click(openButtons[0]);
+  let dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "sample.txtをダウンロード" }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("zoo_download_finish", { id: "dl" }));
+  fireEvent.click(within(dialog).getByRole("button", { name: /閉じる/ }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+  fireEvent.click(openButtons[1]);
+  dialog = await screen.findByRole("dialog");
+  expect(within(dialog).queryByRole("button", { name: "sample.txtをダウンロード" })).toBeNull();
+  expect(invoke.mock.calls.filter(([cmd]) => cmd === "zoo_download_begin")).toHaveLength(1);
+  resolveFinish("saved.txt");
+});
