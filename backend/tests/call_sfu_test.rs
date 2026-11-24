@@ -815,10 +815,22 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
            AND claimed_until > statement_timestamp() + interval '250 seconds' AND channel_id = $1"
     );
     assert_eq!(count(&mut db, &late_sql, &channel).await?, 1);
-    // 処理する時刻になっても、そのセッションがまだその人の割り当てなら閉じずに消す（通話を切らない）。
+    // 5 分後の行は、あとで使う（割り当てが変わったあと、遅れて済んだ操作を閉じる）。
+    let late_id = text(
+        &mut db,
+        &format!(
+            "SELECT id::text FROM call_sfu_departures WHERE cf_session_id = '{subscriber_cf}'
+               AND claimed_until > statement_timestamp() + interval '250 seconds' AND channel_id = $1"
+        ),
+        &channel,
+    )
+    .await?;
+    // 30 秒後の行は、処理する時刻になっても、そのセッションがまだその人の割り当てなら閉じずに消す（通話を切らない）。
     let before_reclose = request_count(&cf).await;
     toasty::sql::statement(
-        "UPDATE call_sfu_departures SET claimed_until = NULL WHERE channel_id = $1 AND cf_session_id = $2",
+        "UPDATE call_sfu_departures SET claimed_until = NULL
+         WHERE channel_id = $1 AND cf_session_id = $2
+           AND claimed_until < statement_timestamp() + interval '250 seconds'",
     )
     .bind(channel.clone())
     .bind(subscriber_cf.clone())
@@ -834,12 +846,12 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         "SELECT count(*) FROM call_sfu_departures WHERE cf_session_id = '{subscriber_cf}' AND channel_id = $1"
     );
     for _ in 0..50 {
-        if count(&mut db, &departures_sql, &channel).await? == 0 {
+        if count(&mut db, &departures_sql, &channel).await? == 1 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert_eq!(count(&mut db, &departures_sql, &channel).await?, 0);
+    assert_eq!(count(&mut db, &departures_sql, &channel).await?, 1);
     assert!(
         close_calls(&cf, before_reclose, &subscriber_cf)
             .await
@@ -903,6 +915,57 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         count(&mut db, &cf_tracks_of(sessions[2]), &channel).await?,
         0,
         "a publish to the old Cloudflare session was registered"
+    );
+
+    // 結果のわからなかった pull が、割り当ての変更の後始末（その時点の GET には載っていない）より遅れて
+    // Cloudflare で済んだ場合。5 分後の行が、そのとき GET に載っている購読を閉じる。
+    assert_eq!(old_cf2, subscriber_cf);
+    let others_sql = format!(
+        "SELECT count(*) FROM call_sfu_departures WHERE cf_session_id = '{old_cf2}'
+           AND id <> {late_id} AND channel_id = $1"
+    );
+    for _ in 0..50 {
+        if count(&mut db, &others_sql, &channel).await? == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(count(&mut db, &others_sql, &channel).await?, 0);
+    let before_late = request_count(&cf).await;
+    Mock::given(method("GET"))
+        .and(path(format!("/apps/app/sessions/{old_cf2}").as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "tracks": [{"mid": "5", "status": "active"}]
+        })))
+        .with_priority(1)
+        .mount(&cf)
+        .await;
+    toasty::sql::statement(&format!(
+        "UPDATE call_sfu_departures SET claimed_until = NULL WHERE id = {late_id}"
+    ))
+    .exec(&mut db)
+    .await?;
+    state
+        .call_sfu
+        .as_ref()
+        .expect("sfu")
+        .departures_wake
+        .notify_one();
+    let mut late_closed = false;
+    for _ in 0..50 {
+        if close_calls(&cf, before_late, &old_cf2)
+            .await
+            .iter()
+            .any(|b| b["tracks"] == json!([{"mid": "5"}]))
+        {
+            late_closed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        late_closed,
+        "the late re-close did not close the late subscription"
     );
 
     // pull の応答を受けたあと、割り当ての確認の前に割り当てが変わったら（fallback で新しいセッションへ）、
