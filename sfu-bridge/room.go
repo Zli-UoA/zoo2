@@ -204,7 +204,7 @@ func (b *roomBridge) connect(r roomState) error {
 
 	ctx, cancel := context.WithTimeout(b.ctx, negotiateTimeout)
 	defer cancel()
-	session, err := b.api.cfSession(ctx, b.channelID)
+	session, err := b.api.cfSession(ctx, b.channelID, b.bridgeEpoch)
 	if err != nil {
 		return err
 	}

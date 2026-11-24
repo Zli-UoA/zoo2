@@ -1438,18 +1438,22 @@ async fn load_bridge_rooms(state: &AppState) -> Result<Vec<BridgeRoomState>, App
 }
 
 #[derive(Debug, Deserialize)]
-struct BridgeChannel {
+struct BridgeSessionBody {
     channel_id: String,
+    /// 要求した bridge の epoch（`bridge_register`）。最新でなければ 409。
+    bridge_epoch: i64,
 }
 
 async fn bridge_cf_session(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<BridgeChannel>,
+    Json(body): Json<BridgeSessionBody>,
 ) -> Result<Json<Value>, AppError> {
     let sfu = bridge_auth(&state, &headers)?;
+    // 前の中継の行を外すのは、Cloudflare のセッションを作る（時間のかかる）前。遅れた要求が、そのあいだに
+    // 始めた新しい中継の行を外さないように。
+    remove_stale_bridge_tracks(&state, &body.channel_id, body.bridge_epoch).await?;
     let session_id = sfu.cloudflare.new_session().await?;
-    remove_stale_bridge_tracks(&state, &body.channel_id).await?;
     Ok(Json(json!({ "cf_session_id": session_id })))
 }
 
@@ -1481,15 +1485,35 @@ async fn clear_bridge_tracks_without_cloudflare(
 
 /// 部屋の中継を始め直すとき（bridge が新しい Cloudflare セッションを作るとき）、その部屋の bridge の行を
 /// 一覧から外す。行は前の中継のセッションのもので、新しい中継は LiveKit の話者を push し直して登録する。
-/// 前の中継が、一覧から外す close を送り直せないまま止まった（Cloudflare の人がいなくなった、など）ときの
-/// 古い行も、ここで外れる。探索：主キー (channel_id, session_id, source) の先頭で、その部屋の行だけ。
-async fn remove_stale_bridge_tracks(state: &AppState, channel_id: &str) -> Result<(), AppError> {
+/// 前の中継が、一覧から外す close を送り直せないまま止まったときの古い行も、ここで外れる。
+///
+/// 要求した bridge の epoch が最新でなければ（古い bridge の遅れた要求）、何も外さずに 409 を返す。外すのは
+/// その epoch 以下の行だけ。epoch の確認は `call_sfu_bridge` の行を FOR SHARE で読み、`bridge_register`
+/// （同じ行を更新する）と、行の登録（`register_track` も FOR SHARE で読む）と直列にする。
+/// 探索：`call_sfu_bridge` の主キーで 1 行と、主キー (channel_id, session_id, source) の先頭でその部屋の行。
+async fn remove_stale_bridge_tracks(
+    state: &AppState,
+    channel_id: &str,
+    bridge_epoch: i64,
+) -> Result<(), AppError> {
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
+    let rows = toasty::sql::query("SELECT epoch::text FROM call_sfu_bridge WHERE id = 1 FOR SHARE")
+        .exec(&mut tx)
+        .await?;
+    if first_text(rows).and_then(|e| e.parse::<i64>().ok()) != Some(bridge_epoch) {
+        return Err(AppError::Conflict(
+            "A newer sfu-bridge is registered".into(),
+        ));
+    }
     let rows = toasty::sql::query(
-        "DELETE FROM call_sfu_tracks WHERE channel_id = $1 AND source = 'bridge' RETURNING 1",
+        "DELETE FROM call_sfu_tracks
+         WHERE channel_id = $1 AND source = 'bridge'
+           AND (bridge_epoch IS NULL OR bridge_epoch <= $2::bigint)
+         RETURNING 1",
     )
     .bind(channel_id.to_string())
+    .bind(bridge_epoch.to_string())
     .exec(&mut tx)
     .await?;
     if !rows.is_empty() {

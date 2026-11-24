@@ -1320,10 +1320,19 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(count(&mut db, bridge_rows_sql, &channel).await?, 1);
+    // 古い epoch の bridge の遅れた要求は 409 で、行は外さない。
     let (status, _) = bridge(
         "POST",
         "/internal/sfu-bridge/cf/session",
-        Some(json!({"channel_id": channel})),
+        Some(json!({"channel_id": channel, "bridge_epoch": bridge_epoch - 1})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(count(&mut db, bridge_rows_sql, &channel).await?, 1);
+    let (status, _) = bridge(
+        "POST",
+        "/internal/sfu-bridge/cf/session",
+        Some(json!({"channel_id": channel, "bridge_epoch": bridge_epoch})),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
