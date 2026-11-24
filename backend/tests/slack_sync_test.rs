@@ -1044,6 +1044,118 @@ async fn test_slack_sync_rechecks_privacy_before_saving_without_hints() -> anyho
     Ok(())
 }
 
+/// CodeRabbit: `conversations.info` が `is_private` を返さない応答は、公開とみなさず (fail closed)、
+/// 非公開として扱う。公開の取り込み先へは書き込まない。
+#[tokio::test]
+async fn test_slack_sync_fails_closed_when_conversations_info_omits_is_private()
+-> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let key = [3u8; 32];
+    let team = format!("TSYNC{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let slack = MockServer::start().await;
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.client_id = Some("cid".into());
+    config.slack.client_secret = Some("sec".into());
+    config.slack.team_id = Some(team.clone());
+    config.slack.oauth_redirect_url = Some("https://zoo.example/api/slack/oauth/callback".into());
+    config.slack.token_encryption_key = Some(base64::engine::general_purpose::STANDARD.encode(key));
+    config.slack.api_base_url = slack.uri();
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db, config);
+    let app = create_router(state.clone());
+
+    let t0 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs()
+        - 7200;
+    let ts = format!("{}.000100", t0 + 100);
+    let alice = create_user(&app, "sync_privacy_unknown_alice").await?;
+    link(&state, &key, &alice, &team, "UA", "xoxp-alice").await?;
+    let target = create_channel(&app, &alice, false).await?;
+    sql(
+        &state,
+        "INSERT INTO slack_channels(team_id,slack_channel_id,channel_id,last_ts) VALUES($1,'C1',$2,$3) \
+         RETURNING json_build_object('ok',true)::text",
+        &[&team, &target, &format!("{t0}.000000")],
+    )
+    .await?;
+
+    // 同期の開始 (1 回目) は公開。履歴を取ったあとの確認 (2 回目) は `is_private` がない
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "channel": {"id": "C1", "is_private": false},
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .expect(1)
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "channel": {"id": "C1"},
+        })))
+        .with_priority(2)
+        .expect(1)
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/users.info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "user": {"id": "UA", "name": "alice", "real_name": "Alice", "profile": {"display_name": "alice"}},
+        })))
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .and(query_param("channel", "C1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [message(&ts, "UA", "unknown visibility")],
+            "has_more": false,
+        })))
+        .expect(1)
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.replies"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"ok": true, "messages": [], "has_more": false})),
+        )
+        .mount(&slack)
+        .await;
+
+    {
+        let mut db = state.db.clone();
+        let mut tx = db.transaction().await?;
+        sync::enqueue_team(&mut tx, &team).await?;
+        tx.commit().await?;
+    }
+    // reset_run は available_at を今にするので、2 回目は別のエラーで上書きされる。1 回だけ回して確かめる
+    assert!(sync::run_once_for_team(&state, &team).await?);
+
+    assert_eq!(count_messages(&state, &target).await, 0);
+    let row = &sql(
+        &state,
+        "SELECT json_build_object('error',last_error)::text FROM slack_channel_syncs \
+         WHERE team_id=$1 AND slack_channel_id='C1'",
+        &[&team],
+    )
+    .await?[0];
+    assert!(
+        row["error"].as_str().is_some_and(|e| e
+            .contains("Slack sync target changed or no longer protects private channel content")),
+        "expected private target error, got {row:?}"
+    );
+    Ok(())
+}
+
 /// CodeRabbit #9: Slack チャンネルの対応先を公開の A から非公開の B へ付け替えたあと、A に同期済みの
 /// メッセージへリアクションを付け直しても、A の投稿は変えない。同じチャンネルへの再適用は従来どおり動く。
 #[tokio::test]
@@ -1112,12 +1224,26 @@ async fn test_slack_sync_does_not_touch_a_message_in_another_channels_target() -
     )
     .await?;
 
+    // 付け替え先の非公開 B の同期では、Slack も非公開と答える (対応先と Slack の可視性が一致する)
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"ok": true, "channel": {"id": "C1", "is_private": true}})),
+        )
+        .up_to_n_times(1)
+        .with_priority(1)
+        .expect(1)
+        .mount(&slack)
+        .await;
+    // 公開 A へ戻した再適用では、公開と答える
     Mock::given(method("GET"))
         .and(path("/conversations.info"))
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_json(json!({"ok": true, "channel": {"id": "C1", "is_private": false}})),
         )
+        .with_priority(2)
         .mount(&slack)
         .await;
     Mock::given(method("GET"))
@@ -1225,7 +1351,8 @@ async fn test_slack_sync_reset_on_remap_does_not_resume_the_old_page_cursor() ->
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs()
         - 7200;
-    let ts = format!("{}.000100", t0 + 100);
+    let ts_a = format!("{}.000100", t0 + 100);
+    let ts_b = format!("{}.000200", t0 + 200);
     let alice = create_user(&app, "sync_remap_alice").await?;
     link(&state, &key, &alice, &team, "UA", "xoxp-alice").await?;
     let channel_a = create_channel(&app, &alice, false).await?;
@@ -1260,37 +1387,52 @@ async fn test_slack_sync_reset_on_remap_does_not_resume_the_old_page_cursor() ->
         })))
         .mount(&slack)
         .await;
-    // 最初の 1 ページ目: 空で、続き (page2) がある
+    // 最初の 1 ページ目: 実在する投稿 (ts_a) を返し、続き (page2) がある
     Mock::given(method("GET"))
         .and(path("/conversations.history"))
         .and(query_param("channel", "C1"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "ok": true,
-            "messages": [],
+            "messages": [message(&ts_a, "UA", "old target page one")],
             "has_more": true,
             "response_metadata": {"next_cursor": "page2"},
         })))
         .up_to_n_times(1)
         .with_priority(5)
+        .expect(1)
         .mount(&slack)
         .await;
-    // 2 ページ目は 429 で止まる。1 ページ目の途中経過 (page2) は保存済み
-    Mock::given(method("GET"))
-        .and(path("/conversations.history"))
-        .and(query_param("channel", "C1"))
-        .and(query_param("cursor", "page2"))
-        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "60"))
-        .up_to_n_times(1)
-        .with_priority(1)
-        .mount(&slack)
-        .await;
-    // 付け替え後の最初のページ。ここに来たら、古いカーソルを送っていない
+    // 2..10 ページ目も続きを返す。10 ページで 1 回の実行の上限 (MAX_PAGES_PER_STEP) に達し、
+    // 途中経過 (page_cursor=page11) を残して Step::More で止まる
+    for page in 2..=10 {
+        let cursor = format!("page{page}");
+        let next = format!("page{}", page + 1);
+        Mock::given(method("GET"))
+            .and(path("/conversations.history"))
+            .and(query_param("channel", "C1"))
+            .and(query_param("cursor", cursor))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ok": true,
+                "messages": [],
+                "has_more": true,
+                "response_metadata": {"next_cursor": next},
+            })))
+            .with_priority(1)
+            .expect(1)
+            .mount(&slack)
+            .await;
+    }
+    // 付け替え後の最初のページ。以前の 1 ページ目と同じ (カーソルなし) 要求に、ts_a と新しい ts_b を返す。
+    // ts_a は A に同期済みなので、B には移さない
     Mock::given(method("GET"))
         .and(path("/conversations.history"))
         .and(query_param("channel", "C1"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "ok": true,
-            "messages": [message(&ts, "UA", "new target page one")],
+            "messages": [
+                message(&ts_a, "UA", "old target page one"),
+                message(&ts_b, "UA", "new target page one"),
+            ],
             "has_more": false,
         })))
         .with_priority(9)
@@ -1301,13 +1443,13 @@ async fn test_slack_sync_reset_on_remap_does_not_resume_the_old_page_cursor() ->
     Mock::given(method("GET"))
         .and(path("/conversations.history"))
         .and(query_param("channel", "C1"))
-        .and(query_param("cursor", "page2"))
+        .and(query_param("cursor", "page11"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "ok": true,
             "messages": [],
             "has_more": false,
         })))
-        .with_priority(8)
+        .with_priority(1)
         .expect(0)
         .mount(&slack)
         .await;
@@ -1320,7 +1462,8 @@ async fn test_slack_sync_reset_on_remap_does_not_resume_the_old_page_cursor() ->
         .mount(&slack)
         .await;
 
-    drain(&state).await;
+    // `drain` は続きを繰り返すので、1 回だけ回して Step::More で止まった状態を作る
+    assert!(sync::run_once_for_team(&state, &team).await?);
     let interrupted = sql(
         &state,
         "SELECT json_build_object('running',running,'cursor',page_cursor,'phase',phase)::text \
@@ -1329,7 +1472,10 @@ async fn test_slack_sync_reset_on_remap_does_not_resume_the_old_page_cursor() ->
     )
     .await?;
     assert_eq!(interrupted[0]["running"], true, "{interrupted:?}");
-    assert_eq!(interrupted[0]["cursor"], "page2", "{interrupted:?}");
+    assert_eq!(interrupted[0]["cursor"], "page11", "{interrupted:?}");
+    assert_eq!(interrupted[0]["phase"], "history", "{interrupted:?}");
+    assert_eq!(count_messages(&state, &channel_a).await, 1);
+    assert_eq!(count_messages(&state, &channel_b).await, 0);
 
     // 対応先を A から B へ付け替える。トリガーが途中経過を捨てる
     sql(
@@ -1352,7 +1498,9 @@ async fn test_slack_sync_reset_on_remap_does_not_resume_the_old_page_cursor() ->
 
     due_now(&state, &team).await;
     drain(&state).await;
+    // 新しい対応先は、古い page11 を送らずに 1 ページ目から取り直し、ts_b だけを取り込む。
+    // ts_a は A に残る (B へは移さない)
+    assert_eq!(count_messages(&state, &channel_a).await, 1);
     assert_eq!(count_messages(&state, &channel_b).await, 1);
-    assert_eq!(count_messages(&state, &channel_a).await, 0);
     Ok(())
 }

@@ -991,6 +991,18 @@ pub(super) async fn ensure_target_unchanged(
     Ok(())
 }
 
+/// `conversations.info` の `channel` が非公開か (IM・MPIM を含む) を判定する。
+///
+/// Fail closed: `is_private` が明示的に `false` で、かつ非公開・DM のフラグがどれも `true` でない
+/// ときだけ公開とみなす。`is_private` がない応答や、形の違う応答は非公開として扱い、非公開の
+/// Slack チャンネルの内容を公開の取り込み先へ書かない。
+fn channel_is_private(channel: &Value) -> bool {
+    channel.get("is_private").and_then(Value::as_bool) != Some(false)
+        || ["is_im", "is_mpim", "is_group"]
+            .iter()
+            .any(|k| channel[*k] == true)
+}
+
 /// Slack のチャンネルが今も非公開か (IM・MPIM を含む) を `conversations.info` で確かめ、非公開なら
 /// `slack_private` を立てる。同期の途中で公開から非公開に変わった Slack チャンネルの内容を、公開の
 /// 取り込み先へ書かないために、ページを取ったあと (保存の前) に呼ぶ。すでに非公開と分かっていれば呼ばない。
@@ -1005,11 +1017,7 @@ pub(super) async fn refresh_slack_privacy(
     let info = slack
         .get("conversations.info", &[("channel", slack_channel)])
         .await?;
-    let channel = &info["channel"];
-    let current = ["is_private", "is_im", "is_mpim", "is_group"]
-        .iter()
-        .any(|k| channel[*k] == true);
-    *slack_private |= current;
+    *slack_private |= channel_is_private(&info["channel"]);
     Ok(())
 }
 

@@ -1520,3 +1520,101 @@ async fn test_recheck_rechecks_privacy_before_applying_without_hints() -> anyhow
     );
     Ok(())
 }
+
+/// CodeRabbit: `conversations.info` が `is_private` を返さない応答は、公開とみなさず (fail closed)、
+/// 非公開として扱う。再確認は、公開の取り込み先の投稿を書き換えない。
+#[tokio::test]
+async fn test_recheck_fails_closed_when_conversations_info_omits_is_private() -> anyhow::Result<()>
+{
+    let _serial = SERIAL.lock().await;
+    let f = fixture(Some(SECRET), None).await?;
+    let ts = f.ts_new.clone();
+    let msg_id = backend::slack::message_id(&f.team, "C1", &ts);
+    sql(
+        &f.state,
+        "INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at) \
+         SELECT $1,user_id,$2,'before',(to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3),\
+         (to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3) \
+         FROM slack_user_links WHERE team_id=$4 \
+         RETURNING json_build_object('ok',true)::text",
+        &[&msg_id, &f.channel, &ts, &f.team],
+    )
+    .await?;
+
+    f.slack.reset().await;
+    // 同期の開始 (1 回目) は公開。履歴を取ったあとの確認 (2 回目) は `is_private` がない
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "channel": {"id": "C1", "is_private": false},
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .expect(1)
+        .mount(&f.slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "channel": {"id": "C1"},
+        })))
+        .with_priority(2)
+        .expect(1)
+        .mount(&f.slack)
+        .await;
+    let edited_ts = format!("{}.000000", now_secs() + 10);
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .and(query_param("channel", "C1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [{
+                "type": "message",
+                "ts": &ts,
+                "user": "UA",
+                "text": "rechecked while the Slack channel visibility is unknown",
+                "edited": {"user": "UA", "ts": &edited_ts}
+            }],
+            "has_more": false
+        })))
+        .with_priority(1)
+        .expect(1)
+        .mount(&f.slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.replies"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"ok": true, "messages": [], "has_more": false})),
+        )
+        .mount(&f.slack)
+        .await;
+
+    sql(
+        &f.state,
+        "UPDATE slack_channel_syncs SET available_at=now(),rechecked_at=now()-interval '1 hour',\
+         not_before=NULL,lease_token=NULL,lease_until=NULL,running=false \
+         WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&f.team],
+    )
+    .await?;
+    // reset_run は available_at を今にするので、2 回目は別のエラーで上書きされる。1 回だけ回して確かめる
+    assert!(sync::run_once_for_team(&f.state, &f.team).await?);
+
+    assert_eq!(row(&f, &msg_id).await["content"], "before");
+    let sync_rows = sql(
+        &f.state,
+        "SELECT json_build_object('last_error',last_error)::text FROM slack_channel_syncs \
+         WHERE team_id=$1 AND slack_channel_id='C1'",
+        &[&f.team],
+    )
+    .await?;
+    assert!(
+        sync_rows[0]["last_error"].as_str().is_some_and(|e| e
+            .contains("Slack sync target changed or no longer protects private channel content")),
+        "expected private target error, got {sync_rows:?}"
+    );
+    Ok(())
+}
