@@ -10,9 +10,7 @@ import io.ktor.client.engine.okhttp.*
 import io.ktor.client.plugins.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
-import io.ktor.utils.io.core.readText
 import io.ktor.utils.io.readAvailable
-import io.ktor.utils.io.readRemaining
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
@@ -116,15 +114,7 @@ class UpdateWorker(context: Context, parameters: WorkerParameters) :
                 }
             try {
                 prefs.status = "main の更新を確認しています"
-                val raw =
-                    http.prepareGet(UPDATE_FEED).execute { response ->
-                        check(response.status.value == 200) {
-                            "更新情報を取得できません (HTTP ${response.status.value})"
-                        }
-                        response.bodyAsChannel().readRemaining(16_385).readText()
-                    }
-                require(raw.toByteArray().size <= 16_384) { "更新情報が大きすぎます" }
-                val release = UpdateRelease.parse(raw)
+                val release = fetchUpdateRelease(http)
                 val current =
                     applicationContext.packageManager.installed(applicationContext.packageName)
                 if (release.versionCode <= current.version()) {

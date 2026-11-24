@@ -1,5 +1,10 @@
 package zoo.android.update
 
+import io.ktor.client.*
+import io.ktor.client.request.*
+import io.ktor.client.statement.*
+import io.ktor.utils.io.core.readText
+import io.ktor.utils.io.readRemaining
 import java.net.URI
 import java.security.MessageDigest
 import kotlinx.serialization.json.*
@@ -68,4 +73,16 @@ internal fun requireMatchingApk(
     require(installedSigners.isNotEmpty() && installedSigners == archiveSigners) {
         "署名鍵が一致しません。現在のアプリと同じ鍵で署名された更新が必要です"
     }
+}
+
+internal suspend fun fetchUpdateRelease(http: HttpClient): UpdateRelease {
+    val raw =
+        http.prepareGet(UPDATE_FEED).execute { response ->
+            check(response.status.value == 200) {
+                "更新情報を取得できません (HTTP ${response.status.value})"
+            }
+            response.bodyAsChannel().readRemaining(16_385).readText()
+        }
+    require(raw.toByteArray().size <= 16_384) { "更新情報が大きすぎます" }
+    return UpdateRelease.parse(raw)
 }
