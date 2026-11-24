@@ -225,6 +225,7 @@
     "compose": "메시지 보내기",
     "send": "보내기",
     "edit": "편집",
+    "editMessage": "메시지 편집",
     "delete": "삭제",
     "more": "더 보기",
     "actions": "메시지 작업",
@@ -247,6 +248,9 @@
     "copyRaw": "원문 복사",
     "copied": "원문을 복사했습니다",
     "copyFailed": "원문을 복사하지 못했습니다",
+    "copyLink": "메시지 링크 복사",
+    "linkCopied": "메시지 링크를 복사했습니다",
+    "linkCopyFailed": "메시지 링크를 복사하지 못했습니다",
     "edited": "편집됨"
   },
   "attachments": {
@@ -1903,9 +1907,8 @@
     "filters": {
       "label": "필터",
       "from": "보낸 사람",
-      "anyone": "모든 사람",
       "in": "채널",
-      "anywhere": "모든 채널",
+      "kind": "종류",
       "period": "기간",
       "anytime": "지정 안 함",
       "last7": "지난 7일",
@@ -1915,7 +1918,16 @@
       "after": "시작일",
       "before": "종료일",
       "reversed": "시작일은 종료일과 같거나 그 이전이어야 합니다.",
-      "reset": "조건 초기화"
+      "reset": "조건 초기화",
+      "me": "{{name}} (나)",
+      "searchPeople": "이름으로 찾기",
+      "searchChannels": "채널 이름으로 찾기",
+      "noMatches": "찾을 수 없습니다",
+      "clearSelection": "선택 해제",
+      "selectedCount": "{{label}}: {{count}}개",
+      "max": "최대 {{count}}개까지 선택할 수 있습니다",
+      "mine": "내가 참여 중",
+      "noBots": "봇 제외"
     }
   },
   "catchUp": {

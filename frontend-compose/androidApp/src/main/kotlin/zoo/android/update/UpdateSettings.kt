@@ -13,6 +13,12 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.unit.dp
+import io.ktor.client.*
+import io.ktor.client.engine.okhttp.*
+import io.ktor.client.plugins.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import rikka.shizuku.Shizuku
 import works.zli.zoo.BuildConfig
 import androidx.compose.foundation.rememberScrollState
@@ -32,6 +38,8 @@ internal fun UpdateSettings(context: Context, dark: Boolean, language: String, b
     var ready by remember { mutableStateOf(shizukuReady()) }
     var granting by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
+    var fetching by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     DisposableEffect(Unit) {
         val changed =
             SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
@@ -109,6 +117,35 @@ internal fun UpdateSettings(context: Context, dark: Boolean, language: String, b
             TextAction("今すぐ更新を確認", colors, icon = UiIcon.Refresh, enabled = ready && !BuildConfig.DEBUG) {
                 UpdateScheduler.checkNow(context)
             }
+            TextAction("最新の APK をダウンロード", colors, icon = UiIcon.External, style = TextActionStyle.Neutral, enabled = !fetching) {
+                error = ""
+                fetching = true
+                scope.launch {
+                    try {
+                        val release =
+                            withContext(Dispatchers.IO) {
+                                HttpClient(OkHttp) {
+                                    engine { config { followSslRedirects(false) } }
+                                    install(HttpTimeout) { requestTimeoutMillis = 30_000 }
+                                }.use { fetchUpdateRelease(it) }
+                            }
+                        context.startActivity(
+                            Intent(Intent.ACTION_VIEW, Uri.parse(release.url))
+                                .addCategory(Intent.CATEGORY_BROWSABLE)
+                        )
+                    } catch (_: android.content.ActivityNotFoundException) {
+                        error = "ブラウザーを開けませんでした"
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        error = e.message ?: "更新情報を取得できませんでした"
+                    } finally {
+                        fetching = false
+                    }
+                }
+            }
+            Text("Shizuku を使わない場合は、APK をダウンロードして開き、手動でインストールしてください。",
+                color = colors.secondary, fontSize = 13.sp)
             if (status.isNotBlank()) Text(status, color = colors.secondary, fontSize = 13.sp)
             if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
         }

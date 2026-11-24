@@ -20,6 +20,7 @@ import { groupReactions } from "../../../lib/emoji/reactions";
 import { Button } from "../../ui/button";
 import { Skeleton } from "../../ui/skeleton";
 import { newMessageAnnouncement, type FeedMessage } from "./messageFormat";
+import { subscribeMessageJump } from "./messageLink";
 import { buildMessageItems } from "./messageGrouping";
 import { MessageRow } from "./MessageRow";
 import {
@@ -66,6 +67,8 @@ interface MessageListProps {
   isWritePending?: boolean;
   isError: boolean;
   currentUserId: string | null;
+  /** 操作権限を伴わない閲覧者 ID。読み取り専用表示でメンションと自分のリアクションを判定する。 */
+  viewerId?: string | null;
   canModerate?: boolean;
   editingId: string | null;
   editingText: string;
@@ -164,6 +167,7 @@ interface MessageScrollViewportProps {
   markRead: () => void;
   firstEncryptedIndex: number;
   currentUserId: string | null;
+  viewerId?: string | null;
   canModerate: boolean;
   editingId: string | null;
   editingText: string;
@@ -200,6 +204,7 @@ export function MessageList({
   isWritePending = false,
   isError,
   currentUserId,
+  viewerId,
   canModerate = false,
   editingId,
   editingText,
@@ -355,6 +360,7 @@ export function MessageList({
           markRead={markRead}
           firstEncryptedIndex={firstEncryptedIndex}
           currentUserId={currentUserId}
+          viewerId={viewerId}
           canModerate={canModerate}
           editingId={editingId}
           editingText={editingText}
@@ -401,6 +407,7 @@ function MessageScrollViewport({
   markRead,
   firstEncryptedIndex,
   currentUserId,
+  viewerId,
   canModerate,
   editingId,
   editingText,
@@ -423,6 +430,7 @@ function MessageScrollViewport({
   onLiveAnnouncementChange,
 }: MessageScrollViewportProps) {
   const { t } = useTranslation();
+  const reactionUserId = currentUserId ?? viewerId ?? null;
   const [cacheKey] = useState(() =>
     channelId ? buildChannelScrollKey(channelId, currentUserId) : null,
   );
@@ -1247,6 +1255,19 @@ function MessageScrollViewport({
     };
   }, [markRead, readStatePending]);
 
+  // 表示中の対象メッセージへのリンクをもう一度押したとき。URL が変わらないので、ルーターは何も
+  // 変えず、対象も同じままになる。離れた位置から戻せるよう、スクロール済みの印を消して、下の効果を
+  // もう一度走らせる。
+  const [jumpRequest, setJumpRequest] = useState(0);
+  useEffect(() => {
+    if (!targetMessageId) return;
+    return subscribeMessageJump((messageId) => {
+      if (messageId !== targetMessageId) return;
+      scrolledTarget.current = undefined;
+      setJumpRequest((count) => count + 1);
+    });
+  }, [targetMessageId]);
+
   useLayoutEffect(() => {
     if (!targetMessageId) {
       scrolledTarget.current = undefined;
@@ -1265,7 +1286,7 @@ function MessageScrollViewport({
       virtualizer.scrollToIndex(index, { align: "center" });
     });
     return () => cancelAnimationFrame(frame);
-  }, [targetMessageId, items, virtualizer, alignIndexSync, cancelUnreadJump]);
+  }, [targetMessageId, items, virtualizer, alignIndexSync, cancelUnreadJump, jumpRequest]);
 
   // 各行の measureElement / ResizeObserver が編集・保存・折り返しによる
   // 高さの変化を追跡する。measure() で全行の実測値を消すと、変化していない
@@ -1328,15 +1349,16 @@ function MessageScrollViewport({
                 ) : null}
                 <MessageRow
                   item={item}
+                  mentionUserId={viewerId === undefined ? currentUserId : viewerId}
                   reactions={
                     item.message.display_data
-                      ? (groupReactions(item.message.display_data.reactions, currentUserId).get(
+                      ? (groupReactions(item.message.display_data.reactions, reactionUserId).get(
                           item.message.id,
                         ) ?? [])
                       : (reactions.get(item.message.id) ?? [])
                   }
                   kitchenCatalog={kitchenCatalog}
-                  canReact={canReact}
+                  canReact={canReact && !item.message.thread_archive_at}
                   onReaction={(emoji) => onReaction(item.message.id, emoji)}
                   onPickReaction={() => onPickReaction(item.message.id)}
                   isOwn={!!currentUserId && item.message.user_id === currentUserId}

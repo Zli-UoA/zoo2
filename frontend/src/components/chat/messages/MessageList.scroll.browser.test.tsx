@@ -7,6 +7,7 @@ import {
   createRoute,
   createRouter,
   useNavigate,
+  useRouterState,
 } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { useLayoutEffect, useRef } from "react";
@@ -1077,6 +1078,84 @@ describe("MessageList and ThreadPane initial bottom landing & channel switch", (
       expect(tr.top).toBeGreaterThanOrEqual(sr.top - 4);
       expect(tr.bottom).toBeLessThanOrEqual(sr.bottom + 4);
     });
+  });
+
+  it("scrolls back to the target when a link to the already-targeted message is pressed again", async () => {
+    const channelId = "chan-jump";
+    const link = `${window.location.origin}/channels/${channelId}?message=j-8`;
+    const messages = Array.from({ length: 50 }, (_, index) => ({
+      ...makeMessage(`j-${index}`, index, 2, channelId),
+      // 末尾に近い投稿が、URL がすでに指している j-8 へのリンクを含む。
+      ...(index === 47 ? { content: `詳細は ${link} を見てください` } : {}),
+    }));
+
+    function Channel() {
+      const location = useRouterState({ select: (state) => state.location });
+      const { message } = location.search as { message?: string };
+      return (
+        <CollectionsProvider value={testCollections}>
+          <LocaleProvider>
+            <div style={{ width: 640, height: 420, display: "flex", flexDirection: "column" }}>
+              <MessageList
+                key={channelId}
+                {...listProps(channelId, messages, { targetMessageId: message })}
+              />
+            </div>
+          </LocaleProvider>
+        </CollectionsProvider>
+      );
+    }
+    const root = createRootRoute();
+    const route = createRoute({
+      getParentRoute: () => root,
+      path: "/channels/$channelId",
+      validateSearch: (search: Record<string, unknown>): { message?: string } => ({
+        message: typeof search.message === "string" ? search.message : undefined,
+      }),
+      component: Channel,
+    });
+    const router = createRouter({
+      routeTree: root.addChildren([route]),
+      history: createMemoryHistory({ initialEntries: [`/channels/${channelId}?message=j-8`] }),
+    });
+    render(<RouterProvider router={router} />);
+
+    const scroller = () => document.querySelector<HTMLElement>('[data-testid="message-scroll"]')!;
+    const targetInView = () => {
+      const row = scroller().querySelector<HTMLElement>('[data-message-id="j-8"]');
+      if (!row) return false;
+      const sr = scroller().getBoundingClientRect();
+      const tr = row.getBoundingClientRect();
+      return tr.top >= sr.top - 4 && tr.bottom <= sr.bottom + 4;
+    };
+    const bodyLink = () =>
+      scroller().querySelector<HTMLAnchorElement>(`a[href="/channels/${channelId}?message=j-8"]`);
+
+    await waitFor(() => expect(targetInView()).toBe(true));
+
+    // 読み進めて、対象から離れる。URL は `?message=j-8` のまま。
+    scroller().scrollTop = scroller().scrollHeight;
+    await waitFor(() => {
+      expect(targetInView()).toBe(false);
+      expect(bodyLink()).toBeTruthy();
+    });
+    expect(router.state.location.href).toBe(`/channels/${channelId}?message=j-8`);
+
+    // 修飾キーつきのクリックは、ブラウザーに任せる。この画面は動かさない（実際の遷移は止める）。
+    const stopNavigation = (event: MouseEvent) => event.preventDefault();
+    document.addEventListener("click", stopNavigation);
+    try {
+      fireEvent.click(bodyLink()!, { ctrlKey: true });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(targetInView()).toBe(false);
+    } finally {
+      document.removeEventListener("click", stopNavigation);
+    }
+
+    // 普通のクリックで、同じ場所への移動になっても、対象の行へ戻る。
+    fireEvent.click(bodyLink()!);
+    await waitFor(() => expect(targetInView()).toBe(true));
+    expect(router.state.location.href).toBe(`/channels/${channelId}?message=j-8`);
   });
 
   it("opens directly at bottom (or targetMessageId) in ThreadPane without an initial scrollTop=0 flash", async () => {

@@ -225,6 +225,7 @@
     "compose": "통보문 보내기",
     "send": "보내기",
     "edit": "편집",
+    "editMessage": "통보문 편집",
     "delete": "삭제",
     "more": "다른 조작",
     "actions": "메시지 조작",
@@ -247,6 +248,9 @@
     "copyRaw": "원문 복사",
     "copied": "원문을 복사했습니다",
     "copyFailed": "원문을 복사하지 못했습니다",
+    "copyLink": "통보문 주소 복사",
+    "linkCopied": "통보문 주소를 복사했습니다",
+    "linkCopyFailed": "통보문 주소를 복사하지 못했습니다",
     "edited": "편집됨"
   },
   "attachments": {
@@ -1903,9 +1907,8 @@
     "filters": {
       "label": "거르기",
       "from": "보낸 사람",
-      "anyone": "모든 사람",
       "in": "통로",
-      "anywhere": "모든 통로",
+      "kind": "종류",
       "period": "기간",
       "anytime": "지정하지 않음",
       "last7": "지난 7일",
@@ -1915,7 +1918,16 @@
       "after": "시작날자",
       "before": "마감날자",
       "reversed": "시작일은 종료일과 같거나 그 이전이여야 합니다.",
-      "reset": "조건 초기화"
+      "reset": "조건 초기화",
+      "me": "{{name}} (나)",
+      "searchPeople": "이름으로 찾기",
+      "searchChannels": "통로 이름으로 찾기",
+      "noMatches": "찾을수 없습니다",
+      "clearSelection": "선택 해제",
+      "selectedCount": "{{label}}: {{count}}개",
+      "max": "최대 {{count}}개까지 선택할수 있습니다",
+      "mine": "내가 참가중",
+      "noBots": "보트 제외"
     }
   },
   "catchUp": {

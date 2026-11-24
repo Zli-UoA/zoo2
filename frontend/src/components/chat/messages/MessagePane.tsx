@@ -12,7 +12,6 @@ import { toast } from "sonner";
 
 import { useChannelCommands } from "../../../hooks/useChannelCommands";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
-import { useKitchenCatalog } from "../../../hooks/useKitchenCatalog";
 import {
   useAttachmentUpload,
   useEncryptedAttachmentUpload,
@@ -21,20 +20,13 @@ import {
 import type { AttachmentInfo } from "@zoo/crypto-wasm";
 
 import type { UploadedAttachment } from "../../../lib/api/attachments";
-import {
-  useChannelMembers,
-  useUsers,
-  useMessageFeed,
-  useMessageReactions,
-} from "../../../hooks/useRealtime";
+import { useChannelMembers, useUsers, useMessageFeed } from "../../../hooks/useRealtime";
 import { useMessageById, useThreadFeed, useThreadRoot } from "../../../hooks/useThread";
 import { useWriteRunner } from "../../../hooks/useWriteRunner";
 import { groupAttachmentsByMessage } from "../../../lib/attachments";
 import { useCollections } from "../../../lib/electric/collections-context";
 import type { ChannelUserWriteMetadata } from "../../../lib/electric/writes";
-import { groupReactions, reactionUserLabel } from "../../../lib/emoji/reactions";
 import { useOfflineStatus } from "../../../lib/offline/offline-context";
-import { reactionKey } from "../../../lib/emoji/kitchen";
 import { nowIso } from "../../../lib/time";
 import { useShell } from "../../layout/shell-context";
 import { ConfirmActionDialog } from "../../ui/confirm-action-dialog";
@@ -46,6 +38,7 @@ import { MessageList } from "./MessageList";
 import { ReactionPicker } from "./ReactionPicker";
 import { ThreadPane } from "./ThreadPane";
 import { ThreadPaneStatus } from "./ThreadPaneStatus";
+import { useChannelReactions } from "./useChannelReactions";
 import { EncryptionRecipientsNotice } from "./EncryptionRecipientsNotice";
 import { encryptedMentions } from "./mentions";
 import { useMessageDecryptions } from "../../../hooks/useMessageDecryptions";
@@ -131,7 +124,7 @@ export function MessagePane({
   targetMessageId?: string;
 }) {
   const { t } = useTranslation();
-  const { messages, channelUsers, reactions, config } = useCollections();
+  const { messages, channelUsers, config } = useCollections();
   const appClient = useMemo(() => createConfiguredApiClient(config), [config]);
   const usersQuery = useUsers();
   const mentionUsers = (usersQuery.data ?? []).filter(
@@ -148,11 +141,9 @@ export function MessagePane({
     [members],
   );
   const messagesCollection = messages(channelId);
-  const reactionsCollection = reactions(channelId);
   // 新しい方から `MESSAGE_PAGE_SIZE` 件だけを同期し、上端付近で `loadOlder()` が古い方へ 1 ページずつ広げる。
   const messagesQuery = useMessageFeed(channelId);
   const feed = messagesQuery.data ?? [];
-  const reactionsQuery = useMessageReactions(channelId);
   const channelUpload = useAttachmentUpload(channelId);
   const e2ee = useE2ee();
   const { downgraded, checkingEncryption, treatAsEncrypted } = useEncryptedDisplay({
@@ -219,26 +210,6 @@ export function MessagePane({
   const { isOnline } = useOfflineStatus();
   const typing = useTyping(channelId, null, !readOnly && isMember && !!currentUserId);
   const { error, errorCause, setError, run, isPending: isWritePending } = useWriteRunner();
-
-  const [reactionMessageId, setReactionMessageId] = useState<string | null>(null);
-  const reactionRows = reactionsQuery.data ?? [];
-  const reactionGroups = useMemo(() => {
-    const names = Object.fromEntries(
-      (usersQuery.data ?? []).map((user) => [user.id, reactionUserLabel(user)]),
-    );
-    const groups = groupReactions(reactionRows, currentUserId);
-    for (const reactions of groups.values()) {
-      for (const reaction of reactions) {
-        reaction.userNames = { ...reaction.userNames, ...names };
-        reaction.usersLoading = usersQuery.isLoading;
-      }
-    }
-    return groups;
-  }, [reactionRows, currentUserId, usersQuery.data, usersQuery.isLoading]);
-  const { catalog } = useKitchenCatalog(
-    reactionRows.some((row) => row.emoji.startsWith("kitchen:")),
-  );
-  const pendingReactions = useRef(new Set<string>());
 
   const { threadRootId, openThread, closeThread } = useShell();
   const threadQuery = useThreadFeed(channelId, threadRootId);
@@ -386,7 +357,7 @@ export function MessagePane({
   );
 
   useEffect(() => {
-    // 開いた後に親が削除されたら、その返信の編集・削除確認・リアクション選択も閉じる。
+    // 開いた後に親が削除されたら、その返信の編集・削除確認も閉じる。
     if (editingId && (isArchivedMessage(editingId) || isUnderDeletedRoot(editingId))) {
       setEditingId(null);
       setEditingText("");
@@ -396,12 +367,7 @@ export function MessagePane({
       (isArchivedMessage(pendingDeleteId) || isUnderDeletedRoot(pendingDeleteId))
     )
       setPendingDeleteId(null);
-    if (
-      reactionMessageId &&
-      (isArchivedMessage(reactionMessageId) || isUnderDeletedRoot(reactionMessageId))
-    )
-      setReactionMessageId(null);
-  }, [editingId, pendingDeleteId, reactionMessageId, isArchivedMessage, isUnderDeletedRoot]);
+  }, [editingId, pendingDeleteId, isArchivedMessage, isUnderDeletedRoot]);
 
   // 編集中にチャンネルが暗号化に切り替わったら（#367）、切り替える前の平文のメッセージの編集をやめる。
   // サーバーも 409 `E2EE_LEGACY_IMMUTABLE` で拒否する。
@@ -415,54 +381,19 @@ export function MessagePane({
     }
   }, [treatAsEncrypted, editingId, messagesCollection, t]);
 
-  const handleReaction = useCallback(
-    async (messageId: string, emoji: string) => {
-      if (
-        !currentUserId ||
-        isArchivedMessage(messageId) ||
-        isUnderDeletedRoot(messageId) ||
-        !messagesCollection.get(messageId) ||
-        messagesCollection.get(messageId)?.deleted_at
-      ) {
-        return;
-      }
-      const key = reactionKey(emoji);
-      const pendingKey = `${messageId}:${key}`;
-      if (pendingReactions.current.has(pendingKey)) {
-        return;
-      }
-      pendingReactions.current.add(pendingKey);
-      try {
-        await run(() => {
-          const own = Array.from(reactionsCollection.values()).find(
-            (row) =>
-              row.message_id === messageId &&
-              row.user_id === currentUserId &&
-              reactionKey(row.emoji) === key,
-          );
-          return own
-            ? reactionsCollection.delete(own.id)
-            : reactionsCollection.insert({
-                id: crypto.randomUUID(),
-                message_id: messageId,
-                user_id: currentUserId,
-                emoji,
-                created_at: nowIso(),
-              });
-        });
-      } finally {
-        pendingReactions.current.delete(pendingKey);
-      }
-    },
-    [
-      currentUserId,
-      messagesCollection,
-      reactionsCollection,
-      run,
-      isArchivedMessage,
-      isUnderDeletedRoot,
-    ],
+  const isBlockedReactionMessage = useCallback(
+    (id: string) => isArchivedMessage(id) || isUnderDeletedRoot(id),
+    [isArchivedMessage, isUnderDeletedRoot],
   );
+  const channelReactions = useChannelReactions({
+    channelId,
+    currentUserId,
+    users: usersQuery.data,
+    usersLoading: usersQuery.isLoading,
+    readOnly,
+    isBlockedMessage: isBlockedReactionMessage,
+    runWrite: run,
+  });
 
   // 通知・リンクの対象 (`?message=`)。メイン一覧の範囲とは関係なく、その行だけを取る。
   const resolvedTargetId =
@@ -921,14 +852,14 @@ export function MessagePane({
     >
       <section className="relative flex h-full min-h-0">
         <div className="flex min-w-0 flex-1 flex-col">
-          {reactionsQuery.isError ||
+          {channelReactions.isError ||
           messagesQuery.isError ||
           messagesQuery.persistedStatus === "error" ? (
             <div
               role="status"
               className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-2"
             >
-              {reactionsQuery.isError ? (
+              {channelReactions.isError ? (
                 <span className="text-xs text-destructive">{t("reactions.fetchError")}</span>
               ) : null}
               {messagesQuery.isError ? (
@@ -957,6 +888,7 @@ export function MessagePane({
             isLoading={messagesQuery.isLoading}
             isError={messagesQuery.isError}
             currentUserId={readOnly ? null : currentUserId}
+            viewerId={isMember ? currentUserId : null}
             canModerate={canModerate}
             editingId={editingId}
             editingText={editingText}
@@ -965,14 +897,12 @@ export function MessagePane({
             onCancelEdit={handleCancelEdit}
             onSaveEdit={handleSaveEdit}
             onRequestDelete={setPendingDeleteId}
-            reactions={reactionGroups}
+            reactions={channelReactions.reactionGroups}
             attachments={attachmentsByMessage}
-            kitchenCatalog={catalog}
-            canReact={
-              !readOnly && !!currentUserId && !reactionsQuery.isLoading && !reactionsQuery.isError
-            }
-            onReaction={handleReaction}
-            onPickReaction={setReactionMessageId}
+            kitchenCatalog={channelReactions.kitchenCatalog}
+            canReact={channelReactions.canReact}
+            onReaction={channelReactions.handleReaction}
+            onPickReaction={channelReactions.openReactionPicker}
             onOpenThread={openThread}
             canCompose={isMember}
             isOffline={!isOnline}
@@ -1078,21 +1008,15 @@ export function MessagePane({
             isError={threadQuery.isError}
             currentUserId={readOnly || threadIsArchived || !threadRoot ? null : currentUserId}
             viewerId={currentUserId}
+            mentionUserId={isMember ? currentUserId : null}
             canModerate={canModerate && !threadIsArchived && !!threadRoot}
-            reactions={reactionGroups}
+            reactions={channelReactions.reactionGroups}
             attachments={attachmentsByMessage}
             onUploadAttachment={uploadAttachment}
-            kitchenCatalog={catalog}
-            canReact={
-              !readOnly &&
-              !threadIsArchived &&
-              !!threadRoot &&
-              !!currentUserId &&
-              !reactionsQuery.isLoading &&
-              !reactionsQuery.isError
-            }
-            onReaction={handleReaction}
-            onPickReaction={setReactionMessageId}
+            kitchenCatalog={channelReactions.kitchenCatalog}
+            canReact={channelReactions.canReact && !threadIsArchived && !!threadRoot}
+            onReaction={channelReactions.handleReaction}
+            onPickReaction={channelReactions.openReactionPicker}
             editingId={editingId}
             editingText={editingText}
             onEditingTextChange={setEditingText}
@@ -1129,15 +1053,15 @@ export function MessagePane({
         ) : null}
 
         <ReactionPicker
-          open={reactionMessageId !== null}
+          open={channelReactions.reactionMessageId !== null}
           onOpenChange={(open) => {
             if (!open) {
-              setReactionMessageId(null);
+              channelReactions.closeReactionPicker();
             }
           }}
           onSelect={(emoji) => {
-            if (reactionMessageId) {
-              void handleReaction(reactionMessageId, emoji);
+            if (channelReactions.reactionMessageId) {
+              void channelReactions.handleReaction(channelReactions.reactionMessageId, emoji);
             }
           }}
         />

@@ -223,4 +223,130 @@ class GlobalSearchControllerTest {
             globalSearchDestination(obj("id" to "f1", "message_id" to "m2", "channel_id" to "c1"), GlobalSearchType.Files),
         )
     }
+
+    @Test
+    fun returningToTheRouteKeepsTheWordsKindAndResultsWithoutRequests() = runTest {
+        val requests = mutableListOf<Parameters>()
+        val app = app { request ->
+            requests += request.url.parameters
+            respond(page(listOf("one", "two"), "next", "2025-12"))
+        }
+        val search = GlobalSearchController(app, backgroundScope)
+        // Open search from a link, then a result, then come back (the route keeps `q` and `type`).
+        assertEquals("会議", search.followRoute(globalSearchRoute("/search?q=%E4%BC%9A%E8%AD%B0&type=files")!!))
+        runCurrent()
+        assertEquals(1, requests.size)
+        assertNull(globalSearchRoute("/channels/c?message=one"))
+        val back = globalSearchRoute(globalSearchPath(search.query, search.type))!!
+        assertEquals(GlobalSearchRoute("会議", GlobalSearchType.Files), back)
+        assertNull(search.followRoute(back), "Returning must not reset the field")
+        // Reopened from the channel list (OpenSearch navigates to the same path).
+        assertNull(search.followRoute(globalSearchRoute(globalSearchPath(search.query, search.type))!!))
+        search.refreshIfStale()
+        runCurrent()
+        assertEquals("会議", search.query)
+        assertEquals(GlobalSearchType.Files, search.type)
+        assertEquals(listOf("one", "two"), search.items.map { it.text("id") })
+        assertEquals(1, requests.size, "Returning within the reuse time sends nothing")
+        app.close()
+    }
+
+    @Test
+    fun refreshSearchesTheSameWordsAgainAndStaleResultsAreReloadedOnReopen() = runTest {
+        var served = 0
+        val app = app { respond(page(listOf("r${++served}"), null, "2025-12")) }
+        val search = GlobalSearchController(app, backgroundScope)
+        search.search("会議")
+        runCurrent()
+        assertEquals(listOf("r1"), search.items.map { it.text("id") })
+        search.search("会議")
+        runCurrent()
+        assertEquals(1, served, "The same words alone do not search again")
+        search.refresh()
+        runCurrent()
+        assertEquals(listOf("r2"), search.items.map { it.text("id") })
+
+        val fetched = kotlin.time.Clock.System.now().toEpochMilliseconds()
+        search.refreshIfStale(fetched + GlobalSearchController.REUSE_MS - 60_000)
+        runCurrent()
+        assertEquals(2, served)
+        search.refreshIfStale(fetched + GlobalSearchController.REUSE_MS + 60_000)
+        runCurrent()
+        assertEquals(listOf("r3"), search.items.map { it.text("id") })
+        app.close()
+    }
+
+    @Test
+    fun wordsTheServerRejectsAreNotSent() = runTest {
+        var served = 0
+        val app = app { served++; respond(page(emptyList(), null, null)) }
+        val search = GlobalSearchController(app, backgroundScope)
+        search.search("a b c d e f")
+        runCurrent()
+        search.search("x".repeat(MAX_SEARCH_TERM_CHARS + 1))
+        runCurrent()
+        assertEquals(0, served)
+        assertFalse(search.loading)
+        assertFalse(search.error)
+        app.close()
+    }
+
+    @Test
+    fun filtersAreSentAsCommaSeparatedIdsAndFlagsAndKeptForOlderPages() = runTest {
+        val requests = mutableListOf<Parameters>()
+        val app = app { request ->
+            requests += request.url.parameters
+            respond(page(listOf("one"), if (request.url.parameters["cursor"] == null) "next" else null, "2025-12"))
+        }
+        val search = GlobalSearchController(app, backgroundScope)
+        search.search("会議", GlobalSearchType.Messages,
+            GlobalSearchFilters(from = listOf("u1", " u2 ", "u1", ""), channels = listOf("c1"), mine = true, noBots = true))
+        runCurrent()
+        search.loadOlder()
+        runCurrent()
+        assertEquals(2, requests.size)
+        for (request in requests) {
+            assertEquals("u1,u2", request["user_id"])
+            assertEquals("c1", request["channel_id"])
+            assertEquals("true", request["involving_me"])
+            assertEquals("true", request["exclude_bots"])
+        }
+        assertEquals("next", requests[1]["cursor"])
+    }
+
+    @Test
+    fun noFiltersSendNoFilterParametersAndChangingThemSearchesAgain() = runTest {
+        val requests = mutableListOf<Parameters>()
+        val app = app { request ->
+            requests += request.url.parameters
+            respond(page(listOf("one"), null, "2025-12"))
+        }
+        val search = GlobalSearchController(app, backgroundScope)
+        search.search("会議")
+        runCurrent()
+        assertEquals(setOf("type", "limit", "q"), requests.single().names())
+        search.search("会議", filter = GlobalSearchFilters(noBots = true))
+        runCurrent()
+        assertEquals(2, requests.size)
+        assertEquals("true", requests[1]["exclude_bots"])
+        // The same filters again (even with repeats) send nothing.
+        search.search("会議", filter = GlobalSearchFilters(noBots = true))
+        runCurrent()
+        assertEquals(2, requests.size)
+        // The field's words keep the chosen filters.
+        search.search("資料")
+        runCurrent()
+        assertEquals("true", requests[2]["exclude_bots"])
+    }
+
+    @Test
+    fun theRouteKeepsTheFiltersLikeWeb() {
+        val filters = GlobalSearchFilters(from = listOf("u1", "u2"), channels = listOf("c1"), mine = true, noBots = true)
+        val path = globalSearchPath("会議", GlobalSearchType.All, filters)
+        assertEquals("/search?q=%E4%BC%9A%E8%AD%B0&type=all&from=u1%2Cu2&in=c1&mine=1&nobots=1", path)
+        assertEquals(GlobalSearchRoute("会議", GlobalSearchType.All, filters), globalSearchRoute(path))
+        assertEquals(GlobalSearchFilters(), globalSearchRoute("/search?q=a&from=&in=,&mine=0")!!.filters)
+        val many = (0..MAX_SEARCH_FILTER_IDS).joinToString(",") { "u$it" }
+        assertEquals(MAX_SEARCH_FILTER_IDS, globalSearchRoute("/search?q=a&from=$many")!!.filters.from.size)
+    }
 }

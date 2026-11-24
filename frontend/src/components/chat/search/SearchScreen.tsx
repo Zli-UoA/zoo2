@@ -1,6 +1,13 @@
 import { useLiveQuery } from "@tanstack/react-db";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
-import { LockIcon, SearchIcon } from "lucide-react";
+import {
+  BotOffIcon,
+  HashIcon,
+  LockIcon,
+  MessagesSquareIcon,
+  SearchIcon,
+  UserRoundIcon,
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -11,15 +18,16 @@ import { useCollections } from "../../../lib/electric/collections-context";
 import type { ChannelUserRow } from "../../../lib/electric/types";
 import { ScreenHeader } from "../../layout/PaneHeader";
 import { Button } from "../../ui/button";
-import { ButtonGroup, ButtonGroupItem } from "../../ui/button-group";
 import { Input } from "../../ui/input";
 import { Select } from "../../ui/select";
+import { AppAvatar } from "../AppIdentity";
 import { Spinner } from "../../ui/spinner";
 import {
   beforeFromEndDay,
   endDayFromBefore,
   hasSearchFilters,
   isSearchDay,
+  MAX_SEARCH_FILTER_IDS,
   normalizeSearchQuery,
   parseSearchRouteParams,
   periodAfter,
@@ -27,6 +35,7 @@ import {
   searchFiltersOf,
   searchItemKey,
   searchKindOf,
+  searchRouteFilters,
   SEARCH_KINDS,
   SEARCH_PERIODS,
   type SearchFilters,
@@ -40,6 +49,7 @@ import {
   searchTerms,
   type SearchQueryProblem,
 } from "../../../lib/searchHighlight";
+import { SearchFilterPicker, type SearchFilterOption } from "./SearchFilterPicker";
 import { SearchResultRow } from "./SearchResultRow";
 
 /**
@@ -97,16 +107,49 @@ export function SearchScreen() {
 
   const channelsQuery = useActiveChannels();
   // 絞り込みに出すのは、検索の対象になりうるチャンネル（DM と暗号化チャンネルは除く）。
-  const channelOptions = useMemo(
-    () => (channelsQuery.data ?? []).filter((channel) => !channel.is_dm && !channel.encrypted),
+  const channelOptions = useMemo<SearchFilterOption[]>(
+    () =>
+      (channelsQuery.data ?? [])
+        .filter((channel) => !channel.is_dm && !channel.encrypted)
+        .sort((a, b) => a.channel_name.localeCompare(b.channel_name))
+        .map((channel) => {
+          const ChannelIcon = channel.is_private ? LockIcon : HashIcon;
+          return {
+            id: channel.id,
+            label: channel.channel_name,
+            icon: <ChannelIcon className="size-4 text-muted-foreground" aria-hidden="true" />,
+          };
+        }),
     [channelsQuery.data],
   );
-  const userOptions = useMemo(
+  // 送信者は自分を先頭に、ほかは名前の順。
+  const userOptions = useMemo<SearchFilterOption[]>(
     () =>
-      [...(usersQuery.data ?? [])].sort((a, b) =>
-        (a.display_name || a.user_name).localeCompare(b.display_name || b.user_name),
-      ),
-    [usersQuery.data],
+      [...(usersQuery.data ?? [])]
+        .sort(
+          (a, b) =>
+            Number(b.id === currentUserId) - Number(a.id === currentUserId) ||
+            (a.display_name || a.user_name).localeCompare(b.display_name || b.user_name),
+        )
+        .map((user) => {
+          const name = user.display_name || user.user_name;
+          return {
+            id: user.id,
+            label: user.id === currentUserId ? t("globalSearch.filters.me", { name }) : name,
+            keywords: `@${user.user_name}`,
+            detail: `@${user.user_name}`,
+            icon: (
+              <AppAvatar
+                label={name}
+                src={user.avatar_url}
+                isBot={user.is_bot}
+                className="size-6"
+                aria-hidden
+              />
+            ),
+          };
+        }),
+    [usersQuery.data, currentUserId, t],
   );
 
   const go = (next: { q: string; type: SearchKind } & SearchFilters) =>
@@ -115,10 +158,7 @@ export function SearchScreen() {
       search: {
         q: next.q || undefined,
         type: next.type === "all" ? undefined : next.type,
-        from: next.from || undefined,
-        in: next.in || undefined,
-        after: next.after || undefined,
-        before: next.before || undefined,
+        ...searchRouteFilters(next),
       },
     });
   const filter = (change: SearchFilters) => go({ q: query, type: kind, ...filters, ...change });
@@ -224,61 +264,66 @@ export function SearchScreen() {
             })}
           </p>
         ) : null}
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-          <ButtonGroup
-            value={[kind]}
-            onValueChange={(value) => {
-              const next = value[0] as SearchKind | undefined;
-              if (next && next !== kind) go({ q: query, type: next, ...filters });
-            }}
-          >
-            {SEARCH_KINDS.map((value) => (
-              <ButtonGroupItem
-                key={value}
-                value={value}
-                className="h-8 w-auto px-3 text-sm"
-                aria-label={kindLabel(value)}
-              >
-                {kindLabel(value)}
-              </ButtonGroupItem>
-            ))}
-          </ButtonGroup>
-        </div>
         <div
           role="group"
           aria-label={t("globalSearch.filters.label")}
           className="flex flex-wrap items-center gap-2"
         >
           <Select
-            value={filters.from ?? ""}
-            onChange={(event) => filter({ from: event.target.value || undefined })}
-            aria-label={t("globalSearch.filters.from")}
-            className="h-8 w-44 text-sm"
+            value={kind}
+            onChange={(event) => {
+              const next = event.target.value as SearchKind;
+              if (next !== kind) go({ q: query, type: next, ...filters });
+            }}
+            aria-label={t("globalSearch.filters.kind")}
+            className="h-8 w-40 text-sm"
           >
-            <option value="">
-              {t("globalSearch.filters.from")}: {t("globalSearch.filters.anyone")}
-            </option>
-            {userOptions.map((user) => (
-              <option key={user.id} value={user.id}>
-                {user.display_name || user.user_name} (@{user.user_name})
+            {SEARCH_KINDS.map((value) => (
+              <option key={value} value={value}>
+                {value === "all"
+                  ? `${t("globalSearch.filters.kind")}: ${kindLabel(value)}`
+                  : kindLabel(value)}
               </option>
             ))}
           </Select>
-          <Select
-            value={filters.in ?? ""}
-            onChange={(event) => filter({ in: event.target.value || undefined })}
-            aria-label={t("globalSearch.filters.in")}
-            className="h-8 w-44 text-sm"
+          <SearchFilterPicker
+            label={t("globalSearch.filters.from")}
+            icon={UserRoundIcon}
+            options={userOptions}
+            selected={filters.from ?? []}
+            onChange={(from) => filter({ from })}
+            searchLabel={t("globalSearch.filters.searchPeople")}
+            max={MAX_SEARCH_FILTER_IDS}
+          />
+          <SearchFilterPicker
+            label={t("globalSearch.filters.in")}
+            icon={HashIcon}
+            options={channelOptions}
+            selected={filters.in ?? []}
+            onChange={(channels) => filter({ in: channels })}
+            searchLabel={t("globalSearch.filters.searchChannels")}
+            max={MAX_SEARCH_FILTER_IDS}
+          />
+          <Button
+            type="button"
+            variant="outline"
+            aria-pressed={!!filters.mine}
+            className="h-8 text-sm aria-pressed:border-primary aria-pressed:text-primary"
+            onClick={() => filter({ mine: !filters.mine || undefined })}
           >
-            <option value="">
-              {t("globalSearch.filters.in")}: {t("globalSearch.filters.anywhere")}
-            </option>
-            {channelOptions.map((channel) => (
-              <option key={channel.id} value={channel.id}>
-                #{channel.channel_name}
-              </option>
-            ))}
-          </Select>
+            <MessagesSquareIcon aria-hidden="true" />
+            {t("globalSearch.filters.mine")}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            aria-pressed={!!filters.noBots}
+            className="h-8 text-sm aria-pressed:border-primary aria-pressed:text-primary"
+            onClick={() => filter({ noBots: !filters.noBots || undefined })}
+          >
+            <BotOffIcon aria-hidden="true" />
+            {t("globalSearch.filters.noBots")}
+          </Button>
           <Select
             value={period}
             onChange={(event) => choosePeriod(event.target.value as SearchPeriod)}
@@ -351,7 +396,14 @@ export function SearchScreen() {
               onClick={() => {
                 setCustomPeriod(false);
                 setDayDraft({});
-                filter({ from: undefined, in: undefined, after: undefined, before: undefined });
+                filter({
+                  from: undefined,
+                  in: undefined,
+                  after: undefined,
+                  before: undefined,
+                  noBots: undefined,
+                  mine: undefined,
+                });
               }}
             >
               {t("globalSearch.filters.reset")}

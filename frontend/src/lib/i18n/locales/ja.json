@@ -225,6 +225,7 @@
     "compose": "メッセージを送信",
     "send": "送信",
     "edit": "編集",
+    "editMessage": "メッセージを編集",
     "delete": "削除",
     "more": "その他の操作",
     "actions": "メッセージを操作",
@@ -247,6 +248,9 @@
     "copyRaw": "原文をコピー",
     "copied": "原文をコピーしました",
     "copyFailed": "原文をコピーできませんでした",
+    "copyLink": "メッセージリンクをコピー",
+    "linkCopied": "メッセージリンクをコピーしました",
+    "linkCopyFailed": "メッセージリンクをコピーできませんでした",
     "edited": "編集済み"
   },
   "attachments": {
@@ -1903,9 +1907,8 @@
     "filters": {
       "label": "絞り込み",
       "from": "送信者",
-      "anyone": "すべての人",
       "in": "チャンネル",
-      "anywhere": "すべてのチャンネル",
+      "kind": "種類",
       "period": "期間",
       "anytime": "指定なし",
       "last7": "過去 7 日間",
@@ -1915,7 +1918,16 @@
       "after": "開始日",
       "before": "終了日",
       "reversed": "開始日は終了日と同じか、それより前にしてください。",
-      "reset": "条件をリセット"
+      "reset": "条件をリセット",
+      "me": "{{name}}（自分）",
+      "searchPeople": "名前で探す",
+      "searchChannels": "チャンネル名で探す",
+      "noMatches": "見つかりません",
+      "clearSelection": "選択を外す",
+      "selectedCount": "{{label}}: {{count}} 件",
+      "max": "選べるのは {{count}} 件までです",
+      "mine": "自分が参加中",
+      "noBots": "ボットを除く"
     }
   },
   "catchUp": {

@@ -200,15 +200,18 @@ impl GlobalSearch {
 }
 
 /// 検索語に書ける絞り込み（Slack と同じ書き方）。
-/// `from:@user_name`・`in:#channel_name`・`after:YYYY-MM-DD`・`before:YYYY-MM-DD`。
+/// `from:@user_name`・`in:#channel_name`（どちらも複数書くと、どれか）・`after:YYYY-MM-DD`・
+/// `before:YYYY-MM-DD`・`with:me`（自分が参加中の会話）・`-is:bot`（ボットを除く）。
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Modifiers {
     /// 残りの語（空白区切り）。
     pub terms: String,
-    pub from: Option<String>,
-    pub channel: Option<String>,
+    pub from: Vec<String>,
+    pub channels: Vec<String>,
     pub after: Option<String>,
     pub before: Option<String>,
+    pub with_me: bool,
+    pub no_bots: bool,
 }
 
 fn is_day(value: &str) -> bool {
@@ -228,15 +231,25 @@ pub fn parse_modifiers(query: &str) -> Modifiers {
         if let Some(name) = word.strip_prefix("from:") {
             let name = name.trim_start_matches('@');
             if !name.is_empty() {
-                out.from = Some(name.to_string());
+                if !out.from.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+                    out.from.push(name.to_string());
+                }
                 continue;
             }
         } else if let Some(name) = word.strip_prefix("in:") {
             let name = name.trim_start_matches('#');
             if !name.is_empty() {
-                out.channel = Some(name.to_string());
+                if !out.channels.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+                    out.channels.push(name.to_string());
+                }
                 continue;
             }
+        } else if word.eq_ignore_ascii_case("with:me") {
+            out.with_me = true;
+            continue;
+        } else if word.eq_ignore_ascii_case("-is:bot") {
+            out.no_bots = true;
+            continue;
         } else if let Some(day) = word.strip_prefix("after:").filter(|d| is_day(d)) {
             out.after = Some(day.to_string());
             continue;
@@ -613,16 +626,19 @@ mod tests {
 
     #[test]
     fn modifiers_are_split_from_the_terms() {
-        let parsed =
-            parse_modifiers("会議 from:@alice in:#general after:2026-11-01 before:11/30 資料");
+        let parsed = parse_modifiers(
+            "会議 from:@alice in:#general after:2026-11-01 before:11/30 資料 from:bob from:@Alice with:me -is:bot in:#random",
+        );
         assert_eq!(
             parsed,
             Modifiers {
                 terms: "会議 before:11/30 資料".into(),
-                from: Some("alice".into()),
-                channel: Some("general".into()),
+                from: vec!["alice".into(), "bob".into()],
+                channels: vec!["general".into(), "random".into()],
                 after: Some("2026-11-01".into()),
                 before: None,
+                with_me: true,
+                no_bots: true,
             }
         );
         assert_eq!(parse_modifiers("from: in:#").terms, "from: in:#");

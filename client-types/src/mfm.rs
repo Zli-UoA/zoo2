@@ -474,7 +474,6 @@ impl Inline<'_> {
             icon.avatar_url = profile.avatar_url.clone();
             icon.avatar_fallback = Some(account_initial(profile));
             vec![
-                Span::styled("@".to_owned(), style),
                 icon,
                 Span::styled(
                     format!(
@@ -814,6 +813,8 @@ mod tests {
         );
         let text: String = spans.iter().map(|span| span.content.as_str()).collect();
         assert!(text.contains("AuthZ Name"));
+        assert!(text.contains("◉ AuthZ Name"));
+        assert!(!text.contains("@◉ AuthZ Name"));
         assert!(text.contains(":@unknown:"));
         assert!(text.contains(":@alice: @alice"));
         assert!(text.ends_with(":@alice:"));

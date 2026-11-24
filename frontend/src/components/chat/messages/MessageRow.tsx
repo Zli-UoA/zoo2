@@ -15,6 +15,7 @@ import { cn } from "cn";
 import {
   BotIcon,
   CopyIcon,
+  LinkIcon,
   LockKeyholeIcon,
   LockKeyholeOpenIcon,
   MessageSquarePlusIcon,
@@ -27,9 +28,10 @@ import {
   ShieldAlertIcon,
 } from "lucide-react";
 import { MfmContent } from "./MfmContent";
-import { decryptedMentionAllowlist, type MentionAllowlist } from "./mentions";
+import { decryptedMentionAllowlist, isAllowedMention, type MentionAllowlist } from "./mentions";
 import { LinkPreviews } from "./LinkPreviews.tsx";
 import { previewUrls } from "./linkPreviews";
+import { messageLinkUrl } from "./messageLink";
 
 import { useLocale } from "../../i18n/LocaleProvider";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
@@ -52,7 +54,13 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../../
 import { Textarea } from "../../ui/textarea";
 import { Dialog, DialogContent, DialogTitle } from "../../ui/dialog";
 import { normalizeUtcTimestamp } from "../../../lib/timestamps";
-import { authorLabel, formatDateSeparator, formatTime, fullTimestamp } from "./messageFormat";
+import {
+  authorLabel,
+  formatDateSeparator,
+  formatTime,
+  fullTimestamp,
+  messageTextSegments,
+} from "./messageFormat";
 import type { MessageItem } from "./messageGrouping";
 import { EncryptedMessageAttachments } from "./EncryptedMessageAttachments";
 import { MessageAttachments } from "./MessageAttachments";
@@ -85,6 +93,8 @@ const sheetActionClass =
 export interface MessageRowProps {
   item: MessageItem;
   isOwn: boolean;
+  /** 自分宛てメンションの強調に使う閲覧者 ID。 */
+  mentionUserId?: string | null;
   canDelete?: boolean;
   isEditing: boolean;
   editingText: string;
@@ -316,6 +326,7 @@ function ReplyLink({ count, onOpen }: { count: number; onOpen: () => void }) {
 export function MessageRow({
   item,
   isOwn,
+  mentionUserId,
   canDelete = isOwn,
   isEditing,
   editingText,
@@ -351,6 +362,7 @@ export function MessageRow({
     resolvedDecryption?.status === "decrypted" ? resolvedDecryption.body : message.content;
   // 暗号化メッセージのメンションは、本文の `@name` ではなく、復号した `mentions` だけで表示する。
   const mentionUserNames = useMentionUserNames();
+  const mentionMe = mentionUserId ? mentionUserNames.get(mentionUserId) : undefined;
   const decryptedMentions =
     resolvedDecryption?.status === "decrypted" ? resolvedDecryption.mentions : undefined;
   const mentionAllowlist = useMemo(
@@ -360,6 +372,15 @@ export function MessageRow({
         : undefined,
     [decryptedMentions, mentionUserNames],
   );
+  const isMentioned =
+    !!mentionMe &&
+    messageTextSegments(bodyText).some(
+      (segment) =>
+        segment.kind === "mention" &&
+        (segment.value === `@${mentionMe}` ||
+          ["@channel", "@here"].includes(segment.value.toLowerCase())) &&
+        (!mentionAllowlist || isAllowedMention(segment.value, mentionAllowlist)),
+    );
 
   async function copyRawMessage() {
     // メニューを出さない状態でも、ほかの経路から呼ばれたときに空文字列で上書きしない。
@@ -369,6 +390,20 @@ export function MessageRow({
       toast.success(t("messages.copied"));
     } catch {
       toast.error(t("messages.copyFailed"));
+    }
+  }
+
+  // リンクは ID だけで作れるので、復号できない暗号化メッセージでも出す。チャンネルが分からない行だけ出さない。
+  const canCopyLink = !!message.channel_id;
+  async function copyMessageLink() {
+    if (!message.channel_id) return;
+    try {
+      await navigator.clipboard.writeText(
+        messageLinkUrl(window.location.origin, message.channel_id, message.id, message.parent_id),
+      );
+      toast.success(t("messages.linkCopied"));
+    } catch {
+      toast.error(t("messages.linkCopyFailed"));
     }
   }
 
@@ -458,7 +493,10 @@ export function MessageRow({
         onPointerDown={rememberTouchStart}
         onClick={openSheetOnTap}
         className={cn(
-          "group/row relative flex gap-3 rounded-lg px-3 transition-colors hover:bg-muted/60 focus-within:bg-muted/60",
+          "group/row relative flex gap-3 rounded-lg px-3 transition-colors",
+          isMentioned
+            ? "bg-mention/[0.08] before:absolute before:inset-y-0 before:left-0 before:w-[3px] before:bg-mention before:content-[''] hover:bg-mention/[0.12] focus-within:bg-mention/[0.12]"
+            : "hover:bg-muted/60 focus-within:bg-muted/60",
           item.isGroupStart ? "pt-1.5" : "pt-0",
           item.isGroupEnd ? "pb-1.5" : "pb-0",
         )}
@@ -728,8 +766,8 @@ export function MessageRow({
                     variant="ghost"
                     size="icon-xs"
                     className={touchHitArea}
-                    aria-label={t("messages.edit")}
-                    title={t("messages.edit")}
+                    aria-label={t("messages.editMessage")}
+                    title={t("messages.editMessage")}
                     onClick={onStartEdit}
                   >
                     <PencilIcon />
@@ -768,23 +806,7 @@ export function MessageRow({
                 <MoreHorizontalIcon />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                {/* 復号できない暗号化メッセージは本文がないので、空文字列をコピーしないようメニューを出さない。 */}
-                {resolvedDecryption?.status === "undecryptable" ? null : (
-                  <DropdownMenuItem onClick={() => void copyRawMessage()}>
-                    <CopyIcon />
-                    {t("messages.copyRaw")}
-                  </DropdownMenuItem>
-                )}
-                <DropdownMenuItem
-                  onClick={() =>
-                    window.dispatchEvent(
-                      new CustomEvent("zoo:message-actions", { detail: message.id }),
-                    )
-                  }
-                >
-                  <BotIcon />
-                  {t("apps.messageActions")}
-                </DropdownMenuItem>
+                {/* 並びは、リアクション・スレッド・編集・原文コピー・リンクコピー・App・削除の順。 */}
                 <DropdownMenuItem
                   className={touchHitArea}
                   disabled={!canReact}
@@ -803,10 +825,33 @@ export function MessageRow({
                   <>
                     <DropdownMenuItem className={touchHitArea} onClick={onStartEdit}>
                       <PencilIcon />
-                      {t("messages.edit")}
+                      {t("messages.editMessage")}
                     </DropdownMenuItem>
                   </>
                 ) : null}
+                {/* 復号できない暗号化メッセージは本文がないので、空文字列をコピーしないようメニューを出さない。 */}
+                {resolvedDecryption?.status === "undecryptable" ? null : (
+                  <DropdownMenuItem onClick={() => void copyRawMessage()}>
+                    <CopyIcon />
+                    {t("messages.copyRaw")}
+                  </DropdownMenuItem>
+                )}
+                {canCopyLink ? (
+                  <DropdownMenuItem className={touchHitArea} onClick={() => void copyMessageLink()}>
+                    <LinkIcon />
+                    {t("messages.copyLink")}
+                  </DropdownMenuItem>
+                ) : null}
+                <DropdownMenuItem
+                  onClick={() =>
+                    window.dispatchEvent(
+                      new CustomEvent("zoo:message-actions", { detail: message.id }),
+                    )
+                  }
+                >
+                  <BotIcon />
+                  {t("apps.messageActions")}
+                </DropdownMenuItem>
                 {canDelete ? (
                   <DropdownMenuItem
                     className={touchHitArea}
@@ -905,6 +950,19 @@ export function MessageRow({
             />
           ) : null}
           <div className="flex flex-col">
+            {canReact ? (
+              <button
+                type="button"
+                className={sheetActionClass}
+                onClick={() => {
+                  setSheetOpen(false);
+                  onPickReaction();
+                }}
+              >
+                <SmilePlusIcon className="size-4 shrink-0" aria-hidden="true" />
+                {t("reactions.add")}
+              </button>
+            ) : null}
             {onOpenThread ? (
               <button
                 type="button"
@@ -918,17 +976,17 @@ export function MessageRow({
                 {t("threads.open")}
               </button>
             ) : null}
-            {canReact ? (
+            {canEdit ? (
               <button
                 type="button"
                 className={sheetActionClass}
                 onClick={() => {
                   setSheetOpen(false);
-                  onPickReaction();
+                  onStartEdit();
                 }}
               >
-                <SmilePlusIcon className="size-4 shrink-0" aria-hidden="true" />
-                {t("reactions.add")}
+                <PencilIcon className="size-4 shrink-0" aria-hidden="true" />
+                {t("messages.editMessage")}
               </button>
             ) : null}
             {resolvedDecryption?.status !== "undecryptable" ? (
@@ -944,6 +1002,19 @@ export function MessageRow({
                 {t("messages.copyRaw")}
               </button>
             ) : null}
+            {canCopyLink ? (
+              <button
+                type="button"
+                className={sheetActionClass}
+                onClick={() => {
+                  setSheetOpen(false);
+                  void copyMessageLink();
+                }}
+              >
+                <LinkIcon className="size-4 shrink-0" aria-hidden="true" />
+                {t("messages.copyLink")}
+              </button>
+            ) : null}
             <button
               type="button"
               className={sheetActionClass}
@@ -957,19 +1028,6 @@ export function MessageRow({
               <BotIcon className="size-4 shrink-0" aria-hidden="true" />
               {t("apps.messageActions")}
             </button>
-            {canEdit ? (
-              <button
-                type="button"
-                className={sheetActionClass}
-                onClick={() => {
-                  setSheetOpen(false);
-                  onStartEdit();
-                }}
-              >
-                <PencilIcon className="size-4 shrink-0" aria-hidden="true" />
-                {t("messages.edit")}
-              </button>
-            ) : null}
             {canDelete ? (
               <button
                 type="button"

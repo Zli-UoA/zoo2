@@ -58,6 +58,53 @@ internal class ConnectedScreenState(
         }
     }
     private val channelFiles = mutableMapOf<String, AttachmentDrafts>()
+
+    /**
+     * チャンネルの添付の下書き。暗号化チャンネルでは、端末で暗号化してから上げ、本文の `attachments` に入れる値を
+     * `encrypted` に持つ（docs/e2ee.md の「暗号化した添付」。平文はサーバーにも S3 にも渡さない）。
+     */
+    private fun channelAttachments(channelId: String): AttachmentDrafts {
+        val encryption = platform.messageEncryption
+        val upload: (suspend (Row) -> Row)? = if (!app.isEncryptedChannel(channelId)) null else { file ->
+            val cipher = checkNotNull(encryption) { "e2ee.sendUnavailable" }.attachmentCipher
+            val bytes = Base64.decode(platform.invoke("fileRead", file.text("id")), Base64.DEFAULT)
+            val info = uploadEncryptedAttachment(app.api, cipher, channelId, bytes,
+                file.text("name").ifBlank { "attachment" },
+                attachmentType(file.text("name"), file.text("type")) ?: "application/octet-stream")
+            obj("id" to info.text("attachment_id"), "encrypted" to info)
+        }
+        return AttachmentDrafts(app, channelId, app.scope, upload).apply { enabled = true }
+    }
+
+    /**
+     * 暗号化した添付を取得して復号し、端末の共有で開く（ハッシュが合わなければ開かない）。平文の添付ならサーバーが
+     * 拒否する種類は、取得も保存もしない（Web の `receivedAttachmentView`）。
+     */
+    private fun openEncryptedAttachment(raw: String) {
+        val encryption = platform.messageEncryption ?: return
+        val info = runCatching { kotlinx.serialization.json.Json.parseToJsonElement(raw).jsonObject }.getOrNull() ?: return
+        val view = receivedAttachment(info)
+        if (view.blocked) { app.toast = app.t("e2ee.attachments.blocked"); return }
+        if ((info.text("size").toLongOrNull() ?: Long.MAX_VALUE) > MAX_ATTACHMENT_BYTES) {
+            app.toast = app.t("attachments.downloadError")
+            return
+        }
+        app.scope.launch {
+            val bytes = try {
+                fetchEncryptedAttachment(app.api, encryption.attachmentCipher, info)
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) {
+                // 取得や照合の失敗。ハッシュが合わない場合も含むので、中身が変わったおそれを伝える。
+                app.toast = app.t("e2ee.attachments.decryptFailed")
+                return@launch
+            }
+            try {
+                platform.shareFile(bytes, view.name.ifBlank { "attachment" }, view.mimetype)
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { app.toast = app.t("attachments.downloadError") }
+        }
+    }
+
     private var postRequest = 0
     private var currentOverlay by mutableStateOf<String?>(null)
     var overlay: String?
@@ -104,6 +151,8 @@ internal class ConnectedScreenState(
     var federationAvailable by mutableStateOf(false)
         private set
     var query by mutableStateOf("")
+    /** The `/search` field; the controller searches it after typing pauses. */
+    var searchText by mutableStateOf(app.globalSearch.query)
     var postSelection by mutableStateOf<TextRange?>(null)
     var postDraft by mutableStateOf("")
     var replyDraft by mutableStateOf("")
@@ -286,8 +335,12 @@ internal class ConnectedScreenState(
                     obj("post_id" to action.item.id))
                 refreshPost()
             }
-            EntryOperation.Attachment -> action.item.attachments.firstOrNull { it.first == action.value }?.let {
-                app.attachmentLinks.download(obj("id" to it.first, "file_name" to it.second))
+            EntryOperation.Attachment -> {
+                val info = action.item.encryptedFiles[action.value]
+                if (info != null) openEncryptedAttachment(info)
+                else action.item.attachments.firstOrNull { it.first == action.value }?.let {
+                    app.attachmentLinks.download(obj("id" to it.first, "file_name" to it.second))
+                }
             }
             EntryOperation.Link -> if (!encrypted && publicUrl(action.value) != null) platform.action("open:${action.value}")
             EntryOperation.Media -> if (!encrypted) {
@@ -424,6 +477,72 @@ internal class ConnectedScreenState(
         )
     }
 
+    fun searchScreen(users: Map<String, Row>, channels: List<Row>, members: List<Row>): AndroidScreen.Search {
+        val search = app.globalSearch
+        val channelsById = channels.associateBy { it.text("id") }
+        val year = platform.day(platform.now()).substringBefore('/')
+        return AndroidScreen.Search(SearchScreenState(
+            searchText, search.query, search.type,
+            search.items.map { row ->
+                val file = isGlobalSearchFile(row, search.type)
+                val user = users[row.text("user_id")] ?: row.nested("author").takeIf { it.isNotEmpty() }
+                val createdAt = row.text("created_at")
+                val day = platform.day(createdAt).let { if (it.substringBefore('/') == year) it.substringAfter('/') else it }
+                SearchResultItem(
+                    key = globalSearchKey(row, search.type),
+                    author = user?.let(::author)?.ifBlank { null } ?: row.text("user_id"),
+                    // Like Web, keep the first hit within the three lines of a narrow screen.
+                    body = if (file) row.text("file_name") else focusSnippet(row.text("snippet"), searchTerms(search.query)),
+                    time = listOf(day, platform.time(createdAt)).filter { it.isNotBlank() }.joinToString(" "),
+                    destination = searchDestination(row, channelsById[row.text("channel_id")], users, members),
+                    dm = isDm(row, channelsById[row.text("channel_id")]),
+                    inThread = row.text("parent_id").isNotEmpty(),
+                    file = file,
+                    fileSize = if (file) attachmentSize(row.text("file_size")) else null,
+                    emoji = if (file) emptyMap() else displayEmoji(row, row, isPost = false),
+                )
+            },
+            loading = search.loading, loadingOlder = search.loadingOlder, error = search.error, loaded = search.loaded,
+            canLoadOlder = search.nextCursor != null, searchedUntil = search.searchedUntil,
+            problem = searchQueryProblem(search.query),
+            filters = searchFilters(users, channels),
+        ))
+    }
+
+    /** Web's picker choices: the user first, then names in order; channels that search can reach (no DMs or encrypted ones). */
+    private fun searchFilters(users: Map<String, Row>, channels: List<Row>): SearchFilterState {
+        val filters = app.globalSearch.filters
+        val me = app.config.userId
+        val people = users.values
+            .sortedWith(compareBy<Row>({ it.text("id") != me }, { author(it).lowercase() }))
+            .map { user ->
+                val name = author(user)
+                SearchFilterOption(
+                    user.text("id"),
+                    if (user.text("id") == me) app.t("globalSearch.filters.me", "name" to name) else name,
+                    user.text("user_name").ifBlank { null }?.let { "@$it" },
+                )
+            }
+        val reachable = visibleChannels(channels)
+            .filter { !it.flag("is_dm") && !it.flag("encrypted") }
+            .map {
+                SearchFilterOption(it.text("id"), it.text("channel_name"),
+                    mark = if (it.flag("is_private")) SearchFilterMark.PrivateChannel else SearchFilterMark.Channel)
+            }
+        return SearchFilterState(people, reachable, filters.from, filters.channels, filters.mine, filters.noBots)
+    }
+
+    private fun isDm(row: Row, channel: Row?) = row.flag("is_dm") || channel?.flag("is_dm") == true
+
+    /** The channel name (the row shows `#` as an icon); for DMs the other members, as in the channel list. */
+    private fun searchDestination(row: Row, channel: Row?, users: Map<String, Row>, members: List<Row>): String {
+        if (!isDm(row, channel)) return row.text("channel_name")
+        val id = row.text("channel_id")
+        val peers = members.filter { it.text("channel_id") == id && it.text("user_id") != app.config.userId }
+            .mapNotNull { users[it.text("user_id")]?.let(::author)?.ifBlank { null } }
+        return peers.joinToString(", ").ifBlank { channel?.text("channel_name") ?: row.text("channel_name") }
+    }
+
     fun canEditMembers(channel: Row): Boolean = !channel.flag("is_dm") &&
         !channel.present("archive_at") && canManage(channel, app.config.userId, app.config.isAdmin)
 
@@ -516,9 +635,12 @@ internal class ConnectedScreenState(
                 channelId.isNotBlank() && app.isEncryptedChannel(channelId))
             is AndroidUiAction.Navigate -> {
                 overlay = null
+                if (action.page == TopPage.Search) searchText = app.globalSearch.query
                 platform.navigate(when (action.page) {
                     TopPage.Home -> "/home"
                     TopPage.Channels -> "/"
+                    // The tab reopens the last words and kind; returning keeps the loaded results.
+                    TopPage.Search -> globalSearchPath(app.globalSearch.query, app.globalSearch.type, app.globalSearch.filters)
                     TopPage.Notifications -> "/notifications"
                     TopPage.Bubble -> "/bubble"
                     TopPage.Settings -> "/settings"
@@ -575,6 +697,36 @@ internal class ConnectedScreenState(
                 replyFocusRequest++
             } else openPost(action.id, focusReply = true)
             is AndroidUiAction.Search -> query = action.query
+            is AndroidUiAction.SearchMessages -> searchText = action.text
+            AndroidUiAction.SubmitSearch -> {
+                // The IME search key: search the typed words now, or the same words again for new messages.
+                val search = app.globalSearch
+                if (searchText.trim() == search.query) search.refresh() else search.search(searchText)
+            }
+            is AndroidUiAction.SelectSearchType -> app.globalSearch.search(searchText, action.type)
+            is AndroidUiAction.SelectSearchFilter -> {
+                val search = app.globalSearch
+                search.search(searchText, filter = when (action.field) {
+                    SearchFilterField.From -> search.filters.copy(from = action.ids)
+                    SearchFilterField.In -> search.filters.copy(channels = action.ids)
+                })
+            }
+            is AndroidUiAction.ToggleSearchFilter -> {
+                val search = app.globalSearch
+                search.search(searchText, filter = when (action.flag) {
+                    SearchFilterFlag.Mine -> search.filters.copy(mine = !search.filters.mine)
+                    SearchFilterFlag.NoBots -> search.filters.copy(noBots = !search.filters.noBots)
+                })
+            }
+            is AndroidUiAction.OpenSearchResult -> {
+                val search = app.globalSearch
+                search.items.firstOrNull { globalSearchKey(it, search.type) == action.key }
+                    // `open` makes each tap a new request: the conversation keeps the last opened target and
+                    // would otherwise stay where it was scrolled when the same result is opened again.
+                    ?.let { platform.navigate(globalSearchDestination(it, search.type) + "&open=${kotlin.time.Clock.System.now().toEpochMilliseconds()}") }
+            }
+            AndroidUiAction.LoadOlderResults -> app.globalSearch.loadOlder()
+            AndroidUiAction.RetrySearch -> app.globalSearch.retry()
             is AndroidUiAction.SelectResult -> when (overlay) {
                 "people" -> people.firstOrNull { it.text("id") == action.id }?.let { person -> request { openProfile(person) } }
                 "add-member" -> if (channel != null) addMember(channel, action.id)
@@ -740,8 +892,8 @@ internal class ConnectedScreenState(
                         }
                     }
                 }
-                is AndroidScreen.Thread, is AndroidScreen.Conversation -> if (channelId.isNotBlank() && !app.isEncryptedChannel(channelId)) {
-                    channelFiles.getOrPut(key) { AttachmentDrafts(app, channelId, app.scope).apply { enabled = true } }.pick()
+                is AndroidScreen.Thread, is AndroidScreen.Conversation -> if (channelId.isNotBlank()) {
+                    channelFiles.getOrPut(key) { channelAttachments(channelId) }.pick()
                 }
                 else -> Unit
             }
@@ -803,8 +955,12 @@ internal class ConnectedScreenState(
                             val files = channelFiles[key]
                             val draft = drafts[key] ?: InputState()
                             val sent = files?.items?.toList().orEmpty()
-                            val ids = sent.mapNotNull { it.uploaded?.text("id") }
-                            if (ids.size == sent.size && app.send(channelId, draft.text, app.thread, attachmentIds = ids)) {
+                            val uploaded = sent.mapNotNull { it.uploaded }
+                            // 暗号化チャンネルの添付は、暗号化して上げたときの本文の `attachments` の値を渡す。
+                            val encryptedFiles = uploaded.mapNotNull { it["encrypted"] as? JsonObject }
+                            val ids = uploaded.filter { it["encrypted"] == null }.map { it.text("id") }
+                            if (uploaded.size == sent.size && app.send(channelId, draft.text, app.thread, attachmentIds = ids,
+                                    encryptedAttachments = encryptedFiles)) {
                                 drafts[key] = InputState()
                                 files?.items?.clear()
                                 files?.release(sent)

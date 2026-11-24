@@ -128,7 +128,9 @@ export const EncryptedUnreadableMember: Story = {
   play: playForImplementation(async () => {
     const warnings = await screen.findAllByText("暗号化未設定");
     await expect(warnings).toHaveLength(1);
-    await expect(warnings[0]).toBeVisible();
+    await waitFor(async () => {
+      await expect(warnings[0]).toBeVisible();
+    });
   }),
 };
 

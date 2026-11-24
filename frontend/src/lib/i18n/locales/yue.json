@@ -225,6 +225,7 @@
     "compose": "輸入訊息",
     "send": "傳送",
     "edit": "編輯",
+    "editMessage": "編輯訊息",
     "delete": "刪除",
     "more": "更多操作",
     "actions": "操作訊息",
@@ -247,6 +248,9 @@
     "copyRaw": "複製原文",
     "copied": "已複製原文",
     "copyFailed": "複製唔到原文",
+    "copyLink": "複製訊息連結",
+    "linkCopied": "已複製訊息連結",
+    "linkCopyFailed": "複製唔到訊息連結",
     "edited": "已編輯"
   },
   "attachments": {
@@ -1903,9 +1907,8 @@
     "filters": {
       "label": "篩選",
       "from": "傳送者",
-      "anyone": "所有人",
       "in": "頻道",
-      "anywhere": "所有頻道",
+      "kind": "類型",
       "period": "日期",
       "anytime": "唔限",
       "last7": "過去 7 日",
@@ -1915,7 +1918,16 @@
       "after": "開始日期",
       "before": "結束日期",
       "reversed": "開始日期唔可以遲過結束日期。",
-      "reset": "重設條件"
+      "reset": "重設條件",
+      "me": "{{name}}（我）",
+      "searchPeople": "用名搵",
+      "searchChannels": "搵頻道",
+      "noMatches": "搵唔到",
+      "clearSelection": "取消揀選",
+      "selectedCount": "{{label}}：{{count}} 個",
+      "max": "最多可以揀 {{count}} 個",
+      "mine": "我有參與嘅",
+      "noBots": "唔包機械人"
     }
   },
   "catchUp": {

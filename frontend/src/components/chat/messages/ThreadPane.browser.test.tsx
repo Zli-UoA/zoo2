@@ -275,7 +275,11 @@ describe("ThreadPane のダイアログ挙動", () => {
 
     it("アーカイブ済み・読み取り専用で操作用の ID が null でも、閲覧者の ID で自分に「あなた」の印を付ける", async () => {
       await page.viewport(1280, 900);
-      for (const extra of [{ isArchived: true }, { readOnly: true }]) {
+      for (const extra of [
+        { isArchived: true },
+        { readOnly: true },
+        { readOnly: true, isMember: false, mentionUserId: null },
+      ]) {
         const { unmount } = render(
           <LocaleProvider>
             <ThreadPane

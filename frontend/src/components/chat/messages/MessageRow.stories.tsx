@@ -20,6 +20,7 @@ import type { MessageItem } from "./messageGrouping";
 const item: MessageItem = {
   message: {
     id: "message-1",
+    channel_id: "channel-1",
     user_id: "user-1",
     content:
       "こんにちは。今日のリリースは 18:00 です。詳細は https://example.com/docs を参照してください。",
@@ -103,7 +104,7 @@ export const HoverActions: Story = {
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.hover(await canvas.findByText(/こんにちは/));
-    await expect(canvas.getByRole("button", { name: "編集" })).toBeInTheDocument();
+    await expect(canvas.getByRole("button", { name: "メッセージを編集" })).toBeInTheDocument();
   }),
 };
 
@@ -319,6 +320,11 @@ export const CopyOriginalMenu: Story = {
     await waitFor(() =>
       expect(screen.getByRole("menuitem", { name: "原文をコピー" })).toBeVisible(),
     );
+    // メッセージリンクのコピーは、原文のコピーの隣に並ぶ。
+    const labels = screen.getAllByRole("menuitem").map((menuItem) => menuItem.textContent);
+    await expect(labels.indexOf("メッセージリンクをコピー")).toBe(
+      labels.indexOf("原文をコピー") + 1,
+    );
   }),
 };
 
@@ -439,6 +445,61 @@ export const EncryptedDecrypted: Story = {
 
 const storyUserNames = new Map(storyUsers.map((user) => [user.id, user.user_name]));
 
+export const MentionedMessage: Story = {
+  decorators: [
+    (Story) => (
+      <MentionUserNamesContext.Provider value={new Map([["user-viewer", "amesyu"]])}>
+        <Story />
+      </MentionUserNamesContext.Provider>
+    ),
+  ],
+  args: {
+    isOwn: true,
+    item: {
+      ...item,
+      message: {
+        ...item.message,
+        user_id: "user-viewer",
+        user_name: "amesyu",
+        display_name: "amesyu",
+        content: "@amesyu 確認をお願いします。",
+      },
+    },
+    mentionUserId: "user-viewer",
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const row = [...canvasElement.querySelectorAll("div")].find((element) =>
+      element.classList.contains("group/row"),
+    );
+    await expect(row).toBeDefined();
+    await waitFor(async () => {
+      await expect(getComputedStyle(row!).backgroundColor).toMatch(/(?:,|\/)\s*0\.08\)$/);
+    });
+    await expect(getComputedStyle(row!, "::before").width).toBe("3px");
+    const swatch = document.createElement("span");
+    swatch.style.color = "var(--mention)";
+    row!.append(swatch);
+    const mentionColor = getComputedStyle(swatch).color;
+    swatch.remove();
+    await expect(getComputedStyle(row!, "::before").backgroundColor).toBe(mentionColor);
+  }),
+};
+
+export const MentionedChannelMessage: Story = {
+  ...MentionedMessage,
+  args: {
+    ...MentionedMessage.args,
+    item: {
+      ...item,
+      message: {
+        ...item.message,
+        user_id: "user-viewer",
+        content: "@channel 確認をお願いします。",
+      },
+    },
+  },
+};
+
 /**
  * 暗号化メッセージのメンションは、復号した `mentions` だけで表示する。本文に `@bob` や `@channel` が
  * あっても、`mentions` になければメンションとして表示しない（docs/e2ee.md の「Megolm の平文」）。
@@ -542,7 +603,9 @@ export const EncryptedBeforeEncryptionRow: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByText(/今日のリリースは 18:00 です/)).toBeVisible();
     await expect(canvas.queryByText("暗号化されていません")).not.toBeInTheDocument();
-    await expect(canvas.queryByRole("button", { name: "編集" })).not.toBeInTheDocument();
+    await expect(
+      canvas.queryByRole("button", { name: "メッセージを編集" }),
+    ).not.toBeInTheDocument();
   }),
 };
 
@@ -557,7 +620,9 @@ export const EncryptedUnencryptedAfterEncryptedRow: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByText("暗号化されていません")).toBeVisible();
     await expect(canvas.getByText(/今日のリリースは 18:00 です/)).toBeVisible();
-    await expect(canvas.queryByRole("button", { name: "編集" })).not.toBeInTheDocument();
+    await expect(
+      canvas.queryByRole("button", { name: "メッセージを編集" }),
+    ).not.toBeInTheDocument();
   }),
 };
 
@@ -588,6 +653,8 @@ export const EncryptedKeyMissing: Story = {
     await userEvent.keyboard("{Enter}");
     await waitFor(() => expect(screen.getByRole("menu")).toBeVisible());
     await expect(screen.queryByRole("menuitem", { name: "原文をコピー" })).not.toBeInTheDocument();
+    // メッセージリンクは ID だけで作れるので、読めないメッセージでも出す。
+    await expect(screen.getByRole("menuitem", { name: "メッセージリンクをコピー" })).toBeVisible();
   }),
 };
 
@@ -709,7 +776,25 @@ export const TouchActionSheet: Story = {
         await expect(within(sheet).getByRole("button", { name: "スレッドを開く" })).toBeVisible();
       });
       await expect(within(sheet).getByRole("button", { name: "リアクションを追加" })).toBeVisible();
+      await expect(
+        within(sheet).getByRole("button", { name: "メッセージリンクをコピー" }),
+      ).toBeVisible();
       await expect(within(sheet).getByRole("button", { name: "削除" })).toBeVisible();
+      // 「…」メニューと同じ順序で並ぶ（最近使った絵文字の行は一覧の外）。
+      const order = [
+        "リアクションを追加",
+        "スレッドを開く",
+        "メッセージを編集",
+        "原文をコピー",
+        "メッセージリンクをコピー",
+        "Appでメッセージを操作",
+        "削除",
+      ];
+      const labels = within(sheet)
+        .getAllByRole("button")
+        .map((button) => button.textContent?.trim() ?? "")
+        .filter((label) => order.includes(label));
+      await expect(labels).toEqual(order);
 
       const recent = within(sheet).getByRole("group", { name: "最近使った絵文字" });
       await expect(within(recent).getByRole("button", { name: "🎉" })).toBeVisible();
