@@ -940,7 +940,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         .with_priority(1)
         .mount(&cf)
         .await;
-    toasty::sql::statement(&format!(
+    toasty::sql::statement(format!(
         "UPDATE call_sfu_departures SET claimed_until = NULL WHERE id = {late_id}"
     ))
     .exec(&mut db)
@@ -1292,6 +1292,28 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(count(&mut db, bridge_rows_sql, &channel).await?, 0);
+
+    // 外せないまま中継が止まり、あとで部屋の中継を始め直す（新しい Cloudflare セッションを作る）と、前の中継の
+    // 行は一覧から外れる。新しい中継は、話者を push し直して登録する。
+    let (status, _) = bridge(
+        "POST",
+        "/internal/sfu-bridge/cf/publish",
+        Some(json!({
+            "channel_id": channel, "bridge_epoch": bridge_epoch, "cf_session_id": "cf-bridge",
+            "speaker_session_id": sessions[0], "offer": two, "mid": "1"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(count(&mut db, bridge_rows_sql, &channel).await?, 1);
+    let (status, _) = bridge(
+        "POST",
+        "/internal/sfu-bridge/cf/session",
+        Some(json!({"channel_id": channel})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(count(&mut db, bridge_rows_sql, &channel).await?, 0);
 
     // 新しい bridge が登録すると、前の bridge のトラックは消える。

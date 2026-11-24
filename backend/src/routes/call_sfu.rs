@@ -1432,9 +1432,29 @@ async fn bridge_cf_session(
     Json(body): Json<BridgeChannel>,
 ) -> Result<Json<Value>, AppError> {
     let sfu = bridge_auth(&state, &headers)?;
-    let _ = body.channel_id;
     let session_id = sfu.cloudflare.new_session().await?;
+    remove_stale_bridge_tracks(&state, &body.channel_id).await?;
     Ok(Json(json!({ "cf_session_id": session_id })))
+}
+
+/// 部屋の中継を始め直すとき（bridge が新しい Cloudflare セッションを作るとき）、その部屋の bridge の行を
+/// 一覧から外す。行は前の中継のセッションのもので、新しい中継は LiveKit の話者を push し直して登録する。
+/// 前の中継が、一覧から外す close を送り直せないまま止まった（Cloudflare の人がいなくなった、など）ときの
+/// 古い行も、ここで外れる。探索：主キー (channel_id, session_id, source) の先頭で、その部屋の行だけ。
+async fn remove_stale_bridge_tracks(state: &AppState, channel_id: &str) -> Result<(), AppError> {
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    let rows = toasty::sql::query(
+        "DELETE FROM call_sfu_tracks WHERE channel_id = $1 AND source = 'bridge' RETURNING 1",
+    )
+    .bind(channel_id.to_string())
+    .exec(&mut tx)
+    .await?;
+    if !rows.is_empty() {
+        bump_tracks(&mut tx, channel_id).await?;
+    }
+    tx.commit().await?;
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
