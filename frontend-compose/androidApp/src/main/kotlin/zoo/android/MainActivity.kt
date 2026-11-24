@@ -340,13 +340,14 @@ class MainActivity : ComponentActivity() {
             unbackedKeysPrompt?.let { prompt ->
                 val args = "count" to prompt.count.toString()
                 val detail = when {
+                    prompt.count == REVOCATION_PENDING_PROMPT -> current.session.t("e2ee.logout.revocationDescription")
                     prompt.count < 0 -> current.session.t("e2ee.logout.unknownDescription")
                     prompt.count == 1 -> current.session.t("e2ee.logout.unbackedDescription_one", args)
                     else -> current.session.t("e2ee.logout.unbackedDescription_other", args)
                 }
                 AlertDialog(
                     onDismissRequest = { prompt.answer.complete(false) },
-                    title = { Text(current.session.t("e2ee.logout.unbackedTitle")) },
+                    title = { Text(current.session.t(if (prompt.count == REVOCATION_PENDING_PROMPT) "e2ee.logout.revocationTitle" else "e2ee.logout.unbackedTitle")) },
                     text = { Text(detail) },
                     confirmButton = {
                         DialogAction(current.session.t("e2ee.logout.confirm"), UiIcon.SignIn) {

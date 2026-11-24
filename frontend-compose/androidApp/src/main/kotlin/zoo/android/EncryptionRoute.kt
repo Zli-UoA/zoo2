@@ -213,6 +213,14 @@ internal fun EncryptionRoute(
                 }
                 Text(session.t("e2ee.devices.deleteIsNotRevocation"), color = colors.secondary, fontSize = 14.sp)
             }
+            val revocation = manager.revocation
+            if (status is E2eeStatus.Unlocked && revocation != null) {
+                RevocationSection(session, platform, revocation, manager.currentDeviceId, colors, enabled) {
+                    scope.launch { try { reload() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { } }
+                }
+            } else if (revocation != null && status is E2eeStatus.Locked) {
+                Text(session.t("e2ee.revocation.needsUnlock"), color = colors.secondary, fontSize = 14.sp)
+            }
             val sas = manager.sas
             if (status is E2eeStatus.Unlocked && sas != null) {
                 // 他のユーザーの検証：暗号化チャンネル（削除されていないもの）を共有する相手（Web の `DevicesSettings`）。
