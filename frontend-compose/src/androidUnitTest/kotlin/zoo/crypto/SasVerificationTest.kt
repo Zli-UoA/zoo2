@@ -264,6 +264,44 @@ class SasVerificationTest {
     }
 
     @Test
+    fun verificationMessageOfALaterRowWhoseSaveFailedSurvivesAReopen() = runBlocking<Unit> {
+        val alice = world.device(ALICE, "alice")
+        val bob = world.device(BOB, "bob")
+        val txn = alice.sas.request(BOB)
+        val rows = synchronized(world) { world.inbox.remove("$BOB|${bob.store.deviceId}").orEmpty() }
+        val first = ToDeviceRow("plain-first", ALICE, "m.other", JsonObject(emptyMap()))
+        val keys = world.keysQuery(BOB, listOf(ALICE))
+        val deviceKeys = keys.getValue("device_keys").jsonObject
+        val signatures = keys.getValue("signatures") as kotlinx.serialization.json.JsonArray
+        val original = CryptoStore.directorySync
+        var saves = 0
+        val partial =
+            try {
+                // 1 行目は保存でき、2 行目（暗号化された検証の要求）の保存を確かめられない。
+                CryptoStore.directorySync = { directory -> if (++saves == 2) throw java.io.IOException("sync failed") else original(directory) }
+                bob.store.processToDevice(listOf(first) + rows, deviceKeys, signatures, keys)
+            } finally {
+                CryptoStore.directorySync = original
+            }
+        assertEquals(listOf(first.id), partial.processed)
+        assertTrue(partial.verifications.isEmpty())
+        // 1 行目を ack すると、2 行目の印と Olm の状態も保存される。そのあと（つなぎ直しで）開き直す。
+        bob.store.acknowledged(partial.processed)
+        val reopened = bob.reopen()
+
+        // 2 行目はもう復号し直せないが、残した封筒から検証の要求を 1 回だけ渡す。
+        val retry = reopened.processToDevice(rows, deviceKeys, signatures, keys)
+        assertEquals(rows.map { it.id }, retry.processed)
+        assertEquals(1, retry.verifications.size)
+        bob.sas.handleMessages(retry.verifications).join()
+        assertEquals(SasPhase.INCOMING, bob.entry(txn).view.phase)
+        // ack するまでは、同じプロセスでは二重に渡さない。ack したら封筒を消す。
+        assertTrue(reopened.processToDevice(rows, deviceKeys, signatures, keys).verifications.isEmpty())
+        reopened.acknowledged(retry.processed)
+        assertTrue(reopened.processToDevice(rows, deviceKeys, signatures, keys).verifications.isEmpty())
+    }
+
+    @Test
     fun messagesArrivingAfterDisposeAreDropped() = runBlocking<Unit> {
         val alice = world.device(ALICE, "alice")
         val bob = world.device(BOB, "bob")

@@ -193,11 +193,12 @@ internal class SasWorld : AutoCloseable {
     inner class SasDevice(val user: String, name: String, expireInterval: Duration) {
         private val wrapping = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
         private val files = CryptoStoreFiles(File(root, name), { wrapping }) {}
-        val store: CryptoStore = CryptoStore.open(files, user)!!.store.also {
+        var store: CryptoStore = CryptoStore.open(files, user)!!.store.also {
             if (!it.isRegistered) it.markRegistered()
             opened += it
             synchronized(this@SasWorld) { devices.getOrPut(user) { mutableListOf() } += this }
         }
+            private set
         /** 登録を終えた暗号ストア（`null` にすると、Shape のつなぎ直しのあいだと同じく使えなくなる）。 */
         val ready = MutableStateFlow<CryptoStore?>(store)
         val sas = SasController(api(user), ready, lifetime, now = { now }, expireInterval = expireInterval)
@@ -214,6 +215,15 @@ internal class SasWorld : AutoCloseable {
             store.acknowledged(result.processed)
             if (result.verifications.isNotEmpty()) sas.handleMessages(result.verifications).join()
             result
+        }
+
+        /** 暗号ストアを閉じて開き直す（つなぎ直しと同じ。メモリーの状態は消え、state.json の状態は残る）。 */
+        fun reopen(): CryptoStore {
+            ready.value = null
+            store.close()
+            store = CryptoStore.open(files, user)!!.store.also { opened += it }
+            ready.value = store
+            return store
         }
 
         /** [receive] と同じく処理するが、検証のメッセージの処理を待たずに、その [kotlinx.coroutines.Job] を返す。 */

@@ -548,6 +548,33 @@ class RevocationTest {
     }
 
     @Test
+    fun disposeRacingWithTheEndOfAStepReleasesTheSecrets() = runBlocking<Unit> {
+        val (first, recoveryKey) = world.setUp()
+        val revocation = first.revocation
+        revocation.openSecretStorage(UnlockMethod.Recovery(recoveryKey))
+        revocation.begin(RevocationScope.FULL, emptyList())
+        revocation.openSecretStorage(UnlockMethod.Recovery(recoveryKey))
+        // 手順（newRecoveryKey）が終わるとき、要求を確かめたあと、ロックを解放する前に、別のスレッドが dispose を呼ぶ。
+        var racer: Thread? = null
+        revocation.beforeUnlockForTest = {
+            revocation.beforeUnlockForTest = null
+            racer = Thread { revocation.dispose() }.also { it.start() }
+            // dispose が、確認とロックの解放のあいだに入ろうとするまで待つ（入れずに待つ）。
+            val deadline = System.currentTimeMillis() + 5_000
+            while (racer!!.state != Thread.State.BLOCKED && System.currentTimeMillis() < deadline) Thread.sleep(1)
+            assertEquals(Thread.State.BLOCKED, racer!!.state)
+        }
+        revocation.newRecoveryKey()
+        racer!!.join(5_000)
+        assertFalse(racer!!.isAlive)
+        // 進めている失効、新しいスロット、開けた SSSS を捨てた（記録は残り、開け直して resume から続ける）。
+        assertFailsWith<RevocationException.NothingToContinue> { revocation.newRecoveryKey() }
+        assertFailsWith<RevocationException.NothingToContinue> { revocation.continueRevocation(token) }
+        assertFailsWith<RevocationException.SecretStorageNotOpened> { revocation.resume() }
+        assertTrue(first.store.hasPendingRevocation)
+    }
+
+    @Test
     fun malformedBackupPageStopsTheMigrationWithoutDeletingTheOldVersion() = runBlocking<Unit> {
         RevocationWorld().use { world ->
             val server = world.server

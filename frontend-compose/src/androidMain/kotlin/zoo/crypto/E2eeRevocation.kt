@@ -271,6 +271,10 @@ class E2eeRevocation(
     /** [dispose] の要求と、手順の終わりの確認とロックの解放を、互いに割り込ませない。 */
     private val disposeGuard = Any()
 
+    /** 単体テスト用：手順の終わりの、要求の確認とロックの解放のあいだに呼ぶ（本番では `null`）。 */
+    @Volatile
+    internal var beforeUnlockForTest: (() -> Unit)? = null
+
     /** 進めている失効（[begin] か [resume] で作る）。 */
     private var revocation: Revocation? = null
 
@@ -780,6 +784,7 @@ class E2eeRevocation(
             synchronized(disposeGuard) {
                 try {
                     if (disposeRequested) release()
+                    beforeUnlockForTest?.invoke()
                 } finally {
                     lock.unlock()
                 }

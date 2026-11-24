@@ -154,6 +154,12 @@ internal class StoreState(
      * `meta` の `revocation` と同じ）。端末を作り直すとき（[CryptoStore.replaceDevice]）は捨てる。
      */
     var revocation: String? = null,
+    /**
+     * 処理済みの印を付けたが、まだ ack していない行の検証のメッセージ（行の ID ごと。保存鍵で封をした封筒）。印と Olm の
+     * 状態と同じ書き込みで残し、渡す前に止まっても（保存に失敗した、開き直した）その行を保存し直したときに渡す。ack
+     * したら消す。
+     */
+    @SerialName("pending_verifications") var pendingVerifications: Map<String, String> = emptyMap(),
 )
 
 /** [CryptoStore.prepareBackupUpload] の結果。 */
@@ -205,11 +211,8 @@ class CryptoStore private constructor(
     val changes = kotlinx.coroutines.flow.MutableStateFlow(0L)
     private val outboundOlm = mutableMapOf<String, String>()
 
-    /**
-     * 処理済みの印を付けたが、保存に失敗した行の検証のメッセージ（行の ID ごと）。印と Olm の状態はメモリーに残る
-     * ので、次の同期でその行を保存し直したときに渡す（同じプロセスのあいだだけ）。
-     */
-    private val unsavedVerifications = mutableMapOf<String, VerificationMessage>()
+    /** このプロセスで、すでに SasController に渡した、ack 待ちの検証のメッセージの行（二重に渡さないため）。 */
+    private val handedOverVerifications = mutableSetOf<String>()
     private val loadedInbound = mutableSetOf<String>()
     private var closed = false
 
@@ -342,10 +345,17 @@ class CryptoStore private constructor(
         var unsaved = false
         // 保存を確かめた行の数（processed の先頭から）。
         var confirmed = 0
-        // 前の処理で印を付けたが保存できなかった行の検証のメッセージ。保存を確かめたら渡す。
+        // 前の処理で印を付けたが、まだ渡していない行の検証のメッセージ（保存に失敗したか、開き直した）。保存を
+        // 確かめたら、封筒から作り直して渡す。
         val waiting = mutableListOf<String>()
         fun saved() {
-            waiting.forEach { id -> unsavedVerifications.remove(id)?.let(verifications::add) }
+            for (id in waiting) {
+                val message = state.pendingVerifications[id]?.let(::openPendingVerification)
+                if (message != null) {
+                    verifications += message
+                    handedOverVerifications += id
+                }
+            }
             waiting.clear()
             unsaved = false
         }
@@ -353,7 +363,7 @@ class CryptoStore private constructor(
             for (row in rows) {
                 if (row.id in state.processedToDevice) {
                     unsaved = true
-                    if (row.id in unsavedVerifications) waiting += row.id
+                    if (row.id in state.pendingVerifications && row.id !in handedOverVerifications) waiting += row.id
                 } else {
                     var verification: VerificationMessage? = null
                     if (row.type == "m.room.encrypted") {
@@ -364,6 +374,9 @@ class CryptoStore private constructor(
                                 if (outcome.roomKey) roomKeys++ else if (outcome.rejected) dropped++
                                 if (outcome.roomKey && outcome.verified) verifiedRoomKeys++
                                 verification = outcome.verification
+                                // 渡す前に止まっても（保存に失敗した、開き直した）渡せるよう、印と Olm の状態と同じ
+                                // 書き込みで、検証のメッセージを保存鍵で封をして残す（ack したら消す）。
+                                outcome.sealed?.let { state.pendingVerifications = state.pendingVerifications + (row.id to it) }
                             }
                         }
                     } else {
@@ -373,13 +386,16 @@ class CryptoStore private constructor(
                     try {
                         save()
                     } catch (failure: Throwable) {
-                        // 復号で Olm の状態は進み、印もメモリーに残る（次の保存で確定しうる）ので、もう復号し直せない。
-                        // 検証のメッセージは捨てずに残し、この行を保存し直したときに渡す。
-                        verification?.let { unsavedVerifications[row.id] = it }
+                        // 復号で Olm の状態は進み、印と封筒もメモリーに残る（次の保存で確定しうる）ので、もう復号し直せ
+                        // ない。この行を保存し直したときに、封筒から作り直して渡す。
+                        verification?.destroy()
                         throw failure
                     }
                     saved()
-                    verification?.let(verifications::add)
+                    verification?.let {
+                        verifications += it
+                        handedOverVerifications += row.id
+                    }
                 }
                 processed += row.id
                 if (!unsaved) confirmed = processed.size
@@ -406,6 +422,8 @@ class CryptoStore private constructor(
             val rejected: Boolean,
             val verified: Boolean = false,
             val verification: VerificationMessage? = null,
+            /** [verification] を保存鍵で封をしたもの（`state.pending_verifications` に入れる）。 */
+            val sealed: String? = null,
         ) : Encrypted
     }
 
@@ -445,7 +463,14 @@ class CryptoStore private constructor(
                     } catch (_: ZooCryptoException) {
                         return Encrypted.Decrypted(created, roomKey = false, rejected = true)
                     }
-                return Encrypted.Decrypted(created, roomKey = false, rejected = false, verification = verification)
+                val sealed =
+                    try {
+                        sealPendingVerification(verification, checkNotNull(listed))
+                    } catch (failure: Throwable) {
+                        verification.destroy()
+                        throw failure
+                    }
+                return Encrypted.Decrypted(created, roomKey = false, rejected = false, verification = verification, sealed = sealed)
             }
             val roomKey =
                 try {
@@ -640,9 +665,54 @@ class CryptoStore private constructor(
     @Synchronized
     fun acknowledged(ids: List<String>) {
         if (ids.isEmpty()) return
-        state.processedToDevice = state.processedToDevice - ids.toSet()
+        val acked = ids.toSet()
+        state.processedToDevice = state.processedToDevice - acked
+        // ack した行の検証のメッセージは渡し済み。
+        state.pendingVerifications = state.pendingVerifications - acked
         save()
+        handedOverVerifications -= acked
     }
+
+    /**
+     * 検証のメッセージを保存鍵（AES-256-GCM。AAD は用途、ユーザー、端末）で封をする。送信端末の端末鍵は
+     * `keys/query` の署名付きの JSON（`listed`）で残し、開くときに検証し直す。
+     */
+    private fun sealPendingVerification(message: VerificationMessage, listed: JsonElement): String {
+        val plain = buildJsonObject {
+            put("sender_user_id", message.senderUserId)
+            put("device_keys", listed)
+            put("event_type", message.eventType)
+            put("content", message.content)
+        }.toString().encodeToByteArray()
+        val nonce = ByteArray(12).also { java.security.SecureRandom().nextBytes(it) }
+        val cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, javax.crypto.spec.SecretKeySpec(storageKey, "AES"), javax.crypto.spec.GCMParameterSpec(128, nonce))
+        cipher.updateAAD(pendingVerificationAad())
+        return java.util.Base64.getEncoder().encodeToString(nonce + cipher.doFinal(plain))
+    }
+
+    /** [sealPendingVerification] の封筒を開き、検証のメッセージを作り直す。開けない・検証できなければ `null`（捨てる）。 */
+    private fun openPendingVerification(sealed: String): VerificationMessage? =
+        try {
+            val bytes = java.util.Base64.getDecoder().decode(sealed)
+            val cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(
+                javax.crypto.Cipher.DECRYPT_MODE,
+                javax.crypto.spec.SecretKeySpec(storageKey, "AES"),
+                javax.crypto.spec.GCMParameterSpec(128, bytes, 0, 12),
+            )
+            cipher.updateAAD(pendingVerificationAad())
+            val plain = json.parseToJsonElement(cipher.doFinal(bytes, 12, bytes.size - 12).decodeToString()) as JsonObject
+            fun text(name: String) = (plain[name] as JsonPrimitive).content
+            val listed = plain.getValue("device_keys") as JsonObject
+            val sender = text("sender_user_id")
+            val device = verifyDeviceKeys(listed.toString(), sender, (listed.getValue("device_id") as JsonPrimitive).content)
+            VerificationMessage(sender, device, text("event_type"), text("content"))
+        } catch (_: Exception) {
+            null
+        }
+
+    private fun pendingVerificationAad(): ByteArray = "zoo.pending_verification\n${state.userId}\n${state.deviceId}".encodeToByteArray()
 
     /** 鍵バックアップにまだ送っていない受信用セッションの数。 */
     @Synchronized
@@ -1198,8 +1268,7 @@ class CryptoStore private constructor(
         if (closed) return
         closed = true
         storageKey.fill(0)
-        unsavedVerifications.values.forEach { it.destroy() }
-        unsavedVerifications.clear()
+        handedOverVerifications.clear()
         pendingUploads.values.forEach { it.upload.close() }
         pendingUploads.clear()
         backupState?.close()
