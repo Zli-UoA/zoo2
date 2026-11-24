@@ -91,7 +91,15 @@ data class ToDeviceResult(
     val newOlmSessions: Int,
     /** 保存した鍵のうち、送信端末を検証できた（受信時の検証の手順 4）ものの数。 */
     val verifiedRoomKeys: Int = 0,
+    /**
+     * 受信時の検証を通った、他のユーザーの検証のメッセージ（`m.key.verification.*`。#368）。Olm のメッセージは
+     * 2 回は復号できないので、ここで返したものを [SasController.handleMessages] に渡して進める。
+     */
+    val verifications: List<VerificationMessage> = emptyList(),
 )
+
+/** 他のユーザーの検証のメッセージの `type` の接頭辞（Web の `VERIFICATION_TYPE_PREFIX`）。 */
+internal const val VERIFICATION_TYPE_PREFIX = "m.key.verification."
 
 /** `POST /api/e2ee/keys/upload` に送る鍵。 */
 class KeyUpload(val oneTimeKeys: JsonObject, val fallbackKeys: JsonObject)
@@ -283,6 +291,7 @@ class CryptoStore private constructor(
         var dropped = 0
         var newOlmSessions = 0
         var verifiedRoomKeys = 0
+        val verifications = mutableListOf<VerificationMessage>()
         // 解錠し直しが要る（secrets_revision を消した）ときは、暗号ストアの自分の鍵を使わない。
         val ownSelfSigning by lazy {
             state.ownKeys?.takeIf { state.secretsRevision != null }?.let { sealed ->
@@ -330,6 +339,7 @@ class CryptoStore private constructor(
                             newOlmSessions += outcome.newOlmSessions
                             if (outcome.roomKey) roomKeys++ else if (outcome.rejected) dropped++
                             if (outcome.roomKey && outcome.verified) verifiedRoomKeys++
+                            outcome.verification?.let(verifications::add)
                         }
                     }
                 } else {
@@ -342,7 +352,7 @@ class CryptoStore private constructor(
             processed += row.id
         }
         if (unsaved) save()
-        return ToDeviceResult(processed, roomKeys, dropped, newOlmSessions, verifiedRoomKeys)
+        return ToDeviceResult(processed, roomKeys, dropped, newOlmSessions, verifiedRoomKeys, verifications)
     }
 
     private sealed interface Encrypted {
@@ -352,6 +362,7 @@ class CryptoStore private constructor(
             val roomKey: Boolean,
             val rejected: Boolean,
             val verified: Boolean = false,
+            val verification: VerificationMessage? = null,
         ) : Encrypted
     }
 
@@ -382,6 +393,17 @@ class CryptoStore private constructor(
                 decrypted.sender()?.let { user ->
                     decrypted.senderDevice()?.let { device -> (deviceKeys[user] as? JsonObject)?.get(device) }
                 }
+            if (decrypted.eventType()?.startsWith(VERIFICATION_TYPE_PREFIX) == true) {
+                // 他のユーザーの検証（#368）。受信時の検証を通したものを返し、検証を進めるのは
+                // SasController に任せる（Web の `processEncrypted` と同じ）。
+                val verification =
+                    try {
+                        decrypted.verifyVerification(account, listed?.toString())
+                    } catch (_: ZooCryptoException) {
+                        return Encrypted.Decrypted(created, roomKey = false, rejected = true)
+                    }
+                return Encrypted.Decrypted(created, roomKey = false, rejected = false, verification = verification)
+            }
             val roomKey =
                 try {
                     decrypted.verifyRoomKey(account, listed?.toString(), trustFor(decrypted.sender(), decrypted.senderDevice()))
@@ -460,6 +482,78 @@ class CryptoStore private constructor(
     @Synchronized
     fun needsOlm(device: VerifiedDeviceKeys): Boolean = device.curve25519Key() !in outboundOlm
 
+    /**
+     * 他のユーザーの検証を求める（#368。Web の `SasVerifications.request`）。`keysQuery` は相手の `keys/query` の
+     * 応答（JSON）。解錠していなければ [SasException]（[SasException.NEEDS_UNLOCK]）。
+     */
+    @Synchronized
+    fun requestVerification(keysQuery: String, theirUserId: String, nowMs: Long): SasRequest {
+        requireVerificationUnlocked()
+        return zoo.crypto.ffi.requestVerification(account, trust, keysQuery, theirUserId, nowMs.toULong())
+    }
+
+    /**
+     * 届いた要求（`m.key.verification.request`）から検証を作る。古い要求、たどれない端末からの要求、解錠の前
+     * （自分のマスター鍵を信頼していない）などは [ZooCryptoException]（捨てる）。
+     */
+    @Synchronized
+    fun verificationFromRequest(message: VerificationMessage, keysQuery: String, nowMs: Long): SasVerification {
+        check(!closed) { "暗号ストアは閉じています" }
+        return SasVerification.fromRequest(account, trust, message, keysQuery, nowMs.toULong())
+    }
+
+    /**
+     * 検証できた相手のマスター鍵（`masterKey` は署名の直前に `keys/query` で読んだ JSON）に、自分のユーザー署名鍵で
+     * 署名する。記録は登録待ちで保存し、`replace: true` のピンと署名を返す（サーバーに保存できたら
+     * [confirmAcceptedMasterKey]）。
+     */
+    @Synchronized
+    fun signVerifiedMasterKey(verification: SasVerification, masterKey: String): AcceptedMasterKey {
+        requireVerificationUnlocked()
+        return OwnKeys.fromPickle(checkNotNull(state.ownKeys), account, storageKey).use { own ->
+            own.userSigning().use { signing -> verification.signMasterKey(trust, signing, masterKey) }
+        }.also { saveTrustStore() }
+    }
+
+    /** [signVerifiedMasterKey] のピンと署名をサーバーに保存できた。記録の登録待ちを外す。 */
+    @Synchronized
+    fun confirmAcceptedMasterKey(targetUserId: String, masterKey: String) {
+        check(!closed) { "暗号ストアは閉じています" }
+        trust.confirmAcceptedMasterKey(targetUserId, masterKey)
+        saveTrustStore()
+    }
+
+    /**
+     * 検証のメッセージを `device` あての to-device の `content` に暗号化する。送信用の Olm セッションは鍵の配布
+     * （[shareKey]）と同じものを使い回し、なければ `claimed`（`keys/claim` で払い出した鍵）で作る。どちらもなければ
+     * `null`。Olm の状態を進めたので、送る前に永続化する。取りやめも送れるよう、解錠は求めない。
+     */
+    @Synchronized
+    fun encryptVerification(device: VerifiedDeviceKeys, eventType: String, content: String, claimed: String?): JsonElement? {
+        check(!closed) { "暗号ストアは閉じています" }
+        val curve = device.curve25519Key()
+        val session = outboundOlm[curve] ?: claimed?.let {
+            account.createOutboundOlmSession(olmSessions, device, it).also { id -> outboundOlm[curve] = id }
+        } ?: return null
+        val encrypted = account.encryptVerification(olmSessions, session, device, eventType, content)
+        persistOutboundOlm(curve)
+        return json.parseToJsonElement(encrypted)
+    }
+
+    private fun requireVerificationUnlocked() {
+        if (closed || state.ownKeys == null || state.secretsRevision == null) {
+            throw SasException(SasException.NEEDS_UNLOCK, "解錠していません")
+        }
+    }
+
+    private fun persistOutboundOlm(curve: String) {
+        val changed = olmSessions.pickleSessions(account, storageKey, curve)
+        state.olmSessions = state.olmSessions.filterNot { it.theirIdentityKey == curve } +
+            changed.map { StoredOlmSession(it.theirIdentityKey, it.sessionId, it.pickle) }
+        state.account = account.pickle(storageKey)
+        save()
+    }
+
     /** Olm の状態を進めたら、ネットワークへ送る前に永続化する。 */
     @Synchronized
     fun shareKey(device: VerifiedDeviceKeys, outbound: OutboundSession, claimed: String?): JsonElement? {
@@ -469,11 +563,7 @@ class CryptoStore private constructor(
             account.createOutboundOlmSession(olmSessions, device, it).also { id -> outboundOlm[curve] = id }
         } ?: return null
         val encrypted = account.encryptRoomKey(olmSessions, session, device, outbound)
-        val changed = olmSessions.pickleSessions(account, storageKey, curve)
-        state.olmSessions = state.olmSessions.filterNot { it.theirIdentityKey == curve } +
-            changed.map { StoredOlmSession(it.theirIdentityKey, it.sessionId, it.pickle) }
-        state.account = account.pickle(storageKey)
-        save()
+        persistOutboundOlm(curve)
         return json.parseToJsonElement(encrypted)
     }
 

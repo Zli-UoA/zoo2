@@ -441,6 +441,8 @@ class MainActivity : ComponentActivity() {
                 },
                 // 初回設定と解錠（#360）。解錠済みの端末は、起動時の確認と鍵バックアップへの送信も行う。
                 setupApi = e2eeApi,
+                // 他のユーザーの検証（#368）。to-device で届いた検証のメッセージを受け取る。
+                sasApi = e2eeApi,
             )
             platform.e2ee = e2ee
             platform.reauthenticate = reauthenticator::reauthenticate

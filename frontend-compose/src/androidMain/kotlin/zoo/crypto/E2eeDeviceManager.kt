@@ -102,8 +102,8 @@ suspend fun <T> withRequestTimeout(timeout: Duration, block: suspend () -> T): T
         throw E2eeRequestTimeoutException(failure)
     }
 
-/** [ZooApi] で呼ぶ [E2eeApi] と [E2eeSetupApi]。E2EE の API には 30 秒の期限を付ける（TUI と同じ）。 */
-class ZooE2eeApi(private val api: ZooApi) : E2eeApi, E2eeSetupApi {
+/** [ZooApi] で呼ぶ [E2eeApi]、[E2eeSetupApi]、[SasApi]。E2EE の API には 30 秒の期限を付ける（TUI と同じ）。 */
+class ZooE2eeApi(private val api: ZooApi) : E2eeApi, E2eeSetupApi, SasApi {
     private suspend fun call(
         path: String,
         method: String,
@@ -222,6 +222,81 @@ class ZooE2eeApi(private val api: ZooApi) : E2eeApi, E2eeSetupApi {
         return KeysQuery(JsonObject(merged), JsonArray(signatures), JsonObject(snapshot))
     }
 
+    override suspend fun claimKeys(oneTimeKeys: JsonObject): JsonObject {
+        // サーバーの上限に合わせ、1000 台ずつ払い出す（Web の `claimKeys`）。
+        val entries = oneTimeKeys.entries.flatMap { (user, devices) ->
+            (devices as? JsonObject).orEmpty().keys.map { user to it }
+        }
+        val claimed = mutableMapOf<String, MutableMap<String, JsonElement>>()
+        for (chunk in entries.chunked(1000)) {
+            val body = buildJsonObject {
+                chunk.groupBy({ it.first }, { it.second }).forEach { (user, devices) ->
+                    put(user, buildJsonObject { devices.forEach { put(it, "signed_curve25519") } })
+                }
+            }
+            val response = data(call("/api/e2ee/keys/claim", "POST", buildJsonObject { put("one_time_keys", body) }))
+            (response["one_time_keys"] as? JsonObject).orEmpty().forEach { (user, devices) ->
+                claimed.getOrPut(user) { mutableMapOf() }.putAll((devices as? JsonObject).orEmpty())
+            }
+        }
+        return JsonObject(claimed.mapValues { JsonObject(it.value) })
+    }
+
+    override suspend fun sendToDevice(deviceId: String, messages: JsonObject): List<Pair<String, String>> {
+        // 100 端末ずつ、リクエストごとに別の `txn_id` で送る（Web の `sendToDevice`）。
+        val entries = messages.entries.flatMap { (user, devices) ->
+            (devices as? JsonObject).orEmpty().entries.map { (device, content) -> Triple(user, device, content) }
+        }
+        val undelivered = mutableListOf<Pair<String, String>>()
+        for (chunk in entries.chunked(100)) {
+            val batch = buildJsonObject {
+                chunk.groupBy { it.first }.forEach { (user, targets) ->
+                    put(user, buildJsonObject { targets.forEach { put(it.second, it.third) } })
+                }
+            }
+            val response =
+                data(
+                    call(
+                        "/api/e2ee/to_device",
+                        "POST",
+                        buildJsonObject {
+                            put("device_id", deviceId)
+                            put("txn_id", java.util.UUID.randomUUID().toString())
+                            put("type", "m.room.encrypted")
+                            put("messages", batch)
+                        },
+                    )
+                )
+            (response["undelivered"] as? JsonArray).orEmpty().forEach { target ->
+                val row = target as? JsonObject ?: return@forEach
+                val user = (row["user_id"] as? JsonPrimitive)?.contentOrNull ?: return@forEach
+                val device = (row["device_id"] as? JsonPrimitive)?.contentOrNull ?: return@forEach
+                undelivered += user to device
+            }
+        }
+        return undelivered
+    }
+
+    override suspend fun uploadPins(pins: JsonArray, replace: Boolean, reauth: String?) {
+        for (chunk in pins.chunked(UPLOAD_BATCH)) {
+            call(
+                "/api/e2ee/tofu_pins",
+                "POST",
+                buildJsonObject {
+                    put("pins", JsonArray(chunk))
+                    put("replace", replace)
+                },
+                reauth,
+            )
+        }
+    }
+
+    override suspend fun uploadSignaturesWithReauth(signatures: JsonArray, reauth: String?) {
+        for (chunk in signatures.chunked(UPLOAD_BATCH)) {
+            call("/api/e2ee/cross_signing/signatures", "POST", buildJsonObject { put("signatures", JsonArray(chunk)) }, reauth)
+        }
+    }
+
     override suspend fun ackToDevice(deviceId: String, ids: List<String>) {
         for (chunk in ids.chunked(1000)) {
             call(
@@ -248,6 +323,9 @@ class ZooE2eeApi(private val api: ZooApi) : E2eeApi, E2eeSetupApi {
 
     companion object {
         private val TIMEOUT = 30.seconds
+
+        /** ピンと署名を一度に書き込む数（Web の `UPLOAD_BATCH`）。 */
+        private const val UPLOAD_BATCH = 100
 
         /** 直前の再認証の ID トークンを入れるヘッダー。 */
         const val REAUTH_HEADER = "X-Zoo-Reauth"
@@ -354,6 +432,11 @@ class E2eeDeviceManager(
      * 送信を行い、to-device で Megolm セッションの鍵を受け取るたびに鍵バックアップへ送る（解錠済みの端末だけ）。
      */
     setupApi: E2eeSetupApi? = null,
+    /**
+     * 他のユーザーの検証（#368）の API。渡すと [sas] を作り、to-device で届いた検証のメッセージ
+     * （`m.key.verification.*`）をそこへ渡す。
+     */
+    sasApi: SasApi? = null,
 ) {
     private val background = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
     private val control = Mutex()
@@ -372,6 +455,12 @@ class E2eeDeviceManager(
     /** 初回設定と解錠（#360）。[readyStore] を待って使う。 */
     val setup: E2eeSetup? =
         setupApi?.let { api -> E2eeSetup(api, userId, store = { ready.filterNotNull().first() }, io = io) }
+
+    /**
+     * 他のユーザーの絵文字 SAS 検証と QR コードによる検証（#368）。画面は [SasController.entries] を見る。
+     * [readyStore] の暗号ストアを使い、検証はメモリーにだけ置く（アプリを開き直したら続けられない）。
+     */
+    val sas: SasController? = sasApi?.let { api -> SasController(api, ready, background, io) }
 
     /** ログアウトのために開いた暗号ストア。 */
     @Volatile
@@ -572,6 +661,11 @@ class E2eeDeviceManager(
         val senders = (rows.map { it.senderUserId } + userId).distinct().sorted()
         val keys = api.queryKeys(senders)
         val result = withContext(io) { store.processToDevice(rows, keys.deviceKeys, keys.signatures, keys.raw) }
+        // 検証のメッセージは、ack の前に渡す（Web の `onVerifications` と同じ順）。Olm のメッセージは 2 回は
+        // 復号できないので、受け取り手がなければ捨てる。
+        if (result.verifications.isNotEmpty()) {
+            sas?.handleMessages(result.verifications) ?: result.verifications.forEach { it.destroy() }
+        }
         if (result.processed.isNotEmpty()) {
             deviceCall(deviceId) { api.ackToDevice(deviceId, result.processed) }
             withContext(io) { store.acknowledged(result.processed) }
@@ -688,6 +782,8 @@ class E2eeDeviceManager(
                 // 途中で失敗しても閉じる（同じプロセスで開き直せるように）。消したあとなら何もしない。
                 store?.close()
                 logoutStore = null
+                // 検証はこのユーザーのもの。ログアウトしたら忘れる。
+                sas?.dispose()
                 background.coroutineContext[Job]?.cancel()
             }
         }
