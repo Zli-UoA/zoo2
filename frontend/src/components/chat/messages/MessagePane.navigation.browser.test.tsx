@@ -722,6 +722,8 @@ describe("forwarding retry idempotency", () => {
 
       const firstBody = fixture.api.post.mock.calls[0]?.[1] as { id: string; content: string };
       const secondBody = fixture.api.post.mock.calls[1]?.[1] as { id: string; content: string };
+      const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      expect(firstBody.id).toMatch(uuidPattern);
       expect(secondBody.id).toBe(firstBody.id);
 
       // コメントを変えた再送は新しい UUID を採番する
@@ -730,6 +732,7 @@ describe("forwarding retry idempotency", () => {
       await waitFor(() => expect(fixture.api.post).toHaveBeenCalledTimes(3));
 
       const thirdBody = fixture.api.post.mock.calls[2]?.[1] as { id: string; content: string };
+      expect(thirdBody.id).toMatch(uuidPattern);
       expect(thirdBody.id).not.toBe(firstBody.id);
       expect(thirdBody.content).toBe("first comment edited");
     } finally {

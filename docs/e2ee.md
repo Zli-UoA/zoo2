@@ -1974,7 +1974,7 @@ A の QR を B が読み取る場合です（B の QR を A が読み取る場�
 ### メッセージ転送（引用）
 
 - 【決定】暗号化チャンネル（および `edm:` の暗号化 DM）を転送元または転送先にするメッセージ転送は禁止する。暗号化チャンネル内の投稿には転送メニュー・転送先一覧・転送カードを表示しない。
-- サーバー（`POST /api/messages`・`POST /api/v1/messages`）は暗号化チャンネル宛ての `forwarded_message_ids` を `E2EE_PLAINTEXT_FORBIDDEN` で拒否し、転送元・転送先検証および `POST /api/messages/forwards/resolve` は暗号化チャンネル内の元投稿をすべて除外する（存在オラクル防止）。DB トリガー `e2ee_reject_plaintext_messages()` も暗号化チャンネルで `forwarded_message_ids IS NOT NULL` となる INSERT/UPDATE を拒否する。
+- サーバー（`POST /api/messages`）は暗号化チャンネル宛ての `forwarded_message_ids` を `E2EE_PLAINTEXT_FORBIDDEN` で拒否し、転送元・転送先検証および `POST /api/messages/forwards/resolve` は暗号化チャンネル内の元投稿をすべて除外する（存在オラクル防止）。なお App API（`POST /api/apps/v1/messages`）は宛先を問わず `forwarded_message_ids` 自体が未対応のため常に `400 Bad Request` で拒否する。DB トリガー `e2ee_reject_plaintext_messages()` も暗号化チャンネルで `forwarded_message_ids IS NOT NULL` となる INSERT/UPDATE を拒否する。
 
 ## Bot の端末
 

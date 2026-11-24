@@ -216,6 +216,11 @@ impl SlackConfig {
     pub fn validate_api_base_url(&self, environment: &str) -> Result<(), String> {
         let parsed = reqwest::Url::parse(&self.api_base_url)
             .map_err(|e| format!("SLACK_API_BASE_URL is not a valid URL: {e}"))?;
+        if parsed.cannot_be_a_base() || parsed.query().is_some() || parsed.fragment().is_some() {
+            return Err(
+                "SLACK_API_BASE_URL must not include a query string or fragment".to_string(),
+            );
+        }
         match parsed.scheme() {
             "https" => Ok(()),
             "http" if environment != "production" => Ok(()),
@@ -1347,5 +1352,13 @@ mod tests {
 
         config.slack.api_base_url = "https://slack.com/api".to_string();
         assert!(config.validate().is_ok());
+
+        for bad in ["https://slack.com/api#ops", "https://slack.com/api?foo=bar"] {
+            config.slack.api_base_url = bad.to_string();
+            assert!(
+                config.slack.validate_api_base_url("production").is_err(),
+                "expected invalid SLACK_API_BASE_URL: {bad}"
+            );
+        }
     }
 }

@@ -510,7 +510,7 @@ pub(super) async fn edit(
         .as_ref()
         .map(|e| e.ts.as_str())
         .filter(|ts| super::is_valid_ts(ts));
-    let forwarded_ids = super::worker::resolve_forwarded_ids(tx, &ctx.team, message).await?;
+    let forwarded_ids = super::worker::resolve_forwarded_ids(tx, &ctx.team, message, true).await?;
     let forwarded_json = if forwarded_ids.is_empty() {
         String::new()
     } else {
@@ -572,8 +572,9 @@ pub(super) async fn edit(
                 tx,
                 "UPDATE messages SET forwarded_message_ids=$2::jsonb \
                  WHERE id=$1 AND deleted_at IS NULL AND forwarded_message_ids IS NULL \
+                 AND ($3='' OR updated_at IS NULL OR updated_at<=(to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3)) \
                  RETURNING json_build_object('ok',true)::text",
-                &[id, &forwarded_json],
+                &[id, &forwarded_json, edited.unwrap_or_default()],
             )
             .await?;
             return Ok(());

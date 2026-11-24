@@ -14,8 +14,11 @@ import { DEFAULT_CONFIG, type AppConfig } from "../lib/config";
 import { createConfiguredApiClient } from "../lib/api/client";
 import {
   cachedForwardEntry,
+  evictExpiredForwardIds,
   forgetForwardIds,
   forwardScopeKey,
+  peekForwardEntry,
+  peekForwardExpiresAt,
   resolveForwardMessages,
   subscribeForwardInvalidation,
   type ForwardCacheScope,
@@ -54,8 +57,8 @@ export function useForwardedMessages(
     [config.apiBaseUrl, currentUserId],
   );
   const scopeKey = forwardScopeKey(scope);
-  const uniqueIds = useMemo(() => [...new Set(ids.filter((id) => id.length > 0))].sort(), [ids]);
-  const idsKey = uniqueIds.join(",");
+  const idsKey = [...new Set(ids.filter((id) => id.length > 0))].sort().join("\0");
+  const uniqueIds = useMemo(() => (idsKey ? idsKey.split("\0") : []), [idsKey]);
 
   const [resolvedState, setResolvedState] = useState<{
     scopeKey: string;
@@ -94,6 +97,12 @@ export function useForwardedMessages(
     }
     if (hits.size > 0) {
       setResolvedState((prev) => {
+        if (
+          prev.scopeKey === scopeKey &&
+          [...hits.entries()].every(([k, v]) => Object.is(prev.map.get(k), v))
+        ) {
+          return prev;
+        }
         const next = prev.scopeKey === scopeKey ? new Map(prev.map) : new Map();
         for (const [k, v] of hits) next.set(k, v);
         return { scopeKey, map: next };
@@ -105,6 +114,12 @@ export function useForwardedMessages(
     void resolveForwardMessages(client, scope, missing).then((fetched) => {
       if (cancelled) return;
       setResolvedState((prev) => {
+        if (
+          prev.scopeKey === scopeKey &&
+          [...fetched.entries()].every(([k, v]) => Object.is(prev.map.get(k), v))
+        ) {
+          return prev;
+        }
         const next = prev.scopeKey === scopeKey ? new Map(prev.map) : new Map();
         for (const [k, v] of fetched) next.set(k, v);
         return { scopeKey, map: next };
@@ -130,13 +145,39 @@ export function useForwardedMessages(
     [scope, scopeKey],
   );
 
+  useEffect(() => {
+    if (!enabled || uniqueIds.length === 0) return;
+    const now = Date.now();
+    let earliest: number | undefined;
+    for (const id of uniqueIds) {
+      const expiresAt = peekForwardExpiresAt(scope, id, now);
+      if (expiresAt !== undefined && (earliest === undefined || expiresAt < earliest)) {
+        earliest = expiresAt;
+      }
+    }
+    if (earliest === undefined) return;
+    const delay = Math.max(0, earliest - now);
+    const timer = setTimeout(() => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      evictExpiredForwardIds(scope, uniqueIds);
+    }, delay);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [enabled, resolvedState, retryTick, scope, uniqueIds]);
+
   const entries = useMemo(() => {
     const map = new Map<string, ForwardEntryState>();
     if (!enabled) return map;
     const scopedMap = resolvedState.scopeKey === scopeKey ? resolvedState.map : null;
     for (const id of uniqueIds) {
-      const cached = cachedForwardEntry(scope, id) ?? scopedMap?.get(id);
-      map.set(id, cached ?? { status: "loading" });
+      const cached = peekForwardEntry(scope, id);
+      if (cached) {
+        map.set(id, cached);
+      } else {
+        const local = scopedMap?.get(id);
+        map.set(id, local?.status === "error" ? local : { status: "loading" });
+      }
     }
     return map;
   }, [enabled, resolvedState, scope, scopeKey, uniqueIds]);

@@ -570,12 +570,10 @@ fn first_oldest(task: &Task) -> String {
 
 /// スレッドの親になれる投稿か。入退室・トピック変更などのシステム通知は、スレッドにできない
 /// (`conversations.replies` が `thread_not_found` になる) ので、候補から外す
-pub(super) fn threadable(message: &SlackMessage, team: Option<&str>) -> bool {
-    message.is_importable_for_team(team)
-        && message
-            .subtype
-            .as_deref()
-            .is_none_or(|t| !(t.starts_with("channel_") || t.starts_with("group_")))
+/// スレッドの親になれる投稿か。親投稿自身の取り込み可否とは独立して判定し、
+/// 入退室・トピック変更などのシステム通知だけは `conversations.replies` 対象から外す。
+pub(super) fn threadable(message: &SlackMessage) -> bool {
+    message.is_thread_root_candidate()
 }
 
 fn now_secs() -> u64 {
@@ -828,7 +826,7 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
                         && !(light_now && progress.known.contains(&message.ts))
                 };
                 if top_level
-                    && threadable(message, Some(&task.team_id))
+                    && threadable(message)
                     && candidate
                     && !progress.pending.contains(&message.ts)
                 {

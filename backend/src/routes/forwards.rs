@@ -153,20 +153,52 @@ struct ExpandedLookupCandidates {
     candidates: Vec<String>,
 }
 
-fn expand_lookup_candidates(ids: &[String]) -> Result<ExpandedLookupCandidates, AppError> {
+fn expand_lookup_candidates(
+    ids: &[String],
+    exact_present: &HashSet<String>,
+) -> Result<ExpandedLookupCandidates, AppError> {
     let mut reqs = Vec::with_capacity(ids.len());
     let mut candidates = Vec::with_capacity(ids.len() * 2);
     let mut seen = HashSet::with_capacity(ids.len() * 4);
     for req_id in ids {
         let (uuid, id_candidates) = uuid_lookup_candidates(req_id)?;
         reqs.push((req_id.clone(), uuid));
-        for candidate in id_candidates {
-            if seen.insert(candidate.clone()) {
-                candidates.push(candidate);
+        if exact_present.contains(req_id) {
+            // 要求文字列と完全一致する行が DB 上に存在する場合は、他表記の別行へフォールバックさせない
+            if seen.insert(req_id.clone()) {
+                candidates.push(req_id.clone());
+            }
+        } else {
+            for candidate in id_candidates {
+                if seen.insert(candidate.clone()) {
+                    candidates.push(candidate);
+                }
             }
         }
     }
     Ok(ExpandedLookupCandidates { reqs, candidates })
+}
+
+async fn load_exact_present_ids(
+    tx: &mut toasty::Transaction<'_>,
+    ids: &[String],
+) -> Result<HashSet<String>, AppError> {
+    if ids.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let exact_json = Value::from(ids.to_vec()).to_string();
+    let rows = crate::apps::query(
+        tx,
+        "SELECT json_build_object('id', m.id)::text \
+         FROM jsonb_array_elements_text($1::jsonb) AS req(id) \
+         JOIN messages m ON m.id = req.id",
+        &[exact_json.as_str()],
+    )
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|r| r.get("id").and_then(|v| v.as_str()).map(str::to_string))
+        .collect())
 }
 
 /// 送信時権限検証 SQL（スケール検証テストと共有）。
@@ -199,10 +231,11 @@ pub async fn verify_forward_sources(
     if ids.is_empty() {
         return Ok(Vec::new());
     }
+    let exact_present = load_exact_present_ids(tx, ids).await?;
     let ExpandedLookupCandidates {
         reqs: parsed_reqs,
         candidates,
-    } = expand_lookup_candidates(ids)?;
+    } = expand_lookup_candidates(ids, &exact_present)?;
     let ids_json = Value::from(candidates).to_string();
     let rows = crate::apps::query(
         tx,
@@ -215,11 +248,13 @@ pub async fn verify_forward_sources(
         ],
     )
     .await?;
+    let mut matched_exact: HashSet<String> = HashSet::with_capacity(rows.len());
     let mut matched_by_uuid: HashMap<Uuid, Vec<String>> = HashMap::with_capacity(rows.len());
     for row in rows {
         if let Some(id) = row.get("id").and_then(|v| v.as_str())
             && let Ok(uuid) = Uuid::parse_str(id)
         {
+            matched_exact.insert(id.to_string());
             matched_by_uuid
                 .entry(uuid)
                 .or_default()
@@ -229,14 +264,21 @@ pub async fn verify_forward_sources(
     let mut resolved = Vec::with_capacity(parsed_reqs.len());
     let mut seen = HashSet::with_capacity(parsed_reqs.len());
     for (req_id, uuid) in parsed_reqs {
-        let Some(matches) = matched_by_uuid.get(&uuid) else {
-            return Err(AppError::NotFound("Forwarded message not found".into()));
+        let actual_id = if exact_present.contains(&req_id) {
+            if matched_exact.contains(&req_id) {
+                req_id
+            } else {
+                return Err(AppError::NotFound("Forwarded message not found".into()));
+            }
+        } else {
+            let Some(matches) = matched_by_uuid.get(&uuid) else {
+                return Err(AppError::NotFound("Forwarded message not found".into()));
+            };
+            if matches.len() != 1 {
+                return Err(AppError::NotFound("Forwarded message not found".into()));
+            }
+            matches[0].clone()
         };
-        let actual_id = matches
-            .iter()
-            .find(|m| *m == &req_id)
-            .cloned()
-            .unwrap_or_else(|| matches[0].clone());
         if seen.insert(actual_id.clone()) {
             resolved.push(actual_id);
         }
@@ -362,13 +404,14 @@ async fn resolve_forwards(
         )));
     }
 
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    let exact_present = load_exact_present_ids(&mut tx, &ids).await?;
     let ExpandedLookupCandidates {
         reqs: parsed_reqs,
         candidates,
-    } = expand_lookup_candidates(&ids)?;
+    } = expand_lookup_candidates(&ids, &exact_present)?;
     let ids_json = Value::from(candidates).to_string();
-    let mut db = state.db.clone();
-    let mut tx = db.transaction().await?;
     let rows = crate::apps::query(
         &mut tx,
         RESOLVE_FORWARDS_SQL,
@@ -379,7 +422,7 @@ async fn resolve_forwards(
 
     let mut exact_items: HashMap<String, ForwardResolutionItem> =
         HashMap::with_capacity(rows.len());
-    let mut items_by_uuid: HashMap<Uuid, ForwardResolutionItem> =
+    let mut items_by_uuid: HashMap<Uuid, Vec<ForwardResolutionItem>> =
         HashMap::with_capacity(rows.len());
     for mut row in rows {
         let Some(id) = row.get("id").and_then(|v| v.as_str()).map(str::to_string) else {
@@ -416,7 +459,7 @@ async fn resolve_forwards(
         };
         if let Some(item) = parsed_item {
             if let Some(u) = parsed_uuid {
-                items_by_uuid.entry(u).or_insert_with(|| item.clone());
+                items_by_uuid.entry(u).or_default().push(item.clone());
             }
             exact_items.insert(id, item);
         }
@@ -425,11 +468,17 @@ async fn resolve_forwards(
     let mut items: HashMap<String, ForwardResolutionItem> =
         HashMap::with_capacity(parsed_reqs.len());
     for (req_id, req_uuid) in parsed_reqs {
-        let item = exact_items
-            .get(&req_id)
-            .cloned()
-            .or_else(|| items_by_uuid.get(&req_uuid).cloned())
-            .unwrap_or(ForwardResolutionItem::Unavailable);
+        let item = if exact_present.contains(&req_id) {
+            exact_items
+                .get(&req_id)
+                .cloned()
+                .unwrap_or(ForwardResolutionItem::Unavailable)
+        } else {
+            match items_by_uuid.get(&req_uuid) {
+                Some(matches) if matches.len() == 1 => matches[0].clone(),
+                _ => ForwardResolutionItem::Unavailable,
+            }
+        };
         items.insert(req_id, item);
     }
 

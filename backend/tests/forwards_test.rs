@@ -1009,6 +1009,7 @@ async fn slack_hints_and_backfill_forwards_restore_forwards_without_bumping_edit
             channel: Some(slack_ch.clone()),
             oldest: None,
             max_pages: None,
+            cursor: None,
         },
     )
     .await?;
@@ -1027,6 +1028,7 @@ async fn slack_hints_and_backfill_forwards_restore_forwards_without_bumping_edit
             channel: Some(slack_ch.clone()),
             oldest: None,
             max_pages: None,
+            cursor: None,
         },
     )
     .await?;
@@ -1071,6 +1073,7 @@ async fn slack_hints_and_backfill_forwards_restore_forwards_without_bumping_edit
             channel: Some(slack_ch.clone()),
             oldest: None,
             max_pages: None,
+            cursor: None,
         },
     )
     .await?;
@@ -1692,6 +1695,55 @@ async fn uppercase_message_id_forwards_and_resolves_consistently() -> anyhow::Re
         );
     }
 
+    // DB に同じ UUID の小文字行（非公開）と大文字行（公開）が共存しても、完全一致が存在する場合は別表記へフォールバックしない
+    let bob = create_user(&app, &state, "up_bob").await?;
+    let priv_ch = create_channel(&app, &bob, true, false, &[]).await?;
+    let mixed_uuid = Uuid::new_v4();
+    let mixed_lower = mixed_uuid.hyphenated().to_string();
+    let mixed_upper = mixed_lower.to_ascii_uppercase();
+    sql_exec(
+        &state,
+        "INSERT INTO messages(id, user_id, channel_id, content, created_at, revision) \
+         VALUES($1, $2, $3, 'private lower', now(), 1), ($4, $5, $6, 'public upper', now(), 1) \
+         RETURNING json_build_object('ok', true)::text",
+        &[&mixed_lower, &bob, &priv_ch, &mixed_upper, &alice, &ch],
+    )
+    .await?;
+
+    let (status, exact_res) = call(
+        &app,
+        "POST",
+        "/api/messages/forwards/resolve",
+        &alice,
+        Some(json!({ "ids": [&mixed_lower, &mixed_upper] })),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{exact_res}");
+    assert_eq!(
+        exact_res["data"]["items"][&mixed_lower],
+        json!({ "status": "unavailable" }),
+        "{exact_res}"
+    );
+    assert_eq!(exact_res["data"]["items"][&mixed_upper]["status"], "ok");
+    assert_eq!(
+        exact_res["data"]["items"][&mixed_upper]["content"],
+        "public upper"
+    );
+
+    let (status, fwd_denied) = call(
+        &app,
+        "POST",
+        "/api/messages",
+        &alice,
+        Some(json!({
+            "channel_id": ch,
+            "content": "must not leak upper",
+            "forwarded_message_ids": [&mixed_lower],
+        })),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{fwd_denied}");
+
     Ok(())
 }
 
@@ -1743,6 +1795,7 @@ async fn slack_forward_reservation_blocks_spoofing_and_stale_bot_hint_preserves_
     let ts_preoccupied = "1704067202.000100";
     let ts_fwd_rsv = format!("{}.000200", now_secs - 200);
     let ts_fwd_pre = format!("{}.000250", now_secs - 190);
+    let ts_fwd_pre_empty = format!("{}.000275", now_secs - 185);
     let ts_bot_hint = format!("{}.000300", now_secs - 180);
     let cursor = format!("{}.000000", now_secs - 500);
 
@@ -1751,6 +1804,7 @@ async fn slack_forward_reservation_blocks_spoofing_and_stale_bot_hint_preserves_
         slack::message_id(&team, &slack_src_preoccupied, ts_preoccupied).to_string();
     let id_fwd_rsv = slack::message_id(&team, &slack_dest, &ts_fwd_rsv).to_string();
     let id_fwd_pre = slack::message_id(&team, &slack_dest, &ts_fwd_pre).to_string();
+    let id_fwd_pre_empty = slack::message_id(&team, &slack_dest, &ts_fwd_pre_empty).to_string();
     let id_bot_hint = slack::message_id(&team, &slack_dest, &ts_bot_hint).to_string();
 
     // 1) Slack 取り込み前に攻撃者が決定的 ID で別投稿を作成済み -> backfill はその偽装 ID を転送先に結び付けない
@@ -1834,6 +1888,19 @@ async fn slack_forward_reservation_blocks_spoofing_and_stale_bot_hint_preserves_
                         "text": "preoccupied slack msg",
                     }],
                 },
+                {
+                    "type": "message",
+                    "ts": ts_fwd_pre_empty,
+                    "user": "UA",
+                    "text": "",
+                    "attachments": [{
+                        "is_share": true,
+                        "channel_id": slack_src_preoccupied,
+                        "ts": ts_preoccupied,
+                        "from_url": format!("https://example.slack.com/archives/{slack_src_preoccupied}/p{}", ts_preoccupied.replace('.', "")),
+                        "text": "preoccupied slack msg",
+                    }],
+                },
             ],
             "has_more": false,
         })))
@@ -1849,12 +1916,13 @@ async fn slack_forward_reservation_blocks_spoofing_and_stale_bot_hint_preserves_
             channel: Some(slack_dest.clone()),
             oldest: None,
             max_pages: None,
+            cursor: None,
         },
     )
     .await?;
     assert_eq!(report.applied_inserts, 1, "{report:?}");
 
-    // 先に占有されていた偽装 ID 向け転送は forwarded_message_ids が付与されない
+    // 先に占有されていた偽装 ID 向け転送は forwarded_message_ids が付与されない（本文なし転送は保存もされない）
     let pre_row = sql_one(
         &state,
         "SELECT json_build_object('exists', count(*) > 0, 'fwd', max(forwarded_message_ids::text))::text \
@@ -1863,6 +1931,13 @@ async fn slack_forward_reservation_blocks_spoofing_and_stale_bot_hint_preserves_
     )
     .await?;
     assert_eq!(pre_row["fwd"], Value::Null, "{pre_row}");
+    let pre_empty_row = sql_one(
+        &state,
+        "SELECT json_build_object('exists', count(*) > 0)::text FROM messages WHERE id = $1",
+        &[&id_fwd_pre_empty],
+    )
+    .await?;
+    assert_eq!(pre_empty_row["exists"], json!(false), "{pre_empty_row}");
 
     // 未取り込みの reserved_id は slack_forward_targets に予約され、小文字・大文字とも POST /api/messages は 409 Conflict
     let rsv_row = sql_one(
@@ -1984,6 +2059,7 @@ async fn slack_forward_reservation_blocks_spoofing_and_stale_bot_hint_preserves_
             }],
             "has_more": false,
         })))
+        .expect(1)
         .with_priority(1)
         .mount(&slack)
         .await;
@@ -2036,6 +2112,14 @@ async fn slack_forward_reservation_blocks_spoofing_and_stale_bot_hint_preserves_
             break;
         }
     }
+    let hint_remaining = sql_one(
+        &state,
+        "SELECT json_build_object('count', count(*))::text FROM slack_message_hints \
+         WHERE team_id = $1 AND slack_channel_id = $2",
+        &[&team, &slack_dest],
+    )
+    .await?;
+    assert_eq!(hint_remaining["count"], json!(0), "{hint_remaining}");
     let bot_row = sql_one(
         &state,
         "SELECT json_build_object('fwd', forwarded_message_ids, 'updated_null', updated_at IS NULL, 'rev', revision)::text \
@@ -2046,6 +2130,42 @@ async fn slack_forward_reservation_blocks_spoofing_and_stale_bot_hint_preserves_
     assert_eq!(bot_row["fwd"], json!([reserved_id]), "{bot_row}");
     assert_eq!(bot_row["updated_null"], json!(true), "{bot_row}");
     assert_eq!(bot_row["rev"], json!(1), "{bot_row}");
+
+    // 3) 通常同期経路 (worker::insert_message) でも、転送先全除外かつ本文なしの投稿は保存されない
+    sql_exec(
+        &state,
+        "UPDATE slack_channel_syncs SET available_at = now() - interval '1 second', \
+         last_synced_at = now() - interval '1 hour', not_before = NULL, \
+         lease_token = NULL, lease_until = NULL, running = false \
+         WHERE team_id = $1 RETURNING json_build_object('ok', true)::text",
+        &[&team],
+    )
+    .await?;
+    for _ in 0..20 {
+        if !sync::run_once(&state).await? {
+            break;
+        }
+    }
+    let sync_pre_row = sql_one(
+        &state,
+        "SELECT json_build_object('exists', count(*) > 0, 'fwd', max(forwarded_message_ids::text))::text \
+         FROM messages WHERE id = $1",
+        &[&id_fwd_pre],
+    )
+    .await?;
+    assert_eq!(sync_pre_row["exists"], json!(true), "{sync_pre_row}");
+    assert_eq!(sync_pre_row["fwd"], Value::Null, "{sync_pre_row}");
+    let sync_pre_empty_row = sql_one(
+        &state,
+        "SELECT json_build_object('exists', count(*) > 0)::text FROM messages WHERE id = $1",
+        &[&id_fwd_pre_empty],
+    )
+    .await?;
+    assert_eq!(
+        sync_pre_empty_row["exists"],
+        json!(false),
+        "{sync_pre_empty_row}"
+    );
 
     Ok(())
 }
@@ -2091,6 +2211,7 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
             channel: Some("   ".into()),
             oldest: None,
             max_pages: None,
+            cursor: None,
         },
     )
     .await
@@ -2222,6 +2343,7 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
         .and(path("/conversations.replies"))
         .and(query_param("channel", &ch_ok))
         .and(query_param("ts", ts_old_root))
+        .and(query_param("inclusive", "true"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "ok": true,
             "messages": [
@@ -2232,6 +2354,70 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
         .mount(&slack)
         .await;
 
+    // `--cursor` バリデーションと `--max-pages 1` 打ち切り時の resume 情報・`--cursor` 再開を検証する
+    let cursor_no_ch_err = backfill_forwards::run(
+        &state.db,
+        &config,
+        &backfill_forwards::Options {
+            apply: false,
+            channel: None,
+            oldest: None,
+            max_pages: None,
+            cursor: Some("cur_page_2".into()),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        cursor_no_ch_err.to_string().contains("--cursor"),
+        "{cursor_no_ch_err}"
+    );
+
+    let trunc_report = backfill_forwards::run(
+        &state.db,
+        &config,
+        &backfill_forwards::Options {
+            apply: false,
+            channel: Some(ch_ok.clone()),
+            oldest: Some(ts_oldest.into()),
+            max_pages: Some(1),
+            cursor: None,
+        },
+    )
+    .await?;
+    assert!(trunc_report.truncated, "{trunc_report:?}");
+    assert_eq!(trunc_report.resume_channels.len(), 1, "{trunc_report:?}");
+    assert_eq!(trunc_report.resume_channels[0].slack_channel_id, ch_ok);
+    assert_eq!(
+        trunc_report.resume_channels[0]
+            .next_history_cursor
+            .as_deref(),
+        Some("cur_page_2")
+    );
+    assert_eq!(
+        trunc_report.resume_channels[0].pending_thread_roots,
+        vec![ts_old_root.to_string()]
+    );
+
+    let resumed_page2 = backfill_forwards::run(
+        &state.db,
+        &config,
+        &backfill_forwards::Options {
+            apply: false,
+            channel: Some(ch_ok.clone()),
+            oldest: Some(ts_oldest.into()),
+            max_pages: Some(1),
+            cursor: trunc_report.resume_channels[0].next_history_cursor.clone(),
+        },
+    )
+    .await?;
+    assert!(!resumed_page2.truncated, "{resumed_page2:?}");
+    assert!(
+        resumed_page2.resume_channels.is_empty(),
+        "{resumed_page2:?}"
+    );
+    assert_eq!(resumed_page2.matched_inserts, 1, "{resumed_page2:?}");
+
     let win_report = backfill_forwards::run(
         &state.db,
         &config,
@@ -2240,9 +2426,12 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
             channel: Some(ch_ok.clone()),
             oldest: Some(ts_oldest.into()),
             max_pages: None,
+            cursor: None,
         },
     )
     .await?;
+    assert!(!win_report.truncated, "{win_report:?}");
+    assert!(win_report.resume_channels.is_empty(), "{win_report:?}");
     assert_eq!(win_report.applied_inserts, 2, "{win_report:?}");
     let exists = sql_one(
         &state,
@@ -2273,19 +2462,23 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
             channel: Some(ch_err.clone()),
             oldest: None,
             max_pages: None,
+            cursor: None,
         },
     )
     .await
     .unwrap_err();
-    assert!(info_err.to_string().contains(&ch_err), "{info_err}");
+    let info_msg = info_err.to_string();
+    assert!(info_msg.contains("conversations.info"), "{info_msg}");
+    assert!(info_msg.contains(&ch_err), "{info_msg}");
+    assert!(info_msg.contains("500"), "{info_msg}");
 
     Mock::given(method("GET"))
         .and(path("/conversations.info"))
         .and(query_param("channel", &ch_rl))
         .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "600"))
+        .expect(1)
         .mount(&slack)
         .await;
-    let started = std::time::Instant::now();
     let rl_err = backfill_forwards::run(
         &state.db,
         &config,
@@ -2294,14 +2487,11 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
             channel: Some(ch_rl.clone()),
             oldest: None,
             max_pages: None,
+            cursor: None,
         },
     )
     .await
     .unwrap_err();
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(5),
-        "should not sleep on Retry-After: 600"
-    );
     let rl_msg = rl_err.to_string();
     assert!(rl_msg.contains("retry_after=600s"), "{rl_msg}");
     assert!(rl_msg.contains("resume_after="), "{rl_msg}");

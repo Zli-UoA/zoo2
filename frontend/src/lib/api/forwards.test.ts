@@ -6,9 +6,13 @@ import {
   FORWARD_UNAVAILABLE_TTL_MS,
   MAX_RESOLVE_FORWARD_IDS,
   cachedForwardEntry,
+  evictExpiredForwardIds,
   forgetForwardIds,
+  peekForwardEntry,
+  peekForwardExpiresAt,
   resetForwardCacheForTests,
   resolveForwardMessages,
+  subscribeForwardInvalidation,
   type ForwardCacheScope,
 } from "./forwards";
 import type { ForwardResolutionItem, ResolveForwardsResponse } from "./types";
@@ -265,5 +269,89 @@ describe("resolveForwardMessages", () => {
     const r3 = await p3;
     expect(r3.get("m-ttl")).toMatchObject({ status: "ok", content: "edited" });
     expect(post).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not pollute cache or clear newer inflight requests when forgetForwardIds runs mid-flight", async () => {
+    vi.useFakeTimers();
+    let callCount = 0;
+    let resolveFirst!: (items: Record<string, ForwardResolutionItem>) => void;
+    let resolveSecond!: (items: Record<string, ForwardResolutionItem>) => void;
+
+    const { client, post } = makeClient(
+      (ids) =>
+        new Promise((resolve) => {
+          callCount += 1;
+          expect(ids).toEqual(["m-race"]);
+          if (callCount === 1) {
+            resolveFirst = resolve;
+          } else {
+            resolveSecond = resolve;
+          }
+        }),
+    );
+
+    const req1 = resolveForwardMessages(client, scopeA, ["m-race"]);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(post).toHaveBeenCalledTimes(1);
+
+    // リクエスト 1 の応答待ち中に無効化され、続けてリクエスト 2 が開始される
+    forgetForwardIds(scopeA, ["m-race"]);
+    const req2 = resolveForwardMessages(client, scopeA, ["m-race"]);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(post).toHaveBeenCalledTimes(2);
+
+    // 先に古いリクエスト 1 が返っても、キャッシュを汚染せず進行中リクエスト 2 の inflight も消さない
+    resolveFirst({ "m-race": okItem("m-race", "stale") });
+    await req1;
+    expect(cachedForwardEntry(scopeA, "m-race")).toBeUndefined();
+
+    // 同じタイミングの後続呼び出しは進行中のリクエスト 2 に合流し、リクエスト 3 を出さない
+    const req2Follower = resolveForwardMessages(client, scopeA, ["m-race"]);
+    expect(post).toHaveBeenCalledTimes(2);
+
+    resolveSecond({ "m-race": okItem("m-race", "fresh") });
+    const [res2, res2Follower] = await Promise.all([req2, req2Follower]);
+    expect(res2.get("m-race")).toMatchObject({ status: "ok", content: "fresh" });
+    expect(res2Follower.get("m-race")).toMatchObject({ status: "ok", content: "fresh" });
+    expect(cachedForwardEntry(scopeA, "m-race")).toMatchObject({
+      status: "ok",
+      content: "fresh",
+    });
+  });
+
+  it("peeks expiry non-destructively and notifies only expired IDs via evictExpiredForwardIds", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(2_000_000);
+    const { client } = makeClient(async () => ({
+      "m-soon": { status: "unavailable" },
+      "m-later": okItem("m-later", "live"),
+    }));
+
+    const p = resolveForwardMessages(client, scopeA, ["m-soon", "m-later"]);
+    await vi.advanceTimersByTimeAsync(20);
+    await p;
+
+    const listener = vi.fn();
+    const unsubscribe = subscribeForwardInvalidation(scopeA, listener);
+    try {
+      await vi.advanceTimersByTimeAsync(FORWARD_UNAVAILABLE_TTL_MS);
+
+      // peekForwardEntry は期限切れでもキャッシュ自体を削除せず、evictExpiredForwardIds まで保持する
+      expect(peekForwardEntry(scopeA, "m-soon")).toBeUndefined();
+      expect(peekForwardExpiresAt(scopeA, "m-soon")).toBeDefined();
+      expect(peekForwardEntry(scopeA, "m-later")).toMatchObject({ status: "ok", content: "live" });
+
+      const evicted = evictExpiredForwardIds(scopeA, ["m-soon", "m-later"]);
+      expect(evicted).toEqual(["m-soon"]);
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(listener).toHaveBeenCalledWith(["m-soon"]);
+      expect(peekForwardExpiresAt(scopeA, "m-soon")).toBeUndefined();
+      expect(peekForwardEntry(scopeA, "m-later")).toMatchObject({ status: "ok", content: "live" });
+
+      expect(evictExpiredForwardIds(scopeA, ["m-soon", "m-later"])).toEqual([]);
+      expect(listener).toHaveBeenCalledTimes(1);
+    } finally {
+      unsubscribe();
+    }
   });
 });

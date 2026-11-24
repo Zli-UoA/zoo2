@@ -28,6 +28,16 @@ pub struct Options {
     pub channel: Option<String>,
     pub oldest: Option<String>,
     pub max_pages: Option<usize>,
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+pub struct ResumeChannel {
+    pub slack_channel_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_history_cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_thread_roots: Vec<String>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
@@ -39,6 +49,9 @@ pub struct Report {
     pub matched_inserts: usize,
     pub applied_backfills: usize,
     pub applied_inserts: usize,
+    pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resume_channels: Vec<ResumeChannel>,
 }
 
 #[derive(Debug)]
@@ -63,6 +76,16 @@ pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow:
         .is_some_and(|channel| channel.trim().is_empty())
     {
         anyhow::bail!("--channel must not be empty");
+    }
+    if options
+        .cursor
+        .as_deref()
+        .is_some_and(|cursor| cursor.trim().is_empty())
+    {
+        anyhow::bail!("--cursor must not be empty");
+    }
+    if options.cursor.is_some() && options.channel.is_none() {
+        anyhow::bail!("--cursor requires --channel");
     }
     let key = config.slack.encryption_key().ok_or_else(|| {
         anyhow::anyhow!("SLACK_TOKEN_ENCRYPTION_KEY is not configured or invalid")
@@ -159,12 +182,16 @@ pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow:
         let oldest = options.oldest.as_deref();
         let in_oldest_window = |ts: &str| oldest.is_none_or(|min| !compare_ts(ts, min).is_lt());
         let mut pages = 0usize;
-        let mut cursor: Option<String> = None;
+        let mut cursor: Option<String> = options.cursor.clone();
+        let mut history_truncated = false;
+        let mut next_history_cursor: Option<String> = None;
         let mut thread_roots: Vec<String> = Vec::new();
         let mut seen_threads: HashSet<String> = HashSet::new();
 
         loop {
             if options.max_pages.is_some_and(|max| pages >= max) {
+                history_truncated = true;
+                next_history_cursor = cursor.clone();
                 break;
             }
             // `--oldest` より古い親投稿配下に期間内の転送返信があり得るため、履歴取得自体は `oldest=0` で走査し、
@@ -192,7 +219,7 @@ pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow:
                     .is_none_or(in_oldest_window);
                 if top_level
                     && m.reply_count.unwrap_or(0) > 0
-                    && threadable(m, Some(&target.team_id))
+                    && threadable(m)
                     && (in_oldest_window(&m.ts) || reply_may_be_in_window)
                     && seen_threads.insert(m.ts.clone())
                 {
@@ -231,19 +258,23 @@ pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow:
             }
         }
 
-        for thread_ts in thread_roots {
+        let mut pending_thread_roots: Vec<String> = Vec::new();
+        for (idx, thread_ts) in thread_roots.iter().enumerate() {
             if options.max_pages.is_some_and(|max| pages >= max) {
+                pending_thread_roots.extend(thread_roots[idx..].iter().cloned());
                 break;
             }
             let mut tcursor: Option<String> = None;
             loop {
                 if options.max_pages.is_some_and(|max| pages >= max) {
+                    pending_thread_roots.extend(thread_roots[idx..].iter().cloned());
                     break;
                 }
                 let mut params = vec![
                     ("channel", target.slack_channel_id.as_str()),
                     ("ts", thread_ts.as_str()),
                     ("oldest", oldest.unwrap_or("0")),
+                    ("inclusive", "true"),
                     ("limit", PAGE_LIMIT),
                 ];
                 if let Some(cur) = tcursor.as_deref() {
@@ -261,7 +292,7 @@ pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow:
                 // 先頭要素（スレッド親）は履歴走査で処理済みのことが多いが、重複処理も冪等に抑止される
                 let replies: Vec<SlackMessage> = messages
                     .into_iter()
-                    .filter(|m| m.ts != thread_ts && in_oldest_window(&m.ts))
+                    .filter(|m| m.ts != *thread_ts && in_oldest_window(&m.ts))
                     .collect();
                 report.scanned_messages += replies.len();
                 if !replies.is_empty() {
@@ -291,6 +322,18 @@ pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow:
                     break;
                 }
             }
+            if !pending_thread_roots.is_empty() {
+                break;
+            }
+        }
+
+        if history_truncated || !pending_thread_roots.is_empty() {
+            report.truncated = true;
+            report.resume_channels.push(ResumeChannel {
+                slack_channel_id: target.slack_channel_id.clone(),
+                next_history_cursor,
+                pending_thread_roots,
+            });
         }
 
         report.channels += 1;
@@ -354,7 +397,7 @@ async fn process_messages(
         if derived && id_taken_by_other(&mut tx, &id, &target.channel_id, &message.ts).await? {
             continue;
         }
-        let forwarded_ids = resolve_forwarded_ids(&mut tx, &target.team_id, message).await?;
+        let forwarded_ids = resolve_forwarded_ids(&mut tx, &target.team_id, message, apply).await?;
         if forwarded_ids.is_empty() {
             continue;
         }
@@ -540,6 +583,19 @@ async fn slack_get_with_retry(
     method: &str,
     params: &[(&str, &str)],
 ) -> Result<serde_json::Value, SyncError> {
+    slack_get_with_retry_using(slack, method, params, tokio::time::sleep).await
+}
+
+async fn slack_get_with_retry_using<F, Fut>(
+    slack: &mut Slack,
+    method: &str,
+    params: &[(&str, &str)],
+    mut sleep_fn: F,
+) -> Result<serde_json::Value, SyncError>
+where
+    F: FnMut(Duration) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
     let mut retries = 0usize;
     loop {
         match slack.get(method, params).await {
@@ -548,7 +604,7 @@ async fn slack_get_with_retry(
                 if retries < MAX_RATE_LIMIT_RETRIES && secs <= MAX_RETRY_AFTER_SECS =>
             {
                 retries += 1;
-                tokio::time::sleep(Duration::from_secs(secs.max(1))).await;
+                sleep_fn(Duration::from_secs(secs.max(1))).await;
             }
             Err(err) => return Err(err),
         }
@@ -568,5 +624,89 @@ fn sync_error_message(err: &SyncError) -> String {
         SyncError::InvalidCursor => "invalid cursor".into(),
         SyncError::LeaseLost => "lease lost".into(),
         SyncError::Failed(e) => e.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn slack_get_with_retry_skips_long_retry_after_without_sleeping() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/conversations.info"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "600"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let key = [7u8; 32];
+        let enc = super::super::crypto::encrypt(&key, "xoxp-test").unwrap();
+        let mut slack = Slack::from_tokens(server.uri(), key, vec![("u1".into(), enc)]).unwrap();
+        let sleeps = Arc::new(AtomicUsize::new(0));
+        let sleeps_ref = Arc::clone(&sleeps);
+
+        let err = slack_get_with_retry_using(
+            &mut slack,
+            "conversations.info",
+            &[("channel", "C1")],
+            move |_| {
+                sleeps_ref.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(())
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(err, SyncError::RateLimited(600)),
+            "{}",
+            sync_error_message(&err)
+        );
+        assert_eq!(sleeps.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn slack_get_with_retry_retries_short_retry_after_up_to_limit() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/conversations.info"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "1"))
+            .expect(4)
+            .mount(&server)
+            .await;
+
+        let key = [7u8; 32];
+        let enc = super::super::crypto::encrypt(&key, "xoxp-test").unwrap();
+        let mut slack = Slack::from_tokens(server.uri(), key, vec![("u1".into(), enc)]).unwrap();
+        let sleeps = Arc::new(AtomicUsize::new(0));
+        let sleeps_ref = Arc::clone(&sleeps);
+
+        let err = slack_get_with_retry_using(
+            &mut slack,
+            "conversations.info",
+            &[("channel", "C1")],
+            move |d| {
+                assert_eq!(d, Duration::from_secs(1));
+                sleeps_ref.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(())
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(err, SyncError::RateLimited(1)),
+            "{}",
+            sync_error_message(&err)
+        );
+        assert_eq!(sleeps.load(Ordering::SeqCst), MAX_RATE_LIMIT_RETRIES);
     }
 }

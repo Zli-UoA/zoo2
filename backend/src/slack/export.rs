@@ -275,6 +275,21 @@ fn is_valid_slack_channel_id(value: &str) -> bool {
     !value.is_empty() && value.bytes().all(|b| b.is_ascii_alphanumeric())
 }
 
+/// Slack の `ts` 表記をパーマリンク（`/archives/.../p<digits>`）と同じ小数部 6 桁へ揃える。
+/// すでに 6 桁以上の場合はそのまま保つ。
+pub fn canonical_slack_ts(ts: &str) -> Option<String> {
+    let trimmed = ts.trim();
+    if !crate::slack::is_valid_ts(trimmed) {
+        return None;
+    }
+    let (secs, frac) = trimmed.split_once('.').unwrap_or((trimmed, ""));
+    if frac.len() >= 6 {
+        Some(trimmed.to_string())
+    } else {
+        Some(format!("{secs}.{frac:0<6}"))
+    }
+}
+
 impl SlackMessage {
     /// 編集・削除の履歴を含むエクスポートの、編集 (`message_changed`)・削除 (`message_deleted`) の記録か
     pub fn is_history_event(&self) -> bool {
@@ -317,6 +332,20 @@ impl SlackMessage {
 
     pub fn is_importable(&self) -> bool {
         self.is_importable_for_team(None)
+    }
+
+    /// スレッドの親として `conversations.replies` を辿る候補にできるか（親投稿自身の取り込み可否とは独立）。
+    pub fn is_thread_root_candidate(&self) -> bool {
+        crate::slack::is_valid_ts(&self.ts)
+            && self.author().is_some()
+            && !self
+                .subtype
+                .as_deref()
+                .is_some_and(|s| SKIPPED_SUBTYPES.contains(&s))
+            && self
+                .subtype
+                .as_deref()
+                .is_none_or(|t| !(t.starts_with("channel_") || t.starts_with("group_")))
     }
 
     pub fn is_importable_for_team(&self, team: Option<&str>) -> bool {
@@ -369,12 +398,11 @@ impl SlackMessage {
             .zip(
                 a.get("ts")
                     .and_then(|v| v.as_str())
-                    .map(str::trim)
-                    .filter(|ts| crate::slack::is_valid_ts(ts)),
+                    .and_then(canonical_slack_ts),
             )
             .map(|(slack_channel_id, ts)| SlackForwardRef {
                 slack_channel_id: slack_channel_id.to_string(),
-                ts: ts.to_string(),
+                ts,
             });
         let from_url = a
             .get("from_url")
@@ -995,5 +1023,36 @@ pub(crate) mod tests {
             "legacy fallback quote"
         );
         assert!(unresolvable_share.components(&NoopResolver).is_some());
+
+        // Slack の短い ts（小数部 1 桁）とパーマリンク表記（6 桁）は同一の正規化 ts に揃い重複排除される
+        let short_ts_and_permalink = message(serde_json::json!({
+            "ts": "1704070007.000100",
+            "user": "U1",
+            "text": "",
+            "attachments": [
+                {
+                    "is_share": true,
+                    "channel_id": "C111",
+                    "ts": "1704070000.1",
+                    "channel_team": "TMAIN"
+                },
+                {
+                    "is_msg_unfurl": true,
+                    "from_url": "https://example.slack.com/archives/C111/p1704070000100000",
+                    "channel_team": "TMAIN"
+                }
+            ]
+        }));
+        assert_eq!(
+            short_ts_and_permalink.forwarded_refs(Some("TMAIN")),
+            vec![SlackForwardRef {
+                slack_channel_id: "C111".into(),
+                ts: "1704070000.100000".into(),
+            }]
+        );
+
+        // 親が他ワークスペース転送のみで取り込み対象外でも、スレッド探索対象には含める
+        assert!(!commentless_no_from_url.is_importable_for_team(Some("TOTHER")));
+        assert!(commentless_no_from_url.is_thread_root_candidate());
     }
 }

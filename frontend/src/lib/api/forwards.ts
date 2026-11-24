@@ -26,6 +26,7 @@ interface CachedForwardEntry {
 interface ScopeBucket {
   cache: Map<string, CachedForwardEntry>;
   inflight: Map<string, Promise<ResolvedForwardEntry>>;
+  generation: Map<string, number>;
   pending: Map<string, PendingWaiter[]>;
   timer: ReturnType<typeof setTimeout> | null;
   waitingVisible: boolean;
@@ -72,6 +73,7 @@ function getBucket(scope: ForwardCacheScope): ScopeBucket {
     bucket = {
       cache: new Map(),
       inflight: new Map(),
+      generation: new Map(),
       pending: new Map(),
       timer: null,
       waitingVisible: false,
@@ -134,7 +136,13 @@ async function flushBucket(bucket: ScopeBucket): Promise<void> {
 
   for (let i = 0; i < entries.length; i += MAX_RESOLVE_FORWARD_IDS) {
     const chunk = entries.slice(i, i + MAX_RESOLVE_FORWARD_IDS);
-    const ids = chunk.map(([id]) => id);
+    const chunkMeta = chunk.map(([id, waiters]) => ({
+      id,
+      waiters,
+      gen: bucket.generation.get(id) ?? 0,
+      inflightPromise: bucket.inflight.get(id),
+    }));
+    const ids = chunkMeta.map((item) => item.id);
     let results: Record<string, ForwardResolutionItem> | null = null;
     try {
       const response = await client.post<ResolveForwardsResponse>(
@@ -148,21 +156,26 @@ async function flushBucket(bucket: ScopeBucket): Promise<void> {
       results = null;
     }
 
-    for (const [id, waiters] of chunk) {
+    for (const { id, waiters, gen, inflightPromise } of chunkMeta) {
       let value: ResolvedForwardEntry;
+      const isCurrentGeneration = (bucket.generation.get(id) ?? 0) === gen;
       if (results) {
         const resolved = results[id] ?? { status: "unavailable" };
-        bucket.cache.set(id, {
-          value: resolved,
-          expiresAt: Date.now() + ttlForItem(resolved),
-        });
-        ensureVisibilityListener();
+        if (isCurrentGeneration) {
+          bucket.cache.set(id, {
+            value: resolved,
+            expiresAt: Date.now() + ttlForItem(resolved),
+          });
+          ensureVisibilityListener();
+        }
         value = resolved;
       } else {
         // 通信・一時エラー時はキャッシュを汚染せず、再試行できる状態として返す。
         value = { status: "error" };
       }
-      bucket.inflight.delete(id);
+      if (inflightPromise !== undefined && bucket.inflight.get(id) === inflightPromise) {
+        bucket.inflight.delete(id);
+      }
       for (const waiter of waiters) {
         waiter.resolve(value);
       }
@@ -190,6 +203,52 @@ export function cachedForwardEntry(
 ): ForwardResolutionItem | undefined {
   const bucket = buckets.get(forwardScopeKey(scope));
   return bucket ? getFreshCacheEntry(bucket, id) : undefined;
+}
+
+/** キャッシュを削除せずに有効な解決結果だけを参照する（期限切れなら `undefined`）。 */
+export function peekForwardEntry(
+  scope: ForwardCacheScope,
+  id: string,
+  now = Date.now(),
+): ForwardResolutionItem | undefined {
+  const entry = buckets.get(forwardScopeKey(scope))?.cache.get(id);
+  return entry && now < entry.expiresAt ? entry.value : undefined;
+}
+
+/** キャッシュを削除せずに有効期限（epoch ms）を参照する（未保持なら `undefined`）。 */
+export function peekForwardExpiresAt(
+  scope: ForwardCacheScope,
+  id: string,
+  now = Date.now(),
+): number | undefined {
+  const entry = buckets.get(forwardScopeKey(scope))?.cache.get(id);
+  if (!entry) return undefined;
+  return now >= entry.expiresAt ? now : entry.expiresAt;
+}
+
+/** 指定 ID 群のうち有効期限切れのエントリだけを破棄し、購読者へ通知する。 */
+export function evictExpiredForwardIds(
+  scope: ForwardCacheScope,
+  ids: readonly string[],
+  now = Date.now(),
+): string[] {
+  const key = forwardScopeKey(scope);
+  const bucket = buckets.get(key);
+  if (!bucket) return [];
+  const expiredIds: string[] = [];
+  for (const id of ids) {
+    const entry = bucket.cache.get(id);
+    if (entry && now >= entry.expiresAt) {
+      bucket.cache.delete(id);
+      expiredIds.push(id);
+    }
+  }
+  if (expiredIds.length > 0) {
+    for (const listener of invalidationListeners.get(key) ?? []) {
+      listener(expiredIds);
+    }
+  }
+  return expiredIds;
 }
 
 /** 指定 ID のキャッシュ破棄イベントを購読する（編集・削除後の即時再解決用）。 */
@@ -221,7 +280,10 @@ export function forgetForwardIds(scope: ForwardCacheScope, ids: readonly string[
   const deleted: string[] = [];
   if (bucket) {
     for (const id of ids) {
-      if (bucket.cache.delete(id)) {
+      bucket.generation.set(id, (bucket.generation.get(id) ?? 0) + 1);
+      const removedInflight = bucket.inflight.delete(id);
+      const removedCache = bucket.cache.delete(id);
+      if (removedCache || removedInflight) {
         deleted.push(id);
       }
     }

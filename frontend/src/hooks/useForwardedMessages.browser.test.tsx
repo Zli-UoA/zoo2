@@ -226,4 +226,108 @@ describe("useForwardedMessages", () => {
       }
     }
   });
+
+  it("keeps entries stable across rerenders with fresh array literals when resolved IDs do not change", async () => {
+    state.post.mockImplementation(async (_path: string, body: { ids: string[] }) => ({
+      data: {
+        items: Object.fromEntries(body.ids.map((id) => [id, okForward(id, `body-${id}`)])),
+      },
+      txid: null,
+    }));
+
+    let renderCount = 0;
+    const { result, rerender } = renderHook(
+      ({ ids }: { ids: string[] }) => {
+        renderCount += 1;
+        return useForwardedMessages(ids);
+      },
+      { initialProps: { ids: ["m-stable-b", "m-stable-a"] } },
+    );
+
+    await waitFor(() => {
+      expect(result.current.entries.get("m-stable-a")).toMatchObject({
+        status: "ok",
+        content: "body-m-stable-a",
+      });
+    });
+
+    const settledEntries = result.current.entries;
+    const rendersBefore = renderCount;
+    const postCallsBefore = state.post.mock.calls.length;
+
+    // 要素順や重複が変わっても解決対象集合が同一なら再解決・state 更新を起こさない
+    rerender({ ids: ["m-stable-a", "m-stable-b", "m-stable-a"] });
+    expect(result.current.entries).toBe(settledEntries);
+    expect(state.post).toHaveBeenCalledTimes(postCallsBefore);
+    expect(renderCount).toBe(rendersBefore + 1);
+
+    // 同じキャッシュ結果を別フックインスタンスで使っても不要な API 呼び出しが発生しない
+    const secondMount = renderHook(() => useForwardedMessages(["m-stable-a"]));
+    await waitFor(() => {
+      expect(secondMount.result.current.entries.get("m-stable-a")).toMatchObject({
+        status: "ok",
+        content: "body-m-stable-a",
+      });
+    });
+    expect(state.post).toHaveBeenCalledTimes(postCallsBefore);
+  });
+
+  it("revalidates expired entries on open visible tabs via TTL timer without visibilitychange", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    const visibilityDesc = Object.getOwnPropertyDescriptor(document, "visibilityState");
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
+
+    try {
+      let updated = false;
+      state.post.mockImplementation(async () => ({
+        data: {
+          items: {
+            "m-open-ttl": okForward(
+              "m-open-ttl",
+              updated ? "updated open body" : "initial open body",
+            ),
+          },
+        },
+        txid: null,
+      }));
+
+      const { result } = renderHook(() => useForwardedMessages(["m-open-ttl"]));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20);
+      });
+
+      expect(result.current.entries.get("m-open-ttl")).toMatchObject({
+        status: "ok",
+        content: "initial open body",
+      });
+      expect(state.post).toHaveBeenCalledTimes(1);
+
+      // visibilitychange を起こさずに開いたまま TTL を経過させると、タイマーで自動再検証される
+      updated = true;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(FORWARD_OK_TTL_MS);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20);
+        await Promise.resolve();
+      });
+
+      expect(result.current.entries.get("m-open-ttl")).toMatchObject({
+        status: "ok",
+        content: "updated open body",
+      });
+      expect(state.post).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+      if (visibilityDesc) {
+        Object.defineProperty(document, "visibilityState", visibilityDesc);
+      } else {
+        delete (document as unknown as { visibilityState?: string }).visibilityState;
+      }
+    }
+  });
 });

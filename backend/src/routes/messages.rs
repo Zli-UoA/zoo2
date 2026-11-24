@@ -1007,11 +1007,14 @@ pub(crate) async fn create_message_impl(
     )
     .await?;
 
-    // Slack 転送の未取り込み参照に予約された決定的 ID（大文字表記を含む）は事前作成させない
+    // Slack 転送の未取り込み参照に予約された決定的 ID（大文字・別表記を含む）は事前作成させない
+    // （Slack 側の予約登録との競合はアドバイザリロックで直列化する）。
     if supplied_id.is_some() {
         let canonical_id = Uuid::parse_str(&id)
             .map(|u| u.to_string())
             .unwrap_or_else(|_| id.clone());
+        crate::slack::lock_message_id_reservation(&mut tx, std::slice::from_ref(&canonical_id))
+            .await?;
         let reserved = crate::apps::query(
             &mut tx,
             "SELECT json_build_object('ok', true)::text FROM slack_forward_targets WHERE message_id = $1",

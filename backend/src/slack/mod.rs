@@ -79,6 +79,35 @@ pub fn is_live_reply_ts(ts: &str, now_secs: u64) -> bool {
     secs >= now_secs.saturating_sub(window)
 }
 
+/// 未取り込み Slack 転送 ID の予約確認（`POST /api/messages`）と予約登録（Slack 取り込み）を
+/// 同一キー順のトランザクション単位アドバイザリロックで直列化する。
+pub async fn lock_message_id_reservation(
+    tx: &mut toasty::Transaction<'_>,
+    canonical_ids: &[String],
+) -> Result<(), crate::error::AppError> {
+    let mut sorted = canonical_ids
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+    sorted.sort();
+    sorted.dedup();
+    if sorted.is_empty() {
+        return Ok(());
+    }
+    let json = serde_json::to_string(&sorted)
+        .map_err(|err| crate::error::AppError::Internal(err.into()))?;
+    toasty::sql::query(
+        "SELECT json_build_object('locked', count(*))::text
+         FROM jsonb_array_elements_text($1::jsonb) AS k(id),
+         LATERAL pg_advisory_xact_lock(hashtextextended('slack_forward_target:' || k.id, 0))",
+    )
+    .bind(json.as_str())
+    .exec(&mut *tx)
+    .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

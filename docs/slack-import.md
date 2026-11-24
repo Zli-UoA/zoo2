@@ -406,8 +406,10 @@ Slack の転送・引用投稿やメッセージパーマリンク展開は `att
 ```bash
 # 既定は dry-run（書き込みなし・件数集計のみ）
 kubectl -n zoo2 exec deploy/zoo-slack-worker -- /home/nonroot/zoo_slack_backfill_forwards
-# 書き込みを実行（チャンネルや開始 ts・最大ページ数で絞り込み可能）
-kubectl -n zoo2 exec deploy/zoo-slack-worker -- /home/nonroot/zoo_slack_backfill_forwards --apply [--channel <id>] [--oldest <slack_ts>] [--max-pages <N>]
+# 書き込みを実行（チャンネル・再開カーソル・対象 ts 下限・最大ページ数を指定可能）
+kubectl -n zoo2 exec deploy/zoo-slack-worker -- /home/nonroot/zoo_slack_backfill_forwards --apply [--channel <id>] [--cursor <slack_cursor>] [--oldest <slack_ts>] [--max-pages <N>]
 ```
 
-暗号化チャンネル・削除済み・Zoo 起点（`origin = 'zoo'`）は対象外で、`updated_at`・`revision` を増やさずに欠損した `forwarded_message_ids` の補完と未取り込みだったコメントなし転送の挿入を冪等に行う。本コマンドは通常同期ワーカーのチャンネルリース（`slack_channel_syncs.lease_token`）を取得せず稼働中のワーカーと並行実行し得るが、決定的 ID の `ON CONFLICT DO NOTHING` と `forwarded_message_ids IS NULL` 条件付きの補完のみを行うため重複・上書きは生じない（ただし Slack API のレート制限 429 は共有されるため、広範囲へ実行する場合は `--channel` や `--max-pages` での分割または閑散時の実行を推奨する）。
+暗号化チャンネル・削除済み・Zoo 起点（`origin = 'zoo'`）は対象外で、`updated_at`・`revision` を増やさずに欠損した `forwarded_message_ids` の補完と未取り込みだったコメントなし転送の挿入を冪等に行う。`--oldest <slack_ts>` は古い親投稿配下の新着スレッド返信を取りこぼさないよう履歴を `oldest=0` で取得したうえで適用対象（およびスレッド探索）を絞り込むオプションであり、`conversations.history` の API 呼び出し回数自体は削減しない。API 呼び出しを分割したい場合は `--channel` と `--max-pages <N>` を併用し、`--max-pages` で打ち切られた際に出力されるレポートの `truncated: true` / `resume_channels`（`next_history_cursor` 等）を使って `--channel <id> --cursor <next_history_cursor>` で再開する。
+
+本コマンドは通常同期ワーカーのチャンネルリース（`slack_channel_syncs.lease_token`）を取得せず稼働中のワーカーと並行実行し得るが、決定的 ID の `ON CONFLICT` により重複投稿を作らず、既存行に対しては本文・`updated_at`・`revision` を上書きせず条件付きの補完（`forwarded_message_ids IS NULL` への設定、および親を後から取り込んだ場合の未設定 `parent_id IS NULL` 返信への親付け替え）のみを行う（ただし Slack API のレート制限 429 は共有されるため、閑散時の分割実行を推奨する）。また未対応クライアント（Android・TUI・`desktop-tauri`、#698 で対応予定）ではコメントなし転送が空行として表示されるため、`--apply` による過去分の新規挿入は #698 の反映後に実行すること。
