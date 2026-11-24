@@ -1391,6 +1391,20 @@ async fn slack_zip_reimport_backfills_forwarded_ids_via_mock_s3() -> anyhow::Res
     let app = create_router(state.clone());
 
     let alice = create_user(&app, &state, "zip_alice").await?;
+    sql_exec(
+        &state,
+        "INSERT INTO role(id, role_name) VALUES('role_admin', 'admin') ON CONFLICT DO NOTHING \
+         RETURNING json_build_object('ok', true)::text",
+        &[],
+    )
+    .await?;
+    sql_exec(
+        &state,
+        "INSERT INTO user_role(user_id, role_id) VALUES($1, 'role_admin') ON CONFLICT DO NOTHING \
+         RETURNING json_build_object('ok', true)::text",
+        &[&alice],
+    )
+    .await?;
     let zoo_ch = create_channel(&app, &alice, false, false, &[]).await?;
     let team = format!("TZIP{}", &Uuid::new_v4().simple().to_string()[..8]);
 
@@ -1403,13 +1417,19 @@ async fn slack_zip_reimport_backfills_forwarded_ids_via_mock_s3() -> anyhow::Res
     let id_reply = slack::message_id(&team, "CZ1", ts_reply).to_string();
     let id_commentless = slack::message_id(&team, "CZ1", ts_commentless).to_string();
 
-    // 既存取り込みメッセージ（forwarded_message_ids なし、updated_at = NULL、親投稿＋スレッド返信）
+    // 既存取り込みメッセージ（forwarded_message_ids なし、updated_at = NULL、親投稿＋スレッド返信、
+    // 作成日時は Slack の ts と一致させ worker::insert_message の derived 判定を通す）
     sql_exec(
         &state,
-        "INSERT INTO messages(id, user_id, channel_id, parent_id, content, revision) \
-         VALUES($1, $2, $3, NULL, 'existing src', 1), ($4, $2, $3, NULL, 'with fwd', 1), ($5, $2, $3, $4, 'reply fwd', 1) \
+        "INSERT INTO messages(id, user_id, channel_id, parent_id, content, created_at, revision) \
+         VALUES\
+         ($1, $2, $3, NULL, 'existing src', (to_timestamp($6::numeric) AT TIME ZONE 'UTC')::timestamp(3), 1), \
+         ($4, $2, $3, NULL, 'with fwd', (to_timestamp($7::numeric) AT TIME ZONE 'UTC')::timestamp(3), 1), \
+         ($5, $2, $3, $4, 'reply fwd', (to_timestamp($8::numeric) AT TIME ZONE 'UTC')::timestamp(3), 1) \
          RETURNING json_build_object('ok', true)::text",
-        &[&id_src, &alice, &zoo_ch, &id_fwd, &id_reply],
+        &[
+            &id_src, &alice, &zoo_ch, &id_fwd, &id_reply, ts_src, ts_fwd, ts_reply,
+        ],
     )
     .await?;
 
