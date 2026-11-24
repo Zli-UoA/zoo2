@@ -989,26 +989,24 @@ fn merged_placeholder_refresh<'a>(
         .filter(|url| url.starts_with("https://"));
     let is_bot =
         stored.is_bot || profile.is_some_and(|p| p.is_bot) || stored.slack_id.starts_with('B');
-    // An entry without name fields (sparse `{"id":"U1"}`, bot-flag-only
-    // `{"id":"U1","is_bot":true}`, or avatar-only `{"id":"U1","profile":{"image_72":"https://..."}}`)
-    // must not let a message fallback overwrite a `"profile"`-sourced row's
-    // workspace-wide name/display_name/real_name or downgrade its `profile_source`;
-    // it may only update `avatar` and `is_bot`.
-    let allowed_fallback =
-        if stored.profile_source == "profile" && !profile_contributes_name(profile) {
-            None
-        } else {
-            fallback_name
-        };
+    // A `"profile"`-sourced row keeps its workspace-wide identity: a message fallback
+    // must never supply its handle or display name, whether the later profile entry is
+    // sparse or only partially populated. Handle and display are chosen separately so
+    // that a new display name does not drag an unrelated fallback into the handle.
+    let name_fallback = if stored.profile_source == "profile" {
+        None
+    } else {
+        fallback_name
+    };
     let handle = profile_name
-        .or(allowed_fallback)
+        .or(name_fallback)
         .filter(|name| !name.is_empty())
         .unwrap_or(if stored.name.is_empty() {
             stored.slack_id
         } else {
             stored.name
         });
-    let display = match profile_display.or(allowed_fallback) {
+    let display = match profile_display.or(name_fallback) {
         Some(candidate) => sanitize_for_display_name(candidate, handle),
         None => stored.display_name.to_string(),
     };
@@ -1409,7 +1407,9 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             exec(
                 &mut tx,
                 "INSERT INTO slack_channels(team_id,slack_channel_id,channel_id) VALUES($1,$2,$3) \
-                 ON CONFLICT (team_id,slack_channel_id) DO UPDATE SET channel_id=EXCLUDED.channel_id,updated_at=now()",
+                 ON CONFLICT (team_id,slack_channel_id) DO UPDATE SET channel_id=EXCLUDED.channel_id,\
+                 last_ts=CASE WHEN slack_channels.channel_id IS DISTINCT FROM EXCLUDED.channel_id THEN NULL ELSE slack_channels.last_ts END,\
+                 updated_at=now()",
                 &[&team, &channel.id, &target.0],
             )
             .await?;
@@ -2231,6 +2231,26 @@ pub(super) async fn insert_message(
     if own.as_ref().is_some_and(|(_, origin)| origin == "zoo") {
         return Ok(());
     }
+    // 対応付けた Zoo のメッセージが、いまの取り込み先とは別のチャンネルにあるなら、触らない。
+    // Slack チャンネルの対応先を付け替えたあとに、古い対応先の投稿へリアクションや添付を足さない
+    if let Some((mapped_id, _)) = own.as_ref() {
+        let other = query(
+            tx,
+            "SELECT json_build_object('other',channel_id<>$2)::text FROM messages WHERE id=$1",
+            &[mapped_id.as_str(), channel_id],
+        )
+        .await?;
+        if other.first().is_some_and(|row| row["other"] == true) {
+            tracing::warn!(
+                message_id = %mapped_id,
+                slack_channel,
+                ts = %message.ts,
+                channel_id,
+                "A Slack message was not applied because its mapped message is in another channel"
+            );
+            return Ok(());
+        }
+    }
     let author = message.author().unwrap_or_default();
     let fallback = message
         .username
@@ -2258,7 +2278,22 @@ pub(super) async fn insert_message(
     let mut parent_ts = "";
     let parent = match message.parent_ts() {
         Some(ts) => match mapped(tx, &ctx.team, slack_channel, ts).await? {
-            Some((id, _)) => id,
+            Some((id, _)) => {
+                // 対応先を付け替えたあとに、古い対応先の投稿を親にしない (親なしとして取り込む)
+                let in_channel = !query(
+                    tx,
+                    "SELECT json_build_object('ok',true)::text FROM messages WHERE id=$1 AND channel_id=$2",
+                    &[id.as_str(), channel_id],
+                )
+                .await?
+                .is_empty();
+                if in_channel {
+                    id
+                } else {
+                    parent_ts = ts;
+                    super::message_id(&ctx.team, slack_channel, ts)
+                }
+            }
             None => {
                 parent_ts = ts;
                 super::message_id(&ctx.team, slack_channel, ts)
@@ -4431,7 +4466,9 @@ mod tests {
             .await?
             .get(0);
         anyhow::ensure!(database.contains("test"), "refusing non-test database");
-        let db = crate::db::init_db(&database_url).await?;
+        // 2 接続を同時に持つので、`DB_MAX_POOL_SIZE=1` でも環境の設定で
+        // プールが尽きて自分自身で止まらないよう、明示的に 2 以上を渡す。
+        let db = crate::db::init_db_with_pool(&database_url, 2).await?;
 
         let baseline_team = format!("TBASE{}", uuid::Uuid::new_v4().simple());
         let order_team = format!("TORDER{}", uuid::Uuid::new_v4().simple());
@@ -4483,7 +4520,13 @@ mod tests {
                     app_id: None,
                 };
                 ctx.user(&mut tx, &first, Some(&fallback)).await?;
-                task_barrier.wait().await;
+                tokio::time::timeout(Duration::from_secs(5), task_barrier.wait())
+                    .await
+                    .map_err(|_| {
+                        anyhow::anyhow!(
+                            "the {actor} importer never reached the barrier; its peer may have failed first"
+                        )
+                    })?;
                 let failure = ctx
                     .user(&mut tx, &second, Some(&fallback))
                     .await
@@ -4751,7 +4794,9 @@ mod tests {
         let database_url = std::env::var("SLACK_IMPORT_TEST_DATABASE_URL")?;
         let mut config = crate::config::Config::from_env();
         config.database_url = database_url.clone();
-        let mut db = crate::db::init_db(&config.database_url).await?;
+        // 2 接続を同時に持つので、`DB_MAX_POOL_SIZE=1` でもプールの枯渇で
+        // 自分自身が止まらないよう、明示的に 2 以上を渡す。
+        let mut db = crate::db::init_db_with_pool(&config.database_url, 2).await?;
         let creator = uuid::Uuid::new_v4().to_string();
         let existing = uuid::Uuid::new_v4().to_string();
         let created = uuid::Uuid::new_v4().to_string();
@@ -4840,7 +4885,9 @@ mod tests {
             tx.commit().await?;
             Ok::<_, AppError>(())
         });
-        started_rx.await?;
+        tokio::time::timeout(Duration::from_secs(5), started_rx)
+            .await
+            .map_err(|_| anyhow::anyhow!("the ZIP importer did not start within 5s"))??;
         let waiting_for_creator = tokio::time::timeout(
             Duration::from_secs(10),
             wait_blocked_on(&observer, note_pid, 200),
@@ -4897,7 +4944,9 @@ mod tests {
         let database_url = std::env::var("SLACK_IMPORT_TEST_DATABASE_URL")?;
         let mut config = crate::config::Config::from_env();
         config.database_url = database_url.clone();
-        let mut db = crate::db::init_db(&config.database_url).await?;
+        // 2 接続を同時に持つので、`DB_MAX_POOL_SIZE=1` でもプールの枯渇で
+        // 自分自身が止まらないよう、明示的に 2 以上を渡す。
+        let mut db = crate::db::init_db_with_pool(&config.database_url, 2).await?;
         let team = format!("TLOCKP{}", uuid::Uuid::new_v4().simple());
         let slack_member = format!(
             "U{}",
@@ -5027,7 +5076,9 @@ mod tests {
                 tx.commit().await?;
                 Ok::<_, AppError>(())
             }));
-            started_rx.await?;
+            tokio::time::timeout(Duration::from_secs(5), started_rx)
+            .await
+            .map_err(|_| anyhow::anyhow!("the ZIP importer did not start within 5s"))??;
             let waiting_for_member =
                 tokio::time::timeout(Duration::from_secs(10), wait_blocked_on(&observer, note_pid, 200))
                     .await??;
@@ -5271,6 +5322,22 @@ mod tests {
         assert_eq!(merged.display, "Renamed");
         assert_eq!(merged.real_name, "Renamed Real");
         assert_eq!(merged.avatar, "https://avatars.example/renamed.png");
+        assert_eq!(merged.profile_source, "profile");
+    }
+
+    #[test]
+    fn profile_rows_keep_the_handle_when_only_the_display_name_changes() {
+        // CodeRabbit #10: a profile refresh that only carries `profile.display_name`
+        // must update the display name without letting the message fallback
+        // (`username`) replace the stored handle.
+        let stored = stored_placeholder("U1", "alice", "Alice", "Alice Real", "", false, "profile");
+        let renamed = slack_user_profile(serde_json::json!({
+            "id":"U1","name":"","real_name":"","profile":{"display_name":"Alice Ops"}
+        }));
+        let merged = merged_placeholder_refresh(&stored, Some(&renamed), Some("deploybot"));
+        assert_eq!(merged.handle, "alice");
+        assert_eq!(merged.display, "Alice Ops");
+        assert_eq!(merged.real_name, "Alice Real");
         assert_eq!(merged.profile_source, "profile");
     }
 

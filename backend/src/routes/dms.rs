@@ -65,7 +65,47 @@ async fn ensure_actor_not_deactivated(
     Ok(())
 }
 
+/// 1 対 1 DM の作成・復帰を最大 2 回試す。PostgreSQL のデッドロック
+/// (`deadlock_detected`, SQLSTATE 40P01) だけを 1 回再試行し、既存の UNIQUE
+/// 制約違反による `Ok(None)` (呼び出し側の再試行) はそのまま保つ。
 async fn try_create_or_get_1on1_dm(
+    db: &mut toasty::Db,
+    auth_user_id: &str,
+    target_id: &str,
+    channel_name: &str,
+    custom_id: Option<String>,
+    encrypted: bool,
+) -> Result<Option<ApiResponse<ChannelResponse>>, AppError> {
+    let mut deadlock_retried = false;
+    loop {
+        match try_create_or_get_1on1_dm_once(
+            db,
+            auth_user_id,
+            target_id,
+            channel_name,
+            custom_id.clone(),
+            encrypted,
+        )
+        .await
+        {
+            Ok(result) => return Ok(result),
+            Err(AppError::Database(err))
+                if !deadlock_retried && AppError::is_deadlock_detected(&err) =>
+            {
+                // `try_create_or_get_1on1_dm_once` returns after dropping its
+                // transaction; toasty rolls back an unfinalized transaction on
+                // drop, so the retry starts from a clean connection.
+                tracing::warn!(
+                    "Concurrent 1-on-1 DM transaction deadlocked (SQLSTATE 40P01), retrying once: {err}"
+                );
+                deadlock_retried = true;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+async fn try_create_or_get_1on1_dm_once(
     db: &mut toasty::Db,
     auth_user_id: &str,
     target_id: &str,

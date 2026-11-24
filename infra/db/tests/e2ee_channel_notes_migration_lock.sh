@@ -60,8 +60,8 @@ PGAPPNAME="$writer_app" psql "$NOTES_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
 writer_pid=$!
 exec 3>"$writer_fifo"
 
-printf "BEGIN;\nINSERT INTO channel_notes (id, channel_id, title, content, created_user_id) VALUES ('%s', '%s', 'plain', 'note', '%s');\n" \
-  "$note_id" "$channel_id" "$user_id" >&3
+printf "SET application_name = '%s';\nBEGIN;\nINSERT INTO channel_notes (id, channel_id, title, content, created_user_id) VALUES ('%s', '%s', 'plain', 'note', '%s');\n" \
+  "$writer_app" "$note_id" "$channel_id" "$user_id" >&3
 
 writer_holding_lock=false
 for _ in $(seq 1 100); do

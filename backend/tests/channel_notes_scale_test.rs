@@ -329,7 +329,7 @@ async fn channel_notes_work_is_bounded_by_channel_notes_not_history() -> anyhow:
         &mut metrics,
     )
     .await?;
-    let list_deleted_first = "SELECT id, channel_id, title, content, position, version, created_user_id, \
+    let list_deleted_first = "SELECT id, channel_id, title, position, version, created_user_id, \
                 to_char(created_at, 'YYYY-MM-DD') || 'T' || to_char(created_at, 'HH24:MI:SS.MS'), \
                 to_char(updated_at, 'YYYY-MM-DD') || 'T' || to_char(updated_at, 'HH24:MI:SS.MS'), \
                 to_char(deleted_at, 'YYYY-MM-DD') || 'T' || to_char(deleted_at, 'HH24:MI:SS.MS') \
@@ -350,7 +350,7 @@ async fn channel_notes_work_is_bounded_by_channel_notes_not_history() -> anyhow:
     // The deleted-list deep page continues after the 46th of the 50 in-window
     // tombstones using the dedicated continuation SQL (`(deleted_at, id) > (...)`
     // directly in WHERE without a CASE wrapper).
-    let list_deleted_after = "SELECT id, channel_id, title, content, position, version, created_user_id, \
+    let list_deleted_after = "SELECT id, channel_id, title, position, version, created_user_id, \
                 to_char(created_at, 'YYYY-MM-DD') || 'T' || to_char(created_at, 'HH24:MI:SS.MS'), \
                 to_char(updated_at, 'YYYY-MM-DD') || 'T' || to_char(updated_at, 'HH24:MI:SS.MS'), \
                 to_char(deleted_at, 'YYYY-MM-DD') || 'T' || to_char(deleted_at, 'HH24:MI:SS.MS') \

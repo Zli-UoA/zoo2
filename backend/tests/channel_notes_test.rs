@@ -1511,6 +1511,9 @@ async fn expired_notes_are_purged_without_touching_live_recent_or_locked_notes()
         .execute("DELETE FROM channels WHERE id = $1", &[&channel])
         .await?;
     cleanup
+        .execute("DELETE FROM channel_user WHERE user_id = $1", &[&owner])
+        .await?;
+    cleanup
         .execute("DELETE FROM users WHERE id = $1", &[&owner])
         .await?;
     cleanup.commit().await?;
@@ -1721,6 +1724,9 @@ async fn expired_note_cleanup_skips_a_locked_channel_without_blocking_other_chan
         )
         .await?;
     cleanup
+        .execute("DELETE FROM channel_user WHERE user_id = $1", &[&owner])
+        .await?;
+    cleanup
         .execute("DELETE FROM users WHERE id = $1", &[&owner])
         .await?;
     cleanup.commit().await?;
@@ -1786,6 +1792,120 @@ async fn expired_note_cleanup_reuses_unused_batch_capacity() -> anyhow::Result<(
         .await?;
     cleanup
         .execute("DELETE FROM channels WHERE id = ANY($1)", &[&channels])
+        .await?;
+    cleanup
+        .execute("DELETE FROM channel_user WHERE user_id = $1", &[&owner])
+        .await?;
+    cleanup
+        .execute("DELETE FROM users WHERE id = $1", &[&owner])
+        .await?;
+    cleanup.commit().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn expired_note_cleanup_shares_each_pass_evenly_across_channels() -> anyhow::Result<()> {
+    let _cleanup_guard = CLEANUP_TEST_LOCK.lock().await;
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let owner = Uuid::new_v4().to_string();
+    let (mut connection, driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(driver);
+    connection
+        .execute(
+            "INSERT INTO users (id, user_name, display_name) VALUES ($1, $1, 'Cleanup quota test')",
+            &[&owner],
+        )
+        .await?;
+
+    // Generate unique sorted channel IDs so retries or parallel processes cannot collide.
+    let mut channels: Vec<String> = (0..3).map(|_| Uuid::new_v4().to_string()).collect();
+    channels.sort();
+    for (index, channel) in channels.iter().enumerate() {
+        connection
+            .execute(
+                "INSERT INTO channels (id, channel_name, created_user_id, is_private) VALUES ($1, $2, $3, false)",
+                &[channel, &format!("purge_quota_{}", Uuid::new_v4().simple()), &owner],
+            )
+            .await?;
+        let amount: i32 = if index == 1 { 1 } else { 100 };
+        connection
+            .execute(
+                "INSERT INTO channel_notes (id, channel_id, title, content, created_user_id, deleted_at) \
+                 SELECT gen_random_uuid()::text, $1, 'expired', 'text', $2, \
+                        (statement_timestamp() AT TIME ZONE 'UTC') - interval '25 hours' \
+                 FROM generate_series(1, $3::int)",
+                &[channel, &owner, &amount],
+            )
+            .await?;
+    }
+    connection
+        .execute(
+            "UPDATE channel_notes_cleanup_cursor SET last_channel_id = '' WHERE id = true",
+            &[],
+        )
+        .await?;
+
+    // Isolate this test from any pre-existing expired notes in other channels by
+    // holding their channel-note advisory locks while purge_expired_notes runs.
+    let lock_tx = connection.transaction().await?;
+    lock_tx
+        .execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended('channel-note:' || channel_id, 0)) \
+             FROM ( \
+                 SELECT DISTINCT channel_id FROM channel_notes \
+                 WHERE deleted_at < (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours' \
+                   AND channel_id <> ALL($1) \
+                 ORDER BY channel_id \
+             ) foreign_channels",
+            &[&channels],
+        )
+        .await?;
+
+    let purge_result = backend::routes::channel_notes::purge_expired_notes(&db).await;
+    lock_tx.rollback().await?;
+    let deleted = purge_result?;
+    assert_eq!(deleted, 100, "the cleanup batch must use its full quota");
+    let mut remaining = Vec::with_capacity(channels.len());
+    for channel in &channels {
+        let count: i64 = connection
+            .query_one(
+                "SELECT count(*) FROM channel_notes WHERE channel_id = $1",
+                &[channel],
+            )
+            .await?
+            .get(0);
+        remaining.push(count);
+    }
+    let deleted_per_channel: Vec<i64> = remaining
+        .iter()
+        .zip([100i64, 1, 100])
+        .map(|(remaining, initial)| initial - remaining)
+        .collect();
+    assert_eq!(
+        deleted_per_channel,
+        vec![50, 1, 49],
+        "each pass must give every active channel the same share instead of \
+         letting later channels consume the capacity left by smaller ones"
+    );
+
+    let cleanup = connection.transaction().await?;
+    cleanup
+        .execute("SET LOCAL zoo.suppress_app_events = 'on'", &[])
+        .await?;
+    cleanup
+        .execute(
+            "DELETE FROM app_deliveries WHERE channel_id = ANY($1)",
+            &[&channels],
+        )
+        .await?;
+    cleanup
+        .execute("DELETE FROM channels WHERE id = ANY($1)", &[&channels])
+        .await?;
+    cleanup
+        .execute("DELETE FROM channel_user WHERE user_id = $1", &[&owner])
         .await?;
     cleanup
         .execute("DELETE FROM users WHERE id = $1", &[&owner])
@@ -1886,6 +2006,9 @@ async fn expired_note_cleanup_scans_past_one_hundred_busy_channels() -> anyhow::
         .await?;
     cleanup
         .execute("DELETE FROM channels WHERE id = ANY($1)", &[&channels])
+        .await?;
+    cleanup
+        .execute("DELETE FROM channel_user WHERE user_id = $1", &[&owner])
         .await?;
     cleanup
         .execute("DELETE FROM users WHERE id = $1", &[&owner])
@@ -2039,6 +2162,9 @@ async fn expired_note_cleanup_rotates_across_a_persistent_backlog() -> anyhow::R
         .execute("DELETE FROM channels WHERE id = ANY($1)", &[&channels])
         .await?;
     cleanup
+        .execute("DELETE FROM channel_user WHERE user_id = $1", &[&owner])
+        .await?;
+    cleanup
         .execute("DELETE FROM users WHERE id = $1", &[&owner])
         .await?;
     cleanup.commit().await?;
@@ -2182,6 +2308,9 @@ async fn deleted_note_timestamp_format_ignores_postgres_datestyle() -> anyhow::R
         .execute("DELETE FROM channels WHERE id = $1", &[&channel])
         .await?;
     cleanup
+        .execute("DELETE FROM channel_user WHERE user_id = $1", &[&owner])
+        .await?;
+    cleanup
         .execute("DELETE FROM users WHERE id = $1", &[&owner])
         .await?;
     cleanup.commit().await?;
@@ -2219,6 +2348,13 @@ async fn channel_notes_wait_for_channel_and_membership_changes_before_authorizin
     let (mut connection, driver) =
         tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(driver);
+    let blocker_pid: i32 = connection
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
+    let (observer, observer_driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(observer_driver);
 
     // An uncommitted archive holds the row lock while authorization sees the old state.
     let tx = connection.transaction().await?;
@@ -2240,7 +2376,7 @@ async fn channel_notes_wait_for_channel_and_membership_changes_before_authorizin
         )
         .await
     });
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    wait_until_blocked_by(&observer, blocker_pid).await?;
     assert!(
         !pending.is_finished(),
         "write must wait for the archive transaction"
@@ -2274,7 +2410,7 @@ async fn channel_notes_wait_for_channel_and_membership_changes_before_authorizin
         )
         .await
     });
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    wait_until_blocked_by(&observer, blocker_pid).await?;
     assert!(
         !pending.is_finished(),
         "write must wait for membership removal"
@@ -2330,6 +2466,13 @@ async fn channel_notes_get_waits_for_visibility_and_membership_changes() -> anyh
     let (mut connection, driver) =
         tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(driver);
+    let blocker_pid: i32 = connection
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
+    let (observer, observer_driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(observer_driver);
     let tx = connection.transaction().await?;
     tx.execute(
         "UPDATE channels SET is_private = true WHERE id = $1",
@@ -2341,7 +2484,7 @@ async fn channel_notes_get_waits_for_visibility_and_membership_changes() -> anyh
     let actor = outsider.clone();
     let pending =
         tokio::spawn(async move { request(&api, "GET", &path, &actor, Value::Null).await });
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    wait_until_blocked_by(&observer, blocker_pid).await?;
     assert!(
         !pending.is_finished(),
         "GET must wait for a concurrent visibility change"
@@ -2404,7 +2547,7 @@ async fn channel_notes_get_waits_for_visibility_and_membership_changes() -> anyh
     let actor = member;
     let pending =
         tokio::spawn(async move { request(&api, "GET", &path, &actor, Value::Null).await });
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    wait_until_blocked_by(&observer, blocker_pid).await?;
     assert!(
         !pending.is_finished(),
         "GET must wait for membership removal even when it does not lock the channel"
@@ -2460,16 +2603,15 @@ async fn adding_user_serializes_guest_transition_before_channel_lock() -> anyhow
     let (observe_connection, observe_driver) =
         tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(observe_driver);
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    let add_pid = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
-            let waiting: bool = observe_connection.query_one(
-                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%channels%' AND query LIKE '%NO KEY UPDATE%' AND $1 = ANY(pg_blocking_pids(pid)))",
+            let waiting = observe_connection.query_opt(
+                "SELECT pid FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%channels%' AND query LIKE '%NO KEY UPDATE%' AND $1 = ANY(pg_blocking_pids(pid)) LIMIT 1",
                 &[&blocker_pid],
-            ).await?.get(0);
-            if waiting { break; }
+            ).await?;
+            if let Some(row) = waiting { break Ok::<i32, anyhow::Error>(row.get(0)); }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        Ok::<(), anyhow::Error>(())
     }).await??;
 
     let (update_connection, update_driver) =
@@ -2484,7 +2626,7 @@ async fn adding_user_serializes_guest_transition_before_channel_lock() -> anyhow
             )
             .await
     });
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    wait_until_blocked_by(&observe_connection, add_pid).await?;
     let transition_waited_for_add = !update.is_finished();
     assert!(
         transition_waited_for_add,
@@ -2824,6 +2966,9 @@ async fn channel_note_deleted_at_is_utc_in_non_utc_sessions() -> anyhow::Result<
         .await?;
     cleanup
         .execute("DELETE FROM channels WHERE id = $1", &[&channel])
+        .await?;
+    cleanup
+        .execute("DELETE FROM channel_user WHERE user_id = $1", &[&owner])
         .await?;
     cleanup
         .execute("DELETE FROM users WHERE id = $1", &[&owner])
@@ -3334,15 +3479,48 @@ async fn channel_notes_enforce_access_and_compare_versions_atomically() -> anyho
     let deleted_list = request(&app, "GET", &deleted, &member, Value::Null).await.1;
     assert_eq!(deleted_list["data"][0]["id"], note_id);
     assert_eq!(deleted_list["data"][0]["title"], updated["data"]["title"]);
-    assert_eq!(
-        deleted_list["data"][0]["content"],
-        updated["data"]["content"]
+    assert!(
+        deleted_list["data"][0].get("content").is_none(),
+        "the deleted list must omit content: {deleted_list}"
     );
+    assert!(deleted_list["data"][0]["deleted_at"].is_string());
     assert_eq!(
         deleted_list["data"][0]["created_at"],
         created["data"]["created_at"]
     );
     assert_eq!(deleted_list["data"][0]["updated_at"], deleted_updated_at);
+
+    // The body of a deleted note is available to members from the dedicated
+    // endpoint within the 24-hour window, but not to channel outsiders.
+    let deleted_item = format!("{deleted}/{note_id}");
+    let (status, deleted_body) = request(&app, "GET", &deleted_item, &member, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{deleted_body}");
+    assert_eq!(deleted_body["data"]["id"], note_id);
+    assert_eq!(deleted_body["data"]["content"], updated["data"]["content"]);
+    assert_eq!(
+        deleted_body["data"]["deleted_at"],
+        deleted_list["data"][0]["deleted_at"]
+    );
+    assert_eq!(
+        request(&app, "GET", &deleted_item, &outsider, Value::Null)
+            .await
+            .0,
+        StatusCode::FORBIDDEN,
+        "non-members must not read a deleted note body"
+    );
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            &format!("{deleted}/{second_id}"),
+            &member,
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND,
+        "active notes are not returned by the deleted-note endpoint"
+    );
     assert_eq!(
         request(
             &app,
@@ -3458,6 +3636,19 @@ async fn channel_notes_enforce_access_and_compare_versions_atomically() -> anyho
         .await
         .0,
         StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            &format!("{deleted}/{expired_id}"),
+            &owner,
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND,
+        "deleted notes older than 24 hours are no longer readable"
     );
 
     // Private-channel visibility is hidden from non-members even for direct note URLs.
@@ -3679,6 +3870,9 @@ async fn channel_note_update_ignores_soft_deleted_note_with_post_delete_version(
         .execute("DELETE FROM channels WHERE id = $1", &[&channel])
         .await?;
     cleanup
+        .execute("DELETE FROM channel_user WHERE user_id = $1", &[&owner])
+        .await?;
+    cleanup
         .execute("DELETE FROM users WHERE id = $1", &[&owner])
         .await?;
     cleanup.commit().await?;
@@ -3796,6 +3990,9 @@ async fn channel_note_restore_expired_does_not_shift_active_positions() -> anyho
         .execute("DELETE FROM channels WHERE id = $1", &[&channel])
         .await?;
     cleanup
+        .execute("DELETE FROM channel_user WHERE user_id = $1", &[&owner])
+        .await?;
+    cleanup
         .execute("DELETE FROM users WHERE id = $1", &[&owner])
         .await?;
     cleanup.commit().await?;
@@ -3899,6 +4096,9 @@ async fn channel_note_duplicate_positions_tie_break_deterministically() -> anyho
         .await?;
     cleanup
         .execute("DELETE FROM channels WHERE id = $1", &[&channel])
+        .await?;
+    cleanup
+        .execute("DELETE FROM channel_user WHERE user_id = $1", &[&owner])
         .await?;
     cleanup
         .execute("DELETE FROM users WHERE id = $1", &[&owner])
@@ -4059,6 +4259,10 @@ async fn deleted_notes_list_is_paginated_by_deleted_at_and_id() -> anyhow::Resul
     assert_eq!(status, StatusCode::OK, "{body}");
     let page1 = body["data"].as_array().unwrap();
     assert_eq!(page1.len(), 50, "the default page is 50 notes");
+    assert!(
+        page1.iter().all(|item| item.get("content").is_none()),
+        "the deleted list must omit content: {body}"
+    );
     let last = page1.last().unwrap();
     let last_id = last["id"].as_str().unwrap().to_owned();
     let last_deleted_at = last["deleted_at"].as_str().unwrap().to_owned();

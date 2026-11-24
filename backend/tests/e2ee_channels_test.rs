@@ -1968,7 +1968,7 @@ async fn membership_insert_racing_single_guest_transition_preserves_single_chann
         .get::<_, String>(0);
     deferred_db
         .batch_execute(include_str!(
-            "../../infra/db/deferred-migrations/20261201010009_guest_membership_lock_order.sql"
+            "../../infra/db/deferred-migrations/20261201010010_guest_membership_lock_order.sql"
         ))
         .await?;
     let result = std::panic::AssertUnwindSafe(run_membership_race(&env))
@@ -1982,7 +1982,9 @@ async fn membership_insert_racing_single_guest_transition_preserves_single_chann
 }
 
 async fn run_membership_race(env: &Env) -> anyhow::Result<()> {
-    let guest = env.user().await;
+    // 既定チャンネルへの自動参加があると、race の前に非 DM 所属が 2 件以上になり
+    // 「1 -> 2」の境界を検証できない。
+    let guest = env.user_without_default_channels().await;
     let owner = env.user().await;
     let first_channel = Uuid::new_v4().to_string();
     let second_channel = Uuid::new_v4().to_string();
@@ -1999,6 +2001,20 @@ async fn run_membership_race(env: &Env) -> anyhow::Result<()> {
         &[&guest, &first_channel],
     )
     .await?;
+
+    // race は「非 DM 所属 1 件」から始める。ここが 1 でないと、2 件目を入れる競合が
+    // 上限を超える境界を検証しない。
+    let memberships = env
+        .query(
+            "SELECT json_build_object('count', count(*))::text FROM channel_user cu JOIN channels c ON c.id = cu.channel_id WHERE cu.user_id = $1 AND NOT c.is_dm AND c.deleted_at IS NULL",
+            &[&guest],
+        )
+        .await;
+    assert_eq!(
+        memberships[0]["count"].as_i64(),
+        Some(1),
+        "the race must start at the single non-DM membership"
+    );
 
     // Hold the second membership uncommitted while another transaction changes the user to
     // `single`. The status trigger cannot see this row; the insert trigger must serialize both.

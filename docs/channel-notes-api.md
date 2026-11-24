@@ -9,7 +9,8 @@
 | GET | `/api/channels/{channel_id}/notes/{note_id}` | ノートを取得 |
 | PATCH | `/api/channels/{channel_id}/notes/{note_id}` | `title`、`content`、`version` を指定して更新 |
 | DELETE | `/api/channels/{channel_id}/notes/{note_id}` | JSON の `version` を指定して削除 |
-| GET | `/api/channels/{channel_id}/notes/deleted` | 24 時間以内に削除されたノートを 1 ページ分取得（`limit`・`after`） |
+| GET | `/api/channels/{channel_id}/notes/deleted` | 24 時間以内に削除されたノートの概要を 1 ページ分取得（`limit`・`after`） |
+| GET | `/api/channels/{channel_id}/notes/deleted/{note_id}` | 24 時間以内に削除されたノートの本文を取得（参加者のみ） |
 | POST | `/api/channels/{channel_id}/notes/{note_id}/restore` | 削除後 24 時間以内のノートを復元 |
 | PATCH | `/api/channels/{channel_id}/notes/order` | `expected_note_ids` と新しい `note_ids` を指定して並べ替え |
 
@@ -17,7 +18,7 @@
 
 削除後 24 時間を過ぎたノートは、定期処理により DB から物理削除する。停止中や障害時は遅れる場合があり、復旧後に再試行する。期限後は物理削除前でも復元できない。
 
-復元期限内の削除済みノートには、件数・サイズの上限を設けていない。有効ノートは 1 チャンネル 500 件で制限する。cleanup ワーカーは 60 秒ごとに、期限切れから 24 時間を過ぎたノートを最大 100 行のバッチで非同期に物理削除する。高負荷や一時的な障害が続くと、24 時間を過ぎても物理削除が遅れることがある。`docs/channel-notes-performance.md` にある有効 50 件・削除済み 100 件という規模は計測用 fixture の前提であり、本番の削除件数を観測した値ではない。削除に上限を設けると、正当な編集・整理の削除が失敗したり、復元できるはずのノートを cleanup や上限判定の途中で落としたりするおそれがあるため、現在は設けていない。削除済み一覧は `(deleted_at, id)` のカーソルでページを読むので、1 ページあたりの読み取りは `limit` で抑えられる。削除と復元を高速に繰り返す乱用が観測された場合は、削除済みノート数の上限や rate limit の追加を検討する。
+復元期限内の削除済みノートには、件数・サイズの上限を設けていない。有効ノートは 1 チャンネル 500 件で制限する。物理削除の対象になるのは、削除 (`deleted_at`) から 24 時間を過ぎたノートである（「期限切れから 24 時間後」ではない）。cleanup ワーカーは 60 秒ごとに、対象ノートを最大 100 行のバッチで非同期に物理削除する。高負荷や一時的な障害が続くと、削除から 24 時間を過ぎても物理削除が遅れることがある。`docs/channel-notes-performance.md` にある有効 50 件・削除済み 100 件という規模は計測用 fixture の前提であり、本番の削除件数を観測した値ではない。削除に上限を設けると、正当な編集・整理の削除が失敗したり、復元できるはずのノートを cleanup や上限判定の途中で落としたりするおそれがあるため、現在は設けていない。削除済み一覧は `(deleted_at, id)` のカーソルでページを読むので、1 ページあたりの読み取りは `limit` で抑えられる。削除と復元を高速に繰り返す乱用が観測された場合は、削除済みノート数の上限や rate limit の追加を検討する。
 
 API のノート作成・更新・削除・復元・並べ替えは、順序や対象行を読む前にチャンネル単位の transaction advisory lock (`pg_advisory_xact_lock(hashtextextended('channel-notes:' || channel_id, 0))`) を取得して直列化する。本文や削除状態を直接 SQL で変更する場合は、同じトランザクションで対象ノートの `version` も進めること。ロックだけでは、変更前に同じ版を取得したクライアントの更新を拒否できない。異なるチャンネルの API 書き込みは独立して進む。直接 SQL でノートを書き込む場合は、同じトランザクションで、最初の関連読み取りより前（読み取りをしない場合は書き込み前）に対象チャンネルの同じ lock を取得する。さらに、平文ガードの trigger (`e2ee_reject_plaintext_channel_notes`) とノート API の認可が最初に取る `channels` の `FOR SHARE` と同じロック順序に従い、`channel_notes` への直接 UPDATE・DELETE の前に同じチャンネル行を `SELECT ... FOR SHARE` で共有ロックしてから書くこと。trigger は `channel_notes` の行を更新する前に `channels` を `FOR SHARE` するため、この順序を外れると trigger・API・直接 SQL の間でデッドロックし得る。複数チャンネルのノートを移動・更新する SQL は、デッドロックを避けるため channel ID の昇順で各 lock を取ってから読み書きする。これは協調する書き込み経路間の契約であり、DB が任意 SQL のロック取得や認可・version 検証・順序の意味を透過的に保証するものではない。運用上の直接 SQL や保守ジョブもこの契約に従うこと。チャンネル削除の FK cascade はチャンネル行の排他ロックが API の共有ロックと競合するため、API 書き込み完了後に実行される。E2EE の DB guard は別の trigger で維持する。DB は active note の `position` 一意性も制約していないため、任意の値を指定する SQL や trigger を無効化する管理操作は重複位置を作り得る。
 
@@ -33,6 +34,6 @@ API のノート作成・更新・削除・復元・並べ替えは、順序や�
 
 `after` の `id` 部分（3 番目の要素）は、区切りの空白が存在する限り空文字 (`""`) を許す。ノートロック契約に従う直接 SQL は任意の text id を書けるため、空の id がページ境界に来ても `"<order_token> <position> "` のカーソルで継続できる。区切りそのものの欠落、空のトークン・position、数値でない position は `400 Bad Request` になる。
 
-削除済み一覧は `(deleted_at, id)` の昇順で、1 ページの件数を SQL で制限する。クエリーパラメーター `limit`（1〜200、既定 50）と `after`（前ページ最後の項目の `deleted_at` と `id` を空白区切りにした値）で次ページを取得できる。各項目の `deleted_at` は UTC の `YYYY-MM-DDTHH:MM:SS.mmm`（23 文字・ミリ秒 3 桁固定）で返し、カーソルも同じ形式に限る。この形式に合わない `deleted_at`（ミリ秒欠落・実在しない日時など）は SQL の実行前に `400 Bad Request` として拒否する（キャスト失敗の 500 にはしない）。`after` の `id` 部分は有効一覧と同じく、区切りの空白があれば空文字を許す。期限（24 時間）とチャンネルの条件は全ページで維持される。
+削除済み一覧は `(deleted_at, id)` の昇順で、1 ページの件数を SQL で制限する。各項目は `id, channel_id, title, position, version, created_user_id, created_at, updated_at, deleted_at` の概要で、本文 (`content`) は含まない。本文は `GET /api/channels/{channel_id}/notes/deleted/{note_id}` で取得する。この項目 API は参加者のみ利用でき、削除から 24 時間以内のノートだけを返す。有効なノート、削除から 24 時間を過ぎたノート、存在しないノートはすべて `404 Not Found` になる。クエリーパラメーター `limit`（1〜200、既定 50）と `after`（前ページ最後の項目の `deleted_at` と `id` を空白区切りにした値）で次ページを取得できる。各項目の `deleted_at` は UTC の `YYYY-MM-DDTHH:MM:SS.mmm`（23 文字・ミリ秒 3 桁固定）で返し、カーソルも同じ形式に限る。この形式に合わない `deleted_at`（ミリ秒欠落・実在しない日時など）は SQL の実行前に `400 Bad Request` として拒否する（キャスト失敗の 500 にはしない）。`after` の `id` 部分は有効一覧と同じく、区切りの空白があれば空文字を許す。期限（24 時間）とチャンネルの条件は全ページで維持される。
 
 メンション通知とクライアント画面は別の変更で追加する。

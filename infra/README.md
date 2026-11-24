@@ -261,20 +261,20 @@ POSTGRES_PASSWORD=staging-test-password \
 `users` ロックを `FOR NO KEY UPDATE` に弱めた `app_guest_membership_rules()` を適用します。
 `FOR UPDATE` は `channel_user` 挿入が外部キー検証で取る `users` 行の KEY SHARE とも競合するため、
 協調書き込み経路による同じユーザーへの所属挿入まで止め得ました。常時 `users` をロックする版は
-`infra/db/deferred-migrations/20261201010009_guest_membership_lock_order.sql`
+`infra/db/deferred-migrations/20261201010010_guest_membership_lock_order.sql`
 に置いています。旧バックエンドの `lock_members` は、single 以外のゲストでは `users` を先にロックせず
 advisory lock を取る経路があるため、旧インスタンスが動いている間にこの関数を適用すると
 「暗号化チャンネルへの所属追加」と「ユーザー無効化」が並行して PostgreSQL のデッドロック
 (SQLSTATE 40P01) になり得ます。
 
-段階デプロイ中は、旧版の平文 1 対 1 DM 復帰（`channels` を KEY SHARE でロックしてから所属挿入で `users` をロック）と、新版の暗号化（`lock_members` で先に `users` をロックしてから `channels` をロック）が同じゲスト行を取り合うと、PostgreSQL がどちらかを `40P01` で中止することがあります。データは壊れません。中止された操作は一時的な失敗として扱い、クライアントの再試行に任せてください。切り替え作業中にこの中止が頻発する場合は、旧版の復帰が終わるまで暗号化の切り替えを一時停止してください。
+段階デプロイ中は、旧版の平文 1 対 1 DM 復帰（`channels` を KEY SHARE でロックしてから所属挿入で `users` をロック）と、新版の暗号化（`lock_members` で先に `users` をロックしてから `channels` をロック）が同じゲスト行を取り合うと、PostgreSQL がどちらかを `40P01` で中止することがあります。特に `single` ゲストの平文 1 対 1 DM を並行して作成・復帰すると、このデッドロックが一時的に発生し得ます。データは壊れません。新バックエンドは 1 対 1 DM のトランザクションで `40P01` を検出すると、そのトランザクションを破棄して 1 回だけ再試行します。一方、旧バックエンドが処理した要求はロールアウトが完了するまで一時的に失敗することがあるため、クライアントの再試行に任せてください。切り替え作業中にこの中止が頻発する場合は、旧版の復帰が終わるまで暗号化の切り替えを一時停止してください。
 
 通常の `migrate-deploy` / `compose.stack` は `infra/db/migrations` だけをコピー・適用するため、
 この関数は適用されません。先に新バックエンド（`lock_membership_users` で users を先にロックする）へ
 切り替え、旧インスタンスの終了を確認してから、deferred migration を適用してください。
 
 適用には、canonical と共通の `atlas_schema_revisions` を使わず、deferred 専用の
-リビジョン表に記録します。共有表に `20261201010009` が記録されると、将来の canonical
+リビジョン表に記録します。共有表に `20261201010010` が記録されると、将来の canonical
 migration が同じ版番号を使ったときに適用済みと判定されたり checksum 不一致で止まったりする
 ためです。
 
@@ -312,7 +312,7 @@ follow-up ファイルは、適用済み DB の履歴を壊さないために次
    上書きするため、deferred migration を適用済みの DB では実質的な変更なしに
    canonical 側の適用記録だけが追加され、未適用の DB では関数が 1 回適用される。
    適用記録を進めるために Atlas は 1 文でも実行する必要があるため、コメントだけの空ファイルにはしない。
-2. **適用済み DB の `atlas_schema_revisions_deferred` の `20261201010009` 記録を
+2. **適用済み DB の `atlas_schema_revisions_deferred` の `20261201010010` 記録を
    削除・無効化しないこと。** follow-up の移動や再ハッシュでこのリビジョン表を触らない。
    全環境で canonical 版の適用が記録されるまで `atlas_schema_revisions_deferred` はそのまま残し、
    収束を確認してからスキーマごと削除する (その時点で再適用の痕跡としては不要になる)。
@@ -323,7 +323,7 @@ follow-up ファイルは、適用済み DB の履歴を壊さないために次
    それぞれで `atlas migrate apply` が成功すること、`pg_get_functiondef` の結果が
    `infra/db/schema.sql` と一致すること、`migrate status` が follow-up を適用済みとして
    報告すること、(a) では `atlas_schema_revisions_deferred.atlas_schema_revisions` に
-   `20261201010009` が記録されたまま残ることを確認する。
+   `20261201010010` が記録されたまま残ることを確認する。
 
   `55000` は `object_not_in_prerequisite_state` で、同 migration の preflight が暗号化済みチャンネル内の有効または24時間以内に復元可能な平文ノートを検出した場合のデータ状態エラーです。`55P03` と異なり、待機や単純な再実行では解消しません。API の `E2EE_CONVERSION_BLOCKED` と同じ条件を確認し、データを保持したまま、ノートの解決後に Atlas を再実行してください。これらのエラーに対して migration 履歴の手動編集やDBボリューム初期化は行わないでください。
 

@@ -1,6 +1,6 @@
 # Deferred migrations
 
-`20261201010009_guest_membership_lock_order.sql` replaces
+`20261201010010_guest_membership_lock_order.sql` replaces
 `app_guest_membership_rules()` with the version that always locks the `users`
 row (`FOR NO KEY UPDATE`) before checking the single-channel guest rule.
 
@@ -31,6 +31,16 @@ applies the same idempotent `CREATE OR REPLACE FUNCTION` again in the canonical
 history and regenerates `atlas.sum`; the deferred revision table can then be
 dropped together with the moved file.
 
+## 段階デプロイ中の平文 1 対 1 DM
+
+旧バックエンドと新バックエンドが混在するロールアウト中に、`single` ゲストの
+平文 1 対 1 DM を並行して作成・復帰すると、`channels` と `users` のロック順の
+違いから PostgreSQL のデッドロック (`deadlock_detected`, SQLSTATE 40P01) が
+一時的に発生することがある。データは壊れず、新バックエンドは 1 対 1 DM の
+トランザクションで 40P01 を検出すると、そのトランザクションを破棄して 1 回だけ
+再試行する。旧バックエンドが処理した要求は、ロールアウトが完了するまで一時的に
+失敗し得るため、クライアントの再試行に任せること。
+
 ## 適用後のロールバック制約
 
 この移行を適用した DB では、`app_guest_membership_rules()` は single 以外の
@@ -42,10 +52,10 @@ dropped together with the moved file.
 （`infra/db/migrations/20261201010001_guest_membership_no_key_update.sql` の
 `CREATE OR REPLACE FUNCTION app_guest_membership_rules()`）を再実行すれば、
 トリガー定義は常にロックしない版へ戻り、`atlas_schema_revisions_deferred` の
-記録はそのまま残る（記録の削除は不要）。ただし、`20261201010009` の適用記録が
+記録はそのまま残る（記録の削除は不要）。ただし、`20261201010010` の適用記録が
 残った状態では `atlas migrate apply --allow-dirty` を再実行しても既適用とみなされ
 SQL が再実行されないため、切り戻し後に新バックエンドへ再移行するときは、旧版が
-すべて停止したことを確認してから `infra/db/deferred-migrations/20261201010009_guest_membership_lock_order.sql`
+すべて停止したことを確認してから `infra/db/deferred-migrations/20261201010010_guest_membership_lock_order.sql`
 の `CREATE OR REPLACE FUNCTION app_guest_membership_rules()` を直接実行し、
 `SELECT pg_get_functiondef('app_guest_membership_rules()'::regprocedure);` で常時
 `users` 行をロックする定義に戻ったことを確認すること。バックエンドのロールバック中は、

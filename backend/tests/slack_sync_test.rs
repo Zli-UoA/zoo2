@@ -931,3 +931,428 @@ async fn test_slack_sync_files_are_fetched_later_by_the_file_worker() -> anyhow:
     assert_eq!(attached[0]["n"], 1);
     Ok(())
 }
+
+/// CodeRabbit #8: ヒントがなくても、同期の開始時は公開だった Slack チャンネルが、取得した履歴を保存する前に
+/// 非公開へ変わったら、公開の取り込み先へ書き込まない。
+#[tokio::test]
+async fn test_slack_sync_rechecks_privacy_before_saving_without_hints() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let key = [3u8; 32];
+    let team = format!("TSYNC{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let slack = MockServer::start().await;
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.client_id = Some("cid".into());
+    config.slack.client_secret = Some("sec".into());
+    config.slack.team_id = Some(team.clone());
+    config.slack.oauth_redirect_url = Some("https://zoo.example/api/slack/oauth/callback".into());
+    config.slack.token_encryption_key = Some(base64::engine::general_purpose::STANDARD.encode(key));
+    config.slack.api_base_url = slack.uri();
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db, config);
+    let app = create_router(state.clone());
+
+    let t0 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs()
+        - 7200;
+    let ts = format!("{}.000100", t0 + 100);
+    let alice = create_user(&app, "sync_privacy_alice").await?;
+    link(&state, &key, &alice, &team, "UA", "xoxp-alice").await?;
+    let target = create_channel(&app, &alice, false).await?;
+    sql(
+        &state,
+        "INSERT INTO slack_channels(team_id,slack_channel_id,channel_id,last_ts) VALUES($1,'C1',$2,$3) \
+         RETURNING json_build_object('ok',true)::text",
+        &[&team, &target, &format!("{t0}.000000")],
+    )
+    .await?;
+
+    // 同期の開始 (1 回目) は公開、履歴を取ったあとの確認 (2 回目) は非公開
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "channel": {"id": "C1", "is_private": false},
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .expect(1)
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "channel": {"id": "C1", "is_private": true},
+        })))
+        .with_priority(2)
+        .expect(1)
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/users.info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "user": {"id": "UA", "name": "alice", "real_name": "Alice", "profile": {"display_name": "alice"}},
+        })))
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .and(query_param("channel", "C1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [message(&ts, "UA", "private now")],
+            "has_more": false,
+        })))
+        .expect(1)
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.replies"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"ok": true, "messages": [], "has_more": false})),
+        )
+        .mount(&slack)
+        .await;
+
+    {
+        let mut db = state.db.clone();
+        let mut tx = db.transaction().await?;
+        sync::enqueue_team(&mut tx, &team).await?;
+        tx.commit().await?;
+    }
+    // reset_run は available_at を今にするので、drain の 2 回目が
+    // private_slack_channel_in_public_channel で止まり、1 回目の last_error を上書きする
+    assert!(sync::run_once_for_team(&state, &team).await?);
+
+    assert_eq!(count_messages(&state, &target).await, 0);
+    let row = &sql(
+        &state,
+        "SELECT json_build_object('error',last_error)::text FROM slack_channel_syncs \
+         WHERE team_id=$1 AND slack_channel_id='C1'",
+        &[&team],
+    )
+    .await?[0];
+    assert!(
+        row["error"].as_str().is_some_and(|e| e
+            .contains("Slack sync target changed or no longer protects private channel content")),
+        "expected private target error, got {row:?}"
+    );
+    Ok(())
+}
+
+/// CodeRabbit #9: Slack チャンネルの対応先を公開の A から非公開の B へ付け替えたあと、A に同期済みの
+/// メッセージへリアクションを付け直しても、A の投稿は変えない。同じチャンネルへの再適用は従来どおり動く。
+#[tokio::test]
+async fn test_slack_sync_does_not_touch_a_message_in_another_channels_target() -> anyhow::Result<()>
+{
+    let _serial = SERIAL.lock().await;
+    let key = [3u8; 32];
+    let team = format!("TSYNC{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let slack = MockServer::start().await;
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.client_id = Some("cid".into());
+    config.slack.client_secret = Some("sec".into());
+    config.slack.team_id = Some(team.clone());
+    config.slack.oauth_redirect_url = Some("https://zoo.example/api/slack/oauth/callback".into());
+    config.slack.token_encryption_key = Some(base64::engine::general_purpose::STANDARD.encode(key));
+    config.slack.api_base_url = slack.uri();
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db, config);
+    let app = create_router(state.clone());
+
+    let t0 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs()
+        - 7200;
+    let ts = format!("{}.000100", t0 + 100);
+    let alice = create_user(&app, "sync_cross_channel_alice").await?;
+    link(&state, &key, &alice, &team, "UA", "xoxp-alice").await?;
+    let public = create_channel(&app, &alice, false).await?;
+    let private = create_channel(&app, &alice, true).await?;
+    let message_id = backend::slack::message_id(&team, "C1", &ts);
+    sql(
+        &state,
+        "INSERT INTO slack_channels(team_id,slack_channel_id,channel_id,last_ts) VALUES($1,'C1',$2,$3) \
+         RETURNING json_build_object('ok',true)::text",
+        &[&team, &public, &format!("{t0}.000000")],
+    )
+    .await?;
+    sql(
+        &state,
+        "INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at) \
+         VALUES($1,$2,$3,'original',(to_timestamp($4::numeric) AT TIME ZONE 'UTC')::timestamp(3),\
+         (to_timestamp($4::numeric) AT TIME ZONE 'UTC')::timestamp(3)) RETURNING json_build_object('ok',true)::text",
+        &[&message_id, &alice, &public, &ts],
+    )
+    .await?;
+    sql(
+        &state,
+        "INSERT INTO slack_message_map(team_id,slack_channel_id,ts,message_id,origin) \
+         VALUES($1,'C1',$2,$3,'slack') RETURNING json_build_object('ok',true)::text",
+        &[&team, &ts, &message_id],
+    )
+    .await?;
+    {
+        let mut db = state.db.clone();
+        let mut tx = db.transaction().await?;
+        sync::enqueue_team(&mut tx, &team).await?;
+        tx.commit().await?;
+    }
+    // 公開の A から非公開の B へ付け替える (同期の途中経過はトリガーが捨てる)
+    sql(
+        &state,
+        "UPDATE slack_channels SET channel_id=$2 WHERE team_id=$1 AND slack_channel_id='C1' \
+         RETURNING json_build_object('ok',true)::text",
+        &[&team, &private],
+    )
+    .await?;
+
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"ok": true, "channel": {"id": "C1", "is_private": false}})),
+        )
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/users.info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "user": {"id": "UA", "name": "alice", "real_name": "Alice", "profile": {"display_name": "alice"}},
+        })))
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .and(query_param("channel", "C1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [{"type": "message", "ts": &ts, "user": "UA", "text": "edited",
+                "reactions": [{"name": "thumbsup", "users": ["UA"], "count": 1}]}],
+            "has_more": false,
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&slack)
+        .await;
+    // B の適用は、A の投稿の ID を対応表から引く。A の投稿には触れない
+    drain(&state).await;
+    assert_eq!(count_messages(&state, &private).await, 0);
+    let before = sql(
+        &state,
+        "SELECT json_build_object('content',content,'revision',revision)::text FROM messages WHERE id=$1",
+        &[&message_id],
+    )
+    .await?;
+    assert_eq!(before[0]["content"], "original");
+    let reactions = sql(
+        &state,
+        "SELECT json_build_object('n',count(*))::text FROM message_reactions WHERE message_id=$1",
+        &[&message_id],
+    )
+    .await?;
+    assert_eq!(reactions[0]["n"], 0, "channel A's message must not change");
+
+    // 同じチャンネルへ戻した再適用は、リアクションを付ける (従来どおり)
+    sql(
+        &state,
+        "UPDATE slack_channels SET channel_id=$2 WHERE team_id=$1 AND slack_channel_id='C1' \
+         RETURNING json_build_object('ok',true)::text",
+        &[&team, &public],
+    )
+    .await?;
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .and(query_param("channel", "C1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [{"type": "message", "ts": &ts, "user": "UA", "text": "edited",
+                "reactions": [{"name": "eyes", "users": ["UA"], "count": 1}]}],
+            "has_more": false,
+        })))
+        .with_priority(2)
+        .mount(&slack)
+        .await;
+    due_now(&state, &team).await;
+    drain(&state).await;
+    let after = sql(
+        &state,
+        "SELECT json_build_object('content',content)::text FROM messages WHERE id=$1",
+        &[&message_id],
+    )
+    .await?;
+    assert_eq!(after[0]["content"], "original");
+    let reactions = sql(
+        &state,
+        "SELECT json_build_object('emoji',emoji)::text FROM message_reactions WHERE message_id=$1 ORDER BY emoji",
+        &[&message_id],
+    )
+    .await?;
+    assert_eq!(reactions.len(), 1, "{reactions:?}");
+    let eyes = backend::slack::convert::reaction_emoji("eyes").unwrap();
+    assert_eq!(reactions[0]["emoji"], eyes.as_str());
+    Ok(())
+}
+
+/// CodeRabbit #7: 1 ページ目を保存して `running=true, page_cursor="page2"` のまま止まった同期は、
+/// 対応先を付け替えたら途中経過を捨て、新しい対応先で先頭から取り直す (古いページのカーソルを送らない)。
+#[tokio::test]
+async fn test_slack_sync_reset_on_remap_does_not_resume_the_old_page_cursor() -> anyhow::Result<()>
+{
+    let _serial = SERIAL.lock().await;
+    let key = [3u8; 32];
+    let team = format!("TSYNC{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let slack = MockServer::start().await;
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.client_id = Some("cid".into());
+    config.slack.client_secret = Some("sec".into());
+    config.slack.team_id = Some(team.clone());
+    config.slack.oauth_redirect_url = Some("https://zoo.example/api/slack/oauth/callback".into());
+    config.slack.token_encryption_key = Some(base64::engine::general_purpose::STANDARD.encode(key));
+    config.slack.api_base_url = slack.uri();
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db, config);
+    let app = create_router(state.clone());
+
+    let t0 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs()
+        - 7200;
+    let ts = format!("{}.000100", t0 + 100);
+    let alice = create_user(&app, "sync_remap_alice").await?;
+    link(&state, &key, &alice, &team, "UA", "xoxp-alice").await?;
+    let channel_a = create_channel(&app, &alice, false).await?;
+    let channel_b = create_channel(&app, &alice, false).await?;
+    sql(
+        &state,
+        "INSERT INTO slack_channels(team_id,slack_channel_id,channel_id,last_ts) VALUES($1,'C1',$2,$3) \
+         RETURNING json_build_object('ok',true)::text",
+        &[&team, &channel_a, &format!("{t0}.000000")],
+    )
+    .await?;
+    {
+        let mut db = state.db.clone();
+        let mut tx = db.transaction().await?;
+        sync::enqueue_team(&mut tx, &team).await?;
+        tx.commit().await?;
+    }
+
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"ok": true, "channel": {"id": "C1", "is_private": false}})),
+        )
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/users.info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "user": {"id": "UA", "name": "alice", "real_name": "Alice", "profile": {"display_name": "alice"}},
+        })))
+        .mount(&slack)
+        .await;
+    // 最初の 1 ページ目: 空で、続き (page2) がある
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .and(query_param("channel", "C1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [],
+            "has_more": true,
+            "response_metadata": {"next_cursor": "page2"},
+        })))
+        .up_to_n_times(1)
+        .with_priority(5)
+        .mount(&slack)
+        .await;
+    // 2 ページ目は 429 で止まる。1 ページ目の途中経過 (page2) は保存済み
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .and(query_param("channel", "C1"))
+        .and(query_param("cursor", "page2"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "60"))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&slack)
+        .await;
+    // 付け替え後の最初のページ。ここに来たら、古いカーソルを送っていない
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .and(query_param("channel", "C1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [message(&ts, "UA", "new target page one")],
+            "has_more": false,
+        })))
+        .with_priority(9)
+        .expect(1)
+        .mount(&slack)
+        .await;
+    // 古いページのカーソルは、付け替え後に送らない
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .and(query_param("channel", "C1"))
+        .and(query_param("cursor", "page2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [],
+            "has_more": false,
+        })))
+        .with_priority(8)
+        .expect(0)
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.replies"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"ok": true, "messages": [], "has_more": false})),
+        )
+        .mount(&slack)
+        .await;
+
+    drain(&state).await;
+    let interrupted = sql(
+        &state,
+        "SELECT json_build_object('running',running,'cursor',page_cursor,'phase',phase)::text \
+         FROM slack_channel_syncs WHERE team_id=$1 AND slack_channel_id='C1'",
+        &[&team],
+    )
+    .await?;
+    assert_eq!(interrupted[0]["running"], true, "{interrupted:?}");
+    assert_eq!(interrupted[0]["cursor"], "page2", "{interrupted:?}");
+
+    // 対応先を A から B へ付け替える。トリガーが途中経過を捨てる
+    sql(
+        &state,
+        "UPDATE slack_channels SET channel_id=$2 WHERE team_id=$1 AND slack_channel_id='C1' \
+         RETURNING json_build_object('ok',true)::text",
+        &[&team, &channel_b],
+    )
+    .await?;
+    let reset = sql(
+        &state,
+        "SELECT json_build_object('running',running,'cursor',page_cursor,'phase',phase)::text \
+         FROM slack_channel_syncs WHERE team_id=$1 AND slack_channel_id='C1'",
+        &[&team],
+    )
+    .await?;
+    assert_eq!(reset[0]["running"], false, "{reset:?}");
+    assert!(reset[0]["cursor"].is_null(), "{reset:?}");
+    assert_eq!(reset[0]["phase"], "history", "{reset:?}");
+
+    due_now(&state, &team).await;
+    drain(&state).await;
+    assert_eq!(count_messages(&state, &channel_b).await, 1);
+    assert_eq!(count_messages(&state, &channel_a).await, 0);
+    Ok(())
+}

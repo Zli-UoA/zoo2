@@ -265,7 +265,6 @@ async fn thread_operation(
     let root = crate::apps::one(&mut tx, root_query, &[&id]).await?;
     let root_id = root["id"].as_str().unwrap();
     let channel_id = root["channel_id"].as_str().unwrap();
-    let root_deleted = root["root_deleted"].as_bool().unwrap_or(false);
     let actor = crate::apps::events::Actor {
         user: auth.clone(),
         principal: None,
@@ -319,7 +318,7 @@ async fn thread_operation(
     let mut row = crate::apps::one(&mut tx,
         "SELECT json_build_object('id',m.id,'channel_id',m.channel_id,'thread_archive_at',m.thread_archive_at,'root_deleted',m.deleted_at IS NOT NULL,'membership',CASE WHEN p.user_id IS NULL THEN 'none' WHEN p.left_at IS NULL THEN 'joined' ELSE 'left' END)::text FROM messages m LEFT JOIN thread_participants p ON p.thread_id=m.id AND p.user_id=$2 WHERE m.id=$1",
         &[root_id,&auth.id]).await?;
-    row["can_participate"] = json!(!root_deleted && channel["member"] == true);
+    row["can_participate"] = json!(row["root_deleted"] != true && channel["member"] == true);
     // Who is in the thread, and whether replies need a join. Reading is already authorized by
     // the channel check above. P = participant rows of this one thread (left rows included).
     // - `keys`: the single primary-key range scan (thread_id,*) of those P rows. `tracked`,

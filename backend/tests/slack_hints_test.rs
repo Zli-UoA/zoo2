@@ -1668,9 +1668,6 @@ async fn test_hints_reply_with_fallback_user_waits_for_users_before_locking_chan
     // e2ee_convert と同じく先に users をロックする
     let mut conv_db = f.state.db.clone();
     let mut conv_tx = conv_db.transaction().await?;
-    toasty::sql::statement("SET LOCAL deadlock_timeout='100ms'")
-        .exec(&mut conv_tx)
-        .await?;
     let conv_pid: i32 = query(
         &mut conv_tx,
         "SELECT json_build_object('pid',pg_backend_pid())::text",
@@ -1898,9 +1895,6 @@ async fn test_hints_edit_reaction_and_zoo_origin_preresolve_unlinked_users() -> 
 
     let mut conv_db = f.state.db.clone();
     let mut conv_tx = conv_db.transaction().await?;
-    toasty::sql::statement("SET LOCAL deadlock_timeout='100ms'")
-        .exec(&mut conv_tx)
-        .await?;
     let conv_pid: i32 = query(
         &mut conv_tx,
         "SELECT json_build_object('pid',pg_backend_pid())::text",
@@ -2156,9 +2150,122 @@ async fn test_hints_rejects_a_private_slack_channel_whose_zoo_target_became_publ
     )
     .await?;
     assert_eq!(
-        hint_rows[0]["attempts"], 1,
-        "hints::apply must fail before consuming the hint: {hint_rows:?}"
+        hint_rows[0]["attempts"], 0,
+        "hints::apply must fail without bumping attempts or consuming the hint: {hint_rows:?}"
     );
+    let sync_rows = sql(
+        &f.state,
+        "SELECT json_build_object('last_error',last_error)::text FROM slack_channel_syncs WHERE team_id=$1 AND slack_channel_id='C1'",
+        &[&f.team],
+    )
+    .await?;
+    assert!(
+        sync_rows[0]["last_error"].as_str().is_some_and(|e| e
+            .contains("Slack sync target changed or no longer protects private channel content")),
+        "expected private target error, got {:?}",
+        sync_rows
+    );
+    Ok(())
+}
+
+/// CodeRabbit #1: 同期の開始時は公開だった Slack チャンネルが、ヒントの取り直しの前に非公開へ変わったら、
+/// 返信を公開の取り込み先へ保存しない。ヒントは消費せず、試行回数も増やさず、残りのヒントも処理しない。
+#[tokio::test]
+async fn test_hints_stop_without_bumping_attempts_when_the_slack_channel_became_private()
+-> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = imported(true).await?;
+    let parent = f.ts_new.clone();
+    let first = format!("{}.000900", now_secs() - 40);
+    let second = format!("{}.000800", now_secs() - 30);
+
+    f.slack.reset().await;
+    // 1 回目 (同期の開始) は公開、2 回目 (ヒントの取り直しの前) から非公開
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "channel": {"id": "C1", "is_private": false},
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .expect(1)
+        .mount(&f.slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "channel": {"id": "C1", "is_private": true},
+        })))
+        .with_priority(2)
+        .expect(1)
+        .mount(&f.slack)
+        .await;
+    // 返信の取り直しには、新しい返信を返す
+    Mock::given(method("GET"))
+        .and(path("/conversations.replies"))
+        .and(query_param("ts", parent.as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [{"type":"message","ts":&first,"user":"UA","text":"late reply","thread_ts":&parent}],
+            "has_more": false,
+        })))
+        .with_priority(1)
+        .mount(&f.slack)
+        .await;
+    // ヒントの処理は 1 件目で止まるので、通常の同期の履歴もここまで来ない
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [],
+            "has_more": false,
+        })))
+        .mount(&f.slack)
+        .await;
+
+    for reply in [&first, &second] {
+        let event = json!({"type":"event_callback","team_id":&f.team,"event":{"type":"message",
+            "channel":"C1","user":"UA","ts":reply,"thread_ts":&parent,"text":"late reply"}});
+        let (status, _) = post_event(&f.app, SECRET, now_secs(), &event).await?;
+        assert_eq!(status, StatusCode::OK);
+    }
+    sql(
+        &f.state,
+        "INSERT INTO slack_channel_wakes(team_id,slack_channel_id) VALUES($1,'C1') \
+         ON CONFLICT (team_id,slack_channel_id) DO UPDATE SET last_at=now() RETURNING json_build_object('ok',true)::text",
+        &[&f.team],
+    )
+    .await?;
+    age_wake(&f.state, &f.team, "10 seconds").await?;
+    set_sync_state(&f.state, &f.team, "1 hour", "1 hour").await?;
+    // 1 回だけ回す (reset_run は available_at を今にするので、drain すると 2 回目が
+    // private_slack_channel_in_public_channel で止まり、1 回目の last_error を上書きする)
+    assert!(sync::run_once_for_team(&f.state, &f.team).await?);
+
+    // (a) 返信は、公開の Zoo チャンネルに入らない (取り込み済みの 1 件だけ)
+    assert!(message_row(&f, &first).await.is_null());
+    assert!(message_row(&f, &second).await.is_null());
+    assert_eq!(count_messages(&f.state, &f.channel).await, 1);
+    // (b) ヒントは残り、試行回数は 0。2 件目の取り直しもしない
+    let rows = hints(&f).await;
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert!(
+        rows.iter()
+            .all(|r| r["kind"] == "reply" && r["attempts"] == 0),
+        "hints must stay unconsumed without bumping attempts: {rows:?}"
+    );
+    let reply_calls = f
+        .slack
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path() == "/conversations.replies")
+        .count();
+    assert_eq!(reply_calls, 1, "the remaining hint must not be fetched");
+    // (c) 最後のエラーに、非公開の内容を保護しない取り込み先のエラーが残る
     let sync_rows = sql(
         &f.state,
         "SELECT json_build_object('last_error',last_error)::text FROM slack_channel_syncs WHERE team_id=$1 AND slack_channel_id='C1'",

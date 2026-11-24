@@ -54,7 +54,7 @@ pub(super) async fn run(
     team: &str,
     slack_channel: &str,
     zoo_channel: &str,
-    slack_private: bool,
+    slack_private: &mut bool,
     lease_token: &str,
     db: &mut toasty::Db,
 ) -> Result<(), SyncError> {
@@ -80,6 +80,7 @@ pub(super) async fn run(
                 SyncError::RateLimited(secs) => format!("rate limited ({secs}s)"),
                 SyncError::NoAccess(e) | SyncError::Failed(e) => e.clone(),
                 SyncError::TargetChanged => "target changed".to_string(),
+                SyncError::PrivateTargetViolation => "private target violation".to_string(),
                 _ => "invalid cursor".to_string(),
             };
             tracing::warn!(team, channel = slack_channel, %reason, "Slack recheck failed; the sync goes on");
@@ -106,7 +107,9 @@ pub(super) async fn run(
             // `conversations.history` が 429 になるので、`Retry-After` を守って、この回を終える
             // (再確認は、上で 5 分後に回したので、待ちのあとの通常の同期は、再確認に妨げられない)
             match error {
-                SyncError::RateLimited(_) | SyncError::TargetChanged => Err(error),
+                SyncError::RateLimited(_)
+                | SyncError::TargetChanged
+                | SyncError::PrivateTargetViolation => Err(error),
                 _ => Ok(()),
             }
         }
@@ -120,7 +123,7 @@ async fn run_inner(
     team: &str,
     slack_channel: &str,
     zoo_channel: &str,
-    slack_private: bool,
+    slack_private: &mut bool,
     lease_token: &str,
     db: &mut toasty::Db,
 ) -> Result<(), SyncError> {
@@ -161,6 +164,9 @@ async fn run_inner(
             None => break,
         }
     }
+    // 履歴のページは、ページを取った時点の可視性を運ばない。保存 (apply_chunk) と削除の前に、
+    // Slack のチャンネルが今も非公開かを確かめ、公開の取り込み先へ書かない
+    super::sync::refresh_slack_privacy(slack, slack_channel, slack_private).await?;
     let importable: Vec<SlackMessage> = messages
         .iter()
         .filter(|m| m.is_importable())
@@ -174,7 +180,7 @@ async fn run_inner(
             team,
             slack_channel,
             zoo_channel,
-            slack_private,
+            *slack_private,
             lease_token,
             chunk,
             db,
@@ -203,7 +209,7 @@ async fn run_inner(
     // 履歴が空で `apply_chunk` が 1 度も走らなかったときも、削除の前に取り込み先の可視性を確かめる。
     // claim の時点では非公開だった Slack チャンネルの内容を、公開へ変わった取り込み先の確認なしに
     // 消したり書いたりしない (apply_chunk と同じ拒否条件)。
-    super::sync::ensure_private_target(&mut tx, zoo_channel, slack_private).await?;
+    super::sync::ensure_private_target(&mut tx, zoo_channel, *slack_private).await?;
     if complete && intact {
         let present: HashSet<&str> = messages.iter().map(|m| m.ts.as_str()).collect();
         let candidates = query(

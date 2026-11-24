@@ -69,6 +69,22 @@ pub struct NoteSummaryResponse {
     pub order_token: String,
 }
 
+/// 削除済みノート一覧の項目。本文は含まず、`GET /notes/deleted/{note_id}` で別途読む。
+#[derive(Debug, Serialize)]
+pub struct DeletedNoteSummaryResponse {
+    pub id: String,
+    pub channel_id: String,
+    pub title: String,
+    /// 表示順。有効ノート一覧と同じ値。
+    pub position: i32,
+    pub version: i32,
+    pub created_user_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+    /// 次ページのカーソルに使う。UTC の `YYYY-MM-DDTHH:MM:SS.mmm` 固定形式。
+    pub deleted_at: String,
+}
+
 #[derive(Deserialize)]
 pub struct NoteInput {
     title: String,
@@ -99,6 +115,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/channels/{channel_id}/notes/deleted",
             get(list_deleted),
+        )
+        .route(
+            "/api/channels/{channel_id}/notes/deleted/{note_id}",
+            get(get_deleted),
         )
         .route(
             "/api/channels/{channel_id}/notes/order",
@@ -261,17 +281,19 @@ pub async fn purge_expired_notes(db: &toasty::Db) -> Result<u64, AppError> {
         .collect();
     while count < 100 && !active_channels.is_empty() {
         let before_pass = count;
+        let pass_remaining = (100 - count) as usize;
+        // Share the bounded batch across every channel active at the start of
+        // this pass. Recomputing the share per item would give the last
+        // channels a much larger slice and leave older rows in the first
+        // channels waiting for a later pass.
+        let per_channel = pass_remaining.div_ceil(active_channels.len());
         let mut next_active = Vec::new();
-        for (index, channel_id) in active_channels.iter().enumerate() {
-            let remaining = (100 - count) as usize;
-            if remaining == 0 {
+        for channel_id in &active_channels {
+            let limit = per_channel.min((100 - count) as usize);
+            if limit == 0 {
                 break;
             }
-            // Share the bounded batch across channels so a single large backlog
-            // cannot consume every pass while older rows in other channels wait.
-            let channels_remaining = active_channels.len() - index;
-            let per_channel = remaining.div_ceil(channels_remaining);
-            // 先頭の per_channel 件だけを候補として読み、その中の未ロック行を削除する。
+            // 先頭の limit 件だけを候補として読み、その中の未ロック行を削除する。
             // LIMIT が SKIP LOCKED の後にあると、ロック済み行を返却件数に数えないため、削除が
             // 0 件でも期限切れの全行を走査し、この間の API 書き込みを advisory lock で待たせる。
             // スキップした行は次の回転で再び候補になる。
@@ -288,7 +310,7 @@ pub async fn purge_expired_notes(db: &toasty::Db) -> Result<u64, AppError> {
             ) DELETE FROM channel_notes WHERE id IN (SELECT id FROM locked)",
             )
             .bind(channel_id.as_str())
-            .bind(per_channel as i32)
+            .bind(limit as i32)
             .exec(&mut tx)
             .await?;
             count += deleted;
@@ -744,7 +766,7 @@ async fn list_deleted(
     actor: AuthUser,
     Path(channel_id): Path<String>,
     Query(query): Query<DeletedNotesQuery>,
-) -> Result<Json<ApiResponse<Vec<NoteResponse>>>, AppError> {
+) -> Result<Json<ApiResponse<Vec<DeletedNoteSummaryResponse>>>, AppError> {
     let limit = query.limit.unwrap_or(50).clamp(1, 200) as i32;
     let (after_deleted_at, after_id) = match query.after.as_deref() {
         None | Some("") => (String::new(), String::new()),
@@ -762,30 +784,17 @@ async fn list_deleted(
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     authorize(&mut tx, &actor.id, &channel_id, false).await?;
-    let is_member = ChannelUser::filter(
-        ChannelUser::fields()
-            .channel_id()
-            .eq(channel_id.as_str())
-            .and(ChannelUser::fields().user_id().eq(actor.id.as_str())),
-    )
-    .first()
-    .exec(&mut tx)
-    .await?
-    .is_some();
-    if !is_member {
-        return Err(AppError::Forbidden(
-            "Join the channel to view deleted notes".into(),
-        ));
-    }
+    ensure_channel_member(&mut tx, &actor.id, &channel_id).await?;
     // The eligibility predicate and response body must share one PostgreSQL
     // statement snapshot. Separate SELECTs under READ COMMITTED can combine a
     // pre-delete body with a post-delete eligibility check.
     // 先頭ページと継続ページの SQL を分ける。CASE の内側に置いた行比較は generic plan で
     // 索引の開始条件にならないため、継続ページでは `(deleted_at, id) > (...)` を直接
     // WHERE に置いてカーソル位置から索引走査を開始させる。
+    // 一覧は本文を返さない。本文は `GET /notes/deleted/{note_id}` で取得する。
     let rows = if after_deleted_at.is_empty() {
         toasty::sql::query(
-            "SELECT id, channel_id, title, content, position, version, created_user_id, \
+            "SELECT id, channel_id, title, position, version, created_user_id, \
                     to_char(created_at, 'YYYY-MM-DD') || 'T' || to_char(created_at, 'HH24:MI:SS.MS'), \
                     to_char(updated_at, 'YYYY-MM-DD') || 'T' || to_char(updated_at, 'HH24:MI:SS.MS'), \
                     to_char(deleted_at, 'YYYY-MM-DD') || 'T' || to_char(deleted_at, 'HH24:MI:SS.MS') \
@@ -800,7 +809,7 @@ async fn list_deleted(
         .await?
     } else {
         toasty::sql::query(
-            "SELECT id, channel_id, title, content, position, version, created_user_id, \
+            "SELECT id, channel_id, title, position, version, created_user_id, \
                     to_char(created_at, 'YYYY-MM-DD') || 'T' || to_char(created_at, 'HH24:MI:SS.MS'), \
                     to_char(updated_at, 'YYYY-MM-DD') || 'T' || to_char(updated_at, 'HH24:MI:SS.MS'), \
                     to_char(deleted_at, 'YYYY-MM-DD') || 'T' || to_char(deleted_at, 'HH24:MI:SS.MS') \
@@ -817,7 +826,7 @@ async fn list_deleted(
         .exec(&mut tx)
         .await?
     };
-    let result: Vec<NoteResponse> = rows
+    let result: Vec<DeletedNoteSummaryResponse> = rows
         .into_iter()
         .map(|row| {
             let toasty::stmt::Value::Record(record) = row else {
@@ -830,7 +839,6 @@ async fn list_deleted(
                 Some(toasty::stmt::Value::String(id)),
                 Some(toasty::stmt::Value::String(channel_id)),
                 Some(toasty::stmt::Value::String(title)),
-                Some(toasty::stmt::Value::String(content)),
                 Some(toasty::stmt::Value::I32(position)),
                 Some(toasty::stmt::Value::I32(version)),
                 Some(toasty::stmt::Value::String(created_user_id)),
@@ -838,7 +846,6 @@ async fn list_deleted(
                 Some(toasty::stmt::Value::String(updated_at)),
                 Some(toasty::stmt::Value::String(deleted_at)),
             ) = (
-                fields.next(),
                 fields.next(),
                 fields.next(),
                 fields.next(),
@@ -865,21 +872,125 @@ async fn list_deleted(
             // deleted_at はページ継続カーソルの素材で、ミリ秒 3 桁固定の正規形を
             // そのまま返す (jiff の表示整形は末尾の 0 を落とし、カーソル検証が
             // 受け付ける形式と一致しなくなる)。
-            Ok(NoteResponse {
+            Ok(DeletedNoteSummaryResponse {
                 id,
                 channel_id,
                 title,
-                content,
                 position,
                 version,
                 created_user_id,
                 created_at,
                 updated_at,
-                deleted_at: Some(deleted_at),
+                deleted_at,
             })
         })
         .collect::<Result<_, _>>()?;
     Ok(Json(ApiResponse::new(result, None::<String>)))
+}
+
+async fn get_deleted(
+    State(state): State<AppState>,
+    actor: AuthUser,
+    Path((channel_id, note_id)): Path<(String, String)>,
+) -> Result<Json<ApiResponse<NoteResponse>>, AppError> {
+    note_path(&channel_id, &note_id)?;
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    authorize(&mut tx, &actor.id, &channel_id, false).await?;
+    ensure_channel_member(&mut tx, &actor.id, &channel_id).await?;
+    // 削除済み本文の取得も、24 時間の期限判定と本文を同じステートメントの
+    // スナップショットで読む。有効なノート・期限切れ・存在しない場合はすべて 404。
+    let rows = toasty::sql::query(
+        "SELECT id, channel_id, title, content, position, version, created_user_id, \
+                to_char(created_at, 'YYYY-MM-DD') || 'T' || to_char(created_at, 'HH24:MI:SS.MS'), \
+                to_char(updated_at, 'YYYY-MM-DD') || 'T' || to_char(updated_at, 'HH24:MI:SS.MS'), \
+                to_char(deleted_at, 'YYYY-MM-DD') || 'T' || to_char(deleted_at, 'HH24:MI:SS.MS') \
+         FROM channel_notes \
+         WHERE id = $1 AND channel_id = $2 AND deleted_at IS NOT NULL \
+           AND deleted_at >= (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours'",
+    )
+    .bind(note_id.as_str())
+    .bind(channel_id.as_str())
+    .exec(&mut tx)
+    .await?;
+    let Some(toasty::stmt::Value::Record(record)) = rows.into_iter().next() else {
+        return Err(AppError::NotFound("Channel note not found".into()));
+    };
+    let mut fields = record.fields.into_iter();
+    let (
+        Some(toasty::stmt::Value::String(id)),
+        Some(toasty::stmt::Value::String(channel_id)),
+        Some(toasty::stmt::Value::String(title)),
+        Some(toasty::stmt::Value::String(content)),
+        Some(toasty::stmt::Value::I32(position)),
+        Some(toasty::stmt::Value::I32(version)),
+        Some(toasty::stmt::Value::String(created_user_id)),
+        Some(toasty::stmt::Value::String(created_at)),
+        Some(toasty::stmt::Value::String(updated_at)),
+        Some(toasty::stmt::Value::String(deleted_at)),
+    ) = (
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+    )
+    else {
+        return Err(AppError::Internal(anyhow::anyhow!(
+            "Unexpected deleted channel note columns"
+        )));
+    };
+    let created_at = created_at
+        .parse::<jiff::civil::DateTime>()
+        .map_err(|error| AppError::Internal(anyhow::anyhow!(error)))?
+        .to_string();
+    let updated_at = updated_at
+        .parse::<jiff::civil::DateTime>()
+        .map_err(|error| AppError::Internal(anyhow::anyhow!(error)))?
+        .to_string();
+    Ok(Json(ApiResponse::new(
+        NoteResponse {
+            id,
+            channel_id,
+            title,
+            content,
+            position,
+            version,
+            created_user_id,
+            created_at,
+            updated_at,
+            deleted_at: Some(deleted_at),
+        },
+        None::<String>,
+    )))
+}
+
+async fn ensure_channel_member(
+    tx: &mut toasty::Transaction<'_>,
+    actor: &str,
+    channel_id: &str,
+) -> Result<(), AppError> {
+    let is_member = ChannelUser::filter(
+        ChannelUser::fields()
+            .channel_id()
+            .eq(channel_id)
+            .and(ChannelUser::fields().user_id().eq(actor)),
+    )
+    .first()
+    .exec(tx)
+    .await?
+    .is_some();
+    if !is_member {
+        return Err(AppError::Forbidden(
+            "Join the channel to view deleted notes".into(),
+        ));
+    }
+    Ok(())
 }
 
 async fn show(

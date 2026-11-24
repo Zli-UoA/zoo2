@@ -1254,11 +1254,19 @@ async fn run_private_zip_visibility_race(
 
         let mut waiting = false;
         for _ in 0..300 {
+            // Wait specifically on this fixture's advisory key. PostgreSQL stores the
+            // single-bigint form as classid = high 32 bits, objid = low 32 bits and
+            // objsubid = 1, and the session below holds it. Matching the statement text
+            // could catch another test's INSERT (or an unrelated lock wait).
             let row = tokio::time::timeout(
                 std::time::Duration::from_secs(2),
                 connection.query_one(
-                    "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid<>pg_backend_pid() AND wait_event_type='Lock' AND query ILIKE '%INSERT INTO users%')",
-                    &[],
+                    "SELECT EXISTS(SELECT 1 FROM pg_locks l \
+                     WHERE l.locktype='advisory' AND NOT l.granted AND l.objsubid=1 \
+                     AND l.classid::bigint = (($1::bigint >> 32) & 4294967295) \
+                     AND l.objid::bigint = ($1::bigint & 4294967295) \
+                     AND pg_backend_pid() = ANY(pg_blocking_pids(l.pid)))",
+                    &[&lock_key],
                 ),
             )
             .await

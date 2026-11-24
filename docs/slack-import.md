@@ -376,6 +376,25 @@ Slack の Events API は、同期については「このチャンネルを今�
 
 マイグレーション `20261124000000_slack_event_wakes.sql`（`slack_channel_wakes` と `slack_channel_syncs.not_before`・`swept_at`・`run_light`）を適用してください。適用の時点で次の実行が先になっている項目は、その日時を `not_before` に引き継ぎます（429 などの待ちの途中で適用しても、合図で前倒ししません）。
 
+## ロック順テストを実行する（`#[ignore]`）
+
+ロック順や競合を確かめるテストは、実際の DB で行ロック・advisory ロックを待ち合わせるため、通常の `cargo test` では動きません（`#[ignore]`）。使い捨ての PostgreSQL 16 を用意し、`infra/db/migrations` のマイグレーションをすべて適用してから実行します。
+
+1. テスト専用の DB を作ります。DB 名には `test` を含めます（例: `zoo_test`）。`worker.rs` のテストは `current_database()` に `test` か `rereview` を含まない DB を拒否し、`api_import.rs` のテストは `test` を要求します。
+2. `SLACK_IMPORT_TEST_DATABASE_URL` にその DB を設定します。`DATABASE_URL` ではありません。テストはこの URL の DB にだけ行を作り、終わったら消します。
+3. 実行します。
+
+```sh
+export SLACK_IMPORT_TEST_DATABASE_URL="postgres://postgres@127.0.0.1:5432/zoo_test?sslmode=disable"
+# DB のみで動くロック順・競合のユニットテスト（S3 不要。worker.rs・api_import.rs・sync.rs・hints.rs）
+cargo test --manifest-path backend/Cargo.toml --lib slack:: -- --ignored
+# ZIP 取り込みの結合テスト（RustFS / S3 が必要。S3_ENDPOINT 等を設定して実行）
+cargo test --manifest-path backend/Cargo.toml --test slack_import_test -- --ignored
+```
+
+- ロック競合テストは、プールの枯渇でテスト自身が止まらないよう、`init_db_with_pool` に 2 接続以上を渡します。`DB_MAX_POOL_SIZE=1` の環境でも動くことを確かめるときは、そのまま環境変数を付けて実行します（例: `DB_MAX_POOL_SIZE=1 cargo test ...`）。
+- `slack_import_test` の `#[ignore]` テスト（`private_zip_import_stops_after_target_is_public_or_deleted` を含む）は共通フィクスチャで S3 バケットを作成・削除するため、すべて RustFS（S3 互換ストレージ。既定の接続先は `http://127.0.0.1:9000`、`S3_ENDPOINT` / `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` / `S3_REGION` で設定）が必要です。S3 を用意できない環境では、DB のみで完結する `--lib slack:: -- --ignored` だけを実行してください。テストは DB 上で直列に実行し、使った行は後片付けしますが、途中で強制終了した場合は残ることがあります。終わったら DB ごと削除してください。
+
 ## 書式の変換より前に取り込んだ投稿を直す
 
 書式（`*太字*` など）の変換を入れる前に取り込んだ投稿は、記号が変換されないまま保存されています。バックエンドのイメージに入っている `zoo_slack_reformat` が、保存済みの本文に同じ変換を 1 回だけ当てます。

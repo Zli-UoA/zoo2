@@ -33,7 +33,7 @@ Android・デスクトップにはRESTのスレッド一覧を使うツリーが
 
 `GET /api/threads`は、参加チャンネルのアクティブなスレッドだけを返します。DM・削除済みチャンネル・削除済みの親投稿は含めません。応答は`{items, next_cursor}`形式で、既定・上限とも1ページ100件です。`limit`で件数を減らし、`before`に前の応答の`next_cursor`を渡して続きを取得します。カーソルは活動時刻とIDを保持するため、境界の投稿が削除されても続きを取得できます。`archived=true` は既存APIとの互換用に維持しますが、Web・TUIのツリーからは取得しません。`channel_id`で参加チャンネルを指定できます。`through`に取得済み範囲の末尾カーソルを渡すと、その境界を含む範囲に絞ってページ取得できます。応答は`Cache-Control: no-store`です。
 
-`GET /api/threads/{id}`はチャンネルの閲覧権限を確認したうえでスレッド状態を返します。Slack 取り込みなどで削除済みの親に有効な返信が残っている場合も、返信 ID（またはその削除済み親 ID）から本文を含まないプレースホルダー（`root_deleted: true`、`can_participate: false`）として開けます。通常の返信投稿や参加・再開は引き続き削除済みの親を拒否（`404`）します。
+`GET /api/threads/{id}`はチャンネルの閲覧権限を確認したうえでスレッド状態を返します。Slack 取り込みなどで削除済みの親に有効な返信が残っている場合も、返信 ID（またはその削除済み親 ID）から本文を含まないプレースホルダー（`root_deleted: true`、`can_participate: false`）として開けます。返信 ID が削除済みの親に解決されるのは、スレッドの正規化が完了している（`thread_migration_completed` に行がある）か、`thread_rollout.phase = 'ready'` のときです。`phase = 'normalizing'` で、まだ `thread_migration_completed` に無いスレッドでは、`GET` は削除済みの親ではなく返信自身を返すため、`root_deleted: false` になります（`phase = 'collecting'` も同じです）。通常の返信投稿や参加・再開は引き続き削除済みの親を拒否（`404`）します。
 
 `POST /api/threads/{id}/unarchive`はチャンネルへの参加と投稿権限を確認します。閲覧権限がない場合やチャンネルがアーカイブ済みの場合は404、投稿権限がない場合は403です。応答は既存の`data`・`txid`形式で、すでに再開済みなら`txid: null`を返します。
 

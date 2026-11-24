@@ -103,8 +103,8 @@ branch's migrations were numbered `20261129020001`–`20261129020008` then, and
 the canonical directory had 107 files), the runs were repeated on PostgreSQL
 16.15 with Atlas `v1.3.9-1824371-canary`. Main later advanced through
 `20261130020001` and `20261201000000`, so this branch's migrations were
-renumbered twice more; they are now `20261201010001`–`20261201010008` (deferred
-`20261201010009`), and the merged canonical directory now has 113 files.
+renumbered twice more; they are now `20261201010001`–`20261201010009` (deferred
+`20261201010010`), and the merged canonical directory now has 114 files.
 
 The versions recorded in that run were `20261129020002` (expiry) and
 `20261129020008` (current). They correspond to the current `20261201010002` and
@@ -134,10 +134,12 @@ onto `main` `20261129000000`, or `20261128030001`–`20261128030007` before the
 rebase onto `main` `20261128030003`), or that applied this branch's
 migrations under the pre-merge numbering `20261129000001`–`20261129000008`
 (deferred `20261129000009`), or the later `20261129020001`–`20261129020008`
-versions (deferred `20261129020009`), or an intermediate renumbering between
-that and `20261201010001`–`20261201010008` (deferred `20261201010009`), must be
-recreated rather than upgraded in place: the renumbered versions are new
-revisions and would be re-applied on top of the old ones.
+versions (deferred `20261129020009`), or an intermediate renumbering before
+the current `20261201010001`–`20261201010009` (deferred `20261201010010`) —
+including the prior `20261201010001`–`20261201010008` draft whose deferred
+revision was `20261201010009` — must be recreated rather than upgraded in place:
+the renumbered versions are new revisions and would be re-applied on top of the
+old ones.
 
 Compare each final application schema with the checked-in `schema.sql`. Give
 each comparison its own empty dev database: Atlas imports `schema.sql` into

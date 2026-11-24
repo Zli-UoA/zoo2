@@ -122,13 +122,11 @@ DATABASE_URL="postgres://.../notes_scale_300k?sslmode=disable" \
 # 100 万件は別の空 DB を作り、SCALE_NOTES=1000000 で同じ 2 コマンドを実行する。
 ```
 
-`channel_notes_work_is_bounded_by_channel_notes_not_history` は対象チャンネルと無関係履歴を作り、SQL の走査行数・中間行・ソート入力・論理バッファを検証して `work.json` に 13 条件を、deep page 2 条件を `deep.json` に保存する。各条件の絶対上限（ノート系 256 行、cleanup page 2,048 行）と `Temp Written Blocks == 0` を超えるサンプルが 1 つでもあれば失敗する。deep page 2 条件は同じ合否チェックを両規模・両 plan で通るが、`compare-channel-notes-work.py` が固定で検証する `work.json` の 13 条件の集合は変えないため、記録は `deep.json` に分けている。`persisted_channel_notes_api_budget` は同じ DB の fixture を使い、単独 30 回・8 同時 240 回の API 時間と cleanup の実行時間を `api.json` に保存する。API 側の合否は応答が 200 OK であることだけで、時間は記録するだけで合否に使わない。
+`channel_notes_work_is_bounded_by_channel_notes_not_history` は対象チャンネルと無関係履歴を作り、SQL の走査行数・中間行・ソート入力・論理バッファを検証して `work.json` に全 15 条件（deep page の 2 条件を含む）× 2 plan（`custom` と `generic`）の計 30 エントリを保存する（`deep.json` は作らない）。各条件の絶対上限（ノート系 256 行、cleanup page 2,048 行）と `Temp Written Blocks == 0` を超えるサンプルが 1 つでもあれば失敗する。`persisted_channel_notes_api_budget` は同じ DB の fixture を使い、単独 30 回・8 同時 240 回の API 時間と cleanup の実行時間を `api.json` に保存する。API 側の合否は応答が 200 OK であることだけで、時間は記録するだけで合否に使わない。
 
-二規模の比較は、それぞれの `work.json` に対して次を実行する。履歴に比例した走査・中間行・ソート・論理バッファの増加があると失敗する。
+二規模の比較は、それぞれの `work.json` に対して次を実行する。`compare-channel-notes-work.py` は 30 エントリすべて（deep page の 2 条件を含む）を両規模で検証し、履歴に比例した走査・中間行・ソート・論理バッファの増加があると失敗する。
 
 ```sh
 python3 infra/db/compare-channel-notes-work.py \
   performance-results/notes-300000 performance-results/notes-1000000
 ```
-
-deep page の 2 条件はこの script の対象外 (条件集合が固定) のため、両規模の `deep.json` が同じ走査行数・論理バッファに収まっていることを記録値で確認する。今回の測定では、一覧 deep page が両規模とも 100 行 / 19 ブロック、削除済み一覧 deep page が両規模とも 50 行 / 12 ブロックであった。

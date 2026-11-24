@@ -486,6 +486,31 @@ mod tests {
                 placeholders_during_wait == 0,
                 "resolve_members must wait for the link lock before creating the placeholder"
             );
+            // 未コミットのプレースホルダを見落とさないよう、同じ主キーを別トランザクションで
+            // 入れてみる。resolve_members がリンクロックより先に行を書いていたら、この INSERT は
+            // その行ロックで待ち、短い lock_timeout で失敗する。
+            let (mut probe, probe_driver) =
+                tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+            tokio::spawn(probe_driver);
+            let probe_tx = probe.transaction().await?;
+            probe_tx
+                .batch_execute("SET LOCAL lock_timeout = '200ms'")
+                .await?;
+            probe_tx
+                .execute(
+                    "INSERT INTO users(id,user_name,display_name) VALUES($1,$2,'Link lock probe')",
+                    &[
+                        &member_id,
+                        &format!("link_lock_probe_{}", uuid::Uuid::new_v4().simple()),
+                    ],
+                )
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!(
+                        "resolve_members inserted the placeholder before taking the link lock: {error}"
+                    )
+                })?;
+            probe_tx.rollback().await?;
             // ロックを放し、取り込みが通ってプレースホルダを作るのを確認する。
             guard_tx.rollback().await?;
             let joined = tokio::time::timeout(Duration::from_secs(5), tasks.join_next()).await?
@@ -603,6 +628,7 @@ fn map_sync(error: SyncError) -> AppError {
         SyncError::InvalidCursor
         | SyncError::LeaseLost
         | SyncError::TargetChanged
+        | SyncError::PrivateTargetViolation
         | SyncError::Failed(_) => AppError::BadGateway("Slack request failed".into()),
     }
 }

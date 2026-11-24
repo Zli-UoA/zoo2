@@ -4,7 +4,7 @@
 -- FETCH_HEAD moves with every fetch and can already contain this branch's note
 -- guards, which would make the migration below fail before either mode runs.
 -- 7873efb7 is main after #595: it has the existing conversion guard and none
--- of this branch's 20261201010001..20261201010009 migrations.
+-- of this branch's 20261201010001..20261201010010 migrations.
 --   git show 7873efb7:infra/db/schema.sql | psql "$DATABASE_URL" -v ON_ERROR_STOP=1
 --   psql "$DATABASE_URL" -v branch=on -v mode=branch -f infra/db/tests/e2ee_channel_notes_regression.sql
 --   psql "$DATABASE_URL" -v branch=off -v mode=main -f infra/db/tests/e2ee_channel_notes_regression.sql

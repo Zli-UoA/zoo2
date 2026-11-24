@@ -134,7 +134,8 @@ pub(super) async fn process(
                 e @ (SyncError::RateLimited(_)
                 | SyncError::NoAccess(_)
                 | SyncError::LeaseLost
-                | SyncError::TargetChanged),
+                | SyncError::TargetChanged
+                | SyncError::PrivateTargetViolation),
             ) => {
                 return Err(e);
             }
@@ -341,20 +342,7 @@ async fn apply(
             }
         }
     }
-    let current_slack_private = if *slack_private {
-        true
-    } else {
-        let info = slack
-            .get("conversations.info", &[("channel", slack_channel)])
-            .await?;
-        let channel = &info["channel"];
-        ["is_private", "is_im", "is_mpim", "is_group"]
-            .iter()
-            .any(|k| channel[*k] == true)
-    };
-    // バッチの残り・`recheck::run`・`store` も同じ値を使う。途中で非公開に変わった
-    // Slack チャンネルを、以降のヒントで取り直したり、公開の取り込み先へ書いたりしない。
-    *slack_private |= current_slack_private;
+    super::sync::refresh_slack_privacy(slack, slack_channel, slack_private).await?;
     if let Some(message) = &message
         && message.is_importable()
     {
@@ -1006,6 +994,9 @@ mod tests {
             Err(SyncError::LeaseLost) => anyhow::bail!("apply lost its lease before the refusal"),
             Err(SyncError::TargetChanged) => {
                 anyhow::bail!("apply failed before the refusal with TargetChanged")
+            }
+            Err(SyncError::PrivateTargetViolation) => {
+                anyhow::bail!("apply failed before the refusal with PrivateTargetViolation")
             }
             Ok(()) => anyhow::bail!("apply unexpectedly succeeded against an encrypted channel"),
         }

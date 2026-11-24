@@ -233,6 +233,9 @@ pub(super) enum SyncError {
     LeaseLost,
     /// 取り込み先 (`slack_channels.channel_id`) が変わった。保存済みの途中経過は、新しい取り込み先には使えない
     TargetChanged,
+    /// 取り込み先が、非公開の Slack チャンネルの内容を保護しなくなった (公開・削除済み)。
+    /// ヒントは消費せず、同期もその場で止める
+    PrivateTargetViolation,
     Failed(String),
 }
 
@@ -284,6 +287,17 @@ pub async fn run_once_for_team(s: &AppState, team: &str) -> Result<bool, AppErro
             // 対応先が変わった。古い対応先のページ位置や取り込みの途中経過は、新しい対応先には使えない
             tracing::info!(team = %task.team_id, channel = %task.slack_channel_id, "Slack sync target changed; resetting the interrupted run");
             reset_run(s, &task, "Slack sync target changed or no longer exists").await?;
+        }
+        Err(SyncError::PrivateTargetViolation) => {
+            // 対応先が、非公開の Slack チャンネルの内容を保護しなくなった。保存済みの途中経過ごと捨てて、
+            // 新しい同期としてやり直す (ヒントは消費しない)
+            tracing::info!(team = %task.team_id, channel = %task.slack_channel_id, "Slack sync target no longer protects private channel content; resetting the interrupted run");
+            reset_run(
+                s,
+                &task,
+                "Slack sync target changed or no longer protects private channel content",
+            )
+            .await?;
         }
         Err(SyncError::Failed(error)) => {
             tracing::warn!(team = %task.team_id, channel = %task.slack_channel_id, %error, "Slack sync failed");
@@ -677,16 +691,8 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
 
     // 再開のときも、毎回確かめる。保存した途中経過のあとで、取り込み先が公開に変わっていることがある。
     // 非公開の Slack チャンネルの履歴を、公開の zoo チャンネルに入れない
-    let info = slack
-        .get(
-            "conversations.info",
-            &[("channel", task.slack_channel_id.as_str())],
-        )
-        .await?;
-    let channel = &info["channel"];
-    let mut slack_private = ["is_private", "is_im", "is_mpim", "is_group"]
-        .iter()
-        .any(|k| channel[*k] == true);
+    let mut slack_private = false;
+    refresh_slack_privacy(&mut slack, &task.slack_channel_id, &mut slack_private).await?;
     if slack_private && !task.private {
         return Ok(Step::Park(
             6 * 3600,
@@ -774,7 +780,7 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
             task.team_id.as_str(),
             task.slack_channel_id.as_str(),
             task.channel_id.as_str(),
-            slack_private,
+            &mut slack_private,
             task.token.as_str(),
             &mut db,
         )
@@ -797,6 +803,9 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
                 params.push(("cursor", cursor));
             }
             let page = slack.get("conversations.history", &params).await?;
+            // ページを取った時点で公開だった Slack チャンネルが、保存の前に非公開へ変わることがある。
+            // ページは可視性を運ばないので、保存の前に確かめる
+            refresh_slack_privacy(&mut slack, &task.slack_channel_id, &mut slack_private).await?;
             let messages = parse_messages(&page);
             let horizon = now_secs().saturating_sub(THREAD_WINDOW_SECS);
             for message in &messages {
@@ -932,6 +941,8 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
                 }
                 Err(e) => return Err(e),
             };
+            // 履歴と同じく、保存の前に、ページを取った時点の可視性ではなく今の可視性を確かめる
+            refresh_slack_privacy(&mut slack, &task.slack_channel_id, &mut slack_private).await?;
             let messages = parse_messages(&page);
             let next = page["response_metadata"]["next_cursor"]
                 .as_str()
@@ -980,6 +991,28 @@ pub(super) async fn ensure_target_unchanged(
     Ok(())
 }
 
+/// Slack のチャンネルが今も非公開か (IM・MPIM を含む) を `conversations.info` で確かめ、非公開なら
+/// `slack_private` を立てる。同期の途中で公開から非公開に変わった Slack チャンネルの内容を、公開の
+/// 取り込み先へ書かないために、ページを取ったあと (保存の前) に呼ぶ。すでに非公開と分かっていれば呼ばない。
+pub(super) async fn refresh_slack_privacy(
+    slack: &mut Slack,
+    slack_channel: &str,
+    slack_private: &mut bool,
+) -> Result<(), SyncError> {
+    if *slack_private {
+        return Ok(());
+    }
+    let info = slack
+        .get("conversations.info", &[("channel", slack_channel)])
+        .await?;
+    let channel = &info["channel"];
+    let current = ["is_private", "is_im", "is_mpim", "is_group"]
+        .iter()
+        .any(|k| channel[*k] == true);
+    *slack_private |= current;
+    Ok(())
+}
+
 /// 取り込み先のチャンネルが、削除されておらず、非公開の Slack チャンネルの内容を保護しているか
 /// (非公開の Slack チャンネルは、非公開の zoo チャンネルにしか入れない) を `FOR SHARE` で固定して確かめる。
 /// 対応表 (`slack_channels`) は、先に `ensure_target_unchanged` で固定しておく。
@@ -996,10 +1029,7 @@ pub(super) async fn ensure_private_target(
     )
     .await?;
     if target.first().is_none_or(|row| row["valid"] != true) {
-        return Err(AppError::BadRequest(
-            "Slack sync target changed or no longer protects private channel content".into(),
-        )
-        .into());
+        return Err(SyncError::PrivateTargetViolation);
     }
     Ok(())
 }
@@ -1651,6 +1681,7 @@ mod tests {
                 Err(SyncError::InvalidCursor) => Err("InvalidCursor".into()),
                 Err(SyncError::LeaseLost) => Err("LeaseLost".into()),
                 Err(SyncError::TargetChanged) => Err("TargetChanged".into()),
+                Err(SyncError::PrivateTargetViolation) => Err("PrivateTargetViolation".into()),
             };
             let _ = store_tx.send(mapped);
             Ok::<(), anyhow::Error>(())
