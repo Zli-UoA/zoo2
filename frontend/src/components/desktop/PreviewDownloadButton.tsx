@@ -36,21 +36,27 @@ export function PreviewDownloadButton({
   const resolveUrl = useCallback(async () => src, [src]);
   // 保存ダイアログの前に本文を確認する。CORS で読めないときはダイアログを出さずに
   // リンクへ切り替え、Content-Length があれば保存の上限判定に渡す。
-  const prepare = useCallback(async (): Promise<DesktopSavePrepared> => {
-    let response: Response;
-    try {
-      response = await fetch(src, { credentials: "omit" });
-    } catch (error) {
-      throw new AttachmentDownloadError("network", { cause: error });
-    }
-    if (!response.ok) throw new AttachmentDownloadError("http", { status: response.status });
-    const raw = response.headers.get("content-length");
-    const parsed = raw ? Number(raw) : Number.NaN;
-    return {
-      response,
-      size: Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : undefined,
-    };
-  }, [src]);
+  const prepare = useCallback(
+    async (signal: AbortSignal): Promise<DesktopSavePrepared> => {
+      let response: Response;
+      try {
+        response = await fetch(src, { credentials: "omit", signal });
+      } catch (error) {
+        throw new AttachmentDownloadError("network", { cause: error });
+      }
+      if (!response.ok) {
+        void response.body?.cancel().catch(() => {});
+        throw new AttachmentDownloadError("http", { status: response.status });
+      }
+      const raw = response.headers.get("content-length");
+      const parsed = raw ? Number(raw) : Number.NaN;
+      const size = Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : undefined;
+      // 保存先のダイアログの間は本文を読まない。接続を止めて、転送は保存時に開き直す。
+      await response.body?.cancel().catch(() => {});
+      return { size };
+    },
+    [src],
+  );
   const { state, pending, available, download, cancel } = useDesktopSave({
     id: saveId,
     fileName: name,

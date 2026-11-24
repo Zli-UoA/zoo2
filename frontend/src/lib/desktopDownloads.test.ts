@@ -49,6 +49,7 @@ import {
   desktopDownloadsAvailable,
   downloadBlobToDesktop,
   downloadUrlToDesktop,
+  prepareDesktopDownload,
   resetDesktopDownloadsForTest,
   subscribeDesktopDownloads,
 } from "./desktopDownloads";
@@ -148,6 +149,32 @@ describe("desktopDownloadsAvailable", () => {
     desktop.detect.mockResolvedValue(false);
     await expect(desktopDownloadsAvailable()).resolves.toBe(false);
     expect(desktop.probe).not.toHaveBeenCalled();
+  });
+});
+
+describe("prepareDesktopDownload", () => {
+  it("keeps the preparing state and aborts a pending preparation", async () => {
+    let prepareSignal: AbortSignal | undefined;
+    const promise = prepareDesktopDownload("prep1", (signal) => {
+      prepareSignal = signal;
+      return new Promise(() => {});
+    });
+
+    expect(desktopDownloadState("prep1")).toEqual({ status: "preparing" });
+    await vi.waitFor(() => expect(prepareSignal).toBeDefined());
+    cancelDesktopDownload("prep1");
+
+    await expect(promise).rejects.toBeInstanceOf(DesktopDownloadCancelledError);
+    expect(prepareSignal?.aborted).toBe(true);
+    expect(desktopDownloadState("prep1")).toBeUndefined();
+  });
+
+  it("rejects a second preparation without changing the first one", async () => {
+    const promise = prepareDesktopDownload("prep2", () => new Promise(() => {}));
+    await expect(prepareDesktopDownload("prep2", () => Promise.resolve(1))).resolves.toBeNull();
+
+    cancelDesktopDownload("prep2");
+    await expect(promise).rejects.toBeInstanceOf(DesktopDownloadCancelledError);
   });
 });
 
@@ -356,6 +383,58 @@ describe("downloadUrlToDesktop", () => {
     expect(desktop.cancel).toHaveBeenCalledWith("d5");
     expect(desktop.finish).not.toHaveBeenCalled();
     expect(desktopDownloadState("a5")).toBeUndefined();
+  });
+
+  it("cancels while waiting for the next chunk even when the body ignores the fetch signal", async () => {
+    desktop.begin.mockResolvedValue(started("dPrepRead"));
+    desktop.cancel.mockResolvedValue(undefined);
+    let pullStarted!: () => void;
+    let releasePull!: () => void;
+    const pullBegan = new Promise<void>((resolve) => (pullStarted = resolve));
+    const pullPending = new Promise<void>((resolve) => (releasePull = resolve));
+    const stream = new ReadableStream<Uint8Array>({
+      pull() {
+        pullStarted();
+        return pullPending;
+      },
+      cancel() {
+        releasePull();
+      },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(stream, { headers: { "content-length": "10" } })),
+    );
+
+    const promise = downloadUrlToDesktop("aPrepRead", "a.txt", vi.fn().mockResolvedValue("u"));
+    await pullBegan;
+    cancelDesktopDownload("aPrepRead");
+
+    await expect(promise).rejects.toBeInstanceOf(DesktopDownloadCancelledError);
+    expect(desktop.cancel).toHaveBeenCalledWith("dPrepRead");
+    expect(desktop.finish).not.toHaveBeenCalled();
+    expect(desktopDownloadState("aPrepRead")).toBeUndefined();
+  });
+
+  it("continues a prepared download with the same state and controller", async () => {
+    const prepared = await prepareDesktopDownload("aPrep", () => Promise.resolve(1234));
+    expect(prepared).not.toBeNull();
+    desktop.begin.mockResolvedValue(started("dPrep"));
+    desktop.write.mockResolvedValue(undefined);
+    desktop.finish.mockResolvedValue("saved.txt");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => blobResponse([1])),
+    );
+
+    const promise = downloadUrlToDesktop("aPrep", "a.txt", vi.fn().mockResolvedValue("u"), {
+      size: prepared?.value,
+      controller: prepared?.controller,
+    });
+    expect(desktopDownloadState("aPrep")).toEqual({ status: "preparing" });
+    await expect(promise).resolves.toBe("saved.txt");
+    expect(desktop.begin).toHaveBeenCalledWith("a.txt", 1234);
+    expect(desktopDownloadState("aPrep")).toBeUndefined();
   });
 
   it("finishes at 100% even when the response has no content-length", async () => {

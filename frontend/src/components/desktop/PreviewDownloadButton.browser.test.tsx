@@ -57,23 +57,45 @@ function renderButton() {
 }
 
 it("saves a preview body through the desktop download commands", async () => {
-  const invoke = desktopInvoke();
-  mockDesktop(invoke);
-  const fetchMock = vi.fn(
-    async () => new Response(new Uint8Array([1, 2, 3]), { headers: { "content-length": "3" } }),
+  const cancelCheck = vi.fn(async () => {});
+  const checked = new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2, 3]));
+        controller.close();
+      },
+      cancel: cancelCheck,
+    }),
+    { headers: { "content-length": "3" } },
   );
+  const base = desktopInvoke();
+  let releaseBegin!: (value: unknown) => void;
+  const beginning = new Promise<unknown>((resolve) => (releaseBegin = resolve));
+  const invoke = vi.fn((cmd: string) => (cmd === "zoo_download_begin" ? beginning : base(cmd)));
+  mockDesktop(invoke);
+  const fetchMock = vi
+    .fn()
+    .mockResolvedValueOnce(checked)
+    .mockResolvedValue(new Response(new Uint8Array([1, 2, 3])));
   vi.stubGlobal("fetch", fetchMock);
   const saved = vi.spyOn(toast, "success").mockReturnValue("saved");
 
   renderButton();
   fireEvent.click(await screen.findByRole("button", { name: "report.txtをダウンロード" }));
 
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith("zoo_download_finish", { id: "dl" }));
+  await waitFor(() =>
+    expect(invoke).toHaveBeenCalledWith("zoo_download_begin", {
+      begin: { file_name: "report.txt", size: 3 },
+    }),
+  );
+  // 確認用の応答はダイアログの前に破棄し、本文は保存時に開き直す。
+  expect(cancelCheck).toHaveBeenCalledOnce();
   expect(fetchMock).toHaveBeenCalledTimes(1);
   expect(fetchMock).toHaveBeenCalledWith(SRC, expect.objectContaining({ credentials: "omit" }));
-  expect(invoke).toHaveBeenCalledWith("zoo_download_begin", {
-    begin: { file_name: "report.txt", size: 3 },
-  });
+
+  releaseBegin({ status: "started", id: "dl", path: "/tmp/report.txt", prompted: true });
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("zoo_download_finish", { id: "dl" }));
+  expect(fetchMock).toHaveBeenCalledTimes(2);
   expect(invoke).toHaveBeenCalledWith(
     "zoo_download_write",
     expect.any(Uint8Array),
@@ -107,6 +129,37 @@ it("switches to the external link when the preview body cannot be fetched", asyn
   expect(link.getAttribute("target")).toBe("_blank");
   expect(invoke).not.toHaveBeenCalledWith("zoo_download_begin", expect.anything());
   expect(invoke).not.toHaveBeenCalledWith("zoo_download_finish", { id: "dl" });
+});
+
+it("cancels while the preview body is still being opened", async () => {
+  const invoke = desktopInvoke();
+  mockDesktop(invoke);
+  let fetchSignal: AbortSignal | undefined;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((_url: string, init?: RequestInit) => {
+      fetchSignal = init?.signal ?? undefined;
+      return new Promise<Response>((_resolve, reject) => {
+        fetchSignal?.addEventListener("abort", () =>
+          reject(new DOMException("Aborted", "AbortError")),
+        );
+      });
+    }),
+  );
+  const failed = vi.spyOn(toast, "error").mockReturnValue("failed");
+
+  renderButton();
+  fireEvent.click(await screen.findByRole("button", { name: "report.txtをダウンロード" }));
+  await waitFor(() => expect(fetchSignal?.aborted).toBe(false));
+
+  fireEvent.click(screen.getByRole("button", { name: "report.txtのダウンロードを中止" }));
+
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "report.txtをダウンロード" })).toBeEnabled(),
+  );
+  expect(fetchSignal?.aborted).toBe(true);
+  expect(failed).not.toHaveBeenCalled();
+  expect(invoke).not.toHaveBeenCalledWith("zoo_download_begin", expect.anything());
 });
 
 it("keeps the original link in a browser", () => {

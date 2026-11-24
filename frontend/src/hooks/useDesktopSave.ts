@@ -15,11 +15,12 @@ import {
   desktopDownloadsAvailable,
   downloadBlobToDesktop,
   downloadUrlToDesktop,
+  prepareDesktopDownload,
   useDesktopDownloadState,
 } from "../lib/desktopDownloads";
 
-/** 保存ダイアログを出す前に確認した本文と大きさ。 */
-export type DesktopSavePrepared = { response?: Response; size?: number | null };
+/** 保存ダイアログを出す前に確認した本文の大きさ。 */
+export type DesktopSavePrepared = { size?: number | null };
 
 /** 保存する本文の出所。表示に使った URL か、復号済みの `Blob` のどちらか。 */
 export type DesktopSaveSource =
@@ -27,8 +28,8 @@ export type DesktopSaveSource =
       kind: "url";
       resolveUrl: AttachmentUrlResolver;
       size?: number | null;
-      /** 保存ダイアログの前に本文を確認し、開いた応答をそのまま転送に使う。 */
-      prepare?: () => Promise<DesktopSavePrepared>;
+      /** 保存ダイアログの前に CORS と本文の大きさを確認する。 */
+      prepare?: (signal: AbortSignal) => Promise<DesktopSavePrepared>;
     }
   | {
       kind: "blob";
@@ -137,16 +138,20 @@ export function useDesktopSave({
         return;
       }
       const { source: active } = current.current;
-      let response: Response | undefined;
       let size = active.size;
+      let controller: AbortController | undefined;
       if (active.kind === "url" && active.prepare) {
-        const prepared = await active.prepare();
-        response = prepared.response;
-        if (prepared.size != null) size = prepared.size;
+        const { prepare } = active;
+        // 確認の待機中も円を中止に切り替え、同じ controller で転送まで続ける。
+        const prepared = await prepareDesktopDownload(id, (signal) => prepare(signal));
+        // 別の保存が先に始まっていたときは、状態を壊さず何もしない。
+        if (!prepared) return;
+        controller = prepared.controller;
+        if (prepared.value.size != null) size = prepared.value.size;
       }
       const savedName =
         active.kind === "url"
-          ? await downloadUrlToDesktop(id, fileName, active.resolveUrl, { size, response })
+          ? await downloadUrlToDesktop(id, fileName, active.resolveUrl, { size, controller })
           : await downloadBlobToDesktop(id, fileName, active.load, size);
       // 同じ名前が既にあったときは番号が足されるので、実際の名前を伝える。
       if (savedName) toast.success(t("attachments.downloadSaved", { name: savedName }));
