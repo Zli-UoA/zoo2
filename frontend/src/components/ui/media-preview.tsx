@@ -1,4 +1,4 @@
-import { useId, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { mediaPreviewKind } from "../../lib/attachments";
 import { imageAspectRatio, type ImageMetadata } from "../../lib/imageMetadata";
@@ -42,7 +42,8 @@ export function MediaPreview({
   depth?: number;
 }) {
   const { t } = useTranslation();
-  const previewId = useId();
+  // マウント時に決めた ID を使い続ける。src 更新中の保存共有と、作り直し後の同一ファイル復帰を両立する。
+  const [previewId] = useState(() => `preview:${name}:${src ?? ""}`);
   const [open, setOpen] = useState(initialOpen);
   const [brokenSrc, setBrokenSrc] = useState<string | null>(null);
   const kind = mediaPreviewKind(contentType, name);
