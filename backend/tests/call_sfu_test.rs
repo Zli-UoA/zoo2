@@ -786,7 +786,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     .await?;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
-    // 結果のわからない pull（Cloudflare が 500）。あとで閉じ直す行を、30 秒先に処理するよう記録する。
+    // 結果のわからない pull（Cloudflare が 500）。あとで閉じ直す行を、30 秒先と 5 分先に処理するよう記録する。
     Mock::given(method("POST"))
         .and(path(pull_path.as_str()))
         .respond_with(ResponseTemplate::new(500))
@@ -808,7 +808,13 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         "SELECT count(*) FROM call_sfu_departures WHERE cf_session_id = '{subscriber_cf}'
            AND claimed_until > statement_timestamp() + interval '20 seconds' AND channel_id = $1"
     );
-    assert_eq!(count(&mut db, &delayed_sql, &channel).await?, 1);
+    // 30 秒後と 5 分後の 2 回、閉じ直す。
+    assert_eq!(count(&mut db, &delayed_sql, &channel).await?, 2);
+    let late_sql = format!(
+        "SELECT count(*) FROM call_sfu_departures WHERE cf_session_id = '{subscriber_cf}'
+           AND claimed_until > statement_timestamp() + interval '250 seconds' AND channel_id = $1"
+    );
+    assert_eq!(count(&mut db, &late_sql, &channel).await?, 1);
     // 処理する時刻になっても、そのセッションがまだその人の割り当てなら閉じずに消す（通話を切らない）。
     let before_reclose = request_count(&cf).await;
     toasty::sql::statement(

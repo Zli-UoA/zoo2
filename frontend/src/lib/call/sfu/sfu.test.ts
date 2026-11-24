@@ -576,7 +576,8 @@ describe("CfRealtimeAdapter", () => {
     setup();
     vi.useFakeTimers();
     // 5xx（backend は Cloudflare の失敗を 502 にする）・時間切れ・status のない失敗は、結果が分からない。
-    for (const err of [rejectedBeforeApply(502), new Error("network")]) {
+    // 409 は、pull のあいだに割り当てが変わったとき（Cloudflare に送ったあと）にも返るので、同じく扱う。
+    for (const err of [rejectedBeforeApply(502), rejectedBeforeApply(409), new Error("network")]) {
       const pull = vi.fn<(ids: string[]) => Promise<CfTracksResponse>>(async () => {
         throw err;
       });

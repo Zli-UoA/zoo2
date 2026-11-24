@@ -934,7 +934,8 @@ async fn still_assigned_to_cf(
 ///
 /// 結果はわからない。Cloudflare では操作が済んでいる、またはこのあと済むことがある（応答を待つのをやめても、
 /// Cloudflare 側の処理は取り消されない）。そのあいだに退出の後始末が `GET` した一覧には、操作の結果が
-/// 載らない。そこで、操作の結果が決まったあと（`UNKNOWN_OUTCOME_RECLOSE_SECS` 秒後）に閉じ直す行を記録する。
+/// 載らない。そこで、操作の結果が決まったあと（`UNKNOWN_OUTCOME_RECLOSE_SECS` の 30 秒後と 5 分後）に閉じ直す
+/// 行を記録する。
 /// worker はその時点でセッションがまだその人の割り当てなら閉じない（`Departure::cf_still_assigned`）ので、
 /// 通話を続けている人のトラックは切らない。記録に失敗しても、元のエラーを返す（ログに残す）。
 async fn record_unknown_cf_outcome(
@@ -944,22 +945,18 @@ async fn record_unknown_cf_outcome(
     session_id: Uuid,
     cf: &str,
 ) {
-    if let Err(e) = record_cf_departure_after_op(
-        state,
-        sfu,
-        channel_id,
-        session_id,
-        cf,
-        UNKNOWN_OUTCOME_RECLOSE_SECS,
-    )
-    .await
-    {
-        tracing::error!(error = ?e, channel_id, %session_id, "結果のわからない Cloudflare の操作の後始末を記録できませんでした");
+    for delay in UNKNOWN_OUTCOME_RECLOSE_SECS {
+        if let Err(e) =
+            record_cf_departure_after_op(state, sfu, channel_id, session_id, cf, delay).await
+        {
+            tracing::error!(error = ?e, channel_id, %session_id, "結果のわからない Cloudflare の操作の後始末を記録できませんでした");
+        }
     }
 }
 
-/// 結果のわからない操作のあと、閉じ直すまでの秒数。Cloudflare への要求のタイムアウト（10 秒）より長くする。
-const UNKNOWN_OUTCOME_RECLOSE_SECS: i32 = 30;
+/// 結果のわからない操作のあと、閉じ直すまでの秒数。1 回目は Cloudflare への要求のタイムアウト（10 秒）より
+/// 長くする。Cloudflare は処理時間の上限を示していないので、遅れて済んだ場合に備えて 5 分後にもう一度閉じ直す。
+const UNKNOWN_OUTCOME_RECLOSE_SECS: [i32; 2] = [30, 300];
 
 /// Cloudflare のセッションの後始末を、`call_sfu_departures` に記録し直す（`still_assigned_to_cf`）。
 /// `delay_secs` が 0 より大きければ、worker はその秒数が過ぎてから処理する（`claimed_until`）。
