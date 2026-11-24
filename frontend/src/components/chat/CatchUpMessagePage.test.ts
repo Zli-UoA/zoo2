@@ -8,6 +8,8 @@ import { CatchUpMessagePage } from "./CatchUpMessagePage";
 const mocks = vi.hoisted(() => ({
   messages: [] as Array<{ id: string; user_id: string; created_at: string }>,
   feedLoading: false,
+  feedError: false,
+  isOnline: true,
   reactions: [] as MessageReactionRow[],
   reactionsLoading: false,
   reactionsError: false,
@@ -39,7 +41,7 @@ vi.mock("../../hooks/useRealtime", () => ({
   useMessageFeed: () => ({
     data: mocks.messages,
     isLoading: mocks.feedLoading,
-    isError: false,
+    isError: mocks.feedError,
     isInitialSyncLoading: false,
     hasOlder: mocks.hasOlder,
     isLoadingOlder: false,
@@ -77,7 +79,7 @@ vi.mock("../../hooks/useKitchenCatalog", () => ({ useKitchenCatalog: () => ({ ca
 vi.mock("../../hooks/useAttachments", () => ({ useMessageAttachments: () => ({ data: [] }) }));
 vi.mock("../../lib/attachments", () => ({ groupAttachmentsByMessage: () => new Map() }));
 vi.mock("../../lib/offline/offline-context", () => ({
-  useOfflineStatus: () => ({ isOnline: true }),
+  useOfflineStatus: () => ({ isOnline: mocks.isOnline }),
 }));
 vi.mock("../../hooks/useEncryptedDisplay", () => ({
   useEncryptedDisplay: ({
@@ -124,6 +126,8 @@ afterEach(() => {
   cleanup();
   mocks.messages = [];
   mocks.feedLoading = false;
+  mocks.feedError = false;
+  mocks.isOnline = true;
   mocks.reactions = [];
   mocks.reactionsLoading = false;
   mocks.reactionsError = false;
@@ -162,10 +166,24 @@ it("passes the viewer and reaction handlers without enabling edit, delete or thr
 it.each([
   { label: "readOnly", props: { readOnly: true }, setup: () => {} },
   {
+    label: "offline",
+    props: {},
+    setup: () => {
+      mocks.isOnline = false;
+    },
+  },
+  {
     label: "messages loading",
     props: {},
     setup: () => {
       mocks.feedLoading = true;
+    },
+  },
+  {
+    label: "messages error",
+    props: {},
+    setup: () => {
+      mocks.feedError = true;
     },
   },
   {
