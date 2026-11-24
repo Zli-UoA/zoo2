@@ -27,7 +27,10 @@ use crate::{
         livekit, rows_json,
     },
     error::AppError,
-    routes::calls::{CallDistributedEvent, SfuTrackInfo, authorize_call_access, load_sfu_tracks},
+    routes::calls::{
+        CallDistributedEvent, SfuTrackInfo, authorize_call_access, authorize_call_access_on,
+        load_sfu_tracks,
+    },
     state::AppState,
 };
 
@@ -177,9 +180,19 @@ async fn join(
 ) -> Result<Json<JoinResponse>, AppError> {
     let sfu = sfu(&state)?;
     let mut db = state.db.clone();
-    authorize_call_access(&mut db, &channel_id, &user).await?;
-    let lan_client = sfu.is_lan_client(client_ip(&extensions, &headers));
     let timings = JoinTimingKey::from_headers(&state, &headers);
+    if let Some(key) = timings.as_ref() {
+        // 計測：権限の確認を、取り出した 1 本の接続で行い、接続の取得と SQL を分けて測る。
+        let started = std::time::Instant::now();
+        let mut conn = db.connection().await?;
+        JoinTimingKey::record(Some(key), JoinPhase::AuthAcquire, started);
+        let started = std::time::Instant::now();
+        authorize_call_access_on(&mut conn, &channel_id, &user).await?;
+        JoinTimingKey::record(Some(key), JoinPhase::AuthSql, started);
+    } else {
+        authorize_call_access(&mut db, &channel_id, &user).await?;
+    }
+    let lan_client = sfu.is_lan_client(client_ip(&extensions, &headers));
 
     // 割り当ては、チャンネル行のロックの下で決める（bridge がないときの「部屋に Cloudflare の人がいるか」を
     // 入室と直列化するため）。
@@ -296,10 +309,19 @@ async fn join(
         sfu.departures_wake.notify_one();
     }
 
-    let (epoch, version, tracks) =
-        load_sfu_tracks(&mut db, &channel_id)
-            .await?
-            .unwrap_or((epoch, 0, Vec::new()));
+    let loaded = if let Some(key) = timings.as_ref() {
+        // 計測：トラック一覧の読み取りも、接続の取得と SQL を分けて測る。
+        let started = std::time::Instant::now();
+        let mut conn = db.connection().await?;
+        JoinTimingKey::record(Some(key), JoinPhase::TracksAcquire, started);
+        let started = std::time::Instant::now();
+        let loaded = load_sfu_tracks(&mut conn, &channel_id).await?;
+        JoinTimingKey::record(Some(key), JoinPhase::TracksSql, started);
+        loaded
+    } else {
+        load_sfu_tracks(&mut db, &channel_id).await?
+    };
+    let (epoch, version, tracks) = loaded.unwrap_or((epoch, 0, Vec::new()));
     Ok(Json(JoinResponse {
         target,
         epoch,
@@ -365,16 +387,32 @@ struct JoinTimingKey(String);
 /// 記録する段階。
 #[derive(Clone, Copy)]
 enum JoinPhase {
-    /// 接続のプールからの取得。
+    /// 権限の確認のための、接続のプールからの取得。
+    AuthAcquire,
+    /// 権限の確認の SQL（チャンネル、guest の確認、メンバーの確認）。
+    AuthSql,
+    /// 割り当てのトランザクションのための、接続のプールからの取得。
     Acquire,
     /// BEGIN の往復。
     BeginSql,
+    /// commit のあとのトラック一覧の読み取りのための、接続のプールからの取得。
+    TracksAcquire,
+    /// トラック一覧の SQL。
+    TracksSql,
 }
 
 /// 記録先ごとの、段階ごとの時間。
 #[doc(hidden)]
 #[derive(Default, Debug, Clone)]
 pub struct JoinTimings {
+    /// 権限の確認のための、接続のプールからの取得。
+    pub auth_acquire: Vec<Duration>,
+    /// 権限の確認の SQL。
+    pub auth_sql: Vec<Duration>,
+    /// commit のあとのトラック一覧の読み取りのための、接続のプールからの取得。
+    pub tracks_acquire: Vec<Duration>,
+    /// トラック一覧の SQL。
+    pub tracks_sql: Vec<Duration>,
     /// 接続のプールからの取得（空きを待つ時間を含む）。
     pub acquire: Vec<Duration>,
     /// BEGIN の往復。
@@ -408,6 +446,10 @@ impl JoinTimingKey {
         };
         let elapsed = started.elapsed();
         key.push(|t| match phase {
+            JoinPhase::AuthAcquire => t.auth_acquire.push(elapsed),
+            JoinPhase::AuthSql => t.auth_sql.push(elapsed),
+            JoinPhase::TracksAcquire => t.tracks_acquire.push(elapsed),
+            JoinPhase::TracksSql => t.tracks_sql.push(elapsed),
             JoinPhase::Acquire => t.acquire.push(elapsed),
             JoinPhase::BeginSql => t.begin_sql.push(elapsed),
         });

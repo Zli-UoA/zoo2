@@ -1691,7 +1691,7 @@ async fn join_round(
     n: usize,
     mode: JoinMode,
     timings_key: &str,
-) -> anyhow::Result<Vec<Duration>> {
+) -> anyhow::Result<Vec<(Duration, backend::routes::call_sfu::JoinTimings)>> {
     let rooms = match mode {
         JoinMode::SeparateRoomsConcurrent => n,
         _ => 1,
@@ -1747,7 +1747,9 @@ async fn join_round(
         } else {
             None
         };
-        let headers = vec![("X-Test-Join-Timings".to_string(), timings_key.to_string())];
+        // 要求ごとに記録先を分け、join 全体の時間と段階ごとの時間を組にする。
+        let key = format!("{timings_key}-{}", uuid::Uuid::new_v4());
+        let headers = vec![("X-Test-Join-Timings".to_string(), key.clone())];
         async move {
             let uri = format!("/api/channels/{channel}/call/sfu/join");
             let started = std::time::Instant::now();
@@ -1761,8 +1763,12 @@ async fn join_round(
                 &headers,
             )
             .await?;
+            let elapsed = started.elapsed();
             anyhow::ensure!(status == StatusCode::OK, "{status} {body}");
-            Ok::<_, anyhow::Error>(started.elapsed())
+            Ok::<_, anyhow::Error>((
+                elapsed,
+                backend::routes::call_sfu::take_join_timings_for_test(&key),
+            ))
         }
     };
     let mut lat = Vec::new();
@@ -1788,8 +1794,49 @@ async fn join_round(
             .exec(&mut *db)
             .await?;
     }
-    lat.sort();
     Ok(lat)
+}
+
+/// 要求ごとの記録をまとめる。`other` は、join 全体から測った段階の合計を引いたもの（HTTP の処理、
+/// LiveKit のトークンの署名、Cloudflare の API、割り当ての SQL など）。`wait` は lock から rtt を引いた
+/// 目安なので、合計には入れない。
+fn merge_join_timings(
+    rows: Vec<(Duration, backend::routes::call_sfu::JoinTimings)>,
+) -> (
+    Vec<Duration>,
+    Vec<Duration>,
+    backend::routes::call_sfu::JoinTimings,
+) {
+    let mut join = Vec::new();
+    let mut other = Vec::new();
+    let mut all = backend::routes::call_sfu::JoinTimings::default();
+    for (elapsed, t) in rows {
+        let measured: Duration = [
+            &t.auth_acquire,
+            &t.auth_sql,
+            &t.acquire,
+            &t.begin_sql,
+            &t.lock,
+            &t.round_trip,
+            &t.tracks_acquire,
+            &t.tracks_sql,
+        ]
+        .into_iter()
+        .flatten()
+        .sum();
+        join.push(elapsed);
+        other.push(elapsed.saturating_sub(measured));
+        all.auth_acquire.extend(t.auth_acquire);
+        all.auth_sql.extend(t.auth_sql);
+        all.acquire.extend(t.acquire);
+        all.begin_sql.extend(t.begin_sql);
+        all.lock.extend(t.lock);
+        all.round_trip.extend(t.round_trip);
+        all.lock_wait.extend(t.lock_wait);
+        all.tracks_acquire.extend(t.tracks_acquire);
+        all.tracks_sql.extend(t.tracks_sql);
+    }
+    (join, other, all)
 }
 
 /// `sfu/join` の待ち時間の計測（手で実行する。`cargo test --test call_sfu_test -- --ignored join_latency --nocapture`）。
@@ -1805,10 +1852,12 @@ async fn join_round(
 /// join の SQL はその接続で初めて実行する。
 ///
 /// join の時間とは別に、要求ごとの記録先（`X-Test-Join-Timings`。ほかのテストの要求は混ざらない）に、
-/// 段階ごとの時間を出す：acquire（プールからの接続の取得）、begin_sql（BEGIN の往復）、lock（チャンネル行の
-/// FOR UPDATE の文）、
-/// rtt（ロックのあと同じ接続での `SELECT 1`。SQL の往復だけ）、wait（lock − rtt。ロック待ちの目安）。
-/// Cloudflare の join はロックを 2 回取るので、lock 系のサンプルは join より多い。
+/// 段階ごとの時間を出す：auth_acquire・auth_sql（権限の確認の接続の取得と SQL）、acquire（割り当ての
+/// トランザクションの接続の取得）、begin_sql（BEGIN の往復）、lock（チャンネル行の FOR UPDATE の文）、
+/// rtt（ロックのあと同じ接続での `SELECT 1`。SQL の往復だけ）、wait（lock − rtt。ロック待ちの目安）、
+/// tracks_acquire・tracks_sql（commit のあとのトラック一覧の接続の取得と SQL）、other（join 全体から、wait を
+/// 除く段階の合計を引いたもの）。Cloudflare の join はトランザクションとロックを 2 回取るので、acquire・lock 系の
+/// サンプルは join より多い。`JOIN_LATENCY_WARMUP=1` なら、測る前に共有のプールで 20 人の同時 join を 1 回捨てる。
 #[tokio::test]
 #[ignore]
 async fn join_latency() -> anyhow::Result<()> {
@@ -1826,6 +1875,7 @@ async fn join_latency() -> anyhow::Result<()> {
     }
     base_state.call_registry.set_db(db.clone()).await;
     let lk = MockServer::start().await;
+    let warmup = std::env::var("JOIN_LATENCY_WARMUP").is_ok_and(|v| v == "1");
 
     let ms = |d: Duration| d.as_secs_f64() * 1000.0;
     let summary = |all: &mut Vec<Duration>| {
@@ -1869,19 +1919,24 @@ async fn join_latency() -> anyhow::Result<()> {
         .map_err(anyhow::Error::msg)?
         .expect("sfu config");
         let sfu = backend::call_sfu::CallSfu::new(cfg);
-        let line = |label: String,
-                    all: &mut Vec<Duration>,
-                    t: &mut backend::routes::call_sfu::JoinTimings| {
-            format!(
-                "{label}\n  join      {}\n  acquire   {}\n  begin_sql {}\n  lock      {}\n  rtt       {}\n  wait      {}",
-                summary(all),
-                summary(&mut t.acquire),
-                summary(&mut t.begin_sql),
-                summary(&mut t.lock),
-                summary(&mut t.round_trip),
-                summary(&mut t.lock_wait),
-            )
-        };
+        let line =
+            |label: String, rows: Vec<(Duration, backend::routes::call_sfu::JoinTimings)>| {
+                let (mut join, mut other, mut t) = merge_join_timings(rows);
+                format!(
+                    "{label}\n  join           {}\n  auth_acquire   {}\n  auth_sql       {}\n  acquire        {}\n  begin_sql      {}\n  lock           {}\n  rtt            {}\n  wait           {}\n  tracks_acquire {}\n  tracks_sql     {}\n  other          {}",
+                    summary(&mut join),
+                    summary(&mut t.auth_acquire),
+                    summary(&mut t.auth_sql),
+                    summary(&mut t.acquire),
+                    summary(&mut t.begin_sql),
+                    summary(&mut t.lock),
+                    summary(&mut t.round_trip),
+                    summary(&mut t.lock_wait),
+                    summary(&mut t.tracks_acquire),
+                    summary(&mut t.tracks_sql),
+                    summary(&mut other),
+                )
+            };
 
         // cold：新しいプールと AppState で、最初の join。
         {
@@ -1890,43 +1945,41 @@ async fn join_latency() -> anyhow::Result<()> {
             cold_state.call_registry.set_db(cold_db.clone()).await;
             cold_state.call_sfu = Some(sfu.clone());
             let cold_app = create_router(cold_state);
-            let key = format!("cold-{}", uuid::Uuid::new_v4());
-            let mut cold = join_round(
+            let rows = join_round(
                 &cold_app,
                 &mut cold_db,
                 30,
                 JoinMode::SameRoomConcurrent,
-                &key,
+                "cold",
             )
             .await?;
-            let mut t = backend::routes::call_sfu::take_join_timings_for_test(&key);
             report.push(line(
                 format!("cf_delay={delay_ms}ms n=30 cold SameRoomConcurrent"),
-                &mut cold,
-                &mut t,
+                rows,
             ));
         }
 
         let mut state = base_state.clone();
         state.call_sfu = Some(sfu);
         let app = create_router(state);
+        // JOIN_LATENCY_WARMUP=1 なら、測る前に 20 人の同時 join を 1 回捨てる（プールの接続を作っておく）。
+        if warmup && delay_ms == 0 {
+            join_round(&app, &mut db, 20, JoinMode::SameRoomConcurrent, "warmup").await?;
+            report.push(
+                "(warm-up: one discarded round of 20 concurrent joins on the shared pool)".into(),
+            );
+        }
         for n in [20usize, 50] {
             for mode in [
                 JoinMode::SameRoomConcurrent,
                 JoinMode::SeparateRoomsConcurrent,
                 JoinMode::SameRoomSequential,
             ] {
-                let key = format!("warm-{}", uuid::Uuid::new_v4());
-                let mut all = Vec::new();
+                let mut rows = Vec::new();
                 for _ in 0..3 {
-                    all.extend(join_round(&app, &mut db, n, mode, &key).await?);
+                    rows.extend(join_round(&app, &mut db, n, mode, "warm").await?);
                 }
-                let mut t = backend::routes::call_sfu::take_join_timings_for_test(&key);
-                report.push(line(
-                    format!("cf_delay={delay_ms}ms n={n} {mode:?}"),
-                    &mut all,
-                    &mut t,
-                ));
+                report.push(line(format!("cf_delay={delay_ms}ms n={n} {mode:?}"), rows));
             }
         }
     }

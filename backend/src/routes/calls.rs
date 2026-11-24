@@ -1146,6 +1146,16 @@ pub(crate) async fn authorize_call_access(
     channel_id: &str,
     user: &AuthUser,
 ) -> Result<Channel, AppError> {
+    authorize_call_access_on(db, channel_id, user).await
+}
+
+/// `authorize_call_access` を、渡した実行先（`Db` か、取り出した 1 本の `Connection`）で行う。
+/// `sfu/join` の計測（`X-Test-Join-Timings`）が、接続の取得と SQL の時間を分けて測るのに使う。
+pub(crate) async fn authorize_call_access_on(
+    db: &mut dyn toasty::Executor,
+    channel_id: &str,
+    user: &AuthUser,
+) -> Result<Channel, AppError> {
     let channel = Channel::get_by_id(&mut *db, channel_id)
         .await
         .map_err(|e| {
@@ -1165,7 +1175,10 @@ pub(crate) async fn authorize_call_access(
     }
 
     // プライベートチャンネルおよび guest ユーザーはメンバーシップを要求 ([P1])
-    let is_guest = crate::apps::events::guest_in_db(&mut *db, &user.id).await?;
+    let is_guest = {
+        let mut tx = db.transaction().await?;
+        crate::apps::events::guest(&mut tx, &user.id).await?
+    };
     if channel.is_private || is_guest {
         let member = ChannelUser::filter(
             ChannelUser::fields()
