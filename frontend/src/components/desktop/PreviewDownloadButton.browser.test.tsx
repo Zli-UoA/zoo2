@@ -358,8 +358,13 @@ it("keeps progress when preview src changes during save", async () => {
     </LocaleProvider>,
   );
 
+  // 押した側だけでなく、同じプレビューの別ボタン（カード側）も同じ保存状態に追従する。
+  fireEvent.click(within(dialog).getByRole("button", { name: /閉じる/ }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(screen.queryByRole("button", { name: "sample.txtをダウンロード" })).toBeNull();
+  expect(screen.getByText("保存しています…")).toBeInTheDocument();
   expect(invoke.mock.calls.filter(([cmd]) => cmd === "zoo_download_begin")).toHaveLength(1);
+
   resolveFinish("saved.txt");
   await waitFor(() =>
     expect(screen.getByRole("button", { name: "sample.txtをダウンロード" })).not.toBeNull(),
