@@ -1,5 +1,6 @@
 import {
   createCollection,
+  createLiveQueryCollection,
   localOnlyCollectionOptions,
   useLiveInfiniteQuery,
   useLiveQuery,
@@ -68,6 +69,60 @@ export function useMessageById(channelId: string | null, messageId: string | nul
   );
   const data = useOptimisticDisplay(channelId && messageId ? channelId : null, query.data);
   return { ...query, data };
+}
+
+type MessageFeedSources = Parameters<typeof messageFeedQuery>[1];
+
+/**
+ * リンク先のメッセージを取る、共有のライブクエリ。リンクの短い表示・埋め込み・別の投稿など、同じメッセージを
+ * 指すものが、1 つの問い合わせ（Electric の subset snapshot）を分け合う。`useLiveQuery` に問い合わせを
+ * 渡すと、呼び出しごとに別の取得になり、同じメッセージへのリンクの数だけ要求が増える。
+ * 鍵は、チャンネルの `messages` コレクション（アカウントごとのコレクション群に属する）と ID。
+ */
+const linkedMessageQueries = new WeakMap<
+  object,
+  Map<string, ReturnType<typeof createLinkedQuery>>
+>();
+
+function createLinkedQuery(sources: MessageFeedSources, messageId: string) {
+  return createLiveQueryCollection({
+    query: (q) => messageFeedQuery(q, sources, { parentId: null, messageId, includeDeleted: true }),
+    // 最初の購読者が付くまで、取得しない。
+    startSync: false,
+  });
+}
+
+function linkedMessageQuery(sources: MessageFeedSources, messageId: string) {
+  let byId = linkedMessageQueries.get(sources.messages);
+  if (!byId) {
+    byId = new Map();
+    linkedMessageQueries.set(sources.messages, byId);
+  }
+  const existing = byId.get(messageId);
+  // 購読者がいなくなって片付いた問い合わせは、作り直す。
+  if (existing && existing.status !== "cleaned-up" && existing.status !== "error") return existing;
+  const created = createLinkedQuery(sources, messageId);
+  byId.set(messageId, created);
+  const forget = ({ status }: { status: string }) => {
+    if (status === "cleaned-up" && byId.get(messageId) === created) byId.delete(messageId);
+  };
+  created.on("status:change", forget);
+  return created;
+}
+
+/**
+ * メッセージリンクの埋め込み用に、ID で 1 件のメッセージを取る。{@link useMessageById} と同じ問い合わせだが、
+ * 楽観更新の重ねがけ（`useOptimisticDisplay`）はしない。それは、チャンネルのリアクションの Shape まで
+ * 購読するため、リンク先のチャンネルごとに余計な同期が増える。埋め込みはリアクションを表示しない。
+ * `channelId` が `null` のときは、何も取得しない。
+ */
+export function useLinkedMessageRows(channelId: string | null, messageId: string | null) {
+  const { messages, users } = useCollections();
+  const query =
+    channelId && messageId
+      ? linkedMessageQuery({ messages: messages(channelId), users }, messageId)
+      : null;
+  return useLiveQuery(() => query);
 }
 
 /** スレッドの親を、メイン一覧の範囲とは関係なく取る。 */

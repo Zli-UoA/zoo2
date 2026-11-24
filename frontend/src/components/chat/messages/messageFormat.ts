@@ -176,6 +176,24 @@ export function formatTime(value: string, locale: Locale = DEFAULT_LOCALE): stri
   return formatClock(parseUtcTimestamp(value), locale);
 }
 
+/**
+ * 埋め込みカードに添える日時。「11月23日 16:30」の形で、今年でなければ年も付ける。
+ * `now` を渡せるようにして、テストを現在の日時から切り離す。
+ */
+export function formatEmbedTimestamp(
+  value: string,
+  locale: Locale = DEFAULT_LOCALE,
+  now: Date = new Date(),
+): string {
+  const date = parseUtcTimestamp(value);
+  const day = new Intl.DateTimeFormat(INTL_LOCALES[locale], {
+    ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
+    month: "short",
+    day: "numeric",
+  }).format(date);
+  return `${day} ${formatClock(date, locale)}`;
+}
+
 /** タイトル属性向けの完全な日時。 */
 export function fullTimestamp(value: string, locale: Locale = DEFAULT_LOCALE): string {
   return new Date(normalizeUtcTimestamp(value)).toLocaleString(INTL_LOCALES[locale]);

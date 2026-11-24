@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   authorLabel,
   formatClock,
+  formatEmbedTimestamp,
   formatRelativeDay,
   formatTime,
   isSameLocalDay,
@@ -201,4 +202,30 @@ it("localizes new message announcements without translating user content", () =>
   expect(newMessageAnnouncement(message({ content: "" }), createI18n("yue").t)).toBe(
     "Alice 傳咗新訊息",
   );
+});
+
+describe("formatEmbedTimestamp", () => {
+  // 端末のタイムゾーンに依らないよう、日付が動かない正午（UTC）を使う。
+  const value = "2026-11-23 12:00:00.000";
+
+  it("今年の日時は、年を付けずに月日と時刻を出す", () => {
+    const text = formatEmbedTimestamp(value, "ja", new Date("2026-12-01T00:00:00Z"));
+    expect(text).toMatch(/^11月23日 \d{2}:\d{2}$/);
+  });
+
+  it("今年でない日時は、年も付ける", () => {
+    const text = formatEmbedTimestamp(value, "ja", new Date("2027-01-05T00:00:00Z"));
+    expect(text).toMatch(/^2026年11月23日 \d{2}:\d{2}$/);
+  });
+
+  it("ロケールに合わせた表記にする", () => {
+    const text = formatEmbedTimestamp(value, "en", new Date("2026-12-01T00:00:00Z"));
+    expect(text).toMatch(/^Nov 23 \d{2}:\d{2}$/);
+  });
+
+  it("時刻は 24 時間表記の HH:mm で、日付と同じ端末のローカル時刻にそろえる", () => {
+    const date = new Date("2026-11-23T12:00:00Z");
+    const text = formatEmbedTimestamp(value, "ja", new Date("2026-12-01T00:00:00Z"));
+    expect(text.endsWith(formatClock(date, "ja"))).toBe(true);
+  });
 });

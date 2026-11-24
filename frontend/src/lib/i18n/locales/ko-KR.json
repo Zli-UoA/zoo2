@@ -253,6 +253,18 @@
     "linkCopyFailed": "메시지 링크를 복사하지 못했습니다",
     "edited": "편집됨"
   },
+  "channelLink": {
+    "inlineMessage": "{{name}} 님: {{channel}}",
+    "thread": "{{channel}}의 스레드",
+    "encrypted": "이 메시지는 암호화되어 있습니다",
+    "messageUnavailable": "메시지를 표시할 수 없습니다",
+    "channelUnavailable": "채널을 표시할 수 없습니다",
+    "loading": "링크 대상을 불러오는 중",
+    "attachments_one": "첨부 파일 {{count}}개",
+    "attachments_other": "첨부 파일 {{count}}개",
+    "privateChannel": "비공개 채널",
+    "encryptedChannel": "암호화 채널"
+  },
   "attachments": {
     "recentPhotos": "최근 사진",
     "systemPhotos": "사진 선택기 열기",

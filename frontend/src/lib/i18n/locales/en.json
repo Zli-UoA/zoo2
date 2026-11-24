@@ -253,6 +253,18 @@
     "linkCopyFailed": "Could not copy the message link",
     "edited": "Edited"
   },
+  "channelLink": {
+    "inlineMessage": "{{name}}: {{channel}}",
+    "thread": "Thread in {{channel}}",
+    "encrypted": "This message is encrypted",
+    "messageUnavailable": "Unable to display this message",
+    "channelUnavailable": "Unable to display this channel",
+    "loading": "Loading the linked item",
+    "attachments_one": "{{count}} attachment",
+    "attachments_other": "{{count}} attachments",
+    "privateChannel": "Private channel",
+    "encryptedChannel": "Encrypted channel"
+  },
   "attachments": {
     "recentPhotos": "Recent photos",
     "systemPhotos": "Open photo picker",

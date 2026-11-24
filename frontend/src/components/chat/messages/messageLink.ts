@@ -78,6 +78,14 @@ export function parseChannelLink(href: string, origin: string): ChannelLinkTarge
   };
 }
 
+/**
+ * リンクが指すメッセージの ID。`?message=` を優先し、`?thread=` だけのリンクはスレッドの親を指す。
+ * チャンネルそのものへのリンクは `null`。
+ */
+export function linkedMessageId(target: ChannelLinkTarget): string | null {
+  return target.search.message ?? target.search.thread ?? null;
+}
+
 const MESSAGE_JUMP_EVENT = "zoo:jump-to-message";
 
 /**

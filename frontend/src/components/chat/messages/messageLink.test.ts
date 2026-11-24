@@ -2,7 +2,12 @@ import { defaultParseSearch } from "@tanstack/react-router";
 import { describe, expect, it } from "vite-plus/test";
 
 import { Route } from "../../../routes/_shell.channels.$channelId";
-import { messageLinkTarget, messageLinkUrl, parseChannelLink } from "./messageLink";
+import {
+  linkedMessageId,
+  messageLinkTarget,
+  messageLinkUrl,
+  parseChannelLink,
+} from "./messageLink";
 
 const origin = "https://zli.chat";
 
@@ -138,5 +143,25 @@ describe("parseChannelLink", () => {
     ["URL ではない文字列", "not a url"],
   ])("%s は、アプリ内のリンクとして扱わない", (_name, href) => {
     expect(parseChannelLink(href, origin)).toBeNull();
+  });
+});
+
+describe("linkedMessageId", () => {
+  it("`message` があれば、それがリンク先のメッセージ", () => {
+    expect(linkedMessageId({ channelId: "c1", search: { message: "m1" } })).toBe("m1");
+  });
+
+  it("返信へのリンクは、スレッドの親ではなく返信を指す", () => {
+    expect(linkedMessageId({ channelId: "c1", search: { thread: "root", message: "m2" } })).toBe(
+      "m2",
+    );
+  });
+
+  it("`thread` だけのリンクは、スレッドの親を指す", () => {
+    expect(linkedMessageId({ channelId: "c1", search: { thread: "root" } })).toBe("root");
+  });
+
+  it("チャンネルそのものへのリンクは、メッセージを指さない", () => {
+    expect(linkedMessageId({ channelId: "c1", search: {} })).toBeNull();
   });
 });

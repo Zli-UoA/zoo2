@@ -30,7 +30,6 @@ import {
 import { MfmContent } from "./MfmContent";
 import { decryptedMentionAllowlist, isAllowedMention, type MentionAllowlist } from "./mentions";
 import { LinkPreviews } from "./LinkPreviews.tsx";
-import { previewUrls } from "./linkPreviews";
 import { messageLinkUrl } from "./messageLink";
 
 import { useLocale } from "../../i18n/LocaleProvider";
@@ -157,30 +156,6 @@ function EditedIndicator({ at }: { at: string }) {
   );
 }
 
-/**
- * 暗号化チャンネルの URL カードは、押したときだけ読み込む。カードの取得で、Summaly と画像プロクシの
- * 運用者に URL が見えるため（docs/e2ee.md の「機能ごとの扱い」）。
- */
-function ManualLinkPreviews({ content }: { content: string }) {
-  const { t } = useTranslation();
-  // 押したときの本文にだけ許可する。編集で本文（URL）が変わったら、もう一度押すまで取得しない。
-  const [loadedFor, setLoadedFor] = useState<string | null>(null);
-  const hasUrls = useMemo(() => previewUrls(content).length > 0, [content]);
-  if (!hasUrls) return null;
-  if (loadedFor === content) return <LinkPreviews content={content} />;
-  return (
-    <Button
-      type="button"
-      variant="link"
-      size="sm"
-      className="h-auto min-h-8 px-0 text-xs text-muted-foreground"
-      onClick={() => setLoadedFor(content)}
-    >
-      {t("e2ee.loadPreviews")}
-    </Button>
-  );
-}
-
 /** 通常投稿は MFM、連携カードは専用の描画を使う。 */
 export function MessageBody({
   content,
@@ -225,11 +200,9 @@ export function MessageBody({
         <MfmContent content={content} emojis={emojis} mentions={mentions} />
         {editedAt ? <EditedIndicator at={editedAt} /> : null}
       </div>
-      {previews === "manual" ? (
-        <ManualLinkPreviews content={content} />
-      ) : (
-        <LinkPreviews content={content} />
-      )}
+      {/* 暗号化チャンネルでは、外部の URL のカードを押したときだけ取得する（docs/e2ee.md の「機能ごとの扱い」）。
+          このアプリのチャンネル・メッセージへのリンクは、外へ送らないので、すぐに埋め込みにする。 */}
+      <LinkPreviews content={content} manualExternal={previews === "manual"} />
     </>
   );
 }

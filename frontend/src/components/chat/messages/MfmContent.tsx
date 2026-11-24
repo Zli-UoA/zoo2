@@ -51,10 +51,13 @@ export interface MfmContentProps {
 }
 const ShortcodeContext = createContext<Readonly<Record<string, string>>>({});
 const linkClass = `${inlineLinkClassName} underline`;
-/** 本文中のリンク。このアプリのチャンネル・メッセージへのリンクだけ、同じタブで移動する。 */
-function bodyLink(url: string, children: ReactNode): ReactNode {
+/**
+ * 本文中のリンク。このアプリのチャンネル・メッセージへのリンクだけ、同じタブで移動する。
+ * `bare` は、リンクの文字が URL そのものであること。行き先が分かれば、短い表示に置き換えてよい。
+ */
+function bodyLink(url: string, children: ReactNode, bare = false): ReactNode {
   return (
-    <ContentLink href={url} className="underline [overflow-wrap:anywhere]">
+    <ContentLink href={url} className="underline [overflow-wrap:anywhere]" bare={bare}>
       {children}
     </ContentLink>
   );
@@ -70,6 +73,8 @@ function text(
         bodyLink(
           segment.value,
           highlightText(segment.value.replace(/^https?:\/\//i, ""), highlight),
+          // 検索語を強調している間は、強調する URL の文字を短い表示に置き換えない。
+          !highlight?.length,
         )
       ) : segment.kind === "mention" && (!mentions || isAllowedMention(segment.value, mentions)) ? (
         <span className="rounded bg-brand-muted px-0.5 font-medium text-brand-muted-foreground">

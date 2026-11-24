@@ -253,6 +253,18 @@
     "linkCopyFailed": "无法复制消息链接",
     "edited": "已编辑"
   },
+  "channelLink": {
+    "inlineMessage": "{{name}}：{{channel}}",
+    "thread": "{{channel}} 中的子线程",
+    "encrypted": "此消息已加密",
+    "messageUnavailable": "无法显示此消息",
+    "channelUnavailable": "无法显示此频道",
+    "loading": "正在加载链接内容",
+    "attachments_one": "{{count}} 个附件",
+    "attachments_other": "{{count}} 个附件",
+    "privateChannel": "私密频道",
+    "encryptedChannel": "加密频道"
+  },
   "attachments": {
     "recentPhotos": "最近的照片",
     "systemPhotos": "打开照片选择器",
