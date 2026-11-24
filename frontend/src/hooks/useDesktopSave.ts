@@ -18,9 +18,18 @@ import {
   useDesktopDownloadState,
 } from "../lib/desktopDownloads";
 
+/** 保存ダイアログを出す前に確認した本文と大きさ。 */
+export type DesktopSavePrepared = { response?: Response; size?: number | null };
+
 /** 保存する本文の出所。表示に使った URL か、復号済みの `Blob` のどちらか。 */
 export type DesktopSaveSource =
-  | { kind: "url"; resolveUrl: AttachmentUrlResolver; size?: number | null }
+  | {
+      kind: "url";
+      resolveUrl: AttachmentUrlResolver;
+      size?: number | null;
+      /** 保存ダイアログの前に本文を確認し、開いた応答をそのまま転送に使う。 */
+      prepare?: () => Promise<DesktopSavePrepared>;
+    }
   | {
       kind: "blob";
       load: (signal: AbortSignal, report: (fraction: number | null) => void) => Promise<Blob>;
@@ -84,7 +93,9 @@ export function useDesktopSave({
   const [pending, setPending] = useState(false);
   const running = useRef(false);
   const current = useRef({ source, fallback, onFailure, describeError });
-  current.current = { source, fallback, onFailure, describeError };
+  useEffect(() => {
+    current.current = { source, fallback, onFailure, describeError };
+  }, [source, fallback, onFailure, describeError]);
 
   function reportFailure(error: unknown) {
     const { onFailure: notify, describeError: describe } = current.current;
@@ -126,10 +137,17 @@ export function useDesktopSave({
         return;
       }
       const { source: active } = current.current;
+      let response: Response | undefined;
+      let size = active.size;
+      if (active.kind === "url" && active.prepare) {
+        const prepared = await active.prepare();
+        response = prepared.response;
+        if (prepared.size != null) size = prepared.size;
+      }
       const savedName =
         active.kind === "url"
-          ? await downloadUrlToDesktop(id, fileName, active.resolveUrl, { size: active.size })
-          : await downloadBlobToDesktop(id, fileName, active.load, active.size);
+          ? await downloadUrlToDesktop(id, fileName, active.resolveUrl, { size, response })
+          : await downloadBlobToDesktop(id, fileName, active.load, size);
       // 同じ名前が既にあったときは番号が足されるので、実際の名前を伝える。
       if (savedName) toast.success(t("attachments.downloadSaved", { name: savedName }));
     } catch (error) {

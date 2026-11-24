@@ -69,9 +69,10 @@ it("saves a preview body through the desktop download commands", async () => {
   fireEvent.click(await screen.findByRole("button", { name: "report.txtをダウンロード" }));
 
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("zoo_download_finish", { id: "dl" }));
+  expect(fetchMock).toHaveBeenCalledTimes(1);
   expect(fetchMock).toHaveBeenCalledWith(SRC, expect.objectContaining({ credentials: "omit" }));
   expect(invoke).toHaveBeenCalledWith("zoo_download_begin", {
-    begin: { file_name: "report.txt" },
+    begin: { file_name: "report.txt", size: 3 },
   });
   expect(invoke).toHaveBeenCalledWith(
     "zoo_download_write",
@@ -104,6 +105,7 @@ it("switches to the external link when the preview body cannot be fetched", asyn
   const link = await screen.findByRole("link", { name: "ダウンロード" });
   expect(link.getAttribute("href")).toBe(SRC);
   expect(link.getAttribute("target")).toBe("_blank");
+  expect(invoke).not.toHaveBeenCalledWith("zoo_download_begin", expect.anything());
   expect(invoke).not.toHaveBeenCalledWith("zoo_download_finish", { id: "dl" });
 });
 
@@ -133,4 +135,43 @@ it("saves the body from the default footer of MediaPreview", async () => {
   fireEvent.click(within(dialog).getByRole("button", { name: "sample.txtをダウンロード" }));
 
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("zoo_download_finish", { id: "dl" }));
+});
+
+it("shares one save across the card and enlarged preview", async () => {
+  const base = desktopInvoke();
+  let resolveFinish!: (name: string) => void;
+  const finishing = new Promise<string>((resolve) => {
+    resolveFinish = resolve;
+  });
+  const invoke = vi.fn((cmd: string) => (cmd === "zoo_download_finish" ? finishing : base(cmd)));
+  mockDesktop(invoke);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => new Response(new Uint8Array([1, 2, 3]))),
+  );
+  vi.spyOn(toast, "success").mockReturnValue("saved");
+
+  render(
+    <LocaleProvider>
+      <MediaPreview name="sample.txt" src="data:text/plain,Hello" contentType="text/plain" />
+    </LocaleProvider>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "sample.txtをプレビュー" }));
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "sample.txtをダウンロード" }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("zoo_download_finish", { id: "dl" }));
+
+  fireEvent.click(within(dialog).getByRole("button", { name: /閉じる/ }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  fireEvent.click(screen.getByRole("button", { name: "sample.txtをプレビュー" }));
+  await screen.findByRole("dialog");
+
+  const begins = invoke.mock.calls.filter(([cmd]) => cmd === "zoo_download_begin");
+  expect(begins).toHaveLength(1);
+  expect(screen.queryByRole("button", { name: "sample.txtをダウンロード" })).toBeNull();
+
+  resolveFinish("saved.txt");
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: "sample.txtをダウンロード" })).not.toBeNull(),
+  );
 });

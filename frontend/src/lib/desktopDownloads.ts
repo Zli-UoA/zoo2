@@ -335,6 +335,11 @@ function contentLength(response: Response): number | null {
   return Number.isFinite(value) && value > 0 ? value : null;
 }
 
+/** 開いただけで書き込まなかった応答の本文を捨てる。 */
+function discardResponse(response: Response | undefined): void {
+  if (response?.body) void response.body.cancel().catch(() => {});
+}
+
 async function writeChunk(
   downloadId: string,
   bytes: Uint8Array,
@@ -401,42 +406,58 @@ export async function downloadUrlToDesktop(
   id: string,
   fileName: string,
   resolveUrl: AttachmentUrlResolver,
-  options: { retryDelayMs?: number; size?: number | null } = {},
+  options: { retryDelayMs?: number; size?: number | null; response?: Response } = {},
 ): Promise<string | null> {
   const retryDelayMs = options.retryDelayMs ?? RETRY_DELAY_MS;
-  return run(
-    id,
-    fileName,
-    options.size,
-    async (downloadId, signal, report) => {
-      const open = async (refresh: boolean): Promise<Response> => {
-        // URL の取得はプレビューなどと共有しているので取り消さず、この保存の待機だけを
-        // 中止する（中止後の一時ファイルと進捗を残さないため）。
-        const url = await abortable(resolveUrl({ refresh }), signal);
+  // プレビューが保存前に開いた応答は最初の転送だけに使う。途中で失敗したら開き直す。
+  let firstResponse = options.response;
+  try {
+    return await run(
+      id,
+      fileName,
+      options.size,
+      async (downloadId, signal, report) => {
+        const open = async (refresh: boolean): Promise<Response> => {
+          // URL の取得はプレビューなどと共有しているので取り消さず、この保存の待機だけを
+          // 中止する（中止後の一時ファイルと進捗を残さないため）。
+          const url = await abortable(resolveUrl({ refresh }), signal);
+          let response: Response;
+          try {
+            response = await fetch(url, { credentials: "omit", signal });
+          } catch (error) {
+            throw new AttachmentDownloadError("network", { cause: error });
+          }
+          if (!response.ok) {
+            throw new AttachmentDownloadError("http", { status: response.status });
+          }
+          return response;
+        };
         let response: Response;
-        try {
-          response = await fetch(url, { credentials: "omit", signal });
-        } catch (error) {
-          throw new AttachmentDownloadError("network", { cause: error });
+        if (firstResponse) {
+          response = firstResponse;
+          firstResponse = undefined;
+        } else {
+          try {
+            response = await open(false);
+          } catch (error) {
+            if (signal.aborted) throw error;
+            await delay(retryDelayMs, signal);
+            if (signal.aborted) throw error;
+            response = await open(true);
+          }
         }
-        if (!response.ok) {
-          throw new AttachmentDownloadError("http", { status: response.status });
+        if (signal.aborted) {
+          discardResponse(response);
+          throw new DesktopDownloadCancelledError();
         }
-        return response;
-      };
-      let response: Response;
-      try {
-        response = await open(false);
-      } catch (error) {
-        if (signal.aborted) throw error;
-        await delay(retryDelayMs, signal);
-        if (signal.aborted) throw error;
-        response = await open(true);
-      }
-      await writeResponse(downloadId, response, signal, report);
-    },
-    retryDelayMs,
-  );
+        await writeResponse(downloadId, response, signal, report);
+      },
+      retryDelayMs,
+    );
+  } finally {
+    // ダイアログのキャンセルなどで転送に至らなかった応答を残さない。
+    discardResponse(firstResponse);
+  }
 }
 
 /**

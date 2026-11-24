@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { useDesktopSave } from "../../hooks/useDesktopSave";
+import { useDesktopSave, type DesktopSavePrepared } from "../../hooks/useDesktopSave";
 import { AttachmentDownloadError, downloadAttachmentWithRetry } from "../../lib/api/attachments";
 import { ExternalLink } from "../ui/external-link";
 import { DownloadProgressButton } from "./DownloadProgressButton";
@@ -13,12 +13,15 @@ import { DownloadProgressButton } from "./DownloadProgressButton";
  * 外部の HTTPS を CORS なしで取得できないときは、案内を出して別タブのリンクに切り替える。
  */
 export function PreviewDownloadButton({
+  id,
   name,
   src,
   size,
   showLabel = false,
   className = "text-xs text-link",
 }: {
+  /** 同じファイルを表示する複数の場所で進捗と中止を共有するための識別子。 */
+  id?: string;
   name: string;
   src: string;
   size?: number | null;
@@ -26,14 +29,32 @@ export function PreviewDownloadButton({
   className?: string;
 }) {
   const { t } = useTranslation();
-  const id = useId();
-  const [useExternalLink, setUseExternalLink] = useState(false);
-  useEffect(() => setUseExternalLink(false), [src]);
+  const generatedId = useId();
+  const saveId = id ?? generatedId;
+  const [externalSrc, setExternalSrc] = useState<string | null>(null);
+  const useExternalLink = externalSrc === src;
   const resolveUrl = useCallback(async () => src, [src]);
+  // 保存ダイアログの前に本文を確認する。CORS で読めないときはダイアログを出さずに
+  // リンクへ切り替え、Content-Length があれば保存の上限判定に渡す。
+  const prepare = useCallback(async (): Promise<DesktopSavePrepared> => {
+    let response: Response;
+    try {
+      response = await fetch(src, { credentials: "omit" });
+    } catch (error) {
+      throw new AttachmentDownloadError("network", { cause: error });
+    }
+    if (!response.ok) throw new AttachmentDownloadError("http", { status: response.status });
+    const raw = response.headers.get("content-length");
+    const parsed = raw ? Number(raw) : Number.NaN;
+    return {
+      response,
+      size: Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : undefined,
+    };
+  }, [src]);
   const { state, pending, available, download, cancel } = useDesktopSave({
-    id,
+    id: saveId,
     fileName: name,
-    source: { kind: "url", resolveUrl, size },
+    source: { kind: "url", resolveUrl, size, prepare },
     fallback: async () => {
       await downloadAttachmentWithRetry(resolveUrl, name);
     },
@@ -45,7 +66,7 @@ export function PreviewDownloadButton({
         : undefined,
     onFailure: (error) => {
       if (error instanceof AttachmentDownloadError && error.reason === "network") {
-        setUseExternalLink(true);
+        setExternalSrc(src);
       }
     },
   });

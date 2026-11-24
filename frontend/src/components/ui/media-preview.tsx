@@ -49,7 +49,9 @@ export function MediaPreview({
     setBrokenSrc(src ?? null);
     onError?.();
   };
-  const downloadFooter = footer ?? (src ? <PreviewDownloadButton name={name} src={src} /> : null);
+  const downloadFooter =
+    footer ??
+    (src ? <PreviewDownloadButton id={`preview:${name}:${src}`} name={name} src={src} /> : null);
   function renderMedia(expanded: boolean) {
     if (error)
       return (
