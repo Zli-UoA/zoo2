@@ -126,6 +126,43 @@ class SasVerificationTest {
     }
 
     @Test
+    fun undeliveredMessageIsResentWithoutResendingTheDeliveredOnes() = runBlocking<Unit> {
+        val alice = world.device(ALICE, "alice")
+        val bob = world.device(BOB, "bob")
+        val txn = compare(alice, bob)
+        alice.sas.confirm(txn, CompletableDeferred("alice-reauth"))
+        bob.receive() // mac
+        // Bob の mac は届き、続く done だけが（キューの上限などで）届かない。
+        var sends = 0
+        world.refuseSend = { caller -> caller == BOB && ++sends == 2 }
+        bob.sas.confirm(txn, CompletableDeferred("bob-reauth"))
+        world.refuseSend = null
+        assertEquals(SasErrorCode.SEND_FAILED, bob.entry(txn).error)
+        alice.receive() // mac → done
+        assertTrue(alice.entry(txn).view.phase != SasPhase.DONE)
+        bob.receive() // done
+
+        // 次の確認で、届かなかった done だけを送り直す（受け付けられた mac は送り直さない）。
+        bob.sas.expire()
+        assertNull(bob.entry(txn).error)
+        val resent = alice.receive()
+        assertEquals(1, resent.verifications.size)
+        assertEquals(SasPhase.DONE, alice.await(txn) { it.save == SasSaveState.SAVED }.view.phase)
+        assertEquals(SasPhase.DONE, bob.await(txn) { it.save == SasSaveState.SAVED }.view.phase)
+    }
+
+    @Test
+    fun messagesArrivingAfterDisposeAreDropped() = runBlocking<Unit> {
+        val alice = world.device(ALICE, "alice")
+        val bob = world.device(BOB, "bob")
+        alice.sas.request(BOB)
+        bob.sas.dispose()
+        // 止めたあとに届いた分は受け取らない（受信箱に戻さない）。
+        bob.receive()
+        assertTrue(bob.sas.entries.value.isEmpty())
+    }
+
+    @Test
     fun qrCodeShowAndScanVerifiesBothUsers() = runBlocking<Unit> {
         val alice = world.device(ALICE, "alice")
         val bob = world.device(BOB, "bob")

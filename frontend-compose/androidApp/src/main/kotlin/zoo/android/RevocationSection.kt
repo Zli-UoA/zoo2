@@ -198,8 +198,11 @@ internal fun RevocationSection(
                         when (val resumed = revocation.resume()) {
                             is RevocationResume.Resumed -> step = RevocationStep.Review(resumed.summary, null)
                             is RevocationResume.Restart -> {
-                                // 全体の失効を SSSS の保存の前で止めた。同じ範囲と端末で始め直す。
+                                // 全体の失効を SSSS の保存の前で止めた。resume が残した SSSS で、同じ範囲と端末で始め直す。
+                                // 記録は捨てたので、始め直しに失敗したら、解錠し直して新しい失効として始める。
+                                step = RevocationStep.Unlock(resumed.scope, resumed.deletedDevices, resume = false)
                                 val summary = revocation.begin(resumed.scope, resumed.deletedDevices)
+                                keyNoted = false
                                 step = RevocationStep.Review(summary, if (resumed.scope == RevocationScope.FULL) revocation.newRecoveryKey() else null)
                             }
                             is RevocationResume.Conflict -> step = RevocationStep.Conflict

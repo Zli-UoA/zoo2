@@ -32,6 +32,7 @@ import zoo.crypto.ffi.SasVerification
 import zoo.crypto.ffi.SasView
 import zoo.crypto.ffi.VerificationMessage
 import zoo.crypto.ffi.VerificationOutgoing
+import zoo.crypto.ffi.VerifiedDeviceKeys
 import zoo.crypto.ffi.ZooCryptoException
 
 /** 他のユーザーの検証（#368）が使う E2EE の API（Web の `megolmApi.ts` と `revocationApi.ts` の一部）。 */
@@ -283,10 +284,24 @@ class SasController(
 ) {
     private class Inbound(val message: VerificationMessage, val receivedAt: Long)
 
+    /**
+     * 1 つの端末あての、送れていない検証のメッセージ（`message` は送る順の番号。同じメッセージの宛先は同じ番号）。
+     * [device] はこれが持ち、送れたか捨てたときに閉じる。
+     */
+    private class PendingSend(
+        val device: VerifiedDeviceKeys,
+        val eventType: String,
+        val content: String,
+        val message: Long,
+        val queuedAt: Long,
+    ) {
+        val target: Pair<String, String> = device.userId() to device.deviceId()
+    }
+
     private val verifications = SasVerifications()
     private val queue = Mutex()
 
-    /** [entryMap]、[inbox]、[reauths]、[ticker] を守る。 */
+    /** [entryMap]、[inbox]、[unsent]、[reauths]、[ticker]、[entriesFlow] への公開を守る。 */
     private val lock = Any()
     private val entryMap = LinkedHashMap<String, SasEntry>()
 
@@ -295,6 +310,13 @@ class SasController(
      * 一時的に失敗しても捨てずに残し、次の確認で試し直す。
      */
     private val inbox = mutableListOf<Inbound>()
+
+    /**
+     * 送れなかった検証のメッセージ（`transaction_id` ごとに、送る順）。届いたメッセージは送り直さず、届かなかった端末に、
+     * 届かなかったメッセージから順に、期限の確認のたびに送り直す（送れたメッセージより後のものも、順を守るため待つ）。
+     */
+    private val unsent = mutableMapOf<String, List<PendingSend>>()
+    private var messageSeq = 0L
 
     /** 「一致する」を押したときに始めた再認証（検証が終わったら、その ID トークンで保存する）。 */
     private val reauths = mutableMapOf<String, Deferred<String?>>()
@@ -328,7 +350,14 @@ class SasController(
      */
     fun handleMessages(messages: List<VerificationMessage>): Job {
         val receivedAt = now()
-        synchronized(lock) { messages.forEach { inbox += Inbound(it, receivedAt) } }
+        synchronized(lock) {
+            if (disposed) {
+                // 止めたあとに届いた分は、受け取らずに捨てる。
+                messages.forEach { it.destroy() }
+                return Job().apply { complete() }
+            }
+            messages.forEach { inbox += Inbound(it, receivedAt) }
+        }
         ensureTicker()
         return scope.launch { drain() }
     }
@@ -387,10 +416,12 @@ class SasController(
         if (entry != null && !entry.finished) cancel(txnId)
         serial {
             verifications.forget(txnId)
-            synchronized(lock) {
+            val dropped = synchronized(lock) {
                 entryMap.remove(txnId)
                 reauths.remove(txnId)
+                unsent.remove(txnId).orEmpty()
             }
+            dropped.forEach { it.device.destroy() }
             publish()
         }
     }
@@ -404,6 +435,17 @@ class SasController(
     /** 10 分を過ぎた検証を取りやめる（`m.timeout`）。処理を待つメッセージがあれば、先に試し直す。 */
     suspend fun expire() {
         if (synchronized(lock) { inbox.isNotEmpty() }) drain()
+        if (synchronized(lock) { unsent.isNotEmpty() }) {
+            serial {
+                for (txnId in synchronized(lock) { unsent.keys.toList() }) {
+                    val retry = synchronized(lock) { unsent.remove(txnId).orEmpty() }
+                    val (live, expired) = retry.partition { now() - it.queuedAt <= SAS_TIMEOUT_MS }
+                    expired.forEach { it.device.destroy() }
+                    if (live.isNotEmpty()) deliver(txnId, live)
+                    else patch(txnId) { if (it.error == SasErrorCode.SEND_FAILED) it.copy(error = null) else it }
+                }
+            }
+        }
         if (synchronized(lock) { entryMap.isEmpty() }) return
         serial {
             val updates = withContext(io) { verifications.expire(now()) }
@@ -419,6 +461,8 @@ class SasController(
             ticker = null
             inbox.forEach { it.message.destroy() }
             inbox.clear()
+            unsent.values.forEach { items -> items.forEach { it.device.destroy() } }
+            unsent.clear()
         }
         verifications.close()
     }
@@ -430,36 +474,42 @@ class SasController(
      */
     private suspend fun drain() =
         serial {
-            // 処理する分を取り出す。待つあいだに届いたメッセージは inbox に入るので、最後に、残した分をその前に
-            // 戻す（同じ検証のメッセージの届いた順を守る）。
-            val pending = synchronized(lock) { inbox.toList().also { inbox.clear() } }
+            // 処理する分を取り出す。待つあいだに届いたメッセージは inbox に入るので、最後に、残した分（と、取り消されて
+            // 処理しなかった分）をその前に戻す（同じ検証のメッセージの届いた順を守る）。止めたあとなら、戻さずに捨てる。
+            val pending = synchronized(lock) { ArrayDeque(inbox).also { inbox.clear() } }
             val remaining = mutableListOf<Inbound>()
             try {
                 drainBatch(pending, remaining)
             } finally {
-                synchronized(lock) { inbox.addAll(0, remaining) }
+                val leftover = remaining + pending
+                synchronized(lock) {
+                    if (disposed) leftover.forEach { it.message.destroy() } else inbox.addAll(0, leftover)
+                }
             }
         }
 
     /**
      * 取り出した分を処理する。送信ユーザーの `keys/query` は、この回の中では使い回し、失敗した送信ユーザーは、この回
-     * では取り直さない。残すメッセージは `remaining` に届いた順に入れる。
+     * では取り直さない。残すメッセージは `remaining` に届いた順に入れる。処理を終えた（捨てたか残した）ものから
+     * `pending` の先頭を外す（取り消されたら、`pending` に残った分を呼び出し元が戻すか捨てる）。
      */
-    private suspend fun drainBatch(pending: List<Inbound>, remaining: MutableList<Inbound>) {
+    private suspend fun drainBatch(pending: ArrayDeque<Inbound>, remaining: MutableList<Inbound>) {
         val keys = mutableMapOf<String, String>()
         val failedSenders = mutableSetOf<String>()
         /** この回で `keys/query` を取れず、メッセージを残した検証。 */
         val held = mutableSetOf<String>()
-        for (item in pending) {
+        while (pending.isNotEmpty()) {
+            val item = pending.first()
             val message = item.message
             val txnId = transactionId(message)
             if (txnId == null || now() - item.receivedAt > SAS_TIMEOUT_MS) {
+                pending.removeFirst()
                 message.destroy()
                 continue
             }
             // 同じ検証の前のメッセージを残したなら、順を守るため、これも残す。
             if (txnId in held) {
-                remaining += item
+                remaining += pending.removeFirst()
                 continue
             }
             var keysQuery = "{}"
@@ -478,12 +528,13 @@ class SasController(
                 }
                 if (cached == null) {
                     held += txnId
-                    remaining += item
+                    remaining += pending.removeFirst()
                     patch(txnId) { it.copy(error = SasErrorCode.RECEIVE_FAILED) }
                     continue
                 }
                 keysQuery = cached
             }
+            pending.removeFirst()
             try {
                 val store = store()
                 val update = withContext(io) { verifications.receive(store, message, keysQuery, now()) }
@@ -525,19 +576,15 @@ class SasController(
             entryMap[txnId] = current?.copy(view = update.view) ?: SasEntry(update.view)
         }
         publish()
-        try {
-            if (update.outgoing.isNotEmpty()) {
-                try {
-                    send(update.outgoing)
-                } catch (failure: CancellationException) {
-                    throw failure
-                } catch (_: Exception) {
-                    patch(txnId) { it.copy(error = SasErrorCode.SEND_FAILED) }
-                }
+        // 前に送れなかった分を先に、今回の分をその後に送る（同じ端末あての順を守る）。宛先の端末は PendingSend が持つ。
+        val fresh = synchronized(lock) {
+            update.outgoing.flatMap { out ->
+                val message = messageSeq++
+                out.devices.map { PendingSend(it, out.eventType, out.content, message, now()) }
             }
-        } finally {
-            update.outgoing.forEach { it.destroy() }
         }
+        val retry = synchronized(lock) { unsent.remove(txnId).orEmpty() }
+        if (retry.isNotEmpty() || fresh.isNotEmpty()) deliver(txnId, retry + fresh)
         val entry = synchronized(lock) { entryMap[txnId] }
         if (entry != null && entry.view.phase == SasPhase.DONE && entry.save == SasSaveState.IDLE) {
             // 再認証を待つので、処理の列の外で保存する。
@@ -546,54 +593,134 @@ class SasController(
     }
 
     /**
+     * `items` を送り、送れなかった分を [unsent] に残す（次の期限の確認で送り直す）。送れた分と、残せない分（検証を
+     * 忘れた、止めた）の端末は閉じる。残した分があれば、画面に [SasErrorCode.SEND_FAILED] を出す。
+     */
+    private suspend fun deliver(txnId: String, items: List<PendingSend>) {
+        val undelivered =
+            try {
+                send(items)
+            } catch (failure: CancellationException) {
+                items.forEach { it.device.destroy() }
+                throw failure
+            }
+        val kept = synchronized(lock) {
+            if (undelivered.isNotEmpty() && !disposed && entryMap.containsKey(txnId)) {
+                unsent[txnId] = undelivered
+                true
+            } else {
+                false
+            }
+        }
+        val keep = if (kept) undelivered.toSet() else emptySet()
+        items.filter { it !in keep }.forEach { it.device.destroy() }
+        patch(txnId) {
+            when {
+                kept -> it.copy(error = SasErrorCode.SEND_FAILED)
+                it.error == SasErrorCode.SEND_FAILED -> it.copy(error = null)
+                else -> it
+            }
+        }
+        if (kept) ensureTicker()
+    }
+
+    /**
      * 送るメッセージを、宛先の端末ごとに Olm で暗号化して送る。送信用の Olm セッションは鍵の配布と同じものを使い
      * 回し、ない端末は先に `keys/claim` で払い出す。1 つの要求には 1 つの端末あてに 1 件しか入れられないので、
-     * メッセージごとに分け、この順に送る。送れなかった端末があれば例外を投げる。
+     * メッセージごとに分け、この順に送る。送れなかった分を、送る順に返す（ある端末に送れなかったら、その端末あての
+     * 後のメッセージは送らずに返す。同じ端末あての順を守るため）。
      */
-    private suspend fun send(outgoing: List<VerificationOutgoing>) {
+    private suspend fun send(items: List<PendingSend>): List<PendingSend> {
+        if (items.isEmpty()) return emptyList()
         val store = store()
-        val needs = withContext(io) { outgoing.flatMap { it.devices }.filter { store.needsOlm(it) } }
         val claimed =
-            if (needs.isEmpty()) JsonObject(emptyMap())
-            else api.claimKeys(buildJsonObject {
-                needs.groupBy { it.userId() }.forEach { (user, devices) ->
-                    put(user, buildJsonObject { devices.forEach { put(it.deviceId(), "signed_curve25519") } })
-                }
-            })
-        var undelivered = 0
-        for (out in outgoing) {
-            var missing = 0
+            try {
+                val needs = withContext(io) { items.distinctBy { it.target }.map { it.device }.filter { store.needsOlm(it) } }
+                if (needs.isEmpty()) JsonObject(emptyMap())
+                else api.claimKeys(buildJsonObject {
+                    needs.groupBy { it.userId() }.forEach { (user, devices) ->
+                        put(user, buildJsonObject { devices.forEach { put(it.deviceId(), "signed_curve25519") } })
+                    }
+                })
+            } catch (failure: CancellationException) {
+                throw failure
+            } catch (_: Exception) {
+                return items
+            }
+        val failed = mutableSetOf<Pair<String, String>>()
+        val undelivered = mutableListOf<PendingSend>()
+        for (group in items.groupBy { it.message }.values) {
+            val encryptedFor = mutableListOf<PendingSend>()
             val messages = buildJsonObject {
-                out.devices.groupBy { it.userId() }.forEach { (user, devices) ->
+                group.groupBy { it.target.first }.forEach { (user, targets) ->
                     val forUser = buildJsonObject {
-                        for (device in devices) {
-                            val key = ((claimed[user] as? JsonObject)?.get(device.deviceId()) as? JsonObject)?.values?.firstOrNull()
+                        for (item in targets) {
+                            if (item.target in failed) {
+                                undelivered += item
+                                continue
+                            }
+                            val key = ((claimed[user] as? JsonObject)?.get(item.target.second) as? JsonObject)?.values?.firstOrNull()
                             val encrypted: JsonElement? =
-                                withContext(io) { store.encryptVerification(device, out.eventType, out.content, key?.toString()) }
-                            if (encrypted == null) missing++ else put(device.deviceId(), encrypted)
+                                try {
+                                    withContext(io) { store.encryptVerification(item.device, item.eventType, item.content, key?.toString()) }
+                                } catch (failure: CancellationException) {
+                                    throw failure
+                                } catch (_: Exception) {
+                                    null
+                                }
+                            if (encrypted == null) {
+                                // ワンタイム鍵もフォールバック鍵も払い出されなかった端末。
+                                failed += item.target
+                                undelivered += item
+                            } else {
+                                put(item.target.second, encrypted)
+                                encryptedFor += item
+                            }
                         }
                     }
                     if (forUser.isNotEmpty()) put(user, forUser)
                 }
             }
-            // ワンタイム鍵もフォールバック鍵も払い出されなかった端末。
-            undelivered += missing
-            if (messages.isNotEmpty()) undelivered += api.sendToDevice(store.deviceId, messages).size
+            if (messages.isEmpty()) continue
+            val refused =
+                try {
+                    api.sendToDevice(store.deviceId, messages).toSet()
+                } catch (failure: CancellationException) {
+                    throw failure
+                } catch (_: Exception) {
+                    // 応答がなければ、届いたか分からない。届かなかったものとして送り直す（同じ段のメッセージの重複は、
+                    // 相手の検証が受け付けないだけで、取りやめにはならない）。
+                    null
+                }
+            for (item in encryptedFor) {
+                if (refused == null || item.target in refused) {
+                    failed += item.target
+                    undelivered += item
+                }
+            }
         }
-        if (undelivered > 0) error("送れなかった端末があります")
+        return undelivered
     }
 
     private suspend fun save(txnId: String) {
-        val entry = synchronized(lock) { entryMap[txnId] } ?: return
-        if (entry.view.phase != SasPhase.DONE || entry.save == SasSaveState.SAVING) return
-        val theirUserId = entry.view.theirUserId
-        val reauth = synchronized(lock) { reauths[txnId] }
-        if (reauth == null) {
-            // QR を読み取った側は、まだ再認証していない。
-            patch(txnId) { it.copy(save = if (it.save == SasSaveState.IDLE) SasSaveState.LOGIN else SasSaveState.REAUTH) }
-            return
-        }
-        patch(txnId) { it.copy(save = SasSaveState.SAVING) }
+        // 確かめることと SAVING にすることを 1 つのロックの中で行う（自動の保存と retrySave が重なっても、保存を
+        // 1 つだけ始める）。
+        val (theirUserId, reauth) =
+            synchronized(lock) {
+                val entry = entryMap[txnId] ?: return
+                if (entry.view.phase != SasPhase.DONE || entry.save == SasSaveState.SAVING) return
+                val reauth = reauths[txnId]
+                entryMap[txnId] =
+                    if (reauth == null) {
+                        // QR を読み取った側は、まだ再認証していない。
+                        entry.copy(save = if (entry.save == SasSaveState.IDLE) SasSaveState.LOGIN else SasSaveState.REAUTH)
+                    } else {
+                        entry.copy(save = SasSaveState.SAVING)
+                    }
+                entry.view.theirUserId to reauth
+            }
+        publish()
+        if (reauth == null) return
         try {
             val token =
                 try {
@@ -673,12 +800,13 @@ class SasController(
 
     private fun publish() {
         if (disposed) return
-        entriesFlow.value = synchronized(lock) { entryMap.values.sortedBy { it.view.startedAt } }
+        // 写しを取ることと公開することを同じロックの中で行う（古い写しで、新しい公開を上書きしないため）。
+        synchronized(lock) { entriesFlow.value = entryMap.values.sortedBy { it.view.startedAt } }
         ensureTicker()
     }
 
-    /** 終わっていない検証か、処理を待つメッセージがあるあいだだけ、期限切れを確かめる。 */
-    private fun active(): Boolean = inbox.isNotEmpty() || entryMap.values.any { !it.finished }
+    /** 終わっていない検証か、処理を待つメッセージか、送り直すメッセージがあるあいだだけ、期限切れを確かめる。 */
+    private fun active(): Boolean = inbox.isNotEmpty() || unsent.isNotEmpty() || entryMap.values.any { !it.finished }
 
     private fun ensureTicker() {
         if (expireInterval <= Duration.ZERO || disposed) return

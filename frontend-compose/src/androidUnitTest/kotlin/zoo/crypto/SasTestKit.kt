@@ -52,6 +52,10 @@ internal class SasWorld : AutoCloseable {
     val pinUploads = mutableListOf<PinUpload>()
     val signatureUploads = mutableListOf<SignatureUpload>()
 
+    /** 置くと、送信ユーザーを渡して真を返した `sendToDevice` の宛先を、すべて届けずに `undelivered` で返す。 */
+    @Volatile
+    var refuseSend: ((caller: String) -> Boolean)? = null
+
     /** 失敗させる `keys/query` の残りの回数。 */
     var failKeysQuery = 0
     var keysQueries = 0
@@ -110,6 +114,9 @@ internal class SasWorld : AutoCloseable {
 
         override suspend fun sendToDevice(deviceId: String, messages: JsonObject): List<Pair<String, String>> =
             synchronized(this@SasWorld) {
+                if (refuseSend?.invoke(caller) == true) {
+                    return@synchronized messages.flatMap { (user, targets) -> targets.jsonObject.keys.map { user to it } }
+                }
                 for ((user, targets) in messages) {
                     for ((target, content) in targets.jsonObject) {
                         val box = inbox.getOrPut("$user|$target") { mutableListOf() }

@@ -384,11 +384,13 @@ class RevocationTest {
         assertEquals(RevocationStage.PREPARED, first.revocation.status()!!.stage)
         first.revocation.openSecretStorage(UnlockMethod.Recovery(recoveryKey))
         // やり直しでも、記録した範囲（1〜5）と削除した端末を引き継ぐ（端末だけに縮めない）。
-        assertEquals(RevocationResume.Restart(RevocationScope.FULL, listOf(lost)), first.revocation.resume())
+        val restart = assertIs<RevocationResume.Restart>(first.revocation.resume())
+        assertEquals(RevocationResume.Restart(RevocationScope.FULL, listOf(lost)), restart)
         assertNull(first.revocation.status())
 
-        first.revocation.openSecretStorage(UnlockMethod.Recovery(recoveryKey))
-        first.revocation.begin(RevocationScope.FULL, emptyList())
+        // 画面と同じく、開け直さずに、resume が残した SSSS で同じ範囲と端末から始め直す。
+        val begun = first.revocation.begin(restart.scope, restart.deletedDevices)
+        assertEquals(listOf(lost), begun.deletedDevices)
         val newRecoveryKey = first.revocation.newRecoveryKey()
         first.revocation.continueRevocation(token)
         assertNotEquals(oldMaster, keyOf(server.master))
@@ -398,6 +400,136 @@ class RevocationTest {
             first.revocation.openSecretStorage(UnlockMethod.Recovery(recoveryKey))
         }
         first.revocation.openSecretStorage(UnlockMethod.Recovery(newRecoveryKey))
+    }
+
+    @Test
+    fun fullRevocationStoppedAfterSavingSecretStorageResumesWithTheNewRecoveryKey() = runBlocking<Unit> {
+        val (first, recoveryKey) = world.setUp()
+        val oldMaster = keyOf(server.master)
+        first.revocation.openSecretStorage(UnlockMethod.Recovery(recoveryKey))
+        val begun = first.revocation.begin(RevocationScope.FULL, emptyList())
+        val newRecoveryKey = first.revocation.newRecoveryKey()
+        // SSSS は保存されたが、応答をなくし、記録する前にアプリが終わった（記録は SSSS の保存の前のまま）。
+        server.after = Pair<String, suspend () -> Unit>("POST /api/e2ee/secret_storage/keys", { throw IOException("応答をなくしました") })
+        assertFailsWith<IOException> { first.revocation.continueRevocation(token) }
+        assertEquals(begun.keyId, server.defaultKeyId)
+        first.restart()
+        assertEquals(RevocationStage.PREPARED, first.revocation.status()!!.stage)
+
+        // 控えた新しいリカバリーキーで開け直すと、保存した SSSS を照合して、保存のあとから続ける（やり直さない）。
+        first.revocation.openSecretStorage(UnlockMethod.Recovery(newRecoveryKey))
+        val resumed = assertIs<RevocationResume.Resumed>(first.revocation.resume(begun.revocationId))
+        assertEquals(RevocationStage.SECRET_STORAGE_SAVED, resumed.summary.stage)
+        assertEquals(RevocationStage.SECRET_STORAGE_SAVED, first.revocation.status()!!.stage)
+        first.revocation.continueRevocation(token)
+        assertNull(first.revocation.status())
+        assertNotEquals(oldMaster, keyOf(server.master))
+        assertEquals(begun.keyId, server.defaultKeyId)
+        // 控えたリカバリーキーのまま開ける。
+        first.revocation.openSecretStorage(UnlockMethod.Recovery(newRecoveryKey))
+        assertIs<E2eeStatus.Unlocked>(first.setup.loadStatus())
+    }
+
+    @Test
+    fun deviceOnlyRevocationContinuesWhenTheSecretStorageResponseIsLost() = runBlocking<Unit> {
+        for (restart in listOf(false, true)) {
+            RevocationWorld().use { world ->
+                val server = world.server
+                val (first, recoveryKey) = world.setUp()
+                first.revocation.openSecretStorage(UnlockMethod.Recovery(recoveryKey))
+                val begun = first.revocation.begin(RevocationScope.DEVICE_ONLY, emptyList())
+                // サーバーは秘密を保存して版を進めたが、応答をなくした。
+                server.after = Pair<String, suspend () -> Unit>("POST /api/e2ee/secret_storage/secrets", { throw IOException("応答をなくしました") })
+                assertFailsWith<IOException> { first.revocation.continueRevocation(token) }
+                val revision = server.revision
+                if (restart) {
+                    first.restart()
+                    first.revocation.openSecretStorage(UnlockMethod.Recovery(recoveryKey))
+                    assertIs<RevocationResume.Resumed>(first.revocation.resume(begun.revocationId))
+                }
+                // 送り直しは 409 になるが、読み直した SSSS が自分の書き込みなので続ける。
+                first.revocation.continueRevocation(token)
+                assertEquals(revision, server.revision, "restart=$restart")
+                assertNull(first.revocation.status(), "restart=$restart")
+                assertEquals(begun.revocationId, keyOf(server.selfSigning), "restart=$restart")
+                assertEquals(listOf("2"), server.liveVersions(), "restart=$restart")
+                assertIs<E2eeStatus.Unlocked>(first.setup.loadStatus(), "restart=$restart")
+            }
+        }
+    }
+
+    @Test
+    fun failedLocalSaveAfterUploadingCrossSigningKeysIsAppliedOnRetry() = runBlocking<Unit> {
+        val (first, recoveryKey) = world.setUp()
+        first.revocation.openSecretStorage(UnlockMethod.Recovery(recoveryKey))
+        val begun = first.revocation.begin(RevocationScope.DEVICE_ONLY, emptyList())
+        val before = server.requests.size
+        // クロス署名鍵はサーバーに保存されたが、暗号ストアの書き込みが置き換えの前に失敗する。
+        val blocker = java.io.File(java.io.File(world.root, "first"), "state.json.tmp")
+        server.after = Pair<String, suspend () -> Unit>("POST /api/e2ee/cross_signing/keys", { blocker.mkdirs() })
+        assertFailsWith<IOException> { first.revocation.continueRevocation(token) }
+        assertEquals(RevocationStage.SECRET_STORAGE_SAVED, first.revocation.status()!!.stage)
+        blocker.delete()
+
+        // 再試行では、クロス署名鍵を送り直さず、先に自分の鍵と記録を新しい鍵にそろえてから続ける。
+        first.revocation.continueRevocation(token)
+        assertEquals(1, server.requests.drop(before).count { it.method == "POST" && it.path == "/api/e2ee/cross_signing/keys" })
+        assertNull(first.revocation.status())
+        assertEquals(begun.revocationId, keyOf(server.selfSigning))
+        assertIs<E2eeStatus.Unlocked>(first.setup.loadStatus())
+        // 暗号ストアの自分の鍵も新しい自己署名鍵になった（開き直しても同じ）。
+        first.restart()
+        assertIs<E2eeStatus.Unlocked>(first.setup.loadStatus())
+    }
+
+    @Test
+    fun disposeWhileRunningReleasesTheSecretsAfterTheStepEnds() = runBlocking<Unit> {
+        val (first, recoveryKey) = world.setUp()
+        first.revocation.openSecretStorage(UnlockMethod.Recovery(recoveryKey))
+        first.revocation.begin(RevocationScope.DEVICE_ONLY, emptyList())
+        // 応答を待っているあいだに画面を閉じ、その後に通信が失敗した。
+        server.after = Pair<String, suspend () -> Unit>("POST /api/e2ee/secret_storage/secrets", {
+            first.revocation.dispose()
+            throw IOException("通信に失敗しました")
+        })
+        assertFailsWith<IOException> { first.revocation.continueRevocation(token) }
+        // 手順が終わったときにメモリーの秘密を捨てた。続きは記録から（SSSS を開け直して resume）。
+        assertFailsWith<RevocationException.NothingToContinue> { first.revocation.continueRevocation(token) }
+        assertTrue(first.store.hasPendingRevocation)
+        first.revocation.openSecretStorage(UnlockMethod.Recovery(recoveryKey))
+        assertIs<RevocationResume.Resumed>(first.revocation.resume())
+        first.revocation.continueRevocation(token)
+        assertNull(first.revocation.status())
+    }
+
+    @Test
+    fun malformedBackupPageStopsTheMigrationWithoutDeletingTheOldVersion() = runBlocking<Unit> {
+        RevocationWorld().use { world ->
+            val server = world.server
+            val (first, recoveryKey) = world.setUp()
+            first.revocation.openSecretStorage(UnlockMethod.Recovery(recoveryKey))
+            first.revocation.begin(RevocationScope.DEVICE_ONLY, emptyList())
+            val malformed = object : E2eeRevocationApi by server {
+                var broken = true
+                override suspend fun backupKeys(version: String, after: String?): JsonObject =
+                    if (broken) buildJsonObject { put("sessions", kotlinx.serialization.json.JsonNull); put("next", kotlinx.serialization.json.JsonNull) }
+                    else server.backupKeys(version, after)
+            }
+            val revocation = E2eeRevocation(malformed, ALICE, store = { first.store })
+            try {
+                revocation.openSecretStorage(UnlockMethod.Recovery(recoveryKey))
+                first.revocation.dispose()
+                assertIs<RevocationResume.Resumed>(revocation.resume())
+                assertFailsWith<IllegalStateException> { revocation.continueRevocation(token) }
+                assertEquals(listOf("1", "2"), server.liveVersions())
+                malformed.broken = false
+                revocation.continueRevocation(token)
+                assertEquals(listOf("2"), server.liveVersions())
+                assertEquals(3, server.sessions["2"]?.size)
+            } finally {
+                revocation.dispose()
+            }
+        }
     }
 
     @Test

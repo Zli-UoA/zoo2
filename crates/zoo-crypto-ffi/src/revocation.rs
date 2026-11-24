@@ -468,6 +468,13 @@ impl Revocation {
         lock(&self.inner).record_dropped(&version, dropped);
     }
 
+    /// 読み直した SSSS（`GET /api/e2ee/secret_storage`）に、この失効の秘密が保存されているか（SSSS の
+    /// 保存で 409 を受けたあと、応答をなくした自分の書き込みが済んでいたかを見る）。
+    pub fn secret_storage_matches(&self, secret_storage: String) -> Result<bool> {
+        let secret_storage = parse_json("secret_storage", &secret_storage)?;
+        Ok(lock(&self.inner).secret_storage_matches(&secret_storage)?)
+    }
+
     /// 保存のあとに読み直した値（`GET /api/e2ee/secret_storage`、自分だけの `keys/query`、
     /// `GET /api/e2ee/key_backup/versions/current`）を、作った鍵と比べる。違えば `ServerKeyMismatch`。
     pub fn verify(

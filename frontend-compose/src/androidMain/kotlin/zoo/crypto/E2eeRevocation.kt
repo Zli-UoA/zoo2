@@ -265,6 +265,10 @@ class E2eeRevocation(
     /** 手順を 1 つずつにする（画面の操作が重なっても、同じ失効に保存を重ねない）。 */
     private val lock = Mutex()
 
+    /** 手順の途中で [dispose] が呼ばれた（手順が終わったら秘密を捨てる）。 */
+    @Volatile
+    private var disposeRequested = false
+
     /** 進めている失効（[begin] か [resume] で作る）。 */
     private var revocation: Revocation? = null
 
@@ -346,7 +350,7 @@ class E2eeRevocation(
                     }
                 }
             }
-        lock.withLock {
+        locked {
             opened?.close()
             opened = unlocked
         }
@@ -369,7 +373,7 @@ class E2eeRevocation(
      * - SSSS の鍵とサーバーの鍵が違えば [RevocationException.ServerKeyMismatch]（端末だけの失効は行えない。1〜5 を選ぶ）。
      */
     suspend fun begin(scope: RevocationScope, deletedDevices: List<String>): RevocationSummary =
-        lock.withLock {
+        locked {
             val store = store()
             if (withContext(io) { store.hasPendingRevocation }) throw RevocationException.Pending()
             val unlocked = opened ?: throw RevocationException.SecretStorageNotOpened()
@@ -398,12 +402,18 @@ class E2eeRevocation(
                         targetsQuery = targetsQuery?.toString(),
                         deletedDevices = deletedDevices,
                     )
-                val begun =
-                    try {
-                        withContext(io) { store.beginRevocation(input, unlocked) }
-                    } catch (failure: ZooCryptoException.ServerKeyMismatch) {
-                        throw RevocationException.ServerKeyMismatch(failure.message.orEmpty())
-                    }
+                // IO で作ったあと、戻る前に取り消されても閉じられるよう、IO の中で受け取る（記録は保存済みなので、
+                // あとで resume から続けられる）。
+                var created: Revocation? = null
+                try {
+                    withContext(io) { created = store.beginRevocation(input, unlocked) }
+                } catch (failure: ZooCryptoException.ServerKeyMismatch) {
+                    throw RevocationException.ServerKeyMismatch(failure.message.orEmpty())
+                } catch (failure: Throwable) {
+                    created?.close()
+                    throw failure
+                }
+                val begun = checkNotNull(created)
                 discard()
                 revocation = begun
                 begun.summary().also { summaryFlow.value = it }
@@ -415,30 +425,44 @@ class E2eeRevocation(
     /**
      * 止まった失効を、[openSecretStorage] で開け直した SSSS で続ける（2〜5 では、SSSS を保存したあとなら新しい
      * SSSS 鍵のスロットで開ける）。`expectedId` を渡したら、暗号ストアの記録がその失効のときだけ続ける。
+     *
+     * [RevocationResume.Restart] のときは、開けた SSSS を閉じずに残す（続けて [begin] を呼べる）。
      */
     suspend fun resume(expectedId: String? = null): RevocationResume =
-        lock.withLock {
+        locked {
             val store = store()
             // やり直しになったら記録を捨てるので、その前に範囲と削除した端末を読んでおく。
             val saved = withContext(io) { store.revocationSummary() } ?: throw RevocationException.NothingToContinue()
             if (expectedId != null && saved.revocationId != expectedId) throw RevocationException.Changed()
             val unlocked = opened ?: throw RevocationException.SecretStorageNotOpened()
             opened = null
+            var keepOpened = false
+            var created: Revocation? = null
             try {
                 discard()
-                val resumed =
-                    withContext(io) { store.resumeRevocation(unlocked) } ?: throw RevocationException.NothingToContinue()
+                withContext(io) { created = store.resumeRevocation(unlocked) }
+                val resumed = created ?: throw RevocationException.NothingToContinue()
                 revocation = resumed
-                RevocationResume.Resumed(resumed.summary().also { summaryFlow.value = it })
+                val summary = resumed.summary()
+                // SSSS を保存したあと、記録する前に止まった 2〜5 は、保存のあとの段から続ける。その段を記録しておく。
+                if (summary.stage != saved.stage) withContext(io) { store.saveRevocation(resumed) }
+                RevocationResume.Resumed(summary.also { summaryFlow.value = it })
             } catch (_: ZooCryptoException.RevocationRestart) {
                 withContext(io) { store.clearRevocation() }
                 summaryFlow.value = null
+                // 同じ SSSS で始め直せるよう、開けた SSSS を残す。
+                opened = unlocked
+                keepOpened = true
                 RevocationResume.Restart(saved.scope, saved.deletedDevices)
             } catch (_: ZooCryptoException.ServerKeyMismatch) {
                 summaryFlow.value = saved
                 RevocationResume.Conflict(saved.revocationId, saved.scope, saved.deletedDevices)
+            } catch (failure: Throwable) {
+                // IO から戻る前に取り消された（または記録を書けなかった）。受け取った失効を閉じる。
+                if (created != null && revocation !== created) created?.close()
+                throw failure
             } finally {
-                unlocked.close()
+                if (!keepOpened) unlocked.close()
             }
         }
 
@@ -447,7 +471,7 @@ class E2eeRevocation(
      * （古いリカバリーキーで新しい SSSS 鍵のスロットを作る経路は持たない）。呼び直すと置き換える。
      */
     suspend fun newRecoveryKey(): String =
-        lock.withLock {
+        locked {
             val revocation = requireRevocation()
             RecoveryKey.generate().use { recovery ->
                 revocation.ssssKey().use { ssss ->
@@ -464,7 +488,7 @@ class E2eeRevocation(
         val salt = newPrfSalt()
         val result = client.prfForNewSlot(rpId, salt)
         try {
-            lock.withLock {
+            locked {
                 val revocation = requireRevocation()
                 val slot =
                     revocation.ssssKey().use { ssss ->
@@ -499,20 +523,20 @@ class E2eeRevocation(
         expectedId: String? = null,
         onProgress: (RevocationSummary) -> Unit = {},
     ): RevocationResult =
-        lock.withLock {
+        locked {
             var token = reauth
             var reauthenticated = false
-            while (true) {
+            var result: RevocationResult? = null
+            while (result == null) {
                 try {
-                    return@withLock runRevocation(token, expectedId, onProgress)
+                    result = runRevocation(token, expectedId, onProgress)
                 } catch (failure: RevocationException.ReauthRequired) {
                     if (reauthenticated || reauthenticate == null) throw failure
                     reauthenticated = true
                     token = reauthenticate() ?: throw failure
                 }
             }
-            @Suppress("UNREACHABLE_CODE")
-            error("unreachable")
+            checkNotNull(result)
         }
 
     private suspend fun runRevocation(
@@ -535,6 +559,18 @@ class E2eeRevocation(
         suspend fun save() = withContext(io) { store.saveRevocation(revocation) }
         var secretsRevision: Long? = null
 
+        // サーバーへの保存は済んだが、暗号ストアへの記録に失敗した（メモリーの段だけが進んだ）なら、送り直さずに先に
+        // 記録し直す。クロス署名鍵の保存のあとは、自分の鍵と記録も新しい鍵にそろえる（飛ばすと、端末に古い鍵が残る）。
+        if (stored != null && STAGE_ORDER.indexOf(summary.stage) > STAGE_ORDER.indexOf(stored.stage)) {
+            if (summary.atLeast(RevocationStage.CROSS_SIGNING_SAVED) && !stored.atLeast(RevocationStage.CROSS_SIGNING_SAVED)) {
+                secretsRevision = api.secretStorage().secretsRevision()
+                withContext(io) { store.applyRevocation(revocation, secretsRevision) }
+            } else {
+                save()
+            }
+            progress()
+        }
+
         if (!summary.atLeast(RevocationStage.SECRET_STORAGE_SAVED)) {
             val body = parseObject(revocation.secretStorageRequest(slots.toList()))
             secretsRevision =
@@ -544,10 +580,11 @@ class E2eeRevocation(
                         else api.putSecrets(body, reauth)
                     }
                 } catch (failure: RevocationException.Conflict) {
-                    // 応答をなくして送り直したか、別の端末が先に書いた。読み直して、自分の書き込みが済んでいれば続ける。
+                    // 応答をなくして送り直したか、別の端末が先に書いた。読み直して、自分の書き込みが済んでいれば続ける
+                    // （端末だけの失効は鍵 ID が変わらないので、SSSS の秘密を開けて、作った鍵と比べる）。
                     if (failure.code != "E2EE_SSSS_CONFLICT") throw failure
                     val current = api.secretStorage()
-                    if (summary.scope != RevocationScope.FULL || current.text("default_key_id") != summary.keyId) throw failure
+                    if (!revocation.secretStorageMatches(current.toString())) throw failure
                     current.secretsRevision()
                 }
             revocation.secretStorageSaved(secretsRevision?.toULong())
@@ -683,7 +720,7 @@ class E2eeRevocation(
      * （違えば何も変えずに [RevocationException.Changed]）。
      */
     suspend fun abandon(expectedId: String? = null) {
-        lock.withLock {
+        locked {
             val store = store()
             if (expectedId != null) {
                 val stored = withContext(io) { store.revocationSummary() }
@@ -697,18 +734,42 @@ class E2eeRevocation(
 
     /**
      * メモリーの秘密（進めている失効、新しいスロット、開けた SSSS）を捨てる（画面を閉じたとき、ログアウト）。
-     * 手順の途中（保存の応答を待っている）なら待たずに何もしない（その手順が終われば、続きは暗号ストアの記録から行う）。
+     * 手順の途中（保存の応答を待っている）なら待たずに、その手順が終わったときに捨てる（続きは暗号ストアの記録から
+     * 行う）。
      */
     fun dispose() {
-        if (!lock.tryLock()) return
+        if (!lock.tryLock()) {
+            disposeRequested = true
+            // 待っているあいだに手順が終わっていたら、ここで捨てる。
+            if (!lock.tryLock()) return
+        }
         try {
-            discard()
-            opened?.close()
-            opened = null
+            release()
         } finally {
             lock.unlock()
         }
     }
+
+    private fun release() {
+        disposeRequested = false
+        discard()
+        opened?.close()
+        opened = null
+    }
+
+    /**
+     * [lock] を取って `block` を行う。行っているあいだに [dispose] が呼ばれたら、終わったあとに秘密を捨てる
+     * （終了の要求がなければ、通信に失敗しても同じ鍵で続けられるよう残す）。捨てる前に次の手順が来たら、先に捨てる。
+     */
+    private suspend fun <T> locked(block: suspend () -> T): T =
+        lock.withLock {
+            if (disposeRequested) release()
+            try {
+                block()
+            } finally {
+                if (disposeRequested) release()
+            }
+        }
 
     private fun discard() {
         revocation?.close()
@@ -737,7 +798,9 @@ class E2eeRevocation(
         try {
             do {
                 val page = api.backupKeys(version, after)
-                (page["sessions"] as? JsonArray)?.let(rows::addAll)
+                // 形の正しくないページを空の版として扱うと、行を移さずに古い版を消してしまう。止めて古い版を残す。
+                val sessions = page["sessions"] as? JsonArray ?: error("版 $version の行の一覧が配列ではありません")
+                rows.addAll(sessions)
                 after = page.text("next")
             } while (after != null)
         } catch (failure: ApiException) {

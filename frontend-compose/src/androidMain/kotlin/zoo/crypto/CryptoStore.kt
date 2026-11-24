@@ -334,30 +334,48 @@ class CryptoStore private constructor(
         // あとで同期に失敗しても、開き直すと新しい state.json を読めることがある）ので、返す前に
         // 保存し直して、同期を確かめてから ack させる。
         var unsaved = false
-        for (row in rows) {
-            if (row.id in state.processedToDevice) {
-                unsaved = true
-            } else {
-                if (row.type == "m.room.encrypted") {
-                    when (val outcome = processEncrypted(row, deviceKeys, trustFor)) {
-                        is Encrypted.Dropped -> dropped++
-                        is Encrypted.Decrypted -> {
-                            newOlmSessions += outcome.newOlmSessions
-                            if (outcome.roomKey) roomKeys++ else if (outcome.rejected) dropped++
-                            if (outcome.roomKey && outcome.verified) verifiedRoomKeys++
-                            outcome.verification?.let(verifications::add)
-                        }
-                    }
+        try {
+            for (row in rows) {
+                if (row.id in state.processedToDevice) {
+                    unsaved = true
                 } else {
-                    dropped++
+                    var verification: VerificationMessage? = null
+                    if (row.type == "m.room.encrypted") {
+                        when (val outcome = processEncrypted(row, deviceKeys, trustFor)) {
+                            is Encrypted.Dropped -> dropped++
+                            is Encrypted.Decrypted -> {
+                                newOlmSessions += outcome.newOlmSessions
+                                if (outcome.roomKey) roomKeys++ else if (outcome.rejected) dropped++
+                                if (outcome.roomKey && outcome.verified) verifiedRoomKeys++
+                                verification = outcome.verification
+                            }
+                        }
+                    } else {
+                        dropped++
+                    }
+                    state.processedToDevice = state.processedToDevice + row.id
+                    try {
+                        save()
+                    } catch (failure: Throwable) {
+                        verification?.destroy()
+                        throw failure
+                    }
+                    // 保存できた行の検証のメッセージだけを渡す。
+                    verification?.let(verifications::add)
+                    unsaved = false
                 }
-                state.processedToDevice = state.processedToDevice + row.id
-                save()
-                unsaved = false
+                processed += row.id
             }
-            processed += row.id
+            if (unsaved) save()
+        } catch (failure: Exception) {
+            // 前の行は処理済みとして保存したので、もう復号できない。後の行の保存に失敗しても、保存できた行（検証の
+            // メッセージを含む）は返して渡し、ack させる。失敗した行は返さない（ack せず、次の同期で試し直す）。
+            // 印を付けただけで保存を確かめていない行（unsaved）があるときと、保存できた行がないときは投げる。
+            if (unsaved || processed.isEmpty()) {
+                verifications.forEach { it.destroy() }
+                throw failure
+            }
         }
-        if (unsaved) save()
         return ToDeviceResult(processed, roomKeys, dropped, newOlmSessions, verifiedRoomKeys, verifications)
     }
 

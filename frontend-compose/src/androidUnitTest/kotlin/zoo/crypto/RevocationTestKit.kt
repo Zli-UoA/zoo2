@@ -252,7 +252,8 @@ internal class FakeRevocationServer(val userId: String) : E2eeRevocationApi {
             val current = currentVersion()
             if (version != current?.version) error(409, "E2EE_WRONG_BACKUP_VERSION")
             if (secretsRevision != revision) error(409, "E2EE_SSSS_CONFLICT")
-            if (proof != null && proof != BackupProofTestKit.expectedProof(current.publicKey, userId, version)) {
+            // `upload_key` がある版は、証明を必須にする（省略できるのは、証明を足す前の版だけ）。
+            if (current.uploadKey != null && proof != BackupProofTestKit.expectedProof(current.publicKey, userId, version)) {
                 error(403, "E2EE_BACKUP_PROOF_INVALID")
             }
             val rows = sessions.getOrPut(version) { mutableListOf() }
@@ -305,7 +306,11 @@ internal class FakeRevocationServer(val userId: String) : E2eeRevocationApi {
     }
 
     override suspend fun uploadSignaturesWithReauth(signatures: JsonArray, reauth: String?) {
-        handle("POST", "/api/e2ee/cross_signing/signatures", reauth) { addSignatures(signatures) }
+        handle("POST", "/api/e2ee/cross_signing/signatures", reauth) {
+            // 他のユーザーのマスター鍵への署名には、直前の再認証が要る（自分の端末への署名だけなら要らない）。
+            if (signatures.any { it.jsonObject.getValue("target_user_id").jsonPrimitive.content != userId }) requireReauth(reauth)
+            addSignatures(signatures)
+        }
     }
 
     override suspend fun uploadPins(pins: JsonArray, replace: Boolean, reauth: String?) {
