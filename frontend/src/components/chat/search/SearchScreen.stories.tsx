@@ -567,7 +567,9 @@ export const SwitchKind: Story = {
   play: playForImplementation(async () => {
     const region = await results();
     await expect(region.getByText(fullText("会議資料_2026年11月.pdf"))).toBeVisible();
-    await userEvent.click(region.getByRole("button", { name: "メッセージ" }));
+    const kind = region.getByRole("combobox", { name: "種類" });
+    await expect(kind).toHaveValue("files");
+    await userEvent.selectOptions(kind, "messages");
     await expect(await region.findByText(/明日の/)).toBeVisible();
     await expect(requests.map((url) => url.searchParams.get("type"))).toEqual([
       "files",

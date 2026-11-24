@@ -1906,6 +1906,7 @@
       "label": "Filters",
       "from": "From",
       "in": "In",
+      "kind": "Type",
       "period": "Date",
       "anytime": "Any time",
       "last7": "Last 7 days",

@@ -17,6 +17,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
@@ -28,6 +29,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import org.robolectric.shadows.ShadowDialog
+import zoo.GlobalSearchType
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35], qualifiers = "ja-rJP-w360dp-h760dp-xhdpi")
@@ -65,9 +67,9 @@ class AndroidSamplesTest {
         ))
         val inbox = AndroidScreen.Notifications(listOf(
             InboxItem("reply", listOf(InboxActor("haru", "はる", "fixture-avatar")),
-                "投稿に返信しました", "次のテストでも確認します。", "12:03", true, kind = "reply", destination = "#開発"),
+                "投稿に返信しました", "次のテストでも確認します。", "12:03", true, kind = "reply", destination = "開発"),
             InboxItem("mention", listOf(InboxActor("yui", "ゆい")),
-                "開発であなたをメンションしました", "ライト版も読みやすいね。", "11:48", true, kind = "mention", destination = "#開発"),
+                "開発であなたをメンションしました", "ライト版も読みやすいね。", "11:48", true, kind = "mention", destination = "開発"),
             InboxItem("reaction", listOf(InboxActor("mizuki", "みずき", "fixture-avatar"), InboxActor("nagi", "なぎ")),
                 "リアクション · 2件", null, "11:22", false, kind = "like", destination = "misskey.io",
                 reactions = listOf(InboxReactionEmoji("🎉"), InboxReactionEmoji(":star:", "fixture-emoji"))),
@@ -118,6 +120,17 @@ class AndroidSamplesTest {
                 hidesBody = true,
             ),
         )
+        val searchResults = AndroidScreen.Search(SearchScreenState(
+            "会議 資料", "会議 資料", GlobalSearchType.All,
+            listOf(
+                SearchResultItem("message:m1", "はる", "…次の**会議**の資料を共有します。`資料.md` を確認してください。", "11/21 12:05", "開発"),
+                SearchResultItem("file:f1", "みずき", "会議資料_2026-11.pdf", "11/20 18:30", "開発", file = true, fileSize = "1.2 MB"),
+                SearchResultItem("message:m2", "ゆい", "資料の 3 ページ目に通話テストの結果を足しました。", "11/18 09:12", "運営", inThread = true),
+                SearchResultItem("message:m3", "なぎ", "資料ありがとう。明日読みます。", "2025/12/03 21:40", "はる", dm = true),
+            ),
+            loaded = true, canLoadOlder = true, searchedUntil = "2025-12",
+            filters = searchFilterChoices,
+        ))
         val cases = listOf(
             "home-rich" to AndroidScreen.Home(listOf(richPost)),
             "channel-rich" to conversation.copy(entries = listOf(richMessage), input = InputState()),
@@ -165,6 +178,15 @@ class AndroidSamplesTest {
                     it.copy(author = "はる", postHeader = it.postHeader?.copy(handle = "@haru", channel = null, server = "social.example"))
                 }, "フォロー", handle = "@haru@social.example", avatar = avatar, originalAvailable = true),
             "directory" to AndroidScreen.Directory("チャンネルを探す", "", listOf(SelectionItem("dev", "開発"))),
+            "search-prompt" to AndroidScreen.Search(SearchScreenState("", "", GlobalSearchType.All)),
+            "search" to searchResults,
+            "search-files" to AndroidScreen.Search(SearchScreenState("資料", "資料", GlobalSearchType.Files,
+                searchResults.state.results.filter { it.file }, loaded = true, searchedUntil = "2025-12")),
+            "search-older" to AndroidScreen.Search(SearchScreenState("議事録", "議事録", GlobalSearchType.Messages,
+                loaded = true, canLoadOlder = true, searchedUntil = "2025-12")),
+            "search-filtered" to AndroidScreen.Search(searchResults.state.copy(filters = searchFilterChoices.copy(
+                from = listOf("haru", "yui"), inChannels = listOf("dev"), mine = true))),
+            "search-error" to AndroidScreen.Search(SearchScreenState("議事録", "議事録", GlobalSearchType.All, error = true)),
             "channel-edit" to AndroidScreen.EditChannel("チャンネルを作成", "開発", "", "作成", true,
                 privateChannel = true, sensitive = false, encrypted = true),
             "channel-settings" to AndroidScreen.ChannelSettings("開発", listOf(SettingsGroup("チャンネル", listOf(
@@ -249,7 +271,9 @@ class AndroidSamplesTest {
                     ui.onNodeWithContentDescription(":party:", useUnmergedTree = true).assertIsDisplayed()
                 }
                 if (name == "channels") {
-                    for (label in listOf("チャンネルを作成", "DMを作成")) {
+                    // The list has no search field; finding and creating channels start from the header's ＋.
+                    ui.onNodeWithText("チャンネルを探す").assertDoesNotExist()
+                    for (label in listOf("チャンネルを探す・作成", "チャンネルを作成", "DMを作成")) {
                         ui.onNodeWithContentDescription(label).assertHasClickAction()
                             .assertWidthIsEqualTo(48.dp).assertHeightIsEqualTo(48.dp)
                     }
@@ -303,6 +327,53 @@ class AndroidSamplesTest {
                     check(gaps.max() - gaps.min() <= 1f)
                     ui.onNode(hasAnyAncestor(hasTestTag("timeline-entry-2")) and hasContentDescription("再投稿"),
                         useUnmergedTree = true).assertIsNotEnabled()
+                }
+                if (name == "channels") {
+                    // Full-text search is a tab of its own; the channel list keeps only its channel finder.
+                    ui.onAllNodesWithContentDescription("検索").assertCountEquals(0)
+                    ui.onNode(isSelectable() and hasText("検索")).assertIsNotSelected().assertHasClickAction()
+                }
+                if (name == "search") {
+                    ui.onNode(isSelectable() and hasText("検索")).assertIsSelected()
+                    ui.onNodeWithText("暗号化されたチャンネルは検索の対象外です。").assertIsDisplayed()
+                    // Terms are marked in the snippet's text and in file names, but not inside code.
+                    fun marked(prefix: String) = ui.onNode(hasText(prefix, substring = true), useUnmergedTree = true)
+                        .fetchSemanticsNode().config[SemanticsProperties.Text].single().let { text ->
+                            text.spanStyles.filter { it.item.background != Color.Unspecified }
+                                .map { text.text.substring(it.start, it.end) }
+                        }
+                    check(marked("…次の会議") == listOf("会議", "資料")) { marked("…次の会議").toString() }
+                    check(marked("会議資料_2026") == listOf("会議", "資料")) { marked("会議資料_2026").toString() }
+                    // The kind is the first filter: "all" by default, shown but not filled.
+                    ui.onNodeWithTag("search-filter-type").assertTextEquals("すべて").assertIsNotSelected()
+                        .assertHeightIsEqualTo(48.dp)
+                    ui.onNodeWithText("運営 · スレッドの返信", useUnmergedTree = true).assertIsDisplayed()
+                    ui.onNodeWithText("1.2 MB", useUnmergedTree = true).assertIsDisplayed()
+                    ui.onNodeWithTag("global-search-results").performScrollToNode(hasText("さらに古い結果を検索"))
+                    ui.onNodeWithText("2025-12 まで検索しました").assertIsDisplayed()
+                    ui.onNodeWithText("さらに古い結果を検索").assertHeightIsEqualTo(48.dp)
+                    ui.onNodeWithTag("global-search-results").performScrollToIndex(0)
+                }
+                if (name == "search-files") {
+                    ui.onNodeWithTag("search-filter-type").assertTextEquals("ファイル").assertIsSelected()
+                    ui.onNodeWithText("2025-12 まで検索しました").assertIsDisplayed()
+                    ui.onNodeWithText("さらに古い結果を検索").assertDoesNotExist()
+                }
+                if (name == "search-older") {
+                    ui.onNodeWithText("2025-12 までに見つかりませんでした。さらに古い期間を検索できます。").assertIsDisplayed()
+                    ui.onNodeWithText("さらに古い結果を検索").assertIsDisplayed()
+                }
+                if (name == "search-error") ui.onNodeWithText("再試行").assertHasClickAction()
+                if (name == "search-filtered") {
+                    // Chosen filters name what they narrow to, as Web's picker buttons.
+                    ui.onNodeWithText("送信者: 2 件").assertIsDisplayed()
+                    ui.onNodeWithText("チャンネル: 開発").assertIsDisplayed()
+                    ui.onNode(isToggleable() and hasText("自分が参加中")).assertIsOn()
+                    ui.onNode(isToggleable() and hasText("ボットを除く")).assertIsOff()
+                }
+                if (name == "search-prompt") {
+                    ui.onNodeWithText("メッセージとファイルを検索").assertIsDisplayed()
+                    ui.onAllNodesWithText("さらに古い結果を検索").assertCountEquals(0)
                 }
                 if (name == "profile") {
                     ui.onNodeWithText("@haru@social.example").assertIsDisplayed()
@@ -394,6 +465,34 @@ class AndroidSamplesTest {
                 AndroidUiAction.ActOnEntry(entry, EntryOperation.React),
             ))
         }
+        ui.runOnIdle { screen = channels }
+        for (item in listOf("チャンネルを探す", "チャンネルを作成")) {
+            ui.onNodeWithContentDescription("チャンネルを探す・作成").performClick()
+            ui.onNodeWithText(item).performClick()
+            ui.onNodeWithText(item).assertDoesNotExist()
+        }
+        ui.runOnIdle {
+            check(actions.takeLast(2) == listOf(AndroidUiAction.Browse, AndroidUiAction.CreateChannel)) { actions.takeLast(2).toString() }
+        }
+        ui.onNode(isSelectable() and hasText("検索")).performClick()
+        ui.runOnIdle { screen = searchResults }
+        ui.onNodeWithTag("global-search-field").performTextReplacement("会議")
+        ui.onNodeWithTag("search-filter-type").performClick()
+        ui.onNode(hasText("すべて") and isSelected()).assertExists()
+        ui.onNodeWithText("メッセージ").performClick()
+        ui.onNodeWithText("メッセージ").assertDoesNotExist()
+        ui.onNodeWithText("みずき", useUnmergedTree = true).performClick()
+        ui.onNodeWithTag("global-search-results").performScrollToNode(hasText("さらに古い結果を検索"))
+        ui.onNodeWithText("さらに古い結果を検索").performClick()
+        ui.runOnIdle {
+            check(actions.takeLast(5) == listOf(
+                AndroidUiAction.Navigate(TopPage.Search),
+                AndroidUiAction.SearchMessages("会議"),
+                AndroidUiAction.SelectSearchType(GlobalSearchType.Messages),
+                AndroidUiAction.OpenSearchResult("file:f1"),
+                AndroidUiAction.LoadOlderResults,
+            )) { "Search actions: ${actions.takeLast(5)}" }
+        }
         ui.runOnIdle { screen = cases.first { it.first == "group-dm" }.second }
         ui.onNodeWithText("はる").performClick()
         ui.onNodeWithText("開始").performClick()
@@ -417,6 +516,71 @@ class AndroidSamplesTest {
             check(readIds.sorted() == listOf("mention", "reply")) { "Read actions: $readIds" }
         }
         ui.onNodeWithText("すべて既読").assertDoesNotExist()
+    }
+
+    /** Shows the search screen with filter choices; the dispatch reflects choices as the adapter would. */
+    private fun showSearchFilters(actions: MutableList<AndroidUiAction>): (Boolean) -> Unit {
+        var screen by mutableStateOf(AndroidScreen.Search(SearchScreenState("会議", "会議", GlobalSearchType.All,
+            loaded = true, filters = searchFilterChoices)))
+        var dark by mutableStateOf(false)
+        ui.setContent {
+            AndroidScreens(screen, dark, true, dispatch = { action ->
+                actions += action
+                // Reflect the choice as the adapter would, so the sheet shows it.
+                val filters = screen.state.filters
+                when (action) {
+                    is AndroidUiAction.SelectSearchFilter -> screen = AndroidScreen.Search(screen.state.copy(filters =
+                        if (action.field == SearchFilterField.From) filters.copy(from = action.ids) else filters.copy(inChannels = action.ids)))
+                    is AndroidUiAction.ToggleSearchFilter -> screen = AndroidScreen.Search(screen.state.copy(filters =
+                        if (action.flag == SearchFilterFlag.Mine) filters.copy(mine = !filters.mine) else filters.copy(noBots = !filters.noBots)))
+                    else -> Unit
+                }
+            }, language = "ja") { _, _ -> }
+        }
+        return { ui.runOnIdle { dark = it } }
+    }
+
+    @Test
+    fun searchFiltersPickSendersInASheet() {
+        val actions = mutableListOf<AndroidUiAction>()
+        val setDark = showSearchFilters(actions)
+        ui.onNodeWithTag("search-filter-from").assertHeightIsAtLeast(48.dp).assertIsNotSelected().performClick()
+        // The user comes first, marked as themselves.
+        ui.onNodeWithText("はる（自分）").assertIsDisplayed()
+        ui.onNodeWithText("ゆい").performClick()
+        capture("search-filter-sheet-light", withSheet = true)
+        setDark(true)
+        capture("search-filter-sheet-dark", withSheet = true)
+        setDark(false)
+        ui.onNodeWithTag("search-filter-field").performTextInput("@nagi")
+        ui.onNodeWithText("はる（自分）").assertDoesNotExist()
+        ui.onNodeWithText("なぎ").performClick()
+        ui.onNodeWithText("選択を外す").performClick()
+        ui.runOnIdle {
+            check(actions.filterIsInstance<AndroidUiAction.SelectSearchFilter>().map { it.ids } ==
+                listOf(listOf("yui"), listOf("yui", "nagi"), emptyList())) { actions.toString() }
+        }
+    }
+
+    @Test
+    fun searchFiltersSwitchFlagsAndPickChannels() {
+        val actions = mutableListOf<AndroidUiAction>()
+        showSearchFilters(actions)
+        // The row scrolls sideways on narrow screens.
+        ui.onNode(isToggleable() and hasText("ボットを除く")).performScrollTo().performClick().assertIsOn()
+        ui.onNodeWithTag("search-filter-in").performScrollTo().performClick()
+        ui.onNodeWithText("雑談").assertIsDisplayed()
+        ui.onNodeWithTag("search-filter-in").assertIsNotSelected()
+        ui.onNodeWithText("運営").performClick()
+        ui.onNodeWithText("チャンネル: 運営").assertExists()
+        // The chosen filter is exposed as selected, not only by its colour.
+        ui.onNodeWithTag("search-filter-in").assertIsSelected()
+        ui.runOnIdle {
+            check(actions == listOf(
+                AndroidUiAction.ToggleSearchFilter(SearchFilterFlag.NoBots),
+                AndroidUiAction.SelectSearchFilter(SearchFilterField.In, listOf("ops")),
+            )) { actions.toString() }
+        }
     }
 
     @Test
@@ -504,6 +668,20 @@ class AndroidSamplesTest {
         check(last.top == first.top && next.top > first.top)
         check(first.right - first.left >= 48.dp)
     }
+
+    private val searchFilterChoices = SearchFilterState(
+        people = listOf(
+            SearchFilterOption("haru", "はる（自分）", "@haru"),
+            SearchFilterOption("mizuki", "みずき", "@mizuki"),
+            SearchFilterOption("nagi", "なぎ", "@nagi"),
+            SearchFilterOption("yui", "ゆい", "@yui"),
+        ),
+        channels = listOf(
+            SearchFilterOption("dev", "開発", mark = SearchFilterMark.Channel),
+            SearchFilterOption("ops", "運営", mark = SearchFilterMark.PrivateChannel),
+            SearchFilterOption("random", "雑談", mark = SearchFilterMark.Channel),
+        ),
+    )
 
     private fun capture(name: String, withSheet: Boolean = false, bottomDialog: Boolean = false) {
         ui.runOnIdle {

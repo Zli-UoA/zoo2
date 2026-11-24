@@ -104,6 +104,8 @@ internal class ConnectedScreenState(
     var federationAvailable by mutableStateOf(false)
         private set
     var query by mutableStateOf("")
+    /** The `/search` field; the controller searches it after typing pauses. */
+    var searchText by mutableStateOf(app.globalSearch.query)
     var postSelection by mutableStateOf<TextRange?>(null)
     var postDraft by mutableStateOf("")
     var replyDraft by mutableStateOf("")
@@ -424,6 +426,72 @@ internal class ConnectedScreenState(
         )
     }
 
+    fun searchScreen(users: Map<String, Row>, channels: List<Row>, members: List<Row>): AndroidScreen.Search {
+        val search = app.globalSearch
+        val channelsById = channels.associateBy { it.text("id") }
+        val year = platform.day(platform.now()).substringBefore('/')
+        return AndroidScreen.Search(SearchScreenState(
+            searchText, search.query, search.type,
+            search.items.map { row ->
+                val file = isGlobalSearchFile(row, search.type)
+                val user = users[row.text("user_id")] ?: row.nested("author").takeIf { it.isNotEmpty() }
+                val createdAt = row.text("created_at")
+                val day = platform.day(createdAt).let { if (it.substringBefore('/') == year) it.substringAfter('/') else it }
+                SearchResultItem(
+                    key = globalSearchKey(row, search.type),
+                    author = user?.let(::author)?.ifBlank { null } ?: row.text("user_id"),
+                    // Like Web, keep the first hit within the three lines of a narrow screen.
+                    body = if (file) row.text("file_name") else focusSnippet(row.text("snippet"), searchTerms(search.query)),
+                    time = listOf(day, platform.time(createdAt)).filter { it.isNotBlank() }.joinToString(" "),
+                    destination = searchDestination(row, channelsById[row.text("channel_id")], users, members),
+                    dm = isDm(row, channelsById[row.text("channel_id")]),
+                    inThread = row.text("parent_id").isNotEmpty(),
+                    file = file,
+                    fileSize = if (file) attachmentSize(row.text("file_size")) else null,
+                    emoji = if (file) emptyMap() else displayEmoji(row, row, isPost = false),
+                )
+            },
+            loading = search.loading, loadingOlder = search.loadingOlder, error = search.error, loaded = search.loaded,
+            canLoadOlder = search.nextCursor != null, searchedUntil = search.searchedUntil,
+            problem = searchQueryProblem(search.query),
+            filters = searchFilters(users, channels),
+        ))
+    }
+
+    /** Web's picker choices: the user first, then names in order; channels that search can reach (no DMs or encrypted ones). */
+    private fun searchFilters(users: Map<String, Row>, channels: List<Row>): SearchFilterState {
+        val filters = app.globalSearch.filters
+        val me = app.config.userId
+        val people = users.values
+            .sortedWith(compareBy<Row>({ it.text("id") != me }, { author(it).lowercase() }))
+            .map { user ->
+                val name = author(user)
+                SearchFilterOption(
+                    user.text("id"),
+                    if (user.text("id") == me) app.t("globalSearch.filters.me", "name" to name) else name,
+                    user.text("user_name").ifBlank { null }?.let { "@$it" },
+                )
+            }
+        val reachable = visibleChannels(channels)
+            .filter { !it.flag("is_dm") && !it.flag("encrypted") }
+            .map {
+                SearchFilterOption(it.text("id"), it.text("channel_name"),
+                    mark = if (it.flag("is_private")) SearchFilterMark.PrivateChannel else SearchFilterMark.Channel)
+            }
+        return SearchFilterState(people, reachable, filters.from, filters.channels, filters.mine, filters.noBots)
+    }
+
+    private fun isDm(row: Row, channel: Row?) = row.flag("is_dm") || channel?.flag("is_dm") == true
+
+    /** The channel name (the row shows `#` as an icon); for DMs the other members, as in the channel list. */
+    private fun searchDestination(row: Row, channel: Row?, users: Map<String, Row>, members: List<Row>): String {
+        if (!isDm(row, channel)) return row.text("channel_name")
+        val id = row.text("channel_id")
+        val peers = members.filter { it.text("channel_id") == id && it.text("user_id") != app.config.userId }
+            .mapNotNull { users[it.text("user_id")]?.let(::author)?.ifBlank { null } }
+        return peers.joinToString(", ").ifBlank { channel?.text("channel_name") ?: row.text("channel_name") }
+    }
+
     fun canEditMembers(channel: Row): Boolean = !channel.flag("is_dm") &&
         !channel.present("archive_at") && canManage(channel, app.config.userId, app.config.isAdmin)
 
@@ -516,9 +584,12 @@ internal class ConnectedScreenState(
                 channelId.isNotBlank() && app.isEncryptedChannel(channelId))
             is AndroidUiAction.Navigate -> {
                 overlay = null
+                if (action.page == TopPage.Search) searchText = app.globalSearch.query
                 platform.navigate(when (action.page) {
                     TopPage.Home -> "/home"
                     TopPage.Channels -> "/"
+                    // The tab reopens the last words and kind; returning keeps the loaded results.
+                    TopPage.Search -> globalSearchPath(app.globalSearch.query, app.globalSearch.type, app.globalSearch.filters)
                     TopPage.Notifications -> "/notifications"
                     TopPage.Bubble -> "/bubble"
                     TopPage.Settings -> "/settings"
@@ -575,6 +646,36 @@ internal class ConnectedScreenState(
                 replyFocusRequest++
             } else openPost(action.id, focusReply = true)
             is AndroidUiAction.Search -> query = action.query
+            is AndroidUiAction.SearchMessages -> searchText = action.text
+            AndroidUiAction.SubmitSearch -> {
+                // The IME search key: search the typed words now, or the same words again for new messages.
+                val search = app.globalSearch
+                if (searchText.trim() == search.query) search.refresh() else search.search(searchText)
+            }
+            is AndroidUiAction.SelectSearchType -> app.globalSearch.search(searchText, action.type)
+            is AndroidUiAction.SelectSearchFilter -> {
+                val search = app.globalSearch
+                search.search(searchText, filter = when (action.field) {
+                    SearchFilterField.From -> search.filters.copy(from = action.ids)
+                    SearchFilterField.In -> search.filters.copy(channels = action.ids)
+                })
+            }
+            is AndroidUiAction.ToggleSearchFilter -> {
+                val search = app.globalSearch
+                search.search(searchText, filter = when (action.flag) {
+                    SearchFilterFlag.Mine -> search.filters.copy(mine = !search.filters.mine)
+                    SearchFilterFlag.NoBots -> search.filters.copy(noBots = !search.filters.noBots)
+                })
+            }
+            is AndroidUiAction.OpenSearchResult -> {
+                val search = app.globalSearch
+                search.items.firstOrNull { globalSearchKey(it, search.type) == action.key }
+                    // `open` makes each tap a new request: the conversation keeps the last opened target and
+                    // would otherwise stay where it was scrolled when the same result is opened again.
+                    ?.let { platform.navigate(globalSearchDestination(it, search.type) + "&open=${kotlin.time.Clock.System.now().toEpochMilliseconds()}") }
+            }
+            AndroidUiAction.LoadOlderResults -> app.globalSearch.loadOlder()
+            AndroidUiAction.RetrySearch -> app.globalSearch.retry()
             is AndroidUiAction.SelectResult -> when (overlay) {
                 "people" -> people.firstOrNull { it.text("id") == action.id }?.let { person -> request { openProfile(person) } }
                 "add-member" -> if (channel != null) addMember(channel, action.id)

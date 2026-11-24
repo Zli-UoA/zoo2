@@ -38,6 +38,7 @@ internal fun androidLabel(key: String, fallback: String): String =
 internal enum class TopPage(val title: String, val icon: UiIcon, val translationKey: String) {
     Home("ホーム", UiIcon.Home, "home.title"),
     Channels("チャンネル", UiIcon.Channels, "channels.title"),
+    Search("検索", UiIcon.TextSearch, "globalSearch.openNav"),
     Notifications("通知", UiIcon.Bell, "notifications.title"),
     Bubble("Bubble", UiIcon.Bubble, "bubbleChat.title"),
     Settings("設定", UiIcon.Settings, "settings.navTitle"),
@@ -54,6 +55,9 @@ internal class AndroidColors(dark: Boolean) {
     val inputHint = if (dark) Color(0xffa6a6a6) else Color(0xff616161)
     val inputBoundary = if (dark) Color(0xff363636) else Color(0xffdedede)
     val accent = Color(0xffffd400)
+    /** Search terms in results (Web's `--highlight`): a paler yellow than [accent], readable on both themes. */
+    val searchHighlight = if (dark) Color(0xff5c4a00) else Color(0xffffe680)
+    val searchHighlightText = if (dark) Color.White else Color.Black
 }
 
 internal val entryTextSize = 16.sp

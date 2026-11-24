@@ -11,7 +11,7 @@
 | 画面 | Compose 実キャプチャ | 見る箇所 |
 | --- | --- | --- |
 | ホーム | [タイムライン](images/android-design/home.png) | 枠を減らした投稿、無彩色の本文面、投稿アイコン |
-| チャンネル | [一覧](images/android-design/channels.png) | 検索、参加中、DM。新デザインは名前を1行で表示し、チャンネル名は未読時に600、個人DMのユーザー名は500で表示する。説明文と区切り線は省く。キャプチャは旧版。 |
+| チャンネル | [一覧](images/android-design/channels.png) | 参加中、DM。右上の＋から「チャンネルを探す」「チャンネルを作成」を選ぶ。新デザインは名前を1行で表示し、チャンネル名は未読時に600、個人DMのユーザー名は500で表示する。説明文と区切り線は省く。キャプチャは旧版。 |
 | 通知 | [通知一覧](images/android-design/notifications.png) | 送信者、通知元、抜粋、未読表示 |
 | Bubble・設定 | [Bubble](images/android-design/bubble.png)・[設定トップ](images/android-design/settings.png) | 5タブから直接開けるトップ |
 | 投稿詳細・会話・スレッド | [会話](images/android-design/channel-editor-idle.png)・[スレッド](images/android-design/thread.png) | 子画面ではタブを隠し、入力操作は下に置く |
