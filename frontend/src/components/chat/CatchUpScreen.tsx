@@ -280,6 +280,7 @@ export function CatchUpScreen() {
               channelId={current.channel_id}
               channelName={channelById.get(current.channel_id)?.channel_name}
               encrypted={channelById.get(current.channel_id)?.encrypted}
+              readOnly={!!channelById.get(current.channel_id)?.archive_at}
               firstUnreadAt={current.first_unread_at ?? null}
               onBoundaryMessage={onBoundaryMessage}
               onRangeReady={onRangeReady}

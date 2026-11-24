@@ -199,6 +199,7 @@
         "Loading",
         "LoadError",
         "Complete",
+        "WithReactions",
         "Dark",
         "Mobile"
       ]
@@ -1200,12 +1201,12 @@
       "file": "src/components/chat/CatchUpMessagePage.tsx",
       "story": "src/components/chat/CatchUpScreen.stories.tsx",
       "composed": true,
-      "reason": "Default・LongUnread・Dark・Mobile で読み取り専用のメッセージ一覧と未読区切りを確認する。"
+      "reason": "Default・LongUnread・Dark・Mobile・WithReactions で未読メッセージ一覧、未読区切り、リアクションの追加・解除を確認する。"
     },
     {
       "file": "src/components/chat/CatchUpScreen.tsx",
       "story": "src/components/chat/CatchUpScreen.stories.tsx",
-      "reason": "通常・長い未読・空・読込中・読込失敗・完了・ダーク・モバイルを確認する。既読書き込みの失敗は CatchUpScreen.test.ts で検証する。"
+      "reason": "通常・長い未読・空・読込中・読込失敗・完了・リアクション操作・ダーク・モバイルを確認する。既読書き込みの失敗とアーカイブ時の読み取り専用切替は CatchUpScreen.test.ts で検証する。"
     },
     {
       "file": "src/components/chat/NotificationsButton.tsx",

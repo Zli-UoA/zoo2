@@ -57,6 +57,75 @@ it.each([
   },
 );
 
+it.each([
+  { currentUserId: "viewer", viewerId: undefined, mine: true, ownActions: true },
+  { currentUserId: null, viewerId: "viewer", mine: true, ownActions: false },
+  { currentUserId: "viewer", viewerId: null, mine: true, ownActions: true },
+  { currentUserId: null, viewerId: null, mine: false, ownActions: false },
+])(
+  "identifies viewer reactions without enabling author actions: $currentUserId / $viewerId",
+  ({ currentUserId, viewerId, mine, ownActions }) => {
+    localStorage.setItem("zoo-locale", "ja");
+    const noop = () => {};
+    try {
+      const html = renderToStaticMarkup(
+        createElement(LocaleProvider, {
+          children: createElement(MessageList, {
+            messages: [
+              {
+                id: "react-1",
+                user_id: "viewer",
+                content: "hello",
+                created_at: "2026-01-02 00:00:00.000",
+                parent_id: null,
+                display_name: "Alice",
+                display_data: {
+                  emojis: {},
+                  attachments: [],
+                  reply_count: 0,
+                  reactions: [
+                    {
+                      id: "r1",
+                      message_id: "react-1",
+                      user_id: "viewer",
+                      emoji: "👍",
+                      created_at: "2026-01-02 00:00:00.000",
+                      user_name: "alice",
+                      display_name: "Alice",
+                    },
+                  ],
+                },
+              },
+            ],
+            isLoading: false,
+            isError: false,
+            currentUserId,
+            viewerId,
+            editingId: null,
+            editingText: "",
+            onEditingTextChange: noop,
+            onStartEdit: noop,
+            onCancelEdit: noop,
+            onSaveEdit: noop,
+            onRequestDelete: noop,
+            reactions: new Map(),
+            kitchenCatalog: null,
+            canReact: false,
+            onReaction: noop,
+            onPickReaction: noop,
+          }),
+        }),
+      );
+      expect(html.includes('aria-pressed="true"')).toBe(mine);
+      expect(html.includes("bg-brand-muted")).toBe(mine);
+      expect(html.includes("自分もリアクション済み")).toBe(mine);
+      expect(html.includes('aria-label="編集"')).toBe(ownActions);
+    } finally {
+      localStorage.clear();
+    }
+  },
+);
+
 async function flush(action: () => unknown) {
   await act(async () => {
     action();
