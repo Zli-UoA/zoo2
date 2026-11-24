@@ -1078,6 +1078,25 @@ async fn register_track(
             }
             // テスト：epoch を確かめたあと、FOR SHARE を持ったまま、書く前で止める。
             PauseGate::pause(pause).await;
+            // 部屋の中継の世代。部屋で受け付けた最新の世代（`call_rooms.bridge_room_gen`。`cf/session` で
+            // 記録する）より古い中継の push は、行がなくても載せない（新しい中継が始まったあとに、前の中継の
+            // push が止まった公開を登録しないように）。部屋の行を FOR UPDATE でロックし、`cf/session` の世代の
+            // 記録と直列にする。探索：call_rooms の主キーで 1 行。
+            let rows = toasty::sql::query(
+                "SELECT (bridge_epoch IS DISTINCT FROM $2::bigint OR bridge_room_gen IS NULL
+                         OR bridge_room_gen <= $3::bigint)::text
+                 FROM call_rooms WHERE channel_id = $1 FOR UPDATE",
+            )
+            .bind(channel_id.to_string())
+            .bind(bridge_epoch.to_string())
+            .bind(room_gen.to_string())
+            .exec(&mut tx)
+            .await?;
+            if first_text(rows).as_deref() == Some("false") {
+                return Err(AppError::Conflict(
+                    "A newer bridge relay started for this room".into(),
+                ));
+            }
             (
                 "bridge",
                 Some(bridge_epoch),
@@ -1499,6 +1518,32 @@ async fn remove_stale_bridge_tracks(
         return Err(AppError::Conflict(
             "A newer sfu-bridge is registered".into(),
         ));
+    }
+    // 部屋で受け付けた最新の世代を記録する。もっと新しい世代がすでにあれば（前の中継の遅れた要求）、409 で
+    // 何も外さない。部屋の行の更新は、push の登録（`register_track` の FOR UPDATE）と直列になる。
+    let rows = toasty::sql::query(
+        "UPDATE call_rooms
+         SET bridge_epoch = $2::bigint, bridge_room_gen = $3::bigint
+         WHERE channel_id = $1
+           AND (bridge_epoch IS DISTINCT FROM $2::bigint OR bridge_room_gen IS NULL
+                OR bridge_room_gen <= $3::bigint)
+         RETURNING 1",
+    )
+    .bind(channel_id.to_string())
+    .bind(bridge_epoch.to_string())
+    .bind(room_gen.to_string())
+    .exec(&mut tx)
+    .await?;
+    if rows.is_empty() {
+        let exists = toasty::sql::query("SELECT 1 FROM call_rooms WHERE channel_id = $1")
+            .bind(channel_id.to_string())
+            .exec(&mut tx)
+            .await?;
+        if !exists.is_empty() {
+            return Err(AppError::Conflict(
+                "A newer bridge relay started for this room".into(),
+            ));
+        }
     }
     let rows = toasty::sql::query(
         "DELETE FROM call_sfu_tracks

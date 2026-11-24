@@ -1394,6 +1394,35 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(count(&mut db, bridge_rows_sql, &channel).await?, 0);
+    // 世代 13 が始まったあとは、前の中継（世代 12）の push は、行のない話者でも登録しない（409）。
+    let (status, _) = bridge(
+        "POST",
+        "/internal/sfu-bridge/cf/publish",
+        Some(json!({
+            "channel_id": channel, "bridge_epoch": bridge_epoch, "cf_session_id": "cf-bridge-new",
+            "speaker_session_id": sessions[0], "offer": two, "mid": "1", "publish_id": "pub-gen12b", "room_gen": 12
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(count(&mut db, bridge_rows_sql, &channel).await?, 0);
+    // 前の中継（世代 12）の遅れた cf/session も 409 で、部屋の世代は 13 のまま。
+    let (status, _) = bridge(
+        "POST",
+        "/internal/sfu-bridge/cf/session",
+        Some(json!({"channel_id": channel, "bridge_epoch": bridge_epoch, "room_gen": 12})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        text(
+            &mut db,
+            "SELECT bridge_room_gen::text FROM call_rooms WHERE channel_id = $1",
+            &channel
+        )
+        .await?,
+        "13"
+    );
 
     // 新しい bridge が登録すると、前の bridge のトラックは消える。
     let (_, reg2) = bridge("POST", "/internal/sfu-bridge/register", None).await;

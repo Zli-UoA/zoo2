@@ -1440,7 +1440,9 @@ CREATE TABLE call_rooms (
   channel_id text PRIMARY KEY REFERENCES channels(id) ON UPDATE CASCADE ON DELETE CASCADE,
   mode text NOT NULL DEFAULT 'mesh' CHECK (mode IN ('mesh','sfu')),
   epoch bigint NOT NULL DEFAULT 0,
-  track_version bigint NOT NULL DEFAULT 0
+  track_version bigint NOT NULL DEFAULT 0,
+  bridge_epoch bigint,
+  bridge_room_gen bigint
 );
 
 -- Audio tracks published on Cloudflare Realtime. 'direct' is pushed by the speaker's client; 'bridge' is a

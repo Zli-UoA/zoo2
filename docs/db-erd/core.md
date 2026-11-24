@@ -110,6 +110,8 @@ erDiagram
       text mode
       bigint epoch
       bigint track_version
+      bigint bridge_epoch
+      bigint bridge_room_gen
     }
     call_rooms |o--o| channels : call_rooms_channel_id_fkey
     call_sfu_bridge {
