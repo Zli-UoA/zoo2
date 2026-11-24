@@ -24,6 +24,7 @@ export function MediaPreview({
   initialOpen = false,
   embedded = false,
   depth = 0,
+  saveId,
   ...metadata
 }: ImageMetadata & {
   src?: string | null;
@@ -40,10 +41,19 @@ export function MediaPreview({
   /** The native host already provides the preview window and close control. */
   embedded?: boolean;
   depth?: number;
+  /** カードと拡大表示で共有する保存ID。未指定時はマウント時の入力から安定IDを作る。 */
+  saveId?: string;
 }) {
   const { t } = useTranslation();
   // マウント時に決めた ID を使い続ける。src 更新中の保存共有と、作り直し後の同一ファイル復帰を両立する。
-  const [previewId] = useState(() => `preview:${name}:${src ?? ""}`);
+  // src が未確定の同名ファイル同士が衝突しないよう、src 未指定時はランダムIDを使う。
+  const [previewId] = useState(
+    () =>
+      saveId ??
+      (src
+        ? `preview:${name}:${src}`
+        : `preview:${name}:${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)}`),
+  );
   const [open, setOpen] = useState(initialOpen);
   const [brokenSrc, setBrokenSrc] = useState<string | null>(null);
   const kind = mediaPreviewKind(contentType, name);
