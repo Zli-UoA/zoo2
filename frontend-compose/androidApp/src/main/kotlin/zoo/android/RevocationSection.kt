@@ -67,6 +67,8 @@ internal fun RevocationSection(
     currentDeviceId: String?,
     colors: AndroidColors,
     enabled: Boolean,
+    /** 解錠しているか。解錠していなくても、終わっていない失効は続けられる（Web の `DevicesSettingsView` と同じ）。 */
+    unlocked: Boolean,
     onFinished: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -81,7 +83,8 @@ internal fun RevocationSection(
     var recovery by remember { mutableStateOf("") }
     var keyNoted by remember { mutableStateOf(false) }
     fun t(key: String, vararg args: Pair<String, String>) = session.t(key, *args)
-    val links = platform.passkey?.rpId?.let { AuthzRevocationUrls.fromIssuer("https://$it") }
+    // AuthZ の画面は issuer と同じ origin にある（Web の `accountRevocationUrls`）。
+    val links = platform.issuer?.let { AuthzRevocationUrls.fromIssuer(it) }
     LaunchedEffect(Unit) { try { revocation.status() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { } }
     DisposableEffect(Unit) { onDispose { revocation.dispose() } }
     fun perform(block: suspend () -> Unit) {
@@ -93,7 +96,14 @@ internal fun RevocationSection(
             catch (cancelled: CancellationException) { throw cancelled }
             catch (_: RevocationException.Conflict) { step = RevocationStep.Conflict }
             catch (_: RevocationException.ServerKeyMismatch) { step = RevocationStep.Conflict }
-            catch (_: Exception) { failed = true }
+            catch (_: Exception) {
+                failed = true
+                // 実行の途中で止まったら（通信の失敗、再認証の取り消しなど）、「失効を続ける」に戻す。
+                if (step is RevocationStep.Running) {
+                    try { revocation.status() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { }
+                    step = RevocationStep.Idle
+                }
+            }
             finally { busy = false }
         }
     }
@@ -126,7 +136,8 @@ internal fun RevocationSection(
                         recovery = ""
                         step = RevocationStep.Unlock(unfinished.scope, unfinished.deletedDevices, resume = true)
                     }
-                } else TextAction(t("e2ee.revocation.start"), colors, can, TextActionStyle.Neutral, icon = UiIcon.Key) {
+                } else if (!unlocked) body(t("e2ee.revocation.needsUnlock"))
+                else TextAction(t("e2ee.revocation.start"), colors, can, TextActionStyle.Neutral, icon = UiIcon.Key) {
                     perform {
                         selected = emptySet()
                         authzDone = false

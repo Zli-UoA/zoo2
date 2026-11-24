@@ -96,7 +96,11 @@ internal fun VerificationContent(
         }
     }
     /** 押したときに再認証を始める（Web と同じく、押した操作の中でログインの画面を開く）。 */
-    fun reauth() = scope.async { platform?.reauthenticate?.invoke() }
+    // 再認証の取り消しや時間切れは値（null）にする。例外のまま返すと、親のスコープまで取り消され、ダイアログの
+    // ボタンが効かなくなるため。
+    fun reauth() = scope.async {
+        try { platform?.reauthenticate?.invoke() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { null }
+    }
     var scanning by remember(txn) { mutableStateOf(false) }
     var camera by remember(txn) { mutableStateOf<CameraState?>(null) }
     var otherCode by remember(txn) { mutableStateOf(false) }

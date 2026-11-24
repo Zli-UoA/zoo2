@@ -41,6 +41,8 @@ internal class AndroidPlatform(
     override var messageEncryption: zoo.MessageEncryption? = null
     var reauthenticate: (suspend () -> String)? = null
     var passkey: zoo.crypto.UnlockMethod.Passkey? = null
+    /** ログインに使う OIDC の issuer（失効の画面の AuthZ へのリンクに使う）。 */
+    var issuer: String? = null
     var e2ee: zoo.crypto.E2eeDeviceManager? = null
 
     private val prefs = activity.getSharedPreferences("preferences", 0)

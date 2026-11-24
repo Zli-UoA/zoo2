@@ -447,6 +447,7 @@ class MainActivity : ComponentActivity() {
             )
             platform.e2ee = e2ee
             platform.reauthenticate = reauthenticator::reauthenticate
+            platform.issuer = connection.issuer
             runCatching { io.ktor.http.Url(connection.issuer) }.getOrNull()
                 ?.takeIf { it.protocol == io.ktor.http.URLProtocol.HTTPS && it.host.isNotBlank() }
                 ?.let { platform.passkey = zoo.crypto.UnlockMethod.Passkey(AndroidPasskeys(this), it.host) }

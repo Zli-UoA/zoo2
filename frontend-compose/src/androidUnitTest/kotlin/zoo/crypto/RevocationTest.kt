@@ -239,6 +239,12 @@ class RevocationTest {
 
             // アプリを開き直す（メモリーの秘密を失い、暗号ストアの進み具合は残る）。
             first.restart()
+            // 画面と同じく、開き直したときの状態の読み込みと起動時の確認を挟む。SSSS を保存したあとの段で止まって
+            // secrets_revision が変わっていても、記録した値を消さず、失効の記録も残る（「失効を続ける」を出せる）。
+            val recorded = first.store.secretsRevision
+            first.setup.loadStatus()
+            first.setup.runStartupCheck()
+            assertEquals(recorded, first.store.secretsRevision, stop)
             val saved = first.revocation.status()!!
             assertEquals(begun.revocationId, saved.revocationId, stop)
             assertTrue(first.store.hasPendingRevocation, stop)

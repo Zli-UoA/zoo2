@@ -214,8 +214,15 @@ internal fun EncryptionRoute(
                 Text(session.t("e2ee.devices.deleteIsNotRevocation"), color = colors.secondary, fontSize = 14.sp)
             }
             val revocation = manager.revocation
-            if (status is E2eeStatus.Unlocked && revocation != null) {
-                RevocationSection(session, platform, revocation, manager.currentDeviceId, colors, enabled) {
+            val pendingRevocation by (revocation?.summary ?: remember { kotlinx.coroutines.flow.MutableStateFlow(null) }).collectAsState()
+            LaunchedEffect(revocation, store) {
+                try { revocation?.status() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { }
+            }
+            // 終わっていない失効は、解錠していなくても続けられるようにする（SSSS を保存したあと、クロス署名鍵を保存する
+            // 前に止まると、secrets_revision が変わって解錠し直しが要る状態になるため。Web と同じ）。
+            if (revocation != null && (status is E2eeStatus.Unlocked || pendingRevocation != null)) {
+                RevocationSection(session, platform, revocation, manager.currentDeviceId, colors, enabled,
+                    unlocked = status is E2eeStatus.Unlocked) {
                     scope.launch { try { reload() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { } }
                 }
             } else if (revocation != null && status is E2eeStatus.Locked) {
