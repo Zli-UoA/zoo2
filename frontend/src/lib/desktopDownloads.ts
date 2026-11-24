@@ -372,8 +372,10 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
 function contentLength(response: Response): number | null {
   // 圧縮された応答の Content-Length は展開後の受信バイト数と一致しない。
   // 確認時と同じく総量として使わず、進捗を不定表示にする。
+  // CORS では Content-Encoding が読めないことがあるため、その場合も総量に使わない。
   const encoding = response.headers.get("content-encoding");
-  if (encoding && encoding !== "identity") return null;
+  const encodingKnownIdentity = encoding === "identity" || (!encoding && response.type !== "cors");
+  if (!encodingKnownIdentity) return null;
   const raw = response.headers.get("content-length");
   if (!raw) return null;
   const value = Number(raw);
