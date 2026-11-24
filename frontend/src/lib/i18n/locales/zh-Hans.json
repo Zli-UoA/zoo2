@@ -247,6 +247,9 @@
     "copyRaw": "复制原文",
     "copied": "已复制原文",
     "copyFailed": "无法复制原文",
+    "copyLink": "复制消息链接",
+    "linkCopied": "已复制消息链接",
+    "linkCopyFailed": "无法复制消息链接",
     "edited": "已编辑"
   },
   "attachments": {

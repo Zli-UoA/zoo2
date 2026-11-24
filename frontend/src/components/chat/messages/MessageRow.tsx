@@ -15,6 +15,7 @@ import { cn } from "cn";
 import {
   BotIcon,
   CopyIcon,
+  LinkIcon,
   LockKeyholeIcon,
   LockKeyholeOpenIcon,
   MessageSquarePlusIcon,
@@ -30,6 +31,7 @@ import { MfmContent } from "./MfmContent";
 import { decryptedMentionAllowlist, isAllowedMention, type MentionAllowlist } from "./mentions";
 import { LinkPreviews } from "./LinkPreviews.tsx";
 import { previewUrls } from "./linkPreviews";
+import { messageLinkUrl } from "./messageLink";
 
 import { useLocale } from "../../i18n/LocaleProvider";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
@@ -388,6 +390,20 @@ export function MessageRow({
       toast.success(t("messages.copied"));
     } catch {
       toast.error(t("messages.copyFailed"));
+    }
+  }
+
+  // リンクは ID だけで作れるので、復号できない暗号化メッセージでも出す。チャンネルが分からない行だけ出さない。
+  const canCopyLink = !!message.channel_id;
+  async function copyMessageLink() {
+    if (!message.channel_id) return;
+    try {
+      await navigator.clipboard.writeText(
+        messageLinkUrl(window.location.origin, message.channel_id, message.id, message.parent_id),
+      );
+      toast.success(t("messages.linkCopied"));
+    } catch {
+      toast.error(t("messages.linkCopyFailed"));
     }
   }
 
@@ -797,6 +813,12 @@ export function MessageRow({
                     {t("messages.copyRaw")}
                   </DropdownMenuItem>
                 )}
+                {canCopyLink ? (
+                  <DropdownMenuItem className={touchHitArea} onClick={() => void copyMessageLink()}>
+                    <LinkIcon />
+                    {t("messages.copyLink")}
+                  </DropdownMenuItem>
+                ) : null}
                 <DropdownMenuItem
                   onClick={() =>
                     window.dispatchEvent(
@@ -964,6 +986,19 @@ export function MessageRow({
               >
                 <CopyIcon className="size-4 shrink-0" aria-hidden="true" />
                 {t("messages.copyRaw")}
+              </button>
+            ) : null}
+            {canCopyLink ? (
+              <button
+                type="button"
+                className={sheetActionClass}
+                onClick={() => {
+                  setSheetOpen(false);
+                  void copyMessageLink();
+                }}
+              >
+                <LinkIcon className="size-4 shrink-0" aria-hidden="true" />
+                {t("messages.copyLink")}
               </button>
             ) : null}
             <button

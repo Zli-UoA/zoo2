@@ -247,6 +247,9 @@
     "copyRaw": "原文をコピー",
     "copied": "原文をコピーしました",
     "copyFailed": "原文をコピーできませんでした",
+    "copyLink": "メッセージリンクをコピー",
+    "linkCopied": "メッセージリンクをコピーしました",
+    "linkCopyFailed": "メッセージリンクをコピーできませんでした",
     "edited": "編集済み"
   },
   "attachments": {

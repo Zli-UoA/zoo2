@@ -743,6 +743,122 @@ describe("copy original message", () => {
   });
 });
 
+describe("copy message link", () => {
+  const channel_id = "channel-1";
+  async function openMenu() {
+    screen.getByRole("button", { name: "その他の操作" }).focus();
+    await userEvent.keyboard("{Enter}");
+  }
+
+  it("copies a link to a top-level message from the menu", async () => {
+    const copy = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+    const success = vi.spyOn(toast, "success").mockReturnValue("link-success");
+    try {
+      renderRow(buildItem({ channel_id }));
+      await openMenu();
+      await userEvent.click(screen.getByRole("menuitem", { name: "メッセージリンクをコピー" }));
+      await waitFor(() =>
+        expect(copy).toHaveBeenCalledWith(
+          `${window.location.origin}/channels/channel-1?message=message-1`,
+        ),
+      );
+      expect(copy).toHaveBeenCalledOnce();
+      await waitFor(() => expect(success).toHaveBeenCalledWith("メッセージリンクをコピーしました"));
+    } finally {
+      copy.mockRestore();
+      success.mockRestore();
+    }
+  });
+
+  it("links a thread reply together with the thread it belongs to", async () => {
+    const copy = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+    const success = vi.spyOn(toast, "success").mockReturnValue("link-success");
+    try {
+      renderRow(buildItem({ channel_id, parent_id: "thread-root" }));
+      await openMenu();
+      await userEvent.click(screen.getByRole("menuitem", { name: "メッセージリンクをコピー" }));
+      await waitFor(() =>
+        expect(copy).toHaveBeenCalledWith(
+          `${window.location.origin}/channels/channel-1?thread=thread-root&message=message-1`,
+        ),
+      );
+    } finally {
+      copy.mockRestore();
+      success.mockRestore();
+    }
+  });
+
+  it("sits next to the original-text copy and does not copy the body", async () => {
+    const copy = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+    const success = vi.spyOn(toast, "success").mockReturnValue("link-success");
+    try {
+      renderRow(buildItem({ channel_id, content: "secret body" }));
+      await openMenu();
+      const names = screen.getAllByRole("menuitem").map((item) => item.textContent);
+      expect(names.indexOf("メッセージリンクをコピー")).toBe(names.indexOf("原文をコピー") + 1);
+      await userEvent.click(screen.getByRole("menuitem", { name: "メッセージリンクをコピー" }));
+      await waitFor(() => expect(copy).toHaveBeenCalledOnce());
+      expect(copy.mock.calls[0]![0]).not.toContain("secret body");
+    } finally {
+      copy.mockRestore();
+      success.mockRestore();
+    }
+  });
+
+  it("copies the same link from the touch action sheet", async () => {
+    const copy = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+    const success = vi.spyOn(toast, "success").mockReturnValue("link-success");
+    try {
+      renderRow(buildItem({ channel_id }));
+      tapTouch(screen.getByText("hello"));
+      const sheet = await screen.findByRole("dialog", { name: "メッセージを操作" });
+      await userEvent.click(
+        within(sheet).getByRole("button", { name: "メッセージリンクをコピー" }),
+      );
+      await waitFor(() =>
+        expect(copy).toHaveBeenCalledWith(
+          `${window.location.origin}/channels/channel-1?message=message-1`,
+        ),
+      );
+      await waitFor(() => expect(success).toHaveBeenCalledWith("メッセージリンクをコピーしました"));
+      await waitFor(() =>
+        expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull(),
+      );
+    } finally {
+      copy.mockRestore();
+      success.mockRestore();
+    }
+  });
+
+  it("reports a denied clipboard write without reporting success", async () => {
+    const copy = vi
+      .spyOn(navigator.clipboard, "writeText")
+      .mockRejectedValue(new DOMException("Denied", "NotAllowedError"));
+    const error = vi.spyOn(toast, "error").mockReturnValue("link-error");
+    const success = vi.spyOn(toast, "success").mockReturnValue("link-success");
+    try {
+      renderRow(buildItem({ channel_id }));
+      await openMenu();
+      await userEvent.click(screen.getByRole("menuitem", { name: "メッセージリンクをコピー" }));
+      await waitFor(() =>
+        expect(error).toHaveBeenCalledWith("メッセージリンクをコピーできませんでした"),
+      );
+      expect(success).not.toHaveBeenCalled();
+    } finally {
+      copy.mockRestore();
+      error.mockRestore();
+      success.mockRestore();
+    }
+  });
+
+  it("hides the action when the row does not know its channel", async () => {
+    renderRow(buildItem());
+    await openMenu();
+    expect(screen.getByRole("menuitem", { name: "原文をコピー" })).toBeVisible();
+    expect(screen.queryByRole("menuitem", { name: "メッセージリンクをコピー" })).toBeNull();
+  });
+});
+
 it.each([null, "thread-root"])(
   "places an edited marker after the final inline link (parent=%s)",
   async (parent_id) => {

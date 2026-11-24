@@ -247,6 +247,9 @@
     "copyRaw": "Copy original text",
     "copied": "Original text copied",
     "copyFailed": "Could not copy the original text",
+    "copyLink": "Copy message link",
+    "linkCopied": "Message link copied",
+    "linkCopyFailed": "Could not copy the message link",
     "edited": "Edited"
   },
   "attachments": {

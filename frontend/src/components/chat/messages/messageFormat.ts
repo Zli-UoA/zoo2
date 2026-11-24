@@ -11,6 +11,8 @@ import { normalizeUtcTimestamp, parseUtcTimestamp } from "../../../lib/timestamp
 export interface FeedMessage {
   display_data?: MessageDisplayData;
   id: string;
+  /** 所属チャンネル。メッセージリンクの作成に使う（フィードの行には必ず入る）。 */
+  channel_id?: string;
   user_id: string;
   content: string;
   card?: string | null;
