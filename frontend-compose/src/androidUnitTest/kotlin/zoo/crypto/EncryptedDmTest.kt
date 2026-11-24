@@ -83,6 +83,8 @@ class EncryptedDmTest {
     private val messages = mutableListOf<JsonObject>()
     private val pins = mutableMapOf<String, MutableMap<String, JsonElement>>()
     private val objects = mutableMapOf<String, ByteArray>()
+    /** 自己署名を返さないユーザー（epoch を変えずに、そのユーザーの端末が配布先から外れる）。 */
+    private val unsignedUsers = mutableSetOf<String>()
     /** サーバーが受け取ったすべての要求の本文（平文が入らないことを確かめる）。 */
     private val wire = mutableListOf<String>()
 
@@ -134,7 +136,7 @@ class EncryptedDmTest {
             put(target, buildJsonObject { members.forEach { user -> setups.getValue(user).keys[field]?.let { put(user, it) } } })
         }
         put("user_signing_keys", buildJsonObject { setups.getValue(caller).keys["user_signing_key"]?.let { put(caller, it) } })
-        put("signatures", JsonArray(members.flatMap { setups.getValue(it).signatures }))
+        put("signatures", JsonArray(members.filter { it !in unsignedUsers }.flatMap { setups.getValue(it).signatures }))
         put("tofu_pins", JsonObject(pins[caller].orEmpty()))
     }
 
@@ -287,6 +289,20 @@ class EncryptedDmTest {
         sendAndDeliver(alice, "again")
         assertEquals(RecipientNotice(emptyList(), listOf(CAROL to UndeliverableReason.NOT_SET_UP)),
             alice.encryption.recipients.value[channel])
+    }
+
+    /** 鍵を配った端末が、epoch を変えずに配布先から外れたら、送信用セッションを作り直す（レビューの指摘）。 */
+    @Test
+    fun aDeviceThatLeavesTheDistributionCannotReadTheNextMessage() = runBlocking<Unit> {
+        val (alice, _) = device(ALICE, "alice-1")
+        val (bob, _) = device(BOB, "bob-1")
+        val first = sendAndDeliver(alice, "SECRET-BEFORE")
+        assertEquals("SECRET-BEFORE", bob.decrypt(first).body)
+        // Bob の端末の自己署名がなくなった（epoch は同じ）。Bob の端末は配布先から外れる。
+        unsignedUsers += BOB
+        val after = sendAndDeliver(alice, "SECRET-AFTER-EXCLUSION")
+        assertEquals("e2ee.undecryptable.keyMissing", bob.decrypt(after).notice)
+        assertEquals("SECRET-AFTER-EXCLUSION", alice.decrypt(after).body)
     }
 
     @Test

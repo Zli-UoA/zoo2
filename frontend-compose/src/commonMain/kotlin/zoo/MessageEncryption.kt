@@ -90,13 +90,6 @@ internal fun encryptedMessagePayload(message: Row): Row = kotlinx.serialization.
 fun isPlaintextBeforeEncryption(message: Row): Boolean =
     !message.present("ciphertext") && !message.present("epoch")
 
-/**
- * 並べた行のうち、最初の暗号化したメッセージの位置（#367・#564）。ここに「ここから暗号化されています」の
- * 区切りを出し、これより後ろの暗号文のない行には警告の印を付ける。暗号化チャンネルでなければ -1。
- */
-fun firstEncryptedIndex(rows: List<Row>, encrypted: Boolean): Int =
-    if (!encrypted) -1 else rows.indexOfFirst { !isPlaintextBeforeEncryption(it) }
-
 /** 確認済みの本文は画面内だけで保持する。旧版・同版の競合で置き換えない。 */
 internal class EncryptedMessageDisplayState {
     var decoded by androidx.compose.runtime.mutableStateOf<DecryptedBody?>(null)

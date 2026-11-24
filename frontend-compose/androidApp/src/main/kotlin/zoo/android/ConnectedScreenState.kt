@@ -76,21 +76,35 @@ internal class ConnectedScreenState(
         return AttachmentDrafts(app, channelId, app.scope, upload).apply { enabled = true }
     }
 
-    /** 暗号化した添付を取得して復号し、端末の共有で開く（ハッシュが合わなければ開かない）。 */
-    private fun openEncryptedAttachment(info: JsonObject) {
+    /**
+     * 暗号化した添付を取得して復号し、端末の共有で開く（ハッシュが合わなければ開かない）。平文の添付ならサーバーが
+     * 拒否する種類は、取得も保存もしない（Web の `receivedAttachmentView`）。
+     */
+    private fun openEncryptedAttachment(raw: String) {
         val encryption = platform.messageEncryption ?: return
+        val info = runCatching { kotlinx.serialization.json.Json.parseToJsonElement(raw).jsonObject }.getOrNull() ?: return
+        val view = receivedAttachment(info)
+        if (view.blocked) { app.toast = app.t("e2ee.attachments.blocked"); return }
+        if ((info.text("size").toLongOrNull() ?: Long.MAX_VALUE) > MAX_ATTACHMENT_BYTES) {
+            app.toast = app.t("attachments.downloadError")
+            return
+        }
         app.scope.launch {
-            try {
-                val bytes = fetchEncryptedAttachment(app.api, encryption.attachmentCipher, info)
-                platform.invoke("previewSave", obj(
-                    "base64" to Base64.encodeToString(bytes, Base64.NO_WRAP),
-                    "name" to info.text("name").ifBlank { "attachment" },
-                    "type" to safeAttachmentType(info),
-                ).toString())
+            val bytes = try {
+                fetchEncryptedAttachment(app.api, encryption.attachmentCipher, info)
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { app.toast = app.t("e2ee.attachments.decryptFailed") }
+            catch (_: Exception) {
+                // 取得や照合の失敗。ハッシュが合わない場合も含むので、中身が変わったおそれを伝える。
+                app.toast = app.t("e2ee.attachments.decryptFailed")
+                return@launch
+            }
+            try {
+                platform.shareFile(bytes, view.name.ifBlank { "attachment" }, view.mimetype)
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { app.toast = app.t("attachments.downloadError") }
         }
     }
+
     private var postRequest = 0
     private var currentOverlay by mutableStateOf<String?>(null)
     var overlay: String?

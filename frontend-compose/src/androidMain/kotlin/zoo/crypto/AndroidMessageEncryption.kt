@@ -216,7 +216,11 @@ class AndroidMessageEncryption(
                 try {
                     val now = System.currentTimeMillis().toULong()
                     val cached = outbound[channel]
-                    if (cached != null && (cached.owner !== store || cached.session.needsRotation(now, epoch))) discard(channel)
+                    // 鍵を配った端末が配布先から外れたら（再検証が必要になった、配れなくなった、など）、その端末が
+                    // 持つ鍵で次の本文を読めないよう、セッションを作り直す。
+                    val distributed = devices.map(::deviceKey).toSet()
+                    if (cached != null && (cached.owner !== store || cached.session.needsRotation(now, epoch) ||
+                            !distributed.containsAll(cached.shared))) discard(channel)
                     val current = outbound.getOrPut(channel) { SendingSession(store, OutboundSession(channel, epoch, now)) }
                     val session = current.session
                     try {

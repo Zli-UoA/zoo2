@@ -21,7 +21,7 @@ class EncryptedEntriesTest {
 
     @Test
     fun undecryptableRowsShowTheReasonInsteadOfTheBody() {
-        val entry = encryptedEntry(base, encryptedRow, DecryptedBody(notice = "e2ee.undecryptable.keyMissing"), true, 0, 0, t)
+        val entry = encryptedEntry(base, encryptedRow, DecryptedBody(notice = "e2ee.undecryptable.keyMissing"), true, t)
         assertEquals("e2ee.undecryptable.keyMissing", entry.notice)
         assertEquals("", entry.body)
         assertTrue(entry.marks.isEmpty())
@@ -30,41 +30,65 @@ class EncryptedEntriesTest {
 
     @Test
     fun senderAndRevisionWarningsAreMarksNextToTheBody() {
-        val entry = encryptedEntry(base, encryptedRow, DecryptedBody("hello", "e2ee.sender.unverified"), true, 0, 0, t)
+        val entry = encryptedEntry(base, encryptedRow, DecryptedBody("hello", "e2ee.sender.unverified"), true, t)
         assertEquals("hello", entry.body)
         assertNull(entry.notice)
         assertEquals(listOf("e2ee.sender.unverified"), entry.marks)
         // 暗号化した本文の URL は自動で取得しない。
         assertNull(entry.link)
         assertTrue(entry.editable)
-        val stale = encryptedEntry(base, encryptedRow, DecryptedBody(revision = MessageRevision.STALE), true, 0, 0, t)
+        val stale = encryptedEntry(base, encryptedRow, DecryptedBody(revision = MessageRevision.STALE), true, t)
         assertEquals(listOf("e2ee.revision.stale"), stale.marks)
         assertFalse(stale.editable)
     }
 
     @Test
-    fun plaintextHistoryGetsADividerAndOnlyLatePlaintextIsMarked() {
-        val before = encryptedEntry(base.copy(id = "p"), plainRow, null, true, 0, 1, t)
-        assertTrue(before.marks.isEmpty())
-        assertNull(before.divider)
+    fun plaintextHistoryIsShownButRowsWithAnEpochAndNoCiphertextAreNot() {
+        val before = encryptedEntry(base.copy(id = "p", body = "before"), plainRow, null, true, t)
+        assertEquals("before", before.body)
         assertFalse(before.editable)
-        val first = encryptedEntry(base, encryptedRow, DecryptedBody("hi"), true, 1, 1, t)
-        assertEquals("e2ee.legacy.divider", first.divider)
-        val late = encryptedEntry(base.copy(id = "late"), plainRow, null, true, 2, 1, t)
-        assertEquals(listOf("e2ee.legacy.unencryptedBadge"), late.marks)
+        // epoch があるのに暗号文のない行は、本文を出さない。
+        val forged = encryptedEntry(base.copy(body = "injected"), obj("id" to "m", "epoch" to "1", "content" to "injected"), null, true, t)
+        assertEquals("", forged.body)
+        assertEquals("e2ee.undecryptable.unencrypted", forged.notice)
         // 平文チャンネルでは何も変えない。
-        assertEquals(base, encryptedEntry(base, plainRow, null, false, 3, -1, t))
+        assertEquals(base, encryptedEntry(base, plainRow, null, false, t))
+    }
+
+    @Test
+    fun theBoundaryIsDecidedWithinTheDisplayedList() {
+        val rows = mapOf("p1" to plainRow, "reply" to encryptedRow, "e1" to encryptedRow, "p2" to plainRow)
+        // 会話の画面には返信（最初の暗号化したメッセージ）が出ない。表示する行の中で区切りを決める。
+        val conversation = withEncryptionBoundary(
+            listOf(base.copy(id = "p1"), base.copy(id = "e1"), base.copy(id = "p2")), rows, true, t)
+        assertNull(conversation[0].divider)
+        assertTrue(conversation[0].marks.isEmpty())
+        assertEquals("e2ee.legacy.divider", conversation[1].divider)
+        assertEquals(listOf("e2ee.legacy.unencryptedBadge"), conversation[2].marks)
+        // 先頭が暗号化したメッセージなら区切りは出さない。
+        assertNull(withEncryptionBoundary(listOf(base.copy(id = "e1")), rows, true, t)[0].divider)
+        // 平文チャンネルでは何もしない。
+        val plain = listOf(base.copy(id = "p1"), base.copy(id = "e1"))
+        assertEquals(plain, withEncryptionBoundary(plain, rows, false, t))
     }
 
     @Test
     fun encryptedAttachmentsComeFromTheDecryptedPayload() {
         val info = obj("attachment_id" to "a1", "name" to "photo.png", "mimetype" to "image/png", "size" to 3, "file" to obj("v" to "v2"))
         val entry = encryptedEntry(base.copy(attachments = listOf("server" to "encrypted.bin")), encryptedRow,
-            DecryptedBody("x", attachments = listOf(info)), true, 0, 0, t)
+            DecryptedBody("x", attachments = listOf(info)), true, t)
         assertEquals(listOf("a1" to "photo.png"), entry.attachments)
-        assertEquals(info, entry.encryptedFiles["a1"])
-        assertEquals("application/octet-stream", safeAttachmentType(obj("mimetype" to "text/html")))
-        assertEquals("image/png", safeAttachmentType(info))
+        assertEquals(info.toString(), entry.encryptedFiles["a1"])
+    }
+
+    @Test
+    fun receivedAttachmentsFollowTheWebRules() {
+        assertEquals(ReceivedAttachment("photo.png", "image/png", false), receivedAttachment(obj("name" to "photo.png", "mimetype" to "image/png")))
+        // 平文の添付ならサーバーが拒否する種類は、取得も保存もしない。
+        assertTrue(receivedAttachment(obj("name" to "x.sh", "mimetype" to "application/x-sh")).blocked)
+        assertTrue(receivedAttachment(obj("name" to "payload.exe", "mimetype" to "application/x-msdownload")).blocked)
+        // 双方向の制御文字で拡張子を偽装させない。
+        assertEquals("evil_gnp.exe", receivedAttachment(obj("name" to "evil‮gnp.exe", "mimetype" to "image/png")).name)
     }
 
     @Test

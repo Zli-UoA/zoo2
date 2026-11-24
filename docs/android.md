@@ -209,13 +209,13 @@ frontend のコンテナの `ANDROID_APP_CERT_SHA256` に、配布する APK の
 （zoo2-infra。debug APK は署名が違うので、App Links で戻りません）。
 AuthZ の Android のクライアントには、認可コードのグラントと、このリダイレクト URI の登録が要ります。
 backend は再認証の ID トークンの `aud` を `OIDC_REAUTH_AUDIENCES`（カンマ区切り）で確かめます。この値は zoo2-infra の
-production の `backend.yaml` の `env` にあるので、今の値を残したまま Android の client ID を足す PR を zoo2-infra に出してください
-（[E2EE の「有効化と運用」](e2ee.md#有効化と運用)）。足すまでは、保存が 403 になります。
+production の `backend.yaml` の `env` にあり、Android の client ID（`129d96c7c57d46729fe5ee31ff95e7fc`）は入っています
+（[E2EE の「有効化と運用」](e2ee.md#有効化と運用)）。Android の client ID を変えるときは、この一覧も zoo2-infra の PR で直してください。
 リダイレクト先のホストはビルド時の `-Pzoo.android.reauthHost=<ホスト>`（既定は `zli.chat`）で、manifest の App Links と
 認可リクエストの両方に使います。接続先のサーバーが違っても、このホストに戻ります。
 パスキーは Credential Manager の PRF で使いますが、AuthZ の `assetlinks.json`（AuthZ#96）が要り、実機ではまだ確かめていません。
 使えないときは、リカバリーキーで解錠してください。解錠した端末だけが、受け取った鍵を鍵バックアップに送ります。
-暗号化チャンネルの送受信、端末一覧と失効、Push の復号は、まだ Android にはありません（#361、#362、#510）。
+端末一覧と失効、Push の復号は、まだ Android にはありません（#362、#510）。
 詳細は [E2EE の「初回設定と解錠の実装」](e2ee.md#compose-android)と[「暗号ストア」](e2ee.md#暗号ストア)を参照してください。
 
 ## Android との接続

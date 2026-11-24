@@ -74,8 +74,7 @@ internal fun ConnectedScreens(
     val cryptoChanges by (encryption?.changes ?: remember { kotlinx.coroutines.flow.MutableStateFlow(0L) }).collectAsState()
     val messageEntries by produceState(emptyList<TimelineItem>(), rows, usersById, encrypted, filesByMessage, reactionsByMessage, canPost, cryptoChanges) {
         val ordered = rows.filterNot { it.present("deleted_at") }.sortedBy { it.text("created_at") }
-        val firstEncrypted = firstEncryptedIndex(ordered, encrypted)
-        value = ordered.mapIndexed { index, row ->
+        value = ordered.map { row ->
             val id = row.text("id")
             val decrypted = if (row.present("ciphertext")) {
                 try { encryption?.decrypt(row) ?: DecryptedBody(notice = "e2ee.sendUnavailable") }
@@ -86,10 +85,11 @@ internal fun ConnectedScreens(
             val entry = state.entry(kotlinx.serialization.json.JsonObject(data), usersById,
                 if (decrypted != null) emptyList() else filesByMessage[id].orEmpty(),
                 reactionsByMessage[id].orEmpty(), writable = canPost, allowPreview = !encrypted)
-            encryptedEntry(entry, row, decrypted, encrypted, index, firstEncrypted, session::t)
+            encryptedEntry(entry, row, decrypted, encrypted, session::t)
         }
     }
     val messages = messageEntries.map { state.withLinkCard(it, previewService) }
+    val rowsById = remember(rows) { rows.associateBy { it.text("id") } }
     val recipientNotices by (encryption?.recipients ?: remember { kotlinx.coroutines.flow.MutableStateFlow(emptyMap()) }).collectAsState()
     val recipientLines = if (!encrypted || channelId == null) emptyList() else recipientNoticeLines(recipientNotices[channelId],
         { id -> usersById[id]?.let(::author)?.ifBlank { null } ?: id }) { key, args -> session.t(key, *args) }
@@ -311,20 +311,27 @@ internal fun ConnectedScreens(
         route == "/notifications" -> state.inbox.screen()
         route == "/bubble" -> AndroidScreen.Bubble(bubbles.map { state.entry(it, usersById) }, InputState(bubbleDraft, live = true), bubbleParticipants.map { it.title })
         route == "/settings" -> AndroidScreen.Settings(state.settings(env, openIncomingSettings != null))
-        channel != null && (threadRoot != null || deletedRoot) -> AndroidScreen.Thread(
+        channel != null && (threadRoot != null || deletedRoot) -> {
+          // 暗号化の境目は、スレッドの画面に出す親と返信の中で決める。
+          val thread = withEncryptionBoundary(
+              listOf(threadRoot ?: TimelineItem(currentThread.orEmpty(), "", session.t("threads.rootDeleted"), "")) +
+                  // Under a deleted parent the thread is read-only (as Web): no edits, deletes or reactions.
+                  messages.filter { it.id in threadReplies }.map {
+                      if (threadRoot == null) it.copy(editable = false, canReact = false, canRepost = false) else it
+                  },
+              rowsById, encrypted, session::t)
+          AndroidScreen.Thread(
             channel.text("channel_name"),
-            threadRoot ?: TimelineItem(currentThread.orEmpty(), "", session.t("threads.rootDeleted"), ""),
-            // Under a deleted parent the thread is read-only (as Web): no edits, deletes or reactions.
-            messages.filter { it.id in threadReplies }.map {
-                if (threadRoot == null) it.copy(editable = false, canReact = false, canRepost = false) else it
-            },
+            thread.first(),
+            thread.drop(1),
             state.input("$channelId:$currentThread", canPost && threadRoot != null && !threadDetail.present("thread_archive_at") &&
                 (!threadDetail.flag("tracked") || threadDetail.text("membership") == "joined"),
                 users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }).copy(notices = recipientLines), focusMessage,
             focusRequest = focusRequest,
-        )
+          )
+        }
         channel != null -> AndroidScreen.Conversation(channelId.orEmpty(), channel.text("channel_name"), channel.text("description"),
-            messages.filter { it.id in conversationEntries }, state.input(channelId.orEmpty(), canPost,
+            withEncryptionBoundary(messages.filter { it.id in conversationEntries }, rowsById, encrypted, session::t), state.input(channelId.orEmpty(), canPost,
                 users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }).copy(notices = recipientLines),
             canCall = channel.flag("is_dm") && member && !encrypted, focusMessage = focusMessage, focusRequest = focusRequest)
         else -> AndroidScreen.Channels(state.channelSections(channels, usersById, memberships))

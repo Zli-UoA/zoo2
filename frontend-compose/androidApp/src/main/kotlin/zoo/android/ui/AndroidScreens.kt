@@ -77,8 +77,8 @@ internal data class TimelineItem(
     val marks: List<String> = emptyList(),
     /** この行の前に出す区切り（暗号化に切り替えた境目、#367）。 */
     val divider: String? = null,
-    /** 暗号化した添付（`attachment_id` → 本文の `attachments` の値。鍵を含むので表示と取得にだけ使う）。 */
-    val encryptedFiles: Map<String, kotlinx.serialization.json.JsonObject> = emptyMap(),
+    /** 暗号化した添付（`attachment_id` → 本文の `attachments` の値の JSON。鍵を含むので表示と取得にだけ使う）。 */
+    val encryptedFiles: Map<String, String> = emptyMap(),
 )
 internal data class ChannelItem(
     val id: String,

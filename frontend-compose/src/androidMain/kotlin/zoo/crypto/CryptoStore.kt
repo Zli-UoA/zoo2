@@ -436,8 +436,15 @@ class CryptoStore private constructor(
         val next = userIds.distinct().sorted()
         val previous = state.recipients[channel]
         if (previous != next) {
+            val before = state.recipients
             state.recipients = state.recipients + (channel to next)
-            save()
+            try {
+                save()
+            } catch (failure: Throwable) {
+                // 保存できなかったら記録を戻す（次の判定でも、増えた配布先を出すため）。
+                state.recipients = before
+                throw failure
+            }
         }
         if (previous == null) return emptyList()
         val known = previous.toSet()

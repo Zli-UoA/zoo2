@@ -25,13 +25,4 @@ class EncryptedMentionsTest {
     fun deduplicatesAndSorts() {
         assertEquals(listOf("u1", "u3"), encryptedMentions("@carol @alice、@carol！", users).userIds)
     }
-
-    @Test
-    fun marksTheFirstEncryptedRowAfterThePlaintextHistory() {
-        val plain = obj("id" to "p")
-        val encrypted = obj("id" to "e", "ciphertext" to "x", "epoch" to "1")
-        assertEquals(2, firstEncryptedIndex(listOf(plain, plain, encrypted, plain), encrypted = true))
-        assertEquals(-1, firstEncryptedIndex(listOf(plain, encrypted), encrypted = false))
-        assertEquals(-1, firstEncryptedIndex(listOf(plain), encrypted = true))
-    }
 }
