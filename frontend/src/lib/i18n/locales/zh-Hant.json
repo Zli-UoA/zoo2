@@ -256,6 +256,7 @@
     "forwardTitle": "轉寄此訊息",
     "forwardSearchPlaceholder": "搜尋頻道或成員",
     "forwardDestinationLabel": "轉寄目標",
+    "forwardDestinationSelected": "已選擇 {{name}} 作為轉寄目標",
     "forwardClearDestination": "移除 {{name}}",
     "forwardNoDestinations": "沒有可轉寄的頻道或私訊",
     "forwardCommentPlaceholder": "新增備註（選填）",

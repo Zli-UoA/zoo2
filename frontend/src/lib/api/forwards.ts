@@ -3,6 +3,9 @@ import type { ForwardResolutionItem, ResolveForwardsResponse } from "./types";
 
 export const MAX_RESOLVE_FORWARD_IDS = 100;
 const BATCH_WINDOW_MS = 20;
+export const FORWARD_OK_TTL_MS = 60_000;
+export const FORWARD_UNAVAILABLE_TTL_MS = 30_000;
+export const FORWARD_DELETED_TTL_MS = 300_000;
 
 export type ResolvedForwardEntry = ForwardResolutionItem | { status: "error" };
 
@@ -15,8 +18,13 @@ interface PendingWaiter {
   resolve: (value: ResolvedForwardEntry) => void;
 }
 
+interface CachedForwardEntry {
+  value: ForwardResolutionItem;
+  expiresAt: number;
+}
+
 interface ScopeBucket {
-  cache: Map<string, ForwardResolutionItem>;
+  cache: Map<string, CachedForwardEntry>;
   inflight: Map<string, Promise<ResolvedForwardEntry>>;
   pending: Map<string, PendingWaiter[]>;
   timer: ReturnType<typeof setTimeout> | null;
@@ -25,14 +33,40 @@ interface ScopeBucket {
 }
 
 const buckets = new Map<string, ScopeBucket>();
+const invalidationListeners = new Map<string, Set<(ids: readonly string[]) => void>>();
 let visibilityListenerAttached = false;
 
-function bucketKey(scope: ForwardCacheScope): string {
+export function forwardScopeKey(scope: ForwardCacheScope): string {
   return `${scope.apiBaseUrl}\0${scope.currentUserId ?? ""}`;
 }
 
+function ttlForItem(item: ForwardResolutionItem): number {
+  switch (item.status) {
+    case "ok":
+      return FORWARD_OK_TTL_MS;
+    case "unavailable":
+      return FORWARD_UNAVAILABLE_TTL_MS;
+    case "deleted":
+      return FORWARD_DELETED_TTL_MS;
+  }
+}
+
+function getFreshCacheEntry(
+  bucket: ScopeBucket,
+  id: string,
+  now = Date.now(),
+): ForwardResolutionItem | undefined {
+  const entry = bucket.cache.get(id);
+  if (!entry) return undefined;
+  if (now >= entry.expiresAt) {
+    bucket.cache.delete(id);
+    return undefined;
+  }
+  return entry.value;
+}
+
 function getBucket(scope: ForwardCacheScope): ScopeBucket {
-  const key = bucketKey(scope);
+  const key = forwardScopeKey(scope);
   let bucket = buckets.get(key);
   if (!bucket) {
     bucket = {
@@ -54,7 +88,20 @@ function isDocumentHidden(): boolean {
 
 function onVisibilityChange(): void {
   if (isDocumentHidden()) return;
-  for (const bucket of buckets.values()) {
+  const now = Date.now();
+  for (const [scopeKey, bucket] of buckets.entries()) {
+    const expiredIds: string[] = [];
+    for (const [id, entry] of bucket.cache.entries()) {
+      if (now >= entry.expiresAt) {
+        bucket.cache.delete(id);
+        expiredIds.push(id);
+      }
+    }
+    if (expiredIds.length > 0) {
+      for (const listener of invalidationListeners.get(scopeKey) ?? []) {
+        listener(expiredIds);
+      }
+    }
     if (bucket.waitingVisible && bucket.pending.size > 0) {
       bucket.waitingVisible = false;
       void flushBucket(bucket);
@@ -74,6 +121,7 @@ async function flushBucket(bucket: ScopeBucket): Promise<void> {
     bucket.timer = null;
   }
   if (isDocumentHidden()) {
+    ensureVisibilityListener();
     bucket.waitingVisible = true;
     return;
   }
@@ -104,7 +152,11 @@ async function flushBucket(bucket: ScopeBucket): Promise<void> {
       let value: ResolvedForwardEntry;
       if (results) {
         const resolved = results[id] ?? { status: "unavailable" };
-        bucket.cache.set(id, resolved);
+        bucket.cache.set(id, {
+          value: resolved,
+          expiresAt: Date.now() + ttlForItem(resolved),
+        });
+        ensureVisibilityListener();
         value = resolved;
       } else {
         // 通信・一時エラー時はキャッシュを汚染せず、再試行できる状態として返す。
@@ -131,20 +183,54 @@ function scheduleFlush(bucket: ScopeBucket): void {
   }, BATCH_WINDOW_MS);
 }
 
-/** キャッシュ済みの解決結果を返す（未解決なら `undefined`）。 */
+/** キャッシュ済みの解決結果を返す（未解決または期限切れなら `undefined`）。 */
 export function cachedForwardEntry(
   scope: ForwardCacheScope,
   id: string,
 ): ForwardResolutionItem | undefined {
-  return buckets.get(bucketKey(scope))?.cache.get(id);
+  const bucket = buckets.get(forwardScopeKey(scope));
+  return bucket ? getFreshCacheEntry(bucket, id) : undefined;
 }
 
-/** 指定 ID のキャッシュだけを破棄する（通信失敗からの再試行時など）。 */
+/** 指定 ID のキャッシュ破棄イベントを購読する（編集・削除後の即時再解決用）。 */
+export function subscribeForwardInvalidation(
+  scope: ForwardCacheScope,
+  listener: (ids: readonly string[]) => void,
+): () => void {
+  const key = forwardScopeKey(scope);
+  let set = invalidationListeners.get(key);
+  if (!set) {
+    set = new Set();
+    invalidationListeners.set(key, set);
+  }
+  set.add(listener);
+  return () => {
+    const current = invalidationListeners.get(key);
+    if (!current) return;
+    current.delete(listener);
+    if (current.size === 0) {
+      invalidationListeners.delete(key);
+    }
+  };
+}
+
+/** 指定 ID のキャッシュだけを破棄する（通信失敗からの再試行や編集・削除時）。 */
 export function forgetForwardIds(scope: ForwardCacheScope, ids: readonly string[]): void {
-  const bucket = buckets.get(bucketKey(scope));
-  if (!bucket) return;
-  for (const id of ids) {
-    bucket.cache.delete(id);
+  const key = forwardScopeKey(scope);
+  const bucket = buckets.get(key);
+  const deleted: string[] = [];
+  if (bucket) {
+    for (const id of ids) {
+      if (bucket.cache.delete(id)) {
+        deleted.push(id);
+      }
+    }
+  }
+  const target = deleted.length > 0 ? deleted : ids;
+  if (target.length > 0) {
+    for (const listener of invalidationListeners.get(key) ?? []) {
+      listener(target);
+    }
   }
 }
 
@@ -167,7 +253,7 @@ export async function resolveForwardMessages(
   let enqueuedNew = false;
 
   for (const id of uniqueIds) {
-    const cached = bucket.cache.get(id);
+    const cached = getFreshCacheEntry(bucket, id);
     if (cached) {
       out.set(id, cached);
       continue;
@@ -218,8 +304,9 @@ export function resetForwardCacheForTests(): void {
     bucket.cache.clear();
   }
   buckets.clear();
+  invalidationListeners.clear();
   if (visibilityListenerAttached && typeof document !== "undefined") {
     document.removeEventListener("visibilitychange", onVisibilityChange);
-    visibilityListenerAttached = false;
   }
+  visibilityListenerAttached = false;
 }

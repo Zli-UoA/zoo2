@@ -256,6 +256,7 @@
     "forwardTitle": "转发此消息",
     "forwardSearchPlaceholder": "搜索频道或成员",
     "forwardDestinationLabel": "转发目标",
+    "forwardDestinationSelected": "已选择 {{name}} 作为转发目标",
     "forwardClearDestination": "移除 {{name}}",
     "forwardNoDestinations": "没有可转发的频道或私信",
     "forwardCommentPlaceholder": "添加附言（可选）",

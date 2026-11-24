@@ -123,7 +123,9 @@ export function ForwardMessageDialog({
   const [search, setSearch] = useState("");
   const [comment, setComment] = useState(defaultComment);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [announcement, setAnnouncement] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const commentInputRef = useRef<HTMLTextAreaElement>(null);
   const listboxId = useId();
   const [platform] = useState(() => detectComposerPlatform());
 
@@ -133,6 +135,7 @@ export function ForwardMessageDialog({
       setSearch("");
       setComment(defaultComment);
       setActiveIndex(0);
+      setAnnouncement("");
     }
   }, [open, source?.id, defaultSelectedId, defaultComment]);
 
@@ -168,8 +171,15 @@ export function ForwardMessageDialog({
   }
 
   function handleSelectDestination(destId: string) {
+    const dest = destinations.find((candidate) => candidate.id === destId);
+    // 選択肢ボタンと検索欄が DOM から消える前にコメント欄へフォーカスを移し、ダイアログの外郭へのフォーカス戻りを防ぐ
+    commentInputRef.current?.focus();
     setSelectedId(destId);
     setSearch("");
+    if (dest) {
+      setAnnouncement(t("messages.forwardDestinationSelected", { name: dest.label }));
+    }
+    requestAnimationFrame(() => commentInputRef.current?.focus());
   }
 
   function handleSubmit() {
@@ -183,6 +193,9 @@ export function ForwardMessageDialog({
         <DialogHeader>
           <DialogTitle>{t("messages.forwardTitle")}</DialogTitle>
         </DialogHeader>
+        <span role="status" aria-live="polite" className="sr-only">
+          {announcement}
+        </span>
 
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-0.5">
           <div className="flex flex-col gap-1.5">
@@ -205,6 +218,7 @@ export function ForwardMessageDialog({
                     })}
                     onClick={() => {
                       setSelectedId(null);
+                      setAnnouncement("");
                       requestAnimationFrame(() => searchInputRef.current?.focus());
                     }}
                   >
@@ -236,6 +250,7 @@ export function ForwardMessageDialog({
                     }
                     className="pl-8"
                     onKeyDown={(event) => {
+                      if (event.nativeEvent.isComposing || event.keyCode === 229) return;
                       if (filteredDestinations.length === 0) return;
                       if (event.key === "ArrowDown") {
                         event.preventDefault();
@@ -314,6 +329,7 @@ export function ForwardMessageDialog({
           </div>
 
           <Textarea
+            ref={commentInputRef}
             value={comment}
             onChange={(event) => setComment(event.target.value)}
             rows={3}

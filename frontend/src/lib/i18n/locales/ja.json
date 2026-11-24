@@ -256,6 +256,7 @@
     "forwardTitle": "このメッセージを転送する",
     "forwardSearchPlaceholder": "チャンネルまたはメンバーを検索する",
     "forwardDestinationLabel": "転送先",
+    "forwardDestinationSelected": "{{name}} を転送先に選択しました",
     "forwardClearDestination": "{{name}} を選択から外す",
     "forwardNoDestinations": "転送できるチャンネルまたは DM がありません",
     "forwardCommentPlaceholder": "コメントを追加（任意）",

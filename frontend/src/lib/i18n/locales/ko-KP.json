@@ -256,6 +256,7 @@
     "forwardTitle": "이 통보문 전송",
     "forwardSearchPlaceholder": "통로 또는 성원 검색",
     "forwardDestinationLabel": "전송 대상",
+    "forwardDestinationSelected": "{{name}}을(를) 전송 대상으로 선택했습니다",
     "forwardClearDestination": "{{name}} 선택 해제",
     "forwardNoDestinations": "전송할 수 있는 통로나 직접 대화가 없습니다",
     "forwardCommentPlaceholder": "설명 추가(선택)",

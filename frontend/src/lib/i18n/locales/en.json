@@ -256,6 +256,7 @@
     "forwardTitle": "Forward this message",
     "forwardSearchPlaceholder": "Search channels or members",
     "forwardDestinationLabel": "Destination",
+    "forwardDestinationSelected": "Selected {{name}} as destination",
     "forwardClearDestination": "Remove {{name}}",
     "forwardNoDestinations": "No channels or DMs available to forward to",
     "forwardCommentPlaceholder": "Add a message (optional)",

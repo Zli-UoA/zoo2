@@ -6,6 +6,8 @@ import {
 import { isThreadJoinRequired, useThreadMembership } from "../../../hooks/useThreadMembership";
 import { refreshAppSurfaces } from "../../../lib/appSurfaceEvents";
 import { ApiError, createConfiguredApiClient } from "../../../lib/api/client";
+import { forgetForwardIds } from "../../../lib/api/forwards";
+import { DEFAULT_CONFIG } from "../../../lib/config";
 import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -835,6 +837,10 @@ export function MessagePane({
         message.content = content;
       }),
     );
+    forgetForwardIds(
+      { apiBaseUrl: config?.apiBaseUrl ?? DEFAULT_CONFIG.apiBaseUrl, currentUserId },
+      [id],
+    );
   }, [
     editingId,
     editingText,
@@ -854,6 +860,8 @@ export function MessagePane({
     membershipEpoch,
     usersQuery.data,
     reportEncryptedFailure,
+    config?.apiBaseUrl,
+    currentUserId,
   ]);
 
   const handleConfirmDelete = useCallback(async () => {
@@ -869,7 +877,19 @@ export function MessagePane({
         message.deleted_at = nowIso();
       }),
     );
-  }, [pendingDeleteId, run, messagesCollection, isArchivedMessage, isUnderDeletedRoot]);
+    forgetForwardIds(
+      { apiBaseUrl: config?.apiBaseUrl ?? DEFAULT_CONFIG.apiBaseUrl, currentUserId },
+      [id],
+    );
+  }, [
+    pendingDeleteId,
+    run,
+    messagesCollection,
+    isArchivedMessage,
+    isUnderDeletedRoot,
+    config?.apiBaseUrl,
+    currentUserId,
+  ]);
 
   const forwardedIds = useMemo(() => {
     if (treatAsEncrypted) return [];
@@ -886,7 +906,7 @@ export function MessagePane({
     () =>
       buildForwardDestinations({
         channels: channelsQuery.data ?? [],
-        memberships: myMemberships.memberships,
+        memberships: myMemberships.allMemberships ?? myMemberships.memberships,
         users: usersQuery.data ?? [],
         currentUserId,
         isAdmin,
@@ -895,6 +915,7 @@ export function MessagePane({
       }),
     [
       channelsQuery.data,
+      myMemberships.allMemberships,
       myMemberships.memberships,
       usersQuery.data,
       currentUserId,
@@ -906,6 +927,13 @@ export function MessagePane({
   const [forwardingSource, setForwardingSource] = useState<ResolvedForwardMessage | null>(null);
   const [isForwarding, setIsForwarding] = useState(false);
   const [forwardError, setForwardError] = useState<string | null>(null);
+  // 再試行時はサーバー側の冪等性（同じ client UUID）を効かせ、宛先やコメントを変えた場合のみ新規採番する
+  const pendingForwardKeyRef = useRef<{
+    sourceId: string;
+    destinationChannelId: string;
+    comment: string;
+    id: string;
+  } | null>(null);
 
   const handleOpenForward = useCallback(
     (msg: FeedMessage, msgAttachments: AttachmentRow[]) => {
@@ -916,6 +944,7 @@ export function MessagePane({
           ? [{ id: user.id, user_name: user.user_name, display_name: user.display_name }]
           : [];
       });
+      pendingForwardKeyRef.current = null;
       setForwardError(null);
       setForwardingSource({
         id: msg.id,
@@ -962,14 +991,29 @@ export function MessagePane({
       setIsForwarding(true);
       setForwardError(null);
       try {
+        const existingKey = pendingForwardKeyRef.current;
+        const messageId =
+          existingKey &&
+          existingKey.sourceId === forwardingSource.id &&
+          existingKey.destinationChannelId === destinationChannelId &&
+          existingKey.comment === comment
+            ? existingKey.id
+            : crypto.randomUUID();
+        pendingForwardKeyRef.current = {
+          sourceId: forwardingSource.id,
+          destinationChannelId,
+          comment,
+          id: messageId,
+        };
         const body: CreateMessageRequest = {
-          id: crypto.randomUUID(),
+          id: messageId,
           channel_id: destinationChannelId,
           content: comment,
           forwarded_message_ids: [forwardingSource.id],
         };
         await appClient.post<MessageResponse>("/api/messages", body);
         const targetDest = forwardDestinations.find((dest) => dest.id === destinationChannelId);
+        pendingForwardKeyRef.current = null;
         setForwardingSource(null);
         toast.success(
           targetDest
@@ -1244,6 +1288,7 @@ export function MessagePane({
             open={forwardingSource !== null}
             onOpenChange={(open) => {
               if (!open && !isForwarding) {
+                pendingForwardKeyRef.current = null;
                 setForwardingSource(null);
                 setForwardError(null);
               }

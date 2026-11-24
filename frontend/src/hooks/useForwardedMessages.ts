@@ -15,7 +15,9 @@ import { createConfiguredApiClient } from "../lib/api/client";
 import {
   cachedForwardEntry,
   forgetForwardIds,
+  forwardScopeKey,
   resolveForwardMessages,
+  subscribeForwardInvalidation,
   type ForwardCacheScope,
   type ResolvedForwardEntry,
 } from "../lib/api/forwards";
@@ -51,15 +53,34 @@ export function useForwardedMessages(
     () => ({ apiBaseUrl: config.apiBaseUrl, currentUserId }),
     [config.apiBaseUrl, currentUserId],
   );
+  const scopeKey = forwardScopeKey(scope);
   const uniqueIds = useMemo(() => [...new Set(ids.filter((id) => id.length > 0))].sort(), [ids]);
   const idsKey = uniqueIds.join(",");
 
-  const [resolvedMap, setResolvedMap] = useState<Map<string, ResolvedForwardEntry>>(
-    () => new Map(),
-  );
+  const [resolvedState, setResolvedState] = useState<{
+    scopeKey: string;
+    map: Map<string, ResolvedForwardEntry>;
+  }>(() => ({ scopeKey, map: new Map() }));
   const [retryTick, setRetryTick] = useState(0);
 
   useEffect(() => {
+    return subscribeForwardInvalidation(scope, (invalidatedIds) => {
+      if (!invalidatedIds.some((id) => uniqueIds.includes(id))) return;
+      setResolvedState((prev) => {
+        if (prev.scopeKey !== scopeKey) return { scopeKey, map: new Map() };
+        let changed = false;
+        const next = new Map(prev.map);
+        for (const id of invalidatedIds) {
+          if (next.delete(id)) changed = true;
+        }
+        return changed ? { scopeKey, map: next } : prev;
+      });
+      setRetryTick((n) => n + 1);
+    });
+  }, [scope, scopeKey, uniqueIds]);
+
+  useEffect(() => {
+    setResolvedState((prev) => (prev.scopeKey === scopeKey ? prev : { scopeKey, map: new Map() }));
     if (!enabled || uniqueIds.length === 0) return;
     const missing: string[] = [];
     const hits = new Map<string, ResolvedForwardEntry>();
@@ -72,10 +93,10 @@ export function useForwardedMessages(
       }
     }
     if (hits.size > 0) {
-      setResolvedMap((prev) => {
-        const next = new Map(prev);
+      setResolvedState((prev) => {
+        const next = prev.scopeKey === scopeKey ? new Map(prev.map) : new Map();
         for (const [k, v] of hits) next.set(k, v);
-        return next;
+        return { scopeKey, map: next };
       });
     }
     if (missing.length === 0) return;
@@ -83,40 +104,42 @@ export function useForwardedMessages(
     let cancelled = false;
     void resolveForwardMessages(client, scope, missing).then((fetched) => {
       if (cancelled) return;
-      setResolvedMap((prev) => {
-        const next = new Map(prev);
+      setResolvedState((prev) => {
+        const next = prev.scopeKey === scopeKey ? new Map(prev.map) : new Map();
         for (const [k, v] of fetched) next.set(k, v);
-        return next;
+        return { scopeKey, map: next };
       });
     });
     return () => {
       cancelled = true;
     };
-  }, [client, enabled, idsKey, retryTick, scope, uniqueIds]);
+  }, [client, enabled, idsKey, retryTick, scope, scopeKey, uniqueIds]);
 
   const retry = useCallback(
     (id: string) => {
       forgetForwardIds(scope, [id]);
-      setResolvedMap((prev) => {
-        if (!prev.has(id)) return prev;
-        const next = new Map(prev);
+      setResolvedState((prev) => {
+        if (prev.scopeKey !== scopeKey) return { scopeKey, map: new Map() };
+        if (!prev.map.has(id)) return prev;
+        const next = new Map(prev.map);
         next.delete(id);
-        return next;
+        return { scopeKey, map: next };
       });
       setRetryTick((n) => n + 1);
     },
-    [scope],
+    [scope, scopeKey],
   );
 
   const entries = useMemo(() => {
     const map = new Map<string, ForwardEntryState>();
     if (!enabled) return map;
+    const scopedMap = resolvedState.scopeKey === scopeKey ? resolvedState.map : null;
     for (const id of uniqueIds) {
-      const cached = cachedForwardEntry(scope, id) ?? resolvedMap.get(id);
+      const cached = cachedForwardEntry(scope, id) ?? scopedMap?.get(id);
       map.set(id, cached ?? { status: "loading" });
     }
     return map;
-  }, [enabled, resolvedMap, scope, uniqueIds]);
+  }, [enabled, resolvedState, scope, scopeKey, uniqueIds]);
 
   return useMemo(() => ({ entries, retry, currentUserId }), [entries, retry, currentUserId]);
 }

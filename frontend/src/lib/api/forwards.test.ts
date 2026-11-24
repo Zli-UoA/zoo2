@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { ApiClient } from "./client";
 import {
+  FORWARD_OK_TTL_MS,
+  FORWARD_UNAVAILABLE_TTL_MS,
   MAX_RESOLVE_FORWARD_IDS,
   cachedForwardEntry,
   forgetForwardIds,
@@ -53,11 +55,13 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   resetForwardCacheForTests();
+  vi.unstubAllGlobals();
 });
 
 describe("resolveForwardMessages", () => {
   const scopeA: ForwardCacheScope = { apiBaseUrl: "https://a.example", currentUserId: "user-1" };
   const scopeB: ForwardCacheScope = { apiBaseUrl: "https://a.example", currentUserId: "user-2" };
+  const scopeC: ForwardCacheScope = { apiBaseUrl: "https://b.example", currentUserId: "user-1" };
 
   it("batches concurrent calls within 20ms, deduplicates IDs, and serves cache hits", async () => {
     vi.useFakeTimers();
@@ -101,7 +105,12 @@ describe("resolveForwardMessages", () => {
     await vi.advanceTimersByTimeAsync(20);
     await pB;
 
-    expect(post).toHaveBeenCalledTimes(2);
+    expect(cachedForwardEntry(scopeC, "m1")).toBeUndefined();
+    const pC = resolveForwardMessages(client, scopeC, ["m1"]);
+    await vi.advanceTimersByTimeAsync(20);
+    await pC;
+
+    expect(post).toHaveBeenCalledTimes(3);
   });
 
   it("chunks requests above MAX_RESOLVE_FORWARD_IDS (100)", async () => {
@@ -116,6 +125,12 @@ describe("resolveForwardMessages", () => {
 
     expect(post).toHaveBeenCalledTimes(2);
     expect(res.size).toBe(MAX_RESOLVE_FORWARD_IDS + 25);
+    const sentIds: string[] = [];
+    for (const [, body] of post.mock.calls) {
+      expect(body.ids.length).toBeLessThanOrEqual(MAX_RESOLVE_FORWARD_IDS);
+      sentIds.push(...body.ids);
+    }
+    expect(sentIds.sort()).toEqual([...ids].sort());
   });
 
   it("does not cache failures and supports retry via forgetForwardIds", async () => {
@@ -172,5 +187,83 @@ describe("resolveForwardMessages", () => {
     expect(post).toHaveBeenCalledTimes(1);
     expect(res.get("m1")).toEqual({ status: "deleted" });
     vi.unstubAllGlobals();
+  });
+
+  it("registers visibility listener when document becomes hidden before scheduled timer fires", async () => {
+    vi.useFakeTimers();
+    let hidden = false;
+    const listeners = new Map<string, Set<() => void>>();
+    vi.stubGlobal("document", {
+      get visibilityState() {
+        return hidden ? "hidden" : "visible";
+      },
+      addEventListener(type: string, fn: () => void) {
+        let set = listeners.get(type);
+        if (!set) listeners.set(type, (set = new Set()));
+        set.add(fn);
+      },
+      removeEventListener(type: string, fn: () => void) {
+        listeners.get(type)?.delete(fn);
+      },
+    });
+    const { client, post } = makeClient(async (ids) =>
+      Object.fromEntries(ids.map((id) => [id, okItem(id)])),
+    );
+
+    const p = resolveForwardMessages(client, scopeA, ["m-vis"]);
+    // タイマー発火前にタブが非表示へ遷移したケース
+    hidden = true;
+    await vi.advanceTimersByTimeAsync(20);
+    expect(post).not.toHaveBeenCalled();
+
+    hidden = false;
+    for (const fn of listeners.get("visibilitychange") ?? []) fn();
+    const res = await p;
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(res.get("m-vis")?.status).toBe("ok");
+    vi.unstubAllGlobals();
+  });
+
+  it("expires cached unavailable and ok entries after their TTLs", async () => {
+    vi.useFakeTimers();
+    let phase: "unavailable" | "ok1" | "ok2" = "unavailable";
+    const { client, post } = makeClient(async (ids) => {
+      if (phase === "unavailable") {
+        return Object.fromEntries(ids.map((id) => [id, { status: "unavailable" as const }]));
+      }
+      return Object.fromEntries(
+        ids.map((id) => [id, okItem(id, phase === "ok1" ? "initial" : "edited")]),
+      );
+    });
+
+    const p1 = resolveForwardMessages(client, scopeA, ["m-ttl"]);
+    await vi.advanceTimersByTimeAsync(20);
+    const r1 = await p1;
+    expect(r1.get("m-ttl")?.status).toBe("unavailable");
+    expect(post).toHaveBeenCalledTimes(1);
+
+    // unavailable は TTL (30s) 内はキャッシュヒットし、経過後は再取得する
+    phase = "ok1";
+    await vi.advanceTimersByTimeAsync(FORWARD_UNAVAILABLE_TTL_MS - 1_000);
+    const rHit = await resolveForwardMessages(client, scopeA, ["m-ttl"]);
+    expect(rHit.get("m-ttl")?.status).toBe("unavailable");
+    expect(post).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(cachedForwardEntry(scopeA, "m-ttl")).toBeUndefined();
+    const p2 = resolveForwardMessages(client, scopeA, ["m-ttl"]);
+    await vi.advanceTimersByTimeAsync(20);
+    const r2 = await p2;
+    expect(r2.get("m-ttl")).toMatchObject({ status: "ok", content: "initial" });
+    expect(post).toHaveBeenCalledTimes(2);
+
+    // ok も TTL (60s) 経過後に更新内容を再取得する
+    phase = "ok2";
+    await vi.advanceTimersByTimeAsync(FORWARD_OK_TTL_MS);
+    const p3 = resolveForwardMessages(client, scopeA, ["m-ttl"]);
+    await vi.advanceTimersByTimeAsync(20);
+    const r3 = await p3;
+    expect(r3.get("m-ttl")).toMatchObject({ status: "ok", content: "edited" });
+    expect(post).toHaveBeenCalledTimes(3);
   });
 });

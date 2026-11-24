@@ -1,5 +1,5 @@
 import "../../../styles.css";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -20,6 +20,20 @@ const USERS: UserRow[] = [
     id: "u-bob",
     user_name: "bob",
     display_name: "Bob",
+    created_at: "2026-01-01 00:00:00.000",
+    updated_at: null,
+  },
+  {
+    id: "u-carol",
+    user_name: "carol",
+    display_name: "Carol",
+    created_at: "2026-01-01 00:00:00.000",
+    updated_at: null,
+  },
+  {
+    id: "u-dave",
+    user_name: "dave",
+    display_name: "Dave",
     created_at: "2026-01-01 00:00:00.000",
     updated_at: null,
   },
@@ -148,6 +162,40 @@ const CHANNELS: ChannelRow[] = [
     slack_imported_at: null,
     encrypted: false,
   },
+  {
+    id: "ch-gdm",
+    channel_name: "dm:group:1",
+    description: null,
+    created_user_id: "u-me",
+    is_private: true,
+    is_nsfw: false,
+    is_dm: true,
+    created_at: "2026-01-01 00:00:00.000",
+    updated_at: null,
+    archive_at: null,
+    deleted_at: null,
+    imported_from_slack: false,
+    slack_import_kind: null,
+    slack_imported_at: null,
+    encrypted: false,
+  },
+  {
+    id: "ch-gdm-2",
+    channel_name: "dm:group:2",
+    description: null,
+    created_user_id: "u-me",
+    is_private: true,
+    is_nsfw: false,
+    is_dm: true,
+    created_at: "2026-01-01 00:00:00.000",
+    updated_at: null,
+    archive_at: null,
+    deleted_at: null,
+    imported_from_slack: false,
+    slack_import_kind: null,
+    slack_imported_at: null,
+    encrypted: false,
+  },
 ];
 
 const MEMBERSHIPS: ChannelUserRow[] = [
@@ -158,6 +206,12 @@ const MEMBERSHIPS: ChannelUserRow[] = [
   { user_id: "u-me", channel_id: "ch-mgr", joined_at: "" },
   { user_id: "u-me", channel_id: "ch-dm", joined_at: "" },
   { user_id: "u-bob", channel_id: "ch-dm", joined_at: "" },
+  { user_id: "u-me", channel_id: "ch-gdm", joined_at: "" },
+  { user_id: "u-bob", channel_id: "ch-gdm", joined_at: "" },
+  { user_id: "u-carol", channel_id: "ch-gdm", joined_at: "" },
+  { user_id: "u-me", channel_id: "ch-gdm-2", joined_at: "" },
+  { user_id: "u-bob", channel_id: "ch-gdm-2", joined_at: "" },
+  { user_id: "u-dave", channel_id: "ch-gdm-2", joined_at: "" },
 ];
 
 const SOURCE: ResolvedForwardMessage = {
@@ -200,7 +254,15 @@ describe("buildForwardDestinations", () => {
       locale: "ja",
       t,
     });
-    expect(memberDests.map((d) => d.id).sort()).toEqual(["ch-dm", "ch-priv", "ch-pub"]);
+    expect(memberDests.map((d) => d.id).sort()).toEqual([
+      "ch-dm",
+      "ch-gdm",
+      "ch-gdm-2",
+      "ch-priv",
+      "ch-pub",
+    ]);
+    expect(memberDests.find((d) => d.id === "ch-gdm")?.label).toBe("Bob, Carol");
+    expect(memberDests.find((d) => d.id === "ch-gdm-2")?.label).toBe("Bob, Dave");
 
     const adminDests = buildForwardDestinations({
       channels: CHANNELS,
@@ -211,7 +273,14 @@ describe("buildForwardDestinations", () => {
       locale: "ja",
       t,
     });
-    expect(adminDests.map((d) => d.id).sort()).toEqual(["ch-dm", "ch-mgr", "ch-priv", "ch-pub"]);
+    expect(adminDests.map((d) => d.id).sort()).toEqual([
+      "ch-dm",
+      "ch-gdm",
+      "ch-gdm-2",
+      "ch-mgr",
+      "ch-priv",
+      "ch-pub",
+    ]);
   });
 });
 
@@ -228,6 +297,8 @@ describe("ForwardMessageDialog", () => {
     { id: "ch-pub", label: "general", isDm: false, isPrivate: false },
     { id: "ch-priv", label: "secret-team", isDm: false, isPrivate: true },
     { id: "ch-dm", label: "Bob", isDm: true, isPrivate: true },
+    { id: "ch-gdm", label: "Bob, Carol", isDm: true, isPrivate: true },
+    { id: "ch-gdm-2", label: "Bob, Dave", isDm: true, isPrivate: true },
   ];
 
   it("filters destinations, allows empty-comment forward, clears selection, and copies link", async () => {
@@ -274,5 +345,57 @@ describe("ForwardMessageDialog", () => {
     } finally {
       copy.mockRestore();
     }
+  });
+
+  it("ignores Enter in destination search during IME composition", async () => {
+    render(
+      <LocaleProvider>
+        <ForwardMessageDialog
+          open
+          onOpenChange={() => {}}
+          source={SOURCE}
+          destinations={destinations}
+          onSubmit={() => {}}
+        />
+      </LocaleProvider>,
+    );
+
+    const searchInput = screen.getByRole("combobox", { name: "転送先" });
+    const submitBtn = screen.getByRole("button", { name: "転送する" });
+
+    fireEvent.keyDown(searchInput, { key: "Enter", isComposing: true });
+    fireEvent.keyDown(searchInput, { key: "Enter", keyCode: 229 });
+    expect(submitBtn).toBeDisabled();
+
+    fireEvent.keyDown(searchInput, { key: "Enter", isComposing: false });
+    expect(submitBtn).toBeEnabled();
+  });
+
+  it("distinguishes multiple group DMs by participants, moves focus to comment box, and announces selection", async () => {
+    render(
+      <LocaleProvider>
+        <ForwardMessageDialog
+          open
+          onOpenChange={() => {}}
+          source={SOURCE}
+          destinations={destinations}
+          onSubmit={() => {}}
+        />
+      </LocaleProvider>,
+    );
+
+    const searchInput = screen.getByRole("combobox", { name: "転送先" });
+    expect(screen.getByRole("option", { name: "Bob, Carol" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "Bob, Dave" })).toBeVisible();
+
+    await userEvent.type(searchInput, "Dave");
+    expect(screen.queryByRole("option", { name: "Bob, Carol" })).toBeNull();
+    await userEvent.click(screen.getByRole("option", { name: "Bob, Dave" }));
+
+    const commentBox = screen.getByRole("textbox", { name: "コメント" });
+    await waitFor(() => {
+      expect(commentBox).toHaveFocus();
+    });
+    expect(screen.getByRole("status")).toHaveTextContent("Bob, Dave を転送先に選択しました");
   });
 });
