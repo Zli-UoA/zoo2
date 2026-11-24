@@ -20,6 +20,7 @@ import { groupReactions } from "../../../lib/emoji/reactions";
 import { Button } from "../../ui/button";
 import { Skeleton } from "../../ui/skeleton";
 import { newMessageAnnouncement, type FeedMessage } from "./messageFormat";
+import { subscribeMessageJump } from "./messageLink";
 import { buildMessageItems } from "./messageGrouping";
 import { MessageRow } from "./MessageRow";
 import {
@@ -1254,6 +1255,19 @@ function MessageScrollViewport({
     };
   }, [markRead, readStatePending]);
 
+  // 表示中の対象メッセージへのリンクをもう一度押したとき。URL が変わらないので、ルーターは何も
+  // 変えず、対象も同じままになる。離れた位置から戻せるよう、スクロール済みの印を消して、下の効果を
+  // もう一度走らせる。
+  const [jumpRequest, setJumpRequest] = useState(0);
+  useEffect(() => {
+    if (!targetMessageId) return;
+    return subscribeMessageJump((messageId) => {
+      if (messageId !== targetMessageId) return;
+      scrolledTarget.current = undefined;
+      setJumpRequest((count) => count + 1);
+    });
+  }, [targetMessageId]);
+
   useLayoutEffect(() => {
     if (!targetMessageId) {
       scrolledTarget.current = undefined;
@@ -1272,7 +1286,7 @@ function MessageScrollViewport({
       virtualizer.scrollToIndex(index, { align: "center" });
     });
     return () => cancelAnimationFrame(frame);
-  }, [targetMessageId, items, virtualizer, alignIndexSync, cancelUnreadJump]);
+  }, [targetMessageId, items, virtualizer, alignIndexSync, cancelUnreadJump, jumpRequest]);
 
   // 各行の measureElement / ResizeObserver が編集・保存・折り返しによる
   // 高さの変化を追跡する。measure() で全行の実測値を消すと、変化していない
