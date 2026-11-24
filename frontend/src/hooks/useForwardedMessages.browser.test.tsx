@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
+import { resetTokenProvider, setTokenProvider } from "../lib/auth";
 import {
   FORWARD_OK_TTL_MS,
   forgetForwardIds,
@@ -69,6 +70,7 @@ describe("useForwardedMessages", () => {
 
   afterEach(() => {
     resetForwardCacheForTests();
+    resetTokenProvider();
   });
 
   it("drops local resolved entries immediately when scope changes without leaking to the next user", async () => {
@@ -389,6 +391,56 @@ describe("useForwardedMessages", () => {
       });
     } finally {
       vi.useRealTimers();
+      if (visibilityDesc) {
+        Object.defineProperty(document, "visibilityState", visibilityDesc);
+      } else {
+        delete (document as unknown as { visibilityState?: string }).visibilityState;
+      }
+    }
+  });
+
+  it("re-resolves visible cards on visibilitychange when tokenProvider rotates for the same user", async () => {
+    const visibilityDesc = Object.getOwnPropertyDescriptor(document, "visibilityState");
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
+
+    try {
+      let rotated = false;
+      state.post.mockImplementation(async () => ({
+        data: {
+          items: {
+            "m-tok": okForward("m-tok", rotated ? "after-rotation" : "before-rotation"),
+          },
+        },
+        txid: null,
+      }));
+
+      setTokenProvider(() => "initial-token");
+      const { result } = renderHook(() => useForwardedMessages(["m-tok"]));
+      await waitFor(() => {
+        expect(result.current.entries.get("m-tok")).toMatchObject({
+          status: "ok",
+          content: "before-rotation",
+        });
+      });
+      expect(state.post).toHaveBeenCalledTimes(1);
+
+      rotated = true;
+      setTokenProvider(() => "rotated-token");
+      act(() => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+
+      await waitFor(() => {
+        expect(result.current.entries.get("m-tok")).toMatchObject({
+          status: "ok",
+          content: "after-rotation",
+        });
+      });
+      expect(state.post).toHaveBeenCalledTimes(2);
+    } finally {
       if (visibilityDesc) {
         Object.defineProperty(document, "visibilityState", visibilityDesc);
       } else {

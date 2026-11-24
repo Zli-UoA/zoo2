@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { notifyAuthSessionEnded, resetTokenProvider, setTokenProvider } from "../auth";
-import type { ApiClient } from "./client";
+import { createApiClient, type ApiClient, type FetchLike } from "./client";
 import {
   FORWARD_OK_TTL_MS,
   FORWARD_UNAVAILABLE_TTL_MS,
@@ -84,9 +84,13 @@ describe("resolveForwardMessages", () => {
     const [r1, r2] = await Promise.all([p1, p2]);
 
     expect(post).toHaveBeenCalledTimes(1);
-    expect(post).toHaveBeenCalledWith("/api/messages/forwards/resolve", {
-      ids: ["m1", "m2", "m3"],
-    });
+    expect(post).toHaveBeenCalledWith(
+      "/api/messages/forwards/resolve",
+      {
+        ids: ["m1", "m2", "m3"],
+      },
+      { signal: expect.any(AbortSignal) },
+    );
     expect(r1.get("m1")?.status).toBe("ok");
     expect(r2.get("m3")?.status).toBe("ok");
     expect(cachedForwardEntry(scopeA, "m2")?.status).toBe("ok");
@@ -659,5 +663,103 @@ describe("resolveForwardMessages", () => {
     expect(res.get(lastId)).toEqual({ status: "error" });
     expect(cachedForwardEntry(scopeA, manyIds[0]!)).toBeUndefined();
     expect(cachedForwardEntry(scopeA, lastId)).toBeUndefined();
+  });
+
+  it("notifies invalidation listeners on visibilitychange when tokenProvider changed and stays silent on logout", async () => {
+    vi.useFakeTimers();
+    const listeners = new Map<string, Set<() => void>>();
+    let hidden = false;
+    vi.stubGlobal("document", {
+      get visibilityState() {
+        return hidden ? "hidden" : "visible";
+      },
+      addEventListener(type: string, fn: () => void) {
+        let set = listeners.get(type);
+        if (!set) listeners.set(type, (set = new Set()));
+        set.add(fn);
+      },
+      removeEventListener(type: string, fn: () => void) {
+        listeners.get(type)?.delete(fn);
+      },
+    });
+
+    setTokenProvider(() => "token-1");
+    const { client } = makeClient(async (ids) =>
+      Object.fromEntries(ids.map((id) => [id, okItem(id, `body-${id}`)])),
+    );
+    const req = resolveForwardMessages(client, scopeA, ["m-rot-1", "m-rot-2"]);
+    await vi.advanceTimersByTimeAsync(20);
+    await req;
+
+    const listener = vi.fn();
+    const unsubscribe = subscribeForwardInvalidation(scopeA, listener);
+    try {
+      setTokenProvider(() => "token-2");
+      expect(peekForwardEntry(scopeA, "m-rot-1")).toBeUndefined();
+      expect(peekForwardExpiresAt(scopeA, "m-rot-1")).toBeUndefined();
+      expect(listener).not.toHaveBeenCalled();
+
+      hidden = false;
+      for (const fn of listeners.get("visibilitychange") ?? []) fn();
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(listener).toHaveBeenCalledWith(["m-rot-1", "m-rot-2"]);
+
+      // ログアウト時の全体破棄では再解決を促す通知を飛ばさない
+      const req2 = resolveForwardMessages(client, scopeA, ["m-out-silent"]);
+      await vi.advanceTimersByTimeAsync(20);
+      await req2;
+      listener.mockClear();
+      notifyAuthSessionEnded("logout");
+      expect(listener).not.toHaveBeenCalled();
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("never invokes fetch via real createApiClient when auth or user changes while getToken is pending", async () => {
+    vi.useFakeTimers();
+    for (const mode of ["logout", "scope", "provider"] as const) {
+      resetForwardCacheForTests();
+      let resolveToken!: (token: string | null) => void;
+      let tokenRequested!: () => void;
+      const tokenWait = new Promise<void>((resolve) => {
+        tokenRequested = resolve;
+      });
+      setTokenProvider(
+        () =>
+          new Promise<string | null>((resolve) => {
+            resolveToken = resolve;
+            tokenRequested();
+          }),
+      );
+      const fetchMock = vi.fn<FetchLike>(
+        async () =>
+          new Response(JSON.stringify({ data: { items: {} }, txid: null }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      );
+      const realClient = createApiClient({ baseUrl: "https://a.example", fetch: fetchMock });
+
+      const targetId = `m-pending-tok-${mode}`;
+      const req = resolveForwardMessages(realClient, scopeA, [targetId]);
+      await vi.advanceTimersByTimeAsync(20);
+      await tokenWait;
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      if (mode === "logout") {
+        notifyAuthSessionEnded("logout");
+      } else if (mode === "scope") {
+        activateForwardScope(scopeB);
+      } else {
+        setTokenProvider(() => "new-user-token");
+      }
+
+      resolveToken("old-user-token");
+      const res = await req;
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(res.get(targetId)).toEqual({ status: "error" });
+      expect(cachedForwardEntry(scopeA, targetId)).toBeUndefined();
+    }
   });
 });

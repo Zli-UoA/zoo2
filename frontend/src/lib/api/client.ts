@@ -2,6 +2,7 @@ import {
   getToken as defaultGetToken,
   getAuthRequestGeneration,
   getAuthSessionGeneration,
+  getTokenProviderGeneration,
   notifyAuthorized,
   notifyUnauthorized,
   type AuthorizedHandler,
@@ -160,27 +161,46 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
   async function buildHeaders(
     explicit: Record<string, string> | undefined,
     hasBody: boolean,
-  ): Promise<Headers> {
+  ): Promise<{ headers: Headers; authHeaders: Headers }> {
     const headers = new Headers(explicit);
     const authHeaders = await buildAuthHeaders({ getToken: tokenProvider, devUserId });
-    lastAuthHeaders = new Headers(authHeaders);
     authHeaders.forEach((value, key) => headers.set(key, value));
     headers.set("Accept", "application/json");
     if (hasBody) {
       headers.set("Content-Type", "application/json");
     }
 
-    return headers;
+    return { headers, authHeaders };
+  }
+
+  function assertRequestStillValid(
+    signal: AbortSignal | undefined,
+    expectedAuthSessionGen: number,
+    expectedTokenProviderGen: number,
+  ): void {
+    if (signal?.aborted) {
+      throw signal.reason ?? new DOMException("The operation was aborted.", "AbortError");
+    }
+    if (
+      expectedAuthSessionGen !== getAuthSessionGeneration() ||
+      (!options.getToken && expectedTokenProviderGen !== getTokenProviderGeneration())
+    ) {
+      throw new DOMException("The operation was aborted.", "AbortError");
+    }
   }
 
   async function request<T>(path: string, requestOptions: RequestOptions = {}): Promise<T> {
     const authSessionGeneration = getAuthSessionGeneration();
     const authRequestGeneration = getAuthRequestGeneration();
+    const tokenProviderGeneration = getTokenProviderGeneration();
     assertSafeApiPath(path);
+    assertRequestStillValid(requestOptions.signal, authSessionGeneration, tokenProviderGeneration);
     const hasBody = requestOptions.body !== undefined;
     const method = requestOptions.method ?? "GET";
     const requestRoute = telemetry ? normalizeRouteGroup() : undefined;
-    const headers = await buildHeaders(requestOptions.headers, hasBody);
+    const { headers, authHeaders } = await buildHeaders(requestOptions.headers, hasBody);
+    assertRequestStillValid(requestOptions.signal, authSessionGeneration, tokenProviderGeneration);
+    lastAuthHeaders = new Headers(authHeaders);
     const url = joinUrl(baseUrl, path);
     const startedAt = Date.now();
 

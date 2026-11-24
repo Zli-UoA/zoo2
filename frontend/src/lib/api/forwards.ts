@@ -47,6 +47,7 @@ interface ScopeBucket {
   generation: Map<string, number>;
   pending: Map<string, PendingWaiter[]>;
   deferred: FlushedEntry[];
+  abortControllers: Set<AbortController>;
   timer: ReturnType<typeof setTimeout> | null;
   waitingVisible: boolean;
   client: ApiClient | null;
@@ -112,6 +113,7 @@ function getBucket(scope: ForwardCacheScope): ScopeBucket {
       generation: new Map(),
       pending: new Map(),
       deferred: [],
+      abortControllers: new Set(),
       timer: null,
       waitingVisible: false,
       client: null,
@@ -134,6 +136,10 @@ function settleEntriesAsError(bucket: ScopeBucket, entries: readonly FlushedEntr
 
 function discardBucket(bucket: ScopeBucket): void {
   bucket.epoch += 1;
+  for (const controller of bucket.abortControllers) {
+    controller.abort();
+  }
+  bucket.abortControllers.clear();
   if (bucket.timer !== null) {
     clearTimeout(bucket.timer);
     bucket.timer = null;
@@ -158,10 +164,18 @@ function discardBucket(bucket: ScopeBucket): void {
 }
 
 function discardAllBuckets(): void {
+  // ログアウト/リセット時は未認証遷移中の再フェッチを防ぐため無効化通知しない。
   for (const bucket of buckets.values()) {
     discardBucket(bucket);
   }
   activeUserByBaseUrl.clear();
+}
+
+function discardStaleSessionBucket(scopeKey: string, bucket: ScopeBucket): string[] {
+  const cachedIds = isBucketActiveForBaseUrl(bucket) ? Array.from(bucket.cache.keys()) : [];
+  discardBucket(bucket);
+  notifyInvalidation(scopeKey, cachedIds);
+  return cachedIds;
 }
 
 function ensureAuthSessionListener(): void {
@@ -229,7 +243,7 @@ function onVisibilityChange(): void {
   const now = Date.now();
   for (const [scopeKey, bucket] of buckets.entries()) {
     if (!isBucketSessionFresh(bucket) || !isBucketActiveForBaseUrl(bucket)) {
-      discardBucket(bucket);
+      discardStaleSessionBucket(scopeKey, bucket);
       continue;
     }
     const expiredIds: string[] = [];
@@ -285,63 +299,70 @@ async function flushBucket(bucket: ScopeBucket): Promise<void> {
   bucket.pending.clear();
   const entries = [...deferredEntries, ...pendingEntries];
 
-  for (let i = 0; i < entries.length; i += MAX_RESOLVE_FORWARD_IDS) {
-    if (!isFlushStillValid(bucket, flushEpoch, flushAuthGen, flushTokenGen)) {
-      settleEntriesAsError(bucket, entries.slice(i));
-      discardBucket(bucket);
-      return;
-    }
-    if (isDocumentHidden()) {
-      bucket.deferred.unshift(...entries.slice(i));
-      ensureVisibilityListener();
-      bucket.waitingVisible = true;
-      return;
-    }
-    const chunkMeta = entries.slice(i, i + MAX_RESOLVE_FORWARD_IDS);
-    const ids = chunkMeta.map((item) => item.id);
-    let results: Record<string, ForwardResolutionItem> | null = null;
-    try {
-      const response = await client.post<ResolveForwardsResponse>(
-        "/api/messages/forwards/resolve",
-        {
-          ids,
-        },
-      );
-      results = response.data?.items ?? {};
-    } catch {
-      results = null;
-    }
+  const controller = new AbortController();
+  bucket.abortControllers.add(controller);
+  try {
+    for (let i = 0; i < entries.length; i += MAX_RESOLVE_FORWARD_IDS) {
+      if (!isFlushStillValid(bucket, flushEpoch, flushAuthGen, flushTokenGen)) {
+        settleEntriesAsError(bucket, entries.slice(i));
+        discardBucket(bucket);
+        return;
+      }
+      if (isDocumentHidden()) {
+        bucket.deferred.unshift(...entries.slice(i));
+        ensureVisibilityListener();
+        bucket.waitingVisible = true;
+        return;
+      }
+      const chunkMeta = entries.slice(i, i + MAX_RESOLVE_FORWARD_IDS);
+      const ids = chunkMeta.map((item) => item.id);
+      let results: Record<string, ForwardResolutionItem> | null = null;
+      try {
+        const response = await client.post<ResolveForwardsResponse>(
+          "/api/messages/forwards/resolve",
+          {
+            ids,
+          },
+          { signal: controller.signal },
+        );
+        results = response.data?.items ?? {};
+      } catch {
+        results = null;
+      }
 
-    if (!isFlushStillValid(bucket, flushEpoch, flushAuthGen, flushTokenGen)) {
-      settleEntriesAsError(bucket, entries.slice(i));
-      discardBucket(bucket);
-      return;
-    }
+      if (!isFlushStillValid(bucket, flushEpoch, flushAuthGen, flushTokenGen)) {
+        settleEntriesAsError(bucket, entries.slice(i));
+        discardBucket(bucket);
+        return;
+      }
 
-    for (const { id, waiters, gen, inflightPromise } of chunkMeta) {
-      let value: ResolvedForwardEntry;
-      const isCurrentGeneration = (bucket.generation.get(id) ?? 0) === gen;
-      if (results) {
-        const resolved = results[id] ?? { status: "unavailable" };
-        if (isCurrentGeneration) {
-          bucket.cache.set(id, {
-            value: resolved,
-            expiresAt: Date.now() + ttlForItem(resolved),
-          });
-          ensureVisibilityListener();
+      for (const { id, waiters, gen, inflightPromise } of chunkMeta) {
+        let value: ResolvedForwardEntry;
+        const isCurrentGeneration = (bucket.generation.get(id) ?? 0) === gen;
+        if (results) {
+          const resolved = results[id] ?? { status: "unavailable" };
+          if (isCurrentGeneration) {
+            bucket.cache.set(id, {
+              value: resolved,
+              expiresAt: Date.now() + ttlForItem(resolved),
+            });
+            ensureVisibilityListener();
+          }
+          value = resolved;
+        } else {
+          // 通信・一時エラー時はキャッシュを汚染せず、再試行できる状態として返す。
+          value = { status: "error" };
         }
-        value = resolved;
-      } else {
-        // 通信・一時エラー時はキャッシュを汚染せず、再試行できる状態として返す。
-        value = { status: "error" };
-      }
-      if (inflightPromise !== undefined && bucket.inflight.get(id) === inflightPromise) {
-        bucket.inflight.delete(id);
-      }
-      for (const waiter of waiters) {
-        waiter.resolve(value);
+        if (inflightPromise !== undefined && bucket.inflight.get(id) === inflightPromise) {
+          bucket.inflight.delete(id);
+        }
+        for (const waiter of waiters) {
+          waiter.resolve(value);
+        }
       }
     }
+  } finally {
+    bucket.abortControllers.delete(controller);
   }
 }
 
@@ -367,40 +388,32 @@ export function cachedForwardEntry(
   const bucket = buckets.get(key);
   if (!bucket) return undefined;
   if (!isBucketSessionFresh(bucket)) {
-    discardBucket(bucket);
+    discardStaleSessionBucket(key, bucket);
     return undefined;
   }
   return getFreshCacheEntry(key, bucket, id);
 }
 
-/** キャッシュを削除せずに有効な解決結果だけを参照する（期限切れなら `undefined`）。 */
+/** キャッシュを削除せずに有効な解決結果だけを参照する（期限切れ・世代不一致なら `undefined`）。 */
 export function peekForwardEntry(
   scope: ForwardCacheScope,
   id: string,
   now = Date.now(),
 ): ForwardResolutionItem | undefined {
   const bucket = buckets.get(forwardScopeKey(scope));
-  if (!bucket) return undefined;
-  if (!isBucketSessionFresh(bucket)) {
-    discardBucket(bucket);
-    return undefined;
-  }
+  if (!bucket || !isBucketSessionFresh(bucket)) return undefined;
   const entry = bucket.cache.get(id);
   return entry && now < entry.expiresAt ? entry.value : undefined;
 }
 
-/** キャッシュを削除せずに有効期限（epoch ms）を参照する（未保持なら `undefined`）。 */
+/** キャッシュを削除せずに有効期限（epoch ms）を参照する（未保持・世代不一致なら `undefined`）。 */
 export function peekForwardExpiresAt(
   scope: ForwardCacheScope,
   id: string,
   now = Date.now(),
 ): number | undefined {
   const bucket = buckets.get(forwardScopeKey(scope));
-  if (!bucket) return undefined;
-  if (!isBucketSessionFresh(bucket)) {
-    discardBucket(bucket);
-    return undefined;
-  }
+  if (!bucket || !isBucketSessionFresh(bucket)) return undefined;
   const entry = bucket.cache.get(id);
   if (!entry) return undefined;
   return now >= entry.expiresAt ? now : entry.expiresAt;
@@ -416,8 +429,9 @@ export function evictExpiredForwardIds(
   const bucket = buckets.get(key);
   if (!bucket) return [];
   if (!isBucketSessionFresh(bucket)) {
-    discardBucket(bucket);
-    return [];
+    const discarded = discardStaleSessionBucket(key, bucket);
+    const idSet = new Set(ids);
+    return discarded.filter((id) => idSet.has(id));
   }
   const expiredIds: string[] = [];
   for (const id of ids) {
@@ -486,7 +500,7 @@ export async function resolveForwardMessages(
   const scopeKey = forwardScopeKey(scope);
   const existingBucket = buckets.get(scopeKey);
   if (existingBucket && !isBucketSessionFresh(existingBucket)) {
-    discardBucket(existingBucket);
+    discardStaleSessionBucket(scopeKey, existingBucket);
   }
   const bucket = getBucket(scope);
   bucket.client = client;
