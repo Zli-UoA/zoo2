@@ -304,6 +304,9 @@ production の `backend.yaml` の `env` にあり、Android の client ID（`129
   ファイルディスクリプターを Shizuku の UserService へ渡してインストールします。
 - 更新の完了後は、Shizuku の UserService が同じ Android ユーザーで Zoo を開き直します。保存した認証情報が有効なら自動ログインします。
   アプリのデータとアカウント別の下書きは維持されます。自動更新は初期状態では無効です。
+- Shizuku を使わない場合は、「最新の APK をダウンロード」で `update.json` を確認し、最新の APK を
+  ブラウザーで開いてダウンロードします。ダウンロードした APK を開き、Android の標準インストーラーで
+  手動更新します。Shizuku の許可や自動更新の設定は不要です。署名鍵が同じ release APK でのみ上書きできます。
 - debug APK は署名が異なるため対象外です。最初に署名付き release APK を導入してください。
   debug 版を削除して入れ替える場合は、そのアプリ内データも削除されます。
 
