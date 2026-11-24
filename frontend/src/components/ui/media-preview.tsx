@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { mediaPreviewKind } from "../../lib/attachments";
 import { imageAspectRatio, type ImageMetadata } from "../../lib/imageMetadata";
@@ -42,6 +42,7 @@ export function MediaPreview({
   depth?: number;
 }) {
   const { t } = useTranslation();
+  const previewId = useId();
   const [open, setOpen] = useState(initialOpen);
   const [brokenSrc, setBrokenSrc] = useState<string | null>(null);
   const kind = mediaPreviewKind(contentType, name);
@@ -51,8 +52,7 @@ export function MediaPreview({
     onError?.();
   };
   const downloadFooter =
-    footer ??
-    (src ? <PreviewDownloadButton id={`preview:${name}:${src}`} name={name} src={src} /> : null);
+    footer ?? (src ? <PreviewDownloadButton id={previewId} name={name} src={src} /> : null);
   function renderMedia(expanded: boolean) {
     if (error)
       return (
