@@ -1232,6 +1232,7 @@ class CryptoStore private constructor(
             replacement.save()
             // 新しいストアに引き継いだので、ディレクトリーの印は外さずに、このストアのものだけを手放す。
             releaseResources()
+            live.replace(directory.canonicalPath, this, replacement)
             return replacement
         } catch (failure: Throwable) {
             opened.forEach { it.close() }
@@ -1253,6 +1254,7 @@ class CryptoStore private constructor(
         // 閉じたあとなら、印を取り直す（ほかの処理が開いていれば消さない）。
         if (closed && !openDirectories.add(path)) throw CryptoStoreBusyException()
         try {
+            live.remove(path, this)
             releaseResources()
             destroyFiles(directory, deleteWrappingKey)
         } finally {
@@ -1264,6 +1266,7 @@ class CryptoStore private constructor(
     override fun close() {
         if (closed) return
         releaseResources()
+        live.remove(directory.canonicalPath, this)
         openDirectories.remove(directory.canonicalPath)
     }
 
@@ -1301,6 +1304,57 @@ class CryptoStore private constructor(
         /** 開いている暗号ストアのディレクトリー（プロセスの中で同時に 2 つ開かないため）。 */
         private val openDirectories: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
+        /** このプロセスで開いている暗号ストア（ディレクトリーごと）。通知の復号が、開いているストアを使う。 */
+        private val live = ConcurrentHashMap<String, CryptoStore>()
+
+        /**
+         * Push の通知の本文のために、`message` を復号する（#510。Web の Service Worker の復号と同じ規則）。
+         * 復号できない（暗号ストアがない、保存鍵を開けない、鍵がまだ届いていない、照合に失敗した、
+         * 古い版か同じ版で中身が違うと分かった）なら `null` で、呼び出し側は「新しいメッセージ」のまま出す。
+         *
+         * - このプロセスでアプリが暗号ストアを開いていれば、そのストアで復号する（版の記録で照合する）。
+         * - 開いていなければ、ディレクトリーの印を取るあいだに `state.json` と保存鍵を読むだけにして印を返し、
+         *   読んだ写しからメモリーだけで復号する。何も書き戻さない（作り直しも、保存鍵の破棄もしない）。
+         *   そのため、この経路ではリプレイと古い版の検出が効かない（Web の Service Worker の写しと同じ）。
+         */
+        fun decryptForNotification(files: CryptoStoreFiles, userId: String, message: EncryptedMessage): DecryptedMessage? {
+            val path = files.directory.canonicalPath
+            fun accept(result: DecryptedMessage): DecryptedMessage? =
+                result.takeIf { it.revision == RevisionStatus.Latest }
+            live[path]?.let { store ->
+                return try {
+                    if (store.userId == userId) accept(store.decrypt(message)) else null
+                } catch (_: Exception) {
+                    null
+                }
+            }
+            if (!openDirectories.add(path)) return null
+            val (state, key) =
+                try {
+                    val state = readState(File(files.directory, STATE_FILE)) ?: return null
+                    if (state.version != STATE_VERSION || state.userId != userId) return null
+                    val key = StorageKeyStore(File(files.directory, KEY_FILE), files.wrappingKey).loadExisting() ?: return null
+                    state to key
+                } catch (_: Exception) {
+                    return null
+                } finally {
+                    openDirectories.remove(path)
+                }
+            val copy =
+                try {
+                    restore(files, key, state)
+                } catch (_: Exception) {
+                    return null
+                }
+            return try {
+                accept(copy.decrypt(message))
+            } catch (_: Exception) {
+                null
+            } finally {
+                copy.releaseResources()
+            }
+        }
+
         /**
          * `userId` の暗号ストアを開く。なければ（`create` が真なら）端末を作る（`device_id` は UUID v4）。
          * `create` が偽でなければ `null` を返す（ログアウトで、なければ作らずに済ませるため）。
@@ -1323,7 +1377,7 @@ class CryptoStore private constructor(
             if (!openDirectories.add(path)) throw CryptoStoreBusyException()
             try {
                 return openUnlocked(files, userId, create, rememberReplaced).also {
-                    if (it == null) openDirectories.remove(path)
+                    if (it == null) openDirectories.remove(path) else live[path] = it.store
                 }
             } catch (failure: Throwable) {
                 openDirectories.remove(path)

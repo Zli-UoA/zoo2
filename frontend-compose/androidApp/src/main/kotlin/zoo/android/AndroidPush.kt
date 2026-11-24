@@ -337,7 +337,8 @@ class ZooMessagingService : FirebaseMessagingService() {
     override fun onNewToken(token: String) { AndroidPushRegistration.tokenChanged() }
 
     override fun onMessageReceived(message: RemoteMessage) {
-        val posted = showPushNotification(this, message.data) ?: return
+        // 暗号化チャンネルの通知は、端末の暗号ストアで復号できたら本文を置き換える（#510）。
+        val posted = showPushNotification(this, message.data, decryptPushBody(this, message.data)) ?: return
         if (posted.avatarUrl == null && posted.imageUrl == null) return
         runBlocking {
             val client = HttpClient(OkHttp) {
@@ -359,6 +360,17 @@ class ZooMessagingService : FirebaseMessagingService() {
 
 private const val PUSH_RENDER = "zoo.push.render"
 
+/**
+ * 端末で復号した暗号化チャンネルの本文（#510）。アプリが動いていて同期した通知で同じ通知を出し直すとき、
+ * サーバーの本文（「新しいメッセージ」）で上書きしないために使う（[preservedDecryptedBody]）。
+ */
+internal const val PUSH_DECRYPTED_BODY = "zoo.push.decrypted"
+
+/** 同じ通知に、Push で端末が復号した本文が出ていれば返す。 */
+internal fun preservedDecryptedBody(manager: NotificationManager, tag: String): String? =
+    manager.activeNotifications.firstOrNull { it.tag == tag && it.id == 0 }
+        ?.notification?.extras?.getString(PUSH_DECRYPTED_BODY)
+
 internal data class PostedPush(
     val binding: String,
     val user: String,
@@ -369,7 +381,7 @@ internal data class PostedPush(
     val build: (Bitmap?, Bitmap?) -> Notification,
 )
 
-internal fun showPushNotification(context: Context, data: Map<String, String>): PostedPush? =
+internal fun showPushNotification(context: Context, data: Map<String, String>, decryptedBody: String? = null): PostedPush? =
     synchronized(PushBinding.lock) {
         val binding = data["binding"] ?: return@synchronized null
         val user = data["userId"] ?: return@synchronized null
@@ -388,18 +400,38 @@ internal fun showPushNotification(context: Context, data: Map<String, String>): 
         val tag = notificationTag(user, id)
         val manager = context.getSystemService(NotificationManager::class.java)
         val existing = manager.activeNotifications.firstOrNull { it.tag == tag && it.id == 0 }
+        val title = data["title"].orEmpty().take(200)
+        val conversation = data["channelName"].orEmpty().take(120)
+        val actor = data["actor"].orEmpty().take(120).ifBlank { title.ifBlank { "Zoo" } }
         // The synchronized session notification may already have reply actions or a richer preview.
-        if (existing != null) return@synchronized null
+        if (existing != null) {
+            // 同期した通知が先に出ていても、端末で復号できた本文はそこに反映する（操作はそのまま残す。#510）。
+            // スタイルは通知と同じ規則（リアクション以外は会話形式の MessagingStyle）で作り直す。
+            if (decryptedBody != null) try {
+                val previous = existing.notification
+                val row = obj(
+                    "notification_type" to kind, "actor_id" to actor,
+                    "created_at" to java.time.Instant.ofEpochMilli(previous.`when`).toString(),
+                    "display_data" to obj("actor" to obj("display_name" to actor),
+                        "channel" to obj("channel_name" to conversation, "is_dm" to (kind == "dm"))),
+                )
+                val avatar = previous.getLargeIcon()?.loadDrawable(context)?.let { (it as? android.graphics.drawable.BitmapDrawable)?.bitmap }
+                val updated = Notification.Builder.recoverBuilder(context, previous)
+                    .setContentText(decryptedBody)
+                    .setStyle(notificationStyle(row, decryptedBody, "Zoo", avatar))
+                    .addExtras(Bundle().apply { putString(PUSH_DECRYPTED_BODY, decryptedBody) })
+                    .build()
+                manager.notify(tag, 0, updated)
+            } catch (_: SecurityException) { }
+            return@synchronized null
+        }
         val channel = when (kind) { "reaction" -> "reactions"; "dm" -> "messages"; else -> "mentions" }
         if (manager.getNotificationChannel("zoo.$channel") == null) {
             manager.createNotificationChannel(NotificationChannel("zoo.$channel", "Zoo",
                 if (channel == "reactions") NotificationManager.IMPORTANCE_DEFAULT else NotificationManager.IMPORTANCE_HIGH))
         }
         val intent = store.openIntent(user, id, path) ?: return@synchronized null
-        val title = data["title"].orEmpty().take(200)
-        val body = data["body"].orEmpty().take(2000)
-        val conversation = data["channelName"].orEmpty().take(120)
-        val actor = data["actor"].orEmpty().take(120).ifBlank { title.ifBlank { "Zoo" } }
+        val body = decryptedBody ?: data["body"].orEmpty().take(2000)
         val timestamp = System.currentTimeMillis()
         val row = obj(
             "notification_type" to kind,
@@ -422,7 +454,10 @@ internal fun showPushNotification(context: Context, data: Map<String, String>): 
                 .setLargeIcon(avatar)
                 .setGroup("zoo:$user:$group")
                 .setGroupAlertBehavior(Notification.GROUP_ALERT_CHILDREN)
-                .setExtras(Bundle().apply { putString(PUSH_RENDER, render) })
+                .setExtras(Bundle().apply {
+                    putString(PUSH_RENDER, render)
+                    decryptedBody?.let { putString(PUSH_DECRYPTED_BODY, it) }
+                })
                 .setContentIntent(PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
                 .setAutoCancel(true).setOnlyAlertOnce(true).setVisibility(Notification.VISIBILITY_PRIVATE)
                 .setCategory(Notification.CATEGORY_MESSAGE).build()
@@ -465,6 +500,11 @@ internal suspend fun enrichPushNotification(
         val manager = context.getSystemService(NotificationManager::class.java)
         val current = manager.activeNotifications.firstOrNull { it.tag == posted.tag && it.id == 0 }
         if (current?.notification?.extras?.getString(PUSH_RENDER) != posted.render) return@synchronized
-        try { manager.notify(posted.tag, 0, posted.build(icon, image)) } catch (_: SecurityException) { }
+        val replacement = posted.build(icon, image)
+        // 画像を待つあいだに、端末で復号した本文がこの通知に反映されていたら、サーバーの本文の古い組み立てで戻さない
+        // （本文の反映では PUSH_RENDER が変わらないため、ここで確かめる。#510）。
+        if (current.notification.extras.getString(PUSH_DECRYPTED_BODY) != null &&
+            replacement.extras.getString(PUSH_DECRYPTED_BODY) == null) return@synchronized
+        try { manager.notify(posted.tag, 0, replacement) } catch (_: SecurityException) { }
     }
 }
