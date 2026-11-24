@@ -119,7 +119,7 @@ it.each([
       expect(html.includes('aria-pressed="true"')).toBe(mine);
       expect(html.includes("bg-brand-muted")).toBe(mine);
       expect(html.includes("自分もリアクション済み")).toBe(mine);
-      expect(html.includes('aria-label="編集"')).toBe(ownActions);
+      expect(html.includes('aria-label="メッセージを編集"')).toBe(ownActions);
     } finally {
       localStorage.clear();
     }
