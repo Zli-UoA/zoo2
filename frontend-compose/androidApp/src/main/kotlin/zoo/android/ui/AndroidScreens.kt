@@ -46,6 +46,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
@@ -70,6 +71,14 @@ internal data class TimelineItem(
     val richContent: EntryRichContent = EntryRichContent(),
     val linkCard: EntryCard? = null,
     val emoji: Map<String, TimelineMedia> = emptyMap(),
+    /** 復号できなかった理由（docs/e2ee.md の「受信時の検証」）。本文の代わりに出す。 */
+    val notice: String? = null,
+    /** 送信者の確かさ・版・暗号化されていない行の印（本文と一緒に出す）。 */
+    val marks: List<String> = emptyList(),
+    /** この行の前に出す区切り（暗号化に切り替えた境目、#367）。 */
+    val divider: String? = null,
+    /** 暗号化した添付（`attachment_id` → 本文の `attachments` の値。鍵を含むので表示と取得にだけ使う）。 */
+    val encryptedFiles: Map<String, kotlinx.serialization.json.JsonObject> = emptyMap(),
 )
 internal data class ChannelItem(
     val id: String,
@@ -528,6 +537,7 @@ private fun Timeline(
                     ))
                     .padding(top = 12.dp, bottom = if (posts) 4.dp else 12.dp),
             ) {
+                entry.divider?.let { EncryptionDivider(it, colors) }
                 entry.repostedBy?.let { RepostAttribution(it, colors) }
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Box(Modifier.size(36.dp).background(colors.background, CircleShape), contentAlignment = Alignment.Center) {
@@ -539,6 +549,11 @@ private fun Timeline(
                         } else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text(entry.author, color = colors.foreground, fontWeight = AndroidWeights.entryAuthor, fontSize = entryTextSize)
                             Text(entry.time, color = colors.secondary, fontSize = 12.sp)
+                        }
+                        if (entry.marks.isNotEmpty()) EntryMarks(entry.marks, colors)
+                        entry.notice?.let {
+                            Text(it, Modifier.testTag("entry-notice-${entry.id}"), color = colors.secondary,
+                                fontSize = entryTextSize, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
                         }
                         if (!entry.richContent.hidesBody && entry.body.isNotBlank()) {
                             EntryBody(entry.body, colors.foreground, entryTextSize, entry.emoji)
@@ -679,4 +694,40 @@ private fun conversationGestures(open: (() -> Unit)?, menu: () -> Unit, swipeRep
                 })
             }
         }
+}
+
+/** 暗号化に切り替えた境目（Web の `MessageList` の区切り）。上は平文、下は暗号化したメッセージ。 */
+@Composable
+private fun EncryptionDivider(label: String, colors: AndroidColors) {
+    Row(
+        Modifier.fillMaxWidth().padding(bottom = 8.dp).semantics(mergeDescendants = true) { contentDescription = label },
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Box(Modifier.weight(1f).height(1.dp).background(colors.inputBoundary))
+        UiGlyph(UiIcon.Lock, colors.secondary, iconSize = 12.dp)
+        Text(label, color = colors.secondary, fontSize = 12.sp, fontWeight = AndroidWeights.label)
+        Box(Modifier.width(24.dp).height(1.dp).background(colors.inputBoundary))
+    }
+}
+
+/** 送信者の確かさや版の警告、暗号化されていない行の印（Web の `MessageRow` のバッジ）。 */
+@Composable
+private fun EntryMarks(marks: List<String>, colors: AndroidColors) {
+    Row(
+        Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        marks.forEach { mark ->
+            Row(
+                Modifier.background(colors.quietSurface, CircleShape).padding(horizontal = 8.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                UiGlyph(UiIcon.Lock, colors.secondary, iconSize = 12.dp)
+                Text(mark, color = colors.secondary, fontSize = 12.sp)
+            }
+        }
+    }
 }

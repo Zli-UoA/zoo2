@@ -58,6 +58,39 @@ internal class ConnectedScreenState(
         }
     }
     private val channelFiles = mutableMapOf<String, AttachmentDrafts>()
+
+    /**
+     * チャンネルの添付の下書き。暗号化チャンネルでは、端末で暗号化してから上げ、本文の `attachments` に入れる値を
+     * `encrypted` に持つ（docs/e2ee.md の「暗号化した添付」。平文はサーバーにも S3 にも渡さない）。
+     */
+    private fun channelAttachments(channelId: String): AttachmentDrafts {
+        val encryption = platform.messageEncryption
+        val upload: (suspend (Row) -> Row)? = if (!app.isEncryptedChannel(channelId)) null else { file ->
+            val cipher = checkNotNull(encryption) { "e2ee.sendUnavailable" }.attachmentCipher
+            val bytes = Base64.decode(platform.invoke("fileRead", file.text("id")), Base64.DEFAULT)
+            val info = uploadEncryptedAttachment(app.api, cipher, channelId, bytes,
+                file.text("name").ifBlank { "attachment" },
+                attachmentType(file.text("name"), file.text("type")) ?: "application/octet-stream")
+            obj("id" to info.text("attachment_id"), "encrypted" to info)
+        }
+        return AttachmentDrafts(app, channelId, app.scope, upload).apply { enabled = true }
+    }
+
+    /** 暗号化した添付を取得して復号し、端末の共有で開く（ハッシュが合わなければ開かない）。 */
+    private fun openEncryptedAttachment(info: JsonObject) {
+        val encryption = platform.messageEncryption ?: return
+        app.scope.launch {
+            try {
+                val bytes = fetchEncryptedAttachment(app.api, encryption.attachmentCipher, info)
+                platform.invoke("previewSave", obj(
+                    "base64" to Base64.encodeToString(bytes, Base64.NO_WRAP),
+                    "name" to info.text("name").ifBlank { "attachment" },
+                    "type" to safeAttachmentType(info),
+                ).toString())
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { app.toast = app.t("e2ee.attachments.decryptFailed") }
+        }
+    }
     private var postRequest = 0
     private var currentOverlay by mutableStateOf<String?>(null)
     var overlay: String?
@@ -288,8 +321,12 @@ internal class ConnectedScreenState(
                     obj("post_id" to action.item.id))
                 refreshPost()
             }
-            EntryOperation.Attachment -> action.item.attachments.firstOrNull { it.first == action.value }?.let {
-                app.attachmentLinks.download(obj("id" to it.first, "file_name" to it.second))
+            EntryOperation.Attachment -> {
+                val info = action.item.encryptedFiles[action.value]
+                if (info != null) openEncryptedAttachment(info)
+                else action.item.attachments.firstOrNull { it.first == action.value }?.let {
+                    app.attachmentLinks.download(obj("id" to it.first, "file_name" to it.second))
+                }
             }
             EntryOperation.Link -> if (!encrypted && publicUrl(action.value) != null) platform.action("open:${action.value}")
             EntryOperation.Media -> if (!encrypted) {
@@ -841,8 +878,8 @@ internal class ConnectedScreenState(
                         }
                     }
                 }
-                is AndroidScreen.Thread, is AndroidScreen.Conversation -> if (channelId.isNotBlank() && !app.isEncryptedChannel(channelId)) {
-                    channelFiles.getOrPut(key) { AttachmentDrafts(app, channelId, app.scope).apply { enabled = true } }.pick()
+                is AndroidScreen.Thread, is AndroidScreen.Conversation -> if (channelId.isNotBlank()) {
+                    channelFiles.getOrPut(key) { channelAttachments(channelId) }.pick()
                 }
                 else -> Unit
             }
@@ -904,8 +941,12 @@ internal class ConnectedScreenState(
                             val files = channelFiles[key]
                             val draft = drafts[key] ?: InputState()
                             val sent = files?.items?.toList().orEmpty()
-                            val ids = sent.mapNotNull { it.uploaded?.text("id") }
-                            if (ids.size == sent.size && app.send(channelId, draft.text, app.thread, attachmentIds = ids)) {
+                            val uploaded = sent.mapNotNull { it.uploaded }
+                            // 暗号化チャンネルの添付は、暗号化して上げたときの本文の `attachments` の値を渡す。
+                            val encryptedFiles = uploaded.mapNotNull { it["encrypted"] as? JsonObject }
+                            val ids = uploaded.filter { it["encrypted"] == null }.map { it.text("id") }
+                            if (uploaded.size == sent.size && app.send(channelId, draft.text, app.thread, attachmentIds = ids,
+                                    encryptedAttachments = encryptedFiles)) {
                                 drafts[key] = InputState()
                                 files?.items?.clear()
                                 files?.release(sent)

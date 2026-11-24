@@ -69,20 +69,30 @@ internal fun ConnectedScreens(
     val posts = state.home.posts.map { state.entry(it, usersById, previewService = previewService) }
     val encrypted = channel?.let { session.isEncryptedChannel(it.text("id")) } == true
     val canPost = env.online && channel != null && member && !channel.present("archive_at")
-    val messageEntries by produceState(emptyList<TimelineItem>(), rows, usersById, encrypted, filesByMessage, reactionsByMessage, canPost) {
-        value = rows.filterNot { it.present("deleted_at") }.sortedBy { it.text("created_at") }.map { row ->
-            val data = if (row.present("ciphertext")) {
-                val body = try { platform.messageEncryption?.decrypt(row)?.body }
-                catch (cancelled: CancellationException) { throw cancelled }
-                catch (_: Exception) { null }
-                row + ("content" to JsonPrimitive(body ?: session.t("e2ee.sendUnavailable")))
-            } else row
+    // 暗号ストアが変わったら（解錠、鍵の受信、鍵バックアップの取り込み）、表示中の行を復号し直す。
+    val encryption = platform.messageEncryption
+    val cryptoChanges by (encryption?.changes ?: remember { kotlinx.coroutines.flow.MutableStateFlow(0L) }).collectAsState()
+    val messageEntries by produceState(emptyList<TimelineItem>(), rows, usersById, encrypted, filesByMessage, reactionsByMessage, canPost, cryptoChanges) {
+        val ordered = rows.filterNot { it.present("deleted_at") }.sortedBy { it.text("created_at") }
+        val firstEncrypted = firstEncryptedIndex(ordered, encrypted)
+        value = ordered.mapIndexed { index, row ->
             val id = row.text("id")
-            state.entry(kotlinx.serialization.json.JsonObject(data), usersById,
-                filesByMessage[id].orEmpty(), reactionsByMessage[id].orEmpty(), writable = canPost, allowPreview = !encrypted)
+            val decrypted = if (row.present("ciphertext")) {
+                try { encryption?.decrypt(row) ?: DecryptedBody(notice = "e2ee.sendUnavailable") }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { DecryptedBody(notice = "e2ee.undecryptable.failed") }
+            } else null
+            val data = if (decrypted != null) row + ("content" to JsonPrimitive(decrypted.body.orEmpty())) else row
+            val entry = state.entry(kotlinx.serialization.json.JsonObject(data), usersById,
+                if (decrypted != null) emptyList() else filesByMessage[id].orEmpty(),
+                reactionsByMessage[id].orEmpty(), writable = canPost, allowPreview = !encrypted)
+            encryptedEntry(entry, row, decrypted, encrypted, index, firstEncrypted, session::t)
         }
     }
     val messages = messageEntries.map { state.withLinkCard(it, previewService) }
+    val recipientNotices by (encryption?.recipients ?: remember { kotlinx.coroutines.flow.MutableStateFlow(emptyMap()) }).collectAsState()
+    val recipientLines = if (!encrypted || channelId == null) emptyList() else recipientNoticeLines(recipientNotices[channelId],
+        { id -> usersById[id]?.let(::author)?.ifBlank { null } ?: id }) { key, args -> session.t(key, *args) }
     val currentThread = session.thread
     val threadDetail = state.threadDetails.takeIf { it.text("id") == currentThread } ?: obj()
     val conversationEntries = rows.filter { it.text("parent_id").isEmpty() }.map { it.text("id") }.toSet()
@@ -310,12 +320,12 @@ internal fun ConnectedScreens(
             },
             state.input("$channelId:$currentThread", canPost && threadRoot != null && !threadDetail.present("thread_archive_at") &&
                 (!threadDetail.flag("tracked") || threadDetail.text("membership") == "joined"),
-                users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }), focusMessage,
+                users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }).copy(notices = recipientLines), focusMessage,
             focusRequest = focusRequest,
         )
         channel != null -> AndroidScreen.Conversation(channelId.orEmpty(), channel.text("channel_name"), channel.text("description"),
             messages.filter { it.id in conversationEntries }, state.input(channelId.orEmpty(), canPost,
-                users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }),
+                users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }).copy(notices = recipientLines),
             canCall = channel.flag("is_dm") && member && !encrypted, focusMessage = focusMessage, focusRequest = focusRequest)
         else -> AndroidScreen.Channels(state.channelSections(channels, usersById, memberships))
     }

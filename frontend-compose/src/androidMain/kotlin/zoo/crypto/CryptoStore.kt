@@ -135,6 +135,11 @@ internal class StoreState(
     @SerialName("backup_upload") var backupUpload: String? = null,
     /** 解錠したあと、過去のセッションを最後まで取り込んだ鍵バックアップの版（新しい端末での解錠の手順 5）。 */
     @SerialName("imported_backup_version") var importedBackupVersion: String? = null,
+    /**
+     * チャンネルごとに、前回判定した配布先のメンバー（`user_id` の昇順。Web の `meta` の `recipients:`、TUI の
+     * `recipients` と同じ役割）。送信画面に「前回の送信から増えた配布先」を出すのに使う。秘密ではない。
+     */
+    var recipients: Map<String, List<String>> = emptyMap(),
 )
 
 /** [CryptoStore.prepareBackupUpload] の結果。 */
@@ -152,6 +157,11 @@ sealed interface BackupUploadRequest {
         val secretsRevision: Long,
         val body: JsonObject,
         val count: Int,
+        /**
+         * `X-Zoo-Backup-Proof` の値（docs/e2ee.md の「アップロードの証明」）。今の版に `upload_key` がない
+         * （証明を足す前のサーバー）ときだけ `null` で、ヘッダーを送らない。
+         */
+        val proof: String? = null,
     ) : BackupUploadRequest
 }
 
@@ -416,6 +426,24 @@ class CryptoStore private constructor(
         }
     }
 
+    /**
+     * 配布先のメンバー `userIds` を記録し、前回判定したときから増えたメンバーを返す（Web の
+     * `MegolmChannels.noteRecipients`）。初めて判定したチャンネルでは空。
+     */
+    @Synchronized
+    fun noteRecipients(channel: String, userIds: List<String>): List<String> {
+        check(!closed)
+        val next = userIds.distinct().sorted()
+        val previous = state.recipients[channel]
+        if (previous != next) {
+            state.recipients = state.recipients + (channel to next)
+            save()
+        }
+        if (previous == null) return emptyList()
+        val known = previous.toSet()
+        return next.filter { it !in known }
+    }
+
     @Synchronized
     fun confirmPin(pin: NewTofuPin, accepted: Boolean) {
         if (accepted) trust.confirmTofuPin(pin) else trust.discardTofuPin(pin)
@@ -606,7 +634,7 @@ class CryptoStore private constructor(
             loadBackupState().suspend()
             return BackupUploadRequest.None
         }
-        try {
+        val version = try {
             acceptCurrentVersion(currentVersion)
         } catch (failure: ZooCryptoException) {
             return BackupUploadRequest.Rejected(failure.message.orEmpty())
@@ -614,6 +642,21 @@ class CryptoStore private constructor(
         val backup = loadBackupState()
         val keys = state.inboundSessions.filterValues { !it.backedUp }.keys.take(limit)
         if (keys.isEmpty()) return BackupUploadRequest.None
+        // フィールドがない版（証明を足す前のサーバー）だけ、証明を付けずに送る。フィールドがあって鍵の形の
+        // 文字列でなければ（`null`、数値、オブジェクトも）送らない。証明を黙って省いて、未証明の行を
+        // 送信済みにしないため（Web・TUI と同じ）。
+        val proof = when (val uploadKey = currentVersion["upload_key"]) {
+            null -> null
+            is JsonPrimitive -> if (!uploadKey.isString) return BackupUploadRequest.Rejected("upload_key が鍵の形ではありません")
+                else try {
+                    OwnKeys.fromPickle(checkNotNull(state.ownKeys), account, storageKey).use { own ->
+                        own.backupKey().use { key -> key.uploadProof(uploadKey.content, userId, version) }
+                    }
+                } catch (failure: ZooCryptoException) {
+                    return BackupUploadRequest.Rejected(failure.message.orEmpty())
+                }
+            else -> return BackupUploadRequest.Rejected("upload_key が鍵の形ではありません")
+        }
         for (key in keys) {
             loadInbound(key)
             backup.enqueue(sessionRef(key))
@@ -630,6 +673,7 @@ class CryptoStore private constructor(
             secretsRevision = upload.secretsRevision().toLong(),
             body = json.parseToJsonElement(upload.body()) as JsonObject,
             count = sessions.size,
+            proof = proof,
         )
     }
 
