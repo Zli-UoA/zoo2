@@ -145,7 +145,8 @@ impl CallSfuConfig {
             .unwrap_or_else(|| DEFAULT_CF_API_BASE.to_string())
             .trim_end_matches('/')
             .to_string();
-        require_secure_api_url(&api_base, "cloudflare.api_base")?;
+        // Cloudflare の API はクラスタの外にあるので、クラスタ内の Service 名への http も許さない。
+        require_https_or_loopback(&api_base, "cloudflare.api_base")?;
 
         let livekit = match raw.livekit {
             None => {
@@ -277,6 +278,19 @@ fn require_secure_api_url(url: &str, field: &str) -> Result<(), String> {
     Err(format!(
         "{field} must start with https:// (http:// is allowed only for loopback and *.svc / *.svc.cluster.local)"
     ))
+}
+
+/// https を必須にし、平文の http はループバック（テストの mock）だけ許す。クラスタ内の Service 名の
+/// 例外は使わない（Cloudflare の app secret の送り先）。
+fn require_https_or_loopback(url: &str, field: &str) -> Result<(), String> {
+    let parsed = parse_url(url, field)?;
+    match parsed.scheme() {
+        "https" => Ok(()),
+        "http" if is_loopback_host(url_host(&parsed)) => Ok(()),
+        _ => Err(format!(
+            "{field} must start with https:// (http:// is allowed only for loopback)"
+        )),
+    }
 }
 
 /// URL を、接続に使う HTTP クライアント（reqwest）と同じ WHATWG の解釈で読む。
@@ -610,6 +624,10 @@ mod tests {
         assert!(cf("http://127.0.0.1:9000/v1").is_ok());
         let err = cf("http://rtc.example/v1").unwrap_err();
         assert!(err.contains("cloudflare.api_base"));
+        // livekit.api_url と違い、クラスタ内の Service 名への http も許さない。
+        let err = cf("http://cf-proxy.zoo2.svc.cluster.local/v1").unwrap_err();
+        assert!(err.contains("cloudflare.api_base"));
+        assert!(cf("https://rtc.example/v1").is_ok());
         let err = cf(r"http://evil.example\\@127.0.0.1:9000/v1").unwrap_err();
         assert!(err.contains("cloudflare.api_base"));
     }

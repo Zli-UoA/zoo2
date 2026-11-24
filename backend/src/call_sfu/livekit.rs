@@ -188,16 +188,28 @@ impl LiveKit {
             .await
             .map_err(|e| AppError::BadGateway(format!("LiveKit: {e}")))?;
         let status = res.status();
-        if status.is_success() || status == reqwest::StatusCode::NOT_FOUND {
+        if status.is_success() {
             return Ok(());
         }
         let body = res.text().await.unwrap_or_default();
-        // Twirp の not_found は 404。ルームがもうないときもここに来る。
-        if body.contains("\"not_found\"") {
+        if is_twirp_not_found(&body) {
             return Ok(());
         }
         Err(AppError::BadGateway(format!("LiveKit returned {status}")))
     }
+}
+
+/// Twirp のエラーが `not_found`（参加者・ルームがもういない）か。
+///
+/// Twirp は、ルートがない `bad_route` も HTTP 404 で返す（https://twitchtv.github.io/twirp/docs/spec_v7.html）。
+/// デプロイ中などで API に届かなかったのを退出の成功と数えないよう、状態コードでなく本文の `code` で見る。
+/// JSON でない本文（Twirp より手前の proxy の 404 など）も成功にしない。
+fn is_twirp_not_found(body: &str) -> bool {
+    #[derive(serde::Deserialize)]
+    struct TwirpError {
+        code: String,
+    }
+    serde_json::from_str::<TwirpError>(body).is_ok_and(|e| e.code == "not_found")
 }
 
 #[cfg(test)]
@@ -265,6 +277,19 @@ mod tests {
         let b = participant_identity(sid);
         assert_ne!(a, b);
         assert_eq!(a.split_once('.').map(|(s, _)| s), Some(sid));
+    }
+
+    #[test]
+    fn only_twirp_not_found_counts_as_removed() {
+        assert!(is_twirp_not_found(
+            r#"{"code":"not_found","msg":"participant not found"}"#
+        ));
+        assert!(!is_twirp_not_found(
+            r#"{"code":"bad_route","msg":"no handler"}"#
+        ));
+        assert!(!is_twirp_not_found("404 page not found"));
+        assert!(!is_twirp_not_found(r#"{"msg":"\"not_found\""}"#));
+        assert!(!is_twirp_not_found(""));
     }
 
     #[test]

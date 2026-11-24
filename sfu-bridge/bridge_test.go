@@ -157,6 +157,7 @@ type fakeBackend struct {
 	mu         sync.Mutex
 	paths      []string
 	closed     [][]string
+	closeChans []string
 	pullResp   tracksResponse
 	pullStatus int
 }
@@ -174,10 +175,12 @@ func (f *fakeBackend) handler(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(f.pullResp)
 	case "/internal/sfu-bridge/cf/close":
 		var body struct {
-			Mids []string `json:"mids"`
+			ChannelID string   `json:"channel_id"`
+			Mids      []string `json:"mids"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.closed = append(f.closed, body.Mids)
+		f.closeChans = append(f.closeChans, body.ChannelID)
 	default:
 		w.WriteHeader(http.StatusInternalServerError)
 	}
@@ -296,7 +299,7 @@ func TestOldPullSuccessDoesNotFillReRegisteredReservation(t *testing.T) {
 func TestOldPullFailureKeepsReRegisteredReservation(t *testing.T) {
 	cases := map[string]*fakeBackend{
 		"error_code": {pullResp: tracksResponse{Tracks: []trackResult{{TrackName: "x", ErrorCode: "not_found"}}}},
-		"http_error": {pullStatus: http.StatusBadGateway},
+		"http_error": {pullStatus: http.StatusNotFound},
 	}
 	for name, f := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -403,5 +406,88 @@ func TestSessionOfIdentity(t *testing.T) {
 	// 割り当てが変わって identity が変わっても、一覧の同じ session_id として扱う。
 	if sessionOfIdentity(sid+".1") != sessionOfIdentity(sid+".2") {
 		t.Error("identities of the same session differ")
+	}
+}
+
+func TestPullFailureWithUnknownOutcomeFailsBridge(t *testing.T) {
+	for _, status := range []int{http.StatusBadGateway, http.StatusInternalServerError} {
+		f := &fakeBackend{pullStatus: status}
+		b := readyBridge(t, f)
+		x := reserve(b, "x:direct", "", "x")
+		b.pull([]*pulledTrack{x})
+		if !b.failed() {
+			t.Fatalf("status %d: a pull whose outcome is unknown must rebuild the bridge", status)
+		}
+	}
+}
+
+func TestPullRejectedByBackendIsRetried(t *testing.T) {
+	f := &fakeBackend{pullStatus: http.StatusNotFound}
+	b := readyBridge(t, f)
+	x := reserve(b, "x:direct", "", "x")
+	b.pull([]*pulledTrack{x})
+	if b.failed() {
+		t.Fatal("a pull the backend rejected must not rebuild the bridge")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, ok := b.pulled[pullKey("x:direct", "")]; ok {
+		t.Fatal("the rejected pull must be released so that it is retried")
+	}
+}
+
+func TestPullLostResponseFailsBridge(t *testing.T) {
+	// 応答を返さずに接続を切る（応答の喪失。時間切れと同じく、Cloudflare が受けたか分からない）。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}))
+	t.Cleanup(srv.Close)
+	b := newRoomBridge(context.Background(), newBackendAPI(srv.URL, "0123456789abcdef0123456789abcdef"), 1, roomState{ChannelID: "c"})
+	t.Cleanup(b.close)
+	b.cfSession = "s"
+	close(b.ready)
+	x := reserve(b, "x:direct", "", "x")
+	b.pull([]*pulledTrack{x})
+	if !b.failed() {
+		t.Fatal("a pull whose response was lost must rebuild the bridge")
+	}
+}
+
+func TestUnpushClosesUnderNegotiateWithChannel(t *testing.T) {
+	f := &fakeBackend{}
+	b := readyBridge(t, f)
+	local, err := webrtc.NewTrackLocalStaticRTP(opusCapability, "audio", "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr, err := b.pc.AddTransceiverFromTrack(local, webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionSendonly})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.pushed["a"] = &pushedTrack{mid: "4", transceiver: tr}
+	// 交渉中は、閉じるのを待つ。
+	b.negotiate.Lock()
+	done := make(chan struct{})
+	go func() {
+		b.unpush("a", "4", tr)
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.Fatal("unpush must wait for the ongoing negotiation")
+	case <-time.After(50 * time.Millisecond):
+	}
+	b.negotiate.Unlock()
+	<-done
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.closed) != 1 || len(f.closed[0]) != 1 || f.closed[0][0] != "4" || f.closeChans[0] != "c" {
+		t.Fatalf("unpush must close the mid with the channel: %v %v", f.closed, f.closeChans)
+	}
+	if _, ok := b.pushed["a"]; ok {
+		t.Fatal("unpush must forget the push")
 	}
 }

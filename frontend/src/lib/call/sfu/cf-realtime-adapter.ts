@@ -29,6 +29,9 @@ const CF_ICE_SERVERS: RTCIceServer[] = [{ urls: "stun:stun.cloudflare.com:3478" 
 export const CF_ICE_GATHERING_TIMEOUT_MS = 10_000;
 /** answer を受けてから ICE と DTLS がつながるまでの上限。 */
 export const CF_CONNECT_TIMEOUT_MS = 15_000;
+/** pull に失敗したトラックを、一覧の更新を待たずに pull し直すまでの間隔（回ごとに倍）と回数の上限。 */
+export const CF_PULL_RETRY_BASE_MS = 1000;
+export const CF_PULL_RETRY_MAX_ATTEMPTS = 4;
 
 /** Opus の DTX（無音のあいだ送らない）を有効にする。 */
 export function enableOpusDtx(sdp: string): string {
@@ -56,8 +59,15 @@ export class CfRealtimeAdapter implements SfuAdapter {
   private sender: RTCRtpSender | null = null;
   private queue: Promise<void> = Promise.resolve();
   private version = -1;
-  /** pull 済みのトラック id → 話者。 */
-  private pulled = new Map<string, { speaker: string; trackName: string; generation: number }>();
+  /** pull 済みのトラック id → 話者。`rev` は公開の世代（同じ id で公開し直すと変わる）。 */
+  private pulled = new Map<
+    string,
+    { speaker: string; trackName: string; rev: string; generation: number }
+  >();
+  /** 最新の一覧。pull の失敗後のやり直しで使う。 */
+  private latestTracks: SfuTrackInfo[] = [];
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryAttempt = 0;
   private generation = 0;
   /** m-line（mid）→ 話者。 */
   private midSpeaker = new Map<string, string>();
@@ -198,14 +208,36 @@ export class CfRealtimeAdapter implements SfuAdapter {
   updateTracks(tracks: SfuTrackInfo[], version: number): void {
     if (version < this.version) return;
     this.version = version;
+    this.latestTracks = tracks;
+    // 新しい一覧で pull し直すので、やり直しの回数は数え直す。
+    this.retryAttempt = 0;
+    this.reconcile();
+  }
+
+  /** pull に失敗したトラックを、上限の回数まで間隔を空けて pull し直す（一覧の更新を待たない）。 */
+  private scheduleRetry(): void {
+    if (this.closed || this.retryTimer || this.retryAttempt >= CF_PULL_RETRY_MAX_ATTEMPTS) return;
+    const delay = CF_PULL_RETRY_BASE_MS * 2 ** this.retryAttempt;
+    this.retryAttempt++;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      if (!this.closed) this.reconcile();
+    }, delay);
+  }
+
+  /** 最新の一覧（latestTracks）に合わせて、pull と停止をする。 */
+  private reconcile(): void {
     const wanted = new Map<string, SfuTrackInfo>();
-    for (const t of tracks) {
+    for (const t of this.latestTracks) {
       if (t.session_id === this.selfSessionId) continue;
       wanted.set(t.id, t);
     }
     // Map は走査中に今の要素を消してもよい。
     for (const [id, entry] of this.pulled) {
-      if (!wanted.has(id)) {
+      const want = wanted.get(id);
+      // 一覧から消えたもの、別のセッションで公開し直された（rev が変わった）ものは、古い購読をやめる。
+      // rev が変わったものは、下で新しい世代を pull する。
+      if (!want || (want.rev ?? "") !== entry.rev) {
         this.pulled.delete(id);
         this.callbacks.onRemoteGone(entry.speaker);
       }
@@ -216,12 +248,24 @@ export class CfRealtimeAdapter implements SfuAdapter {
     const generation = ++this.generation;
     for (const id of toPull) {
       const t = wanted.get(id)!;
-      this.pulled.set(id, { speaker: t.session_id, trackName: trackNameOf(t), generation });
+      this.pulled.set(id, {
+        speaker: t.session_id,
+        trackName: trackNameOf(t),
+        rev: t.rev ?? "",
+        generation,
+      });
     }
     const isMine = (id: string) => this.pulled.get(id)?.generation === generation;
-    // 失敗した id を、次の一覧の更新で pull し直せるようにする（自分の世代の登録だけ）。
+    // 失敗した id を、やり直し（scheduleRetry）か次の一覧の更新で pull し直せるようにする（自分の世代の登録だけ）。
     const release = (ids: string[]) => {
-      for (const id of ids) if (isMine(id)) this.pulled.delete(id);
+      let released = false;
+      for (const id of ids) {
+        if (isMine(id)) {
+          this.pulled.delete(id);
+          released = true;
+        }
+      }
+      if (released) this.scheduleRetry();
     };
     void this.enqueue(async () => {
       // キューで待っているあいだに一覧から消えたもの・登録し直されたものは pull しない。
@@ -243,7 +287,9 @@ export class CfRealtimeAdapter implements SfuAdapter {
           succeeded.add(t.trackName);
         }
       }
-      release(ids.filter((id) => !succeeded.has(this.pulled.get(id)?.trackName ?? "")));
+      const failed = ids.filter((id) => !succeeded.has(this.pulled.get(id)?.trackName ?? ""));
+      if (failed.length === 0) this.retryAttempt = 0;
+      release(failed);
       if (res.requiresImmediateRenegotiation && res.sessionDescription) {
         try {
           await this.pc.setRemoteDescription(res.sessionDescription as RTCSessionDescriptionInit);
@@ -286,6 +332,8 @@ export class CfRealtimeAdapter implements SfuAdapter {
 
   close(): void {
     this.closed = true;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
     // Set は走査中に今の要素を消してもよい。
     for (const finish of this.waiters) finish(new Error("Closed"));
     const speakers = new Set<string>();

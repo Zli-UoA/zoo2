@@ -275,6 +275,7 @@ async fn drain_departures(
         return Ok(0);
     }
 
+    let processed = departures.len();
     let results = close_all(sfu, departures).await;
 
     let mut done = Vec::new();
@@ -311,8 +312,9 @@ async fn drain_departures(
         .exec(&mut *db)
         .await?;
     }
-    // 失敗だけが残ったときは、すぐに繰り返さない。
-    Ok(done.len())
+    // 処理した件数を返す。全件が失敗しても、続けて次の未確保の行を確保する。失敗した行は
+    // `claimed_until` を先にずらしたので、次の確保では選ばれず、失敗だけが残ったときはすぐに繰り返さない。
+    Ok(processed)
 }
 
 async fn close_all(

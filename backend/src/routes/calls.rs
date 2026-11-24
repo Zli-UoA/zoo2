@@ -1396,7 +1396,7 @@ async fn call_stream(
     // 部屋の mode（mesh / SFU）を決める。SFU の部屋に、SFU に対応していないクライアントは入れない。
     let sfu = state.call_sfu.as_ref();
     let sfu_capable = sfu.is_some() && query.sfu_capable();
-    let (room_mode_before, _) =
+    let (room_mode_before, _, as_of) =
         match prepare_room_for_join(&mut tx, sfu, &channel_id, sfu_capable).await {
             Ok(v) => v,
             Err(e) => {
@@ -1423,7 +1423,8 @@ async fn call_stream(
          WHERE (
              -- 在室の判定は、部屋の準備（prepare_room_for_join）と SFU への切り替えと同じ時点で行う。
              SELECT count(*) FROM call_presence
-             WHERE channel_id = $1 AND expires_at > transaction_timestamp()
+             WHERE channel_id = $1
+               AND expires_at > COALESCE(NULLIF($8, '')::timestamptz, transaction_timestamp())
          ) + (
              -- 呼び出し中の人と、応答してまだ入室していない人（自分以外）の席は空けておく。招待は空きの
              -- 数までしか作らないので、招待されていない人が先に入って、呼ばれた人が入れなくなることを防ぐ。
@@ -1441,6 +1442,7 @@ async fn call_stream(
         .bind(user.display_name.clone())
         .bind(now_str.clone())
         .bind(sfu_capable.to_string())
+        .bind(as_of.clone())
         .exec(&mut tx)
         .await;
 
@@ -1507,7 +1509,7 @@ async fn call_stream(
 
     // 人数が増えたので、条件を満たせば SFU に切り替える（mode_changed は同じトランザクションで通知）。
     let (room_mode_now, room_epoch) =
-        match maybe_switch_to_sfu(&mut tx, sfu, &channel_id, room_mode_before).await {
+        match maybe_switch_to_sfu(&mut tx, sfu, &channel_id, room_mode_before, &as_of).await {
             Ok(v) => v,
             Err(e) => {
                 state
@@ -2124,20 +2126,38 @@ pub async fn load_sfu_tracks(
 }
 
 /// SFU の入室処理（チャンネル行をロックしたトランザクションの中）。部屋の mode を決め、
-/// 対応していないクライアントが SFU モードの部屋に入るのを断る。戻り値は (mode, epoch)。
+/// 対応していないクライアントが SFU モードの部屋に入るのを断る。戻り値は (mode, epoch, 基準時刻)。
 ///
-/// 在室の判定は、この関数、定員つきの INSERT、`maybe_switch_to_sfu` のすべてで `transaction_timestamp()`
-/// を基準にする。文ごとの時刻（`statement_timestamp()`）だと、そのあいだに期限の切れた人を、部屋の準備では
-/// 在室、定員や切り替えでは不在と数えてしまい、空の部屋を古い epoch のまま使うことがある。
+/// 在室の判定は、この関数、定員つきの INSERT、`maybe_switch_to_sfu` のすべてで、ここで読む 1 つの時刻
+/// （基準時刻）を使う。文ごとの時刻（`statement_timestamp()`）だと、そのあいだに期限の切れた人を、部屋の
+/// 準備では在室、定員や切り替えでは不在と数えてしまい、空の部屋を古い epoch のまま使うことがある。
+/// 基準時刻は、チャンネル行のロックを取ったあとの時刻（`clock_timestamp()`）。トランザクションの開始時刻
+/// （`transaction_timestamp()`）だと、ロックを待つあいだに期限の切れた最後の人を在室と数え、空の SFU の
+/// 部屋を mesh に戻せず、SFU に対応していない最初の人を断ってしまう。SFU が無効なら空文字（各 SQL は
+/// `transaction_timestamp()` を使う。mode も epoch も変えないので、ずれても困らない）。
 async fn prepare_room_for_join(
     tx: &mut toasty::Transaction<'_>,
     sfu: Option<&CallSfu>,
     channel_id: &str,
     sfu_capable: bool,
-) -> Result<(RoomMode, i64), AppError> {
+) -> Result<(RoomMode, i64, String), AppError> {
     if sfu.is_none() {
-        return Ok((RoomMode::Mesh, 0));
+        return Ok((RoomMode::Mesh, 0, String::new()));
     }
+    // 呼び出し元は、チャンネル行のロックを取り終えている。
+    let rows = toasty::sql::query("SELECT clock_timestamp()::text")
+        .exec(&mut *tx)
+        .await?;
+    let as_of = rows
+        .into_iter()
+        .find_map(|row| match row {
+            toasty::stmt::Value::Record(rec) => match rec.fields.into_iter().next() {
+                Some(toasty::stmt::Value::String(s)) => Some(s),
+                _ => None,
+            },
+            _ => None,
+        })
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("clock_timestamp returned nothing")))?;
     // 在室が 0 人なら、新しい通話として mesh から始め、epoch を進める（古い LiveKit のルームと分ける）。
     let rows = toasty::sql::query(
         "INSERT INTO call_rooms AS r (channel_id) VALUES ($1)
@@ -2147,10 +2167,11 @@ async fn prepare_room_for_join(
                       CASE WHEN empty THEN r.epoch + 1 ELSE r.epoch END
                FROM (SELECT NOT EXISTS (
                          SELECT 1 FROM call_presence
-                         WHERE channel_id = $1 AND expires_at > transaction_timestamp()) AS empty) e)
+                         WHERE channel_id = $1 AND expires_at > $2::timestamptz) AS empty) e)
          RETURNING json_build_object('mode', r.mode, 'epoch', r.epoch, 'track_version', r.track_version)::text",
     )
     .bind(channel_id.to_string())
+    .bind(as_of.clone())
     .exec(&mut *tx)
     .await;
     let rows = match rows {
@@ -2170,7 +2191,7 @@ async fn prepare_room_for_join(
         });
     }
     let _ = room.track_version;
-    Ok((room.mode, room.epoch))
+    Ok((room.mode, room.epoch, as_of))
 }
 
 /// 入室のあと、mesh の部屋が条件を満たしていれば SFU モードに切り替える（同じトランザクション）。
@@ -2180,6 +2201,7 @@ async fn maybe_switch_to_sfu(
     sfu: Option<&CallSfu>,
     channel_id: &str,
     mode: RoomMode,
+    as_of: &str,
 ) -> Result<(RoomMode, i64), AppError> {
     let Some(sfu) = sfu else {
         return Ok((RoomMode::Mesh, 0));
@@ -2188,13 +2210,14 @@ async fn maybe_switch_to_sfu(
         "UPDATE call_rooms r SET mode = 'sfu'
          FROM (SELECT count(*) AS n, bool_and(sfu_capable) AS all_capable
                FROM call_presence
-               WHERE channel_id = $1 AND expires_at > transaction_timestamp()) live
+               WHERE channel_id = $1 AND expires_at > $2::timestamptz) live
          WHERE r.channel_id = $1 AND r.mode = 'mesh'
            AND live.n > {} AND live.all_capable
          RETURNING json_build_object('mode', r.mode, 'epoch', r.epoch, 'track_version', r.track_version)::text",
         sfu.config.threshold
     ))
     .bind(channel_id.to_string())
+    .bind(as_of.to_string())
     .exec(&mut *tx)
     .await?;
     let Some(room) = crate::call_sfu::rows_json::<RoomRow>(rows)

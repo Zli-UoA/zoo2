@@ -354,6 +354,14 @@ async fn join(
     } else {
         load_sfu_tracks(&mut db, &channel_id).await?
     };
+    // 割り当てのコミットのあと、一覧を読む前に全員が退出して次の通話（新しい epoch）が始まっていたら、
+    // 接続先（前の epoch のルーム）と一覧が食い違う。混ぜて返さず、競合として返す（クライアントは
+    // 新しい room_state から入り直す）。
+    if let Some((loaded_epoch, ..)) = &loaded
+        && *loaded_epoch != epoch
+    {
+        return Err(AppError::Conflict("Call room changed while joining".into()));
+    }
     let (epoch, version, tracks) = loaded.unwrap_or((epoch, 0, Vec::new()));
     Ok(Json(JoinResponse {
         target,
@@ -589,20 +597,49 @@ impl JoinTimingKey {
         self.push(|t| t.sql.entry(name.to_string()).or_default().push(elapsed));
     }
 
+    /// 記録先が登録されているとき（`register_join_timings_for_test`）だけ書く。登録のない名前
+    /// （`sfu/join` 以外の要求や、回収しない要求に付いたヘッダー）は何も残さない。
     fn push(&self, f: impl FnOnce(&mut JoinTimings)) {
         let mut map = JOIN_TIMINGS.lock().unwrap_or_else(|e| e.into_inner());
-        f(map.entry(self.0.clone()).or_default());
+        if let Some(t) = map.get_mut(&self.0) {
+            f(t);
+        }
     }
 }
 
-/// テスト用（join の計測）：記録先 `key` に残した時間を取り出して消す。
+/// テスト用（join の計測）：記録先 `key` を登録する。返した値を落とすと（join の失敗・キャンセルを含む）、
+/// 記録先は消える。成功したら `take` で取り出す。
 #[doc(hidden)]
-pub fn take_join_timings_for_test(key: &str) -> JoinTimings {
+pub fn register_join_timings_for_test(key: &str) -> JoinTimingsCollector {
     JOIN_TIMINGS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .remove(key)
-        .unwrap_or_default()
+        .insert(key.to_string(), JoinTimings::default());
+    JoinTimingsCollector(key.to_string())
+}
+
+/// テスト用（join の計測）：登録した記録先。落とすと消える。
+#[doc(hidden)]
+pub struct JoinTimingsCollector(String);
+
+impl JoinTimingsCollector {
+    /// 残した時間を取り出し、記録先を消す。
+    pub fn take(self) -> JoinTimings {
+        JOIN_TIMINGS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.0)
+            .unwrap_or_default()
+    }
+}
+
+impl Drop for JoinTimingsCollector {
+    fn drop(&mut self) {
+        JOIN_TIMINGS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.0);
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -833,7 +870,7 @@ async fn cf_publish(
     crate::call_sfu::cloudflare::check_pushed(&res, &mid)?;
     // テスト：Cloudflare の応答のあと、登録の前で止める（そのあいだに割り当てを変える）。
     PauseGate::pause(PauseGate::from_headers(&state, &headers).as_ref()).await;
-    register_track(
+    let registered = register_track(
         &state,
         &channel_id,
         body.session_id,
@@ -842,8 +879,69 @@ async fn cf_publish(
         &track_name,
         None,
     )
-    .await?;
+    .await;
+    if let Err(e @ (AppError::NotFound(_) | AppError::Conflict(_))) = registered {
+        // push のあいだに退出・割り当ての変更があった。push で作ったトラックを閉じ直す。
+        record_cf_departure_after_op(&state, sfu, &channel_id, body.session_id, &cf).await?;
+        return Err(e);
+    }
+    registered?;
     Ok(Json(res))
+}
+
+/// Cloudflare の操作（push・pull）が終わったあと、その Cloudflare セッションがまだこの人の割り当てかを
+/// 確かめる。違えば（`false`）、同じセッションの後始末を記録し直す。
+///
+/// 退出の後始末（worker の `close_session`）は、その時点の `GET` に載った mid だけを閉じる。操作が
+/// Cloudflare で処理中のあいだに後始末が走ると、操作の結果が載る前の一覧で閉じ終えてしまう
+/// （https://developers.cloudflare.com/realtime/sfu/api/）。操作の応答を受け取ったあとに記録し直せば、
+/// worker の次の `GET` には操作の結果が載っている。まだ割り当てのままなら、このあとの退出は、操作の
+/// 結果が載った一覧で閉じる。探索：call_presence の主キーで 1 行。
+async fn still_assigned_to_cf(
+    state: &AppState,
+    sfu: &CallSfu,
+    channel_id: &str,
+    session_id: Uuid,
+    cf: &str,
+) -> Result<bool, AppError> {
+    let mut db = state.db.clone();
+    let rows = toasty::sql::query(
+        "SELECT 1 FROM call_presence
+         WHERE channel_id = $1 AND session_id = $2::uuid AND sfu_id = 'cloudflare'
+           AND cf_session_id = $3 AND expires_at > statement_timestamp()",
+    )
+    .bind(channel_id.to_string())
+    .bind(session_id.to_string())
+    .bind(cf.to_string())
+    .exec(&mut db)
+    .await?;
+    if !rows.is_empty() {
+        return Ok(true);
+    }
+    record_cf_departure_after_op(state, sfu, channel_id, session_id, cf).await?;
+    Ok(false)
+}
+
+/// Cloudflare のセッションの後始末を、`call_sfu_departures` に記録し直す（`still_assigned_to_cf`）。
+async fn record_cf_departure_after_op(
+    state: &AppState,
+    sfu: &CallSfu,
+    channel_id: &str,
+    session_id: Uuid,
+    cf: &str,
+) -> Result<(), AppError> {
+    let mut db = state.db.clone();
+    toasty::sql::statement(
+        "INSERT INTO call_sfu_departures (channel_id, session_id, sfu_id, cf_session_id)
+         VALUES ($1, $2::uuid, 'cloudflare', $3)",
+    )
+    .bind(channel_id.to_string())
+    .bind(session_id.to_string())
+    .bind(cf.to_string())
+    .exec(&mut db)
+    .await?;
+    sfu.departures_wake.notify_one();
+    Ok(())
 }
 
 /// 1 列目が text の行を 1 つ読む。
@@ -1037,7 +1135,14 @@ async fn cf_pull(
     if remotes.is_empty() {
         return Err(AppError::NotFound("No tracks to pull".into()));
     }
-    Ok(Json(sfu.cloudflare.pull_tracks(&cf, &remotes).await?))
+    let res = sfu.cloudflare.pull_tracks(&cf, &remotes).await?;
+    // pull のあいだに退出していれば、pull で作った購読を閉じ直す（退出した人に音声を流さない）。
+    if !still_assigned_to_cf(&state, sfu, &channel_id, body.session_id, &cf).await? {
+        return Err(AppError::Conflict(
+            "The SFU assignment changed while pulling".into(),
+        ));
+    }
+    Ok(Json(res))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1390,6 +1495,9 @@ async fn bridge_cf_answer(
 
 #[derive(Debug, Deserialize)]
 struct BridgeCloseBody {
+    /// 閉じる mid の部屋。あれば、push を閉じた話者のトラックを一覧から外す（古い bridge は送らない）。
+    #[serde(default)]
+    channel_id: Option<String>,
     cf_session_id: String,
     mids: Vec<String>,
 }
@@ -1403,8 +1511,63 @@ async fn bridge_cf_close(
     if body.mids.len() > MAX_PULL_TRACKS {
         return Err(AppError::BadRequest("Too many mids".into()));
     }
+    // 閉じる前に、どの mid が bridge の push（話者の声）かを読む。pull の mid は一覧に関係しない。
+    // 読めなくても mid は閉じる（閉じるほうが大事）。一覧から外せなかったことは、最後にエラーで返す。
+    let pushed = match &body.channel_id {
+        Some(_) => {
+            sfu.cloudflare
+                .local_track_names(&body.cf_session_id, &body.mids)
+                .await
+        }
+        None => Ok(Vec::new()),
+    };
     sfu.cloudflare
         .close_tracks(&body.cf_session_id, &body.mids)
         .await?;
+    if let Some(channel_id) = &body.channel_id {
+        remove_closed_bridge_tracks(&state, channel_id, &body.cf_session_id, &pushed?).await?;
+    }
     Ok(Json(json!({ "ok": true })))
+}
+
+/// bridge が閉じた push を、トラック一覧から外す。話者が LiveKit にいるまま公開をやめると、行が残り、
+/// あとから来た Cloudflare の人に pull できないトラックが配られるため。
+///
+/// 外すのは、閉じたセッションと track 名がいまの行と同じとき（いまの公開）だけ。新しいセッションで
+/// push し直した行は残す。bridge の track 名は `{話者の session_id}-bridge`（`bridge_cf_publish`）。
+/// 探索：主キー (channel_id, session_id, source) で、閉じた push 1 つにつき 1 行。
+async fn remove_closed_bridge_tracks(
+    state: &AppState,
+    channel_id: &str,
+    cf_session: &str,
+    track_names: &[String],
+) -> Result<(), AppError> {
+    let speakers: Vec<String> = track_names
+        .iter()
+        .filter_map(|n| n.strip_suffix("-bridge"))
+        .filter_map(|s| Uuid::parse_str(s).ok())
+        .map(|s| s.to_string())
+        .collect();
+    if speakers.is_empty() {
+        return Ok(());
+    }
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    let rows = toasty::sql::query(
+        "DELETE FROM call_sfu_tracks
+         WHERE channel_id = $1 AND source = 'bridge'
+           AND session_id = ANY(string_to_array($2, ',')::uuid[])
+           AND cf_session_id = $3 AND track_name = session_id::text || '-bridge'
+         RETURNING 1",
+    )
+    .bind(channel_id.to_string())
+    .bind(speakers.join(","))
+    .bind(cf_session.to_string())
+    .exec(&mut tx)
+    .await?;
+    if !rows.is_empty() {
+        bump_tracks(&mut tx, channel_id).await?;
+    }
+    tx.commit().await?;
+    Ok(())
 }

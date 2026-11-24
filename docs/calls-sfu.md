@@ -68,7 +68,9 @@
   - Cloudflare：`GET /sessions/{id}` と `tracks/close`（force）。応答の track ごとの結果を見て、閉じた mid と既に閉じていた mid（`close_track_error`）だけを成功に数える。ほかのエラーや結果のない mid があれば失敗にする。
   - LiveKit：`RemoveParticipant`。外すのは、記録した割り当ての identity（`call_sfu_departures.livekit_identity`）だけ。同じ `session_id` で入り直した人は新しい identity になるので、要求が遅れて LiveKit に届いても（打ち切ったあとに LiveKit が処理した場合を含む）、新しい接続は切れない。そのため、入り直しの確認やロックは要らない。identity のない行（identity が `session_id` だったころの割り当て）は、`session_id` を外す。
 - worker は、短い 1 文で行を確保して（`claimed_until` を 5 分先にする。`FOR UPDATE SKIP LOCKED`）、トランザクションもロックも持たずに API を呼ぶ。確保と処理のループは SFU ごとに分かれていて（確保も `sfu_id` で絞る）、片方の API が遅くても、もう片方の後始末は待たない。SFU ごとに同時 8 件まで。worker が途中で止まっても、確保の期限のあとに別の worker が取り直す。
-- 失敗したものは、15 秒あけて 5 回まで試し直す。
+- 失敗したものは、15 秒あけて試し直す。試すのは初回を含めて 5 回まで（`MAX_DEPARTURE_ATTEMPTS`）。5 回目も失敗したら、警告をログに出して行を消す。消した行は、あとで SFU が直っても処理しない（障害が長引いたときに、試し直しを待ち続けない）。
+- 全件が失敗したバッチのあとも、worker は続けて次のまだ確保していない行を処理する（失敗した行は 15 秒先まで確保したままなので、選ばれない）。
+- Cloudflare の操作（push・pull）が処理中のあいだに後始末が走ると、`GET` に操作の結果がまだ載っておらず、閉じ漏れる（https://developers.cloudflare.com/realtime/sfu/api/）。そのため backend は、push・pull の応答を受け取ったあとに、そのセッションがまだ割り当てのままかを確かめる。違えば（そのあいだに退出・割り当ての変更があった）、同じセッションの行を記録し直して 409 を返す。worker の次の `GET` には操作の結果が載っている。
 - LiveKit の設定がないときは、LiveKit の行を確保しない（消さずに残す）。設定を戻せば処理する。
 
 ## sfu-bridge
@@ -118,7 +120,7 @@
 URL の条件も起動時に確かめる。URL は、接続に使う HTTP クライアント（reqwest）と同じ WHATWG の解釈（`url` クレート）で読み、その host で判定する。文字列を自前で区切ると、`http://evil.example\@livekit.zoo2.svc:7880` の host を `livekit.zoo2.svc` と読み違える（WHATWG では `\` は `/` と同じ区切りで、接続先は `evil.example`）。`\` と userinfo（`user@`）を含む URL は受け付けない。
 
 - `livekit.ws_url` は `wss://`。参加者のトークンをこの URL で送るため。`ws://` はループバック（`localhost`・`127.0.0.1`・`::1`。テスト用）だけ許す。
-- `cloudflare.api_base` と `livekit.api_url` は `https://`。Cloudflare の app secret と LiveKit の管理用 JWT を Bearer で送るため。`http://` は、ループバックと、クラスタ内の Service の名前（`<service>.<namespace>.svc`・`<service>.<namespace>.svc.cluster.local`）だけ許す。本番の `livekit.api_url` は `http://livekit.zoo2.svc.cluster.local:7880`（Twirp をクラスタ内から呼ぶ。経路の扱いは backend の内部 API の平文 HTTP と同じ。zoo2-infra の docs/calls-sfu.md）。
+- `cloudflare.api_base` と `livekit.api_url` は `https://`。Cloudflare の app secret と LiveKit の管理用 JWT を Bearer で送るため。`cloudflare.api_base` の `http://` は、ループバック（テストの mock）だけ許す。`livekit.api_url` の `http://` は、ループバックと、クラスタ内の Service の名前（`<service>.<namespace>.svc`・`<service>.<namespace>.svc.cluster.local`）だけ許す。本番の `livekit.api_url` は `http://livekit.zoo2.svc.cluster.local:7880`（Twirp をクラスタ内から呼ぶ。経路の扱いは backend の内部 API の平文 HTTP と同じ。zoo2-infra の docs/calls-sfu.md）。
 - SFU の API を呼ぶ HTTP クライアントはリダイレクトを追わない。リダイレクト先に Bearer を送らないため。
 
 LiveKit を有効にするときは、frontend の `CSP_CONNECT_SRC` に LiveKit の `wss://` のオリジン（例：`wss://livekit.zli.chat`）を足す。Web の CSP の `connect-src` は `https:` しか許していないので、足さないと LiveKit のシグナリング（WebSocket）がはじかれ、全員が Cloudflare に移る。

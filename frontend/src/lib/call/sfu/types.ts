@@ -7,6 +7,11 @@ export interface SfuTrackInfo {
   id: string;
   session_id: string;
   source: "direct" | "bridge";
+  /**
+   * 公開の世代（backend が Cloudflare のセッションと track 名から作る）。同じ `id` のまま別のセッションで
+   * 公開し直すと変わるので、変わったら pull し直す。古い backend は送らないので省略できる。
+   */
+  rev?: string;
 }
 
 export type SfuJoinResponse =
@@ -55,7 +60,8 @@ export function isSfuTrackInfo(value: unknown): value is SfuTrackInfo {
   return (
     typeof t.id === "string" &&
     typeof t.session_id === "string" &&
-    (t.source === "direct" || t.source === "bridge")
+    (t.source === "direct" || t.source === "bridge") &&
+    (t.rev === undefined || typeof t.rev === "string")
   );
 }
 

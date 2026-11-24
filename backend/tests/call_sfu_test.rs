@@ -415,24 +415,37 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         },
         "bridge": true
     });
-    // SAFETY: このテストバイナリは、このテストだけで、env を読むのは下の AppState::new の前。
-    unsafe {
-        std::env::set_var("CALL_SFUS_JSON", sfus.to_string());
-        std::env::set_var("CF_REALTIME_APP_ID", "app");
-        std::env::set_var("CF_REALTIME_APP_SECRET", "secret");
-        std::env::set_var("LIVEKIT_API_KEY", "key");
-        std::env::set_var("LIVEKIT_API_SECRET", "0123456789abcdef0123456789abcdef");
-        std::env::set_var("SFU_BRIDGE_TOKEN", BRIDGE_TOKEN);
-        // .env の値に左右されないよう、閾値と定員を固定する。
-        std::env::set_var("CALL_SFU_THRESHOLD", "4");
-        std::env::set_var("CALL_SFU_MAX_PARTICIPANTS", "50");
-        std::env::remove_var("ACTIVITYPUB_CLOUDFLARE_TUNNEL");
-    }
+    // SFU の設定は、プロセスの環境変数を書き換えずに渡す（同じプロセスで並行に動く `join_latency` の
+    // AppState が、このテストの設定で退出の worker を起動しないように）。閾値と定員も、.env の値に
+    // 左右されないよう固定する。
+    let sfus = sfus.to_string();
+    let sfu_config = backend::call_sfu::CallSfuConfig::from_lookup(&|name| match name {
+        "CALL_SFUS_JSON" => Some(sfus.clone()),
+        "CF_REALTIME_APP_ID" => Some("app".into()),
+        "CF_REALTIME_APP_SECRET" => Some("secret".into()),
+        "LIVEKIT_API_KEY" => Some("key".into()),
+        "LIVEKIT_API_SECRET" => Some("0123456789abcdef0123456789abcdef".into()),
+        "SFU_BRIDGE_TOKEN" => Some(BRIDGE_TOKEN.into()),
+        "CALL_SFU_THRESHOLD" => Some("4".into()),
+        "CALL_SFU_MAX_PARTICIPANTS" => Some("50".into()),
+        _ => None,
+    })
+    .map_err(anyhow::Error::msg)?
+    .expect("sfu config");
+    // クライアントの IP は、テストの要求に付けた接続元（ConnectInfo）で決める。Tunnel の扱いが有効だと
+    // `CF-Connecting-IP` を見るので、LAN の判定が変わる。環境変数は書き換えず、設定されていたら止める。
+    anyhow::ensure!(
+        !matches!(
+            std::env::var("ACTIVITYPUB_CLOUDFLARE_TUNNEL").as_deref(),
+            Ok("true" | "1")
+        ),
+        "unset ACTIVITYPUB_CLOUDFLARE_TUNNEL to run this test"
+    );
 
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
     let mut db = init_db(&config.database_url).await?;
-    let state = AppState::new(db.clone(), config.clone());
+    let state = AppState::with_call_sfu_config(db.clone(), config.clone(), Some(sfu_config));
     assert!(state.call_sfu.is_some());
     let app = create_router(state.clone());
     // LISTEN の接続を待つ（ほかのテストと同じく、待てなければ手で有効にする）。
@@ -1750,6 +1763,8 @@ async fn join_round(
         // 要求ごとに記録先を分け、join 全体の時間と段階ごとの時間を組にする。
         let key = format!("{timings_key}-{}", uuid::Uuid::new_v4());
         async move {
+            // 記録先を先に登録する。join が失敗して途中で返っても、落とせば消える。
+            let collector = backend::routes::call_sfu::register_join_timings_for_test(&key);
             let uri = format!("/api/channels/{channel}/call/sfu/join");
             // 送った時刻。backend は handler の始まりとの差（AuthUser の取り出しなど）を残す。
             let sent_at = std::time::SystemTime::now()
@@ -1773,10 +1788,7 @@ async fn join_round(
             .await?;
             let elapsed = started.elapsed();
             anyhow::ensure!(status == StatusCode::OK, "{status} {body}");
-            Ok::<_, anyhow::Error>((
-                elapsed,
-                backend::routes::call_sfu::take_join_timings_for_test(&key),
-            ))
+            Ok::<_, anyhow::Error>((elapsed, collector.take()))
         }
     };
     let mut lat = Vec::new();
@@ -1958,7 +1970,8 @@ async fn join_latency() -> anyhow::Result<()> {
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
     let mut db = init_db(&config.database_url).await?;
-    let base_state = AppState::new(db.clone(), config.clone());
+    // SFU の設定は環境変数から読まず、下で測る設定（`sfu`）に差し替える。
+    let base_state = AppState::with_call_sfu_config(db.clone(), config.clone(), None);
     for _ in 0..50 {
         if base_state.call_registry.is_listening() {
             break;
@@ -2074,7 +2087,8 @@ async fn join_latency() -> anyhow::Result<()> {
         // cold：新しいプールと AppState で、最初の join。
         {
             let mut cold_db = init_db(&config.database_url).await?;
-            let mut cold_state = AppState::new(cold_db.clone(), config.clone());
+            let mut cold_state =
+                AppState::with_call_sfu_config(cold_db.clone(), config.clone(), None);
             cold_state.call_registry.set_db(cold_db.clone()).await;
             cold_state.call_sfu = Some(sfu.clone());
             let cold_app = create_router(cold_state);

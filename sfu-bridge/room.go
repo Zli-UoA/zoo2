@@ -330,19 +330,31 @@ func (b *roomBridge) publishLocal(speaker string, local *webrtc.TrackLocalStatic
 	return mid, transceiver, nil
 }
 
+// unpush は push をやめる。Cloudflare 側を閉じるのは、ほかの SDP のやり取りと重ならないよう b.negotiate の下で行う
+// （b.mu を持ったまま b.negotiate を取らない）。呼び出し側は b.negotiate を持たない（relayToCloudflare の defer）。
 func (b *roomBridge) unpush(speaker, mid string, transceiver *webrtc.RTPTransceiver) {
 	b.mu.Lock()
 	if p, ok := b.pushed[speaker]; ok && p.mid == mid {
 		delete(b.pushed, speaker)
 	}
 	b.mu.Unlock()
+	b.negotiate.Lock()
+	defer b.negotiate.Unlock()
 	if b.ctx.Err() != nil {
 		return
 	}
+	// stopMidsLocked と同じく、送信を止めてから Cloudflare 側を閉じる。
+	_ = transceiver.Stop()
+	b.closeMidsLocked([]string{mid})
+}
+
+// closeMidsLocked は Cloudflare 側の mid を閉じる。失敗は記録だけする（セッションを閉じれば消える）。b.negotiate を持って呼ぶ。
+func (b *roomBridge) closeMidsLocked(mids []string) {
 	ctx, cancel := context.WithTimeout(b.ctx, negotiateTimeout)
 	defer cancel()
-	_ = b.api.cfClose(ctx, b.cfSession, []string{mid})
-	_ = transceiver.Stop()
+	if err := b.api.cfClose(ctx, b.channelID, b.cfSession, mids); err != nil && b.ctx.Err() == nil {
+		b.log().Warn("closing Cloudflare tracks failed", "mids", mids, "error", err)
+	}
 }
 
 func drainRTCP(sender *webrtc.RTPSender) {
@@ -478,13 +490,19 @@ func (b *roomBridge) pull(reqs []*pulledTrack) {
 	}
 	res, err := b.api.cfPull(ctx, b.channelID, b.cfSession, ids)
 	if err != nil {
-		// 次の一覧の更新（最長 25 秒）で、もう一度 pull する。外すのは、この pull の予約だけ。
-		// 応答を待つあいだに作り直された予約は、新しい pull のものなので残す。
+		// 外すのは、この pull の予約だけ。応答を待つあいだに作り直された予約は、新しい pull のものなので残す。
 		b.mu.Lock()
 		for _, p := range reqs {
 			b.releaseLocked(p)
 		}
 		b.mu.Unlock()
+		if !rejectedBeforeApply(err) {
+			// 時間切れや応答の喪失などで、Cloudflare が pull を受けたか分からない。受けていれば、answer を返していない
+			// 交渉が残り、セッションと手元の PeerConnection が食い違う。中継を作り直させる（supervisor が次の一覧で作り直す）。
+			b.fail(err)
+			return
+		}
+		// backend が Cloudflare に送る前に断った。次の一覧の更新（最長 25 秒）で、もう一度 pull する。
 		b.log().Warn("pull from Cloudflare failed", "error", err)
 		return
 	}
@@ -596,9 +614,7 @@ func (b *roomBridge) stopMidsLocked(mids []string) {
 		delete(b.midSpeaker, mid)
 	}
 	b.mu.Unlock()
-	ctx, cancel := context.WithTimeout(b.ctx, negotiateTimeout)
-	defer cancel()
-	_ = b.api.cfClose(ctx, b.cfSession, mids)
+	b.closeMidsLocked(mids)
 }
 
 func (b *roomBridge) close() {

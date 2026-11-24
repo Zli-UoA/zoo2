@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -96,12 +97,30 @@ func (a *backendAPI) do(ctx context.Context, method, path string, body, out any)
 		return err
 	}
 	if res.StatusCode >= 300 {
-		return fmt.Errorf("%s %s: status %d", method, path, res.StatusCode)
+		return &statusError{method: method, path: path, status: res.StatusCode}
 	}
 	if out == nil {
 		return nil
 	}
 	return json.Unmarshal(data, out)
+}
+
+// statusError は、backend が 2xx 以外を返した。
+type statusError struct {
+	method, path string
+	status       int
+}
+
+func (e *statusError) Error() string {
+	return fmt.Sprintf("%s %s: status %d", e.method, e.path, e.status)
+}
+
+// rejectedBeforeApply は、backend が要求を Cloudflare に送る前に断った（4xx）か。
+// 通信の失敗・時間切れ・5xx（Cloudflare の失敗の中継を含む）・応答の読み取りの失敗では、Cloudflare で
+// 処理されたかどうか分からないので false。
+func rejectedBeforeApply(err error) bool {
+	var se *statusError
+	return errors.As(err, &se) && se.status >= 400 && se.status < 500
 }
 
 func (a *backendAPI) register(ctx context.Context) (int64, error) {
@@ -162,8 +181,10 @@ func (a *backendAPI) cfAnswer(ctx context.Context, cfSession string, answer sess
 	}, nil)
 }
 
-func (a *backendAPI) cfClose(ctx context.Context, cfSession string, mids []string) error {
+// cfClose は mid を閉じる。channel_id があると、backend は bridge が push を閉じた話者のトラックを一覧から外す。
+func (a *backendAPI) cfClose(ctx context.Context, channelID, cfSession string, mids []string) error {
 	return a.do(ctx, http.MethodPost, "/internal/sfu-bridge/cf/close", map[string]any{
+		"channel_id":    channelID,
 		"cf_session_id": cfSession,
 		"mids":          mids,
 	}, nil)

@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   CF_CONNECT_TIMEOUT_MS,
   CF_ICE_GATHERING_TIMEOUT_MS,
+  CF_PULL_RETRY_BASE_MS,
+  CF_PULL_RETRY_MAX_ATTEMPTS,
   CfRealtimeAdapter,
   type CfTracksResponse,
   enableOpusDtx,
@@ -213,6 +215,7 @@ describe("CfRealtimeAdapter", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it("publishes with DTX, then pulls only other speakers and answers renegotiation", async () => {
@@ -428,6 +431,103 @@ describe("CfRealtimeAdapter", () => {
     await adapter.replaceMicTrack(newMic);
     await adapter.start();
     expect(FakePeerConnection.last?.added).toEqual([newMic]);
+    adapter.close();
+  });
+
+  it("pulls a track again when its rev changes, and keeps it while the rev stays", async () => {
+    setup();
+    const pull = vi.fn(async (ids: string[]) => ({
+      tracks: ids.map((id, i) => ({ mid: String(i + 1), trackName: id.split(":")[0] })),
+    }));
+    const api: CfRealtimeApi = {
+      publish: async () => ({ sessionDescription: { type: "answer", sdp: "a" } }),
+      pull,
+      answer: async () => {},
+    };
+    const gone: string[] = [];
+    const bob = (rev: string) => [
+      { id: "bob:direct", session_id: "bob", source: "direct" as const, rev },
+    ];
+    const adapter = new CfRealtimeAdapter(
+      "me",
+      {} as MediaStreamTrack,
+      api,
+      { ...noCallbacks, onRemoteGone: (s) => gone.push(s) },
+      { tracks: bob("r1"), version: 1 },
+    );
+    await adapter.start();
+    await vi.waitFor(() => expect(pull).toHaveBeenCalledTimes(1));
+    // 同じ rev なら pull し直さない。
+    adapter.updateTracks(bob("r1"), 2);
+    await Promise.resolve();
+    expect(pull).toHaveBeenCalledTimes(1);
+    expect(gone).toEqual([]);
+    // 同じ id のまま別のセッションで公開し直された。古い購読をやめて、新しい世代を pull する。
+    adapter.updateTracks(bob("r2"), 3);
+    expect(gone).toEqual(["bob"]);
+    await vi.waitFor(() => expect(pull).toHaveBeenCalledTimes(2));
+    expect(pull).toHaveBeenLastCalledWith(["bob:direct"]);
+    adapter.close();
+  });
+
+  it("retries a failed pull with backoff without waiting for a list update, up to a limit", async () => {
+    setup();
+    vi.useFakeTimers();
+    const pull = vi.fn<(ids: string[]) => Promise<CfTracksResponse>>(async () => {
+      throw new Error("network");
+    });
+    const api: CfRealtimeApi = {
+      publish: async () => ({ sessionDescription: { type: "answer", sdp: "a" } }),
+      pull,
+      answer: async () => {},
+    };
+    const adapter = new CfRealtimeAdapter("me", {} as MediaStreamTrack, api, noCallbacks, {
+      tracks: [{ id: "bob:direct", session_id: "bob", source: "direct" }],
+      version: 1,
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await adapter.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pull).toHaveBeenCalledTimes(1);
+    for (let attempt = 0; attempt < CF_PULL_RETRY_MAX_ATTEMPTS; attempt++) {
+      await vi.advanceTimersByTimeAsync(CF_PULL_RETRY_BASE_MS * 2 ** attempt);
+      expect(pull).toHaveBeenCalledTimes(attempt + 2);
+    }
+    // 上限に達したら、次の一覧の更新まで待つ。
+    await vi.advanceTimersByTimeAsync(
+      CF_PULL_RETRY_BASE_MS * 2 ** (CF_PULL_RETRY_MAX_ATTEMPTS + 2),
+    );
+    expect(pull).toHaveBeenCalledTimes(CF_PULL_RETRY_MAX_ATTEMPTS + 1);
+    adapter.close();
+  });
+
+  it("recovers a failed pull on the retry", async () => {
+    setup();
+    vi.useFakeTimers();
+    const pull = vi
+      .fn<(ids: string[]) => Promise<CfTracksResponse>>()
+      .mockRejectedValueOnce(new Error("network"))
+      .mockImplementation(async (ids) => ({
+        tracks: ids.map((id, i) => ({ mid: String(i + 1), trackName: id.split(":")[0] })),
+      }));
+    const api: CfRealtimeApi = {
+      publish: async () => ({ sessionDescription: { type: "answer", sdp: "a" } }),
+      pull,
+      answer: async () => {},
+    };
+    const adapter = new CfRealtimeAdapter("me", {} as MediaStreamTrack, api, noCallbacks, {
+      tracks: [{ id: "bob:direct", session_id: "bob", source: "direct" }],
+      version: 1,
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await adapter.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pull).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(CF_PULL_RETRY_BASE_MS);
+    expect(pull).toHaveBeenCalledTimes(2);
+    // 成功したら、それ以上 pull しない。
+    await vi.advanceTimersByTimeAsync(CF_PULL_RETRY_BASE_MS * 16);
+    expect(pull).toHaveBeenCalledTimes(2);
     adapter.close();
   });
 });

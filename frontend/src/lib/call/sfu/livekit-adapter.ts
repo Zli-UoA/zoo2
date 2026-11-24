@@ -6,7 +6,7 @@
  * 始まる）が Cloudflare の人の声を publish するときは、トラック名がその人の session_id になる。
  */
 import {
-  type LocalAudioTrack,
+  LocalAudioTrack,
   type RemoteParticipant,
   type RemoteTrack,
   type RemoteTrackPublication,
@@ -79,6 +79,8 @@ export class LiveKitAdapter implements SfuAdapter {
   readonly kind = "livekit" as const;
   private room: Room;
   private localTrack: LocalAudioTrack | null = null;
+  /** 最後に指定されたミュートの状態。publish の前に指定された分も、publish の前に当てる。 */
+  private muted = false;
   private speakers: SpeakerTracks;
   private closed = false;
 
@@ -124,14 +126,21 @@ export class LiveKitAdapter implements SfuAdapter {
     });
     if (this.closed) return;
     const published = this.mic;
-    const publication = await this.room.localParticipant.publishTrack(published, {
+    // マイクは通話側のもの（userProvidedTrack）。ミュート中なら publish の前にミュートしておき、
+    // publish した直後に音を送ったり、ミュートしていない状態を伝えたりしないようにする。
+    const local = new LocalAudioTrack(published, undefined, true);
+    if (this.muted) await local.mute();
+    if (this.closed) return;
+    const publication = await this.room.localParticipant.publishTrack(local, {
       source: Track.Source.Microphone,
       dtx: true,
       red: true,
     });
-    this.localTrack = (publication.track as LocalAudioTrack | undefined) ?? null;
+    this.localTrack = (publication.track as LocalAudioTrack | undefined) ?? local;
+    // publish 中にミュートが切り替わっていたら、今の状態に合わせる。
+    if (this.localTrack.isMuted !== this.muted) await this.setMuted(this.muted);
     // publish 中にマイクが切り替わっていたら、今のマイクに差し替える。
-    if (this.localTrack && this.mic !== published) {
+    if (this.mic !== published) {
       await this.localTrack.replaceTrack(this.mic, { userProvidedTrack: true });
     }
   }
@@ -148,6 +157,7 @@ export class LiveKitAdapter implements SfuAdapter {
   }
 
   async setMuted(muted: boolean): Promise<void> {
+    this.muted = muted;
     if (!this.localTrack) return;
     if (muted) await this.localTrack.mute();
     else await this.localTrack.unmute();
