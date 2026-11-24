@@ -25,6 +25,7 @@ import { MessageRow } from "./MessageRow";
 import type { FeedMessage } from "./messageFormat";
 import { buildMessageItems } from "./messageGrouping";
 import { isNearBottom } from "./messageScroll";
+import { useMessageJumpRequest, useMessageTargetFlash } from "./messageTarget";
 
 const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -241,6 +242,10 @@ export function ThreadPane({
   );
   const atBottomRef = useRef(!hasTargetInReplies);
   const scrolledTarget = useRef<string | undefined>(undefined);
+  // 表示中の対象の返信へのリンクをもう一度押したとき。URL が変わらないので、スクロール済みの印を消して、
+  // 下の効果をもう一度走らせる。対象の行へスクロールしたときには、強調（点滅 → 点灯 → フェードアウト）を再生する。
+  const jumpRequest = useMessageJumpRequest(targetMessageId, scrolledTarget);
+  const { play: playTargetFlash, runFor: targetFlashRun } = useMessageTargetFlash();
   const prevRootIdRef = useRef(root.id);
   // 件数が上限のままでも、新着で末尾の返信が変わったら、最下部にいるときは追従する。
   const lastReplyId = replies[replies.length - 1]?.id;
@@ -295,15 +300,18 @@ export function ThreadPane({
         scrollRef.current?.querySelectorAll<HTMLElement>("[data-message-id]") ?? [],
       ).find((element) => element.dataset.messageId === targetMessageId);
       if (target && scrollRef.current) {
+        // 位置合わせは 2 回走るので、強調は、最初にスクロールできたときだけ再生する。
+        const firstTime = scrolledTarget.current !== targetMessageId;
         atBottomRef.current = false;
         scrolledTarget.current = targetMessageId;
         scrollRef.current.scrollTop = target.offsetTop - scrollRef.current.offsetTop;
+        if (firstTime) playTargetFlash(targetMessageId);
       }
     };
     align();
     const frame = requestAnimationFrame(align);
     return () => cancelAnimationFrame(frame);
-  }, [targetMessageId, replies]);
+  }, [targetMessageId, replies, jumpRequest, playTargetFlash]);
 
   // 幅が変わっても同じ要素ツリーを保つため、ダイアログの属性とフォーカス制御は
   // この要素にだけ付け外しする（Composer の下書きやスクロール位置を失わないため）。
@@ -530,18 +538,10 @@ export function ThreadPane({
         ) : (
           <div role="list">
             {items.map((item) => (
-              <div
-                key={item.message.id}
-                data-message-id={item.message.id}
-                role="listitem"
-                className={
-                  item.message.id === targetMessageId
-                    ? "rounded-lg bg-brand-muted/40 ring-1 ring-brand"
-                    : undefined
-                }
-              >
+              <div key={item.message.id} data-message-id={item.message.id} role="listitem">
                 <MessageRow
                   item={item}
+                  highlightRun={targetFlashRun(item.message.id)}
                   mentionUserId={mentionUserId}
                   isOwn={!!currentUserId && item.message.user_id === currentUserId}
                   canDelete={

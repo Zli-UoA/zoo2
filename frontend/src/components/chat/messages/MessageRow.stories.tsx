@@ -485,6 +485,39 @@ export const MentionedMessage: Story = {
   }),
 };
 
+/** メッセージリンクなどで開いた行。青の背景と左端のアクセントが、3 回点滅してから 1.5 秒点灯し、フェードアウトする。 */
+export const LinkTargetHighlight: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: { highlightRun: 1 },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const overlay = canvasElement.querySelector<HTMLElement>("[data-message-target-highlight]");
+    await expect(overlay).not.toBeNull();
+    // 読み上げには出さず、操作も妨げない。
+    await expect(overlay!.getAttribute("aria-hidden")).toBe("true");
+    await expect(getComputedStyle(overlay!).pointerEvents).toBe("none");
+    // メンションの強調と同じ形式で、左端に 3px のアクセントを持つ。
+    await expect(getComputedStyle(overlay!, "::before").width).toBe("3px");
+  }),
+};
+
+/** メンションの強調がある行でも、同じ強調を重ねる。フェードアウトのあとは、メンションの強調だけが残る。 */
+export const LinkTargetHighlightMentioned: Story = {
+  ...MentionedMessage,
+  parameters: { a11y: { test: "error" } },
+  args: { ...MentionedMessage.args, highlightRun: 1 },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const row = [...canvasElement.querySelectorAll("div")].find((element) =>
+      element.classList.contains("group/row"),
+    );
+    const overlay = canvasElement.querySelector<HTMLElement>("[data-message-target-highlight]");
+    await expect(overlay).not.toBeNull();
+    await expect(overlay!.parentElement).toBe(row);
+    await waitFor(async () => {
+      await expect(getComputedStyle(row!).backgroundColor).toMatch(/(?:,|\/)\s*0\.08\)$/);
+    });
+  }),
+};
+
 export const MentionedChannelMessage: Story = {
   ...MentionedMessage,
   args: {

@@ -23,6 +23,7 @@ import {
   getChannelMeasurementCache,
 } from "./messageScroll";
 import { MessageList } from "./MessageList";
+import { requestMessageJump } from "./messageLink";
 import { ThreadPane } from "./ThreadPane";
 
 const mockCollection = {
@@ -1132,6 +1133,15 @@ describe("MessageList and ThreadPane initial bottom landing & channel switch", (
       scroller().querySelector<HTMLAnchorElement>(`a[href="/channels/${channelId}?message=j-8"]`);
 
     await waitFor(() => expect(targetInView()).toBe(true));
+    // 対象の行へスクロールしたら、その行だけを強調する（常時の枠線は付けない）。
+    const targetOverlay = () =>
+      scroller().querySelector<HTMLElement>(
+        '[data-message-id="j-8"] [data-message-target-highlight]',
+      );
+    await waitFor(() => expect(targetOverlay()).toBeTruthy());
+    expect(scroller().querySelector('[data-message-id="j-8"]')!.className).not.toContain("ring");
+    expect(scroller().querySelectorAll("[data-message-target-highlight]")).toHaveLength(1);
+    const firstOverlay = targetOverlay()!;
 
     // 読み進めて、対象から離れる。URL は `?message=j-8` のまま。
     scroller().scrollTop = scroller().scrollHeight;
@@ -1152,10 +1162,85 @@ describe("MessageList and ThreadPane initial bottom landing & channel switch", (
       document.removeEventListener("click", stopNavigation);
     }
 
-    // 普通のクリックで、同じ場所への移動になっても、対象の行へ戻る。
+    // 普通のクリックで、同じ場所への移動になっても、対象の行へ戻り、強調を最初から再生し直す。
     fireEvent.click(bodyLink()!);
     await waitFor(() => expect(targetInView()).toBe(true));
+    await waitFor(() => {
+      expect(targetOverlay()).toBeTruthy();
+      expect(targetOverlay()).not.toBe(firstOverlay);
+    });
     expect(router.state.location.href).toBe(`/channels/${channelId}?message=j-8`);
+  });
+
+  it("highlights the target reply in ThreadPane once and replays it when the link is pressed again", async () => {
+    const root = makeMessage("root-h", 0, 2, "chan-thread-h");
+    const replies = Array.from(
+      { length: 40 },
+      (_, index) =>
+        ({
+          ...makeMessage(`reply-${index}`, index + 1, 4, "chan-thread-h"),
+          parent_id: "root-h",
+        }) as FeedMessage,
+    );
+    render(
+      <CollectionsProvider value={testCollections}>
+        <LocaleProvider>
+          <div style={{ position: "relative", width: 800, height: 480, display: "flex" }}>
+            <ThreadPane
+              root={root}
+              replies={replies}
+              targetMessageId="reply-3"
+              isLoading={false}
+              isError={false}
+              currentUserId="alice"
+              reactions={new Map()}
+              kitchenCatalog={null}
+              canReact={false}
+              onReaction={noop}
+              onPickReaction={noop}
+              editingId={null}
+              editingText=""
+              onEditingTextChange={noop}
+              onStartEdit={noop}
+              onCancelEdit={noop}
+              onSaveEdit={noop}
+              onRequestDelete={noop}
+              onSendReply={async () => true}
+              onClose={noop}
+            />
+          </div>
+        </LocaleProvider>
+      </CollectionsProvider>,
+    );
+    const scroller = () =>
+      document.querySelector<HTMLElement>('[data-scroll-restoration-id="thread-scroll:root-h"]')!;
+    const row = () => scroller().querySelector<HTMLElement>('[data-message-id="reply-3"]')!;
+    const overlay = () =>
+      row().querySelector<HTMLElement>("[data-message-target-highlight]") ?? undefined;
+    const inView = () => {
+      const sr = scroller().getBoundingClientRect();
+      const tr = row().getBoundingClientRect();
+      return tr.top >= sr.top - 4 && tr.bottom <= sr.bottom + 4;
+    };
+
+    // 対象の返信へスクロールしたら、その行だけを強調する。常時の枠線は付けない。
+    await waitFor(() => {
+      expect(inView()).toBe(true);
+      expect(overlay()).toBeTruthy();
+    });
+    expect(row().className).not.toContain("ring");
+    expect(scroller().querySelectorAll("[data-message-target-highlight]")).toHaveLength(1);
+    const first = overlay()!;
+
+    // 離れてから、すでに表示中の対象へのリンクをもう一度押すと、戻って最初から強調し直す。
+    scroller().scrollTop = scroller().scrollHeight;
+    await waitFor(() => expect(inView()).toBe(false));
+    requestMessageJump("reply-3");
+    await waitFor(() => {
+      expect(inView()).toBe(true);
+      expect(overlay()).toBeTruthy();
+      expect(overlay()).not.toBe(first);
+    });
   });
 
   it("opens directly at bottom (or targetMessageId) in ThreadPane without an initial scrollTop=0 flash", async () => {

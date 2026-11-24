@@ -346,6 +346,8 @@
         "Default",
         "MentionedMessage",
         "MentionedChannelMessage",
+        "LinkTargetHighlight",
+        "LinkTargetHighlightMentioned",
         "EncryptedBeforeEncryptionRow",
         "EncryptedUnencryptedAfterEncryptedRow",
         "OwnMessage",
