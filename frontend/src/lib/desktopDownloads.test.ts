@@ -207,6 +207,40 @@ describe("downloadUrlToDesktop", () => {
     expect(Math.max(...fractions.filter((value): value is number => value !== null))).toBe(1);
   });
 
+  it("reports progress for a CORS response when attachment size is known", async () => {
+    desktop.detect.mockResolvedValue(true);
+    desktop.settings.mockResolvedValue({ ask_every_time: true, directory: null });
+    desktop.begin.mockResolvedValue(started());
+    desktop.write.mockResolvedValue(undefined);
+    desktop.finish.mockResolvedValue("a.txt");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        const response = new Response(new Uint8Array([1, 2, 3, 4]), {
+          headers: { "content-length": "4" },
+        });
+        Object.defineProperty(response, "type", { value: "cors" });
+        return response;
+      }),
+    );
+    const resolve = vi.fn().mockResolvedValue("https://files.test/a");
+    const fractions: Array<number | null> = [];
+    const unsubscribe = subscribeDesktopDownloads(() => {
+      const state = desktopDownloadState("cors-known");
+      if (state?.status === "downloading") fractions.push(state.fraction);
+    });
+
+    await expect(downloadUrlToDesktop("cors-known", "a.txt", resolve, { size: 4 })).resolves.toBe(
+      "a.txt",
+    );
+
+    unsubscribe();
+    expect(fractions.at(-1)).toBe(1);
+    // CORS 応答でも既知の添付サイズがあれば進捗割合を出せる。
+    expect(fractions.some((value) => typeof value === "number" && value >= 0)).toBe(true);
+    expect(fractions).not.toContain(null);
+  });
+
   it("reports indeterminate progress for a compressed response", async () => {
     desktop.detect.mockResolvedValue(true);
     desktop.settings.mockResolvedValue({ ask_every_time: true, directory: null });

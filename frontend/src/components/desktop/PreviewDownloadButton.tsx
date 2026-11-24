@@ -1,4 +1,4 @@
-import { useCallback, useId, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { useDesktopSave, type DesktopSavePrepared } from "../../hooks/useDesktopSave";
@@ -41,6 +41,7 @@ export function PreviewDownloadButton({
   const { t } = useTranslation();
   const generatedId = useId();
   const saveId = id ?? generatedId;
+  const [lockedSaveId, setLockedSaveId] = useState<string | null>(null);
   const [externalSrc, setExternalSrc] = useState<string | null>(null);
   const useExternalLink = externalSrc === src;
   const staticUrl = useCallback(async () => src, [src]);
@@ -80,8 +81,9 @@ export function PreviewDownloadButton({
     [urlResolver],
   );
   // src が保存中に変わっても、失敗通知は保存開始時の src にだけ適用する。
+  const effectiveSaveId = lockedSaveId ?? saveId;
   const { state, pending, available, download, cancel } = useDesktopSave({
-    id: saveId,
+    id: effectiveSaveId,
     fileName: name,
     source: { kind: "url", resolveUrl: urlResolver, size, prepare },
     fallback: async () => {
@@ -99,6 +101,13 @@ export function PreviewDownloadButton({
       }
     },
   });
+  useEffect(() => {
+    if (!state && !pending && lockedSaveId) setLockedSaveId(null);
+  }, [state, pending, lockedSaveId]);
+  const handleDownload = useCallback(() => {
+    if (!lockedSaveId && !state && !pending) setLockedSaveId(saveId);
+    void download();
+  }, [download, lockedSaveId, pending, saveId, state]);
 
   if (useExternalLink || available === false) {
     return src.startsWith("blob:") ? (
@@ -123,7 +132,7 @@ export function PreviewDownloadButton({
       cancelShortLabel={t("attachments.cancelDownloadShort")}
       finishingLabel={t("attachments.saving")}
       progressLabel={t("attachments.downloading")}
-      onDownload={() => void download()}
+      onDownload={handleDownload}
       onCancel={cancel}
     />
   );

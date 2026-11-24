@@ -415,8 +415,10 @@ async function writeResponse(
   response: Response,
   signal: AbortSignal,
   report: ProgressReporter,
+  knownTotal?: number | null,
 ): Promise<void> {
-  const total = contentLength(response);
+  const total =
+    contentLength(response) ?? (knownTotal != null && knownTotal > 0 ? knownTotal : null);
   const reader = response.body?.getReader();
   const written = { value: 0 };
   if (!reader) {
@@ -497,7 +499,7 @@ export async function downloadUrlToDesktop(
         discardResponse(response);
         throw new DesktopDownloadCancelledError();
       }
-      await writeResponse(downloadId, response, signal, report);
+      await writeResponse(downloadId, response, signal, report, options.size);
     },
     retryDelayMs,
     options.controller,
