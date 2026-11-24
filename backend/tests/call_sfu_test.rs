@@ -1809,17 +1809,26 @@ async fn join_round(
 #[derive(Default)]
 struct JoinSummary {
     join: Vec<Duration>,
-    /// 要求ごとの、接続の取得の合計。
+    /// 要求ごとの、接続の取得の合計（AuthUser の取り出しの分を含む）。
     db_acquire_total: Vec<Duration>,
-    /// 要求ごとの、SQL の合計（BEGIN・ロック・COMMIT・ロックのあとの `SELECT 1` を含む）。
+    /// 要求ごとの、SQL の合計（BEGIN・ロック・COMMIT・ロックのあとの `SELECT 1`・新しい接続かの確認・
+    /// AuthUser の取り出しの分を含む）。
     db_sql_total: Vec<Duration>,
-    /// 送ってから handler が始まるまで（AuthUser の取り出しの DB を含む）。
-    pre_handler: Vec<Duration>,
-    /// join − db_acquire_total − db_sql_total − pre_handler（Cloudflare の API、トークンの署名、応答の組み立てなど）。
+    /// 送ってから handler が始まるまでから、AuthUser の取り出しの DB（取得と SQL）を引いたもの。
+    pre_handler_rest: Vec<Duration>,
+    /// AuthUser の取り出しの、接続の取得と SQL（BEGIN と確認の SQL）。
+    auth_user_acquire: Vec<Duration>,
+    auth_user_sql: Vec<Duration>,
+    /// join − db_acquire_total − db_sql_total − pre_handler_rest（Cloudflare の API、トークンの署名、応答など）。
     other: Vec<Duration>,
     /// 段階ごと（`acquire:名前`・`sql:名前`）の時間。
     phases: std::collections::BTreeMap<String, Vec<Duration>>,
     lock_wait: Vec<Duration>,
+    /// 接続の取得のうち、新しい接続を開いたものと、プールの接続を使ったもの。
+    new_acquires: Vec<Duration>,
+    reused_acquires: Vec<Duration>,
+    /// 新しい接続を開いた取得の、段階ごとの数。
+    new_by_phase: std::collections::BTreeMap<String, usize>,
 }
 
 fn merge_join_timings(
@@ -1829,12 +1838,22 @@ fn merge_join_timings(
     for (elapsed, t) in rows {
         let acquire: Duration = t.acquire.values().flatten().sum();
         let sql: Duration = t.sql.values().flatten().sum();
+        let auth_acquire: Duration = t.acquire.get("auth_user").into_iter().flatten().sum();
+        let auth_sql: Duration = ["auth_user_begin", "auth_user", "probe_auth_user"]
+            .iter()
+            .filter_map(|n| t.sql.get(*n))
+            .flatten()
+            .sum();
         let pre: Duration = t.pre_handler.iter().sum();
+        let pre_rest = pre.saturating_sub(auth_acquire + auth_sql);
         sum.join.push(elapsed);
         sum.db_acquire_total.push(acquire);
         sum.db_sql_total.push(sql);
-        sum.pre_handler.extend(t.pre_handler);
-        sum.other.push(elapsed.saturating_sub(acquire + sql + pre));
+        sum.pre_handler_rest.push(pre_rest);
+        sum.auth_user_acquire.push(auth_acquire);
+        sum.auth_user_sql.push(auth_sql);
+        sum.other
+            .push(elapsed.saturating_sub(acquire + sql + pre_rest));
         for (name, v) in t.acquire {
             sum.phases
                 .entry(format!("acquire:{name}"))
@@ -1848,8 +1867,67 @@ fn merge_join_timings(
                 .extend(v);
         }
         sum.lock_wait.extend(t.lock_wait);
+        for a in t.acquires {
+            if a.new_connection {
+                sum.new_acquires.push(a.elapsed);
+                *sum.new_by_phase.entry(a.name).or_default() += 1;
+            } else {
+                sum.reused_acquires.push(a.elapsed);
+            }
+        }
     }
     sum
+}
+
+/// 新しい接続を開く時間を、直接測る。`concurrency` 本を同時に開き、それぞれの時間を返す。
+/// toasty（backend と同じドライバー）の新しいプールから、取得のたびに新しい接続を開く。
+async fn fresh_connects(url: &str, concurrency: usize) -> anyhow::Result<Vec<Duration>> {
+    let db = init_db(url).await?;
+    // 同時に取るので、プールの上限まで新しく開く。上限を超えた分は、開いた接続の空きを待つ。
+    let tasks: Vec<_> = (0..concurrency)
+        .map(|_| {
+            let db = db.clone();
+            tokio::spawn(async move {
+                let started = std::time::Instant::now();
+                let mut conn = db.connection().await?;
+                let elapsed = started.elapsed();
+                toasty::sql::query("SELECT 1").exec(&mut conn).await?;
+                // 少し持って、ほかのタスクが同じ接続を使い回さないようにする。
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                Ok::<_, anyhow::Error>(elapsed)
+            })
+        })
+        .collect();
+    let mut out = Vec::new();
+    for t in tasks {
+        out.push(t.await??);
+    }
+    Ok(out)
+}
+
+/// `tokio_postgres` で、プールを通さずに接続を開く時間（接続と認証、`SELECT 1` の手前まで）。
+async fn raw_connects(url: &str, concurrency: usize) -> anyhow::Result<Vec<Duration>> {
+    let tasks: Vec<_> = (0..concurrency)
+        .map(|_| {
+            let url = url.to_string();
+            tokio::spawn(async move {
+                let started = std::time::Instant::now();
+                let (client, connection) =
+                    tokio_postgres::connect(&url, tokio_postgres::NoTls).await?;
+                let elapsed = started.elapsed();
+                let handle = tokio::spawn(connection);
+                client.simple_query("SELECT 1").await?;
+                drop(client);
+                let _ = handle.await;
+                Ok::<_, anyhow::Error>(elapsed)
+            })
+        })
+        .collect();
+    let mut out = Vec::new();
+    for t in tasks {
+        out.push(t.await??);
+    }
+    Ok(out)
 }
 
 /// `sfu/join` の待ち時間の計測（手で実行する。`cargo test --test call_sfu_test -- --ignored join_latency --nocapture`）。
@@ -1904,6 +1982,41 @@ async fn join_latency() -> anyhow::Result<()> {
         )
     };
     let mut report = Vec::new();
+    let summary_or_none = |v: &mut Vec<Duration>| {
+        if v.is_empty() {
+            "samples=0".to_string()
+        } else {
+            summary(v)
+        }
+    };
+    // 新しい接続を開く時間を、直接測る。
+    {
+        let pool_max = init_db(&config.database_url)
+            .await?
+            .pool()
+            .status()
+            .max_size;
+        report.push(format!("pool max_size={pool_max}"));
+        let mut one = Vec::new();
+        for _ in 0..10 {
+            one.extend(raw_connects(&config.database_url, 1).await?);
+        }
+        report.push(format!(
+            "fresh connect, tokio_postgres, 1 at a time (x10)\n  connect {}",
+            summary(&mut one)
+        ));
+        let mut burst = raw_connects(&config.database_url, 30).await?;
+        report.push(format!(
+            "fresh connect, tokio_postgres, 30 at once\n  connect {}",
+            summary(&mut burst)
+        ));
+        // 1 本ずつの値は、`init_db` が作るときに開いた接続を取るので測れない（tokio_postgres の 1 本ずつで見る）。
+        let mut burst = fresh_connects(&config.database_url, pool_max).await?;
+        report.push(format!(
+            "fresh connect, toasty pool, {pool_max} at once (pool max)\n  connect {}",
+            summary(&mut burst)
+        ));
+    }
     for delay_ms in [0u64, 100] {
         let cf = MockServer::start().await;
         Mock::given(method("POST"))
@@ -1936,14 +2049,21 @@ async fn join_latency() -> anyhow::Result<()> {
         let line =
             |label: String, rows: Vec<(Duration, backend::routes::call_sfu::JoinTimings)>| {
                 let mut m = merge_join_timings(rows);
+                let new_count = m.new_acquires.len();
+                let total_count = new_count + m.reused_acquires.len();
                 let mut out = format!(
-                    "{label}\n  join                 {}\n  db_acquire_total     {}\n  db_sql_total         {}\n  pre_handler          {}\n  other                {}\n  lock_wait            {}",
+                    "{label}\n  join                 {}\n  db_acquire_total     {}\n  db_sql_total         {}\n  pre_handler_rest     {}\n  other                {}\n  auth_user_acquire    {}\n  auth_user_sql        {}\n  lock_wait            {}\n  new_connections      {new_count} of {total_count} acquires {:?}\n  acquire_new          {}\n  acquire_reused       {}",
                     summary(&mut m.join),
                     summary(&mut m.db_acquire_total),
                     summary(&mut m.db_sql_total),
-                    summary(&mut m.pre_handler),
+                    summary(&mut m.pre_handler_rest),
                     summary(&mut m.other),
-                    summary(&mut m.lock_wait),
+                    summary(&mut m.auth_user_acquire),
+                    summary(&mut m.auth_user_sql),
+                    summary_or_none(&mut m.lock_wait),
+                    m.new_by_phase,
+                    summary_or_none(&mut m.new_acquires),
+                    summary_or_none(&mut m.reused_acquires),
                 );
                 for (name, v) in m.phases.iter_mut() {
                     out.push_str(&format!("\n  {name:<20} {}", summary(v)));

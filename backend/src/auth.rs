@@ -725,7 +725,15 @@ impl FromRequestParts<AppState> for AuthUser {
     type Rejection = AppError;
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, AppError> {
         let actor = Self::resolve_request(parts, state).await?;
-        crate::apps::events::active_user(state, &actor.id).await?;
+        // `sfu/join` の計測（開発用の認証で、`X-Test-Join-Timings` があるときだけ）。そのときは同じ確認を、
+        // 接続の取得と SQL を分けて測りながら行う。それ以外は、どのルートでも今までどおり。
+        if let Some(key) =
+            crate::routes::call_sfu::JoinTimingKey::for_extractor(state, &parts.headers)
+        {
+            crate::routes::call_sfu::timed_active_user(state, &key, &actor.id).await?;
+        } else {
+            crate::apps::events::active_user(state, &actor.id).await?;
+        }
         Ok(actor)
     }
 }

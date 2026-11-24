@@ -370,11 +370,62 @@ async fn acquire(
     name: &str,
 ) -> Result<toasty::Connection, AppError> {
     let started = std::time::Instant::now();
-    let conn = db.connection().await?;
+    let mut conn = db.connection().await?;
     if let Some(key) = timings {
-        key.acquire_time(name, started.elapsed());
+        let elapsed = started.elapsed();
+        key.acquire_time(name, elapsed);
+        probe_connection(&mut conn, key, name, elapsed).await?;
     }
     Ok(conn)
+}
+
+/// 計測：取った接続が、この取得で新しく開いたものかを調べる。接続（サーバー側のプロセス）の年齢が、
+/// 取得にかかった時間（と少しの余裕）以下なら、取得のあいだに開いた新しい接続。調べる SQL の時間は
+/// `probe_{name}` として SQL に残す。
+async fn probe_connection(
+    conn: &mut toasty::Connection,
+    key: &JoinTimingKey,
+    name: &str,
+    acquire: Duration,
+) -> Result<(), AppError> {
+    let started = std::time::Instant::now();
+    let rows = toasty::sql::query(
+        "SELECT (extract(epoch FROM clock_timestamp() - backend_start) * 1000000)::bigint::text
+         FROM pg_stat_activity WHERE pid = pg_backend_pid()",
+    )
+    .exec(&mut *conn)
+    .await?;
+    key.sql_time(&format!("probe_{name}"), started.elapsed());
+    let age = first_text(rows)
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_micros);
+    let new_connection =
+        age.is_some_and(|age| age <= acquire + started.elapsed() + Duration::from_millis(5));
+    key.push(|t| {
+        t.acquires.push(AcquireEvent {
+            name: name.to_string(),
+            elapsed: acquire,
+            new_connection,
+        })
+    });
+    Ok(())
+}
+
+/// 計測：`AuthUser` の取り出しのときの、有効なユーザーかの確認（`apps::events::active_user` と同じ）を、
+/// 接続の取得（`auth_user`）、BEGIN（`auth_user_begin`）、SQL（`auth_user`）に分けて測りながら行う。
+pub(crate) async fn timed_active_user(
+    state: &AppState,
+    key: &JoinTimingKey,
+    user: &str,
+) -> Result<(), AppError> {
+    let mut conn = acquire(&state.db, Some(key), "auth_user").await?;
+    let mut tx = begin(&mut conn, Some(key), "auth_user_begin").await?;
+    timed_sql(
+        Some(key),
+        "auth_user",
+        crate::apps::events::active_user_tx(&mut tx, user),
+    )
+    .await
 }
 
 /// 取った接続でトランザクションを始める（計測するときは、`name` で BEGIN の往復の時間を残す）。
@@ -436,7 +487,19 @@ async fn lock_channel(
 /// テスト用（join の計測）：join の各段階にかかった時間を、要求ごとの記録先に残す。開発用の認証が有効な
 /// ときだけ、`X-Test-Join-Timings` ヘッダーで記録先の名前を指定できる。名前ごとに分けるので、同じプロセスで
 /// 並行に動くほかのテストの要求は混ざらない。ヘッダーがなければ、どの段階も記録しない（本番の処理は変わらない）。
-struct JoinTimingKey(String);
+pub(crate) struct JoinTimingKey(String);
+
+/// 計測：接続の取得 1 回分。
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct AcquireEvent {
+    /// 段階の名前（`acquire` の名前と同じ）。
+    pub name: String,
+    /// 取得にかかった時間。
+    pub elapsed: Duration,
+    /// この取得のあいだに、新しい接続を開いたか。
+    pub new_connection: bool,
+}
 
 /// 記録先ごとの時間。
 #[doc(hidden)]
@@ -448,6 +511,8 @@ pub struct JoinTimings {
     pub sql: std::collections::BTreeMap<String, Vec<Duration>>,
     /// ロックの文から、同じ接続での `SELECT 1` を引いたもの（ロック待ちの目安）。
     pub lock_wait: Vec<Duration>,
+    /// 接続の取得ごとの、時間と、新しい接続を開いたか。
+    pub acquires: Vec<AcquireEvent>,
     /// 要求を送ってから、handler が始まるまで（`X-Test-Join-Sent-At` があるとき）。ルーティング、本文の読み取り、
     /// `AuthUser` の取り出し（ユーザーの解決と有効なユーザーかの確認。DB を読む）を含む。
     pub pre_handler: Vec<Duration>,
@@ -458,6 +523,17 @@ static JOIN_TIMINGS: std::sync::LazyLock<
 > = std::sync::LazyLock::new(Default::default);
 
 impl JoinTimingKey {
+    /// `AuthUser` の取り出しで使う。開発用の認証のときだけヘッダーを見る（本番では見ない）。
+    pub(crate) fn for_extractor(state: &AppState, headers: &HeaderMap) -> Option<Self> {
+        if !state.config.dev_auth_enabled {
+            return None;
+        }
+        headers
+            .get("X-Test-Join-Timings")
+            .and_then(|v| v.to_str().ok())
+            .map(|k| Self(k.to_string()))
+    }
+
     fn from_headers(state: &AppState, headers: &HeaderMap) -> Option<Self> {
         if !state.config.dev_auth_enabled {
             return None;
