@@ -203,6 +203,31 @@ it("switches to the external link when the preview body cannot be fetched", asyn
   expect(invoke).not.toHaveBeenCalledWith("zoo_download_finish", { id: "dl" });
 });
 
+it("does not replace an expired blob URL with a stale external link", async () => {
+  const invoke = desktopInvoke();
+  mockDesktop(invoke);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    }),
+  );
+  const failed = vi.spyOn(toast, "error").mockReturnValue("failed");
+
+  render(
+    <LocaleProvider>
+      <PreviewDownloadButton name="report.txt" src="blob:expired" showLabel />
+    </LocaleProvider>,
+  );
+  fireEvent.click(await screen.findByRole("button", { name: "report.txtをダウンロード" }));
+
+  await waitFor(() =>
+    expect(failed).toHaveBeenCalledWith("ダウンロードできませんでした。", undefined),
+  );
+  expect(screen.queryByRole("link")).toBeNull();
+  expect(invoke).not.toHaveBeenCalledWith("zoo_download_begin", expect.anything());
+});
+
 it("cancels while the preview body is still being opened", async () => {
   const invoke = desktopInvoke();
   mockDesktop(invoke);

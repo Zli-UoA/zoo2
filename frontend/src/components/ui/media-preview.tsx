@@ -35,7 +35,7 @@ export function MediaPreview({
   onError?: () => void;
   onOpen?: () => void;
   footer?: ReactNode;
-  /** 署名付き URL を更新できるときは、保存ボタンへ渡す。 */
+  /** ダイアログを最初から開くか。 */
   initialOpen?: boolean;
   /** The native host already provides the preview window and close control. */
   embedded?: boolean;

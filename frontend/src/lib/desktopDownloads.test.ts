@@ -207,6 +207,38 @@ describe("downloadUrlToDesktop", () => {
     expect(Math.max(...fractions.filter((value): value is number => value !== null))).toBe(1);
   });
 
+  it("reports indeterminate progress for a compressed response", async () => {
+    desktop.detect.mockResolvedValue(true);
+    desktop.settings.mockResolvedValue({ ask_every_time: true, directory: null });
+    desktop.begin.mockResolvedValue(started());
+    desktop.write.mockResolvedValue(undefined);
+    desktop.finish.mockResolvedValue("a.txt");
+    // Content-Length は圧縮後の 2 バイトだが、実際に読む本文は 4 バイト。
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(new Uint8Array([1, 2, 3, 4]), {
+            headers: { "content-length": "2", "content-encoding": "gzip" },
+          }),
+      ),
+    );
+    const resolve = vi.fn().mockResolvedValue("https://files.test/a");
+    const fractions: Array<number | null> = [];
+    const unsubscribe = subscribeDesktopDownloads(() => {
+      const state = desktopDownloadState("compressed");
+      if (state?.status === "downloading") fractions.push(state.fraction);
+    });
+
+    await expect(downloadUrlToDesktop("compressed", "a.txt", resolve)).resolves.toBe("a.txt");
+
+    unsubscribe();
+    expect(desktop.begin).toHaveBeenCalledWith("a.txt");
+    expect(fractions).toContain(null);
+    expect(fractions.filter((value) => value !== null && value > 0 && value < 1)).toEqual([]);
+    expect(fractions.at(-1)).toBe(1);
+  });
+
   it("passes the attachment size to the app so the app can set the limit", async () => {
     desktop.begin.mockResolvedValue(started());
     desktop.write.mockResolvedValue(undefined);

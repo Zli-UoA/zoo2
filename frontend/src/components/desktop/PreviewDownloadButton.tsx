@@ -42,6 +42,8 @@ export function PreviewDownloadButton({
   const useExternalLink = externalSrc === src;
   const staticUrl = useCallback(async () => src, [src]);
   const urlResolver = resolveUrl ?? staticUrl;
+  // 失効した blob: URL は差し替える先がないため、外部リンクへは切り替えない。
+  const isBlob = src.startsWith("blob:");
   // 保存ダイアログの前に本文を確認する。CORS で読めないときはダイアログを出さずに
   // リンクへ切り替え、Content-Length があれば保存の上限判定に渡す。
   const prepare = useCallback(
@@ -84,11 +86,11 @@ export function PreviewDownloadButton({
     // CORS やオフラインで本文が読めないときだけ、別タブのリンクへ案内する。
     // URL の取得や HTTP のエラーは通常のダウンロード失敗として伝える。
     describeError: (error) =>
-      error instanceof AttachmentDownloadError && error.reason === "network"
+      error instanceof AttachmentDownloadError && error.reason === "network" && !isBlob
         ? { message: t("attachments.previewSaveUnsupported") }
         : undefined,
     onFailure: (error) => {
-      if (error instanceof AttachmentDownloadError && error.reason === "network") {
+      if (error instanceof AttachmentDownloadError && error.reason === "network" && !isBlob) {
         setExternalSrc(src);
       }
     },
