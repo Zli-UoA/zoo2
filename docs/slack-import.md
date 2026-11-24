@@ -394,3 +394,20 @@ kubectl -n zoo2 exec -i deploy/zoo-slack-worker -- /home/nonroot/zoo_slack_refor
 既にスレッドに属する返信は、再取り込みで本文や親を更新しない。INSERTのBEFOREトリガーはON CONFLICTより先に動くため、既存返信への不要なINSERTを先に除外し、削除済みの親を新規返信の親として検証し直さない。新規返信や親が未設定の既存行では、従来のスレッド制約と親の補完を維持する。
 
 総メッセージ数をN、取り込む日付ファイル内の投稿数をMとすると、除外判定は各投稿IDの主キー検索でO(log N)、ファイル全体ではO(M log N)。履歴やチャンネル全体を列挙しない。親の補完も主キーと既存のparent_idインデックスを使い、追加の全履歴ソートやOFFSETを導入しない。
+
+## Slack メッセージ転送（引用）の反映と過去投稿バックフィル
+
+Slack の転送・引用投稿やメッセージパーマリンク展開は `attachments` 内の `is_share: true` または `is_msg_unfurl: true` として記録される。`SlackMessage::forwarded_refs` は同一ワークスペースの参照を `channel_id` + `ts` または `/archives/<ch>/p<digits>` から抽出し（他ワークスペースは除外、最大 5 件）、コメントなし転送投稿も `is_importable()` の対象に含める。
+
+- **ID 解決と権限境界**: 参照先は `slack_message_map`、無ければ決定的な `slack::message_id(team, slack_channel_id, ts)` へ解決して `messages.forwarded_message_ids` に保存する。転送元チャンネルが未取り込みの場合でも本文はスナップショットせず、閲覧時は解決 API が `unavailable` を返す（後から転送元チャンネルを取り込めばそのまま表示される）。
+- **既存投稿・スレッド返信の補完**: ZIP の再取り込み（`worker::insert_message`）および差分同期・イベント反映（`hints::edit`）は、既に取り込み済みの Slack 由来メッセージ（`parent_id IS NOT NULL` のスレッド返信を含む）で `forwarded_message_ids IS NULL` の行について、`updated_at` と `revision` を変えずに `forwarded_message_ids` を補完する。
+- **過去投稿バックフィル CLI (`zoo_slack_backfill_forwards`)**:
+
+```bash
+# 既定は dry-run（書き込みなし・件数集計のみ）
+kubectl -n zoo2 exec deploy/zoo-slack-worker -- /home/nonroot/zoo_slack_backfill_forwards
+# 書き込みを実行（チャンネルや開始 ts・最大ページ数で絞り込み可能）
+kubectl -n zoo2 exec deploy/zoo-slack-worker -- /home/nonroot/zoo_slack_backfill_forwards --apply [--channel <id>] [--oldest <slack_ts>] [--max-pages <N>]
+```
+
+暗号化チャンネル・削除済み・Zoo 起点（`origin = 'zoo'`）は対象外で、`updated_at`・`revision` を増やさずに欠損した `forwarded_message_ids` の補完と未取り込みだったコメントなし転送の挿入を冪等に行う。
