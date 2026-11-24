@@ -435,7 +435,8 @@ internal fun sharedFileName(name: String, maxBytes: Int = 255 - 37): String {
     val stem = StringBuilder()
     var used = 0
     var index = 0
-    val base = clean.substring(0, clean.length - extension.length)
+    // 拡張子を残せないときは、縮めた末尾が新しい拡張子（`.exe` など）にならないよう、ドットを `_` にする。
+    val base = clean.substring(0, clean.length - extension.length).let { if (extension.isEmpty()) it.replace('.', '_') else it }
     while (index < base.length) {
         val end = base.offsetByCodePoints(index, 1)
         val size = bytes(base.substring(index, end))

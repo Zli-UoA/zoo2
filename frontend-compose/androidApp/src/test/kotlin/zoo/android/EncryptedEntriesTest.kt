@@ -106,6 +106,11 @@ class EncryptedEntriesTest {
         assertTrue(emoji.toByteArray().size <= 255 - 37)
         assertEquals(emoji, String(emoji.toByteArray()))
         assertTrue(emoji.endsWith(".pdf"))
+        // 長すぎる拡張子を残せないとき、縮めた末尾に別の拡張子（.exe）を作らない。
+        val hidden = sharedFileName("a".repeat(210) + ".exe." + "x".repeat(40))
+        assertTrue(hidden.toByteArray().size <= 255 - 37)
+        assertTrue('.' !in hidden)
+        assertTrue(zoo.attachmentType(hidden, "application/octet-stream") != null)
     }
 
     @Test
