@@ -379,33 +379,54 @@ async fn acquire(
     Ok(conn)
 }
 
-/// 計測：取った接続が、この取得で新しく開いたものかを調べる。接続（サーバー側のプロセス）の年齢が、
-/// 取得にかかった時間（と少しの余裕）以下なら、取得のあいだに開いた新しい接続。調べる SQL の時間は
-/// `probe_{name}` として SQL に残す。
+/// 計測：取った接続が、この取得で新しく開いたものかを推定する。
+///
+/// プールが接続を開いた時点の情報は toasty から取れないので、次の 2 つがそろったときに「新しい接続（推定）」とする。
+/// - その接続のサーバー側のプロセス（`pg_backend_pid()`）を、計測した取得で初めて見た。
+/// - そのプロセスの年齢（`backend_start` から）が、取得にかかった時間（と少しの余裕）以下。
+///
+/// 1 つ目で、ほかの計測した要求が少し前に開いて返した接続を、使い回したときに新しいと数えないようにする。
+/// 計測しない要求（SSE など）が取得のあいだに開いて返した接続は、区別できない（`join_latency` では、計測中に
+/// そのような要求は出さない）。調べる SQL の時間は `probe_{name}` として SQL に残す。
 async fn probe_connection(
     conn: &mut toasty::Connection,
     key: &JoinTimingKey,
     name: &str,
     acquire: Duration,
 ) -> Result<(), AppError> {
+    static SEEN_BACKENDS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::LazyLock::new(Default::default);
     let started = std::time::Instant::now();
     let rows = toasty::sql::query(
-        "SELECT (extract(epoch FROM clock_timestamp() - backend_start) * 1000000)::bigint::text
+        "SELECT json_build_object(
+                  'pid', pg_backend_pid(),
+                  'age_us', (extract(epoch FROM clock_timestamp() - backend_start) * 1000000)::bigint
+                )::text
          FROM pg_stat_activity WHERE pid = pg_backend_pid()",
     )
     .exec(&mut *conn)
     .await?;
     key.sql_time(&format!("probe_{name}"), started.elapsed());
-    let age = first_text(rows)
-        .and_then(|v| v.parse::<u64>().ok())
+    let probe: Option<serde_json::Value> =
+        first_text(rows).and_then(|v| serde_json::from_str(&v).ok());
+    let pid = probe.as_ref().map(|p| p["pid"].to_string());
+    let age = probe
+        .as_ref()
+        .and_then(|p| p["age_us"].as_u64())
         .map(Duration::from_micros);
-    let new_connection =
-        age.is_some_and(|age| age <= acquire + started.elapsed() + Duration::from_millis(5));
+    let first_seen = pid.is_some_and(|pid| {
+        SEEN_BACKENDS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(pid)
+    });
+    let likely_new_connection = first_seen
+        && age.is_some_and(|age| age <= acquire + started.elapsed() + Duration::from_millis(5));
     key.push(|t| {
         t.acquires.push(AcquireEvent {
             name: name.to_string(),
             elapsed: acquire,
-            new_connection,
+            likely_new_connection,
         })
     });
     Ok(())
@@ -497,8 +518,8 @@ pub struct AcquireEvent {
     pub name: String,
     /// 取得にかかった時間。
     pub elapsed: Duration,
-    /// この取得のあいだに、新しい接続を開いたか。
-    pub new_connection: bool,
+    /// この取得のあいだに、新しい接続を開いたか（推定。`probe_connection` の条件）。
+    pub likely_new_connection: bool,
 }
 
 /// 記録先ごとの時間。
@@ -511,7 +532,7 @@ pub struct JoinTimings {
     pub sql: std::collections::BTreeMap<String, Vec<Duration>>,
     /// ロックの文から、同じ接続での `SELECT 1` を引いたもの（ロック待ちの目安）。
     pub lock_wait: Vec<Duration>,
-    /// 接続の取得ごとの、時間と、新しい接続を開いたか。
+    /// 接続の取得ごとの、時間と、新しい接続を開いたか（推定）。
     pub acquires: Vec<AcquireEvent>,
     /// 要求を送ってから、handler が始まるまで（`X-Test-Join-Sent-At` があるとき）。ルーティング、本文の読み取り、
     /// `AuthUser` の取り出し（ユーザーの解決と有効なユーザーかの確認。DB を読む）を含む。

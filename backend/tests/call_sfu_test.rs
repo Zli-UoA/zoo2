@@ -1868,7 +1868,7 @@ fn merge_join_timings(
         }
         sum.lock_wait.extend(t.lock_wait);
         for a in t.acquires {
-            if a.new_connection {
+            if a.likely_new_connection {
                 sum.new_acquires.push(a.elapsed);
                 *sum.new_by_phase.entry(a.name).or_default() += 1;
             } else {
@@ -2052,7 +2052,7 @@ async fn join_latency() -> anyhow::Result<()> {
                 let new_count = m.new_acquires.len();
                 let total_count = new_count + m.reused_acquires.len();
                 let mut out = format!(
-                    "{label}\n  join                 {}\n  db_acquire_total     {}\n  db_sql_total         {}\n  pre_handler_rest     {}\n  other                {}\n  auth_user_acquire    {}\n  auth_user_sql        {}\n  lock_wait            {}\n  new_connections      {new_count} of {total_count} acquires {:?}\n  acquire_new          {}\n  acquire_reused       {}",
+                    "{label}\n  join                 {}\n  db_acquire_total     {}\n  db_sql_total         {}\n  pre_handler_rest     {}\n  other                {}\n  auth_user_acquire    {}\n  auth_user_sql        {}\n  lock_wait            {}\n  new_conns_estimated  {new_count} of {total_count} acquires {:?}\n  acquire_new_est      {}\n  acquire_reused       {}",
                     summary(&mut m.join),
                     summary(&mut m.db_acquire_total),
                     summary(&mut m.db_sql_total),
