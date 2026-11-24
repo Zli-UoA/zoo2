@@ -216,6 +216,189 @@ impl ApiClient {
     }
 }
 
+/// 端末の管理、失効、他のユーザーの検証、鍵スロットの管理で使う API（docs/e2ee.md の「端末とワンタイム鍵」
+/// 「クロス署名」「Secret Storage」「鍵バックアップ」。#362、#368）。React の `revocationApi.ts` と
+/// `secretStorageApi.ts` と同じ要求。
+impl ApiClient {
+    /// `GET /api/e2ee/devices`（自分の、削除されていない端末。端末名と最後に使った日時は本人にだけ返る）。
+    pub async fn e2ee_devices(&self) -> Result<Vec<Value>> {
+        let value = self
+            .e2ee_json(Method::GET, "/api/e2ee/devices", None)
+            .await?;
+        match value {
+            Value::Array(devices) => Ok(devices),
+            _ => Err(anyhow::anyhow!("端末の一覧が配列ではありません")),
+        }
+    }
+
+    /// `PATCH /api/e2ee/devices/{device_id}`（端末名を変える）。
+    pub async fn e2ee_rename_device(&self, device_id: &str, display_name: &str) -> Result<()> {
+        let path = format!("/api/e2ee/devices/{}", urlencode(device_id));
+        self.send_e2ee(
+            Method::PATCH,
+            &path,
+            Some(json!({ "display_name": display_name })),
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// `GET /api/e2ee/tofu_pins` を `next` が `null` になるまで読む。
+    pub async fn e2ee_all_tofu_pins(&self) -> Result<Vec<Value>> {
+        let mut pins = Vec::new();
+        let mut after: Option<String> = None;
+        loop {
+            let path = match &after {
+                Some(after) => format!("/api/e2ee/tofu_pins?after={}", urlencode(after)),
+                None => "/api/e2ee/tofu_pins".to_owned(),
+            };
+            let page = self.e2ee_json(Method::GET, &path, None).await?;
+            let Some(Value::Array(rows)) = page.get("pins") else {
+                return Err(anyhow::anyhow!("ピンの一覧が配列ではありません"));
+            };
+            pins.extend(rows.iter().cloned());
+            match page.get("next").and_then(Value::as_str) {
+                Some(next) => after = Some(next.to_owned()),
+                None => return Ok(pins),
+            }
+        }
+    }
+
+    /// `POST /api/e2ee/tofu_pins`（1000 件ずつ）。`replace: true` には直前の再認証が要る。サーバーが自分で
+    /// 付ける `type` と `user_id` は、署名付きのピンから外して送る。
+    pub async fn e2ee_upload_pins(
+        &self,
+        pins: &[Value],
+        replace: bool,
+        reauth: Option<&str>,
+    ) -> Result<()> {
+        let body: Vec<Value> = pins
+            .iter()
+            .map(|pin| {
+                json!({
+                    "target_user_id": pin.get("target_user_id"),
+                    "master_key": pin.get("master_key"),
+                    "signatures": pin.get("signatures"),
+                })
+            })
+            .collect();
+        for chunk in body.chunks(UPLOAD_BATCH) {
+            self.e2ee_write(
+                "/api/e2ee/tofu_pins",
+                json!({ "pins": chunk, "replace": replace }),
+                reauth,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// 他のユーザーのマスター鍵への署名を含む `POST /api/e2ee/cross_signing/signatures`（1000 件ずつ。
+    /// 直前の再認証が要る）。
+    pub async fn e2ee_upload_signatures_with_reauth(
+        &self,
+        signatures: &[Value],
+        reauth: Option<&str>,
+    ) -> Result<()> {
+        for chunk in signatures.chunks(UPLOAD_BATCH) {
+            self.e2ee_write(
+                "/api/e2ee/cross_signing/signatures",
+                json!({ "signatures": chunk }),
+                reauth,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// `POST /api/e2ee/secret_storage/secrets`（端末だけの失効）。増やしたあとの `secrets_revision`。
+    pub async fn e2ee_put_secrets(&self, body: Value, reauth: Option<&str>) -> Result<Option<u64>> {
+        let data = self
+            .e2ee_write("/api/e2ee/secret_storage/secrets", body, reauth)
+            .await?;
+        Ok(data.get("secrets_revision").and_then(Value::as_u64))
+    }
+
+    /// `GET /api/e2ee/key_backup/versions/{version}`。消した版と、ない版は `None`。
+    pub async fn e2ee_backup_version(&self, version: &str) -> Result<Option<Value>> {
+        let path = format!("/api/e2ee/key_backup/versions/{}", urlencode(version));
+        match self.e2ee_json(Method::GET, &path, None).await {
+            Ok(value) => Ok(Some(value)),
+            Err(error) if ApiError::status_of(&error) == Some(reqwest::StatusCode::NOT_FOUND) => {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// `DELETE /api/e2ee/key_backup/versions/{version}`。すでに消えていれば（404）何もしない。今の版を
+    /// 消すときだけ再認証が要る。
+    pub async fn e2ee_delete_backup_version(
+        &self,
+        version: &str,
+        reauth: Option<&str>,
+    ) -> Result<()> {
+        let path = format!("/api/e2ee/key_backup/versions/{}", urlencode(version));
+        match self.send_e2ee(Method::DELETE, &path, None, reauth).await {
+            Ok(_) => Ok(()),
+            Err(error) if ApiError::status_of(&error) == Some(reqwest::StatusCode::NOT_FOUND) => {
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// `DELETE /api/e2ee/secret_storage/slots/{slot_id}`（最後の 1 つはサーバーが拒否する）。
+    pub async fn e2ee_delete_key_slot(&self, slot_id: &str, reauth: Option<&str>) -> Result<()> {
+        let path = format!("/api/e2ee/secret_storage/slots/{}", urlencode(slot_id));
+        self.send_e2ee(Method::DELETE, &path, None, reauth).await?;
+        Ok(())
+    }
+
+    /// `txn_id` を指定した `POST /api/e2ee/to_device`（宛先は [`TO_DEVICE_BATCH`] 端末まで）。応答が分から
+    /// なかった送信を、同じ `txn_id` と内容で送り直すため（サーバーは同じ送信端末・`txn_id`・宛先を 1 件に
+    /// まとめる）。入れられなかった宛先を返す。
+    pub async fn e2ee_send_to_device_txn(
+        &self,
+        device_id: &str,
+        txn_id: &str,
+        messages: Value,
+    ) -> Result<Vec<DeviceTarget>> {
+        let data = self
+            .e2ee_write(
+                "/api/e2ee/to_device",
+                json!({
+                    "device_id": device_id,
+                    "txn_id": txn_id,
+                    "type": "m.room.encrypted",
+                    "messages": messages,
+                }),
+                None,
+            )
+            .await?;
+        Ok(undelivered_targets(&data))
+    }
+}
+
+/// 書き込みを分けて送る件数（ピンと署名。サーバーの上限）。
+pub const UPLOAD_BATCH: usize = 1000;
+
+/// to-device の応答の `undelivered`。
+fn undelivered_targets(data: &Value) -> Vec<DeviceTarget> {
+    data.get("undelivered")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|target| {
+            Some(DeviceTarget {
+                user_id: target.get("user_id")?.as_str()?.to_owned(),
+                device_id: target.get("device_id")?.as_str()?.to_owned(),
+            })
+        })
+        .collect()
+}
+
 /// to-device の宛先の端末（キューの上限で入れなかった宛先など）。
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DeviceTarget {
@@ -355,22 +538,7 @@ impl ApiClient {
                     None,
                 )
                 .await?;
-            for target in data
-                .get("undelivered")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                if let (Some(user_id), Some(device_id)) = (
-                    target.get("user_id").and_then(Value::as_str),
-                    target.get("device_id").and_then(Value::as_str),
-                ) {
-                    undelivered.push(DeviceTarget {
-                        user_id: user_id.to_owned(),
-                        device_id: device_id.to_owned(),
-                    });
-                }
-            }
+            undelivered.extend(undelivered_targets(&data));
         }
         Ok(undelivered)
     }

@@ -28,10 +28,13 @@ use zeroize::Zeroizing;
 use zoo_crypto::{
     BackupUpload, BackupUploadState, CryptoError, Curve25519PublicKey, DeviceAccount,
     InboundSessionStore, KeySnapshot, ListedDevice, OlmSession, OwnKeys, OwnSecrets,
-    ServerKeyState, SessionRef, StartupCheck, TrustStore, VersionChange,
+    ServerKeyState, SessionRef, StartupCheck, TrustStore, VERIFICATION_TYPES, VerificationMessage,
+    VersionChange,
 };
 
+mod devices;
 mod megolm;
+pub use devices::{ReverifyKeyChanged, VerificationNeedsUnlock, master_public_key};
 pub use megolm::{
     Decrypted, Decryption, EncryptedRow, MegolmError, RecipientSummary, SenderTrust, SharePlan,
     ShareResult, UndecryptableReason, UndeliverableReason,
@@ -117,6 +120,10 @@ struct State {
     /// 鍵バックアップからの取り込みの進み具合（秘密は入らない。Web の `meta` の `backup_import`）。
     #[serde(default)]
     backup_import: Option<BackupImportProgress>,
+    /// 終わっていない失効の進み具合（`RevocationState::pickle`。保存鍵で暗号化した封筒。#362）。
+    /// 端末を作り直すときは捨てる。
+    #[serde(default)]
+    revocation: Option<String>,
 }
 
 /// 鍵バックアップからの取り込みの進み具合。途中で止まったら、同じ版なら続きから取り込み、版が変わったら
@@ -186,6 +193,9 @@ pub struct ToDeviceResult {
     pub dropped: usize,
     /// 新しく作った Olm セッションの数（ワンタイム鍵を使われたので補充する）。
     pub new_olm_sessions: usize,
+    /// 受信時の検証を通った、他のユーザーの検証のメッセージ（`m.key.verification.*`。#368）。届いた順。
+    /// `e2ee::verification` に渡す（暗号ストアには置かない）。
+    pub verifications: Vec<VerificationMessage>,
 }
 
 /// [`CryptoStore::prepare_backup_upload`] の結果。
@@ -754,6 +764,20 @@ impl CryptoStore {
             }
             _ => None,
         };
+        // 他のユーザーの検証のメッセージ（#368）。手順 1〜3 を通ったものだけを渡す。送信端末がクロス
+        // 署名をたどれるかは、`SasVerification` が確かめる。
+        if decrypted
+            .plaintext()
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|t| VERIFICATION_TYPES.contains(&t))
+        {
+            match decrypted.verify_verification(&self.account, listed) {
+                Ok(message) => result.verifications.push(message),
+                Err(_) => result.dropped += 1,
+            }
+            return Ok(());
+        }
         let Ok(room_key) = decrypted.verify_room_key(&self.account, listed, trust.as_ref()) else {
             result.dropped += 1;
             return Ok(());
@@ -1323,6 +1347,7 @@ impl CryptoStore {
             encrypted_channels: self.state.encrypted_channels.clone(),
             recipients: self.state.recipients.clone(),
             backup_import: None,
+            revocation: None,
         };
         write_private(&self.dir.join(STATE_FILE), &serde_json::to_vec(&state)?)?;
 

@@ -10,8 +10,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use serde_json::Value;
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{Mutex, mpsc, watch};
 use tokio::task::JoinHandle;
+use zoo_crypto::VerificationMessage;
 
 use crate::api::ApiClient;
 use crate::electric::{Change, ShapeStream};
@@ -247,6 +248,39 @@ pub async fn retry_pending_device_deletion(
 /// 端末の管理のタスクが開いている暗号ストア。登録を終えるまでと、作り直している間は `None`。
 pub type StoreWatch = watch::Receiver<Option<(String, SharedStore)>>;
 
+/// 端末の管理のタスクから画面に渡すもの（#362、#368）。
+pub struct ManagerEvents {
+    /// to-device で届いた、他のユーザーの検証のメッセージ（届いた順）。
+    pub verifications: mpsc::UnboundedReceiver<Vec<VerificationMessage>>,
+    /// 端末の登録が 20 台の上限で拒否されたときの `stale_devices`（30 日以上使っていない端末）。登録できたら
+    /// `None` に戻す。
+    pub device_limit: watch::Receiver<Option<Vec<Value>>>,
+}
+
+/// 端末の登録が 20 台の上限で拒否されたときの `stale_devices`。ほかの失敗なら `None`（Web の `staleDevices`）。
+pub fn stale_devices(error: &anyhow::Error) -> Option<Vec<Value>> {
+    let api = error.downcast_ref::<ApiError>()?;
+    if api.status != reqwest::StatusCode::BAD_REQUEST
+        || api.code.as_deref() != Some("E2EE_LIMIT_EXCEEDED")
+        || api.body.get("limit").and_then(Value::as_str) != Some("devices")
+    {
+        return None;
+    }
+    Some(
+        api.body
+            .get("stale_devices")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
+    )
+}
+
+/// `run` に渡す、画面への送り口。
+struct Notifiers {
+    verifications: mpsc::UnboundedSender<Vec<VerificationMessage>>,
+    device_limit: watch::Sender<Option<Vec<Value>>>,
+}
+
 /// 暗号ストアを開き、端末を登録して、to-device を処理し続けるタスクを起動する。
 ///
 /// TUI は全画面なので、失敗は表示せずに間隔をあけて試し直す。登録を終えた暗号ストアは、
@@ -258,8 +292,14 @@ pub fn spawn(
     api: ApiClient,
     root: std::path::PathBuf,
     user_id: Option<String>,
-) -> (JoinHandle<()>, StoreWatch) {
+) -> (JoinHandle<()>, StoreWatch, ManagerEvents) {
     let (store_tx, store_rx) = watch::channel(None);
+    let (verifications_tx, verifications_rx) = mpsc::unbounded_channel();
+    let (limit_tx, limit_rx) = watch::channel(None);
+    let notifiers = Notifiers {
+        verifications: verifications_tx,
+        device_limit: limit_tx,
+    };
     let task = tokio::spawn(async move {
         let mut backoff = Duration::from_secs(5);
         let mut user_id = user_id;
@@ -283,6 +323,7 @@ pub fn spawn(
                 user_id,
                 &mut state,
                 &store_tx,
+                &notifiers,
             )
             .await;
             // 画面が操作の途中で持っている暗号ストアを手放すまで待つ。同じプロセスでも、開いたままの
@@ -300,7 +341,14 @@ pub fn spawn(
             backoff = next;
         }
     });
-    (task, store_rx)
+    (
+        task,
+        store_rx,
+        ManagerEvents {
+            verifications: verifications_rx,
+            device_limit: limit_rx,
+        },
+    )
 }
 
 /// 暗号ストアの最後の持ち主が手放すまで待つ（`store` は手放してから待つ）。
@@ -344,6 +392,7 @@ async fn run(
     user_id: &str,
     state: &mut RunState,
     store_tx: &watch::Sender<Option<(String, SharedStore)>>,
+    notifiers: &Notifiers,
 ) -> Result<()> {
     retry_pending_device_deletion(api, root, user_id, &mut state.counted_not_found).await;
     let opened = CryptoStore::open(root, user_id)?;
@@ -352,7 +401,19 @@ async fn run(
         delete_device_or_remember(api, root, &target, &mut state.counted_not_found).await;
     }
     let store = Arc::new(Mutex::new(opened.store));
-    let counts = register(api, &store).await?;
+    let counts = match register(api, &store).await {
+        Ok(counts) => {
+            notifiers.device_limit.send_replace(None);
+            counts
+        }
+        Err(error) => {
+            // 20 台の上限なら、画面で削除する端末を選んでもらう（削除したら、次の試し直しで登録し直す）。
+            if let Some(stale) = stale_devices(&error) {
+                notifiers.device_limit.send_replace(Some(stale));
+            }
+            return Err(error);
+        }
+    };
     replenish(api, &store, counts).await?;
     store_tx.send_replace(Some((user_id.to_owned(), store.clone())));
     // 解錠済みの端末は、署名を確かめて、送信待ちを鍵バックアップに送る。失敗しても to-device は止めない
@@ -393,7 +454,7 @@ async fn run(
         }
         let mut pending: Vec<ToDeviceRow> = rows.values().cloned().collect();
         pending.sort_by(|a, b| a.id.len().cmp(&b.id.len()).then_with(|| a.id.cmp(&b.id)));
-        let processed = process(api, &store, &device_id, &pending).await?;
+        let processed = process(api, &store, &device_id, &pending, notifiers).await?;
         // ack を送れた行は、Shape の Delete が届く前でも外す。初めの Shape が何回かに分かれて
         // 届くと、Delete より先に次の回が来て、同じ行をもう一度処理してしまうため。
         rows.retain(|_, row| !processed.contains(&row.id));
@@ -426,6 +487,7 @@ async fn process(
     store: &SharedStore,
     device_id: &str,
     rows: &[ToDeviceRow],
+    notifiers: &Notifiers,
 ) -> Result<Vec<String>> {
     let mut senders: Vec<String> = rows.iter().map(|row| row.sender_user_id.clone()).collect();
     // 手順 4 で他のユーザーのマスター鍵を判定するには、自分のマスター鍵とユーザー署名鍵が要る（Web と同じ）。
@@ -437,6 +499,10 @@ async fn process(
         .lock()
         .await
         .process_to_device_with_keys(rows, &response)?;
+    // 検証のメッセージは、処理済みとして保存したあとで画面に渡す（Olm のメッセージは 2 回は復号できない）。
+    if !result.verifications.is_empty() {
+        let _ = notifiers.verifications.send(result.verifications.clone());
+    }
     if !result.processed.is_empty() {
         api.e2ee_ack_to_device(device_id, &result.processed).await?;
         store.lock().await.acknowledged(&result.processed)?;
@@ -463,6 +529,8 @@ async fn process(
 pub struct LogoutTarget {
     pub store: CryptoStore,
     pub pending_backup: usize,
+    /// 終わっていない失効がある（ログアウトすると進み具合が消える。#362）。
+    pub pending_revocation: bool,
     /// 保存鍵を失って作り直したときの、前の端末（これも消す）。
     pub replaced_device_id: Option<String>,
     /// 前の端末の登録が済んでいたか。
@@ -476,9 +544,11 @@ pub fn open_for_logout(root: &Path) -> Result<Vec<LogoutTarget>> {
         .map(|user_id| {
             let opened = CryptoStore::open_for_logout(root, &user_id)?;
             let pending_backup = opened.store.pending_backup_count();
+            let pending_revocation = opened.store.has_pending_revocation();
             Ok(LogoutTarget {
                 store: opened.store,
                 pending_backup,
+                pending_revocation,
                 replaced_device_id: opened.replaced_device_id,
                 replaced_registered: opened.replaced_registered,
             })

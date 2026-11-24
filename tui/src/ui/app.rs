@@ -102,6 +102,10 @@ pub enum AppEvent {
     },
     /// 暗号化の画面の裏の処理の結果（#360）。
     Encryption(super::encryption::EncryptionEvent),
+    /// 端末と検証の画面の裏の処理の結果（#362）。
+    Devices(super::devices::DevicesEvent),
+    /// 他のユーザーの検証の知らせ（#368）。
+    Verification(crate::e2ee::verification::VerificationEvent),
     /// 暗号化したメッセージの復号の結果（メッセージ ID、行の版、結果）と、そのときの暗号ストアの
     /// 受信用セッションの数え（#361）。
     Decrypted {
@@ -182,6 +186,8 @@ pub enum Mode {
     Help,
     /// 暗号化の画面（初回設定と解錠。#360）。
     Encryption,
+    /// 端末と検証の画面（端末一覧と失効、他のユーザーの検証、鍵スロット。#362）。
+    Devices,
     /// チャンネルか DM を作る（#361）。
     Create(CreateForm),
     /// 暗号化チャンネルの配布先の詳細（#361）。`scroll` 行目から出す。
@@ -285,6 +291,10 @@ pub struct App {
     typing_poll: PollGate,
     /// 暗号化の画面と、その裏の処理。
     pub encryption: super::encryption::Encryption,
+    /// 端末と検証の画面と、その裏の処理（#362、#368）。
+    pub devices: super::devices::Devices,
+    /// 検証の期限切れと送り直しを最後に確かめた時刻。
+    verification_tick: Option<Instant>,
     /// 暗号化したメッセージの復号の結果（#361）。
     pub decryptions: Decryptions,
     /// 暗号化チャンネルごとの、最後に判定した配布先（送信画面に出す。#361）。
@@ -320,8 +330,11 @@ impl App {
         crate::mfm::set_emoji_catalog(HashMap::new(), HashSet::new());
         let encryption =
             super::encryption::Encryption::new(api.clone(), http.clone(), app_tx.clone());
+        let devices = super::devices::Devices::new(api.clone(), http.clone(), app_tx.clone());
         let mut app = Self {
             encryption,
+            devices,
+            verification_tick: None,
             api,
             http,
             api_base_url,
@@ -598,6 +611,8 @@ impl App {
                 self.store.account_profiles = profiles;
             }
             AppEvent::Encryption(event) => self.encryption.on_event(event),
+            AppEvent::Devices(event) => self.devices.on_event(event),
+            AppEvent::Verification(event) => self.on_verification(event),
             AppEvent::Decrypted {
                 channel_id,
                 results,
@@ -889,11 +904,65 @@ impl App {
                 Err(_) => self.known_encrypted_unreadable = true,
             }
         }
+        let mut context = context;
+        if let Some(events) = context.events.take() {
+            self.devices.attach(
+                context.oidc.clone(),
+                context.stores.clone(),
+                Some(events.device_limit),
+            );
+            // 端末の管理のタスクが受け取った検証のメッセージを、検証の処理に渡す。
+            if let Some(sas) = self.devices.sas.clone() {
+                let mut verifications = events.verifications;
+                tokio::spawn(async move {
+                    while let Some(messages) = verifications.recv().await {
+                        sas.handle_messages(messages);
+                    }
+                });
+            }
+        } else {
+            self.devices
+                .attach(context.oidc.clone(), context.stores.clone(), None);
+        }
         self.encryption.attach(context);
+    }
+
+    /// 他のユーザーの検証の知らせ。届いた要求は前面に出す。入力の途中などでは、キー操作を奪わないよう、
+    /// ステータス行で知らせて `D` で開いてもらう。
+    fn on_verification(&mut self, event: crate::e2ee::verification::VerificationEvent) {
+        let fresh = self.devices.on_verification(event);
+        if fresh && !matches!(self.mode, Mode::Normal | Mode::Devices) {
+            self.devices.sas_open = None;
+            self.notify("検証の要求が届いています（D で開く）");
+        }
+    }
+
+    /// 暗号化チャンネル（削除されていないもの）を共有する相手（Web の `useEncryptedPeers`）。
+    pub fn encrypted_peers(&self) -> Vec<String> {
+        let me = self.me.id.as_str();
+        let mut peers: Vec<String> = self
+            .store
+            .channels()
+            .into_iter()
+            .filter(|channel| channel.encrypted && self.store.is_member(&channel.id, me))
+            .flat_map(|channel| self.store.channel_members(&channel.id))
+            .map(|user| user.id.clone())
+            .filter(|id| id != me)
+            .collect();
+        peers.sort();
+        peers.dedup();
+        peers
     }
 
     pub fn on_tick(&mut self) {
         self.encryption.on_tick(self.mode == Mode::Encryption);
+        if self
+            .verification_tick
+            .is_none_or(|at| at.elapsed() >= crate::e2ee::verification::TICK_INTERVAL)
+        {
+            self.verification_tick = Some(Instant::now());
+            self.devices.on_tick();
+        }
         self.sync_known_encrypted();
         self.request_decryptions();
         if self.terminal_active {
@@ -1363,6 +1432,12 @@ impl App {
             self.should_quit = true;
             return;
         }
+        // 前面に出した他のユーザーの検証は、ほかの画面より先にキーを受け取る。
+        if matches!(self.mode, Mode::Normal | Mode::Devices) && self.devices.has_open_verification()
+        {
+            self.devices.on_verification_key(key);
+            return;
+        }
         match self.mode.clone() {
             Mode::Normal => self.on_normal_key(key),
             Mode::Insert => self.on_insert_key(key),
@@ -1398,6 +1473,11 @@ impl App {
                     self.mode = Mode::Normal;
                 }
             }
+            Mode::Devices => {
+                if !self.devices.on_key(key) {
+                    self.mode = Mode::Normal;
+                }
+            }
             Mode::Create(form) => self.on_create_key(key, form),
             Mode::Recipients { scroll } => {
                 let last = super::view::recipient_details(self)
@@ -1425,6 +1505,20 @@ impl App {
             KeyCode::Char('E') => {
                 self.mode = Mode::Encryption;
                 self.encryption.open();
+            }
+            KeyCode::Char('D') => {
+                self.mode = Mode::Devices;
+                let peers = self.encrypted_peers();
+                self.devices.open(peers);
+                // 知らせただけの検証の要求があれば、前面に出す。
+                if !self.devices.has_open_verification() {
+                    self.devices.sas_open = self
+                        .devices
+                        .sas_entries
+                        .iter()
+                        .find(|(_, entry)| !entry.view.finished())
+                        .map(|(txn, _)| txn.clone());
+                }
             }
             KeyCode::Tab => self.cycle_focus(true),
             KeyCode::BackTab => self.cycle_focus(false),
@@ -1606,6 +1700,10 @@ impl App {
     fn on_paste(&mut self, text: &str) {
         if self.mode == Mode::Encryption {
             self.encryption.on_paste(text);
+            return;
+        }
+        if self.mode == Mode::Devices {
+            self.devices.on_paste(text);
             return;
         }
         if let Mode::Create(form) = &mut self.mode {
@@ -3378,6 +3476,7 @@ mod tests {
             oidc: None,
             stores,
             crypto_root: None,
+            events: None,
         });
         app.current = Some(CHANNEL.into());
 
