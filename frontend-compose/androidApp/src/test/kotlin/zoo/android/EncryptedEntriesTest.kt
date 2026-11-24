@@ -87,8 +87,25 @@ class EncryptedEntriesTest {
         // 平文の添付ならサーバーが拒否する種類は、取得も保存もしない。
         assertTrue(receivedAttachment(obj("name" to "x.sh", "mimetype" to "application/x-sh")).blocked)
         assertTrue(receivedAttachment(obj("name" to "payload.exe", "mimetype" to "application/x-msdownload")).blocked)
+        // 末尾のドットや空白で拡張子を隠しても拒否する（サーバーの `is_disallowed_extension` と同じ）。
+        assertTrue(receivedAttachment(obj("name" to "malware.exe. ", "mimetype" to "application/octet-stream")).blocked)
+        assertTrue(receivedAttachment(obj("name" to "malware.EXE...", "mimetype" to "application/octet-stream")).blocked)
         // 双方向の制御文字で拡張子を偽装させない。
         assertEquals("evil_gnp.exe", receivedAttachment(obj("name" to "evil‮gnp.exe", "mimetype" to "image/png")).name)
+    }
+
+    @Test
+    fun sharedFileNamesFitTheFileSystemLimit() {
+        assertEquals("photo.png", sharedFileName("photo.png"))
+        val long = sharedFileName("あ".repeat(80) + ".txt")
+        assertTrue(long.toByteArray().size <= 255 - 37)
+        assertTrue(long.endsWith(".txt"))
+        assertTrue(long.removeSuffix(".txt").all { it == 'あ' })
+        // 絵文字（サロゲートペア）の途中で切らない。
+        val emoji = sharedFileName("😀".repeat(80) + ".pdf")
+        assertTrue(emoji.toByteArray().size <= 255 - 37)
+        assertEquals(emoji, String(emoji.toByteArray()))
+        assertTrue(emoji.endsWith(".pdf"))
     }
 
     @Test
