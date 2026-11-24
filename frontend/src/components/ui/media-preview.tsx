@@ -2,9 +2,9 @@ import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { mediaPreviewKind } from "../../lib/attachments";
 import { imageAspectRatio, type ImageMetadata } from "../../lib/imageMetadata";
+import { PreviewDownloadButton } from "../desktop/PreviewDownloadButton";
 import { Button } from "./button";
 import { Dialog, DialogContent, DialogTitle } from "./dialog";
-import { ExternalLink } from "./external-link";
 import { ImagePreview } from "./image-preview";
 import { DocumentPreview } from "./document-preview";
 import { PdfPreview } from "./pdf-preview";
@@ -49,6 +49,7 @@ export function MediaPreview({
     setBrokenSrc(src ?? null);
     onError?.();
   };
+  const downloadFooter = footer ?? (src ? <PreviewDownloadButton name={name} src={src} /> : null);
   function renderMedia(expanded: boolean) {
     if (error)
       return (
@@ -207,16 +208,7 @@ export function MediaPreview({
             {t("attachments.preview", { name })}
           </Button>
         ) : null}
-        {footer ??
-          (src?.startsWith("blob:") ? (
-            <a href={src} download={name} className="text-xs text-link">
-              {t("attachments.downloadShort")}
-            </a>
-          ) : src ? (
-            <ExternalLink href={src} className="text-xs text-link">
-              {t("attachments.downloadShort")}
-            </ExternalLink>
-          ) : null)}
+        {downloadFooter}
       </div>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] gap-2 p-2 pt-12 sm:max-w-[min(96vw,80rem)]">
@@ -224,16 +216,7 @@ export function MediaPreview({
           {open ? renderMedia(true) : null}
           <div className="flex min-w-0 items-center justify-between gap-2">
             <span className="min-w-0 truncate text-xs">{name}</span>
-            {footer ??
-              (src?.startsWith("blob:") ? (
-                <a href={src} download={name} className="text-xs text-link">
-                  {t("attachments.downloadShort")}
-                </a>
-              ) : src ? (
-                <ExternalLink href={src} className="text-xs text-link">
-                  {t("attachments.downloadShort")}
-                </ExternalLink>
-              ) : null)}
+            {downloadFooter}
           </div>
         </DialogContent>
       </Dialog>

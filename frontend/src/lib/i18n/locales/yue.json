@@ -272,6 +272,7 @@
     "download": "下載{{name}}",
     "downloadShort": "下載",
     "downloadError": "下載唔到檔案。",
+    "previewSaveUnsupported": "呢個檔案唔可以由 app 儲存入。開連結喺新分頁再存。",
     "downloadSaved": "已存成 {{name}}。",
     "downloadDestinationUnsupported": "呢個位置存唔到檔案。請揀第二個資料夾，或者喺設定嘅「下載」改儲存位置。",
     "downloadTooMany": "同時下載嘅數量已經到上限。等其他下載完成之後再試。",

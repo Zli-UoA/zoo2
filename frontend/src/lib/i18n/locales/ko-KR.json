@@ -272,6 +272,7 @@
     "download": "{{name}} 다운로드",
     "downloadShort": "다운로드",
     "downloadError": "다운로드하지 못했습니다.",
+    "previewSaveUnsupported": "이 파일은 앱에서 저장할 수 없습니다. 링크를 새 탭에서 열어 저장해 주세요.",
     "downloadSaved": "{{name}}(으)로 저장했습니다.",
     "downloadDestinationUnsupported": "이 저장 위치에는 저장할 수 없습니다. 다른 폴더를 선택하거나 설정의 \"다운로드\"에서 저장 위치를 변경하세요.",
     "downloadTooMany": "동시에 저장할 수 있는 개수를 초과했습니다. 다른 다운로드가 끝난 후 다시 시도하세요.",
