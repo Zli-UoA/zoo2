@@ -20,7 +20,7 @@ import { groupReactions } from "../../../lib/emoji/reactions";
 import { Button } from "../../ui/button";
 import { Skeleton } from "../../ui/skeleton";
 import { newMessageAnnouncement, type FeedMessage } from "./messageFormat";
-import { subscribeMessageJump } from "./messageLink";
+import { useMessageJumpRequest, useMessageTargetFlash } from "./messageTarget";
 import { buildMessageItems } from "./messageGrouping";
 import { MessageRow } from "./MessageRow";
 import {
@@ -1255,18 +1255,11 @@ function MessageScrollViewport({
     };
   }, [markRead, readStatePending]);
 
-  // 表示中の対象メッセージへのリンクをもう一度押したとき。URL が変わらないので、ルーターは何も
-  // 変えず、対象も同じままになる。離れた位置から戻せるよう、スクロール済みの印を消して、下の効果を
-  // もう一度走らせる。
-  const [jumpRequest, setJumpRequest] = useState(0);
-  useEffect(() => {
-    if (!targetMessageId) return;
-    return subscribeMessageJump((messageId) => {
-      if (messageId !== targetMessageId) return;
-      scrolledTarget.current = undefined;
-      setJumpRequest((count) => count + 1);
-    });
-  }, [targetMessageId]);
+  // 表示中の対象メッセージへのリンクをもう一度押したとき。URL が変わらず、ルーターは何も変えないので、
+  // スクロール済みの印を消して、下の効果をもう一度走らせる。
+  const jumpRequest = useMessageJumpRequest(targetMessageId, scrolledTarget);
+  // 対象の行へスクロールしたときに、その行の強調（点滅 → 点灯 → フェードアウト）を再生する。
+  const { play: playTargetFlash, runFor: targetFlashRun } = useMessageTargetFlash();
 
   useLayoutEffect(() => {
     if (!targetMessageId) {
@@ -1284,9 +1277,18 @@ function MessageScrollViewport({
       atBottomRef.current = false;
       scrolledTarget.current = targetMessageId;
       virtualizer.scrollToIndex(index, { align: "center" });
+      playTargetFlash(targetMessageId);
     });
     return () => cancelAnimationFrame(frame);
-  }, [targetMessageId, items, virtualizer, alignIndexSync, cancelUnreadJump, jumpRequest]);
+  }, [
+    targetMessageId,
+    items,
+    virtualizer,
+    alignIndexSync,
+    cancelUnreadJump,
+    jumpRequest,
+    playTargetFlash,
+  ]);
 
   // 各行の measureElement / ResizeObserver が編集・保存・折り返しによる
   // 高さの変化を追跡する。measure() で全行の実測値を消すと、変化していない
@@ -1320,7 +1322,7 @@ function MessageScrollViewport({
                 data-index={virtualRow.index}
                 data-message-id={item.message.id}
                 role="listitem"
-                className={`absolute left-0 top-0 w-full ${item.message.id === targetMessageId ? "rounded-lg bg-brand-muted/40 ring-1 ring-brand" : ""}`}
+                className="absolute left-0 top-0 w-full"
                 style={{ transform: `translateY(${virtualRow.start}px)` }}
               >
                 {virtualRow.index > 0 && virtualRow.index === firstEncryptedIndex ? (
@@ -1349,6 +1351,7 @@ function MessageScrollViewport({
                 ) : null}
                 <MessageRow
                   item={item}
+                  highlightRun={targetFlashRun(item.message.id)}
                   mentionUserId={viewerId === undefined ? currentUserId : viewerId}
                   reactions={
                     item.message.display_data

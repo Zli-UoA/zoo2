@@ -124,6 +124,12 @@ export interface MessageRowProps {
    * メッセージの作成日時と比べて決める（スレッドのペイン）。
    */
   unencryptedAfterEncrypted?: boolean;
+  /**
+   * メッセージリンクなどで、この行へ移動したときの強調の再生回数。値が変わるたびに、点滅 → 点灯 → フェードアウトを
+   * 最初から再生する（styles.css の `message-target-flash`）。未指定なら出さない。メンションの強調とは別の層で、
+   * 終わるとメンションの強調だけが残る。
+   */
+  highlightRun?: number;
 }
 
 function EditedIndicator({ at }: { at: string }) {
@@ -345,6 +351,7 @@ export function MessageRow({
   attachments = [],
   decryption,
   unencryptedAfterEncrypted,
+  highlightRun,
 }: MessageRowProps) {
   const { t } = useTranslation();
   const { locale } = useLocale();
@@ -501,6 +508,15 @@ export function MessageRow({
           item.isGroupEnd ? "pb-1.5" : "pb-0",
         )}
       >
+        {highlightRun !== undefined ? (
+          // メンションの強調と同じ領域・同じ形式（背景と左端のアクセント）で、青を重ねる。
+          <span
+            key={highlightRun}
+            aria-hidden="true"
+            data-message-target-highlight=""
+            className="animate-message-target absolute inset-0 rounded-lg bg-message-target/[0.16] before:absolute before:inset-y-0 before:left-0 before:w-[3px] before:bg-message-target before:content-['']"
+          />
+        ) : null}
         {item.isGroupStart ? (
           <AppAvatar
             className="mt-0.5"

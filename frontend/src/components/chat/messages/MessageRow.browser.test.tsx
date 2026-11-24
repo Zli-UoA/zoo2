@@ -2,7 +2,7 @@ import "../../../styles.css";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { cdp, page } from "vite-plus/test/browser/context";
 
 import { LocaleProvider } from "../../i18n/LocaleProvider";
@@ -53,6 +53,9 @@ vi.mock("../../../lib/emoji/workspace", () => ({
   }),
 }));
 import { MessageRow, type MessageRowProps } from "./MessageRow";
+import { MESSAGE_TARGET_FLASH_MS } from "./messageTarget";
+import { enableAnimations } from "../../../test/browser-setup";
+import { MentionUserNamesContext } from "../../../lib/e2ee/messageDecryption";
 import type { MessageItem } from "./messageGrouping";
 
 function buildItem(overrides: Partial<MessageItem["message"]> = {}): MessageItem {
@@ -869,6 +872,137 @@ const MENU_LABELS = [
   "Appでメッセージを操作",
   "削除",
 ] as const;
+
+describe("link target highlight", () => {
+  const overlay = () => document.querySelector<HTMLElement>("[data-message-target-highlight]");
+
+  /** 重ね層のアニメーションを止めて、指定した時刻（ms）の不透明度を読む。実時間を待たない。 */
+  async function opacityAt(element: HTMLElement, ms: number) {
+    await waitFor(() => expect(element.getAnimations()).toHaveLength(1));
+    const animation = element.getAnimations()[0]!;
+    animation.pause();
+    animation.currentTime = ms;
+    return Number(getComputedStyle(element).opacity);
+  }
+
+  // テスト全体の「アニメーション停止」を外して、実際のアニメーションを検証する。
+  let restoreAnimations = () => {};
+  beforeEach(() => {
+    restoreAnimations = enableAnimations();
+  });
+  afterEach(async () => {
+    restoreAnimations();
+    await cdp().send("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-reduced-motion", value: "no-preference" }],
+    });
+  });
+
+  it("shows nothing unless a run is given", () => {
+    renderRow(buildItem());
+    expect(overlay()).toBeNull();
+  });
+
+  it("blinks three times in 0.5s, stays lit for 1.5s, then fades out in 0.5s", async () => {
+    renderRow(buildItem(), false, { highlightRun: 1 });
+    const element = overlay()!;
+    await waitFor(() => expect(element.getAnimations()).toHaveLength(1));
+    const timing = element.getAnimations()[0]!.effect!.getTiming();
+    // 全体は 2.5 秒。JS の MESSAGE_TARGET_FLASH_MS と同じ値。
+    expect(timing.duration).toBe(MESSAGE_TARGET_FLASH_MS);
+
+    // 0〜0.5 秒: 点灯・消灯を 3 回（点灯 83ms・消灯 83ms）。
+    for (const [ms, opacity] of [
+      [40, 1],
+      [120, 0],
+      [200, 1],
+      [290, 0],
+      [370, 1],
+      [450, 0],
+    ] as const) {
+      expect(await opacityAt(element, ms)).toBe(opacity);
+    }
+    // 0.5〜2.0 秒: 点灯を保つ。
+    for (const ms of [520, 1000, 1990]) expect(await opacityAt(element, ms)).toBe(1);
+    // 2.0〜2.5 秒: フェードアウトして、最後は消える。
+    const fading = await opacityAt(element, 2250);
+    expect(fading).toBeGreaterThan(0.3);
+    expect(fading).toBeLessThan(0.7);
+    expect(await opacityAt(element, 2500)).toBe(0);
+  });
+
+  it("restarts from the beginning each time the run changes", async () => {
+    const { update } = renderRow(buildItem(), false, { highlightRun: 1 });
+    const first = overlay()!;
+    expect(await opacityAt(first, 1500)).toBe(1);
+    update({ highlightRun: 2 });
+    await waitFor(() => expect(overlay()).not.toBe(first));
+    const second = overlay()!;
+    await waitFor(() => expect(second.getAnimations()).toHaveLength(1));
+    expect(Number(second.getAnimations()[0]!.currentTime)).toBeLessThan(500);
+    expect(second.getAnimations()[0]!.playState).toBe("running");
+  });
+
+  it("is a blue layer over the mention highlight, which stays after it fades out", async () => {
+    render(
+      <MentionUserNamesContext.Provider value={new Map([["user-viewer", "amesyu"]])}>
+        <LocaleProvider>
+          <MessageRow
+            item={buildItem({ user_id: "user-viewer", content: "@amesyu 確認をお願いします。" })}
+            isOwn
+            mentionUserId="user-viewer"
+            highlightRun={1}
+            isEditing={false}
+            editingText=""
+            onEditingTextChange={noop}
+            onStartEdit={noop}
+            onCancelEdit={noop}
+            onSaveEdit={noop}
+            onRequestDelete={noop}
+            reactions={[]}
+            kitchenCatalog={null}
+            canReact={false}
+            onReaction={noop}
+            onPickReaction={noop}
+          />
+        </LocaleProvider>
+      </MentionUserNamesContext.Provider>,
+    );
+    const element = overlay()!;
+    const row = element.closest<HTMLElement>(".group\\/row")!;
+    // メンションの強調と同じ領域に重なり、同じ形式（背景と左端の 3px のアクセント）を持つ。
+    expect(row.className).toContain("bg-mention/[0.08]");
+    expect(element.parentElement).toBe(row);
+    expect(getComputedStyle(element, "::before").width).toBe("3px");
+    expect(getComputedStyle(element).backgroundColor).not.toBe(
+      getComputedStyle(row).backgroundColor,
+    );
+    expect(
+      getComputedStyle(document.documentElement).getPropertyValue("--message-target").trim(),
+    ).toBe("#3b82f6");
+    // 点滅の間もメンションの強調はそのまま残り、フェードアウトのあとはメンションだけになる。
+    expect(await opacityAt(element, 120)).toBe(0);
+    expect(row.className).toContain("bg-mention/[0.08]");
+    expect(await opacityAt(element, 2500)).toBe(0);
+    expect(row.className).toContain("bg-mention/[0.08]");
+  });
+
+  it("does not blink under reduced motion, but still stays lit for 2s and fades out in 0.5s", async () => {
+    await cdp().send("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+    });
+    renderRow(buildItem(), false, { highlightRun: 1 });
+    const element = overlay()!;
+    await waitFor(() => expect(element.getAnimations()).toHaveLength(1));
+    // サイト全体の「ほぼ 0 秒」の設定に負けず、2.5 秒を保つ。
+    expect(getComputedStyle(element).animationName).toBe("message-target-steady");
+    expect(element.getAnimations()[0]!.effect!.getTiming().duration).toBe(MESSAGE_TARGET_FLASH_MS);
+    for (const ms of [40, 120, 450, 1000, 1990]) expect(await opacityAt(element, ms)).toBe(1);
+    const fading = await opacityAt(element, 2250);
+    expect(fading).toBeGreaterThan(0.3);
+    expect(fading).toBeLessThan(0.7);
+    expect(await opacityAt(element, 2500)).toBe(0);
+  });
+});
 
 describe("more menu order", () => {
   async function menuLabels() {

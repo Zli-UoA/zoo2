@@ -5,6 +5,7 @@ import { expect, fireEvent, fn, screen, userEvent, waitFor, within } from "story
 
 import { StoryShell } from "../../../../.storybook/shell";
 import { storyUsers } from "../../../../.storybook/fixtures";
+import encryptedAttachmentImage from "../../../../.storybook/fixtures/encrypted-attachment.png?inline";
 import { reactionUserLabel } from "../../../lib/emoji/reactions";
 import { RECENT_EMOJIS_STORAGE_KEY } from "../../../lib/emoji/recents";
 import {
@@ -485,6 +486,39 @@ export const MentionedMessage: Story = {
   }),
 };
 
+/** メッセージリンクなどで開いた行。青の背景と左端のアクセントが、3 回点滅してから 1.5 秒点灯し、フェードアウトする。 */
+export const LinkTargetHighlight: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: { highlightRun: 1 },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const overlay = canvasElement.querySelector<HTMLElement>("[data-message-target-highlight]");
+    await expect(overlay).not.toBeNull();
+    // 読み上げには出さず、操作も妨げない。
+    await expect(overlay!.getAttribute("aria-hidden")).toBe("true");
+    await expect(getComputedStyle(overlay!).pointerEvents).toBe("none");
+    // メンションの強調と同じ形式で、左端に 3px のアクセントを持つ。
+    await expect(getComputedStyle(overlay!, "::before").width).toBe("3px");
+  }),
+};
+
+/** メンションの強調がある行でも、同じ強調を重ねる。フェードアウトのあとは、メンションの強調だけが残る。 */
+export const LinkTargetHighlightMentioned: Story = {
+  ...MentionedMessage,
+  parameters: { a11y: { test: "error" } },
+  args: { ...MentionedMessage.args, highlightRun: 1 },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const row = [...canvasElement.querySelectorAll("div")].find((element) =>
+      element.classList.contains("group/row"),
+    );
+    const overlay = canvasElement.querySelector<HTMLElement>("[data-message-target-highlight]");
+    await expect(overlay).not.toBeNull();
+    await expect(overlay!.parentElement).toBe(row);
+    await waitFor(async () => {
+      await expect(getComputedStyle(row!).backgroundColor).toMatch(/(?:,|\/)\s*0\.08\)$/);
+    });
+  }),
+};
+
 export const MentionedChannelMessage: Story = {
   ...MentionedMessage,
   args: {
@@ -670,21 +704,10 @@ export const EncryptedInvalid: Story = {
 };
 
 // 暗号化した添付（#364）。Storybook では暗号の Worker の代わりに、決まった中身を返す。
-async function storyImage(): Promise<Blob> {
-  const canvas = document.createElement("canvas");
-  canvas.width = 320;
-  canvas.height = 200;
-  const context = canvas.getContext("2d")!;
-  const gradient = context.createLinearGradient(0, 0, 320, 200);
-  gradient.addColorStop(0, "#6366f1");
-  gradient.addColorStop(1, "#22d3ee");
-  context.fillStyle = gradient;
-  context.fillRect(0, 0, 320, 200);
-  context.fillStyle = "#ffffff";
-  context.font = "bold 28px sans-serif";
-  context.fillText("🔒 decrypted", 70, 110);
-  return new Promise((resolve) => canvas.toBlob((blob) => resolve(blob!), "image/png"));
-}
+const storyImage = new Blob(
+  [Uint8Array.from(atob(encryptedAttachmentImage.split(",")[1]!), (char) => char.charCodeAt(0))],
+  { type: "image/png" },
+);
 
 const storyEncryptedFile = {
   v: "v2" as const,
@@ -735,7 +758,7 @@ export const EncryptedWithAttachments: Story = {
       <EncryptedAttachmentLoaderContext.Provider
         value={async (info) =>
           info.mimetype.startsWith("image/")
-            ? storyImage()
+            ? storyImage
             : new Blob(["%PDF-1.7"], { type: info.mimetype })
         }
       >
@@ -745,9 +768,10 @@ export const EncryptedWithAttachments: Story = {
   ],
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const image = await canvas.findByRole("img", { name: "architecture.png" });
+    const image = await canvas.findByRole<HTMLImageElement>("img", { name: "architecture.png" });
     await waitFor(async () => {
       await expect(image).toBeVisible();
+      await expect(image.naturalWidth).toBe(320);
     });
     await expect(canvas.getByText("議事録.pdf")).toBeVisible();
     await expect(canvas.queryByText("encrypted.bin")).not.toBeInTheDocument();
