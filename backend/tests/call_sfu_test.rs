@@ -1824,10 +1824,10 @@ struct JoinSummary {
     /// 段階ごと（`acquire:名前`・`sql:名前`）の時間。
     phases: std::collections::BTreeMap<String, Vec<Duration>>,
     lock_wait: Vec<Duration>,
-    /// 接続の取得のうち、新しい接続を開いたものと、プールの接続を使ったもの。
+    /// 接続の取得のうち、新しい接続を開いたと推定したものと、そう推定しなかったもの（使い回しの実測ではない）。
     new_acquires: Vec<Duration>,
-    reused_acquires: Vec<Duration>,
-    /// 新しい接続を開いた取得の、段階ごとの数。
+    not_new_est_acquires: Vec<Duration>,
+    /// 新しい接続を開いたと推定した取得の、段階ごとの数。
     new_by_phase: std::collections::BTreeMap<String, usize>,
 }
 
@@ -1872,7 +1872,7 @@ fn merge_join_timings(
                 sum.new_acquires.push(a.elapsed);
                 *sum.new_by_phase.entry(a.name).or_default() += 1;
             } else {
-                sum.reused_acquires.push(a.elapsed);
+                sum.not_new_est_acquires.push(a.elapsed);
             }
         }
     }
@@ -2050,9 +2050,9 @@ async fn join_latency() -> anyhow::Result<()> {
             |label: String, rows: Vec<(Duration, backend::routes::call_sfu::JoinTimings)>| {
                 let mut m = merge_join_timings(rows);
                 let new_count = m.new_acquires.len();
-                let total_count = new_count + m.reused_acquires.len();
+                let total_count = new_count + m.not_new_est_acquires.len();
                 let mut out = format!(
-                    "{label}\n  join                 {}\n  db_acquire_total     {}\n  db_sql_total         {}\n  pre_handler_rest     {}\n  other                {}\n  auth_user_acquire    {}\n  auth_user_sql        {}\n  lock_wait            {}\n  new_conns_estimated  {new_count} of {total_count} acquires {:?}\n  acquire_new_est      {}\n  acquire_reused       {}",
+                    "{label}\n  join                 {}\n  db_acquire_total     {}\n  db_sql_total         {}\n  pre_handler_rest     {}\n  other                {}\n  auth_user_acquire    {}\n  auth_user_sql        {}\n  lock_wait            {}\n  new_conns_estimated  {new_count} of {total_count} acquires {:?}\n  acquire_new_est      {}\n  acquire_not_new_est  {}",
                     summary(&mut m.join),
                     summary(&mut m.db_acquire_total),
                     summary(&mut m.db_sql_total),
@@ -2063,7 +2063,7 @@ async fn join_latency() -> anyhow::Result<()> {
                     summary_or_none(&mut m.lock_wait),
                     m.new_by_phase,
                     summary_or_none(&mut m.new_acquires),
-                    summary_or_none(&mut m.reused_acquires),
+                    summary_or_none(&mut m.not_new_est_acquires),
                 );
                 for (name, v) in m.phases.iter_mut() {
                     out.push_str(&format!("\n  {name:<20} {}", summary(v)));
