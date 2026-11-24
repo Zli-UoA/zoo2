@@ -1,13 +1,13 @@
 ; zoo2 デスクトップ版 (Tauri) の Windows 用 Inno Setup インストーラー定義。
 ; ビルド例:
-;   iscc /DAppVersion=0.2.13 desktop-tauri\installer\zoo2.iss
+;   iscc /DAppVersion=0.3.0 desktop-tauri\installer\zoo2.iss
 
 #if Ver < EncodeVer(6, 5, 2)
   #error This script requires Inno Setup 6.5.2 or later for UTF-8 without BOM and PNG wizard images.
 #endif
 
 #ifndef AppVersion
-  #define AppVersion "0.2.13"
+  #define AppVersion "0.3.0"
 #endif
 #ifndef ExePath
   #define ExePath "..\src-tauri\target\release\zoo2-desktop-tauri.exe"
