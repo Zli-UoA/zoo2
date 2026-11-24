@@ -500,6 +500,11 @@ internal suspend fun enrichPushNotification(
         val manager = context.getSystemService(NotificationManager::class.java)
         val current = manager.activeNotifications.firstOrNull { it.tag == posted.tag && it.id == 0 }
         if (current?.notification?.extras?.getString(PUSH_RENDER) != posted.render) return@synchronized
-        try { manager.notify(posted.tag, 0, posted.build(icon, image)) } catch (_: SecurityException) { }
+        val replacement = posted.build(icon, image)
+        // 画像を待つあいだに、端末で復号した本文がこの通知に反映されていたら、サーバーの本文の古い組み立てで戻さない
+        // （本文の反映では PUSH_RENDER が変わらないため、ここで確かめる。#510）。
+        if (current.notification.extras.getString(PUSH_DECRYPTED_BODY) != null &&
+            replacement.extras.getString(PUSH_DECRYPTED_BODY) == null) return@synchronized
+        try { manager.notify(posted.tag, 0, replacement) } catch (_: SecurityException) { }
     }
 }

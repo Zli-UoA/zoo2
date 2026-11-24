@@ -211,6 +211,17 @@ class AndroidPushTest {
         assertEquals(Notification.VISIBILITY_PRIVATE, displayed.visibility)
     }
 
+    /** 画像を待つあいだに復号した本文が反映されたら、画像の取得のあとでサーバーの本文に戻さない（#510）。 */
+    @Test fun lateMediaDoesNotRevertADecryptedBody() = runTest {
+        val binding = PushBinding(context).bind("https://zoo.example", user)
+        val posted = assertNotNull(showPushNotification(context, data(binding) + ("avatarUrl" to "https://zoo.example/avatar.png")))
+        // 同じ通知に、あとから届いた Push の復号した本文が反映された。
+        showPushNotification(context, data(binding), decryptedBody = "復号した本文")
+        enrichPushNotification(context, posted) { _, _ -> android.graphics.Bitmap.createBitmap(1, 1, android.graphics.Bitmap.Config.ARGB_8888) }
+        assertEquals("復号した本文", manager.activeNotifications.single().notification.extras.getString(Notification.EXTRA_TEXT))
+        assertEquals("復号した本文", preservedDecryptedBody(manager, notificationTag(user, id)))
+    }
+
     @Test fun dismissedPushIsNotRestoredByLateMedia() = runTest {
         val binding = PushBinding(context).bind("https://zoo.example", user)
         val posted = assertNotNull(showPushNotification(context, data(binding) +
