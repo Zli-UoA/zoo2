@@ -77,3 +77,21 @@ export function parseChannelLink(href: string, origin: string): ChannelLinkTarge
     },
   };
 }
+
+const MESSAGE_JUMP_EVENT = "zoo:jump-to-message";
+
+/**
+ * すでに URL の `?message=` が指している（表示中の）メッセージへのリンクを押したことを知らせる。
+ * 移動先の URL が今と同じだと、ルーターは何も変えず、メッセージ一覧も再スクロールしない。
+ * その場合に、離れた位置から対象の行へ戻すための合図。移動先が違うときは、通常の移動が行う。
+ */
+export function requestMessageJump(messageId: string): void {
+  window.dispatchEvent(new CustomEvent(MESSAGE_JUMP_EVENT, { detail: messageId }));
+}
+
+/** {@link requestMessageJump} の合図を受け取る。戻り値で購読を解除する。 */
+export function subscribeMessageJump(handler: (messageId: string) => void): () => void {
+  const listener = (event: Event) => handler((event as CustomEvent<string>).detail);
+  window.addEventListener(MESSAGE_JUMP_EVENT, listener);
+  return () => window.removeEventListener(MESSAGE_JUMP_EVENT, listener);
+}

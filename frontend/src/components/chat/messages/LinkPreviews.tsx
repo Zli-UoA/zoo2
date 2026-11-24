@@ -1,4 +1,3 @@
-import { Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   createSummalyClient,
@@ -8,7 +7,7 @@ import {
 import { resolvePublicConfig, type AppConfig } from "../../../lib/config";
 import { useOptionalCollections } from "../../../lib/electric/collections-context";
 import { proxyImageUrl } from "../../../lib/media-proxy";
-import { useChannelLinkTarget } from "./ContentLink";
+import { ChannelLink, useChannelLinkTarget } from "./ContentLink";
 import { previewUrls } from "./linkPreviews";
 import { acquirePreview, cachedPreview, subscribePreview } from "./linkPreviewRequests";
 import { subscribePreviewEndpoints, type PreviewEndpoints } from "../../../lib/preview-endpoints";
@@ -93,14 +92,9 @@ function LinkPreview({
   );
   // このアプリのチャンネル・メッセージへのリンクは、新しいタブを開かずに同じタブで移動する。
   return channelLink ? (
-    <Link
-      to="/channels/$channelId"
-      params={{ channelId: channelLink.channelId }}
-      search={channelLink.search}
-      className={cardClassName}
-    >
+    <ChannelLink target={channelLink} className={cardClassName}>
       {card}
-    </Link>
+    </ChannelLink>
   ) : (
     <a href={url} target="_blank" rel="noopener noreferrer" className={cardClassName}>
       {card}

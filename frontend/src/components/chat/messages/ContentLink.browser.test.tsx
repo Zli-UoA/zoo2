@@ -11,6 +11,7 @@ import {
 } from "@tanstack/react-router";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { MfmContent } from "./MfmContent";
+import { subscribeMessageJump } from "./messageLink";
 
 const origin = window.location.origin;
 
@@ -117,11 +118,48 @@ describe("in-app links in message text", () => {
   });
 
   it.each([
+    ["a message link", `${origin}/channels/c1?message=m1`, ["m1"]],
+    // チャンネルのリンクは、対象のメッセージを持たないので、合図を送らない。
+    ["a channel link", `${origin}/channels/c2`, []],
+  ])("asks the message list to scroll back for %s", async (_name, url, expected) => {
+    // 移動先が今と同じでも対象へ戻せるよう、メッセージを指すリンクだけが合図を送る。
+    const jumps: string[] = [];
+    const unsubscribe = subscribeMessageJump((messageId) => jumps.push(messageId));
+    try {
+      setup(url);
+      await userEvent.click(await screen.findByRole("link"));
+      expect(jumps).toEqual(expected);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("does not ask for a scroll when the link opens somewhere else", async () => {
+    const jumps: string[] = [];
+    const unsubscribe = subscribeMessageJump((messageId) => jumps.push(messageId));
+    const clicks = observeDefaultPrevented();
+    try {
+      setup(`${origin}/channels/c1?message=m1`);
+      const link = await screen.findByRole("link");
+      fireEvent.click(link, { button: 0, ctrlKey: true });
+      fireEvent.click(link, { button: 0, metaKey: true });
+      fireEvent.click(link, { button: 1 });
+      expect(jumps).toEqual([]);
+    } finally {
+      clicks.stop();
+      unsubscribe();
+    }
+  });
+
+  it.each([
     ["another site", "https://example.com/channels/c1?message=m1"],
     ["another origin with the same path", `https://other.${window.location.host}/channels/c1`],
     ["a same-origin page that is not a channel", `${origin}/settings`],
     ["a same-origin API address", `${origin}/api/channels/c1`],
-    ["an address with credentials", `https://user:pass@${window.location.host}/channels/c1`],
+    [
+      "an address with credentials",
+      `${window.location.protocol}//user:pass@${window.location.host}/channels/c1`,
+    ],
   ])("keeps %s as an external link in a new tab", async (_name, url) => {
     setup(`${url}`);
     const link = await screen.findByRole("link");
