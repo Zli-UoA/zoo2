@@ -9,7 +9,7 @@ mod tauri;
 use leptos::{ev, html, prelude::*, task::spawn_local};
 use zoo2_client_types::{
     ipc::{
-        DeviceLogin, FocusState, IpcError, OpenChannel, OpenTarget, SendMessage, SendResult,
+        FocusState, IpcError, LoginPrompt, OpenChannel, OpenTarget, SendMessage, SendResult,
         SessionInfo, SessionState, ShapeBatch, ShapeFailed, UiMode, command, event,
     },
     mfm::{self, Tone},
@@ -259,19 +259,28 @@ fn ExternalLinkIcon() -> impl IntoView {
 fn Login(state: Option<SessionState>) -> impl IntoView {
     let ctx = expect_context::<Ctx>();
     let starting = ctx.starting;
-    let start = move |_| {
+    // 既定はブラウザー（認可コード + PKCE）。ブラウザーを開けない環境のために、確認コード
+    // （デバイス認可）でも始められる。
+    let begin = move |method: &'static str| {
         if starting.get_untracked() {
             return;
         }
         starting.set(true);
         ctx.error.set(None);
         spawn_local(async move {
-            if let Err(err) = tauri::invoke0::<DeviceLogin>(command::START_LOGIN).await {
+            if let Err(err) = tauri::invoke::<LoginPrompt>(
+                command::START_LOGIN,
+                serde_json::json!({ "method": method }),
+            )
+            .await
+            {
                 ctx.error.set(Some(err.message));
             }
             starting.set(false);
         });
     };
+    let start = move |_| begin("browser");
+    let start_device = move |_| begin("device");
     let cancel = move |_| {
         spawn_local(async move {
             ctx.report(tauri::invoke0::<()>(command::CANCEL_LOGIN).await);
@@ -312,9 +321,62 @@ fn Login(state: Option<SessionState>) -> impl IntoView {
                 </button>
             </div>
             <p class="auth-hint">"ボタンを押すと、通常は既定のブラウザーが自動で開きます。開かない場合は、次の画面から手動で開けます。"</p>
+            <div class="auth-fallback">
+                <p class="auth-fallback-note">"ブラウザーが開けない環境では、確認コードでもログインできます。"</p>
+                <button
+                    type="button"
+                    class="auth-btn auth-btn-outline"
+                    disabled=move || starting.get()
+                    on:click=start_device
+                >
+                    "確認コードでログイン"
+                </button>
+            </div>
         }
         .into_any(),
-        Some(SessionState::LoggingIn { login }) => {
+        Some(SessionState::LoggingIn {
+            login: LoginPrompt::Browser(login),
+        }) => view! {
+            <div class="auth-eyebrow">
+                <span class="auth-pill" aria-hidden="true"></span>
+                <span>"BROWSER LOGIN"</span>
+            </div>
+            <h1 class="auth-title">"ブラウザーで承認"</h1>
+            <p class="auth-lead">"開いたブラウザーでログインを済ませると、このアプリに戻ります。"</p>
+            <div class="auth-status">
+                <span class="auth-dot" aria-hidden="true"></span>
+                <span>"承認を待っています…"</span>
+            </div>
+            <div class="auth-actions">
+                <a
+                    class="auth-btn auth-btn-primary"
+                    href=login.url.clone()
+                    target="_blank"
+                    rel="noopener noreferrer"
+                >
+                    <ExternalLinkIcon />
+                    <span>"ブラウザーで開く"</span>
+                </a>
+                <button type="button" class="auth-btn auth-btn-outline" on:click=cancel>
+                    "中止"
+                </button>
+            </div>
+            <div class="auth-fallback">
+                <p class="auth-fallback-note">"自動で開かない場合は上のボタンを押してください。ブラウザーが開けない環境では、確認コードでもログインできます。"</p>
+                <button
+                    type="button"
+                    class="auth-btn auth-btn-outline"
+                    disabled=move || starting.get()
+                    on:click=start_device
+                >
+                    "確認コードでログイン"
+                </button>
+            </div>
+        }
+        .into_any(),
+        Some(SessionState::LoggingIn {
+            login: LoginPrompt::Device(login),
+        }) => {
             let has_complete = login.verification_uri_complete.is_some();
             let lead = if !login.auto_open {
                 "下の「ブラウザーで開く」を押し、表示された画面に確認コードを入力して承認してください。"

@@ -13,7 +13,7 @@ Linux・macOS・Windows 向けのデスクトップ版を Tauri v2 で作る。P
 | crate 名 | `zoo2-desktop-tauri` |
 | 更新タグ | `desktop-tauri-v*` |
 | 設定ディレクトリ | `config_dir_for("zoo2-desktop-tauri")`（TUI の `zoo2-tui` とは別） |
-| OIDC の client_id | `MwrfTPwsaaelMmxBdQGjWYuywWrsMHMe`（AuthZ の「Zoo for Desktop」。AuthZ が発行した ID。public client で、デバイスコードと refresh_token を許可し、resource `https://zli.chat/api` を紐付けてある） |
+| OIDC の client_id | `MwrfTPwsaaelMmxBdQGjWYuywWrsMHMe`（AuthZ の「Zoo for Desktop」。AuthZ が発行した ID。public client で、認可コード（ループバックのリダイレクト URI）・デバイスコード・refresh_token を許可し、resource `https://zli.chat/api` を紐付けてある） |
 
 ## crate の層
 
@@ -28,7 +28,7 @@ client-types/   zoo2-client-types   型と純粋関数。wasm32 でもビルド�
                   notify  OS の通知を出すかの判定
                   api     REST の応答のうち両側で使うもの（Me）
                   ipc     Tauri のコマンド・イベントの名前と型
-client-core/    zoo2-client-core    ネイティブ専用。通信（ShapeStream、ApiClient）、認証（デバイスコード、TokenManager）、設定、更新の確認
+client-core/    zoo2-client-core    ネイティブ専用。通信（ShapeStream、ApiClient）、認証（認可コード + PKCE、デバイスコード、TokenManager）、設定、更新の確認
                                     types のモジュールを同じパスで再公開しているので、TUI の import は変わらない
 desktop-tauri/src-tauri             Tauri のコマンドとイベントの層
 desktop-tauri/ui                    (a) Leptos の画面（wasm32）。client-types だけに依存する
@@ -196,8 +196,8 @@ PR の検証用 CI（`ci-desktop-tauri.yaml`）は、署名用 Secrets を渡さ
 
 ## 未確定・確認が要るもの
 
-- AuthZは`offline_access`に対応している。「Zoo for Desktop」で更新トークンを利用するには、登録済みclientに同scopeを許可し、デバイス認可で要求して本人が同意する。Web用の`VITE_OIDC_SCOPE`とは別に、デスクトップは共通クライアントの`ZOO_OIDC_SCOPE`（既定値は`openid profile offline_access`）を使う。発行・rotation・再起動後の復元は実機で確認する。`TokenManager`は更新トークンがない場合も動き、期限が切れたらログインし直しになる。
-- ループバックの redirect（RFC 8252）：ログインはデバイスコードなので依存しないが、E2EE の再認証（`zoo_reauthenticate`）は依存する。「Zoo for Desktop」に認可コードのグラントとループバックのリダイレクト URI を AuthZ の管理画面で足し、zoo2-infra の `OIDC_REAUTH_AUDIENCES` にこのクライアント ID を足すまでは、再認証が要る保存は 403 になる。
+- AuthZは`offline_access`に対応している。「Zoo for Desktop」で更新トークンを利用するには、登録済みclientに同scopeを許可し、ログイン（認可コード + PKCE、またはデバイス認可）で要求して本人が同意する。Web用の`VITE_OIDC_SCOPE`とは別に、デスクトップは共通クライアントの`ZOO_OIDC_SCOPE`（既定値は`openid profile offline_access`）を使う。発行・rotation・再起動後の復元は実機で確認する。`TokenManager`は更新トークンがない場合も動き、期限が切れたらログインし直しになる。
+- ループバックの redirect（RFC 8252）：ふだんのログイン（`zoo_start_login` の `method` 省略時の `browser`）と、E2EE の再認証（`zoo_reauthenticate`）の両方が依存する。「Zoo for Desktop」に認可コードのグラントとループバックのリダイレクト URI（`http://127.0.0.1/callback`。ポートは登録不要）を AuthZ の管理画面で足すまでは、ログインは `invalid_redirect_uri` で失敗するので、画面の「確認コードでログイン」（`method: "device"`）を使う。再認証は、zoo2-infra の `OIDC_REAUTH_AUDIENCES` にこのクライアント ID を足すまで、再認証が要る保存は 403 になる。
 
 ## 開発
 
@@ -217,6 +217,6 @@ cargo tauri build --bundles deb    # NixOS では AppImage を作れないので
 - (b) で読み込む先は `api_base_url` の起点。debug ビルドだけ、`ZOO_DESKTOP_REMOTE_URL=http://localhost:5173` で Vite の dev サーバーに差し替えられる（React 側の変更をデプロイ前に試すため）。
 - 接続先とログインは TUI と同じ環境変数（`ZOO_API_BASE_URL`、`ZOO_OIDC_CLIENT_ID`、`ZOO_OIDC_RESOURCE` など）か、`~/.config/zoo2-desktop-tauri/config.toml`（Windows では `%APPDATA%\zoo2-desktop-tauri\config\config.toml`）で変える。
 - Windows のリリース構成をローカルで作るときは、Rust の `wasm32-unknown-unknown` ターゲット、`trunk`、`wasm-bindgen-cli`、`tauri-cli`（版は `ci-desktop-tauri.yaml` と合わせる）、Inno Setup 6.5.2 以降、WebView2 Runtime、Windows C++ ビルドツールを用意する。`desktop-tauri/src-tauri` で `cargo tauri build --no-bundle -- --locked` を実行したあと、リポジトリルートで `iscc /DAppVersion=<版> desktop-tauri\installer\zoo2.iss` を実行する（Windows の Authenticode コード署名は未導入のため、初回実行時に SmartScreen の確認が出る）。
-- ローカルの backend（`DEV_AUTH_ENABLED=true`）に向けるときは `ZOO_DEV_USER=<UUID>` を付ける。デバイスコードのログインを通らずに `X-Dev-User` で接続する。画面は同梱の `leptos` になる。Web の画面を試すときは、frontend の dev サーバー（`pnpm dev`）を立てて、debug ビルドで `ZOO_DESKTOP_UI=remote ZOO_DESKTOP_REMOTE_URL=http://localhost:5173` を付ける。
+- ローカルの backend（`DEV_AUTH_ENABLED=true`）に向けるときは `ZOO_DEV_USER=<UUID>` を付ける。ログイン（認可コード + PKCE、デバイスコード）を通らずに `X-Dev-User` で接続する。画面は同梱の `leptos` になる。Web の画面を試すときは、frontend の dev サーバー（`pnpm dev`）を立てて、debug ビルドで `ZOO_DESKTOP_UI=remote ZOO_DESKTOP_REMOTE_URL=http://localhost:5173` を付ける。
 - NVIDIA と Wayland の組み合わせで画面が出ないときは、`WEBKIT_DISABLE_DMABUF_RENDERER=1` を付ける。
 - `wasm-bindgen` は `desktop-tauri/ui/Cargo.toml` で、nixpkgs の `wasm-bindgen-cli` と同じ版に固定している。flake.lock を更新して版が変わったら、両方をそろえる。
