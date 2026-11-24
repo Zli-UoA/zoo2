@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
+import { notifyAuthSessionEnded, resetTokenProvider, setTokenProvider } from "../auth";
 import type { ApiClient } from "./client";
 import {
   FORWARD_OK_TTL_MS,
   FORWARD_UNAVAILABLE_TTL_MS,
   MAX_RESOLVE_FORWARD_IDS,
+  activateForwardScope,
   cachedForwardEntry,
   evictExpiredForwardIds,
   forgetForwardIds,
@@ -59,6 +61,7 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   resetForwardCacheForTests();
+  resetTokenProvider();
   vi.unstubAllGlobals();
 });
 
@@ -509,5 +512,152 @@ describe("resolveForwardMessages", () => {
     } finally {
       unsubscribe();
     }
+  });
+
+  it("registers visibility listener and resumes deferred chunks even when first chunk rejects while hidden", async () => {
+    vi.useFakeTimers();
+    const listeners = new Map<string, Set<() => void>>();
+    let hidden = false;
+    vi.stubGlobal("document", {
+      get visibilityState() {
+        return hidden ? "hidden" : "visible";
+      },
+      addEventListener(type: string, fn: () => void) {
+        let set = listeners.get(type);
+        if (!set) listeners.set(type, (set = new Set()));
+        set.add(fn);
+      },
+      removeEventListener(type: string, fn: () => void) {
+        listeners.get(type)?.delete(fn);
+      },
+    });
+
+    const deferredCalls: Array<{
+      resolve: (items: Record<string, ForwardResolutionItem>) => void;
+      reject: (reason?: unknown) => void;
+    }> = [];
+    const seenRequests: string[][] = [];
+    const { client, post } = makeClient(
+      (ids) =>
+        new Promise((resolve, reject) => {
+          seenRequests.push(ids);
+          deferredCalls.push({ resolve, reject });
+        }),
+    );
+
+    const manyIds = Array.from(
+      { length: MAX_RESOLVE_FORWARD_IDS + 1 },
+      (_, i) => `m-err-vis-${i + 1}`,
+    );
+    const lastId = `m-err-vis-${MAX_RESOLVE_FORWARD_IDS + 1}`;
+    const req = resolveForwardMessages(client, scopeA, manyIds);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(post).toHaveBeenCalledTimes(1);
+
+    // 先頭チャンク失敗時もキャッシュ保存側の listener 登録には頼らず、保留分岐で visibilitychange を購読する
+    hidden = true;
+    deferredCalls[0]!.reject(new Error("transient failure"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(listeners.get("visibilitychange")?.size).toBe(1);
+
+    hidden = false;
+    for (const fn of listeners.get("visibilitychange") ?? []) fn();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(seenRequests[1]).toEqual([lastId]);
+
+    deferredCalls[1]!.resolve({ [lastId]: okItem(lastId, "recovered-after-fail") });
+    const res = await req;
+    expect(res.get(manyIds[0]!)).toEqual({ status: "error" });
+    expect(res.get(lastId)).toMatchObject({ status: "ok", content: "recovered-after-fail" });
+  });
+
+  function makeDeferredPost() {
+    const pendingResolvers: Array<(items: Record<string, ForwardResolutionItem>) => void> = [];
+    const seenRequests: string[][] = [];
+    const { client, post } = makeClient(
+      (ids) =>
+        new Promise((resolve) => {
+          seenRequests.push(ids);
+          pendingResolvers.push(resolve);
+        }),
+    );
+    return { client, post, pendingResolvers, seenRequests };
+  }
+
+  it("aborts remaining chunks, clears cache, and resolves callers with error on logout mid-flush", async () => {
+    vi.useFakeTimers();
+    const { client, post, pendingResolvers, seenRequests } = makeDeferredPost();
+    const manyIds = Array.from({ length: MAX_RESOLVE_FORWARD_IDS + 1 }, (_, i) => `m-out-${i + 1}`);
+    const lastId = `m-out-${MAX_RESOLVE_FORWARD_IDS + 1}`;
+
+    const req = resolveForwardMessages(client, scopeA, manyIds);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(post).toHaveBeenCalledTimes(1);
+
+    notifyAuthSessionEnded("logout");
+    pendingResolvers[0]!(
+      Object.fromEntries(seenRequests[0]!.map((id) => [id, okItem(id, `leak-${id}`)])),
+    );
+    const res = await req;
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(res.get(manyIds[0]!)).toEqual({ status: "error" });
+    expect(res.get(lastId)).toEqual({ status: "error" });
+    expect(cachedForwardEntry(scopeA, manyIds[0]!)).toBeUndefined();
+    expect(cachedForwardEntry(scopeA, lastId)).toBeUndefined();
+  });
+
+  it("aborts remaining chunks of previous user without caching or leaking responses when switching user scope", async () => {
+    vi.useFakeTimers();
+    const { client, post, pendingResolvers, seenRequests } = makeDeferredPost();
+    const manyIds = Array.from({ length: MAX_RESOLVE_FORWARD_IDS + 1 }, (_, i) => `m-sw-${i + 1}`);
+    const lastId = `m-sw-${MAX_RESOLVE_FORWARD_IDS + 1}`;
+
+    const reqA = resolveForwardMessages(client, scopeA, manyIds);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(post).toHaveBeenCalledTimes(1);
+
+    activateForwardScope(scopeB);
+    const reqB = resolveForwardMessages(client, scopeB, ["m-user-b"]);
+    pendingResolvers[0]!(
+      Object.fromEntries(seenRequests[0]!.map((id) => [id, okItem(id, `alice-${id}`)])),
+    );
+    const resA = await reqA;
+    expect(resA.get(manyIds[0]!)).toEqual({ status: "error" });
+    expect(resA.get(lastId)).toEqual({ status: "error" });
+    expect(cachedForwardEntry(scopeA, manyIds[0]!)).toBeUndefined();
+
+    await vi.advanceTimersByTimeAsync(20);
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(seenRequests[1]).toEqual(["m-user-b"]);
+    pendingResolvers[1]!({ "m-user-b": okItem("m-user-b", "bob-ok") });
+    const resB = await reqB;
+    expect(resB.get("m-user-b")).toMatchObject({ status: "ok", content: "bob-ok" });
+  });
+
+  it("aborts flush and discards response when tokenProvider changes mid-flush", async () => {
+    vi.useFakeTimers();
+    setTokenProvider(() => "token-user-1");
+    const { client, post, pendingResolvers, seenRequests } = makeDeferredPost();
+    const manyIds = Array.from({ length: MAX_RESOLVE_FORWARD_IDS + 1 }, (_, i) => `m-tok-${i + 1}`);
+    const lastId = `m-tok-${MAX_RESOLVE_FORWARD_IDS + 1}`;
+
+    const req = resolveForwardMessages(client, scopeA, manyIds);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(post).toHaveBeenCalledTimes(1);
+
+    setTokenProvider(() => "token-user-2");
+    pendingResolvers[0]!(
+      Object.fromEntries(seenRequests[0]!.map((id) => [id, okItem(id, `wrong-${id}`)])),
+    );
+    const res = await req;
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(res.get(manyIds[0]!)).toEqual({ status: "error" });
+    expect(res.get(lastId)).toEqual({ status: "error" });
+    expect(cachedForwardEntry(scopeA, manyIds[0]!)).toBeUndefined();
+    expect(cachedForwardEntry(scopeA, lastId)).toBeUndefined();
   });
 });

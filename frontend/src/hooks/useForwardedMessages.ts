@@ -13,6 +13,7 @@ import { useCurrentUser } from "./useCurrentUser";
 import { DEFAULT_CONFIG, type AppConfig } from "../lib/config";
 import { createConfiguredApiClient } from "../lib/api/client";
 import {
+  activateForwardScope,
   cachedForwardEntry,
   evictExpiredForwardIds,
   forgetForwardIds,
@@ -84,6 +85,7 @@ export function useForwardedMessages(
 
   useEffect(() => {
     setResolvedState((prev) => (prev.scopeKey === scopeKey ? prev : { scopeKey, map: new Map() }));
+    activateForwardScope(scope);
     if (!enabled || uniqueIds.length === 0) return;
     const missing: string[] = [];
     const hits = new Map<string, ResolvedForwardEntry>();

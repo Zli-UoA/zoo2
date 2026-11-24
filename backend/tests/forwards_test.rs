@@ -2649,6 +2649,241 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
     assert_eq!(exists["reply"], json!(true), "{exists}");
     assert_eq!(exists["reply_p2"], json!(true), "{exists}");
 
+    // 2b) 別フィクスチャを使い、`--max-pages 1` の 4 段階再開を最初から `--apply` で実行して一括適用前に DB 保存を検証する
+    let ch_apply = format!("CAPP{}", &team[4..]);
+    let zoo_apply = create_channel(&app, &alice, false, false, &[]).await?;
+    sql_exec(
+        &state,
+        "INSERT INTO slack_channels(team_id, slack_channel_id, channel_id, last_ts) \
+         VALUES($1, $2, $3, '1704068000.000000') RETURNING json_build_object('ok', true)::text",
+        &[&team, &ch_apply, &zoo_apply],
+    )
+    .await?;
+
+    let ts_apply_src = "1704068100.000100";
+    let ts_apply_old_root = "1704068150.000100";
+    let ts_apply_oldest = "1704068200.000000";
+    let ts_apply_old_ignored = "1704068180.000100";
+    let ts_apply_page2 = "1704068250.000100";
+    let ts_apply_reply_p1 = "1704068260.000200";
+    let ts_apply_reply_p2 = "1704068270.000300";
+    let id_apply_src = slack::message_id(&team, &ch_apply, ts_apply_src).to_string();
+    let id_apply_old_ignored =
+        slack::message_id(&team, &ch_apply, ts_apply_old_ignored).to_string();
+    let id_apply_page2 = slack::message_id(&team, &ch_apply, ts_apply_page2).to_string();
+    let id_apply_reply_p1 = slack::message_id(&team, &ch_apply, ts_apply_reply_p1).to_string();
+    let id_apply_reply_p2 = slack::message_id(&team, &ch_apply, ts_apply_reply_p2).to_string();
+
+    sql_exec(
+        &state,
+        "INSERT INTO messages(id, user_id, channel_id, content, created_at, revision) \
+         VALUES($1, $2, $3, 'apply src', (to_timestamp($4::numeric) AT TIME ZONE 'UTC')::timestamp(3), 1) \
+         RETURNING json_build_object('ok', true)::text",
+        &[&id_apply_src, &alice, &zoo_apply, ts_apply_src],
+    )
+    .await?;
+
+    let att_apply = json!([{
+        "is_share": true,
+        "channel_id": ch_apply,
+        "ts": ts_apply_src,
+        "from_url": format!("https://example.slack.com/archives/{ch_apply}/p{}", ts_apply_src.replace('.', "")),
+        "text": "apply src",
+    }]);
+
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .and(query_param("channel", &ch_apply))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "channel": { "id": ch_apply, "is_private": false },
+        })))
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .and(query_param("channel", &ch_apply))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [
+                {
+                    "type": "message",
+                    "ts": ts_apply_old_ignored,
+                    "user": "UA",
+                    "text": "",
+                    "attachments": att_apply,
+                },
+                {
+                    "type": "message",
+                    "ts": ts_apply_old_root,
+                    "user": "UA",
+                    "text": "apply old root",
+                    "thread_ts": ts_apply_old_root,
+                    "reply_count": 2,
+                    "latest_reply": ts_apply_reply_p2,
+                },
+            ],
+            "response_metadata": { "next_cursor": "cur_apply_2" },
+        })))
+        .with_priority(5)
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .and(query_param("channel", &ch_apply))
+        .and(query_param("cursor", "cur_apply_2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [{
+                "type": "message",
+                "ts": ts_apply_page2,
+                "user": "UA",
+                "text": "",
+                "attachments": att_apply,
+            }],
+        })))
+        .with_priority(1)
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.replies"))
+        .and(query_param("channel", &ch_apply))
+        .and(query_param("ts", ts_apply_old_root))
+        .and(query_param("inclusive", "true"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [
+                { "type": "message", "ts": ts_apply_old_root, "user": "UA", "text": "apply old root", "thread_ts": ts_apply_old_root },
+                { "type": "message", "ts": ts_apply_reply_p1, "user": "UA", "text": "", "thread_ts": ts_apply_old_root, "attachments": att_apply },
+            ],
+            "response_metadata": { "next_cursor": "tcur_apply_2" },
+        })))
+        .with_priority(5)
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.replies"))
+        .and(query_param("channel", &ch_apply))
+        .and(query_param("ts", ts_apply_old_root))
+        .and(query_param("inclusive", "true"))
+        .and(query_param("cursor", "tcur_apply_2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [
+                { "type": "message", "ts": ts_apply_reply_p2, "user": "UA", "text": "", "thread_ts": ts_apply_old_root, "attachments": att_apply },
+            ],
+        })))
+        .with_priority(1)
+        .mount(&slack)
+        .await;
+
+    let app_run1 = backfill_forwards::run(
+        &state.db,
+        &config,
+        &backfill_forwards::Options {
+            apply: true,
+            channel: Some(ch_apply.clone()),
+            oldest: Some(ts_apply_oldest.into()),
+            max_pages: Some(1),
+            cursor: None,
+            thread_roots: Vec::new(),
+            thread_cursor: None,
+        },
+    )
+    .await?;
+    assert!(app_run1.truncated, "{app_run1:?}");
+    assert_eq!(app_run1.applied_inserts, 0, "{app_run1:?}");
+
+    let app_run2 = backfill_forwards::run(
+        &state.db,
+        &config,
+        &backfill_forwards::Options {
+            apply: true,
+            channel: Some(ch_apply.clone()),
+            oldest: Some(ts_apply_oldest.into()),
+            max_pages: Some(1),
+            cursor: app_run1.resume_channels[0].next_history_cursor.clone(),
+            thread_roots: app_run1.resume_channels[0].pending_thread_roots.clone(),
+            thread_cursor: app_run1.resume_channels[0].next_thread_cursor.clone(),
+        },
+    )
+    .await?;
+    assert!(app_run2.truncated, "{app_run2:?}");
+    assert_eq!(app_run2.applied_inserts, 1, "{app_run2:?}");
+    assert_eq!(
+        app_run2.resume_channels[0].next_thread_cursor.as_deref(),
+        Some("tcur_apply_2")
+    );
+
+    let app_run3 = backfill_forwards::run(
+        &state.db,
+        &config,
+        &backfill_forwards::Options {
+            apply: true,
+            channel: Some(ch_apply.clone()),
+            oldest: Some(ts_apply_oldest.into()),
+            max_pages: Some(1),
+            cursor: app_run2.resume_channels[0].next_history_cursor.clone(),
+            thread_roots: app_run2.resume_channels[0].pending_thread_roots.clone(),
+            thread_cursor: app_run2.resume_channels[0].next_thread_cursor.clone(),
+        },
+    )
+    .await?;
+    assert!(app_run3.truncated, "{app_run3:?}");
+    assert_eq!(app_run3.applied_inserts, 1, "{app_run3:?}");
+    assert!(
+        app_run3.resume_channels[0].pending_thread_roots.is_empty(),
+        "{app_run3:?}"
+    );
+    assert_eq!(app_run3.resume_channels[0].next_thread_cursor, None);
+
+    let app_run4 = backfill_forwards::run(
+        &state.db,
+        &config,
+        &backfill_forwards::Options {
+            apply: true,
+            channel: Some(ch_apply.clone()),
+            oldest: Some(ts_apply_oldest.into()),
+            max_pages: Some(1),
+            cursor: app_run3.resume_channels[0].next_history_cursor.clone(),
+            thread_roots: app_run3.resume_channels[0].pending_thread_roots.clone(),
+            thread_cursor: app_run3.resume_channels[0].next_thread_cursor.clone(),
+        },
+    )
+    .await?;
+    assert!(!app_run4.truncated, "{app_run4:?}");
+    assert!(app_run4.resume_channels.is_empty(), "{app_run4:?}");
+    assert_eq!(app_run4.applied_inserts, 1, "{app_run4:?}");
+
+    let app_saved = sql_one(
+        &state,
+        "SELECT json_build_object(\
+            'old', EXISTS(SELECT 1 FROM messages WHERE id = $1), \
+            'p2_fwds', (SELECT forwarded_message_ids FROM messages WHERE id = $2), \
+            'reply_p1_fwds', (SELECT forwarded_message_ids FROM messages WHERE id = $3), \
+            'reply_p2_fwds', (SELECT forwarded_message_ids FROM messages WHERE id = $4)\
+         )::text",
+        &[
+            &id_apply_old_ignored,
+            &id_apply_page2,
+            &id_apply_reply_p1,
+            &id_apply_reply_p2,
+        ],
+    )
+    .await?;
+    assert_eq!(app_saved["old"], json!(false), "{app_saved}");
+    assert_eq!(app_saved["p2_fwds"], json!([id_apply_src]), "{app_saved}");
+    assert_eq!(
+        app_saved["reply_p1_fwds"],
+        json!([id_apply_src]),
+        "{app_saved}"
+    );
+    assert_eq!(
+        app_saved["reply_p2_fwds"],
+        json!([id_apply_src]),
+        "{app_saved}"
+    );
+
     // 3) conversations.info の一時エラー（HTTP 500）は伝播し、長い Retry-After (>300s) は待たずにエラー報告する
     Mock::given(method("GET"))
         .and(path("/conversations.info"))

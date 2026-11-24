@@ -1,3 +1,8 @@
+import {
+  getAuthSessionGeneration,
+  getTokenProviderGeneration,
+  subscribeAuthSessionEnded,
+} from "../auth";
 import type { ApiClient } from "./client";
 import type { ForwardResolutionItem, ResolveForwardsResponse } from "./types";
 
@@ -31,6 +36,12 @@ interface CachedForwardEntry {
 }
 
 interface ScopeBucket {
+  scopeKey: string;
+  apiBaseUrl: string;
+  currentUserId: string | null;
+  epoch: number;
+  authSessionGeneration: number;
+  tokenProviderGeneration: number;
   cache: Map<string, CachedForwardEntry>;
   inflight: Map<string, Promise<ResolvedForwardEntry>>;
   generation: Map<string, number>;
@@ -42,8 +53,10 @@ interface ScopeBucket {
 }
 
 const buckets = new Map<string, ScopeBucket>();
+const activeUserByBaseUrl = new Map<string, string | null>();
 const invalidationListeners = new Map<string, Set<(ids: readonly string[]) => void>>();
 let visibilityListenerAttached = false;
+let authSessionUnsubscribe: (() => void) | null = null;
 
 export function forwardScopeKey(scope: ForwardCacheScope): string {
   return `${scope.apiBaseUrl}\0${scope.currentUserId ?? ""}`;
@@ -88,6 +101,12 @@ function getBucket(scope: ForwardCacheScope): ScopeBucket {
   let bucket = buckets.get(key);
   if (!bucket) {
     bucket = {
+      scopeKey: key,
+      apiBaseUrl: scope.apiBaseUrl,
+      currentUserId: scope.currentUserId,
+      epoch: 0,
+      authSessionGeneration: getAuthSessionGeneration(),
+      tokenProviderGeneration: getTokenProviderGeneration(),
       cache: new Map(),
       inflight: new Map(),
       generation: new Map(),
@@ -102,6 +121,105 @@ function getBucket(scope: ForwardCacheScope): ScopeBucket {
   return bucket;
 }
 
+function settleEntriesAsError(bucket: ScopeBucket, entries: readonly FlushedEntry[]): void {
+  for (const { id, waiters, inflightPromise } of entries) {
+    if (inflightPromise !== undefined && bucket.inflight.get(id) === inflightPromise) {
+      bucket.inflight.delete(id);
+    }
+    for (const waiter of waiters) {
+      waiter.resolve({ status: "error" });
+    }
+  }
+}
+
+function discardBucket(bucket: ScopeBucket): void {
+  bucket.epoch += 1;
+  if (bucket.timer !== null) {
+    clearTimeout(bucket.timer);
+    bucket.timer = null;
+  }
+  bucket.waitingVisible = false;
+  if (bucket.deferred.length > 0) {
+    settleEntriesAsError(bucket, bucket.deferred);
+    bucket.deferred = [];
+  }
+  for (const waiters of bucket.pending.values()) {
+    for (const waiter of waiters) {
+      waiter.resolve({ status: "error" });
+    }
+  }
+  bucket.pending.clear();
+  bucket.inflight.clear();
+  bucket.cache.clear();
+  bucket.generation.clear();
+  if (buckets.get(bucket.scopeKey) === bucket) {
+    buckets.delete(bucket.scopeKey);
+  }
+}
+
+function discardAllBuckets(): void {
+  for (const bucket of buckets.values()) {
+    discardBucket(bucket);
+  }
+  activeUserByBaseUrl.clear();
+}
+
+function ensureAuthSessionListener(): void {
+  if (authSessionUnsubscribe) return;
+  authSessionUnsubscribe = subscribeAuthSessionEnded((reason) => {
+    if (reason === "logout" || reason === "reset") {
+      discardAllBuckets();
+    }
+  });
+}
+
+function isBucketSessionFresh(bucket: ScopeBucket): boolean {
+  return (
+    bucket.authSessionGeneration === getAuthSessionGeneration() &&
+    bucket.tokenProviderGeneration === getTokenProviderGeneration()
+  );
+}
+
+function isBucketActiveForBaseUrl(bucket: ScopeBucket): boolean {
+  return (
+    !activeUserByBaseUrl.has(bucket.apiBaseUrl) ||
+    activeUserByBaseUrl.get(bucket.apiBaseUrl) === bucket.currentUserId
+  );
+}
+
+function isFlushStillValid(
+  bucket: ScopeBucket,
+  expectedEpoch: number,
+  expectedAuthGen: number,
+  expectedTokenGen: number,
+): boolean {
+  return (
+    bucket.epoch === expectedEpoch &&
+    buckets.get(bucket.scopeKey) === bucket &&
+    bucket.authSessionGeneration === expectedAuthGen &&
+    getAuthSessionGeneration() === expectedAuthGen &&
+    bucket.tokenProviderGeneration === expectedTokenGen &&
+    getTokenProviderGeneration() === expectedTokenGen &&
+    isBucketActiveForBaseUrl(bucket)
+  );
+}
+
+/** 指定スコープを現在アクティブとして登録し、同一接続先の別利用者キャッシュ・進行中バケットを破棄する。 */
+export function activateForwardScope(scope: ForwardCacheScope): void {
+  ensureAuthSessionListener();
+  if (
+    activeUserByBaseUrl.has(scope.apiBaseUrl) &&
+    activeUserByBaseUrl.get(scope.apiBaseUrl) !== scope.currentUserId
+  ) {
+    for (const bucket of buckets.values()) {
+      if (bucket.apiBaseUrl === scope.apiBaseUrl && bucket.currentUserId !== scope.currentUserId) {
+        discardBucket(bucket);
+      }
+    }
+  }
+  activeUserByBaseUrl.set(scope.apiBaseUrl, scope.currentUserId);
+}
+
 function isDocumentHidden(): boolean {
   return typeof document !== "undefined" && document.visibilityState === "hidden";
 }
@@ -110,6 +228,10 @@ function onVisibilityChange(): void {
   if (isDocumentHidden()) return;
   const now = Date.now();
   for (const [scopeKey, bucket] of buckets.entries()) {
+    if (!isBucketSessionFresh(bucket) || !isBucketActiveForBaseUrl(bucket)) {
+      discardBucket(bucket);
+      continue;
+    }
     const expiredIds: string[] = [];
     for (const [id, entry] of bucket.cache.entries()) {
       if (now >= entry.expiresAt) {
@@ -132,9 +254,16 @@ function ensureVisibilityListener(): void {
 }
 
 async function flushBucket(bucket: ScopeBucket): Promise<void> {
+  const flushEpoch = bucket.epoch;
+  const flushAuthGen = bucket.authSessionGeneration;
+  const flushTokenGen = bucket.tokenProviderGeneration;
   if (bucket.timer !== null) {
     clearTimeout(bucket.timer);
     bucket.timer = null;
+  }
+  if (!isFlushStillValid(bucket, flushEpoch, flushAuthGen, flushTokenGen)) {
+    discardBucket(bucket);
+    return;
   }
   if (isDocumentHidden()) {
     ensureVisibilityListener();
@@ -157,6 +286,11 @@ async function flushBucket(bucket: ScopeBucket): Promise<void> {
   const entries = [...deferredEntries, ...pendingEntries];
 
   for (let i = 0; i < entries.length; i += MAX_RESOLVE_FORWARD_IDS) {
+    if (!isFlushStillValid(bucket, flushEpoch, flushAuthGen, flushTokenGen)) {
+      settleEntriesAsError(bucket, entries.slice(i));
+      discardBucket(bucket);
+      return;
+    }
     if (isDocumentHidden()) {
       bucket.deferred.unshift(...entries.slice(i));
       ensureVisibilityListener();
@@ -176,6 +310,12 @@ async function flushBucket(bucket: ScopeBucket): Promise<void> {
       results = response.data?.items ?? {};
     } catch {
       results = null;
+    }
+
+    if (!isFlushStillValid(bucket, flushEpoch, flushAuthGen, flushTokenGen)) {
+      settleEntriesAsError(bucket, entries.slice(i));
+      discardBucket(bucket);
+      return;
     }
 
     for (const { id, waiters, gen, inflightPromise } of chunkMeta) {
@@ -225,7 +365,12 @@ export function cachedForwardEntry(
 ): ForwardResolutionItem | undefined {
   const key = forwardScopeKey(scope);
   const bucket = buckets.get(key);
-  return bucket ? getFreshCacheEntry(key, bucket, id) : undefined;
+  if (!bucket) return undefined;
+  if (!isBucketSessionFresh(bucket)) {
+    discardBucket(bucket);
+    return undefined;
+  }
+  return getFreshCacheEntry(key, bucket, id);
 }
 
 /** キャッシュを削除せずに有効な解決結果だけを参照する（期限切れなら `undefined`）。 */
@@ -234,7 +379,13 @@ export function peekForwardEntry(
   id: string,
   now = Date.now(),
 ): ForwardResolutionItem | undefined {
-  const entry = buckets.get(forwardScopeKey(scope))?.cache.get(id);
+  const bucket = buckets.get(forwardScopeKey(scope));
+  if (!bucket) return undefined;
+  if (!isBucketSessionFresh(bucket)) {
+    discardBucket(bucket);
+    return undefined;
+  }
+  const entry = bucket.cache.get(id);
   return entry && now < entry.expiresAt ? entry.value : undefined;
 }
 
@@ -244,7 +395,13 @@ export function peekForwardExpiresAt(
   id: string,
   now = Date.now(),
 ): number | undefined {
-  const entry = buckets.get(forwardScopeKey(scope))?.cache.get(id);
+  const bucket = buckets.get(forwardScopeKey(scope));
+  if (!bucket) return undefined;
+  if (!isBucketSessionFresh(bucket)) {
+    discardBucket(bucket);
+    return undefined;
+  }
+  const entry = bucket.cache.get(id);
   if (!entry) return undefined;
   return now >= entry.expiresAt ? now : entry.expiresAt;
 }
@@ -258,6 +415,10 @@ export function evictExpiredForwardIds(
   const key = forwardScopeKey(scope);
   const bucket = buckets.get(key);
   if (!bucket) return [];
+  if (!isBucketSessionFresh(bucket)) {
+    discardBucket(bucket);
+    return [];
+  }
   const expiredIds: string[] = [];
   for (const id of ids) {
     const entry = bucket.cache.get(id);
@@ -321,7 +482,12 @@ export async function resolveForwardMessages(
   const out = new Map<string, ResolvedForwardEntry>();
   if (uniqueIds.length === 0) return out;
 
+  activateForwardScope(scope);
   const scopeKey = forwardScopeKey(scope);
+  const existingBucket = buckets.get(scopeKey);
+  if (existingBucket && !isBucketSessionFresh(existingBucket)) {
+    discardBucket(existingBucket);
+  }
   const bucket = getBucket(scope);
   bucket.client = client;
   const promises: Array<[string, Promise<ResolvedForwardEntry>]> = [];
@@ -364,30 +530,12 @@ export async function resolveForwardMessages(
 
 /** テスト間でキャッシュ・待機タイマー・可視状態リスナーを初期化する。 */
 export function resetForwardCacheForTests(): void {
-  for (const bucket of buckets.values()) {
-    if (bucket.timer !== null) {
-      clearTimeout(bucket.timer);
-      bucket.timer = null;
-    }
-    for (const item of bucket.deferred) {
-      for (const waiter of item.waiters) {
-        waiter.resolve({ status: "error" });
-      }
-    }
-    bucket.deferred = [];
-    for (const waiters of bucket.pending.values()) {
-      for (const waiter of waiters) {
-        waiter.resolve({ status: "error" });
-      }
-    }
-    bucket.pending.clear();
-    bucket.inflight.clear();
-    bucket.cache.clear();
-  }
-  buckets.clear();
+  discardAllBuckets();
   invalidationListeners.clear();
   if (visibilityListenerAttached && typeof document !== "undefined") {
     document.removeEventListener("visibilitychange", onVisibilityChange);
   }
   visibilityListenerAttached = false;
+  authSessionUnsubscribe?.();
+  authSessionUnsubscribe = null;
 }
