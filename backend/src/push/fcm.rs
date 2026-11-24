@@ -134,11 +134,7 @@ impl FcmConfig {
     ) -> anyhow::Result<bool> {
         let (token, binding) = registration(endpoint)
             .ok_or_else(|| anyhow::anyhow!("Invalid Android registration"))?;
-        let body = message(token, binding, user, payload, ttl);
-        anyhow::ensure!(
-            serde_json::to_vec(&body["message"]["data"])?.len() <= 4096,
-            "FCM data payload too large"
-        );
+        let body = fitting_message(token, binding, user, payload, ttl)?;
         let access = self.access_token(client).await?;
         post_message(
             client,
@@ -151,6 +147,33 @@ impl FcmConfig {
         )
         .await
     }
+}
+
+/// FCM の data の上限（バイト）。
+const MAX_FCM_DATA_BYTES: usize = 4096;
+
+fn data_len(body: &Value) -> anyhow::Result<usize> {
+    Ok(serde_json::to_vec(&body["message"]["data"])?.len())
+}
+
+/// 送る FCM のメッセージ。暗号文を入れると data の上限を超えるなら、暗号文を外す（Web Push の `encrypt_fitting`
+/// と同じ。Android は「新しいメッセージ」のまま出す）。外しても超えるならエラー。
+fn fitting_message(
+    token: &str,
+    binding: &str,
+    user: &str,
+    payload: &NotificationPayload,
+    ttl: u32,
+) -> anyhow::Result<Value> {
+    let mut body = message(token, binding, user, payload, ttl);
+    if payload.e2ee.is_some() && data_len(&body)? > MAX_FCM_DATA_BYTES {
+        body = message(token, binding, user, &payload.without_ciphertext(), ttl);
+    }
+    anyhow::ensure!(
+        data_len(&body)? <= MAX_FCM_DATA_BYTES,
+        "FCM data payload too large"
+    );
+    Ok(body)
 }
 
 async fn post_message(
@@ -212,7 +235,9 @@ fn message(
     ttl: u32,
 ) -> Value {
     // Data-only messages reach FirebaseMessagingService in the foreground and after process death.
-    // Never attach E2EE ciphertext: Android displays the existing generic encrypted-message body.
+    // 暗号化チャンネルの通知には、Web Push と同じ `e2ee`（Megolm の暗号文と照合に使う行の値）を JSON の文字列で
+    // 入れる（FCM の data の値は文字列だけ）。端末が自分の暗号ストアで復号して本文を出す（#510）。どれもサーバーが
+    // 元から持つ値で、平文は入らない。
     let mut data = json!({"binding": binding, "userId": user, "title": payload.title,
         "body": payload.body, "url": payload.url, "tag": payload.tag,
         "notificationType": payload.notification_type});
@@ -223,6 +248,9 @@ fn message(
             .as_secs();
         data["inviteId"] = json!(id);
         data["expiresAt"] = json!((now + u64::from(ttl)).to_string());
+    }
+    if let Some(e2ee) = &payload.e2ee {
+        data["e2ee"] = json!(serde_json::to_string(e2ee).unwrap_or_default());
     }
     if let Some(preview) = &payload.android_preview {
         data["actor"] = json!(preview.actor);
@@ -319,6 +347,55 @@ mod tests {
         assert!(is_unregistered(
             &json!({"error":{"details":[{"@type":"type.googleapis.com/google.firebase.fcm.v1.FcmError","errorCode":"UNREGISTERED"}]}})
         ));
+    }
+
+    fn encrypted_payload(ciphertext_len: usize) -> NotificationPayload {
+        NotificationPayload {
+            title: "Actor".into(),
+            body: "新しいメッセージ".into(),
+            url: "/channels/channel?message=message".into(),
+            tag: "zoo-notification".into(),
+            notification_type: "dm".into(),
+            e2ee: Some(super::super::EncryptedPush {
+                recipient_id: "00000000-0000-4000-8000-000000000001".into(),
+                message: super::super::EncryptedRow {
+                    channel_id: "00000000-0000-4000-8000-000000000002".into(),
+                    message_id: "00000000-0000-4000-8000-000000000003".into(),
+                    parent_id: None,
+                    user_id: "00000000-0000-4000-8000-000000000004".into(),
+                    message_kind: "message".into(),
+                    epoch: 3,
+                    revision: 1,
+                    ciphertext: json!({"algorithm": "m.megolm.v1.aes-sha2", "ciphertext": "A".repeat(ciphertext_len)}),
+                },
+            }),
+            invite_id: None,
+            android_preview: None,
+        }
+    }
+
+    /// 暗号化チャンネルの通知は、Web Push と同じ `e2ee` を JSON の文字列で入れる（#510）。本文は「新しいメッセージ」のまま。
+    #[test]
+    fn encrypted_notifications_carry_the_ciphertext_for_the_device() {
+        let body =
+            fitting_message("token", "binding", "user", &encrypted_payload(64), 300).unwrap();
+        let data = &body["message"]["data"];
+        assert_eq!(data["body"], "新しいメッセージ");
+        let e2ee: Value = serde_json::from_str(data["e2ee"].as_str().unwrap()).unwrap();
+        assert_eq!(e2ee["recipient_id"], "00000000-0000-4000-8000-000000000001");
+        assert_eq!(e2ee["message"]["epoch"], 3);
+        assert_eq!(e2ee["message"]["revision"], 1);
+        assert_eq!(e2ee["message"]["ciphertext"]["ciphertext"], "A".repeat(64));
+    }
+
+    /// 暗号文を入れると data の上限を超えるなら、暗号文を外して送る。
+    #[test]
+    fn oversized_ciphertext_is_dropped_to_fit_the_data_limit() {
+        let body =
+            fitting_message("token", "binding", "user", &encrypted_payload(5000), 300).unwrap();
+        assert!(body["message"]["data"].get("e2ee").is_none());
+        assert_eq!(body["message"]["data"]["body"], "新しいメッセージ");
+        assert!(data_len(&body).unwrap() <= MAX_FCM_DATA_BYTES);
     }
 
     #[test]

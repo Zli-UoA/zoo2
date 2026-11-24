@@ -775,7 +775,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 - Android の送信は 1 経路で直列化する。送信ごとに recipients を取得し、送信用 Megolm セッションはアプリの実行中に再利用する。epoch の変更、共通暗号基盤のメッセージ数・期間の更新条件、暗号ストアの開き直しで作り直す。送信用 Olm セッションもアプリの実行中に再利用し、鍵は配布済み端末へ再配布しない。新しい受信用セッションを保存してから本文を送るため、自分が送った本文も再起動後に読める。1 送信につき recipients のページ数、未配布端末への必要な鍵の払い出しと配布（100 端末ずつ）、本文の書き込みが必要で、新しい常設接続・ポーリングは追加しない。一度確認した epoch より古いスナップショットは受け入れず、`E2EE_STALE_EPOCH` には新しい epoch 以上のスナップショットで最大 3 回まで再暗号化して送る。通信失敗では平文に切り替えない。
 - Android の復号は表示中の行について行い、本文を Electric の同期キャッシュへ書き戻さない。暗号ストアの更新（解錠、鍵の受信、バックアップの取り込み）で再判定する（`MessageEncryption.changes` が変わるたびに、開いている会話の行を復号し直す）。復号できない行は、本文の代わりに Web と同じ文で理由を出す（鍵がまだ届いていない、解錠が必要、検証に失敗した、復号できなかった）。送信者・チャンネル・親・epoch・revision・リプレイを共通暗号基盤で検証し、未検証の送信者とバックアップ由来の鍵を区別して表示する。旧版と同じ版の競合では画面内の確認済み本文を保持し、送信者の検証状態と版の警告を別々に表示する。表示メタデータの更新や再復号で編集下書きを初期化しない。暗号化前の投稿は編集を禁止するが、リアクションの追加・解除は維持し、暗号化本文の URL プレビューを自動取得しない。【決定】（#564）Web と同じく、読み込んだ行のうち最初の暗号化したメッセージの前に「ここから暗号化されています」の区切りを出し、それより後ろにある暗号文のない行だけに「暗号化されていません」の印を付ける（暗号化する前の平文の行には印を付けない）。境目は、会話の画面（親のない行）とスレッドの画面（親と返信）のそれぞれで、表示する行の中で決める。epoch があるのに暗号文のない行は、正しいサーバーは作らないので、本文を出さずに「暗号化されていないため表示しません」を出す。受け取った添付は、Web の `receivedAttachmentView` と同じく、名前の双方向の制御文字を `_` にし、平文の添付ならサーバーが拒否する種類は取得も保存もしない。
 - 異常系のテストは `frontend-compose` の `EncryptedDmTest`（状態を持つ模擬サーバーと、2 人と暗号化を設定していない 1 人の実際の暗号ストア。`frontend/e2e/e2ee.spec.ts` と同じ観点）。2 人の暗号化 DM の往復と要求に平文が入らないこと、TOFU で信頼した相手が「未検証の送信者」にならないこと、鍵バックアップから取り込んだ端末で「送信者を確かめられません」になること、退出したメンバーに鍵を配らないこと、配れない相手がいても送って理由と増えた配布先を出すこと、`mentions` の平文、暗号化した添付の往復と差し替えの拒否を確かめる。アップロードの証明は `E2eeSetupTest`（模擬サーバーが JDK の X25519 と HKDF で別に計算して確かめる）、表示の規則は `EncryptedEntriesTest`。
-- 端末一覧と失効（#362）、Push の復号（#510）、解錠したあとの鍵スロットの追加と削除、E2EE のリセット、他ユーザーの SAS 検証、既存チャンネルの暗号化切り替え操作は後続。
+- Push の復号（#510）は [Android の Push の復号](#android-の-push-の復号510) のとおり入れた。端末一覧と失効（#362）、解錠したあとの鍵スロットの追加と削除、E2EE のリセット、他ユーザーの SAS 検証、既存チャンネルの暗号化切り替え操作は後続。
 
 ### 暗号化チャンネルと DM の送受信の実装（#361）
 
@@ -2221,7 +2221,24 @@ A の QR を B が読み取る場合です（B の QR を A が読み取る場�
   - `importScripts` の失敗は握りつぶさず、install を失敗させる。読めたスクリプトだけが更新の検査の対象になるので、握りつぶすと、復号できない Service Worker が `sw.js` の次の変更まで残るため（ローリング更新で、古い Pod が `/sw-push.js` に HTML を返したときなど）。失敗した install は、次の登録や更新の検査でやり直す。
   - wasm（zoo-crypto と wa-sqlite）は、install で専用のキャッシュ（`zoo-push-wasm-v1`）に保存し、Push を受けたときに初めてコンパイルする。デプロイで wasm の名前（ハッシュ）が変わっても、動いている Service Worker の `sw-push.js` が指す wasm を返せる。新しい Service Worker の activate で、今の 2 つ以外を消す。キャッシュになければ取りに行き、1 つ 8 秒で諦める。nginx は wasm も gzip で圧縮する（`infra/frontend-nginx.conf`）。
 - 本物の Service Worker での確かめは `frontend/src/sw/push.browser.test.ts`（Chromium）。
-- 【決定】（#365）Android は、まだ Push の受信（FCM）がなく、#365 の時点では暗号ストアと端末の登録（#359）もなかったので、#365 では扱わず、[#510](https://github.com/Zli-UoA/zoo2/issues/510) に分けた。Android で Push を受けるようにするときは、同じ `e2ee` を受け取り、Android の暗号ストアの受信用セッション（UniFFI の `InboundSessionStore`）で、Web と同じく書き戻さずに復号する。
+- 【決定】（#365）Android は、#365 の時点では Push の受信（FCM）も暗号ストアと端末の登録（#359）もなかったので、#365 では扱わず、[#510](https://github.com/Zli-UoA/zoo2/issues/510) に分けた（[Android の Push の復号](#android-の-push-の復号510)）。
+
+### Android の Push の復号（#510）
+
+【決定】（#510）Android の暗号化チャンネルの Push も、Web と同じく、サーバーが平文を持たないまま、受け取った端末が自分の暗号ストアで復号して本文を出します。
+
+- 送り方：FCM の data（`backend/src/push/fcm.rs`）に、Web Push と同じ `e2ee`（`recipient_id` と、zoo-crypto の `EncryptedMessage` と同じ形の `message`）を、JSON の文字列で入れる（FCM の data の値は文字列だけ）。`body` は Web と同じく「新しいメッセージ」。どれもサーバーが元から持つ値で、Push のために新しくサーバーに渡る値はない。
+  - FCM の data は、Web Push と違って RFC 8291 で暗号化しないので、Google には `e2ee` の中身（チャンネル、メッセージ、送信者の ID、epoch、Megolm の暗号文）が見える。本文は Megolm の暗号文のままで読めない。タイトル（送信者の名前）、チャンネル名、通知の種類は、平文チャンネルと同じく今までも data に入っている。
+  - 上限：data を JSON にした長さが 4096 バイトを超えるなら、`e2ee` を外して送る（Web Push の `encrypt_fitting` と同じ考え方。`fitting_message`）。外しても超えるなら送らない（今までどおり）。
+- 受け取り方（`frontend-compose` の `androidApp` の `EncryptedPush.kt`、`ZooMessagingService`）。
+  1. `binding` が今の端末の登録と一致し（今ログインしているユーザーで）、`e2ee.recipient_id` がそのユーザーと一致するときだけ復号する。`e2ee` の形が違えば復号しない（Web の `parsePushE2ee` と同じ規則）。
+  2. 暗号ストアの選び方は、ログインしたときと同じ接続先とユーザー（`CryptoStoreFiles.android`）。
+  3. 同じプロセスでアプリが暗号ストアを開いていれば、そのストアで復号する（画面の表示と同じく版の記録で照合し、古い版や同じ版で中身が違うと分かった本文は出さない）。開いていなければ、ディレクトリーの印を取るあいだに `state.json` と保存鍵を読むだけにして印を返し、読んだ写しからメモリーだけで復号する（`CryptoStore.decryptForNotification`）。写しは書き戻さず、保存鍵を開けなくても暗号ストアを作り直さない。そのため、この経路ではリプレイと古い版の検出が効かない（Web の Service Worker の写しと同じ）。
+  4. 通知の本文は、復号した `content.body` の先頭 240 文字（コードポイント）。送信者の確かさは通知には出さず、通知から開いた画面で示す。
+  5. `binding` は、本文を出す直前（`showPushNotification` の中）にもう一度確かめる。
+- 戻し方：`e2ee` がない、復号できない（暗号ストアがない、保存鍵を開けない、鍵が届いていない、照合に失敗した、宛先が今のユーザーでない）なら「新しいメッセージ」のまま出す。サーバーには何も送らない。
+- アプリが動いているあいだは、同期した通知（`AndroidNotifications`）が同じ通知を出し直す。通知の行には暗号文がないので、Push で端末が復号した本文が出ていれば、その本文を残す（通知の extras の `zoo.push.decrypted`。サーバーの data からは読まない）。
+- 異常系のテストは、`NotificationDecryptionTest`（開いているストアと写しからの復号、書き戻さないこと、鍵が届いていない・照合に失敗したときに出さないこと、保存鍵がなくても作り直さないこと）、`EncryptedPushTest`（`e2ee` の読み取り、宛先の確認、240 文字）、backend の `push::fcm` のテスト（`e2ee` を入れること、上限を超えたら外すこと）。
 
 ### Playwright の E2E（[#363](https://github.com/Zli-UoA/zoo2/issues/363)）
 
@@ -2320,7 +2337,7 @@ A の QR を B が読み取る場合です（B の QR を A が読み取る場�
 | [#363](https://github.com/Zli-UoA/zoo2/issues/363) | Playwright の E2E テスト（仮想認証器 `hasPrf: true`） | #362 |
 | [#364](https://github.com/Zli-UoA/zoo2/issues/364) | 暗号化した添付（実装したら添付の禁止を外す） | #361 |
 | [#365](https://github.com/Zli-UoA/zoo2/issues/365) | Push 通知を Service Worker で復号する | #361 |
-| [#510](https://github.com/Zli-UoA/zoo2/issues/510) | Android の Push 通知を復号する（#365 から分けた） | #359、#365 |
+| [#510](https://github.com/Zli-UoA/zoo2/issues/510) | Android の Push 通知を復号する（#365 から分けた。[Android の Push の復号](#android-の-push-の復号510)） | #359、#365 |
 | [#366](https://github.com/Zli-UoA/zoo2/issues/366) | Bot を端末として参加させる（メンバーの許可、`e2ee:device`、`/api/apps/v1/e2ee/...`、`sdk/src/e2ee.ts`、`examples/e2ee-echo-bot`。[Bot の端末](#bot-の端末)） | #361 |
 | [#367](https://github.com/Zli-UoA/zoo2/issues/367) | 既存のプライベートチャンネルを暗号化に切り替える。Slack 取り込みの worker が、暗号化されたチャンネルへ平文を書かないようにする（【決定】worker 側の検査。[既存のチャンネルの暗号化](#既存のチャンネルの暗号化)） | #361 |
 | [#368](https://github.com/Zli-UoA/zoo2/issues/368) | 他のユーザーの絵文字 SAS 検証（共通部分と Web。Compose Android と TUI は、それぞれの #362 のあと） | #362 |
