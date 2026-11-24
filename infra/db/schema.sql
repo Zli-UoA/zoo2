@@ -1453,6 +1453,7 @@ CREATE TABLE call_sfu_tracks (
   track_name text NOT NULL,
   bridge_epoch bigint,
   bridge_publish_id text,
+  bridge_room_gen bigint,
   PRIMARY KEY (channel_id, session_id, source),
   CONSTRAINT call_sfu_tracks_presence_fkey
     FOREIGN KEY (channel_id, session_id) REFERENCES call_presence (channel_id, session_id)

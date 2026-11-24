@@ -1005,6 +1005,8 @@ enum TrackSource {
     Bridge {
         bridge_epoch: i64,
         publish_id: String,
+        /// 部屋の中継の世代。同じ epoch で、新しい中継が登録した行を、前の中継の push は上書きしない。
+        room_gen: i64,
     },
 }
 
@@ -1043,7 +1045,7 @@ async fn register_track(
     let Some(current) = rows_json::<Assignment>(rows).into_iter().next() else {
         return Err(AppError::NotFound("Call session not found".into()));
     };
-    let (source_name, bridge_epoch, publish_id) = match source {
+    let (source_name, bridge_epoch, publish_id, room_gen) = match source {
         TrackSource::Direct => {
             if current.sfu_id.as_deref() != Some(SFU_CLOUDFLARE)
                 || current.cf_session_id.as_deref() != Some(cf_session)
@@ -1052,11 +1054,12 @@ async fn register_track(
                     "The SFU assignment changed while publishing".into(),
                 ));
             }
-            ("direct", None, None)
+            ("direct", None, None, None)
         }
         TrackSource::Bridge {
             bridge_epoch,
             publish_id,
+            room_gen,
         } => {
             if current.sfu_id.as_deref() != Some(SFU_LIVEKIT) {
                 return Err(AppError::Conflict("Speaker is not on LiveKit".into()));
@@ -1075,16 +1078,28 @@ async fn register_track(
             }
             // テスト：epoch を確かめたあと、FOR SHARE を持ったまま、書く前で止める。
             PauseGate::pause(pause).await;
-            ("bridge", Some(bridge_epoch), Some(publish_id))
+            (
+                "bridge",
+                Some(bridge_epoch),
+                Some(publish_id),
+                Some(room_gen),
+            )
         }
     };
-    toasty::sql::statement(
+    // 同じ epoch で、新しい部屋の中継が登録した行は、前の中継の push で上書きしない（409）。
+    let written = toasty::sql::query(
         "INSERT INTO call_sfu_tracks
-           (channel_id, session_id, source, cf_session_id, track_name, bridge_epoch, bridge_publish_id)
-         VALUES ($1, $2::uuid, $3, $4, $5, NULLIF($6, '')::bigint, NULLIF($7, ''))
+           (channel_id, session_id, source, cf_session_id, track_name, bridge_epoch, bridge_publish_id,
+            bridge_room_gen)
+         VALUES ($1, $2::uuid, $3, $4, $5, NULLIF($6, '')::bigint, NULLIF($7, ''), NULLIF($8, '')::bigint)
          ON CONFLICT (channel_id, session_id, source) DO UPDATE
            SET cf_session_id = EXCLUDED.cf_session_id, track_name = EXCLUDED.track_name,
-               bridge_epoch = EXCLUDED.bridge_epoch, bridge_publish_id = EXCLUDED.bridge_publish_id",
+               bridge_epoch = EXCLUDED.bridge_epoch, bridge_publish_id = EXCLUDED.bridge_publish_id,
+               bridge_room_gen = EXCLUDED.bridge_room_gen
+           WHERE call_sfu_tracks.bridge_epoch IS DISTINCT FROM EXCLUDED.bridge_epoch
+              OR call_sfu_tracks.bridge_room_gen IS NULL OR EXCLUDED.bridge_room_gen IS NULL
+              OR call_sfu_tracks.bridge_room_gen <= EXCLUDED.bridge_room_gen
+         RETURNING 1",
     )
     .bind(channel_id.to_string())
     .bind(speaker.to_string())
@@ -1093,8 +1108,14 @@ async fn register_track(
     .bind(track_name.to_string())
     .bind(bridge_epoch.map(|e| e.to_string()).unwrap_or_default())
     .bind(publish_id.unwrap_or_default())
+    .bind(room_gen.map(|g| g.to_string()).unwrap_or_default())
     .exec(&mut tx)
     .await?;
+    if written.is_empty() {
+        return Err(AppError::Conflict(
+            "A newer bridge relay registered this speaker".into(),
+        ));
+    }
     bump_tracks(&mut tx, channel_id).await?;
     tx.commit().await?;
     Ok(())
@@ -1436,6 +1457,9 @@ struct BridgeSessionBody {
     channel_id: String,
     /// 要求した bridge の epoch（`bridge_register`）。最新でなければ 409。
     bridge_epoch: i64,
+    /// 部屋の中継の世代（bridge が部屋の中継を作るたびに大きくなる）。同じ epoch の中で、遅れた前の中継の要求が
+    /// 新しい中継の行を外さないように使う。
+    room_gen: i64,
 }
 
 async fn bridge_cf_session(
@@ -1446,7 +1470,7 @@ async fn bridge_cf_session(
     let sfu = bridge_auth(&state, &headers)?;
     // 前の中継の行を外すのは、Cloudflare のセッションを作る（時間のかかる）前。遅れた要求が、そのあいだに
     // 始めた新しい中継の行を外さないように。
-    remove_stale_bridge_tracks(&state, &body.channel_id, body.bridge_epoch).await?;
+    remove_stale_bridge_tracks(&state, &body.channel_id, body.bridge_epoch, body.room_gen).await?;
     let session_id = sfu.cloudflare.new_session().await?;
     Ok(Json(json!({ "cf_session_id": session_id })))
 }
@@ -1455,14 +1479,16 @@ async fn bridge_cf_session(
 /// 一覧から外す。行は前の中継のセッションのもので、新しい中継は LiveKit の話者を push し直して登録する。
 /// 前の中継が、一覧から外す close を送り直せないまま止まったときの古い行も、ここで外れる。
 ///
-/// 要求した bridge の epoch が最新でなければ（古い bridge の遅れた要求）、何も外さずに 409 を返す。外すのは
-/// その epoch 以下の行だけ。epoch の確認は `call_sfu_bridge` の行を FOR SHARE で読み、`bridge_register`
+/// 要求した bridge の epoch が最新でなければ（古い bridge の遅れた要求）、何も外さずに 409 を返す。外すのは、
+/// 古い epoch の行と、同じ epoch で部屋の中継の世代（`room_gen`）が古い行だけ。同じ bridge の中で、遅れた
+/// 前の中継の要求が、新しい中継の行を外すことはない。epoch の確認は `call_sfu_bridge` の行を FOR SHARE で読み、`bridge_register`
 /// （同じ行を更新する）と、行の登録（`register_track` も FOR SHARE で読む）と直列にする。
 /// 探索：`call_sfu_bridge` の主キーで 1 行と、主キー (channel_id, session_id, source) の先頭でその部屋の行。
 async fn remove_stale_bridge_tracks(
     state: &AppState,
     channel_id: &str,
     bridge_epoch: i64,
+    room_gen: i64,
 ) -> Result<(), AppError> {
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
@@ -1477,11 +1503,14 @@ async fn remove_stale_bridge_tracks(
     let rows = toasty::sql::query(
         "DELETE FROM call_sfu_tracks
          WHERE channel_id = $1 AND source = 'bridge'
-           AND (bridge_epoch IS NULL OR bridge_epoch <= $2::bigint)
+           AND (bridge_epoch IS NULL OR bridge_epoch < $2::bigint
+                OR (bridge_epoch = $2::bigint
+                    AND (bridge_room_gen IS NULL OR bridge_room_gen < $3::bigint)))
          RETURNING 1",
     )
     .bind(channel_id.to_string())
     .bind(bridge_epoch.to_string())
+    .bind(room_gen.to_string())
     .exec(&mut tx)
     .await?;
     if !rows.is_empty() {
@@ -1502,6 +1531,8 @@ struct BridgePublishBody {
     mid: String,
     /// bridge が push ごとに付ける ID（close で、この push の行だけを外すため）。
     publish_id: String,
+    /// 部屋の中継の世代（`BridgeSessionBody::room_gen`）。
+    room_gen: i64,
 }
 
 /// LiveKit の話者の声を、bridge の Cloudflare セッションから push する。
@@ -1542,6 +1573,7 @@ async fn bridge_cf_publish(
         TrackSource::Bridge {
             bridge_epoch: body.bridge_epoch,
             publish_id: body.publish_id.clone(),
+            room_gen: body.room_gen,
         },
         &body.cf_session_id,
         &track_name,

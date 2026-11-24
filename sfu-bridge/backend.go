@@ -145,18 +145,19 @@ func (a *backendAPI) rooms(ctx context.Context, bridgeEpoch int64, since string)
 
 // cfSession は部屋の中継の Cloudflare セッションを作る。backend は、その前に前の中継の bridge の行を外す
 // （bridgeEpoch が最新のときだけ。その epoch 以下の行）。
-func (a *backendAPI) cfSession(ctx context.Context, channelID string, bridgeEpoch int64) (string, error) {
+func (a *backendAPI) cfSession(ctx context.Context, channelID string, bridgeEpoch, roomGen int64) (string, error) {
 	var out struct {
 		CfSessionID string `json:"cf_session_id"`
 	}
 	err := a.do(ctx, http.MethodPost, "/internal/sfu-bridge/cf/session", map[string]any{
 		"channel_id":   channelID,
 		"bridge_epoch": bridgeEpoch,
+		"room_gen":     roomGen,
 	}, &out)
 	return out.CfSessionID, err
 }
 
-func (a *backendAPI) cfPublish(ctx context.Context, channelID string, bridgeEpoch int64, cfSession, speaker string, offer sessionDescription, mid, publishID string) (tracksResponse, error) {
+func (a *backendAPI) cfPublish(ctx context.Context, channelID string, bridgeEpoch, roomGen int64, cfSession, speaker string, offer sessionDescription, mid, publishID string) (tracksResponse, error) {
 	var out tracksResponse
 	err := a.do(ctx, http.MethodPost, "/internal/sfu-bridge/cf/publish", map[string]any{
 		"channel_id":         channelID,
@@ -166,6 +167,7 @@ func (a *backendAPI) cfPublish(ctx context.Context, channelID string, bridgeEpoc
 		"offer":              offer,
 		"mid":                mid,
 		"publish_id":         publishID,
+		"room_gen":           roomGen,
 	}, &out)
 	return out, err
 }

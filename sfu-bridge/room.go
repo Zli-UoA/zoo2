@@ -70,10 +70,13 @@ func newPublishID() string {
 type roomBridge struct {
 	api         *backendAPI
 	bridgeEpoch int64
-	channelID   string
-	ctx         context.Context
-	cancel      context.CancelFunc
-	broken      atomic.Bool
+	// roomGen は部屋の中継の世代（作った時刻のナノ秒）。backend は、同じ epoch の中で、遅れた前の中継の要求が
+	// 新しい中継の行を外したり上書きしたりしないように使う。
+	roomGen   int64
+	channelID string
+	ctx       context.Context
+	cancel    context.CancelFunc
+	broken    atomic.Bool
 
 	// negotiate は Cloudflare のセッションの SDP のやり取りを 1 つずつにする。
 	negotiate sync.Mutex
@@ -119,7 +122,7 @@ var (
 func newRoomBridge(parent context.Context, api *backendAPI, bridgeEpoch int64, r roomState) *roomBridge {
 	ctx, cancel := context.WithCancel(parent)
 	b := &roomBridge{
-		api: api, bridgeEpoch: bridgeEpoch, channelID: r.ChannelID, ctx: ctx, cancel: cancel,
+		api: api, bridgeEpoch: bridgeEpoch, roomGen: time.Now().UnixNano(), channelID: r.ChannelID, ctx: ctx, cancel: cancel,
 		ready:      make(chan struct{}),
 		latest:     r,
 		pulled:     map[string]*pulledTrack{},
@@ -204,7 +207,7 @@ func (b *roomBridge) connect(r roomState) error {
 
 	ctx, cancel := context.WithTimeout(b.ctx, negotiateTimeout)
 	defer cancel()
-	session, err := b.api.cfSession(ctx, b.channelID, b.bridgeEpoch)
+	session, err := b.api.cfSession(ctx, b.channelID, b.bridgeEpoch, b.roomGen)
 	if err != nil {
 		return err
 	}
@@ -350,7 +353,7 @@ func (b *roomBridge) publishLocal(speaker string, local *webrtc.TrackLocalStatic
 	defer cancel()
 	desc := b.pc.LocalDescription()
 	publishID := newPublishID()
-	res, err := b.api.cfPublish(ctx, b.channelID, b.bridgeEpoch, b.cfSession, speaker, sessionDescription{Type: "offer", SDP: desc.SDP}, mid, publishID)
+	res, err := b.api.cfPublish(ctx, b.channelID, b.bridgeEpoch, b.roomGen, b.cfSession, speaker, sessionDescription{Type: "offer", SDP: desc.SDP}, mid, publishID)
 	if err != nil {
 		return "", nil, err
 	}

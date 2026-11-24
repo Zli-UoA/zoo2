@@ -136,6 +136,7 @@ erDiagram
       text track_name
       bigint bridge_epoch
       text bridge_publish_id
+      bigint bridge_room_gen
     }
     call_sfu_tracks }o--o| call_presence : call_sfu_tracks_presence_fkey
     channel_leave {

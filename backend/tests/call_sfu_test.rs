@@ -1193,7 +1193,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         "/internal/sfu-bridge/cf/publish",
         Some(json!({
             "channel_id": channel, "bridge_epoch": bridge_epoch, "cf_session_id": "cf-bridge",
-            "speaker_session_id": sessions[0], "offer": two, "mid": "1", "publish_id": "pub-1"
+            "speaker_session_id": sessions[0], "offer": two, "mid": "1", "publish_id": "pub-1", "room_gen": 10
         })),
     )
     .await;
@@ -1205,7 +1205,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         "/internal/sfu-bridge/cf/publish",
         Some(json!({
             "channel_id": channel, "bridge_epoch": bridge_epoch, "cf_session_id": "cf-bridge-2",
-            "speaker_session_id": sessions[0], "offer": failing, "mid": "9", "publish_id": "pub-2"
+            "speaker_session_id": sessions[0], "offer": failing, "mid": "9", "publish_id": "pub-2", "room_gen": 10
         })),
     )
     .await;
@@ -1225,7 +1225,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         "/internal/sfu-bridge/cf/publish",
         Some(json!({
             "channel_id": channel, "bridge_epoch": bridge_epoch, "cf_session_id": "cf-bridge",
-            "speaker_session_id": sessions[1], "offer": two, "mid": "1", "publish_id": "pub-3"
+            "speaker_session_id": sessions[1], "offer": two, "mid": "1", "publish_id": "pub-3", "room_gen": 10
         })),
     )
     .await;
@@ -1276,7 +1276,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         "/internal/sfu-bridge/cf/close",
         Some(json!({
             "channel_id": channel, "cf_session_id": "cf-bridge-2",
-            "mids": ["1"], "pushes": [{"speaker": sessions[0], "publish_id": "pub-1"}]
+            "mids": ["1"], "pushes": [{"speaker": sessions[0], "publish_id": "pub-1", "room_gen": 10}]
         })),
     )
     .await;
@@ -1289,7 +1289,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         "/internal/sfu-bridge/cf/publish",
         Some(json!({
             "channel_id": channel, "bridge_epoch": bridge_epoch, "cf_session_id": "cf-bridge",
-            "speaker_session_id": sessions[0], "offer": two, "mid": "1", "publish_id": "pub-1b"
+            "speaker_session_id": sessions[0], "offer": two, "mid": "1", "publish_id": "pub-1b", "room_gen": 10
         })),
     )
     .await;
@@ -1304,7 +1304,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         "/internal/sfu-bridge/cf/close",
         Some(json!({
             "channel_id": channel, "cf_session_id": "cf-bridge",
-            "mids": ["0"], "pushes": [{"speaker": sessions[0], "publish_id": "pub-1"}]
+            "mids": ["0"], "pushes": [{"speaker": sessions[0], "publish_id": "pub-1", "room_gen": 10}]
         })),
     )
     .await;
@@ -1317,7 +1317,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         "/internal/sfu-bridge/cf/close",
         Some(json!({
             "channel_id": channel, "cf_session_id": "cf-bridge",
-            "mids": ["9"], "pushes": [{"speaker": sessions[0], "publish_id": "pub-1b"}]
+            "mids": ["9"], "pushes": [{"speaker": sessions[0], "publish_id": "pub-1b", "room_gen": 10}]
         })),
     )
     .await;
@@ -1331,7 +1331,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         "/internal/sfu-bridge/cf/publish",
         Some(json!({
             "channel_id": channel, "bridge_epoch": bridge_epoch, "cf_session_id": "cf-bridge",
-            "speaker_session_id": sessions[0], "offer": two, "mid": "1", "publish_id": "pub-4"
+            "speaker_session_id": sessions[0], "offer": two, "mid": "1", "publish_id": "pub-4", "room_gen": 10
         })),
     )
     .await;
@@ -1341,7 +1341,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     let (status, _) = bridge(
         "POST",
         "/internal/sfu-bridge/cf/session",
-        Some(json!({"channel_id": channel, "bridge_epoch": bridge_epoch - 1})),
+        Some(json!({"channel_id": channel, "bridge_epoch": bridge_epoch - 1, "room_gen": 10})),
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
@@ -1349,7 +1349,47 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     let (status, _) = bridge(
         "POST",
         "/internal/sfu-bridge/cf/session",
-        Some(json!({"channel_id": channel, "bridge_epoch": bridge_epoch})),
+        Some(json!({"channel_id": channel, "bridge_epoch": bridge_epoch, "room_gen": 11})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(count(&mut db, bridge_rows_sql, &channel).await?, 0);
+    // 同じ epoch の中で、新しい部屋の中継（世代 12）が行を登録したあとに、前の中継（世代 11）の遅れた
+    // cf/session が届いても、新しい行は外れない。前の中継の push も、新しい行を上書きしない（409）。
+    let (status, _) = bridge(
+        "POST",
+        "/internal/sfu-bridge/cf/publish",
+        Some(json!({
+            "channel_id": channel, "bridge_epoch": bridge_epoch, "cf_session_id": "cf-bridge-new",
+            "speaker_session_id": sessions[0], "offer": two, "mid": "1", "publish_id": "pub-gen12", "room_gen": 12
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = bridge(
+        "POST",
+        "/internal/sfu-bridge/cf/session",
+        Some(json!({"channel_id": channel, "bridge_epoch": bridge_epoch, "room_gen": 11})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(count(&mut db, bridge_rows_sql, &channel).await?, 1);
+    let (status, _) = bridge(
+        "POST",
+        "/internal/sfu-bridge/cf/publish",
+        Some(json!({
+            "channel_id": channel, "bridge_epoch": bridge_epoch, "cf_session_id": "cf-bridge-old",
+            "speaker_session_id": sessions[0], "offer": two, "mid": "1", "publish_id": "pub-gen11", "room_gen": 11
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(text(&mut db, &publish_id_sql, &channel).await?, "pub-gen12");
+    // 次の部屋の中継（世代 13）を始めると、外れる。
+    let (status, _) = bridge(
+        "POST",
+        "/internal/sfu-bridge/cf/session",
+        Some(json!({"channel_id": channel, "bridge_epoch": bridge_epoch, "room_gen": 13})),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -1375,7 +1415,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
             "channel_id": channel, "bridge_epoch": bridge_epoch, "cf_session_id": "cf-bridge",
             "speaker_session_id": sessions[0],
             "offer": {"type": "offer", "sdp": "v=0\r\nm=audio 9 X 111\r\na=mid:0\r\nm=audio 9 X 111\r\na=mid:1\r\n"},
-            "mid": "1", "publish_id": "pub-8"
+            "mid": "1", "publish_id": "pub-8", "room_gen": 10
         })),
     )
     .await;
@@ -1414,7 +1454,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         "/internal/sfu-bridge/cf/publish",
         Some(json!({
             "channel_id": channel, "bridge_epoch": epoch2, "cf_session_id": slow_cf,
-            "speaker_session_id": sessions[0], "offer": speaker_offer, "mid": "1", "publish_id": "pub-5"
+            "speaker_session_id": sessions[0], "offer": speaker_offer, "mid": "1", "publish_id": "pub-5", "room_gen": 10
         })),
     ));
     let mut reached = false;
@@ -1448,7 +1488,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         "/internal/sfu-bridge/cf/publish",
         Some(json!({
             "channel_id": channel, "bridge_epoch": epoch3, "cf_session_id": "cf-bridge-3",
-            "speaker_session_id": sessions[0], "offer": speaker_offer, "mid": "1", "publish_id": "pub-6"
+            "speaker_session_id": sessions[0], "offer": speaker_offer, "mid": "1", "publish_id": "pub-6", "room_gen": 10
         })),
     )
     .await;
@@ -1468,7 +1508,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         "/internal/sfu-bridge/cf/publish",
         Some(json!({
             "channel_id": channel, "bridge_epoch": epoch4, "cf_session_id": "cf-bridge-4",
-            "speaker_session_id": sessions[0], "offer": speaker_offer, "mid": "1", "publish_id": "pub-7"
+            "speaker_session_id": sessions[0], "offer": speaker_offer, "mid": "1", "publish_id": "pub-7", "room_gen": 10
         })),
         gate.headers(),
     ));

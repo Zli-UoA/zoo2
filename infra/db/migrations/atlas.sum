@@ -1,4 +1,4 @@
-h1:a4b8awoE1YlzOEPnQqHLiZbtHSjEM+rW0/HnWe8qgto=
+h1:SnGJVhKQAqCOO4RWbPtogqhK9R5ejOTYK5Mpz4sJAgU=
 20261008000000_initial.sql h1:v3rZATh+MriHOzHYMS+oLMrabKMd7J8aLKuEYdsKNfc=
 20261015110156_snake_case_and_replica_identity.sql h1:gWKFhGTel2djLDzitJiG+ufrbKEjusudna0EhabxkZU=
 20261016171538_create_user_identities.sql h1:h8btCK61sRc0EaVuiKnON59nR594VVKdLtl8nes3KKc=
@@ -106,3 +106,4 @@ h1:a4b8awoE1YlzOEPnQqHLiZbtHSjEM+rW0/HnWe8qgto=
 20261201000000_notification_events_user_mention.sql h1:ABw9cQzJb9DFfNRO5nYutC1jUHkzKVNanjOGbRAMAqg=
 20261202000000_call_sfu.sql h1:/WfVNR0euRbnvJtP4ZYX2kzCAP1Kd4Kmc1T1XTm/LlE=
 20261202000001_call_sfu_bridge_publish_id.sql h1:BTXeGcurv5uxyYbeGwLnxoLOtMwde61IENnyEwq9W2E=
+20261202000002_call_sfu_bridge_room_gen.sql h1:HUaiZiCsRTWNduKv/PWzm+2eXu4y8hAIbOvVHHWnarM=
