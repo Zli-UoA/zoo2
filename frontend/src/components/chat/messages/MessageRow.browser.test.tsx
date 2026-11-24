@@ -167,7 +167,7 @@ describe("MessageRow", () => {
     tapTouch(screen.getByText("hello"));
     const sheet = await screen.findByRole("dialog", { name: "メッセージを操作" });
 
-    for (const name of ["リアクションを追加", "スレッドを開く", "編集", "削除"]) {
+    for (const name of ["リアクションを追加", "スレッドを開く", "メッセージを編集", "削除"]) {
       const item = within(sheet).getByRole("button", { name });
       // シートは出現アニメーションで一時的に scale されるため、落ち着くまで待つ。
       await waitFor(() => {
@@ -469,7 +469,7 @@ describe("MessageRow", () => {
     renderRow(buildItem(), true, { onStartEdit });
     screen.getByRole("button", { name: "その他の操作" }).focus();
     await userEvent.keyboard("{Enter}");
-    const item = screen.getByRole("menuitem", { name: "編集" });
+    const item = screen.getByRole("menuitem", { name: "メッセージを編集" });
     // タッチの pointerDown の後に項目をactivateしても、操作シートは開かない。
     fireEvent.pointerDown(item, { pointerType: "touch", clientX: 10, clientY: 10 });
     await userEvent.click(item);
@@ -555,7 +555,7 @@ describe("MessageRow", () => {
     trigger.focus();
     expect(document.activeElement).toBe(trigger);
     await userEvent.keyboard("{Enter}");
-    const edit = screen.getByRole("menuitem", { name: "編集" });
+    const edit = screen.getByRole("menuitem", { name: "メッセージを編集" });
     edit.focus();
     await userEvent.keyboard("{Enter}");
     expect(onStartEdit).toHaveBeenCalledOnce();
@@ -641,7 +641,7 @@ describe("MessageRow", () => {
   it("groups the overflow menu and quick actions within one toolbar", () => {
     renderRow(buildItem(), true);
     const toolbar = document.querySelector("[data-message-toolbar]")!;
-    expect(toolbar.contains(screen.getByLabelText("編集"))).toBe(true);
+    expect(toolbar.contains(screen.getByLabelText("メッセージを編集"))).toBe(true);
     expect(toolbar.contains(screen.getByLabelText("その他の操作"))).toBe(true);
     expect(getComputedStyle(toolbar).pointerEvents).toBe("none");
     screen.getByLabelText("その他の操作").focus();
@@ -653,7 +653,7 @@ describe("MessageRow", () => {
     renderRow(buildItem(), false, { canDelete: true, onRequestDelete });
     screen.getByRole("button", { name: "その他の操作" }).focus();
     await userEvent.keyboard("{Enter}");
-    expect(screen.queryByRole("menuitem", { name: "編集" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "メッセージを編集" })).toBeNull();
     await userEvent.click(screen.getByRole("menuitem", { name: "削除" }));
     expect(onRequestDelete).toHaveBeenCalledOnce();
   });
@@ -856,6 +856,74 @@ describe("copy message link", () => {
     await openMenu();
     expect(screen.getByRole("menuitem", { name: "原文をコピー" })).toBeVisible();
     expect(screen.queryByRole("menuitem", { name: "メッセージリンクをコピー" })).toBeNull();
+  });
+});
+
+/** 「…」メニューと操作シートに並ぶ項目。出る条件がそろったときの順序。 */
+const MENU_LABELS = [
+  "リアクションを追加",
+  "スレッドを開く",
+  "メッセージを編集",
+  "原文をコピー",
+  "メッセージリンクをコピー",
+  "Appでメッセージを操作",
+  "削除",
+] as const;
+
+describe("more menu order", () => {
+  async function menuLabels() {
+    screen.getByRole("button", { name: "その他の操作" }).focus();
+    await userEvent.keyboard("{Enter}");
+    await screen.findByRole("menu");
+    return screen.getAllByRole("menuitem").map((menuItem) => menuItem.textContent);
+  }
+
+  it("lists reaction, thread, edit, copy, link, App and delete in that order", async () => {
+    renderRow(buildItem({ channel_id: "channel-1" }), true, {
+      canReact: true,
+      canDelete: true,
+      onOpenThread: () => {},
+    });
+    expect(await menuLabels()).toEqual([...MENU_LABELS]);
+  });
+
+  /** 操作シートの項目名を、画面上の並びのまま取る（最近使った絵文字と閉じるボタンは除く）。 */
+  async function sheetLabels() {
+    tapTouch(screen.getByText("hello"));
+    const sheet = await screen.findByRole("dialog", { name: "メッセージを操作" });
+    const known = new Set<string>(MENU_LABELS);
+    return within(sheet)
+      .getAllByRole("button")
+      .map((button) => button.textContent?.trim() ?? "")
+      .filter((label) => known.has(label));
+  }
+
+  it("lists the same items in the same order in the touch action sheet", async () => {
+    renderRow(buildItem({ channel_id: "channel-1" }), true, {
+      canReact: true,
+      canDelete: true,
+      onOpenThread: () => {},
+    });
+    expect(await sheetLabels()).toEqual([...MENU_LABELS]);
+  });
+
+  it("keeps the touch action sheet order when items the viewer cannot use are left out", async () => {
+    renderRow(buildItem({ channel_id: "channel-1" }));
+    expect(await sheetLabels()).toEqual([
+      "原文をコピー",
+      "メッセージリンクをコピー",
+      "Appでメッセージを操作",
+    ]);
+  });
+
+  it("keeps the order when items the viewer cannot use are left out", async () => {
+    renderRow(buildItem({ channel_id: "channel-1" }));
+    expect(await menuLabels()).toEqual([
+      "リアクションを追加",
+      "原文をコピー",
+      "メッセージリンクをコピー",
+      "Appでメッセージを操作",
+    ]);
   });
 });
 

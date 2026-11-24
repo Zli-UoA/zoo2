@@ -766,8 +766,8 @@ export function MessageRow({
                     variant="ghost"
                     size="icon-xs"
                     className={touchHitArea}
-                    aria-label={t("messages.edit")}
-                    title={t("messages.edit")}
+                    aria-label={t("messages.editMessage")}
+                    title={t("messages.editMessage")}
                     onClick={onStartEdit}
                   >
                     <PencilIcon />
@@ -806,6 +806,29 @@ export function MessageRow({
                 <MoreHorizontalIcon />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
+                {/* 並びは、リアクション・スレッド・編集・原文コピー・リンクコピー・App・削除の順。 */}
+                <DropdownMenuItem
+                  className={touchHitArea}
+                  disabled={!canReact}
+                  onClick={onPickReaction}
+                >
+                  <SmilePlusIcon />
+                  {t("reactions.add")}
+                </DropdownMenuItem>
+                {onOpenThread ? (
+                  <DropdownMenuItem className={touchHitArea} onClick={onOpenThread}>
+                    <MessageSquarePlusIcon />
+                    {t("threads.open")}
+                  </DropdownMenuItem>
+                ) : null}
+                {canEdit ? (
+                  <>
+                    <DropdownMenuItem className={touchHitArea} onClick={onStartEdit}>
+                      <PencilIcon />
+                      {t("messages.editMessage")}
+                    </DropdownMenuItem>
+                  </>
+                ) : null}
                 {/* 復号できない暗号化メッセージは本文がないので、空文字列をコピーしないようメニューを出さない。 */}
                 {resolvedDecryption?.status === "undecryptable" ? null : (
                   <DropdownMenuItem onClick={() => void copyRawMessage()}>
@@ -829,28 +852,6 @@ export function MessageRow({
                   <BotIcon />
                   {t("apps.messageActions")}
                 </DropdownMenuItem>
-                <DropdownMenuItem
-                  className={touchHitArea}
-                  disabled={!canReact}
-                  onClick={onPickReaction}
-                >
-                  <SmilePlusIcon />
-                  {t("reactions.add")}
-                </DropdownMenuItem>
-                {onOpenThread ? (
-                  <DropdownMenuItem className={touchHitArea} onClick={onOpenThread}>
-                    <MessageSquarePlusIcon />
-                    {t("threads.open")}
-                  </DropdownMenuItem>
-                ) : null}
-                {canEdit ? (
-                  <>
-                    <DropdownMenuItem className={touchHitArea} onClick={onStartEdit}>
-                      <PencilIcon />
-                      {t("messages.edit")}
-                    </DropdownMenuItem>
-                  </>
-                ) : null}
                 {canDelete ? (
                   <DropdownMenuItem
                     className={touchHitArea}
@@ -949,6 +950,19 @@ export function MessageRow({
             />
           ) : null}
           <div className="flex flex-col">
+            {canReact ? (
+              <button
+                type="button"
+                className={sheetActionClass}
+                onClick={() => {
+                  setSheetOpen(false);
+                  onPickReaction();
+                }}
+              >
+                <SmilePlusIcon className="size-4 shrink-0" aria-hidden="true" />
+                {t("reactions.add")}
+              </button>
+            ) : null}
             {onOpenThread ? (
               <button
                 type="button"
@@ -962,17 +976,17 @@ export function MessageRow({
                 {t("threads.open")}
               </button>
             ) : null}
-            {canReact ? (
+            {canEdit ? (
               <button
                 type="button"
                 className={sheetActionClass}
                 onClick={() => {
                   setSheetOpen(false);
-                  onPickReaction();
+                  onStartEdit();
                 }}
               >
-                <SmilePlusIcon className="size-4 shrink-0" aria-hidden="true" />
-                {t("reactions.add")}
+                <PencilIcon className="size-4 shrink-0" aria-hidden="true" />
+                {t("messages.editMessage")}
               </button>
             ) : null}
             {resolvedDecryption?.status !== "undecryptable" ? (
@@ -1014,19 +1028,6 @@ export function MessageRow({
               <BotIcon className="size-4 shrink-0" aria-hidden="true" />
               {t("apps.messageActions")}
             </button>
-            {canEdit ? (
-              <button
-                type="button"
-                className={sheetActionClass}
-                onClick={() => {
-                  setSheetOpen(false);
-                  onStartEdit();
-                }}
-              >
-                <PencilIcon className="size-4 shrink-0" aria-hidden="true" />
-                {t("messages.edit")}
-              </button>
-            ) : null}
             {canDelete ? (
               <button
                 type="button"

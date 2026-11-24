@@ -225,6 +225,7 @@
     "compose": "메시지 보내기",
     "send": "보내기",
     "edit": "편집",
+    "editMessage": "메시지 편집",
     "delete": "삭제",
     "more": "더 보기",
     "actions": "메시지 작업",
