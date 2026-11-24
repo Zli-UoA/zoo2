@@ -1166,6 +1166,7 @@ async fn cf_pull(
     State(state): State<AppState>,
     user: AuthUser,
     Path(channel_id): Path<String>,
+    headers: HeaderMap,
     Json(body): Json<PullBody>,
 ) -> Result<Json<TracksResponse>, AppError> {
     let sfu = sfu(&state)?;
@@ -1184,6 +1185,8 @@ async fn cf_pull(
             return Err(e);
         }
     };
+    // テスト：Cloudflare の応答のあと、割り当ての確認の前で止める（そのあいだに割り当てを変える）。
+    PauseGate::pause(PauseGate::from_headers(&state, &headers).as_ref()).await;
     // pull のあいだに退出していれば、pull で作った購読を閉じ直す（退出した人に音声を流さない）。
     if !still_assigned_to_cf(&state, sfu, &channel_id, body.session_id, &cf).await? {
         return Err(AppError::Conflict(

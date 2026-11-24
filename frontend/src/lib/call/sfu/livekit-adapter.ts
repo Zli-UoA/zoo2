@@ -164,14 +164,23 @@ export class LiveKitAdapter implements SfuAdapter {
     await this.replaceOwnMic(track);
   }
 
-  /** publish 中のトラックを、新しいマイクの複製に差し替え、前の複製を止める。 */
+  /**
+   * publish 中のトラックを、新しいマイクの複製に差し替え、前の複製を止める。差し替えが失敗したら、新しい複製を
+   * 止めて前の複製を使い続ける（`ownMic` は差し替えが済んでから入れ替えるので、close() は使っている複製を止める）。
+   */
   private async replaceOwnMic(track: MediaStreamTrack): Promise<void> {
     if (!this.localTrack) return;
     const own = track.clone();
+    try {
+      await this.localTrack.replaceTrack(own, { userProvidedTrack: true });
+    } catch (err) {
+      own.stop();
+      throw err;
+    }
     const previous = this.ownMic;
     this.ownMic = own;
-    await this.localTrack.replaceTrack(own, { userProvidedTrack: true });
     previous?.stop();
+    // 差し替えのあいだに close() していれば、close() は前の複製しか止めていない。
     if (this.closed) own.stop();
   }
 

@@ -905,6 +905,51 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         "a publish to the old Cloudflare session was registered"
     );
 
+    // pull の応答を受けたあと、割り当ての確認の前に割り当てが変わったら（fallback で新しいセッションへ）、
+    // その pull は 409 で、pull した古いセッションの後始末を記録し直す（worker が閉じる）。
+    let before_pull = request_count(&cf).await;
+    let gate = Gate::new();
+    let pulling = {
+        let app = app.clone();
+        let user = users[2].clone();
+        let uri = format!("/api/channels/{channel}/call/sfu/cf/pull");
+        let body = json!({"session_id": sessions[2], "track_ids": [track_id]});
+        let headers = gate.headers();
+        tokio::spawn(async move {
+            request_with(&app, &user, "POST", &uri, Some(body), None, &headers).await
+        })
+    };
+    gate.reached().await?;
+    let (status, joined) = request(
+        &app,
+        &users[2],
+        "POST",
+        &join_uri,
+        Some(json!({"session_id": sessions[2], "fallback": true})),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    let newer_cf2 = text(&mut db, &cf_of(sessions[2]), &channel).await?;
+    assert_ne!(newer_cf2, new_cf2);
+    gate.release();
+    let (status, body) = pulling.await??;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    // pull した古いセッションは、worker が閉じる。
+    let mut closed = false;
+    for _ in 0..50 {
+        if !close_calls(&cf, before_pull, &new_cf2).await.is_empty() {
+            closed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        closed,
+        "the Cloudflare session pulled into was not closed: {new_cf2}"
+    );
+    let new_cf2 = newer_cf2;
+
     // push が先に終わってから割り当てが変わったら、古いトラックは消える。
     let (status, published) = request(
         &app,

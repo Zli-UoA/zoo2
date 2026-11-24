@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 const state = vi.hoisted(() => ({
   log: [] as string[],
   publishGate: null as Promise<void> | null,
+  replaceError: null as Error | null,
 }));
 
 vi.mock("livekit-client", () => {
@@ -23,6 +24,7 @@ vi.mock("livekit-client", () => {
       return this;
     }
     async replaceTrack() {
+      if (state.replaceError) throw state.replaceError;
       return this;
     }
   }
@@ -138,5 +140,26 @@ describe("LiveKitAdapter mute", () => {
     await started;
     expect(state.log).toEqual(["publish muted=false", "mute"]);
     adapter.close();
+  });
+
+  it("keeps and later stops the current clone when replacing the mic fails", async () => {
+    state.log = [];
+    state.publishGate = null;
+    const first = fakeMic();
+    const adapter = new LiveKitAdapter("wss://x", "t", first.mic, noCallbacks);
+    await adapter.start();
+    const second = fakeMic();
+    state.replaceError = new Error("replace failed");
+    try {
+      await expect(adapter.replaceMicTrack(second.mic)).rejects.toThrow("replace failed");
+    } finally {
+      state.replaceError = null;
+    }
+    // 差し替えられなかった複製は止め、使っている複製は残す。
+    expect(second.clones[0].stopped).toBe(true);
+    expect(first.clones[0].stopped).toBe(false);
+    // 退出すると、使っていた複製を止める。
+    adapter.close();
+    expect(first.clones[0].stopped).toBe(true);
   });
 });
