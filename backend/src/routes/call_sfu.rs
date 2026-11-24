@@ -180,15 +180,18 @@ async fn join(
 ) -> Result<Json<JoinResponse>, AppError> {
     let sfu = sfu(&state)?;
     let mut db = state.db.clone();
+    // 計測（`X-Test-Join-Timings`。開発用の認証のときだけ）。`None` なら、どの段階も記録せず、処理も変わらない。
     let timings = JoinTimingKey::from_headers(&state, &headers);
-    if let Some(key) = timings.as_ref() {
+    let t = timings.as_ref();
+    if t.is_some() {
         // 計測：権限の確認を、取り出した 1 本の接続で行い、接続の取得と SQL を分けて測る。
-        let started = std::time::Instant::now();
-        let mut conn = db.connection().await?;
-        JoinTimingKey::record(Some(key), JoinPhase::AuthAcquire, started);
-        let started = std::time::Instant::now();
-        authorize_call_access_on(&mut conn, &channel_id, &user).await?;
-        JoinTimingKey::record(Some(key), JoinPhase::AuthSql, started);
+        let mut conn = acquire(&db, t, "auth").await?;
+        timed_sql(
+            t,
+            "auth",
+            authorize_call_access_on(&mut conn, &channel_id, &user),
+        )
+        .await?;
     } else {
         authorize_call_access(&mut db, &channel_id, &user).await?;
     }
@@ -198,14 +201,24 @@ async fn join(
     // 入室と直列化するため）。
     // 接続の取得と BEGIN を分けて計測できるよう、接続を取ってからトランザクションを始める
     // （`Db::transaction` と同じ）。Cloudflare の API を呼ぶ前には、この接続をプールに返す。
-    let mut conn = acquire(&db, timings.as_ref()).await?;
-    let mut tx = begin(&mut conn, timings.as_ref()).await?;
-    lock_channel(&mut tx, &channel_id, timings.as_ref()).await?;
-    let me = own_presence(&mut tx, &channel_id, body.session_id, &user.id, true).await?;
+    let mut conn = acquire(&db, t, "tx").await?;
+    let mut tx = begin(&mut conn, t, "begin").await?;
+    lock_channel(&mut tx, &channel_id, t, "lock").await?;
+    let me = timed_sql(
+        t,
+        "own_presence",
+        own_presence(&mut tx, &channel_id, body.session_id, &user.id, true),
+    )
+    .await?;
     let (Some(RoomMode::Sfu), Some(epoch)) = (me.mode, me.epoch) else {
         return Err(AppError::Conflict("Call is not in SFU mode".into()));
     };
-    let counts = count_others(&mut tx, &channel_id, body.session_id).await?;
+    let counts = timed_sql(
+        t,
+        "count_others",
+        count_others(&mut tx, &channel_id, body.session_id),
+    )
+    .await?;
     let choice = crate::call_sfu::choose_sfu(
         lan_client,
         sfu.livekit.is_some(),
@@ -230,27 +243,34 @@ async fn join(
         };
         let token = lk.participant_token(&room, &identity, &me.display_name)?;
         // 前の割り当ての後始末は、新しい割り当てと同じトランザクションで記録する（退出と同じ worker が処理する）。
-        let departed =
-            record_previous_assignment(&mut tx, &channel_id, body.session_id, &me, Some(&identity))
-                .await?;
-        // 同じルームへの割り当てを出し直すだけなら、bridge が出しているトラックを残し、版も進めない。
-        if set_assignment(
-            &mut tx,
-            &channel_id,
-            body.session_id,
-            &me,
-            Assignment {
-                sfu_id: SFU_LIVEKIT,
-                room: Some(&room),
-                cf_session: None,
-                livekit_identity: Some(&identity),
-            },
+        let departed = timed_sql(
+            t,
+            "record_previous",
+            record_previous_assignment(&mut tx, &channel_id, body.session_id, &me, Some(&identity)),
         )
-        .await?
-        {
-            bump_tracks(&mut tx, &channel_id).await?;
+        .await?;
+        // 同じルームへの割り当てを出し直すだけなら、bridge が出しているトラックを残し、版も進めない。
+        let changed = timed_sql(
+            t,
+            "set_assignment",
+            set_assignment(
+                &mut tx,
+                &channel_id,
+                body.session_id,
+                &me,
+                Assignment {
+                    sfu_id: SFU_LIVEKIT,
+                    room: Some(&room),
+                    cf_session: None,
+                    livekit_identity: Some(&identity),
+                },
+            ),
+        )
+        .await?;
+        if changed {
+            timed_sql(t, "bump_tracks", bump_tracks(&mut tx, &channel_id)).await?;
         }
-        tx.commit().await?;
+        timed_sql(t, "commit", async { Ok(tx.commit().await?) }).await?;
         drop(conn);
         (
             JoinTarget::Livekit {
@@ -261,63 +281,76 @@ async fn join(
         )
     } else {
         // Cloudflare の API は、ロックも接続も持ったまま呼ばない。
-        tx.commit().await?;
+        timed_sql(t, "commit", async { Ok(tx.commit().await?) }).await?;
         drop(conn);
         let cf_session = sfu.cloudflare.new_session().await?;
-        let mut conn = acquire(&db, timings.as_ref()).await?;
-        let mut tx = begin(&mut conn, timings.as_ref()).await?;
+        let mut conn = acquire(&db, t, "tx2").await?;
+        let mut tx = begin(&mut conn, t, "begin2").await?;
         // ロックを取り直す。呼んでいるあいだに退出していたら、作ったセッションは使わない
         // （何も流れないので放置してよい）。割り当ても、ロックを外していたあいだに変わりうるので読み直す。
-        lock_channel(&mut tx, &channel_id, timings.as_ref()).await?;
-        let me = own_presence(&mut tx, &channel_id, body.session_id, &user.id, true).await?;
+        lock_channel(&mut tx, &channel_id, t, "lock2").await?;
+        let me = timed_sql(
+            t,
+            "own_presence2",
+            own_presence(&mut tx, &channel_id, body.session_id, &user.id, true),
+        )
+        .await?;
         if me.epoch != Some(epoch) || me.mode != Some(RoomMode::Sfu) {
             return Err(AppError::Conflict("Call room changed while joining".into()));
         }
-        let departed =
-            record_previous_assignment(&mut tx, &channel_id, body.session_id, &me, None).await?;
-        // Cloudflare のセッションは毎回新しいので、割り当ては必ず変わる。
-        if set_assignment(
-            &mut tx,
-            &channel_id,
-            body.session_id,
-            &me,
-            Assignment {
-                sfu_id: SFU_CLOUDFLARE,
-                room: None,
-                cf_session: Some(&cf_session),
-                livekit_identity: None,
-            },
+        let departed = timed_sql(
+            t,
+            "record_previous2",
+            record_previous_assignment(&mut tx, &channel_id, body.session_id, &me, None),
         )
-        .await?
-        {
-            bump_tracks(&mut tx, &channel_id).await?;
+        .await?;
+        // Cloudflare のセッションは毎回新しいので、割り当ては必ず変わる。
+        let changed = timed_sql(
+            t,
+            "set_assignment2",
+            set_assignment(
+                &mut tx,
+                &channel_id,
+                body.session_id,
+                &me,
+                Assignment {
+                    sfu_id: SFU_CLOUDFLARE,
+                    room: None,
+                    cf_session: Some(&cf_session),
+                    livekit_identity: None,
+                },
+            ),
+        )
+        .await?;
+        if changed {
+            timed_sql(t, "bump_tracks2", bump_tracks(&mut tx, &channel_id)).await?;
         }
         // ロックを外していたあいだに LiveKit に入った人も数えるため、取り直したロックの下で数え直す。
-        let counts = count_others(&mut tx, &channel_id, body.session_id).await?;
+        let counts = timed_sql(
+            t,
+            "count_others2",
+            count_others(&mut tx, &channel_id, body.session_id),
+        )
+        .await?;
         if !sfu.bridge_enabled() && counts.livekit > 0 {
             // bridge がないので、LiveKit の人にも Cloudflare に移ってもらう。
             let event = CallDistributedEvent::SfuReassign {
                 channel_id: channel_id.clone(),
                 epoch,
             };
-            notify_in(&mut tx, &event).await?;
+            timed_sql(t, "notify", notify_in(&mut tx, &event)).await?;
         }
-        tx.commit().await?;
+        timed_sql(t, "commit2", async { Ok(tx.commit().await?) }).await?;
         (JoinTarget::Cloudflare, departed)
     };
     if departed {
         sfu.departures_wake.notify_one();
     }
 
-    let loaded = if let Some(key) = timings.as_ref() {
+    let loaded = if t.is_some() {
         // 計測：トラック一覧の読み取りも、接続の取得と SQL を分けて測る。
-        let started = std::time::Instant::now();
-        let mut conn = db.connection().await?;
-        JoinTimingKey::record(Some(key), JoinPhase::TracksAcquire, started);
-        let started = std::time::Instant::now();
-        let loaded = load_sfu_tracks(&mut conn, &channel_id).await?;
-        JoinTimingKey::record(Some(key), JoinPhase::TracksSql, started);
-        loaded
+        let mut conn = acquire(&db, t, "tracks").await?;
+        timed_sql(t, "tracks", load_sfu_tracks(&mut conn, &channel_id)).await?
     } else {
         load_sfu_tracks(&mut db, &channel_id).await?
     };
@@ -330,33 +363,58 @@ async fn join(
     }))
 }
 
-/// 接続のプールから接続を取る（計測するときは、その時間を残す）。
+/// 接続のプールから接続を取る（計測するときは、`name` で取得の時間を残す）。
 async fn acquire(
     db: &toasty::Db,
     timings: Option<&JoinTimingKey>,
+    name: &str,
 ) -> Result<toasty::Connection, AppError> {
     let started = std::time::Instant::now();
     let conn = db.connection().await?;
-    JoinTimingKey::record(timings, JoinPhase::Acquire, started);
+    if let Some(key) = timings {
+        key.acquire_time(name, started.elapsed());
+    }
     Ok(conn)
 }
 
-/// 取った接続でトランザクションを始める（計測するときは、BEGIN の往復の時間を残す）。
+/// 取った接続でトランザクションを始める（計測するときは、`name` で BEGIN の往復の時間を残す）。
 async fn begin<'a>(
     conn: &'a mut toasty::Connection,
     timings: Option<&JoinTimingKey>,
+    name: &str,
 ) -> Result<toasty::Transaction<'a>, AppError> {
     let started = std::time::Instant::now();
     let tx = conn.transaction().await?;
-    JoinTimingKey::record(timings, JoinPhase::BeginSql, started);
+    if let Some(key) = timings {
+        key.sql_time(name, started.elapsed());
+    }
     Ok(tx)
 }
 
+/// SQL を 1 つ実行し、計測するときは `name` でその時間を残す。計測しないときは、そのまま待つだけ。
+async fn timed_sql<T>(
+    timings: Option<&JoinTimingKey>,
+    name: &str,
+    fut: impl std::future::Future<Output = Result<T, AppError>>,
+) -> Result<T, AppError> {
+    let Some(key) = timings else {
+        return fut.await;
+    };
+    let started = std::time::Instant::now();
+    let result = fut.await;
+    key.sql_time(name, started.elapsed());
+    result
+}
+
 /// チャンネル行のロック。入室と SFU の割り当てを、このロックで直列化する。
+///
+/// 計測するときは、ロックの文を `name`、そのあと同じ接続での `SELECT 1`（SQL の往復だけ）を
+/// `{name}_rtt` で残し、差をロック待ちの目安（`lock_wait`）にする。
 async fn lock_channel(
     tx: &mut toasty::Transaction<'_>,
     channel_id: &str,
     timings: Option<&JoinTimingKey>,
+    name: &str,
 ) -> Result<(), AppError> {
     let started = std::time::Instant::now();
     toasty::sql::query("SELECT 1 FROM channels WHERE id = $1 FOR UPDATE")
@@ -365,64 +423,34 @@ async fn lock_channel(
         .await?;
     if let Some(key) = timings {
         let lock = started.elapsed();
-        // 同じ接続での SQL の往復だけの時間（ロックを取ったあとなので待たない）。ロックの文の時間からこれを
-        // 引いたものが、ロック待ちの目安。計測するときだけ実行する。
         let rtt_started = std::time::Instant::now();
         toasty::sql::query("SELECT 1").exec(&mut *tx).await?;
         let rtt = rtt_started.elapsed();
-        key.push(|t| {
-            t.lock.push(lock);
-            t.round_trip.push(rtt);
-            t.lock_wait.push(lock.saturating_sub(rtt));
-        });
+        key.sql_time(name, lock);
+        key.sql_time(&format!("{name}_rtt"), rtt);
+        key.push(|t| t.lock_wait.push(lock.saturating_sub(rtt)));
     }
     Ok(())
 }
 
 /// テスト用（join の計測）：join の各段階にかかった時間を、要求ごとの記録先に残す。開発用の認証が有効な
 /// ときだけ、`X-Test-Join-Timings` ヘッダーで記録先の名前を指定できる。名前ごとに分けるので、同じプロセスで
-/// 並行に動くほかのテストの要求は混ざらない。
+/// 並行に動くほかのテストの要求は混ざらない。ヘッダーがなければ、どの段階も記録しない（本番の処理は変わらない）。
 struct JoinTimingKey(String);
 
-/// 記録する段階。
-#[derive(Clone, Copy)]
-enum JoinPhase {
-    /// 権限の確認のための、接続のプールからの取得。
-    AuthAcquire,
-    /// 権限の確認の SQL（チャンネル、guest の確認、メンバーの確認）。
-    AuthSql,
-    /// 割り当てのトランザクションのための、接続のプールからの取得。
-    Acquire,
-    /// BEGIN の往復。
-    BeginSql,
-    /// commit のあとのトラック一覧の読み取りのための、接続のプールからの取得。
-    TracksAcquire,
-    /// トラック一覧の SQL。
-    TracksSql,
-}
-
-/// 記録先ごとの、段階ごとの時間。
+/// 記録先ごとの時間。
 #[doc(hidden)]
 #[derive(Default, Debug, Clone)]
 pub struct JoinTimings {
-    /// 権限の確認のための、接続のプールからの取得。
-    pub auth_acquire: Vec<Duration>,
-    /// 権限の確認の SQL。
-    pub auth_sql: Vec<Duration>,
-    /// commit のあとのトラック一覧の読み取りのための、接続のプールからの取得。
-    pub tracks_acquire: Vec<Duration>,
-    /// トラック一覧の SQL。
-    pub tracks_sql: Vec<Duration>,
-    /// 接続のプールからの取得（空きを待つ時間を含む）。
-    pub acquire: Vec<Duration>,
-    /// BEGIN の往復。
-    pub begin_sql: Vec<Duration>,
-    /// チャンネル行の FOR UPDATE の文（ロック待ちと SQL の往復）。
-    pub lock: Vec<Duration>,
-    /// ロックのあと、同じ接続での `SELECT 1`（SQL の往復だけ）。
-    pub round_trip: Vec<Duration>,
-    /// `lock` から `round_trip` を引いたもの（ロック待ちの目安）。
+    /// 接続のプールからの取得（空きを待つ時間を含む）。段階の名前ごと。
+    pub acquire: std::collections::BTreeMap<String, Vec<Duration>>,
+    /// SQL の実行（BEGIN・ロック・COMMIT を含む）。段階の名前ごと。
+    pub sql: std::collections::BTreeMap<String, Vec<Duration>>,
+    /// ロックの文から、同じ接続での `SELECT 1` を引いたもの（ロック待ちの目安）。
     pub lock_wait: Vec<Duration>,
+    /// 要求を送ってから、handler が始まるまで（`X-Test-Join-Sent-At` があるとき）。ルーティング、本文の読み取り、
+    /// `AuthUser` の取り出し（ユーザーの解決と有効なユーザーかの確認。DB を読む）を含む。
+    pub pre_handler: Vec<Duration>,
 }
 
 static JOIN_TIMINGS: std::sync::LazyLock<
@@ -434,25 +462,34 @@ impl JoinTimingKey {
         if !state.config.dev_auth_enabled {
             return None;
         }
-        headers
-            .get("X-Test-Join-Timings")
+        let key = Self(
+            headers
+                .get("X-Test-Join-Timings")
+                .and_then(|v| v.to_str().ok())?
+                .to_string(),
+        );
+        // 送った時刻（UNIX 時刻のマイクロ秒）から、handler が始まるまでの時間。
+        let sent = headers
+            .get("X-Test-Join-Sent-At")
             .and_then(|v| v.to_str().ok())
-            .map(|k| Self(k.to_string()))
+            .and_then(|v| v.parse::<u64>().ok());
+        if let Some(sent) = sent {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_micros() as u64)
+                .unwrap_or(0);
+            let elapsed = Duration::from_micros(now.saturating_sub(sent));
+            key.push(|t| t.pre_handler.push(elapsed));
+        }
+        Some(key)
     }
 
-    fn record(key: Option<&Self>, phase: JoinPhase, started: std::time::Instant) {
-        let Some(key) = key else {
-            return;
-        };
-        let elapsed = started.elapsed();
-        key.push(|t| match phase {
-            JoinPhase::AuthAcquire => t.auth_acquire.push(elapsed),
-            JoinPhase::AuthSql => t.auth_sql.push(elapsed),
-            JoinPhase::TracksAcquire => t.tracks_acquire.push(elapsed),
-            JoinPhase::TracksSql => t.tracks_sql.push(elapsed),
-            JoinPhase::Acquire => t.acquire.push(elapsed),
-            JoinPhase::BeginSql => t.begin_sql.push(elapsed),
-        });
+    fn acquire_time(&self, name: &str, elapsed: Duration) {
+        self.push(|t| t.acquire.entry(name.to_string()).or_default().push(elapsed));
+    }
+
+    fn sql_time(&self, name: &str, elapsed: Duration) {
+        self.push(|t| t.sql.entry(name.to_string()).or_default().push(elapsed));
     }
 
     fn push(&self, f: impl FnOnce(&mut JoinTimings)) {

@@ -1749,9 +1749,17 @@ async fn join_round(
         };
         // 要求ごとに記録先を分け、join 全体の時間と段階ごとの時間を組にする。
         let key = format!("{timings_key}-{}", uuid::Uuid::new_v4());
-        let headers = vec![("X-Test-Join-Timings".to_string(), key.clone())];
         async move {
             let uri = format!("/api/channels/{channel}/call/sfu/join");
+            // 送った時刻。backend は handler の始まりとの差（AuthUser の取り出しなど）を残す。
+            let sent_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_micros()
+                .to_string();
+            let headers = vec![
+                ("X-Test-Join-Timings".to_string(), key.clone()),
+                ("X-Test-Join-Sent-At".to_string(), sent_at),
+            ];
             let started = std::time::Instant::now();
             let (status, body) = request_with(
                 &app,
@@ -1797,46 +1805,51 @@ async fn join_round(
     Ok(lat)
 }
 
-/// 要求ごとの記録をまとめる。`other` は、join 全体から測った段階の合計を引いたもの（HTTP の処理、
-/// LiveKit のトークンの署名、Cloudflare の API、割り当ての SQL など）。`wait` は lock から rtt を引いた
-/// 目安なので、合計には入れない。
+/// 要求ごとの記録をまとめたもの。
+#[derive(Default)]
+struct JoinSummary {
+    join: Vec<Duration>,
+    /// 要求ごとの、接続の取得の合計。
+    db_acquire_total: Vec<Duration>,
+    /// 要求ごとの、SQL の合計（BEGIN・ロック・COMMIT・ロックのあとの `SELECT 1` を含む）。
+    db_sql_total: Vec<Duration>,
+    /// 送ってから handler が始まるまで（AuthUser の取り出しの DB を含む）。
+    pre_handler: Vec<Duration>,
+    /// join − db_acquire_total − db_sql_total − pre_handler（Cloudflare の API、トークンの署名、応答の組み立てなど）。
+    other: Vec<Duration>,
+    /// 段階ごと（`acquire:名前`・`sql:名前`）の時間。
+    phases: std::collections::BTreeMap<String, Vec<Duration>>,
+    lock_wait: Vec<Duration>,
+}
+
 fn merge_join_timings(
     rows: Vec<(Duration, backend::routes::call_sfu::JoinTimings)>,
-) -> (
-    Vec<Duration>,
-    Vec<Duration>,
-    backend::routes::call_sfu::JoinTimings,
-) {
-    let mut join = Vec::new();
-    let mut other = Vec::new();
-    let mut all = backend::routes::call_sfu::JoinTimings::default();
+) -> JoinSummary {
+    let mut sum = JoinSummary::default();
     for (elapsed, t) in rows {
-        let measured: Duration = [
-            &t.auth_acquire,
-            &t.auth_sql,
-            &t.acquire,
-            &t.begin_sql,
-            &t.lock,
-            &t.round_trip,
-            &t.tracks_acquire,
-            &t.tracks_sql,
-        ]
-        .into_iter()
-        .flatten()
-        .sum();
-        join.push(elapsed);
-        other.push(elapsed.saturating_sub(measured));
-        all.auth_acquire.extend(t.auth_acquire);
-        all.auth_sql.extend(t.auth_sql);
-        all.acquire.extend(t.acquire);
-        all.begin_sql.extend(t.begin_sql);
-        all.lock.extend(t.lock);
-        all.round_trip.extend(t.round_trip);
-        all.lock_wait.extend(t.lock_wait);
-        all.tracks_acquire.extend(t.tracks_acquire);
-        all.tracks_sql.extend(t.tracks_sql);
+        let acquire: Duration = t.acquire.values().flatten().sum();
+        let sql: Duration = t.sql.values().flatten().sum();
+        let pre: Duration = t.pre_handler.iter().sum();
+        sum.join.push(elapsed);
+        sum.db_acquire_total.push(acquire);
+        sum.db_sql_total.push(sql);
+        sum.pre_handler.extend(t.pre_handler);
+        sum.other.push(elapsed.saturating_sub(acquire + sql + pre));
+        for (name, v) in t.acquire {
+            sum.phases
+                .entry(format!("acquire:{name}"))
+                .or_default()
+                .extend(v);
+        }
+        for (name, v) in t.sql {
+            sum.phases
+                .entry(format!("sql:{name}"))
+                .or_default()
+                .extend(v);
+        }
+        sum.lock_wait.extend(t.lock_wait);
     }
-    (join, other, all)
+    sum
 }
 
 /// `sfu/join` の待ち時間の計測（手で実行する。`cargo test --test call_sfu_test -- --ignored join_latency --nocapture`）。
@@ -1852,12 +1865,13 @@ fn merge_join_timings(
 /// join の SQL はその接続で初めて実行する。
 ///
 /// join の時間とは別に、要求ごとの記録先（`X-Test-Join-Timings`。ほかのテストの要求は混ざらない）に、
-/// 段階ごとの時間を出す：auth_acquire・auth_sql（権限の確認の接続の取得と SQL）、acquire（割り当ての
-/// トランザクションの接続の取得）、begin_sql（BEGIN の往復）、lock（チャンネル行の FOR UPDATE の文）、
-/// rtt（ロックのあと同じ接続での `SELECT 1`。SQL の往復だけ）、wait（lock − rtt。ロック待ちの目安）、
-/// tracks_acquire・tracks_sql（commit のあとのトラック一覧の接続の取得と SQL）、other（join 全体から、wait を
-/// 除く段階の合計を引いたもの）。Cloudflare の join はトランザクションとロックを 2 回取るので、acquire・lock 系の
-/// サンプルは join より多い。`JOIN_LATENCY_WARMUP=1` なら、測る前に共有のプールで 20 人の同時 join を 1 回捨てる。
+/// 段階ごとの時間を出す。join の中のすべての DB の段階を、接続の取得（`acquire:名前`）と SQL（`sql:名前`。BEGIN・
+/// チャンネル行の FOR UPDATE・COMMIT・ロックのあとの `SELECT 1`（`_rtt`）を含む）に分けて測る。名前の `2` は、
+/// Cloudflare の join が API を呼んだあとに取り直すトランザクション。要求ごとに、db_acquire_total（取得の合計）、
+/// db_sql_total（SQL の合計）、pre_handler（送ってから handler が始まるまで。AuthUser の取り出しの DB を含む）、
+/// other（join から、その 3 つを引いたもの。Cloudflare の API、トークンの署名、応答など）を出す。lock_wait は
+/// ロックの文から `_rtt` を引いた、ロック待ちの目安。`JOIN_LATENCY_WARMUP=1` なら、測る前に共有のプールで
+/// 20 人の同時 join を 1 回捨てる。
 #[tokio::test]
 #[ignore]
 async fn join_latency() -> anyhow::Result<()> {
@@ -1921,21 +1935,20 @@ async fn join_latency() -> anyhow::Result<()> {
         let sfu = backend::call_sfu::CallSfu::new(cfg);
         let line =
             |label: String, rows: Vec<(Duration, backend::routes::call_sfu::JoinTimings)>| {
-                let (mut join, mut other, mut t) = merge_join_timings(rows);
-                format!(
-                    "{label}\n  join           {}\n  auth_acquire   {}\n  auth_sql       {}\n  acquire        {}\n  begin_sql      {}\n  lock           {}\n  rtt            {}\n  wait           {}\n  tracks_acquire {}\n  tracks_sql     {}\n  other          {}",
-                    summary(&mut join),
-                    summary(&mut t.auth_acquire),
-                    summary(&mut t.auth_sql),
-                    summary(&mut t.acquire),
-                    summary(&mut t.begin_sql),
-                    summary(&mut t.lock),
-                    summary(&mut t.round_trip),
-                    summary(&mut t.lock_wait),
-                    summary(&mut t.tracks_acquire),
-                    summary(&mut t.tracks_sql),
-                    summary(&mut other),
-                )
+                let mut m = merge_join_timings(rows);
+                let mut out = format!(
+                    "{label}\n  join                 {}\n  db_acquire_total     {}\n  db_sql_total         {}\n  pre_handler          {}\n  other                {}\n  lock_wait            {}",
+                    summary(&mut m.join),
+                    summary(&mut m.db_acquire_total),
+                    summary(&mut m.db_sql_total),
+                    summary(&mut m.pre_handler),
+                    summary(&mut m.other),
+                    summary(&mut m.lock_wait),
+                );
+                for (name, v) in m.phases.iter_mut() {
+                    out.push_str(&format!("\n  {name:<20} {}", summary(v)));
+                }
+                out
             };
 
         // cold：新しいプールと AppState で、最初の join。
