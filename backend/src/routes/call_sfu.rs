@@ -1748,6 +1748,12 @@ async fn remove_closed_bridge_tracks(
     .map_err(|e| AppError::Internal(e.into()))?;
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
+    // 部屋の行を先にロックする。`cf/session`（`remove_stale_bridge_tracks`）と push の登録（`register_track`）も
+    // 部屋の行 → トラックの行の順に取るので、同じ順にしてデッドロックを避ける。探索：call_rooms の主キーで 1 行。
+    toasty::sql::query("SELECT 1 FROM call_rooms WHERE channel_id = $1 FOR UPDATE")
+        .bind(channel_id.to_string())
+        .exec(&mut tx)
+        .await?;
     let rows = toasty::sql::query(
         "DELETE FROM call_sfu_tracks t
          USING unnest(string_to_array($2, ',')::uuid[], ARRAY(SELECT json_array_elements_text($4::json)))
