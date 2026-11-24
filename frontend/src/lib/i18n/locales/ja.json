@@ -260,6 +260,8 @@
     "messageUnavailable": "メッセージを表示できません",
     "channelUnavailable": "チャンネルを表示できません",
     "loading": "リンク先を読み込み中",
+    "loadFailed": "リンク先を読み込めませんでした",
+    "appMessage": "Appのメッセージ",
     "attachments_one": "添付ファイル {{count}} 件",
     "attachments_other": "添付ファイル {{count}} 件",
     "privateChannel": "非公開チャンネル",

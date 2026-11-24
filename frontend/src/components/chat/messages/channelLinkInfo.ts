@@ -1,8 +1,25 @@
+import { useState, useSyncExternalStore } from "react";
 import { useLinkedMessageRows } from "../../../hooks/useThread";
+import {
+  encryptedChannelsVersion,
+  encryptionSendState,
+  subscribeEncryptedChannels,
+} from "../../../lib/e2ee/encryptionGuard";
 import { linkedMessageId, type ChannelLinkTarget } from "./messageLink";
+import { messageBodySource } from "./messageBodySource";
 import { messageExcerpt } from "./messageExcerpt";
 import { authorLabel, type FeedMessage } from "./messageFormat";
 import type { ChannelDirectory, LinkedChannel } from "./MfmChannels";
+
+/**
+ * 埋め込みカードの本文に、何を出すか。
+ *
+ * - `text`: 本文の要約（`excerpt`）。
+ * - `encrypted`: 暗号化されたメッセージ。本文は出さない。
+ * - `app`: 連携カード・部品・App のブロックの投稿。チャンネルでは `content` の代わりにそれらを描くので、
+ *   `content` は出さず、短い代替の表示にする。
+ */
+export type LinkedMessageKind = "text" | "encrypted" | "app";
 
 /** 埋め込みカードとリンクの短い表示に使う、リンク先のメッセージ。 */
 export interface LinkedMessage {
@@ -13,7 +30,8 @@ export interface LinkedMessage {
   avatarUrl: string | null;
   isBot: boolean;
   createdAt: string;
-  /** 本文を素の文字列にした要約。暗号化チャンネルでは空（本文を出さない）。 */
+  kind: LinkedMessageKind;
+  /** 本文の要約。`kind` が `text` のときだけ入る。 */
   excerpt: string;
   attachmentCount: number;
 }
@@ -44,9 +62,25 @@ type LinkedMessageRow = Pick<
   | "display_name"
   | "avatar_url"
   | "is_bot"
+  | "card"
+  | "components"
+  | "app_blocks"
+  | "ciphertext"
 > & { deleted_at?: string | null };
 
 export function toLinkedMessage(row: LinkedMessageRow, channel: LinkedChannel): LinkedMessage {
+  // 暗号文のある行は、チャンネルの `encrypted` がどうあっても暗号化されたメッセージとして扱う
+  // （格下げされたチャンネルに、平文の `content` を差し込まれても、本文として出さない）。
+  const kind: LinkedMessageKind =
+    channel.encrypted || row.ciphertext != null
+      ? "encrypted"
+      : messageBodySource({
+            components: row.components,
+            appBlocks: row.app_blocks,
+            card: row.card,
+          }).kind === "text"
+        ? "text"
+        : "app";
   return {
     id: row.id,
     parentId: row.parent_id,
@@ -54,7 +88,8 @@ export function toLinkedMessage(row: LinkedMessageRow, channel: LinkedChannel): 
     avatarUrl: row.avatar_url ?? null,
     isBot: row.is_bot === true,
     createdAt: row.created_at,
-    excerpt: channel.encrypted ? "" : messageExcerpt(row.content),
+    kind,
+    excerpt: kind === "text" ? messageExcerpt(row.content) : "",
     attachmentCount: row.display_data?.attachments?.length ?? 0,
   };
 }
@@ -65,23 +100,28 @@ export function toLinkedMessage(row: LinkedMessageRow, channel: LinkedChannel): 
  * 「見られない」とする。
  *
  * `messages` は、メッセージを取得する問い合わせの結果。`undefined` は、まだ問い合わせていない。
+ * `downgraded` は、暗号化チャンネルだったのに `encrypted = false` が配られているか（暗号化の格下げ）。
+ * そのチャンネルは、暗号化チャンネルとして扱う。
  */
 export function resolveChannelLinkInfo({
   directory,
   target,
   messages,
+  downgraded = false,
 }: {
   directory: ChannelDirectory;
   target: ChannelLinkTarget;
   messages: { rows: readonly LinkedMessageRow[] | undefined; loading: boolean } | undefined;
+  downgraded?: boolean;
 }): ChannelLinkInfo {
   const messageId = linkedMessageId(target);
-  const channel = directory.byId.get(target.channelId);
-  if (!channel) {
+  const listed = directory.byId.get(target.channelId);
+  if (!listed) {
     return directory.ready
       ? { status: "unavailable", subject: messageId ? "message" : "channel" }
       : { status: "loading" };
   }
+  const channel = downgraded && !listed.encrypted ? { ...listed, encrypted: true } : listed;
   if (!messageId) return { status: "channel", channel };
   if (!messages || (messages.loading && !messages.rows?.length)) return { status: "loading" };
   const row = messages.rows?.find((candidate) => candidate.id === messageId);
@@ -93,6 +133,8 @@ export function resolveChannelLinkInfo({
  * リンク先の状態を購読する。{@link ChannelDirectory} のある画面（アプリのシェルの中）で使う。
  *
  * `enabled` が false の間は、メッセージを取得せず `loading` のまま。画面の近くに来た行だけが取得する。
+ * 一度取得を始めたら、そのあと `enabled` が false に戻っても、取得したリンク先の表示は保つ
+ * （画面から遠ざかったときに、表示が枠へ戻って、行の大きさが変わらないように）。
  * メッセージを取得するのは、チャンネルが見られるときだけ。リアクション・添付の Shape は購読しない
  * （表示しないため）。
  */
@@ -101,15 +143,34 @@ export function useChannelLinkInfo(
   directory: ChannelDirectory,
   enabled = true,
 ): ChannelLinkInfo {
+  const [started, setStarted] = useState(enabled);
+  if (enabled && !started) setStarted(true);
   const messageId = linkedMessageId(target);
   const channel = directory.byId.get(target.channelId);
-  const query = useLinkedMessageRows(enabled && channel ? channel.id : null, messageId);
+  // 暗号化の格下げの判定（docs/e2ee.md の「暗号化の格下げを防ぐ」）。チャンネルを開いたときに覚えた
+  // 記録と、`edm:` の名前で、サーバーが `encrypted = false` を配っても暗号化として扱う。
+  // `ciphertext` のある行は、`toLinkedMessage` が行ごとに判定する。
+  useSyncExternalStore(subscribeEncryptedChannels, encryptedChannelsVersion, () => 0);
+  const downgraded = channel
+    ? encryptionSendState({
+        channelId: channel.id,
+        encrypted: channel.encrypted,
+        known: "unavailable",
+        channelName: channel.name,
+        hasCiphertext: false,
+      }).downgraded
+    : false;
+  const query = useLinkedMessageRows(started && channel ? channel.id : null, messageId);
   return resolveChannelLinkInfo({
     directory,
     target,
     messages:
-      enabled && messageId
-        ? { rows: query.data as readonly LinkedMessageRow[] | undefined, loading: query.isLoading }
+      started && messageId
+        ? {
+            rows: query.data as readonly LinkedMessageRow[] | undefined,
+            loading: query.isLoading,
+          }
         : undefined,
+    downgraded,
   });
 }

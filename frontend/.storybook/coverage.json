@@ -305,6 +305,8 @@
         "InMessageRow",
         "ThreadReply",
         "Encrypted",
+        "CiphertextInPlainChannel",
+        "AppMessage",
         "NotJoined",
         "MessageDeleted",
         "MessageNotFound",
@@ -1290,7 +1292,8 @@
       "story": "src/components/chat/messages/ChannelLinkEmbed.stories.tsx",
       "checks": [
         "src/components/chat/messages/ChannelLinkEmbed.browser.test.tsx",
-        "src/components/chat/messages/ChannelLinkEmbed.requests.browser.test.tsx"
+        "src/components/chat/messages/ChannelLinkEmbed.requests.browser.test.tsx",
+        "src/components/chat/messages/ChannelLinkEmbed.stalled.browser.test.tsx"
       ]
     },
     {

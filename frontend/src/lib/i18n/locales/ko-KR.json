@@ -260,6 +260,8 @@
     "messageUnavailable": "메시지를 표시할 수 없습니다",
     "channelUnavailable": "채널을 표시할 수 없습니다",
     "loading": "링크 대상을 불러오는 중",
+    "loadFailed": "링크 대상을 불러오지 못했습니다",
+    "appMessage": "App 메시지",
     "attachments_one": "첨부 파일 {{count}}개",
     "attachments_other": "첨부 파일 {{count}}개",
     "privateChannel": "비공개 채널",

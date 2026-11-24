@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
   createSummalyClient,
@@ -6,6 +6,7 @@ import {
   type LinkPreviewData as Preview,
 } from "../../../lib/summaly";
 import { resolvePublicConfig, type AppConfig } from "../../../lib/config";
+import { useNearViewport } from "../../../hooks/useNearViewport";
 import { useOptionalCollections } from "../../../lib/electric/collections-context";
 import { proxyImageUrl } from "../../../lib/media-proxy";
 import { Button } from "../../ui/button";
@@ -137,39 +138,10 @@ function ActiveLinkPreviews({ urls, config, active = true, showFallback = true }
 
 /** Home and public profiles keep offscreen rows mounted; only nearby rows fetch. */
 function DeferredLinkPreviews({ children }: { children: (active: boolean) => ReactNode }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [nearby, setNearby] = useState(false);
-  const [visible, setVisible] = useState(
-    () => typeof document !== "undefined" && document.visibilityState !== "hidden",
-  );
-  useEffect(() => {
-    const update = () => setVisible(document.visibilityState !== "hidden");
-    update();
-    document.addEventListener("visibilitychange", update);
-    if (typeof IntersectionObserver === "undefined") {
-      setNearby(true);
-      return () => document.removeEventListener("visibilitychange", update);
-    }
-    // rootMargin must expand the actual scrolling pane, not only the window.
-    let root = ref.current?.parentElement ?? null;
-    while (root && root !== document.body && root !== document.documentElement) {
-      if (/(auto|scroll|overlay)/.test(getComputedStyle(root).overflowY)) break;
-      root = root.parentElement;
-    }
-    if (root === document.body || root === document.documentElement) root = null;
-    const observer = new IntersectionObserver(
-      ([entry]) => setNearby(entry?.isIntersecting ?? false),
-      { root, rootMargin: "200px 0px" },
-    );
-    if (ref.current) observer.observe(ref.current);
-    return () => {
-      observer.disconnect();
-      document.removeEventListener("visibilitychange", update);
-    };
-  }, []);
+  const [ref, active] = useNearViewport<HTMLDivElement>();
   return (
     <div ref={ref} className="min-h-px">
-      {children(nearby && visible)}
+      {children(active)}
     </div>
   );
 }

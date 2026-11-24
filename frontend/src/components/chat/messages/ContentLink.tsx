@@ -1,6 +1,7 @@
 import { Link, useRouter } from "@tanstack/react-router";
-import { useCallback, type ReactNode } from "react";
+import { useCallback, type ReactNode, type Ref } from "react";
 import { cn } from "cn";
+import { useNearViewport } from "../../../hooks/useNearViewport";
 import { ExternalLink, inlineLinkClassName } from "../../ui/external-link";
 import { useChannelLinkInfo } from "./channelLinkInfo";
 import { useShortChannelLinkLabel } from "./channelLinkLabel";
@@ -37,15 +38,19 @@ export function useChannelLinkTarget(href: string): ChannelLinkTarget | null {
 export function ChannelLink({
   target,
   className,
+  anchorRef,
   children,
 }: {
   target: ChannelLinkTarget;
   className?: string;
+  /** リンクの要素。画面の近くにあるかの判定などに使う。 */
+  anchorRef?: Ref<HTMLAnchorElement>;
   children: ReactNode;
 }) {
   const message = target.search.message;
   return (
     <Link
+      ref={anchorRef}
       to="/channels/$channelId"
       params={{ channelId: target.channelId }}
       search={target.search}
@@ -79,10 +84,13 @@ function ResolvedChannelLink({
   className?: string;
   children: ReactNode;
 }) {
-  const info = useChannelLinkInfo(target, directory);
+  // 行き先の取得は、カードと同じく、画面の近くに来てから始める（全行をマウントする画面で、リンクの数だけ
+  // 別のチャンネルの取得が一斉に始まらないように）。
+  const [ref, near] = useNearViewport<HTMLAnchorElement>();
+  const info = useChannelLinkInfo(target, directory, near);
   const label = useShortChannelLinkLabel(info);
   return (
-    <ChannelLink target={target} className={className}>
+    <ChannelLink target={target} className={className} anchorRef={ref}>
       {label ?? children}
     </ChannelLink>
   );

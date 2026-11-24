@@ -1,7 +1,7 @@
 import { storySurfaces } from "../../../../.storybook/story-surfaces";
 import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import type { Decorator, Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, within } from "storybook/test";
+import { expect, fn, waitFor, within } from "storybook/test";
 import type { ChannelRow, MessageRow as MessageData, UserRow } from "../../../lib/electric/types";
 import { MessageBody, MessageRow } from "./MessageRow";
 import { MfmChannelsProvider } from "./MfmChannels";
@@ -112,6 +112,33 @@ const storyMessages: MessageData[] = [
     },
   }),
   message({ id: "m-deleted", channel_id: general.id, content: "消えた", deleted_at: ts(40) }),
+  message({
+    id: "m-card",
+    channel_id: general.id,
+    content: "カードの代わりの本文",
+    card: JSON.stringify({
+      title: "デプロイ完了",
+      description: "",
+      url: "https://example.com",
+      source: "CI",
+      context: "",
+      author: "",
+      badge: "",
+    }),
+  }),
+  // サーバーが `encrypted = false` を配るチャンネルにある、暗号文の行。平文の `content` は出さない。
+  message({
+    id: "m-cipher",
+    channel_id: general.id,
+    content: "差し込まれた平文",
+    ciphertext: {
+      algorithm: "m.megolm.v1.aes-sha2",
+      sender_key: "key",
+      device_id: "device",
+      session_id: "session",
+      ciphertext: "AwgA",
+    },
+  }),
   message({ id: "m-hidden", channel_id: hidden.id, content: "見えてはいけない" }),
 ];
 
@@ -159,26 +186,34 @@ type Story = StoryObj<typeof meta>;
 
 const url = (path: string) => `{origin}/channels/${path}`;
 
+/**
+ * 描画が落ち着くのを待ちながら検証する。ストーリーは、開始直後（`globals` の適用など）に作り直されることが
+ * あり、最初に見つけた要素が古くなる。要素を持ち回らず、毎回探し直す。
+ */
+const settled = (
+  check: (canvas: ReturnType<typeof within>, root: HTMLElement) => Promise<void> | void,
+) =>
+  playForImplementation(async ({ canvasElement }) => {
+    await waitFor(async () => check(within(canvasElement), canvasElement));
+  });
+
 /** 参考にした Slack の表示。短くしたリンクと、投稿者・チャンネル・本文の埋め込み。 */
 export const Message: Story = {
   args: { content: `こうだと？\n${url("c-general?message=m-1")}` },
-  play: playForImplementation(async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expect(
-      await canvas.findByRole("link", { name: "アメシュさん: #z_-amesyu" }),
-    ).toBeVisible();
-    const embed = await canvas.findByRole("link", { name: /アメシュ.*テスト/ });
+  play: settled(async (canvas, root) => {
+    await expect(canvas.getByRole("link", { name: "アメシュさん: #z_-amesyu" })).toBeVisible();
+    const embed = canvas.getByRole("link", { name: /アメシュ.*テスト/ });
     await expect(embed).toHaveAttribute("href", "/channels/c-general?message=m-1");
     await expect(within(embed).getByText("テスト")).toBeVisible();
-    // 元の URL は表示しない。
-    await expect(canvasElement.textContent).not.toContain("http");
+    // 元の URL は表示しない（表示では `https://` を省くので、パスで確かめる）。
+    await expect(root.textContent).not.toContain("/channels/");
   }),
 };
 
 export const ThreadReply: Story = {
   args: { content: url("c-general?thread=m-1&message=m-reply") },
-  play: playForImplementation(async ({ canvasElement }) => {
-    const embed = await within(canvasElement).findByRole("link", { name: /スレッドへの返信/ });
+  play: settled(async (canvas) => {
+    const embed = canvas.getByRole("link", { name: /スレッドへの返信/ });
     await expect(within(embed).getByText("#z_-amesyu 内のスレッド")).toBeVisible();
     await expect(embed).toHaveAttribute("href", "/channels/c-general?thread=m-1&message=m-reply");
     // 装飾とリンクは文字だけにして、リンクの中にリンクを作らない。
@@ -189,23 +224,40 @@ export const ThreadReply: Story = {
 /** 暗号化チャンネルのメッセージは、本文を出さず、暗号化されていることを書く。 */
 export const Encrypted: Story = {
   args: { content: url("c-sealed?message=m-sealed") },
-  play: playForImplementation(async ({ canvasElement }) => {
-    const embed = await within(canvasElement).findByRole("link", {
-      name: /このメッセージは暗号化されています/,
-    });
+  play: settled(async (canvas) => {
+    const embed = canvas.getByRole("link", { name: /このメッセージは暗号化されています/ });
     await expect(within(embed).getByText("#sealed")).toBeVisible();
     await expect(embed).toHaveAttribute("href", "/channels/c-sealed?message=m-sealed");
+  }),
+};
+
+/** 暗号文のある行は、チャンネルが平文として配られていても、本文を出さず暗号化と書く（格下げ対策）。 */
+export const CiphertextInPlainChannel: Story = {
+  args: { content: url("c-general?message=m-cipher") },
+  play: settled(async (canvas, root) => {
+    await expect(
+      canvas.getByRole("link", { name: /このメッセージは暗号化されています/ }),
+    ).toBeVisible();
+    await expect(root.textContent).not.toContain("差し込まれた平文");
+  }),
+};
+
+/** 連携カード・部品の投稿は、チャンネルでは `content` の代わりにそれらを描く。埋め込みも本文を出さない。 */
+export const AppMessage: Story = {
+  args: { content: url("c-general?message=m-card") },
+  play: settled(async (canvas, root) => {
+    await expect(canvas.getByRole("link", { name: /Appのメッセージ/ })).toBeVisible();
+    await expect(root.textContent).not.toContain("カードの代わりの本文");
   }),
 };
 
 /** 参加していない非公開チャンネルは、存在しないものとして扱う。チャンネル名も本文も出さない。 */
 export const NotJoined: Story = {
   args: { content: url("c-hidden?message=m-hidden") },
-  play: playForImplementation(async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expect(await canvas.findByText("メッセージを表示できません")).toBeVisible();
-    await expect(canvasElement.textContent).not.toContain("秘密の計画");
-    await expect(canvasElement.textContent).not.toContain("見えてはいけない");
+  play: settled(async (canvas, root) => {
+    await expect(canvas.getByText("メッセージを表示できません")).toBeVisible();
+    await expect(root.textContent).not.toContain("秘密の計画");
+    await expect(root.textContent).not.toContain("見えてはいけない");
     // 埋め込みは押せない。本文中の URL だけがリンクとして残る。
     await expect(canvas.getAllByRole("link")).toHaveLength(1);
   }),
@@ -213,75 +265,68 @@ export const NotJoined: Story = {
 
 export const MessageDeleted: Story = {
   args: { content: url("c-general?message=m-deleted") },
-  play: playForImplementation(async ({ canvasElement }) => {
-    await expect(
-      await within(canvasElement).findByText("メッセージを表示できません"),
-    ).toBeVisible();
-    await expect(canvasElement.textContent).not.toContain("消えた");
+  play: settled(async (canvas, root) => {
+    await expect(canvas.getByText("メッセージを表示できません")).toBeVisible();
+    await expect(root.textContent).not.toContain("消えた");
   }),
 };
 
 export const MessageNotFound: Story = {
   args: { content: url("c-general?message=m-nothing") },
-  play: playForImplementation(async ({ canvasElement }) => {
-    await expect(
-      await within(canvasElement).findByText("メッセージを表示できません"),
-    ).toBeVisible();
+  play: settled(async (canvas) => {
+    await expect(canvas.getByText("メッセージを表示できません")).toBeVisible();
   }),
 };
 
 export const Channel: Story = {
   args: { content: `チャンネルはこちら ${url("c-general")}` },
-  play: playForImplementation(async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expect(await canvas.findByRole("link", { name: "#z_-amesyu" })).toBeVisible();
-    const embed = await canvas.findByRole("link", { name: /場所の共有と雑談/ });
-    await expect(embed).toHaveAttribute("href", "/channels/c-general");
+  play: settled(async (canvas) => {
+    await expect(canvas.getByRole("link", { name: "#z_-amesyu" })).toBeVisible();
+    await expect(canvas.getByRole("link", { name: /場所の共有と雑談/ })).toHaveAttribute(
+      "href",
+      "/channels/c-general",
+    );
   }),
 };
 
 export const PrivateAndEncryptedChannels: Story = {
   args: { content: `${url("c-projects")}\n${url("c-sealed")}` },
-  play: playForImplementation(async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expect(await canvas.findByText("非公開チャンネル")).toBeVisible();
+  play: settled(async (canvas) => {
+    await expect(canvas.getByText("非公開チャンネル")).toBeVisible();
     await expect(canvas.getByText("暗号化チャンネル")).toBeVisible();
   }),
 };
 
 export const ChannelNotJoined: Story = {
   args: { content: url("c-hidden") },
-  play: playForImplementation(async ({ canvasElement }) => {
-    await expect(
-      await within(canvasElement).findByText("チャンネルを表示できません"),
-    ).toBeVisible();
+  play: settled(async (canvas) => {
+    await expect(canvas.getByText("チャンネルを表示できません")).toBeVisible();
   }),
 };
 
 export const DirectMessage: Story = {
   args: { content: url("c-dm?message=m-dm") },
-  play: playForImplementation(async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
+  play: settled(async (canvas, root) => {
     await expect(
-      await canvas.findByRole("link", { name: "アメシュさん: ダイレクトメッセージ" }),
+      canvas.getByRole("link", { name: "アメシュさん: ダイレクトメッセージ" }),
     ).toBeVisible();
     // 内部の名前（dm:…）は出さない。
-    await expect(canvasElement.textContent).not.toContain("dm:u-alice");
+    await expect(root.textContent).not.toContain("dm:u-alice");
   }),
 };
 
 export const AttachmentsOnly: Story = {
   args: { content: url("c-general?message=m-files") },
-  play: playForImplementation(async ({ canvasElement }) => {
-    await expect(await within(canvasElement).findByText("添付ファイル 2 件")).toBeVisible();
+  play: settled(async (canvas) => {
+    await expect(canvas.getByText("添付ファイル 2 件")).toBeVisible();
   }),
 };
 
 /** 長い本文は 3 行で切り、長いチャンネル名は 1 行に収める。カードは幅を超えない。 */
 export const LongText: Story = {
   args: { content: url("c-projects?message=m-long") },
-  play: playForImplementation(async ({ canvasElement }) => {
-    const embed = await within(canvasElement).findByRole("link", { name: /長い本文は/ });
+  play: settled(async (canvas) => {
+    const embed = canvas.getByRole("link", { name: /長い本文は/ });
     await expect(embed.getBoundingClientRect().width).toBeLessThanOrEqual(448);
     await expect(embed.scrollWidth).toBeLessThanOrEqual(embed.clientWidth);
   }),
@@ -324,12 +369,9 @@ export const InMessageRow: Story = {
       onPickReaction={fn()}
     />
   ),
-  play: playForImplementation(async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expect(
-      await canvas.findByRole("link", { name: "アメシュさん: #z_-amesyu" }),
-    ).toBeVisible();
-    const embed = await canvas.findByRole("link", { name: /スレッドへの返信/ });
+  play: settled(async (canvas) => {
+    await expect(canvas.getByRole("link", { name: "アメシュさん: #z_-amesyu" })).toBeVisible();
+    const embed = canvas.getByRole("link", { name: /スレッドへの返信/ });
     await expect(within(embed).getByText("#z_-amesyu 内のスレッド")).toBeVisible();
   }),
 };
@@ -339,13 +381,14 @@ export const Mobile: Story = {
   globals: { viewport: { value: "mobile" } },
 };
 
-/** チャンネルの一覧の同期が終わるまでは、「表示できません」と決めず、枠だけを置く。 */
+/** 一覧にないチャンネルは、一覧の同期が終わるまでは、「表示できません」と決めず、枠だけを置く（一覧にあるチャンネルは、同期中でも表示する）。 */
 export const LoadingDirectory: Story = {
-  args: { content: url("c-general?message=m-1") },
+  args: { content: url("c-hidden?message=m-hidden") },
   decorators: [withDirectory(false)],
-  play: playForImplementation(async ({ canvasElement }) => {
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    await expect(within(canvasElement).queryByText("メッセージを表示できません")).toBeNull();
+  play: settled(async (canvas) => {
+    // 枠は、読み上げに「読み込み中」と伝える。「表示できません」とは決めない。
+    await expect(canvas.getByRole("status")).toHaveTextContent("リンク先を読み込み中");
+    await expect(canvas.queryByText("メッセージを表示できません")).toBeNull();
   }),
 };
 
@@ -355,9 +398,8 @@ export const InEncryptedPost: Story = {
     content: `${url("c-general?message=m-1")}\nhttps://example.com/docs`,
     previews: "manual",
   },
-  play: playForImplementation(async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expect(await canvas.findByRole("link", { name: /アメシュ.*テスト/ })).toBeVisible();
+  play: settled(async (canvas) => {
+    await expect(canvas.getByRole("link", { name: /アメシュ.*テスト/ })).toBeVisible();
     await expect(
       canvas.getByRole("button", { name: "リンクのプレビューを読み込む" }),
     ).toBeVisible();

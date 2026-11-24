@@ -260,6 +260,8 @@
     "messageUnavailable": "Unable to display this message",
     "channelUnavailable": "Unable to display this channel",
     "loading": "Loading the linked item",
+    "loadFailed": "Couldn't load the linked item",
+    "appMessage": "App message",
     "attachments_one": "{{count}} attachment",
     "attachments_other": "{{count}} attachments",
     "privateChannel": "Private channel",

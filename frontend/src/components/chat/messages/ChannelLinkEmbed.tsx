@@ -1,4 +1,5 @@
-import { EyeOffIcon, LockKeyholeIcon, PaperclipIcon } from "lucide-react";
+import { BlocksIcon, CloudOffIcon, EyeOffIcon, LockKeyholeIcon, PaperclipIcon } from "lucide-react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
 import { normalizeUtcTimestamp } from "../../../lib/timestamps";
@@ -54,19 +55,28 @@ function MessageEmbed({
         <span className="truncate text-xs text-muted-foreground">
           {message.parentId ? t("channelLink.thread", { channel: channelLabel }) : channelLabel}
         </span>
-        <MessageEmbedBody message={message} encrypted={channel.encrypted} />
+        <MessageEmbedBody message={message} />
       </span>
     </ChannelLink>
   );
 }
 
-function MessageEmbedBody({ message, encrypted }: { message: LinkedMessage; encrypted: boolean }) {
+function MessageEmbedBody({ message }: { message: LinkedMessage }) {
   const { t } = useTranslation();
-  if (encrypted) {
+  if (message.kind === "encrypted") {
     return (
       <span className="mt-1 flex items-center gap-1.5 text-muted-foreground italic">
         <LockKeyholeIcon className="size-3.5 shrink-0" aria-hidden="true" />
         <span>{t("channelLink.encrypted")}</span>
+      </span>
+    );
+  }
+  if (message.kind === "app") {
+    // チャンネルでは、`content` の代わりにカード・部品を描く投稿。その代わりの表示は作らず、種類だけを伝える。
+    return (
+      <span className="mt-1 flex items-center gap-1.5 text-muted-foreground">
+        <BlocksIcon className="size-3.5 shrink-0" aria-hidden="true" />
+        <span>{t("channelLink.appMessage")}</span>
       </span>
     );
   }
@@ -118,12 +128,34 @@ function ChannelEmbed({ target, channel }: { target: ChannelLinkTarget; channel:
 }
 
 /**
+ * 取得を始めてから、これだけたっても終わらないときは、読み込めなかったものとして枠をやめる。
+ * `useLiveQuery` は、取得が失敗しても（サーバーのエラー・オフライン）`isError` にならず、`isLoading` のまま
+ * 再試行を続けるので、失敗を状態から知れない。あとで取得できれば、そのまま内容に切り替わる。
+ */
+export const LINK_LOAD_TIMEOUT_MS = 10_000;
+
+/** `pending` が続いて `ms` たったか。`pending` でなくなったら戻す。 */
+function useStalled(pending: boolean, ms: number): boolean {
+  const [stalled, setStalled] = useState(false);
+  useEffect(() => {
+    if (!pending) return;
+    const timer = setTimeout(() => setStalled(true), ms);
+    return () => {
+      clearTimeout(timer);
+      setStalled(false);
+    };
+  }, [pending, ms]);
+  return pending && stalled;
+}
+
+/**
  * このアプリのチャンネル・メッセージへのリンクの埋め込みカード。カードのどこを押しても、同じタブで
  * そのメッセージ・チャンネルへ移動する。
  *
  * 行き先を取得して表示するので、Summaly には送らない。見られない行き先（存在しない・削除済み、
  * 非公開で未参加）は理由を区別せず、「表示できません」とだけ出し、移動もしない。
- * 暗号化チャンネルのメッセージは本文を出さず、暗号化されていることだけを伝える。
+ * 暗号化チャンネルのメッセージ（格下げされたチャンネルや、暗号文のある行を含む）は本文を出さず、暗号化されて
+ * いることだけを伝える。連携カード・部品の投稿は `content` を出さず、種類だけを伝える。
  *
  * `active` が false の間は取得せず、場所だけを確保する。`showFallback` が false のときは、
  * 行き先が分かった場合だけ出す。
@@ -141,15 +173,27 @@ export function ChannelLinkEmbed({
 }) {
   const { t } = useTranslation();
   const info = useChannelLinkInfo(target, directory, active);
+  // 取得を始めていない（画面から遠い）間は数えない。
+  const stalled = useStalled(info.status === "loading" && active, LINK_LOAD_TIMEOUT_MS);
   switch (info.status) {
     case "loading":
-      // 読み込み中は、行の高さが後から大きく動かないよう、カードの形だけを置く。
-      return showFallback ? (
+      if (!showFallback) return null;
+      return stalled ? (
+        // 見られない場合とは区別する。行き先が見られるかは、まだ分からない。
+        <div className={cn(cardClassName, "items-center text-muted-foreground")}>
+          <CloudOffIcon className="size-4 shrink-0" aria-hidden="true" />
+          <span>{t("channelLink.loadFailed")}</span>
+        </div>
+      ) : (
+        // 読み込み中は、行の高さが後から大きく動かないよう、カードの形だけを置く。
         <div
-          aria-hidden="true"
+          role="status"
+          aria-busy="true"
           className={cn(cardClassName, "h-[5.25rem] animate-pulse bg-muted/40")}
-        />
-      ) : null;
+        >
+          <span className="sr-only">{t("channelLink.loading")}</span>
+        </div>
+      );
     case "unavailable":
       return showFallback ? (
         <div className={cn(cardClassName, "items-center text-muted-foreground")}>

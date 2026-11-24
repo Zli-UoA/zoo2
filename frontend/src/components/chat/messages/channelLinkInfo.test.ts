@@ -32,9 +32,34 @@ function row(overrides: Record<string, unknown> = {}) {
     is_bot: false,
     deleted_at: null,
     display_data: undefined,
+    card: null,
+    components: null,
+    app_blocks: null,
+    ciphertext: null,
     ...overrides,
   };
 }
+
+const ciphertext = {
+  algorithm: "m.megolm.v1.aes-sha2" as const,
+  sender_key: "key",
+  device_id: "device",
+  session_id: "session",
+  ciphertext: "AwgA",
+};
+const hiddenComponents = JSON.stringify({
+  flags: 1 << 15,
+  components: [{ type: 10, content: "部品" }],
+});
+const card = JSON.stringify({
+  title: "デプロイ完了",
+  description: "",
+  url: "https://example.com",
+  source: "CI",
+  context: "",
+  author: "",
+  badge: "",
+});
 
 const channelTarget = (channelId: string): ChannelLinkTarget => ({ channelId, search: {} });
 const messageTarget = (channelId: string, message: string, thread?: string): ChannelLinkTarget => ({
@@ -186,6 +211,7 @@ describe("resolveChannelLinkInfo", () => {
           avatarUrl: "https://example.com/bob.png",
           isBot: false,
           createdAt: "2026-11-23 07:30:00.000",
+          kind: "text",
           excerpt: "こんにちは リンク",
           attachmentCount: 0,
         },
@@ -222,6 +248,101 @@ describe("resolveChannelLinkInfo", () => {
       });
       expect(info.status === "message" && info.message.authorName).toBe("Bob");
     });
+  });
+});
+
+describe("暗号化の判定（格下げ対策）", () => {
+  const resolve = (channel: LinkedChannel, rows: ReturnType<typeof row>[], downgraded = false) =>
+    resolveChannelLinkInfo({
+      directory: directory([channel]),
+      target: messageTarget(channel.id, "m1"),
+      messages: { rows, loading: false },
+      downgraded,
+    });
+
+  it("暗号文のある行は、チャンネルが `encrypted = false` でも、本文を出さずに暗号化として扱う", () => {
+    // 暗号化メッセージの `content` は空。サーバーが平文の `content` を差し込んでも、出さない。
+    const info = resolve(general, [row({ ciphertext, content: "差し込まれた平文" })]);
+    expect(info.status === "message" && info.message.kind).toBe("encrypted");
+    expect(info.status === "message" && info.message.excerpt).toBe("");
+    expect(JSON.stringify(info)).not.toContain("差し込まれた平文");
+  });
+
+  it("暗号文のない行も、同じチャンネルの暗号文のある行とは別に判定する", () => {
+    const info = resolve(general, [row({ ciphertext: null })]);
+    expect(info.status === "message" && info.message.kind).toBe("text");
+  });
+
+  it("暗号化チャンネルだったのに `encrypted = false` が配られた（格下げ）チャンネルは、暗号化として扱う", () => {
+    const info = resolve(general, [row({ content: "差し込まれた平文" })], true);
+    expect(info).toMatchObject({ status: "message", channel: { encrypted: true } });
+    expect(info.status === "message" && info.message.kind).toBe("encrypted");
+    expect(JSON.stringify(info)).not.toContain("差し込まれた平文");
+  });
+
+  it("格下げの判定は、チャンネルのリンクにも効く（暗号化チャンネルとして示す）", () => {
+    const info = resolveChannelLinkInfo({
+      directory: directory([general]),
+      target: channelTarget("c-general"),
+      messages: undefined,
+      downgraded: true,
+    });
+    expect(info).toMatchObject({ status: "channel", channel: { encrypted: true } });
+  });
+
+  it("一覧のチャンネルの情報は、書き換えない", () => {
+    const dir = directory([general]);
+    resolveChannelLinkInfo({
+      directory: dir,
+      target: channelTarget("c-general"),
+      messages: undefined,
+      downgraded: true,
+    });
+    expect(dir.byId.get("c-general")?.encrypted).toBe(false);
+  });
+});
+
+describe("連携カード・部品の投稿", () => {
+  const kindOf = (overrides: Record<string, unknown>) => {
+    const info = resolveChannelLinkInfo({
+      directory: directory([general]),
+      target: messageTarget("c-general", "m1"),
+      messages: { rows: [row(overrides)], loading: false },
+    });
+    return info.status === "message" ? info.message : null;
+  };
+
+  it("本文を隠す部品の投稿は、`content` を出さず、`app` として扱う", () => {
+    const message = kindOf({ components: hiddenComponents, content: "代わりの本文" });
+    expect(message?.kind).toBe("app");
+    expect(message?.excerpt).toBe("");
+  });
+
+  it("App のカードのブロックの投稿は、`content` を出さない", () => {
+    const blocks = JSON.stringify([{ type: "card", card: JSON.parse(card) }]);
+    expect(kindOf({ app_blocks: blocks, content: "代わりの本文" })?.kind).toBe("app");
+  });
+
+  it("連携カードの投稿は、`content` を出さない", () => {
+    expect(kindOf({ card, content: "代わりの本文" })?.kind).toBe("app");
+  });
+
+  it("本文を隠さない部品や、読めないカードは、本文を出す", () => {
+    expect(
+      kindOf({
+        components: JSON.stringify({ flags: 0, components: [{ type: 10, content: "部品" }] }),
+      })?.kind,
+    ).toBe("text");
+    expect(kindOf({ card: "not json" })?.kind).toBe("text");
+  });
+
+  it("暗号化チャンネルでは、連携カードでも暗号化として扱う", () => {
+    const info = resolveChannelLinkInfo({
+      directory: directory([sealed]),
+      target: messageTarget("c-sealed", "m1"),
+      messages: { rows: [row({ card })], loading: false },
+    });
+    expect(info.status === "message" && info.message.kind).toBe("encrypted");
   });
 });
 

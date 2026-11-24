@@ -10,9 +10,15 @@ import {
   RouterProvider,
   useRouterState,
 } from "@tanstack/react-router";
+import { useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { createStoryCollections } from "../../../../.storybook/fixtures";
+import {
+  ENCRYPTED_CHANNEL_STORAGE_PREFIX,
+  noteEncryptedChannel,
+  resetSeenEncryptedChannels,
+} from "../../../lib/e2ee/encryptionGuard";
 import { LOCALE_STORAGE_KEY } from "../../../lib/i18n/locale";
 import { CollectionsProvider } from "../../../lib/electric/collections-context";
 import type { ChannelRow, MessageRow, UserRow } from "../../../lib/electric/types";
@@ -90,7 +96,53 @@ const dm = channel({
   is_dm: true,
 });
 
+/** サーバーが `encrypted = false` を配る、暗号化チャンネルだったチャンネル（格下げ）。 */
+const edm = channel({
+  id: "c-edm",
+  channel_name: "edm:u-alice:u-bob",
+  is_private: true,
+  is_dm: true,
+});
+const recorded = channel({ id: "c-recorded", channel_name: "recorded", is_private: true });
+
+const ciphertext = {
+  algorithm: "m.megolm.v1.aes-sha2" as const,
+  sender_key: "key",
+  device_id: "device",
+  session_id: "session",
+  ciphertext: "AwgA",
+};
+const cardJson = JSON.stringify({
+  title: "デプロイ完了",
+  description: "",
+  url: "https://example.com",
+  source: "CI",
+  context: "",
+  author: "",
+  badge: "",
+});
+
 const messages: MessageRow[] = [
+  message({
+    id: "m-cipher",
+    channel_id: "c-general",
+    content: "差し込まれた平文",
+    ciphertext,
+  }),
+  message({ id: "m-edm", channel_id: "c-edm", content: "edm の平文" }),
+  message({ id: "m-recorded", channel_id: "c-recorded", content: "記録済みの平文" }),
+  message({
+    id: "m-card",
+    channel_id: "c-general",
+    content: "カードの代わりの本文",
+    card: cardJson,
+  }),
+  message({
+    id: "m-parts",
+    channel_id: "c-general",
+    content: "部品の代わりの本文",
+    components: JSON.stringify({ flags: 1 << 15, components: [{ type: 10, content: "部品" }] }),
+  }),
   message({ id: "m-general", channel_id: "c-general", content: "テスト" }),
   message({
     id: "m-reply",
@@ -158,8 +210,15 @@ function setup({
   const bundle = createStoryCollections({
     currentUserId: "u-alice",
     users,
+    // コレクションには、一覧に出るかどうかによらず、すべてのチャンネルを置く（あとから一覧に現れるものも含む）。
+    // 見られるかどうかを決めるのは、一覧（`MfmChannelsProvider`）で、コレクションではない。
     channels: [
-      ...visible,
+      general,
+      secretMember,
+      sealed,
+      dm,
+      edm,
+      recorded,
       channel({ id: "c-hidden", channel_name: "秘密の計画", is_private: true }),
     ],
     messages: [...messages, ...hiddenRows],
@@ -168,8 +227,13 @@ function setup({
   const messagesFor = vi.fn((channelId: string) => original(channelId));
   bundle.messages = messagesFor as typeof bundle.messages;
 
+  const directoryControl: {
+    set: ((next: { visible: ChannelRow[]; ready: boolean }) => void) | null;
+  } = { set: null };
   const root = createRootRoute({ component: Outlet });
   function Body() {
+    const [state, setState] = useState({ visible, ready });
+    directoryControl.set = setState;
     const rendered =
       body === "message" ? (
         <MessageBody content={content} previews={previews} />
@@ -180,7 +244,7 @@ function setup({
       <LocaleProvider>
         <CollectionsProvider value={bundle}>
           {directory ? (
-            <MfmChannelsProvider channels={visible} ready={ready}>
+            <MfmChannelsProvider channels={state.visible} ready={state.ready}>
               {rendered}
             </MfmChannelsProvider>
           ) : (
@@ -213,7 +277,16 @@ function setup({
     history: createMemoryHistory({ initialEntries: ["/"] }),
   });
   render(<RouterProvider router={router} />);
-  return { router, messagesFor };
+  return {
+    router,
+    messagesFor,
+    /** チャンネルの一覧（見られるチャンネルと、同期が終わったか）を、あとから差し替える。 */
+    updateDirectory: async (next: { visible: ChannelRow[]; ready: boolean }) => {
+      await act(async () => {
+        directoryControl.set?.(next);
+      });
+    },
+  };
 }
 
 const link = (channelId: string, search = "") => `${origin}/channels/${channelId}${search}`;
@@ -231,6 +304,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetSeenEncryptedChannels();
+  for (const key of Object.keys(localStorage)) {
+    if (key.startsWith(ENCRYPTED_CHANNEL_STORAGE_PREFIX)) localStorage.removeItem(key);
+  }
   localStorage.removeItem(LOCALE_STORAGE_KEY);
   vi.restoreAllMocks();
 });
@@ -315,7 +392,7 @@ describe("メッセージのリンク", () => {
   it("非公開チャンネルでも、参加していて見られるなら表示する", async () => {
     setup({ content: link("c-secret", "?message=m-secret") });
     expect(await screen.findByRole("link", { name: /参加者だけの話/ })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "アメシュさん: #secret" })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: "アメシュさん: #secret" })).toBeInTheDocument();
   });
 });
 
@@ -332,6 +409,82 @@ describe("暗号化チャンネルのメッセージ", () => {
     await waitFor(() =>
       expect(screen.getByLabelText("Opened").textContent).toBe("c-sealed|m-sealed|"),
     );
+  });
+});
+
+describe("暗号化の格下げ対策", () => {
+  // サーバーが `encrypted = false` を配っても、暗号化として扱うもの（docs/e2ee.md の「暗号化の格下げを防ぐ」）。
+  const hiddenText = (text: string) => expect(document.body.textContent).not.toContain(text);
+
+  it("暗号文のある行は、チャンネルが平文でも、本文を出さずに暗号化と書く", async () => {
+    setup({ content: link("c-general", "?message=m-cipher") });
+    const embed = await screen.findByRole("link", { name: /このメッセージは暗号化されています/ });
+    expect(within(embed).getByText("アメシュ")).toBeInTheDocument();
+    hiddenText("差し込まれた平文");
+    // 暗号文のない行は、同じチャンネルでも本文を出す。
+  });
+
+  it("暗号文のない行は、同じチャンネルでも本文を出す", async () => {
+    setup({ content: link("c-general", "?message=m-general") });
+    expect(await screen.findByRole("link", { name: /アメシュ.*テスト/ })).toBeInTheDocument();
+    expect(screen.queryByText("このメッセージは暗号化されています")).toBeNull();
+  });
+
+  it("名前が `edm:` のチャンネルは、暗号化として扱う", async () => {
+    setup({ content: link("c-edm", "?message=m-edm"), visible: [edm] });
+    expect(
+      await screen.findByRole("link", { name: /このメッセージは暗号化されています/ }),
+    ).toBeInTheDocument();
+    hiddenText("edm の平文");
+  });
+
+  it("以前に暗号化チャンネルとして見たチャンネルは、暗号化として扱う", async () => {
+    noteEncryptedChannel("c-recorded");
+    setup({ content: link("c-recorded", "?message=m-recorded"), visible: [recorded] });
+    expect(
+      await screen.findByRole("link", { name: /このメッセージは暗号化されています/ }),
+    ).toBeInTheDocument();
+    hiddenText("記録済みの平文");
+  });
+
+  it("一覧で暗号化と見たチャンネルは、あとで平文として配られても、暗号化として扱う", async () => {
+    const encrypted = { ...recorded, encrypted: true };
+    const { updateDirectory } = setup({
+      content: link("c-recorded", "?message=m-recorded"),
+      visible: [encrypted],
+    });
+    expect(
+      await screen.findByRole("link", { name: /このメッセージは暗号化されています/ }),
+    ).toBeInTheDocument();
+
+    // サーバーが `encrypted = false` を配る（格下げ）。
+    await updateDirectory({ visible: [{ ...encrypted, encrypted: false }], ready: true });
+
+    await waitFor(() =>
+      expect(screen.getByText("このメッセージは暗号化されています")).toBeInTheDocument(),
+    );
+    hiddenText("記録済みの平文");
+  });
+
+  it("チャンネルのリンクも、格下げされたチャンネルを暗号化チャンネルと示す", async () => {
+    noteEncryptedChannel("c-recorded");
+    setup({ content: link("c-recorded"), visible: [recorded] });
+    expect(await screen.findByText("暗号化チャンネル")).toBeInTheDocument();
+  });
+});
+
+describe("連携カード・部品の投稿", () => {
+  it("連携カードの投稿は、代わりの本文を出さず、App のメッセージと書く", async () => {
+    setup({ content: link("c-general", "?message=m-card") });
+    const embed = await screen.findByRole("link", { name: /Appのメッセージ/ });
+    expect(within(embed).getByText("アメシュ")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("カードの代わりの本文");
+  });
+
+  it("本文を隠す部品の投稿も、代わりの本文を出さない", async () => {
+    setup({ content: link("c-general", "?message=m-parts") });
+    expect(await screen.findByRole("link", { name: /Appのメッセージ/ })).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("部品の代わりの本文");
   });
 });
 
@@ -388,15 +541,40 @@ describe("一覧の同期を待つ間", () => {
     expect(screen.queryByText("メッセージを表示できません")).toBeNull();
   });
 
-  it("同期が終わって一覧に現れたチャンネルは、そのまま表示に切り替わる", async () => {
-    const { messagesFor } = setup({
+  it("同期が終わって一覧に現れたチャンネルは、取得を始めて、表示に切り替わる", async () => {
+    const { messagesFor, updateDirectory } = setup({
       content: link("c-general", "?message=m-general"),
       visible: [],
       ready: false,
     });
     await new Promise((resolve) => setTimeout(resolve, 50));
+    // 同期前は、取得せず、「表示できません」とも決めない。
     expect(messagesFor).not.toHaveBeenCalled();
     expect(screen.queryByText("メッセージを表示できません")).toBeNull();
+    expect(screen.queryByText("テスト")).toBeNull();
+
+    await updateDirectory({ visible: [general], ready: true });
+
+    // 同じチャンネルのメッセージを取得し、短い表示と埋め込みが出る。
+    expect(await screen.findByRole("link", { name: /アメシュ.*テスト/ })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: "アメシュさん: #general" })).toBeInTheDocument();
+    expect(messagesFor).toHaveBeenCalledWith("c-general");
+    expect(screen.queryByText("メッセージを表示できません")).toBeNull();
+  });
+
+  it("同期が終わっても一覧になかったチャンネルは、「表示できません」に切り替わる", async () => {
+    const { messagesFor, updateDirectory } = setup({
+      content: link("c-hidden", "?message=m-hidden"),
+      visible: [],
+      ready: false,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByText("メッセージを表示できません")).toBeNull();
+
+    await updateDirectory({ visible: [general], ready: true });
+
+    expect(await screen.findByText("メッセージを表示できません")).toBeInTheDocument();
+    expect(messagesFor).not.toHaveBeenCalledWith("c-hidden");
   });
 });
 
@@ -531,7 +709,8 @@ describe("操作", () => {
 });
 
 describe("画面の近くに来るまで取得しない", () => {
-  it("遅延表示（defer）では、画面の近くに来た行だけがメッセージを取得する", async () => {
+  /** 画面から遠い位置（スクロール枠の 3000px 下）に、`children` を置く。 */
+  async function renderFar(children: ReactNode) {
     const bundle = createStoryCollections({
       currentUserId: "u-alice",
       users,
@@ -550,7 +729,8 @@ describe("画面の近くに来るまで取得しない", () => {
             <MfmChannelsProvider channels={[general]}>
               <div data-testid="pane" style={{ height: 200, overflowY: "auto" }}>
                 <div style={{ height: 3000 }} />
-                <LinkPreviews defer content={link("c-general", "?message=m-general")} />
+                {children}
+                <div style={{ height: 3000 }} />
               </div>
             </MfmChannelsProvider>
           </CollectionsProvider>
@@ -564,12 +744,58 @@ describe("画面の近くに来るまで取得しない", () => {
     render(<RouterProvider router={router} />);
     const pane = await screen.findByTestId("pane");
     await new Promise((resolve) => setTimeout(resolve, 150));
+    return { pane, messagesFor };
+  }
+
+  it("遅延表示（defer）のカードは、画面の近くに来てから、メッセージを取得する", async () => {
+    const { pane, messagesFor } = await renderFar(
+      <LinkPreviews defer content={link("c-general", "?message=m-general")} />,
+    );
     // 画面から遠い間は、取得せず、読み込み中の枠だけを置く。
     expect(messagesFor).not.toHaveBeenCalled();
     expect(screen.queryByText(/アメシュ/)).toBeNull();
+    expect(screen.getByRole("status")).toHaveTextContent("リンク先を読み込み中");
 
-    pane.scrollTop = pane.scrollHeight;
+    pane.scrollTop = 3000;
     expect(await screen.findByRole("link", { name: /アメシュ.*テスト/ })).toBeInTheDocument();
     expect(messagesFor).toHaveBeenCalledWith("c-general");
+  });
+
+  it("本文中の短い表示も、画面の近くに来てから、メッセージを取得する", async () => {
+    const { pane, messagesFor } = await renderFar(
+      <MfmContent content={link("c-general", "?message=m-general")} />,
+    );
+    // 遠い間は、取得せず、URL のまま。
+    expect(messagesFor).not.toHaveBeenCalled();
+    expect(screen.getByRole("link").textContent).toContain("/channels/c-general?message=m-general");
+
+    pane.scrollTop = 3000;
+    expect(await screen.findByRole("link", { name: "アメシュさん: #general" })).toBeInTheDocument();
+    expect(messagesFor).toHaveBeenCalledWith("c-general");
+  });
+
+  it("一度表示したカードは、画面から遠ざかっても、枠に戻らない", async () => {
+    const { pane } = await renderFar(
+      <LinkPreviews defer content={link("c-general", "?message=m-general")} />,
+    );
+    pane.scrollTop = 3000;
+    expect(await screen.findByRole("link", { name: /アメシュ.*テスト/ })).toBeInTheDocument();
+
+    pane.scrollTop = 0;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(screen.getByRole("link", { name: /アメシュ.*テスト/ })).toBeInTheDocument();
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("一度表示した短い表示は、画面から遠ざかっても、URL に戻らない", async () => {
+    const { pane } = await renderFar(
+      <MfmContent content={link("c-general", "?message=m-general")} />,
+    );
+    pane.scrollTop = 3000;
+    expect(await screen.findByRole("link", { name: "アメシュさん: #general" })).toBeInTheDocument();
+
+    pane.scrollTop = 0;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(screen.getByRole("link", { name: "アメシュさん: #general" })).toBeInTheDocument();
   });
 });

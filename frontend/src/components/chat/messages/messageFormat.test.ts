@@ -205,8 +205,9 @@ it("localizes new message announcements without translating user content", () =>
 });
 
 describe("formatEmbedTimestamp", () => {
-  // 端末のタイムゾーンに依らないよう、日付が動かない正午（UTC）を使う。
-  const value = "2026-11-23 12:00:00.000";
+  // 端末のタイムゾーンに依らないよう、端末のローカル時刻の正午から作る（UTC の固定値だと、UTC+12 以上の
+  // 端末では日付が翌日になる）。
+  const value = new Date(2026, 10, 23, 12).toISOString();
 
   it("今年の日時は、年を付けずに月日と時刻を出す", () => {
     const text = formatEmbedTimestamp(value, "ja", new Date("2026-12-01T00:00:00Z"));
@@ -224,7 +225,7 @@ describe("formatEmbedTimestamp", () => {
   });
 
   it("時刻は 24 時間表記の HH:mm で、日付と同じ端末のローカル時刻にそろえる", () => {
-    const date = new Date("2026-11-23T12:00:00Z");
+    const date = new Date(value);
     const text = formatEmbedTimestamp(value, "ja", new Date("2026-12-01T00:00:00Z"));
     expect(text.endsWith(formatClock(date, "ja"))).toBe(true);
   });

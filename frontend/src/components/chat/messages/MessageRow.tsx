@@ -8,7 +8,8 @@ import {
   useRef,
   useState,
 } from "react";
-import { MessageCard, parseMessageCards } from "./MessageCard";
+import { MessageCard } from "./MessageCard";
+import { messageBodySource } from "./messageBodySource";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { cn } from "cn";
@@ -179,16 +180,13 @@ export function MessageBody({
   /** 暗号化メッセージで、メンションとして表示してよい `@name`（{@link MfmContent} の `mentions`）。 */
   mentions?: MentionAllowlist;
 }) {
-  // 部品は MessageAppContent が描画する。本文を隠すフラグがあれば、本文は出さない
-  // 読めない部品（`{}` など）は、ないものとして旧形式の表示に戻す（MessageAppContent と同じ判定）
-  const doc = parseComponents(components);
-  if (hidesContent(doc)) return null;
-  if (!doc && hasCardBlocks(appBlocks)) return null;
-  const cards = doc ? null : parseMessageCards(data);
-  if (cards)
+  // 本文の代わりに部品・カードを描く投稿かは、メッセージリンクの埋め込みと同じ判定で決める。
+  const source = messageBodySource({ components, appBlocks, card: data });
+  if (source.kind === "hidden") return null;
+  if (source.kind === "cards")
     return (
       <>
-        {cards.map((card, index) => (
+        {source.cards.map((card, index) => (
           <MessageCard key={index} card={card} />
         ))}
         {editedAt ? <EditedIndicator at={editedAt} /> : null}

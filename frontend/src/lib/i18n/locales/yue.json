@@ -260,6 +260,8 @@
     "messageUnavailable": "無法顯示呢條訊息",
     "channelUnavailable": "無法顯示呢個頻道",
     "loading": "載入緊連結內容",
+    "loadFailed": "載入唔到連結內容",
+    "appMessage": "App 嘅訊息",
     "attachments_one": "{{count}} 個附件",
     "attachments_other": "{{count}} 個附件",
     "privateChannel": "私人頻道",

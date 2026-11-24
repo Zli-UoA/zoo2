@@ -260,6 +260,8 @@
     "messageUnavailable": "无法显示此消息",
     "channelUnavailable": "无法显示此频道",
     "loading": "正在加载链接内容",
+    "loadFailed": "无法加载链接内容",
+    "appMessage": "App 的消息",
     "attachments_one": "{{count}} 个附件",
     "attachments_other": "{{count}} 个附件",
     "privateChannel": "私密频道",

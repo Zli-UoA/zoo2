@@ -260,6 +260,8 @@
     "messageUnavailable": "통보문을 표시할수 없습니다",
     "channelUnavailable": "통로를 표시할수 없습니다",
     "loading": "련결대상을 불러오는중",
+    "loadFailed": "련결대상을 불러오지 못하였습니다",
+    "appMessage": "App 통보문",
     "attachments_one": "첨부파일 {{count}}건",
     "attachments_other": "첨부파일 {{count}}건",
     "privateChannel": "비공개 통로",

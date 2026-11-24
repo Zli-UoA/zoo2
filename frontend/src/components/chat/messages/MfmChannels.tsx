@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { createContext, useContext, useMemo, type ReactNode } from "react";
+import { noteEncryptedChannel } from "../../../lib/e2ee/encryptionGuard";
 import type { ChannelRow } from "../../../lib/electric/types";
 
 const MfmChannelsContext = createContext<ReadonlyMap<string, string>>(new Map());
@@ -53,27 +54,28 @@ export function MfmChannelsProvider({
       ),
     [channels],
   );
-  const directory = useMemo<ChannelDirectory>(
-    () => ({
+  const directory = useMemo<ChannelDirectory>(() => {
+    const visible = channels.filter((channel) => channel.deleted_at === null);
+    // 一度 `encrypted = true` を見たチャンネルは覚える。あとで `encrypted = false` が届いても（格下げ）、
+    // 埋め込みに本文を出さないため（lib/e2ee/encryptionGuard.ts、docs/e2ee.md の「暗号化の格下げを防ぐ」）。
+    for (const channel of visible) if (channel.encrypted) noteEncryptedChannel(channel.id);
+    return {
       byId: new Map(
-        channels
-          .filter((channel) => channel.deleted_at === null)
-          .map((channel) => [
-            channel.id,
-            {
-              id: channel.id,
-              name: channel.channel_name,
-              description: channel.description ?? null,
-              isPrivate: channel.is_private ?? false,
-              isDm: channel.is_dm ?? false,
-              encrypted: channel.encrypted ?? false,
-            },
-          ]),
+        visible.map((channel) => [
+          channel.id,
+          {
+            id: channel.id,
+            name: channel.channel_name,
+            description: channel.description ?? null,
+            isPrivate: channel.is_private ?? false,
+            isDm: channel.is_dm ?? false,
+            encrypted: channel.encrypted ?? false,
+          },
+        ]),
       ),
       ready,
-    }),
-    [channels, ready],
-  );
+    };
+  }, [channels, ready]);
   return (
     <MfmChannelsContext.Provider value={byName}>
       <ChannelDirectoryContext.Provider value={directory}>

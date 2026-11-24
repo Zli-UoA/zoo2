@@ -16,6 +16,7 @@ import { CollectionsProvider } from "../../../lib/electric/collections-context";
 import type { ChannelRow } from "../../../lib/electric/types";
 import { LOCALE_STORAGE_KEY } from "../../../lib/i18n/locale";
 import { LocaleProvider } from "../../i18n/LocaleProvider";
+import { LINK_LOAD_TIMEOUT_MS } from "./ChannelLinkEmbed";
 import { MessageBody } from "./MessageRow";
 import { MfmChannelsProvider } from "./MfmChannels";
 
@@ -91,7 +92,7 @@ interface Recorded {
   snapshots: URLSearchParams[];
 }
 
-function stubFetch(): Recorded {
+function stubFetch(options: { snapshotStatus?: number } = {}): Recorded {
   const recorded: Recorded = { messages: [], snapshots: [] };
   vi.stubGlobal(
     "fetch",
@@ -121,6 +122,10 @@ function stubFetch(): Recorded {
         return hang();
       }
       recorded.snapshots.push(url.searchParams);
+      // 取得の失敗（サーバーのエラー）を再現する。
+      if (options.snapshotStatus) {
+        return Promise.resolve(new Response("error", { status: options.snapshotStatus }));
+      }
       const data = subsetRows(url.searchParams).map((row) => ({
         key: row.id,
         value: Object.fromEntries(
@@ -262,3 +267,17 @@ it("リアクションや添付の Shape は、リンク先のチャンネルに
   expect(paths.some((path) => path.endsWith("/messages"))).toBe(true);
   expect(paths.some((path) => /message_reactions|attachments/.test(path))).toBe(false);
 });
+
+it("サーバーが取得に失敗し続けても、枠を出し続けず、読み込めなかったと書く", async () => {
+  // `useLiveQuery` は、取得が失敗しても `isError` にならず、`isLoading` のまま再試行を続ける。
+  stubFetch({ snapshotStatus: 500 });
+  renderBodies([link(channelId, "m-1")], [channel(channelId)]);
+  expect(await screen.findByRole("status")).toHaveTextContent("リンク先を読み込み中");
+  expect(
+    await screen.findByText("リンク先を読み込めませんでした", undefined, {
+      timeout: LINK_LOAD_TIMEOUT_MS + 5_000,
+    }),
+  ).toBeInTheDocument();
+  expect(screen.queryByRole("status")).toBeNull();
+  expect(screen.queryByText("メッセージを表示できません")).toBeNull();
+}, 30_000);
