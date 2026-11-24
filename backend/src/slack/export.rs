@@ -334,15 +334,21 @@ impl SlackMessage {
                     .any(|b| b.get("type").and_then(|t| t.as_str()) != Some("rich_text")))
     }
 
+    /// Slack のメッセージ転送・引用（`is_share` / `is_msg_unfurl`）添付か。
+    /// `forwarded_message_ids` 経由で権限チェック付きに描画するため、`from_url` が無い形式でも
+    /// 本文やレガシーカードへ転記しない（非公開チャンネル本文の漏洩・重複表示を防ぐ）。
+    fn is_forwarded_attachment(a: &serde_json::Value) -> bool {
+        a.get("is_share").and_then(|v| v.as_bool()) == Some(true)
+            || a.get("is_msg_unfurl").and_then(|v| v.as_bool()) == Some(true)
+    }
+
     /// Slack 添付配列からメッセージ転送・引用（`is_share` / `is_msg_unfurl`）の対象を取り出す。
     /// 他ワークスペースの参照は `team` 指定時に除外し、重複排除して最大件数までに制限する。
     pub fn forwarded_refs(&self, team: Option<&str>) -> Vec<SlackForwardRef> {
         let mut refs = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for a in &self.attachments {
-            let is_share = a.get("is_share").and_then(|v| v.as_bool()) == Some(true);
-            let is_msg_unfurl = a.get("is_msg_unfurl").and_then(|v| v.as_bool()) == Some(true);
-            if !is_share && !is_msg_unfurl {
+            if !Self::is_forwarded_attachment(a) {
                 continue;
             }
             let att_team = ["channel_team", "team_id", "team"]
@@ -404,11 +410,13 @@ impl SlackMessage {
             .join("\n")
     }
 
-    /// リンクの展開 (unfurl) を除いた attachments
+    /// リンクの展開 (unfurl) とメッセージ転送・引用 (`is_share` / `is_msg_unfurl`) を除いた attachments
     fn own_attachments(&self) -> impl Iterator<Item = &serde_json::Value> {
-        self.attachments
-            .iter()
-            .filter(|a| a.get("from_url").is_none() && a.get("is_app_unfurl").is_none())
+        self.attachments.iter().filter(|a| {
+            a.get("from_url").is_none()
+                && a.get("is_app_unfurl").is_none()
+                && !Self::is_forwarded_attachment(a)
+        })
     }
 
     /// カードにできなかったときに本文へ残す文字列 (fallback・タイトル・本文)
@@ -449,7 +457,12 @@ impl SlackMessage {
         } else {
             self.blocks.iter().take(100).collect()
         };
-        let attachments: Vec<&serde_json::Value> = self.attachments.iter().take(100).collect();
+        let attachments: Vec<&serde_json::Value> = self
+            .attachments
+            .iter()
+            .filter(|a| !Self::is_forwarded_attachment(a))
+            .take(100)
+            .collect();
         if blocks.is_empty() && attachments.is_empty() {
             return None;
         }
@@ -913,5 +926,38 @@ pub(crate) mod tests {
             ]
         }));
         assert_eq!(many.forwarded_refs(None).len(), 5);
+
+        struct NoopResolver;
+        impl crate::slack::convert::Resolver for NoopResolver {
+            fn user_name(&self, _: &str) -> Option<String> {
+                None
+            }
+            fn channel_name(&self, _: &str) -> Option<String> {
+                None
+            }
+        }
+        // `from_url` の無い転送・引用添付でも本文 (`attachments_text`) やカード (`components`) へ転記しない
+        let commentless_no_from_url = message(serde_json::json!({
+            "ts": "1704070005.000100",
+            "user": "U1",
+            "text": "",
+            "attachments": [{
+                "is_msg_unfurl": true,
+                "channel_id": "C111",
+                "ts": "1704070000.000200",
+                "channel_team": "TMAIN",
+                "text": "secret quoted text"
+            }]
+        }));
+        assert!(commentless_no_from_url.is_importable());
+        assert_eq!(commentless_no_from_url.attachments_text(), "");
+        assert!(commentless_no_from_url.components(&NoopResolver).is_none());
+        assert_eq!(
+            commentless_no_from_url.forwarded_refs(Some("TMAIN")),
+            vec![SlackForwardRef {
+                slack_channel_id: "C111".into(),
+                ts: "1704070000.000200".into(),
+            }]
+        );
     }
 }
