@@ -614,3 +614,15 @@ func TestCloseKeepsRetryingUntilBackendRecovers(t *testing.T) {
 		t.Fatalf("the delivered close must be forgotten: %v %d", b.pendingCloses, b.closeAttempts)
 	}
 }
+
+func TestRoomGenerationsIncrease(t *testing.T) {
+	// 部屋の中継の世代は、時刻ではなく数で増える（システム時刻が戻っても、新しい中継の世代が小さくならない）。
+	api := newBackendAPI("http://127.0.0.1:1", "0123456789abcdef0123456789abcdef")
+	first := newRoomBridge(context.Background(), api, 1, roomState{ChannelID: "c"})
+	second := newRoomBridge(context.Background(), api, 1, roomState{ChannelID: "c"})
+	t.Cleanup(first.close)
+	t.Cleanup(second.close)
+	if second.roomGen <= first.roomGen {
+		t.Fatalf("a later room bridge must have a larger generation: %d then %d", first.roomGen, second.roomGen)
+	}
+}

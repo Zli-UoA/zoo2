@@ -70,7 +70,7 @@ func newPublishID() string {
 type roomBridge struct {
 	api         *backendAPI
 	bridgeEpoch int64
-	// roomGen は部屋の中継の世代（作った時刻のナノ秒）。backend は、同じ epoch の中で、遅れた前の中継の要求が
+	// roomGen は部屋の中継の世代（nextRoomGen）。backend は、同じ epoch の中で、遅れた前の中継の要求が
 	// 新しい中継の行を外したり上書きしたりしないように使う。
 	roomGen   int64
 	channelID string
@@ -119,10 +119,16 @@ var (
 	closeRetryMaxInterval = time.Minute
 )
 
+// roomGens は、このプロセスで作った部屋の中継の数。epoch はプロセスごと（起動のたびに register）なので、同じ
+// epoch の中では世代が必ず大きくなる。時刻を使うと、システム時刻が戻ったときに世代が小さくなる。
+var roomGens atomic.Int64
+
+func nextRoomGen() int64 { return roomGens.Add(1) }
+
 func newRoomBridge(parent context.Context, api *backendAPI, bridgeEpoch int64, r roomState) *roomBridge {
 	ctx, cancel := context.WithCancel(parent)
 	b := &roomBridge{
-		api: api, bridgeEpoch: bridgeEpoch, roomGen: time.Now().UnixNano(), channelID: r.ChannelID, ctx: ctx, cancel: cancel,
+		api: api, bridgeEpoch: bridgeEpoch, roomGen: nextRoomGen(), channelID: r.ChannelID, ctx: ctx, cancel: cancel,
 		ready:      make(chan struct{}),
 		latest:     r,
 		pulled:     map[string]*pulledTrack{},
