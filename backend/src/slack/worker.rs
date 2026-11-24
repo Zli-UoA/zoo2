@@ -947,14 +947,15 @@ fn profile_contributes(profile: Option<&SlackUser>) -> bool {
 }
 
 /// The `profile_source` recorded when a placeholder is first created: only a
-/// profile that actually supplied a name/avatar counts as `"profile"`. A sparse
-/// entry (even `is_bot` with all names blank) did not supply the name, so the
-/// row records the fallback (or `"unknown"` when even that is absent).
+/// profile that actually supplied a name counts as `"profile"`. An avatar-only
+/// entry still saves `avatar_url`, but its name comes from the fallback (or the
+/// Slack ID when even that is absent), so the next ZIP entry with a public
+/// `username` may still fill the name in.
 fn initial_profile_source(
     profile: Option<&SlackUser>,
     fallback_name: Option<&str>,
 ) -> &'static str {
-    if profile_contributes_identity(profile) {
+    if profile_contributes_name(profile) {
         "profile"
     } else if fallback_name.is_some() {
         "fallback"
@@ -1012,15 +1013,15 @@ fn merged_placeholder_refresh<'a>(
     };
     let real_name = profile_real_name.unwrap_or(stored.real_name);
     let avatar = profile_avatar.unwrap_or(stored.avatar_url);
-    let profile_source =
-        if stored.profile_source == "profile" || profile_contributes_identity(profile) {
-            "profile"
-        } else if fallback_name.is_some() {
-            "fallback"
-        } else {
-            // The entry provides nothing: keep whatever the row already says.
-            stored.profile_source
-        };
+    let profile_source = if stored.profile_source == "profile" || profile_contributes_name(profile)
+    {
+        "profile"
+    } else if fallback_name.is_some() {
+        "fallback"
+    } else {
+        // The entry provides nothing: keep whatever the row already says.
+        stored.profile_source
+    };
     PlaceholderRefresh {
         handle,
         display,
@@ -3927,6 +3928,8 @@ mod tests {
             },
             app_id: None,
         };
+        let mention_id = super::super::message_id(&team, &channel.id, &day_one[0].ts);
+        let placeholder = super::super::user_id(&team, &slack_user);
         {
             let mut tx = db.transaction().await?;
             exec(
@@ -3957,6 +3960,35 @@ mod tests {
             .await?;
             tx.commit().await?;
         }
+        // The day-one mention must already use the priority candidate from the
+        // public day-two `username`, not the Slack ID, before any later import
+        // can change the placeholder.
+        let day_one_saved = query(
+            &mut db.transaction().await?,
+            "SELECT json_build_object('content',m.content,'user_name',u.user_name,'handle',s.name)::text \
+             FROM messages m JOIN users u ON u.id=$2 JOIN slack_users s ON s.user_id=u.id WHERE m.id=$1",
+            &[&mention_id, &placeholder],
+        )
+        .await?;
+        anyhow::ensure!(
+            !day_one_saved.is_empty(),
+            "day-one mention must resolve to the placeholder user"
+        );
+        let day_one_content = day_one_saved[0]["content"].as_str().unwrap();
+        let day_one_name = day_one_saved[0]["user_name"].as_str().unwrap();
+        anyhow::ensure!(
+            day_one_saved[0]["handle"].as_str() == Some("target-name"),
+            "day-one placeholder handle must come from the priority username; row={:?}",
+            day_one_saved[0]
+        );
+        anyhow::ensure!(
+            day_one_name.contains("target-name"),
+            "day-one placeholder user_name must derive from target-name, not the Slack ID: {day_one_name}"
+        );
+        anyhow::ensure!(
+            day_one_content.contains(&format!("@{day_one_name}")),
+            "day-one mention must use the priority candidate name; content={day_one_content}, user_name={day_one_name}"
+        );
         {
             let mut tx = db.transaction().await?;
             let refs: Vec<&SlackMessage> = day_two.iter().collect();
@@ -3976,8 +4008,6 @@ mod tests {
             }
             tx.commit().await?;
         }
-        let mention_id = super::super::message_id(&team, &channel.id, &day_one[0].ts);
-        let placeholder = super::super::user_id(&team, &slack_user);
         let before_link = query(&mut db.transaction().await?, "SELECT json_build_object('content',m.content,'user_name',u.user_name)::text FROM messages m JOIN users u ON u.id=$2 WHERE m.id=$1", &[&mention_id, &placeholder]).await?;
         let content = before_link[0]["content"].as_str().unwrap();
         let final_name = before_link[0]["user_name"].as_str().unwrap();
@@ -5370,17 +5400,52 @@ mod tests {
             "fallback"
         );
 
-        // An avatar alone is real profile data.
+        // An avatar alone is saved, but it did not supply the name: the row
+        // keeps the fallback (or the Slack ID) and a later public `username`
+        // may still populate the name.
         let avatar_only = slack_user_profile(serde_json::json!({
             "id":"U1","profile":{"image_72":"https://avatars.example/u1.png"}
         }));
+        assert_eq!(initial_profile_source(Some(&avatar_only), None), "unknown");
         assert_eq!(
             initial_profile_source(Some(&avatar_only), Some("fallback")),
-            "profile"
+            "fallback"
         );
 
         assert_eq!(initial_profile_source(None, None), "unknown");
         assert_eq!(initial_profile_source(None, Some("fallback")), "fallback");
+    }
+
+    #[test]
+    fn avatar_only_and_public_username_refreshes_preserve_both_name_and_avatar() {
+        let avatar_only = slack_user_profile(serde_json::json!({
+            "id":"U1","profile":{"image_72":"https://avatars.example/u1.png"}
+        }));
+        let avatar = "https://avatars.example/u1.png";
+        let public_name = "public-username";
+
+        // Order 1: avatar-only first import. The name stays the Slack ID and
+        // the source is not `"profile"`, so a later public `username` fills the
+        // name while the avatar is kept.
+        let source = initial_profile_source(Some(&avatar_only), None);
+        assert_eq!(source, "unknown");
+        let first = stored_placeholder("U1", "U1", "U1", "", avatar, false, source);
+        let merged = merged_placeholder_refresh(&first, None, Some(public_name));
+        assert_eq!(merged.handle, public_name);
+        assert_eq!(merged.display, public_name);
+        assert_eq!(merged.avatar, avatar);
+        assert_eq!(merged.profile_source, "fallback");
+
+        // Order 2: public `username` first, then the avatar-only entry. The
+        // name survives and the avatar is added without promoting the source.
+        let source = initial_profile_source(None, Some(public_name));
+        assert_eq!(source, "fallback");
+        let first = stored_placeholder("U1", public_name, public_name, "", "", false, source);
+        let merged = merged_placeholder_refresh(&first, Some(&avatar_only), None);
+        assert_eq!(merged.handle, public_name);
+        assert_eq!(merged.display, public_name);
+        assert_eq!(merged.avatar, avatar);
+        assert_eq!(merged.profile_source, "fallback");
     }
 
     #[test]

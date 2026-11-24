@@ -1442,9 +1442,28 @@ async fn expired_notes_are_purged_without_touching_live_recent_or_locked_notes()
         let mut cleanup = tokio::spawn(async move {
             backend::routes::channel_notes::purge_expired_notes(&cleanup_db).await
         });
-        tokio::time::timeout(std::time::Duration::from_secs(2), &mut cleanup)
-            .await
-            .context("cleanup must skip row locks rather than wait")???;
+        let completed = tokio::time::timeout(std::time::Duration::from_secs(2), &mut cleanup).await;
+        match completed {
+            Ok(result) => {
+                result??;
+            }
+            Err(_) => {
+                // Release the row lock first so the spawned cleanup can finish instead of
+                // continuing after this test returns and changes the next test's fixtures.
+                let rollback = locked.rollback().await;
+                // Keep CLEANUP_TEST_LOCK until the task has really stopped. If it ignores the
+                // abort, awaiting again bounds that wait instead of detaching the task.
+                if tokio::time::timeout(std::time::Duration::from_secs(5), &mut cleanup)
+                    .await
+                    .is_err()
+                {
+                    cleanup.abort();
+                    let _ = cleanup.await;
+                }
+                rollback?;
+                anyhow::bail!("cleanup must skip row locks rather than wait");
+            }
+        }
         let rows = locked
             .query("SELECT id FROM channel_notes WHERE id = ANY($1)", &[&ids])
             .await?;
@@ -1853,7 +1872,7 @@ async fn expired_note_cleanup_shares_each_pass_evenly_across_channels() -> anyho
     let lock_tx = connection.transaction().await?;
     lock_tx
         .execute(
-            "SELECT pg_advisory_xact_lock(hashtextextended('channel-note:' || channel_id, 0)) \
+            "SELECT pg_advisory_xact_lock(hashtextextended('channel-notes:' || channel_id, 0)) \
              FROM ( \
                  SELECT DISTINCT channel_id FROM channel_notes \
                  WHERE deleted_at < (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours' \
@@ -1890,6 +1909,120 @@ async fn expired_note_cleanup_shares_each_pass_evenly_across_channels() -> anyho
         "each pass must give every active channel the same share instead of \
          letting later channels consume the capacity left by smaller ones"
     );
+
+    let cleanup = connection.transaction().await?;
+    cleanup
+        .execute("SET LOCAL zoo.suppress_app_events = 'on'", &[])
+        .await?;
+    cleanup
+        .execute(
+            "DELETE FROM app_deliveries WHERE channel_id = ANY($1)",
+            &[&channels],
+        )
+        .await?;
+    cleanup
+        .execute("DELETE FROM channels WHERE id = ANY($1)", &[&channels])
+        .await?;
+    cleanup
+        .execute("DELETE FROM channel_user WHERE user_id = $1", &[&owner])
+        .await?;
+    cleanup
+        .execute("DELETE FROM users WHERE id = $1", &[&owner])
+        .await?;
+    cleanup.commit().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn expired_note_cleanup_advances_cursor_past_served_channels() -> anyhow::Result<()> {
+    let _cleanup_guard = CLEANUP_TEST_LOCK.lock().await;
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let owner = Uuid::new_v4().to_string();
+    let (mut connection, driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(driver);
+    connection
+        .execute(
+            "INSERT INTO users (id, user_name, display_name) VALUES ($1, $1, 'Cleanup cursor test')",
+            &[&owner],
+        )
+        .await?;
+
+    // 60 channels with a persistent backlog. One pass can delete at most 100
+    // notes, so its first pass serves only the leading channels; the cursor
+    // must stop there instead of jumping to the end of the scanned page.
+    let channel_base = Uuid::new_v4().as_u128() & !0xff;
+    let channels: Vec<String> = (1..=60)
+        .map(|index| Uuid::from_u128(channel_base + index).to_string())
+        .collect();
+    for channel in &channels {
+        connection
+            .execute(
+                "INSERT INTO channels (id, channel_name, created_user_id, is_private) VALUES ($1, $2, $3, false)",
+                &[channel, &format!("purge_cursor_{}", Uuid::new_v4().simple()), &owner],
+            )
+            .await?;
+        connection
+            .execute(
+                "INSERT INTO channel_notes (id, channel_id, title, content, created_user_id, deleted_at) \
+                 SELECT gen_random_uuid()::text, $1, 'expired', 'text', $2, \
+                        (statement_timestamp() AT TIME ZONE 'UTC') - interval '25 hours' \
+                 FROM generate_series(1, 10)",
+                &[channel, &owner],
+            )
+            .await?;
+    }
+    connection
+        .execute(
+            "UPDATE channel_notes_cleanup_cursor SET last_channel_id = (SELECT max(id) FROM channels WHERE id < $1) WHERE id = true",
+            &[&channels[0]],
+        )
+        .await?;
+
+    // Isolate this test from any pre-existing expired notes in other channels
+    // by holding their channel-note advisory locks while cleanup runs.
+    let lock_tx = connection.transaction().await?;
+    lock_tx
+        .execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended('channel-notes:' || channel_id, 0)) \
+             FROM ( \
+                 SELECT DISTINCT channel_id FROM channel_notes \
+                 WHERE deleted_at < (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours' \
+                   AND channel_id <> ALL($1) \
+                 ORDER BY channel_id \
+             ) foreign_channels",
+            &[&channels],
+        )
+        .await?;
+
+    let first = backend::routes::channel_notes::purge_expired_notes(&db).await?;
+    let second = backend::routes::channel_notes::purge_expired_notes(&db).await?;
+    lock_tx.rollback().await?;
+    assert_eq!(first, 100, "the first pass must use its full quota");
+    assert_eq!(
+        second, 100,
+        "the next pass must start at the first unserved channel and use its full quota"
+    );
+
+    let rows = connection
+        .query(
+            "SELECT channel_id, count(*)::bigint FROM channel_notes \
+             WHERE channel_id = ANY($1) GROUP BY channel_id",
+            &[&channels],
+        )
+        .await?;
+    let remaining: std::collections::HashMap<String, i64> =
+        rows.iter().map(|row| (row.get(0), row.get(1))).collect();
+    for channel in &channels[50..] {
+        let deleted = 10 - remaining.get(channel).copied().unwrap_or(0);
+        assert!(
+            deleted > 0,
+            "trailing channels must not be starved by the next pass; channel={channel}, remaining={:?}",
+            remaining.get(channel)
+        );
+    }
 
     let cleanup = connection.transaction().await?;
     cleanup
@@ -2566,7 +2699,18 @@ async fn adding_user_serializes_guest_transition_before_channel_lock() -> anyhow
     let owner = Uuid::new_v4().to_string();
     let guest = Uuid::new_v4().to_string();
     create_user(&app, &owner).await;
-    create_user(&app, &guest).await;
+    // 既定チャンネルがある環境では create_user が guest をそこへ参加させ、テスト対象の
+    // 追加と合わせて非 DM 所属が 2 件になり single への遷移 (23514) が失敗する。
+    // 直接行を挿入し、テスト対象の追加だけが guest の所属になるようにする。
+    let (setup_connection, setup_driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(setup_driver);
+    setup_connection
+        .execute(
+            "INSERT INTO users (id, user_name, display_name) VALUES ($1, $1, 'Guest transition test')",
+            &[&guest],
+        )
+        .await?;
     let channel = Uuid::new_v4().to_string();
     assert_eq!(request(&app, "POST", "/api/channels", &owner, json!({
         "id":channel,"channel_name":format!("notes_guest_lock_{}", Uuid::new_v4().simple()),"is_private":false
@@ -3136,6 +3280,68 @@ async fn channel_note_create_and_update_reject_nul_in_title_or_content() -> anyh
             StatusCode::BAD_REQUEST,
             "update accepted NUL in {field}"
         );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn channel_note_paths_and_cursors_reject_nul() -> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db, config));
+    let owner = Uuid::new_v4().to_string();
+    create_user(&app, &owner).await;
+    let channel = Uuid::new_v4().to_string();
+    assert_eq!(request(&app, "POST", "/api/channels", &owner, json!({
+        "id":channel,"channel_name":format!("notes_nul_cursor_{}", Uuid::new_v4().simple()),"is_private":false
+    })).await.0, StatusCode::OK);
+    let collection = format!("/api/channels/{channel}/notes");
+    let (status, created) = request(
+        &app,
+        "POST",
+        &collection,
+        &owner,
+        json!({"title":"valid title","content":"valid content"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+
+    // A NUL in the path `note_id` must be a 400 before any SQL sees it.
+    for path in [
+        format!("{collection}/%00"),
+        format!("{collection}/bad%00id"),
+        format!("{collection}/deleted/%00"),
+        format!("{collection}/deleted/bad%00id"),
+    ] {
+        let (status, body) = request(&app, "GET", &path, &owner, Value::Null).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{path}: {body}");
+    }
+
+    // The active list cursor's id is arbitrary text, but NUL cannot reach SQL.
+    for id in ["%00", "bad%00id"] {
+        let (status, body) = request(
+            &app,
+            "GET",
+            &format!("{collection}?after=d41d8cd98f00b204e9800998ecf8427e%200%20{id}"),
+            &owner,
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "after id={id}: {body}");
+    }
+
+    // Same for the deleted list cursor.
+    for id in ["%00", "bad%00id"] {
+        let (status, body) = request(
+            &app,
+            "GET",
+            &format!("{collection}/deleted?after=2026-11-19T10:00:00.000%20{id}"),
+            &owner,
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "after id={id}: {body}");
     }
     Ok(())
 }

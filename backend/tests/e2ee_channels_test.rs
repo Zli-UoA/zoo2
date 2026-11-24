@@ -2029,7 +2029,7 @@ async fn run_membership_race(env: &Env) -> anyhow::Result<()> {
         .query_one("SELECT pg_backend_pid()", &[])
         .await?
         .get(0);
-    let mut membership_tx = membership_connection.transaction().await?;
+    let membership_tx = membership_connection.transaction().await?;
     membership_tx
         .execute(
             "INSERT INTO channel_user (user_id, channel_id, joined_at) VALUES ($1, $2, now())",
@@ -2058,7 +2058,20 @@ async fn run_membership_race(env: &Env) -> anyhow::Result<()> {
         tx.commit().await?;
         Ok::<(), tokio_postgres::Error>(())
     });
-    let transition_pid = pid_rx.await?;
+    let transition_pid = match tokio::time::timeout(Duration::from_secs(5), pid_rx).await {
+        Ok(pid) => pid?,
+        Err(_) => {
+            // The transition task reported no PID, so waiting for it to finish would hide
+            // the problem and leave the uncommitted membership insert holding its locks.
+            transition.abort();
+            let _ = transition.await;
+            membership_tx.rollback().await?;
+            anyhow::bail!(
+                "guest transition did not report its backend PID within 5 seconds; \
+                 the membership insert transaction was rolled back"
+            );
+        }
+    };
     let (observer, observer_driver) =
         tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(observer_driver);

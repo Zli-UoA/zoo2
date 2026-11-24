@@ -236,6 +236,9 @@ pub(super) enum SyncError {
     /// 取り込み先が、非公開の Slack チャンネルの内容を保護しなくなった (公開・削除済み)。
     /// ヒントは消費せず、同期もその場で止める
     PrivateTargetViolation,
+    /// ヒントの反映前に確かめる `conversations.info` が一時的な失敗 (HTTP 5xx など) で終わった。
+    /// ヒントは消費せず、同期は指数バックオフでやり直す
+    PrivacyCheckFailed(String),
     Failed(String),
 }
 
@@ -299,7 +302,7 @@ pub async fn run_once_for_team(s: &AppState, team: &str) -> Result<bool, AppErro
             )
             .await?;
         }
-        Err(SyncError::Failed(error)) => {
+        Err(SyncError::Failed(error) | SyncError::PrivacyCheckFailed(error)) => {
             tracing::warn!(team = %task.team_id, channel = %task.slack_channel_id, %error, "Slack sync failed");
             let secs = (30u64 << task.attempts.clamp(0, 7) as u32).min(3600);
             release(s, &task, secs, Some(&error), true).await?;
@@ -1386,7 +1389,6 @@ mod tests {
         let baseline_profile = tokio::spawn(async move {
             let mut connection = sync_connection;
             let tx = connection.transaction().await?;
-            tx.batch_execute("SET LOCAL deadlock_timeout='100ms'").await?;
             tx.query_one("SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE", &[&sync_user])
                 .await?;
             let _ = sync_user_locked_tx.send(());
@@ -1421,8 +1423,6 @@ mod tests {
         let baseline_link = tokio::spawn(async move {
             let mut connection = link_connection;
             let tx = connection.transaction().await?;
-            tx.batch_execute("SET LOCAL deadlock_timeout='100ms'")
-                .await?;
             tx.query_one(
                 "SELECT pg_advisory_xact_lock(hashtextextended('slack-link',0))",
                 &[],
@@ -1497,8 +1497,6 @@ mod tests {
         let baseline_sync = tokio::spawn(async move {
             let mut connection = sync_connection;
             let tx = connection.transaction().await?;
-            tx.batch_execute("SET LOCAL deadlock_timeout='100ms'")
-                .await?;
             tx.query_one(
                 "SELECT id FROM channels WHERE id=$1 FOR KEY SHARE",
                 &[&baseline_channel],
@@ -1528,8 +1526,6 @@ mod tests {
         let convert = tokio::spawn(async move {
             let mut connection = convert_connection;
             let tx = connection.transaction().await?;
-            tx.batch_execute("SET LOCAL deadlock_timeout='100ms'")
-                .await?;
             tx.query_one(
                 "SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE",
                 &[&baseline_convert_user],
@@ -1576,8 +1572,6 @@ mod tests {
         let convert = tokio::spawn(async move {
             let mut connection = convert_connection;
             let tx = connection.transaction().await?;
-            tx.batch_execute("SET LOCAL deadlock_timeout='100ms'")
-                .await?;
             tx.query_one(
                 "SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE",
                 &[&convert_user],
@@ -1690,6 +1684,9 @@ mod tests {
                 Err(SyncError::LeaseLost) => Err("LeaseLost".into()),
                 Err(SyncError::TargetChanged) => Err("TargetChanged".into()),
                 Err(SyncError::PrivateTargetViolation) => Err("PrivateTargetViolation".into()),
+                Err(SyncError::PrivacyCheckFailed(message)) => {
+                    Err(format!("PrivacyCheckFailed({message})"))
+                }
             };
             let _ = store_tx.send(mapped);
             Ok::<(), anyhow::Error>(())

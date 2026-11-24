@@ -10,6 +10,19 @@ old backend instances are still running. Deploy the new backend (which takes
 the same user-row lock in `lock_membership_users` before its member advisory
 locks) first. After all old instances have stopped, apply this directory:
 
+The function locks each `NEW.user_id` one row at a time. Direct-SQL bulk
+inserts into `channel_user` that touch several users must therefore pre-lock
+the target `users` rows in ascending `id` order before inserting, for example:
+
+```sql
+SELECT id FROM users WHERE id = ANY($1) ORDER BY id FOR NO KEY UPDATE;
+```
+
+Without that pre-lock, two concurrent bulk inserts that meet the same users in
+opposite order can deadlock (SQLSTATE 40P01) in the row-level trigger. The
+backend's `lock_membership_users` path already uses this order; writes that only
+pass through the trigger need the explicit pre-lock.
+
 ```sh
 atlas migrate apply --dir file://infra/db/deferred-migrations   --url "$DATABASE_URL" --revisions-schema atlas_schema_revisions_deferred --allow-dirty
 ```
@@ -26,10 +39,16 @@ would become the "current" revision of the shared `atlas_schema_revisions`
 table, and a later canonical migration could collide with that version number
 or be skipped as already applied. The canonical history stays untouched, so
 `migrate status` on `infra/db/migrations` keeps reporting only canonical
-migrations. The follow-up that moves this file into `infra/db/migrations`
-applies the same idempotent `CREATE OR REPLACE FUNCTION` again in the canonical
-history and regenerates `atlas.sum`; the deferred revision table can then be
-dropped together with the moved file.
+migrations. The follow-up that integrates this change into canonical history
+must add a **new** migration file in `infra/db/migrations` whose version
+timestamp is newer than the latest canonical migration at merge time (for
+example `20261202000000_...sql`, not a reuse of `20261201010010`) and contains
+the same idempotent `CREATE OR REPLACE FUNCTION` definition. Regenerate
+`atlas.sum` with `atlas migrate hash` after adding it. Reusing the deferred
+version would place it before canonical migrations added after this file, and
+Atlas's default `linear` mode rejects that as out of order even though the
+deferred apply was recorded in a separate revision table. The deferred revision
+table can then be dropped together with the deferred file.
 
 ## 段階デプロイ中の平文 1 対 1 DM
 

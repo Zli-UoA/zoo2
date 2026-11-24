@@ -172,6 +172,7 @@ pub async fn purge_expired_notes(db: &toasty::Db) -> Result<u64, AppError> {
     let mut seen_channels = std::collections::HashSet::new();
     let mut scanned = 0usize;
     let mut wrapped = false;
+    let mut scanned_last: Option<String> = None;
     while unlocked_channels.len() < 100 && scanned < 500 {
         // Page over the channels primary key rather than grouping every
         // expired note. This bounds each lookup to 100 channels and uses the
@@ -211,21 +212,14 @@ pub async fn purge_expired_notes(db: &toasty::Db) -> Result<u64, AppError> {
             if wrapped || last_channel.is_none() {
                 break;
             }
-            toasty::sql::statement(
-                "UPDATE channel_notes_cleanup_cursor SET last_channel_id = NULL WHERE id = true",
-            )
-            .exec(&mut tx)
-            .await?;
             last_channel = None;
             wrapped = true;
             continue;
         };
-        toasty::sql::statement(
-            "UPDATE channel_notes_cleanup_cursor SET last_channel_id = $1 WHERE id = true",
-        )
-        .bind(page_last.clone())
-        .exec(&mut tx)
-        .await?;
+        // The cursor is advanced after the deletion loop below. Advancing it
+        // here would skip channels that were scanned but never got a turn when
+        // the deletion quota ran out during the first pass.
+        scanned_last = Some(page_last.clone());
         last_channel = Some(page_last);
 
         let selected = serde_json::to_string(&candidates)
@@ -279,6 +273,13 @@ pub async fn purge_expired_notes(db: &toasty::Db) -> Result<u64, AppError> {
         .into_iter()
         .filter(|channel_id| available.contains(channel_id))
         .collect();
+    // The first pass gives every active channel one turn before any channel
+    // gets a second turn. Remember the last channel that actually received a
+    // deletion attempt so an early quota stop does not move the cursor past
+    // the channels this run never reached.
+    let mut last_served_channel: Option<String> = None;
+    let mut first_pass_incomplete = false;
+    let mut first_pass = true;
     while count < 100 && !active_channels.is_empty() {
         let before_pass = count;
         let pass_remaining = (100 - count) as usize;
@@ -288,6 +289,7 @@ pub async fn purge_expired_notes(db: &toasty::Db) -> Result<u64, AppError> {
         // channels waiting for a later pass.
         let per_channel = pass_remaining.div_ceil(active_channels.len());
         let mut next_active = Vec::new();
+        let mut served_in_pass = 0usize;
         for channel_id in &active_channels {
             let limit = per_channel.min((100 - count) as usize);
             if limit == 0 {
@@ -314,17 +316,40 @@ pub async fn purge_expired_notes(db: &toasty::Db) -> Result<u64, AppError> {
             .exec(&mut tx)
             .await?;
             count += deleted;
+            served_in_pass += 1;
+            if first_pass {
+                last_served_channel = Some(channel_id.clone());
+            }
             // A channel that could not fill its share is depleted. Do not count
             // it in the denominator of the next pass.
             if deleted >= per_channel as u64 {
                 next_active.push(channel_id.clone());
             }
         }
+        if first_pass {
+            first_pass_incomplete = served_in_pass < active_channels.len();
+            first_pass = false;
+        }
         if count == before_pass {
             break;
         }
         active_channels = next_active;
     }
+    // Only advance the cursor after the deletion loop. When the quota ran out
+    // before the first pass reached every active channel, leave it at the last
+    // channel that got a turn so the next run starts at the first unserved one
+    // instead of wrapping around and starving the tail of the page.
+    let next_cursor = if count >= 100 && first_pass_incomplete {
+        last_served_channel.as_deref().or(scanned_last.as_deref())
+    } else {
+        scanned_last.as_deref()
+    };
+    toasty::sql::statement(
+        "UPDATE channel_notes_cleanup_cursor SET last_channel_id = NULLIF($1, '') WHERE id = true",
+    )
+    .bind(next_cursor.unwrap_or_default())
+    .exec(&mut tx)
+    .await?;
     tx.commit().await?;
     Ok(count)
 }
@@ -570,7 +595,7 @@ fn note_path(channel_id: &str, note_id: &str) -> Result<(), AppError> {
     Uuid::parse_str(channel_id).map_err(|_| AppError::BadRequest("Invalid channel ID".into()))?;
     // 一覧は保存済みの id をそのまま返す。作成 API は UUID を保存するが、ノートロック契約に
     // 従う直接 SQL は任意の text id を書き得るため、項目 API も同じ形式を受け付ける。
-    if note_id.is_empty() {
+    if note_id.is_empty() || note_id.contains('\0') {
         return Err(AppError::BadRequest("Invalid note ID".into()));
     }
     Ok(())
@@ -601,6 +626,9 @@ fn parse_active_after(after: Option<&str>) -> Result<(Option<String>, String, St
                 return Err(AppError::BadRequest("Invalid note cursor".into()));
             };
             if token.is_empty() || position.is_empty() || position.parse::<i32>().is_err() {
+                return Err(AppError::BadRequest("Invalid note cursor".into()));
+            }
+            if id.contains('\0') {
                 return Err(AppError::BadRequest("Invalid note cursor".into()));
             }
             Ok((
@@ -773,7 +801,7 @@ async fn list_deleted(
         Some(cursor) => match cursor.split_once(' ') {
             // 区切りの空白があれば id は空文字を許す。直接 SQL が空 id を書き得るため。
             Some((deleted_at, id)) if !deleted_at.is_empty() => {
-                if !is_deleted_at_cursor_datetime(deleted_at) {
+                if !is_deleted_at_cursor_datetime(deleted_at) || id.contains('\0') {
                     return Err(AppError::BadRequest("Invalid deleted note cursor".into()));
                 }
                 (deleted_at.to_string(), id.to_string())

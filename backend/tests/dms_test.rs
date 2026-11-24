@@ -1344,7 +1344,7 @@ async fn test_concurrent_guest_transition_rejects_dm_creation() -> anyhow::Resul
         let actor = alice_id.clone();
         let dm_id_req = dm_id.clone();
         let targets = target_ids.clone();
-        let handle = tokio::spawn(async move {
+        let mut handle = tokio::spawn(async move {
             let req = Request::builder()
                 .method("POST")
                 .uri("/api/dms")
@@ -1388,7 +1388,20 @@ async fn test_concurrent_guest_transition_rejects_dm_creation() -> anyhow::Resul
         );
 
         blocker.commit().await?;
-        let resp = handle.await?;
+        let resp = match tokio::time::timeout(std::time::Duration::from_secs(10), &mut handle).await
+        {
+            Ok(response) => response?,
+            Err(_) => {
+                // A JoinHandle drop does not stop the task; abort and reap it so the
+                // fixture cleanup cannot race a request still waiting on another lock.
+                handle.abort();
+                let _ = handle.await;
+                anyhow::bail!(
+                    "{label} DM request timed out after the blocker committed; \
+                     the response was still waiting after the users row lock was released"
+                );
+            }
+        };
         assert_eq!(
             resp.status(),
             StatusCode::NOT_FOUND,

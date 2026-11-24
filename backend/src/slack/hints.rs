@@ -135,7 +135,8 @@ pub(super) async fn process(
                 | SyncError::NoAccess(_)
                 | SyncError::LeaseLost
                 | SyncError::TargetChanged
-                | SyncError::PrivateTargetViolation),
+                | SyncError::PrivateTargetViolation
+                | SyncError::PrivacyCheckFailed(_)),
             ) => {
                 return Err(e);
             }
@@ -342,7 +343,14 @@ async fn apply(
             }
         }
     }
-    super::sync::refresh_slack_privacy(slack, slack_channel, slack_private).await?;
+    super::sync::refresh_slack_privacy(slack, slack_channel, slack_private)
+        .await
+        .map_err(|error| match error {
+            // `conversations.info` の一時的な失敗 (HTTP 5xx など) で、ヒントの
+            // 試行回数を消費しない。呼び出し側は指数バックオフで同期をやり直す
+            SyncError::Failed(message) => SyncError::PrivacyCheckFailed(message),
+            other => other,
+        })?;
     if let Some(message) = &message
         && message.is_importable()
     {
@@ -997,6 +1005,9 @@ mod tests {
             }
             Err(SyncError::PrivateTargetViolation) => {
                 anyhow::bail!("apply failed before the refusal with PrivateTargetViolation")
+            }
+            Err(SyncError::PrivacyCheckFailed(error)) => {
+                anyhow::bail!("apply failed before the refusal with PrivacyCheckFailed: {error}")
             }
             Ok(()) => anyhow::bail!("apply unexpectedly succeeded against an encrypted channel"),
         }

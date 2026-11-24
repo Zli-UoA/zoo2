@@ -16,7 +16,12 @@ use wiremock::{
 };
 
 use backend::{
-    apps::query, config::Config, db::init_db, routes::create_router, slack::sync, state::AppState,
+    apps::query,
+    config::Config,
+    db::{init_db, init_db_with_pool},
+    routes::create_router,
+    slack::sync,
+    state::AppState,
 };
 
 /// `sync::run_once` は DB 上のどのチャンネルの項目でも拾い、ほかのワークスペースの項目は自分の設定で
@@ -193,7 +198,9 @@ async fn slack_sync_holds_mapping_until_message_save_commits() -> anyhow::Result
     config.slack.oauth_redirect_url = Some("https://zoo.example/api/slack/oauth/callback".into());
     config.slack.token_encryption_key = Some(base64::engine::general_purpose::STANDARD.encode(key));
     config.slack.api_base_url = slack.uri();
-    let db = init_db(&config.database_url).await?;
+    // The sync task holds one pooled connection while it waits on the advisory gate and
+    // the observation queries need another; DB_MAX_POOL_SIZE=1 would self-deadlock.
+    let db = init_db_with_pool(&config.database_url, 3).await?;
     let state = AppState::new(db, config);
     let app = create_router(state.clone());
 

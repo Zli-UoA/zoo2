@@ -79,6 +79,7 @@ pub(super) async fn run(
             let reason = match &error {
                 SyncError::RateLimited(secs) => format!("rate limited ({secs}s)"),
                 SyncError::NoAccess(e) | SyncError::Failed(e) => e.clone(),
+                SyncError::PrivacyCheckFailed(e) => format!("privacy check failed: {e}"),
                 SyncError::TargetChanged => "target changed".to_string(),
                 SyncError::PrivateTargetViolation => "private target violation".to_string(),
                 _ => "invalid cursor".to_string(),

@@ -154,6 +154,7 @@ pub(crate) async fn create_channel(
     // Take it before checking guest status so a concurrent transition cannot land
     // between authorization and channel creation.
     e2ee_channels::lock_membership_users(&mut tx, &[auth_user.id.as_str()]).await?;
+    ensure_actor_not_deactivated(&mut tx, auth_user.id.as_str()).await?;
     if crate::apps::events::guest(&mut tx, &auth_user.id).await? {
         return Err(AppError::Forbidden(
             "Guests cannot create or join channels without an invitation".into(),
@@ -541,6 +542,7 @@ pub(crate) async fn join_channel(
     // If we checked first, a concurrent guest transition could commit while this
     // transaction waits for the same user lock immediately before inserting.
     e2ee_channels::lock_membership_users(&mut tx, &[auth_user.id.as_str()]).await?;
+    ensure_actor_not_deactivated(&mut tx, auth_user.id.as_str()).await?;
     if crate::apps::events::guest(&mut tx, &auth_user.id).await? {
         return Err(AppError::Forbidden(
             "Guests cannot create or join channels without an invitation".into(),

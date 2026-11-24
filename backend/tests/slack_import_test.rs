@@ -14,8 +14,13 @@ use wiremock::{
 };
 
 use backend::{
-    apps::query, config::Config, db::init_db, models::UserRole, routes::create_router,
-    state::AppState, storage::ensure_bucket_exists,
+    apps::query,
+    config::Config,
+    db::{init_db, init_db_with_pool},
+    models::UserRole,
+    routes::create_router,
+    state::AppState,
+    storage::ensure_bucket_exists,
 };
 
 /// ワーカーの run_once は DB 上のどのジョブでも拾うため、設定 (添付取得のトークンなど) の違う
@@ -1180,7 +1185,9 @@ async fn run_private_zip_visibility_race(
     config.database_url = database_url.clone();
     config.dev_auth_enabled = true;
     config.slack.import_bot_token = None;
-    let db = init_db(&config.database_url).await?;
+    // The ZIP worker holds one pooled connection while it waits on the test gate and the
+    // destination update needs a second one; DB_MAX_POOL_SIZE=1 would self-deadlock.
+    let db = init_db_with_pool(&config.database_url, 2).await?;
     let state = AppState::new(db.clone(), config.clone());
     ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
     let app = create_router(state.clone());
@@ -1206,6 +1213,9 @@ async fn run_private_zip_visibility_race(
     let mut export_id = None;
     let mut run_id = None;
     let mut worker_handle = None;
+    // Whether the ZIP worker is known to have stopped. Cleanup must not delete fixtures
+    // while an unconfirmed task could still be writing them.
+    let mut worker_termination_confirmed = true;
     let caught_result = std::panic::AssertUnwindSafe(async {
         {
             let mut tx = db.clone();
@@ -1309,11 +1319,18 @@ async fn run_private_zip_visibility_race(
                 anyhow::bail!("injected ZIP worker did not remain blocked on the test gate");
             }
             worker.abort();
-            match tokio::time::timeout(std::time::Duration::from_secs(5), worker).await {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), &mut worker).await {
                 Ok(Err(error)) if error.is_cancelled() => {}
                 Ok(Ok(_)) => anyhow::bail!("injected ZIP worker completed instead of timing out"),
                 Ok(Err(error)) => return Err(error.into()),
-                Err(_) => anyhow::bail!("injected ZIP worker did not stop after abort"),
+                Err(_) => {
+                    // Dropping a JoinHandle does not stop the task. Report the unresolved
+                    // job instead so cleanup retains its fixtures for recovery.
+                    worker_termination_confirmed = false;
+                    anyhow::bail!(
+                        "injected ZIP worker did not stop after abort; retained fixtures for job {run}"
+                    );
+                }
             }
             anyhow::bail!("injected ZIP worker timeout while held at test gate");
         }
@@ -1359,14 +1376,20 @@ async fn run_private_zip_visibility_race(
             }
             Err(_) => {
                 worker.abort();
-                match tokio::time::timeout(std::time::Duration::from_secs(5), worker)
-                    .await
-                    .map_err(|_| anyhow::anyhow!("ZIP worker did not stop after abort"))?
-                {
+                match tokio::time::timeout(std::time::Duration::from_secs(5), &mut worker).await {
                     Ok(Ok(_)) => {}
-                    Ok(Err(error)) => return Err(anyhow::anyhow!("ZIP worker failed after abort: {error}")),
-                    Err(error) if error.is_cancelled() => {}
-                    Err(error) => return Err(error.into()),
+                    Ok(Err(error)) if error.is_cancelled() => {}
+                    Ok(Err(error)) => {
+                        return Err(anyhow::anyhow!("ZIP worker failed after abort: {error}"));
+                    }
+                    Err(_) => {
+                        // Awaiting through `&mut` keeps the handle alive; if it still does not
+                        // stop, cleanup must retain the fixtures and report the job.
+                        worker_termination_confirmed = false;
+                        anyhow::bail!(
+                            "ZIP worker did not stop after abort; retained fixtures for job {run}"
+                        );
+                    }
                 }
                 anyhow::bail!("ZIP worker timed out after releasing the test gate");
             }
@@ -1545,14 +1568,22 @@ async fn run_private_zip_visibility_race(
 
     if let Some(worker) = worker_handle {
         worker.abort();
-        attempt_cleanup!("await aborted ZIP worker", async {
-            match worker.await {
-                Ok(Ok(_)) => Ok(()),
-                Ok(Err(error)) => Err(anyhow::anyhow!("ZIP worker failed during cleanup: {error}")),
-                Err(error) if error.is_cancelled() => Ok(()),
-                Err(error) => Err(anyhow::Error::from(error)),
+        match tokio::time::timeout(std::time::Duration::from_secs(5), worker).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) if error.is_cancelled() => {}
+            Ok(Err(error)) => {
+                cleanup_errors.push(format!("await aborted ZIP worker: {error}"));
             }
-        });
+            Err(_) => {
+                // The task may still be running. Keep the fixtures and report the job id
+                // instead of deleting rows or ZIP objects out from under it.
+                worker_termination_confirmed = false;
+                cleanup_errors.push(format!(
+                    "await aborted ZIP worker: timed out after 5s; fixture cleanup skipped, job_id={}",
+                    run_id.as_deref().unwrap_or("unknown")
+                ));
+            }
+        }
     }
     if inject_update_lock_timeout {
         attempt_cleanup!("rollback target lock injection", async {
@@ -1584,8 +1615,17 @@ async fn run_private_zip_visibility_race(
             .await?;
         Ok::<(), anyhow::Error>(())
     });
+    if !worker_termination_confirmed {
+        cleanup_errors.push(format!(
+            "fixture cleanup skipped because ZIP worker termination is unconfirmed; \
+             recovery resources: job_id={}, run_id={}, bucket={}",
+            export_id.as_deref().unwrap_or("unknown"),
+            run_id.as_deref().unwrap_or("unknown"),
+            config.s3.bucket
+        ));
+    }
     let mut export_object_removal_confirmed = false;
-    if let Some(export) = export_id.as_deref() {
+    if worker_termination_confirmed && let Some(export) = export_id.as_deref() {
         // The import run and export job share the export's storage_key. Check and
         // remove that one object before either database row is deleted.
         let key = format!("slack-imports/{export}/export.zip");
@@ -1787,17 +1827,19 @@ async fn run_private_zip_visibility_race(
                 .push("inject job DELETE failure trigger: timed out after 5s".to_string()),
         }
     }
-    for (label, statement, params) in cleanup_db {
-        let refs: Vec<&str> = params.iter().map(String::as_str).collect();
-        let recovery_label = if matches!(label, "delete import run" | "delete export job") {
-            format!(
-                "{label} (job_id={})",
-                params.first().map(String::as_str).unwrap_or("unknown")
-            )
-        } else {
-            label.to_string()
-        };
-        attempt_cleanup!(recovery_label, cleanup_statement(&state, statement, &refs));
+    if worker_termination_confirmed {
+        for (label, statement, params) in cleanup_db {
+            let refs: Vec<&str> = params.iter().map(String::as_str).collect();
+            let recovery_label = if matches!(label, "delete import run" | "delete export job") {
+                format!(
+                    "{label} (job_id={})",
+                    params.first().map(String::as_str).unwrap_or("unknown")
+                )
+            } else {
+                label.to_string()
+            };
+            attempt_cleanup!(recovery_label, cleanup_statement(&state, statement, &refs));
+        }
     }
     if inject_job_delete_failure {
         attempt_cleanup!("drop injected job DELETE trigger", async {
@@ -1859,30 +1901,32 @@ async fn run_private_zip_visibility_race(
             )
         );
     }
-    attempt_cleanup!("verify database fixture cleanup", async {
-        let run = run_id.as_deref().unwrap_or("");
-        let export = export_id.as_deref().unwrap_or("");
-        let rows = sql(
-            &state,
-            "SELECT json_build_object('n', (SELECT count(*) FROM slack_import_jobs WHERE id IN ($1,$2)) + (SELECT count(*) FROM channels WHERE id IN ($3,$4)) + (SELECT count(*) FROM slack_channels WHERE team_id=$5) + (SELECT count(*) FROM slack_users WHERE team_id=$5) + (SELECT count(*) FROM users WHERE id IN ($6,$7,$8)) + (SELECT count(*) FROM messages WHERE channel_id IN ($3,$4)) + (SELECT count(*) FROM channel_user WHERE channel_id IN ($3,$4)) + (SELECT count(*) FROM pg_trigger WHERE tgname=$9) + (SELECT count(*) FROM pg_proc WHERE proname=$10) + (SELECT count(*) FROM pg_class WHERE relname=$11))::text",
-            &[run, export, &target, &remapped_target, &team, &admin, &slack_member, &slack_late_author, &trigger, &function, &sequence],
-        ).await?;
-        anyhow::ensure!(
-            rows.first().and_then(|row| row["n"].as_i64()) == Some(0),
-            "database fixture rows remain after cleanup: {rows:?}"
-        );
-        Ok::<(), anyhow::Error>(())
-    });
-    attempt_cleanup!("verify S3 fixture cleanup", async {
-        for id in [run_id.as_deref(), export_id.as_deref()]
-            .into_iter()
-            .flatten()
-        {
-            let key = format!("slack-imports/{id}/export.zip");
-            assert_s3_object_exists(&state.s3_client, &config.s3.bucket, &key, false).await?;
-        }
-        Ok::<(), anyhow::Error>(())
-    });
+    if worker_termination_confirmed {
+        attempt_cleanup!("verify database fixture cleanup", async {
+            let run = run_id.as_deref().unwrap_or("");
+            let export = export_id.as_deref().unwrap_or("");
+            let rows = sql(
+                &state,
+                "SELECT json_build_object('n', (SELECT count(*) FROM slack_import_jobs WHERE id IN ($1,$2)) + (SELECT count(*) FROM channels WHERE id IN ($3,$4)) + (SELECT count(*) FROM slack_channels WHERE team_id=$5) + (SELECT count(*) FROM slack_users WHERE team_id=$5) + (SELECT count(*) FROM users WHERE id IN ($6,$7,$8)) + (SELECT count(*) FROM messages WHERE channel_id IN ($3,$4)) + (SELECT count(*) FROM channel_user WHERE channel_id IN ($3,$4)) + (SELECT count(*) FROM pg_trigger WHERE tgname=$9) + (SELECT count(*) FROM pg_proc WHERE proname=$10) + (SELECT count(*) FROM pg_class WHERE relname=$11))::text",
+                &[run, export, &target, &remapped_target, &team, &admin, &slack_member, &slack_late_author, &trigger, &function, &sequence],
+            ).await?;
+            anyhow::ensure!(
+                rows.first().and_then(|row| row["n"].as_i64()) == Some(0),
+                "database fixture rows remain after cleanup: {rows:?}"
+            );
+            Ok::<(), anyhow::Error>(())
+        });
+        attempt_cleanup!("verify S3 fixture cleanup", async {
+            for id in [run_id.as_deref(), export_id.as_deref()]
+                .into_iter()
+                .flatten()
+            {
+                let key = format!("slack-imports/{id}/export.zip");
+                assert_s3_object_exists(&state.s3_client, &config.s3.bucket, &key, false).await?;
+            }
+            Ok::<(), anyhow::Error>(())
+        });
+    }
     finish_test_result(result, cleanup_errors)
 }
 

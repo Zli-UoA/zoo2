@@ -13,8 +13,14 @@ the old index; `IF NOT EXISTS` alone would leave the old definition in place.
 ## Reproducing the branch histories
 
 The regression was checked on an isolated PostgreSQL 16.15 instance with
-Atlas `v1.3.9-1824371-canary`. Use a disposable PostgreSQL instance and create
-the test databases (`notes_case1`, `notes_case2`, `notes_case3`, and three dev DBs):
+Atlas `v1.3.9-1824371-canary`. Both the migration target databases and the
+comparison dev databases used by `atlas schema diff` must run on a PostgreSQL 16
+instance with the `pg_bigm` extension installed (for example the repository's
+`zoo2-postgres-bigm:16` image). Without it, `atlas schema diff` fails when it
+imports `schema.sql` into the dev database because that file contains
+`CREATE EXTENSION pg_bigm`. Use a disposable PostgreSQL instance that provides
+the extension and create the test databases (`notes_case1`, `notes_case2`,
+`notes_case3`, and three dev DBs):
 
 ```sql
 CREATE DATABASE notes_case1;

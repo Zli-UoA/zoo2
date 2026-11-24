@@ -629,6 +629,7 @@ fn map_sync(error: SyncError) -> AppError {
         | SyncError::LeaseLost
         | SyncError::TargetChanged
         | SyncError::PrivateTargetViolation
+        | SyncError::PrivacyCheckFailed(_)
         | SyncError::Failed(_) => AppError::BadGateway("Slack request failed".into()),
     }
 }

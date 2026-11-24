@@ -2280,3 +2280,102 @@ async fn test_hints_stop_without_bumping_attempts_when_the_slack_channel_became_
     );
     Ok(())
 }
+
+/// ヒントの取り直しでは返信の取得に成功したが、その後の `conversations.info` が
+/// 一時的な HTTP 503 で失敗したら、返信を保存せず、ヒントの試行回数も増やさない。
+/// 同期自体は指数バックオフでやり直す。
+#[tokio::test]
+async fn test_hint_privacy_check_failure_does_not_bump_attempts() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = imported(true).await?;
+    let parent = f.ts_new.clone();
+    let reply = format!("{}.000900", now_secs() - 40);
+
+    f.slack.reset().await;
+    // 同期の開始時は公開。ヒントの反映前の 2 回目だけ 503 にする。
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "channel": {"id": "C1", "is_private": false},
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .expect(1)
+        .mount(&f.slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .respond_with(ResponseTemplate::new(503))
+        .with_priority(2)
+        .expect(1)
+        .mount(&f.slack)
+        .await;
+    // 返信の取り直しは成功する
+    Mock::given(method("GET"))
+        .and(path("/conversations.replies"))
+        .and(query_param("channel", "C1"))
+        .and(query_param("ts", parent.as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [{"type":"message","ts":&reply,"user":"UA","text":"late reply","thread_ts":&parent}],
+            "has_more": false,
+        })))
+        .with_priority(1)
+        .mount(&f.slack)
+        .await;
+    // ヒントの取り直しは `conversations.history` を先に引く (返信は出ない)
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [],
+            "has_more": false,
+        })))
+        .mount(&f.slack)
+        .await;
+
+    let event = json!({"type":"event_callback","team_id":&f.team,"event":{"type":"message",
+        "channel":"C1","user":"UA","ts":&reply,"thread_ts":&parent,"text":"late reply"}});
+    let (status, _) = post_event(&f.app, SECRET, now_secs(), &event).await?;
+    assert_eq!(status, StatusCode::OK);
+    sql(
+        &f.state,
+        "INSERT INTO slack_channel_wakes(team_id,slack_channel_id) VALUES($1,'C1') \
+         ON CONFLICT (team_id,slack_channel_id) DO UPDATE SET last_at=now() RETURNING json_build_object('ok',true)::text",
+        &[&f.team],
+    )
+    .await?;
+    age_wake(&f.state, &f.team, "10 seconds").await?;
+    set_sync_state(&f.state, &f.team, "1 hour", "1 hour").await?;
+    assert!(sync::run_once_for_team(&f.state, &f.team).await?);
+
+    // (a) 返信は保存しない
+    assert!(message_row(&f, &reply).await.is_null());
+    assert_eq!(count_messages(&f.state, &f.channel).await, 1);
+    // (b) ヒントは残り、試行回数は 0 のまま
+    let rows = hints(&f).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(
+        rows[0]["attempts"], 0,
+        "a transient privacy-check failure must not consume the hint: {rows:?}"
+    );
+    // (c) 同期は指数バックオフでやり直す (試行回数を増やし、次回を未来にする)
+    let sync_rows = sql(
+        &f.state,
+        "SELECT json_build_object('attempts',attempts,'last_error',last_error,\
+         'future',available_at>now())::text FROM slack_channel_syncs \
+         WHERE team_id=$1 AND slack_channel_id='C1'",
+        &[&f.team],
+    )
+    .await?;
+    assert_eq!(sync_rows[0]["attempts"], 1, "{sync_rows:?}");
+    assert_eq!(sync_rows[0]["future"], true, "{sync_rows:?}");
+    assert!(
+        sync_rows[0]["last_error"]
+            .as_str()
+            .is_some_and(|e| e.contains("conversations.info: HTTP 503")),
+        "expected the privacy check failure, got {sync_rows:?}"
+    );
+    Ok(())
+}

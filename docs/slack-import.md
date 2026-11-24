@@ -294,7 +294,7 @@ ZIP の取り込み・差分同期・イベントのヒント処理・直近 24 
 - **スレッド**: 取得した投稿のうちスレッドの親があれば、返信を `conversations.replies` で取得します。返信がまだない投稿も含め、3 日以内の親になりうる投稿（最大 20 件、新しい順）は、新しい返信がないか毎回確かめます（同期のあとで初めて返信が付いても取り込むため）。
 - **キューと再開**: チャンネルごとにキュー（`slack_channel_syncs`）の 1 行を持ち、複数台のバックエンドが、`FOR UPDATE SKIP LOCKED` とリースで 1 チャンネルを 1 台だけが進めます。1 ページ（または 1 スレッド）ごとに、書き込みと同じトランザクションで、ページのカーソルと残りのスレッドを保存するので、止まっても続きから再開します。ページのカーソルが期限切れ（`invalid_cursor`）になったときは、保存した位置を捨て、同期カーソルから取り直します。取り込みの書き込みは決定的 ID の `ON CONFLICT DO NOTHING` なので、取り直しや、ZIP の取り込みとの重なりで投稿が重複することはありません。取り込みのジョブが動いているワークスペースは、そのジョブが終わるまで同期を待ちます。
 - **429**: `Retry-After` の秒数だけ、そのチャンネルの次の実行を遅らせます（ほかのチャンネルは進みます）。途中経過は保存済みで、失敗の回数には数えません。そのほかの失敗は、30 秒から最大 1 時間まで、回数に応じて待ちを延ばして再実行します。
-- **非公開チャンネル**: 取り込み先は、対応付けた Zoo のチャンネルだけです。Slack が非公開（非公開チャンネル・DM）と答えたチャンネルが、公開の Zoo チャンネルに対応付いているときは、取り込みません（`slack_channel_syncs.last_error` に `private_slack_channel_in_public_channel` が残ります）。
+- **非公開チャンネル**: 取り込み先は、対応付けた Zoo のチャンネルだけです。Slack が非公開（非公開チャンネル・DM）と答えたチャンネルが、公開の Zoo チャンネルに対応付いているときは、取り込みません（`slack_channel_syncs.last_error` に `private_slack_channel_in_public_channel` が残ります）。履歴のページとスレッド返信のページを保存する直前にも `conversations.info` で可視性を確かめ直すため、公開チャンネルでは Slack API の呼び出しが増えます。`is_private` が明示的に `false` でない応答は非公開として扱い（fail-closed）、公開の Zoo チャンネルが対応先なら 6 時間待ってから再試行します。同期の途中で保護が失われた場合（Slack チャンネルが非公開になった、Zoo チャンネルが公開・削除された）は、保存済みの途中経過を捨てて最初からやり直し、`last_error` に `Slack sync target changed or no longer protects private channel content` を残します（`private_slack_channel_in_public_channel` とは別の状態です）。`slack_channels.channel_id` を付け替えると、ZIP の upsert が `last_ts` を NULL にし、migration `20261201010009`（`reset_slack_channel_sync_on_remap`）が `slack_channel_syncs` の途中経過を戻します。
 - **ブリッジの穴埋め**: ブリッジ（#293）が取りこぼした（ダウンタイムなど）チャンネルは、`slack::sync::request_channel` で、すぐに同期できます。カーソルより後を取り直すだけなので、取り込み済みの投稿とは重複しません。
 - **イベントによる前倒し**: Slack の Events API が投稿を知らせたチャンネルは、5 分を待たずに同期します（次の節）。反映するのは、これまでどおり差分同期だけです。
 - **待ち（`not_before`）**: 429・失敗・保留（`Park`）のあとの待ちは、`slack_channel_syncs.not_before` に残します。イベントによる前倒しは、この待ちの間は行いません（429 の最中に、イベントのたびに Slack を叩き直さないためです）。
@@ -381,7 +381,7 @@ Slack の Events API は、同期については「このチャンネルを今�
 ロック順や競合を確かめるテストは、実際の DB で行ロック・advisory ロックを待ち合わせるため、通常の `cargo test` では動きません（`#[ignore]`）。使い捨ての PostgreSQL 16 を用意し、`infra/db/migrations` のマイグレーションをすべて適用してから実行します。
 
 1. テスト専用の DB を作ります。DB 名には `test` を含めます（例: `zoo_test`）。`worker.rs` のテストは `current_database()` に `test` か `rereview` を含まない DB を拒否し、`api_import.rs` のテストは `test` を要求します。
-2. `SLACK_IMPORT_TEST_DATABASE_URL` にその DB を設定します。`DATABASE_URL` ではありません。テストはこの URL の DB にだけ行を作り、終わったら消します。
+2. `SLACK_IMPORT_TEST_DATABASE_URL` にその DB を設定します。`DATABASE_URL` ではありません。テストはこの URL の DB にだけ行を作り、終わったら消します。接続 URL に例示の `postgres` 以外の DB ロールを使う場合は、そのロールがスーパーユーザーであるか、PostgreSQL 16 の `deadlock_timeout` に `SET` 権限を持っている必要があります。`api_import.rs` と `worker.rs` のロック競合テストは競合を作る前に `SET LOCAL deadlock_timeout` を実行するため、権限がないとその設定で失敗します。
 3. 実行します。
 
 ```sh
@@ -390,7 +390,12 @@ export SLACK_IMPORT_TEST_DATABASE_URL="postgres://postgres@127.0.0.1:5432/zoo_te
 cargo test --manifest-path backend/Cargo.toml --lib slack:: -- --ignored
 # ZIP 取り込みの結合テスト（RustFS / S3 が必要。S3_ENDPOINT 等を設定して実行）
 cargo test --manifest-path backend/Cargo.toml --test slack_import_test -- --ignored
+# 付け替えのユーザー行ロック順テスト（S3 不要。同じテスト専用 DB を使える）
+export SLACK_LINK_TEST_DATABASE_URL="postgres://postgres@127.0.0.1:5432/zoo_test?sslmode=disable"
+cargo test --manifest-path backend/Cargo.toml --test slack_link_test -- --ignored
 ```
+
+`slack_link_test` も `current_database()` に `test` を含む DB を要求します。`reconcile_team_user_row_locks_in_sorted_order_do_not_deadlock_with_lock_membership_users` は `SLACK_LINK_TEST_DATABASE_URL` の DB を使うため、上のコマンドで `SLACK_IMPORT_TEST_DATABASE_URL` と同じ `zoo_test` を指定しても構いません。
 
 - ロック競合テストは、プールの枯渇でテスト自身が止まらないよう、`init_db_with_pool` に 2 接続以上を渡します。`DB_MAX_POOL_SIZE=1` の環境でも動くことを確かめるときは、そのまま環境変数を付けて実行します（例: `DB_MAX_POOL_SIZE=1 cargo test ...`）。
 - `slack_import_test` の `#[ignore]` テスト（`private_zip_import_stops_after_target_is_public_or_deleted` を含む）は共通フィクスチャで S3 バケットを作成・削除するため、すべて RustFS（S3 互換ストレージ。既定の接続先は `http://127.0.0.1:9000`、`S3_ENDPOINT` / `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` / `S3_REGION` で設定）が必要です。S3 を用意できない環境では、DB のみで完結する `--lib slack:: -- --ignored` だけを実行してください。テストは DB 上で直列に実行し、使った行は後片付けしますが、途中で強制終了した場合は残ることがあります。終わったら DB ごと削除してください。

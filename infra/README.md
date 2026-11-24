@@ -206,9 +206,9 @@ POSTGRES_PASSWORD=staging-test-password \
        AND idx.relname = 'idx_channel_notes_expired';
      ```
 
-  3. 行の `indisvalid` で分岐する。いずれの場合も、`migrate status` で `20261201010002` が未記録 (pending) であることと、他の apply が動いていないことを先に確認する。
+  3. 行の `indisvalid` で分岐する。いずれの場合も、他の apply が動いていないことと、`atlas migrate status` で `20261201010002` が完全適用済みではないことを先に確認する。この migration は `-- atlas:txmode none` なので、`DROP INDEX` の後に `CREATE INDEX CONCURRENTLY` が失敗すると `atlas_schema_revisions` に部分適用の記録が残り、status は「未記録 (pending)」ではなく部分適用として表示される。status が次に実行する文として対象の `CREATE INDEX CONCURRENTLY` を示すことを、ログの停止箇所と合わせて確かめる。
      - `indisvalid = false` (INVALID): `CREATE INDEX CONCURRENTLY` が中断・キャンセルされた場合。無効なインデックスは再実行の妨げになるため削除する。
-     - `indisvalid = true` (有効): `CREATE INDEX` 自体は完了したが、文ごとに進むこの migration で Atlas が記録の前に停止した場合 (コンテナの強制終了など)。この場合、再実行は同名インデックスの作成で失敗するため、有効でも同じく削除する。`migrate status` が `20261201010002` を適用済みと報告するなら、そのインデックスは完了した migration の成果物なので削除しない。
+     - `indisvalid = true` (有効): `CREATE INDEX` 自体は完了したが、文ごとに進むこの migration で Atlas が記録の前に停止した場合 (コンテナの強制終了など)。この場合、再実行は同名インデックスの作成で失敗するため、有効でも同じく削除する。`atlas migrate status` が `20261201010002` を完全に適用済みと報告するなら、そのインデックスは完了した migration の成果物なので削除しない。
 
      `CONCURRENTLY` はトランザクション外で実行する必要があるため、削除も `DROP INDEX CONCURRENTLY` を使う。
 
@@ -243,9 +243,14 @@ POSTGRES_PASSWORD=staging-test-password \
     AND idx.relname = 'slack_channel_syncs_team_due_order';
   ```
 
-  `table_name = 'slack_channel_syncs'` の行があり、この migration の記録がまだ無い
-  （`migrate status` で `20261201010008` が pending）場合、`indisvalid` の真偽にかかわらず、
+  `table_name = 'slack_channel_syncs'` の行があり、`atlas migrate status` で
+  `20261201010008` が完全適用済みではなく、次に実行する文として対象の
+  `CREATE INDEX CONCURRENTLY` が示される場合、`indisvalid` の真偽にかかわらず、
   他の apply が動いていない状態で次を実行してから Atlas を再実行します。
+  この migration も `-- atlas:txmode none` なので、先行する文の後に失敗すると
+  `atlas_schema_revisions` に部分適用の記録が残り、status は「未記録 (pending)」ではなく
+  部分適用として表示されます。`20261201010008` を完全に適用済みと報告する場合は、
+  そのインデックスは完了した migration の成果物なので削除しないでください。
   `DROP INDEX CONCURRENTLY` は名前で削除するため、有効なインデックスにも同じ手順が使えます。
   `IF NOT EXISTS` で再試行すると INVALID インデックスが残ったまま成功するため、使わないでください。
 
@@ -299,10 +304,13 @@ docker compose --project-directory . -f infra/compose.stack.yaml   run --rm --no
       --allow-dirty
 ```
 
-この適用後、canonical migrations へ戻す follow-up で deferred migration を
-`infra/db/migrations` の最新版より後へ移動し、`atlas.sum` を再生成します。この関数は
-`CREATE OR REPLACE` で冪等なため、canonical 側での再適用は安全です。移行が済んだら
-`atlas_schema_revisions_deferred` スキーマも削除できます。
+この適用後、canonical migrations へ戻す follow-up では、deferred migration を同じ番号のまま
+移動せず、統合時点の `infra/db/migrations` の最新版より新しい版番号を持つ**新しい**ファイルと
+して同じ `CREATE OR REPLACE FUNCTION` を追加し、`atlas.sum` を再生成します。`20261201010010`
+を再利用すると、その後に追加された canonical migration より前の版番号になり、Atlas の既定の
+`linear` モードが追加順違反として拒否します。この関数は `CREATE OR REPLACE` で冪等なため、
+canonical 側での再適用は安全です。移行が済んだら `atlas_schema_revisions_deferred` スキーマも
+削除できます。
 
 follow-up ファイルは、適用済み DB の履歴を壊さないために次の条件をすべて満たすこと。
 
@@ -313,7 +321,7 @@ follow-up ファイルは、適用済み DB の履歴を壊さないために次
    canonical 側の適用記録だけが追加され、未適用の DB では関数が 1 回適用される。
    適用記録を進めるために Atlas は 1 文でも実行する必要があるため、コメントだけの空ファイルにはしない。
 2. **適用済み DB の `atlas_schema_revisions_deferred` の `20261201010010` 記録を
-   削除・無効化しないこと。** follow-up の移動や再ハッシュでこのリビジョン表を触らない。
+   削除・無効化しないこと。** follow-up の追加や再ハッシュでこのリビジョン表を触らない。
    全環境で canonical 版の適用が記録されるまで `atlas_schema_revisions_deferred` はそのまま残し、
    収束を確認してからスキーマごと削除する (その時点で再適用の痕跡としては不要になる)。
    削除を先に行うと、canonical 版の適用がまだの環境で deferred 版の適用状態が分からなくなる。
@@ -348,9 +356,13 @@ follow-up ファイルは、適用済み DB の履歴を壊さないために次
      SELECT '{}'::text FROM pg_advisory_xact_lock(
        hashtextextended('channel-notes:' || '<channel_id>', 0));
      SELECT 1 FROM channels WHERE id = '<channel_id>' FOR SHARE;
-     DELETE FROM channel_notes WHERE id = '<note_id>' AND channel_id = '<channel_id>';
+     DELETE FROM channel_notes
+      WHERE id = '<note_id>' AND channel_id = '<channel_id>'
+        AND version = <backed-up-version>;
      COMMIT;
      ```
+
+     `<backed-up-version>` には、手順1の照会で退避したときの `n.version` を指定する。退避後に別のセッションが同じノートを更新していると `DELETE` の対象から外れるため、削除件数が 1 でなければ `ROLLBACK` して手順1から退避し直す。件数を確認せずに `COMMIT` しない。
 
   3. 同じ照会を再実行して 0 行になることを確認します。有効・復元可能のどちらも残っていても Atlas は同じ `55000` で停止します。
   4. `docker compose ... up --force-recreate --exit-code-from migrate migrate` で Atlas を再実行します。削除済みノートの物理削除は既存の定期処理が行うため、手動での掃除は不要です。
