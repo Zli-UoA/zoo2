@@ -84,7 +84,7 @@
 - 部屋ごとに LiveKit に `bridge:{epoch}` として入り（hidden にはしない）、Cloudflare のセッションを 1 つ持つ。
   - LiveKit の話者の声：Cloudflare に push する（`/internal/sfu-bridge/cf/publish`、track 名は `{session_id}-bridge`）。
     話者が LiveKit で公開をやめたら、bridge は `/internal/sfu-bridge/cf/close` に mid と話者の `session_id`（`speakers`）を渡す。backend は、先にその話者の行を一覧から外してから（そのセッション・track 名の行だけ。別のセッションで公開し直した行は残す）mid を閉じる。close が失敗しても、一覧に古い行は残らない（mid は bridge のセッションを閉じれば消える）。一覧から外せなかったときは、close もせずにエラーを返す。
-    close は、同じ話者の push と同じロック（`negotiate`）の下で送る。そのあいだに同じ話者を push し直していれば、話者は渡さない（新しい公開の行を消さない）。close が失敗したら、bridge は取っておいて 5 秒ごとに 10 回まで送り直す。送り直すときも、push し直した話者は渡さない。
+    close は、同じ話者の push と同じロック（`negotiate`）の下で送る。そのあいだに同じ話者を push し直していれば、話者は渡さない（新しい公開の行を消さない）。close が失敗したら、bridge は取っておいて送り直す。間隔は 5 秒から倍にしていき、1 分で止める。部屋の中継が続くあいだは諦めないので、backend が長く落ちていても、直ったあとに一覧の古い行を外せる。送り直すときも、push し直した話者は渡さない。
   - Cloudflare の話者の声（`direct`）：pull して、トラック名を話者の `session_id` にして LiveKit に publish する。
 - Opus の RTP はトランスコードしない。RTP ヘッダ拡張の ID の割り当ては LiveKit と Cloudflare で違うので、拡張は外す。
 - 内部 API の認証は `SFU_BRIDGE_TOKEN`（Bearer）。

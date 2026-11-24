@@ -92,12 +92,13 @@ type pendingClose struct {
 	speakers []string
 }
 
-// close のやり直しの間隔と回数の上限。上限を超えた分は記録して捨てる（mid はセッションを閉じれば消え、
-// 一覧の行は次の bridge の登録で消える）。
-const closeRetryMaxAttempts = 10
-
-// closeRetryInterval はテストで短くする。
-var closeRetryInterval = 5 * time.Second
+// closeRetryInterval は最初のやり直しまでの間隔。失敗が続くと倍にし、closeRetryMaxInterval で止める。
+// 諦めずに、部屋の中継が続くあいだはやり直す（backend が直ったあとに、一覧の古い行を外せるように）。
+// テストで短くする。
+var (
+	closeRetryInterval    = 5 * time.Second
+	closeRetryMaxInterval = time.Minute
+)
 
 func newRoomBridge(parent context.Context, api *backendAPI, bridgeEpoch int64, r roomState) *roomBridge {
 	ctx, cancel := context.WithCancel(parent)
@@ -411,15 +412,13 @@ func (b *roomBridge) scheduleCloseRetryLocked() {
 	if b.closeRetry != nil || len(b.pendingCloses) == 0 {
 		return
 	}
-	if b.closeAttempts >= closeRetryMaxAttempts {
-		b.log().Error("giving up closing Cloudflare tracks", "pending", len(b.pendingCloses))
-		b.pendingCloses = nil
-		// あとで失敗した close には、新しく同じ回数のやり直しをさせる。
-		b.closeAttempts = 0
-		return
+	delay := closeRetryInterval
+	for i := 0; i < b.closeAttempts && delay < closeRetryMaxInterval; i++ {
+		delay *= 2
 	}
+	delay = min(delay, closeRetryMaxInterval)
 	b.closeAttempts++
-	b.closeRetry = time.AfterFunc(closeRetryInterval, func() {
+	b.closeRetry = time.AfterFunc(delay, func() {
 		b.negotiate.Lock()
 		defer b.negotiate.Unlock()
 		b.closeRetry = nil

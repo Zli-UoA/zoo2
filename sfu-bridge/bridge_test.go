@@ -578,26 +578,22 @@ func TestUnpushKeepsRepushedSpeaker(t *testing.T) {
 	}
 }
 
-func TestCloseRetriesAfterGivingUp(t *testing.T) {
-	old := closeRetryInterval
-	closeRetryInterval = time.Hour
-	t.Cleanup(func() { closeRetryInterval = old })
-	f := &fakeBackend{closeFails: closeRetryMaxAttempts + 2}
+func TestCloseKeepsRetryingUntilBackendRecovers(t *testing.T) {
+	oldInterval, oldMax := closeRetryInterval, closeRetryMaxInterval
+	closeRetryInterval, closeRetryMaxInterval = time.Hour, time.Hour
+	t.Cleanup(func() { closeRetryInterval, closeRetryMaxInterval = oldInterval, oldMax })
+	// backend が長く落ちていても（最初と 20 回のやり直しが失敗）、諦めずに取っておき、直ったら届く。
+	f := &fakeBackend{closeFails: 21}
 	b := readyBridge(t, f)
 	b.negotiate.Lock()
-	b.closeMidsLocked([]string{"4"}, nil)
-	for i := 0; i < closeRetryMaxAttempts; i++ {
+	b.closeMidsLocked([]string{"4"}, []string{"a"})
+	for i := 0; i < 20; i++ {
+		if b.closeRetry == nil || len(b.pendingCloses) != 1 {
+			t.Fatalf("retry %d: the failed close must stay pending and scheduled", i)
+		}
 		b.closeRetry.Stop()
 		b.closeRetry = nil
 		b.retryPendingClosesLocked()
-	}
-	// 上限で諦めた。あとの close が一度失敗しても、やり直しを予約し、送り直せば届く。
-	if len(b.pendingCloses) != 0 || b.closeRetry != nil {
-		t.Fatalf("the first close must be given up: %v", b.pendingCloses)
-	}
-	b.closeMidsLocked([]string{"5"}, nil)
-	if b.closeRetry == nil {
-		t.Fatal("a later failed close must be retried")
 	}
 	b.closeRetry.Stop()
 	b.closeRetry = nil
@@ -605,7 +601,10 @@ func TestCloseRetriesAfterGivingUp(t *testing.T) {
 	b.negotiate.Unlock()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if len(f.closed) != 1 || f.closed[0][0] != "5" {
-		t.Fatalf("the later close must be sent on retry: %v", f.closed)
+	if len(f.closed) != 1 || f.closed[0][0] != "4" || len(f.closeSpk[0]) != 1 || f.closeSpk[0][0] != "a" {
+		t.Fatalf("the close must be delivered after the backend recovers: %v %v", f.closed, f.closeSpk)
+	}
+	if len(b.pendingCloses) != 0 || b.closeAttempts != 0 {
+		t.Fatalf("the delivered close must be forgotten: %v %d", b.pendingCloses, b.closeAttempts)
 	}
 }
