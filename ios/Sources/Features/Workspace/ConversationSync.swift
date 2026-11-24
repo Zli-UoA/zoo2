@@ -48,7 +48,7 @@ struct ConversationSync: ViewModifier {
         let attachments = readable.flatMap { $0.needsAttachmentStream ? $0 : nil }
         let reactions = readable.flatMap { $0.needsReactionStream ? $0 : nil }
         let authors = readable.map { Authors(channelID: $0.channel.id, ids: Set($0.messages.map(\.user_id))) }
-        let needsEmojiCatalog = scenePhase == .active && (store != nil || workspace.selectedTab == .notifications)
+        let needsEmojiCatalog = scenePhase == .active && (store != nil || workspace.selectedTab == .notifications || workspace.selectedTab == .search)
         let typing = typingScope
         let messageScope = readable.map { MessageScope(channelID: $0.channel.id, requestID: $0.syncRequest,
                                                        parentID: feedParentID, focusID: $0.focusedMessageID) }

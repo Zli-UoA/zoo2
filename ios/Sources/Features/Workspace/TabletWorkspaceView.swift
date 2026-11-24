@@ -16,6 +16,8 @@ struct TabletWorkspaceView: View {
                 TabletConversations(workspace: workspace, directMessages: false)
             case .directMessages:
                 TabletConversations(workspace: workspace, directMessages: true)
+            case .search:
+                GlobalSearchScreen(workspace: workspace)
             case .notifications:
                 NavigationStack {
                     InboxView(store: workspace.inbox, workspace: workspace, isActive: scenePhase == .active,
@@ -38,6 +40,7 @@ struct TabletWorkspaceView: View {
             destination("チャンネル", symbol: "number", tab: .channels)
             destination("DM", symbol: "bubble.left.and.bubble.right.fill", tab: .directMessages)
             destination("通知", symbol: "bell.fill", tab: .notifications)
+            destination("検索", symbol: "magnifyingglass", tab: .search)
             Spacer(minLength: 16)
             destination("プロフィール", symbol: "person.crop.circle.fill", tab: .profile)
         }

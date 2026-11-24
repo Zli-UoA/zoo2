@@ -328,6 +328,9 @@ final class PreviewChatClient: ChatClient {
         }
         return ChannelThreadPage(items: rows, next_cursor: nil)
     }
+    func search(q: String, type: GlobalSearchKind, cursor: String?, limit: Int, filters: SearchRequestFilters) async throws -> SearchPage {
+        try await previewSearch(q: q, type: type, cursor: cursor)
+    }
     func channel(id: String) async throws -> Channel {
         guard let value = allChannels.first(where: { $0.id == id }) else { throw ZooError.rejected(404, "チャンネルがありません。") }
         return value

@@ -109,6 +109,9 @@ struct WorkspaceView: View {
                 }
             }
             .badge(workspace.inbox.unreadCount)
+            Tab("検索", systemImage: "magnifyingglass", value: WorkspaceTab.search) {
+                GlobalSearchScreen(workspace: workspace)
+            }
             Tab("プロフィール", systemImage: "person.crop.circle.fill", value: WorkspaceTab.profile) {
                 NavigationStack(path: $workspace.profilePath) {
                     ProfileView(workspace: workspace, session: session)

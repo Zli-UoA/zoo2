@@ -15,6 +15,7 @@
 | `Sources/Data/Notifications` | プッシュ登録と通知プレビュー鍵の保存契約 |
 | `Sources/Data/Images` | 公開アイコン・スタンプ画像の取得、メモリとディスクのキャッシュ |
 | `Sources/Features/Workspace` | タブ・iPadの画面構成、会話のルーティング、ワークスペースの状態と同期の開始・停止 |
+| `Sources/Features/Search` | 全文検索（`GET /api/search`）。検索タブ。送信者・チャンネル・期間・自分が参加中・ボットを除くの絞り込みを持つ。検索ストアは `WorkspaceStore` が保持し、別のタブへ移っても結果を残す |
 | `Sources/Features/Channels` | チャンネル一覧・検索・作成・詳細・編集、DMの宛先選択、スレッド一覧 |
 | `Sources/Features/Conversation` | 会話・返信の画面、スクロール位置、入力欄、メッセージ操作と会話の状態 |
 | `Sources/Features/Attachments` | 添付の読み込み状態、画像・PDFの閲覧、動画再生と保存 |
