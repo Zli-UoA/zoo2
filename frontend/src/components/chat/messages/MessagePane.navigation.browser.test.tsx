@@ -72,21 +72,23 @@ const collection = {
   get: (id: string) => fixture.collectionRows.find((row) => row.id === id),
   values: () => fixture.empty.values(),
 };
+const collectionsBundle = {
+  messages: () => collection,
+  reactions: () => collection,
+  attachments: () => collection,
+  channelUsers: {},
+  config: {},
+};
 vi.mock("../../../lib/electric/collections-context", () => ({
-  useCollections: () => ({
-    messages: () => collection,
-    reactions: () => collection,
-    attachments: () => collection,
-    channelUsers: {},
-    config: {},
-  }),
+  useCollections: () => collectionsBundle,
+  useOptionalCollections: () => collectionsBundle,
 }));
 vi.mock("../../../lib/api/client", async (original) => ({
   ...(await original<typeof import("../../../lib/api/client")>()),
   createConfiguredApiClient: () => fixture.api,
 }));
 vi.mock("../../../hooks/useCurrentUser", () => ({
-  useCurrentUser: () => ({ currentUserId: "alice" }),
+  useCurrentUser: () => ({ currentUserId: "alice", isAdmin: false }),
 }));
 vi.mock("../../../hooks/useThreadMembership", async (original) => ({
   ...(await original<typeof import("../../../hooks/useThreadMembership")>()),
@@ -111,6 +113,15 @@ vi.mock("../../../hooks/useKitchenCatalog", () => ({
 }));
 vi.mock("../../../hooks/useRealtime", () => ({
   useUsers: () => ({ data: fixture.users, isLoading: false }),
+  useActiveChannels: () => ({
+    data: fixture.empty,
+    isLoading: false,
+    isInitialSyncLoading: false,
+  }),
+  useMyChannelMemberships: () => ({
+    memberships: fixture.empty,
+    isLoading: false,
+  }),
   useChannelMembers: () => ({ data: fixture.empty }),
   useMessageReactions: () => ({ data: fixture.reactions, isLoading: false, isError: false }),
   useMessageFeed: () => ({
@@ -123,7 +134,8 @@ vi.mock("../../../hooks/useRealtime", () => ({
     loadOlder: fixture.loadOlder,
   }),
 }));
-vi.mock("../../../hooks/useAttachments", () => ({
+vi.mock("../../../hooks/useAttachments", async (original) => ({
+  ...(await original<typeof import("../../../hooks/useAttachments")>()),
   useMessageAttachments: () => ({ data: fixture.empty }),
   useAttachmentUpload: () => vi.fn(),
   useEncryptedAttachmentUpload: () => vi.fn(),
