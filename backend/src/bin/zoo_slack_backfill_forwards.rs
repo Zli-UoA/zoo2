@@ -5,7 +5,7 @@
 //! 既定は dry-run で何も書き込まない。`--apply` を指定したときだけ DB を更新・挿入する。
 //!
 //! ```text
-//! zoo_slack_backfill_forwards [--apply] [--channel <zoo_channel_id|slack_channel_id>] [--oldest <slack_ts>] [--max-pages <N>] [--cursor <slack_cursor>] [--thread-roots <ts1,ts2,...>]
+//! zoo_slack_backfill_forwards [--apply] [--channel <zoo_channel_id|slack_channel_id>] [--oldest <slack_ts>] [--max-pages <N>] [--cursor <slack_cursor>] [--thread-roots <ts1,ts2,...>] [--thread-cursor <slack_cursor>]
 //! ```
 
 use backend::slack::backfill_forwards::{Options, run};
@@ -73,9 +73,18 @@ async fn main() -> anyhow::Result<()> {
                     anyhow::bail!("--thread-roots must not be empty");
                 }
             }
+            "--thread-cursor" => {
+                let cur = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--thread-cursor requires a Slack cursor"))?;
+                if cur.trim().is_empty() {
+                    anyhow::bail!("--thread-cursor must not be empty");
+                }
+                opts.thread_cursor = Some(cur);
+            }
             "-h" | "--help" => {
                 eprintln!(
-                    "Usage: zoo_slack_backfill_forwards [--apply] [--channel <id>] [--oldest <ts>] [--max-pages <N>] [--cursor <slack_cursor>] [--thread-roots <ts1,ts2,...>]"
+                    "Usage: zoo_slack_backfill_forwards [--apply] [--channel <id>] [--oldest <ts>] [--max-pages <N>] [--cursor <slack_cursor>] [--thread-roots <ts1,ts2,...>] [--thread-cursor <slack_cursor>]"
                 );
                 return Ok(());
             }
@@ -87,6 +96,9 @@ async fn main() -> anyhow::Result<()> {
     }
     if !opts.thread_roots.is_empty() && opts.channel.is_none() {
         anyhow::bail!("--thread-roots requires --channel");
+    }
+    if opts.thread_cursor.is_some() && opts.thread_roots.is_empty() {
+        anyhow::bail!("--thread-cursor requires --thread-roots");
     }
 
     let _telemetry = backend::telemetry::init(

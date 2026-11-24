@@ -406,10 +406,17 @@ Slack の転送・引用投稿やメッセージパーマリンク展開は `att
 ```bash
 # 既定は dry-run（書き込みなし・件数集計のみ）
 kubectl -n zoo2 exec deploy/zoo-slack-worker -- /home/nonroot/zoo_slack_backfill_forwards
-# 書き込みを実行（チャンネル・再開カーソル・未処理スレッド・対象 ts 下限・最大ページ数を指定可能）
-kubectl -n zoo2 exec deploy/zoo-slack-worker -- /home/nonroot/zoo_slack_backfill_forwards --apply [--channel <id>] [--cursor <slack_cursor>] [--thread-roots <ts1,ts2,...>] [--oldest <slack_ts>] [--max-pages <N>]
+# 書き込みを実行（チャンネル・再開カーソル・未処理スレッド・スレッド返信カーソル・対象 ts 下限・最大ページ数を指定可能）
+kubectl -n zoo2 exec deploy/zoo-slack-worker -- /home/nonroot/zoo_slack_backfill_forwards --apply [--channel <id>] [--cursor <slack_cursor>] [--thread-roots <ts1,ts2,...>] [--thread-cursor <slack_cursor>] [--oldest <slack_ts>] [--max-pages <N>]
 ```
 
-暗号化チャンネル・削除済み・Zoo 起点（`origin = 'zoo'`）は対象外で、`updated_at`・`revision` を増やさずに欠損した `forwarded_message_ids` の補完と未取り込みだったコメントなし転送の挿入を冪等に行う。`--oldest <slack_ts>` は古い親投稿配下の新着スレッド返信を取りこぼさないよう履歴を `oldest=0` で取得したうえで適用対象（およびスレッド探索）を絞り込むオプションであり、`conversations.history` の API 呼び出し回数自体は削減しない。API 呼び出しを分割したい場合は `--channel` と `--max-pages <N>` を併用し、`--max-pages` で打ち切られた際に出力されるレポートの `truncated: true` / `resume_channels` を使って、`next_history_cursor` と `pending_thread_roots` の双方を `--channel <id> --cursor <next_history_cursor> --thread-roots <ts1,ts2,...>`（`next_history_cursor` が無い場合は `--channel <id> --thread-roots <ts1,ts2,...>` のみ）で引き継いで再開する（Slack が前回と同じ `next_cursor` を返した場合は完了と誤認せずエラーとして停止する）。
+暗号化チャンネル・削除済み・Zoo 起点（`origin = 'zoo'`）は対象外で、`updated_at`・`revision` を増やさずに欠損した `forwarded_message_ids` の補完と未取り込みだったコメントなし転送の挿入を冪等に行う。`--oldest <slack_ts>` は古い親投稿配下の新着スレッド返信を取りこぼさないよう履歴を `oldest=0` で取得したうえで適用対象（およびスレッド探索）を絞り込むオプションであり、`conversations.history` の API 呼び出し回数自体は削減しない。API 呼び出しを分割したい場合は `--channel` と `--max-pages <N>` を併用し、`--max-pages` で打ち切られた際に出力されるレポートの `truncated: true` / `resume_channels` を使って、`next_history_cursor`・`pending_thread_roots`・`next_thread_cursor` を引き継いで再開する（書き込み実行の中断時は `--apply` を引き続き指定すること。省略すると既定の dry-run になる。また `--oldest` の値は `resume_channels` に保存されないため、中断前に `--oldest` を指定した場合は再開時にも同じ `--oldest <中断時と同じ slack_ts>` を必ず指定すること）。複数ページのスレッド途中で打ち切られた場合も `next_thread_cursor` を `--thread-cursor` に渡せば次の返信ページから再開でき、Slack が前回と同じ `next_cursor` を返した場合は完了と誤認せずエラーとして停止する。
+
+```bash
+# 履歴カーソル＋スレッド両方が残っている場合の書き込み再開例
+kubectl -n zoo2 exec deploy/zoo-slack-worker -- /home/nonroot/zoo_slack_backfill_forwards --apply --channel <id> [--oldest <中断時と同じ slack_ts>] --cursor <next_history_cursor> --thread-roots <ts1,ts2,...> [--thread-cursor <next_thread_cursor>]
+# スレッドのみが残っている場合（next_history_cursor が無い場合）の書き込み再開例
+kubectl -n zoo2 exec deploy/zoo-slack-worker -- /home/nonroot/zoo_slack_backfill_forwards --apply --channel <id> [--oldest <中断時と同じ slack_ts>] --thread-roots <ts1,ts2,...> [--thread-cursor <next_thread_cursor>]
+```
 
 本コマンドは通常同期ワーカーのチャンネルリース（`slack_channel_syncs.lease_token`）を取得せず稼働中のワーカーと並行実行し得るが、決定的 ID の `ON CONFLICT` により重複投稿を作らず、既存行に対しては本文・`updated_at`・`revision` を上書きせず条件付きの補完（`forwarded_message_ids IS NULL` への設定、および親を後から取り込んだ場合の未設定 `parent_id IS NULL` 返信への親付け替え）のみを行う（ただし Slack API のレート制限 429 は共有されるため、閑散時の分割実行を推奨する）。また未対応クライアント（Android・TUI・`desktop-tauri`、#698 で対応予定）ではコメントなし転送が空行として表示されるため、`--apply` による過去分の新規挿入は #698 の反映後に実行すること。

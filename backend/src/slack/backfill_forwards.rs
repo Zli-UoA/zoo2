@@ -30,6 +30,7 @@ pub struct Options {
     pub max_pages: Option<usize>,
     pub cursor: Option<String>,
     pub thread_roots: Vec<String>,
+    pub thread_cursor: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
@@ -39,6 +40,8 @@ pub struct ResumeChannel {
     pub next_history_cursor: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_thread_roots: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_thread_cursor: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
@@ -95,6 +98,16 @@ pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow:
         if ts.trim().is_empty() || !super::is_valid_ts(ts) {
             anyhow::bail!("--thread-roots contains invalid Slack timestamp: {ts}");
         }
+    }
+    if options
+        .thread_cursor
+        .as_deref()
+        .is_some_and(|cursor| cursor.trim().is_empty())
+    {
+        anyhow::bail!("--thread-cursor must not be empty");
+    }
+    if options.thread_cursor.is_some() && options.thread_roots.is_empty() {
+        anyhow::bail!("--thread-cursor requires --thread-roots");
     }
     let key = config.slack.encryption_key().ok_or_else(|| {
         anyhow::anyhow!("SLACK_TOKEN_ENCRYPTION_KEY is not configured or invalid")
@@ -203,6 +216,7 @@ pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow:
         }
         let mut new_thread_roots: Vec<String> = Vec::new();
         let mut pending_thread_roots: Vec<String> = Vec::new();
+        let mut next_thread_cursor: Option<String> = None;
 
         if !resume_threads.is_empty() {
             let mut scan = ChannelScanCtx {
@@ -217,7 +231,14 @@ pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow:
                 pages: &mut pages,
                 report: &mut report,
             };
-            scan_thread_roots(&mut scan, &resume_threads, &mut pending_thread_roots).await?;
+            scan_thread_roots(
+                &mut scan,
+                &resume_threads,
+                options.thread_cursor.clone(),
+                &mut pending_thread_roots,
+                &mut next_thread_cursor,
+            )
+            .await?;
         }
 
         if options.cursor.is_some() || options.thread_roots.is_empty() {
@@ -308,7 +329,14 @@ pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow:
                 pages: &mut pages,
                 report: &mut report,
             };
-            scan_thread_roots(&mut scan, &new_thread_roots, &mut pending_thread_roots).await?;
+            scan_thread_roots(
+                &mut scan,
+                &new_thread_roots,
+                None,
+                &mut pending_thread_roots,
+                &mut next_thread_cursor,
+            )
+            .await?;
         }
 
         if history_truncated || !pending_thread_roots.is_empty() {
@@ -317,6 +345,7 @@ pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow:
                 slack_channel_id: target.slack_channel_id.clone(),
                 next_history_cursor,
                 pending_thread_roots,
+                next_thread_cursor,
             });
         }
 
@@ -342,17 +371,29 @@ struct ChannelScanCtx<'a> {
 async fn scan_thread_roots(
     scan: &mut ChannelScanCtx<'_>,
     roots: &[String],
+    mut initial_cursor: Option<String>,
     pending_thread_roots: &mut Vec<String>,
+    next_thread_cursor: &mut Option<String>,
 ) -> anyhow::Result<()> {
     for (idx, thread_ts) in roots.iter().enumerate() {
+        let mut tcursor = if idx == 0 {
+            initial_cursor.take()
+        } else {
+            None
+        };
         if scan.max_pages.is_some_and(|max| *scan.pages >= max) {
             pending_thread_roots.extend(roots[idx..].iter().cloned());
+            if next_thread_cursor.is_none() {
+                *next_thread_cursor = tcursor;
+            }
             break;
         }
-        let mut tcursor: Option<String> = None;
         loop {
             if scan.max_pages.is_some_and(|max| *scan.pages >= max) {
                 pending_thread_roots.extend(roots[idx..].iter().cloned());
+                if next_thread_cursor.is_none() {
+                    *next_thread_cursor = tcursor;
+                }
                 return Ok(());
             }
             let mut params = vec![

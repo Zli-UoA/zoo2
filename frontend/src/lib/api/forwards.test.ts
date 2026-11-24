@@ -434,4 +434,80 @@ describe("resolveForwardMessages", () => {
       unsubscribe();
     }
   });
+
+  it("defers remaining chunks if tab becomes hidden mid-flush and resumes on visibilitychange", async () => {
+    vi.useFakeTimers();
+    const listeners = new Map<string, Set<() => void>>();
+    let hidden = false;
+    vi.stubGlobal("document", {
+      get visibilityState() {
+        return hidden ? "hidden" : "visible";
+      },
+      addEventListener(type: string, fn: () => void) {
+        let set = listeners.get(type);
+        if (!set) listeners.set(type, (set = new Set()));
+        set.add(fn);
+      },
+      removeEventListener(type: string, fn: () => void) {
+        listeners.get(type)?.delete(fn);
+      },
+    });
+
+    const pendingResolvers: Array<(items: Record<string, ForwardResolutionItem>) => void> = [];
+    const seenRequests: string[][] = [];
+    const { client, post } = makeClient(
+      (ids) =>
+        new Promise((resolve) => {
+          seenRequests.push(ids);
+          pendingResolvers.push(resolve);
+        }),
+    );
+
+    const manyIds = Array.from({ length: MAX_RESOLVE_FORWARD_IDS + 1 }, (_, i) => `m-vis-${i + 1}`);
+    const lastId = `m-vis-${MAX_RESOLVE_FORWARD_IDS + 1}`;
+    const req = resolveForwardMessages(client, scopeA, manyIds);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(post).toHaveBeenCalledTimes(1);
+
+    // チャンク 1 の応答待ち中にタブが非表示になると、チャンク 2 は即送信せず保留する
+    hidden = true;
+    pendingResolvers[0]!(
+      Object.fromEntries(seenRequests[0]!.map((id) => [id, okItem(id, `body-${id}`)])),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(post).toHaveBeenCalledTimes(1);
+
+    // タブが可視に復帰すると保留していたチャンク 2 が送信される
+    hidden = false;
+    for (const fn of listeners.get("visibilitychange") ?? []) fn();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(seenRequests[1]).toEqual([lastId]);
+
+    pendingResolvers[1]!({ [lastId]: okItem(lastId, "resumed-last") });
+    const res = await req;
+    expect(res.get(lastId)).toMatchObject({ status: "ok", content: "resumed-last" });
+  });
+
+  it("notifies all deduped requested IDs in forgetForwardIds even when some exist only in local error state", async () => {
+    vi.useFakeTimers();
+    const { client } = makeClient(async () => ({
+      "m-cached": okItem("m-cached", "cached body"),
+    }));
+    const p = resolveForwardMessages(client, scopeA, ["m-cached"]);
+    await vi.advanceTimersByTimeAsync(20);
+    await p;
+
+    const listener = vi.fn();
+    const unsubscribe = subscribeForwardInvalidation(scopeA, listener);
+    try {
+      forgetForwardIds(scopeA, ["m-cached", "m-local-error", "m-cached", ""]);
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(listener).toHaveBeenCalledWith(["m-cached", "m-local-error"]);
+    } finally {
+      unsubscribe();
+    }
+  });
 });

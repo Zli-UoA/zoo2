@@ -1011,6 +1011,7 @@ async fn slack_hints_and_backfill_forwards_restore_forwards_without_bumping_edit
             max_pages: None,
             cursor: None,
             thread_roots: Vec::new(),
+            thread_cursor: None,
         },
     )
     .await?;
@@ -1031,6 +1032,7 @@ async fn slack_hints_and_backfill_forwards_restore_forwards_without_bumping_edit
             max_pages: None,
             cursor: None,
             thread_roots: Vec::new(),
+            thread_cursor: None,
         },
     )
     .await?;
@@ -1077,6 +1079,7 @@ async fn slack_hints_and_backfill_forwards_restore_forwards_without_bumping_edit
             max_pages: None,
             cursor: None,
             thread_roots: Vec::new(),
+            thread_cursor: None,
         },
     )
     .await?;
@@ -1921,6 +1924,7 @@ async fn slack_forward_reservation_blocks_spoofing_and_stale_bot_hint_preserves_
             max_pages: None,
             cursor: None,
             thread_roots: Vec::new(),
+            thread_cursor: None,
         },
     )
     .await?;
@@ -2217,6 +2221,7 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
             max_pages: None,
             cursor: None,
             thread_roots: Vec::new(),
+            thread_cursor: None,
         },
     )
     .await
@@ -2259,10 +2264,12 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
     let ts_old_ignored = "1704067180.000100";
     let ts_page2_msg = "1704067250.000100";
     let ts_reply_in_window = "1704067260.000200";
+    let ts_reply_win_p2 = "1704067270.000300";
     let id_src = slack::message_id(&team, &ch_ok, ts_src).to_string();
     let id_old_ignored = slack::message_id(&team, &ch_ok, ts_old_ignored).to_string();
     let id_page2 = slack::message_id(&team, &ch_ok, ts_page2_msg).to_string();
     let id_reply_win = slack::message_id(&team, &ch_ok, ts_reply_in_window).to_string();
+    let id_reply_win_p2 = slack::message_id(&team, &ch_ok, ts_reply_win_p2).to_string();
 
     sql_exec(
         &state,
@@ -2355,11 +2362,28 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
                 { "type": "message", "ts": ts_old_root, "user": "UA", "text": "old root", "thread_ts": ts_old_root },
                 { "type": "message", "ts": ts_reply_in_window, "user": "UA", "text": "", "thread_ts": ts_old_root, "attachments": att },
             ],
+            "response_metadata": { "next_cursor": "tcur_page_2" },
         })))
+        .with_priority(5)
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.replies"))
+        .and(query_param("channel", &ch_ok))
+        .and(query_param("ts", ts_old_root))
+        .and(query_param("inclusive", "true"))
+        .and(query_param("cursor", "tcur_page_2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [
+                { "type": "message", "ts": ts_reply_win_p2, "user": "UA", "text": "", "thread_ts": ts_old_root, "attachments": att },
+            ],
+        })))
+        .with_priority(1)
         .mount(&slack)
         .await;
 
-    // `--cursor` / `--thread-roots` バリデーションと `--max-pages 1` 打ち切りからの段階的再開（履歴＋残スレッドの完全回収）を検証する
+    // `--cursor` / `--thread-roots` / `--thread-cursor` バリデーションと `--max-pages 1` 打ち切りからの段階的再開（履歴＋複数ページスレッドの完全回収）を検証する
     let cursor_no_ch_err = backfill_forwards::run(
         &state.db,
         &config,
@@ -2370,6 +2394,7 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
             max_pages: None,
             cursor: Some("cur_page_2".into()),
             thread_roots: Vec::new(),
+            thread_cursor: None,
         },
     )
     .await
@@ -2389,6 +2414,7 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
             max_pages: None,
             cursor: None,
             thread_roots: vec![ts_old_root.into()],
+            thread_cursor: None,
         },
     )
     .await
@@ -2408,6 +2434,7 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
             max_pages: None,
             cursor: None,
             thread_roots: vec!["not-a-ts".into()],
+            thread_cursor: None,
         },
     )
     .await
@@ -2415,6 +2442,46 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
     assert!(
         thread_bad_ts_err.to_string().contains("--thread-roots"),
         "{thread_bad_ts_err}"
+    );
+
+    let tcur_no_roots_err = backfill_forwards::run(
+        &state.db,
+        &config,
+        &backfill_forwards::Options {
+            apply: false,
+            channel: Some(ch_ok.clone()),
+            oldest: None,
+            max_pages: None,
+            cursor: None,
+            thread_roots: Vec::new(),
+            thread_cursor: Some("tcur_page_2".into()),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        tcur_no_roots_err.to_string().contains("--thread-cursor"),
+        "{tcur_no_roots_err}"
+    );
+
+    let tcur_empty_err = backfill_forwards::run(
+        &state.db,
+        &config,
+        &backfill_forwards::Options {
+            apply: false,
+            channel: Some(ch_ok.clone()),
+            oldest: None,
+            max_pages: None,
+            cursor: None,
+            thread_roots: vec![ts_old_root.into()],
+            thread_cursor: Some("   ".into()),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        tcur_empty_err.to_string().contains("--thread-cursor"),
+        "{tcur_empty_err}"
     );
 
     // Run 1: history page 1 のみ取得（page 2 カーソルと未処理スレッド ts_old_root が resume_channels に残る）
@@ -2428,6 +2495,7 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
             max_pages: Some(1),
             cursor: None,
             thread_roots: Vec::new(),
+            thread_cursor: None,
         },
     )
     .await?;
@@ -2444,9 +2512,10 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
         trunc_report.resume_channels[0].pending_thread_roots,
         vec![ts_old_root.to_string()]
     );
+    assert_eq!(trunc_report.resume_channels[0].next_thread_cursor, None);
 
-    // Run 2: 前回の next_history_cursor + pending_thread_roots を渡して再開 -> 未処理スレッドを回収
-    let resumed_threads = backfill_forwards::run(
+    // Run 2: スレッド返信 1 ページ目を回収 -> 次ページカーソル tcur_page_2 を保持して中断
+    let resumed_tpage1 = backfill_forwards::run(
         &state.db,
         &config,
         &backfill_forwards::Options {
@@ -2456,25 +2525,65 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
             max_pages: Some(1),
             cursor: trunc_report.resume_channels[0].next_history_cursor.clone(),
             thread_roots: trunc_report.resume_channels[0].pending_thread_roots.clone(),
+            thread_cursor: trunc_report.resume_channels[0].next_thread_cursor.clone(),
         },
     )
     .await?;
-    assert!(resumed_threads.truncated, "{resumed_threads:?}");
+    assert!(resumed_tpage1.truncated, "{resumed_tpage1:?}");
     assert_eq!(
-        resumed_threads.resume_channels[0]
+        resumed_tpage1.resume_channels[0]
+            .next_history_cursor
+            .as_deref(),
+        Some("cur_page_2")
+    );
+    assert_eq!(
+        resumed_tpage1.resume_channels[0].pending_thread_roots,
+        vec![ts_old_root.to_string()]
+    );
+    assert_eq!(
+        resumed_tpage1.resume_channels[0]
+            .next_thread_cursor
+            .as_deref(),
+        Some("tcur_page_2")
+    );
+    assert_eq!(resumed_tpage1.matched_inserts, 1, "{resumed_tpage1:?}");
+
+    // Run 3: `--thread-cursor tcur_page_2` を引き継いでスレッド返信 2 ページ目を回収完了 -> pending_thread_roots が空になる
+    let resumed_tpage2 = backfill_forwards::run(
+        &state.db,
+        &config,
+        &backfill_forwards::Options {
+            apply: false,
+            channel: Some(ch_ok.clone()),
+            oldest: Some(ts_oldest.into()),
+            max_pages: Some(1),
+            cursor: resumed_tpage1.resume_channels[0]
+                .next_history_cursor
+                .clone(),
+            thread_roots: resumed_tpage1.resume_channels[0]
+                .pending_thread_roots
+                .clone(),
+            thread_cursor: resumed_tpage1.resume_channels[0].next_thread_cursor.clone(),
+        },
+    )
+    .await?;
+    assert!(resumed_tpage2.truncated, "{resumed_tpage2:?}");
+    assert_eq!(
+        resumed_tpage2.resume_channels[0]
             .next_history_cursor
             .as_deref(),
         Some("cur_page_2")
     );
     assert!(
-        resumed_threads.resume_channels[0]
+        resumed_tpage2.resume_channels[0]
             .pending_thread_roots
             .is_empty(),
-        "{resumed_threads:?}"
+        "{resumed_tpage2:?}"
     );
-    assert_eq!(resumed_threads.matched_inserts, 1, "{resumed_threads:?}");
+    assert_eq!(resumed_tpage2.resume_channels[0].next_thread_cursor, None);
+    assert_eq!(resumed_tpage2.matched_inserts, 1, "{resumed_tpage2:?}");
 
-    // Run 3: 残った履歴 page 2 を回収して完了
+    // Run 4: 残った履歴 page 2 を回収して完了
     let resumed_page2 = backfill_forwards::run(
         &state.db,
         &config,
@@ -2483,12 +2592,13 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
             channel: Some(ch_ok.clone()),
             oldest: Some(ts_oldest.into()),
             max_pages: Some(1),
-            cursor: resumed_threads.resume_channels[0]
+            cursor: resumed_tpage2.resume_channels[0]
                 .next_history_cursor
                 .clone(),
-            thread_roots: resumed_threads.resume_channels[0]
+            thread_roots: resumed_tpage2.resume_channels[0]
                 .pending_thread_roots
                 .clone(),
+            thread_cursor: resumed_tpage2.resume_channels[0].next_thread_cursor.clone(),
         },
     )
     .await?;
@@ -2509,15 +2619,17 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
             max_pages: None,
             cursor: None,
             thread_roots: Vec::new(),
+            thread_cursor: None,
         },
     )
     .await?;
     assert!(!win_report.truncated, "{win_report:?}");
     assert!(win_report.resume_channels.is_empty(), "{win_report:?}");
-    assert_eq!(win_report.applied_inserts, 2, "{win_report:?}");
+    assert_eq!(win_report.applied_inserts, 3, "{win_report:?}");
     assert_eq!(
         trunc_report.matched_inserts
-            + resumed_threads.matched_inserts
+            + resumed_tpage1.matched_inserts
+            + resumed_tpage2.matched_inserts
             + resumed_page2.matched_inserts,
         win_report.applied_inserts
     );
@@ -2526,14 +2638,16 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
         "SELECT json_build_object(\
             'old', EXISTS(SELECT 1 FROM messages WHERE id = $1), \
             'p2', EXISTS(SELECT 1 FROM messages WHERE id = $2 AND forwarded_message_ids IS NOT NULL), \
-            'reply', EXISTS(SELECT 1 FROM messages WHERE id = $3 AND forwarded_message_ids IS NOT NULL)\
+            'reply', EXISTS(SELECT 1 FROM messages WHERE id = $3 AND forwarded_message_ids IS NOT NULL), \
+            'reply_p2', EXISTS(SELECT 1 FROM messages WHERE id = $4 AND forwarded_message_ids IS NOT NULL)\
          )::text",
-        &[&id_old_ignored, &id_page2, &id_reply_win],
+        &[&id_old_ignored, &id_page2, &id_reply_win, &id_reply_win_p2],
     )
     .await?;
     assert_eq!(exists["old"], json!(false), "{exists}");
     assert_eq!(exists["p2"], json!(true), "{exists}");
     assert_eq!(exists["reply"], json!(true), "{exists}");
+    assert_eq!(exists["reply_p2"], json!(true), "{exists}");
 
     // 3) conversations.info の一時エラー（HTTP 500）は伝播し、長い Retry-After (>300s) は待たずにエラー報告する
     Mock::given(method("GET"))
@@ -2552,6 +2666,7 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
             max_pages: None,
             cursor: None,
             thread_roots: Vec::new(),
+            thread_cursor: None,
         },
     )
     .await
@@ -2578,6 +2693,7 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
             max_pages: None,
             cursor: None,
             thread_roots: Vec::new(),
+            thread_cursor: None,
         },
     )
     .await
@@ -2623,9 +2739,10 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
             apply: false,
             channel: Some(ch_loop.clone()),
             oldest: None,
-            max_pages: None,
+            max_pages: Some(3),
             cursor: None,
             thread_roots: Vec::new(),
+            thread_cursor: None,
         },
     )
     .await
@@ -2633,6 +2750,41 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
     assert!(
         loop_err.to_string().contains("unchanged next_cursor"),
         "{loop_err}"
+    );
+
+    Mock::given(method("GET"))
+        .and(path("/conversations.replies"))
+        .and(query_param("channel", &ch_loop))
+        .and(query_param("ts", ts_old_root))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [],
+            "response_metadata": { "next_cursor": "tstuck" },
+        })))
+        .mount(&slack)
+        .await;
+    let tloop_err = backfill_forwards::run(
+        &state.db,
+        &config,
+        &backfill_forwards::Options {
+            apply: false,
+            channel: Some(ch_loop.clone()),
+            oldest: None,
+            max_pages: Some(3),
+            cursor: None,
+            thread_roots: vec![ts_old_root.into()],
+            thread_cursor: None,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        tloop_err.to_string().contains("conversations.replies"),
+        "{tloop_err}"
+    );
+    assert!(
+        tloop_err.to_string().contains("unchanged next_cursor"),
+        "{tloop_err}"
     );
 
     Ok(())
@@ -2977,6 +3129,7 @@ async fn slack_cross_workspace_parent_replies_imported_by_sync_and_backfill() ->
             max_pages: None,
             cursor: None,
             thread_roots: Vec::new(),
+            thread_cursor: None,
         },
     )
     .await?;

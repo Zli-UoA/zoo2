@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import {
   FORWARD_OK_TTL_MS,
   forgetForwardIds,
+  peekForwardExpiresAt,
   resetForwardCacheForTests,
 } from "../lib/api/forwards";
 import type { ForwardResolutionItem } from "../lib/api/types";
@@ -360,10 +361,16 @@ describe("useForwardedMessages", () => {
         content: "v1",
       });
 
-      // TTL 到達時点で hookB が先に期限切れエントリを削除・再取得を開始した場合でも hookA が取り残されない
+      // 初回書き込み完了時刻から TTL 経過後に hookB が先に期限切れエントリを削除・再取得を開始しても hookA が取り残されない
       version = "v2";
-      vi.setSystemTime(2_000_000 + FORWARD_OK_TTL_MS);
+      vi.setSystemTime(Date.now() + FORWARD_OK_TTL_MS);
       const hookB = renderHook(() => useForwardedMessages(["m-shared"]));
+      expect(
+        peekForwardExpiresAt(
+          { apiBaseUrl: state.apiBaseUrl, currentUserId: state.currentUserId },
+          "m-shared",
+        ),
+      ).toBeUndefined();
       await act(async () => {
         await vi.advanceTimersByTimeAsync(20);
       });
@@ -371,6 +378,7 @@ describe("useForwardedMessages", () => {
         await vi.advanceTimersByTimeAsync(20);
       });
 
+      expect(state.post).toHaveBeenCalledTimes(2);
       expect(hookB.result.current.entries.get("m-shared")).toMatchObject({
         status: "ok",
         content: "v2",

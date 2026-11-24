@@ -18,6 +18,13 @@ interface PendingWaiter {
   resolve: (value: ResolvedForwardEntry) => void;
 }
 
+interface FlushedEntry {
+  id: string;
+  waiters: PendingWaiter[];
+  gen: number;
+  inflightPromise: Promise<ResolvedForwardEntry> | undefined;
+}
+
 interface CachedForwardEntry {
   value: ForwardResolutionItem;
   expiresAt: number;
@@ -28,6 +35,7 @@ interface ScopeBucket {
   inflight: Map<string, Promise<ResolvedForwardEntry>>;
   generation: Map<string, number>;
   pending: Map<string, PendingWaiter[]>;
+  deferred: FlushedEntry[];
   timer: ReturnType<typeof setTimeout> | null;
   waitingVisible: boolean;
   client: ApiClient | null;
@@ -84,6 +92,7 @@ function getBucket(scope: ForwardCacheScope): ScopeBucket {
       inflight: new Map(),
       generation: new Map(),
       pending: new Map(),
+      deferred: [],
       timer: null,
       waitingVisible: false,
       client: null,
@@ -109,7 +118,7 @@ function onVisibilityChange(): void {
       }
     }
     notifyInvalidation(scopeKey, expiredIds);
-    if (bucket.waitingVisible && bucket.pending.size > 0) {
+    if (bucket.waitingVisible && (bucket.deferred.length > 0 || bucket.pending.size > 0)) {
       bucket.waitingVisible = false;
       void flushBucket(bucket);
     }
@@ -134,18 +143,26 @@ async function flushBucket(bucket: ScopeBucket): Promise<void> {
   }
   bucket.waitingVisible = false;
   const client = bucket.client;
-  if (!client || bucket.pending.size === 0) return;
+  if (!client || (bucket.deferred.length === 0 && bucket.pending.size === 0)) return;
 
-  // 最初の await の前に全チャンク分の世代と inflight 所有情報を固定する。
-  const entries = [...bucket.pending.entries()].map(([id, waiters]) => ({
+  // 最初の await の前に保留済み・新規待ちの世代と inflight 所有情報を固定する。
+  const deferredEntries = bucket.deferred.splice(0, bucket.deferred.length);
+  const pendingEntries: FlushedEntry[] = [...bucket.pending.entries()].map(([id, waiters]) => ({
     id,
     waiters,
     gen: bucket.generation.get(id) ?? 0,
     inflightPromise: bucket.inflight.get(id),
   }));
   bucket.pending.clear();
+  const entries = [...deferredEntries, ...pendingEntries];
 
   for (let i = 0; i < entries.length; i += MAX_RESOLVE_FORWARD_IDS) {
+    if (isDocumentHidden()) {
+      bucket.deferred.unshift(...entries.slice(i));
+      ensureVisibilityListener();
+      bucket.waitingVisible = true;
+      return;
+    }
     const chunkMeta = entries.slice(i, i + MAX_RESOLVE_FORWARD_IDS);
     const ids = chunkMeta.map((item) => item.id);
     let results: Record<string, ForwardResolutionItem> | null = null;
@@ -277,20 +294,18 @@ export function subscribeForwardInvalidation(
 
 /** 指定 ID のキャッシュだけを破棄する（通信失敗からの再試行や編集・削除時）。 */
 export function forgetForwardIds(scope: ForwardCacheScope, ids: readonly string[]): void {
+  const uniqueIds = [...new Set(ids.filter((id) => id.length > 0))];
+  if (uniqueIds.length === 0) return;
   const key = forwardScopeKey(scope);
   const bucket = buckets.get(key);
-  const deleted: string[] = [];
   if (bucket) {
-    for (const id of ids) {
+    for (const id of uniqueIds) {
       bucket.generation.set(id, (bucket.generation.get(id) ?? 0) + 1);
-      const removedInflight = bucket.inflight.delete(id);
-      const removedCache = bucket.cache.delete(id);
-      if (removedCache || removedInflight) {
-        deleted.push(id);
-      }
+      bucket.inflight.delete(id);
+      bucket.cache.delete(id);
     }
   }
-  notifyInvalidation(key, deleted.length > 0 ? deleted : ids);
+  notifyInvalidation(key, uniqueIds);
 }
 
 /**
@@ -354,6 +369,12 @@ export function resetForwardCacheForTests(): void {
       clearTimeout(bucket.timer);
       bucket.timer = null;
     }
+    for (const item of bucket.deferred) {
+      for (const waiter of item.waiters) {
+        waiter.resolve({ status: "error" });
+      }
+    }
+    bucket.deferred = [];
     for (const waiters of bucket.pending.values()) {
       for (const waiter of waiters) {
         waiter.resolve({ status: "error" });

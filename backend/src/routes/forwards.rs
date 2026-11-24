@@ -289,7 +289,7 @@ pub async fn verify_forward_sources(
 /// 転送元メッセージの一括解決 SQL（スケール検証テストと共有）。
 ///
 /// `$1` = 重複排除済みの UUID 配列 JSON（最大 100 件）、`$2` = 閲覧者 `users.id`。
-/// 入力 ID 集合から主キーで `messages`・`channels`・`users`・`channel_user` のみを参照し、
+/// 入力 ID 集合から主キー・索引で `messages`・`channels`・`users`・`channel_user`・`slack_forward_targets`・`slack_channels` を参照し、
 /// 総履歴 N に依存せず O(K log N) で解決する。
 pub const RESOLVE_FORWARDS_SQL: &str = "\
 SELECT json_build_object(
