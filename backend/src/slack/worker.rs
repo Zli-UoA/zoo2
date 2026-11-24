@@ -1492,6 +1492,60 @@ pub(super) async fn id_taken_by_other(
     .is_empty())
 }
 
+/// 投稿に含まれる Slack 転送・引用（`is_share` / `is_msg_unfurl`）を Zoo のメッセージ UUID に解決する。
+/// `slack_message_map` に一致する行があればその ID を優先し、なければ決定的な ID を計算して返す。
+pub(super) async fn resolve_forwarded_ids(
+    tx: &mut toasty::Transaction<'_>,
+    team: &str,
+    message: &SlackMessage,
+) -> Result<Vec<String>, AppError> {
+    let refs = message.forwarded_refs(Some(team));
+    if refs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let input = serde_json::json!(
+        refs.iter()
+            .map(|r| serde_json::json!({"slack_channel_id": r.slack_channel_id, "ts": r.ts}))
+            .collect::<Vec<_>>()
+    )
+    .to_string();
+    let rows = query(
+        tx,
+        "SELECT json_build_object('slack_channel_id',m.slack_channel_id,'ts',m.ts,'message_id',m.message_id)::text \
+         FROM slack_message_map m \
+         JOIN jsonb_to_recordset($2::jsonb) AS r(slack_channel_id text, ts text) \
+           ON m.slack_channel_id=r.slack_channel_id AND m.ts=r.ts \
+         WHERE m.team_id=$1",
+        &[team, &input],
+    )
+    .await?;
+    let mut mapped_ids: HashMap<(String, String), String> = HashMap::with_capacity(rows.len());
+    for row in rows {
+        if let (Some(ch), Some(ts), Some(id)) = (
+            row["slack_channel_id"].as_str(),
+            row["ts"].as_str(),
+            row["message_id"].as_str(),
+        ) {
+            mapped_ids.insert((ch.to_string(), ts.to_string()), id.to_string());
+        }
+    }
+    let mut resolved = Vec::with_capacity(refs.len());
+    let mut seen = std::collections::HashSet::with_capacity(refs.len());
+    for r in refs {
+        let id = mapped_ids
+            .get(&(r.slack_channel_id.clone(), r.ts.clone()))
+            .cloned()
+            .unwrap_or_else(|| super::message_id(team, &r.slack_channel_id, &r.ts));
+        if seen.insert(id.clone()) {
+            resolved.push(id);
+            if resolved.len() >= crate::routes::forwards::MAX_FORWARDED_MESSAGES_PER_MESSAGE {
+                break;
+            }
+        }
+    }
+    Ok(resolved)
+}
+
 /// `live_replies`: 直近の返信を、zoo の返信と同じライブの投稿として扱うか (スレッドの再Open・退出済みの
 /// 投稿者の再参加)。差分同期・イベントの取り込みは真。ZIP・API の履歴の取り込み (取り込みジョブ、API の
 /// 初回の全履歴の同期) は偽で、直近の返信でも履歴として入れるだけにする
@@ -1559,6 +1613,12 @@ pub(super) async fn insert_message(
         components,
         filled,
     } = render_message(tx, ctx, message).await?;
+    let forwarded_ids = resolve_forwarded_ids(tx, &ctx.team, message).await?;
+    let forwarded_json = if forwarded_ids.is_empty() {
+        String::new()
+    } else {
+        serde_json::to_string(&forwarded_ids).map_err(|err| AppError::Internal(err.into()))?
+    };
     // 差分同期・イベントで取り込む直近の返信は、zoo の返信と同じライブの投稿として、アーカイブ済みのスレッドを
     // 再Openし、退出済みの投稿者を再参加させる (DB トリガー `update_thread_activity`)。ZIP・API の履歴の取り込み
     // (`live_replies` が偽) と、期間より古い返信は、立てない。フラグ (`zoo.thread_live_import`) は、下の INSERT 文が
@@ -1577,12 +1637,14 @@ pub(super) async fn insert_message(
     exec(
         tx,
         "WITH live AS MATERIALIZED (SELECT set_config('zoo.thread_live_import',$11,true) AS v) \
-         INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at,parent_id,components) \
+         INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at,parent_id,components,forwarded_message_ids) \
          SELECT $1,$2,$3,$4,(to_timestamp($5::numeric) AT TIME ZONE 'UTC')::timestamp(3),\
          CASE WHEN $6='' THEN NULL ELSE (to_timestamp($6::numeric) AT TIME ZONE 'UTC')::timestamp(3) END,\
          (SELECT m.id FROM messages m WHERE m.id=NULLIF($7,'') AND m.channel_id=$3 AND m.parent_id IS NULL \
           AND ($9='' OR m.created_at=(to_timestamp($9::numeric) AT TIME ZONE 'UTC')::timestamp(3))),\
-         NULLIF($8,'') FROM live WHERE NOT EXISTS(SELECT 1 FROM messages existing WHERE existing.id=$1 AND existing.parent_id IS NOT NULL) \
+         NULLIF($8,''),\
+         NULLIF($12,'')::jsonb \
+         FROM live WHERE NOT EXISTS(SELECT 1 FROM messages existing WHERE existing.id=$1 AND existing.parent_id IS NOT NULL) \
          ON CONFLICT (id) DO UPDATE SET parent_id=EXCLUDED.parent_id \
          WHERE messages.parent_id IS NULL AND EXCLUDED.parent_id IS NOT NULL \
          AND messages.channel_id=EXCLUDED.channel_id \
@@ -1602,6 +1664,7 @@ pub(super) async fn insert_message(
             if derived { "1" } else { "" },
             // ライブの返信として扱うか (`zoo.thread_live_import`)。毎回、この文で決める
             if live { "on" } else { "off" },
+            &forwarded_json,
         ],
     )
     .await?;
@@ -1614,6 +1677,23 @@ pub(super) async fn insert_message(
             "A Slack message was not imported because its ID is already used by another message"
         );
         return Ok(());
+    }
+    // 既に取り込み済みのメッセージ（スレッド返信を含む）に forwarded_message_ids が未設定なら補完する（updated_at / revision は変えない）
+    if !forwarded_json.is_empty() {
+        exec(
+            tx,
+            "UPDATE messages SET forwarded_message_ids=$2::jsonb \
+             WHERE id=$1 AND channel_id=$3 AND deleted_at IS NULL \
+             AND forwarded_message_ids IS NULL \
+             AND ($4='' OR created_at=(to_timestamp($4::numeric) AT TIME ZONE 'UTC')::timestamp(3))",
+            &[
+                &id,
+                &forwarded_json,
+                channel_id,
+                if derived { message.ts.as_str() } else { "" },
+            ],
+        )
+        .await?;
     }
     // 差分同期・イベントで取り込んだ投稿は、`slack_message_map` に `slack` で残す (直近 24 時間の再確認が、
     // Slack から消えた投稿を見つけるのに使う。ZIP の取り込みは、件数が多いので残さない。古い行は掃除が消す)

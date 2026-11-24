@@ -236,6 +236,45 @@ pub(super) const SKIPPED_SUBTYPES: &[&str] = &[
     "message_deleted",
 ];
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlackForwardRef {
+    pub slack_channel_id: String,
+    pub ts: String,
+}
+
+/// Slack メッセージのパーマリンク（`.../archives/<CH>/p<digits>`）から `(slack_channel_id, ts)` を取り出す。
+pub fn parse_slack_archive_url(url: &str) -> Option<SlackForwardRef> {
+    let without_fragment = url.split('#').next().unwrap_or(url);
+    let path = without_fragment
+        .split('?')
+        .next()
+        .unwrap_or(without_fragment);
+    let (_, rest) = path.split_once("/archives/")?;
+    let mut segments = rest.split('/');
+    let channel_id = segments.next()?.trim();
+    if channel_id.is_empty() || !channel_id.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let p_segment = segments.next()?.trim();
+    let digits = p_segment.strip_prefix('p')?;
+    if digits.len() < 7 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let split = digits.len() - 6;
+    let ts = format!("{}.{}", &digits[..split], &digits[split..]);
+    if !crate::slack::is_valid_ts(&ts) {
+        return None;
+    }
+    Some(SlackForwardRef {
+        slack_channel_id: channel_id.to_string(),
+        ts,
+    })
+}
+
+fn is_valid_slack_channel_id(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
 impl SlackMessage {
     /// 編集・削除の履歴を含むエクスポートの、編集 (`message_changed`)・削除 (`message_deleted`) の記録か
     pub fn is_history_event(&self) -> bool {
@@ -287,11 +326,72 @@ impl SlackMessage {
                 || self.files.iter().any(SlackFile::is_importable)
                 || !self.files_text(|_| true).is_empty()
                 || !self.attachments_text().is_empty()
+                || self.has_forward_refs()
                 // 本文が blocks にしかない bot 投稿（rich_text 以外のブロック）も取り込む。部品にする条件と同じ
                 || self
                     .blocks
                     .iter()
                     .any(|b| b.get("type").and_then(|t| t.as_str()) != Some("rich_text")))
+    }
+
+    /// Slack 添付配列からメッセージ転送・引用（`is_share` / `is_msg_unfurl`）の対象を取り出す。
+    /// 他ワークスペースの参照は `team` 指定時に除外し、重複排除して最大件数までに制限する。
+    pub fn forwarded_refs(&self, team: Option<&str>) -> Vec<SlackForwardRef> {
+        let mut refs = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for a in &self.attachments {
+            let is_share = a.get("is_share").and_then(|v| v.as_bool()) == Some(true);
+            let is_msg_unfurl = a.get("is_msg_unfurl").and_then(|v| v.as_bool()) == Some(true);
+            if !is_share && !is_msg_unfurl {
+                continue;
+            }
+            let att_team = ["channel_team", "team_id", "team"]
+                .into_iter()
+                .find_map(|key| {
+                    a.get(key)
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                });
+            if let (Some(current_team), Some(att_team)) = (team, att_team)
+                && att_team != current_team
+            {
+                continue;
+            }
+            let direct = a
+                .get("channel_id")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|ch| is_valid_slack_channel_id(ch))
+                .zip(
+                    a.get("ts")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|ts| crate::slack::is_valid_ts(ts)),
+                )
+                .map(|(slack_channel_id, ts)| SlackForwardRef {
+                    slack_channel_id: slack_channel_id.to_string(),
+                    ts: ts.to_string(),
+                });
+            let from_url = a
+                .get("from_url")
+                .and_then(|v| v.as_str())
+                .and_then(parse_slack_archive_url);
+            let Some(found) = direct.or(from_url) else {
+                continue;
+            };
+            if seen.insert((found.slack_channel_id.clone(), found.ts.clone())) {
+                refs.push(found);
+                if refs.len() >= crate::routes::forwards::MAX_FORWARDED_MESSAGES_PER_MESSAGE {
+                    break;
+                }
+            }
+        }
+        refs
+    }
+
+    pub fn has_forward_refs(&self) -> bool {
+        !self.forwarded_refs(None).is_empty()
     }
 
     /// `include` が真の添付ファイルの名前 (1 行に 1 つ)。本文のない投稿が空にならないよう、代わりの本文に使う
@@ -733,5 +833,85 @@ pub(crate) mod tests {
             serde_json::json!({"subtype": "tombstone", "ts": "1704070000.000100", "user": "USLACKBOT", "text": "This message was deleted."}),
         );
         assert!(!tombstone.is_importable());
+    }
+
+    #[test]
+    fn extracts_slack_forwarded_and_msg_unfurl_refs_with_team_filter() {
+        let message =
+            |value: serde_json::Value| -> SlackMessage { serde_json::from_value(value).unwrap() };
+
+        // コメントなし転送（text = ""）でも is_importable になり、channel_id + ts から参照を抽出する
+        let direct = message(serde_json::json!({
+            "ts": "1704070001.000100",
+            "user": "U1",
+            "text": "",
+            "attachments": [{
+                "is_share": true,
+                "channel_id": "C111",
+                "ts": "1704070000.000200",
+                "from_url": "https://example.slack.com/archives/C111/p1704070000000200",
+                "channel_team": "TMAIN"
+            }]
+        }));
+        assert!(direct.has_forward_refs());
+        assert!(direct.is_importable());
+        assert_eq!(
+            direct.forwarded_refs(Some("TMAIN")),
+            vec![SlackForwardRef {
+                slack_channel_id: "C111".into(),
+                ts: "1704070000.000200".into(),
+            }]
+        );
+        // 他ワークスペースの転送は team 指定で除外される
+        assert!(direct.forwarded_refs(Some("TOTHER")).is_empty());
+
+        // from_url のみ（スレッド返信 URL + query parameter）でも is_msg_unfurl から抽出できる
+        let unfurl = message(serde_json::json!({
+            "ts": "1704070002.000100",
+            "user": "U1",
+            "text": "check this reply",
+            "attachments": [{
+                "is_msg_unfurl": true,
+                "from_url": "https://example.slack.com/archives/C222/p1704070000000300?thread_ts=1704070000.000100&cid=C222"
+            }]
+        }));
+        assert_eq!(
+            unfurl.forwarded_refs(None),
+            vec![SlackForwardRef {
+                slack_channel_id: "C222".into(),
+                ts: "1704070000.000300".into(),
+            }]
+        );
+
+        // 通常の URL 展開（from_url / is_app_unfurl）は転送として扱わない
+        let web_unfurl = message(serde_json::json!({
+            "ts": "1704070003.000100",
+            "user": "U1",
+            "text": "",
+            "attachments": [{
+                "is_app_unfurl": true,
+                "from_url": "https://example.slack.com/archives/C222/p1704070000000300"
+            }]
+        }));
+        assert!(!web_unfurl.has_forward_refs());
+        assert!(!web_unfurl.is_importable());
+        assert!(web_unfurl.forwarded_refs(None).is_empty());
+
+        // 重複排除・上限 5 件
+        let many = message(serde_json::json!({
+            "ts": "1704070004.000100",
+            "user": "U1",
+            "text": "many",
+            "attachments": [
+                {"is_share": true, "channel_id": "C1", "ts": "1704070000.000001"},
+                {"is_msg_unfurl": true, "channel_id": "C1", "ts": "1704070000.000001"},
+                {"is_share": true, "channel_id": "C1", "ts": "1704070000.000002"},
+                {"is_share": true, "channel_id": "C1", "ts": "1704070000.000003"},
+                {"is_share": true, "channel_id": "C1", "ts": "1704070000.000004"},
+                {"is_share": true, "channel_id": "C1", "ts": "1704070000.000005"},
+                {"is_share": true, "channel_id": "C1", "ts": "1704070000.000006"}
+            ]
+        }));
+        assert_eq!(many.forwarded_refs(None).len(), 5);
     }
 }
