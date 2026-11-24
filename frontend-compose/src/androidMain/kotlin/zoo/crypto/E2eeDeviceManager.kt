@@ -102,8 +102,11 @@ suspend fun <T> withRequestTimeout(timeout: Duration, block: suspend () -> T): T
         throw E2eeRequestTimeoutException(failure)
     }
 
-/** [ZooApi] で呼ぶ [E2eeApi]、[E2eeSetupApi]、[SasApi]。E2EE の API には 30 秒の期限を付ける（TUI と同じ）。 */
-class ZooE2eeApi(private val api: ZooApi) : E2eeApi, E2eeSetupApi, SasApi {
+/**
+ * [ZooApi] で呼ぶ [E2eeApi]、[E2eeSetupApi]、[E2eeRevocationApi]、[SasApi]。E2EE の API には 30 秒の期限を付ける
+ * （TUI と同じ）。
+ */
+class ZooE2eeApi(private val api: ZooApi) : E2eeApi, E2eeRevocationApi, SasApi {
     private suspend fun call(
         path: String,
         method: String,
@@ -314,6 +317,34 @@ class ZooE2eeApi(private val api: ZooApi) : E2eeApi, E2eeSetupApi, SasApi {
         call("/api/e2ee/devices/$deviceId", "DELETE")
     }
 
+    override suspend fun listDevices(): JsonArray = call("/api/e2ee/devices", "GET") as? JsonArray ?: error("端末の一覧を読めません")
+
+    override suspend fun tofuPins(after: String?): JsonObject =
+        obj(call("/api/e2ee/tofu_pins" + (after?.let { "?after=${it.encodeURLParameter()}" } ?: ""), "GET"))
+
+    override suspend fun putSecrets(body: JsonObject, reauth: String?): Long? =
+        (data(call("/api/e2ee/secret_storage/secrets", "POST", body, reauth))["secrets_revision"] as? JsonPrimitive)
+            ?.longOrNull
+
+    override suspend fun createBackupVersionNumber(body: JsonObject, reauth: String?): String? =
+        (data(call("/api/e2ee/key_backup/versions", "POST", body, reauth))["version"] as? JsonPrimitive)
+            ?.takeIf { it.isString }?.content
+
+    override suspend fun backupVersion(version: String): JsonObject? =
+        try {
+            obj(call("/api/e2ee/key_backup/versions/${version.encodeURLPathPart()}", "GET"))
+        } catch (failure: ApiException) {
+            if (failure.status == 404) null else throw failure
+        }
+
+    override suspend fun deleteBackupVersion(version: String, reauth: String?) {
+        try {
+            call("/api/e2ee/key_backup/versions/${version.encodeURLPathPart()}", "DELETE", reauth = reauth)
+        } catch (failure: ApiException) {
+            if (failure.status != 404) throw failure
+        }
+    }
+
     override suspend fun listDeviceIds(): List<String> {
         val devices = call("/api/e2ee/devices", "GET") as? JsonArray ?: error("端末の一覧を読めません")
         return devices.map { device ->
@@ -455,6 +486,15 @@ class E2eeDeviceManager(
     /** 初回設定と解錠（#360）。[readyStore] を待って使う。 */
     val setup: E2eeSetup? =
         setupApi?.let { api -> E2eeSetup(api, userId, store = { ready.filterNotNull().first() }, io = io) }
+
+    /**
+     * 失効の手順（#362）。初回設定と解錠の API が失効の API（[E2eeRevocationApi]）も持つときに作る。
+     * [readyStore] の暗号ストアを使う。
+     */
+    val revocation: E2eeRevocation? =
+        (setupApi as? E2eeRevocationApi)?.let { api ->
+            E2eeRevocation(api, userId, store = { ready.filterNotNull().first() }, io = io)
+        }
 
     /**
      * 他のユーザーの絵文字 SAS 検証と QR コードによる検証（#368）。画面は [SasController.entries] を見る。
@@ -733,6 +773,12 @@ class E2eeDeviceManager(
             logoutStore?.let { withContext(io) { it.pendingBackupCount() } } ?: -1
         }
 
+    /**
+     * [prepareLogout] で開いた暗号ストアに、終わっていない失効があるか（docs/e2ee.md の「失効の手順」。ログアウトすると
+     * 暗号ストアの進み具合が消えるので、ログアウトの確認で警告する）。開けていなければ `false`。
+     */
+    fun revocationPendingForLogout(): Boolean = logoutStore?.hasPendingRevocation == true
+
     /** ログアウトを取りやめたら、to-device の処理に戻る。 */
     suspend fun cancelLogout() {
         control.withLock {
@@ -784,6 +830,7 @@ class E2eeDeviceManager(
                 logoutStore = null
                 // 検証はこのユーザーのもの。ログアウトしたら忘れる。
                 sas?.dispose()
+                revocation?.dispose()
                 background.coroutineContext[Job]?.cancel()
             }
         }

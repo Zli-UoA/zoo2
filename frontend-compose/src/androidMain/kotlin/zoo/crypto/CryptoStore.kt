@@ -148,6 +148,12 @@ internal class StoreState(
      * `recipients` と同じ役割）。送信画面に「前回の送信から増えた配布先」を出すのに使う。秘密ではない。
      */
     var recipients: Map<String, List<String>> = emptyMap(),
+    /**
+     * 終わっていない失効の進み具合（#362。`Revocation.pickle` の封筒。保存鍵で暗号化してある）。新しい自己署名鍵、
+     * ユーザー署名鍵、バックアップ鍵と古いバックアップ鍵を含み、マスター鍵の秘密鍵と SSSS 鍵は含まない（Web の
+     * `meta` の `revocation` と同じ）。端末を作り直すとき（[CryptoStore.replaceDevice]）は捨てる。
+     */
+    var revocation: String? = null,
 )
 
 /** [CryptoStore.prepareBackupUpload] の結果。 */
@@ -908,6 +914,129 @@ class CryptoStore private constructor(
         pendingUploads.remove(id)?.upload?.close()
         if (conflict) backupState?.suspend()
     }
+
+    /** 終わっていない失効があるか（ログアウトの前に警告する。docs/e2ee.md の「失効の手順」）。 */
+    @get:Synchronized
+    val hasPendingRevocation: Boolean get() = state.revocation != null
+
+    /** 終わっていない失効の進み具合（秘密鍵を除く。解錠する前の表示用）。なければ `null`。 */
+    @Synchronized
+    fun revocationSummary(): RevocationSummary? = state.revocation?.let { peekRevocation(it, account, storageKey) }
+
+    /**
+     * 失効を始め（署名し直す一覧を集め、新しい鍵を作る）、進み具合を保存する（サーバーにはまだ何も保存しない）。
+     * 古いバックアップ鍵と古いユーザー署名鍵は、暗号ストアの自分の鍵のものを渡す（なければ SSSS の鍵を使う）。
+     * 終わっていない失効があれば始めない（[IllegalStateException]）。
+     */
+    @Synchronized
+    fun beginRevocation(input: RevocationInput, unlocked: UnlockedSecretStorage): Revocation {
+        check(state.revocation == null) { "終わっていない失効があります" }
+        val own = state.ownKeys?.let { OwnKeys.fromPickle(it, account, storageKey) }
+        val revocation =
+            try {
+                val backupKey = own?.backupKey()
+                val userSigning = own?.userSigning()
+                try {
+                    Revocation.begin(input, unlocked, trust, backupKey, userSigning)
+                } finally {
+                    backupKey?.close()
+                    userSigning?.close()
+                }
+            } finally {
+                own?.close()
+            }
+        try {
+            saveRevocation(revocation)
+        } catch (failure: Throwable) {
+            revocation.close()
+            throw failure
+        }
+        return revocation
+    }
+
+    /** 失効の進み具合を保存する（サーバーへの保存が 1 つ済むたびに呼ぶ）。書けなければ前の記録に戻す。 */
+    @Synchronized
+    fun saveRevocation(revocation: Revocation) {
+        val previous = state.revocation
+        state.revocation = revocation.pickle(account, storageKey)
+        try {
+            save()
+        } catch (failure: Throwable) {
+            state.revocation = previous
+            throw failure
+        }
+    }
+
+    /**
+     * 保存した失効を、開け直した SSSS で続ける。なければ `null`。2〜5 を SSSS の保存の前に止めていたら
+     * `ZooCryptoException.RevocationRestart`、SSSS の鍵が記録と違えば `ZooCryptoException.ServerKeyMismatch`。
+     */
+    @Synchronized
+    fun resumeRevocation(unlocked: UnlockedSecretStorage): Revocation? =
+        state.revocation?.let { Revocation.resume(it, account, storageKey, unlocked) }
+
+    /** 失効の進み具合を消す（終えたとき、やり直すとき）。 */
+    @Synchronized
+    fun clearRevocation() {
+        if (state.revocation == null) return
+        val previous = state.revocation
+        state.revocation = null
+        try {
+            save()
+        } catch (failure: Throwable) {
+            state.revocation = previous
+            throw failure
+        }
+    }
+
+    /** 今の端末への自己署名、署名し直すマスター鍵への署名、作り直すピン。 */
+    @Synchronized
+    fun revocationSignatures(revocation: Revocation): RevocationSignatures = revocation.signatures(account.deviceKeys())
+
+    /**
+     * 失効を行う端末が、クロス署名鍵を保存したあとに、記録と自分の鍵を新しい鍵にそろえる（Web の
+     * `applyRevocation`）。新しい鍵の `secrets_revision` も記録する（次の起動で SSSS が書き換えられたと誤って
+     * 判定しないため）。自分の鍵、`secrets_revision`、記録、失効の進み具合を 1 回の書き込みで保存し、書けなければ
+     * メモリーの状態も前に戻して例外を投げる。
+     */
+    @Synchronized
+    fun applyRevocation(revocation: Revocation, secretsRevision: Long?) {
+        // 記録はコピーで更新し、すべて保存できたときだけ置き換える（saveOwnKeys と同じ）。
+        val updated = TrustStore.fromJson(trust.toJson(), state.userId)
+        try {
+            revocation.applyToTrust(updated)
+            val ownKeys = revocation.ownKeysPickle(account, storageKey)
+            val trustStore = updated.pickle(account, storageKey)
+            val sealed = revocation.pickle(account, storageKey)
+            val previous = listOf(state.ownKeys, state.trustStore, state.revocation)
+            val previousRevision = state.secretsRevision
+            state.ownKeys = ownKeys
+            state.secretsRevision = secretsRevision
+            state.trustStore = trustStore
+            state.revocation = sealed
+            try {
+                save()
+            } catch (failure: Throwable) {
+                state.ownKeys = previous[0]
+                state.trustStore = previous[1]
+                state.revocation = previous[2]
+                state.secretsRevision = previousRevision
+                throw failure
+            }
+        } catch (failure: Throwable) {
+            updated.close()
+            throw failure
+        }
+        trust.close()
+        trust = updated
+        // 自分の鍵が変わったので、鍵バックアップの今の版は検証し直す。
+        backupState?.suspend()
+    }
+
+    /** 記録がある相手（失効で署名し直す候補を集めるため。Web の `trustRecordedUsers`）。 */
+    @Synchronized
+    fun trustRecordedUsers(): List<String> =
+        ((json.parseToJsonElement(trust.toJson()) as? JsonObject)?.get("records") as? JsonObject)?.keys?.toList().orEmpty()
 
     /** 配布先の判定の記録（#361 以降が使う）。変えたら [saveTrustStore] で保存し直す。 */
     val trustStore: TrustStore get() = trust
