@@ -66,7 +66,7 @@ interface MessageListProps {
   isWritePending?: boolean;
   isError: boolean;
   currentUserId: string | null;
-  /** 操作権限を伴わない閲覧者 ID。読み取り専用表示でメンションを判定する。 */
+  /** 操作権限を伴わない閲覧者 ID。読み取り専用表示でメンションと自分のリアクションを判定する。 */
   viewerId?: string | null;
   canModerate?: boolean;
   editingId: string | null;
@@ -429,6 +429,7 @@ function MessageScrollViewport({
   onLiveAnnouncementChange,
 }: MessageScrollViewportProps) {
   const { t } = useTranslation();
+  const reactionUserId = currentUserId ?? viewerId ?? null;
   const [cacheKey] = useState(() =>
     channelId ? buildChannelScrollKey(channelId, currentUserId) : null,
   );
@@ -1337,13 +1338,13 @@ function MessageScrollViewport({
                   mentionUserId={viewerId === undefined ? currentUserId : viewerId}
                   reactions={
                     item.message.display_data
-                      ? (groupReactions(item.message.display_data.reactions, currentUserId).get(
+                      ? (groupReactions(item.message.display_data.reactions, reactionUserId).get(
                           item.message.id,
                         ) ?? [])
                       : (reactions.get(item.message.id) ?? [])
                   }
                   kitchenCatalog={kitchenCatalog}
-                  canReact={canReact}
+                  canReact={canReact && !item.message.thread_archive_at}
                   onReaction={(emoji) => onReaction(item.message.id, emoji)}
                   onPickReaction={() => onPickReaction(item.message.id)}
                   isOwn={!!currentUserId && item.message.user_id === currentUserId}
