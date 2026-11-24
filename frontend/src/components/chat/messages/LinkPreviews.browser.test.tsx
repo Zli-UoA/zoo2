@@ -1,5 +1,13 @@
 import "../../../styles.css";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  Outlet,
+  RouterProvider,
+} from "@tanstack/react-router";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { ApiError } from "../../../lib/api/client";
 import { HomePostContent } from "../../home/HomePostContent";
@@ -387,4 +395,42 @@ it("shows the cached card during a slow background refresh and replaces every mo
   });
   expect(screen.getAllByRole("link", { name: /更新済みのカード/ })).toHaveLength(2);
   expect(screen.queryByText("保存済みのカード")).toBeNull();
+});
+
+function renderInRouter(content: string) {
+  const root = createRootRoute({ component: Outlet });
+  const home = createRoute({
+    getParentRoute: () => root,
+    path: "/",
+    component: () => <LinkPreviews content={content} />,
+  });
+  const channel = createRoute({
+    getParentRoute: () => root,
+    path: "/channels/$channelId",
+    component: () => <p>Channel opened</p>,
+  });
+  const router = createRouter({
+    routeTree: root.addChildren([home, channel]),
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+  });
+  render(<RouterProvider router={router} />);
+  return router;
+}
+
+it("opens the card of this app's message link in the same tab, but other cards in a new tab", async () => {
+  api.get.mockRejectedValue(new Error("unavailable"));
+  const own = `${window.location.origin}/channels/c1?message=m1`;
+  const router = renderInRouter(`${own} https://example.com/page`);
+  const cards = await screen.findAllByRole("link");
+  expect(cards).toHaveLength(2);
+  const [ownCard, externalCard] = cards;
+  expect(ownCard!.getAttribute("target")).toBeNull();
+  expect(ownCard!.getAttribute("href")).toBe("/channels/c1?message=m1");
+  expect(externalCard!.getAttribute("target")).toBe("_blank");
+  expect(externalCard!.getAttribute("rel")).toBe("noopener noreferrer");
+  expect(externalCard!.getAttribute("href")).toBe("https://example.com/page");
+
+  fireEvent.click(ownCard!);
+  await screen.findByText("Channel opened");
+  expect(router.state.location.href).toBe("/channels/c1?message=m1");
 });
