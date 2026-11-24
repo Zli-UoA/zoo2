@@ -305,26 +305,7 @@ internal class AndroidPlatform(
                 require(data.text("base64").length <= 24 * 1024 * 1024)
                 val bytes = android.util.Base64.decode(data.text("base64"), android.util.Base64.DEFAULT)
                 require(bytes.size <= 16 * 1024 * 1024)
-                val target = withContext(Dispatchers.IO) {
-                    val directory = java.io.File(activity.cacheDir, "preview-files").apply { mkdirs() }
-                    // Share only user-selected files, retaining at most 64 MiB in the private cache.
-                    val existing = directory.listFiles().orEmpty().sortedBy { it.lastModified() }.toMutableList()
-                    var total = existing.sumOf { it.length() }
-                    while (existing.isNotEmpty() && (total + bytes.size > 64 * 1024 * 1024 || existing.first().lastModified() < System.currentTimeMillis() - 86_400_000)) {
-                        val old = existing.removeAt(0); total -= old.length(); old.delete()
-                    }
-                    val safeName = data.text("name").substringAfterLast('/').substringAfterLast('\\').replace(Regex("[\\p{Cntrl}]"), "_").take(120).ifEmpty { "attachment" }
-                    java.io.File(directory, "${UUID.randomUUID()}-$safeName").apply { writeBytes(bytes) }
-                }
-                withContext(Dispatchers.Main) {
-                    val uri = androidx.core.content.FileProvider.getUriForFile(activity, "${activity.packageName}.preview-files", target)
-                    val share = Intent(Intent.ACTION_SEND).apply {
-                        type = data.text("type").ifEmpty { "application/octet-stream" }
-                        putExtra(Intent.EXTRA_STREAM, uri)
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    }
-                    activity.startActivity(Intent.createChooser(share, data.text("name")))
-                }
+                shareFile(bytes, data.text("name"), data.text("type"))
                 "{}"
             }
             "attachmentDownload" -> {
@@ -355,6 +336,34 @@ internal class AndroidPlatform(
             "refreshUser" -> "{}" // Profile updates are rendered by the shared users Shape.
             else -> error("Android では未対応の操作です: $name")
         }
+
+    /**
+     * 端末の非公開キャッシュにファイルを書き、共有の画面で開く（プレビューの保存と、復号した暗号化の添付。
+     * 暗号化の添付は平文を文字列にしないで、そのまま書く）。キャッシュは 64 MiB と 1 日までに保つ。
+     */
+    suspend fun shareFile(bytes: ByteArray, name: String, type: String) {
+        require(bytes.size <= 64 * 1024 * 1024)
+        val target = withContext(Dispatchers.IO) {
+            val directory = java.io.File(activity.cacheDir, "preview-files").apply { mkdirs() }
+            // Share only user-selected files, retaining at most 64 MiB in the private cache.
+            val existing = directory.listFiles().orEmpty().sortedBy { it.lastModified() }.toMutableList()
+            var total = existing.sumOf { it.length() }
+            while (existing.isNotEmpty() && (total + bytes.size > 64 * 1024 * 1024 || existing.first().lastModified() < System.currentTimeMillis() - 86_400_000)) {
+                val old = existing.removeAt(0); total -= old.length(); old.delete()
+            }
+            val safeName = sharedFileName(name.substringAfterLast('/').substringAfterLast('\\').replace(Regex("[\\p{Cntrl}]"), "_"))
+            java.io.File(directory, "${UUID.randomUUID()}-$safeName").apply { writeBytes(bytes) }
+        }
+        withContext(Dispatchers.Main) {
+            val uri = androidx.core.content.FileProvider.getUriForFile(activity, "${activity.packageName}.preview-files", target)
+            val share = Intent(Intent.ACTION_SEND).apply {
+                this.type = type.ifEmpty { "application/octet-stream" }
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            activity.startActivity(Intent.createChooser(share, name))
+        }
+    }
 
     private suspend fun registerFiles(selected: List<Uri>, mediaStoreId: String? = null): String {
         val rows =
@@ -410,4 +419,31 @@ internal class AndroidPlatform(
                 output.toByteArray()
             }
         }
+}
+
+/**
+ * 共有のために書くファイルの名前（UUID とハイフンの 37 バイトを足して、ファイル名の上限 255 バイトに収める）。
+ * 短い名前はそのまま使い、長い名前は文字の途中で切らずに縮め、拡張子は残す。
+ */
+internal fun sharedFileName(name: String, maxBytes: Int = 255 - 37): String {
+    fun bytes(value: String) = value.toByteArray(Charsets.UTF_8).size
+    val clean = name.ifEmpty { "attachment" }
+    if (bytes(clean) <= maxBytes) return clean
+    val dot = clean.lastIndexOf('.')
+    val extension = if (dot > 0 && bytes(clean.substring(dot)) <= 32) clean.substring(dot) else ""
+    val budget = maxBytes - bytes(extension)
+    val stem = StringBuilder()
+    var used = 0
+    var index = 0
+    // 拡張子を残せないときは、縮めた末尾が新しい拡張子（`.exe` など）にならないよう、ドットを `_` にする。
+    val base = clean.substring(0, clean.length - extension.length).let { if (extension.isEmpty()) it.replace('.', '_') else it }
+    while (index < base.length) {
+        val end = base.offsetByCodePoints(index, 1)
+        val size = bytes(base.substring(index, end))
+        if (used + size > budget) break
+        stem.append(base, index, end)
+        used += size
+        index = end
+    }
+    return (stem.toString() + extension).ifEmpty { "attachment" }
 }

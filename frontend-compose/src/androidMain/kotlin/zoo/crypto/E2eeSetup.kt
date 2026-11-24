@@ -62,7 +62,7 @@ interface E2eeSetupApi {
     suspend fun backupKeys(version: String, after: String?): JsonObject
 
     /** `POST /api/e2ee/key_backup/keys?version=<版>&secrets_revision=<数>`。 */
-    suspend fun uploadBackupKeys(version: String, secretsRevision: Long, body: JsonObject)
+    suspend fun uploadBackupKeys(version: String, secretsRevision: Long, body: JsonObject, proof: String?)
 }
 
 /** 今の状態（React の `E2eeStatus`、TUI の `E2eeStatus` と同じ）。 */
@@ -283,10 +283,13 @@ class E2eeSetup(
                         is BackupUploadRequest.Upload -> prepared
                     }
                 try {
-                    api.uploadBackupKeys(request.version, request.secretsRevision, request.body)
+                    api.uploadBackupKeys(request.version, request.secretsRevision, request.body, request.proof)
                 } catch (failure: Throwable) {
-                    val code = (failure as? ApiException)?.takeIf { it.status == 409 }?.code()
-                    val conflict = code == "E2EE_WRONG_BACKUP_VERSION" || code == "E2EE_SSSS_CONFLICT"
+                    val api = failure as? ApiException
+                    val code = api?.takeIf { it.status == 409 || it.status == 403 }?.code()
+                    // 証明が今の版と合わない（403）も、版の食い違いと同じく送るのをやめる（Web・TUI と同じ）。
+                    val conflict = api?.status == 409 && (code == "E2EE_WRONG_BACKUP_VERSION" || code == "E2EE_SSSS_CONFLICT") ||
+                        api?.status == 403 && code == "E2EE_BACKUP_PROOF_INVALID"
                     withContext(io) {
                         store.backupUploadFailed(request.id, conflict)
                         // SSSS の秘密が書き換えられた（失効など）。解錠し直すまで送らない。
