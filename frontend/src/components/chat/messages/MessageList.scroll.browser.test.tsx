@@ -24,6 +24,7 @@ import {
 } from "./messageScroll";
 import { MessageList } from "./MessageList";
 import { requestMessageJump } from "./messageLink";
+import { MESSAGE_TARGET_FLASH_MS } from "./messageTarget";
 import { ThreadPane } from "./ThreadPane";
 
 const mockCollection = {
@@ -1081,7 +1082,8 @@ describe("MessageList and ThreadPane initial bottom landing & channel switch", (
     });
   });
 
-  it("scrolls back to the target when a link to the already-targeted message is pressed again", async () => {
+  /** URL が `?message=j-8` を指すチャンネルを描く。j-47 の本文に、j-8 へのリンクがある。 */
+  function renderJumpChannel() {
     const channelId = "chan-jump";
     const link = `${window.location.origin}/channels/${channelId}?message=j-8`;
     const messages = Array.from({ length: 50 }, (_, index) => ({
@@ -1132,12 +1134,18 @@ describe("MessageList and ThreadPane initial bottom landing & channel switch", (
     const bodyLink = () =>
       scroller().querySelector<HTMLAnchorElement>(`a[href="/channels/${channelId}?message=j-8"]`);
 
-    await waitFor(() => expect(targetInView()).toBe(true));
-    // 対象の行へスクロールしたら、その行だけを強調する（常時の枠線は付けない）。
     const targetOverlay = () =>
       scroller().querySelector<HTMLElement>(
         '[data-message-id="j-8"] [data-message-target-highlight]',
       );
+    return { channelId, router, scroller, targetInView, bodyLink, targetOverlay };
+  }
+
+  it("scrolls back to the target when a link to the already-targeted message is pressed again", async () => {
+    const { channelId, router, scroller, targetInView, bodyLink, targetOverlay } =
+      renderJumpChannel();
+    await waitFor(() => expect(targetInView()).toBe(true));
+    // 対象の行へスクロールしたら、その行だけを強調する（常時の枠線は付けない）。
     await waitFor(() => expect(targetOverlay()).toBeTruthy());
     expect(scroller().querySelector('[data-message-id="j-8"]')!.className).not.toContain("ring");
     expect(scroller().querySelectorAll("[data-message-target-highlight]")).toHaveLength(1);
@@ -1170,6 +1178,28 @@ describe("MessageList and ThreadPane initial bottom landing & channel switch", (
       expect(targetOverlay()).not.toBe(firstOverlay);
     });
     expect(router.state.location.href).toBe(`/channels/${channelId}?message=j-8`);
+  });
+
+  it("does not replay an ended highlight when the target row is mounted again before the state is cleared", async () => {
+    const { scroller, targetInView, targetOverlay } = renderJumpChannel();
+    await waitFor(() => expect(targetInView()).toBe(true));
+    await waitFor(() => expect(targetOverlay()).toBeTruthy());
+
+    // 読み進めると、対象の行は仮想リストから外れる。
+    scroller().scrollTop = scroller().scrollHeight;
+    await waitFor(() => expect(scroller().querySelector('[data-message-id="j-8"]')).toBeNull());
+
+    // 時刻だけを進める。強調は終わっているが、状態を消すタイマーはまだ動いていない。
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + MESSAGE_TARGET_FLASH_MS + 1);
+      // 対象の行が、もう一度描かれる。終わった強調を、先頭から再生し直してはいけない。
+      scroller().scrollTop = 0;
+      await waitFor(() => expect(scroller().querySelector('[data-message-id="j-8"]')).toBeTruthy());
+      expect(targetOverlay()).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("highlights the target reply in ThreadPane once and replays it when the link is pressed again", async () => {

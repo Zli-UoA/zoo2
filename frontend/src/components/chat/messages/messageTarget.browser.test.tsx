@@ -26,22 +26,42 @@ describe("useMessageTargetFlash", () => {
     expect(result.current.runFor("m2")).toBe(3);
   });
 
-  it("clears itself after the animation has ended, so a row mounted later does not replay it", () => {
+  it("clears itself when the animation ends, so a row mounted later does not replay it", () => {
     vi.useFakeTimers();
     const { result } = renderHook(() => useMessageTargetFlash());
     act(() => result.current.play("m1"));
 
     // 再生の途中では消えない。
     act(() => {
-      vi.advanceTimersByTime(MESSAGE_TARGET_FLASH_MS);
+      vi.advanceTimersByTime(MESSAGE_TARGET_FLASH_MS - 100);
     });
     expect(result.current.runFor("m1")).toBe(1);
 
-    // 終わったら消える。
+    // CSS のアニメーションが終わる時刻に、そろえて消える。
     act(() => {
-      vi.advanceTimersByTime(300);
+      vi.advanceTimersByTime(100);
     });
     expect(result.current.runFor("m1")).toBeUndefined();
+  });
+
+  it("does not hand an ended run to a row mounted before the clearing timer fires", () => {
+    vi.useFakeTimers();
+    const { result, rerender } = renderHook(() => useMessageTargetFlash());
+    act(() => result.current.play("m1"));
+    expect(result.current.runFor("m1")).toBe(1);
+
+    // 時刻だけが進み、状態を消すタイマーはまだ動いていない（遅れた）状態。
+    // このあとに描かれる行（一覧から外れて戻った行）へは、終わった強調を渡さない。
+    vi.setSystemTime(Date.now() + MESSAGE_TARGET_FLASH_MS + 1);
+    rerender();
+    expect(result.current.runFor("m1")).toBeUndefined();
+
+    // 再生の途中なら、渡す。
+    act(() => result.current.play("m1"));
+    expect(result.current.runFor("m1")).toBe(2);
+    vi.setSystemTime(Date.now() + MESSAGE_TARGET_FLASH_MS - 100);
+    rerender();
+    expect(result.current.runFor("m1")).toBe(2);
   });
 
   it("counts the duration again from the latest play", () => {

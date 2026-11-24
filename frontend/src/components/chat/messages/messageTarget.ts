@@ -32,25 +32,34 @@ export function useMessageJumpRequest(
 export interface MessageTargetFlash {
   id: string;
   run: number;
+  /** 再生を始めた時刻（`Date.now()`）。終わったあとの行に、古い強調を渡さないために使う。 */
+  startedAt: number;
 }
 
 /**
- * 対象の行へスクロールしたときに、その行の強調を再生する。`play` を呼ぶたびに最初から再生し直し、
- * 再生が終わる頃に自分で消える（行が一覧から外れて、再び描かれたときに、古い強調をまた再生しないため）。
+ * 対象の行へスクロールしたときに、その行の強調を再生する。`play` を呼ぶたびに最初から再生し直す。
+ *
+ * 再生が終わったあとに、行が一覧から外れて再び描かれても、古い強調を再生し直さない。`runFor` が
+ * 経過時間を直接見て、終わった強調には `undefined` を返す。状態を消すタイマーは、メモリを空けて
+ * 再描画するためだけのもので、タイマーが遅れても、終わったあとの行には強調が渡らない。
+ * （再生の途中で行が外れて戻ったときは、最初から再生し直す。）
  */
 export function useMessageTargetFlash() {
   const [flash, setFlash] = useState<MessageTargetFlash | null>(null);
   const play = useCallback((id: string) => {
-    setFlash((previous) => ({ id, run: (previous?.run ?? 0) + 1 }));
+    setFlash((previous) => ({ id, run: (previous?.run ?? 0) + 1, startedAt: Date.now() }));
   }, []);
   useEffect(() => {
     if (!flash) return;
-    const timer = setTimeout(() => setFlash(null), MESSAGE_TARGET_FLASH_MS + 200);
+    const timer = setTimeout(() => setFlash(null), MESSAGE_TARGET_FLASH_MS);
     return () => clearTimeout(timer);
   }, [flash]);
-  /** その行に渡す `highlightRun`。強調しない行は `undefined`。 */
+  /** その行に渡す `highlightRun`。強調しない行と、再生が終わった行は `undefined`。 */
   const runFor = useCallback(
-    (id: string): number | undefined => (flash?.id === id ? flash.run : undefined),
+    (id: string): number | undefined =>
+      flash?.id === id && Date.now() - flash.startedAt < MESSAGE_TARGET_FLASH_MS
+        ? flash.run
+        : undefined,
     [flash],
   );
   return { play, runFor };
