@@ -964,3 +964,58 @@ it("shows the last edit time when the marker receives keyboard focus", async () 
   expect(screen.getByRole("img", { name: "編集済み" })).toHaveFocus();
   expect((await screen.findByRole("tooltip")).textContent).toContain("編集済み");
 });
+
+describe("message forwarding UI in MessageRow", () => {
+  it("places Forward below Open thread and above Edit message in desktop menu and touch sheet", async () => {
+    const onForward = vi.fn();
+    renderRow(buildItem({ channel_id: "channel-1" }), true, {
+      canReact: true,
+      canDelete: true,
+      onOpenThread: () => {},
+      onForward,
+    });
+
+    const expectedWithForward = [
+      "リアクションを追加",
+      "スレッドを開く",
+      "メッセージを転送…",
+      "メッセージを編集",
+      "原文をコピー",
+      "メッセージリンクをコピー",
+      "Appでメッセージを操作",
+      "削除",
+    ];
+
+    screen.getByRole("button", { name: "その他の操作" }).focus();
+    await userEvent.keyboard("{Enter}");
+    await screen.findByRole("menu");
+    const menuItems = screen.getAllByRole("menuitem").map((el) => el.textContent);
+    expect(menuItems).toEqual(expectedWithForward);
+
+    await userEvent.click(screen.getByRole("menuitem", { name: "メッセージを転送…" }));
+    expect(onForward).toHaveBeenCalledTimes(1);
+
+    tapTouch(screen.getByText("hello"));
+    const sheet = await screen.findByRole("dialog", { name: "メッセージを操作" });
+    const known = new Set(expectedWithForward);
+    const sheetButtons = within(sheet)
+      .getAllByRole("button")
+      .map((b) => b.textContent?.trim() ?? "")
+      .filter((label) => known.has(label));
+    expect(sheetButtons).toEqual(expectedWithForward);
+  });
+
+  it("allows saving empty text while editing a message with forwarded_message_ids", async () => {
+    const onSaveEdit = vi.fn();
+    renderRow(buildItem({ content: "", forwarded_message_ids: ["fwd-1"] }), true, {
+      isEditing: true,
+      editingText: "",
+      onSaveEdit,
+    });
+
+    const saveBtn = screen.getByRole("button", { name: "保存" });
+    expect(saveBtn).toBeEnabled();
+    await userEvent.click(saveBtn);
+    expect(onSaveEdit).toHaveBeenCalledTimes(1);
+  });
+});

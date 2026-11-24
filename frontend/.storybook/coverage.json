@@ -377,7 +377,25 @@
         "EncryptedLocked",
         "EncryptedInvalid",
         "EncryptedWithAttachments",
-        "EncryptedAttachmentDecryptFailed"
+        "EncryptedAttachmentDecryptFailed",
+        "ForwardedMessage",
+        "ForwardedCommentless",
+        "ForwardedDeleted",
+        "ForwardedUnavailable",
+        "ForwardedNested",
+        "ForwardedWithMenu"
+      ]
+    },
+    {
+      "file": "src/components/chat/messages/ForwardMessageDialog.stories.tsx",
+      "states": [
+        "Default",
+        "SelectedDestination",
+        "SearchEmpty",
+        "NoDestinations",
+        "Submitting",
+        "Error",
+        "Mobile"
       ]
     },
     {
@@ -1828,6 +1846,24 @@
       "file": "src/components/sip/SipProvider.tsx",
       "reason": "アカウント単位の一覧取得・認証終了・チャンネル通話との排他を所有する制御層。ブラウザー統合テストで通信数と破棄を確認する。",
       "checks": ["src/components/sip/SipProvider.browser.test.tsx"]
+    },
+    {
+      "file": "src/components/chat/messages/MessageBody.tsx",
+      "story": "src/components/chat/messages/MessageRow.stories.tsx",
+      "composed": true,
+      "reason": "MessageRowのメッセージ本文・編集済みマーカー・MFM・リンクプレビューを描画する共通コンポーネントで、MessageRowのDefault・Edited・ForwardedMessageおよびForwardedMessageCardで実表示を確認する。"
+    },
+    {
+      "file": "src/components/chat/messages/ForwardedMessageCard.tsx",
+      "story": "src/components/chat/messages/MessageRow.stories.tsx",
+      "composed": true,
+      "reason": "MessageRowのForwardedMessage・ForwardedCommentless・ForwardedDeleted・ForwardedUnavailable・ForwardedNestedの各ストーリーで転送元カードの解決状態と表示を確認する。",
+      "checks": ["src/components/chat/messages/ForwardedMessageCard.browser.test.tsx"]
+    },
+    {
+      "file": "src/components/chat/messages/ForwardMessageDialog.tsx",
+      "story": "src/components/chat/messages/ForwardMessageDialog.stories.tsx",
+      "checks": ["src/components/chat/messages/ForwardMessageDialog.browser.test.tsx"]
     }
   ]
 }

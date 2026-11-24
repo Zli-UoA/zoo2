@@ -251,7 +251,32 @@
     "copyLink": "Copy message link",
     "linkCopied": "Message link copied",
     "linkCopyFailed": "Could not copy the message link",
-    "edited": "Edited"
+    "edited": "Edited",
+    "forward": "Forward message…",
+    "forwardTitle": "Forward this message",
+    "forwardSearchPlaceholder": "Search channels or members",
+    "forwardDestinationLabel": "Destination",
+    "forwardClearDestination": "Remove {{name}}",
+    "forwardNoDestinations": "No channels or DMs available to forward to",
+    "forwardCommentPlaceholder": "Add a message (optional)",
+    "forwardCommentLabel": "Comment",
+    "forwardPreviewLabel": "Forwarded message preview",
+    "forwardSubmit": "Forward",
+    "forwarding": "Forwarding…",
+    "forwarded": "Message forwarded",
+    "forwardedTo": "Forwarded to {{channel}}",
+    "forwardSourceUnavailable": "The original message does not exist or cannot be forwarded",
+    "forwardLoading": "Loading forwarded message",
+    "forwardDeleted": "This message was deleted",
+    "forwardUnavailable": "You don't have permission to view this message",
+    "forwardLoadError": "Couldn't load forwarded message",
+    "forwardSourceChannel": "Posted in {{channel}}",
+    "forwardSourceThread": "Reply in thread in {{channel}}",
+    "forwardQuoteLabel": "Forwarded message from {{author}}",
+    "forwardAttachmentCount_one": "{{count}} attachment",
+    "forwardAttachmentCount_other": "{{count}} attachments",
+    "forwardNestedCompact": "This post also includes a forwarded message",
+    "forwardNestedNote": "Includes another forwarded message · View original"
   },
   "attachments": {
     "recentPhotos": "Recent photos",
@@ -446,7 +471,8 @@
     "unreadStatus": "Unread",
     "readStatus": "Read",
     "actors_one": "{{actor}} and 1 other",
-    "actors_other": "{{actor}} and {{count}} others"
+    "actors_other": "{{actor}} and {{count}} others",
+    "forwardedPreview": "Forwarded a message"
   },
   "webhooks": {
     "title": "Webhook settings",

@@ -17,24 +17,43 @@ import {
   useEncryptedAttachmentUpload,
   useMessageAttachments,
 } from "../../../hooks/useAttachments";
+import {
+  ForwardedMessagesProvider,
+  useForwardedMessages,
+} from "../../../hooks/useForwardedMessages";
 import type { AttachmentInfo } from "@zoo/crypto-wasm";
 
 import type { UploadedAttachment } from "../../../lib/api/attachments";
-import { useChannelMembers, useUsers, useMessageFeed } from "../../../hooks/useRealtime";
+import type {
+  CreateMessageRequest,
+  MessageResponse,
+  ResolvedForwardMessage,
+} from "../../../lib/api/types";
+import {
+  useActiveChannels,
+  useChannelMembers,
+  useUsers,
+  useMessageFeed,
+  useMyChannelMemberships,
+} from "../../../hooks/useRealtime";
 import { useMessageById, useThreadFeed, useThreadRoot } from "../../../hooks/useThread";
 import { useWriteRunner } from "../../../hooks/useWriteRunner";
 import { groupAttachmentsByMessage } from "../../../lib/attachments";
 import { useCollections } from "../../../lib/electric/collections-context";
+import type { AttachmentRow } from "../../../lib/electric/types";
 import type { ChannelUserWriteMetadata } from "../../../lib/electric/writes";
 import { useOfflineStatus } from "../../../lib/offline/offline-context";
 import { nowIso } from "../../../lib/time";
+import { useLocale } from "../../i18n/LocaleProvider";
 import { useShell } from "../../layout/shell-context";
 import { ConfirmActionDialog } from "../../ui/confirm-action-dialog";
 import { useTyping } from "../../../hooks/useTyping";
 import { TypingIndicator } from "./TypingIndicator";
 import { Composer } from "./Composer";
+import { ForwardMessageDialog, buildForwardDestinations } from "./ForwardMessageDialog";
 import { JoinPrompt } from "./JoinPrompt";
 import { MessageList } from "./MessageList";
+import type { FeedMessage } from "./messageFormat";
 import { ReactionPicker } from "./ReactionPicker";
 import { ThreadPane } from "./ThreadPane";
 import { ThreadPaneStatus } from "./ThreadPaneStatus";
@@ -205,7 +224,10 @@ export function MessagePane({
       ? uploadEncryptedAttachment
       : undefined
     : channelUpload;
-  const { currentUserId } = useCurrentUser();
+  const { currentUserId, isAdmin } = useCurrentUser();
+  const { locale } = useLocale();
+  const channelsQuery = useActiveChannels();
+  const myMemberships = useMyChannelMemberships();
   const commandSuggestions = useChannelCommands(channelId, currentUserId);
   const { isOnline } = useOfflineStatus();
   const typing = useTyping(channelId, null, !readOnly && isMember && !!currentUserId);
@@ -747,13 +769,24 @@ export function MessagePane({
   const handleSaveEdit = useCallback(async () => {
     const id = editingId;
     const content = editingText.trim();
-    if (!id || !content || isArchivedMessage(id) || isUnderDeletedRoot(id) || sendBlocked) {
+    if (!id || isArchivedMessage(id) || isUnderDeletedRoot(id) || sendBlocked) {
+      return;
+    }
+    const row =
+      messagesCollection.get(id) ??
+      feed.find((item) => item.id === id) ??
+      (threadRoot?.id === id ? threadRoot : undefined) ??
+      threadReplies.find((item) => item.id === id);
+    const rowAttachments = row?.display_data?.attachments ?? attachmentsByMessage.get(id) ?? [];
+    const allowEmpty =
+      !cryptoDeps && (rowAttachments.length > 0 || (row?.forwarded_message_ids?.length ?? 0) > 0);
+    if (!content && !allowEmpty) {
       return;
     }
     if (cryptoDeps) {
-      const row = messagesCollection.get(id);
+      const targetRow = messagesCollection.get(id);
       const decrypted = decryptions.get(id);
-      if (!row || decrypted?.status !== "decrypted" || savingEdit.current) return;
+      if (!targetRow || decrypted?.status !== "decrypted" || savingEdit.current) return;
       // 送れるまで編集中の本文を残す（失敗したら、そのまま直して保存し直せる）。
       savingEdit.current = true;
       try {
@@ -761,7 +794,7 @@ export function MessagePane({
           channelId,
           shapeEpoch: membershipEpoch,
           messageId: id,
-          parentId: row.parent_id,
+          parentId: targetRow.parent_id,
           revision: editingRevision + 1,
           body: content,
           kind: decrypted.kind,
@@ -808,6 +841,10 @@ export function MessagePane({
     editingRevision,
     run,
     messagesCollection,
+    feed,
+    threadRoot,
+    threadReplies,
+    attachmentsByMessage,
     isArchivedMessage,
     isUnderDeletedRoot,
     sendBlocked,
@@ -834,6 +871,126 @@ export function MessagePane({
     );
   }, [pendingDeleteId, run, messagesCollection, isArchivedMessage, isUnderDeletedRoot]);
 
+  const forwardedIds = useMemo(() => {
+    if (treatAsEncrypted) return [];
+    const rows = [...feed, ...threadReplies, ...(threadRoot ? [threadRoot] : [])];
+    return rows.flatMap((row) => row.forwarded_message_ids ?? []);
+  }, [treatAsEncrypted, feed, threadReplies, threadRoot]);
+  const forwardedMessages = useForwardedMessages(forwardedIds, !treatAsEncrypted);
+
+  const currentChannel = useMemo(
+    () => (channelsQuery.data ?? []).find((channel) => channel.id === channelId) ?? null,
+    [channelsQuery.data, channelId],
+  );
+  const forwardDestinations = useMemo(
+    () =>
+      buildForwardDestinations({
+        channels: channelsQuery.data ?? [],
+        memberships: myMemberships.memberships,
+        users: usersQuery.data ?? [],
+        currentUserId,
+        isAdmin,
+        locale,
+        t,
+      }),
+    [
+      channelsQuery.data,
+      myMemberships.memberships,
+      usersQuery.data,
+      currentUserId,
+      isAdmin,
+      locale,
+      t,
+    ],
+  );
+  const [forwardingSource, setForwardingSource] = useState<ResolvedForwardMessage | null>(null);
+  const [isForwarding, setIsForwarding] = useState(false);
+  const [forwardError, setForwardError] = useState<string | null>(null);
+
+  const handleOpenForward = useCallback(
+    (msg: FeedMessage, msgAttachments: AttachmentRow[]) => {
+      if (treatAsEncrypted || !currentUserId) return;
+      const participantUsers = (members ?? []).flatMap((member) => {
+        const user = (usersQuery.data ?? []).find((candidate) => candidate.id === member.user_id);
+        return user
+          ? [{ id: user.id, user_name: user.user_name, display_name: user.display_name }]
+          : [];
+      });
+      setForwardError(null);
+      setForwardingSource({
+        id: msg.id,
+        channel_id: msg.channel_id ?? channelId,
+        channel_name: currentChannel?.channel_name ?? channelName ?? "",
+        is_private: currentChannel?.is_private ?? false,
+        is_dm: currentChannel?.is_dm ?? false,
+        dm_participants: participantUsers,
+        parent_id: msg.parent_id,
+        user_id: msg.user_id,
+        created_at: msg.created_at,
+        updated_at: msg.updated_at ?? null,
+        content: msg.content,
+        card: msg.card ?? null,
+        components: msg.components ?? null,
+        message_kind: msg.message_kind ?? null,
+        author: {
+          id: msg.user_id,
+          user_name: msg.user_name ?? msg.user_id,
+          display_name: msg.display_name ?? msg.user_name ?? msg.user_id,
+          avatar_url: msg.avatar_url ?? null,
+          is_bot: !!msg.is_bot,
+          app_id: msg.app_id ?? null,
+        },
+        emojis: msg.display_data?.emojis ?? {},
+        attachments: msgAttachments,
+        has_forwards: (msg.forwarded_message_ids?.length ?? 0) > 0,
+      });
+    },
+    [
+      treatAsEncrypted,
+      currentUserId,
+      members,
+      usersQuery.data,
+      channelId,
+      currentChannel,
+      channelName,
+    ],
+  );
+
+  const handleSubmitForward = useCallback(
+    async (destinationChannelId: string, comment: string) => {
+      if (!forwardingSource || isForwarding) return;
+      setIsForwarding(true);
+      setForwardError(null);
+      try {
+        const body: CreateMessageRequest = {
+          id: crypto.randomUUID(),
+          channel_id: destinationChannelId,
+          content: comment,
+          forwarded_message_ids: [forwardingSource.id],
+        };
+        await appClient.post<MessageResponse>("/api/messages", body);
+        const targetDest = forwardDestinations.find((dest) => dest.id === destinationChannelId);
+        setForwardingSource(null);
+        toast.success(
+          targetDest
+            ? t("messages.forwardedTo", {
+                channel: targetDest.isDm ? targetDest.label : `#${targetDest.label}`,
+              })
+            : t("messages.forwarded"),
+        );
+      } catch (cause) {
+        if (cause instanceof ApiError && cause.status === 404) {
+          setForwardError(t("messages.forwardSourceUnavailable"));
+        } else {
+          setForwardError(localizeApiError(cause, t));
+        }
+      } finally {
+        setIsForwarding(false);
+      }
+    },
+    [forwardingSource, isForwarding, appClient, forwardDestinations, t],
+  );
+
   const threadTargetMessageId =
     resolvedTargetId &&
     threadPaneRoot &&
@@ -850,233 +1007,255 @@ export function MessagePane({
       encrypted={treatAsEncrypted}
       encryptedSince={encryptedSince}
     >
-      <section className="relative flex h-full min-h-0">
-        <div className="flex min-w-0 flex-1 flex-col">
-          {channelReactions.isError ||
-          messagesQuery.isError ||
-          messagesQuery.persistedStatus === "error" ? (
-            <div
-              role="status"
-              className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-2"
-            >
-              {channelReactions.isError ? (
-                <span className="text-xs text-destructive">{t("reactions.fetchError")}</span>
-              ) : null}
-              {messagesQuery.isError ? (
-                <span
-                  className={
-                    feed.length > 0 ? "text-xs text-muted-foreground" : "text-xs text-destructive"
-                  }
-                >
-                  {feed.length > 0 ? t("offline.cached") : t("messages.fetchError")}
-                </span>
-              ) : null}
-              {messagesQuery.persistedStatus === "error" ? (
-                <span className="text-xs text-destructive">
-                  {t("offline.persistenceErrorTitle")}
-                </span>
-              ) : null}
-            </div>
-          ) : null}
-
-          <MessageList
-            targetMessageId={targetMessageId}
-            key={`${channelId}:${currentUserId}`}
-            channelId={channelId}
-            messages={feed}
-            isWritePending={isWritePending}
-            isLoading={messagesQuery.isLoading}
-            isError={messagesQuery.isError}
-            currentUserId={readOnly ? null : currentUserId}
-            viewerId={isMember ? currentUserId : null}
-            canModerate={canModerate}
-            editingId={editingId}
-            editingText={editingText}
-            onEditingTextChange={setEditingText}
-            onStartEdit={handleStartEdit}
-            onCancelEdit={handleCancelEdit}
-            onSaveEdit={handleSaveEdit}
-            onRequestDelete={setPendingDeleteId}
-            reactions={channelReactions.reactionGroups}
-            attachments={attachmentsByMessage}
-            kitchenCatalog={channelReactions.kitchenCatalog}
-            canReact={channelReactions.canReact}
-            onReaction={channelReactions.handleReaction}
-            onPickReaction={channelReactions.openReactionPicker}
-            onOpenThread={openThread}
-            canCompose={isMember}
-            isOffline={!isOnline}
-            hasOlder={messagesQuery.hasOlder}
-            isLoadingOlder={messagesQuery.isLoadingOlder}
-            onLoadOlder={() => void messagesQuery.loadOlder()}
-            onRetry={() => window.location.reload()}
-          />
-
-          {readOnly ? null : isMember ? (
-            <>
-              <TypingIndicator users={typing.users} />
-              {downgraded ? (
-                <p role="alert" className="mx-3 mb-2 text-xs text-destructive">
-                  {t("e2ee.downgraded")}
-                </p>
-              ) : null}
-              {/* 配布先の表示は、増えた人か配れない人がいるときだけ出る。中身が後から入っても読み上げられる
-                  よう、live region は常に置いておく。 */}
-              <div role="status" aria-live="polite" data-testid="encryption-recipients-status">
-                {encrypted && recipients ? (
-                  <EncryptionRecipientsNotice summary={recipients} users={usersQuery.data ?? []} />
+      <ForwardedMessagesProvider value={forwardedMessages}>
+        <section className="relative flex h-full min-h-0">
+          <div className="flex min-w-0 flex-1 flex-col">
+            {channelReactions.isError ||
+            messagesQuery.isError ||
+            messagesQuery.persistedStatus === "error" ? (
+              <div
+                role="status"
+                className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-2"
+              >
+                {channelReactions.isError ? (
+                  <span className="text-xs text-destructive">{t("reactions.fetchError")}</span>
+                ) : null}
+                {messagesQuery.isError ? (
+                  <span
+                    className={
+                      feed.length > 0 ? "text-xs text-muted-foreground" : "text-xs text-destructive"
+                    }
+                  >
+                    {feed.length > 0 ? t("offline.cached") : t("messages.fetchError")}
+                  </span>
+                ) : null}
+                {messagesQuery.persistedStatus === "error" ? (
+                  <span className="text-xs text-destructive">
+                    {t("offline.persistenceErrorTitle")}
+                  </span>
                 ) : null}
               </div>
-              <Composer
-                commands={commandSuggestions.commands}
-                onRequestCommands={commandSuggestions.load}
-                mentionUsers={mentionUsers}
-                mentionMemberIds={mentionMemberIds}
-                key={channelId}
-                onSend={handleSend}
-                onUploadAttachment={uploadAttachment}
-                onTyping={typing.onTyping}
-                // 最初のページが届く前の書き込みは、確認 (txid) を待つ間、永続化層が
-                // 最初のページの取得を止めるため、互いに待ち合って失敗する。
-                disabled={
-                  readOnly ||
-                  postingForbidden ||
-                  sendBlocked ||
-                  !isOnline ||
-                  messagesQuery.isLoading
-                }
-                placeholder={
-                  postingForbidden
-                    ? t("channels.postingManagersOnly")
-                    : downgraded
-                      ? t("e2ee.downgraded")
-                      : checkingEncryption
-                        ? t("e2ee.checking")
-                        : sendBlocked
-                          ? t("e2ee.deviceNotReady")
-                          : isOnline
-                            ? undefined
-                            : t("offline.composeDisabled")
-                }
-              />
-            </>
-          ) : (
-            <JoinToPostPrompt
-              onJoin={() => void handleJoin()}
-              joining={isJoining}
-              disabled={!currentUserId || !isOnline}
+            ) : null}
+
+            <MessageList
+              targetMessageId={targetMessageId}
+              key={`${channelId}:${currentUserId}`}
+              channelId={channelId}
+              messages={feed}
+              isWritePending={isWritePending}
+              isLoading={messagesQuery.isLoading}
+              isError={messagesQuery.isError}
+              currentUserId={readOnly ? null : currentUserId}
+              viewerId={isMember ? currentUserId : null}
+              canModerate={canModerate}
+              editingId={editingId}
+              editingText={editingText}
+              onEditingTextChange={setEditingText}
+              onStartEdit={handleStartEdit}
+              onCancelEdit={handleCancelEdit}
+              onSaveEdit={handleSaveEdit}
+              onRequestDelete={setPendingDeleteId}
+              onForward={!treatAsEncrypted && currentUserId ? handleOpenForward : undefined}
+              reactions={channelReactions.reactionGroups}
+              attachments={attachmentsByMessage}
+              kitchenCatalog={channelReactions.kitchenCatalog}
+              canReact={channelReactions.canReact}
+              onReaction={channelReactions.handleReaction}
+              onPickReaction={channelReactions.openReactionPicker}
+              onOpenThread={openThread}
+              canCompose={isMember}
+              isOffline={!isOnline}
+              hasOlder={messagesQuery.hasOlder}
+              isLoadingOlder={messagesQuery.isLoadingOlder}
+              onLoadOlder={() => void messagesQuery.loadOlder()}
+              onRetry={() => window.location.reload()}
             />
-          )}
-        </div>
 
-        {threadPaneRoot ? (
-          <ThreadPane
-            commands={commandSuggestions.commands}
-            onRequestCommands={commandSuggestions.load}
-            targetMessageId={threadTargetMessageId}
-            mentionUsers={mentionUsers}
-            mentionMemberIds={mentionMemberIds}
-            key={threadPaneRoot.id}
-            readOnly={readOnly || !threadRoot}
-            rootDeleted={!threadRoot}
-            isArchived={threadIsArchived}
-            isMember={!readOnly && isMember}
-            isOffline={!isOnline}
-            typingUsers={threadTyping.users}
-            onTyping={threadTyping.onTyping}
-            root={threadPaneRoot}
-            replies={threadReplies}
-            membership={threadMembership.data?.membership}
-            membershipPending={threadMembership.pending}
-            membershipError={threadMembership.error}
-            membershipLoading={!threadMembership.data}
-            participantCount={threadMembership.data?.participant_count}
-            participants={threadMembership.data?.participants}
-            onMembershipRetry={() => void threadMembership.retry?.()}
-            onJoinThread={() => void threadMembership.change?.("join")}
-            onLeaveThread={() => void threadMembership.change?.("leave")}
-            onReopenThread={() => void threadMembership.change?.("unarchive")}
-            onReopenAndJoinThread={() =>
-              void (async () => {
-                // 再Openに失敗したら参加しない（アーカイブ中の参加は 409 になり、原因が分からなくなる）。
-                if (await threadMembership.change?.("unarchive")) {
-                  await threadMembership.change?.("join");
-                }
-              })()
-            }
-            isLoading={threadQuery.isLoading}
-            isError={threadQuery.isError}
-            currentUserId={readOnly || threadIsArchived || !threadRoot ? null : currentUserId}
-            viewerId={currentUserId}
-            mentionUserId={isMember ? currentUserId : null}
-            canModerate={canModerate && !threadIsArchived && !!threadRoot}
-            reactions={channelReactions.reactionGroups}
-            attachments={attachmentsByMessage}
-            onUploadAttachment={uploadAttachment}
-            kitchenCatalog={channelReactions.kitchenCatalog}
-            canReact={channelReactions.canReact && !threadIsArchived && !!threadRoot}
-            onReaction={channelReactions.handleReaction}
-            onPickReaction={channelReactions.openReactionPicker}
-            editingId={editingId}
-            editingText={editingText}
-            onEditingTextChange={setEditingText}
-            onStartEdit={handleStartEdit}
-            onCancelEdit={handleCancelEdit}
-            onSaveEdit={handleSaveEdit}
-            onRequestDelete={setPendingDeleteId}
-            onSendReply={handleSendReply}
-            onOpenThread={openThread}
-            composeDisabledReason={
-              postingForbidden
-                ? t("channels.postingManagersOnly")
-                : downgraded
-                  ? t("e2ee.downgraded")
-                  : checkingEncryption
-                    ? t("e2ee.checking")
-                    : sendBlocked
-                      ? t("e2ee.deviceNotReady")
-                      : undefined
-            }
-            postingForbidden={postingForbidden}
-            hasOlder={threadQuery.hasOlder}
-            isLoadingOlder={threadQuery.isLoadingOlder}
-            onLoadOlder={() => void threadQuery.loadOlder()}
-            onRetry={() => window.location.reload()}
-            onClose={closeThread}
+            {readOnly ? null : isMember ? (
+              <>
+                <TypingIndicator users={typing.users} />
+                {downgraded ? (
+                  <p role="alert" className="mx-3 mb-2 text-xs text-destructive">
+                    {t("e2ee.downgraded")}
+                  </p>
+                ) : null}
+                {/* 配布先の表示は、増えた人か配れない人がいるときだけ出る。中身が後から入っても読み上げられる
+                  よう、live region は常に置いておく。 */}
+                <div role="status" aria-live="polite" data-testid="encryption-recipients-status">
+                  {encrypted && recipients ? (
+                    <EncryptionRecipientsNotice
+                      summary={recipients}
+                      users={usersQuery.data ?? []}
+                    />
+                  ) : null}
+                </div>
+                <Composer
+                  commands={commandSuggestions.commands}
+                  onRequestCommands={commandSuggestions.load}
+                  mentionUsers={mentionUsers}
+                  mentionMemberIds={mentionMemberIds}
+                  key={channelId}
+                  onSend={handleSend}
+                  onUploadAttachment={uploadAttachment}
+                  onTyping={typing.onTyping}
+                  // 最初のページが届く前の書き込みは、確認 (txid) を待つ間、永続化層が
+                  // 最初のページの取得を止めるため、互いに待ち合って失敗する。
+                  disabled={
+                    readOnly ||
+                    postingForbidden ||
+                    sendBlocked ||
+                    !isOnline ||
+                    messagesQuery.isLoading
+                  }
+                  placeholder={
+                    postingForbidden
+                      ? t("channels.postingManagersOnly")
+                      : downgraded
+                        ? t("e2ee.downgraded")
+                        : checkingEncryption
+                          ? t("e2ee.checking")
+                          : sendBlocked
+                            ? t("e2ee.deviceNotReady")
+                            : isOnline
+                              ? undefined
+                              : t("offline.composeDisabled")
+                  }
+                />
+              </>
+            ) : (
+              <JoinToPostPrompt
+                onJoin={() => void handleJoin()}
+                joining={isJoining}
+                disabled={!currentUserId || !isOnline}
+              />
+            )}
+          </div>
+
+          {threadPaneRoot ? (
+            <ThreadPane
+              commands={commandSuggestions.commands}
+              onRequestCommands={commandSuggestions.load}
+              targetMessageId={threadTargetMessageId}
+              mentionUsers={mentionUsers}
+              mentionMemberIds={mentionMemberIds}
+              key={threadPaneRoot.id}
+              readOnly={readOnly || !threadRoot}
+              rootDeleted={!threadRoot}
+              isArchived={threadIsArchived}
+              isMember={!readOnly && isMember}
+              isOffline={!isOnline}
+              typingUsers={threadTyping.users}
+              onTyping={threadTyping.onTyping}
+              root={threadPaneRoot}
+              replies={threadReplies}
+              membership={threadMembership.data?.membership}
+              membershipPending={threadMembership.pending}
+              membershipError={threadMembership.error}
+              membershipLoading={!threadMembership.data}
+              participantCount={threadMembership.data?.participant_count}
+              participants={threadMembership.data?.participants}
+              onMembershipRetry={() => void threadMembership.retry?.()}
+              onJoinThread={() => void threadMembership.change?.("join")}
+              onLeaveThread={() => void threadMembership.change?.("leave")}
+              onReopenThread={() => void threadMembership.change?.("unarchive")}
+              onReopenAndJoinThread={() =>
+                void (async () => {
+                  // 再Openに失敗したら参加しない（アーカイブ中の参加は 409 になり、原因が分からなくなる）。
+                  if (await threadMembership.change?.("unarchive")) {
+                    await threadMembership.change?.("join");
+                  }
+                })()
+              }
+              isLoading={threadQuery.isLoading}
+              isError={threadQuery.isError}
+              currentUserId={readOnly || threadIsArchived || !threadRoot ? null : currentUserId}
+              viewerId={currentUserId}
+              mentionUserId={isMember ? currentUserId : null}
+              canModerate={canModerate && !threadIsArchived && !!threadRoot}
+              reactions={channelReactions.reactionGroups}
+              attachments={attachmentsByMessage}
+              onUploadAttachment={uploadAttachment}
+              kitchenCatalog={channelReactions.kitchenCatalog}
+              canReact={channelReactions.canReact && !threadIsArchived && !!threadRoot}
+              onReaction={channelReactions.handleReaction}
+              onPickReaction={channelReactions.openReactionPicker}
+              editingId={editingId}
+              editingText={editingText}
+              onEditingTextChange={setEditingText}
+              onStartEdit={handleStartEdit}
+              onCancelEdit={handleCancelEdit}
+              onSaveEdit={handleSaveEdit}
+              onRequestDelete={setPendingDeleteId}
+              onSendReply={handleSendReply}
+              onOpenThread={openThread}
+              onForward={!treatAsEncrypted && currentUserId ? handleOpenForward : undefined}
+              composeDisabledReason={
+                postingForbidden
+                  ? t("channels.postingManagersOnly")
+                  : downgraded
+                    ? t("e2ee.downgraded")
+                    : checkingEncryption
+                      ? t("e2ee.checking")
+                      : sendBlocked
+                        ? t("e2ee.deviceNotReady")
+                        : undefined
+              }
+              postingForbidden={postingForbidden}
+              hasOlder={threadQuery.hasOlder}
+              isLoadingOlder={threadQuery.isLoadingOlder}
+              onLoadOlder={() => void threadQuery.loadOlder()}
+              onRetry={() => window.location.reload()}
+              onClose={closeThread}
+            />
+          ) : threadRootId && (threadRootQuery.isLoading || threadRootQuery.isError) ? (
+            <ThreadPaneStatus
+              isError={!!threadRootQuery.isError}
+              onRetry={() => window.location.reload()}
+              onClose={closeThread}
+            />
+          ) : null}
+
+          <ReactionPicker
+            open={channelReactions.reactionMessageId !== null}
+            onOpenChange={(open) => {
+              if (!open) {
+                channelReactions.closeReactionPicker();
+              }
+            }}
+            onSelect={(emoji) => {
+              if (channelReactions.reactionMessageId) {
+                void channelReactions.handleReaction(channelReactions.reactionMessageId, emoji);
+              }
+            }}
           />
-        ) : threadRootId && (threadRootQuery.isLoading || threadRootQuery.isError) ? (
-          <ThreadPaneStatus
-            isError={!!threadRootQuery.isError}
-            onRetry={() => window.location.reload()}
-            onClose={closeThread}
+
+          <ConfirmActionDialog
+            open={pendingDeleteId !== null}
+            onOpenChange={(open) => {
+              if (!open) setPendingDeleteId(null);
+            }}
+            title={t("messages.deleteTitle")}
+            description={t("messages.deleteDescription")}
+            confirmLabel={t("messages.delete")}
+            onConfirm={handleConfirmDelete}
           />
-        ) : null}
 
-        <ReactionPicker
-          open={channelReactions.reactionMessageId !== null}
-          onOpenChange={(open) => {
-            if (!open) {
-              channelReactions.closeReactionPicker();
-            }
-          }}
-          onSelect={(emoji) => {
-            if (channelReactions.reactionMessageId) {
-              void channelReactions.handleReaction(channelReactions.reactionMessageId, emoji);
-            }
-          }}
-        />
-
-        <ConfirmActionDialog
-          open={pendingDeleteId !== null}
-          onOpenChange={(open) => {
-            if (!open) setPendingDeleteId(null);
-          }}
-          title={t("messages.deleteTitle")}
-          description={t("messages.deleteDescription")}
-          confirmLabel={t("messages.delete")}
-          onConfirm={handleConfirmDelete}
-        />
-      </section>
+          <ForwardMessageDialog
+            open={forwardingSource !== null}
+            onOpenChange={(open) => {
+              if (!open && !isForwarding) {
+                setForwardingSource(null);
+                setForwardError(null);
+              }
+            }}
+            source={forwardingSource}
+            destinations={forwardDestinations}
+            isSubmitting={isForwarding}
+            error={forwardError}
+            onSubmit={handleSubmitForward}
+          />
+        </section>
+      </ForwardedMessagesProvider>
     </MessageDecryptionsProvider>
   );
 }

@@ -98,6 +98,7 @@ export function messageFeedQuery(
         epoch: messages.epoch,
         revision: messages.revision,
         message_kind: messages.message_kind,
+        forwarded_message_ids: messages.forwarded_message_ids,
         user_name: caseWhen(
           eq(messages.display_data?.author?.id, messages.user_id),
           messages.display_data?.author?.user_name,

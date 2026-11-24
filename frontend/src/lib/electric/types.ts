@@ -90,6 +90,8 @@ export type MessageRow = {
    * （docs/e2ee.md の「受信時の検証」）。
    */
   message_kind?: string | null;
+  /** 転送（引用）元のメッセージ ID 一覧（平文チャンネルのみ）。 */
+  forwarded_message_ids?: string[] | null;
 };
 
 export type MessageReactionRow = {
@@ -176,6 +178,7 @@ export type NotificationDisplayData = {
     id: string;
     user_id: string;
     content: string;
+    has_forwards?: boolean;
     emojis?: Record<string, DisplayEmoji>;
   } | null;
   reactions: MessageDisplayData["reactions"];

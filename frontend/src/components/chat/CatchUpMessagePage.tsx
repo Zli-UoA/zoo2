@@ -11,6 +11,7 @@ import {
   withUnencryptedRows,
 } from "../../lib/e2ee/messageDecryption";
 import { useMessageAttachments } from "../../hooks/useAttachments";
+import { ForwardedMessagesProvider, useForwardedMessages } from "../../hooks/useForwardedMessages";
 import { useMessageFeed, useUsers } from "../../hooks/useRealtime";
 import { groupAttachmentsByMessage } from "../../lib/attachments";
 import { useOfflineStatus } from "../../lib/offline/offline-context";
@@ -97,6 +98,11 @@ export function CatchUpMessagePage({
     () => new Map((usersQuery.data ?? []).map((user) => [user.id, user.user_name])),
     [usersQuery.data],
   );
+  const forwardedIds = useMemo(
+    () => (treatAsEncrypted ? [] : messages.flatMap((row) => row.forwarded_message_ids ?? [])),
+    [messages, treatAsEncrypted],
+  );
+  const forwardedMessages = useForwardedMessages(forwardedIds, !treatAsEncrypted);
 
   // The boundary is the newest message visible when the page opens. Messages
   // arriving while reading stay unread for the next catch-up.
@@ -195,57 +201,59 @@ export function CatchUpMessagePage({
       encrypted={treatAsEncrypted}
       encryptedSince={encryptedSince}
     >
-      {reactionsError ? (
-        <div
-          role="status"
-          className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-2"
-        >
-          <span className="text-xs text-destructive">{t("reactions.fetchError")}</span>
-        </div>
-      ) : null}
-      <MessageList
-        key={channelId}
-        channelId={undefined}
-        messages={messages}
-        isLoading={feed.isLoading}
-        isError={feed.isError}
-        currentUserId={null}
-        viewerId={currentUserId}
-        editingId={null}
-        editingText=""
-        onEditingTextChange={() => {}}
-        onStartEdit={() => {}}
-        onCancelEdit={() => {}}
-        onSaveEdit={() => {}}
-        onRequestDelete={() => {}}
-        reactions={reactionGroups}
-        attachments={attachments}
-        kitchenCatalog={kitchenCatalog}
-        canReact={canReact}
-        onReaction={handleReaction}
-        onPickReaction={openReactionPicker}
-        canCompose={false}
-        isOffline={!isOnline}
-        unreadBoundaryId={firstUnreadId}
-        unreadBoundaryAt={firstUnreadAt ? parseUtcTimestamp(firstUnreadAt).getTime() : null}
-        hasOlder={feed.hasOlder}
-        isLoadingOlder={feed.isLoadingOlder}
-        onLoadOlder={() => void feed.loadOlder()}
-        onRetry={() => window.location.reload()}
-      />
-      <ReactionPicker
-        open={reactionMessageId !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            closeReactionPicker();
-          }
-        }}
-        onSelect={(emoji) => {
-          if (reactionMessageId) {
-            void handleReaction(reactionMessageId, emoji);
-          }
-        }}
-      />
+      <ForwardedMessagesProvider value={forwardedMessages}>
+        {reactionsError ? (
+          <div
+            role="status"
+            className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-2"
+          >
+            <span className="text-xs text-destructive">{t("reactions.fetchError")}</span>
+          </div>
+        ) : null}
+        <MessageList
+          key={channelId}
+          channelId={undefined}
+          messages={messages}
+          isLoading={feed.isLoading}
+          isError={feed.isError}
+          currentUserId={null}
+          viewerId={currentUserId}
+          editingId={null}
+          editingText=""
+          onEditingTextChange={() => {}}
+          onStartEdit={() => {}}
+          onCancelEdit={() => {}}
+          onSaveEdit={() => {}}
+          onRequestDelete={() => {}}
+          reactions={reactionGroups}
+          attachments={attachments}
+          kitchenCatalog={kitchenCatalog}
+          canReact={canReact}
+          onReaction={handleReaction}
+          onPickReaction={openReactionPicker}
+          canCompose={false}
+          isOffline={!isOnline}
+          unreadBoundaryId={firstUnreadId}
+          unreadBoundaryAt={firstUnreadAt ? parseUtcTimestamp(firstUnreadAt).getTime() : null}
+          hasOlder={feed.hasOlder}
+          isLoadingOlder={feed.isLoadingOlder}
+          onLoadOlder={() => void feed.loadOlder()}
+          onRetry={() => window.location.reload()}
+        />
+        <ReactionPicker
+          open={reactionMessageId !== null}
+          onOpenChange={(open) => {
+            if (!open) {
+              closeReactionPicker();
+            }
+          }}
+          onSelect={(emoji) => {
+            if (reactionMessageId) {
+              void handleReaction(reactionMessageId, emoji);
+            }
+          }}
+        />
+      </ForwardedMessagesProvider>
     </MessageDecryptionsProvider>
   );
 }

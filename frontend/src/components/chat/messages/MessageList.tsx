@@ -84,6 +84,7 @@ interface MessageListProps {
   onPickReaction: (messageId: string) => void;
   attachments?: Map<string, AttachmentRow[]>;
   onOpenThread?: (messageId: string) => void;
+  onForward?: (message: FeedMessage, attachments: AttachmentRow[]) => void;
   /** 送信できる状態か。false なら空状態で「最初のメッセージ」を促さない。 */
   canCompose?: boolean;
   /** オフラインか。スケルトンの代わりに保存済みがない旨を出す。 */
@@ -183,6 +184,7 @@ interface MessageScrollViewportProps {
   onPickReaction: (messageId: string) => void;
   attachments?: Map<string, AttachmentRow[]>;
   onOpenThread?: (messageId: string) => void;
+  onForward?: (message: FeedMessage, attachments: AttachmentRow[]) => void;
   loadOlder: () => void;
   hasOlder: boolean;
   isLoadingOlder: boolean;
@@ -220,6 +222,7 @@ export function MessageList({
   onPickReaction,
   attachments,
   onOpenThread,
+  onForward,
   canCompose = true,
   isOffline = false,
   unreadBoundaryId,
@@ -376,6 +379,7 @@ export function MessageList({
           onPickReaction={onPickReaction}
           attachments={attachments}
           onOpenThread={onOpenThread}
+          onForward={onForward}
           loadOlder={loadOlder}
           hasOlder={hasOlder}
           isLoadingOlder={isLoadingOlder}
@@ -423,6 +427,7 @@ function MessageScrollViewport({
   onPickReaction,
   attachments,
   onOpenThread,
+  onForward,
   loadOlder,
   hasOlder,
   isLoadingOlder,
@@ -1378,6 +1383,17 @@ function MessageScrollViewport({
                     item.message.display_data?.attachments ??
                     attachments?.get(item.message.id) ??
                     []
+                  }
+                  onForward={
+                    onForward
+                      ? () =>
+                          onForward(
+                            item.message,
+                            item.message.display_data?.attachments ??
+                              attachments?.get(item.message.id) ??
+                              [],
+                          )
+                      : undefined
                   }
                   unencryptedAfterEncrypted={
                     firstEncryptedIndex >= 0 && virtualRow.index > firstEncryptedIndex

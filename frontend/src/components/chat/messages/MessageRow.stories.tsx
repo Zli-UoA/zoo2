@@ -11,6 +11,10 @@ import {
   EncryptedChannelContext,
   MentionUserNamesContext,
 } from "../../../lib/e2ee/messageDecryption";
+import {
+  ForwardedMessagesProvider,
+  type ForwardEntryState,
+} from "../../../hooks/useForwardedMessages";
 import { storyAttachments } from "../../../../.storybook/attachment-fixtures";
 import { EncryptedAttachmentError } from "../../../lib/e2ee/attachments";
 import { EncryptedAttachmentLoaderContext } from "./EncryptedMessageAttachments";
@@ -835,5 +839,203 @@ export const EncryptedAttachmentDecryptFailed: Story = {
     await expect(
       await within(canvasElement).findByText(/添付を復号できませんでした/),
     ).toBeVisible();
+  }),
+};
+
+const forwardEntries = new Map<string, ForwardEntryState>([
+  [
+    "fwd-ok",
+    {
+      status: "ok",
+      id: "fwd-ok",
+      channel_id: "ch-src",
+      channel_name: "z_yuip",
+      is_private: false,
+      is_dm: false,
+      dm_participants: [],
+      parent_id: null,
+      user_id: "user-1",
+      created_at: "2026-01-02 20:20:00.000",
+      updated_at: null,
+      content: "あああてすと",
+      card: null,
+      components: null,
+      message_kind: "message",
+      author: {
+        id: "user-1",
+        user_name: "alice",
+        display_name: "ゆいぴー",
+        avatar_url: null,
+        is_bot: false,
+        app_id: null,
+      },
+      emojis: {},
+      attachments: [],
+      has_forwards: false,
+    },
+  ],
+  [
+    "fwd-nested",
+    {
+      status: "ok",
+      id: "fwd-nested",
+      channel_id: "ch-src",
+      channel_name: "general",
+      is_private: false,
+      is_dm: false,
+      dm_participants: [],
+      parent_id: "thread-1",
+      user_id: "user-2",
+      created_at: "2026-01-02 19:10:00.000",
+      updated_at: null,
+      content: "さらに元のメッセージ",
+      card: null,
+      components: null,
+      message_kind: "message",
+      author: {
+        id: "user-2",
+        user_name: "bob",
+        display_name: "Bob",
+        avatar_url: null,
+        is_bot: false,
+        app_id: null,
+      },
+      emojis: {},
+      attachments: [],
+      has_forwards: true,
+    },
+  ],
+  ["fwd-deleted", { status: "deleted" }],
+  ["fwd-unavailable", { status: "unavailable" }],
+]);
+
+export const ForwardedMessage: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    item: {
+      ...item,
+      message: {
+        ...item.message,
+        content: "てんそうしたよ",
+        forwarded_message_ids: ["fwd-ok"],
+      },
+    },
+  },
+  decorators: [
+    (Story) => (
+      <StoryShell>
+        <ForwardedMessagesProvider
+          value={{ entries: forwardEntries, retry: fn(), currentUserId: "user-1" }}
+        >
+          <Story />
+        </ForwardedMessagesProvider>
+      </StoryShell>
+    ),
+  ],
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("てんそうしたよ")).toBeVisible();
+    await expect(canvas.getByText("あああてすと")).toBeVisible();
+    await expect(canvas.getByRole("link", { name: "#z_yuip への投稿" })).toBeVisible();
+  }),
+};
+
+export const ForwardedCommentless: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    item: {
+      ...item,
+      message: {
+        ...item.message,
+        content: "",
+        forwarded_message_ids: ["fwd-ok"],
+      },
+    },
+  },
+  decorators: ForwardedMessage.decorators,
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(await within(canvasElement).findByText("あああてすと")).toBeVisible();
+  }),
+};
+
+export const ForwardedDeleted: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    item: {
+      ...item,
+      message: {
+        ...item.message,
+        content: "",
+        forwarded_message_ids: ["fwd-deleted"],
+      },
+    },
+  },
+  decorators: ForwardedMessage.decorators,
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(
+      await within(canvasElement).findByText("このメッセージは削除されました"),
+    ).toBeVisible();
+  }),
+};
+
+export const ForwardedUnavailable: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    item: {
+      ...item,
+      message: {
+        ...item.message,
+        content: "",
+        forwarded_message_ids: ["fwd-unavailable"],
+      },
+    },
+  },
+  decorators: ForwardedMessage.decorators,
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(
+      await within(canvasElement).findByText("このメッセージは閲覧権限がないため表示できません"),
+    ).toBeVisible();
+  }),
+};
+
+export const ForwardedNested: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    item: {
+      ...item,
+      message: {
+        ...item.message,
+        content: "スレッドから転送",
+        forwarded_message_ids: ["fwd-nested"],
+      },
+    },
+  },
+  decorators: ForwardedMessage.decorators,
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(
+      await within(canvasElement).findByRole("link", {
+        name: "この投稿にも転送（引用）があります · 元の投稿を見る",
+      }),
+    ).toBeVisible();
+  }),
+};
+
+export const ForwardedWithMenu: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    isOwn: true,
+    onOpenThread: fn(),
+    onForward: fn(),
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    (await within(canvasElement).findByRole("button", { name: "その他の操作" })).focus();
+    await userEvent.keyboard("{Enter}");
+    const items = await screen.findAllByRole("menuitem");
+    const labels = items.map((el) => el.textContent?.trim() ?? "");
+    const threadIdx = labels.indexOf("スレッドを開く");
+    const forwardIdx = labels.indexOf("メッセージを転送…");
+    const editIdx = labels.indexOf("メッセージを編集");
+    await expect(forwardIdx).toBeGreaterThan(threadIdx);
+    await expect(editIdx).toBeGreaterThan(forwardIdx);
   }),
 };
