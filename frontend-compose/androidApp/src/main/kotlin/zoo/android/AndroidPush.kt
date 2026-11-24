@@ -400,13 +400,25 @@ internal fun showPushNotification(context: Context, data: Map<String, String>, d
         val tag = notificationTag(user, id)
         val manager = context.getSystemService(NotificationManager::class.java)
         val existing = manager.activeNotifications.firstOrNull { it.tag == tag && it.id == 0 }
+        val title = data["title"].orEmpty().take(200)
+        val conversation = data["channelName"].orEmpty().take(120)
+        val actor = data["actor"].orEmpty().take(120).ifBlank { title.ifBlank { "Zoo" } }
         // The synchronized session notification may already have reply actions or a richer preview.
         if (existing != null) {
             // 同期した通知が先に出ていても、端末で復号できた本文はそこに反映する（操作はそのまま残す。#510）。
+            // スタイルは通知と同じ規則（リアクション以外は会話形式の MessagingStyle）で作り直す。
             if (decryptedBody != null) try {
-                val updated = Notification.Builder.recoverBuilder(context, existing.notification)
+                val previous = existing.notification
+                val row = obj(
+                    "notification_type" to kind, "actor_id" to actor,
+                    "created_at" to java.time.Instant.ofEpochMilli(previous.`when`).toString(),
+                    "display_data" to obj("actor" to obj("display_name" to actor),
+                        "channel" to obj("channel_name" to conversation, "is_dm" to (kind == "dm"))),
+                )
+                val avatar = previous.getLargeIcon()?.loadDrawable(context)?.let { (it as? android.graphics.drawable.BitmapDrawable)?.bitmap }
+                val updated = Notification.Builder.recoverBuilder(context, previous)
                     .setContentText(decryptedBody)
-                    .setStyle(Notification.BigTextStyle().bigText(decryptedBody))
+                    .setStyle(notificationStyle(row, decryptedBody, "Zoo", avatar))
                     .addExtras(Bundle().apply { putString(PUSH_DECRYPTED_BODY, decryptedBody) })
                     .build()
                 manager.notify(tag, 0, updated)
@@ -419,10 +431,7 @@ internal fun showPushNotification(context: Context, data: Map<String, String>, d
                 if (channel == "reactions") NotificationManager.IMPORTANCE_DEFAULT else NotificationManager.IMPORTANCE_HIGH))
         }
         val intent = store.openIntent(user, id, path) ?: return@synchronized null
-        val title = data["title"].orEmpty().take(200)
         val body = decryptedBody ?: data["body"].orEmpty().take(2000)
-        val conversation = data["channelName"].orEmpty().take(120)
-        val actor = data["actor"].orEmpty().take(120).ifBlank { title.ifBlank { "Zoo" } }
         val timestamp = System.currentTimeMillis()
         val row = obj(
             "notification_type" to kind,

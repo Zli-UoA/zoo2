@@ -179,11 +179,12 @@ internal class AndroidNotifications(
         // それで上書きしない）。
         synchronized(PushBinding.lock) {
             val latest = preservedDecryptedBody(manager, tag)
+            // エラーを出すときも、復号した本文の印は残す（次に出し直すときに本文へ戻すため）。
+            (latest ?: decrypted)?.let { kept -> builder.setExtras(android.os.Bundle().apply { putString(PUSH_DECRYPTED_BODY, kept) }) }
             if (latest != null && latest != decrypted && error == null) {
                 builder.setContentText(latest)
                     .setStyle(if (picture != null) Notification.BigPictureStyle().bigPicture(picture).setSummaryText(latest)
                         else notificationStyle(row, latest, self, avatar))
-                    .setExtras(android.os.Bundle().apply { putString(PUSH_DECRYPTED_BODY, latest) })
             }
             try { manager.notify(tag, 0, builder.build()) }
             catch (_: SecurityException) { /* Permission may be revoked while building the notification. */ }
@@ -328,7 +329,8 @@ internal class AndroidNotifications(
         pendingPictures.clear()
         pictures.clear()
         avatars.clear()
-        if (preserveNotifications) {
+        // Push と同じロックの中で、今出ている通知を読んでから出し直す（あいだに Push が出した復号した本文を上書きしない）。
+        if (preserveNotifications) synchronized(PushBinding.lock) {
             val posted = manager.activeNotifications.associateBy { it.tag }
             for (row in shown.values.toList()) {
                 val id = row.text("id")

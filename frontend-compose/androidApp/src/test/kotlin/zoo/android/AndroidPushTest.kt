@@ -74,6 +74,8 @@ class AndroidPushTest {
         val updated = manager.activeNotifications.single().notification
         assertEquals("あとで復号した本文", updated.extras.getString(Notification.EXTRA_TEXT))
         assertEquals(1, updated.actions.size)
+        // 会話形式（MessagingStyle）のまま本文だけを置き換える。
+        assertEquals(Notification.MessagingStyle::class.java.name, updated.extras.getString(Notification.EXTRA_TEMPLATE))
         assertEquals("あとで復号した本文", preservedDecryptedBody(manager, notificationTag(user, id)))
 
         // 復号できなければ、先に出ている通知はそのまま。
