@@ -82,7 +82,9 @@ private val forbiddenAttachmentTypes =
     )
 
 fun attachmentType(name: String, declared: String): String? {
-    val extension = name.substringAfterLast('.').lowercase()
+    // サーバーの `is_disallowed_extension` と同じく、末尾のドットと空白を除いてから拡張子を見る
+    // （`malware.exe. ` を実行形式として扱う）。
+    val extension = name.trimEnd { it == '.' || it.isWhitespace() }.substringAfterLast('.').lowercase()
     if (extension in forbiddenAttachmentExtensions) return null
     val mime = declared.substringBefore(';').trim().lowercase()
     if (

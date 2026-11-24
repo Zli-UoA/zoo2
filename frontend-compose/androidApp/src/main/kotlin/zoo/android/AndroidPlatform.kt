@@ -351,7 +351,7 @@ internal class AndroidPlatform(
             while (existing.isNotEmpty() && (total + bytes.size > 64 * 1024 * 1024 || existing.first().lastModified() < System.currentTimeMillis() - 86_400_000)) {
                 val old = existing.removeAt(0); total -= old.length(); old.delete()
             }
-            val safeName = name.substringAfterLast('/').substringAfterLast('\\').replace(Regex("[\\p{Cntrl}]"), "_").take(120).ifEmpty { "attachment" }
+            val safeName = sharedFileName(name.substringAfterLast('/').substringAfterLast('\\').replace(Regex("[\\p{Cntrl}]"), "_"))
             java.io.File(directory, "${UUID.randomUUID()}-$safeName").apply { writeBytes(bytes) }
         }
         withContext(Dispatchers.Main) {
@@ -419,4 +419,30 @@ internal class AndroidPlatform(
                 output.toByteArray()
             }
         }
+}
+
+/**
+ * 共有のために書くファイルの名前（UUID とハイフンの 37 バイトを足して、ファイル名の上限 255 バイトに収める）。
+ * 短い名前はそのまま使い、長い名前は文字の途中で切らずに縮め、拡張子は残す。
+ */
+internal fun sharedFileName(name: String, maxBytes: Int = 255 - 37): String {
+    fun bytes(value: String) = value.toByteArray(Charsets.UTF_8).size
+    val clean = name.ifEmpty { "attachment" }
+    if (bytes(clean) <= maxBytes) return clean
+    val dot = clean.lastIndexOf('.')
+    val extension = if (dot > 0 && bytes(clean.substring(dot)) <= 32) clean.substring(dot) else ""
+    val budget = maxBytes - bytes(extension)
+    val stem = StringBuilder()
+    var used = 0
+    var index = 0
+    val base = clean.substring(0, clean.length - extension.length)
+    while (index < base.length) {
+        val end = base.offsetByCodePoints(index, 1)
+        val size = bytes(base.substring(index, end))
+        if (used + size > budget) break
+        stem.append(base, index, end)
+        used += size
+        index = end
+    }
+    return (stem.toString() + extension).ifEmpty { "attachment" }
 }
