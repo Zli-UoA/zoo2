@@ -17,18 +17,22 @@ mod cross_signing;
 mod device;
 mod error;
 mod megolm;
+mod revocation;
 mod secret_storage;
 mod setup;
 mod trust;
+mod verification;
 
 pub use backup::*;
 pub use cross_signing::*;
 pub use device::*;
 pub use error::ZooCryptoError;
 pub use megolm::*;
+pub use revocation::*;
 pub use secret_storage::*;
 pub use setup::*;
 pub use trust::*;
+pub use verification::*;
 
 uniffi::setup_scaffolding!();
 

@@ -198,6 +198,10 @@ class E2eeSetup(
         // 同じ記録で決める。
         // 消すのは、取得を始める前の記録がまだ残っているときだけ（forgetSecretsRevision が今の値と比べる）。
         suspend fun mismatch(): E2eeStatus {
+            // この端末の失効が途中で止まっているあいだは、サーバーの鍵や版が暗号ストアと食い違うのは失効の途中だから
+            // （SSSS を保存したあと、クロス署名鍵や版を保存する前）。別の端末の書き換えとして扱わず、記録も消さない。
+            // 画面は「失効を続ける」を出す（Web と同じ）。
+            if (withContext(io) { store.hasPendingRevocation }) return E2eeStatus.Locked(LockReason.MISMATCH, storage)
             recorded?.let { withContext(io) { store.forgetSecretsRevision(it) } }
             return E2eeStatus.Locked(LockReason.MISMATCH, storage)
         }

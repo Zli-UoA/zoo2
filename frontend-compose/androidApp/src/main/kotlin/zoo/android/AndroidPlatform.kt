@@ -41,6 +41,8 @@ internal class AndroidPlatform(
     override var messageEncryption: zoo.MessageEncryption? = null
     var reauthenticate: (suspend () -> String)? = null
     var passkey: zoo.crypto.UnlockMethod.Passkey? = null
+    /** ログインに使う OIDC の issuer（失効の画面の AuthZ へのリンクに使う）。 */
+    var issuer: String? = null
     var e2ee: zoo.crypto.E2eeDeviceManager? = null
 
     private val prefs = activity.getSharedPreferences("preferences", 0)
@@ -259,7 +261,9 @@ internal class AndroidPlatform(
                 val manager = e2ee
                 // 件数を数える前に to-device の処理を止める（数えたあとで増えた鍵を、確かめずに消さないため）。
                 val count = manager?.prepareLogout() ?: 0
-                if (count != 0 && !confirmUnbackedKeys(count)) {
+                // 終わっていない失効があれば、進み具合が消えることを先に確かめる（Web の `logout.revocation*`）。
+                val revocationPending = manager?.revocationPendingForLogout() == true
+                if (revocationPending && !confirmUnbackedKeys(REVOCATION_PENDING_PROMPT) || count != 0 && !confirmUnbackedKeys(count)) {
                     // 取りやめたら、to-device の処理に戻る。
                     manager?.cancelLogout()
                 } else {
@@ -447,3 +451,6 @@ internal fun sharedFileName(name: String, maxBytes: Int = 255 - 37): String {
     }
     return (stem.toString() + extension).ifEmpty { "attachment" }
 }
+
+/** ログアウトの確認で、終わっていない失効があることを知らせる（鍵の件数の代わりに渡す値）。 */
+internal const val REVOCATION_PENDING_PROMPT = Int.MIN_VALUE

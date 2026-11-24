@@ -91,7 +91,15 @@ data class ToDeviceResult(
     val newOlmSessions: Int,
     /** 保存した鍵のうち、送信端末を検証できた（受信時の検証の手順 4）ものの数。 */
     val verifiedRoomKeys: Int = 0,
+    /**
+     * 受信時の検証を通った、他のユーザーの検証のメッセージ（`m.key.verification.*`。#368）。Olm のメッセージは
+     * 2 回は復号できないので、ここで返したものを [SasController.handleMessages] に渡して進める。
+     */
+    val verifications: List<VerificationMessage> = emptyList(),
 )
+
+/** 他のユーザーの検証のメッセージの `type` の接頭辞（Web の `VERIFICATION_TYPE_PREFIX`）。 */
+internal const val VERIFICATION_TYPE_PREFIX = "m.key.verification."
 
 /** `POST /api/e2ee/keys/upload` に送る鍵。 */
 class KeyUpload(val oneTimeKeys: JsonObject, val fallbackKeys: JsonObject)
@@ -140,6 +148,18 @@ internal class StoreState(
      * `recipients` と同じ役割）。送信画面に「前回の送信から増えた配布先」を出すのに使う。秘密ではない。
      */
     var recipients: Map<String, List<String>> = emptyMap(),
+    /**
+     * 終わっていない失効の進み具合（#362。`Revocation.pickle` の封筒。保存鍵で暗号化してある）。新しい自己署名鍵、
+     * ユーザー署名鍵、バックアップ鍵と古いバックアップ鍵を含み、マスター鍵の秘密鍵と SSSS 鍵は含まない（Web の
+     * `meta` の `revocation` と同じ）。端末を作り直すとき（[CryptoStore.replaceDevice]）は捨てる。
+     */
+    var revocation: String? = null,
+    /**
+     * 処理済みの印を付けたが、まだ ack していない行の検証のメッセージ（行の ID ごと。保存鍵で封をした封筒）。印と Olm の
+     * 状態と同じ書き込みで残し、渡す前に止まっても（保存に失敗した、開き直した）その行を保存し直したときに渡す。ack
+     * したら消す。
+     */
+    @SerialName("pending_verifications") var pendingVerifications: Map<String, String> = emptyMap(),
 )
 
 /** [CryptoStore.prepareBackupUpload] の結果。 */
@@ -190,6 +210,13 @@ class CryptoStore private constructor(
 ) : AutoCloseable {
     val changes = kotlinx.coroutines.flow.MutableStateFlow(0L)
     private val outboundOlm = mutableMapOf<String, String>()
+
+    /** 閉じたか（閉じたストアの処理の失敗を、受け付けなかったことと見分けるため）。 */
+    val isClosed: Boolean
+        @Synchronized get() = closed
+
+    /** このプロセスで、すでに SasController に渡した、ack 待ちの検証のメッセージの行（二重に渡さないため）。 */
+    private val handedOverVerifications = mutableSetOf<String>()
     private val loadedInbound = mutableSetOf<String>()
     private var closed = false
 
@@ -283,6 +310,7 @@ class CryptoStore private constructor(
         var dropped = 0
         var newOlmSessions = 0
         var verifiedRoomKeys = 0
+        val verifications = mutableListOf<VerificationMessage>()
         // 解錠し直しが要る（secrets_revision を消した）ときは、暗号ストアの自分の鍵を使わない。
         val ownSelfSigning by lazy {
             state.ownKeys?.takeIf { state.secretsRevision != null }?.let { sealed ->
@@ -319,30 +347,75 @@ class CryptoStore private constructor(
         // あとで同期に失敗しても、開き直すと新しい state.json を読めることがある）ので、返す前に
         // 保存し直して、同期を確かめてから ack させる。
         var unsaved = false
-        for (row in rows) {
-            if (row.id in state.processedToDevice) {
-                unsaved = true
-            } else {
-                if (row.type == "m.room.encrypted") {
-                    when (val outcome = processEncrypted(row, deviceKeys, trustFor)) {
-                        is Encrypted.Dropped -> dropped++
-                        is Encrypted.Decrypted -> {
-                            newOlmSessions += outcome.newOlmSessions
-                            if (outcome.roomKey) roomKeys++ else if (outcome.rejected) dropped++
-                            if (outcome.roomKey && outcome.verified) verifiedRoomKeys++
-                        }
-                    }
-                } else {
-                    dropped++
+        // 保存を確かめた行の数（processed の先頭から）。
+        var confirmed = 0
+        // 前の処理で印を付けたが、まだ渡していない行の検証のメッセージ（保存に失敗したか、開き直した）。保存を
+        // 確かめたら、封筒から作り直して渡す。
+        val waiting = mutableListOf<String>()
+        fun saved() {
+            for (id in waiting) {
+                val message = state.pendingVerifications[id]?.let(::openPendingVerification)
+                if (message != null) {
+                    verifications += message
+                    handedOverVerifications += id
                 }
-                state.processedToDevice = state.processedToDevice + row.id
-                save()
-                unsaved = false
             }
-            processed += row.id
+            waiting.clear()
+            unsaved = false
         }
-        if (unsaved) save()
-        return ToDeviceResult(processed, roomKeys, dropped, newOlmSessions, verifiedRoomKeys)
+        try {
+            for (row in rows) {
+                if (row.id in state.processedToDevice) {
+                    unsaved = true
+                    if (row.id in state.pendingVerifications && row.id !in handedOverVerifications) waiting += row.id
+                } else {
+                    var verification: VerificationMessage? = null
+                    if (row.type == "m.room.encrypted") {
+                        when (val outcome = processEncrypted(row, deviceKeys, trustFor)) {
+                            is Encrypted.Dropped -> dropped++
+                            is Encrypted.Decrypted -> {
+                                newOlmSessions += outcome.newOlmSessions
+                                if (outcome.roomKey) roomKeys++ else if (outcome.rejected) dropped++
+                                if (outcome.roomKey && outcome.verified) verifiedRoomKeys++
+                                verification = outcome.verification
+                                // 渡す前に止まっても（保存に失敗した、開き直した）渡せるよう、印と Olm の状態と同じ
+                                // 書き込みで、検証のメッセージを保存鍵で封をして残す（ack したら消す）。
+                                outcome.sealed?.let { state.pendingVerifications = state.pendingVerifications + (row.id to it) }
+                            }
+                        }
+                    } else {
+                        dropped++
+                    }
+                    state.processedToDevice = state.processedToDevice + row.id
+                    try {
+                        save()
+                    } catch (failure: Throwable) {
+                        // 復号で Olm の状態は進み、印と封筒もメモリーに残る（次の保存で確定しうる）ので、もう復号し直せ
+                        // ない。この行を保存し直したときに、封筒から作り直して渡す。
+                        verification?.destroy()
+                        throw failure
+                    }
+                    saved()
+                    verification?.let {
+                        verifications += it
+                        handedOverVerifications += row.id
+                    }
+                }
+                processed += row.id
+                if (!unsaved) confirmed = processed.size
+            }
+            if (unsaved) {
+                save()
+                saved()
+                confirmed = processed.size
+            }
+        } catch (failure: Exception) {
+            // 前の行は処理済みとして保存したので、もう復号できない。後の行の保存に失敗しても、保存を確かめた行（検証の
+            // メッセージを含む）は返して渡し、ack させる。確かめていない行は返さない（ack せず、次の同期で試し直す）。
+            if (confirmed == 0) throw failure
+            return ToDeviceResult(processed.take(confirmed), roomKeys, dropped, newOlmSessions, verifiedRoomKeys, verifications)
+        }
+        return ToDeviceResult(processed, roomKeys, dropped, newOlmSessions, verifiedRoomKeys, verifications)
     }
 
     private sealed interface Encrypted {
@@ -352,6 +425,9 @@ class CryptoStore private constructor(
             val roomKey: Boolean,
             val rejected: Boolean,
             val verified: Boolean = false,
+            val verification: VerificationMessage? = null,
+            /** [verification] を保存鍵で封をしたもの（`state.pending_verifications` に入れる）。 */
+            val sealed: String? = null,
         ) : Encrypted
     }
 
@@ -382,6 +458,24 @@ class CryptoStore private constructor(
                 decrypted.sender()?.let { user ->
                     decrypted.senderDevice()?.let { device -> (deviceKeys[user] as? JsonObject)?.get(device) }
                 }
+            if (decrypted.eventType()?.startsWith(VERIFICATION_TYPE_PREFIX) == true) {
+                // 他のユーザーの検証（#368）。受信時の検証を通したものを返し、検証を進めるのは
+                // SasController に任せる（Web の `processEncrypted` と同じ）。
+                val verification =
+                    try {
+                        decrypted.verifyVerification(account, listed?.toString())
+                    } catch (_: ZooCryptoException) {
+                        return Encrypted.Decrypted(created, roomKey = false, rejected = true)
+                    }
+                val sealed =
+                    try {
+                        sealPendingVerification(verification, checkNotNull(listed))
+                    } catch (failure: Throwable) {
+                        verification.destroy()
+                        throw failure
+                    }
+                return Encrypted.Decrypted(created, roomKey = false, rejected = false, verification = verification, sealed = sealed)
+            }
             val roomKey =
                 try {
                     decrypted.verifyRoomKey(account, listed?.toString(), trustFor(decrypted.sender(), decrypted.senderDevice()))
@@ -460,6 +554,78 @@ class CryptoStore private constructor(
     @Synchronized
     fun needsOlm(device: VerifiedDeviceKeys): Boolean = device.curve25519Key() !in outboundOlm
 
+    /**
+     * 他のユーザーの検証を求める（#368。Web の `SasVerifications.request`）。`keysQuery` は相手の `keys/query` の
+     * 応答（JSON）。解錠していなければ [SasException]（[SasException.NEEDS_UNLOCK]）。
+     */
+    @Synchronized
+    fun requestVerification(keysQuery: String, theirUserId: String, nowMs: Long): SasRequest {
+        requireVerificationUnlocked()
+        return zoo.crypto.ffi.requestVerification(account, trust, keysQuery, theirUserId, nowMs.toULong())
+    }
+
+    /**
+     * 届いた要求（`m.key.verification.request`）から検証を作る。古い要求、たどれない端末からの要求、解錠の前
+     * （自分のマスター鍵を信頼していない）などは [ZooCryptoException]（捨てる）。
+     */
+    @Synchronized
+    fun verificationFromRequest(message: VerificationMessage, keysQuery: String, nowMs: Long): SasVerification {
+        check(!closed) { "暗号ストアは閉じています" }
+        return SasVerification.fromRequest(account, trust, message, keysQuery, nowMs.toULong())
+    }
+
+    /**
+     * 検証できた相手のマスター鍵（`masterKey` は署名の直前に `keys/query` で読んだ JSON）に、自分のユーザー署名鍵で
+     * 署名する。記録は登録待ちで保存し、`replace: true` のピンと署名を返す（サーバーに保存できたら
+     * [confirmAcceptedMasterKey]）。
+     */
+    @Synchronized
+    fun signVerifiedMasterKey(verification: SasVerification, masterKey: String): AcceptedMasterKey {
+        requireVerificationUnlocked()
+        return OwnKeys.fromPickle(checkNotNull(state.ownKeys), account, storageKey).use { own ->
+            own.userSigning().use { signing -> verification.signMasterKey(trust, signing, masterKey) }
+        }.also { saveTrustStore() }
+    }
+
+    /** [signVerifiedMasterKey] のピンと署名をサーバーに保存できた。記録の登録待ちを外す。 */
+    @Synchronized
+    fun confirmAcceptedMasterKey(targetUserId: String, masterKey: String) {
+        check(!closed) { "暗号ストアは閉じています" }
+        trust.confirmAcceptedMasterKey(targetUserId, masterKey)
+        saveTrustStore()
+    }
+
+    /**
+     * 検証のメッセージを `device` あての to-device の `content` に暗号化する。送信用の Olm セッションは鍵の配布
+     * （[shareKey]）と同じものを使い回し、なければ `claimed`（`keys/claim` で払い出した鍵）で作る。どちらもなければ
+     * `null`。Olm の状態を進めたので、送る前に永続化する。取りやめも送れるよう、解錠は求めない。
+     */
+    @Synchronized
+    fun encryptVerification(device: VerifiedDeviceKeys, eventType: String, content: String, claimed: String?): JsonElement? {
+        check(!closed) { "暗号ストアは閉じています" }
+        val curve = device.curve25519Key()
+        val session = outboundOlm[curve] ?: claimed?.let {
+            account.createOutboundOlmSession(olmSessions, device, it).also { id -> outboundOlm[curve] = id }
+        } ?: return null
+        val encrypted = account.encryptVerification(olmSessions, session, device, eventType, content)
+        persistOutboundOlm(curve)
+        return json.parseToJsonElement(encrypted)
+    }
+
+    private fun requireVerificationUnlocked() {
+        if (closed || state.ownKeys == null || state.secretsRevision == null) {
+            throw SasException(SasException.NEEDS_UNLOCK, "解錠していません")
+        }
+    }
+
+    private fun persistOutboundOlm(curve: String) {
+        val changed = olmSessions.pickleSessions(account, storageKey, curve)
+        state.olmSessions = state.olmSessions.filterNot { it.theirIdentityKey == curve } +
+            changed.map { StoredOlmSession(it.theirIdentityKey, it.sessionId, it.pickle) }
+        state.account = account.pickle(storageKey)
+        save()
+    }
+
     /** Olm の状態を進めたら、ネットワークへ送る前に永続化する。 */
     @Synchronized
     fun shareKey(device: VerifiedDeviceKeys, outbound: OutboundSession, claimed: String?): JsonElement? {
@@ -469,11 +635,7 @@ class CryptoStore private constructor(
             account.createOutboundOlmSession(olmSessions, device, it).also { id -> outboundOlm[curve] = id }
         } ?: return null
         val encrypted = account.encryptRoomKey(olmSessions, session, device, outbound)
-        val changed = olmSessions.pickleSessions(account, storageKey, curve)
-        state.olmSessions = state.olmSessions.filterNot { it.theirIdentityKey == curve } +
-            changed.map { StoredOlmSession(it.theirIdentityKey, it.sessionId, it.pickle) }
-        state.account = account.pickle(storageKey)
-        save()
+        persistOutboundOlm(curve)
         return json.parseToJsonElement(encrypted)
     }
 
@@ -507,9 +669,54 @@ class CryptoStore private constructor(
     @Synchronized
     fun acknowledged(ids: List<String>) {
         if (ids.isEmpty()) return
-        state.processedToDevice = state.processedToDevice - ids.toSet()
+        val acked = ids.toSet()
+        state.processedToDevice = state.processedToDevice - acked
+        // ack した行の検証のメッセージは渡し済み。
+        state.pendingVerifications = state.pendingVerifications - acked
         save()
+        handedOverVerifications -= acked
     }
+
+    /**
+     * 検証のメッセージを保存鍵（AES-256-GCM。AAD は用途、ユーザー、端末）で封をする。送信端末の端末鍵は
+     * `keys/query` の署名付きの JSON（`listed`）で残し、開くときに検証し直す。
+     */
+    private fun sealPendingVerification(message: VerificationMessage, listed: JsonElement): String {
+        val plain = buildJsonObject {
+            put("sender_user_id", message.senderUserId)
+            put("device_keys", listed)
+            put("event_type", message.eventType)
+            put("content", message.content)
+        }.toString().encodeToByteArray()
+        val nonce = ByteArray(12).also { java.security.SecureRandom().nextBytes(it) }
+        val cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, javax.crypto.spec.SecretKeySpec(storageKey, "AES"), javax.crypto.spec.GCMParameterSpec(128, nonce))
+        cipher.updateAAD(pendingVerificationAad())
+        return java.util.Base64.getEncoder().encodeToString(nonce + cipher.doFinal(plain))
+    }
+
+    /** [sealPendingVerification] の封筒を開き、検証のメッセージを作り直す。開けない・検証できなければ `null`（捨てる）。 */
+    private fun openPendingVerification(sealed: String): VerificationMessage? =
+        try {
+            val bytes = java.util.Base64.getDecoder().decode(sealed)
+            val cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(
+                javax.crypto.Cipher.DECRYPT_MODE,
+                javax.crypto.spec.SecretKeySpec(storageKey, "AES"),
+                javax.crypto.spec.GCMParameterSpec(128, bytes, 0, 12),
+            )
+            cipher.updateAAD(pendingVerificationAad())
+            val plain = json.parseToJsonElement(cipher.doFinal(bytes, 12, bytes.size - 12).decodeToString()) as JsonObject
+            fun text(name: String) = (plain[name] as JsonPrimitive).content
+            val listed = plain.getValue("device_keys") as JsonObject
+            val sender = text("sender_user_id")
+            val device = verifyDeviceKeys(listed.toString(), sender, (listed.getValue("device_id") as JsonPrimitive).content)
+            VerificationMessage(sender, device, text("event_type"), text("content"))
+        } catch (_: Exception) {
+            null
+        }
+
+    private fun pendingVerificationAad(): ByteArray = "zoo.pending_verification\n${state.userId}\n${state.deviceId}".encodeToByteArray()
 
     /** 鍵バックアップにまだ送っていない受信用セッションの数。 */
     @Synchronized
@@ -819,6 +1026,129 @@ class CryptoStore private constructor(
         if (conflict) backupState?.suspend()
     }
 
+    /** 終わっていない失効があるか（ログアウトの前に警告する。docs/e2ee.md の「失効の手順」）。 */
+    @get:Synchronized
+    val hasPendingRevocation: Boolean get() = state.revocation != null
+
+    /** 終わっていない失効の進み具合（秘密鍵を除く。解錠する前の表示用）。なければ `null`。 */
+    @Synchronized
+    fun revocationSummary(): RevocationSummary? = state.revocation?.let { peekRevocation(it, account, storageKey) }
+
+    /**
+     * 失効を始め（署名し直す一覧を集め、新しい鍵を作る）、進み具合を保存する（サーバーにはまだ何も保存しない）。
+     * 古いバックアップ鍵と古いユーザー署名鍵は、暗号ストアの自分の鍵のものを渡す（なければ SSSS の鍵を使う）。
+     * 終わっていない失効があれば始めない（[IllegalStateException]）。
+     */
+    @Synchronized
+    fun beginRevocation(input: RevocationInput, unlocked: UnlockedSecretStorage): Revocation {
+        check(state.revocation == null) { "終わっていない失効があります" }
+        val own = state.ownKeys?.let { OwnKeys.fromPickle(it, account, storageKey) }
+        val revocation =
+            try {
+                val backupKey = own?.backupKey()
+                val userSigning = own?.userSigning()
+                try {
+                    Revocation.begin(input, unlocked, trust, backupKey, userSigning)
+                } finally {
+                    backupKey?.close()
+                    userSigning?.close()
+                }
+            } finally {
+                own?.close()
+            }
+        try {
+            saveRevocation(revocation)
+        } catch (failure: Throwable) {
+            revocation.close()
+            throw failure
+        }
+        return revocation
+    }
+
+    /** 失効の進み具合を保存する（サーバーへの保存が 1 つ済むたびに呼ぶ）。書けなければ前の記録に戻す。 */
+    @Synchronized
+    fun saveRevocation(revocation: Revocation) {
+        val previous = state.revocation
+        state.revocation = revocation.pickle(account, storageKey)
+        try {
+            save()
+        } catch (failure: Throwable) {
+            state.revocation = previous
+            throw failure
+        }
+    }
+
+    /**
+     * 保存した失効を、開け直した SSSS で続ける。なければ `null`。2〜5 を SSSS の保存の前に止めていたら
+     * `ZooCryptoException.RevocationRestart`、SSSS の鍵が記録と違えば `ZooCryptoException.ServerKeyMismatch`。
+     */
+    @Synchronized
+    fun resumeRevocation(unlocked: UnlockedSecretStorage): Revocation? =
+        state.revocation?.let { Revocation.resume(it, account, storageKey, unlocked) }
+
+    /** 失効の進み具合を消す（終えたとき、やり直すとき）。 */
+    @Synchronized
+    fun clearRevocation() {
+        if (state.revocation == null) return
+        val previous = state.revocation
+        state.revocation = null
+        try {
+            save()
+        } catch (failure: Throwable) {
+            state.revocation = previous
+            throw failure
+        }
+    }
+
+    /** 今の端末への自己署名、署名し直すマスター鍵への署名、作り直すピン。 */
+    @Synchronized
+    fun revocationSignatures(revocation: Revocation): RevocationSignatures = revocation.signatures(account.deviceKeys())
+
+    /**
+     * 失効を行う端末が、クロス署名鍵を保存したあとに、記録と自分の鍵を新しい鍵にそろえる（Web の
+     * `applyRevocation`）。新しい鍵の `secrets_revision` も記録する（次の起動で SSSS が書き換えられたと誤って
+     * 判定しないため）。自分の鍵、`secrets_revision`、記録、失効の進み具合を 1 回の書き込みで保存し、書けなければ
+     * メモリーの状態も前に戻して例外を投げる。
+     */
+    @Synchronized
+    fun applyRevocation(revocation: Revocation, secretsRevision: Long?) {
+        // 記録はコピーで更新し、すべて保存できたときだけ置き換える（saveOwnKeys と同じ）。
+        val updated = TrustStore.fromJson(trust.toJson(), state.userId)
+        try {
+            revocation.applyToTrust(updated)
+            val ownKeys = revocation.ownKeysPickle(account, storageKey)
+            val trustStore = updated.pickle(account, storageKey)
+            val sealed = revocation.pickle(account, storageKey)
+            val previous = listOf(state.ownKeys, state.trustStore, state.revocation)
+            val previousRevision = state.secretsRevision
+            state.ownKeys = ownKeys
+            state.secretsRevision = secretsRevision
+            state.trustStore = trustStore
+            state.revocation = sealed
+            try {
+                save()
+            } catch (failure: Throwable) {
+                state.ownKeys = previous[0]
+                state.trustStore = previous[1]
+                state.revocation = previous[2]
+                state.secretsRevision = previousRevision
+                throw failure
+            }
+        } catch (failure: Throwable) {
+            updated.close()
+            throw failure
+        }
+        trust.close()
+        trust = updated
+        // 自分の鍵が変わったので、鍵バックアップの今の版は検証し直す。
+        backupState?.suspend()
+    }
+
+    /** 記録がある相手（失効で署名し直す候補を集めるため。Web の `trustRecordedUsers`）。 */
+    @Synchronized
+    fun trustRecordedUsers(): List<String> =
+        ((json.parseToJsonElement(trust.toJson()) as? JsonObject)?.get("records") as? JsonObject)?.keys?.toList().orEmpty()
+
     /** 配布先の判定の記録（#361 以降が使う）。変えたら [saveTrustStore] で保存し直す。 */
     val trustStore: TrustStore get() = trust
 
@@ -945,6 +1275,7 @@ class CryptoStore private constructor(
         if (closed) return
         closed = true
         storageKey.fill(0)
+        handedOverVerifications.clear()
         pendingUploads.values.forEach { it.upload.close() }
         pendingUploads.clear()
         backupState?.close()
