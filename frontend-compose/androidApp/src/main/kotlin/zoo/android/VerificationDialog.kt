@@ -12,6 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -253,9 +254,14 @@ internal fun QrImage(bytes: ByteArray, label: String) {
         // 四辺に 4 モジュールの余白（クワイエットゾーン）を、モジュールの大きさから取る。
         val quiet = 4
         val cell = size.minDimension / (modules.size + quiet * 2)
-        modules.forEachIndexed { y, row ->
-            row.forEachIndexed { x, dark ->
-                if (dark) drawRect(Color.Black, Offset((x + quiet) * cell, (y + quiet) * cell), Size(cell + 0.5f, cell + 0.5f))
+        // セルの継ぎ目を埋めるために少し大きく描くので、QR の本体の範囲で切り、余白を削らない。
+        val start = quiet * cell
+        val end = (quiet + modules.size) * cell
+        clipRect(start, start, end, end) {
+            modules.forEachIndexed { y, row ->
+                row.forEachIndexed { x, dark ->
+                    if (dark) drawRect(Color.Black, Offset((x + quiet) * cell, (y + quiet) * cell), Size(cell + 0.5f, cell + 0.5f))
+                }
             }
         }
     }
