@@ -1090,12 +1090,24 @@ impl Core {
         if let Some(task) = inner.login_task.take() {
             task.abort();
         }
-        if matches!(inner.state, SessionState::LoggingIn { .. }) {
-            let cancelled = inner.generation;
-            inner.generation += 1;
-            self.browser_launch.cancel_before_transition(cancelled, || {
-                self.set_state(&mut inner, SessionState::LoggedOut);
-            });
+        match inner.state {
+            SessionState::LoggingIn { .. } => {
+                let cancelled = inner.generation;
+                inner.generation += 1;
+                self.browser_launch.cancel_before_transition(cancelled, || {
+                    self.set_state(&mut inner, SessionState::LoggedOut);
+                });
+            }
+            // 開始処理の途中（Discovery や、デバイスコードの発行を待っている間）は、状態が
+            // `LoggedOut` のままで、`login_task` もまだない。世代を進めておけば、その試行は
+            // 世代の確認で止まり、プロンプトの表示もブラウザーの起動もしない。進行中の試行が
+            // なければ、世代が進むだけで何も起きない。
+            SessionState::LoggedOut => {
+                let cancelled = inner.generation;
+                inner.generation += 1;
+                self.browser_launch.cancel(cancelled);
+            }
+            _ => {}
         }
     }
 
