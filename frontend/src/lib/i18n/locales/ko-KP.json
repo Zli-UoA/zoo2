@@ -247,6 +247,9 @@
     "copyRaw": "원문 복사",
     "copied": "원문을 복사했습니다",
     "copyFailed": "원문을 복사하지 못했습니다",
+    "copyLink": "통보문 주소 복사",
+    "linkCopied": "통보문 주소를 복사했습니다",
+    "linkCopyFailed": "통보문 주소를 복사하지 못했습니다",
     "edited": "편집됨"
   },
   "attachments": {

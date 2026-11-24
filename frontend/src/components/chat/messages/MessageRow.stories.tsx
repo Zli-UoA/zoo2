@@ -20,6 +20,7 @@ import type { MessageItem } from "./messageGrouping";
 const item: MessageItem = {
   message: {
     id: "message-1",
+    channel_id: "channel-1",
     user_id: "user-1",
     content:
       "こんにちは。今日のリリースは 18:00 です。詳細は https://example.com/docs を参照してください。",
@@ -318,6 +319,11 @@ export const CopyOriginalMenu: Story = {
     await userEvent.keyboard("{Enter}");
     await waitFor(() =>
       expect(screen.getByRole("menuitem", { name: "原文をコピー" })).toBeVisible(),
+    );
+    // メッセージリンクのコピーは、原文のコピーの隣に並ぶ。
+    const labels = screen.getAllByRole("menuitem").map((menuItem) => menuItem.textContent);
+    await expect(labels.indexOf("メッセージリンクをコピー")).toBe(
+      labels.indexOf("原文をコピー") + 1,
     );
   }),
 };
@@ -643,6 +649,8 @@ export const EncryptedKeyMissing: Story = {
     await userEvent.keyboard("{Enter}");
     await waitFor(() => expect(screen.getByRole("menu")).toBeVisible());
     await expect(screen.queryByRole("menuitem", { name: "原文をコピー" })).not.toBeInTheDocument();
+    // メッセージリンクは ID だけで作れるので、読めないメッセージでも出す。
+    await expect(screen.getByRole("menuitem", { name: "メッセージリンクをコピー" })).toBeVisible();
   }),
 };
 
@@ -764,6 +772,9 @@ export const TouchActionSheet: Story = {
         await expect(within(sheet).getByRole("button", { name: "スレッドを開く" })).toBeVisible();
       });
       await expect(within(sheet).getByRole("button", { name: "リアクションを追加" })).toBeVisible();
+      await expect(
+        within(sheet).getByRole("button", { name: "メッセージリンクをコピー" }),
+      ).toBeVisible();
       await expect(within(sheet).getByRole("button", { name: "削除" })).toBeVisible();
 
       const recent = within(sheet).getByRole("group", { name: "最近使った絵文字" });
