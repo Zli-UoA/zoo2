@@ -33,6 +33,21 @@ export const CF_CONNECT_TIMEOUT_MS = 15_000;
 export const CF_PULL_RETRY_BASE_MS = 1000;
 export const CF_PULL_RETRY_MAX_ATTEMPTS = 4;
 
+/**
+ * pull の要求そのものが失敗したとき、backend が Cloudflare に送る前に断ったと分かる HTTP の状態。
+ * 400・403・404 は track id の検証・権限・対象なし、409 は自分のセッションがもう Cloudflare に割り当てられて
+ * いない（backend はそのセッションで pull しない）。これ以外（5xx・時間切れ・通信の失敗・状態の分からない失敗）は、
+ * Cloudflare が購読と offer を作ったか分からないので、同じセッションで pull し直さない。
+ */
+const CF_PULL_REJECTED_STATUSES = new Set([400, 403, 404, 409]);
+
+/** pull の失敗が「Cloudflare に届く前に断られた」と分かるか。状態を持たない失敗は分からないものとする。 */
+export function isPullRejectedBeforeApply(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const status = (err as { status?: unknown }).status;
+  return typeof status === "number" && CF_PULL_REJECTED_STATUSES.has(status);
+}
+
 /** Opus の DTX（無音のあいだ送らない）を有効にする。 */
 export function enableOpusDtx(sdp: string): string {
   const opus = /a=rtpmap:(\d+) opus\/48000/i.exec(sdp);
@@ -72,6 +87,13 @@ export class CfRealtimeAdapter implements SfuAdapter {
   /** m-line（mid）→ 話者。 */
   private midSpeaker = new Map<string, string>();
   private closed = false;
+  /**
+   * このセッションでは交渉を続けられない（pull の結果が分からない・answer を返せない）。以後の pull はしない。
+   * つながったあとなら onFailed で、つながる前なら start() の失敗で呼び出し側に伝え、新しいセッションでつなぎ直してもらう。
+   */
+  private failed = false;
+  /** ミュート中か。publish の前に指定された分も、publish するときに当てる。 */
+  private muted: boolean;
   /** start() が終わって、つながったあと。これより前の失敗は start() の失敗として返す。 */
   private connected = false;
   /** close() で止める待機。 */
@@ -86,7 +108,9 @@ export class CfRealtimeAdapter implements SfuAdapter {
     private readonly api: CfRealtimeApi,
     private readonly callbacks: SfuAdapterCallbacks,
     initial: { tracks: SfuTrackInfo[]; version: number },
+    options: { muted?: boolean } = {},
   ) {
+    this.muted = options.muted ?? false;
     this.pc = new RTCPeerConnection({ iceServers: CF_ICE_SERVERS, bundlePolicy: "max-bundle" });
     this.pc.addEventListener("track", (event) => {
       const mid = event.transceiver.mid;
@@ -104,7 +128,7 @@ export class CfRealtimeAdapter implements SfuAdapter {
 
   private enqueue(task: () => Promise<void>): Promise<void> {
     const run = this.queue.then(async () => {
-      if (this.closed) return;
+      if (this.closed || this.failed) return;
       await task();
     });
     this.queue = run.catch((err) => {
@@ -184,6 +208,8 @@ export class CfRealtimeAdapter implements SfuAdapter {
   /** マイクを publish し、Cloudflare とつながるまで待つ。つながらなければ reject する。 */
   async start(): Promise<void> {
     const run = this.enqueue(async () => {
+      // ミュート中なら、publish する前に無音にしておく。
+      if (this.muted) this.mic.enabled = false;
       const transceiver = this.pc.addTransceiver(this.mic, { direction: "sendonly" });
       this.sender = transceiver.sender;
       const offer = await this.pc.createOffer();
@@ -216,7 +242,13 @@ export class CfRealtimeAdapter implements SfuAdapter {
 
   /** pull に失敗したトラックを、上限の回数まで間隔を空けて pull し直す（一覧の更新を待たない）。 */
   private scheduleRetry(): void {
-    if (this.closed || this.retryTimer || this.retryAttempt >= CF_PULL_RETRY_MAX_ATTEMPTS) return;
+    if (
+      this.closed ||
+      this.failed ||
+      this.retryTimer ||
+      this.retryAttempt >= CF_PULL_RETRY_MAX_ATTEMPTS
+    )
+      return;
     const delay = CF_PULL_RETRY_BASE_MS * 2 ** this.retryAttempt;
     this.retryAttempt++;
     this.retryTimer = setTimeout(() => {
@@ -225,8 +257,28 @@ export class CfRealtimeAdapter implements SfuAdapter {
     }, delay);
   }
 
+  /**
+   * このセッションでは交渉を続けられない。pull のやり直しを止め、つながったあとなら onFailed、つながる前なら
+   * start() の失敗として伝える（どちらも呼び出し側が新しいセッションでつなぎ直す）。
+   */
+  private fail(reason: string, err: unknown): void {
+    if (this.closed || this.failed) return;
+    this.failed = true;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    if (this.connected) {
+      this.callbacks.onFailed(reason);
+      return;
+    }
+    const error = err instanceof Error ? err : new Error(String(err));
+    this.startFailure ??= error;
+    // start() がつながるのを待っていれば、待たずに失敗させる。
+    for (const finish of this.waiters) finish(error);
+  }
+
   /** 最新の一覧（latestTracks）に合わせて、pull と停止をする。 */
   private reconcile(): void {
+    if (this.failed) return;
     const wanted = new Map<string, SfuTrackInfo>();
     for (const t of this.latestTracks) {
       if (t.session_id === this.selfSessionId) continue;
@@ -275,7 +327,14 @@ export class CfRealtimeAdapter implements SfuAdapter {
       try {
         res = await this.api.pull(ids);
       } catch (err) {
-        release(ids);
+        if (isPullRejectedBeforeApply(err)) {
+          // Cloudflare に届く前に断られた。同じセッションで pull し直してよい。
+          release(ids);
+        } else {
+          // 結果が分からない（Cloudflare は購読と offer を作ったが、応答だけ失われたかもしれない）。同じセッションで
+          // tracks/new を送り直すと購読が重なりうるので、接続ごと作り直してもらう（sfu-bridge の b.fail と同じ）。
+          this.fail("cloudflare_pull_failed", err);
+        }
         throw err;
       }
       if (this.closed) return;
@@ -301,10 +360,7 @@ export class CfRealtimeAdapter implements SfuAdapter {
           await this.api.answer({ type: "answer", sdp });
         } catch (err) {
           // answer を返せないと Cloudflare のセッションが先へ進めないので、接続の失敗として扱う。
-          if (!this.closed) {
-            if (this.connected) this.callbacks.onFailed("cloudflare_renegotiation_failed");
-            else this.startFailure ??= err instanceof Error ? err : new Error(String(err));
-          }
+          this.fail("cloudflare_renegotiation_failed", err);
           throw err;
         }
       }
@@ -321,6 +377,7 @@ export class CfRealtimeAdapter implements SfuAdapter {
   }
 
   async setMuted(muted: boolean): Promise<void> {
+    this.muted = muted;
     // DTX が有効なので、無効にしたトラック（無音）はほとんど送られない。
     const track = this.sender?.track;
     if (track) track.enabled = !muted;

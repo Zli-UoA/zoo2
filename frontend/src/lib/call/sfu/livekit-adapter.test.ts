@@ -58,6 +58,18 @@ describe("LiveKitAdapter mute", () => {
     adapter.close();
   });
 
+  it("publishes muted when created with the current muted state", async () => {
+    state.log = [];
+    state.publishGate = null;
+    // ミュート中の mesh 通話から移るとき、call-context は作るときに今の状態を渡す（start() の前に setMuted しない）。
+    const adapter = new LiveKitAdapter("wss://x", "t", {} as MediaStreamTrack, noCallbacks, {
+      muted: true,
+    });
+    await adapter.start();
+    expect(state.log).toEqual(["mute", "publish muted=true"]);
+    adapter.close();
+  });
+
   it("applies a mute change made while publishing", async () => {
     state.log = [];
     let release = () => {};

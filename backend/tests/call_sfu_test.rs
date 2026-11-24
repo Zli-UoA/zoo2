@@ -367,8 +367,8 @@ async fn text(db: &mut toasty::Db, sql: &str, bind: &str) -> anyhow::Result<Stri
 
 #[tokio::test]
 async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
-    dotenvy::dotenv().ok();
-    dotenvy::from_filename("../.env").ok();
+    // `.env` は読まない（dotenvy はプロセスの環境に書くので、並行するテストの環境の読み取りと競合する）。
+    // DATABASE_URL などは、テストを起動する前に環境に入れておく。
 
     let cf = MockServer::start().await;
     let lk = MockServer::start().await;
@@ -786,6 +786,61 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     .await?;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
+    // 結果のわからない pull（Cloudflare が 500）。あとで閉じ直す行を、30 秒先に処理するよう記録する。
+    Mock::given(method("POST"))
+        .and(path(pull_path.as_str()))
+        .respond_with(ResponseTemplate::new(500))
+        .with_priority(1)
+        .up_to_n_times(1)
+        .mount(&cf)
+        .await;
+    let (status, _) = request(
+        &app,
+        &users[2],
+        "POST",
+        &format!("/api/channels/{channel}/call/sfu/cf/pull"),
+        Some(json!({"session_id": sessions[2], "track_ids": [track_id]})),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    let delayed_sql = format!(
+        "SELECT count(*) FROM call_sfu_departures WHERE cf_session_id = '{subscriber_cf}'
+           AND claimed_until > statement_timestamp() + interval '20 seconds' AND channel_id = $1"
+    );
+    assert_eq!(count(&mut db, &delayed_sql, &channel).await?, 1);
+    // 処理する時刻になっても、そのセッションがまだその人の割り当てなら閉じずに消す（通話を切らない）。
+    let before_reclose = request_count(&cf).await;
+    toasty::sql::statement(
+        "UPDATE call_sfu_departures SET claimed_until = NULL WHERE channel_id = $1 AND cf_session_id = $2",
+    )
+    .bind(channel.clone())
+    .bind(subscriber_cf.clone())
+    .exec(&mut db)
+    .await?;
+    state
+        .call_sfu
+        .as_ref()
+        .expect("sfu")
+        .departures_wake
+        .notify_one();
+    let departures_sql = format!(
+        "SELECT count(*) FROM call_sfu_departures WHERE cf_session_id = '{subscriber_cf}' AND channel_id = $1"
+    );
+    for _ in 0..50 {
+        if count(&mut db, &departures_sql, &channel).await? == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(count(&mut db, &departures_sql, &channel).await?, 0);
+    assert!(
+        close_calls(&cf, before_reclose, &subscriber_cf)
+            .await
+            .is_empty(),
+        "a still-assigned session must not be closed"
+    );
+
     // push の応答を受けたあと、登録の前に割り当てが変わったら（fallback で新しい Cloudflare セッションへ）、
     // その push は 409 で、古いセッションのトラックは一覧に載らない。順序は backend の test gate で固定する
     // （Cloudflare の応答のあと、register_track の前で止める）。
@@ -1098,6 +1153,33 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
             .all(|t| t["rev"].as_str().is_some_and(|r| r.len() == 12)),
         "{joined}"
     );
+    // bridge が push をやめると、話者のトラックを一覧から外す。別のセッションの close では外さない。
+    let bridge_rows_sql =
+        "SELECT count(*) FROM call_sfu_tracks WHERE channel_id = $1 AND source = 'bridge'";
+    let (status, _) = bridge(
+        "POST",
+        "/internal/sfu-bridge/cf/close",
+        Some(json!({
+            "channel_id": channel, "cf_session_id": "cf-bridge-2",
+            "mids": ["1"], "speakers": [sessions[0]]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(count(&mut db, bridge_rows_sql, &channel).await?, 1);
+    // close が失敗しても（mid "9" は Cloudflare が失敗を返す）、一覧からは先に外れている。
+    let (status, _) = bridge(
+        "POST",
+        "/internal/sfu-bridge/cf/close",
+        Some(json!({
+            "channel_id": channel, "cf_session_id": "cf-bridge",
+            "mids": ["9"], "speakers": [sessions[0]]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(count(&mut db, bridge_rows_sql, &channel).await?, 0);
+
     // 新しい bridge が登録すると、前の bridge のトラックは消える。
     let (_, reg2) = bridge("POST", "/internal/sfu-bridge/register", None).await;
     assert!(reg2["bridge_epoch"].as_i64().unwrap() > bridge_epoch);
@@ -1965,8 +2047,8 @@ async fn raw_connects(url: &str, concurrency: usize) -> anyhow::Result<Vec<Durat
 #[tokio::test]
 #[ignore]
 async fn join_latency() -> anyhow::Result<()> {
-    dotenvy::dotenv().ok();
-    dotenvy::from_filename("../.env").ok();
+    // `.env` は読まない（dotenvy はプロセスの環境に書くので、並行するテストの環境の読み取りと競合する）。
+    // DATABASE_URL などは、テストを起動する前に環境に入れておく。
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
     let mut db = init_db(&config.database_url).await?;

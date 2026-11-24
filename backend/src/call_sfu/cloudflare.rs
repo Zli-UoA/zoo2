@@ -54,11 +54,6 @@ struct SessionTrack {
     mid: Option<String>,
     #[serde(default)]
     status: Option<String>,
-    /// `local` は、このセッションが push したトラック。`remote` は pull したトラック。
-    #[serde(default)]
-    location: Option<String>,
-    #[serde(default)]
-    track_name: Option<String>,
 }
 
 /// pull する相手の track。
@@ -209,25 +204,6 @@ impl CloudflareRealtime {
             )
             .await?;
         check_closed(mids, &res)
-    }
-
-    /// `mids` のうち、このセッションが push した（`location` が `local`）トラックの名前。pull した mid は
-    /// 含めない。
-    pub async fn local_track_names(
-        &self,
-        session_id: &str,
-        mids: &[String],
-    ) -> Result<Vec<String>, AppError> {
-        let state: SessionState = self
-            .send(self.http.get(self.url(&format!("sessions/{session_id}"))))
-            .await?;
-        Ok(state
-            .tracks
-            .into_iter()
-            .filter(|t| t.location.as_deref() == Some("local"))
-            .filter(|t| t.mid.as_ref().is_some_and(|m| mids.contains(m)))
-            .filter_map(|t| t.track_name)
-            .collect())
     }
 
     /// セッションの track をすべて強制的に閉じる（退出・キックの後始末）。

@@ -345,14 +345,16 @@ func (b *roomBridge) unpush(speaker, mid string, transceiver *webrtc.RTPTranscei
 	}
 	// stopMidsLocked と同じく、送信を止めてから Cloudflare 側を閉じる。
 	_ = transceiver.Stop()
-	b.closeMidsLocked([]string{mid})
+	b.closeMidsLocked([]string{mid}, []string{speaker})
 }
 
-// closeMidsLocked は Cloudflare 側の mid を閉じる。失敗は記録だけする（セッションを閉じれば消える）。b.negotiate を持って呼ぶ。
-func (b *roomBridge) closeMidsLocked(mids []string) {
+// closeMidsLocked は Cloudflare 側の mid を閉じる。speakers は push を閉じる話者（pull だけなら nil）。
+// 失敗は記録だけする。mid はセッションを閉じれば消え、話者のトラックは backend が close の前に一覧から外す。
+// b.negotiate を持って呼ぶ。
+func (b *roomBridge) closeMidsLocked(mids, speakers []string) {
 	ctx, cancel := context.WithTimeout(b.ctx, negotiateTimeout)
 	defer cancel()
-	if err := b.api.cfClose(ctx, b.channelID, b.cfSession, mids); err != nil && b.ctx.Err() == nil {
+	if err := b.api.cfClose(ctx, b.channelID, b.cfSession, mids, speakers); err != nil && b.ctx.Err() == nil {
 		b.log().Warn("closing Cloudflare tracks failed", "mids", mids, "error", err)
 	}
 }
@@ -614,7 +616,7 @@ func (b *roomBridge) stopMidsLocked(mids []string) {
 		delete(b.midSpeaker, mid)
 	}
 	b.mu.Unlock()
-	b.closeMidsLocked(mids)
+	b.closeMidsLocked(mids, nil)
 }
 
 func (b *roomBridge) close() {

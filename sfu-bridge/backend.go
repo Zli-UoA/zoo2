@@ -181,11 +181,16 @@ func (a *backendAPI) cfAnswer(ctx context.Context, cfSession string, answer sess
 	}, nil)
 }
 
-// cfClose は mid を閉じる。channel_id があると、backend は bridge が push を閉じた話者のトラックを一覧から外す。
-func (a *backendAPI) cfClose(ctx context.Context, channelID, cfSession string, mids []string) error {
+// cfClose は mid を閉じる。speakers は、閉じる mid のうち bridge の push（話者の声）の話者の session_id。
+// backend は閉じる前に、その話者のトラックを一覧から外す（Cloudflare に問い合わせずに済むよう、ここで渡す）。
+func (a *backendAPI) cfClose(ctx context.Context, channelID, cfSession string, mids, speakers []string) error {
+	if speakers == nil {
+		speakers = []string{}
+	}
 	return a.do(ctx, http.MethodPost, "/internal/sfu-bridge/cf/close", map[string]any{
 		"channel_id":    channelID,
 		"cf_session_id": cfSession,
 		"mids":          mids,
+		"speakers":      speakers,
 	}, nil)
 }

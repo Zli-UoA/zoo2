@@ -1085,12 +1085,17 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         if (isStale()) return;
         const mic = currentMic();
         if (!mic) return;
-        adapter = new LiveKitAdapter(joined.url, joined.token, mic, callbacks);
+        // ミュート中の通話から移るときに、ミュートしていない状態で publish しないよう、今の状態を渡す。
+        adapter = new LiveKitAdapter(joined.url, joined.token, mic, callbacks, {
+          muted: isMutedRef.current,
+        });
         sfuMicSync.created(adapter, mic);
       } else {
         const mic = currentMic();
         if (!mic) return;
-        adapter = new CfRealtimeAdapter(mySessionId, mic, cfApi, callbacks, initial);
+        adapter = new CfRealtimeAdapter(mySessionId, mic, cfApi, callbacks, initial, {
+          muted: isMutedRef.current,
+        });
         sfuMicSync.created(adapter, mic);
       }
       sfuAdapterRef.current = adapter;

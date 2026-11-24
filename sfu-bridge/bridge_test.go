@@ -158,6 +158,7 @@ type fakeBackend struct {
 	paths      []string
 	closed     [][]string
 	closeChans []string
+	closeSpk   [][]string
 	pullResp   tracksResponse
 	pullStatus int
 }
@@ -177,9 +178,11 @@ func (f *fakeBackend) handler(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			ChannelID string   `json:"channel_id"`
 			Mids      []string `json:"mids"`
+			Speakers  []string `json:"speakers"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.closed = append(f.closed, body.Mids)
+		f.closeSpk = append(f.closeSpk, body.Speakers)
 		f.closeChans = append(f.closeChans, body.ChannelID)
 	default:
 		w.WriteHeader(http.StatusInternalServerError)
@@ -229,6 +232,10 @@ func TestPullResponseAfterRemovalIsClosed(t *testing.T) {
 	defer f.mu.Unlock()
 	if len(f.closed) != 1 || len(f.closed[0]) != 1 || f.closed[0][0] != "3" {
 		t.Fatalf("the orphaned mid must be closed: %v", f.closed)
+	}
+	// pull の mid を閉じるだけなので、話者は渡さない（一覧から外さない）。
+	if len(f.closeSpk[0]) != 0 {
+		t.Fatalf("closing pulled mids must not pass speakers: %v", f.closeSpk)
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -486,6 +493,10 @@ func TestUnpushClosesUnderNegotiateWithChannel(t *testing.T) {
 	defer f.mu.Unlock()
 	if len(f.closed) != 1 || len(f.closed[0]) != 1 || f.closed[0][0] != "4" || f.closeChans[0] != "c" {
 		t.Fatalf("unpush must close the mid with the channel: %v %v", f.closed, f.closeChans)
+	}
+	// backend が close の前に一覧から外せるよう、push をやめた話者を渡す。
+	if len(f.closeSpk[0]) != 1 || f.closeSpk[0][0] != "a" {
+		t.Fatalf("unpush must pass the speaker: %v", f.closeSpk)
 	}
 	if _, ok := b.pushed["a"]; ok {
 		t.Fatal("unpush must forget the push")

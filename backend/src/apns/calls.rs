@@ -56,8 +56,8 @@ async fn call_payload(
 ///
 /// iOS は SFU に対応しておらず、SFU の部屋には入れない（409 `CALL_SFU_UNSUPPORTED`、docs/calls-sfu.md）。
 /// 着信を鳴らしても応答できないので、iOS の端末には知らせない（Web・Android の通知は今までどおり送る）。
-/// 部屋のモードは、端末ごとの送信直前の照会（`CALL_PAYLOAD_SQL` の `$4`）で見る。照会の失敗は、その端末の
-/// 配信の失敗として記録し、ほかの宛先の配信は止めない。
+/// 部屋のモードは、端末ごとの送信直前の照会（`CALL_PAYLOAD_SQL` の `$4`）で見る。照会の失敗は、APNs の
+/// 失敗と分けて記録し（`deliver_device`）、その端末には送らず、ほかの宛先の配信は止めない。
 pub(crate) fn dispatch_call_invites(
     db: toasty::Db,
     invites: Vec<CallInvitePush>,
@@ -131,7 +131,15 @@ async fn deliver_device(
             &sub.device_token,
             &config.authorization().await?,
         )?;
-        send_if_allowed(request, call_payload(&mut db, &sub, &invite, sfu_enabled)).await
+        // 照会の失敗は、APNs への送信の失敗と分けて記録する。
+        let payload = async {
+            let payload = call_payload(&mut db, &sub, &invite, sfu_enabled).await;
+            if let Err(e) = &payload {
+                tracing::warn!(error = ?e, "VoIP通知の着信の内容をDBから照会できませんでした");
+            }
+            payload
+        };
+        send_if_allowed(request, payload).await
     }
     .await;
     match result {

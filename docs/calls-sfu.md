@@ -71,6 +71,8 @@
 - 失敗したものは、15 秒あけて試し直す。試すのは初回を含めて 5 回まで（`MAX_DEPARTURE_ATTEMPTS`）。5 回目も失敗したら、警告をログに出して行を消す。消した行は、あとで SFU が直っても処理しない（障害が長引いたときに、試し直しを待ち続けない）。
 - 全件が失敗したバッチのあとも、worker は続けて次のまだ確保していない行を処理する（失敗した行は 15 秒先まで確保したままなので、選ばれない）。
 - Cloudflare の操作（push・pull）が処理中のあいだに後始末が走ると、`GET` に操作の結果がまだ載っておらず、閉じ漏れる（https://developers.cloudflare.com/realtime/sfu/api/）。そのため backend は、push・pull の応答を受け取ったあとに、そのセッションがまだ割り当てのままかを確かめる。違えば（そのあいだに退出・割り当ての変更があった）、同じセッションの行を記録し直して 409 を返す。worker の次の `GET` には操作の結果が載っている。
+- push・pull が失敗した、または応答がなかった（タイムアウトや 5xx。backend は 502 を返す）ときは、結果がわからない。Cloudflare では操作が済んでいる、またはこのあと済むことがある（応答を待つのをやめても、Cloudflare 側の処理は取り消されない）。そのため backend は、30 秒後（Cloudflare への要求のタイムアウト 10 秒より長い）に処理する行を、そのセッションについて記録する（`claimed_until` を先にする）。worker は、その時点でセッションがまだその人の割り当てなら閉じずに行を消し、割り当てでなければ（退出・割り当ての変更のあと）閉じる。通話を続けている人のトラックは切らず、退出した人の分は、操作の結果が決まったあとの `GET` で閉じる。
+- クライアントは、結果のわからない pull のあと、同じセッションで pull し直さない（購読が重なることがある。https://developers.cloudflare.com/realtime/sfu/concepts/negotiation/ ）。そのセッションを捨てて、新しい PeerConnection とセッションで接続し直す。トラックごとの失敗（`errorCode`）と、Cloudflare に送る前に backend が断った要求（400・403・404・409）だけは、同じセッションで間隔をあけて pull し直す。Android は Kotlin が HTTP の状態を渡さないので、pull の要求の失敗はすべて接続し直す。sfu-bridge も同じで、結果のわからない pull のあとは Cloudflare のセッションを作り直す。
 - LiveKit の設定がないときは、LiveKit の行を確保しない（消さずに残す）。設定を戻せば処理する。
 
 ## sfu-bridge
@@ -81,6 +83,7 @@
 - `GET /internal/sfu-bridge/rooms?bridge_epoch=…&since=…` を long-poll する。返るのは、LiveKit と Cloudflare の両方に人がいる部屋の一覧と、部屋ごとの LiveKit のトークン。変化がなければ最大 25 秒待つ。
 - 部屋ごとに LiveKit に `bridge:{epoch}` として入り（hidden にはしない）、Cloudflare のセッションを 1 つ持つ。
   - LiveKit の話者の声：Cloudflare に push する（`/internal/sfu-bridge/cf/publish`、track 名は `{session_id}-bridge`）。
+    話者が LiveKit で公開をやめたら、bridge は `/internal/sfu-bridge/cf/close` に mid と話者の `session_id`（`speakers`）を渡す。backend は、先にその話者の行を一覧から外してから（そのセッション・track 名の行だけ。別のセッションで公開し直した行は残す）mid を閉じる。close が失敗しても、一覧に古い行は残らない（mid は bridge のセッションを閉じれば消える）。一覧から外せなかったときは、close もせずにエラーを返す。
   - Cloudflare の話者の声（`direct`）：pull して、トラック名を話者の `session_id` にして LiveKit に publish する。
 - Opus の RTP はトランスコードしない。RTP ヘッダ拡張の ID の割り当ては LiveKit と Cloudflare で違うので、拡張は外す。
 - 内部 API の認証は `SFU_BRIDGE_TOKEN`（Bearer）。

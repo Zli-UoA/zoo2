@@ -8,6 +8,7 @@ import {
   CfRealtimeAdapter,
   type CfTracksResponse,
   enableOpusDtx,
+  isPullRejectedBeforeApply,
   speakerOfTrackName,
   type CfRealtimeApi,
 } from "./cf-realtime-adapter";
@@ -148,6 +149,8 @@ class FakePeerConnection {
   local: RTCSessionDescriptionInit | null = null;
   remote: RTCSessionDescriptionInit[] = [];
   added: MediaStreamTrack[] = [];
+  /** addTransceiver した時点のトラックの enabled。 */
+  addedEnabled: boolean[] = [];
   closed = false;
   constructor() {
     FakePeerConnection.last = this;
@@ -176,6 +179,7 @@ class FakePeerConnection {
   }
   addTransceiver(track: MediaStreamTrack) {
     this.added.push(track);
+    this.addedEnabled.push(track.enabled);
     return { sender: { track, replaceTrack: vi.fn(async () => {}) } };
   }
   async createOffer() {
@@ -204,6 +208,11 @@ class FakePeerConnection {
 }
 
 const noCallbacks = { onRemoteAudio: () => {}, onRemoteGone: () => {}, onFailed: () => {} };
+
+/** backend が Cloudflare に送る前に断った（ApiError と同じく status を持つ）失敗。 */
+function rejectedBeforeApply(status = 404) {
+  return Object.assign(new Error(`HTTP ${status}`), { status });
+}
 
 function setup() {
   FakePeerConnection.autoConnect = true;
@@ -408,7 +417,7 @@ describe("CfRealtimeAdapter", () => {
     // pull を待つあいだに Bob が消えて、また現れた。
     adapter.updateTracks([], 2);
     adapter.updateTracks(bob, 3);
-    rejectFirst(new Error("network"));
+    rejectFirst(rejectedBeforeApply());
     // 新しい登録の pull が走る。
     await vi.waitFor(() => expect(pull).toHaveBeenCalledTimes(2));
     expect(pull).toHaveBeenLastCalledWith(["bob:direct"]);
@@ -470,11 +479,11 @@ describe("CfRealtimeAdapter", () => {
     adapter.close();
   });
 
-  it("retries a failed pull with backoff without waiting for a list update, up to a limit", async () => {
+  it("retries a pull rejected before apply with backoff without waiting for a list update, up to a limit", async () => {
     setup();
     vi.useFakeTimers();
     const pull = vi.fn<(ids: string[]) => Promise<CfTracksResponse>>(async () => {
-      throw new Error("network");
+      throw rejectedBeforeApply(409);
     });
     const api: CfRealtimeApi = {
       publish: async () => ({ sessionDescription: { type: "answer", sdp: "a" } }),
@@ -506,7 +515,7 @@ describe("CfRealtimeAdapter", () => {
     vi.useFakeTimers();
     const pull = vi
       .fn<(ids: string[]) => Promise<CfTracksResponse>>()
-      .mockRejectedValueOnce(new Error("network"))
+      .mockRejectedValueOnce(rejectedBeforeApply())
       .mockImplementation(async (ids) => ({
         tracks: ids.map((id, i) => ({ mid: String(i + 1), trackName: id.split(":")[0] })),
       }));
@@ -529,5 +538,141 @@ describe("CfRealtimeAdapter", () => {
     await vi.advanceTimersByTimeAsync(CF_PULL_RETRY_BASE_MS * 16);
     expect(pull).toHaveBeenCalledTimes(2);
     adapter.close();
+  });
+
+  it("retries a per-track errorCode on the same session with backoff", async () => {
+    setup();
+    vi.useFakeTimers();
+    const pull = vi
+      .fn<(ids: string[]) => Promise<CfTracksResponse>>()
+      .mockResolvedValueOnce({ tracks: [{ mid: null, trackName: "bob", errorCode: "not_found" }] })
+      .mockImplementation(async (ids) => ({
+        tracks: ids.map((id, i) => ({ mid: String(i + 1), trackName: id.split(":")[0] })),
+      }));
+    const failed = vi.fn();
+    const api: CfRealtimeApi = {
+      publish: async () => ({ sessionDescription: { type: "answer", sdp: "a" } }),
+      pull,
+      answer: async () => {},
+    };
+    const adapter = new CfRealtimeAdapter(
+      "me",
+      {} as MediaStreamTrack,
+      api,
+      { ...noCallbacks, onFailed: failed },
+      { tracks: [{ id: "bob:direct", session_id: "bob", source: "direct" }], version: 1 },
+    );
+    await adapter.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pull).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(CF_PULL_RETRY_BASE_MS);
+    expect(pull).toHaveBeenCalledTimes(2);
+    expect(pull).toHaveBeenLastCalledWith(["bob:direct"]);
+    expect(failed).not.toHaveBeenCalled();
+    adapter.close();
+  });
+
+  it("fails the connection instead of retrying when a pull's outcome is unknown", async () => {
+    setup();
+    vi.useFakeTimers();
+    // 5xx（backend は Cloudflare の失敗を 502 にする）・時間切れ・status のない失敗は、結果が分からない。
+    for (const err of [rejectedBeforeApply(502), new Error("network")]) {
+      const pull = vi.fn<(ids: string[]) => Promise<CfTracksResponse>>(async () => {
+        throw err;
+      });
+      const failed = vi.fn();
+      const api: CfRealtimeApi = {
+        publish: async () => ({ sessionDescription: { type: "answer", sdp: "a" } }),
+        pull,
+        answer: async () => {},
+      };
+      const bob = [{ id: "bob:direct", session_id: "bob", source: "direct" as const }];
+      const adapter = new CfRealtimeAdapter(
+        "me",
+        {} as MediaStreamTrack,
+        api,
+        { ...noCallbacks, onFailed: failed },
+        { tracks: [], version: 1 },
+      );
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      await adapter.start();
+      adapter.updateTracks(bob, 2);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(pull).toHaveBeenCalledTimes(1);
+      expect(failed).toHaveBeenCalledWith("cloudflare_pull_failed");
+      // 同じセッションでは、やり直しも一覧の更新でも pull しない。
+      await vi.advanceTimersByTimeAsync(
+        CF_PULL_RETRY_BASE_MS * 2 ** (CF_PULL_RETRY_MAX_ATTEMPTS + 2),
+      );
+      adapter.updateTracks(
+        [...bob, { id: "carol:direct", session_id: "carol", source: "direct" }],
+        3,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(pull).toHaveBeenCalledTimes(1);
+      expect(failed).toHaveBeenCalledTimes(1);
+      adapter.close();
+    }
+  });
+
+  it("fails start() when the initial pull's outcome is unknown", async () => {
+    setup();
+    FakePeerConnection.autoConnect = false;
+    let rejectPull: (err: Error) => void = () => {};
+    const pull = vi.fn(() => new Promise<CfTracksResponse>((_, reject) => (rejectPull = reject)));
+    const failed = vi.fn();
+    const api: CfRealtimeApi = {
+      publish: async () => ({ sessionDescription: { type: "answer", sdp: "a" } }),
+      pull,
+      answer: async () => {},
+    };
+    const adapter = new CfRealtimeAdapter(
+      "me",
+      {} as MediaStreamTrack,
+      api,
+      { ...noCallbacks, onFailed: failed },
+      { tracks: [{ id: "bob:direct", session_id: "bob", source: "direct" }], version: 1 },
+    );
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const started = expect(adapter.start()).rejects.toThrow("timeout");
+    await vi.waitFor(() => expect(pull).toHaveBeenCalledTimes(1));
+    // つながるのを待たずに start() を失敗させる（onFailed は呼ばない）。
+    rejectPull(new Error("timeout"));
+    await started;
+    expect(failed).not.toHaveBeenCalled();
+    expect(pull).toHaveBeenCalledTimes(1);
+    adapter.close();
+  });
+
+  it("publishes a muted microphone when created muted", async () => {
+    setup();
+    const api: CfRealtimeApi = {
+      publish: async () => ({ sessionDescription: { type: "answer", sdp: "a" } }),
+      pull: async () => ({}),
+      answer: async () => {},
+    };
+    const mic = { enabled: true } as MediaStreamTrack;
+    const adapter = new CfRealtimeAdapter(
+      "me",
+      mic,
+      api,
+      noCallbacks,
+      { tracks: [], version: 0 },
+      { muted: true },
+    );
+    await adapter.start();
+    expect(FakePeerConnection.last?.addedEnabled).toEqual([false]);
+    adapter.close();
+  });
+});
+
+describe("isPullRejectedBeforeApply", () => {
+  it("accepts only statuses the backend returns before calling Cloudflare", () => {
+    for (const status of [400, 403, 404, 409])
+      expect(isPullRejectedBeforeApply(rejectedBeforeApply(status))).toBe(true);
+    for (const status of [500, 502, 504])
+      expect(isPullRejectedBeforeApply(rejectedBeforeApply(status))).toBe(false);
+    expect(isPullRejectedBeforeApply(new Error("network"))).toBe(false);
+    expect(isPullRejectedBeforeApply(undefined)).toBe(false);
   });
 });

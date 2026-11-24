@@ -862,10 +862,18 @@ async fn cf_publish(
     let cf = own_cf_session(&state, &user, &channel_id, body.session_id).await?;
     let mid = crate::call_sfu::cloudflare::validate_audio_only_offer(&body.offer)?;
     let track_name = body.session_id.to_string();
-    let res = sfu
+    let res = match sfu
         .cloudflare
         .push_track(&cf, &body.offer, &mid, &track_name)
-        .await?;
+        .await
+    {
+        Ok(res) => res,
+        Err(e) => {
+            // 応答がない・失敗した push も、Cloudflare では済んでいることがある。結果が決まったあとで閉じ直す。
+            record_unknown_cf_outcome(&state, sfu, &channel_id, body.session_id, &cf).await;
+            return Err(e);
+        }
+    };
     // Cloudflare が受け付けなかったトラックは、一覧に載せない。
     crate::call_sfu::cloudflare::check_pushed(&res, &mid)?;
     // テスト：Cloudflare の応答のあと、登録の前で止める（そのあいだに割り当てを変える）。
@@ -882,7 +890,7 @@ async fn cf_publish(
     .await;
     if let Err(e @ (AppError::NotFound(_) | AppError::Conflict(_))) = registered {
         // push のあいだに退出・割り当ての変更があった。push で作ったトラックを閉じ直す。
-        record_cf_departure_after_op(&state, sfu, &channel_id, body.session_id, &cf).await?;
+        record_cf_departure_after_op(&state, sfu, &channel_id, body.session_id, &cf, 0).await?;
         return Err(e);
     }
     registered?;
@@ -918,26 +926,61 @@ async fn still_assigned_to_cf(
     if !rows.is_empty() {
         return Ok(true);
     }
-    record_cf_departure_after_op(state, sfu, channel_id, session_id, cf).await?;
+    record_cf_departure_after_op(state, sfu, channel_id, session_id, cf, 0).await?;
     Ok(false)
 }
 
+/// Cloudflare の操作（push・pull）が失敗した・応答がなかったときの後始末。
+///
+/// 結果はわからない。Cloudflare では操作が済んでいる、またはこのあと済むことがある（応答を待つのをやめても、
+/// Cloudflare 側の処理は取り消されない）。そのあいだに退出の後始末が `GET` した一覧には、操作の結果が
+/// 載らない。そこで、操作の結果が決まったあと（`UNKNOWN_OUTCOME_RECLOSE_SECS` 秒後）に閉じ直す行を記録する。
+/// worker はその時点でセッションがまだその人の割り当てなら閉じない（`Departure::cf_still_assigned`）ので、
+/// 通話を続けている人のトラックは切らない。記録に失敗しても、元のエラーを返す（ログに残す）。
+async fn record_unknown_cf_outcome(
+    state: &AppState,
+    sfu: &CallSfu,
+    channel_id: &str,
+    session_id: Uuid,
+    cf: &str,
+) {
+    if let Err(e) = record_cf_departure_after_op(
+        state,
+        sfu,
+        channel_id,
+        session_id,
+        cf,
+        UNKNOWN_OUTCOME_RECLOSE_SECS,
+    )
+    .await
+    {
+        tracing::error!(error = ?e, channel_id, %session_id, "結果のわからない Cloudflare の操作の後始末を記録できませんでした");
+    }
+}
+
+/// 結果のわからない操作のあと、閉じ直すまでの秒数。Cloudflare への要求のタイムアウト（10 秒）より長くする。
+const UNKNOWN_OUTCOME_RECLOSE_SECS: i32 = 30;
+
 /// Cloudflare のセッションの後始末を、`call_sfu_departures` に記録し直す（`still_assigned_to_cf`）。
+/// `delay_secs` が 0 より大きければ、worker はその秒数が過ぎてから処理する（`claimed_until`）。
 async fn record_cf_departure_after_op(
     state: &AppState,
     sfu: &CallSfu,
     channel_id: &str,
     session_id: Uuid,
     cf: &str,
+    delay_secs: i32,
 ) -> Result<(), AppError> {
     let mut db = state.db.clone();
     toasty::sql::statement(
-        "INSERT INTO call_sfu_departures (channel_id, session_id, sfu_id, cf_session_id)
-         VALUES ($1, $2::uuid, 'cloudflare', $3)",
+        "INSERT INTO call_sfu_departures (channel_id, session_id, sfu_id, cf_session_id, claimed_until)
+         VALUES ($1, $2::uuid, 'cloudflare', $3,
+                 CASE WHEN $4::int > 0 THEN statement_timestamp() + make_interval(secs => $4::int) END)",
     )
     .bind(channel_id.to_string())
     .bind(session_id.to_string())
     .bind(cf.to_string())
+    .bind(delay_secs.to_string())
     .exec(&mut db)
     .await?;
     sfu.departures_wake.notify_one();
@@ -1135,7 +1178,15 @@ async fn cf_pull(
     if remotes.is_empty() {
         return Err(AppError::NotFound("No tracks to pull".into()));
     }
-    let res = sfu.cloudflare.pull_tracks(&cf, &remotes).await?;
+    let res = match sfu.cloudflare.pull_tracks(&cf, &remotes).await {
+        Ok(res) => res,
+        Err(e) => {
+            // 結果のわからない pull。クライアントはこのセッションを捨てて接続し直す（同じセッションで
+            // pull し直すと購読が重なる）。Cloudflare で済んでいた購読は、結果が決まったあとで閉じ直す。
+            record_unknown_cf_outcome(&state, sfu, &channel_id, body.session_id, &cf).await;
+            return Err(e);
+        }
+    };
     // pull のあいだに退出していれば、pull で作った購読を閉じ直す（退出した人に音声を流さない）。
     if !still_assigned_to_cf(&state, sfu, &channel_id, body.session_id, &cf).await? {
         return Err(AppError::Conflict(
@@ -1500,6 +1551,9 @@ struct BridgeCloseBody {
     channel_id: Option<String>,
     cf_session_id: String,
     mids: Vec<String>,
+    /// `mids` のうち bridge の push を閉じる話者の session_id（pull だけなら空）。
+    #[serde(default)]
+    speakers: Vec<String>,
 }
 
 async fn bridge_cf_close(
@@ -1511,26 +1565,23 @@ async fn bridge_cf_close(
     if body.mids.len() > MAX_PULL_TRACKS {
         return Err(AppError::BadRequest("Too many mids".into()));
     }
-    // 閉じる前に、どの mid が bridge の push（話者の声）かを読む。pull の mid は一覧に関係しない。
-    // 読めなくても mid は閉じる（閉じるほうが大事）。一覧から外せなかったことは、最後にエラーで返す。
-    let pushed = match &body.channel_id {
-        Some(_) => {
-            sfu.cloudflare
-                .local_track_names(&body.cf_session_id, &body.mids)
-                .await
-        }
-        None => Ok(Vec::new()),
-    };
+    if body.speakers.len() > MAX_PULL_TRACKS {
+        return Err(AppError::BadRequest("Too many speakers".into()));
+    }
+    // 閉じる前に、push をやめる話者のトラックを一覧から外す。先に外すので、close が失敗しても一覧に
+    // 古い行は残らない（mid はセッションを閉じれば消える）。一覧から外せなければ close もせずにエラーを返し、
+    // bridge の push は残る（一覧と食い違わない）。話者は bridge が渡すので、Cloudflare に問い合わせない。
+    if let Some(channel_id) = &body.channel_id {
+        remove_closed_bridge_tracks(&state, channel_id, &body.cf_session_id, &body.speakers)
+            .await?;
+    }
     sfu.cloudflare
         .close_tracks(&body.cf_session_id, &body.mids)
         .await?;
-    if let Some(channel_id) = &body.channel_id {
-        remove_closed_bridge_tracks(&state, channel_id, &body.cf_session_id, &pushed?).await?;
-    }
     Ok(Json(json!({ "ok": true })))
 }
 
-/// bridge が閉じた push を、トラック一覧から外す。話者が LiveKit にいるまま公開をやめると、行が残り、
+/// bridge が閉じる push を、トラック一覧から外す。話者が LiveKit にいるまま公開をやめると、行が残り、
 /// あとから来た Cloudflare の人に pull できないトラックが配られるため。
 ///
 /// 外すのは、閉じたセッションと track 名がいまの行と同じとき（いまの公開）だけ。新しいセッションで
@@ -1540,11 +1591,10 @@ async fn remove_closed_bridge_tracks(
     state: &AppState,
     channel_id: &str,
     cf_session: &str,
-    track_names: &[String],
+    speakers: &[String],
 ) -> Result<(), AppError> {
-    let speakers: Vec<String> = track_names
+    let speakers: Vec<String> = speakers
         .iter()
-        .filter_map(|n| n.strip_suffix("-bridge"))
         .filter_map(|s| Uuid::parse_str(s).ok())
         .map(|s| s.to_string())
         .collect();

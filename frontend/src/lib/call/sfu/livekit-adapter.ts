@@ -80,7 +80,7 @@ export class LiveKitAdapter implements SfuAdapter {
   private room: Room;
   private localTrack: LocalAudioTrack | null = null;
   /** 最後に指定されたミュートの状態。publish の前に指定された分も、publish の前に当てる。 */
-  private muted = false;
+  private muted: boolean;
   private speakers: SpeakerTracks;
   private closed = false;
 
@@ -89,7 +89,10 @@ export class LiveKitAdapter implements SfuAdapter {
     private readonly token: string,
     private mic: MediaStreamTrack,
     private readonly callbacks: SfuAdapterCallbacks,
+    /** `muted`: 作った時点のミュートの状態（ミュート中の通話から移るとき、publish の前にミュートする）。 */
+    options: { muted?: boolean } = {},
   ) {
+    this.muted = options.muted ?? false;
     this.speakers = new SpeakerTracks(callbacks);
     this.room = new Room({
       adaptiveStream: false,

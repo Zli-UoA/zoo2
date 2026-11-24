@@ -80,6 +80,8 @@ export class AndroidSfuCall {
         },
       },
       initial,
+      // join の応答待ちのあいだのミュートは mic.enabled に入っている。
+      { muted: !this.mic.enabled },
     );
     // start() は Cloudflare と ICE・DTLS までつながってから終わる（つながらなければ reject）。
     await this.adapter.start();

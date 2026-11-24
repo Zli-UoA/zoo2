@@ -190,6 +190,10 @@ struct Departure {
     /// その割り当ての LiveKit の identity（`livekit::participant_identity`）。
     livekit_identity: Option<String>,
     attempts: i32,
+    /// その Cloudflare セッションが、まだその人の割り当てのまま（`call_presence` の主キーで 1 行）。
+    /// 操作の結果がわからないときに遅らせて記録した行（`routes::call_sfu`）で、その人がまだ使っていれば閉じない。
+    #[serde(default)]
+    cf_still_assigned: bool,
 }
 
 /// 何度試しても閉じられないもの（相手側でもう消えたものなど）は、この回数で諦める。
@@ -230,7 +234,8 @@ pub async fn pause_departure_worker_for_test(paused: bool) {
 /// ほかの SFU の行。この SFU の行が少ないときは idx_call_sfu_departures_sfu (sfu_id, id) を使い、ほかの SFU の
 /// 行は読まない。この SFU の行が多いときは主キー順の計画になることがあり、そのときは先に並ぶほかの SFU の
 /// 行を除外しながら読む（その数は、ほかの SFU のまだ閉じていない退出の数以下）。行は処理したら消すので、
-/// 表の大きさは「まだ閉じていない退出」の数に比例し、履歴は残らない。
+/// 表の大きさは「まだ閉じていない退出」の数に比例し、履歴は残らない。確保した行ごとに、Cloudflare の
+/// セッションがまだ割り当てのままかを call_presence の主キーで 1 行読む（最大 `DEPARTURE_BATCH` 行）。
 async fn drain_departures(
     sfu: &CallSfu,
     db: &mut toasty::Db,
@@ -264,7 +269,13 @@ async fn drain_departures(
          RETURNING json_build_object(
              'id', d.id, 'session_id', d.session_id, 'sfu_id', d.sfu_id, 'sfu_room', d.sfu_room,
              'cf_session_id', d.cf_session_id, 'livekit_identity', d.livekit_identity,
-             'attempts', d.attempts
+             'attempts', d.attempts,
+             'cf_still_assigned', d.cf_session_id IS NOT NULL AND EXISTS(
+                 SELECT 1 FROM call_presence p
+                 WHERE p.channel_id = d.channel_id AND p.session_id = d.session_id
+                   AND p.cf_session_id = d.cf_session_id
+                   AND p.expires_at > statement_timestamp()
+             )
          )::text"
     ))
     .exec(&mut *db)
@@ -344,7 +355,9 @@ fn join_ids(ids: &[i64]) -> String {
 }
 
 async fn close_departed(sfu: &CallSfu, d: &Departure) -> Result<(), AppError> {
-    if let Some(cf) = &d.cf_session_id {
+    if let Some(cf) = &d.cf_session_id
+        && !d.cf_still_assigned
+    {
         sfu.cloudflare.close_session(cf).await?;
     }
     if d.sfu_id == SFU_LIVEKIT
