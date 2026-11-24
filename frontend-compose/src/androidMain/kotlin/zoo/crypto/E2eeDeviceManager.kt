@@ -56,6 +56,7 @@ import zoo.Platform
 import zoo.ZooApi
 import zoo.endpoint
 import zoo.json
+import zoo.crypto.ffi.backupProofHeader
 
 /** 端末の登録と to-device に使う E2EE の API（docs/e2ee.md の「API」）。 */
 interface E2eeApi {
@@ -170,12 +171,15 @@ class ZooE2eeApi(private val api: ZooApi) : E2eeApi, E2eeSetupApi {
             )
         )
 
-    override suspend fun uploadBackupKeys(version: String, secretsRevision: Long, body: JsonObject) {
-        call(
-            "/api/e2ee/key_backup/keys?version=${version.encodeURLParameter()}&secrets_revision=$secretsRevision",
-            "POST",
-            body,
-        )
+    override suspend fun uploadBackupKeys(version: String, secretsRevision: Long, body: JsonObject, proof: String?) {
+        withRequestTimeout(TIMEOUT) {
+            api.request(
+                "/api/e2ee/key_backup/keys?version=${version.encodeURLParameter()}&secrets_revision=$secretsRevision",
+                "POST",
+                body,
+                proof?.let { mapOf(backupProofHeader() to it) }.orEmpty(),
+            )
+        }
     }
 
     /** 書き込みの応答は `{"data": ...}` の封筒に入っている。 */
