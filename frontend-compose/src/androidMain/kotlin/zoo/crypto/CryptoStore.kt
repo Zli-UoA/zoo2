@@ -211,6 +211,10 @@ class CryptoStore private constructor(
     val changes = kotlinx.coroutines.flow.MutableStateFlow(0L)
     private val outboundOlm = mutableMapOf<String, String>()
 
+    /** 閉じたか（閉じたストアの処理の失敗を、受け付けなかったことと見分けるため）。 */
+    val isClosed: Boolean
+        @Synchronized get() = closed
+
     /** このプロセスで、すでに SasController に渡した、ack 待ちの検証のメッセージの行（二重に渡さないため）。 */
     private val handedOverVerifications = mutableSetOf<String>()
     private val loadedInbound = mutableSetOf<String>()

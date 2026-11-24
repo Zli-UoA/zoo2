@@ -573,12 +573,19 @@ class SasController(
                 remaining += pending.removeFirst()
                 continue
             }
-            pending.removeFirst()
+            val taken = pending.removeFirst()
+            // IO の処理を始めたか（始める前に取り消されたら、メッセージを pending の先頭に戻す）。
+            var started = false
+            // 捨てずに残すか（試し直す）。
+            var keep = false
             try {
                 // 受け付けた結果は、戻る前に取り消されても登録する（検証の状態は進んでいる）。送信は登録のあとに行う。
                 var update: SasUpdate? = null
                 try {
-                    withContext(io) { update = verifications.receive(store, message, keysQuery, now()) }
+                    withContext(io) {
+                        started = true
+                        update = verifications.receive(store, message, keysQuery, now())
+                    }
                 } finally {
                     update?.let { register(it) }
                 }
@@ -588,11 +595,22 @@ class SasController(
                     flush(id)
                 }
             } catch (failure: CancellationException) {
+                if (!started) {
+                    pending.addFirst(taken)
+                    keep = true
+                }
                 throw failure
             } catch (_: Exception) {
-                // 受け付けないメッセージは、試し直しても通らない。捨てて続きを処理する。
+                if (store.isClosed || ready.value !== store) {
+                    // 取ったあとで暗号ストアが閉じられた（つなぎ直し）。受け付けなかったのではないので、この検証の
+                    // メッセージを届いた順のまま残し、次の確認で試し直す。
+                    held += txnId
+                    remaining += taken
+                    keep = true
+                }
+                // それ以外の、受け付けないメッセージは、試し直しても通らない。捨てて続きを処理する。
             } finally {
-                message.destroy()
+                if (!keep) message.destroy()
             }
         }
     }

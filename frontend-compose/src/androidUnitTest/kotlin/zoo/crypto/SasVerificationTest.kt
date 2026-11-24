@@ -12,6 +12,7 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
@@ -299,6 +300,69 @@ class SasVerificationTest {
         assertTrue(reopened.processToDevice(rows, deviceKeys, signatures, keys).verifications.isEmpty())
         reopened.acknowledged(retry.processed)
         assertTrue(reopened.processToDevice(rows, deviceKeys, signatures, keys).verifications.isEmpty())
+    }
+
+    @Test
+    fun messageReceivedWithAStoreClosedMeanwhileIsKeptAndProcessedLater() = runBlocking<Unit> {
+        val alice = world.device(ALICE, "alice")
+        val bob = world.device(BOB, "bob")
+        val txn = alice.sas.request(BOB)
+        val rows = synchronized(world) { world.inbox.remove("$BOB|${bob.store.deviceId}").orEmpty() }
+        val keys = world.keysQuery(BOB, rows.map { it.senderUserId })
+        val result = bob.store.processToDevice(rows, keys.getValue("device_keys").jsonObject, keys.getValue("signatures") as kotlinx.serialization.json.JsonArray, keys)
+        bob.store.acknowledged(result.processed)
+        // つなぎ直しで、ready を外す前に暗号ストアが閉じられた（取った暗号ストアが、受け取る前に閉じた）。
+        bob.store.close()
+        bob.sas.handleMessages(result.verifications).join()
+        // 受け付けなかったのではないので、捨てずに残す。
+        assertTrue(bob.sas.entries.value.isEmpty())
+        bob.reopen()
+        bob.sas.expire()
+        assertEquals(SasPhase.INCOMING, bob.entry(txn).view.phase)
+    }
+
+    @Test
+    fun cancellationBeforeTheReceiveRunsKeepsTheMessage() = runBlocking<Unit> {
+        val alice = world.device(ALICE, "alice")
+        val bob = world.device(BOB, "bob")
+        val txn = alice.sas.request(BOB)
+        val rows = synchronized(world) { world.inbox.remove("$BOB|${bob.store.deviceId}").orEmpty() }
+        val keys = world.keysQuery(BOB, rows.map { it.senderUserId })
+        val result = bob.store.processToDevice(rows, keys.getValue("device_keys").jsonObject, keys.getValue("signatures") as kotlinx.serialization.json.JsonArray, keys)
+        bob.store.acknowledged(result.processed)
+
+        // IO の処理を、送り出したところで止めておける dispatcher。
+        val dispatched = CompletableDeferred<Unit>()
+        val gate = java.util.concurrent.CountDownLatch(1)
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val io = object : kotlinx.coroutines.CoroutineDispatcher() {
+            override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) {
+                dispatched.complete(Unit)
+                executor.execute {
+                    gate.await()
+                    block.run()
+                }
+            }
+        }
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
+        val sas = SasController(world.api(BOB), kotlinx.coroutines.flow.MutableStateFlow(bob.store), scope, io = io, now = { world.now }, expireInterval = kotlin.time.Duration.ZERO)
+        try {
+            val job = sas.handleMessages(result.verifications)
+            // 受け取りの IO の処理を送り出したが、まだ始まっていないうちに取り消す。
+            kotlinx.coroutines.withTimeout(30.seconds) { dispatched.await() }
+            job.cancel()
+            gate.countDown()
+            kotlinx.coroutines.withTimeout(30.seconds) { job.join() }
+            // 処理を始めていないメッセージは捨てずに残り、次の確認で処理する。
+            assertTrue(sas.entries.value.isEmpty())
+            sas.expire()
+            assertEquals(SasPhase.INCOMING, sas.entries.value.single { it.view.transactionId == txn }.view.phase)
+        } finally {
+            gate.countDown()
+            sas.dispose()
+            scope.cancel()
+            executor.shutdownNow()
+        }
     }
 
     @Test
