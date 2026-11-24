@@ -18,7 +18,6 @@ import { useCollections } from "../../../lib/electric/collections-context";
 import type { ChannelUserRow } from "../../../lib/electric/types";
 import { ScreenHeader } from "../../layout/PaneHeader";
 import { Button } from "../../ui/button";
-import { ButtonGroup, ButtonGroupItem } from "../../ui/button-group";
 import { Input } from "../../ui/input";
 import { Select } from "../../ui/select";
 import { AppAvatar } from "../AppIdentity";
@@ -265,31 +264,28 @@ export function SearchScreen() {
             })}
           </p>
         ) : null}
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-          <ButtonGroup
-            value={[kind]}
-            onValueChange={(value) => {
-              const next = value[0] as SearchKind | undefined;
-              if (next && next !== kind) go({ q: query, type: next, ...filters });
-            }}
-          >
-            {SEARCH_KINDS.map((value) => (
-              <ButtonGroupItem
-                key={value}
-                value={value}
-                className="h-8 w-auto px-3 text-sm"
-                aria-label={kindLabel(value)}
-              >
-                {kindLabel(value)}
-              </ButtonGroupItem>
-            ))}
-          </ButtonGroup>
-        </div>
         <div
           role="group"
           aria-label={t("globalSearch.filters.label")}
           className="flex flex-wrap items-center gap-2"
         >
+          <Select
+            value={kind}
+            onChange={(event) => {
+              const next = event.target.value as SearchKind;
+              if (next !== kind) go({ q: query, type: next, ...filters });
+            }}
+            aria-label={t("globalSearch.filters.kind")}
+            className="h-8 w-40 text-sm"
+          >
+            {SEARCH_KINDS.map((value) => (
+              <option key={value} value={value}>
+                {value === "all"
+                  ? `${t("globalSearch.filters.kind")}: ${kindLabel(value)}`
+                  : kindLabel(value)}
+              </option>
+            ))}
+          </Select>
           <SearchFilterPicker
             label={t("globalSearch.filters.from")}
             icon={UserRoundIcon}
