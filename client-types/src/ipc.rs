@@ -116,6 +116,8 @@ pub mod event {
     pub const SHAPE: &str = "zoo://shape";
     /// [`super::ShapeFailed`]。(a) だけ。回復できない購読のエラー。
     pub const SHAPE_FAILED: &str = "zoo://shape-failed";
+    /// [`super::LoginFailed`]。(a) だけ。ブラウザーでのログインが、始まったあとで失敗したとき。
+    pub const LOGIN_FAILED: &str = "zoo://login-failed";
     /// [`super::OpenTarget`]。通知やトレイ、ディープリンクから、あるメッセージを開くとき。
     pub const OPEN: &str = "zoo://open";
     /// 中身なし。着信のトーストの「応答」が押された。`zoo_take_call_accept` で印を取りに来る合図で、
@@ -336,6 +338,12 @@ pub struct ObservedNotifications {
 pub struct ShapeBatch {
     pub shape: ShapeId,
     pub batch: Batch,
+}
+
+/// ブラウザーでのログインが失敗した理由。`START_LOGIN` はもう成功を返しているので、イベントで知らせる。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoginFailed {
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

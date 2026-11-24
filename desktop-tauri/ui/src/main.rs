@@ -9,8 +9,8 @@ mod tauri;
 use leptos::{ev, html, prelude::*, task::spawn_local};
 use zoo2_client_types::{
     ipc::{
-        FocusState, IpcError, LoginPrompt, OpenChannel, OpenTarget, SendMessage, SendResult,
-        SessionInfo, SessionState, ShapeBatch, ShapeFailed, UiMode, command, event,
+        FocusState, IpcError, LoginFailed, LoginPrompt, OpenChannel, OpenTarget, SendMessage,
+        SendResult, SessionInfo, SessionState, ShapeBatch, ShapeFailed, UiMode, command, event,
     },
     mfm::{self, Tone},
     rows::Message,
@@ -170,6 +170,10 @@ fn App() -> impl IntoView {
         })
         .await;
         tauri::listen(event::SHAPE_FAILED, move |failed: ShapeFailed| {
+            ctx.error.set(Some(failed.message));
+        })
+        .await;
+        tauri::listen(event::LOGIN_FAILED, move |failed: LoginFailed| {
             ctx.error.set(Some(failed.message));
         })
         .await;

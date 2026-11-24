@@ -35,9 +35,9 @@ use zoo2_client_core::{
 use zoo2_client_types::{
     api::Me,
     ipc::{
-        BrowserLogin, DeviceLogin, ErrorCode, FocusState, IpcError, LoginMethod, LoginPrompt,
-        NotificationSettings, OpenTarget, PROTOCOL_VERSION, SessionInfo, SessionState, ShapeBatch,
-        ShapeFailed, UiMode, event,
+        BrowserLogin, DeviceLogin, ErrorCode, FocusState, IpcError, LoginFailed, LoginMethod,
+        LoginPrompt, NotificationSettings, OpenTarget, PROTOCOL_VERSION, SessionInfo, SessionState,
+        ShapeBatch, ShapeFailed, UiMode, event,
     },
     notify::{self, NotifyContext, Toast},
     shape::{Batch, Replica, ShapeId},
@@ -812,8 +812,16 @@ impl Core {
         }
         let prev = inner.generation;
         inner.generation += 1;
-        // 前の試行がまだブラウザー起動待ちにあれば、置き換え時点で失効させる。
-        self.browser_launch.cancel(prev);
+        // 前の試行がまだブラウザー起動待ちにあれば、置き換え時点で失効させる。承認待ちの画面は
+        // 取り消した旧試行のものなので、その場で外す（新しい開始が失敗しても、使えないリンクが残らない）。
+        // 開始に成功すれば、新しいプロンプトがすぐ表示される。
+        if matches!(inner.state, SessionState::LoggingIn { .. }) {
+            self.browser_launch.cancel_before_transition(prev, || {
+                self.set_state(&mut inner, SessionState::LoggedOut);
+            });
+        } else {
+            self.browser_launch.cancel(prev);
+        }
         Ok(inner.generation)
     }
 
@@ -882,12 +890,15 @@ impl Core {
                     )
                     .await
                 }
-                Err(_) => {
+                Err(error) => {
+                    let message = browser_login_failure_message(&error);
                     let mut inner = core.inner.lock().await;
                     core.browser_launch
                         .cancel_before_transition(generation, || {
                             if inner.generation == generation {
                                 core.set_state(&mut inner, SessionState::LoggedOut);
+                                // `START_LOGIN` は成功を返したあとなので、理由はイベントで知らせる。
+                                let _ = core.app.emit(event::LOGIN_FAILED, LoginFailed { message });
                             }
                         });
                 }
@@ -1329,6 +1340,19 @@ fn open_in_browser(app: &AppHandle, url: &str) -> Result<()> {
     app.opener()
         .open_url(url, None::<&str>)
         .map_err(|error| anyhow!("ブラウザーを開けませんでした: {error}"))
+}
+
+/// ブラウザーでのログインが失敗した理由を、利用者に見せる文にする。認可エンドポイントが
+/// `invalid_redirect_uri` などで拒否した場合、エラーはブラウザーに表示されるだけで、ループバックには
+/// 戻らない。そのため時間切れのときに、リダイレクト URI の未登録の可能性と、確認コード方式を案内する。
+fn browser_login_failure_message(error: &anyhow::Error) -> String {
+    match error.downcast_ref::<ReauthError>() {
+        Some(ReauthError::Timeout) => "ブラウザーでのログインが時間内に終わりませんでした。\
+            ブラウザーに認証サーバーのエラーが出ていたら、アプリのリダイレクト URI が未登録の可能性があります。\
+            「確認コードでログイン」も使えます。"
+            .to_owned(),
+        _ => format!("ログインできませんでした: {error:#}"),
+    }
 }
 
 /// 再認証の失敗を、Web の画面が見分けられる IPC のエラーにする。
