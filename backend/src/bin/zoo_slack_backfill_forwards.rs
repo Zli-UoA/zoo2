@@ -5,7 +5,7 @@
 //! 既定は dry-run で何も書き込まない。`--apply` を指定したときだけ DB を更新・挿入する。
 //!
 //! ```text
-//! zoo_slack_backfill_forwards [--apply] [--channel <zoo_channel_id|slack_channel_id>] [--oldest <slack_ts>] [--max-pages <N>] [--cursor <slack_cursor>]
+//! zoo_slack_backfill_forwards [--apply] [--channel <zoo_channel_id|slack_channel_id>] [--oldest <slack_ts>] [--max-pages <N>] [--cursor <slack_cursor>] [--thread-roots <ts1,ts2,...>]
 //! ```
 
 use backend::slack::backfill_forwards::{Options, run};
@@ -56,9 +56,26 @@ async fn main() -> anyhow::Result<()> {
                 }
                 opts.cursor = Some(cur);
             }
+            "--thread-roots" => {
+                let raw = args.next().ok_or_else(|| {
+                    anyhow::anyhow!("--thread-roots requires comma-separated Slack timestamps")
+                })?;
+                let mut added = false;
+                for part in raw.split(',') {
+                    let ts = part.trim();
+                    if ts.is_empty() || !backend::slack::is_valid_ts(ts) {
+                        anyhow::bail!("--thread-roots contains invalid Slack timestamp: {part}");
+                    }
+                    opts.thread_roots.push(ts.to_string());
+                    added = true;
+                }
+                if !added {
+                    anyhow::bail!("--thread-roots must not be empty");
+                }
+            }
             "-h" | "--help" => {
                 eprintln!(
-                    "Usage: zoo_slack_backfill_forwards [--apply] [--channel <id>] [--oldest <ts>] [--max-pages <N>] [--cursor <slack_cursor>]"
+                    "Usage: zoo_slack_backfill_forwards [--apply] [--channel <id>] [--oldest <ts>] [--max-pages <N>] [--cursor <slack_cursor>] [--thread-roots <ts1,ts2,...>]"
                 );
                 return Ok(());
             }
@@ -67,6 +84,9 @@ async fn main() -> anyhow::Result<()> {
     }
     if opts.cursor.is_some() && opts.channel.is_none() {
         anyhow::bail!("--cursor requires --channel");
+    }
+    if !opts.thread_roots.is_empty() && opts.channel.is_none() {
+        anyhow::bail!("--thread-roots requires --channel");
     }
 
     let _telemetry = backend::telemetry::init(

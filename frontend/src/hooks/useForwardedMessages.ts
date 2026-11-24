@@ -159,12 +159,31 @@ export function useForwardedMessages(
     const delay = Math.max(0, earliest - now);
     const timer = setTimeout(() => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
-      evictExpiredForwardIds(scope, uniqueIds);
+      const evicted = evictExpiredForwardIds(scope, uniqueIds);
+      if (evicted.length === 0) {
+        const staleIds = uniqueIds.filter((id) => {
+          if (peekForwardEntry(scope, id) !== undefined) return false;
+          const entry = resolvedState.scopeKey === scopeKey ? resolvedState.map.get(id) : undefined;
+          return entry !== undefined && entry.status !== "error";
+        });
+        if (staleIds.length > 0) {
+          setResolvedState((prev) => {
+            if (prev.scopeKey !== scopeKey) return prev;
+            let changed = false;
+            const next = new Map(prev.map);
+            for (const id of staleIds) {
+              if (next.delete(id)) changed = true;
+            }
+            return changed ? { scopeKey, map: next } : prev;
+          });
+          setRetryTick((n) => n + 1);
+        }
+      }
     }, delay);
     return () => {
       clearTimeout(timer);
     };
-  }, [enabled, resolvedState, retryTick, scope, uniqueIds]);
+  }, [enabled, resolvedState, retryTick, scope, scopeKey, uniqueIds]);
 
   const entries = useMemo(() => {
     const map = new Map<string, ForwardEntryState>();

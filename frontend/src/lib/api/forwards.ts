@@ -52,7 +52,15 @@ function ttlForItem(item: ForwardResolutionItem): number {
   }
 }
 
+function notifyInvalidation(scopeKey: string, ids: readonly string[]): void {
+  if (ids.length === 0) return;
+  for (const listener of invalidationListeners.get(scopeKey) ?? []) {
+    listener(ids);
+  }
+}
+
 function getFreshCacheEntry(
+  scopeKey: string,
   bucket: ScopeBucket,
   id: string,
   now = Date.now(),
@@ -61,6 +69,7 @@ function getFreshCacheEntry(
   if (!entry) return undefined;
   if (now >= entry.expiresAt) {
     bucket.cache.delete(id);
+    notifyInvalidation(scopeKey, [id]);
     return undefined;
   }
   return entry.value;
@@ -99,11 +108,7 @@ function onVisibilityChange(): void {
         expiredIds.push(id);
       }
     }
-    if (expiredIds.length > 0) {
-      for (const listener of invalidationListeners.get(scopeKey) ?? []) {
-        listener(expiredIds);
-      }
-    }
+    notifyInvalidation(scopeKey, expiredIds);
     if (bucket.waitingVisible && bucket.pending.size > 0) {
       bucket.waitingVisible = false;
       void flushBucket(bucket);
@@ -131,17 +136,17 @@ async function flushBucket(bucket: ScopeBucket): Promise<void> {
   const client = bucket.client;
   if (!client || bucket.pending.size === 0) return;
 
-  const entries = [...bucket.pending.entries()];
+  // 最初の await の前に全チャンク分の世代と inflight 所有情報を固定する。
+  const entries = [...bucket.pending.entries()].map(([id, waiters]) => ({
+    id,
+    waiters,
+    gen: bucket.generation.get(id) ?? 0,
+    inflightPromise: bucket.inflight.get(id),
+  }));
   bucket.pending.clear();
 
   for (let i = 0; i < entries.length; i += MAX_RESOLVE_FORWARD_IDS) {
-    const chunk = entries.slice(i, i + MAX_RESOLVE_FORWARD_IDS);
-    const chunkMeta = chunk.map(([id, waiters]) => ({
-      id,
-      waiters,
-      gen: bucket.generation.get(id) ?? 0,
-      inflightPromise: bucket.inflight.get(id),
-    }));
+    const chunkMeta = entries.slice(i, i + MAX_RESOLVE_FORWARD_IDS);
     const ids = chunkMeta.map((item) => item.id);
     let results: Record<string, ForwardResolutionItem> | null = null;
     try {
@@ -201,8 +206,9 @@ export function cachedForwardEntry(
   scope: ForwardCacheScope,
   id: string,
 ): ForwardResolutionItem | undefined {
-  const bucket = buckets.get(forwardScopeKey(scope));
-  return bucket ? getFreshCacheEntry(bucket, id) : undefined;
+  const key = forwardScopeKey(scope);
+  const bucket = buckets.get(key);
+  return bucket ? getFreshCacheEntry(key, bucket, id) : undefined;
 }
 
 /** キャッシュを削除せずに有効な解決結果だけを参照する（期限切れなら `undefined`）。 */
@@ -243,11 +249,7 @@ export function evictExpiredForwardIds(
       expiredIds.push(id);
     }
   }
-  if (expiredIds.length > 0) {
-    for (const listener of invalidationListeners.get(key) ?? []) {
-      listener(expiredIds);
-    }
-  }
+  notifyInvalidation(key, expiredIds);
   return expiredIds;
 }
 
@@ -288,12 +290,7 @@ export function forgetForwardIds(scope: ForwardCacheScope, ids: readonly string[
       }
     }
   }
-  const target = deleted.length > 0 ? deleted : ids;
-  if (target.length > 0) {
-    for (const listener of invalidationListeners.get(key) ?? []) {
-      listener(target);
-    }
-  }
+  notifyInvalidation(key, deleted.length > 0 ? deleted : ids);
 }
 
 /**
@@ -309,13 +306,14 @@ export async function resolveForwardMessages(
   const out = new Map<string, ResolvedForwardEntry>();
   if (uniqueIds.length === 0) return out;
 
+  const scopeKey = forwardScopeKey(scope);
   const bucket = getBucket(scope);
   bucket.client = client;
   const promises: Array<[string, Promise<ResolvedForwardEntry>]> = [];
   let enqueuedNew = false;
 
   for (const id of uniqueIds) {
-    const cached = getFreshCacheEntry(bucket, id);
+    const cached = getFreshCacheEntry(scopeKey, bucket, id);
     if (cached) {
       out.set(id, cached);
       continue;

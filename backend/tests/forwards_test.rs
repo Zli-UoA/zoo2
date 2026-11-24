@@ -1010,6 +1010,7 @@ async fn slack_hints_and_backfill_forwards_restore_forwards_without_bumping_edit
             oldest: None,
             max_pages: None,
             cursor: None,
+            thread_roots: Vec::new(),
         },
     )
     .await?;
@@ -1029,6 +1030,7 @@ async fn slack_hints_and_backfill_forwards_restore_forwards_without_bumping_edit
             oldest: None,
             max_pages: None,
             cursor: None,
+            thread_roots: Vec::new(),
         },
     )
     .await?;
@@ -1074,6 +1076,7 @@ async fn slack_hints_and_backfill_forwards_restore_forwards_without_bumping_edit
             oldest: None,
             max_pages: None,
             cursor: None,
+            thread_roots: Vec::new(),
         },
     )
     .await?;
@@ -1917,6 +1920,7 @@ async fn slack_forward_reservation_blocks_spoofing_and_stale_bot_hint_preserves_
             oldest: None,
             max_pages: None,
             cursor: None,
+            thread_roots: Vec::new(),
         },
     )
     .await?;
@@ -2212,6 +2216,7 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
             oldest: None,
             max_pages: None,
             cursor: None,
+            thread_roots: Vec::new(),
         },
     )
     .await
@@ -2354,7 +2359,7 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
         .mount(&slack)
         .await;
 
-    // `--cursor` バリデーションと `--max-pages 1` 打ち切り時の resume 情報・`--cursor` 再開を検証する
+    // `--cursor` / `--thread-roots` バリデーションと `--max-pages 1` 打ち切りからの段階的再開（履歴＋残スレッドの完全回収）を検証する
     let cursor_no_ch_err = backfill_forwards::run(
         &state.db,
         &config,
@@ -2364,6 +2369,7 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
             oldest: None,
             max_pages: None,
             cursor: Some("cur_page_2".into()),
+            thread_roots: Vec::new(),
         },
     )
     .await
@@ -2373,6 +2379,45 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
         "{cursor_no_ch_err}"
     );
 
+    let thread_no_ch_err = backfill_forwards::run(
+        &state.db,
+        &config,
+        &backfill_forwards::Options {
+            apply: false,
+            channel: None,
+            oldest: None,
+            max_pages: None,
+            cursor: None,
+            thread_roots: vec![ts_old_root.into()],
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        thread_no_ch_err.to_string().contains("--thread-roots"),
+        "{thread_no_ch_err}"
+    );
+
+    let thread_bad_ts_err = backfill_forwards::run(
+        &state.db,
+        &config,
+        &backfill_forwards::Options {
+            apply: false,
+            channel: Some(ch_ok.clone()),
+            oldest: None,
+            max_pages: None,
+            cursor: None,
+            thread_roots: vec!["not-a-ts".into()],
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        thread_bad_ts_err.to_string().contains("--thread-roots"),
+        "{thread_bad_ts_err}"
+    );
+
+    // Run 1: history page 1 のみ取得（page 2 カーソルと未処理スレッド ts_old_root が resume_channels に残る）
     let trunc_report = backfill_forwards::run(
         &state.db,
         &config,
@@ -2382,6 +2427,7 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
             oldest: Some(ts_oldest.into()),
             max_pages: Some(1),
             cursor: None,
+            thread_roots: Vec::new(),
         },
     )
     .await?;
@@ -2399,7 +2445,8 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
         vec![ts_old_root.to_string()]
     );
 
-    let resumed_page2 = backfill_forwards::run(
+    // Run 2: 前回の next_history_cursor + pending_thread_roots を渡して再開 -> 未処理スレッドを回収
+    let resumed_threads = backfill_forwards::run(
         &state.db,
         &config,
         &backfill_forwards::Options {
@@ -2408,6 +2455,40 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
             oldest: Some(ts_oldest.into()),
             max_pages: Some(1),
             cursor: trunc_report.resume_channels[0].next_history_cursor.clone(),
+            thread_roots: trunc_report.resume_channels[0].pending_thread_roots.clone(),
+        },
+    )
+    .await?;
+    assert!(resumed_threads.truncated, "{resumed_threads:?}");
+    assert_eq!(
+        resumed_threads.resume_channels[0]
+            .next_history_cursor
+            .as_deref(),
+        Some("cur_page_2")
+    );
+    assert!(
+        resumed_threads.resume_channels[0]
+            .pending_thread_roots
+            .is_empty(),
+        "{resumed_threads:?}"
+    );
+    assert_eq!(resumed_threads.matched_inserts, 1, "{resumed_threads:?}");
+
+    // Run 3: 残った履歴 page 2 を回収して完了
+    let resumed_page2 = backfill_forwards::run(
+        &state.db,
+        &config,
+        &backfill_forwards::Options {
+            apply: false,
+            channel: Some(ch_ok.clone()),
+            oldest: Some(ts_oldest.into()),
+            max_pages: Some(1),
+            cursor: resumed_threads.resume_channels[0]
+                .next_history_cursor
+                .clone(),
+            thread_roots: resumed_threads.resume_channels[0]
+                .pending_thread_roots
+                .clone(),
         },
     )
     .await?;
@@ -2427,12 +2508,19 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
             oldest: Some(ts_oldest.into()),
             max_pages: None,
             cursor: None,
+            thread_roots: Vec::new(),
         },
     )
     .await?;
     assert!(!win_report.truncated, "{win_report:?}");
     assert!(win_report.resume_channels.is_empty(), "{win_report:?}");
     assert_eq!(win_report.applied_inserts, 2, "{win_report:?}");
+    assert_eq!(
+        trunc_report.matched_inserts
+            + resumed_threads.matched_inserts
+            + resumed_page2.matched_inserts,
+        win_report.applied_inserts
+    );
     let exists = sql_one(
         &state,
         "SELECT json_build_object(\
@@ -2463,6 +2551,7 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
             oldest: None,
             max_pages: None,
             cursor: None,
+            thread_roots: Vec::new(),
         },
     )
     .await
@@ -2488,6 +2577,7 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
             oldest: None,
             max_pages: None,
             cursor: None,
+            thread_roots: Vec::new(),
         },
     )
     .await
@@ -2495,6 +2585,55 @@ async fn slack_backfill_handles_validation_transient_errors_cursors_oldest_and_l
     let rl_msg = rl_err.to_string();
     assert!(rl_msg.contains("retry_after=600s"), "{rl_msg}");
     assert!(rl_msg.contains("resume_after="), "{rl_msg}");
+
+    // 4) Slack が前回と同じ next_cursor を返し続けた場合は完了扱いせずエラーを返す
+    let ch_loop = format!("CLOP{}", &team[4..]);
+    let zoo_loop = create_channel(&app, &alice, false, false, &[]).await?;
+    sql_exec(
+        &state,
+        "INSERT INTO slack_channels(team_id, slack_channel_id, channel_id, last_ts) \
+         VALUES($1, $2, $3, '1704067000.000000') RETURNING json_build_object('ok', true)::text",
+        &[&team, &ch_loop, &zoo_loop],
+    )
+    .await?;
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .and(query_param("channel", &ch_loop))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "channel": { "id": ch_loop, "is_private": false },
+        })))
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .and(query_param("channel", &ch_loop))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [],
+            "response_metadata": { "next_cursor": "stuck_cur" },
+        })))
+        .with_priority(5)
+        .mount(&slack)
+        .await;
+    let loop_err = backfill_forwards::run(
+        &state.db,
+        &config,
+        &backfill_forwards::Options {
+            apply: false,
+            channel: Some(ch_loop.clone()),
+            oldest: None,
+            max_pages: None,
+            cursor: None,
+            thread_roots: Vec::new(),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        loop_err.to_string().contains("unchanged next_cursor"),
+        "{loop_err}"
+    );
 
     Ok(())
 }
@@ -2620,6 +2759,244 @@ async fn app_api_rejects_forwarded_message_ids() -> anyhow::Result<()> {
     )
     .await?;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{rejected}");
+
+    Ok(())
+}
+
+/// 他ワークスペース転送のみの親投稿（Zoo へ未取り込み）に付いた通常返信・同一WS転送返信が、
+/// `sync::run_once` および `backfill_forwards::run` の双方で親なし投稿（`parent_id IS NULL`）として取り込まれることを検証する。
+#[tokio::test]
+async fn slack_cross_workspace_parent_replies_imported_by_sync_and_backfill() -> anyhow::Result<()>
+{
+    let _serial = SERIAL.lock().await;
+    let key = [17u8; 32];
+    let team = format!("TXWS{}", &Uuid::new_v4().simple().to_string()[..8]);
+    let slack = MockServer::start().await;
+
+    let mut config = dev_config();
+    config.slack.client_id = Some("cid".into());
+    config.slack.client_secret = Some("sec".into());
+    config.slack.team_id = Some(team.clone());
+    config.slack.oauth_redirect_url = Some("https://zoo.example/api/slack/oauth/callback".into());
+    config.slack.token_encryption_key = Some(base64::engine::general_purpose::STANDARD.encode(key));
+    config.slack.api_base_url = slack.uri();
+
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db, config.clone());
+    let app = create_router(state.clone());
+
+    let alice = create_user(&app, &state, "xws_alice").await?;
+    let enc = slack::crypto::encrypt(&key, "xoxp-alice")?;
+    sql_exec(
+        &state,
+        "INSERT INTO slack_user_links(user_id, team_id, slack_user_id, access_token_enc) \
+         VALUES($1, $2, 'UA', $3) RETURNING json_build_object('ok', true)::text",
+        &[&alice, &team, &enc],
+    )
+    .await?;
+
+    let slack_src = format!("CSRC{}", &team[4..]);
+    let slack_dest = format!("CDST{}", &team[4..]);
+    let zoo_src = create_channel(&app, &alice, false, false, &[]).await?;
+    let zoo_dest = create_channel(&app, &alice, false, false, &[]).await?;
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    let cursor = format!("{}.000000", now_secs - 500);
+    let ts_src = "1704067100.000100";
+    let ts_parent = format!("{}.000100", now_secs - 120);
+    let ts_reply_text = format!("{}.000200", now_secs - 60);
+    let ts_reply_fwd = format!("{}.000300", now_secs - 30);
+
+    let id_src = slack::message_id(&team, &slack_src, ts_src).to_string();
+    let id_parent = slack::message_id(&team, &slack_dest, &ts_parent).to_string();
+    let id_reply_text = slack::message_id(&team, &slack_dest, &ts_reply_text).to_string();
+    let id_reply_fwd = slack::message_id(&team, &slack_dest, &ts_reply_fwd).to_string();
+
+    sql_exec(
+        &state,
+        "INSERT INTO slack_channels(team_id, slack_channel_id, channel_id, last_ts) \
+         VALUES($1, $2, $3, $4), ($1, $5, $6, $4) RETURNING json_build_object('ok', true)::text",
+        &[&team, &slack_src, &zoo_src, &cursor, &slack_dest, &zoo_dest],
+    )
+    .await?;
+    sql_exec(
+        &state,
+        "INSERT INTO messages(id, user_id, channel_id, content, created_at, revision) \
+         VALUES($1, $2, $3, 'same ws src', (to_timestamp($4::numeric) AT TIME ZONE 'UTC')::timestamp(3), 1) \
+         RETURNING json_build_object('ok', true)::text",
+        &[&id_src, &alice, &zoo_src, ts_src],
+    )
+    .await?;
+
+    let parent_msg = json!({
+        "type": "message",
+        "ts": ts_parent,
+        "user": "UA",
+        "text": "",
+        "thread_ts": ts_parent,
+        "reply_count": 2,
+        "latest_reply": ts_reply_fwd,
+        "attachments": [{
+            "is_share": true,
+            "team_id": "TOTHER",
+            "channel_id": "COTHER",
+            "ts": "1704067000.000100",
+            "from_url": "https://other.slack.com/archives/COTHER/p1704067000000100",
+            "text": "other ws msg",
+        }],
+    });
+    let text_reply_msg = json!({
+        "type": "message",
+        "ts": ts_reply_text,
+        "user": "UA",
+        "text": "normal reply under cross-ws parent",
+        "thread_ts": ts_parent,
+    });
+    let fwd_reply_msg = json!({
+        "type": "message",
+        "ts": ts_reply_fwd,
+        "user": "UA",
+        "text": "",
+        "thread_ts": ts_parent,
+        "attachments": [{
+            "is_share": true,
+            "channel_id": slack_src,
+            "ts": ts_src,
+            "from_url": format!("https://example.slack.com/archives/{slack_src}/p{}", ts_src.replace('.', "")),
+            "text": "same ws src",
+        }],
+    });
+
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .and(query_param("channel", &slack_dest))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "channel": { "id": slack_dest, "is_private": false },
+        })))
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/users.info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "user": { "id": "UA", "name": "alice", "real_name": "Alice", "profile": { "display_name": "alice" } },
+        })))
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .and(query_param("channel", &slack_dest))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [parent_msg],
+            "has_more": false,
+        })))
+        .with_priority(5)
+        .mount(&slack)
+        .await;
+
+    // 1) 通常同期 (`sync::run_once`): 親は未取り込みのまま、通常返信が parent_id IS NULL として取り込まれる
+    {
+        let _replies_sync = Mock::given(method("GET"))
+            .and(path("/conversations.replies"))
+            .and(query_param("channel", &slack_dest))
+            .and(query_param("ts", &ts_parent))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ok": true,
+                "messages": [parent_msg, text_reply_msg],
+                "has_more": false,
+            })))
+            .mount_as_scoped(&slack)
+            .await;
+
+        {
+            let mut db = state.db.clone();
+            let mut tx = db.transaction().await?;
+            sync::enqueue_team(&mut tx, &team).await?;
+            tx.commit().await?;
+        }
+        sql_exec(
+            &state,
+            "UPDATE slack_channel_syncs \
+             SET available_at = CASE WHEN slack_channel_id = $2 THEN now() - interval '1 second' ELSE now() + interval '1 hour' END, \
+                 last_synced_at = now() - interval '1 hour', not_before = NULL, \
+                 lease_token = NULL, lease_until = NULL, running = false \
+             WHERE team_id = $1 RETURNING json_build_object('ok', true)::text",
+            &[&team, &slack_dest],
+        )
+        .await?;
+        for _ in 0..20 {
+            if !sync::run_once(&state).await? {
+                break;
+            }
+        }
+    }
+
+    let sync_check = sql_one(
+        &state,
+        "SELECT json_build_object(\
+            'parent_exists', EXISTS(SELECT 1 FROM messages WHERE id = $1), \
+            'reply_content', (SELECT content FROM messages WHERE id = $2), \
+            'reply_parent_null', (SELECT parent_id IS NULL FROM messages WHERE id = $2)\
+         )::text",
+        &[&id_parent, &id_reply_text],
+    )
+    .await?;
+    assert_eq!(sync_check["parent_exists"], json!(false), "{sync_check}");
+    assert_eq!(
+        sync_check["reply_content"],
+        json!("normal reply under cross-ws parent"),
+        "{sync_check}"
+    );
+    assert_eq!(sync_check["reply_parent_null"], json!(true), "{sync_check}");
+
+    // 2) バックフィル (`backfill_forwards::run`): 同一WS転送のみのコメントなし返信も parent_id IS NULL で補填される
+    Mock::given(method("GET"))
+        .and(path("/conversations.replies"))
+        .and(query_param("channel", &slack_dest))
+        .and(query_param("ts", &ts_parent))
+        .and(query_param("inclusive", "true"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [parent_msg, text_reply_msg, fwd_reply_msg],
+            "has_more": false,
+        })))
+        .mount(&slack)
+        .await;
+
+    let bf_report = backfill_forwards::run(
+        &state.db,
+        &config,
+        &backfill_forwards::Options {
+            apply: true,
+            channel: Some(slack_dest.clone()),
+            oldest: None,
+            max_pages: None,
+            cursor: None,
+            thread_roots: Vec::new(),
+        },
+    )
+    .await?;
+    assert_eq!(bf_report.applied_inserts, 1, "{bf_report:?}");
+
+    let bf_check = sql_one(
+        &state,
+        "SELECT json_build_object(\
+            'parent_exists', EXISTS(SELECT 1 FROM messages WHERE id = $1), \
+            'fwd_content', (SELECT content FROM messages WHERE id = $2), \
+            'fwd_parent_null', (SELECT parent_id IS NULL FROM messages WHERE id = $2), \
+            'fwd_ids', (SELECT forwarded_message_ids FROM messages WHERE id = $2)\
+         )::text",
+        &[&id_parent, &id_reply_fwd],
+    )
+    .await?;
+    assert_eq!(bf_check["parent_exists"], json!(false), "{bf_check}");
+    assert_eq!(bf_check["fwd_content"], json!(""), "{bf_check}");
+    assert_eq!(bf_check["fwd_parent_null"], json!(true), "{bf_check}");
+    assert_eq!(bf_check["fwd_ids"], json!([id_src]), "{bf_check}");
 
     Ok(())
 }

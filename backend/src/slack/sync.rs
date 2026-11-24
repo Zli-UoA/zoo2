@@ -568,8 +568,6 @@ fn first_oldest(task: &Task) -> String {
     }
 }
 
-/// スレッドの親になれる投稿か。入退室・トピック変更などのシステム通知は、スレッドにできない
-/// (`conversations.replies` が `thread_not_found` になる) ので、候補から外す
 /// スレッドの親になれる投稿か。親投稿自身の取り込み可否とは独立して判定し、
 /// 入退室・トピック変更などのシステム通知だけは `conversations.replies` 対象から外す。
 pub(super) fn threadable(message: &SlackMessage) -> bool {

@@ -354,4 +354,84 @@ describe("resolveForwardMessages", () => {
       unsubscribe();
     }
   });
+
+  it("snapshots all chunk ownership before first await so invalidating id #101 mid-flush cannot evict newer inflight", async () => {
+    vi.useFakeTimers();
+    const pendingResolvers: Array<(items: Record<string, ForwardResolutionItem>) => void> = [];
+    const seenRequests: string[][] = [];
+
+    const { client, post } = makeClient(
+      (ids) =>
+        new Promise((resolve) => {
+          seenRequests.push(ids);
+          pendingResolvers.push(resolve);
+        }),
+    );
+
+    const manyIds = Array.from({ length: MAX_RESOLVE_FORWARD_IDS + 1 }, (_, i) => `m-${i + 1}`);
+    const targetId = `m-${MAX_RESOLVE_FORWARD_IDS + 1}`;
+
+    // リクエスト A (101 件) のフラッシュ開始: 先頭 100 件チャンク (index 0) が応答待ちに入る
+    const reqA = resolveForwardMessages(client, scopeA, manyIds);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(post).toHaveBeenCalledTimes(1);
+
+    // 1 チャンク目の完了前に 101 件目 (targetId) を無効化し、新しいリクエスト B を開始する
+    forgetForwardIds(scopeA, [targetId]);
+    const reqB = resolveForwardMessages(client, scopeA, [targetId]);
+    await vi.advanceTimersByTimeAsync(20);
+    // リクエスト B が targetId のポスト (index 1) を送信済み
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(seenRequests[1]).toEqual([targetId]);
+
+    // ここでリクエスト A のチャンク 1 が完了し、A のチャンク 2 (index 2) が送信される
+    pendingResolvers[0]!(
+      Object.fromEntries(seenRequests[0]!.map((id) => [id, okItem(id, `chunk1-${id}`)])),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(post).toHaveBeenCalledTimes(3);
+    expect(seenRequests[2]).toEqual([targetId]);
+
+    // 先にリクエスト A のチャンク 2 (stale) が返っても、キャッシュ汚染も B の inflight 削除もしない
+    pendingResolvers[2]!({ [targetId]: okItem(targetId, "stale-101") });
+    await reqA;
+    expect(cachedForwardEntry(scopeA, targetId)).toBeUndefined();
+
+    // 後続の解決呼び出しはリクエスト B に合流し、追加の POST を発生させない
+    const reqBFollower = resolveForwardMessages(client, scopeA, [targetId]);
+    expect(post).toHaveBeenCalledTimes(3);
+
+    pendingResolvers[1]!({ [targetId]: okItem(targetId, "fresh-101") });
+    const [resB, resFollower] = await Promise.all([reqB, reqBFollower]);
+    expect(resB.get(targetId)).toMatchObject({ status: "ok", content: "fresh-101" });
+    expect(resFollower.get(targetId)).toMatchObject({ status: "ok", content: "fresh-101" });
+    expect(cachedForwardEntry(scopeA, targetId)).toMatchObject({
+      status: "ok",
+      content: "fresh-101",
+    });
+  });
+
+  it("notifies invalidation listeners when getFreshCacheEntry deletes an expired entry", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(3_000_000);
+    const { client } = makeClient(async () => ({
+      "m-exp": okItem("m-exp", "initial"),
+    }));
+
+    const p = resolveForwardMessages(client, scopeA, ["m-exp"]);
+    await vi.advanceTimersByTimeAsync(20);
+    await p;
+
+    const listener = vi.fn();
+    const unsubscribe = subscribeForwardInvalidation(scopeA, listener);
+    try {
+      await vi.advanceTimersByTimeAsync(FORWARD_OK_TTL_MS);
+      expect(cachedForwardEntry(scopeA, "m-exp")).toBeUndefined();
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(listener).toHaveBeenCalledWith(["m-exp"]);
+    } finally {
+      unsubscribe();
+    }
+  });
 });

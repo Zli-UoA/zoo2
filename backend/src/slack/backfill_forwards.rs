@@ -29,6 +29,7 @@ pub struct Options {
     pub oldest: Option<String>,
     pub max_pages: Option<usize>,
     pub cursor: Option<String>,
+    pub thread_roots: Vec<String>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
@@ -86,6 +87,14 @@ pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow:
     }
     if options.cursor.is_some() && options.channel.is_none() {
         anyhow::bail!("--cursor requires --channel");
+    }
+    if !options.thread_roots.is_empty() && options.channel.is_none() {
+        anyhow::bail!("--thread-roots requires --channel");
+    }
+    for ts in &options.thread_roots {
+        if ts.trim().is_empty() || !super::is_valid_ts(ts) {
+            anyhow::bail!("--thread-roots contains invalid Slack timestamp: {ts}");
+        }
     }
     let key = config.slack.encryption_key().ok_or_else(|| {
         anyhow::anyhow!("SLACK_TOKEN_ENCRYPTION_KEY is not configured or invalid")
@@ -185,124 +194,83 @@ pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow:
         let mut cursor: Option<String> = options.cursor.clone();
         let mut history_truncated = false;
         let mut next_history_cursor: Option<String> = None;
-        let mut thread_roots: Vec<String> = Vec::new();
         let mut seen_threads: HashSet<String> = HashSet::new();
-
-        loop {
-            if options.max_pages.is_some_and(|max| pages >= max) {
-                history_truncated = true;
-                next_history_cursor = cursor.clone();
-                break;
-            }
-            // `--oldest` より古い親投稿配下に期間内の転送返信があり得るため、履歴取得自体は `oldest=0` で走査し、
-            // 個別メッセージの適用とスレッド返信の探索で期間フィルタをかける。
-            let mut params = vec![
-                ("channel", target.slack_channel_id.as_str()),
-                ("oldest", "0"),
-                ("limit", PAGE_LIMIT),
-            ];
-            if let Some(cur) = cursor.as_deref() {
-                params.push(("cursor", cur));
-            }
-            let page = slack_get_with_retry(&mut slack, "conversations.history", &params)
-                .await
-                .map_err(|err| anyhow::anyhow!("{}", sync_error_message(&err)))?;
-            pages += 1;
-            let messages = parse_messages(&page);
-            report.scanned_messages += messages.len();
-            for m in &messages {
-                let top_level = m.thread_ts.as_deref().is_none_or(|t| t == m.ts.as_str());
-                let reply_may_be_in_window = m
-                    .latest_reply
-                    .as_deref()
-                    .filter(|t| super::is_valid_ts(t))
-                    .is_none_or(in_oldest_window);
-                if top_level
-                    && m.reply_count.unwrap_or(0) > 0
-                    && threadable(m)
-                    && (in_oldest_window(&m.ts) || reply_may_be_in_window)
-                    && seen_threads.insert(m.ts.clone())
-                {
-                    thread_roots.push(m.ts.clone());
-                }
-            }
-            let filtered_messages: Vec<SlackMessage> = messages
-                .into_iter()
-                .filter(|m| in_oldest_window(&m.ts))
-                .collect();
-            if !filtered_messages.is_empty() {
-                process_messages(
-                    &mut db,
-                    &mut slack,
-                    &mut ctx,
-                    &target,
-                    slack_private,
-                    &filtered_messages,
-                    options.apply,
-                    &mut report,
-                )
-                .await?;
-            }
-
-            let next = page["response_metadata"]["next_cursor"]
-                .as_str()
-                .map(str::trim)
-                .filter(|c| !c.is_empty())
-                .map(str::to_string);
-            if let Some(next_cursor) = next
-                && cursor.as_deref() != Some(next_cursor.as_str())
-            {
-                cursor = Some(next_cursor);
-            } else {
-                break;
+        let mut resume_threads: Vec<String> = Vec::new();
+        for ts in &options.thread_roots {
+            if seen_threads.insert(ts.clone()) {
+                resume_threads.push(ts.clone());
             }
         }
-
+        let mut new_thread_roots: Vec<String> = Vec::new();
         let mut pending_thread_roots: Vec<String> = Vec::new();
-        for (idx, thread_ts) in thread_roots.iter().enumerate() {
-            if options.max_pages.is_some_and(|max| pages >= max) {
-                pending_thread_roots.extend(thread_roots[idx..].iter().cloned());
-                break;
-            }
-            let mut tcursor: Option<String> = None;
+
+        if !resume_threads.is_empty() {
+            let mut scan = ChannelScanCtx {
+                db: &mut db,
+                slack: &mut slack,
+                ctx: &mut ctx,
+                target: &target,
+                slack_private,
+                apply: options.apply,
+                oldest,
+                max_pages: options.max_pages,
+                pages: &mut pages,
+                report: &mut report,
+            };
+            scan_thread_roots(&mut scan, &resume_threads, &mut pending_thread_roots).await?;
+        }
+
+        if options.cursor.is_some() || options.thread_roots.is_empty() {
             loop {
                 if options.max_pages.is_some_and(|max| pages >= max) {
-                    pending_thread_roots.extend(thread_roots[idx..].iter().cloned());
+                    history_truncated = true;
+                    next_history_cursor = cursor.clone();
                     break;
                 }
+                // `--oldest` より古い親投稿配下に期間内の転送返信があり得るため、履歴取得自体は `oldest=0` で走査し、
+                // 個別メッセージの適用とスレッド返信の探索で期間フィルタをかける。
                 let mut params = vec![
                     ("channel", target.slack_channel_id.as_str()),
-                    ("ts", thread_ts.as_str()),
-                    ("oldest", oldest.unwrap_or("0")),
-                    ("inclusive", "true"),
+                    ("oldest", "0"),
                     ("limit", PAGE_LIMIT),
                 ];
-                if let Some(cur) = tcursor.as_deref() {
+                if let Some(cur) = cursor.as_deref() {
                     params.push(("cursor", cur));
                 }
-                let page = match slack_get_with_retry(&mut slack, "conversations.replies", &params)
+                let page = slack_get_with_retry(&mut slack, "conversations.history", &params)
                     .await
-                {
-                    Ok(page) => page,
-                    Err(SyncError::Failed(err)) if err.ends_with("thread_not_found") => break,
-                    Err(err) => return Err(anyhow::anyhow!("{}", sync_error_message(&err))),
-                };
+                    .map_err(|err| anyhow::anyhow!("{}", sync_error_message(&err)))?;
                 pages += 1;
                 let messages = parse_messages(&page);
-                // 先頭要素（スレッド親）は履歴走査で処理済みのことが多いが、重複処理も冪等に抑止される
-                let replies: Vec<SlackMessage> = messages
+                report.scanned_messages += messages.len();
+                for m in &messages {
+                    let top_level = m.thread_ts.as_deref().is_none_or(|t| t == m.ts.as_str());
+                    let reply_may_be_in_window = m
+                        .latest_reply
+                        .as_deref()
+                        .filter(|t| super::is_valid_ts(t))
+                        .is_none_or(in_oldest_window);
+                    if top_level
+                        && m.reply_count.unwrap_or(0) > 0
+                        && threadable(m)
+                        && (in_oldest_window(&m.ts) || reply_may_be_in_window)
+                        && seen_threads.insert(m.ts.clone())
+                    {
+                        new_thread_roots.push(m.ts.clone());
+                    }
+                }
+                let filtered_messages: Vec<SlackMessage> = messages
                     .into_iter()
-                    .filter(|m| m.ts != *thread_ts && in_oldest_window(&m.ts))
+                    .filter(|m| in_oldest_window(&m.ts))
                     .collect();
-                report.scanned_messages += replies.len();
-                if !replies.is_empty() {
+                if !filtered_messages.is_empty() {
                     process_messages(
                         &mut db,
                         &mut slack,
                         &mut ctx,
                         &target,
                         slack_private,
-                        &replies,
+                        &filtered_messages,
                         options.apply,
                         &mut report,
                     )
@@ -314,17 +282,33 @@ pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow:
                     .map(str::trim)
                     .filter(|c| !c.is_empty())
                     .map(str::to_string);
-                if let Some(next_cursor) = next
-                    && tcursor.as_deref() != Some(next_cursor.as_str())
-                {
-                    tcursor = Some(next_cursor);
-                } else {
-                    break;
+                match next {
+                    Some(next_cursor) if cursor.as_deref() == Some(next_cursor.as_str()) => {
+                        anyhow::bail!(
+                            "conversations.history returned an unchanged next_cursor for {}",
+                            target.slack_channel_id
+                        );
+                    }
+                    Some(next_cursor) => cursor = Some(next_cursor),
+                    None => break,
                 }
             }
-            if !pending_thread_roots.is_empty() {
-                break;
-            }
+        }
+
+        if !new_thread_roots.is_empty() {
+            let mut scan = ChannelScanCtx {
+                db: &mut db,
+                slack: &mut slack,
+                ctx: &mut ctx,
+                target: &target,
+                slack_private,
+                apply: options.apply,
+                oldest,
+                max_pages: options.max_pages,
+                pages: &mut pages,
+                report: &mut report,
+            };
+            scan_thread_roots(&mut scan, &new_thread_roots, &mut pending_thread_roots).await?;
         }
 
         if history_truncated || !pending_thread_roots.is_empty() {
@@ -340,6 +324,99 @@ pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow:
     }
 
     Ok(report)
+}
+
+struct ChannelScanCtx<'a> {
+    db: &'a mut toasty::Db,
+    slack: &'a mut Slack,
+    ctx: &'a mut Context,
+    target: &'a TargetChannel,
+    slack_private: bool,
+    apply: bool,
+    oldest: Option<&'a str>,
+    max_pages: Option<usize>,
+    pages: &'a mut usize,
+    report: &'a mut Report,
+}
+
+async fn scan_thread_roots(
+    scan: &mut ChannelScanCtx<'_>,
+    roots: &[String],
+    pending_thread_roots: &mut Vec<String>,
+) -> anyhow::Result<()> {
+    for (idx, thread_ts) in roots.iter().enumerate() {
+        if scan.max_pages.is_some_and(|max| *scan.pages >= max) {
+            pending_thread_roots.extend(roots[idx..].iter().cloned());
+            break;
+        }
+        let mut tcursor: Option<String> = None;
+        loop {
+            if scan.max_pages.is_some_and(|max| *scan.pages >= max) {
+                pending_thread_roots.extend(roots[idx..].iter().cloned());
+                return Ok(());
+            }
+            let mut params = vec![
+                ("channel", scan.target.slack_channel_id.as_str()),
+                ("ts", thread_ts.as_str()),
+                ("oldest", scan.oldest.unwrap_or("0")),
+                ("inclusive", "true"),
+                ("limit", PAGE_LIMIT),
+            ];
+            if let Some(cur) = tcursor.as_deref() {
+                params.push(("cursor", cur));
+            }
+            let page =
+                match slack_get_with_retry(scan.slack, "conversations.replies", &params).await {
+                    Ok(page) => page,
+                    Err(SyncError::Failed(err)) if err.ends_with("thread_not_found") => break,
+                    Err(err) => return Err(anyhow::anyhow!("{}", sync_error_message(&err))),
+                };
+            *scan.pages += 1;
+            let messages = parse_messages(&page);
+            // 先頭要素（スレッド親）は履歴走査で処理済みのことが多いが、重複処理も冪等に抑止される
+            let replies: Vec<SlackMessage> = messages
+                .into_iter()
+                .filter(|m| {
+                    m.ts != *thread_ts
+                        && scan
+                            .oldest
+                            .is_none_or(|min| !compare_ts(&m.ts, min).is_lt())
+                })
+                .collect();
+            scan.report.scanned_messages += replies.len();
+            if !replies.is_empty() {
+                process_messages(
+                    scan.db,
+                    scan.slack,
+                    scan.ctx,
+                    scan.target,
+                    scan.slack_private,
+                    &replies,
+                    scan.apply,
+                    scan.report,
+                )
+                .await?;
+            }
+
+            let next = page["response_metadata"]["next_cursor"]
+                .as_str()
+                .map(str::trim)
+                .filter(|c| !c.is_empty())
+                .map(str::to_string);
+            match next {
+                Some(next_cursor) if tcursor.as_deref() == Some(next_cursor.as_str()) => {
+                    anyhow::bail!(
+                        "conversations.replies returned an unchanged next_cursor for {} (ts={})",
+                        scan.target.slack_channel_id,
+                        thread_ts
+                    );
+                }
+                Some(next_cursor) => tcursor = Some(next_cursor),
+                None => break,
+            }
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

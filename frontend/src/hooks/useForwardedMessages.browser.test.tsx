@@ -330,4 +330,62 @@ describe("useForwardedMessages", () => {
       }
     }
   });
+
+  it("updates an existing hook when another hook reads and evicts the shared expired entry", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(2_000_000);
+    const visibilityDesc = Object.getOwnPropertyDescriptor(document, "visibilityState");
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
+
+    try {
+      let version = "v1";
+      state.post.mockImplementation(async () => ({
+        data: {
+          items: {
+            "m-shared": okForward("m-shared", version),
+          },
+        },
+        txid: null,
+      }));
+
+      const hookA = renderHook(() => useForwardedMessages(["m-shared"]));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20);
+      });
+      expect(hookA.result.current.entries.get("m-shared")).toMatchObject({
+        status: "ok",
+        content: "v1",
+      });
+
+      // TTL 到達時点で hookB が先に期限切れエントリを削除・再取得を開始した場合でも hookA が取り残されない
+      version = "v2";
+      vi.setSystemTime(2_000_000 + FORWARD_OK_TTL_MS);
+      const hookB = renderHook(() => useForwardedMessages(["m-shared"]));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20);
+      });
+
+      expect(hookB.result.current.entries.get("m-shared")).toMatchObject({
+        status: "ok",
+        content: "v2",
+      });
+      expect(hookA.result.current.entries.get("m-shared")).toMatchObject({
+        status: "ok",
+        content: "v2",
+      });
+    } finally {
+      vi.useRealTimers();
+      if (visibilityDesc) {
+        Object.defineProperty(document, "visibilityState", visibilityDesc);
+      } else {
+        delete (document as unknown as { visibilityState?: string }).visibilityState;
+      }
+    }
+  });
 });
