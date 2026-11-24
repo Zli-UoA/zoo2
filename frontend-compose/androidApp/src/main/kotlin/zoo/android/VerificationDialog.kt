@@ -248,12 +248,14 @@ private fun EmojiRow(indices: ByteArray, colors: AndroidColors, label: String, t
 @Composable
 internal fun QrImage(bytes: ByteArray, label: String) {
     val modules = remember(bytes.contentHashCode()) { qrModules(bytes) }
-    Canvas(Modifier.fillMaxWidth().aspectRatio(1f).background(Color.White).padding(16.dp)
+    Canvas(Modifier.fillMaxWidth().aspectRatio(1f).background(Color.White)
         .semantics { contentDescription = label }) {
-        val cell = size.minDimension / modules.size
+        // 四辺に 4 モジュールの余白（クワイエットゾーン）を、モジュールの大きさから取る。
+        val quiet = 4
+        val cell = size.minDimension / (modules.size + quiet * 2)
         modules.forEachIndexed { y, row ->
             row.forEachIndexed { x, dark ->
-                if (dark) drawRect(Color.Black, Offset(x * cell, y * cell), Size(cell + 0.5f, cell + 0.5f))
+                if (dark) drawRect(Color.Black, Offset((x + quiet) * cell, (y + quiet) * cell), Size(cell + 0.5f, cell + 0.5f))
             }
         }
     }

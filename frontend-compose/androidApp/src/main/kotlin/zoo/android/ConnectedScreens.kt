@@ -223,6 +223,9 @@ internal fun ConnectedScreens(
         }
     }
     BackHandler { back() }
+    // 他のユーザーの検証（届いた要求と、自分から始めた検証）は、どの画面にいても前面に出す。設定の「暗号化」から
+    // 始めた検証も出せるよう、画面を切り替える早期の return より前に置く。
+    VerificationHost(session, platform)
     if (call == null && state.overlay == "app-update") {
         zoo.android.update.UpdateSettings(androidx.compose.ui.platform.LocalContext.current, env.dark, env.locale, ::back)
         return
@@ -526,6 +529,4 @@ internal fun ConnectedScreens(
             dismissButton = { DialogAction("キャンセル", UiIcon.Close) { state.overlay = "channel-settings" } },
         )
     }
-    // 他のユーザーの検証（届いた要求と、自分から始めた検証）は、どの画面にいても前面に出す。
-    VerificationHost(session, platform)
 }

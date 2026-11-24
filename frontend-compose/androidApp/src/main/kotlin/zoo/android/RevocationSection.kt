@@ -87,6 +87,12 @@ internal fun RevocationSection(
     val links = platform.issuer?.let { AuthzRevocationUrls.fromIssuer(it) }
     LaunchedEffect(Unit) { try { revocation.status() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { } }
     DisposableEffect(Unit) { onDispose { revocation.dispose() } }
+    // リカバリーキーを入力する段と、新しいリカバリーキーを出す段では、画面のキャプチャーを止める（初回設定と同じ）。
+    val showsSecret = step is RevocationStep.Unlock || (step as? RevocationStep.Review)?.recoveryKey != null
+    DisposableEffect(showsSecret) {
+        val release = if (showsSecret) platform.protectScreen() else ({})
+        onDispose { release() }
+    }
     fun perform(block: suspend () -> Unit) {
         if (busy) return
         busy = true

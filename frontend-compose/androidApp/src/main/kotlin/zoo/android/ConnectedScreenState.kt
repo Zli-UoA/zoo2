@@ -58,6 +58,24 @@ internal class ConnectedScreenState(
         }
     }
     private val channelFiles = mutableMapOf<String, AttachmentDrafts>()
+    /** 暗号化した添付として上げる下書き（[channelFiles] のキー）。 */
+    private val encryptedFileKeys = mutableSetOf<String>()
+
+    /**
+     * チャンネルの添付の下書きを返す。チャンネルの暗号化の状態が、下書きを作ったときと違えば（既存のチャンネルを
+     * 暗号化に切り替えた、など）、作り直す（古い上げ方を使い続けないため）。
+     */
+    private fun attachmentDrafts(key: String, channelId: String): AttachmentDrafts {
+        val encrypted = app.isEncryptedChannel(channelId)
+        channelFiles[key]?.let { existing ->
+            if ((key in encryptedFileKeys) == encrypted) return existing
+            existing.close()
+        }
+        return channelAttachments(channelId).also {
+            channelFiles[key] = it
+            if (encrypted) encryptedFileKeys += key else encryptedFileKeys -= key
+        }
+    }
 
     /**
      * チャンネルの添付の下書き。暗号化チャンネルでは、端末で暗号化してから上げ、本文の `attachments` に入れる値を
@@ -893,7 +911,7 @@ internal class ConnectedScreenState(
                     }
                 }
                 is AndroidScreen.Thread, is AndroidScreen.Conversation -> if (channelId.isNotBlank()) {
-                    channelFiles.getOrPut(key) { channelAttachments(channelId) }.pick()
+                    attachmentDrafts(key, channelId).pick()
                 }
                 else -> Unit
             }

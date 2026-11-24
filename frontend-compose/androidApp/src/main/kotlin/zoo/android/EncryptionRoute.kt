@@ -220,7 +220,11 @@ internal fun EncryptionRoute(
             }
             // 終わっていない失効は、解錠していなくても続けられるようにする（SSSS を保存したあと、クロス署名鍵を保存する
             // 前に止まると、secrets_revision が変わって解錠し直しが要る状態になるため。Web と同じ）。
-            if (revocation != null && (status is E2eeStatus.Unlocked || pendingRevocation != null)) {
+            // 一度出した失効の画面は、この設定の画面を閉じるまで残す（解錠していない状態から続けて終えたとき、記録が
+            // 消えて親の状態が読み直されるまでのあいだに、結果（未署名の端末、AuthZ の後の手順）を消さないため）。
+            var revocationShown by remember { mutableStateOf(false) }
+            if (!revocationShown && revocation != null && (status is E2eeStatus.Unlocked || pendingRevocation != null)) revocationShown = true
+            if (revocation != null && (status is E2eeStatus.Unlocked || pendingRevocation != null || revocationShown)) {
                 RevocationSection(session, platform, revocation, manager.currentDeviceId, colors, enabled,
                     unlocked = status is E2eeStatus.Unlocked) {
                     scope.launch { try { reload() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { } }

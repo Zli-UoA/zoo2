@@ -53,12 +53,17 @@ internal fun QrScanner(
     val executor = remember { Executors.newSingleThreadExecutor() }
     // 1 つずつ確かめる（確かめているあいだの映像は捨てる）。
     val checking = remember { AtomicBoolean(false) }
+    // 画面から外したか（初期化が終わる前に外したら、あとから届いた初期化の通知でカメラを bind しない）と、bind した
+    // provider（外すときに、初期化を待たずに unbind する）。どちらも main thread だけで読み書きする。
+    val released = remember { AtomicBoolean(false) }
+    var bound by remember { mutableStateOf<ProcessCameraProvider?>(null) }
     DisposableEffect(Unit) { onDispose { executor.shutdown() } }
     AndroidView(
         factory = { viewContext ->
             val preview = PreviewView(viewContext)
             val future = ProcessCameraProvider.getInstance(viewContext)
             future.addListener({
+                if (released.get()) return@addListener
                 val provider = try { future.get() } catch (_: Exception) { onState(CameraState.FAILED); return@addListener }
                 if (!provider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA) && !provider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)) {
                     onState(CameraState.NO_CAMERA)
@@ -88,6 +93,7 @@ internal fun QrScanner(
                 try {
                     provider.unbindAll()
                     provider.bindToLifecycle(lifecycle, selector, previewUse, analysis)
+                    bound = provider
                     onState(CameraState.RUNNING)
                 } catch (_: Exception) {
                     onState(CameraState.FAILED)
@@ -96,7 +102,10 @@ internal fun QrScanner(
             preview
         },
         onRelease = {
-            try { ProcessCameraProvider.getInstance(context).get().unbindAll() } catch (_: Exception) { }
+            released.set(true)
+            // 初期化の完了を待たない（UI thread を止めないため）。bind 済みのときだけ外す。
+            try { bound?.unbindAll() } catch (_: Exception) { }
+            bound = null
         },
         modifier = modifier.fillMaxWidth().aspectRatio(1f).semantics { contentDescription = label },
     )
