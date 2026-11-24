@@ -32,7 +32,10 @@ export function PreviewDownloadButton({
   size?: number | null;
   showLabel?: boolean;
   className?: string;
-  /** 表示に使う URL を更新できる経路。署名付き URL の期限切れに備えて渡す。 */
+  /**
+   * 表示に使う URL を更新できる経路。署名付き URL の期限切れに備えて渡す。
+   * 現状の footer なし呼び出し先では未使用だが、将来の署名付き URL プレビュー用に残す。
+   */
   resolveUrl?: AttachmentUrlResolver;
 }) {
   const { t } = useTranslation();
@@ -62,13 +65,13 @@ export function PreviewDownloadButton({
       const encoding = response.headers.get("content-encoding");
       const raw = response.headers.get("content-length");
       const parsed = raw ? Number(raw) : Number.NaN;
-      // Content-Encoding がある場合、Content-Length は圧縮後のサイズであり、
-      // 展開後の本体サイズとは一致しないことがある。Rust 側の保存上限に誤った値を渡さない。
+      // Content-Encoding が identity と確認できるときだけ Content-Length を size に使う。
+      // CORS では encoding が読めないことがあり、圧縮後サイズを展開後サイズとして扱う危険がある。
+      const encodingKnownIdentity =
+        encoding === "identity" || (!encoding && response.type !== "cors");
       const size =
-        !encoding || encoding === "identity"
-          ? Number.isFinite(parsed) && parsed > 0
-            ? Math.floor(parsed)
-            : undefined
+        encodingKnownIdentity && Number.isFinite(parsed) && parsed > 0
+          ? Math.floor(parsed)
           : undefined;
       // 保存先のダイアログの間は本文を読まない。接続を止めて、転送は保存時に開き直す。
       await response.body?.cancel().catch(() => {});
@@ -76,6 +79,7 @@ export function PreviewDownloadButton({
     },
     [urlResolver],
   );
+  // src が保存中に変わっても、失敗通知は保存開始時の src にだけ適用する。
   const { state, pending, available, download, cancel } = useDesktopSave({
     id: saveId,
     fileName: name,

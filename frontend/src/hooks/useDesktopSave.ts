@@ -98,8 +98,11 @@ export function useDesktopSave({
     current.current = { source, fallback, onFailure, describeError };
   }, [source, fallback, onFailure, describeError]);
 
-  function reportFailure(error: unknown) {
-    const { onFailure: notify, describeError: describe } = current.current;
+  function reportFailure(
+    error: unknown,
+    callbacks: Pick<typeof current.current, "onFailure" | "describeError"> = current.current,
+  ) {
+    const { onFailure: notify, describeError: describe } = callbacks;
     if (error instanceof DesktopDownloadDestinationError) {
       void desktopDownloadSettings()
         .then((settings) => {
@@ -131,13 +134,15 @@ export function useDesktopSave({
     if (running.current || state) return;
     running.current = true;
     setPending(true);
+    // src が保存中に変わっても、失敗通知は保存開始時の対象へ適用する。
+    const started = current.current;
     try {
       // 古い版のアプリではコマンドがない。Web と同じくブラウザーの保存に戻す。
       if (!(await desktopDownloadsAvailable())) {
-        await current.current.fallback();
+        await started.fallback();
         return;
       }
-      const { source: active } = current.current;
+      const { source: active } = started;
       let size = active.size;
       let controller: AbortController | undefined;
       if (active.kind === "url" && active.prepare) {
@@ -156,7 +161,7 @@ export function useDesktopSave({
       // 同じ名前が既にあったときは番号が足されるので、実際の名前を伝える。
       if (savedName) toast.success(t("attachments.downloadSaved", { name: savedName }));
     } catch (error) {
-      if (!(error instanceof DesktopDownloadCancelledError)) reportFailure(error);
+      if (!(error instanceof DesktopDownloadCancelledError)) reportFailure(error, started);
     } finally {
       running.current = false;
       setPending(false);
