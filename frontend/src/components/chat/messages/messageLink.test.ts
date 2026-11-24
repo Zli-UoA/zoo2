@@ -2,7 +2,7 @@ import { defaultParseSearch } from "@tanstack/react-router";
 import { describe, expect, it } from "vite-plus/test";
 
 import { Route } from "../../../routes/_shell.channels.$channelId";
-import { messageLinkTarget, messageLinkUrl } from "./messageLink";
+import { messageLinkTarget, messageLinkUrl, parseChannelLink } from "./messageLink";
 
 const origin = "https://zli.chat";
 
@@ -73,5 +73,70 @@ describe("messageLinkUrl", () => {
       message: "12345",
       thread: "67890",
     });
+  });
+});
+
+describe("parseChannelLink", () => {
+  it("messageLinkUrl が作ったリンクを、同じ移動先に戻す", () => {
+    expect(parseChannelLink(messageLinkUrl(origin, "c1", "m1", null), origin)).toEqual({
+      channelId: "c1",
+      search: { message: "m1" },
+    });
+    expect(parseChannelLink(messageLinkUrl(origin, "c1", "m2", "root"), origin)).toEqual({
+      channelId: "c1",
+      search: { thread: "root", message: "m2" },
+    });
+  });
+
+  it("エスケープした ID と、数字だけの ID も読み戻す", () => {
+    expect(parseChannelLink(messageLinkUrl(origin, "a/b?c", "m#1&x=y", null), origin)).toEqual({
+      channelId: "a/b?c",
+      search: { message: "m#1&x=y" },
+    });
+    expect(parseChannelLink(messageLinkUrl(origin, "c", "12345", "67890"), origin)).toEqual({
+      channelId: "c",
+      search: { thread: "67890", message: "12345" },
+    });
+  });
+
+  it("message のないチャンネルのリンクも、チャンネルそのものを指す移動先にする", () => {
+    expect(parseChannelLink(`${origin}/channels/c1`, origin)).toEqual({
+      channelId: "c1",
+      search: {},
+    });
+    expect(parseChannelLink(`${origin}/channels/c1/`, origin)).toEqual({
+      channelId: "c1",
+      search: {},
+    });
+    expect(parseChannelLink(`${origin}/channels/c1?thread=root`, origin)).toEqual({
+      channelId: "c1",
+      search: { thread: "root" },
+    });
+  });
+
+  it("ルートが読まない検索パラメーターと、ハッシュは無視する", () => {
+    expect(parseChannelLink(`${origin}/channels/c1?utm_source=x&message=m1#top`, origin)).toEqual({
+      channelId: "c1",
+      search: { message: "m1" },
+    });
+    expect(parseChannelLink(`${origin}/channels/c1?message=`, origin)).toEqual({
+      channelId: "c1",
+      search: {},
+    });
+  });
+
+  it.each([
+    ["別のサイト", "https://example.com/channels/c1?message=m1"],
+    ["同じホストの別ポート", "https://zli.chat:8443/channels/c1"],
+    ["http の同じホスト", "http://zli.chat/channels/c1"],
+    ["ユーザー情報付き", "https://user:pass@zli.chat/channels/c1"],
+    ["チャンネルではないパス", "https://zli.chat/settings"],
+    ["API のパス", "https://zli.chat/api/channels/c1"],
+    ["チャンネル ID がない", "https://zli.chat/channels/"],
+    ["ID の後ろに続くパス", "https://zli.chat/channels/c1/extra"],
+    ["不正なエスケープ", "https://zli.chat/channels/%E0%A4%A"],
+    ["URL ではない文字列", "not a url"],
+  ])("%s は、アプリ内のリンクとして扱わない", (_name, href) => {
+    expect(parseChannelLink(href, origin)).toBeNull();
   });
 });

@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   createSummalyClient,
@@ -7,6 +8,7 @@ import {
 import { resolvePublicConfig, type AppConfig } from "../../../lib/config";
 import { useOptionalCollections } from "../../../lib/electric/collections-context";
 import { proxyImageUrl } from "../../../lib/media-proxy";
+import { useChannelLinkTarget } from "./ContentLink";
 import { previewUrls } from "./linkPreviews";
 import { acquirePreview, cachedPreview, subscribePreview } from "./linkPreviewRequests";
 import { subscribePreviewEndpoints, type PreviewEndpoints } from "../../../lib/preview-endpoints";
@@ -31,6 +33,7 @@ function LinkPreview({
   const [result, setResult] = useState<{ key: string; data: Preview | null } | null>(null);
   const [failedImage, setFailedImage] = useState<string | null>(null);
   const [failedIcon, setFailedIcon] = useState<string | null>(null);
+  const channelLink = useChannelLinkTarget(url);
   useEffect(() => subscribePreview(key, (data) => setResult({ key, data })), [key]);
   useEffect(() => {
     if (!client || !active) return;
@@ -51,13 +54,10 @@ function LinkPreview({
   const src = proxyImageUrl(proxy, image);
   const iconSrc = proxyImageUrl(proxy, icon ?? null);
   if (!showFallback && !data) return null;
-  return (
-    <a
-      href={url}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="my-2 flex h-32 w-full max-w-sm overflow-hidden rounded-lg border bg-card text-sm outline-none transition-colors hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring"
-    >
+  const cardClassName =
+    "my-2 flex h-32 w-full max-w-sm overflow-hidden rounded-lg border bg-card text-sm outline-none transition-colors hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring";
+  const card = (
+    <>
       <span className="relative h-full w-24 shrink-0 bg-muted sm:w-28">
         {src && failedImage !== src ? (
           <img
@@ -89,6 +89,21 @@ function LinkPreview({
           <span className="truncate">{siteName || new URL(url).hostname}</span>
         </span>
       </span>
+    </>
+  );
+  // このアプリのチャンネル・メッセージへのリンクは、新しいタブを開かずに同じタブで移動する。
+  return channelLink ? (
+    <Link
+      to="/channels/$channelId"
+      params={{ channelId: channelLink.channelId }}
+      search={channelLink.search}
+      className={cardClassName}
+    >
+      {card}
+    </Link>
+  ) : (
+    <a href={url} target="_blank" rel="noopener noreferrer" className={cardClassName}>
+      {card}
     </a>
   );
 }

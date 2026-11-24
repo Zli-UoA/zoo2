@@ -384,6 +384,7 @@
       "states": [
         "Default",
         "InlineLinks",
+        "InAppLinks",
         "LongUrl",
         "CodeAndMath",
         "SearchHighlight",
@@ -1313,6 +1314,12 @@
       "story": "src/components/chat/messages/MfmContent.stories.tsx",
       "composed": true,
       "reason": "Defaultで実Providerから公開チャンネルのハッシュタグを解決する。MfmChannels.browser.test.tsxでアプリ内遷移・戻る・進む・下書き保持を検証する。"
+    },
+    {
+      "file": "src/components/chat/messages/ContentLink.tsx",
+      "story": "src/components/chat/messages/MfmContent.stories.tsx",
+      "composed": true,
+      "reason": "InAppLinksで、このアプリのメッセージ・チャンネルのリンクを同じタブのリンクに、外部URLを別タブのリンクに描くことを確認する。移動・修飾キー・ルーターの外でのフォールバックはContentLink.browser.test.tsxで検証する。"
     },
     {
       "file": "src/components/chat/messages/MfmContent.tsx",
