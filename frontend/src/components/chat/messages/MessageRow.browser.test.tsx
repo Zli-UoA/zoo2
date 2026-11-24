@@ -859,6 +859,42 @@ describe("copy message link", () => {
   });
 });
 
+describe("more menu order", () => {
+  async function menuLabels() {
+    screen.getByRole("button", { name: "その他の操作" }).focus();
+    await userEvent.keyboard("{Enter}");
+    await screen.findByRole("menu");
+    return screen.getAllByRole("menuitem").map((menuItem) => menuItem.textContent);
+  }
+
+  it("lists reaction, thread, edit, copy, link, App and delete in that order", async () => {
+    renderRow(buildItem({ channel_id: "channel-1" }), true, {
+      canReact: true,
+      canDelete: true,
+      onOpenThread: () => {},
+    });
+    expect(await menuLabels()).toEqual([
+      "リアクションを追加",
+      "スレッドを開く",
+      "編集",
+      "原文をコピー",
+      "メッセージリンクをコピー",
+      "Appでメッセージを操作",
+      "削除",
+    ]);
+  });
+
+  it("keeps the order when items the viewer cannot use are left out", async () => {
+    renderRow(buildItem({ channel_id: "channel-1" }));
+    expect(await menuLabels()).toEqual([
+      "リアクションを追加",
+      "原文をコピー",
+      "メッセージリンクをコピー",
+      "Appでメッセージを操作",
+    ]);
+  });
+});
+
 it.each([null, "thread-root"])(
   "places an edited marker after the final inline link (parent=%s)",
   async (parent_id) => {

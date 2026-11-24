@@ -806,6 +806,29 @@ export function MessageRow({
                 <MoreHorizontalIcon />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
+                {/* 並びは、リアクション・スレッド・編集・原文コピー・リンクコピー・App・削除の順。 */}
+                <DropdownMenuItem
+                  className={touchHitArea}
+                  disabled={!canReact}
+                  onClick={onPickReaction}
+                >
+                  <SmilePlusIcon />
+                  {t("reactions.add")}
+                </DropdownMenuItem>
+                {onOpenThread ? (
+                  <DropdownMenuItem className={touchHitArea} onClick={onOpenThread}>
+                    <MessageSquarePlusIcon />
+                    {t("threads.open")}
+                  </DropdownMenuItem>
+                ) : null}
+                {canEdit ? (
+                  <>
+                    <DropdownMenuItem className={touchHitArea} onClick={onStartEdit}>
+                      <PencilIcon />
+                      {t("messages.edit")}
+                    </DropdownMenuItem>
+                  </>
+                ) : null}
                 {/* 復号できない暗号化メッセージは本文がないので、空文字列をコピーしないようメニューを出さない。 */}
                 {resolvedDecryption?.status === "undecryptable" ? null : (
                   <DropdownMenuItem onClick={() => void copyRawMessage()}>
@@ -829,28 +852,6 @@ export function MessageRow({
                   <BotIcon />
                   {t("apps.messageActions")}
                 </DropdownMenuItem>
-                <DropdownMenuItem
-                  className={touchHitArea}
-                  disabled={!canReact}
-                  onClick={onPickReaction}
-                >
-                  <SmilePlusIcon />
-                  {t("reactions.add")}
-                </DropdownMenuItem>
-                {onOpenThread ? (
-                  <DropdownMenuItem className={touchHitArea} onClick={onOpenThread}>
-                    <MessageSquarePlusIcon />
-                    {t("threads.open")}
-                  </DropdownMenuItem>
-                ) : null}
-                {canEdit ? (
-                  <>
-                    <DropdownMenuItem className={touchHitArea} onClick={onStartEdit}>
-                      <PencilIcon />
-                      {t("messages.edit")}
-                    </DropdownMenuItem>
-                  </>
-                ) : null}
                 {canDelete ? (
                   <DropdownMenuItem
                     className={touchHitArea}
