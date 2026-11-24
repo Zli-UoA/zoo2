@@ -1100,11 +1100,14 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
                 .collect();
             let real_ts: std::collections::HashSet<&str> = messages
                 .iter()
-                .filter(|m| m.is_importable())
+                .filter(|m| m.is_importable_for_team(Some(&team)))
                 .map(|m| m.ts.as_str())
                 .collect();
             let mut last_ts = None;
-            for message in messages.iter().filter(|m| m.is_importable()) {
+            for message in messages
+                .iter()
+                .filter(|m| m.is_importable_for_team(Some(&team)))
+            {
                 // ZIP の取り込みは履歴。直近の返信でも、再Openも再参加もしない
                 insert_message(
                     &mut tx,
@@ -1494,6 +1497,8 @@ pub(super) async fn id_taken_by_other(
 
 /// 投稿に含まれる Slack 転送・引用（`is_share` / `is_msg_unfurl`）を Zoo のメッセージ UUID に解決する。
 /// `slack_message_map` に一致する行があればその ID を優先し、なければ決定的な ID を計算して返す。
+/// 未取り込みの決定的 ID は `slack_forward_targets` に予約して事前作成なりすましを防ぎ、
+/// 既に Slack 由来でない別投稿（チャネルや作成時刻が不一致）が占有している ID は除外する。
 pub(super) async fn resolve_forwarded_ids(
     tx: &mut toasty::Transaction<'_>,
     team: &str,
@@ -1529,13 +1534,93 @@ pub(super) async fn resolve_forwarded_ids(
             mapped_ids.insert((ch.to_string(), ts.to_string()), id.to_string());
         }
     }
+
+    let derived_candidates: Vec<serde_json::Value> = refs
+        .iter()
+        .filter(|r| !mapped_ids.contains_key(&(r.slack_channel_id.clone(), r.ts.clone())))
+        .map(|r| {
+            serde_json::json!({
+                "slack_channel_id": r.slack_channel_id,
+                "ts": r.ts,
+                "message_id": super::message_id(team, &r.slack_channel_id, &r.ts),
+            })
+        })
+        .collect();
+    let mut usable_derived: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut reserve_rows: Vec<serde_json::Value> = Vec::new();
+    if !derived_candidates.is_empty() {
+        let derived_json = serde_json::to_string(&derived_candidates)
+            .map_err(|err| AppError::Internal(err.into()))?;
+        let status_rows = query(
+            tx,
+            "SELECT json_build_object(\
+                'message_id', r.message_id,\
+                'slack_channel_id', r.slack_channel_id,\
+                'ts', r.ts,\
+                'exists', m.id IS NOT NULL,\
+                'valid', (\
+                    m.id IS NOT NULL \
+                    AND m.created_at = (to_timestamp(r.ts::numeric) AT TIME ZONE 'UTC')::timestamp(3) \
+                    AND (sc.channel_id IS NULL OR m.channel_id = sc.channel_id)\
+                )\
+             )::text \
+             FROM jsonb_to_recordset($2::jsonb) AS r(slack_channel_id text, ts text, message_id text) \
+             LEFT JOIN messages m ON m.id = r.message_id \
+             LEFT JOIN slack_channels sc ON sc.team_id = $1 AND sc.slack_channel_id = r.slack_channel_id",
+            &[team, &derived_json],
+        )
+        .await?;
+        for row in status_rows {
+            let Some(msg_id) = row["message_id"].as_str() else {
+                continue;
+            };
+            let exists = row["exists"] == true;
+            let valid = row["valid"] == true;
+            if exists && !valid {
+                // 既に別投稿（事前作成されたなりすまし等）に占有されている決定的 ID は紐付けない
+                tracing::warn!(
+                    message_id = %msg_id,
+                    team,
+                    "Skipped Slack forward reference whose deterministic ID is occupied by a non-matching message"
+                );
+                continue;
+            }
+            if !exists {
+                reserve_rows.push(serde_json::json!({
+                    "message_id": msg_id,
+                    "slack_channel_id": row["slack_channel_id"],
+                    "ts": row["ts"],
+                }));
+            }
+            usable_derived.insert(msg_id.to_string());
+        }
+        if !reserve_rows.is_empty() {
+            let reserve_json = serde_json::to_string(&reserve_rows)
+                .map_err(|err| AppError::Internal(err.into()))?;
+            exec(
+                tx,
+                "INSERT INTO slack_forward_targets(message_id, team_id, slack_channel_id, ts) \
+                 SELECT r.message_id, $1, r.slack_channel_id, r.ts \
+                 FROM jsonb_to_recordset($2::jsonb) AS r(message_id text, slack_channel_id text, ts text) \
+                 ON CONFLICT (message_id) DO NOTHING",
+                &[team, &reserve_json],
+            )
+            .await?;
+        }
+    }
+
     let mut resolved = Vec::with_capacity(refs.len());
     let mut seen = std::collections::HashSet::with_capacity(refs.len());
     for r in refs {
-        let id = mapped_ids
-            .get(&(r.slack_channel_id.clone(), r.ts.clone()))
-            .cloned()
-            .unwrap_or_else(|| super::message_id(team, &r.slack_channel_id, &r.ts));
+        let id = if let Some(mapped) = mapped_ids.get(&(r.slack_channel_id.clone(), r.ts.clone())) {
+            mapped.clone()
+        } else {
+            let derived = super::message_id(team, &r.slack_channel_id, &r.ts);
+            if !usable_derived.contains(&derived) {
+                continue;
+            }
+            derived
+        };
         if seen.insert(id.clone()) {
             resolved.push(id);
             if resolved.len() >= crate::routes::forwards::MAX_FORWARDED_MESSAGES_PER_MESSAGE {

@@ -14,12 +14,13 @@ use super::sync::{
     Slack, SyncError, load_channel_tokens, lookup_profiles, parse_messages, threadable,
 };
 use super::worker::{
-    Context, FilePolicy, ensure_plaintext_allowed, id_taken_by_other, insert_message, mapped,
-    resolve_forwarded_ids, suppress_app_events,
+    Context, FilePolicy, id_taken_by_other, insert_message, mapped, resolve_forwarded_ids,
+    suppress_app_events,
 };
 
 const PAGE_LIMIT: &str = "200";
 const MAX_RATE_LIMIT_RETRIES: usize = 3;
+const MAX_RETRY_AFTER_SECS: u64 = 300;
 
 #[derive(Debug, Default, Clone)]
 pub struct Options {
@@ -52,6 +53,17 @@ struct TargetChannel {
 }
 
 pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow::Result<Report> {
+    config
+        .slack
+        .validate_api_base_url(&config.environment)
+        .map_err(|e| anyhow::anyhow!(e))?;
+    if options
+        .channel
+        .as_deref()
+        .is_some_and(|channel| channel.trim().is_empty())
+    {
+        anyhow::bail!("--channel must not be empty");
+    }
     let key = config.slack.encryption_key().ok_or_else(|| {
         anyhow::anyhow!("SLACK_TOKEN_ENCRYPTION_KEY is not configured or invalid")
     })?;
@@ -91,7 +103,7 @@ pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow:
         .await
         {
             Ok(info) => info,
-            Err(SyncError::NoAccess(err) | SyncError::Failed(err)) => {
+            Err(SyncError::NoAccess(err)) => {
                 tracing::warn!(
                     team = %target.team_id,
                     channel = %target.slack_channel_id,
@@ -144,7 +156,8 @@ pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow:
         // 差分同期と同様にここでは添付ファイルを同期ダウンロードしない（orphan_files_worker に任せる）
         ctx.files.token = false;
 
-        let oldest = options.oldest.as_deref().unwrap_or("0");
+        let oldest = options.oldest.as_deref();
+        let in_oldest_window = |ts: &str| oldest.is_none_or(|min| !compare_ts(ts, min).is_lt());
         let mut pages = 0usize;
         let mut cursor: Option<String> = None;
         let mut thread_roots: Vec<String> = Vec::new();
@@ -154,9 +167,11 @@ pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow:
             if options.max_pages.is_some_and(|max| pages >= max) {
                 break;
             }
+            // `--oldest` より古い親投稿配下に期間内の転送返信があり得るため、履歴取得自体は `oldest=0` で走査し、
+            // 個別メッセージの適用とスレッド返信の探索で期間フィルタをかける。
             let mut params = vec![
                 ("channel", target.slack_channel_id.as_str()),
-                ("oldest", oldest),
+                ("oldest", "0"),
                 ("limit", PAGE_LIMIT),
             ];
             if let Some(cur) = cursor.as_deref() {
@@ -170,31 +185,47 @@ pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow:
             report.scanned_messages += messages.len();
             for m in &messages {
                 let top_level = m.thread_ts.as_deref().is_none_or(|t| t == m.ts.as_str());
+                let reply_may_be_in_window = m
+                    .latest_reply
+                    .as_deref()
+                    .filter(|t| super::is_valid_ts(t))
+                    .is_none_or(in_oldest_window);
                 if top_level
                     && m.reply_count.unwrap_or(0) > 0
-                    && threadable(m)
+                    && threadable(m, Some(&target.team_id))
+                    && (in_oldest_window(&m.ts) || reply_may_be_in_window)
                     && seen_threads.insert(m.ts.clone())
                 {
                     thread_roots.push(m.ts.clone());
                 }
             }
-            process_messages(
-                &mut db,
-                &mut slack,
-                &mut ctx,
-                &target,
-                &messages,
-                options.apply,
-                &mut report,
-            )
-            .await?;
+            let filtered_messages: Vec<SlackMessage> = messages
+                .into_iter()
+                .filter(|m| in_oldest_window(&m.ts))
+                .collect();
+            if !filtered_messages.is_empty() {
+                process_messages(
+                    &mut db,
+                    &mut slack,
+                    &mut ctx,
+                    &target,
+                    slack_private,
+                    &filtered_messages,
+                    options.apply,
+                    &mut report,
+                )
+                .await?;
+            }
 
             let next = page["response_metadata"]["next_cursor"]
                 .as_str()
+                .map(str::trim)
                 .filter(|c| !c.is_empty())
                 .map(str::to_string);
-            if page["has_more"] == true && next.is_some() {
-                cursor = next;
+            if let Some(next_cursor) = next
+                && cursor.as_deref() != Some(next_cursor.as_str())
+            {
+                cursor = Some(next_cursor);
             } else {
                 break;
             }
@@ -212,7 +243,7 @@ pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow:
                 let mut params = vec![
                     ("channel", target.slack_channel_id.as_str()),
                     ("ts", thread_ts.as_str()),
-                    ("oldest", oldest),
+                    ("oldest", oldest.unwrap_or("0")),
                     ("limit", PAGE_LIMIT),
                 ];
                 if let Some(cur) = tcursor.as_deref() {
@@ -228,26 +259,34 @@ pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow:
                 pages += 1;
                 let messages = parse_messages(&page);
                 // 先頭要素（スレッド親）は履歴走査で処理済みのことが多いが、重複処理も冪等に抑止される
-                let replies: Vec<SlackMessage> =
-                    messages.into_iter().filter(|m| m.ts != thread_ts).collect();
+                let replies: Vec<SlackMessage> = messages
+                    .into_iter()
+                    .filter(|m| m.ts != thread_ts && in_oldest_window(&m.ts))
+                    .collect();
                 report.scanned_messages += replies.len();
-                process_messages(
-                    &mut db,
-                    &mut slack,
-                    &mut ctx,
-                    &target,
-                    &replies,
-                    options.apply,
-                    &mut report,
-                )
-                .await?;
+                if !replies.is_empty() {
+                    process_messages(
+                        &mut db,
+                        &mut slack,
+                        &mut ctx,
+                        &target,
+                        slack_private,
+                        &replies,
+                        options.apply,
+                        &mut report,
+                    )
+                    .await?;
+                }
 
                 let next = page["response_metadata"]["next_cursor"]
                     .as_str()
+                    .map(str::trim)
                     .filter(|c| !c.is_empty())
                     .map(str::to_string);
-                if page["has_more"] == true && next.is_some() {
-                    tcursor = next;
+                if let Some(next_cursor) = next
+                    && tcursor.as_deref() != Some(next_cursor.as_str())
+                {
+                    tcursor = Some(next_cursor);
                 } else {
                     break;
                 }
@@ -260,11 +299,13 @@ pub async fn run(db: &toasty::Db, config: &Config, options: &Options) -> anyhow:
     Ok(report)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process_messages(
     db: &mut toasty::Db,
     slack: &mut Slack,
     ctx: &mut Context,
     target: &TargetChannel,
+    slack_private: bool,
     messages: &[SlackMessage],
     apply: bool,
     report: &mut Report,
@@ -272,7 +313,7 @@ async fn process_messages(
     let mut with_forwards: Vec<&SlackMessage> = messages
         .iter()
         .filter(|m| {
-            m.is_importable()
+            m.is_importable_for_team(Some(&target.team_id))
                 && !(ctx.app_id.is_some() && m.app_id == ctx.app_id)
                 && !m.forwarded_refs(Some(&target.team_id)).is_empty()
         })
@@ -292,7 +333,7 @@ async fn process_messages(
     let mut tx = db.transaction().await.map_err(AppError::from)?;
     if apply {
         suppress_app_events(&mut tx).await?;
-        ensure_plaintext_allowed(&mut tx, &target.channel_id).await?;
+        ensure_target_writable(&mut tx, &target.channel_id, slack_private).await?;
     }
 
     for message in with_forwards {
@@ -457,6 +498,43 @@ async fn load_team_channel_names(
     Ok(names)
 }
 
+async fn ensure_target_writable(
+    tx: &mut toasty::Transaction<'_>,
+    channel_id: &str,
+    slack_private: bool,
+) -> Result<(), AppError> {
+    let rows = query(
+        tx,
+        "SELECT json_build_object(\
+            'encrypted', encrypted, \
+            'is_private', is_private, \
+            'deleted', deleted_at IS NOT NULL \
+         )::text \
+         FROM channels WHERE id = $1 FOR SHARE",
+        &[channel_id],
+    )
+    .await?;
+    let Some(row) = rows.into_iter().next() else {
+        return Err(AppError::NotFound(format!(
+            "Channel not found: {channel_id}"
+        )));
+    };
+    if row["deleted"] == true {
+        return Err(AppError::BadRequest(format!(
+            "Channel {channel_id} was deleted"
+        )));
+    }
+    if row["encrypted"] == true {
+        return Err(crate::routes::e2ee_channels::plaintext_forbidden());
+    }
+    if slack_private && row["is_private"] != true {
+        return Err(AppError::BadRequest(format!(
+            "Private Slack channel cannot be written to public channel {channel_id}"
+        )));
+    }
+    Ok(())
+}
+
 async fn slack_get_with_retry(
     slack: &mut Slack,
     method: &str,
@@ -466,9 +544,11 @@ async fn slack_get_with_retry(
     loop {
         match slack.get(method, params).await {
             Ok(val) => return Ok(val),
-            Err(SyncError::RateLimited(secs)) if retries < MAX_RATE_LIMIT_RETRIES => {
+            Err(SyncError::RateLimited(secs))
+                if retries < MAX_RATE_LIMIT_RETRIES && secs <= MAX_RETRY_AFTER_SECS =>
+            {
                 retries += 1;
-                tokio::time::sleep(Duration::from_secs(secs.clamp(1, 300))).await;
+                tokio::time::sleep(Duration::from_secs(secs.max(1))).await;
             }
             Err(err) => return Err(err),
         }
@@ -477,7 +557,13 @@ async fn slack_get_with_retry(
 
 fn sync_error_message(err: &SyncError) -> String {
     match err {
-        SyncError::RateLimited(secs) => format!("rate limited (retry_after={secs}s)"),
+        SyncError::RateLimited(secs) => {
+            let resume_at = jiff::Timestamp::now()
+                .checked_add(jiff::Span::new().seconds(*secs as i64))
+                .map(|ts| ts.to_string())
+                .unwrap_or_else(|_| "unknown".into());
+            format!("rate limited (retry_after={secs}s, resume_after={resume_at})")
+        }
         SyncError::NoAccess(e) => format!("no access: {e}"),
         SyncError::InvalidCursor => "invalid cursor".into(),
         SyncError::LeaseLost => "lease lost".into(),

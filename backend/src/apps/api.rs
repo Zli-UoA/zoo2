@@ -90,10 +90,11 @@ async fn create_message(
     if body.metadata.is_some() {
         p.require("metadata:write")?;
     }
-    let forwarded_ids = crate::routes::forwards::normalize_forwarded_message_ids(
-        body.forwarded_message_ids.as_deref().unwrap_or(&[]),
-        crate::routes::forwards::MAX_FORWARDED_MESSAGES_USER_POST,
-    )?;
+    if body.forwarded_message_ids.is_some() {
+        return Err(AppError::BadRequest(
+            "forwarded_message_ids is not supported by the App API".into(),
+        ));
+    }
     // A supplied UUID is the idempotency key; never return another author's write.
     if let Some(id) = &body.id {
         let mut db = state.db.clone();
@@ -109,7 +110,7 @@ async fn create_message(
             body.broadcast,
             body.metadata.as_ref(),
             &att_ids,
-            &forwarded_ids,
+            &[],
         )
         .await?
         {

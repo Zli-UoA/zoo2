@@ -154,7 +154,7 @@ async fn run_inner(
     }
     let importable: Vec<SlackMessage> = messages
         .iter()
-        .filter(|m| m.is_importable())
+        .filter(|m| m.is_importable_for_team(Some(team)))
         .cloned()
         .collect();
     lookup_profiles(db, slack, ctx, &importable).await?;
@@ -310,7 +310,7 @@ async fn apply_chunk(
             }
             continue;
         }
-        if !message.is_importable() {
+        if !message.is_importable_for_team(Some(team)) {
             continue;
         }
         if !zoo_origin {

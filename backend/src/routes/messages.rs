@@ -435,7 +435,7 @@ async fn idempotent_existing_message_in_snapshot(
         options_match = saved_kind == kind
             && saved_broadcast == broadcast
             && saved_metadata == req_metadata
-            && saved_forwards == forwarded_message_ids;
+            && same_forwarded_message_ids(&saved_forwards, forwarded_message_ids);
     }
 
     if existing_msg.user_id == auth_user_id
@@ -457,6 +457,16 @@ async fn idempotent_existing_message_in_snapshot(
 /// `code` of the 403 for a reply to a thread that tracks participants, from someone who has not
 /// joined it. Joining (after reopening an archived thread) lets the same reply go through.
 pub const THREAD_JOIN_REQUIRED_CODE: &str = "THREAD_JOIN_REQUIRED";
+
+fn same_forwarded_message_ids(a: &[String], b: &[String]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b.iter()).all(|(lhs, rhs)| {
+            match (Uuid::parse_str(lhs.trim()), Uuid::parse_str(rhs.trim())) {
+                (Ok(lu), Ok(ru)) => lu == ru,
+                _ => lhs == rhs,
+            }
+        })
+}
 
 /// Reply gate lookup (`$1` = thread root, `$2` = author): whether the thread has participant
 /// rows and whether the author is joined. Shared with the scale test so it measures exactly the
@@ -988,7 +998,7 @@ pub(crate) async fn create_message_impl(
         parent_author_id = Some(parent.user_id);
     }
 
-    forwards::verify_forward_sources(
+    let forwarded_ids = forwards::verify_forward_sources(
         &mut tx,
         &auth_user.id,
         bot_actor,
@@ -996,6 +1006,22 @@ pub(crate) async fn create_message_impl(
         &forwarded_ids,
     )
     .await?;
+
+    // Slack 転送の未取り込み参照に予約された決定的 ID（大文字表記を含む）は事前作成させない
+    if supplied_id.is_some() {
+        let canonical_id = Uuid::parse_str(&id)
+            .map(|u| u.to_string())
+            .unwrap_or_else(|_| id.clone());
+        let reserved = crate::apps::query(
+            &mut tx,
+            "SELECT json_build_object('ok', true)::text FROM slack_forward_targets WHERE message_id = $1",
+            &[canonical_id.as_str()],
+        )
+        .await?;
+        if !reserved.is_empty() {
+            return Err(AppError::Conflict("Message ID is reserved".into()));
+        }
+    }
 
     let now = crate::models::now_utc_millis();
 

@@ -94,7 +94,8 @@ pub fn router() -> Router<AppState> {
         ))
 }
 
-/// 転送元メッセージ ID 配列を検証し、小文字 UUID に正規化・重複排除する。
+/// 転送元メッセージ ID 配列を UUID として検証・重複排除する。
+/// 大文字・別表記で作成された既存 `messages.id` も主キー検索できるよう、元の表記を保持する。
 pub fn normalize_forwarded_message_ids(
     ids: &[String],
     max_len: usize,
@@ -108,22 +109,71 @@ pub fn normalize_forwarded_message_ids(
     let mut normalized = Vec::with_capacity(ids.len());
     let mut seen = HashSet::with_capacity(ids.len());
     for raw in ids {
-        let uuid = Uuid::parse_str(raw.trim()).map_err(|_| {
+        let trimmed = raw.trim();
+        let uuid = Uuid::parse_str(trimmed).map_err(|_| {
             AppError::BadRequest(format!("forwarded_message_id is not a valid UUID: {raw}"))
         })?;
-        let canonical = uuid.to_string();
-        if seen.insert(canonical.clone()) {
-            normalized.push(canonical);
+        if seen.insert(uuid) {
+            normalized.push(trimmed.to_string());
         }
     }
     Ok(normalized)
 }
 
+fn uuid_lookup_candidates(raw: &str) -> Result<(Uuid, Vec<String>), AppError> {
+    let trimmed = raw.trim();
+    let uuid = Uuid::parse_str(trimmed).map_err(|_| {
+        AppError::BadRequest(format!("forwarded_message_id is not a valid UUID: {raw}"))
+    })?;
+    let lower_hyphen = uuid.hyphenated().to_string();
+    let upper_hyphen = lower_hyphen.to_uppercase();
+    let lower_simple = uuid.simple().to_string();
+    let upper_simple = lower_simple.to_uppercase();
+    let lower_braced = uuid.braced().to_string();
+    let upper_braced = lower_braced.to_uppercase();
+    let mut candidates = Vec::with_capacity(7);
+    for candidate in [
+        trimmed.to_string(),
+        lower_hyphen,
+        upper_hyphen,
+        lower_simple,
+        upper_simple,
+        lower_braced,
+        upper_braced,
+    ] {
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    }
+    Ok((uuid, candidates))
+}
+
+struct ExpandedLookupCandidates {
+    reqs: Vec<(String, Uuid)>,
+    candidates: Vec<String>,
+}
+
+fn expand_lookup_candidates(ids: &[String]) -> Result<ExpandedLookupCandidates, AppError> {
+    let mut reqs = Vec::with_capacity(ids.len());
+    let mut candidates = Vec::with_capacity(ids.len() * 2);
+    let mut seen = HashSet::with_capacity(ids.len() * 4);
+    for req_id in ids {
+        let (uuid, id_candidates) = uuid_lookup_candidates(req_id)?;
+        reqs.push((req_id.clone(), uuid));
+        for candidate in id_candidates {
+            if seen.insert(candidate.clone()) {
+                candidates.push(candidate);
+            }
+        }
+    }
+    Ok(ExpandedLookupCandidates { reqs, candidates })
+}
+
 /// 送信時権限検証 SQL（スケール検証テストと共有）。
 ///
-/// `$1` = 重複排除済みの UUID 配列 JSON、`$2` = 送信者 `users.id`、`$3` = bot か、`$4` = guest か。
+/// `$1` = UUID 候補文字列配列 JSON、`$2` = 送信者 `users.id`、`$3` = bot か、`$4` = guest か。
 pub const VERIFY_FORWARD_SOURCES_SQL: &str = "\
-SELECT json_build_object('count', count(*))::text
+SELECT json_build_object('id', m.id)::text
 FROM jsonb_array_elements_text($1::jsonb) AS req(id)
 JOIN messages m ON m.id = req.id
 JOIN channels c ON c.id = m.channel_id
@@ -136,7 +186,8 @@ WHERE m.deleted_at IS NULL
     OR cu.user_id IS NOT NULL
   )";
 
-/// 送信者自身が、指定した全転送元メッセージを閲覧可能（未削除・平文チャンネル/DM・権限あり）であることを検証する。
+/// 送信者自身が、指定した全転送元メッセージを閲覧可能（未削除・平文チャンネル/DM・権限あり）であることを検証し、
+/// データベースに保存されている実際の `messages.id` 表記を返す。
 /// 存在しない・削除済み・閲覧権限なし・暗号化チャンネルのいずれであっても 404 を返し、存在オラクルを防ぐ。
 pub async fn verify_forward_sources(
     tx: &mut toasty::Transaction<'_>,
@@ -144,12 +195,16 @@ pub async fn verify_forward_sources(
     bot_actor: bool,
     guest_actor: bool,
     ids: &[String],
-) -> Result<(), AppError> {
+) -> Result<Vec<String>, AppError> {
     if ids.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
-    let ids_json = Value::from(ids.to_vec()).to_string();
-    let row = crate::apps::one(
+    let ExpandedLookupCandidates {
+        reqs: parsed_reqs,
+        candidates,
+    } = expand_lookup_candidates(ids)?;
+    let ids_json = Value::from(candidates).to_string();
+    let rows = crate::apps::query(
         tx,
         VERIFY_FORWARD_SOURCES_SQL,
         &[
@@ -160,11 +215,33 @@ pub async fn verify_forward_sources(
         ],
     )
     .await?;
-    let count = row["count"].as_i64().unwrap_or(0);
-    if count != ids.len() as i64 {
-        return Err(AppError::NotFound("Forwarded message not found".into()));
+    let mut matched_by_uuid: HashMap<Uuid, Vec<String>> = HashMap::with_capacity(rows.len());
+    for row in rows {
+        if let Some(id) = row.get("id").and_then(|v| v.as_str())
+            && let Ok(uuid) = Uuid::parse_str(id)
+        {
+            matched_by_uuid
+                .entry(uuid)
+                .or_default()
+                .push(id.to_string());
+        }
     }
-    Ok(())
+    let mut resolved = Vec::with_capacity(parsed_reqs.len());
+    let mut seen = HashSet::with_capacity(parsed_reqs.len());
+    for (req_id, uuid) in parsed_reqs {
+        let Some(matches) = matched_by_uuid.get(&uuid) else {
+            return Err(AppError::NotFound("Forwarded message not found".into()));
+        };
+        let actual_id = matches
+            .iter()
+            .find(|m| *m == &req_id)
+            .cloned()
+            .unwrap_or_else(|| matches[0].clone());
+        if seen.insert(actual_id.clone()) {
+            resolved.push(actual_id);
+        }
+    }
+    Ok(resolved)
 }
 
 /// 転送元メッセージの一括解決 SQL（スケール検証テストと共有）。
@@ -230,12 +307,25 @@ JOIN users viewer ON viewer.id = $2
 JOIN messages m ON m.id = req.id
 JOIN channels c ON c.id = m.channel_id
 LEFT JOIN channel_user cu ON cu.user_id = $2 AND cu.channel_id = c.id
+LEFT JOIN slack_forward_targets sft ON sft.message_id = m.id
+LEFT JOIN slack_channels sft_sc
+  ON sft.message_id IS NOT NULL
+  AND sft_sc.team_id = sft.team_id
+  AND sft_sc.slack_channel_id = sft.slack_channel_id
 WHERE NOT viewer.is_deactivated
   AND c.deleted_at IS NULL
   AND NOT c.encrypted
   AND (
     (NOT c.is_private AND NOT c.is_dm AND NOT viewer.is_guest AND NOT viewer.is_bot)
     OR cu.user_id IS NOT NULL
+  )
+  AND (
+    CASE
+      WHEN sft.message_id IS NOT NULL THEN
+        m.created_at = (to_timestamp(sft.ts::numeric) AT TIME ZONE 'UTC')::timestamp(3)
+        AND (sft_sc.channel_id IS NULL OR m.channel_id = sft_sc.channel_id)
+      ELSE true
+    END
   )";
 
 async fn resolve_forwards(
@@ -243,7 +333,26 @@ async fn resolve_forwards(
     auth_user: AuthUser,
     Json(payload): Json<ResolveForwardsRequest>,
 ) -> Result<Json<ApiResponse<ResolveForwardsResponse>>, AppError> {
-    let ids = normalize_forwarded_message_ids(&payload.ids, MAX_RESOLVE_FORWARD_IDS)?;
+    if payload.ids.len() > MAX_RESOLVE_FORWARD_IDS {
+        return Err(AppError::BadRequest(format!(
+            "Too many forwarded messages: maximum allowed is {MAX_RESOLVE_FORWARD_IDS}, got {}",
+            payload.ids.len()
+        )));
+    }
+    // 解決 API では同一 UUID の別表記（小文字／大文字等）が同じ要求に含まれる場合も各キーを返す。
+    let mut ids = Vec::with_capacity(payload.ids.len());
+    let mut seen_keys = HashSet::with_capacity(payload.ids.len());
+    for raw in &payload.ids {
+        let trimmed = raw.trim();
+        if Uuid::parse_str(trimmed).is_err() {
+            return Err(AppError::BadRequest(format!(
+                "forwarded_message_id is not a valid UUID: {raw}"
+            )));
+        }
+        if seen_keys.insert(trimmed.to_string()) {
+            ids.push(trimmed.to_string());
+        }
+    }
     if ids.is_empty() {
         return Ok(Json(ApiResponse::new(
             ResolveForwardsResponse {
@@ -253,7 +362,11 @@ async fn resolve_forwards(
         )));
     }
 
-    let ids_json = Value::from(ids.clone()).to_string();
+    let ExpandedLookupCandidates {
+        reqs: parsed_reqs,
+        candidates,
+    } = expand_lookup_candidates(&ids)?;
+    let ids_json = Value::from(candidates).to_string();
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     let rows = crate::apps::query(
@@ -264,20 +377,22 @@ async fn resolve_forwards(
     .await?;
     tx.commit().await?;
 
-    let mut items: HashMap<String, ForwardResolutionItem> = HashMap::with_capacity(ids.len());
+    let mut exact_items: HashMap<String, ForwardResolutionItem> =
+        HashMap::with_capacity(rows.len());
+    let mut items_by_uuid: HashMap<Uuid, ForwardResolutionItem> =
+        HashMap::with_capacity(rows.len());
     for mut row in rows {
         let Some(id) = row.get("id").and_then(|v| v.as_str()).map(str::to_string) else {
             continue;
         };
+        let parsed_uuid = Uuid::parse_str(&id).ok();
         let status = row
             .get("status")
             .and_then(|v| v.as_str())
             .unwrap_or("unavailable");
-        if status == "deleted" {
-            items.insert(id, ForwardResolutionItem::Deleted);
-            continue;
-        }
-        if status == "ok" {
+        let parsed_item = if status == "deleted" {
+            Some(ForwardResolutionItem::Deleted)
+        } else if status == "ok" {
             // `CASE ... ELSE NULL` で JSON 上に null が入る任意配列フィールドを補完してからデシリアライズする。
             if let Some(obj) = row.as_object_mut() {
                 if obj.get("dm_participants").is_none_or(Value::is_null) {
@@ -293,15 +408,29 @@ async fn resolve_forwards(
                     obj.insert("has_forwards".into(), Value::Bool(false));
                 }
             }
-            if let Ok(resolved) = serde_json::from_value::<ResolvedForwardMessage>(row) {
-                items.insert(id, ForwardResolutionItem::Ok(Box::new(resolved)));
+            serde_json::from_value::<ResolvedForwardMessage>(row)
+                .ok()
+                .map(|resolved| ForwardResolutionItem::Ok(Box::new(resolved)))
+        } else {
+            None
+        };
+        if let Some(item) = parsed_item {
+            if let Some(u) = parsed_uuid {
+                items_by_uuid.entry(u).or_insert_with(|| item.clone());
             }
+            exact_items.insert(id, item);
         }
     }
-    for id in ids {
-        items
-            .entry(id)
-            .or_insert(ForwardResolutionItem::Unavailable);
+
+    let mut items: HashMap<String, ForwardResolutionItem> =
+        HashMap::with_capacity(parsed_reqs.len());
+    for (req_id, req_uuid) in parsed_reqs {
+        let item = exact_items
+            .get(&req_id)
+            .cloned()
+            .or_else(|| items_by_uuid.get(&req_uuid).cloned())
+            .unwrap_or(ForwardResolutionItem::Unavailable);
+        items.insert(req_id, item);
     }
 
     Ok(Json(ApiResponse::new(
@@ -316,14 +445,14 @@ mod tests {
 
     #[test]
     fn normalizes_and_deduplicates_forwarded_ids() {
-        let a = "550E8400-E29B-41D4-A716-446655440000".to_string();
+        let a = " 550E8400-E29B-41D4-A716-446655440000 ".to_string();
         let b = "550e8400-e29b-41d4-a716-446655440000".to_string();
         let c = "6ba7b810-9dad-11d1-80b4-00c04fd430c8".to_string();
         let out = normalize_forwarded_message_ids(&[a, b, c], 5).unwrap();
         assert_eq!(
             out,
             vec![
-                "550e8400-e29b-41d4-a716-446655440000",
+                "550E8400-E29B-41D4-A716-446655440000",
                 "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
             ]
         );

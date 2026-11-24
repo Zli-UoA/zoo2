@@ -18,10 +18,13 @@ async fn main() -> anyhow::Result<()> {
         match arg.as_str() {
             "--apply" => opts.apply = true,
             "--channel" => {
-                opts.channel = Some(
-                    args.next()
-                        .ok_or_else(|| anyhow::anyhow!("--channel requires a value"))?,
-                );
+                let ch = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--channel requires a value"))?;
+                if ch.trim().is_empty() {
+                    anyhow::bail!("--channel must not be empty");
+                }
+                opts.channel = Some(ch);
             }
             "--oldest" => {
                 let ts = args

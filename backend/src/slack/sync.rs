@@ -570,8 +570,8 @@ fn first_oldest(task: &Task) -> String {
 
 /// スレッドの親になれる投稿か。入退室・トピック変更などのシステム通知は、スレッドにできない
 /// (`conversations.replies` が `thread_not_found` になる) ので、候補から外す
-pub(super) fn threadable(message: &SlackMessage) -> bool {
-    message.is_importable()
+pub(super) fn threadable(message: &SlackMessage, team: Option<&str>) -> bool {
+    message.is_importable_for_team(team)
         && message
             .subtype
             .as_deref()
@@ -828,7 +828,7 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
                         && !(light_now && progress.known.contains(&message.ts))
                 };
                 if top_level
-                    && threadable(message)
+                    && threadable(message, Some(&task.team_id))
                     && candidate
                     && !progress.pending.contains(&message.ts)
                 {
@@ -953,8 +953,10 @@ async fn store(
 ) -> Result<(), SyncError> {
     // 投稿者の名前を調べる (トランザクションの外で行う。調べられなくても、Slack の ID の名前で作る)
     lookup_profiles(db, slack, ctx, messages).await?;
-    let mut importable: Vec<&SlackMessage> =
-        messages.iter().filter(|m| m.is_importable()).collect();
+    let mut importable: Vec<&SlackMessage> = messages
+        .iter()
+        .filter(|m| m.is_importable_for_team(Some(&task.team_id)))
+        .collect();
     importable.sort_by_key(|m| ts_key(&m.ts));
     let mut tx = db.transaction().await.map_err(AppError::from)?;
     suppress_app_events(&mut tx).await?;
@@ -1016,7 +1018,10 @@ pub(super) async fn lookup_profiles(
 ) -> Result<(), SyncError> {
     let mut wanted: Vec<String> = Vec::new();
     let mut seen = HashSet::new();
-    for message in messages.iter().filter(|m| m.is_importable()) {
+    for message in messages
+        .iter()
+        .filter(|m| m.is_importable_for_team(Some(&ctx.team)))
+    {
         let authors = message.author().map(str::to_string).into_iter();
         let mentions = super::convert::mentioned_users(&message.text).into_iter();
         for id in authors.chain(mentions) {

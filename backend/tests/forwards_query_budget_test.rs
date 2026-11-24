@@ -43,10 +43,67 @@ async fn explain_json(client: &Client, query: &str) -> anyhow::Result<Value> {
         }
     }
     let parsed: Vec<Value> = serde_json::from_str(&body)?;
-    Ok(parsed
+    parsed
         .into_iter()
         .next()
-        .ok_or_else(|| anyhow::anyhow!("empty EXPLAIN JSON result"))?)
+        .ok_or_else(|| anyhow::anyhow!("empty EXPLAIN JSON result"))
+}
+
+fn node_targets_relation(node: &Value, relation: &str) -> bool {
+    node["Relation Name"].as_str() == Some(relation)
+}
+
+fn has_id_index_cond(node: &Value) -> bool {
+    node["Index Cond"]
+        .as_str()
+        .is_some_and(|cond| cond.contains("id"))
+        || node["Plans"]
+            .as_array()
+            .is_some_and(|children| children.iter().any(has_id_index_cond))
+}
+
+fn assert_messages_indexed_by_id(node: &Value, query_name: &str) {
+    fn walk(node: &Value, found: &mut usize, errors: &mut Vec<String>) {
+        if node_targets_relation(node, "messages") {
+            *found += 1;
+            let node_type = node["Node Type"].as_str().unwrap_or("");
+            let ok = match node_type {
+                "Index Scan" | "Index Only Scan" => node["Index Cond"]
+                    .as_str()
+                    .is_some_and(|cond| cond.contains("id")),
+                "Bitmap Heap Scan" => node["Plans"].as_array().is_some_and(|children| {
+                    children.iter().any(|child| {
+                        child["Node Type"].as_str() == Some("Bitmap Index Scan")
+                            && has_id_index_cond(child)
+                    })
+                }),
+                _ => false,
+            };
+            if !ok {
+                errors.push(format!(
+                    "unindexed or full-range scan on messages: node_type={node_type} index_name={:?} index_cond={:?} filter={:?}",
+                    node["Index Name"], node["Index Cond"], node["Filter"]
+                ));
+            }
+        }
+        if let Some(plans) = node["Plans"].as_array() {
+            for child in plans {
+                walk(child, found, errors);
+            }
+        }
+    }
+
+    let mut found = 0;
+    let mut errors = Vec::new();
+    walk(node, &mut found, &mut errors);
+    assert!(
+        found > 0,
+        "{query_name}: expected at least one indexed scan on messages\nplan={node:#}"
+    );
+    assert!(
+        errors.is_empty(),
+        "{query_name}: invalid messages scan(s): {errors:?}\nplan={node:#}"
+    );
 }
 
 fn collect_seq_scans(node: &Value, hits: &mut Vec<String>) {
@@ -92,11 +149,13 @@ async fn forward_queries_use_index_scans_without_seq_scan() -> anyhow::Result<()
     let url = std::env::var("DATABASE_URL")?;
     let client = pg_connect(&url).await?;
 
-    // 独立した固定プレフィックスで複数チャンネル・DM・添付・メッセージを一括投入する
+    // 独立した固定プレフィックスで複数チャンネル・DM・添付・メッセージを一括投入し、トランザクション内で
+    // ANALYZE・EXPLAIN を実行後に必ず ROLLBACK することで、異常終了時も含め共有 DB へテスト行を残さない
     let viewer = "11111111-1111-1111-1111-000000000001";
     client
         .batch_execute(
             r#"
+BEGIN;
 DELETE FROM notification_events WHERE id LIKE '11111111-%';
 DELETE FROM attachments WHERE id LIKE '11111111-%';
 DELETE FROM channel_user WHERE channel_id LIKE '11111111-%';
@@ -104,7 +163,7 @@ DELETE FROM messages WHERE id LIKE '11111111-%';
 DELETE FROM channels WHERE id LIKE '11111111-%';
 DELETE FROM users WHERE id LIKE '11111111-%';
 
-SET session_replication_role = replica;
+SET LOCAL session_replication_role = replica;
 INSERT INTO users(id, user_name, display_name)
 SELECT '11111111-1111-1111-1111-' || lpad(i::text, 12, '0'),
        'fqb_u_' || i,
@@ -152,11 +211,11 @@ SELECT '11111111-1111-4444-1111-' || lpad(i::text, 12, '0'),
        'application/pdf',
        'fqb/' || i
 FROM generate_series(1, 2000) i;
-SET session_replication_role = DEFAULT;
+SET LOCAL session_replication_role = DEFAULT;
+ANALYZE users, channels, channel_user, messages, attachments, slack_forward_targets;
 "#,
         )
         .await?;
-    client.batch_execute("VACUUM ANALYZE").await?;
 
     // 未削除の公開(attachments 付)・非公開・DM(dm_participants 用)・削除済み・暗号化・未存在を含む 50 件の ID
     let mut mixed_ids: Vec<String> = Vec::with_capacity(50);
@@ -209,6 +268,11 @@ SET session_replication_role = DEFAULT;
         resolve_seq_scans.is_empty(),
         "RESOLVE_FORWARDS_SQL fell back to Seq Scan: {resolve_seq_scans:?}\nplan={resolve_plan:#}"
     );
+    assert_messages_indexed_by_id(&resolve_plan["Plan"], "RESOLVE_FORWARDS_SQL");
+    assert!(
+        res_hit + res_read < 5_000,
+        "RESOLVE_FORWARDS_SQL buffer budget exceeded: hit={res_hit} read={res_read}"
+    );
     assert!(
         resolve_indexes
             .iter()
@@ -248,6 +312,11 @@ SET session_replication_role = DEFAULT;
         verify_seq_scans.is_empty(),
         "VERIFY_FORWARD_SOURCES_SQL fell back to Seq Scan: {verify_seq_scans:?}\nplan={verify_plan:#}"
     );
+    assert_messages_indexed_by_id(&verify_plan["Plan"], "VERIFY_FORWARD_SOURCES_SQL");
+    assert!(
+        ver_hit + ver_read < 500,
+        "VERIFY_FORWARD_SOURCES_SQL buffer budget exceeded: hit={ver_hit} read={ver_read}"
+    );
     assert!(
         verify_indexes
             .iter()
@@ -255,21 +324,7 @@ SET session_replication_role = DEFAULT;
         "expected executed ChannelUser_pkey in verify plan: {verify_indexes:?}"
     );
 
-    // クリーンアップ（共有 DB へテスト行を残さない）
-    client
-        .batch_execute(
-            r#"
-SET session_replication_role = replica;
-DELETE FROM notification_events WHERE id LIKE '11111111-%';
-DELETE FROM attachments WHERE id LIKE '11111111-%';
-DELETE FROM channel_user WHERE channel_id LIKE '11111111-%';
-DELETE FROM messages WHERE id LIKE '11111111-%';
-DELETE FROM channels WHERE id LIKE '11111111-%';
-DELETE FROM users WHERE id LIKE '11111111-%';
-SET session_replication_role = DEFAULT;
-"#,
-        )
-        .await?;
+    client.batch_execute("ROLLBACK").await?;
 
     Ok(())
 }

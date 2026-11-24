@@ -1,4 +1,6 @@
 -- メッセージ転送（引用）機能の参照先 ID 配列。NULL 許容・FK なしで後方互換と Slack 順不同取り込みを保つ。
+-- 長時間の取り込み等の後ろで待ってメッセージ読み書きを止めないよう lock_timeout を設定する。
+SET lock_timeout = '10s';
 ALTER TABLE messages ADD COLUMN forwarded_message_ids jsonb;
 
 CREATE OR REPLACE FUNCTION messages_clear_deleted_content() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -123,3 +125,14 @@ END;
 $$;
 DROP TRIGGER IF EXISTS message_notifications_display ON messages;
 CREATE TRIGGER message_notifications_display AFTER UPDATE OF content,user_id,display_data,deleted_at,forwarded_message_ids ON messages FOR EACH ROW EXECUTE FUNCTION sync_message_notifications_display();
+
+CREATE TABLE IF NOT EXISTS slack_forward_targets (
+  message_id text NOT NULL,
+  team_id text NOT NULL,
+  slack_channel_id text NOT NULL,
+  ts text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (message_id)
+);
+
+RESET lock_timeout;

@@ -1984,6 +1984,18 @@ CREATE TABLE slack_message_map (
     ON UPDATE CASCADE ON DELETE CASCADE
 );
 
+-- Slack から取り込む投稿が未取り込みチャンネル等の投稿を転送・引用している場合、決定的メッセージ ID と
+-- 参照元 `(team_id, slack_channel_id, ts)` を予約する。POST /api/messages での同一 ID なりすまし作成と、
+-- 偽造行を誤って転送先として解決してしまう問題を防止する（Electric の Shape には含めない内部表）。
+CREATE TABLE slack_forward_targets (
+  message_id text NOT NULL,
+  team_id text NOT NULL,
+  slack_channel_id text NOT NULL,
+  ts text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (message_id)
+);
+
 -- エクスポートに実体が含まれない添付ファイル。トークンで取得して attachments に移す。
 -- 同じファイルが複数のメッセージに共有されることがあるため、メッセージごとに 1 行持つ。
 CREATE TABLE slack_files (

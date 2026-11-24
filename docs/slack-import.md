@@ -397,9 +397,9 @@ kubectl -n zoo2 exec -i deploy/zoo-slack-worker -- /home/nonroot/zoo_slack_refor
 
 ## Slack メッセージ転送（引用）の反映と過去投稿バックフィル
 
-Slack の転送・引用投稿やメッセージパーマリンク展開は `attachments` 内の `is_share: true` または `is_msg_unfurl: true` として記録される。`SlackMessage::forwarded_refs` は同一ワークスペースの参照を `channel_id` + `ts` または `/archives/<ch>/p<digits>` から抽出し（他ワークスペースは除外、最大 5 件）、コメントなし転送投稿も `is_importable()` の対象に含める。
+Slack の転送・引用投稿やメッセージパーマリンク展開は `attachments` 内の `is_share: true` または `is_msg_unfurl: true` として記録される。`SlackMessage::forwarded_refs` は同一ワークスペースの参照を `channel_id` + `ts` または `/archives/<ch>/p<digits>` から抽出し（他ワークスペースは除外、最大 5 件）、`is_importable_for_team` により同一ワークスペースの参照を含むコメントなし転送投稿を新規取り込み対象とする（他ワークスペース転送のみの投稿は空投稿として取り込まず、参照を取り出せない古い・不完全な転送添付のみ従来の添付テキスト転記へフォールバックする）。なお Slack 連携は取り込み方向のみのため、Zoo 側で行った転送は Slack へ書き戻さない（`chat.postMessage` 等は呼ばない）。
 
-- **ID 解決と権限境界**: 参照先は `slack_message_map`、無ければ決定的な `slack::message_id(team, slack_channel_id, ts)` へ解決して `messages.forwarded_message_ids` に保存する。転送元チャンネルが未取り込みの場合でも本文はスナップショットせず、閲覧時は解決 API が `unavailable` を返す（後から転送元チャンネルを取り込めばそのまま表示される）。
+- **ID 解決と権限境界**: 参照先は `slack_message_map`、無ければ決定的な `slack::message_id(team, slack_channel_id, ts)` へ解決して `messages.forwarded_message_ids` に保存する。転送元チャンネルが未取り込みの場合でも本文はスナップショットせず、決定的 ID と `(team_id, slack_channel_id, ts)` を内部表 `slack_forward_targets` に予約して事前作成によるなりすまし（`409 Conflict`）を防止しつつ、閲覧時は解決 API が `unavailable` を返す（後から転送元チャンネルで正当な `ts`・チャンネルに一致する実メッセージが取り込まれればそのまま表示される）。
 - **既存投稿・スレッド返信の補完**: ZIP の再取り込み（`worker::insert_message`）および差分同期・イベント反映（`hints::edit`）は、既に取り込み済みの Slack 由来メッセージ（`parent_id IS NOT NULL` のスレッド返信を含む）で `forwarded_message_ids IS NULL` の行について、`updated_at` と `revision` を変えずに `forwarded_message_ids` を補完する。
 - **過去投稿バックフィル CLI (`zoo_slack_backfill_forwards`)**:
 
@@ -410,4 +410,4 @@ kubectl -n zoo2 exec deploy/zoo-slack-worker -- /home/nonroot/zoo_slack_backfill
 kubectl -n zoo2 exec deploy/zoo-slack-worker -- /home/nonroot/zoo_slack_backfill_forwards --apply [--channel <id>] [--oldest <slack_ts>] [--max-pages <N>]
 ```
 
-暗号化チャンネル・削除済み・Zoo 起点（`origin = 'zoo'`）は対象外で、`updated_at`・`revision` を増やさずに欠損した `forwarded_message_ids` の補完と未取り込みだったコメントなし転送の挿入を冪等に行う。
+暗号化チャンネル・削除済み・Zoo 起点（`origin = 'zoo'`）は対象外で、`updated_at`・`revision` を増やさずに欠損した `forwarded_message_ids` の補完と未取り込みだったコメントなし転送の挿入を冪等に行う。本コマンドは通常同期ワーカーのチャンネルリース（`slack_channel_syncs.lease_token`）を取得せず稼働中のワーカーと並行実行し得るが、決定的 ID の `ON CONFLICT DO NOTHING` と `forwarded_message_ids IS NULL` 条件付きの補完のみを行うため重複・上書きは生じない（ただし Slack API のレート制限 429 は共有されるため、広範囲へ実行する場合は `--channel` や `--max-pages` での分割または閑散時の実行を推奨する）。

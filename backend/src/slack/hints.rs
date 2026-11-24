@@ -328,7 +328,7 @@ async fn apply(
         }
     }
     if let Some(message) = &message
-        && message.is_importable()
+        && message.is_importable_for_team(Some(team))
     {
         lookup_profiles(db, slack, ctx, std::slice::from_ref(message)).await?;
     }
@@ -388,7 +388,7 @@ async fn apply(
             }
             match existing {
                 None => {
-                    if has("reply") && message.is_importable() {
+                    if has("reply") && message.is_importable_for_team(Some(team)) {
                         // `users` が省略されていたら、取り直した完全なリアクションの一覧で入れる
                         let full = full_reactions.as_ref().map(|reactions| SlackMessage {
                             reactions: reactions.clone(),
@@ -408,7 +408,7 @@ async fn apply(
                 }
                 Some(row) if row["deleted"] == true => {}
                 Some(row) => {
-                    if has("changed") && !zoo_origin && message.is_importable() {
+                    if has("changed") && !zoo_origin && message.is_importable_for_team(Some(team)) {
                         edit(&mut tx, ctx, &id, message, row).await?;
                     }
                     if has("reaction") || has("changed") {
@@ -576,6 +576,11 @@ pub(super) async fn edit(
                 &[id, &forwarded_json],
             )
             .await?;
+            return Ok(());
+        }
+        // `edited` のない bot 投稿では、古い Slack 応答で転送参照が空に見えただけで
+        // 既に保存済みの転送参照を消したり revision / updated_at を進めない。
+        if edited.is_none() && forwarded_ids.is_empty() {
             return Ok(());
         }
     }
