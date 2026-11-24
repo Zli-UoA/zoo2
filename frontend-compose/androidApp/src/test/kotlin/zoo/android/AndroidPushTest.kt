@@ -57,6 +57,32 @@ class AndroidPushTest {
         assertNotNull(notifications.single().notification.contentIntent)
     }
 
+    /** 暗号化チャンネル（#510）：端末で復号した本文を出し、同期した通知が先に出ていても、そこに反映して印を残す。 */
+    @Test fun decryptedBodiesReplaceTheGenericTextAndAreKeptForResync() {
+        val binding = PushBinding(context).bind("https://zoo.example", user)
+        showPushNotification(context, data(binding), decryptedBody = "復号した本文")
+        val shown = manager.activeNotifications.single().notification
+        assertEquals("復号した本文", shown.extras.getString(Notification.EXTRA_TEXT))
+        assertEquals("復号した本文", preservedDecryptedBody(manager, notificationTag(user, id)))
+
+        // 同期した通知（印なし）が先に出ている場合も、操作を残したまま本文を置き換える。
+        manager.cancelAll()
+        fun synced() = Notification.Builder(context, "zoo.messages").setSmallIcon(works.zli.zoo.R.drawable.ic_notification)
+            .setContentText("投稿者さんからの DM").addAction(Notification.Action.Builder(null, "既読にする", null).build()).build()
+        manager.notify(notificationTag(user, id), 0, synced())
+        showPushNotification(context, data(binding), decryptedBody = "あとで復号した本文")
+        val updated = manager.activeNotifications.single().notification
+        assertEquals("あとで復号した本文", updated.extras.getString(Notification.EXTRA_TEXT))
+        assertEquals(1, updated.actions.size)
+        assertEquals("あとで復号した本文", preservedDecryptedBody(manager, notificationTag(user, id)))
+
+        // 復号できなければ、先に出ている通知はそのまま。
+        manager.cancelAll()
+        manager.notify(notificationTag(user, id), 0, synced())
+        showPushNotification(context, data(binding))
+        assertEquals("投稿者さんからの DM", manager.activeNotifications.single().notification.extras.getString(Notification.EXTRA_TEXT))
+    }
+
     @Test fun accountSwitchAndLogoutRejectDelayedDeliveries() {
         val store = PushBinding(context)
         val old = store.bind("https://zoo.example", user)

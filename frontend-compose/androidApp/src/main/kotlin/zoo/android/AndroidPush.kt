@@ -401,7 +401,18 @@ internal fun showPushNotification(context: Context, data: Map<String, String>, d
         val manager = context.getSystemService(NotificationManager::class.java)
         val existing = manager.activeNotifications.firstOrNull { it.tag == tag && it.id == 0 }
         // The synchronized session notification may already have reply actions or a richer preview.
-        if (existing != null) return@synchronized null
+        if (existing != null) {
+            // 同期した通知が先に出ていても、端末で復号できた本文はそこに反映する（操作はそのまま残す。#510）。
+            if (decryptedBody != null) try {
+                val updated = Notification.Builder.recoverBuilder(context, existing.notification)
+                    .setContentText(decryptedBody)
+                    .setStyle(Notification.BigTextStyle().bigText(decryptedBody))
+                    .addExtras(Bundle().apply { putString(PUSH_DECRYPTED_BODY, decryptedBody) })
+                    .build()
+                manager.notify(tag, 0, updated)
+            } catch (_: SecurityException) { }
+            return@synchronized null
+        }
         val channel = when (kind) { "reaction" -> "reactions"; "dm" -> "messages"; else -> "mentions" }
         if (manager.getNotificationChannel("zoo.$channel") == null) {
             manager.createNotificationChannel(NotificationChannel("zoo.$channel", "Zoo",

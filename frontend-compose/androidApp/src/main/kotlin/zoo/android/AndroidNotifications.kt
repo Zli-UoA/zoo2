@@ -102,9 +102,6 @@ internal class AndroidNotifications(
         PendingIntent.getBroadcast(activity, 0, intent(id, name), PendingIntent.FLAG_UPDATE_CURRENT or
             if (mutable) PendingIntent.FLAG_MUTABLE else PendingIntent.FLAG_IMMUTABLE)
 
-    private fun isEncryptedNotification(row: Row): Boolean =
-        app.repo.channels.rows.value.find { it.text("id") == row.text("channel_id") }?.flag("encrypted") == true
-
     private fun canReply(row: Row): Boolean {
         val channel = app.repo.channels.rows.value.find { it.text("id") == row.text("channel_id") }
         return channel != null && !channel.flag("encrypted") && !channel.present("archive_at") &&
@@ -136,8 +133,10 @@ internal class AndroidNotifications(
         val channel = data.nested("channel").text("channel_name")
         val kind = row.text("notification_type")
         val channelId = notificationChannel(row)
-        // 暗号化チャンネルは、Push で端末が復号した本文が出ていれば、それを残す（サーバーは本文を持たない。#510）。
-        val decrypted = if (isEncryptedNotification(row)) preservedDecryptedBody(manager, notificationTag(app.config.userId, id)) else null
+        // Push で端末が復号した本文が同じ通知に出ていれば、それを残す（サーバーは暗号化チャンネルの本文を持たない。#510）。
+        // 印は端末が復号したときだけ付けるので、チャンネルの行がまだ同期されていなくても使う。
+        val tag = notificationTag(app.config.userId, id)
+        val decrypted = preservedDecryptedBody(manager, tag)
         val body = decrypted ?: notificationBody(row) { key, name -> app.t(key, "actor" to name) }
         val avatar = avatars[notificationAvatar(row)]
         val image = previewImage(row)
@@ -176,8 +175,19 @@ internal class AndroidNotifications(
             builder.addAction(Notification.Action.Builder(null, app.t("home.reply"), action(id, "reply", true))
                 .addRemoteInput(input).setAllowGeneratedReplies(true).build())
         }
-        try { manager.notify(notificationTag(app.repo.config.userId, id), 0, builder.build()) }
-        catch (_: SecurityException) { /* Permission may be revoked while building the notification. */ }
+        // Push と同じロックで、出す直前にもう一度確かめる（読んでから出すまでのあいだに Push が復号した本文を出したら、
+        // それで上書きしない）。
+        synchronized(PushBinding.lock) {
+            val latest = preservedDecryptedBody(manager, tag)
+            if (latest != null && latest != decrypted && error == null) {
+                builder.setContentText(latest)
+                    .setStyle(if (picture != null) Notification.BigPictureStyle().bigPicture(picture).setSummaryText(latest)
+                        else notificationStyle(row, latest, self, avatar))
+                    .setExtras(android.os.Bundle().apply { putString(PUSH_DECRYPTED_BODY, latest) })
+            }
+            try { manager.notify(tag, 0, builder.build()) }
+            catch (_: SecurityException) { /* Permission may be revoked while building the notification. */ }
+        }
         if (refreshSummary) updateSummaries()
         loadAvatar(row)
         if (error == null && image != null) loadPicture(image.text("id"))
