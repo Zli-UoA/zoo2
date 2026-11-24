@@ -129,10 +129,14 @@ export function useLinkedMessageRows(channelId: string | null, messageId: string
  * この端末が読み込んでいる、そのチャンネルの行に、暗号文のある行があるか。暗号化の格下げの検出
  * （`encryptionSendState` の `hasCiphertext`、`MessagePane` は表示中の行で判定する）に使う。
  *
- * 要求は出さない。メッセージリンクの埋め込みは対象の 1 件しか取らないので、同じチャンネルの別の行は、
+ * 行を取る要求は出さない。メッセージリンクの埋め込みは対象の 1 件しか取らないので、同じチャンネルの別の行は、
  * チャンネルを開いて読み込んだ分だけが見える。変更の購読は、行を取らずに変更だけを受ける
  * （`useOptimisticDisplay` と同じ。on-demand のコレクションで、全行を取る要求にしないため）。
- * `channelId` が `null` のときは、見ない。
+ *
+ * **注意**: `subscribeChanges` は、`includeInitialState: false` でも、そのコレクションの同期を始める
+ * （初期状態の通知を止めるだけ）。そのチャンネルの `messages` を、ほかの理由で同期するときだけ使う
+ * （メッセージを取得する {@link useLinkedMessageRows} と同じチャンネルなど）。これだけのために
+ * 同期を増やさない。`channelId` が `null` のときは、見ない。
  */
 export function useChannelHasCiphertext(channelId: string | null): boolean {
   const { messages } = useCollections();

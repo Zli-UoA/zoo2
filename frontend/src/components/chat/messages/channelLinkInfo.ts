@@ -159,8 +159,12 @@ export function useChannelLinkInfo(
   // `ciphertext` のある行は、`toLinkedMessage` が行ごとに判定する。
   useSyncExternalStore(subscribeEncryptedChannels, encryptedChannelsVersion, () => 0);
   // 同じチャンネルの別の行に暗号文があれば、その行が対象でなくても、暗号化チャンネルとして扱う
-  // （`MessagePane` が、表示中の行で判定するのと同じ。読み込み済みの行だけを見て、要求は出さない）。
-  const channelHasCiphertext = useChannelHasCiphertext(started && channel ? channel.id : null);
+  // （`MessagePane` が、表示中の行で判定するのと同じ。読み込み済みの行だけを見て、行を取る要求は出さない）。
+  // この購読は、そのチャンネルの `messages` の同期を始める。メッセージを取得する問い合わせ（下）が同じ
+  // コレクションを始めるときだけ使い、チャンネルだけを指すリンクでは、同期を増やさないため見ない。
+  const channelHasCiphertext = useChannelHasCiphertext(
+    started && channel && messageId ? channel.id : null,
+  );
   const downgraded = channel
     ? encryptionSendState({
         channelId: channel.id,

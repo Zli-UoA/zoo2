@@ -249,6 +249,16 @@ it("見られないチャンネルのリンクは、メッセージの要求を�
   expect(recorded.messages).toHaveLength(0);
 });
 
+it("チャンネルのリンク（メッセージを指さない）は、そのチャンネルの messages を同期しない", async () => {
+  // チャンネルの名前と説明は一覧にある。メッセージを取る必要はなく、変更の購読も開かない。
+  const recorded = stubFetch();
+  renderBodies([`${origin}/channels/${channelId}`], [channel(channelId)]);
+  // 本文中の短い表示と、カード（名前と説明）の 2 つが出る。
+  expect(await screen.findAllByRole("link", { name: /#general/ })).toHaveLength(2);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  expect(recorded.messages).toHaveLength(0);
+});
+
 it("リアクションや添付の Shape は、リンク先のチャンネルについて購読しない", async () => {
   stubFetch();
   const fetchMock = vi.mocked(fetch);

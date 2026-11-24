@@ -436,9 +436,13 @@ describe("暗号化の格下げ対策", () => {
     hiddenText("暗号文の隣の平文");
   });
 
-  it("チャンネルのリンクも、暗号文のある行を含むチャンネルを暗号化チャンネルと示す", async () => {
-    setup({ content: link("c-downgraded") });
-    expect(await screen.findByText("暗号化チャンネル")).toBeInTheDocument();
+  it("チャンネルだけを指すリンクは、暗号文の有無を見ない（そのチャンネルの messages を同期しないため）", async () => {
+    // 名前と説明だけを出すカードなので、本文の漏れはない。記録・`edm:` による判定は、メッセージのリンクと同じ。
+    const { messagesFor } = setup({ content: link("c-downgraded") });
+    expect(await screen.findAllByRole("link", { name: /#downgraded/ })).toHaveLength(2);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(screen.queryByText("暗号化チャンネル")).toBeNull();
+    expect(messagesFor).not.toHaveBeenCalled();
   });
 
   it("暗号文のないチャンネルの行は、本文を出す", async () => {
