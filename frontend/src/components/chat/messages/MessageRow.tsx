@@ -15,7 +15,7 @@ import { cn } from "cn";
 import {
   BotIcon,
   CopyIcon,
-  FilesIcon,
+  LinkIcon,
   LockKeyholeIcon,
   LockKeyholeOpenIcon,
   MessageSquarePlusIcon,
@@ -815,7 +815,7 @@ export function MessageRow({
                 )}
                 {canCopyLink ? (
                   <DropdownMenuItem className={touchHitArea} onClick={() => void copyMessageLink()}>
-                    <FilesIcon />
+                    <LinkIcon />
                     {t("messages.copyLink")}
                   </DropdownMenuItem>
                 ) : null}
@@ -997,7 +997,7 @@ export function MessageRow({
                   void copyMessageLink();
                 }}
               >
-                <FilesIcon className="size-4 shrink-0" aria-hidden="true" />
+                <LinkIcon className="size-4 shrink-0" aria-hidden="true" />
                 {t("messages.copyLink")}
               </button>
             ) : null}
