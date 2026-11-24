@@ -322,13 +322,7 @@ async fn join(
             ),
         )
         .await?;
-        let cleared = timed_sql(
-            t,
-            "clear_stale_bridge",
-            clear_bridge_tracks_without_cloudflare(&mut tx, &channel_id, body.session_id),
-        )
-        .await?;
-        if changed || cleared {
+        if changed {
             timed_sql(t, "bump_tracks2", bump_tracks(&mut tx, &channel_id)).await?;
         }
         // ロックを外していたあいだに LiveKit に入った人も数えるため、取り直したロックの下で数え直す。
@@ -1455,32 +1449,6 @@ async fn bridge_cf_session(
     remove_stale_bridge_tracks(&state, &body.channel_id, body.bridge_epoch).await?;
     let session_id = sfu.cloudflare.new_session().await?;
     Ok(Json(json!({ "cf_session_id": session_id })))
-}
-
-/// 部屋で最初の Cloudflare の人として入るとき、その部屋の bridge の行を一覧から外す。Cloudflare の人が
-/// いない部屋では bridge は中継を止めているので、残っている行は止まった中継のもの（外す close を送れないまま
-/// 止まった、など）。入ってくる人の join の応答と、そのあとの一覧に、古い行を配らない。新しい中継は、話者を
-/// push し直して登録する。チャンネル行のロックの下で呼ぶ。
-/// 探索：その部屋の在室（idx_call_presence_channel、部屋の人数以下）と、主キーの先頭でその部屋の bridge の行。
-async fn clear_bridge_tracks_without_cloudflare(
-    tx: &mut toasty::Transaction<'_>,
-    channel_id: &str,
-    me: Uuid,
-) -> Result<bool, AppError> {
-    let rows = toasty::sql::query(
-        "DELETE FROM call_sfu_tracks
-         WHERE channel_id = $1 AND source = 'bridge'
-           AND NOT EXISTS (
-             SELECT 1 FROM call_presence
-             WHERE channel_id = $1 AND session_id <> $2::uuid AND sfu_id = 'cloudflare'
-               AND expires_at > statement_timestamp())
-         RETURNING 1",
-    )
-    .bind(channel_id.to_string())
-    .bind(me.to_string())
-    .exec(&mut *tx)
-    .await?;
-    Ok(!rows.is_empty())
 }
 
 /// 部屋の中継を始め直すとき（bridge が新しい Cloudflare セッションを作るとき）、その部屋の bridge の行を

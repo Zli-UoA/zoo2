@@ -1282,25 +1282,42 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(count(&mut db, bridge_rows_sql, &channel).await?, 1);
-    // 同じセッションでも、前の push の ID の close（話者を push し直したあとに、遅れて届いたもの）では外さない。
+    // 前の push（pub-1）の close を出したまま、同じセッションで同じ話者を push し直す（pub-1b）。そのあとで前の
+    // close が backend に届いても、新しい行は外れない（push の ID が違う）。
+    let (status, _) = bridge(
+        "POST",
+        "/internal/sfu-bridge/cf/publish",
+        Some(json!({
+            "channel_id": channel, "bridge_epoch": bridge_epoch, "cf_session_id": "cf-bridge",
+            "speaker_session_id": sessions[0], "offer": two, "mid": "1", "publish_id": "pub-1b"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let publish_id_sql = format!(
+        "SELECT bridge_publish_id FROM call_sfu_tracks WHERE channel_id = $1 AND source = 'bridge' AND session_id = '{}'",
+        sessions[0]
+    );
+    assert_eq!(text(&mut db, &publish_id_sql, &channel).await?, "pub-1b");
     let (status, _) = bridge(
         "POST",
         "/internal/sfu-bridge/cf/close",
         Some(json!({
             "channel_id": channel, "cf_session_id": "cf-bridge",
-            "mids": ["0"], "pushes": [{"speaker": sessions[0], "publish_id": "pub-older"}]
+            "mids": ["0"], "pushes": [{"speaker": sessions[0], "publish_id": "pub-1"}]
         })),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(count(&mut db, bridge_rows_sql, &channel).await?, 1);
+    assert_eq!(text(&mut db, &publish_id_sql, &channel).await?, "pub-1b");
     // close が失敗しても（mid "9" は Cloudflare が失敗を返す）、一覧からは先に外れている。
     let (status, _) = bridge(
         "POST",
         "/internal/sfu-bridge/cf/close",
         Some(json!({
             "channel_id": channel, "cf_session_id": "cf-bridge",
-            "mids": ["9"], "pushes": [{"speaker": sessions[0], "publish_id": "pub-1"}]
+            "mids": ["9"], "pushes": [{"speaker": sessions[0], "publish_id": "pub-1b"}]
         })),
     )
     .await;
@@ -1857,17 +1874,6 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         streams2.push(stream.expect("stream"));
     }
     let join2_uri = format!("/api/channels/{channel2}/call/sfu/join");
-    // 止まった中継が外せずに残した bridge の行（Cloudflare の人がいない部屋）。最初の Cloudflare の人が入ると外れ、
-    // その人の join の応答と一覧には配られない。
-    toasty::sql::statement(
-        "INSERT INTO call_sfu_tracks
-           (channel_id, session_id, source, cf_session_id, track_name, bridge_epoch, bridge_publish_id)
-         VALUES ($1, $2::uuid, 'bridge', 'cf-stale-bridge', $2 || '-bridge', 1, 'stale')",
-    )
-    .bind(channel2.as_str())
-    .bind(sessions2[0].to_string())
-    .exec(&mut db)
-    .await?;
     // Cloudflare の人の join（sessions/new が遅い）。
     let cf_join = {
         let app = app2.clone();
@@ -1908,21 +1914,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     let (status, joined) = cf_join.await??;
     assert_eq!(status, StatusCode::OK, "{joined}");
     assert_eq!(joined["sfu"], "cloudflare");
-    assert!(
-        joined["tracks"]
-            .as_array()
-            .is_none_or(|t| t.iter().all(|t| t["source"] != "bridge")),
-        "the stale bridge track was handed to the first Cloudflare participant: {joined}"
-    );
-    assert_eq!(
-        count(
-            &mut db,
-            "SELECT count(*) FROM call_sfu_tracks WHERE channel_id = $1 AND source = 'bridge'",
-            &channel2
-        )
-        .await?,
-        0
-    );
+
     // LiveKit の人の SSE に sfu_reassign が届く。
     let lk_stream = &mut streams2[0];
     let mut buf = String::new();
