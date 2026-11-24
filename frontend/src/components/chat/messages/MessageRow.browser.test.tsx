@@ -167,7 +167,7 @@ describe("MessageRow", () => {
     tapTouch(screen.getByText("hello"));
     const sheet = await screen.findByRole("dialog", { name: "メッセージを操作" });
 
-    for (const name of ["リアクションを追加", "スレッドを開く", "編集", "削除"]) {
+    for (const name of ["リアクションを追加", "スレッドを開く", "メッセージを編集", "削除"]) {
       const item = within(sheet).getByRole("button", { name });
       // シートは出現アニメーションで一時的に scale されるため、落ち着くまで待つ。
       await waitFor(() => {
@@ -641,7 +641,7 @@ describe("MessageRow", () => {
   it("groups the overflow menu and quick actions within one toolbar", () => {
     renderRow(buildItem(), true);
     const toolbar = document.querySelector("[data-message-toolbar]")!;
-    expect(toolbar.contains(screen.getByLabelText("編集"))).toBe(true);
+    expect(toolbar.contains(screen.getByLabelText("メッセージを編集"))).toBe(true);
     expect(toolbar.contains(screen.getByLabelText("その他の操作"))).toBe(true);
     expect(getComputedStyle(toolbar).pointerEvents).toBe("none");
     screen.getByLabelText("その他の操作").focus();

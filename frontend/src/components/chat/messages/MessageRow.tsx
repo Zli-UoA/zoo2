@@ -766,8 +766,8 @@ export function MessageRow({
                     variant="ghost"
                     size="icon-xs"
                     className={touchHitArea}
-                    aria-label={t("messages.edit")}
-                    title={t("messages.edit")}
+                    aria-label={t("messages.editMessage")}
+                    title={t("messages.editMessage")}
                     onClick={onStartEdit}
                   >
                     <PencilIcon />
@@ -1025,7 +1025,7 @@ export function MessageRow({
                 }}
               >
                 <PencilIcon className="size-4 shrink-0" aria-hidden="true" />
-                {t("messages.edit")}
+                {t("messages.editMessage")}
               </button>
             ) : null}
             {canDelete ? (

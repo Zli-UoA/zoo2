@@ -104,7 +104,7 @@ export const HoverActions: Story = {
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.hover(await canvas.findByText(/こんにちは/));
-    await expect(canvas.getByRole("button", { name: "編集" })).toBeInTheDocument();
+    await expect(canvas.getByRole("button", { name: "メッセージを編集" })).toBeInTheDocument();
   }),
 };
 
@@ -603,7 +603,9 @@ export const EncryptedBeforeEncryptionRow: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByText(/今日のリリースは 18:00 です/)).toBeVisible();
     await expect(canvas.queryByText("暗号化されていません")).not.toBeInTheDocument();
-    await expect(canvas.queryByRole("button", { name: "編集" })).not.toBeInTheDocument();
+    await expect(
+      canvas.queryByRole("button", { name: "メッセージを編集" }),
+    ).not.toBeInTheDocument();
   }),
 };
 
@@ -618,7 +620,9 @@ export const EncryptedUnencryptedAfterEncryptedRow: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByText("暗号化されていません")).toBeVisible();
     await expect(canvas.getByText(/今日のリリースは 18:00 です/)).toBeVisible();
-    await expect(canvas.queryByRole("button", { name: "編集" })).not.toBeInTheDocument();
+    await expect(
+      canvas.queryByRole("button", { name: "メッセージを編集" }),
+    ).not.toBeInTheDocument();
   }),
 };
 

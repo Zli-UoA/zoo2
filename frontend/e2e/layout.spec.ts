@@ -28,10 +28,10 @@ test("editing, saving and cancelling preserve measured row positions", async ({
       await row.locator(".mfm-body").tap();
       const sheet = page.getByRole("dialog", { name: "Message actions" });
       await expect(sheet).toBeVisible();
-      await sheet.getByRole("button", { name: "Edit", exact: true }).click();
+      await sheet.getByRole("button", { name: "Edit message", exact: true }).click();
     } else {
       await row.hover();
-      await row.getByRole("button", { name: "Edit", exact: true }).click();
+      await row.getByRole("button", { name: "Edit message", exact: true }).click();
     }
   };
   await edit();
@@ -246,7 +246,7 @@ test("hover preserves a short grouped row and centers its timestamp", async ({
   expect(Math.abs(time!.y + time!.height / 2 - body!.y - body!.height / 2)).toBeLessThan(1);
   const toolbar = row.locator("[data-message-toolbar]");
   await expect(toolbar.getByRole("button", { name: "More actions" })).toBeVisible();
-  await expect(toolbar.getByRole("button", { name: "Edit", exact: true })).toBeVisible();
+  await expect(toolbar.getByRole("button", { name: "Edit message", exact: true })).toBeVisible();
 });
 
 test("copies the original text from the upper-right message menu", async ({ page, context }) => {
