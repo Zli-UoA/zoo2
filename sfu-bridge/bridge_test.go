@@ -183,13 +183,18 @@ func (f *fakeBackend) handler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var body struct {
-			ChannelID string   `json:"channel_id"`
-			Mids      []string `json:"mids"`
-			Speakers  []string `json:"speakers"`
+			ChannelID string       `json:"channel_id"`
+			Mids      []string     `json:"mids"`
+			Pushes    []closedPush `json:"pushes"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.closed = append(f.closed, body.Mids)
-		f.closeSpk = append(f.closeSpk, body.Speakers)
+		// push は「話者:push の ID」で記録する。
+		var pushes []string
+		for _, p := range body.Pushes {
+			pushes = append(pushes, p.Speaker+":"+p.PublishID)
+		}
+		f.closeSpk = append(f.closeSpk, pushes)
 		f.closeChans = append(f.closeChans, body.ChannelID)
 	default:
 		w.WriteHeader(http.StatusInternalServerError)
@@ -481,7 +486,7 @@ func TestUnpushClosesUnderNegotiateWithChannel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b.pushed["a"] = &pushedTrack{mid: "4", transceiver: tr}
+	b.pushed["a"] = &pushedTrack{mid: "4", transceiver: tr, publishID: "p1"}
 	// 交渉中は、閉じるのを待つ。
 	b.negotiate.Lock()
 	done := make(chan struct{})
@@ -502,8 +507,8 @@ func TestUnpushClosesUnderNegotiateWithChannel(t *testing.T) {
 		t.Fatalf("unpush must close the mid with the channel: %v %v", f.closed, f.closeChans)
 	}
 	// backend が close の前に一覧から外せるよう、push をやめた話者を渡す。
-	if len(f.closeSpk[0]) != 1 || f.closeSpk[0][0] != "a" {
-		t.Fatalf("unpush must pass the speaker: %v", f.closeSpk)
+	if len(f.closeSpk[0]) != 1 || f.closeSpk[0][0] != "a:p1" {
+		t.Fatalf("unpush must pass the speaker and the push ID: %v", f.closeSpk)
 	}
 	if _, ok := b.pushed["a"]; ok {
 		t.Fatal("unpush must forget the push")
@@ -517,7 +522,7 @@ func TestFailedCloseIsRetried(t *testing.T) {
 	f := &fakeBackend{closeFails: 1}
 	b := readyBridge(t, f)
 	b.negotiate.Lock()
-	b.closeMidsLocked([]string{"4"}, []string{"a"})
+	b.closeMidsLocked([]string{"4"}, []closedPush{{Speaker: "a", PublishID: "p1"}})
 	b.negotiate.Unlock()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
@@ -531,29 +536,30 @@ func TestFailedCloseIsRetried(t *testing.T) {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if len(f.closed) != 1 || f.closed[0][0] != "4" || len(f.closeSpk[0]) != 1 || f.closeSpk[0][0] != "a" {
+	if len(f.closed) != 1 || f.closed[0][0] != "4" || len(f.closeSpk[0]) != 1 || f.closeSpk[0][0] != "a:p1" {
 		t.Fatalf("the failed close must be retried with its speaker: %v %v", f.closed, f.closeSpk)
 	}
 }
 
-func TestRetriedCloseKeepsRepushedSpeaker(t *testing.T) {
+func TestRetriedCloseNamesOnlyTheOldPush(t *testing.T) {
 	old := closeRetryInterval
 	closeRetryInterval = time.Hour
 	t.Cleanup(func() { closeRetryInterval = old })
 	f := &fakeBackend{closeFails: 1}
 	b := readyBridge(t, f)
 	b.negotiate.Lock()
-	b.closeMidsLocked([]string{"4"}, []string{"a"})
+	b.closeMidsLocked([]string{"4"}, []closedPush{{Speaker: "a", PublishID: "p1"}})
 	// やり直す前に、同じ話者を push し直した。
 	b.mu.Lock()
-	b.pushed["a"] = &pushedTrack{mid: "6"}
+	b.pushed["a"] = &pushedTrack{mid: "6", publishID: "p2"}
 	b.mu.Unlock()
 	b.retryPendingClosesLocked()
 	b.negotiate.Unlock()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if len(f.closed) != 1 || f.closed[0][0] != "4" || len(f.closeSpk[0]) != 0 {
-		t.Fatalf("the retry must close the mid but keep the re-pushed speaker's row: %v %v", f.closed, f.closeSpk)
+	// 送り直すのは前の push の ID だけ。backend は ID の違う新しい行を外さない。
+	if len(f.closed) != 1 || f.closed[0][0] != "4" || len(f.closeSpk[0]) != 1 || f.closeSpk[0][0] != "a:p1" {
+		t.Fatalf("the retry must name only the old push: %v %v", f.closed, f.closeSpk)
 	}
 }
 
@@ -586,7 +592,7 @@ func TestCloseKeepsRetryingUntilBackendRecovers(t *testing.T) {
 	f := &fakeBackend{closeFails: 21}
 	b := readyBridge(t, f)
 	b.negotiate.Lock()
-	b.closeMidsLocked([]string{"4"}, []string{"a"})
+	b.closeMidsLocked([]string{"4"}, []closedPush{{Speaker: "a", PublishID: "p1"}})
 	for i := 0; i < 20; i++ {
 		if b.closeRetry == nil || len(b.pendingCloses) != 1 {
 			t.Fatalf("retry %d: the failed close must stay pending and scheduled", i)
@@ -601,7 +607,7 @@ func TestCloseKeepsRetryingUntilBackendRecovers(t *testing.T) {
 	b.negotiate.Unlock()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if len(f.closed) != 1 || f.closed[0][0] != "4" || len(f.closeSpk[0]) != 1 || f.closeSpk[0][0] != "a" {
+	if len(f.closed) != 1 || f.closed[0][0] != "4" || len(f.closeSpk[0]) != 1 || f.closeSpk[0][0] != "a:p1" {
 		t.Fatalf("the close must be delivered after the backend recovers: %v %v", f.closed, f.closeSpk)
 	}
 	if len(b.pendingCloses) != 0 || b.closeAttempts != 0 {

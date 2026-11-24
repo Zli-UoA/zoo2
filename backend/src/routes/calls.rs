@@ -120,7 +120,8 @@ pub struct SfuTrackInfo {
     pub id: String,
     pub session_id: Uuid,
     pub source: String,
-    /// 公開の世代。Cloudflare のセッションと track 名から作る（`left(md5(cf_session_id || '/' || track_name), 12)`）。
+    /// 公開の世代。Cloudflare のセッションと track 名と、bridge の push の ID から作る
+    /// （`left(md5(cf_session_id || '/' || track_name || '/' || COALESCE(bridge_publish_id, '')), 12)`）。
     /// 同じ `id` のまま別のセッションで公開し直すと変わるので、pull する側は、変わったら pull し直す。
     pub rev: String,
 }
@@ -2096,7 +2097,7 @@ pub async fn load_sfu_tracks(
                      'id', t.session_id::text || ':' || t.source,
                      'session_id', t.session_id,
                      'source', t.source,
-                     'rev', left(md5(t.cf_session_id || '/' || t.track_name), 12))
+                     'rev', left(md5(t.cf_session_id || '/' || t.track_name || '/' || COALESCE(t.bridge_publish_id, '')), 12))
                      ORDER BY t.session_id, t.source)
                  FROM call_sfu_tracks t
                  -- 期限の切れた（まだ消されていない）話者のトラックは、新しい通話の一覧に入れない。

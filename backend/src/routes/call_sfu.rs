@@ -322,7 +322,13 @@ async fn join(
             ),
         )
         .await?;
-        if changed {
+        let cleared = timed_sql(
+            t,
+            "clear_stale_bridge",
+            clear_bridge_tracks_without_cloudflare(&mut tx, &channel_id, body.session_id),
+        )
+        .await?;
+        if changed || cleared {
             timed_sql(t, "bump_tracks2", bump_tracks(&mut tx, &channel_id)).await?;
         }
         // ロックを外していたあいだに LiveKit に入った人も数えるため、取り直したロックの下で数え直す。
@@ -1000,7 +1006,12 @@ enum TrackSource {
     /// 話者のクライアントが push したもの。話者の割り当てが、push に使った Cloudflare セッションのままのこと。
     Direct,
     /// LiveKit の話者を bridge が push したもの。話者がまだ LiveKit にいること。
-    Bridge { bridge_epoch: i64 },
+    /// `publish_id` は bridge が push ごとに付ける ID。close はこの ID の行だけを外す（同じ話者を push し直した
+    /// 新しい行を、遅れて届いた前の close が外さないように）。
+    Bridge {
+        bridge_epoch: i64,
+        publish_id: String,
+    },
 }
 
 /// push したトラックを一覧に載せる。
@@ -1038,7 +1049,7 @@ async fn register_track(
     let Some(current) = rows_json::<Assignment>(rows).into_iter().next() else {
         return Err(AppError::NotFound("Call session not found".into()));
     };
-    let (source_name, bridge_epoch) = match source {
+    let (source_name, bridge_epoch, publish_id) = match source {
         TrackSource::Direct => {
             if current.sfu_id.as_deref() != Some(SFU_CLOUDFLARE)
                 || current.cf_session_id.as_deref() != Some(cf_session)
@@ -1047,9 +1058,12 @@ async fn register_track(
                     "The SFU assignment changed while publishing".into(),
                 ));
             }
-            ("direct", None)
+            ("direct", None, None)
         }
-        TrackSource::Bridge { bridge_epoch } => {
+        TrackSource::Bridge {
+            bridge_epoch,
+            publish_id,
+        } => {
             if current.sfu_id.as_deref() != Some(SFU_LIVEKIT) {
                 return Err(AppError::Conflict("Speaker is not on LiveKit".into()));
             }
@@ -1067,15 +1081,16 @@ async fn register_track(
             }
             // テスト：epoch を確かめたあと、FOR SHARE を持ったまま、書く前で止める。
             PauseGate::pause(pause).await;
-            ("bridge", Some(bridge_epoch))
+            ("bridge", Some(bridge_epoch), Some(publish_id))
         }
     };
     toasty::sql::statement(
-        "INSERT INTO call_sfu_tracks (channel_id, session_id, source, cf_session_id, track_name, bridge_epoch)
-         VALUES ($1, $2::uuid, $3, $4, $5, NULLIF($6, '')::bigint)
+        "INSERT INTO call_sfu_tracks
+           (channel_id, session_id, source, cf_session_id, track_name, bridge_epoch, bridge_publish_id)
+         VALUES ($1, $2::uuid, $3, $4, $5, NULLIF($6, '')::bigint, NULLIF($7, ''))
          ON CONFLICT (channel_id, session_id, source) DO UPDATE
            SET cf_session_id = EXCLUDED.cf_session_id, track_name = EXCLUDED.track_name,
-               bridge_epoch = EXCLUDED.bridge_epoch",
+               bridge_epoch = EXCLUDED.bridge_epoch, bridge_publish_id = EXCLUDED.bridge_publish_id",
     )
     .bind(channel_id.to_string())
     .bind(speaker.to_string())
@@ -1083,6 +1098,7 @@ async fn register_track(
     .bind(cf_session.to_string())
     .bind(track_name.to_string())
     .bind(bridge_epoch.map(|e| e.to_string()).unwrap_or_default())
+    .bind(publish_id.unwrap_or_default())
     .exec(&mut tx)
     .await?;
     bump_tracks(&mut tx, channel_id).await?;
@@ -1394,7 +1410,7 @@ async fn load_bridge_rooms(state: &AppState) -> Result<Vec<BridgeRoomState>, App
                  SELECT json_agg(json_build_object(
                      'id', t.session_id::text || ':' || t.source,
                      'session_id', t.session_id, 'source', t.source,
-                     'rev', left(md5(t.cf_session_id || '/' || t.track_name), 12))
+                     'rev', left(md5(t.cf_session_id || '/' || t.track_name || '/' || COALESCE(t.bridge_publish_id, '')), 12))
                      ORDER BY t.session_id)
                  FROM call_sfu_tracks t
                  CROSS JOIN LATERAL (
@@ -1437,6 +1453,32 @@ async fn bridge_cf_session(
     Ok(Json(json!({ "cf_session_id": session_id })))
 }
 
+/// 部屋で最初の Cloudflare の人として入るとき、その部屋の bridge の行を一覧から外す。Cloudflare の人が
+/// いない部屋では bridge は中継を止めているので、残っている行は止まった中継のもの（外す close を送れないまま
+/// 止まった、など）。入ってくる人の join の応答と、そのあとの一覧に、古い行を配らない。新しい中継は、話者を
+/// push し直して登録する。チャンネル行のロックの下で呼ぶ。
+/// 探索：その部屋の在室（idx_call_presence_channel、部屋の人数以下）と、主キーの先頭でその部屋の bridge の行。
+async fn clear_bridge_tracks_without_cloudflare(
+    tx: &mut toasty::Transaction<'_>,
+    channel_id: &str,
+    me: Uuid,
+) -> Result<bool, AppError> {
+    let rows = toasty::sql::query(
+        "DELETE FROM call_sfu_tracks
+         WHERE channel_id = $1 AND source = 'bridge'
+           AND NOT EXISTS (
+             SELECT 1 FROM call_presence
+             WHERE channel_id = $1 AND session_id <> $2::uuid AND sfu_id = 'cloudflare'
+               AND expires_at > statement_timestamp())
+         RETURNING 1",
+    )
+    .bind(channel_id.to_string())
+    .bind(me.to_string())
+    .exec(&mut *tx)
+    .await?;
+    Ok(!rows.is_empty())
+}
+
 /// 部屋の中継を始め直すとき（bridge が新しい Cloudflare セッションを作るとき）、その部屋の bridge の行を
 /// 一覧から外す。行は前の中継のセッションのもので、新しい中継は LiveKit の話者を push し直して登録する。
 /// 前の中継が、一覧から外す close を送り直せないまま止まった（Cloudflare の人がいなくなった、など）ときの
@@ -1466,6 +1508,8 @@ struct BridgePublishBody {
     speaker_session_id: Uuid,
     offer: SessionDescription,
     mid: String,
+    /// bridge が push ごとに付ける ID（close で、この push の行だけを外すため）。
+    publish_id: String,
 }
 
 /// LiveKit の話者の声を、bridge の Cloudflare セッションから push する。
@@ -1476,6 +1520,9 @@ async fn bridge_cf_publish(
 ) -> Result<Json<TracksResponse>, AppError> {
     let sfu = bridge_auth(&state, &headers)?;
     crate::call_sfu::cloudflare::validate_audio_offer_mid(&body.offer, &body.mid)?;
+    if body.publish_id.is_empty() || body.publish_id.len() > 64 {
+        return Err(AppError::BadRequest("Invalid publish_id".into()));
+    }
     // 話者が本当にその部屋の LiveKit にいるか。
     let mut db = state.db.clone();
     let rows = toasty::sql::query(
@@ -1502,6 +1549,7 @@ async fn bridge_cf_publish(
         body.speaker_session_id,
         TrackSource::Bridge {
             bridge_epoch: body.bridge_epoch,
+            publish_id: body.publish_id.clone(),
         },
         &body.cf_session_id,
         &track_name,
@@ -1571,9 +1619,15 @@ struct BridgeCloseBody {
     channel_id: Option<String>,
     cf_session_id: String,
     mids: Vec<String>,
-    /// `mids` のうち bridge の push を閉じる話者の session_id（pull だけなら空）。
+    /// `mids` のうち bridge の push を閉じるもの（話者の session_id と push の ID。pull だけなら空）。
     #[serde(default)]
-    speakers: Vec<String>,
+    pushes: Vec<ClosedPush>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClosedPush {
+    speaker: Uuid,
+    publish_id: String,
 }
 
 async fn bridge_cf_close(
@@ -1585,15 +1639,14 @@ async fn bridge_cf_close(
     if body.mids.len() > MAX_PULL_TRACKS {
         return Err(AppError::BadRequest("Too many mids".into()));
     }
-    if body.speakers.len() > MAX_PULL_TRACKS {
-        return Err(AppError::BadRequest("Too many speakers".into()));
+    if body.pushes.len() > MAX_PULL_TRACKS {
+        return Err(AppError::BadRequest("Too many pushes".into()));
     }
     // 閉じる前に、push をやめる話者のトラックを一覧から外す。先に外すので、close が失敗しても一覧に
     // 古い行は残らない（mid はセッションを閉じれば消える）。一覧から外せなければ close もせずにエラーを返し、
     // bridge の push は残る（一覧と食い違わない）。話者は bridge が渡すので、Cloudflare に問い合わせない。
     if let Some(channel_id) = &body.channel_id {
-        remove_closed_bridge_tracks(&state, channel_id, &body.cf_session_id, &body.speakers)
-            .await?;
+        remove_closed_bridge_tracks(&state, channel_id, &body.cf_session_id, &body.pushes).await?;
     }
     sfu.cloudflare
         .close_tracks(&body.cf_session_id, &body.mids)
@@ -1604,35 +1657,41 @@ async fn bridge_cf_close(
 /// bridge が閉じる push を、トラック一覧から外す。話者が LiveKit にいるまま公開をやめると、行が残り、
 /// あとから来た Cloudflare の人に pull できないトラックが配られるため。
 ///
-/// 外すのは、閉じたセッションと track 名がいまの行と同じとき（いまの公開）だけ。新しいセッションで
-/// push し直した行は残す。bridge の track 名は `{話者の session_id}-bridge`（`bridge_cf_publish`）。
+/// 外すのは、閉じたセッションと push の ID がいまの行と同じとき（その push の行）だけ。同じ話者を push し直した
+/// 行は ID が違うので、遅れて届いた前の close でも外さない。
 /// 探索：主キー (channel_id, session_id, source) で、閉じた push 1 つにつき 1 行。
 async fn remove_closed_bridge_tracks(
     state: &AppState,
     channel_id: &str,
     cf_session: &str,
-    speakers: &[String],
+    pushes: &[ClosedPush],
 ) -> Result<(), AppError> {
-    let speakers: Vec<String> = speakers
-        .iter()
-        .filter_map(|s| Uuid::parse_str(s).ok())
-        .map(|s| s.to_string())
-        .collect();
-    if speakers.is_empty() {
+    if pushes.is_empty() {
         return Ok(());
     }
+    let speakers: Vec<String> = pushes.iter().map(|p| p.speaker.to_string()).collect();
+    let ids = serde_json::to_string(
+        &pushes
+            .iter()
+            .map(|p| p.publish_id.as_str())
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|e| AppError::Internal(e.into()))?;
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     let rows = toasty::sql::query(
-        "DELETE FROM call_sfu_tracks
-         WHERE channel_id = $1 AND source = 'bridge'
-           AND session_id = ANY(string_to_array($2, ',')::uuid[])
-           AND cf_session_id = $3 AND track_name = session_id::text || '-bridge'
+        "DELETE FROM call_sfu_tracks t
+         USING unnest(string_to_array($2, ',')::uuid[], ARRAY(SELECT json_array_elements_text($4::json)))
+           AS p(speaker, publish_id)
+         WHERE t.channel_id = $1 AND t.source = 'bridge'
+           AND t.session_id = p.speaker AND t.cf_session_id = $3
+           AND t.bridge_publish_id = p.publish_id
          RETURNING 1",
     )
     .bind(channel_id.to_string())
     .bind(speakers.join(","))
     .bind(cf_session.to_string())
+    .bind(ids)
     .exec(&mut tx)
     .await?;
     if !rows.is_empty() {

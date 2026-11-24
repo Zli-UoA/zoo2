@@ -151,7 +151,7 @@ func (a *backendAPI) cfSession(ctx context.Context, channelID string) (string, e
 	return out.CfSessionID, err
 }
 
-func (a *backendAPI) cfPublish(ctx context.Context, channelID string, bridgeEpoch int64, cfSession, speaker string, offer sessionDescription, mid string) (tracksResponse, error) {
+func (a *backendAPI) cfPublish(ctx context.Context, channelID string, bridgeEpoch int64, cfSession, speaker string, offer sessionDescription, mid, publishID string) (tracksResponse, error) {
 	var out tracksResponse
 	err := a.do(ctx, http.MethodPost, "/internal/sfu-bridge/cf/publish", map[string]any{
 		"channel_id":         channelID,
@@ -160,6 +160,7 @@ func (a *backendAPI) cfPublish(ctx context.Context, channelID string, bridgeEpoc
 		"speaker_session_id": speaker,
 		"offer":              offer,
 		"mid":                mid,
+		"publish_id":         publishID,
 	}, &out)
 	return out, err
 }
@@ -181,16 +182,16 @@ func (a *backendAPI) cfAnswer(ctx context.Context, cfSession string, answer sess
 	}, nil)
 }
 
-// cfClose は mid を閉じる。speakers は、閉じる mid のうち bridge の push（話者の声）の話者の session_id。
-// backend は閉じる前に、その話者のトラックを一覧から外す（Cloudflare に問い合わせずに済むよう、ここで渡す）。
-func (a *backendAPI) cfClose(ctx context.Context, channelID, cfSession string, mids, speakers []string) error {
-	if speakers == nil {
-		speakers = []string{}
+// cfClose は mid を閉じる。pushes は、閉じる mid のうち bridge の push（話者と push の ID）。backend は閉じる前に、
+// その push の行を一覧から外す（Cloudflare に問い合わせずに済むよう、ここで渡す）。
+func (a *backendAPI) cfClose(ctx context.Context, channelID, cfSession string, mids []string, pushes []closedPush) error {
+	if pushes == nil {
+		pushes = []closedPush{}
 	}
 	return a.do(ctx, http.MethodPost, "/internal/sfu-bridge/cf/close", map[string]any{
 		"channel_id":    channelID,
 		"cf_session_id": cfSession,
 		"mids":          mids,
-		"speakers":      speakers,
+		"pushes":        pushes,
 	}, nil)
 }

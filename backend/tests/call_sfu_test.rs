@@ -1106,9 +1106,10 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         .clone();
     assert_eq!(room["livekit_sessions"], json!([sessions[0]]));
     assert_eq!(room["cloudflare_tracks"][0]["id"], track_id);
-    // 公開の世代（rev）は、Cloudflare のセッションと track 名から作る。
+    // 公開の世代（rev）は、Cloudflare のセッションと track 名と、bridge の push の ID（direct は空）から作る。
     let rev_sql = format!(
-        "SELECT left(md5(cf_session_id || '/' || track_name), 12) FROM call_sfu_tracks
+        "SELECT left(md5(cf_session_id || '/' || track_name || '/' || COALESCE(bridge_publish_id, '')), 12)
+         FROM call_sfu_tracks
          WHERE channel_id = $1 AND session_id = '{}' AND source = 'direct'",
         sessions[1]
     );
@@ -1192,7 +1193,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         "/internal/sfu-bridge/cf/publish",
         Some(json!({
             "channel_id": channel, "bridge_epoch": bridge_epoch, "cf_session_id": "cf-bridge",
-            "speaker_session_id": sessions[0], "offer": two, "mid": "1"
+            "speaker_session_id": sessions[0], "offer": two, "mid": "1", "publish_id": "pub-1"
         })),
     )
     .await;
@@ -1204,7 +1205,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         "/internal/sfu-bridge/cf/publish",
         Some(json!({
             "channel_id": channel, "bridge_epoch": bridge_epoch, "cf_session_id": "cf-bridge-2",
-            "speaker_session_id": sessions[0], "offer": failing, "mid": "9"
+            "speaker_session_id": sessions[0], "offer": failing, "mid": "9", "publish_id": "pub-2"
         })),
     )
     .await;
@@ -1224,7 +1225,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         "/internal/sfu-bridge/cf/publish",
         Some(json!({
             "channel_id": channel, "bridge_epoch": bridge_epoch, "cf_session_id": "cf-bridge",
-            "speaker_session_id": sessions[1], "offer": two, "mid": "1"
+            "speaker_session_id": sessions[1], "offer": two, "mid": "1", "publish_id": "pub-3"
         })),
     )
     .await;
@@ -1275,7 +1276,19 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         "/internal/sfu-bridge/cf/close",
         Some(json!({
             "channel_id": channel, "cf_session_id": "cf-bridge-2",
-            "mids": ["1"], "speakers": [sessions[0]]
+            "mids": ["1"], "pushes": [{"speaker": sessions[0], "publish_id": "pub-1"}]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(count(&mut db, bridge_rows_sql, &channel).await?, 1);
+    // 同じセッションでも、前の push の ID の close（話者を push し直したあとに、遅れて届いたもの）では外さない。
+    let (status, _) = bridge(
+        "POST",
+        "/internal/sfu-bridge/cf/close",
+        Some(json!({
+            "channel_id": channel, "cf_session_id": "cf-bridge",
+            "mids": ["0"], "pushes": [{"speaker": sessions[0], "publish_id": "pub-older"}]
         })),
     )
     .await;
@@ -1287,7 +1300,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         "/internal/sfu-bridge/cf/close",
         Some(json!({
             "channel_id": channel, "cf_session_id": "cf-bridge",
-            "mids": ["9"], "speakers": [sessions[0]]
+            "mids": ["9"], "pushes": [{"speaker": sessions[0], "publish_id": "pub-1"}]
         })),
     )
     .await;
@@ -1301,7 +1314,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         "/internal/sfu-bridge/cf/publish",
         Some(json!({
             "channel_id": channel, "bridge_epoch": bridge_epoch, "cf_session_id": "cf-bridge",
-            "speaker_session_id": sessions[0], "offer": two, "mid": "1"
+            "speaker_session_id": sessions[0], "offer": two, "mid": "1", "publish_id": "pub-4"
         })),
     )
     .await;
@@ -1336,7 +1349,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
             "channel_id": channel, "bridge_epoch": bridge_epoch, "cf_session_id": "cf-bridge",
             "speaker_session_id": sessions[0],
             "offer": {"type": "offer", "sdp": "v=0\r\nm=audio 9 X 111\r\na=mid:0\r\nm=audio 9 X 111\r\na=mid:1\r\n"},
-            "mid": "1"
+            "mid": "1", "publish_id": "pub-8"
         })),
     )
     .await;
@@ -1375,7 +1388,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         "/internal/sfu-bridge/cf/publish",
         Some(json!({
             "channel_id": channel, "bridge_epoch": epoch2, "cf_session_id": slow_cf,
-            "speaker_session_id": sessions[0], "offer": speaker_offer, "mid": "1"
+            "speaker_session_id": sessions[0], "offer": speaker_offer, "mid": "1", "publish_id": "pub-5"
         })),
     ));
     let mut reached = false;
@@ -1409,7 +1422,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         "/internal/sfu-bridge/cf/publish",
         Some(json!({
             "channel_id": channel, "bridge_epoch": epoch3, "cf_session_id": "cf-bridge-3",
-            "speaker_session_id": sessions[0], "offer": speaker_offer, "mid": "1"
+            "speaker_session_id": sessions[0], "offer": speaker_offer, "mid": "1", "publish_id": "pub-6"
         })),
     )
     .await;
@@ -1429,7 +1442,7 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         "/internal/sfu-bridge/cf/publish",
         Some(json!({
             "channel_id": channel, "bridge_epoch": epoch4, "cf_session_id": "cf-bridge-4",
-            "speaker_session_id": sessions[0], "offer": speaker_offer, "mid": "1"
+            "speaker_session_id": sessions[0], "offer": speaker_offer, "mid": "1", "publish_id": "pub-7"
         })),
         gate.headers(),
     ));
@@ -1835,6 +1848,17 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         streams2.push(stream.expect("stream"));
     }
     let join2_uri = format!("/api/channels/{channel2}/call/sfu/join");
+    // 止まった中継が外せずに残した bridge の行（Cloudflare の人がいない部屋）。最初の Cloudflare の人が入ると外れ、
+    // その人の join の応答と一覧には配られない。
+    toasty::sql::statement(
+        "INSERT INTO call_sfu_tracks
+           (channel_id, session_id, source, cf_session_id, track_name, bridge_epoch, bridge_publish_id)
+         VALUES ($1, $2::uuid, 'bridge', 'cf-stale-bridge', $2 || '-bridge', 1, 'stale')",
+    )
+    .bind(channel2.as_str())
+    .bind(sessions2[0].to_string())
+    .exec(&mut db)
+    .await?;
     // Cloudflare の人の join（sessions/new が遅い）。
     let cf_join = {
         let app = app2.clone();
@@ -1875,6 +1899,21 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     let (status, joined) = cf_join.await??;
     assert_eq!(status, StatusCode::OK, "{joined}");
     assert_eq!(joined["sfu"], "cloudflare");
+    assert!(
+        joined["tracks"]
+            .as_array()
+            .is_none_or(|t| t.iter().all(|t| t["source"] != "bridge")),
+        "the stale bridge track was handed to the first Cloudflare participant: {joined}"
+    );
+    assert_eq!(
+        count(
+            &mut db,
+            "SELECT count(*) FROM call_sfu_tracks WHERE channel_id = $1 AND source = 'bridge'",
+            &channel2
+        )
+        .await?,
+        0
+    );
     // LiveKit の人の SSE に sfu_reassign が届く。
     let lk_stream = &mut streams2[0];
     let mut buf = String::new();

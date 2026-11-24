@@ -56,7 +56,7 @@
 ## トラック一覧
 
 - Cloudflare にある音声は `call_sfu_tracks` に置く。`direct` は話者のクライアントが push したもの、`bridge` は LiveKit の話者を bridge が push したもの。
-- 一覧の各トラックには `rev`（公開の世代。`left(md5(cf_session_id || '/' || track_name), 12)`）が入る。同じ `id` のまま別の Cloudflare セッションで公開し直すと変わるので、pull する側（sfu-bridge）は、`rev` が変わったら前の購読を閉じて pull し直す。bridge の long-poll の `revision` にも入るので、`rev` だけが変わっても bridge は起きる。
+- 一覧の各トラックには `rev`（公開の世代。`left(md5(cf_session_id || '/' || track_name || '/' || COALESCE(bridge_publish_id, '')), 12)`）が入る。同じ `id` のまま別の Cloudflare セッションで公開し直すと変わる（bridge は同じセッションで push し直しても変わる）ので、pull する側（sfu-bridge）は、`rev` が変わったら前の購読を閉じて pull し直す。bridge の long-poll の `revision` にも入るので、`rev` だけが変わっても bridge は起きる。
 - 話者の presence が消えると、外部キーで一緒に消える。期限が切れて、まだ消されていない presence のトラックは、一覧に入れない。
 - 一覧が変わると `call_rooms.track_version` を進め、`sfu_tracks_changed`（`channel_id`・`epoch`・`version` だけ）を `pg_notify` する。一覧そのものは NOTIFY の上限（8000 バイト）を超えるので載せない。
 - 通知を受けた各レプリカが DB から一覧を読み、SSE の `sfu_tracks` で配る。クライアントは、手元より古い `version` を捨てる。
@@ -83,8 +83,8 @@
 - `GET /internal/sfu-bridge/rooms?bridge_epoch=…&since=…` を long-poll する。返るのは、LiveKit と Cloudflare の両方に人がいる部屋の一覧と、部屋ごとの LiveKit のトークン。変化がなければ最大 25 秒待つ。
 - 部屋ごとに LiveKit に `bridge:{epoch}` として入り（hidden にはしない）、Cloudflare のセッションを 1 つ持つ。
   - LiveKit の話者の声：Cloudflare に push する（`/internal/sfu-bridge/cf/publish`、track 名は `{session_id}-bridge`）。
-    話者が LiveKit で公開をやめたら、bridge は `/internal/sfu-bridge/cf/close` に mid と話者の `session_id`（`speakers`）を渡す。backend は、先にその話者の行を一覧から外してから（そのセッション・track 名の行だけ。別のセッションで公開し直した行は残す）mid を閉じる。close が失敗しても、一覧に古い行は残らない（mid は bridge のセッションを閉じれば消える）。一覧から外せなかったときは、close もせずにエラーを返す。
-    close は、同じ話者の push と同じロック（`negotiate`）の下で送る。そのあいだに同じ話者を push し直していれば、話者は渡さない（新しい公開の行を消さない）。close が失敗したら、bridge は取っておいて送り直す。間隔は 5 秒から倍にしていき、1 分で止める。部屋の中継が続くあいだは諦めないので、backend が長く落ちていても、直ったあとに一覧の古い行を外せる。送り直す前に部屋の中継が止まった（Cloudflare の人がいなくなった）ときは、次にその部屋の中継を始めるとき（`/internal/sfu-bridge/cf/session`）に、backend がその部屋の bridge の行をすべて外す。新しい中継は、LiveKit の話者を push し直して登録する。送り直すときも、push し直した話者は渡さない。
+    bridge は push ごとに ID（`publish_id`）を付けて送り、backend は一覧の行（`call_sfu_tracks.bridge_publish_id`）に持つ。`rev` にも入れるので、同じセッションで push し直すと `rev` が変わり、クライアントは pull し直す。話者が LiveKit で公開をやめたら、bridge は `/internal/sfu-bridge/cf/close` に mid と、閉じる push の話者と ID（`pushes`）を渡す。backend は、先にその push の行を一覧から外してから（セッションと ID が同じ行だけ。同じ話者を push し直した行は ID が違うので、遅れて届いた前の close でも外れない）mid を閉じる。close が失敗しても、一覧に古い行は残らない（mid は bridge のセッションを閉じれば消える）。一覧から外せなかったときは、close もせずにエラーを返す。
+    close が失敗したら、bridge は取っておいて送り直す。間隔は 5 秒から倍にしていき、1 分で止める。部屋の中継が続くあいだは諦めないので、backend が長く落ちていても、直ったあとに一覧の古い行を外せる。送り直す前に部屋の中継が止まった（Cloudflare の人がいなくなった）ときの古い行は、部屋で最初の Cloudflare の人が入るとき（join の中、チャンネル行のロックの下）と、次にその部屋の中継を始めるとき（`/internal/sfu-bridge/cf/session`）に、backend がその部屋の bridge の行をすべて外す。そのため、入ってくる人の join の応答や一覧には配られない。新しい中継は、LiveKit の話者を push し直して登録する。
   - Cloudflare の話者の声（`direct`）：pull して、トラック名を話者の `session_id` にして LiveKit に publish する。
 - Opus の RTP はトランスコードしない。RTP ヘッダ拡張の ID の割り当ては LiveKit と Cloudflare で違うので、拡張は外す。
 - 内部 API の認証は `SFU_BRIDGE_TOKEN`（Bearer）。

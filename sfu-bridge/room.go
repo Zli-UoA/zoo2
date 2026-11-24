@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"strconv"
@@ -48,6 +50,20 @@ func pullKey(id, rev string) string { return id + "\x00" + rev }
 type pushedTrack struct {
 	mid         string
 	transceiver *webrtc.RTPTransceiver
+	// publishID は push ごとの ID。backend は一覧の行に持ち、close はこの ID の行だけを外す。
+	publishID string
+}
+
+// closedPush は、close で一覧から外す push（話者と push の ID）。
+type closedPush struct {
+	Speaker   string `json:"speaker"`
+	PublishID string `json:"publish_id"`
+}
+
+func newPublishID() string {
+	var buf [16]byte
+	_, _ = rand.Read(buf[:])
+	return hex.EncodeToString(buf[:])
 }
 
 // roomBridge は 1 つの通話（channel と epoch）の中継。
@@ -88,8 +104,8 @@ type roomBridge struct {
 
 // pendingClose は、送り直す close。
 type pendingClose struct {
-	mids     []string
-	speakers []string
+	mids   []string
+	pushes []closedPush
 }
 
 // closeRetryInterval は最初のやり直しまでの間隔。失敗が続くと倍にし、closeRetryMaxInterval で止める。
@@ -333,7 +349,8 @@ func (b *roomBridge) publishLocal(speaker string, local *webrtc.TrackLocalStatic
 	ctx, cancel := context.WithTimeout(b.ctx, negotiateTimeout)
 	defer cancel()
 	desc := b.pc.LocalDescription()
-	res, err := b.api.cfPublish(ctx, b.channelID, b.bridgeEpoch, b.cfSession, speaker, sessionDescription{Type: "offer", SDP: desc.SDP}, mid)
+	publishID := newPublishID()
+	res, err := b.api.cfPublish(ctx, b.channelID, b.bridgeEpoch, b.cfSession, speaker, sessionDescription{Type: "offer", SDP: desc.SDP}, mid, publishID)
 	if err != nil {
 		return "", nil, err
 	}
@@ -344,7 +361,7 @@ func (b *roomBridge) publishLocal(speaker string, local *webrtc.TrackLocalStatic
 		return "", nil, err
 	}
 	b.mu.Lock()
-	b.pushed[speaker] = &pushedTrack{mid: mid, transceiver: transceiver}
+	b.pushed[speaker] = &pushedTrack{mid: mid, transceiver: transceiver, publishID: publishID}
 	b.mu.Unlock()
 	return mid, transceiver, nil
 }
@@ -352,9 +369,14 @@ func (b *roomBridge) publishLocal(speaker string, local *webrtc.TrackLocalStatic
 // unpush は push をやめる。Cloudflare 側を閉じるのは、ほかの SDP のやり取りと重ならないよう b.negotiate の下で行う
 // （b.mu を持ったまま b.negotiate を取らない）。呼び出し側は b.negotiate を持たない（relayToCloudflare の defer）。
 func (b *roomBridge) unpush(speaker, mid string, transceiver *webrtc.RTPTransceiver) {
+	// 一覧から外すのは、この push の行だけ（push の ID で指定する）。同じ話者を push し直した新しい行は ID が
+	// 違うので、この close が遅れて backend に届いても外れない。この push がもう記録にない（push し直して
+	// 上書きされた）ときは、一覧の行も新しい push のものなので、外さない。
+	var pushes []closedPush
 	b.mu.Lock()
 	if p, ok := b.pushed[speaker]; ok && p.mid == mid {
 		delete(b.pushed, speaker)
+		pushes = []closedPush{{Speaker: speaker, PublishID: p.publishID}}
 	}
 	b.mu.Unlock()
 	b.negotiate.Lock()
@@ -364,29 +386,14 @@ func (b *roomBridge) unpush(speaker, mid string, transceiver *webrtc.RTPTranscei
 	}
 	// stopMidsLocked と同じく、送信を止めてから Cloudflare 側を閉じる。
 	_ = transceiver.Stop()
-	b.closeMidsLocked([]string{mid}, b.notRepushedLocked([]string{speaker}))
+	b.closeMidsLocked([]string{mid}, pushes)
 }
 
-// notRepushedLocked は、speakers のうち、いま push していない話者を返す。b.mu を外してから b.negotiate を取る
-// までに、同じ話者を push し直していれば（publishLocal も b.negotiate の下）、一覧の行は新しい公開のものなので、
-// close で外さない。b.negotiate を持って呼ぶ。
-func (b *roomBridge) notRepushedLocked(speakers []string) []string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	var out []string
-	for _, s := range speakers {
-		if _, ok := b.pushed[s]; !ok {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-// closeMidsLocked は Cloudflare 側の mid を閉じる。speakers は push を閉じる話者（pull だけなら nil）。
+// closeMidsLocked は Cloudflare 側の mid を閉じる。pushes は一覧から外す push（pull だけなら nil）。
 // 失敗は記録だけする。mid はセッションを閉じれば消え、話者のトラックは backend が close の前に一覧から外す。
 // b.negotiate を持って呼ぶ。
-func (b *roomBridge) closeMidsLocked(mids, speakers []string) {
-	if !b.sendCloseLocked(pendingClose{mids: mids, speakers: speakers}) {
+func (b *roomBridge) closeMidsLocked(mids []string, pushes []closedPush) {
+	if !b.sendCloseLocked(pendingClose{mids: mids, pushes: pushes}) {
 		b.scheduleCloseRetryLocked()
 	}
 }
@@ -395,7 +402,7 @@ func (b *roomBridge) closeMidsLocked(mids, speakers []string) {
 func (b *roomBridge) sendCloseLocked(c pendingClose) bool {
 	ctx, cancel := context.WithTimeout(b.ctx, negotiateTimeout)
 	defer cancel()
-	err := b.api.cfClose(ctx, b.channelID, b.cfSession, c.mids, c.speakers)
+	err := b.api.cfClose(ctx, b.channelID, b.cfSession, c.mids, c.pushes)
 	if err == nil {
 		return true
 	}
@@ -429,14 +436,13 @@ func (b *roomBridge) scheduleCloseRetryLocked() {
 	})
 }
 
-// retryPendingClosesLocked は、取っておいた close を送り直す。そのあいだに同じ話者を push し直していれば、
-// その話者は一覧から外さない（新しい公開の行を消さない）。b.negotiate を持って呼ぶ。
+// retryPendingClosesLocked は、取っておいた close を送り直す。一覧から外すのは push の ID が同じ行だけなので、
+// そのあいだに同じ話者を push し直していても、新しい公開の行は消えない。b.negotiate を持って呼ぶ。
 func (b *roomBridge) retryPendingClosesLocked() {
 	pending := b.pendingCloses
 	b.pendingCloses = nil
 	ok := true
 	for _, c := range pending {
-		c.speakers = b.notRepushedLocked(c.speakers)
 		if !b.sendCloseLocked(c) {
 			ok = false
 		}
