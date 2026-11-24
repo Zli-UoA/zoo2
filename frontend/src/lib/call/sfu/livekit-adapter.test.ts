@@ -8,7 +8,10 @@ const state = vi.hoisted(() => ({
 vi.mock("livekit-client", () => {
   class LocalAudioTrack {
     isMuted = false;
-    constructor(readonly mediaStreamTrack: MediaStreamTrack) {}
+    constructor(readonly mediaStreamTrack: MediaStreamTrack) {
+      // SDK と同じく、包むときにトラックを有効にする。
+      mediaStreamTrack.enabled = true;
+    }
     async mute() {
       this.isMuted = true;
       state.log.push("mute");
@@ -47,11 +50,33 @@ const { LiveKitAdapter } = await import("./livekit-adapter");
 
 const noCallbacks = { onRemoteAudio: () => {}, onRemoteGone: () => {}, onFailed: () => {} };
 
+/** mesh と共有するマイクの代わり。clone() は LiveKit に渡す複製を返す。 */
+function fakeMic(enabled = true) {
+  const clones: { enabled: boolean; stopped: boolean }[] = [];
+  const mic = {
+    enabled,
+    clone() {
+      const c = {
+        enabled: mic.enabled,
+        stopped: false,
+        clone: () => c,
+        stop() {
+          c.stopped = true;
+        },
+      };
+      clones.push(c);
+      return c;
+    },
+    stop() {},
+  };
+  return { mic: mic as unknown as MediaStreamTrack, clones, raw: mic };
+}
+
 describe("LiveKitAdapter mute", () => {
   it("applies a mute requested before start() before publishing", async () => {
     state.log = [];
     state.publishGate = null;
-    const adapter = new LiveKitAdapter("wss://x", "t", {} as MediaStreamTrack, noCallbacks);
+    const adapter = new LiveKitAdapter("wss://x", "t", fakeMic().mic, noCallbacks);
     await adapter.setMuted(true);
     await adapter.start();
     expect(state.log).toEqual(["mute", "publish muted=true"]);
@@ -62,7 +87,7 @@ describe("LiveKitAdapter mute", () => {
     state.log = [];
     state.publishGate = null;
     // ミュート中の mesh 通話から移るとき、call-context は作るときに今の状態を渡す（start() の前に setMuted しない）。
-    const adapter = new LiveKitAdapter("wss://x", "t", {} as MediaStreamTrack, noCallbacks, {
+    const adapter = new LiveKitAdapter("wss://x", "t", fakeMic().mic, noCallbacks, {
       muted: true,
     });
     await adapter.start();
@@ -74,7 +99,7 @@ describe("LiveKitAdapter mute", () => {
     state.log = [];
     let release = () => {};
     state.publishGate = new Promise<void>((resolve) => (release = resolve));
-    const adapter = new LiveKitAdapter("wss://x", "t", {} as MediaStreamTrack, noCallbacks);
+    const adapter = new LiveKitAdapter("wss://x", "t", fakeMic().mic, noCallbacks);
     const started = adapter.start();
     await vi.waitFor(() => expect(state.log).toEqual(["publish muted=false"]));
     await adapter.setMuted(true);
@@ -82,5 +107,19 @@ describe("LiveKitAdapter mute", () => {
     await started;
     expect(state.log).toEqual(["publish muted=false", "mute"]);
     adapter.close();
+  });
+
+  it("does not enable the mic shared with mesh while muted", async () => {
+    state.log = [];
+    state.publishGate = null;
+    // ミュート中の mesh のマイク（enabled = false）。SDK が包むのは複製なので、mesh のマイクは有効にならない。
+    const { mic, clones, raw } = fakeMic(false);
+    const adapter = new LiveKitAdapter("wss://x", "t", mic, noCallbacks, { muted: true });
+    await adapter.start();
+    expect(raw.enabled).toBe(false);
+    expect(clones).toHaveLength(1);
+    adapter.close();
+    // 止めるのは複製だけ。
+    expect(clones[0].stopped).toBe(true);
   });
 });

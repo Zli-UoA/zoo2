@@ -414,6 +414,8 @@ func (b *roomBridge) scheduleCloseRetryLocked() {
 	if b.closeAttempts >= closeRetryMaxAttempts {
 		b.log().Error("giving up closing Cloudflare tracks", "pending", len(b.pendingCloses))
 		b.pendingCloses = nil
+		// あとで失敗した close には、新しく同じ回数のやり直しをさせる。
+		b.closeAttempts = 0
 		return
 	}
 	b.closeAttempts++

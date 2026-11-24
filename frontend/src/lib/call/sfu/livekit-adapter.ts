@@ -79,6 +79,11 @@ export class LiveKitAdapter implements SfuAdapter {
   readonly kind = "livekit" as const;
   private room: Room;
   private localTrack: LocalAudioTrack | null = null;
+  /**
+   * LiveKit に渡すマイクの複製。SDK はトラックを包むときに `enabled` を true にし、ミュートで切り替える。mesh と
+   * 共有するマイクそのものを渡すと、ミュート中でも mesh に音が漏れるので、複製を渡してこのアダプタが止める。
+   */
+  private ownMic: MediaStreamTrack | null = null;
   /** 最後に指定されたミュートの状態。publish の前に指定された分も、publish の前に当てる。 */
   private muted: boolean;
   private speakers: SpeakerTracks;
@@ -129,9 +134,11 @@ export class LiveKitAdapter implements SfuAdapter {
     });
     if (this.closed) return;
     const published = this.mic;
-    // マイクは通話側のもの（userProvidedTrack）。ミュート中なら publish の前にミュートしておき、
+    // マイクは通話側のもの（userProvidedTrack）の複製。ミュート中なら publish の前にミュートしておき、
     // publish した直後に音を送ったり、ミュートしていない状態を伝えたりしないようにする。
-    const local = new LocalAudioTrack(published, undefined, true);
+    const own = published.clone();
+    this.ownMic = own;
+    const local = new LocalAudioTrack(own, undefined, true);
     if (this.muted) await local.mute();
     if (this.closed) return;
     const publication = await this.room.localParticipant.publishTrack(local, {
@@ -143,9 +150,7 @@ export class LiveKitAdapter implements SfuAdapter {
     // publish 中にミュートが切り替わっていたら、今の状態に合わせる。
     if (this.localTrack.isMuted !== this.muted) await this.setMuted(this.muted);
     // publish 中にマイクが切り替わっていたら、今のマイクに差し替える。
-    if (this.mic !== published) {
-      await this.localTrack.replaceTrack(this.mic, { userProvidedTrack: true });
-    }
+    if (this.mic !== published) await this.replaceOwnMic(this.mic);
   }
 
   updateTracks(): void {
@@ -156,7 +161,18 @@ export class LiveKitAdapter implements SfuAdapter {
     // まだ publish していなければ、start() が publish するトラックを差し替える。
     this.mic = track;
     if (!this.localTrack) return;
-    await this.localTrack.replaceTrack(track, { userProvidedTrack: true });
+    await this.replaceOwnMic(track);
+  }
+
+  /** publish 中のトラックを、新しいマイクの複製に差し替え、前の複製を止める。 */
+  private async replaceOwnMic(track: MediaStreamTrack): Promise<void> {
+    if (!this.localTrack) return;
+    const own = track.clone();
+    const previous = this.ownMic;
+    this.ownMic = own;
+    await this.localTrack.replaceTrack(own, { userProvidedTrack: true });
+    previous?.stop();
+    if (this.closed) own.stop();
   }
 
   async setMuted(muted: boolean): Promise<void> {
@@ -173,7 +189,8 @@ export class LiveKitAdapter implements SfuAdapter {
   close(): void {
     this.closed = true;
     this.speakers.clear();
-    // マイクは通話側のもの（Cloudflare に移るときも使う）なので、切断で止めない。
+    // マイクは通話側のもの（Cloudflare に移るときも使う）なので、切断で止めない。止めるのは複製だけ。
     void this.room.disconnect(false);
+    this.ownMic?.stop();
   }
 }

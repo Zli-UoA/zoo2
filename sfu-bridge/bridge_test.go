@@ -577,3 +577,35 @@ func TestUnpushKeepsRepushedSpeaker(t *testing.T) {
 		t.Fatalf("closing the old push must not remove the new push's row: %v %v", f.closed, f.closeSpk)
 	}
 }
+
+func TestCloseRetriesAfterGivingUp(t *testing.T) {
+	old := closeRetryInterval
+	closeRetryInterval = time.Hour
+	t.Cleanup(func() { closeRetryInterval = old })
+	f := &fakeBackend{closeFails: closeRetryMaxAttempts + 2}
+	b := readyBridge(t, f)
+	b.negotiate.Lock()
+	b.closeMidsLocked([]string{"4"}, nil)
+	for i := 0; i < closeRetryMaxAttempts; i++ {
+		b.closeRetry.Stop()
+		b.closeRetry = nil
+		b.retryPendingClosesLocked()
+	}
+	// 上限で諦めた。あとの close が一度失敗しても、やり直しを予約し、送り直せば届く。
+	if len(b.pendingCloses) != 0 || b.closeRetry != nil {
+		t.Fatalf("the first close must be given up: %v", b.pendingCloses)
+	}
+	b.closeMidsLocked([]string{"5"}, nil)
+	if b.closeRetry == nil {
+		t.Fatal("a later failed close must be retried")
+	}
+	b.closeRetry.Stop()
+	b.closeRetry = nil
+	b.retryPendingClosesLocked()
+	b.negotiate.Unlock()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.closed) != 1 || f.closed[0][0] != "5" {
+		t.Fatalf("the later close must be sent on retry: %v", f.closed)
+	}
+}
