@@ -89,7 +89,7 @@ struct GlobalSearchContent: View {
 
     @ViewBuilder
     private var results: some View {
-        ForEach(search.items) { item in
+        ForEach(search.items, id: \.rowID) { item in
             Button { open(item) } label: {
                 GlobalSearchRow(workspace: workspace, item: item)
             }
