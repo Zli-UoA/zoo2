@@ -9,7 +9,7 @@ import {
   useNavigate,
   useRouterState,
 } from "@tanstack/react-router";
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { useLayoutEffect, useRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -1202,7 +1202,14 @@ describe("MessageList and ThreadPane initial bottom landing & channel switch", (
     }
   });
 
-  it("highlights the target reply in ThreadPane once and replays it when the link is pressed again", async () => {
+  it("highlights the target reply in ThreadPane once and replays it when the link is pressed again", async ({
+    onTestFinished,
+  }) => {
+    vi.useFakeTimers({ toFake: ["requestAnimationFrame", "cancelAnimationFrame"] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+
     const root = makeMessage("root-h", 0, 2, "chan-thread-h");
     const replies = Array.from(
       { length: 40 },
@@ -1253,24 +1260,29 @@ describe("MessageList and ThreadPane initial bottom landing & channel switch", (
       return tr.top >= sr.top - 4 && tr.bottom <= sr.bottom + 4;
     };
 
-    // 対象の返信へスクロールしたら、その行だけを強調する。常時の枠線は付けない。
-    await waitFor(() => {
-      expect(inView()).toBe(true);
-      expect(overlay()).toBeTruthy();
+    // 最初の位置合わせで強調し、次のフレームで位置を合わせ直しても再生し直さない。
+    const first = overlay();
+    expect(first).toBeTruthy();
+    act(() => {
+      vi.advanceTimersToNextFrame();
     });
+    expect(overlay()).toBe(first);
+    await waitFor(() => expect(inView()).toBe(true));
     expect(row().className).not.toContain("ring");
     expect(scroller().querySelectorAll("[data-message-target-highlight]")).toHaveLength(1);
-    const first = overlay()!;
 
     // 離れてから、すでに表示中の対象へのリンクをもう一度押すと、戻って最初から強調し直す。
     scroller().scrollTop = scroller().scrollHeight;
     await waitFor(() => expect(inView()).toBe(false));
-    requestMessageJump("reply-3");
-    await waitFor(() => {
-      expect(inView()).toBe(true);
-      expect(overlay()).toBeTruthy();
-      expect(overlay()).not.toBe(first);
+    act(() => requestMessageJump("reply-3"));
+    const replay = overlay();
+    expect(replay).toBeTruthy();
+    expect(replay).not.toBe(first);
+    act(() => {
+      vi.advanceTimersToNextFrame();
     });
+    expect(overlay()).toBe(replay);
+    await waitFor(() => expect(inView()).toBe(true));
   });
 
   it("opens directly at bottom (or targetMessageId) in ThreadPane without an initial scrollTop=0 flash", async () => {

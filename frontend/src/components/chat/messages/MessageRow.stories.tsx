@@ -5,6 +5,7 @@ import { expect, fireEvent, fn, screen, userEvent, waitFor, within } from "story
 
 import { StoryShell } from "../../../../.storybook/shell";
 import { storyUsers } from "../../../../.storybook/fixtures";
+import encryptedAttachmentImage from "../../../../.storybook/fixtures/encrypted-attachment.png?inline";
 import { reactionUserLabel } from "../../../lib/emoji/reactions";
 import { RECENT_EMOJIS_STORAGE_KEY } from "../../../lib/emoji/recents";
 import {
@@ -703,21 +704,10 @@ export const EncryptedInvalid: Story = {
 };
 
 // 暗号化した添付（#364）。Storybook では暗号の Worker の代わりに、決まった中身を返す。
-async function storyImage(): Promise<Blob> {
-  const canvas = document.createElement("canvas");
-  canvas.width = 320;
-  canvas.height = 200;
-  const context = canvas.getContext("2d")!;
-  const gradient = context.createLinearGradient(0, 0, 320, 200);
-  gradient.addColorStop(0, "#6366f1");
-  gradient.addColorStop(1, "#22d3ee");
-  context.fillStyle = gradient;
-  context.fillRect(0, 0, 320, 200);
-  context.fillStyle = "#ffffff";
-  context.font = "bold 28px sans-serif";
-  context.fillText("🔒 decrypted", 70, 110);
-  return new Promise((resolve) => canvas.toBlob((blob) => resolve(blob!), "image/png"));
-}
+const storyImage = new Blob(
+  [Uint8Array.from(atob(encryptedAttachmentImage.split(",")[1]!), (char) => char.charCodeAt(0))],
+  { type: "image/png" },
+);
 
 const storyEncryptedFile = {
   v: "v2" as const,
@@ -768,7 +758,7 @@ export const EncryptedWithAttachments: Story = {
       <EncryptedAttachmentLoaderContext.Provider
         value={async (info) =>
           info.mimetype.startsWith("image/")
-            ? storyImage()
+            ? storyImage
             : new Blob(["%PDF-1.7"], { type: info.mimetype })
         }
       >
@@ -778,9 +768,10 @@ export const EncryptedWithAttachments: Story = {
   ],
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const image = await canvas.findByRole("img", { name: "architecture.png" });
+    const image = await canvas.findByRole<HTMLImageElement>("img", { name: "architecture.png" });
     await waitFor(async () => {
       await expect(image).toBeVisible();
+      await expect(image.naturalWidth).toBe(320);
     });
     await expect(canvas.getByText("議事録.pdf")).toBeVisible();
     await expect(canvas.queryByText("encrypted.bin")).not.toBeInTheDocument();
