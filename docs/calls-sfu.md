@@ -147,6 +147,7 @@ sfu-bridge の環境変数：`BACKEND_INTERNAL_URL`（クラスタ内の backend
 - **段階 3（LiveKit）**：
   - backend から LiveKit への経路が通るノード、そこにアクセスできる主体、盗聴の防ぎ方（平文を受け入れるか、TLS にするか）を確かめる。
   - セルフホストの LiveKit で、`revoke_token_ts` が効くか、退出後に手元のトークンで入り直せるかを確かめる。
+  - 実際の通話で、ミュート中に受信側へ音声が届かないことを確かめる。ミュートしたまま mesh から LiveKit に移る場合と、LiveKit への publish の途中でミュートする場合の両方。結果は段階 3 の設定 PR に残す。
 - **段階 4（bridge）**：sfu-bridge から backend への平文の経路を受け入れるか、暗号化するかを決める。
 
 ## プライバシー
