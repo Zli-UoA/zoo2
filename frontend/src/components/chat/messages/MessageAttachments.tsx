@@ -83,6 +83,7 @@ function AttachmentPreview({ attachment }: { attachment: AttachmentMetadata }) {
         }
       }}
       footer={<AttachmentDownloadButton attachment={attachment} state={state} showLabel />}
+      resolveUrl={state.getFreshUrl}
     />
   );
 }

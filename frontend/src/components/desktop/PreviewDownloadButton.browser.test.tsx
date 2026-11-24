@@ -104,6 +104,54 @@ it("saves a preview body through the desktop download commands", async () => {
   expect(saved).toHaveBeenCalledWith("saved.txtを保存しました。");
 });
 
+it("refreshes a signed URL that expires while the save dialog is open", async () => {
+  const expired = "https://files.test/expired";
+  const fresh = "https://files.test/fresh";
+  const base = desktopInvoke();
+  let releaseBegin!: (value: unknown) => void;
+  const beginning = new Promise<unknown>((resolve) => (releaseBegin = resolve));
+  const invoke = vi.fn((cmd: string) => (cmd === "zoo_download_begin" ? beginning : base(cmd)));
+  mockDesktop(invoke);
+  const resolveUrl = vi.fn(async ({ refresh }: { refresh: boolean }) =>
+    refresh ? fresh : expired,
+  );
+  let expiredCalls = 0;
+  const fetchMock = vi.fn(async (url: string) => {
+    if (url === expired) {
+      expiredCalls += 1;
+      // 確認のときだけ有効で、保存ダイアログのあとは期限切れになる。
+      return expiredCalls === 1
+        ? new Response(new Uint8Array([1, 2, 3]), { headers: { "content-length": "3" } })
+        : new Response(null, { status: 403 });
+    }
+    return new Response(new Uint8Array([1, 2, 3]));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  const saved = vi.spyOn(toast, "success").mockReturnValue("saved");
+
+  render(
+    <LocaleProvider>
+      <PreviewDownloadButton name="report.txt" src={expired} showLabel resolveUrl={resolveUrl} />
+    </LocaleProvider>,
+  );
+  fireEvent.click(await screen.findByRole("button", { name: "report.txtをダウンロード" }));
+
+  await waitFor(() =>
+    expect(invoke).toHaveBeenCalledWith("zoo_download_begin", {
+      begin: { file_name: "report.txt", size: 3 },
+    }),
+  );
+  releaseBegin({ status: "started", id: "dl", path: "/tmp/report.txt", prompted: true });
+
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("zoo_download_finish", { id: "dl" }), {
+    timeout: 3000,
+  });
+  expect(resolveUrl).toHaveBeenCalledWith({ refresh: false });
+  expect(resolveUrl).toHaveBeenCalledWith({ refresh: true });
+  expect(fetchMock).toHaveBeenCalledWith(fresh, expect.objectContaining({ credentials: "omit" }));
+  expect(saved).toHaveBeenCalledWith("saved.txtを保存しました。");
+});
+
 it("switches to the external link when the preview body cannot be fetched", async () => {
   const invoke = desktopInvoke();
   mockDesktop(invoke);

@@ -2,7 +2,11 @@ import { useCallback, useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { useDesktopSave, type DesktopSavePrepared } from "../../hooks/useDesktopSave";
-import { AttachmentDownloadError, downloadAttachmentWithRetry } from "../../lib/api/attachments";
+import {
+  AttachmentDownloadError,
+  downloadAttachmentWithRetry,
+  type AttachmentUrlResolver,
+} from "../../lib/api/attachments";
 import { ExternalLink } from "../ui/external-link";
 import { DownloadProgressButton } from "./DownloadProgressButton";
 
@@ -19,6 +23,7 @@ export function PreviewDownloadButton({
   size,
   showLabel = false,
   className = "text-xs text-link",
+  resolveUrl,
 }: {
   /** 同じファイルを表示する複数の場所で進捗と中止を共有するための識別子。 */
   id?: string;
@@ -27,20 +32,24 @@ export function PreviewDownloadButton({
   size?: number | null;
   showLabel?: boolean;
   className?: string;
+  /** 表示に使う URL を更新できる経路。署名付き URL の期限切れに備えて渡す。 */
+  resolveUrl?: AttachmentUrlResolver;
 }) {
   const { t } = useTranslation();
   const generatedId = useId();
   const saveId = id ?? generatedId;
   const [externalSrc, setExternalSrc] = useState<string | null>(null);
   const useExternalLink = externalSrc === src;
-  const resolveUrl = useCallback(async () => src, [src]);
+  const staticUrl = useCallback(async () => src, [src]);
+  const urlResolver = resolveUrl ?? staticUrl;
   // 保存ダイアログの前に本文を確認する。CORS で読めないときはダイアログを出さずに
   // リンクへ切り替え、Content-Length があれば保存の上限判定に渡す。
   const prepare = useCallback(
     async (signal: AbortSignal): Promise<DesktopSavePrepared> => {
+      const url = await urlResolver({ refresh: false });
       let response: Response;
       try {
-        response = await fetch(src, { credentials: "omit", signal });
+        response = await fetch(url, { credentials: "omit", signal });
       } catch (error) {
         throw new AttachmentDownloadError("network", { cause: error });
       }
@@ -55,14 +64,14 @@ export function PreviewDownloadButton({
       await response.body?.cancel().catch(() => {});
       return { size };
     },
-    [src],
+    [urlResolver],
   );
   const { state, pending, available, download, cancel } = useDesktopSave({
     id: saveId,
     fileName: name,
-    source: { kind: "url", resolveUrl, size, prepare },
+    source: { kind: "url", resolveUrl: urlResolver, size, prepare },
     fallback: async () => {
-      await downloadAttachmentWithRetry(resolveUrl, name);
+      await downloadAttachmentWithRetry(urlResolver, name);
     },
     // CORS やオフラインで本文が読めないときだけ、別タブのリンクへ案内する。
     // URL の取得や HTTP のエラーは通常のダウンロード失敗として伝える。

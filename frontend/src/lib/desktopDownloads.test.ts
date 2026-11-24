@@ -389,18 +389,19 @@ describe("downloadUrlToDesktop", () => {
     desktop.begin.mockResolvedValue(started("dPrepRead"));
     desktop.cancel.mockResolvedValue(undefined);
     let pullStarted!: () => void;
-    let releasePull!: () => void;
     const pullBegan = new Promise<void>((resolve) => (pullStarted = resolve));
-    const pullPending = new Promise<void>((resolve) => (releasePull = resolve));
-    const stream = new ReadableStream<Uint8Array>({
-      pull() {
-        pullStarted();
-        return pullPending;
+    // highWaterMark を 0 にして、reader.read() が呼ばれるまで pull() を遅らせる。
+    // これで「応答を開いた直後の中止」ではなく「次のチャンク待ちの中止」を検証できる。
+    const stream = new ReadableStream<Uint8Array>(
+      {
+        pull() {
+          pullStarted();
+          // 本文が中止を無視しても、raceAbort が待機を終わらせる必要がある。
+          return new Promise<void>(() => {});
+        },
       },
-      cancel() {
-        releasePull();
-      },
-    });
+      { highWaterMark: 0 },
+    );
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => new Response(stream, { headers: { "content-length": "10" } })),
