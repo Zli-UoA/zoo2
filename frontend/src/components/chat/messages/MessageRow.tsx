@@ -950,6 +950,19 @@ export function MessageRow({
             />
           ) : null}
           <div className="flex flex-col">
+            {canReact ? (
+              <button
+                type="button"
+                className={sheetActionClass}
+                onClick={() => {
+                  setSheetOpen(false);
+                  onPickReaction();
+                }}
+              >
+                <SmilePlusIcon className="size-4 shrink-0" aria-hidden="true" />
+                {t("reactions.add")}
+              </button>
+            ) : null}
             {onOpenThread ? (
               <button
                 type="button"
@@ -963,17 +976,17 @@ export function MessageRow({
                 {t("threads.open")}
               </button>
             ) : null}
-            {canReact ? (
+            {canEdit ? (
               <button
                 type="button"
                 className={sheetActionClass}
                 onClick={() => {
                   setSheetOpen(false);
-                  onPickReaction();
+                  onStartEdit();
                 }}
               >
-                <SmilePlusIcon className="size-4 shrink-0" aria-hidden="true" />
-                {t("reactions.add")}
+                <PencilIcon className="size-4 shrink-0" aria-hidden="true" />
+                {t("messages.editMessage")}
               </button>
             ) : null}
             {resolvedDecryption?.status !== "undecryptable" ? (
@@ -1015,19 +1028,6 @@ export function MessageRow({
               <BotIcon className="size-4 shrink-0" aria-hidden="true" />
               {t("apps.messageActions")}
             </button>
-            {canEdit ? (
-              <button
-                type="button"
-                className={sheetActionClass}
-                onClick={() => {
-                  setSheetOpen(false);
-                  onStartEdit();
-                }}
-              >
-                <PencilIcon className="size-4 shrink-0" aria-hidden="true" />
-                {t("messages.editMessage")}
-              </button>
-            ) : null}
             {canDelete ? (
               <button
                 type="button"

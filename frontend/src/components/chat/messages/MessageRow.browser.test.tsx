@@ -859,6 +859,17 @@ describe("copy message link", () => {
   });
 });
 
+/** 「…」メニューと操作シートに並ぶ項目。出る条件がそろったときの順序。 */
+const MENU_LABELS = [
+  "リアクションを追加",
+  "スレッドを開く",
+  "メッセージを編集",
+  "原文をコピー",
+  "メッセージリンクをコピー",
+  "Appでメッセージを操作",
+  "削除",
+] as const;
+
 describe("more menu order", () => {
   async function menuLabels() {
     screen.getByRole("button", { name: "その他の操作" }).focus();
@@ -873,14 +884,35 @@ describe("more menu order", () => {
       canDelete: true,
       onOpenThread: () => {},
     });
-    expect(await menuLabels()).toEqual([
-      "リアクションを追加",
-      "スレッドを開く",
-      "メッセージを編集",
+    expect(await menuLabels()).toEqual([...MENU_LABELS]);
+  });
+
+  /** 操作シートの項目名を、画面上の並びのまま取る（最近使った絵文字と閉じるボタンは除く）。 */
+  async function sheetLabels() {
+    tapTouch(screen.getByText("hello"));
+    const sheet = await screen.findByRole("dialog", { name: "メッセージを操作" });
+    const known = new Set<string>(MENU_LABELS);
+    return within(sheet)
+      .getAllByRole("button")
+      .map((button) => button.textContent?.trim() ?? "")
+      .filter((label) => known.has(label));
+  }
+
+  it("lists the same items in the same order in the touch action sheet", async () => {
+    renderRow(buildItem({ channel_id: "channel-1" }), true, {
+      canReact: true,
+      canDelete: true,
+      onOpenThread: () => {},
+    });
+    expect(await sheetLabels()).toEqual([...MENU_LABELS]);
+  });
+
+  it("keeps the touch action sheet order when items the viewer cannot use are left out", async () => {
+    renderRow(buildItem({ channel_id: "channel-1" }));
+    expect(await sheetLabels()).toEqual([
       "原文をコピー",
       "メッセージリンクをコピー",
       "Appでメッセージを操作",
-      "削除",
     ]);
   });
 

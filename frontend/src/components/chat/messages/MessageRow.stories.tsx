@@ -780,6 +780,21 @@ export const TouchActionSheet: Story = {
         within(sheet).getByRole("button", { name: "メッセージリンクをコピー" }),
       ).toBeVisible();
       await expect(within(sheet).getByRole("button", { name: "削除" })).toBeVisible();
+      // 「…」メニューと同じ順序で並ぶ（最近使った絵文字の行は一覧の外）。
+      const order = [
+        "リアクションを追加",
+        "スレッドを開く",
+        "メッセージを編集",
+        "原文をコピー",
+        "メッセージリンクをコピー",
+        "Appでメッセージを操作",
+        "削除",
+      ];
+      const labels = within(sheet)
+        .getAllByRole("button")
+        .map((button) => button.textContent?.trim() ?? "")
+        .filter((label) => order.includes(label));
+      await expect(labels).toEqual(order);
 
       const recent = within(sheet).getByRole("group", { name: "最近使った絵文字" });
       await expect(within(recent).getByRole("button", { name: "🎉" })).toBeVisible();
