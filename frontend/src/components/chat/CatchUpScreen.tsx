@@ -15,6 +15,7 @@ import { apiPath } from "../../lib/api/path";
 import { createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
 import { useLocale } from "../i18n/LocaleProvider";
+import { PaneHeader } from "../layout/PaneHeader";
 import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
 import { buildDmLabels } from "./dm";
@@ -204,7 +205,7 @@ export function CatchUpScreen() {
       className="flex h-full min-h-0 flex-col bg-background"
       aria-labelledby="catch-up-title"
     >
-      <header className="flex items-center justify-between gap-3 border-b px-4 py-3">
+      <PaneHeader className="justify-between">
         <div className="min-w-0">
           <h1
             id="catch-up-title"
@@ -225,7 +226,7 @@ export function CatchUpScreen() {
         <Button variant="ghost" size="sm" onClick={() => void navigate({ to: "/" })}>
           {t("catchUp.close")}
         </Button>
-      </header>
+      </PaneHeader>
 
       {queue === null ? (
         loadError ? (
