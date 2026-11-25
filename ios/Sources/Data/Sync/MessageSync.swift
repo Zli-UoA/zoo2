@@ -4,6 +4,8 @@ struct MessageFeedRequest: Equatable, Sendable {
     var parentID: String? = nil
     var limit = 50
     var focusID: String? = nil
+    /// 暗号化チャンネル。復号した本文は保存しない。暗号文の行もオフラインの記録に残さない（#685）。
+    var encrypted = false
     var key: String { parentID ?? "root" }
 }
 
@@ -158,12 +160,13 @@ struct MessageSync {
 
     func observe(_ request: MessageFeedRequest, receive: @MainActor (MessageFeedSnapshot) -> Void) async throws {
         let version = sync.channelVersion(channelID)
-        let restored = try await sync.load(key, as: MessageSyncState.self)
+        // 暗号化チャンネルは、前回の記録を読まず、保存もしない（平文だった頃の行を表示に戻さない）。
+        let restored = request.encrypted ? nil : try await sync.load(key, as: MessageSyncState.self)
         var state = restored ?? MessageSyncState()
         var savedState = restored
         @MainActor func persist(_ value: MessageSyncState) async throws {
             try sync.check(channelID: channelID, channelVersion: version)
-            guard savedState != value else { return }
+            guard !request.encrypted, savedState != value else { return }
             try await sync.store(value, key: key, channelID: channelID, channelVersion: version)
             savedState = value
         }
