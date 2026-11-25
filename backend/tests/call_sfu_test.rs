@@ -120,11 +120,17 @@ async fn count(db: &mut toasty::Db, sql: &str, bind: &str) -> anyhow::Result<i64
 }
 
 /// Cloudflare の `sessions/new` の代わり。要求ごとに新しいセッション ID を返す（ID が同じだと、
-/// 別の人のセッションを閉じても区別できない）。
+/// 別の人のセッションを閉じても区別できない）。本物と同じく、本文があれば（`{}` でも）断る。
 struct NewSession;
 
 impl wiremock::Respond for NewSession {
-    fn respond(&self, _req: &wiremock::Request) -> ResponseTemplate {
+    fn respond(&self, req: &wiremock::Request) -> ResponseTemplate {
+        if !req.body.is_empty() {
+            return ResponseTemplate::new(400).set_body_json(json!({
+                "errorCode": "decoding_error",
+                "errorDescription": "Body JSON validation error: sessionDescription"
+            }));
+        }
         ResponseTemplate::new(201)
             .set_body_json(json!({ "sessionId": format!("cf-{}", uuid::Uuid::new_v4()) }))
     }
