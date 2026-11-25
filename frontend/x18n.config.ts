@@ -11,5 +11,7 @@ export default defineConfig({
     // 動的な部分は `prefix.${suffix}` のように静的な前方一致を持たせるか、
     // @x18n-key / @x18n-keys でキーを明示する（docs/i18n.md）。
     "dynamic-key": "error",
+    // 他ロケールのキー欠落も CI で落とす（locale.test.ts と二重の担保）。
+    "missing-translation": "error",
   },
 });

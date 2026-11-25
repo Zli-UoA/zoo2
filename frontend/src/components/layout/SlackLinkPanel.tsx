@@ -81,9 +81,9 @@ export function SlackLinkPanel({ navigateTo = (url: string) => window.location.a
     void navigate({ to: "/settings", search: { tab: "slack" }, replace: true });
     const fail = (reason: string) => {
       // toast は消えるので、理由が分かるようパネル内に残す
-      const suffix =
-        LINK_ERROR_SUFFIXES[reason as keyof typeof LINK_ERROR_SUFFIXES] ??
-        LINK_ERROR_SUFFIXES.failed;
+      const suffix = Object.hasOwn(LINK_ERROR_SUFFIXES, reason)
+        ? LINK_ERROR_SUFFIXES[reason as keyof typeof LINK_ERROR_SUFFIXES]
+        : LINK_ERROR_SUFFIXES.failed;
       setError(t(`slackLink.errors.${suffix}`));
     };
     if (result.status === "error") {
