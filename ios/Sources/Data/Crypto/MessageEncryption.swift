@@ -258,8 +258,10 @@ final class MessageEncryption {
     }
 
     /// 新しい本文を送る。
-    func send(channel: String, id: String, parent: String?, body: String) async throws {
-        try await serialized { try await self.submit(channel: channel, id: id, parent: parent, body: body, revision: 0, edit: nil) }
+    func send(channel: String, id: String, parent: String?, body: String, attachments: [AttachmentInfo] = []) async throws {
+        try await serialized {
+            try await self.submit(channel: channel, id: id, parent: parent, body: body, revision: 0, edit: nil, attachments: attachments)
+        }
     }
 
     /// 自分の本文を編集する。元の暗号文を復号して、最新の版であることを確かめてから、次の版を送る。
@@ -283,7 +285,8 @@ final class MessageEncryption {
         await uploadBackup()
     }
 
-    private func submit(channel: String, id: String, parent: String?, body: String, revision: UInt64, edit: EncryptedRow?) async throws {
+    private func submit(channel: String, id: String, parent: String?, body: String, revision: UInt64, edit: EncryptedRow?,
+                        attachments newAttachments: [AttachmentInfo] = []) async throws {
         let store = try currentStore()
         var minimum = latestEpochs[channel] ?? 0
         for _ in 0..<3 {
@@ -320,7 +323,7 @@ final class MessageEncryption {
                     previous = decrypted
                 }
                 let kind = previous?.payload.content.kind ?? "message"
-                let attachments = previous?.payload.attachments ?? []
+                let attachments = previous?.payload.attachments ?? newAttachments
                 let encrypted: String
                 do { encrypted = try store.encrypt(current.session, senderKey: current.senderKey, message: OutgoingMessage(
                     messageId: id, parentId: parent, revision: revision,
@@ -337,6 +340,8 @@ final class MessageEncryption {
                 ]
                 if let parent { payload["parent_id"] = .string(parent) }
                 if edit == nil {
+                    // 添付の行は、サーバーが `attachment_ids` でメッセージに紐付ける（中身の情報は暗号文の中だけ）。
+                    if !attachments.isEmpty { payload["attachment_ids"] = .array(attachments.map { .string($0.attachmentId) }) }
                     payload["id"] = .string(id)
                     payload["channel_id"] = .string(channel)
                     payload["mentions"] = .object(["user_ids": .array([]), "channel": .bool(false), "here": .bool(false)])

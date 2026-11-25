@@ -30,6 +30,8 @@ protocol ChatClient: InboxClient, CallClient, TypingClient {
     func emojis() async throws -> [WorkspaceEmoji]
     func emojiAccounts() async throws -> [EmojiAccount]
     func upload(_ attachment: DraftAttachment, channelID: String) async throws -> String
+    /// 暗号化チャンネルの添付の暗号文を上げ、添付の ID を返す。
+    func uploadEncrypted(_ ciphertext: Data, channelID: String) async throws -> String
     func send(id: String, channelID: String, content: String, parentID: String?, attachmentIDs: [String], sensitiveAttachmentIDs: [String]) async throws -> Message
     func edit(id: String, content: String) async throws -> Message
     func delete(id: String) async throws

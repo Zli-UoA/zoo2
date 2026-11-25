@@ -10,7 +10,7 @@ protocol ConversationEncryption: AnyObject {
     /// 復号の結果が変わりうる（鍵が届いた、解錠した）たびに増える。
     var revision: Int { get }
     func decrypt(_ message: Message) -> DecryptedBody
-    func send(channelID: String, id: String, parentID: String?, body: String) async throws
+    func send(channelID: String, id: String, parentID: String?, body: String, attachments: [AttachmentInfo]) async throws
     func edit(_ message: Message, body: String) async throws
 }
 
@@ -76,7 +76,10 @@ final class E2eeController: ConversationEncryption {
     }
 
     func start() { manager.start() }
-    func stop() async { await manager.stop() }
+    func stop() async {
+        await manager.stop()
+        EncryptedAttachmentFiles.shared.removeAll()
+    }
 
     var isReady: Bool { status == .unlocked && manager.readyStore != nil }
 
@@ -167,8 +170,8 @@ final class E2eeController: ConversationEncryption {
         return result
     }
 
-    func send(channelID: String, id: String, parentID: String?, body: String) async throws {
-        try await encryption.send(channel: channelID, id: id, parent: parentID, body: body)
+    func send(channelID: String, id: String, parentID: String?, body: String, attachments: [AttachmentInfo]) async throws {
+        try await encryption.send(channel: channelID, id: id, parent: parentID, body: body, attachments: attachments)
     }
 
     func edit(_ message: Message, body: String) async throws {

@@ -442,6 +442,7 @@ final class PreviewChatClient: ChatClient {
         }
     }
     private var uploadedAttachments: [String: MessageAttachment] = [:]
+    private var encryptedUploads: [String: Data] = [:]
 
     func prepareAttachmentDraft(in workspace: WorkspaceStore) async {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -457,6 +458,12 @@ final class PreviewChatClient: ChatClient {
     func upload(_ attachment: DraftAttachment, channelID: String) async throws -> String {
         let id = UUID().uuidString.lowercased()
         uploadedAttachments[id] = MessageAttachment(id: id, file_name: attachment.fileName, content_type: attachment.contentType)
+        return id
+    }
+
+    func uploadEncrypted(_ ciphertext: Data, channelID: String) async throws -> String {
+        let id = UUID().uuidString.lowercased()
+        encryptedUploads[id] = ciphertext
         return id
     }
 

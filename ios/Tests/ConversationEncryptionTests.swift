@@ -1,3 +1,4 @@
+import ZooCrypto
 import Foundation
 import Testing
 @testable import Zoo
@@ -9,12 +10,14 @@ private final class FakeEncryption: ConversationEncryption {
     var bodies: [String: DecryptedBody] = [:]
     var sent: [(channel: String, id: String, parent: String?, body: String)] = []
     var edited: [(id: String, body: String)] = []
+    var sentAttachments: [[AttachmentInfo]] = []
     var failSend = false
 
     func decrypt(_ message: Message) -> DecryptedBody { bodies[message.id] ?? DecryptedBody(notice: E2eeText.keyMissing) }
-    func send(channelID: String, id: String, parentID: String?, body: String) async throws {
+    func send(channelID: String, id: String, parentID: String?, body: String, attachments: [AttachmentInfo]) async throws {
         if failSend { throw MessageEncryptionError.sendStaleEpoch }
         sent.append((channelID, id, parentID, body))
+        sentAttachments.append(attachments)
     }
     func edit(_ message: Message, body: String) async throws { edited.append((message.id, body)) }
 }
@@ -159,8 +162,8 @@ struct ConversationEncryptionTests {
         #expect(store.sendErrors["root"]?.contains(E2eeText.sendStaleEpoch) == true)
     }
 
-    @Test("暗号化チャンネルには、まだ添付を送れない")
-    func attachmentsAreNotSentYet() async throws {
+    @Test("暗号化チャンネルの添付は、暗号化して上げ、本文の暗号文に入れて送る")
+    func attachmentsAreEncryptedAndSent() async throws {
         let encryption = FakeEncryption()
         let store = store(encryption)
         store.drafts["root"] = "添付つき"
@@ -169,8 +172,12 @@ struct ConversationEncryptionTests {
         defer { try? FileManager.default.removeItem(at: file) }
         await store.importFiles([file], parentID: nil)
         await store.send()
-        #expect(encryption.sent.isEmpty)
-        #expect(store.sendErrors["root"] != nil)
+        #expect(encryption.sent.count == 1)
+        let info = try #require(encryption.sentAttachments.first?.first)
+        #expect(info.name == file.lastPathComponent && info.size == 1)
+        #expect(!info.file.isEmpty)
+        #expect(store.sendErrors["root"] == nil)
+        #expect(store.draftAttachments["root"]?.isEmpty ?? true)
     }
 
     @Test("暗号化チャンネルの編集は暗号化の経路へ渡す")

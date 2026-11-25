@@ -1,4 +1,6 @@
 import Foundation
+import ImageIO
+import ZooCrypto
 import Observation
 import PhotosUI
 import SwiftUI
@@ -34,6 +36,8 @@ final class ConversationStore {
     private var attachmentImportTasks: [String: Task<Void, Never>] = [:]
     private(set) var uploadStatus: [String: String] = [:]
     private var uploadedAttachmentIDs: [UUID: String] = [:]
+    /// 暗号化して上げた添付（再送で作り直さない）。鍵を含むので、メモリーだけに置く。
+    private var encryptedUploads: [UUID: AttachmentInfo] = [:]
     var sendErrors: [String: String] = [:]
     var actionError: String?
     var focusedMessageID: String? {
@@ -223,6 +227,7 @@ final class ConversationStore {
         importingAttachments = []
         draftAttachments = [:]
         uploadedAttachmentIDs = [:]
+        encryptedUploads = [:]
         uploadStatus = [:]
         sending = []
         mutationInProgress = false
@@ -406,6 +411,12 @@ final class ConversationStore {
                 }
                 let result = e2ee.decrypt(message)
                 shown.content = result.body ?? ""
+                let infos = result.payload?.attachments ?? []
+                if !infos.isEmpty {
+                    var display = shown.display_data ?? MessageDisplayData()
+                    display.attachments = infos.map { MessageAttachment(decrypted: $0) }
+                    shown.display_data = display
+                }
                 shown.e2eeNotice = result.notice ?? (result.revision == .stale ? E2eeText.revisionStale
                     : result.revision == .conflict ? E2eeText.revisionConflict : nil)
                 rows[id] = shown
@@ -420,6 +431,16 @@ final class ConversationStore {
             messages = dated.map { $0.message }
         }
         reconcileReactionWrites()
+    }
+
+    /// 画像の大きさ（暗号化した添付の `width`、`height`）。読めなければ `nil`。
+    private static func imageSize(_ data: Data, contentType: String) -> (width: UInt32, height: UInt32)? {
+        guard contentType.lowercased().hasPrefix("image/"),
+              let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int, let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0, let w = UInt32(exactly: width), let h = UInt32(exactly: height) else { return nil }
+        return (w, h)
     }
 
     func send(parentID: String? = nil) async {
@@ -450,15 +471,38 @@ final class ConversationStore {
             if channel.encrypted == true {
                 // 暗号化チャンネル：本文を暗号化して送る。サーバーに平文は渡らない。添付は、まだ送れない。
                 guard let e2ee else { throw ZooError.rejected(403, "この会話には投稿できません。") }
-                guard attachments.isEmpty else {
-                    throw MessageEncryptionError.undeliverable("暗号化された会話への添付は、まだ送信できません。")
+                var infos: [AttachmentInfo] = []
+                for (index, attachment) in attachments.enumerated() {
+                    try Task.checkCancellation()
+                    guard epoch == accessGeneration else { return }
+                    uploadStatus[key] = "ファイルを送信中（\(index + 1)/\(attachments.count)）"
+                    if var known = encryptedUploads[attachment.id] {
+                        known.sensitive = attachment.isSensitive
+                        infos.append(known)
+                        continue
+                    }
+                    // 暗号化してから上げる。ファイル名・MIME・大きさは、本文と同じ暗号文の中にだけ入れる。
+                    let plaintext = try Data(contentsOf: attachment.file.url)
+                    let encrypted = encryptAttachment(plaintext: plaintext)
+                    let id = try await client.uploadEncrypted(encrypted.ciphertext, channelID: channel.id)
+                    try Task.checkCancellation()
+                    guard epoch == accessGeneration else { return }
+                    let size = Self.imageSize(plaintext, contentType: attachment.contentType)
+                    let info = AttachmentInfo(attachmentId: id, name: attachment.fileName, mimetype: attachment.contentType,
+                                              size: UInt64(plaintext.count), width: size?.width, height: size?.height,
+                                              sensitive: attachment.isSensitive, file: encrypted.file)
+                    encryptedUploads[attachment.id] = info
+                    infos.append(info)
                 }
+                uploadStatus[key] = attachments.isEmpty ? nil : "メッセージを送信中…"
                 pendingSends[key]?.messageAttempted = true
-                try await e2ee.send(channelID: channel.id, id: pending.id, parentID: parentID, body: content)
+                try await e2ee.send(channelID: channel.id, id: pending.id, parentID: parentID, body: content, attachments: infos)
                 try Task.checkCancellation()
                 guard active, !blocked, epoch == accessGeneration else { return }
                 pendingSends[key] = nil
                 if drafts[key] == content { drafts[key] = "" }
+                draftAttachments[key]?.removeAll { attachmentIDs.contains($0.id) }
+                for id in attachmentIDs { encryptedUploads[id] = nil }
                 focusedMessageID = pending.id
                 followsFocusedMessageToLatest = true
                 return

@@ -178,6 +178,7 @@
 		CDF47B6B97F6A7B8692DD5BA /* DraftAttachment.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB537CBD3E87CD21D7A6F7FA /* DraftAttachment.swift */; };
 		CE5F7E6D9F57E6FC335A3E70 /* GlobalSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = FAAD47FFF6738DD5E157A6A9 /* GlobalSearch.swift */; };
 		CF6DC203CE2BD66846D3A82E /* AttachmentPreviewDismissGesture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BB6EEB9B3CF688AE17A971E /* AttachmentPreviewDismissGesture.swift */; };
+		D1EF6F106F164B8C3D8D0887 /* EncryptedAttachments.swift in Sources */ = {isa = PBXBuildFile; fileRef = F707CC3FCDB8E4157249FAA5 /* EncryptedAttachments.swift */; };
 		D362DAEB447798B0C26FC87C /* PreviewNotificationStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90CF169EFD87FC14EF186771 /* PreviewNotificationStorage.swift */; };
 		D3C7A21180B2680A5E52FAC8 /* ConversationEncryptionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 611F8815436C42C1E7AE73FE /* ConversationEncryptionTests.swift */; };
 		D465A498C77749369FDE697D /* CryptoStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF725375FA248F5C75335E14 /* CryptoStoreTests.swift */; };
@@ -479,6 +480,7 @@
 		F230B983DAA1A7D1DF612212 /* WorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceView.swift; sourceTree = "<group>"; };
 		F319F936598401712D26E2BC /* Message.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Message.swift; sourceTree = "<group>"; };
 		F60D13FAC3AF4D27673E7AD3 /* AttachmentVideoTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentVideoTests.swift; sourceTree = "<group>"; };
+		F707CC3FCDB8E4157249FAA5 /* EncryptedAttachments.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EncryptedAttachments.swift; sourceTree = "<group>"; };
 		F9013878118EB556FFF8679B /* ConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationView.swift; sourceTree = "<group>"; };
 		F9F30F10363C425009A500BC /* SyncCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncCache.swift; sourceTree = "<group>"; };
 		FAAD47FFF6738DD5E157A6A9 /* GlobalSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalSearch.swift; sourceTree = "<group>"; };
@@ -812,6 +814,7 @@
 				BA23AA6ED309FC33873C86DF /* E2eeController.swift */,
 				111FAF4B91FBC87D2EE0DF36 /* E2eeDeviceManager.swift */,
 				164ACCCC5DC90C3964A189A9 /* E2eeSetup.swift */,
+				F707CC3FCDB8E4157249FAA5 /* EncryptedAttachments.swift */,
 				20D98B4BD6EBD1E34085071B /* MessageEncryption.swift */,
 				11C88737BD962A470DDDCD69 /* Passkeys.swift */,
 				38F9FD9EA5349E25978E7C49 /* Reauth.swift */,
@@ -1347,6 +1350,7 @@
 				6B6933E1A14C269CC7E2D77E /* E2eeSetup.swift in Sources */,
 				7B2B0FE8A40167E74DAEF7EC /* EditMessageView.swift in Sources */,
 				BC8C3D14F46CC3B9D8684DC3 /* ElectricTransport.swift in Sources */,
+				D1EF6F106F164B8C3D8D0887 /* EncryptedAttachments.swift in Sources */,
 				21FBA003EE25E46B71570538 /* EncryptionSetupView.swift in Sources */,
 				FD354FB696C684AA39F32F4C /* Envelope.swift in Sources */,
 				CE5F7E6D9F57E6FC335A3E70 /* GlobalSearch.swift in Sources */,

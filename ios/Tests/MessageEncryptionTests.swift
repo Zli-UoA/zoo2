@@ -147,6 +147,33 @@ struct MessageEncryptionTests {
         #expect(reopened.decrypt(row(server)).body == secret)
     }
 
+    @Test func 暗号化した添付は暗号文の中にだけ入り受信端末が復号できる() async throws {
+        let (server, sender, receiver, encryption, _) = try await makePair()
+        defer { sender.cleanUp(); receiver.cleanUp(); EncryptedAttachmentFiles.shared.removeAll() }
+        let plaintext = Data("SECRET-ATTACHMENT-BYTES".utf8)
+        let encrypted = ZooCrypto.encryptAttachment(plaintext: plaintext)
+        #expect(encrypted.ciphertext != plaintext)
+        let attachmentID = "00000000-0000-4000-8000-0000000000e1"
+        let info = AttachmentInfo(attachmentId: attachmentID, name: "秘密.txt", mimetype: "text/plain", size: UInt64(plaintext.count),
+                                  width: nil, height: nil, sensitive: false, file: encrypted.file)
+        try await encryption.send(channel: channel, id: messageID, parent: nil, body: "添付つき", attachments: [info])
+        // 紐付けの ID だけを平文で送り、ファイル名や MIME は送らない。
+        #expect(server.accepted["attachment_ids"] == .array([.string(attachmentID)]))
+        #expect(server.requests.allSatisfy { !$0.contains("秘密.txt") && !$0.contains("text/plain") })
+        _ = try receiver.store.processToDevice(server.delivered, keysQuery: dump(.object(try await server.snapshot())))
+        let reader = MessageEncryption(store: { receiver.store }, api: server)
+        let decrypted = reader.decrypt(row(server))
+        let received = try #require(decrypted.payload?.attachments.first)
+        #expect(received.name == "秘密.txt" && received.mimetype == "text/plain")
+        // 表示用の行にして覚えると、暗号文から元の中身に戻せる。ハッシュが合わない暗号文は復号しない。
+        let shown = MessageAttachment(decrypted: received)
+        #expect(shown.content_type == "text/plain")
+        #expect(EncryptedAttachmentFiles.shared.decrypt(encrypted.ciphertext, id: shown.id) == plaintext)
+        var tampered = encrypted.ciphertext
+        tampered[0] ^= 1
+        #expect(EncryptedAttachmentFiles.shared.decrypt(tampered, id: shown.id) == nil)
+    }
+
     @Test func 送信した本文は送信端末でも再起動後に読める() async throws {
         let (server, sender, receiver, encryption, _) = try await makePair()
         defer { sender.cleanUp(); receiver.cleanUp() }
