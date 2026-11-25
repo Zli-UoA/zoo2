@@ -10,9 +10,10 @@ import {
 } from "../lib/e2ee/encryptionGuard";
 
 /**
- * 暗号化チャンネルの表示判定を MessagePane とキャッチアップで共有する。
- * `encrypted=false` が届いたときも、以前から暗号化と覚えているチャンネルや
- * `edm:` の暗号化DMは平文として扱わない。
+ * 暗号化チャンネルの表示判定を MessagePane・キャッチアップ・メッセージリンクの埋め込みで共有する。
+ * `encrypted=false` が届いたときも、以前から暗号化と覚えているチャンネル（`localStorage` と暗号ストアの記録）や
+ * `edm:` の暗号化DM、`ciphertext` のある行を含むチャンネルは平文として扱わない。
+ * `channelId` が `null` の間は、判定する対象がないものとして、何も問い合わせない。
  */
 export function useEncryptedDisplay({
   channelId,
@@ -20,21 +21,21 @@ export function useEncryptedDisplay({
   encrypted,
   hasCiphertext,
 }: {
-  channelId: string;
+  channelId: string | null;
   channelName?: string;
   encrypted?: boolean;
   hasCiphertext: boolean;
 }) {
   const e2ee = useE2ee();
-  if (encrypted) noteEncryptedChannel(channelId);
-  useSyncExternalStore(subscribeEncryptedChannels, encryptedChannelsVersion);
+  if (encrypted && channelId) noteEncryptedChannel(channelId);
+  useSyncExternalStore(subscribeEncryptedChannels, encryptedChannelsVersion, () => 0);
   const [knownEncrypted, setKnownEncrypted] = useState<{
     channelId: string;
     known: KnownEncryptedState;
   } | null>(null);
   useEffect(() => {
     const worker = e2ee.worker;
-    if (!worker) return;
+    if (!worker || !channelId) return;
     let active = true;
     if (encrypted) {
       void worker.request({ op: "megolmRememberEncrypted", channelId }).catch(() => undefined);
@@ -55,20 +56,22 @@ export function useEncryptedDisplay({
   }, [channelId, e2ee.worker, encrypted]);
 
   const isEdm = !!channelName?.startsWith("edm:");
-  const { downgraded, checking } = encryptionSendState({
-    channelId,
-    encrypted: !!encrypted,
-    known: !e2ee.worker
-      ? "unavailable"
-      : knownEncrypted?.channelId === channelId
-        ? knownEncrypted.known
-        : "pending",
-    channelName,
-    hasCiphertext,
-  });
+  const { downgraded, checking } = channelId
+    ? encryptionSendState({
+        channelId,
+        encrypted: !!encrypted,
+        known: !e2ee.worker
+          ? "unavailable"
+          : knownEncrypted?.channelId === channelId
+            ? knownEncrypted.known
+            : "pending",
+        channelName,
+        hasCiphertext,
+      })
+    : { downgraded: false, checking: false };
   return {
     downgraded,
     checkingEncryption: checking,
-    treatAsEncrypted: !!encrypted || isEdm || downgraded,
+    treatAsEncrypted: !!channelId && (!!encrypted || isEdm || downgraded),
   };
 }

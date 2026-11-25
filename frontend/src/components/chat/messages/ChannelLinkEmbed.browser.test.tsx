@@ -19,6 +19,7 @@ import {
   noteEncryptedChannel,
   resetSeenEncryptedChannels,
 } from "../../../lib/e2ee/encryptionGuard";
+import { E2eeContext, type E2eeContextValue } from "../../../lib/e2ee/e2ee-context";
 import { LOCALE_STORAGE_KEY } from "../../../lib/i18n/locale";
 import { CollectionsProvider } from "../../../lib/electric/collections-context";
 import type { ChannelRow, MessageRow, UserRow } from "../../../lib/electric/types";
@@ -186,6 +187,20 @@ const messages: MessageRow[] = [
   }),
 ];
 
+type WorkerRequest = (request: { op: string; channelId: string }) => Promise<unknown>;
+
+/** 暗号ストアを開いたタブ（`worker` がある）を再現する。値は 1 度だけ作り、描き直しで変えない。 */
+function cryptoStore(request: WorkerRequest): E2eeContextValue {
+  return { worker: { request } } as unknown as E2eeContextValue;
+}
+
+/** `known` の答えを返す暗号ストア。記録の依頼（`megolmRememberEncrypted`）は受けるだけ。 */
+function workerKnowing(known: (channelId: string) => Promise<boolean>) {
+  return vi.fn<WorkerRequest>(({ op, channelId }) =>
+    op === "megolmIsKnownEncrypted" ? known(channelId) : Promise.resolve(undefined),
+  );
+}
+
 interface SetupOptions {
   content: string;
   /** メッセージ取得の対象にできるチャンネル（ユーザーが見られるもの）。 */
@@ -198,6 +213,8 @@ interface SetupOptions {
   directory?: boolean;
   highlight?: string[];
   body?: "message" | "content";
+  /** 暗号ストアを開いたタブにする。省くと、暗号ストアのないタブ（`worker` がない）。 */
+  worker?: WorkerRequest;
 }
 
 function setup({
@@ -209,7 +226,9 @@ function setup({
   directory = true,
   highlight,
   body = "message",
+  worker,
 }: SetupOptions) {
+  const e2ee = worker ? cryptoStore(worker) : null;
   const bundle = createStoryCollections({
     currentUserId: "u-alice",
     users,
@@ -244,7 +263,7 @@ function setup({
       ) : (
         <MfmContent content={content} highlight={highlight} />
       );
-    return (
+    const tree = (
       <LocaleProvider>
         <CollectionsProvider value={bundle}>
           {directory ? (
@@ -257,6 +276,7 @@ function setup({
         </CollectionsProvider>
       </LocaleProvider>
     );
+    return e2ee ? <E2eeContext.Provider value={e2ee}>{tree}</E2eeContext.Provider> : tree;
   }
   const home = createRoute({ getParentRoute: () => root, path: "/", component: Body });
   const channelRoute = createRoute({
@@ -491,6 +511,95 @@ describe("暗号化の格下げ対策", () => {
     noteEncryptedChannel("c-recorded");
     setup({ content: link("c-recorded"), visible: [recorded] });
     expect(await screen.findByText("暗号化チャンネル")).toBeInTheDocument();
+  });
+});
+
+describe("暗号ストアの記録による格下げ対策", () => {
+  // `localStorage` の記録がない端末で、サーバーが `encrypted = false` を配り、平文の行が届いた場合。
+  // 暗号ストアの記録（`megolmIsKnownEncrypted`）で、暗号化チャンネルと分かる。
+  const target = link("c-recorded", "?message=m-recorded");
+  const options = { content: target, visible: [recorded] };
+
+  it("暗号ストアの記録で暗号化と分かるチャンネルは、本文を出さずに暗号化と書く", async () => {
+    const worker = workerKnowing(async (id) => id === "c-recorded");
+    setup({ ...options, worker });
+    expect(
+      await screen.findByRole("link", { name: /このメッセージは暗号化されています/ }),
+    ).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("記録済みの平文");
+    expect(worker).toHaveBeenCalledWith({ op: "megolmIsKnownEncrypted", channelId: "c-recorded" });
+  });
+
+  it("暗号ストアに記録がなければ、本文を出す", async () => {
+    setup({ ...options, worker: workerKnowing(async () => false) });
+    expect(await screen.findByRole("link", { name: /記録済みの平文/ })).toBeInTheDocument();
+    expect(screen.queryByText("このメッセージは暗号化されています")).toBeNull();
+  });
+
+  it("確認が終わるまで、平文の本文を出さず、読み込み中の枠を置く", async () => {
+    // 本文中の短い表示とカードが、それぞれ問い合わせる。どちらにも、あとで答える。
+    const answers: ((known: boolean) => void)[] = [];
+    const worker = workerKnowing(() => new Promise<boolean>((resolve) => answers.push(resolve)));
+    setup({ ...options, worker });
+    expect(await screen.findByRole("status")).toHaveTextContent("リンク先を読み込み中");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(document.body.textContent).not.toContain("記録済みの平文");
+    // 本文中のリンクも、確認が終わるまで URL のまま。
+    expect(screen.getByRole("link").textContent).toContain("/channels/c-recorded");
+
+    await act(async () => {
+      for (const answer of answers) answer(false);
+    });
+    expect(await screen.findByRole("link", { name: /記録済みの平文/ })).toBeInTheDocument();
+    // 問い合わせは、短い表示とカードの 2 回だけ。描き直しのたびに繰り返さない。
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(worker).toHaveBeenCalledTimes(2);
+  });
+
+  it("確認できなかった（問い合わせが失敗した）ときは、平文の本文を出さない", async () => {
+    const worker = workerKnowing(() => Promise.reject(new Error("store unavailable")));
+    setup({ ...options, worker });
+    await waitFor(() => expect(worker).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(document.body.textContent).not.toContain("記録済みの平文");
+    expect(screen.getByRole("status")).toBeInTheDocument();
+  });
+
+  it("本文を出さないと決まっている行は、確認を待たずに暗号化と出す", async () => {
+    setup({
+      content: link("c-downgraded", "?message=m-cipher"),
+      worker: workerKnowing(() => new Promise<boolean>(() => {})),
+    });
+    expect(
+      await screen.findByRole("link", { name: /このメッセージは暗号化されています/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("サーバーが暗号化と配るチャンネルは、暗号ストアにも覚えさせる", async () => {
+    const worker = workerKnowing(async () => false);
+    setup({ content: link("c-sealed", "?message=m-sealed"), worker });
+    await screen.findByRole("link", { name: /このメッセージは暗号化されています/ });
+    expect(worker).toHaveBeenCalledWith({
+      op: "megolmRememberEncrypted",
+      channelId: "c-sealed",
+    });
+  });
+
+  it("チャンネルだけを指すリンクも、暗号ストアの記録で暗号化チャンネルと示す", async () => {
+    setup({
+      content: link("c-recorded"),
+      visible: [recorded],
+      worker: workerKnowing(async () => true),
+    });
+    expect(await screen.findByText("暗号化チャンネル")).toBeInTheDocument();
+  });
+
+  it("一覧にない（見られない）チャンネルは、暗号ストアに問い合わせない", async () => {
+    const worker = workerKnowing(async () => true);
+    setup({ content: link("c-hidden", "?message=m-hidden"), worker });
+    expect(await screen.findByText("メッセージを表示できません")).toBeInTheDocument();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(worker).not.toHaveBeenCalledWith(expect.objectContaining({ channelId: "c-hidden" }));
   });
 });
 
@@ -731,7 +840,12 @@ describe("操作", () => {
 
 describe("画面の近くに来るまで取得しない", () => {
   /** 画面から遠い位置（スクロール枠の 3000px 下）に、`children` を置く。 */
-  async function renderFar(children: ReactNode, visible: ChannelRow[] = [general]) {
+  async function renderFar(
+    children: ReactNode,
+    visible: ChannelRow[] = [general],
+    worker?: WorkerRequest,
+  ) {
+    const e2ee = cryptoStore(worker ?? workerKnowing(async () => false));
     const bundle = createStoryCollections({
       currentUserId: "u-alice",
       users,
@@ -745,17 +859,19 @@ describe("画面の近くに来るまで取得しない", () => {
       getParentRoute: () => root,
       path: "/",
       component: () => (
-        <LocaleProvider>
-          <CollectionsProvider value={bundle}>
-            <MfmChannelsProvider channels={visible}>
-              <div data-testid="pane" style={{ height: 200, overflowY: "auto" }}>
-                <div style={{ height: 3000 }} />
-                {children}
-                <div style={{ height: 3000 }} />
-              </div>
-            </MfmChannelsProvider>
-          </CollectionsProvider>
-        </LocaleProvider>
+        <E2eeContext.Provider value={e2ee}>
+          <LocaleProvider>
+            <CollectionsProvider value={bundle}>
+              <MfmChannelsProvider channels={visible}>
+                <div data-testid="pane" style={{ height: 200, overflowY: "auto" }}>
+                  <div style={{ height: 3000 }} />
+                  {children}
+                  <div style={{ height: 3000 }} />
+                </div>
+              </MfmChannelsProvider>
+            </CollectionsProvider>
+          </LocaleProvider>
+        </E2eeContext.Provider>
       ),
     });
     const router = createRouter({
@@ -838,6 +954,20 @@ describe("画面の近くに来るまで取得しない", () => {
     await new Promise((resolve) => setTimeout(resolve, 300));
     await act(async () => setContent(link("c-general", "?message=m-general")));
     expect(await screen.findByRole("link", { name: "アメシュさん: #general" })).toBeInTheDocument();
+  });
+
+  it("画面から遠いメッセージのリンクは、暗号ストアにも問い合わせない", async () => {
+    const worker = workerKnowing(async () => false);
+    const { pane } = await renderFar(
+      <MfmContent content={link("c-general", "?message=m-general")} />,
+      [general],
+      worker,
+    );
+    expect(worker).not.toHaveBeenCalled();
+
+    pane.scrollTop = 3000;
+    expect(await screen.findByRole("link", { name: "アメシュさん: #general" })).toBeInTheDocument();
+    expect(worker).toHaveBeenCalledWith({ op: "megolmIsKnownEncrypted", channelId: "c-general" });
   });
 
   it("一度表示した短い表示は、画面から遠ざかっても、URL に戻らない", async () => {

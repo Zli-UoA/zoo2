@@ -173,8 +173,9 @@ export function ChannelLinkEmbed({
 }) {
   const { t } = useTranslation();
   const info = useChannelLinkInfo(target, directory, active);
-  // 数えるのは、リンク先のメッセージの取得を待っている間だけ。取得を始めていない（画面から遠い）間と、
-  // チャンネルの一覧の同期を待っている間（一覧にないチャンネルは、まだ取得を始められない）は数えない。
+  // 数えるのは、リンク先のメッセージの取得（と、暗号化かどうかの確認）を待っている間だけ。取得を始めて
+  // いない（画面から遠い）間と、チャンネルの一覧の同期を待っている間（一覧にないチャンネルは、まだ取得を
+  // 始められない）は数えない。
   const fetchingMessage =
     info.status === "loading" && active && directory.byId.has(target.channelId);
   const stalled = useStalled(fetchingMessage, LINK_LOAD_TIMEOUT_MS);

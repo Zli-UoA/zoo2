@@ -1,10 +1,6 @@
-import { useState, useSyncExternalStore } from "react";
+import { useState } from "react";
+import { useEncryptedDisplay } from "../../../hooks/useEncryptedDisplay";
 import { useChannelHasCiphertext, useLinkedMessageRows } from "../../../hooks/useThread";
-import {
-  encryptedChannelsVersion,
-  encryptionSendState,
-  subscribeEncryptedChannels,
-} from "../../../lib/e2ee/encryptionGuard";
 import { linkedMessageId, type ChannelLinkTarget } from "./messageLink";
 import { messageBodySource } from "./messageBodySource";
 import { messageExcerpt } from "./messageExcerpt";
@@ -100,19 +96,23 @@ export function toLinkedMessage(row: LinkedMessageRow, channel: LinkedChannel): 
  * 「見られない」とする。
  *
  * `messages` は、メッセージを取得する問い合わせの結果。`undefined` は、まだ問い合わせていない。
- * `downgraded` は、暗号化チャンネルだったのに `encrypted = false` が配られているか（暗号化の格下げ）。
- * そのチャンネルは、暗号化チャンネルとして扱う。
+ * `treatAsEncrypted` は、暗号化チャンネルとして扱うか（`useEncryptedDisplay`）。一覧の `encrypted` が
+ * `false` でも（暗号化の格下げ）、true なら暗号化チャンネルとして扱う。
+ * `checkingEncryption` は、暗号化かどうかを確かめている（確かめられなかった）か。その間は、平文の本文を
+ * 出さず、読み込み中とする。
  */
 export function resolveChannelLinkInfo({
   directory,
   target,
   messages,
-  downgraded = false,
+  treatAsEncrypted = false,
+  checkingEncryption = false,
 }: {
   directory: ChannelDirectory;
   target: ChannelLinkTarget;
   messages: { rows: readonly LinkedMessageRow[] | undefined; loading: boolean } | undefined;
-  downgraded?: boolean;
+  treatAsEncrypted?: boolean;
+  checkingEncryption?: boolean;
 }): ChannelLinkInfo {
   const messageId = linkedMessageId(target);
   const listed = directory.byId.get(target.channelId);
@@ -121,12 +121,16 @@ export function resolveChannelLinkInfo({
       ? { status: "unavailable", subject: messageId ? "message" : "channel" }
       : { status: "loading" };
   }
-  const channel = downgraded && !listed.encrypted ? { ...listed, encrypted: true } : listed;
+  const channel = treatAsEncrypted && !listed.encrypted ? { ...listed, encrypted: true } : listed;
   if (!messageId) return { status: "channel", channel };
   if (!messages || (messages.loading && !messages.rows?.length)) return { status: "loading" };
   const row = messages.rows?.find((candidate) => candidate.id === messageId);
   if (!row || row.deleted_at) return { status: "unavailable", subject: "message" };
-  return { status: "message", channel, message: toLinkedMessage(row, channel) };
+  const message = toLinkedMessage(row, channel);
+  // 暗号化かどうかが決まるまで、本文は出さない（格下げされたチャンネルに差し込まれた平文を、
+  // 確認の前に一瞬でも出さないため）。本文を出さない種類（暗号化・App）は、待たずに出す。
+  if (checkingEncryption && message.kind === "text") return { status: "loading" };
+  return { status: "message", channel, message };
 }
 
 /**
@@ -154,10 +158,6 @@ export function useChannelLinkInfo(
   if (enabled && !startedKeys.has(targetKey)) setStartedKeys(new Set(startedKeys).add(targetKey));
   const started = enabled || startedKeys.has(targetKey);
   const channel = directory.byId.get(target.channelId);
-  // 暗号化の格下げの判定（docs/e2ee.md の「暗号化の格下げを防ぐ」）。チャンネルを開いたときに覚えた
-  // 記録と、`edm:` の名前で、サーバーが `encrypted = false` を配っても暗号化として扱う。
-  // `ciphertext` のある行は、`toLinkedMessage` が行ごとに判定する。
-  useSyncExternalStore(subscribeEncryptedChannels, encryptedChannelsVersion, () => 0);
   // 同じチャンネルの別の行に暗号文があれば、その行が対象でなくても、暗号化チャンネルとして扱う
   // （`MessagePane` が、表示中の行で判定するのと同じ。読み込み済みの行だけを見て、行を取る要求は出さない）。
   // この購読は、そのチャンネルの `messages` の同期を始める。メッセージを取得する問い合わせ（下）が同じ
@@ -165,15 +165,15 @@ export function useChannelLinkInfo(
   const channelHasCiphertext = useChannelHasCiphertext(
     started && channel && messageId ? channel.id : null,
   );
-  const downgraded = channel
-    ? encryptionSendState({
-        channelId: channel.id,
-        encrypted: channel.encrypted,
-        known: "unavailable",
-        channelName: channel.name,
-        hasCiphertext: channelHasCiphertext,
-      }).downgraded
-    : false;
+  // 暗号化の判定（docs/e2ee.md の「暗号化の格下げを防ぐ」）は、`MessagePane` と同じ `useEncryptedDisplay` を
+  // 使う。サーバーが `encrypted = false` を配っても、`localStorage` と暗号ストアの記録、`edm:` の名前、
+  // 暗号文のある行で、暗号化チャンネルとして扱う。メッセージのリンクは、取得を始めてから確かめる。
+  const { treatAsEncrypted, checkingEncryption } = useEncryptedDisplay({
+    channelId: channel && (started || !messageId) ? channel.id : null,
+    channelName: channel?.name,
+    encrypted: channel?.encrypted,
+    hasCiphertext: channelHasCiphertext,
+  });
   const query = useLinkedMessageRows(started && channel ? channel.id : null, messageId);
   return resolveChannelLinkInfo({
     directory,
@@ -185,6 +185,7 @@ export function useChannelLinkInfo(
             loading: query.isLoading,
           }
         : undefined,
-    downgraded,
+    treatAsEncrypted,
+    checkingEncryption,
   });
 }

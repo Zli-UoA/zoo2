@@ -11,6 +11,7 @@ import {
 import { act, useState, type ReactNode } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 
+import { E2eeContext, type E2eeContextValue } from "../../../lib/e2ee/e2ee-context";
 import { LOCALE_STORAGE_KEY } from "../../../lib/i18n/locale";
 import { LocaleProvider } from "../../i18n/LocaleProvider";
 import { ChannelLinkEmbed, LINK_LOAD_TIMEOUT_MS } from "./ChannelLinkEmbed";
@@ -164,6 +165,24 @@ it("取得が終われば、時間がたっても、読み込めなかったと�
   expect(await screen.findByRole("link", { name: /遅れて届いた本文/ })).toBeInTheDocument();
   await advance(LINK_LOAD_TIMEOUT_MS * 3);
   expect(screen.queryByText("リンク先を読み込めませんでした")).toBeNull();
+});
+
+it("暗号化かどうかの確認が終わらないまま一定時間たつと、本文を出さず、読み込めなかったと書く", async () => {
+  // 取得は終わっているが、暗号ストアが答えない。本文は出さない。
+  query.current = { data: [row], isLoading: false };
+  const e2ee = {
+    worker: { request: () => new Promise(() => {}) },
+  } as unknown as E2eeContextValue;
+  mount(() => (
+    <E2eeContext.Provider value={e2ee}>
+      <ChannelLinkEmbed target={target} directory={directory} />
+    </E2eeContext.Provider>
+  ));
+  await screen.findByRole("status");
+  expect(document.body.textContent).not.toContain("遅れて届いた本文");
+  await advance(LINK_LOAD_TIMEOUT_MS + 1_000);
+  expect(screen.getByText("リンク先を読み込めませんでした")).toBeInTheDocument();
+  expect(document.body.textContent).not.toContain("遅れて届いた本文");
 });
 
 it("読み込み中の枠が要らない画面（showFallback が false）では、何も出さない", async () => {

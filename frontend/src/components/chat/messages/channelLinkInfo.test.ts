@@ -252,12 +252,16 @@ describe("resolveChannelLinkInfo", () => {
 });
 
 describe("暗号化の判定（格下げ対策）", () => {
-  const resolve = (channel: LinkedChannel, rows: ReturnType<typeof row>[], downgraded = false) =>
+  const resolve = (
+    channel: LinkedChannel,
+    rows: ReturnType<typeof row>[],
+    treatAsEncrypted = false,
+  ) =>
     resolveChannelLinkInfo({
       directory: directory([channel]),
       target: messageTarget(channel.id, "m1"),
       messages: { rows, loading: false },
-      downgraded,
+      treatAsEncrypted,
     });
 
   it("暗号文のある行は、チャンネルが `encrypted = false` でも、本文を出さずに暗号化として扱う", () => {
@@ -285,7 +289,7 @@ describe("暗号化の判定（格下げ対策）", () => {
       directory: directory([general]),
       target: channelTarget("c-general"),
       messages: undefined,
-      downgraded: true,
+      treatAsEncrypted: true,
     });
     expect(info).toMatchObject({ status: "channel", channel: { encrypted: true } });
   });
@@ -296,9 +300,58 @@ describe("暗号化の判定（格下げ対策）", () => {
       directory: dir,
       target: channelTarget("c-general"),
       messages: undefined,
-      downgraded: true,
+      treatAsEncrypted: true,
     });
     expect(dir.byId.get("c-general")?.encrypted).toBe(false);
+  });
+});
+
+describe("暗号化かどうかを確かめている間", () => {
+  const checking = (channel: LinkedChannel, overrides: Record<string, unknown> = {}) =>
+    resolveChannelLinkInfo({
+      directory: directory([channel]),
+      target: messageTarget(channel.id, "m1"),
+      messages: { rows: [row(overrides)], loading: false },
+      checkingEncryption: true,
+    });
+
+  it("平文の本文は出さず、読み込み中とする", () => {
+    const info = checking(general, { content: "確認前の本文" });
+    expect(info).toEqual({ status: "loading" });
+    expect(JSON.stringify(info)).not.toContain("確認前の本文");
+  });
+
+  it("本文を出さないと決まっている行（暗号文の行）は、待たずに暗号化と出す", () => {
+    const info = checking(general, { ciphertext, content: "" });
+    expect(info.status === "message" && info.message.kind).toBe("encrypted");
+  });
+
+  it("本文を出さないと決まっている行（連携カード）は、待たずに App のメッセージと出す", () => {
+    const info = checking(general, { card });
+    expect(info.status === "message" && info.message.kind).toBe("app");
+  });
+
+  it("サーバーが暗号化と配るチャンネルは、待たずに暗号化と出す", () => {
+    const info = checking(sealed);
+    expect(info.status === "message" && info.message.kind).toBe("encrypted");
+  });
+
+  it("見つからないメッセージは、待たずに「表示できません」とする", () => {
+    expect(checking(general, { id: "other" })).toEqual({
+      status: "unavailable",
+      subject: "message",
+    });
+  });
+
+  it("チャンネルだけを指すリンクは、本文がないので、待たずに出す", () => {
+    expect(
+      resolveChannelLinkInfo({
+        directory: directory([general]),
+        target: channelTarget("c-general"),
+        messages: undefined,
+        checkingEncryption: true,
+      }).status,
+    ).toBe("channel");
   });
 });
 
