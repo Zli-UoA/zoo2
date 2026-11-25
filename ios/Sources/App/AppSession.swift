@@ -188,6 +188,14 @@ final class AppSession {
         let journal = KeychainCallSessionJournal(account: SyncCache.connectionKey(api.settings) + ":" + user.id)
         let calls = CallStore(client: client, userID: user.id, sessionJournal: Self.isUITesting ? nil : journal)
         let workspace = WorkspaceStore(client: client, user: user, calls: calls)
+        if !Self.isUITesting, let files = try? CryptoStoreFiles.ios(root: CryptoStoreFiles.defaultRoot(), server: api.settings.server, userID: user.id) {
+            let controller = E2eeController.make(api: api, userID: user.id, files: files)
+            let reauthenticator = Reauthenticator(auth: authentication)
+            controller.reauthenticate = { try await reauthenticator.idToken() }
+            controller.rpID = URL(string: api.settings.issuer)?.host ?? ""
+            workspace.e2ee = controller
+            controller.start()
+        }
         sync.onChannelRevoked = { [weak workspace] id, channel in workspace?.revokeChannel(id, retaining: channel) }
         sync.onChannelAuthorized = { [weak workspace] id in workspace?.calls.authorizeChannel(id) }
         workspace.onExpiredSession = { [weak self, weak workspace] in

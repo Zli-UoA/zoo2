@@ -6,7 +6,7 @@ enum WorkspaceTab: Hashable {
 }
 
 enum WorkspaceSheet: Identifiable {
-    case createChannel, createDirectMessage, browseChannels, profile
+    case createChannel, createDirectMessage, browseChannels, profile, encryption
     case draftDirectMessage(String)
     case channelDetails(Channel)
     case messageActions(MessageActionSheet)
@@ -18,6 +18,7 @@ enum WorkspaceSheet: Identifiable {
         case .draftDirectMessage: "draft-dm"
         case .browseChannels: "browse-channels"
         case .profile: "profile"
+        case .encryption: "encryption"
         case .channelDetails(let channel): "details-\(channel.id)"
         case .messageActions(let sheet): sheet.id.uuidString
         }
@@ -130,6 +131,8 @@ final class WorkspaceStore {
     }
     @ObservationIgnored var onExpiredSession: (() -> Void)?
     @ObservationIgnored private var conversations: [String: ConversationStore] = [:]
+    /// 暗号化チャンネルの復号と送信、初回設定と解錠（#685）。プレビューなどでは `nil`。
+    var e2ee: E2eeController?
     private(set) var active = true
     private var destinationGeneration = UUID()
     private var channelGeneration = UUID()
@@ -424,6 +427,7 @@ final class WorkspaceStore {
     func conversation(for channel: Channel) -> ConversationStore {
         if let existing = conversations[channel.id] { return existing }
         let store = ConversationStore(channel: channel, client: client, userID: user.id)
+        store.e2ee = e2ee
         store.canonicalEmoji = { [weak self] value in
             self?.emojisByKey[value].map { ":\($0.name):" } ?? ReactionEmoji.key(value)
         }
@@ -725,6 +729,8 @@ final class WorkspaceStore {
         memberRequests = [:]
         conversations.values.forEach { $0.shutdown() }
         conversations.removeAll()
+        if let e2ee { Task { await e2ee.stop() } }
+        e2ee = nil
         videoPlayback.stop()
         images.close()
         calls.shutdown()

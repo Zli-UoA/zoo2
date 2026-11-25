@@ -40,6 +40,8 @@ final class ConversationStore {
         didSet { followsFocusedMessageToLatest = false }
     }
     private(set) var followsFocusedMessageToLatest = false
+    /// 暗号化チャンネルの復号と送信（#685）。ないとき（プレビューなど）は、暗号化チャンネルを開けない。
+    @ObservationIgnored var e2ee: (any ConversationEncryption)?
     @ObservationIgnored var onExpiredSession: (() -> Void)?
     @ObservationIgnored var onAccessRevoked: (() -> Void)?
     @ObservationIgnored var onRead: (() -> Void)?
@@ -81,9 +83,20 @@ final class ConversationStore {
         typing.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
     }
 
-    var canPost: Bool { active && !blocked && !showingCachedMessages && channel.canPost }
+    /// 暗号化チャンネルを、この端末で読み書きできる（復号の仕組みがある）。
+    var supportsEncryption: Bool { e2ee != nil }
+    /// 復号の結果が変わりうるたびに増える（鍵が届いた、解錠した）。
+    var decryptionRevision: Int { e2ee?.revision ?? 0 }
+    private var channelAllowsPosting: Bool {
+        guard channel.encrypted == true else { return channel.canPost }
+        return channel.archive_at == nil && channel.deleted_at == nil && e2ee?.isReady == true
+    }
+    var canPost: Bool { active && !blocked && !showingCachedMessages && channelAllowsPosting }
     var postingRestrictionMessage: String? {
-        if channel.encrypted == true { return "暗号化された会話には送信できません" }
+        if channel.encrypted == true {
+            guard e2ee != nil else { return "暗号化された会話には送信できません" }
+            if e2ee?.isReady != true { return E2eeText.sendNeedsUnlock }
+        }
         if !active || blocked || channel.deleted_at != nil { return "このチャンネルには送信できません" }
         if channel.archive_at != nil { return "アーカイブ済みのチャンネルです" }
         return nil
@@ -216,6 +229,7 @@ final class ConversationStore {
     }
 
     func update(_ channel: Channel) {
+        let previouslyEncrypted = self.channel.encrypted
         if channel.encrypted != self.channel.encrypted {
             streamGeneration = UUID()
             accessGeneration = UUID()
@@ -229,11 +243,13 @@ final class ConversationStore {
             onAccessRevoked?()
             messages = []; remoteMessages = []; localWrites = [:]
         }
+        // 暗号化に変わったら、暗号化チャンネルとして読み直す（平文の行は消した）。
+        if channel.encrypted != previouslyEncrypted, supportsEncryption { syncRequest = UUID() }
     }
 
     func run() async {
         guard !Task.isCancelled else { return }
-        guard active, channel.encrypted != true else { loading = false; return }
+        guard active, channel.encrypted != true || supportsEncryption else { loading = false; return }
         let epoch = UUID()
         streamGeneration = epoch
         blocked = false
@@ -242,7 +258,8 @@ final class ConversationStore {
         while active, !Task.isCancelled, epoch == streamGeneration {
             do {
                 var writesAtStart = reactionWrites
-                let request = feedRequest
+                var request = feedRequest
+                request.encrypted = channel.encrypted == true
                 try await client.observeMessageFeed(channelID: channel.id, request: request) { update in
                     guard self.active, !Task.isCancelled, self.streamGeneration == epoch else { return }
                     self.showingCachedMessages = update.fromCache
@@ -324,8 +341,14 @@ final class ConversationStore {
         syncError = "このチャンネルを閲覧できません。一覧を更新してください。"
     }
 
-    private func apply(_ snapshot: [Message]) {
+    func apply(_ snapshot: [Message]) {
         remoteMessages = snapshot
+        render()
+    }
+
+    /// 復号の結果が変わりうるとき（鍵が届いた、解錠した）に、表示を作り直す。
+    func redecrypt() {
+        guard channel.encrypted == true, e2ee != nil else { return }
         render()
     }
 
@@ -356,6 +379,24 @@ final class ConversationStore {
             rows[id] = nil
         }
         rows = rows.filter { $0.value.deleted_at == nil }
+        if channel.encrypted == true, let e2ee {
+            // 復号した本文は、この表示のためだけにメモリーに置く（保存しない）。
+            for (id, message) in rows {
+                var shown = message
+                // 暗号文のない（平文の）行は、サーバーが `content` を返していても表示しない。
+                guard message.ciphertext != nil else {
+                    shown.content = ""
+                    shown.e2eeNotice = E2eeText.unencrypted
+                    rows[id] = shown
+                    continue
+                }
+                let result = e2ee.decrypt(message)
+                shown.content = result.body ?? ""
+                shown.e2eeNotice = result.notice ?? (result.revision == .stale ? E2eeText.revisionStale
+                    : result.revision == .conflict ? E2eeText.revisionConflict : nil)
+                rows[id] = shown
+            }
+        }
         if rows != messagesByID {
             // 比較のたびに日時を解析すると、長い履歴の更新中にメインスレッドを占有する。
             var dated: [(message: Message, date: Date)] = rows.values.map { ($0, $0.date ?? .distantPast) }
@@ -392,6 +433,22 @@ final class ConversationStore {
         sendErrors[key] = nil
         defer { if epoch == accessGeneration { sending.remove(key); uploadStatus[key] = nil } }
         do {
+            if channel.encrypted == true {
+                // 暗号化チャンネル：本文を暗号化して送る。サーバーに平文は渡らない。添付は、まだ送れない。
+                guard let e2ee else { throw ZooError.rejected(403, "この会話には投稿できません。") }
+                guard attachments.isEmpty else {
+                    throw MessageEncryptionError.undeliverable("暗号化された会話への添付は、まだ送信できません。")
+                }
+                pendingSends[key]?.messageAttempted = true
+                try await e2ee.send(channelID: channel.id, id: pending.id, parentID: parentID, body: content)
+                try Task.checkCancellation()
+                guard active, !blocked, epoch == accessGeneration else { return }
+                pendingSends[key] = nil
+                if drafts[key] == content { drafts[key] = "" }
+                focusedMessageID = pending.id
+                followsFocusedMessageToLatest = true
+                return
+            }
             var uploaded: [MessageAttachment] = []
             for (index, attachment) in attachments.enumerated() {
                 try Task.checkCancellation()
@@ -444,6 +501,16 @@ final class ConversationStore {
         let epoch = accessGeneration
         mutationInProgress = true
         defer { if epoch == accessGeneration { mutationInProgress = false } }
+        if channel.encrypted == true {
+            do {
+                guard let e2ee else { return false }
+                try await e2ee.edit(message, body: content)
+                try Task.checkCancellation()
+                guard active, !blocked, epoch == accessGeneration else { return false }
+                actionError = nil
+                return true
+            } catch { if epoch == accessGeneration { reportMutation(error) }; return false }
+        }
         do {
             let updated = try await client.edit(id: message.id, content: content)
             try Task.checkCancellation()

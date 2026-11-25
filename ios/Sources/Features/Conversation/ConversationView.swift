@@ -34,10 +34,13 @@ struct ConversationView: View {
                     .lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, AppDesign.horizontalInset).padding(.bottom, AppDesign.spacing)
             }
-            if store.channel.encrypted == true {
+            if store.channel.encrypted == true && !store.supportsEncryption {
                 ContentUnavailableView("暗号化された会話", systemImage: "lock.shield",
                                        description: Text("この iOS 版では暗号化された会話をまだ開けません。対応済みの Zoo クライアントをご利用ください。"))
             } else {
+                if store.channel.encrypted == true, let e2ee = workspace.e2ee, !e2ee.isReady {
+                    EncryptionUnlockBanner(e2ee: e2ee) { workspace.presentedSheet = .encryption }
+                }
                 if let error = store.syncError ?? store.reactionSyncError ?? store.attachmentSyncError {
                     HStack {
                         Label(error, systemImage: "wifi.exclamationmark").font(.caption)

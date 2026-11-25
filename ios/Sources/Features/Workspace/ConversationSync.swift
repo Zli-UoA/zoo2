@@ -44,7 +44,7 @@ struct ConversationSync: ViewModifier {
 
     func body(content: Content) -> some View {
         let store = activeConversation
-        let readable = store.flatMap { !$0.blocked && $0.channel.encrypted != true ? $0 : nil }
+        let readable = store.flatMap { !$0.blocked && ($0.channel.encrypted != true || $0.supportsEncryption) ? $0 : nil }
         let attachments = readable.flatMap { $0.needsAttachmentStream ? $0 : nil }
         let reactions = readable.flatMap { $0.needsReactionStream ? $0 : nil }
         let authors = readable.map { Authors(channelID: $0.channel.id, ids: Set($0.messages.map(\.user_id))) }
@@ -62,6 +62,8 @@ struct ConversationSync: ViewModifier {
                 await readable.run()
             }
             .task(id: readable?.channel.id) { if let readable { await workspace.loadMembers(channelID: readable.channel.id) } }
+            // 鍵が届いた、解錠した：読めなかったメッセージを読み直す。
+            .task(id: readable?.decryptionRevision) { readable?.redecrypt() }
             .task(id: attachments?.syncRequest) { await attachments?.runAttachments() }
             .task(id: reactions?.syncRequest) { await reactions?.runReactions() }
             .task(id: readable?.reactionResyncTicket) {

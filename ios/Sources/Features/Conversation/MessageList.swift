@@ -463,13 +463,20 @@ struct MessageList: View {
                     .frame(minHeight: message.content.isEmpty && hasFullWidthImages ? AvatarView.size : nil, alignment: .topLeading)
                     .contentShape(Rectangle())
                     .onLongPressGesture(perform: showActions, onPressingChanged: pressingChanged)
-                    if !message.content.isEmpty || attachments.isEmpty {
+                    if !message.content.isEmpty || (attachments.isEmpty && message.e2eeNotice == nil) {
                         MessageContentView(message: message, workspace: workspace, renderState: renderState)
                         .font(.body)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .accessibilityIdentifier("message-content-\(message.id)")
                         .accessibilityAction(named: "メッセージの操作", showActions)
                         .onLongPressGesture(perform: showActions, onPressingChanged: pressingChanged)
+                    }
+                    if let notice = message.e2eeNotice {
+                        // 復号できない理由や、送信者についての注意（Web の `e2ee.undecryptable.*`、`e2ee.sender.*` と同じ文言）。
+                        Label(notice, systemImage: message.content.isEmpty ? "lock.slash" : "exclamationmark.shield")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityIdentifier("message-e2ee-notice-\(message.id)")
                     }
                     MessageAttachmentsView(attachments: attachments, workspace: workspace, renderState: renderState,
                                            channelID: store.channel.id, messageID: message.id, isVisible: isVisible,
