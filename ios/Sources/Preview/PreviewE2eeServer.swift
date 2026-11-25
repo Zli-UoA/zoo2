@@ -208,7 +208,7 @@ final class PreviewE2eeRequests: E2eeRequesting {
 extension E2eeController {
     /// `--uitesting-e2ee` 用。模擬サーバーで、実際の zoo-crypto を使って、初回設定と解錠の画面を動かす。
     /// `alreadySetUp` のときは、先に別の端末で設定を済ませてから、この端末を始める（解錠が要る状態になる）。
-    static func makePreview(userID: String, alreadySetUp: Bool = false) -> E2eeController {
+    static func makePreview(userID: String, alreadySetUp: Bool = false, failingSetup: Bool = false) -> E2eeController {
         let server = PreviewE2eeServer(userID: userID)
         let controller = buildPreview(server: server, userID: userID)
         guard alreadySetUp else {
@@ -218,10 +218,10 @@ extension E2eeController {
         let other = buildPreview(server: server, userID: userID)
         Task { @MainActor in
             other.start()
-            for _ in 0..<100 where other.status == .starting { try? await Task.sleep(for: .milliseconds(100)) }
+            for _ in 0..<100 where other.status == .starting && !failingSetup { try? await Task.sleep(for: .milliseconds(100)) }
             do {
                 // 準備ができて、初回設定が成功してから、対象の端末を始める。失敗は、テストから見えるエラーにする。
-                guard other.status != .starting else { throw E2eeSetupError.noSecretStorage }
+                guard other.status != .starting, !failingSetup else { throw E2eeSetupError.noSecretStorage }
                 let start = try other.beginSetup()
                 try await other.addSetupPasskey(start, label: "iPad（iOS）")
                 try await other.completeSetup(start)
