@@ -4,9 +4,13 @@ DESTINATION ?= platform=iOS Simulator,name=iPhone 18 Pro
 DERIVED_DATA ?= .build
 WATCH_DESTINATION ?= generic/platform=watchOS Simulator
 
-.PHONY: generate build build-watch test icon
+.PHONY: crypto-xcframework generate build build-watch test icon
 
-generate:
+# zoo-crypto の XCFramework と Swift のバインディング（ZooCrypto/）。xcodegen の前に要る。
+crypto-xcframework:
+	cd .. && $(MAKE) crypto-ffi-ios
+
+generate: crypto-xcframework
 	xcodegen generate
 
 build:
