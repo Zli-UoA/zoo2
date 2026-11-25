@@ -26,6 +26,8 @@ final class FakeSetupServer: E2eeSetupAPI {
     var reauthHeaders: [String] = []
     var usedSlots: [String] = []
     var failNext: Set<String> = []
+    /// 版の作成にも、直前の再認証を求める（過去の版があるユーザーの版の作り直し）。
+    var requireReauthForVersions = false
 
     init(userID: String) { self.userID = userID }
 
@@ -119,6 +121,7 @@ final class FakeSetupServer: E2eeSetupAPI {
 
     func createBackupVersion(_ body: String, reauth: String?) async throws {
         let body = object(body)
+        if requireReauthForVersions { try requireReauth(reauth) }
         try checkDefaultKey(body)
         try fail("versions")
         versions.append(.object(["version": .string(String(versions.count + 1)), "algorithm": body["algorithm"]!,
@@ -204,6 +207,23 @@ struct E2eeSetupTests {
             if let master { #expect(server.keys["master_key"] == master, "\(stop)") }
             #expect(server.versions.count == 1, "\(stop)")
         }
+    }
+
+    @Test func 版の作り直しに再認証が要るときは解錠を失敗にせず再認証を求める() async throws {
+        let server = FakeSetupServer(userID: user)
+        let device = try Device(server)
+        defer { device.cleanUp() }
+        let start = try device.setup.begin()
+        server.failNext.insert("versions")
+        await #expect(throws: Network.self) { try await device.setup.completeSetup(start.session, reauth: "t") }
+        try device.restart()
+        server.requireReauthForVersions = true
+        let unlocked = try await device.setup.unlock(.recovery(start.recoveryKey))
+        #expect(unlocked.needsReauth)
+        #expect(!device.store.hasOwnKeys)
+        try await device.setup.saveRemaining(unlocked.session, secretsRevision: unlocked.secretsRevision, reauth: "t")
+        #expect(try await device.setup.loadStatus() == .unlocked)
+        #expect(server.versions.count == 1)
     }
 
     @Test func SSSSの保存の応答をなくしても読み直して続きを保存する() async throws {

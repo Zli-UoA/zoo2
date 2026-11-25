@@ -108,11 +108,12 @@ struct E2eeDeviceManagerTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         manager.start()
         #expect(await eventually { manager.readyStore != nil && server.registered.count == 2 })
+        // 検証が途中で終わっても、処理を続けない（一時ディレクトリーを消したあとに動かさない）。
+        await manager.stop()
         guard case .object(let first)? = server.registered.first?["device_keys"], case .object(let second)? = server.registered.last?["device_keys"] else {
             Issue.record("device_keys がない"); return
         }
         #expect(first["device_id"] != second["device_id"])
-        await manager.stop()
     }
 
     @Test func 行はIDの桁数と文字列の順に並べ文字列のjsonbも読む() throws {
@@ -126,9 +127,16 @@ struct E2eeDeviceManagerTests {
     }
 
     @Test func ワンタイム鍵の数は応答から読む() {
-        let counts = KeyCounts(.object(["one_time_key_counts": .object(["signed_curve25519": .number(50)]),
-                                        "unused_fallback_key_types": .array([.string("signed_curve25519")])]))
+        let counts = try? KeyCounts(.object(["one_time_key_counts": .object(["signed_curve25519": .number(50)]),
+                                             "unused_fallback_key_types": .array([.string("signed_curve25519")])]))
         #expect(counts == KeyCounts(oneTimeKeys: 50, hasUnusedFallbackKey: true))
-        #expect(KeyCounts(.object([:])) == KeyCounts())
+        #expect((try? KeyCounts(.object([:]))) == KeyCounts())
+        #expect((try? KeyCounts(.object(["one_time_key_counts": .object(["signed_curve25519": .number(0)])]))) == KeyCounts())
+        // 整数で表せない数や負の数は、停止せず不正な応答として扱う。
+        for bad in [1e20, -1, 1.5] {
+            #expect(throws: ZooError.self) {
+                try KeyCounts(.object(["one_time_key_counts": .object(["signed_curve25519": .number(bad)])]))
+            }
+        }
     }
 }

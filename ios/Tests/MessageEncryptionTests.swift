@@ -23,6 +23,8 @@ private final class FakeMessageServer: E2eeRequesting {
     var refuseDelivery = false
     /// `POST /api/messages` の最初の 1 回を、epoch が進んだ 409 にする。
     var staleOnce = true
+    /// `to_device` の応答に `undelivered` がない（読めない応答）。
+    var omitUndelivered = false
 
     init(setup: FakeSetupServer, sender: Device, receiver: Device) { self.setup = setup; self.sender = sender; self.receiver = receiver }
 
@@ -48,6 +50,7 @@ private final class FakeMessageServer: E2eeRequesting {
             guard case .object(let messages)? = body?["messages"], case .object(let perUser)? = messages[user],
                   let content = perUser[receiver.store.deviceID] else { fatalError() }
             delivered.append(.init(id: String(delivered.count), senderUserID: user, type: "m.room.encrypted", content: dump(content)))
+            if omitUndelivered { return .object([:]) }
             return .object(["undelivered": .array(refuseDelivery ? [.object(["user_id": .string(user), "device_id": .string(receiver.store.deviceID)])] : [])])
         case "api/messages", "api/messages/\(messageID)":
             posts += 1
@@ -60,6 +63,19 @@ private final class FakeMessageServer: E2eeRequesting {
         default:
             fatalError("Unexpected request: \(path)")
         }
+    }
+}
+
+/// 配布先の `membership_epoch` が、整数で表せない値を返す。
+@MainActor
+private final class BrokenEpochServer: E2eeRequesting {
+    let base: FakeMessageServer
+    init(base: FakeMessageServer) { self.base = base }
+    func e2eeJSON(_ path: String, method: String, body: [String: JSONValue]?) async throws -> JSONValue {
+        guard path.hasPrefix("api/e2ee/channels/") else { return try await base.e2eeJSON(path, method: method, body: body) }
+        guard case .object(var page) = try await base.e2eeJSON(path, method: method, body: body) else { return .object([:]) }
+        page["membership_epoch"] = .number(1e20)
+        return .object(page)
     }
 }
 
@@ -156,6 +172,28 @@ struct MessageEncryptionTests {
             try await encryption.send(channel: channel, id: messageID, parent: nil, body: "x")
         }
         #expect(server.posts == 0)
+    }
+
+    @Test func 鍵の配布の結果を読めなければ本文を送らない() async throws {
+        let (server, sender, receiver, encryption, _) = try await makePair()
+        defer { sender.cleanUp(); receiver.cleanUp() }
+        server.omitUndelivered = true
+        server.staleOnce = false
+        await #expect(throws: MessageEncryptionError.self) {
+            try await encryption.send(channel: channel, id: messageID, parent: nil, body: "x")
+        }
+        #expect(server.posts == 0)
+    }
+
+    @Test func epochが整数で表せなければ停止せず不正な応答にする() async throws {
+        let (server, sender, receiver, encryption, _) = try await makePair()
+        defer { sender.cleanUp(); receiver.cleanUp() }
+        let broken = BrokenEpochServer(base: server)
+        let guarded = MessageEncryption(store: { sender.store }, api: broken)
+        await #expect(throws: (any Error).self) {
+            try await guarded.send(channel: channel, id: messageID, parent: nil, body: "x")
+        }
+        _ = encryption
     }
 
     @Test func 解錠していなければ送れず復号は解錠を促す() async throws {

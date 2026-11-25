@@ -12,6 +12,14 @@ final class MemoryKey: StorageKeyBacking, @unchecked Sendable {
 
 let user = "11111111-1111-4111-8111-111111111111"
 
+/// 保存だけが失敗する保存鍵の置き場。
+struct FailingSaveKey: StorageKeyBacking {
+    let base: MemoryKey
+    func load() throws -> Data? { try base.load() }
+    func save(_ key: Data) throws { throw NSError(domain: NSOSStatusErrorDomain, code: -34018) }
+    func delete() throws { try base.delete() }
+}
+
 func makeFiles(_ key: MemoryKey = MemoryKey()) -> (CryptoStoreFiles, MemoryKey, URL) {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     return (CryptoStoreFiles(directory: directory, keys: StorageKeyStore(backing: key)), key, directory)
@@ -44,7 +52,7 @@ struct CryptoStoreTests {
         let second = try #require(try CryptoStore.open(files, userID: user))
         #expect(second.store.deviceID == deviceID)
         #expect(second.store.isRegistered)
-        #expect(second.replacedDeviceID == nil)
+        #expect(second.store.pendingDeviceDeletions.isEmpty)
         second.store.close()
     }
 
@@ -65,9 +73,47 @@ struct CryptoStoreTests {
         first.close()
         try key.delete()
         let second = try #require(try CryptoStore.open(files, userID: user))
-        #expect(second.replacedDeviceID == oldID)
+        #expect(second.store.pendingDeviceDeletions == [oldID])
         #expect(second.store.deviceID != oldID)
         second.store.close()
+    }
+
+    @Test func 作り直しの途中で失敗しても前の端末のIDを失わない() throws {
+        let key = MemoryKey()
+        let (files, _, directory) = makeFiles(key)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = try #require(try CryptoStore.open(files, userID: user)).store
+        let oldID = first.deviceID
+        first.close()
+        try key.delete()
+        // 新しい保存鍵を Keychain に書けずに失敗する（前の `state.json` はそのまま残る）。
+        let failing = CryptoStoreFiles(directory: files.directory, keys: StorageKeyStore(backing: FailingSaveKey(base: key)))
+        #expect(throws: (any Error).self) { try CryptoStore.open(failing, userID: user) }
+        // 開き直すと、前の端末の ID を取り出せる。作り直した端末の状態にも残り、消せたときだけ記録から外す。
+        let second = try #require(try CryptoStore.open(files, userID: user)).store
+        #expect(second.pendingDeviceDeletions == [oldID])
+        second.close()
+        let third = try #require(try CryptoStore.open(files, userID: user)).store
+        #expect(third.pendingDeviceDeletions == [oldID])
+        try third.clearPendingDeletion(oldID)
+        #expect(third.pendingDeviceDeletions.isEmpty)
+        third.close()
+    }
+
+    @Test func 閉じた暗号ストアは使えず消せない() throws {
+        let (files, _, directory) = makeFiles()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try #require(try CryptoStore.open(files, userID: user)).store
+        store.close()
+        #expect(throws: E2eeStoreError.closed) { try store.markRegistered() }
+        #expect(throws: E2eeStoreError.closed) { try store.acknowledged(["1"]) }
+        // 閉じたインスタンスは、開き直した暗号ストアを消せない。
+        let reopened = try #require(try CryptoStore.open(files, userID: user)).store
+        #expect(throws: E2eeStoreError.closed) { try store.destroy(files) }
+        #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("state.json").path))
+        try reopened.destroy(files)
+        // 消し終えたあとは、新しく開ける。
+        try #require(try CryptoStore.open(files, userID: user)).store.close()
     }
 
     @Test func 別のユーザーの暗号ストアは開かない() throws {
