@@ -73,9 +73,11 @@ final class E2eeController: ConversationEncryption {
             guard let self else { return }
             self.revision += 1
             // 届いた部屋の鍵（受信用のセッション）を鍵バックアップへ送る。失敗しても、次の起動時や次の鍵で再び試す。
+            let startedAt = self.unlockGeneration
             Task { @MainActor in
                 // SSSS が書き換えられていたら（別の端末で失効・解錠し直した）、解錠済みの表示を残さず、状態を読み直す。
-                if case .conflict(let code)? = try? await self.setup.uploadKeyBackup(), code == "E2EE_SSSS_CONFLICT" {
+                if case .conflict(let code)? = try? await self.setup.uploadKeyBackup(), code == "E2EE_SSSS_CONFLICT",
+                   startedAt == self.unlockGeneration {  // 送っているあいだに解錠し直していたら、その解錠を取り消さない。
                     // 競合を検出した時点で、解錠済みの表示を解く（読み直しに失敗しても残さない）。読み直せれば、正しい状態に戻る。
                     self.secretsChanged = true
                     self.status = .locked(.mismatch)
