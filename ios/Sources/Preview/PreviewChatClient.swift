@@ -103,6 +103,16 @@ final class PreviewChatClient: ChatClient {
                     content: "SwiftUI で、いつもの会話がもっと身近に。", created_at: "2026-11-18T09:01:00Z",
                     display_data: MessageDisplayData(reactions: []))
         ]
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-e2ee") {
+            // 暗号化チャンネル：鍵がまだ届いていない暗号文の行と、平文の行（表示しない）。
+            let encryptedID = "77777777-7777-4777-8777-777777777777"
+            allMessages += [
+                Message(id: "77777777-7777-4777-8777-777777777701", user_id: colleague.id, channel_id: encryptedID, content: "",
+                        created_at: "2026-11-18T09:02:00Z", ciphertext: CiphertextText("{}"), epoch: ShapeInteger(1), revision: ShapeInteger(0)),
+                Message(id: "77777777-7777-4777-8777-777777777702", user_id: colleague.id, channel_id: encryptedID,
+                        content: "これは暗号化前の平文です", created_at: "2026-11-18T09:03:00Z")
+            ]
+        }
         if ProcessInfo.processInfo.arguments.contains("--uitesting-wrapped-reactions") {
             allMessages[0].display_data?.reactions = ["👍", "❤️", "🎉", "👏", "🙌", "😂", "🙏", "👀", "😊", "🔥", "💯", "✨"].map { emoji in
                 MessageReaction(id: UUID().uuidString.lowercased(), message_id: Self.messageID, user_id: colleague.id, emoji: emoji)

@@ -49,6 +49,11 @@ final class AppSession {
             session.validatedSession = true
             let calls = CallStore(client: client, userID: client.currentUser.id, makeMedia: { PreviewCallMedia() }, permission: { true })
             session.workspace = WorkspaceStore(client: client, user: client.currentUser, recentEmojiDefaults: nil, calls: calls)
+            if let workspace = session.workspace, ProcessInfo.processInfo.arguments.contains("--uitesting-e2ee") {
+                let controller = E2eeController.makePreview(userID: client.currentUser.id)
+                workspace.e2ee = controller
+                controller.start()
+            }
             if let workspace = session.workspace, ProcessInfo.processInfo.arguments.contains("--uitesting-attachments") {
                 Task { await client.prepareAttachmentDraft(in: workspace) }
             }
