@@ -41,6 +41,10 @@ enum E2eeStoreError: Error, Equatable {
     case closed
     /// 送信者の鍵（端末）が、セッションを作ったときと変わった。そのセッションでは暗号化できない。
     case senderChanged
+    /// 終わっていない失効がある（黙って捨てない）。
+    case revocationPending
+    /// 続ける失効がない。
+    case noRevocation
 }
 
 /// 同じ暗号ストアを、ほかの場所が開いている。少し待って試し直す。
@@ -73,6 +77,8 @@ struct StoreState: Codable {
     var backup_upload: String?
     /// 解錠したあと、過去のセッションを最後まで取り込んだ鍵バックアップの版（新しい端末での解錠の手順 5）。
     var imported_backup_version: String?
+    /// 終わっていない失効の進み具合（`Revocation.pickle`。マスター鍵の秘密鍵と SSSS 鍵は入らない）。
+    var revocation: String?
 
     init(version: Int, user_id: String, device_id: String, registered: Bool, account: String, trust_store: String?) {
         self.version = version; self.user_id = user_id; self.device_id = device_id
@@ -96,6 +102,7 @@ struct StoreState: Codable {
         pending_deletions = try c.decodeIfPresent([String].self, forKey: .pending_deletions) ?? []
         backup_upload = try c.decodeIfPresent(String.self, forKey: .backup_upload)
         imported_backup_version = try c.decodeIfPresent(String.self, forKey: .imported_backup_version)
+        revocation = try c.decodeIfPresent(String.self, forKey: .revocation)
     }
 }
 
@@ -615,6 +622,89 @@ final class CryptoStore: @unchecked Sendable {
             return try inbound.decrypt(message: message)
         }
     }
+
+    // MARK: - 失効（#362）
+
+    /// 保存した失効の進み具合（秘密鍵を除く表示用の JSON。なければ `nil`）。
+    func revocationSummary() throws -> String? {
+        try lock.withLock {
+            try ensureOpen()
+            guard let sealed = state.revocation else { return nil }
+            return try peekRevocation(sealed: sealed, account: account, storageKey: storageKey)
+        }
+    }
+
+    /// 失効を始める。終わっていない失効があれば `E2eeStoreError.revocationPending`（黙って捨てない）。解錠した SSSS が前提。
+    func beginRevocation(input: String, unlocked: UnlockedSecretStorage) throws -> Revocation {
+        try lock.withLock {
+            try ensureOpen()
+            guard state.revocation == nil else { throw E2eeStoreError.revocationPending }
+            var backup: BackupDecryptionKey?
+            var userSigning: CrossSigningKeyPair?
+            if state.secrets_revision != nil, let sealed = state.own_keys {
+                let own = try OwnKeys.fromPickle(sealed: sealed, account: account, storageKey: storageKey)
+                backup = own.backupKey()
+                userSigning = own.userSigning()
+            }
+            let revocation = try ZooCrypto.beginRevocation(inputJson: input, unlocked: unlocked, trust: trust,
+                                                           localBackupKey: backup, oldUserSigning: userSigning)
+            try saveRevocationLocked(revocation)
+            return revocation
+        }
+    }
+
+    /// 保存した失効を、開け直した SSSS で続ける。
+    func resumeRevocation(unlocked: UnlockedSecretStorage) throws -> Revocation {
+        try lock.withLock {
+            try ensureOpen()
+            guard let sealed = state.revocation else { throw E2eeStoreError.noRevocation }
+            return try ZooCrypto.resumeRevocation(sealed: sealed, account: account, storageKey: storageKey, unlocked: unlocked)
+        }
+    }
+
+    /// 進み具合を保存する（保存が 1 つ済むたびに）。
+    func saveRevocation(_ revocation: Revocation) throws {
+        try lock.withLock {
+            try ensureOpen()
+            try saveRevocationLocked(revocation)
+        }
+    }
+
+    private func saveRevocationLocked(_ revocation: Revocation) throws {
+        var next = state
+        next.revocation = try revocation.pickle(account: account, storageKey: storageKey)
+        try save(next)
+        state = next
+    }
+
+    /// 失効の記録を消す（読み直して確かめたあと、またはやり直すとき）。
+    func clearRevocation() throws {
+        try lock.withLock {
+            try ensureOpen()
+            var next = state
+            next.revocation = nil
+            try save(next)
+            state = next
+        }
+    }
+
+    /// クロス署名鍵を保存したあと、記録と自分の鍵を新しい鍵にそろえ、新しい `secrets_revision` を記録する。
+    func applyRevocation(_ revocation: Revocation, secretsRevision: UInt64?) throws {
+        try lock.withLock {
+            try ensureOpen()
+            try revocation.applyToTrust(trust: trust)
+            var next = state
+            next.own_keys = try revocation.ownKeysPickle(account: account, storageKey: storageKey)
+            next.secrets_revision = secretsRevision
+            next.revocation = try revocation.pickle(account: account, storageKey: storageKey)
+            next.trust_store = try trust.pickle(account: account, storageKey: storageKey)
+            try save(next)
+            state = next
+        }
+    }
+
+    /// この端末の端末鍵（JSON。失効の署名に使う）。
+    func deviceKeysJSON() -> String { lock.withLock { account.deviceKeys() } }
 
     // MARK: - 他のユーザーの検証（SAS、#368）
 

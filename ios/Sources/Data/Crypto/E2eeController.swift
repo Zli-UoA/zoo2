@@ -57,6 +57,8 @@ final class E2eeController: ConversationEncryption {
     @ObservationIgnored private var unlockGeneration = 0
     /// SSSS が書き換えられたと分かったあと、解錠し直すまで立てる。保留中の古い読み直しが、解錠済みを書き戻さないため。
     @ObservationIgnored private var secretsChanged = false
+    /// 失効（端末の削除のあとの鍵の作り直し）。本番は `make` で作る。
+    @ObservationIgnored var revocation: E2eeRevocation?
     /// 他のユーザーの検証（SAS）。本番は `make` で作る。
     @ObservationIgnored var verification: E2eeVerification?
     /// 端末一覧の API（本番は `APIClient`）。
@@ -105,6 +107,7 @@ final class E2eeController: ConversationEncryption {
         controller.devicesAPI = api
         let verification = E2eeVerification(store: { manager.readyStore }, api: api)
         controller.verification = verification
+        controller.revocation = E2eeRevocation(store: { manager.readyStore }, api: api, setup: setup, userID: userID)
         manager.onVerifications = { verification.handle($0) }
         return controller
     }

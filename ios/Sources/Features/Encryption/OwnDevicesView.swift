@@ -10,6 +10,7 @@ struct OwnDevicesView: View {
     @State private var renaming: OwnDevice?
     @State private var draftName = ""
     @State private var removing: OwnDevice?
+    @State private var revoking = false
 
     var body: some View {
         List {
@@ -34,8 +35,14 @@ struct OwnDevicesView: View {
                 }
                 if loading && devices.isEmpty { ProgressView() }
             } footer: {
-                Text("端末を削除しても、その端末の鍵が使えなくなるだけで、失効ではありません。端末をなくした、盗まれたなどの場合は、Web 版の設定で失効してください。")
+                Text("端末を削除しても、その端末の鍵が使えなくなるだけで、失効ではありません。端末をなくした、盗まれたなどの場合は、下の「失効する」で鍵を作り直してください。")
             }
+            if e2ee.revocation != nil {
+                Section { Button("失効する…", role: .destructive) { revoking = true }.accessibilityIdentifier("revocation-open") }
+            }
+        }
+        .sheet(isPresented: $revoking, onDismiss: { Task { await load() } }) {
+            if let revocation = e2ee.revocation { RevocationView(e2ee: e2ee, revocation: revocation, devices: devices) }
         }
         .navigationTitle("端末")
         .navigationBarTitleDisplayMode(.inline)
