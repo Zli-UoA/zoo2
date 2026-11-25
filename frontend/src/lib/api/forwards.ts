@@ -503,6 +503,9 @@ export async function resolveForwardMessages(
     discardStaleSessionBucket(scopeKey, existingBucket);
   }
   const bucket = getBucket(scope);
+  const startEpoch = bucket.epoch;
+  const startAuthGen = bucket.authSessionGeneration;
+  const startTokenGen = bucket.tokenProviderGeneration;
   bucket.client = client;
   const promises: Array<[string, Promise<ResolvedForwardEntry>]> = [];
   let enqueuedNew = false;
@@ -536,6 +539,16 @@ export async function resolveForwardMessages(
   }
 
   const settled = await Promise.all(promises.map(([, p]) => p));
+  if (!isFlushStillValid(bucket, startEpoch, startAuthGen, startTokenGen)) {
+    if (!isBucketSessionFresh(bucket) || !isBucketActiveForBaseUrl(bucket)) {
+      discardBucket(bucket);
+    }
+    const aborted = new Map<string, ResolvedForwardEntry>();
+    for (const id of uniqueIds) {
+      aborted.set(id, { status: "error" });
+    }
+    return aborted;
+  }
   for (let i = 0; i < promises.length; i++) {
     out.set(promises[i]![0], settled[i]!);
   }

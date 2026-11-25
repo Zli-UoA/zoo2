@@ -762,4 +762,35 @@ describe("resolveForwardMessages", () => {
       expect(cachedForwardEntry(scopeA, targetId)).toBeUndefined();
     }
   });
+
+  it("discards chunk 1 results too if tokenProvider changes while awaiting chunk 2", async () => {
+    vi.useFakeTimers();
+    setTokenProvider(() => "token-1");
+    const { client, post, pendingResolvers, seenRequests } = makeDeferredPost();
+    const manyIds = Array.from(
+      { length: MAX_RESOLVE_FORWARD_IDS + 1 },
+      (_, i) => `m-mchunk-${i + 1}`,
+    );
+    const lastId = `m-mchunk-${MAX_RESOLVE_FORWARD_IDS + 1}`;
+
+    const req = resolveForwardMessages(client, scopeA, manyIds);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(post).toHaveBeenCalledTimes(1);
+
+    pendingResolvers[0]!(
+      Object.fromEntries(seenRequests[0]!.map((id) => [id, okItem(id, `chunk1-${id}`)])),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(post).toHaveBeenCalledTimes(2);
+
+    setTokenProvider(() => "token-2");
+    pendingResolvers[1]!({ [lastId]: okItem(lastId, "chunk2-stale") });
+
+    const res = await req;
+    expect(res.get(manyIds[0]!)).toEqual({ status: "error" });
+    expect(res.get(lastId)).toEqual({ status: "error" });
+    expect(cachedForwardEntry(scopeA, manyIds[0]!)).toBeUndefined();
+    expect(cachedForwardEntry(scopeA, lastId)).toBeUndefined();
+  });
 });
