@@ -84,8 +84,22 @@ final class SystemPasskeyClient: NSObject, PasskeyClient {
                              prfOutput: try PasskeyCoding.checkedOutput(output))
     }
 
+    /// 保留中のパスキーの要求を取り消す（シートを閉じたとき、新しい要求を始めるとき）。
+    func cancel() {
+        controller?.cancel()
+        finish(.failure(ASAuthorizationError(.canceled)))
+    }
+
+    private func finish(_ result: Result<ASAuthorization, any Error>) {
+        continuation?.resume(with: result)
+        continuation = nil
+        controller = nil
+    }
+
     private func perform(_ request: ASAuthorizationRequest) async throws -> ASAuthorization {
-        try await withCheckedThrowingContinuation { continuation in
+        // 前の要求が応答しないまま残っていても、新しい要求は始められる（前のものは取り消す）。
+        cancel()
+        return try await withCheckedThrowingContinuation { continuation in
             self.continuation = continuation
             let controller = ASAuthorizationController(authorizationRequests: [request])
             controller.delegate = self
@@ -99,19 +113,11 @@ final class SystemPasskeyClient: NSObject, PasskeyClient {
 extension SystemPasskeyClient: ASAuthorizationControllerDelegate {
     nonisolated func authorizationController(controller: ASAuthorizationController,
                                              didCompleteWithAuthorization authorization: ASAuthorization) {
-        Task { @MainActor in
-            self.continuation?.resume(returning: authorization)
-            self.continuation = nil
-            self.controller = nil
-        }
+        Task { @MainActor in self.finish(.success(authorization)) }
     }
 
     nonisolated func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: any Error) {
-        Task { @MainActor in
-            self.continuation?.resume(throwing: error)
-            self.continuation = nil
-            self.controller = nil
-        }
+        Task { @MainActor in self.finish(.failure(error)) }
     }
 }
 

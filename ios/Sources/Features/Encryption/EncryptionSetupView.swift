@@ -64,6 +64,8 @@ struct EncryptionSetupView: View {
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("閉じる") { dismiss() } } }
             .disabled(busy)
             .onChange(of: e2ee.status) { _, status in if status == .unlocked && start == nil { dismiss() } }
+            // シートを閉じたら、保留中のパスキーの要求を取り消す。
+            .onDisappear { e2ee.passkeys.cancel() }
         }
     }
 
@@ -141,6 +143,7 @@ struct EncryptionSetupView: View {
         case PasskeyError.prfUnsupported: "このパスキーの保存先は、暗号化の解錠に使えません。リカバリーキーをお使いください。"
         case PasskeyError.originNotAllowed: "このアプリでは、まだパスキーを使えません。リカバリーキーをお使いください。"
         case PasskeyError.noSlot: "パスキーで解錠する設定がありません。リカバリーキーをお使いください。"
+        case PasskeyError.unknown: "パスキーを使えませんでした。リカバリーキーだけで設定する場合は、「パスキーでも解錠できるようにする」をオフにしてください。"
         case let reauth as ReauthError:
             switch reauth {
             case .denied: "再認証を取りやめました。"
