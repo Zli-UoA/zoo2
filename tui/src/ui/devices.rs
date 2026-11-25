@@ -591,6 +591,11 @@ impl Devices {
                 };
             }
             Outcome::ReauthWaiting { url, port } => {
+                // 取りやめたあとに届いた知らせでは、画面を戻さず、ブラウザーも開かない（戻すと次の Esc で処理を
+                // 止め、失効のセッションを失う）。
+                if self.reauth_cancelling {
+                    return;
+                }
                 if !self.over_ssh {
                     reauth::open_browser(&url);
                 }
@@ -2225,6 +2230,16 @@ mod tests {
         press(&mut devices, KeyCode::Esc);
         assert!(matches!(devices.screen, Screen::Working(_)));
         assert_eq!(devices.generation, generation, "処理を止めない");
+        // 取りやめのあとに再認証の URL の知らせが届いても、再認証の画面に戻さない。
+        devices.over_ssh = true;
+        devices.on_event(DevicesEvent {
+            generation,
+            outcome: Outcome::ReauthWaiting {
+                url: "http://127.0.0.1:1/".into(),
+                port: 1,
+            },
+        });
+        assert!(matches!(devices.screen, Screen::Working(_)));
     }
 
     #[test]
