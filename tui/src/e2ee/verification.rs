@@ -463,7 +463,10 @@ impl VerificationController {
                 this.drain().await;
                 let txns: Vec<String> = this.shared().unsent.keys().cloned().collect();
                 for txn in txns {
-                    let items = this.shared().unsent.remove(&txn).unwrap_or_default();
+                    let (items, epoch) = {
+                        let mut shared = this.shared();
+                        (shared.unsent.remove(&txn).unwrap_or_default(), shared.epoch)
+                    };
                     // 期限を過ぎたものは捨てる。捨てた端末あての後のメッセージも、順を守れないので捨てる。
                     let mut dead = BTreeSet::new();
                     let live: Vec<PendingSend> = items
@@ -485,7 +488,7 @@ impl VerificationController {
                             error: None,
                         });
                     } else {
-                        this.deliver(&txn, live).await;
+                        this.deliver(&txn, live, epoch).await;
                     }
                 }
                 let expired: Vec<(SasView, Vec<VerificationOutgoing>)> = this
@@ -672,9 +675,13 @@ impl VerificationController {
 
     /// 送信待ちを送り（前に送れなかった分から順に）、検証が終わっていたら保存を始める。
     async fn flush(&self, txn: &str) {
-        let items = self.shared().unsent.remove(txn).unwrap_or_default();
+        // 取り出すのと同じロックで世代を読み、送る処理に渡す（取り出したあとに止めたら送らない）。
+        let (items, epoch) = {
+            let mut shared = self.shared();
+            (shared.unsent.remove(txn).unwrap_or_default(), shared.epoch)
+        };
         if !items.is_empty() {
-            self.deliver(txn, items).await;
+            self.deliver(txn, items, epoch).await;
         }
         let done = self
             .shared()
@@ -690,9 +697,9 @@ impl VerificationController {
     }
 
     /// `items` を送り、送れなかった分を送信待ちに残す（次の確認で送り直す）。
-    async fn deliver(&self, txn: &str, items: Vec<PendingSend>) {
-        let epoch = self.epoch();
-        let undelivered = self.send_items(items).await;
+    /// `epoch` は `items` を取り出したときの世代。
+    async fn deliver(&self, txn: &str, items: Vec<PendingSend>, epoch: u64) {
+        let undelivered = self.send_items(items, epoch).await;
         let kept = !undelivered.is_empty();
         {
             // 画面を閉じた検証（取りやめを送れなかった）も残す。止めた（dispose）あとは残さない。
@@ -713,8 +720,10 @@ impl VerificationController {
     /// 送るメッセージを、宛先の端末ごとに Olm で暗号化して送る。送信用の Olm セッションは鍵の配布と同じものを
     /// 使い回し、ない端末は先に `keys/claim` で払い出す。メッセージごとに分けて、この順に送る。送れなかった
     /// 分を送る順に返す（ある端末に送れなかったら、その端末あての後のメッセージは送らずに返す）。
-    async fn send_items(&self, mut items: Vec<PendingSend>) -> Vec<PendingSend> {
-        let epoch = self.epoch();
+    async fn send_items(&self, mut items: Vec<PendingSend>, epoch: u64) -> Vec<PendingSend> {
+        if self.epoch() != epoch {
+            return items;
+        }
         let Some(store) = self.store() else {
             return items;
         };

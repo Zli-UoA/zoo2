@@ -324,6 +324,8 @@ pub struct Devices {
     device_limit: Option<watch::Receiver<Option<Vec<Value>>>>,
     /// 上限のときに選んだ、削除する端末。
     pub limit_selected: BTreeSet<String>,
+    /// 直近の描画で出した上限の知らせ（[`Self::sync_device_limit`] が置く）。
+    limit_shown: Option<Vec<Value>>,
     session: Option<RevocationSession>,
     /// 失効でやり直すときに引き継ぐ、範囲と削除した端末。
     restart: Option<RestartContext>,
@@ -400,6 +402,7 @@ impl Devices {
             scroll: 0,
             device_limit: None,
             limit_selected: BTreeSet::new(),
+            limit_shown: None,
             session: None,
             restart: None,
             replacing: None,
@@ -507,9 +510,12 @@ impl Devices {
     }
 
     /// 端末の上限の知らせを初めて受け取ったら、30 日以上使っていない端末を選んだ状態にする（画面を開いた
-    /// あとに届いても選ぶ。同じ知らせのあいだは、利用者が選び直したものを上書きしない）。
+    /// あとに届いても選ぶ。同じ知らせのあいだは、利用者が選び直したものを上書きしない）。描画の前に呼び、
+    /// 読んだ値を `limit_shown` に置く。表示とキー操作はこの値だけを使う（描画していない知らせで、画面に
+    /// 出ていない選択の端末を削除しないため）。
     pub fn sync_device_limit(&mut self) {
-        match self.device_limit() {
+        self.limit_shown = self.device_limit();
+        match self.limit_shown.clone() {
             Some(stale) if !self.limit_applied => {
                 self.limit_selected = stale
                     .iter()
@@ -828,7 +834,11 @@ impl Devices {
         if let Some(sas) = &self.sas {
             sas.tick();
         }
-        self.sync_device_limit();
+    }
+
+    /// 直近の描画で出した上限の知らせ（`stale_devices`）。
+    pub fn shown_device_limit(&self) -> Option<&Vec<Value>> {
+        self.limit_shown.as_ref()
     }
 
     /// 次に前面に出す、終わっていない検証。
@@ -912,8 +922,6 @@ impl Devices {
             self.on_sas_key(key);
             return true;
         }
-        // 上限の知らせが届いていれば、キーを受け付ける前に候補を選んでおく（定期的な処理を待たない）。
-        self.sync_device_limit();
         if key.code == KeyCode::Esc {
             match &self.screen {
                 // 再認証を取りやめて、失効のセッションが戻るのを待っているあいだは、処理を止めない（止めると
@@ -1215,7 +1223,7 @@ impl Devices {
                 return Screen::Loading;
             }
             KeyCode::Char('R') => return self.start_revocation(),
-            KeyCode::Char(' ') if self.device_limit().is_some() => {
+            KeyCode::Char(' ') if self.shown_device_limit().is_some() => {
                 if let Some(Item::Device(index)) = item
                     && let Some(device) = self.overview.devices.get(index)
                     && !device.current
@@ -1224,7 +1232,7 @@ impl Devices {
                     self.limit_selected.insert(device.device_id.clone());
                 }
             }
-            KeyCode::Char('X') if self.device_limit().is_some() => {
+            KeyCode::Char('X') if self.shown_device_limit().is_some() => {
                 let ids: Vec<String> = self.limit_selected.iter().cloned().collect();
                 if ids.is_empty() {
                     return Screen::Overview;
@@ -2240,6 +2248,10 @@ mod tests {
             },
         });
         assert!(matches!(devices.screen, Screen::Working(_)));
+        // そのあとの Esc でも、待っている処理を止めない。
+        press(&mut devices, KeyCode::Esc);
+        assert!(matches!(devices.screen, Screen::Working(_)));
+        assert_eq!(devices.generation, generation, "処理を止めない");
     }
 
     #[test]

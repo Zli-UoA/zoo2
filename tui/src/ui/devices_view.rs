@@ -780,7 +780,7 @@ fn overview(app: &App) -> (Vec<Line<'static>>, usize, Line<'static>) {
     let selected = items.get(devices.cursor).copied();
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut cursor_line = 0;
-    let limit = devices.device_limit();
+    let limit = devices.shown_device_limit().cloned();
 
     if let Some(revocation) = &overview.revocation {
         lines.push(warn("失効が終わっていません"));
@@ -815,6 +815,7 @@ fn overview(app: &App) -> (Vec<Line<'static>>, usize, Line<'static>) {
     lines.push(heading("端末"));
     lines.push(Line::styled("暗号化の鍵を持つ端末の一覧です。", DIM));
     let stale: std::collections::BTreeSet<String> = limit
+        .clone()
         .unwrap_or_default()
         .iter()
         .filter_map(|d| d.get("device_id").and_then(serde_json::Value::as_str))
@@ -825,7 +826,7 @@ fn overview(app: &App) -> (Vec<Line<'static>>, usize, Line<'static>) {
         if is_selected {
             cursor_line = lines.len();
         }
-        let marker = (devices.device_limit().is_some() && !device.current)
+        let marker = (limit.is_some() && !device.current)
             .then(|| devices.limit_selected.contains(&device.device_id));
         let mut device_lines = device_line(app, device, is_selected, marker);
         if stale.contains(&device.device_id) {
