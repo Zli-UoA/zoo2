@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import Zoo
 
-private final class MemoryKey: StorageKeyBacking, @unchecked Sendable {
+final class MemoryKey: StorageKeyBacking, @unchecked Sendable {
     private let lock = NSLock()
     private var value: Data?
     func load() throws -> Data? { lock.withLock { value } }
@@ -10,9 +10,9 @@ private final class MemoryKey: StorageKeyBacking, @unchecked Sendable {
     func delete() throws { lock.withLock { value = nil } }
 }
 
-private let user = "11111111-1111-4111-8111-111111111111"
+let user = "11111111-1111-4111-8111-111111111111"
 
-private func makeFiles(_ key: MemoryKey = MemoryKey()) -> (CryptoStoreFiles, MemoryKey, URL) {
+func makeFiles(_ key: MemoryKey = MemoryKey()) -> (CryptoStoreFiles, MemoryKey, URL) {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     return (CryptoStoreFiles(directory: directory, keys: StorageKeyStore(backing: key)), key, directory)
 }

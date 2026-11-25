@@ -76,6 +76,7 @@
 		59BA0FE0798C3C24ECA09B9A /* ZooWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 3C798D4514312CC0982CDC89 /* ZooWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		59C0C5DAB08E66F2221143F8 /* InboxClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE28572B36977689E59203F7 /* InboxClient.swift */; };
 		5A7A3578F818354BFCC65908 /* SyncSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B5A97DE9BE174514BFEFB1C /* SyncSession.swift */; };
+		5AD71F79A03DAD18C534159F /* E2eeSetupTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB4705B390A717E20A055E9C /* E2eeSetupTests.swift */; };
 		5DB7DFA19CDDFFDE5AFE7D4E /* CallStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12D51F722D7C4B8DBFB9B6D3 /* CallStore.swift */; };
 		5FE31C613A246316C3EEB0EC /* PDFPreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0475FD843E214D1E1FECC2B7 /* PDFPreviewTests.swift */; };
 		6146398707AA56F736B1039F /* ZooWatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6ABBF4DB653068B85AF91376 /* ZooWatchApp.swift */; };
@@ -87,6 +88,7 @@
 		668F32106D62E0CC1E7850A2 /* ProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E17CDC3496D288695B1949AA /* ProfileView.swift */; };
 		671D24762ECA6B88367C5656 /* AttachmentRenderState.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC38AB430AA1777D763AB387 /* AttachmentRenderState.swift */; };
 		68A8F60E90FC71AB8BF78D0C /* ChatPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B38BCEDE645D8F594A866F0A /* ChatPresentationTests.swift */; };
+		6B6933E1A14C269CC7E2D77E /* E2eeSetup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 164ACCCC5DC90C3964A189A9 /* E2eeSetup.swift */; };
 		6F7EC3297CC479A2FF50706E /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 84988680574ACD3D2856EBF0 /* LaunchScreen.storyboard */; };
 		6FE23D9AF44A22C289554B41 /* PushNotice.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12854D256475220A637BE892 /* PushNotice.swift */; };
 		718B5FC14955CAF0EDA62737 /* GlobalSearchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10E68D0BFA3AD771F645D5F4 /* GlobalSearchTests.swift */; };
@@ -291,6 +293,7 @@
 		132FD98256984E0F35ADCCDD /* Call.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Call.swift; sourceTree = "<group>"; };
 		14E4AAB4AE5607CB586D5A7B /* AttachmentPreviewUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentPreviewUITests.swift; sourceTree = "<group>"; };
 		15394EC238B72BE70D20E77B /* CallConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallConnection.swift; sourceTree = "<group>"; };
+		164ACCCC5DC90C3964A189A9 /* E2eeSetup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = E2eeSetup.swift; sourceTree = "<group>"; };
 		1651B9D5D7861771BAF31E96 /* TypingUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingUITests.swift; sourceTree = "<group>"; };
 		1664E69F66D50F581EA2FF8C /* InboxView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxView.swift; sourceTree = "<group>"; };
 		16CF3EB75D2C45B7013FE2FD /* ReactionChips.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReactionChips.swift; sourceTree = "<group>"; };
@@ -444,6 +447,7 @@
 		EA787668A52085815A631603 /* ReactionGlyph.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReactionGlyph.swift; sourceTree = "<group>"; };
 		EA7E89B56716F9AA82A2F4D6 /* DeviceAuthorization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceAuthorization.swift; sourceTree = "<group>"; };
 		EAC85886AA1B8DCF3C432F37 /* SiriMessageHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SiriMessageHandler.swift; sourceTree = "<group>"; };
+		EB4705B390A717E20A055E9C /* E2eeSetupTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = E2eeSetupTests.swift; sourceTree = "<group>"; };
 		EB9A5B575F132C8A8A643AF0 /* PushRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushRegistration.swift; sourceTree = "<group>"; };
 		EBD80F99CDA0261D2C9C9BDF /* NativeCallMedia.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeCallMedia.swift; sourceTree = "<group>"; };
 		EC205CFCD51C565F28065B0A /* WorkspaceNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceNavigationTests.swift; sourceTree = "<group>"; };
@@ -559,6 +563,7 @@
 				AD8C8688E49CEFE743C30BBB /* CryptoBindingTests.swift */,
 				EF725375FA248F5C75335E14 /* CryptoStoreTests.swift */,
 				4AF636CE5F5200DE9C254331 /* DeviceAuthorizationTests.swift */,
+				EB4705B390A717E20A055E9C /* E2eeSetupTests.swift */,
 				659DEA088FB41035E2DEAF39 /* ElectricPersistenceTests.swift */,
 				10E68D0BFA3AD771F645D5F4 /* GlobalSearchTests.swift */,
 				D25EF17EDFF59E2344458187 /* ImagePreviewTests.swift */,
@@ -769,6 +774,7 @@
 			children = (
 				568AEF9DEE3D0E39CBC266A3 /* CryptoStore.swift */,
 				F0B4CCDF5EF02DB351767888 /* DeviceRegistration.swift */,
+				164ACCCC5DC90C3964A189A9 /* E2eeSetup.swift */,
 				6AF4206D41FF4FD8CC5016C2 /* StorageKeyStore.swift */,
 			);
 			path = Crypto;
@@ -1183,6 +1189,7 @@
 				1F6A754BDC30EAD03664B785 /* CryptoBindingTests.swift in Sources */,
 				D465A498C77749369FDE697D /* CryptoStoreTests.swift in Sources */,
 				0BDE0D56316999925653EA9F /* DeviceAuthorizationTests.swift in Sources */,
+				5AD71F79A03DAD18C534159F /* E2eeSetupTests.swift in Sources */,
 				8838C2693D6E37CC008AB3FA /* ElectricPersistenceTests.swift in Sources */,
 				718B5FC14955CAF0EDA62737 /* GlobalSearchTests.swift in Sources */,
 				50C6DB856F12CDBA0AA46EBD /* ImagePreviewTests.swift in Sources */,
@@ -1290,6 +1297,7 @@
 				6294A116360D5449F2A4F0ED /* DeviceAuthorization.swift in Sources */,
 				7D8E3882D95EDE016FB46673 /* DeviceRegistration.swift in Sources */,
 				CDF47B6B97F6A7B8692DD5BA /* DraftAttachment.swift in Sources */,
+				6B6933E1A14C269CC7E2D77E /* E2eeSetup.swift in Sources */,
 				7B2B0FE8A40167E74DAEF7EC /* EditMessageView.swift in Sources */,
 				BC8C3D14F46CC3B9D8684DC3 /* ElectricTransport.swift in Sources */,
 				FD354FB696C684AA39F32F4C /* Envelope.swift in Sources */,
