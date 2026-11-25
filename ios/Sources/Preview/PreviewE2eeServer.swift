@@ -1,4 +1,6 @@
+import CryptoKit
 import Foundation
+import ZooCrypto
 
 private func previewJSONText(_ value: JSONValue) -> String { String(decoding: try! JSONEncoder().encode(value), as: UTF8.self) }
 private func previewJSONObject(_ json: String) -> [String: JSONValue] {
@@ -170,8 +172,29 @@ final class PreviewE2eeRequests: E2eeRequesting {
 
 extension E2eeController {
     /// `--uitesting-e2ee` 用。模擬サーバーで、実際の zoo-crypto を使って、初回設定と解錠の画面を動かす。
-    static func makePreview(userID: String) -> E2eeController {
+    /// `alreadySetUp` のときは、先に別の端末で設定を済ませてから、この端末を始める（解錠が要る状態になる）。
+    static func makePreview(userID: String, alreadySetUp: Bool = false) -> E2eeController {
         let server = PreviewE2eeServer(userID: userID)
+        let controller = buildPreview(server: server, userID: userID)
+        guard alreadySetUp else {
+            controller.start()
+            return controller
+        }
+        let other = buildPreview(server: server, userID: userID)
+        Task { @MainActor in
+            other.start()
+            for _ in 0..<100 where other.status == .starting { try? await Task.sleep(for: .milliseconds(100)) }
+            if let start = try? other.beginSetup() {
+                try? await other.addSetupPasskey(start, label: "iPad（iOS）")
+                try? await other.completeSetup(start)
+            }
+            await other.stop()
+            controller.start()
+        }
+        return controller
+    }
+
+    private static func buildPreview(server: PreviewE2eeServer, userID: String) -> E2eeController {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("zoo-preview-e2ee-\(UUID().uuidString)", isDirectory: true)
         let files = CryptoStoreFiles(directory: directory, keys: StorageKeyStore(backing: PreviewMemoryKey()))
         let manager = E2eeDeviceManager(api: server, files: files, userID: userID,
@@ -184,7 +207,26 @@ extension E2eeController {
         let controller = E2eeController(manager: manager, setup: setup, encryption: encryption)
         // 再認証は、ブラウザーを開かずに通す。
         controller.reauthenticate = { "preview-token" }
+        controller.passkeys = PreviewPasskeyClient()
         controller.rpID = "account.zli.works"
         return controller
+    }
+}
+
+/// プレビュー用の模擬パスキー。システムのパスキーの画面を出さず、スロットごとの塩から決まる PRF の出力を返す
+/// （同じ塩なら同じ出力なので、足したスロットで解錠できる）。シミュレーターは、パスキーの保存先を持たない。
+@MainActor
+final class PreviewPasskeyClient: PasskeyClient {
+    private func output(_ salt: Data) -> Data { Data(SHA256.hash(data: Data("zoo-preview-prf".utf8) + salt)) }
+
+    func prfForNewSlot(rpID: String, salt: Data) async throws -> PasskeyResult {
+        try await Task.sleep(for: .milliseconds(400))
+        return PasskeyResult(credentialID: PasskeyCoding.base64URL(Data(SHA256.hash(data: salt)).prefix(16)), prfOutput: output(salt))
+    }
+
+    func prfForUnlock(rpID: String, slots: [PasskeySlot]) async throws -> PasskeyResult {
+        try await Task.sleep(for: .milliseconds(400))
+        guard let slot = slots.first else { throw PasskeyError.noSlot }
+        return PasskeyResult(credentialID: slot.credentialId, prfOutput: output(slot.prfSalt))
     }
 }
