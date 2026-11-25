@@ -1,20 +1,13 @@
 import { ActivityPubBadge } from "../../home/ActivityPubBadge";
-import {
-  type MouseEvent,
-  type PointerEvent,
-  useEffect,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
-import { MessageCard, parseMessageCards } from "./MessageCard";
+import { type MouseEvent, type PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { cn } from "cn";
 import {
   BotIcon,
   CopyIcon,
+  ForwardIcon,
+  LinkIcon,
   LockKeyholeIcon,
   LockKeyholeOpenIcon,
   MessageSquarePlusIcon,
@@ -26,17 +19,18 @@ import {
   UsersRoundIcon,
   ShieldAlertIcon,
 } from "lucide-react";
-import { MfmContent } from "./MfmContent";
-import { decryptedMentionAllowlist, isAllowedMention, type MentionAllowlist } from "./mentions";
-import { LinkPreviews } from "./LinkPreviews.tsx";
-import { previewUrls } from "./linkPreviews";
+import { decryptedMentionAllowlist, isAllowedMention } from "./mentions";
+import { messageLinkUrl } from "./messageLink";
+import { EditedIndicator, MessageBody } from "./MessageBody";
+import { ForwardedMessageCard } from "./ForwardedMessageCard";
+export { MessageBody } from "./MessageBody";
 
 import { useLocale } from "../../i18n/LocaleProvider";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import { kitchenLabel, kitchenParts, reactionKey } from "../../../lib/emoji/kitchen";
 import { addRecentEmoji, loadRecentEmojis } from "../../../lib/emoji/recents";
 import { RecentReactions } from "./RecentReactions";
-import type { AttachmentRow, DisplayEmoji } from "../../../lib/electric/types";
+import type { AttachmentRow } from "../../../lib/electric/types";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
 import { AppAvatar, AuthorIdentity } from "../AppIdentity";
 import { MessageAppContent, hasCardBlocks } from "../AppBlocks";
@@ -65,6 +59,7 @@ import { MessageAttachments } from "./MessageAttachments";
 import { ReactionEmoji } from "./ReactionEmoji";
 import { detectComposerPlatform, shouldSendFromKey } from "./Composer";
 import {
+  useEncryptedChannel,
   useMentionUserNames,
   useMessageDecryption,
   usePlaintextBeforeEncryption,
@@ -110,6 +105,8 @@ export interface MessageRowProps {
   replyCount?: number;
   /** スレッドペインを開く。返信行では未指定。 */
   onOpenThread?: () => void;
+  /** メッセージを別チャンネル・DM へ転送する。平文チャンネルのみ渡される。 */
+  onForward?: () => void;
   attachments?: AttachmentRow[];
   /**
    * 暗号化チャンネルのメッセージを復号した結果。暗号文のある行で未指定なら、この端末では読めない
@@ -122,108 +119,12 @@ export interface MessageRowProps {
    * メッセージの作成日時と比べて決める（スレッドのペイン）。
    */
   unencryptedAfterEncrypted?: boolean;
-}
-
-function EditedIndicator({ at }: { at: string }) {
-  const tooltipId = useId();
-  const [tooltipOpen, setTooltipOpen] = useState(false);
-  const { t } = useTranslation();
-  const { locale } = useLocale();
-  return (
-    <TooltipProvider>
-      <Tooltip onOpenChange={setTooltipOpen}>
-        <TooltipTrigger
-          render={<span role="img" tabIndex={0} />}
-          aria-label={t("messages.edited")}
-          aria-describedby={tooltipOpen ? tooltipId : undefined}
-          className="ml-1 inline-flex rounded-sm align-middle text-muted-foreground/80 outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-        >
-          <PencilIcon className="size-3" strokeWidth={1.5} aria-hidden="true" />
-        </TooltipTrigger>
-        <TooltipContent id={tooltipId} role="tooltip">
-          {t("messages.edited")} ·{" "}
-          <time dateTime={normalizeUtcTimestamp(at)}>{fullTimestamp(at, locale)}</time>
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  );
-}
-
-/**
- * 暗号化チャンネルの URL カードは、押したときだけ読み込む。カードの取得で、Summaly と画像プロクシの
- * 運用者に URL が見えるため（docs/e2ee.md の「機能ごとの扱い」）。
- */
-function ManualLinkPreviews({ content }: { content: string }) {
-  const { t } = useTranslation();
-  // 押したときの本文にだけ許可する。編集で本文（URL）が変わったら、もう一度押すまで取得しない。
-  const [loadedFor, setLoadedFor] = useState<string | null>(null);
-  const hasUrls = useMemo(() => previewUrls(content).length > 0, [content]);
-  if (!hasUrls) return null;
-  if (loadedFor === content) return <LinkPreviews content={content} />;
-  return (
-    <Button
-      type="button"
-      variant="link"
-      size="sm"
-      className="h-auto min-h-8 px-0 text-xs text-muted-foreground"
-      onClick={() => setLoadedFor(content)}
-    >
-      {t("e2ee.loadPreviews")}
-    </Button>
-  );
-}
-
-/** 通常投稿は MFM、連携カードは専用の描画を使う。 */
-export function MessageBody({
-  content,
-  card: data,
-  appBlocks,
-  editedAt,
-  emojis,
-  previews = "auto",
-  mentions,
-  components,
-}: {
-  emojis?: Record<string, DisplayEmoji>;
-  editedAt?: string | null;
-  content: string;
-  card?: string | null;
-  appBlocks?: string | null;
-  /** メッセージ部品（`messages.components`）。フラグが立っていれば本文の代わりに部品だけを表示する */
-  components?: string | null;
-  /** `manual` は、押したときだけ URL カードを読み込む（暗号化チャンネル）。 */
-  previews?: "auto" | "manual";
-  /** 暗号化メッセージで、メンションとして表示してよい `@name`（{@link MfmContent} の `mentions`）。 */
-  mentions?: MentionAllowlist;
-}) {
-  // 部品は MessageAppContent が描画する。本文を隠すフラグがあれば、本文は出さない
-  // 読めない部品（`{}` など）は、ないものとして旧形式の表示に戻す（MessageAppContent と同じ判定）
-  const doc = parseComponents(components);
-  if (hidesContent(doc)) return null;
-  if (!doc && hasCardBlocks(appBlocks)) return null;
-  const cards = doc ? null : parseMessageCards(data);
-  if (cards)
-    return (
-      <>
-        {cards.map((card, index) => (
-          <MessageCard key={index} card={card} />
-        ))}
-        {editedAt ? <EditedIndicator at={editedAt} /> : null}
-      </>
-    );
-  return (
-    <>
-      <div className="mfm-body whitespace-pre-wrap break-words text-sm leading-relaxed">
-        <MfmContent content={content} emojis={emojis} mentions={mentions} />
-        {editedAt ? <EditedIndicator at={editedAt} /> : null}
-      </div>
-      {previews === "manual" ? (
-        <ManualLinkPreviews content={content} />
-      ) : (
-        <LinkPreviews content={content} />
-      )}
-    </>
-  );
+  /**
+   * メッセージリンクなどで、この行へ移動したときの強調の再生回数。値が変わるたびに、点滅 → 点灯 → フェードアウトを
+   * 最初から再生する（styles.css の `message-target-flash`）。未指定なら出さない。メンションの強調とは別の層で、
+   * 終わるとメンションの強調だけが残る。
+   */
+  highlightRun?: number;
 }
 
 /** 復号できない暗号化メッセージの代わりに出す行。理由ごとに文言を変える。 */
@@ -340,13 +241,16 @@ export function MessageRow({
   onPickReaction,
   replyCount = 0,
   onOpenThread,
+  onForward,
   attachments = [],
   decryption,
   unencryptedAfterEncrypted,
+  highlightRun,
 }: MessageRowProps) {
   const { t } = useTranslation();
   const { locale } = useLocale();
   const { message } = item;
+  const isEncryptedChannel = useEncryptedChannel();
   const decryptionFromPane = useMessageDecryption(message.id);
   // 暗号化に切り替える前の平文のメッセージ（#367）。本文はそのまま出し、編集させない。
   const beforeEncryption = usePlaintextBeforeEncryption(message);
@@ -355,6 +259,10 @@ export function MessageRow({
   const afterEncryptedFromTime = useUnencryptedAfterEncrypted(message);
   const warnUnencrypted = beforeEncryption && (unencryptedAfterEncrypted ?? afterEncryptedFromTime);
   const resolvedDecryption = resolveMessageDecryption(message, decryption ?? decryptionFromPane);
+  const canForward = !!onForward && !isEncryptedChannel && !resolvedDecryption;
+  const canSubmitEmptyEdit =
+    !resolvedDecryption &&
+    (attachments.length > 0 || (message.forwarded_message_ids?.length ?? 0) > 0);
   // 暗号化チャンネルの行の `content` は空なので、復号した本文を使う。
   const bodyText =
     resolvedDecryption?.status === "decrypted" ? resolvedDecryption.body : message.content;
@@ -388,6 +296,20 @@ export function MessageRow({
       toast.success(t("messages.copied"));
     } catch {
       toast.error(t("messages.copyFailed"));
+    }
+  }
+
+  // リンクは ID だけで作れるので、復号できない暗号化メッセージでも出す。チャンネルが分からない行だけ出さない。
+  const canCopyLink = !!message.channel_id;
+  async function copyMessageLink() {
+    if (!message.channel_id) return;
+    try {
+      await navigator.clipboard.writeText(
+        messageLinkUrl(window.location.origin, message.channel_id, message.id, message.parent_id),
+      );
+      toast.success(t("messages.linkCopied"));
+    } catch {
+      toast.error(t("messages.linkCopyFailed"));
     }
   }
 
@@ -485,6 +407,15 @@ export function MessageRow({
           item.isGroupEnd ? "pb-1.5" : "pb-0",
         )}
       >
+        {highlightRun !== undefined ? (
+          // メンションの強調と同じ領域・同じ形式（背景と左端のアクセント）で、青を重ねる。
+          <span
+            key={highlightRun}
+            aria-hidden="true"
+            data-message-target-highlight=""
+            className="animate-message-target absolute inset-0 rounded-lg bg-message-target/[0.16] before:absolute before:inset-y-0 before:left-0 before:w-[3px] before:bg-message-target before:content-['']"
+          />
+        ) : null}
         {item.isGroupStart ? (
           <AppAvatar
             className="mt-0.5"
@@ -557,7 +488,7 @@ export function MessageRow({
                     )
                   ) {
                     event.preventDefault();
-                    if (editingText.trim()) onSaveEdit();
+                    if (editingText.trim() || canSubmitEmptyEdit) onSaveEdit();
                   }
                 }}
               />
@@ -565,7 +496,11 @@ export function MessageRow({
                 <Button type="button" variant="ghost" size="sm" onClick={onCancelEdit}>
                   {t("common.cancelShort")}
                 </Button>
-                <Button type="submit" size="sm" disabled={!editingText.trim()}>
+                <Button
+                  type="submit"
+                  size="sm"
+                  disabled={!editingText.trim() && !canSubmitEmptyEdit}
+                >
                   {t("common.save")}
                 </Button>
               </div>
@@ -610,6 +545,15 @@ export function MessageRow({
                 <MessageAttachments attachments={attachments} />
               )}
               {resolvedDecryption ? null : <MessageAppContent message={message} />}
+              {!isEncryptedChannel &&
+              !resolvedDecryption &&
+              message.forwarded_message_ids?.length ? (
+                <div className="mt-1 flex flex-col gap-1.5">
+                  {message.forwarded_message_ids.map((forwardedId) => (
+                    <ForwardedMessageCard key={forwardedId} messageId={forwardedId} />
+                  ))}
+                </div>
+              ) : null}
               {!resolvedDecryption &&
               message.updated_at &&
               (hidesContent(parseComponents(message.components)) ||
@@ -750,8 +694,8 @@ export function MessageRow({
                     variant="ghost"
                     size="icon-xs"
                     className={touchHitArea}
-                    aria-label={t("messages.edit")}
-                    title={t("messages.edit")}
+                    aria-label={t("messages.editMessage")}
+                    title={t("messages.editMessage")}
                     onClick={onStartEdit}
                   >
                     <PencilIcon />
@@ -790,23 +734,7 @@ export function MessageRow({
                 <MoreHorizontalIcon />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                {/* 復号できない暗号化メッセージは本文がないので、空文字列をコピーしないようメニューを出さない。 */}
-                {resolvedDecryption?.status === "undecryptable" ? null : (
-                  <DropdownMenuItem onClick={() => void copyRawMessage()}>
-                    <CopyIcon />
-                    {t("messages.copyRaw")}
-                  </DropdownMenuItem>
-                )}
-                <DropdownMenuItem
-                  onClick={() =>
-                    window.dispatchEvent(
-                      new CustomEvent("zoo:message-actions", { detail: message.id }),
-                    )
-                  }
-                >
-                  <BotIcon />
-                  {t("apps.messageActions")}
-                </DropdownMenuItem>
+                {/* 並びは、リアクション・スレッド・転送・編集・原文コピー・リンクコピー・App・削除の順。 */}
                 <DropdownMenuItem
                   className={touchHitArea}
                   disabled={!canReact}
@@ -821,14 +749,43 @@ export function MessageRow({
                     {t("threads.open")}
                   </DropdownMenuItem>
                 ) : null}
+                {canForward ? (
+                  <DropdownMenuItem className={touchHitArea} onClick={onForward}>
+                    <ForwardIcon />
+                    {t("messages.forward")}
+                  </DropdownMenuItem>
+                ) : null}
                 {canEdit ? (
                   <>
                     <DropdownMenuItem className={touchHitArea} onClick={onStartEdit}>
                       <PencilIcon />
-                      {t("messages.edit")}
+                      {t("messages.editMessage")}
                     </DropdownMenuItem>
                   </>
                 ) : null}
+                {/* 復号できない暗号化メッセージは本文がないので、空文字列をコピーしないようメニューを出さない。 */}
+                {resolvedDecryption?.status === "undecryptable" ? null : (
+                  <DropdownMenuItem onClick={() => void copyRawMessage()}>
+                    <CopyIcon />
+                    {t("messages.copyRaw")}
+                  </DropdownMenuItem>
+                )}
+                {canCopyLink ? (
+                  <DropdownMenuItem className={touchHitArea} onClick={() => void copyMessageLink()}>
+                    <LinkIcon />
+                    {t("messages.copyLink")}
+                  </DropdownMenuItem>
+                ) : null}
+                <DropdownMenuItem
+                  onClick={() =>
+                    window.dispatchEvent(
+                      new CustomEvent("zoo:message-actions", { detail: message.id }),
+                    )
+                  }
+                >
+                  <BotIcon />
+                  {t("apps.messageActions")}
+                </DropdownMenuItem>
                 {canDelete ? (
                   <DropdownMenuItem
                     className={touchHitArea}
@@ -927,6 +884,19 @@ export function MessageRow({
             />
           ) : null}
           <div className="flex flex-col">
+            {canReact ? (
+              <button
+                type="button"
+                className={sheetActionClass}
+                onClick={() => {
+                  setSheetOpen(false);
+                  onPickReaction();
+                }}
+              >
+                <SmilePlusIcon className="size-4 shrink-0" aria-hidden="true" />
+                {t("reactions.add")}
+              </button>
+            ) : null}
             {onOpenThread ? (
               <button
                 type="button"
@@ -940,17 +910,30 @@ export function MessageRow({
                 {t("threads.open")}
               </button>
             ) : null}
-            {canReact ? (
+            {canForward ? (
               <button
                 type="button"
                 className={sheetActionClass}
                 onClick={() => {
                   setSheetOpen(false);
-                  onPickReaction();
+                  onForward();
                 }}
               >
-                <SmilePlusIcon className="size-4 shrink-0" aria-hidden="true" />
-                {t("reactions.add")}
+                <ForwardIcon className="size-4 shrink-0" aria-hidden="true" />
+                {t("messages.forward")}
+              </button>
+            ) : null}
+            {canEdit ? (
+              <button
+                type="button"
+                className={sheetActionClass}
+                onClick={() => {
+                  setSheetOpen(false);
+                  onStartEdit();
+                }}
+              >
+                <PencilIcon className="size-4 shrink-0" aria-hidden="true" />
+                {t("messages.editMessage")}
               </button>
             ) : null}
             {resolvedDecryption?.status !== "undecryptable" ? (
@@ -966,6 +949,19 @@ export function MessageRow({
                 {t("messages.copyRaw")}
               </button>
             ) : null}
+            {canCopyLink ? (
+              <button
+                type="button"
+                className={sheetActionClass}
+                onClick={() => {
+                  setSheetOpen(false);
+                  void copyMessageLink();
+                }}
+              >
+                <LinkIcon className="size-4 shrink-0" aria-hidden="true" />
+                {t("messages.copyLink")}
+              </button>
+            ) : null}
             <button
               type="button"
               className={sheetActionClass}
@@ -979,19 +975,6 @@ export function MessageRow({
               <BotIcon className="size-4 shrink-0" aria-hidden="true" />
               {t("apps.messageActions")}
             </button>
-            {canEdit ? (
-              <button
-                type="button"
-                className={sheetActionClass}
-                onClick={() => {
-                  setSheetOpen(false);
-                  onStartEdit();
-                }}
-              >
-                <PencilIcon className="size-4 shrink-0" aria-hidden="true" />
-                {t("messages.edit")}
-              </button>
-            ) : null}
             {canDelete ? (
               <button
                 type="button"

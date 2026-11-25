@@ -337,6 +337,7 @@ erDiagram
       integer revision
       text reply_target_id
       text components
+      jsonb forwarded_message_ids
     }
     messages }o--o| apps : messages_app_origin_id_fkey
     messages }o--o| channels : messages_channel_id_fkey

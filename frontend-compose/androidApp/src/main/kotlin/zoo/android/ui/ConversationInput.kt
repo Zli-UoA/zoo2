@@ -24,13 +24,18 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 internal data class InputState(val text: String = "", val expanded: Boolean = false, val canSend: Boolean = true, val hasAttachments: Boolean = false, val mentions: List<String> = emptyList(),
-    val selection: TextRange? = null, val files: List<Pair<String, String>> = emptyList(), val live: Boolean = false, val focusRequest: Int = 0)
+    val selection: TextRange? = null, val files: List<Pair<String, String>> = emptyList(), val live: Boolean = false, val focusRequest: Int = 0,
+    /** 暗号化チャンネルの送信画面の表示（増えた配布先と、鍵を配れない相手。#565）。何もなければ空。 */
+    val notices: List<String> = emptyList())
 internal enum class InputTool { Attach, Format, Emoji, Send, Expand }
 
 @Composable
@@ -59,6 +64,13 @@ internal fun ConversationInput(
     val showTools = full || focused || state.text.isNotEmpty() || drag > 0f
     val expand by rememberUpdatedState { onTool(InputTool.Expand) }
     Column(modifier.fillMaxWidth().background(colors.inputSurface).padding(bottom = AndroidControlSize.inputEdgeInset)) {
+        if (state.notices.isNotEmpty()) {
+            Column(Modifier.fillMaxWidth().testTag("encryption-recipients").padding(horizontal = 16.dp, vertical = 8.dp)
+                .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
+                verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                state.notices.forEach { Text(it, color = colors.inputHint, fontSize = 12.sp) }
+            }
+        }
         if (state.mentions.isNotEmpty()) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp)
                 .horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {

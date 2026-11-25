@@ -88,6 +88,11 @@ dependencies {
     implementation("androidx.credentials:credentials:1.5.0")
     implementation("androidx.credentials:credentials-play-services-auth:1.5.0")
     implementation("androidx.browser:browser:1.9.0")
+    // 他のユーザーの検証の QR（#567）：描画と読み取り（ZXing）と、読み取りのカメラ（CameraX）。
+    implementation("com.google.zxing:core:3.5.3")
+    implementation("androidx.camera:camera-camera2:1.4.2")
+    implementation("androidx.camera:camera-lifecycle:1.4.2")
+    implementation("androidx.camera:camera-view:1.4.2")
 }
 
 val translations by

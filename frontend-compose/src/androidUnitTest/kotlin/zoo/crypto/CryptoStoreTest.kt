@@ -312,6 +312,26 @@ class CryptoStoreTest {
     }
 
     @Test
+    fun aLaterRowsSaveFailureStillReturnsTheRowsSavedBeforeIt() {
+        val original = CryptoStore.directorySync
+        val store = open()!!.store
+        val first = ToDeviceRow("40", ALICE, "m.other", JsonObject(emptyMap()))
+        val second = ToDeviceRow("41", ALICE, "m.other", JsonObject(emptyMap()))
+        var saves = 0
+        try {
+            // 1 行目は保存でき、2 行目の保存に失敗する。保存できた 1 行目（検証のメッセージなら、それも）は返して
+            // ack させ、2 行目は返さない（次の同期で試し直す）。
+            CryptoStore.directorySync = { directory -> if (++saves == 2) throw java.io.IOException("sync failed") else original(directory) }
+            assertEquals(listOf("40"), store.processToDevice(listOf(first, second), JsonObject(emptyMap())).processed)
+            CryptoStore.directorySync = original
+            assertEquals(listOf("41"), store.processToDevice(listOf(second), JsonObject(emptyMap())).processed)
+        } finally {
+            CryptoStore.directorySync = original
+            store.close()
+        }
+    }
+
+    @Test
     fun resavesAlreadyProcessedRowsBeforeAck() {
         val original = CryptoStore.directorySync
         val synced = mutableListOf<File>()

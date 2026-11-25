@@ -90,7 +90,10 @@ class ParityTransportTest {
         var writes = 0
         platform.messageEncryption = object : MessageEncryption {
             override val changes = kotlinx.coroutines.flow.MutableStateFlow(0L)
-            override suspend fun send(channel: String, id: String, parent: String?, body: String) {
+            override val recipients = kotlinx.coroutines.flow.MutableStateFlow(emptyMap<String, RecipientNotice>())
+            override val attachmentCipher: AttachmentCipher get() = error("Unexpected attachment")
+            override suspend fun send(channel: String, id: String, parent: String?, body: String,
+                mentions: EncryptedMentions, attachments: List<kotlinx.serialization.json.JsonObject>) {
                 if (fail) error("e2ee.sendNeedsUnlock")
                 sent = body
             }
@@ -123,7 +126,10 @@ class ParityTransportTest {
         val encryptedWrites = mutableListOf<String?>()
         platform.messageEncryption = object : MessageEncryption {
             override val changes = kotlinx.coroutines.flow.MutableStateFlow(0L)
-            override suspend fun send(channel: String, id: String, parent: String?, body: String) {
+            override val recipients = kotlinx.coroutines.flow.MutableStateFlow(emptyMap<String, RecipientNotice>())
+            override val attachmentCipher: AttachmentCipher get() = error("Unexpected attachment")
+            override suspend fun send(channel: String, id: String, parent: String?, body: String,
+                mentions: EncryptedMentions, attachments: List<kotlinx.serialization.json.JsonObject>) {
                 encryptedWrites += parent
                 throw ApiException(403, json.parseToJsonElement(refusal).jsonObject)
             }

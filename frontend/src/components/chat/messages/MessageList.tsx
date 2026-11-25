@@ -20,6 +20,7 @@ import { groupReactions } from "../../../lib/emoji/reactions";
 import { Button } from "../../ui/button";
 import { Skeleton } from "../../ui/skeleton";
 import { newMessageAnnouncement, type FeedMessage } from "./messageFormat";
+import { useMessageJumpRequest, useMessageTargetFlash } from "./messageTarget";
 import { buildMessageItems } from "./messageGrouping";
 import { MessageRow } from "./MessageRow";
 import {
@@ -66,7 +67,7 @@ interface MessageListProps {
   isWritePending?: boolean;
   isError: boolean;
   currentUserId: string | null;
-  /** 操作権限を伴わない閲覧者 ID。読み取り専用表示でメンションを判定する。 */
+  /** 操作権限を伴わない閲覧者 ID。読み取り専用表示でメンションと自分のリアクションを判定する。 */
   viewerId?: string | null;
   canModerate?: boolean;
   editingId: string | null;
@@ -83,6 +84,7 @@ interface MessageListProps {
   onPickReaction: (messageId: string) => void;
   attachments?: Map<string, AttachmentRow[]>;
   onOpenThread?: (messageId: string) => void;
+  onForward?: (message: FeedMessage, attachments: AttachmentRow[]) => void;
   /** 送信できる状態か。false なら空状態で「最初のメッセージ」を促さない。 */
   canCompose?: boolean;
   /** オフラインか。スケルトンの代わりに保存済みがない旨を出す。 */
@@ -182,6 +184,7 @@ interface MessageScrollViewportProps {
   onPickReaction: (messageId: string) => void;
   attachments?: Map<string, AttachmentRow[]>;
   onOpenThread?: (messageId: string) => void;
+  onForward?: (message: FeedMessage, attachments: AttachmentRow[]) => void;
   loadOlder: () => void;
   hasOlder: boolean;
   isLoadingOlder: boolean;
@@ -219,6 +222,7 @@ export function MessageList({
   onPickReaction,
   attachments,
   onOpenThread,
+  onForward,
   canCompose = true,
   isOffline = false,
   unreadBoundaryId,
@@ -375,6 +379,7 @@ export function MessageList({
           onPickReaction={onPickReaction}
           attachments={attachments}
           onOpenThread={onOpenThread}
+          onForward={onForward}
           loadOlder={loadOlder}
           hasOlder={hasOlder}
           isLoadingOlder={isLoadingOlder}
@@ -422,6 +427,7 @@ function MessageScrollViewport({
   onPickReaction,
   attachments,
   onOpenThread,
+  onForward,
   loadOlder,
   hasOlder,
   isLoadingOlder,
@@ -429,6 +435,7 @@ function MessageScrollViewport({
   onLiveAnnouncementChange,
 }: MessageScrollViewportProps) {
   const { t } = useTranslation();
+  const reactionUserId = currentUserId ?? viewerId ?? null;
   const [cacheKey] = useState(() =>
     channelId ? buildChannelScrollKey(channelId, currentUserId) : null,
   );
@@ -1253,6 +1260,12 @@ function MessageScrollViewport({
     };
   }, [markRead, readStatePending]);
 
+  // 表示中の対象メッセージへのリンクをもう一度押したとき。URL が変わらず、ルーターは何も変えないので、
+  // スクロール済みの印を消して、下の効果をもう一度走らせる。
+  const jumpRequest = useMessageJumpRequest(targetMessageId, scrolledTarget);
+  // 対象の行へスクロールしたときに、その行の強調（点滅 → 点灯 → フェードアウト）を再生する。
+  const { play: playTargetFlash, runFor: targetFlashRun } = useMessageTargetFlash();
+
   useLayoutEffect(() => {
     if (!targetMessageId) {
       scrolledTarget.current = undefined;
@@ -1269,9 +1282,18 @@ function MessageScrollViewport({
       atBottomRef.current = false;
       scrolledTarget.current = targetMessageId;
       virtualizer.scrollToIndex(index, { align: "center" });
+      playTargetFlash(targetMessageId);
     });
     return () => cancelAnimationFrame(frame);
-  }, [targetMessageId, items, virtualizer, alignIndexSync, cancelUnreadJump]);
+  }, [
+    targetMessageId,
+    items,
+    virtualizer,
+    alignIndexSync,
+    cancelUnreadJump,
+    jumpRequest,
+    playTargetFlash,
+  ]);
 
   // 各行の measureElement / ResizeObserver が編集・保存・折り返しによる
   // 高さの変化を追跡する。measure() で全行の実測値を消すと、変化していない
@@ -1305,7 +1327,7 @@ function MessageScrollViewport({
                 data-index={virtualRow.index}
                 data-message-id={item.message.id}
                 role="listitem"
-                className={`absolute left-0 top-0 w-full ${item.message.id === targetMessageId ? "rounded-lg bg-brand-muted/40 ring-1 ring-brand" : ""}`}
+                className="absolute left-0 top-0 w-full"
                 style={{ transform: `translateY(${virtualRow.start}px)` }}
               >
                 {virtualRow.index > 0 && virtualRow.index === firstEncryptedIndex ? (
@@ -1334,16 +1356,17 @@ function MessageScrollViewport({
                 ) : null}
                 <MessageRow
                   item={item}
+                  highlightRun={targetFlashRun(item.message.id)}
                   mentionUserId={viewerId === undefined ? currentUserId : viewerId}
                   reactions={
                     item.message.display_data
-                      ? (groupReactions(item.message.display_data.reactions, currentUserId).get(
+                      ? (groupReactions(item.message.display_data.reactions, reactionUserId).get(
                           item.message.id,
                         ) ?? [])
                       : (reactions.get(item.message.id) ?? [])
                   }
                   kitchenCatalog={kitchenCatalog}
-                  canReact={canReact}
+                  canReact={canReact && !item.message.thread_archive_at}
                   onReaction={(emoji) => onReaction(item.message.id, emoji)}
                   onPickReaction={() => onPickReaction(item.message.id)}
                   isOwn={!!currentUserId && item.message.user_id === currentUserId}
@@ -1363,6 +1386,17 @@ function MessageScrollViewport({
                     item.message.display_data?.attachments ??
                     attachments?.get(item.message.id) ??
                     []
+                  }
+                  onForward={
+                    onForward
+                      ? () =>
+                          onForward(
+                            item.message,
+                            item.message.display_data?.attachments ??
+                              attachments?.get(item.message.id) ??
+                              [],
+                          )
+                      : undefined
                   }
                   unencryptedAfterEncrypted={
                     firstEncryptedIndex >= 0 && virtualRow.index > firstEncryptedIndex

@@ -1,4 +1,5 @@
 import type { DisplayEmoji, MessageDisplayData } from "../../../lib/electric/types";
+import { messageLinkTarget, type MessageLinkTarget } from "../messages/messageLink";
 
 /**
  * クライアントで表示する種類。`all`（既定）はメッセージとファイルをまとめて探す。
@@ -264,15 +265,9 @@ export function isFileItem(item: SearchItem): item is SearchFileItem {
 }
 
 /** 結果を開くリンク。返信はスレッドを開いたうえで、その返信へ移動する。 */
-export function searchResultLink(item: SearchItem): {
-  channelId: string;
-  search: { message: string; thread?: string };
-} {
+export function searchResultLink(item: SearchItem): MessageLinkTarget {
   const message = isFileItem(item) ? item.message_id : item.id;
-  return {
-    channelId: item.channel_id,
-    search: item.parent_id ? { thread: item.parent_id, message } : { message },
-  };
+  return messageLinkTarget(item.channel_id, message, item.parent_id);
 }
 
 /** 一覧のキー。「すべて」ではメッセージと添付の ID が重なりうるので、種類も含める。 */

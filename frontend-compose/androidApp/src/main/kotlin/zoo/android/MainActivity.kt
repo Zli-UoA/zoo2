@@ -340,13 +340,14 @@ class MainActivity : ComponentActivity() {
             unbackedKeysPrompt?.let { prompt ->
                 val args = "count" to prompt.count.toString()
                 val detail = when {
+                    prompt.count == REVOCATION_PENDING_PROMPT -> current.session.t("e2ee.logout.revocationDescription")
                     prompt.count < 0 -> current.session.t("e2ee.logout.unknownDescription")
                     prompt.count == 1 -> current.session.t("e2ee.logout.unbackedDescription_one", args)
                     else -> current.session.t("e2ee.logout.unbackedDescription_other", args)
                 }
                 AlertDialog(
                     onDismissRequest = { prompt.answer.complete(false) },
-                    title = { Text(current.session.t("e2ee.logout.unbackedTitle")) },
+                    title = { Text(current.session.t(if (prompt.count == REVOCATION_PENDING_PROMPT) "e2ee.logout.revocationTitle" else "e2ee.logout.unbackedTitle")) },
                     text = { Text(detail) },
                     confirmButton = {
                         DialogAction(current.session.t("e2ee.logout.confirm"), UiIcon.SignIn) {
@@ -441,9 +442,12 @@ class MainActivity : ComponentActivity() {
                 },
                 // 初回設定と解錠（#360）。解錠済みの端末は、起動時の確認と鍵バックアップへの送信も行う。
                 setupApi = e2eeApi,
+                // 他のユーザーの検証（#368）。to-device で届いた検証のメッセージを受け取る。
+                sasApi = e2eeApi,
             )
             platform.e2ee = e2ee
             platform.reauthenticate = reauthenticator::reauthenticate
+            platform.issuer = connection.issuer
             runCatching { io.ktor.http.Url(connection.issuer) }.getOrNull()
                 ?.takeIf { it.protocol == io.ktor.http.URLProtocol.HTTPS && it.host.isNotBlank() }
                 ?.let { platform.passkey = zoo.crypto.UnlockMethod.Passkey(AndroidPasskeys(this), it.host) }

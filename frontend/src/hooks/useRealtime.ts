@@ -250,6 +250,8 @@ export interface MyChannelMemberships {
   isInitialSyncLoading: boolean;
   /** 現在ユーザーが参加している channel_user 行。 */
   memberships: ChannelUserRow[];
+  /** 全チャンネルの channel_user 行（グループ DM 転送先の表示名解決に使用する）。 */
+  allMemberships: ChannelUserRow[];
   /** 参加中チャンネル ID の集合（一覧の参加バッジ判定用）。 */
   joinedChannelIds: ReadonlySet<string>;
   /** 現在ユーザーが解決できているか。false なら参加状態を表示しない。 */
@@ -271,9 +273,10 @@ export function useMyChannelMemberships(): MyChannelMemberships {
   const { channelUsers } = useCollections();
   const { currentUserId } = useCurrentUser();
   const membershipsQuery = useLiveQuery((q) => q.from({ channelUsers }));
+  const allMemberships = useMemo(() => membershipsQuery.data ?? [], [membershipsQuery.data]);
   const memberships = useMemo(
-    () => (membershipsQuery.data ?? []).filter((row) => row.user_id === currentUserId),
-    [membershipsQuery.data, currentUserId],
+    () => allMemberships.filter((row) => row.user_id === currentUserId),
+    [allMemberships, currentUserId],
   );
   const joinedChannelIds = useMemo(
     () => new Set(memberships.map((row) => row.channel_id)),
@@ -281,6 +284,7 @@ export function useMyChannelMemberships(): MyChannelMemberships {
   );
   return {
     memberships,
+    allMemberships,
     joinedChannelIds,
     hasCurrentUser: currentUserId !== null,
     isInitialSyncLoading: membershipsQuery.isLoading,

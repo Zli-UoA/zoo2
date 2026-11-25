@@ -273,7 +273,7 @@ describe("createCurrentUserStore", () => {
 
 it("ends loading and permits retry after a stalled current-user request times out", async () => {
   const controller = new AbortController();
-  const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);
+  const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValueOnce(controller.signal);
   let started!: () => void;
   const fetching = new Promise<void>((resolve) => {
     started = resolve;

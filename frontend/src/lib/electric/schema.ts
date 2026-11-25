@@ -141,6 +141,7 @@ export const MESSAGE_SCHEMA: ShapeSchema<MessageRow> = {
     epoch: "int8",
     revision: "int4",
     message_kind: "text",
+    forwarded_message_ids: "jsonb",
   },
 };
 

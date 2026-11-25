@@ -54,7 +54,7 @@ Appの `redirect_uris` にHTTPSのコールバックURLを登録し、管理者�
 
 ## API・イベント
 
-外部App用の操作APIは `/api/apps/v1` です。メッセージ、リアクション、チャンネル操作、DMは人向けAPIと共通の処理を使います。書き込みは既存の `{data,txid}` を返し、プラットフォーム設定・対話APIはJSONを直接返します。メッセージ作成のUUID `id` は冪等キーです。同じ投稿内容の再送は既存メッセージを返し、別の内容・別の投稿者への再利用は409です。
+外部App用の操作APIは `/api/apps/v1` です。メッセージ、リアクション、チャンネル操作、DMは人向けAPIと共通の処理を使います。書き込みは既存の `{data,txid}` を返し、プラットフォーム設定・対話APIはJSONを直接返します。メッセージ作成のUUID `id` は冪等キーです。同じ投稿内容の再送は既存メッセージを返し、別の内容・別の投稿者への再利用は409です。なお `POST /api/apps/v1/messages` は `forwarded_message_ids`（メッセージ転送）に未対応で、指定された場合は `400 Bad Request` を返します。
 
 読み取りは `/api/apps/v1/shapes/{shape}` に統一します。対応するshapeは `messages`、`message_reactions`、`channels`、`channel_users`、`users` です。会話データには `channel_id` を指定します。Electricの `offset`、`live`、`subset__*` を使用でき、SDKの `shape()` は認証付きResponseを返します。これはチャットイベント配信とは別の、状態の読み取り・同期APIです。
 
