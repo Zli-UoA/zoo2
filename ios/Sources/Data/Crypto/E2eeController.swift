@@ -71,7 +71,11 @@ final class E2eeController: ConversationEncryption {
             // 届いた部屋の鍵（受信用のセッション）を鍵バックアップへ送る。失敗しても、次の起動時や次の鍵で再び試す。
             Task { @MainActor in
                 // SSSS が書き換えられていたら（別の端末で失効・解錠し直した）、解錠済みの表示を残さず、状態を読み直す。
-                if case .conflict(let code)? = try? await self.setup.uploadKeyBackup(), code == "E2EE_SSSS_CONFLICT" { self.refreshStatus() }
+                if case .conflict(let code)? = try? await self.setup.uploadKeyBackup(), code == "E2EE_SSSS_CONFLICT" {
+                    // 競合を検出した時点で、解錠済みの表示を解く（読み直しに失敗しても残さない）。読み直せれば、正しい状態に戻る。
+                    self.status = .locked(.mismatch)
+                    self.refreshStatus()
+                }
             }
         }
     }
