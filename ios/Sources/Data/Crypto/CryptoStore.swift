@@ -138,8 +138,9 @@ final class CryptoStore: @unchecked Sendable {
 
     private let reservation: UUID
 
-    /// 単体テスト用：`open` が失敗して予約を外す直前（作りかけのインスタンスの `deinit` のあと）に呼ぶ。
-    static let openFailureHook = Mutex<(@Sendable () -> Void)?>(nil)
+    /// 単体テスト用：そのディレクトリーの `open` が失敗して予約を外す直前（作りかけのインスタンスの `deinit` のあと）に呼ぶ。
+    /// ディレクトリーごとなので、並行して動くほかのテストの `open` には呼ばれない。
+    static let openFailureHooks = Mutex<[String: @Sendable () -> Void]>([:])
 
     private let directory: URL
     /// 開いたときの `user_id`。暗号ストアの持ち主は変わらないので、ロックなしで読める。
@@ -193,7 +194,7 @@ final class CryptoStore: @unchecked Sendable {
             return opened
         } catch {
             // 作りかけのインスタンスの `deinit` が先に外していても、持ち主の印が合うときだけ外すので、重ならない。
-            openFailureHook.withLock { $0 }?()
+            openFailureHooks.withLock { $0[path] }?()
             release(path, token: token)
             throw error
         }
@@ -712,6 +713,26 @@ final class CryptoStore: @unchecked Sendable {
         let handle = try FileHandle(forWritingTo: temporary)
         try handle.synchronize()
         try handle.close()
-        _ = try FileManager.default.replaceItemAt(url, withItemAt: temporary)
+        do {
+            _ = try FileManager.default.replaceItemAt(url, withItemAt: temporary)
+        } catch {
+            // 置き換えに失敗したとき、元のファイルが別の場所へ移されたままなら、`state.json` へ戻す（前の端末の ID や
+            // 受信用セッションの記録を失わないため）。一時ファイルは残さない。
+            restoreOriginal(after: error, to: url)
+            try? FileManager.default.removeItem(at: temporary)
+            throw error
+        }
+    }
+
+    /// `replaceItemAt` のエラーが、元のファイルの場所を示すキー（Foundation の文書にある文字列。定数は公開されていない）。
+    static let originalItemLocationKey = "NSFileOriginalItemLocationKey"
+
+    /// `replaceItemAt` の失敗で、元のファイルが `url` になく、エラーが元の場所（`NSFileOriginalItemLocationKey`）を
+    /// 示しているときだけ、そこから戻す。何もなければ、何もしない。
+    static func restoreOriginal(after error: any Error, to url: URL) {
+        guard !FileManager.default.fileExists(atPath: url.path),
+              let original = (error as NSError).userInfo[Self.originalItemLocationKey] as? URL,
+              FileManager.default.fileExists(atPath: original.path) else { return }
+        try? FileManager.default.moveItem(at: original, to: url)
     }
 }

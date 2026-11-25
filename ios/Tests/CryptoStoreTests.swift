@@ -128,20 +128,56 @@ struct CryptoStoreTests {
         try FileManager.default.createDirectory(at: blocker, withIntermediateDirectories: true)
         let other = Mutex<CryptoStore?>(nil)
         // 作りかけのインスタンスの `deinit` が予約を外したあと、`open` の後始末の前に、別の `open` が予約を取る。
-        CryptoStore.openFailureHook.withLock {
-            $0 = {
+        let path = directory.standardizedFileURL.path
+        CryptoStore.openFailureHooks.withLock {
+            $0[path] = {
                 try? FileManager.default.removeItem(at: blocker)
                 other.withLock { $0 = try? CryptoStore.open(files, userID: user)?.store }
             }
         }
-        defer { CryptoStore.openFailureHook.withLock { $0 = nil } }
-        #expect(throws: (any Error).self) { try CryptoStore.open(files, userID: user) }
+        defer { CryptoStore.openFailureHooks.withLock { $0[path] = nil } }
+        // 最初の失敗は、初期保存によるもの（予約の競合ではない）。
+        do {
+            _ = try CryptoStore.open(files, userID: user)
+            Issue.record("初期保存の失敗で投げるはず")
+        } catch {
+            #expect(!(error is CryptoStoreBusyError))
+        }
         let second = try #require(other.withLock { $0 })
         // 後始末は、別の持ち主の予約を外さない：まだ予約されていて、同じストアを重ねて開けない。
         #expect(CryptoStore.isReserved(directory))
         #expect(throws: CryptoStoreBusyError.self) { try CryptoStore.open(files, userID: user) }
         second.close()
         #expect(!CryptoStore.isReserved(directory))
+    }
+
+    @Test func 置き換えに失敗して元のファイルが移されたままなら状態ファイルへ戻す() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let state = directory.appendingPathComponent("state.json")
+        let moved = directory.appendingPathComponent("moved-original")
+        try Data("前の状態".utf8).write(to: state)
+        // 元のファイルが別の場所へ移されたまま、置き換えが失敗した状態を作る。
+        try FileManager.default.moveItem(at: state, to: moved)
+        let failure = NSError(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError,
+                              userInfo: [CryptoStore.originalItemLocationKey: moved])
+        CryptoStore.restoreOriginal(after: failure, to: state)
+        #expect(try String(contentsOf: state, encoding: .utf8) == "前の状態")
+        // 元の場所を示さないエラーや、`state.json` が残っているときは、何もしない。
+        CryptoStore.restoreOriginal(after: NSError(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError), to: state)
+        #expect(try String(contentsOf: state, encoding: .utf8) == "前の状態")
+    }
+
+    @Test func 状態ファイルの書き込みは成功すれば置き換わり一時ファイルを残さない() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let state = directory.appendingPathComponent("state.json")
+        try CryptoStore.writeAtomically(Data("1".utf8), to: state)
+        try CryptoStore.writeAtomically(Data("2".utf8), to: state)
+        #expect(try String(contentsOf: state, encoding: .utf8) == "2")
+        #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("state.json.tmp").path))
     }
 
     @Test func 予約は持ち主の印が合うときだけ外れる() throws {
