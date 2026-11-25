@@ -772,6 +772,15 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 - Android の復号は表示中の行について行い、本文を Electric の同期キャッシュへ書き戻さない。暗号ストアの更新（解錠、鍵の受信、バックアップの取り込み）で再判定する。送信者・チャンネル・親・epoch・revision・リプレイを共通暗号基盤で検証し、未検証の送信者とバックアップ由来の鍵を区別して表示する。旧版と同じ版の競合では画面内の確認済み本文を保持し、送信者の検証状態と版の警告を別々に表示する。表示メタデータの更新や再復号で編集下書きを初期化しない。暗号化前の投稿には印を出して編集を禁止するが、リアクションの追加・解除は維持し、暗号化本文の URL プレビューを自動取得しない。
 - 端末一覧と失効（#362）、Push の復号（#510）、解錠したあとの鍵スロットの追加と削除、E2EE のリセット、暗号化した添付の送受信 UI、他ユーザーの SAS 検証、メンション通知の宛先抽出、既存チャンネルの暗号化切り替え操作は後続。添付の暗号化ヘルパーは存在するが、本文の送信経路に接続するまでは添付ボタンを無効にする。
 
+#### iOS の初回設定と解錠（[#685](https://github.com/Zli-UoA/zoo2/issues/685)）
+
+- 【決定】iOS の手順は Android の `zoo.crypto.E2eeSetup` と同じ順（SSSS、クロス署名鍵、端末への署名、バックアップの版）で、`ios/Sources/Data/Crypto/E2eeSetup.swift` に置く。秘密（マスター鍵の秘密鍵、SSSS 鍵）は UniFFI の `SetupSession`（Rust のメモリー）にだけ置き、Swift には要求の本文（JSON）とリカバリーキーの表示だけを渡す。API は `E2eeSetupAPI`（`APIClient` が実装）。直前の再認証が要る要求は `X-Zoo-Reauth` に ID トークンを入れる。
+- 【決定】再認証（`ios/Sources/Data/Crypto/Reauth.swift`）。iOS はふだんのログインにデバイス認可グラントを使い、`max_age` を付けた ID トークンを取れないので、再認証のときだけ認可コードフロー（PKCE の S256、`max_age=0`、`state`、`nonce`、scope は `openid profile`）を `ASWebAuthenticationSession` で開く。リダイレクト URI は `works.zli.zoo:/reauth-callback`（カスタム URL スキーム）。認可コードはトークンエンドポイントで ID トークンに換え、`iss`、`aud`、`exp`（許容のずれ 60 秒）、`nonce` を確かめてから使う。今のセッションのトークンは変えない。待つ時間は 10 分。
+  - AuthZ の iOS のクライアントに、リダイレクト URI `works.zli.zoo:/reauth-callback` を登録する。zoo2-infra の `OIDC_REAUTH_AUDIENCES` に iOS のクライアント ID を足す（別リポジトリの PR）。どちらも入るまで、iOS の初回設定の保存は 403 になる。
+- 【決定】パスキー（`ios/Sources/Data/Crypto/Passkeys.swift`）。`ASAuthorizationPlatformPublicKeyCredentialProvider` の PRF 拡張（iOS 18 以上）で、Android の `PasskeyClient` と同じ 2 つの操作（スロットを足す：`allowCredentials` なしで利用者が選んだパスキーを評価する、解錠：スロットごとの `prfSalt` で評価する）を行う。RP ID は AuthZ のホスト（`account.zli.works`）で、`Zoo.entitlements` の Associated Domains に `webcredentials:account.zli.works` を足した。AuthZ の `/.well-known/apple-app-site-association` の `webcredentials` に `F82XB5KFX2.works.zli.zoo` を載せる。App ID に Associated Domains の capability を有効にする。iOS 18 未満と、PRF の結果を返さない保存先は `PasskeyError.prfUnsupported`。アサーションはどこにも送らない。
+- 【決定】今の iOS の初回設定と解錠では、鍵バックアップへの送信と取り込みはしない（送受信の実装で足す）。
+- 【決定】テストは Android・TUI・Web と同じく、状態を持つ模擬サーバー（`ios/Tests/E2eeSetupTests.swift`）で、SSSS を除く各保存（クロス署名鍵、端末への署名、バックアップの版）の直前で止めて開け直しても、控えたリカバリーキーで解錠して同じ鍵のまま最後まで終えること、再認証の 403、同時の初回設定（`conflict`）、別の端末での解錠と署名、`secrets_revision` の変更、パスキーの PRF での解錠を確かめる。SSSS の保存の応答をなくした場合は、読み直して続ける。実機のパスキーの保存先（iCloud キーチェーン、1Password）での確認は、実機で行う（#369）。
+
 ### 暗号化チャンネルと DM の送受信の実装（#361）
 
 #### TUI
