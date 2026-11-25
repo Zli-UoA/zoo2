@@ -29,7 +29,7 @@ struct EncryptionUnlockBanner: View {
 }
 
 /// 暗号化の初回設定と解錠（docs/e2ee.md の「初回設定と解錠の流れ」。#685）。パスキーを主役にして、リカバリーキーは
-/// 非常用として後ろに置く。
+/// 補助として後ろに置く。
 struct EncryptionSetupView: View {
     let e2ee: E2eeController
     @Environment(\.dismiss) private var dismiss
@@ -110,7 +110,7 @@ struct EncryptionSetupView: View {
             PrimaryButton(title: "パスキーで解錠", symbol: "person.badge.key.fill", identifier: "encryption-unlock-passkey") {
                 run { try await e2ee.unlock(.passkey(e2ee.passkeys, rpID: e2ee.rpID)) }
             }
-            // リカバリーキーは非常用なので、たたんでおく。
+            // リカバリーキーは、パスキーを使えないときだけ使うので、たたんでおく。
             DisclosureGroup {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("パスキーを使えないときだけ使います。控えておいた 48 文字のキーを入力してください。")
@@ -130,7 +130,7 @@ struct EncryptionSetupView: View {
                 }
                 .padding(.top, 8)
             } label: {
-                Label("非常用：リカバリーキーで解錠", systemImage: "key.horizontal").font(.subheadline.weight(.medium))
+                Label("リカバリーキーで解錠", systemImage: "key.horizontal").font(.subheadline.weight(.medium))
             }
             .padding(16)
             .background(AppDesign.surface, in: RoundedRectangle(cornerRadius: AppDesign.cornerRadius))
@@ -144,7 +144,7 @@ struct EncryptionSetupView: View {
             VStack(alignment: .leading, spacing: 18) {
                 FeatureRow(symbol: "person.badge.key.fill", title: "パスキーで解錠",
                            detail: "Face ID や Touch ID で、すぐに解錠できます。ほかの端末でも、同じパスキーで開けます。")
-                FeatureRow(symbol: "key.horizontal.fill", title: "非常用のリカバリーキー",
+                FeatureRow(symbol: "key.horizontal.fill", title: "リカバリーキー",
                            detail: "パスキーを使えなくなったときのための鍵です。次の画面で、1 回だけ表示します。")
                 FeatureRow(symbol: "iphone.and.arrow.forward", title: "端末を変えても読める",
                            detail: "新しい端末で解錠すると、これまでのメッセージを読めます。")
@@ -170,7 +170,7 @@ struct EncryptionSetupView: View {
 
     private func recovery(_ start: SetupStartHandle, passkey: Bool) -> some View {
         VStack(spacing: 20) {
-            Hero(symbol: "key.horizontal.fill", title: "非常用のリカバリーキー",
+            Hero(symbol: "key.horizontal.fill", title: "リカバリーキー",
                  message: passkey
                      ? "パスキーを使えなくなったときに、この鍵で解錠できます。このキーは、もう表示されません。"
                      : "パスキーを使わないので、この鍵が唯一の解錠の手段です。失うと、解錠できなくなります。")
