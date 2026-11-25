@@ -74,7 +74,10 @@ struct ConversationEncryptionTests {
         #expect(shown[before]?.e2eeLegacy == true)
         // 暗号化したメッセージより後ろ：本文は出すが警告を付ける。
         #expect(shown[after]?.content == "紛れた平文")
-        #expect(shown[after]?.e2eeNotice == E2eeText.unencryptedBadge)
+        // 短い文だけを出し、くわしい説明は ⓘ をタップしたときに出す。
+        #expect(shown[after]?.e2eeNotice == "暗号化されていません")
+        #expect(shown[after]?.e2eeNoticeDetail == E2eeText.unencryptedBadgeHelp)
+        #expect(shown[before]?.e2eeNoticeDetail == nil)
         #expect(shown[after]?.e2eeLegacy == true)
         // 暗号文がないのに `epoch` がある行は、本文を出さない。
         #expect(shown[tampered]?.content == "")
@@ -217,5 +220,29 @@ struct MessageEncryptionNoticeTests {
         let decrypted = DecryptedBody(notice: E2eeText.invalid)
         #expect(decrypted.body == nil)
         #expect(decrypted.notice == E2eeText.invalid)
+    }
+}
+
+struct EncryptionDividerTests {
+    private func row(_ id: String, ciphertext: String? = nil, epoch: UInt64? = nil) -> Message {
+        Message(id: id, user_id: "u", channel_id: "c", content: "本文", created_at: "2026-11-25T09:00:00Z",
+                ciphertext: ciphertext.map(CiphertextText.init), epoch: epoch.map(ShapeInteger.init))
+    }
+
+    @Test("読み込んだうちで最初の暗号化したメッセージの前に、境目を出す（暗号文か epoch のある行）")
+    func dividerBeforeFirstEncryptedRow() {
+        let rows = [row("a"), row("b"), row("c", ciphertext: "{}", epoch: 1), row("d", ciphertext: "{}", epoch: 1)]
+        #expect(MessageTimeline.encryptionStartIndex(in: rows, channelEncrypted: true) == 2)
+        // `epoch` だけの行（暗号化したメッセージを削除した行）も、暗号化したメッセージとして数える。
+        let deleted = [row("a"), row("b", epoch: 1)]
+        #expect(MessageTimeline.encryptionStartIndex(in: deleted, channelEncrypted: true) == 1)
+    }
+
+    @Test("先頭が暗号化したメッセージ、暗号化したメッセージがない、暗号化チャンネルでないときは、境目を出さない")
+    func noDividerWhenNothingAbove() {
+        #expect(MessageTimeline.encryptionStartIndex(in: [row("a", ciphertext: "{}", epoch: 1), row("b")], channelEncrypted: true) == nil)
+        #expect(MessageTimeline.encryptionStartIndex(in: [row("a"), row("b")], channelEncrypted: true) == nil)
+        #expect(MessageTimeline.encryptionStartIndex(in: [row("a"), row("b", ciphertext: "{}", epoch: 1)], channelEncrypted: false) == nil)
+        #expect(MessageTimeline.encryptionStartIndex(in: [], channelEncrypted: true) == nil)
     }
 }
