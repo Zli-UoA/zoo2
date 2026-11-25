@@ -158,7 +158,7 @@ describe("useLinkedMessageRows", () => {
     expect(logged.mock.calls.length).toBeLessThanOrEqual(1);
   });
 
-  it("失敗した問い合わせも、購読者がいなくなって片付いたら、次の購読で作り直して取り直す", async () => {
+  it("失敗した問い合わせは片付いたら作り直すが、取り直せるのは、失敗したソースも片付いたあと", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const { wrapper: Wrapper, bundle } = wrapper();
     const source = bundle.messages(channelId);
@@ -169,14 +169,24 @@ describe("useLinkedMessageRows", () => {
     const failed = first.result.current.collection!;
     expect(failed.status).toBe("error");
     first.unmount();
-    // 片付け（購読者がいなくなったあとの GC）。ソースのコレクションも、片付くと取り直せる。
+    // 片付け（購読者がいなくなったあとの GC）。
     await failed.cleanup();
+
+    // ソース（チャンネルの `messages`）が失敗のままなら、作り直した問い合わせも失敗する。
+    const again = renderHook(() => useLinkedMessageRows(channelId, messageId), {
+      wrapper: Wrapper,
+    });
+    const recreated = again.result.current.collection!;
+    expect(recreated).not.toBe(failed);
+    expect(again.result.current.isError).toBe(true);
+    again.unmount();
+    await recreated.cleanup();
     await source.cleanup();
 
     const second = renderHook(() => useLinkedMessageRows(channelId, messageId), {
       wrapper: Wrapper,
     });
-    expect(second.result.current.collection).not.toBe(failed);
+    expect(second.result.current.collection).not.toBe(recreated);
     await waitFor(() => expect(second.result.current.data?.length).toBe(1));
   });
 });

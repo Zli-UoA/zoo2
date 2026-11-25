@@ -101,8 +101,9 @@ function linkedMessageQuery(sources: MessageFeedSources, messageId: string) {
   const existing = byId.get(messageId);
   // 購読者がいなくなって片付いた問い合わせは、作り直す。失敗した（`error`）問い合わせは、片付くまで使い続ける。
   // ここは描画のたびに呼ばれる。失敗の原因（チャンネルの `messages` の同期の失敗など）が残っていると、作り直した
-  // 問い合わせもすぐ失敗し、描画のたびに購読と要求が増える。取り直すのは、購読者がいなくなって
-  // 片付いた（既定で 5 秒）あとに、また購読されたとき。ソースが回復すれば、同じ問い合わせも回復する。
+  // 問い合わせもすぐ失敗し、描画のたびに購読と要求が増える。作り直しても、`messages` が失敗のままなら
+  // 取り直さない。`messages` はアプリで共有するので、ここでは片付けない。取り直すのは、ページの再読み込みか、
+  // 使う画面がなくなって TanStack DB が片付けた（`gcTime` の既定は 5 分）あと。
   if (existing && existing.status !== "cleaned-up") return existing;
   const created = createLinkedQuery(sources, messageId);
   byId.set(messageId, created);

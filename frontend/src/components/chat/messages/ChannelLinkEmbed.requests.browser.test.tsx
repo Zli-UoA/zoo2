@@ -1,5 +1,5 @@
 import "../../../styles.css";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import {
   createMemoryHistory,
   createRootRoute,
@@ -8,6 +8,7 @@ import {
   Outlet,
   RouterProvider,
 } from "@tanstack/react-router";
+import { useState } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 
 import { resolveConfig } from "../../../lib/config";
@@ -158,26 +159,33 @@ function renderBodies(contents: string[], visible: ChannelRow[]) {
     { namespace: `channel-link-requests-${(namespace += 1)}`, persistence: null },
   );
   const root = createRootRoute({ component: Outlet });
-  const home = createRoute({
-    getParentRoute: () => root,
-    path: "/",
-    component: () => (
+  const control: { setShown: (shown: boolean) => void } = { setShown: () => {} };
+  function Bodies() {
+    const [shown, setShown] = useState(true);
+    control.setShown = setShown;
+    return (
       <LocaleProvider>
         <CollectionsProvider value={bundle}>
           <MfmChannelsProvider channels={visible}>
-            {contents.map((content, index) => (
-              <MessageBody key={index} content={content} />
-            ))}
+            {shown
+              ? contents.map((content, index) => <MessageBody key={index} content={content} />)
+              : null}
           </MfmChannelsProvider>
         </CollectionsProvider>
       </LocaleProvider>
-    ),
-  });
+    );
+  }
+  const home = createRoute({ getParentRoute: () => root, path: "/", component: Bodies });
   const router = createRouter({
     routeTree: root.addChildren([home]),
     history: createMemoryHistory({ initialEntries: ["/"] }),
   });
   render(<RouterProvider router={router} />);
+  return {
+    bundle,
+    /** 投稿を画面から消す・戻す（コレクションはそのまま）。 */
+    show: (shown: boolean) => act(async () => control.setShown(shown)),
+  };
 }
 
 const link = (id: string, message: string) => `${origin}/channels/${id}?message=${message}`;
@@ -334,3 +342,32 @@ it.each([401, 403, 400])(
     logged.mockRestore();
   },
 );
+
+// 取り直しの条件（docs/mfm.md）。失敗が残るのは、リンクの問い合わせではなく、チャンネルの `messages`。
+it("同期に失敗したチャンネルは、リンクを出し直しても取り直さず、`messages` が片付いたあとに取り直す", async () => {
+  const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+  const failing = "c-recover";
+  stubFetch({ messagesStatus: 403 });
+  const view = renderBodies([link(failing, "m-1")], [channel(failing)]);
+  await screen.findByText("リンク先を読み込めませんでした");
+  const source = view.bundle.messages(failing);
+
+  // サーバーは回復した。リンクを消して、リンクの問い合わせが片付く（5 秒）まで待ってから、出し直す。
+  const recovered = stubFetch();
+  await view.show(false);
+  await waitFor(() => expect(source.subscriberCount).toBe(0), { timeout: 10_000 });
+  await view.show(true);
+  expect(await screen.findByText("リンク先を読み込めませんでした")).toBeInTheDocument();
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  expect(recovered.messages).toHaveLength(0);
+  expect(source.status).toBe("error");
+
+  // 使う表示がなくなって 5 分（TanStack DB の既定の `gcTime`）たつと、ライブラリが `messages` を片付ける。
+  // 待たずに、同じ片付けを呼ぶ。
+  await view.show(false);
+  await waitFor(() => expect(source.subscriberCount).toBe(0), { timeout: 10_000 });
+  await source.cleanup();
+  await view.show(true);
+  expect(await screen.findByText("本文 m-1", undefined, { timeout: 5_000 })).toBeInTheDocument();
+  logged.mockRestore();
+}, 40_000);
