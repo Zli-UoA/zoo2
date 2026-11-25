@@ -33,9 +33,13 @@ struct KeyCounts: Equatable {
         self.hasUnusedFallbackKey = hasUnusedFallbackKey
     }
 
-    init(_ response: JSONValue) {
+    /// 数が整数で表せない、または負のときは、不正な応答として投げる（`Int(_:)` で停止しない）。
+    init(_ response: JSONValue) throws {
         if case .object(let object) = response {
-            if case .object(let counts)? = object["one_time_key_counts"], case .number(let count)? = counts["signed_curve25519"] { oneTimeKeys = Int(count) }
+            if case .object(let counts)? = object["one_time_key_counts"], case .number(let count)? = counts["signed_curve25519"] {
+                guard let value = Int(exactly: count), value >= 0 else { throw ZooError.invalidResponse }
+                oneTimeKeys = value
+            }
             if case .array(let types)? = object["unused_fallback_key_types"] { hasUnusedFallbackKey = types.contains(.string("signed_curve25519")) }
         }
     }
@@ -54,7 +58,7 @@ protocol E2eeKeysAPI {
 
 extension APIClient: E2eeKeysAPI {
     func uploadKeys(deviceID: String, oneTimeKeys: [String: JSONValue], fallbackKeys: [String: JSONValue]) async throws -> KeyCounts {
-        KeyCounts(try await e2eeJSON("api/e2ee/keys/upload", method: "POST", body: [
+        try KeyCounts(try await e2eeJSON("api/e2ee/keys/upload", method: "POST", body: [
             "device_id": .string(deviceID), "one_time_keys": .object(oneTimeKeys), "fallback_keys": .object(fallbackKeys)
         ]))
     }
@@ -154,11 +158,14 @@ final class E2eeDeviceManager {
     }
 
     /// 処理を止めて、暗号ストアを閉じる。
+    /// 止め終えるまで `loop` を持ち続けるので、そのあいだの `start()` は何もしない（新しい処理が、古い処理の後片付けに
+    /// 巻き込まれない）。
     func stop() async {
-        let running = loop
-        loop = nil
-        running?.cancel()
-        await running?.value
+        guard let running = loop else { return }
+        running.cancel()
+        await running.value
+        // 止めている間に別の `stop()` が終えていたら、何もしない。
+        if loop == running { loop = nil }
         readyStore = nil
         store?.close()
         store = nil
@@ -178,13 +185,15 @@ final class E2eeDeviceManager {
         var backoff = firstRetryDelay
         while !Task.isCancelled {
             var connected = false
-            do { try await runOnce { connected = true } } catch is CancellationError { break } catch {
-                if Task.isCancelled { break }
-                onError(error)
+            // 親の処理が止められていないのに購読が `CancellationError` を返したときも、後片付けとバックオフを通して
+            // やり直す（止められたときだけ抜ける）。
+            do { try await runOnce { connected = true } } catch {
+                if !Task.isCancelled { onError(error) }
             }
             readyStore = nil
             store?.close()
             store = nil
+            if Task.isCancelled { break }
             // 登録と補充を終えて Shape を受け取れていたら、そのあとの切断は連続した失敗ではないので、
             // 最初の間隔から数え直す。続けて失敗したら倍にする。
             let wait = connected ? firstRetryDelay : backoff
