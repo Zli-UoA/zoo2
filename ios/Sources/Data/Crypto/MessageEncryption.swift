@@ -80,7 +80,7 @@ private extension JSONValue {
     var object: [String: JSONValue]? { if case .object(let value) = self { value } else { nil } }
     var string: String? { if case .string(let value) = self { value } else { nil } }
     var array: [JSONValue]? { if case .array(let value) = self { value } else { nil } }
-    var uint: UInt64? { if case .number(let value) = self, value >= 0 { UInt64(value) } else { nil } }
+    var uint: UInt64? { if case .number(let value) = self { UInt64(exactly: value) } else { nil } }
 }
 
 private func jsonText(_ value: JSONValue) -> String { String(decoding: try! JSONEncoder().encode(value), as: UTF8.self) }
@@ -101,8 +101,14 @@ final class MessageEncryption {
     private final class SendingSession {
         let owner: CryptoStore
         let session: OutboundSession
+        /// 作ったときの送信端末の Curve25519 鍵。端末を作り直すと変わり、そのセッションは使えない。
+        let senderKey: String
         var shared = Set<String>()
-        init(owner: CryptoStore, session: OutboundSession) { self.owner = owner; self.session = session }
+        init(owner: CryptoStore, session: OutboundSession) {
+            self.owner = owner
+            self.session = session
+            senderKey = owner.curve25519Key
+        }
     }
 
     private var outbound: [String: SendingSession] = [:]
@@ -231,7 +237,9 @@ final class MessageEncryption {
                 "device_id": .string(store.deviceID), "txn_id": .string(makeID()),
                 "type": .string("m.room.encrypted"), "messages": .object(messages)
             ])
-            guard (sent["undelivered"]?.array ?? []).isEmpty else { throw MessageEncryptionError.undeliverable("受信端末に鍵を配れませんでした") }
+            // 応答は `{"undelivered": [...]}`（なければ空の配列）。読めない応答は、配れたと確かめられないので、本文を送らない。
+            guard let undelivered = sent["undelivered"]?.array else { throw MessageEncryptionError.undeliverable("鍵の配布の結果を確かめられませんでした") }
+            guard undelivered.isEmpty else { throw MessageEncryptionError.undeliverable("受信端末に鍵を配れませんでした") }
         }
     }
 
@@ -269,7 +277,10 @@ final class MessageEncryption {
             latestEpochs[channel] = epoch
             do {
                 let nowMs = now()
-                if let cached = outbound[channel], cached.owner !== store || cached.session.needsRotation(nowMs: nowMs, currentEpoch: epoch) {
+                // 端末を作り直した（送信者の鍵が変わった）ときも、古いセッションを捨てる。受信側は古い鍵の受信用セッションしか
+                // 持たず、`shared` も古い端末の分なので、新しい鍵を配り直せるようにする。
+                if let cached = outbound[channel], cached.owner !== store || cached.senderKey != store.curve25519Key
+                    || cached.session.needsRotation(nowMs: nowMs, currentEpoch: epoch) {
                     discard(channel)
                 }
                 let current: SendingSession
