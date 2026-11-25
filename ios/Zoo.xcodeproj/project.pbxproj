@@ -30,11 +30,13 @@
 		1E45AF3447442D972CC66160 /* ShortcutActionsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A207CEFA59094C7050CE45B8 /* ShortcutActionsUITests.swift */; };
 		1E7120C4C61C002DCC2A219B /* Passkeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11C88737BD962A470DDDCD69 /* Passkeys.swift */; };
 		1F6A754BDC30EAD03664B785 /* CryptoBindingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD8C8688E49CEFE743C30BBB /* CryptoBindingTests.swift */; };
+		21FBA003EE25E46B71570538 /* EncryptionSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A81E691EC7FDF48530929C7 /* EncryptionSetupView.swift */; };
 		26CF4C18C8BEB0A8CF709993 /* ReactionGlyph.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA787668A52085815A631603 /* ReactionGlyph.swift */; };
 		271C2664053C32BFF3DE7410 /* ConversationDestination.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C78FF3DA140FCB63A561014 /* ConversationDestination.swift */; };
 		271D71364DCDE2BD7CF35296 /* ThreadAppearanceObserver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 700FE578491E5FDFF05429E3 /* ThreadAppearanceObserver.swift */; };
 		27A4C9665DA76C973A657EF5 /* ZooCallActivity.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 62A8E57F6027DEA362C925EE /* ZooCallActivity.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		2A1CD6E6753953CC6D6FD3FC /* SiriVocabulary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 102E33938A627DB54B47D79E /* SiriVocabulary.swift */; };
+		2A5C81C37C85299540AA901C /* E2eeController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA23AA6ED309FC33873C86DF /* E2eeController.swift */; };
 		2AA72BE94EE7D278C8981F14 /* AttachmentCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C1EAD4774E62106EA178697 /* AttachmentCacheTests.swift */; };
 		2B5E49E1F342B071682412A5 /* emoji-kitchen.json in Resources */ = {isa = PBXBuildFile; fileRef = 282DDBDDEB96DE924165AE86 /* emoji-kitchen.json */; };
 		2BBF832A281944225B1D2A6C /* SiriCallTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54B6A271234210960610C440 /* SiriCallTests.swift */; };
@@ -177,6 +179,7 @@
 		CE5F7E6D9F57E6FC335A3E70 /* GlobalSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = FAAD47FFF6738DD5E157A6A9 /* GlobalSearch.swift */; };
 		CF6DC203CE2BD66846D3A82E /* AttachmentPreviewDismissGesture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BB6EEB9B3CF688AE17A971E /* AttachmentPreviewDismissGesture.swift */; };
 		D362DAEB447798B0C26FC87C /* PreviewNotificationStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90CF169EFD87FC14EF186771 /* PreviewNotificationStorage.swift */; };
+		D3C7A21180B2680A5E52FAC8 /* ConversationEncryptionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 611F8815436C42C1E7AE73FE /* ConversationEncryptionTests.swift */; };
 		D465A498C77749369FDE697D /* CryptoStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF725375FA248F5C75335E14 /* CryptoStoreTests.swift */; };
 		D473BAC0ED955861E142E946 /* PreviewCallMedia.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0F6FF6D923BB6F15CD14431 /* PreviewCallMedia.swift */; };
 		D47CB77FEF6CD1A9E3719747 /* AttachmentPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = A157AA6F544356F098E65A50 /* AttachmentPreview.swift */; };
@@ -324,6 +327,7 @@
 		347E28ACB1C49647000B1C66 /* InboxStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxStore.swift; sourceTree = "<group>"; };
 		35169546CA55D414B0D9CF10 /* CallView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallView.swift; sourceTree = "<group>"; };
 		38F9FD9EA5349E25978E7C49 /* Reauth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Reauth.swift; sourceTree = "<group>"; };
+		3A81E691EC7FDF48530929C7 /* EncryptionSetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EncryptionSetupView.swift; sourceTree = "<group>"; };
 		3B18DFF6412E210868419C7D /* NotificationPreviewKeyStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationPreviewKeyStorage.swift; sourceTree = "<group>"; };
 		3C78FF3DA140FCB63A561014 /* ConversationDestination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationDestination.swift; sourceTree = "<group>"; };
 		3C798D4514312CC0982CDC89 /* ZooWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ZooWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -353,6 +357,7 @@
 		5B55811C2D4DEF2C5310391F /* E2eeDeviceManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = E2eeDeviceManagerTests.swift; sourceTree = "<group>"; };
 		5C1432176D2EE10E6E652F81 /* CreateChannelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreateChannelView.swift; sourceTree = "<group>"; };
 		5C4E223B8FAF667DB327FCDB /* AppOrientation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppOrientation.swift; sourceTree = "<group>"; };
+		611F8815436C42C1E7AE73FE /* ConversationEncryptionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationEncryptionTests.swift; sourceTree = "<group>"; };
 		6171E0B48D5118B0F608CF07 /* JSONValue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONValue.swift; sourceTree = "<group>"; };
 		62A8E57F6027DEA362C925EE /* ZooCallActivity.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = ZooCallActivity.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		62B45093AC11E5E04625E6C0 /* PDFPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFPreviewView.swift; sourceTree = "<group>"; };
@@ -421,6 +426,7 @@
 		B7C83D3956A6E92C9C1838B5 /* GlobalSearchFilters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalSearchFilters.swift; sourceTree = "<group>"; };
 		B7F8415CB919AB24D2C69580 /* ZooUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = ZooUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B8D75455ED3D61632AD514B1 /* ZooShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZooShortcuts.swift; sourceTree = "<group>"; };
+		BA23AA6ED309FC33873C86DF /* E2eeController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = E2eeController.swift; sourceTree = "<group>"; };
 		BC38AB430AA1777D763AB387 /* AttachmentRenderState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentRenderState.swift; sourceTree = "<group>"; };
 		BCADD40C264C81FB2A211091 /* PublicProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PublicProfile.swift; sourceTree = "<group>"; };
 		BD210A905C644AF9486510B3 /* ZooMessageSchemas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZooMessageSchemas.swift; sourceTree = "<group>"; };
@@ -572,6 +578,7 @@
 				FF0CFDBEA15C95A3C360562D /* ChannelReadTests.swift */,
 				6E574B38B51C1F97994593C4 /* ChannelThreadsTests.swift */,
 				B38BCEDE645D8F594A866F0A /* ChatPresentationTests.swift */,
+				611F8815436C42C1E7AE73FE /* ConversationEncryptionTests.swift */,
 				AD8C8688E49CEFE743C30BBB /* CryptoBindingTests.swift */,
 				EF725375FA248F5C75335E14 /* CryptoStoreTests.swift */,
 				4AF636CE5F5200DE9C254331 /* DeviceAuthorizationTests.swift */,
@@ -709,6 +716,14 @@
 			path = Preview;
 			sourceTree = "<group>";
 		};
+		7CFDF20B027671407AD737FC /* Encryption */ = {
+			isa = PBXGroup;
+			children = (
+				3A81E691EC7FDF48530929C7 /* EncryptionSetupView.swift */,
+			);
+			path = Encryption;
+			sourceTree = "<group>";
+		};
 		7FE24A48C2AEAC9637EFE6B0 /* Channels */ = {
 			isa = PBXGroup;
 			children = (
@@ -788,6 +803,7 @@
 			children = (
 				568AEF9DEE3D0E39CBC266A3 /* CryptoStore.swift */,
 				F0B4CCDF5EF02DB351767888 /* DeviceRegistration.swift */,
+				BA23AA6ED309FC33873C86DF /* E2eeController.swift */,
 				111FAF4B91FBC87D2EE0DF36 /* E2eeDeviceManager.swift */,
 				164ACCCC5DC90C3964A189A9 /* E2eeSetup.swift */,
 				20D98B4BD6EBD1E34085071B /* MessageEncryption.swift */,
@@ -878,6 +894,7 @@
 				AE1F3DDBBBB25B04CE7AD9CB /* Calls */,
 				7FE24A48C2AEAC9637EFE6B0 /* Channels */,
 				6F1232EC72671985308C622C /* Conversation */,
+				7CFDF20B027671407AD737FC /* Encryption */,
 				C6AB68CFE234037FA3B29F54 /* Inbox */,
 				F2DE4ECE725E22455AB6213E /* Intents */,
 				FA9B2BC4E85650E17B0E92C2 /* Profile */,
@@ -1204,6 +1221,7 @@
 				BCD3133A011897F76683ED45 /* ChannelReadTests.swift in Sources */,
 				A8431E8A8F001AEC5FD6EB2D /* ChannelThreadsTests.swift in Sources */,
 				68A8F60E90FC71AB8BF78D0C /* ChatPresentationTests.swift in Sources */,
+				D3C7A21180B2680A5E52FAC8 /* ConversationEncryptionTests.swift in Sources */,
 				1F6A754BDC30EAD03664B785 /* CryptoBindingTests.swift in Sources */,
 				D465A498C77749369FDE697D /* CryptoStoreTests.swift in Sources */,
 				0BDE0D56316999925653EA9F /* DeviceAuthorizationTests.swift in Sources */,
@@ -1317,10 +1335,12 @@
 				6294A116360D5449F2A4F0ED /* DeviceAuthorization.swift in Sources */,
 				7D8E3882D95EDE016FB46673 /* DeviceRegistration.swift in Sources */,
 				CDF47B6B97F6A7B8692DD5BA /* DraftAttachment.swift in Sources */,
+				2A5C81C37C85299540AA901C /* E2eeController.swift in Sources */,
 				8088A80CB03836B4905F0609 /* E2eeDeviceManager.swift in Sources */,
 				6B6933E1A14C269CC7E2D77E /* E2eeSetup.swift in Sources */,
 				7B2B0FE8A40167E74DAEF7EC /* EditMessageView.swift in Sources */,
 				BC8C3D14F46CC3B9D8684DC3 /* ElectricTransport.swift in Sources */,
+				21FBA003EE25E46B71570538 /* EncryptionSetupView.swift in Sources */,
 				FD354FB696C684AA39F32F4C /* Envelope.swift in Sources */,
 				CE5F7E6D9F57E6FC335A3E70 /* GlobalSearch.swift in Sources */,
 				4009217F95300292B0420477 /* GlobalSearchFilterBar.swift in Sources */,
