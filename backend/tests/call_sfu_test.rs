@@ -2363,15 +2363,41 @@ async fn join_latency() -> anyhow::Result<()> {
             summary(&mut burst)
         ));
     }
-    for delay_ms in [0u64, 100] {
+    // JOIN_LATENCY_REAL_CF=1 なら、mock の代わりに実際の Cloudflare Realtime を呼ぶ。鍵は
+    // CF_REALTIME_APP_ID・CF_REALTIME_APP_SECRET（環境変数）から読み、表示しない。作ったセッションは
+    // 何も流さないので、Cloudflare が片付ける。
+    let real_cf = std::env::var("JOIN_LATENCY_REAL_CF").is_ok_and(|v| v == "1");
+    let variants: Vec<Option<u64>> = if real_cf {
+        vec![None]
+    } else {
+        vec![Some(0), Some(100)]
+    };
+    for delay in variants {
         let cf = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path_regex(r"^/apps/app/sessions/new$"))
-            .respond_with(SlowNewSession(Duration::from_millis(delay_ms)))
-            .mount(&cf)
-            .await;
+        let (cloudflare, app_id, app_secret, cf_label) = match delay {
+            Some(delay_ms) => {
+                Mock::given(method("POST"))
+                    .and(path_regex(r"^/apps/app/sessions/new$"))
+                    .respond_with(SlowNewSession(Duration::from_millis(delay_ms)))
+                    .mount(&cf)
+                    .await;
+                (
+                    json!({"api_base": cf.uri()}),
+                    "app".to_string(),
+                    "secret".to_string(),
+                    format!("cf_delay={delay_ms}ms"),
+                )
+            }
+            None => (
+                json!({}),
+                std::env::var("CF_REALTIME_APP_ID")?,
+                std::env::var("CF_REALTIME_APP_SECRET")?,
+                "cf=real".to_string(),
+            ),
+        };
+        let delay_ms = delay.unwrap_or(0);
         let json = json!({
-            "cloudflare": {"api_base": cf.uri()},
+            "cloudflare": cloudflare,
             "livekit": {
                 "ws_url": "wss://livekit.example",
                 "api_url": lk.uri(),
@@ -2382,8 +2408,8 @@ async fn join_latency() -> anyhow::Result<()> {
         .to_string();
         let cfg = backend::call_sfu::CallSfuConfig::from_lookup(&|name| match name {
             "CALL_SFUS_JSON" => Some(json.clone()),
-            "CF_REALTIME_APP_ID" => Some("app".into()),
-            "CF_REALTIME_APP_SECRET" => Some("secret".into()),
+            "CF_REALTIME_APP_ID" => Some(app_id.clone()),
+            "CF_REALTIME_APP_SECRET" => Some(app_secret.clone()),
             "LIVEKIT_API_KEY" => Some("key".into()),
             "LIVEKIT_API_SECRET" => Some("0123456789abcdef0123456789abcdef".into()),
             "SFU_BRIDGE_TOKEN" => Some(BRIDGE_TOKEN.into()),
@@ -2434,7 +2460,7 @@ async fn join_latency() -> anyhow::Result<()> {
             )
             .await?;
             report.push(line(
-                format!("cf_delay={delay_ms}ms n=30 cold SameRoomConcurrent"),
+                format!("{cf_label} n=30 cold SameRoomConcurrent"),
                 rows,
             ));
         }
@@ -2459,7 +2485,7 @@ async fn join_latency() -> anyhow::Result<()> {
                 for _ in 0..3 {
                     rows.extend(join_round(&app, &mut db, n, mode, "warm").await?);
                 }
-                report.push(line(format!("cf_delay={delay_ms}ms n={n} {mode:?}"), rows));
+                report.push(line(format!("{cf_label} n={n} {mode:?}"), rows));
             }
         }
     }
