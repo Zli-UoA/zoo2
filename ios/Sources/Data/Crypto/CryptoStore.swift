@@ -34,12 +34,15 @@ struct CryptoStoreFiles: Sendable {
     }
 }
 
+/// 送信に解錠が要る（解錠していない、解錠し直しが要る、サーバーの自己署名鍵が暗号ストアの鍵と違う）。
+enum E2eeStoreError: Error, Equatable { case sendNeedsUnlock }
+
 /// 同じ暗号ストアを、ほかの場所が開いている。少し待って試し直す。
 struct CryptoStoreBusyError: Error, Equatable {}
 
 /// `state.json` の中身。`account` は `DeviceAccount.pickle`（保存鍵で暗号化済み）。
 /// `user_id`、`device_id`、登録済みかは平文で、秘密ではない（Android・TUI の `state.json` と同じ形）。
-private struct StoreState: Codable {
+struct StoreState: Codable {
     var version: Int
     var user_id: String
     var device_id: String
@@ -51,6 +54,45 @@ private struct StoreState: Codable {
     var own_keys: String?
     /// 最後に解錠したときの `secrets_revision`。
     var secrets_revision: UInt64?
+    /// Olm セッション（`OlmSessionStore::pickle_sessions`）。
+    var olm_sessions: [StoredOlm] = []
+    /// 受信用セッション。キーは `inboundKey`。
+    var inbound_sessions: [String: StoredInbound] = [:]
+    /// 処理を終えて、まだ ack を送れていない to-device の ID。
+    var processed_to_device: [String] = []
+
+    init(version: Int, user_id: String, device_id: String, registered: Bool, account: String, trust_store: String?) {
+        self.version = version; self.user_id = user_id; self.device_id = device_id
+        self.registered = registered; self.account = account; self.trust_store = trust_store
+    }
+
+    // 後から足した項目は、ないときの既定値で読む（前の版の `state.json` を開けるように）。
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decode(Int.self, forKey: .version)
+        user_id = try c.decode(String.self, forKey: .user_id)
+        device_id = try c.decode(String.self, forKey: .device_id)
+        registered = try c.decode(Bool.self, forKey: .registered)
+        account = try c.decode(String.self, forKey: .account)
+        trust_store = try c.decodeIfPresent(String.self, forKey: .trust_store)
+        own_keys = try c.decodeIfPresent(String.self, forKey: .own_keys)
+        secrets_revision = try c.decodeIfPresent(UInt64.self, forKey: .secrets_revision)
+        olm_sessions = try c.decodeIfPresent([StoredOlm].self, forKey: .olm_sessions) ?? []
+        inbound_sessions = try c.decodeIfPresent([String: StoredInbound].self, forKey: .inbound_sessions) ?? [:]
+        processed_to_device = try c.decodeIfPresent([String].self, forKey: .processed_to_device) ?? []
+    }
+}
+
+struct StoredOlm: Codable {
+    var their_identity_key: String
+    var session_id: String
+    var pickle: String
+}
+
+struct StoredInbound: Codable {
+    var pickle: String
+    /// 鍵バックアップに送ったか。送っていないものの数を、ログアウトの前に見せる。
+    var backed_up: Bool = false
 }
 
 /// iOS の暗号ストア（#685）。今は端末アカウントと登録の状態だけを持ち、Olm・Megolm のセッションなどは送受信の実装で足す。
@@ -74,6 +116,10 @@ final class CryptoStore: @unchecked Sendable {
     private let storageKey: Data
     private var account: DeviceAccount
     private var trust: TrustStore
+    private var olmSessions: OlmSessionStore
+    private var inbound = InboundSessionStore()
+    private var loadedInbound = Set<String>()
+    private var outboundOlm: [String: String] = [:]
     private var state: StoreState
     private var closed = false
     private let lock = NSLock()
@@ -82,8 +128,9 @@ final class CryptoStore: @unchecked Sendable {
     var deviceID: String { state.device_id }
     var isRegistered: Bool { lock.withLock { state.registered } }
 
-    private init(directory: URL, storageKey: Data, account: DeviceAccount, trust: TrustStore, state: StoreState) {
+    private init(directory: URL, storageKey: Data, account: DeviceAccount, trust: TrustStore, olmSessions: OlmSessionStore, state: StoreState) {
         self.directory = directory
+        self.olmSessions = olmSessions
         self.storageKey = storageKey
         self.account = account
         self.trust = trust
@@ -122,8 +169,10 @@ final class CryptoStore: @unchecked Sendable {
                                                            userId: stored.user_id, deviceId: stored.device_id)
                 let trust = try stored.trust_store.map { try TrustStore.fromPickle(pickle: $0, account: account, storageKey: key) }
                     ?? TrustStore(userId: stored.user_id)
+                let olm = OlmSessionStore()
+                for session in stored.olm_sessions { _ = try olm.restoreSession(account: account, pickle: session.pickle, storageKey: key) }
                 return Opened(store: CryptoStore(directory: files.directory, storageKey: key, account: account, trust: trust,
-                                                 state: stored),
+                                                 olmSessions: olm, state: stored),
                               replacedDeviceID: nil)
             }
             // 保存鍵がなければ、どの値も読めない。作り直して、新しい端末として登録し直す。
@@ -145,7 +194,8 @@ final class CryptoStore: @unchecked Sendable {
         let state = StoreState(version: stateVersion, user_id: userID, device_id: account.deviceId(),
                                registered: false, account: try account.pickle(storageKey: key),
                                trust_store: try trust.pickle(account: account, storageKey: key))
-        let store = CryptoStore(directory: files.directory, storageKey: key, account: account, trust: trust, state: state)
+        let store = CryptoStore(directory: files.directory, storageKey: key, account: account, trust: trust,
+                                olmSessions: OlmSessionStore(), state: state)
         try store.save()
         return Opened(store: store, replacedDeviceID: replaced)
     }
@@ -184,10 +234,26 @@ final class CryptoStore: @unchecked Sendable {
             nextState.secrets_revision = nil
             nextState.trust_store = try TrustStore(userId: state.user_id).pickle(account: next, storageKey: storageKey)
             nextState.account = try next.pickle(storageKey: storageKey)
+            // Olm セッションは古い端末の鍵との間のものなので捨てる。受信用セッションは、古い端末で開いて新しい端末で封をし直す
+            // （開けない、壊れたものは捨てる）。
+            nextState.olm_sessions = []
+            nextState.processed_to_device = []
+            let opener = InboundSessionStore()
+            var resealed: [String: StoredInbound] = [:]
+            for (key, stored) in state.inbound_sessions {
+                guard let ref = try? opener.restoreSession(account: account, pickle: stored.pickle, storageKey: storageKey),
+                      let pickle = try? opener.pickleSession(account: next, key: ref, storageKey: storageKey) else { continue }
+                resealed[key] = StoredInbound(pickle: pickle, backed_up: stored.backed_up)
+            }
+            nextState.inbound_sessions = resealed
             try Self.writeAtomically(JSONEncoder().encode(nextState), to: directory.appendingPathComponent(Self.stateFile))
             // 保存できてから、メモリーの状態を進める。
             account = next
             trust = try TrustStore.fromPickle(pickle: nextState.trust_store!, account: next, storageKey: storageKey)
+            olmSessions = OlmSessionStore()
+            inbound = InboundSessionStore()
+            loadedInbound = []
+            outboundOlm = [:]
             state = nextState
         }
     }
@@ -237,6 +303,296 @@ final class CryptoStore: @unchecked Sendable {
             next.secrets_revision = nil
             try Self.writeAtomically(JSONEncoder().encode(next), to: directory.appendingPathComponent(Self.stateFile))
             state = next
+        }
+    }
+
+    // MARK: - ワンタイム鍵
+
+    /// `POST /api/e2ee/keys/upload` に送る鍵。
+    struct KeyUpload: Equatable {
+        let oneTimeKeys: [String: JSONValue]
+        let fallbackKeys: [String: JSONValue]
+    }
+
+    /// サーバーのワンタイム鍵を最大数に戻し、使われたフォールバック鍵を作り直す。送るものがなければ `nil`。
+    /// まだ公開していない鍵（応答をなくした送信の分）も入れる。
+    func prepareKeyUpload(oneTimeKeyCount: Int, hasUnusedFallbackKey: Bool) throws -> KeyUpload? {
+        try lock.withLock {
+            func parse(_ json: String) throws -> [String: JSONValue] {
+                guard case .object(let object) = try JSONDecoder().decode(JSONValue.self, from: Data(json.utf8)) else { throw ZooError.invalidResponse }
+                return object
+            }
+            let unpublished = try parse(account.oneTimeKeys()).count
+            let missing = Int(account.maxNumberOfOneTimeKeys()) - oneTimeKeyCount - unpublished
+            var changed = false
+            if missing > 0 { account.generateOneTimeKeys(count: UInt64(missing)); changed = true }
+            if !hasUnusedFallbackKey, try parse(account.fallbackKeys()).isEmpty { account.generateFallbackKey(); changed = true }
+            if changed {
+                var next = state
+                next.account = try account.pickle(storageKey: storageKey)
+                try save(next)
+                state = next
+            }
+            let oneTimeKeys = try parse(account.oneTimeKeys()), fallbackKeys = try parse(account.fallbackKeys())
+            if oneTimeKeys.isEmpty && fallbackKeys.isEmpty { return nil }
+            return KeyUpload(oneTimeKeys: oneTimeKeys, fallbackKeys: fallbackKeys)
+        }
+    }
+
+    func markKeysPublished() throws {
+        try lock.withLock {
+            account.markKeysAsPublished()
+            var next = state
+            next.account = try account.pickle(storageKey: storageKey)
+            try save(next)
+            state = next
+        }
+    }
+
+    // MARK: - 受信（to-device、本文の復号）
+
+    /// 受信用セッションのキーを 1 つの文字列にする（Android・TUI と同じ形）。
+    static func inboundKey(_ ref: SessionRef) -> String {
+        String(decoding: try! JSONEncoder().encode([ref.channelId, ref.senderKey, ref.sessionId]), as: UTF8.self)
+    }
+
+    private func save(_ next: StoreState) throws {
+        try Self.writeAtomically(JSONEncoder().encode(next), to: directory.appendingPathComponent(Self.stateFile))
+    }
+
+    /// 保存した受信用セッションを、まだなら読み込む。読み込めたときだけ読み込み済みにする。
+    private func loadInbound(_ key: String) throws {
+        guard !loadedInbound.contains(key) else { return }
+        if let stored = state.inbound_sessions[key] {
+            _ = try inbound.restoreSession(account: account, pickle: stored.pickle, storageKey: storageKey)
+        }
+        loadedInbound.insert(key)
+    }
+
+    private func saveTrustStore() throws {
+        var next = state
+        next.trust_store = try trust.pickle(account: account, storageKey: storageKey)
+        try save(next)
+        state = next
+    }
+
+    /// to-device の Shape の行のうち、処理に使う列。
+    struct ToDeviceRow: Equatable {
+        let id: String
+        let senderUserID: String
+        let type: String
+        let content: String
+    }
+
+    struct ToDeviceResult: Equatable {
+        /// 処理を終えた（保存した、または捨てた）ID。ack を送ってよい。
+        let processed: [String]
+        let roomKeys: Int
+        let dropped: Int
+        /// 新しく作った Olm セッションの数（ワンタイム鍵を使われたので補充する）。
+        let newOlmSessions: Int
+        /// 保存した鍵のうち、送信端末を検証できたものの数。
+        let verifiedRoomKeys: Int
+    }
+
+    /// to-device メッセージを処理する（Android の `CryptoStore.processToDevice`、TUI・React と同じ規則）。
+    ///
+    /// 1 件ごとに、変わった状態と処理済みの印を保存してから次に進む。ack の前に終了しても、同じメッセージを 2 回
+    /// 復号しない。`keysQuery` は送信ユーザーと自分の `keys/query` の応答（端末鍵と署名を含む）で、解錠していれば、
+    /// 自分と送信者のクロス署名と保存済みの信頼記録で送信端末を検証する。
+    func processToDevice(_ rows: [ToDeviceRow], keysQuery: String) throws -> ToDeviceResult {
+        try lock.withLock {
+            var processed: [String] = [], roomKeys = 0, dropped = 0, newOlm = 0, verified = 0
+            let query = (try? JSONDecoder().decode(JSONValue.self, from: Data(keysQuery.utf8))) ?? .null
+            // 前の処理で印を付けた行（ack の前に失敗した）。保存の同期が済んだとは限らないので、返す前に保存し直す。
+            var unsaved = false
+            for row in rows {
+                if state.processed_to_device.contains(row.id) {
+                    unsaved = true
+                } else {
+                    if row.type == "m.room.encrypted" {
+                        switch try processEncrypted(row, query: query, keysQuery: keysQuery) {
+                        case .dropped: dropped += 1
+                        case .decrypted(let created, let roomKey, let rejected, let isVerified):
+                            newOlm += created
+                            if roomKey { roomKeys += 1 } else if rejected { dropped += 1 }
+                            if roomKey && isVerified { verified += 1 }
+                        }
+                    } else {
+                        dropped += 1
+                    }
+                    state.processed_to_device.append(row.id)
+                    try save(state)
+                    unsaved = false
+                }
+                processed.append(row.id)
+            }
+            if unsaved { try save(state) }
+            return ToDeviceResult(processed: processed, roomKeys: roomKeys, dropped: dropped, newOlmSessions: newOlm,
+                                  verifiedRoomKeys: verified)
+        }
+    }
+
+    private enum Encrypted {
+        case dropped
+        case decrypted(newOlmSessions: Int, roomKey: Bool, rejected: Bool, verified: Bool)
+    }
+
+    private func ownSelfSigning() -> String? {
+        // 解錠し直しが要る（secrets_revision を消した）ときは、暗号ストアの自分の鍵を使わない。
+        guard let sealed = state.own_keys, state.secrets_revision != nil else { return nil }
+        return try? OwnKeys.fromPickle(sealed: sealed, account: account, storageKey: storageKey).selfSigningPublicKey()
+    }
+
+    private func processEncrypted(_ row: ToDeviceRow, query: JSONValue, keysQuery: String) throws -> Encrypted {
+        let before = olmSessions.len()
+        let decrypted: OlmDecrypted
+        do { decrypted = try account.decryptToDevice(sessions: olmSessions, content: row.content) } catch is ZooCryptoError {
+            // 復号できないメッセージは何度試しても読めない。捨てて ack する。
+            return .dropped
+        }
+        // 復号できたら、セッションの状態が進んでいる。検証の結果に関わらず保存する。
+        let created = Int(olmSessions.len() - before)
+        state.account = try account.pickle(storageKey: storageKey)
+        let senderKey = decrypted.senderKey()
+        let changed = try olmSessions.pickleSessions(account: account, storageKey: storageKey, theirIdentityKey: senderKey)
+        state.olm_sessions.removeAll { stored in
+            changed.contains { $0.sessionId == stored.session_id && $0.theirIdentityKey == stored.their_identity_key }
+        }
+        state.olm_sessions += changed.map { StoredOlm(their_identity_key: $0.theirIdentityKey, session_id: $0.sessionId, pickle: $0.pickle) }
+        var listed: String?
+        if let user = decrypted.sender(), let device = decrypted.senderDevice(),
+           case .object(let root) = query, case .object(let devices) = root["device_keys"],
+           case .object(let ofUser) = devices[user], let keys = ofUser[device] {
+            listed = String(decoding: try JSONEncoder().encode(keys), as: UTF8.self)
+        }
+        var trustResult: SenderTrust?
+        if let user = decrypted.sender(), let device = decrypted.senderDevice(), state.secrets_revision != nil {
+            trustResult = try trust.senderTrust(keysQuery: keysQuery, sender: user, senderDevice: device, ownSelfSigning: ownSelfSigning())
+            // Olm の更新・受信用鍵・処理済み ID と同じ行単位の保存に含める。
+            state.trust_store = try trust.pickle(account: account, storageKey: storageKey)
+        }
+        let roomKey: ReceivedRoomKey
+        do { roomKey = try decrypted.verifyRoomKey(account: account, listedDeviceKeys: listed, trust: trustResult) } catch is ZooCryptoError {
+            return .decrypted(newOlmSessions: created, roomKey: false, rejected: true, verified: false)
+        }
+        // addRoomKey で鍵を渡す前に読む。
+        let verified = roomKey.senderVerified()
+        let ref = SessionRef(channelId: roomKey.channelId(), senderKey: roomKey.senderKey(), sessionId: roomKey.sessionId())
+        let key = Self.inboundKey(ref)
+        // 読み込めたときだけ読み込み済みにする（失敗したら次の試行で読み直す）。
+        try loadInbound(key)
+        if try inbound.addRoomKey(roomKey: roomKey) == .kept {
+            return .decrypted(newOlmSessions: created, roomKey: false, rejected: false, verified: false)
+        }
+        guard let pickle = try inbound.pickleSession(account: account, key: ref, storageKey: storageKey) else {
+            return .decrypted(newOlmSessions: created, roomKey: false, rejected: false, verified: false)
+        }
+        state.inbound_sessions[key] = StoredInbound(pickle: pickle, backed_up: false)
+        return .decrypted(newOlmSessions: created, roomKey: true, rejected: false, verified: verified)
+    }
+
+    /// ack を送れた ID を、処理済みの印から外す。
+    func acknowledged(_ ids: [String]) throws {
+        try lock.withLock {
+            guard !ids.isEmpty else { return }
+            var next = state
+            next.processed_to_device.removeAll { ids.contains($0) }
+            try save(next)
+            state = next
+        }
+    }
+
+    /// 鍵バックアップにまだ送っていない受信用セッションの数。
+    func pendingBackupCount() -> Int { lock.withLock { state.inbound_sessions.values.filter { !$0.backed_up }.count } }
+
+    /// 保存している受信用セッションの数。
+    var inboundSessionCount: Int { lock.withLock { state.inbound_sessions.count } }
+
+    /// 本文を復号する。channel・id・parent・sender・epoch・revision とリプレイの照合は、共通の暗号基盤で行う。
+    func decrypt(_ message: EncryptedMessage) throws -> DecryptedMessage {
+        try lock.withLock {
+            guard case .object(let envelope) = try JSONDecoder().decode(JSONValue.self, from: Data(message.ciphertext.utf8)),
+                  case .string(let senderKey) = envelope["sender_key"], case .string(let sessionID) = envelope["session_id"] else {
+                throw ZooError.invalidResponse
+            }
+            try loadInbound(Self.inboundKey(SessionRef(channelId: message.channelId, senderKey: senderKey, sessionId: sessionID)))
+            return try inbound.decrypt(message: message)
+        }
+    }
+
+    // MARK: - 送信
+
+    /// 解錠済みの鍵で配布先を判定し、TOFU の変更を保存する。
+    func recipients(pages: [String]) throws -> Distribution {
+        try lock.withLock {
+            guard state.secrets_revision != nil, let sealed = state.own_keys else { throw E2eeStoreError.sendNeedsUnlock }
+            let own = try OwnKeys.fromPickle(sealed: sealed, account: account, storageKey: storageKey)
+            // 起動時の確認と送信が重なっても、失効前の自己署名鍵で送信を始めない。
+            var matches = false
+            for page in pages {
+                guard case .object(let root) = try JSONDecoder().decode(JSONValue.self, from: Data(page.utf8)),
+                      case .object(let selfSigning) = root["self_signing_keys"], case .object(let mine) = selfSigning[state.user_id],
+                      case .object(let keys) = mine["keys"] else { continue }
+                if keys.values.contains(.string(own.selfSigningPublicKey())) { matches = true; break }
+            }
+            guard matches else { throw E2eeStoreError.sendNeedsUnlock }
+            let distribution = try trust.evaluate(snapshotPages: pages, ownDeviceId: state.device_id, userSigning: own.userSigning())
+            try saveTrustStore()
+            return distribution
+        }
+    }
+
+    func confirmPin(_ pin: NewTofuPin, accepted: Bool) throws {
+        try lock.withLock {
+            if accepted { try trust.confirmTofuPin(pin: pin) } else { try trust.discardTofuPin(pin: pin) }
+            try saveTrustStore()
+        }
+    }
+
+    func needsOlm(_ device: VerifiedDeviceKeys) -> Bool { lock.withLock { outboundOlm[device.curve25519Key()] == nil } }
+
+    /// Olm の状態を進めたら、ネットワークへ送る前に永続化する。`claimed` は `keys/claim` で受け取ったワンタイム鍵。
+    func shareKey(_ device: VerifiedDeviceKeys, outbound: OutboundSession, claimed: String?) throws -> String? {
+        try lock.withLock {
+            guard state.secrets_revision != nil else { throw E2eeStoreError.sendNeedsUnlock }
+            let curve = device.curve25519Key()
+            let session: String
+            if let existing = outboundOlm[curve] {
+                session = existing
+            } else if let claimed {
+                session = try account.createOutboundOlmSession(sessions: olmSessions, recipient: device, oneTimeKey: claimed)
+                outboundOlm[curve] = session
+            } else {
+                return nil
+            }
+            let encrypted = try account.encryptRoomKey(sessions: olmSessions, sessionId: session, recipient: device, outbound: outbound)
+            let changed = try olmSessions.pickleSessions(account: account, storageKey: storageKey, theirIdentityKey: curve)
+            var next = state
+            next.olm_sessions.removeAll { $0.their_identity_key == curve }
+            next.olm_sessions += changed.map { StoredOlm(their_identity_key: $0.theirIdentityKey, session_id: $0.sessionId, pickle: $0.pickle) }
+            next.account = try account.pickle(storageKey: storageKey)
+            try save(next)
+            state = next
+            return encrypted
+        }
+    }
+
+    /// 本文を暗号化する。自分が送った本文も、再起動後に復号・バックアップできるよう、受信用の鍵を先に保存する。
+    func encrypt(_ outbound: OutboundSession, message: OutgoingMessage) throws -> String {
+        try lock.withLock {
+            guard state.secrets_revision != nil else { throw E2eeStoreError.sendNeedsUnlock }
+            let ref = SessionRef(channelId: outbound.channelId(), senderKey: account.curve25519Key(), sessionId: outbound.sessionId())
+            let key = Self.inboundKey(ref)
+            if state.inbound_sessions[key] == nil {
+                try loadInbound(key)
+                _ = inbound.addOutbound(account: account, outbound: outbound)
+                var next = state
+                next.inbound_sessions[key] = StoredInbound(pickle: try inbound.pickleSession(account: account, key: ref, storageKey: storageKey)!)
+                try save(next)
+                state = next
+            }
+            return try outbound.encrypt(account: account, message: message)
         }
     }
 

@@ -16,6 +16,8 @@ protocol E2eeDeviceAPI {
 struct E2eeAPIError: Error, Equatable {
     let status: Int
     let code: String?
+    /// 409 `E2EE_STALE_EPOCH` の `current_epoch`。
+    var currentEpoch: UInt64? = nil
 
     /// 登録の 409 `E2EE_DEVICE_EXISTS`（削除済みの `device_id`）。`code` のない 409 は含めない。
     var isDeletedDeviceID: Bool { status == 409 && code == "E2EE_DEVICE_EXISTS" }
@@ -52,7 +54,8 @@ extension APIClient: E2eeDeviceAPI {
         if response.statusCode == 401 { throw ZooError.expiredSession }
         guard (200..<300).contains(response.statusCode) else {
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            throw E2eeAPIError(status: response.statusCode, code: json?["code"] as? String)
+            throw E2eeAPIError(status: response.statusCode, code: json?["code"] as? String,
+                               currentEpoch: (json?["current_epoch"] as? NSNumber)?.uint64Value)
         }
         return data
     }
