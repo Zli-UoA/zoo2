@@ -88,14 +88,15 @@ struct PasskeyResult {
 }
 
 enum PasskeyError: Error, Equatable {
-    /// 使えるパスキーのスロットがない。
-    case noSlot
-    /// この OS では PRF を使えない（iOS 18 未満など）。
-    case unsupported
-    /// 利用者が取りやめた。
+    /// 利用者が取りやめた、または使えるパスキーがなかった。
     case cancelled
-    /// PRF の出力を返さない保存先だった。
-    case noPRF
+    /// この OS か認証器が PRF に対応していない（iOS 18 未満、PRF の結果がない）。
+    case prfUnsupported
+    /// このアプリから RP ID のパスキーを使えない（Associated Domains の関連付けがない）。
+    case originNotAllowed
+    /// 返ったパスキーに対応するスロットがない。
+    case noSlot
+    case unknown
 }
 
 private func jsonObject(_ text: String) throws -> [String: JSONValue] {
