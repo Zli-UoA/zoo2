@@ -221,6 +221,16 @@
         zooChrome = pkgs.writeShellScriptBin "zoo-chrome" ''
           exec ${pkgs.chromium}/bin/chromium --no-sandbox "$@"
         '';
+        # iOS（ios/）の zoo-crypto の XCFramework（crates/zoo-crypto-ffi、#685）。
+        # iosRustTargets は ios/Scripts/build-crypto-xcframework.sh の IOS_TARGETS と同じ。
+        # watchOS と x86_64 のシミュレーターは対象外。rust-toolchain.toml には足さない（iOS を触らない人の rustup に std を入れないため）。
+        iosRustTargets = [ "aarch64-apple-ios" "aarch64-apple-ios-sim" ];
+        iosToolchain = fenix.packages.${system}.combine ([ toolchain ] ++ map
+          (target: (fenix.packages.${system}.targets.${target}.fromToolchainName {
+            name = (builtins.fromTOML (builtins.readFile ./rust-toolchain.toml)).toolchain.channel;
+            sha256 = "sha256-zm3dyIY2T414ZRR3EhLOvptzG6gta4WZUcawzMUWtqI=";
+          }).rust-std)
+          iosRustTargets);
       in
       {
         formatter = pkgs.nixpkgs-fmt;
@@ -250,6 +260,16 @@
           JAVA_HOME = "${pkgs.jdk21}";
           ANDROID_HOME = "${androidComposition.androidsdk}/libexec/android-sdk";
           ANDROID_NDK_HOME = "${androidComposition.androidsdk}/libexec/android-sdk/ndk/${androidNdkVersion}";
+        };
+        # `nix develop .#ios` で iOS 向けの XCFramework を作る（`make crypto-ffi-ios`）。
+        # Xcode 本体（xcodebuild・xcrun・iOS SDK）は mac に入れたものを使う。
+        devShells.ios = pkgs.mkShell {
+          name = "zoo2-ios";
+          nativeBuildInputs = [
+            iosToolchain
+            pkgs.gnumake
+            pkgs.xcodegen
+          ];
         };
         devShells.default = pkgs.stdenv.mkDerivation {
           name = "rust-env";
