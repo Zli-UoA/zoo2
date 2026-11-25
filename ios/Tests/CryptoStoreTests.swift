@@ -100,6 +100,37 @@ struct CryptoStoreTests {
         third.close()
     }
 
+    @Test func Olmセッションの復元に失敗しても作り直さず投げる() throws {
+        let (files, _, directory) = makeFiles()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = try #require(try CryptoStore.open(files, userID: user)).store
+        let deviceID = first.deviceID
+        first.close()
+        // 保存鍵は合っているが、Olm セッションの pickle だけが壊れている状態にする。
+        let url = directory.appendingPathComponent("state.json")
+        var object = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        object["olm_sessions"] = [["their_identity_key": "x", "session_id": "y", "pickle": "壊れている"]]
+        try JSONSerialization.data(withJSONObject: object).write(to: url)
+        #expect(throws: (any Error).self) { try CryptoStore.open(files, userID: user) }
+        // 保存鍵も状態も消さず、前の端末の ID も記録しない（受信用セッションを失わない）。
+        #expect(!CryptoStore.isReserved(directory))
+        let stored = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        #expect(stored["device_id"] as? String == deviceID)
+        #expect((stored["pending_deletions"] as? [String] ?? []).isEmpty)
+    }
+
+    @Test func 予約は持ち主の印が合うときだけ外れる() throws {
+        let (files, _, directory) = makeFiles()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try #require(try CryptoStore.open(files, userID: user)).store
+        // 別の持ち主の解除は、予約を外さない（作りかけの後始末が、あとから開いた別のインスタンスの予約を外さない）。
+        CryptoStore.releaseReservation(directory, token: UUID())
+        #expect(CryptoStore.isReserved(directory))
+        #expect(throws: CryptoStoreBusyError.self) { try CryptoStore.open(files, userID: user) }
+        store.close()
+        #expect(!CryptoStore.isReserved(directory))
+    }
+
     @Test func 閉じた暗号ストアは使えず消せない() throws {
         let (files, _, directory) = makeFiles()
         defer { try? FileManager.default.removeItem(at: directory) }

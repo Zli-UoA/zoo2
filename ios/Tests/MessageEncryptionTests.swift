@@ -25,6 +25,8 @@ private final class FakeMessageServer: E2eeRequesting {
     var staleOnce = true
     /// `to_device` の応答に `undelivered` がない（読めない応答）。
     var omitUndelivered = false
+    /// `to_device` を処理する前に 1 回だけ呼ぶ（鍵の配布の応答を待つあいだに起きることを再現する）。
+    var beforeToDevice: (() async throws -> Void)?
 
     init(setup: FakeSetupServer, sender: Device, receiver: Device) { self.setup = setup; self.sender = sender; self.receiver = receiver }
 
@@ -47,6 +49,7 @@ private final class FakeMessageServer: E2eeRequesting {
             let key = try #require(try receiver.store.prepareKeyUpload(oneTimeKeyCount: 0, hasUnusedFallbackKey: true)).oneTimeKeys.first!
             return .object(["one_time_keys": .object([user: .object([receiver.store.deviceID: .object([key.key: key.value])])])])
         case "api/e2ee/to_device":
+            if let hook = beforeToDevice { beforeToDevice = nil; try await hook() }
             guard case .object(let messages)? = body?["messages"], case .object(let perUser)? = messages[user],
                   let content = perUser[receiver.store.deviceID] else { fatalError() }
             delivered.append(.init(id: String(delivered.count), senderUserID: user, type: "m.room.encrypted", content: dump(content)))
@@ -172,6 +175,28 @@ struct MessageEncryptionTests {
             try await encryption.send(channel: channel, id: messageID, parent: nil, body: "x")
         }
         #expect(server.posts == 0)
+    }
+
+    @Test func 鍵を配るあいだに端末が作り直されたら古い鍵のセッションで暗号化しない() async throws {
+        let (server, sender, receiver, encryption, recoveryKey) = try await makePair()
+        defer { sender.cleanUp(); receiver.cleanUp() }
+        server.staleOnce = false
+        let oldKey = sender.store.curve25519Key
+        // 最初の配布の応答を待つあいだに、端末の作り直しと再解錠が終わる。
+        server.beforeToDevice = {
+            try sender.store.replaceDevice()
+            _ = try await sender.setup.unlock(.recovery(recoveryKey))
+        }
+        try await encryption.send(channel: channel, id: messageID, parent: nil, body: "race")
+        // 本文は、新しい端末の鍵で、新しいセッションを配り直してから送る。
+        let newKey = sender.store.curve25519Key
+        #expect(newKey != oldKey)
+        #expect(server.posts == 1)
+        guard case .string(let ciphertext)? = server.accepted["ciphertext"], case .object(let envelope) = parse(ciphertext) else {
+            Issue.record("ciphertext がない"); return
+        }
+        #expect(envelope["sender_key"] == .string(newKey))
+        #expect(server.delivered.count == 2)
     }
 
     @Test func 鍵の配布の結果を読めなければ本文を送らない() async throws {
