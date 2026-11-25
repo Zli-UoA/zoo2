@@ -896,8 +896,10 @@ impl Devices {
             {
                 sas.retry_save(&txn)
             }
-            // 保存している途中は閉じない（閉じると保存を止めてしまう）。
-            (SasPhase::Done, KeyCode::Enter) if entry.save == SaveState::Saving => {}
+            // 保存している途中（保存を始める前の `Idle` を含む。画面はどちらも「保存しています」）は閉じない
+            // （閉じると保存を止めるか、始めなくしてしまう）。
+            (SasPhase::Done, KeyCode::Enter)
+                if matches!(entry.save, SaveState::Saving | SaveState::Idle) => {}
             (SasPhase::Done | SasPhase::Cancelled, KeyCode::Enter) => {
                 sas.dismiss(&txn);
                 self.sas_entries.remove(&txn);
@@ -2290,6 +2292,43 @@ mod tests {
         };
         assert!(*error);
         assert!(text.contains("絵文字の検証を始められませんでした"));
+    }
+
+    #[test]
+    fn enter_does_not_close_a_verification_that_is_still_saving() {
+        let mut devices = devices();
+        for save in [SaveState::Idle, SaveState::Saving] {
+            devices.sas_entries.insert(
+                "t".into(),
+                SasEntry {
+                    view: SasView {
+                        transaction_id: "t".into(),
+                        their_user_id: "u2".into(),
+                        their_device_id: None,
+                        we_requested: true,
+                        started_at_ms: 0,
+                        phase: SasPhase::Done,
+                        emoji: None,
+                        cancellation: None,
+                        method: None,
+                        qr_code: None,
+                        can_start_sas: false,
+                    },
+                    busy: false,
+                    save,
+                    error: None,
+                    reauth: None,
+                },
+            );
+            devices.sas_open = Some("t".into());
+            press(&mut devices, KeyCode::Enter);
+            assert_eq!(
+                devices.sas_open.as_deref(),
+                Some("t"),
+                "{save:?} では閉じない"
+            );
+            assert!(devices.sas_entries.contains_key("t"));
+        }
     }
 
     #[test]
