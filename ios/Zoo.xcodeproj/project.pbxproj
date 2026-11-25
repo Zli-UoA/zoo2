@@ -202,6 +202,7 @@
 		E7BAF6451FD36BC26D0BF384 /* JSONValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6171E0B48D5118B0F608CF07 /* JSONValue.swift */; };
 		E89395C27163AC554CC83EC5 /* SyncCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9F30F10363C425009A500BC /* SyncCache.swift */; };
 		EBA527080A5826BA1A5A33E5 /* PreviewChatClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A7E7F971B693C6723C53450 /* PreviewChatClient.swift */; };
+		EEB943E1E9AC01BE730EE66C /* KeyBackupTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE622584547CC4CFB398CC1A /* KeyBackupTests.swift */; };
 		F007D707EBC1121852F8ED5F /* SiriMessageHandlerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA138117D52DA452807AF1DB /* SiriMessageHandlerTests.swift */; };
 		F02C25FD997391E1F781653F /* SiriMessageHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAC85886AA1B8DCF3C432F37 /* SiriMessageHandler.swift */; };
 		F3624288C10B9A47EA6B22CB /* ReactionEmojiTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EAF718542356B731B86C80C /* ReactionEmojiTests.swift */; };
@@ -472,6 +473,7 @@
 		EBD80F99CDA0261D2C9C9BDF /* NativeCallMedia.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeCallMedia.swift; sourceTree = "<group>"; };
 		EC205CFCD51C565F28065B0A /* WorkspaceNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceNavigationTests.swift; sourceTree = "<group>"; };
 		EC9A3F509D28BCB4647FB81D /* TypingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingStore.swift; sourceTree = "<group>"; };
+		EE622584547CC4CFB398CC1A /* KeyBackupTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyBackupTests.swift; sourceTree = "<group>"; };
 		EF725375FA248F5C75335E14 /* CryptoStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CryptoStoreTests.swift; sourceTree = "<group>"; };
 		F0B4CCDF5EF02DB351767888 /* DeviceRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceRegistration.swift; sourceTree = "<group>"; };
 		F230B983DAA1A7D1DF612212 /* WorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceView.swift; sourceTree = "<group>"; };
@@ -592,6 +594,7 @@
 				BDFA0EA73CA3D24EFC391EBC /* InboxTests.swift */,
 				CD793353F54041D2944CEE92 /* IncomingCallNotificationTests.swift */,
 				57993368233A06C99B903220 /* IncomingCallTests.swift */,
+				EE622584547CC4CFB398CC1A /* KeyBackupTests.swift */,
 				FC080878D2B6AA8B561E7434 /* MessageContentTests.swift */,
 				E5C5172D3E0B0D4FA67BBCB6 /* MessageEncryptionTests.swift */,
 				17B7F6D3EBD0B387B6C5B77A /* NativeCallMediaTests.swift */,
@@ -1236,6 +1239,7 @@
 				9C4AC6D0333226761FBC7CA9 /* InboxTests.swift in Sources */,
 				9FFDD5FBD18FD8BDBC47B94C /* IncomingCallNotificationTests.swift in Sources */,
 				46D213091D0C9ECF3B419F83 /* IncomingCallTests.swift in Sources */,
+				EEB943E1E9AC01BE730EE66C /* KeyBackupTests.swift in Sources */,
 				429726CC1380B378CAB26B5C /* MessageContentTests.swift in Sources */,
 				7D832E9AB67EC2226C74E099 /* MessageEncryptionTests.swift in Sources */,
 				321F928016165948A8736531 /* NativeCallMediaTests.swift in Sources */,
