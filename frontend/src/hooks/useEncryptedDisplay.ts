@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 
-import { useE2ee } from "../lib/e2ee/e2ee-context";
+import { useE2ee, type E2eeContextValue } from "../lib/e2ee/e2ee-context";
 import {
   encryptedChannelsVersion,
   encryptionSendState,
@@ -8,6 +8,14 @@ import {
   subscribeEncryptedChannels,
   type KnownEncryptedState,
 } from "../lib/e2ee/encryptionGuard";
+
+/**
+ * このタブが暗号ストアを開いているところで、まもなく `worker` が使えるようになるか。ほかのタブが開いている、
+ * 非対応、オフライン、失敗などは、待っても使えるようになるとは限らないので含めない。
+ */
+function isOpeningCryptoStore(e2ee: E2eeContextValue): boolean {
+  return !e2ee.unprovided && !e2ee.worker && e2ee.notReadyReason?.kind === "starting";
+}
 
 /**
  * 暗号化チャンネルの表示判定を MessagePane・キャッチアップ・メッセージリンクの埋め込みで共有する。
@@ -20,11 +28,18 @@ export function useEncryptedDisplay({
   channelName,
   encrypted,
   hasCiphertext,
+  holdWhileOpening = false,
 }: {
   channelId: string | null;
   channelName?: string;
   encrypted?: boolean;
   hasCiphertext: boolean;
+  /**
+   * 暗号ストアを開いているところも、確認中（`checkingEncryption`）にする。確認の前に本文を出さない
+   * 呼び出し元（メッセージリンクの埋め込み）が指定する。省くと、`worker` がない間は
+   * `localStorage` などの記録だけで判定する。
+   */
+  holdWhileOpening?: boolean;
 }) {
   const e2ee = useE2ee();
   if (encrypted && channelId) noteEncryptedChannel(channelId);
@@ -61,7 +76,9 @@ export function useEncryptedDisplay({
         channelId,
         encrypted: !!encrypted,
         known: !e2ee.worker
-          ? "unavailable"
+          ? holdWhileOpening && isOpeningCryptoStore(e2ee)
+            ? "pending"
+            : "unavailable"
           : knownEncrypted?.channelId === channelId
             ? knownEncrypted.known
             : "pending",

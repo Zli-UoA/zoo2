@@ -173,6 +173,9 @@ export function useChannelLinkInfo(
     channelName: channel?.name,
     encrypted: channel?.encrypted,
     hasCiphertext: channelHasCiphertext,
+    // 起動直後は暗号ストアを開いている途中。開き終わるまで本文を出さない（開けないと分かった状態では、
+    // `localStorage` などの記録で表示する）。
+    holdWhileOpening: true,
   });
   const query = useLinkedMessageRows(started && channel ? channel.id : null, messageId);
   return resolveChannelLinkInfo({

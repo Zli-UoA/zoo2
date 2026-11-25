@@ -213,8 +213,10 @@ interface SetupOptions {
   directory?: boolean;
   highlight?: string[];
   body?: "message" | "content";
-  /** 暗号ストアを開いたタブにする。省くと、暗号ストアのないタブ（`worker` がない）。 */
+  /** 暗号ストアを開いたタブにする。省くと、`E2eeProvider` のない状態（`worker` がない）。 */
   worker?: WorkerRequest;
+  /** `E2eeProvider` が配る値を直接指定する。 */
+  e2eeValue?: E2eeContextValue;
 }
 
 function setup({
@@ -227,8 +229,10 @@ function setup({
   highlight,
   body = "message",
   worker,
+  e2eeValue,
 }: SetupOptions) {
-  const e2ee = worker ? cryptoStore(worker) : null;
+  const initialE2ee = e2eeValue ?? (worker ? cryptoStore(worker) : null);
+  const e2eeControl: { set: ((next: E2eeContextValue) => void) | null } = { set: null };
   const bundle = createStoryCollections({
     currentUserId: "u-alice",
     users,
@@ -255,6 +259,8 @@ function setup({
   } = { set: null };
   const root = createRootRoute({ component: Outlet });
   function Body() {
+    const [e2ee, setE2ee] = useState(initialE2ee);
+    e2eeControl.set = setE2ee;
     const [state, setState] = useState({ visible, ready });
     directoryControl.set = setState;
     const rendered =
@@ -305,6 +311,12 @@ function setup({
     router,
     messagesFor,
     /** チャンネルの一覧（見られるチャンネルと、同期が終わったか）を、あとから差し替える。 */
+    /** `E2eeProvider` が配る値を、あとから差し替える（暗号ストアを開き終えたなど）。 */
+    updateCryptoStore: async (next: E2eeContextValue) => {
+      await act(async () => {
+        e2eeControl.set?.(next);
+      });
+    },
     updateDirectory: async (next: { visible: ChannelRow[]; ready: boolean }) => {
       await act(async () => {
         directoryControl.set?.(next);
@@ -600,6 +612,71 @@ describe("暗号ストアの記録による格下げ対策", () => {
     expect(await screen.findByText("メッセージを表示できません")).toBeInTheDocument();
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(worker).not.toHaveBeenCalledWith(expect.objectContaining({ channelId: "c-hidden" }));
+  });
+});
+
+describe("暗号ストアを開く前の扱い", () => {
+  const options = { content: link("c-recorded", "?message=m-recorded"), visible: [recorded] };
+  /** `E2eeProvider` が、暗号ストアを開けていない理由を添えて配る値。 */
+  const notReady = (kind: string) =>
+    ({ worker: null, notReadyReason: { kind } }) as unknown as E2eeContextValue;
+
+  it("開いているところ（まもなく確かめられる）は、平文の本文を出さず、枠を置く", async () => {
+    setup({ ...options, e2eeValue: notReady("starting") });
+    expect(await screen.findByRole("status")).toHaveTextContent("リンク先を読み込み中");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(document.body.textContent).not.toContain("記録済みの平文");
+  });
+
+  it("開き終わるまで本文を出さず、記録があれば、一度も本文を出さずに暗号化と書く", async () => {
+    // 本文が一瞬でも出ないことを、DOM の変化を見張って確かめる。
+    let leaked = false;
+    const observer = new MutationObserver(() => {
+      if (document.body.textContent?.includes("記録済みの平文")) leaked = true;
+    });
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    try {
+      const { updateCryptoStore } = setup({ ...options, e2eeValue: notReady("starting") });
+      await screen.findByRole("status");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await updateCryptoStore(cryptoStore(workerKnowing(async () => true)));
+      expect(
+        await screen.findByRole("link", { name: /このメッセージは暗号化されています/ }),
+      ).toBeInTheDocument();
+      expect(leaked).toBe(false);
+    } finally {
+      observer.disconnect();
+    }
+  });
+
+  it("開き終えて記録がなければ、本文を出す", async () => {
+    const { updateCryptoStore } = setup({ ...options, e2eeValue: notReady("starting") });
+    await screen.findByRole("status");
+    await updateCryptoStore(cryptoStore(workerKnowing(async () => false)));
+    expect(await screen.findByRole("link", { name: /記録済みの平文/ })).toBeInTheDocument();
+  });
+
+  it.each([
+    "unsupported",
+    "otherTab",
+    "offline",
+    "failed",
+    "deviceLimit",
+    "signedOut",
+    "userUnavailable",
+  ])("このタブで開けない状態（%s）は、localStorage などの判定だけで表示する", async (kind) => {
+    // 暗号ストアの答えを待っても得られないので、リンクの表示を止めない（`MessagePane` と同じ）。
+    setup({ ...options, e2eeValue: notReady(kind) });
+    expect(await screen.findByRole("link", { name: /記録済みの平文/ })).toBeInTheDocument();
+  });
+
+  it("このタブで開けない状態でも、localStorage の記録があれば、本文を出さない", async () => {
+    noteEncryptedChannel("c-recorded");
+    setup({ ...options, e2eeValue: notReady("otherTab") });
+    expect(
+      await screen.findByRole("link", { name: /このメッセージは暗号化されています/ }),
+    ).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("記録済みの平文");
   });
 });
 
