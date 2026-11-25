@@ -53,6 +53,8 @@ final class E2eeController: ConversationEncryption {
     @ObservationIgnored private var confirmed: [String: (revision: UInt64, result: DecryptedBody)] = [:]
     /// パスキーの RP ID（AuthZ のホスト）。
     @ObservationIgnored private var refreshGeneration = 0
+    /// 解錠・初回設定が終わるたびに進める（古い読み直しの失敗が、新しい解錠を取り消さないため）。
+    @ObservationIgnored private var unlockGeneration = 0
     /// 端末一覧の API（本番は `APIClient`）。
     @ObservationIgnored var devicesAPI: (any E2eeOwnDevicesAPI)?
     @ObservationIgnored var rpID = ""
@@ -126,6 +128,7 @@ final class E2eeController: ConversationEncryption {
     func refreshStatus() {
         refreshGeneration += 1
         let generation = refreshGeneration
+        let unlockGeneration = self.unlockGeneration
         Task { @MainActor in
             do {
                 // 解錠済みなら、鍵バックアップの送信と取り込みも行う（失敗しても状態の表示は止めない）。
@@ -143,7 +146,9 @@ final class E2eeController: ConversationEncryption {
             } catch {
                 statusError = error.localizedDescription
                 // SSSS が書き換えられたと分かったのに読み直せないときは、解錠済みの表示を残さない（解錠し直しが要る）。
-                if case E2eeSetupError.secretsChanged = error, generation == refreshGeneration {
+                // あとから始めた読み直しがあっても、競合を検出した結果は捨てない（そちらも失敗すれば、ロックが残る）。
+                // 競合のあとに、利用者が解錠し直していたら、その結果は取り消さない。
+                if case E2eeSetupError.secretsChanged = error, unlockGeneration == self.unlockGeneration {
                     status = .locked(.mismatch)
                     statusError = "暗号化の鍵が別の端末で更新されました。解錠し直してください。"
                 }
@@ -182,6 +187,7 @@ final class E2eeController: ConversationEncryption {
     }
 
     private func finished() {
+        unlockGeneration += 1
         status = .unlocked
         statusError = nil
         decrypted = [:]
