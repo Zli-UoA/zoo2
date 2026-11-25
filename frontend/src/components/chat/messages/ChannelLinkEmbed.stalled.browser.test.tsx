@@ -148,6 +148,41 @@ it("取得を始めていない（画面から遠い）間は、時間がたっ�
   expect(screen.queryByText("リンク先を読み込めませんでした")).toBeNull();
 });
 
+/** 画面の近くにあるか（`active`）を、あとから切り替えられるカードを描く。 */
+async function mountToggleable() {
+  const control = { active: true };
+  const view = mount(() => (
+    <ChannelLinkEmbed target={target} directory={directory} active={control.active} />
+  ));
+  await screen.findByRole("status");
+  return async (active: boolean) => {
+    control.active = active;
+    await view.refresh();
+  };
+}
+
+it("読み込めなかったあとで、画面から離れて戻っても、枠に戻らない", async () => {
+  const setActive = await mountToggleable();
+  await advance(LINK_LOAD_TIMEOUT_MS + 1_000);
+  expect(screen.getByText("リンク先を読み込めませんでした")).toBeInTheDocument();
+
+  for (const active of [false, true]) {
+    await setActive(active);
+    expect(screen.getByText("リンク先を読み込めませんでした")).toBeInTheDocument();
+    expect(screen.queryByRole("status")).toBeNull();
+  }
+});
+
+it("取得を始めたあとは、画面から離れても、経過した時間を数え続ける", async () => {
+  // 画面から離れても、タブを隠しても、始めた取得は続く。
+  const setActive = await mountToggleable();
+  await advance(LINK_LOAD_TIMEOUT_MS / 2);
+  await setActive(false);
+  expect(screen.getByRole("status")).toBeInTheDocument();
+  await advance(LINK_LOAD_TIMEOUT_MS / 2 + 1_000);
+  expect(screen.getByText("リンク先を読み込めませんでした")).toBeInTheDocument();
+});
+
 it("チャンネルの一覧の同期を待っている間は、時間がたっても、読み込めなかったと書かない", async () => {
   // 一覧にないチャンネルは、同期が終わるまで、メッセージの取得を始められない。取得の失敗ではない。
   const waiting: ChannelDirectory = { ready: false, byId: new Map() };

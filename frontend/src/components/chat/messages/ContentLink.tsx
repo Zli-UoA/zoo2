@@ -87,7 +87,7 @@ function ResolvedChannelLink({
   // 行き先の取得は、カードと同じく、画面の近くに来てから始める（全行をマウントする画面で、リンクの数だけ
   // 別のチャンネルの取得が一斉に始まらないように）。
   const [ref, near] = useNearViewport<HTMLAnchorElement>();
-  const info = useChannelLinkInfo(target, directory, near);
+  const { info } = useChannelLinkInfo(target, directory, near);
   const label = useShortChannelLinkLabel(info);
   return (
     <ChannelLink target={target} className={className} anchorRef={ref}>

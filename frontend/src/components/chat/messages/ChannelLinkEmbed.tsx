@@ -200,12 +200,13 @@ export function ChannelLinkEmbed({
   showFallback?: boolean;
 }) {
   const { t } = useTranslation();
-  const info = useChannelLinkInfo(target, directory, active);
-  // 数えるのは、リンク先のメッセージの取得（と、暗号化かどうかの確認）を待っている間だけ。取得を始めて
-  // いない（画面から遠い）間と、チャンネルの一覧の同期を待っている間（一覧にないチャンネルは、まだ取得を
-  // 始められない）は数えない。
+  const { info, started } = useChannelLinkInfo(target, directory, active);
+  // 数えるのは、取得を始めたリンク先のメッセージ（と、暗号化かどうかの確認）を待っている間。始めた取得は、
+  // 画面から離れても、タブを隠しても続くので、`active` では区切らない（区切ると、戻るたびに枠へ戻って
+  // 数え直す）。取得を始めていない間と、チャンネルの一覧の同期を待っている間（一覧にないチャンネルは、
+  // まだ取得を始められない）は数えない。
   const fetchingMessage =
-    info.status === "loading" && active && directory.byId.has(target.channelId);
+    info.status === "loading" && started && directory.byId.has(target.channelId);
   const stalled = useStalled(fetchingMessage, LINK_LOAD_TIMEOUT_MS);
   switch (info.status) {
     case "loading":

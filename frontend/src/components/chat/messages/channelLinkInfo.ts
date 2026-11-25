@@ -147,6 +147,8 @@ export function resolveChannelLinkInfo({
 /**
  * リンク先の状態を購読する。{@link ChannelDirectory} のある画面（アプリのシェルの中）で使う。
  *
+ * `info` は行き先の状態。`started` は、このリンク先の取得を始めたか（一度始めたら true のまま）。
+ *
  * `enabled` が false の間は、メッセージを取得せず `loading` のまま。画面の近くに来た行だけが取得する。
  * 一度取得を始めたリンク先は、そのあと `enabled` が false に戻っても、表示を保つ
  * （画面から遠ざかったときに、表示が枠へ戻って、行の大きさが変わらないように）。リンク先が変わったら、
@@ -158,7 +160,7 @@ export function useChannelLinkInfo(
   target: ChannelLinkTarget,
   directory: ChannelDirectory,
   enabled = true,
-): ChannelLinkInfo {
+): { info: ChannelLinkInfo; started: boolean } {
   const messageId = linkedMessageId(target);
   // 取得を始めたリンク先。リンク先が変わったら（同じ要素が別のリンクに使い回されたとき）、新しいリンク先は
   // 近くに来るまで取得しない。同じリンク先に戻ったときは、取得済みのものをそのまま使う。
@@ -189,7 +191,7 @@ export function useChannelLinkInfo(
     holdWhileOpening: true,
   });
   const query = useLinkedMessageRows(started && channel ? channel.id : null, messageId);
-  return resolveChannelLinkInfo({
+  const info = resolveChannelLinkInfo({
     directory,
     target,
     messages:
@@ -203,4 +205,5 @@ export function useChannelLinkInfo(
     treatAsEncrypted,
     checkingEncryption,
   });
+  return { info, started };
 }
