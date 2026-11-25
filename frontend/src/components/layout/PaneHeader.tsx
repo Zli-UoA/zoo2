@@ -1,4 +1,4 @@
-import type { ComponentProps, ReactNode } from "react";
+import type { ComponentProps, ReactNode, Ref } from "react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "cn";
 
@@ -21,6 +21,7 @@ export function ScreenHeader({
   iconClassName,
   title,
   titleId,
+  titleRef,
   description,
   actions,
 }: {
@@ -29,6 +30,7 @@ export function ScreenHeader({
   iconClassName?: string;
   title: string;
   titleId: string;
+  titleRef?: Ref<HTMLHeadingElement>;
   description?: string;
   actions?: ReactNode;
 }) {
@@ -46,7 +48,12 @@ export function ScreenHeader({
         </div>
       )}
       <div className="min-w-0 flex-1">
-        <h1 id={titleId} className="truncate text-sm font-semibold">
+        <h1
+          id={titleId}
+          ref={titleRef}
+          tabIndex={titleRef ? -1 : undefined}
+          className="truncate text-sm font-semibold"
+        >
           {title}
         </h1>
         {description ? (
