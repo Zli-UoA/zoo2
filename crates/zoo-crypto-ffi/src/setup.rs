@@ -19,7 +19,11 @@ fn to_json<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_string(value).expect("コアの型は必ず JSON にできる")
 }
 
-fn server_state(user_id: &str, keys_query: &str, versions: &str) -> Result<core::ServerKeyState> {
+pub(crate) fn server_state(
+    user_id: &str,
+    keys_query: &str,
+    versions: &str,
+) -> Result<core::ServerKeyState> {
     let keys_query = parse_json("keys_query", keys_query)?;
     let versions = parse_json("versions", versions)?;
     Ok(core::ServerKeyState::from_json(
