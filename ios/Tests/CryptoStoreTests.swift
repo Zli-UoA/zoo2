@@ -125,6 +125,38 @@ struct CryptoStoreTests {
         second.close()
     }
 
+    @Test func 復旧中にrenameが失敗しても開き直すと前の端末のIDを取り出せる() throws {
+        let key = MemoryKey()
+        let (files, _, directory) = makeFiles(key)
+        let url = directory.appendingPathComponent("state.json")
+        defer {
+            try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: url.path)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let first = try #require(try CryptoStore.open(files, userID: user)).store
+        let oldID = first.deviceID
+        first.close()
+        try key.delete()
+        // 既存の `state.json` を変更できない（不変）ようにして、一時ファイルは書けるが、`rename` だけが失敗する状態にする。
+        try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: url.path)
+        do {
+            _ = try CryptoStore.open(files, userID: user)
+            Issue.record("rename の失敗で投げるはず")
+        } catch {
+            // `rename(2)` の失敗（`POSIXError`）であって、一時ファイルの書き込みなど、ほかの失敗ではない。
+            #expect(error is POSIXError)
+        }
+        #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("state.json.tmp").path))
+        // 前の `state.json` は、そのまま残っている。
+        let stored = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        #expect(stored["device_id"] as? String == oldID)
+        // 置き換えられるようになってから開き直すと、前の端末の ID を取り出せる。
+        try FileManager.default.setAttributes([.immutable: false], ofItemAtPath: url.path)
+        let second = try #require(try CryptoStore.open(files, userID: user)).store
+        #expect(second.pendingDeviceDeletions == [oldID])
+        second.close()
+    }
+
     @Test func Olmセッションの復元に失敗しても作り直さず投げる() throws {
         let (files, _, directory) = makeFiles()
         defer { try? FileManager.default.removeItem(at: directory) }
