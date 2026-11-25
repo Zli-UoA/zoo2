@@ -226,7 +226,10 @@ extension E2eeController {
                 try await other.addSetupPasskey(start, label: "iPad（iOS）")
                 try await other.completeSetup(start)
             } catch {
+                // 失敗したときは、対象の端末を始めない（始めると、状態の取得が成功してエラーを消すため）。テストから見えるまま残す。
                 controller.setPreviewFailure("テスト用の初期設定に失敗しました：\(error.localizedDescription)")
+                await other.stop()
+                return
             }
             await other.stop()
             controller.start()
