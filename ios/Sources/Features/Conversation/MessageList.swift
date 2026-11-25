@@ -556,10 +556,12 @@ private struct MessageNoticeView: View {
                 .accessibilityHint("くわしい説明を表示します")
                 .accessibilityIdentifier("message-e2ee-notice-button")
                 .popover(isPresented: $showingDetail) {
+                    // 折り返して、全文を出す（高さを内容に合わせる）。
                     Text(detail)
-                        .font(.callout)
+                        .font(.callout).foregroundStyle(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
                         .padding(16)
-                        .frame(maxWidth: 320, alignment: .leading)
+                        .frame(width: 320, alignment: .leading)
                         .presentationCompactAdaptation(.popover)
                 }
             } else {
