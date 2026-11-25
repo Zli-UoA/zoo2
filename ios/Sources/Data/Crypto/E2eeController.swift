@@ -69,7 +69,10 @@ final class E2eeController: ConversationEncryption {
             guard let self else { return }
             self.revision += 1
             // 届いた部屋の鍵（受信用のセッション）を鍵バックアップへ送る。失敗しても、次の起動時や次の鍵で再び試す。
-            Task { @MainActor in _ = try? await self.setup.uploadKeyBackup() }
+            Task { @MainActor in
+                // SSSS が書き換えられていたら（別の端末で失効・解錠し直した）、解錠済みの表示を残さず、状態を読み直す。
+                if case .conflict(let code)? = try? await self.setup.uploadKeyBackup(), code == "E2EE_SSSS_CONFLICT" { self.refreshStatus() }
+            }
         }
     }
 

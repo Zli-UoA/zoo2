@@ -232,14 +232,17 @@ final class E2eeSetup {
         guard status == .unlocked else { return status }
         // 鍵バックアップの失敗は、確かめ終えた解錠の状態を失わせない（通信に失敗しても、暗号化チャンネルは使える。次の機会に再び試す）。
         // ただし、SSSS が書き換えられていたら（`E2EE_SSSS_CONFLICT`）、解錠済みとは言えないので、状態を読み直す。
+        var ssssConflict = false
         do {
-            if case .conflict(let code) = try await uploadKeyBackup(), code == "E2EE_SSSS_CONFLICT" { return try await loadStatus() }
-            _ = try await importKeyBackup()
+            if case .conflict(let code) = try await uploadKeyBackup(), code == "E2EE_SSSS_CONFLICT" { ssssConflict = true }
+            else { _ = try await importKeyBackup() }
         } catch is CancellationError {
             throw CancellationError()
         } catch let failure as E2eeAPIError where failure.code == "E2EE_SSSS_CONFLICT" {
-            return try await loadStatus()
+            ssssConflict = true
         } catch {}
+        // 読み直しの失敗は、解錠済みとして返さず、そのまま投げる（古い `.unlocked` を残さない）。
+        if ssssConflict { return try await loadStatus() }
         return status
     }
 

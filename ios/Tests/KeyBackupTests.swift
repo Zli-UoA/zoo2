@@ -124,4 +124,13 @@ struct KeyBackupTests {
         sent.server.backupPage = nil
         #expect(try await receiver.setup.importKeyBackup() == 1)
     }
+
+    @Test func SSSSの競合のあとの読み直しに失敗したら解錠済みを返さず投げる() async throws {
+        let sent = try await sendOne()
+        defer { sent.sender.cleanUp() }
+        sent.server.backupConflict = "E2EE_SSSS_CONFLICT"
+        // 起動時の確認の取得は成功し、競合のあとの読み直しだけ失敗する（1 回目の取得のあとに失敗を仕込む）。
+        sent.server.failSecretStorageAfterFirst = true
+        await #expect(throws: (any Error).self) { _ = try await sent.sender.setup.runStartupCheck() }
+    }
 }

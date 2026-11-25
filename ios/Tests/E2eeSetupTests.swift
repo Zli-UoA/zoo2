@@ -45,7 +45,15 @@ final class FakeSetupServer: E2eeSetupAPI {
         if expected != defaultKeyID { throw E2eeAPIError(status: 409, code: "E2EE_SSSS_CONFLICT") }
     }
 
+    /// 0 より大きい間、`secret_storage` の取得を通信エラーにして、1 つずつ減らす。
+    var failSecretStorage = 0
+    /// 1 回目の取得のあと、通信エラーにする。
+    var failSecretStorageAfterFirst = false
+    private var secretStorageCalls = 0
+
     func secretStorage() async throws -> String {
+        if failSecretStorageAfterFirst { if secretStorageCalls >= 1 { throw URLError(.notConnectedToInternet) }; secretStorageCalls += 1 }
+        if failSecretStorage > 0 { failSecretStorage -= 1; throw URLError(.notConnectedToInternet) }
         var response: [String: JSONValue] = [:]
         if let defaultKeyID {
             response["default_key_id"] = .string(defaultKeyID)
