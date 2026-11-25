@@ -20,6 +20,7 @@ mod megolm;
 mod secret_storage;
 mod setup;
 mod trust;
+mod verification;
 
 pub use backup::*;
 pub use cross_signing::*;
@@ -29,6 +30,7 @@ pub use megolm::*;
 pub use secret_storage::*;
 pub use setup::*;
 pub use trust::*;
+pub use verification::*;
 
 uniffi::setup_scaffolding!();
 
