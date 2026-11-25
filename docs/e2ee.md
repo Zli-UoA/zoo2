@@ -805,7 +805,8 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 - 【決定】送受信（`MessageEncryption.swift`）は、Android の `AndroidMessageEncryption`、Web と同じ手順にする。配布先を `membership_epoch` 付きのページで読み（途中で epoch が変わったら、または古ければ読み直す。5 回まで）、新しい TOFU のピンは `POST /api/e2ee/tofu_pins` で登録してから確定する。配れない参加者がいれば黙って除外せず送らない。鍵は 100 端末ずつ `keys/claim` と `to_device` で配り、1 台でも配れなければ本文を送らない。メッセージの POST が 409 `E2EE_STALE_EPOCH` なら、そのセッションを捨て、`current_epoch` 以上の epoch でセッションを作り直す（3 回まで）。送信は 1 つずつ。
 - 【決定】復号できないときの文言は Web の `ja.json` の `e2ee.*` と同じ（「このメッセージを復号する鍵がまだ届いていません。」「未検証の送信者」「送信者を確かめられません」など）。`MessageEncryption` が本文と注意書きを返し、画面に出すのは画面の実装で行う。
 - 【決定】テストは Android と同じく、状態を持つ模擬サーバーで、平文がサーバーに渡らないこと、epoch が進んだ 409 からの作り直し、受信端末での復号と検証済みの送信者、再起動後の復号、編集（同じ epoch では鍵を配り直さない）、配れなかったときに本文を送らないこと、解錠していないときの扱い、鍵が届いていないときの文言を確かめる（`ios/Tests/MessageEncryptionTests.swift`）。
-- 【提案】まだ入れていない iOS の送受信：to-device の Shape の購読と ack、ワンタイム鍵の補充、画面への組み込み（メッセージ一覧の復号表示、送信欄の上の表示、#564 の警告）、鍵バックアップの送信と取り込み、暗号化した添付。
+- 【決定】端末の管理（`ios/Sources/Data/Crypto/E2eeDeviceManager.swift`）は、React の `deviceManager.ts`、Android の `E2eeDeviceManager` と同じ流れで、暗号ストアを開き、登録し、ワンタイム鍵を補充し、to-device の Shape（`api/shapes/e2ee_to_device?device_id=`。永続化しない）を購読して処理し、ack する。Olm セッションを新しく作ったら、ワンタイム鍵を補充し直す。失敗は表示せず、暗号ストアを閉じて 5 秒から 5 分まで間隔をのばして初めからやり直す。登録の 409 `E2EE_DEVICE_EXISTS` と、鍵のアップロードや ack の 404 `E2EE_DEVICE_NOT_FOUND` は、`GET /api/e2ee/devices` の一覧に今の端末がないと確かめられたときだけ、端末を作り直す。保存鍵を失って作り直した前の端末を消せなかったときは、再試行では ID を持ち越さない（Android の削除待ちに当たるものは、端末の一覧と削除を入れるときに足す）。
+- 【提案】まだ入れていない iOS の送受信：画面への組み込み（メッセージ一覧の復号表示、送信欄の上の表示、#564 の警告）、鍵バックアップの送信と取り込み、暗号化した添付。
 
 ## API
 
