@@ -138,6 +138,11 @@ final class E2eeController: ConversationEncryption {
                 revision += 1
             } catch {
                 statusError = error.localizedDescription
+                // SSSS が書き換えられたと分かったのに読み直せないときは、解錠済みの表示を残さない（解錠し直しが要る）。
+                if case E2eeSetupError.secretsChanged = error, generation == refreshGeneration {
+                    status = .locked(.mismatch)
+                    statusError = "暗号化の鍵が別の端末で更新されました。解錠し直してください。"
+                }
             }
         }
     }

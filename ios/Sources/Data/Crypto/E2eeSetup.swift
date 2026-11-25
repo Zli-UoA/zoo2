@@ -51,6 +51,8 @@ enum E2eeSetupError: Error, Equatable {
     case serverKeyMismatch(String)
     /// SSSS がまだない（解錠するものがない）。
     case noSecretStorage
+    /// SSSS が書き換えられたと分かったが、状態を読み直せなかった（解錠済みとは言えない）。
+    case secretsChanged
 }
 
 /// 今の状態（React の `E2eeStatus`、Android の `E2eeStatus` と同じ）。
@@ -242,7 +244,11 @@ final class E2eeSetup {
             ssssConflict = true
         } catch {}
         // 読み直しの失敗は、解錠済みとして返さず、そのまま投げる（古い `.unlocked` を残さない）。
-        if ssssConflict { return try await loadStatus() }
+        if ssssConflict {
+            do { return try await loadStatus() }
+            catch is CancellationError { throw CancellationError() }
+            catch { throw E2eeSetupError.secretsChanged }
+        }
         return status
     }
 
