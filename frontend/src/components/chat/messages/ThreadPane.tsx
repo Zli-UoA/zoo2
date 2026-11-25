@@ -110,6 +110,7 @@ export interface ThreadPaneProps {
   onRetry?: () => void;
   /** Read existing nested threads until their staged migration completes. */
   onOpenThread?: (id: string) => void;
+  onForward?: (message: FeedMessage, attachments: AttachmentRow[]) => void;
   onClose: () => void;
 }
 
@@ -124,6 +125,7 @@ export function ThreadPane({
   commands,
   onRequestCommands,
   onOpenThread,
+  onForward,
   targetMessageId,
   mentionUsers,
   mentionMemberIds,
@@ -488,6 +490,15 @@ export function ThreadPane({
                 : (reactions.get(root.id) ?? [])
             }
             attachments={root.display_data?.attachments ?? attachments?.get(root.id) ?? []}
+            onForward={
+              onForward
+                ? () =>
+                    onForward(
+                      root,
+                      root.display_data?.attachments ?? attachments?.get(root.id) ?? [],
+                    )
+                : undefined
+            }
             kitchenCatalog={kitchenCatalog}
             canReact={canReact}
             onReaction={(emoji) => onReaction(root.id, emoji)}
@@ -571,6 +582,17 @@ export function ThreadPane({
                     item.message.display_data?.attachments ??
                     attachments?.get(item.message.id) ??
                     []
+                  }
+                  onForward={
+                    onForward
+                      ? () =>
+                          onForward(
+                            item.message,
+                            item.message.display_data?.attachments ??
+                              attachments?.get(item.message.id) ??
+                              [],
+                          )
+                      : undefined
                   }
                   kitchenCatalog={kitchenCatalog}
                   canReact={canReact}

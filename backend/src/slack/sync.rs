@@ -403,12 +403,11 @@ pub(super) struct Slack {
 }
 
 impl Slack {
-    /// 1 人のトークンだけで Slack を呼ぶ (ユーザーが自分で始める取り込み用)
-    pub(super) fn single(
-        s: &AppState,
+    /// 全リンク済みトークンで Slack クライアントを組み立てる
+    pub(super) fn from_tokens(
+        base: String,
         key: [u8; 32],
-        user: &str,
-        enc: &str,
+        tokens: Vec<(String, String)>,
     ) -> Result<Self, AppError> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
@@ -417,11 +416,25 @@ impl Slack {
             .map_err(|e| AppError::Internal(e.into()))?;
         Ok(Self {
             client,
-            base: s.config.slack.api_base_url.clone(),
+            base,
             key,
-            tokens: vec![(user.to_string(), enc.to_string())],
+            tokens,
             index: 0,
         })
+    }
+
+    /// 1 人のトークンだけで Slack を呼ぶ (ユーザーが自分で始める取り込み用)
+    pub(super) fn single(
+        s: &AppState,
+        key: [u8; 32],
+        user: &str,
+        enc: &str,
+    ) -> Result<Self, AppError> {
+        Self::from_tokens(
+            s.config.slack.api_base_url.clone(),
+            key,
+            vec![(user.to_string(), enc.to_string())],
+        )
     }
 
     /// 今使っているトークンの位置。`NoAccess` で全トークンを試し切ると、位置が末尾まで進み、後続の呼び出しが
@@ -555,14 +568,10 @@ fn first_oldest(task: &Task) -> String {
     }
 }
 
-/// スレッドの親になれる投稿か。入退室・トピック変更などのシステム通知は、スレッドにできない
-/// (`conversations.replies` が `thread_not_found` になる) ので、候補から外す
-fn threadable(message: &SlackMessage) -> bool {
-    message.is_importable()
-        && message
-            .subtype
-            .as_deref()
-            .is_none_or(|t| !(t.starts_with("channel_") || t.starts_with("group_")))
+/// スレッドの親になれる投稿か。親投稿自身の取り込み可否とは独立して判定し、
+/// 入退室・トピック変更などのシステム通知だけは `conversations.replies` 対象から外す。
+pub(super) fn threadable(message: &SlackMessage) -> bool {
+    message.is_thread_root_candidate()
 }
 
 fn now_secs() -> u64 {
@@ -591,8 +600,13 @@ struct Progress {
     light: bool,
 }
 
-async fn load_tokens(s: &AppState, task: &Task) -> Result<Vec<(String, String)>, AppError> {
-    let mut db = s.db.clone();
+pub(super) async fn load_channel_tokens(
+    db: &mut toasty::Db,
+    team_id: &str,
+    channel_id: &str,
+    private: bool,
+    preferred_user_id: Option<&str>,
+) -> Result<Vec<(String, String)>, AppError> {
     let mut tx = db.transaction().await?;
     // 非公開の zoo チャンネルは、そのメンバーのトークンだけを使う。公開なら、メンバーを先にして、ほかの人も使う。
     // 前回読めたトークンを先に試す
@@ -605,10 +619,10 @@ async fn load_tokens(s: &AppState, task: &Task) -> Result<Vec<(String, String)>,
          EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=$2 AND cu.user_id=l.user_id) DESC,\
          l.updated_at DESC,l.user_id",
         &[
-            &task.team_id,
-            &task.channel_id,
-            if task.private { "true" } else { "false" },
-            task.token_user_id.as_deref().unwrap_or(""),
+            team_id,
+            channel_id,
+            if private { "true" } else { "false" },
+            preferred_user_id.unwrap_or(""),
         ],
     )
     .await?;
@@ -624,6 +638,18 @@ async fn load_tokens(s: &AppState, task: &Task) -> Result<Vec<(String, String)>,
         })
         .collect();
     Ok(tokens)
+}
+
+async fn load_tokens(s: &AppState, task: &Task) -> Result<Vec<(String, String)>, AppError> {
+    let mut db = s.db.clone();
+    load_channel_tokens(
+        &mut db,
+        &task.team_id,
+        &task.channel_id,
+        task.private,
+        task.token_user_id.as_deref(),
+    )
+    .await
 }
 
 async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step, SyncError> {
@@ -923,8 +949,10 @@ async fn store(
 ) -> Result<(), SyncError> {
     // 投稿者の名前を調べる (トランザクションの外で行う。調べられなくても、Slack の ID の名前で作る)
     lookup_profiles(db, slack, ctx, messages).await?;
-    let mut importable: Vec<&SlackMessage> =
-        messages.iter().filter(|m| m.is_importable()).collect();
+    let mut importable: Vec<&SlackMessage> = messages
+        .iter()
+        .filter(|m| m.is_importable_for_team(Some(&task.team_id)))
+        .collect();
     importable.sort_by_key(|m| ts_key(&m.ts));
     let mut tx = db.transaction().await.map_err(AppError::from)?;
     suppress_app_events(&mut tx).await?;
@@ -986,7 +1014,10 @@ pub(super) async fn lookup_profiles(
 ) -> Result<(), SyncError> {
     let mut wanted: Vec<String> = Vec::new();
     let mut seen = HashSet::new();
-    for message in messages.iter().filter(|m| m.is_importable()) {
+    for message in messages
+        .iter()
+        .filter(|m| m.is_importable_for_team(Some(&ctx.team)))
+    {
         let authors = message.author().map(str::to_string).into_iter();
         let mentions = super::convert::mentioned_users(&message.text).into_iter();
         for id in authors.chain(mentions) {

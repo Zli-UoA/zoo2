@@ -1,21 +1,12 @@
 import { ActivityPubBadge } from "../../home/ActivityPubBadge";
-import {
-  type MouseEvent,
-  type PointerEvent,
-  useEffect,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
-import { MessageCard } from "./MessageCard";
-import { messageBodySource } from "./messageBodySource";
+import { type MouseEvent, type PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { cn } from "cn";
 import {
   BotIcon,
   CopyIcon,
+  ForwardIcon,
   LinkIcon,
   LockKeyholeIcon,
   LockKeyholeOpenIcon,
@@ -28,17 +19,18 @@ import {
   UsersRoundIcon,
   ShieldAlertIcon,
 } from "lucide-react";
-import { MfmContent } from "./MfmContent";
-import { decryptedMentionAllowlist, isAllowedMention, type MentionAllowlist } from "./mentions";
-import { LinkPreviews } from "./LinkPreviews.tsx";
+import { decryptedMentionAllowlist, isAllowedMention } from "./mentions";
 import { messageLinkUrl } from "./messageLink";
+import { EditedIndicator, MessageBody } from "./MessageBody";
+import { ForwardedMessageCard } from "./ForwardedMessageCard";
+export { MessageBody } from "./MessageBody";
 
 import { useLocale } from "../../i18n/LocaleProvider";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import { kitchenLabel, kitchenParts, reactionKey } from "../../../lib/emoji/kitchen";
 import { addRecentEmoji, loadRecentEmojis } from "../../../lib/emoji/recents";
 import { RecentReactions } from "./RecentReactions";
-import type { AttachmentRow, DisplayEmoji } from "../../../lib/electric/types";
+import type { AttachmentRow } from "../../../lib/electric/types";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
 import { AppAvatar, AuthorIdentity } from "../AppIdentity";
 import { MessageAppContent, hasCardBlocks } from "../AppBlocks";
@@ -67,6 +59,7 @@ import { MessageAttachments } from "./MessageAttachments";
 import { ReactionEmoji } from "./ReactionEmoji";
 import { detectComposerPlatform, shouldSendFromKey } from "./Composer";
 import {
+  useEncryptedChannel,
   useMentionUserNames,
   useMessageDecryption,
   usePlaintextBeforeEncryption,
@@ -112,6 +105,8 @@ export interface MessageRowProps {
   replyCount?: number;
   /** スレッドペインを開く。返信行では未指定。 */
   onOpenThread?: () => void;
+  /** メッセージを別チャンネル・DM へ転送する。平文チャンネルのみ渡される。 */
+  onForward?: () => void;
   attachments?: AttachmentRow[];
   /**
    * 暗号化チャンネルのメッセージを復号した結果。暗号文のある行で未指定なら、この端末では読めない
@@ -130,79 +125,6 @@ export interface MessageRowProps {
    * 終わるとメンションの強調だけが残る。
    */
   highlightRun?: number;
-}
-
-function EditedIndicator({ at }: { at: string }) {
-  const tooltipId = useId();
-  const [tooltipOpen, setTooltipOpen] = useState(false);
-  const { t } = useTranslation();
-  const { locale } = useLocale();
-  return (
-    <TooltipProvider>
-      <Tooltip onOpenChange={setTooltipOpen}>
-        <TooltipTrigger
-          render={<span role="img" tabIndex={0} />}
-          aria-label={t("messages.edited")}
-          aria-describedby={tooltipOpen ? tooltipId : undefined}
-          className="ml-1 inline-flex rounded-sm align-middle text-muted-foreground/80 outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-        >
-          <PencilIcon className="size-3" strokeWidth={1.5} aria-hidden="true" />
-        </TooltipTrigger>
-        <TooltipContent id={tooltipId} role="tooltip">
-          {t("messages.edited")} ·{" "}
-          <time dateTime={normalizeUtcTimestamp(at)}>{fullTimestamp(at, locale)}</time>
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  );
-}
-
-/** 通常投稿は MFM、連携カードは専用の描画を使う。 */
-export function MessageBody({
-  content,
-  card: data,
-  appBlocks,
-  editedAt,
-  emojis,
-  previews = "auto",
-  mentions,
-  components,
-}: {
-  emojis?: Record<string, DisplayEmoji>;
-  editedAt?: string | null;
-  content: string;
-  card?: string | null;
-  appBlocks?: string | null;
-  /** メッセージ部品（`messages.components`）。フラグが立っていれば本文の代わりに部品だけを表示する */
-  components?: string | null;
-  /** `manual` は、押したときだけ URL カードを読み込む（暗号化チャンネル）。 */
-  previews?: "auto" | "manual";
-  /** 暗号化メッセージで、メンションとして表示してよい `@name`（{@link MfmContent} の `mentions`）。 */
-  mentions?: MentionAllowlist;
-}) {
-  // 本文の代わりに部品・カードを描く投稿かは、メッセージリンクの埋め込みと同じ判定で決める。
-  const source = messageBodySource({ components, appBlocks, card: data });
-  if (source.kind === "hidden") return null;
-  if (source.kind === "cards")
-    return (
-      <>
-        {source.cards.map((card, index) => (
-          <MessageCard key={index} card={card} />
-        ))}
-        {editedAt ? <EditedIndicator at={editedAt} /> : null}
-      </>
-    );
-  return (
-    <>
-      <div className="mfm-body whitespace-pre-wrap break-words text-sm leading-relaxed">
-        <MfmContent content={content} emojis={emojis} mentions={mentions} />
-        {editedAt ? <EditedIndicator at={editedAt} /> : null}
-      </div>
-      {/* 暗号化チャンネルでは、外部の URL のカードを押したときだけ取得する（docs/e2ee.md の「機能ごとの扱い」）。
-          このアプリのチャンネル・メッセージへのリンクは、外へ送らないので、すぐに埋め込みにする。 */}
-      <LinkPreviews content={content} manualExternal={previews === "manual"} />
-    </>
-  );
 }
 
 /** 復号できない暗号化メッセージの代わりに出す行。理由ごとに文言を変える。 */
@@ -319,6 +241,7 @@ export function MessageRow({
   onPickReaction,
   replyCount = 0,
   onOpenThread,
+  onForward,
   attachments = [],
   decryption,
   unencryptedAfterEncrypted,
@@ -327,6 +250,7 @@ export function MessageRow({
   const { t } = useTranslation();
   const { locale } = useLocale();
   const { message } = item;
+  const isEncryptedChannel = useEncryptedChannel();
   const decryptionFromPane = useMessageDecryption(message.id);
   // 暗号化に切り替える前の平文のメッセージ（#367）。本文はそのまま出し、編集させない。
   const beforeEncryption = usePlaintextBeforeEncryption(message);
@@ -335,6 +259,10 @@ export function MessageRow({
   const afterEncryptedFromTime = useUnencryptedAfterEncrypted(message);
   const warnUnencrypted = beforeEncryption && (unencryptedAfterEncrypted ?? afterEncryptedFromTime);
   const resolvedDecryption = resolveMessageDecryption(message, decryption ?? decryptionFromPane);
+  const canForward = !!onForward && !isEncryptedChannel && !resolvedDecryption;
+  const canSubmitEmptyEdit =
+    !resolvedDecryption &&
+    (attachments.length > 0 || (message.forwarded_message_ids?.length ?? 0) > 0);
   // 暗号化チャンネルの行の `content` は空なので、復号した本文を使う。
   const bodyText =
     resolvedDecryption?.status === "decrypted" ? resolvedDecryption.body : message.content;
@@ -560,7 +488,7 @@ export function MessageRow({
                     )
                   ) {
                     event.preventDefault();
-                    if (editingText.trim()) onSaveEdit();
+                    if (editingText.trim() || canSubmitEmptyEdit) onSaveEdit();
                   }
                 }}
               />
@@ -568,7 +496,11 @@ export function MessageRow({
                 <Button type="button" variant="ghost" size="sm" onClick={onCancelEdit}>
                   {t("common.cancelShort")}
                 </Button>
-                <Button type="submit" size="sm" disabled={!editingText.trim()}>
+                <Button
+                  type="submit"
+                  size="sm"
+                  disabled={!editingText.trim() && !canSubmitEmptyEdit}
+                >
                   {t("common.save")}
                 </Button>
               </div>
@@ -613,6 +545,15 @@ export function MessageRow({
                 <MessageAttachments attachments={attachments} />
               )}
               {resolvedDecryption ? null : <MessageAppContent message={message} />}
+              {!isEncryptedChannel &&
+              !resolvedDecryption &&
+              message.forwarded_message_ids?.length ? (
+                <div className="mt-1 flex flex-col gap-1.5">
+                  {message.forwarded_message_ids.map((forwardedId) => (
+                    <ForwardedMessageCard key={forwardedId} messageId={forwardedId} />
+                  ))}
+                </div>
+              ) : null}
               {!resolvedDecryption &&
               message.updated_at &&
               (hidesContent(parseComponents(message.components)) ||
@@ -793,7 +734,7 @@ export function MessageRow({
                 <MoreHorizontalIcon />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                {/* 並びは、リアクション・スレッド・編集・原文コピー・リンクコピー・App・削除の順。 */}
+                {/* 並びは、リアクション・スレッド・転送・編集・原文コピー・リンクコピー・App・削除の順。 */}
                 <DropdownMenuItem
                   className={touchHitArea}
                   disabled={!canReact}
@@ -806,6 +747,12 @@ export function MessageRow({
                   <DropdownMenuItem className={touchHitArea} onClick={onOpenThread}>
                     <MessageSquarePlusIcon />
                     {t("threads.open")}
+                  </DropdownMenuItem>
+                ) : null}
+                {canForward ? (
+                  <DropdownMenuItem className={touchHitArea} onClick={onForward}>
+                    <ForwardIcon />
+                    {t("messages.forward")}
                   </DropdownMenuItem>
                 ) : null}
                 {canEdit ? (
@@ -961,6 +908,19 @@ export function MessageRow({
               >
                 <MessageSquareTextIcon className="size-4 shrink-0" aria-hidden="true" />
                 {t("threads.open")}
+              </button>
+            ) : null}
+            {canForward ? (
+              <button
+                type="button"
+                className={sheetActionClass}
+                onClick={() => {
+                  setSheetOpen(false);
+                  onForward();
+                }}
+              >
+                <ForwardIcon className="size-4 shrink-0" aria-hidden="true" />
+                {t("messages.forward")}
               </button>
             ) : null}
             {canEdit ? (

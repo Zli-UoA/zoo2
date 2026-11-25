@@ -37,6 +37,7 @@ export interface FeedMessage {
   epoch?: string | null;
   revision?: number;
   message_kind?: string | null;
+  forwarded_message_ids?: string[] | null;
   user_name?: string | null;
   display_name?: string | null;
 }
