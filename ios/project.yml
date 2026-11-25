@@ -14,6 +14,8 @@ settings:
     DEVELOPMENT_TEAM: F82XB5KFX2
     ENABLE_USER_SCRIPT_SANDBOXING: YES
 packages:
+  ZooCrypto:
+    path: ZooCrypto
   WebRTC:
     url: https://github.com/stasel/WebRTC.git
     exactVersion: 157.0.0
@@ -24,6 +26,7 @@ targets:
     sources: [Sources, Shared, WatchShared, CallActivityShared]
     dependencies:
       - package: WebRTC
+      - package: ZooCrypto
       - target: ZooNotificationService
         embed: true
       - target: ZooWatch
@@ -99,6 +102,8 @@ targets:
     type: app-extension
     platform: iOS
     sources: [NotificationService, Shared]
+    dependencies:
+      - package: ZooCrypto
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: works.zli.zoo.notification-service

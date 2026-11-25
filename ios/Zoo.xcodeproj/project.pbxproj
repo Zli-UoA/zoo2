@@ -28,6 +28,7 @@
 		1A095FA85FC3872A764B6A70 /* MessageAttachmentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54A9ADE68E4D89ACABEC8B5E /* MessageAttachmentsView.swift */; };
 		1B7F6BCAE4C67B7914263744 /* CallView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35169546CA55D414B0D9CF10 /* CallView.swift */; };
 		1E45AF3447442D972CC66160 /* ShortcutActionsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A207CEFA59094C7050CE45B8 /* ShortcutActionsUITests.swift */; };
+		1F6A754BDC30EAD03664B785 /* CryptoBindingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD8C8688E49CEFE743C30BBB /* CryptoBindingTests.swift */; };
 		26CF4C18C8BEB0A8CF709993 /* ReactionGlyph.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA787668A52085815A631603 /* ReactionGlyph.swift */; };
 		271C2664053C32BFF3DE7410 /* ConversationDestination.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C78FF3DA140FCB63A561014 /* ConversationDestination.swift */; };
 		271D71364DCDE2BD7CF35296 /* ThreadAppearanceObserver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 700FE578491E5FDFF05429E3 /* ThreadAppearanceObserver.swift */; };
@@ -126,6 +127,7 @@
 		A1A0D8BAA8707F5FC4E6F288 /* ThreadReplyLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 412038E3D7C38AA9D88ACF7E /* ThreadReplyLink.swift */; };
 		A22185231054340280D73F41 /* RemoteImageDiskCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F4B5FB24C249C614603307E /* RemoteImageDiskCache.swift */; };
 		A40125ACF59590CFE5A3B177 /* ZooCallSchemas.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A7782546A5108FE43CD6F8B /* ZooCallSchemas.swift */; };
+		A446A338342AD0D2D2B7A94A /* ZooCrypto in Frameworks */ = {isa = PBXBuildFile; productRef = DE7BE6CF765EFD50D00DB190 /* ZooCrypto */; };
 		A4C8E5DCD544E5833AE8C8B8 /* GlobalSearchFilters.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7C83D3956A6E92C9C1838B5 /* GlobalSearchFilters.swift */; };
 		A5B3B2174411ED707B979BEF /* IncomingCall.caf in Resources */ = {isa = PBXBuildFile; fileRef = 01F4605EEE99FB8A46EE593A /* IncomingCall.caf */; };
 		A74D571581DA830C6D2CDBBE /* CallTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5DD821D3B8BF904D7F0157B /* CallTests.swift */; };
@@ -172,6 +174,7 @@
 		DB499E00F43349BE97609EE7 /* WatchHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F3DDE4238701DA740353ED4 /* WatchHomeView.swift */; };
 		DC3328CC9FA55D7D0A7403E5 /* TypingUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1651B9D5D7861771BAF31E96 /* TypingUITests.swift */; };
 		DD2DF6A7BCB2FC21FAC60AC3 /* CreateChannelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C1432176D2EE10E6E652F81 /* CreateChannelView.swift */; };
+		DE0D1E1C2A866122BE53A4F4 /* ZooCrypto in Frameworks */ = {isa = PBXBuildFile; productRef = 7DFF271D3FAA430D1B383DF4 /* ZooCrypto */; };
 		DE27785108646185D520404F /* NativeCallMedia.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBD80F99CDA0261D2C9C9BDF /* NativeCallMedia.swift */; };
 		DF6C0A6C562160CE0999C74D /* CallRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6A9A3127AF80FE4B7F07EEC /* CallRecoveryTests.swift */; };
 		DFEC52A76256133EEB122D30 /* IPadWorkspaceUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89F4F93B7B05D3A5B0764F05 /* IPadWorkspaceUITests.swift */; };
@@ -389,6 +392,7 @@
 		A425CE6E446FF381CB83ED52 /* CallBannerLayoutUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallBannerLayoutUITests.swift; sourceTree = "<group>"; };
 		A7C95B5F4BDB5E3364893D00 /* MessageSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageSync.swift; sourceTree = "<group>"; };
 		AB537CBD3E87CD21D7A6F7FA /* DraftAttachment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DraftAttachment.swift; sourceTree = "<group>"; };
+		AD8C8688E49CEFE743C30BBB /* CryptoBindingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CryptoBindingTests.swift; sourceTree = "<group>"; };
 		B07444D0AA7E2238A3EBF33E /* IncomingCallNotifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IncomingCallNotifications.swift; sourceTree = "<group>"; };
 		B38BCEDE645D8F594A866F0A /* ChatPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatPresentationTests.swift; sourceTree = "<group>"; };
 		B5DD821D3B8BF904D7F0157B /* CallTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallTests.swift; sourceTree = "<group>"; };
@@ -444,6 +448,7 @@
 		F9013878118EB556FFF8679B /* ConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationView.swift; sourceTree = "<group>"; };
 		F9F30F10363C425009A500BC /* SyncCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncCache.swift; sourceTree = "<group>"; };
 		FAAD47FFF6738DD5E157A6A9 /* GlobalSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalSearch.swift; sourceTree = "<group>"; };
+		FAE32E0372A8264D9FF55707 /* ZooCrypto */ = {isa = PBXFileReference; lastKnownFileType = folder; name = ZooCrypto; path = ZooCrypto; sourceTree = SOURCE_ROOT; };
 		FC080878D2B6AA8B561E7434 /* MessageContentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageContentTests.swift; sourceTree = "<group>"; };
 		FF0CFDBEA15C95A3C360562D /* ChannelReadTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChannelReadTests.swift; sourceTree = "<group>"; };
 		FF44DD9C064D4786249C50F9 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
@@ -456,6 +461,15 @@
 			buildActionMask = 2147483647;
 			files = (
 				8861B36B04FB92368D1B61E7 /* WebRTC in Frameworks */,
+				A446A338342AD0D2D2B7A94A /* ZooCrypto in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FDB47FEF5A282F96D23221EE /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				DE0D1E1C2A866122BE53A4F4 /* ZooCrypto in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -534,6 +548,7 @@
 				FF0CFDBEA15C95A3C360562D /* ChannelReadTests.swift */,
 				6E574B38B51C1F97994593C4 /* ChannelThreadsTests.swift */,
 				B38BCEDE645D8F594A866F0A /* ChatPresentationTests.swift */,
+				AD8C8688E49CEFE743C30BBB /* CryptoBindingTests.swift */,
 				4AF636CE5F5200DE9C254331 /* DeviceAuthorizationTests.swift */,
 				659DEA088FB41035E2DEAF39 /* ElectricPersistenceTests.swift */,
 				10E68D0BFA3AD771F645D5F4 /* GlobalSearchTests.swift */,
@@ -801,6 +816,7 @@
 				8FFB1377CEFF525BD8D884B1 /* CallActivityExtension */,
 				622BF504E8DB4A2CFF1BABB5 /* CallActivityShared */,
 				AC8FCDA34087CDFC3A7C8C62 /* NotificationService */,
+				EA382DA78D807A3E7991A8FC /* Packages */,
 				D054A5346644D49BA5B613F9 /* Shared */,
 				80CB46EEA7222E998A1958F2 /* Sources */,
 				42F149848CF299CB3C0FC5C9 /* Tests */,
@@ -879,6 +895,14 @@
 			path = Resources;
 			sourceTree = "<group>";
 		};
+		EA382DA78D807A3E7991A8FC /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				FAE32E0372A8264D9FF55707 /* ZooCrypto */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
 		F2DE4ECE725E22455AB6213E /* Intents */ = {
 			isa = PBXGroup;
 			children = (
@@ -933,6 +957,7 @@
 			name = Zoo;
 			packageProductDependencies = (
 				BA4AC1C450DF77F6EBC8E959 /* WebRTC */,
+				DE7BE6CF765EFD50D00DB190 /* ZooCrypto */,
 			);
 			productName = Zoo;
 			productReference = C6BEC97D3AE34D98ED3B5376 /* Zoo.app */;
@@ -1014,6 +1039,7 @@
 			buildConfigurationList = AC939B28191936F874335DDC /* Build configuration list for PBXNativeTarget "ZooNotificationService" */;
 			buildPhases = (
 				7FF1192716E551F261A33D28 /* Sources */,
+				FDB47FEF5A282F96D23221EE /* Frameworks */,
 			);
 			buildRules = (
 			);
@@ -1021,6 +1047,7 @@
 			);
 			name = ZooNotificationService;
 			packageProductDependencies = (
+				7DFF271D3FAA430D1B383DF4 /* ZooCrypto */,
 			);
 			productName = ZooNotificationService;
 			productReference = 337CC9AC583295489E718778 /* ZooNotificationService.appex */;
@@ -1074,6 +1101,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				C7CB12059E4A30077F0E01E2 /* XCRemoteSwiftPackageReference "WebRTC" */,
+				8D79B3EC89E218F2BD0349D2 /* XCLocalSwiftPackageReference "ZooCrypto" */,
 			);
 			preferredProjectObjectVersion = 77;
 			projectDirPath = "";
@@ -1132,6 +1160,7 @@
 				BCD3133A011897F76683ED45 /* ChannelReadTests.swift in Sources */,
 				A8431E8A8F001AEC5FD6EB2D /* ChannelThreadsTests.swift in Sources */,
 				68A8F60E90FC71AB8BF78D0C /* ChatPresentationTests.swift in Sources */,
+				1F6A754BDC30EAD03664B785 /* CryptoBindingTests.swift in Sources */,
 				0BDE0D56316999925653EA9F /* DeviceAuthorizationTests.swift in Sources */,
 				8838C2693D6E37CC008AB3FA /* ElectricPersistenceTests.swift in Sources */,
 				718B5FC14955CAF0EDA62737 /* GlobalSearchTests.swift in Sources */,
@@ -1781,6 +1810,13 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		8D79B3EC89E218F2BD0349D2 /* XCLocalSwiftPackageReference "ZooCrypto" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ZooCrypto;
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCRemoteSwiftPackageReference section */
 		C7CB12059E4A30077F0E01E2 /* XCRemoteSwiftPackageReference "WebRTC" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -1793,10 +1829,18 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		7DFF271D3FAA430D1B383DF4 /* ZooCrypto */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ZooCrypto;
+		};
 		BA4AC1C450DF77F6EBC8E959 /* WebRTC */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = C7CB12059E4A30077F0E01E2 /* XCRemoteSwiftPackageReference "WebRTC" */;
 			productName = WebRTC;
+		};
+		DE7BE6CF765EFD50D00DB190 /* ZooCrypto */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ZooCrypto;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
