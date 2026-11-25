@@ -79,6 +79,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             ],
         ),
         Mode::Encryption => draw_encryption(frame, app),
+        Mode::Devices => super::devices_view::draw(frame, app),
         Mode::Create(form) => draw_create(frame, form),
         Mode::Recipients { scroll } => {
             let scroll = *scroll;
@@ -86,6 +87,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
         Mode::GlobalSearch => draw_global_search(frame, app),
         _ => {}
+    }
+    // 他のユーザーの検証は、どの画面にいても前面に出す。
+    if app.devices.has_open_verification() {
+        super::devices_view::draw_verification(frame, app);
     }
 }
 
@@ -722,8 +727,12 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     app.scroll = scroll;
     app.inner_scroll = inner_scroll;
-    // 全文検索の画面が覆っている間は、背後のタイムラインを読んだことにしない（既読を進めない）。
-    if app.mode != Mode::GlobalSearch {
+    // 全文検索の画面、端末と検証の画面、検証のダイアログが覆っている間は、背後のタイムラインを読んだことに
+    // しない（既読を進めない）。
+    if app.mode != Mode::GlobalSearch
+        && app.mode != Mode::Devices
+        && !app.devices.has_open_verification()
+    {
         app.newest_shown = built
             .ranges
             .iter()
@@ -952,6 +961,7 @@ const HELP: &[(&str, &str)] = &[
     ("V", "暗号化チャンネルの配布先の詳細"),
     ("R", "送れなかった本文を入力欄に戻す"),
     ("E", "暗号化（初回設定・解錠）"),
+    ("D", "端末と検証（失効・再検証・絵文字の検証）"),
     ("q / Ctrl+C", "終了"),
 ];
 
@@ -1345,6 +1355,83 @@ mod tests {
 
     fn press(app: &mut App, code: KeyCode) {
         app.on_terminal_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    }
+
+    fn sas_view(phase: zoo_crypto::SasPhase) -> crate::e2ee::verification::SasView {
+        crate::e2ee::verification::SasView {
+            transaction_id: "txn-1".into(),
+            their_user_id: "u2".into(),
+            their_device_id: Some("D2".into()),
+            we_requested: false,
+            started_at_ms: 0,
+            phase,
+            emoji: None,
+            cancellation: None,
+            method: None,
+            qr_code: None,
+            can_start_sas: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn an_incoming_verification_comes_to_the_front_without_stealing_typing() {
+        use crate::e2ee::verification::VerificationEvent;
+        let mut app = app();
+        let (_tx, stores) = tokio::sync::watch::channel(None);
+        app.attach_encryption(crate::ui::encryption::E2eeContext {
+            oidc: None,
+            stores,
+            crypto_root: None,
+            events: None,
+        });
+        // 入力の途中では、キー操作を奪わずに知らせる。
+        app.mode = Mode::Insert;
+        app.on_app_event(AppEvent::Verification(VerificationEvent::View(sas_view(
+            zoo_crypto::SasPhase::Incoming,
+        ))));
+        assert!(!app.devices.has_open_verification());
+        assert!(render(&mut app).contains("検証の要求が届いています（D で開く）"));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Normal);
+        // `D` で開くと、前面に出す。
+        press(&mut app, KeyCode::Char('D'));
+        assert_eq!(app.mode, Mode::Devices);
+        assert!(app.devices.has_open_verification());
+        let screen = render_sized(&mut app, 100, 30);
+        assert!(screen.contains("さんが検証を求めています"), "{screen}");
+        assert!(screen.contains("受け入れる"), "{screen}");
+
+        // 通常の画面では、届いたらすぐに前面に出す。
+        let mut app = self::app();
+        let (_tx, stores) = tokio::sync::watch::channel(None);
+        app.attach_encryption(crate::ui::encryption::E2eeContext {
+            oidc: None,
+            stores,
+            crypto_root: None,
+            events: None,
+        });
+        app.on_app_event(AppEvent::Verification(VerificationEvent::View(sas_view(
+            zoo_crypto::SasPhase::Cancelled,
+        ))));
+        assert!(
+            !app.devices.has_open_verification(),
+            "終わった検証は出さない"
+        );
+        let mut view = sas_view(zoo_crypto::SasPhase::Incoming);
+        view.transaction_id = "txn-2".into();
+        app.on_app_event(AppEvent::Verification(VerificationEvent::View(view)));
+        assert!(app.devices.has_open_verification());
+        assert!(render_sized(&mut app, 100, 30).contains("さんが検証を求めています"));
+    }
+
+    #[tokio::test]
+    async fn the_devices_screen_opens_with_d_and_closes_with_esc() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('D'));
+        assert_eq!(app.mode, Mode::Devices);
+        assert!(render_sized(&mut app, 100, 30).contains("端末と検証"));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Normal);
     }
 
     #[tokio::test]
@@ -3506,6 +3593,7 @@ mod tests {
             oidc: None,
             stores,
             crypto_root: None,
+            events: None,
         });
         press(&mut app, KeyCode::Char('E'));
         encryption_event(&mut app, |generation| EncryptionEvent::Status {
@@ -3849,6 +3937,7 @@ mod tests {
             oidc: None,
             stores,
             crypto_root: Some(dir.path().to_owned()),
+            events: None,
         });
         // 暗号ストアがまだ開いていなくても、`encrypted = true` を見たらその場で記録する。
         app.on_shape(ShapeEvent::Batch(
@@ -3877,6 +3966,7 @@ mod tests {
             oidc: None,
             stores,
             crypto_root: Some(dir.path().to_owned()),
+            events: None,
         });
         press(&mut app, KeyCode::Enter);
         press(&mut app, KeyCode::Char('i'));
