@@ -130,6 +130,7 @@ afterEach(() => {
 async function clickMarkRead() {
   const button = await screen.findByRole("button", { name: "既読にする" });
   await waitFor(() => expect(button.hasAttribute("disabled")).toBe(false));
+  button.focus();
   await act(async () => {
     fireEvent.click(button);
   });
@@ -177,8 +178,10 @@ it("keeps focus on the heading when the conversation changes", async () => {
   await clickMarkRead();
   await waitFor(() => expect(document.activeElement).toBe(heading));
 
+  const keepUnread = screen.getByText("未読のまま次へ");
+  keepUnread.focus();
   await act(async () => {
-    fireEvent.click(screen.getByText("未読のまま次へ"));
+    fireEvent.click(keepUnread);
   });
   await waitFor(() => expect(document.activeElement).toBe(heading));
 });
