@@ -133,6 +133,8 @@ final class E2eeDeviceManager {
     @ObservationIgnored var onReady: (() -> Void)?
     /// to-device で Megolm セッションの鍵を受け取ったとき（読めなかったメッセージを読めるようになる）。
     @ObservationIgnored var onKeysReceived: (() -> Void)?
+    /// 受信時の検証を通った、SAS の検証のメッセージ（JSON）が届いた。
+    @ObservationIgnored var onVerifications: (([String]) -> Void)?
     @ObservationIgnored private var loop: Task<Void, Never>?
     @ObservationIgnored private var store: CryptoStore?
 
@@ -258,6 +260,7 @@ final class E2eeDeviceManager {
                 let result = try await process(store, deviceID: deviceID, rows: waiting)
                 acknowledged.formUnion(result.processed)
                 if result.roomKeys > 0 { onKeysReceived?() }
+                if !result.verifications.isEmpty { onVerifications?(result.verifications) }
             }
         }
         // 止められたときは、購読の終了を待たずに抜ける（defer が購読を取り消す）。

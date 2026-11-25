@@ -473,6 +473,8 @@ final class CryptoStore: @unchecked Sendable {
         let newOlmSessions: Int
         /// 保存した鍵のうち、送信端末を検証できたものの数。
         let verifiedRoomKeys: Int
+        /// 受信時の検証を通った、SAS の検証のメッセージ（JSON。`SasVerification` に渡す）。
+        var verifications: [String] = []
     }
 
     /// to-device メッセージを処理する（Android の `CryptoStore.processToDevice`、TUI・React と同じ規則）。
@@ -483,7 +485,7 @@ final class CryptoStore: @unchecked Sendable {
     func processToDevice(_ rows: [ToDeviceRow], keysQuery: String) throws -> ToDeviceResult {
         try lock.withLock {
             try ensureOpen()
-            var processed: [String] = [], roomKeys = 0, dropped = 0, newOlm = 0, verified = 0
+            var processed: [String] = [], roomKeys = 0, dropped = 0, newOlm = 0, verified = 0, verifications: [String] = []
             let query = (try? JSONDecoder().decode(JSONValue.self, from: Data(keysQuery.utf8))) ?? .null
             // 前の処理で印を付けた行（ack の前に失敗した）。保存の同期が済んだとは限らないので、返す前に保存し直す。
             var unsaved = false
@@ -494,6 +496,9 @@ final class CryptoStore: @unchecked Sendable {
                     if row.type == "m.room.encrypted" {
                         switch try processEncrypted(row, query: query, keysQuery: keysQuery) {
                         case .dropped: dropped += 1
+                        case .verification(let created, let message):
+                            newOlm += created
+                            if let message { verifications.append(message) } else { dropped += 1 }
                         case .decrypted(let created, let roomKey, let rejected, let isVerified):
                             newOlm += created
                             if roomKey { roomKeys += 1 } else if rejected { dropped += 1 }
@@ -510,12 +515,14 @@ final class CryptoStore: @unchecked Sendable {
             }
             if unsaved { try save(state) }
             return ToDeviceResult(processed: processed, roomKeys: roomKeys, dropped: dropped, newOlmSessions: newOlm,
-                                  verifiedRoomKeys: verified)
+                                  verifiedRoomKeys: verified, verifications: verifications)
         }
     }
 
     private enum Encrypted {
         case dropped
+        /// SAS の検証のメッセージ（検証を通らなければ `message` は `nil`）。
+        case verification(newOlmSessions: Int, message: String?)
         case decrypted(newOlmSessions: Int, roomKey: Bool, rejected: Bool, verified: Bool)
     }
 
@@ -546,6 +553,11 @@ final class CryptoStore: @unchecked Sendable {
            case .object(let root) = query, case .object(let devices) = root["device_keys"],
            case .object(let ofUser) = devices[user], let keys = ofUser[device] {
             listed = String(decoding: try JSONEncoder().encode(keys), as: UTF8.self)
+        }
+        if decrypted.eventType()?.hasPrefix("m.key.verification.") == true {
+            // 解錠していない端末は、検証を受けない（相手のクロス署名をたどれない）。
+            let message = state.secrets_revision == nil ? nil : try? decrypted.verifyVerification(account: account, listedDeviceKeys: listed)
+            return .verification(newOlmSessions: created, message: message)
         }
         var trustResult: SenderTrust?
         if let user = decrypted.sender(), let device = decrypted.senderDevice(), state.secrets_revision != nil {
@@ -601,6 +613,78 @@ final class CryptoStore: @unchecked Sendable {
             }
             try loadInbound(Self.inboundKey(SessionRef(channelId: message.channelId, senderKey: senderKey, sessionId: sessionID)))
             return try inbound.decrypt(message: message)
+        }
+    }
+
+    // MARK: - 他のユーザーの検証（SAS、#368）
+
+    /// `theirUserID` に検証を求める。`snapshotPages` は相手の `keys/query` の応答（JSON）。
+    func sasRequest(snapshotPages: [String], theirUserID: String, nowMs: UInt64) throws -> SasRequest {
+        try lock.withLock {
+            try ensureOpen()
+            guard state.secrets_revision != nil else { throw E2eeStoreError.sendNeedsUnlock }
+            return try requestSasVerification(account: account, trust: trust, snapshotPages: snapshotPages,
+                                              theirUserId: theirUserID, nowMs: nowMs)
+        }
+    }
+
+    /// 届いた要求から検証を作る。
+    func sasFromRequest(message: String, snapshotPages: [String], nowMs: UInt64) throws -> SasVerification {
+        try lock.withLock {
+            try ensureOpen()
+            guard state.secrets_revision != nil else { throw E2eeStoreError.sendNeedsUnlock }
+            return try SasVerification.fromRequest(account: account, trust: trust, messageJson: message,
+                                                   snapshotPages: snapshotPages, nowMs: nowMs)
+        }
+    }
+
+    /// 検証できた相手のマスター鍵に、自分のユーザー署名鍵で署名する（記録は登録待ちで置き換わる。保存する）。
+    func signSasMasterKey(_ sas: SasVerification, masterKey: String) throws -> AcceptedMasterKey {
+        try lock.withLock {
+            try ensureOpen()
+            guard state.secrets_revision != nil, let sealed = state.own_keys else { throw E2eeStoreError.sendNeedsUnlock }
+            let own = try OwnKeys.fromPickle(sealed: sealed, account: account, storageKey: storageKey)
+            let accepted = try sas.signMasterKey(trust: trust, userSigning: own.userSigning(), masterKey: masterKey)
+            try saveTrustStore()
+            return accepted
+        }
+    }
+
+    /// 受け入れのピンと署名をサーバーに保存できた（登録待ちを外す）。
+    func confirmAcceptedMasterKey(userID: String, masterKey: String) throws {
+        try lock.withLock {
+            try ensureOpen()
+            trust.confirmAcceptedMasterKey(targetUserId: userID, masterKey: masterKey)
+            try saveTrustStore()
+        }
+    }
+
+    /// 検証のメッセージを、`device` あての to-device の `content`（JSON）にする。Olm のセッションがなく、
+    /// `claimed`（`keys/claim` のワンタイム鍵）もなければ `nil`。
+    func encryptVerification(_ device: VerifiedDeviceKeys, eventType: String, content: String, claimed: String?) throws -> String? {
+        try lock.withLock {
+            try ensureOpen()
+            guard state.secrets_revision != nil else { throw E2eeStoreError.sendNeedsUnlock }
+            let curve = device.curve25519Key()
+            let session: String
+            if let existing = outboundOlm[curve] {
+                session = existing
+            } else if let claimed {
+                session = try account.createOutboundOlmSession(sessions: olmSessions, recipient: device, oneTimeKey: claimed)
+                outboundOlm[curve] = session
+            } else {
+                return nil
+            }
+            let encrypted = try account.encryptVerification(sessions: olmSessions, sessionId: session, recipient: device,
+                                                            eventType: eventType, content: content)
+            let changed = try olmSessions.pickleSessions(account: account, storageKey: storageKey, theirIdentityKey: curve)
+            var next = state
+            next.olm_sessions.removeAll { $0.their_identity_key == curve }
+            next.olm_sessions += changed.map { StoredOlm(their_identity_key: $0.theirIdentityKey, session_id: $0.sessionId, pickle: $0.pickle) }
+            next.account = try account.pickle(storageKey: storageKey)
+            try save(next)
+            state = next
+            return encrypted
         }
     }
 

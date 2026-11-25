@@ -19,6 +19,10 @@ struct WorkspaceView: View {
                 compactTabs
             }
         }
+        // 相手から検証の要求が届いたら、ほかのシートを開いていなければ、検証の画面を出す。
+        .onChange(of: workspace.e2ee?.verification?.entries.filter { $0.view.phase == "incoming" }.map(\.id) ?? []) { _, ids in
+            if !ids.isEmpty, case .none = workspace.presentedSheet { workspace.presentedSheet = .verification }
+        }
         // 開閉で一覧や会話が入れ替わっても、入力中のシートを破棄しない。
         .sheet(item: $workspace.presentedSheet, onDismiss: {
             let action = messageActionSheet
@@ -32,6 +36,8 @@ struct WorkspaceView: View {
             case .browseChannels: ChannelBrowser(workspace: workspace)
             case .encryption:
                 if let e2ee = workspace.e2ee { EncryptionSetupView(e2ee: e2ee) }
+            case .verification:
+                if let verification = workspace.e2ee?.verification { VerificationSheet(workspace: workspace, verification: verification) }
             case .channelDetails(let channel): ChannelDetailsView(channel: channel, workspace: workspace)
             case .messageActions(let action):
                 if let message = action.store.message(id: action.message.id) {

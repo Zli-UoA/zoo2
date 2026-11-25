@@ -199,6 +199,7 @@ final class AppSession {
                 let controller = E2eeController.make(api: api, userID: user.id, files: files)
                 let reauthenticator = Reauthenticator(auth: authentication)
                 controller.reauthenticate = { try await reauthenticator.idToken() }
+                controller.verification?.reauthenticate = { try await reauthenticator.idToken() }
                 controller.rpID = URL(string: api.settings.issuer)?.host ?? ""
                 workspace.e2ee = controller
                 controller.start()

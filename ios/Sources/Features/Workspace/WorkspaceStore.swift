@@ -6,7 +6,7 @@ enum WorkspaceTab: Hashable {
 }
 
 enum WorkspaceSheet: Identifiable {
-    case createChannel, createDirectMessage, browseChannels, profile, encryption
+    case createChannel, createDirectMessage, browseChannels, profile, encryption, verification
     case draftDirectMessage(String)
     case channelDetails(Channel)
     case messageActions(MessageActionSheet)
@@ -19,6 +19,7 @@ enum WorkspaceSheet: Identifiable {
         case .browseChannels: "browse-channels"
         case .profile: "profile"
         case .encryption: "encryption"
+        case .verification: "verification"
         case .channelDetails(let channel): "details-\(channel.id)"
         case .messageActions(let sheet): sheet.id.uuidString
         }

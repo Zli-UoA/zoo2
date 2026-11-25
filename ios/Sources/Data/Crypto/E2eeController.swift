@@ -57,6 +57,8 @@ final class E2eeController: ConversationEncryption {
     @ObservationIgnored private var unlockGeneration = 0
     /// SSSS が書き換えられたと分かったあと、解錠し直すまで立てる。保留中の古い読み直しが、解錠済みを書き戻さないため。
     @ObservationIgnored private var secretsChanged = false
+    /// 他のユーザーの検証（SAS）。本番は `make` で作る。
+    @ObservationIgnored var verification: E2eeVerification?
     /// 端末一覧の API（本番は `APIClient`）。
     @ObservationIgnored var devicesAPI: (any E2eeOwnDevicesAPI)?
     @ObservationIgnored var rpID = ""
@@ -101,6 +103,9 @@ final class E2eeController: ConversationEncryption {
         let encryption = MessageEncryption(store: { manager.readyStore }, api: api)
         let controller = E2eeController(manager: manager, setup: setup, encryption: encryption)
         controller.devicesAPI = api
+        let verification = E2eeVerification(store: { manager.readyStore }, api: api)
+        controller.verification = verification
+        manager.onVerifications = { verification.handle($0) }
         return controller
     }
 
@@ -121,8 +126,22 @@ final class E2eeController: ConversationEncryption {
     /// 待っているパスキーの要求を取り消す。
     func cancelPasskey() { (passkeys as? SystemPasskeyClient)?.cancel() }
 
-    func start() { manager.start() }
+    func start() {
+        manager.start()
+        // 10 分を過ぎた検証の取りやめと、残したメッセージの試し直し。
+        expireTask?.cancel()
+        expireTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                await self?.verification?.expire()
+            }
+        }
+    }
+    @ObservationIgnored private var expireTask: Task<Void, Never>?
+
     func stop() async {
+        expireTask?.cancel()
+        expireTask = nil
         await manager.stop()
         EncryptedAttachmentFiles.shared.removeAll()
     }

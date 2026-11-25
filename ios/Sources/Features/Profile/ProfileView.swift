@@ -193,6 +193,10 @@ private struct ProfileSettingsView: View {
                 Section("暗号化") {
                     NavigationLink("端末") { OwnDevicesView(e2ee: e2ee) }
                         .accessibilityIdentifier("encryption-devices")
+                    if let verification = e2ee.verification, let workspace = session.workspace {
+                        NavigationLink("ユーザーの検証") { VerifyUsersView(workspace: workspace, verification: verification) }
+                            .accessibilityIdentifier("encryption-verify-users")
+                    }
                 }
             }
             SiriSettingsSection(workspace: session.workspace)
