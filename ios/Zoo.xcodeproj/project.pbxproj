@@ -28,6 +28,7 @@
 		1A095FA85FC3872A764B6A70 /* MessageAttachmentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54A9ADE68E4D89ACABEC8B5E /* MessageAttachmentsView.swift */; };
 		1B7F6BCAE4C67B7914263744 /* CallView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35169546CA55D414B0D9CF10 /* CallView.swift */; };
 		1E45AF3447442D972CC66160 /* ShortcutActionsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A207CEFA59094C7050CE45B8 /* ShortcutActionsUITests.swift */; };
+		1E7120C4C61C002DCC2A219B /* Passkeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11C88737BD962A470DDDCD69 /* Passkeys.swift */; };
 		1F6A754BDC30EAD03664B785 /* CryptoBindingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD8C8688E49CEFE743C30BBB /* CryptoBindingTests.swift */; };
 		26CF4C18C8BEB0A8CF709993 /* ReactionGlyph.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA787668A52085815A631603 /* ReactionGlyph.swift */; };
 		271C2664053C32BFF3DE7410 /* ConversationDestination.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C78FF3DA140FCB63A561014 /* ConversationDestination.swift */; };
@@ -103,6 +104,7 @@
 		7CD732C011B7177319DE3B77 /* CallBannerLayoutUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A425CE6E446FF381CB83ED52 /* CallBannerLayoutUITests.swift */; };
 		7D8E3882D95EDE016FB46673 /* DeviceRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0B4CCDF5EF02DB351767888 /* DeviceRegistration.swift */; };
 		7E1DCACB49D5FFE8BC45CBB1 /* CachedRemoteImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD2555E76421440BBC09003A /* CachedRemoteImage.swift */; };
+		82D8CFA4773575EC1C78B385 /* Reauth.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38F9FD9EA5349E25978E7C49 /* Reauth.swift */; };
 		85E6D5F0F8C6965E41C1EB52 /* CallClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F3E57223E471CA7ADD4C698 /* CallClient.swift */; };
 		8838C2693D6E37CC008AB3FA /* ElectricPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 659DEA088FB41035E2DEAF39 /* ElectricPersistenceTests.swift */; };
 		8861B36B04FB92368D1B61E7 /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = BA4AC1C450DF77F6EBC8E959 /* WebRTC */; };
@@ -287,6 +289,7 @@
 		0D55FF32D15ADC5CFB4DDDB1 /* AttachmentSaveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentSaveTests.swift; sourceTree = "<group>"; };
 		102E33938A627DB54B47D79E /* SiriVocabulary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SiriVocabulary.swift; sourceTree = "<group>"; };
 		10E68D0BFA3AD771F645D5F4 /* GlobalSearchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalSearchTests.swift; sourceTree = "<group>"; };
+		11C88737BD962A470DDDCD69 /* Passkeys.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Passkeys.swift; sourceTree = "<group>"; };
 		12854D256475220A637BE892 /* PushNotice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushNotice.swift; sourceTree = "<group>"; };
 		12D51F722D7C4B8DBFB9B6D3 /* CallStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallStore.swift; sourceTree = "<group>"; };
 		12EEE47E3CEF468606320831 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -314,6 +317,7 @@
 		337CC9AC583295489E718778 /* ZooNotificationService.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = ZooNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		347E28ACB1C49647000B1C66 /* InboxStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxStore.swift; sourceTree = "<group>"; };
 		35169546CA55D414B0D9CF10 /* CallView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallView.swift; sourceTree = "<group>"; };
+		38F9FD9EA5349E25978E7C49 /* Reauth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Reauth.swift; sourceTree = "<group>"; };
 		3B18DFF6412E210868419C7D /* NotificationPreviewKeyStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationPreviewKeyStorage.swift; sourceTree = "<group>"; };
 		3C78FF3DA140FCB63A561014 /* ConversationDestination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationDestination.swift; sourceTree = "<group>"; };
 		3C798D4514312CC0982CDC89 /* ZooWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ZooWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -775,6 +779,8 @@
 				568AEF9DEE3D0E39CBC266A3 /* CryptoStore.swift */,
 				F0B4CCDF5EF02DB351767888 /* DeviceRegistration.swift */,
 				164ACCCC5DC90C3964A189A9 /* E2eeSetup.swift */,
+				11C88737BD962A470DDDCD69 /* Passkeys.swift */,
+				38F9FD9EA5349E25978E7C49 /* Reauth.swift */,
 				6AF4206D41FF4FD8CC5016C2 /* StorageKeyStore.swift */,
 			);
 			path = Crypto;
@@ -1329,6 +1335,7 @@
 				4EEE80F7647418932F36D08C /* NotificationPreview.swift in Sources */,
 				C1D452E8D72D8C510817D063 /* NotificationPreviewKeyStorage.swift in Sources */,
 				E5E0B976BBCD0F6C546E78DE /* PDFPreviewView.swift in Sources */,
+				1E7120C4C61C002DCC2A219B /* Passkeys.swift in Sources */,
 				30F58F229E22FC2239A1A5DE /* PeopleView.swift in Sources */,
 				76FB319F6E5B2574D6850C71 /* Person.swift in Sources */,
 				5973BBB3D704B981249CF546 /* PreviewAssets.swift in Sources */,
@@ -1345,6 +1352,7 @@
 				96C7DF5DEA20135848135EA6 /* ReactionEmoji.swift in Sources */,
 				26CF4C18C8BEB0A8CF709993 /* ReactionGlyph.swift in Sources */,
 				B92630228026D57D18396D5D /* ReactionPicker.swift in Sources */,
+				82D8CFA4773575EC1C78B385 /* Reauth.swift in Sources */,
 				F90953CE7C537093F3126C14 /* RecentEmojiStore.swift in Sources */,
 				A22185231054340280D73F41 /* RemoteImageDiskCache.swift in Sources */,
 				E1A132CB97C34E7338A5988B /* RemoteImageStore.swift in Sources */,

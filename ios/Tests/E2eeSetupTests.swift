@@ -13,7 +13,7 @@ private struct Network: Error {}
 
 /// 状態を持つ模擬サーバー（Android の `FakeSetupServer`、TUI の `tests/e2ee_setup.rs` と同じ）。
 @MainActor
-private final class FakeSetupServer: E2eeSetupAPI {
+final class FakeSetupServer: E2eeSetupAPI {
     let userID: String
     var defaultKeyID: String?
     var revision: UInt64 = 0
@@ -127,7 +127,7 @@ private final class FakeSetupServer: E2eeSetupAPI {
 }
 
 @MainActor
-private final class Device {
+final class Device {
     let server: FakeSetupServer
     let files: CryptoStoreFiles
     let directory: URL
@@ -275,5 +275,129 @@ struct E2eeSetupTests {
         #expect(try await device.setup.loadStatus() == .locked(.mismatch))
         // 解錠し直すまで、暗号ストアの鍵を使う処理を止める（記録を消す）。
         #expect(device.store.secretsRevision == nil)
+    }
+}
+
+struct PasskeyCodingTests {
+    @Test func base64URLはパディングなしで往復する() throws {
+        let data = Data([0xfb, 0xff, 0xfe, 0x00, 0x10])
+        let text = PasskeyCoding.base64URL(data)
+        #expect(!text.contains("=") && !text.contains("+") && !text.contains("/"))
+        #expect(PasskeyCoding.decodeBase64URL(text) == data)
+        #expect(PasskeyCoding.decodeBase64URL(text + "==") == data)
+        #expect(PasskeyCoding.decodeBase64URL("***") == nil)
+    }
+
+    @Test func PRFの出力は32バイトだけを受け付ける() throws {
+        #expect(try PasskeyCoding.checkedOutput(Data(count: 32)).count == 32)
+        #expect(throws: PasskeyError.prfUnsupported) { try PasskeyCoding.checkedOutput(nil) }
+        #expect(throws: PasskeyError.prfUnsupported) { try PasskeyCoding.checkedOutput(Data(count: 31)) }
+    }
+}
+
+/// 解錠の手段にパスキーを渡す経路（PRF の出力でスロットを開ける）。
+@MainActor
+private final class FakePasskey: PasskeyClient {
+    var output = Data(repeating: 7, count: 32)
+    var salts: [Data] = []
+    var credential = "Y3JlZC0x"
+    func prfForNewSlot(rpID: String, salt: Data) async throws -> PasskeyResult {
+        salts.append(salt)
+        return PasskeyResult(credentialID: credential, prfOutput: output)
+    }
+    func prfForUnlock(rpID: String, slots: [PasskeySlot]) async throws -> PasskeyResult {
+        PasskeyResult(credentialID: slots.first?.credentialId ?? credential, prfOutput: output)
+    }
+}
+
+@MainActor
+struct PasskeyUnlockTests {
+    @Test func パスキーのスロットを足した初回設定を同じPRFで解錠できる() async throws {
+        let server = FakeSetupServer(userID: user)
+        let first = try Device(server)
+        let second = try Device(server)
+        defer { first.cleanUp(); second.cleanUp() }
+        let passkey = FakePasskey()
+        let start = try first.setup.begin()
+        try await first.setup.addSetupPasskey(start.session, client: passkey, rpID: "account.zli.works", label: "iPhone")
+        try await first.setup.completeSetup(start.session, reauth: "t")
+        let unlocked = try await second.setup.unlock(.passkey(passkey, rpID: "account.zli.works"))
+        #expect(!unlocked.needsReauth)
+        #expect(second.store.hasOwnKeys)
+        #expect(try await second.setup.loadStatus() == .unlocked)
+    }
+
+    @Test func 違うPRFの出力では解錠できず自分の鍵を保存しない() async throws {
+        let server = FakeSetupServer(userID: user)
+        let first = try Device(server)
+        let second = try Device(server)
+        defer { first.cleanUp(); second.cleanUp() }
+        let passkey = FakePasskey()
+        let start = try first.setup.begin()
+        try await first.setup.addSetupPasskey(start.session, client: passkey, rpID: "account.zli.works", label: nil)
+        try await first.setup.completeSetup(start.session, reauth: "t")
+        passkey.output = Data(repeating: 9, count: 32)
+        await #expect(throws: (any Error).self) { try await second.setup.unlock(.passkey(passkey, rpID: "account.zli.works")) }
+        #expect(!second.store.hasOwnKeys)
+    }
+}
+
+struct ReauthTests {
+    private func request() throws -> ReauthRequest {
+        try ReauthRequest.create(authorizationEndpoint: "https://account.zli.works/api/auth/oauth2/authorize",
+                                 clientID: "client-1", resource: "https://zli.chat/api",
+                                 state: "s1", nonce: "n1", verifier: "v".padding(toLength: 43, withPad: "v", startingAt: 0))
+    }
+
+    @Test func 認可リクエストはmax_age0とPKCEとstateとnonceを持ちoffline_accessを持たない() throws {
+        let items = Dictionary(uniqueKeysWithValues: URLComponents(url: try request().url, resolvingAgainstBaseURL: false)!
+            .queryItems!.map { ($0.name, $0.value ?? "") })
+        #expect(items["max_age"] == "0")
+        #expect(items["code_challenge_method"] == "S256")
+        #expect(items["scope"] == "openid profile")
+        #expect(items["state"] == "s1" && items["nonce"] == "n1")
+        #expect(items["redirect_uri"] == "works.zli.zoo:/reauth-callback")
+        #expect(items["code_challenge"] == ReauthRequest.codeChallenge(String(repeating: "v", count: 43)))
+    }
+
+    @Test func 認可エンドポイントはHTTPSだけ() {
+        #expect(throws: (any Error).self) {
+            try ReauthRequest.create(authorizationEndpoint: "http://account.zli.works/authorize", clientID: "c", resource: "")
+        }
+    }
+
+    @Test func PKCEのS256はRFC7636の例と一致する() {
+        #expect(ReauthRequest.codeChallenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")
+            == "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
+    }
+
+    @Test func コールバックはstateが合うときだけ受け取る() throws {
+        let request = try request()
+        #expect(ReauthCallback.parse(URL(string: "works.zli.zoo:/reauth-callback?code=abc&state=s1")!, request: request) == .code("abc"))
+        #expect(ReauthCallback.parse(URL(string: "works.zli.zoo:/reauth-callback?code=abc&state=other")!, request: request) == nil)
+        #expect(ReauthCallback.parse(URL(string: "works.zli.zoo:/elsewhere?code=abc&state=s1")!, request: request) == nil)
+        #expect(ReauthCallback.parse(URL(string: "works.zli.zoo:/reauth-callback?error=access_denied&state=s1")!, request: request)
+            == .error("access_denied"))
+        #expect(ReauthCallback.parse(URL(string: "works.zli.zoo:/reauth-callback?state=s1")!, request: request)
+            == .error("認可コードがありません"))
+    }
+
+    private func token(_ claims: [String: Any]) -> String {
+        let payload = PasskeyCoding.base64URL(try! JSONSerialization.data(withJSONObject: claims))
+        return "e30.\(payload).sig"
+    }
+
+    @Test func IDトークンのiss_aud_exp_nonceを確かめる() throws {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let good: [String: Any] = ["iss": "https://a/", "aud": ["x", "client-1"], "exp": 1_000_100, "nonce": "n1"]
+        try validateIDToken(token(good), issuer: "https://a", clientID: "client-1", nonce: "n1", now: now)
+        for (change, message) in [("iss", "iss"), ("aud", "aud"), ("exp", "期限"), ("nonce", "nonce")] {
+            var claims = good
+            claims[change] = change == "exp" ? 1_000_000 - 61 : "bad"
+            #expect(throws: ReauthError.self, "\(message)") {
+                try validateIDToken(token(claims), issuer: "https://a", clientID: "client-1", nonce: "n1", now: now)
+            }
+        }
+        #expect(throws: ReauthError.self) { try validateIDToken("not-a-jwt", issuer: "i", clientID: "c", nonce: "n") }
     }
 }
