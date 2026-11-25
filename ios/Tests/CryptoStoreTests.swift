@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import Zoo
 
@@ -117,6 +118,30 @@ struct CryptoStoreTests {
         let stored = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         #expect(stored["device_id"] as? String == deviceID)
         #expect((stored["pending_deletions"] as? [String] ?? []).isEmpty)
+    }
+
+    @Test func 初期保存に失敗した直後に別のopenが予約を取っても外さない() throws {
+        let (files, _, directory) = makeFiles()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // 初期保存を失敗させる：一時ファイルの場所をディレクトリーにしておく。
+        let blocker = directory.appendingPathComponent("state.json.tmp", isDirectory: true)
+        try FileManager.default.createDirectory(at: blocker, withIntermediateDirectories: true)
+        let other = Mutex<CryptoStore?>(nil)
+        // 作りかけのインスタンスの `deinit` が予約を外したあと、`open` の後始末の前に、別の `open` が予約を取る。
+        CryptoStore.openFailureHook.withLock {
+            $0 = {
+                try? FileManager.default.removeItem(at: blocker)
+                other.withLock { $0 = try? CryptoStore.open(files, userID: user)?.store }
+            }
+        }
+        defer { CryptoStore.openFailureHook.withLock { $0 = nil } }
+        #expect(throws: (any Error).self) { try CryptoStore.open(files, userID: user) }
+        let second = try #require(other.withLock { $0 })
+        // 後始末は、別の持ち主の予約を外さない：まだ予約されていて、同じストアを重ねて開けない。
+        #expect(CryptoStore.isReserved(directory))
+        #expect(throws: CryptoStoreBusyError.self) { try CryptoStore.open(files, userID: user) }
+        second.close()
+        #expect(!CryptoStore.isReserved(directory))
     }
 
     @Test func 予約は持ち主の印が合うときだけ外れる() throws {

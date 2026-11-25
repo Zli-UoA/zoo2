@@ -138,6 +138,9 @@ final class CryptoStore: @unchecked Sendable {
 
     private let reservation: UUID
 
+    /// 単体テスト用：`open` が失敗して予約を外す直前（作りかけのインスタンスの `deinit` のあと）に呼ぶ。
+    static let openFailureHook = Mutex<(@Sendable () -> Void)?>(nil)
+
     private let directory: URL
     /// 開いたときの `user_id`。暗号ストアの持ち主は変わらないので、ロックなしで読める。
     let userID: String
@@ -190,6 +193,7 @@ final class CryptoStore: @unchecked Sendable {
             return opened
         } catch {
             // 作りかけのインスタンスの `deinit` が先に外していても、持ち主の印が合うときだけ外すので、重ならない。
+            openFailureHook.withLock { $0 }?()
             release(path, token: token)
             throw error
         }
