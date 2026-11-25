@@ -52,7 +52,12 @@ final class E2eeController: ConversationEncryption {
         self.setup = setup
         self.encryption = encryption
         manager.onReady = { [weak self] in self?.refreshStatus() }
-        manager.onKeysReceived = { [weak self] in self?.revision += 1 }
+        manager.onKeysReceived = { [weak self] in
+            guard let self else { return }
+            self.revision += 1
+            // 届いた部屋の鍵（受信用のセッション）を鍵バックアップへ送る。失敗しても、次の起動時や次の鍵で再び試す。
+            Task { @MainActor in _ = try? await self.setup.uploadKeyBackup() }
+        }
     }
 
     /// 本番の組み立て。暗号ストアは Application Support の `e2ee/` に置く。
@@ -79,7 +84,9 @@ final class E2eeController: ConversationEncryption {
     func refreshStatus() {
         Task { @MainActor in
             do {
-                let loaded = try await setup.loadStatus()
+                // 解錠済みなら、鍵バックアップの送信と取り込みも行う（失敗しても状態の表示は止めない）。
+                let checked = try await setup.runStartupCheck()
+                let loaded = if let checked { checked } else { try await setup.loadStatus() }
                 status = switch loaded {
                 case .notSetUp: .notSetUp
                 case .locked(let reason): .locked(reason)

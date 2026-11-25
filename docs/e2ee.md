@@ -778,7 +778,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 - 【決定】再認証（`ios/Sources/Data/Crypto/Reauth.swift`）。iOS はふだんのログインにデバイス認可グラントを使い、`max_age` を付けた ID トークンを取れないので、再認証のときだけ認可コードフロー（PKCE の S256、`max_age=0`、`state`、`nonce`、scope は `openid profile`）を `ASWebAuthenticationSession` で開く。リダイレクト URI は `works.zli.zoo:/reauth-callback`（カスタム URL スキーム）。認可コードはトークンエンドポイントで ID トークンに換え、`iss`、`aud`、`exp`（許容のずれ 60 秒）、`nonce` を確かめてから使う。今のセッションのトークンは変えない。待つ時間は 10 分。
   - AuthZ の iOS のクライアントに、リダイレクト URI `works.zli.zoo:/reauth-callback` を登録する。zoo2-infra の `OIDC_REAUTH_AUDIENCES` に iOS のクライアント ID を足す（別リポジトリの PR）。失敗する段階は、設定ごとに違う。リダイレクト URI が AuthZ に登録されていないと、AuthZ が認可の要求を拒み、アプリは認可コードを受け取れずに、再認証の画面で止まる（保存の要求までは進まない）。URI が登録済みでも、`OIDC_REAUTH_AUDIENCES` に iOS のクライアント ID がないと、再認証には成功するが、そのあとの保存（SSSS、クロス署名鍵、版の作成）が 403 `E2EE_REAUTH_REQUIRED` になる。クライアントの `authorization_code` グラントの許可がないと、トークンエンドポイントが `unsupported_grant_type`／`unauthorized_client` を返し、アプリは「AuthZ で authorization_code グラントを許可してください」と表示する。
 - 【決定】パスキー（`ios/Sources/Data/Crypto/Passkeys.swift`）。`ASAuthorizationPlatformPublicKeyCredentialProvider` の PRF 拡張（iOS 18 以上）で、Android の `PasskeyClient` と同じ 2 つの操作（スロットを足す：`allowCredentials` なしで利用者が選んだパスキーを評価する、解錠：スロットごとの `prfSalt` で評価する）を行う。RP ID は AuthZ のホスト（`account.zli.works`）で、`Zoo.entitlements` の Associated Domains に `webcredentials:account.zli.works` を足した。AuthZ の `/.well-known/apple-app-site-association` の `webcredentials` に `F82XB5KFX2.works.zli.zoo` を載せる。App ID に Associated Domains の capability を有効にする。iOS 18 未満と、PRF の結果を返さない保存先は `PasskeyError.prfUnsupported`。アサーションはどこにも送らない。
-- 【決定】今の iOS の初回設定と解錠では、鍵バックアップへの送信と取り込みはしない（送受信の実装で足す）。
+- 【決定】iOS の鍵バックアップ（`E2eeSetup.uploadKeyBackup`・`importKeyBackup`、状態は `CryptoStore` の `backup_upload`・`imported_backup_version`）は Android と同じ手順。送信は、今の版を `BackupUploadState.accept_current_version` で検証し、`upload_key` が文字列のときだけ `X-Zoo-Backup-Proof` を付け（文字列でなければ送らず、送信待ちのまま残す）、送信待ちの受信用セッションを `PUT /api/e2ee/backup/keys?version=` で送る。版の違いで拒まれたら（409）、送信待ちのまま残して次に再び試す。取り込みは、解錠のあと（起動時の確認、初回設定・解錠の保存の後）に今の版から `GET /api/e2ee/backup/keys` をページ（`after`）で読み、`importRows` で受信用セッションを取り込む。取り込んだセッションは送信者を確かめられないので「送信者を確かめられません」の表示になり、取り込んだ版から取ったものは送信待ちに入れない。同じ版から取り込み終えていれば、もう取り込まない。解錠していない端末は、送信も取り込みもしない。部屋の鍵が届いたときも、送信を試す（失敗しても次の機会に再び試す）。
 - 【決定】テストは Android・TUI・Web と同じく、状態を持つ模擬サーバー（`ios/Tests/E2eeSetupTests.swift`）で、SSSS を除く各保存（クロス署名鍵、端末への署名、バックアップの版）の直前で止めて開け直しても、控えたリカバリーキーで解錠して同じ鍵のまま最後まで終えること、再認証の 403、同時の初回設定（`conflict`）、別の端末での解錠と署名、`secrets_revision` の変更、パスキーの PRF での解錠を確かめる。SSSS の保存の応答をなくした場合は、読み直して続ける。実機のパスキーの保存先（iCloud キーチェーン、1Password）での確認は、実機で行う（#369）。
 
 ### 暗号化チャンネルと DM の送受信の実装（#361）
@@ -817,7 +817,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 - 【決定】読み込んだうちで最初の暗号化したメッセージ（暗号文か `epoch` のある行。`epoch` だけの行も含める）の前に、Web と同じ「ここから暗号化されています」の境目（錠のアイコンと文、両側に線）を出す。それより上に行がないとき（先頭）と、暗号化したメッセージがないときは出さない（`MessageTimeline.encryptionStartIndex`）。
 - 【決定】暗号化したメッセージより後ろの平文の行には、短い「暗号化されていません」だけを出す。文字列の全体（アイコン、文、ⓘ）が 1 つのボタンで、タップすると、くわしい説明（「暗号化したメッセージより後ろにある、暗号化されていないメッセージです。…サーバーが足したか、書き換えたおそれがあります。」）をポップオーバーで出す。
 - 【決定】暗号化チャンネルの暗号文のない行は、Web（#367・#564）と同じに扱う。暗号文も `epoch` もない行は、暗号化に切り替える前の平文のメッセージとして本文をそのまま出し、編集させない（`Message.e2eeLegacy`）。最初の暗号化したメッセージ（暗号文か `epoch` のある行）より後ろの平文の行にだけ、警告「暗号化されていません」を付ける。暗号文がなく `epoch` がある行は、正しいサーバーが作れないので、本文を出さず「このメッセージは暗号化されていないため表示しません。」とする。
-- 【提案】まだ入れていない iOS の送受信：送信欄の上の「前回から増えた配布先」「鍵を配れない相手」の表示、鍵バックアップの送信と取り込み、暗号化した添付
+- 【提案】まだ入れていない iOS の送受信：送信欄の上の「前回から増えた配布先」「鍵を配れない相手」の表示、暗号化した添付
 
 ## API
 
