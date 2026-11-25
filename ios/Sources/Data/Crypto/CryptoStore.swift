@@ -713,26 +713,18 @@ final class CryptoStore: @unchecked Sendable {
         let handle = try FileHandle(forWritingTo: temporary)
         try handle.synchronize()
         try handle.close()
-        do {
-            _ = try FileManager.default.replaceItemAt(url, withItemAt: temporary)
-        } catch {
-            // 置き換えに失敗したとき、元のファイルが別の場所へ移されたままなら、`state.json` へ戻す（前の端末の ID や
-            // 受信用セッションの記録を失わないため）。一時ファイルは残さない。
-            restoreOriginal(after: error, to: url)
+        // `rename(2)` は、同じボリュームで原子的に置き換える。失敗しても、元のファイルは動かさない（`replaceItemAt` は、
+        // 失敗したときに元のファイルを別の場所へ移したままにすることがあり、前の端末の ID や受信用セッションの記録を
+        // 取り出せなくなる）。
+        guard rename(temporary.path, url.path) == 0 else {
+            let code = errno
             try? FileManager.default.removeItem(at: temporary)
-            throw error
+            throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
         }
-    }
-
-    /// `replaceItemAt` のエラーが、元のファイルの場所を示すキー（Foundation の文書にある文字列。定数は公開されていない）。
-    static let originalItemLocationKey = "NSFileOriginalItemLocationKey"
-
-    /// `replaceItemAt` の失敗で、元のファイルが `url` になく、エラーが元の場所（`NSFileOriginalItemLocationKey`）を
-    /// 示しているときだけ、そこから戻す。何もなければ、何もしない。
-    static func restoreOriginal(after error: any Error, to url: URL) {
-        guard !FileManager.default.fileExists(atPath: url.path),
-              let original = (error as NSError).userInfo[Self.originalItemLocationKey] as? URL,
-              FileManager.default.fileExists(atPath: original.path) else { return }
-        try? FileManager.default.moveItem(at: original, to: url)
+        // 置き換えたディレクトリーのエントリーも書き出す（停電で前の状態に戻らないように）。
+        let directory = Darwin.open(url.deletingLastPathComponent().path, O_RDONLY)
+        guard directory >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        defer { Darwin.close(directory) }
+        guard fsync(directory) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
     }
 }

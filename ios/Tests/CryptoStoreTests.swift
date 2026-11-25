@@ -151,22 +151,19 @@ struct CryptoStoreTests {
         #expect(!CryptoStore.isReserved(directory))
     }
 
-    @Test func 置き換えに失敗して元のファイルが移されたままなら状態ファイルへ戻す() throws {
+    @Test func 置き換えに失敗しても元のファイルを動かさず一時ファイルを残さない() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let state = directory.appendingPathComponent("state.json")
-        let moved = directory.appendingPathComponent("moved-original")
-        try Data("前の状態".utf8).write(to: state)
-        // 元のファイルが別の場所へ移されたまま、置き換えが失敗した状態を作る。
-        try FileManager.default.moveItem(at: state, to: moved)
-        let failure = NSError(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError,
-                              userInfo: [CryptoStore.originalItemLocationKey: moved])
-        CryptoStore.restoreOriginal(after: failure, to: state)
-        #expect(try String(contentsOf: state, encoding: .utf8) == "前の状態")
-        // 元の場所を示さないエラーや、`state.json` が残っているときは、何もしない。
-        CryptoStore.restoreOriginal(after: NSError(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError), to: state)
-        #expect(try String(contentsOf: state, encoding: .utf8) == "前の状態")
+        // `state.json` が、中身のあるディレクトリーになっている（ファイルでは置き換えられない）状態にして、置き換えを失敗させる。
+        let state = directory.appendingPathComponent("state.json", isDirectory: true)
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        let original = state.appendingPathComponent("前の記録")
+        try Data("前の端末の記録".utf8).write(to: original)
+        #expect(throws: (any Error).self) { try CryptoStore.writeAtomically(Data("新しい".utf8), to: state) }
+        // 元のものは、その場所にそのまま残る。一時ファイルも残らない。
+        #expect(try String(contentsOf: original, encoding: .utf8) == "前の端末の記録")
+        #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("state.json.tmp").path))
     }
 
     @Test func 状態ファイルの書き込みは成功すれば置き換わり一時ファイルを残さない() throws {
