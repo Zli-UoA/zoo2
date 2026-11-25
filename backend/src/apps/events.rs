@@ -89,7 +89,11 @@ pub async fn guest_in_db(db: &mut toasty::Db, user: &str) -> Result<bool, AppErr
 pub async fn active_user(state: &AppState, user: &str) -> Result<(), AppError> {
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    if one(&mut tx,"SELECT json_build_object('disabled',EXISTS(SELECT 1 FROM users WHERE id=$1 AND is_deactivated))::text",&[user]).await?["disabled"]==true{return Err(AppError::Forbidden("Account is deactivated".into()));}
+    active_user_tx(&mut tx, user).await
+}
+/// `active_user` の確認を、渡したトランザクションで行う（`sfu/join` の計測が、接続の取得と分けて測るのに使う）。
+pub async fn active_user_tx(tx: &mut toasty::Transaction<'_>, user: &str) -> Result<(), AppError> {
+    if one(tx,"SELECT json_build_object('disabled',EXISTS(SELECT 1 FROM users WHERE id=$1 AND is_deactivated))::text",&[user]).await?["disabled"]==true{return Err(AppError::Forbidden("Account is deactivated".into()));}
     Ok(())
 }
 /// `code` of the 403 for a write to a channel whose `posting_policy` is `managers`, from someone

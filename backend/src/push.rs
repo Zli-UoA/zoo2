@@ -693,11 +693,12 @@ pub struct CallInvitePush {
 }
 
 /// 招待の着信を、呼ばれた人の Push 購読へ送る。コミットの後に呼ぶ。失敗しても呼び出しは続く。
-pub fn dispatch_call_invites(db: toasty::Db, invites: Vec<CallInvitePush>) {
+/// `sfu_enabled` は通話の SFU が有効か（SFU の部屋では iOS の着信を送らないため）。
+pub fn dispatch_call_invites(db: toasty::Db, invites: Vec<CallInvitePush>, sfu_enabled: bool) {
     if invites.is_empty() {
         return;
     }
-    crate::apns::dispatch_call_invites(db.clone(), invites.clone());
+    crate::apns::dispatch_call_invites(db.clone(), invites.clone(), sfu_enabled);
     tokio::spawn(async move {
         if deliver_call_invites(db, invites, false).await.is_err() {
             tracing::warn!("Push call invite delivery failed");

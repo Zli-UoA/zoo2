@@ -18,6 +18,7 @@ on:
       - "CI Frontend Auth E2E"
       - "CI Frontend E2EE E2E"
       - "CI GitHub Bot"
+      - "CI sfu-bridge"
       - "CI TUI"
       - "Check DB ER diagram"
       - "DB ER diagram"

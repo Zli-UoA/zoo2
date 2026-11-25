@@ -218,6 +218,12 @@ pub enum WebrtcEventState {
     HeartbeatTimeout,
     PoorQuality,
     Recovered,
+    /// SFU への割り当て（`call/sfu/join`）に失敗した。
+    SfuJoinFailed,
+    /// LiveKit につながらず、Cloudflare に移った。
+    SfuFallback,
+    /// Cloudflare Realtime につながらない・切れた。
+    SfuFailed,
 }
 
 impl WebrtcEventState {
@@ -228,6 +234,9 @@ impl WebrtcEventState {
             Self::HeartbeatTimeout => "heartbeat_timeout",
             Self::PoorQuality => "poor_quality",
             Self::Recovered => "recovered",
+            Self::SfuJoinFailed => "sfu_join_failed",
+            Self::SfuFallback => "sfu_fallback",
+            Self::SfuFailed => "sfu_failed",
         }
     }
 }

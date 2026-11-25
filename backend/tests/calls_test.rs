@@ -1501,7 +1501,8 @@ async fn test_explicit_dm_accept_returns_channel_and_join_is_recorded() -> anyho
     let channel = w.dm_ch.clone();
     let (alice, bob) = (w.alice.clone(), w.bob.clone());
     put_presence(&mut w.db, &channel, &alice).await?;
-    let created = backend::call_invites::create_dm_invites(&mut w.db, &channel, &alice).await?;
+    let created =
+        backend::call_invites::create_dm_invites(&mut w.db, None, &channel, &alice).await?;
     assert_eq!(created.len(), 1);
     let id = &created[0].id;
     let path = format!("/api/call-invites/{id}/accept");
@@ -1662,7 +1663,7 @@ async fn test_group_dm_auto_invite_stops_at_the_room_capacity() -> anyhow::Resul
     }
     put_presence(&mut w.db, &group, &alice).await?;
     // alice が入室済み。残りの空きは 5 つ（定員 6）。9 人のグループ DM でも、呼ぶのは 5 人まで
-    let created = backend::call_invites::create_dm_invites(&mut w.db, &group, &alice).await?;
+    let created = backend::call_invites::create_dm_invites(&mut w.db, None, &group, &alice).await?;
     assert_eq!(created.len(), 5);
     Ok(())
 }
