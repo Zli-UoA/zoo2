@@ -143,7 +143,7 @@ sfu-bridge の環境変数：`BACKEND_INTERNAL_URL`（クラスタ内の backend
 
 ## 有効にする前に確かめること
 
-- **段階 1（Cloudflare）**：確かめた（下の「段階 1 の確認の結果」、Zli-UoA/zoo2-infra#213）。
+- **段階 1（Cloudflare）**：同時に入室させて、チャンネル行のロック待ちと join の API 全体の p50・p95・最大を、実際の Cloudflare で測る。結果は、その段階の PR（Zli-UoA/zoo2-infra#213）に記録する。Preview には Cloudflare の鍵を渡す仕組みがないので、手元の DB から実際の Cloudflare を呼ぶ `join_latency`（`JOIN_LATENCY_REAL_CF=1`、下）で測る。あわせて、退出したあとに遅れて済んだ pull の音声を、閉じていない古い PeerConnection が受け取れるかを確かめる（確かめた。下の「段階 1 の確認の結果」）。
 - **段階 3（LiveKit）**：
   - backend から LiveKit への経路が通るノード、そこにアクセスできる主体、盗聴の防ぎ方（平文を受け入れるか、TLS にするか）を確かめる。
   - セルフホストの LiveKit で、`revoke_token_ts` が効くか、退出後に手元のトークンで入り直せるかを確かめる。
@@ -165,7 +165,7 @@ sfu-bridge の環境変数：`BACKEND_INTERNAL_URL`（クラスタ内の backend
 - そのため、5 分より後の閉じ直しは足さない。
 - 反映していない offer が残っているあいだ、そのセッションへの次の `tracks/new` は 406 `invalid_session_description` になる（renegotiation 待ち）。このリポジトリのクライアントは、結果のわからない pull のあとセッションを作り直すので、影響しない。
 - `sessions/new` は本文なしで呼ぶ。本文 `{}` は 400 `decoding_error` になる。
-- `sessions/new` の応答時間（手元から、失敗 0）：同時 1 件で p50 85 ms・p95 146〜239 ms・最大 469〜541 ms、同時 10 件で p50 82 ms・p95 109〜157 ms、同時 30 件で p50 84〜88 ms・p95 106〜119 ms・最大 153〜213 ms。join はこれをロックの外で 1 回呼ぶので、join の全体は `join_latency` の値（#671 の本文。Cloudflare を 100 ms 遅らせた場合を含む）にこの時間を足したものになる。ロック待ちと接続待ちは延びない。
+- `sessions/new` だけの応答時間（手元から、失敗 0）：同時 1 件で p50 85 ms・p95 146〜239 ms・最大 469〜541 ms、同時 10 件で p50 82 ms・p95 109〜157 ms、同時 30 件で p50 84〜88 ms・p95 106〜119 ms・最大 153〜213 ms。join の全体の値は、これと `join_latency` の値を足しても出ない（`join_latency` の mock の値には、Cloudflare の待ち時間が既に入っている。p95 どうしは足せない）。join の全体は、`join_latency` を `JOIN_LATENCY_REAL_CF=1` で実際の Cloudflare に向けて測る（鍵は `CF_REALTIME_APP_ID`・`CF_REALTIME_APP_SECRET` を環境変数で渡す）。Cloudflare の呼び出しはロックの外なので、ロック待ちと接続待ちは延びない（#671 の本文）。
 
 ## プライバシー
 
