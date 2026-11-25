@@ -152,8 +152,11 @@ final class E2eeDeviceManager {
     }
 
     /// 処理を始める。動いていれば何もしない。
+    private var started = false
+
     func start() {
         guard loop == nil else { return }
+        started = true
         loop = Task { await self.runLoop() }
     }
 
@@ -162,6 +165,7 @@ final class E2eeDeviceManager {
     /// 巻き込まれない）。
     func stop() async {
         guard let running = loop else { return }
+        started = false
         running.cancel()
         await running.value
         // 止めている間に別の `stop()` が終えていたら、何もしない。
@@ -175,6 +179,8 @@ final class E2eeDeviceManager {
     func waitForStore() async throws -> CryptoStore {
         while true {
             if let readyStore { return readyStore }
+            // 止めたあとは待ち続けない（待っている鍵バックアップなども終わらせる）。
+            if !started { throw CancellationError() }
             try await Task.sleep(for: .milliseconds(50))
         }
     }

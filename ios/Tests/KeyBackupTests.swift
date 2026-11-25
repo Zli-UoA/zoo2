@@ -109,4 +109,19 @@ struct KeyBackupTests {
         #expect(try await device.setup.importKeyBackup() == 0)
         #expect(server.backupRows.isEmpty)
     }
+
+    @Test(arguments: [#"{"sessions":null,"next":null}"#, #"{"sessions":[],"next":5}"#, #"{"sessions":[],"next":"A"}"#])
+    func 不正なページや繰り返すカーソルでは取り込み完了を記録しない(page: String) async throws {
+        let sent = try await sendOne()
+        let receiver = try Device(sent.server)
+        defer { sent.sender.cleanUp(); receiver.cleanUp() }
+        _ = try await sent.sender.setup.uploadKeyBackup()
+        sent.server.backupPage = { _ in page }
+        // 不正なページで取り込みが失敗する（完了を記録しない）。
+        _ = try? await receiver.setup.unlock(.recovery(sent.recoveryKey))
+        #expect(receiver.store.inboundSessionCount == 0)
+        // 完了を記録していないので、正常なページなら取り込める。
+        sent.server.backupPage = nil
+        #expect(try await receiver.setup.importKeyBackup() == 1)
+    }
 }

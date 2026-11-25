@@ -16,6 +16,16 @@ protocol ConversationEncryption: AnyObject {
 
 /// ログインしているユーザーの E2EE（#685）。端末の管理、初回設定と解錠、暗号化チャンネルの送受信をまとめ、
 /// 画面には状態（`status`）と、復号・送信だけを見せる。
+/// 復号の結果を使い回す条件。検証に影響する列をすべて含める（暗号文は値そのもので比べる）。
+private struct DecryptedKey: Hashable {
+    let channelID: String, id: String, parentID: String?, userID: String, kind: String
+    let epoch: UInt64, revision: UInt64, ciphertext: String
+    init(row: EncryptedRow) {
+        channelID = row.channelID; id = row.id; parentID = row.parentID; userID = row.userID; kind = row.kind
+        epoch = row.epoch; revision = row.revision; ciphertext = row.ciphertext
+    }
+}
+
 @Observable @MainActor
 final class E2eeController: ConversationEncryption {
     enum Status: Equatable {
@@ -38,10 +48,11 @@ final class E2eeController: ConversationEncryption {
     @ObservationIgnored let setup: E2eeSetup
     @ObservationIgnored private let encryption: MessageEncryption
     /// 復号に成功した本文（ID と版ごと）。失敗は鍵が届けば読めるので、覚えない。
-    @ObservationIgnored private var decrypted: [String: DecryptedBody] = [:]
+    @ObservationIgnored private var decrypted: [DecryptedKey: DecryptedBody] = [:]
     /// メッセージごとの、確認できた最新の版の本文。古い版や、同じ版で中身の違う行が届いたときに、この本文を警告つきで出す。
     @ObservationIgnored private var confirmed: [String: (revision: UInt64, result: DecryptedBody)] = [:]
     /// パスキーの RP ID（AuthZ のホスト）。
+    @ObservationIgnored private var refreshGeneration = 0
     @ObservationIgnored var rpID = ""
     @ObservationIgnored var passkeys: any PasskeyClient = SystemPasskeyClient()
     /// 直前の再認証の ID トークンを取る（`Reauthenticator`）。
@@ -75,6 +86,12 @@ final class E2eeController: ConversationEncryption {
         return E2eeController(manager: manager, setup: setup, encryption: encryption)
     }
 
+    /// プレビュー用：準備の失敗を、画面とテストから見えるようにする。
+    func setPreviewFailure(_ message: String) { statusError = message }
+
+    /// 待っているパスキーの要求を取り消す。
+    func cancelPasskey() { (passkeys as? SystemPasskeyClient)?.cancel() }
+
     func start() { manager.start() }
     func stop() async {
         await manager.stop()
@@ -85,11 +102,15 @@ final class E2eeController: ConversationEncryption {
 
     /// 状態を読み直す（登録のあと、解錠や初回設定のあと）。解錠済みの端末は、署名し直しなども行う。
     func refreshStatus() {
+        refreshGeneration += 1
+        let generation = refreshGeneration
         Task { @MainActor in
             do {
                 // 解錠済みなら、鍵バックアップの送信と取り込みも行う（失敗しても状態の表示は止めない）。
                 let checked = try await setup.runStartupCheck()
                 let loaded = if let checked { checked } else { try await setup.loadStatus() }
+                // あとから始めた読み直しがあれば、古い結果で状態を上書きしない。
+                guard generation == refreshGeneration else { return }
                 status = switch loaded {
                 case .notSetUp: .notSetUp
                 case .locked(let reason): .locked(reason)
@@ -152,8 +173,17 @@ final class E2eeController: ConversationEncryption {
     /// 暗号化チャンネルのメッセージを復号する。暗号文がない（平文の）行は、表示しない。
     func decrypt(_ message: Message) -> DecryptedBody {
         guard let row = row(message) else { return DecryptedBody(notice: E2eeText.unencrypted) }
-        let key = "\(row.id)|\(row.revision)|\(row.ciphertext.hashValue)"
-        if let cached = decrypted[key] { return cached }
+        // 検証に使う列（送信者、チャンネル、返信先、種別、epoch、暗号文）がすべて同じときだけ、復号の結果を使い回す。
+        let key = DecryptedKey(row: row)
+        if let cached = decrypted[key] {
+            // 確認できた最新の版より古い版が再送されたら、キャッシュを返さず、最新の本文を警告つきで出す。
+            if let known = confirmed[row.id], known.revision > row.revision {
+                var shown = known.result
+                shown.notice = E2eeText.revisionStale
+                return shown
+            }
+            return cached
+        }
         let result = encryption.decrypt(row)
         if result.body != nil {
             decrypted[key] = result

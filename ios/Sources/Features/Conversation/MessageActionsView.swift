@@ -45,12 +45,14 @@ struct MessageActionsView: View {
     private var currentMessage: Message? { store.message(id: message.id) }
     private var canRetainEditor: Bool { store.active && !store.blocked && currentMessage?.user_id == store.userID }
     /// 暗号化に切り替える前の平文のメッセージは、編集させない（サーバーも拒否する）。
-    private var canEdit: Bool { store.canPost && canRetainEditor && currentMessage?.e2eeLegacy != true }
+    private var canEdit: Bool { canDelete && currentMessage?.e2eeLegacy != true }
+    /// 削除は、旧平文の自分のメッセージでもできる（制限は編集だけ）。
+    private var canDelete: Bool { store.canPost && canRetainEditor }
     private var detents: Set<PresentationDetent> {
         if dynamicTypeSize.isAccessibilitySize || page == .edit { return [.large] }
         if page == .reactions { return [.medium, .large] }
         let height = 56 + (store.canPost ? stampSize + 12 : 0) + (canOpenThread ? 96 : 0)
-        return [.height(height + (currentMessage?.content.isEmpty == false ? 48 : 0) + (canEdit ? 98 : 0)), .large]
+        return [.height(height + (currentMessage?.content.isEmpty == false ? 48 : 0) + (canDelete ? 98 : 0)), .large]
     }
 
     var body: some View {
@@ -68,7 +70,7 @@ struct MessageActionsView: View {
             Button("削除", role: .destructive) {
                 Task { if await store.delete(message) { dismiss() } }
             }
-            .disabled(store.mutationInProgress || !canEdit)
+            .disabled(store.mutationInProgress || !canDelete)
             Button("キャンセル", role: .cancel) {}
         }
         .onChange(of: store.canReact(to: message.id)) { _, allowed in
@@ -132,7 +134,9 @@ struct MessageActionsView: View {
                             page = .edit
                         } label: { actionLabel("メッセージを編集", icon: "pencil") }
                             .accessibilityIdentifier("message-action-edit")
-                        Divider()
+                    }
+                    if canDelete {
+                        if canEdit { Divider() }
                         Button(role: .destructive) { confirmingDelete = true } label: { actionLabel("メッセージを削除", icon: "trash") }
                             .foregroundStyle(.red)
                             .disabled(store.mutationInProgress)

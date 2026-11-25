@@ -90,6 +90,12 @@ final class SystemPasskeyClient: NSObject, PasskeyClient {
         finish(.failure(ASAuthorizationError(.canceled)))
     }
 
+    /// 通知元が今の要求のコントローラーのときだけ完了する（取り消した前の要求の遅れた通知で、次の要求を終えない）。
+    private func finish(_ result: Result<ASAuthorization, any Error>, from source: ObjectIdentifier) {
+        guard let controller, ObjectIdentifier(controller) == source else { return }
+        finish(result)
+    }
+
     private func finish(_ result: Result<ASAuthorization, any Error>) {
         continuation?.resume(with: result)
         continuation = nil
@@ -113,11 +119,13 @@ final class SystemPasskeyClient: NSObject, PasskeyClient {
 extension SystemPasskeyClient: ASAuthorizationControllerDelegate {
     nonisolated func authorizationController(controller: ASAuthorizationController,
                                              didCompleteWithAuthorization authorization: ASAuthorization) {
-        Task { @MainActor in self.finish(.success(authorization)) }
+        let source = ObjectIdentifier(controller)
+        Task { @MainActor in self.finish(.success(authorization), from: source) }
     }
 
     nonisolated func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: any Error) {
-        Task { @MainActor in self.finish(.failure(error)) }
+        let source = ObjectIdentifier(controller)
+        Task { @MainActor in self.finish(.failure(error), from: source) }
     }
 }
 

@@ -219,9 +219,14 @@ extension E2eeController {
         Task { @MainActor in
             other.start()
             for _ in 0..<100 where other.status == .starting { try? await Task.sleep(for: .milliseconds(100)) }
-            if let start = try? other.beginSetup() {
-                try? await other.addSetupPasskey(start, label: "iPad（iOS）")
-                try? await other.completeSetup(start)
+            do {
+                // 準備ができて、初回設定が成功してから、対象の端末を始める。失敗は、テストから見えるエラーにする。
+                guard other.status != .starting else { throw E2eeSetupError.noSecretStorage }
+                let start = try other.beginSetup()
+                try await other.addSetupPasskey(start, label: "iPad（iOS）")
+                try await other.completeSetup(start)
+            } catch {
+                controller.setPreviewFailure("テスト用の初期設定に失敗しました：\(error.localizedDescription)")
             }
             await other.stop()
             controller.start()

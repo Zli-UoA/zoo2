@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// 暗号化チャンネルを開けない（解錠していない）ときに、会話の上に出す案内。
 struct EncryptionUnlockBanner: View {
@@ -73,6 +74,16 @@ struct EncryptionSetupView: View {
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("閉じる") { dismiss() } } }
             .overlay { if busy { BusyOverlay() } }
             .disabled(busy)
+            // 待っているあいだも、パスキーの要求は取り消せる（応答しない要求で、画面が止まらないように）。
+            // サーバーへの保存中は、取り消す要求がないので何も起きず、二重の操作も防げる。
+            .overlay(alignment: .bottom) {
+                if busy {
+                    Button("パスキーの操作を取り消す") { e2ee.cancelPasskey() }
+                        .buttonStyle(.bordered).buttonBorderShape(.capsule)
+                        .padding(.bottom, 24)
+                        .accessibilityIdentifier("encryption-cancel-passkey")
+                }
+            }
             .interactiveDismissDisabled(busy)
             .onChange(of: e2ee.status) { _, status in
                 if status == .unlocked, case .intro = phase { dismiss() }
@@ -185,7 +196,12 @@ struct EncryptionSetupView: View {
                     .textSelection(.enabled)
                     .accessibilityIdentifier("encryption-recovery-key-display")
                 HStack(spacing: 12) {
-                    Button { UIPasteboard.general.string = start.recoveryKey; copied = true } label: {
+                    Button {
+                        // この端末の中だけに貼れるようにし（Handoff などで他の端末へ渡さない）、2 分で消す。
+                        UIPasteboard.general.setItems([[UTType.plainText.identifier: start.recoveryKey]],
+                                                      options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(120)])
+                        copied = true
+                    } label: {
                         Label(copied ? "コピーしました" : "コピー", systemImage: copied ? "checkmark" : "doc.on.doc")
                     }
                     ShareLink(item: start.recoveryKey) { Label("保存・共有", systemImage: "square.and.arrow.up") }
@@ -221,7 +237,11 @@ struct EncryptionSetupView: View {
         error = nil
         Task {
             defer { busy = false }
-            do { try await operation() } catch { self.error = Self.describe(error) }
+            do { try await operation() } catch {
+                self.error = Self.describe(error)
+                // 別の端末が先に設定を保存した。この端末の設定は使えないので、状態を読み直して、解錠へ案内する。
+                if case E2eeSetupError.conflict = error { phase = .intro; e2ee.refreshStatus() }
+            }
         }
     }
 

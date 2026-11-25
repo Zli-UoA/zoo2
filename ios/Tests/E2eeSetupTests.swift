@@ -136,8 +136,12 @@ final class FakeSetupServer: E2eeSetupAPI {
     }
 
     func backupKeys(version: String, after: String?) async throws -> String {
-        text(.object(["sessions": .array(Array(backupRows.values)), "next": .null]))
+        if let backupPage { return backupPage(after) }
+        return text(.object(["sessions": .array(Array(backupRows.values)), "next": .null]))
     }
+
+    /// 取り込みのページの応答を差し替える（不正なページと、同じカーソルの繰り返しを試す）。
+    var backupPage: ((String?) -> String)?
 
     func uploadBackupKeys(version: String, secretsRevision: UInt64, body: String, proof: String?) async throws {
         if let backupConflict { throw E2eeAPIError(status: 409, code: backupConflict) }

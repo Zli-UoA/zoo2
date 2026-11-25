@@ -252,6 +252,13 @@ final class ConversationStore {
         if channel.encrypted != previouslyEncrypted, supportsEncryption { syncRequest = UUID() }
     }
 
+    /// 今の購読の要求（`run` が `encrypted` を足して渡すので、同じ条件で比べる）。
+    private var currentFeedRequest: MessageFeedRequest {
+        var request = feedRequest
+        request.encrypted = channel.encrypted == true
+        return request
+    }
+
     func run() async {
         guard !Task.isCancelled else { return }
         guard active, channel.encrypted != true || supportsEncryption else { loading = false; return }
@@ -271,7 +278,7 @@ final class ConversationStore {
                     self.morePages[request.key] = update.hasMore
                     self.pageLimits[request.key] = max(self.pageLimits[request.key] ?? 50, update.loadedLimit)
                     if !update.fromCache, update.messages != nil, self.pendingHistoryKey == request.key,
-                       request == self.feedRequest {
+                       request == self.currentFeedRequest {
                         self.historyRevision += 1
                         self.pendingHistoryKey = nil
                     }

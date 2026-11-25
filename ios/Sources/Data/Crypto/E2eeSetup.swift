@@ -229,10 +229,17 @@ final class E2eeSetup {
         guard store.hasOwnKeys else { return nil }
         let recorded = store.secretsRevision
         let status = try await startupStatus(store, recorded: recorded, storage: api.secretStorage())
-        if status == .unlocked {
-            _ = try await uploadKeyBackup()
+        guard status == .unlocked else { return status }
+        // 鍵バックアップの失敗は、確かめ終えた解錠の状態を失わせない（通信に失敗しても、暗号化チャンネルは使える。次の機会に再び試す）。
+        // ただし、SSSS が書き換えられていたら（`E2EE_SSSS_CONFLICT`）、解錠済みとは言えないので、状態を読み直す。
+        do {
+            if case .conflict(let code) = try await uploadKeyBackup(), code == "E2EE_SSSS_CONFLICT" { return try await loadStatus() }
             _ = try await importKeyBackup()
-        }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let failure as E2eeAPIError where failure.code == "E2EE_SSSS_CONFLICT" {
+            return try await loadStatus()
+        } catch {}
         return status
     }
 
@@ -252,13 +259,20 @@ final class E2eeSetup {
             guard let version else { return 0 }
             var imported = 0
             var after: String?
+            var seen = Set<String>()
             repeat {
                 let page = try await self.api.backupKeys(version: version, after: after)
-                guard case .object(let object) = try JSONDecoder().decode(JSONValue.self, from: Data(page.utf8)) else { throw ZooError.invalidResponse }
-                var rows: [String] = []
-                if case .array(let sessions)? = object["sessions"] { rows = try sessions.map(jsonText) }
-                imported += try store.importBackupRows(rows)
-                after = object.string("next")
+                guard case .object(let object) = try JSONDecoder().decode(JSONValue.self, from: Data(page.utf8)),
+                      case .array(let sessions)? = object["sessions"] else { throw ZooError.invalidResponse }
+                // `next` は文字列か null だけ。ほかの値は不正なページなので、取り込み完了を記録しない。
+                switch object["next"] {
+                case nil, .null?: after = nil
+                case .string(let next)?: after = next
+                default: throw ZooError.invalidResponse
+                }
+                imported += try store.importBackupRows(try sessions.map(jsonText))
+                // 同じカーソルを返し続けるサーバーに、閉じ込められない（排他を占有し続けない）。
+                if let after, !seen.insert(after).inserted { throw ZooError.invalidResponse }
             } while after != nil
             try store.backupImported(version)
             return imported
