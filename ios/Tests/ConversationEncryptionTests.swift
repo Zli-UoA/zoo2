@@ -206,3 +206,16 @@ struct ConversationEncryptionTests {
         #expect(request != MessageFeedRequest())
     }
 }
+
+@MainActor
+struct MessageEncryptionNoticeTests {
+    @Test("復号できない行の注意は、「表示しません」と言い切らず、検証に失敗したことだけを知らせる")
+    func invalidNoticeDoesNotClaimHiding() throws {
+        #expect(E2eeText.invalid == "このメッセージは検証に失敗しました。")
+        #expect(!E2eeText.invalid.contains("表示しません"))
+        // 本文がない行でも、注意の文（アイコンつき）だけを出す。
+        let decrypted = DecryptedBody(notice: E2eeText.invalid)
+        #expect(decrypted.body == nil)
+        #expect(decrypted.notice == E2eeText.invalid)
+    }
+}

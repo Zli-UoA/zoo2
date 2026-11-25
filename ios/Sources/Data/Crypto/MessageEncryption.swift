@@ -5,7 +5,8 @@ import ZooCrypto
 enum E2eeText {
     static let keyMissing = "このメッセージを復号する鍵がまだ届いていません。"
     static let locked = "この端末で暗号化を解錠すると、このメッセージを読めます。"
-    static let invalid = "このメッセージは検証に失敗したため表示しません。"
+    /// 復号や照合に失敗した行。本文はないが、「表示しない」とは言わず、注意として知らせる（アイコンと文だけ）。
+    static let invalid = "このメッセージは検証に失敗しました。"
     static let senderUnverified = "未検証の送信者"
     static let senderUnauthenticated = "送信者を確かめられません"
     static let revisionStale = "サーバーが古い版を返しました。最新の版を表示しています"
