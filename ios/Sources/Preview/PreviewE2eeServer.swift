@@ -125,6 +125,41 @@ final class PreviewE2eeServer: E2eeSetupAPI, E2eeDeviceAPI, E2eeKeysAPI {
         versions.append(.object(["version": .string(String(versions.count + 1)), "algorithm": body["algorithm"]!,
                                  "auth_data": body["auth_data"]!, "deleted": .bool(false)]))
     }
+    // MARK: 鍵バックアップ
+
+    /// 今の版に入れる `upload_key`（証明の確認用。なければ付けない）。
+    var uploadKey: JSONValue?
+    /// 送られたセッション（`(channel_id, sender_key, session_id)` ごとに 1 つ）と、`X-Zoo-Backup-Proof` の値の記録。
+    var backupRows: [String: JSONValue] = [:]
+    var backupProofs: [String?] = []
+    var backupUploads: [Int] = []
+    var backupConflict: String?
+
+    func currentBackupVersion() async throws -> String? {
+        guard case .object(var version)? = versions.last else { return nil }
+        if let uploadKey { version["upload_key"] = uploadKey }
+        return previewJSONText(.object(version))
+    }
+
+    func backupKeys(version: String, after: String?) async throws -> String {
+        previewJSONText(.object(["sessions": .array(Array(backupRows.values)), "next": .null]))
+    }
+
+    func uploadBackupKeys(version: String, secretsRevision: UInt64, body: String, proof: String?) async throws {
+        if let backupConflict { throw E2eeAPIError(status: 409, code: backupConflict) }
+        guard case .object(let last)? = versions.last, last["version"] == .string(version), secretsRevision == revision else {
+            throw E2eeAPIError(status: 409, code: "E2EE_WRONG_BACKUP_VERSION")
+        }
+        backupProofs.append(proof)
+        guard case .array(let sessions)? = previewJSONObject(body)["sessions"] else { return }
+        backupUploads.append(sessions.count)
+        for session in sessions {
+            guard case .object(let row) = session, case .string(let channel)? = row["channel_id"],
+                  case .string(let sender)? = row["sender_key"], case .string(let id)? = row["session_id"] else { continue }
+            backupRows["\(channel)|\(sender)|\(id)"] = session
+        }
+    }
+
     // MARK: 端末の登録と鍵（プレビューでは、受け取るだけ）
 
     private var registered = false
@@ -154,7 +189,7 @@ final class PreviewE2eeRequests: E2eeRequesting {
     let device: () -> CryptoStore?
     init(server: PreviewE2eeServer, device: @escaping () -> CryptoStore?) { self.server = server; self.device = device }
 
-    func e2eeJSON(_ path: String, method: String, body: [String: JSONValue]?) async throws -> JSONValue {
+    func e2eeJSON(_ path: String, method: String, query: [String: String], body: [String: JSONValue]?) async throws -> JSONValue {
         if path.hasPrefix("api/e2ee/channels/") {
             guard case .object(var page) = try JSONDecoder().decode(JSONValue.self, from: Data(try await server.queryOwnKeys(userID: server.userID).utf8)),
                   let store = device() else { return .object([:]) }

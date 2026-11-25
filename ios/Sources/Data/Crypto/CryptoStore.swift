@@ -69,6 +69,10 @@ struct StoreState: Codable {
     /// 保存鍵を失って作り直した前の端末のうち、サーバーから消せていないもの。新しい状態と一緒に保存するので、
     /// 開き直しても失わない。
     var pending_deletions: [String] = []
+    /// 鍵バックアップの送信の状態（`BackupUploadState.to_json`。秘密は入らない）。
+    var backup_upload: String?
+    /// 解錠したあと、過去のセッションを最後まで取り込んだ鍵バックアップの版（新しい端末での解錠の手順 5）。
+    var imported_backup_version: String?
 
     init(version: Int, user_id: String, device_id: String, registered: Bool, account: String, trust_store: String?) {
         self.version = version; self.user_id = user_id; self.device_id = device_id
@@ -90,6 +94,8 @@ struct StoreState: Codable {
         inbound_sessions = try c.decodeIfPresent([String: StoredInbound].self, forKey: .inbound_sessions) ?? [:]
         processed_to_device = try c.decodeIfPresent([String].self, forKey: .processed_to_device) ?? []
         pending_deletions = try c.decodeIfPresent([String].self, forKey: .pending_deletions) ?? []
+        backup_upload = try c.decodeIfPresent(String.self, forKey: .backup_upload)
+        imported_backup_version = try c.decodeIfPresent(String.self, forKey: .imported_backup_version)
     }
 }
 
@@ -99,7 +105,7 @@ struct StoredOlm: Codable {
     var pickle: String
 }
 
-struct StoredInbound: Codable {
+struct StoredInbound: Codable, Equatable {
     var pickle: String
     /// 鍵バックアップに送ったか。送っていないものの数を、ログアウトの前に見せる。
     var backed_up: Bool = false
@@ -152,6 +158,12 @@ final class CryptoStore: @unchecked Sendable {
     private var inbound = InboundSessionStore()
     private var loadedInbound = Set<String>()
     private var outboundOlm: [String: String] = [:]
+    /// 鍵バックアップの送信の状態。初めて使うときに `state.backup_upload` から読む。
+    private var backupState: BackupUploadState?
+    /// 送っている途中の要求と、送ったときのセッションの pickle（送ったあとに書き換わったものを送信待ちのまま残すため）。
+    private struct PendingUpload { let upload: BackupUpload; let sessions: [(String, String)] }
+    private var pendingUploads: [Int: PendingUpload] = [:]
+    private var nextUploadID = 0
     private var state: StoreState
     private var closed = false
     private let lock = NSLock()
@@ -288,6 +300,7 @@ final class CryptoStore: @unchecked Sendable {
             // 自分の鍵と配布先の記録は古い端末アカウントで封をしてあるので、解錠し直すまで使わない。
             nextState.own_keys = nil
             nextState.secrets_revision = nil
+            nextState.imported_backup_version = nil
             nextState.trust_store = try TrustStore(userId: state.user_id).pickle(account: next, storageKey: storageKey)
             nextState.account = try next.pickle(storageKey: storageKey)
             // Olm セッションは古い端末の鍵との間のものなので捨てる。受信用セッションは、古い端末で開いて新しい端末で封をし直す
@@ -334,9 +347,13 @@ final class CryptoStore: @unchecked Sendable {
             next.own_keys = try session.ownKeysPickle(account: account, storageKey: storageKey)
             next.secrets_revision = secretsRevision
             next.trust_store = try updated.pickle(account: account, storageKey: storageKey)
+            // 解錠し直したら、鍵バックアップから取り込み直す。
+            next.imported_backup_version = nil
             try save(next)
             state = next
             trust = updated
+            // 新しい秘密を記録したので、鍵バックアップの今の版は検証し直す。
+            backupState?.suspend()
         }
     }
 
@@ -356,6 +373,8 @@ final class CryptoStore: @unchecked Sendable {
     func forgetSecretsRevision(_ failed: UInt64) throws {
         try lock.withLock {
             guard state.secrets_revision == failed else { return }
+            backupState?.setSecretsRevision(secretsRevision: nil)
+            backupState?.suspend()
             var next = state
             next.secrets_revision = nil
             try save(next)
@@ -663,6 +682,186 @@ final class CryptoStore: @unchecked Sendable {
                 loadedInbound.insert(key)
             }
             return try outbound.encrypt(account: account, message: message)
+        }
+    }
+
+    // MARK: - 鍵バックアップ
+
+    /// `POST /api/e2ee/key_backup/keys` に送る要求。
+    enum BackupUploadRequest: Equatable {
+        /// 送るものがない（解錠していない、今の版がない、送信待ちがない）。
+        case none
+        /// 今の版を使えない（署名がない、SSSS の鍵と違う、版の巻き戻り、`upload_key` が鍵の形でないなど）。送らない。
+        case rejected(String)
+        /// 送る。`proof` は `X-Zoo-Backup-Proof` の値（今の版に `upload_key` がない、証明を足す前のサーバーなら `nil`）。
+        case upload(id: Int, version: String, secretsRevision: UInt64, body: String, count: Int, proof: String?)
+    }
+
+    /// 受信用セッションのキー（`inboundKey`）の逆。
+    static func sessionRef(_ key: String) throws -> SessionRef {
+        guard let parts = try? JSONDecoder().decode([String].self, from: Data(key.utf8)), parts.count == 3 else {
+            throw ZooError.invalidResponse
+        }
+        return SessionRef(channelId: parts[0], senderKey: parts[1], sessionId: parts[2])
+    }
+
+    private func loadBackupState() throws -> BackupUploadState {
+        if let backupState { return backupState }
+        let loaded = try state.backup_upload.flatMap { try? BackupUploadState.fromJson(json: $0, userId: state.user_id) }
+        let value = try loaded ?? BackupUploadState(userId: state.user_id)
+        backupState = value
+        return value
+    }
+
+    /// サーバーが今の版として返した版（`GET /api/e2ee/key_backup/versions/current` の応答）を、暗号ストアの自分のマスター鍵と
+    /// バックアップ鍵で検証して受け入れ、版の番号を返す。署名がない、公開鍵が違う、版が戻ったなどは `ZooCryptoError`。
+    /// 版が変わったら、手元のセッションをすべて送信待ちに戻し、新しい版を見たことと同じ書き込みで記録する。
+    private func acceptCurrentVersion(_ currentVersion: String) throws -> String {
+        guard let sealed = state.own_keys else { throw E2eeStoreError.sendNeedsUnlock }
+        let backup = try loadBackupState()
+        backup.setSecretsRevision(secretsRevision: state.secrets_revision)
+        let own = try OwnKeys.fromPickle(sealed: sealed, account: account, storageKey: storageKey)
+        let change = try backup.acceptCurrentVersion(version: currentVersion, masterKey: own.masterPublicKey(), backupKey: own.backupKey())
+        var next = state
+        if change == .changed {
+            next.inbound_sessions = next.inbound_sessions.mapValues { StoredInbound(pickle: $0.pickle, backed_up: false) }
+        }
+        next.backup_upload = backup.toJson()
+        do { try save(next) } catch {
+            // 新しい版を見たことを記録できなかったので、次の送信でもう一度戻す。
+            backupState = nil
+            throw error
+        }
+        state = next
+        guard let version = backup.currentVersion()?.version else { throw ZooError.invalidResponse }
+        return version
+    }
+
+    /// 鍵バックアップへ送る次の要求を作る（docs/e2ee.md の「鍵バックアップ」。TUI の `prepare_backup_upload`、
+    /// Web の `prepareBackupUpload` と同じ規則）。`currentVersion` は今の版の応答（なければ `nil`）。今の版の `auth_data` に
+    /// 自分のマスター鍵の署名があり、公開鍵が SSSS のバックアップ鍵と同じで、前に見た版より古くないときだけ送る。
+    /// 版が変わったら、すべてのセッションを送り直す。
+    func prepareBackupUpload(currentVersion: String?, limit: Int) throws -> BackupUploadRequest {
+        try lock.withLock {
+            try ensureOpen()
+            // 送信は 1 つずつなので、ここで残っている要求は、送っている途中で捨てられたもの。記録を捨てる。
+            pendingUploads.removeAll()
+            guard state.own_keys != nil else { return .none }
+            guard let currentVersion else {
+                try loadBackupState().suspend()
+                return .none
+            }
+            let version: String
+            do { version = try acceptCurrentVersion(currentVersion) } catch let failure as ZooCryptoError {
+                return .rejected(failure.localizedDescription)
+            }
+            let backup = try loadBackupState()
+            let keys = Array(state.inbound_sessions.filter { !$0.value.backed_up }.keys.sorted().prefix(limit))
+            guard !keys.isEmpty else { return .none }
+            // 今の版に `upload_key` がなければ（証明を足す前のサーバー）、証明を付けない。あって文字列でなければ送らない
+            // （証明を黙って省いて、未証明の行を送信済みにしないため）。
+            var proof: String?
+            if case .object(let object)? = try? JSONDecoder().decode(JSONValue.self, from: Data(currentVersion.utf8)),
+               let uploadKey = object["upload_key"] {
+                guard case .string(let key) = uploadKey else { return .rejected("upload_key が鍵の形ではありません") }
+                guard let sealed = state.own_keys else { return .none }
+                do {
+                    proof = try OwnKeys.fromPickle(sealed: sealed, account: account, storageKey: storageKey).backupKey()
+                        .uploadProof(uploadKey: key, userId: state.user_id, version: version)
+                } catch is ZooCryptoError { return .rejected("upload_key が鍵の形ではありません") }
+            }
+            for key in keys {
+                try loadInbound(key)
+                backup.enqueue(session: try Self.sessionRef(key))
+            }
+            guard let upload = try backup.nextUpload(store: inbound, limit: UInt64(limit)) else { return .none }
+            let sent = Set(upload.sessions().map(Self.inboundKey))
+            let sessions = keys.filter { sent.contains($0) }.compactMap { key in state.inbound_sessions[key].map { (key, $0.pickle) } }
+            nextUploadID += 1
+            let id = nextUploadID
+            pendingUploads[id] = PendingUpload(upload: upload, sessions: sessions)
+            return .upload(id: id, version: upload.version(), secretsRevision: upload.secretsRevision(), body: upload.body(),
+                           count: sessions.count, proof: proof)
+        }
+    }
+
+    /// `id` の要求が成功した。その要求に入れたセッションだけを送信済みにする。
+    func backupUploaded(_ id: Int) throws {
+        try lock.withLock {
+            guard let pending = pendingUploads.removeValue(forKey: id) else { return }
+            var next = state
+            if let backupState {
+                backupState.uploadSucceeded(upload: pending.upload)
+                next.backup_upload = backupState.toJson()
+            }
+            // 送ったあとに書き換わった（pickle が違う）セッションは、送信待ちのまま残す。
+            for (key, pickle) in pending.sessions where next.inbound_sessions[key]?.pickle == pickle {
+                next.inbound_sessions[key]?.backed_up = true
+            }
+            try save(next)
+            state = next
+        }
+    }
+
+    /// `id` の要求が失敗した。入れたセッションは送信待ちのまま残す。409 のときは、今の版を検証し直すまで送らない。
+    func backupUploadFailed(_ id: Int, conflict: Bool) {
+        lock.withLock {
+            pendingUploads.removeValue(forKey: id)
+            if conflict { backupState?.suspend() }
+        }
+    }
+
+    /// 鍵バックアップから取り込む版を決める（新しい端末での解錠の手順 5）。解錠していない、今の版がない、この版から
+    /// 取り込み終えているときは `nil`。版を使えない（`acceptCurrentVersion` が拒んだ）ときは `ZooCryptoError`。
+    func backupVersionToImport(currentVersion: String?) throws -> String? {
+        try lock.withLock {
+            try ensureOpen()
+            guard state.own_keys != nil, state.secrets_revision != nil, let currentVersion else { return nil }
+            let version = try acceptCurrentVersion(currentVersion)
+            return version == state.imported_backup_version ? nil : version
+        }
+    }
+
+    /// `GET /api/e2ee/key_backup/keys` の 1 ページの行を、バックアップ鍵で復号して取り込む（docs/e2ee.md の「受信時の検証」の
+    /// 「鍵バックアップから取り込んだとき」）。復号と照合は zoo-crypto が行い、Megolm のセッション鍵は Swift に出さない。
+    /// バックアップ由来として保存し、Olm 由来のセッションを置き換えない。新しく取り込んだセッションは、この版から取ったので
+    /// 送信済みにする。返すのは取り込めた行の数。
+    func importBackupRows(_ rows: [String]) throws -> Int {
+        try lock.withLock {
+            try ensureOpen()
+            guard let sealed = state.own_keys, !rows.isEmpty else { return 0 }
+            var refs: [SessionRef] = []
+            for row in rows {
+                guard case .object(let object)? = try? JSONDecoder().decode(JSONValue.self, from: Data(row.utf8)),
+                      case .string(let channel)? = object["channel_id"], case .string(let sender)? = object["sender_key"],
+                      case .string(let session)? = object["session_id"] else { continue }
+                refs.append(SessionRef(channelId: channel, senderKey: sender, sessionId: session))
+            }
+            for ref in refs { try loadInbound(Self.inboundKey(ref)) }
+            let key = try OwnKeys.fromPickle(sealed: sealed, account: account, storageKey: storageKey).backupKey()
+            let discarded = Int(try key.importRows(store: inbound, rows: rows))
+            var next = state
+            for ref in refs {
+                let storeKey = Self.inboundKey(ref)
+                guard let pickle = try inbound.pickleSession(account: account, key: ref, storageKey: storageKey) else { continue }
+                let existing = next.inbound_sessions[storeKey]
+                if existing?.pickle == pickle { continue }
+                next.inbound_sessions[storeKey] = StoredInbound(pickle: pickle, backed_up: existing?.backed_up ?? true)
+                loadedInbound.insert(storeKey)
+            }
+            if next.inbound_sessions != state.inbound_sessions { try save(next); state = next }
+            return rows.count - discarded
+        }
+    }
+
+    /// `version` の鍵バックアップから最後まで取り込んだ。
+    func backupImported(_ version: String) throws {
+        try lock.withLock {
+            guard state.imported_backup_version != version else { return }
+            var next = state
+            next.imported_backup_version = version
+            try save(next)
+            state = next
         }
     }
 

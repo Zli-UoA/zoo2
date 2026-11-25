@@ -24,6 +24,21 @@ protocol E2eeSetupAPI {
     func uploadSignature(_ signature: String) async throws
     /// `POST /api/e2ee/key_backup/versions`。
     func createBackupVersion(_ body: String, reauth: String?) async throws
+    /// `GET /api/e2ee/key_backup/versions/current`。今の版がなければ（404）`nil`。
+    func currentBackupVersion() async throws -> String?
+    /// `GET /api/e2ee/key_backup/keys?version=<版>&after=<カーソル>`。`{"sessions": [...], "next": <カーソル>|null}`。
+    func backupKeys(version: String, after: String?) async throws -> String
+    /// `POST /api/e2ee/key_backup/keys?version=<版>&secrets_revision=<数>`。`proof` は `X-Zoo-Backup-Proof`（あれば）。
+    func uploadBackupKeys(version: String, secretsRevision: UInt64, body: String, proof: String?) async throws
+}
+
+/// [E2eeSetup.uploadKeyBackup] の結果。
+enum BackupUploadResult: Equatable, Sendable {
+    case done(Int)
+    /// 今の版を使えない（署名がない、SSSS の鍵と違う、巻き戻りなど）。送っていない。
+    case rejected(String)
+    /// サーバーが拒んだ（409 `E2EE_WRONG_BACKUP_VERSION` か `E2EE_SSSS_CONFLICT`）。
+    case conflict(String)
 }
 
 /// 初回設定と解錠の誤り。
@@ -189,6 +204,100 @@ final class E2eeSetup {
         }
     }
 
+    // MARK: - 鍵バックアップ
+
+    /// 1 回に送るセッションの数（サーバーの上限）。
+    static let backupUploadBatch = 1000
+    /// 鍵バックアップの送信と取り込みを 1 つずつにする（呼び出し元が端末の管理でも画面でも、重ねない）。
+    private var backupChain: Task<Void, Never>?
+
+    private func exclusive<T: Sendable>(_ operation: @escaping @MainActor () async throws -> T) async throws -> T {
+        let previous = backupChain
+        let task = Task { @MainActor in
+            await previous?.value
+            return try await operation()
+        }
+        backupChain = Task { _ = try? await task.value }
+        return try await task.value
+    }
+
+    /// 起動時の確認（docs/e2ee.md の「初回設定と解錠の流れ」）。解錠済みの端末だけが、自分の端末への署名を確かめ、
+    /// なければ署名し直し、送信待ちのセッションを鍵バックアップに送り、途中で止まっていた取り込みを続ける。
+    /// まだ解錠していない端末は、何も取得しない（`nil`）。
+    func runStartupCheck() async throws -> E2eeStatus? {
+        let store = try await store()
+        guard store.hasOwnKeys else { return nil }
+        let recorded = store.secretsRevision
+        let status = try await startupStatus(store, recorded: recorded, storage: api.secretStorage())
+        if status == .unlocked {
+            _ = try await uploadKeyBackup()
+            _ = try await importKeyBackup()
+        }
+        return status
+    }
+
+    /// 鍵バックアップの今の版から、過去のセッションを取り込む（「新しい端末での解錠」の手順 5）。今の版は、送信と同じく
+    /// `BackupUploadState.accept_current_version` で検証してから使う。この版から取り込み終えていれば何もしない。
+    /// 返すのは取り込めた行の数。
+    func importKeyBackup() async throws -> Int {
+        try await exclusive {
+            let store = try await self.store()
+            guard store.hasOwnKeys else { return 0 }
+            let current = try await self.api.currentBackupVersion()
+            let version: String?
+            do { version = try store.backupVersionToImport(currentVersion: current) } catch is ZooCryptoError {
+                // 署名がない、鍵が違うなど、使えない版からは取り込まない。
+                return 0
+            }
+            guard let version else { return 0 }
+            var imported = 0
+            var after: String?
+            repeat {
+                let page = try await self.api.backupKeys(version: version, after: after)
+                guard case .object(let object) = try JSONDecoder().decode(JSONValue.self, from: Data(page.utf8)) else { throw ZooError.invalidResponse }
+                var rows: [String] = []
+                if case .array(let sessions)? = object["sessions"] { rows = try sessions.map(jsonText) }
+                imported += try store.importBackupRows(rows)
+                after = object.string("next")
+            } while after != nil
+            try store.backupImported(version)
+            return imported
+        }
+    }
+
+    /// 鍵バックアップの送信待ちのセッションを、今の版に送る（docs/e2ee.md の「鍵バックアップ」）。解錠していない端末と、
+    /// 今の版がない場合は何もしない。送信は 1 つずつ。今の版に `upload_key` があれば、証明を `X-Zoo-Backup-Proof` に入れる。
+    func uploadKeyBackup() async throws -> BackupUploadResult {
+        try await exclusive {
+            let store = try await self.store()
+            guard store.hasOwnKeys else { return .done(0) }
+            let current = try await self.api.currentBackupVersion()
+            var uploaded = 0
+            while true {
+                switch try store.prepareBackupUpload(currentVersion: current, limit: Self.backupUploadBatch) {
+                case .none: return .done(uploaded)
+                case .rejected(let reason): return .rejected(reason)
+                case .upload(let id, let version, let revision, let body, let count, let proof):
+                    do {
+                        try await self.api.uploadBackupKeys(version: version, secretsRevision: revision, body: body, proof: proof)
+                    } catch let failure as E2eeAPIError {
+                        let conflict = failure.status == 409 && (failure.code == "E2EE_WRONG_BACKUP_VERSION" || failure.code == "E2EE_SSSS_CONFLICT")
+                        store.backupUploadFailed(id, conflict: conflict)
+                        // SSSS の秘密が書き換えられた（失効など）。解錠し直すまで送らない。
+                        if failure.code == "E2EE_SSSS_CONFLICT" { try store.forgetSecretsRevision(revision) }
+                        if conflict, let code = failure.code { return .conflict(code) }
+                        throw failure
+                    } catch {
+                        store.backupUploadFailed(id, conflict: false)
+                        throw error
+                    }
+                    try store.backupUploaded(id)
+                    uploaded += count
+                }
+            }
+        }
+    }
+
     /// 初回設定を始める。返したリカバリーキーを利用者に控えてもらう。
     func begin() throws -> SetupStart { try beginSetup(userId: userID) }
 
@@ -251,6 +360,14 @@ final class E2eeSetup {
             throw Self.mapReauth(failure)
         }
         try await store().saveOwnKeys(session, secretsRevision: secretsRevision)
+        // 解錠した（または初回設定を終えた）ので、手元のセッションを今の版に送り、過去のセッションを取り込む。
+        // 失敗しても解錠は済んでいる（取り込みは、次の起動時の確認で続きを行う）。
+        do {
+            _ = try await uploadKeyBackup()
+            if !session.isCreated() { _ = try await importKeyBackup() }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {}
     }
 
     private func planRemaining(_ session: SetupSession) async throws -> ResumePlan {
@@ -366,5 +483,22 @@ extension APIClient: E2eeSetupAPI {
 
     func createBackupVersion(_ body: String, reauth: String?) async throws {
         _ = try await e2ee("api/e2ee/key_backup/versions", method: "POST", body: jsonObject(body), reauth: reauth)
+    }
+
+    func currentBackupVersion() async throws -> String? {
+        do { return String(decoding: try await e2ee("api/e2ee/key_backup/versions/current", method: "GET"), as: UTF8.self) }
+        catch let failure as E2eeAPIError where failure.status == 404 { return nil }
+    }
+
+    func backupKeys(version: String, after: String?) async throws -> String {
+        var query = ["version": version]
+        if let after { query["after"] = after }
+        return String(decoding: try await e2ee("api/e2ee/key_backup/keys", method: "GET", query: query), as: UTF8.self)
+    }
+
+    func uploadBackupKeys(version: String, secretsRevision: UInt64, body: String, proof: String?) async throws {
+        _ = try await e2ee("api/e2ee/key_backup/keys", method: "POST",
+                           query: ["version": version, "secrets_revision": String(secretsRevision)], body: jsonObject(body),
+                           headers: proof.map { ["X-Zoo-Backup-Proof": $0] } ?? [:])
     }
 }

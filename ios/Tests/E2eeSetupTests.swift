@@ -119,6 +119,41 @@ final class FakeSetupServer: E2eeSetupAPI {
         ]))
     }
 
+    // MARK: 鍵バックアップ
+
+    /// 今の版に入れる `upload_key`（証明の確認用。なければ付けない）。
+    var uploadKey: JSONValue?
+    /// 送られたセッション（`(channel_id, sender_key, session_id)` ごとに 1 つ）と、`X-Zoo-Backup-Proof` の値の記録。
+    var backupRows: [String: JSONValue] = [:]
+    var backupProofs: [String?] = []
+    var backupUploads: [Int] = []
+    var backupConflict: String?
+
+    func currentBackupVersion() async throws -> String? {
+        guard case .object(var version)? = versions.last else { return nil }
+        if let uploadKey { version["upload_key"] = uploadKey }
+        return text(.object(version))
+    }
+
+    func backupKeys(version: String, after: String?) async throws -> String {
+        text(.object(["sessions": .array(Array(backupRows.values)), "next": .null]))
+    }
+
+    func uploadBackupKeys(version: String, secretsRevision: UInt64, body: String, proof: String?) async throws {
+        if let backupConflict { throw E2eeAPIError(status: 409, code: backupConflict) }
+        guard case .object(let last)? = versions.last, last["version"] == .string(version), secretsRevision == revision else {
+            throw E2eeAPIError(status: 409, code: "E2EE_WRONG_BACKUP_VERSION")
+        }
+        backupProofs.append(proof)
+        guard case .array(let sessions)? = object(body)["sessions"] else { return }
+        backupUploads.append(sessions.count)
+        for session in sessions {
+            guard case .object(let row) = session, case .string(let channel)? = row["channel_id"],
+                  case .string(let sender)? = row["sender_key"], case .string(let id)? = row["session_id"] else { continue }
+            backupRows["\(channel)|\(sender)|\(id)"] = session
+        }
+    }
+
     func createBackupVersion(_ body: String, reauth: String?) async throws {
         let body = object(body)
         if requireReauthForVersions { try requireReauth(reauth) }
