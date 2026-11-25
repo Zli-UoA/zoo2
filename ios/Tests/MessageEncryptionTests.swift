@@ -246,3 +246,71 @@ struct MessageEncryptionTests {
         #expect(reader.decrypt(row(server)).notice == E2eeText.keyMissing)
     }
 }
+
+@MainActor
+struct ConfirmedBodyTests {
+    @Test func 古い版や中身の違う同じ版が届いても確認できた最新の本文を警告つきで出す() async throws {
+        let setupServer = FakeSetupServer(userID: user)
+        let sender = try Device(setupServer)
+        defer { sender.cleanUp() }
+        let start = try sender.setup.begin()
+        try await sender.setup.completeSetup(start.session, reauth: "t")
+        let server = PreviewE2eeServer(userID: user)
+        let capture = CapturingRequests(user: user, store: { sender.store }, setupServer: setupServer)
+        let encryption = MessageEncryption(store: { sender.store }, api: capture)
+        let controller = E2eeController(
+            manager: E2eeDeviceManager(api: server, files: sender.files, userID: user, observeToDevice: { _, _ in }),
+            setup: E2eeSetup(api: server, userID: user, store: { sender.store }), encryption: encryption)
+
+        func message(_ revision: UInt64) -> Message {
+            Message(id: messageID, user_id: user, channel_id: channel, content: "", created_at: "2026-11-25T09:00:00Z",
+                    ciphertext: CiphertextText(capture.ciphertext(revision)), epoch: ShapeInteger(capture.epoch(revision)),
+                    revision: ShapeInteger(revision))
+        }
+        try await encryption.send(channel: channel, id: messageID, parent: nil, body: "最初")
+        capture.record(revision: 0)
+        let original = message(0)
+        capture.epochValue = 2
+        try await encryption.edit(EncryptedRow(channelID: channel, id: messageID, parentID: nil, userID: user, kind: "message",
+                                               epoch: capture.epoch(0), revision: 0, ciphertext: capture.ciphertext(0)), body: "直した")
+        capture.record(revision: 1)
+        // 新しい版を読んだあと、古い版が届いても、新しい版の本文を警告つきで出す。
+        #expect(controller.decrypt(message(1)).body == "直した")
+        let stale = controller.decrypt(original)
+        #expect(stale.body == "直した")
+        #expect(stale.notice == E2eeText.revisionStale)
+    }
+}
+
+/// 送った暗号文を版ごとに覚える、配布先が自分の端末だけの模擬の API。
+@MainActor
+private final class CapturingRequests: E2eeRequesting {
+    let user: String
+    let store: () -> CryptoStore?
+    let setupServer: FakeSetupServer
+    var epochValue: UInt64 = 1
+    private var accepted: [String: JSONValue] = [:]
+    private var recorded: [UInt64: [String: JSONValue]] = [:]
+
+    init(user: String, store: @escaping () -> CryptoStore?, setupServer: FakeSetupServer) {
+        self.user = user; self.store = store; self.setupServer = setupServer
+    }
+
+    func record(revision: UInt64) { recorded[revision] = accepted }
+    func ciphertext(_ revision: UInt64) -> String { if case .string(let text)? = recorded[revision]?["ciphertext"] { text } else { "" } }
+    func epoch(_ revision: UInt64) -> UInt64 { if case .number(let value)? = recorded[revision]?["epoch"] { UInt64(value) } else { 0 } }
+
+    func e2eeJSON(_ path: String, method: String, body: [String: JSONValue]?) async throws -> JSONValue {
+        if path.hasPrefix("api/e2ee/channels/") {
+            guard case .object(var page) = try JSONDecoder().decode(JSONValue.self, from: Data(try await setupServer.queryOwnKeys(userID: user).utf8)),
+                  let store = store() else { return .object([:]) }
+            page["membership_epoch"] = .number(Double(epochValue))
+            page["user_ids"] = .array([.string(user)])
+            page["device_keys"] = .object([user: .object([store.deviceID: try JSONDecoder().decode(JSONValue.self, from: Data(store.deviceKeys().utf8))])])
+            return .object(page)
+        }
+        if path == "api/e2ee/to_device" { return .object(["undelivered": .array([])]) }
+        if path.hasPrefix("api/messages") { accepted = body ?? [:] }
+        return .object([:])
+    }
+}
