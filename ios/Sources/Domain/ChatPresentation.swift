@@ -78,6 +78,14 @@ struct AttachmentDownload: Decodable, Sendable {
 }
 
 enum MessageTimeline {
+    /// 暗号化チャンネルで、「ここから暗号化されています」の境目を出す位置（読み込んだうちで最初の暗号化したメッセージ
+    /// ＝暗号文か `epoch` のある行の添字）。それより上に行がないとき（先頭）や、暗号化したメッセージがないときは `nil`。
+    static func encryptionStartIndex(in messages: [Message], channelEncrypted: Bool) -> Int? {
+        guard channelEncrypted, let index = messages.firstIndex(where: { $0.ciphertext != nil || $0.epoch != nil }),
+              index > 0 else { return nil }
+        return index
+    }
+
     static func firstUnread(in messages: [Message], state: ChannelReadState?, userID: String) -> String? {
         guard let state, state.has_unread else { return nil }
         let boundary: Date

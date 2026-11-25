@@ -17,7 +17,11 @@ enum E2eeText {
     static let editConflict = "このメッセージはほかの場所で編集されました。読み込み直してから編集してください。"
     static let unencrypted = "このメッセージは暗号化されていないため表示しません。"
     /// 暗号化したメッセージより後ろにある、暗号化されていないメッセージ（正しいサーバーは作れない）。
-    static let unencryptedBadge = "暗号化されていません。暗号化したメッセージより後ろにある、暗号化されていないメッセージです。サーバーが足したか、書き換えたおそれがあります。"
+    /// 暗号化に切り替える前と後の境目（Web の `e2ee.legacy.divider`）。
+    static let encryptionStarts = "ここから暗号化されています"
+    static let unencryptedBadge = "暗号化されていません"
+    /// ⓘ をタップしたときに出す、くわしい説明。
+    static let unencryptedBadgeHelp = "暗号化したメッセージより後ろにある、暗号化されていないメッセージです。暗号化したチャンネルでは、正しいサーバーはこのようなメッセージを作れません。サーバーが足したか、書き換えたおそれがあります。"
     static let editForbidden = "暗号化されていないメッセージは、暗号化チャンネルでは編集できません。"
 }
 

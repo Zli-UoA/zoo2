@@ -393,6 +393,7 @@ final class ConversationStore {
                         shown.e2eeLegacy = true
                         if let first = firstEncrypted, let created = message.date, created > first {
                             shown.e2eeNotice = E2eeText.unencryptedBadge
+                            shown.e2eeNoticeDetail = E2eeText.unencryptedBadgeHelp
                         }
                     } else {
                         // 暗号化チャンネルとして送った行（`epoch` がある）なのに暗号文がない。正しいサーバーは作れないので、

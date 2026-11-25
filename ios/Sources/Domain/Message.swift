@@ -18,6 +18,8 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
     var kind: String? = nil
     /// 復号できなかった理由や、送信者についての注意書き。表示だけに使い、保存も送信もしない。
     var e2eeNotice: String? = nil
+    /// `e2eeNotice` のくわしい説明。あれば、注意の横の ⓘ をタップしたときに出す。表示専用。
+    var e2eeNoticeDetail: String? = nil
     /// 暗号化に切り替える前の平文のメッセージ（暗号文も `epoch` もない行）。本文はそのまま出し、編集させない。表示専用。
     var e2eeLegacy = false
 

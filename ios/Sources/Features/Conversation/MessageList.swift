@@ -31,11 +31,14 @@ private final class MessageViewport {
 private enum MessageTimelineItem: Identifiable {
     case message(Message)
     case divider(id: String, title: String, unread: Bool)
+    /// 暗号化に切り替える前と後の境目（#367。Web の「ここから暗号化されています」）。
+    case encryptionDivider
 
     var id: String {
         switch self {
         case .message(let message): message.id
         case .divider(let id, _, _): id
+        case .encryptionDivider: "encryption-divider"
         }
     }
 }
@@ -112,12 +115,15 @@ struct MessageList: View {
 
     private func timeline(_ messages: [Message], firstUnreadID: String?) -> [MessageTimelineItem] {
         var items: [MessageTimelineItem] = []
+        // 読み込んだうちで最初の暗号化したメッセージ（暗号文か `epoch` のある行）。それより上に行があるときだけ、境目を出す。
+        let firstEncrypted = MessageTimeline.encryptionStartIndex(in: messages, channelEncrypted: store.channel.encrypted == true)
         for (index, message) in messages.enumerated() {
             if message.id != parentID,
                MessageTimeline.startsDay(message, after: index > 0 ? messages[index - 1] : nil), let date = message.date {
                 items.append(.divider(id: "date-divider-" + message.id,
                                       title: date.formatted(.dateTime.year().month().day().weekday().locale(Locale(identifier: "ja_JP"))), unread: false))
             }
+            if index == firstEncrypted { items.append(.encryptionDivider) }
             if firstUnreadID == message.id { items.append(.divider(id: "unread-divider", title: "ここから未読", unread: true)) }
             items.append(.message(message))
         }
@@ -152,6 +158,9 @@ struct MessageList: View {
                     switch item {
                     case .divider(let id, let title, let unread):
                         timelineDivider(title, color: unread ? .red : .primary).accessibilityIdentifier(id)
+                    case .encryptionDivider:
+                        timelineDivider(E2eeText.encryptionStarts, color: .secondary, symbol: "lock.fill")
+                            .accessibilityIdentifier("encryption-divider")
                     case .message(let message):
                         VStack(spacing: 0) {
                             messageRow(message)
@@ -391,10 +400,13 @@ struct MessageList: View {
         let blocked: Bool
     }
 
-    private func timelineDivider(_ title: String, color: Color) -> some View {
+    private func timelineDivider(_ title: String, color: Color, symbol: String? = nil) -> some View {
         HStack(spacing: 10) {
             Rectangle().fill(color.opacity(0.6)).frame(height: 1)
-            Text(title).font(.caption.bold())
+            Group {
+                if let symbol { Label(title, systemImage: symbol) } else { Text(title) }
+            }
+            .font(.caption.bold())
                 .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
                 .layoutPriority(1)
             Rectangle().fill(color.opacity(0.6)).frame(height: 1)
@@ -473,9 +485,8 @@ struct MessageList: View {
                     }
                     if let notice = message.e2eeNotice {
                         // 復号できない理由や、送信者についての注意（Web の `e2ee.undecryptable.*`、`e2ee.sender.*` と同じ文言）。
-                        Label(notice, systemImage: message.e2eeLegacy ? "exclamationmark.triangle" : message.content.isEmpty ? "lock.slash" : "exclamationmark.shield")
-                            .font(.caption).foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        MessageNoticeView(notice: notice, detail: message.e2eeNoticeDetail,
+                                          symbol: message.e2eeLegacy ? "exclamationmark.triangle" : message.content.isEmpty ? "lock.slash" : "exclamationmark.shield")
                             .accessibilityIdentifier("message-e2ee-notice-\(message.id)")
                     }
                     MessageAttachmentsView(attachments: attachments, workspace: workspace, renderState: renderState,
@@ -518,5 +529,44 @@ struct MessageList: View {
         }
         .contentShape(Rectangle())
         .modifier(MessagePressFeedback(isEnabled: hasActions(for: message), isPressing: pressingMessageID == message.id))
+    }
+}
+
+/// 暗号化チャンネルのメッセージに添える注意（アイコンと短い文）。くわしい説明があるときは、アイコンと文の全体が 1 つの
+/// ボタンになり、タップすると説明を出す（右端の ⓘ は、タップできることを示す）。
+private struct MessageNoticeView: View {
+    let notice: String
+    let detail: String?
+    let symbol: String
+    @State private var showingDetail = false
+
+    var body: some View {
+        Group {
+            if let detail {
+                Button { showingDetail = true } label: {
+                    HStack(spacing: 6) {
+                        Label(notice, systemImage: symbol)
+                        Image(systemName: "info.circle")
+                        Spacer(minLength: 0)
+                    }
+                    // 文字の部分だけでなく、行の全体をタップできるようにする。
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint("くわしい説明を表示します")
+                .accessibilityIdentifier("message-e2ee-notice-button")
+                .popover(isPresented: $showingDetail) {
+                    Text(detail)
+                        .font(.callout)
+                        .padding(16)
+                        .frame(maxWidth: 320, alignment: .leading)
+                        .presentationCompactAdaptation(.popover)
+                }
+            } else {
+                Label(notice, systemImage: symbol)
+            }
+        }
+        .font(.caption).foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
