@@ -137,6 +137,7 @@
 		9FFDD5FBD18FD8BDBC47B94C /* IncomingCallNotificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD793353F54041D2944CEE92 /* IncomingCallNotificationTests.swift */; };
 		A1A0D8BAA8707F5FC4E6F288 /* ThreadReplyLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 412038E3D7C38AA9D88ACF7E /* ThreadReplyLink.swift */; };
 		A22185231054340280D73F41 /* RemoteImageDiskCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F4B5FB24C249C614603307E /* RemoteImageDiskCache.swift */; };
+		A37C64E68D24C30960899053 /* OwnDevices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FD56F4CD45990D9ABA568DE /* OwnDevices.swift */; };
 		A40125ACF59590CFE5A3B177 /* ZooCallSchemas.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A7782546A5108FE43CD6F8B /* ZooCallSchemas.swift */; };
 		A446A338342AD0D2D2B7A94A /* ZooCrypto in Frameworks */ = {isa = PBXBuildFile; productRef = DE7BE6CF765EFD50D00DB190 /* ZooCrypto */; };
 		A4C8E5DCD544E5833AE8C8B8 /* GlobalSearchFilters.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7C83D3956A6E92C9C1838B5 /* GlobalSearchFilters.swift */; };
@@ -203,6 +204,7 @@
 		E7BAF6451FD36BC26D0BF384 /* JSONValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6171E0B48D5118B0F608CF07 /* JSONValue.swift */; };
 		E89395C27163AC554CC83EC5 /* SyncCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9F30F10363C425009A500BC /* SyncCache.swift */; };
 		EBA527080A5826BA1A5A33E5 /* PreviewChatClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A7E7F971B693C6723C53450 /* PreviewChatClient.swift */; };
+		EE82F354528C58E4F3CA8A22 /* OwnDevicesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E0A14CA71AF06C828E104FC /* OwnDevicesView.swift */; };
 		EEB943E1E9AC01BE730EE66C /* KeyBackupTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE622584547CC4CFB398CC1A /* KeyBackupTests.swift */; };
 		F007D707EBC1121852F8ED5F /* SiriMessageHandlerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA138117D52DA452807AF1DB /* SiriMessageHandlerTests.swift */; };
 		F02C25FD997391E1F781653F /* SiriMessageHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAC85886AA1B8DCF3C432F37 /* SiriMessageHandler.swift */; };
@@ -314,7 +316,9 @@
 		17B7F6D3EBD0B387B6C5B77A /* NativeCallMediaTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeCallMediaTests.swift; sourceTree = "<group>"; };
 		1A17A85DE13BEC86A1BA4001 /* RemoteImageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteImageTests.swift; sourceTree = "<group>"; };
 		1B5A97DE9BE174514BFEFB1C /* SyncSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncSession.swift; sourceTree = "<group>"; };
+		1E0A14CA71AF06C828E104FC /* OwnDevicesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OwnDevicesView.swift; sourceTree = "<group>"; };
 		1EECD0A3E9993C94D242F919 /* ReactionEmoji.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReactionEmoji.swift; sourceTree = "<group>"; };
+		1FD56F4CD45990D9ABA568DE /* OwnDevices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OwnDevices.swift; sourceTree = "<group>"; };
 		20D98B4BD6EBD1E34085071B /* MessageEncryption.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageEncryption.swift; sourceTree = "<group>"; };
 		21BD9F627E87B53FCAE111D3 /* RecentEmojiTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentEmojiTests.swift; sourceTree = "<group>"; };
 		2404904C875E990F2DE45F43 /* ConversationDirectory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationDirectory.swift; sourceTree = "<group>"; };
@@ -728,6 +732,7 @@
 			isa = PBXGroup;
 			children = (
 				3A81E691EC7FDF48530929C7 /* EncryptionSetupView.swift */,
+				1E0A14CA71AF06C828E104FC /* OwnDevicesView.swift */,
 			);
 			path = Encryption;
 			sourceTree = "<group>";
@@ -816,6 +821,7 @@
 				164ACCCC5DC90C3964A189A9 /* E2eeSetup.swift */,
 				F707CC3FCDB8E4157249FAA5 /* EncryptedAttachments.swift */,
 				20D98B4BD6EBD1E34085071B /* MessageEncryption.swift */,
+				1FD56F4CD45990D9ABA568DE /* OwnDevices.swift */,
 				11C88737BD962A470DDDCD69 /* Passkeys.swift */,
 				38F9FD9EA5349E25978E7C49 /* Reauth.swift */,
 				6AF4206D41FF4FD8CC5016C2 /* StorageKeyStore.swift */,
@@ -1381,6 +1387,8 @@
 				950CD93E89836C3C207F977C /* NotificationDelegate.swift in Sources */,
 				4EEE80F7647418932F36D08C /* NotificationPreview.swift in Sources */,
 				C1D452E8D72D8C510817D063 /* NotificationPreviewKeyStorage.swift in Sources */,
+				A37C64E68D24C30960899053 /* OwnDevices.swift in Sources */,
+				EE82F354528C58E4F3CA8A22 /* OwnDevicesView.swift in Sources */,
 				E5E0B976BBCD0F6C546E78DE /* PDFPreviewView.swift in Sources */,
 				1E7120C4C61C002DCC2A219B /* Passkeys.swift in Sources */,
 				30F58F229E22FC2239A1A5DE /* PeopleView.swift in Sources */,

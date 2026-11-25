@@ -53,6 +53,8 @@ final class E2eeController: ConversationEncryption {
     @ObservationIgnored private var confirmed: [String: (revision: UInt64, result: DecryptedBody)] = [:]
     /// パスキーの RP ID（AuthZ のホスト）。
     @ObservationIgnored private var refreshGeneration = 0
+    /// 端末一覧の API（本番は `APIClient`）。
+    @ObservationIgnored var devicesAPI: (any E2eeOwnDevicesAPI)?
     @ObservationIgnored var rpID = ""
     @ObservationIgnored var passkeys: any PasskeyClient = SystemPasskeyClient()
     /// 直前の再認証の ID トークンを取る（`Reauthenticator`）。
@@ -83,11 +85,24 @@ final class E2eeController: ConversationEncryption {
         let manager = E2eeDeviceManager(api: api, files: files, userID: userID, observeToDevice: toDevice)
         let setup = E2eeSetup(api: api, userID: userID, store: { try await manager.waitForStore() })
         let encryption = MessageEncryption(store: { manager.readyStore }, api: api)
-        return E2eeController(manager: manager, setup: setup, encryption: encryption)
+        let controller = E2eeController(manager: manager, setup: setup, encryption: encryption)
+        controller.devicesAPI = api
+        return controller
     }
 
     /// プレビュー用：準備の失敗を、画面とテストから見えるようにする。
     func setPreviewFailure(_ message: String) { statusError = message }
+
+    /// この端末の `device_id`（登録後。端末一覧で「この端末」を示す）。
+    var currentDeviceID: String? { manager.readyStore?.deviceID }
+
+    func ownDevices() async throws -> [OwnDevice] { try await devicesAPI?.ownDevices() ?? [] }
+    func renameDevice(_ id: String, to name: String) async throws { try await devicesAPI?.renameDevice(id, to: name) }
+    /// 別の端末を削除する（この端末は消さない）。
+    func removeDevice(_ id: String) async throws {
+        guard id.lowercased() != currentDeviceID?.lowercased() else { return }
+        try await devicesAPI?.removeDevice(id)
+    }
 
     /// 待っているパスキーの要求を取り消す。
     func cancelPasskey() { (passkeys as? SystemPasskeyClient)?.cancel() }

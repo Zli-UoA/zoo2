@@ -189,6 +189,12 @@ private struct ProfileSettingsView: View {
                         .tint(AppDesign.externalLink)
                 }
             }
+            if let e2ee = session.workspace?.e2ee, e2ee.status == .unlocked {
+                Section("暗号化") {
+                    NavigationLink("端末") { OwnDevicesView(e2ee: e2ee) }
+                        .accessibilityIdentifier("encryption-devices")
+                }
+            }
             SiriSettingsSection(workspace: session.workspace)
             if let webSettings {
                 Section {
