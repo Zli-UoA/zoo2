@@ -76,10 +76,16 @@ enum UnlockMethod {
 /// パスキーの PRF（`ios/Sources/Data/Crypto/Passkeys.swift`）。
 @MainActor
 protocol PasskeyClient {
+    /// 保留中の要求を取り消す（シートを閉じたとき）。
+    func cancel()
     /// 新しいパスキーを作り、PRF の出力を返す。
     func prfForNewSlot(rpID: String, salt: Data) async throws -> PasskeyResult
     /// 保存したスロットのパスキーで PRF の出力を返す。
     func prfForUnlock(rpID: String, slots: [PasskeySlot]) async throws -> PasskeyResult
+}
+
+extension PasskeyClient {
+    func cancel() {}
 }
 
 struct PasskeyResult {

@@ -41,7 +41,7 @@ final class E2eeController: ConversationEncryption {
     @ObservationIgnored private var decrypted: [String: DecryptedBody] = [:]
     /// パスキーの RP ID（AuthZ のホスト）。
     @ObservationIgnored var rpID = ""
-    @ObservationIgnored let passkeys = SystemPasskeyClient()
+    @ObservationIgnored var passkeys: any PasskeyClient = SystemPasskeyClient()
     /// 直前の再認証の ID トークンを取る（`Reauthenticator`）。
     @ObservationIgnored var reauthenticate: () async throws -> String = { throw ReauthError.browserUnavailable }
 
@@ -96,10 +96,13 @@ final class E2eeController: ConversationEncryption {
     /// 初回設定を始める。返したリカバリーキーを利用者に控えてもらう。
     func beginSetup() throws -> SetupStartHandle { SetupStartHandle(try setup.begin()) }
 
-    /// 初回設定を保存する。再認証が要るときは [E2eeSetupError.reauthRequired] になるので、`reauthenticate` で
-    /// ID トークンを取ってからやり直す（同じ鍵のまま）。
-    func completeSetup(_ start: SetupStartHandle, passkey: (any PasskeyClient, rpID: String)? = nil, label: String? = nil) async throws {
-        if let passkey { try await setup.addSetupPasskey(start.start.session, client: passkey.0, rpID: passkey.rpID, label: label) }
+    /// 初回設定に、パスキー（PRF）のスロットを足す。利用者がパスキーを作る（選ぶ）。保存の前なので、サーバーには何も書かない。
+    func addSetupPasskey(_ start: SetupStartHandle, label: String?) async throws {
+        try await setup.addSetupPasskey(start.start.session, client: passkeys, rpID: rpID, label: label)
+    }
+
+    /// 初回設定を保存する。再認証が要るときは、ここで ID トークンを取ってから、同じ鍵のまま保存し直す。
+    func completeSetup(_ start: SetupStartHandle) async throws {
         do { try await setup.completeSetup(start.start.session, reauth: nil) }
         catch E2eeSetupError.reauthRequired {
             let token = try await reauthenticate()
