@@ -166,6 +166,23 @@ it("does not write on open, freezes the queue and marks read only on demand", as
   expect(mocks.post).toHaveBeenCalledTimes(1);
 });
 
+it("keeps focus on the heading when the conversation changes", async () => {
+  mocks.unread = [unreadItem("a"), unreadItem("b")];
+  mocks.get.mockResolvedValue(mocks.unread);
+  mocks.post.mockResolvedValue({ data: { channel_id: "a", has_unread: false } });
+  render(createElement(CatchUpScreen));
+  const heading = await screen.findByRole("heading", { name: "未読キャッチアップ" });
+  await waitFor(() => expect(document.activeElement).toBe(heading));
+
+  await clickMarkRead();
+  await waitFor(() => expect(document.activeElement).toBe(heading));
+
+  await act(async () => {
+    fireEvent.click(screen.getByText("未読のまま次へ"));
+  });
+  await waitFor(() => expect(document.activeElement).toBe(heading));
+});
+
 it("stays on the page and shows an error when the write fails", async () => {
   mocks.unread = [unreadItem("a")];
   mocks.get.mockResolvedValue(mocks.unread);

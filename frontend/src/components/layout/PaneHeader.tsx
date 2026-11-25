@@ -30,6 +30,7 @@ export function ScreenHeader({
   iconClassName?: string;
   title: string;
   titleId: string;
+  /** 見出しへフォーカスを移す呼び出し元が渡す。渡すと `tabIndex={-1}` も設定される。 */
   titleRef?: Ref<HTMLHeadingElement>;
   description?: string;
   actions?: ReactNode;
