@@ -863,6 +863,13 @@ impl Devices {
             return;
         };
         if key.code == KeyCode::Esc {
+            // 保存している途中（と保存を始める前）は、Enter と同じく閉じない。再認証を待ちきれなければ、期限の
+            // あとで「保存し直す」の画面になり、閉じられる。
+            if entry.view.phase == SasPhase::Done
+                && matches!(entry.save, SaveState::Saving | SaveState::Idle)
+            {
+                return;
+            }
             if entry.view.finished() {
                 sas.dismiss(&txn);
                 self.sas_entries.remove(&txn);
@@ -2294,8 +2301,8 @@ mod tests {
         assert!(text.contains("絵文字の検証を始められませんでした"));
     }
 
-    #[test]
-    fn enter_does_not_close_a_verification_that_is_still_saving() {
+    #[tokio::test]
+    async fn enter_does_not_close_a_verification_that_is_still_saving() {
         let mut devices = devices();
         for save in [SaveState::Idle, SaveState::Saving] {
             devices.sas_entries.insert(
@@ -2321,14 +2328,23 @@ mod tests {
                 },
             );
             devices.sas_open = Some("t".into());
-            press(&mut devices, KeyCode::Enter);
-            assert_eq!(
-                devices.sas_open.as_deref(),
-                Some("t"),
-                "{save:?} では閉じない"
-            );
-            assert!(devices.sas_entries.contains_key("t"));
+            for key in [KeyCode::Enter, KeyCode::Esc] {
+                press(&mut devices, key);
+                assert_eq!(
+                    devices.sas_open.as_deref(),
+                    Some("t"),
+                    "{save:?} では {key:?} で閉じない"
+                );
+                assert!(devices.sas_entries.contains_key("t"));
+            }
         }
+        // 中止した検証は、これまでどおり Esc で閉じられる。
+        if let Some(entry) = devices.sas_entries.get_mut("t") {
+            entry.view.phase = SasPhase::Cancelled;
+        }
+        press(&mut devices, KeyCode::Esc);
+        assert!(!devices.sas_entries.contains_key("t"));
+        assert_eq!(devices.sas_open, None);
     }
 
     #[test]
