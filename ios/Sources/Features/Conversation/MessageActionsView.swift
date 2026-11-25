@@ -44,7 +44,8 @@ struct MessageActionsView: View {
     private enum Page { case actions, reactions, edit }
     private var currentMessage: Message? { store.message(id: message.id) }
     private var canRetainEditor: Bool { store.active && !store.blocked && currentMessage?.user_id == store.userID }
-    private var canEdit: Bool { store.canPost && canRetainEditor }
+    /// 暗号化に切り替える前の平文のメッセージは、編集させない（サーバーも拒否する）。
+    private var canEdit: Bool { store.canPost && canRetainEditor && currentMessage?.e2eeLegacy != true }
     private var detents: Set<PresentationDetent> {
         if dynamicTypeSize.isAccessibilitySize || page == .edit { return [.large] }
         if page == .reactions { return [.medium, .large] }

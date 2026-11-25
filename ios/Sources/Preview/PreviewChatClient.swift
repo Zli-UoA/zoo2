@@ -107,10 +107,16 @@ final class PreviewChatClient: ChatClient {
             // 暗号化チャンネル：鍵がまだ届いていない暗号文の行と、平文の行（表示しない）。
             let encryptedID = "77777777-7777-4777-8777-777777777777"
             allMessages += [
+                // 暗号化に切り替える前の平文（印なし）、鍵がまだ届いていない暗号文、暗号化したメッセージより後ろの平文（警告）、
+                // 暗号文がないのに `epoch` がある行（表示しない）。
+                Message(id: "77777777-7777-4777-8777-777777777700", user_id: colleague.id, channel_id: encryptedID,
+                        content: "これは暗号化に切り替える前の平文です", created_at: "2026-11-18T09:01:00Z"),
                 Message(id: "77777777-7777-4777-8777-777777777701", user_id: colleague.id, channel_id: encryptedID, content: "",
                         created_at: "2026-11-18T09:02:00Z", ciphertext: CiphertextText("{}"), epoch: ShapeInteger(1), revision: ShapeInteger(0)),
                 Message(id: "77777777-7777-4777-8777-777777777702", user_id: colleague.id, channel_id: encryptedID,
-                        content: "これは暗号化前の平文です", created_at: "2026-11-18T09:03:00Z")
+                        content: "これは暗号化したあとに紛れた平文です", created_at: "2026-11-18T09:03:00Z"),
+                Message(id: "77777777-7777-4777-8777-777777777703", user_id: colleague.id, channel_id: encryptedID,
+                        content: "暗号文がないのに epoch がある行", created_at: "2026-11-18T09:04:00Z", epoch: ShapeInteger(1))
             ]
         }
         if ProcessInfo.processInfo.arguments.contains("--uitesting-wrapped-reactions") {

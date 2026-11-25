@@ -380,13 +380,26 @@ final class ConversationStore {
         }
         rows = rows.filter { $0.value.deleted_at == nil }
         if channel.encrypted == true, let e2ee {
+            // 最初の暗号化したメッセージ（暗号文か `epoch` のある行）の作成日時。これより後ろの平文の行だけに警告を付ける。
+            let firstEncrypted = rows.values.filter { $0.ciphertext != nil || $0.epoch != nil }
+                .compactMap { $0.date }.min()
             // 復号した本文は、この表示のためだけにメモリーに置く（保存しない）。
             for (id, message) in rows {
                 var shown = message
-                // 暗号文のない（平文の）行は、サーバーが `content` を返していても表示しない。
                 guard message.ciphertext != nil else {
-                    shown.content = ""
-                    shown.e2eeNotice = E2eeText.unencrypted
+                    if message.epoch == nil {
+                        // 暗号化に切り替える前の平文のメッセージ（#367）。本文はそのまま出し、編集させない。区切りより上の行には
+                        // 印を付けず、暗号化したメッセージより後ろの行だけに警告を出す（#564）。
+                        shown.e2eeLegacy = true
+                        if let first = firstEncrypted, let created = message.date, created > first {
+                            shown.e2eeNotice = E2eeText.unencryptedBadge
+                        }
+                    } else {
+                        // 暗号化チャンネルとして送った行（`epoch` がある）なのに暗号文がない。正しいサーバーは作れないので、
+                        // サーバーが `content` を返していても表示しない。
+                        shown.content = ""
+                        shown.e2eeNotice = E2eeText.unencrypted
+                    }
                     rows[id] = shown
                     continue
                 }
@@ -503,7 +516,7 @@ final class ConversationStore {
         defer { if epoch == accessGeneration { mutationInProgress = false } }
         if channel.encrypted == true {
             do {
-                guard let e2ee else { return false }
+                guard let e2ee, !message.e2eeLegacy else { return false }
                 try await e2ee.edit(message, body: content)
                 try Task.checkCancellation()
                 guard active, !blocked, epoch == accessGeneration else { return false }
