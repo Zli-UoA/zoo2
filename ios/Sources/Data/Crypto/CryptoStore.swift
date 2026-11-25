@@ -21,12 +21,23 @@ struct CryptoStoreFiles: Sendable {
         SHA256.hash(data: Data("\(server)\n\(userID)".utf8)).map { String(format: "%02x", $0) }.joined().prefix(32).description
     }
 
-    /// 暗号ストアの置き場（Application Support。iCloud バックアップと端末間の転送には入れない）。
+    /// 暗号ストアの置き場。通知拡張が `state.json` を読めるよう、App Group（`group.works.zli.zoo`）のコンテナーに置く。
+    /// App Group を使えない環境（署名のない単体テストなど）では Application Support に置く。どちらも iCloud バックアップと
+    /// 端末間の転送には入れない。以前の置き場（Application Support）に暗号ストアがあれば、App Group に移す。
     static func defaultRoot() throws -> URL {
-        var root = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
-                                               appropriateFor: nil, create: true)
+        let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
             .appendingPathComponent("e2ee", isDirectory: true)
+        var root = support
+        if let group = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: NotificationE2ee.appGroup) {
+            root = group.appendingPathComponent("e2ee", isDirectory: true)
+        }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        if root != support, let old = try? FileManager.default.contentsOfDirectory(at: support, includingPropertiesForKeys: nil) {
+            for directory in old {
+                let target = root.appendingPathComponent(directory.lastPathComponent)
+                if !FileManager.default.fileExists(atPath: target.path) { try? FileManager.default.moveItem(at: directory, to: target) }
+            }
+        }
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
         try root.setResourceValues(values)

@@ -27,6 +27,7 @@
 		146577E5F16B76E7B2A927EF /* SiriSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 658DA7218E890A9040E0F7D1 /* SiriSettingsSection.swift */; };
 		1A095FA85FC3872A764B6A70 /* MessageAttachmentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54A9ADE68E4D89ACABEC8B5E /* MessageAttachmentsView.swift */; };
 		1B7F6BCAE4C67B7914263744 /* CallView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35169546CA55D414B0D9CF10 /* CallView.swift */; };
+		1E345147D874C0023DABB249 /* StorageKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F72D12E386E2E9A6CC724C5 /* StorageKeyStore.swift */; };
 		1E45AF3447442D972CC66160 /* ShortcutActionsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A207CEFA59094C7050CE45B8 /* ShortcutActionsUITests.swift */; };
 		1E7120C4C61C002DCC2A219B /* Passkeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11C88737BD962A470DDDCD69 /* Passkeys.swift */; };
 		1F6A754BDC30EAD03664B785 /* CryptoBindingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD8C8688E49CEFE743C30BBB /* CryptoBindingTests.swift */; };
@@ -95,7 +96,9 @@
 		668F32106D62E0CC1E7850A2 /* ProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E17CDC3496D288695B1949AA /* ProfileView.swift */; };
 		671D24762ECA6B88367C5656 /* AttachmentRenderState.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC38AB430AA1777D763AB387 /* AttachmentRenderState.swift */; };
 		68A8F60E90FC71AB8BF78D0C /* ChatPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B38BCEDE645D8F594A866F0A /* ChatPresentationTests.swift */; };
+		68EF88513D59031559437778 /* StorageKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F72D12E386E2E9A6CC724C5 /* StorageKeyStore.swift */; };
 		6B6933E1A14C269CC7E2D77E /* E2eeSetup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 164ACCCC5DC90C3964A189A9 /* E2eeSetup.swift */; };
+		6BC223CD7FD3D52B4B8F74A1 /* NotificationE2ee.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A31DE9EE4DC0F2517A90777 /* NotificationE2ee.swift */; };
 		6F7EC3297CC479A2FF50706E /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 84988680574ACD3D2856EBF0 /* LaunchScreen.storyboard */; };
 		6FE23D9AF44A22C289554B41 /* PushNotice.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12854D256475220A637BE892 /* PushNotice.swift */; };
 		718B5FC14955CAF0EDA62737 /* GlobalSearchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10E68D0BFA3AD771F645D5F4 /* GlobalSearchTests.swift */; };
@@ -133,6 +136,7 @@
 		995EEAB8889BBD27E75B2964 /* ZooCallActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4A1AC523FAE860C85755B77 /* ZooCallActivityWidget.swift */; };
 		99794E66037117E84CAA1F71 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BB00E9CE7E9A70261228578 /* NotificationService.swift */; };
 		9A4DDE5B4D51C6CA317BD616 /* ShortcutActionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AA44B4DC3CF86D63903163E /* ShortcutActionsTests.swift */; };
+		9AC045F013C244351464EDB9 /* NotificationE2ee.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A31DE9EE4DC0F2517A90777 /* NotificationE2ee.swift */; };
 		9AED95A41F1F2D71B0198908 /* CryptoStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 568AEF9DEE3D0E39CBC266A3 /* CryptoStore.swift */; };
 		9B1C8F73EE8ED592041BDEF5 /* IncomingCall.swift in Sources */ = {isa = PBXBuildFile; fileRef = 548B66131DFF335268964C41 /* IncomingCall.swift */; };
 		9C30C79D4F9978252500D2EA /* RemoteImageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A17A85DE13BEC86A1BA4001 /* RemoteImageTests.swift */; };
@@ -170,7 +174,6 @@
 		BE7DA1EC2DC261567099EB0F /* MessageContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01020741494B6B776CDE495 /* MessageContentView.swift */; };
 		BEEF1A1A714CBB47266B98B4 /* CallSessionJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F7B87B8B0F657CCE321046B /* CallSessionJournal.swift */; };
 		BF07EBA56C7BCC575B5C0F2E /* AppOrientation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C4E223B8FAF667DB327FCDB /* AppOrientation.swift */; };
-		C19977D5966C909DEBB90F72 /* StorageKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AF4206D41FF4FD8CC5016C2 /* StorageKeyStore.swift */; };
 		C1CAE5CD6841B0267CEAEC4F /* ChannelBrowser.swift in Sources */ = {isa = PBXBuildFile; fileRef = D961E80DEF3F6F4A5185A447 /* ChannelBrowser.swift */; };
 		C1D452E8D72D8C510817D063 /* NotificationPreviewKeyStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B18DFF6412E210868419C7D /* NotificationPreviewKeyStorage.swift */; };
 		C31C91820F333AD6CA379BAD /* PublicProfileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53517A665AD0645C38D84A55 /* PublicProfileTests.swift */; };
@@ -309,6 +312,7 @@
 		0CA6BC996A1C94A23F95F16E /* GlobalSearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalSearchView.swift; sourceTree = "<group>"; };
 		0D12A552929A7154204E90F7 /* emoji-shortcodes.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "emoji-shortcodes.json"; sourceTree = "<group>"; };
 		0D55FF32D15ADC5CFB4DDDB1 /* AttachmentSaveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentSaveTests.swift; sourceTree = "<group>"; };
+		0F72D12E386E2E9A6CC724C5 /* StorageKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageKeyStore.swift; sourceTree = "<group>"; };
 		102E33938A627DB54B47D79E /* SiriVocabulary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SiriVocabulary.swift; sourceTree = "<group>"; };
 		10E68D0BFA3AD771F645D5F4 /* GlobalSearchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalSearchTests.swift; sourceTree = "<group>"; };
 		111FAF4B91FBC87D2EE0DF36 /* E2eeDeviceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = E2eeDeviceManager.swift; sourceTree = "<group>"; };
@@ -340,6 +344,7 @@
 		27E0AB62DCE96156089FAD00 /* WatchSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchSession.swift; sourceTree = "<group>"; };
 		282DDBDDEB96DE924165AE86 /* emoji-kitchen.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "emoji-kitchen.json"; sourceTree = "<group>"; };
 		288C868343D5CF6B3975C4BF /* ChatPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatPresentation.swift; sourceTree = "<group>"; };
+		2A31DE9EE4DC0F2517A90777 /* NotificationE2ee.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationE2ee.swift; sourceTree = "<group>"; };
 		2A8013648AFC26DFB51FBA44 /* PreviewE2eeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewE2eeTests.swift; sourceTree = "<group>"; };
 		2D5E04EDE6036CD270B1CB4C /* TypingClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingClient.swift; sourceTree = "<group>"; };
 		337CC9AC583295489E718778 /* ZooNotificationService.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = ZooNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -387,7 +392,6 @@
 		6A7719EDD1AC7F79FA44F275 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		6AA44B4DC3CF86D63903163E /* ShortcutActionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutActionsTests.swift; sourceTree = "<group>"; };
 		6ABBF4DB653068B85AF91376 /* ZooWatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZooWatchApp.swift; sourceTree = "<group>"; };
-		6AF4206D41FF4FD8CC5016C2 /* StorageKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageKeyStore.swift; sourceTree = "<group>"; };
 		6D1B04C11A2D816B7C0D96E6 /* ReactionStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReactionStoreTests.swift; sourceTree = "<group>"; };
 		6D95CB109EEB5106D7F5BA3B /* WatchCompanion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchCompanion.swift; sourceTree = "<group>"; };
 		6E574B38B51C1F97994593C4 /* ChannelThreadsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChannelThreadsTests.swift; sourceTree = "<group>"; };
@@ -848,7 +852,6 @@
 				1FD56F4CD45990D9ABA568DE /* OwnDevices.swift */,
 				11C88737BD962A470DDDCD69 /* Passkeys.swift */,
 				38F9FD9EA5349E25978E7C49 /* Reauth.swift */,
-				6AF4206D41FF4FD8CC5016C2 /* StorageKeyStore.swift */,
 			);
 			path = Crypto;
 			sourceTree = "<group>";
@@ -966,7 +969,9 @@
 		D054A5346644D49BA5B613F9 /* Shared */ = {
 			isa = PBXGroup;
 			children = (
+				2A31DE9EE4DC0F2517A90777 /* NotificationE2ee.swift */,
 				51FA111F133136EC511F356C /* NotificationPreview.swift */,
+				0F72D12E386E2E9A6CC724C5 /* StorageKeyStore.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -1332,8 +1337,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				6BC223CD7FD3D52B4B8F74A1 /* NotificationE2ee.swift in Sources */,
 				4BB114C8A59D8BBF6C2BF478 /* NotificationPreview.swift in Sources */,
 				99794E66037117E84CAA1F71 /* NotificationService.swift in Sources */,
+				68EF88513D59031559437778 /* StorageKeyStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1415,6 +1422,7 @@
 				07392C24AF69434194F5765B /* NativeChatClient.swift in Sources */,
 				4F4D1850FA0057D0613FA47F /* NotificationController.swift in Sources */,
 				950CD93E89836C3C207F977C /* NotificationDelegate.swift in Sources */,
+				9AC045F013C244351464EDB9 /* NotificationE2ee.swift in Sources */,
 				4EEE80F7647418932F36D08C /* NotificationPreview.swift in Sources */,
 				C1D452E8D72D8C510817D063 /* NotificationPreviewKeyStorage.swift in Sources */,
 				A37C64E68D24C30960899053 /* OwnDevices.swift in Sources */,
@@ -1449,7 +1457,7 @@
 				F02C25FD997391E1F781653F /* SiriMessageHandler.swift in Sources */,
 				146577E5F16B76E7B2A927EF /* SiriSettingsSection.swift in Sources */,
 				2A1CD6E6753953CC6D6FD3FC /* SiriVocabulary.swift in Sources */,
-				C19977D5966C909DEBB90F72 /* StorageKeyStore.swift in Sources */,
+				1E345147D874C0023DABB249 /* StorageKeyStore.swift in Sources */,
 				E89395C27163AC554CC83EC5 /* SyncCache.swift in Sources */,
 				02A54FEBFF890844AAA7A343 /* SyncCoding.swift in Sources */,
 				52258DE1EDF9A81B95E600F4 /* SyncLease.swift in Sources */,

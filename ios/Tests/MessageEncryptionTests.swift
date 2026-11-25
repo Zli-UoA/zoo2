@@ -174,6 +174,42 @@ struct MessageEncryptionTests {
         #expect(EncryptedAttachmentFiles.shared.decrypt(tampered, id: shown.id) == nil)
     }
 
+    @Test func 通知拡張は通知の暗号文の行を暗号ストアの読み取りだけで復号する() async throws {
+        let (server, sender, receiver, encryption, _) = try await makePair()
+        defer { sender.cleanUp(); receiver.cleanUp() }
+        let secret = "通知の本文"
+        try await encryption.send(channel: channel, id: messageID, parent: nil, body: secret)
+        _ = try receiver.store.processToDevice(server.delivered, keysQuery: dump(.object(try await server.snapshot())))
+        // 通知拡張が読む App Group の置き場に、受信端末の暗号ストアを写す（拡張は読み取りだけ）。
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.copyItem(at: receiver.directory, to: root.appendingPathComponent("store"))
+        let storageKey = try #require(try receiver.files.keys.loadExisting())
+        let before = try Data(contentsOf: root.appendingPathComponent("store/state.json"))
+
+        let accepted = row(server)
+        let cipherObject = try JSONSerialization.jsonObject(with: Data(accepted.ciphertext.utf8))
+        func info(user: String = user, recipient: String = user, ciphertext: Any = cipherObject) -> [AnyHashable: Any] {
+            ["user_id": user, "e2ee_v1": [
+                "recipient_id": recipient,
+                "message": ["channel_id": channel, "message_id": messageID, "parent_id": NSNull(), "user_id": user,
+                            "message_kind": "message", "epoch": accepted.epoch, "revision": accepted.revision, "ciphertext": ciphertext]]]
+        }
+        #expect(NotificationE2ee.body(userInfo: info(), roots: [root], loadKey: { _ in storageKey }) == secret)
+        // 読み取りだけ：状態は変わらない。
+        #expect(try Data(contentsOf: root.appendingPathComponent("store/state.json")) == before)
+        // 本文は 240 コードポイントまで。
+        #expect((NotificationE2ee.body(userInfo: info(), roots: [root], loadKey: { _ in storageKey }) ?? "").unicodeScalars.count <= 240)
+        // 保存鍵が違う、宛先が違う、置き場がない、暗号文が壊れているときは、復号しない。
+        #expect(NotificationE2ee.body(userInfo: info(), roots: [root], loadKey: { _ in Data(repeating: 1, count: 32) }) == nil)
+        #expect(NotificationE2ee.body(userInfo: info(), roots: [root], loadKey: { _ in nil }) == nil)
+        #expect(NotificationE2ee.body(userInfo: info(recipient: "00000000-0000-4000-8000-0000000000ff"), roots: [root], loadKey: { _ in storageKey }) == nil)
+        #expect(NotificationE2ee.body(userInfo: info(), roots: [], loadKey: { _ in storageKey }) == nil)
+        #expect(NotificationE2ee.body(userInfo: info(ciphertext: ["sender_key": "x", "session_id": "y"]), roots: [root], loadKey: { _ in storageKey }) == nil)
+        #expect(NotificationE2ee.body(userInfo: ["user_id": user], roots: [root], loadKey: { _ in storageKey }) == nil)
+    }
+
     @Test func 送信した本文は送信端末でも再起動後に読める() async throws {
         let (server, sender, receiver, encryption, _) = try await makePair()
         defer { sender.cleanUp(); receiver.cleanUp() }
