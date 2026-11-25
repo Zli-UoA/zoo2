@@ -54,6 +54,49 @@ struct ConversationEncryptionTests {
         #expect(shown[c]?.e2eeNotice == E2eeText.unencrypted)
     }
 
+    private func plaintext(_ id: String, _ content: String, at second: Int) -> Message {
+        Message(id: id, user_id: userID, channel_id: channel.id, content: content, created_at: "2026-11-25T09:00:0\(second)Z")
+    }
+
+    @Test("暗号化に切り替える前の平文は本文を出し印を付けず、暗号化したメッセージより後ろの平文だけに警告を出す")
+    func legacyPlaintextBeforeAndAfterEncryption() {
+        let encryption = FakeEncryption()
+        let before = UUID().uuidString, encrypted = UUID().uuidString, after = UUID().uuidString, tampered = UUID().uuidString
+        encryption.bodies[encrypted] = DecryptedBody(body: "暗号文")
+        let store = store(encryption)
+        store.apply([plaintext(before, "切り替え前", at: 1), message(encrypted, at: 2), plaintext(after, "紛れた平文", at: 3),
+                     Message(id: tampered, user_id: userID, channel_id: channel.id, content: "書き換え",
+                             created_at: "2026-11-25T09:00:04Z", epoch: ShapeInteger(1))])
+        let shown = Dictionary(uniqueKeysWithValues: store.messages.map { ($0.id, $0) })
+        // 区切りより上：本文はそのまま、印なし、編集は禁止。
+        #expect(shown[before]?.content == "切り替え前")
+        #expect(shown[before]?.e2eeNotice == nil)
+        #expect(shown[before]?.e2eeLegacy == true)
+        // 暗号化したメッセージより後ろ：本文は出すが警告を付ける。
+        #expect(shown[after]?.content == "紛れた平文")
+        #expect(shown[after]?.e2eeNotice == E2eeText.unencryptedBadge)
+        #expect(shown[after]?.e2eeLegacy == true)
+        // 暗号文がないのに `epoch` がある行は、本文を出さない。
+        #expect(shown[tampered]?.content == "")
+        #expect(shown[tampered]?.e2eeNotice == E2eeText.unencrypted)
+        #expect(shown[tampered]?.e2eeLegacy == false)
+        // 暗号化したメッセージがまだないチャンネルでは、平文の行に警告を付けない。
+        let plainOnly = self.store(encryption)
+        plainOnly.apply([plaintext(UUID().uuidString, "だけ", at: 5)])
+        #expect(plainOnly.messages.first?.e2eeNotice == nil)
+    }
+
+    @Test("暗号化に切り替える前の平文は編集できない")
+    func legacyPlaintextCannotBeEdited() async {
+        let encryption = FakeEncryption()
+        let store = store(encryption)
+        var own = plaintext(UUID().uuidString, "古い平文", at: 1)
+        own.e2eeLegacy = true
+        let result = await store.edit(own, content: "直した")
+        #expect(!result)
+        #expect(encryption.edited.isEmpty)
+    }
+
     @Test("鍵が届いたら読み直して本文を表示する")
     func redecryptsWhenKeysArrive() {
         let encryption = FakeEncryption()
