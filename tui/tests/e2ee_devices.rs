@@ -91,6 +91,10 @@ struct State {
     stop: Option<Stop>,
     /// 直前の再認証を確かめるか（dev モードのサーバーは確かめない）。
     require_reauth: bool,
+    /// 鍵バックアップの行の一覧の 1 ページの行数（`None` なら 1 ページで全部返す）。
+    page_size: Option<usize>,
+    /// 鍵バックアップへのアップロードを、この回数だけ受け付けたあとの 1 回を 500 で失敗させる。
+    fail_upload_after: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -536,12 +540,30 @@ impl Respond for Backend {
                         .any(|v| v["version"] == json!(version) && v["deleted"] == false)
                         .then(|| a.rows.get(&version).cloned().unwrap_or_default())
                 }) {
-                    Some(rows) => ResponseTemplate::new(200)
-                        .set_body_json(json!({ "sessions": rows, "next": null })),
+                    Some(rows) => {
+                        // `after` は前のページの終わりの位置（偽のカーソル）。
+                        let start: usize = query("after").map_or(0, |after| after.parse().unwrap());
+                        let size = state.page_size.unwrap_or(usize::MAX);
+                        let end = start.saturating_add(size).min(rows.len());
+                        let next = if end < rows.len() {
+                            json!(end.to_string())
+                        } else {
+                            Value::Null
+                        };
+                        ResponseTemplate::new(200)
+                            .set_body_json(json!({ "sessions": rows[start..end], "next": next }))
+                    }
                     None => coded(404, "E2EE_NOT_FOUND", Value::Null),
                 }
             }
             ("POST", "/api/e2ee/key_backup/keys") => {
+                if let Some(remaining) = state.fail_upload_after.as_mut() {
+                    if *remaining == 0 {
+                        state.fail_upload_after = None;
+                        return ResponseTemplate::new(500);
+                    }
+                    *remaining -= 1;
+                }
                 let account = state.accounts.entry(me.clone()).or_default();
                 let current = account.current_version().map(|v| v["version"].clone());
                 if current != query("version").map(Value::String) {
@@ -570,6 +592,8 @@ struct World {
     backend: Backend,
     uri: String,
     _dirs: Vec<tempfile::TempDir>,
+    /// ユーザーごとの暗号ストアの置き場所（開き直すため）。
+    roots: Vec<(String, std::path::PathBuf)>,
 }
 
 impl World {
@@ -588,6 +612,7 @@ impl World {
             _server: server,
             backend,
             _dirs: Vec::new(),
+            roots: Vec::new(),
         }
     }
 
@@ -604,6 +629,7 @@ impl World {
         let dir = tempfile::tempdir().unwrap();
         let root = store::crypto_root(dir.path());
         let mut store = CryptoStore::open(&root, user).unwrap().store;
+        self.roots.push((user.to_owned(), root.clone()));
         let upload = store.prepare_key_upload(0, false).unwrap().unwrap();
         store.mark_registered().unwrap();
         store.mark_keys_published().unwrap();
@@ -635,6 +661,12 @@ impl World {
             .await
             .unwrap();
         (store, recovery_key.to_string())
+    }
+
+    /// `user` の最後に作った端末の暗号ストアを、同じ置き場所から開き直す（呼ぶ前に前のストアを閉じる）。
+    fn reopen(&self, user: &str) -> SharedStore {
+        let (_, root) = self.roots.iter().rev().find(|(u, _)| u == user).unwrap();
+        Arc::new(Mutex::new(CryptoStore::open(root, user).unwrap().store))
     }
 
     fn account<T>(&self, user: &str, f: impl FnOnce(&Account) -> T) -> T {
@@ -1122,6 +1154,9 @@ async fn the_chosen_scope_and_devices_survive_until_the_revocation_is_recorded()
         .await
         .save_revocation_intent(intent.clone())
         .unwrap();
+    // 閉じて開き直しても残る（`state.json` に書いた）。
+    drop(alice);
+    let alice = world.reopen(ALICE);
     assert_eq!(alice.lock().await.revocation_intent(), Some(intent));
     assert!(alice.lock().await.has_pending_revocation());
     let opened = revocation::open_secret_storage(&api, ALICE, &recovery_key)
@@ -1138,9 +1173,86 @@ async fn the_chosen_scope_and_devices_survive_until_the_revocation_is_recorded()
     )
     .await
     .unwrap();
-    // 失効の記録と同じ書き込みで消す。
+    // 失効の記録と同じ書き込みで消す（開き直しても同じ）。
+    drop(alice);
+    let alice = world.reopen(ALICE);
     assert_eq!(alice.lock().await.revocation_intent(), None);
     assert!(alice.lock().await.revocation_state().unwrap().is_some());
+}
+
+#[tokio::test]
+async fn backup_migration_goes_page_by_page_and_resumes_after_a_failed_upload() {
+    let mut world = World::new(false).await;
+    let (alice, recovery_key) = world.set_up(ALICE).await;
+    let api = world.api(ALICE);
+    // 古い版に 3 件のセッションと、復号できない 1 件（行の照合に失敗する）を入れる。
+    for _ in 0..3 {
+        receive_room_key(&alice, ALICE).await;
+    }
+    assert!(matches!(
+        setup::upload_key_backup(&api, &alice).await.unwrap(),
+        setup::BackupUploadResult::Done { uploaded: 3 }
+    ));
+    {
+        let mut state = world.backend.0.lock().unwrap();
+        let rows = state
+            .accounts
+            .get_mut(ALICE)
+            .unwrap()
+            .rows
+            .get_mut("1")
+            .unwrap();
+        let mut broken = rows[0].clone();
+        broken["session_id"] = json!("broken");
+        rows.insert(0, broken);
+        // 2 件ずつのページにし、2 ページ目のアップロードを失敗させる。
+        state.page_size = Some(2);
+        state.fail_upload_after = Some(1);
+    }
+    let opened = revocation::open_secret_storage(&api, ALICE, &recovery_key)
+        .await
+        .unwrap();
+    let mut session = revocation::begin(
+        &api,
+        &alice,
+        ALICE,
+        RevocationScope::Full,
+        Vec::new(),
+        &opened,
+        None,
+    )
+    .await
+    .unwrap();
+    session.new_recovery_key(ALICE).unwrap();
+    let progress = |_| {};
+    revocation::run(&api, &alice, ALICE, &mut session, None, &progress)
+        .await
+        .unwrap_err();
+    // 途中で止まったので、古い版は消さない。捨てた行の数は、読んだページまでの累計で記録してある。
+    world.account(ALICE, |a| assert_eq!(a.versions[0]["deleted"], false));
+    let stored = alice.lock().await.revocation_state().unwrap().unwrap();
+    assert_eq!(stored.dropped_total(), 1);
+    // 続きから実行すると、最初のページから読み直し、累計を置き換える（足し直さない）。
+    let outcome = revocation::run(&api, &alice, ALICE, &mut session, None, &progress)
+        .await
+        .unwrap();
+    assert_eq!(outcome.dropped_sessions, 1);
+    world.account(ALICE, |a| {
+        assert_eq!(
+            a.versions[0]["deleted"], true,
+            "すべてのページを送ってから消す"
+        );
+        let current = a.current_version().unwrap()["version"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let moved: std::collections::BTreeSet<&str> = a.rows[&current]
+            .iter()
+            .map(|row| row["session_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(moved.len(), 3, "復号できた 3 件をすべて移した");
+        assert!(!moved.contains("broken"));
+    });
 }
 
 /// 検証の知らせを集める。
