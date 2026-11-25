@@ -409,4 +409,181 @@ class RepositoryTest {
         assertTrue(cancelled.isCompleted)
         http.close()
     }
+
+    // ---- on-demand（Android の messages）----
+
+    private val onDemandSchema =
+        """{"id":{"type":"text"},"content":{"type":"text"},"created_at":{"type":"text"},"parent_id":{"type":"text"}}"""
+
+    private fun protocolHeaders(handle: String = "h", offset: String = "1_0") =
+        headersOf(
+            "electric-handle" to listOf(handle),
+            "electric-offset" to listOf(offset),
+            "electric-cursor" to listOf("1"),
+            "electric-schema" to listOf(onDemandSchema),
+            "content-type" to listOf("application/json"),
+        )
+
+    private fun message(index: Int) =
+        """{"key":"m$index","value":{"id":"m${index.toString().padStart(3, '0')}","content":"c$index","created_at":"2026-11-${(index % 28 + 1).toString().padStart(2, '0')}T00:00:00Z","parent_id":null},"headers":{"operation":"insert"}}"""
+
+    private fun snapshot(messages: List<String>) =
+        """{"metadata":{"xmin":"1","xmax":"1","xip_list":[],"snapshot_mark":1,"database_lsn":"1"},"data":[${messages.joinToString(",")}]}"""
+
+    @Test
+    fun onDemandMessagesReadOnePageThroughSubsetAndNeverTheWholeShape() = runTest {
+        val platform = FakePlatform()
+        val subsets = mutableListOf<Map<String, String>>()
+        var wholeShapeRequests = 0
+        val http =
+            HttpClient(
+                MockEngine { request ->
+                    val p = request.url.parameters
+                    when {
+                        p["subset__where"] != null -> {
+                            subsets += p.entries().associate { it.key to it.value.first() }
+                            respond(snapshot((1..3).map(::message)), headers = protocolHeaders())
+                        }
+                        p["offset"] == "-1" -> {
+                            wholeShapeRequests++
+                            respond("[]", headers = protocolHeaders())
+                        }
+                        p["offset"] == "now" ->
+                            respond("""[{"headers":{"control":"up-to-date"}}]""", headers = protocolHeaders())
+                        else -> awaitCancellation()
+                    }
+                }
+            )
+        val table =
+            SyncedTable("messages", config, platform, http, backgroundScope,
+                mapOf("channel_id" to "channel-a"), options, onDemand = true)
+        try {
+            table.rows.first { it.isNotEmpty() }
+            assertEquals(0, wholeShapeRequests)
+            assertEquals(3, table.rows.value.size)
+            val first = subsets.first()
+            assertEquals("50", first["subset__limit"])
+            assertEquals("created_at DESC, id DESC", first["subset__order_by"])
+            assertEquals("parent_id IS NULL AND deleted_at IS NULL", first["subset__where"])
+            assertEquals("changes_only", first["log"])
+            val state = table.pageStates.first { it[PageScope.Main]?.loaded == true }.getValue(PageScope.Main)
+            assertFalse(state.hasOlder)
+            assertFalse(table.loading.value)
+        } finally {
+            table.close()
+            http.close()
+        }
+    }
+
+    @Test
+    fun onDemandOlderPageContinuesFromTheOldestRowAndStopsWhenItIsNotFull() = runTest {
+        val platform = FakePlatform()
+        val subsets = mutableListOf<Map<String, String>>()
+        val http =
+            HttpClient(
+                MockEngine { request ->
+                    val p = request.url.parameters
+                    when {
+                        p["subset__where"] != null -> {
+                            subsets += p.entries().associate { it.key to it.value.first() }
+                            val rows = if (subsets.size == 1) (100 until 150).map(::message) else listOf(message(1))
+                            respond(snapshot(rows), headers = protocolHeaders())
+                        }
+                        p["offset"] == "now" ->
+                            respond("""[{"headers":{"control":"up-to-date"}}]""", headers = protocolHeaders())
+                        else -> awaitCancellation()
+                    }
+                }
+            )
+        val table =
+            SyncedTable("messages", config, platform, http, backgroundScope,
+                mapOf("channel_id" to "channel-a"), options, onDemand = true)
+        try {
+            val first = table.pageStates.first { it[PageScope.Main]?.loaded == true }.getValue(PageScope.Main)
+            assertTrue(first.hasOlder)
+            assertNotNull(first.oldest)
+            assertTrue(table.loadOlder(PageScope.Main))
+            val second = subsets[1]
+            assertTrue(second.getValue("subset__where").contains("created_at < \$1 OR (created_at = \$1 AND id < \$2)"))
+            val bound = Json.parseToJsonElement(second.getValue("subset__params")).jsonObject
+            assertEquals(first.oldest!!.first, bound.getValue("1").jsonPrimitive.content)
+            assertEquals(first.oldest!!.second, bound.getValue("2").jsonPrimitive.content)
+            val after = table.pageStates.value.getValue(PageScope.Main)
+            assertFalse(after.hasOlder)
+            // 取り終わった範囲は、もう取りに行かない。
+            assertFalse(table.loadOlder(PageScope.Main))
+            assertEquals(2, subsets.size)
+        } finally {
+            table.close()
+            http.close()
+        }
+    }
+
+    @Test
+    fun onDemandKeepsCachedRowsUntilTheFirstPageAndNeverPersistsAnEmptyInitialSnapshot() = runTest {
+        val cached = obj("id" to "old", "content" to "cached", "created_at" to "2026-01-01T00:00:00Z")
+        val written = mutableMapOf<String, String>()
+        val platform =
+            object : Platform by FakePlatform() {
+                override suspend fun readCache(key: String) =
+                    if (":v3:" in key) JsonArray(listOf(cached)).toString() else null
+
+                override suspend fun writeCache(key: String, value: String) {
+                    written[key] = value
+                }
+            }
+        val release = CompletableDeferred<Unit>()
+        val http =
+            HttpClient(
+                MockEngine { request ->
+                    val p = request.url.parameters
+                    when {
+                        p["subset__where"] != null -> {
+                            release.await()
+                            respond(snapshot(listOf(message(1))), headers = protocolHeaders())
+                        }
+                        p["offset"] == "now" ->
+                            respond("""[{"headers":{"control":"up-to-date"}}]""", headers = protocolHeaders())
+                        else -> awaitCancellation()
+                    }
+                }
+            )
+        val table =
+            SyncedTable("messages", config, platform, http, backgroundScope,
+                mapOf("channel_id" to "channel-a"), options, onDemand = true)
+        try {
+            table.loading.first { !it }
+            runCurrent()
+            // 最初のページが届く前: 控えの行を残し、空の `[]` を書かない。
+            assertEquals(listOf(cached), table.replicatedRows.value)
+            assertTrue(written.isEmpty())
+            release.complete(Unit)
+            table.rows.first { rows -> rows.any { it.text("id") == "m001" } }
+            assertEquals(listOf("m001"), table.rows.value.map { it.text("id") })
+        } finally {
+            table.close()
+            http.close()
+        }
+    }
+
+    @Test
+    fun onDemandKeepsOnlyTheNewestPageInTheOfflineCache() {
+        val rows =
+            (1..120).map {
+                obj("id" to "m${it.toString().padStart(3, '0')}",
+                    "created_at" to "2026-11-01T00:${(it / 60).toString().padStart(2, '0')}:${(it % 60).toString().padStart(2, '0')}Z")
+            } + obj("id" to "reply", "parent_id" to "m001", "created_at" to "2026-12-01T00:00:00Z") +
+                obj("id" to "gone", "deleted_at" to "2026-12-01T00:00:00Z", "created_at" to "2026-12-02T00:00:00Z")
+        val kept = feedCacheRows(rows)
+        assertEquals(MESSAGE_PAGE_SIZE, kept.size)
+        assertEquals("m120", kept.first().text("id"))
+        assertTrue(kept.none { it.text("id") == "reply" || it.text("id") == "gone" })
+    }
+
+    @Test
+    fun newestFirstOrdersRowsOfTheSameTimeById() {
+        val a = obj("id" to "a", "created_at" to "t")
+        val b = obj("id" to "b", "created_at" to "t")
+        assertEquals(listOf(b, a), listOf(a, b).sortedWith(::compareNewestFirst))
+    }
 }

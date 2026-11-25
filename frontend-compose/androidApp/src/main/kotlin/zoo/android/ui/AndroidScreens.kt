@@ -11,6 +11,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -25,6 +26,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -51,6 +53,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
+import kotlinx.coroutines.flow.first
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -100,12 +103,15 @@ internal sealed interface AndroidScreen {
         val focusMessage: String? = null,
         /** Changes on each request to show [focusMessage] (a search result opened again), unlike the id. */
         val focusRequest: String? = focusMessage,
+        /** 古いページが残っていて、いま取れる。 */
+        val loadOlder: Boolean = false,
     ) : AndroidScreen
     data class Thread(
         val channelName: String, val root: TimelineItem, val replies: List<TimelineItem>, val input: InputState,
         val focusMessage: String? = null,
         /** Changes on each request to show [focusMessage] (a search result opened again), unlike the id. */
         val focusRequest: String? = focusMessage,
+        val loadOlder: Boolean = false,
     ) : AndroidScreen
     data class Post(val root: TimelineItem, val replies: List<TimelineItem>, val input: InputState) : AndroidScreen
     data class ChannelSettings(val channel: String, val groups: List<SettingsGroup>) : AndroidScreen
@@ -185,6 +191,8 @@ internal sealed interface AndroidUiAction {
     data object CreateChannel : AndroidUiAction
     data object CreateDm : AndroidUiAction
     data object LoadOlderPosts : AndroidUiAction
+    /** チャンネル（開いているスレッドがあれば、その返信）の、次の古い 1 ページ。 */
+    data object LoadOlderMessages : AndroidUiAction
     data class SelectTimeline(val id: String) : AndroidUiAction
     data class SelectPostVisibility(val id: String) : AndroidUiAction
     data object StartCall : AndroidUiAction
@@ -317,7 +325,8 @@ private fun RenderAndroidScreen(
                             { dispatch(AndroidUiAction.StartCall) })
                     }
                 }) {
-                    TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = interaction.swipeReply, allowThreads = true, focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true)
+                    TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = interaction.swipeReply, allowThreads = true, focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true,
+                        loadEarlier = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderMessages) } } else null)
                 }
             }
             is AndroidScreen.Thread -> {
@@ -326,7 +335,8 @@ private fun RenderAndroidScreen(
                 Text("# ${screen.channelName}", Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                     color = colors.secondary, fontSize = 13.sp)
                 TimelineWithInput(listOf(screen.root) + screen.replies, screen.input, colors, dispatch,
-                    focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true)
+                    focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true,
+                    loadEarlier = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderMessages) } } else null)
             }
             is AndroidScreen.Post -> {
                 PageHeader("投稿", colors, onBack = back)
@@ -477,9 +487,22 @@ private fun ColumnScope.TimelineWithInput(
     focusRequest: String? = focusMessage,
     posts: Boolean = false,
     hideIdleHandle: Boolean = false,
+    loadEarlier: (() -> Unit)? = null,
 ) {
     val scroll = rememberLazyListState()
     var positioned by rememberSaveable { mutableStateOf(false) }
+    // スレッドは、親が先頭にあるので、最初から先頭に見える。利用者がドラッグするまでは、古い返信を読まない。
+    var dragged by remember { mutableStateOf(false) }
+    LaunchedEffect(scroll) {
+        scroll.interactionSource.interactions.first { it is DragInteraction.Start }
+        dragged = true
+    }
+    val atTop by remember { derivedStateOf { scroll.firstVisibleItemIndex == 0 } }
+    val requestEarlier by rememberUpdatedState(loadEarlier)
+    // 先頭に来たら、古い 1 ページを取る。末尾へ初期位置を合わせる前に呼ぶと、開いた直後に全履歴を読んでしまう。
+    LaunchedEffect(atTop, positioned, dragged, loadEarlier != null, entries.size) {
+        if (atTop && (if (allowThreads) positioned else dragged)) requestEarlier?.invoke()
+    }
     var openedTarget by rememberSaveable { mutableStateOf<String?>(null) }
     val focusedIndex = entries.indexOfFirst { it.id == focusMessage }
     LaunchedEffect(input.expanded, focusMessage, focusRequest, focusedIndex, entries.size) {

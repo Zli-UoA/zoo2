@@ -93,6 +93,8 @@ internal class AndroidPlatform(
             cache.write(key, value)
         }
 
+    override suspend fun removeCache(key: String) = withContext(Dispatchers.IO) { cache.delete(key) }
+
     fun close() { images.close() }
 
     private suspend fun clear() = withContext(NonCancellable + Dispatchers.IO) {

@@ -127,7 +127,49 @@ class ZooApi(val config: Config, val platform: Platform, private val http: HttpC
     }
 }
 
-/** One Shape per resource/channel; its owner closes the HTTP stream on navigation or logout. */
+/** 1 回の subset snapshot で取る行数と、オフライン用の控えの行数。Web の `MESSAGE_PAGE_SIZE` と揃える。 */
+const val MESSAGE_PAGE_SIZE = 50
+
+/** on-demand の messages で、1 ページずつ読む範囲。 */
+sealed interface PageScope {
+    /** チャンネル直下（`parent_id IS NULL`）。 */
+    data object Main : PageScope
+
+    /** `rootId` への返信。 */
+    data class Replies(val rootId: String) : PageScope
+}
+
+/**
+ * 範囲ごとの読み込み状態。`loaded` は最初のページが画面の行に反映済みであること、`hasOlder` は直前のページが
+ * 満杯（= まだ古い行があるかもしれない）であること。
+ */
+data class PageState(
+    val loaded: Boolean = false,
+    val loading: Boolean = false,
+    val hasOlder: Boolean = false,
+    /** 取得済みの範囲の古い端（`created_at` と `id`）。 */
+    val oldest: Pair<String, String>? = null,
+)
+
+/** `created_at` の降順に、同じ時刻でも順序が決まるよう `id` を足した並び。 */
+internal fun compareNewestFirst(a: Row, b: Row): Int {
+    val byTime = b.text("created_at").compareTo(a.text("created_at"))
+    return if (byTime != 0) byTime else b.text("id").compareTo(a.text("id"))
+}
+
+/** オフライン用の控えに残す行: チャンネル直下で、削除されていない最新のページ。 */
+internal fun feedCacheRows(rows: List<Row>): List<Row> =
+    rows
+        .filter { it.text("parent_id").isEmpty() && !it.present("deleted_at") }
+        .sortedWith(::compareNewestFirst)
+        .take(MESSAGE_PAGE_SIZE)
+
+/**
+ * One Shape per resource/channel; its owner closes the HTTP stream on navigation or logout.
+ *
+ * `onDemand` の表は `log=changes_only` で購読し、行は subset snapshot（[loadOlder] / [loadAround]）で
+ * 1 ページずつ取る。新着・編集・削除は、取得済みの行についてだけ live で届く。
+ */
 class SyncedTable(
     private val name: String,
     private val config: Config,
@@ -138,6 +180,7 @@ class SyncedTable(
     private val streamOptions: ShapeStreamOptions = ShapeStreamOptions(liveSse = true),
     private val synchronize: Boolean = true,
     private val persist: Boolean = true,
+    private val onDemand: Boolean = false,
 ) {
     private val tableScope =
         CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
@@ -161,22 +204,147 @@ class SyncedTable(
     val error = MutableStateFlow<Throwable?>(null)
     val persistenceError = MutableStateFlow(false)
     private val seenTxids = MutableStateFlow<Set<String>>(emptySet())
+    /** 取得した subset snapshot の可視範囲。snapshot に含まれて捨てられた変更の txid を、確認済みとして扱う。 */
+    private val snapshotMetas = MutableStateFlow<List<SnapshotMetadata>>(emptyList())
 
     suspend fun awaitTxId(txid: String, timeout: Long = 15_000) {
-        withTimeout(timeout) { seenTxids.first { txid in it } }
+        val id = txid.toULongOrNull()
+        withTimeout(timeout) {
+            combine(seenTxids, snapshotMetas) { seen, metas ->
+                    txid in seen || (id != null && metas.any { isVisibleInSnapshot(id, it) })
+                }
+                .first { it }
+        }
     }
+
+    private class Requested(val main: Boolean, val subset: SubsetParams)
+
+    /** 範囲ごとの読み込み状態（on-demand のみ）。 */
+    private val pages = MutableStateFlow<Map<PageScope, PageState>>(emptyMap())
+    val pageStates: StateFlow<Map<PageScope, PageState>> = pages.asStateFlow()
+    /** 最初のページが画面の行に反映済みか。それまでは、控えの行を live の行で上書きしない。 */
+    private val accepting = MutableStateFlow(false)
+    private val requested = MutableStateFlow<List<Requested>>(emptyList())
+    private var refetchPending = false
+    private var streamReady = CompletableDeferred<ShapeStream>()
+    private var acceptNow: () -> Unit = {}
 
     private var stream: ShapeStream? = null
     private var refreshJob: Job? = null
     private val cacheKey =
-        "zoo-compose:v2:${config.apiBaseUrl}:${config.shapeProxyPath}:${config.shapeMode}:${config.electricShapeUrl}:${config.userId}:$name:${params.entries.sortedBy { it.key }}"
+        "zoo-compose:${if (onDemand) "v3" else "v2"}:${config.apiBaseUrl}:${config.shapeProxyPath}:${config.shapeMode}:${config.electricShapeUrl}:${config.userId}:$name:${params.entries.sortedBy { it.key }}"
+    /** on-demand に移す前の、全件入りの控え（添付・リアクションの別 Shape の分も）。読まずに消す。 */
+    private val legacyCacheKeys =
+        listOf(name, "attachments", "message_reactions").map { resource ->
+            "zoo-compose:v2:${config.apiBaseUrl}:${config.shapeProxyPath}:${config.shapeMode}:${config.electricShapeUrl}:${config.userId}:$resource:${params.entries.sortedBy { it.key }}"
+        }
     private var worker = startSync(readCache = true)
 
-    private fun startSync(readCache: Boolean): Job =
-        tableScope.launch {
+    private fun pageSubset(scope: PageScope, before: Pair<String, String>?): SubsetParams {
+        val conditions = mutableListOf<String>()
+        val values = linkedMapOf<String, JsonPrimitive>()
+        when (scope) {
+            PageScope.Main -> conditions += "parent_id IS NULL"
+            is PageScope.Replies -> {
+                values["1"] = JsonPrimitive(scope.rootId)
+                conditions += "parent_id = \$1"
+            }
+        }
+        conditions += "deleted_at IS NULL"
+        if (before != null) {
+            val a = values.size + 1
+            val b = a + 1
+            values["$a"] = JsonPrimitive(before.first)
+            values["$b"] = JsonPrimitive(before.second)
+            conditions += "(created_at < \$$a OR (created_at = \$$a AND id < \$$b))"
+        }
+        return SubsetParams(
+            where = conditions.joinToString(" AND "),
+            params = values,
+            limit = MESSAGE_PAGE_SIZE,
+            orderBy = "created_at DESC, id DESC",
+        )
+    }
+
+    private suspend fun fetchSubset(main: Boolean, subset: SubsetParams): SubsetSnapshot {
+        val source = streamReady.await()
+        requested.update { it + Requested(main, subset) }
+        val snapshot = source.requestSnapshot(subset)
+        snapshotMetas.update { (it + snapshot.metadata).takeLast(32) }
+        // 行は snapshot の配信の中で Shape に入っている。最初のメインのページが届いたら、画面へ反映する。
+        if (main && !accepting.value) accepting.value = true
+        if (accepting.value) acceptNow()
+        return snapshot
+    }
+
+    /**
+     * 次の 1 ページを取る。最初の呼び出し（`loaded` が偽）は、最新のページ。失敗や取得済みの範囲は何もせず
+     * 偽を返す。範囲ごとに 1 件ずつだけ取る。
+     */
+    suspend fun loadOlder(scope: PageScope): Boolean {
+        if (!onDemand || !synchronize) return false
+        val current = pages.value[scope] ?: PageState()
+        if (current.loading || (current.loaded && !current.hasOlder)) return false
+        pages.update { it + (scope to current.copy(loading = true)) }
+        try {
+            val snapshot = fetchSubset(scope == PageScope.Main, pageSubset(scope, current.oldest))
+            val values = snapshot.data.mapNotNull { it.jsonObject["value"] as? JsonObject }
+            val oldest = values.lastOrNull()?.let { it.text("created_at") to it.text("id") } ?: current.oldest
+            pages.update {
+                it + (scope to PageState(
+                    loaded = true,
+                    loading = false,
+                    hasOlder = snapshot.data.size >= MESSAGE_PAGE_SIZE,
+                    oldest = oldest,
+                ))
+            }
+            return true
+        } catch (e: CancellationException) {
+            pages.update { it + (scope to current) }
+            throw e
+        } catch (_: Exception) {
+            pages.update { it + (scope to current) }
+            return false
+        }
+    }
+
+    /** 通知・リンク・検索の対象や、スレッドの親を、1 行だけ取る。窓の外でもよく、削除済みの行も取る。 */
+    suspend fun loadAround(id: String): Boolean {
+        if (!onDemand || !synchronize) return false
+        return try {
+            val subset =
+                SubsetParams(
+                    where = "id = \$1",
+                    params = mapOf("1" to JsonPrimitive(id)),
+                    limit = 1,
+                    orderBy = "created_at DESC, id DESC",
+                )
+            fetchSubset(false, subset).data.isNotEmpty()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun startSync(readCache: Boolean): Job {
+        streamReady = CompletableDeferred()
+        val ready = streamReady
+        accepting.value = false
+        refetchPending = false
+        requested.value = emptyList()
+        pages.value = emptyMap()
+        return tableScope.launch {
             if (!synchronize) {
                 loading.value = false
                 return@launch
+            }
+            if (onDemand && persist && readCache) {
+                try {
+                    legacyCacheKeys.forEach { platform.removeCache(it) }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {}
             }
             try {
                 (if (persist && readCache) platform.readCache(cacheKey) else null)?.let { raw ->
@@ -219,7 +387,14 @@ class SyncedTable(
                     headers = { if (direct) emptyMap() else platform.headers() },
                     queryParams = { shapeParams },
                 )
-            val source = ShapeStream(shapeClient, scope = this, options = streamOptions)
+            val source =
+                ShapeStream(
+                    shapeClient,
+                    request =
+                        if (onDemand) ShapeRequest(log = LogMode.ChangesOnly) else ShapeRequest(),
+                    scope = this,
+                    options = streamOptions,
+                )
             stream = source
             val materialized = Shape(source)
             val pendingTxids = mutableSetOf<String>()
@@ -240,26 +415,36 @@ class SyncedTable(
             fun acceptSnapshot(rows: List<Row>) {
                 serverRows.value = rows
                 error.value = null
-                successfulSnapshot.value = rows.toList()
                 loading.value = false
-                snapshots.trySend(rows.toList())
+                if (onDemand) {
+                    // 全行のコピーも、全行の JSON も持たない。控えは最新のページだけ。
+                    snapshots.trySend(feedCacheRows(rows))
+                } else {
+                    successfulSnapshot.value = rows.toList()
+                    snapshots.trySend(rows.toList())
+                }
             }
+            acceptNow = { acceptSnapshot(materialized.currentRows) }
+            fun control(message: JsonElement): String? =
+                message.jsonObject["headers"]?.jsonObject?.get("control")?.jsonPrimitive?.content
             // Shape is subscribed first, so this observes its consistent materialized snapshot.
             val unsubscribeTx =
                 source.subscribe(
                     { batch ->
-                        if (
-                            batch.any {
-                                it.jsonObject["headers"]
-                                    ?.jsonObject
-                                    ?.get("control")
-                                    ?.jsonPrimitive
-                                    ?.content == "must-refetch"
-                            }
-                        ) {
+                        val upToDate = batch.any { control(it) == "up-to-date" }
+                        val changed =
+                            batch.any { it.jsonObject["headers"]?.jsonObject?.containsKey("operation") == true }
+                        if (batch.any { control(it) == "must-refetch" }) {
                             pendingTxids.clear()
-                            serverRows.value = emptyList()
-                            loading.value = true
+                            if (onDemand) {
+                                // 表示中の行は、取り直した範囲で置き換わるまで残す。
+                                accepting.value = false
+                                refetchPending = true
+                                if (serverRows.value.isEmpty()) loading.value = true
+                            } else {
+                                serverRows.value = emptyList()
+                                loading.value = true
+                            }
                         }
                         val txids =
                             batch.flatMap { message ->
@@ -269,7 +454,29 @@ class SyncedTable(
                                     .orEmpty()
                             }
                         pendingTxids.addAll(txids)
-                        if (materialized.isUpToDate) {
+                        if (onDemand) {
+                            if (upToDate && refetchPending) {
+                                refetchPending = false
+                                val again = requested.value
+                                requested.value = emptyList()
+                                launch {
+                                    try {
+                                        again.forEach { fetchSubset(it.main, it.subset) }
+                                    } catch (e: CancellationException) {
+                                        throw e
+                                    } catch (e: Exception) {
+                                        error.value = e
+                                        loading.value = false
+                                    }
+                                }
+                            }
+                            if (accepting.value && (changed || upToDate)) acceptSnapshot(materialized.currentRows)
+                            if (upToDate || (accepting.value && changed)) {
+                                seenTxids.value =
+                                    (seenTxids.value.toList() + pendingTxids).takeLast(512).toSet()
+                                pendingTxids.clear()
+                            }
+                        } else if (materialized.isUpToDate) {
                             acceptSnapshot(materialized.currentRows)
                             seenTxids.value =
                                 (seenTxids.value.toList() + pendingTxids).takeLast(512).toSet()
@@ -286,13 +493,19 @@ class SyncedTable(
                 if (failure != null) {
                     error.value = failure
                     loading.value = false
-                } else if (materialized.isUpToDate) {
+                } else if (!onDemand && materialized.isUpToDate) {
                     acceptSnapshot(change.rows)
                 }
             }
             try {
                 materialized.awaitRows()
-                acceptSnapshot(materialized.currentRows)
+                if (onDemand) {
+                    // changes_only の最初の up-to-date は空。行は subset snapshot が届くまで反映しない。
+                    ready.complete(source)
+                    launch { loadOlder(PageScope.Main) }
+                } else {
+                    acceptSnapshot(materialized.currentRows)
+                }
                 awaitCancellation()
             } catch (e: CancellationException) {
                 throw e
@@ -300,6 +513,8 @@ class SyncedTable(
                 error.value = e
                 loading.value = false
             } finally {
+                ready.completeExceptionally(IllegalStateException("Shape stream closed"))
+                acceptNow = {}
                 cacheWriter.cancel()
                 unsubscribeTx()
                 materialized.close()
@@ -307,6 +522,7 @@ class SyncedTable(
                 shapeClient.close()
             }
         }
+    }
 
     suspend fun write(
         api: ZooApi,
@@ -317,6 +533,8 @@ class SyncedTable(
         key: String? = row?.let(::rowKey),
     ): JsonElement {
         check(key == null || !optimistic.value.containsKey(key)) { "Write already pending" }
+        // changes_only は購読を始めた時点より前の変更を送らない。最初のページが反映されるまで待つ。
+        if (onDemand && synchronize) withTimeoutOrNull(10_000) { accepting.first { it } }
         if (key != null) optimistic.update { it + (key to row) }
         try {
             val result = api.request(path, method, body)
@@ -421,9 +639,7 @@ class Repository(
             "users" -> users
             "channel_users" -> members
             "notifications" -> notifications
-            "messages",
-            "attachments",
-            "message_reactions" ->
+            "messages" ->
                 dynamic.getOrPut(name to channelId) {
                     require(channelId.isNotBlank())
                     SyncedTable(
@@ -434,6 +650,7 @@ class Repository(
                         scope,
                         mapOf("channel_id" to channelId),
                         synchronize = synchronize,
+                        onDemand = true,
                     )
                 }
             else -> error("Unknown Shape resource")
@@ -447,10 +664,6 @@ class Repository(
     }
 
     fun messages(channelId: String) = table("messages", channelId)
-
-    fun attachments(channelId: String) = table("attachments", channelId)
-
-    fun reactions(channelId: String) = table("message_reactions", channelId)
 
     fun refresh() {
         (listOf(channels, users, members, notifications) + dynamic.values).forEach { it.refresh() }

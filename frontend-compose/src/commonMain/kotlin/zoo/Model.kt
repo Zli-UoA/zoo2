@@ -82,6 +82,9 @@ interface Platform {
 
     suspend fun writeCache(key: String, value: String)
 
+    /** 同期キャッシュを 1 件消す。キーごとに消せない保存先では何もしない。 */
+    suspend fun removeCache(key: String) {}
+
     fun uuid(): String
 
     fun now(): String

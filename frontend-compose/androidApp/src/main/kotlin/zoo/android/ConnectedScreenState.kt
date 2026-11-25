@@ -839,6 +839,9 @@ internal class ConnectedScreenState(
             is AndroidUiAction.SelectPhoto -> request { postFiles.add(platform.invoke("pickRecentPhoto", action.id)) }
             is AndroidUiAction.SelectTimeline -> home.select(action.id)
             AndroidUiAction.LoadOlderPosts -> home.older()
+            AndroidUiAction.LoadOlderMessages -> if (channelId.isNotBlank()) app.scope.launch {
+                app.repo.messages(channelId).loadOlder(app.thread?.let(PageScope::Replies) ?: PageScope.Main)
+            }
             is AndroidUiAction.SelectPostVisibility -> postVisibility = action.id
             AndroidUiAction.MinimizeCall, AndroidUiAction.FloatCall -> Unit
             AndroidUiAction.Answer -> phone.answer()

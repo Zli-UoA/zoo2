@@ -24,6 +24,9 @@ import zoo.android.ui.*
 import zoo.phone.PhoneController
 import zoo.android.phone.rememberCallImage
 
+/** 窓の外の対象まで古い方へ広げる、1 ページずつの読み込みの上限。 */
+private const val MAX_FOCUS_PAGES = 20
+
 @Composable
 internal fun ConnectedScreens(
     session: Session,
@@ -45,24 +48,16 @@ internal fun ConnectedScreens(
     val channel = channels.find { it.text("id") == channelId }
     val channelMembers = memberships.filter { it.text("channel_id") == channelId }
     val member = channelMembers.any { it.text("user_id") == session.config.userId }
-    val rows = if (channelId == null) emptyList() else {
-        val table = remember(channelId) { session.repo.messages(channelId) }
-        DisposableEffect(channelId) { onDispose { session.repo.releaseChannel(channelId) } }
-        val messages by table.rows.collectAsState()
+    val messageTable = if (channelId == null) null else remember(channelId) { session.repo.messages(channelId) }
+    if (channelId != null) DisposableEffect(channelId) { onDispose { session.repo.releaseChannel(channelId) } }
+    val rows = if (messageTable == null) emptyList() else {
+        val messages by messageTable.rows.collectAsState()
         messages
     }
-    val files = if (channelId == null) emptyList() else {
-        val table = remember(channelId) { session.repo.attachments(channelId) }
-        val values by table.rows.collectAsState()
-        values
+    val pageStates = if (messageTable == null) emptyMap() else {
+        val states by messageTable.pageStates.collectAsState()
+        states
     }
-    val reactions = if (channelId == null) emptyList() else {
-        val table = remember(channelId) { session.repo.reactions(channelId) }
-        val values by table.rows.collectAsState()
-        values
-    }
-    val filesByMessage = remember(files) { files.groupBy { it.text("message_id") } }
-    val reactionsByMessage = remember(reactions) { reactions.groupBy { it.text("message_id") } }
     val previewEndpoints by session.previews.endpoints.collectAsState()
     val previewService = previewEndpoints.first
     val usersById = remember(users) { users.associateBy { it.text("id") } }
@@ -72,10 +67,9 @@ internal fun ConnectedScreens(
     // 暗号ストアが変わったら（解錠、鍵の受信、鍵バックアップの取り込み）、表示中の行を復号し直す。
     val encryption = platform.messageEncryption
     val cryptoChanges by (encryption?.changes ?: remember { kotlinx.coroutines.flow.MutableStateFlow(0L) }).collectAsState()
-    val messageEntries by produceState(emptyList<TimelineItem>(), rows, usersById, encrypted, filesByMessage, reactionsByMessage, canPost, cryptoChanges) {
-        val ordered = rows.filterNot { it.present("deleted_at") }.sortedBy { it.text("created_at") }
+    val messageEntries by produceState(emptyList<TimelineItem>(), rows, usersById, encrypted, canPost, cryptoChanges) {
+        val ordered = rows.filterNot { it.present("deleted_at") }.sortedWith(compareBy({ it.text("created_at") }, { it.text("id") }))
         value = ordered.map { row ->
-            val id = row.text("id")
             val decrypted = if (row.present("ciphertext")) {
                 try { encryption?.decrypt(row) ?: DecryptedBody(notice = "e2ee.sendUnavailable") }
                 catch (cancelled: CancellationException) { throw cancelled }
@@ -83,8 +77,8 @@ internal fun ConnectedScreens(
             } else null
             val data = if (decrypted != null) row + ("content" to JsonPrimitive(decrypted.body.orEmpty())) else row
             val entry = state.entry(kotlinx.serialization.json.JsonObject(data), usersById,
-                if (decrypted != null) emptyList() else filesByMessage[id].orEmpty(),
-                reactionsByMessage[id].orEmpty(), writable = canPost, allowPreview = !encrypted)
+                if (decrypted != null) emptyList() else displayAttachments(row),
+                displayReactions(row), writable = canPost, allowPreview = !encrypted)
             encryptedEntry(entry, row, decrypted, encrypted, session::t)
         }
     }
@@ -109,6 +103,27 @@ internal fun ConnectedScreens(
         rows.find { it.text("id") == currentThread }?.present("deleted_at") == true
     LaunchedEffect(focusMessage, focusParent) {
         if (!focusParent.isNullOrBlank()) session.thread = focusParent
+    }
+    // 窓の外の対象（通知・リンク・検索）は、1 行だけ先に取ってから、含むまで古い方へ 1 ページずつ広げる（回数に上限あり）。
+    LaunchedEffect(messageTable, focusMessage) {
+        val table = messageTable ?: return@LaunchedEffect
+        val target = focusMessage ?: return@LaunchedEffect
+        if (table.rows.value.none { it.text("id") == target }) table.loadAround(target)
+        val row = table.rows.value.find { it.text("id") == target } ?: return@LaunchedEffect
+        val range = row.text("parent_id").takeIf { it.isNotEmpty() }?.let(PageScope::Replies) ?: PageScope.Main
+        repeat(MAX_FOCUS_PAGES) {
+            val state = table.pageStates.value[range]
+            if (pageCovers(state?.oldest, row.text("created_at"), row.text("id"))) return@LaunchedEffect
+            if (state != null && state.loaded && !state.hasOlder) return@LaunchedEffect
+            if (!table.loadOlder(range)) delay(100)
+        }
+    }
+    // スレッドの親（窓の外かもしれない）と、返信の最新の 1 ページ。
+    LaunchedEffect(messageTable, currentThread) {
+        val table = messageTable ?: return@LaunchedEffect
+        val thread = currentThread ?: return@LaunchedEffect
+        if (table.rows.value.none { it.text("id") == thread }) table.loadAround(thread)
+        table.loadOlder(PageScope.Replies(thread))
     }
     val call = phone.call
     val callChannelId = call?.target ?: channelId
@@ -331,12 +346,14 @@ internal fun ConnectedScreens(
                 (!threadDetail.flag("tracked") || threadDetail.text("membership") == "joined"),
                 users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }).copy(notices = recipientLines), focusMessage,
             focusRequest = focusRequest,
+            loadOlder = pageStates[PageScope.Replies(currentThread.orEmpty())]?.let { it.hasOlder && !it.loading } == true,
           )
         }
         channel != null -> AndroidScreen.Conversation(channelId.orEmpty(), channel.text("channel_name"), channel.text("description"),
             withEncryptionBoundary(messages.filter { it.id in conversationEntries }, rowsById, encrypted, session::t), state.input(channelId.orEmpty(), canPost,
                 users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }).copy(notices = recipientLines),
-            canCall = channel.flag("is_dm") && member && !encrypted, focusMessage = focusMessage, focusRequest = focusRequest)
+            canCall = channel.flag("is_dm") && member && !encrypted, focusMessage = focusMessage, focusRequest = focusRequest,
+            loadOlder = pageStates[PageScope.Main]?.let { it.hasOlder && !it.loading } == true)
         else -> AndroidScreen.Channels(state.channelSections(channels, usersById, memberships))
     }
     val instanceHosts = when (screen) {
