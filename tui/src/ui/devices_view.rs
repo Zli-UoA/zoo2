@@ -113,10 +113,11 @@ pub fn cleanup_reasons(
 }
 
 /// 幅 `width` の枠に入れたときの行数（枠を除く）。折り返す行には 1 行足す。
-/// 枠（幅 `width`）の内側の幅で、行を文字ごとに折り返す。描画と、選んだ行やスクロールの計算で同じ行を使う
+/// 枠（幅 `width`）の内側の幅で、行を書記素ごとに（書記素の文字列の表示幅で）折り返す。描画と、選んだ行やスクロールの計算で同じ行を使う
 /// ため、描画の側では折り返さない。返す 2 つ目は、元の各行が始まる折り返し後の行の番号。
 fn wrap_lines(lines: Vec<Line<'static>>, width: u16) -> (Vec<Line<'static>>, Vec<usize>) {
-    use unicode_width::UnicodeWidthChar;
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
     let inner = usize::from(width.saturating_sub(2)).max(1);
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut starts = Vec::with_capacity(lines.len());
@@ -132,8 +133,8 @@ fn wrap_lines(lines: Vec<Line<'static>>, width: u16) -> (Vec<Line<'static>>, Vec
         for span in line.spans {
             let style = span.style;
             let mut text = String::new();
-            for ch in span.content.chars() {
-                let w = ch.width().unwrap_or(0);
+            for grapheme in span.content.graphemes(true) {
+                let w = grapheme.width();
                 if used + w > inner && used > 0 {
                     if !text.is_empty() {
                         current.push(Span::styled(std::mem::take(&mut text), style));
@@ -141,7 +142,7 @@ fn wrap_lines(lines: Vec<Line<'static>>, width: u16) -> (Vec<Line<'static>>, Vec
                     out.push(Line::from(std::mem::take(&mut current)).style(line_style));
                     used = 0;
                 }
-                text.push(ch);
+                text.push_str(grapheme);
                 used += w;
             }
             if !text.is_empty() {
@@ -786,6 +787,18 @@ fn overview(app: &App) -> (Vec<Line<'static>>, usize, Line<'static>) {
         )));
         lines.push(keys(&[("R", "失効を続ける")]));
         lines.push(Line::from(""));
+    } else if let Some(intent) = &overview.intent {
+        lines.push(warn("失効が終わっていません"));
+        lines.push(Line::from(format!(
+            "前に始めた失効が、鍵を作り直す前に止まりました（削除する端末: {}）。同じ範囲と端末で始め直してください。",
+            if intent.deleted_devices.is_empty() {
+                "なし".to_owned()
+            } else {
+                intent.deleted_devices.join(", ")
+            }
+        )));
+        lines.push(keys(&[("R", "失効を続ける")]));
+        lines.push(Line::from(""));
     }
     if limit.is_some() {
         lines.push(error("端末の上限（20 台）に達しました"));
@@ -951,7 +964,7 @@ fn overview(app: &App) -> (Vec<Line<'static>>, usize, Line<'static>) {
     help.push(("K", "リカバリーキーを作り直す"));
     help.push((
         "R",
-        if overview.revocation.is_some() {
+        if overview.revocation.is_some() || overview.intent.is_some() {
             "失効を続ける"
         } else {
             "失効を始める"
@@ -1298,6 +1311,16 @@ mod tests {
         assert!(wrapped.iter().all(|line| line.width() <= 8));
         assert_eq!(wrapped[1].to_string(), "おかきく");
         assert_eq!(wrapped[4].to_string(), "ij");
+    }
+
+    #[test]
+    fn wrapping_measures_whole_graphemes() {
+        // `❤` は文字ごとの幅の合計が 1 だが、表示幅は 2（異体字セレクター付き）。書記素の幅で折り返す。
+        let source = "abcdef\u{2764}\u{fe0f}z";
+        let (wrapped, _) = wrap_lines(vec![Line::from(source)], 10);
+        assert!(wrapped.iter().all(|line| line.width() <= 8), "{wrapped:?}");
+        let joined: String = wrapped.iter().map(|line| line.to_string()).collect();
+        assert_eq!(joined, source);
     }
 
     #[test]

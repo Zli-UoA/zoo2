@@ -448,39 +448,69 @@ fn secrets_revision_of(storage: &Value) -> Option<u64> {
     storage.get("secrets_revision").and_then(Value::as_u64)
 }
 
-/// `GET /api/e2ee/key_backup/keys?version=` を `next` が `null` になるまで読む。消した版は `None`。
-async fn list_backup_rows(api: &ApiClient, version: &str) -> Result<Option<Vec<BackupRow>>> {
-    let mut rows = Vec::new();
-    let mut after: Option<String> = None;
-    loop {
-        let page = match api.e2ee_backup_keys(version, after.as_deref()).await {
-            Ok(page) => page,
-            Err(error) if ApiError::status_of(&error) == Some(reqwest::StatusCode::NOT_FOUND) => {
-                return Ok(None);
-            }
-            Err(error) => return Err(error),
-        };
-        // 形の正しくないページを空の版として扱うと、行を移さずに古い版を消してしまう。止めて古い版を残す。
-        let Some(Value::Array(sessions)) = page.get("sessions") else {
-            return Err(anyhow!("版 {version} の行の一覧が配列ではありません"));
-        };
-        for row in sessions {
-            rows.push(
-                serde_json::from_value(row.clone())
-                    .map_err(|e| anyhow!("版 {version} の行を読めません: {e}"))?,
-            );
+/// 新しい版の `upload_key` へのアップロードの証明（docs/e2ee.md の「アップロードの証明」）。フィールドがない版
+/// （証明を足す前のサーバー）だけ `None`（証明を付けずに送る）。フィールドがあって文字列でなければ、送らず古い版も
+/// 消さずに止める（未証明の行を移したことにしないため）。
+async fn upload_proof(
+    api: &ApiClient,
+    revocation: &Revocation,
+    user_id: &str,
+    new_version: &str,
+) -> Result<Option<String>> {
+    let target = api.e2ee_backup_version(new_version).await?;
+    match target.as_ref().and_then(|t| t.get("upload_key")) {
+        None => Ok(None),
+        Some(Value::String(key)) => {
+            let key =
+                zoo_crypto::Curve25519PublicKey::from_base64(key).map_err(CryptoError::from)?;
+            Ok(Some(revocation.secrets().backup_key.upload_proof(
+                &key,
+                user_id,
+                new_version,
+            )?))
         }
-        // 終わりは明示した `null` だけ。欠けているか文字列でなければ、残りの行を読まずに古い版を消さないよう止める。
-        match page.get("next") {
-            Some(Value::String(next)) => after = Some(next.clone()),
-            Some(Value::Null) => return Ok(Some(rows)),
-            _ => {
-                return Err(anyhow!(
-                    "版 {version} の行の一覧の next が null でも文字列でもありません"
-                ));
-            }
-        }
+        Some(_) => Err(anyhow!(
+            "版 {new_version} の upload_key が鍵の形ではありません"
+        )),
     }
+}
+
+/// `GET /api/e2ee/key_backup/keys?version=` の 1 ページ。消した版は `None`。2 つ目は次のページのカーソル
+/// （終わりなら `None`）。
+async fn backup_rows_page(
+    api: &ApiClient,
+    version: &str,
+    after: Option<&str>,
+) -> Result<Option<(Vec<BackupRow>, Option<String>)>> {
+    let page = match api.e2ee_backup_keys(version, after).await {
+        Ok(page) => page,
+        Err(error) if ApiError::status_of(&error) == Some(reqwest::StatusCode::NOT_FOUND) => {
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
+    // 形の正しくないページを空の版として扱うと、行を移さずに古い版を消してしまう。止めて古い版を残す。
+    let Some(Value::Array(sessions)) = page.get("sessions") else {
+        return Err(anyhow!("版 {version} の行の一覧が配列ではありません"));
+    };
+    let rows = sessions
+        .iter()
+        .map(|row| {
+            serde_json::from_value(row.clone())
+                .map_err(|e| anyhow!("版 {version} の行を読めません: {e}"))
+        })
+        .collect::<Result<Vec<BackupRow>>>()?;
+    // 終わりは明示した `null` だけ。欠けているか文字列でなければ、残りの行を読まずに古い版を消さないよう止める。
+    let next = match page.get("next") {
+        Some(Value::String(next)) => Some(next.clone()),
+        Some(Value::Null) => None,
+        _ => {
+            return Err(anyhow!(
+                "版 {version} の行の一覧の next が null でも文字列でもありません"
+            ));
+        }
+    };
+    Ok(Some((rows, next)))
 }
 
 /// 記録した段の続きから、最後まで保存する（SSSS、クロス署名鍵、署名とピン、鍵バックアップの版、古い版の
@@ -574,6 +604,12 @@ pub async fn run(
             return Err(RevocationError::Conflict("E2EE_SSSS_CONFLICT".into()).into());
         }
         secrets_revision = secrets_revision_of(&current);
+        // 取り直した値も失効の記録に入れる（このあとの要求の `expected_secrets_revision` は記録から作るので、
+        // 記録に入れないと、照合のあとで別の端末が秘密を書き換えても、サーバーが比べずに受け付ける）。
+        if secrets_revision.is_some() {
+            revocation.secret_storage_saved(secrets_revision);
+            store.lock().await.save_revocation(revocation)?;
+        }
     }
 
     if stage(revocation) < RevocationStage::CrossSigningSaved {
@@ -665,49 +701,45 @@ pub async fn run(
         let migrate = revocation.versions_to_migrate(&versions);
         // 移行の行も、新しい版の `upload_key` への証明を付けて送る（docs/e2ee.md の「アップロードの証明」）。
         let mut proof: Option<Option<String>> = None;
-        for (old_version, old_key) in migrate {
-            // 別の端末が先に移行を終えて消した。
-            let Some(rows) = list_backup_rows(api, &old_version).await? else {
-                continue;
-            };
-            let (rows, dropped) = revocation.reencrypt_rows(&old_key, &rows);
-            // 捨てた行の数は、失効の記録に版ごとに残す（古い版を消したあとで止まっても数え直せないため）。
-            revocation.record_dropped(&old_version, dropped);
-            store.lock().await.save_revocation(revocation)?;
-            if proof.is_none() {
-                let target = api.e2ee_backup_version(&new_version).await?;
-                // フィールドがない版（証明を足す前のサーバー）だけ、証明を付けずに送る。フィールドがあって
-                // 文字列でなければ、送らず古い版も消さずに止める（未証明の行を移したことにしないため）。
-                let upload_key = target.as_ref().and_then(|t| t.get("upload_key"));
-                proof = Some(match upload_key {
-                    None => None,
-                    Some(Value::String(key)) => {
-                        let key = zoo_crypto::Curve25519PublicKey::from_base64(key)
-                            .map_err(CryptoError::from)?;
-                        Some(revocation.secrets().backup_key.upload_proof(
-                            &key,
-                            user_id,
+        // 古い版は 1 ページずつ読み、そのページを新しい版の鍵で暗号化し直して送る（版全体をメモリーに持たない）。
+        // 古い版は、`next` が明示的な `null` になり、すべてのページを送れてから消す。
+        'versions: for (old_version, old_key) in migrate {
+            let mut after: Option<String> = None;
+            let mut dropped_total = 0;
+            loop {
+                // 別の端末が先に移行を終えて消した。
+                let Some((rows, next)) =
+                    backup_rows_page(api, &old_version, after.as_deref()).await?
+                else {
+                    continue 'versions;
+                };
+                let (rows, dropped) = revocation.reencrypt_rows(&old_key, &rows);
+                // 捨てた行の数は、失効の記録に版ごとの累計で残す（古い版を消したあとで止まっても数え直せない
+                // ため）。止まったあとの再開は最初のページから読み直すので、累計で置き換える。
+                dropped_total += dropped;
+                revocation.record_dropped(&old_version, dropped_total);
+                store.lock().await.save_revocation(revocation)?;
+                if !rows.is_empty() {
+                    let revision =
+                        secrets_revision.ok_or_else(|| anyhow!("secrets_revision がありません"))?;
+                    if proof.is_none() {
+                        proof = Some(upload_proof(api, revocation, user_id, &new_version).await?);
+                    }
+                    for chunk in rows.chunks(BACKUP_UPLOAD_BATCH) {
+                        api.e2ee_upload_backup_keys(
                             &new_version,
-                        )?)
+                            revision,
+                            json!({ "sessions": chunk }),
+                            proof.as_ref().and_then(Option::as_deref),
+                        )
+                        .await
+                        .map_err(guarded)?;
                     }
-                    Some(_) => {
-                        return Err(anyhow!(
-                            "版 {new_version} の upload_key が鍵の形ではありません"
-                        ));
-                    }
-                });
-            }
-            let revision =
-                secrets_revision.ok_or_else(|| anyhow!("secrets_revision がありません"))?;
-            for chunk in rows.chunks(BACKUP_UPLOAD_BATCH) {
-                api.e2ee_upload_backup_keys(
-                    &new_version,
-                    revision,
-                    json!({ "sessions": chunk }),
-                    proof.as_ref().and_then(Option::as_deref),
-                )
-                .await
-                .map_err(guarded)?;
+                }
+                match next {
+                    Some(next) => after = Some(next),
+                    None => break,
+                }
             }
             // 今の版ではないので、再認証は要らない。
             api.e2ee_delete_backup_version(&old_version, None).await?;

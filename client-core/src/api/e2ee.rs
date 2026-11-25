@@ -42,13 +42,23 @@ impl ApiClient {
         body: Option<Value>,
         headers: &[(&str, &str)],
     ) -> Result<reqwest::Response> {
-        if headers.iter().any(|(name, _)| *name == REAUTH_HEADER) && !self.reauth_transport_ok() {
+        let reauth = headers.iter().any(|(name, _)| *name == REAUTH_HEADER);
+        if reauth && !self.reauth_transport_ok() {
             anyhow::bail!(
                 "再認証の ID トークンは HTTPS の接続先にだけ送ります（ZOO_API_BASE_URL を https:// にしてください）"
             );
         }
-        let mut request = self
-            .http
+        // 再認証の ID トークンを付ける要求は、リダイレクトをたどらない専用のクライアントで送る（転送先の HTTP や
+        // 別の origin にトークンを渡さないため。3xx はそのまま誤りにする）。共有のクライアントの方針は変えない。
+        // 再認証の要求はまれなので、そのつど作る。
+        let http = if reauth {
+            reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()?
+        } else {
+            self.http.clone()
+        };
+        let mut request = http
             .request(method, format!("{}{path}", self.base_url))
             .header(reqwest::header::ACCEPT, "application/json")
             .timeout(Self::E2EE_TIMEOUT);
@@ -624,7 +634,7 @@ fn urlencode(value: &str) -> String {
 mod tests {
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
-        matchers::{header, method, path, query_param},
+        matchers::{any, header, method, path, query_param},
     };
 
     use super::*;
@@ -636,6 +646,35 @@ mod tests {
             &server.uri(),
             Credentials::Dev("00000000-0000-0000-0000-000000000001".into()),
         )
+    }
+
+    #[tokio::test]
+    async fn reauth_requests_never_follow_redirects() {
+        // 再認証の要求にリダイレクトが返っても、転送先（別の origin）にはトークンを送らない。
+        let server = MockServer::start().await;
+        let elsewhere = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/e2ee/secret_storage/slots/slot"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("location", format!("{}/steal", elsewhere.uri())),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": {} })))
+            .expect(0)
+            .mount(&elsewhere)
+            .await;
+        let error = client(&server)
+            .e2ee_delete_key_slot("slot", Some("id-token"))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            ApiError::status_of(&error),
+            Some(reqwest::StatusCode::TEMPORARY_REDIRECT)
+        );
+        assert!(elsewhere.received_requests().await.unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -1107,6 +1107,42 @@ async fn a_full_revocation_stopped_before_saving_starts_over() {
     assert_eq!(stored.deleted_devices, vec![LOST_DEVICE.to_owned()]);
 }
 
+#[tokio::test]
+async fn the_chosen_scope_and_devices_survive_until_the_revocation_is_recorded() {
+    let mut world = World::new(true).await;
+    let (alice, recovery_key) = world.set_up(ALICE).await;
+    let api = world.api(ALICE);
+    // 端末を削除する前に残した範囲と端末は、失効の記録を保存するまで残る（ログアウトの前にも確かめる）。
+    let intent = zoo2_tui::e2ee::store::RevocationIntent {
+        scope: RevocationScope::DeviceOnly,
+        deleted_devices: vec![LOST_DEVICE.into()],
+    };
+    alice
+        .lock()
+        .await
+        .save_revocation_intent(intent.clone())
+        .unwrap();
+    assert_eq!(alice.lock().await.revocation_intent(), Some(intent));
+    assert!(alice.lock().await.has_pending_revocation());
+    let opened = revocation::open_secret_storage(&api, ALICE, &recovery_key)
+        .await
+        .unwrap();
+    revocation::begin(
+        &api,
+        &alice,
+        ALICE,
+        RevocationScope::DeviceOnly,
+        vec![LOST_DEVICE.into()],
+        &opened,
+        None,
+    )
+    .await
+    .unwrap();
+    // 失効の記録と同じ書き込みで消す。
+    assert_eq!(alice.lock().await.revocation_intent(), None);
+    assert!(alice.lock().await.revocation_state().unwrap().is_some());
+}
+
 /// 検証の知らせを集める。
 #[derive(Clone, Default)]
 struct Events(Arc<StdMutex<Vec<VerificationEvent>>>);

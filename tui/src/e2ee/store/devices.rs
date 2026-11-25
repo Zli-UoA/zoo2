@@ -66,7 +66,22 @@ impl CryptoStore {
 
     /// 終わっていない失効があるか（ログアウトの前に警告する）。
     pub fn has_pending_revocation(&self) -> bool {
-        self.state.revocation.is_some()
+        self.state.revocation.is_some() || self.state.revocation_intent.is_some()
+    }
+
+    /// 端末を削除したあと、失効の記録を保存する前に止まった失効の、範囲と端末。
+    pub fn revocation_intent(&self) -> Option<super::RevocationIntent> {
+        self.state.revocation_intent.clone()
+    }
+
+    /// 端末の削除の前に、選んだ範囲と端末を残す。書けなければ前の値に戻す。
+    pub fn save_revocation_intent(&mut self, intent: super::RevocationIntent) -> Result<()> {
+        let previous = self.state.revocation_intent.replace(intent);
+        if let Err(error) = self.save() {
+            self.state.revocation_intent = previous;
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// 終わっていない失効の進み具合（秘密鍵を含むが、表示にだけ使う）。なければ `None`。
@@ -147,7 +162,12 @@ impl CryptoStore {
             old_user_signing: own.as_ref().map(|own| &own.user_signing),
             deleted_devices,
         })?;
-        self.save_revocation(&revocation)?;
+        // 始める前に残した範囲と端末は、失効の記録と同じ書き込みで消す。
+        let intent = self.state.revocation_intent.take();
+        if let Err(error) = self.save_revocation(&revocation) {
+            self.state.revocation_intent = intent;
+            return Err(error);
+        }
         Ok(revocation)
     }
 

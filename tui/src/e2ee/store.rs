@@ -124,6 +124,17 @@ struct State {
     /// 端末を作り直すときは捨てる。
     #[serde(default)]
     revocation: Option<String>,
+    /// 失効を始める前（端末の削除の前）に残す、選んだ範囲と端末（#362）。端末を削除したあと、失効の記録を
+    /// 保存する前に止まっても、同じ範囲と端末で始め直せるようにする。失効の記録を保存するときに消す。
+    #[serde(default)]
+    revocation_intent: Option<RevocationIntent>,
+}
+
+/// 失効を始める前に残す、選んだ範囲と削除する端末（秘密は含まない）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevocationIntent {
+    pub scope: zoo_crypto::RevocationScope,
+    pub deleted_devices: Vec<String>,
 }
 
 /// 鍵バックアップからの取り込みの進み具合。途中で止まったら、同じ版なら続きから取り込み、版が変わったら
@@ -293,6 +304,18 @@ fn user_dir(root: &Path, user_id: &str) -> Result<PathBuf> {
 }
 
 /// 0600 で書く。一時ファイルに書いてから置き換える。
+/// `state.json` を置き換えたが、ディレクトリーの同期に失敗した（新しい内容はもう読める。停電では前に戻りうる）。
+#[derive(Debug)]
+pub struct ReplacedButNotSynced(String);
+
+impl std::fmt::Display for ReplacedButNotSynced {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} を同期できません", self.0)
+    }
+}
+
+impl std::error::Error for ReplacedButNotSynced {}
+
 fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = path.with_extension("tmp");
     {
@@ -312,7 +335,10 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         File::open(parent)
             .and_then(|dir| dir.sync_all())
-            .with_context(|| format!("{} を同期できません", parent.display()))?;
+            .map_err(|error| {
+                anyhow::Error::new(error)
+                    .context(ReplacedButNotSynced(parent.display().to_string()))
+            })?;
     }
     Ok(())
 }
@@ -718,6 +744,12 @@ impl CryptoStore {
                 }
                 self.state.processed_to_device.insert(row.id.clone());
                 if let Err(error) = self.save() {
+                    // ファイルは置き換えた（処理済みの印と進んだ Olm の状態は、もう読める）なら、次の回はこの行を
+                    // 読み飛ばすので、この行の結果（検証のメッセージ）もエラーと一緒に返す。
+                    if error.downcast_ref::<ReplacedButNotSynced>().is_some() {
+                        result.merge(row_result);
+                        result.processed.push(row.id.clone());
+                    }
                     return (result, Some(error));
                 }
                 result.merge(row_result);
@@ -1379,6 +1411,7 @@ impl CryptoStore {
             recipients: self.state.recipients.clone(),
             backup_import: None,
             revocation: None,
+            revocation_intent: None,
         };
         write_private(&self.dir.join(STATE_FILE), &serde_json::to_vec(&state)?)?;
 

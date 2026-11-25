@@ -86,6 +86,8 @@ pub struct Overview {
     /// この端末を解錠したか（失効と再検証は、解錠した端末で行える）。
     pub unlocked: bool,
     pub revocation: Option<PendingRevocation>,
+    /// 端末を削除したあと、失効を始める前に止まった失効（選んだ範囲と端末）。
+    pub intent: Option<crate::e2ee::store::RevocationIntent>,
     pub slots: Vec<SlotView>,
 }
 
@@ -1293,6 +1295,16 @@ impl Devices {
                 error: None,
             };
         }
+        // 端末を削除したあと、失効を始める前に止まったなら、同じ範囲と端末を選んだ状態から始め直す（削除した
+        // 端末は一覧に出ないが、失効の対象に残す）。
+        if let Some(intent) = &self.overview.intent {
+            return Screen::RevokeSelect {
+                selected: intent.deleted_devices.iter().cloned().collect(),
+                cursor: 0,
+                scope: intent.scope,
+                error: None,
+            };
+        }
         Screen::RevokeSelect {
             selected: BTreeSet::new(),
             cursor: 0,
@@ -1415,6 +1427,19 @@ impl Devices {
                     },
                     Err(error) => failed(error, RevokeRetry::Restart, None),
                 };
+            }
+            // 端末を削除する前に、選んだ範囲と端末を暗号ストアに残す（削除のあと、失効の記録を保存する前に
+            // 止まっても、同じ範囲と端末で始め直せるように）。
+            if let Err(error) =
+                store
+                    .lock()
+                    .await
+                    .save_revocation_intent(crate::e2ee::store::RevocationIntent {
+                        scope,
+                        deleted_devices: deleted.clone(),
+                    })
+            {
+                return failed(error, RevokeRetry::Restart, None);
             }
             // 手順 1：選んだ端末を削除する（端末の削除は失効ではない。続けて鍵を作り直す）。
             if let Err(error) = revocation::delete_devices(&api, &deleted).await {
@@ -1795,6 +1820,7 @@ async fn load_overview(
                     scope: state.scope,
                     stage: state.stage,
                 });
+        overview.intent = store.revocation_intent();
     }
     match load_verifications(api, &store, &user_id, peers).await {
         Ok((users, warnings)) => {
