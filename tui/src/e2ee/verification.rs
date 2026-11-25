@@ -982,12 +982,16 @@ impl VerificationController {
                 .ok_or_else(|| anyhow!("暗号ストアの準備ができていません"))?;
             let accepted = {
                 let mut store = store.lock().await;
-                let shared = this.shared();
+                let mut shared = this.shared();
                 let verification = shared
                     .active
                     .get(txn)
                     .ok_or_else(|| anyhow!("検証がありません"))?;
-                store.sign_verified_master_key(verification, &master_key)?
+                let accepted = store.sign_verified_master_key(verification, &master_key)?;
+                // 記録を書いたあとは、止めずに最後まで送る（途中で止めると、記録がピンの登録待ちのまま残る）。
+                // `active` の確認と同じロックの中で、止めるための登録を外す。
+                shared.saving_reauths.remove(txn);
+                accepted
             };
             save_accepted(
                 &this.inner.api,

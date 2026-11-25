@@ -895,6 +895,8 @@ impl Devices {
             {
                 sas.retry_save(&txn)
             }
+            // 保存している途中は閉じない（閉じると保存を止めてしまう）。
+            (SasPhase::Done, KeyCode::Enter) if entry.save == SaveState::Saving => {}
             (SasPhase::Done | SasPhase::Cancelled, KeyCode::Enter) => {
                 sas.dismiss(&txn);
                 self.sas_entries.remove(&txn);
