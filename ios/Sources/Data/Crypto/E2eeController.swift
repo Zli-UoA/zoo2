@@ -39,6 +39,8 @@ final class E2eeController: ConversationEncryption {
     @ObservationIgnored private let encryption: MessageEncryption
     /// 復号に成功した本文（ID と版ごと）。失敗は鍵が届けば読めるので、覚えない。
     @ObservationIgnored private var decrypted: [String: DecryptedBody] = [:]
+    /// メッセージごとの、確認できた最新の版の本文。古い版や、同じ版で中身の違う行が届いたときに、この本文を警告つきで出す。
+    @ObservationIgnored private var confirmed: [String: (revision: UInt64, result: DecryptedBody)] = [:]
     /// パスキーの RP ID（AuthZ のホスト）。
     @ObservationIgnored var rpID = ""
     @ObservationIgnored var passkeys: any PasskeyClient = SystemPasskeyClient()
@@ -143,7 +145,18 @@ final class E2eeController: ConversationEncryption {
         let key = "\(row.id)|\(row.revision)|\(row.ciphertext.hashValue)"
         if let cached = decrypted[key] { return cached }
         let result = encryption.decrypt(row)
-        if result.body != nil { decrypted[key] = result }
+        if result.body != nil {
+            decrypted[key] = result
+            if (confirmed[row.id]?.revision ?? 0) <= row.revision || confirmed[row.id] == nil { confirmed[row.id] = (row.revision, result) }
+            return result
+        }
+        // 古い版（`stale`）や、同じ版で中身の違う行（`conflict`）は、この行の本文ではなく、確認できた最新の本文を、
+        // 警告つきで出す（Web と同じ）。まだ確認できた本文がなければ、警告だけ。
+        if result.revision != .latest, let known = confirmed[row.id] {
+            var shown = known.result
+            shown.notice = result.revision == .stale ? E2eeText.revisionStale : E2eeText.revisionConflict
+            return shown
+        }
         return result
     }
 
