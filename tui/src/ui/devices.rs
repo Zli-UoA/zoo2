@@ -647,6 +647,7 @@ impl Devices {
                 };
             }
             Outcome::RevocationFinished(outcome) => {
+                self.reauth_cancelling = false;
                 self.session = None;
                 self.restart = None;
                 self.screen = Screen::RevokeDone(outcome);
@@ -929,6 +930,9 @@ impl Devices {
                 // 再認証を取りやめて、失効のセッションが戻るのを待っているあいだは、処理を止めない（止めると
                 // セッションを失う）。
                 Screen::Working(_) if self.reauth_cancelling => return true,
+                // 失効を保存しているあいだは止めない（止めると、SSSS を保存する前の全体の失効では、同じ鍵で
+                // 続けられなくなる）。終わるか失敗すると、閉じられる画面に変わる。
+                Screen::RevokeWorking(_) => return true,
                 Screen::Overview | Screen::Loading | Screen::Message { .. } => {
                     self.close();
                     return false;
@@ -2254,6 +2258,15 @@ mod tests {
         press(&mut devices, KeyCode::Esc);
         assert!(matches!(devices.screen, Screen::Working(_)));
         assert_eq!(devices.generation, generation, "処理を止めない");
+        // 取りやめが間に合わず再認証が成功し、保存が進んだ（Esc → 段の知らせ → Esc）。保存中の Esc でも止めない。
+        devices.on_event(DevicesEvent {
+            generation,
+            outcome: Outcome::Stage(RevocationStage::Prepared),
+        });
+        assert!(matches!(devices.screen, Screen::RevokeWorking(_)));
+        press(&mut devices, KeyCode::Esc);
+        assert!(matches!(devices.screen, Screen::RevokeWorking(_)));
+        assert_eq!(devices.generation, generation, "保存を止めない");
     }
 
     #[test]
