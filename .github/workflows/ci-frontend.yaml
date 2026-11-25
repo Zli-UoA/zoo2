@@ -398,6 +398,10 @@ jobs:
       - name: format / lint / typecheck
         run: pnpm check
 
+      # 翻訳キーの欠落・プレースホルダ不一致・動的キーの未検査箇所を検出する。
+      - name: i18n check
+        run: pnpm check:i18n
+
   build:
     if: fromJSON(needs.test-selection.outputs.frontendBuild).build
     needs: [runner, crypto-wasm, test-selection]

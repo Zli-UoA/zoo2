@@ -716,17 +716,18 @@ export function AuthzSteps({
   after: boolean;
 }) {
   const { t } = useTranslation();
+  // キーを配列で回すと x18n が追えないので、訳文をリテラルキーから作る。
   const steps = after
-    ? (["e2ee.authz.disconnectAgain", "e2ee.authz.signOut"] as const)
-    : (["e2ee.authz.revokeSessions", "e2ee.authz.disconnect"] as const);
+    ? [t("e2ee.authz.disconnectAgain"), t("e2ee.authz.signOut")]
+    : [t("e2ee.authz.revokeSessions"), t("e2ee.authz.disconnect")];
   return (
     <div className="space-y-2 rounded-md border p-3">
       <p className="text-sm font-medium">
         {t(after ? "e2ee.authz.afterTitle" : "e2ee.authz.beforeTitle")}
       </p>
       <ol className="list-decimal space-y-1 pl-5 text-sm">
-        {steps.map((key) => (
-          <li key={key}>{t(key)}</li>
+        {steps.map((step, index) => (
+          <li key={index}>{step}</li>
         ))}
       </ol>
       <p className="text-xs text-muted-foreground">{t("e2ee.authz.note")}</p>
