@@ -2120,7 +2120,7 @@ A の QR を B が読み取る場合です（B の QR を A が読み取る場�
 - 【決定】バインディングと XCFramework は Git に入れず、`make crypto-ffi-ios`（`ios/` からは `make crypto-xcframework`、`make generate` の前提）がビルドのたびに `ios/ZooCrypto/` へ作る（`ios/Scripts/build-crypto-xcframework.sh`）。Swift のバインディングは、ビルドした `.a` から同じクレートの `uniffi-bindgen`（`--features cli`）で作るので、ライブラリーと版が必ず一致する。
 - 【決定】生成した Swift は、アプリと同じモジュールには入れず、ローカルの Swift パッケージ `ZooCrypto`（`import ZooCrypto`）にする。同じモジュールに入れると、`MessageContent` などアプリの型名と衝突する。`Zoo` と `ZooNotificationService` の両方が `ZooCrypto` に依存する（通知の復号は #510）。
 - 開発シェルは `nix develop .#ios`（Rust の iOS target と `xcodegen`）。Xcode 本体は Nix で入れられないので、mac に入れたものを使う。スクリプトは Nix が設定する `DEVELOPER_DIR`・`SDKROOT` を外し、`xcode-select` の Xcode の SDK でビルドする。
-- 【確認が要る】暗号の輸出コンプライアンス：`ios/project.yml` の `ITSAppUsesNonExemptEncryption` は `NO` のまま。リンクする `zoo-crypto`（vodozemac、AES-256-GCM・CBC・CTR、HMAC-SHA256、HKDF）は OS が提供する暗号ではないので、配布の前に、配布地域（特にフランス）と輸出分類を確かめて、免除と言えなければ `YES` にして App Store Connect に書類を出し、発行されたコードを `ITSEncryptionExportComplianceCode` に入れる。コードからは判定できない。
+- 【決定】暗号の輸出コンプライアンス：`ios/project.yml` の `ITSAppUsesNonExemptEncryption` は `YES`（免除と言い切れない）にする。リンクする `zoo-crypto`（vodozemac、AES-256-GCM・CBC・CTR、HMAC-SHA256、HKDF）は OS が提供する暗号ではないため。配布の前に、App Store Connect で暗号の使用の質問に答え、必要な書類（フランスで配布するなら、フランスの暗号申告書を含む）を提出し、発行されたコードを `ITSEncryptionExportComplianceCode` に入れる（`ios/project.yml`）。輸出分類は、配布地域に合わせて、配布する人が判定する。
 - 動作は `ios/Tests/CryptoBindingTests.swift` で確認する（端末の鍵を作り、保存鍵で保存して戻す）。
 
 ### 乱数
