@@ -19,6 +19,10 @@ struct E2eeAPIError: Error, Equatable {
 
     /// 登録の 409 `E2EE_DEVICE_EXISTS`（削除済みの `device_id`）。`code` のない 409 は含めない。
     var isDeletedDeviceID: Bool { status == 409 && code == "E2EE_DEVICE_EXISTS" }
+    /// 直前の再認証が要る（403 `E2EE_REAUTH_REQUIRED`）。
+    var isReauthRequired: Bool { status == 403 && code == "E2EE_REAUTH_REQUIRED" }
+    /// 別の端末が先に SSSS を書いた（409 `E2EE_SSSS_CONFLICT`）。
+    var isSsssConflict: Bool { status == 409 && code == "E2EE_SSSS_CONFLICT" }
 }
 
 extension APIClient: E2eeDeviceAPI {
@@ -40,8 +44,10 @@ extension APIClient: E2eeDeviceAPI {
     }
 
     /// E2EE の API は `code` を見て判断するので、`HTTPTransport.check` ではなく、ここで `code` を読む。
-    private func e2ee(_ path: String, method: String, body: [String: JSONValue]? = nil) async throws -> Data {
-        let request = try await request(path, method: method, body: body)
+    func e2ee(_ path: String, method: String, body: [String: JSONValue]? = nil, reauth: String? = nil) async throws -> Data {
+        var request = try await request(path, method: method, body: body)
+        // 直前の再認証で受け取った ID トークン。
+        if let reauth { request.setValue(reauth, forHTTPHeaderField: "X-Zoo-Reauth") }
         let (data, response) = try await transport.send(request)
         if response.statusCode == 401 { throw ZooError.expiredSession }
         guard (200..<300).contains(response.statusCode) else {
