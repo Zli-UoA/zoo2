@@ -141,3 +141,61 @@ it("still treats a recorded channel as encrypted while the store is opening", ()
     treatAsEncrypted: true,
   });
 });
+
+/**
+ * 暗号ストアが「暗号化ではない」と答えたところまで描き、以後の描画の `checkingEncryption` を順に記録する。
+ * effect が直す前の、最初の描画の値を確かめるため。
+ */
+async function answeredNotEncrypted() {
+  mocks.request.mockResolvedValue(false);
+  const seen: boolean[] = [];
+  const hook = renderHook(
+    ({ channelId }: { channelId: string | null }) => {
+      const value = useEncryptedDisplay({
+        channelId,
+        encrypted: false,
+        hasCiphertext: false,
+        holdWhileOpening: true,
+      });
+      seen.push(value.checkingEncryption);
+      return value;
+    },
+    { initialProps: { channelId: "c6" as string | null } },
+  );
+  await act(async () => {});
+  expect(hook.result.current.checkingEncryption).toBe(false);
+  /** 次の問い合わせは、答えを返さない（確かめ直しの途中を保つ）。 */
+  mocks.request.mockImplementation(() => new Promise(() => {}));
+  return { ...hook, seen };
+}
+
+it("checks again from the first render when the same worker comes back after being unavailable", async () => {
+  // 端末の登録し直し（`reregister`）では、同じ Worker がいったん消えて戻る。
+  const { rerender, seen } = await answeredNotEncrypted();
+  mocks.context.current = notReady("starting");
+  rerender({ channelId: "c6" });
+  mocks.context.current = { worker: mocks.worker };
+  seen.length = 0;
+  rerender({ channelId: "c6" });
+  expect(seen.length).toBeGreaterThan(0);
+  expect(seen).not.toContain(false);
+});
+
+it("does not reuse another worker's answer, even without a render in between", async () => {
+  const { rerender, seen } = await answeredNotEncrypted();
+  mocks.context.current = { worker: { request: mocks.request } };
+  seen.length = 0;
+  rerender({ channelId: "c6" });
+  expect(seen.length).toBeGreaterThan(0);
+  expect(seen).not.toContain(false);
+});
+
+it("checks again from the first render when the same channel is judged again", async () => {
+  // 一覧から消えたチャンネルが、戻ってきた。
+  const { rerender, seen } = await answeredNotEncrypted();
+  rerender({ channelId: null });
+  seen.length = 0;
+  rerender({ channelId: "c6" });
+  expect(seen.length).toBeGreaterThan(0);
+  expect(seen).not.toContain(false);
+});

@@ -44,25 +44,32 @@ export function useEncryptedDisplay({
   const e2ee = useE2ee();
   if (encrypted && channelId) noteEncryptedChannel(channelId);
   useSyncExternalStore(subscribeEncryptedChannels, encryptedChannelsVersion, () => 0);
+  // 暗号ストアの答え。尋ねた `worker` とチャンネルの組にだけ使う。
   const [knownEncrypted, setKnownEncrypted] = useState<{
+    worker: NonNullable<E2eeContextValue["worker"]>;
     channelId: string;
     known: KnownEncryptedState;
   } | null>(null);
   useEffect(() => {
     const worker = e2ee.worker;
-    if (!worker || !channelId) return;
+    if (!worker || !channelId) {
+      // 前の答えは捨てる。同じ `worker` が `null` を経て戻ったとき（端末の登録し直し）に、古い
+      // 「暗号化ではない」を最初の描画で使わず、確かめ直すまで確認中にする。
+      setKnownEncrypted(null);
+      return;
+    }
     let active = true;
     if (encrypted) {
       void worker.request({ op: "megolmRememberEncrypted", channelId }).catch(() => undefined);
     } else {
-      setKnownEncrypted({ channelId, known: "pending" });
+      setKnownEncrypted({ worker, channelId, known: "pending" });
       void worker
         .request({ op: "megolmIsKnownEncrypted", channelId })
         .then((known) => {
-          if (active) setKnownEncrypted({ channelId, known });
+          if (active) setKnownEncrypted({ worker, channelId, known });
         })
         .catch(() => {
-          if (active) setKnownEncrypted({ channelId, known: "failed" });
+          if (active) setKnownEncrypted({ worker, channelId, known: "failed" });
         });
     }
     return () => {
@@ -79,7 +86,7 @@ export function useEncryptedDisplay({
           ? holdWhileOpening && isOpeningCryptoStore(e2ee)
             ? "pending"
             : "unavailable"
-          : knownEncrypted?.channelId === channelId
+          : knownEncrypted?.worker === e2ee.worker && knownEncrypted.channelId === channelId
             ? knownEncrypted.known
             : "pending",
         channelName,
