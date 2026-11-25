@@ -2396,12 +2396,19 @@ async fn join_latency() -> anyhow::Result<()> {
             ),
         };
         let delay_ms = delay.unwrap_or(0);
+        // 実際の Cloudflare で測るときは、すべての join を Cloudflare に割り当てる（`join_round` が LAN の
+        // IP で送る半分も、LAN の範囲に入れない）。LiveKit に割り当てる join は mock の回だけで測る。
+        let lan_cidr = if delay.is_some() {
+            format!("{LAN_IP}/32")
+        } else {
+            "192.0.2.0/32".to_string()
+        };
         let json = json!({
             "cloudflare": cloudflare,
             "livekit": {
                 "ws_url": "wss://livekit.example",
                 "api_url": lk.uri(),
-                "lan_egress_cidrs": [format!("{LAN_IP}/32")]
+                "lan_egress_cidrs": [lan_cidr]
             },
             "bridge": true
         })
