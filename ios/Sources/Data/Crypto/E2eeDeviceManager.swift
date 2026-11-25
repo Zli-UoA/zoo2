@@ -125,6 +125,10 @@ final class E2eeDeviceManager {
     private let firstRetryDelay: Duration
     private let maxRetryDelay: Duration
     @ObservationIgnored private let onError: (any Error) -> Void
+    /// 登録と補充を終えて、暗号ストアを使えるようになったとき。
+    @ObservationIgnored var onReady: (() -> Void)?
+    /// to-device で Megolm セッションの鍵を受け取ったとき（読めなかったメッセージを読めるようになる）。
+    @ObservationIgnored var onKeysReceived: (() -> Void)?
     @ObservationIgnored private var loop: Task<Void, Never>?
     @ObservationIgnored private var store: CryptoStore?
 
@@ -158,6 +162,14 @@ final class E2eeDeviceManager {
         readyStore = nil
         store?.close()
         store = nil
+    }
+
+    /// 登録を終えて使える暗号ストアを待つ（初回設定と解錠が使う）。取り消されたら投げる。
+    func waitForStore() async throws -> CryptoStore {
+        while true {
+            if let readyStore { return readyStore }
+            try await Task.sleep(for: .milliseconds(50))
+        }
     }
 
     private struct DeviceGone: Error { let deviceID: String; let failure: E2eeAPIError }
@@ -207,6 +219,7 @@ final class E2eeDeviceManager {
         let deviceID = store.deviceID
         try await replenish(store, counts: try await uploadKeys(deviceID, [:], [:]))
         readyStore = store
+        onReady?()
         // 行の到着（同期の通知）と処理（通信を待つ）を分ける。最新の一覧だけを残す。
         let (rows, continuation) = AsyncStream<[CryptoStore.ToDeviceRow]>.makeStream(bufferingPolicy: .bufferingNewest(1))
         let observer = Task { @MainActor in
@@ -226,7 +239,11 @@ final class E2eeDeviceManager {
             connected()
             acknowledged.formIntersection(list.map(\.id))
             let waiting = list.filter { !acknowledged.contains($0.id) }
-            if !waiting.isEmpty { acknowledged.formUnion(try await process(store, deviceID: deviceID, rows: waiting).processed) }
+            if !waiting.isEmpty {
+                let result = try await process(store, deviceID: deviceID, rows: waiting)
+                acknowledged.formUnion(result.processed)
+                if result.roomKeys > 0 { onKeysReceived?() }
+            }
         }
         // 止められたときは、購読の終了を待たずに抜ける（defer が購読を取り消す）。
         try Task.checkCancellation()

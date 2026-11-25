@@ -14,6 +14,7 @@ enum E2eeText {
     static let sendNeedsUnlock = "暗号化チャンネルに送るには、この端末で暗号化を解錠してください。"
     static let sendStaleEpoch = "メンバーが変わり続けたため、送信できませんでした。もう一度送ってください。"
     static let editConflict = "このメッセージはほかの場所で編集されました。読み込み直してから編集してください。"
+    static let unencrypted = "このメッセージは暗号化されていないため表示しません。"
     static let editForbidden = "暗号化されていないメッセージは、暗号化チャンネルでは編集できません。"
 }
 
