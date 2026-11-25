@@ -21,6 +21,8 @@ struct E2eeAPIError: Error, Equatable {
 
     /// 登録の 409 `E2EE_DEVICE_EXISTS`（削除済みの `device_id`）。`code` のない 409 は含めない。
     var isDeletedDeviceID: Bool { status == 409 && code == "E2EE_DEVICE_EXISTS" }
+    /// 鍵のアップロードや ack の 404 `E2EE_DEVICE_NOT_FOUND`（消された端末の候補）。`code` のない 404 は含めない。
+    var isDeviceNotFound: Bool { status == 404 && code == "E2EE_DEVICE_NOT_FOUND" }
     /// 直前の再認証が要る（403 `E2EE_REAUTH_REQUIRED`）。
     var isReauthRequired: Bool { status == 403 && code == "E2EE_REAUTH_REQUIRED" }
     /// 別の端末が先に SSSS を書いた（409 `E2EE_SSSS_CONFLICT`）。
@@ -94,7 +96,7 @@ struct DeviceRegistration {
         }
     }
 
-    private func register(_ store: CryptoStore, recreated: Bool = false) async throws {
+    func register(_ store: CryptoStore, recreated: Bool = false) async throws {
         var body = try store.registrationRequest()
         body["display_name"] = .string(displayName)
         do {
