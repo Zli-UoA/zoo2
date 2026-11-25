@@ -86,7 +86,11 @@ struct DeviceRegistration {
         guard let opened = try CryptoStore.open(files, userID: userID) else { throw CocoaError(.fileNoSuchFile) }
         let store = opened.store
         do {
-            if let replaced = opened.replacedDeviceID { try await deleteReplaced(replaced) }
+            // 保存鍵を失って作り直した前の端末を、サーバーから消す。消せるまで、記録に残す。
+            for replaced in store.pendingDeviceDeletions {
+                try await deleteReplaced(replaced)
+                try store.clearPendingDeletion(replaced)
+            }
             guard !store.isRegistered else { return store }
             try await register(store)
             return store

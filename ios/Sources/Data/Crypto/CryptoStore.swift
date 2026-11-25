@@ -35,7 +35,11 @@ struct CryptoStoreFiles: Sendable {
 }
 
 /// 送信に解錠が要る（解錠していない、解錠し直しが要る、サーバーの自己署名鍵が暗号ストアの鍵と違う）。
-enum E2eeStoreError: Error, Equatable { case sendNeedsUnlock }
+enum E2eeStoreError: Error, Equatable {
+    case sendNeedsUnlock
+    /// 閉じた（または消した）暗号ストアは使えない。
+    case closed
+}
 
 /// 同じ暗号ストアを、ほかの場所が開いている。少し待って試し直す。
 struct CryptoStoreBusyError: Error, Equatable {}
@@ -60,6 +64,9 @@ struct StoreState: Codable {
     var inbound_sessions: [String: StoredInbound] = [:]
     /// 処理を終えて、まだ ack を送れていない to-device の ID。
     var processed_to_device: [String] = []
+    /// 保存鍵を失って作り直した前の端末のうち、サーバーから消せていないもの。新しい状態と一緒に保存するので、
+    /// 開き直しても失わない。
+    var pending_deletions: [String] = []
 
     init(version: Int, user_id: String, device_id: String, registered: Bool, account: String, trust_store: String?) {
         self.version = version; self.user_id = user_id; self.device_id = device_id
@@ -80,6 +87,7 @@ struct StoreState: Codable {
         olm_sessions = try c.decodeIfPresent([StoredOlm].self, forKey: .olm_sessions) ?? []
         inbound_sessions = try c.decodeIfPresent([String: StoredInbound].self, forKey: .inbound_sessions) ?? [:]
         processed_to_device = try c.decodeIfPresent([String].self, forKey: .processed_to_device) ?? []
+        pending_deletions = try c.decodeIfPresent([String].self, forKey: .pending_deletions) ?? []
     }
 }
 
@@ -104,8 +112,6 @@ struct StoredInbound: Codable {
 final class CryptoStore: @unchecked Sendable {
     struct Opened {
         let store: CryptoStore
-        /// 保存鍵を失って作り直したとき、前の端末の ID（サーバーから消す）。
-        let replacedDeviceID: String?
     }
 
     static let stateVersion = 1
@@ -113,6 +119,8 @@ final class CryptoStore: @unchecked Sendable {
     private static let openDirectories = Mutex(Set<String>())
 
     private let directory: URL
+    /// 開いたときの `user_id`。暗号ストアの持ち主は変わらないので、ロックなしで読める。
+    let userID: String
     private let storageKey: Data
     private var account: DeviceAccount
     private var trust: TrustStore
@@ -124,12 +132,16 @@ final class CryptoStore: @unchecked Sendable {
     private var closed = false
     private let lock = NSLock()
 
-    var userID: String { state.user_id }
-    var deviceID: String { state.device_id }
+    var deviceID: String { lock.withLock { state.device_id } }
+    /// 今の端末の Curve25519 鍵（端末を作り直すと変わる）。
+    var curve25519Key: String { lock.withLock { account.curve25519Key() } }
+    /// サーバーから消せていない前の端末の ID。
+    var pendingDeviceDeletions: [String] { lock.withLock { state.pending_deletions } }
     var isRegistered: Bool { lock.withLock { state.registered } }
 
     private init(directory: URL, storageKey: Data, account: DeviceAccount, trust: TrustStore, olmSessions: OlmSessionStore, state: StoreState) {
         self.directory = directory
+        self.userID = state.user_id
         self.olmSessions = olmSessions
         self.storageKey = storageKey
         self.account = account
@@ -139,8 +151,9 @@ final class CryptoStore: @unchecked Sendable {
 
     deinit { close() }
 
-    /// 開く。なければ、`create` のとき新しい端末を作る。保存鍵を開けなければ（Keychain から消えた、壊れた）、
-    /// 状態も読めないので、新しい端末を作って前の端末の ID を返す。Keychain の一時的な失敗はそのまま投げる。
+    /// 開く。なければ、`create` のとき新しい端末を作る。保存鍵を開けなければ（Keychain から消えた、壊れた、状態と合わない）、
+    /// 状態も読めないので、新しい端末を作る。前の端末の ID は新しい状態に入れて保存する（`pendingDeviceDeletions`）ので、
+    /// 作り直しの途中で失敗しても、開き直すと取り出せる。Keychain の一時的な失敗はそのまま投げる。
     static func open(_ files: CryptoStoreFiles, userID: String, create: Bool = true) throws -> Opened? {
         let path = files.directory.standardizedFileURL.path
         guard openDirectories.withLock({ $0.insert(path).inserted }) else { throw CryptoStoreBusyError() }
@@ -158,26 +171,31 @@ final class CryptoStore: @unchecked Sendable {
 
     private static func openUnlocked(_ files: CryptoStoreFiles, userID: String, create: Bool) throws -> Opened? {
         let stateURL = files.directory.appendingPathComponent(stateFile)
-        var replaced: String?
+        var pending: [String] = []
         if let stored = try readState(stateURL) {
             guard stored.version == stateVersion else { throw CocoaError(.fileReadCorruptFile) }
             guard stored.user_id == userID else { throw CocoaError(.fileReadCorruptFile) }
             let key: Data?
             do { key = try files.keys.loadExisting() } catch StorageKeyError.malformed { key = nil }
             if let key {
-                let account = try DeviceAccount.fromPickle(pickle: stored.account, storageKey: key,
-                                                           userId: stored.user_id, deviceId: stored.device_id)
-                let trust = try stored.trust_store.map { try TrustStore.fromPickle(pickle: $0, account: account, storageKey: key) }
-                    ?? TrustStore(userId: stored.user_id)
-                let olm = OlmSessionStore()
-                for session in stored.olm_sessions { _ = try olm.restoreSession(account: account, pickle: session.pickle, storageKey: key) }
-                return Opened(store: CryptoStore(directory: files.directory, storageKey: key, account: account, trust: trust,
-                                                 olmSessions: olm, state: stored),
-                              replacedDeviceID: nil)
+                do {
+                    let account = try DeviceAccount.fromPickle(pickle: stored.account, storageKey: key,
+                                                               userId: stored.user_id, deviceId: stored.device_id)
+                    let trust = try stored.trust_store.map { try TrustStore.fromPickle(pickle: $0, account: account, storageKey: key) }
+                        ?? TrustStore(userId: stored.user_id)
+                    let olm = OlmSessionStore()
+                    for session in stored.olm_sessions { _ = try olm.restoreSession(account: account, pickle: session.pickle, storageKey: key) }
+                    return Opened(store: CryptoStore(directory: files.directory, storageKey: key, account: account, trust: trust,
+                                                     olmSessions: olm, state: stored))
+                } catch is ZooCryptoError {
+                    // 保存鍵が状態と合わない（作り直しの途中で止まった、壊れた）。読めないので、作り直す。
+                }
             }
-            // 保存鍵がなければ、どの値も読めない。作り直して、新しい端末として登録し直す。
-            replaced = stored.device_id
-            try FileManager.default.removeItem(at: stateURL)
+            // 保存鍵がなければ、どの値も読めない。作り直して、新しい端末として登録し直す。前の端末の ID は、
+            // 新しい状態（これが前の `state.json` を置き換える）に入れる。置き換える前に消さないので、
+            // 途中で失敗しても、前の `state.json` から同じ ID を取り出せる。
+            pending = stored.pending_deletions + [stored.device_id]
+            guard create else { return nil }
             try files.keys.delete()
         }
         guard create else { return nil }
@@ -191,13 +209,14 @@ final class CryptoStore: @unchecked Sendable {
         account.generateOneTimeKeys(count: account.maxNumberOfOneTimeKeys())
         account.generateFallbackKey()
         let trust = try TrustStore(userId: userID)
-        let state = StoreState(version: stateVersion, user_id: userID, device_id: account.deviceId(),
+        var state = StoreState(version: stateVersion, user_id: userID, device_id: account.deviceId(),
                                registered: false, account: try account.pickle(storageKey: key),
                                trust_store: try trust.pickle(account: account, storageKey: key))
+        state.pending_deletions = pending
         let store = CryptoStore(directory: files.directory, storageKey: key, account: account, trust: trust,
                                 olmSessions: OlmSessionStore(), state: state)
         try store.save()
-        return Opened(store: store, replacedDeviceID: replaced)
+        return Opened(store: store)
     }
 
     /// `POST /api/e2ee/devices` の本文（`display_name` を除く）。応答をなくしても同じ鍵で送り直す。
@@ -246,7 +265,7 @@ final class CryptoStore: @unchecked Sendable {
                 resealed[key] = StoredInbound(pickle: pickle, backed_up: stored.backed_up)
             }
             nextState.inbound_sessions = resealed
-            try Self.writeAtomically(JSONEncoder().encode(nextState), to: directory.appendingPathComponent(Self.stateFile))
+            try save(nextState)
             // 保存できてから、メモリーの状態を進める。
             account = next
             trust = try TrustStore.fromPickle(pickle: nextState.trust_store!, account: next, storageKey: storageKey)
@@ -278,7 +297,7 @@ final class CryptoStore: @unchecked Sendable {
             next.own_keys = try session.ownKeysPickle(account: account, storageKey: storageKey)
             next.secrets_revision = secretsRevision
             next.trust_store = try updated.pickle(account: account, storageKey: storageKey)
-            try Self.writeAtomically(JSONEncoder().encode(next), to: directory.appendingPathComponent(Self.stateFile))
+            try save(next)
             state = next
             trust = updated
         }
@@ -288,6 +307,7 @@ final class CryptoStore: @unchecked Sendable {
     /// `GET /api/e2ee/key_backup/versions` の応答）から決める。まだ解錠していなければ `nil`。
     func startupCheck(keysQuery: String, versions: String) throws -> StartupCheck? {
         try lock.withLock {
+            try ensureOpen()
             guard let sealed = state.own_keys else { return nil }
             return try OwnKeys.fromPickle(sealed: sealed, account: account, storageKey: storageKey)
                 .startupCheck(keysQuery: keysQuery, versions: versions, deviceKeys: account.deviceKeys())
@@ -301,7 +321,7 @@ final class CryptoStore: @unchecked Sendable {
             guard state.secrets_revision == failed else { return }
             var next = state
             next.secrets_revision = nil
-            try Self.writeAtomically(JSONEncoder().encode(next), to: directory.appendingPathComponent(Self.stateFile))
+            try save(next)
             state = next
         }
     }
@@ -356,16 +376,20 @@ final class CryptoStore: @unchecked Sendable {
         String(decoding: try! JSONEncoder().encode([ref.channelId, ref.senderKey, ref.sessionId]), as: UTF8.self)
     }
 
+    /// 閉じたストアには書かない（閉じたあとに、古いインスタンスが開き直したストアの状態を書き換えないため）。
+    private func ensureOpen() throws { if closed { throw E2eeStoreError.closed } }
+
     private func save(_ next: StoreState) throws {
+        try ensureOpen()
         try Self.writeAtomically(JSONEncoder().encode(next), to: directory.appendingPathComponent(Self.stateFile))
     }
 
     /// 保存した受信用セッションを、まだなら読み込む。読み込めたときだけ読み込み済みにする。
     private func loadInbound(_ key: String) throws {
         guard !loadedInbound.contains(key) else { return }
-        if let stored = state.inbound_sessions[key] {
-            _ = try inbound.restoreSession(account: account, pickle: stored.pickle, storageKey: storageKey)
-        }
+        // 保存していないセッションは、覚えない（鍵が届かない別のセッションを読み続けても、メモリーが増えない）。
+        guard let stored = state.inbound_sessions[key] else { return }
+        _ = try inbound.restoreSession(account: account, pickle: stored.pickle, storageKey: storageKey)
         loadedInbound.insert(key)
     }
 
@@ -402,6 +426,7 @@ final class CryptoStore: @unchecked Sendable {
     /// 自分と送信者のクロス署名と保存済みの信頼記録で送信端末を検証する。
     func processToDevice(_ rows: [ToDeviceRow], keysQuery: String) throws -> ToDeviceResult {
         try lock.withLock {
+            try ensureOpen()
             var processed: [String] = [], roomKeys = 0, dropped = 0, newOlm = 0, verified = 0
             let query = (try? JSONDecoder().decode(JSONValue.self, from: Data(keysQuery.utf8))) ?? .null
             // 前の処理で印を付けた行（ack の前に失敗した）。保存の同期が済んだとは限らないので、返す前に保存し直す。
@@ -489,6 +514,7 @@ final class CryptoStore: @unchecked Sendable {
             return .decrypted(newOlmSessions: created, roomKey: false, rejected: false, verified: false)
         }
         state.inbound_sessions[key] = StoredInbound(pickle: pickle, backed_up: false)
+        loadedInbound.insert(key)
         return .decrypted(newOlmSessions: created, roomKey: true, rejected: false, verified: verified)
     }
 
@@ -512,6 +538,7 @@ final class CryptoStore: @unchecked Sendable {
     /// 本文を復号する。channel・id・parent・sender・epoch・revision とリプレイの照合は、共通の暗号基盤で行う。
     func decrypt(_ message: EncryptedMessage) throws -> DecryptedMessage {
         try lock.withLock {
+            try ensureOpen()
             guard case .object(let envelope) = try JSONDecoder().decode(JSONValue.self, from: Data(message.ciphertext.utf8)),
                   case .string(let senderKey) = envelope["sender_key"], case .string(let sessionID) = envelope["session_id"] else {
                 throw ZooError.invalidResponse
@@ -526,6 +553,7 @@ final class CryptoStore: @unchecked Sendable {
     /// 解錠済みの鍵で配布先を判定し、TOFU の変更を保存する。
     func recipients(pages: [String]) throws -> Distribution {
         try lock.withLock {
+            try ensureOpen()
             guard state.secrets_revision != nil, let sealed = state.own_keys else { throw E2eeStoreError.sendNeedsUnlock }
             let own = try OwnKeys.fromPickle(sealed: sealed, account: account, storageKey: storageKey)
             // 起動時の確認と送信が重なっても、失効前の自己署名鍵で送信を始めない。
@@ -555,6 +583,7 @@ final class CryptoStore: @unchecked Sendable {
     /// Olm の状態を進めたら、ネットワークへ送る前に永続化する。`claimed` は `keys/claim` で受け取ったワンタイム鍵。
     func shareKey(_ device: VerifiedDeviceKeys, outbound: OutboundSession, claimed: String?) throws -> String? {
         try lock.withLock {
+            try ensureOpen()
             guard state.secrets_revision != nil else { throw E2eeStoreError.sendNeedsUnlock }
             let curve = device.curve25519Key()
             let session: String
@@ -581,6 +610,7 @@ final class CryptoStore: @unchecked Sendable {
     /// 本文を暗号化する。自分が送った本文も、再起動後に復号・バックアップできるよう、受信用の鍵を先に保存する。
     func encrypt(_ outbound: OutboundSession, message: OutgoingMessage) throws -> String {
         try lock.withLock {
+            try ensureOpen()
             guard state.secrets_revision != nil else { throw E2eeStoreError.sendNeedsUnlock }
             let ref = SessionRef(channelId: outbound.channelId(), senderKey: account.curve25519Key(), sessionId: outbound.sessionId())
             let key = Self.inboundKey(ref)
@@ -591,6 +621,7 @@ final class CryptoStore: @unchecked Sendable {
                 next.inbound_sessions[key] = StoredInbound(pickle: try inbound.pickleSession(account: account, key: ref, storageKey: storageKey)!)
                 try save(next)
                 state = next
+                loadedInbound.insert(key)
             }
             return try outbound.encrypt(account: account, message: message)
         }
@@ -605,17 +636,30 @@ final class CryptoStore: @unchecked Sendable {
         }
     }
 
-    /// ログアウトで暗号ストアを消す。`state.json` を消し、保存鍵を Keychain から消す。
+    /// ログアウトで暗号ストアを消す。`state.json` を消し、保存鍵を Keychain から消す。消し終えるまで、同じ暗号ストアを
+    /// ほかの場所が開けないようにする（予約を解除するのは、そのあと）。閉じたインスタンスからは消せない。
     func destroy(_ files: CryptoStoreFiles) throws {
-        close()
-        let stateURL = directory.appendingPathComponent(Self.stateFile)
-        if FileManager.default.fileExists(atPath: stateURL.path) { try FileManager.default.removeItem(at: stateURL) }
-        try files.keys.delete()
+        try lock.withLock {
+            try ensureOpen()
+            let stateURL = directory.appendingPathComponent(Self.stateFile)
+            if FileManager.default.fileExists(atPath: stateURL.path) { try FileManager.default.removeItem(at: stateURL) }
+            try files.keys.delete()
+            closed = true
+            _ = Self.openDirectories.withLock { $0.remove(directory.standardizedFileURL.path) }
+        }
     }
 
-    private func save() throws {
-        try Self.writeAtomically(JSONEncoder().encode(state), to: directory.appendingPathComponent(Self.stateFile))
+    /// 前の端末をサーバーから消せたので、記録から外す。
+    func clearPendingDeletion(_ deviceID: String) throws {
+        try lock.withLock {
+            var next = state
+            next.pending_deletions.removeAll { $0 == deviceID }
+            try save(next)
+            state = next
+        }
     }
+
+    private func save() throws { try save(state) }
 
     private static func readState(_ url: URL) throws -> StoreState? {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
