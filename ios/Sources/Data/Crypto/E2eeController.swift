@@ -139,7 +139,15 @@ final class E2eeController: ConversationEncryption {
                 let loaded = if let checked { checked } else { try await setup.loadStatus() }
                 // 解錠済みでないと分かったら（競合のあとの読み直しなど）、解錠し直すまで、ほかの読み直しの「解錠済み」を適用しない。
                 // その結果自身が古くて捨てられる場合も、これは覚えておく（解錠し直していれば、覚えない）。
-                if loaded != .unlocked, unlockGeneration == self.unlockGeneration { secretsChanged = true }
+                if loaded != .unlocked, unlockGeneration == self.unlockGeneration {
+                    secretsChanged = true
+                    // 古い読み直しでも、解錠済みでない状態は表示に反映する（元の「解錠済み」を残さない）。
+                    status = switch loaded {
+                    case .notSetUp: .notSetUp
+                    case .locked(let reason): .locked(reason)
+                    case .unlocked: status
+                    }
+                }
                 // あとから始めた読み直しがあれば、古い結果で状態を上書きしない。
                 guard generation == refreshGeneration else { return }
                 // 競合でロックしたあとは、解錠し直すまで、古い読み直しの「解錠済み」を適用しない。
