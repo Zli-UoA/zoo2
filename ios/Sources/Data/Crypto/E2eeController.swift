@@ -59,6 +59,10 @@ final class E2eeController: ConversationEncryption {
     @ObservationIgnored private var secretsChanged = false
     /// 失効（端末の削除のあとの鍵の作り直し）。本番は `make` で作る。
     @ObservationIgnored var revocation: E2eeRevocation?
+    /// ログアウトで暗号ストアを消すための置き場と、接続先（削除待ちの照合に使う）。本番は `make` で作る。
+    @ObservationIgnored var files: CryptoStoreFiles?
+    @ObservationIgnored var serverKey = ""
+    @ObservationIgnored var userIDForStore = ""
     /// 他のユーザーの検証（SAS）。本番は `make` で作る。
     @ObservationIgnored var verification: E2eeVerification?
     /// 端末一覧の API（本番は `APIClient`）。
@@ -105,6 +109,9 @@ final class E2eeController: ConversationEncryption {
         let encryption = MessageEncryption(store: { manager.readyStore }, api: api)
         let controller = E2eeController(manager: manager, setup: setup, encryption: encryption)
         controller.devicesAPI = api
+        controller.files = files
+        controller.serverKey = api.settings.server
+        controller.userIDForStore = userID
         let verification = E2eeVerification(store: { manager.readyStore }, api: api)
         controller.verification = verification
         controller.revocation = E2eeRevocation(store: { manager.readyStore }, api: api, setup: setup, userID: userID)
@@ -131,6 +138,7 @@ final class E2eeController: ConversationEncryption {
 
     func start() {
         manager.start()
+        Task { @MainActor [weak self] in await self?.retryPendingDeviceDeletions() }
         // 10 分を過ぎた検証の取りやめと、残したメッセージの試し直し。
         expireTask?.cancel()
         expireTask = Task { @MainActor [weak self] in
@@ -194,6 +202,62 @@ final class E2eeController: ConversationEncryption {
                     statusError = "暗号化の鍵が別の端末で更新されました。解錠し直してください。"
                 }
             }
+        }
+    }
+
+
+    // MARK: - ログアウト（docs/e2ee.md の「ログアウト」）
+
+    /// ログアウトの前の確認。動いているうちに、送れていない鍵バックアップを 5 秒まで送ろうとし、処理を止めて、暗号ストアを
+    /// 開き直して、まだバックアップに送れていない受信用セッションの数を返す（数えられなかったときは `nil`）。
+    /// 取りやめるときは `cancelLogout()` で処理に戻す。
+    func prepareLogout() async -> Int? {
+        _ = await e2eeWithTimeout(.seconds(5)) { [setup] in (try? await setup.uploadKeyBackup()) != nil ? true : nil }
+        await stop()
+        guard let files, let opened = try? CryptoStore.open(files, userID: userIDForStore, create: false) else { return nil }
+        let store = opened.store
+        defer { store.close() }
+        return store.pendingBackupCount()
+    }
+
+    /// ログアウトを取りやめた。処理に戻る。
+    func cancelLogout() { start() }
+
+    /// ログアウトする：端末をサーバーから消し（5 秒まで）、暗号ストアを消す。消せなかった端末は削除待ちに残し、同じ接続先と
+    /// ユーザーの次のログインで消し直す。端末の削除にはトークンが要るので、認証情報を消す前に呼ぶ。
+    func finishLogout() async {
+        await stop()
+        guard let files, let opened = try? CryptoStore.open(files, userID: userIDForStore, create: false) else { return }
+        let store = opened.store
+        let registered = store.isRegistered
+        let device = store.deviceID
+        if registered, let api = devicesAPI {
+            let removed = await e2eeWithTimeout(.seconds(5)) { () -> Bool? in
+                do { try await api.removeDevice(device); return true }
+                catch let failure as E2eeAPIError where failure.status == 404 { return true }
+                catch { return false }
+            }
+            if removed != true {
+                // 消せなかった（通信の失敗など）。次のログインで消し直す。書けなくても、暗号ストアは消して閉じる。
+                PendingDeviceDeletions(root: files.directory.deletingLastPathComponent())
+                    .add(PendingDeviceDeletion(server: serverKey, user: userIDForStore, device: device))
+            }
+        }
+        do { try store.destroy(files) } catch { store.close() }
+        EncryptedAttachmentFiles.shared.removeAll()
+    }
+
+    /// 前のログアウトで消せなかった、この接続先とユーザーの端末を消し直す（ログインのあと、裏で行う）。
+    func retryPendingDeviceDeletions() async {
+        guard let files, let api = devicesAPI else { return }
+        let pending = PendingDeviceDeletions(root: files.directory.deletingLastPathComponent())
+        for entry in pending.load() ?? [] where entry.server == serverKey && entry.user == userIDForStore {
+            let done = await e2eeWithTimeout(.seconds(5)) { () -> Bool? in
+                do { try await api.removeDevice(entry.device); return true }
+                catch let failure as E2eeAPIError where failure.status == 404 { return true }
+                catch { return false }
+            }
+            if done == true { pending.remove(entry) }
         }
     }
 

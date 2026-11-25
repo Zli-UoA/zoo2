@@ -210,9 +210,19 @@ private struct ProfileSettingsView: View {
                 Button("ログアウト", role: .destructive) { confirmingLogout = true }
                     .accessibilityIdentifier("logout")
                     .confirmationDialog("ログアウトしますか？", isPresented: $confirmingLogout, titleVisibility: .visible) {
-                        Button("ログアウト", role: .destructive) { session.logout() }
+                        Button("ログアウト", role: .destructive) { Task { await session.beginLogout() } }
                         Button("キャンセル", role: .cancel) {}
                     } message: { Text("この端末のログイン情報と下書きを削除します。") }
+                    .alert("暗号鍵をバックアップできていません", isPresented: Binding(get: { session.logoutPrompt != nil }, set: { _ in })) {
+                        Button("ログアウトする", role: .destructive) { Task { await session.confirmLogout() } }
+                        Button("キャンセル", role: .cancel) { session.cancelLogout() }
+                    } message: {
+                        if let count = session.logoutPrompt?.unbackedSessions {
+                            Text("まだバックアップに送れていない暗号鍵が \(count) 件あります。ログアウトすると、これらのメッセージを別の端末で読めなくなります。")
+                        } else {
+                            Text("暗号鍵のバックアップの状況を確かめられませんでした。ログアウトすると、まだ送れていない鍵のメッセージを別の端末で読めなくなる場合があります。")
+                        }
+                    }
             }
         }
         .navigationTitle("設定")

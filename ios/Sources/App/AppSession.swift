@@ -235,6 +235,31 @@ final class AppSession {
         error = nil
     }
 
+    /// 暗号鍵をまだバックアップに送れていないまま、ログアウトしようとしている（確認の対象。`nil` なら確認なし）。
+    struct LogoutPrompt: Equatable { let unbackedSessions: Int? }
+    var logoutPrompt: LogoutPrompt?
+
+    /// 利用者のログアウト。暗号化があれば、送れていない鍵を確かめる（0 でなければ確認を出す）。
+    func beginLogout() async {
+        guard let e2ee = workspace?.e2ee else { logout(); return }
+        let count = await e2ee.prepareLogout()
+        if count == 0 { await completeLogout() } else { logoutPrompt = LogoutPrompt(unbackedSessions: count) }
+    }
+
+    func confirmLogout() async { await completeLogout() }
+
+    func cancelLogout() {
+        logoutPrompt = nil
+        workspace?.e2ee?.cancelLogout()
+    }
+
+    private func completeLogout() async {
+        // 端末の削除にはトークンが要るので、認証情報を消す前に、端末を消して暗号ストアを消す。
+        await workspace?.e2ee?.finishLogout()
+        logoutPrompt = nil
+        logout()
+    }
+
     func logout() {
         cancelConnection()
         destinationDelivery?.task.cancel()

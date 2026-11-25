@@ -10,6 +10,7 @@
 		0049768C0551C30EC2A63BF8 /* ZooMessageSchemas.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD210A905C644AF9486510B3 /* ZooMessageSchemas.swift */; };
 		017E36C75CDB6F86DA0C29B5 /* WebRTC-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 06C2582A361DB82A2A24585B /* WebRTC-LICENSE.txt */; };
 		017F4DA879BF8E0CE588D2B8 /* WatchCompanionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E1FD0671CA2C9F23958A038 /* WatchCompanionTests.swift */; };
+		01896FD7F9B593757833082A /* LogoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07E04628974E0C321216E2EF /* LogoutTests.swift */; };
 		02A54FEBFF890844AAA7A343 /* SyncCoding.swift in Sources */ = {isa = PBXBuildFile; fileRef = 245AE894E05BC1E0DEDE0CF0 /* SyncCoding.swift */; };
 		02C122958A9B0B5838784C64 /* ConversationSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26A675980111EF4DD4A4BF20 /* ConversationSync.swift */; };
 		070C2FD149347CE8B7E7FDE4 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 805443D6BD58FDE63B07CA86 /* RootView.swift */; };
@@ -144,6 +145,7 @@
 		9D27F27E4CFD3E1504D92CD4 /* Reaction.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E0ABD4A57191371D0DC3ECE /* Reaction.swift */; };
 		9FFDD5FBD18FD8BDBC47B94C /* IncomingCallNotificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD793353F54041D2944CEE92 /* IncomingCallNotificationTests.swift */; };
 		A08EAA4FB9EE6ABA5765D109 /* RevocationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D66FC0B69F136D13372E7682 /* RevocationView.swift */; };
+		A121FA0B68A88A7DEC5AE9A7 /* E2eeLogout.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD95A6DCF03746EF37D8A213 /* E2eeLogout.swift */; };
 		A1A0D8BAA8707F5FC4E6F288 /* ThreadReplyLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 412038E3D7C38AA9D88ACF7E /* ThreadReplyLink.swift */; };
 		A22185231054340280D73F41 /* RemoteImageDiskCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F4B5FB24C249C614603307E /* RemoteImageDiskCache.swift */; };
 		A37C64E68D24C30960899053 /* OwnDevices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FD56F4CD45990D9ABA568DE /* OwnDevices.swift */; };
@@ -305,6 +307,7 @@
 		05C74B02233A91F8402DEA66 /* E2eeRevocation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = E2eeRevocation.swift; sourceTree = "<group>"; };
 		06C2582A361DB82A2A24585B /* WebRTC-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "WebRTC-LICENSE.txt"; sourceTree = "<group>"; };
 		06C33CC342CE1E346C9A61B0 /* ComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerView.swift; sourceTree = "<group>"; };
+		07E04628974E0C321216E2EF /* LogoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogoutTests.swift; sourceTree = "<group>"; };
 		09596446B9C70A06C26AEF02 /* ChannelThreads.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChannelThreads.swift; sourceTree = "<group>"; };
 		0A94614EBD05AEA25D7FE6F9 /* OwnDevicesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OwnDevicesTests.swift; sourceTree = "<group>"; };
 		0C1EAD4774E62106EA178697 /* AttachmentCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentCacheTests.swift; sourceTree = "<group>"; };
@@ -455,6 +458,7 @@
 		BC38AB430AA1777D763AB387 /* AttachmentRenderState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentRenderState.swift; sourceTree = "<group>"; };
 		BCADD40C264C81FB2A211091 /* PublicProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PublicProfile.swift; sourceTree = "<group>"; };
 		BD210A905C644AF9486510B3 /* ZooMessageSchemas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZooMessageSchemas.swift; sourceTree = "<group>"; };
+		BD95A6DCF03746EF37D8A213 /* E2eeLogout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = E2eeLogout.swift; sourceTree = "<group>"; };
 		BDFA0EA73CA3D24EFC391EBC /* InboxTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxTests.swift; sourceTree = "<group>"; };
 		C01020741494B6B776CDE495 /* MessageContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageContentView.swift; sourceTree = "<group>"; };
 		C6A9A3127AF80FE4B7F07EEC /* CallRecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallRecoveryTests.swift; sourceTree = "<group>"; };
@@ -621,6 +625,7 @@
 				CD793353F54041D2944CEE92 /* IncomingCallNotificationTests.swift */,
 				57993368233A06C99B903220 /* IncomingCallTests.swift */,
 				EE622584547CC4CFB398CC1A /* KeyBackupTests.swift */,
+				07E04628974E0C321216E2EF /* LogoutTests.swift */,
 				FC080878D2B6AA8B561E7434 /* MessageContentTests.swift */,
 				E5C5172D3E0B0D4FA67BBCB6 /* MessageEncryptionTests.swift */,
 				17B7F6D3EBD0B387B6C5B77A /* NativeCallMediaTests.swift */,
@@ -844,6 +849,7 @@
 				F0B4CCDF5EF02DB351767888 /* DeviceRegistration.swift */,
 				BA23AA6ED309FC33873C86DF /* E2eeController.swift */,
 				111FAF4B91FBC87D2EE0DF36 /* E2eeDeviceManager.swift */,
+				BD95A6DCF03746EF37D8A213 /* E2eeLogout.swift */,
 				05C74B02233A91F8402DEA66 /* E2eeRevocation.swift */,
 				164ACCCC5DC90C3964A189A9 /* E2eeSetup.swift */,
 				4D0861B20FC8109C6D06F8D3 /* E2eeVerification.swift */,
@@ -1278,6 +1284,7 @@
 				9FFDD5FBD18FD8BDBC47B94C /* IncomingCallNotificationTests.swift in Sources */,
 				46D213091D0C9ECF3B419F83 /* IncomingCallTests.swift in Sources */,
 				EEB943E1E9AC01BE730EE66C /* KeyBackupTests.swift in Sources */,
+				01896FD7F9B593757833082A /* LogoutTests.swift in Sources */,
 				429726CC1380B378CAB26B5C /* MessageContentTests.swift in Sources */,
 				7D832E9AB67EC2226C74E099 /* MessageEncryptionTests.swift in Sources */,
 				321F928016165948A8736531 /* NativeCallMediaTests.swift in Sources */,
@@ -1388,6 +1395,7 @@
 				CDF47B6B97F6A7B8692DD5BA /* DraftAttachment.swift in Sources */,
 				2A5C81C37C85299540AA901C /* E2eeController.swift in Sources */,
 				8088A80CB03836B4905F0609 /* E2eeDeviceManager.swift in Sources */,
+				A121FA0B68A88A7DEC5AE9A7 /* E2eeLogout.swift in Sources */,
 				5E2D0E4DF376D911D53819F7 /* E2eeRevocation.swift in Sources */,
 				6B6933E1A14C269CC7E2D77E /* E2eeSetup.swift in Sources */,
 				AE778DE3776013FC723549AA /* E2eeVerification.swift in Sources */,
