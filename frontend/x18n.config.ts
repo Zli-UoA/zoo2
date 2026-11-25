@@ -8,8 +8,8 @@ export default defineConfig({
   usage: { exclude: ["x18n.config.ts"] },
   checks: {
     // 変数だけで渡されるキーは検査できないので、CI で落とす。
-    // 動的な部分は `prefix.${suffix}` のように静的な前方一致を持たせるか、
-    // @x18n-key / @x18n-keys でキーを明示する（docs/i18n.md）。
+    // 動的な部分は `prefix.${suffix}` のような静的な前方一致を持たせるか、
+    // リテラル分岐にする（docs/i18n.md）。
     "dynamic-key": "error",
     // 他ロケールのキー欠落も CI で落とす（locale.test.ts と二重の担保）。
     "missing-translation": "error",
