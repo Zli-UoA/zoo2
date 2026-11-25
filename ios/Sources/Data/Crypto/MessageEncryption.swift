@@ -291,6 +291,12 @@ final class MessageEncryption {
                 let pending = devices.filter { !current.shared.contains(deviceKey($0)) }
                 try await share(store, outbound: current.session, devices: pending)
                 current.shared.formUnion(pending.map(deviceKey))
+                // 鍵の配布の応答を待つあいだに、端末が作り直されていたら（送信者の鍵が変わった）、古い鍵で配ったセッションを
+                // 新しい鍵で暗号化しない。捨てて、配布先の取得からやり直す。
+                if current.senderKey != store.curve25519Key {
+                    discard(channel)
+                    continue
+                }
                 var previous: DecryptedMessage?
                 if let edit {
                     let decrypted = try store.decrypt(EncryptedMessage(channelId: channel, messageId: id, parentId: parent,
@@ -301,10 +307,16 @@ final class MessageEncryption {
                 }
                 let kind = previous?.payload.content.kind ?? "message"
                 let attachments = previous?.payload.attachments ?? []
-                let encrypted = try store.encrypt(current.session, message: OutgoingMessage(
+                let encrypted: String
+                do { encrypted = try store.encrypt(current.session, senderKey: current.senderKey, message: OutgoingMessage(
                     messageId: id, parentId: parent, revision: revision,
                     content: ZooCrypto.MessageContent(body: body, format: "mfm", kind: kind),
                     mentions: Mentions(userIds: [], channel: false, here: false), attachments: attachments))
+                } catch E2eeStoreError.senderChanged {
+                    // 暗号化の直前に端末が作り直された。古い鍵で配ったセッションを捨てて、配布先の取得からやり直す。
+                    discard(channel)
+                    continue
+                }
                 var payload: [String: JSONValue] = [
                     "content": .string(""), "kind": .string(kind), "epoch": .number(Double(epoch)),
                     "revision": .number(Double(revision)), "ciphertext": .string(encrypted)
