@@ -7,7 +7,7 @@ import { LOCALE_STORAGE_KEY } from "../../../lib/i18n/locale";
 import { ApiError } from "../../../lib/api/client";
 import { MessagePane } from "./MessagePane";
 
-vi.mock("sonner", () => ({ toast: { error: vi.fn(), info: vi.fn() } }));
+vi.mock("sonner", () => ({ toast: { error: vi.fn(), info: vi.fn(), success: vi.fn() } }));
 
 const fixture = vi.hoisted(() => {
   const root = {
@@ -40,6 +40,8 @@ const fixture = vi.hoisted(() => {
     replies: [] as (typeof root)[],
     insert: vi.fn(),
     empty: [],
+    channels: [] as Record<string, unknown>[],
+    memberships: [] as { user_id: string; channel_id: string; joined_at: string }[],
     users: [] as { id: string; display_name: string; user_name: string }[],
     reactions: [] as {
       id: string;
@@ -72,21 +74,23 @@ const collection = {
   get: (id: string) => fixture.collectionRows.find((row) => row.id === id),
   values: () => fixture.empty.values(),
 };
+const collectionsBundle = {
+  messages: () => collection,
+  reactions: () => collection,
+  attachments: () => collection,
+  channelUsers: {},
+  config: {},
+};
 vi.mock("../../../lib/electric/collections-context", () => ({
-  useCollections: () => ({
-    messages: () => collection,
-    reactions: () => collection,
-    attachments: () => collection,
-    channelUsers: {},
-    config: {},
-  }),
+  useCollections: () => collectionsBundle,
+  useOptionalCollections: () => collectionsBundle,
 }));
 vi.mock("../../../lib/api/client", async (original) => ({
   ...(await original<typeof import("../../../lib/api/client")>()),
   createConfiguredApiClient: () => fixture.api,
 }));
 vi.mock("../../../hooks/useCurrentUser", () => ({
-  useCurrentUser: () => ({ currentUserId: "alice" }),
+  useCurrentUser: () => ({ currentUserId: "alice", isAdmin: false }),
 }));
 vi.mock("../../../hooks/useThreadMembership", async (original) => ({
   ...(await original<typeof import("../../../hooks/useThreadMembership")>()),
@@ -111,6 +115,16 @@ vi.mock("../../../hooks/useKitchenCatalog", () => ({
 }));
 vi.mock("../../../hooks/useRealtime", () => ({
   useUsers: () => ({ data: fixture.users, isLoading: false }),
+  useActiveChannels: () => ({
+    data: fixture.channels,
+    isLoading: false,
+    isInitialSyncLoading: false,
+  }),
+  useMyChannelMemberships: () => ({
+    memberships: fixture.memberships,
+    allMemberships: fixture.memberships,
+    isLoading: false,
+  }),
   useChannelMembers: () => ({ data: fixture.empty }),
   useMessageReactions: () => ({ data: fixture.reactions, isLoading: false, isError: false }),
   useMessageFeed: () => ({
@@ -123,7 +137,8 @@ vi.mock("../../../hooks/useRealtime", () => ({
     loadOlder: fixture.loadOlder,
   }),
 }));
-vi.mock("../../../hooks/useAttachments", () => ({
+vi.mock("../../../hooks/useAttachments", async (original) => ({
+  ...(await original<typeof import("../../../hooks/useAttachments")>()),
   useMessageAttachments: () => ({ data: fixture.empty }),
   useAttachmentUpload: () => vi.fn(),
   useEncryptedAttachmentUpload: () => vi.fn(),
@@ -168,13 +183,17 @@ vi.mock("../../layout/shell-context", () => ({
 }));
 vi.mock("./MessageList", () => ({
   MessageList: ({
+    messages,
     reactions,
     currentUserId,
     viewerId,
+    onForward,
   }: {
+    messages: (typeof fixture.root)[];
     reactions: Map<string, { userNames?: Record<string, string> }[]>;
     currentUserId: string | null;
     viewerId?: string | null;
+    onForward?: (msg: typeof fixture.root, attachments: unknown[]) => void;
   }) => (
     <div
       data-testid="message-list-mock"
@@ -182,6 +201,11 @@ vi.mock("./MessageList", () => ({
       data-viewer-id={viewerId ?? ""}
     >
       {reactions.get("old-root")?.[0]?.userNames?.alice}
+      {onForward && messages[0] ? (
+        <button type="button" onClick={() => onForward(messages[0]!, [])}>
+          Forward {messages[0]!.id}
+        </button>
+      ) : null}
     </div>
   ),
 }));
@@ -262,6 +286,8 @@ beforeEach(() => {
   fixture.feedLoading = false;
   fixture.hasOlder = false;
   fixture.isLoadingOlder = false;
+  fixture.channels = [];
+  fixture.memberships = [];
   fixture.users = [];
   fixture.reactions = [];
   fixture.closeThread.mockClear();
@@ -277,6 +303,7 @@ beforeEach(() => {
   fixture.pickReaction = null;
   vi.mocked(toast.error).mockClear();
   vi.mocked(toast.info).mockClear();
+  vi.mocked(toast.success).mockClear();
 });
 
 describe("links and threads whose rows are older than the loaded range", () => {
@@ -618,5 +645,100 @@ describe("a reply that the server refuses until the thread is joined", () => {
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
     expect(fixture.retryMembership).not.toHaveBeenCalled();
     expect(toast.info).not.toHaveBeenCalled();
+  });
+});
+
+describe("forwarding retry idempotency", () => {
+  it("reuses the same message id on retry after failure and rotates it when payload changes", async () => {
+    const previousLocale = localStorage.getItem(LOCALE_STORAGE_KEY);
+    localStorage.setItem(LOCALE_STORAGE_KEY, "ja");
+    try {
+      fixture.channels = [
+        {
+          id: "plain-forward-ch",
+          channel_name: "plain-forward",
+          is_private: false,
+          is_dm: false,
+          encrypted: false,
+          archive_at: null,
+          deleted_at: null,
+          posting_policy: "members",
+        },
+        {
+          id: "target-ch",
+          channel_name: "random",
+          is_private: false,
+          is_dm: false,
+          encrypted: false,
+          archive_at: null,
+          deleted_at: null,
+          posting_policy: "members",
+        },
+      ];
+      fixture.memberships = [
+        { user_id: "alice", channel_id: "plain-forward-ch", joined_at: "" },
+        { user_id: "alice", channel_id: "target-ch", joined_at: "" },
+      ];
+      fixture.feed = [
+        {
+          id: "src-1",
+          channel_id: "plain-forward-ch",
+          user_id: "alice",
+          content: "Forward source body",
+          parent_id: null,
+          created_at: "2026-01-01 00:00:00.000",
+          updated_at: null,
+          deleted_at: null,
+          thread_archive_at: null,
+          user_name: "alice",
+          display_name: "Alice",
+        },
+      ];
+
+      fixture.api.post
+        .mockRejectedValueOnce(new Error("timeout"))
+        .mockRejectedValueOnce(new Error("timeout"))
+        .mockResolvedValueOnce({ data: { id: "ok" } });
+
+      render(
+        <LocaleProvider>
+          <MessagePane channelId="plain-forward-ch" isMember />
+        </LocaleProvider>,
+      );
+
+      await userEvent.click(screen.getByRole("button", { name: "Forward src-1" }));
+      await userEvent.click(screen.getByRole("option", { name: "random" }));
+      const commentBox = screen.getByRole("textbox", { name: "コメント" });
+      await userEvent.type(commentBox, "first comment");
+
+      const submitBtn = screen.getByRole("button", { name: "転送する" });
+      // 1 回目失敗
+      await userEvent.click(submitBtn);
+      await waitFor(() => expect(fixture.api.post).toHaveBeenCalledTimes(1));
+
+      // 同じ内容での再送は同じ client UUID を使う
+      await userEvent.click(submitBtn);
+      await waitFor(() => expect(fixture.api.post).toHaveBeenCalledTimes(2));
+
+      const firstBody = fixture.api.post.mock.calls[0]?.[1] as { id: string; content: string };
+      const secondBody = fixture.api.post.mock.calls[1]?.[1] as { id: string; content: string };
+      const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      expect(firstBody.id).toMatch(uuidPattern);
+      expect(secondBody.id).toBe(firstBody.id);
+
+      // コメントを変えた再送は新しい UUID を採番する
+      await userEvent.type(commentBox, " edited");
+      await userEvent.click(submitBtn);
+      await waitFor(() => expect(fixture.api.post).toHaveBeenCalledTimes(3));
+
+      const thirdBody = fixture.api.post.mock.calls[2]?.[1] as { id: string; content: string };
+      expect(thirdBody.id).toMatch(uuidPattern);
+      expect(thirdBody.id).not.toBe(firstBody.id);
+      expect(thirdBody.content).toBe("first comment edited");
+    } finally {
+      fixture.api.post.mockReset().mockResolvedValue({});
+      if (previousLocale === null) localStorage.removeItem(LOCALE_STORAGE_KEY);
+      else localStorage.setItem(LOCALE_STORAGE_KEY, previousLocale);
+    }
   });
 });

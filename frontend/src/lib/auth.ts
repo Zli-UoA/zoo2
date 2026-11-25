@@ -15,10 +15,15 @@ let unauthorizedHandler: UnauthorizedHandler | null = null;
 let authorizedHandler: AuthorizedHandler | null = null;
 let authSessionGeneration = 0;
 let authRequestGeneration = 0;
+let tokenProviderGeneration = 0;
 const authSessionEndListeners = new Set<AuthSessionEndListener>();
 
 export function getAuthSessionGeneration(): number {
   return authSessionGeneration;
+}
+
+export function getTokenProviderGeneration(): number {
+  return tokenProviderGeneration;
 }
 
 /** Requests started before a login/reauthorization operation must not affect it later. */
@@ -67,10 +72,12 @@ function notifyAuthSessionListeners(event: AuthSessionLifecycleEvent): boolean {
 }
 
 export function setTokenProvider(provider: TokenProvider): void {
+  tokenProviderGeneration += 1;
   tokenProvider = provider;
 }
 
 export function resetTokenProvider(): void {
+  tokenProviderGeneration += 1;
   tokenProvider = () => null;
 }
 

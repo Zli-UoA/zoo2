@@ -1975,6 +1975,11 @@ A の QR を B が読み取る場合です（B の QR を A が読み取る場�
 - 【決定】Web（React）は、非公開チャンネルの「チャンネル設定」と、DM のメニューから切り替える。確認の画面で、これからのメッセージだけを暗号化すること、これまでのメッセージは平文のまま残り編集できなくなること、Home と ActivityPub に出した投稿は取り消されないこと、Slack の取り込みと同期が止まり、App と Webhook は先に外すこと（チャンネルだけ）、元に戻せないことを示す。切り替えのあと、端末の暗号化の準備ができていなければ、送信の欄は今までどおり止まる（作成した暗号化チャンネルと同じ）。
 - 【決定】Compose Android と TUI は、暗号化チャンネルの本文の送受信に対応したが、切り替えの操作はまだ持たない（[未決と未検証の一覧](#未決と未検証の一覧)）。【決定】（#361）TUI は送受信を持ったあとも、切り替えの操作は入れず、切り替える前の行を Web と同じ区切りと警告で表示するだけにする（[暗号化チャンネルと DM の送受信の実装](#暗号化チャンネルと-dm-の送受信の実装361)）。
 
+### メッセージ転送（引用）
+
+- 【決定】暗号化チャンネル（および `edm:` の暗号化 DM）を転送元または転送先にするメッセージ転送は禁止する。暗号化チャンネル内の投稿には転送メニュー・転送先一覧・転送カードを表示しない。
+- サーバー（`POST /api/messages`）は暗号化チャンネル宛ての `forwarded_message_ids` を `E2EE_PLAINTEXT_FORBIDDEN` で拒否し、転送元・転送先検証および `POST /api/messages/forwards/resolve` は暗号化チャンネル内の元投稿をすべて除外する（存在オラクル防止）。なお App API（`POST /api/apps/v1/messages`）は宛先を問わず `forwarded_message_ids` 自体が未対応のため常に `400 Bad Request` で拒否する。DB トリガー `e2ee_reject_plaintext_messages()` も暗号化チャンネルで `forwarded_message_ids IS NOT NULL` となる INSERT/UPDATE を拒否する。
+
 ## Bot の端末
 
 【決定】（[#366](https://github.com/Zli-UoA/zoo2/issues/366)）App のボットユーザー（Bot）は、人間の端末と同じ仕組み（端末鍵、クロス署名、TOFU、Olm と Megolm）で、端末として暗号化チャンネルに参加できます。参加させるかどうかはチャンネルのメンバーが明示的に決めます。サーバーが平文を受け取る経路は開きません。サンプルは `examples/e2ee-echo-bot`、Bot 側の実装は `sdk/src/e2ee.ts`（`@zoo/app-sdk/e2ee`）です。
