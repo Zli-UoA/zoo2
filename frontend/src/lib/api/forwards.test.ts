@@ -793,4 +793,48 @@ describe("resolveForwardMessages", () => {
     expect(cachedForwardEntry(scopeA, manyIds[0]!)).toBeUndefined();
     expect(cachedForwardEntry(scopeA, lastId)).toBeUndefined();
   });
+
+  it("notifies invalidation for cached IDs when tokenProvider changes mid-flush, while staying silent on logout", async () => {
+    vi.useFakeTimers();
+    setTokenProvider(() => "token-1");
+    const { client, post, pendingResolvers, seenRequests } = makeDeferredPost();
+
+    const pCached = resolveForwardMessages(client, scopeA, ["m-cached-live"]);
+    await vi.advanceTimersByTimeAsync(20);
+    pendingResolvers[0]!({ "m-cached-live": okItem("m-cached-live", "v1") });
+    await pCached;
+
+    const listener = vi.fn();
+    const unsubscribe = subscribeForwardInvalidation(scopeA, listener);
+    try {
+      const pInflight = resolveForwardMessages(client, scopeA, ["m-inflight"]);
+      await vi.advanceTimersByTimeAsync(20);
+      expect(post).toHaveBeenCalledTimes(2);
+
+      setTokenProvider(() => "token-2");
+      pendingResolvers[1]!({ "m-inflight": okItem("m-inflight", "stale") });
+      const resInflight = await pInflight;
+      expect(resInflight.get("m-inflight")).toEqual({ status: "error" });
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(listener).toHaveBeenCalledWith(["m-cached-live"]);
+
+      // ログアウト時の進行中破棄では無効化通知を飛ばさない
+      listener.mockClear();
+      const pCached2 = resolveForwardMessages(client, scopeA, ["m-cached-logout"]);
+      await vi.advanceTimersByTimeAsync(20);
+      pendingResolvers[2]!({ "m-cached-logout": okItem("m-cached-logout", "v1") });
+      await pCached2;
+
+      const pInflightLogout = resolveForwardMessages(client, scopeA, ["m-inflight-logout"]);
+      await vi.advanceTimersByTimeAsync(20);
+      notifyAuthSessionEnded("logout");
+      pendingResolvers[3]!(
+        Object.fromEntries(seenRequests[3]!.map((id) => [id, okItem(id, "stale-out")])),
+      );
+      await pInflightLogout;
+      expect(listener).not.toHaveBeenCalled();
+    } finally {
+      unsubscribe();
+    }
+  });
 });

@@ -448,4 +448,65 @@ describe("useForwardedMessages", () => {
       }
     }
   });
+
+  it("notifies and re-resolves an existing hook when tokenProvider changes during another inflight request", async () => {
+    setTokenProvider(() => "initial-token");
+    let resolveInflight:
+      | ((value: { data: { items: Record<string, ForwardResolutionItem> }; txid: null }) => void)
+      | undefined;
+    let rotated = false;
+
+    state.post.mockImplementation(async (_path: string, body: { ids: string[] }) => {
+      if (!rotated && body.ids.includes("m-inflight")) {
+        return await new Promise((resolve) => {
+          resolveInflight = resolve;
+        });
+      }
+      return {
+        data: {
+          items: Object.fromEntries(
+            body.ids.map((id) => [
+              id,
+              okForward(id, rotated ? `after-rotation-${id}` : `before-rotation-${id}`),
+            ]),
+          ),
+        },
+        txid: null,
+      };
+    });
+
+    const hookA = renderHook(() => useForwardedMessages(["m-live-cached"]));
+    await waitFor(() => {
+      expect(hookA.result.current.entries.get("m-live-cached")).toMatchObject({
+        status: "ok",
+        content: "before-rotation-m-live-cached",
+      });
+    });
+
+    const hookB = renderHook(() => useForwardedMessages(["m-inflight"]));
+    await waitFor(() => {
+      expect(resolveInflight).toBeDefined();
+    });
+
+    rotated = true;
+    setTokenProvider(() => "rotated-token");
+    resolveInflight!({
+      data: {
+        items: {
+          "m-inflight": okForward("m-inflight", "stale-inflight"),
+        },
+      },
+      txid: null,
+    });
+
+    await waitFor(() => {
+      expect(hookA.result.current.entries.get("m-live-cached")).toMatchObject({
+        status: "ok",
+        content: "after-rotation-m-live-cached",
+      });
+    });
+    expect(hookB.result.current.entries.get("m-inflight")).not.toMatchObject({
+      content: "stale-inflight",
+    });
+  });
 });

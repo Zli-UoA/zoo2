@@ -172,7 +172,10 @@ function discardAllBuckets(): void {
 }
 
 function discardStaleSessionBucket(scopeKey: string, bucket: ScopeBucket): string[] {
-  const cachedIds = isBucketActiveForBaseUrl(bucket) ? Array.from(bucket.cache.keys()) : [];
+  const cachedIds =
+    isBucketActiveForBaseUrl(bucket) && bucket.authSessionGeneration === getAuthSessionGeneration()
+      ? Array.from(bucket.cache.keys())
+      : [];
   discardBucket(bucket);
   notifyInvalidation(scopeKey, cachedIds);
   return cachedIds;
@@ -276,7 +279,7 @@ async function flushBucket(bucket: ScopeBucket): Promise<void> {
     bucket.timer = null;
   }
   if (!isFlushStillValid(bucket, flushEpoch, flushAuthGen, flushTokenGen)) {
-    discardBucket(bucket);
+    discardStaleSessionBucket(bucket.scopeKey, bucket);
     return;
   }
   if (isDocumentHidden()) {
@@ -305,7 +308,7 @@ async function flushBucket(bucket: ScopeBucket): Promise<void> {
     for (let i = 0; i < entries.length; i += MAX_RESOLVE_FORWARD_IDS) {
       if (!isFlushStillValid(bucket, flushEpoch, flushAuthGen, flushTokenGen)) {
         settleEntriesAsError(bucket, entries.slice(i));
-        discardBucket(bucket);
+        discardStaleSessionBucket(bucket.scopeKey, bucket);
         return;
       }
       if (isDocumentHidden()) {
@@ -332,7 +335,7 @@ async function flushBucket(bucket: ScopeBucket): Promise<void> {
 
       if (!isFlushStillValid(bucket, flushEpoch, flushAuthGen, flushTokenGen)) {
         settleEntriesAsError(bucket, entries.slice(i));
-        discardBucket(bucket);
+        discardStaleSessionBucket(bucket.scopeKey, bucket);
         return;
       }
 
@@ -541,7 +544,7 @@ export async function resolveForwardMessages(
   const settled = await Promise.all(promises.map(([, p]) => p));
   if (!isFlushStillValid(bucket, startEpoch, startAuthGen, startTokenGen)) {
     if (!isBucketSessionFresh(bucket) || !isBucketActiveForBaseUrl(bucket)) {
-      discardBucket(bucket);
+      discardStaleSessionBucket(scopeKey, bucket);
     }
     const aborted = new Map<string, ResolvedForwardEntry>();
     for (const id of uniqueIds) {
