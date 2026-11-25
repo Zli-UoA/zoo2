@@ -8,9 +8,9 @@ use std::sync::Arc;
 use tauri::{AppHandle, State, Webview};
 use zoo2_client_types::{
     ipc::{
-        AccessToken, DOWNLOAD_ID_HEADER, DOWNLOAD_OFFSET_HEADER, DeviceLogin, DownloadBegin,
-        DownloadSettings, DownloadSettingsUpdate, DownloadStart, ErrorCode, FocusState,
-        InvokeAppAction, IpcError, NotificationSettings, ObservedNotifications, OpenChannel,
+        AccessToken, DOWNLOAD_ID_HEADER, DOWNLOAD_OFFSET_HEADER, DownloadBegin, DownloadSettings,
+        DownloadSettingsUpdate, DownloadStart, ErrorCode, FocusState, InvokeAppAction, IpcError,
+        LoginMethod, LoginPrompt, NotificationSettings, ObservedNotifications, OpenChannel,
         SendMessage, SendResult, SessionInfo, UiMode,
     },
     shape::ShapeId,
@@ -52,9 +52,14 @@ pub async fn zoo_session(webview: Webview, core: Core_<'_>) -> Result<SessionInf
 }
 
 #[tauri::command]
-pub async fn zoo_start_login(webview: Webview, core: Core_<'_>) -> Result<DeviceLogin, IpcError> {
+pub async fn zoo_start_login(
+    webview: Webview,
+    core: Core_<'_>,
+    method: Option<LoginMethod>,
+) -> Result<LoginPrompt, IpcError> {
     require(&webview, &core, ANY)?;
-    core.inner().start_login().await
+    // 引数のない呼び出し（古い画面）は、ブラウザー（認可コード + PKCE）で始める。
+    core.inner().start_login(method.unwrap_or_default()).await
 }
 
 #[tauri::command]

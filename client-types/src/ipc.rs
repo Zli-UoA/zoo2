@@ -32,8 +32,9 @@ pub mod command {
     // (a)・(b) 共通
     /// 引数なし。[`super::SessionInfo`] を返す。
     pub const SESSION: &str = "zoo_session";
-    /// 引数なし。デバイスコードのログインを始め、[`super::DeviceLogin`] を返す。
-    /// 承認を待つ間は [`super::event::SESSION`] で状態を知らせる。
+    /// `{ method?: LoginMethod }`。省略すると `browser`。ログインを始め、[`super::LoginPrompt`] を返す。
+    /// `browser` は認可コード + PKCE（ループバックのリダイレクト）、`device` はデバイスコード
+    /// (RFC 8628)。承認を待つ間は [`super::event::SESSION`] で状態を知らせる。
     pub const START_LOGIN: &str = "zoo_start_login";
     /// 引数なし。承認待ちをやめる。
     pub const CANCEL_LOGIN: &str = "zoo_cancel_login";
@@ -115,6 +116,8 @@ pub mod event {
     pub const SHAPE: &str = "zoo://shape";
     /// [`super::ShapeFailed`]。(a) だけ。回復できない購読のエラー。
     pub const SHAPE_FAILED: &str = "zoo://shape-failed";
+    /// [`super::LoginFailed`]。(a) だけ。ブラウザーでのログインが、始まったあとで失敗したとき。
+    pub const LOGIN_FAILED: &str = "zoo://login-failed";
     /// [`super::OpenTarget`]。通知やトレイ、ディープリンクから、あるメッセージを開くとき。
     pub const OPEN: &str = "zoo://open";
     /// 中身なし。着信のトーストの「応答」が押された。`zoo_take_call_accept` で印を取りに来る合図で、
@@ -147,9 +150,9 @@ pub enum SessionState {
     /// 保存済みのトークンを確かめている間。
     Starting,
     LoggedOut,
-    /// デバイスコードの承認を待っている。
+    /// ブラウザーでの承認を待っている。
     LoggingIn {
-        login: DeviceLogin,
+        login: LoginPrompt,
     },
     Ready {
         me: Me,
@@ -158,6 +161,33 @@ pub enum SessionState {
     Failed {
         message: String,
     },
+}
+
+/// ログインの方式。ブラウザーを開ける環境では認可コード + PKCE を使い（RFC 8252）、ブラウザーを
+/// 開けない・ループバックで受けられない環境のために、デバイスコードを残す。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoginMethod {
+    #[default]
+    Browser,
+    Device,
+}
+
+/// 承認待ちの画面に出す内容。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LoginPrompt {
+    Browser(BrowserLogin),
+    Device(DeviceLogin),
+}
+
+/// 認可コード + PKCE のログインの、画面に出す部分。code verifier、`state`、`nonce` は Rust 側だけが持つ。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserLogin {
+    /// 既定のブラウザーで開く認可リクエストの URL（開けなかったときに手動で開く）。
+    pub url: String,
+    /// UNIX 秒。これを過ぎたらやり直す。
+    pub expires_at: i64,
 }
 
 /// デバイスコード (RFC 8628) の、画面に出す部分。`device_code` は Rust 側だけが持つ。
@@ -308,6 +338,12 @@ pub struct ObservedNotifications {
 pub struct ShapeBatch {
     pub shape: ShapeId,
     pub batch: Batch,
+}
+
+/// ブラウザーでのログインが失敗した理由。`START_LOGIN` はもう成功を返しているので、イベントで知らせる。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoginFailed {
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -491,6 +527,34 @@ mod tests {
                 ask_every_time: false,
                 reset_directory: false
             }
+        );
+    }
+
+    #[test]
+    fn login_prompt_is_tagged_and_the_method_defaults_to_browser() {
+        let browser = LoginPrompt::Browser(BrowserLogin {
+            url: "https://issuer/authorize?x=1".into(),
+            expires_at: 10,
+        });
+        let value = serde_json::to_value(&browser).unwrap();
+        assert_eq!(value["kind"], "browser");
+        assert_eq!(value["url"], "https://issuer/authorize?x=1");
+        assert_eq!(
+            serde_json::from_value::<LoginPrompt>(value).unwrap(),
+            browser
+        );
+        let device = LoginPrompt::Device(DeviceLogin {
+            user_code: "ABCD-EFGH".into(),
+            verification_uri: "https://issuer/device".into(),
+            verification_uri_complete: None,
+            auto_open: true,
+            expires_at: 10,
+        });
+        assert_eq!(serde_json::to_value(&device).unwrap()["kind"], "device");
+        assert_eq!(LoginMethod::default(), LoginMethod::Browser);
+        assert_eq!(
+            serde_json::from_value::<LoginMethod>(json!("device")).unwrap(),
+            LoginMethod::Device
         );
     }
 
