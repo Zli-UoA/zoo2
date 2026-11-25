@@ -212,31 +212,32 @@ fn identity(account: &DeviceAccount, trust: &TrustStore) -> Result<core::Verific
     )?)
 }
 
+/// `their_user_id` に検証を求める。`snapshot_pages` は相手の `keys/query` の応答（JSON）。
+/// （UniFFI の constructor は自分の型しか返せないので、`SasRequest` を返すこちらは関数にする。）
+#[uniffi::export]
+pub fn request_sas_verification(
+    account: &DeviceAccount,
+    trust: &TrustStore,
+    snapshot_pages: Vec<String>,
+    their_user_id: String,
+    now_ms: u64,
+) -> Result<SasRequest> {
+    let (inner, out) = core::SasVerification::request(
+        identity(account, trust)?,
+        &snapshot(&snapshot_pages)?,
+        &their_user_id,
+        now_ms,
+    )?;
+    Ok(SasRequest {
+        verification: Arc::new(SasVerification {
+            inner: Mutex::new(inner),
+        }),
+        outgoing: outgoing(vec![out]),
+    })
+}
+
 #[uniffi::export]
 impl SasVerification {
-    /// `their_user_id` に検証を求める。`snapshot_pages` は相手の `keys/query` の応答（JSON）。
-    #[uniffi::constructor]
-    pub fn request(
-        account: &DeviceAccount,
-        trust: &TrustStore,
-        snapshot_pages: Vec<String>,
-        their_user_id: String,
-        now_ms: u64,
-    ) -> Result<SasRequest> {
-        let (inner, out) = core::SasVerification::request(
-            identity(account, trust)?,
-            &snapshot(&snapshot_pages)?,
-            &their_user_id,
-            now_ms,
-        )?;
-        Ok(SasRequest {
-            verification: Arc::new(Self {
-                inner: Mutex::new(inner),
-            }),
-            outgoing: outgoing(vec![out]),
-        })
-    }
-
     /// 届いた要求から検証を作る。古い要求、たどれない端末からの要求などは投げる（捨てる）。
     #[uniffi::constructor]
     pub fn from_request(
