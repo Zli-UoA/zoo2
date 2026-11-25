@@ -30,6 +30,8 @@ export interface LinkedMessage {
   /** 本文の要約。`kind` が `text` のときだけ入る。 */
   excerpt: string;
   attachmentCount: number;
+  /** 別のメッセージを転送（引用）した投稿か。暗号化されたメッセージは、常に false。 */
+  forwarded: boolean;
 }
 
 /**
@@ -62,6 +64,7 @@ type LinkedMessageRow = Pick<
   | "components"
   | "app_blocks"
   | "ciphertext"
+  | "forwarded_message_ids"
 > & { deleted_at?: string | null };
 
 export function toLinkedMessage(row: LinkedMessageRow, channel: LinkedChannel): LinkedMessage {
@@ -87,6 +90,7 @@ export function toLinkedMessage(row: LinkedMessageRow, channel: LinkedChannel): 
     kind,
     excerpt: kind === "text" ? messageExcerpt(row.content) : "",
     attachmentCount: row.display_data?.attachments?.length ?? 0,
+    forwarded: kind !== "encrypted" && !!row.forwarded_message_ids?.length,
   };
 }
 

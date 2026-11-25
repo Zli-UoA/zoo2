@@ -1,4 +1,11 @@
-import { BlocksIcon, CloudOffIcon, EyeOffIcon, LockKeyholeIcon, PaperclipIcon } from "lucide-react";
+import {
+  BlocksIcon,
+  CloudOffIcon,
+  EyeOffIcon,
+  ForwardIcon,
+  LockKeyholeIcon,
+  PaperclipIcon,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
@@ -84,6 +91,15 @@ function MessageEmbedBody({ message }: { message: LinkedMessage }) {
     return (
       <span className="mt-1 line-clamp-3 break-words text-foreground [overflow-wrap:anywhere]">
         {message.excerpt}
+      </span>
+    );
+  }
+  if (message.forwarded) {
+    // コメントのない転送。転送元は展開せず、通知と同じ文言で、転送したことだけを伝える。
+    return (
+      <span className="mt-1 flex items-center gap-1.5 text-muted-foreground">
+        <ForwardIcon className="size-3.5 shrink-0" aria-hidden="true" />
+        <span>{t("notifications.forwardedPreview")}</span>
       </span>
     );
   }

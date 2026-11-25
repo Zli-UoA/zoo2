@@ -214,6 +214,7 @@ describe("resolveChannelLinkInfo", () => {
           kind: "text",
           excerpt: "こんにちは リンク",
           attachmentCount: 0,
+          forwarded: false,
         },
       });
     });
@@ -431,5 +432,21 @@ describe("toLinkedMessage", () => {
 
   it("非公開チャンネルでも、見られるなら本文を要約する", () => {
     expect(toLinkedMessage(row({ content: "参加者向け" }), secret).excerpt).toBe("参加者向け");
+  });
+
+  it.each([
+    ["転送元がある", ["m-source"], true],
+    ["転送元の配列が空", [], false],
+    ["転送元がない（null）", null, false],
+    ["列がない", undefined, false],
+  ])("転送の投稿かを持つ（%s）", (_name, forwarded_message_ids, forwarded) => {
+    expect(toLinkedMessage(row({ forwarded_message_ids }), general).forwarded).toBe(forwarded);
+  });
+
+  it("暗号化チャンネルの行は、転送の ID があっても転送の投稿として扱わない", () => {
+    // 暗号化チャンネルでは転送を表示しない（docs/e2ee.md の「メッセージ転送（引用）」）。
+    expect(toLinkedMessage(row({ forwarded_message_ids: ["m-source"] }), sealed).forwarded).toBe(
+      false,
+    );
   });
 });

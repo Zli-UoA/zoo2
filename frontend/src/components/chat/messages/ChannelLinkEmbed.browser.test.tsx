@@ -24,6 +24,8 @@ import { LOCALE_STORAGE_KEY } from "../../../lib/i18n/locale";
 import { CollectionsProvider } from "../../../lib/electric/collections-context";
 import type { ChannelRow, MessageRow, UserRow } from "../../../lib/electric/types";
 import { LocaleProvider } from "../../i18n/LocaleProvider";
+import type { ForwardEntryState } from "../../../hooks/useForwardedMessages";
+import { ForwardedMessageCard } from "./ForwardedMessageCard";
 import { MessageBody } from "./MessageRow";
 import { MfmChannelsProvider } from "./MfmChannels";
 import { MfmContent } from "./MfmContent";
@@ -176,6 +178,18 @@ const messages: MessageRow[] = [
     },
   }),
   message({
+    id: "m-forward-only",
+    channel_id: "c-general",
+    content: "",
+    forwarded_message_ids: ["m-general"],
+  }),
+  message({
+    id: "m-forward-comment",
+    channel_id: "c-general",
+    content: "これを見てください",
+    forwarded_message_ids: ["m-general"],
+  }),
+  message({
     id: "m-long",
     channel_id: "c-general",
     content: "とても長い本文です。".repeat(80),
@@ -208,7 +222,9 @@ interface SetupOptions {
   ready?: boolean;
   /** 一覧には出ないが、コレクションには行がある（サーバーの権限で守られる）チャンネル。 */
   hiddenRows?: MessageRow[];
-  previews?: "auto" | "manual";
+  previews?: "auto" | "manual" | "none";
+  /** 指定すると、本文の代わりに、これを描く（`content` は使わない）。 */
+  node?: ReactNode;
   /** `false` で、チャンネルの一覧（Provider）を置かない（公開プロフィールなどを想定）。 */
   directory?: boolean;
   highlight?: string[];
@@ -230,6 +246,7 @@ function setup({
   body = "message",
   worker,
   e2eeValue,
+  node,
 }: SetupOptions) {
   const initialE2ee = e2eeValue ?? (worker ? cryptoStore(worker) : null);
   const e2eeControl: { set: ((next: E2eeContextValue) => void) | null } = { set: null };
@@ -264,11 +281,12 @@ function setup({
     const [state, setState] = useState({ visible, ready });
     directoryControl.set = setState;
     const rendered =
-      body === "message" ? (
+      node ??
+      (body === "message" ? (
         <MessageBody content={content} previews={previews} />
       ) : (
         <MfmContent content={content} highlight={highlight} />
-      );
+      ));
     const tree = (
       <LocaleProvider>
         <CollectionsProvider value={bundle}>
@@ -414,6 +432,20 @@ describe("メッセージのリンク", () => {
   it("本文がなく添付だけのメッセージは、添付の数を出す", async () => {
     setup({ content: link("c-general", "?message=m-files") });
     expect(await screen.findByText("添付ファイル 2 件")).toBeInTheDocument();
+  });
+
+  it("コメントのない転送の投稿は、空のカードにせず、転送したことを書く", async () => {
+    setup({ content: link("c-general", "?message=m-forward-only") });
+    const embed = await screen.findByRole("link", { name: /メッセージを転送しました/ });
+    expect(within(embed).getByText("アメシュ")).toBeInTheDocument();
+    // 転送元の本文は、埋め込みに展開しない（`m-general` の本文）。
+    expect(within(embed).queryByText("テスト")).toBeNull();
+  });
+
+  it("コメントのある転送の投稿は、コメントを出す", async () => {
+    setup({ content: link("c-general", "?message=m-forward-comment") });
+    const embed = await screen.findByRole("link", { name: /これを見てください/ });
+    expect(within(embed).queryByText("メッセージを転送しました")).toBeNull();
   });
 
   it("DM は内部の名前ではなく、総称で示す", async () => {
@@ -874,6 +906,57 @@ describe("外部へ送らない", () => {
     setup({ content: link("c-general", "?message=m-general"), previews: "manual" });
     await screen.findByRole("link", { name: /アメシュ.*テスト/ });
     expect(screen.queryByRole("button", { name: "リンクのプレビューを読み込む" })).toBeNull();
+  });
+});
+
+describe("転送（引用）のカードの中のリンク", () => {
+  const entry = (content: string): ForwardEntryState => ({
+    status: "ok",
+    id: "m-forwarded",
+    channel_id: "c-general",
+    channel_name: "general",
+    is_private: false,
+    is_dm: false,
+    parent_id: null,
+    user_id: "u-alice",
+    created_at: ts(45),
+    updated_at: null,
+    content,
+    card: null,
+    components: null,
+    message_kind: "message",
+    author: null,
+    emojis: {},
+    attachments: [],
+    has_forwards: false,
+  });
+  const forwardCard = (compact: boolean) => (
+    <ForwardedMessageCard
+      messageId="m-forwarded"
+      entry={entry(`転送元の本文 ${link("c-general", "?message=m-general")}`)}
+      compact={compact}
+    />
+  );
+
+  it("引用の中のメッセージリンクは、短くして埋め込み、リンクを入れ子にしない", async () => {
+    setup({ content: "", node: forwardCard(false) });
+    const quote = await screen.findByRole("blockquote");
+    expect(
+      await within(quote).findByRole("link", { name: "アメシュさん: #general" }),
+    ).toBeInTheDocument();
+    expect(
+      await within(quote).findByRole("link", { name: /アメシュ.*#general.*テスト/ }),
+    ).toBeInTheDocument();
+    expect(quote.querySelector("a a")).toBeNull();
+  });
+
+  it("転送ダイアログの簡潔なプレビューは、埋め込みを出さない", async () => {
+    setup({ content: "", node: forwardCard(true) });
+    const quote = await screen.findByRole("blockquote");
+    // 本文中の短い表示は出る。埋め込み（本文を含むカード）は出さない。
+    await within(quote).findByRole("link", { name: "アメシュさん: #general" });
+    expect(within(quote).queryByRole("link", { name: /アメシュ.*#general.*テスト/ })).toBeNull();
+    expect(within(quote).queryByRole("status")).toBeNull();
   });
 });
 

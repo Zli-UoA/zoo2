@@ -116,6 +116,12 @@ const storyMessages: MessageData[] = [
   }),
   message({ id: "m-deleted", channel_id: general.id, content: "消えた", deleted_at: ts(40) }),
   message({
+    id: "m-forward",
+    channel_id: general.id,
+    content: "",
+    forwarded_message_ids: ["m-1"],
+  }),
+  message({
     id: "m-card",
     channel_id: general.id,
     content: "カードの代わりの本文",
@@ -332,6 +338,16 @@ export const AttachmentsOnly: Story = {
   args: { content: url("c-general?message=m-files") },
   play: settled(async (canvas) => {
     await expect(canvas.getByText("添付ファイル 2 件")).toBeVisible();
+  }),
+};
+
+/** コメントのない転送（引用）の投稿は、転送元を展開せず、転送したことを書く。 */
+export const ForwardOnly: Story = {
+  args: { content: url("c-general?message=m-forward") },
+  play: settled(async (canvas) => {
+    const embed = canvas.getByRole("link", { name: /メッセージを転送しました/ });
+    await expect(embed).toHaveAttribute("href", "/channels/c-general?message=m-forward");
+    await expect(within(embed).queryByText("テスト")).toBeNull();
   }),
 };
 
