@@ -142,7 +142,7 @@ final class E2eeSetup {
 
     private static func secretsRevision(_ storage: String) -> UInt64? {
         guard let object = try? jsonObject(storage), case .number(let value) = object["secrets_revision"] else { return nil }
-        return UInt64(value)
+        return UInt64(exactly: value)
     }
 
     private func serverState() async throws -> (keys: String, versions: String) {
@@ -170,6 +170,8 @@ final class E2eeSetup {
         }
         if Self.secretsRevision(storage) != recorded { return try mismatch() }
         let state = try await serverState()
+        // 待っているあいだに、解錠し直して新しい `secrets_revision` を保存していたら、古い確認結果は使わず読み直す。
+        if store.secretsRevision != recorded { return try await loadStatus() }
         switch try store.startupCheck(keysQuery: state.keys, versions: state.versions) {
         case nil: return .locked(.new)
         case .ready: return .unlocked
@@ -282,7 +284,12 @@ final class E2eeSetup {
         let revision = session.secretsRevision()
         let plan = try await planRemaining(session)
         if plan.crossSigning != nil { return UnlockResult(session: session, secretsRevision: revision, needsReauth: true) }
-        try await saveRemaining(session, secretsRevision: revision, reauth: nil)
+        do {
+            try await saveRemaining(session, secretsRevision: revision, reauth: nil)
+        } catch E2eeSetupError.reauthRequired {
+            // 過去の版（消した版を含む）があるユーザーが版を作り直すときも、直前の再認証が要る。呼び出し側が再認証して続ける。
+            return UnlockResult(session: session, secretsRevision: revision, needsReauth: true)
+        }
         return UnlockResult(session: session, secretsRevision: revision, needsReauth: false)
     }
 
@@ -316,7 +323,7 @@ extension APIClient: E2eeSetupAPI {
         guard case .object(let root) = try? JSONDecoder().decode(JSONValue.self, from: data) else { return nil }
         let inner: [String: JSONValue]
         if case .object(let object) = root["data"] { inner = object } else { inner = root }
-        if case .number(let value) = inner["secrets_revision"] { return UInt64(value) }
+        if case .number(let value) = inner["secrets_revision"] { return UInt64(exactly: value) }
         return nil
     }
 
