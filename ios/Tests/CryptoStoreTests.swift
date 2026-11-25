@@ -101,6 +101,30 @@ struct CryptoStoreTests {
         third.close()
     }
 
+    @Test func 復旧中に状態ファイルの保存が失敗しても開き直すと前の端末のIDを取り出せる() throws {
+        let key = MemoryKey()
+        let (files, _, directory) = makeFiles(key)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = try #require(try CryptoStore.open(files, userID: user)).store
+        let oldID = first.deviceID
+        first.close()
+        // 保存鍵を失った状態で、復旧の最後の `state.json` の保存だけを失敗させる（一時ファイルの場所をディレクトリーにする）。
+        try key.delete()
+        let blocker = directory.appendingPathComponent("state.json.tmp", isDirectory: true)
+        try FileManager.default.createDirectory(at: blocker, withIntermediateDirectories: true)
+        #expect(throws: (any Error).self) { try CryptoStore.open(files, userID: user) }
+        // 前の `state.json` は、そのまま残っている。
+        let url = directory.appendingPathComponent("state.json")
+        let stored = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        #expect(stored["device_id"] as? String == oldID)
+        // 保存できるようになってから開き直すと、前の端末の ID を取り出せる。
+        try FileManager.default.removeItem(at: blocker)
+        let second = try #require(try CryptoStore.open(files, userID: user)).store
+        #expect(second.pendingDeviceDeletions == [oldID])
+        #expect(second.deviceID != oldID)
+        second.close()
+    }
+
     @Test func Olmセッションの復元に失敗しても作り直さず投げる() throws {
         let (files, _, directory) = makeFiles()
         defer { try? FileManager.default.removeItem(at: directory) }
