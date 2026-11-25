@@ -55,6 +55,8 @@ final class E2eeController: ConversationEncryption {
     @ObservationIgnored private var refreshGeneration = 0
     /// 解錠・初回設定が終わるたびに進める（古い読み直しの失敗が、新しい解錠を取り消さないため）。
     @ObservationIgnored private var unlockGeneration = 0
+    /// SSSS が書き換えられたと分かったあと、解錠し直すまで立てる。保留中の古い読み直しが、解錠済みを書き戻さないため。
+    @ObservationIgnored private var secretsChanged = false
     /// 端末一覧の API（本番は `APIClient`）。
     @ObservationIgnored var devicesAPI: (any E2eeOwnDevicesAPI)?
     @ObservationIgnored var rpID = ""
@@ -75,6 +77,7 @@ final class E2eeController: ConversationEncryption {
                 // SSSS が書き換えられていたら（別の端末で失効・解錠し直した）、解錠済みの表示を残さず、状態を読み直す。
                 if case .conflict(let code)? = try? await self.setup.uploadKeyBackup(), code == "E2EE_SSSS_CONFLICT" {
                     // 競合を検出した時点で、解錠済みの表示を解く（読み直しに失敗しても残さない）。読み直せれば、正しい状態に戻る。
+                    self.secretsChanged = true
                     self.status = .locked(.mismatch)
                     self.refreshStatus()
                 }
@@ -136,6 +139,8 @@ final class E2eeController: ConversationEncryption {
                 let loaded = if let checked { checked } else { try await setup.loadStatus() }
                 // あとから始めた読み直しがあれば、古い結果で状態を上書きしない。
                 guard generation == refreshGeneration else { return }
+                // 競合でロックしたあとは、解錠し直すまで、古い読み直しの「解錠済み」を適用しない。
+                if secretsChanged, loaded == .unlocked { return }
                 status = switch loaded {
                 case .notSetUp: .notSetUp
                 case .locked(let reason): .locked(reason)
@@ -149,6 +154,7 @@ final class E2eeController: ConversationEncryption {
                 // あとから始めた読み直しがあっても、競合を検出した結果は捨てない（そちらも失敗すれば、ロックが残る）。
                 // 競合のあとに、利用者が解錠し直していたら、その結果は取り消さない。
                 if case E2eeSetupError.secretsChanged = error, unlockGeneration == self.unlockGeneration {
+                    secretsChanged = true
                     status = .locked(.mismatch)
                     statusError = "暗号化の鍵が別の端末で更新されました。解錠し直してください。"
                 }
@@ -188,6 +194,7 @@ final class E2eeController: ConversationEncryption {
 
     private func finished() {
         unlockGeneration += 1
+        secretsChanged = false
         status = .unlocked
         statusError = nil
         decrypted = [:]
