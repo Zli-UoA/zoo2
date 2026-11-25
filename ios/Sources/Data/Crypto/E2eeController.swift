@@ -137,6 +137,9 @@ final class E2eeController: ConversationEncryption {
                 // 解錠済みなら、鍵バックアップの送信と取り込みも行う（失敗しても状態の表示は止めない）。
                 let checked = try await setup.runStartupCheck()
                 let loaded = if let checked { checked } else { try await setup.loadStatus() }
+                // 解錠済みでないと分かったら（競合のあとの読み直しなど）、解錠し直すまで、ほかの読み直しの「解錠済み」を適用しない。
+                // その結果自身が古くて捨てられる場合も、これは覚えておく（解錠し直していれば、覚えない）。
+                if loaded != .unlocked, unlockGeneration == self.unlockGeneration { secretsChanged = true }
                 // あとから始めた読み直しがあれば、古い結果で状態を上書きしない。
                 guard generation == refreshGeneration else { return }
                 // 競合でロックしたあとは、解錠し直すまで、古い読み直しの「解錠済み」を適用しない。
