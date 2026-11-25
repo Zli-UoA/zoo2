@@ -2091,6 +2091,15 @@ A の QR を B が読み取る場合です（B の QR を A が読み取る場�
 - CSP の `script-src` の `'wasm-unsafe-eval'` は、SQLite の Worker のためにすでにある（`infra/frontend-nginx.conf`）。Vite は `*_bg.wasm` を `assets/` に出すので、Service Worker はほかの `assets/` と同じく、`pwa-assets.json` から先に保存し、オフラインでも返す（`frontend/scripts/pwa.test.mjs`）。
 - 【決定】（#359）本番のイメージ（`infra/Dockerfile-frontend-deploy`）は、`crypto-wasm` の段で `crates/zoo-crypto-wasm/build.sh` を動かして wasm を作り、`frontend` の `link:` 依存の先（`/crates/zoo-crypto-wasm`）に置いてから `pnpm install` する。Rust は `rust-toolchain.toml` の版、wasm-bindgen-cli は `Cargo.toml` で `=` 固定した版を `cargo install` する（CI の `crypto-wasm` ジョブと同じ）。
 
+#### Swift バインディング（iOS、[#685](https://github.com/Zli-UoA/zoo2/issues/685)）
+
+- 【決定】iOS（`ios/`）も `crates/zoo-crypto-ffi` を使う。同じ UniFFI（0.32）から Swift のバインディングを作り、コアの `crates/zoo-crypto` は変えない。`crate-type` に `staticlib` を足し、iOS 向けの `.a` を作る。
+- 【決定】対象は `aarch64-apple-ios`（実機）と `aarch64-apple-ios-sim`（シミュレーター）だけ。x86_64 のシミュレーターと watchOS は対象外（watchOS は暗号を扱わない）。
+- 【決定】バインディングと XCFramework は Git に入れず、`make crypto-ffi-ios`（`ios/` からは `make crypto-xcframework`、`make generate` の前提）がビルドのたびに `ios/ZooCrypto/` へ作る（`ios/Scripts/build-crypto-xcframework.sh`）。Swift のバインディングは、ビルドした `.a` から同じクレートの `uniffi-bindgen`（`--features cli`）で作るので、ライブラリーと版が必ず一致する。
+- 【決定】生成した Swift は、アプリと同じモジュールには入れず、ローカルの Swift パッケージ `ZooCrypto`（`import ZooCrypto`）にする。同じモジュールに入れると、`MessageContent` などアプリの型名と衝突する。`Zoo` と `ZooNotificationService` の両方が `ZooCrypto` に依存する（通知の復号は #510）。
+- 開発シェルは `nix develop .#ios`（Rust の iOS target と `xcodegen`）。Xcode 本体は Nix で入れられないので、mac に入れたものを使う。スクリプトは Nix が設定する `DEVELOPER_DIR`・`SDKROOT` を外し、`xcode-select` の Xcode の SDK でビルドする。
+- 動作は `ios/Tests/CryptoBindingTests.swift` で確認する（端末の鍵を作り、保存鍵で保存して戻す）。
+
 ### 乱数
 
 - 【決定】乱数は OS かブラウザーの暗号用乱数（Web では `crypto.getRandomValues`）だけを使う。
