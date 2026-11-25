@@ -495,13 +495,17 @@ async fn process(
     senders.sort();
     senders.dedup();
     let response = api.e2ee_query_keys(&senders).await?;
-    let result = store
+    let (result, failed) = store
         .lock()
         .await
-        .process_to_device_with_keys(rows, &response)?;
+        .process_to_device_partial(rows, &response);
     // 検証のメッセージは、処理済みとして保存したあとで画面に渡す（Olm のメッセージは 2 回は復号できない）。
+    // 後ろの行で失敗しても、処理済みにした行の分は渡す（次の回では読み飛ばすため）。
     if !result.verifications.is_empty() {
         let _ = notifiers.verifications.send(result.verifications.clone());
+    }
+    if let Some(error) = failed {
+        return Err(error);
     }
     if !result.processed.is_empty() {
         api.e2ee_ack_to_device(device_id, &result.processed).await?;

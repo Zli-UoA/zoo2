@@ -111,9 +111,16 @@ impl CryptoStore {
         targets_query: Option<&Value>,
         deleted_devices: Vec<String>,
         unlocked: &UnlockedSecretStorage,
+        replacing: Option<&str>,
     ) -> Result<Revocation> {
-        if self.has_pending_revocation() {
-            bail!("終わっていない失効があります");
+        // やり直し（`replacing`）では、捨てる失効の記録を、新しい記録の保存で置き換える（先に消すと、始め直しに
+        // 失敗したときに範囲と削除した端末を失う）。記録が別の失効に置き換わっていたら始めない。
+        if let Some(state) = self.revocation_state()? {
+            let same = replacing
+                .is_some_and(|id| state.new_keys.self_signing.as_deref().unwrap_or_default() == id);
+            if !same {
+                bail!("終わっていない失効があります");
+            }
         }
         let server = ServerKeyState::from_json(self.user_id(), keys_query, versions)?;
         let signatures: Vec<KeySignature> = match targets_query.and_then(|q| q.get("signatures")) {
@@ -327,6 +334,7 @@ impl CryptoStore {
         keys_query: &Value,
         now_ms: u64,
     ) -> Result<SasVerification> {
+        self.require_verification_unlocked()?;
         let snapshot = KeySnapshot::from_json(keys_query)?;
         Ok(SasVerification::from_request(
             self.verification_identity()?,

@@ -183,6 +183,11 @@ struct Shared {
     message_seq: u64,
     /// 「一致する」か「読み取った」を押したときに始めた再認証。
     reauths: BTreeMap<String, ReauthTask>,
+    /// 保存が取り出して結果を待っている再認証（[`VerificationController::dispose`] で止めるため）。
+    saving_reauths: BTreeMap<String, tokio::task::AbortHandle>,
+    /// [`VerificationController::dispose`] のたびに増やす。待っていた古い処理は、状態を変える前と送る前に
+    /// これを比べ、変わっていれば何もしない。
+    epoch: u64,
 }
 
 struct Inner {
@@ -268,6 +273,7 @@ impl VerificationController {
     /// `user_id` に検証を求める。
     pub fn request(&self, user_id: String) {
         let this = self.clone();
+        let epoch = self.epoch();
         tokio::spawn(async move {
             let _serial = this.inner.queue.lock().await;
             let result = async {
@@ -286,13 +292,22 @@ impl VerificationController {
                         .request_verification(&keys, &user_id, now_ms())?;
                 let txn = verification.transaction_id().to_owned();
                 let view = SasView::of(&verification);
-                this.shared().active.insert(txn.clone(), verification);
+                {
+                    // 待つあいだに止めた（ログアウトなど）なら、登録も送信もしない。
+                    let mut shared = this.shared();
+                    if shared.epoch != epoch {
+                        return Ok(None);
+                    }
+                    shared.active.insert(txn.clone(), verification);
+                }
                 this.register(view, vec![outgoing]);
-                anyhow::Ok(txn)
+                anyhow::Ok(Some(txn))
             }
             .await;
             match result {
-                Ok(txn) => this.flush(&txn).await,
+                Ok(Some(txn)) => this.flush(&txn).await,
+                Ok(None) => {}
+                Err(_) if this.epoch() != epoch => {}
                 Err(error) => this.send(VerificationEvent::RequestFailed {
                     user_id,
                     error: error_code(&error),
@@ -394,11 +409,14 @@ impl VerificationController {
             if !finished && let Ok(true) = this.step(&txn, Action::Cancel).await {
                 this.flush(&txn).await;
             }
+            // 送れなかった分（取りやめを含む）は `unsent` に残し、期限まで `tick` で送り直す。
             let mut shared = this.shared();
             shared.active.remove(&txn);
             shared.phases.remove(&txn);
-            shared.unsent.remove(&txn);
             if let Some(task) = shared.reauths.remove(&txn) {
+                task.abort();
+            }
+            if let Some(task) = shared.saving_reauths.remove(&txn) {
                 task.abort();
             }
         });
@@ -418,7 +436,18 @@ impl VerificationController {
         for (_, task) in std::mem::take(&mut shared.reauths) {
             task.abort();
         }
-        *shared = Shared::default();
+        for (_, task) in std::mem::take(&mut shared.saving_reauths) {
+            task.abort();
+        }
+        let epoch = shared.epoch + 1;
+        *shared = Shared {
+            epoch,
+            ..Shared::default()
+        };
+    }
+
+    fn epoch(&self) -> u64 {
+        self.shared().epoch
     }
 
     /// 期限切れを確かめ、処理できなかったメッセージと、送れなかったメッセージを試し直す。画面の tick から、
@@ -492,7 +521,10 @@ impl VerificationController {
     /// 届いたメッセージを、届いた順に処理する。`keys/query` を取れなければ、その検証のメッセージだけを、順を
     /// 変えずに残す（次の確認で試し直す）。呼ぶ側が `queue` を持つ。
     async fn drain(&self) {
-        let pending = std::mem::take(&mut self.shared().inbox);
+        let (pending, epoch) = {
+            let mut shared = self.shared();
+            (std::mem::take(&mut shared.inbox), shared.epoch)
+        };
         let mut remaining = Vec::new();
         let mut keys: BTreeMap<String, Value> = BTreeMap::new();
         let mut failed_senders = BTreeSet::new();
@@ -550,6 +582,10 @@ impl VerificationController {
             let update = {
                 let store = store.lock().await;
                 let mut shared = self.shared();
+                if shared.epoch != epoch {
+                    // 待つあいだに止めた。取り出した分は捨てる。
+                    return;
+                }
                 match shared.active.get_mut(&txn) {
                     Some(verification) => {
                         let snapshot =
@@ -583,6 +619,9 @@ impl VerificationController {
         // 待つあいだに届いた分の前に、残した分を戻す（同じ検証のメッセージの届いた順を守る）。
         {
             let mut shared = self.shared();
+            if shared.epoch != epoch {
+                return;
+            }
             let newer = std::mem::take(&mut shared.inbox);
             shared.inbox = remaining;
             shared.inbox.extend(newer);
@@ -648,11 +687,13 @@ impl VerificationController {
 
     /// `items` を送り、送れなかった分を送信待ちに残す（次の確認で送り直す）。
     async fn deliver(&self, txn: &str, items: Vec<PendingSend>) {
+        let epoch = self.epoch();
         let undelivered = self.send_items(items).await;
         let kept = !undelivered.is_empty();
         {
+            // 画面を閉じた検証（取りやめを送れなかった）も残す。止めた（dispose）あとは残さない。
             let mut shared = self.shared();
-            if kept && shared.phases.contains_key(txn) {
+            if kept && shared.epoch == epoch {
                 let rest = shared.unsent.remove(txn).unwrap_or_default();
                 let mut all = undelivered;
                 all.extend(rest);
@@ -834,6 +875,7 @@ impl VerificationController {
 
     /// 検証できた相手のマスター鍵に署名し、`replace: true` のピンと署名を保存する。
     async fn save(&self, txn: &str) {
+        let epoch = self.epoch();
         // 確かめることと保存中にすることを 1 つのロックの中で行う（自動の保存と保存し直しが重なっても、
         // 保存を 1 つだけ始める）。
         let (their_user_id, task) = {
@@ -872,7 +914,26 @@ impl VerificationController {
             transaction_id: txn.to_owned(),
             state: SaveState::Saving,
         });
-        let token = match task.await {
+        // 結果を待つあいだも、dispose と dismiss が再認証を止められるようにする（取り出した保存だけが結果を使う）。
+        {
+            let mut shared = self.shared();
+            if shared.epoch != epoch {
+                task.abort();
+                return;
+            }
+            shared
+                .saving_reauths
+                .insert(txn.to_owned(), task.abort_handle());
+        }
+        let awaited = task.await;
+        {
+            let mut shared = self.shared();
+            if shared.epoch != epoch || !shared.active.contains_key(txn) {
+                return;
+            }
+            shared.saving_reauths.remove(txn);
+        }
+        let token = match awaited {
             Ok(Ok(token)) => token,
             _ => {
                 self.set_save(txn, SaveState::Reauth);

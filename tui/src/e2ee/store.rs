@@ -198,6 +198,16 @@ pub struct ToDeviceResult {
     pub verifications: Vec<VerificationMessage>,
 }
 
+impl ToDeviceResult {
+    /// 1 行分の結果を足す（`processed` は呼ぶ側が足す）。
+    fn merge(&mut self, other: ToDeviceResult) {
+        self.room_keys += other.room_keys;
+        self.dropped += other.dropped;
+        self.new_olm_sessions += other.new_olm_sessions;
+        self.verifications.extend(other.verifications);
+    }
+}
+
 /// [`CryptoStore::prepare_backup_upload`] の結果。
 #[derive(Debug)]
 pub enum BackupUploadRequest {
@@ -656,6 +666,20 @@ impl CryptoStore {
         rows: &[ToDeviceRow],
         query: &Value,
     ) -> Result<ToDeviceResult> {
+        match self.process_to_device_partial(rows, query) {
+            (result, None) => Ok(result),
+            (_, Some(error)) => Err(error),
+        }
+    }
+
+    /// [`process_to_device_with_keys`](Self::process_to_device_with_keys) と同じだが、途中の行で失敗しても、
+    /// それより前に処理済みとして保存した行の結果（検証のメッセージを含む）を、エラーと一緒に返す。処理済みの
+    /// 印を保存した検証のメッセージは、次の回では読み飛ばすため、ここで渡さないと失われる。
+    pub fn process_to_device_partial(
+        &mut self,
+        rows: &[ToDeviceRow],
+        query: &Value,
+    ) -> (ToDeviceResult, Option<anyhow::Error>) {
         // 手順 4 の判定（`TrustStore::sender_trust`）に使う、送信ユーザーと自分の `keys/query`。
         // 解錠し直しが要るあいだは、暗号ストアの記録で送信端末を検証済みにしない（#360 の決まり）。
         let snapshot = if self.needs_unlock() {
@@ -677,23 +701,30 @@ impl CryptoStore {
         let mut result = ToDeviceResult::default();
         for row in rows {
             if !self.state.processed_to_device.contains(&row.id) {
+                // この行の結果は、処理済みの印を保存できたときだけ足す（保存できなければ次の回で処理し直す）。
+                let mut row_result = ToDeviceResult::default();
                 if row.r#type == "m.room.encrypted" {
-                    self.process_encrypted(
+                    if let Err(error) = self.process_encrypted(
                         row,
                         query,
                         snapshot.as_ref(),
                         own_self_signing.as_ref(),
-                        &mut result,
-                    )?;
+                        &mut row_result,
+                    ) {
+                        return (result, Some(error));
+                    }
                 } else {
-                    result.dropped += 1;
+                    row_result.dropped += 1;
                 }
                 self.state.processed_to_device.insert(row.id.clone());
-                self.save()?;
+                if let Err(error) = self.save() {
+                    return (result, Some(error));
+                }
+                result.merge(row_result);
             }
             result.processed.push(row.id.clone());
         }
-        Ok(result)
+        (result, None)
     }
 
     fn process_encrypted(

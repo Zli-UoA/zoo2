@@ -7,7 +7,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph},
 };
 use zoo_crypto::{RevocationScope, SasPhase, UserState};
 
@@ -113,24 +113,67 @@ pub fn cleanup_reasons(
 }
 
 /// 幅 `width` の枠に入れたときの行数（枠を除く）。折り返す行には 1 行足す。
-fn rows(lines: &[Line<'_>], width: u16) -> usize {
+/// 枠（幅 `width`）の内側の幅で、行を文字ごとに折り返す。描画と、選んだ行やスクロールの計算で同じ行を使う
+/// ため、描画の側では折り返さない。返す 2 つ目は、元の各行が始まる折り返し後の行の番号。
+fn wrap_lines(lines: Vec<Line<'static>>, width: u16) -> (Vec<Line<'static>>, Vec<usize>) {
+    use unicode_width::UnicodeWidthChar;
     let inner = usize::from(width.saturating_sub(2)).max(1);
-    lines
-        .iter()
-        .map(|line| {
-            let width = line.width();
-            if width <= inner {
-                1
-            } else {
-                width.div_ceil(inner) + 1
+    let mut out: Vec<Line<'static>> = Vec::new();
+    let mut starts = Vec::with_capacity(lines.len());
+    for line in lines {
+        starts.push(out.len());
+        if line.width() <= inner {
+            out.push(line);
+            continue;
+        }
+        let line_style = line.style;
+        let mut current: Vec<Span<'static>> = Vec::new();
+        let mut used = 0;
+        for span in line.spans {
+            let style = span.style;
+            let mut text = String::new();
+            for ch in span.content.chars() {
+                let w = ch.width().unwrap_or(0);
+                if used + w > inner && used > 0 {
+                    if !text.is_empty() {
+                        current.push(Span::styled(std::mem::take(&mut text), style));
+                    }
+                    out.push(Line::from(std::mem::take(&mut current)).style(line_style));
+                    used = 0;
+                }
+                text.push(ch);
+                used += w;
             }
-        })
-        .sum()
+            if !text.is_empty() {
+                current.push(Span::styled(text, style));
+            }
+        }
+        if !current.is_empty() {
+            out.push(Line::from(current).style(line_style));
+        }
+    }
+    (out, starts)
 }
 
-fn draw_box(frame: &mut Frame, title: &str, lines: Vec<Line<'static>>, scroll: usize) {
+/// 折り返したあとの行の数。
+fn rows(lines: &[Line<'static>], width: u16) -> usize {
+    wrap_lines(lines.to_vec(), width).0.len()
+}
+
+/// 枠の中に、本文と、下に固定する操作の案内（`footer`）を描く。`focus` は本文の元の行の番号と行数で、
+/// その行が見えるように `scroll`（折り返し後の行の番号）を直す。
+fn draw_box(
+    frame: &mut Frame,
+    title: &str,
+    lines: Vec<Line<'static>>,
+    footer: Vec<Line<'static>>,
+    focus: Option<(usize, usize)>,
+    scroll: &mut usize,
+) {
     let width = WIDTH.min(frame.area().width);
-    let height = (rows(&lines, width) as u16)
+    let (body, starts) = wrap_lines(lines, width);
+    let (footer, _) = wrap_lines(footer, width);
+    let height = ((body.len() + footer.len()) as u16)
         .saturating_add(2)
         .min(frame.area().height);
     let area = Rect {
@@ -139,18 +182,41 @@ fn draw_box(frame: &mut Frame, title: &str, lines: Vec<Line<'static>>, scroll: u
         width,
         height,
     };
+    let inner_height = usize::from(height.saturating_sub(2));
+    let footer_height = footer.len().min(inner_height);
+    let body_height = inner_height - footer_height;
+    if let Some((line, count)) = focus {
+        let first = starts.get(line).copied().unwrap_or(body.len());
+        let end = starts.get(line + count).copied().unwrap_or(body.len());
+        if first < *scroll {
+            *scroll = first;
+        } else if end > *scroll + body_height {
+            *scroll = end.saturating_sub(body_height).min(first);
+        }
+    }
+    *scroll = (*scroll).min(body.len().saturating_sub(body_height));
     frame.render_widget(Clear, area);
     let block = Block::new()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(ACCENT))
         .title(Line::from(format!(" {title} ")));
+    let inside = block.inner(area);
+    frame.render_widget(block, area);
+    let body_area = Rect {
+        height: body_height as u16,
+        ..inside
+    };
+    let footer_area = Rect {
+        y: inside.y + body_height as u16,
+        height: footer_height as u16,
+        ..inside
+    };
+    let visible: Vec<Line<'static>> = body.into_iter().skip(*scroll).take(body_height).collect();
+    frame.render_widget(Paragraph::new(visible), body_area);
     frame.render_widget(
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .scroll((scroll.min(u16::MAX as usize) as u16, 0))
-            .block(block),
-        area,
+        Paragraph::new(footer.into_iter().take(footer_height).collect::<Vec<_>>()),
+        footer_area,
     );
 }
 
@@ -300,23 +366,19 @@ fn device_line(
 /// 端末と検証の画面。
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut scroll = 0;
+    // 下に固定する操作の案内（本文が長くてスクロールしても見えるように）。
+    let mut footer: Vec<Line<'static>> = Vec::new();
+    // 見えるようにする本文の行（一覧の選んだ行）。あれば `app.devices.scroll` で表示位置を持つ。
+    let mut focus: Option<(usize, usize)> = None;
     let over_ssh = app.devices.over_ssh;
     match &app.devices.screen {
         Screen::Loading => lines.push(Line::from("読んでいます…")),
         Screen::Working(message) => lines.push(Line::from(*message)),
         Screen::Overview => {
-            let (overview_lines, cursor_line) = overview(app);
+            let (overview_lines, cursor_line, help) = overview(app);
             lines = overview_lines;
-            // 選んだ行が見えるように、表示位置を直す。
-            let height = usize::from(frame.area().height.saturating_sub(2));
-            let devices = &mut app.devices;
-            if cursor_line < devices.scroll {
-                devices.scroll = cursor_line;
-            } else if cursor_line + 2 > devices.scroll + height {
-                devices.scroll = (cursor_line + 2).saturating_sub(height);
-            }
-            scroll = devices.scroll;
+            footer.push(help);
+            focus = Some((cursor_line, 2));
         }
         Screen::Rename { input, .. } => {
             lines.push(Line::from("端末名を変える"));
@@ -370,23 +432,31 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 lines.push(Line::styled("（ほかの端末はありません）", DIM));
             }
             for (index, device) in others.iter().enumerate() {
-                lines.extend(device_line(
+                let device_lines = device_line(
                     app,
                     device,
                     index == *cursor,
                     Some(selected.contains(&device.device_id)),
-                ));
+                );
+                if index == *cursor {
+                    focus = Some((lines.len(), device_lines.len()));
+                }
+                lines.extend(device_lines);
             }
-            lines.push(Line::from(""));
-            lines.push(heading("漏れた可能性があるもの"));
-            lines.push(Line::from(format!("● {}", scope_text(*scope))));
-            lines.push(Line::from(scope_description(*scope)));
-            lines.push(Line::from(""));
-            lines.push(warn(
+            // 範囲と操作の案内は、一覧をスクロールしても見えるように下に固定する。
+            footer.push(Line::from(""));
+            footer.push(Line::from(vec![
+                Span::styled(
+                    "漏れた可能性があるもの: ",
+                    Style::new().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(scope_text(*scope)),
+            ]));
+            footer.push(Line::from(scope_description(*scope)));
+            footer.push(warn(
                 "すでに取得された過去のメッセージ、古いバックアップの中身、削除した端末が持つ鍵は、失効しても取り消せません。",
             ));
-            lines.push(Line::from(""));
-            lines.push(keys(&[
+            footer.push(keys(&[
                 ("j/k", "移動"),
                 ("Space", "選ぶ"),
                 ("t", "範囲を切り替える"),
@@ -409,7 +479,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             ..
         } => {
             lines.push(Line::from(if *resume {
-                "止まった失効を続けるため、リカバリーキーで SSSS を開け直してください。全体の失効（パスキー、リカバリーキー、または SSSS の鍵）で新しいリカバリーキーを作ったあとなら、新しいほうを使ってください。"
+                resume_key_text(app.devices.overview.revocation.as_ref())
             } else {
                 "始める前に、リカバリーキーで SSSS を開け直してください。"
             }));
@@ -459,42 +529,30 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                         "チャンネルの他のメンバーが、あなたを再検証するまで、あなたの新しい端末に鍵を配りません。",
                     ));
                 }
-                let notes = not_resigned_users(state);
-                if !notes.is_empty() {
-                    lines.push(Line::from(""));
-                    lines.push(heading("署名し直さない相手"));
-                    lines.push(Line::from(
-                        "この端末に確認の記録がない相手です。失効のあと、再検証するまで鍵を配りません。",
-                    ));
-                    for (user, reasons) in notes {
-                        let reasons: Vec<&str> = reasons.into_iter().map(note_text).collect();
-                        lines.push(Line::from(format!(
-                            "・{}: {}",
-                            app.store.display_name(&user),
-                            reasons.join("、")
-                        )));
-                    }
-                }
+                // 移せないバックアップの警告は、長くなる相手の一覧より先に出す。
                 if !state.versions_without_key.is_empty() {
-                    lines.push(Line::from(""));
                     lines.push(warn(format!(
                         "新しい版に移せないバックアップがあります（版 {}）。この端末と SSSS に鍵がないので、その版のメッセージは復元できません。",
                         state.versions_without_key.join(", ")
                     )));
                 }
                 if state.stage > zoo_crypto::RevocationStage::Prepared {
-                    lines.push(Line::from(""));
                     lines.push(Line::from(format!(
                         "続きから保存します: {}",
                         stage_text(state.stage)
                     )));
                 }
+                let notes = not_resigned_users(state);
+                if !notes.is_empty() {
+                    lines.push(Line::from(""));
+                    resign_note_lines(&mut lines, app, &notes);
+                }
             }
-            lines.push(Line::from(""));
-            lines.push(Line::from(
+            footer.push(Line::from(""));
+            footer.push(Line::from(
                 "実行すると、ログインし直して本人確認をしてから、鍵を作り直して保存します。",
             ));
-            lines.push(keys(&[("Enter", "失効を実行"), ("Esc", "やめる")]));
+            footer.push(keys(&[("Enter", "失効を実行"), ("Esc", "やめる")]));
         }
         Screen::RevokeWorking(stage) => lines.push(Line::from(stage_text(*stage))),
         Screen::RevokeDone(outcome) => {
@@ -502,6 +560,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 "失効が終わりました。",
                 Style::new().fg(Color::Green),
             ));
+            if outcome.dropped_sessions > 0 {
+                lines.push(warn(format!(
+                    "古いバックアップの {} 件を移せませんでした。",
+                    outcome.dropped_sessions
+                )));
+            }
+            // AuthZ で行うことは、長くなる一覧より先に出す（端末が小さくても見えるように）。
+            lines.push(Line::from(""));
+            authz_lines(&mut lines, app, false);
             if !outcome.unsigned_devices.is_empty() {
                 lines.push(Line::from(""));
                 lines.push(heading("新しい鍵で署名されていない端末"));
@@ -512,28 +579,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     lines.extend(device_line(app, device, false, None));
                 }
             }
-            if outcome.dropped_sessions > 0 {
-                lines.push(warn(format!(
-                    "古いバックアップの {} 件を移せませんでした。",
-                    outcome.dropped_sessions
-                )));
-            }
             if !outcome.not_resigned.is_empty() {
                 lines.push(Line::from(""));
-                lines.push(heading("署名し直さない相手"));
-                for (user, reasons) in &outcome.not_resigned {
-                    let reasons: Vec<&str> = reasons.iter().copied().map(note_text).collect();
-                    lines.push(Line::from(format!(
-                        "・{}: {}",
-                        app.store.display_name(user),
-                        reasons.join("、")
-                    )));
-                }
+                resign_note_lines(&mut lines, app, &outcome.not_resigned);
             }
-            lines.push(Line::from(""));
-            authz_lines(&mut lines, app, false);
-            lines.push(Line::from(""));
-            lines.push(keys(&[("Enter", "閉じる")]));
+            footer.push(Line::from(""));
+            footer.push(keys(&[("Enter", "閉じる")]));
         }
         Screen::RevokeFailed { message, retry } => {
             lines.push(error(message.clone()));
@@ -656,7 +707,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Screen::RevokeRecoveryKey(_) | Screen::SlotRecoveryKey { .. }
     ) {
         let width = WIDTH.min(frame.area().width);
-        let fits = rows(&lines, width) + 2 <= usize::from(frame.area().height);
+        let fits =
+            rows(&lines, width) + rows(&footer, width) + 2 <= usize::from(frame.area().height);
         app.devices.recovery_key_shown = fits;
         if !fits {
             lines = vec![
@@ -664,13 +716,60 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 Line::from("端末を広げてください（広げるまで先に進めません）。"),
                 keys(&[("Esc", "やめる")]),
             ];
+            footer.clear();
         }
     }
-    draw_box(frame, "端末と検証", lines, scroll);
+    match focus {
+        Some(_) => draw_box(
+            frame,
+            "端末と検証",
+            lines,
+            footer,
+            focus,
+            &mut app.devices.scroll,
+        ),
+        None => draw_box(frame, "端末と検証", lines, footer, None, &mut 0),
+    }
+}
+
+/// 止まった失効を続けるときに使うリカバリーキーの案内。SSSS を保存したと記録してあれば、全体の失効では
+/// 新しいキー。記録の前（SSSS を書いたかどうか分からない）なら、前のキーを先に試し、開けなければ新しいキー。
+fn resume_key_text(pending: Option<&super::devices::PendingRevocation>) -> &'static str {
+    match pending {
+        Some(state) if state.scope == RevocationScope::DeviceOnly => {
+            "止まった失効を続けるため、リカバリーキーで SSSS を開け直してください（端末だけの失効は、リカバリーキーを変えません）。"
+        }
+        Some(state) if state.stage >= zoo_crypto::RevocationStage::SecretStorageSaved => {
+            "止まった失効を続けるため、リカバリーキーで SSSS を開け直してください。新しい SSSS を保存したあとなので、失効で控えた新しいリカバリーキーを使ってください。"
+        }
+        _ => {
+            "止まった失効を続けるため、リカバリーキーで SSSS を開け直してください。新しい SSSS を保存できたかは分からないので、まず失効を始めたときのリカバリーキーを使い、開けなければ失効で控えた新しいリカバリーキーを試してください。"
+        }
+    }
+}
+
+/// 署名し直しとピンの更新についての注意（相手ごとの理由）。
+fn resign_note_lines(
+    lines: &mut Vec<Line<'static>>,
+    app: &App,
+    notes: &[(String, Vec<zoo_crypto::ResignNote>)],
+) {
+    lines.push(heading("署名し直しとピンの更新についての注意"));
+    lines.push(Line::from(
+        "相手ごとの理由です。「この端末の記録で置き換える」相手は、サーバーのピンをこの端末の記録で作り直します。ほかの相手は、新しい鍵で署名し直しません（理由によっては、失効のあと再検証が必要です）。",
+    ));
+    for (user, reasons) in notes {
+        let reasons: Vec<&str> = reasons.iter().copied().map(note_text).collect();
+        lines.push(Line::from(format!(
+            "・{}: {}",
+            app.store.display_name(user),
+            reasons.join("、")
+        )));
+    }
 }
 
 /// 一覧の行と、選んだ行の位置。
-fn overview(app: &App) -> (Vec<Line<'static>>, usize) {
+fn overview(app: &App) -> (Vec<Line<'static>>, usize, Line<'static>) {
     let devices = &app.devices;
     let overview = &devices.overview;
     let items = devices.items();
@@ -860,8 +959,7 @@ fn overview(app: &App) -> (Vec<Line<'static>>, usize) {
     ));
     help.push(("r", "読み直す"));
     help.push(("Esc", "閉じる"));
-    lines.push(keys(&help));
-    (lines, cursor_line)
+    (lines, cursor_line, keys(&help))
 }
 
 /// QR コードを、上下 2 つのモジュールを 1 文字にして描く（Web と同じバイトモード、誤り訂正 M）。白地に黒で
@@ -900,21 +998,54 @@ pub fn draw_verification(frame: &mut Frame, app: &mut App) {
         return;
     };
     let name = app.store.display_name(&entry.view.their_user_id);
-    let lines = verification_lines(&entry, &name, app.devices.over_ssh);
+    let mut lines = verification_lines(&entry, &name, app.devices.over_ssh, true);
+    // QR コードを全部表示できない（端末が小さい）ときは、欠けた QR コードを出さず、広げるよう案内する（絵文字の
+    // 操作の案内は残す）。
+    if let Some(bytes) = &entry.view.qr_code
+        && matches!(
+            entry.view.phase,
+            SasPhase::Requested | SasPhase::ChooseMethod
+        )
+    {
+        let width = WIDTH.min(frame.area().width);
+        let qr_width = qr_lines(bytes)
+            .and_then(|code| code.first().map(Line::width))
+            .unwrap_or(usize::MAX);
+        let fits = qr_width <= usize::from(width.saturating_sub(2))
+            && rows(&lines, width) + 2 <= usize::from(frame.area().height);
+        if !fits {
+            lines = verification_lines(&entry, &name, app.devices.over_ssh, false);
+        }
+    }
     let title = match entry.view.phase {
         SasPhase::Requested | SasPhase::ChooseMethod if entry.view.qr_code.is_some() => {
             format!("{name} さんを検証します")
         }
         _ => "他のユーザーの検証".into(),
     };
-    draw_box(frame, &title, lines, 0);
+    draw_box(frame, &title, lines, Vec::new(), None, &mut 0);
 }
 
 /// 検証のダイアログの行（文言は Web の `VerificationDialog`）。
-pub fn verification_lines(entry: &SasEntry, name: &str, over_ssh: bool) -> Vec<Line<'static>> {
+///
+/// `show_qr` が偽なら、QR コードの代わりに、端末を広げるか絵文字を選ぶよう案内する（端末が小さいとき）。
+pub fn verification_lines(
+    entry: &SasEntry,
+    name: &str,
+    over_ssh: bool,
+    show_qr: bool,
+) -> Vec<Line<'static>> {
     let view = &entry.view;
     let mut lines = Vec::new();
     let qr = |lines: &mut Vec<Line<'static>>| {
+        if !show_qr && view.qr_code.is_some() {
+            lines.push(warn(if view.can_start_sas {
+                "端末が小さいため、QR コードを全部表示できません。端末を広げるか、s で絵文字を選んでください。"
+            } else {
+                "端末が小さいため、QR コードを全部表示できません。端末を広げてください。"
+            }));
+            return;
+        }
         if let Some(bytes) = &view.qr_code
             && let Some(code) = qr_lines(bytes)
         {
@@ -1127,7 +1258,7 @@ mod tests {
 
     #[test]
     fn compare_shows_the_emoji_and_their_names() {
-        let lines = verification_lines(&entry(SasPhase::Compare), "ボブ", false);
+        let lines = verification_lines(&entry(SasPhase::Compare), "ボブ", false, true);
         let text = text(&lines);
         assert!(text.contains("ボブ さんと絵文字を見比べてください"));
         assert!(text.contains("🐶"));
@@ -1136,12 +1267,37 @@ mod tests {
 
     #[test]
     fn choosing_a_method_shows_the_qr_code_but_never_scans() {
-        let lines = verification_lines(&entry(SasPhase::ChooseMethod), "ボブ", false);
+        let lines = verification_lines(&entry(SasPhase::ChooseMethod), "ボブ", false, true);
         let text = text(&lines);
         assert!(text.contains("この QR コードを読み取ってもらってください"));
         assert!(text.contains("相手の QR コードは読み取れません"));
         assert!(text.contains("絵文字で検証する"));
         assert!(!text.contains("相手の QR を読み取る"));
+    }
+
+    #[test]
+    fn a_small_terminal_gets_guidance_instead_of_a_cut_qr_code() {
+        let lines = verification_lines(&entry(SasPhase::ChooseMethod), "ボブ", false, false);
+        let text = text(&lines);
+        assert!(text.contains("端末を広げるか、s で絵文字を選んでください"));
+        assert!(text.contains("s: 絵文字で検証する"));
+        assert!(!text.contains('█'));
+    }
+
+    #[test]
+    fn wrapping_tracks_where_each_line_starts() {
+        // 内側の幅は 8。日本語は 1 文字が 2 桁なので、4 文字で折り返す。
+        let lines = vec![
+            Line::from("あいうえおかきく"),
+            Line::from("短い"),
+            Line::from("abcdefghij"),
+        ];
+        let (wrapped, starts) = wrap_lines(lines, 10);
+        assert_eq!(starts, vec![0, 2, 3]);
+        assert_eq!(wrapped.len(), 5);
+        assert!(wrapped.iter().all(|line| line.width() <= 8));
+        assert_eq!(wrapped[1].to_string(), "おかきく");
+        assert_eq!(wrapped[4].to_string(), "ij");
     }
 
     #[test]

@@ -42,6 +42,11 @@ impl ApiClient {
         body: Option<Value>,
         headers: &[(&str, &str)],
     ) -> Result<reqwest::Response> {
+        if headers.iter().any(|(name, _)| *name == REAUTH_HEADER) && !self.reauth_transport_ok() {
+            anyhow::bail!(
+                "再認証の ID トークンは HTTPS の接続先にだけ送ります（ZOO_API_BASE_URL を https:// にしてください）"
+            );
+        }
         let mut request = self
             .http
             .request(method, format!("{}{path}", self.base_url))
@@ -55,6 +60,24 @@ impl ApiClient {
         }
         let request = self.credentials.apply(request).await?;
         error_for_status_coded(request.send().await?).await
+    }
+
+    /// 再認証の ID トークンを送ってよい接続先か。HTTPS か、この機械の中で閉じるループバック（手元の開発）だけ。
+    /// 平文の HTTP で送ると、経路上で読み取られたトークンで、失効や鍵スロットの削除を行えてしまう。
+    fn reauth_transport_ok(&self) -> bool {
+        let Ok(url) = reqwest::Url::parse(&self.base_url) else {
+            return false;
+        };
+        match url.scheme() {
+            "https" => true,
+            "http" => match url.host() {
+                Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+                Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+                Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+                None => false,
+            },
+            _ => false,
+        }
     }
 
     /// 封筒なしの JSON を返す要求（GET と `keys/query`）。
@@ -613,6 +636,36 @@ mod tests {
             &server.uri(),
             Credentials::Dev("00000000-0000-0000-0000-000000000001".into()),
         )
+    }
+
+    #[tokio::test]
+    async fn reauth_tokens_are_never_sent_over_plain_http() {
+        // 経路上で読めてしまう平文の HTTP には、再認証の ID トークンを送らない（送る前に止める）。
+        let api = ApiClient::new(
+            reqwest::Client::new(),
+            "http://zoo.example",
+            Credentials::Dev("00000000-0000-0000-0000-000000000001".into()),
+        );
+        let error = api
+            .e2ee_delete_key_slot("slot", Some("id-token"))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("HTTPS"), "{error}");
+        // HTTPS と、この機械の中で閉じるループバックには送る。
+        for (base, ok) in [
+            ("https://zoo.example", true),
+            ("http://127.0.0.1:8080", true),
+            ("http://localhost:8080", true),
+            ("http://[::1]:8080", true),
+            ("http://10.0.0.1", false),
+        ] {
+            let api = ApiClient::new(
+                reqwest::Client::new(),
+                base,
+                Credentials::Dev("00000000-0000-0000-0000-000000000001".into()),
+            );
+            assert_eq!(api.reauth_transport_ok(), ok, "{base}");
+        }
     }
 
     #[tokio::test]

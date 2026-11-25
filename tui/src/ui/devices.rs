@@ -129,6 +129,18 @@ pub enum RevokeRetry {
     Restart,
 }
 
+/// 失効をやり直すときに引き継ぐもの。
+#[derive(Debug, Clone)]
+pub struct RestartContext {
+    /// 止まった失効を続ける（SSSS を開け直して [`revocation::resume`] する）。
+    resume: bool,
+    scope: RevocationScope,
+    /// 選んだ（削除した）端末。
+    deleted: Vec<String>,
+    /// 新しい失効の記録で置き換える、捨てる失効の ID。
+    replacing: Option<String>,
+}
+
 /// 画面の状態。
 pub enum Screen {
     Loading,
@@ -224,11 +236,13 @@ pub enum Outcome {
         deleted: Vec<String>,
     },
     RevocationFinished(RevocationOutcome),
-    /// 失効に失敗した。`session` は、同じ鍵で続けられるときに戻す。
+    /// 失効に失敗した。`session` は、同じ鍵で続けられるときに戻す。`restart` は、やり直すときに引き継ぐもの
+    /// （失効を始める前の失敗で、画面に戻す）。
     RevocationFailed {
         error: String,
         retry: RevokeRetry,
         session: Option<Box<RevocationSession>>,
+        restart: Option<RestartContext>,
         unlock_error: bool,
         device_only_unavailable: bool,
     },
@@ -310,7 +324,15 @@ pub struct Devices {
     pub limit_selected: BTreeSet<String>,
     session: Option<RevocationSession>,
     /// 失効でやり直すときに引き継ぐ、範囲と削除した端末。
-    restart: Option<(RevocationScope, Vec<String>)>,
+    restart: Option<RestartContext>,
+    /// 次に失効を始めるときに置き換える、捨てる失効の ID（やり直しの「SSSS を開け直す」画面のあいだ）。
+    replacing: Option<String>,
+    /// 失効の再認証を取りやめる（失効の鍵は捨てずに、画面に戻す）。
+    reauth_cancel: Option<tokio::sync::oneshot::Sender<()>>,
+    /// 端末の上限の知らせを、選んだ状態に反映したか（同じ知らせで、利用者が選び直したものを上書きしない）。
+    limit_applied: bool,
+    /// 別の画面の途中で届いた知らせ（一覧に戻ったときに出す）。
+    pending_notice: Option<String>,
     /// 失効のために SSSS を開けているときの、続けるか・選んだ端末・範囲（打ち間違いで同じ画面に戻す）。
     unlock_context: Option<(bool, BTreeSet<String>, RevocationScope)>,
     task: Option<JoinHandle<()>>,
@@ -376,6 +398,10 @@ impl Devices {
             limit_selected: BTreeSet::new(),
             session: None,
             restart: None,
+            replacing: None,
+            reauth_cancel: None,
+            limit_applied: false,
+            pending_notice: None,
             unlock_context: None,
             task: None,
             generation: 0,
@@ -466,15 +492,30 @@ impl Devices {
         self.peers = peers;
         self.cursor = 0;
         self.scroll = 0;
-        if let Some(stale) = self.device_limit() {
-            // 上限のときは、30 日以上使っていない端末を選んだ状態にする。
-            self.limit_selected = stale
-                .iter()
-                .filter_map(|device| device.get("device_id").and_then(Value::as_str))
-                .map(str::to_owned)
-                .collect();
-        }
+        self.sync_device_limit();
         self.reload();
+    }
+
+    /// 暗号化チャンネルを共有する相手を入れ替える（一覧の読み直しの前に、同期済みの値を渡す）。
+    pub fn set_peers(&mut self, peers: Vec<String>) {
+        self.peers = peers;
+    }
+
+    /// 端末の上限の知らせを初めて受け取ったら、30 日以上使っていない端末を選んだ状態にする（画面を開いた
+    /// あとに届いても選ぶ。同じ知らせのあいだは、利用者が選び直したものを上書きしない）。
+    fn sync_device_limit(&mut self) {
+        match self.device_limit() {
+            Some(stale) if !self.limit_applied => {
+                self.limit_selected = stale
+                    .iter()
+                    .filter_map(|device| device.get("device_id").and_then(Value::as_str))
+                    .map(str::to_owned)
+                    .collect();
+                self.limit_applied = true;
+            }
+            Some(_) => {}
+            None => self.limit_applied = false,
+        }
     }
 
     /// 画面を閉じる。メモリーの秘密を捨てる（続きは SSSS を開け直して行う）。
@@ -482,6 +523,8 @@ impl Devices {
         self.next_generation();
         self.session = None;
         self.restart = None;
+        self.replacing = None;
+        self.reauth_cancel = None;
         self.screen = Screen::Loading;
     }
 
@@ -530,7 +573,10 @@ impl Devices {
                 self.overview = *overview;
                 let count = self.items().len();
                 self.cursor = self.cursor.min(count.saturating_sub(1));
-                self.screen = Screen::Overview;
+                self.screen = match self.pending_notice.take() {
+                    Some(text) => Screen::Message { text, error: true },
+                    None => Screen::Overview,
+                };
             }
             Outcome::OverviewFailed(message) => {
                 self.screen = Screen::Message {
@@ -560,12 +606,10 @@ impl Devices {
                 };
             }
             Outcome::Stage(stage) => self.screen = Screen::RevokeWorking(stage),
-            Outcome::Revocation(session) => {
+            Outcome::Revocation(session) | Outcome::RevocationRestarted(session) => {
                 self.session = Some(*session);
-                self.after_begin();
-            }
-            Outcome::RevocationRestarted(session) => {
-                self.session = Some(*session);
+                self.restart = None;
+                self.replacing = None;
                 self.after_begin();
             }
             Outcome::RevocationConflict {
@@ -573,8 +617,13 @@ impl Devices {
                 scope,
                 deleted,
             } => {
-                let _ = revocation_id;
-                self.restart = Some((scope, deleted));
+                // 「やり直す」では、ここに出した失効の記録だけを置き換える（別の失効に置き換わっていれば始めない）。
+                self.restart = Some(RestartContext {
+                    resume: false,
+                    scope,
+                    deleted,
+                    replacing: Some(revocation_id),
+                });
                 self.screen = Screen::RevokeFailed {
                     message: "別の端末の失効と入り混じりました。SSSS を開け直して、失効をやり直してください（消していないバックアップの鍵は引き継ぎます）。".into(),
                     retry: RevokeRetry::Restart,
@@ -589,14 +638,20 @@ impl Devices {
                 error,
                 retry,
                 session,
+                restart,
                 unlock_error,
                 device_only_unavailable,
             } => {
                 if let Some(session) = session {
                     self.session = Some(*session);
                 }
+                if restart.is_some() {
+                    self.restart = restart;
+                }
                 if device_only_unavailable {
-                    let selected = self.restart.take().map(|(_, deleted)| deleted);
+                    let restart = self.restart.take();
+                    self.replacing = restart.as_ref().and_then(|r| r.replacing.clone());
+                    let selected = restart.map(|r| r.deleted);
                     self.screen = Screen::RevokeSelect {
                         selected: selected.unwrap_or_default().into_iter().collect(),
                         cursor: 0,
@@ -736,13 +791,16 @@ impl Devices {
             }
             VerificationEvent::RequestFailed { user_id, error } => {
                 let _ = user_id;
-                self.screen = Screen::Message {
-                    text: match error {
-                        SasErrorCode::NeedsUnlock => "この端末は解錠していないため、検証できません。設定の「暗号化」で解錠してください。".into(),
-                        _ => "絵文字の検証を始められませんでした。相手が暗号化を設定しているか確かめて、もう一度試してください。".into(),
-                    },
-                    error: true,
+                let text: String = match error {
+                    SasErrorCode::NeedsUnlock => "この端末は解錠していないため、検証できません。設定の「暗号化」で解錠してください。".into(),
+                    _ => "絵文字の検証を始められませんでした。相手が暗号化を設定しているか確かめて、もう一度試してください。".into(),
                 };
+                // 要求を出した一覧にいるときだけ出す。ほかの画面（入力の途中など）は置き換えず、一覧に戻ったときに出す。
+                if matches!(self.screen, Screen::Overview) {
+                    self.screen = Screen::Message { text, error: true };
+                } else {
+                    self.pending_notice = Some(text);
+                }
             }
             VerificationEvent::Saved { .. } => {
                 if matches!(self.screen, Screen::Overview) {
@@ -753,11 +811,20 @@ impl Devices {
         false
     }
 
-    /// 定期的な処理（検証の期限切れと送り直し）。
+    /// 定期的な処理（検証の期限切れと送り直し、端末の上限の知らせ）。
     pub fn on_tick(&mut self) {
         if let Some(sas) = &self.sas {
             sas.tick();
         }
+        self.sync_device_limit();
+    }
+
+    /// 次に前面に出す、終わっていない検証。
+    fn next_open_verification(&self) -> Option<String> {
+        self.sas_entries
+            .iter()
+            .find(|(_, entry)| !entry.view.finished())
+            .map(|(txn, _)| txn.clone())
     }
 
     /// 前面の検証へのキー操作。閉じたら `sas_open` を外す。
@@ -776,15 +843,10 @@ impl Devices {
             if entry.view.finished() {
                 sas.dismiss(&txn);
                 self.sas_entries.remove(&txn);
+                // 待っている検証があれば、続けて前面に出す。
+                self.sas_open = self.next_open_verification();
             } else {
                 sas.act(&txn, Action::Cancel);
-            }
-            if entry.view.finished() {
-                self.sas_open = self.sas_entries.keys().next().cloned().filter(|other| {
-                    self.sas_entries
-                        .get(other)
-                        .is_some_and(|e| !e.view.finished())
-                });
             }
             return;
         }
@@ -814,7 +876,7 @@ impl Devices {
             (SasPhase::Done | SasPhase::Cancelled, KeyCode::Enter) => {
                 sas.dismiss(&txn);
                 self.sas_entries.remove(&txn);
-                self.sas_open = None;
+                self.sas_open = self.next_open_verification();
             }
             _ => {}
         }
@@ -844,13 +906,13 @@ impl Devices {
                     self.close();
                     return false;
                 }
-                Screen::Reauth { .. } if self.session.is_some() => {
-                    // 再認証をやめても、失効の鍵は捨てない。同じ鍵のまま、もう一度実行できる。
-                    self.next_generation();
-                    self.screen = Screen::RevokeFailed {
-                        message: "再認証を取りやめました".into(),
-                        retry: RevokeRetry::Run,
-                    };
+                Screen::Reauth { .. } if self.reauth_cancel.is_some() => {
+                    // 再認証をやめても、失効の鍵は捨てない。失効のセッションは再認証を待つ処理が持っているので、
+                    // 再認証だけを取りやめ、セッションを返してもらう（同じ鍵のまま、もう一度実行できる）。
+                    if let Some(cancel) = self.reauth_cancel.take() {
+                        let _ = cancel.send(());
+                    }
+                    self.screen = Screen::Working("取りやめています…");
                     return true;
                 }
                 _ => {
@@ -1239,30 +1301,30 @@ impl Devices {
         }
     }
 
-    /// 記録を捨てて、同じ範囲と端末でやり直す（端末は削除済みなので、選び直さない）。
+    /// 同じ範囲と端末でやり直す（端末は削除済みなので、選び直さない）。捨てる失効の記録は、ここでは消さず、
+    /// 新しい失効の記録で置き換える（始め直しに失敗しても、範囲と削除した端末が残る）。失効を始める前の失敗
+    /// なら、選んだ範囲と端末のまま、SSSS を開け直す画面に戻す。
     fn restart_revocation(&mut self) -> Screen {
-        let (scope, deleted) = self
-            .restart
-            .take()
-            .or_else(|| {
-                self.session
-                    .as_ref()
-                    .map(|s| (s.state().scope, s.state().deleted_devices.clone()))
-            })
-            .unwrap_or((RevocationScope::Full, Vec::new()));
-        let expected = self.session.as_ref().map(RevocationSession::revocation_id);
-        self.session = None;
-        if let Some((_, store)) = self.store() {
-            let expected = expected.clone();
-            tokio::spawn(async move {
-                let _ = revocation::abandon(&store, expected.as_deref()).await;
-            });
-        }
-        self.overview.revocation = None;
+        let restart = self.restart.take();
+        let context = match self.session.take() {
+            Some(session) => RestartContext {
+                resume: false,
+                scope: session.state().scope,
+                deleted: session.state().deleted_devices.clone(),
+                replacing: Some(session.revocation_id()),
+            },
+            None => restart.unwrap_or(RestartContext {
+                resume: false,
+                scope: RevocationScope::Full,
+                deleted: Vec::new(),
+                replacing: None,
+            }),
+        };
+        self.replacing = context.replacing;
         Screen::RevokeUnlock {
-            resume: false,
-            selected: deleted.into_iter().collect(),
-            scope,
+            resume: context.resume,
+            selected: context.deleted.into_iter().collect(),
+            scope: context.scope,
             input: Zeroizing::new(String::new()),
             error: None,
         }
@@ -1287,8 +1349,16 @@ impl Devices {
         self.unlock_context = Some((resume, selected.clone(), scope));
         let api = self.api.clone();
         let deleted: Vec<String> = selected.into_iter().collect();
+        let replacing = if resume { None } else { self.replacing.clone() };
+        // 失効を始める前に失敗したら、選んだ範囲と端末のままやり直す。
+        self.restart = Some(RestartContext {
+            resume,
+            scope,
+            deleted: deleted.clone(),
+            replacing: replacing.clone(),
+        });
         self.spawn(async move {
-            let failed = |error: anyhow::Error, retry| Outcome::RevocationFailed {
+            let failed = |error: anyhow::Error, retry, restart| Outcome::RevocationFailed {
                 unlock_error: is_unlock_error(&error),
                 device_only_unavailable: matches!(
                     error.downcast_ref::<RevocationError>(),
@@ -1297,25 +1367,43 @@ impl Devices {
                 error: status_text(&error),
                 retry,
                 session: None,
+                restart,
             };
             let opened = match revocation::open_secret_storage(&api, &user_id, &recovery_key).await
             {
                 Ok(opened) => opened,
-                Err(error) => return failed(error, RevokeRetry::Restart),
+                Err(error) => return failed(error, RevokeRetry::Restart, None),
             };
             if resume {
                 return match revocation::resume(&store, opened).await {
                     Ok(Resumed::Resumed(session)) => Outcome::Revocation(session),
                     Ok(Resumed::Restart {
+                        revocation_id,
                         scope,
                         deleted_devices,
                         opened,
-                    }) => begin(&api, &store, &user_id, scope, deleted_devices, &opened)
+                    }) => {
+                        let restart = RestartContext {
+                            resume: false,
+                            scope,
+                            deleted: deleted_devices.clone(),
+                            replacing: Some(revocation_id.clone()),
+                        };
+                        match begin(
+                            &api,
+                            &store,
+                            &user_id,
+                            scope,
+                            deleted_devices,
+                            &opened,
+                            Some(&revocation_id),
+                        )
                         .await
-                        .map_or_else(
-                            |error| failed(error, RevokeRetry::Restart),
-                            |session| Outcome::RevocationRestarted(Box::new(session)),
-                        ),
+                        {
+                            Ok(session) => Outcome::RevocationRestarted(Box::new(session)),
+                            Err(error) => failed(error, RevokeRetry::Restart, Some(restart)),
+                        }
+                    }
                     Ok(Resumed::Conflict {
                         revocation_id,
                         scope,
@@ -1325,16 +1413,26 @@ impl Devices {
                         scope,
                         deleted: deleted_devices,
                     },
-                    Err(error) => failed(error, RevokeRetry::Restart),
+                    Err(error) => failed(error, RevokeRetry::Restart, None),
                 };
             }
             // 手順 1：選んだ端末を削除する（端末の削除は失効ではない。続けて鍵を作り直す）。
             if let Err(error) = revocation::delete_devices(&api, &deleted).await {
-                return failed(error, RevokeRetry::Restart);
+                return failed(error, RevokeRetry::Restart, None);
             }
-            match begin(&api, &store, &user_id, scope, deleted, &opened).await {
+            match begin(
+                &api,
+                &store,
+                &user_id,
+                scope,
+                deleted,
+                &opened,
+                replacing.as_deref(),
+            )
+            .await
+            {
                 Ok(session) => Outcome::Revocation(Box::new(session)),
-                Err(error) => failed(error, RevokeRetry::Restart),
+                Err(error) => failed(error, RevokeRetry::Restart, None),
             }
         });
         Screen::Working("解錠しています…")
@@ -1419,6 +1517,15 @@ impl Devices {
             AfterReauth::Revoke => self.session.take(),
             _ => None,
         };
+        // 失効の再認証は、Esc で再認証だけを取りやめられるようにする（セッションは結果と一緒に返す）。
+        let mut cancel = if session.is_some() {
+            let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+            self.reauth_cancel = Some(tx);
+            Some(rx)
+        } else {
+            self.reauth_cancel = None;
+            None
+        };
         let screen = match oidc {
             Some(_) => Screen::Reauth {
                 url: None,
@@ -1439,8 +1546,29 @@ impl Devices {
                         pending
                             .finish(&http, &discovery, oidc, REAUTH_TIMEOUT)
                             .await
-                    }
-                    .await;
+                    };
+                    let cancelled = async {
+                        match cancel.take() {
+                            Some(rx) => {
+                                let _ = rx.await;
+                            }
+                            None => std::future::pending::<()>().await,
+                        }
+                    };
+                    let token = tokio::select! {
+                        token = token => Some(token),
+                        () = cancelled => None,
+                    };
+                    let Some(token) = token else {
+                        return Outcome::RevocationFailed {
+                            error: "再認証を取りやめました".into(),
+                            retry: RevokeRetry::Run,
+                            session: session.take().map(Box::new),
+                            restart: None,
+                            unlock_error: false,
+                            device_only_unavailable: false,
+                        };
+                    };
                     match token {
                         Ok(token) => Some(Zeroizing::new(token)),
                         Err(error) => {
@@ -1449,6 +1577,7 @@ impl Devices {
                                     error: format!("再認証できませんでした: {error}"),
                                     retry: RevokeRetry::Run,
                                     session: Some(Box::new(session)),
+                                    restart: None,
                                     unlock_error: false,
                                     device_only_unavailable: false,
                                 };
@@ -1461,6 +1590,17 @@ impl Devices {
             let token = token.as_deref().map(String::as_str);
             // 再認証を待つ間は暗号ストアを持たない（端末の管理のタスクが開き直せるように）。
             let Some((user_id, store)) = stores.and_then(|rx| rx.borrow().clone()) else {
+                // 開き直しのあいだなら、失効のセッションは捨てずに返す（戻ったら同じ鍵のまま続ける）。
+                if let Some(session) = session {
+                    return Outcome::RevocationFailed {
+                        error: "暗号ストアを開き直しています。少し待ってから、もう一度実行してください（同じ鍵のまま続けます）".into(),
+                        retry: RevokeRetry::Run,
+                        session: Some(Box::new(session)),
+                        restart: None,
+                        unlock_error: false,
+                        device_only_unavailable: false,
+                    };
+                }
                 return Outcome::Failed("暗号ストアを開けていません".into());
             };
             match after {
@@ -1495,6 +1635,7 @@ impl Devices {
                                 error: message,
                                 retry,
                                 session: Some(Box::new(session)),
+                                restart: None,
                                 unlock_error: false,
                                 device_only_unavailable: false,
                             }
@@ -1564,8 +1705,9 @@ async fn begin(
     scope: RevocationScope,
     deleted: Vec<String>,
     opened: &OpenedSecretStorage,
+    replacing: Option<&str>,
 ) -> anyhow::Result<RevocationSession> {
-    revocation::begin(api, store, user_id, scope, deleted, opened).await
+    revocation::begin(api, store, user_id, scope, deleted, opened, replacing).await
 }
 
 /// 利用者が相手の今のマスター鍵を受け入れる（再検証）。確認の画面に出した鍵と、署名する直前の鍵が同じとき
@@ -1998,6 +2140,7 @@ mod tests {
                 error: "リカバリーキーが違います".into(),
                 retry: RevokeRetry::Restart,
                 session: None,
+                restart: None,
                 unlock_error: true,
                 device_only_unavailable: false,
             },

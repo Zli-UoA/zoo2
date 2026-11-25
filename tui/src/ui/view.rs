@@ -727,8 +727,12 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     app.scroll = scroll;
     app.inner_scroll = inner_scroll;
-    // 全文検索の画面が覆っている間は、背後のタイムラインを読んだことにしない（既読を進めない）。
-    if app.mode != Mode::GlobalSearch {
+    // 全文検索の画面、端末と検証の画面、検証のダイアログが覆っている間は、背後のタイムラインを読んだことに
+    // しない（既読を進めない）。
+    if app.mode != Mode::GlobalSearch
+        && app.mode != Mode::Devices
+        && !app.devices.has_open_verification()
+    {
         app.newest_shown = built
             .ranges
             .iter()

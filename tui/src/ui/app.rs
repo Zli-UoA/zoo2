@@ -1474,6 +1474,10 @@ impl App {
                 }
             }
             Mode::Devices => {
+                // 読み直し（`r`）では、同期が進んで増えた、暗号化チャンネルを共有する相手も取り直す。
+                if key.code == KeyCode::Char('r') {
+                    self.devices.set_peers(self.encrypted_peers());
+                }
                 if !self.devices.on_key(key) {
                     self.mode = Mode::Normal;
                 }

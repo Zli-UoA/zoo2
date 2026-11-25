@@ -168,7 +168,12 @@ pub async fn load_devices(
 /// 失効の手順の 1：選んだ端末を削除する（端末の削除は失効ではない。続けて [`begin`] 以降を行う）。
 pub async fn delete_devices(api: &ApiClient, device_ids: &[String]) -> Result<()> {
     for device_id in device_ids {
-        api.e2ee_delete_device(device_id).await?;
+        match api.e2ee_delete_device(device_id).await {
+            Ok(()) => {}
+            // やり直しでは、前の回で削除できた端末も渡す。もうない端末は削除できたものとして扱う。
+            Err(error) if ApiError::status_of(&error) == Some(reqwest::StatusCode::NOT_FOUND) => {}
+            Err(error) => return Err(error),
+        }
     }
     Ok(())
 }
@@ -273,6 +278,9 @@ pub fn not_resigned_users(state: &RevocationState) -> Vec<(String, Vec<ResignNot
 /// 失効を始める。署名し直す一覧を集め、新しい鍵を作って暗号ストアに保存する（サーバーにはまだ何も
 /// 保存しない）。終わっていない失効があれば [`RevocationError::Pending`]。端末だけの失効で SSSS の鍵と
 /// サーバーの鍵が違えば [`RevocationError::ServerKeyMismatch`]（1〜5 を選ぶ）。
+///
+/// `replacing` はやり直しで捨てる失効の ID（[`Resumed::Restart`] と [`Resumed::Conflict`] の
+/// `revocation_id`）。その記録は、新しい失効の記録の保存で置き換える（始め直しに失敗しても、元の記録が残る）。
 pub async fn begin(
     api: &ApiClient,
     store: &SharedStore,
@@ -280,8 +288,11 @@ pub async fn begin(
     scope: RevocationScope,
     deleted_devices: Vec<String>,
     opened: &OpenedSecretStorage,
+    replacing: Option<&str>,
 ) -> Result<RevocationSession> {
-    if store.lock().await.has_pending_revocation() {
+    if let Some(state) = store.lock().await.revocation_state()?
+        && replacing != Some(revocation_id(&state).as_str())
+    {
         return Err(RevocationError::Pending.into());
     }
     let (keys_query, versions, pins) = tokio::try_join!(
@@ -315,6 +326,7 @@ pub async fn begin(
             targets_query.as_ref(),
             deleted_devices,
             &opened.0,
+            replacing,
         )
         .map_err(|error| match error.downcast_ref::<CryptoError>() {
             Some(CryptoError::ServerKeyMismatch(message)) => {
@@ -330,9 +342,11 @@ pub async fn begin(
 pub enum Resumed {
     /// 記録した段から続ける（[`run`] を呼ぶ）。
     Resumed(Box<RevocationSession>),
-    /// 1〜5 を SSSS の保存の前に止めたので、最初からやり直す。記録は捨てたが、範囲と削除した端末は引き継ぐ
-    /// （範囲を黙って端末だけに縮めないため）。同じ SSSS で [`begin`] を呼ぶ。
+    /// 1〜5 を SSSS の保存の前に止めたので、最初からやり直す。範囲と削除した端末は引き継ぐ（範囲を黙って
+    /// 端末だけに縮めないため）。記録は、同じ SSSS で `replacing` に `revocation_id` を渡した [`begin`] が
+    /// 置き換えるまで残す（始め直しの通信に失敗しても、削除した端末を失わないため）。
     Restart {
+        revocation_id: String,
         scope: RevocationScope,
         deleted_devices: Vec<String>,
         opened: OpenedSecretStorage,
@@ -365,14 +379,12 @@ pub async fn resume(store: &SharedStore, opened: OpenedSecretStorage) -> Result<
         }
         Ok(None) => Err(RevocationError::NothingToContinue.into()),
         Err(error) => match error.downcast_ref::<CryptoError>() {
-            Some(CryptoError::RevocationRestart) => {
-                store.clear_revocation()?;
-                Ok(Resumed::Restart {
-                    scope: saved.scope,
-                    deleted_devices: saved.deleted_devices.clone(),
-                    opened,
-                })
-            }
+            Some(CryptoError::RevocationRestart) => Ok(Resumed::Restart {
+                revocation_id: revocation_id(&saved),
+                scope: saved.scope,
+                deleted_devices: saved.deleted_devices.clone(),
+                opened,
+            }),
             Some(CryptoError::ServerKeyMismatch(_)) => Ok(Resumed::Conflict {
                 revocation_id: revocation_id(&saved),
                 scope: saved.scope,
@@ -458,9 +470,15 @@ async fn list_backup_rows(api: &ApiClient, version: &str) -> Result<Option<Vec<B
                     .map_err(|e| anyhow!("版 {version} の行を読めません: {e}"))?,
             );
         }
-        match page.get("next").and_then(Value::as_str) {
-            Some(next) => after = Some(next.to_owned()),
-            None => return Ok(Some(rows)),
+        // 終わりは明示した `null` だけ。欠けているか文字列でなければ、残りの行を読まずに古い版を消さないよう止める。
+        match page.get("next") {
+            Some(Value::String(next)) => after = Some(next.clone()),
+            Some(Value::Null) => return Ok(Some(rows)),
+            _ => {
+                return Err(anyhow!(
+                    "版 {version} の行の一覧の next が null でも文字列でもありません"
+                ));
+            }
         }
     }
 }
@@ -544,8 +562,18 @@ pub async fn run(
         store.lock().await.save_revocation(revocation)?;
         progress(stage(revocation));
     }
+    // 続きからのときは、この失効で SSSS を保存したときの `secrets_revision`（失効の記録）を使う。今の値を読むと、
+    // 別の端末が秘密だけを書き換えたあとの値で移行を続けてしまう。記録にないとき（応答に値がなかった）だけ、
+    // SSSS がこの失効の鍵のままかを確かめてから今の値を使う。
     if secrets_revision.is_none() {
-        secrets_revision = secrets_revision_of(&api.e2ee_secret_storage().await?);
+        secrets_revision = revocation.state().secrets_revision;
+    }
+    if secrets_revision.is_none() {
+        let current = api.e2ee_secret_storage().await?;
+        if !revocation.secret_storage_matches(&current)? {
+            return Err(RevocationError::Conflict("E2EE_SSSS_CONFLICT".into()).into());
+        }
+        secrets_revision = secrets_revision_of(&current);
     }
 
     if stage(revocation) < RevocationStage::CrossSigningSaved {

@@ -1648,7 +1648,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 
 ### 失効と検証の実装（#362）
 
-【決定】（#362）Web（React）の実装で決めた細部です。TUI と Compose for Android は、それぞれの #360（初回設定と解錠、再認証）のあとに、同じ `zoo-crypto` の関数で入れます（別の PR）。Compose Android は、端末一覧、失効、絵文字 SAS と QR を入れた（[Compose Android](#compose-android)）。TUI は、端末一覧、失効、再検証、絵文字 SAS と QR の表示、鍵スロットの管理を入れた（下の「TUI」）。
+【決定】（#362）Web（React）の実装で決めた細部です。TUI と Compose for Android も、同じ `zoo-crypto` の関数で入れた。Compose Android は、端末一覧、失効、絵文字 SAS と QR を入れた（[Compose Android](#compose-android)）。TUI は、端末一覧、失効、再検証、絵文字 SAS と QR の表示、鍵スロットの管理を入れた（下の「TUI」）。
 
 - 共通部分（`crates/zoo-crypto` の `revocation.rs`）は I/O を持たず、要求の本文と、暗号ストアに置く進み具合（`RevocationState`）を返す。
   - `ResignPlan::collect` は、手順 4 の【決定】のとおり、失効を行う端末の記録のうち `confirmed_usk` がある相手のピン（記録のマスター鍵で作り直す）と、古いユーザー署名鍵で検証でき、記録と同じマスター鍵への署名だけを署名し直す。署名し直さない相手は、理由（`no_record`、`not_confirmed`、`pin_replaced`、`signature_unverified`、`master_key_mismatch`、`stale_confirmation`、`pin_pending`）を付けて失効の画面に出す。
@@ -1690,6 +1690,9 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 - 失効の手順は `tui/src/e2ee/revocation.rs`（Web の `revocationController.ts`、Android の `E2eeRevocation` と同じ順の要求）。暗号ストアの記録（`state.json` の `revocation`。`RevocationState::pickle` の封筒）と、クロス署名鍵を保存したあとの自分の鍵と記録のそろえ（`apply_revocation`）は `tui/src/e2ee/store/devices.rs`。画面の順は、削除する端末と範囲を選ぶ（既定は 1〜5）、AuthZ で行うことを確かめる、リカバリーキーで SSSS を開け直す、選んだ端末を削除して一覧を集める、（1〜5 なら）新しいリカバリーキーを控える、署名し直さない相手と「新しい版に移せないバックアップ」を確かめる、再認証（#360 と同じループバック）して最後まで保存する、の順。
   - TUI はパスキーを使えないので、1〜5 で新しい SSSS 鍵に作るスロットはリカバリーキーだけ。パスキーは、失効のあと Web か Android から足すよう画面で案内する。
   - 画面を閉じても、進み具合は暗号ストアに残る。もう一度開いて「失効を続ける」（`R`）から、リカバリーキー（1〜5 で SSSS を保存したあとなら新しいキー）で開け直して続ける。403 `E2EE_REAUTH_REQUIRED` は同じ鍵のまま再認証して続け、409 と読み直しの不一致は、記録を捨てて、範囲と削除した端末を引き継いでやり直す。終わっていない失効があれば、`zoo2-tui logout` が確かめてから消す。
+  - 再開のリカバリーキー：SSSS を保存したと記録していれば、1〜5 では新しいキー。記録の前（SSSS を書いたかどうか分からない）なら、失効を始めたときのキーを先に使い、開けなければ新しいキーを試すよう画面で案内する。
+  - やり直しでは、捨てる失効の記録を先に消さず、新しい失効の記録の保存で置き換える（`begin` の `replacing`。記録が別の失効に置き換わっていれば始めない）。始め直しの通信に失敗しても、範囲と削除した端末が残る。続きの保存では、この失効で SSSS を保存したときの `secrets_revision`（記録の値）を使い、今の値は読まない。古い版の行の一覧は、`next` が明示的な `null` のときだけ終わりとみなす。
+  - 再認証の ID トークン（`X-Zoo-Reauth`）は、HTTPS の接続先と、この機械の中で閉じるループバック（手元の開発）にだけ送る（`client-core` が送る前に止める）。
   - AuthZ のセッションとトークンの失効は、Web と同じく、AuthZ の「セキュリティ」と「サービス接続」の URL（issuer と同じ origin）と手順を、始める前（済ませたことを `y` で確かめる）と終えたあとに出す。
 - 他のユーザーの検証は、暗号化チャンネル（削除されていないもの）を共有する相手（Electric のチャンネルとメンバー）の判定（`TrustStore::evaluate`。初めて見た相手には TOFU のピンを置く）と、判定の警告を出す。再検証（`a`）は、確認の画面に今の鍵と前に信頼した鍵の指紋を出し、`keys/query` で取り直した鍵が見せた鍵と同じときだけ署名する（M-2。`CryptoStore::accept_master_key`）。確認の画面から絵文字 SAS に切り替えられる。
 - 絵文字 SAS は `tui/src/e2ee/verification.rs`（Web の `sasController.ts`、Android の `SasController` と同じ規則。処理と送信を 1 つずつにし、送れなかったメッセージは同じ `txn_id` と暗号文で送り直し、`keys/query` を取れなかったメッセージは順を保って試し直す）。to-device の `m.key.verification.*` は、端末の管理のタスクが受信時の検証の手順 1〜3 を通してから（`CryptoStore::process_to_device`）画面に渡す。再認証は「一致する」（QR なら「読み取った」）を押したときに始め、検証が終わったら、その ID トークンで `replace: true` のピンと署名を保存する。
@@ -1823,7 +1826,7 @@ A が B に検証を求める場合です。
 - 画面は、シェルのどこにでも出るダイアログ（`SasVerificationHost`）です。検証は、設定の「暗号化」タブの他のユーザーの検証の「絵文字で検証」から始めます（鍵が変わった相手と、最初に見た鍵を信頼している相手に出す）。保存できたら、他のユーザーの検証の状態を読み直して「検証済み」にします。
 - 暗号ストアを開いているタブ（Web Locks を取ったタブ）だけが検証のメッセージを受け取り、ダイアログを出します。
 - テストは `crates/zoo-crypto/tests/verification.rs`（2 人の端末どうしで Olm を通して検証する。偽のマスター鍵、差し替えた `key`、古い要求、タイムアウト、検証のあとのマスター鍵の作り直し）と、`frontend/src/lib/e2ee/sasController.test.ts`（本物の wasm と、サーバーを模したもので、2 人が検証して「検証済み」になるまで）。
-- Compose Android と TUI は、#362 と同じく、それぞれの初回設定と解錠（#360）、端末一覧と他のユーザーの検証（#362）のあとに、同じ `zoo-crypto` の関数で入れます（別の PR。FFI には `TrustStore::confirm_accepted_master_key` だけを足した）。Compose Android と TUI は、どちらも #362 で入れた（[失効と検証の実装](#失効と検証の実装362)の「TUI」と [Compose Android](#compose-android)）。
+- Compose Android と TUI も、同じ `zoo-crypto` の関数で絵文字 SAS を入れた（FFI には `TrustStore::confirm_accepted_master_key` だけを足した。TUI は FFI を使わず `zoo-crypto` を直接使う）。詳しくは（[失効と検証の実装](#失効と検証の実装362)の「TUI」と [Compose Android](#compose-android)）。
 
 ### QR コードによる検証
 

@@ -779,6 +779,7 @@ async fn full_revocation_completes_after_reauth_and_resigns_recorded_peers() {
         RevocationScope::Full,
         vec![lost.clone()],
         &opened,
+        None,
     )
     .await
     .unwrap();
@@ -903,6 +904,7 @@ async fn signatures_for_peers_who_left_encrypted_channels_are_renewed() {
         RevocationScope::DeviceOnly,
         Vec::new(),
         &opened,
+        None,
     )
     .await
     .unwrap();
@@ -950,6 +952,7 @@ async fn device_only_revocation_finishes_after_a_lost_response() {
         RevocationScope::DeviceOnly,
         Vec::new(),
         &opened,
+        None,
     )
     .await
     .unwrap();
@@ -992,6 +995,7 @@ async fn a_stopped_full_revocation_resumes_with_the_new_recovery_key() {
         RevocationScope::Full,
         Vec::new(),
         &opened,
+        None,
     )
     .await
     .unwrap();
@@ -1042,6 +1046,7 @@ async fn a_full_revocation_stopped_before_saving_starts_over() {
         RevocationScope::Full,
         vec![LOST_DEVICE.into()],
         &opened,
+        None,
     )
     .await
     .unwrap();
@@ -1050,18 +1055,56 @@ async fn a_full_revocation_stopped_before_saving_starts_over() {
     let opened = revocation::open_secret_storage(&api, ALICE, &recovery_key)
         .await
         .unwrap();
-    match revocation::resume(&alice, opened).await.unwrap() {
+    let (revocation_id, opened) = match revocation::resume(&alice, opened).await.unwrap() {
         Resumed::Restart {
+            revocation_id,
             scope,
             deleted_devices,
-            ..
+            opened,
         } => {
             assert_eq!(scope, RevocationScope::Full);
             assert_eq!(deleted_devices, vec![LOST_DEVICE.to_owned()]);
+            (revocation_id, opened)
         }
         other => panic!("始め直す: {other:?}"),
-    }
-    assert!(!alice.lock().await.has_pending_revocation());
+    };
+    // 始め直すまで、元の記録は残す（始め直しに失敗しても、範囲と削除した端末を失わない）。
+    assert!(alice.lock().await.has_pending_revocation());
+    // 捨てる失効の ID を渡さなければ、残っている記録を上書きしない。
+    let error = revocation::begin(
+        &api,
+        &alice,
+        ALICE,
+        RevocationScope::Full,
+        vec![LOST_DEVICE.into()],
+        &opened,
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<RevocationError>(),
+        Some(&RevocationError::Pending)
+    );
+    // ID を渡すと、新しい失効の記録で置き換える。
+    let restarted = revocation::begin(
+        &api,
+        &alice,
+        ALICE,
+        RevocationScope::Full,
+        vec![LOST_DEVICE.into()],
+        &opened,
+        Some(&revocation_id),
+    )
+    .await
+    .unwrap();
+    assert_ne!(restarted.revocation_id(), revocation_id);
+    let stored = alice.lock().await.revocation_state().unwrap().unwrap();
+    assert_eq!(
+        revocation::revocation_id(&stored),
+        restarted.revocation_id()
+    );
+    assert_eq!(stored.deleted_devices, vec![LOST_DEVICE.to_owned()]);
 }
 
 /// 検証の知らせを集める。
@@ -1087,16 +1130,21 @@ impl Events {
             })
     }
 
-    fn emoji(&self) -> Option<[u8; 7]> {
+    /// `transaction_id` の最新の表示が比べる画面なら、その絵文字（比べる画面でなければ `None`）。
+    fn compare_emoji(&self, transaction_id: &str) -> Option<Option<[u8; 7]>> {
         self.0
             .lock()
             .unwrap()
             .iter()
             .rev()
             .find_map(|event| match event {
-                VerificationEvent::View(view) => view.emoji,
+                VerificationEvent::View(view) if view.transaction_id == transaction_id => {
+                    Some(view)
+                }
                 _ => None,
             })
+            .filter(|view| view.phase == SasPhase::Compare)
+            .map(|view| view.emoji)
     }
 
     fn saved(&self) -> bool {
@@ -1221,7 +1269,16 @@ async fn two_tui_users_verify_each_other_with_emoji() {
         },
     )
     .await;
-    assert_eq!(alice_events.emoji(), bob_events.emoji(), "同じ絵文字が出る");
+    // 比べる画面に、両方とも絵文字が出ていることを確かめてから見比べる（`None == None` で通さない）。
+    let alice_emoji = alice_events
+        .compare_emoji(&txn)
+        .expect("比べる画面")
+        .expect("絵文字が出る");
+    let bob_emoji = bob_events
+        .compare_emoji(&txn)
+        .expect("比べる画面")
+        .expect("絵文字が出る");
+    assert_eq!(alice_emoji, bob_emoji, "同じ絵文字が出る");
     alice_sas.act(&txn, Action::Confirm);
     bob_sas.act(&txn, Action::Confirm);
     run_until(
