@@ -127,7 +127,9 @@ impl CloudflareRealtime {
             session_id: String,
         }
         let res: NewSession = self
-            .send(self.http.post(self.url("sessions/new")).json(&json!({})))
+            // 本文なしで呼ぶ。Cloudflare は `{}` を `decoding_error`（`sessionDescription`）で断る
+            // （https://developers.cloudflare.com/realtime/sfu/concepts/sessions-tracks/）。
+            .send(self.http.post(self.url("sessions/new")))
             .await?;
         Ok(res.session_id)
     }

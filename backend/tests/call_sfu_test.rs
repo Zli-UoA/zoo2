@@ -120,11 +120,17 @@ async fn count(db: &mut toasty::Db, sql: &str, bind: &str) -> anyhow::Result<i64
 }
 
 /// Cloudflare の `sessions/new` の代わり。要求ごとに新しいセッション ID を返す（ID が同じだと、
-/// 別の人のセッションを閉じても区別できない）。
+/// 別の人のセッションを閉じても区別できない）。本物と同じく、本文があれば（`{}` でも）断る。
 struct NewSession;
 
 impl wiremock::Respond for NewSession {
-    fn respond(&self, _req: &wiremock::Request) -> ResponseTemplate {
+    fn respond(&self, req: &wiremock::Request) -> ResponseTemplate {
+        if !req.body.is_empty() {
+            return ResponseTemplate::new(400).set_body_json(json!({
+                "errorCode": "decoding_error",
+                "errorDescription": "Body JSON validation error: sessionDescription"
+            }));
+        }
         ResponseTemplate::new(201)
             .set_body_json(json!({ "sessionId": format!("cf-{}", uuid::Uuid::new_v4()) }))
     }
@@ -2357,27 +2363,60 @@ async fn join_latency() -> anyhow::Result<()> {
             summary(&mut burst)
         ));
     }
-    for delay_ms in [0u64, 100] {
+    // JOIN_LATENCY_REAL_CF=1 なら、mock の代わりに実際の Cloudflare Realtime を呼ぶ。鍵は
+    // CF_REALTIME_APP_ID・CF_REALTIME_APP_SECRET（環境変数）から読み、表示しない。作ったセッションは
+    // 何も流さないので、Cloudflare が片付ける。
+    let real_cf = std::env::var("JOIN_LATENCY_REAL_CF").is_ok_and(|v| v == "1");
+    let variants: Vec<Option<u64>> = if real_cf {
+        vec![None]
+    } else {
+        vec![Some(0), Some(100)]
+    };
+    for delay in variants {
         let cf = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path_regex(r"^/apps/app/sessions/new$"))
-            .respond_with(SlowNewSession(Duration::from_millis(delay_ms)))
-            .mount(&cf)
-            .await;
+        let (cloudflare, app_id, app_secret, cf_label) = match delay {
+            Some(delay_ms) => {
+                Mock::given(method("POST"))
+                    .and(path_regex(r"^/apps/app/sessions/new$"))
+                    .respond_with(SlowNewSession(Duration::from_millis(delay_ms)))
+                    .mount(&cf)
+                    .await;
+                (
+                    json!({"api_base": cf.uri()}),
+                    "app".to_string(),
+                    "secret".to_string(),
+                    format!("cf_delay={delay_ms}ms"),
+                )
+            }
+            None => (
+                json!({}),
+                std::env::var("CF_REALTIME_APP_ID")?,
+                std::env::var("CF_REALTIME_APP_SECRET")?,
+                "cf=real".to_string(),
+            ),
+        };
+        let delay_ms = delay.unwrap_or(0);
+        // 実際の Cloudflare で測るときは、すべての join を Cloudflare に割り当てる（`join_round` が LAN の
+        // IP で送る半分も、LAN の範囲に入れない）。LiveKit に割り当てる join は mock の回だけで測る。
+        let lan_cidr = if delay.is_some() {
+            format!("{LAN_IP}/32")
+        } else {
+            "192.0.2.0/32".to_string()
+        };
         let json = json!({
-            "cloudflare": {"api_base": cf.uri()},
+            "cloudflare": cloudflare,
             "livekit": {
                 "ws_url": "wss://livekit.example",
                 "api_url": lk.uri(),
-                "lan_egress_cidrs": [format!("{LAN_IP}/32")]
+                "lan_egress_cidrs": [lan_cidr]
             },
             "bridge": true
         })
         .to_string();
         let cfg = backend::call_sfu::CallSfuConfig::from_lookup(&|name| match name {
             "CALL_SFUS_JSON" => Some(json.clone()),
-            "CF_REALTIME_APP_ID" => Some("app".into()),
-            "CF_REALTIME_APP_SECRET" => Some("secret".into()),
+            "CF_REALTIME_APP_ID" => Some(app_id.clone()),
+            "CF_REALTIME_APP_SECRET" => Some(app_secret.clone()),
             "LIVEKIT_API_KEY" => Some("key".into()),
             "LIVEKIT_API_SECRET" => Some("0123456789abcdef0123456789abcdef".into()),
             "SFU_BRIDGE_TOKEN" => Some(BRIDGE_TOKEN.into()),
@@ -2428,7 +2467,7 @@ async fn join_latency() -> anyhow::Result<()> {
             )
             .await?;
             report.push(line(
-                format!("cf_delay={delay_ms}ms n=30 cold SameRoomConcurrent"),
+                format!("{cf_label} n=30 cold SameRoomConcurrent"),
                 rows,
             ));
         }
@@ -2453,7 +2492,7 @@ async fn join_latency() -> anyhow::Result<()> {
                 for _ in 0..3 {
                     rows.extend(join_round(&app, &mut db, n, mode, "warm").await?);
                 }
-                report.push(line(format!("cf_delay={delay_ms}ms n={n} {mode:?}"), rows));
+                report.push(line(format!("{cf_label} n={n} {mode:?}"), rows));
             }
         }
     }
