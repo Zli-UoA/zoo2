@@ -27,6 +27,8 @@ private final class FakeMessageServer: E2eeRequesting {
     var omitUndelivered = false
     /// `to_device` を処理する前に 1 回だけ呼ぶ（鍵の配布の応答を待つあいだに起きることを再現する）。
     var beforeToDevice: (() async throws -> Void)?
+    /// 配布先を 2 ページに分ける（1 ページ目に `next_after` を付ける）。
+    var pagedRecipients = false
 
     init(setup: FakeSetupServer, sender: Device, receiver: Device) { self.setup = setup; self.sender = sender; self.receiver = receiver }
 
@@ -40,11 +42,17 @@ private final class FakeMessageServer: E2eeRequesting {
         return root
     }
 
-    func e2eeJSON(_ path: String, method: String, body: [String: JSONValue]?) async throws -> JSONValue {
+    var queries: [[String: String]] = []
+
+    func e2eeJSON(_ path: String, method: String, query: [String: String], body: [String: JSONValue]?) async throws -> JSONValue {
         requests.append(body.map { dump(.object($0)) } ?? "")
-        switch path.split(separator: "?").first.map(String.init) ?? path {
+        queries.append(query)
+        switch path {
         case "api/e2ee/channels/\(channel)/recipients":
-            return .object(try await snapshot())
+            var page = try await snapshot()
+            // 2 ページ目：同じ内容で、これ以上続かない。
+            if pagedRecipients, query["after"] == nil { page["next_after"] = .string("page-2") }
+            return .object(page)
         case "api/e2ee/keys/claim":
             let key = try #require(try receiver.store.prepareKeyUpload(oneTimeKeyCount: 0, hasUnusedFallbackKey: true)).oneTimeKeys.first!
             return .object(["one_time_keys": .object([user: .object([receiver.store.deviceID: .object([key.key: key.value])])])])
@@ -74,9 +82,9 @@ private final class FakeMessageServer: E2eeRequesting {
 private final class BrokenEpochServer: E2eeRequesting {
     let base: FakeMessageServer
     init(base: FakeMessageServer) { self.base = base }
-    func e2eeJSON(_ path: String, method: String, body: [String: JSONValue]?) async throws -> JSONValue {
-        guard path.hasPrefix("api/e2ee/channels/") else { return try await base.e2eeJSON(path, method: method, body: body) }
-        guard case .object(var page) = try await base.e2eeJSON(path, method: method, body: body) else { return .object([:]) }
+    func e2eeJSON(_ path: String, method: String, query: [String: String], body: [String: JSONValue]?) async throws -> JSONValue {
+        guard path.hasPrefix("api/e2ee/channels/") else { return try await base.e2eeJSON(path, method: method, query: query, body: body) }
+        guard case .object(var page) = try await base.e2eeJSON(path, method: method, query: query, body: body) else { return .object([:]) }
         page["membership_epoch"] = .number(1e20)
         return .object(page)
     }
@@ -199,6 +207,20 @@ struct MessageEncryptionTests {
         #expect(server.delivered.count == 2)
     }
 
+    @Test func 配布先のページはクエリで渡し二ページ目にepochとafterを付ける() async throws {
+        let (server, sender, receiver, encryption, _) = try await makePair()
+        defer { sender.cleanUp(); receiver.cleanUp() }
+        server.staleOnce = false
+        server.pagedRecipients = true
+        try await encryption.send(channel: channel, id: messageID, parent: nil, body: "ページ")
+        // 1 ページ目はクエリなし、2 ページ目は `epoch` と `after`（パスに連結すると、`?` が符号化されて、実サーバーで失敗する）。
+        let recipientQueries = server.queries.filter { !$0.isEmpty && $0["after"] != nil }
+        #expect(recipientQueries.count == 1)
+        #expect(recipientQueries.first?["epoch"] == "1")
+        #expect(recipientQueries.first?["after"] == "page-2")
+        #expect(server.posts == 1)
+    }
+
     @Test func 鍵の配布の結果を読めなければ本文を送らない() async throws {
         let (server, sender, receiver, encryption, _) = try await makePair()
         defer { sender.cleanUp(); receiver.cleanUp() }
@@ -284,7 +306,7 @@ struct ConfirmedBodyTests {
 
 /// 送った暗号文を版ごとに覚える、配布先が自分の端末だけの模擬の API。
 @MainActor
-private final class CapturingRequests: E2eeRequesting {
+final class CapturingRequests: E2eeRequesting {
     let user: String
     let store: () -> CryptoStore?
     let setupServer: FakeSetupServer
@@ -300,7 +322,7 @@ private final class CapturingRequests: E2eeRequesting {
     func ciphertext(_ revision: UInt64) -> String { if case .string(let text)? = recorded[revision]?["ciphertext"] { text } else { "" } }
     func epoch(_ revision: UInt64) -> UInt64 { if case .number(let value)? = recorded[revision]?["epoch"] { UInt64(value) } else { 0 } }
 
-    func e2eeJSON(_ path: String, method: String, body: [String: JSONValue]?) async throws -> JSONValue {
+    func e2eeJSON(_ path: String, method: String, query: [String: String], body: [String: JSONValue]?) async throws -> JSONValue {
         if path.hasPrefix("api/e2ee/channels/") {
             guard case .object(var page) = try JSONDecoder().decode(JSONValue.self, from: Data(try await setupServer.queryOwnKeys(userID: user).utf8)),
                   let store = store() else { return .object([:]) }

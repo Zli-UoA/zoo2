@@ -48,10 +48,13 @@ extension APIClient: E2eeDeviceAPI {
     }
 
     /// E2EE の API は `code` を見て判断するので、`HTTPTransport.check` ではなく、ここで `code` を読む。
-    func e2ee(_ path: String, method: String, body: [String: JSONValue]? = nil, reauth: String? = nil) async throws -> Data {
-        var request = try await request(path, method: method, body: body)
+    func e2ee(_ path: String, method: String, query: [String: String] = [:], body: [String: JSONValue]? = nil,
+              reauth: String? = nil, headers: [String: String] = [:]) async throws -> Data {
+        // クエリは `query` で渡す（パスに連結すると、`?` が `%3F` に符号化される）。
+        var request = try await request(path, method: method, query: query, body: body)
         // 直前の再認証で受け取った ID トークン。
         if let reauth { request.setValue(reauth, forHTTPHeaderField: "X-Zoo-Reauth") }
+        for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
         let (data, response) = try await transport.send(request)
         if response.statusCode == 401 { throw ZooError.expiredSession }
         guard (200..<300).contains(response.statusCode) else {

@@ -71,12 +71,18 @@ struct EncryptedRow: Equatable {
 /// E2EE の API を呼ぶ。応答は `{"data": ...}` の封筒を外した JSON。
 @MainActor
 protocol E2eeRequesting {
-    func e2eeJSON(_ path: String, method: String, body: [String: JSONValue]?) async throws -> JSONValue
+    func e2eeJSON(_ path: String, method: String, query: [String: String], body: [String: JSONValue]?) async throws -> JSONValue
+}
+
+extension E2eeRequesting {
+    func e2eeJSON(_ path: String, method: String, body: [String: JSONValue]?) async throws -> JSONValue {
+        try await e2eeJSON(path, method: method, query: [:], body: body)
+    }
 }
 
 extension APIClient: E2eeRequesting {
-    func e2eeJSON(_ path: String, method: String, body: [String: JSONValue]?) async throws -> JSONValue {
-        let data = try await e2ee(path, method: method, body: body)
+    func e2eeJSON(_ path: String, method: String, query: [String: String], body: [String: JSONValue]?) async throws -> JSONValue {
+        let data = try await e2ee(path, method: method, query: query, body: body)
         guard let value = try? JSONDecoder().decode(JSONValue.self, from: data) else { return .object([:]) }
         if case .object(let object) = value, let inner = object["data"] { return inner }
         return value
@@ -138,8 +144,9 @@ final class MessageEncryption {
         return store
     }
 
-    private func request(_ path: String, method: String = "GET", body: [String: JSONValue]? = nil) async throws -> [String: JSONValue] {
-        try await api.e2eeJSON(path, method: method, body: body).object ?? [:]
+    private func request(_ path: String, method: String = "GET", query: [String: String] = [:],
+                         body: [String: JSONValue]? = nil) async throws -> [String: JSONValue] {
+        try await api.e2eeJSON(path, method: method, query: query, body: body).object ?? [:]
     }
 
     private func deviceKey(_ device: VerifiedDeviceKeys) -> String {
@@ -157,10 +164,10 @@ final class MessageEncryption {
             var after: String?
             do {
                 repeat {
-                    var query: [String] = []
-                    if let epoch { query.append("epoch=\(epoch)") }
-                    if let after { query.append("after=\(after.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? after)") }
-                    let page = try await request("api/e2ee/channels/\(encodedChannel)/recipients" + (query.isEmpty ? "" : "?" + query.joined(separator: "&")))
+                    var query: [String: String] = [:]
+                    if let epoch { query["epoch"] = epoch }
+                    if let after { query["after"] = after }
+                    let page = try await request("api/e2ee/channels/\(encodedChannel)/recipients", query: query)
                     guard let current = page["membership_epoch"]?.uint else { throw ZooError.invalidResponse }
                     if current < minimum || (epoch != nil && epoch != String(current)) { break }
                     epoch = String(current)
