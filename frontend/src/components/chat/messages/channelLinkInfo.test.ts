@@ -400,6 +400,54 @@ describe("連携カード・部品の投稿", () => {
   });
 });
 
+describe("取得に失敗したリンク先", () => {
+  const resolve = (
+    messages: Parameters<typeof resolveChannelLinkInfo>[0]["messages"],
+    extra: { checkingEncryption?: boolean; channels?: LinkedChannel[] } = {},
+  ) =>
+    resolveChannelLinkInfo({
+      directory: directory(extra.channels ?? [general]),
+      target: messageTarget("c-general", "m1"),
+      messages,
+      checkingEncryption: extra.checkingEncryption,
+    });
+
+  it.each([
+    ["行がない", []],
+    ["結果がない", undefined],
+    ["別の ID の行だけ", [row({ id: "other" })]],
+  ])("失敗したら、「見られない」とせず、失敗とする（%s）", (_name, rows) => {
+    expect(resolve({ rows, loading: false, failed: true })).toEqual({ status: "failed" });
+  });
+
+  it("暗号化かどうかを確かめている間でも、取得の失敗は失敗とする", () => {
+    expect(
+      resolve({ rows: [], loading: false, failed: true }, { checkingEncryption: true }),
+    ).toEqual({ status: "failed" });
+  });
+
+  it("取得済みの行があれば、あとで同期に失敗しても、表示する", () => {
+    expect(resolve({ rows: [row()], loading: false, failed: true }).status).toBe("message");
+  });
+
+  it("削除済みと分かっている行は、失敗していても「見られない」", () => {
+    expect(
+      resolve({
+        rows: [row({ deleted_at: "2026-11-23 08:00:00.000" })],
+        loading: false,
+        failed: true,
+      }),
+    ).toEqual({ status: "unavailable", subject: "message" });
+  });
+
+  it("一覧にないチャンネルは、取得の失敗より先に「見られない」", () => {
+    expect(resolve({ rows: [], loading: false, failed: true }, { channels: [secret] })).toEqual({
+      status: "unavailable",
+      subject: "message",
+    });
+  });
+});
+
 describe("toLinkedMessage", () => {
   it("返信は、スレッドの親を持つ", () => {
     expect(toLinkedMessage(row({ parent_id: "root" }), general).parentId).toBe("root");

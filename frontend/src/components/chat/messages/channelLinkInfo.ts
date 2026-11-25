@@ -40,11 +40,13 @@ export interface LinkedMessage {
  * - `loading`: チャンネルの一覧かメッセージを取得中。「ない」とはまだ決めない。
  * - `unavailable`: 見られない。存在しない・削除済み、非公開で参加していない、はどれも同じ扱いで、
  *   理由を区別しない（存在を知らせない）。
+ * - `failed`: メッセージの取得が、再試行されない形で失敗した（認証の期限切れなど）。見られるかは分からない。
  * - `channel` / `message`: 行き先が分かった。
  */
 export type ChannelLinkInfo =
   | { status: "loading" }
   | { status: "unavailable"; subject: "channel" | "message" }
+  | { status: "failed" }
   | { status: "channel"; channel: LinkedChannel }
   | { status: "message"; channel: LinkedChannel; message: LinkedMessage };
 
@@ -100,6 +102,7 @@ export function toLinkedMessage(row: LinkedMessageRow, channel: LinkedChannel): 
  * 「見られない」とする。
  *
  * `messages` は、メッセージを取得する問い合わせの結果。`undefined` は、まだ問い合わせていない。
+ * 問い合わせが失敗（`failed`）して対象の行がないときは、「見られない」ではなく失敗とする。
  * `treatAsEncrypted` は、暗号化チャンネルとして扱うか（`useEncryptedDisplay`）。一覧の `encrypted` が
  * `false` でも（暗号化の格下げ）、true なら暗号化チャンネルとして扱う。
  * `checkingEncryption` は、暗号化かどうかを確かめている（確かめられなかった）か。その間は、平文の本文を
@@ -114,7 +117,9 @@ export function resolveChannelLinkInfo({
 }: {
   directory: ChannelDirectory;
   target: ChannelLinkTarget;
-  messages: { rows: readonly LinkedMessageRow[] | undefined; loading: boolean } | undefined;
+  messages:
+    | { rows: readonly LinkedMessageRow[] | undefined; loading: boolean; failed?: boolean }
+    | undefined;
   treatAsEncrypted?: boolean;
   checkingEncryption?: boolean;
 }): ChannelLinkInfo {
@@ -127,8 +132,10 @@ export function resolveChannelLinkInfo({
   }
   const channel = treatAsEncrypted && !listed.encrypted ? { ...listed, encrypted: true } : listed;
   if (!messageId) return { status: "channel", channel };
-  if (!messages || (messages.loading && !messages.rows?.length)) return { status: "loading" };
+  if (!messages) return { status: "loading" };
   const row = messages.rows?.find((candidate) => candidate.id === messageId);
+  if (!row && messages.failed) return { status: "failed" };
+  if (messages.loading && !messages.rows?.length) return { status: "loading" };
   if (!row || row.deleted_at) return { status: "unavailable", subject: "message" };
   const message = toLinkedMessage(row, channel);
   // 暗号化かどうかが決まるまで、本文は出さない（格下げされたチャンネルに差し込まれた平文を、
@@ -190,6 +197,7 @@ export function useChannelLinkInfo(
         ? {
             rows: query.data as readonly LinkedMessageRow[] | undefined,
             loading: query.isLoading,
+            failed: query.isError,
           }
         : undefined,
     treatAsEncrypted,

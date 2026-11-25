@@ -92,7 +92,7 @@ interface Recorded {
   snapshots: URLSearchParams[];
 }
 
-function stubFetch(options: { snapshotStatus?: number } = {}): Recorded {
+function stubFetch(options: { snapshotStatus?: number; messagesStatus?: number } = {}): Recorded {
   const recorded: Recorded = { messages: [], snapshots: [] };
   vi.stubGlobal(
     "fetch",
@@ -118,6 +118,10 @@ function stubFetch(options: { snapshotStatus?: number } = {}): Recorded {
         );
       }
       recorded.messages.push(url.searchParams);
+      // `messages` Shape への要求が、すべて失敗する（権限がないなど）。
+      if (options.messagesStatus) {
+        return Promise.resolve(new Response("error", { status: options.messagesStatus }));
+      }
       if (!url.searchParams.has("subset__where") && !url.searchParams.has("subset__limit")) {
         return hang();
       }
@@ -291,3 +295,42 @@ it("サーバーが取得に失敗し続けても、枠を出し続けず、読�
   expect(screen.queryByRole("status")).toBeNull();
   expect(screen.queryByText("メッセージを表示できません")).toBeNull();
 }, 30_000);
+
+it.each([401, 403, 400])(
+  "同期が再試行されない失敗（HTTP %i）で止まったら、要求を出し続けず、読み込めなかったと書く",
+  async (status) => {
+    // ライブラリが出す、同期の失敗と、失敗した問い合わせのログ。
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    // ほかのテストの再試行の要求が混ざらないように、このテストだけのチャンネルを使う。
+    const failing = `c-failing-${status}`;
+    const recorded = stubFetch({ messagesStatus: status });
+    const requests = () =>
+      recorded.messages.filter((params) => params.toString().includes(failing)).length;
+    const logs = () =>
+      logged.mock.calls.filter((args) => args.map(String).join(" ").includes(failing)).length;
+    renderBodies(
+      [link(failing, "m-1"), `また ${link(failing, "m-1")}`, link(failing, "m-2")],
+      [channel(failing)],
+    );
+    // 10 秒を待たずに分かる。「表示できません」（見られない）とは区別する。
+    await waitFor(() =>
+      expect(screen.getAllByText("リンク先を読み込めませんでした")).toHaveLength(3),
+    );
+    expect(screen.queryByText("メッセージを表示できません")).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const settled = { requests: requests(), logs: logs() };
+    // 2 つのメッセージの取得と、チャンネルの変更の購読だけ。描画のたびには増えない。
+    expect(settled.requests).toBeGreaterThan(0);
+    expect(settled.requests).toBeLessThanOrEqual(4);
+    expect(settled.logs).toBeGreaterThan(0);
+    expect(settled.logs).toBeLessThan(10);
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    // 時間がたっても、要求もログも増えない。
+    expect(requests()).toBe(settled.requests);
+    expect(logs()).toBe(settled.logs);
+    // 本文中のリンクは、URL のまま残る。
+    expect(screen.getAllByRole("link")).toHaveLength(3);
+    logged.mockRestore();
+  },
+);

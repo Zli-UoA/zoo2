@@ -143,10 +143,22 @@ function ChannelEmbed({ target, channel }: { target: ChannelLinkTarget; channel:
   );
 }
 
+/** 見られない場合とは区別する。行き先が見られるかは、分からない。 */
+function LoadFailed() {
+  const { t } = useTranslation();
+  return (
+    <div className={cn(cardClassName, "items-center text-muted-foreground")}>
+      <CloudOffIcon className="size-4 shrink-0" aria-hidden="true" />
+      <span>{t("channelLink.loadFailed")}</span>
+    </div>
+  );
+}
+
 /**
  * 取得を始めてから、これだけたっても終わらないときは、読み込めなかったものとして枠をやめる。
- * `useLiveQuery` は、取得が失敗しても（サーバーのエラー・オフライン）`isError` にならず、`isLoading` のまま
- * 再試行を続けるので、失敗を状態から知れない。あとで取得できれば、そのまま内容に切り替わる。
+ * サーバーのエラー（5xx）やオフラインでは、Electric のクライアントが再試行を続け、`useLiveQuery` は
+ * `isLoading` のままで、失敗を状態から知れない。あとで取得できれば、そのまま内容に切り替わる。
+ * 再試行されない失敗（4xx）は `isError` になるので、待たずに `failed` とする。
  */
 export const LINK_LOAD_TIMEOUT_MS = 10_000;
 
@@ -199,11 +211,7 @@ export function ChannelLinkEmbed({
     case "loading":
       if (!showFallback) return null;
       return stalled ? (
-        // 見られない場合とは区別する。行き先が見られるかは、まだ分からない。
-        <div className={cn(cardClassName, "items-center text-muted-foreground")}>
-          <CloudOffIcon className="size-4 shrink-0" aria-hidden="true" />
-          <span>{t("channelLink.loadFailed")}</span>
-        </div>
+        <LoadFailed />
       ) : (
         // 読み込み中は、行の高さが後から大きく動かないよう、カードの形だけを置く。
         <div
@@ -214,6 +222,8 @@ export function ChannelLinkEmbed({
           <span className="sr-only">{t("channelLink.loading")}</span>
         </div>
       );
+    case "failed":
+      return showFallback ? <LoadFailed /> : null;
     case "unavailable":
       return showFallback ? (
         <div className={cn(cardClassName, "items-center text-muted-foreground")}>

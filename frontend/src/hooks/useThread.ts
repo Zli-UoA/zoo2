@@ -99,8 +99,11 @@ function linkedMessageQuery(sources: MessageFeedSources, messageId: string) {
     linkedMessageQueries.set(sources.messages, byId);
   }
   const existing = byId.get(messageId);
-  // 購読者がいなくなって片付いた問い合わせは、作り直す。
-  if (existing && existing.status !== "cleaned-up" && existing.status !== "error") return existing;
+  // 購読者がいなくなって片付いた問い合わせは、作り直す。失敗した（`error`）問い合わせは、片付くまで使い続ける。
+  // ここは描画のたびに呼ばれる。失敗の原因（チャンネルの `messages` の同期の失敗など）が残っていると、作り直した
+  // 問い合わせもすぐ失敗し、描画のたびに購読と要求が増える。取り直すのは、購読者がいなくなって
+  // 片付いた（既定で 5 秒）あとに、また購読されたとき。ソースが回復すれば、同じ問い合わせも回復する。
+  if (existing && existing.status !== "cleaned-up") return existing;
   const created = createLinkedQuery(sources, messageId);
   byId.set(messageId, created);
   const forget = ({ status }: { status: string }) => {
