@@ -39,6 +39,8 @@ enum E2eeStoreError: Error, Equatable {
     case sendNeedsUnlock
     /// 閉じた（または消した）暗号ストアは使えない。
     case closed
+    /// 送信者の鍵（端末）が、セッションを作ったときと変わった。そのセッションでは暗号化できない。
+    case senderChanged
 }
 
 /// 同じ暗号ストアを、ほかの場所が開いている。少し待って試し直す。
@@ -116,7 +118,25 @@ final class CryptoStore: @unchecked Sendable {
 
     static let stateVersion = 1
     static let stateFile = "state.json"
-    private static let openDirectories = Mutex(Set<String>())
+    /// 開いている暗号ストアのディレクトリーと、その予約の持ち主（予約ごとの印）。解除は、持ち主の印が合うときだけ行う
+    /// （失敗の後始末と `deinit` が重なっても、あとから開いた別のインスタンスの予約を外さない）。
+    private static let openDirectories = Mutex([String: UUID]())
+
+    private static func release(_ path: String, token: UUID) {
+        openDirectories.withLock { if $0[path] == token { $0[path] = nil } }
+    }
+
+    /// 単体テスト用：このディレクトリーを、ほかの場所が予約しているか。
+    static func isReserved(_ directory: URL) -> Bool {
+        openDirectories.withLock { $0[directory.standardizedFileURL.path] != nil }
+    }
+
+    /// 単体テスト用：持ち主の印が違う解除は、何もしない。
+    static func releaseReservation(_ directory: URL, token: UUID) {
+        release(directory.standardizedFileURL.path, token: token)
+    }
+
+    private let reservation: UUID
 
     private let directory: URL
     /// 開いたときの `user_id`。暗号ストアの持ち主は変わらないので、ロックなしで読める。
@@ -139,8 +159,10 @@ final class CryptoStore: @unchecked Sendable {
     var pendingDeviceDeletions: [String] { lock.withLock { state.pending_deletions } }
     var isRegistered: Bool { lock.withLock { state.registered } }
 
-    private init(directory: URL, storageKey: Data, account: DeviceAccount, trust: TrustStore, olmSessions: OlmSessionStore, state: StoreState) {
+    private init(directory: URL, storageKey: Data, account: DeviceAccount, trust: TrustStore, olmSessions: OlmSessionStore,
+                 state: StoreState, reservation: UUID) {
         self.directory = directory
+        self.reservation = reservation
         self.userID = state.user_id
         self.olmSessions = olmSessions
         self.storageKey = storageKey
@@ -156,20 +178,24 @@ final class CryptoStore: @unchecked Sendable {
     /// 作り直しの途中で失敗しても、開き直すと取り出せる。Keychain の一時的な失敗はそのまま投げる。
     static func open(_ files: CryptoStoreFiles, userID: String, create: Bool = true) throws -> Opened? {
         let path = files.directory.standardizedFileURL.path
-        guard openDirectories.withLock({ $0.insert(path).inserted }) else { throw CryptoStoreBusyError() }
+        let token = UUID()
+        guard openDirectories.withLock({ guard $0[path] == nil else { return false }; $0[path] = token; return true }) else {
+            throw CryptoStoreBusyError()
+        }
         do {
-            guard let opened = try openUnlocked(files, userID: userID, create: create) else {
-                _ = openDirectories.withLock { $0.remove(path) }
+            guard let opened = try openUnlocked(files, userID: userID, create: create, reservation: token) else {
+                release(path, token: token)
                 return nil
             }
             return opened
         } catch {
-            _ = openDirectories.withLock { $0.remove(path) }
+            // 作りかけのインスタンスの `deinit` が先に外していても、持ち主の印が合うときだけ外すので、重ならない。
+            release(path, token: token)
             throw error
         }
     }
 
-    private static func openUnlocked(_ files: CryptoStoreFiles, userID: String, create: Bool) throws -> Opened? {
+    private static func openUnlocked(_ files: CryptoStoreFiles, userID: String, create: Bool, reservation: UUID) throws -> Opened? {
         let stateURL = files.directory.appendingPathComponent(stateFile)
         var pending: [String] = []
         if let stored = try readState(stateURL) {
@@ -178,17 +204,23 @@ final class CryptoStore: @unchecked Sendable {
             let key: Data?
             do { key = try files.keys.loadExisting() } catch StorageKeyError.malformed { key = nil }
             if let key {
+                // 保存鍵が端末アカウントと合わないときだけ、作り直す（作り直しの途中で止まった、保存鍵だけ別のもの）。
+                // 信頼の記録や Olm セッションの復元の失敗は、保存鍵のせいとは言えないので、作り直さずに投げる
+                // （受信用セッションを失わず、前の端末も消さない）。
+                let restored: DeviceAccount?
                 do {
-                    let account = try DeviceAccount.fromPickle(pickle: stored.account, storageKey: key,
-                                                               userId: stored.user_id, deviceId: stored.device_id)
+                    restored = try DeviceAccount.fromPickle(pickle: stored.account, storageKey: key,
+                                                            userId: stored.user_id, deviceId: stored.device_id)
+                } catch is ZooCryptoError {
+                    restored = nil
+                }
+                if let account = restored {
                     let trust = try stored.trust_store.map { try TrustStore.fromPickle(pickle: $0, account: account, storageKey: key) }
                         ?? TrustStore(userId: stored.user_id)
                     let olm = OlmSessionStore()
                     for session in stored.olm_sessions { _ = try olm.restoreSession(account: account, pickle: session.pickle, storageKey: key) }
                     return Opened(store: CryptoStore(directory: files.directory, storageKey: key, account: account, trust: trust,
-                                                     olmSessions: olm, state: stored))
-                } catch is ZooCryptoError {
-                    // 保存鍵が状態と合わない（作り直しの途中で止まった、壊れた）。読めないので、作り直す。
+                                                     olmSessions: olm, state: stored, reservation: reservation))
                 }
             }
             // 保存鍵がなければ、どの値も読めない。作り直して、新しい端末として登録し直す。前の端末の ID は、
@@ -214,7 +246,7 @@ final class CryptoStore: @unchecked Sendable {
                                trust_store: try trust.pickle(account: account, storageKey: key))
         state.pending_deletions = pending
         let store = CryptoStore(directory: files.directory, storageKey: key, account: account, trust: trust,
-                                olmSessions: OlmSessionStore(), state: state)
+                                olmSessions: OlmSessionStore(), state: state, reservation: reservation)
         try store.save()
         return Opened(store: store)
     }
@@ -608,9 +640,11 @@ final class CryptoStore: @unchecked Sendable {
     }
 
     /// 本文を暗号化する。自分が送った本文も、再起動後に復号・バックアップできるよう、受信用の鍵を先に保存する。
-    func encrypt(_ outbound: OutboundSession, message: OutgoingMessage) throws -> String {
+    func encrypt(_ outbound: OutboundSession, senderKey: String, message: OutgoingMessage) throws -> String {
         try lock.withLock {
             try ensureOpen()
+            // 鍵を配ったあとに端末が作り直されていたら、古い鍵で配ったセッションでは暗号化しない（確認と暗号化を同じロックで行う）。
+            guard account.curve25519Key() == senderKey else { throw E2eeStoreError.senderChanged }
             guard state.secrets_revision != nil else { throw E2eeStoreError.sendNeedsUnlock }
             let ref = SessionRef(channelId: outbound.channelId(), senderKey: account.curve25519Key(), sessionId: outbound.sessionId())
             let key = Self.inboundKey(ref)
@@ -632,7 +666,7 @@ final class CryptoStore: @unchecked Sendable {
         lock.withLock {
             guard !closed else { return }
             closed = true
-            _ = Self.openDirectories.withLock { $0.remove(directory.standardizedFileURL.path) }
+            Self.release(directory.standardizedFileURL.path, token: reservation)
         }
     }
 
@@ -645,7 +679,7 @@ final class CryptoStore: @unchecked Sendable {
             if FileManager.default.fileExists(atPath: stateURL.path) { try FileManager.default.removeItem(at: stateURL) }
             try files.keys.delete()
             closed = true
-            _ = Self.openDirectories.withLock { $0.remove(directory.standardizedFileURL.path) }
+            Self.release(directory.standardizedFileURL.path, token: reservation)
         }
     }
 
