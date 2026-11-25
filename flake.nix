@@ -244,7 +244,8 @@
         } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           zoo2-desktop-tauri = flake-utils.lib.mkApp { drv = zoo2-desktop-tauri; };
         };
-        devShells.android = pkgs.mkShell {
+        devShells = {
+        android = pkgs.mkShell {
           name = "zoo2-android";
           nativeBuildInputs = with pkgs; [
             androidToolchain
@@ -261,17 +262,7 @@
           ANDROID_HOME = "${androidComposition.androidsdk}/libexec/android-sdk";
           ANDROID_NDK_HOME = "${androidComposition.androidsdk}/libexec/android-sdk/ndk/${androidNdkVersion}";
         };
-        # `nix develop .#ios` で iOS 向けの XCFramework を作る（`make crypto-ffi-ios`）。
-        # Xcode 本体（xcodebuild・xcrun・iOS SDK）は mac に入れたものを使う。
-        devShells.ios = pkgs.mkShell {
-          name = "zoo2-ios";
-          nativeBuildInputs = [
-            iosToolchain
-            pkgs.gnumake
-            pkgs.xcodegen
-          ];
-        };
-        devShells.default = pkgs.stdenv.mkDerivation {
+        default = pkgs.stdenv.mkDerivation {
           name = "rust-env";
           nativeBuildInputs = with pkgs; [
             toolchain
@@ -310,6 +301,19 @@
           shellHook = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
             export XDG_DATA_DIRS="${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}:''${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
           '';
+        };
+        # `nix develop .#ios` で iOS 向けの XCFramework を作る（`make crypto-ffi-ios`）。xcodegen は Darwin 専用なので、
+        # Linux には公開しない（`nix flake check` が未対応のプラットフォームで止まらないように）。
+        # Xcode 本体（xcodebuild・xcrun・iOS SDK）は mac に入れたものを使う。
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
+          ios = pkgs.mkShell {
+            name = "zoo2-ios";
+            nativeBuildInputs = [
+              iosToolchain
+              pkgs.gnumake
+              pkgs.xcodegen
+            ];
+          };
         };
       }
     );

@@ -35,7 +35,8 @@ for target in "${IOS_TARGETS[@]}"; do
     export "CC_${env_target}=$clang"
     export "CARGO_TARGET_${upper}_LINKER=$clang"
     cd "$crate"
-    cargo build --locked --release --lib --target "$target"
+    # 出力先を固定する（`CARGO_TARGET_DIR` が設定されていても、あとの処理が今回の成果物を読む）。
+    cargo build --locked --release --lib --target "$target" --target-dir "$crate/target"
   )
 done
 
@@ -43,7 +44,7 @@ done
 first="${IOS_TARGETS[0]}"
 (
   cd "$crate"
-  cargo run --locked --features cli --bin uniffi-bindgen -- generate \
+  cargo run --locked --features cli --target-dir "$crate/target" --bin uniffi-bindgen -- generate \
     --library "target/$first/release/$LIB" --language swift --out-dir "$out/generated"
 )
 cp "$out"/generated/*.swift "$out/Sources/ZooCrypto/"
