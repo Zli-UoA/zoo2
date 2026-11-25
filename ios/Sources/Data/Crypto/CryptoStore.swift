@@ -45,6 +45,12 @@ private struct StoreState: Codable {
     var device_id: String
     var registered: Bool
     var account: String
+    /// 配布先の判定の記録（`TrustStore::pickle`）。
+    var trust_store: String?
+    /// 解錠した（または初回設定で作った）自分の鍵（`OwnKeys` の封筒。マスター鍵の秘密鍵は入れない）。
+    var own_keys: String?
+    /// 最後に解錠したときの `secrets_revision`。
+    var secrets_revision: UInt64?
 }
 
 /// iOS の暗号ストア（#685）。今は端末アカウントと登録の状態だけを持ち、Olm・Megolm のセッションなどは送受信の実装で足す。
@@ -67,6 +73,7 @@ final class CryptoStore: @unchecked Sendable {
     private let directory: URL
     private let storageKey: Data
     private var account: DeviceAccount
+    private var trust: TrustStore
     private var state: StoreState
     private var closed = false
     private let lock = NSLock()
@@ -75,10 +82,11 @@ final class CryptoStore: @unchecked Sendable {
     var deviceID: String { state.device_id }
     var isRegistered: Bool { lock.withLock { state.registered } }
 
-    private init(directory: URL, storageKey: Data, account: DeviceAccount, state: StoreState) {
+    private init(directory: URL, storageKey: Data, account: DeviceAccount, trust: TrustStore, state: StoreState) {
         self.directory = directory
         self.storageKey = storageKey
         self.account = account
+        self.trust = trust
         self.state = state
     }
 
@@ -112,7 +120,10 @@ final class CryptoStore: @unchecked Sendable {
             if let key {
                 let account = try DeviceAccount.fromPickle(pickle: stored.account, storageKey: key,
                                                            userId: stored.user_id, deviceId: stored.device_id)
-                return Opened(store: CryptoStore(directory: files.directory, storageKey: key, account: account, state: stored),
+                let trust = try stored.trust_store.map { try TrustStore.fromPickle(pickle: $0, account: account, storageKey: key) }
+                    ?? TrustStore(userId: stored.user_id)
+                return Opened(store: CryptoStore(directory: files.directory, storageKey: key, account: account, trust: trust,
+                                                 state: stored),
                               replacedDeviceID: nil)
             }
             // 保存鍵がなければ、どの値も読めない。作り直して、新しい端末として登録し直す。
@@ -130,9 +141,11 @@ final class CryptoStore: @unchecked Sendable {
         let account = try DeviceAccount(userId: userID, deviceId: UUID().uuidString.lowercased())
         account.generateOneTimeKeys(count: account.maxNumberOfOneTimeKeys())
         account.generateFallbackKey()
+        let trust = try TrustStore(userId: userID)
         let state = StoreState(version: stateVersion, user_id: userID, device_id: account.deviceId(),
-                               registered: false, account: try account.pickle(storageKey: key))
-        let store = CryptoStore(directory: files.directory, storageKey: key, account: account, state: state)
+                               registered: false, account: try account.pickle(storageKey: key),
+                               trust_store: try trust.pickle(account: account, storageKey: key))
+        let store = CryptoStore(directory: files.directory, storageKey: key, account: account, trust: trust, state: state)
         try store.save()
         return Opened(store: store, replacedDeviceID: replaced)
     }
@@ -166,11 +179,64 @@ final class CryptoStore: @unchecked Sendable {
             var nextState = state
             nextState.device_id = next.deviceId()
             nextState.registered = false
+            // 自分の鍵と配布先の記録は古い端末アカウントで封をしてあるので、解錠し直すまで使わない。
+            nextState.own_keys = nil
+            nextState.secrets_revision = nil
+            nextState.trust_store = try TrustStore(userId: state.user_id).pickle(account: next, storageKey: storageKey)
             nextState.account = try next.pickle(storageKey: storageKey)
             try Self.writeAtomically(JSONEncoder().encode(nextState), to: directory.appendingPathComponent(Self.stateFile))
             // 保存できてから、メモリーの状態を進める。
             account = next
+            trust = try TrustStore.fromPickle(pickle: nextState.trust_store!, account: next, storageKey: storageKey)
             state = nextState
+        }
+    }
+
+    /// 今の端末の署名付きの端末鍵（JSON）。
+    func deviceKeys() -> String { lock.withLock { account.deviceKeys() } }
+
+    /// 自分の鍵を保存してあるか（解錠済みの端末か）。
+    var hasOwnKeys: Bool { lock.withLock { state.own_keys != nil } }
+
+    /// 最後に解錠したときの `secrets_revision`。
+    var secretsRevision: UInt64? { lock.withLock { state.secrets_revision } }
+
+    /// 解錠した（または初回設定で作った）自分の鍵を保存する。マスター鍵の秘密鍵は保存せず、自分のマスター鍵の
+    /// 公開鍵とユーザー署名鍵を、配布先の判定の記録に入れる。書けなければ、メモリーの状態も前に戻して投げる。
+    func saveOwnKeys(_ session: SetupSession, secretsRevision: UInt64?) throws {
+        try lock.withLock {
+            // 記録はコピーで更新し、すべて保存できたときだけ置き換える。
+            let updated = try TrustStore.fromJson(json: trust.toJson(), userId: state.user_id)
+            try session.recordOwnKeys(trust: updated)
+            var next = state
+            next.own_keys = try session.ownKeysPickle(account: account, storageKey: storageKey)
+            next.secrets_revision = secretsRevision
+            next.trust_store = try updated.pickle(account: account, storageKey: storageKey)
+            try Self.writeAtomically(JSONEncoder().encode(next), to: directory.appendingPathComponent(Self.stateFile))
+            state = next
+            trust = updated
+        }
+    }
+
+    /// 起動時にすることを、暗号ストアの自分の鍵とサーバーの状態（自分だけの `keys/query` と
+    /// `GET /api/e2ee/key_backup/versions` の応答）から決める。まだ解錠していなければ `nil`。
+    func startupCheck(keysQuery: String, versions: String) throws -> StartupCheck? {
+        try lock.withLock {
+            guard let sealed = state.own_keys else { return nil }
+            return try OwnKeys.fromPickle(sealed: sealed, account: account, storageKey: storageKey)
+                .startupCheck(keysQuery: keysQuery, versions: versions, deviceKeys: account.deviceKeys())
+        }
+    }
+
+    /// 解錠し直すまで、暗号ストアの鍵を使う処理を止める。`failed` は、409 になった要求の `secrets_revision`。
+    /// 送っている間に解錠し直して新しい値を保存していたら（値が違えば）、その解錠を取り消さない。
+    func forgetSecretsRevision(_ failed: UInt64) throws {
+        try lock.withLock {
+            guard state.secrets_revision == failed else { return }
+            var next = state
+            next.secrets_revision = nil
+            try Self.writeAtomically(JSONEncoder().encode(next), to: directory.appendingPathComponent(Self.stateFile))
+            state = next
         }
     }
 
