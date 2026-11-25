@@ -623,10 +623,12 @@ describe("暗号ストアの記録による格下げ対策", () => {
     const worker = workerKnowing(async () => false);
     setup({ content: link("c-sealed", "?message=m-sealed"), worker });
     await screen.findByRole("link", { name: /このメッセージは暗号化されています/ });
-    expect(worker).toHaveBeenCalledWith({
-      op: "megolmRememberEncrypted",
-      channelId: "c-sealed",
-    });
+    await waitFor(() =>
+      expect(worker).toHaveBeenCalledWith({
+        op: "megolmRememberEncrypted",
+        channelId: "c-sealed",
+      }),
+    );
   });
 
   it("チャンネルだけを指すリンクも、暗号ストアの記録で暗号化チャンネルと示す", async () => {
@@ -1114,6 +1116,30 @@ describe("画面の近くに来るまで取得しない", () => {
     await new Promise((resolve) => setTimeout(resolve, 300));
     await act(async () => setContent(link("c-general", "?message=m-general")));
     expect(await screen.findByRole("link", { name: "アメシュさん: #general" })).toBeInTheDocument();
+  });
+
+  // チャットの投稿の本文。スレッドやキャッチアップは、画面外の行もマウントしたままにする。
+  it("投稿の本文の埋め込みと外部のカードも、画面の近くに来てから取得する", async () => {
+    const worker = workerKnowing(async () => false);
+    const { pane, messagesFor } = await renderFar(
+      <MessageBody
+        content={`${link("c-general", "?message=m-general")}\nhttps://example.com/far-page`}
+      />,
+      [general],
+      worker,
+    );
+    expect(messagesFor).not.toHaveBeenCalled();
+    expect(worker).not.toHaveBeenCalled();
+    expect(summaly.get).not.toHaveBeenCalled();
+    expect(screen.getByRole("status")).toHaveTextContent("リンク先を読み込み中");
+
+    pane.scrollTop = 3000;
+    expect(await screen.findByRole("link", { name: /アメシュ.*テスト/ })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: /外部のタイトル/ })).toBeInTheDocument();
+    expect(messagesFor).toHaveBeenCalledWith("c-general");
+    expect(summaly.get.mock.calls.map(([url]) => String(url))).toEqual([
+      "https://example.com/far-page",
+    ]);
   });
 
   it("画面から遠いメッセージのリンクは、暗号ストアにも問い合わせない", async () => {

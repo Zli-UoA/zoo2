@@ -79,10 +79,11 @@ export function MessageBody({
         <MfmContent content={content} emojis={emojis} mentions={mentions} />
         {editedAt ? <EditedIndicator at={editedAt} /> : null}
       </div>
-      {/* 暗号化チャンネル（`manual`）では、外部の URL のカードを押したときだけ取得する（docs/e2ee.md の
-          「機能ごとの扱い」）。このアプリのチャンネル・メッセージへのリンクは、外へ送らないので、すぐに埋め込みにする。 */}
+      {/* 画面外の行もマウントする画面（スレッドなど）があるので、画面の近くに来るまで取得しない（`defer`）。
+          暗号化チャンネル（`manual`）では、外部の URL のカードを押したときだけ取得する（docs/e2ee.md の
+          「機能ごとの扱い」）。このアプリのチャンネル・メッセージへのリンクは、外へ送らないので、押さずに埋め込みにする。 */}
       {previews === "none" ? null : (
-        <LinkPreviews content={content} manualExternal={previews === "manual"} />
+        <LinkPreviews defer content={content} manualExternal={previews === "manual"} />
       )}
     </>
   );

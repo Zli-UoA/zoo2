@@ -136,7 +136,7 @@ function ActiveLinkPreviews({ urls, config, active = true, showFallback = true }
   ));
 }
 
-/** Home and public profiles keep offscreen rows mounted; only nearby rows fetch. */
+/** Some screens keep offscreen rows mounted (Home, threads, catch-up); only nearby rows fetch. */
 function DeferredLinkPreviews({ children }: { children: (active: boolean) => ReactNode }) {
   const [ref, active] = useNearViewport<HTMLDivElement>();
   return (
