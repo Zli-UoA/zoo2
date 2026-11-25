@@ -637,6 +637,10 @@ impl VerificationController {
         let txn = view.transaction_id.clone();
         {
             let mut shared = self.shared();
+            // 止めた（dispose）か閉じた検証は、表示も送信待ちも作り直さない（`active` の登録と同じロックで判定する）。
+            if !shared.active.contains_key(&txn) {
+                return;
+            }
             let save = shared
                 .phases
                 .get(&txn)
@@ -710,6 +714,7 @@ impl VerificationController {
     /// 使い回し、ない端末は先に `keys/claim` で払い出す。メッセージごとに分けて、この順に送る。送れなかった
     /// 分を送る順に返す（ある端末に送れなかったら、その端末あての後のメッセージは送らずに返す）。
     async fn send_items(&self, mut items: Vec<PendingSend>) -> Vec<PendingSend> {
+        let epoch = self.epoch();
         let Some(store) = self.store() else {
             return items;
         };
@@ -793,6 +798,11 @@ impl VerificationController {
                 requests.insert(id, chunk.to_vec());
             }
             for (txn_id, request) in requests {
+                // 待つあいだ（`keys/claim` など）に止めたら、送らない。
+                if self.epoch() != epoch {
+                    undelivered.extend(request.iter().copied());
+                    continue;
+                }
                 let mut messages = serde_json::Map::new();
                 for &i in &request {
                     let (user, device) = items[i].target();
@@ -890,6 +900,13 @@ impl VerificationController {
                 return;
             };
             let task = shared.reauths.remove(txn);
+            // 取り出すのと同じロックの中で登録し、結果を待つあいだも dispose と dismiss が再認証を止められる
+            // ようにする（取り出した保存だけが結果を使う）。
+            if let Some(task) = &task {
+                shared
+                    .saving_reauths
+                    .insert(txn.to_owned(), task.abort_handle());
+            }
             let next = match (&task, save) {
                 (Some(_), _) => SaveState::Saving,
                 (None, SaveState::Idle) => SaveState::Login,
@@ -914,17 +931,6 @@ impl VerificationController {
             transaction_id: txn.to_owned(),
             state: SaveState::Saving,
         });
-        // 結果を待つあいだも、dispose と dismiss が再認証を止められるようにする（取り出した保存だけが結果を使う）。
-        {
-            let mut shared = self.shared();
-            if shared.epoch != epoch {
-                task.abort();
-                return;
-            }
-            shared
-                .saving_reauths
-                .insert(txn.to_owned(), task.abort_handle());
-        }
         let awaited = task.await;
         {
             let mut shared = self.shared();
@@ -940,8 +946,19 @@ impl VerificationController {
                 return;
             }
         };
-        let result = async {
-            let keys = self
+        // 保存（`keys/query` から）は別のタスクで行い、そのタスクも dispose と dismiss が止められるように登録して
+        // から始める（登録の前に止めていれば始めない）。
+        let (go, ready) = tokio::sync::oneshot::channel::<()>();
+        let this = self.clone();
+        let txn_owned = txn.to_owned();
+        let their = their_user_id.clone();
+        let work = tokio::spawn(async move {
+            if ready.await.is_err() {
+                return Err(anyhow!("保存を取りやめました"));
+            }
+            let txn = txn_owned.as_str();
+            let their_user_id = their;
+            let keys = this
                 .inner
                 .api
                 .e2ee_query_keys(std::slice::from_ref(&their_user_id))
@@ -951,12 +968,12 @@ impl VerificationController {
                 .and_then(|keys| keys.get(&their_user_id))
                 .cloned()
                 .ok_or_else(|| anyhow!("相手のマスター鍵がありません"))?;
-            let store = self
+            let store = this
                 .store()
                 .ok_or_else(|| anyhow!("暗号ストアの準備ができていません"))?;
             let accepted = {
                 let mut store = store.lock().await;
-                let shared = self.shared();
+                let shared = this.shared();
                 let verification = shared
                     .active
                     .get(txn)
@@ -964,14 +981,35 @@ impl VerificationController {
                 store.sign_verified_master_key(verification, &master_key)?
             };
             save_accepted(
-                &self.inner.api,
+                &this.inner.api,
                 &store,
                 &accepted,
                 token.as_deref().map(String::as_str),
             )
             .await
+        });
+        {
+            let mut shared = self.shared();
+            if shared.epoch != epoch || !shared.active.contains_key(txn) {
+                work.abort();
+                return;
+            }
+            shared
+                .saving_reauths
+                .insert(txn.to_owned(), work.abort_handle());
         }
-        .await;
+        let _ = go.send(());
+        let Ok(result) = work.await else {
+            // 止められた。
+            return;
+        };
+        {
+            let mut shared = self.shared();
+            if shared.epoch != epoch || !shared.active.contains_key(txn) {
+                return;
+            }
+            shared.saving_reauths.remove(txn);
+        }
         match result {
             Ok(()) => {
                 self.set_save(txn, SaveState::Saved);

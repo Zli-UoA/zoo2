@@ -331,6 +331,8 @@ pub struct Devices {
     replacing: Option<String>,
     /// 失効の再認証を取りやめる（失効の鍵は捨てずに、画面に戻す）。
     reauth_cancel: Option<tokio::sync::oneshot::Sender<()>>,
+    /// 再認証を取りやめて、失効のセッションが戻るのを待っている（そのあいだの Esc で処理を止めない）。
+    reauth_cancelling: bool,
     /// 端末の上限の知らせを、選んだ状態に反映したか（同じ知らせで、利用者が選び直したものを上書きしない）。
     limit_applied: bool,
     /// 別の画面の途中で届いた知らせ（一覧に戻ったときに出す）。
@@ -402,6 +404,7 @@ impl Devices {
             restart: None,
             replacing: None,
             reauth_cancel: None,
+            reauth_cancelling: false,
             limit_applied: false,
             pending_notice: None,
             unlock_context: None,
@@ -505,7 +508,7 @@ impl Devices {
 
     /// 端末の上限の知らせを初めて受け取ったら、30 日以上使っていない端末を選んだ状態にする（画面を開いた
     /// あとに届いても選ぶ。同じ知らせのあいだは、利用者が選び直したものを上書きしない）。
-    fn sync_device_limit(&mut self) {
+    pub fn sync_device_limit(&mut self) {
         match self.device_limit() {
             Some(stale) if !self.limit_applied => {
                 self.limit_selected = stale
@@ -527,6 +530,7 @@ impl Devices {
         self.restart = None;
         self.replacing = None;
         self.reauth_cancel = None;
+        self.reauth_cancelling = false;
         self.screen = Screen::Loading;
     }
 
@@ -644,6 +648,7 @@ impl Devices {
                 unlock_error,
                 device_only_unavailable,
             } => {
+                self.reauth_cancelling = false;
                 if let Some(session) = session {
                     self.session = Some(*session);
                 }
@@ -902,8 +907,13 @@ impl Devices {
             self.on_sas_key(key);
             return true;
         }
+        // 上限の知らせが届いていれば、キーを受け付ける前に候補を選んでおく（定期的な処理を待たない）。
+        self.sync_device_limit();
         if key.code == KeyCode::Esc {
             match &self.screen {
+                // 再認証を取りやめて、失効のセッションが戻るのを待っているあいだは、処理を止めない（止めると
+                // セッションを失う）。
+                Screen::Working(_) if self.reauth_cancelling => return true,
                 Screen::Overview | Screen::Loading | Screen::Message { .. } => {
                     self.close();
                     return false;
@@ -913,6 +923,7 @@ impl Devices {
                     // 再認証だけを取りやめ、セッションを返してもらう（同じ鍵のまま、もう一度実行できる）。
                     if let Some(cancel) = self.reauth_cancel.take() {
                         let _ = cancel.send(());
+                        self.reauth_cancelling = true;
                     }
                     self.screen = Screen::Working("取りやめています…");
                     return true;
@@ -926,6 +937,12 @@ impl Devices {
         }
         let screen = std::mem::replace(&mut self.screen, Screen::Loading);
         self.screen = self.on_screen_key(screen, key);
+        // 別の画面の途中で届いた知らせは、一覧に戻ったときに出す（読み直さずに戻る場合も）。
+        if matches!(self.screen, Screen::Overview)
+            && let Some(text) = self.pending_notice.take()
+        {
+            self.screen = Screen::Message { text, error: true };
+        }
         true
     }
 
@@ -2190,6 +2207,47 @@ mod tests {
             panic!("案内を出す");
         };
         assert!(text.contains("解錠した端末で行えます"));
+    }
+
+    #[tokio::test]
+    async fn a_second_esc_while_cancelling_reauth_keeps_waiting_for_the_session() {
+        let mut devices = devices();
+        let (cancel, mut cancelled) = tokio::sync::oneshot::channel();
+        devices.reauth_cancel = Some(cancel);
+        devices.screen = Screen::Reauth {
+            url: None,
+            port: None,
+        };
+        press(&mut devices, KeyCode::Esc);
+        assert!(cancelled.try_recv().is_ok(), "再認証だけを取りやめる");
+        let generation = devices.generation;
+        // セッションが戻る前にもう一度 Esc を押しても、待っている処理を止めない。
+        press(&mut devices, KeyCode::Esc);
+        assert!(matches!(devices.screen, Screen::Working(_)));
+        assert_eq!(devices.generation, generation, "処理を止めない");
+    }
+
+    #[test]
+    fn a_held_notice_is_shown_when_returning_to_the_list_directly() {
+        let mut devices = devices();
+        devices.screen = Screen::ConfirmDelete {
+            device_id: "LOST".into(),
+        };
+        devices.on_verification(VerificationEvent::RequestFailed {
+            user_id: "u2".into(),
+            error: SasErrorCode::Failed,
+        });
+        assert!(
+            matches!(devices.screen, Screen::ConfirmDelete { .. }),
+            "入力中の画面は置き換えない"
+        );
+        // 読み直さずに一覧に戻っても、届いていた知らせを出す。
+        press(&mut devices, KeyCode::Char('n'));
+        let Screen::Message { text, error } = &devices.screen else {
+            panic!("知らせを出す");
+        };
+        assert!(*error);
+        assert!(text.contains("絵文字の検証を始められませんでした"));
     }
 
     #[test]

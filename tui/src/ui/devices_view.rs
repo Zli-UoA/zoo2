@@ -372,6 +372,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // 見えるようにする本文の行（一覧の選んだ行）。あれば `app.devices.scroll` で表示位置を持つ。
     let mut focus: Option<(usize, usize)> = None;
     let over_ssh = app.devices.over_ssh;
+    // 上限の知らせは、出すのと同時に候補を選んでおく（出したあと、定期的な処理より先にキーを押されても選べる）。
+    app.devices.sync_device_limit();
     match &app.devices.screen {
         Screen::Loading => lines.push(Line::from("読んでいます…")),
         Screen::Working(message) => lines.push(Line::from(*message)),
@@ -519,18 +521,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             if let Some(state) = app.devices.session_state() {
                 lines.push(heading("端末と鍵の失効"));
                 lines.push(Line::from(format!("範囲: {}", scope_text(state.scope))));
-                if !state.deleted_devices.is_empty() {
-                    lines.push(Line::from(format!(
-                        "削除した端末: {}",
-                        state.deleted_devices.join(", ")
-                    )));
-                }
                 if state.scope == RevocationScope::Full {
                     lines.push(warn(
                         "チャンネルの他のメンバーが、あなたを再検証するまで、あなたの新しい端末に鍵を配りません。",
                     ));
                 }
-                // 移せないバックアップの警告は、長くなる相手の一覧より先に出す。
+                // 移せないバックアップの警告は、長くなる端末と相手の一覧より先に出す。
                 if !state.versions_without_key.is_empty() {
                     lines.push(warn(format!(
                         "新しい版に移せないバックアップがあります（版 {}）。この端末と SSSS に鍵がないので、その版のメッセージは復元できません。",
@@ -541,6 +537,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     lines.push(Line::from(format!(
                         "続きから保存します: {}",
                         stage_text(state.stage)
+                    )));
+                }
+                // 警告より後に出す（台数が多いと長くなるため）。
+                if !state.deleted_devices.is_empty() {
+                    lines.push(Line::from(format!(
+                        "削除した端末: {}",
+                        state.deleted_devices.join(", ")
                     )));
                 }
                 let notes = not_resigned_users(state);
