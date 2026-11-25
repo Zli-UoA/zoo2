@@ -143,7 +143,8 @@ vi.mock("../../../hooks/useAttachments", async (original) => ({
   useAttachmentUpload: () => vi.fn(),
   useEncryptedAttachmentUpload: () => vi.fn(),
 }));
-vi.mock("../../../hooks/useThread", () => ({
+vi.mock("../../../hooks/useThread", async (original) => ({
+  ...(await original<typeof import("../../../hooks/useThread")>()),
   useMessageById: () => ({ data: fixture.targetRows, isLoading: false }),
   useThreadRoot: () => ({
     data: fixture.rootRows,

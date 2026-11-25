@@ -279,6 +279,20 @@
     "forwardNestedCompact": "此消息中还包含转发的内容",
     "forwardNestedNote": "此消息还包含转发内容 · 查看原消息"
   },
+  "channelLink": {
+    "inlineMessage": "{{name}}：{{channel}}",
+    "thread": "{{channel}} 中的子线程",
+    "encrypted": "此消息已加密",
+    "messageUnavailable": "无法显示此消息",
+    "channelUnavailable": "无法显示此频道",
+    "loading": "正在加载链接内容",
+    "loadFailed": "无法加载链接内容",
+    "appMessage": "App 的消息",
+    "attachments_one": "{{count}} 个附件",
+    "attachments_other": "{{count}} 个附件",
+    "privateChannel": "私密频道",
+    "encryptedChannel": "加密频道"
+  },
   "attachments": {
     "recentPhotos": "最近的照片",
     "systemPhotos": "打开照片选择器",

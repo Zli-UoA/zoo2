@@ -279,6 +279,20 @@
     "forwardNestedCompact": "이 통보문에도 전송된 내용이 포함되여 있습니다",
     "forwardNestedNote": "이 통보문에도 인용된 내용이 있습니다 · 원본 보기"
   },
+  "channelLink": {
+    "inlineMessage": "{{name}} 님: {{channel}}",
+    "thread": "{{channel}}의 타래",
+    "encrypted": "이 통보문은 암호화되여 있습니다",
+    "messageUnavailable": "통보문을 표시할수 없습니다",
+    "channelUnavailable": "통로를 표시할수 없습니다",
+    "loading": "련결대상을 불러오는중",
+    "loadFailed": "련결대상을 불러오지 못하였습니다",
+    "appMessage": "App 통보문",
+    "attachments_one": "첨부파일 {{count}}건",
+    "attachments_other": "첨부파일 {{count}}건",
+    "privateChannel": "비공개 통로",
+    "encryptedChannel": "암호화 통로"
+  },
   "attachments": {
     "recentPhotos": "최근 사진",
     "systemPhotos": "사진 선택기 열기",

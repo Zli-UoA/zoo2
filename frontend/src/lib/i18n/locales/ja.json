@@ -279,6 +279,20 @@
     "forwardNestedCompact": "この投稿にも転送（引用）が含まれます",
     "forwardNestedNote": "この投稿にも転送（引用）があります · 元の投稿を見る"
   },
+  "channelLink": {
+    "inlineMessage": "{{name}}さん: {{channel}}",
+    "thread": "{{channel}} 内のスレッド",
+    "encrypted": "このメッセージは暗号化されています",
+    "messageUnavailable": "メッセージを表示できません",
+    "channelUnavailable": "チャンネルを表示できません",
+    "loading": "リンク先を読み込み中",
+    "loadFailed": "リンク先を読み込めませんでした",
+    "appMessage": "Appのメッセージ",
+    "attachments_one": "添付ファイル {{count}} 件",
+    "attachments_other": "添付ファイル {{count}} 件",
+    "privateChannel": "非公開チャンネル",
+    "encryptedChannel": "暗号化チャンネル"
+  },
   "attachments": {
     "recentPhotos": "最近の写真",
     "systemPhotos": "写真アプリで選ぶ",

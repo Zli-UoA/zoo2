@@ -279,6 +279,20 @@
     "forwardNestedCompact": "이 게시물에도 전달된 메시지가 포함되어 있습니다",
     "forwardNestedNote": "이 게시물에도 전달된 메시지가 있습니다 · 원본 보기"
   },
+  "channelLink": {
+    "inlineMessage": "{{name}} 님: {{channel}}",
+    "thread": "{{channel}}의 스레드",
+    "encrypted": "이 메시지는 암호화되어 있습니다",
+    "messageUnavailable": "메시지를 표시할 수 없습니다",
+    "channelUnavailable": "채널을 표시할 수 없습니다",
+    "loading": "링크 대상을 불러오는 중",
+    "loadFailed": "링크 대상을 불러오지 못했습니다",
+    "appMessage": "App 메시지",
+    "attachments_one": "첨부 파일 {{count}}개",
+    "attachments_other": "첨부 파일 {{count}}개",
+    "privateChannel": "비공개 채널",
+    "encryptedChannel": "암호화 채널"
+  },
   "attachments": {
     "recentPhotos": "최근 사진",
     "systemPhotos": "사진 선택기 열기",

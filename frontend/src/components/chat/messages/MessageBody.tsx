@@ -1,18 +1,15 @@
-import { useId, useMemo, useState } from "react";
+import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { PencilIcon } from "lucide-react";
 
 import type { DisplayEmoji } from "../../../lib/electric/types";
 import { normalizeUtcTimestamp } from "../../../lib/timestamps";
-import { hasCardBlocks } from "../AppBlocks";
-import { hidesContent, parseComponents } from "../components/parse";
 import { useLocale } from "../../i18n/LocaleProvider";
-import { Button } from "../../ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../../ui/tooltip";
 import { LinkPreviews } from "./LinkPreviews.tsx";
 import { MfmContent } from "./MfmContent";
-import { MessageCard, parseMessageCards } from "./MessageCard";
-import { previewUrls } from "./linkPreviews";
+import { MessageCard } from "./MessageCard";
+import { messageBodySource } from "./messageBodySource";
 import { type MentionAllowlist } from "./mentions";
 import { fullTimestamp } from "./messageFormat";
 
@@ -41,30 +38,6 @@ export function EditedIndicator({ at }: { at: string }) {
   );
 }
 
-/**
- * 暗号化チャンネルの URL カードは、押したときだけ読み込む。カードの取得で、Summaly と画像プロクシの
- * 運用者に URL が見えるため（docs/e2ee.md の「機能ごとの扱い」）。
- */
-function ManualLinkPreviews({ content }: { content: string }) {
-  const { t } = useTranslation();
-  // 押したときの本文にだけ許可する。編集で本文（URL）が変わったら、もう一度押すまで取得しない。
-  const [loadedFor, setLoadedFor] = useState<string | null>(null);
-  const hasUrls = useMemo(() => previewUrls(content).length > 0, [content]);
-  if (!hasUrls) return null;
-  if (loadedFor === content) return <LinkPreviews content={content} />;
-  return (
-    <Button
-      type="button"
-      variant="link"
-      size="sm"
-      className="h-auto min-h-8 px-0 text-xs text-muted-foreground"
-      onClick={() => setLoadedFor(content)}
-    >
-      {t("e2ee.loadPreviews")}
-    </Button>
-  );
-}
-
 /** 通常投稿は MFM、連携カードは専用の描画を使う。 */
 export function MessageBody({
   content,
@@ -88,16 +61,13 @@ export function MessageBody({
   /** 暗号化メッセージで、メンションとして表示してよい `@name`（{@link MfmContent} の `mentions`）。 */
   mentions?: MentionAllowlist;
 }) {
-  // 部品は MessageAppContent が描画する。本文を隠すフラグがあれば、本文は出さない
-  // 読めない部品（`{}` など）は、ないものとして旧形式の表示に戻す（MessageAppContent と同じ判定）
-  const doc = parseComponents(components);
-  if (hidesContent(doc)) return null;
-  if (!doc && hasCardBlocks(appBlocks)) return null;
-  const cards = doc ? null : parseMessageCards(data);
-  if (cards)
+  // 本文の代わりに部品・カードを描く投稿かは、メッセージリンクの埋め込みと同じ判定で決める。
+  const source = messageBodySource({ components, appBlocks, card: data });
+  if (source.kind === "hidden") return null;
+  if (source.kind === "cards")
     return (
       <>
-        {cards.map((card, index) => (
+        {source.cards.map((card, index) => (
           <MessageCard key={index} card={card} />
         ))}
         {editedAt ? <EditedIndicator at={editedAt} /> : null}
@@ -109,11 +79,12 @@ export function MessageBody({
         <MfmContent content={content} emojis={emojis} mentions={mentions} />
         {editedAt ? <EditedIndicator at={editedAt} /> : null}
       </div>
-      {previews === "manual" ? (
-        <ManualLinkPreviews content={content} />
-      ) : previews === "auto" ? (
-        <LinkPreviews content={content} />
-      ) : null}
+      {/* 画面外の行もマウントする画面（スレッドなど）があるので、画面の近くに来るまで取得しない（`defer`）。
+          暗号化チャンネル（`manual`）では、外部の URL のカードを押したときだけ取得する（docs/e2ee.md の
+          「機能ごとの扱い」）。このアプリのチャンネル・メッセージへのリンクは、外へ送らないので、押さずに埋め込みにする。 */}
+      {previews === "none" ? null : (
+        <LinkPreviews defer content={content} manualExternal={previews === "manual"} />
+      )}
     </>
   );
 }

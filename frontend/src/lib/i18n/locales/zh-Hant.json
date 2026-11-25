@@ -279,6 +279,20 @@
     "forwardNestedCompact": "此訊息中亦包含轉寄內容",
     "forwardNestedNote": "此訊息還包含轉寄內容 · 檢視原訊息"
   },
+  "channelLink": {
+    "inlineMessage": "{{name}}：{{channel}}",
+    "thread": "{{channel}} 中的子討論",
+    "encrypted": "此訊息已加密",
+    "messageUnavailable": "無法顯示此訊息",
+    "channelUnavailable": "無法顯示此頻道",
+    "loading": "正在載入連結內容",
+    "loadFailed": "無法載入連結內容",
+    "appMessage": "App 的訊息",
+    "attachments_one": "{{count}} 個附件",
+    "attachments_other": "{{count}} 個附件",
+    "privateChannel": "私人頻道",
+    "encryptedChannel": "加密頻道"
+  },
   "attachments": {
     "recentPhotos": "最近的照片",
     "systemPhotos": "開啟照片選擇器",

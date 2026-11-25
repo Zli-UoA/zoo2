@@ -177,7 +177,7 @@ function AppShellContent({ children }: { children: ReactNode }) {
       <AppBadgeBridge />
       <PwaProvider>
         <ShellContext.Provider value={value}>
-          <MfmChannelsProvider channels={channels}>
+          <MfmChannelsProvider channels={channels} ready={!channelsQuery.isInitialSyncLoading}>
             <MfmAccountsProvider accounts={accounts}>
               <div
                 ref={viewportRef}

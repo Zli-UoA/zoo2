@@ -299,6 +299,29 @@
       ]
     },
     {
+      "file": "src/components/chat/messages/ChannelLinkEmbed.stories.tsx",
+      "states": [
+        "Message",
+        "InMessageRow",
+        "ThreadReply",
+        "Encrypted",
+        "CiphertextInPlainChannel",
+        "AppMessage",
+        "NotJoined",
+        "MessageDeleted",
+        "MessageNotFound",
+        "Channel",
+        "PrivateAndEncryptedChannels",
+        "ChannelNotJoined",
+        "DirectMessage",
+        "AttachmentsOnly",
+        "LongText",
+        "Mobile",
+        "LoadingDirectory",
+        "InEncryptedPost"
+      ]
+    },
+    {
       "file": "src/components/chat/messages/LinkPreviews.stories.tsx",
       "states": ["CachedOnReturn", "Landscape", "Portrait", "TextOnly", "Mobile"]
     },
@@ -1283,12 +1306,28 @@
       "reason": "DefaultとSearchEmptyが標準ピッカーを、ManyCustomEmojisとManyCustomEmojisMobileが大量のカスタム絵文字のスクロールと選択を確認する。"
     },
     {
+      "file": "src/components/chat/messages/ChannelLinkEmbed.tsx",
+      "story": "src/components/chat/messages/ChannelLinkEmbed.stories.tsx",
+      "checks": [
+        "src/components/chat/messages/ChannelLinkEmbed.browser.test.tsx",
+        "src/components/chat/messages/ChannelLinkEmbed.requests.browser.test.tsx",
+        "src/components/chat/messages/ChannelLinkEmbed.stalled.browser.test.tsx"
+      ]
+    },
+    {
+      "file": "src/components/chat/messages/channelLinkLabel.tsx",
+      "story": "src/components/chat/messages/ChannelLinkEmbed.stories.tsx",
+      "composed": true,
+      "reason": "MessageとChannelで、リンクの短い表示（「○○さん: #チャンネル名」「#チャンネル名」）を確認する。DMの総称はDirectMessage、見られないリンク先でURLのまま残ることはNotJoinedで確認する。ChannelLinkEmbed.browser.test.tsxでも検証する。"
+    },
+    {
       "file": "src/components/chat/messages/LinkPreviews.tsx",
       "story": "src/components/chat/messages/LinkPreviews.stories.tsx",
       "checks": [
         "src/components/chat/messages/LinkPreviews.browser.test.tsx",
         "src/components/home/HomePostContent.browser.test.tsx",
-        "src/components/home/HomePostContent.no-summaly.browser.test.tsx"
+        "src/components/home/HomePostContent.no-summaly.browser.test.tsx",
+        "src/components/chat/messages/ChannelLinkEmbed.browser.test.tsx"
       ]
     },
     {
