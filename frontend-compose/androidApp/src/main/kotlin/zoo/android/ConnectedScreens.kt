@@ -27,7 +27,6 @@ import zoo.android.phone.rememberCallImage
 
 /** 窓の外の対象まで古い方へ広げる、1 ページずつの読み込みの上限。 */
 private const val MAX_FOCUS_PAGES = 20
-private const val MAX_FOCUS_WAITS = 100
 private const val MAX_FOCUS_FAILURES = 3
 
 @Composable
@@ -129,15 +128,15 @@ internal fun ConnectedScreens(
         val row = table.rows.first { rows -> rows.any { it.text("id") == target } }
             .first { it.text("id") == target }
         val range = row.text("parent_id").takeIf { it.isNotEmpty() }?.let(PageScope::Replies) ?: PageScope.Main
-        // 上限は取れたページ数だけで数える。ほかの処理が取っている間の待機と、失敗は、別に数える。
+        // 上限は、取れたページ数と失敗の回数で数える。待機は数えない。
         var pages = 0
-        var waits = 0
         var failures = 0
-        while (pages < MAX_FOCUS_PAGES && waits < MAX_FOCUS_WAITS && failures < MAX_FOCUS_FAILURES) {
+        while (pages < MAX_FOCUS_PAGES && failures < MAX_FOCUS_FAILURES) {
             val state = table.pageStates.value[range]
             if (pageCovers(state?.oldest, row.text("created_at"), row.text("id"))) return@LaunchedEffect
             if (state != null && state.loaded && !state.hasOlder) return@LaunchedEffect
-            if (state?.loading == true || state == null) { waits++; delay(100); continue }
+            // ほかの処理が取っている間は、時間では打ち切らず待つ（取り消されるまで）。
+            if (state?.loading == true || state == null) { delay(100); continue }
             if (table.loadOlder(range)) pages++ else { failures++; delay(100) }
         }
     }

@@ -228,6 +228,8 @@ class SyncedTable(
     private var refetchPending = false
     /** must-refetch で消えた範囲を取り直している間。この間は古いページを足さない（`oldest` が先に進むのを防ぐ）。 */
     private val refetching = MutableStateFlow(false)
+    /** must-refetch のたびに増える。取り直し前に始めた `loadOlder` の結果を捨てるのに使う。 */
+    private var refetchEpoch = 0
     private var streamReady = CompletableDeferred<ShapeStream>()
     private var acceptNow: () -> Unit = {}
 
@@ -288,8 +290,14 @@ class SyncedTable(
         val current = pages.value[scope] ?: PageState()
         if (current.loading || (current.loaded && !current.hasOlder)) return false
         pages.update { it + (scope to current.copy(loading = true)) }
+        val epoch = refetchEpoch
         try {
             val snapshot = fetchSubset(scope == PageScope.Main, pageSubset(scope, current.oldest))
+            if (epoch != refetchEpoch) {
+                // 取り直しが始まった。この結果では範囲を進めず、取り直しの後にやり直す。
+                pages.update { it + (scope to current) }
+                return false
+            }
             val values = snapshot.data.mapNotNull { it.jsonObject["value"] as? JsonObject }
             val oldest = values.lastOrNull()?.let { it.text("created_at") to it.text("id") } ?: current.oldest
             pages.update {
@@ -335,6 +343,7 @@ class SyncedTable(
         accepting.value = false
         refetchPending = false
         refetching.value = false
+        refetchEpoch++
         requested.value = emptyList()
         pages.value = emptyMap()
         return tableScope.launch {
@@ -444,6 +453,7 @@ class SyncedTable(
                                 accepting.value = false
                                 refetchPending = true
                                 refetching.value = true
+                                refetchEpoch++
                                 if (serverRows.value.isEmpty()) loading.value = true
                             } else {
                                 serverRows.value = emptyList()
@@ -466,8 +476,7 @@ class SyncedTable(
                                 launch {
                                     var done = 0
                                     var attempt = 0
-                                    // 取り直せなかった範囲は、間隔を空けて数回やり直す。それでも失敗したら、次の up-to-date で
-                                    // もう一度取る。取り直しが済むまで、`loadOlder` は何もしない。
+                                    // 取り直しが済むまで、`loadOlder` は何もしない。
                                     while (done < again.size) {
                                         try {
                                             fetchSubset(again[done].main, again[done].subset)
@@ -475,18 +484,12 @@ class SyncedTable(
                                         } catch (e: CancellationException) {
                                             throw e
                                         } catch (e: Exception) {
-                                            if (++attempt < 3) {
-                                                delay(1_000L * attempt)
-                                                continue
-                                            }
-                                            val remaining = again.drop(done)
-                                            requested.update { current ->
-                                                remaining + current.filterNot { c -> remaining.any { it.subset == c.subset } }
-                                            }
-                                            refetchPending = true
+                                            // 取り直しが済むまで、間隔を空けて（最大 10 秒）やり直し続ける。
+                                            // 画面を離れる・ログアウトで、このジョブごと取り消される。
+                                            attempt++
                                             error.value = e
-                                            loading.value = false
-                                            return@launch
+                                            delay(minOf(1_000L * attempt, 10_000L))
+                                            continue
                                         }
                                     }
                                     refetching.value = false
