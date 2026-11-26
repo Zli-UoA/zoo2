@@ -189,7 +189,7 @@ class ConversationScrollTest {
 
     @OptIn(ExperimentalFoundationApi::class)
     @Test
-    fun bringingAControlIntoViewScrollsItBelowTheHeader() {
+    fun bringingATallRowIntoViewAlignsItsTopBelowTheHeader() {
         val overlay = 56.dp
         var reveal by mutableStateOf(false)
         ui.setContent {
@@ -200,7 +200,7 @@ class ConversationScrollTest {
             WithHeaderBringIntoView(overlay) {
                 LazyColumn(Modifier.height(500.dp), state = scroll) {
                     item { Spacer(Modifier.height(110.dp)) }
-                    item { Box(Modifier.size(48.dp).bringIntoViewRequester(requester).testTag("covered-control")) }
+                    item { Box(Modifier.size(48.dp, 480.dp).bringIntoViewRequester(requester).testTag("covered-control")) }
                     item { Spacer(Modifier.height(700.dp)) }
                 }
             }
@@ -211,6 +211,35 @@ class ConversationScrollTest {
         assertTrue(control.fetchSemanticsNode().positionInRoot.y < headerBottom)
         ui.runOnIdle { reveal = true }
         assertEquals(headerBottom, control.fetchSemanticsNode().positionInRoot.y, 1f)
+    }
+
+    @Test
+    fun aSearchResultOpenedInTheFullComposerTakesPriorityOverImeTracking() {
+        var imeHeight by mutableStateOf(0.dp)
+        var expanded by mutableStateOf(false)
+        var target by mutableStateOf<String?>(null)
+        ui.setContent {
+            val imePixels = with(LocalDensity.current) { imeHeight.roundToPx() }
+            Column(Modifier.height(700.dp - imeHeight)) {
+                TimelineWithInput(entries, InputState(expanded = expanded), AndroidColors(false), dispatch = {},
+                    allowThreads = true, focusMessage = target, imeInsets = WindowInsets(bottom = imePixels))
+            }
+        }
+
+        val list = ui.onNodeWithTag("conversation-timeline")
+        list.performTouchInput { swipeDown() }
+        list.performScrollToIndex(12)
+        ui.runOnIdle { expanded = true }
+        list.assertDoesNotExist()
+        ui.runOnIdle { target = "e3" }
+        ui.waitForIdle()
+        ui.runOnIdle { imeHeight = 120.dp }
+        ui.waitForIdle()
+        ui.runOnIdle { expanded = false }
+        val result = ui.onNodeWithTag("timeline-entry-e3")
+        result.assertIsDisplayed()
+        ui.runOnIdle { imeHeight = 0.dp }
+        result.assertIsDisplayed()
     }
 
     @Test

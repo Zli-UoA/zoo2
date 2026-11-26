@@ -684,7 +684,8 @@ internal fun ColumnScope.TimelineWithInput(
             }
         }
     }
-    FollowHistoryDuringIme(scroll, entries, imeInsets, input.expanded, followEnd, focusRequest)
+    FollowHistoryDuringIme(scroll, entries, imeInsets, input.expanded, followEnd, focusRequest,
+        focusRequest != null && openedTarget != focusRequest)
 
     // Viewport, row height and item count can all change without user scrolling.
     // Only follow those changes while the reader is at the end or has just sent a message.
@@ -768,6 +769,7 @@ private fun FollowHistoryDuringIme(
     expanded: Boolean,
     followEnd: Boolean,
     focusRequest: String?,
+    focusPending: Boolean,
 ) {
     val density = LocalDensity.current
     val insets by rememberUpdatedState(imeInsets)
@@ -777,7 +779,11 @@ private fun FollowHistoryDuringIme(
     var anchor by rememberSaveable(focusRequest, stateSaver = ImeHistoryAnchorSaver) {
         mutableStateOf<ImeHistoryAnchor?>(null)
     }
-    LaunchedEffect(scroll, density, focusRequest) {
+    LaunchedEffect(scroll, density, focusRequest, focusPending) {
+        if (focusPending) {
+            anchor = null
+            return@LaunchedEffect
+        }
         var previousInset = insets.getBottom(density)
         snapshotFlow {
             Triple(insets.getBottom(density), scroll.isScrollInProgress, editorExpanded) to
@@ -939,6 +945,9 @@ internal fun WithHeaderBringIntoView(headerOverlayHeight: Dp, content: @Composab
         object : BringIntoViewSpec by inheritedBringIntoView {
             override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float {
                 val covered = overlayPixels.coerceAtMost(containerSize)
+                if (offset >= 0 && offset < covered && size >= containerSize - covered) {
+                    return offset - covered
+                }
                 return inheritedBringIntoView.calculateScrollDistance(offset - covered, size, containerSize - covered)
             }
         }
