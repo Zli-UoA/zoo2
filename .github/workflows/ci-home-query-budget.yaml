@@ -3,7 +3,14 @@ on:
   pull_request:
     paths:
       - 'backend/**'
+      - "!backend/tests/*_test.rs"
+      - 'backend/tests/home_scale_test.rs'
       - 'infra/db/**'
+      - "!infra/db/erd.sh"
+      - "!infra/db/compare-*.py"
+      - "!infra/db/test-*.py"
+      - "infra/db/compare-home-plan-work.py"
+      - "infra/db/test-migrate-recovery.py"
       - 'rust-toolchain.toml'
       - '.github/workflows/ci-home-query-budget.yaml'
   workflow_call:
@@ -14,6 +21,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   query-budget:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     services:

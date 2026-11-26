@@ -10,6 +10,9 @@ on:
       - "crates/zoo-components/**"
       - "docs/slack-event-coverage.json"
       - "infra/db/**"
+      - "!infra/db/erd.sh"
+      - "!infra/db/compare-*.py"
+      - "!infra/db/test-*.py"
       - "infra/Dockerfile-backend-deploy*"
       - "infra/Dockerfile-migrate-deploy*"
       - "infra/compose.stack*.yaml"
@@ -26,6 +29,9 @@ on:
       - "crates/zoo-components/**"
       - "docs/slack-event-coverage.json"
       - "infra/db/**"
+      - "!infra/db/erd.sh"
+      - "!infra/db/compare-*.py"
+      - "!infra/db/test-*.py"
       - "infra/Dockerfile-backend-deploy*"
       - "infra/Dockerfile-migrate-deploy*"
       - "infra/compose.stack*.yaml"
@@ -94,14 +100,14 @@ jobs:
       - name: format check
         run: cargo fmt --check
       - name: lint check
-        if: fromJSON(needs.test-selection.outputs.backend).full
+        if: fromJSON(needs.test-selection.outputs.backend).full || fromJSON(needs.test-selection.outputs.backend).source
         run: cargo clippy
       - name: unit test
-        if: fromJSON(needs.test-selection.outputs.backend).full
+        if: fromJSON(needs.test-selection.outputs.backend).full || fromJSON(needs.test-selection.outputs.backend).source
         run: cargo test --lib
 
   deploy-image:
-    if: fromJSON(needs.test-selection.outputs.backend).deploy
+    if: github.event_name != 'pull_request' && fromJSON(needs.test-selection.outputs.backend).deploy
     needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     # A cold build also needs time to extract and save the cache mounts.
@@ -260,7 +266,7 @@ jobs:
       # 34 個のテストバイナリーをそれぞれリンクするので、デバッグ情報を行番号だけにしてリンクを軽くする。
       # panic のバックトレースの行番号は残る。
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
-    if: fromJSON(needs.test-selection.outputs.backend).run
+    if: fromJSON(needs.test-selection.outputs.backend).run && (github.event_name != 'pull_request' || !fromJSON(needs.test-selection.outputs.backend).full)
     needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     defaults:
@@ -387,7 +393,7 @@ jobs:
 
 
   shared-emoji-projection:
-    if: fromJSON(needs.test-selection.outputs.backend).emoji
+    if: fromJSON(needs.test-selection.outputs.backend).emoji && (github.event_name != 'pull_request' || !fromJSON(needs.test-selection.outputs.backend).full)
     needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     timeout-minutes: 45

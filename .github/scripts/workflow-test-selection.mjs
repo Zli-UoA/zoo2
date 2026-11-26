@@ -112,7 +112,7 @@ export function restrictWorkflow(selection, workflow, jobs) {
   if (workflow === 'ci-frontend') {
     for (const key of ['container', 'proxy']) selection.frontend[key] = jobs.has(key);
     selection.frontend.unit = selection.frontend.pwa = jobs.has('unit-test');
-    for (const key of ['browser', 'vrt', 'storybook', 'avatar', 'offline', 'i18n', 'layout', 'frontend-selection']) selection.frontend[key] = jobs.has('browser-test');
+    for (const key of ['browser', 'vrt', 'storybook', 'avatar', 'offline', 'i18n', 'layout', 'frontend-selection', 'catalog']) selection.frontend[key] = jobs.has('browser-test');
     selection.frontendBuild = { check: jobs.has('check'), build: jobs.has('build'), wasm: jobs.has('crypto-wasm') };
   } else if (workflow === 'ci-backend') {
     Object.assign(selection.backend, { check: jobs.has('check'), deploy: jobs.has('deploy-image'), run: jobs.has('e2e'), emoji: jobs.has('shared-emoji-projection') });

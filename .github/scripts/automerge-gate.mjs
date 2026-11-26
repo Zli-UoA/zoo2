@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { pullRequestPaths, globToRegExp } from './merge-queue-changes.mjs';
+import { pullRequestPaths, pathMatcher } from './merge-queue-changes.mjs';
 
 export const ignoredWorkflows = new Set(['automerge-gate.yaml', 'cd-images.yaml', 'cd-preview-label.yaml', 'cd-storybook.yaml']);
 const basename = path => path?.split('/').at(-1);
@@ -9,8 +9,8 @@ const green = new Set(['success', 'skipped', 'neutral']);
 export function expectedWorkflows(files, workflows) {
   return workflows.filter(({ path, source }) => {
     if (ignoredWorkflows.has(basename(path)) || !/^  pull_request:/m.test(source)) return false;
-    const patterns = pullRequestPaths(source).map(globToRegExp);
-    return !patterns.length || files.some(file => patterns.some(p => p.test(file)));
+    const patterns = pullRequestPaths(source);
+    return !patterns.length || files.some(pathMatcher(patterns));
   }).map(w => basename(w.path));
 }
 
@@ -112,7 +112,7 @@ export async function evaluatePullRequest({ github, repo, number, workflows, loa
       return list.map(check => ({ ...check, suite_id: suite.id }));
     }))).flat();
     const definitions = loadWorkflows ? await loadWorkflows(pr) : workflows;
-    return publish(aggregateChecks(checks, runs, expectedWorkflows(files.map(f => f.filename), definitions)));
+    return publish(aggregateChecks(checks, runs, expectedWorkflows(files.flatMap(f => [f.filename, f.previous_filename].filter(Boolean)), definitions)));
   } catch (error) {
     await publish({ state: 'pending', description: 'Could not read all checks; retry on the next event or manual run' });
     throw error;

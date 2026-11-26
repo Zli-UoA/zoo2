@@ -60,15 +60,25 @@ CI Frontend の `check` と `build` は、`crypto-wasm` の成果物を受け取
 
 PRをまたいで検証を先行させる場合は、リポジトリのmain向けRulesetでMerge Queueを有効にし、Build concurrencyをまず2〜3に設定します。キューは先行PRがマージされる想定で後続の組み合わせを検証し、先行PRが失敗した場合は影響を受ける後続を再検証します。`merge_group` を処理するworkflowは既存の `merge-queue.yaml` を使います。Rulesetはこのリポジトリのコードでは管理していないため、このworkflowの変更だけではMerge Queueは有効になりません。
 
+## PRとマージキューで実行する検証
+
+PRではフロントエンドの型検査・ビルドと、変更に対応する単体・ブラウザー・VRT・Storybookテストを実行します。バックエンドではフォーマット・lint・単体テストと、対象を特定できる結合テストを実行します。認証・E2EEのE2E、対象を絞れないバックエンド結合テスト、本番イメージ検証、DBの負荷検証、Android・Tauriの検証はマージキューで実行します。
+
+マージキューは候補コミットの変更パスに応じて対象のworkflowを呼び出し、いずれかが失敗すると必須チェック `automerge-gate/all-passed` を失敗にします。PRでジョブをスキップしても、そのパス判定に使うworkflowの `pull_request.paths` は定義しておきます。mainのRulesetでMerge Queueを必須にする構成が前提です。既存のmainへのpushと手動実行でも、対象の検証を実行します。
+
+Android専用の電話エンジン・APKメディアビューアの入口とビルド設定は、Webのテスト・Storybookプレビュー・イメージビルドの対象外です。共有のSIP・通話・メディアUIは双方の対象です。実ブラウザーを使う共有WebRTCテストはCI Frontendで実行し、APKメディアビューアのsmoke testはAndroidでGradleが生成したバンドルを使って実行します。
+
+PRゲート、マージキュー、ワークフロー内の選別は同じパス条件を使います。たとえばOIDCのspec変更は認証E2E、DB負荷測定用スクリプトの変更は対応する負荷検証を起動します。複数プラットフォームを含む差分でも、関連するファイルだけを各ワークフローのテスト選別に渡します。
+
 ## Test Selection
 
-CI Frontendの単体テスト・Vitestのbrowser・VRTプロジェクトは、PR内の変更が通常の `frontend/src/**/*.ts`・`tsx` の追加・編集だけなら、`vp test related <変更したファイル>` で依存するテストを選びます。PRのbase SHAとチェックアウトしたコミットを比較し、直前のコミットだけでなくPRの差分全体を対象にします。浅いcheckoutでも選別できるよう、Gitの履歴をたどる `--changed` ではなく、差分のファイル一覧を明示します。Vitestがimportの依存関係をたどるため、共通モジュールを変更すると、それを間接的に使うテストも対象になります。関連テストがない場合だけ、テスト0件を成功として扱います。
+CI Frontendの単体テスト・Vitestのbrowser・VRTプロジェクトは、PRまたはマージキューの変更が通常の `frontend/src/**/*.ts`・`tsx` の追加・編集だけなら、`vp test related <変更したファイル>` で依存するテストを選びます。PRでは `pull_request.base.sha`、マージキューでは `merge_group.base_sha` とチェックアウトした候補コミットを比較し、候補に含まれる差分全体を対象にします。浅いcheckoutでも選別できるよう、Gitの履歴をたどる `--changed` ではなく、差分のファイル一覧を明示します。Vitestがimportの依存関係をたどるため、共通モジュールを変更すると、それを間接的に使うテストも対象になります。関連テストがない場合だけ、テスト0件を成功として扱います。
 
-設定・依存・CSS・JSONなどの資源、型宣言、共通テスト設定、ルート、Service Worker、i18n・PWA・E2EE・OIDCなどの実行時資源に関わる変更は全件実行します。削除・名前変更、差分取得失敗、base SHA不明、空の差分でも全件に戻します。mainへのpush、マージキュー、手動実行は常に全件実行です。選択モードと理由はジョブログへ出し、テストそのものの失敗は再試行で隠さず、そのまま失敗にします。
+設定・依存・CSS・JSONなどの資源、型宣言、共通テスト設定、ルート、Service Worker、i18n・PWA・E2EE・OIDCなどの実行時資源に関わる変更は全件実行します。削除・名前変更、差分取得失敗、base SHA不明、空の差分でも全件に戻します。mainへのpushと手動実行ではテストケースを全件実行します。選択モードと理由はジョブログへ出し、テストそのものの失敗は再試行で隠さず、そのまま失敗にします。
 
-スイートの選択は共有workflow `select-tests.yaml` が行います。PRの変更が独立したテストファイルだけなら、単体・browser・VRT、Playwrightのi18n・レイアウト・frontend選択・CSP・OIDC・E2EE、PWA・avatar-cache・offline-CSPの該当スイートの和集合だけを選びます。無関係なコンテナ・proxy検証、Storybookのテストとカタログ生成、認証・E2EEのWasm生成も省きます。i18nを単独選択した場合は、先行するoffline-CSP検証のビルドを使えないため、専用のビルドを行います。アプリ本体・Story・共通ヘルパー・設定・未登録のテストの変更は全スイートを選びます。
+スイートの選択は共有workflow `select-tests.yaml` が行います。PRまたはマージキューの変更が独立したテストファイルだけなら、単体・browser・VRT、Playwrightのi18n・レイアウト・frontend選択・CSP・OIDC・E2EE、PWA・avatar-cache・offline-CSPの該当スイートの和集合だけを選びます。無関係なコンテナ・proxy検証、Storybookのテストとカタログ生成、認証・E2EEのWasm生成も省きます。i18nを単独選択した場合は、先行するoffline-CSP検証のビルドを使えないため、専用のビルドを行います。通常のフロントエンドモジュールと、その範囲内のテストだけを変更したPRでは、importの依存関係で選べるVitestの単体・ブラウザー・VRT・Storybookに絞ります。Playwright、オフライン検証、静的Storybook生成はマージキューで実行します。共通設定や実行時資源を含む差分では、通常モジュール向けの絞り込みを解除します。
 
-バックエンドは `backend/tests/*_test.rs` だけの追加・編集なら、その結合テストを `cargo test --test <名前>` で選び、必要なslack/core区分のジョブだけを起動します。他の結合テストのリンクと実行、未変更の本体のClippy・単体テスト・デプロイイメージ検証を省きます。フォーマット検査は維持し、emoji_service_testの変更では専用のignoredテストも選びます。ソース・共有support・SQL fixture・マイグレーション・Cargo設定・未登録の変更があれば全件へ戻します。全件実行ではActivityPubのignored単体テストも維持します。
+バックエンドは `backend/tests/*_test.rs` だけの追加・編集なら、その結合テストを `cargo test --test <名前>` で選び、必要なslack/core区分のジョブだけを起動します。他の結合テストのリンクと実行、未変更の本体のClippy・単体テスト・デプロイイメージ検証を省きます。フォーマット検査は維持し、emoji_service_testの変更では専用のignoredテストも選びます。ソース・共有support・SQL fixture・マイグレーション・Cargo設定・未登録の変更があれば全件へ戻します。全件実行ではActivityPubのignored単体テストも維持します。PRで `backend-e2e-selection.mjs` に登録したルートと独立した結合テストだけを変更した場合は、ルートの結合テストと変更したテストの和集合を実行します。ルート変更時はlintと単体テストも実行します。マージキューではルートの変更に対して結合テストを全件実行します。
 
 判定workflowは自身の回帰テストが成功してから結果を返します。判定ジョブの失敗はworkflowを失敗にし、差分だけが取得できない場合は全件を選びます。import以外の依存を持つ資源は、全件へ戻す対象として `.github/scripts/frontend-test-selection.mjs` に追加します。`node --test .github/scripts/frontend-test-selection.test.mjs .github/scripts/test-selection.test.mjs` で選別と全件への切り替えを検証します。
 

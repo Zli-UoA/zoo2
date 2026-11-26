@@ -1,3 +1,5 @@
+import { isAndroidFrontendOnly } from './frontend-test-selection-paths.mjs';
+
 // Publish images（cd-images.yaml）の plan ジョブから呼ぶ。ビルドするコンポーネントと、付けるイメージタグを決める。
 export const components = ['frontend', 'backend', 'migrate'];
 
@@ -37,10 +39,17 @@ export function changedComponents(files) {
 // infra/Dockerfile-frontend-deploy が frontend/ のほかに COPY するファイル。
 const frontendInfraFiles = ['infra/frontend-nginx.conf', 'infra/csp-hashes.mjs', 'infra/frontend-entrypoint.sh'];
 
+// Migration image COPY inputs from infra/Dockerfile-migrate-deploy.
+const migrationFiles = ['infra/db/atlas.hcl', 'infra/db/schema.sql', 'infra/db/migrate.sh'];
+
 // コンポーネント自身のソースと Dockerfile のファイルか。ビルド用の共有ファイルは含まない。
 function componentFile(c, f) {
+  if (c === 'frontend' && (isAndroidFrontendOnly(f) || f.startsWith('frontend/e2e/') ||
+      /^frontend\/playwright\..+\.config\.ts$/.test(f) ||
+      /^frontend\/(?:src|scripts)\/.+\.test\.(?:ts|tsx|mjs)$/.test(f))) return false;
+  if (c === 'backend' && f.startsWith('backend/tests/')) return false;
   return f.startsWith(`infra/Dockerfile-${c}-deploy`) ||
-    (c === 'migrate' ? f.startsWith('infra/db/') : f.startsWith(`${c}/`)) ||
+    (c === 'migrate' ? (f.startsWith('infra/db/migrations/') || migrationFiles.includes(f)) : f.startsWith(`${c}/`)) ||
     (c === 'frontend' && frontendInfraFiles.includes(f)) ||
     (c === 'frontend' && (f.startsWith('crates/zoo-crypto/') || f.startsWith('crates/zoo-crypto-wasm/') || f === 'rust-toolchain.toml')) ||
     (c === 'backend' && (f === 'docs/slack-event-coverage.json' || f.startsWith('crates/zoo-crypto/') || f.startsWith('crates/zoo-components/')));
