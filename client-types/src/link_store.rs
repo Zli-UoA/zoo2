@@ -6,13 +6,19 @@ use std::collections::HashMap;
 use crate::{
     ipc::LinkedMessage,
     links::{self, EncryptionCheck, LinkState, LinkTarget, LinkedFetch},
-    rows::Message,
     shape::ShapeId,
     store::Store,
 };
 
 /// 開いているチャンネル以外の、取得した結果。
 pub type Fetched = HashMap<LinkedMessage, LinkedFetch>;
+
+/// このチャンネルで読み込んでいる行に、暗号文の行があるか。
+pub fn has_ciphertext(store: &Store, channel_id: &str) -> bool {
+    store
+        .visible_messages(channel_id)
+        .any(|message| message.ciphertext.is_some())
+}
 
 /// 画面の近くにある本文 (`contents`) の、取得が要るリンク先。一覧にあるチャンネルのメッセージのうち、
 /// 開いているチャンネル（同期した行を使う）以外のものを、重複なく返す。
@@ -45,18 +51,27 @@ pub fn wanted<'a>(
     result
 }
 
+/// 開いているチャンネルのこと。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Open<'a> {
+    pub channel_id: Option<&'a str>,
+    /// 同期した行に暗号文の行があるか（[`has_ciphertext`]）。リンクごとに行を調べないよう、
+    /// 呼ぶ側が行の変わったときに調べておく。
+    pub has_ciphertext: bool,
+}
+
 /// リンク先の状態。`recorded` は端末がそのチャンネルを暗号化チャンネルと記録しているかで、
 /// 記録を読めなければ `None`（平文の本文を出さない）。
 pub fn state<'a>(
     store: &'a Store,
     fetched: &Fetched,
-    open: Option<&str>,
+    open: Open<'_>,
     recorded: Option<bool>,
     target: &LinkTarget,
 ) -> LinkState<'a> {
     let channel_id = target.channel_id.as_str();
     let channel = store.channel(channel_id);
-    let open_here = open == Some(channel_id);
+    let open_here = open.channel_id == Some(channel_id);
     let message_id = target.linked_message_id();
     let fetch = match message_id {
         // チャンネルだけのリンクは、メッセージを取らない。
@@ -77,12 +92,11 @@ pub fn state<'a>(
             .unwrap_or(LinkedFetch::Loading { stalled: false }),
     };
     // 暗号文の行は、対象の行と、読み込んでいる同じチャンネルの行を見る。チャンネルだけのリンクは見ない。
-    let encrypted_row = |message: &Message| message.ciphertext.is_some();
     let has_ciphertext = message_id.is_some()
-        && ((open_here && store.visible_messages(channel_id).any(encrypted_row))
+        && ((open_here && open.has_ciphertext)
             || fetched.iter().any(|(key, fetch)| {
                 key.channel_id == channel_id
-                    && matches!(fetch, LinkedFetch::Found(message) if encrypted_row(message))
+                    && matches!(fetch, LinkedFetch::Found(message) if message.ciphertext.is_some())
             }));
     let encrypted = channel.is_some_and(|channel| {
         links::treats_as_encrypted(channel, recorded == Some(true), has_ciphertext)
@@ -219,17 +233,23 @@ mod tests {
     fn the_open_channel_uses_synced_rows() {
         let store = store();
         let fetched = Fetched::new();
-        let look = |id| {
+        let look = |id, has_ciphertext| {
+            let open = Open {
+                channel_id: Some("here"),
+                has_ciphertext,
+            };
             name(state(
                 &store,
                 &fetched,
-                Some("here"),
+                open,
                 Some(false),
                 &target("here", Some(id)),
             ))
         };
-        assert_eq!(look("m1"), "text");
-        assert_eq!(look("gone"), "unavailable");
+        assert!(!has_ciphertext(&store, "here"));
+        assert_eq!(look("m1", false), "text");
+        assert_eq!(look("m1", true), "encrypted");
+        assert_eq!(look("gone", false), "unavailable");
     }
 
     #[test]
@@ -237,9 +257,12 @@ mod tests {
         let store = store();
         let mut fetched = Fetched::new();
         let linked = target("there", Some("a"));
-        let look = |fetched: &Fetched, recorded| {
-            name(state(&store, fetched, Some("here"), recorded, &linked))
+        let open = Open {
+            channel_id: Some("here"),
+            has_ciphertext: false,
         };
+        let look =
+            |fetched: &Fetched, recorded| name(state(&store, fetched, open, recorded, &linked));
         assert_eq!(look(&fetched, Some(false)), "loading");
         fetched.insert(key("there", "a"), found("a", "there", json!({})));
         assert_eq!(look(&fetched, Some(false)), "text");
@@ -253,16 +276,34 @@ mod tests {
         assert_eq!(look(&fetched, Some(false)), "encrypted");
         let channel_only = target("there", None);
         assert_eq!(
-            name(state(&store, &fetched, None, Some(false), &channel_only)),
+            name(state(
+                &store,
+                &fetched,
+                Open::default(),
+                Some(false),
+                &channel_only
+            )),
             "channel"
         );
         assert_eq!(
-            name(state(&store, &fetched, None, Some(true), &channel_only)),
+            name(state(
+                &store,
+                &fetched,
+                Open::default(),
+                Some(true),
+                &channel_only
+            )),
             "encrypted channel"
         );
         let hidden = target("hidden", Some("a"));
         assert_eq!(
-            name(state(&store, &fetched, None, Some(false), &hidden)),
+            name(state(
+                &store,
+                &fetched,
+                Open::default(),
+                Some(false),
+                &hidden
+            )),
             "unavailable"
         );
     }

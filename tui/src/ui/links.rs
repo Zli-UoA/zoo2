@@ -1,7 +1,7 @@
 //! 本文のアプリ内リンクの表示（docs/mfm.md の「チャンネル・メッセージのリンクの表示」）。リンク先の
 //! 取得は `client-core` の `electric::LinkedCache`。
 
-use std::collections::HashMap;
+use std::{cell::RefCell, collections::HashMap};
 
 use ratatui::{
     style::{Modifier, Style},
@@ -25,6 +25,9 @@ pub struct LinkView {
     pub body: Option<Line<'static>>,
     pub body_lines: usize,
 }
+
+/// チャンネルごとの、読み込んでいる行に暗号文の行があるかの結果（1 回の描画の間だけ使う）。
+pub type CiphertextRows = RefCell<HashMap<String, bool>>;
 
 /// 1 つの本文のアプリ内リンクの表示と、取得の対象。
 #[derive(Debug, Clone, Default)]

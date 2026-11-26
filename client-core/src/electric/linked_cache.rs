@@ -135,6 +135,7 @@ impl LinkedCache {
             self.started
                 .retain(|(channel, _), _| *channel != channel_id);
         }
+        self.evict();
     }
 
     /// 次に状態が変わる時刻（取得の時間切れか、購読を閉じる時刻）。そのときに [`Self::sync`] する。
@@ -166,6 +167,10 @@ impl LinkedCache {
                         Some(Ok(message)) => Some(Box::new(message)),
                         // 読めない行は、取得できなかったものとする。
                         Some(Err(_)) => {
+                            self.started.remove(&key);
+                            if self.results.remove(&key).is_some() {
+                                self.order.retain(|old| *old != key);
+                            }
                             self.failed.insert(key);
                             continue;
                         }
@@ -344,13 +349,28 @@ mod tests {
             links.fetch(&key("m0"), start),
             LinkedFetch::Found(_)
         ));
+        // 購読を閉じたら、その場で上限まで捨てる。
         links.visible.clear();
         links.sync(start + RELEASE_DELAY, |_, _| unreachable!());
-        links.apply(LinkedEvent::Rows {
-            channel_id: "c2".into(),
-            rows: vec![("x".into(), None)],
-        });
         assert_eq!(links.results.len(), CACHE_SIZE);
         assert!(!links.results.contains_key(&key("m0")));
+    }
+
+    #[test]
+    fn an_unreadable_update_replaces_the_old_result() {
+        let mut links = LinkedCache::default();
+        links.apply(rows("m1", Some("本文")));
+        let broken = json!({ "id": "m1" }).as_object().unwrap().clone();
+        links.apply(LinkedEvent::Rows {
+            channel_id: "c1".into(),
+            rows: vec![("m1".into(), Some(broken))],
+        });
+        assert_eq!(links.fetch(&key("m1"), Instant::now()), LinkedFetch::Failed);
+        assert!(links.order.is_empty());
+        links.apply(rows("m1", Some("直った本文")));
+        assert!(matches!(
+            links.fetch(&key("m1"), Instant::now()),
+            LinkedFetch::Found(_)
+        ));
     }
 }

@@ -150,6 +150,12 @@ impl ShapeStream {
         Ok(Some(rows))
     }
 
+    /// 保持している行のうち、`keep` が偽の行を捨てる。一部の行だけを使う購読で、行がたまらないように
+    /// する。捨てた行の update は、変わった列だけになる。
+    pub fn retain(&mut self, keep: impl Fn(&Row) -> bool) {
+        self.rows.retain(|_, row| keep(row));
+    }
+
     /// 保持している行のうち、`id` 列が `id` の行のキー。
     pub fn key_of(&self, id: &str) -> Option<String> {
         self.rows
@@ -419,6 +425,22 @@ mod tests {
         assert_eq!(stream.offset, "-1");
         assert_eq!(stream.handle, None);
         assert_eq!(stream.cursor, None);
+    }
+
+    #[test]
+    fn retains_only_the_rows_in_use() {
+        let mut stream = ShapeStream::changes_only(
+            reqwest::Client::new(),
+            "http://localhost".into(),
+            Vec::new(),
+            Credentials::Dev("u1".into()),
+        );
+        for id in ["m1", "m2"] {
+            stream.apply("insert", Some(id.into()), Some(row(json!({ "id": id }))));
+        }
+        stream.retain(|row| row.get("id").and_then(Value::as_str) == Some("m2"));
+        assert_eq!(stream.key_of("m1"), None);
+        assert_eq!(stream.key_of("m2").as_deref(), Some("m2"));
     }
 
     #[tokio::test]

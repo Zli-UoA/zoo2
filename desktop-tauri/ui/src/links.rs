@@ -161,11 +161,15 @@ impl Ctx {
         target: &LinkTarget,
         use_state: impl FnOnce(&LinkState<'_>, &Store) -> R,
     ) -> R {
-        let open = self.channel.get();
+        let channel = self.channel.get();
+        let open = link_store::Open {
+            channel_id: channel.as_deref(),
+            has_ciphertext: self.open_ciphertext.get(),
+        };
         let recorded = records::recorded(&target.channel_id);
         self.store.with(|store| {
             self.linked.with(|fetched| {
-                let state = link_store::state(store, fetched, open.as_deref(), recorded, target);
+                let state = link_store::state(store, fetched, open, recorded, target);
                 use_state(&state, store)
             })
         })

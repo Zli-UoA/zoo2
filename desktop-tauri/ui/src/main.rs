@@ -43,6 +43,8 @@ struct Ctx {
     starting: RwSignal<bool>,
     /// 本文のリンクが指すメッセージで、Rust 側が取った結果。
     linked: RwSignal<link_store::Fetched>,
+    /// 開いているチャンネルの同期した行に、暗号文の行があるか。
+    open_ciphertext: Memo<bool>,
     /// Rust 側に伝えるリンク先と、伝えている途中かどうか。
     watched: StoredValue<Option<Vec<LinkedMessage>>>,
     watching: StoredValue<bool>,
@@ -161,10 +163,18 @@ async fn refresh_account_profiles(ctx: Ctx) {
 
 #[component]
 fn App() -> impl IntoView {
+    let store = RwSignal::new_local(Store::default());
+    let channel = RwSignal::new(None::<String>);
+    let open_ciphertext = Memo::new(move |_| {
+        channel.get().is_some_and(|channel: String| {
+            store.with(|store| link_store::has_ciphertext(store, &channel))
+        })
+    });
     let ctx = Ctx {
         session: RwSignal::new(None),
-        store: RwSignal::new_local(Store::default()),
-        channel: RwSignal::new(None),
+        store,
+        channel,
+        open_ciphertext,
         error: RwSignal::new(None),
         profile_request: RwSignal::new(None),
         profile_checked: RwSignal::new(0.0),

@@ -9,7 +9,11 @@ use std::{
     time::Duration,
 };
 
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{
+    sync::mpsc,
+    task::JoinHandle,
+    time::{Instant, sleep_until},
+};
 
 use super::{Change, Row, ShapeId, ShapeStream};
 use crate::http::{Credentials, HttpError};
@@ -28,8 +32,13 @@ pub enum LinkedEvent {
     },
 }
 
+/// 失敗したあと、次に試すまでの間隔。失敗のたびに倍にする。
+const FIRST_BACKOFF: Duration = Duration::from_millis(500);
+const MAX_BACKOFF: Duration = Duration::from_secs(30);
+
 /// `ids` に送られたメッセージを取り続けるタスクを起動する。通信エラーと 5xx は間隔を延ばして
-/// 再試行し、4xx では `Failed` を送って止まる。`ids` を閉じるか、`events` が `false` を返すと止まる。
+/// 再試行し（再試行を待つ間も、ほかの ID の取得と live の読み取りは進める）、4xx では `Failed` を
+/// 送って止まる。`ids` を閉じるか、`events` が `false` を返すと止まる。
 pub fn spawn_linked(
     http: reqwest::Client,
     api_base_url: &str,
@@ -46,30 +55,53 @@ pub fn spawn_linked(
         let mut fetched = HashSet::new();
         // シェイプのキーからメッセージの ID を引く（削除はキーだけが届く）。
         let mut keys: HashMap<String, String> = HashMap::new();
-        let mut backoff = Duration::from_millis(500);
+        // 取得に失敗した ID の、次に試す時刻と、そこまでの間隔。
+        let mut retries: HashMap<String, (Instant, Duration)> = HashMap::new();
+        // live の読み取りに失敗したら、この時刻まで読まない。
+        let mut live_at = Instant::now();
+        let mut live_backoff = FIRST_BACKOFF;
         loop {
             while let Ok(id) = ids.try_recv() {
                 wanted.insert(id);
             }
-            let pending: Option<String> = wanted.iter().find(|id| !fetched.contains(*id)).cloned();
-            let result = if let (true, Some(id)) = (stream.is_started(), pending) {
-                stream
-                    .subset("id = $1", &[&id], "id", 1)
-                    .await
-                    .map(|rows| match rows {
-                        Some(rows) => {
-                            fetched.insert(id.clone());
-                            let row = rows
-                                .into_iter()
-                                .find(|row| text(row, "id") == Some(id.as_str()));
-                            vec![(id, row)]
+            // 次に取る ID と、再試行を待っている中でいちばん早い時刻。
+            let now = Instant::now();
+            let mut pending = None;
+            let mut retry_at: Option<Instant> = None;
+            if stream.is_started() {
+                for id in wanted.iter().filter(|id| !fetched.contains(*id)) {
+                    match retries.get(id) {
+                        Some((at, _)) if *at > now => {
+                            retry_at = Some(retry_at.map_or(*at, |soonest| soonest.min(*at)));
                         }
-                        // 取り直し。取得済みの ID をもう一度取る。
-                        None => {
-                            fetched.clear();
-                            Vec::new()
+                        _ => {
+                            pending = Some(id.clone());
+                            break;
                         }
-                    })
+                    }
+                }
+            }
+            // `asked` は、`subset` で取りに行った ID。live の読み取りなら `None`。
+            let (asked, result) = if let Some(id) = pending {
+                let result =
+                    stream
+                        .subset("id = $1", &[&id], "id", 1)
+                        .await
+                        .map(|rows| match rows {
+                            Some(rows) => {
+                                fetched.insert(id.clone());
+                                let row = rows
+                                    .into_iter()
+                                    .find(|row| text(row, "id") == Some(id.as_str()));
+                                vec![(id.clone(), row)]
+                            }
+                            // 取り直し。取得済みの ID をもう一度取る。
+                            None => {
+                                fetched.clear();
+                                Vec::new()
+                            }
+                        });
+                (Some(id), result)
             } else {
                 let batch = tokio::select! {
                     id = ids.recv() => {
@@ -81,9 +113,14 @@ pub fn spawn_linked(
                             None => return,
                         }
                     }
-                    batch = stream.next_batch() => batch,
+                    // 条件が偽でも式は評価されるので、予定がないときの時刻も用意する。
+                    () = sleep_until(retry_at.unwrap_or(now)), if retry_at.is_some() => continue,
+                    batch = async {
+                        sleep_until(live_at).await;
+                        stream.next_batch().await
+                    } => batch,
                 };
-                batch.map(|batch| {
+                let result = batch.map(|batch| {
                     if batch.reset {
                         fetched.clear();
                         keys.clear();
@@ -106,11 +143,17 @@ pub fn spawn_linked(
                             Change::Delete { key } => keys.get(&key).map(|id| (id.clone(), None)),
                         })
                         .collect()
-                })
+                });
+                (None, result)
             };
             match result {
                 Ok(rows) => {
-                    backoff = Duration::from_millis(500);
+                    match &asked {
+                        Some(id) => {
+                            retries.remove(id);
+                        }
+                        None => live_backoff = FIRST_BACKOFF,
+                    }
                     for (id, row) in &rows {
                         // subset で取った行は、キーを覚えるために ID から引けるようにする。
                         if row.is_some()
@@ -119,6 +162,8 @@ pub fn spawn_linked(
                             keys.insert(key, id.clone());
                         }
                     }
+                    // チャンネルの新しい投稿などは持たない。
+                    stream.retain(|row| text(row, "id").is_some_and(|id| wanted.contains(id)));
                     if !rows.is_empty()
                         && !events(LinkedEvent::Rows {
                             channel_id: channel_id.clone(),
@@ -146,8 +191,18 @@ pub fn spawn_linked(
                         });
                         return;
                     }
-                    tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(Duration::from_secs(30));
+                    match asked {
+                        Some(id) => {
+                            let wait = retries
+                                .get(&id)
+                                .map_or(FIRST_BACKOFF, |(_, wait)| (*wait * 2).min(MAX_BACKOFF));
+                            retries.insert(id, (Instant::now() + wait, wait));
+                        }
+                        None => {
+                            live_at = Instant::now() + live_backoff;
+                            live_backoff = (live_backoff * 2).min(MAX_BACKOFF);
+                        }
+                    }
                 }
             }
         }
@@ -269,6 +324,66 @@ mod tests {
         );
         task.abort();
         server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn a_failing_message_does_not_block_the_others() {
+        let server = MockServer::start().await;
+        let headers = |response: ResponseTemplate| {
+            response
+                .insert_header("electric-handle", "h1")
+                .insert_header("electric-offset", "0_0")
+                .insert_header("electric-cursor", "1")
+        };
+        Mock::given(method("GET"))
+            .and(query_param("offset", "now"))
+            .and(query_param_is_missing("subset__where"))
+            .respond_with(headers(ResponseTemplate::new(200).set_body_json(json!([
+                { "headers": { "control": "up-to-date" } }
+            ]))))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(query_param("subset__params", r#"{"1":"m1"}"#))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(query_param("subset__params", r#"{"1":"m2"}"#))
+            .respond_with(headers(
+                ResponseTemplate::new(200).set_body_json(subset("m2")),
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(query_param("live", "true"))
+            .respond_with(headers(ResponseTemplate::new(200).set_body_json(json!([
+                { "key": "\"public\".\"messages\"/\"m2\"", "headers": { "operation": "delete" } },
+                { "headers": { "control": "up-to-date" } }
+            ]))))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(query_param("live", "true"))
+            .respond_with(headers(
+                ResponseTemplate::new(204).set_delay(Duration::from_secs(30)),
+            ))
+            .mount(&server)
+            .await;
+        let (ids, mut events, task) = spawn(&server);
+        // `m1` は失敗し続ける。`m2` の取得と、そのあとの削除は届く。
+        ids.send("m1".into()).unwrap();
+        ids.send("m2".into()).unwrap();
+        let LinkedEvent::Rows { rows, .. } = next(&mut events).await else {
+            panic!("行が届く");
+        };
+        assert_eq!(rows[0].0, "m2");
+        let LinkedEvent::Rows { rows, .. } = next(&mut events).await else {
+            panic!("削除が届く");
+        };
+        assert_eq!(rows, [("m2".to_owned(), None)]);
+        task.abort();
     }
 
     #[tokio::test]

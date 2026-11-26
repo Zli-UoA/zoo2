@@ -73,7 +73,30 @@ pub fn parse_channel_link(value: &str, app_base_url: &str) -> Option<LinkTarget>
 }
 
 /// 本文の中の、記法を解釈しない部分（コードブロック、インラインコード、`<plain>`）かどうかで分ける。
+/// コードブロックは [`crate::mfm`] の表示と同じく、```` ``` ```` で始まる行で開閉し、閉じていなければ
+/// 末尾まで続く。
 fn segments(content: &str) -> Vec<(bool, &str)> {
+    let mut result = Vec::new();
+    let mut in_code = false;
+    // コードブロックでない行が続いている部分の先頭。
+    let mut text = 0;
+    let mut at = 0;
+    for line in content.split_inclusive('\n') {
+        let fence = line.trim_start().starts_with("```");
+        if fence || in_code {
+            result.extend(inline_segments(&content[text..at]));
+            result.push((true, line));
+            text = at + line.len();
+            in_code ^= fence;
+        }
+        at += line.len();
+    }
+    result.extend(inline_segments(&content[text..]));
+    result
+}
+
+/// コードブロックの外を、インラインコードと `<plain>` かどうかで分ける。
+fn inline_segments(content: &str) -> Vec<(bool, &str)> {
     let mut result = Vec::new();
     let mut start = 0;
     let mut at = 0;
@@ -149,17 +172,14 @@ fn urls(content: &str, include_silent: bool) -> Vec<String> {
         if literal {
             continue;
         }
-        let visible = if include_silent {
-            part.to_owned()
-        } else {
-            replace_markdown_links(part, |label, url, silent| {
-                if silent {
-                    " ".to_owned()
-                } else {
-                    format!("[{label}]({url})")
-                }
-            })
-        };
+        // `[文字](URL)` は行き先だけを残す（文字に書いた URL は行き先ではない）。
+        let visible = replace_markdown_links(part, |_, url, silent| {
+            if silent && !include_silent {
+                " ".to_owned()
+            } else {
+                format!(" {url} ")
+            }
+        });
         let mut rest = visible.as_str();
         while let Some(index) = [rest.find("https://"), rest.find("http://")]
             .into_iter()
@@ -594,6 +614,26 @@ mod tests {
             let text = serde_json::to_string(&fetch).unwrap();
             assert_eq!(serde_json::from_str::<LinkedFetch>(&text).unwrap(), fetch);
         }
+    }
+
+    #[test]
+    fn urls_follow_how_the_body_is_shown() {
+        let ids = |content: &str| {
+            app_links(content, APP)
+                .into_iter()
+                .map(|(_, target)| target.channel_id)
+                .collect::<Vec<_>>()
+        };
+        // 文字に書いた URL は行き先ではない。
+        assert_eq!(
+            ids("[https://zli.chat/channels/a](https://zli.chat/channels/b)"),
+            ["b"]
+        );
+        // 閉じていないコードブロックは末尾まで。行の頭でなくなる閉じ方はない。
+        assert!(ids("```\nhttps://zli.chat/channels/a").is_empty());
+        assert!(ids("  ```rs\nhttps://zli.chat/channels/a\n本文```").is_empty());
+        assert_eq!(ids("```\nx\n```\nhttps://zli.chat/channels/c"), ["c"]);
+        assert_eq!(excerpt("前\n```\n**コード**"), "前 **コード**");
     }
 
     #[test]
