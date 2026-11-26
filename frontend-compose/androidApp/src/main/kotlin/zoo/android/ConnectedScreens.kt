@@ -157,6 +157,8 @@ internal fun ConnectedScreens(
                 return@LaunchedEffect
             }
         }
+        // 親行は、最初のメインのページが画面に反映されるまで rows に入らない。入るのを待ってから返信を取る。
+        table.rows.first { rows -> rows.any { it.text("id") == thread } }
         table.loadOlder(PageScope.Replies(thread))
     }
     val call = phone.call
