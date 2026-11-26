@@ -36,14 +36,21 @@ struct CryptoStoreFiles: Sendable {
             for directory in try FileManager.default.contentsOfDirectory(at: support, includingPropertiesForKeys: nil) {
                 let target = root.appendingPathComponent(directory.lastPathComponent)
                 // 移せなかったら、新しい置き場を使わない（使うと、新しい端末を作ってしまい、前の端末と受信用セッションを失う）。
-                // 移す状態がない（初期保存に失敗して空のまま残った）ものは、移さない。移行先の状態は、消さない。
-                guard FileManager.default.fileExists(atPath: directory.appendingPathComponent(CryptoStore.stateFile).path) else { continue }
-                if FileManager.default.fileExists(atPath: target.appendingPathComponent(CryptoStore.stateFile).path) {
-                    // 同じ ID の暗号ストアが両方にある（App Group を使えない間に、前の置き場へ保存した）。どちらも変えず、競合として返す
-                    // （片方を開くと、もう片方にしかない受信用セッションを失う）。
-                    throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: target.path])
+                var isDirectory: ObjCBool = false
+                FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory)
+                if isDirectory.boolValue {
+                    // 移す状態がない（初期保存に失敗して空のまま残った）ディレクトリーは、移さない。移行先の状態は、消さない。
+                    guard FileManager.default.fileExists(atPath: directory.appendingPathComponent(CryptoStore.stateFile).path) else { continue }
+                    if FileManager.default.fileExists(atPath: target.appendingPathComponent(CryptoStore.stateFile).path) {
+                        // 同じ ID の暗号ストアが両方にある（App Group を使えない間に、前の置き場へ保存した）。どちらも変えず、競合として返す
+                        // （片方を開くと、もう片方にしかない受信用セッションを失う）。
+                        throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: target.path])
+                    }
+                    if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) }
+                } else if FileManager.default.fileExists(atPath: target.path) {
+                    // ファイル（ログアウトの削除待ちの記録など）は、両方にあれば、どちらも残す。
+                    continue
                 }
-                if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) }
                 try FileManager.default.moveItem(at: directory, to: target)
             }
         }
