@@ -77,6 +77,63 @@ struct CryptoStoreTests {
         store.close()
     }
 
+    private func migrationDirectories() throws -> (old: URL, new: URL, cleanUp: () -> Void) {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("zoo-migrate-\(UUID().uuidString)", isDirectory: true)
+        let old = base.appendingPathComponent("old", isDirectory: true), new = base.appendingPathComponent("new", isDirectory: true)
+        try FileManager.default.createDirectory(at: old, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: new, withIntermediateDirectories: true)
+        return (old, new, { try? FileManager.default.removeItem(at: base) })
+    }
+
+    @Test func 移行は両方にある削除待ちの記録を統合する() throws {
+        let (old, new, cleanUp) = try migrationDirectories()
+        defer { cleanUp() }
+        let a = PendingDeviceDeletion(server: "s", user: "u", device: "d1")
+        let b = PendingDeviceDeletion(server: "s", user: "u", device: "d2")
+        #expect(PendingDeviceDeletions(root: old).add(a) && PendingDeviceDeletions(root: old).add(b))
+        #expect(PendingDeviceDeletions(root: new).add(a))
+        try CryptoStoreFiles.migrate(from: old, to: new)
+        let merged = PendingDeviceDeletions(root: new).load() ?? []
+        #expect(merged.count == 2 && merged.contains(a) && merged.contains(b))
+        #expect(!FileManager.default.fileExists(atPath: PendingDeviceDeletions(root: old).file.path))
+    }
+
+    @Test func 削除待ちの記録が読めないときは移行を止めてどちらも残す() throws {
+        let (old, new, cleanUp) = try migrationDirectories()
+        defer { cleanUp() }
+        let a = PendingDeviceDeletion(server: "s", user: "u", device: "d1")
+        #expect(PendingDeviceDeletions(root: old).add(a))
+        try Data("壊れた".utf8).write(to: PendingDeviceDeletions(root: new).file)
+        #expect(throws: (any Error).self) { try CryptoStoreFiles.migrate(from: old, to: new) }
+        #expect(FileManager.default.fileExists(atPath: PendingDeviceDeletions(root: old).file.path))
+        #expect(FileManager.default.fileExists(atPath: PendingDeviceDeletions(root: new).file.path))
+    }
+
+    @Test func 移行は同じIDの状態が両方にあれば競合として止める() throws {
+        let (old, new, cleanUp) = try migrationDirectories()
+        defer { cleanUp() }
+        for root in [old, new] {
+            let dir = root.appendingPathComponent("abc", isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try Data("{}".utf8).write(to: dir.appendingPathComponent(CryptoStore.stateFile))
+        }
+        #expect(throws: (any Error).self) { try CryptoStoreFiles.migrate(from: old, to: new) }
+        #expect(FileManager.default.fileExists(atPath: old.appendingPathComponent("abc/\(CryptoStore.stateFile)").path))
+        #expect(FileManager.default.fileExists(atPath: new.appendingPathComponent("abc/\(CryptoStore.stateFile)").path))
+    }
+
+    @Test func 移行は状態のある暗号ストアを移し空のものは移さない() throws {
+        let (old, new, cleanUp) = try migrationDirectories()
+        defer { cleanUp() }
+        let full = old.appendingPathComponent("full", isDirectory: true)
+        try FileManager.default.createDirectory(at: full, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: full.appendingPathComponent(CryptoStore.stateFile))
+        try FileManager.default.createDirectory(at: old.appendingPathComponent("empty", isDirectory: true), withIntermediateDirectories: true)
+        try CryptoStoreFiles.migrate(from: old, to: new)
+        #expect(FileManager.default.fileExists(atPath: new.appendingPathComponent("full/\(CryptoStore.stateFile)").path))
+        #expect(!FileManager.default.fileExists(atPath: new.appendingPathComponent("empty").path))
+    }
+
     @Test func 保存鍵は作ったあと同じ値を返し32バイトである() throws {
         let store = StorageKeyStore(backing: MemoryKey())
         let first = try store.loadOrCreate()

@@ -21,18 +21,8 @@ struct CryptoStoreFiles: Sendable {
         SHA256.hash(data: Data("\(server)\n\(userID)".utf8)).map { String(format: "%02x", $0) }.joined().prefix(32).description
     }
 
-    /// 暗号ストアの置き場。通知拡張が `state.json` を読めるよう、App Group（`group.works.zli.zoo`）のコンテナーに置く。
-    /// App Group を使えない環境（署名のない単体テストなど）では Application Support に置く。どちらも iCloud バックアップと
-    /// 端末間の転送には入れない。以前の置き場（Application Support）に暗号ストアがあれば、App Group に移す。
-    static func defaultRoot() throws -> URL {
-        let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-            .appendingPathComponent("e2ee", isDirectory: true)
-        var root = support
-        if let group = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: NotificationE2ee.appGroup) {
-            root = group.appendingPathComponent("e2ee", isDirectory: true)
-        }
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        if root != support, FileManager.default.fileExists(atPath: support.path) {
+    /// 前の置き場（`support`）の暗号ストアなどを、新しい置き場（`root`）へ移す。競合や統合の失敗は、エラーで止める。
+    static func migrate(from support: URL, to root: URL) throws {
             for directory in try FileManager.default.contentsOfDirectory(at: support, includingPropertiesForKeys: nil) {
                 let target = root.appendingPathComponent(directory.lastPathComponent)
                 // 移せなかったら、新しい置き場を使わない（使うと、新しい端末を作ってしまい、前の端末と受信用セッションを失う）。
@@ -49,16 +39,32 @@ struct CryptoStoreFiles: Sendable {
                     if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) }
                 } else if FileManager.default.fileExists(atPath: target.path) {
                     // ログアウトの削除待ちの記録は、両方にあれば、重複なく統合する（読み込みや保存に失敗したら、どちらも残す）。
-                    if directory.lastPathComponent == PendingDeviceDeletions(root: support).file.lastPathComponent,
-                       let old = PendingDeviceDeletions(root: support).load(), PendingDeviceDeletions(root: root).load() != nil,
-                       old.allSatisfy({ PendingDeviceDeletions(root: root).add($0) }) {
-                        try? FileManager.default.removeItem(at: directory)
+                    if directory.lastPathComponent == PendingDeviceDeletions(root: support).file.lastPathComponent {
+                        // 読み込みや保存に失敗したら、どちらも残して、エラーで止める（移行元にしかない記録を、見失わない）。
+                        guard let old = PendingDeviceDeletions(root: support).load(), PendingDeviceDeletions(root: root).load() != nil,
+                              old.allSatisfy({ PendingDeviceDeletions(root: root).add($0) }) else {
+                            throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: target.path])
+                        }
+                        try FileManager.default.removeItem(at: directory)
                     }
                     continue
                 }
                 try FileManager.default.moveItem(at: directory, to: target)
             }
+    }
+
+    /// 暗号ストアの置き場。通知拡張が `state.json` を読めるよう、App Group（`group.works.zli.zoo`）のコンテナーに置く。
+    /// App Group を使えない環境（署名のない単体テストなど）では Application Support に置く。どちらも iCloud バックアップと
+    /// 端末間の転送には入れない。以前の置き場（Application Support）に暗号ストアがあれば、App Group に移す。
+    static func defaultRoot() throws -> URL {
+        let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+            .appendingPathComponent("e2ee", isDirectory: true)
+        var root = support
+        if let group = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: NotificationE2ee.appGroup) {
+            root = group.appendingPathComponent("e2ee", isDirectory: true)
         }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        if root != support, FileManager.default.fileExists(atPath: support.path) { try migrate(from: support, to: root) }
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
         try root.setResourceValues(values)
