@@ -288,11 +288,17 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
 
     suspend fun rememberEncryptedChannel(id: String) = encryptedChannels.remember(listOf(id))
 
-    /** 端末の暗号化チャンネルの記録を読み終えたか。 */
-    val encryptionRecordsLoaded: Boolean get() = encryptedChannels.loaded
+    private val encryptionRecordsLoader by lazy {
+        EncryptionRecordsLoader(scope, { encryptedChannels.loaded }, ::loadEncryptionRecords)
+    }
 
-    /** 端末の暗号化チャンネルの記録を読み込む。読めなければ false（本文を出す前の確認に使う）。 */
-    suspend fun loadEncryptionRecords(): Boolean =
+    /** 端末の暗号化チャンネルの記録の、いまの読み込み状態。 */
+    val currentEncryptionRecords: EncryptionRecords get() = encryptionRecordsLoader.current()
+
+    /** 端末の暗号化チャンネルの記録を読み込みながら、状態を返す（本文を出す前の確認に使う）。 */
+    fun encryptionRecords(): Flow<EncryptionRecords> = encryptionRecordsLoader.states()
+
+    private suspend fun loadEncryptionRecords(): Boolean =
         try {
             encryptedChannels.remember()
             true

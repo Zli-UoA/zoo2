@@ -40,6 +40,17 @@ class ChannelLinkTextTest {
     }
 
     @Test
+    fun labelsThatContainUrlsAreNotRewritten() {
+        val asked = mutableListOf<Boolean>()
+        val link: (String, Boolean) -> EntryChannelLink? = { url, bare -> asked += bare; labelled(url, bare) }
+        val text = formatEntry("[$app]($app) と [見る $app]($app)", channelLink = link)
+        // ラベルが URL でも書き換えず、ラベルの中の URL はリンクとして扱わない。
+        assertEquals("$app と 見る $app", text.text)
+        assertEquals(listOf(false, false), asked)
+        assertEquals(2, text.getLinkAnnotations(0, text.length).size)
+    }
+
+    @Test
     fun unresolvedAndHighlightedLinksKeepTheUrl() {
         val unresolved = formatEntry(app) { _, _ -> null }
         assertEquals(app, unresolved.text)

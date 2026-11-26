@@ -13,9 +13,11 @@ import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -32,6 +34,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -49,6 +52,44 @@ private const val LINK_CACHE_SIZE = 256
 
 /** 同時に購読するチャンネルの数の上限。backend のアカウントごとのシェイプの上限は、ほかの画面や端末と分け合う。 */
 const val LINK_MAX_CHANNELS = 8
+
+/**
+ * 端末の暗号化チャンネルの記録の読み込み。1 回の読み込みを、表示するすべてのリンクで共有する。始めてから [timeout]
+ * （画面を離れた間も数える）で終わらなければ読めないものとし、あとで読めれば切り替える。
+ */
+class EncryptionRecordsLoader(
+    private val scope: CoroutineScope,
+    private val isLoaded: () -> Boolean,
+    private val load: suspend () -> Boolean,
+    private val timeout: Duration = LINK_LOAD_TIMEOUT,
+    private val clock: TimeSource = TimeSource.Monotonic,
+) {
+    private var pending: Pair<TimeMark, Deferred<Boolean>>? = null
+
+    /** 読み込みを始めずに、いま分かっている状態を返す（最初の描画用）。 */
+    fun current(): EncryptionRecords {
+        if (isLoaded()) return EncryptionRecords.Loaded
+        val late = pending?.let { (since, result) -> !result.isCompleted && since.elapsedNow() >= timeout } == true
+        return if (late) EncryptionRecords.Unreadable else EncryptionRecords.Loading
+    }
+
+    fun states(): Flow<EncryptionRecords> = flow {
+        if (isLoaded()) {
+            emit(EncryptionRecords.Loaded)
+            return@flow
+        }
+        val (since, result) = pending?.takeUnless { it.second.isCompleted }
+            ?: (clock.markNow() to scope.async { load() }).also { pending = it }
+        val remaining = timeout - since.elapsedNow()
+        if (remaining.isPositive()) {
+            emit(EncryptionRecords.Loading)
+            if (withTimeoutOrNull(remaining) { result.await() } == null) emit(EncryptionRecords.Unreadable)
+        } else {
+            emit(EncryptionRecords.Unreadable)
+        }
+        emit(if (result.await()) EncryptionRecords.Loaded else EncryptionRecords.Unreadable)
+    }.distinctUntilChanged()
+}
 
 /** リンク先のメッセージ 1 件の取得の状態。 */
 sealed interface LinkedRow {

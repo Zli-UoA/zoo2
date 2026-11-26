@@ -3,12 +3,10 @@ package zoo.android
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import kotlinx.coroutines.flow.flowOf
 import zoo.ChannelLinkInfo
 import zoo.ChannelLinkTarget
-import zoo.EncryptionRecords
 import zoo.LinkedChannel
 import zoo.LinkedMessage
 import zoo.LinkedMessageKind
@@ -54,11 +52,8 @@ private fun channelLinkState(session: Session, platform: AndroidPlatform, target
         if (messageId == null) LinkedMessageState() else session.repo.linkedMessages.peek(target.channelId, messageId)
     }
     val message by updates.collectAsState(initial)
-    val records by produceState(
-        if (session.encryptionRecordsLoaded) EncryptionRecords.Loaded else EncryptionRecords.Loading, session,
-    ) {
-        value = if (session.loadEncryptionRecords()) EncryptionRecords.Loaded else EncryptionRecords.Unreadable
-    }
+    val records by remember(session) { session.encryptionRecords() }
+        .collectAsState(remember(session) { session.currentEncryptionRecords })
     val info = resolveChannelLink(
         target, channel, directoryReady = synchronized != null, message = message,
         recorded = channel != null && session.isEncryptedChannel(channel.id), records = records,

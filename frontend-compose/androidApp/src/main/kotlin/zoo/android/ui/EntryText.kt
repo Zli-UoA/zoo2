@@ -68,7 +68,10 @@ internal class EntryChannelLink(val label: String?, val messageIcon: Boolean, va
 private class EntryFormat(
     val emoji: Set<String>, val mark: EntryHighlight?, val links: Boolean,
     val channelLink: ((url: String, bare: Boolean) -> EntryChannelLink?)?,
-)
+) {
+    /** リンクのラベル用。中の URL は、リンクにせず、短くせず、行き先も取らない。 */
+    fun withoutLinks() = EntryFormat(emoji, mark, links = false, channelLink = null)
+}
 
 internal fun formatEntry(
     body: String, emoji: Set<String> = emptySet(), highlight: EntryHighlight? = null, links: Boolean = true,
@@ -153,7 +156,7 @@ private fun AnnotatedString.Builder.appendMfm(body: String, format: EntryFormat,
                     if (value == token.url) appendHighlighted(value, format.mark) else appendMfm(value, format, depth + 1)
                 }
                 else {
-                    val bare = value == token.url
+                    val bare = token.bare
                     val app = format.channelLink?.invoke(url, bare)
                     val annotation = if (app == null) LinkAnnotation.Url(url, TextLinkStyles(style = linked))
                     else LinkAnnotation.Clickable(channelLinkTag, TextLinkStyles(style = linked)) { app.open() }
@@ -169,7 +172,8 @@ private fun AnnotatedString.Builder.appendMfm(body: String, format: EntryFormat,
                         } else {
                             // A label may contain formatting. Strip its link annotations to avoid nested links.
                             val label = buildAnnotatedString {
-                                if (bare) appendHighlighted(value, format.mark) else appendMfm(value, format, depth + 1)
+                                if (value == token.url) appendHighlighted(value, format.mark)
+                                else appendMfm(value, format.withoutLinks(), depth + 1)
                             }
                             append(AnnotatedString(label.text, label.spanStyles))
                         }

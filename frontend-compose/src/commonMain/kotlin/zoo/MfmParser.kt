@@ -1,7 +1,10 @@
 package zoo
 
-/** Tokens retain their source bodies so nested styles can be rendered in the same paragraph. */
-data class Inline(val value: String, val kind: String = "text", val url: String? = null)
+/**
+ * Tokens retain their source bodies so nested styles can be rendered in the same paragraph. [bare] marks a
+ * link written as its URL itself (a `[label](url)` link is not, even when the label is the URL).
+ */
+data class Inline(val value: String, val kind: String = "text", val url: String? = null, val bare: Boolean = false)
 
 private val atoms = Regex(
     "https?://[^\\s<>]+|:@[A-Za-z0-9._-]+:|@[A-Za-z0-9._-]+(?:@[A-Za-z0-9.-]+)?|#[^\\s#.,!?:;<>]+|:[a-zA-Z0-9_+-]+:"
@@ -184,7 +187,7 @@ private class MfmScanner(length: Int) {
                 val close = source.indexOf('>', at + 1)
                 if (close >= 0 && source.substring(at + 1, close).none { it.isWhitespace() }) {
                     val url = source.substring(at + 1, close)
-                    token = Inline(url, "link", url)
+                    token = Inline(url, "link", url, bare = true)
                     end = close + 1
                 }
             } else if (source[at] == '\\' && at + 1 < source.length && source[at + 1] in "\\`*_{}[]()#+-.!~$<>@:") {
@@ -232,7 +235,7 @@ private class MfmScanner(length: Int) {
                             if (kind !in setOf("mention", "hashtag") || boundary) {
                                 val trimmed = if (kind == "link") leadingUrl(value) else value
                                 if (trimmed != null) {
-                                    token = Inline(trimmed, kind, trimmed.takeIf { kind == "link" })
+                                    token = Inline(trimmed, kind, trimmed.takeIf { kind == "link" }, kind == "link")
                                     end = at + trimmed.length
                                 }
                             }
@@ -389,7 +392,12 @@ internal fun leadingUrl(text: String, start: Int = 0): String? {
                 open.add(end to if (ch == '(') ')' else ']')
                 true
             }
-            ')', ']' -> open.removeLastOrNull()?.second == ch
+            ')', ']' -> {
+                // 対応しないときは、開き括弧を残す（閉じていない括弧として、URL から除くため）。
+                val paired = open.lastOrNull()?.second == ch
+                if (paired) open.removeAt(open.lastIndex)
+                paired
+            }
             else -> ch in 'a'..'z' || ch in 'A'..'Z' || ch in '0'..'9' || ch in "._,/:%#@$&?!~=+-"
         }
         if (!used) break

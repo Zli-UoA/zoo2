@@ -31,7 +31,41 @@ fun publicUrl(raw: String): Url? =
 fun publicUrlString(raw: String): String? = publicUrl(raw)?.toString()
 
 /** Only visible links create cards: code, plain and MFM silent links stay private. */
-private val markdownLink = Regex("\\[[^\\[\\]\\n]*]\\((https?://(?:[^\\s()]++|\\([^\\s()]*+\\))++)\\)")
+/**
+ * `[文字](URL)` を行き先の URL に、`?[文字](URL)` を空白に置き換える。文字に書いた URL は行き先ではない。文字には、
+ * 対になった角括弧を含められる（装飾の `$[…]` など）。本文を 1 回走査する。
+ */
+private fun markdownDestinations(text: String): String {
+    val result = StringBuilder()
+    val open = mutableListOf<Int>()
+    var copied = 0
+    var at = 0
+    while (at < text.length) {
+        when (text[at]) {
+            '[' -> open.add(at)
+            '\n' -> open.clear()
+            ']' -> {
+                val start = if (open.isEmpty()) null else open.removeAt(open.lastIndex)
+                val url = if (start != null && text.startsWith("](", at)) leadingUrl(text, at + 2) else null
+                if (start != null && url != null) {
+                    var end = at + 2 + url.length
+                    // URL に含めない末尾の `.` と `,` は、閉じ括弧の前にあってよい。
+                    while (end < text.length && text[end] in ".,") end++
+                    if (text.getOrNull(end) == ')') {
+                        val silent = start > copied && text[start - 1] == '?'
+                        result.appendRange(text, copied, if (silent) start - 1 else start).append(' ')
+                        if (!silent) result.append(url).append(' ')
+                        copied = end + 1
+                        at = end
+                        open.clear()
+                    }
+                }
+            }
+        }
+        at++
+    }
+    return result.appendRange(text, copied, text.length).toString()
+}
 
 fun previewUrls(content: String, excludeUrl: String? = null): List<String> {
     val visible =
@@ -41,8 +75,7 @@ fun previewUrls(content: String, excludeUrl: String? = null): List<String> {
             ),
             " ",
         )
-        // `[文字](URL)` は行き先だけを残す（文字に書いた URL は行き先ではない）。
-        .replace(markdownLink) { " ${it.groupValues[1]} " }
+        .let(::markdownDestinations)
     return sequence {
         var from = 0
         while (true) {

@@ -15,6 +15,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.awaitCancellation
@@ -172,6 +173,36 @@ class LinkedMessagesTest {
         sources.last().deliver(message)
         runCurrent()
         assertEquals(LinkedRow.Found(message), third.last.row)
+    }
+
+    @Test
+    fun recordsThatDoNotLoadInTimeAreUnreadable() = runTest {
+        val result = CompletableDeferred<Boolean>()
+        var loaded = false
+        var loads = 0
+        val records = EncryptionRecordsLoader(
+            backgroundScope, { loaded }, { loads++; result.await() }, 10.seconds, testScheduler.timeSource,
+        )
+        val states = mutableListOf<EncryptionRecords>()
+        val first = backgroundScope.launch { records.states().collect { states += it } }
+        runCurrent()
+        assertEquals(listOf(EncryptionRecords.Loading), states)
+        advanceTimeBy(10_001.milliseconds)
+        runCurrent()
+        assertEquals(EncryptionRecords.Unreadable, states.last())
+        first.cancel()
+        // 画面に戻っても読み込み中の枠に戻さず、読み込みは 1 回のまま。読めたら切り替える。
+        assertEquals(EncryptionRecords.Unreadable, records.current())
+        val again = mutableListOf<EncryptionRecords>()
+        backgroundScope.launch { records.states().collect { again += it } }
+        runCurrent()
+        assertEquals(listOf(EncryptionRecords.Unreadable), again)
+        loaded = true
+        result.complete(true)
+        runCurrent()
+        assertEquals(EncryptionRecords.Loaded, again.last())
+        assertEquals(EncryptionRecords.Loaded, records.current())
+        assertEquals(1, loads)
     }
 
     @Test

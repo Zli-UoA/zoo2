@@ -219,6 +219,16 @@ class ChannelLinksTest {
         for (content in listOf("[".repeat(40_000), "https://a(".repeat(4_000), "[](https://a".repeat(3_000))) {
             previewUrls(content)
         }
+        // 対応しない閉じ括弧があれば、閉じていない括弧より前で終わる。
+        assertEquals(listOf("https://example.com/a"), previewUrls("https://example.com/a(b]"))
+        // 装飾などの角括弧を含むラベルも、行き先だけを数える。サイレントリンクは数えない。
+        // ホストだけの URL は、末尾に `/` を付けた形で返る。
+        assertEquals(listOf("https://b.test/"), previewUrls("[\$[fg.color=ff0000 https://a.test]](https://b.test)"))
+        assertEquals(emptyList(), previewUrls("?[a [b] c](https://silent.test)"))
+        assertEquals(listOf("https://b.test/page"), previewUrls("[a](https://b.test/page.)"))
+        // 文字に URL を書いたリンクは、URL そのものを書いたリンクと区別する。
+        val labelled = parseInline("[https://a.test](https://a.test) https://c.test <https://d.test>")
+        assertEquals(listOf(false, true, true), labelled.filter { it.url != null }.map { it.bare })
         assertEquals(
             listOf("https://zli.chat/channels/b"),
             previewUrls("[https://zli.chat/channels/a](https://zli.chat/channels/b)"),
