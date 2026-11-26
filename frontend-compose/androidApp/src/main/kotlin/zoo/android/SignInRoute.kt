@@ -1,6 +1,8 @@
 package zoo.android
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import androidx.activity.compose.BackHandler
 import kotlinx.coroutines.Job
 import androidx.compose.foundation.layout.*
@@ -44,6 +46,9 @@ internal fun SignInRoute(
             loginJob = scope.launch {
                 signInError = ""
                 try {
+                    if (wifiNeedsSignIn(context)) {
+                        throw LoginFailure(wifiSignInMessage)
+                    }
                     val connection = LoginConnection(server.trim().trimEnd('/'), issuer.trim(), client.trim(), resource.trim())
                     connection.validate()
                     preferences.edit().putString("base", connection.base).putString("issuer", connection.issuer)
@@ -57,8 +62,9 @@ internal fun SignInRoute(
                     signInError = failure.message.orEmpty()
                 } catch (failure: IllegalArgumentException) {
                     signInError = failure.message.orEmpty()
-                } catch (_: Exception) {
-                    signInError = "ログインできません。接続先とネットワークを確認してください。"
+                } catch (failure: Exception) {
+                    signInError = loginNetworkMessage(failure, wifiNeedsSignIn(context))
+                        ?: "ログインできません。接続先とネットワークを確認してください。"
                 } finally {
                     busy = false
                     loginJob = null
@@ -103,4 +109,11 @@ internal fun SignInRoute(
             }
         }
     }
+}
+
+private fun wifiNeedsSignIn(context: Context): Boolean {
+    val manager = context.getSystemService(ConnectivityManager::class.java) ?: return false
+    val network = manager.activeNetwork ?: return false
+    return manager.getNetworkCapabilities(network)
+        ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL) == true
 }

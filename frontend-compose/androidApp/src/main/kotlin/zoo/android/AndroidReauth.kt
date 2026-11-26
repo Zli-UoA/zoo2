@@ -122,7 +122,7 @@ internal class AndroidReauth(
         if (response.status.value !in 200..299) {
             throw ReauthException(ReauthException.Reason.DENIED, "認証先の設定を取得できません (HTTP ${response.status.value})")
         }
-        val discovery = json.parseToJsonElement(response.bodyAsText()) as JsonObject
+        val discovery = response.loginJson("認証先の設定取得")
         if (discovery.text("issuer")?.trimEnd('/') != issuer.trimEnd('/')) {
             throw ReauthException(ReauthException.Reason.DENIED, "issuer が一致しません")
         }
