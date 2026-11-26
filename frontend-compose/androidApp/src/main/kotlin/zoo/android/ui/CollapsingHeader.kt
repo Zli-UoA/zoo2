@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -22,7 +23,7 @@ internal fun CollapsingHeader(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val threshold = with(LocalDensity.current) { 20.dp.toPx() }
-    var visible by remember { mutableStateOf(true) }
+    var visible by rememberSaveable { mutableStateOf(true) }
     val scroll = remember(threshold) {
         object : NestedScrollConnection {
             private var distance = 0f

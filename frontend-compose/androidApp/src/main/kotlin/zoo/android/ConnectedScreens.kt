@@ -8,6 +8,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
@@ -41,6 +42,7 @@ internal fun ConnectedScreens(
     openPictureInPicture: ((String) -> Unit)? = null,
 ) {
     val state = remember(session) { ConnectedScreenState(session, platform, phone) }
+    val pageState = key(session.config.apiBaseUrl, session.config.userId) { rememberSaveableStateHolder() }
     DisposableEffect(state) { onDispose { state.close() } }
     val openChannelLink = remember(state) { { target: ChannelLinkTarget, parent: String? -> state.openChannelLink(target, parent) } }
     val channelLinks = rememberChannelLinks(session, platform, openChannelLink)
@@ -274,6 +276,7 @@ internal fun ConnectedScreens(
             showFullCall -> background()
             sipRoute && state.overlay == null -> platform.navigate("/settings")
             state.overlay == "edit-entry" -> state.finishEditing()
+            state.overlay == "post" && state.replyExpanded -> state.replyExpanded = false
             state.overlay == "post" -> state.closePost()
             state.overlay == "profile" -> state.overlay = "people"
             state.overlay == "thread-members" -> state.overlay = "thread-settings"
@@ -281,6 +284,8 @@ internal fun ConnectedScreens(
             state.overlay in setOf("members", "rename", "archive", "unarchive") -> state.overlay = "channel-settings"
             state.overlay == "add-member" -> state.overlay = "members"
             state.overlay != null -> state.overlay = null
+            route == "/bubble" && state.bubbleExpanded -> state.bubbleExpanded = false
+            state.collapseInput(channelId, currentThread) -> Unit
             currentThread != null -> session.thread = null
             platform.back() -> Unit
             else -> background()
@@ -322,7 +327,7 @@ internal fun ConnectedScreens(
             handle = profile.text("user_name").takeIf { it.isNotBlank() }?.let { name ->
                 if (remoteProfile && profileHost.isNotBlank()) "@$name@$profileHost" else "@$name"
             },
-            avatar = profileAvatar, originalAvailable = profileUrl != null,
+            avatar = profileAvatar, originalAvailable = profileUrl != null, id = profile.text("id"),
         )
         state.overlay == "bubble-participants" -> AndroidScreen.Directory("参加者", state.query,
             bubbleParticipants.filter { it.title.contains(state.query, true) })
@@ -354,7 +359,7 @@ internal fun ConnectedScreens(
             encrypted = state.channelEncrypted.takeIf { state.overlay == "create" && state.channelPrivate },
         )
         state.overlay in setOf("channel-settings", "archive", "unarchive") && channel != null -> AndroidScreen.ChannelSettings(
-            channel.text("channel_name"), state.channelSettings(channel, member, encrypted))
+            channel.text("channel_name"), state.channelSettings(channel, member, encrypted), channel.text("id"))
         state.overlay == "new-post" -> AndroidScreen.NewPost(
             InputState(state.postDraft, canSend = env.online && !state.saving && state.postFiles.canSend(state.postDraft), selection = state.postSelection),
             state.recent, state.photosOpen, state.postVisibility,
@@ -367,13 +372,14 @@ internal fun ConnectedScreens(
         state.overlay == "post" && state.postDetail.isNotEmpty() -> {
             val entries = state.postDetail.map { state.entry(it, usersById, previewService = previewService) }
             val root = entries.firstOrNull { it.id == state.openedPostId } ?: entries.first()
-            AndroidScreen.Post(root, entries.filter { it.id != root.id }, InputState(state.replyDraft, canSend = env.online && !state.saving, selection = state.replySelection, focusRequest = state.replyFocusRequest))
+            AndroidScreen.Post(root, entries.filter { it.id != root.id }, InputState(state.replyDraft, expanded = state.replyExpanded, canSend = env.online && !state.saving,
+                selection = state.replySelection, focusRequest = state.replyFocusRequest, lastSend = state.replyLastSend))
         }
         state.overlay in setOf("theme", "language", "notifications", "search-engine") -> state.settingsDetail(env)
         searching -> state.searchScreen(usersById, channels, memberships)
         route == "/home" -> AndroidScreen.Home(posts, state.home.timeline, state.home.canLoadOlder)
         route == "/notifications" -> state.inbox.screen()
-        route == "/bubble" -> AndroidScreen.Bubble(bubbles.map { state.entry(it, usersById) }, InputState(bubbleDraft, live = true), bubbleParticipants.map { it.title })
+        route == "/bubble" -> AndroidScreen.Bubble(bubbles.map { state.entry(it, usersById) }, InputState(bubbleDraft, expanded = state.bubbleExpanded, live = true), bubbleParticipants.map { it.title })
         route == "/settings" -> AndroidScreen.Settings(state.settings(env, openIncomingSettings != null))
         channel != null && (threadRoot != null || deletedRoot) -> {
           // 暗号化の境目は、スレッドの画面に出す親と返信の中で決める。
@@ -461,7 +467,7 @@ internal fun ConnectedScreens(
                                 else -> state.dispatch(action, screen, channel, rows, dmPeer, usersById[dmPeer]?.let(::author), enableNotifications)
                             }
                         },
-                        language = env.locale, interaction = state.interaction.snapshot(),
+                        language = env.locale, interaction = state.interaction.snapshot(), pageState = pageState,
                         remoteAudioLevel = { phone.remoteAudioLevel },
                         loadNotificationReactions = state.inbox::loadReactions,
                         loadNotificationAvatar = { url ->
