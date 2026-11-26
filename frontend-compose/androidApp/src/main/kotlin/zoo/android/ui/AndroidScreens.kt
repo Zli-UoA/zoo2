@@ -499,18 +499,24 @@ private fun ColumnScope.TimelineWithInput(
         scroll.interactionSource.interactions.collect { if (it is DragInteraction.Start) drags++ }
     }
     var servedDrags by remember { mutableIntStateOf(0) }
+    // 最後に要求したときの行数。行数が変わらないまま Effect が再起動したとき（取得の失敗で loadEarlier が
+    // 偽から真に戻ったとき）は、利用者がもう一度ドラッグするまで、同じページを要求しない。
+    var requestedAtSize by remember { mutableIntStateOf(-1) }
     val atTop by remember { derivedStateOf { scroll.firstVisibleItemIndex == 0 } }
     val requestEarlier by rememberUpdatedState(loadEarlier)
     // 先頭に来たら、古い 1 ページを取る。末尾へ初期位置を合わせる前に呼ぶと、開いた直後に全履歴を読んでしまう。
+    // チャンネルは、ページが増える（行数が変わる）か、新しくドラッグしたときだけ要求する。成功すると行数が増え、
+    // まだ先頭にいれば続けて取る。失敗では行数が変わらないので、ドラッグを待つ。
     // スレッドは、親が先頭に残るので、ページが増えても先頭のまま。ドラッグ 1 回につき 1 ページだけ取る。
     LaunchedEffect(atTop, positioned, drags, loadEarlier != null, entries.size.takeIf { allowThreads }) {
-        if (!atTop) return@LaunchedEffect
+        if (!atTop || requestEarlier == null) return@LaunchedEffect
+        val newDrag = drags > servedDrags
         if (allowThreads) {
-            if (positioned) requestEarlier?.invoke()
-        } else if (drags > servedDrags && requestEarlier != null) {
-            servedDrags = drags
-            requestEarlier?.invoke()
-        }
+            if (!positioned || !(newDrag || entries.size != requestedAtSize)) return@LaunchedEffect
+            requestedAtSize = entries.size
+        } else if (!newDrag) return@LaunchedEffect
+        servedDrags = drags
+        requestEarlier?.invoke()
     }
     var openedTarget by rememberSaveable { mutableStateOf<String?>(null) }
     val focusedIndex = entries.indexOfFirst { it.id == focusMessage }
