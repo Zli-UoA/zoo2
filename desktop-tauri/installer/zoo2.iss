@@ -24,6 +24,11 @@ AppId={{8E9B3B8E-3B89-4F0F-B7C5-6E4F1D79A2C1}
 AppName=zoo2
 AppVersion={#AppVersion}
 AppVerName=zoo2 {#AppVersion}
+; インストーラー自身のファイル情報にも版を入れ、OS 側のアプリ一覧やファイルのプロパティから版を確認できるようにする。
+VersionInfoVersion={#AppVersion}
+VersionInfoProductVersion={#AppVersion}
+VersionInfoProductName=zoo2
+VersionInfoCompany=Zli
 AppPublisher=Zli
 AppPublisherURL=https://github.com/Zli-UoA/zoo2
 AppSupportURL=https://github.com/Zli-UoA/zoo2

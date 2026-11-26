@@ -240,7 +240,7 @@ pub fn create_main(app: &App, core: &Arc<Core>) -> tauri::Result<()> {
     #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
     let window = {
         let builder = WebviewWindowBuilder::new(app, MAIN, WebviewUrl::App("index.html".into()))
-            .title("zoo2")
+            .title(format!("zoo2 v{}", env!("CARGO_PKG_VERSION")))
             .inner_size(1100.0, 760.0)
             .min_inner_size(480.0, 360.0)
             .on_navigation(move |url| {
