@@ -665,7 +665,8 @@ class RepositoryTest {
         // どこで止まったか分かるよう、段階ごとに待ち時間を区切る。
         suspend fun <T> step(name: String, block: suspend () -> T): T =
             try {
-                withTimeout(20_000) { block() }
+                // 実時間で区切る。仮想時間で区切ると、別スレッドの応答を待つ間に、時計だけが進んで打ち切ってしまう。
+                withContext(Dispatchers.Default) { withTimeout(20_000) { block() } }
             } catch (e: TimeoutCancellationException) {
                 fail("did not finish: $name (subsetCalls=$subsetCalls, invalidations=${invalidations.value})")
             }
