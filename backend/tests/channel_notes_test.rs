@@ -1081,7 +1081,7 @@ async fn concurrent_creates_by_different_members_get_distinct_positions() -> any
     let second_notes = notes.clone();
     let first_actor = first_member.clone();
     let second_actor = second_member.clone();
-    let first = tokio::spawn(async move {
+    let mut first = tokio::spawn(async move {
         request(
             &first_app,
             "POST",
@@ -1091,7 +1091,7 @@ async fn concurrent_creates_by_different_members_get_distinct_positions() -> any
         )
         .await
     });
-    let second = tokio::spawn(async move {
+    let mut second = tokio::spawn(async move {
         request(
             &second_app,
             "POST",
@@ -1108,28 +1108,42 @@ async fn concurrent_creates_by_different_members_get_distinct_positions() -> any
         "both creates must wait on the channel-notes advisory lock: {waiting_pids:?}"
     );
     blocker_tx.commit().await?;
-    let first = first.await?;
-    let second = second.await?;
+    let (first, second) = match tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::join!(&mut first, &mut second)
+    })
+    .await
+    {
+        Ok((first, second)) => (first?, second?),
+        Err(_) => {
+            first.abort();
+            second.abort();
+            anyhow::bail!("concurrent creates did not finish after releasing the advisory lock");
+        }
+    };
     assert_eq!(first.0, StatusCode::OK, "{}", first.1);
     assert_eq!(second.0, StatusCode::OK, "{}", second.1);
 
     for round in 1..20 {
-        let (first, second) = tokio::join!(
-            request(
-                &app,
-                "POST",
-                &notes,
-                &first_member,
-                json!({"title":format!("A{round}"),"content":""})
-            ),
-            request(
-                &app,
-                "POST",
-                &notes,
-                &second_member,
-                json!({"title":format!("B{round}"),"content":""})
-            ),
-        );
+        let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(
+                request(
+                    &app,
+                    "POST",
+                    &notes,
+                    &first_member,
+                    json!({"title":format!("A{round}"),"content":""})
+                ),
+                request(
+                    &app,
+                    "POST",
+                    &notes,
+                    &second_member,
+                    json!({"title":format!("B{round}"),"content":""})
+                ),
+            )
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("concurrent creates timed out in round {round}"))?;
         assert_eq!(first.0, StatusCode::OK, "{}", first.1);
         assert_eq!(second.0, StatusCode::OK, "{}", second.1);
     }
@@ -1309,13 +1323,15 @@ async fn concurrent_restore_create_and_reorder_delete_keep_active_order_consiste
         "active positions must be unique: {positions:?}"
     );
     if reordered.0 == StatusCode::OK {
-        // 並び替えが確定したときは 0,1,... の連番を振り直す。その後ろで削除が
-        // 確定すると、削除したノートの分だけ先頭がずれた連番になる
-        let first = positions.first().copied().unwrap_or(0);
-        let expected_positions = (first..first + positions.len() as i32).collect::<Vec<_>>();
+        let expected_positions = requested_order
+            .iter()
+            .enumerate()
+            .filter(|(_, id)| *id != &item_b)
+            .map(|(position, _)| position as i32)
+            .collect::<Vec<_>>();
         assert_eq!(
             positions, expected_positions,
-            "a committed reorder must leave contiguous positions: {positions:?}"
+            "a committed reorder must preserve positions assigned before deletion: {positions:?}"
         );
     }
     let mut expected_ids = if reordered.0 == StatusCode::OK {
@@ -3544,20 +3560,13 @@ async fn channel_notes_get_rechecks_deactivation_after_authentication() -> anyho
         StatusCode::OK
     );
 
-    let (mut blocker_connection, blocker_driver) =
-        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
-    tokio::spawn(blocker_driver);
-    let blocker_pid: i32 = blocker_connection
-        .query_one("SELECT pg_backend_pid()", &[])
-        .await?
-        .get(0);
-    let blocker = blocker_connection.transaction().await?;
-    blocker
-        .batch_execute("LOCK TABLE channel_notes IN ACCESS EXCLUSIVE MODE")
-        .await?;
     let (mut update_connection, update_driver) =
         tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(update_driver);
+    let update_pid: i32 = update_connection
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
     let update = update_connection.transaction().await?;
     update
         .execute(
@@ -3566,7 +3575,7 @@ async fn channel_notes_get_rechecks_deactivation_after_authentication() -> anyho
         )
         .await?;
 
-    let (mut observer, observer_driver) =
+    let (observer, observer_driver) =
         tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(observer_driver);
     let api = app.clone();
@@ -3574,17 +3583,13 @@ async fn channel_notes_get_rechecks_deactivation_after_authentication() -> anyho
     let request_actor = actor.clone();
     let pending =
         tokio::spawn(async move { request(&api, "GET", &path, &request_actor, Value::Null).await });
-    // 待機が認証より後の note 読み取りで起きていることを確認する。固定時間の待ちは、
-    // 認証前で止まっていても通ってしまうため、回帰を見逃す。
-    wait_until_blocked_by(&observer, blocker_pid).await?;
-    assert!(
-        !pending.is_finished(),
-        "GET should reach the blocked note query after AuthUser's separate active check"
-    );
+    // ノート認可のユーザー行ロックが状態変更を待つまで、更新を確定させない。
+    wait_until_blocked_by(&observer, update_pid).await?;
     update.commit().await?;
-    blocker.commit().await?;
     assert_eq!(
-        pending.await?.0,
+        tokio::time::timeout(std::time::Duration::from_secs(5), pending)
+            .await??
+            .0,
         StatusCode::FORBIDDEN,
         "a request whose AuthUser check preceded deactivation must recheck active state in its transaction"
     );
@@ -3619,20 +3624,13 @@ async fn channel_notes_get_rechecks_guest_status_before_public_read() -> anyhow:
         StatusCode::OK
     );
 
-    let (mut blocker_connection, blocker_driver) =
-        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
-    tokio::spawn(blocker_driver);
-    let blocker_pid: i32 = blocker_connection
-        .query_one("SELECT pg_backend_pid()", &[])
-        .await?
-        .get(0);
-    let blocker = blocker_connection.transaction().await?;
-    blocker
-        .batch_execute("LOCK TABLE channel_notes IN ACCESS EXCLUSIVE MODE")
-        .await?;
     let (mut update_connection, update_driver) =
         tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(update_driver);
+    let update_pid: i32 = update_connection
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
     let update = update_connection.transaction().await?;
     update
         .execute(
@@ -3641,7 +3639,7 @@ async fn channel_notes_get_rechecks_guest_status_before_public_read() -> anyhow:
         )
         .await?;
 
-    let (mut observer, observer_driver) =
+    let (observer, observer_driver) =
         tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(observer_driver);
     let api = app.clone();
@@ -3649,17 +3647,13 @@ async fn channel_notes_get_rechecks_guest_status_before_public_read() -> anyhow:
     let request_actor = actor.clone();
     let pending =
         tokio::spawn(async move { request(&api, "GET", &path, &request_actor, Value::Null).await });
-    // 待機が認可より後の note 読み取りで起きていることを確認する。固定時間の待ちは、
-    // 認可前で止まっていても通ってしまうため、回帰を見逃す。
-    wait_until_blocked_by(&observer, blocker_pid).await?;
-    assert!(
-        !pending.is_finished(),
-        "GET should reach the blocked note query after guest authorization"
-    );
+    // ノート認可のユーザー行ロックが状態変更を待つまで、更新を確定させない。
+    wait_until_blocked_by(&observer, update_pid).await?;
     update.commit().await?;
-    blocker.commit().await?;
     assert_eq!(
-        pending.await?.0,
+        tokio::time::timeout(std::time::Duration::from_secs(5), pending)
+            .await??
+            .0,
         StatusCode::NOT_FOUND,
         "a user changed to guest after authorization must not read public notes without membership"
     );

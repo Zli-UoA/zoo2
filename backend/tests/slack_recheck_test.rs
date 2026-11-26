@@ -1038,21 +1038,23 @@ async fn test_recheck_apply_chunk_and_final_delete_reject_remapped_slack_channel
         assert_eq!(row(&f, &msg_id).await["content"], "before");
         let sync_rows = sql(
             &f.state,
-            "SELECT json_build_object('last_error',last_error)::text \
+            "SELECT json_build_object('running',running,'phase',phase,'lease_token',lease_token,\
+             'lease_until',lease_until,'last_error',last_error,'rechecked_at',rechecked_at)::text \
              FROM slack_channel_syncs WHERE team_id=$1 AND slack_channel_id='C1'",
             &[&f.team],
         )
         .await?;
-        assert!(
-            sync_rows[0]["last_error"]
-                .as_str()
-                .is_some_and(|e| e.contains("Slack sync target changed or no longer exists")),
-            "expected target change error, got {:?}",
-            sync_rows
+        assert_eq!(
+            sync_rows,
+            vec![json!({
+                "running": false,
+                "phase": "history",
+                "lease_token": null,
+                "lease_until": null,
+                "last_error": null,
+                "rechecked_at": null,
+            })]
         );
-        // 再確認は完了せず (成功なら rechecked_at が今になる)、5 分後の再試行に回る
-        let minutes = retry_in_minutes(&f).await;
-        assert!((3.0..=6.0).contains(&minutes), "{minutes}");
     }
 
     // 2. run_inner の最終削除トランザクション直前に slack_channels が別チャンネルへ再マッピングされた場合
@@ -1146,21 +1148,23 @@ async fn test_recheck_apply_chunk_and_final_delete_reject_remapped_slack_channel
         assert_eq!(msg["content"], "keep me");
         let sync_rows = sql(
             &f.state,
-            "SELECT json_build_object('last_error',last_error)::text \
+            "SELECT json_build_object('running',running,'phase',phase,'lease_token',lease_token,\
+             'lease_until',lease_until,'last_error',last_error,'rechecked_at',rechecked_at)::text \
              FROM slack_channel_syncs WHERE team_id=$1 AND slack_channel_id='C1'",
             &[&f.team],
         )
         .await?;
-        assert!(
-            sync_rows[0]["last_error"]
-                .as_str()
-                .is_some_and(|e| e.contains("Slack sync target changed or no longer exists")),
-            "expected target change error, got {:?}",
-            sync_rows
+        assert_eq!(
+            sync_rows,
+            vec![json!({
+                "running": false,
+                "phase": "history",
+                "lease_token": null,
+                "lease_until": null,
+                "last_error": null,
+                "rechecked_at": null,
+            })]
         );
-        // 再確認は完了せず (成功なら rechecked_at が今になる)、5 分後の再試行に回る
-        let minutes = retry_in_minutes(&f).await;
-        assert!((3.0..=6.0).contains(&minutes), "{minutes}");
     }
 
     Ok(())

@@ -1055,8 +1055,10 @@ async fn ensure_user(
         // so rewriting it after the token becomes reusable could alter an unrelated user's
         // mention. Preserve the later fallback in display_name and Slack metadata.
         let source = found["profile_source"].as_str().unwrap_or("unknown");
+        let stored_display_name = found["display_name"].as_str().unwrap_or_default();
         let generic_legacy_row = source == "unknown"
             && found["name"].as_str() == Some(slack_id)
+            && (stored_display_name.trim().is_empty() || stored_display_name == slack_id)
             && found["real_name"]
                 .as_str()
                 .unwrap_or_default()
@@ -1072,7 +1074,7 @@ async fn ensure_user(
             let stored = StoredPlaceholder {
                 slack_id,
                 name: found["name"].as_str().unwrap_or_default(),
-                display_name: found["display_name"].as_str().unwrap_or_default(),
+                display_name: stored_display_name,
                 real_name: found["real_name"].as_str().unwrap_or_default(),
                 avatar_url: found["avatar_url"].as_str().unwrap_or_default(),
                 is_bot: found["is_bot"].as_bool().unwrap_or(false),
@@ -5638,6 +5640,32 @@ mod tests {
                 && updated[0]["profile_source"] == "fallback",
             "a public username fallback must populate a placeholder whose real_name was only whitespace: {updated:?}"
         );
+        // Recreate a pre-normalization row with a meaningful Zoo display name.
+        let mut legacy = db.transaction().await?;
+        exec(
+            &mut legacy,
+            "UPDATE slack_users SET name=$2, real_name=' ', profile_source='unknown' WHERE team_id=$1 AND slack_user_id=$2",
+            &[&team, &slack_id],
+        )
+        .await?;
+        exec(
+            &mut legacy,
+            "UPDATE users SET display_name='Alice Ops' WHERE id=$1",
+            &[&placeholder_id],
+        )
+        .await?;
+        ensure_user(&mut legacy, &team, &slack_id, None, Some("zip-author")).await?;
+        let legacy_rows = query(
+            &mut legacy,
+            "SELECT json_build_object('display_name',display_name)::text FROM users WHERE id=$1",
+            &[&placeholder_id],
+        )
+        .await?;
+        anyhow::ensure!(
+            legacy_rows[0]["display_name"] == "Alice Ops",
+            "a fallback must preserve a meaningful legacy display name: {legacy_rows:?}"
+        );
+        legacy.rollback().await?;
         let mut cleanup = db.transaction().await?;
         exec(
             &mut cleanup,
