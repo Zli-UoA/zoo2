@@ -212,11 +212,14 @@ private struct SasEntryView: View {
     }
 }
 
-/// 設定の「ユーザーの検証」。相手を選んで、検証を求める。
+/// 設定の「ユーザーの検証」。相手の検証状態を出し、検証を求める。鍵が変わった相手は、チャンネルの外で確かめてから受け入れる
+/// （再検証）。
 struct VerifyUsersView: View {
     let workspace: WorkspaceStore
     let verification: E2eeVerification
     @State private var error: String?
+    @State private var states: [String: E2eeVerification.UserVerificationState] = [:]
+    @State private var reverifying: Person?
 
     private var people: [Person] {
         workspace.people.values.filter { $0.id != workspace.user.id && !$0.is_bot && !$0.is_deactivated }
@@ -229,19 +232,59 @@ struct VerifyUsersView: View {
             Section {
                 ForEach(people) { person in
                     HStack {
-                        Text(person.name)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(person.name)
+                            if let state = states[person.id] { Label(label(state), systemImage: symbol(state)).font(.caption).foregroundStyle(color(state)) }
+                        }
                         Spacer()
+                        if states[person.id] == .needsReverification {
+                            Button("再検証") { reverifying = person }.buttonStyle(.bordered)
+                                .accessibilityIdentifier("reverify-\(person.id)")
+                        }
                         Button("検証する") { Task { await start(person) } }
                             .buttonStyle(.bordered)
                             .accessibilityIdentifier("verify-\(person.id)")
                     }
+                    .task(id: person.id) { states[person.id] = try? await verification.state(of: person.id) }
                 }
             } footer: {
-                Text("相手の鍵を、互いの画面の絵文字を見比べて確かめます。対面や通話など、チャンネルの外で行ってください。")
+                Text("相手の鍵を、QR か互いの画面の絵文字で確かめます。対面や通話など、チャンネルの外で行ってください。鍵が変わった相手には、再検証するまで、鍵を配りません。")
             }
         }
         .navigationTitle("ユーザーの検証")
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $reverifying) { person in
+            ReverifySheet(person: person, verification: verification) {
+                states[person.id] = nil
+                Task { states[person.id] = try? await verification.state(of: person.id) }
+            }
+        }
+    }
+
+    private func label(_ state: E2eeVerification.UserVerificationState) -> String {
+        switch state {
+        case .verified: "検証済み"
+        case .trustedOnFirstUse: "初めて見たときに信頼（未検証）"
+        case .needsReverification: "鍵が変わりました。再検証が必要です"
+        case .unavailable: "暗号化を確かめられません"
+        }
+    }
+
+    private func symbol(_ state: E2eeVerification.UserVerificationState) -> String {
+        switch state {
+        case .verified: "checkmark.shield"
+        case .trustedOnFirstUse: "shield"
+        case .needsReverification: "exclamationmark.shield"
+        case .unavailable: "questionmark.circle"
+        }
+    }
+
+    private func color(_ state: E2eeVerification.UserVerificationState) -> Color {
+        switch state {
+        case .verified: .green
+        case .needsReverification: .orange
+        default: .secondary
+        }
     }
 
     private func start(_ person: Person) async {
@@ -253,6 +296,63 @@ struct VerifyUsersView: View {
             error = "この端末は解錠していないため、検証できません。設定の「暗号化」で解錠してください。"
         } catch {
             self.error = "検証の要求を送れませんでした。"
+        }
+    }
+}
+
+/// 鍵が変わった相手の、再検証（受け入れ）の確認。相手の今のマスター鍵の指紋を出し、チャンネルの外で相手と読み合わせてから受け入れる。
+private struct ReverifySheet: View {
+    let person: Person
+    let verification: E2eeVerification
+    let finished: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var fingerprint: String?
+    @State private var confirmed = false
+    @State private var error: String?
+    @State private var busy = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("\(person.name) さんの鍵が変わりました") {
+                    Text("本人が鍵を作り直した場合のほか、アカウントが乗っ取られた可能性もあります。チャンネルの外（対面や通話）で、本人に次の鍵の指紋を読み上げて確かめてください。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    if let fingerprint { Text(fingerprint).font(.system(.body, design: .monospaced)).textSelection(.enabled) }
+                    else if error == nil { ProgressView() }
+                    Toggle("本人に確かめ、同じ指紋でした", isOn: $confirmed)
+                }
+                if let error { Section { Text(error).foregroundStyle(.red).font(.subheadline) } }
+                Section {
+                    Button("この鍵を受け入れる", role: .destructive) { Task { await accept() } }
+                        .disabled(!confirmed || fingerprint == nil)
+                }
+            }
+            .navigationTitle("再検証")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("閉じる") { dismiss() } } }
+            .disabled(busy)
+            .task {
+                do { fingerprint = try await verification.masterKeyFingerprint(of: person.id) }
+                catch { self.error = "相手の鍵を取得できませんでした。" }
+            }
+        }
+    }
+
+    private func accept() async {
+        guard let fingerprint else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            try await verification.reverify(person.id, expectedFingerprint: fingerprint)
+            finished()
+            dismiss()
+        } catch ZooError.invalidResponse {
+            error = "確認の画面に出した鍵から、相手の鍵が変わりました。もう一度、確かめてください。"
+            self.fingerprint = nil
+            confirmed = false
+            self.fingerprint = try? await verification.masterKeyFingerprint(of: person.id)
+        } catch {
+            self.error = "受け入れを保存できませんでした。本人確認ができなかったか、通信に失敗しました。"
         }
     }
 }

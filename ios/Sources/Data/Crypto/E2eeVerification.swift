@@ -9,6 +9,10 @@ private func sasJSONText(_ value: JSONValue) -> String { String(decoding: (try? 
 protocol E2eeVerificationAPI {
     /// 相手の `keys/query`（1 人）。端末鍵、クロス署名鍵、署名、ピンをまとめた JSON。
     func queryKeys(userID: String) async throws -> String
+    /// 複数のユーザーの `keys/query`（`user_ids` に、判定するユーザーを入れた JSON）。
+    func queryKeys(userIDs: [String]) async throws -> String
+    /// TOFU のピンを登録する。別の端末のピンと食い違えば（409 `E2EE_PIN_CONFLICT`）`false`。
+    func registerPin(_ pin: String) async throws -> Bool
     /// `keys/claim`。応答の `one_time_keys`。
     func claim(_ oneTimeKeys: [String: JSONValue]) async throws -> [String: JSONValue]
     /// `to_device`。配れなかった端末の数（応答の `undelivered`）。
@@ -24,6 +28,14 @@ extension APIClient: E2eeVerificationAPI {
         if case .object(let envelope)? = response["data"] { response = envelope }
         response["user_ids"] = .array([.string(userID)])
         return String(decoding: try JSONEncoder().encode(JSONValue.object(response)), as: UTF8.self)
+    }
+
+    func registerPin(_ pin: String) async throws -> Bool {
+        let value = try JSONDecoder().decode(JSONValue.self, from: Data(pin.utf8))
+        do {
+            _ = try await e2ee("api/e2ee/tofu_pins", method: "POST", body: ["pins": .array([value]), "replace": .bool(false)])
+            return true
+        } catch let failure as E2eeAPIError where failure.code == "E2EE_PIN_CONFLICT" { return false }
     }
 
     func claim(_ oneTimeKeys: [String: JSONValue]) async throws -> [String: JSONValue] {
@@ -131,6 +143,72 @@ final class E2eeVerification {
         let received = now()
         for message in messages { inbox.append((message, received)) }
         Task { @MainActor in try? await self.drain() }
+    }
+
+    // MARK: - 相手の検証状態と再検証
+
+    /// 他のユーザーの検証状態。
+    enum UserVerificationState: Equatable {
+        /// 自分のユーザー署名鍵で署名した（検証済み）。
+        case verified
+        /// 初めて見たときに信頼した（TOFU。検証はしていない）。
+        case trustedOnFirstUse
+        /// マスター鍵が変わった、など。再検証するまで、鍵を配らない。
+        case needsReverification
+        /// 暗号化を設定していない、署名が不正、解錠が要る、など。
+        case unavailable
+    }
+
+    /// 相手の検証状態を読む。初めて見た相手には TOFU のピンを置く（配布先の判定と同じ。最大 3 回、競合を読み直す）。
+    func state(of userID: String) async throws -> UserVerificationState {
+        let store = try currentStore()
+        for attempt in 0..<3 {
+            let keys = try await api.queryKeys(userIDs: [userID, store.userID])
+            let distribution = try store.recipients(pages: [keys])
+            if distribution.newPins.isEmpty || attempt == 2 {
+                guard let trust = distribution.users[userID] else { return .unavailable }
+                switch trust.state {
+                case .trusted(let basis): return basis == .userSigningSignature || basis == .own ? .verified : .trustedOnFirstUse
+                case .needsReverification: return .needsReverification
+                default: return .unavailable
+                }
+            }
+            for pin in distribution.newPins { try store.confirmPin(pin, accepted: try await api.registerPin(pin.pin)) }
+        }
+        return .unavailable
+    }
+
+    /// 再検証の確認の画面に出す、相手の今のマスター鍵の公開鍵（指紋）。
+    func masterKeyFingerprint(of userID: String) async throws -> String {
+        let keys = try await api.queryKeys(userID: userID)
+        guard let master = try Self.masterKey(in: keys, user: userID), let fingerprint = Self.fingerprint(master) else { throw ZooError.invalidResponse }
+        return fingerprint
+    }
+
+    /// 利用者が、確認の画面に出した指紋の鍵を受け入れた（再検証）。署名の直前に鍵を取り直し、同じ鍵のときだけ署名して、
+    /// 直前の再認証つきでピンと署名を保存する。違えば `ZooError.invalidResponse`（何も保存しない）。
+    func reverify(_ userID: String, expectedFingerprint: String) async throws {
+        let store = try currentStore()
+        let keys = try await api.queryKeys(userID: userID)
+        guard let master = try Self.masterKey(in: keys, user: userID), Self.fingerprint(master) == expectedFingerprint else {
+            throw ZooError.invalidResponse
+        }
+        let token = try await reauthenticate()
+        let masterJSON = sasJSONText(master)
+        let accepted = try store.acceptMasterKey(userID: userID, masterKey: masterJSON)
+        try await api.saveAccepted(pin: accepted.pin, signature: accepted.signature, reauth: token)
+        try store.confirmAcceptedMasterKey(userID: userID, masterKey: masterJSON)
+        onSaved?(userID)
+    }
+
+    private static func masterKey(in keys: String, user: String) throws -> JSONValue? {
+        guard case .object(let root)? = try? JSONDecoder().decode(JSONValue.self, from: Data(keys.utf8)) else { return nil }
+        return root["master_keys"]?.object?[user]
+    }
+
+    private static func fingerprint(_ master: JSONValue) -> String? {
+        guard let values = master.object?["keys"]?.object?.values, values.count == 1 else { return nil }
+        return values.first?.string
     }
 
     func accept(_ id: String) async { await act(id) { try $0.accept() } }

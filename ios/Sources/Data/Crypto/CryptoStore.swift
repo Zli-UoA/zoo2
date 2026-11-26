@@ -772,6 +772,18 @@ final class CryptoStore: @unchecked Sendable {
         }
     }
 
+    /// 利用者が相手の今のマスター鍵（JSON）を受け入れる（再検証）。記録を登録待ちで置き換え、送るピンと署名を返す（保存する）。
+    func acceptMasterKey(userID: String, masterKey: String) throws -> AcceptedMasterKey {
+        try lock.withLock {
+            try ensureOpen()
+            guard state.secrets_revision != nil, let sealed = state.own_keys else { throw E2eeStoreError.sendNeedsUnlock }
+            let own = try OwnKeys.fromPickle(sealed: sealed, account: account, storageKey: storageKey)
+            let accepted = try trust.acceptMasterKey(userSigning: own.userSigning(), targetUserId: userID, masterKey: masterKey)
+            try saveTrustStore()
+            return accepted
+        }
+    }
+
     /// 受け入れのピンと署名をサーバーに保存できた（登録待ちを外す）。
     func confirmAcceptedMasterKey(userID: String, masterKey: String) throws {
         try lock.withLock {

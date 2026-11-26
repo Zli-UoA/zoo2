@@ -7,6 +7,8 @@ import Testing
 private final class StubVerificationAPI: E2eeVerificationAPI {
     var queries = 0
     func queryKeys(userID: String) async throws -> String { queries += 1; return "{}" }
+    func queryKeys(userIDs: [String]) async throws -> String { queries += 1; return "{}" }
+    func registerPin(_ pin: String) async throws -> Bool { true }
     func claim(_ oneTimeKeys: [String: JSONValue]) async throws -> [String: JSONValue] { [:] }
     func sendToDevice(deviceID: String, messages: [String: JSONValue]) async throws -> Int { 0 }
     func saveAccepted(pin: String, signature: SignatureUpload, reauth: String) async throws {}

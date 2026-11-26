@@ -230,6 +230,28 @@ struct RevocationTests {
 }
 
 @MainActor
+struct ReverifyTests {
+    private let other = "22222222-2222-4222-8222-222222222222"
+
+    @Test func 相手のマスター鍵を受け入れるとピンと署名を作り保存できたら登録待ちを外す() async throws {
+        let fake = FakeSetupServer(userID: user)
+        let device = try Device(fake)
+        defer { device.cleanUp() }
+        // 解錠していない端末は、受け入れられない。
+        let theirs = try CrossSigningKeys.generate(userId: other)
+        let master = theirs.master().publicKeyJson()
+        #expect(throws: E2eeStoreError.sendNeedsUnlock) { _ = try device.store.acceptMasterKey(userID: other, masterKey: master) }
+
+        let start = try device.setup.begin()
+        try await device.setup.completeSetup(start.session, reauth: "t")
+        let accepted = try device.store.acceptMasterKey(userID: other, masterKey: master)
+        #expect(accepted.signature.targetUserId == other)
+        #expect(accepted.pin.contains(other))
+        try device.store.confirmAcceptedMasterKey(userID: other, masterKey: master)
+    }
+}
+
+@MainActor
 struct KeySlotsTests {
     /// 鍵スロットの API を模した、状態を持つサーバー。
     private final class Server: E2eeRevocationAPI {
