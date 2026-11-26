@@ -320,12 +320,12 @@ async function handleAsset(request) {
 }
 
 // nginx の try_files は見つからないファイルに index.html を返す。HTML を manifest として
-// 保存するとオフライン起動の配色まで壊れるため、ContentType で受け入れるか決める。
-function isExpectedFreshAsset(path, response) {
+// 保存するとオフライン起動の配色まで壊れるため拒否する。本番の nginx は webmanifest を
+// application/octet-stream で配信するため、JSON 系だけを許可することはできない。
+function isFreshAssetResponse(path, response) {
   const type = (response.headers.get("content-type") || "").toLowerCase();
-  return path === "/offline.html"
-    ? type.includes("text/html")
-    : type.includes("manifest+json") || type.includes("application/json");
+  // offline.html は HTML そのものなので、こちらは HTML を要求する。
+  return path === "/offline.html" ? type.includes("text/html") : !type.includes("text/html");
 }
 
 async function handleFreshAsset(request) {
@@ -333,7 +333,7 @@ async function handleFreshAsset(request) {
   const path = new URL(request.url, self.location.origin).pathname;
   try {
     const response = await fetch(request, { cache: "reload" });
-    if (response.ok && isExpectedFreshAsset(path, response)) {
+    if (response.ok && isFreshAssetResponse(path, response)) {
       if (response.type !== "basic") return response;
       // 保存に失敗しても取得できた最新の応答は返す。古いキャッシュへ戻さない。
       const fresh = response.clone();

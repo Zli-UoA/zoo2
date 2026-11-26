@@ -767,6 +767,30 @@ test("an HTML fallback for a missing manifest does not overwrite the cached mani
   );
 });
 
+test("a manifest served as octet-stream by nginx is still accepted", async () => {
+  let manifest = '{"background_color":"#ffffff"}';
+  const { handlers, cacheContext } = worker({
+    fetch: async (input) => {
+      if (requestKey(input) === `${ORIGIN}/manifest.webmanifest`)
+        return basicResponse(manifest, { headers: { "content-type": "application/octet-stream" } });
+      return basicResponse(`network:${requestKey(input)}`);
+    },
+  });
+  await dispatch(handlers, "install");
+  manifest = '{"background_color":"#000000"}';
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+  });
+  assert.equal(await response.text(), '{"background_color":"#000000"}');
+  const cache = await cacheContext.api.open("zoo-shell-v2");
+  assert.equal(
+    await (await cache.match(`${ORIGIN}/manifest.webmanifest`)).text(),
+    '{"background_color":"#000000"}',
+  );
+});
+
 test("opening offline.html online refreshes its cached copy", async () => {
   let html = "<html>old offline</html>";
   const { handlers, cacheContext } = worker({
