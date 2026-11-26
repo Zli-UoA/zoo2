@@ -22,7 +22,12 @@ import { AppAvatar } from "../chat/AppIdentity";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "../ui/dialog";
 import { Separator } from "../ui/separator";
-import { AppDialogs } from "../chat/AppsDialog";
+import { lazy, Suspense } from "react";
+
+// アプリの一覧ダイアログは開くまで要らない。レールの初期チャンクから外す。
+const AppDialogs = lazy(() =>
+  import("../chat/AppsDialog").then((module) => ({ default: module.AppDialogs })),
+);
 import { NotificationsButton } from "../chat/NotificationsButton";
 import { CatchUpButton } from "../chat/CatchUpButton";
 import { PaneHeader } from "./PaneHeader";
@@ -100,7 +105,9 @@ export function LeftRail() {
       <NotificationsButton />
       <CatchUpButton />
       <RailLink to="/bubble" icon={MessageCircleMoreIcon} label={t("bubbleChat.title")} exact />
-      <AppDialogs />
+      <Suspense fallback={null}>
+        <AppDialogs />
+      </Suspense>
       {/* 同期の状態（/realtime）は開発時の確認用。本番ビルドでは出さない。 */}
       {import.meta.env.DEV ? (
         <RailLink to="/realtime" icon={ActivityIcon} label={t("sync.title")} exact />
