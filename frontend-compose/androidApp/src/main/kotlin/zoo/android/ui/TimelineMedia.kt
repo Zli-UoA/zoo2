@@ -123,21 +123,24 @@ private val TimelineMedia.aspect: Float
 internal fun TimelineMediaGroup(
     media: List<TimelineMedia>, colors: AndroidColors, apub: Boolean, open: (TimelineMedia) -> Unit,
 ) {
-    var start = 0
-    while (start < media.size) {
-        val first = media[start]
-        if (first.kind == TimelineMediaKind.Video) {
-            key(first.key) { TimelineMediaTile(first, colors) { open(first) } }
-            start++
-        } else {
-            var end = start + 1
-            while (end < media.size && media[end].kind == TimelineMediaKind.Image) end++
-            val images = media.subList(start, end)
-            key(first.key) {
-                if (apub) ApubImageGrid(images, colors, open)
-                else ChannelImageStrip(images, colors, open)
+    if (media.isEmpty()) return
+    Column {
+        var start = 0
+        while (start < media.size) {
+            val first = media[start]
+            if (first.kind == TimelineMediaKind.Video) {
+                key(first.key) { TimelineMediaTile(first, colors) { open(first) } }
+                start++
+            } else {
+                var end = start + 1
+                while (end < media.size && media[end].kind == TimelineMediaKind.Image) end++
+                val images = media.subList(start, end)
+                key(first.key) {
+                    if (apub) ApubImageGrid(images, colors, open)
+                    else ChannelImageStrip(images, colors, open)
+                }
+                start = end
             }
-            start = end
         }
     }
 }

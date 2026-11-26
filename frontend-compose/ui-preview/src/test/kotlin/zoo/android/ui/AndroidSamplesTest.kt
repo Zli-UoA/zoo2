@@ -192,7 +192,7 @@ class AndroidSamplesTest {
         val illustratedPost = homePosts.first().copy(
             repostedBy = "みずき",
             quote = TimelineQuote("https://example.test/notes/42", null, "なぎ", "引用元の投稿を共有します。", emptyList()),
-            media = listOf(TimelineMedia("post-image", "投稿画像", TimelineMediaKind.Image),
+            media = listOf(TimelineMedia("post-image", "投稿画像", TimelineMediaKind.Image, imageAspectRatio = 16f / 9f),
                 TimelineMedia("post-video", "投稿動画", TimelineMediaKind.Video, sensitive = true)),
         )
         val illustratedMessage = posts.first().copy(media = listOf(
