@@ -555,7 +555,15 @@ class SyncedTable(
                 if (onDemand) {
                     // changes_only の最初の up-to-date は空。行は subset snapshot が届くまで反映しない。
                     ready.complete(source)
-                    launch { loadOlder(PageScope.Main) }
+                    // 最初のページが取れるまで、間隔を空けて（最大 10 秒）やり直す。遅い応答は待つ。
+                    launch {
+                        var attempt = 0
+                        while (pages.value[PageScope.Main]?.loaded != true) {
+                            if (loadOlder(PageScope.Main)) break
+                            attempt++
+                            delay(minOf(1_000L * attempt, 10_000L))
+                        }
+                    }
                 } else {
                     acceptSnapshot(materialized.currentRows)
                 }

@@ -588,4 +588,38 @@ class RepositoryTest {
         val b = obj("id" to "b", "created_at" to "t")
         assertEquals(listOf(b, a), listOf(a, b).sortedWith(::compareNewestFirst))
     }
+
+    @Test
+    fun onDemandRetriesTheFirstPageUntilItSucceeds() = runTest {
+        val platform = FakePlatform()
+        var attempts = 0
+        val http =
+            HttpClient(
+                MockEngine { request ->
+                    val p = request.url.parameters
+                    when {
+                        p["subset__where"] != null -> {
+                            attempts++
+                            if (attempts == 1) respond("{}", HttpStatusCode.BadRequest)
+                            else respond(snapshot(listOf(message(1))), headers = protocolHeaders())
+                        }
+                        p["offset"] == "now" ->
+                            respond("""[{"headers":{"control":"up-to-date"}}]""", headers = protocolHeaders())
+                        else -> awaitCancellation()
+                    }
+                }
+            )
+        val table =
+            SyncedTable("messages", config, platform, http, backgroundScope,
+                mapOf("channel_id" to "channel-a"), options, onDemand = true)
+        try {
+            table.rows.first { it.isNotEmpty() }
+            assertEquals(2, attempts)
+            assertEquals(listOf("m001"), table.rows.value.map { it.text("id") })
+            assertTrue(table.pageStates.value.getValue(PageScope.Main).loaded)
+        } finally {
+            table.close()
+            http.close()
+        }
+    }
 }
