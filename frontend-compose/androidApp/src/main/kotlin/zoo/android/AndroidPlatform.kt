@@ -62,6 +62,7 @@ internal class AndroidPlatform(
         private set
 
     private val history = NavigationHistory(env.path)
+    val navigationRevision: Long get() = history.revision
     private val files = java.util.concurrent.ConcurrentHashMap<String, Uri>()
     private val cacheDirectory = java.io.File(activity.cacheDir, "accounts/${hash("$base:$userId")}")
     private val cache = AccountCache(cacheDirectory)

@@ -386,13 +386,14 @@ internal class ConnectedScreenState(
 
     fun confirmDelete(post: Boolean) {
         val action = confirmingEntry?.takeIf { it.operation == EntryOperation.Delete && it.item.editable } ?: return
+        val deletedChannelId = app.channelId
         request {
             val endpoint = if (post) "home" else "messages"
             app.api.request("/api/$endpoint/${action.item.id.encodeURLParameter()}", "DELETE")
             confirmingEntry = null
             if (!post) {
                 searchPreviewLinks.removeMessage(action.item.id)
-                app.channelId?.let { app.globalSearch.removeDeletedMessage(it, action.item.id) }
+                deletedChannelId?.let { app.globalSearch.removeDeletedMessage(it, action.item.id) }
             }
             if (post) {
                 if (openedPostId == action.item.id) {
@@ -629,7 +630,7 @@ internal class ConnectedScreenState(
         val selection = TimelineMediaSelection(listOf(media), 0, ChannelLinkTarget(id, parent))
         if (!canKeepMediaPreview(selection)) return
         val requestId = ++searchMediaRequest
-        val path = platform.env.path
+        val navigation = platform.navigationRevision
         request {
             // Cached signed URLs can outlive deletion. Ask the attachment API to authorize this open.
             try {
@@ -638,8 +639,8 @@ internal class ConnectedScreenState(
                 if (failure.status !in setOf(403, 404, 410)) throw failure
                 return@request
             }
-            if (requestId == searchMediaRequest && path == platform.env.path &&
-                row in search.items && canKeepMediaPreview(selection)) {
+            if (requestId == searchMediaRequest && navigation == platform.navigationRevision &&
+                platform.env.visible && row in search.items && canKeepMediaPreview(selection)) {
                 mediaPreview = selection
             }
         }
