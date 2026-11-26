@@ -121,8 +121,11 @@ fn message_lines(
 ) -> Vec<Line<'static>> {
     let time = created
         .map(|zoned| {
-            let pattern = if zoned.date() == Zoned::now().date() {
+            let today = Zoned::now().date();
+            let pattern = if zoned.date() == today {
                 "%H:%M"
+            } else if zoned.year() == today.year() {
+                "%m/%d %H:%M"
             } else {
                 "%Y/%m/%d %H:%M"
             };

@@ -53,19 +53,17 @@ describe("formatTime", () => {
     );
   });
 
-  it("adds the full date across a local midnight, even when less than a day has passed", () => {
+  it("shows the month and day across a local midnight in the same year", () => {
     const value = new Date(2026, 9, 19, 23, 59).toISOString();
-    expect(formatTime(value, "ja", new Date(2026, 9, 20, 0, 1))).toBe("2026/10/19 23:59");
+    expect(formatTime(value, "ja", new Date(2026, 9, 20, 0, 1))).toBe("10/19 23:59");
   });
 
-  it("zero-pads dates and includes the year for future and previous-year messages", () => {
-    const now = new Date(2026, 0, 1, 12);
-    expect(formatTime(new Date(2025, 11, 31, 19, 18).toISOString(), "ja", now)).toBe(
-      "2025/12/31 19:18",
-    );
-    expect(formatTime(new Date(2026, 0, 2, 3, 4).toISOString(), "en", now)).toBe(
-      "2026/01/02 03:04",
-    );
+  it("uses the local year boundary for past and future messages", () => {
+    const endOfYear = new Date(2026, 11, 31, 23, 59);
+    const newYear = new Date(2027, 0, 1, 0, 1);
+    expect(formatTime(endOfYear.toISOString(), "ja", newYear)).toBe("2026/12/31 23:59");
+    expect(formatTime(newYear.toISOString(), "en", endOfYear)).toBe("2027/01/01 00:01");
+    expect(formatTime(new Date(2027, 0, 2, 3, 4).toISOString(), "en", newYear)).toBe("01/02 03:04");
   });
 });
 
@@ -226,24 +224,9 @@ describe("formatEmbedTimestamp", () => {
   // 端末では日付が翌日になる）。
   const value = new Date(2026, 10, 23, 12).toISOString();
 
-  it("今日以外は年・月・日と時刻を出す", () => {
-    const text = formatEmbedTimestamp(value, "ja", new Date("2026-12-01T00:00:00Z"));
-    expect(text).toMatch(/^2026\/11\/23 \d{2}:\d{2}$/);
-  });
-
-  it("今年でない日時は、年も付ける", () => {
-    const text = formatEmbedTimestamp(value, "ja", new Date("2027-01-05T00:00:00Z"));
-    expect(text).toMatch(/^2026\/11\/23 \d{2}:\d{2}$/);
-  });
-
-  it("英語でも同じ年月日の表記にする", () => {
-    const text = formatEmbedTimestamp(value, "en", new Date("2026-12-01T00:00:00Z"));
-    expect(text).toMatch(/^2026\/11\/23 \d{2}:\d{2}$/);
-  });
-
-  it("時刻は 24 時間表記の HH:mm で、日付と同じ端末のローカル時刻にそろえる", () => {
-    const date = new Date(value);
-    const text = formatEmbedTimestamp(value, "ja", new Date("2026-12-01T00:00:00Z"));
-    expect(text.endsWith(formatClock(date, "ja"))).toBe(true);
+  it.each(["ja", "en"] as const)("埋め込みでも当日・同年・別の年を区別する (%s)", (locale) => {
+    expect(formatEmbedTimestamp(value, locale, new Date(2026, 10, 23, 23))).toBe("12:00");
+    expect(formatEmbedTimestamp(value, locale, new Date(2026, 11, 1))).toBe("11/23 12:00");
+    expect(formatEmbedTimestamp(value, locale, new Date(2027, 0, 1))).toBe("2026/11/23 12:00");
   });
 });

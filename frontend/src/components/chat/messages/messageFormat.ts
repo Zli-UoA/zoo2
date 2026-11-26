@@ -172,7 +172,7 @@ export function formatClock(date: Date, locale: Locale = DEFAULT_LOCALE): string
   }).format(date);
 }
 
-/** 今日の投稿は時刻、それ以外は端末ローカルの YYYY/MM/DD HH:mm。 */
+/** 端末の暦で、今日なら時刻のみ、今年なら月日、別の年なら年月日を添える。 */
 export function formatTime(
   value: string,
   locale: Locale = DEFAULT_LOCALE,
@@ -180,9 +180,11 @@ export function formatTime(
 ): string {
   const date = parseUtcTimestamp(value);
   const time = formatClock(date, locale);
-  return isSameLocalDay(date, now)
-    ? time
-    : `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${time}`;
+  if (isSameLocalDay(date, now)) return time;
+  const monthDay = `${pad(date.getMonth() + 1)}/${pad(date.getDate())}`;
+  const day =
+    date.getFullYear() === now.getFullYear() ? monthDay : `${date.getFullYear()}/${monthDay}`;
+  return `${day} ${time}`;
 }
 
 /** 埋め込みカードも投稿と同じ日時表記にする。 */

@@ -251,7 +251,8 @@ export function MessageRow({
   const { t } = useTranslation();
   const { locale } = useLocale();
   const { message } = item;
-  const isToday = isSameLocalDay(parseUtcTimestamp(message.created_at), new Date());
+  const now = new Date();
+  const isToday = isSameLocalDay(parseUtcTimestamp(message.created_at), now);
   const isEncryptedChannel = useEncryptedChannel();
   const decryptionFromPane = useMessageDecryption(message.id);
   // 暗号化に切り替える前の平文のメッセージ（#367）。本文はそのまま出し、編集させない。
@@ -433,7 +434,7 @@ export function MessageRow({
                 dateTime={normalizeUtcTimestamp(message.created_at)}
                 title={fullTimestamp(message.created_at, locale)}
               >
-                {formatTime(message.created_at, locale)}
+                {formatTime(message.created_at, locale, now)}
               </time>
             ) : null}
           </div>
@@ -448,7 +449,7 @@ export function MessageRow({
                 dateTime={normalizeUtcTimestamp(message.created_at)}
                 title={fullTimestamp(message.created_at, locale)}
               >
-                {formatTime(message.created_at, locale)}
+                {formatTime(message.created_at, locale, now)}
               </time>
               {message.apub ? (
                 <ActivityPubBadge visibility={message.apub_visibility ?? "public"} />

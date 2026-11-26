@@ -98,8 +98,14 @@ interface Platform {
 
     fun time(timestamp: String): String
 
-    fun messageTimestamp(timestamp: String): String =
-        if (day(timestamp) == day(now())) time(timestamp) else fullTimestamp(timestamp)
+    fun messageTimestamp(timestamp: String): String {
+        val date = day(timestamp)
+        val today = day(now())
+        val clock = time(timestamp)
+        if (date == today) return clock
+        val label = if (date.substringBefore('/') == today.substringBefore('/')) date.substringAfter('/') else date
+        return "$label $clock"
+    }
 
     fun fullTimestamp(timestamp: String): String = "${day(timestamp)} ${time(timestamp)}"
 
