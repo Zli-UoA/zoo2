@@ -431,12 +431,13 @@ fn search_result_metadata(
 ) -> Option<Span<'static>> {
     use unicode_width::UnicodeWidthStr;
     let available = width.saturating_sub(destination_width.min(5));
-    let short_date = time
+    let month_day_time = time
+        .split_once('/')
+        .and_then(|(_, rest)| rest.contains('/').then_some(rest));
+    let short_date = month_day_time
+        .unwrap_or(time)
         .split_once(' ')
-        .map(|(date, _)| match date.split_once('/') {
-            Some((_, month_day)) if month_day.contains('/') => month_day,
-            _ => date,
-        });
+        .map(|(date, _)| date);
     let labels: &[&str] = if reply {
         &[" スレッドの返信", " 返信"]
     } else {
