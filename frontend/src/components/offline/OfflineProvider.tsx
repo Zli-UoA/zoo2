@@ -10,7 +10,7 @@ import {
 
 import { useTranslation } from "react-i18next";
 
-import { resolveConfig, type AppConfig } from "../../lib/config";
+import type { AppConfig } from "../../lib/config";
 import { getCurrentUserStore } from "../../lib/currentUser";
 import { getCollections, type CollectionsBundle } from "../../lib/electric/collections";
 import { CollectionsProvider } from "../../lib/electric/collections-context";
@@ -18,7 +18,6 @@ import {
   clearPendingOfflineDeletion,
   forgetOfflineUserId,
   markOfflineDeletionPending,
-  readPendingOfflineDeletion,
   rememberOfflineUserId,
   readLastOfflineUserId,
   resolveOfflineNamespace,
@@ -42,21 +41,6 @@ import { clearLegacyFrontendStorage } from "../../lib/offline/legacy-storage";
 import { startAssetCaching } from "../../lib/pwa/cache-assets";
 import { Button } from "../ui/button";
 import { ShellSkeleton } from "../layout/ShellSkeleton";
-
-// OPFS の worker（大きい JS）は new Worker() を呼ぶまでダウンロードが始まらず、
-// その取得が初回描画をブロックする。名前空間が確定している dev / オフラインでは
-// モジュール評価の時点で開き始め、Provider は同じ Promise を使い回す。
-// OIDC のオンライン起動はユーザー解決を待つ必要があるため、ここでは触らない。
-if (typeof window !== "undefined") {
-  const config = resolveConfig();
-  if (!config.oidc && !readPendingOfflineDeletion()) {
-    const namespace = resolveOfflineNamespace({
-      devUserId: config.devUserId,
-      currentUserId: getCurrentUserStore(config).getState().currentUserId,
-    });
-    void openOfflinePersistence(namespace).catch(() => {});
-  }
-}
 
 interface ReadyState {
   key: string;

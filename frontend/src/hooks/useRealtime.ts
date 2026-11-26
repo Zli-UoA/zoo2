@@ -13,7 +13,7 @@ import type { FeedMessage as FeedRow } from "../components/chat/messages/message
 import { canAddChannelMember, canManageChannel } from "./channelPermissions";
 import { useCurrentUser } from "./useCurrentUser";
 
-/** 投稿者名の解決に使う全ユーザーを購読する。 */
+/** 投稿者名の解決に使うユーザーのうち、本人と共同チャンネルにいるものを購読する。 */
 export function useUsers() {
   const { users } = useCollections();
   const query = useLiveQuery((q) => q.from({ users }));

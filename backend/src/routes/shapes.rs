@@ -618,10 +618,13 @@ pub(crate) async fn users_shape(
 ) -> Result<Response, AppError> {
     // 起動時の既定は本人と同じチャンネルにいるユーザーだけ。ディレクトリ・DM 作成など
     // 全ユーザーが必要な画面は `?all=1` で従来の全件 Shape を明示的に購読する。
+    // ゲストはフラグに関係なく絞り込みを維持する（`all=1` を認可根拠にしない）。
     // `id = $1 OR ...` は users 全体の Seq Scan になる。自分の行は channel_user 経由で
     // 含まれるため、OR を外して主キー Index Only Scan が使える形にする。
+    let mut db = state.db.clone();
+    let is_guest = crate::apps::events::guest_in_db(&mut db, &auth_user.id).await?;
     let narrow_where = "id IN (SELECT user_id FROM channel_user WHERE channel_id IN (SELECT channel_id FROM channel_user WHERE user_id = $1))";
-    if raw_query.get("all").is_some_and(|value| value == "1") {
+    if raw_query.get("all").is_some_and(|value| value == "1") && !is_guest {
         return proxy_shape(&state, "users", None, &[], &raw_query, false, &auth_user.id).await;
     }
     proxy_shape(

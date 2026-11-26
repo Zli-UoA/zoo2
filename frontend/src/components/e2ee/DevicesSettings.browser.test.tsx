@@ -26,7 +26,7 @@ const live = vi.hoisted(() => ({
 }));
 
 vi.mock("@tanstack/react-db", () => ({ useLiveQuery: () => ({ data: live.empty }) }));
-vi.mock("../../hooks/useRealtime", () => ({ useUsers: () => ({ data: live.users }) }));
+vi.mock("../../hooks/useRealtime", () => ({ useAllUsers: () => ({ data: live.users }) }));
 vi.mock("../../lib/electric/collections-context", () => ({
   useCollections: () => live.collections,
 }));
