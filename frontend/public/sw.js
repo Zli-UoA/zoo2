@@ -220,6 +220,8 @@ async function fetchShellIndex() {
 }
 
 async function precacheShell() {
+  // 新しいキャッシュに正常な manifest / offline.html が無いときの引き継ぎ元。
+  const previousCache = await findActiveShellCache().catch(() => null);
   const index = await fetchShellIndex();
   // Without the app shell there is nothing safe to replace; keep the old cache.
   if (!index) throw new Error("Cannot install an app shell without a fresh index");
@@ -252,6 +254,20 @@ async function precacheShell() {
       }
     }),
   );
+  // 欠けた／不正な応答で保存できなかった分は旧シェルから引き継ぐ。新しいキャッシュが
+  // 選択されたあとにオフラインになっても、案内と配色設定を読めるようにする。
+  if (previousCache && previousCache !== name && (await caches.keys()).includes(previousCache)) {
+    try {
+      const previous = await caches.open(previousCache);
+      for (const path of ["/manifest.webmanifest", "/offline.html"]) {
+        if (await cache.match(path)) continue;
+        const saved = await previous.match(path);
+        if (saved) await cache.put(path, saved.clone());
+      }
+    } catch {
+      /* An unavailable old cache is not a reason to fail the install. */
+    }
+  }
   // Write the marker last so a partially precached cache is not selected.
   await cache.put(META_PATH, new Response(String(Date.now())));
 }

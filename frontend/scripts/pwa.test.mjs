@@ -889,6 +889,46 @@ test("install does not store an HTML fallback as the manifest", async () => {
   assert.equal(await cache.match(`${ORIGIN}/manifest.webmanifest`), undefined);
 });
 
+test("a valid manifest is carried over when a new shell install gets an invalid one", async () => {
+  const cacheContext = memoryCaches([
+    [
+      "zoo-shell-old",
+      `${ORIGIN}/manifest.webmanifest`,
+      basicResponse('{"background_color":"#ffffff"}'),
+    ],
+  ]);
+  const old = await cacheContext.api.open("zoo-shell-old");
+  await old.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("1"));
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async (input) => {
+      const key = requestKey(input);
+      if (key === `${ORIGIN}/manifest.webmanifest`)
+        return basicResponse("<html>app shell</html>", {
+          headers: { "content-type": "text/html" },
+        });
+      if (key === `${ORIGIN}/offline.html`)
+        return basicResponse('<meta name="zoo-offline" content="true" />offline', {
+          headers: { "content-type": "text/html" },
+        });
+      return basicResponse(`network:${key}`);
+    },
+  });
+  await dispatch(handlers, "install");
+  const offline = worker({
+    caches: cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const response = await fetchThrough(offline.handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+  });
+  assert.equal(await response.text(), '{"background_color":"#ffffff"}');
+});
+
 test("offline manifest fallback reads the active shell cache", async () => {
   const cacheContext = memoryCaches([
     [
