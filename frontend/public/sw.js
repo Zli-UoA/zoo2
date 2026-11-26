@@ -416,6 +416,26 @@ async function isOfflinePage(response) {
   }
 }
 
+async function currentShellPolicy() {
+  const candidates = [];
+  for (const name of (await caches.keys()).filter((name) => name.startsWith(POLICY_PREFIX))) {
+    const cache = await caches.open(name);
+    const meta = await cache.match(META_PATH);
+    const installedAt = meta ? Number(await meta.text()) : 0;
+    candidates.push({
+      name,
+      installedAt: Number.isFinite(installedAt) ? installedAt : 0,
+    });
+  }
+  candidates.sort((a, b) => b.installedAt - a.installedAt);
+  for (const { name } of candidates) {
+    const cache = await caches.open(name);
+    const shell = (await cache.match("/index.html")) || (await cache.match("/"));
+    if (shell) return { known: true, csp: shell.headers.get("content-security-policy") };
+  }
+  return { known: false, csp: null };
+}
+
 async function withPolicyHeaders(saved, csp) {
   const headers = cacheHeaders(saved);
   if (csp) headers.set("content-security-policy", csp);
@@ -431,7 +451,11 @@ async function handleFreshAsset(request) {
   const path = new URL(request.url, self.location.origin).pathname;
   let response;
   try {
-    response = await fetch(request, { cache: "reload" });
+    // サーバーが応答を返さない／本文が途中で止まる場合も、保存済みの版に戻れるようにする。
+    response = await fetch(request, {
+      cache: "reload",
+      signal: AbortSignal.timeout(10_000),
+    });
   } catch {
     return await cachedFreshAsset(path);
   }
@@ -442,6 +466,14 @@ async function handleFreshAsset(request) {
     (path !== "/offline.html" || (await isOfflinePage(response)));
   if (acceptable) {
     if (response.type !== "basic") return response;
+    if (path === "/offline.html") {
+      // 混在配信で古い CSP の案内が来ても、現行シェルのキャッシュは上書きしない。
+      const policy = await currentShellPolicy();
+      if (policy.known && response.headers.get("content-security-policy") !== policy.csp) {
+        const cached = await cachedFreshAsset(path);
+        return cached.type === "error" ? response : cached;
+      }
+    }
     // 保存に失敗しても取得できた最新の応答は返す。古いキャッシュへ戻さない。
     const fresh = response.clone();
     try {
@@ -473,17 +505,9 @@ async function cachedFreshAsset(path) {
     candidates.sort(
       (a, b) => Number(b.current) - Number(a.current) || b.installedAt - a.installedAt,
     );
-    let csp = null;
-    let currentPolicyKnown = false;
+    const policy = await currentShellPolicy();
     for (const { name, current } of candidates) {
       const cache = await caches.open(name);
-      if (current && !currentPolicyKnown) {
-        const shell = (await cache.match("/index.html")) || (await cache.match("/"));
-        if (shell) {
-          currentPolicyKnown = true;
-          csp = shell.headers.get("content-security-policy");
-        }
-      }
       const saved = await cache.match(path);
       if (!saved) continue;
       if (
@@ -494,9 +518,9 @@ async function cachedFreshAsset(path) {
         continue;
       if (current || path !== "/offline.html") return saved;
       // 現行のポリシーが確認できないときは、旧世代の案内ページを使わない。
-      if (!currentPolicyKnown) continue;
+      if (!policy.known) continue;
       // 旧世代の案内ページには現行の CSP を付ける（現行にヘッダーが無ければ削除）。
-      return await withPolicyHeaders(saved.clone(), csp);
+      return await withPolicyHeaders(saved.clone(), policy.csp);
     }
   } catch {
     /* No usable cached copy. */

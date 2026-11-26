@@ -1284,6 +1284,61 @@ test("an invalid cached manifest is not returned offline", async () => {
   assert.equal(response.type, "error");
 });
 
+test("fresh asset requests are time bounded", async () => {
+  let init;
+  const { handlers } = worker({
+    fetch: async (input, options) => {
+      init = options;
+      return basicResponse(validManifest("#ffffff"), {
+        headers: { "content-type": "application/manifest+json" },
+      });
+    },
+  });
+  await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+  });
+  assert.ok(init.signal instanceof AbortSignal);
+  assert.equal(init.signal.aborted, false);
+});
+
+test("an offline page with a stale CSP does not overwrite the current cache", async () => {
+  const cacheContext = memoryCaches([
+    [
+      "zoo-shell-v3-new-v2",
+      `${ORIGIN}/index.html`,
+      basicResponse("<html>app</html>", {
+        headers: { "content-type": "text/html", "content-security-policy": "new-policy" },
+      }),
+    ],
+    [
+      "zoo-shell-v3-new-v2",
+      `${ORIGIN}/offline.html`,
+      basicResponse('<meta name="zoo-offline" content="true" />cached', {
+        headers: { "content-type": "text/html", "content-security-policy": "new-policy" },
+      }),
+    ],
+  ]);
+  const cache = await cacheContext.api.open("zoo-shell-v3-new-v2");
+  await cache.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("2"));
+  const { handlers } = worker({
+    policyVersion: "new",
+    caches: cacheContext.api,
+    fetch: async (input) => {
+      if (new URL(requestKey(input)).pathname === "/offline.html")
+        return basicResponse('<meta name="zoo-offline" content="true" />new', {
+          headers: { "content-type": "text/html", "content-security-policy": "old-policy" },
+        });
+      return basicResponse(`network:${requestKey(input)}`);
+    },
+  });
+  const response = await fetchThrough(handlers, navigation(`${ORIGIN}/offline.html`));
+  assert.match(await response.text(), /cached/);
+  const saved = await cache.match(`${ORIGIN}/offline.html`);
+  assert.equal(saved.headers.get("content-security-policy"), "new-policy");
+});
+
 test("a queried offline.html is cached and read under its pathname", async () => {
   let html = '<html><meta name="zoo-offline" content="true" />old</html>';
   const { handlers, cacheContext } = worker({
