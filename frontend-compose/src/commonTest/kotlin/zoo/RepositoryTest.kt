@@ -425,7 +425,7 @@ class RepositoryTest {
         )
 
     private fun message(index: Int) =
-        """{"key":"m$index","value":{"id":"m${index.toString().padStart(3, '0')}","content":"c$index","created_at":"2026-11-${(index % 28 + 1).toString().padStart(2, '0')}T00:00:00Z","parent_id":null},"headers":{"operation":"insert"}}"""
+        """{"key":"m$index","value":{"id":"m${index.toString().padStart(3, '0')}","content":"c$index","created_at":"2026-11-01T${(index / 3600).toString().padStart(2, '0')}:${(index / 60 % 60).toString().padStart(2, '0')}:${(index % 60).toString().padStart(2, '0')}Z","parent_id":null},"headers":{"operation":"insert"}}"""
 
     private fun snapshot(messages: List<String>) =
         """{"metadata":{"xmin":"1","xmax":"1","xip_list":[],"snapshot_mark":1,"database_lsn":"1"},"data":[${messages.joinToString(",")}]}"""
@@ -486,7 +486,8 @@ class RepositoryTest {
                     when {
                         p["subset__where"] != null -> {
                             subsets += p.entries().associate { it.key to it.value.first() }
-                            val rows = if (subsets.size == 1) (100 until 150).map(::message) else listOf(message(1))
+                            // サーバーの並び（created_at DESC, id DESC）で返す。最古の行は最後の m100。
+                            val rows = if (subsets.size == 1) (100 until 150).reversed().map(::message) else listOf(message(1))
                             respond(snapshot(rows), headers = protocolHeaders())
                         }
                         p["offset"] == "now" ->
@@ -501,13 +502,14 @@ class RepositoryTest {
         try {
             val first = table.pageStates.first { it[PageScope.Main]?.loaded == true }.getValue(PageScope.Main)
             assertTrue(first.hasOlder)
-            assertNotNull(first.oldest)
+            // 最古の行は、先頭の行（m149）ではなく、最後の行 m100。
+            assertEquals("2026-11-01T00:01:40Z" to "m100", first.oldest)
             assertTrue(table.loadOlder(PageScope.Main))
             val second = subsets[1]
             assertTrue(second.getValue("subset__where").contains("created_at < \$1 OR (created_at = \$1 AND id < \$2)"))
             val bound = Json.parseToJsonElement(second.getValue("subset__params")).jsonObject
-            assertEquals(first.oldest!!.first, bound.getValue("1").jsonPrimitive.content)
-            assertEquals(first.oldest!!.second, bound.getValue("2").jsonPrimitive.content)
+            assertEquals("2026-11-01T00:01:40Z", bound.getValue("1").jsonPrimitive.content)
+            assertEquals("m100", bound.getValue("2").jsonPrimitive.content)
             val after = table.pageStates.value.getValue(PageScope.Main)
             assertFalse(after.hasOlder)
             // 取り終わった範囲は、もう取りに行かない。

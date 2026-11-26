@@ -31,6 +31,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
@@ -53,7 +54,6 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
-import kotlinx.coroutines.flow.first
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -492,16 +492,23 @@ private fun ColumnScope.TimelineWithInput(
     val scroll = rememberLazyListState()
     var positioned by rememberSaveable { mutableStateOf(false) }
     // スレッドは、親が先頭にあるので、最初から先頭に見える。利用者がドラッグするまでは、古い返信を読まない。
-    var dragged by remember { mutableStateOf(false) }
+    var drags by remember { mutableIntStateOf(0) }
     LaunchedEffect(scroll) {
-        scroll.interactionSource.interactions.first { it is DragInteraction.Start }
-        dragged = true
+        scroll.interactionSource.interactions.collect { if (it is DragInteraction.Start) drags++ }
     }
+    var servedDrags by remember { mutableIntStateOf(0) }
     val atTop by remember { derivedStateOf { scroll.firstVisibleItemIndex == 0 } }
     val requestEarlier by rememberUpdatedState(loadEarlier)
     // 先頭に来たら、古い 1 ページを取る。末尾へ初期位置を合わせる前に呼ぶと、開いた直後に全履歴を読んでしまう。
-    LaunchedEffect(atTop, positioned, dragged, loadEarlier != null, entries.size) {
-        if (atTop && (if (allowThreads) positioned else dragged)) requestEarlier?.invoke()
+    // スレッドは、親が先頭に残るので、ページが増えても先頭のまま。ドラッグ 1 回につき 1 ページだけ取る。
+    LaunchedEffect(atTop, positioned, drags, loadEarlier != null, entries.size.takeIf { allowThreads }) {
+        if (!atTop) return@LaunchedEffect
+        if (allowThreads) {
+            if (positioned) requestEarlier?.invoke()
+        } else if (drags > servedDrags && requestEarlier != null) {
+            servedDrags = drags
+            requestEarlier?.invoke()
+        }
     }
     var openedTarget by rememberSaveable { mutableStateOf<String?>(null) }
     val focusedIndex = entries.indexOfFirst { it.id == focusMessage }

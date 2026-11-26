@@ -16,8 +16,10 @@ import androidx.compose.ui.unit.dp
 import io.ktor.http.Url
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonPrimitive
 import zoo.*
 import zoo.android.ui.*
@@ -26,6 +28,8 @@ import zoo.android.phone.rememberCallImage
 
 /** 窓の外の対象まで古い方へ広げる、1 ページずつの読み込みの上限。 */
 private const val MAX_FOCUS_PAGES = 20
+private const val MAX_FOCUS_WAITS = 100
+private const val MAX_FOCUS_FAILURES = 3
 
 @Composable
 internal fun ConnectedScreens(
@@ -109,13 +113,20 @@ internal fun ConnectedScreens(
         val table = messageTable ?: return@LaunchedEffect
         val target = focusMessage ?: return@LaunchedEffect
         if (table.rows.value.none { it.text("id") == target }) table.loadAround(target)
-        val row = table.rows.value.find { it.text("id") == target } ?: return@LaunchedEffect
+        // 行は、最初のメインのページが画面に反映されるまで rows に入らない。入るのを待ってから広げる。
+        val row = withTimeoutOrNull(10_000) { table.rows.first { rows -> rows.any { it.text("id") == target } } }
+            ?.first { it.text("id") == target } ?: return@LaunchedEffect
         val range = row.text("parent_id").takeIf { it.isNotEmpty() }?.let(PageScope::Replies) ?: PageScope.Main
-        repeat(MAX_FOCUS_PAGES) {
+        // 上限は取れたページ数だけで数える。ほかの処理が取っている間の待機と、失敗は、別に数える。
+        var pages = 0
+        var waits = 0
+        var failures = 0
+        while (pages < MAX_FOCUS_PAGES && waits < MAX_FOCUS_WAITS && failures < MAX_FOCUS_FAILURES) {
             val state = table.pageStates.value[range]
             if (pageCovers(state?.oldest, row.text("created_at"), row.text("id"))) return@LaunchedEffect
             if (state != null && state.loaded && !state.hasOlder) return@LaunchedEffect
-            if (!table.loadOlder(range)) delay(100)
+            if (state?.loading == true || state == null) { waits++; delay(100); continue }
+            if (table.loadOlder(range)) pages++ else { failures++; delay(100) }
         }
     }
     // スレッドの親（窓の外かもしれない）と、返信の最新の 1 ページ。

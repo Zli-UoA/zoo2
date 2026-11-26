@@ -460,11 +460,21 @@ class SyncedTable(
                                 val again = requested.value
                                 requested.value = emptyList()
                                 launch {
+                                    var done = 0
                                     try {
-                                        again.forEach { fetchSubset(it.main, it.subset) }
+                                        again.forEach {
+                                            fetchSubset(it.main, it.subset)
+                                            done++
+                                        }
                                     } catch (e: CancellationException) {
                                         throw e
                                     } catch (e: Exception) {
+                                        // 取り直せなかった範囲は、次の up-to-date でもう一度取る。
+                                        val remaining = again.drop(done)
+                                        requested.update { current ->
+                                            remaining + current.filterNot { c -> remaining.any { it.subset == c.subset } }
+                                        }
+                                        refetchPending = true
                                         error.value = e
                                         loading.value = false
                                     }
@@ -532,9 +542,10 @@ class SyncedTable(
         row: Row? = null,
         key: String? = row?.let(::rowKey),
     ): JsonElement {
-        check(key == null || !optimistic.value.containsKey(key)) { "Write already pending" }
         // changes_only は購読を始めた時点より前の変更を送らない。最初のページが反映されるまで待つ。
+        // 待った後で、キーの保留を検査してから登録する（間に中断点を置かない）。
         if (onDemand && synchronize) withTimeoutOrNull(10_000) { accepting.first { it } }
+        check(key == null || !optimistic.value.containsKey(key)) { "Write already pending" }
         if (key != null) optimistic.update { it + (key to row) }
         try {
             val result = api.request(path, method, body)
