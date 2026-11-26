@@ -85,6 +85,7 @@ internal fun ConnectedScreens(
     val encryption = platform.messageEncryption
     val cryptoChanges by (encryption?.changes ?: remember { kotlinx.coroutines.flow.MutableStateFlow(0L) }).collectAsState()
     val messageEntries by produceState(emptyList<TimelineItem>(), rows, usersById, encrypted, canPost, cryptoChanges, session.workspaceEmojis) {
+        state.forgetSearchPreviews(rows)
         val ordered = rows.filterNot { it.present("deleted_at") }.sortedWith(compareBy({ it.text("created_at") }, { it.text("id") }))
         value = ordered.map { row ->
             val decrypted = if (row.present("ciphertext")) {
@@ -312,11 +313,14 @@ internal fun ConnectedScreens(
     val profileHost = profileUrl?.let { Url(it).host }.orEmpty()
     val profileAvatarUrl = timelineAvatarUrl(session.config.apiBaseUrl, profile)
     val profileAvatar = if (state.overlay == "profile" && profileAvatarUrl != null) {
-        key(profile.text("id"), profileAvatarUrl) {
-            produceState<ImageBitmap?>(null) {
-                value = try { session.imageBitmap(profileAvatarUrl) }
-                catch (cancelled: CancellationException) { throw cancelled }
-                catch (_: Exception) { null }
+        key(session, profileAvatarUrl) {
+            val initial = session.cachedImageBitmap(profileAvatarUrl)
+            produceState(initial) {
+                if (initial == null) {
+                    value = try { session.imageBitmap(profileAvatarUrl) }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { null }
+                }
             }.value
         }
     } else null
@@ -379,7 +383,7 @@ internal fun ConnectedScreens(
                 selection = state.replySelection, focusRequest = state.replyFocusRequest, lastSend = state.replyLastSend))
         }
         state.overlay in setOf("theme", "language", "notifications", "search-engine") -> state.settingsDetail(env)
-        searching -> state.searchScreen(usersById, channels, memberships)
+        searching -> state.searchScreen(usersById, channels, memberships, previewService)
         route == "/home" -> AndroidScreen.Home(posts, state.home.timeline, state.home.canLoadOlder)
         route == "/notifications" -> state.inbox.screen()
         route == "/bubble" -> AndroidScreen.Bubble(bubbles.map { state.entry(it, usersById) }, InputState(bubbleDraft, live = true), bubbleParticipants.map { it.title })
@@ -453,7 +457,8 @@ internal fun ConnectedScreens(
                 pageState.SaveableStateProvider("sip") { SipRoute(session, phone, users, ::back) }
             } else {
                 CompositionLocalProvider(
-                    LocalTimelineImage provides { media -> timelineImage(session, media) },
+                    LocalTimelineImage provides remember(session) { { media -> timelineImage(session, media) } },
+                    LocalCachedTimelineImage provides remember(session) { { media -> cachedTimelineImage(session, media) } },
                     LocalKitchenReactionImage provides emojiCatalog::kitchenReaction,
                     LocalAndroidTranslation provides { session.t(it) },
                     LocalChannelLinks provides channelLinks,
@@ -495,15 +500,48 @@ internal fun ConnectedScreens(
             }
         }
     }
-    LaunchedEffect(env.visible, showFullCall) {
-        if (!env.visible || showFullCall) state.mediaPreview = null
+    val mediaSelection = state.mediaPreview
+    // Observe the current Shapes so a change to channel visibility closes an open search image.
+    val canKeepMedia = remember(mediaSelection, channels, memberships, users) {
+        mediaSelection?.let(state::canKeepMediaPreview) ?: true
     }
-    state.mediaPreview?.takeIf { env.visible && !showFullCall }?.let { media ->
-        key(media.key) {
-            TimelineMediaPreview(session, media, AndroidColors(env.dark), dismiss = { state.mediaPreview = null }) {
-                val id = media.attachmentId
-                if (id != null) session.attachmentLinks.download(obj("id" to id, "file_name" to media.name))
-                else media.url?.let { platform.action("open:$it") }
+    LaunchedEffect(env.visible, showFullCall, canKeepMedia) {
+        if (!env.visible || showFullCall || !canKeepMedia) state.mediaPreview = null
+    }
+    mediaSelection?.takeIf { env.visible && !showFullCall && canKeepMedia }?.let { selection ->
+        val target = selection.searchTarget
+        if (target?.messageId != null) {
+            LaunchedEffect(selection) {
+                session.repo.linkedMessages.observe(target.channelId, checkNotNull(target.messageId)).collect {
+                    state.dismissUnavailableSearchPreview(selection, it)
+                }
+            }
+        }
+        key(selection) {
+            val media = selection.selected
+            val dismiss = { state.mediaPreview = null }
+            val openOriginal: (TimelineMedia) -> Unit = { original ->
+                if (state.canKeepMediaPreview(selection)) {
+                    val id = original.attachmentId
+                    if (id != null) session.attachmentLinks.download(
+                        obj("id" to id, "file_name" to original.name),
+                        force = selection.searchTarget != null,
+                    ) else original.url?.let { platform.action("open:$it") }
+                } else dismiss()
+            }
+            if (media.kind == TimelineMediaKind.Image) {
+                CompositionLocalProvider(
+                    LocalTimelineImage provides remember(session) { { image -> timelineImage(session, image) } },
+                    LocalTimelineImageRetry provides remember(session) { { image -> timelineImage(session, image, retry = true) } },
+                    LocalCachedTimelineImage provides remember(session) { { image -> cachedTimelineImage(session, image) } },
+                    LocalAndroidTranslation provides { session.t(it) },
+                ) {
+                    TimelineImageViewer(selection, dismiss, openOriginal)
+                }
+            } else {
+                TimelineVideoPreview(session, media, AndroidColors(env.dark), dismiss) {
+                    openOriginal(media)
+                }
             }
         }
     }

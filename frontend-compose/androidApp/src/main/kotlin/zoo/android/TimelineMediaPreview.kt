@@ -2,7 +2,6 @@ package zoo.android
 
 import android.widget.MediaController
 import android.widget.VideoView
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -11,7 +10,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -33,9 +31,16 @@ import zoo.android.ui.*
 internal suspend fun timelineMediaUrl(session: Session, media: TimelineMedia): String =
     media.url ?: session.attachmentLinks.get(requireNotNull(media.attachmentId))
 
-internal suspend fun timelineImage(session: Session, media: TimelineMedia): ImageBitmap? = try {
+internal fun cachedTimelineImage(session: Session, media: TimelineMedia): ImageBitmap? {
+    val publicUrl = media.previewUrl ?: media.url
+    if (publicUrl != null) return session.cachedImageBitmap(publicUrl)
+    val signedUrl = media.attachmentId?.let(session.attachmentLinks::cachedUrl) ?: return null
+    return session.cachedImageBitmap(signedUrl, signedAttachment = true)
+}
+
+internal suspend fun timelineImage(session: Session, media: TimelineMedia, retry: Boolean = false): ImageBitmap? = try {
     val usesSignedUrl = media.previewUrl == null && media.url == null && media.attachmentId != null
-    session.imageBitmap(media.previewUrl ?: timelineMediaUrl(session, media), signedAttachment = usesSignedUrl)
+    session.imageBitmap(media.previewUrl ?: timelineMediaUrl(session, media), signedAttachment = usesSignedUrl, retry = retry)
 } catch (cancelled: CancellationException) {
     throw cancelled
 } catch (_: Exception) {
@@ -43,27 +48,17 @@ internal suspend fun timelineImage(session: Session, media: TimelineMedia): Imag
 }
 
 @Composable
-internal fun TimelineMediaPreview(
+internal fun TimelineVideoPreview(
     session: Session, media: TimelineMedia, colors: AndroidColors, dismiss: () -> Unit, openOriginal: () -> Unit,
 ) {
     val context = LocalContext.current
-    var image by remember(media) { mutableStateOf<ImageBitmap?>(null) }
     var video by remember(media) { mutableStateOf<File?>(null) }
-    var failed by remember(media) { mutableStateOf(false) }
+    var failed by remember(session, media) { mutableStateOf(false) }
     val cacheDir = context.cacheDir
     DisposableEffect(media) { onDispose { video?.delete() } }
-    LaunchedEffect(media) {
+    LaunchedEffect(session, media) {
         try {
-            when (media.kind) {
-                TimelineMediaKind.Image -> {
-                    image = timelineImage(session, media)
-                    failed = image == null
-                }
-                TimelineMediaKind.Video -> {
-                    val url = timelineMediaUrl(session, media)
-                    video = downloadTimelineVideo(url, cacheDir)
-                }
-            }
+            video = downloadTimelineVideo(timelineMediaUrl(session, media), cacheDir)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
@@ -76,11 +71,9 @@ internal fun TimelineMediaPreview(
         containerColor = colors.background,
         text = {
             Box(Modifier.fillMaxWidth().heightIn(min = 80.dp, max = 340.dp), contentAlignment = Alignment.Center) {
-                val bitmap = image
                 val file = video
                 when {
                     failed -> Text("プレビューを表示できません", color = colors.foreground)
-                    bitmap != null -> Image(bitmap, media.name, Modifier.fillMaxWidth(), contentScale = ContentScale.Fit)
                     file != null -> AndroidView(
                         factory = { ctx ->
                             VideoView(ctx).apply {

@@ -291,15 +291,23 @@ internal fun EntryBody(
     appLinks: Boolean = true,
 ) {
     val loader = LocalTimelineImage.current
+    val cached = LocalCachedTimelineImage.current
     val channelLinks = entryChannelLinks(body, links && appLinks)
     val formatted = remember(body, emoji, highlight, links, channelLinks) {
         val lookup: ((String, Boolean) -> EntryChannelLink?)? =
             channelLinks?.let { found -> { url: String, _: Boolean -> found[url] } }
         formatEntry(body, emoji.keys, highlight, links, lookup)
     }
-    val images = remember(formatted, emoji, loader) { mutableStateMapOf<String, ImageBitmap>() }
-    LaunchedEffect(formatted, emoji, loader) {
-        formatted.getStringAnnotations(emojiTag, 0, formatted.length).map { it.item }.distinct().take(32).forEach { code ->
+    val codes = remember(formatted) {
+        formatted.getStringAnnotations(emojiTag, 0, formatted.length).map { it.item }.distinct().take(32)
+    }
+    val images = remember(codes, emoji, loader, cached) {
+        mutableStateMapOf<String, ImageBitmap>().apply {
+            codes.forEach { code -> emoji[code]?.let(cached)?.let { put(code, it) } }
+        }
+    }
+    LaunchedEffect(codes, emoji, loader, cached) {
+        codes.filterNot(images::containsKey).forEach { code ->
             launch {
                 val media = emoji[code] ?: return@launch
                 loader(media)?.let { images[code] = it }

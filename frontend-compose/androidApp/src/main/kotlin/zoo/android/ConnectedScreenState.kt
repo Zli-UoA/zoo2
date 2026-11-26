@@ -141,7 +141,7 @@ internal class ConnectedScreenState(
         private set
     var editing by mutableStateOf<AndroidUiAction.ActOnEntry?>(null)
         private set
-    var mediaPreview by mutableStateOf<TimelineMedia?>(null)
+    var mediaPreview by mutableStateOf<TimelineMediaSelection?>(null)
     var confirmingEntry by mutableStateOf<AndroidUiAction.ActOnEntry?>(null)
     private var editingPost = false
     private var returnOverlay: String? = null
@@ -263,12 +263,8 @@ internal class ConnectedScreenState(
                 image ?: account?.let { timelineAvatarUrl(app.config.apiBaseUrl, it) }, canToggle = timelineReactionCanToggle(value, selected = false, canReact = true, post = false))
         }
         val fileRows = (attachments + metadata.array("attachments").rows()).distinctBy { it.text("id") }
-        val attachmentMedia = if (allowPreview && !data.present("ciphertext")) fileRows.mapNotNull { file ->
-            val id = file.text("id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            val kind = timelineMediaKind(file.text("content_type")) ?: return@mapNotNull null
-            val name = file.text("file_name").ifBlank { if (kind == TimelineMediaKind.Video) "動画" else "画像" }
-            TimelineMedia(id, name, kind, file.flag("is_sensitive"), attachmentId = id)
-        } else emptyList()
+        val attachmentMedia = if (allowPreview && !data.present("ciphertext")) fileRows.mapNotNull(::timelineAttachmentMedia)
+        else emptyList()
         val previewIds = attachmentMedia.mapNotNull { it.attachmentId }.toSet()
         val files = fileRows.filterNot { it.text("id") in previewIds }.map { it.text("id") to it.text("file_name") }
         val postMedia = data.array("media").rows().mapNotNull(::postMedia)
@@ -280,6 +276,8 @@ internal class ConnectedScreenState(
         val links = if (!richContent.hidesBody) messageLinks(body, app.config.apiBaseUrl, quoteUri, mediaUrls)
             else MessageLinks(emptyList(), null)
         val url = links.external.takeIf { allowPreview && !data.present("ciphertext") }
+        if (!isPost) searchPreviewLinks.remember(data, url.takeUnless { data.present("deleted_at") })
+
         val createdAt = data.text("created_at")
         val time = platform.time(createdAt)
         val postHeader = if (isPost) {
@@ -308,12 +306,15 @@ internal class ConnectedScreenState(
 
     fun withLinkCard(entry: TimelineItem, service: String): TimelineItem {
         val url = entry.link ?: return entry
-        val preview = app.previews.cached(service, url) ?: return entry
-        val previewSource = publicUrlString(preview.image)
-        val alreadyAttached = previewSource != null && previewSource in entry.attachedImageUrls
-        val image = previewSource?.takeUnless { alreadyAttached }?.let { TimelineMedia(it, "", TimelineMediaKind.Image, url = it) }
-        return entry.copy(linkCard = EntryCard(preview.title, preview.description, url, preview.site, image = image,
-            formatted = false))
+        return entry.copy(linkCard = summalyCard(service, url, entry.attachedImageUrls))
+    }
+
+    private fun summalyCard(service: String, url: String, attachedImages: Set<String> = emptySet()): EntryCard? {
+        val preview = app.previews.cached(service, url) ?: return null
+        val image = publicUrlString(preview.image)?.takeUnless { it in attachedImages }
+            ?.let { TimelineMedia(it, "", TimelineMediaKind.Image, url = it) }
+        return EntryCard(preview.title, preview.description, url, preview.site, image = image,
+            formatted = false, summaly = true)
     }
 
     private fun displayEmoji(data: Row, metadata: Row, isPost: Boolean): Map<String, TimelineMedia> {
@@ -380,7 +381,8 @@ internal class ConnectedScreenState(
             }
             EntryOperation.Link -> if (!encrypted && publicUrl(action.value) != null) platform.action("open:${action.value}")
             EntryOperation.Media -> if (!encrypted) {
-                mediaPreview = (action.item.media + action.item.quote?.media.orEmpty()).firstOrNull { it.key == action.value }
+                val media = if (action.quotedMedia) action.item.quote?.media.orEmpty() else action.item.media
+                mediaPreview = selectMediaPreview(media, action.value)
             }
             EntryOperation.Quote -> action.item.quote?.let { quote ->
                 val postId = quote.postId
@@ -392,10 +394,15 @@ internal class ConnectedScreenState(
 
     fun confirmDelete(post: Boolean) {
         val action = confirmingEntry?.takeIf { it.operation == EntryOperation.Delete && it.item.editable } ?: return
+        val deletedChannelId = app.channelId
         request {
             val endpoint = if (post) "home" else "messages"
             app.api.request("/api/$endpoint/${action.item.id.encodeURLParameter()}", "DELETE")
             confirmingEntry = null
+            if (!post) {
+                searchPreviewLinks.removeMessage(action.item.id)
+                deletedChannelId?.let { app.globalSearch.removeDeletedMessage(it, action.item.id) }
+            }
             if (post) {
                 if (openedPostId == action.item.id) {
                     closePost()
@@ -513,29 +520,59 @@ internal class ConnectedScreenState(
         )
     }
 
-    fun searchScreen(users: Map<String, Row>, channels: List<Row>, members: List<Row>): AndroidScreen.Search {
+    private val searchPreviewLinks = SearchPreviewLinks()
+
+    fun forgetSearchPreviews(rows: List<Row>) {
+        rows.forEach { row ->
+            if (row.present("deleted_at") || row.present("ciphertext")) {
+                searchPreviewLinks.remove(row.text("channel_id"), row.text("id"))
+                if (row.present("deleted_at")) app.globalSearch.removeDeletedMessage(row.text("channel_id"), row.text("id"))
+            }
+        }
+    }
+
+    fun searchScreen(
+        users: Map<String, Row>, channels: List<Row>, members: List<Row>, previewService: String,
+    ): AndroidScreen.Search {
         val search = app.globalSearch
         val channelsById = channels.associateBy { it.text("id") }
+        val memberChannels = searchMemberChannels(members)
+        val guest = isSearchGuest(users[app.config.userId])
+        val messagesByChannel = mutableMapOf<String, Map<String, Row>>()
         val year = platform.day(platform.now()).substringBefore('/')
         return AndroidScreen.Search(SearchScreenState(
             searchText, search.query, search.type,
-            search.items.map { row ->
+            search.items.mapNotNull { row ->
+                val channelId = row.text("channel_id")
+                val channel = channelsById[channelId]?.takeIf {
+                    canViewSearchChannel(it, channelId in memberChannels, guest)
+                } ?: return@mapNotNull null
                 val file = isGlobalSearchFile(row, search.type)
-                val user = users[row.text("user_id")] ?: row.nested("author").takeIf { it.isNotEmpty() }
+                val searchAuthor = row.nested("author")
+                val user = users[row.text("user_id")] ?: searchAuthor
+                val link = if (file || row.text("kind") == "note") null else {
+                    val current = messagesByChannel.getOrPut(row.text("channel_id")) {
+                        app.repo.cachedMessages(row.text("channel_id")).associateBy { it.text("id") }
+                    }[row.text("id")]
+                    searchPreviewLinks.cached(row, current)
+                }
                 val createdAt = row.text("created_at")
                 val day = platform.day(createdAt).let { if (it.substringBefore('/') == year) it.substringAfter('/') else it }
                 SearchResultItem(
                     key = globalSearchKey(row, search.type),
-                    author = user?.let(::author)?.ifBlank { null } ?: row.text("user_id"),
+                    author = author(user).ifBlank { row.text("user_id") },
                     // Like Web, keep the first hit within the three lines of a narrow screen.
                     body = if (file) row.text("file_name") else focusSnippet(row.text("snippet"), searchTerms(search.query)),
                     time = listOf(day, platform.time(createdAt)).filter { it.isNotBlank() }.joinToString(" "),
-                    destination = searchDestination(row, channelsById[row.text("channel_id")], users, members),
-                    dm = isDm(row, channelsById[row.text("channel_id")]),
+                    destination = searchDestination(row, channel, users, members),
+                    dm = isDm(row, channel),
                     inThread = row.text("parent_id").isNotEmpty(),
                     file = file,
                     fileSize = if (file) attachmentSize(row.text("file_size")) else null,
                     emoji = if (file) emptyMap() else displayEmoji(row, row, isPost = false),
+                    avatar = timelineAvatarUrl(app.config.apiBaseUrl, user, searchAuthor),
+                    media = if (file) searchImage(row, channel) else null,
+                    linkCard = link?.let { summalyCard(previewService, it) },
                 )
             },
             loading = search.loading, loadingOlder = search.loadingOlder, error = search.error, loaded = search.loaded,
@@ -544,6 +581,82 @@ internal class ConnectedScreenState(
             filters = searchFilters(users, channels),
         ))
     }
+
+    private fun searchMemberChannels(members: List<Row>): Set<String> =
+        members.asSequence().filter { it.text("user_id") == app.config.userId && !it.present("deleted_at") }
+            .map { it.text("channel_id") }.toSet()
+
+    private fun isSearchGuest(user: Row?): Boolean = user == null || user.flag("is_guest")
+
+    private fun canViewSearchChannel(channel: Row, member: Boolean, guest: Boolean): Boolean =
+        searchChannelVisible(channel, member, guest, app.isEncryptedChannel(channel.text("id")))
+
+    private fun currentSearchChannel(id: String): Row? {
+        val members = searchMemberChannels(app.repo.members.rows.value)
+        val guest = isSearchGuest(app.repo.users.rows.value.firstOrNull { it.text("id") == app.config.userId })
+        return app.repo.channels.rows.value.firstOrNull { it.text("id") == id }
+            ?.takeIf { canViewSearchChannel(it, id in members, guest) }
+    }
+
+    fun canKeepMediaPreview(selection: TimelineMediaSelection): Boolean {
+        val target = selection.searchTarget ?: return true
+        val channel = currentSearchChannel(target.channelId) ?: return false
+        if (channel.flag("is_nsfw") && !selection.selected.sensitive) return false
+        val message = target.messageId?.let { app.repo.linkedMessages.peek(target.channelId, it) }
+        return message == null || !searchParentUnavailable(message)
+    }
+
+    fun dismissUnavailableSearchPreview(selection: TimelineMediaSelection, message: LinkedMessageState) {
+        if (mediaPreview != selection || !searchParentUnavailable(message)) return
+        val target = selection.searchTarget ?: return
+        val parent = message.row
+        if (parent is LinkedRow.Missing || (parent is LinkedRow.Found && parent.row.present("deleted_at"))) {
+            target.messageId?.let { app.globalSearch.removeDeletedMessage(target.channelId, it) }
+        }
+        mediaPreview = null
+    }
+
+    private fun searchParentUnavailable(message: LinkedMessageState): Boolean =
+        message.hasCiphertext || when (val parent = message.row) {
+            LinkedRow.Missing, LinkedRow.Failed -> true
+            is LinkedRow.Found -> parent.row.present("deleted_at") || parent.row.present("ciphertext")
+            LinkedRow.Loading -> false
+        }
+
+    private var searchMediaRequest = 0
+
+    private fun openSearchMedia(action: AndroidUiAction.OpenSearchMedia) {
+        val search = app.globalSearch
+        val row = search.items.firstOrNull {
+            isGlobalSearchFile(it, search.type) && globalSearchKey(it, search.type) == action.key
+        } ?: return
+        val id = row.text("channel_id")
+        val parent = row.text("message_id").takeIf { it.isNotBlank() } ?: return
+        val media = currentSearchChannel(id)?.let { searchImage(row, it) } ?: return
+        if (media.sensitive && !action.revealedSensitive) return
+        val attachmentId = media.attachmentId ?: return
+        val selection = TimelineMediaSelection(listOf(media), 0, ChannelLinkTarget(id, parent))
+        if (!canKeepMediaPreview(selection)) return
+        val requestId = ++searchMediaRequest
+        val navigation = platform.navigationRevision
+        request {
+            // Cached signed URLs can outlive deletion. Ask the attachment API to authorize this open.
+            try {
+                app.attachmentLinks.get(attachmentId, force = true)
+            } catch (failure: ApiException) {
+                if (failure.status !in setOf(403, 404, 410)) throw failure
+                return@request
+            }
+            if (requestId == searchMediaRequest && navigation == platform.navigationRevision &&
+                platform.env.visible && row in search.items && canKeepMediaPreview(selection)) {
+                mediaPreview = selection
+            }
+        }
+    }
+
+    private fun searchImage(row: Row, channel: Row): TimelineMedia? =
+        timelineAttachmentMedia(row)?.takeIf { it.kind == TimelineMediaKind.Image }
+            ?.let { it.copy(sensitive = it.sensitive || channel.flag("is_nsfw")) }
 
     /** Web's picker choices: the user first, then names in order; channels that search can reach (no DMs or encrypted ones). */
     private fun searchFilters(users: Map<String, Row>, channels: List<Row>): SearchFilterState {
@@ -761,6 +874,7 @@ internal class ConnectedScreenState(
                     // would otherwise stay where it was scrolled when the same result is opened again.
                     ?.let { platform.navigate(globalSearchDestination(it, search.type) + "&open=${kotlin.time.Clock.System.now().toEpochMilliseconds()}") }
             }
+            is AndroidUiAction.OpenSearchMedia -> openSearchMedia(action)
             AndroidUiAction.LoadOlderResults -> app.globalSearch.loadOlder()
             AndroidUiAction.RetrySearch -> app.globalSearch.retry()
             is AndroidUiAction.SelectResult -> when (overlay) {

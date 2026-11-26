@@ -64,6 +64,26 @@ class GlobalSearchControllerTest {
             .toString()
 
     @Test
+    fun deletedMessageAndItsAttachmentsStayOutOfLaterSearchResponses() = runTest {
+        val hits = kotlinx.serialization.json.JsonArray(listOf(
+            obj("id" to "parent", "kind" to "message", "channel_id" to "c"),
+            obj("id" to "attachment", "kind" to "file", "message_id" to "parent", "channel_id" to "c"),
+            obj("id" to "other", "kind" to "message", "channel_id" to "c"),
+        ))
+        val session = app { respond(obj("items" to hits).toString()) }
+        val search = session.globalSearch
+        search.search("photo")
+        runCurrent()
+        assertEquals(3, search.items.size)
+        search.removeDeletedMessage("c", "parent")
+        assertEquals(listOf("other"), search.items.map { it.text("id") })
+        search.refresh()
+        runCurrent()
+        assertEquals(listOf("other"), search.items.map { it.text("id") })
+        session.close()
+    }
+
+    @Test
     fun olderPagesUseTheEncodedCursorAndShortPagesKeepTheCursor() = runTest {
         val requests = mutableListOf<Parameters>()
         val cursor = """{"m":24310,"at":null,"id":null}"""

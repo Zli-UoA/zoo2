@@ -54,6 +54,21 @@ internal fun workspaceReactionImages(base: String, emojis: List<Row>): Map<Strin
 
 private val localMediaPath = Regex("/api/home/images/[a-fA-F0-9-]+")
 
+private fun Row.imageAspectRatio(kind: TimelineMediaKind): Float? {
+    if (kind != TimelineMediaKind.Image) return null
+    val width = text("width").toIntOrNull()?.takeIf { it > 0 } ?: return null
+    val height = text("height").toIntOrNull()?.takeIf { it > 0 } ?: return null
+    return width.toFloat() / height
+}
+
+internal fun timelineAttachmentMedia(row: Row): TimelineMedia? {
+    val id = row.text("id").takeIf(String::isNotBlank) ?: return null
+    val kind = timelineMediaKind(row.text("content_type")) ?: return null
+    val name = row.text("file_name").ifBlank { if (kind == TimelineMediaKind.Video) "動画" else "画像" }
+    return TimelineMedia(id, name, kind, row.flag("is_sensitive"), attachmentId = id,
+        imageAspectRatio = row.imageAspectRatio(kind), blurhash = row.text("blurhash").ifBlank { null })
+}
+
 internal fun timelinePostMedia(base: String, row: Row): TimelineMedia? {
     val raw = row.text("url")
     val local = raw.matches(localMediaPath)
@@ -67,7 +82,7 @@ internal fun timelinePostMedia(base: String, row: Row): TimelineMedia? {
     val original = if (local || !raw.startsWith('/')) timelineImageUrl(base, raw) else null
     val url = original ?: preview ?: return null
     val name = row.text("name").ifBlank { if (kind == TimelineMediaKind.Video) "動画" else "画像" }
-    return TimelineMedia(url, name, kind, row.flag("is_sensitive"), url = url, previewUrl = preview)
+    return TimelineMedia(url, name, kind, row.flag("is_sensitive"), url = url, previewUrl = preview, imageAspectRatio = row.imageAspectRatio(kind), blurhash = row.text("blurhash").ifBlank { null })
 }
 
 internal fun selectTimelineMedia(post: List<TimelineMedia>, attachments: List<TimelineMedia>, preferAttachments: Boolean) =
@@ -90,9 +105,11 @@ internal fun distinctTimelineMedia(media: List<TimelineMedia>): List<TimelineMed
             groupKeys.add(mutableSetOf())
         }
         val winner = checkNotNull(result[keep])
-        if (item.sensitive || matches.any { result[it]?.sensitive == true }) {
-            result[keep] = winner.copy(sensitive = true)
-        }
+        val sensitive = winner.sensitive || item.sensitive || matches.any { result[it]?.sensitive == true }
+        val aspectRatio = winner.imageAspectRatio ?: item.imageAspectRatio
+            ?: matches.firstNotNullOfOrNull { result[it]?.imageAspectRatio }
+        val blurhash = winner.blurhash ?: item.blurhash ?: matches.firstNotNullOfOrNull { result[it]?.blurhash }
+        result[keep] = winner.copy(sensitive = sensitive, imageAspectRatio = aspectRatio, blurhash = blurhash)
         for (merged in matches.drop(1)) {
             groupKeys[keep].addAll(groupKeys[merged])
             groupKeys[merged].clear()

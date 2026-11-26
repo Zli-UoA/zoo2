@@ -304,10 +304,13 @@ class ParityTransportTest {
                 backgroundScope,
             )
         val app = Session(repo, backgroundScope, Environment())
+        assertNull(app.attachmentLinks.cachedUrl("file"))
         assertEquals("https://storage.test/file.png", app.attachmentLinks.get("file"))
+        assertEquals("https://storage.test/file.png", app.attachmentLinks.cachedUrl("file"))
         app.attachmentLinks.get("file")
         assertEquals(1, calls)
         platform.timestamp = "2026-01-02T09:05:00Z"
+        assertNull(app.attachmentLinks.cachedUrl("file"))
         assertFailsWith<ApiException> { app.attachmentLinks.get("file") }
         assertTrue(app.attachmentLinks.errors["file"] == true)
         assertEquals("https://storage.test/file.png", app.attachmentLinks.get("file", true))

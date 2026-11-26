@@ -61,6 +61,25 @@ class GlobalSearchController(private val app: Session, private val scope: Corout
     /** When the current first page arrived (epoch ms); `null` until then. */
     private var fetchedAt: Long? = null
 
+    private val deletedMessages = linkedSetOf<Pair<String, String>>()
+
+    fun removeDeletedMessage(channelId: String, messageId: String) {
+        if (messageId.isBlank()) return
+        val key = channelId to messageId
+        if (!deletedMessages.add(key)) return
+        if (deletedMessages.size > 512) deletedMessages.remove(deletedMessages.first())
+        items = items.filterNot { messageKey(it, type) == key }
+    }
+
+    private fun messageKey(row: Row, kind: GlobalSearchType): Pair<String, String>? {
+        val id = when {
+            isGlobalSearchFile(row, kind) -> row.text("message_id")
+            row.text("kind") == "note" -> return null
+            else -> row.text("id")
+        }
+        return row.text("channel_id") to id
+    }
+
     fun search(text: String, kind: GlobalSearchType = type, filter: GlobalSearchFilters = filters) {
         val next = text.trim()
         val normalized = filter.normalized()
@@ -148,6 +167,7 @@ class GlobalSearchController(private val app: Session, private val scope: Corout
                     .objectOrEmpty()
             if (request.generation != generation) return
             val incoming = response["items"]?.rows().orEmpty()
+                .filterNot { messageKey(it, request.type) in deletedMessages }
             items =
                 if (request.cursor == null) incoming
                 else {

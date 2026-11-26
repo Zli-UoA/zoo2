@@ -446,6 +446,18 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
     let files = search(&app, &alice, &format!("type=files&q={}", q("議事録 pdf"))).await;
     assert_eq!(ids(&files), vec!["a1"], "{files}");
     assert_eq!(files["items"][0]["message_id"], json!(m(1)));
+    let hash = "LEHV6nWB2yk8pyo0adR*.7kCMdnj";
+    sql.execute(
+        "INSERT INTO attachments (id, message_id, uploader_id, channel_id, file_name, file_size, content_type, storage_key, width, height, blurhash)
+         VALUES ('search-image', $1, $2, $3, '風景写真.png', 10, 'image/png', 'search-image', 640, 480, $4)",
+        &[&m(1), &alice, &public, &hash],
+    )
+    .await?;
+    let images = search(&app, &alice, &format!("type=files&q={}", q("風景写真"))).await;
+    assert_eq!(images["items"][0]["blurhash"], json!(hash));
+    assert_eq!(images["items"][0]["width"], json!(640));
+    assert_eq!(images["items"][0]["height"], json!(480));
+
     assert_eq!(
         ids(&search(&app, &alice, &format!("type=notes&q={}", q("障害"))).await).len(),
         2

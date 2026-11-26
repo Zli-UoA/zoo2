@@ -160,7 +160,7 @@ internal sealed interface AndroidUiAction {
     data class OpenNotification(val path: String) : AndroidUiAction
     data object RetryNotifications : AndroidUiAction
     data object LoadMoreNotifications : AndroidUiAction
-    data class ActOnEntry(val item: TimelineItem, val operation: EntryOperation, val value: String = "", val reactionImageId: String? = null) : AndroidUiAction
+    data class ActOnEntry(val item: TimelineItem, val operation: EntryOperation, val value: String = "", val reactionImageId: String? = null, val quotedMedia: Boolean = false) : AndroidUiAction
     data class RespondFollow(val actor: String, val activity: String, val accept: Boolean) : AndroidUiAction
     data class RemoveFile(val id: String) : AndroidUiAction
     data class SelectInput(val range: TextRange) : AndroidUiAction
@@ -182,6 +182,7 @@ internal sealed interface AndroidUiAction {
     data class SelectSearchFilter(val field: SearchFilterField, val ids: List<String>) : AndroidUiAction
     data class ToggleSearchFilter(val flag: SearchFilterFlag) : AndroidUiAction
     data class OpenSearchResult(val key: String) : AndroidUiAction
+    data class OpenSearchMedia(val key: String, val revealedSensitive: Boolean = false) : AndroidUiAction
     data object LoadOlderResults : AndroidUiAction
     data object RetrySearch : AndroidUiAction
     data class ChannelNameChanged(val name: String) : AndroidUiAction
@@ -688,15 +689,13 @@ private fun Timeline(
                             Text(name, Modifier.clickable { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Attachment, id)) }
                                 .heightIn(min = 48.dp).padding(vertical = 12.dp), color = colors.foreground)
                         }
-                        entry.media.forEach { media ->
-                            TimelineMediaTile(media, colors) {
-                                dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Media, media.key))
-                            }
+                        TimelineMediaGroup(entry.media, colors, apub = posts) { media ->
+                            dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Media, media.key))
                         }
                         entry.quote?.let { quote ->
                             TimelineQuoteCard(quote, colors,
                                 open = { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Quote)) },
-                                openMedia = { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Media, it.key)) })
+                                openMedia = { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Media, it.key, quotedMedia = true)) })
                         }
                         entry.channelLinks.forEach { url -> ChannelLinkCard(url, colors, menu = { menuId = entry.id }) }
                         EntryCards(listOfNotNull(entry.linkCard), colors)
