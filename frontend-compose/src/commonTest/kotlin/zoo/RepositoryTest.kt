@@ -679,7 +679,7 @@ class RepositoryTest {
                 // 実時間で区切る。仮想時間で区切ると、別スレッドの応答を待つ間に、時計だけが進んで打ち切ってしまう。
                 withContext(Dispatchers.Default) { withTimeout(20_000) { block() } }
             } catch (e: TimeoutCancellationException) {
-                fail("did not finish: $name (subsetCalls=$subsetCalls, invalidations=${invalidations.value}) requests=${requestLog.takeLast(25)}")
+                fail("did not finish: $name (subsetCalls=$subsetCalls, invalidations=${invalidations.value}) requests=${requestLog.takeLast(25)} error=${table.error.value} pages=${table.pageStates.value} loading=${table.loading.value} rows=${table.rows.value.map { it.text("id") }}")
             }
         try {
             step("first page") { table.rows.first { rows -> rows.any { it.text("id") == "m001" } } }
