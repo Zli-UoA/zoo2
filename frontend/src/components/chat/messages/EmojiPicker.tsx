@@ -260,18 +260,21 @@ export type CustomEmojiOption = {
 };
 
 /**
- * Lower is better: 0 exact name, 1 name prefix, 2 name substring, 3 exact alias,
- * 4 alias prefix, 5 other alias/category match. Null when nothing matches.
+ * Lower is better: 0 exact name, 1 name prefix, 2 name substring, then the same three
+ * tiers (3 exact, 4 prefix, 5 substring) over aliases and category, which rank equally.
+ * Null when nothing matches.
  */
 function customEmojiRank(e: CustomEmojiOption, needle: string): number | null {
   const name = e.name.toLowerCase();
-  const names = (e.aliases ?? []).map((a) => a?.toLowerCase()).filter(Boolean);
+  const others = [...(e.aliases ?? []), e.category]
+    .map((v) => v?.toLowerCase())
+    .filter((v): v is string => Boolean(v));
   if (name === needle) return 0;
   if (name.startsWith(needle)) return 1;
   if (name.includes(needle)) return 2;
-  if (names.includes(needle)) return 3;
-  if (names.some((a) => a.startsWith(needle))) return 4;
-  if ([...names, e.category?.toLowerCase()].some((v) => v?.includes(needle))) return 5;
+  if (others.includes(needle)) return 3;
+  if (others.some((v) => v.startsWith(needle))) return 4;
+  if (others.some((v) => v.includes(needle))) return 5;
   return null;
 }
 

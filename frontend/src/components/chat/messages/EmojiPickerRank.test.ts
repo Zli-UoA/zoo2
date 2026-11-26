@@ -33,6 +33,11 @@ describe("rankCustomEmojis", () => {
     expect(rankCustomEmojis(options, "").map((x) => x.name)).toEqual(["longer_name", "a", "mid"]);
   });
 
+  it("ranks alias and category matches equally, so shorter names come first", () => {
+    const options = [e("longname", ["x"]), e("a", [], "x")];
+    expect(rankCustomEmojis(options, "x").map((x) => x.name)).toEqual(["a", "longname"]);
+  });
+
   it("keeps the original order for equal rank and length", () => {
     expect(rankCustomEmojis([e("ab1"), e("ab2")], "ab").map((x) => x.name)).toEqual(["ab1", "ab2"]);
   });
