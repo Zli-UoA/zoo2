@@ -2022,16 +2022,23 @@ async fn test_hints_rejects_remapped_slack_channel_target() -> anyhow::Result<()
     assert_eq!(message_row(&f, &ts).await["content"], "new post");
     let sync_rows = sql(
         &f.state,
-        "SELECT json_build_object('last_error',last_error)::text FROM slack_channel_syncs WHERE team_id=$1 AND slack_channel_id='C1'",
+        "SELECT json_build_object('running',running,'phase',phase,'lease_token',lease_token,\
+         'lease_until',lease_until,'last_error',last_error)::text \
+         FROM slack_channel_syncs WHERE team_id=$1 AND slack_channel_id='C1'",
         &[&f.team],
     )
     .await?;
-    assert!(
-        sync_rows[0]["last_error"]
-            .as_str()
-            .is_some_and(|e| e.contains("Slack sync target changed or no longer exists")),
-        "expected target change error, got {:?}",
-        sync_rows
+    // Remapping resets the sync and revokes its lease. The old worker must not
+    // overwrite that state with its target-changed error.
+    assert_eq!(
+        sync_rows,
+        vec![json!({
+            "running": false,
+            "phase": "history",
+            "lease_token": null,
+            "lease_until": null,
+            "last_error": null,
+        })]
     );
     Ok(())
 }
