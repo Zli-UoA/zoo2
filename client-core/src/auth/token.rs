@@ -1158,7 +1158,7 @@ impl TokenManager {
             return Ok(false);
         };
         let (lock, cleanup_error) = cleanup_stale_token_temps_async(&self.path, lock).await?;
-        let outcome = logout_with_cleanup_result(
+        let result = logout_with_cleanup_result(
             &self.path,
             &self.oidc,
             &self.http,
@@ -1166,10 +1166,10 @@ impl TokenManager {
             lock,
             cleanup_error,
         )
-        .await?;
-        if let Some(refresh_token) = unsaved
-            && outcome != DeleteOutcome::Changed
-        {
+        .await;
+        // 保存できなかった最新の refresh token は、この manager の session のものなので、
+        // ファイルの結果（別のログインに置き換わった、一時ファイルの回収に失敗した）にかかわらず失効を要求する。
+        if let Some(refresh_token) = unsaved {
             let revoke = async {
                 let discovery = discover(&self.http, &self.oidc.issuer).await?;
                 if let Some(endpoint) = discovery.revocation_endpoint {
@@ -1184,6 +1184,7 @@ impl TokenManager {
             };
             let _ = tokio::time::timeout(LOGOUT_REVOCATION_TIMEOUT, revoke).await;
         }
+        let outcome = result?;
         Ok(matches!(outcome, DeleteOutcome::Deleted))
     }
 
@@ -3323,6 +3324,50 @@ mod tests {
 
         assert!(!manager.sign_out_and_revoke().await.unwrap());
         assert_eq!(load(&path, &config, Some(API)).unwrap().unwrap(), newer);
+    }
+
+    #[tokio::test]
+    async fn sign_out_and_revoke_also_revokes_a_refresh_token_that_could_not_be_saved() {
+        let server = MockServer::start().await;
+        let issuer = format!("{}/api/auth", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/api/auth/.well-known/openid-configuration"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "issuer": issuer,
+                "token_endpoint": format!("{}/token", server.uri()),
+                "revocation_endpoint": format!("{}/revoke", server.uri())
+            })))
+            .mount(&server)
+            .await;
+        for token in ["old-refresh", "unsaved-refresh"] {
+            Mock::given(method("POST"))
+                .and(path("/revoke"))
+                .and(body_string_contains(format!("token={token}")))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+
+        let config = oidc(&issuer);
+        let path = temp_path("sign-out-and-revoke-unsaved");
+        let on_disk = tokens(&config, now() + 3600, Some("old-refresh"));
+        save(&path, &on_disk).unwrap();
+        let manager = TokenManager::new(
+            reqwest::Client::new(),
+            config.clone(),
+            path.clone(),
+            on_disk.clone(),
+        );
+        {
+            // 更新には成功したが、保存できなかった状態。
+            let mut state = manager.state.lock().await;
+            state.tokens.refresh_token = Some("unsaved-refresh".into());
+            state.pending_persist = Some(on_disk);
+        }
+
+        assert!(manager.sign_out_and_revoke().await.unwrap());
+        assert!(!path.exists());
     }
 
     #[tokio::test]
