@@ -415,11 +415,11 @@ class RepositoryTest {
     private val onDemandSchema =
         """{"id":{"type":"text"},"content":{"type":"text"},"created_at":{"type":"text"},"parent_id":{"type":"text"}}"""
 
-    private fun protocolHeaders(handle: String = "h", offset: String = "1_0") =
+    private fun protocolHeaders(handle: String = "h", offset: String = "1_0", cursor: String = "1") =
         headersOf(
             "electric-handle" to listOf(handle),
             "electric-offset" to listOf(offset),
-            "electric-cursor" to listOf("1"),
+            "electric-cursor" to listOf(cursor),
             "electric-schema" to listOf(onDemandSchema),
             "content-type" to listOf("application/json"),
         )
@@ -665,7 +665,8 @@ class RepositoryTest {
                         else ->
                             respond(
                                 """[{"headers":{"control":"up-to-date"}}]""",
-                                headers = protocolHeaders(handle, "${++offsetCounter}_0"),
+                                // cursor も毎回変える。同じ cursor を返すと、ライブラリは「再生」と見なして up-to-date を捨てる。
+                                headers = protocolHeaders(handle, "${++offsetCounter}_0", "c$offsetCounter"),
                             )
                     }
                 }
