@@ -1,6 +1,7 @@
 import { AccountGlyph, useMfmAccounts } from "./MfmAccounts";
 import { useWorkspaceEmojis } from "../../../lib/emoji/workspace";
 import { Button } from "../../ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../../ui/tooltip";
 import { noAutofill } from "../../ui/autofill";
 import { EmojiPicker as Frimousse } from "frimousse";
 import { SearchIcon } from "lucide-react";
@@ -39,7 +40,9 @@ const SCROLL_CORRECTION_WINDOW_MS = 200;
  * localStorage after the first load. `resolveMultilingualEmojiData` also loads
  * `search-index.json` once so every language (and pinyin) is searchable.
  */
-const KeyboardNavigationContext = createContext<{ current: number }>({ current: 0 });
+const KeyboardNavigationContext = createContext<{ current: number }>({
+  current: 0,
+});
 
 /** Owns the frimousse state (search, skin tone, keyboard navigation) for its children. */
 export function EmojiPickerRoot({
@@ -256,6 +259,31 @@ export type CustomEmojiOption = {
   height?: number | null;
 };
 
+/**
+ * Lower is better: 0 exact name, 1 name prefix, 2 name substring, 3 exact alias,
+ * 4 alias prefix, 5 other alias/category match. Null when nothing matches.
+ */
+function customEmojiRank(e: CustomEmojiOption, needle: string): number | null {
+  const name = e.name.toLowerCase();
+  const names = (e.aliases ?? []).map((a) => a?.toLowerCase()).filter(Boolean);
+  if (name === needle) return 0;
+  if (name.startsWith(needle)) return 1;
+  if (name.includes(needle)) return 2;
+  if (names.includes(needle)) return 3;
+  if (names.some((a) => a.startsWith(needle))) return 4;
+  if ([...names, e.category?.toLowerCase()].some((v) => v?.includes(needle))) return 5;
+  return null;
+}
+
+/** Exact matches first, then prefix, then substring; shorter names first within a rank. */
+export function rankCustomEmojis(options: CustomEmojiOption[], needle: string): CustomEmojiOption[] {
+  return options
+    .map((e, index) => ({ e, index, rank: customEmojiRank(e, needle) }))
+    .filter((x): x is { e: CustomEmojiOption; index: number; rank: number } => x.rank !== null)
+    .sort((a, b) => a.rank - b.rank || a.e.name.length - b.e.name.length || a.index - b.index)
+    .map((x) => x.e);
+}
+
 /** Workspace custom emoji plus account avatars, filtered by `query`. */
 export function useCustomEmojiSearch(query: string) {
   const { emojis, loading, failed, retry, imageUrl } = useWorkspaceEmojis();
@@ -270,11 +298,7 @@ export function useCustomEmojiSearch(query: string) {
     })),
   ];
   const needle = query.trim().toLowerCase();
-  const filtered = options.filter((e) =>
-    [e.name, e.category, ...(e.aliases ?? [])].some((value) =>
-      value?.toLowerCase().includes(needle),
-    ),
-  );
+  const filtered = rankCustomEmojis(options, needle);
   return { filtered, loading, failed, retry, imageUrl };
 }
 
@@ -318,24 +342,29 @@ function CustomEmojiGroups({
             {filtered
               .filter((e) => (e.category ?? "") === category)
               .map((e) => (
-                <Button
-                  key={e.name}
-                  variant="ghost"
-                  aria-label={`:${e.name}:`}
-                  title={`:${e.name}:`}
-                  onClick={() => onSelect(`:${e.name}:`)}
-                >
-                  {e.name.startsWith("@") ? (
-                    <AccountGlyph name={e.name.slice(1)} />
-                  ) : (
-                    <img
-                      src={imageUrl(e.url)}
-                      alt={`:${e.name}:`}
-                      className="h-7 w-auto max-w-40 object-contain"
-                      style={customEmojiImageStyle(e)}
-                    />
-                  )}
-                </Button>
+                <Tooltip key={e.name}>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        variant="ghost"
+                        aria-label={`:${e.name}:`}
+                        onClick={() => onSelect(`:${e.name}:`)}
+                      />
+                    }
+                  >
+                    {e.name.startsWith("@") ? (
+                      <AccountGlyph name={e.name.slice(1)} />
+                    ) : (
+                      <img
+                        src={imageUrl(e.url)}
+                        alt={`:${e.name}:`}
+                        className="h-7 w-auto max-w-40 object-contain"
+                        style={customEmojiImageStyle(e)}
+                      />
+                    )}
+                  </TooltipTrigger>
+                  <TooltipContent>{`:${e.name}:`}</TooltipContent>
+                </Tooltip>
               ))}
           </div>
         </section>
