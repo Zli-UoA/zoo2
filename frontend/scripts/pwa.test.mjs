@@ -656,10 +656,6 @@ test("the splash background is dark so launching at night is not dazzling", () =
   // Android のスプラッシュは manifest の background_color から作られ、OS ダークに
   // 追随しない。明るい色に戻すと夜の起動が眩しくなるので暗い色を固定する。
   assert.equal(manifest.background_color, "#000000");
-  assert.deepEqual(manifest.color_scheme_dark, {
-    background_color: "#000000",
-    theme_color: "#000000",
-  });
 });
 
 test("the offline page follows the system color scheme", () => {
