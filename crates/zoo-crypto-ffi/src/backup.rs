@@ -77,7 +77,8 @@ impl BackupDecryptionKey {
     }
 
     /// `GET /api/e2ee/key_backup/keys` の行（`BackupRow` の JSON の一覧）を復号し、`store` に取り込む。
-    /// 復号できない行は飛ばす。返すのは捨てた行の数（取り込んだ数ではない。コアの `import_rows` と同じ）。
+    /// 復号できない行は飛ばす。返すのは、復号・検証に失敗して捨てた行の数（取り込んだ数ではない。コアの `import_rows` と同じ）。
+    /// 送信者が保存済みの鍵と違うなどの理由で保持されなかった行は数えないので、0 は、すべての行が復元されたことを意味しない。
     pub fn import_rows(&self, store: &InboundSessionStore, rows: Vec<String>) -> Result<u64> {
         let rows = rows
             .iter()
