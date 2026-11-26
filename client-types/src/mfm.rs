@@ -641,8 +641,14 @@ fn shortcode(scan: &mut Scan, i: usize, base: Style) -> Option<(usize, Vec<Span>
     }
     // 辞書の値も、サーバーから届いた文字列として無害化する。
     let emoji = unicode_shortcode(name)?;
-    let emoji = crate::text::sanitize_display(&emoji).into_owned();
-    Some((name.len() + 2, vec![Span::styled(emoji, base)]))
+    Some((name.len() + 2, shortcode_spans(&emoji, base)))
+}
+
+fn shortcode_spans(emoji: &str, base: Style) -> Vec<Span> {
+    vec![Span::styled(
+        crate::text::sanitize_display(emoji).into_owned(),
+        base,
+    )]
 }
 
 fn unixtime(body: &str, base: Style) -> Vec<Span> {
@@ -682,17 +688,11 @@ mod tests {
 
     #[test]
     fn shortcode_values_are_sanitized() {
-        set_emoji_catalog(
-            [("evil".to_string(), "a\tb\u{1b}".to_string())].into(),
-            Default::default(),
-        );
-        let text: String = parse(":evil: :thumbsup:", None)
-            .iter()
-            .map(|line| line.to_string())
-            .collect();
-        set_emoji_catalog(Default::default(), Default::default());
-        assert!(!text.chars().any(char::is_control), "{text:?}");
-        assert!(text.contains("a    b\u{FFFD}"));
+        // 共有の辞書は変えず、辞書の値から Span を作る部分だけを確かめる。
+        let spans = shortcode_spans("a\tb\u{1b}", Style::new());
+        let text: String = spans.iter().map(|span| span.content.as_str()).collect();
+        assert_eq!(text, "a    b\u{FFFD}");
+        assert_eq!(shortcode_spans("👍", Style::new())[0].content, "👍");
     }
 
     #[test]
