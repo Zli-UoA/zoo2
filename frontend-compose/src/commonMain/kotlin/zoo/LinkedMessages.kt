@@ -121,6 +121,8 @@ interface LinkedChannelSource {
         val failed: Set<String> = emptySet(),
         /** 購読そのものの失敗。 */
         val failure: Throwable? = null,
+        /** 届いた行に暗号文があったか。[rows] に残さない行も含む。 */
+        val hasCiphertext: Boolean = false,
     )
 
     val state: StateFlow<State>
@@ -182,12 +184,14 @@ class LinkedChannelTable(
             generation++
             refetching = true
             synced.value = false
-            values.value = LinkedChannelSource.State()
+            values.value = LinkedChannelSource.State(hasCiphertext = values.value.hasCiphertext)
         }
         batch.forEach(::keep)
+        // 保持しない行でも、暗号文が届いたことは覚える（暗号化の格下げの判定に使う）。
+        val ciphertext = batch.any { (it.jsonObject["value"] as? JsonObject)?.present("ciphertext") == true }
         val upToDate = batch.any { control(it) == "up-to-date" }
         if (upToDate) synced.value = true
-        values.update { it.copy(rows = currentRows()) }
+        values.update { it.copy(rows = currentRows(), hasCiphertext = it.hasCiphertext || ciphertext) }
         if (upToDate && refetching) {
             refetching = false
             requested.toList().forEach(::fetch)
@@ -252,6 +256,8 @@ class LinkedChannelTable(
  *   [observe] で作り直す。
  * - 同時に購読するチャンネルは [maxChannels] まで。超えるときは使う行がない購読を先に閉じ、なければ
  *   読み込めなかったものとして、空くのを待つ。
+ * - 暗号文の行を一度でも見たチャンネルは、購読を閉じたあとも覚える。覚えた結果の平文を出さないようにする。
+ * - メッセージの ID の形でない値（[fetchable]）は取得せず、ないものとする。
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class LinkedMessages(
@@ -262,6 +268,7 @@ class LinkedMessages(
     private val releaseAfter: Duration = LINK_RELEASE_DELAY,
     private val clock: TimeSource = TimeSource.Monotonic,
     private val maxChannels: Int = LINK_MAX_CHANNELS,
+    private val fetchable: (messageId: String) -> Boolean = ::isMessageId,
 ) {
     private class Entry(val source: LinkedChannelSource) {
         var users = 0
@@ -276,24 +283,27 @@ class LinkedMessages(
     /** 取得できた結果。画面に戻ったときに、枠を経由せず表示する。 */
     private val results = LinkedHashMap<Key, LinkedRow>()
     private val started = mutableMapOf<Key, TimeMark>()
+    /** 暗号文の行を見たチャンネル。 */
+    private val ciphertextChannels = mutableSetOf<String>()
     /** 使う行がない購読ができるたびに進め、空きを待つ取得に知らせる。 */
     private val vacancies = MutableStateFlow(0)
 
     /** 要求を出さずに、いま分かっている状態を返す（最初の描画用）。 */
     fun peek(channelId: String, messageId: String): LinkedMessageState {
+        if (!fetchable(messageId)) return LinkedMessageState(LinkedRow.Missing)
         val rows = openRows(channelId)?.value
+        val ciphertext = sawCiphertext(channelId, rows, entries[channelId]?.source?.state?.value)
         val open = rows?.firstOrNull { it.text("id") == messageId }
-        return if (open != null) LinkedMessageState(LinkedRow.Found(open), hasCiphertext(rows))
-        else LinkedMessageState(
-            results[Key(channelId, messageId)] ?: LinkedRow.Loading,
-            hasCiphertext(rows) || hasCiphertext(entries[channelId]?.source?.state?.value?.rows?.values),
-        )
+        val row = if (open != null) LinkedRow.Found(open)
+        else results[Key(channelId, messageId)] ?: LinkedRow.Loading
+        return LinkedMessageState(row, ciphertext)
     }
 
     fun observe(channelId: String, messageId: String): Flow<LinkedMessageState> {
+        if (!fetchable(messageId)) return flowOf(LinkedMessageState(LinkedRow.Missing))
         val loaded = openRows(channelId) ?: return fetched(channelId, messageId)
         return loaded
-            .map { rows -> rows.firstOrNull { it.text("id") == messageId } to hasCiphertext(rows) }
+            .map { rows -> rows.firstOrNull { it.text("id") == messageId } to sawCiphertext(channelId, rows) }
             .distinctUntilChanged()
             .flatMapLatest { (row, ciphertext) ->
                 if (row != null) flowOf(LinkedMessageState(LinkedRow.Found(row), ciphertext))
@@ -306,7 +316,7 @@ class LinkedMessages(
         var acquired = acquire(channelId)
         while (acquired == null) {
             val seen = vacancies.value
-            emit(LinkedMessageState(results[key] ?: LinkedRow.Failed))
+            emit(LinkedMessageState(results[key] ?: LinkedRow.Failed, sawCiphertext(channelId)))
             vacancies.first { it != seen }
             acquired = acquire(channelId)
         }
@@ -346,7 +356,7 @@ class LinkedMessages(
         val shown = if (current == null || current == LinkedRow.Failed) previous ?: current else current
         return LinkedMessageState(
             shown ?: LinkedRow.Loading,
-            hasCiphertext(state.rows.values),
+            sawCiphertext(key.channelId, source = state),
             stalled = late && current == null,
         )
     }
@@ -357,7 +367,16 @@ class LinkedMessages(
         while (results.size > LINK_CACHE_SIZE) results.remove(results.keys.first())
     }
 
-    private fun hasCiphertext(rows: Collection<Row>?): Boolean = rows?.any { it.present("ciphertext") } == true
+    /** [channelId] で暗号文の行を見たことがあるか。[rows] と購読の状態に暗号文があれば覚える。 */
+    private fun sawCiphertext(
+        channelId: String, rows: Collection<Row>? = null, source: LinkedChannelSource.State? = null,
+    ): Boolean {
+        fun encrypted(candidates: Collection<Row>?) = candidates?.any { it.present("ciphertext") } == true
+        if (source?.hasCiphertext == true || encrypted(rows) || encrypted(source?.rows?.values)) {
+            ciphertextChannels.add(channelId)
+        }
+        return channelId in ciphertextChannels
+    }
 
     /** 購読を使い始める。上限まで使っていて空けられなければ `null`。 */
     private fun acquire(channelId: String): Entry? {
@@ -395,6 +414,7 @@ class LinkedMessages(
         entries.remove(channelId)
         // 閉じたあとの取得は、改めて時間を数える。
         started.keys.removeAll { it.channelId == channelId }
+        sawCiphertext(channelId, source = entry.source.state.value)
         entry.source.close()
     }
 
@@ -403,6 +423,7 @@ class LinkedMessages(
         entries.clear()
         results.clear()
         started.clear()
+        ciphertextChannels.clear()
         open.forEach {
             it.release?.cancel()
             it.source.close()

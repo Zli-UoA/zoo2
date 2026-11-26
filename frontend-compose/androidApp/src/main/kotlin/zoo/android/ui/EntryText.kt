@@ -49,6 +49,8 @@ import zoo.fetchedLinks
 
 private const val emojiTag = "zoo-entry-emoji"
 private const val channelLinkIconId = "zoo-channel-link-message"
+/** アイコンに置き換わる文字。幅も読みもない文字にして、読み上げとコピーに入れない。 */
+private const val channelLinkIconText = "\u2060"
 private const val channelLinkTag = "zoo-channel-link"
 /** 1 つの本文で、短い表示にするアプリ内リンクの上限（取得する行き先の数を抑える）。 */
 private const val maxResolvedLinks = 20
@@ -165,7 +167,7 @@ private fun AnnotatedString.Builder.appendMfm(body: String, format: EntryFormat,
                         val short = app?.label?.takeIf { bare && format.mark == null }
                         if (short != null) {
                             if (app.messageIcon) {
-                                appendInlineContent(channelLinkIconId, "\uD83D\uDCAC")
+                                appendInlineContent(channelLinkIconId, channelLinkIconText)
                                 append(' ')
                             }
                             append(short)
@@ -237,7 +239,8 @@ internal fun entryLabel(value: String, url: String?) = buildAnnotatedString {
 @Composable
 private fun entryChannelLinks(body: String, links: Boolean): Map<String, EntryChannelLink>? {
     val provider = LocalChannelLinks.current
-    if (provider == null || !links) return null
+    // アプリ内リンクがありえない本文は、リンクを探す解析をしない。
+    if (provider == null || !links || "/channels/" !in body) return null
     val found = remember(body, provider) {
         val urls = linkedMapOf<String, Boolean>()
         formatEntry(body, channelLink = { url, bare ->
@@ -284,9 +287,11 @@ private data class ChannelLinkState(
 internal fun EntryBody(
     body: String, color: Color, fontSize: TextUnit, emoji: Map<String, TimelineMedia>, maxLines: Int = Int.MAX_VALUE,
     highlight: EntryHighlight? = null, lineHeight: TextUnit = TextUnit.Unspecified, links: Boolean = true,
+    /** アプリ内リンクを短くして、行き先を取るか。 */
+    appLinks: Boolean = true,
 ) {
     val loader = LocalTimelineImage.current
-    val channelLinks = entryChannelLinks(body, links)
+    val channelLinks = entryChannelLinks(body, links && appLinks)
     val formatted = remember(body, emoji, highlight, links, channelLinks) {
         val lookup: ((String, Boolean) -> EntryChannelLink?)? =
             channelLinks?.let { found -> { url: String, _: Boolean -> found[url] } }

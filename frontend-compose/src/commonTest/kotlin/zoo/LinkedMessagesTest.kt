@@ -46,6 +46,8 @@ class LinkedMessagesTest {
     private fun TestScope.loader() = LinkedMessages(
         backgroundScope, openRows = { open[it] }, openSource = { FakeSource().also(sources::add) },
         stallAfter = 10.seconds, releaseAfter = 30.seconds, clock = testScheduler.timeSource,
+        // ID の形の確認は onlyMessageIdsAreFetched で見る。
+        fetchable = { true },
     )
 
     private class Observer(val job: Job, val states: MutableList<LinkedMessageState>) {
@@ -118,6 +120,41 @@ class LinkedMessagesTest {
     }
 
     @Test
+    fun onlyMessageIdsAreFetched() = runTest {
+        val loader = LinkedMessages(
+            backgroundScope, openRows = { open[it] }, openSource = { FakeSource().also(sources::add) },
+            clock = testScheduler.timeSource,
+        )
+        for (id in listOf("zzz", "m1", "0000", "12345678-1234-1234-1234-123456789012x")) {
+            assertEquals(LinkedRow.Missing, observe(loader, id = id).last.row, id)
+            assertEquals(LinkedRow.Missing, loader.peek("c1", id).row, id)
+        }
+        assertTrue(sources.isEmpty())
+        observe(loader, id = "0f8fad5b-d9cb-469f-a165-70867728950e")
+        assertEquals(listOf("0f8fad5b-d9cb-469f-a165-70867728950e"), sources.single().requests)
+    }
+
+    @Test
+    fun ciphertextSeenOnceStaysAfterTheSubscriptionCloses() = runTest {
+        val loader = loader()
+        val first = observe(loader)
+        sources.single().deliver(message)
+        runCurrent()
+        assertFalse(first.last.hasCiphertext)
+        // 保持しない行の暗号文でも、チャンネルとして覚える。
+        sources.single().state.update { it.copy(hasCiphertext = true) }
+        runCurrent()
+        assertTrue(first.last.hasCiphertext)
+        first.job.cancel()
+        advanceTimeBy(31.seconds)
+        runCurrent()
+        assertTrue(sources.single().closed)
+        assertTrue(loader.peek("c1", "m1").hasCiphertext)
+        assertTrue(observe(loader).states.all { it.hasCiphertext })
+        assertFalse(loader.peek("c2", "m1").hasCiphertext)
+    }
+
+    @Test
     fun timeKeepsCountingWhileTheRowIsOffScreen() = runTest {
         val loader = loader()
         observe(loader).job.cancel()
@@ -156,7 +193,7 @@ class LinkedMessagesTest {
     fun theNumberOfSubscribedChannelsIsLimited() = runTest {
         val loader = LinkedMessages(
             backgroundScope, openRows = { open[it] }, openSource = { FakeSource().also(sources::add) },
-            clock = testScheduler.timeSource, maxChannels = 2,
+            clock = testScheduler.timeSource, maxChannels = 2, fetchable = { true },
         )
         val first = observe(loader, channel = "c1")
         observe(loader, channel = "c2")
@@ -309,7 +346,7 @@ class LinkedChannelTableTest {
                 // live の要求が打ち切られるので、何度でも返す。
                 parameters["live"] == "true" && fetched ->
                     respond(
-                        """[{"key":"other","value":{"id":"other","content":"別の投稿"},"headers":{"operation":"insert"}},""" +
+                        """[{"key":"other","value":{"id":"other","content":"","ciphertext":"{}"},"headers":{"operation":"insert"}},""" +
                             """{"key":"m1","value":{"id":"m1","content":"直した本文"},"headers":{"operation":"update"}},""" +
                             """{"headers":{"control":"up-to-date"}}]""",
                         headers = next,
@@ -328,6 +365,8 @@ class LinkedChannelTableTest {
             table.request("m1")
             val state = table.state.first { it.rows["m1"]?.text("content") == "直した本文" }
             assertEquals(setOf("m1"), state.rows.keys)
+            // 保持しない行でも、暗号文が届いたことは分かる。
+            assertTrue(state.hasCiphertext)
         } finally {
             table.close()
             http.close()

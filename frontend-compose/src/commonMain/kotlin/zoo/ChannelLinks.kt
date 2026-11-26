@@ -15,6 +15,11 @@ data class ChannelLinkTarget(val channelId: String, val messageId: String? = nul
 
 private val channelLinkPath = Regex("^/channels/([^/]+)/?$")
 
+private val messageIdPattern = Regex("[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32}")
+
+/** メッセージの ID（UUID）の形か。ほかの値は、どのメッセージも指さない。 */
+fun isMessageId(value: String): Boolean = messageIdPattern.matches(value)
+
 /**
  * [url] が、接続先（[appBaseUrl]）と同じ origin の `/channels/<ID>` なら行き先を返す（Web の `parseChannelLink`）。
  * 別の origin、別のパス、ユーザー情報の付いた URL は `null`（外部のリンクとして扱う）。

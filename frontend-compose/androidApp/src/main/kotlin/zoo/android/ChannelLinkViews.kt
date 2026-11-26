@@ -1,7 +1,9 @@
 package zoo.android
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import kotlinx.coroutines.flow.flowOf
@@ -26,22 +28,38 @@ import zoo.text
 @Composable
 internal fun rememberChannelLinks(
     session: Session, platform: AndroidPlatform, open: (ChannelLinkTarget, String?) -> Unit,
-): ChannelLinkProvider = remember(session, platform, open) {
-    ChannelLinkProvider(
-        target = { url -> parseChannelLink(url, session.config.apiBaseUrl) },
-        view = { target -> channelLinkState(session, platform, target) },
-        open = open,
-    )
+): ChannelLinkProvider {
+    // 一覧の購読と索引は、リンクごとに作らず、画面で 1 つだけ持つ。値を読むのは各リンクの表示だけ。
+    val channels = session.repo.channels.rows.collectAsState()
+    val synchronized = session.repo.channels.synchronizedRows.collectAsState()
+    val users = session.repo.users.rows.collectAsState()
+    return remember(session, platform, open, channels, synchronized, users) {
+        val lists = ChannelLinkLists(
+            channels = derivedStateOf { channels.value.associateBy { it.text("id") } },
+            synchronized = derivedStateOf { synchronized.value != null },
+            users = derivedStateOf { users.value.associateBy { it.text("id") } },
+        )
+        ChannelLinkProvider(
+            target = { url -> parseChannelLink(url, session.config.apiBaseUrl) },
+            view = { target -> channelLinkState(session, platform, lists, target) },
+            open = open,
+        )
+    }
 }
 
+private class ChannelLinkLists(
+    val channels: State<Map<String, Row>>,
+    /** 一覧の初回同期（保存した控えではなく、サーバーから）が終わったか。終わるまで「見られない」と決めない。 */
+    val synchronized: State<Boolean>,
+    val users: State<Map<String, Row>>,
+)
+
 @Composable
-private fun channelLinkState(session: Session, platform: AndroidPlatform, target: ChannelLinkTarget): ChannelLinkView {
-    val channels by session.repo.channels.rows.collectAsState()
-    // 一覧の初回同期（保存した控えではなく、サーバーから）が終わるまで、「見られない」と決めない。
-    val synchronized by session.repo.channels.synchronizedRows.collectAsState()
-    val users by session.repo.users.rows.collectAsState()
-    val usersById = remember(users) { users.associateBy { it.text("id") } }
-    val channel = remember(channels, target.channelId) { linkedChannel(channels, target.channelId) }
+private fun channelLinkState(
+    session: Session, platform: AndroidPlatform, lists: ChannelLinkLists, target: ChannelLinkTarget,
+): ChannelLinkView {
+    val row = lists.channels.value[target.channelId]
+    val channel = remember(row, target.channelId) { linkedChannel(listOfNotNull(row), target.channelId) }
     // 見られるチャンネルのメッセージだけを取得する。
     val messageId = target.linkedMessageId?.takeIf { channel != null }
     val updates = remember(session, target.channelId, messageId) {
@@ -55,9 +73,9 @@ private fun channelLinkState(session: Session, platform: AndroidPlatform, target
     val records by remember(session) { session.encryptionRecords() }
         .collectAsState(remember(session) { session.currentEncryptionRecords })
     val info = resolveChannelLink(
-        target, channel, directoryReady = synchronized != null, message = message,
+        target, channel, directoryReady = lists.synchronized.value, message = message,
         recorded = channel != null && session.isEncryptedChannel(channel.id), records = records,
-        users = usersById, hidesContent = { messageRichContent(it).hidesBody },
+        users = lists.users.value, hidesContent = { messageRichContent(it).hidesBody },
     )
     return channelLinkView(info, { key, args -> session.t(key, *args) }) { createdAt ->
         channelLinkTime(createdAt, platform.now(), platform::day, platform::time)

@@ -225,7 +225,17 @@ class ChannelLinksTest {
         // ホストだけの URL は、末尾に `/` を付けた形で返る。
         assertEquals(listOf("https://b.test/"), previewUrls("[\$[fg.color=ff0000 https://a.test]](https://b.test)"))
         assertEquals(emptyList(), previewUrls("?[a [b] c](https://silent.test)"))
-        assertEquals(listOf("https://b.test/page"), previewUrls("[a](https://b.test/page.)"))
+        // `[文字](URL)` の行き先は、押して開くリンクと同じに切る。文字の中の URL は数えない。
+        for (content in listOf(
+            "[a](https://b.test/page.)",
+            "[https://a.test](https://b.test/x;y)",
+            "[a](https://b.test/日本)",
+            "[\$[x2 https://a.test]](https://b.test/x;y)",
+            "[https://a.test](https://b.test/x y)",
+        )) {
+            val opened = parseInline(content).mapNotNull { token -> token.url?.let(::publicUrlString) }
+            assertEquals(opened, previewUrls(content), content)
+        }
         // 文字に URL を書いたリンクは、URL そのものを書いたリンクと区別する。
         val labelled = parseInline("[https://a.test](https://a.test) https://c.test <https://d.test>")
         assertEquals(listOf(false, true, true), labelled.filter { it.url != null }.map { it.bare })

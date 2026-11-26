@@ -134,25 +134,12 @@ private class MfmScanner(length: Int) {
         if (source.getOrNull(start) != '[') return null
         val labelEnd = closing(source, start + 1, "](", budget = budget + 1) ?: return null
         val urlStart = labelEnd + 2
-        if (!source.startsWith("https://", urlStart) && !source.startsWith("http://", urlStart)) return null
-        var cursor = urlStart
-        var parentheses = 1
-        while (cursor < source.length && !source[cursor].isWhitespace()) {
-            if (!step()) return null
-            if (source[cursor] == '(') parentheses++
-            if (source[cursor] == ')') {
-                parentheses--
-                if (parentheses == 0) {
-                    return Inline(
-                        source.substring(start + 1, labelEnd),
-                        "link",
-                        source.substring(urlStart, cursor),
-                    ) to (cursor + 1)
-                }
-            }
-            cursor++
-        }
-        return null
+        val urlEnd = linkDestinationEnd(source, urlStart) { step() } ?: return null
+        return Inline(
+            source.substring(start + 1, labelEnd),
+            "link",
+            source.substring(urlStart, urlEnd),
+        ) to (urlEnd + 1)
     }
 
     fun inlineSlices(source: String): List<InlineSlice> {
@@ -407,6 +394,22 @@ internal fun leadingUrl(text: String, start: Int = 0): String? {
     open.firstOrNull()?.let { end = it.first }
     val url = text.substring(start, end).trimEnd('.', ',')
     return url.takeIf { it.length > scheme.length }
+}
+
+/**
+ * `[文字](` の直後 [start] から始まる行き先の終わり（対応する `)` の位置）。行き先は空白を含まず、丸括弧は対にする。
+ * http(s) の URL でないとき、閉じないとき、[step] が打ち切ったときは `null`（リンクではない）。
+ */
+internal fun linkDestinationEnd(text: String, start: Int, step: () -> Boolean): Int? {
+    if (!text.startsWith("https://", start) && !text.startsWith("http://", start)) return null
+    var parentheses = 1
+    for (cursor in start until text.length) {
+        val ch = text[cursor]
+        if (ch.isWhitespace() || !step()) return null
+        if (ch == '(') parentheses++
+        if (ch == ')' && --parentheses == 0) return cursor
+    }
+    return null
 }
 
 data class MfmRuby(val base: String, val reading: String)

@@ -30,13 +30,26 @@ fun publicUrl(raw: String): Url? =
 
 fun publicUrlString(raw: String): String? = publicUrl(raw)?.toString()
 
-/** Only visible links create cards: code, plain and MFM silent links stay private. */
+/** [publicUrl] が受け付ける長さ。これより長い行き先は調べない。 */
+private const val LINK_DESTINATION_LIMIT = 4096
+
 /**
- * `[文字](URL)` を行き先の URL に、`?[文字](URL)` を空白に置き換える。文字に書いた URL は行き先ではない。文字には、
- * 対になった角括弧を含められる（装飾の `$[…]` など）。本文を 1 回走査する。
+ * 本文の URL を、書いた順に返す。`[文字](URL)` は行き先だけ（文字に書いた URL は行き先ではない）で、行き先は
+ * 本文のリンクと同じ規則（[linkDestinationEnd]）で切る。`?[文字](URL)` の URL は含めない。文字には、対になった
+ * 角括弧を含められる（装飾の `$[…]` など）。
  */
-private fun markdownDestinations(text: String): String {
-    val result = StringBuilder()
+private fun writtenUrls(text: String): List<String> {
+    val urls = mutableListOf<String>()
+    fun addBare(part: String) {
+        var from = 0
+        while (true) {
+            val at = part.indexOf("http", from).takeIf { it >= 0 } ?: break
+            val url = leadingUrl(part, at)
+            if (url != null) urls.add(url)
+            // URL の中に書いた URL は数えない。
+            from = at + (url?.length ?: "http".length)
+        }
+    }
     val open = mutableListOf<Int>()
     var copied = 0
     var at = 0
@@ -46,15 +59,13 @@ private fun markdownDestinations(text: String): String {
             '\n' -> open.clear()
             ']' -> {
                 val start = if (open.isEmpty()) null else open.removeAt(open.lastIndex)
-                val url = if (start != null && text.startsWith("](", at)) leadingUrl(text, at + 2) else null
-                if (start != null && url != null) {
-                    var end = at + 2 + url.length
-                    // URL に含めない末尾の `.` と `,` は、閉じ括弧の前にあってよい。
-                    while (end < text.length && text[end] in ".,") end++
-                    if (text.getOrNull(end) == ')') {
+                if (start != null && text.startsWith("](", at)) {
+                    var left = LINK_DESTINATION_LIMIT
+                    val end = linkDestinationEnd(text, at + 2) { left-- > 0 }
+                    if (end != null) {
                         val silent = start > copied && text[start - 1] == '?'
-                        result.appendRange(text, copied, if (silent) start - 1 else start).append(' ')
-                        if (!silent) result.append(url).append(' ')
+                        addBare(text.substring(copied, if (silent) start - 1 else start))
+                        if (!silent) urls.add(text.substring(at + 2, end))
                         copied = end + 1
                         at = end
                         open.clear()
@@ -64,9 +75,11 @@ private fun markdownDestinations(text: String): String {
         }
         at++
     }
-    return result.appendRange(text, copied, text.length).toString()
+    addBare(text.substring(copied))
+    return urls
 }
 
+/** Only visible links create cards: code, plain and MFM silent links stay private. */
 fun previewUrls(content: String, excludeUrl: String? = null): List<String> {
     val visible =
         content.replace(
@@ -75,17 +88,8 @@ fun previewUrls(content: String, excludeUrl: String? = null): List<String> {
             ),
             " ",
         )
-        .let(::markdownDestinations)
-    return sequence {
-        var from = 0
-        while (true) {
-            val at = visible.indexOf("http", from).takeIf { it >= 0 } ?: break
-            val url = leadingUrl(visible, at)
-            if (url != null) yield(url)
-            // URL の中に書いた URL は数えない。
-            from = at + (url?.length ?: "http".length)
-        }
-    }
+    return writtenUrls(visible)
+        .asSequence()
         .mapNotNull { publicUrl(it)?.toString() }
         .distinct()
         .filter { it != publicUrl(excludeUrl.orEmpty())?.toString() }

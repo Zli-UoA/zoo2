@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.view.View
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.layout.Column
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -13,6 +14,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.sp
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -33,7 +35,8 @@ class ChannelLinkTextTest {
     @Test
     fun onlyBareLinksToThisAppAreShortened() {
         val text = formatEntry("見て $app と [資料]($app) と https://example.test/a", channelLink = labelled)
-        assertEquals("見て 💬 はるさん: #開発 と 資料 と https://example.test/a", text.text)
+        // アイコンの位置は、読みのない文字にする。
+        assertEquals("見て \u2060 はるさん: #開発 と 資料 と https://example.test/a", text.text)
         val links = text.getLinkAnnotations(0, text.length).map { it.item }
         assertEquals(2, links.count { it is LinkAnnotation.Clickable })
         assertEquals("https://example.test/a", links.filterIsInstance<LinkAnnotation.Url>().single().url)
@@ -129,6 +132,26 @@ class ChannelLinkCardTest {
         ui.onNodeWithText(url("gone"), substring = true).assertIsDisplayed()
         ui.onNodeWithText("メッセージを表示できません").assertHasNoClickAction()
         ui.onNodeWithContentDescription("リンク先を読み込み中").assertHasNoClickAction()
+    }
+
+    @Test
+    fun linksInAppBlocksKeepTheUrl() {
+        val asked = mutableListOf<ChannelLinkTarget>()
+        val recording = ChannelLinkProvider(
+            target = provider.target, view = { asked += it; reply }, open = { _, _ -> },
+        )
+        ui.setContent {
+            CompositionLocalProvider(LocalChannelLinks provides recording) {
+                Column {
+                    EntryBlocks(
+                        listOf(EntryContentPanel(listOf(EntryContentText(url("reply"))))),
+                        AndroidColors(dark = false), 14.sp, emptyMap(),
+                    )
+                }
+            }
+        }
+        ui.onNodeWithText(url("reply")).assertIsDisplayed()
+        ui.runOnIdle { assertEquals(emptyList<ChannelLinkTarget>(), asked.toList()) }
     }
 
     @Test
