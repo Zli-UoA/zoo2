@@ -669,9 +669,9 @@ test("the offline page follows the system color scheme", () => {
     html.indexOf("@media (prefers-color-scheme: dark)"),
     html.indexOf("</style>"),
   );
-  assert.match(darkRule, /body\s*\{/);
-  assert.match(darkRule, /color:\s*#ffffff/);
-  assert.match(darkRule, /background:\s*#000000/);
+  const darkBody = darkRule.match(/body\s*\{([^}]*)\}/)?.[1] ?? "";
+  assert.match(darkBody, /color:\s*#ffffff/);
+  assert.match(darkBody, /background:\s*#000000/);
 });
 
 test("the manifest is revalidated so installed apps receive the new splash color", async () => {
