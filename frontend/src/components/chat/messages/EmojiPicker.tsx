@@ -280,6 +280,8 @@ export function rankCustomEmojis(
   options: CustomEmojiOption[],
   needle: string,
 ): CustomEmojiOption[] {
+  // No query: keep the registration order (every emoji would otherwise rank as a prefix match).
+  if (needle === "") return options;
   return options
     .map((e, index) => ({ e, index, rank: customEmojiRank(e, needle) }))
     .filter((x): x is { e: CustomEmojiOption; index: number; rank: number } => x.rank !== null)
