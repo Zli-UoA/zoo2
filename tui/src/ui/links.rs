@@ -262,7 +262,7 @@ pub struct Parsed {
     pub targets: Vec<LinkTarget>,
 }
 
-/// 覚える本文の数。超えたら全部捨てて覚え直す。
+/// 覚える本文の数。超えた分は覚えない（全部捨てると、次の描画で同じ本文をすべて調べ直す）。
 const PARSED_LIMIT: usize = 20_000;
 
 /// 本文ごとの [`Parsed`]。タイムラインは描画のたびに読み込んだ全部の投稿を組み立てるので、描画を
@@ -287,10 +287,9 @@ impl ParsedLinks {
             }
         });
         let mut cache = self.0.borrow_mut();
-        if cache.len() >= PARSED_LIMIT {
-            cache.clear();
+        if cache.len() < PARSED_LIMIT {
+            cache.insert(body.to_owned(), parsed.clone());
         }
-        cache.insert(body.to_owned(), parsed.clone());
         parsed
     }
 }

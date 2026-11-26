@@ -92,7 +92,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             draw_recipients(frame, app, scroll);
         }
         Mode::GlobalSearch => draw_global_search(frame, app),
-        Mode::Links { targets, index } => draw_links(frame, app, targets, *index),
+        Mode::Links { targets, index } => {
+            // 一覧に出した行き先は取得する（本文ごとの取得の上限を超えたリンクも分かるように）。
+            let shown = draw_links(frame, app, targets, *index);
+            app.links.visible.extend(shown);
+        }
         _ => {}
     }
     // 他のユーザーの検証は、どの画面にいても前面に出す。
@@ -777,18 +781,25 @@ fn near_links(app: &App, built: &Timeline, scroll: usize, height: usize) -> Vec<
         .collect()
 }
 
-/// 選択中のメッセージにリンクがいくつもあるとき、開くものを選ぶ。
-fn draw_links(frame: &mut Frame, app: &App, targets: &[LinkTarget], index: usize) {
+/// 選択中のメッセージにリンクがいくつもあるとき、開くものを選ぶ。返すのは、出した候補の取得が要る
+/// リンク先。
+fn draw_links(
+    frame: &mut Frame,
+    app: &App,
+    targets: &[LinkTarget],
+    index: usize,
+) -> Vec<super::links::Key> {
     let now = Instant::now();
     let cache = DrawCache::default();
     // 画面に収まらないときは、選んでいる候補が見える範囲だけを出す（枠と操作の案内の分を空ける）。
     // 候補は 1 行にする。
     let room = usize::from(frame.area().height).saturating_sub(4).max(1);
     let width = usize::from(frame.area().width.min(POPUP_WIDTH).saturating_sub(2));
+    let first = index.saturating_sub(room - 1);
     let mut lines: Vec<Line<'static>> = targets
         .iter()
         .enumerate()
-        .skip(index.saturating_sub(room - 1))
+        .skip(first)
         .take(room)
         .map(|(i, target)| {
             let view = app.link_view(target, now, &cache);
@@ -809,6 +820,12 @@ fn draw_links(frame: &mut Frame, app: &App, targets: &[LinkTarget], index: usize
     lines.push(Line::from(""));
     lines.push(Line::styled("j k: 選ぶ / Enter: 開く / Esc: 閉じる", DIM));
     draw_popup(frame, "リンクを開く", lines);
+    targets
+        .iter()
+        .skip(first)
+        .take(room)
+        .filter_map(|target| app.link_key(target))
+        .collect()
 }
 
 fn draw_thread(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -1646,7 +1663,6 @@ mod tests {
         assert_eq!(app.links.visible.len(), 3);
         press(&mut app, KeyCode::Char('o'));
         render(&mut app);
-        app.sync_links();
         assert_eq!(app.links.visible.len(), 3 + 5);
         app.on_app_event(AppEvent::Linked(crate::electric::LinkedEvent::Rows {
             channel_id: "c2".into(),
@@ -1658,6 +1674,41 @@ mod tests {
         assert!(render(&mut app).contains("5. メッセージを表示できません"));
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.current.as_deref(), Some("c1"));
+        assert_eq!(
+            app.notice.as_ref().map(|(text, _)| text.as_str()),
+            Some("メッセージを表示できません")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_chooser_fetches_every_row_it_shows() {
+        let content: String = (1..=30)
+            .map(|n| format!("http://127.0.0.1:9/channels/c2?message=n{n} "))
+            .collect();
+        let mut app = app_with_link(&content);
+        press(&mut app, KeyCode::Char('o'));
+        let screen = render_sized(&mut app, 100, 50);
+        assert!(screen.contains("30. "), "{screen}");
+        assert_eq!(app.links.visible.len(), 3 + 30);
+    }
+
+    #[tokio::test]
+    async fn a_missing_reply_is_reported_in_the_thread() {
+        let mut app = app_with_link("http://127.0.0.1:9/channels/c2?thread=m2&message=gone");
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(
+            app.thread.as_ref().unwrap().selected.as_deref(),
+            Some("gone")
+        );
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c2".into()),
+            batch(vec![(
+                "m2",
+                json!({ "id": "m2", "user_id": "u2", "channel_id": "c2", "content": "親",
+                        "created_at": "2026-11-01 01:00:00" }),
+            )]),
+        ));
+        assert_eq!(app.thread.as_ref().unwrap().selected, None);
         assert_eq!(
             app.notice.as_ref().map(|(text, _)| text.as_str()),
             Some("メッセージを表示できません")

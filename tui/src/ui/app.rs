@@ -19,9 +19,6 @@ use super::e2ee_chat::{
 };
 use super::global_search::{self, GlobalSearch};
 use super::links::{BodyLinks, DrawCache, LinkView};
-
-/// リンクを選ぶ画面で、選んでいる位置の前後それぞれ何件の行き先を取得するか。
-const CHOOSER_FETCH: usize = 8;
 use crate::{
     api::{ApiClient, Me, ReadState, ThreadSummary, TypingUser, stale_revision},
     e2ee::{
@@ -1888,17 +1885,6 @@ impl App {
 
     /// 直近の描画で画面の近くに出ていたリンク先を取得し、使わなくなった購読を閉じる。
     pub fn sync_links(&mut self) {
-        // 開くリンクを選んでいる間は、一覧に出ている行き先も取得する（本文ごとの取得の上限を超えた
-        // リンクも、選ぶ前に分かるように）。
-        if let Mode::Links { targets, index } = &self.mode {
-            let shown: Vec<_> = targets
-                .iter()
-                .skip(index.saturating_sub(CHOOSER_FETCH))
-                .take(CHOOSER_FETCH * 2)
-                .filter_map(|target| self.link_key(target))
-                .collect();
-            self.links.visible.extend(shown);
-        }
         let (http, base, credentials, tx) = (
             self.http.clone(),
             self.api_base_url.clone(),
@@ -2125,8 +2111,8 @@ impl App {
             _ => None,
         }
         .or_else(|| target.thread_id.clone());
-        // 返信かどうかがまだ分からなければ、行が届いた時点でスレッドを開く。
-        let pending = (parent_id.is_none() && !matches!(fetched, LinkedFetch::Found(_)))
+        // まだ取得できていなければ、行が届いた時点で、返信ならスレッドを開き、なければ知らせる。
+        let pending = (!matches!(fetched, LinkedFetch::Found(_)))
             .then(|| (target.channel_id.clone(), message_id.clone()));
         // スレッドの親ではないメッセージへ移るときは、開いているスレッドを閉じる。
         if parent_id.is_none() && self.thread.is_some() {
@@ -2149,23 +2135,38 @@ impl App {
             return;
         }
         self.pending_link = None;
-        // 利用者がほかを選んだり、スレッドを開いたりしていたら、移動しない。
-        if self.thread.is_some() || self.selected.as_deref() != Some(message_id.as_str()) {
+        let in_thread = self
+            .thread
+            .as_ref()
+            .is_some_and(|thread| thread.selected.as_deref() == Some(message_id.as_str()));
+        // 利用者がほかを選んだり、別のスレッドを開いたりしていたら、何もしない。
+        if !in_thread
+            && (self.thread.is_some() || self.selected.as_deref() != Some(message_id.as_str()))
+        {
             return;
         }
-        let Some(message) = self.store.message(channel_id, &message_id) else {
+        let parent = self
+            .store
+            .message(channel_id, &message_id)
+            .map(|message| message.parent_id.clone());
+        match parent {
             // 行がそろっても見つからなければ、選ばずに知らせる。
-            self.selected = None;
-            self.notify("メッセージを表示できません");
-            return;
-        };
-        if let Some(parent_id) = message.parent_id.clone() {
-            self.selected = None;
-            self.open_search_result(global_search::Destination {
-                channel_id: channel_id.to_owned(),
-                message_id,
-                parent_id: Some(parent_id),
-            });
+            None => {
+                match self.thread.as_mut() {
+                    Some(thread) => thread.selected = None,
+                    None => self.selected = None,
+                }
+                self.notify("メッセージを表示できません");
+            }
+            Some(Some(parent_id)) if !in_thread => {
+                self.selected = None;
+                self.open_search_result(global_search::Destination {
+                    channel_id: channel_id.to_owned(),
+                    message_id,
+                    parent_id: Some(parent_id),
+                });
+            }
+            Some(_) => {}
         }
     }
 
