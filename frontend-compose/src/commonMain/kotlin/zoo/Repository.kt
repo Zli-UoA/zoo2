@@ -231,6 +231,9 @@ class SyncedTable(
     private val refetching = MutableStateFlow(false)
     /** must-refetch のたびに増える。取り直し前に始めた `loadOlder` の結果を捨てるのに使う。 */
     private var refetchEpoch = 0
+    /** 取り直しのジョブと、まだ取り直していない範囲。must-refetch が続いても、範囲を引き継ぐ。 */
+    private var refetchJob: Job? = null
+    private var refetchTargets = emptyList<Requested>()
     private var streamReady = CompletableDeferred<ShapeStream>()
     private var acceptNow: () -> Unit = {}
 
@@ -326,9 +329,8 @@ class SyncedTable(
         }
     }
 
-    /** 通知・リンク・検索の対象や、スレッドの親を、1 行だけ取る。窓の外でもよく、削除済みの行も取る。 */
-    suspend fun loadAround(id: String): Boolean {
-        if (!onDemand || !synchronize) return false
+    /** 1 行を取る。通信の失敗は `Result.failure`、行がなかったときは `success(false)`。 */
+    private suspend fun fetchAround(id: String): Result<Boolean> {
         if (requested.value.none { it.aroundId == id }) requested.update { it + Requested(null, id) }
         return try {
             val subset =
@@ -338,12 +340,18 @@ class SyncedTable(
                     limit = 1,
                     orderBy = "created_at DESC, id DESC",
                 )
-            fetchSubset(false, subset).data.isNotEmpty()
+            Result.success(fetchSubset(false, subset).data.isNotEmpty())
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
-            false
+        } catch (e: Exception) {
+            Result.failure(e)
         }
+    }
+
+    /** 通知・リンク・検索の対象や、スレッドの親を、1 行だけ取る。窓の外でもよく、削除済みの行も取る。 */
+    suspend fun loadAround(id: String): Boolean {
+        if (!onDemand || !synchronize) return false
+        return fetchAround(id).getOrDefault(false)
     }
 
     private fun startSync(readCache: Boolean): Job {
@@ -353,6 +361,8 @@ class SyncedTable(
         refetchPending = false
         refetching.value = false
         refetchEpoch++
+        refetchJob = null
+        refetchTargets = emptyList()
         requested.value = emptyList()
         pages.value = emptyMap()
         return tableScope.launch {
@@ -462,7 +472,14 @@ class SyncedTable(
                                 accepting.value = false
                                 refetchPending = true
                                 refetching.value = true
+                                // 先に世代を進めてから、進行中の取り直しを止める。止めたジョブの結果は、範囲にも
+                                // `refetching` にも触れない。まだ取っていない範囲は、次の取り直しへ引き継ぐ。
                                 refetchEpoch++
+                                refetchJob?.cancel()
+                                refetchJob = null
+                                refetchTargets = (refetchTargets + requested.value).distinctBy { it.scope to it.aroundId }
+                                requested.value = emptyList()
+                                pages.value = emptyMap()
                                 if (serverRows.value.isEmpty()) loading.value = true
                             } else {
                                 serverRows.value = emptyList()
@@ -480,29 +497,31 @@ class SyncedTable(
                         if (onDemand) {
                             if (upToDate && refetchPending) {
                                 refetchPending = false
-                                val again = requested.value
+                                val targets = (refetchTargets + requested.value).distinctBy { it.scope to it.aroundId }
+                                refetchTargets = targets
                                 requested.value = emptyList()
-                                // 範囲の状態は作り直す。位置（oldest）は、取り直した最新のページから数え直すので、
-                                // 取り直し前に増えた行があっても、保持している最古行との間に欠落ができない。
                                 pages.value = emptyMap()
-                                launch {
-                                    var attempt = 0
-                                    // 取り直しが済むまで、`loadOlder` は何もしない。失敗したら、成功するまで
-                                    // 間隔を空けて（最大 10 秒）やり直す。画面を離れる・ログアウトで取り消される。
-                                    val scopes = (again.mapNotNull { it.scope } + PageScope.Main).distinct()
-                                    val arounds = again.mapNotNull { it.aroundId }
-                                    var done = 0
-                                    while (done < scopes.size) {
-                                        if (loadPage(scopes[done])) {
-                                            done++
-                                        } else {
-                                            attempt++
-                                            delay(minOf(1_000L * attempt, 10_000L))
+                                refetchJob =
+                                    launch {
+                                        var attempt = 0
+                                        // 取り直しが済むまで、`loadOlder` は何もしない。失敗したら、成功するまで
+                                        // 間隔を空けて（最大 10 秒）やり直す。画面を離れる・ログアウト・次の
+                                        // must-refetch で取り消される。
+                                        suspend fun retry(block: suspend () -> Boolean) {
+                                            while (!block()) {
+                                                attempt++
+                                                delay(minOf(1_000L * attempt, 10_000L))
+                                            }
                                         }
+                                        val scopes = (targets.mapNotNull { it.scope } + PageScope.Main).distinct()
+                                        scopes.forEach { scope -> retry { loadPage(scope) } }
+                                        // 対象行は、通信の失敗だけやり直す（行がなくなっていた場合は、そのまま終える）。
+                                        targets.mapNotNull { it.aroundId }.forEach { id ->
+                                            retry { fetchAround(id).isSuccess }
+                                        }
+                                        refetchTargets = emptyList()
+                                        refetching.value = false
                                     }
-                                    arounds.forEach { loadAround(it) }
-                                    refetching.value = false
-                                }
                             }
                             if (accepting.value && (changed || upToDate)) acceptSnapshot(materialized.currentRows)
                             if (upToDate || (accepting.value && changed)) {
