@@ -1303,6 +1303,25 @@ test("fresh asset requests are time bounded", async () => {
   assert.equal(init.signal.aborted, false);
 });
 
+test("a failed CSP lookup still returns the fetched offline page", async () => {
+  const cacheContext = memoryCaches();
+  cacheContext.api.keys = async () => {
+    throw new Error("CacheStorage denied");
+  };
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async (input) => {
+      if (new URL(requestKey(input)).pathname === "/offline.html")
+        return basicResponse('<meta name="zoo-offline" content="true" />fresh', {
+          headers: { "content-type": "text/html" },
+        });
+      return basicResponse(`network:${requestKey(input)}`);
+    },
+  });
+  const response = await fetchThrough(handlers, navigation(`${ORIGIN}/offline.html`));
+  assert.match(await response.text(), /fresh/);
+});
+
 test("an offline page with a stale CSP does not overwrite the current cache", async () => {
   const cacheContext = memoryCaches([
     [

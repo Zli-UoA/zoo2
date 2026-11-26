@@ -468,8 +468,14 @@ async function handleFreshAsset(request) {
     if (response.type !== "basic") return response;
     if (path === "/offline.html") {
       // 混在配信で古い CSP の案内が来ても、現行シェルのキャッシュは上書きしない。
-      const policy = await currentShellPolicy();
-      if (policy.known && response.headers.get("content-security-policy") !== policy.csp) {
+      // Cache API の照会に失敗した場合は取得済みの応答を返すことを優先する。
+      let policy = null;
+      try {
+        policy = await currentShellPolicy();
+      } catch {
+        /* CSP could not be checked: serve the response we already fetched. */
+      }
+      if (policy?.known && response.headers.get("content-security-policy") !== policy.csp) {
         const cached = await cachedFreshAsset(path);
         return cached.type === "error" ? response : cached;
       }
