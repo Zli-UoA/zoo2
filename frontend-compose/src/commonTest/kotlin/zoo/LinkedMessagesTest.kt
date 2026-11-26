@@ -290,6 +290,35 @@ class LinkedMessagesTest {
     }
 
     @Test
+    fun recordsThatFailedToLoadStayUnreadableWhileRetrying() = runTest {
+        val retry = CompletableDeferred<Unit>()
+        var loaded = false
+        var loads = 0
+        val records = EncryptionRecordsLoader(
+            backgroundScope, { loaded }, {
+                if (++loads > 1) {
+                    retry.await()
+                    loaded = true
+                }
+                loaded
+            }, 10.seconds, testScheduler.timeSource,
+        )
+        backgroundScope.launch { records.states().collect {} }
+        runCurrent()
+        // 失敗で終わったあとの最初の描画も、読み直す間も、読み込み中の枠に戻さない。
+        assertEquals(EncryptionRecords.Unreadable, records.current())
+        val again = mutableListOf<EncryptionRecords>()
+        backgroundScope.launch { records.states().collect { again += it } }
+        runCurrent()
+        assertEquals(listOf(EncryptionRecords.Unreadable), again)
+        assertEquals(EncryptionRecords.Unreadable, records.current())
+        retry.complete(Unit)
+        runCurrent()
+        assertEquals(listOf(EncryptionRecords.Unreadable, EncryptionRecords.Loaded), again)
+        assertEquals(2, loads)
+    }
+
+    @Test
     fun closingTheSessionClosesEverySubscription() = runTest {
         val loader = loader()
         observe(loader)
@@ -483,7 +512,7 @@ class LinkedChannelTableTest {
 
     private fun TestScope.timedTable(channelId: String, http: HttpClient) = LinkedChannelTable(
         channelId, config, LinkPlatform(), http, backgroundScope,
-        options.copy(liveSse = false, liveRequestTimeoutMillis = null),
+        options.copy(liveSse = false, liveRequestTimeoutMillis = null), testScheduler.timeSource,
     )
 
     @Test
@@ -557,6 +586,38 @@ class LinkedChannelTableTest {
             second.await()
             val between = log.subList(log.lastIndexOf("first") + 1, log.indexOf("second"))
             assertTrue("live" in between, log.toString())
+        } finally {
+            table.close()
+            http.close()
+        }
+    }
+
+    @Test
+    fun aStuckLiveReadDoesNotDelayEveryFetch() = runTest {
+        val sent = mutableListOf<Pair<String, Long>>()
+        val third = CompletableDeferred<Unit>()
+        var catchUps = 0
+        val http = timedHttp(
+            subset = { params ->
+                val id = listOf("one", "two", "three").first { it in params }
+                sent += id to testScheduler.currentTime
+                if (id == "three") third.complete(Unit)
+                respond("{}", HttpStatusCode.InternalServerError)
+            },
+            // 最初の同期のあとは、追いつくための要求に応答しない（障害中）。
+            catchUp = { if (catchUps++ > 0) awaitCancellation() },
+        )
+        val table = timedTable("stuck", http)
+        try {
+            listOf("one", "two", "three").forEach(table::request)
+            third.await()
+            fun gap(from: String, to: String): Long {
+                val start = sent.indexOfFirst { it.first == to }
+                return sent[start].second - sent.subList(0, start).last { it.first == from }.second
+            }
+            // 1 回は追いつくのを 5 秒待つ。追いつかなければ、続く打ち切りでは待たない。
+            assertTrue(gap("one", "two") >= 5_000, sent.toString())
+            assertTrue(gap("two", "three") < 5_000, sent.toString())
         } finally {
             table.close()
             http.close()

@@ -68,6 +68,9 @@ private val LINK_SUBSET_MAX_RETRY = 30.seconds
 /** 打ち切ったあと、再開した live が追いつくのを待つ時間の上限。 */
 private val LINK_LIVE_WINDOW = 5.seconds
 
+/** 待っても live が追いつかなかったあと、次に待つまでの間隔。 */
+private val LINK_LIVE_RECHECK = 30.seconds
+
 /** 失敗が続く取得の打ち切り。Electric クライアントが再試行しない例外にする。 */
 private class SubsetYield : Exception("subset の取得を一度打ち切った")
 
@@ -86,12 +89,15 @@ class EncryptionRecordsLoader(
     private val clock: TimeSource = TimeSource.Monotonic,
 ) {
     private var pending: Pair<TimeMark, Deferred<Boolean>>? = null
+    /** 前の読み込みが失敗で終わった。読み直す間も、読めないものとして出す。 */
+    private var failed = false
 
     /** 読み込みを始めずに、いま分かっている状態を返す（最初の描画用）。 */
     fun current(): EncryptionRecords {
         if (isLoaded()) return EncryptionRecords.Loaded
-        val late = pending?.let { (since, result) -> !result.isCompleted && since.elapsedNow() >= timeout } == true
-        return if (late) EncryptionRecords.Unreadable else EncryptionRecords.Loading
+        // 終わっても読めていなければ、失敗している。
+        val unreadable = pending?.let { (since, result) -> result.isCompleted || since.elapsedNow() >= timeout } == true
+        return if (failed || unreadable) EncryptionRecords.Unreadable else EncryptionRecords.Loading
     }
 
     fun states(): Flow<EncryptionRecords> = flow {
@@ -99,10 +105,11 @@ class EncryptionRecordsLoader(
             emit(EncryptionRecords.Loaded)
             return@flow
         }
+        if (pending?.second?.isCompleted == true) failed = true
         val (since, result) = pending?.takeUnless { it.second.isCompleted }
             ?: (clock.markNow() to scope.async { load() }).also { pending = it }
         val remaining = timeout - since.elapsedNow()
-        if (remaining.isPositive()) {
+        if (!failed && remaining.isPositive()) {
             emit(EncryptionRecords.Loading)
             if (withTimeoutOrNull(remaining) { result.await() } == null) emit(EncryptionRecords.Unreadable)
         } else {
@@ -160,8 +167,8 @@ interface LinkedChannelSource {
  * live で届く。
  *
  * Electric クライアントは、取得を再試行している間、live の読み取りとほかの取得を待たせる。サーバーのエラーなどで
- * 失敗が続く取得は、[LINK_SUBSET_ATTEMPTS] 回で打ち切り、live が追いつくのを待ってから次の取得に進む。打ち切った
- * 取得は、間隔を空けて取り直す。
+ * 失敗が続く取得は、[LINK_SUBSET_ATTEMPTS] 回で打ち切り、live が追いつくのを待ってから次の取得に進む（[awaitLive]）。
+ * 打ち切った取得は、間隔を空けて取り直す。
  */
 class LinkedChannelTable(
     channelId: String,
@@ -170,6 +177,7 @@ class LinkedChannelTable(
     http: HttpClient,
     scope: CoroutineScope,
     options: ShapeStreamOptions = ShapeStreamOptions(liveSse = true),
+    private val clock: TimeSource = TimeSource.Monotonic,
 ) : LinkedChannelSource {
     private val tableScope =
         CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
@@ -180,6 +188,8 @@ class LinkedChannelTable(
     private val synced = MutableStateFlow(false)
     /** 受け取った up-to-date の数。 */
     private val caughtUp = MutableStateFlow(0)
+    /** 待っても live が追いつかなかった時刻。追いつけば消す。 */
+    private var liveStuck: TimeMark? = null
     private var generation = 0
     private var refetching = false
     /** subset の取得は 1 件ずつ。[sent] は、いまの取得で送った要求の数。 */
@@ -232,6 +242,7 @@ class LinkedChannelTable(
         val upToDate = batch.any { control(it) == "up-to-date" }
         if (upToDate) {
             synced.value = true
+            liveStuck = null
             caughtUp.update { it + 1 }
         }
         values.update { it.copy(rows = currentRows(), hasCiphertext = it.hasCiphertext || ciphertext) }
@@ -279,8 +290,7 @@ class LinkedChannelTable(
                             )
                             true
                         } catch (_: SubsetYield) {
-                            // 次の取得が live をすぐにまた止めないように、追いつくのを待ってから順番を譲る。
-                            withTimeoutOrNull(LINK_LIVE_WINDOW) { caughtUp.first { it > before } }
+                            awaitLive(before)
                             false
                         }
                     }
@@ -298,6 +308,17 @@ class LinkedChannelTable(
             } catch (_: Exception) {
                 if (startedAt == generation) values.update { it.copy(failed = it.failed + messageId) }
             }
+        }
+    }
+
+    /**
+     * 打ち切ったあと、次の取得が live をすぐにまた止めないように、up-to-date が [before] 件より増えるのを待つ。
+     * 待っても追いつかなければ（サーバーの障害や接続の断）、[LINK_LIVE_RECHECK] の間は待たずに次の取得に進む。
+     */
+    private suspend fun awaitLive(before: Int) {
+        if (liveStuck?.let { it.elapsedNow() < LINK_LIVE_RECHECK } == true) return
+        if (withTimeoutOrNull(LINK_LIVE_WINDOW) { caughtUp.first { it > before } } == null) {
+            liveStuck = clock.markNow()
         }
     }
 
