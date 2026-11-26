@@ -520,7 +520,7 @@ final class CryptoStore: @unchecked Sendable {
     func processToDevice(_ rows: [ToDeviceRow], keysQuery: String) throws -> ToDeviceResult {
         try lock.withLock {
             try ensureOpen()
-            var processed: [String] = [], roomKeys = 0, dropped = 0, newOlm = 0, verified = 0, verifications: [String] = []
+            var processed: [String] = [], roomKeys = 0, dropped = 0, newOlm = 0, verified = 0
             let query = (try? JSONDecoder().decode(JSONValue.self, from: Data(keysQuery.utf8))) ?? .null
             // 前の処理で印を付けた行（ack の前に失敗した）。保存の同期が済んだとは限らないので、返す前に保存し直す。
             var unsaved = false
@@ -533,7 +533,8 @@ final class CryptoStore: @unchecked Sendable {
                         case .dropped: dropped += 1
                         case .verification(let created, let message):
                             newOlm += created
-                            if let message { verifications.append(message) } else { dropped += 1 }
+                            // 後の行の保存が失敗して投げても、保存済みの行の検証メッセージを失わないよう、ストアに溜める。
+                            if let message { undeliveredVerifications.append(message) } else { dropped += 1 }
                         case .decrypted(let created, let roomKey, let rejected, let isVerified):
                             newOlm += created
                             if roomKey { roomKeys += 1 } else if rejected { dropped += 1 }
@@ -550,7 +551,7 @@ final class CryptoStore: @unchecked Sendable {
             }
             if unsaved { try save(state) }
             return ToDeviceResult(processed: processed, roomKeys: roomKeys, dropped: dropped, newOlmSessions: newOlm,
-                                  verifiedRoomKeys: verified, verifications: verifications)
+                                  verifiedRoomKeys: verified, verifications: takeVerificationsLocked())
         }
     }
 
@@ -666,6 +667,18 @@ final class CryptoStore: @unchecked Sendable {
             state = next
         }
     }
+
+    /// 処理済みの行から取り出して、まだ届け先に渡していない検証のメッセージ（`processToDevice` が途中で投げても残る）。
+    private var undeliveredVerifications: [String] = []
+
+    private func takeVerificationsLocked() -> [String] {
+        let taken = undeliveredVerifications
+        undeliveredVerifications = []
+        return taken
+    }
+
+    /// 途中で投げた `processToDevice` が、すでに処理済みにした行の検証メッセージを受け取る。
+    func takeVerifications() -> [String] { lock.withLock { takeVerificationsLocked() } }
 
     /// リセットの途中の印（SSSS を新しい鍵に作り直した）。`nil` で外す。
     func setResetKeyID(_ id: String?) throws {

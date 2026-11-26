@@ -38,5 +38,10 @@ struct VerificationTests {
         verification.handle([message])
         try await Task.sleep(for: .milliseconds(200))
         #expect(verification.entries.isEmpty)
+        // 暗号ストアを使えないあいだは、捨てずに残す（Olm のメッセージは、2 回は復号できない）。形が壊れたものは、捨てる。
+        #expect(verification.pendingMessageCount == 1)
+        verification.handle(["壊れたメッセージ"])
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(verification.pendingMessageCount == 1)
     }
 }

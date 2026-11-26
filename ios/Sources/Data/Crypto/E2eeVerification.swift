@@ -105,6 +105,8 @@ final class E2eeVerification {
     private static let needsKeys: Set<String> = ["m.key.verification.request", "m.key.verification.ready"]
 
     private(set) var entries: [SasEntry] = []
+    /// まだ処理できずに残しているメッセージの数（暗号ストアを使えないとき、鍵を取れないとき）。
+    var pendingMessageCount: Int { inbox.count }
     /// 保存できたら呼ぶ（検証済みの表示を読み直す）。
     @ObservationIgnored var onSaved: ((String) -> Void)?
     /// 直前の再認証の ID トークンを取る。
@@ -344,8 +346,14 @@ final class E2eeVerification {
                     }
                     keys = [snapshot]
                 }
+                // 暗号ストアを一時的に使えないとき（ack の失敗で閉じた、開き直している）は、捨てずに残して、あとで試し直す
+                // （Olm のメッセージは、2 回は復号できない）。
+                guard let store = self.store() else {
+                    held.insert(txn)
+                    remaining.append(item)
+                    continue
+                }
                 do {
-                    let store = try self.currentStore()
                     if let sas = self.live[txn] {
                         let out = try sas.receive(messageJson: item.message, snapshotPages: keys)
                         self.patch(txn) { if $0.error == .receiveFailed { $0.error = nil } }

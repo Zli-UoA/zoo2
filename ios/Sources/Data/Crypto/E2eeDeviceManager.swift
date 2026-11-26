@@ -282,7 +282,14 @@ final class E2eeDeviceManager {
         var senders = Set(rows.map(\.senderUserID))
         senders.insert(userID)
         let keys = try await api.queryKeys(userIDs: senders.sorted())
-        let result = try store.processToDevice(rows, keysQuery: keys)
+        let result: CryptoStore.ToDeviceResult
+        do { result = try store.processToDevice(rows, keysQuery: keys) }
+        catch {
+            // 途中の行で保存に失敗しても、すでに処理済みにした行の検証メッセージは、再試行では復号できないので、ここで届ける。
+            let delivered = store.takeVerifications()
+            if !delivered.isEmpty { onVerifications?(delivered) }
+            throw error
+        }
         // 処理済みの印は、もう保存した。この先の ack や鍵の補充が通信で失敗しても、再試行では復号を省くので、鍵と検証のメッセージは、
         // ここで届ける（ack より前。届け先が覚えておく）。
         if result.roomKeys > 0 { onKeysReceived?() }
