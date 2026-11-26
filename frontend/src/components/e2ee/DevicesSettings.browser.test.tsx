@@ -9,7 +9,8 @@ import { LocaleProvider } from "../i18n/LocaleProvider";
 import { ServerKeyMismatchError } from "../../lib/e2ee/setupController";
 import { DevicesSettings } from "./DevicesSettings";
 
-// Electric の行。`users` を差し替えて描画し直すと、`nameOf` が作り直されて一覧を読み直す。
+// Electric の行。`peers` を差し替えて描画し直すと、`load` が作り直されて一覧を読み直す。
+// `users` の表示名だけが変わったときは再取得しない（PR #715 の変更）。
 const live = vi.hoisted(() => ({
   users: [] as { id: string; display_name: string }[],
   /** チャンネルとメンバーの行（同じ配列を返し続け、`peers` を作り直さない）。 */
@@ -84,6 +85,7 @@ function summary(scope: "device_only" | "full", stage = "prepared") {
 beforeEach(() => {
   vi.clearAllMocks();
   live.users = [{ id: "u1", display_name: "Alice" }];
+  live.empty = [];
   mocked.loadDevices.mockResolvedValue([
     {
       deviceId: DEVICE,
@@ -133,10 +135,10 @@ function renderPanel() {
   );
   const view = render(tree());
   return {
-    /** Electric の `users` の行が変わったときと同じく、一覧を読み直させる。 */
+    /** Electric の `peers` の行が変わったときと同じく、一覧を読み直させる。 */
     async changeRows() {
       const calls = mocked.loadDevices.mock.calls.length;
-      live.users = [...live.users, { id: `u${calls + 2}`, display_name: "Bob" }];
+      live.empty = [...live.empty] as never[];
       view.rerender(tree());
       await waitFor(() => expect(mocked.loadDevices.mock.calls.length).toBeGreaterThan(calls));
     },
@@ -179,7 +181,7 @@ it("keeps the recovery key of a resumed full revocation when Electric rows chang
   expect(await screen.findByText(NEW_RECOVERY_KEY)).toBeVisible();
   expect(mocked.beginRevocation).toHaveBeenCalledWith(expect.anything(), "full", ["lost"]);
 
-  // useUsers の行を新しい配列に替え、背景の読み直しが終わるのを待つ。
+  // peers の行を新しい配列に替え、背景の読み直しが終わるのを待つ。
   await panel.changeRows();
   await settle();
   expect(screen.getByText(NEW_RECOVERY_KEY)).toBeVisible();
