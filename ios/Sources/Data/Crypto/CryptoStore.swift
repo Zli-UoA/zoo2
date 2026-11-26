@@ -48,7 +48,12 @@ struct CryptoStoreFiles: Sendable {
                     }
                     if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) }
                 } else if FileManager.default.fileExists(atPath: target.path) {
-                    // ファイル（ログアウトの削除待ちの記録など）は、両方にあれば、どちらも残す。
+                    // ログアウトの削除待ちの記録は、両方にあれば、重複なく統合する（読み込みや保存に失敗したら、どちらも残す）。
+                    if directory.lastPathComponent == PendingDeviceDeletions(root: support).file.lastPathComponent,
+                       let old = PendingDeviceDeletions(root: support).load(), PendingDeviceDeletions(root: root).load() != nil,
+                       old.allSatisfy({ PendingDeviceDeletions(root: root).add($0) }) {
+                        try? FileManager.default.removeItem(at: directory)
+                    }
                     continue
                 }
                 try FileManager.default.moveItem(at: directory, to: target)
