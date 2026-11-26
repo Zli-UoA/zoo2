@@ -96,6 +96,8 @@ struct Discovery: Decodable, Sendable {
     let issuer: String
     let token_endpoint: String
     let device_authorization_endpoint: String?
+    /// 再認証（E2EE の直前の再認証。認可コードフロー）に使う。
+    let authorization_endpoint: String?
 }
 
 enum OAuthForm {
@@ -257,6 +259,20 @@ final class Authentication {
         return .auth(message)
     }
 
+    /// 再認証（認可コードフロー）の失敗。デバイスコード認証の文言は使わない。今のログインは、無効にならない。
+    private func reauthError(_ data: Data, status: Int) -> ZooError {
+        let code = (try? JSONDecoder().decode(OAuthFailure.self, from: data))?.error
+        let message = switch code {
+        case "unsupported_grant_type", "unauthorized_client": "AuthZ で iOS 用クライアントの認可コード（authorization_code）グラントを許可してください。"
+        case "invalid_client": "iOS 用クライアント ID と、公開クライアントが有効であることを確認してください。"
+        case "invalid_scope": "AuthZ で iOS 用クライアントの openid・profile の利用を許可してください。"
+        case "invalid_target": "AuthZ で iOS 用クライアントに Zoo API へのアクセスを許可してください。"
+        case "invalid_grant": "再認証のコードを受け付けられませんでした（使用済み、期限切れ、または確認値の不一致）。もう一度再認証してください。"
+        default: "再認証に失敗しました（HTTP \(status)）。もう一度お試しください。ログイン中の状態は変わりません。"
+        }
+        return .auth(message)
+    }
+
     private func postForm(endpoint: String, fields: [String: String], timeout: TimeInterval = 30) async throws -> (Data, HTTPURLResponse) {
         var request = URLRequest(url: try ConnectionSettings.secureURL(endpoint))
         request.httpMethod = "POST"
@@ -264,6 +280,22 @@ final class Authentication {
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.httpBody = OAuthForm.form(fields)
         return try await transport.send(request, timeout: .seconds(timeout))
+    }
+
+    /// 再認証の認可コードを、トークンエンドポイントで ID トークンに換える（E2EE の直前の再認証。#685）。
+    /// 今のセッションのトークンは変えない。
+    func exchangeReauthCode(_ code: String, verifier: String, redirectURI: String) async throws -> String {
+        struct Response: Decodable { let id_token: String? }
+        let discovery = try await discovery()
+        let (data, response) = try await postForm(endpoint: discovery.token_endpoint, fields: [
+            "grant_type": "authorization_code", "code": code, "code_verifier": verifier,
+            "redirect_uri": redirectURI, "client_id": settings.clientID
+        ])
+        guard (200..<300).contains(response.statusCode) else { throw reauthError(data, status: response.statusCode) }
+        guard let token = try? JSONDecoder().decode(Response.self, from: data).id_token, !token.isEmpty else {
+            throw ZooError.invalidResponse
+        }
+        return token
     }
 
     private func exchangeToken(endpoint: String, fields: [String: String], previousRefresh: String?) async throws -> TokenSet {

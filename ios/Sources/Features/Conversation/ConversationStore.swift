@@ -1,4 +1,6 @@
 import Foundation
+import ImageIO
+import ZooCrypto
 import Observation
 import PhotosUI
 import SwiftUI
@@ -34,12 +36,55 @@ final class ConversationStore {
     private var attachmentImportTasks: [String: Task<Void, Never>] = [:]
     private(set) var uploadStatus: [String: String] = [:]
     private var uploadedAttachmentIDs: [UUID: String] = [:]
+    /// 暗号化して上げた添付（再送で作り直さない）。鍵を含むので、メモリーだけに置く。
+    private var encryptedUploads: [UUID: AttachmentInfo] = [:]
     var sendErrors: [String: String] = [:]
     var actionError: String?
     var focusedMessageID: String? {
         didSet { followsFocusedMessageToLatest = false }
     }
     private(set) var followsFocusedMessageToLatest = false
+    /// 暗号化チャンネルの復号と送信（#685）。ないとき（プレビューなど）は、暗号化チャンネルを開けない。
+    @ObservationIgnored var e2ee: (any ConversationEncryption)?
+    /// ユーザー名からユーザー ID を引く（暗号化チャンネルの送信に付ける `mentions` を作る）。
+    /// 暗号化チャンネルだったはずなのに、サーバーが平文だと返している（格下げ）。送信を止める。
+    @ObservationIgnored var isDowngraded: () -> Bool = { false }
+    /// ユーザー ID から表示名を引く（鍵を配れない相手の表示に使う）。
+    @ObservationIgnored var displayName: (String) -> String = { $0 }
+    /// 送信欄の上に出す、配布先の要約（暗号化チャンネルで、気付いてほしいことがあるときだけ）。
+    private(set) var recipientSummary: MessageEncryption.RecipientSummary?
+
+    /// 配布先の要約を読み直す（会話を開いたとき、鍵が届いたとき、送信のあと）。
+    func refreshRecipientSummary() async {
+        guard channel.encrypted == true, let e2ee, e2ee.isReady else { recipientSummary = nil; return }
+        let summary = await e2ee.recipientSummary(channelID: channel.id)
+        recipientSummary = (summary?.isEmpty ?? true) ? nil : summary
+    }
+
+    /// 鍵を配れない相手を、名前と理由で説明する。
+    func describe(_ error: any Error) -> String {
+        guard case MessageEncryptionError.undeliverableUsers(let users) = error else { return error.localizedDescription }
+        let lines = users.map { "・\(displayName($0.userID))：\(Self.reasonText($0.reason))" }
+        return "鍵を配れない参加者がいるため、送りませんでした。\n" + lines.joined(separator: "\n")
+    }
+
+    static func reasonText(_ reason: MessageEncryption.Undeliverable.Reason) -> String {
+        switch reason {
+        case .notSetUp: "暗号化を設定していません"
+        case .invalidKeys: "鍵が正しくありません"
+        case .needsReverification: "鍵が変わりました。再検証が必要です"
+        case .needsUnlock: "この端末が解錠されていません"
+        case .pinPending: "鍵の確認を保存できていません"
+        case .blocked: "鍵を配れません"
+        case .warning: "鍵の警告があります"
+        }
+    }
+
+    @ObservationIgnored var userIDForName: (String) -> String? = { _ in nil }
+
+    private func encryptedMentions(_ content: String) -> EncryptedMentions {
+        EncryptedMentions.extract(from: content, userIDForName: userIDForName)
+    }
     @ObservationIgnored var onExpiredSession: (() -> Void)?
     @ObservationIgnored var onAccessRevoked: (() -> Void)?
     @ObservationIgnored var onRead: (() -> Void)?
@@ -81,9 +126,20 @@ final class ConversationStore {
         typing.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
     }
 
-    var canPost: Bool { active && !blocked && !showingCachedMessages && channel.canPost }
+    /// 暗号化チャンネルを、この端末で読み書きできる（復号の仕組みがある）。
+    var supportsEncryption: Bool { e2ee != nil }
+    /// 復号の結果が変わりうるたびに増える（鍵が届いた、解錠した）。
+    var decryptionRevision: Int { e2ee?.revision ?? 0 }
+    private var channelAllowsPosting: Bool {
+        guard channel.encrypted == true else { return channel.canPost }
+        return channel.archive_at == nil && channel.deleted_at == nil && e2ee?.isReady == true
+    }
+    var canPost: Bool { active && !blocked && !showingCachedMessages && channelAllowsPosting }
     var postingRestrictionMessage: String? {
-        if channel.encrypted == true { return "暗号化された会話には送信できません" }
+        if channel.encrypted == true {
+            guard e2ee != nil else { return "暗号化された会話には送信できません" }
+            if e2ee?.isReady != true { return E2eeText.sendNeedsUnlock }
+        }
         if !active || blocked || channel.deleted_at != nil { return "このチャンネルには送信できません" }
         if channel.archive_at != nil { return "アーカイブ済みのチャンネルです" }
         return nil
@@ -210,12 +266,14 @@ final class ConversationStore {
         importingAttachments = []
         draftAttachments = [:]
         uploadedAttachmentIDs = [:]
+        encryptedUploads = [:]
         uploadStatus = [:]
         sending = []
         mutationInProgress = false
     }
 
     func update(_ channel: Channel) {
+        let previouslyEncrypted = self.channel.encrypted
         if channel.encrypted != self.channel.encrypted {
             streamGeneration = UUID()
             accessGeneration = UUID()
@@ -225,15 +283,25 @@ final class ConversationStore {
         }
         self.channel = channel
         if !canPost { typing.stop() }
-        if channel.encrypted == true {
+        // 暗号化への切り替えのときだけ、平文の履歴と閲覧の権限を捨てる（すでに暗号化なら、通常の更新で履歴を消さない）。
+        if channel.encrypted == true, previouslyEncrypted != true {
             onAccessRevoked?()
             messages = []; remoteMessages = []; localWrites = [:]
         }
+        // 暗号化に変わったら、暗号化チャンネルとして読み直す（平文の行は消した）。
+        if channel.encrypted != previouslyEncrypted, supportsEncryption { syncRequest = UUID() }
+    }
+
+    /// 今の購読の要求（`run` が `encrypted` を足して渡すので、同じ条件で比べる）。
+    private var currentFeedRequest: MessageFeedRequest {
+        var request = feedRequest
+        request.encrypted = channel.encrypted == true
+        return request
     }
 
     func run() async {
         guard !Task.isCancelled else { return }
-        guard active, channel.encrypted != true else { loading = false; return }
+        guard active, channel.encrypted != true || supportsEncryption else { loading = false; return }
         let epoch = UUID()
         streamGeneration = epoch
         blocked = false
@@ -242,14 +310,15 @@ final class ConversationStore {
         while active, !Task.isCancelled, epoch == streamGeneration {
             do {
                 var writesAtStart = reactionWrites
-                let request = feedRequest
+                var request = feedRequest
+                request.encrypted = channel.encrypted == true
                 try await client.observeMessageFeed(channelID: channel.id, request: request) { update in
                     guard self.active, !Task.isCancelled, self.streamGeneration == epoch else { return }
                     self.showingCachedMessages = update.fromCache
                     self.morePages[request.key] = update.hasMore
                     self.pageLimits[request.key] = max(self.pageLimits[request.key] ?? 50, update.loadedLimit)
                     if !update.fromCache, update.messages != nil, self.pendingHistoryKey == request.key,
-                       request == self.feedRequest {
+                       request == self.currentFeedRequest {
                         self.historyRevision += 1
                         self.pendingHistoryKey = nil
                     }
@@ -324,8 +393,14 @@ final class ConversationStore {
         syncError = "このチャンネルを閲覧できません。一覧を更新してください。"
     }
 
-    private func apply(_ snapshot: [Message]) {
+    func apply(_ snapshot: [Message]) {
         remoteMessages = snapshot
+        render()
+    }
+
+    /// 復号の結果が変わりうるとき（鍵が届いた、解錠した）に、表示を作り直す。
+    func redecrypt() {
+        guard channel.encrypted == true, e2ee != nil else { return }
         render()
     }
 
@@ -356,6 +431,46 @@ final class ConversationStore {
             rows[id] = nil
         }
         rows = rows.filter { $0.value.deleted_at == nil }
+        if channel.encrypted == true, let e2ee {
+            // 最初の暗号化したメッセージ（暗号文か `epoch` のある行）の作成日時。これより後ろの平文の行だけに警告を付ける。
+            let firstEncrypted = rows.values.filter { $0.ciphertext != nil || $0.epoch != nil }
+                .compactMap { $0.date }.min()
+            // 復号した本文は、この表示のためだけにメモリーに置く（保存しない）。
+            for (id, message) in rows {
+                var shown = message
+                guard message.ciphertext != nil else {
+                    if message.epoch == nil {
+                        // 暗号化に切り替える前の平文のメッセージ（#367）。本文はそのまま出し、編集させない。区切りより上の行には
+                        // 印を付けず、暗号化したメッセージより後ろの行だけに警告を出す（#564）。
+                        shown.e2eeLegacy = true
+                        if let first = firstEncrypted, let created = message.date, created > first {
+                            shown.e2eeNotice = E2eeText.unencryptedBadge
+                            shown.e2eeNoticeDetail = E2eeText.unencryptedBadgeHelp
+                        }
+                    } else {
+                        // 暗号化チャンネルとして送った行（`epoch` がある）なのに暗号文がない。正しいサーバーは作れないので、
+                        // サーバーが `content` を返していても表示しない。
+                        shown.content = ""
+                        shown.e2eeNotice = E2eeText.unencrypted
+                    }
+                    rows[id] = shown
+                    continue
+                }
+                let result = e2ee.decrypt(message)
+                shown.content = result.body ?? ""
+                if let mentions = result.payload?.mentions {
+                    shown.e2eeMentions = DecryptedMentions(userIDs: Set(mentions.userIds), channel: mentions.channel, here: mentions.here)
+                }
+                // 暗号化メッセージの添付は、復号した本文の `attachments` だけを根拠にする（サーバーの添付の行は、`encrypted.bin` で、
+                // 中身も大きさも信用できない）。空でも、サーバー由来の添付を残さない。
+                var display = shown.display_data ?? MessageDisplayData()
+                display.attachments = (result.payload?.attachments ?? []).map { MessageAttachment(decrypted: $0) }
+                shown.display_data = display
+                shown.e2eeNotice = result.notice ?? (result.revision == .stale ? E2eeText.revisionStale
+                    : result.revision == .conflict ? E2eeText.revisionConflict : nil)
+                rows[id] = shown
+            }
+        }
         if rows != messagesByID {
             // 比較のたびに日時を解析すると、長い履歴の更新中にメインスレッドを占有する。
             var dated: [(message: Message, date: Date)] = rows.values.map { ($0, $0.date ?? .distantPast) }
@@ -365,6 +480,16 @@ final class ConversationStore {
             messages = dated.map { $0.message }
         }
         reconcileReactionWrites()
+    }
+
+    /// 画像の大きさ（暗号化した添付の `width`、`height`）。読めなければ `nil`。
+    private static func imageSize(_ data: Data, contentType: String) -> (width: UInt32, height: UInt32)? {
+        guard contentType.lowercased().hasPrefix("image/"),
+              let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int, let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0, let w = UInt32(exactly: width), let h = UInt32(exactly: height) else { return nil }
+        return (w, h)
     }
 
     func send(parentID: String? = nil) async {
@@ -382,7 +507,7 @@ final class ConversationStore {
         }
         if matching == nil, let previous, previous.messageAttempted {
             // 応答が失われた投稿に紐付いている可能性があるため、別の投稿では添付も作り直す。
-            for id in previous.attachmentIDs { uploadedAttachmentIDs[id] = nil }
+            for id in previous.attachmentIDs { uploadedAttachmentIDs[id] = nil; encryptedUploads[id] = nil }
         }
         let pending = matching
             ?? PendingSend(id: UUID().uuidString.lowercased(), content: content, attachmentIDs: attachmentIDs,
@@ -392,6 +517,47 @@ final class ConversationStore {
         sendErrors[key] = nil
         defer { if epoch == accessGeneration { sending.remove(key); uploadStatus[key] = nil } }
         do {
+            if channel.encrypted == true {
+                // 暗号化チャンネル：本文を暗号化して送る。サーバーに平文は渡らない。添付は、まだ送れない。
+                guard !isDowngraded() else { throw MessageEncryptionError.downgraded }
+                guard let e2ee else { throw ZooError.rejected(403, "この会話には投稿できません。") }
+                var infos: [AttachmentInfo] = []
+                for (index, attachment) in attachments.enumerated() {
+                    try Task.checkCancellation()
+                    guard epoch == accessGeneration else { return }
+                    uploadStatus[key] = "ファイルを送信中（\(index + 1)/\(attachments.count)）"
+                    if var known = encryptedUploads[attachment.id] {
+                        known.sensitive = attachment.isSensitive
+                        infos.append(known)
+                        continue
+                    }
+                    // 暗号化してから上げる。ファイル名・MIME・大きさは、本文と同じ暗号文の中にだけ入れる。
+                    let plaintext = try Data(contentsOf: attachment.file.url)
+                    let encrypted = encryptAttachment(plaintext: plaintext)
+                    let id = try await client.uploadEncrypted(encrypted.ciphertext, channelID: channel.id)
+                    try Task.checkCancellation()
+                    guard epoch == accessGeneration else { return }
+                    let size = Self.imageSize(plaintext, contentType: attachment.contentType)
+                    let info = AttachmentInfo(attachmentId: id, name: attachment.fileName, mimetype: attachment.contentType,
+                                              size: UInt64(plaintext.count), width: size?.width, height: size?.height,
+                                              sensitive: attachment.isSensitive, file: encrypted.file)
+                    encryptedUploads[attachment.id] = info
+                    infos.append(info)
+                }
+                uploadStatus[key] = attachments.isEmpty ? nil : "メッセージを送信中…"
+                pendingSends[key]?.messageAttempted = true
+                try await e2ee.send(channelID: channel.id, id: pending.id, parentID: parentID, body: content, attachments: infos, mentions: encryptedMentions(content))
+                Task { await refreshRecipientSummary() }
+                try Task.checkCancellation()
+                guard active, !blocked, epoch == accessGeneration else { return }
+                pendingSends[key] = nil
+                if drafts[key] == content { drafts[key] = "" }
+                draftAttachments[key]?.removeAll { attachmentIDs.contains($0.id) }
+                for id in attachmentIDs { encryptedUploads[id] = nil }
+                focusedMessageID = pending.id
+                followsFocusedMessageToLatest = true
+                return
+            }
             var uploaded: [MessageAttachment] = []
             for (index, attachment) in attachments.enumerated() {
                 try Task.checkCancellation()
@@ -435,7 +601,7 @@ final class ConversationStore {
         } catch {
             guard active, epoch == accessGeneration, !Task.isCancelled, !(error is CancellationError) else { return }
             if case ZooError.expiredSession = error { onExpiredSession?(); return }
-            sendErrors[key] = "送信できませんでした。本文と添付を保持しています。\(error.localizedDescription)"
+            sendErrors[key] = "送信できませんでした。本文と添付を保持しています。\(describe(error))"
         }
     }
 
@@ -444,6 +610,17 @@ final class ConversationStore {
         let epoch = accessGeneration
         mutationInProgress = true
         defer { if epoch == accessGeneration { mutationInProgress = false } }
+        if channel.encrypted == true {
+            do {
+                guard !isDowngraded() else { actionError = MessageEncryptionError.downgraded.localizedDescription; return false }
+                guard let e2ee, !message.e2eeLegacy else { return false }
+                try await e2ee.edit(message, body: content, mentions: encryptedMentions(content))
+                try Task.checkCancellation()
+                guard active, !blocked, epoch == accessGeneration else { return false }
+                actionError = nil
+                return true
+            } catch { if epoch == accessGeneration { reportMutation(error) }; return false }
+        }
         do {
             let updated = try await client.edit(id: message.id, content: content)
             try Task.checkCancellation()
@@ -482,7 +659,7 @@ final class ConversationStore {
     func markRead(through messageID: String) async {
         let epoch = accessGeneration
         var delay = 2
-        while active, !blocked, channel.encrypted != true, epoch == accessGeneration, !Task.isCancelled,
+        while active, !blocked, epoch == accessGeneration, !Task.isCancelled,
               lastReadID != messageID {
             do {
                 try await client.markRead(channelID: channel.id, messageID: messageID)
@@ -512,7 +689,9 @@ final class ConversationStore {
     }
 
     func attachments(for message: Message) -> [MessageAttachment] {
-        message.display_data?.attachments ?? fallbackAttachments[message.id] ?? []
+        // 暗号化メッセージは、復号した結果（`display_data`）だけを使い、サーバーの添付の行は使わない。
+        if message.ciphertext != nil { return message.display_data?.attachments ?? [] }
+        return message.display_data?.attachments ?? fallbackAttachments[message.id] ?? []
     }
 
     private func clearAttachments() {

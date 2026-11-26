@@ -6,7 +6,7 @@ enum WorkspaceTab: Hashable {
 }
 
 enum WorkspaceSheet: Identifiable {
-    case createChannel, createDirectMessage, browseChannels, profile
+    case createChannel, createDirectMessage, browseChannels, profile, encryption, verification
     case draftDirectMessage(String)
     case channelDetails(Channel)
     case messageActions(MessageActionSheet)
@@ -18,6 +18,8 @@ enum WorkspaceSheet: Identifiable {
         case .draftDirectMessage: "draft-dm"
         case .browseChannels: "browse-channels"
         case .profile: "profile"
+        case .encryption: "encryption"
+        case .verification: "verification"
         case .channelDetails(let channel): "details-\(channel.id)"
         case .messageActions(let sheet): sheet.id.uuidString
         }
@@ -64,6 +66,8 @@ final class WorkspaceStore {
     let recentEmojis: RecentEmojiStore
     private(set) var channels: [Channel] = []
     private(set) var people: [String: Person] = [:]
+    /// サーバーが平文だと返したが、暗号化チャンネルだったはずのチャンネル（格下げ。送信を止める）。
+    private(set) var downgradedChannelIDs = Set<String>()
     @ObservationIgnored var onPeopleChanged: (() -> Void)?
     private(set) var unread: Set<String> = []
     private(set) var markingReadChannelIDs: Set<String> = []
@@ -130,6 +134,8 @@ final class WorkspaceStore {
     }
     @ObservationIgnored var onExpiredSession: (() -> Void)?
     @ObservationIgnored private var conversations: [String: ConversationStore] = [:]
+    /// 暗号化チャンネルの復号と送信、初回設定と解錠（#685）。プレビューなどでは `nil`。
+    var e2ee: E2eeController?
     private(set) var active = true
     private var destinationGeneration = UUID()
     private var channelGeneration = UUID()
@@ -258,7 +264,7 @@ final class WorkspaceStore {
     }
 
     func markChannelRead(_ channel: Channel) async {
-        guard active, !Task.isCancelled, !channel.is_dm, channel.encrypted != true,
+        guard active, !Task.isCancelled, !channel.is_dm,
               channel.deleted_at == nil, unread.contains(channel.id),
               markingReadChannelIDs.insert(channel.id).inserted else { return }
         readUpdateError = nil
@@ -352,7 +358,24 @@ final class WorkspaceStore {
         }
     }
 
+    /// 暗号化チャンネルとして見たことがあるのに、サーバーが平文のチャンネルだと返したときは（格下げ）、暗号化チャンネルとして
+    /// 扱い続け、送信を止めて警告する（docs/e2ee.md の「格下げの検出」）。
     private func reconcileChannel(_ incoming: Channel, confirmsWrite: Bool = false) -> Channel {
+        applyingDowngradeCheck(reconcileChannelCore(incoming, confirmsWrite: confirmsWrite))
+    }
+
+    private func applyingDowngradeCheck(_ reconciled: Channel) -> Channel {
+        var channel = reconciled
+        guard let e2ee else { return channel }
+        e2ee.rememberEncryptedChannels([channel])
+        if e2ee.isDowngraded(channel) {
+            downgradedChannelIDs.insert(channel.id)
+            channel.encrypted = true
+        }
+        return channel
+    }
+
+    private func reconcileChannelCore(_ incoming: Channel, confirmsWrite: Bool = false) -> Channel {
         // 書き込みの同期確認後も、先に始まった単件取得で表示を巻き戻さない。
         if let current = channels.first(where: { $0.id == incoming.id }),
            let currentDate = current.updated_at.flatMap(ZooDate.parse),
@@ -421,9 +444,27 @@ final class WorkspaceStore {
         return person.id == user.id
     }
 
+    /// 暗号化メッセージでは、復号した `mentions` にある `@name` だけを、メンションとして表示する（本文だけの `@name` は、
+    /// 通知も出ていないので、メンションに見せない。docs/e2ee.md の「Megolm の平文」）。
+    func mentionIdentity(_ username: String, in message: Message) -> Bool? {
+        guard let mentions = message.e2eeMentions else { return mentionIdentity(username) }
+        switch username.lowercased() {
+        case "channel": return mentions.channel ? true : nil
+        case "here": return mentions.here ? true : nil
+        default:
+            guard let person = people.values.first(where: { $0.user_name.caseInsensitiveCompare(username) == .orderedSame }),
+                  mentions.userIDs.contains(person.id) else { return nil }
+            return person.id == user.id
+        }
+    }
+
     func conversation(for channel: Channel) -> ConversationStore {
         if let existing = conversations[channel.id] { return existing }
         let store = ConversationStore(channel: channel, client: client, userID: user.id)
+        store.e2ee = e2ee
+        store.isDowngraded = { [weak self] in self?.downgradedChannelIDs.contains(channel.id) == true }
+        store.displayName = { [weak self] id in self?.people[id]?.name ?? "不明なユーザー" }
+        store.userIDForName = { [weak self] name in self?.people.values.first { $0.user_name == name }?.id }
         store.canonicalEmoji = { [weak self] value in
             self?.emojisByKey[value].map { ":\($0.name):" } ?? ReactionEmoji.key(value)
         }
@@ -531,13 +572,15 @@ final class WorkspaceStore {
         }
         defer { updatingChannels.remove(channel.id) }
         channelGeneration = UUID()
-        let updated = try await write()
+        let written = try await write()
         try Task.checkCancellation()
-        guard active, updated.id == channel.id, let index = channels.firstIndex(where: { $0.id == channel.id }),
+        guard active, written.id == channel.id, let index = channels.firstIndex(where: { $0.id == channel.id }),
               conversations[channel.id]?.blocked != true else { throw CancellationError() }
         if let currentDate = channels[index].updated_at.flatMap(ZooDate.parse),
-           let responseDate = updated.updated_at.flatMap(ZooDate.parse), currentDate > responseDate { return }
+           let responseDate = written.updated_at.flatMap(ZooDate.parse), currentDate > responseDate { return }
         channelGeneration = UUID()
+        // 更新の応答も、一覧と同じく格下げの判定を通す（暗号化チャンネルを平文として返しても、暗号化の状態を保つ）。
+        let updated = applyingDowngradeCheck(written)
         channelWrites[channel.id] = updated
         channels[index] = updated
         conversations[channel.id]?.update(updated)
@@ -546,7 +589,7 @@ final class WorkspaceStore {
 
     func openThread(_ parentID: String, in store: ConversationStore, focusComposer: Bool) {
         guard active, path.last == .channel(store.channel.id), !store.blocked,
-              store.channel.encrypted != true, store.message(id: parentID) != nil else { return }
+              store.message(id: parentID) != nil else { return }
         let route = ChatRoute.thread(channelID: store.channel.id, parentID: parentID, focusComposer: focusComposer)
         if store.channel.is_dm { dmPath.append(route) }
         else { channelPath.append(route) }
@@ -560,7 +603,7 @@ final class WorkspaceStore {
 
     func openListedThread(_ parentID: String, in channel: Channel) {
         guard active, selectedTab == .channels, joinedChannelIDs.contains(channel.id),
-              !channel.is_dm, channel.encrypted != true else { return }
+              !channel.is_dm else { return }
         let store = conversation(for: channel)
         guard !store.blocked else { report(ZooError.rejected(403, "この会話を閲覧できません。")); return }
         store.prepareForThread(parentID)
@@ -725,6 +768,8 @@ final class WorkspaceStore {
         memberRequests = [:]
         conversations.values.forEach { $0.shutdown() }
         conversations.removeAll()
+        if let e2ee { Task { await e2ee.stop() } }
+        e2ee = nil
         videoPlayback.stop()
         images.close()
         calls.shutdown()

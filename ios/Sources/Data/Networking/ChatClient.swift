@@ -30,15 +30,17 @@ protocol ChatClient: InboxClient, CallClient, TypingClient {
     func emojis() async throws -> [WorkspaceEmoji]
     func emojiAccounts() async throws -> [EmojiAccount]
     func upload(_ attachment: DraftAttachment, channelID: String) async throws -> String
+    /// 暗号化チャンネルの添付の暗号文を上げ、添付の ID を返す。
+    func uploadEncrypted(_ ciphertext: Data, channelID: String) async throws -> String
     func send(id: String, channelID: String, content: String, parentID: String?, attachmentIDs: [String], sensitiveAttachmentIDs: [String]) async throws -> Message
     func edit(id: String, content: String) async throws -> Message
     func delete(id: String) async throws
     func markRead(channelID: String, messageID: String) async throws
     func markChannelRead(channelID: String) async throws -> ChannelReadState
-    func createChannel(id: String, name: String, description: String, isPrivate: Bool) async throws -> Channel
+    func createChannel(id: String, name: String, description: String, isPrivate: Bool, encrypted: Bool) async throws -> Channel
     func updateChannel(id: String, name: String?, description: String) async throws -> Channel
     func archiveChannel(id: String) async throws -> Channel
-    func directMessage(userIDs: [String]) async throws -> Channel
+    func directMessage(userIDs: [String], encrypted: Bool) async throws -> Channel
     func dmMemberships() async throws -> [ChannelMembership]
     func joinChannel(id: String) async throws
 }
@@ -67,5 +69,15 @@ extension ChatClient {
     }
     func observeMessageFeed(channelID: String, request: MessageFeedRequest, receive: @MainActor (MessageFeedSnapshot) -> Void) async throws {
         try await observeMessages(channelID: channelID) { receive(MessageFeedSnapshot(messages: $0)) }
+    }
+}
+
+extension ChatClient {
+    func createChannel(id: String, name: String, description: String, isPrivate: Bool) async throws -> Channel {
+        try await createChannel(id: id, name: name, description: description, isPrivate: isPrivate, encrypted: false)
+    }
+
+    func directMessage(userIDs: [String]) async throws -> Channel {
+        try await directMessage(userIDs: userIDs, encrypted: false)
     }
 }

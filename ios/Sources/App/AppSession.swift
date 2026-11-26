@@ -49,6 +49,11 @@ final class AppSession {
             session.validatedSession = true
             let calls = CallStore(client: client, userID: client.currentUser.id, makeMedia: { PreviewCallMedia() }, permission: { true })
             session.workspace = WorkspaceStore(client: client, user: client.currentUser, recentEmojiDefaults: nil, calls: calls)
+            if let workspace = session.workspace, ProcessInfo.processInfo.arguments.contains("--uitesting-e2ee") {
+                workspace.e2ee = E2eeController.makePreview(
+                    userID: client.currentUser.id,
+                    alreadySetUp: ProcessInfo.processInfo.arguments.contains("--uitesting-e2ee-locked"))
+            }
             if let workspace = session.workspace, ProcessInfo.processInfo.arguments.contains("--uitesting-attachments") {
                 Task { await client.prepareAttachmentDraft(in: workspace) }
             }
@@ -188,6 +193,21 @@ final class AppSession {
         let journal = KeychainCallSessionJournal(account: SyncCache.connectionKey(api.settings) + ":" + user.id)
         let calls = CallStore(client: client, userID: user.id, sessionJournal: Self.isUITesting ? nil : journal)
         let workspace = WorkspaceStore(client: client, user: user, calls: calls)
+        if !Self.isUITesting {
+            do {
+                let files = try CryptoStoreFiles.ios(root: CryptoStoreFiles.defaultRoot(), server: api.settings.server, userID: user.id)
+                let controller = E2eeController.make(api: api, userID: user.id, files: files)
+                let reauthenticator = Reauthenticator(auth: authentication)
+                controller.reauthenticate = { try await reauthenticator.idToken() }
+                controller.verification?.reauthenticate = { try await reauthenticator.idToken() }
+                controller.rpID = URL(string: api.settings.issuer)?.host ?? ""
+                workspace.e2ee = controller
+                controller.start()
+            } catch {
+                // 暗号化の保存領域を作れなくても、ワークスペースは開ける。暗号化チャンネルだけが使えない（作り直すと再び試す）。
+                workspace.error = "暗号化の保存領域を初期化できませんでした。暗号化チャンネルは使えません。アプリを開き直すと再び試します。"
+            }
+        }
         sync.onChannelRevoked = { [weak workspace] id, channel in workspace?.revokeChannel(id, retaining: channel) }
         sync.onChannelAuthorized = { [weak workspace] id in workspace?.calls.authorizeChannel(id) }
         workspace.onExpiredSession = { [weak self, weak workspace] in
@@ -215,7 +235,45 @@ final class AppSession {
         error = nil
     }
 
+    /// 暗号鍵をまだバックアップに送れていないまま、ログアウトしようとしている（確認の対象。`nil` なら確認なし）。
+    struct LogoutPrompt: Equatable { let unbackedSessions: Int? }
+    var logoutPrompt: LogoutPrompt?
+    /// ログアウトの確認を始めたときのセッション（確認のあいだに別のセッションになったら、何もしない）。
+    @ObservationIgnored private var loggingOutWorkspace: WorkspaceStore?
+
+    /// 利用者のログアウト。暗号化があれば、送れていない鍵を確かめる（0 でなければ確認を出す）。
+    func beginLogout() async {
+        guard let workspace, let e2ee = workspace.e2ee else { logout(); return }
+        // 確認を出しているあいだにセッションが終わったり、別のセッションになったりしたら、古い確認では何もしない。
+        loggingOutWorkspace = workspace
+        let count = await e2ee.prepareLogout()
+        guard self.workspace === workspace else { return }
+        if count == 0 { await completeLogout() } else { logoutPrompt = LogoutPrompt(unbackedSessions: count) }
+    }
+
+    func confirmLogout() async { await completeLogout() }
+
+    func cancelLogout() {
+        logoutPrompt = nil
+        loggingOutWorkspace?.e2ee?.cancelLogout()
+        loggingOutWorkspace = nil
+    }
+
+    private func completeLogout() async {
+        // 確認した時のセッションと、今のセッションが同じときだけ行う（違えば、確認は古いので、何もしない）。
+        // 確認の持ち主が違うときは、新しいセッションの確認状態を消さない。
+        guard let target = loggingOutWorkspace, target === workspace else { return }
+        // 端末の削除にはトークンが要るので、認証情報を消す前に、端末を消して暗号ストアを消す。
+        await target.e2ee?.finishLogout()
+        guard target === workspace, loggingOutWorkspace === target else { return }
+        logoutPrompt = nil
+        loggingOutWorkspace = nil
+        logout()
+    }
+
     func logout() {
+        logoutPrompt = nil
+        loggingOutWorkspace = nil
         cancelConnection()
         destinationDelivery?.task.cancel()
         destinationDelivery = nil

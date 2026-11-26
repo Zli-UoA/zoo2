@@ -7,6 +7,7 @@ struct PeopleView: View {
     @State private var search = ""
     @State private var recipients: Set<String> = []
     @State private var submitting = false
+    @State private var encrypted = false
     @State private var error: String?
 
     private var eligibleIDs: Set<String> {
@@ -25,6 +26,11 @@ struct PeopleView: View {
         NavigationStack {
             AppList {
                 if let error { Text(error).foregroundStyle(.red) }
+                if draftContent == nil, workspace.e2ee != nil {
+                    Section {
+                        Toggle("暗号化", isOn: $encrypted).accessibilityIdentifier("dm-encrypted")
+                    } footer: { Text("暗号化したDMは、あとから暗号化をやめられません。サーバーにも、運営にも本文は読めません。") }
+                }
                 Section(draftContent == nil ? "宛先（9人まで）" : "宛先") {
                     ForEach(candidates) { person in
                         let selected = recipients.contains(person.id)
@@ -70,7 +76,7 @@ struct PeopleView: View {
                         }
                         try await actions.draft(draftContent, to: target)
                     } else {
-                        let channel = try await workspace.client.directMessage(userIDs: ids)
+                        let channel = try await workspace.client.directMessage(userIDs: ids, encrypted: encrypted)
                         try Task.checkCancellation()
                         workspace.addAndOpen(channel, members: ids + [workspace.user.id])
                     }

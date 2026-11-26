@@ -8,6 +8,11 @@ final class NotificationService: UNNotificationServiceExtension {
         let handler: (UNNotificationContent) -> Void
     }
 
+    /// 暗号ストアの保存鍵（共有の Keychain。ディレクトリー名が暗号ストアの ID で、鍵の項目名）。
+    private static func storageKey(_ id: String) -> Data? {
+        (try? KeychainStorageKey(account: id).load()) ?? nil
+    }
+
     private let lock = NSLock()
     private var pending: Delivery?
 
@@ -23,7 +28,11 @@ final class NotificationService: UNNotificationServiceExtension {
 
         let keys = NotificationPreviewKeyStore()
         let key = try? keys.load()
-        let content = NotificationPreview.content(for: fallback, key: key)
+        var content = NotificationPreview.content(for: fallback, key: key)
+        // 暗号化チャンネルの通知は、暗号文の行（`e2ee_v1`）から、この端末の暗号ストアで本文を復号する。
+        // 復号できなければ、プレビューのまま（「新しいメッセージ」）。
+        let storageKey = Self.storageKey
+        content = NotificationE2ee.content(for: content, roots: NotificationE2ee.roots(), loadKey: storageKey)
         // 再照合中も期限切れの汎用通知を渡せるよう、配信権をまだ取り出さない。
         let valid = key != nil && (try? keys.load()) == key
         let handler = lock.withLock {

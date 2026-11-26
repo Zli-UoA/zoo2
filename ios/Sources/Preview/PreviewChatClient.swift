@@ -103,6 +103,22 @@ final class PreviewChatClient: ChatClient {
                     content: "SwiftUI で、いつもの会話がもっと身近に。", created_at: "2026-11-18T09:01:00Z",
                     display_data: MessageDisplayData(reactions: []))
         ]
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-e2ee") {
+            // 暗号化チャンネル：鍵がまだ届いていない暗号文の行と、平文の行（表示しない）。
+            let encryptedID = "77777777-7777-4777-8777-777777777777"
+            allMessages += [
+                // 暗号化に切り替える前の平文（印なし）、鍵がまだ届いていない暗号文、暗号化したメッセージより後ろの平文（警告）、
+                // 暗号文がないのに `epoch` がある行（表示しない）。
+                Message(id: "77777777-7777-4777-8777-777777777700", user_id: colleague.id, channel_id: encryptedID,
+                        content: "これは暗号化に切り替える前の平文です", created_at: "2026-11-18T09:01:00Z"),
+                Message(id: "77777777-7777-4777-8777-777777777701", user_id: colleague.id, channel_id: encryptedID, content: "",
+                        created_at: "2026-11-18T09:02:00Z", ciphertext: CiphertextText("{}"), epoch: ShapeInteger(1), revision: ShapeInteger(0)),
+                Message(id: "77777777-7777-4777-8777-777777777702", user_id: colleague.id, channel_id: encryptedID,
+                        content: "これは暗号化したあとに紛れた平文です", created_at: "2026-11-18T09:03:00Z"),
+                Message(id: "77777777-7777-4777-8777-777777777703", user_id: colleague.id, channel_id: encryptedID,
+                        content: "暗号文がないのに epoch がある行", created_at: "2026-11-18T09:04:00Z", epoch: ShapeInteger(1))
+            ]
+        }
         if ProcessInfo.processInfo.arguments.contains("--uitesting-wrapped-reactions") {
             allMessages[0].display_data?.reactions = ["👍", "❤️", "🎉", "👏", "🙌", "😂", "🙏", "👀", "😊", "🔥", "💯", "✨"].map { emoji in
                 MessageReaction(id: UUID().uuidString.lowercased(), message_id: Self.messageID, user_id: colleague.id, emoji: emoji)
@@ -426,6 +442,7 @@ final class PreviewChatClient: ChatClient {
         }
     }
     private var uploadedAttachments: [String: MessageAttachment] = [:]
+    private var encryptedUploads: [String: Data] = [:]
 
     func prepareAttachmentDraft(in workspace: WorkspaceStore) async {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -441,6 +458,12 @@ final class PreviewChatClient: ChatClient {
     func upload(_ attachment: DraftAttachment, channelID: String) async throws -> String {
         let id = UUID().uuidString.lowercased()
         uploadedAttachments[id] = MessageAttachment(id: id, file_name: attachment.fileName, content_type: attachment.contentType)
+        return id
+    }
+
+    func uploadEncrypted(_ ciphertext: Data, channelID: String) async throws -> String {
+        let id = UUID().uuidString.lowercased()
+        encryptedUploads[id] = ciphertext
         return id
     }
 
@@ -477,9 +500,9 @@ final class PreviewChatClient: ChatClient {
         }
         readPositions[channelID] = allMessages.first { $0.id == messageID }?.created_at
     }
-    func createChannel(id: String, name: String, description: String, isPrivate: Bool) async throws -> Channel {
+    func createChannel(id: String, name: String, description: String, isPrivate: Bool, encrypted: Bool) async throws -> Channel {
         let channel = Channel(id: id, channel_name: name, description: description, is_private: isPrivate, is_dm: false,
-                              created_user_id: currentUser.id)
+                              encrypted: encrypted ? true : nil, created_user_id: currentUser.id)
         allChannels.append(channel)
         return channel
     }
@@ -515,11 +538,15 @@ final class PreviewChatClient: ChatClient {
         if id == discoverableID { joinedPublic = true }
     }
 
-    func directMessage(userIDs: [String]) async throws -> Channel {
+    func directMessage(userIDs: [String], encrypted: Bool) async throws -> Channel {
         let id = UUID().uuidString.lowercased()
         let name = userIDs.count == 1 ? "dm:\(currentUser.id):\(userIDs[0])" : "dm:group:\(id)"
-        if let channel = allChannels.first(where: { $0.channel_name == name }) { return channel }
-        let channel = Channel(id: id, channel_name: name, is_private: true, is_dm: true)
+        if let channel = allChannels.first(where: { $0.channel_name == name }) {
+            // 暗号化を求めたのに、すでにある DM が平文なら、本番と同じく格下げとして拒む。
+            if encrypted, channel.encrypted != true { throw MessageEncryptionError.downgraded }
+            return channel
+        }
+        let channel = Channel(id: id, channel_name: name, is_private: true, is_dm: true, encrypted: encrypted ? true : nil)
         memberships += ([currentUser.id] + userIDs).map { ChannelMembership(channel_id: id, user_id: $0) }
         allChannels.append(channel)
         return channel

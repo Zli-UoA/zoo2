@@ -23,7 +23,7 @@ struct ConversationView: View {
 
     private var threadUnavailable: Bool {
         guard let parentID else { return false }
-        return store.blocked || store.channel.encrypted == true ||
+        return store.blocked ||
             (!store.loading && !store.showingCachedMessages && store.syncError == nil && store.message(id: parentID) == nil)
     }
 
@@ -34,10 +34,36 @@ struct ConversationView: View {
                     .lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, AppDesign.horizontalInset).padding(.bottom, AppDesign.spacing)
             }
-            if store.channel.encrypted == true {
+            if store.channel.encrypted == true && !store.supportsEncryption {
                 ContentUnavailableView("暗号化された会話", systemImage: "lock.shield",
                                        description: Text("この iOS 版では暗号化された会話をまだ開けません。対応済みの Zoo クライアントをご利用ください。"))
             } else {
+                if store.channel.encrypted == true, let e2ee = workspace.e2ee, !e2ee.isReady {
+                    EncryptionUnlockBanner(e2ee: e2ee) { workspace.presentedSheet = .encryption }
+                }
+                if let summary = store.recipientSummary {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if !summary.added.isEmpty {
+                            Label("前回の送信から、配布先に加わった人：" + summary.added.map(store.displayName).joined(separator: "、"),
+                                  systemImage: "person.badge.plus").font(.caption)
+                        }
+                        if !summary.undeliverable.isEmpty {
+                            Label("鍵を配れない相手がいます（送れません）", systemImage: "exclamationmark.shield").font(.caption.bold())
+                            ForEach(summary.undeliverable, id: \.userID) { entry in
+                                Text("・\(store.displayName(entry.userID))：\(ConversationStore.reasonText(entry.reason))").font(.caption)
+                            }
+                        }
+                    }
+                    .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.orange.opacity(0.12))
+                    .accessibilityIdentifier("encryption-recipients-notice")
+                }
+                if store.isDowngraded() {
+                    Label(MessageEncryptionError.downgraded.localizedDescription, systemImage: "exclamationmark.shield")
+                        .font(.caption).padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.red.opacity(0.12))
+                        .accessibilityIdentifier("encryption-downgraded-banner")
+                }
                 if let error = store.syncError ?? store.reactionSyncError ?? store.attachmentSyncError {
                     HStack {
                         Label(error, systemImage: "wifi.exclamationmark").font(.caption)
@@ -57,6 +83,10 @@ struct ConversationView: View {
             }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { navigationContentWidth = $0 }
+        // 暗号化チャンネルは、開いたとき、鍵が届いたとき、解錠したときに、配布先の要約を読み直す。
+        .task(id: "\(store.channel.id)|\(workspace.e2ee?.revision ?? 0)|\(workspace.e2ee?.isReady == true)") {
+            await store.refreshRecipientSummary()
+        }
         .background(AppDesign.background.ignoresSafeArea())
         .navigationTitle(parentID == nil ? workspace.name(for: store.channel) : "スレッド")
         .navigationBarTitleDisplayMode(.inline)

@@ -277,3 +277,157 @@ fn passkey_slot_and_key_mismatch() {
         Ok(None) | Err(_)
     ));
 }
+
+/// 失効（#362）。初回設定の状態から、全範囲の失効を始め、暗号ストアに保存して開け直し、各段階の要求を作る。
+#[test]
+fn revocation_full_round_trip() {
+    let account = DeviceAccount::new(ALICE.into(), DEVICE.into()).unwrap();
+    let storage_key = vec![9u8; 32];
+    let start = begin_setup(ALICE.into()).unwrap();
+    let response = storage_response(&start.session.secret_storage_request().unwrap(), 1);
+    let mut server = Server::default();
+    let unlocked_session =
+        unlock_setup_with_recovery_key(ALICE.into(), response.clone(), start.recovery_key.clone())
+            .unwrap()
+            .unwrap();
+    let plan = unlocked_session
+        .plan(
+            server.keys_query(),
+            server.versions(),
+            account.device_keys(),
+        )
+        .unwrap();
+    server.apply(&plan);
+
+    let storage = parse_secret_storage(ALICE.into(), response)
+        .unwrap()
+        .unwrap();
+    let recovery = RecoveryKey::parse(start.recovery_key).unwrap();
+    let unlocked = storage.unlock_with_recovery_key(&recovery).unwrap();
+    let trust = TrustStore::new(ALICE.into()).unwrap();
+    unlocked_session.record_own_keys(&trust).unwrap();
+
+    let input = json!({
+        "scope": "full",
+        "keys_query": serde_json::from_str::<Value>(&server.keys_query()).unwrap(),
+        "versions": serde_json::from_str::<Value>(&server.versions()).unwrap(),
+        "pins": [],
+        "targets_query": {},
+        "deleted_devices": [],
+    })
+    .to_string();
+    let revocation = begin_revocation(input, &unlocked, &trust, None, None).unwrap();
+
+    // 暗号ストアに保存した進み具合は、秘密鍵を除いて読める。
+    let sealed = revocation.pickle(&account, storage_key.clone()).unwrap();
+    let summary: Value = serde_json::from_str(
+        &peek_revocation(sealed.clone(), &account, storage_key.clone()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(summary["scope"], "full");
+    assert_eq!(summary["stage"], "prepared");
+    assert!(summary["revocation_id"].as_str().unwrap().len() > 10);
+    // 全範囲は、SSSS を保存する前に止まったら、最初からやり直す。
+    assert!(matches!(
+        resume_revocation(sealed, &account, storage_key.clone(), &unlocked),
+        Err(ZooCryptoError::RevocationRestart { .. })
+    ));
+
+    // 新しい SSSS 鍵の要求（鍵スロットは新しい鍵で作る）。
+    let slot = new_recovery_key_slot(
+        ALICE.into(),
+        &revocation.ssss_key(),
+        &RecoveryKey::generate(),
+    )
+    .unwrap();
+    let request: Value =
+        serde_json::from_str(&revocation.secret_storage_request(vec![slot]).unwrap()).unwrap();
+    assert_eq!(request["key_id"], summary["key_id"]);
+    revocation.secret_storage_saved(Some(2));
+    revocation.advance("secret_storage_saved".into()).unwrap();
+    assert!(revocation.advance("unknown".into()).is_err());
+    assert!(revocation.cross_signing_request().contains("master_key"));
+    let signatures: Value =
+        serde_json::from_str(&revocation.signatures(account.device_keys()).unwrap()).unwrap();
+    assert_eq!(signatures["device"]["target_user_id"], ALICE);
+    assert!(revocation.backup_version_request().is_ok());
+    revocation.backup_created("2".into());
+
+    // 新しい鍵は、暗号ストアの自分の鍵にできる。
+    let own = OwnKeys::from_pickle(
+        revocation
+            .own_keys_pickle(&account, storage_key.clone())
+            .unwrap(),
+        &account,
+        storage_key,
+    )
+    .unwrap();
+    assert_eq!(own.user_signing().usage(), KeyUsage::UserSigning);
+    revocation.apply_to_trust(&trust).unwrap();
+}
+
+/// E2EE のリセット：他人が作った（または開けない）SSSS がすでにあるとき、その鍵と版を前提にして作り直す。
+#[test]
+fn reset_replaces_secret_storage_and_keys() {
+    let account = DeviceAccount::new(ALICE.into(), DEVICE.into()).unwrap();
+    // 先に、別の鍵で初回設定を済ませたサーバー。
+    let first = begin_setup(ALICE.into()).unwrap();
+    let old_response = storage_response(&first.session.secret_storage_request().unwrap(), 4);
+    let mut server = Server::default();
+    let old_session =
+        unlock_setup_with_recovery_key(ALICE.into(), old_response.clone(), first.recovery_key)
+            .unwrap()
+            .unwrap();
+    let old_plan = old_session
+        .plan(
+            server.keys_query(),
+            server.versions(),
+            account.device_keys(),
+        )
+        .unwrap();
+    server.apply(&old_plan);
+
+    // リセット：新しい鍵を作り、サーバーの今の既定の鍵と版を前提にする。
+    let reset = begin_setup(ALICE.into()).unwrap();
+    let old: Value = serde_json::from_str(&old_response).unwrap();
+    let request: Value = serde_json::from_str(
+        &reset
+            .session
+            .reset_secret_storage_request(
+                Some(old["default_key_id"].as_str().unwrap().to_owned()),
+                old["secrets_revision"].as_u64(),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(request["expected_default_key_id"], old["default_key_id"]);
+    assert_eq!(request["expected_secrets_revision"], 4);
+    assert_ne!(request["key_id"], old["default_key_id"]);
+
+    // 初回設定の要求は、前提の値が空のまま。
+    let first_request: Value =
+        serde_json::from_str(&reset.session.secret_storage_request().unwrap()).unwrap();
+    assert!(first_request["expected_default_key_id"].is_null());
+
+    // クロス署名鍵は 3 つとも差し替え（サーバーの今の鍵が前提）、新しい版を作る（今の版が前提）。
+    let plan = reset
+        .session
+        .plan_reset(
+            server.keys_query(),
+            server.versions(),
+            account.device_keys(),
+        )
+        .unwrap();
+    let cross: Value = serde_json::from_str(&plan.cross_signing.unwrap()).unwrap();
+    assert!(cross["expected_keys"]["master"].is_string());
+    assert!(plan.device_signature.is_some());
+    let version: Value = serde_json::from_str(&plan.backup_version.unwrap()).unwrap();
+    assert_eq!(version["expected_current_version"], "1");
+
+    // 解錠で取り出した鍵では、リセットの要求を作れない。
+    assert!(
+        old_session
+            .reset_secret_storage_request(None, None)
+            .is_err()
+    );
+}

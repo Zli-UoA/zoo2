@@ -32,6 +32,20 @@ pub(super) fn attach(
     }
 }
 
+/// 暗号化チャンネルの通知に、受信端末が復号に使う暗号文の行を付ける（docs/e2ee.md の「iOS の通知の復号」）。
+/// どれもサーバーが元から持つ値で、平文を含まない（`ciphertext` は Megolm の暗号文のまま）。本文を作れるのは
+/// 受信端末の通知拡張だけ。上限を超えるなら付けない（汎用の通知のまま出る）。
+pub(super) fn attach_e2ee(envelope: Value, recipient_id: &str, message: Value) -> Value {
+    let mut attached = envelope.clone();
+    attached["e2ee_v1"] = json!({"recipient_id": recipient_id, "message": message});
+    attached["aps"]["mutable-content"] = json!(1);
+    if attached.to_string().len() <= MAX_PUSH_BYTES {
+        attached
+    } else {
+        envelope
+    }
+}
+
 fn cipher(revocation_hash: &str) -> anyhow::Result<Aes256Gcm> {
     let mut mac = <Hmac<Sha256> as HmacKeyInit>::new_from_slice(revocation_hash.as_bytes())?;
     mac.update(b"works.zli.zoo.apns.preview.v1");
@@ -105,6 +119,35 @@ pub(super) mod tests {
             )
             .ok()?;
         serde_json::from_slice(&plaintext).ok()
+    }
+
+    #[test]
+    fn e2ee_row_is_attached_only_within_the_apns_limit() {
+        let notification = Notification {
+            id: NOTICE.into(),
+            user_id: USER.into(),
+            actor_id: "送信者".into(),
+            channel_id: CHANNEL.into(),
+            message_id: Some(MESSAGE.into()),
+            notification_type: "mention".into(),
+            is_read: false,
+            created_at: crate::models::now_utc_millis(),
+        };
+        let fallback = apns::fallback_payload(&notification);
+        let row = |size: usize| {
+            json!({"channel_id": CHANNEL, "message_id": MESSAGE, "parent_id": null, "user_id": USER,
+                   "message_kind": "message", "epoch": 3, "revision": 0,
+                   "ciphertext": {"v": "x".repeat(size)}})
+        };
+        let attached = super::attach_e2ee(fallback.clone(), USER, row(100));
+        assert_eq!(attached["e2ee_v1"]["recipient_id"], USER);
+        assert_eq!(attached["e2ee_v1"]["message"]["epoch"], 3);
+        assert_eq!(attached["aps"]["mutable-content"], 1);
+        assert!(attached.to_string().len() <= MAX_PUSH_BYTES);
+        // 上限を超えるなら付けず、汎用の通知のまま（`mutable-content` も付けない）。
+        let oversized = super::attach_e2ee(fallback.clone(), USER, row(MAX_PUSH_BYTES));
+        assert_eq!(oversized, fallback);
+        assert!(oversized.get("e2ee_v1").is_none());
     }
 
     #[test]

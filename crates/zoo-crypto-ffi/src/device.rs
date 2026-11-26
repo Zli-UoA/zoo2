@@ -185,7 +185,7 @@ impl DeviceAccount {
 /// 形式はコアの保存用の封筒（docs/e2ee.md の「暗号ストア」、#359）。
 #[derive(uniffi::Object, Default)]
 pub struct OlmSessionStore {
-    inner: Mutex<Vec<core::OlmSession>>,
+    pub(crate) inner: Mutex<Vec<core::OlmSession>>,
 }
 
 #[uniffi::export]
@@ -383,7 +383,7 @@ pub struct SenderTrust {
 /// [`DeviceAccount::decrypt_to_device`] で復号した、まだ検証していない平文。
 #[derive(uniffi::Object)]
 pub struct OlmDecrypted {
-    inner: core::OlmDecrypted,
+    pub(crate) inner: core::OlmDecrypted,
 }
 
 #[uniffi::export]

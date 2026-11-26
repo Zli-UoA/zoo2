@@ -11,6 +11,12 @@ struct WorkspaceView: View {
     @State private var selectedPhotos: [PhotosPickerItem] = []
     @State private var messageActionSheet: MessageActionSheet?
 
+    /// 受けた検証の要求があり、ほかのシートを開いていなければ、検証の画面を出す。
+    private func presentPendingVerification() {
+        let pending = workspace.e2ee?.verification?.entries.contains { $0.view.phase == "incoming" } ?? false
+        if pending, case .none = workspace.presentedSheet { workspace.presentedSheet = .verification }
+    }
+
     var body: some View {
         Group {
             if horizontalSizeClass == .regular {
@@ -18,6 +24,15 @@ struct WorkspaceView: View {
             } else {
                 compactTabs
             }
+        }
+        // 相手から検証の要求が届いたら、ほかのシートを開いていなければ、検証の画面を出す。
+        .onChange(of: workspace.e2ee?.verification?.entries.filter { $0.view.phase == "incoming" }.map(\.id) ?? []) { _, _ in
+            presentPendingVerification()
+        }
+        // 別のシートを開いていて見送った検証の要求は、そのシートを閉じたときに出す。
+        // 検証のシート自身を閉じたときは、同じ要求で開き直さない（応答するか、期限が切れるまで、要求は残る）。
+        .onChange(of: workspace.presentedSheet?.id) { old, id in
+            if id == nil, old != "verification" { presentPendingVerification() }
         }
         // 開閉で一覧や会話が入れ替わっても、入力中のシートを破棄しない。
         .sheet(item: $workspace.presentedSheet, onDismiss: {
@@ -30,6 +45,10 @@ struct WorkspaceView: View {
             case .createDirectMessage: PeopleView(workspace: workspace)
             case .draftDirectMessage(let content): PeopleView(workspace: workspace, draftContent: content)
             case .browseChannels: ChannelBrowser(workspace: workspace)
+            case .encryption:
+                if let e2ee = workspace.e2ee { EncryptionSetupView(e2ee: e2ee) }
+            case .verification:
+                if let verification = workspace.e2ee?.verification { VerificationSheet(workspace: workspace, verification: verification) }
             case .channelDetails(let channel): ChannelDetailsView(channel: channel, workspace: workspace)
             case .messageActions(let action):
                 if let message = action.store.message(id: action.message.id) {

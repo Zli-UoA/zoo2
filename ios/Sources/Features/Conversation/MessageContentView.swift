@@ -79,7 +79,7 @@ struct MessageContentView: View {
     }
 
     var body: some View {
-        let parts = MessageContent.parse(message.content.isEmpty ? "添付ファイルまたはアプリのメッセージ" : message.content, mention: workspace.mentionIdentity) {
+        let parts = MessageContent.parse(message.content.isEmpty ? "添付ファイルまたはアプリのメッセージ" : message.content, mention: { workspace.mentionIdentity($0, in: message) }) {
             workspace.emojiImageURL(for: $0, message: message)
         }
         let urls = Array(Set(parts.compactMap { part -> URL? in

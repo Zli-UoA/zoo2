@@ -138,7 +138,7 @@ pub fn next_backup_version(versions: String) -> Result<u64> {
     Ok(core::next_backup_version(&parse_versions(&versions)?))
 }
 
-fn parse_versions(versions: &str) -> Result<Vec<core::BackupVersionInfo>> {
+pub(crate) fn parse_versions(versions: &str) -> Result<Vec<core::BackupVersionInfo>> {
     Ok(core::BackupVersionInfo::list_from_json(&parse_json(
         "versions", versions,
     )?)?)
