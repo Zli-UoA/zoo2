@@ -232,9 +232,6 @@ internal class ConnectedScreenState(
             else content.trimEnd().removeSuffix("<$rawQuoteUrl>").removeSuffix(rawQuoteUrl).trimEnd()
         }
         val richContent = if (!isPost && !data.present("ciphertext")) messageRichContent(data) else EntryRichContent()
-        val linkUrls = if (allowPreview && !data.present("ciphertext") && !richContent.hidesBody) {
-            previewUrls(body, quoteUri)
-        } else emptyList()
         val metadata = display.ifEmpty { data }
         val emoji = if (allowPreview && !data.present("ciphertext")) displayEmoji(data, metadata, isPost) else emptyMap()
         val reactionEmoji = if (allowPreview && !data.present("ciphertext")) {
@@ -270,7 +267,11 @@ internal class ConnectedScreenState(
         // A channel-linked post exposes its attachments through both representations.
         val media = selectTimelineMedia(postMedia, attachmentMedia, isPost && fileRows.isNotEmpty())
         val mediaUrls = timelineImageIdentities(postMedia + quote?.media.orEmpty())
-        val url = linkUrls.firstOrNull { it !in mediaUrls }
+        // このアプリのリンクは自分のデータから埋め込み、外へ送らないので、暗号化チャンネルでも出す。
+        // 外部の URL のカードだけを Summaly で取得する。添付として出す画像の URL は、カードにしない。
+        val links = if (!richContent.hidesBody) messageLinks(body, app.config.apiBaseUrl, quoteUri, mediaUrls)
+            else MessageLinks(emptyList(), null)
+        val url = links.external.takeIf { allowPreview && !data.present("ciphertext") }
         val createdAt = data.text("created_at")
         val time = platform.time(createdAt)
         val postHeader = if (isPost) {
@@ -290,7 +291,7 @@ internal class ConnectedScreenState(
             canReact = writable || isPost,
             canRepost = isPost && data.text("visibility") in setOf("public", "local", "unlisted"),
             reposted = metadata.flag("reposted"), reactions = badges, attachments = files, link = url,
-            richContent = richContent,
+            richContent = richContent, channelLinks = links.channels.map { it.first },
             emoji = emoji, attachedImageUrls = mediaUrls, avatar = timelineAvatarUrl(app.config.apiBaseUrl, data, users[data.text("user_id")]),
             entryKey = HomeTimeline.key(row).ifBlank { id }, media = media, postHeader = postHeader, quote = quote,
             repostedBy = data.text("reposted_by").ifBlank { data.text("reposter_actor") }.ifBlank { null },
@@ -1002,6 +1003,12 @@ internal class ConnectedScreenState(
             }
             InputTool.Format, InputTool.Emoji -> inputMenu = tool
         }
+    }
+
+    /** 本文のリンクと埋め込みカードから、アプリ内でチャンネル・メッセージへ移動する。 */
+    fun openChannelLink(target: ChannelLinkTarget, parentId: String?) {
+        overlay = null
+        app.openChannelLink(target, parentId)
     }
 
     private fun replyVisibility(id: String): String {

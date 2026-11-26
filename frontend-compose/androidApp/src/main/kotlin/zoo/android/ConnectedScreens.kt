@@ -42,6 +42,8 @@ internal fun ConnectedScreens(
 ) {
     val state = remember(session) { ConnectedScreenState(session, platform, phone) }
     DisposableEffect(state) { onDispose { state.close() } }
+    val openChannelLink = remember(state) { { target: ChannelLinkTarget, parent: String? -> state.openChannelLink(target, parent) } }
+    val channelLinks = rememberChannelLinks(session, platform, openChannelLink)
     val env = platform.env
     val channels by session.repo.channels.rows.collectAsState()
     val users by session.repo.users.rows.collectAsState()
@@ -443,6 +445,7 @@ internal fun ConnectedScreens(
                     LocalTimelineImage provides { media -> timelineImage(session, media) },
                     LocalKitchenReactionImage provides emojiCatalog::kitchenReaction,
                     LocalAndroidTranslation provides { session.t(it) },
+                    LocalChannelLinks provides channelLinks,
                 ) {
                     AndroidScreens(screen, env.dark, env.visible && env.focused,
                         dispatch = { action ->

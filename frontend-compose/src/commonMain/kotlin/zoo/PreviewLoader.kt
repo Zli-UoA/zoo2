@@ -30,6 +30,55 @@ fun publicUrl(raw: String): Url? =
 
 fun publicUrlString(raw: String): String? = publicUrl(raw)?.toString()
 
+/** [publicUrl] が受け付ける長さ。これより長い行き先は調べない。 */
+private const val LINK_DESTINATION_LIMIT = 4096
+
+/**
+ * 本文の URL を、書いた順に返す。`[文字](URL)` は行き先だけ（文字に書いた URL は行き先ではない）で、行き先は
+ * 本文のリンクと同じ規則（[linkDestinationEnd]）で切る。`?[文字](URL)` の URL は含めない。文字には、対になった
+ * 角括弧を含められる（装飾の `$[…]` など）。
+ */
+private fun writtenUrls(text: String): List<String> {
+    val urls = mutableListOf<String>()
+    fun addBare(part: String) {
+        var from = 0
+        while (true) {
+            val at = part.indexOf("http", from).takeIf { it >= 0 } ?: break
+            val url = leadingUrl(part, at)
+            if (url != null) urls.add(url)
+            // URL の中に書いた URL は数えない。
+            from = at + (url?.length ?: "http".length)
+        }
+    }
+    val open = mutableListOf<Int>()
+    var copied = 0
+    var at = 0
+    while (at < text.length) {
+        when (text[at]) {
+            '[' -> open.add(at)
+            '\n' -> open.clear()
+            ']' -> {
+                val start = if (open.isEmpty()) null else open.removeAt(open.lastIndex)
+                if (start != null && text.startsWith("](", at)) {
+                    var left = LINK_DESTINATION_LIMIT
+                    val end = linkDestinationEnd(text, at + 2) { left-- > 0 }
+                    if (end != null) {
+                        val silent = start > copied && text[start - 1] == '?'
+                        addBare(text.substring(copied, if (silent) start - 1 else start))
+                        if (!silent) urls.add(text.substring(at + 2, end))
+                        copied = end + 1
+                        at = end
+                        open.clear()
+                    }
+                }
+            }
+        }
+        at++
+    }
+    addBare(text.substring(copied))
+    return urls
+}
+
 /** Only visible links create cards: code, plain and MFM silent links stay private. */
 fun previewUrls(content: String, excludeUrl: String? = null): List<String> {
     val visible =
@@ -39,9 +88,9 @@ fun previewUrls(content: String, excludeUrl: String? = null): List<String> {
             ),
             " ",
         )
-    return Regex("https?://[^\\s<>\\\"\\[\\]]+")
-        .findAll(visible)
-        .mapNotNull { publicUrl(it.value.trimEnd(')', ',', '.', '!', '?', '、', '。'))?.toString() }
+    return writtenUrls(visible)
+        .asSequence()
+        .mapNotNull { publicUrl(it)?.toString() }
         .distinct()
         .filter { it != publicUrl(excludeUrl.orEmpty())?.toString() }
         .take(3)

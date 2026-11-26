@@ -73,6 +73,8 @@ internal data class TimelineItem(
     val postHeader: PostHeaderData? = null,
     val richContent: EntryRichContent = EntryRichContent(),
     val linkCard: EntryCard? = null,
+    /** 本文に書いた、このアプリのチャンネル・メッセージへのリンク（埋め込みカードを出す。外部には送らない）。 */
+    val channelLinks: List<String> = emptyList(),
     val emoji: Map<String, TimelineMedia> = emptyMap(),
     val avatar: String? = null,
     val attachedImageUrls: Set<String> = emptySet(),
@@ -316,7 +318,10 @@ private fun RenderAndroidScreen(
                 }
                 Text("入力中の内容がリアルタイムに表示されます", Modifier.padding(16.dp),
                     color = colors.secondary, fontSize = 13.sp)
-                TimelineWithInput(screen.entries, screen.input, colors, dispatch)
+                // 入力途中の URL で行き先を取得しないよう、Bubble（Web と同じく素の表示）ではアプリ内リンクを扱わない。
+                CompositionLocalProvider(LocalChannelLinks provides null) {
+                    TimelineWithInput(screen.entries, screen.input, colors, dispatch)
+                }
             }
             is AndroidScreen.Settings -> SettingsPage(screen.groups, colors, openSetting, toggle)
             is AndroidScreen.Conversation -> {
@@ -610,6 +615,7 @@ private fun Timeline(
                                 open = { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Quote)) },
                                 openMedia = { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Media, it.key)) })
                         }
+                        entry.channelLinks.forEach { url -> ChannelLinkCard(url, colors, menu = { menuId = entry.id }) }
                         EntryCards(listOfNotNull(entry.linkCard), colors)
                         entry.link?.takeIf { entry.linkCard == null }?.let { url ->
                             Text(url,

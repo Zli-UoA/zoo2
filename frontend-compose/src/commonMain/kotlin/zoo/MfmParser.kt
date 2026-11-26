@@ -1,7 +1,10 @@
 package zoo
 
-/** Tokens retain their source bodies so nested styles can be rendered in the same paragraph. */
-data class Inline(val value: String, val kind: String = "text", val url: String? = null)
+/**
+ * Tokens retain their source bodies so nested styles can be rendered in the same paragraph. [bare] marks a
+ * link written as its URL itself (a `[label](url)` link is not, even when the label is the URL).
+ */
+data class Inline(val value: String, val kind: String = "text", val url: String? = null, val bare: Boolean = false)
 
 private val atoms = Regex(
     "https?://[^\\s<>]+|:@[A-Za-z0-9._-]+:|@[A-Za-z0-9._-]+(?:@[A-Za-z0-9.-]+)?|#[^\\s#.,!?:;<>]+|:[a-zA-Z0-9_+-]+:"
@@ -131,25 +134,12 @@ private class MfmScanner(length: Int) {
         if (source.getOrNull(start) != '[') return null
         val labelEnd = closing(source, start + 1, "](", budget = budget + 1) ?: return null
         val urlStart = labelEnd + 2
-        if (!source.startsWith("https://", urlStart) && !source.startsWith("http://", urlStart)) return null
-        var cursor = urlStart
-        var parentheses = 1
-        while (cursor < source.length && !source[cursor].isWhitespace()) {
-            if (!step()) return null
-            if (source[cursor] == '(') parentheses++
-            if (source[cursor] == ')') {
-                parentheses--
-                if (parentheses == 0) {
-                    return Inline(
-                        source.substring(start + 1, labelEnd),
-                        "link",
-                        source.substring(urlStart, cursor),
-                    ) to (cursor + 1)
-                }
-            }
-            cursor++
-        }
-        return null
+        val urlEnd = linkDestinationEnd(source, urlStart) { step() } ?: return null
+        return Inline(
+            source.substring(start + 1, labelEnd),
+            "link",
+            source.substring(urlStart, urlEnd),
+        ) to (urlEnd + 1)
     }
 
     fun inlineSlices(source: String): List<InlineSlice> {
@@ -184,7 +174,7 @@ private class MfmScanner(length: Int) {
                 val close = source.indexOf('>', at + 1)
                 if (close >= 0 && source.substring(at + 1, close).none { it.isWhitespace() }) {
                     val url = source.substring(at + 1, close)
-                    token = Inline(url, "link", url)
+                    token = Inline(url, "link", url, bare = true)
                     end = close + 1
                 }
             } else if (source[at] == '\\' && at + 1 < source.length && source[at + 1] in "\\`*_{}[]()#+-.!~$<>@:") {
@@ -230,9 +220,11 @@ private class MfmScanner(length: Int) {
                                 !it.isLetterOrDigit() && it !in "_/@"
                             } != false
                             if (kind !in setOf("mention", "hashtag") || boundary) {
-                                val trimmed = if (kind == "link") trimMfmUrl(value) else value
-                                token = Inline(trimmed, kind, trimmed.takeIf { kind == "link" })
-                                end = at + trimmed.length
+                                val trimmed = if (kind == "link") leadingUrl(value) else value
+                                if (trimmed != null) {
+                                    token = Inline(trimmed, kind, trimmed.takeIf { kind == "link" }, kind == "link")
+                                    end = at + trimmed.length
+                                }
                             }
                         }
                     }
@@ -365,16 +357,59 @@ fun messageHeadingBlocks(content: String): List<MessageHeadingBlock> {
     return blocks
 }
 
-private fun trimMfmUrl(value: String): String {
-    var result = value.trimEnd('.', ',', '!', '?', ';', ':')
-    for ((open, close) in listOf('(' to ')', '[' to ']', '{' to '}')) {
-        var excess = result.count { it == close } - result.count { it == open }
-        while (excess > 0 && result.endsWith(close)) {
-            result = result.dropLast(1)
-            excess--
+/** 閉じていない括弧の対応を探す長さ。閉じない括弧が並ぶ本文で、同じ部分を繰り返し調べないようにする。 */
+private const val URL_BRACKET_LOOKAHEAD = 1024
+
+/**
+ * [text] の [start] から始まる `http://` か `https://` の URL。Web（`mfm-js`）と同じく、URL に使う ASCII の
+ * 文字と、対応のとれた括弧までを URL とし、末尾の `.` と `,` は除く。日本語や全角の記号が続いても、そこで終わる。
+ * 表示と、本文のリンクの抽出（[previewUrls]）で同じ位置で切る。
+ */
+internal fun leadingUrl(text: String, start: Int = 0): String? {
+    val scheme = listOf("https://", "http://").firstOrNull { text.startsWith(it, start) } ?: return null
+    // 閉じていない括弧の位置と、対応する閉じ括弧。
+    val open = mutableListOf<Pair<Int, Char>>()
+    var end = start + scheme.length
+    while (end < text.length) {
+        val unclosed = open.firstOrNull()
+        if (unclosed != null && end - unclosed.first > URL_BRACKET_LOOKAHEAD) break
+        val ch = text[end]
+        val used = when (ch) {
+            '(', '[' -> {
+                open.add(end to if (ch == '(') ')' else ']')
+                true
+            }
+            ')', ']' -> {
+                // 対応しないときは、開き括弧を残す（閉じていない括弧として、URL から除くため）。
+                val paired = open.lastOrNull()?.second == ch
+                if (paired) open.removeAt(open.lastIndex)
+                paired
+            }
+            else -> ch in 'a'..'z' || ch in 'A'..'Z' || ch in '0'..'9' || ch in "._,/:%#@$&?!~=+-"
         }
+        if (!used) break
+        end++
     }
-    return result
+    // 閉じていない括弧は、URL に含めない。
+    open.firstOrNull()?.let { end = it.first }
+    val url = text.substring(start, end).trimEnd('.', ',')
+    return url.takeIf { it.length > scheme.length }
+}
+
+/**
+ * `[文字](` の直後 [start] から始まる行き先の終わり（対応する `)` の位置）。行き先は空白を含まず、丸括弧は対にする。
+ * http(s) の URL でないとき、閉じないとき、[step] が打ち切ったときは `null`（リンクではない）。
+ */
+internal fun linkDestinationEnd(text: String, start: Int, step: () -> Boolean): Int? {
+    if (!text.startsWith("https://", start) && !text.startsWith("http://", start)) return null
+    var parentheses = 1
+    for (cursor in start until text.length) {
+        val ch = text[cursor]
+        if (ch.isWhitespace() || !step()) return null
+        if (ch == '(') parentheses++
+        if (ch == ')' && --parentheses == 0) return cursor
+    }
+    return null
 }
 
 data class MfmRuby(val base: String, val reading: String)
