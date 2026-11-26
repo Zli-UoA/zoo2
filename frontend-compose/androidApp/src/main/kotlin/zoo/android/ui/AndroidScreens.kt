@@ -62,7 +62,7 @@ internal enum class EntryOperation { Edit, Delete, React, Repost, Attachment, Li
 internal data class TimelineItem(
     val id: String, val author: String, val body: String, val time: String,
     val editable: Boolean = false, val canReact: Boolean = false, val canRepost: Boolean = false,
-    val reposted: Boolean = false, val reactions: List<Pair<String, Boolean>> = emptyList(),
+    val reposted: Boolean = false, val reactions: List<TimelineReaction> = emptyList(),
     val attachments: List<Pair<String, String>> = emptyList(), val link: String? = null,
     val entryKey: String = id,
     val media: List<TimelineMedia> = emptyList(),
@@ -71,6 +71,7 @@ internal data class TimelineItem(
     val richContent: EntryRichContent = EntryRichContent(),
     val linkCard: EntryCard? = null,
     val emoji: Map<String, TimelineMedia> = emptyMap(),
+    val avatar: String? = null,
     /** 復号できなかった理由（docs/e2ee.md の「受信時の検証」）。本文の代わりに出す。 */
     val notice: String? = null,
     /** 送信者の確かさ・版・暗号化されていない行の印（本文と一緒に出す）。 */
@@ -145,7 +146,7 @@ internal sealed interface AndroidUiAction {
     data class OpenNotification(val path: String) : AndroidUiAction
     data object RetryNotifications : AndroidUiAction
     data object LoadMoreNotifications : AndroidUiAction
-    data class ActOnEntry(val item: TimelineItem, val operation: EntryOperation, val value: String = "") : AndroidUiAction
+    data class ActOnEntry(val item: TimelineItem, val operation: EntryOperation, val value: String = "", val reactionImageId: String? = null) : AndroidUiAction
     data class RespondFollow(val actor: String, val activity: String, val accept: Boolean) : AndroidUiAction
     data class RemoveFile(val id: String) : AndroidUiAction
     data class SelectInput(val range: TextRange) : AndroidUiAction
@@ -540,9 +541,7 @@ private fun Timeline(
                 entry.divider?.let { EncryptionDivider(it, colors) }
                 entry.repostedBy?.let { RepostAttribution(it, colors) }
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Box(Modifier.size(36.dp).background(colors.background, CircleShape), contentAlignment = Alignment.Center) {
-                        Text(entry.author.take(1), color = colors.secondary, fontSize = 13.sp)
-                    }
+                    TimelineAvatar(entry.author, entry.avatar, colors)
                     Column(Modifier.weight(1f)) {
                         if (posts && entry.postHeader != null) {
                             PostHeader(entry.author, entry.postHeader, colors)
@@ -582,11 +581,10 @@ private fun Timeline(
                         }
                         if (entry.reactions.isNotEmpty()) {
                             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                entry.reactions.forEach { (label, selected) ->
-                                    Text(label, Modifier.heightIn(min = 48.dp)
-                                        .background(if (selected) colors.headerLight else colors.background, CircleShape)
-                                        .clickable { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.React, label.substringBeforeLast(" "))) }
-                                        .padding(horizontal = 10.dp, vertical = 12.dp), color = colors.foreground)
+                                entry.reactions.forEach { reaction ->
+                                    TimelineReactionChip(reaction, colors) {
+                                        dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.React, reaction.value, reaction.imageId))
+                                    }
                                 }
                             }
                         }
