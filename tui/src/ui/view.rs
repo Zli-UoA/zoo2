@@ -33,6 +33,7 @@ const HIGHLIGHT: Style = Style::new().fg(Color::Black).bg(Color::Yellow);
 pub fn draw(frame: &mut Frame, app: &mut App) {
     // 画面の近くに出ているリンク先は、描くたびに集め直す。
     app.links.visible.clear();
+    app.parsed_links.next_frame();
     let composer_height = (app.composer.lines().len() as u16).clamp(1, 6) + 2;
     // 長い表示（増えた配布先、配れない相手）は、タイムラインと同じ折り返し（表示幅で切る）で自分で
     // 折り返し、その行数を高さにする（画面の半分まで）。`Paragraph` の語ごとの折り返しでは、行数が

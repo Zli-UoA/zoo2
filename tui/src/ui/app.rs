@@ -302,7 +302,7 @@ pub struct App {
     typing_poll: PollGate,
     /// 本文のアプリ内リンクの、リンク先の取得。
     pub links: super::links::Links,
-    parsed_links: super::links::ParsedLinks,
+    pub(super) parsed_links: super::links::ParsedLinks,
     /// リンクで開いた、まだ同期していないメッセージ (チャンネル, メッセージ)。返信と分かれば
     /// スレッドを開く。
     pending_link: Option<(String, String)>,

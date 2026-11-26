@@ -262,48 +262,40 @@ pub struct Parsed {
     pub targets: Vec<LinkTarget>,
 }
 
-/// 新しい方に覚える本文の数。古い方と合わせて、この 2 倍までを覚える。
-const PARSED_LIMIT: usize = 20_000;
-
 /// 本文ごとの [`Parsed`]。タイムラインは描画のたびに読み込んだ全部の投稿を組み立てるので、描画を
 /// またいで覚え、同じ本文を調べ直さない。接続先は変わらないものとする。
 ///
-/// 新旧 2 つに分けて持ち、新しい方がいっぱいになったら古い方を捨てて入れ替える。使った本文は
-/// 新しい方へ移るので、画面で使っている本文は残り、新しい本文も覚えられる。
+/// 直前の描画で使った本文だけを次の描画へ引き継ぐので、覚える量は読み込んでいる本文の分で収まり、
+/// 履歴がどれだけ長くても、調べるのは新しく出た本文だけになる。
+#[derive(Default)]
 pub struct ParsedLinks {
-    limit: usize,
-    /// (新しい方, 古い方)
-    entries: RefCell<(ParsedMap, ParsedMap)>,
-}
-
-type ParsedMap = HashMap<String, Arc<Parsed>>;
-
-impl Default for ParsedLinks {
-    fn default() -> Self {
-        Self::with_limit(PARSED_LIMIT)
-    }
+    /// いまの描画の番号。
+    frame: u64,
+    /// 本文ごとの、最後に使った描画の番号と結果。
+    entries: RefCell<HashMap<String, (u64, Arc<Parsed>)>>,
 }
 
 impl ParsedLinks {
-    fn with_limit(limit: usize) -> Self {
-        Self {
-            limit,
-            entries: Default::default(),
+    /// 描画を始めるときに呼び、直前の描画で使わなかった本文を捨てる。直前の描画で本文を 1 つも
+    /// 使っていなければ、そのまま残す。
+    pub fn next_frame(&mut self) {
+        let frame = self.frame;
+        let entries = self.entries.get_mut();
+        if entries.values().any(|(used, _)| *used == frame) {
+            entries.retain(|_, (used, _)| *used == frame);
+            self.frame += 1;
         }
     }
 
     pub fn get(&self, body: &str, app_base_url: &str) -> Arc<Parsed> {
-        if let Some(parsed) = self.entries.borrow().0.get(body) {
+        if let Some((used, parsed)) = self.entries.borrow_mut().get_mut(body) {
+            *used = self.frame;
             return parsed.clone();
         }
-        let old = self.entries.borrow_mut().1.remove(body);
-        let parsed = old.unwrap_or_else(|| Arc::new(parse(body, app_base_url)));
-        let mut entries = self.entries.borrow_mut();
-        let (new, old) = &mut *entries;
-        if new.len() >= self.limit {
-            *old = std::mem::take(new);
-        }
-        new.insert(body.to_owned(), parsed.clone());
+        let parsed = Arc::new(parse(body, app_base_url));
+        self.entries
+            .borrow_mut()
+            .insert(body.to_owned(), (self.frame, parsed.clone()));
         parsed
     }
 }
@@ -593,18 +585,28 @@ mod tests {
     }
 
     #[test]
-    fn parsed_bodies_in_use_are_kept_past_the_limit() {
-        let cache = ParsedLinks::with_limit(2);
-        let get = |body: &str| cache.get(body, "https://zli.chat");
-        let (a, b) = (get("a"), get("b"));
-        let c = get("c");
-        // 使い続ける本文は残り、上限を超えたあとの本文も覚える。
-        assert!(Arc::ptr_eq(&a, &get("a")));
-        assert!(Arc::ptr_eq(&c, &get("c")));
-        get("d");
-        assert!(Arc::ptr_eq(&a, &get("a")));
-        // 使わなかった本文は捨てる。
-        assert!(!Arc::ptr_eq(&b, &get("b")));
+    fn parsed_bodies_are_kept_while_draws_use_them() {
+        let mut cache = ParsedLinks::default();
+        let get = |cache: &ParsedLinks, body: &str| cache.get(body, "https://zli.chat");
+        let bodies: Vec<String> = (0..50_000).map(|n| n.to_string()).collect();
+        let first: Vec<_> = bodies.iter().map(|body| get(&cache, body)).collect();
+        // 毎回同じ本文を使う長い履歴は、件数によらず調べ直さない。
+        for _ in 0..2 {
+            cache.next_frame();
+            for (body, parsed) in bodies.iter().zip(&first) {
+                assert!(Arc::ptr_eq(parsed, &get(&cache, body)));
+            }
+        }
+        cache.next_frame();
+        get(&cache, "0");
+        cache.next_frame();
+        // 直前の描画で使わなかった本文は捨てる。
+        assert_eq!(cache.entries.borrow().len(), 1);
+        // 本文を使わない描画をはさんでも、残した本文は調べ直さない。
+        cache.next_frame();
+        cache.next_frame();
+        assert!(Arc::ptr_eq(&first[0], &get(&cache, "0")));
+        assert!(!Arc::ptr_eq(&first[1], &get(&cache, "1")));
     }
 
     #[test]
