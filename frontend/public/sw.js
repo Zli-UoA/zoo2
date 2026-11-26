@@ -243,8 +243,9 @@ async function precacheShell() {
       try {
         const response = await fetch(path, { cache: "reload" });
         if (!response.ok) return;
-        // nginx の try_files が欠けた /offline.html を index.html で返しても保存しない。
+        // nginx の try_files が欠けたファイルを index.html で返しても保存しない。
         if (path === "/offline.html" && !(await isOfflinePage(response))) return;
+        if (path === "/manifest.webmanifest" && !(await isFreshManifest(response))) return;
         await cacheResponse(cache, path, response);
       } catch {
         /* Offline installs fall back to the runtime cache. */
@@ -378,7 +379,9 @@ async function handleFreshAsset(request) {
 
 async function cachedFreshAsset(request) {
   try {
-    return (await caches.match(request)) || Response.error();
+    // 更新中は新旧のキャッシュが併存するため、有効な方から読む。
+    const cache = await caches.open(await findActiveShellCache());
+    return (await cache.match(request)) || Response.error();
   } catch {
     return Response.error();
   }

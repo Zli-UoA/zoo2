@@ -81,6 +81,10 @@ function worker(overrides = {}) {
       return basicResponse('<meta name="zoo-offline" content="true" />offline', {
         headers: { "content-type": "text/html" },
       });
+    if (key === `${ORIGIN}/manifest.webmanifest`)
+      return basicResponse('{"background_color":"#ffffff"}', {
+        headers: { "content-type": "application/manifest+json" },
+      });
     return basicResponse(`network:${key}`);
   };
   const context = {
@@ -863,6 +867,57 @@ test("an index.html fallback is not stored as the offline page", async () => {
   assert.match(await response.text(), /zoo-offline/);
   const cache = await cacheContext.api.open("zoo-shell-v2");
   assert.match(await (await cache.match(`${ORIGIN}/offline.html`)).text(), /zoo-offline/);
+});
+
+test("install does not store an HTML fallback as the manifest", async () => {
+  const { handlers, cacheContext } = worker({
+    fetch: async (input) => {
+      const key = requestKey(input);
+      if (key === `${ORIGIN}/manifest.webmanifest`)
+        return basicResponse("<html>app shell</html>", {
+          headers: { "content-type": "text/html" },
+        });
+      if (key === `${ORIGIN}/offline.html`)
+        return basicResponse('<meta name="zoo-offline" content="true" />offline', {
+          headers: { "content-type": "text/html" },
+        });
+      return basicResponse(`network:${key}`);
+    },
+  });
+  await dispatch(handlers, "install");
+  const cache = await cacheContext.api.open("zoo-shell-v2");
+  assert.equal(await cache.match(`${ORIGIN}/manifest.webmanifest`), undefined);
+});
+
+test("offline manifest fallback reads the active shell cache", async () => {
+  const cacheContext = memoryCaches([
+    [
+      "zoo-shell-old",
+      `${ORIGIN}/manifest.webmanifest`,
+      basicResponse('{"background_color":"#ffffff"}'),
+    ],
+    [
+      "zoo-shell-new",
+      `${ORIGIN}/manifest.webmanifest`,
+      basicResponse('{"background_color":"#000000"}'),
+    ],
+  ]);
+  const old = await cacheContext.api.open("zoo-shell-old");
+  await old.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("1"));
+  const newer = await cacheContext.api.open("zoo-shell-new");
+  await newer.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("2"));
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+  });
+  assert.equal(await response.text(), '{"background_color":"#000000"}');
 });
 
 test("a fresh manifest is served even when the cache cannot be opened", async () => {
