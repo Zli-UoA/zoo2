@@ -361,7 +361,11 @@ final class WorkspaceStore {
     /// 暗号化チャンネルとして見たことがあるのに、サーバーが平文のチャンネルだと返したときは（格下げ）、暗号化チャンネルとして
     /// 扱い続け、送信を止めて警告する（docs/e2ee.md の「格下げの検出」）。
     private func reconcileChannel(_ incoming: Channel, confirmsWrite: Bool = false) -> Channel {
-        var channel = reconcileChannelCore(incoming, confirmsWrite: confirmsWrite)
+        applyingDowngradeCheck(reconcileChannelCore(incoming, confirmsWrite: confirmsWrite))
+    }
+
+    private func applyingDowngradeCheck(_ reconciled: Channel) -> Channel {
+        var channel = reconciled
         guard let e2ee else { return channel }
         e2ee.rememberEncryptedChannels([channel])
         if e2ee.isDowngraded(channel) {
@@ -568,13 +572,15 @@ final class WorkspaceStore {
         }
         defer { updatingChannels.remove(channel.id) }
         channelGeneration = UUID()
-        let updated = try await write()
+        let written = try await write()
         try Task.checkCancellation()
-        guard active, updated.id == channel.id, let index = channels.firstIndex(where: { $0.id == channel.id }),
+        guard active, written.id == channel.id, let index = channels.firstIndex(where: { $0.id == channel.id }),
               conversations[channel.id]?.blocked != true else { throw CancellationError() }
         if let currentDate = channels[index].updated_at.flatMap(ZooDate.parse),
-           let responseDate = updated.updated_at.flatMap(ZooDate.parse), currentDate > responseDate { return }
+           let responseDate = written.updated_at.flatMap(ZooDate.parse), currentDate > responseDate { return }
         channelGeneration = UUID()
+        // 更新の応答も、一覧と同じく格下げの判定を通す（暗号化チャンネルを平文として返しても、暗号化の状態を保つ）。
+        let updated = applyingDowngradeCheck(written)
         channelWrites[channel.id] = updated
         channels[index] = updated
         conversations[channel.id]?.update(updated)

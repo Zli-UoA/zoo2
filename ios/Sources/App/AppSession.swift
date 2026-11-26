@@ -261,10 +261,11 @@ final class AppSession {
 
     private func completeLogout() async {
         // 確認した時のセッションと、今のセッションが同じときだけ行う（違えば、確認は古いので、何もしない）。
-        guard let target = loggingOutWorkspace, target === workspace else { logoutPrompt = nil; return }
+        // 確認の持ち主が違うときは、新しいセッションの確認状態を消さない。
+        guard let target = loggingOutWorkspace, target === workspace else { return }
         // 端末の削除にはトークンが要るので、認証情報を消す前に、端末を消して暗号ストアを消す。
         await target.e2ee?.finishLogout()
-        guard target === workspace else { logoutPrompt = nil; return }
+        guard target === workspace, loggingOutWorkspace === target else { return }
         logoutPrompt = nil
         loggingOutWorkspace = nil
         logout()

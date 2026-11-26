@@ -30,8 +30,9 @@ struct WorkspaceView: View {
             presentPendingVerification()
         }
         // 別のシートを開いていて見送った検証の要求は、そのシートを閉じたときに出す。
-        .onChange(of: workspace.presentedSheet?.id) { _, id in
-            if id == nil { presentPendingVerification() }
+        // 検証のシート自身を閉じたときは、同じ要求で開き直さない（応答するか、期限が切れるまで、要求は残る）。
+        .onChange(of: workspace.presentedSheet?.id) { old, id in
+            if id == nil, old != "verification" { presentPendingVerification() }
         }
         // 開閉で一覧や会話が入れ替わっても、入力中のシートを破棄しない。
         .sheet(item: $workspace.presentedSheet, onDismiss: {

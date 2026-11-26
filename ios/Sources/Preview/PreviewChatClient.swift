@@ -541,7 +541,11 @@ final class PreviewChatClient: ChatClient {
     func directMessage(userIDs: [String], encrypted: Bool) async throws -> Channel {
         let id = UUID().uuidString.lowercased()
         let name = userIDs.count == 1 ? "dm:\(currentUser.id):\(userIDs[0])" : "dm:group:\(id)"
-        if let channel = allChannels.first(where: { $0.channel_name == name }) { return channel }
+        if let channel = allChannels.first(where: { $0.channel_name == name }) {
+            // 暗号化を求めたのに、すでにある DM が平文なら、本番と同じく格下げとして拒む。
+            if encrypted, channel.encrypted != true { throw MessageEncryptionError.downgraded }
+            return channel
+        }
         let channel = Channel(id: id, channel_name: name, is_private: true, is_dm: true, encrypted: encrypted ? true : nil)
         memberships += ([currentUser.id] + userIDs).map { ChannelMembership(channel_id: id, user_id: $0) }
         allChannels.append(channel)

@@ -161,6 +161,8 @@ struct RevocationView: View {
                 else { await execute() }
                 return
             }
+            // 保存済みの失効があるのに、端末だけを先に削除しない（`begin` が拒むときには、削除が済んでいる）。
+            if (try? revocation.savedSummary()) != nil { throw RevocationError.pending }
             try await revocation.deleteDevices(Array(selected))
             _ = try await revocation.begin(scope: scope, deletedDevices: Array(selected), unlocked: opened)
             if scope == .full { phase = .newKey(try newKey()) } else { await execute() }

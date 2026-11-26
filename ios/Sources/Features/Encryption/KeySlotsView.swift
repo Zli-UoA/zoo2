@@ -18,7 +18,12 @@ struct KeySlotsView: View {
 
     var body: some View {
         List {
-            if let error { Section { Text(error).foregroundStyle(.red).font(.subheadline) } }
+            if let error {
+                Section {
+                    Text(error).foregroundStyle(.red).font(.subheadline)
+                    Button("再読み込み") { Task { await reload() } }
+                }
+            }
             Section {
                 ForEach(slots.slots) { slot in
                     VStack(alignment: .leading, spacing: 2) {
@@ -58,11 +63,16 @@ struct KeySlotsView: View {
         .navigationTitle("パスキーとリカバリーキー")
         .navigationBarTitleDisplayMode(.inline)
         .disabled(busy)
-        .task { try? await slots.load() }
+        .task { await reload() }
         .alert("このスロットを削除しますか？", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } })) {
             Button("削除", role: .destructive) { if let slot = removing { Task { await remove(slot) } } }
             Button("キャンセル", role: .cancel) {}
         } message: { Text("このパスキーかリカバリーキーでは、暗号化を解錠できなくなります。") }
+    }
+
+    private func reload() async {
+        do { try await slots.load(); error = nil }
+        catch { self.error = "パスキーとリカバリーキーの一覧を取得できませんでした。接続を確認して、再読み込みしてください。" }
     }
 
     private func run(_ action: Action, _ method: UnlockMethod) async {

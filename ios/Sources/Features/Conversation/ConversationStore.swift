@@ -283,7 +283,8 @@ final class ConversationStore {
         }
         self.channel = channel
         if !canPost { typing.stop() }
-        if channel.encrypted == true {
+        // 暗号化への切り替えのときだけ、平文の履歴と閲覧の権限を捨てる（すでに暗号化なら、通常の更新で履歴を消さない）。
+        if channel.encrypted == true, previouslyEncrypted != true {
             onAccessRevoked?()
             messages = []; remoteMessages = []; localWrites = [:]
         }

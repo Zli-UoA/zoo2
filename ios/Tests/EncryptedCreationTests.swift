@@ -35,6 +35,16 @@ struct EncryptedCreationTests {
         await #expect(throws: MessageEncryptionError.downgraded) {
             _ = try await harness.client.createChannel(id: id, name: "秘密", description: "", isPrivate: true, encrypted: true)
         }
+        // DM は、送る要求（宛先と `encrypted`）も確かめたうえで、平文の応答を拒む。
+        let plainDM = Channel(id: id, channel_name: "dm", is_private: true, is_dm: true)
+        let dmBytes = try envelope(plainDM)
+        harness.stub { request in
+            #expect(request.url?.path == "/api/dms")
+            let body = try JSONDecoder().decode(JSONValue.self, from: StubProtocol.body(request))
+            #expect(body.object?["encrypted"] == .bool(true))
+            #expect(body.object?["target_user_ids"] == .array([.string(id)]))
+            return (200, [:], dmBytes)
+        }
         await #expect(throws: MessageEncryptionError.downgraded) {
             _ = try await harness.client.directMessage(userIDs: [id], encrypted: true)
         }
