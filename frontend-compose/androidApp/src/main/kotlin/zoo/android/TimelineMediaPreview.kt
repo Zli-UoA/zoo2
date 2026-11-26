@@ -32,8 +32,10 @@ internal suspend fun timelineMediaUrl(session: Session, media: TimelineMedia): S
     media.url ?: session.attachmentLinks.get(requireNotNull(media.attachmentId))
 
 internal fun cachedTimelineImage(session: Session, media: TimelineMedia): ImageBitmap? {
-    val url = media.previewUrl ?: media.url ?: return null
-    return session.cachedImageBitmap(url)
+    val publicUrl = media.previewUrl ?: media.url
+    if (publicUrl != null) return session.cachedImageBitmap(publicUrl)
+    val signedUrl = media.attachmentId?.let(session.attachmentLinks::cachedUrl) ?: return null
+    return session.cachedImageBitmap(signedUrl, signedAttachment = true)
 }
 
 internal suspend fun timelineImage(session: Session, media: TimelineMedia): ImageBitmap? = try {

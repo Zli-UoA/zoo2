@@ -121,7 +121,8 @@ private val TimelineMedia.aspect: Float
 
 @Composable
 internal fun TimelineMediaGroup(
-    media: List<TimelineMedia>, colors: AndroidColors, apub: Boolean, open: (TimelineMedia) -> Unit,
+    media: List<TimelineMedia>, colors: AndroidColors, apub: Boolean,
+    showSensitiveToggle: Boolean = true, open: (TimelineMedia) -> Unit,
 ) {
     if (media.isEmpty()) return
     Column {
@@ -137,7 +138,7 @@ internal fun TimelineMediaGroup(
                 val images = media.subList(start, end)
                 key(first.key) {
                     if (apub) ApubImageGrid(images, colors, open)
-                    else ChannelImageStrip(images, colors, open)
+                    else ChannelImageStrip(images, colors, showSensitiveToggle, open)
                 }
                 start = end
             }
@@ -156,7 +157,8 @@ private fun ApubImageGrid(images: List<TimelineMedia>, colors: AndroidColors, op
         .clip(RoundedCornerShape(8.dp)).testTag("apub-image-grid")) {
         if (single != null) {
             MediaFrame(single, colors, Modifier.matchParentSize(),
-                onImageRatio = if (single.imageAspectRatio == null) ({ decodedRatio = it }) else null) { open(single) }
+                contentScale = if (single.sensitive && single.imageAspectRatio == null) ContentScale.Fit else ContentScale.Crop,
+                onImageRatio = if (single.imageAspectRatio == null && !single.sensitive) ({ decodedRatio = it }) else null) { open(single) }
         } else {
             Row(Modifier.matchParentSize(), horizontalArrangement = Arrangement.spacedBy(gap)) {
                 val columns = when (images.size) {
@@ -181,14 +183,16 @@ private fun ApubImageGrid(images: List<TimelineMedia>, colors: AndroidColors, op
 }
 
 @Composable
-private fun ChannelImageStrip(images: List<TimelineMedia>, colors: AndroidColors, open: (TimelineMedia) -> Unit) {
+private fun ChannelImageStrip(
+    images: List<TimelineMedia>, colors: AndroidColors, showSensitiveToggle: Boolean, open: (TimelineMedia) -> Unit,
+) {
     BoxWithConstraints(Modifier.fillMaxWidth().padding(top = 6.dp)) {
         val availableWidth = maxWidth
         if (images.size == 1) {
             val image = images.first()
             val height = (availableWidth / image.aspect).coerceAtMost(220.dp)
             MediaFrame(image, colors, Modifier.size((height * image.aspect).coerceAtMost(availableWidth), height)
-                .clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Fit) { open(image) }
+                .clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Fit, showSensitiveToggle = showSensitiveToggle) { open(image) }
         } else {
             val maxTileWidth = (availableWidth - 24.dp).coerceAtLeast(availableWidth / 2)
             val rowHeight = images.maxOf { (maxTileWidth / it.aspect).coerceAtMost(160.dp) }
@@ -197,7 +201,7 @@ private fun ChannelImageStrip(images: List<TimelineMedia>, colors: AndroidColors
                 items(images, key = { it.key }) { image ->
                     val height = (maxTileWidth / image.aspect).coerceAtMost(160.dp)
                     MediaFrame(image, colors, Modifier.size((height * image.aspect).coerceAtMost(maxTileWidth), height)
-                        .clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Fit) { open(image) }
+                        .clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Fit, showSensitiveToggle = showSensitiveToggle) { open(image) }
                 }
             }
         }
@@ -235,7 +239,7 @@ internal fun rememberMediaBlurHash(hash: String?): ImageBitmap? = if (hash != nu
 private fun MediaFrame(
     media: TimelineMedia, colors: AndroidColors, modifier: Modifier,
     contentScale: ContentScale = ContentScale.Crop, more: Int = 0,
-    onImageRatio: ((Float) -> Unit)? = null, open: () -> Unit,
+    onImageRatio: ((Float) -> Unit)? = null, showSensitiveToggle: Boolean = true, open: () -> Unit,
 ) {
     val video = media.kind == TimelineMediaKind.Video
     var revealed by remember(media.key, media.url, media.previewUrl, media.sensitive) { mutableStateOf(false) }
@@ -257,6 +261,7 @@ private fun MediaFrame(
                 bitmap != null -> Image(bitmap, media.name, Modifier.matchParentSize(), contentScale = contentScale)
                 placeholder != null -> Image(placeholder, media.name.takeUnless { hidden }, Modifier.matchParentSize().testTag("media-blurhash"),
                     contentScale = ContentScale.FillBounds)
+                hidden && !showSensitiveToggle -> Text(showLabel, color = colors.foreground, fontSize = 14.sp)
                 !hidden && !video -> Text(media.name, Modifier.padding(horizontal = 10.dp), color = colors.foreground,
                     fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
@@ -272,7 +277,7 @@ private fun MediaFrame(
                 Text("+$more", color = Color.White, fontSize = 24.sp, fontWeight = AndroidWeights.emphasis)
             }
         }
-        if (media.sensitive) {
+        if (media.sensitive && showSensitiveToggle) {
             UiIconButton(
                 if (hidden) UiIcon.Eye else UiIcon.EyeOff,
                 if (hidden) showLabel else hideLabel,

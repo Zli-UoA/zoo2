@@ -3,6 +3,7 @@ package zoo.android.ui
 import androidx.compose.animation.core.animate
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
@@ -21,6 +22,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.IntOffset
@@ -121,24 +124,21 @@ internal fun TimelineImagePages(
                         CircularProgressIndicator(color = Color.White)
                     }
                 }
-                if (index == pager.currentPage) {
-                    Row(Modifier.align(Alignment.TopEnd).safeDrawingPadding().padding(8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        val fill = Color.Black.copy(alpha = 0.65f)
-                        if (!hidden && (image.attachmentId != null || image.url != null)) {
-                            UiIconButton(if (image.attachmentId != null) UiIcon.Download else UiIcon.External,
-                                androidLabel("attachments.openOriginal", "元のファイル"), Color.White,
-                                { openOriginal(image) }, fill = fill)
-                        }
-                        if (image.sensitive) {
-                            UiIconButton(
-                                if (hidden) UiIcon.Eye else UiIcon.EyeOff,
-                                if (hidden) androidLabel("attachments.showSensitive", "画像を表示")
-                                else androidLabel("attachments.hideSensitive", "画像を隠す"),
-                                Color.White, { revealed[index] = hidden }, fill = fill,
-                            )
-                        }
+                if (hidden) {
+                    val label = androidLabel("attachments.showSensitive", "画像を表示")
+                    Box(Modifier.matchParentSize()
+                        .clickable(role = Role.Button) { revealed[index] = true }
+                        .semantics { contentDescription = label },
+                        contentAlignment = Alignment.Center) {
+                        if (blur == null) Text(label, color = Color.White)
                     }
+                } else if (index == pager.currentPage && (image.attachmentId != null || image.url != null)) {
+                    UiIconButton(
+                        if (image.attachmentId != null) UiIcon.Download else UiIcon.External,
+                        androidLabel("attachments.openOriginal", "元のファイル"), Color.White,
+                        { openOriginal(image) }, fill = Color.Black.copy(alpha = 0.65f),
+                        modifier = Modifier.align(Alignment.TopEnd).safeDrawingPadding().padding(8.dp),
+                    )
                 }
             }
         }

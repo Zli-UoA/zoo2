@@ -232,7 +232,7 @@ private fun SearchResult(
                 EntryBody(item.body, colors.foreground, entryTextSize, item.emoji, maxLines = 3, highlight = highlight,
                     lineHeight = 23.sp, links = false)
             }
-            item.media?.let { media -> TimelineMediaGroup(listOf(media), colors, apub = false) { openMedia() } }
+            item.media?.let { media -> TimelineMediaGroup(listOf(media), colors, apub = false, showSensitiveToggle = false) { openMedia() } }
             item.linkCard?.let { EntryCards(listOf(it), colors) }
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 UiGlyph(if (item.dm) UiIcon.Person else UiIcon.Channels, colors.secondary,

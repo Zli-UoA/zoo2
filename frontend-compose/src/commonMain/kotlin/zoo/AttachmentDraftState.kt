@@ -158,14 +158,16 @@ class AttachmentLinks(private val app: Session) {
     private val cache = mutableMapOf<String, Pair<String, Long>>()
     private val requests = mutableMapOf<String, Deferred<Result<String>>>()
 
+    fun cachedUrl(id: String): String? =
+        cachedUrl(id, timestampMillis(app.platform.now()) ?: 0L)
+
+    private fun cachedUrl(id: String, now: Long): String? =
+        cache[id]?.takeIf { it.second - now > 5_000 }?.first
+
     suspend fun get(id: String, force: Boolean = false): String {
         errors.remove(id)
         val now = timestampMillis(app.platform.now()) ?: 0L
-        cache[id]
-            ?.takeIf { !force && it.second - now > 5000 }
-            ?.let {
-                return it.first
-            }
+        if (!force) cachedUrl(id, now)?.let { return it }
         val work =
             requests.getOrPut(id) {
                 app.scope.async {

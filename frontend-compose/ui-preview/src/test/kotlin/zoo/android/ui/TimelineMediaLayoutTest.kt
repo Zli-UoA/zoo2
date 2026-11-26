@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.test.*
@@ -161,7 +162,7 @@ class TimelineMediaLayoutTest {
         val video = TimelineMedia("video", "video", TimelineMediaKind.Video)
         ui.setContent {
             CompositionLocalProvider(LocalCachedTimelineImage provides { bitmap }) {
-                Box(Modifier.width(240.dp)) {
+                Column(Modifier.width(240.dp)) {
                     TimelineMediaGroup(listOf(video, image, video.copy(key = "second")), AndroidColors(false), apub = true) {}
                 }
             }
@@ -171,6 +172,38 @@ class TimelineMediaLayoutTest {
         val first = videos[0].getUnclippedBoundsInRoot()
         val last = videos[1].getUnclippedBoundsInRoot()
         assertTrue(first.bottom <= preview.top && preview.bottom <= last.top)
+    }
+
+    @Test
+    fun revealingSensitiveImagesKeepsTheirFrameAndDoesNotAddAnEyeToTheViewer() {
+        val bitmap = Bitmap.createBitmap(8, 24, Bitmap.Config.ARGB_8888).asImageBitmap()
+        val sensitive = images[1].copy(sensitive = true, imageAspectRatio = null)
+        var loads = 0
+        val viewing = mutableStateOf(false)
+        ui.setContent {
+            CompositionLocalProvider(LocalTimelineImage provides { loads++; bitmap }) {
+                if (viewing.value) {
+                    TimelineImagePages(TimelineMediaSelection(listOf(images[0], sensitive), 0)) {}
+                } else {
+                    Column(Modifier.width(240.dp)) {
+                        TimelineMediaGroup(listOf(sensitive), AndroidColors(false), apub = true) {}
+                    }
+                }
+            }
+        }
+        val grid = ui.onNodeWithTag("apub-image-grid")
+        grid.assertHeightIsEqualTo(180.dp)
+        ui.onNodeWithContentDescription("画像を表示").performClick()
+        grid.assertHeightIsEqualTo(180.dp)
+        ui.onNodeWithContentDescription("画像を隠す").assertExists()
+        ui.runOnIdle { viewing.value = true }
+        val viewer = ui.onNodeWithTag("timeline-image-viewer")
+        viewer.performTouchInput { swipeLeft() }
+        ui.runOnIdle { assertEquals(2, loads) }
+        ui.onNodeWithContentDescription("画像を表示").performClick()
+        ui.onNodeWithTag("viewer-image-1").assertIsDisplayed()
+        ui.onNodeWithContentDescription("画像を隠す").assertDoesNotExist()
+        ui.runOnIdle { assertEquals(3, loads) }
     }
 
     @Test
