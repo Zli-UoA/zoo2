@@ -134,6 +134,27 @@ final class E2eeVerification {
     }
 
     func accept(_ id: String) async { await act(id) { try $0.accept() } }
+
+    /// 相手の QR を読み取った。形が正しくない、別の検証の QR は `false`（取りやめずに読み直す）。鍵が違えば取りやめになり、
+    /// `true`（結果は画面の状態に出る）。
+    func scanQr(_ id: String, bytes: Data) async -> Bool {
+        guard let sas = live[id] else { return false }
+        patch(id) { $0.busy = true; $0.error = nil }
+        defer { patch(id) { $0.busy = false } }
+        do {
+            let out = try sas.scanQrCode(bytes: bytes)
+            _ = try await serial { try await self.apply(sas, outgoing: out) }
+            return true
+        } catch let failure as E2eeStoreError where failure == .sendNeedsUnlock {
+            patch(id) { $0.error = .needsUnlock }
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// 相手がこの端末の QR を読み取ったと、利用者が答えた。
+    func confirmQrScanned(_ id: String) async { await act(id) { try $0.confirmQrScanned() } }
     func confirm(_ id: String) async { await act(id) { try $0.confirm() } }
     func startSas(_ id: String) async { await act(id) { try $0.startSas() } }
     func mismatch(_ id: String) async { await act(id) { $0.mismatch() } }

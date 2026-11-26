@@ -57,7 +57,7 @@ targets:
       properties:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
-        NSCameraUsageDescription: このバージョンではカメラを使用しません。音声通話はマイクのみを使用します。
+        NSCameraUsageDescription: 他のユーザーの検証で、相手の画面の QR コードを読み取るためにカメラを使います。
         NSMicrophoneUsageDescription: チャンネルやDMの音声通話でマイクを使用します。
         NSLocalNetworkUsageDescription: 同じWi-Fiに接続している通話相手と音声を直接送受信します。
         NSSiriUsageDescription: SiriからZooのDM送信・下書き・音声通話を使うため、メンバー名と依頼内容をSiriと共有します。

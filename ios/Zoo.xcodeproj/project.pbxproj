@@ -154,6 +154,7 @@
 		A446A338342AD0D2D2B7A94A /* ZooCrypto in Frameworks */ = {isa = PBXBuildFile; productRef = DE7BE6CF765EFD50D00DB190 /* ZooCrypto */; };
 		A4C8E5DCD544E5833AE8C8B8 /* GlobalSearchFilters.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7C83D3956A6E92C9C1838B5 /* GlobalSearchFilters.swift */; };
 		A5B3B2174411ED707B979BEF /* IncomingCall.caf in Resources */ = {isa = PBXBuildFile; fileRef = 01F4605EEE99FB8A46EE593A /* IncomingCall.caf */; };
+		A6F7301A6860E3A2E25E2750 /* QrCodeKitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E486702563C72D7348CB467 /* QrCodeKitTests.swift */; };
 		A74D571581DA830C6D2CDBBE /* CallTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5DD821D3B8BF904D7F0157B /* CallTests.swift */; };
 		A751479364BE32F5AE061E63 /* ZooNotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 337CC9AC583295489E718778 /* ZooNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		A8431E8A8F001AEC5FD6EB2D /* ChannelThreadsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E574B38B51C1F97994593C4 /* ChannelThreadsTests.swift */; };
@@ -203,6 +204,7 @@
 		DA1395BFDC7E9872BDA51899 /* GlobalSearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CA6BC996A1C94A23F95F16E /* GlobalSearchView.swift */; };
 		DB499E00F43349BE97609EE7 /* WatchHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F3DDE4238701DA740353ED4 /* WatchHomeView.swift */; };
 		DC3328CC9FA55D7D0A7403E5 /* TypingUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1651B9D5D7861771BAF31E96 /* TypingUITests.swift */; };
+		DD03139C0B5A5799DECB99D2 /* QrCodeKit.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CF0B1CD5EA36441BAD71B3F /* QrCodeKit.swift */; };
 		DD2DF6A7BCB2FC21FAC60AC3 /* CreateChannelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C1432176D2EE10E6E652F81 /* CreateChannelView.swift */; };
 		DE0D1E1C2A866122BE53A4F4 /* ZooCrypto in Frameworks */ = {isa = PBXBuildFile; productRef = 7DFF271D3FAA430D1B383DF4 /* ZooCrypto */; };
 		DE27785108646185D520404F /* NativeCallMedia.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBD80F99CDA0261D2C9C9BDF /* NativeCallMedia.swift */; };
@@ -351,6 +353,7 @@
 		288C868343D5CF6B3975C4BF /* ChatPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatPresentation.swift; sourceTree = "<group>"; };
 		2A31DE9EE4DC0F2517A90777 /* NotificationE2ee.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationE2ee.swift; sourceTree = "<group>"; };
 		2A8013648AFC26DFB51FBA44 /* PreviewE2eeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewE2eeTests.swift; sourceTree = "<group>"; };
+		2CF0B1CD5EA36441BAD71B3F /* QrCodeKit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrCodeKit.swift; sourceTree = "<group>"; };
 		2D5E04EDE6036CD270B1CB4C /* TypingClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingClient.swift; sourceTree = "<group>"; };
 		337CC9AC583295489E718778 /* ZooNotificationService.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = ZooNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		347E28ACB1C49647000B1C66 /* InboxStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxStore.swift; sourceTree = "<group>"; };
@@ -438,6 +441,7 @@
 		9BB00E9CE7E9A70261228578 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
 		9BB6EEB9B3CF688AE17A971E /* AttachmentPreviewDismissGesture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentPreviewDismissGesture.swift; sourceTree = "<group>"; };
 		9E1FD0671CA2C9F23958A038 /* WatchCompanionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchCompanionTests.swift; sourceTree = "<group>"; };
+		9E486702563C72D7348CB467 /* QrCodeKitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrCodeKitTests.swift; sourceTree = "<group>"; };
 		9F3DDE4238701DA740353ED4 /* WatchHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchHomeView.swift; sourceTree = "<group>"; };
 		9F4B5FB24C249C614603307E /* RemoteImageDiskCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteImageDiskCache.swift; sourceTree = "<group>"; };
 		A0F6FF6D923BB6F15CD14431 /* PreviewCallMedia.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewCallMedia.swift; sourceTree = "<group>"; };
@@ -639,6 +643,7 @@
 				2A8013648AFC26DFB51FBA44 /* PreviewE2eeTests.swift */,
 				53517A665AD0645C38D84A55 /* PublicProfileTests.swift */,
 				90753D29DA20E7D9A00BEDF1 /* PushTests.swift */,
+				9E486702563C72D7348CB467 /* QrCodeKitTests.swift */,
 				715B4A6037103403F6BAB12C /* ReactionAPITests.swift */,
 				6EAF718542356B731B86C80C /* ReactionEmojiTests.swift */,
 				6D1B04C11A2D816B7C0D96E6 /* ReactionStoreTests.swift */,
@@ -764,6 +769,7 @@
 			children = (
 				3A81E691EC7FDF48530929C7 /* EncryptionSetupView.swift */,
 				1E0A14CA71AF06C828E104FC /* OwnDevicesView.swift */,
+				2CF0B1CD5EA36441BAD71B3F /* QrCodeKit.swift */,
 				17F0A8F07AE43C6093D6527A /* ResetView.swift */,
 				D66FC0B69F136D13372E7682 /* RevocationView.swift */,
 				E7428B65B987DF15D0327D39 /* VerificationViews.swift */,
@@ -1299,6 +1305,7 @@
 				4BA75AEA368232995BBB3DC9 /* PreviewE2eeTests.swift in Sources */,
 				C31C91820F333AD6CA379BAD /* PublicProfileTests.swift in Sources */,
 				C9B97BBBDE456DB67AA52447 /* PushTests.swift in Sources */,
+				A6F7301A6860E3A2E25E2750 /* QrCodeKitTests.swift in Sources */,
 				BADBA7C701C6D031CB67657B /* ReactionAPITests.swift in Sources */,
 				F3624288C10B9A47EA6B22CB /* ReactionEmojiTests.swift in Sources */,
 				629CBE9A77BFB961DC63F37C /* ReactionStoreTests.swift in Sources */,
@@ -1452,6 +1459,7 @@
 				D6E56687A4F4875274167259 /* PublicProfile.swift in Sources */,
 				6FE23D9AF44A22C289554B41 /* PushNotice.swift in Sources */,
 				8B63EFD9224ABEA01A76DF21 /* PushRegistration.swift in Sources */,
+				DD03139C0B5A5799DECB99D2 /* QrCodeKit.swift in Sources */,
 				9D27F27E4CFD3E1504D92CD4 /* Reaction.swift in Sources */,
 				F4A714D0315A838AE271D8EE /* ReactionChips.swift in Sources */,
 				96C7DF5DEA20135848135EA6 /* ReactionEmoji.swift in Sources */,

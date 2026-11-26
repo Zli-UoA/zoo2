@@ -55,6 +55,10 @@ private struct SasEntryView: View {
     let name: String
     let verification: E2eeVerification
 
+    @State private var scanning = false
+    @State private var scanNotice: String?
+    @State private var cameraUnavailable = false
+
     private var phase: String { entry.view.phase }
 
     var body: some View {
@@ -62,7 +66,8 @@ private struct SasEntryView: View {
             switch phase {
             case "requested":
                 title("\(name) さんの承認を待っています")
-                note("相手の端末に検証の要求を送りました。相手が受け入れると、絵文字が出ます。")
+                note("相手の端末に検証の要求を送りました。相手が受け入れると、QR か絵文字で確かめられます。")
+                methodChoices
                 button("中止する", role: .cancel) { await verification.cancel(entry.id) }
             case "incoming":
                 title("\(name) さんが検証を求めています")
@@ -71,9 +76,18 @@ private struct SasEntryView: View {
                 button("断る", role: .cancel) { await verification.cancel(entry.id) }
             case "choose_method":
                 title("検証の方法を選んでください")
-                button("絵文字で検証する", primary: true) { await verification.startSas(entry.id) }
+                methodChoices
                 button("中止する", role: .cancel) { await verification.cancel(entry.id) }
-            case "exchanging", "qr_scanned", "qr_confirm":
+            case "qr_scanned":
+                title("\(name) さんの確認を待っています…")
+                ProgressView()
+                button("中止する", role: .cancel) { await verification.cancel(entry.id) }
+            case "qr_confirm":
+                title("\(name) さんの端末で QR を読み取りましたか？")
+                note("読み取ったと答えると、ログインし直して本人確認をしてから、相手の鍵を検証済みとして保存します。")
+                button("読み取った", primary: true) { await verification.confirmQrScanned(entry.id) }
+                button("読み取っていない", role: .cancel) { await verification.cancel(entry.id) }
+            case "exchanging":
                 title("鍵を交換しています…")
                 ProgressView()
                 button("中止する", role: .cancel) { await verification.cancel(entry.id) }
@@ -103,6 +117,38 @@ private struct SasEntryView: View {
         .background(AppDesign.surface, in: RoundedRectangle(cornerRadius: AppDesign.cornerRadius))
         .disabled(entry.busy)
         .accessibilityIdentifier("sas-\(entry.id)")
+    }
+
+    /// QR（自分の QR を見せる、相手の QR を読み取る）と、絵文字で検証する、の選び方。
+    @ViewBuilder private var methodChoices: some View {
+        if scanning {
+            if cameraUnavailable {
+                note("カメラを使えません。iOS の設定でカメラを許可するか、絵文字で検証してください。")
+            } else {
+                QrScannerView(onScan: { bytes in
+                    Task {
+                        let accepted = await verification.scanQr(entry.id, bytes: bytes)
+                        if accepted { scanning = false; scanNotice = nil } else { scanNotice = "今の検証の QR ではありません。相手の画面の QR を読み取ってください。" }
+                    }
+                }, onUnavailable: { cameraUnavailable = true })
+                .frame(height: 260)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .accessibilityLabel("相手の QR を読み取るカメラ")
+            }
+            if let scanNotice { Text(scanNotice).font(.footnote).foregroundStyle(.orange) }
+            button("QR を表示に戻す") { scanning = false; scanNotice = nil }
+        } else {
+            if let bytes = entry.view.qrCode {
+                QrCodeImage(bytes: bytes)
+                note("相手の端末で、この QR を読み取ってください。")
+            }
+            if entry.view.canScanQrCode {
+                button("相手の QR を読み取る", primary: true) { scanning = true; cameraUnavailable = false }
+            }
+        }
+        if entry.view.canStartSas {
+            button("絵文字で検証する") { scanning = false; await verification.startSas(entry.id) }
+        }
     }
 
     @ViewBuilder private var emoji: some View {
