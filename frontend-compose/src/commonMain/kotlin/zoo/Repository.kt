@@ -217,7 +217,8 @@ class SyncedTable(
         }
     }
 
-    private class Requested(val main: Boolean, val subset: SubsetParams)
+    /** 取得済みの範囲。取り直し（must-refetch）のとき、この単位でやり直す。`scope` か `aroundId` のどちらか。 */
+    private class Requested(val scope: PageScope?, val aroundId: String?)
 
     /** 範囲ごとの読み込み状態（on-demand のみ）。 */
     private val pages = MutableStateFlow<Map<PageScope, PageState>>(emptyMap())
@@ -272,7 +273,6 @@ class SyncedTable(
 
     private suspend fun fetchSubset(main: Boolean, subset: SubsetParams): SubsetSnapshot {
         val source = streamReady.await()
-        requested.update { it + Requested(main, subset) }
         val snapshot = source.requestSnapshot(subset)
         snapshotMetas.update { (it + snapshot.metadata).takeLast(32) }
         // 行は snapshot の配信の中で Shape に入っている。最初のメインのページが届いたら、画面へ反映する。
@@ -282,22 +282,30 @@ class SyncedTable(
     }
 
     /**
-     * 次の 1 ページを取る。最初の呼び出し（`loaded` が偽）は、最新のページ。失敗や取得済みの範囲は何もせず
-     * 偽を返す。範囲ごとに 1 件ずつだけ取る。
+     * 次の 1 ページを取る。最初の呼び出し（`loaded` が偽）は、最新のページ。取得済みの範囲や、同じ範囲を取っている
+     * 最中は何もせず偽を返す。取り直し（must-refetch 後）の間は、終わるまで待ってから取る。
      */
     suspend fun loadOlder(scope: PageScope): Boolean {
-        if (!onDemand || !synchronize || refetching.value) return false
+        if (!onDemand || !synchronize) return false
+        while (true) {
+            refetching.first { !it }
+            val epoch = refetchEpoch
+            val result = loadPage(scope)
+            // 取り直しが始まって、この結果が捨てられたときは、取り直しの後にやり直す。
+            if (epoch == refetchEpoch) return result
+        }
+    }
+
+    private suspend fun loadPage(scope: PageScope): Boolean {
         val current = pages.value[scope] ?: PageState()
         if (current.loading || (current.loaded && !current.hasOlder)) return false
+        if (requested.value.none { it.scope == scope }) requested.update { it + Requested(scope, null) }
         pages.update { it + (scope to current.copy(loading = true)) }
         val epoch = refetchEpoch
         try {
             val snapshot = fetchSubset(scope == PageScope.Main, pageSubset(scope, current.oldest))
-            if (epoch != refetchEpoch) {
-                // 取り直しが始まった。この結果では範囲を進めず、取り直しの後にやり直す。
-                pages.update { it + (scope to current) }
-                return false
-            }
+            // 取り直しが始まった: 範囲の状態は取り直しが作り直す。この結果では進めない。
+            if (epoch != refetchEpoch) return false
             val values = snapshot.data.mapNotNull { it.jsonObject["value"] as? JsonObject }
             val oldest = values.lastOrNull()?.let { it.text("created_at") to it.text("id") } ?: current.oldest
             pages.update {
@@ -310,10 +318,10 @@ class SyncedTable(
             }
             return true
         } catch (e: CancellationException) {
-            pages.update { it + (scope to current) }
+            if (epoch == refetchEpoch) pages.update { it + (scope to current) }
             throw e
         } catch (_: Exception) {
-            pages.update { it + (scope to current) }
+            if (epoch == refetchEpoch) pages.update { it + (scope to current) }
             return false
         }
     }
@@ -321,6 +329,7 @@ class SyncedTable(
     /** 通知・リンク・検索の対象や、スレッドの親を、1 行だけ取る。窓の外でもよく、削除済みの行も取る。 */
     suspend fun loadAround(id: String): Boolean {
         if (!onDemand || !synchronize) return false
+        if (requested.value.none { it.aroundId == id }) requested.update { it + Requested(null, id) }
         return try {
             val subset =
                 SubsetParams(
@@ -473,25 +482,25 @@ class SyncedTable(
                                 refetchPending = false
                                 val again = requested.value
                                 requested.value = emptyList()
+                                // 範囲の状態は作り直す。位置（oldest）は、取り直した最新のページから数え直すので、
+                                // 取り直し前に増えた行があっても、保持している最古行との間に欠落ができない。
+                                pages.value = emptyMap()
                                 launch {
-                                    var done = 0
                                     var attempt = 0
-                                    // 取り直しが済むまで、`loadOlder` は何もしない。
-                                    while (done < again.size) {
-                                        try {
-                                            fetchSubset(again[done].main, again[done].subset)
+                                    // 取り直しが済むまで、`loadOlder` は何もしない。失敗したら、成功するまで
+                                    // 間隔を空けて（最大 10 秒）やり直す。画面を離れる・ログアウトで取り消される。
+                                    val scopes = (again.mapNotNull { it.scope } + PageScope.Main).distinct()
+                                    val arounds = again.mapNotNull { it.aroundId }
+                                    var done = 0
+                                    while (done < scopes.size) {
+                                        if (loadPage(scopes[done])) {
                                             done++
-                                        } catch (e: CancellationException) {
-                                            throw e
-                                        } catch (e: Exception) {
-                                            // 取り直しが済むまで、間隔を空けて（最大 10 秒）やり直し続ける。
-                                            // 画面を離れる・ログアウトで、このジョブごと取り消される。
+                                        } else {
                                             attempt++
-                                            error.value = e
                                             delay(minOf(1_000L * attempt, 10_000L))
-                                            continue
                                         }
                                     }
+                                    arounds.forEach { loadAround(it) }
                                     refetching.value = false
                                 }
                             }

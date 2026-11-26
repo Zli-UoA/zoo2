@@ -144,7 +144,19 @@ internal fun ConnectedScreens(
     LaunchedEffect(messageTable, currentThread) {
         val table = messageTable ?: return@LaunchedEffect
         val thread = currentThread ?: return@LaunchedEffect
-        if (table.rows.value.none { it.text("id") == thread }) table.loadAround(thread)
+        if (table.rows.value.none { it.text("id") == thread }) {
+            // 親が取れないと、スレッド画面を選べない。対象行と同じく、数回やり直し、取れなければ通知して返信へは進まない。
+            var found = false
+            var tries = 0
+            while (!found && tries < MAX_FOCUS_FAILURES) {
+                found = table.loadAround(thread)
+                if (!found && ++tries < MAX_FOCUS_FAILURES) delay(500L * tries)
+            }
+            if (!found) {
+                session.toast = session.t("common.errors.network")
+                return@LaunchedEffect
+            }
+        }
         table.loadOlder(PageScope.Replies(thread))
     }
     val call = phone.call
