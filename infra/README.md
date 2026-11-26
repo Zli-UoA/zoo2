@@ -283,25 +283,21 @@ advisory lock を取る経路があるため、旧インスタンスが動いて
 migration が同じ版番号を使ったときに適用済みと判定されたり checksum 不一致で止まったりする
 ためです。
 
-```sh
-atlas migrate apply --dir file://infra/db/deferred-migrations   --url "$DATABASE_URL" --revisions-schema atlas_schema_revisions_deferred --allow-dirty
-```
-
-標準の `compose.stack` では `DATABASE_URL` は `migrate` コンテナ内だけにあり、
+標準の `compose.stack` では `DATABASE_URL` は `migrate` サービスに設定され、
 PostgreSQL のポートはホストに公開されません。また `migrate` イメージには
 `infra/db/deferred-migrations` も含まれません。ステージング Compose では、旧インスタンスの
 停止を確認した後、DB と同じネットワーク上の使い捨てコンテナで、ホストの deferred
-ディレクトリを読み取り専用でマウントして適用します。
+ディレクトリを読み取り専用でマウントして適用します。リポジトリのルートで、既存の
+ステージングと同じ Compose プロジェクト・環境変数を使って実行してください。
 
 ```bash
-docker compose --project-directory . -f infra/compose.stack.yaml   run --rm --no-deps \
+docker compose --project-directory . -f infra/compose.stack.yaml run --rm --no-deps \
     -v "$(pwd)/infra/db/deferred-migrations:/deferred-migrations:ro" \
-    --entrypoint /usr/local/bin/atlas \
-    migrate \
-    migrate apply --dir file:///deferred-migrations \
-      --url "$DATABASE_URL" \
+    --entrypoint /bin/sh migrate -ec \
+    'exec /usr/local/bin/atlas migrate apply --dir file:///deferred-migrations \
+      --url "${DATABASE_URL:?DATABASE_URL is required}" \
       --revisions-schema atlas_schema_revisions_deferred \
-      --allow-dirty
+      --allow-dirty'
 ```
 
 この適用後、canonical migrations へ戻す follow-up では、deferred migration を同じ番号のまま

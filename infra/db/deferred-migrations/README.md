@@ -23,8 +23,15 @@ opposite order can deadlock (SQLSTATE 40P01) in the row-level trigger. The
 backend's `lock_membership_users` path already uses this order; writes that only
 pass through the trigger need the explicit pre-lock.
 
+Run the command below from the repository root in an environment that can
+reach the target PostgreSQL server and has its `DATABASE_URL` set. For the
+standard staging Compose stack, use the container-based procedure in
+[`infra/README.md`](../../README.md#slack-ゲスト所属トリガーの適用順序).
+
 ```sh
-atlas migrate apply --dir file://infra/db/deferred-migrations   --url "$DATABASE_URL" --revisions-schema atlas_schema_revisions_deferred --allow-dirty
+atlas migrate apply --dir file://infra/db/deferred-migrations \
+  --url "${DATABASE_URL:?DATABASE_URL is required}" \
+  --revisions-schema atlas_schema_revisions_deferred --allow-dirty
 ```
 
 `--allow-dirty` is required because the target database already carries the
@@ -80,7 +87,3 @@ SQL が再実行されないため、切り戻し後に新バックエンドへ�
 `users` 行をロックする定義に戻ったことを確認すること。バックエンドのロールバック中は、
 暗号化チャンネルへの所属追加とユーザー無効化が並行して 40P01 で中止され得る
 点も `infra/README.md` の段階デプロイの節と同様に扱うこと。
-
-A staging Compose procedure for this command is in `infra/README.md` (the
-standard `migrate` image does not contain this directory and the PostgreSQL
-port is not published to the host).
