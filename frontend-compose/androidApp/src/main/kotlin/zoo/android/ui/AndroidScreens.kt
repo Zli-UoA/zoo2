@@ -72,6 +72,7 @@ internal data class TimelineItem(
     val linkCard: EntryCard? = null,
     val emoji: Map<String, TimelineMedia> = emptyMap(),
     val avatar: String? = null,
+    val attachedImageUrls: Set<String> = emptySet(),
     /** 復号できなかった理由（docs/e2ee.md の「受信時の検証」）。本文の代わりに出す。 */
     val notice: String? = null,
     /** 送信者の確かさ・版・暗号化されていない行の印（本文と一緒に出す）。 */

@@ -49,4 +49,15 @@ class TimelineImageSourcesTest {
         assertEquals(first.url, shown.url)
         assertTrue(shown.sensitive)
     }
+    @Test
+    fun bridgeMergesPreviouslyDistinctGroupsAndKeepsSourceUrls() {
+        val first = TimelineMedia("first", "photo", TimelineMediaKind.Image, url = "$base/one")
+        val second = first.copy(key = "second", url = "$base/two", sensitive = true)
+        val bridge = first.copy(url = second.url, previewUrl = "$base/proxy")
+        val shown = distinctTimelineMedia(listOf(first, second, bridge, second)).single()
+        assertEquals(first.key, shown.key)
+        assertTrue(shown.sensitive)
+        assertEquals(setOf("$base/one", "$base/two", "$base/proxy"), timelineImageIdentities(listOf(first, second, bridge)))
+    }
+
 }

@@ -29,10 +29,15 @@ internal class AndroidEmojiCatalog(private val readAsset: (String) -> String) {
     suspend fun kitchen(): KitchenChoices = withContext(Dispatchers.IO) { kitchen }
 
     suspend fun kitchenReaction(value: String): String? {
-        val first = value.removePrefix("kitchen:").substringBefore('_')
+        if (!value.startsWith("kitchen:")) return null
+        val parts = value.removePrefix("kitchen:").split('_')
+        if (parts.size != 2) return null
+        val normalized = parts.map(::kitchenComponentCode).sorted()
+        val first = normalized.first()
+        val key = "kitchen:" + normalized.joinToString("_")
         val catalog = kitchen()
         val component = catalog.components.firstOrNull { kitchenComponentCode(it.value) == first } ?: return null
-        return catalog.combinations(component).firstOrNull { it.value == value }?.image
+        return catalog.combinations(component).firstOrNull { it.value == key }?.image
     }
 
     private fun read(name: String): JsonObject = Json.parseToJsonElement(readAsset(name)).jsonObject
@@ -51,7 +56,7 @@ internal fun accountEmojiChoices(rows: List<Row>): List<EmojiChoice> = rows.mapN
 }
 
 private fun kitchenComponentCode(value: String) =
-    value.split('-').filterNot { it == "fe0f" }.joinToString("-")
+    value.lowercase().split('-').map { it.trimStart('0').ifEmpty { "0" } }.filterNot { it == "fe0f" }.joinToString("-")
 
 private fun parseKitchen(data: JsonObject): KitchenChoices {
     val components = data.array("emojis").map { row ->

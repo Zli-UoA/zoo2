@@ -27,7 +27,7 @@ class LoginNetworkMessageTest {
         assertTrue(http.contains("認証先の設定取得 — 失敗"))
         assertTrue(http.contains("HTTP 503"))
         assertFalse(http.contains("secret-token"))
-        val dns = loginDiagnosticLog(stages, UnknownHostException("private.example"))
+        val dns = loginDiagnosticLog(stages, LoginFailure("接続できません", cause = UnknownHostException("private.example")))
         assertTrue(dns.contains("DNS"))
         assertFalse(dns.contains("private.example"))
     }

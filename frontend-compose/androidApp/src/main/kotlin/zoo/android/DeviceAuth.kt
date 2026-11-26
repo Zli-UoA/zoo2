@@ -23,6 +23,7 @@ internal class DeviceAuth(
     private val http: HttpClient,
     private val persistRefresh: (String?) -> Unit = {},
     private val consumeRefresh: () -> Unit = { persistRefresh(null) },
+    private val readDiscovery: (suspend (String) -> Row)? = null,
     private val onExpired: (DeviceAuth) -> Unit = {},
 ) {
     private var token = ""
@@ -39,11 +40,13 @@ internal class DeviceAuth(
         require(Url(issuer).protocol == URLProtocol.HTTPS) { "認証先は HTTPS を指定してください" }
         clientId = client
         resource = audience
-        val response = http.get("${issuer.trimEnd('/')}/.well-known/openid-configuration")
-        if (response.status.value !in 200..299) {
-            throw LoginFailure("認証先の設定を取得できません (HTTP ${response.status.value})")
+        val discovery = readDiscovery?.invoke(issuer) ?: run {
+            val response = http.get("${issuer.trimEnd('/')}/.well-known/openid-configuration")
+            if (response.status.value !in 200..299) {
+                throw LoginFailure("認証先の設定を取得できません (HTTP ${response.status.value})")
+            }
+            response.loginJson("認証先の設定取得")
         }
-        val discovery = response.loginJson("認証先の設定取得")
         require(discovery.text("issuer").trimEnd('/') == issuer.trimEnd('/')) { "issuer が一致しません" }
         endpoint = discovery.text("token_endpoint")
         require(Url(endpoint).protocol == URLProtocol.HTTPS)
@@ -108,7 +111,7 @@ internal class DeviceAuth(
                             }
                         }
                     }.getOrDefault(false)
-                    if (restored) throw LoginFailure("認証先に接続できません。通信状態を確認して再試行してください。")
+                    if (restored) throw LoginFailure("認証先に接続できません。通信状態を確認して再試行してください。", cause = failure)
                 }
                 var notify = false
                 try {
@@ -125,6 +128,7 @@ internal class DeviceAuth(
                     if (failure is LoginFailure) failure.message.orEmpty()
                     else "トークン更新の結果を確認できませんでした。ログインし直してください。",
                     requiresLogin = true,
+                    cause = failure,
                 )
             }
         }
@@ -181,7 +185,8 @@ internal class DeviceAuth(
 }
 
 /** Only locally constructed messages are safe to show in the login screen. */
-internal class LoginFailure(message: String, val requiresLogin: Boolean = false) : IllegalStateException(message)
+internal class LoginFailure(message: String, val requiresLogin: Boolean = false, cause: Throwable? = null) :
+    IllegalStateException(message, cause)
 
 internal suspend fun HttpResponse.loginJson(stage: String): Row {
     val raw = bodyAsText()

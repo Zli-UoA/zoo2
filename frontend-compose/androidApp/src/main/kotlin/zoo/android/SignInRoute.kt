@@ -2,6 +2,7 @@ package zoo.android
 
 import android.content.ClipData
 import android.content.Context
+import android.widget.Toast
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import androidx.activity.compose.BackHandler
@@ -12,7 +13,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -124,23 +124,29 @@ internal fun SignInRoute(
                 }
             }
         }
-    }
-    if (showDiagnostics && diagnostics.isNotBlank()) {
-        AlertDialog(
-            onDismissRequest = { showDiagnostics = false },
-            title = { Text("ログインの診断ログ") },
-            text = {
-                SelectionContainer {
-                    Text(diagnostics, Modifier.heightIn(max = 280.dp).verticalScroll(rememberScrollState()))
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    scope.launch { clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("Zoo", diagnostics))) }
-                }) { Text("コピー") }
-            },
-            dismissButton = { TextButton(onClick = { showDiagnostics = false }) { Text("閉じる") } },
-        )
+
+        if (showDiagnostics && diagnostics.isNotBlank()) {
+            AlertDialog(
+                onDismissRequest = { showDiagnostics = false },
+                title = { Text("ログインの診断ログ") },
+                text = {
+                    SelectionContainer {
+                        Text(diagnostics, Modifier.heightIn(max = 280.dp).verticalScroll(rememberScrollState()))
+                    }
+                },
+                confirmButton = {
+                    DialogAction("コピー", UiIcon.Copy) {
+                        scope.launch {
+                            clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("Zoo", diagnostics)))
+                            if (android.os.Build.VERSION.SDK_INT < 33) {
+                                Toast.makeText(context, "診断ログをコピーしました", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                },
+                dismissButton = { DialogAction("閉じる", UiIcon.Close) { showDiagnostics = false } },
+            )
+        }
     }
 }
 

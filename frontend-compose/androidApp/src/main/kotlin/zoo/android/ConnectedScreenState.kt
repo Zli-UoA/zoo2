@@ -243,14 +243,15 @@ internal class ConnectedScreenState(
             val icon = it.nested("emoji")
             val (label, fallback) = timelineReactionEmoji(app.config.apiBaseUrl, value, reactionEmoji)
             TimelineReaction(value, label, it.text("count"), it.flag("selected"),
-                timelineEmojiUrl(app.config.apiBaseUrl, icon) ?: fallback, imageId(icon.text("image_id")))
+                timelineEmojiUrl(app.config.apiBaseUrl, icon) ?: fallback, imageId(icon.text("image_id")),
+                canToggle = it.text("can_react") != "false" || it.flag("selected"))
         } else reactions.groupBy { it.text("emoji") }.map { (value, rows) ->
             val (label, image) = timelineReactionEmoji(app.config.apiBaseUrl, value, reactionEmoji)
             val account = value.takeIf { it.startsWith(":@") && it.endsWith(':') }
                 ?.removePrefix(":@")?.removeSuffix(":")
                 ?.let { username -> users.values.firstOrNull { it.text("user_name") == username } }
             TimelineReaction(value, label, rows.size.toString(), rows.any { it.text("user_id") == app.config.userId },
-                image ?: account?.let { timelineAvatarUrl(app.config.apiBaseUrl, it) })
+                image ?: account?.let { timelineAvatarUrl(app.config.apiBaseUrl, it) }, canToggle = !value.startsWith("apub:"))
         }
         val fileRows = (attachments + metadata.array("attachments").rows()).distinctBy { it.text("id") }
         val attachmentMedia = if (allowPreview && !data.present("ciphertext")) fileRows.mapNotNull { file ->
@@ -264,7 +265,7 @@ internal class ConnectedScreenState(
         val postMedia = data.array("media").rows().mapNotNull(::postMedia)
         // A channel-linked post exposes its attachments through both representations.
         val media = selectTimelineMedia(postMedia, attachmentMedia, isPost && fileRows.isNotEmpty())
-        val mediaUrls = (postMedia + quote?.media.orEmpty()).mapNotNull { it.url }.toSet()
+        val mediaUrls = timelineImageIdentities(postMedia + quote?.media.orEmpty())
         val url = linkUrls.firstOrNull { it !in mediaUrls }
         val createdAt = data.text("created_at")
         val time = platform.time(createdAt)
@@ -286,7 +287,7 @@ internal class ConnectedScreenState(
             canRepost = isPost && data.text("visibility") in setOf("public", "local", "unlisted"),
             reposted = metadata.flag("reposted"), reactions = badges, attachments = files, link = url,
             richContent = richContent,
-            emoji = emoji, avatar = timelineAvatarUrl(app.config.apiBaseUrl, data, users[data.text("user_id")]),
+            emoji = emoji, attachedImageUrls = mediaUrls, avatar = timelineAvatarUrl(app.config.apiBaseUrl, data, users[data.text("user_id")]),
             entryKey = HomeTimeline.key(row).ifBlank { id }, media = media, postHeader = postHeader, quote = quote,
             repostedBy = data.text("reposted_by").ifBlank { data.text("reposter_actor") }.ifBlank { null },
         ), previewService)
@@ -301,7 +302,7 @@ internal class ConnectedScreenState(
             preview.image,
         )
         val previewSource = publicUrlString(preview.image)
-        val alreadyAttached = previewSource != null && (entry.media + entry.quote?.media.orEmpty()).any { it.url == previewSource }
+        val alreadyAttached = previewSource != null && previewSource in entry.attachedImageUrls
         val image = imageUrl?.takeUnless { alreadyAttached }?.let { TimelineMedia(it, "", TimelineMediaKind.Image, url = it) }
         return entry.copy(linkCard = EntryCard(preview.title, preview.description, url, preview.site, image = image,
             formatted = false))

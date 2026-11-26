@@ -47,12 +47,14 @@ private val httpStatus = Regex("""\(HTTP ([1-5][0-9]{2})\)""")
 
 /** Only allowlisted stage names and error codes may be shown or copied. */
 internal fun loginDiagnosticLog(stages: List<LoginStage>, failure: Throwable): String {
+    val network = loginNetworkIssue(failure)
     val category = when {
         failure is LoginFailure && failure.message == wifiSignInMessage -> "WIFI_SIGN_IN_REQUIRED"
         failure is ReauthException -> failure.reason.name
+        network != null -> network.label
         failure is LoginFailure -> "LOGIN_FAILURE"
         failure is IllegalArgumentException -> "INVALID_RESPONSE_OR_SETTINGS"
-        else -> loginNetworkIssue(failure)?.label ?: "UNEXPECTED"
+        else -> "UNEXPECTED"
     }
     val status = when (failure) {
         is LoginFailure, is ReauthException -> httpStatus.find(failure.message.orEmpty())?.groupValues?.get(1)

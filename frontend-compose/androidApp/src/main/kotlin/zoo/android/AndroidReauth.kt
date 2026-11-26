@@ -42,6 +42,7 @@ internal class AndroidReauth(
     private val http: HttpClient,
     private val connection: LoginConnection,
     private val launchAuthTab: (AuthTabIntent, Uri, Uri, (AuthTabIntent.AuthResult) -> Unit) -> Boolean,
+    private val readDiscovery: suspend (String) -> JsonObject = { readOidcDiscovery(it) },
 ) {
     private class Pending(val request: ReauthRequest, val result: CompletableDeferred<ReauthCallback>)
 
@@ -124,7 +125,7 @@ internal class AndroidReauth(
     private suspend fun discover(): JsonObject {
         val issuer = connection.issuer
         require(Url(issuer).protocol == URLProtocol.HTTPS) { "認証先は HTTPS を指定してください" }
-        val discovery = readOidcDiscovery(issuer)
+        val discovery = readDiscovery(issuer)
         if (discovery.text("issuer")?.trimEnd('/') != issuer.trimEnd('/')) {
             throw ReauthException(ReauthException.Reason.DENIED, "issuer が一致しません")
         }

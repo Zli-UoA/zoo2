@@ -383,11 +383,13 @@ class MainActivity : ComponentActivity() {
     ): RunningSession {
         connection.validate()
         val owner = loginStore.beginSession(savedRefresh?.let { SavedLogin(connection, it) })
+        val oidcRoutes = OidcNetworkRoutes()
         val http = HttpClient(OkHttp) {
             // Refresh tokens are single-use: never replay a request inside OkHttp.
             engine {
                 config {
                     retryOnConnectionFailure(false)
+                    dns(oidcRoutes)
                     followRedirects(false)
                     followSslRedirects(false)
                 }
@@ -406,8 +408,9 @@ class MainActivity : ComponentActivity() {
             },
             consumeRefresh = { loginStore.consume(owner) },
             onExpired = onExpired,
+            readDiscovery = oidcRoutes::discover,
         )
-        val reauthenticator = AndroidReauth(this, http, connection, ::launchAuthTab)
+        val reauthenticator = AndroidReauth(this, http, connection, ::launchAuthTab, oidcRoutes::discover)
         reauth = reauthenticator
         try {
             if (savedRefresh == null) {

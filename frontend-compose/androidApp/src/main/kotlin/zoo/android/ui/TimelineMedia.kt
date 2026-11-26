@@ -18,6 +18,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -105,7 +107,7 @@ internal fun TimelineMediaTile(media: TimelineMedia, colors: AndroidColors, open
 
 internal data class TimelineReaction(
     val value: String, val label: String, val count: String, val selected: Boolean,
-    val image: String? = null, val imageId: String? = null,
+    val image: String? = null, val imageId: String? = null, val canToggle: Boolean = true,
 )
 
 @Composable
@@ -122,8 +124,8 @@ private fun timelineIcon(url: String?): ImageBitmap? {
 internal fun TimelineAvatar(author: String, url: String?, colors: AndroidColors, size: Dp = 36.dp) {
     val image = timelineIcon(url)
     Box(Modifier.size(size).clip(CircleShape).background(colors.background), contentAlignment = Alignment.Center) {
-        if (image == null) Text(author.take(1), color = colors.secondary, fontSize = 13.sp)
-        else Image(image, contentDescription = author, Modifier.matchParentSize(), contentScale = ContentScale.Crop)
+        if (image == null) Text(author.take(1), Modifier.clearAndSetSemantics {}, color = colors.secondary, fontSize = 13.sp)
+        else Image(image, contentDescription = null, Modifier.matchParentSize().testTag("timeline-avatar"), contentScale = ContentScale.Crop)
     }
 }
 
@@ -139,7 +141,7 @@ internal fun TimelineReactionChip(reaction: TimelineReaction, colors: AndroidCol
     Row(
         Modifier.heightIn(min = AndroidControlSize.target)
             .background(if (reaction.selected) colors.headerLight else colors.background, CircleShape)
-            .clickable(role = Role.Button, onClick = toggle).padding(horizontal = 10.dp, vertical = 12.dp),
+            .clickable(enabled = reaction.canToggle, role = Role.Button, onClick = toggle).padding(horizontal = 10.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {

@@ -74,16 +74,33 @@ internal fun timelinePostMedia(base: String, row: Row): TimelineMedia? {
 internal fun selectTimelineMedia(post: List<TimelineMedia>, attachments: List<TimelineMedia>, preferAttachments: Boolean) =
     distinctTimelineMedia(if (preferAttachments) attachments else post + attachments)
 
+internal fun timelineImageIdentities(media: List<TimelineMedia>): Set<String> =
+    media.flatMap { listOfNotNull(it.url, it.previewUrl) }.toSet()
+
 internal fun distinctTimelineMedia(media: List<TimelineMedia>): List<TimelineMedia> {
     val positions = mutableMapOf<String, Int>()
-    val result = mutableListOf<TimelineMedia>()
+    val result = mutableListOf<TimelineMedia?>()
+    val groupKeys = mutableListOf<MutableSet<String>>()
     for (item in media) {
         val keys = if (item.kind == TimelineMediaKind.Image) listOfNotNull(item.key, item.url, item.previewUrl)
         else listOf(item.key)
-        val index = keys.firstNotNullOfOrNull(positions::get) ?: result.size
-        if (index == result.size) result.add(item)
-        else if (item.sensitive && !result[index].sensitive) result[index] = result[index].copy(sensitive = true)
-        keys.forEach { positions.putIfAbsent(it, index) }
+        val matches = keys.mapNotNull(positions::get).distinct().sorted()
+        val keep = matches.firstOrNull() ?: result.size
+        if (keep == result.size) {
+            result.add(item)
+            groupKeys.add(mutableSetOf())
+        }
+        val winner = checkNotNull(result[keep])
+        if (item.sensitive || matches.any { result[it]?.sensitive == true }) {
+            result[keep] = winner.copy(sensitive = true)
+        }
+        for (merged in matches.drop(1)) {
+            groupKeys[keep].addAll(groupKeys[merged])
+            groupKeys[merged].clear()
+            result[merged] = null
+        }
+        groupKeys[keep].addAll(keys)
+        groupKeys[keep].forEach { positions[it] = keep }
     }
-    return result
+    return result.filterNotNull()
 }

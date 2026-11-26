@@ -272,7 +272,8 @@ class AndroidSamplesTest {
                     ui.onNodeWithText("Zoo Android ガイド", useUnmergedTree = true).assertIsDisplayed()
                     ui.onNodeWithContentDescription(":party:", useUnmergedTree = true).assertIsDisplayed()
                     ui.onNodeWithContentDescription(":star:", useUnmergedTree = true).assertIsDisplayed()
-                    ui.onNodeWithContentDescription("はる", useUnmergedTree = true).assertIsDisplayed()
+                    ui.onNodeWithTag("timeline-avatar", useUnmergedTree = true).assertIsDisplayed()
+                    ui.onNodeWithContentDescription("はる", useUnmergedTree = true).assertDoesNotExist()
                 }
                 if (name == "channels") {
                     // The list has no search field; finding and creating channels start from the header's ＋.

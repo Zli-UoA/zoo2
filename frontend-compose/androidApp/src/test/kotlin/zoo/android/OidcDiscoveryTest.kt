@@ -27,15 +27,22 @@ class OidcDiscoveryTest {
             val issuer = "https://localhost:${server.port}"
             server.enqueue(MockResponse().setBody("""{"issuer":"$issuer"}"""))
 
+            var addresses = listOf(unavailable, address)
+            val routes = OidcNetworkRoutes(object : Dns {
+                override fun lookup(hostname: String) = addresses
+            })
             val discovery = readOidcDiscovery(issuer) {
                 proxy(Proxy.NO_PROXY)
-                dns(object : Dns {
-                    override fun lookup(hostname: String) = listOf(unavailable, address)
-                })
+                dns(routes)
+                eventListener(routes.discoveryEvents)
                 sslSocketFactory(clientTls.sslSocketFactory(), clientTls.trustManager)
             }
             assertEquals(issuer, discovery.text("issuer"))
             assertEquals("/.well-known/openid-configuration", server.takeRequest().path)
+            assertEquals(listOf(address, unavailable), routes.lookup("localhost"))
+            assertEquals(listOf(unavailable, address), routes.lookup("other.example"))
+            addresses = listOf(unavailable)
+            assertEquals(addresses, routes.lookup("localhost"))
         }
     }
 }
