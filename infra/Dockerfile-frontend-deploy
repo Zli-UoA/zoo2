@@ -57,7 +57,7 @@ ENV VITE_OIDC_REDIRECT_URI=$VITE_OIDC_REDIRECT_URI
 ENV VITE_OIDC_SCOPE=$VITE_OIDC_SCOPE
 ENV VITE_OIDC_RESOURCE=$VITE_OIDC_RESOURCE
 ENV VITE_OIDC_POST_LOGOUT_REDIRECT_URI=$VITE_OIDC_POST_LOGOUT_REDIRECT_URI
-RUN pnpm build
+RUN pnpm build && rm -f dist/client/mockServiceWorker.js
 # コミットごとの値を HTML にだけ入れ、JS のチャンクと Vite のビルドキャッシュを維持する。
 ARG ZOO_BUILD_SHA=""
 RUN node scripts/stamp-build-sha.mjs dist/client/index.html

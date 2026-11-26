@@ -31,7 +31,7 @@ struct Ctx {
     error: RwSignal<Option<String>>,
     profile_request: RwSignal<Option<u64>>,
     profile_checked: RwSignal<f64>,
-    today: RwSignal<jiff::civil::Date>,
+    calendar: RwSignal<(jiff::civil::Date, String)>,
     generation: RwSignal<u64>,
     starting: RwSignal<bool>,
 }
@@ -146,13 +146,13 @@ fn App() -> impl IntoView {
         error: RwSignal::new(None),
         profile_request: RwSignal::new(None),
         profile_checked: RwSignal::new(0.0),
-        today: RwSignal::new(local_today()),
+        calendar: RwSignal::new(local_calendar()),
         generation: RwSignal::new(0),
         starting: RwSignal::new(false),
     };
     provide_context(ctx);
     Effect::new(move |_| {
-        let today = ctx.today.get();
+        let today = ctx.calendar.with(|calendar| calendar.0);
         let midnight = js_sys::Date::new_with_year_month_day(
             today.year() as u32,
             i32::from(today.month()) - 1,
@@ -160,7 +160,7 @@ fn App() -> impl IntoView {
         );
         let delay = (midnight.get_time() - js_sys::Date::now()).max(1.0) as u64;
         if let Ok(timer) = set_timeout_with_handle(
-            move || ctx.today.set(local_today()),
+            move || refresh_calendar(ctx),
             std::time::Duration::from_millis(delay),
         ) {
             on_cleanup(move || timer.clear());
@@ -168,6 +168,9 @@ fn App() -> impl IntoView {
     });
     if let Ok(timer) = set_interval_with_handle(
         move || {
+            if !document().hidden() {
+                refresh_calendar(ctx);
+            }
             spawn_local(refresh_account_profiles(ctx));
         },
         std::time::Duration::from_secs(60),
@@ -206,7 +209,7 @@ fn App() -> impl IntoView {
 
     // 前面かどうかが変わったら、表示中のチャンネルと一緒に知らせる (通知を抑えるため)。
     let _ = window_event_listener(ev::focus, move |_| {
-        ctx.today.set(local_today());
+        refresh_calendar(ctx);
         spawn_local(refresh_account_profiles(ctx));
         spawn_local(send_focus(ctx.channel.get_untracked()));
     });
@@ -674,7 +677,7 @@ fn MessageView(message: Message, name: String) -> impl IntoView {
         <article class="message">
             <header>
                 <span class="author">{name}</span>
-                <time>{move || local_time(created_at, ctx.today.get())}</time>
+                <time>{move || local_time(created_at, ctx.calendar.with(|calendar| calendar.0))}</time>
             </header>
             {body}
             {parts}
@@ -705,8 +708,22 @@ fn local_date(date: &js_sys::Date) -> Result<jiff::civil::Date, jiff::Error> {
     )
 }
 
-fn local_today() -> jiff::civil::Date {
-    local_date(&js_sys::Date::new_0()).expect("current local date")
+fn local_calendar() -> (jiff::civil::Date, String) {
+    let today = local_date(&js_sys::Date::new_0()).expect("current local date");
+    let options = js_sys::Intl::DateTimeFormat::new(&js_sys::Array::new(), &js_sys::Object::new())
+        .resolved_options();
+    let zone = js_sys::Reflect::get(&options, &"timeZone".into())
+        .ok()
+        .and_then(|value| value.as_string())
+        .unwrap_or_default();
+    (today, zone)
+}
+
+fn refresh_calendar(ctx: Ctx) {
+    let next = local_calendar();
+    if ctx.calendar.with_untracked(|current| current != &next) {
+        ctx.calendar.set(next);
+    }
 }
 
 /// 入力欄。日本語の変換中 (`isComposing`) の Enter では送らない。値は DOM が持ち、

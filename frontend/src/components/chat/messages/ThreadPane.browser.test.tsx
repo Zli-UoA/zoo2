@@ -1,5 +1,5 @@
 import "../../../styles.css";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -71,6 +71,39 @@ it("regroups replies when a time zone change puts midnight between them", async 
     window.dispatchEvent(new Event("focus"));
   }
 });
+
+it.each(["bottom", "top"])(
+  "preserves the %s scroll position when grouped replies grow at midnight",
+  async (position) => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const now = new Date(2026, 9, 19, 23, 59, 59);
+    vi.setSystemTime(now);
+    try {
+      const replies = Array.from({ length: 20 }, (_, i) =>
+        message({ id: String(i), created_at: now.toISOString(), content: "reply " + i }),
+      );
+      const view = render(
+        <LocaleProvider>
+          <ThreadPane {...paneProps({ replies })} />
+        </LocaleProvider>,
+      );
+      const scroll = view.container.querySelector<HTMLElement>("[data-scroll-restoration-id]")!;
+      scroll.style.cssText = "height: 180px; flex: none";
+      const height = scroll.scrollHeight;
+      expect(height).toBeGreaterThan(scroll.clientHeight);
+      scroll.scrollTop = position === "bottom" ? height : 0;
+      fireEvent.scroll(scroll);
+      await act(() => vi.advanceTimersByTimeAsync(1000));
+      expect(scroll.scrollHeight).toBeGreaterThan(height);
+      expect(scroll.scrollTop).toBe(
+        position === "bottom" ? scroll.scrollHeight - scroll.clientHeight : 0,
+      );
+      view.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);
 
 /** 呼び出し元のボタンを残したまま ThreadPane を開閉する。 */
 function Harness({ onClose }: { onClose?: () => void }) {

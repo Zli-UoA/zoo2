@@ -55,6 +55,14 @@ it("limits long previews without splitting emoji and preserves short multiline q
   expect(quotePreview("a".repeat(280))).toHaveLength(280);
 });
 
+it("closes a <plain> that the preview cuts in the middle", () => {
+  const content = `<plain>${"a".repeat(400)}</plain>`;
+  expect(quotePreview(content)).toBe(`<plain>${"a".repeat(273)}</plain>…`);
+  expect(quotePreview(`<plain>x</plain> ${"b".repeat(300)}`)).toBe(
+    `<plain>x</plain> ${"b".repeat(263)}…`,
+  );
+});
+
 it("counts only notification actors and deduplicates equivalent kitchen reactions", () => {
   expect(
     notificationReactionGroups(

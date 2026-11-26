@@ -20,6 +20,7 @@ use crate::api::SearchKind;
 use crate::e2ee::reauth;
 use crate::e2ee::setup::{E2eeStatus, LockReason};
 use crate::electric::ShapeId;
+use zoo2_client_core::text::sanitize_display;
 
 const ACCENT: Color = Color::Cyan;
 const DIM: Style = Style::new().fg(Color::DarkGray);
@@ -91,6 +92,30 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // 他のユーザーの検証は、どの画面にいても前面に出す。
     if app.devices.has_open_verification() {
         super::devices_view::draw_verification(frame, app);
+    }
+    scrub_buffer(frame.buffer_mut());
+}
+
+/// 描画したセルから制御文字を取り除く。
+///
+/// ratatui の `Paragraph` などは、ESC や BEL をセルにそのまま残し、バックエンドはセルの
+/// 中身をそのまま端末へ出力する。サーバーから届いた文字列（本文、表示名、チャンネル名、
+/// 説明など）が、端末の制御シーケンスとして解釈されないよう、出力の直前に置き換える。
+pub(super) fn scrub_buffer(buffer: &mut ratatui::buffer::Buffer) {
+    let area = buffer.area;
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let cell = &mut buffer[(x, y)];
+            if cell.symbol().chars().any(char::is_control) {
+                // セルの占有幅を変えないよう、1 文字（幅 1）に置き換える。幅が変わると、
+                // `Buffer::diff` が後続のセルを読み飛ばして、表示が崩れる。
+                cell.set_symbol(if cell.symbol() == "\t" {
+                    " "
+                } else {
+                    "\u{FFFD}"
+                });
+            }
+        }
     }
 }
 
@@ -362,11 +387,13 @@ fn draw_global_search(frame: &mut Frame, app: &App) {
             Span::styled(if selected { "▶ " } else { "  " }, accent),
             Span::styled(place, if selected { accent } else { Style::new() }),
         ];
+        let destination_width = head.iter().map(Span::width).sum::<usize>();
         if let Some(author) = &item.author {
             head.push(Span::styled(format!("  {author}"), DIM));
         }
         let time = global_search::result_time(&item.created_at, &now);
-        let metadata = search_result_metadata(&time, item.parent_id.is_some(), inner);
+        let metadata =
+            search_result_metadata(&time, item.parent_id.is_some(), inner, destination_width);
         let reserved = metadata.as_ref().map_or(0, Span::width);
         head = truncate_spans(head, inner.saturating_sub(reserved));
         head.extend(metadata);
@@ -396,18 +423,36 @@ fn draw_global_search(frame: &mut Frame, app: &App) {
 }
 
 /// 選択マークと行き先の先頭を残し、残り幅に収まる日時・返信ラベルを選ぶ。
-fn search_result_metadata(time: &str, reply: bool, width: usize) -> Option<Span<'static>> {
+fn search_result_metadata(
+    time: &str,
+    reply: bool,
+    width: usize,
+    destination_width: usize,
+) -> Option<Span<'static>> {
     use unicode_width::UnicodeWidthStr;
-    let available = width.saturating_sub(5);
-    let clock = time.rsplit_once(' ').map_or(time, |(_, clock)| clock);
+    let available = width.saturating_sub(destination_width.min(5));
+    let short_date = time
+        .split_once(' ')
+        .map(|(date, _)| match date.split_once('/') {
+            Some((_, month_day)) if month_day.contains('/') => month_day,
+            _ => date,
+        });
     let labels: &[&str] = if reply {
         &[" スレッドの返信", " 返信"]
     } else {
         &[""]
     };
-    for stamp in [time, clock] {
+    for stamp in std::iter::once(time)
+        .chain(month_day_time)
+        .chain(short_date)
+    {
         for &label in labels {
-            if stamp.width() + label.width() < available {
+            let budget = if label == " スレッドの返信" {
+                width.saturating_sub(destination_width)
+            } else {
+                available
+            };
+            if stamp.width() + label.width() < budget {
                 return Some(Span::styled(format!(" {stamp}{label}"), DIM));
             }
         }
@@ -699,7 +744,10 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         .and_then(|c| c.description.as_deref())
         .filter(|d| !d.is_empty())
     {
-        title.push(Span::styled(format!(" — {description}"), DIM));
+        title.push(Span::styled(
+            format!(" — {}", sanitize_display(description)),
+            DIM,
+        ));
     }
     title.push(Span::raw(" "));
     let block = pane(Line::from(title), app.focus == Focus::Messages);
@@ -894,9 +942,9 @@ fn typing_line(app: &App) -> Option<String> {
         _ => None,
     };
     let users = app.typing.get(&scope).filter(|users| !users.is_empty())?;
-    let names: Vec<&str> = users
+    let names: Vec<_> = users
         .iter()
-        .map(|user| user.display_name.as_str())
+        .map(|user| sanitize_display(&user.display_name))
         .collect();
     Some(match names.as_slice() {
         [one] => format!(" {one} が入力中… "),
@@ -924,10 +972,17 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("  Enter: 開く / Esc: やめる", DIM),
         ])
     } else if let Some((notice, _)) = &app.notice {
-        Line::styled(format!(" {notice}"), Style::new().fg(Color::Yellow))
+        Line::styled(
+            format!(" {}", sanitize_display(notice)),
+            Style::new().fg(Color::Yellow),
+        )
     } else {
         let mut spans = vec![Span::styled(
-            format!(" {} (@{})", app.me.display_name, app.me.user_name),
+            format!(
+                " {} (@{})",
+                sanitize_display(&app.me.display_name),
+                sanitize_display(&app.me.user_name)
+            ),
             DIM,
         )];
         if app.store.invalid_rows > 0 {
@@ -1451,6 +1506,79 @@ mod tests {
         assert!(render_sized(&mut app, 100, 30).contains("端末と検証"));
         press(&mut app, KeyCode::Esc);
         assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[tokio::test]
+    async fn control_characters_from_the_server_never_reach_the_screen() {
+        let mut app = app();
+        app.current = Some("c1".into());
+        let esc = "\u{1b}]52;c;QUFB\u{7}\u{1b}c\u{1b}[2J\u{9b}31m";
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![(
+                "c1",
+                json!({ "id": "c1", "channel_name": format!("gen{esc}eral"), "is_private": "f",
+                           "description": format!("desc{esc}") }),
+            )]),
+        ));
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Users,
+            batch(vec![(
+                "u2",
+                json!({ "id": "u2", "user_name": "bob", "display_name": format!("Bob{esc}") }),
+            )]),
+        ));
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "m1",
+                json!({ "id": "m1", "user_id": "u2", "channel_id": "c1",
+                           "content": format!("```\n{esc}\n```\n本文{esc}\ttab"),
+                           "created_at": "2026-11-01 03:00:00" }),
+            )]),
+        ));
+        let screen = render(&mut app);
+        assert!(screen.contains("本文"));
+        assert!(
+            !screen.chars().any(|c| c.is_control() && c != '\n'),
+            "control character in screen: {screen:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn tabs_and_crlf_in_server_strings_do_not_break_the_layout() {
+        let mut app = app();
+        app.current = Some("c1".into());
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![(
+                "c1",
+                json!({ "id": "c1", "channel_name": "1234567890ab\t", "is_private": "f",
+                           "description": "a\r\nb\tc" }),
+            )]),
+        ));
+        let screen = render(&mut app);
+        assert!(!screen.chars().any(|c| c.is_control() && c != '\n'));
+        // サイドバー (幅 25) の右の枠線が、タブで広がったセルに消されない。
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let sidebar_width = (100u16 / 4).clamp(18, 32);
+        assert_eq!(buffer[(sidebar_width - 1, 0)].symbol(), "╮");
+        assert_eq!(buffer[(sidebar_width - 1, 1)].symbol(), "│");
+    }
+
+    #[test]
+    fn scrub_buffer_replaces_control_characters_in_cells() {
+        let mut buffer = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 4, 1));
+        buffer[(0, 0)].set_symbol("\u{1b}");
+        buffer[(1, 0)].set_symbol("a");
+        buffer[(2, 0)].set_symbol("\u{7}");
+        scrub_buffer(&mut buffer);
+        let symbols: Vec<_> = (0..4)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
+        assert_eq!(symbols, ["\u{FFFD}", "a", "\u{FFFD}", " "]);
     }
 
     #[tokio::test]
@@ -3011,16 +3139,20 @@ mod tests {
             .find(|line| line.contains("▶ #"))
             .unwrap();
         assert!(
-            reply.contains(&timestamp) && reply.contains("スレッドの返信"),
+            reply.contains("#general") && reply.contains(&timestamp) && reply.contains("返信"),
             "{reply_screen}"
         );
         let narrow = render_sized(&mut app, 20, 40);
         let selected = narrow.lines().find(|line| line.contains("▶ #g")).unwrap();
         assert!(
-            selected.contains(timestamp.split_whitespace().last().unwrap())
-                && selected.contains("返信"),
+            selected.contains(&timestamp[5..10]) && selected.contains("返信"),
             "{narrow}"
         );
+        app.global_search.items[0].channel_name = "a".into();
+        app.global_search.items[0].parent_id = None;
+        app.global_search.items[0].author = None;
+        let exact = render_sized(&mut app, 23, 40);
+        assert!(exact.contains(&format!("▶ #a {timestamp}")), "{exact}");
         assert!(screen.contains("Esc"), "{screen}");
     }
 

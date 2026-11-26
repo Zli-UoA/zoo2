@@ -23,6 +23,7 @@ import {
 } from "./ThreadParticipantsDialog";
 import { MessageRow } from "./MessageRow";
 import type { FeedMessage } from "./messageFormat";
+import { useLocalCalendar } from "../../../hooks/useLocalDay";
 import { useMessageItems } from "./messageGrouping";
 import { isNearBottom } from "./messageScroll";
 import { useMessageJumpRequest, useMessageTargetFlash } from "./messageTarget";
@@ -238,6 +239,7 @@ export function ThreadPane({
             disabled: membershipPending || isOffline,
           }
         : null;
+  const calendar = useLocalCalendar();
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasTargetInReplies = Boolean(
     targetMessageId && replies.some((reply) => reply.id === targetMessageId),
@@ -270,7 +272,7 @@ export function ThreadPane({
       return;
     }
     element.scrollTop = element.scrollHeight;
-  }, [items.length, lastReplyId, root.id, hasTargetInReplies, targetMessageId]);
+  }, [calendar, items.length, lastReplyId, root.id, hasTargetInReplies, targetMessageId]);
 
   // 古い返信のページが先頭に足されたときは、読んでいた位置が動かないよう、増えた高さの分だけ補正する。
   const scrollSnapshot = useRef({ firstId: "", lastId: "", height: 0 });
@@ -288,7 +290,7 @@ export function ThreadPane({
       if (prepended) element.scrollTop += element.scrollHeight - previous.height;
       scrollSnapshot.current = { firstId, lastId, height: element.scrollHeight };
     }
-  }, [replies]);
+  }, [replies, calendar]);
 
   useLayoutEffect(() => {
     if (!targetMessageId) {

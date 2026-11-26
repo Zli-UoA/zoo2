@@ -148,6 +148,9 @@ internal class ConnectedScreenState(
     private var postOrigin: String? = null
     var editSelection by mutableStateOf<TextRange?>(null)
         private set
+    var bubbleExpanded by mutableStateOf(false)
+    var replyExpanded by mutableStateOf(false)
+    var replyLastSend by mutableStateOf<String?>(null)
     var replyFocusRequest by mutableIntStateOf(0)
         private set
     var replySelection by mutableStateOf<TextRange?>(null)
@@ -190,6 +193,13 @@ internal class ConnectedScreenState(
         private set
     var postVisibility by mutableStateOf("unlisted")
     private val drafts = mutableStateMapOf<String, InputState>()
+
+    fun collapseInput(channelId: String?, threadId: String?): Boolean {
+        val key = channelId?.let { it + (threadId?.let { ":$it" } ?: "") } ?: return false
+        val draft = drafts[key]?.takeIf { it.expanded } ?: return false
+        drafts[key] = draft.copy(expanded = false)
+        return true
+    }
 
     private fun AttachmentDrafts.maxImageSize() {
         acceptedTypes = imageTypes
@@ -904,7 +914,15 @@ internal class ConnectedScreenState(
 
     private fun inputTool(tool: InputTool, screen: AndroidScreen, channelId: String, key: String, rows: List<Row>) {
         when (tool) {
-            InputTool.Expand -> (drafts[key] ?: InputState()).let { drafts[key] = it.copy(expanded = !it.expanded) }
+            InputTool.Expand -> when (screen) {
+                is AndroidScreen.Post -> replyExpanded = !replyExpanded
+                is AndroidScreen.Bubble -> bubbleExpanded = !bubbleExpanded
+                is AndroidScreen.Conversation, is AndroidScreen.Thread -> {
+                    val draft = drafts[key] ?: InputState()
+                    drafts[key] = draft.copy(expanded = !draft.expanded)
+                }
+                else -> Unit
+            }
             InputTool.Attach -> when (screen) {
                 is AndroidScreen.NewPost -> {
                     photosOpen = !photosOpen
@@ -931,7 +949,10 @@ internal class ConnectedScreenState(
                 saving = true
                 try {
                     when (screen) {
-                        is AndroidScreen.Bubble -> bubble.edit("")
+                        is AndroidScreen.Bubble -> {
+                            bubble.edit("")
+                            bubbleExpanded = false
+                        }
                         is AndroidScreen.EditEntry -> {
                             val action = editing ?: return@request
                             val row = rows.firstOrNull { it.text("id") == action.item.id }
@@ -974,9 +995,13 @@ internal class ConnectedScreenState(
                             if (text.isBlank()) return@request
                             app.api.request("/api/home", "POST", obj("content" to text,
                                 "visibility" to replyVisibility(screen.root.id), "apub" to false, "in_reply_to" to screen.root.id))
-                            if (overlay == "post" && openedPostId == screen.root.id && replyDraft == text) {
-                                replyDraft = ""
-                                replySelection = null
+                            if (overlay == "post" && openedPostId == screen.root.id) {
+                                replyLastSend = platform.uuid()
+                                if (replyDraft == text) {
+                                    replyDraft = ""
+                                    replySelection = null
+                                    replyExpanded = false
+                                }
                             }
                             val detail = app.api.request("/api/home/${screen.root.id.encodeURLParameter()}/thread").rows()
                             if (overlay == "post" && openedPostId == screen.root.id) postDetail = detail
@@ -991,7 +1016,7 @@ internal class ConnectedScreenState(
                             val ids = uploaded.filter { it["encrypted"] == null }.map { it.text("id") }
                             if (uploaded.size == sent.size && app.send(channelId, draft.text, app.thread, attachmentIds = ids,
                                     encryptedAttachments = encryptedFiles)) {
-                                drafts[key] = InputState()
+                                drafts[key] = InputState(lastSend = platform.uuid())
                                 files?.items?.clear()
                                 files?.release(sent)
                             }
@@ -1030,6 +1055,8 @@ internal class ConnectedScreenState(
             if (detail.isNotEmpty() && opening == postRequest && source == overlay && path == app.env.path) {
                 if (source != "post") postOrigin = source
                 if (openedPostId != id) {
+                    replyLastSend = null
+                    replyExpanded = false
                     replyDraft = ""
                     replySelection = null
                 }
@@ -1044,6 +1071,8 @@ internal class ConnectedScreenState(
     fun closePost() {
         invalidatePostRequest()
         openedPostId = null
+        replyLastSend = null
+        replyExpanded = false
         postDetail = emptyList()
         replyDraft = ""
         replySelection = null

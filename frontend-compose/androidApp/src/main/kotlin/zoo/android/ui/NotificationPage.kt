@@ -68,6 +68,7 @@ internal fun NotificationPage(
         }
     }
     val scroll = rememberLazyListState()
+    if (items.isEmpty()) return
     val visible by remember {
         derivedStateOf {
             val layout = scroll.layoutInfo
