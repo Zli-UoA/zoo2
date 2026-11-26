@@ -111,7 +111,19 @@ internal fun ConnectedScreens(
     LaunchedEffect(messageTable, focusMessage) {
         val table = messageTable ?: return@LaunchedEffect
         val target = focusMessage ?: return@LaunchedEffect
-        if (table.rows.value.none { it.text("id") == target }) table.loadAround(target)
+        if (table.rows.value.none { it.text("id") == target }) {
+            // 通信の失敗は、間隔を空けて数回やり直す。取れなければ待たずに終え、利用者が開き直せるようにする。
+            var found = false
+            var tries = 0
+            while (!found && tries < MAX_FOCUS_FAILURES) {
+                found = table.loadAround(target)
+                if (!found && ++tries < MAX_FOCUS_FAILURES) delay(500L * tries)
+            }
+            if (!found) {
+                session.toast = session.t("common.errors.network")
+                return@LaunchedEffect
+            }
+        }
         // 行は、最初のメインのページが画面に反映されるまで rows に入らない。入るのを待ってから広げる。
         // 時間では打ち切らない（遅い回線でも、入った時点で広げる）。画面を離れる・対象が変わると、Effect ごと取り消される。
         val row = table.rows.first { rows -> rows.any { it.text("id") == target } }

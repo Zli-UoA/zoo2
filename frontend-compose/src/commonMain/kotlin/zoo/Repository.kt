@@ -226,6 +226,8 @@ class SyncedTable(
     private val accepting = MutableStateFlow(false)
     private val requested = MutableStateFlow<List<Requested>>(emptyList())
     private var refetchPending = false
+    /** must-refetch で消えた範囲を取り直している間。この間は古いページを足さない（`oldest` が先に進むのを防ぐ）。 */
+    private val refetching = MutableStateFlow(false)
     private var streamReady = CompletableDeferred<ShapeStream>()
     private var acceptNow: () -> Unit = {}
 
@@ -282,7 +284,7 @@ class SyncedTable(
      * 偽を返す。範囲ごとに 1 件ずつだけ取る。
      */
     suspend fun loadOlder(scope: PageScope): Boolean {
-        if (!onDemand || !synchronize) return false
+        if (!onDemand || !synchronize || refetching.value) return false
         val current = pages.value[scope] ?: PageState()
         if (current.loading || (current.loaded && !current.hasOlder)) return false
         pages.update { it + (scope to current.copy(loading = true)) }
@@ -332,6 +334,7 @@ class SyncedTable(
         val ready = streamReady
         accepting.value = false
         refetchPending = false
+        refetching.value = false
         requested.value = emptyList()
         pages.value = emptyMap()
         return tableScope.launch {
@@ -440,6 +443,7 @@ class SyncedTable(
                                 // 表示中の行は、取り直した範囲で置き換わるまで残す。
                                 accepting.value = false
                                 refetchPending = true
+                                refetching.value = true
                                 if (serverRows.value.isEmpty()) loading.value = true
                             } else {
                                 serverRows.value = emptyList()
@@ -461,23 +465,31 @@ class SyncedTable(
                                 requested.value = emptyList()
                                 launch {
                                     var done = 0
-                                    try {
-                                        again.forEach {
-                                            fetchSubset(it.main, it.subset)
+                                    var attempt = 0
+                                    // 取り直せなかった範囲は、間隔を空けて数回やり直す。それでも失敗したら、次の up-to-date で
+                                    // もう一度取る。取り直しが済むまで、`loadOlder` は何もしない。
+                                    while (done < again.size) {
+                                        try {
+                                            fetchSubset(again[done].main, again[done].subset)
                                             done++
+                                        } catch (e: CancellationException) {
+                                            throw e
+                                        } catch (e: Exception) {
+                                            if (++attempt < 3) {
+                                                delay(1_000L * attempt)
+                                                continue
+                                            }
+                                            val remaining = again.drop(done)
+                                            requested.update { current ->
+                                                remaining + current.filterNot { c -> remaining.any { it.subset == c.subset } }
+                                            }
+                                            refetchPending = true
+                                            error.value = e
+                                            loading.value = false
+                                            return@launch
                                         }
-                                    } catch (e: CancellationException) {
-                                        throw e
-                                    } catch (e: Exception) {
-                                        // 取り直せなかった範囲は、次の up-to-date でもう一度取る。
-                                        val remaining = again.drop(done)
-                                        requested.update { current ->
-                                            remaining + current.filterNot { c -> remaining.any { it.subset == c.subset } }
-                                        }
-                                        refetchPending = true
-                                        error.value = e
-                                        loading.value = false
                                     }
+                                    refetching.value = false
                                 }
                             }
                             if (accepting.value && (changed || upToDate)) acceptSnapshot(materialized.currentRows)
