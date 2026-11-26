@@ -624,7 +624,9 @@ pub(crate) async fn users_shape(
     let mut db = state.db.clone();
     let is_guest = crate::apps::events::guest_in_db(&mut db, &auth_user.id).await?;
     let narrow_where = "id IN (SELECT user_id FROM channel_user WHERE channel_id IN (SELECT channel_id FROM channel_user WHERE user_id = $1))";
-    let shared_only = raw_query.get("scope").is_some_and(|value| value == "shared");
+    let shared_only = raw_query
+        .get("scope")
+        .is_some_and(|value| value == "shared");
     if !shared_only && !is_guest {
         return proxy_shape(&state, "users", None, &[], &raw_query, false, &auth_user.id).await;
     }
