@@ -277,6 +277,7 @@ final class CryptoStore: @unchecked Sendable {
         let stateURL = files.directory.appendingPathComponent(stateFile)
         var pending: [String] = []
         var carriedChannels: [String] = []
+        var carriedResetKeyID: String?
         if let stored = try readState(stateURL) {
             guard stored.version == stateVersion else { throw CocoaError(.fileReadCorruptFile) }
             guard stored.user_id == userID else { throw CocoaError(.fileReadCorruptFile) }
@@ -308,6 +309,8 @@ final class CryptoStore: @unchecked Sendable {
             pending = stored.pending_deletions + [stored.device_id]
             // 暗号化チャンネルの記録は、復号に要らない（保存鍵で封をしていない）ので、引き継ぐ。格下げの検出を失わない。
             carriedChannels = stored.encrypted_channels
+            // リセットの途中の印（新しい SSSS 鍵の ID）も、保存鍵で封をしていないので、引き継ぐ（消すと、同じリカバリーキーでリセットを再開できない）。
+            carriedResetKeyID = stored.reset_key_id
             guard create else { return nil }
             try files.keys.delete()
         }
@@ -327,6 +330,7 @@ final class CryptoStore: @unchecked Sendable {
                                trust_store: try trust.pickle(account: account, storageKey: key))
         state.pending_deletions = pending
         state.encrypted_channels = carriedChannels
+        state.reset_key_id = carriedResetKeyID
         let store = CryptoStore(directory: files.directory, storageKey: key, account: account, trust: trust,
                                 olmSessions: OlmSessionStore(), state: state, reservation: reservation)
         try store.save()

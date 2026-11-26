@@ -59,11 +59,13 @@ struct CryptoStoreTests {
         var store = try #require(try CryptoStore.open(files, userID: user)).store
         let oldDevice = store.deviceID
         try store.rememberEncryptedChannels(["c1"])
+        try store.setResetKeyID("reset-key")
         store.close()
         try files.keys.delete()
         store = try #require(try CryptoStore.open(files, userID: user)).store
         #expect(store.deviceID != oldDevice)
         #expect(store.isRememberedEncrypted("c1"))
+        #expect(store.resetKeyID == "reset-key")
         store.close()
     }
 
