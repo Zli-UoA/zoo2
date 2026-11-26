@@ -68,8 +68,8 @@ function cacheNameForIndex(html) {
  * 現在有効な app shell キャッシュを返す。install が書いたメタ情報のうち
  * 最新のものを選ぶ。メタ情報がない旧キャッシュは index.html の有無で拾う。
  */
-async function findActiveShellCache() {
-  const names = (await caches.keys()).filter((name) => name.startsWith(POLICY_PREFIX));
+async function findActiveShellCache(prefix = POLICY_PREFIX) {
+  const names = (await caches.keys()).filter((name) => name.startsWith(prefix));
   let latest = null;
   for (const name of names) {
     const cache = await caches.open(name);
@@ -85,7 +85,7 @@ async function findActiveShellCache() {
     const cache = await caches.open(name);
     if (await cache.match("/index.html")) return name;
   }
-  return DEFAULT_CACHE;
+  return prefix === POLICY_PREFIX ? DEFAULT_CACHE : null;
 }
 
 /**
@@ -221,7 +221,8 @@ async function fetchShellIndex() {
 
 async function precacheShell() {
   // 新しいキャッシュに正常な manifest / offline.html が無いときの引き継ぎ元。
-  const previousCache = await findActiveShellCache().catch(() => null);
+  // CSP が変わると接頭辞も変わるため、引き継ぎ元は全世代のシェルから探す。
+  const previousCache = await findActiveShellCache(CACHE_PREFIX).catch(() => null);
   const index = await fetchShellIndex();
   // Without the app shell there is nothing safe to replace; keep the old cache.
   if (!index) throw new Error("Cannot install an app shell without a fresh index");
@@ -246,7 +247,9 @@ async function precacheShell() {
         const response = await fetch(path, { cache: "reload" });
         if (!response.ok) return;
         // nginx の try_files が欠けたファイルを index.html で返しても保存しない。
-        if (path === "/offline.html" && !(await isOfflinePage(response))) return;
+        if (path === "/offline.html") {
+          if (!isFreshAssetResponse(path, response) || !(await isOfflinePage(response))) return;
+        }
         if (path === "/manifest.webmanifest" && !(await isFreshManifest(response))) return;
         await cacheResponse(cache, path, response);
       } catch {
@@ -262,7 +265,11 @@ async function precacheShell() {
       for (const path of ["/manifest.webmanifest", "/offline.html"]) {
         if (await cache.match(path)) continue;
         const saved = await previous.match(path);
-        if (saved) await cache.put(path, saved.clone());
+        if (!saved) continue;
+        // 旧 SW は本文を検証せずに保存していたため、コピーする前に確認する。
+        if (path === "/manifest.webmanifest" && !(await isFreshManifest(saved))) continue;
+        if (path === "/offline.html" && !(await isOfflinePage(saved))) continue;
+        await cache.put(path, saved.clone());
       }
     } catch {
       /* An unavailable old cache is not a reason to fail the install. */
@@ -359,7 +366,9 @@ async function isFreshManifest(response) {
 
 async function isOfflinePage(response) {
   try {
-    return (await response.clone().text()).includes('name="zoo-offline"');
+    const text = await response.clone().text();
+    // 旧形式の案内ページにもマーカーはないが、title で app shell と区別できる。
+    return text.includes('name="zoo-offline"') || text.includes("<title>Zoo — Offline</title>");
   } catch {
     return false;
   }
