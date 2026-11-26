@@ -793,8 +793,9 @@ private fun FollowHistoryDuringIme(
             }
             if (anchor == null && opening && (fullEditor || viewportHeight > 0)) {
                 val index = scroll.firstVisibleItemIndex
-                anchor = currentEntries.getOrNull(index)?.let { item ->
-                    ImeHistoryAnchor(item.entryKey, index, scroll.firstVisibleItemScrollOffset, originalInset)
+                val key = scroll.layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }?.key as? String
+                if (key != null) {
+                    anchor = ImeHistoryAnchor(key, index, scroll.firstVisibleItemScrollOffset, originalInset)
                 }
             }
             if (fullEditor || viewportHeight <= 0) return@collect

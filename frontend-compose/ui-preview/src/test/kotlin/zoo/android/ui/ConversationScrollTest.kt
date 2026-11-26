@@ -288,10 +288,11 @@ class ConversationScrollTest {
     fun openingTheImeInTheFullComposerAdjustsHistoryAfterCollapse() {
         var imeHeight by mutableStateOf(0.dp)
         var expanded by mutableStateOf(false)
+        var rows by mutableStateOf(entries)
         ui.setContent {
             val imePixels = with(LocalDensity.current) { imeHeight.roundToPx() }
             Column(Modifier.height(700.dp - imeHeight)) {
-                TimelineWithInput(entries, InputState(expanded = expanded), AndroidColors(false), dispatch = {},
+                TimelineWithInput(rows, InputState(expanded = expanded), AndroidColors(false), dispatch = {},
                     allowThreads = true, imeInsets = WindowInsets(bottom = imePixels))
             }
         }
@@ -302,6 +303,10 @@ class ConversationScrollTest {
         val history = ui.onNodeWithTag("timeline-entry-e17")
         val originalTop = history.fetchSemanticsNode().positionInRoot.y
         ui.runOnIdle { expanded = true }
+        list.assertDoesNotExist()
+        ui.runOnIdle {
+            rows = (1..5).map { TimelineItem("earlier-$it", "はる", "過去 $it", "11:00") } + entries
+        }
         list.assertDoesNotExist()
         val opening = 120.dp
         val openingPixels = with(ui.density) { opening.toPx() }
