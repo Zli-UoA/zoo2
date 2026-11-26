@@ -652,25 +652,35 @@ class RepositoryTest {
                             invalidations.value = invalidations.value - 1
                             respond("[]", HttpStatusCode.Conflict, headersOf("electric-handle" to listOf("next-handle")))
                         }
-                        else -> respond("""[{"headers":{"control":"up-to-date"}}]""", headers = protocolHeaders())
+                        // 最初の購読と、must-refetch の後の取り直しの購読（changes_only は offset=now から始まる）。
+                        p["offset"] == "now" || p["offset"] == "-1" ->
+                            respond("""[{"headers":{"control":"up-to-date"}}]""", headers = protocolHeaders())
+                        else -> awaitCancellation()
                     }
                 }
             )
         val table =
             SyncedTable("messages", config, platform, http, backgroundScope,
                 mapOf("channel_id" to "channel-a"), options, onDemand = true)
+        // どこで止まったか分かるよう、段階ごとに待ち時間を区切る。
+        suspend fun <T> step(name: String, block: suspend () -> T): T =
+            try {
+                withTimeout(20_000) { block() }
+            } catch (e: TimeoutCancellationException) {
+                fail("did not finish: $name (subsetCalls=$subsetCalls, invalidations=${invalidations.value})")
+            }
         try {
-            table.rows.first { rows -> rows.any { it.text("id") == "m001" } }
+            step("first page") { table.rows.first { rows -> rows.any { it.text("id") == "m001" } } }
             // must-refetch その 1: 取り直しの最初の取得が失敗して、再試行を待つ。
             invalidations.value = 1
-            secondSubsetStarted.await()
+            step("second subset request") { secondSubsetStarted.await() }
             // must-refetch その 2: 再試行を待つ古いジョブは取り消され、新しい取り直しが範囲を取り直す。
             invalidations.value = 1
-            table.rows.first { rows -> rows.any { it.text("id") == "m010" } }
+            step("rows after the second refetch") { table.rows.first { rows -> rows.any { it.text("id") == "m010" } } }
             assertEquals(listOf("m010"), table.rows.value.map { it.text("id") })
             assertTrue(table.pageStates.value.getValue(PageScope.Main).loaded)
             // 取り直しが済んでいれば、loadOlder は待たずに終わる（古いジョブが解除できなくても、新しいジョブが解除する）。
-            val result = withTimeout(30_000) { table.loadOlder(PageScope.Main) }
+            val result = step("loadOlder after the refetch") { table.loadOlder(PageScope.Main) }
             assertFalse(result) // 50 件に満たないので、これより古いページはない。
         } finally {
             table.close()
