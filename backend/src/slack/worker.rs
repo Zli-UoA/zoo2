@@ -5665,6 +5665,23 @@ mod tests {
             legacy_rows[0]["display_name"] == "Alice Ops",
             "a fallback must preserve a meaningful legacy display name: {legacy_rows:?}"
         );
+        exec(
+            &mut legacy,
+            "UPDATE users SET display_name=$2 WHERE id=$1",
+            &[&placeholder_id, &slack_id],
+        )
+        .await?;
+        ensure_user(&mut legacy, &team, &slack_id, None, Some("zip-author")).await?;
+        let legacy_rows = query(
+            &mut legacy,
+            "SELECT json_build_object('display_name',display_name)::text FROM users WHERE id=$1",
+            &[&placeholder_id],
+        )
+        .await?;
+        anyhow::ensure!(
+            legacy_rows[0]["display_name"] == "zip-author",
+            "a fallback must replace the Slack ID on a generic legacy row: {legacy_rows:?}"
+        );
         legacy.rollback().await?;
         let mut cleanup = db.transaction().await?;
         exec(
