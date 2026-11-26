@@ -639,7 +639,9 @@ fn shortcode(scan: &mut Scan, i: usize, base: Style) -> Option<(usize, Vec<Span>
     {
         return None;
     }
+    // 辞書の値も、サーバーから届いた文字列として無害化する。
     let emoji = unicode_shortcode(name)?;
+    let emoji = crate::text::sanitize_display(&emoji).into_owned();
     Some((name.len() + 2, vec![Span::styled(emoji, base)]))
 }
 
@@ -676,6 +678,21 @@ mod tests {
             .iter()
             .map(|line| line.to_string())
             .collect()
+    }
+
+    #[test]
+    fn shortcode_values_are_sanitized() {
+        set_emoji_catalog(
+            [("evil".to_string(), "a\tb\u{1b}".to_string())].into(),
+            Default::default(),
+        );
+        let text: String = parse(":evil: :thumbsup:", None)
+            .iter()
+            .map(|line| line.to_string())
+            .collect();
+        set_emoji_catalog(Default::default(), Default::default());
+        assert!(!text.chars().any(char::is_control), "{text:?}");
+        assert!(text.contains("a    b\u{FFFD}"));
     }
 
     #[test]
