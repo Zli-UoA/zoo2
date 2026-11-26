@@ -473,7 +473,8 @@ async function handleFreshAsset(request) {
       try {
         policy = await currentShellPolicy();
       } catch {
-        /* CSP could not be checked: serve the response we already fetched. */
+        // CSP を確認できない場合は保存せず、取得済みの応答だけを返す。
+        return response;
       }
       if (policy?.known && response.headers.get("content-security-policy") !== policy.csp) {
         const cached = await cachedFreshAsset(path);
