@@ -434,6 +434,7 @@ fn search_result_metadata(
     let month_day_time = time
         .split_once('/')
         .and_then(|(_, rest)| rest.contains('/').then_some(rest));
+    let full_date = time.split_once(' ').map(|(date, _)| date);
     let short_date = month_day_time
         .unwrap_or(time)
         .split_once(' ')
@@ -445,6 +446,7 @@ fn search_result_metadata(
     };
     for stamp in std::iter::once(time)
         .chain(month_day_time)
+        .chain(full_date)
         .chain(short_date)
     {
         for &label in labels {
@@ -3150,8 +3152,13 @@ mod tests {
             "{narrow}"
         );
         app.global_search.items[0].channel_name = "a".into();
-        app.global_search.items[0].parent_id = None;
         app.global_search.items[0].author = None;
+        let dated_reply = render_sized(&mut app, 22, 40);
+        assert!(
+            dated_reply.contains(&format!("▶ #a {} 返信", &timestamp[..10])),
+            "{dated_reply}"
+        );
+        app.global_search.items[0].parent_id = None;
         let exact = render_sized(&mut app, 23, 40);
         assert!(exact.contains(&format!("▶ #a {timestamp}")), "{exact}");
         assert!(screen.contains("Esc"), "{screen}");

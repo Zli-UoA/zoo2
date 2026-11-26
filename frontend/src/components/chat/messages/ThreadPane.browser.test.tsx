@@ -72,7 +72,7 @@ it("regroups replies when a time zone change puts midnight between them", async 
   }
 });
 
-it.each(["bottom", "top"])(
+it.each(["bottom", "middle", "top"])(
   "preserves the %s scroll position when grouped replies grow at midnight",
   async (position) => {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
@@ -88,16 +88,22 @@ it.each(["bottom", "top"])(
         </LocaleProvider>,
       );
       const scroll = view.container.querySelector<HTMLElement>("[data-scroll-restoration-id]")!;
-      scroll.style.cssText = "height: 180px; flex: none";
+      scroll.style.cssText = "height: 180px; flex: none; overflow-anchor: none";
       const height = scroll.scrollHeight;
       expect(height).toBeGreaterThan(scroll.clientHeight);
       scroll.scrollTop = position === "bottom" ? height : 0;
+      const middle = scroll.querySelector<HTMLElement>('[data-message-id="8"]')!;
+      const offset = () => middle.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
+      if (position === "middle") scroll.scrollTop += offset() + 4;
+      const before = offset();
       fireEvent.scroll(scroll);
       await act(() => vi.advanceTimersByTimeAsync(1000));
       expect(scroll.scrollHeight).toBeGreaterThan(height);
-      expect(scroll.scrollTop).toBe(
-        position === "bottom" ? scroll.scrollHeight - scroll.clientHeight : 0,
-      );
+      if (position === "middle") expect(Math.abs(offset() - before)).toBeLessThanOrEqual(0.5);
+      else
+        expect(scroll.scrollTop).toBe(
+          position === "bottom" ? scroll.scrollHeight - scroll.clientHeight : 0,
+        );
       view.unmount();
     } finally {
       vi.useRealTimers();

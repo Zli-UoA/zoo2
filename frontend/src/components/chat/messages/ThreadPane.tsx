@@ -1,6 +1,15 @@
 import { useTranslation } from "react-i18next";
 import { ArrowLeftIcon, UsersIcon, XIcon } from "lucide-react";
-import { type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  Component,
+  createRef,
+  type ReactNode,
+  type KeyboardEvent,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 import type { CommandSuggestion } from "./composerSuggestions";
 import type { UploadedAttachment } from "../../../lib/api/attachments";
@@ -27,6 +36,57 @@ import { useLocalCalendar } from "../../../hooks/useLocalDay";
 import { useMessageItems } from "./messageGrouping";
 import { isNearBottom } from "./messageScroll";
 import { useMessageJumpRequest, useMessageTargetFlash } from "./messageTarget";
+
+type ReplyListProps = {
+  calendar: ReturnType<typeof useLocalCalendar>;
+  firstReplyId: string;
+  children: ReactNode;
+};
+
+type ReplyAnchor = { row: Element; offset: number };
+
+// 日付変更で返信の高さが変わる前に、画面の上端に見えている返信の位置を記録する。
+class ThreadReplyList extends Component<ReplyListProps> {
+  private list = createRef<HTMLDivElement>();
+
+  getSnapshotBeforeUpdate(previous: ReplyListProps): ReplyAnchor | null {
+    if (
+      previous.calendar === this.props.calendar ||
+      previous.firstReplyId !== this.props.firstReplyId
+    )
+      return null;
+    const list = this.list.current;
+    const scroll = list?.parentElement;
+    if (
+      !list ||
+      !scroll ||
+      scroll.scrollTop === 0 ||
+      isNearBottom(scroll.scrollTop, scroll.scrollHeight, scroll.clientHeight)
+    )
+      return null;
+    const top = scroll.getBoundingClientRect().top;
+    for (const row of list.children) {
+      const bounds = row.getBoundingClientRect();
+      if (bounds.bottom > top) return { row, offset: bounds.top - top };
+    }
+    return null;
+  }
+
+  componentDidUpdate(_previous: ReplyListProps, _state: unknown, anchor: ReplyAnchor | null) {
+    const scroll = this.list.current?.parentElement;
+    if (!scroll || !anchor || !scroll.contains(anchor.row)) return;
+    const offset = anchor.row.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
+    scroll.scrollTop += offset - anchor.offset;
+  }
+
+  render() {
+    return (
+      <div ref={this.list} role="list">
+        {this.props.children}
+      </div>
+    );
+  }
+}
 
 const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -549,7 +609,7 @@ export function ThreadPane({
         ) : replies.length === 0 ? (
           <p className="p-3 text-xs text-muted-foreground">{t("threads.empty")}</p>
         ) : (
-          <div role="list">
+          <ThreadReplyList key={root.id} calendar={calendar} firstReplyId={replies[0].id}>
             {items.map((item) => (
               <div key={item.message.id} data-message-id={item.message.id} role="listitem">
                 <MessageRow
@@ -603,7 +663,7 @@ export function ThreadPane({
                 />
               </div>
             ))}
-          </div>
+          </ThreadReplyList>
         )}
       </div>
 
