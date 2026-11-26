@@ -19,12 +19,21 @@ internal class AssetCache<T>(
     private var bytes = 0
     private var closed = false
 
+    // The UI can use a decoded hit during composition without waiting on a cache miss.
+    fun getIfPresent(url: String): T? {
+        if (!mutex.tryLock()) return null
+        return try {
+            touch(url)
+        } finally {
+            mutex.unlock()
+        }
+    }
+
+    private fun touch(url: String): T? = images.remove(url)?.also { images[url] = it }
+
     suspend fun get(url: String, load: suspend () -> T): T {
         val request = mutex.withLock {
-            images.remove(url)?.let {
-                images[url] = it
-                return it
-            }
+            touch(url)?.let { return it }
             pending.getOrPut(url) {
                 scope.async(start = CoroutineStart.LAZY) {
                     try {

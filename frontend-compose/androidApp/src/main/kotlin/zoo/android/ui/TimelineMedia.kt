@@ -11,6 +11,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,6 +43,20 @@ internal data class TimelineQuote(
 internal val LocalKitchenReactionImage = staticCompositionLocalOf<suspend (String) -> String?> { { null } }
 
 internal val LocalTimelineImage = staticCompositionLocalOf<suspend (TimelineMedia) -> ImageBitmap?> { { null } }
+
+internal val LocalCachedTimelineImage = staticCompositionLocalOf<(TimelineMedia) -> ImageBitmap?> { { null } }
+
+@Composable
+internal fun rememberTimelineImage(media: TimelineMedia?): ImageBitmap? {
+    val cached = LocalCachedTimelineImage.current
+    val load = LocalTimelineImage.current
+    val initial = remember(media, cached) { media?.let(cached) }
+    return key(media, cached, load) {
+        produceState(initial) {
+            if (initial == null && media != null) value = load(media)
+        }.value
+    }
+}
 
 internal fun timelineMediaKind(mimeType: String): TimelineMediaKind? = when (mimeType.lowercase().substringBefore('/')) {
     "image" -> TimelineMediaKind.Image
@@ -81,13 +96,7 @@ internal fun TimelineQuoteCard(
 
 @Composable
 internal fun TimelineMediaTile(media: TimelineMedia, colors: AndroidColors, open: () -> Unit) {
-    val load = LocalTimelineImage.current
-    val image by key(media) {
-        produceState<ImageBitmap?>(null, load) {
-            value = if (media.kind == TimelineMediaKind.Image && !media.sensitive) load(media) else null
-        }
-    }
-    val bitmap = image
+    val bitmap = rememberTimelineImage(media.takeIf { it.kind == TimelineMediaKind.Image && !it.sensitive })
     Column(Modifier.fillMaxWidth().padding(top = 6.dp).clip(RoundedCornerShape(8.dp))
         .background(colors.inputSurface).clickable(role = Role.Button, onClick = open)) {
         if (bitmap != null) Image(bitmap, media.name, Modifier.fillMaxWidth().heightIn(max = 220.dp)
@@ -112,14 +121,13 @@ internal data class TimelineReaction(
 )
 
 @Composable
-private fun timelineIcon(url: String?): ImageBitmap? {
-    val load = LocalTimelineImage.current
-    return key(url, load) {
-        produceState<ImageBitmap?>(null) {
-            value = url?.let { load(TimelineMedia(it, "", TimelineMediaKind.Image, url = it)) }
-        }.value
-    }
-}
+internal fun cachedTimelineIcon(url: String?): ImageBitmap? =
+    url?.takeIf { it.startsWith("https://", ignoreCase = true) }
+        ?.let { LocalCachedTimelineImage.current(TimelineMedia(it, "", TimelineMediaKind.Image, url = it)) }
+
+@Composable
+private fun timelineIcon(url: String?): ImageBitmap? =
+    rememberTimelineImage(url?.let { TimelineMedia(it, "", TimelineMediaKind.Image, url = it) })
 
 @Composable
 internal fun TimelineAvatar(author: String, url: String?, colors: AndroidColors, size: Dp = 36.dp) {

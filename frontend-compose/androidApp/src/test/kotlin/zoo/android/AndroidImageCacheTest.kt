@@ -3,9 +3,18 @@ package zoo.android
 import java.io.Closeable
 import java.nio.file.Files
 import kotlin.test.*
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import okhttp3.Dispatcher
+import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.SocketPolicy
 import okhttp3.tls.HandshakeCertificates
 import okhttp3.tls.HeldCertificate
 
@@ -21,12 +30,34 @@ class AndroidImageCacheTest {
             start()
         }
         val url get() = server.url("/image.png").toString()
-        fun cache() = AndroidImageCache(directory) {
+        fun cache(configure: OkHttpClient.Builder.() -> Unit = {}) = AndroidImageCache(directory) {
             sslSocketFactory(clientTls.sslSocketFactory(), clientTls.trustManager)
+            configure()
         }
         override fun close() {
             server.shutdown()
             directory.deleteRecursively()
+        }
+    }
+
+    @Test fun cachedImageDoesNotWaitForABusyNetworkDispatcher() = runBlocking {
+        Fixture().use { fixture ->
+            fixture.cache { dispatcher(Dispatcher().apply { maxRequests = 1 }) }.use { cache ->
+                val cached = ImageRequest(fixture.url)
+                fixture.server.enqueue(MockResponse().setHeader("Cache-Control", "public, max-age=3600").setBody("cached"))
+                cache.download(cached, 1024)
+                assertNotNull(fixture.server.takeRequest(5, TimeUnit.SECONDS))
+                fixture.server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+                val pending = async { cache.download(ImageRequest(fixture.server.url("/slow.png").toString()), 1024) }
+                try {
+                    assertNotNull(withContext(Dispatchers.IO) { fixture.server.takeRequest(5, TimeUnit.SECONDS) })
+                    val image = withTimeout(5_000) { cache.imageIfCached(cached, 1024) }
+                    assertEquals("cached", image?.decodeToString())
+                    assertEquals(2, fixture.server.requestCount)
+                } finally {
+                    pending.cancelAndJoin()
+                }
+            }
         }
     }
 

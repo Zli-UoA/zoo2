@@ -304,11 +304,14 @@ internal fun ConnectedScreens(
     val profileHost = profileUrl?.let { Url(it).host }.orEmpty()
     val profileAvatarUrl = timelineAvatarUrl(session.config.apiBaseUrl, profile)
     val profileAvatar = if (state.overlay == "profile" && profileAvatarUrl != null) {
-        key(profile.text("id"), profileAvatarUrl) {
-            produceState<ImageBitmap?>(null) {
-                value = try { session.imageBitmap(profileAvatarUrl) }
-                catch (cancelled: CancellationException) { throw cancelled }
-                catch (_: Exception) { null }
+        key(session, profileAvatarUrl) {
+            val initial = session.cachedImageBitmap(profileAvatarUrl)
+            produceState(initial) {
+                if (initial == null) {
+                    value = try { session.imageBitmap(profileAvatarUrl) }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { null }
+                }
             }.value
         }
     } else null
@@ -442,7 +445,8 @@ internal fun ConnectedScreens(
                 SipRoute(session, phone, users, ::back)
             } else {
                 CompositionLocalProvider(
-                    LocalTimelineImage provides { media -> timelineImage(session, media) },
+                    LocalTimelineImage provides remember(session) { { media -> timelineImage(session, media) } },
+                    LocalCachedTimelineImage provides remember(session) { { media -> cachedTimelineImage(session, media) } },
                     LocalKitchenReactionImage provides emojiCatalog::kitchenReaction,
                     LocalAndroidTranslation provides { session.t(it) },
                     LocalChannelLinks provides channelLinks,

@@ -38,6 +38,20 @@ class AndroidSamplesTest {
     @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
 
     @Test
+    fun cachedAvatarIsComposedWithoutRunningTheLoader() {
+        val bitmap = Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888).asImageBitmap()
+        ui.setContent {
+            CompositionLocalProvider(
+                LocalCachedTimelineImage provides { if (it.url == "https://example.test/avatar") bitmap else null },
+                LocalTimelineImage provides { error("Decoded avatar should be displayed from memory") },
+            ) {
+                TimelineAvatar("はる", "https://example.test/avatar", AndroidColors(false))
+            }
+        }
+        ui.onNodeWithTag("timeline-avatar").assertExists()
+    }
+
+    @Test
     fun capturesScreensAndSendsNotificationReadOnlyInForeground() {
         val posts = listOf(
             TimelineItem("1", "はる", "Android のライト版を試しました。投稿の背景が読みやすくなりました。", "12:05"),

@@ -33,6 +33,11 @@ import zoo.android.ui.*
 internal suspend fun timelineMediaUrl(session: Session, media: TimelineMedia): String =
     media.url ?: session.attachmentLinks.get(requireNotNull(media.attachmentId))
 
+internal fun cachedTimelineImage(session: Session, media: TimelineMedia): ImageBitmap? {
+    val url = media.previewUrl ?: media.url ?: return null
+    return session.cachedImageBitmap(url)
+}
+
 internal suspend fun timelineImage(session: Session, media: TimelineMedia): ImageBitmap? = try {
     val usesSignedUrl = media.previewUrl == null && media.url == null && media.attachmentId != null
     session.imageBitmap(media.previewUrl ?: timelineMediaUrl(session, media), signedAttachment = usesSignedUrl)
@@ -47,16 +52,16 @@ internal fun TimelineMediaPreview(
     session: Session, media: TimelineMedia, colors: AndroidColors, dismiss: () -> Unit, openOriginal: () -> Unit,
 ) {
     val context = LocalContext.current
-    var image by remember(media) { mutableStateOf<ImageBitmap?>(null) }
+    var image by remember(session, media) { mutableStateOf(cachedTimelineImage(session, media)) }
     var video by remember(media) { mutableStateOf<File?>(null) }
-    var failed by remember(media) { mutableStateOf(false) }
+    var failed by remember(session, media) { mutableStateOf(false) }
     val cacheDir = context.cacheDir
     DisposableEffect(media) { onDispose { video?.delete() } }
-    LaunchedEffect(media) {
+    LaunchedEffect(session, media) {
         try {
             when (media.kind) {
                 TimelineMediaKind.Image -> {
-                    image = timelineImage(session, media)
+                    if (image == null) image = timelineImage(session, media)
                     failed = image == null
                 }
                 TimelineMediaKind.Video -> {

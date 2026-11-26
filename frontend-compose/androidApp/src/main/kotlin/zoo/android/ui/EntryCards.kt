@@ -10,10 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.produceState
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
@@ -77,9 +74,7 @@ internal fun EntryCards(cards: List<EntryCard>, colors: AndroidColors) {
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 card.image?.let { media ->
-                    val load = LocalTimelineImage.current
-                    val bitmap by produceState<ImageBitmap?>(null, media, load) { value = load(media) }
-                    bitmap?.let {
+                    rememberTimelineImage(media)?.let {
                         Image(it, contentDescription = null, Modifier.fillMaxWidth().heightIn(max = 128.dp),
                             contentScale = ContentScale.Crop)
                     }

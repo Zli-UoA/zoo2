@@ -175,8 +175,11 @@ private fun InboxReaction(
     colors: AndroidColors,
     loadImage: suspend (String) -> ImageBitmap?,
 ) {
-    val bitmap by produceState<ImageBitmap?>(null, reaction.image) {
-        value = reaction.image?.let { loadImage(it) }
+    val bitmap = key(reaction.image, LocalCachedTimelineImage.current) {
+        val initial = cachedTimelineIcon(reaction.image)
+        produceState(initial) {
+            if (initial == null) value = reaction.image?.let { loadImage(it) }
+        }.value
     }
     val image = bitmap
     if (image != null) Image(image, reaction.emoji, Modifier.size(18.dp), contentScale = ContentScale.Fit)
@@ -190,8 +193,11 @@ private fun InboxAvatar(
     colors: AndroidColors,
     loadAvatar: suspend (String) -> ImageBitmap?,
 ) {
-    val bitmap by key(actor.avatar) {
-        produceState<ImageBitmap?>(null) { value = actor.avatar?.let { loadAvatar(it) } }
+    val bitmap by key(actor.avatar, LocalCachedTimelineImage.current) {
+        val initial = cachedTimelineIcon(actor.avatar)
+        produceState(initial) {
+            if (initial == null) value = actor.avatar?.let { loadAvatar(it) }
+        }
     }
     Box(Modifier.size(size).clip(CircleShape).background(colors.inputSurface)
         .semantics { contentDescription = actor.name }, contentAlignment = Alignment.Center) {
