@@ -21,7 +21,6 @@ import appCss from "../styles.css?url";
 export const Route = createRootRoute({
   head: () => ({
     meta: [
-      { name: "theme-color", content: "#FFD600" },
       { name: "apple-mobile-web-app-title", content: "Zoo" },
       {
         charSet: "utf-8",
@@ -57,6 +56,11 @@ function RootDocument({ children }: { children: React.ReactNode }) {
   return (
     <html lang="ja" data-zoo-build-sha="" suppressHydrationWarning>
       <head>
+        {/* HeadContent は name ごとに meta を dedupe するため、配色別の 2 つはここに置く。
+            OS のダーク設定に合わせてステータスバーも暗くする。スプラッシュ自体は
+            manifest の background_color で決まり、ブラウザーからは切り替えられない。 */}
+        <meta name="theme-color" content="#FFD600" media="(prefers-color-scheme: light)" />
+        <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" />
         <script dangerouslySetInnerHTML={{ __html: localeInitScript }} />
         <HeadContent />
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />

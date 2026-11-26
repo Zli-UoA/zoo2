@@ -649,6 +649,29 @@ test("manifest icon files exist with the declared PNG dimensions", () => {
   }
 });
 
+test("the splash background is dark so launching at night is not dazzling", () => {
+  const manifest = JSON.parse(
+    readFileSync(new URL("../public/manifest.webmanifest", import.meta.url), "utf8"),
+  );
+  // Android のスプラッシュは manifest の background_color から作られ、OS ダークに
+  // 追随しない。明るい色に戻すと夜の起動が眩しくなるので暗い色を固定する。
+  assert.equal(manifest.background_color, "#000000");
+  assert.deepEqual(manifest.color_scheme_dark, {
+    background_color: "#000000",
+    theme_color: "#000000",
+  });
+});
+
+test("the offline page follows the system color scheme", () => {
+  const html = readFileSync(new URL("../public/offline.html", import.meta.url), "utf8");
+  assert.match(
+    html,
+    /name="theme-color" content="#FFD600" media="\(prefers-color-scheme: light\)"/,
+  );
+  assert.match(html, /name="theme-color" content="#000000" media="\(prefers-color-scheme: dark\)"/);
+  assert.match(html, /@media \(prefers-color-scheme: dark\)/);
+});
+
 test("push displays sender, channel and message preview from the decrypted payload", async () => {
   const { handlers, notifications } = worker();
   await dispatch(handlers, "push", {
