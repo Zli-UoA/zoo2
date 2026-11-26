@@ -268,9 +268,17 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     }
 
     /** Static images use the same platform decoder as attachments and animated media. */
-    suspend fun imageBitmap(url: String, signedAttachment: Boolean = false): androidx.compose.ui.graphics.ImageBitmap =
+    suspend fun imageBitmap(
+        url: String, signedAttachment: Boolean = false, retry: Boolean = false,
+    ): androidx.compose.ui.graphics.ImageBitmap =
         bitmapCache.get(imageCacheKey(url, signedAttachment)) {
-            platform.imageFrames(image(url, signedAttachment)).first()
+            val bytes = if (!retry) image(url, signedAttachment) else {
+                val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
+                imageCache.remove(imageCacheKey(url, signedAttachment))
+                (if (signedAttachment) platform.attachmentImage(resolved) else platform.refreshImage(resolved))
+                    ?: assetClient.get(resolved) { header("Cache-Control", "max-age=0") }.body()
+            }
+            platform.imageFrames(bytes).first()
         }
 
     fun update(next: Environment): Unit = androidx.compose.runtime.snapshots.Snapshot.withMutableSnapshot {

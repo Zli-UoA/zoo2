@@ -14,6 +14,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -32,6 +33,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
@@ -186,24 +188,35 @@ private fun ApubImageGrid(images: List<TimelineMedia>, colors: AndroidColors, op
 private fun ChannelImageStrip(
     images: List<TimelineMedia>, colors: AndroidColors, showSensitiveToggle: Boolean, open: (TimelineMedia) -> Unit,
 ) {
+    val decodedRatios = remember(images) { mutableStateMapOf<String, Float>() }
     BoxWithConstraints(Modifier.fillMaxWidth().padding(top = 6.dp)) {
-        val availableWidth = maxWidth
-        if (images.size == 1) {
-            val image = images.first()
-            val height = (availableWidth / image.aspect).coerceAtMost(220.dp)
-            MediaFrame(image, colors, Modifier.size((height * image.aspect).coerceAtMost(availableWidth), height)
-                .clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Fit, showSensitiveToggle = showSensitiveToggle) { open(image) }
-        } else {
-            val maxTileWidth = (availableWidth - 24.dp).coerceAtLeast(availableWidth / 2)
-            val rowHeight = images.maxOf { (maxTileWidth / it.aspect).coerceAtMost(160.dp) }
-            LazyRow(Modifier.fillMaxWidth().height(rowHeight).testTag("channel-image-strip"),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                items(images, key = { it.key }) { image ->
-                    val height = (maxTileWidth / image.aspect).coerceAtMost(160.dp)
-                    MediaFrame(image, colors, Modifier.size((height * image.aspect).coerceAtMost(maxTileWidth), height)
-                        .clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Fit, showSensitiveToggle = showSensitiveToggle) { open(image) }
-                }
-            }
+        val single = images.size == 1
+        val limitWidth = if (single) maxWidth else (maxWidth - 24.dp).coerceAtLeast(maxWidth / 2)
+        val limitHeight = if (single) 220.dp else 160.dp
+        val sizes = images.associate { image ->
+            val ratio = image.imageAspectRatio ?: decodedRatios[image.key] ?: image.aspect
+            val height = (limitWidth / ratio).coerceAtMost(limitHeight)
+            val minimum = if (image.sensitive) AndroidControlSize.target + 8.dp else 0.dp
+            image.key to DpSize(
+                (height * ratio).coerceAtLeast(minimum).coerceAtMost(limitWidth),
+                height.coerceAtLeast(minimum),
+            )
+        }
+        val tile: @Composable (TimelineMedia) -> Unit = { image ->
+            val size = sizes.getValue(image.key)
+            MediaFrame(
+                image, colors, Modifier.size(size.width, size.height).clip(RoundedCornerShape(8.dp)),
+                contentScale = ContentScale.Fit, imageAlignment = Alignment.TopStart,
+                onImageRatio = if (image.imageAspectRatio == null && !image.sensitive) {
+                    { decodedRatios[image.key] = it }
+                } else null,
+                showSensitiveToggle = showSensitiveToggle,
+            ) { open(image) }
+        }
+        if (single) tile(images.first())
+        else LazyRow(Modifier.fillMaxWidth().height(sizes.values.maxOf { it.height }).testTag("channel-image-strip"),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            items(images, key = { it.key }) { tile(it) }
         }
     }
 }
@@ -238,7 +251,7 @@ internal fun rememberMediaBlurHash(hash: String?): ImageBitmap? = if (hash != nu
 @Composable
 private fun MediaFrame(
     media: TimelineMedia, colors: AndroidColors, modifier: Modifier,
-    contentScale: ContentScale = ContentScale.Crop, more: Int = 0,
+    contentScale: ContentScale = ContentScale.Crop, more: Int = 0, imageAlignment: Alignment = Alignment.Center,
     onImageRatio: ((Float) -> Unit)? = null, showSensitiveToggle: Boolean = true, open: () -> Unit,
 ) {
     val video = media.kind == TimelineMediaKind.Video
@@ -258,7 +271,7 @@ private fun MediaFrame(
             onClick = { if (hidden) revealed = true else open() },
         ), contentAlignment = Alignment.Center) {
             when {
-                bitmap != null -> Image(bitmap, media.name, Modifier.matchParentSize(), contentScale = contentScale)
+                bitmap != null -> Image(bitmap, media.name, Modifier.matchParentSize(), alignment = imageAlignment, contentScale = contentScale)
                 placeholder != null -> Image(placeholder, media.name.takeUnless { hidden }, Modifier.matchParentSize().testTag("media-blurhash"),
                     contentScale = ContentScale.FillBounds)
                 hidden && !showSensitiveToggle -> Text(showLabel, color = colors.foreground, fontSize = 14.sp)
@@ -277,9 +290,13 @@ private fun MediaFrame(
                 Text("+$more", color = Color.White, fontSize = 24.sp, fontWeight = AndroidWeights.emphasis)
             }
         }
-        if (media.sensitive && showSensitiveToggle) {
+        if (media.sensitive && (showSensitiveToggle || !hidden)) {
             UiIconButton(
-                if (hidden) UiIcon.Eye else UiIcon.EyeOff,
+                when {
+                    !showSensitiveToggle -> UiIcon.Close
+                    hidden -> UiIcon.Eye
+                    else -> UiIcon.EyeOff
+                },
                 if (hidden) showLabel else hideLabel,
                 Color.White, { revealed = hidden }, fill = Color.Black.copy(alpha = 0.65f),
                 modifier = Modifier.align(Alignment.TopEnd).padding(4.dp),

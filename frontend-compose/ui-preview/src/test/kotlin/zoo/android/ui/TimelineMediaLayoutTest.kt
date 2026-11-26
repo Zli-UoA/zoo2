@@ -120,7 +120,7 @@ class TimelineMediaLayoutTest {
         val bitmap = Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888).asImageBitmap()
         val actions = mutableListOf<AndroidUiAction>()
         val result = SearchResultItem("file-hit", "はる", "写真.png", "12:00", "写真部", file = true,
-            avatar = "https://example.test/avatar.png", media = images.first())
+            avatar = "https://example.test/avatar.png", media = images.first().copy(sensitive = true))
         ui.setContent {
             CompositionLocalProvider(LocalCachedTimelineImage provides { bitmap }) {
                 Column {
@@ -130,8 +130,12 @@ class TimelineMediaLayoutTest {
             }
         }
         ui.onNodeWithTag("timeline-avatar", useUnmergedTree = true).assertIsDisplayed()
+        ui.onNodeWithText("画像を表示").performClick()
+        ui.onNodeWithContentDescription("画像を隠す").performClick()
+        ui.onNodeWithContentDescription("photo-0").assertDoesNotExist()
+        ui.onNodeWithText("画像を表示").performClick()
         ui.onNodeWithContentDescription("photo-0").assertIsDisplayed().performClick()
-        ui.runOnIdle { assertEquals(AndroidUiAction.OpenSearchMedia("file-hit"), actions.last()) }
+        ui.runOnIdle { assertEquals(AndroidUiAction.OpenSearchMedia("file-hit", revealedSensitive = true), actions.last()) }
     }
 
     @Test
@@ -141,7 +145,10 @@ class TimelineMediaLayoutTest {
         var loads = 0
         var opened: TimelineMedia? = null
         ui.setContent {
-            CompositionLocalProvider(LocalTimelineImage provides { if (++loads == 1) null else bitmap }) {
+            CompositionLocalProvider(
+                LocalTimelineImage provides { loads++; null },
+                LocalTimelineImageRetry provides { loads++; bitmap },
+            ) {
                 TimelineImagePages(TimelineMediaSelection(listOf(image), 0), openOriginal = { opened = it }) {}
             }
         }
@@ -204,6 +211,25 @@ class TimelineMediaLayoutTest {
         ui.onNodeWithTag("viewer-image-1").assertIsDisplayed()
         ui.onNodeWithContentDescription("画像を隠す").assertDoesNotExist()
         ui.runOnIdle { assertEquals(3, loads) }
+    }
+
+    @Test
+    fun channelFitsDecodedPortraitsAndKeepsThinSensitiveControlsTappable() {
+        val portrait = Bitmap.createBitmap(8, 24, Bitmap.Config.ARGB_8888).asImageBitmap()
+        val unknown = images.first().copy(imageAspectRatio = null)
+        val thin = images[1].copy(imageAspectRatio = 20f, sensitive = true)
+        ui.setContent {
+            CompositionLocalProvider(LocalCachedTimelineImage provides { portrait }) {
+                Column(Modifier.width(240.dp)) {
+                    TimelineMediaGroup(listOf(unknown), AndroidColors(false), apub = false) {}
+                    TimelineMediaGroup(listOf(thin), AndroidColors(false), apub = false) {}
+                }
+            }
+        }
+        val bounds = ui.onNodeWithContentDescription(unknown.name).getUnclippedBoundsInRoot()
+        assertTrue(bounds.right - bounds.left < 80.dp)
+        ui.onNodeWithContentDescription("画像を表示").assertHeightIsEqualTo(48.dp).performClick()
+        ui.onNodeWithContentDescription("画像を隠す").assertExists()
     }
 
     @Test

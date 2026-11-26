@@ -177,7 +177,7 @@ internal sealed interface AndroidUiAction {
     data class SelectSearchFilter(val field: SearchFilterField, val ids: List<String>) : AndroidUiAction
     data class ToggleSearchFilter(val flag: SearchFilterFlag) : AndroidUiAction
     data class OpenSearchResult(val key: String) : AndroidUiAction
-    data class OpenSearchMedia(val key: String) : AndroidUiAction
+    data class OpenSearchMedia(val key: String, val revealedSensitive: Boolean = false) : AndroidUiAction
     data object LoadOlderResults : AndroidUiAction
     data object RetrySearch : AndroidUiAction
     data class ChannelNameChanged(val name: String) : AndroidUiAction

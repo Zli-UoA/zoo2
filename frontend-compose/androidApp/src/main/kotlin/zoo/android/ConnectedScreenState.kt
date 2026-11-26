@@ -510,15 +510,23 @@ internal class ConnectedScreenState(
     ): AndroidScreen.Search {
         val search = app.globalSearch
         val channelsById = channels.associateBy { it.text("id") }
+        val messagesByChannel = mutableMapOf<String, Map<String, Row>>()
         val year = platform.day(platform.now()).substringBefore('/')
         return AndroidScreen.Search(SearchScreenState(
             searchText, search.query, search.type,
-            search.items.map { row ->
+            search.items.filterNot { app.isEncryptedChannel(it.text("channel_id")) }.map { row ->
+                val channel = channelsById[row.text("channel_id")]
                 val file = isGlobalSearchFile(row, search.type)
                 val searchAuthor = row.nested("author")
                 val user = users[row.text("user_id")] ?: searchAuthor
-                // A clipped snippet can lose code or silent-link markers. Only look up existing cards.
-                val link = if (file) null else messageLinks(row.text("snippet"), app.config.apiBaseUrl).external
+                // Only a locally synced full body can establish whether the link is visible.
+                val link = if (file || row.text("kind") == "note") null else {
+                    messagesByChannel.getOrPut(row.text("channel_id")) {
+                        app.repo.cachedMessages(row.text("channel_id")).associateBy { it.text("id") }
+                    }[row.text("id")]
+                        ?.takeUnless { it.present("ciphertext") || it.text("deleted_at").isNotEmpty() }
+                        ?.let { messageLinks(it.text("content"), app.config.apiBaseUrl).external }
+                }
                 val createdAt = row.text("created_at")
                 val day = platform.day(createdAt).let { if (it.substringBefore('/') == year) it.substringAfter('/') else it }
                 SearchResultItem(
@@ -534,7 +542,7 @@ internal class ConnectedScreenState(
                     fileSize = if (file) attachmentSize(row.text("file_size")) else null,
                     emoji = if (file) emptyMap() else displayEmoji(row, row, isPost = false),
                     avatar = timelineAvatarUrl(app.config.apiBaseUrl, user, searchAuthor),
-                    media = if (file) timelineAttachmentMedia(row)?.takeIf { it.kind == TimelineMediaKind.Image } else null,
+                    media = if (file) searchImage(row, channel) else null,
                     linkCard = link?.let { summalyCard(previewService, it) },
                 )
             },
@@ -543,6 +551,12 @@ internal class ConnectedScreenState(
             problem = searchQueryProblem(search.query),
             filters = searchFilters(users, channels),
         ))
+    }
+
+    private fun searchImage(row: Row, channel: Row?): TimelineMedia? {
+        if (channel == null || app.isEncryptedChannel(row.text("channel_id"))) return null
+        val image = timelineAttachmentMedia(row)?.takeIf { it.kind == TimelineMediaKind.Image } ?: return null
+        return image.copy(sensitive = image.sensitive || channel.flag("is_nsfw"))
     }
 
     /** Web's picker choices: the user first, then names in order; channels that search can reach (no DMs or encrypted ones). */
@@ -765,8 +779,13 @@ internal class ConnectedScreenState(
                 val search = app.globalSearch
                 val media = search.items.firstOrNull {
                     isGlobalSearchFile(it, search.type) && globalSearchKey(it, search.type) == action.key
-                }?.let(::timelineAttachmentMedia)?.takeIf { it.kind == TimelineMediaKind.Image }
-                if (media != null) mediaPreview = TimelineMediaSelection(listOf(media), 0)
+                }?.let { row ->
+                    val channel = app.repo.channels.rows.value.firstOrNull { it.text("id") == row.text("channel_id") }
+                    searchImage(row, channel)
+                }
+                if (media != null && (!media.sensitive || action.revealedSensitive)) {
+                    mediaPreview = TimelineMediaSelection(listOf(media), 0)
+                }
             }
             AndroidUiAction.LoadOlderResults -> app.globalSearch.loadOlder()
             AndroidUiAction.RetrySearch -> app.globalSearch.retry()

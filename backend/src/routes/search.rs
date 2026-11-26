@@ -332,7 +332,7 @@ pub fn month_sql(kind: SearchKind, terms: &[&str]) -> String {
                'channel_name', c.channel_name, 'is_dm', c.is_dm, 'parent_id', m.parent_id, \
                'user_id', a.uploader_id, 'author', m.display_data->'author', \
                'file_name', a.file_name, 'content_type', a.content_type, 'file_size', a.file_size, \
-               'width', a.width, 'height', a.height, 'is_sensitive', a.is_sensitive, \
+               'width', a.width, 'height', a.height, 'blurhash', a.blurhash, 'is_sensitive', a.is_sensitive, \
                {text}, 'created_at', a.created_at)::text \
              FROM (SELECT a.* FROM attachments a WHERE a.message_id IS NOT NULL{likes} \
                AND EXISTS (SELECT 1 FROM messages live WHERE live.id = a.message_id AND live.deleted_at IS NULL \

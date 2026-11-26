@@ -57,6 +57,10 @@ internal class AssetCache<T>(
         return request.await()
     }
 
+    suspend fun remove(url: String) {
+        mutex.withLock { images.remove(url)?.let { bytes -= weight(it) } }
+    }
+
     fun close() {
         closed = true
         job.cancel()
@@ -70,5 +74,6 @@ internal class AssetCache<T>(
 internal class ImageCache(scope: CoroutineScope, maxBytes: Int = 32 * 1024 * 1024, maxEntries: Int = 256) {
     private val cache = AssetCache<ByteArray>(scope, maxBytes, maxEntries) { it.size }
     suspend fun get(url: String, load: suspend () -> ByteArray): ByteArray = cache.get(url, load)
+    suspend fun remove(url: String) = cache.remove(url)
     fun close() = cache.close()
 }

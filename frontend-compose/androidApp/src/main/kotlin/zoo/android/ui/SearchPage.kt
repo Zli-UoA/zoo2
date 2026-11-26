@@ -158,7 +158,7 @@ internal fun ColumnScope.SearchPage(screen: AndroidScreen.Search, colors: Androi
                     items(state.results, key = { it.key }) { item ->
                         SearchResult(item, colors, highlight,
                             open = { dispatch(AndroidUiAction.OpenSearchResult(item.key)) },
-                            openMedia = { dispatch(AndroidUiAction.OpenSearchMedia(item.key)) })
+                            openMedia = { dispatch(AndroidUiAction.OpenSearchMedia(item.key, revealedSensitive = item.media?.sensitive == true)) })
                     }
                     item("search-footer") { SearchFooter(state, colors, dispatch) }
                 }
@@ -233,7 +233,7 @@ private fun SearchResult(
                     lineHeight = 23.sp, links = false)
             }
             item.media?.let { media -> TimelineMediaGroup(listOf(media), colors, apub = false, showSensitiveToggle = false) { openMedia() } }
-            item.linkCard?.let { EntryCards(listOf(it), colors) }
+            item.linkCard?.let { EntryCards(listOf(it.copy(url = null)), colors) }
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 UiGlyph(if (item.dm) UiIcon.Person else UiIcon.Channels, colors.secondary,
                     iconSize = AndroidControlSize.metadataIcon)

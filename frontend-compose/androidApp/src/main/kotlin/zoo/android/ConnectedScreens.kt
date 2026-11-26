@@ -503,6 +503,7 @@ internal fun ConnectedScreens(
             if (media.kind == TimelineMediaKind.Image) {
                 CompositionLocalProvider(
                     LocalTimelineImage provides remember(session) { { image -> timelineImage(session, image) } },
+                    LocalTimelineImageRetry provides remember(session) { { image -> timelineImage(session, image, retry = true) } },
                     LocalCachedTimelineImage provides remember(session) { { image -> cachedTimelineImage(session, image) } },
                     LocalAndroidTranslation provides { session.t(it) },
                 ) {

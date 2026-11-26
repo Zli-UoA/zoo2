@@ -38,9 +38,9 @@ internal fun cachedTimelineImage(session: Session, media: TimelineMedia): ImageB
     return session.cachedImageBitmap(signedUrl, signedAttachment = true)
 }
 
-internal suspend fun timelineImage(session: Session, media: TimelineMedia): ImageBitmap? = try {
+internal suspend fun timelineImage(session: Session, media: TimelineMedia, retry: Boolean = false): ImageBitmap? = try {
     val usesSignedUrl = media.previewUrl == null && media.url == null && media.attachmentId != null
-    session.imageBitmap(media.previewUrl ?: timelineMediaUrl(session, media), signedAttachment = usesSignedUrl)
+    session.imageBitmap(media.previewUrl ?: timelineMediaUrl(session, media), signedAttachment = usesSignedUrl, retry = retry)
 } catch (cancelled: CancellationException) {
     throw cancelled
 } catch (_: Exception) {

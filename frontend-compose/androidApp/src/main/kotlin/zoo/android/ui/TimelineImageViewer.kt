@@ -38,6 +38,8 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.sign
 
+internal val LocalTimelineImageRetry = staticCompositionLocalOf<suspend (TimelineMedia) -> ImageBitmap?> { { null } }
+
 @Composable
 internal fun TimelineImageViewer(selection: TimelineMediaSelection, dismiss: () -> Unit, openOriginal: (TimelineMedia) -> Unit) {
     Dialog(onDismissRequest = dismiss, properties = DialogProperties(
@@ -88,12 +90,13 @@ internal fun TimelineImagePages(
             val hidden = image.sensitive && revealed[index] != true
             val cached = LocalCachedTimelineImage.current
             val load = LocalTimelineImage.current
+            val retry = LocalTimelineImageRetry.current
             var attempt by remember(image) { mutableIntStateOf(0) }
             val initial = remember(image, hidden, attempt, cached) { if (hidden) null else cached(image) }
-            val result by key(image, hidden, attempt, cached, load) {
+            val result by key(image, hidden, attempt, cached, load, retry) {
                 produceState(ViewerImage(initial)) {
                     if (!hidden && initial == null) {
-                        val loaded = load(image)
+                        val loaded = if (attempt == 0) load(image) else retry(image)
                         value = ViewerImage(loaded, failed = loaded == null)
                     }
                 }
