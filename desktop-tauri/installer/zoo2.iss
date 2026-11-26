@@ -9,6 +9,13 @@
 #ifndef AppVersion
   #define AppVersion "0.3.1"
 #endif
+; プレリリース版 (例: 0.3.1-rc.1) でも数値専用の VersionInfo 項目へ渡せるように、
+; ハイフン以降を除いた数値部分を AppVersionNumeric として定義する。
+#if Pos("-", AppVersion) != 0
+  #define AppVersionNumeric Copy(AppVersion, 1, Pos("-", AppVersion) - 1)
+#else
+  #define AppVersionNumeric AppVersion
+#endif
 #ifndef ExePath
   #define ExePath "..\src-tauri\target\release\zoo2-desktop-tauri.exe"
 #endif
@@ -25,10 +32,13 @@ AppName=zoo2
 AppVersion={#AppVersion}
 AppVerName=zoo2 {#AppVersion}
 ; インストーラー自身のファイル情報にも版を入れ、OS 側のアプリ一覧やファイルのプロパティから版を確認できるようにする。
-VersionInfoVersion={#AppVersion}
-VersionInfoProductVersion={#AppVersion}
+VersionInfoVersion={#AppVersionNumeric}
+VersionInfoProductVersion={#AppVersionNumeric}
 VersionInfoProductName=zoo2
 VersionInfoCompany=Zli
+; 完全な版 (プレリリースを含む) はテキスト項目に残す。
+VersionInfoProductTextVersion={#AppVersion}
+VersionInfoTextVersion={#AppVersion}
 AppPublisher=Zli
 AppPublisherURL=https://github.com/Zli-UoA/zoo2
 AppSupportURL=https://github.com/Zli-UoA/zoo2
