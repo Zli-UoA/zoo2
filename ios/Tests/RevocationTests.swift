@@ -228,3 +228,75 @@ struct RevocationTests {
         #expect(server.versions.count == 2)
     }
 }
+
+@MainActor
+struct KeySlotsTests {
+    /// 鍵スロットの API を模した、状態を持つサーバー。
+    private final class Server: E2eeRevocationAPI {
+        var storage: JSONValue
+        var reauthSeen: [String?] = []
+        var failReauthOnce = false
+        init(storage: JSONValue) { self.storage = storage }
+
+        func call(_ path: String, method: String, query: [String: String], body: [String: JSONValue]?, reauth: String?,
+                  headers: [String: String]) async throws -> JSONValue {
+            var object = storage.object ?? [:]
+            var slots = object["slots"]?.array ?? []
+            switch (method, path) {
+            case ("GET", "api/e2ee/secret_storage"): return storage
+            case ("POST", "api/e2ee/secret_storage/slots"):
+                reauthSeen.append(reauth)
+                if failReauthOnce { failReauthOnce = false; throw E2eeAPIError(status: 403, code: "E2EE_REAUTH_REQUIRED") }
+                var slot = body ?? [:]
+                slot["created_at"] = .string("2026-11-26T00:00:00Z")
+                slots.append(.object(slot))
+            case ("DELETE", _) where path.hasPrefix("api/e2ee/secret_storage/slots/"):
+                reauthSeen.append(reauth)
+                let id = String(path.dropFirst("api/e2ee/secret_storage/slots/".count))
+                slots.removeAll { $0.object?["id"]?.string == id }
+            default: throw E2eeAPIError(status: 404, code: nil)
+            }
+            object["slots"] = .array(slots)
+            storage = .object(object)
+            return .null
+        }
+    }
+
+    private func prepared() async throws -> (Server, UnlockedSecretStorage, String, E2eeKeySlots) {
+        let fake = FakeSetupServer(userID: user)
+        let device = try Device(fake)
+        let start = try device.setup.begin()
+        try await device.setup.completeSetup(start.session, reauth: "t")
+        let server = Server(storage: try JSONDecoder().decode(JSONValue.self, from: Data(try await fake.secretStorage().utf8)))
+        let parsed = try #require(try parseSecretStorage(userId: user, response: try await fake.secretStorage()))
+        let unlocked = try parsed.unlockWithRecoveryKey(recoveryKey: try RecoveryKey.parse(input: start.recoveryKey))
+        device.cleanUp()
+        return (server, unlocked, start.recoveryKey, E2eeKeySlots(api: server, userID: user))
+    }
+
+    @Test func リカバリーキーを作り直すと新しいキーだけが解錠でき古いキーは使えなくなる() async throws {
+        let (server, unlocked, firstKey, slots) = try await prepared()
+        try await slots.load()
+        #expect(slots.slots.count == 1 && slots.slots[0].kind == "recovery")
+
+        let newKey = try await slots.regenerateRecovery(unlocked: unlocked, reauth: { "token" })
+        // 追加と、古いスロットの削除のどちらも、再認証つき。リカバリーキーのスロットは 1 つのまま。
+        #expect(server.reauthSeen == ["token", "token"])
+        #expect(slots.slots.count == 1 && slots.slots[0].kind == "recovery")
+        let storage = try #require(try parseSecretStorage(userId: user, response: String(decoding: try JSONEncoder().encode(server.storage), as: UTF8.self)))
+        _ = try storage.unlockWithRecoveryKey(recoveryKey: try RecoveryKey.parse(input: newKey))
+        #expect(throws: (any Error).self) { _ = try storage.unlockWithRecoveryKey(recoveryKey: try RecoveryKey.parse(input: firstKey)) }
+        // 最後の 1 つは消せない。
+        await #expect(throws: KeySlotError.lastSlot) { try await slots.remove(slots.slots[0], reauth: { "token3" }) }
+    }
+
+    @Test func 再認証が足りなければ取り直してもう一度だけ行う() async throws {
+        let (server, unlocked, _, slots) = try await prepared()
+        try await slots.load()
+        server.failReauthOnce = true
+        var tokens = 0
+        _ = try await slots.regenerateRecovery(unlocked: unlocked, reauth: { tokens += 1; return "token\(tokens)" })
+        // 追加が足りなければ取り直して 1 回だけ行い、そのあと、古いスロットを消す（もう 1 回）。
+        #expect(server.reauthSeen == ["token1", "token2", "token3"] && slots.slots.count == 1)
+    }
+}

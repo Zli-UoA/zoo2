@@ -101,17 +101,7 @@ final class E2eeRevocation {
 
     /// 始める前に SSSS を開け直す（パスキーかリカバリーキー）。
     func openStorage(_ method: UnlockMethod) async throws -> UnlockedSecretStorage {
-        let storage = String(decoding: try rvEncode(try await api.call("api/e2ee/secret_storage", method: "GET", query: [:], body: nil, reauth: nil, headers: [:])), as: UTF8.self)
-        guard let parsed = try parseSecretStorage(userId: userID, response: storage) else { throw E2eeSetupError.noSecretStorage }
-        switch method {
-        case .recovery(let key):
-            return try parsed.unlockWithRecoveryKey(recoveryKey: try RecoveryKey.parse(input: key))
-        case .passkey(let client, let rpID):
-            let slots = try parsed.passkeySlots()
-            guard !slots.isEmpty else { throw PasskeyError.noSlot }
-            let result = try await client.prfForUnlock(rpID: rpID, slots: slots)
-            return try parsed.unlockWithPasskey(credentialId: result.credentialID, prfOutput: result.prfOutput)
-        }
+        try await e2eeOpenSecretStorage(api: api, userID: userID, method: method)
     }
 
     /// 手順 1：選んだ端末を削除する（端末の削除は失効ではない）。
@@ -411,4 +401,20 @@ private func rvEncode(_ value: JSONValue) throws -> Data { try JSONEncoder().enc
 private func rvObject(_ text: String) throws -> [String: JSONValue] {
     guard case .object(let object) = try rvValue(text) else { throw ZooError.invalidResponse }
     return object
+}
+
+/// パスキーかリカバリーキーで SSSS を開ける（保存はしない）。失効と、鍵スロットの追加・削除が使う。
+@MainActor
+func e2eeOpenSecretStorage(api: any E2eeRevocationAPI, userID: String, method: UnlockMethod) async throws -> UnlockedSecretStorage {
+    let storage = String(decoding: try rvEncode(try await api.call("api/e2ee/secret_storage", method: "GET", query: [:], body: nil, reauth: nil, headers: [:])), as: UTF8.self)
+    guard let parsed = try parseSecretStorage(userId: userID, response: storage) else { throw E2eeSetupError.noSecretStorage }
+    switch method {
+    case .recovery(let key):
+        return try parsed.unlockWithRecoveryKey(recoveryKey: try RecoveryKey.parse(input: key))
+    case .passkey(let client, let rpID):
+        let slots = try parsed.passkeySlots()
+        guard !slots.isEmpty else { throw PasskeyError.noSlot }
+        let result = try await client.prfForUnlock(rpID: rpID, slots: slots)
+        return try parsed.unlockWithPasskey(credentialId: result.credentialID, prfOutput: result.prfOutput)
+    }
 }

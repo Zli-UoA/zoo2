@@ -191,6 +191,10 @@ private struct ProfileSettingsView: View {
             }
             if let e2ee = session.workspace?.e2ee, e2ee.status == .unlocked {
                 Section("暗号化") {
+                    if let keySlots = e2ee.keySlots {
+                        NavigationLink("パスキーとリカバリーキー") { KeySlotsView(e2ee: e2ee, slots: keySlots) }
+                            .accessibilityIdentifier("encryption-key-slots")
+                    }
                     NavigationLink("端末") { OwnDevicesView(e2ee: e2ee) }
                         .accessibilityIdentifier("encryption-devices")
                     if let verification = e2ee.verification, let workspace = session.workspace {
