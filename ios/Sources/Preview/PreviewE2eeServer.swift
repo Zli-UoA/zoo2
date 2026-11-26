@@ -252,6 +252,12 @@ extension E2eeController {
         controller.reauthenticate = { "preview-token" }
         controller.passkeys = PreviewPasskeyClient()
         controller.rpID = "account.zli.works"
+        // 設定の「端末」「パスキーとリカバリーキー」「ユーザーの検証」「失効」の画面を、サーバーなしで動かす模擬。
+        let calls = PreviewE2eeCalls(server: server)
+        controller.devicesAPI = PreviewOwnDevices()
+        controller.keySlots = E2eeKeySlots(api: calls, userID: userID)
+        controller.revocation = E2eeRevocation(store: { manager.readyStore }, api: calls, setup: setup, userID: userID)
+        controller.verification = E2eeVerification(store: { manager.readyStore }, api: PreviewVerificationAPI())
         return controller
     }
 }
@@ -272,4 +278,52 @@ final class PreviewPasskeyClient: PasskeyClient {
         guard let slot = slots.first else { throw PasskeyError.noSlot }
         return PasskeyResult(credentialID: slot.credentialId, prfOutput: output(slot.prfSalt))
     }
+}
+
+/// プレビュー用の、端末の一覧（2 台）。
+@MainActor
+struct PreviewOwnDevices: E2eeOwnDevicesAPI {
+    func ownDevices() async throws -> [OwnDevice] {
+        let json = #"[{"device_id":"11111111-1111-4111-8111-111111111111","display_name":"iPhone（iOS）","created_at":"2026-11-20T09:00:00Z","last_seen_at":"2026-11-26T08:30:00Z"},{"device_id":"22222222-2222-4222-8222-222222222222","display_name":"Chrome（macOS）","created_at":"2026-11-10T12:00:00Z","last_seen_at":"2026-11-25T21:10:00Z"},{"device_id":"33333333-3333-4333-8333-333333333333","display_name":"iPad（iOS）","created_at":"2026-10-30T07:00:00Z","last_seen_at":null}]"#
+        return OwnDevice.ordered(try JSONDecoder().decode([OwnDevice].self, from: Data(json.utf8)))
+    }
+    func renameDevice(_ deviceID: String, to name: String) async throws {}
+    func removeDevice(_ deviceID: String) async throws {}
+}
+
+/// プレビュー用の、鍵スロットと失効の API（読むものだけ。書き込みは何もしない）。
+@MainActor
+final class PreviewE2eeCalls: E2eeRevocationAPI {
+    private let server: PreviewE2eeServer
+    init(server: PreviewE2eeServer) { self.server = server }
+
+    func call(_ path: String, method: String, query: [String: String], body: [String: JSONValue]?, reauth: String?,
+              headers: [String: String]) async throws -> JSONValue {
+        if method == "GET", path == "api/e2ee/secret_storage" {
+            var value = try JSONDecoder().decode(JSONValue.self, from: Data(try await server.secretStorage().utf8))
+            // 表示のための、鍵スロットの追加の日時と、最後に使った日時。
+            if case .object(var object) = value, case .array(let slots)? = object["slots"] {
+                object["slots"] = .array(slots.map { slot in
+                    guard case .object(var entry) = slot else { return slot }
+                    entry["created_at"] = .string("2026-11-26T08:00:00Z")
+                    entry["last_used_at"] = .string("2026-11-26T08:20:00Z")
+                    return .object(entry)
+                })
+                value = .object(object)
+            }
+            return value
+        }
+        return .null
+    }
+}
+
+/// プレビュー用の、検証の API（何も返さない。画面だけを動かす）。
+@MainActor
+struct PreviewVerificationAPI: E2eeVerificationAPI {
+    func queryKeys(userID: String) async throws -> String { "{}" }
+    func queryKeys(userIDs: [String]) async throws -> String { "{}" }
+    func registerPin(_ pin: String) async throws -> Bool { true }
+    func claim(_ oneTimeKeys: [String: JSONValue]) async throws -> [String: JSONValue] { [:] }
+    func sendToDevice(deviceID: String, messages: [String: JSONValue]) async throws -> Int { 0 }
+    func saveAccepted(pin: String, signature: SignatureUpload, reauth: String) async throws {}
 }
