@@ -97,6 +97,10 @@ class ReauthException(val reason: Reason, message: String) : Exception(message) 
         /** ブラウザーを開けなかった。 */
         BROWSER_UNAVAILABLE,
 
+        INVALID_CALLBACK,
+        CALLBACK_VERIFICATION_FAILED,
+        CANCELLED,
+
         /** ID トークンを受け付けられない（iss、aud、exp、nonce の不一致など）。 */
         INVALID_ID_TOKEN,
     }

@@ -316,6 +316,7 @@
     "download": "{{name}} 내려받기",
     "downloadShort": "내려받기",
     "downloadError": "내려받지 못했습니다.",
+    "previewSaveUnsupported": "이 파일은 앱에서 저장할 수 없습니다. 링크를 새 탭에서 열어 저장하십시오.",
     "downloadSaved": "{{name}}(으)로 저장했습니다.",
     "downloadDestinationUnsupported": "이 저장 위치에는 저장할 수 없습니다. 다른 폴더를 선택하거나 설정의 \"내려받기\"에서 저장 위치를 변경하십시오.",
     "downloadTooMany": "동시에 내려받을 수 있는 수가 넘었습니다. 다른 내려받기가 끝난 다음에 다시 시도하십시오.",

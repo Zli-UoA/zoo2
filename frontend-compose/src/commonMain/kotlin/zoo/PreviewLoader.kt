@@ -148,7 +148,7 @@ class PreviewLoader(private val app: Session, private val clock: TimeSource = Ti
     private data class Work(val request: Deferred<PreviewData?>, var users: Int = 0)
 
     private val pending = mutableMapOf<String, Work>()
-    private val summalyEndpoint = runtimeEndpoint("/summaly-endpoint", app.config.summalyUrl)
+    val summalyEndpoint = runtimeEndpoint("/summaly-endpoint", app.config.summalyUrl)
     val mediaProxyEndpoint = runtimeEndpoint("/media-proxy-endpoint", app.config.mediaProxyUrl)
     val endpoints =
         summalyEndpoint.combine(mediaProxyEndpoint) { summaly, media -> summaly to media }

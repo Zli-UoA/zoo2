@@ -84,15 +84,17 @@ data class MessageLinks(val channels: List<Pair<String, ChannelLinkTarget>>, val
 
 /**
  * 投稿の下に出すリンクを、このアプリのリンク（埋め込み。Summaly に送らない）と外部の URL に分ける。
- * Web と同じく、合わせて最大 3 件（[previewUrls]）。
+ * Web と同じく、合わせて最大 3 件（[previewUrls]）。[attached]（添付として出す画像の URL）は、外部のカードにしない。
  */
-fun messageLinks(body: String, appBaseUrl: String, excludeUrl: String? = null): MessageLinks {
+fun messageLinks(
+    body: String, appBaseUrl: String, excludeUrl: String? = null, attached: Set<String> = emptySet(),
+): MessageLinks {
     val channels = mutableListOf<Pair<String, ChannelLinkTarget>>()
     var external: String? = null
     for (url in previewUrls(body, excludeUrl)) {
         val target = parseChannelLink(url, appBaseUrl)
         if (target != null) channels += url to target
-        else if (external == null) external = url
+        else if (external == null && url !in attached) external = url
     }
     return MessageLinks(channels, external)
 }

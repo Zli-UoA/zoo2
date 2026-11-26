@@ -29,6 +29,15 @@ class AndroidEmojiCatalogTest {
         assertEquals(combination.image, kitchen.combinations(smile).first { it.value == value }.image)
     }
 
+    @Test fun kitchenLookupNormalizesVariationSelectorsAndOrder() = runTest {
+        val catalog = AndroidEmojiCatalog {
+            """{"emojis":[["1f600","😀","smile"],["2764-fe0f","❤️","heart"]],"dates":["20200101"],"pairs":{"0_1":0}}"""
+        }
+        val image = assertNotNull(catalog.kitchenReaction("kitchen:1f600_2764"))
+        assertEquals(image, catalog.kitchenReaction("kitchen:2764-FE0F_01f600"))
+        assertEquals(null, catalog.kitchenReaction("kitchen:1f600_1f431"))
+    }
+
     @Test fun workspaceChoicesInsertTheShortcodeAndSearchAliases() {
         val custom = workspaceEmojiChoices(listOf(obj(
             "name" to "party", "aliases" to JsonArray(listOf(JsonPrimitive("celebration"))), "category" to "events",

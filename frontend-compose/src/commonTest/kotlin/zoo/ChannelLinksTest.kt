@@ -89,6 +89,13 @@ class ChannelLinksTest {
         assertEquals(3, many.channels.size)
         assertNull(many.external)
         assertNull(messageLinks("?[静か]($app/channels/c)", app).channels.firstOrNull())
+        // 添付として出す画像の URL は、外部のカードにしない。
+        assertEquals(
+            "https://example.com/b",
+            messageLinks(
+                "https://img.test/a.png https://example.com/b", app, attached = setOf("https://img.test/a.png"),
+            ).external,
+        )
     }
 
     @Test

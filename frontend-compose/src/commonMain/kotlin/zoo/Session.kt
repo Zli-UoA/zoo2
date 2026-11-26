@@ -251,18 +251,21 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         (it.width.toLong() * it.height * 4).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     }
 
-    suspend fun image(url: String): ByteArray {
+    suspend fun image(url: String, signedAttachment: Boolean = false): ByteArray {
         val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
-        return imageCache.get(resolved) {
-            platform.image(resolved) ?: assetClient.get(resolved).body()
+        return imageCache.get(if (signedAttachment) "attachment:$resolved" else resolved) {
+            val bytes = if (signedAttachment) platform.attachmentImage(resolved) else platform.image(resolved)
+            bytes ?: assetClient.get(resolved).body()
         }
     }
 
     /** Static images use the same platform decoder as attachments and animated media. */
-    suspend fun imageBitmap(url: String): androidx.compose.ui.graphics.ImageBitmap =
-        bitmapCache.get(if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url) {
-            platform.imageFrames(image(url)).first()
+    suspend fun imageBitmap(url: String, signedAttachment: Boolean = false): androidx.compose.ui.graphics.ImageBitmap {
+        val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
+        return bitmapCache.get(if (signedAttachment) "attachment:$resolved" else resolved) {
+            platform.imageFrames(image(resolved, signedAttachment)).first()
         }
+    }
 
     fun update(next: Environment): Unit = androidx.compose.runtime.snapshots.Snapshot.withMutableSnapshot {
         val old = env
