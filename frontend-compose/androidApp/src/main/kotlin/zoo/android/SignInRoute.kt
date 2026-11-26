@@ -51,9 +51,9 @@ internal fun SignInRoute(
     val scope = rememberCoroutineScope()
     var loginJob by remember { mutableStateOf<Job?>(null) }
     BackHandler(editing && !busy && !restoring) { editing = false }
-    var allowPortalAttempt by remember { mutableStateOf(false) }
     val submit = {
         if (!busy) {
+            val allowPortalAttempt = signInError == wifiSignInMessage
             busy = true
             loginJob = scope.launch {
                 signInError = ""
@@ -61,7 +61,6 @@ internal fun SignInRoute(
                 val stages = mutableListOf(LoginStage.Network)
                 try {
                     if (wifiNeedsSignIn(context) && !allowPortalAttempt) {
-                        allowPortalAttempt = true
                         throw LoginFailure(wifiSignInMessage)
                     }
                     stages.add(LoginStage.Configuration)

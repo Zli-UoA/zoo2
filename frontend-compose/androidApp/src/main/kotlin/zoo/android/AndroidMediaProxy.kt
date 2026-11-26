@@ -41,11 +41,11 @@ internal class AndroidMediaProxy(context: Context, private val base: String, pri
 
     suspend fun image(
         source: String, http: HttpClient, cache: AndroidImageCache,
-        online: Boolean = true, limit: Int = 20 * 1024 * 1024,
+        online: Boolean = true, limit: Int = 20 * 1024 * 1024, preferSavedProxy: Boolean = false,
     ): ByteArray {
         val cachedRoute = imageRequest(base, source, prefs.getString(base, "").orEmpty())
         if (cachedRoute != null) cache.imageIfCached(cachedRoute, limit)?.let { return it }
-        val route = request(source, http, online)
+        val route = if (preferSavedProxy && cachedRoute != null) cachedRoute else request(source, http, online)
         if (route != cachedRoute) cache.imageIfCached(route, limit)?.let { return it }
         if (!route.proxied) return cache.download(route, limit)
         return proxyDownloads.withPermit {

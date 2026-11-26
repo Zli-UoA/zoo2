@@ -359,7 +359,7 @@ class ZooMessagingService : FirebaseMessagingService() {
                 // Push can run without a session; its disk cache has a separate owner.
                 AndroidImageCache(directory, maxBytes = 32L * 1024 * 1024, timeoutMillis = 3_000).use { images ->
                     enrichPushNotification(this@ZooMessagingService, posted) { url, maxEdge ->
-                        val bytes = proxy.image(url, client, images, online = false, limit = 4 * 1024 * 1024)
+                        val bytes = proxy.image(url, client, images, limit = 4 * 1024 * 1024, preferSavedProxy = true)
                         withContext(Dispatchers.Default) { decodeOrientedBitmap(bytes, maxEdge) }
                     }
                 }
