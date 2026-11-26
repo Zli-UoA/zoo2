@@ -223,7 +223,12 @@ struct RevocationTests {
         // アプリを閉じて開き直した（メモリーの秘密は消え、進み具合だけが暗号ストアにある）。
         let reopened = E2eeRevocation(store: { device.store }, api: server, setup: device.setup, userID: user)
         #expect(try reopened.savedSummary()?.stage == "prepared")
-        #expect(throws: ZooCryptoError.self) { _ = try reopened.resume(unlocked: unlocked) }
+        #expect {
+            _ = try reopened.resume(unlocked: unlocked)
+        } throws: { error in
+            if case ZooCryptoError.RevocationRestart = error { return true }
+            return false
+        }
         // 捨てれば、新しい失効を始められる。
         try reopened.abandon()
         #expect(try reopened.savedSummary() == nil)

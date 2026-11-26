@@ -326,9 +326,10 @@ struct MessageEncryptionTests {
         defer { sender.cleanUp(); receiver.cleanUp() }
         let broken = BrokenEpochServer(base: server)
         let guarded = MessageEncryption(store: { sender.store }, api: broken)
-        await #expect(throws: (any Error).self) {
+        await #expect(throws: ZooError.self) {
             try await guarded.send(channel: channel, id: messageID, parent: nil, body: "x")
         }
+        #expect(server.posts == 0)
         _ = encryption
     }
 
