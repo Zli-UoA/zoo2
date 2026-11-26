@@ -17,7 +17,10 @@ private val channelLinkPath = Regex("^/channels/([^/]+)/?$")
 
 private val messageIdPattern = Regex("[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32}")
 
-/** メッセージの ID（UUID）の形か。ほかの値は、どのメッセージも指さない。 */
+/**
+ * メッセージの ID（UUID）の形か。ほかの値は、どのメッセージも指さない。大文字などにそろえ直さず、書いてあるまま
+ * 照合する（サーバーは、投稿者が指定した ID をそのまま保存する）。
+ */
 fun isMessageId(value: String): Boolean = messageIdPattern.matches(value)
 
 /**

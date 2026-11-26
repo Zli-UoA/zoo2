@@ -7,6 +7,8 @@ import electric4k.ShapeStream
 import electric4k.ShapeStreamOptions
 import electric4k.SubsetParams
 import io.ktor.client.HttpClient
+import io.ktor.client.plugins.api.createClientPlugin
+import io.ktor.client.plugins.timeout
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeMark
@@ -33,7 +35,10 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -49,6 +54,19 @@ val LINK_LOAD_TIMEOUT: Duration = 10.seconds
 val LINK_RELEASE_DELAY: Duration = 30.seconds
 
 private const val LINK_CACHE_SIZE = 256
+
+/** 1 件の取得で、続けて要求を送る回数。失敗が続くときは一度打ち切り、ほかの取得と live に順番を譲る。 */
+private const val LINK_SUBSET_ATTEMPTS = 3
+
+/** 取得の要求 1 回の応答を待つ時間。 */
+private val LINK_SUBSET_TIMEOUT = 15.seconds
+
+/** 打ち切った取得を、次に試すまでの間隔。打ち切るたびに倍にする。 */
+private val LINK_SUBSET_RETRY = 1.seconds
+private val LINK_SUBSET_MAX_RETRY = 30.seconds
+
+/** 失敗が続く取得の打ち切り。Electric クライアントが再試行しない例外にする。 */
+private class SubsetYield : Exception("subset の取得を一度打ち切った")
 
 /** 同時に購読するチャンネルの数の上限。backend のアカウントごとのシェイプの上限は、ほかの画面や端末と分け合う。 */
 const val LINK_MAX_CHANNELS = 8
@@ -137,6 +155,9 @@ interface LinkedChannelSource {
  * `messages` Shape を `log=changes_only` で購読し、行は subset snapshot で 1 件ずつ取る（Web の on-demand の
  * `messages` と同じ経路・権限）。チャンネルの全件は同期せず、端末にも保存しない。取得した行の編集・削除は
  * live で届く。
+ *
+ * Electric クライアントは、取得を再試行している間、live の読み取りとほかの取得を待たせる。サーバーのエラーなどで
+ * 失敗が続く取得は、[LINK_SUBSET_ATTEMPTS] 回で打ち切り、間隔を空けて取り直す。
  */
 class LinkedChannelTable(
     channelId: String,
@@ -155,12 +176,25 @@ class LinkedChannelTable(
     private val synced = MutableStateFlow(false)
     private var generation = 0
     private var refetching = false
+    /** subset の取得は 1 件ずつ。[sent] は、いまの取得で送った要求の数。 */
+    private val fetching = Mutex()
+    private val sent = MutableStateFlow(0)
+    private val requests = http.config {
+        install(createClientPlugin("ZooLinkedSubset") {
+            onRequest { request, _ ->
+                if (request.url.parameters.contains("subset__where")) {
+                    if (sent.updateAndGet { it + 1 } > LINK_SUBSET_ATTEMPTS) throw SubsetYield()
+                    request.timeout { requestTimeoutMillis = LINK_SUBSET_TIMEOUT.inWholeMilliseconds }
+                }
+            }
+        })
+    }
 
     private val direct = config.shapeMode == "direct"
     private val client = ShapeClient(
         if (direct) config.electricShapeUrl
         else endpoint(config.apiBaseUrl, "${config.shapeProxyPath}/messages"),
-        httpClient = http,
+        httpClient = requests,
         headers = { if (direct) emptyMap() else platform.headers() },
         queryParams = {
             if (direct) mapOf("table" to "messages", "where" to "channel_id = \$1", "params[1]" to channelId)
@@ -224,12 +258,24 @@ class LinkedChannelTable(
         tableScope.launch {
             try {
                 combine(synced, values) { ready, current -> ready || current.failure != null }.first { it }
-                if (values.value.failure != null) return@launch
-                stream.requestSnapshot(
-                    SubsetParams(where = "id = \$1", params = mapOf("1" to JsonPrimitive(messageId)))
-                )
-                if (startedAt == generation) {
-                    values.update { it.copy(rows = currentRows(), fetched = it.fetched + messageId) }
+                var wait = LINK_SUBSET_RETRY
+                // 取り直し（must-refetch）になったら、そちらの取得に任せる。
+                while (startedAt == generation && values.value.failure == null) {
+                    try {
+                        fetching.withLock {
+                            sent.value = 0
+                            stream.requestSnapshot(
+                                SubsetParams(where = "id = \$1", params = mapOf("1" to JsonPrimitive(messageId)))
+                            )
+                        }
+                        if (startedAt == generation) {
+                            values.update { it.copy(rows = currentRows(), fetched = it.fetched + messageId) }
+                        }
+                        return@launch
+                    } catch (_: SubsetYield) {
+                        delay(wait)
+                        wait = minOf(wait * 2, LINK_SUBSET_MAX_RETRY)
+                    }
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -243,6 +289,7 @@ class LinkedChannelTable(
         unsubscribe()
         stream.close()
         client.close()
+        requests.close()
         tableScope.cancel()
     }
 }
@@ -283,8 +330,8 @@ class LinkedMessages(
     /** 取得できた結果。画面に戻ったときに、枠を経由せず表示する。 */
     private val results = LinkedHashMap<Key, LinkedRow>()
     private val started = mutableMapOf<Key, TimeMark>()
-    /** 暗号文の行を見たチャンネル。 */
-    private val ciphertextChannels = mutableSetOf<String>()
+    /** 暗号文の行を見たチャンネル。増えたら、表示中のリンクも判定し直す。 */
+    private val ciphertextChannels = MutableStateFlow(emptySet<String>())
     /** 使う行がない購読ができるたびに進め、空きを待つ取得に知らせる。 */
     private val vacancies = MutableStateFlow(0)
 
@@ -301,6 +348,13 @@ class LinkedMessages(
 
     fun observe(channelId: String, messageId: String): Flow<LinkedMessageState> {
         if (!fetchable(messageId)) return flowOf(LinkedMessageState(LinkedRow.Missing))
+        // 暗号文は、同じチャンネルのほかのリンクの取得で見つかることもある。
+        return combine(rowState(channelId, messageId), ciphertextChannels) { state, seen ->
+            if (channelId in seen) state.copy(hasCiphertext = true) else state
+        }.distinctUntilChanged()
+    }
+
+    private fun rowState(channelId: String, messageId: String): Flow<LinkedMessageState> {
         val loaded = openRows(channelId) ?: return fetched(channelId, messageId)
         return loaded
             .map { rows -> rows.firstOrNull { it.text("id") == messageId } to sawCiphertext(channelId, rows) }
@@ -341,19 +395,20 @@ class LinkedMessages(
 
     private fun result(key: Key, state: LinkedChannelSource.State, late: Boolean): LinkedMessageState {
         val row = state.rows[key.messageId]
+        // 再試行されない失敗（認証や権限の 4xx）は、その前に取得できた行があっても出さない。
         val current = when {
+            key.messageId in state.failed || state.failure != null -> LinkedRow.Failed
             row != null -> LinkedRow.Found(row)
             key.messageId in state.fetched -> LinkedRow.Missing
-            key.messageId in state.failed || state.failure != null -> LinkedRow.Failed
             else -> null
         }
         if (current is LinkedRow.Found || current == LinkedRow.Missing) {
             started.remove(key)
             remember(key, current!!)
         }
-        // 取り直しに失敗したときは、前に取得できた結果を残す。
-        val previous = results[key]
-        val shown = if (current == null || current == LinkedRow.Failed) previous ?: current else current
+        if (current == LinkedRow.Failed) results.remove(key)
+        // 取り直しや再試行の間は、前に取得できた結果を出す。
+        val shown = current ?: results[key]
         return LinkedMessageState(
             shown ?: LinkedRow.Loading,
             sawCiphertext(key.channelId, source = state),
@@ -373,9 +428,9 @@ class LinkedMessages(
     ): Boolean {
         fun encrypted(candidates: Collection<Row>?) = candidates?.any { it.present("ciphertext") } == true
         if (source?.hasCiphertext == true || encrypted(rows) || encrypted(source?.rows?.values)) {
-            ciphertextChannels.add(channelId)
+            ciphertextChannels.update { it + channelId }
         }
-        return channelId in ciphertextChannels
+        return channelId in ciphertextChannels.value
     }
 
     /** 購読を使い始める。上限まで使っていて空けられなければ `null`。 */
@@ -423,7 +478,7 @@ class LinkedMessages(
         entries.clear()
         results.clear()
         started.clear()
-        ciphertextChannels.clear()
+        ciphertextChannels.value = emptySet()
         open.forEach {
             it.release?.cancel()
             it.source.close()

@@ -12,6 +12,7 @@ import io.ktor.http.headersOf
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
@@ -155,6 +156,20 @@ class LinkedMessagesTest {
     }
 
     @Test
+    fun ciphertextFoundByAnotherLinkUpdatesOpenRows() = runTest {
+        open["c1"] = MutableStateFlow(listOf(message))
+        val loader = loader()
+        val shown = observe(loader)
+        observe(loader, id = "m2")
+        assertFalse(shown.last.hasCiphertext)
+        // 開いている行から出したリンクも、ほかのリンクの取得で暗号文が見つかれば判定し直す。
+        sources.single().state.update { it.copy(hasCiphertext = true) }
+        runCurrent()
+        assertTrue(shown.last.hasCiphertext)
+        assertEquals(LinkedRow.Found(message), shown.last.row)
+    }
+
+    @Test
     fun timeKeepsCountingWhileTheRowIsOffScreen() = runTest {
         val loader = loader()
         observe(loader).job.cancel()
@@ -179,14 +194,16 @@ class LinkedMessagesTest {
         runCurrent()
         assertTrue(sources.single().closed)
 
-        // 閉じたあとは作り直し、取得が終わるまで前の結果を出す。取り直しに失敗しても残す。
+        // 閉じたあとは作り直し、取得が終わるまで前の結果を出す。
         assertEquals(LinkedRow.Found(message), loader.peek("c1", "m1").row)
         val again = observe(loader)
         assertEquals(2, sources.size)
         assertEquals(LinkedRow.Found(message), again.states.first().row)
+        // 拒否されたら（権限の喪失など）、前の結果は出さない。
         sources.last().state.update { it.copy(failure = IllegalStateException("403")) }
         runCurrent()
-        assertEquals(LinkedRow.Found(message), again.last.row)
+        assertEquals(LinkedRow.Failed, again.last.row)
+        assertEquals(LinkedRow.Loading, loader.peek("c1", "m1").row)
     }
 
     @Test
@@ -367,6 +384,39 @@ class LinkedChannelTableTest {
             assertEquals(setOf("m1"), state.rows.keys)
             // 保持しない行でも、暗号文が届いたことは分かる。
             assertTrue(state.hasCiphertext)
+        } finally {
+            table.close()
+            http.close()
+        }
+    }
+
+    @Test
+    fun aFailingMessageDoesNotBlockTheOthers() = runTest {
+        val failing = CompletableDeferred<Unit>()
+        var failures = 0
+        val http = HttpClient(MockEngine { request ->
+            val subset = request.url.parameters["subset__params"]
+            when {
+                subset != null && "bad" in subset -> {
+                    failures++
+                    failing.complete(Unit)
+                    respond("{}", HttpStatusCode.InternalServerError)
+                }
+                subset != null -> respond(snapshot("good"), headers = headers)
+                request.url.parameters["live"] == "true" -> awaitCancellation()
+                else -> respond("""[{"headers":{"control":"up-to-date"}}]""", headers = headers)
+            }
+        })
+        val table = LinkedChannelTable("failing", config, LinkPlatform(), http, backgroundScope, options)
+        try {
+            table.request("bad")
+            failing.await()
+            table.request("good")
+            val state = table.state.first { "good" in it.fetched }
+            // 失敗が続く取得は打ち切って、後の取得を進める。再試行する失敗は、失敗にしない。
+            assertTrue(failures >= 3, failures.toString())
+            assertTrue(state.failed.isEmpty())
+            assertNull(state.failure)
         } finally {
             table.close()
             http.close()
