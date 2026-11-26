@@ -11,15 +11,17 @@ private final class FakeEncryption: ConversationEncryption {
     var sent: [(channel: String, id: String, parent: String?, body: String)] = []
     var edited: [(id: String, body: String)] = []
     var sentAttachments: [[AttachmentInfo]] = []
+    var sentMentions: [EncryptedMentions] = []
     var failSend = false
 
     func decrypt(_ message: Message) -> DecryptedBody { bodies[message.id] ?? DecryptedBody(notice: E2eeText.keyMissing) }
-    func send(channelID: String, id: String, parentID: String?, body: String, attachments: [AttachmentInfo]) async throws {
+    func send(channelID: String, id: String, parentID: String?, body: String, attachments: [AttachmentInfo], mentions: EncryptedMentions) async throws {
+        sentMentions.append(mentions)
         if failSend { throw MessageEncryptionError.sendStaleEpoch }
         sent.append((channelID, id, parentID, body))
         sentAttachments.append(attachments)
     }
-    func edit(_ message: Message, body: String) async throws { edited.append((message.id, body)) }
+    func edit(_ message: Message, body: String, mentions: EncryptedMentions) async throws { edited.append((message.id, body)) }
 }
 
 @MainActor

@@ -46,6 +46,12 @@ final class ConversationStore {
     private(set) var followsFocusedMessageToLatest = false
     /// 暗号化チャンネルの復号と送信（#685）。ないとき（プレビューなど）は、暗号化チャンネルを開けない。
     @ObservationIgnored var e2ee: (any ConversationEncryption)?
+    /// ユーザー名からユーザー ID を引く（暗号化チャンネルの送信に付ける `mentions` を作る）。
+    @ObservationIgnored var userIDForName: (String) -> String? = { _ in nil }
+
+    private func encryptedMentions(_ content: String) -> EncryptedMentions {
+        EncryptedMentions.extract(from: content, userIDForName: userIDForName)
+    }
     @ObservationIgnored var onExpiredSession: (() -> Void)?
     @ObservationIgnored var onAccessRevoked: (() -> Void)?
     @ObservationIgnored var onRead: (() -> Void)?
@@ -418,6 +424,9 @@ final class ConversationStore {
                 }
                 let result = e2ee.decrypt(message)
                 shown.content = result.body ?? ""
+                if let mentions = result.payload?.mentions {
+                    shown.e2eeMentions = DecryptedMentions(userIDs: Set(mentions.userIds), channel: mentions.channel, here: mentions.here)
+                }
                 let infos = result.payload?.attachments ?? []
                 if !infos.isEmpty {
                     var display = shown.display_data ?? MessageDisplayData()
@@ -503,7 +512,7 @@ final class ConversationStore {
                 }
                 uploadStatus[key] = attachments.isEmpty ? nil : "メッセージを送信中…"
                 pendingSends[key]?.messageAttempted = true
-                try await e2ee.send(channelID: channel.id, id: pending.id, parentID: parentID, body: content, attachments: infos)
+                try await e2ee.send(channelID: channel.id, id: pending.id, parentID: parentID, body: content, attachments: infos, mentions: encryptedMentions(content))
                 try Task.checkCancellation()
                 guard active, !blocked, epoch == accessGeneration else { return }
                 pendingSends[key] = nil
@@ -569,7 +578,7 @@ final class ConversationStore {
         if channel.encrypted == true {
             do {
                 guard let e2ee, !message.e2eeLegacy else { return false }
-                try await e2ee.edit(message, body: content)
+                try await e2ee.edit(message, body: content, mentions: encryptedMentions(content))
                 try Task.checkCancellation()
                 guard active, !blocked, epoch == accessGeneration else { return false }
                 actionError = nil

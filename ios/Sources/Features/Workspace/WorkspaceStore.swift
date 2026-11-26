@@ -425,10 +425,25 @@ final class WorkspaceStore {
         return person.id == user.id
     }
 
+    /// 暗号化メッセージでは、復号した `mentions` にある `@name` だけを、メンションとして表示する（本文だけの `@name` は、
+    /// 通知も出ていないので、メンションに見せない。docs/e2ee.md の「Megolm の平文」）。
+    func mentionIdentity(_ username: String, in message: Message) -> Bool? {
+        guard let mentions = message.e2eeMentions else { return mentionIdentity(username) }
+        switch username.lowercased() {
+        case "channel": return mentions.channel ? true : nil
+        case "here": return mentions.here ? true : nil
+        default:
+            guard let person = people.values.first(where: { $0.user_name.caseInsensitiveCompare(username) == .orderedSame }),
+                  mentions.userIDs.contains(person.id) else { return nil }
+            return person.id == user.id
+        }
+    }
+
     func conversation(for channel: Channel) -> ConversationStore {
         if let existing = conversations[channel.id] { return existing }
         let store = ConversationStore(channel: channel, client: client, userID: user.id)
         store.e2ee = e2ee
+        store.userIDForName = { [weak self] name in self?.people.values.first { $0.user_name == name }?.id }
         store.canonicalEmoji = { [weak self] value in
             self?.emojisByKey[value].map { ":\($0.name):" } ?? ReactionEmoji.key(value)
         }

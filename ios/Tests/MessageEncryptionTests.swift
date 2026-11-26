@@ -210,6 +210,20 @@ struct MessageEncryptionTests {
         #expect(NotificationE2ee.body(userInfo: ["user_id": user], roots: [root], loadKey: { _ in storageKey }) == nil)
     }
 
+    @Test func メンションは平文のmentionsに付けて送り編集では付けない() async throws {
+        let (server, sender, receiver, encryption, _) = try await makePair()
+        defer { sender.cleanUp(); receiver.cleanUp() }
+        let mentions = EncryptedMentions(userIDs: ["00000000-0000-4000-8000-0000000000aa"], channel: true, here: false)
+        try await encryption.send(channel: channel, id: messageID, parent: nil, body: "@alice @channel こんにちは", mentions: mentions)
+        guard case .object(let sent)? = server.accepted["mentions"] else { Issue.record("mentions がありません"); return }
+        #expect(sent["user_ids"] == .array([.string("00000000-0000-4000-8000-0000000000aa")]))
+        #expect(sent["channel"] == .bool(true) && sent["here"] == .bool(false))
+        // 本文の暗号文の中にも入る（受信した端末が、メンションとして表示してよい `@name` を決める）。
+        _ = try receiver.store.processToDevice(server.delivered, keysQuery: dump(.object(try await server.snapshot())))
+        let decrypted = MessageEncryption(store: { receiver.store }, api: server).decrypt(row(server))
+        #expect(decrypted.payload?.mentions.userIds == mentions.userIDs && decrypted.payload?.mentions.channel == true)
+    }
+
     @Test func 送信した本文は送信端末でも再起動後に読める() async throws {
         let (server, sender, receiver, encryption, _) = try await makePair()
         defer { sender.cleanUp(); receiver.cleanUp() }

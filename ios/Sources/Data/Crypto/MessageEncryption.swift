@@ -258,17 +258,17 @@ final class MessageEncryption {
     }
 
     /// 新しい本文を送る。
-    func send(channel: String, id: String, parent: String?, body: String, attachments: [AttachmentInfo] = []) async throws {
+    func send(channel: String, id: String, parent: String?, body: String, attachments: [AttachmentInfo] = [], mentions: EncryptedMentions = EncryptedMentions()) async throws {
         try await serialized {
-            try await self.submit(channel: channel, id: id, parent: parent, body: body, revision: 0, edit: nil, attachments: attachments)
+            try await self.submit(channel: channel, id: id, parent: parent, body: body, revision: 0, edit: nil, attachments: attachments, mentions: mentions)
         }
     }
 
     /// 自分の本文を編集する。元の暗号文を復号して、最新の版であることを確かめてから、次の版を送る。
-    func edit(_ row: EncryptedRow, body: String) async throws {
+    func edit(_ row: EncryptedRow, body: String, mentions: EncryptedMentions = EncryptedMentions()) async throws {
         try await serialized {
             try await self.submit(channel: row.channelID, id: row.id, parent: row.parentID, body: body,
-                                  revision: row.revision + 1, edit: row)
+                                  revision: row.revision + 1, edit: row, mentions: mentions)
         }
     }
 
@@ -286,7 +286,7 @@ final class MessageEncryption {
     }
 
     private func submit(channel: String, id: String, parent: String?, body: String, revision: UInt64, edit: EncryptedRow?,
-                        attachments newAttachments: [AttachmentInfo] = []) async throws {
+                        attachments newAttachments: [AttachmentInfo] = [], mentions: EncryptedMentions = EncryptedMentions()) async throws {
         let store = try currentStore()
         var minimum = latestEpochs[channel] ?? 0
         for _ in 0..<3 {
@@ -328,7 +328,7 @@ final class MessageEncryption {
                 do { encrypted = try store.encrypt(current.session, senderKey: current.senderKey, message: OutgoingMessage(
                     messageId: id, parentId: parent, revision: revision,
                     content: ZooCrypto.MessageContent(body: body, format: "mfm", kind: kind),
-                    mentions: Mentions(userIds: [], channel: false, here: false), attachments: attachments))
+                    mentions: Mentions(userIds: mentions.userIDs, channel: mentions.channel, here: mentions.here), attachments: attachments))
                 } catch E2eeStoreError.senderChanged {
                     // 暗号化の直前に端末が作り直された。古い鍵で配ったセッションを捨てて、配布先の取得からやり直す。
                     discard(channel)
@@ -344,7 +344,9 @@ final class MessageEncryption {
                     if !attachments.isEmpty { payload["attachment_ids"] = .array(attachments.map { .string($0.attachmentId) }) }
                     payload["id"] = .string(id)
                     payload["channel_id"] = .string(channel)
-                    payload["mentions"] = .object(["user_ids": .array([]), "channel": .bool(false), "here": .bool(false)])
+                    // 通知の宛先を作るための平文（サーバーは本文を読めない）。編集では通知を作らないので、付けない。
+                    payload["mentions"] = .object(["user_ids": .array(mentions.userIDs.map(JSONValue.string)),
+                                                   "channel": .bool(mentions.channel), "here": .bool(mentions.here)])
                 }
                 do {
                     _ = try await request(edit == nil ? "api/messages" : "api/messages/\(id)", method: edit == nil ? "POST" : "PATCH", body: payload)

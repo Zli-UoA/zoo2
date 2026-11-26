@@ -20,6 +20,8 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
     var e2eeNotice: String? = nil
     /// `e2eeNotice` のくわしい説明。あれば、注意の横の ⓘ をタップしたときに出す。表示専用。
     var e2eeNoticeDetail: String? = nil
+    /// 復号した本文の `mentions`（暗号化チャンネルで、メンションとして表示してよい `@name` を決める）。表示専用。
+    var e2eeMentions: DecryptedMentions? = nil
     /// 暗号化に切り替える前の平文のメッセージ（暗号文も `epoch` もない行）。本文はそのまま出し、編集させない。表示専用。
     var e2eeLegacy = false
 
@@ -67,4 +69,11 @@ struct ShapeInteger: Codable, Hashable, Sendable {
         var single = encoder.singleValueContainer()
         try single.encode(value)
     }
+}
+
+/// 復号した `mentions`（暗号化メッセージ）。本文に `@name` があっても、ここにないものはメンションとして表示しない。
+struct DecryptedMentions: Hashable, Sendable {
+    var userIDs: Set<String> = []
+    var channel = false
+    var here = false
 }

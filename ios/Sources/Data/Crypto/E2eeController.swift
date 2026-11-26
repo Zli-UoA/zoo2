@@ -10,8 +10,8 @@ protocol ConversationEncryption: AnyObject {
     /// 復号の結果が変わりうる（鍵が届いた、解錠した）たびに増える。
     var revision: Int { get }
     func decrypt(_ message: Message) -> DecryptedBody
-    func send(channelID: String, id: String, parentID: String?, body: String, attachments: [AttachmentInfo]) async throws
-    func edit(_ message: Message, body: String) async throws
+    func send(channelID: String, id: String, parentID: String?, body: String, attachments: [AttachmentInfo], mentions: EncryptedMentions) async throws
+    func edit(_ message: Message, body: String, mentions: EncryptedMentions) async throws
 }
 
 /// ログインしているユーザーの E2EE（#685）。端末の管理、初回設定と解錠、暗号化チャンネルの送受信をまとめ、
@@ -363,13 +363,13 @@ final class E2eeController: ConversationEncryption {
         return result
     }
 
-    func send(channelID: String, id: String, parentID: String?, body: String, attachments: [AttachmentInfo]) async throws {
-        try await encryption.send(channel: channelID, id: id, parent: parentID, body: body, attachments: attachments)
+    func send(channelID: String, id: String, parentID: String?, body: String, attachments: [AttachmentInfo], mentions: EncryptedMentions) async throws {
+        try await encryption.send(channel: channelID, id: id, parent: parentID, body: body, attachments: attachments, mentions: mentions)
     }
 
-    func edit(_ message: Message, body: String) async throws {
+    func edit(_ message: Message, body: String, mentions: EncryptedMentions) async throws {
         guard let row = row(message) else { throw MessageEncryptionError.editForbidden }
-        try await encryption.edit(row, body: body)
+        try await encryption.edit(row, body: body, mentions: mentions)
     }
 
 }
