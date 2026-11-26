@@ -126,6 +126,26 @@ impl Links {
         }
     }
 
+    /// 覚える件数を超えた分を古い順に捨てる。購読中のチャンネルの結果は残す。取得のタスクは
+    /// 取った ID をもう一度は取らないので、捨てると読み込み中のままになる。
+    fn evict(&mut self) {
+        let mut excess = self.order.len().saturating_sub(CACHE_SIZE);
+        let Self {
+            order,
+            results,
+            channels,
+            ..
+        } = self;
+        order.retain(|key| {
+            let drop = excess > 0 && !channels.contains_key(&key.0);
+            if drop {
+                excess -= 1;
+                results.remove(key);
+            }
+            !drop
+        });
+    }
+
     pub fn apply(&mut self, event: LinkedEvent) {
         match event {
             LinkedEvent::Rows { channel_id, rows } => {
@@ -146,11 +166,7 @@ impl Links {
                         self.order.push_back(key);
                     }
                 }
-                while self.order.len() > CACHE_SIZE {
-                    if let Some(old) = self.order.pop_front() {
-                        self.results.remove(&old);
-                    }
-                }
+                self.evict();
             }
             LinkedEvent::Failed {
                 channel_id,
@@ -377,6 +393,30 @@ mod tests {
             links.fetch(&key("m1"), start),
             LinkedFetch::Loading { stalled: false }
         );
+    }
+
+    #[tokio::test]
+    async fn keeps_results_of_subscribed_channels() {
+        let mut links = Links::default();
+        let start = Instant::now();
+        links.visible = vec![key("m0")];
+        links.sync(start, |_, _| tokio::spawn(std::future::pending()));
+        for index in 0..=CACHE_SIZE {
+            links.apply(rows(&format!("m{index}"), Some("本文")));
+        }
+        // 購読中は、上限を超えても捨てない。
+        assert!(matches!(
+            links.fetch(&key("m0"), start),
+            LinkedFetch::Found(_)
+        ));
+        links.visible.clear();
+        links.sync(start + RELEASE_DELAY, |_, _| unreachable!());
+        links.apply(LinkedEvent::Rows {
+            channel_id: "c2".into(),
+            rows: vec![("x".into(), None)],
+        });
+        assert_eq!(links.results.len(), CACHE_SIZE);
+        assert!(!links.results.contains_key(&key("m0")));
     }
 
     #[test]
