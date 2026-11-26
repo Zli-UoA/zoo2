@@ -331,6 +331,44 @@ final class E2eeSetup {
         try session.addPasskeySlot(credentialId: result.credentialID, prfSalt: salt, prfOutput: result.prfOutput, label: label)
     }
 
+
+    // MARK: - E2EE のリセット（docs/e2ee.md の「失効の手順」）
+
+    /// リセットの前提にする、サーバーの今の SSSS（`GET /api/e2ee/secret_storage` で読んだ既定の鍵と `secrets_revision`）。
+    struct ResetExpectation: Equatable {
+        let defaultKeyID: String?
+        let secretsRevision: UInt64?
+    }
+
+    /// E2EE のリセットを始める。新しい鍵とリカバリーキーを作る（利用者にリカバリーキーを控えてもらう）。
+    func beginReset() async throws -> (start: SetupStart, expectation: ResetExpectation) {
+        let current = try await api.secretStorage()
+        let object = try jsonObject(current)
+        let expectation = Self.hasSecretStorage(current)
+            ? ResetExpectation(defaultKeyID: object.string("default_key_id"), secretsRevision: Self.secretsRevision(current))
+            : ResetExpectation(defaultKeyID: nil, secretsRevision: nil)
+        return (try begin(), expectation)
+    }
+
+    /// E2EE のリセットを保存する。SSSS の作り直し（サーバーの今の鍵と版が前提）、クロス署名鍵 3 つの差し替え、今の端末への署名、
+    /// 新しい鍵バックアップの版の順。403 `E2EE_REAUTH_REQUIRED` は `E2eeSetupError.reauthRequired`（同じ鍵のまま再認証してやり直す）、
+    /// SSSS の 409 は、読み直して自分の鍵が保存済みなら続け、別の鍵なら `E2eeSetupError.conflict`。
+    func completeReset(_ session: SetupSession, expectation: ResetExpectation, reauth: String?) async throws {
+        let body = try session.resetSecretStorageRequest(expectedDefaultKeyId: expectation.defaultKeyID,
+                                                         expectedSecretsRevision: expectation.secretsRevision)
+        let revision: UInt64?
+        do {
+            revision = try await api.createSecretStorageKey(body, reauth: reauth)
+        } catch let failure as E2eeAPIError {
+            guard failure.isSsssConflict else { throw Self.mapReauth(failure) }
+            // 応答をなくして送り直したか、別の端末が先にリセットした。読み直して判定する。
+            let current = try await api.secretStorage()
+            guard try jsonObject(current).string("default_key_id") == session.keyId() else { throw E2eeSetupError.conflict }
+            revision = Self.secretsRevision(current)
+        }
+        try await saveRemaining(session, secretsRevision: revision, reauth: reauth, reset: true)
+    }
+
     /// 初回設定を保存する。SSSS、クロス署名鍵、端末への署名、バックアップの版の順。
     ///
     /// - 403 `E2EE_REAUTH_REQUIRED` なら `E2eeSetupError.reauthRequired`。同じ鍵のまま再認証してやり直す。
@@ -366,8 +404,8 @@ final class E2eeSetup {
     /// SSSS を保存したあと（または解錠したあと）の続きを保存し、自分の鍵を暗号ストアに保存する。応答をなくして
     /// 送り直しても、同じ鍵なら成功する（サーバーの冪等の規則）。続きの保存は、作った（開けた）SSSS 鍵が
     /// サーバーの既定の鍵のままであることを前提にする（`expected_default_key_id`）。
-    func saveRemaining(_ session: SetupSession, secretsRevision: UInt64?, reauth: String?) async throws {
-        let plan = try await planRemaining(session)
+    func saveRemaining(_ session: SetupSession, secretsRevision: UInt64?, reauth: String?, reset: Bool = false) async throws {
+        let plan = try await planRemaining(session, reset: reset)
         let keyID = session.keyId()
         func withPrecondition(_ body: String) throws -> String {
             var object = try jsonObject(body)
@@ -393,7 +431,7 @@ final class E2eeSetup {
         } catch {}
     }
 
-    private func planRemaining(_ session: SetupSession) async throws -> ResumePlan {
+    private func planRemaining(_ session: SetupSession, reset: Bool = false) async throws -> ResumePlan {
         let server = try await serverState()
         let current = try await api.secretStorage()
         // 別の端末が SSSS を作り直した（同時の初回設定など）。手元の鍵でクロス署名鍵や版を差し替えると、
@@ -402,6 +440,7 @@ final class E2eeSetup {
         guard try jsonObject(current).string("default_key_id") == session.keyId() else { throw E2eeSetupError.conflict }
         let deviceKeys = try await store().deviceKeys()
         do {
+            if reset { return try session.planReset(keysQuery: server.keys, versions: server.versions, deviceKeys: deviceKeys) }
             return try session.plan(keysQuery: server.keys, versions: server.versions, deviceKeys: deviceKeys)
         } catch ZooCryptoError.ServerKeyMismatch(let reason) {
             throw E2eeSetupError.serverKeyMismatch(reason)

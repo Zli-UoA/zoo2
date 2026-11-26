@@ -33,6 +33,7 @@
 		1E7120C4C61C002DCC2A219B /* Passkeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11C88737BD962A470DDDCD69 /* Passkeys.swift */; };
 		1F6A754BDC30EAD03664B785 /* CryptoBindingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD8C8688E49CEFE743C30BBB /* CryptoBindingTests.swift */; };
 		21FBA003EE25E46B71570538 /* EncryptionSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A81E691EC7FDF48530929C7 /* EncryptionSetupView.swift */; };
+		22EAEABA4DD9FED299B5D4D0 /* ResetView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17F0A8F07AE43C6093D6527A /* ResetView.swift */; };
 		26CF4C18C8BEB0A8CF709993 /* ReactionGlyph.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA787668A52085815A631603 /* ReactionGlyph.swift */; };
 		271C2664053C32BFF3DE7410 /* ConversationDestination.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C78FF3DA140FCB63A561014 /* ConversationDestination.swift */; };
 		271D71364DCDE2BD7CF35296 /* ThreadAppearanceObserver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 700FE578491E5FDFF05429E3 /* ThreadAppearanceObserver.swift */; };
@@ -331,6 +332,7 @@
 		1664E69F66D50F581EA2FF8C /* InboxView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxView.swift; sourceTree = "<group>"; };
 		16CF3EB75D2C45B7013FE2FD /* ReactionChips.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReactionChips.swift; sourceTree = "<group>"; };
 		17B7F6D3EBD0B387B6C5B77A /* NativeCallMediaTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeCallMediaTests.swift; sourceTree = "<group>"; };
+		17F0A8F07AE43C6093D6527A /* ResetView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResetView.swift; sourceTree = "<group>"; };
 		1A17A85DE13BEC86A1BA4001 /* RemoteImageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteImageTests.swift; sourceTree = "<group>"; };
 		1B5A97DE9BE174514BFEFB1C /* SyncSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncSession.swift; sourceTree = "<group>"; };
 		1E0A14CA71AF06C828E104FC /* OwnDevicesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OwnDevicesView.swift; sourceTree = "<group>"; };
@@ -762,6 +764,7 @@
 			children = (
 				3A81E691EC7FDF48530929C7 /* EncryptionSetupView.swift */,
 				1E0A14CA71AF06C828E104FC /* OwnDevicesView.swift */,
+				17F0A8F07AE43C6093D6527A /* ResetView.swift */,
 				D66FC0B69F136D13372E7682 /* RevocationView.swift */,
 				E7428B65B987DF15D0327D39 /* VerificationViews.swift */,
 			);
@@ -1458,6 +1461,7 @@
 				F90953CE7C537093F3126C14 /* RecentEmojiStore.swift in Sources */,
 				A22185231054340280D73F41 /* RemoteImageDiskCache.swift in Sources */,
 				E1A132CB97C34E7338A5988B /* RemoteImageStore.swift in Sources */,
+				22EAEABA4DD9FED299B5D4D0 /* ResetView.swift in Sources */,
 				A08EAA4FB9EE6ABA5765D109 /* RevocationView.swift in Sources */,
 				070C2FD149347CE8B7E7FDE4 /* RootView.swift in Sources */,
 				45A27E9D3E513F620D9347E4 /* ShapeStream.swift in Sources */,

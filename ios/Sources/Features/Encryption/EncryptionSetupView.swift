@@ -40,6 +40,7 @@ struct EncryptionSetupView: View {
     @State private var recoveryKey = ""
     @State private var saved = false
     @State private var copied = false
+    @State private var resetting = false
 
     /// 初回設定の段階。リカバリーキーは、パスキーを足したあとに表示する（サーバーに書く直前）。
     private enum Phase {
@@ -145,7 +146,11 @@ struct EncryptionSetupView: View {
             }
             .padding(16)
             .background(AppDesign.surface, in: RoundedRectangle(cornerRadius: AppDesign.cornerRadius))
+            Button("パスキーもリカバリーキーもなくした場合（リセット）", role: .destructive) { resetting = true }
+                .font(.footnote)
+                .accessibilityIdentifier("encryption-reset-open")
         }
+        .sheet(isPresented: $resetting) { ResetView(e2ee: e2ee) }
     }
 
     private var intro: some View {

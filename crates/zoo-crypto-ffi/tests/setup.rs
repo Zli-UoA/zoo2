@@ -365,3 +365,69 @@ fn revocation_full_round_trip() {
     assert_eq!(own.user_signing().usage(), KeyUsage::UserSigning);
     revocation.apply_to_trust(&trust).unwrap();
 }
+
+/// E2EE のリセット：他人が作った（または開けない）SSSS がすでにあるとき、その鍵と版を前提にして作り直す。
+#[test]
+fn reset_replaces_secret_storage_and_keys() {
+    let account = DeviceAccount::new(ALICE.into(), DEVICE.into()).unwrap();
+    // 先に、別の鍵で初回設定を済ませたサーバー。
+    let first = begin_setup(ALICE.into()).unwrap();
+    let old_response = storage_response(&first.session.secret_storage_request().unwrap(), 4);
+    let mut server = Server::default();
+    let old_session =
+        unlock_setup_with_recovery_key(ALICE.into(), old_response.clone(), first.recovery_key)
+            .unwrap()
+            .unwrap();
+    let old_plan = old_session
+        .plan(
+            server.keys_query(),
+            server.versions(),
+            account.device_keys(),
+        )
+        .unwrap();
+    server.apply(&old_plan);
+
+    // リセット：新しい鍵を作り、サーバーの今の既定の鍵と版を前提にする。
+    let reset = begin_setup(ALICE.into()).unwrap();
+    let old: Value = serde_json::from_str(&old_response).unwrap();
+    let request: Value = serde_json::from_str(
+        &reset
+            .session
+            .reset_secret_storage_request(
+                Some(old["default_key_id"].as_str().unwrap().to_owned()),
+                old["secrets_revision"].as_u64(),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(request["expected_default_key_id"], old["default_key_id"]);
+    assert_eq!(request["expected_secrets_revision"], 4);
+    assert_ne!(request["key_id"], old["default_key_id"]);
+
+    // 初回設定の要求は、前提の値が空のまま。
+    let first_request: Value =
+        serde_json::from_str(&reset.session.secret_storage_request().unwrap()).unwrap();
+    assert!(first_request["expected_default_key_id"].is_null());
+
+    // クロス署名鍵は 3 つとも差し替え（サーバーの今の鍵が前提）、新しい版を作る（今の版が前提）。
+    let plan = reset
+        .session
+        .plan_reset(
+            server.keys_query(),
+            server.versions(),
+            account.device_keys(),
+        )
+        .unwrap();
+    let cross: Value = serde_json::from_str(&plan.cross_signing.unwrap()).unwrap();
+    assert!(cross["expected_keys"]["master"].is_string());
+    assert!(plan.device_signature.is_some());
+    let version: Value = serde_json::from_str(&plan.backup_version.unwrap()).unwrap();
+    assert_eq!(version["expected_current_version"], "1");
+
+    // 解錠で取り出した鍵では、リセットの要求を作れない。
+    assert!(
+        old_session
+            .reset_secret_storage_request(None, None)
+            .is_err()
+    );
+}

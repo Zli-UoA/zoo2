@@ -73,7 +73,14 @@ final class FakeSetupServer: E2eeSetupAPI {
         try fail("secret_storage")
         let body = object(body)
         guard case .string(let keyID) = body["key_id"] else { fatalError() }
-        if defaultKeyID != nil { throw E2eeAPIError(status: 409, code: "E2EE_SSSS_CONFLICT") }
+        if let current = defaultKeyID {
+            // E2EE のリセット：サーバーの今の既定の鍵と版が前提のときだけ、作り直す（鍵スロットも置き換える）。
+            guard case .string(let expected) = body["expected_default_key_id"], expected == current,
+                  case .number(let expectedRevision)? = body["expected_secrets_revision"], UInt64(expectedRevision) == revision else {
+                throw E2eeAPIError(status: 409, code: "E2EE_SSSS_CONFLICT")
+            }
+            slots = []
+        }
         defaultKeyID = keyID
         storageKey = body["key"]!
         if case .object(let incoming) = body["secrets"] {
@@ -283,6 +290,57 @@ struct E2eeSetupTests {
         try await device.setup.completeSetup(start.session, reauth: "t")
         #expect(try await device.setup.loadStatus() == .unlocked)
         #expect(server.versions.count == 1)
+    }
+
+    @Test func E2EEのリセットはサーバーの今の鍵と版を前提に鍵を作り直して保存する() async throws {
+        let server = FakeSetupServer(userID: user)
+        let first = try Device(server)
+        let start = try first.setup.begin()
+        try await first.setup.completeSetup(start.session, reauth: "t")
+        let oldKeyID = server.defaultKeyID
+        let oldMaster = server.keys["master_key"]
+        let second = try Device(server)
+        defer { first.cleanUp(); second.cleanUp() }
+
+        let (reset, expectation) = try await second.setup.beginReset()
+        #expect(expectation.defaultKeyID == oldKeyID && expectation.secretsRevision == 1)
+        // 再認証なしでは保存できない（何も変わらない）。
+        await #expect(throws: E2eeSetupError.reauthRequired) {
+            try await second.setup.completeReset(reset.session, expectation: expectation, reauth: nil)
+        }
+        #expect(server.defaultKeyID == oldKeyID)
+        try await second.setup.completeReset(reset.session, expectation: expectation, reauth: "t")
+        // 新しい SSSS 鍵と、新しいマスター鍵、新しい版（今の版）になる。
+        #expect(server.defaultKeyID == reset.session.keyId() && server.defaultKeyID != oldKeyID)
+        #expect(server.keys["master_key"] != oldMaster)
+        #expect(server.versions.count == 2)
+        #expect(server.slots.count == 1)
+        #expect(second.store.hasOwnKeys && second.store.secretsRevision == server.revision)
+        // 古い端末は、サーバーの鍵が手元の鍵と違うので、解錠し直しを求められる。
+        #expect(try await first.setup.loadStatus() == .locked(.mismatch))
+        // 新しいリカバリーキーで、別の端末が解錠できる。
+        let third = try Device(server)
+        defer { third.cleanUp() }
+        _ = try await third.setup.unlock(.recovery(reset.recoveryKey))
+        #expect(third.store.hasOwnKeys)
+    }
+
+    @Test func E2EEのリセットは前提の版が古ければ別の端末が先にリセットしたとして止まる() async throws {
+        let server = FakeSetupServer(userID: user)
+        let first = try Device(server)
+        let start = try first.setup.begin()
+        try await first.setup.completeSetup(start.session, reauth: "t")
+        let second = try Device(server)
+        let other = try Device(server)
+        defer { first.cleanUp(); second.cleanUp(); other.cleanUp() }
+        let (mine, expectation) = try await second.setup.beginReset()
+        // 読んだあとに、別の端末が先にリセットを終える。
+        let (theirs, theirExpectation) = try await other.setup.beginReset()
+        try await other.setup.completeReset(theirs.session, expectation: theirExpectation, reauth: "t")
+        await #expect(throws: E2eeSetupError.conflict) {
+            try await second.setup.completeReset(mine.session, expectation: expectation, reauth: "t")
+        }
+        #expect(server.defaultKeyID == theirs.session.keyId())
     }
 
     @Test func 別の端末が先に初回設定をしていたら手元の鍵を捨てる() async throws {

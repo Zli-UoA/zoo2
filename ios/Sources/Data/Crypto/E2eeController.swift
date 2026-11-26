@@ -281,6 +281,30 @@ final class E2eeController: ConversationEncryption {
         finished()
     }
 
+    /// E2EE のリセットを始める（解錠できないとき。他人が作った SSSS を含む）。新しい鍵とリカバリーキーを作る。
+    func beginReset() async throws -> ResetHandle {
+        let started = try await setup.beginReset()
+        return ResetHandle(start: SetupStartHandle(started.start), expectation: started.expectation)
+    }
+
+    /// リセットに、パスキー（PRF）のスロットを足す。
+    func addResetPasskey(_ reset: ResetHandle, label: String?) async throws {
+        try await setup.addSetupPasskey(reset.start.start.session, client: passkeys, rpID: rpID, label: label)
+    }
+
+    /// リセットを保存する。直前の再認証が要るので、ここで取ってから保存する（足りなければ取り直す）。
+    func completeReset(_ reset: ResetHandle) async throws {
+        var attempts = 0
+        while true {
+            let token = try await reauthenticate()
+            do {
+                try await setup.completeReset(reset.start.start.session, expectation: reset.expectation, reauth: token)
+                break
+            } catch E2eeSetupError.reauthRequired where attempts < 1 { attempts += 1 }
+        }
+        finished()
+    }
+
     /// 解錠する。初回設定の再開で再認証が要るときは、ここで取って続きを保存する。
     func unlock(_ method: UnlockMethod) async throws {
         let result = try await setup.unlock(method)
@@ -351,6 +375,14 @@ final class E2eeController: ConversationEncryption {
 }
 
 /// 初回設定の途中の状態（SwiftUI の `@State` に持てるように包む）。
+/// リセットの途中の状態（新しい鍵と、前提にしたサーバーの SSSS）。
+final class ResetHandle: @unchecked Sendable {
+    let start: SetupStartHandle
+    let expectation: E2eeSetup.ResetExpectation
+    init(start: SetupStartHandle, expectation: E2eeSetup.ResetExpectation) { self.start = start; self.expectation = expectation }
+    var recoveryKey: String { start.recoveryKey }
+}
+
 final class SetupStartHandle: @unchecked Sendable {
     let start: SetupStart
     var recoveryKey: String { start.recoveryKey }
