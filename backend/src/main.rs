@@ -28,6 +28,11 @@ async fn main() -> anyhow::Result<()> {
     }
 
     backend::emoji_service::service_url()?;
+    if let Some(sfu) =
+        backend::call_sfu::CallSfuConfig::from_env().map_err(|e| anyhow::anyhow!(e))?
+    {
+        tracing::info!(config = ?sfu, "Call SFU enabled");
+    }
 
     // データベース接続初期化 (Toasty ORM)
     let db = init_db(&config.database_url).await?;

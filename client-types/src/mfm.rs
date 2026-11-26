@@ -61,7 +61,25 @@ pub fn resolve_emoji(input: &str) -> Option<String> {
     EMOJI_CATALOG.read().unwrap().resolve_emoji(input)
 }
 pub fn unicode_shortcode(name: &str) -> Option<String> {
-    EMOJI_CATALOG.read().unwrap().unicode(name)
+    kitchen_shortcode_label(name).or_else(|| EMOJI_CATALOG.read().unwrap().unicode(name))
+}
+
+// Text clients show the two source glyphs for image-only Kitchen shortcodes.
+fn kitchen_shortcode_label(name: &str) -> Option<String> {
+    let pair = name.strip_prefix("kitchen_")?;
+    if pair.len() > 256 {
+        return None;
+    }
+    let (left, right) = pair.split_once('_')?;
+    let glyph = |hex: &str| -> Option<String> {
+        let value: String = hex
+            .split('-')
+            .map(|part| char::from_u32(u32::from_str_radix(part, 16).ok()?))
+            .collect::<Option<String>>()?;
+        emojis::get(&value)?;
+        Some(value)
+    };
+    Some(format!("{} + {}", glyph(left)?, glyph(right)?))
 }
 
 #[cfg(test)]
@@ -261,6 +279,8 @@ pub fn parse_with_accounts(
     let mut in_code = false;
     for raw in content.split('\n') {
         let line = raw.strip_suffix('\r').unwrap_or(raw);
+        // 制御文字を含む行は、記法を解析する前に置き換える。端末に出力されるのを防ぐ。
+        let line = &*crate::text::sanitize_display(line);
         if line.trim_start().starts_with("```") {
             in_code = !in_code;
             continue;
@@ -456,16 +476,15 @@ impl Inline<'_> {
             icon.avatar_url = profile.avatar_url.clone();
             icon.avatar_fallback = Some(account_initial(profile));
             vec![
-                Span::styled("@".to_owned(), style),
                 icon,
                 Span::styled(
                     format!(
                         " {}",
-                        if profile.display_name.is_empty() {
+                        crate::text::sanitize_display(if profile.display_name.is_empty() {
                             &profile.username
                         } else {
                             &profile.display_name
-                        }
+                        })
                     ),
                     style,
                 ),
@@ -483,6 +502,7 @@ fn account_initial(profile: &crate::accounts::AccountProfile) -> String {
     } else {
         &profile.display_name
     };
+    let label = crate::text::sanitize_display(label);
     label.chars().next().unwrap_or('?').to_string()
 }
 
@@ -619,8 +639,16 @@ fn shortcode(scan: &mut Scan, i: usize, base: Style) -> Option<(usize, Vec<Span>
     {
         return None;
     }
+    // 辞書の値も、サーバーから届いた文字列として無害化する。
     let emoji = unicode_shortcode(name)?;
-    Some((name.len() + 2, vec![Span::styled(emoji, base)]))
+    Some((name.len() + 2, shortcode_spans(&emoji, base)))
+}
+
+fn shortcode_spans(emoji: &str, base: Style) -> Vec<Span> {
+    vec![Span::styled(
+        crate::text::sanitize_display(emoji).into_owned(),
+        base,
+    )]
 }
 
 fn unixtime(body: &str, base: Style) -> Vec<Span> {
@@ -656,6 +684,36 @@ mod tests {
             .iter()
             .map(|line| line.to_string())
             .collect()
+    }
+
+    #[test]
+    fn shortcode_values_are_sanitized() {
+        // 共有の辞書は変えず、辞書の値から Span を作る部分だけを確かめる。
+        let spans = shortcode_spans("a\tb\u{1b}", Style::new());
+        let text: String = spans.iter().map(|span| span.content.as_str()).collect();
+        assert_eq!(text, "a    b\u{FFFD}");
+        assert_eq!(shortcode_spans("👍", Style::new())[0].content, "👍");
+    }
+
+    #[test]
+    fn control_characters_are_replaced_in_every_span() {
+        let esc = "\u{1b}]52;c;AAAA\u{7}";
+        for content in [
+            format!("```\n{esc}\n```"),
+            format!("本文{esc}"),
+            format!("> 引用{esc}"),
+            format!("**太字{esc}**"),
+        ] {
+            for line in parse(&content, None) {
+                for span in line.spans {
+                    assert!(
+                        !span.content.chars().any(char::is_control),
+                        "{content:?} -> {:?}",
+                        span.content
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -796,6 +854,8 @@ mod tests {
         );
         let text: String = spans.iter().map(|span| span.content.as_str()).collect();
         assert!(text.contains("AuthZ Name"));
+        assert!(text.contains("◉ AuthZ Name"));
+        assert!(!text.contains("@◉ AuthZ Name"));
         assert!(text.contains(":@unknown:"));
         assert!(text.contains(":@alice: @alice"));
         assert!(text.ends_with(":@alice:"));
@@ -833,5 +893,20 @@ mod tests {
             parse_with_accounts(":@unknown:", None, &profiles)[0].spans[0].avatar_fallback,
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod kitchen_shortcode_tests {
+    use super::*;
+    #[test]
+    fn image_shortcodes_have_readable_text_fallbacks() {
+        assert_eq!(
+            unicode_shortcode("kitchen_1f431_1f600").as_deref(),
+            Some("🐱 + 😀")
+        );
+        assert!(kitchen_shortcode_label("kitchen_0_1").is_none());
+        assert!(kitchen_shortcode_label("kitchen_d800_1f431").is_none());
+        assert!(kitchen_shortcode_label("kitchen_1f431_1f600_extra").is_none());
     }
 }

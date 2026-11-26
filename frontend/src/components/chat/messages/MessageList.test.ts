@@ -5,8 +5,190 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it, vi } from "vite-plus/test";
 
 import { LocaleProvider, useLocale } from "../../i18n/LocaleProvider";
+import { MentionUserNamesContext } from "../../../lib/e2ee/messageDecryption";
 import { MessageList } from "./MessageList";
 import type { FeedMessage } from "./messageFormat";
+
+it.each([
+  { currentUserId: "viewer", viewerId: undefined, highlighted: true },
+  { currentUserId: null, viewerId: "viewer", highlighted: true },
+  { currentUserId: "viewer", viewerId: null, highlighted: false },
+])(
+  "passes mention identity through the list: $currentUserId / $viewerId",
+  ({ currentUserId, viewerId, highlighted }) => {
+    const noop = () => {};
+    const html = renderToStaticMarkup(
+      createElement(MentionUserNamesContext.Provider, {
+        value: new Map([["viewer", "alice"]]),
+        children: createElement(LocaleProvider, {
+          children: createElement(MessageList, {
+            messages: [
+              {
+                id: "mention-1",
+                user_id: "other",
+                content: "@alice hello",
+                created_at: "2026-01-02 00:00:00.000",
+                parent_id: null,
+                display_name: "Bob",
+              },
+            ],
+            isLoading: false,
+            isError: false,
+            currentUserId,
+            viewerId,
+            editingId: null,
+            editingText: "",
+            onEditingTextChange: noop,
+            onStartEdit: noop,
+            onCancelEdit: noop,
+            onSaveEdit: noop,
+            onRequestDelete: noop,
+            reactions: new Map(),
+            kitchenCatalog: null,
+            canReact: false,
+            onReaction: noop,
+            onPickReaction: noop,
+          }),
+        }),
+      }),
+    );
+    expect(html).toContain("@alice");
+    expect(html.includes("bg-mention/[0.08]")).toBe(highlighted);
+  },
+);
+
+it.each([
+  { currentUserId: "viewer", viewerId: undefined, mine: true, ownActions: true },
+  { currentUserId: null, viewerId: "viewer", mine: true, ownActions: false },
+  { currentUserId: "viewer", viewerId: null, mine: true, ownActions: true },
+  { currentUserId: null, viewerId: null, mine: false, ownActions: false },
+])(
+  "identifies viewer reactions without enabling author actions: $currentUserId / $viewerId",
+  ({ currentUserId, viewerId, mine, ownActions }) => {
+    localStorage.setItem("zoo-locale", "ja");
+    const noop = () => {};
+    try {
+      const html = renderToStaticMarkup(
+        createElement(LocaleProvider, {
+          children: createElement(MessageList, {
+            messages: [
+              {
+                id: "react-1",
+                user_id: "viewer",
+                content: "hello",
+                created_at: "2026-01-02 00:00:00.000",
+                parent_id: null,
+                display_name: "Alice",
+                display_data: {
+                  emojis: {},
+                  attachments: [],
+                  reply_count: 0,
+                  reactions: [
+                    {
+                      id: "r1",
+                      message_id: "react-1",
+                      user_id: "viewer",
+                      emoji: "👍",
+                      created_at: "2026-01-02 00:00:00.000",
+                      user_name: "alice",
+                      display_name: "Alice",
+                    },
+                  ],
+                },
+              },
+            ],
+            isLoading: false,
+            isError: false,
+            currentUserId,
+            viewerId,
+            editingId: null,
+            editingText: "",
+            onEditingTextChange: noop,
+            onStartEdit: noop,
+            onCancelEdit: noop,
+            onSaveEdit: noop,
+            onRequestDelete: noop,
+            reactions: new Map(),
+            kitchenCatalog: null,
+            canReact: false,
+            onReaction: noop,
+            onPickReaction: noop,
+          }),
+        }),
+      );
+      expect(html.includes('aria-pressed="true"')).toBe(mine);
+      expect(html.includes("bg-brand-muted")).toBe(mine);
+      expect(html.includes("自分もリアクション済み")).toBe(mine);
+      expect(html.includes('aria-label="メッセージを編集"')).toBe(ownActions);
+    } finally {
+      localStorage.clear();
+    }
+  },
+);
+
+it.each([
+  { label: "active row", threadArchiveAt: null, archived: false },
+  { label: "archived thread root", threadArchiveAt: "2026-01-03T00:00:00Z", archived: true },
+])("disables row reactions on $label", ({ threadArchiveAt, archived }) => {
+  localStorage.setItem("zoo-locale", "ja");
+  const noop = () => {};
+  try {
+    const html = renderToStaticMarkup(
+      createElement(LocaleProvider, {
+        children: createElement(MessageList, {
+          messages: [
+            {
+              id: "react-archived",
+              user_id: "other",
+              content: "hello",
+              created_at: "2026-01-02 00:00:00.000",
+              parent_id: null,
+              thread_archive_at: threadArchiveAt,
+              display_name: "Bob",
+              display_data: {
+                emojis: {},
+                attachments: [],
+                reply_count: 0,
+                reactions: [
+                  {
+                    id: "r1",
+                    message_id: "react-archived",
+                    user_id: "other",
+                    emoji: "👍",
+                    created_at: "2026-01-02 00:00:00.000",
+                    user_name: "bob",
+                    display_name: "Bob",
+                  },
+                ],
+              },
+            },
+          ],
+          isLoading: false,
+          isError: false,
+          currentUserId: null,
+          viewerId: "viewer",
+          editingId: null,
+          editingText: "",
+          onEditingTextChange: noop,
+          onStartEdit: noop,
+          onCancelEdit: noop,
+          onSaveEdit: noop,
+          onRequestDelete: noop,
+          reactions: new Map(),
+          kitchenCatalog: null,
+          canReact: true,
+          onReaction: noop,
+          onPickReaction: noop,
+        }),
+      }),
+    );
+    expect(html.includes('aria-disabled="true"')).toBe(archived);
+    expect(html.includes('aria-disabled="false"')).toBe(!archived);
+    expect(html.includes('disabled=""')).toBe(archived);
+  } finally {
+    localStorage.clear();
+  }
+});
 
 async function flush(action: () => unknown) {
   await act(async () => {

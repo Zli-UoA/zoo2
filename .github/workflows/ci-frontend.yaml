@@ -84,6 +84,8 @@ jobs:
 
   runner:
     uses: ./.github/workflows/select-runner.yaml
+    with:
+      large: true
     secrets:
       runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
 
@@ -150,6 +152,12 @@ jobs:
           if [ "$GITHUB_REF" = refs/heads/main ]; then files+=(-f infra/compose.ci-cache-write.yaml); fi
           docker compose --project-directory . "${files[@]}" up -d --build --wait --wait-timeout 60 frontend
 
+      - name: Check frontend build revision
+        run: |
+          html=$(docker compose --project-directory . -f infra/compose.stack.yaml exec -T frontend \
+            wget -q -O - http://127.0.0.1:3000/)
+          printf '%s' "$html" | grep -Fq "data-zoo-build-sha=\"$GITHUB_SHA\""
+
       - name: Check SPA routes and security headers
         run: |
           worker=$(docker compose --project-directory . -f infra/compose.stack.yaml exec -T frontend \
@@ -177,6 +185,19 @@ jobs:
               printf '%s\n' "$connect" | tr ' ' '\n' | grep -Fxq "$origin"
             done
             case "$images $connect" in *avater.zliusercontent.com*) echo "Avatar CSP override was ignored" >&2; exit 1 ;; esac
+          done
+
+      - name: Check .mjs assets are served as JavaScript
+        run: |
+          # PDF.js の worker（.mjs）は module worker として読み込むため、JavaScript の
+          # MIME タイプで配信されている必要がある（#631）。
+          workers=$(docker compose --project-directory . -f infra/compose.stack.yaml exec -T frontend \
+            find /usr/share/nginx/html/assets -name '*.mjs')
+          test -n "$workers"
+          for file in $workers; do
+            headers=$(docker compose --project-directory . -f infra/compose.stack.yaml exec -T frontend \
+              wget -S -O /dev/null "http://127.0.0.1:3000${file#/usr/share/nginx/html}" 2>&1)
+            printf "%s" "$headers" | grep -Eqi "Content-Type: (text|application)/javascript"
           done
 
       - name: Check default avatar CSP in image and Compose
@@ -359,7 +380,7 @@ jobs:
     needs: [runner, crypto-wasm, test-selection]
     # Native type analysis needs headroom beyond kubecamp's 2GiB limit,
     # including the runner processes. Use the shared large-job selector.
-    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"zli-k8s"') }}
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"ubuntu-latest"') }}
     defaults:
       run:
         working-directory: ./frontend
@@ -399,11 +420,15 @@ jobs:
       - name: format / lint / typecheck
         run: pnpm check
 
+      # 翻訳キーの欠落・プレースホルダ不一致・動的キーの未検査箇所を検出する。
+      - name: i18n check
+        run: pnpm check:i18n
+
   build:
     if: fromJSON(needs.test-selection.outputs.frontendBuild).build
     needs: [runner, crypto-wasm, test-selection]
     # Build concurrently with check, with enough memory for bundling.
-    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"zli-k8s"') }}
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"ubuntu-latest"') }}
     defaults:
       run:
         working-directory: ./frontend
@@ -493,7 +518,7 @@ jobs:
       fromJSON(needs.test-selection.outputs.frontend).catalog
     needs: [runner, crypto-wasm, test-selection]
     # Storybook exceeds the 2GiB kubecamp limit, even with a single test page.
-    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"zli-k8s"') }}
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"ubuntu-latest"') }}
     defaults:
       run:
         working-directory: ./frontend

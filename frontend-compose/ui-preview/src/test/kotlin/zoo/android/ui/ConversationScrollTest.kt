@@ -1,0 +1,249 @@
+package zoo.android.ui
+
+import androidx.activity.ComponentActivity
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.height
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.test.*
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.unit.dp
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
+
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35], qualifiers = "ja-rJP-w360dp-h760dp-xhdpi")
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
+class ConversationScrollTest {
+    @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
+
+    private val entries = (1..40).map { TimelineItem("e$it", "はる", "メッセージ $it", "12:00") }
+    private val channel = AndroidScreen.Conversation("dev", "開発", "", entries, InputState())
+
+    @Test
+    fun inputFollowsTheHandleBeforeReleaseInBothDirections() {
+        var screen by mutableStateOf(channel.copy(input = InputState("下書き")))
+        ui.setContent {
+            AndroidScreens(screen, false, true, dispatch = { action ->
+                if (action == AndroidUiAction.UseInputTool(InputTool.Expand)) {
+                    screen = screen.copy(input = screen.input.copy(expanded = !screen.input.expanded))
+                }
+            }) { _, _ -> }
+        }
+
+        val compact = ui.onNodeWithContentDescription("入力欄を広げる")
+        val compactTop = compact.fetchSemanticsNode().boundsInRoot.top
+        val delta = with(ui.density) { 120.dp.toPx() }
+        compact.performTouchInput { down(center); moveBy(Offset(0f, -delta)) }
+        assertTrue(compact.fetchSemanticsNode().boundsInRoot.top < compactTop - delta / 2)
+        compact.performTouchInput { up() }
+
+        val expanded = ui.onNodeWithContentDescription("入力欄を縮める")
+        val expandedTop = expanded.fetchSemanticsNode().boundsInRoot.top
+        expanded.performTouchInput { down(center); moveBy(Offset(0f, delta)) }
+        assertTrue(expanded.fetchSemanticsNode().boundsInRoot.top > expandedTop + delta / 2)
+        expanded.performTouchInput { cancel() }
+        assertEquals(expandedTop, expanded.fetchSemanticsNode().boundsInRoot.top, 1f)
+    }
+
+    @Test
+    fun expandedInputCollapsesEvenWhenTheHandleHasNoRoomToMove() {
+        var expanded by mutableStateOf(true)
+        ui.setContent {
+            Box(Modifier.height(112.dp)) {
+                ConversationInput(InputState("下書き", expanded = expanded), AndroidColors(false),
+                    textChanged = {}, onTool = { if (it == InputTool.Expand) expanded = false })
+            }
+        }
+
+        val handle = ui.onNodeWithContentDescription("入力欄を縮める")
+        val top = handle.fetchSemanticsNode().boundsInRoot.top
+        val distance = with(ui.density) { 90.dp.toPx() }
+        handle.performTouchInput { down(center); moveBy(Offset(0f, distance)) }
+        assertEquals(top, handle.fetchSemanticsNode().boundsInRoot.top, 1f)
+        handle.performTouchInput { cancel() }
+        handle.performTouchInput { down(center); moveBy(Offset(0f, distance / 3)); up() }
+        handle.assertIsDisplayed()
+
+        handle.performTouchInput { down(center); moveBy(Offset(0f, distance)); up() }
+        ui.onNodeWithContentDescription("入力欄を広げる").assertIsDisplayed()
+    }
+
+    @Test
+    fun viewportChangesFollowTheEndAndSuccessfulSendReturnsFromHistory() {
+        var screen by mutableStateOf(channel)
+        var height by mutableStateOf(750.dp)
+        ui.setContent {
+            Box(Modifier.height(height)) {
+                AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> }
+            }
+        }
+
+        val list = ui.onNodeWithTag("conversation-timeline")
+        fun assertAtEnd(id: String) {
+            val last = ui.onNodeWithTag("timeline-entry-$id").assertIsDisplayed().fetchSemanticsNode()
+            assertEquals(list.fetchSemanticsNode().boundsInRoot.bottom, last.positionInRoot.y + last.size.height, 1f)
+        }
+        assertAtEnd("e40")
+        ui.onNode(hasSetTextAction()).performClick()
+        assertAtEnd("e40")
+        ui.runOnIdle { height = 430.dp }
+        assertAtEnd("e40")
+
+        list.performTouchInput { swipeDown() }
+        list.performScrollToIndex(12)
+        val history = ui.onNodeWithTag("timeline-entry-e13")
+        history.assertIsDisplayed()
+        ui.runOnIdle { height = 500.dp }
+        history.assertIsDisplayed()
+
+        ui.runOnIdle { screen = screen.copy(input = InputState(lastSend = "send-1")) }
+        assertAtEnd("e40")
+        ui.runOnIdle { screen = screen.copy(entries = entries + TimelineItem("sent", "はる", "送信済み", "12:01")) }
+        assertAtEnd("sent")
+    }
+
+    @Test
+    fun returningToAConversationRestoresTheSameMessageAfterEarlierRowsArrive() {
+        var screen by mutableStateOf<AndroidScreen>(channel)
+        ui.setContent {
+            AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> }
+        }
+
+        val list = ui.onNodeWithTag("conversation-timeline")
+        val history = ui.onNodeWithTag("timeline-entry-e13")
+        list.performTouchInput { swipeDown() }
+        list.performScrollToIndex(12)
+        val originalTop = history.fetchSemanticsNode().boundsInRoot.top
+
+        ui.runOnIdle { screen = AndroidScreen.Channels(emptyList()) }
+        list.assertDoesNotExist()
+        val earlier = (1..5).map { TimelineItem("earlier-$it", "はる", "過去 $it", "11:00") }
+        ui.runOnIdle { screen = channel.copy(entries = emptyList()) }
+        ui.onNodeWithTag("conversation-timeline").assertDoesNotExist()
+        ui.runOnIdle { screen = channel.copy(entries = earlier + entries) }
+
+        assertEquals(originalTop, history.fetchSemanticsNode().boundsInRoot.top, 1f)
+    }
+
+    @Test
+    fun openingAThreadKeepsItsRootVisibleWhenRepliesArrive() {
+        val root = TimelineItem("root", "はる", "親メッセージ", "12:00")
+        var screen by mutableStateOf(AndroidScreen.Thread("開発", root, emptyList(), InputState(), historyReady = false))
+        ui.setContent { AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> } }
+
+        val parent = ui.onNodeWithTag("timeline-entry-root")
+        parent.assertIsDisplayed()
+        ui.runOnIdle { screen = screen.copy(replies = entries, historyReady = true) }
+        parent.assertIsDisplayed()
+    }
+
+    @Test
+    fun aRequestedMessageTakesPriorityOverAnUnseenSend() {
+        var screen by mutableStateOf<AndroidScreen>(channel)
+        ui.setContent { AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> } }
+
+        ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
+        ui.runOnIdle {
+            screen = channel.copy(entries = entries.drop(10), input = InputState(lastSend = "send-1"),
+                focusMessage = "e3", focusRequest = "open-e3")
+        }
+        ui.onNodeWithTag("timeline-entry-e3").assertDoesNotExist()
+        ui.runOnIdle {
+            screen = channel.copy(input = InputState(lastSend = "send-1"), focusMessage = "e3", focusRequest = "open-e3")
+        }
+        ui.onNodeWithTag("timeline-entry-e3").assertIsDisplayed()
+    }
+
+    @Test
+    fun aLaterSendFollowsTheEndWhenTheRequestedMessageIsUnavailable() {
+        val initial = channel.copy(focusMessage = "missing", focusRequest = "open-missing")
+        var screen by mutableStateOf(initial)
+        ui.setContent { AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> } }
+
+        ui.onNodeWithTag("timeline-entry-e1").assertIsDisplayed()
+        ui.runOnIdle { screen = initial.copy(input = InputState(lastSend = "new-send")) }
+        ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
+
+        ui.runOnIdle {
+            screen = initial.copy(entries = listOf(TimelineItem("missing", "はる", "遅れて届いた行", "11:59")) + entries,
+                input = InputState(lastSend = "new-send"))
+        }
+        ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
+    }
+
+    @Test
+    fun sendingFromTheChannelWorksAfterReturningFromAFocusedReply() {
+        val request = "open-reply"
+        val focusedChannel = channel.copy(focusMessage = "reply", focusRequest = request)
+        val reply = TimelineItem("reply", "はる", "指定された返信", "12:01")
+        var screen by mutableStateOf<AndroidScreen>(focusedChannel)
+        ui.setContent { AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> } }
+
+        ui.onNodeWithTag("timeline-entry-e1").assertIsDisplayed()
+        ui.runOnIdle {
+            screen = AndroidScreen.Thread("開発", entries.first(), listOf(reply), InputState(),
+                focusMessage = reply.id, focusRequest = request)
+        }
+        ui.onNodeWithTag("timeline-entry-reply").assertIsDisplayed()
+        ui.runOnIdle { screen = focusedChannel }
+        ui.onNodeWithTag("timeline-entry-e1").assertIsDisplayed()
+        ui.runOnIdle { screen = focusedChannel.copy(input = InputState(lastSend = "channel-send")) }
+        ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
+    }
+
+    @Test
+    fun missingSavedMessageReturnsToTheEndAfterHistoryLoads() {
+        var screen by mutableStateOf<AndroidScreen>(channel)
+        ui.setContent { AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> } }
+        val list = ui.onNodeWithTag("conversation-timeline")
+        list.performTouchInput { swipeDown() }
+        list.performScrollToIndex(12)
+        ui.onNodeWithTag("timeline-entry-e13").assertIsDisplayed()
+
+        ui.runOnIdle { screen = AndroidScreen.Channels(emptyList()) }
+        list.assertDoesNotExist()
+        ui.runOnIdle { screen = channel.copy(entries = entries.drop(18), historyReady = false) }
+        list.assertIsDisplayed()
+        ui.runOnIdle { screen = channel.copy(entries = entries.drop(18), historyReady = true) }
+        ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
+    }
+
+    @Test
+    fun returningToHomeAndChannelsRestoresTheirOwnScrollPositions() {
+        val home = AndroidScreen.Home(entries)
+        val channels = AndroidScreen.Channels(listOf(
+            ChannelSection("参加中", (1..40).map { ChannelItem("c$it", "チャンネル $it") }),
+        ))
+        var screen by mutableStateOf<AndroidScreen>(home)
+        ui.setContent {
+            AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> }
+        }
+
+        val post = ui.onNodeWithTag("timeline-entry-e34")
+        ui.onNode(hasScrollToNodeAction()).performScrollToNode(hasTestTag("timeline-entry-e34"))
+        val postTop = post.fetchSemanticsNode().boundsInRoot.top
+
+        ui.runOnIdle { screen = channels }
+        ui.onNode(hasScrollToNodeAction()).performScrollToNode(hasText("チャンネル 34"))
+        val channelRow = ui.onNodeWithText("チャンネル 34")
+        val channelTop = channelRow.fetchSemanticsNode().boundsInRoot.top
+
+        ui.runOnIdle { screen = channel }
+        ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
+        ui.runOnIdle { screen = channels }
+        assertEquals(channelTop, channelRow.fetchSemanticsNode().boundsInRoot.top, 1f)
+
+        ui.runOnIdle { screen = home }
+        assertEquals(postTop, post.fetchSemanticsNode().boundsInRoot.top, 1f)
+    }
+}

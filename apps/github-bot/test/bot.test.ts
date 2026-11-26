@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { verify, randomUUID } from "node:crypto";
 import { fixture, job, command, pair } from "./helpers.ts";
 import { GitHubError } from "../src/github.ts";
+import { summary } from "../src/events.ts";
 import { preview } from "../src/previews.ts";
 import { subscription, words, permits } from "../src/subscriptions.ts";
 import { ZooError } from "../../../sdk/src/index.ts";
@@ -464,6 +465,59 @@ test("scheduled channel reminders are timezone aware and post at most once per d
   assert.match([...f.zoo.messages.values()][0].content, /@alice_zoo/);
 });
 
+test("reminders post an untrusted PR title as plain text", async (t) => {
+  const f = fixture();
+  t.after(() => f.store.close());
+  f.remote.pr.requested_reviewers = [{ login: "alice" }];
+  f.remote.pr.title = "Fix [github.com/acme/project/pull/5](https://evil.example/x) </plain>**x**";
+  f.store.set("reminder:channel", { time: "00:00", zone: "Asia/Tokyo" });
+  await f.bot.reminders();
+  const content = [...f.zoo.messages.values()][0].content;
+  assert.match(content, /<plain>Fix \[github\.com\/acme\/project\/pull\/5\]\(https:\/\/evil\.example\/x\) \*\*x\*\*<\/plain>/);
+  assert.equal(content.split("</plain>").length, 2);
+});
+
+test("reminders never cut a plain wrapper when the body is long", async (t) => {
+  const f = fixture();
+  t.after(() => f.store.close());
+  f.remote.pr.requested_reviewers = [{ login: "alice" }];
+  f.remote.pr.title = `${"x".repeat(140)} [spoof](https://evil.example/phish)`;
+  f.remote.pulls = Array.from({ length: 30 }, (_, i) => ({ ...f.remote.pr, number: 100 + i }));
+  f.store.set("reminder:channel", { time: "00:00", zone: "Asia/Tokyo" });
+  await f.bot.reminders();
+  const content = [...f.zoo.messages.values()][0].content;
+  assert.ok(content.length <= 3600);
+  assert.equal(content.split("<plain>").length, content.split("</plain>").length);
+});
+
+test("the opening message posts untrusted GitHub text as plain text", async (t) => {
+  const f = fixture();
+  t.after(() => f.store.close());
+  f.remote.issue.title = "Fix [github.com/acme/project/pull/8](https://evil.example/t)";
+  f.remote.issue.body = "Body [docs](https://evil.example/b)";
+  await f.bot.githubEvent(job("issues", { action: "opened", issue: f.remote.issue }));
+  const root = [...f.zoo.messages.values()].find((m) => !m.parent_id)!;
+  assert.match(root.content, /<plain>Fix \[github\.com\/acme\/project\/pull\/8\]/);
+  assert.match(root.content, /<plain>Body \[docs\]\(https:\/\/evil\.example\/b\)<\/plain>/);
+  assert.equal(root.content.split("<plain>").length, root.content.split("</plain>").length);
+});
+
+test("untrusted comment text is posted as plain text per line", async (t) => {
+  const f = fixture();
+  t.after(() => f.store.close());
+  await f.bot.githubEvent(job("issues", { action: "opened", issue: f.remote.issue }));
+  f.remote.comment!.body = "[x](https://evil.example)\n</plain>[y](https://evil.example)";
+  await f.bot.githubEvent(
+    job("issue_comment", {
+      action: "created",
+      issue: f.remote.issue,
+      comment: { id: 99, body: "x" },
+    }),
+  );
+  const reply = [...f.zoo.messages.values()].find((m) => m.parent_id)!;
+  assert.match(reply.content, /<plain>\[x\]\(https:\/\/evil\.example\)<\/plain>\n<plain>\[y\]/);
+});
+
 test("Discussions answer updates edit the parent, and discussion comment edits reuse its reply", async (t) => {
   const f = fixture();
   t.after(() => f.store.close());
@@ -716,4 +770,13 @@ test("a message that this bot did not publish under its ID fails the job without
   );
   assert.equal([...f.zoo.messages.values()].filter((m) => m.channel_id === "channel").length, 1);
   assert.equal(f.zoo.messages.get(taken)!.content, "occupied");
+});
+
+test("a multi-line title keeps the canonical URL within the length cap", () => {
+  const out = summary(
+    { repo: "acme/project", kind: "pull", number: "8" },
+    { title: "x\n".repeat(249) + "x", state: "open" },
+  );
+  assert.ok(out.includes("https://github.com/acme/project/pull/8"));
+  assert.equal(out.split("<plain>").length, out.split("</plain>").length);
 });

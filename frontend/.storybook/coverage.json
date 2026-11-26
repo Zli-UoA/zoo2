@@ -134,6 +134,7 @@
         "MobileSections",
         "Pinned",
         "MobilePinned",
+        "PinnedThreads",
         "PinnedReorderError"
       ]
     },
@@ -143,7 +144,7 @@
     },
     {
       "file": "src/components/chat/CreateChannelDialog.stories.tsx",
-      "states": ["Default", "Filled", "Closed", "Encrypted"]
+      "states": ["Default", "Filled", "InvalidName", "Closed", "Encrypted"]
     },
     {
       "file": "src/components/chat/CreateDmDialog.stories.tsx",
@@ -177,16 +178,66 @@
       ]
     },
     {
-      "file": "src/components/chat/MembersScreen.stories.tsx",
-      "states": ["Default", "PublicNotJoined"]
+      "file": "src/components/chat/ChannelMembersDialog.stories.tsx",
+      "states": [
+        "Default",
+        "AddCandidates",
+        "Archived",
+        "PrivateNotJoined",
+        "UserAvatar",
+        "EncryptedUnreadableMember",
+        "Mobile",
+        "MobilePublicNotJoined"
+      ]
     },
     {
-      "file": "src/components/chat/MembersPanel.stories.tsx",
-      "states": ["Default", "AddCandidates", "Archived", "PrivateNotJoined", "UserAvatar"]
+      "file": "src/components/chat/CatchUpScreen.stories.tsx",
+      "states": [
+        "Default",
+        "LongUnread",
+        "Empty",
+        "Loading",
+        "LoadError",
+        "Complete",
+        "WithReactions",
+        "Dark",
+        "Mobile"
+      ]
+    },
+    {
+      "file": "src/components/chat/CatchUpButton.stories.tsx",
+      "states": ["Unread", "AllRead"]
     },
     {
       "file": "src/components/chat/NotificationsButton.stories.tsx",
       "states": ["Unread", "SingleUnread", "AllRead"]
+    },
+    {
+      "file": "src/components/chat/search/SearchScreen.stories.tsx",
+      "states": [
+        "Prompt",
+        "SubmitQuery",
+        "All",
+        "Highlight",
+        "OpenFromRow",
+        "TooManyTerms",
+        "TermTooLong",
+        "CustomDates",
+        "ReversedDates",
+        "RejectedThenNavigate",
+        "NarrowLateHit",
+        "Filters",
+        "FromPicker",
+        "LoadOlder",
+        "Files",
+        "SwitchKind",
+        "Loading",
+        "Empty",
+        "EmptyWithOlder",
+        "LoadError",
+        "LongJapanese",
+        "Mobile"
+      ]
     },
     {
       "file": "src/components/chat/NotificationsScreen.stories.tsx",
@@ -230,6 +281,8 @@
       "file": "src/components/chat/messages/Composer.stories.tsx",
       "states": [
         "Default",
+        "SingleLineActionsAlignWithText",
+        "SingleLineActionsAlignWithTextMobile",
         "Disabled",
         "Multiline",
         "MentionSuggestions",
@@ -241,7 +294,31 @@
         "WithFileAttachment",
         "AttachmentUploadError",
         "SendError",
-        "MixedSensitivity"
+        "MixedSensitivity",
+        "KitchenBody"
+      ]
+    },
+    {
+      "file": "src/components/chat/messages/ChannelLinkEmbed.stories.tsx",
+      "states": [
+        "Message",
+        "InMessageRow",
+        "ThreadReply",
+        "Encrypted",
+        "CiphertextInPlainChannel",
+        "AppMessage",
+        "NotJoined",
+        "MessageDeleted",
+        "MessageNotFound",
+        "Channel",
+        "PrivateAndEncryptedChannels",
+        "ChannelNotJoined",
+        "DirectMessage",
+        "AttachmentsOnly",
+        "LongText",
+        "Mobile",
+        "LoadingDirectory",
+        "InEncryptedPost"
       ]
     },
     {
@@ -265,6 +342,7 @@
         "Default",
         "Empty",
         "Loading",
+        "LoadingOlder",
         "Error",
         "UnreadSeparator",
         "LongMessages",
@@ -281,13 +359,18 @@
         "Mobile",
         "FederatedReactions",
         "Encrypted",
-        "EncryptionDowngraded"
+        "EncryptionDowngraded",
+        "PostingForbidden"
       ]
     },
     {
       "file": "src/components/chat/messages/MessageRow.stories.tsx",
       "states": [
         "Default",
+        "MentionedMessage",
+        "MentionedChannelMessage",
+        "LinkTargetHighlight",
+        "LinkTargetHighlightMentioned",
         "EncryptedBeforeEncryptionRow",
         "EncryptedUnencryptedAfterEncryptedRow",
         "OwnMessage",
@@ -300,6 +383,7 @@
         "LongMessage",
         "Card",
         "Mobile",
+        "TouchActionSheet",
         "AppMessage",
         "CopyOriginalMenu",
         "Edited",
@@ -318,7 +402,25 @@
         "EncryptedLocked",
         "EncryptedInvalid",
         "EncryptedWithAttachments",
-        "EncryptedAttachmentDecryptFailed"
+        "EncryptedAttachmentDecryptFailed",
+        "ForwardedMessage",
+        "ForwardedCommentless",
+        "ForwardedDeleted",
+        "ForwardedUnavailable",
+        "ForwardedNested",
+        "ForwardedWithMenu"
+      ]
+    },
+    {
+      "file": "src/components/chat/messages/ForwardMessageDialog.stories.tsx",
+      "states": [
+        "Default",
+        "SelectedDestination",
+        "SearchEmpty",
+        "NoDestinations",
+        "Submitting",
+        "Error",
+        "Mobile"
       ]
     },
     {
@@ -326,15 +428,19 @@
       "states": [
         "Default",
         "InlineLinks",
+        "InAppLinks",
         "LongUrl",
         "CodeAndMath",
+        "SearchHighlight",
         "EmojiAndFallback",
         "JoinedEmoji",
         "Formatting",
         "CodeAndMathDark",
         "Headings",
         "SharedShortcodes",
-        "AuthZAccounts"
+        "AuthZAccounts",
+        "KitchenBody",
+        "KitchenTaggedEmoji"
       ]
     },
     {
@@ -351,6 +457,7 @@
         "KitchenLoading",
         "Mobile",
         "ManyCustomEmojis",
+        "SearchExactFirst",
         "ManyCustomEmojisMobile"
       ]
     },
@@ -368,6 +475,7 @@
         "Loading",
         "Error",
         "Mobile",
+        "MobileDialog",
         "Completions",
         "AppCard",
         "RootLoadError",
@@ -376,7 +484,16 @@
         "LeftThread",
         "MembershipPending",
         "MembershipFailed",
-        "ReopenArchived"
+        "ReopenArchived",
+        "WithParticipants",
+        "ParticipantsJoinFromDialog",
+        "ParticipantsMembershipFailed",
+        "ReopenAndJoin",
+        "MembershipLoadingBlocksComposer",
+        "LeftWithNoParticipants",
+        "PostingForbidden",
+        "NoRepliesYet",
+        "PostingForbiddenNotJoined"
       ]
     },
     {
@@ -405,6 +522,10 @@
       "states": ["Default", "Open", "SelectControl"]
     },
     {
+      "file": "src/components/layout/NotFoundScreen.stories.tsx",
+      "states": ["Default", "Mobile"]
+    },
+    {
       "file": "src/components/layout/AppShell.stories.tsx",
       "states": [
         "Welcome",
@@ -429,7 +550,7 @@
     },
     {
       "file": "src/components/layout/LeftRail.stories.tsx",
-      "states": ["Default", "Mobile", "UserAvatar"]
+      "states": ["Default", "Mobile", "UserAvatar", "AboutZoo", "AboutZooUnknownVersion"]
     },
     {
       "file": "src/components/layout/ShellSkeleton.stories.tsx",
@@ -517,6 +638,33 @@
     {
       "file": "src/components/desktop/DesktopNotificationSelect.stories.tsx",
       "states": ["On", "TurnOff", "Off", "OlderApp"]
+    },
+    {
+      "file": "src/components/desktop/DownloadProgressButton.stories.tsx",
+      "states": [
+        "Idle",
+        "Preparing",
+        "Downloading",
+        "UnknownSize",
+        "Finishing",
+        "Complete",
+        "WithLabel",
+        "FinishingWithLabel",
+        "Pending"
+      ]
+    },
+    {
+      "file": "src/components/desktop/DesktopDownloadSettings.stories.tsx",
+      "states": [
+        "AskEveryTime",
+        "SaveToFolder",
+        "ToggleOff",
+        "ChooseFolder",
+        "ResetFolder",
+        "OlderApp",
+        "LoadError",
+        "LongPath"
+      ]
     },
     {
       "file": "src/components/pwa/AppUpdateNotice.stories.tsx",
@@ -850,6 +998,7 @@
         "Loading",
         "Image",
         "PDF",
+        "MultiPagePDF",
         "Video",
         "Audio",
         "Failed",
@@ -942,6 +1091,12 @@
       "story": "src/components/chat/messages/MessageRow.stories.tsx",
       "composed": true,
       "reason": "AppMessageでBotアバター・著者名・APP表示を組み合わせて確認する。"
+    },
+    {
+      "file": "src/components/chat/messages/RecentReactions.tsx",
+      "story": "src/components/chat/messages/MessageRow.stories.tsx",
+      "composed": true,
+      "reason": "TouchActionSheetで最近のリアクション一覧と選択を確認する。"
     },
     {
       "file": "src/components/chat/AppSettingsSections.tsx",
@@ -1044,7 +1199,13 @@
       "file": "src/components/chat/PinnedSection.tsx",
       "story": "src/components/chat/ChannelSidebar.stories.tsx",
       "composed": true,
-      "reason": "Pinned・MobilePinned Story でピン留め行の順序、NSFW の印、DM 行、アーカイブ中の非表示、下へ移動の PATCH を確認し、PinnedReorderError でエラー表示を確認する。最後のピン解除後のフォーカス維持は ChannelSidebar.browser.test.tsx で検証する。"
+      "reason": "Pinned・MobilePinned Story でピン留め行の順序、NSFW の印、DM 行、アーカイブ中の非表示、下へ移動の PATCH を確認し、PinnedThreads でピン留め行の下にもスレッドのツリーが出ることを確認し、PinnedReorderError でエラー表示を確認する。最後のピン解除後のフォーカス維持と、行とスレッドの行を囲むブロックを1つの置き先にする並べ替え（線はスレッドの行の下、ほかのドラッグは受け付けない）は ChannelSidebar.browser.test.tsx で検証する。"
+    },
+    {
+      "file": "src/components/chat/DropIndicator.tsx",
+      "story": "src/components/chat/ChannelListItem.stories.tsx",
+      "composed": true,
+      "reason": "ドラッグ中の挿入位置の線。ChannelListItem・DmListItemのStoryで、前・後ろの線が出ることを確認する。ピン留めの行とスレッドの行を囲むブロックでの置き先と、線がスレッドの行の下に出ることは、ChannelSidebar.browser.test.tsxで検証する。"
     },
     {
       "file": "src/components/chat/ChannelThreadItems.tsx",
@@ -1074,12 +1235,43 @@
       "reason": "Default・Empty・Loading・LoadError・UsersError の一覧状態と、PinFromMenu で実際の行メニューからピン留めする操作を確認する。"
     },
     {
-      "file": "src/components/chat/MembersPanel.tsx",
-      "story": "src/components/chat/MembersPanel.stories.tsx"
+      "file": "src/components/chat/ChannelMembersDialog.tsx",
+      "story": "src/components/chat/ChannelMembersDialog.stories.tsx"
+    },
+    {
+      "file": "src/components/chat/CatchUpButton.tsx",
+      "story": "src/components/chat/CatchUpButton.stories.tsx"
+    },
+    {
+      "file": "src/components/chat/CatchUpMessagePage.tsx",
+      "story": "src/components/chat/CatchUpScreen.stories.tsx",
+      "composed": true,
+      "reason": "Default・LongUnread・Dark・Mobile・WithReactions で未読メッセージ一覧、未読区切り、リアクションの追加・解除を確認する。"
+    },
+    {
+      "file": "src/components/chat/CatchUpScreen.tsx",
+      "story": "src/components/chat/CatchUpScreen.stories.tsx",
+      "reason": "通常・長い未読・空・読込中・読込失敗・完了・リアクション操作・ダーク・モバイルを確認する。既読書き込みの失敗とアーカイブ時の読み取り専用切替は CatchUpScreen.test.ts で検証する。"
     },
     {
       "file": "src/components/chat/NotificationsButton.tsx",
       "story": "src/components/chat/NotificationsButton.stories.tsx"
+    },
+    {
+      "file": "src/components/chat/search/SearchScreen.tsx",
+      "story": "src/components/chat/search/SearchScreen.stories.tsx"
+    },
+    {
+      "file": "src/components/chat/search/SearchFilterPicker.tsx",
+      "story": "src/components/chat/search/SearchScreen.stories.tsx",
+      "composed": true,
+      "reason": "FiltersとFromPickerで、送信者・チャンネルの検索欄、アイコン付きの複数選択、該当なしを実描画する。"
+    },
+    {
+      "file": "src/components/chat/search/SearchResultRow.tsx",
+      "story": "src/components/chat/search/SearchScreen.stories.tsx",
+      "composed": true,
+      "reason": "AllとFilesでメッセージ・スレッドの返信・DM・Appの投稿者・ファイルの各行、LongJapaneseで長い名前と本文の折り返しを実描画する。"
     },
     {
       "file": "src/components/chat/NotificationsScreen.tsx",
@@ -1092,6 +1284,11 @@
     {
       "file": "src/components/chat/WelcomePanel.tsx",
       "story": "src/components/chat/WelcomePanel.stories.tsx"
+    },
+    {
+      "file": "src/components/chat/messages/ComposerEmojiButton.tsx",
+      "story": "src/components/chat/messages/Composer.stories.tsx",
+      "reason": "本文への挿入は KitchenBody、選択範囲とIMEは ComposerEmojiButton.browser.test.tsx で検証する"
     },
     {
       "file": "src/components/chat/messages/Composer.tsx",
@@ -1110,12 +1307,28 @@
       "reason": "DefaultとSearchEmptyが標準ピッカーを、ManyCustomEmojisとManyCustomEmojisMobileが大量のカスタム絵文字のスクロールと選択を確認する。"
     },
     {
+      "file": "src/components/chat/messages/ChannelLinkEmbed.tsx",
+      "story": "src/components/chat/messages/ChannelLinkEmbed.stories.tsx",
+      "checks": [
+        "src/components/chat/messages/ChannelLinkEmbed.browser.test.tsx",
+        "src/components/chat/messages/ChannelLinkEmbed.requests.browser.test.tsx",
+        "src/components/chat/messages/ChannelLinkEmbed.stalled.browser.test.tsx"
+      ]
+    },
+    {
+      "file": "src/components/chat/messages/channelLinkLabel.tsx",
+      "story": "src/components/chat/messages/ChannelLinkEmbed.stories.tsx",
+      "composed": true,
+      "reason": "MessageとChannelで、リンクの短い表示（「○○さん: #チャンネル名」「#チャンネル名」）を確認する。DMの総称はDirectMessage、見られないリンク先でURLのまま残ることはNotJoinedで確認する。ChannelLinkEmbed.browser.test.tsxでも検証する。"
+    },
+    {
       "file": "src/components/chat/messages/LinkPreviews.tsx",
       "story": "src/components/chat/messages/LinkPreviews.stories.tsx",
       "checks": [
         "src/components/chat/messages/LinkPreviews.browser.test.tsx",
         "src/components/home/HomePostContent.browser.test.tsx",
-        "src/components/home/HomePostContent.no-summaly.browser.test.tsx"
+        "src/components/home/HomePostContent.no-summaly.browser.test.tsx",
+        "src/components/chat/messages/ChannelLinkEmbed.browser.test.tsx"
       ]
     },
     {
@@ -1164,6 +1377,12 @@
       "reason": "Defaultで実Providerから公開チャンネルのハッシュタグを解決する。MfmChannels.browser.test.tsxでアプリ内遷移・戻る・進む・下書き保持を検証する。"
     },
     {
+      "file": "src/components/chat/messages/ContentLink.tsx",
+      "story": "src/components/chat/messages/MfmContent.stories.tsx",
+      "composed": true,
+      "reason": "InAppLinksで、このアプリのメッセージ・チャンネルのリンクを同じタブのリンクに、外部URLを別タブのリンクに描くことを確認する。移動・修飾キー・ルーターの外でのフォールバックはContentLink.browser.test.tsxで検証する。"
+    },
+    {
       "file": "src/components/chat/messages/MfmContent.tsx",
       "story": "src/components/chat/messages/MfmContent.stories.tsx"
     },
@@ -1174,6 +1393,24 @@
     {
       "file": "src/components/chat/messages/ReactionPicker.tsx",
       "story": "src/components/chat/messages/ReactionPicker.stories.tsx"
+    },
+    {
+      "file": "src/components/chat/messages/JoinPrompt.tsx",
+      "story": "src/components/chat/messages/ThreadPane.stories.tsx",
+      "composed": true,
+      "reason": "ThreadPaneのNotParticipating・ReopenAndJoin・PostingForbiddenNotJoinedで、参加の案内・再Openして参加・権限がないときの理由だけの表示を確認する。チャンネルの参加案内はMessagePaneのNotJoinedで確認する。"
+    },
+    {
+      "file": "src/components/chat/messages/ThreadParticipantsDialog.tsx",
+      "story": "src/components/chat/messages/ThreadPane.stories.tsx",
+      "composed": true,
+      "reason": "ThreadPaneのWithParticipantsで、画面中央のダイアログの並び（スレ主が先頭）・「スレ主」「あなた」の印・名前の絞り込み・退出・Escapeで閉じてフォーカスが戻ることを、ParticipantsJoinFromDialogで未参加の「参加する」を、ParticipantsMembershipFailedで参加・退出の失敗と再試行がダイアログの中に出ることを、WithParticipantsで50人を超えるときの検索の注記も、Participatingで人数が未取得でも退出できることを確認する。ThreadPane.browser.test.tsxで、狭幅・再Openして参加・投稿権限がないとき・メンバーでないときを検証する。"
+    },
+    {
+      "file": "src/components/chat/MemberRow.tsx",
+      "story": "src/components/chat/ChannelMembersDialog.stories.tsx",
+      "composed": true,
+      "reason": "チャンネルのメンバーのダイアログ（ChannelMembersDialog）とスレッドのメンバーのダイアログ（ThreadParticipantsDialog）が共有する1行。ChannelMembersDialogのStoryで作成者・あなた・Bot・暗号化の警告・キックの表示を、ThreadPaneのWithParticipantsでスレ主・あなたの印を確認する。"
     },
     {
       "file": "src/components/chat/messages/ThreadPaneStatus.tsx",
@@ -1208,9 +1445,13 @@
       "story": "src/components/layout/AppShell.stories.tsx"
     },
     {
+      "file": "src/components/layout/NotFoundScreen.tsx",
+      "story": "src/components/layout/NotFoundScreen.stories.tsx"
+    },
+    {
       "file": "src/components/layout/LeftRail.tsx",
       "story": "src/components/layout/LeftRail.stories.tsx",
-      "reason": "DefaultとMobileで、削除済みの実験版切り替えボタンが表示されないことを確認する。"
+      "reason": "DefaultとMobileで実験版切り替えボタンが表示されないこと、AboutZooで版情報の表示と開閉、AboutZooUnknownVersionで版情報がない場合の表示を確認する。"
     },
     {
       "file": "src/components/layout/PaneHeader.tsx",
@@ -1241,6 +1482,22 @@
     {
       "file": "src/components/desktop/DesktopNotificationSelect.tsx",
       "story": "src/components/desktop/DesktopNotificationSelect.stories.tsx"
+    },
+    {
+      "file": "src/components/desktop/DownloadProgressButton.tsx",
+      "story": "src/components/desktop/DownloadProgressButton.stories.tsx"
+    },
+    {
+      "file": "src/components/desktop/PreviewDownloadButton.tsx",
+      "reason": "進捗・中止の表示は DownloadProgressButton.stories.tsx で確認する。デスクトップ判定、Web のリンク、CORS 失敗時の案内と別タブへの切替は PreviewDownloadButton.browser.test.tsx で確認する。",
+      "checks": [
+        "src/components/desktop/DownloadProgressButton.stories.tsx",
+        "src/components/desktop/PreviewDownloadButton.browser.test.tsx"
+      ]
+    },
+    {
+      "file": "src/components/desktop/DesktopDownloadSettings.tsx",
+      "story": "src/components/desktop/DesktopDownloadSettings.stories.tsx"
     },
     {
       "file": "src/components/desktop/DesktopBridge.tsx",
@@ -1383,6 +1640,12 @@
       "reason": "LoadingとBodiesReadyTogetherで初回の全体Spinner、LoadingOnScrollで一覧を残した追加読込の下部Spinnerを確認する。"
     },
     {
+      "file": "src/components/ui/highlighted-text.tsx",
+      "story": "src/components/chat/search/SearchScreen.stories.tsx",
+      "composed": true,
+      "reason": "Highlightで検索結果の本文の抜粋（MFMの太字の中を含む）とファイル名の検索語を実描画する。"
+    },
+    {
       "file": "src/components/ui/external-link.tsx",
       "story": "src/components/chat/messages/MfmContent.stories.tsx",
       "composed": true,
@@ -1402,7 +1665,7 @@
       "file": "src/components/home/HomeScreen.tsx",
       "story": "src/components/home/HomeScreen.stories.tsx",
       "checks": ["src/components/home/HomeScreen.browser.test.tsx", "src/lib/homeTimeline.test.ts"],
-      "reason": "Default/Mobileで投稿下のアクションの従来のボタンサイズ・均等配置・下側の余白・三点メニューの配置を確認する。タブ切替時の先頭復帰・追加ページ後の閲覧位置・連続先読みの抑止を390px・1440pxで確認する。Federatedで元の投稿リンクを三点メニューから開く操作を確認する。HomeScreen.browser.test.tsxで、個別投稿への遷移時に既知の本文を即表示し、遅延したスレッド応答で本文・返信を更新することと取得回数を検証する。"
+      "reason": "Default/Mobileで投稿下のアクションの従来のボタンサイズ・均等配置・下側の余白・三点メニューの配置を確認する。タブ切替時の先頭復帰・追加ページ後の閲覧位置・連続先読みの抑止を390px・1440pxで確認する。Federatedで元の投稿リンクを三点メニューから開く操作を確認する。HomeScreen.browser.test.tsxで、メディアプレビューを背景または閉じるボタンで閉じてもタイムラインに留まることを確認する。個別投稿への遷移時に既知の本文を即表示し、遅延したスレッド応答で本文・返信を更新することと取得回数を検証する。"
     },
     {
       "file": "src/components/home/ActivityPubBadge.tsx",
@@ -1415,7 +1678,7 @@
       "story": "src/components/home/HomeScreen.stories.tsx",
       "checks": ["src/components/home/HomeComposer.browser.test.tsx"],
       "composed": true,
-      "reason": "WithImages/MobileImagesで画像表示、ImageOnlyPostで貼り付け・削除・画像のみ送信・再送を確認する。Composer/MobileComposerで実フォームの起動と配置を、Submit/SendError/FederationToggleで送信・下書き・公開範囲と連合の独立性を確認する。"
+      "reason": "WithImages/MobileImagesで画像表示、ImageOnlyPostで貼り付け・削除・画像のみ送信・再送を確認する。Composer/MobileComposerで実フォームの起動と配置を、Submit/SendError/FederationToggleで送信・下書き・公開範囲と連合の独立性を確認する。管理者のみ投稿できるチャンネルへの返信の無効化と、チャンネルに参加していない人の返信（無効にしない）は、HomeComposer.browser.test.tsxで確認する。"
     },
     {
       "file": "src/components/home/ActivityPubNotifications.tsx",
@@ -1596,8 +1859,9 @@
       "file": "src/components/ui/pdf-preview.tsx",
       "story": "src/components/ui/media-preview.stories.tsx",
       "composed": true,
-      "reason": "PDFとMediaPreviewのブラウザーテストでキャンバス描画とページ送りを確認する。",
+      "reason": "PDFとMediaPreviewのブラウザーテストでキャンバス描画・縦スクロール・前後ページボタン・ページ番号ジャンプを確認する。",
       "checks": [
+        "src/components/ui/pdf-preview.test.ts",
         "src/components/ui/media-preview.browser.test.tsx",
         "src/components/ui/pdf-preview-timeout.browser.test.tsx"
       ]
@@ -1632,6 +1896,24 @@
       "file": "src/components/sip/SipProvider.tsx",
       "reason": "アカウント単位の一覧取得・認証終了・チャンネル通話との排他を所有する制御層。ブラウザー統合テストで通信数と破棄を確認する。",
       "checks": ["src/components/sip/SipProvider.browser.test.tsx"]
+    },
+    {
+      "file": "src/components/chat/messages/MessageBody.tsx",
+      "story": "src/components/chat/messages/MessageRow.stories.tsx",
+      "composed": true,
+      "reason": "MessageRowのメッセージ本文・編集済みマーカー・MFM・リンクプレビューを描画する共通コンポーネントで、MessageRowのDefault・Edited・ForwardedMessageおよびForwardedMessageCardで実表示を確認する。"
+    },
+    {
+      "file": "src/components/chat/messages/ForwardedMessageCard.tsx",
+      "story": "src/components/chat/messages/MessageRow.stories.tsx",
+      "composed": true,
+      "reason": "MessageRowのForwardedMessage・ForwardedCommentless・ForwardedDeleted・ForwardedUnavailable・ForwardedNestedの各ストーリーで転送元カードの解決状態と表示を確認する。",
+      "checks": ["src/components/chat/messages/ForwardedMessageCard.browser.test.tsx"]
+    },
+    {
+      "file": "src/components/chat/messages/ForwardMessageDialog.tsx",
+      "story": "src/components/chat/messages/ForwardMessageDialog.stories.tsx",
+      "checks": ["src/components/chat/messages/ForwardMessageDialog.browser.test.tsx"]
     }
   ]
 }

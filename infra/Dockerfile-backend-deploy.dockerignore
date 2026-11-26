@@ -14,3 +14,13 @@ crates/zoo-components/target
 
 !docs/
 !docs/slack-event-coverage.json
+
+!frontend/
+frontend/*
+!frontend/src/
+frontend/src/*
+!frontend/src/lib/
+frontend/src/lib/*
+!frontend/src/lib/emoji/
+frontend/src/lib/emoji/*
+!frontend/src/lib/emoji/emoji-kitchen.json

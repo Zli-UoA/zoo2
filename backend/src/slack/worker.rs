@@ -19,7 +19,7 @@ use serde_json::json;
 
 use super::{
     convert::{Resolver, mrkdwn_to_mfm, reaction_emoji},
-    export::{ExportArchive, SlackChannel, SlackMessage, SlackUser},
+    export::{ExportArchive, SlackChannel, SlackFile, SlackMessage, SlackUser},
     import::{Mapping, MappingAction},
 };
 use crate::{
@@ -1100,13 +1100,25 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
                 .collect();
             let real_ts: std::collections::HashSet<&str> = messages
                 .iter()
-                .filter(|m| m.is_importable())
+                .filter(|m| m.is_importable_for_team(Some(&team)))
                 .map(|m| m.ts.as_str())
                 .collect();
             let mut last_ts = None;
-            for message in messages.iter().filter(|m| m.is_importable()) {
-                insert_message(&mut tx, &mut ctx, &channel.id, channel_id, &job.id, message)
-                    .await?;
+            for message in messages
+                .iter()
+                .filter(|m| m.is_importable_for_team(Some(&team)))
+            {
+                // ZIP の取り込みは履歴。直近の返信でも、再Openも再参加もしない
+                insert_message(
+                    &mut tx,
+                    &mut ctx,
+                    &channel.id,
+                    channel_id,
+                    &job.id,
+                    false,
+                    message,
+                )
+                .await?;
                 last_ts = Some(message.ts.as_str());
                 processed += 1;
             }
@@ -1483,12 +1495,235 @@ pub(super) async fn id_taken_by_other(
     .is_empty())
 }
 
+fn slack_ts_candidates(ts: &str) -> Vec<String> {
+    let mut out = vec![ts.to_string()];
+    if let Some((secs, frac)) = ts.split_once('.') {
+        let stripped = frac.trim_end_matches('0');
+        let trimmed = if stripped.is_empty() {
+            format!("{secs}.0")
+        } else {
+            format!("{secs}.{stripped}")
+        };
+        if !out.contains(&trimmed) {
+            out.push(trimmed);
+        }
+        if stripped.is_empty() {
+            let bare = secs.to_string();
+            if !out.contains(&bare) {
+                out.push(bare);
+            }
+        }
+    }
+    out
+}
+
+/// 投稿に含まれる Slack 転送・引用（`is_share` / `is_msg_unfurl`）を Zoo のメッセージ UUID に解決する。
+/// `slack_message_map` に一致する行があればその ID を優先し、なければ決定的な ID を計算して返す。
+/// `reserve_unmapped` が真のときは未取り込みの決定的 ID をアドバイザリロック下で `slack_forward_targets` に予約して
+/// 事前作成なりすましを防ぎ、既に Slack 由来でない別投稿（チャネルや作成時刻が不一致）が占有している ID は除外する。
+pub(super) async fn resolve_forwarded_ids(
+    tx: &mut toasty::Transaction<'_>,
+    team: &str,
+    message: &SlackMessage,
+    reserve_unmapped: bool,
+) -> Result<Vec<String>, AppError> {
+    let refs = message.forwarded_refs(Some(team));
+    if refs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let map_candidates: Vec<serde_json::Value> = refs
+        .iter()
+        .flat_map(|r| {
+            slack_ts_candidates(&r.ts).into_iter().map(move |cand_ts| {
+                serde_json::json!({
+                    "slack_channel_id": r.slack_channel_id,
+                    "req_ts": r.ts,
+                    "cand_ts": cand_ts,
+                })
+            })
+        })
+        .collect();
+    let input =
+        serde_json::to_string(&map_candidates).map_err(|err| AppError::Internal(err.into()))?;
+    let rows = query(
+        tx,
+        "SELECT json_build_object('slack_channel_id',m.slack_channel_id,'req_ts',r.req_ts,'matched_ts',m.ts,'message_id',m.message_id)::text \
+         FROM slack_message_map m \
+         JOIN jsonb_to_recordset($2::jsonb) AS r(slack_channel_id text, req_ts text, cand_ts text) \
+           ON m.slack_channel_id=r.slack_channel_id AND m.ts=r.cand_ts \
+         WHERE m.team_id=$1",
+        &[team, &input],
+    )
+    .await?;
+    let mut mapped_ids: HashMap<(String, String), String> = HashMap::with_capacity(rows.len());
+    for row in rows {
+        if let (Some(ch), Some(req_ts), Some(matched_ts), Some(id)) = (
+            row["slack_channel_id"].as_str(),
+            row["req_ts"].as_str(),
+            row["matched_ts"].as_str(),
+            row["message_id"].as_str(),
+        ) {
+            let key = (ch.to_string(), req_ts.to_string());
+            if matched_ts == req_ts || !mapped_ids.contains_key(&key) {
+                mapped_ids.insert(key, id.to_string());
+            }
+        }
+    }
+
+    let unmapped_refs: Vec<_> = refs
+        .iter()
+        .filter(|r| !mapped_ids.contains_key(&(r.slack_channel_id.clone(), r.ts.clone())))
+        .collect();
+    let mut resolved_derived: HashMap<(String, String), String> = HashMap::new();
+    if !unmapped_refs.is_empty() {
+        let mut derived_candidates: Vec<serde_json::Value> = Vec::new();
+        let mut lock_ids: Vec<String> = Vec::new();
+        for r in &unmapped_refs {
+            for cand_ts in slack_ts_candidates(&r.ts) {
+                let derived = super::message_id(team, &r.slack_channel_id, &cand_ts);
+                lock_ids.push(derived.clone());
+                derived_candidates.push(serde_json::json!({
+                    "slack_channel_id": r.slack_channel_id,
+                    "req_ts": r.ts,
+                    "ts": cand_ts,
+                    "is_primary": cand_ts == r.ts,
+                    "message_id": derived,
+                }));
+            }
+        }
+        if reserve_unmapped {
+            super::lock_message_id_reservation(tx, &lock_ids).await?;
+        }
+        let derived_json = serde_json::to_string(&derived_candidates)
+            .map_err(|err| AppError::Internal(err.into()))?;
+        let status_rows = query(
+            tx,
+            "SELECT json_build_object(\
+                'message_id', r.message_id,\
+                'slack_channel_id', r.slack_channel_id,\
+                'req_ts', r.req_ts,\
+                'ts', r.ts,\
+                'is_primary', r.is_primary,\
+                'exists', m.id IS NOT NULL,\
+                'valid', (\
+                    m.id IS NOT NULL \
+                    AND m.created_at = (to_timestamp(r.ts::numeric) AT TIME ZONE 'UTC')::timestamp(3) \
+                    AND (sc.channel_id IS NULL OR m.channel_id = sc.channel_id)\
+                )\
+             )::text \
+             FROM jsonb_to_recordset($2::jsonb) AS r(slack_channel_id text, req_ts text, ts text, is_primary boolean, message_id text) \
+             LEFT JOIN messages m ON m.id = r.message_id \
+             LEFT JOIN slack_channels sc ON sc.team_id = $1 AND sc.slack_channel_id = r.slack_channel_id",
+            &[team, &derived_json],
+        )
+        .await?;
+
+        #[derive(Clone)]
+        struct DerivedStatus {
+            message_id: String,
+            ts: String,
+            is_primary: bool,
+            exists: bool,
+            valid: bool,
+        }
+        let mut by_ref: HashMap<(String, String), Vec<DerivedStatus>> = HashMap::new();
+        for row in status_rows {
+            if let (Some(ch), Some(req_ts), Some(ts), Some(msg_id)) = (
+                row["slack_channel_id"].as_str(),
+                row["req_ts"].as_str(),
+                row["ts"].as_str(),
+                row["message_id"].as_str(),
+            ) {
+                by_ref
+                    .entry((ch.to_string(), req_ts.to_string()))
+                    .or_default()
+                    .push(DerivedStatus {
+                        message_id: msg_id.to_string(),
+                        ts: ts.to_string(),
+                        is_primary: row["is_primary"] == true,
+                        exists: row["exists"] == true,
+                        valid: row["valid"] == true,
+                    });
+            }
+        }
+        let mut reserve_rows: Vec<serde_json::Value> = Vec::new();
+        for r in &unmapped_refs {
+            let key = (r.slack_channel_id.clone(), r.ts.clone());
+            let Some(cands) = by_ref.get(&key) else {
+                continue;
+            };
+            let primary = cands.iter().find(|c| c.is_primary);
+            if let Some(existing_valid) = cands.iter().find(|c| c.valid) {
+                resolved_derived.insert(key, existing_valid.message_id.clone());
+                continue;
+            }
+            let Some(primary) = primary else {
+                continue;
+            };
+            if primary.exists {
+                // 既に別投稿（事前作成されたなりすまし等）に占有されている決定的 ID は紐付けない
+                tracing::warn!(
+                    message_id = %primary.message_id,
+                    team,
+                    "Skipped Slack forward reference whose deterministic ID is occupied by a non-matching message"
+                );
+                continue;
+            }
+            if reserve_unmapped {
+                reserve_rows.push(serde_json::json!({
+                    "message_id": primary.message_id,
+                    "slack_channel_id": r.slack_channel_id,
+                    "ts": primary.ts,
+                }));
+            }
+            resolved_derived.insert(key, primary.message_id.clone());
+        }
+        if reserve_unmapped && !reserve_rows.is_empty() {
+            let reserve_json = serde_json::to_string(&reserve_rows)
+                .map_err(|err| AppError::Internal(err.into()))?;
+            exec(
+                tx,
+                "INSERT INTO slack_forward_targets(message_id, team_id, slack_channel_id, ts) \
+                 SELECT r.message_id, $1, r.slack_channel_id, r.ts \
+                 FROM jsonb_to_recordset($2::jsonb) AS r(message_id text, slack_channel_id text, ts text) \
+                 ON CONFLICT (message_id) DO NOTHING",
+                &[team, &reserve_json],
+            )
+            .await?;
+        }
+    }
+
+    let mut resolved = Vec::with_capacity(refs.len());
+    let mut seen = std::collections::HashSet::with_capacity(refs.len());
+    for r in refs {
+        let key = (r.slack_channel_id.clone(), r.ts.clone());
+        let Some(id) = mapped_ids
+            .get(&key)
+            .or_else(|| resolved_derived.get(&key))
+            .cloned()
+        else {
+            continue;
+        };
+        if seen.insert(id.clone()) {
+            resolved.push(id);
+            if resolved.len() >= crate::routes::forwards::MAX_FORWARDED_MESSAGES_PER_MESSAGE {
+                break;
+            }
+        }
+    }
+    Ok(resolved)
+}
+
+/// `live_replies`: 直近の返信を、zoo の返信と同じライブの投稿として扱うか (スレッドの再Open・退出済みの
+/// 投稿者の再参加)。差分同期・イベントの取り込みは真。ZIP・API の履歴の取り込み (取り込みジョブ、API の
+/// 初回の全履歴の同期) は偽で、直近の返信でも履歴として入れるだけにする
 pub(super) async fn insert_message(
     tx: &mut toasty::Transaction<'_>,
     ctx: &mut Context,
     slack_channel: &str,
     channel_id: &str,
     job_id: &str,
+    live_replies: bool,
     message: &SlackMessage,
 ) -> Result<(), AppError> {
     // ループ防止: このアプリが投稿したメッセージ (#294 のブリッジが Zoo から Slack へ出したもの) は、取り込まない
@@ -1546,17 +1781,46 @@ pub(super) async fn insert_message(
         components,
         filled,
     } = render_message(tx, ctx, message).await?;
+    let forwarded_ids = resolve_forwarded_ids(tx, &ctx.team, message, true).await?;
+    let forwarded_json = if forwarded_ids.is_empty() {
+        String::new()
+    } else {
+        serde_json::to_string(&forwarded_ids).map_err(|err| AppError::Internal(err.into()))?
+    };
+    // コメントなし転送ですべての転送参照が除外された場合（別投稿による ID 占有など）は空の投稿を保存しない
+    if forwarded_ids.is_empty()
+        && content.trim().is_empty()
+        && components.is_empty()
+        && !message.files.iter().any(SlackFile::is_importable)
+    {
+        return Ok(());
+    }
+    // 差分同期・イベントで取り込む直近の返信は、zoo の返信と同じライブの投稿として、アーカイブ済みのスレッドを
+    // 再Openし、退出済みの投稿者を再参加させる (DB トリガー `update_thread_activity`)。ZIP・API の履歴の取り込み
+    // (`live_replies` が偽) と、期間より古い返信は、立てない。フラグ (`zoo.thread_live_import`) は、下の INSERT 文が
+    // 先頭の CTE で、この返信の値 (`on` / `off`) を毎回決め直す。別の文・往復は増えず、同じトランザクションの
+    // 次の返信に値を引き継ぐことも起きない。同じ投稿IDの再送は、INSERT されないのでトリガーが動かず、何も変わらない
+    let live = live_replies && !parent.is_empty() && {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_default();
+        super::is_live_reply_ts(&message.ts, now)
+    };
     // 期間を区切った ZIP では返信だけが先に入ることがある。後から親を取り込んだら、返信をスレッドに戻す。
     // 既存返信はON CONFLICTでも更新しない。BEFORE INSERTで削除済みの親を
     // 再検証しないよう、主キーで先に除外する。新規返信の制約はそのまま通す。
     exec(
         tx,
-        "INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at,parent_id,components) \
+        "WITH live AS MATERIALIZED (SELECT set_config('zoo.thread_live_import',$11,true) AS v) \
+         INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at,parent_id,components,forwarded_message_ids) \
          SELECT $1,$2,$3,$4,(to_timestamp($5::numeric) AT TIME ZONE 'UTC')::timestamp(3),\
          CASE WHEN $6='' THEN NULL ELSE (to_timestamp($6::numeric) AT TIME ZONE 'UTC')::timestamp(3) END,\
          (SELECT m.id FROM messages m WHERE m.id=NULLIF($7,'') AND m.channel_id=$3 AND m.parent_id IS NULL \
           AND ($9='' OR m.created_at=(to_timestamp($9::numeric) AT TIME ZONE 'UTC')::timestamp(3))),\
-         NULLIF($8,'') WHERE NOT EXISTS(SELECT 1 FROM messages existing WHERE existing.id=$1 AND existing.parent_id IS NOT NULL) \
+         NULLIF($8,''),\
+         NULLIF($12,'')::jsonb \
+         FROM live WHERE NOT EXISTS(SELECT 1 FROM messages existing WHERE existing.id=$1 AND existing.parent_id IS NOT NULL) \
          ON CONFLICT (id) DO UPDATE SET parent_id=EXCLUDED.parent_id \
          WHERE messages.parent_id IS NULL AND EXCLUDED.parent_id IS NOT NULL \
          AND messages.channel_id=EXCLUDED.channel_id \
@@ -1574,6 +1838,9 @@ pub(super) async fn insert_message(
             parent_ts,
             // 決定的な ID の行は、作成日時が同じ行だけを更新する (Zoo の投稿との対応 `slack_message_map` がある行は除く)
             if derived { "1" } else { "" },
+            // ライブの返信として扱うか (`zoo.thread_live_import`)。毎回、この文で決める
+            if live { "on" } else { "off" },
+            &forwarded_json,
         ],
     )
     .await?;
@@ -1586,6 +1853,23 @@ pub(super) async fn insert_message(
             "A Slack message was not imported because its ID is already used by another message"
         );
         return Ok(());
+    }
+    // 既に取り込み済みのメッセージ（スレッド返信を含む）に forwarded_message_ids が未設定なら補完する（updated_at / revision は変えない）
+    if !forwarded_json.is_empty() {
+        exec(
+            tx,
+            "UPDATE messages SET forwarded_message_ids=$2::jsonb \
+             WHERE id=$1 AND channel_id=$3 AND deleted_at IS NULL \
+             AND forwarded_message_ids IS NULL \
+             AND ($4='' OR created_at=(to_timestamp($4::numeric) AT TIME ZONE 'UTC')::timestamp(3))",
+            &[
+                &id,
+                &forwarded_json,
+                channel_id,
+                if derived { message.ts.as_str() } else { "" },
+            ],
+        )
+        .await?;
     }
     // 差分同期・イベントで取り込んだ投稿は、`slack_message_map` に `slack` で残す (直近 24 時間の再確認が、
     // Slack から消えた投稿を見つけるのに使う。ZIP の取り込みは、件数が多いので残さない。古い行は掃除が消す)

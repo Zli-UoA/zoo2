@@ -10,8 +10,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# schema.sql は pg_bigm を使うので、infra/db/postgres のイメージで立てる。
+docker build -q -t zoo2-postgres-bigm:16 ../../infra/db/postgres >/dev/null
 docker run -d --rm --name "$name" \
-  -e POSTGRES_PASSWORD=erd -e POSTGRES_DB=erd postgres:16 >/dev/null
+  -e POSTGRES_PASSWORD=erd -e POSTGRES_DB=erd zoo2-postgres-bigm:16 >/dev/null
 ready=false
 for _ in $(seq 1 60); do
   if docker exec "$name" pg_isready -h 127.0.0.1 -U postgres -d erd -q; then

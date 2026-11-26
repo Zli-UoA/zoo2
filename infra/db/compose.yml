@@ -2,7 +2,9 @@ name: zoo2
 
 services:
   postgres:
-    image: postgres:16-alpine
+    # pg_bigm for full-text search; built here because ghcr.io/zli-uoa is private.
+    build: ./postgres
+    image: zoo2-postgres-bigm:16
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-root}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
@@ -11,6 +13,9 @@ services:
       - postgres
       - -c
       - wal_level=logical
+      # The search query budget test counts SQL per API request (docs/search.md).
+      - -c
+      - shared_preload_libraries=pg_stat_statements
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:

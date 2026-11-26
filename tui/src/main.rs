@@ -141,7 +141,7 @@ async fn run() -> Result<()> {
         )
     });
     let (crypto_task, e2ee) = match crypto {
-        Some((task, stores)) => {
+        Some((task, stores, events)) => {
             // 初回設定と解錠の再認証（#360）。dev モードではサーバーも再認証を確かめない。
             let oidc = match &config.auth {
                 AuthConfig::Oidc(oidc) => Some(oidc.clone()),
@@ -153,6 +153,7 @@ async fn run() -> Result<()> {
                     oidc,
                     stores,
                     crypto_root,
+                    events: Some(events),
                 }),
             )
         }
@@ -211,7 +212,8 @@ async fn login() -> Result<()> {
         .context("ログインはできましたが、zoo2 がトークンを受け付けませんでした")?;
     println!(
         "{} (@{}) としてログインしました。",
-        me.display_name, me.user_name
+        zoo2_client_core::text::sanitize_display(&me.display_name),
+        zoo2_client_core::text::sanitize_display(&me.user_name)
     );
     Ok(())
 }
@@ -270,6 +272,20 @@ async fn clear_encryption(
     let targets = e2ee::manager::open_for_logout(&root)?;
     if targets.is_empty() {
         return Ok(true);
+    }
+    // 終わっていない失効があれば、ログアウトの前に警告する（ログアウトすると進み具合が消える。#362）。
+    if targets.iter().any(|target| target.pending_revocation) {
+        println!("失効が終わっていません。");
+        println!(
+            "ログアウトすると、この端末に残した失効の進み具合が消えます。別の端末で SSSS を開け直して、失効をやり直す必要があります。"
+        );
+        print!("ログアウトしますか？ [y/N] ");
+        std::io::Write::flush(&mut std::io::stdout())?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !matches!(answer.trim(), "y" | "Y" | "yes") {
+            return Ok(false);
+        }
     }
     let pending: usize = targets.iter().map(|target| target.pending_backup).sum();
     if pending > 0 {

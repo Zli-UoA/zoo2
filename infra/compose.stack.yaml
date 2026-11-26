@@ -169,7 +169,9 @@ services:
         condition: service_healthy
 
   postgres:
-    image: postgres:16-alpine
+    # pg_bigm for full-text search (same image as infra/db/compose.yml).
+    build: ./infra/db/postgres
+    image: zoo2-postgres-bigm:16
     restart: unless-stopped
     networks:
       - backend

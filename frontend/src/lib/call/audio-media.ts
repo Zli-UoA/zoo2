@@ -18,6 +18,7 @@ export class AudioCallMedia {
   private early = new Map<string, RTCIceCandidateInit[]>();
   private left = new Set<string>();
   private members = new Set<string>();
+  private participantUsers = new Map<string, string>();
   private queue: Promise<void> = Promise.resolve();
   private closed = false;
   private hadRemote = false;
@@ -88,7 +89,41 @@ export class AudioCallMedia {
   private signal(id: string, signal: unknown) {
     if (!this.closed) this.emit("signal", { target_session_id: id, signal });
   }
-  private async join(id: string) {
+  /** Read decoded, inbound audio levels without opening a second audio stream. */
+  async remoteAudioLevel(userId?: string): Promise<number> {
+    const levels = await Promise.all(
+      Array.from(this.peers, async ([id, { pc }]) => {
+        if (
+          pc.connectionState !== "connected" ||
+          (userId && this.participantUsers.get(id) !== userId)
+        )
+          return 0;
+        try {
+          let level = 0;
+          (await pc.getStats()).forEach((report) => {
+            if (
+              report.type === "inbound-rtp" &&
+              report.kind === "audio" &&
+              Number.isFinite(report.audioLevel)
+            )
+              level = Math.max(level, report.audioLevel);
+          });
+          return this.closed || this.peers.get(id)?.pc !== pc ? 0 : Math.min(1, level);
+        } catch {
+          return 0;
+        }
+      }),
+    );
+    return Math.max(0, ...levels);
+  }
+  private async join({
+    session_id: id,
+    user_id: userId,
+  }: {
+    session_id: string;
+    user_id?: string;
+  }) {
+    if (userId && !this.left.has(id) && id !== this.session) this.participantUsers.set(id, userId);
     if (id === this.session || this.left.has(id) || this.peers.has(id)) return;
     this.members.add(id);
     this.hadRemote = true;
@@ -103,13 +138,15 @@ export class AudioCallMedia {
     if (event === "room_state") {
       this.offerer =
         typeof data.offerer_session_id === "string" ? data.offerer_session_id : undefined;
-      for (const p of data.participants as { session_id: string }[]) await this.join(p.session_id);
+      for (const p of data.participants as { session_id: string; user_id?: string }[])
+        await this.join(p);
     } else if (event === "participant_joined") {
-      await this.join((data.participant as { session_id: string }).session_id);
+      await this.join(data.participant as { session_id: string; user_id?: string });
     } else if (event === "participant_left") {
       const id = data.session_id as string;
       this.left.add(id);
       this.members.delete(id);
+      this.participantUsers.delete(id);
       const p = this.peers.get(id);
       if (p) {
         p.pc.close();
@@ -148,6 +185,10 @@ export class AudioCallMedia {
       }
     }
   }
+  /** 送信中のマイク（SFU に移るときに複製して使う。docs/calls-sfu.md）。 */
+  micTrack(): MediaStreamTrack | null {
+    return this.stream?.getAudioTracks()[0] ?? null;
+  }
   mute(muted: boolean) {
     this.stream?.getAudioTracks().forEach((track) => {
       track.enabled = !muted;
@@ -165,5 +206,6 @@ export class AudioCallMedia {
     this.peers.clear();
     this.early.clear();
     this.members.clear();
+    this.participantUsers.clear();
   }
 }

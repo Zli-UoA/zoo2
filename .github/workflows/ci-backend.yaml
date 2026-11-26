@@ -9,6 +9,7 @@ on:
       - "crates/zoo-crypto/**"
       - "crates/zoo-components/**"
       - "docs/slack-event-coverage.json"
+      - "frontend/src/lib/emoji/emoji-kitchen.json"
       - "infra/db/**"
       - "!infra/db/erd.sh"
       - "!infra/db/compare-*.py"
@@ -28,6 +29,7 @@ on:
       - "crates/zoo-crypto/**"
       - "crates/zoo-components/**"
       - "docs/slack-event-coverage.json"
+      - "frontend/src/lib/emoji/emoji-kitchen.json"
       - "infra/db/**"
       - "!infra/db/erd.sh"
       - "!infra/db/compare-*.py"
@@ -58,6 +60,8 @@ jobs:
 
   runner:
     uses: ./.github/workflows/select-runner.yaml
+    with:
+      large: true
     secrets:
       runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
 
@@ -69,7 +73,7 @@ jobs:
     if: fromJSON(needs.test-selection.outputs.backend).check
     needs: [runner, test-selection]
     # Rust builds and linking can exceed kubecamp's 2GiB budget and starve the runner.
-    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"zli-k8s"') }}
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"ubuntu-latest"') }}
     defaults:
       run:
         working-directory: ./backend
@@ -397,18 +401,6 @@ jobs:
     needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     timeout-minutes: 45
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: root
-          POSTGRES_PASSWORD: emoji-local-test
-          POSTGRES_DB: emoji_projection_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U root -d emoji_projection_test"
-          --health-interval 5s --health-timeout 5s --health-retries 20
     env:
       EMOJI_TEST_DATABASE_URL: postgres://root:emoji-local-test@127.0.0.1:5432/emoji_projection_test
     steps:
@@ -427,6 +419,18 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: backend
           shared-key: backend-check
+      # schema.sql は pg_bigm を使う。service コンテナではイメージをビルドできないので、ここで立てる。
+      - name: Start PostgreSQL with pg_bigm
+        run: |
+          docker build -t zoo2-postgres-bigm:16 infra/db/postgres
+          docker run -d --name postgres -p 5432:5432 -e POSTGRES_USER=root \
+            -e POSTGRES_PASSWORD=emoji-local-test -e POSTGRES_DB=emoji_projection_test zoo2-postgres-bigm:16
+          for _ in $(seq 60); do
+            docker exec postgres pg_isready -U root -d emoji_projection_test -h 127.0.0.1 && exit 0
+            sleep 2
+          done
+          docker logs postgres
+          exit 1
       - name: Apply disposable database schema
         run: psql "$EMOJI_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f infra/db/schema.sql
       - name: Check shared emoji display projection

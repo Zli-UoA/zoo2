@@ -11,44 +11,6 @@ import kotlinx.serialization.json.*
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ParityTransportTest {
-    @Test
-    fun escapeClearsQueryBeforeClosingOnTheNextKey() = runTest {
-        val http = HttpClient(MockEngine { respond("{}") })
-        val app =
-            Session(
-                Repository(
-                    Config("https://zoo.test", "/shapes", "alice", false),
-                    Browser(),
-                    http,
-                    backgroundScope,
-                ),
-                backgroundScope,
-                Environment(),
-            )
-        var query = "member"
-        var closed = 0
-        val dialog = OverlaySlot()
-        dialog.onEscape = {
-            if (query.isNotEmpty()) {
-                query = ""
-                true
-            } else false
-        }
-        dialog.close = {
-            closed++
-            app.overlays.remove(dialog)
-        }
-        app.overlays.add(dialog)
-        assertTrue(app.escape())
-        assertEquals("", query)
-        assertEquals(0, closed)
-        assertTrue(app.escape())
-        assertEquals(1, closed)
-        assertFalse(app.escape())
-        app.close()
-        http.close()
-    }
-
     private class Browser : Platform {
         override var messageEncryption: MessageEncryption? = null
         var channelCache: String? = null
@@ -128,7 +90,10 @@ class ParityTransportTest {
         var writes = 0
         platform.messageEncryption = object : MessageEncryption {
             override val changes = kotlinx.coroutines.flow.MutableStateFlow(0L)
-            override suspend fun send(channel: String, id: String, parent: String?, body: String) {
+            override val recipients = kotlinx.coroutines.flow.MutableStateFlow(emptyMap<String, RecipientNotice>())
+            override val attachmentCipher: AttachmentCipher get() = error("Unexpected attachment")
+            override suspend fun send(channel: String, id: String, parent: String?, body: String,
+                mentions: EncryptedMentions, attachments: List<kotlinx.serialization.json.JsonObject>) {
                 if (fail) error("e2ee.sendNeedsUnlock")
                 sent = body
             }
@@ -149,6 +114,54 @@ class ParityTransportTest {
         assertFalse(app.send("secret", "file", null, attachmentIds = listOf("plaintext-file")))
         assertFalse(app.send("secret", "/echo secret text", null, commandAppId = "echo"))
         assertEquals(0, writes)
+        app.close()
+        http.close()
+    }
+
+    /** `Session.send` の平文・暗号化の両方の `catch` が、参加が必要な 403 だけ、参加の案内を出す。 */
+    @Test
+    fun aReplyRefusedForAMissingJoinShowsTheJoinHintOnBothSendPaths() = runTest {
+        val platform = Browser().apply { channelCache = """[{"id":"secret","encrypted":"t"}]""" }
+        var refusal = """{"error":"Join the thread before replying","code":"THREAD_JOIN_REQUIRED"}"""
+        val encryptedWrites = mutableListOf<String?>()
+        platform.messageEncryption = object : MessageEncryption {
+            override val changes = kotlinx.coroutines.flow.MutableStateFlow(0L)
+            override val recipients = kotlinx.coroutines.flow.MutableStateFlow(emptyMap<String, RecipientNotice>())
+            override val attachmentCipher: AttachmentCipher get() = error("Unexpected attachment")
+            override suspend fun send(channel: String, id: String, parent: String?, body: String,
+                mentions: EncryptedMentions, attachments: List<kotlinx.serialization.json.JsonObject>) {
+                encryptedWrites += parent
+                throw ApiException(403, json.parseToJsonElement(refusal).jsonObject)
+            }
+            override suspend fun edit(message: Row, body: String) = error("Unexpected edit")
+            override suspend fun decrypt(message: Row) = error("Unexpected decrypt")
+        }
+        val http = HttpClient(MockEngine { request ->
+            if (request.method == HttpMethod.Get) awaitCancellation()
+            respond(refusal, HttpStatusCode.Forbidden)
+        })
+        val app = Session(
+            Repository(Config("https://zoo.test", "/shapes", "alice", false, txidMode = "none"), platform, http, backgroundScope),
+            backgroundScope,
+            Environment(),
+        )
+        runCurrent()
+        for (channel in listOf("plain", "secret")) {
+            app.dismissToast()
+            assertFalse(app.send(channel, "reply", "root"))
+            assertEquals("threads.joinToReply", app.toast, channel)
+            // 親のない投稿は、スレッドの参加では直らない。
+            app.dismissToast()
+            assertFalse(app.send(channel, "post", null))
+            assertEquals("common.writeError", app.toast, channel)
+            // 投稿権限の 403 は、参加を案内しない。
+            refusal = """{"error":"Only channel managers may post here","code":"POSTING_RESTRICTED"}"""
+            app.dismissToast()
+            assertFalse(app.send(channel, "reply", "root"))
+            assertEquals("common.writeError", app.toast, channel)
+            refusal = """{"error":"Join the thread before replying","code":"THREAD_JOIN_REQUIRED"}"""
+        }
+        assertEquals(listOf<String?>("root", null, "root"), encryptedWrites)
         app.close()
         http.close()
     }
@@ -291,10 +304,13 @@ class ParityTransportTest {
                 backgroundScope,
             )
         val app = Session(repo, backgroundScope, Environment())
+        assertNull(app.attachmentLinks.cachedUrl("file"))
         assertEquals("https://storage.test/file.png", app.attachmentLinks.get("file"))
+        assertEquals("https://storage.test/file.png", app.attachmentLinks.cachedUrl("file"))
         app.attachmentLinks.get("file")
         assertEquals(1, calls)
         platform.timestamp = "2026-01-02T09:05:00Z"
+        assertNull(app.attachmentLinks.cachedUrl("file"))
         assertFailsWith<ApiException> { app.attachmentLinks.get("file") }
         assertTrue(app.attachmentLinks.errors["file"] == true)
         assertEquals("https://storage.test/file.png", app.attachmentLinks.get("file", true))

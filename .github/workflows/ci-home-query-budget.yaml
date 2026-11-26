@@ -24,23 +24,24 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: root
-          POSTGRES_PASSWORD: password
-          POSTGRES_DB: zoo
-        ports: ['5432:5432']
-        options: >-
-          --health-cmd "pg_isready -U root -d zoo" --health-interval 5s
-          --health-timeout 5s --health-retries 20
     env:
       DATABASE_URL: postgres://root:password@localhost:5432/zoo?sslmode=disable
       ACTIVITYPUB_BASE_URL: https://zoo.example.com
       DB_MAX_POOL_SIZE: '2'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      # Migrations need pg_bigm; service containers cannot build images.
+      - name: Start PostgreSQL with pg_bigm
+        run: |
+          docker build -t zoo2-postgres-bigm:16 infra/db/postgres
+          docker run -d --name postgres -p 5432:5432 -e POSTGRES_USER=root \
+            -e POSTGRES_PASSWORD=password -e POSTGRES_DB=zoo zoo2-postgres-bigm:16
+          for _ in $(seq 60); do
+            docker exec postgres pg_isready -U root -d zoo -h 127.0.0.1 && exit 0
+            sleep 2
+          done
+          docker logs postgres
+          exit 1
       - name: Read Rust version
         id: rust
         run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"

@@ -8,10 +8,6 @@ on:
       - "client-core/**"
       - "client-types/**"
       - "crates/zoo-components/**"
-      - "desktop/**"
-      # desktop のトークンと翻訳は frontend のファイルを include_str! で読み、
-      # アイコンのテストは frontend/src の lucide-react の import を読む。
-      - "frontend/src/**"
       - "tui/**"
       # TUI は E2EE の暗号コアを path で依存する（#359）。
       - "crates/zoo-crypto/**"
@@ -26,10 +22,6 @@ on:
       - "client-core/**"
       - "client-types/**"
       - "crates/zoo-components/**"
-      - "desktop/**"
-      # desktop のトークンと翻訳は frontend のファイルを include_str! で読み、
-      # アイコンのテストは frontend/src の lucide-react の import を読む。
-      - "frontend/src/**"
       - "tui/**"
       # TUI は E2EE の暗号コアを path で依存する（#359）。
       - "crates/zoo-crypto/**"
@@ -88,7 +80,7 @@ jobs:
           # キャッシュの保存は main だけにする。PR ごとに数百 MB ずつ保存すると、容量の上限（10GB）を超えて、main のキャッシュも追い出される。
           save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: tui
-      # メッセージ部品のモデル。backend と client-types（GPUI・Tauri・TUI）が使う。
+      # メッセージ部品のモデル。backend と client-types（Tauri・TUI）が使う。
       - name: format check (zoo-components)
         working-directory: ./crates/zoo-components
         run: cargo fmt --check
@@ -130,56 +122,3 @@ jobs:
         run: cargo test --locked
       - name: build
         run: cargo build --locked --release
-
-  desktop:
-    if: fromJSON(needs.test-selection.outputs.clients).desktop
-    # GPUI のビルドには Wayland / X11 / xkbcommon などの apt パッケージが要るため、GitHub ホストの実行先を使う。
-    needs: test-selection
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: ./desktop
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config \
-            libasound2-dev \
-            libfontconfig1-dev \
-            libfreetype-dev \
-            libvulkan-dev \
-            libwayland-dev \
-            libx11-dev \
-            libxcb1-dev \
-            libxcursor-dev \
-            libxi-dev \
-            libxkbcommon-dev \
-            libxkbcommon-x11-dev \
-            libxrandr-dev
-      - name: Read Rust toolchain
-        id: rust-toolchain
-        working-directory: .
-        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
-        with:
-          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
-          components: clippy, rustfmt
-      - name: Restore Cache
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-        with:
-          # キャッシュの保存は main だけにする。PR ごとに数百 MB ずつ保存すると、容量の上限（10GB）を超えて、main のキャッシュも追い出される。
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          workspaces: desktop
-      - name: format check
-        run: cargo fmt --check
-      - name: lint check
-        run: cargo clippy --all-targets --locked -- -D warnings
-      - name: test
-        run: cargo test --locked

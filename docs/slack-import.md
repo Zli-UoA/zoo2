@@ -130,7 +130,7 @@ ZIP は添付ファイルと同じバケット（`S3_*`）の `slack-imports/` �
 - 配備の順序: (1) このバイナリを含むイメージを配備する（backend の挙動は変わりません）、(2) 専用のワーカーの Deployment を足して、`/healthz` が通り、小さな ZIP が最後まで取り込めることを確認する、(3) backend に `SLACK_IMPORT_WORKER=false` を足して再起動する。戻すときは、この env を外して再起動します。
 
 
-ZIP はブラウザから署名付き URL に直接 PUT するので、フロントエンドの CSP の `connect-src` に、ストレージの公開オリジン（`CSP_STORAGE_SRC`。添付ファイルと同じ設定）が必要です。公開オリジンが Cloudflare のプロキシ配下だと、プランごとのリクエスト本文の上限（Free・Pro は 100 MB、Business は 200 MB）を超える ZIP はブラウザーから PUT できません。そのような大きな ZIP は、ブラウザーを使わず、管理者が手動でストレージへ直接アップロードします（「大きな ZIP を手動でアップロードする」）。プレースホルダのアイコンは Slack のプロフィール画像の URL（`https://avatars.slack-edge.com/…` など）を使うので、表示するには、その配信元を `CSP_APP_IMAGE_SRC`（`img-src`）に追加します。追加しない場合は、既定のアイコンを表示します。`SLACK_IMPORT_BOT_TOKEN` で添付ファイルを取得する場合は、バックエンドから `files.slack.com`（`SLACK_FILES_BASE_URL` のホスト）へ HTTPS で接続できる必要があります。NetworkPolicy などで外向きの通信を絞っている場合は、許可してください。
+ZIP はブラウザから署名付き URL に直接 PUT するので、フロントエンドの CSP の `connect-src` に、ストレージの公開オリジン（`CSP_STORAGE_SRC`。添付ファイルと同じ設定）が必要です。公開オリジンが Cloudflare のプロキシ配下だと、プランごとのリクエスト本文の上限（Free・Pro は 100 MB、Business は 200 MB）を超える ZIP はブラウザーから PUT できません。そのような大きな ZIP は、ブラウザーを使わず、管理者が手動でストレージへ直接アップロードします（「大きな ZIP を手動でアップロードする」）。プレースホルダの `avatars.slack-edge.com` のプロフィール画像は、Web と Android で `MEDIA_PROXY_URL` に設定した画像プロキシを経由して取得します。プロキシを設定する前に取り込んだ画像にも適用します。プロキシが未設定、または画像取得に失敗した場合は、既定のアイコンを表示します。その他の配信元を Web で表示する場合は、配信元に応じて `CSP_APP_IMAGE_SRC`（`img-src`）を設定します。`SLACK_IMPORT_BOT_TOKEN` で添付ファイルを取得する場合は、バックエンドから `files.slack.com`（`SLACK_FILES_BASE_URL` のホスト）へ HTTPS で接続できる必要があります。NetworkPolicy などで外向きの通信を絞っている場合は、許可してください。
 
 ### 大きな ZIP を手動でアップロードする
 
@@ -282,6 +282,7 @@ Android アプリでは、「Slack と連携」を押すと外部のブラウザ
 
 - **トークン**: 同じチャンネルは、そのワークスペースの連携済みメンバーのうち 1 人のトークンで取得します。非公開の Zoo チャンネルは、そのメンバーのトークンだけを使い、公開のチャンネルは、メンバーのトークンを先に試します。読めないトークン（チャンネルに参加していない、トークンが失効した、履歴スコープがない）は飛ばして、次のメンバーのトークンで取り直します。誰のトークンでも読めないときは、1 時間後に取り直します。
 - **カーソル**: 同期の起点は `slack_channels.last_ts` で、チャンネル単位で共有します（人数分の取得はしません）。`conversations.history` は新しい順に返すので、`last_ts` は同期が最後まで終わったときにだけ、取得した最新の投稿の `ts` まで進めます。
+- **スレッドの再Openと参加**: 差分同期・イベントで取り込む（API の最初の全履歴の同期は含めません）、直近（スレッドの自動アーカイブの期間 `THREAD_IDLE_DAYS`＝1 日から、余裕の 10 分を引いた範囲）の返信は、zoo の返信と同じライブの投稿として扱います。アーカイブ済みのスレッドを再Openし、退出済みの投稿者（連携したユーザー）を再参加させます。ただし、返信より後に zoo で退出した人は、取り込みが遅れても（429・再試行・同期の追いつき）、時計のずれで返信の時刻が DB の時刻より先でも、その返信では再参加しません。期間の端の返信は、再Openしても活動時刻がすぐ期間を外れて閉じ直されるので、履歴として入れるだけです。親の投稿者と返信者の自動参加は、これまでどおりです（連携していない人のプレースホルダは、参加者の一覧に出ません）。同じ返信の再取り込み（5 分ごとの確認や再送）は INSERT されないので、再Openも再参加もしません。Slack の返信者も、zoo の返信者と同じ参加の扱いです（未参加の人は参加して返信し、退出済みの人は退出のあとの返信で参加し直し、アーカイブ済みのスレッドへの他人の返信はスレッドを再表示します）。フラグ（`zoo.thread_live_import`）は、メッセージの INSERT 文の先頭の CTE（テーブルを読まない定数の `set_config`）で、返信ごとに決め直します。別の SQL 文・往復は増えず、同じトランザクションの次の返信には引き継がれません（差分同期のページは `ts` の昇順に入れるので、「直近の返信のあとに古い返信」の順は、現状の経路では起きません）。ZIP・API の履歴の取り込み（API の最初の全履歴の同期、`is_initial` を含む。Slack の時計が DB より進んでいて、返信の時刻が DB の時刻より先でも同じ）と、範囲より古い返信は、履歴として入れるだけで、再Openも再参加もしません（初回の全履歴や、止まっていた同期の追いつきが、古いスレッドを開き直さないため）。
 - **スレッド**: 取得した投稿のうちスレッドの親があれば、返信を `conversations.replies` で取得します。返信がまだない投稿も含め、3 日以内の親になりうる投稿（最大 20 件、新しい順）は、新しい返信がないか毎回確かめます（同期のあとで初めて返信が付いても取り込むため）。
 - **キューと再開**: チャンネルごとにキュー（`slack_channel_syncs`）の 1 行を持ち、複数台のバックエンドが、`FOR UPDATE SKIP LOCKED` とリースで 1 チャンネルを 1 台だけが進めます。1 ページ（または 1 スレッド）ごとに、書き込みと同じトランザクションで、ページのカーソルと残りのスレッドを保存するので、止まっても続きから再開します。ページのカーソルが期限切れ（`invalid_cursor`）になったときは、保存した位置を捨て、同期カーソルから取り直します。取り込みの書き込みは決定的 ID の `ON CONFLICT DO NOTHING` なので、取り直しや、ZIP の取り込みとの重なりで投稿が重複することはありません。取り込みのジョブが動いているワークスペースは、そのジョブが終わるまで同期を待ちます。
 - **429**: `Retry-After` の秒数だけ、そのチャンネルの次の実行を遅らせます（ほかのチャンネルは進みます）。途中経過は保存済みで、失敗の回数には数えません。そのほかの失敗は、30 秒から最大 1 時間まで、回数に応じて待ちを延ばして再実行します。
@@ -393,3 +394,29 @@ kubectl -n zoo2 exec -i deploy/zoo-slack-worker -- /home/nonroot/zoo_slack_refor
 既にスレッドに属する返信は、再取り込みで本文や親を更新しない。INSERTのBEFOREトリガーはON CONFLICTより先に動くため、既存返信への不要なINSERTを先に除外し、削除済みの親を新規返信の親として検証し直さない。新規返信や親が未設定の既存行では、従来のスレッド制約と親の補完を維持する。
 
 総メッセージ数をN、取り込む日付ファイル内の投稿数をMとすると、除外判定は各投稿IDの主キー検索でO(log N)、ファイル全体ではO(M log N)。履歴やチャンネル全体を列挙しない。親の補完も主キーと既存のparent_idインデックスを使い、追加の全履歴ソートやOFFSETを導入しない。
+
+## Slack メッセージ転送（引用）の反映と過去投稿バックフィル
+
+Slack の転送・引用投稿やメッセージパーマリンク展開は `attachments` 内の `is_share: true` または `is_msg_unfurl: true` として記録される。`SlackMessage::forwarded_refs` は同一ワークスペースの参照を `channel_id` + `ts` または `/archives/<ch>/p<digits>` から抽出し（他ワークスペースは除外、最大 5 件）、`is_importable_for_team` により同一ワークスペースの参照を含むコメントなし転送投稿を新規取り込み対象とする（他ワークスペース転送のみの投稿は空投稿として取り込まず、参照を取り出せない古い・不完全な転送添付のみ従来の添付テキスト転記へフォールバックする）。なお Slack 連携は取り込み方向のみのため、Zoo 側で行った転送は Slack へ書き戻さない（`chat.postMessage` 等は呼ばない）。
+
+- **ID 解決と権限境界**: 参照先は `slack_message_map`、無ければ決定的な `slack::message_id(team, slack_channel_id, ts)` へ解決して `messages.forwarded_message_ids` に保存する。転送元チャンネルが未取り込みの場合でも本文はスナップショットせず、決定的 ID と `(team_id, slack_channel_id, ts)` を内部表 `slack_forward_targets` に予約して事前作成によるなりすまし（`409 Conflict`）を防止しつつ、閲覧時は解決 API が `unavailable` を返す（後から転送元チャンネルで正当な `ts`・チャンネルに一致する実メッセージが取り込まれればそのまま表示される）。なお他ワークスペース転送のみの親投稿など親自体が取り込み対象外でも、スレッド内の通常返信や同一ワークスペース転送返信は `conversations.replies` で取得し、親が Zoo に存在しないため親なしの通常投稿（`parent_id IS NULL`）として取り込む。
+- **既存投稿・スレッド返信の補完**: ZIP の再取り込み（`worker::insert_message`）および差分同期・イベント反映（`hints::edit`）は、既に取り込み済みの Slack 由来メッセージ（`parent_id IS NOT NULL` のスレッド返信を含む）で `forwarded_message_ids IS NULL` の行について、`updated_at` と `revision` を変えずに `forwarded_message_ids` を補完する。
+- **過去投稿バックフィル CLI (`zoo_slack_backfill_forwards`)**:
+
+```bash
+# 既定は dry-run（書き込みなし・件数集計のみ）
+kubectl -n zoo2 exec deploy/zoo-slack-worker -- /home/nonroot/zoo_slack_backfill_forwards
+# 書き込みを実行（チャンネル・再開カーソル・未処理スレッド・スレッド返信カーソル・対象 ts 下限・最大ページ数を指定可能）
+kubectl -n zoo2 exec deploy/zoo-slack-worker -- /home/nonroot/zoo_slack_backfill_forwards --apply [--channel <id>] [--cursor <slack_cursor>] [--thread-roots <ts1,ts2,...>] [--thread-cursor <slack_cursor>] [--oldest <slack_ts>] [--max-pages <N>]
+```
+
+暗号化チャンネル・削除済み・Zoo 起点（`origin = 'zoo'`）は対象外で、`updated_at`・`revision` を増やさずに欠損した `forwarded_message_ids` の補完と未取り込みだったコメントなし転送の挿入を冪等に行う。`--oldest <slack_ts>` は古い親投稿配下の新着スレッド返信を取りこぼさないよう履歴を `oldest=0` で取得したうえで適用対象（およびスレッド探索）を絞り込むオプションであり、`conversations.history` の API 呼び出し回数自体は削減しない。API 呼び出しを分割したい場合は `--channel` と `--max-pages <N>` を併用し、`--max-pages` で打ち切られた際に出力されるレポートの `truncated: true` / `resume_channels` を使って、`next_history_cursor`・`pending_thread_roots`・`next_thread_cursor` を引き継いで再開する（書き込み実行の中断時は `--apply` を引き続き指定すること。省略すると既定の dry-run になる。また `--oldest` の値は `resume_channels` に保存されないため、中断前に `--oldest` を指定した場合は再開時にも同じ `--oldest <中断時と同じ slack_ts>` を必ず指定すること）。複数ページのスレッド途中で打ち切られた場合も `next_thread_cursor` を `--thread-cursor` に渡せば次の返信ページから再開でき、Slack が前回と同じ `next_cursor` を返した場合は完了と誤認せずエラーとして停止する。
+
+```bash
+# 履歴カーソル＋スレッド両方が残っている場合の書き込み再開例
+kubectl -n zoo2 exec deploy/zoo-slack-worker -- /home/nonroot/zoo_slack_backfill_forwards --apply --channel <id> [--oldest <中断時と同じ slack_ts>] --cursor <next_history_cursor> --thread-roots <ts1,ts2,...> [--thread-cursor <next_thread_cursor>]
+# スレッドのみが残っている場合（next_history_cursor が無い場合）の書き込み再開例
+kubectl -n zoo2 exec deploy/zoo-slack-worker -- /home/nonroot/zoo_slack_backfill_forwards --apply --channel <id> [--oldest <中断時と同じ slack_ts>] --thread-roots <ts1,ts2,...> [--thread-cursor <next_thread_cursor>]
+```
+
+本コマンドは通常同期ワーカーのチャンネルリース（`slack_channel_syncs.lease_token`）を取得せず稼働中のワーカーと並行実行し得るが、決定的 ID の `ON CONFLICT` により重複投稿を作らず、既存行に対しては本文・`updated_at`・`revision` を上書きせず条件付きの補完（`forwarded_message_ids IS NULL` への設定、および親を後から取り込んだ場合の未設定 `parent_id IS NULL` 返信への親付け替え）のみを行う（ただし Slack API のレート制限 429 は共有されるため、閑散時の分割実行を推奨する）。また未対応クライアント（Android・TUI・`desktop-tauri`、#698 で対応予定）ではコメントなし転送が空行として表示されるため、`--apply` による過去分の新規挿入は #698 の反映後に実行すること。

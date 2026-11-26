@@ -1,4 +1,16 @@
 {
+  "a11y": {
+    "skipToContent": "본문으로 건너뛰기"
+  },
+  "aboutZoo": {
+    "title": "Zoo 정보",
+    "version": "버전: {{version}}",
+    "versionUnknown": "알 수 없음"
+  },
+  "notFoundPage": {
+    "title": "페이지를 찾을 수 없습니다",
+    "description": "요청하신 페이지가 이동되었거나 더 이상 존재하지 않을 수 있습니다."
+  },
   "nav": {
     "main": "메인 내비게이션"
   },
@@ -10,6 +22,10 @@
     "unread": "읽지 않은 메시지 있음",
     "editTitle": "채널 편집",
     "editHelp": "채널 이름은 한글 등의 문자·숫자와 반각 하이픈(-)·밑줄(_)을 사용해 80자 이내로 입력해 주세요. 공백, 이모지, 그 밖의 기호와 예약어는 사용할 수 없습니다.",
+    "nameRequired": "채널 이름을 입력해 주세요.",
+    "nameTooLong": "채널 이름은 {{max}}자 이내로 입력해 주세요 (현재 {{length}}자).",
+    "nameReserved": "'{{name}}'은 예약어라 사용할 수 없습니다.",
+    "invalidName": "채널 이름에는 문자, 숫자, 반각 하이픈(-), 밑줄(_)만 사용할 수 있습니다.",
     "saveName": "저장",
     "savingName": "저장 중…",
     "title": "채널",
@@ -44,6 +60,7 @@
     "notFound": "채널을 찾을 수 없습니다.",
     "duplicateName": "같은 이름의 채널이 이미 있습니다.",
     "privateMessages": "비공개 채널입니다. 초대를 받으면 메시지를 볼 수 있습니다.",
+    "postingManagersOnly": "이 채널은 관리자만 게시할 수 있습니다.",
     "back": "채널 목록으로 돌아가기",
     "noDescription": "아직 설명이 없습니다",
     "visibilityHelp": "공개 채널은 누구나 참여할 수 있습니다. 비공개 채널은 만든 사람이 초대한 사람만 참여할 수 있습니다.",
@@ -122,8 +139,7 @@
     "candidates": "멤버 후보",
     "usersLoading": "사용자를 불러오는 중…",
     "usersError": "사용자를 불러오지 못했습니다.",
-    "usersEmpty": "해당하는 사용자가 없습니다.",
-    "back": "채널로 돌아가기"
+    "usersEmpty": "해당하는 사용자가 없습니다."
   },
   "moderation": {
     "archived": "보관됨",
@@ -159,6 +175,11 @@
     "invalidState": "현재 상태에서는 이 작업을 수행할 수 없습니다."
   },
   "settings": {
+    "appearance": "모양",
+    "interaction": "동작",
+    "swipeReply": "밀어서 답장",
+    "operationHaptics": "햅틱 피드백",
+    "navTitle": "설정",
     "admin": "관리자",
     "member": "멤버",
     "makeAdmin": "관리자로 지정",
@@ -198,13 +219,16 @@
     "description": "왼쪽 목록에서 채널을 선택하면 메시지를 주고받을 수 있습니다."
   },
   "messages": {
+    "loadingOlder": "이전 메시지를 불러오는 중…",
     "typing": "{{names}}님이 입력 중…",
     "typingSeparator": ", ",
     "compose": "메시지 보내기",
     "send": "보내기",
     "edit": "편집",
+    "editMessage": "메시지 편집",
     "delete": "삭제",
     "more": "더 보기",
+    "actions": "메시지 작업",
     "editLabel": "메시지 편집",
     "loadError": "메시지를 불러오지 못했습니다",
     "retryHelp": "연결을 확인한 후 다시 시도해 주세요.",
@@ -224,9 +248,56 @@
     "copyRaw": "원문 복사",
     "copied": "원문을 복사했습니다",
     "copyFailed": "원문을 복사하지 못했습니다",
-    "edited": "편집됨"
+    "copyLink": "메시지 링크 복사",
+    "linkCopied": "메시지 링크를 복사했습니다",
+    "linkCopyFailed": "메시지 링크를 복사하지 못했습니다",
+    "edited": "편집됨",
+    "forward": "메시지 전달…",
+    "forwardTitle": "이 메시지 전달",
+    "forwardSearchPlaceholder": "채널 또는 멤버 검색",
+    "forwardDestinationLabel": "전달 대상",
+    "forwardDestinationSelected": "{{name}}을(를) 전달 대상으로 선택했습니다",
+    "forwardClearDestination": "{{name}} 선택 해제",
+    "forwardNoDestinations": "전달할 수 있는 채널이나 DM이 없습니다",
+    "forwardCommentPlaceholder": "코멘트 추가(선택 사항)",
+    "forwardCommentLabel": "코멘트",
+    "forwardPreviewLabel": "전달할 메시지 미리보기",
+    "forwardSubmit": "전달",
+    "forwarding": "전달 중…",
+    "forwarded": "메시지를 전달했습니다",
+    "forwardedTo": "{{channel}}에 전달했습니다",
+    "forwardSourceUnavailable": "원본 메시지가 없거나 전달할 권한이 없습니다",
+    "forwardLoading": "전달된 메시지 불러오는 중",
+    "forwardDeleted": "이 메시지는 삭제되었습니다",
+    "forwardUnavailable": "볼 수 있는 권한이 없어 이 메시지를 표시할 수 없습니다",
+    "forwardLoadError": "전달된 메시지를 불러오지 못했습니다",
+    "forwardSourceChannel": "{{channel}}에 게시됨",
+    "forwardSourceThread": "{{channel}} 스레드의 답글",
+    "forwardQuoteLabel": "{{author}}님의 전달된 메시지",
+    "forwardAttachmentCount_one": "첨부 파일 {{count}}개",
+    "forwardAttachmentCount_other": "첨부 파일 {{count}}개",
+    "forwardNestedCompact": "이 게시물에도 전달된 메시지가 포함되어 있습니다",
+    "forwardNestedNote": "이 게시물에도 전달된 메시지가 있습니다 · 원본 보기"
+  },
+  "channelLink": {
+    "inlineMessage": "{{name}} 님: {{channel}}",
+    "thread": "{{channel}}의 스레드",
+    "encrypted": "이 메시지는 암호화되어 있습니다",
+    "messageUnavailable": "메시지를 표시할 수 없습니다",
+    "channelUnavailable": "채널을 표시할 수 없습니다",
+    "loading": "링크 대상을 불러오는 중",
+    "loadFailed": "링크 대상을 불러오지 못했습니다",
+    "appMessage": "App 메시지",
+    "attachments_one": "첨부 파일 {{count}}개",
+    "attachments_other": "첨부 파일 {{count}}개",
+    "privateChannel": "비공개 채널",
+    "encryptedChannel": "암호화 채널"
   },
   "attachments": {
+    "recentPhotos": "최근 사진",
+    "systemPhotos": "사진 선택기 열기",
+    "allowRecentPhotos": "사진 접근 허용",
+    "noRecentPhotos": "표시할 사진이 없습니다",
     "play": "재생",
     "pause": "일시 정지",
     "add": "파일 첨부",
@@ -245,11 +316,23 @@
     "download": "{{name}} 다운로드",
     "downloadShort": "다운로드",
     "downloadError": "다운로드하지 못했습니다.",
+    "previewSaveUnsupported": "이 파일은 앱에서 저장할 수 없습니다. 링크를 새 탭에서 열어 저장해 주세요.",
+    "downloadSaved": "{{name}}(으)로 저장했습니다.",
+    "downloadDestinationUnsupported": "이 저장 위치에는 저장할 수 없습니다. 다른 폴더를 선택하거나 설정의 \"다운로드\"에서 저장 위치를 변경하세요.",
+    "downloadTooMany": "동시에 저장할 수 있는 개수를 초과했습니다. 다른 다운로드가 끝난 후 다시 시도하세요.",
+    "downloading": "다운로드 중",
+    "saving": "저장 중…",
+    "cancelDownload": "{{name}} 다운로드 취소",
+    "cancelDownloadShort": "취소",
     "retry": "다시 시도",
     "sensitive": "민감한 이미지",
     "markSensitive": "이미지를 민감한 콘텐츠로 표시",
     "showSensitive": "이미지 표시",
     "hideSensitive": "이미지 숨기기",
+    "showSensitiveVideo": "동영상 표시",
+    "hideSensitiveVideo": "동영상 숨기기",
+    "openOriginal": "원본 파일",
+    "imagePreviewFailed": "이미지를 불러오지 못했습니다",
     "sensitiveShort": "민감한 이미지",
     "documentSummary": "본문과 셀의 간단한 미리보기입니다. 서식과 배치는 원본과 다를 수 있습니다.",
     "previewLimit": "미리보기의 크기, 파일 수 또는 처리 시간 제한을 초과했습니다. 파일을 다운로드해 확인하세요.",
@@ -257,6 +340,8 @@
     "containedFiles": "포함된 파일",
     "previousPage": "이전 페이지",
     "nextPage": "다음 페이지",
+    "pageNumber": "페이지 번호",
+    "pdfPages": "PDF 페이지 목록",
     "pdfPage": "PDF {{page}}페이지",
     "mail": {
       "subject": "제목",
@@ -264,7 +349,8 @@
       "to": "받는 사람",
       "cc": "참조",
       "date": "날짜"
-    }
+    },
+    "downloadDestinationUnsupportedAskEveryTimeOff": "이 저장 위치에는 저장할 수 없습니다. 설정의 \"다운로드\"에서 저장 위치를 변경하거나, \"저장할 때마다 확인\"을 켜세요."
   },
   "threads": {
     "title": "스레드",
@@ -293,8 +379,18 @@
     "join": "스레드 참여",
     "leave": "스레드 나가기",
     "reopen": "다시 열기",
-    "reopenOnSend": "답장을 보내면 스레드를 다시 열고 참여합니다.",
-    "membershipError": "스레드 참여 상태를 변경하지 못했습니다."
+    "reopenOnSend": "답장을 보내면 스레드를 다시 엽니다.",
+    "membershipError": "스레드 참여 상태를 변경하지 못했습니다.",
+    "participants_one": "참여자 {{count}}명",
+    "participants_other": "참여자 {{count}}명",
+    "participantsMore": "외 {{count}}명",
+    "participantsEmpty": "참여자가 없습니다",
+    "threadStarter": "스레드 작성자",
+    "participantsSearch": "이름으로 검색",
+    "participantsFilterPartial": "불러온 처음 {{loaded}}명 중에서만 검색합니다(외 {{count}}명은 검색할 수 없습니다).",
+    "participantsDescription": "이 스레드에 참여 중인 사람입니다.",
+    "joinToReply": "스레드에 참여하면 답글을 보낼 수 있습니다.",
+    "reopenAndJoin": "다시 열고 참여하기"
   },
   "reactions": {
     "showUsers": "{{emoji}} 반응을 남긴 사용자 보기",
@@ -328,7 +424,6 @@
     "noSearchResults": "일치하는 이모지가 없습니다",
     "tabEmoji": "이모지",
     "tabKitchen": "Emoji Kitchen",
-    "emojiDescription": "모든 이모지에서 고를 수 있습니다.",
     "emojiLoading": "이모지를 불러오는 중…",
     "recent": "최근 사용한 이모지",
     "skinTone": "피부색"
@@ -366,6 +461,8 @@
     "channels": "채널 후보"
   },
   "notifications": {
+    "filterAll": "전체 알림",
+    "filterMentions": "멘션",
     "label": "알림",
     "close": "알림 닫기",
     "title": "알림",
@@ -394,7 +491,8 @@
     "unreadStatus": "읽지 않음",
     "readStatus": "읽음",
     "actors_one": "{{actor}} 님 외 1명",
-    "actors_other": "{{actor}} 님 외 {{count}}명"
+    "actors_other": "{{actor}} 님 외 {{count}}명",
+    "forwardedPreview": "메시지를 전달했습니다"
   },
   "webhooks": {
     "title": "Webhook 설정",
@@ -456,6 +554,19 @@
     "desktopTitle": "알림",
     "desktopValue": "시스템 알림",
     "desktopDescription": "멘션과 DM을 앱이 시스템 알림으로 알려 줍니다. 시스템 설정에서 zoo2 알림을 꺼 두었다면 그쪽도 켜 주세요."
+  },
+  "downloads": {
+    "desktopTitle": "다운로드",
+    "desktopDescription": "첨부 파일을 저장할 위치입니다. 저장할 때마다 위치를 확인하거나, 미리 정한 폴더에 저장할 수 있습니다.",
+    "askEveryTime": "저장할 때마다 확인",
+    "noFolder": "폴더가 선택되지 않음",
+    "chooseFolder": "폴더 선택",
+    "resetDirectory": "저장 폴더를 지우고 저장할 때마다 확인",
+    "olderAppValue": "앱 기본 저장 위치",
+    "olderAppDescription": "이 버전의 앱은 앱이 정한 위치에 첨부 파일을 저장합니다. 저장 위치를 바꾸려면 앱을 업데이트하세요.",
+    "loadError": "저장 위치 설정을 불러오지 못했습니다.",
+    "retry": "다시 불러오기",
+    "error": "다운로드 설정을 변경하지 못했습니다. 다시 시도해 주세요."
   },
   "mfm": {
     "suggestions": "MFM 후보",
@@ -563,6 +674,7 @@
     "micNotFound": "마이크를 찾을 수 없습니다."
   },
   "bubbleChat": {
+    "navTitle": "Bubble",
     "title": "Bubble Chat",
     "description": "입력 중인 글자가 그대로 실시간으로 표시되는 방입니다",
     "emptyTitle": "현재 입력 중인 사용자가 없습니다",
@@ -776,6 +888,7 @@
     "showLess": "접기"
   },
   "home": {
+    "navTitle": "홈",
     "back": "뒤로",
     "deleted": "게시물을 삭제했습니다",
     "newPosts": "새 게시물 보기 ({{count}}개)",
@@ -791,6 +904,7 @@
     "post": "게시",
     "sending": "게시 중…",
     "sendError": "게시하지 못했습니다. 임시 저장한 글은 남아 있습니다. 다시 시도해 주세요.",
+    "postForbidden": "이 채널에는 게시할 수 없습니다.",
     "loadError": "타임라인을 불러오지 못했습니다.",
     "loading": "불러오는 중…",
     "empty": "아직 게시물이 없습니다",
@@ -1691,6 +1805,9 @@
     "empty": "사용 가능한 공개 채널이 없습니다.",
     "saved": "저장했습니다."
   },
+  "androidUpdate": {
+    "title": "앱 업데이트"
+  },
   "androidNotifications": {
     "enable": "알림 사용",
     "scope": "로그인한 세션이 동기화되는 동안 새 알림을 받습니다.",
@@ -1799,11 +1916,89 @@
   "androidPhone": {
     "description": "개인 또는 공유 SIP 회선과 DM 음성 통화를 기기의 통화 기능과 함께 사용합니다.",
     "nativeCalls": "기기 통화 기능 연동",
-    "nativeHelp": "수신을 켜면 지속 알림과 함께 연결을 유지합니다. 기기의 통화 제어로 응답, 종료 및 음성 출력을 조작할 수 있습니다. 마이크 권한이 필요합니다.",
+    "nativeHelp": "전화가 오면 통화 알림이 표시됩니다. 알림을 허용하면 지원되는 기기에서 백그라운드에서도 DM 전화를 받을 수 있습니다. SIP 전화를 기다리거나 FCM을 사용할 수 없는 기기에서 DM 전화를 기다릴 때는 Zoo를 화면에 열어 두세요. 기기의 통화 제어로 응답, 종료 및 음성 출력을 조작할 수 있으며 마이크 권한이 필요합니다.",
+    "minimizeCall": "최소화",
+    "expandCall": "통화 열기",
+    "floatCall": "작은 창으로 보기",
+    "pipUnavailable": "Android 설정에서 화면 속 화면을 확인하세요.",
+    "incomingScreenSettings": "전체 화면 수신 설정",
     "receiveDm": "DM 전화 받기",
     "callError": "통화 준비 또는 조작에 실패했습니다. 마이크 권한, 기기의 통화 지원, 네트워크와 회선 설정을 확인하세요.",
     "speaker": "스피커",
     "waiting": "전화 수신 대기 중",
     "dmCall": "통화"
+  },
+  "globalSearch": {
+    "title": "검색",
+    "placeholder": "메시지와 파일 검색",
+    "kinds": {
+      "all": "전체",
+      "messages": "메시지",
+      "files": "파일"
+    },
+    "prompt": "검색할 단어를 입력하세요. 공백으로 구분하면 모든 단어를 포함한 결과를 찾습니다.",
+    "empty": "결과가 없습니다.",
+    "emptyOlder": "{{month}}까지 결과가 없습니다. 더 이전 기간을 검색할 수 있습니다.",
+    "searchedUntil": "{{month}}까지 검색했습니다",
+    "searchOlder": "이전 결과 더 검색",
+    "loading": "검색 중…",
+    "loadError": "검색하지 못했습니다.",
+    "retry": "다시 시도",
+    "tooManyTerms": "검색어는 최대 {{max}}개까지 입력할 수 있습니다. 단어를 줄여 주세요.",
+    "termTooLong": "한 단어는 최대 {{max}}자까지 입력할 수 있습니다. 단어를 짧게 줄여 주세요.",
+    "encryptedNote": "암호화된 채널은 검색 대상에서 제외됩니다.",
+    "openNav": "검색",
+    "inThread": "스레드 답글",
+    "filters": {
+      "label": "필터",
+      "from": "보낸 사람",
+      "in": "채널",
+      "kind": "종류",
+      "period": "기간",
+      "anytime": "지정 안 함",
+      "last7": "지난 7일",
+      "last30": "지난 30일",
+      "last365": "지난 1년",
+      "custom": "날짜 지정",
+      "after": "시작일",
+      "before": "종료일",
+      "reversed": "시작일은 종료일과 같거나 그 이전이어야 합니다.",
+      "reset": "조건 초기화",
+      "me": "{{name}} (나)",
+      "searchPeople": "이름으로 찾기",
+      "searchChannels": "채널 이름으로 찾기",
+      "noMatches": "찾을 수 없습니다",
+      "clearSelection": "선택 해제",
+      "selectedCount": "{{label}}: {{count}}개",
+      "max": "최대 {{count}}개까지 선택할 수 있습니다",
+      "mine": "내가 참여 중",
+      "noBots": "봇 제외"
+    }
+  },
+  "catchUp": {
+    "navUnread_one": "안 읽은 대화 {{count}}개",
+    "navUnread_other": "안 읽은 대화 {{count}}개",
+    "title": "안 읽은 메시지 확인",
+    "close": "닫기",
+    "count_one": "읽지 않은 메시지 {{count}}개",
+    "count_other": "읽지 않은 메시지 {{count}}개",
+    "overCount_one": "읽지 않은 메시지 {{count}}개 이상",
+    "overCount_other": "읽지 않은 메시지 {{count}}개 이상",
+    "progress": "{{current}} / {{total}}",
+    "markRead": "읽음으로 표시",
+    "keepUnread": "읽지 않고 다음으로",
+    "readError": "읽음으로 표시할 수 없습니다. 다시 시도해 주세요.",
+    "loadError": "안 읽은 대화를 불러올 수 없습니다",
+    "retry": "다시 시도",
+    "loading": "안 읽은 대화를 불러오는 중",
+    "empty": "안 읽은 대화가 없습니다",
+    "emptyDescription": "새 메시지가 오면 다시 확인해 주세요",
+    "complete": "모두 확인했습니다",
+    "summary": "읽음 {{read}}개 · 읽지 않음 {{skipped}}개",
+    "refresh": "새로 고침",
+    "conversation": "대화",
+    "unreadTooOld": "이전 안 읽은 메시지가 아직 범위 밖에 있습니다. 더 불러온 뒤 읽음으로 표시하세요.",
+    "loadMore": "더 불러오기",
+    "unreadChanged": "읽는 동안 새로운 안 읽은 메시지가 도착했습니다. 이 대화는 읽지 않은 상태로 다음으로 넘어가세요."
   }
 }

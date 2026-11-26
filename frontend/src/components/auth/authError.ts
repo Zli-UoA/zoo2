@@ -7,23 +7,24 @@ export type AuthError =
   | { kind: "oidc"; error: OidcError }
   | { kind: "message"; text: string };
 
-const ERROR_KEYS = {
-  discovery_failed: "auth.oidcErrors.discovery_failed",
-  issuer_mismatch: "auth.oidcErrors.issuer_mismatch",
-  invalid_discovery: "auth.oidcErrors.invalid_discovery",
-  authorization_failed: "auth.oidcErrors.authorization_failed",
-  invalid_callback: "auth.oidcErrors.invalid_callback",
-  missing_pending_request: "auth.oidcErrors.missing_pending_request",
-  state_mismatch: "auth.oidcErrors.state_mismatch",
-  no_refresh_token: "auth.oidcErrors.no_refresh_token",
-  session_reset: "auth.oidcErrors.session_reset",
-  invalid_token_response: "auth.oidcErrors.invalid_token_response",
-  token_request_failed: "auth.oidcErrors.token_request_failed",
-  invalid_id_token: "auth.oidcErrors.invalid_id_token",
-  id_token_issuer_mismatch: "auth.oidcErrors.id_token_issuer_mismatch",
-  id_token_audience_mismatch: "auth.oidcErrors.id_token_audience_mismatch",
-  id_token_expired: "auth.oidcErrors.id_token_expired",
-  nonce_mismatch: "auth.oidcErrors.nonce_mismatch",
+/** 辞書のキーは `auth.oidcErrors.` + 接尾辞で組み立てる。x18n が前方一致で追えるようにする。 */
+const ERROR_SUFFIXES = {
+  discovery_failed: "discovery_failed",
+  issuer_mismatch: "issuer_mismatch",
+  invalid_discovery: "invalid_discovery",
+  authorization_failed: "authorization_failed",
+  invalid_callback: "invalid_callback",
+  missing_pending_request: "missing_pending_request",
+  state_mismatch: "state_mismatch",
+  no_refresh_token: "no_refresh_token",
+  session_reset: "session_reset",
+  invalid_token_response: "invalid_token_response",
+  token_request_failed: "token_request_failed",
+  invalid_id_token: "invalid_id_token",
+  id_token_issuer_mismatch: "id_token_issuer_mismatch",
+  id_token_audience_mismatch: "id_token_audience_mismatch",
+  id_token_expired: "id_token_expired",
+  nonce_mismatch: "nonce_mismatch",
 } as const;
 
 export function describeAuthError(cause: unknown): AuthError {
@@ -37,10 +38,12 @@ export function formatAuthError(error: AuthError | null, t: TFunction): string {
   if (error.kind === "unauthorizedLoop") return t("auth.unauthorizedLoop");
   if (error.kind === "message") return error.text;
   const cause = error.error;
-  const key = Object.hasOwn(ERROR_KEYS, cause.reason)
-    ? ERROR_KEYS[cause.reason as keyof typeof ERROR_KEYS]
+  const suffix = Object.hasOwn(ERROR_SUFFIXES, cause.reason)
+    ? ERROR_SUFFIXES[cause.reason as keyof typeof ERROR_SUFFIXES]
     : null;
   const message =
-    cause.source === "client" && key ? t(key, { status: cause.status }) : cause.message;
+    cause.source === "client" && suffix
+      ? t(`auth.oidcErrors.${suffix}`, { status: cause.status })
+      : cause.message;
   return t("auth.errorWithCode", { message, code: cause.code });
 }

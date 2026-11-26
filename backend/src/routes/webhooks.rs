@@ -93,6 +93,7 @@ pub(super) async fn persist_components(
             epoch: None,
             revision: None,
             mentions: None,
+            forwarded_message_ids: None,
         },
         false,
         components,

@@ -212,7 +212,25 @@ impl SlackConfig {
         self.signing_secret.is_some() && self.oauth_enabled()
     }
 
+    /// `SLACK_API_BASE_URL` が正当な HTTP(S) URL であり、本番環境では HTTPS であることを検証する。
+    pub fn validate_api_base_url(&self, environment: &str) -> Result<(), String> {
+        let parsed = reqwest::Url::parse(&self.api_base_url)
+            .map_err(|e| format!("SLACK_API_BASE_URL is not a valid URL: {e}"))?;
+        if parsed.cannot_be_a_base() || parsed.query().is_some() || parsed.fragment().is_some() {
+            return Err(
+                "SLACK_API_BASE_URL must not include a query string or fragment".to_string(),
+            );
+        }
+        match parsed.scheme() {
+            "https" => Ok(()),
+            "http" if environment != "production" => Ok(()),
+            "http" => Err("SLACK_API_BASE_URL must use https in production".to_string()),
+            scheme => Err(format!("SLACK_API_BASE_URL has invalid scheme: {scheme}")),
+        }
+    }
+
     fn validate(&self, environment: &str) -> Result<(), String> {
+        self.validate_api_base_url(environment)?;
         // 受信口は、合図で差分同期を起こすだけ。連携の設定がないと同期が動かないので、設定ミスとして止める
         if self.signing_secret.is_some() && !self.oauth_enabled() {
             return Err(
@@ -301,6 +319,9 @@ pub struct Config {
     /// `encrypted: true` のチャンネルと DM の作成を受け付けるか（`E2EE_ENCRYPTED_CHANNELS_ENABLED`。既定は false）。
     /// false のあいだは 403 `E2EE_DISABLED`。#358 の拒否が入ってから true にする（docs/e2ee.md）。
     pub e2ee_encrypted_channels_enabled: bool,
+    /// 参加・退出・再Openの応答に載せる参加者一覧を、コミット後に読む時間の上限（ミリ秒）。超えたら、
+    /// 一覧を省いて応答する（書き込みはコミット済み）。Web の POST の期限（10秒）より短くする。環境変数にはしない。
+    pub thread_participants_read_timeout_ms: u64,
 }
 
 impl fmt::Debug for Config {
@@ -514,6 +535,8 @@ impl Config {
             e2ee_encrypted_channels_enabled: parse_bool_flag(
                 env::var("E2EE_ENCRYPTED_CHANNELS_ENABLED").ok().as_deref(),
             ),
+            thread_participants_read_timeout_ms:
+                crate::routes::threads::THREAD_PARTICIPANTS_READ_TIMEOUT_MS,
         }
     }
 
@@ -767,6 +790,8 @@ mod tests {
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
             e2ee_encrypted_channels_enabled: false,
+            thread_participants_read_timeout_ms:
+                crate::routes::threads::THREAD_PARTICIPANTS_READ_TIMEOUT_MS,
         };
         let debug_str = format!("{config:?}");
         assert!(!debug_str.contains("super_secret_password"));
@@ -798,6 +823,8 @@ mod tests {
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
             e2ee_encrypted_channels_enabled: false,
+            thread_participants_read_timeout_ms:
+                crate::routes::threads::THREAD_PARTICIPANTS_READ_TIMEOUT_MS,
         };
 
         // 有効な JSON 配列
@@ -841,6 +868,8 @@ mod tests {
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
             e2ee_encrypted_channels_enabled: false,
+            thread_participants_read_timeout_ms:
+                crate::routes::threads::THREAD_PARTICIPANTS_READ_TIMEOUT_MS,
         };
         assert!(prod_no_oidc.validate().is_err());
 
@@ -935,6 +964,8 @@ mod tests {
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
             e2ee_encrypted_channels_enabled: false,
+            thread_participants_read_timeout_ms:
+                crate::routes::threads::THREAD_PARTICIPANTS_READ_TIMEOUT_MS,
         };
         assert!(config.validate().is_err());
     }
@@ -965,6 +996,8 @@ mod tests {
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
             e2ee_encrypted_channels_enabled: false,
+            thread_participants_read_timeout_ms:
+                crate::routes::threads::THREAD_PARTICIPANTS_READ_TIMEOUT_MS,
         };
         assert!(config.validate().is_ok());
 
@@ -1005,6 +1038,8 @@ mod tests {
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
             e2ee_encrypted_channels_enabled: false,
+            thread_participants_read_timeout_ms:
+                crate::routes::threads::THREAD_PARTICIPANTS_READ_TIMEOUT_MS,
         };
 
         // 境界値 OK (1 秒、604,800 秒 = 7 日)
@@ -1061,6 +1096,8 @@ mod tests {
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
             e2ee_encrypted_channels_enabled: false,
+            thread_participants_read_timeout_ms:
+                crate::routes::threads::THREAD_PARTICIPANTS_READ_TIMEOUT_MS,
         };
 
         // 正常系: 有効な STUN / TURN
@@ -1165,6 +1202,8 @@ mod tests {
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
             e2ee_encrypted_channels_enabled: false,
+            thread_participants_read_timeout_ms:
+                crate::routes::threads::THREAD_PARTICIPANTS_READ_TIMEOUT_MS,
         };
         let debug_str = format!("{config:?}");
         assert!(!debug_str.contains("stun:stun.l.google.com:19302"));
@@ -1217,6 +1256,8 @@ mod tests {
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
             e2ee_encrypted_channels_enabled: false,
+            thread_participants_read_timeout_ms:
+                crate::routes::threads::THREAD_PARTICIPANTS_READ_TIMEOUT_MS,
         };
 
         // None は OK
@@ -1269,5 +1310,55 @@ mod tests {
         // 本番環境での http は拒否
         config.s3.public_endpoint = Some("http://attachments.zliusercontent.com".to_string());
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_slack_api_base_url() {
+        let mut config = Config {
+            database_url: "test".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            electric_url: "test".to_string(),
+            electric_secret: None,
+            oidc: Some(OidcConfig {
+                issuer: "https://idm.example.com".to_string(),
+                audience: "zoo_client".to_string(),
+                jwks_url: None,
+                reauth_audiences: Vec::new(),
+            }),
+            dev_auth_enabled: false,
+            environment: "development".to_string(),
+            cors_allowed_origins: vec![],
+            webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
+            sip_encryption_key: None,
+            phone_gateway: Default::default(),
+            s3: dummy_s3_config(),
+            slack: SlackConfig::default(),
+            e2ee_encrypted_channels_enabled: false,
+            thread_participants_read_timeout_ms:
+                crate::routes::threads::THREAD_PARTICIPANTS_READ_TIMEOUT_MS,
+        };
+
+        config.slack.api_base_url = "http://127.0.0.1:8787".to_string();
+        assert!(config.validate().is_ok());
+
+        // 本番環境では OAuth 未設定でも HTTP の SLACK_API_BASE_URL を拒否する
+        config.environment = "production".to_string();
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.contains("SLACK_API_BASE_URL"),
+            "unexpected error: {err}"
+        );
+
+        config.slack.api_base_url = "https://slack.com/api".to_string();
+        assert!(config.validate().is_ok());
+
+        for bad in ["https://slack.com/api#ops", "https://slack.com/api?foo=bar"] {
+            config.slack.api_base_url = bad.to_string();
+            assert!(
+                config.slack.validate_api_base_url("production").is_err(),
+                "expected invalid SLACK_API_BASE_URL: {bad}"
+            );
+        }
     }
 }

@@ -14,8 +14,12 @@ import hljs from "highlight.js/lib/common";
 import { useWorkspaceEmojis } from "../../../lib/emoji/workspace";
 import type { DisplayEmoji } from "../../../lib/electric/types";
 import { emojiImageStyle } from "../../../lib/emoji/dimensions";
+import { useKitchenCatalog } from "../../../hooks/useKitchenCatalog";
+import { kitchenFromShortcode, kitchenImageUrl, kitchenLabel } from "../../../lib/emoji/kitchen";
 import { useShortcodes } from "../../../lib/emoji/shortcodes";
-import { ExternalLink, inlineLinkClassName } from "../../ui/external-link";
+import { inlineLinkClassName } from "../../ui/external-link";
+import { highlightText } from "../../ui/highlighted-text";
+import { ContentLink } from "./ContentLink";
 import { MfmSearch } from "./MfmSearch";
 import { ChannelHashtag } from "./MfmChannels";
 import { AccountGlyph } from "./MfmAccounts";
@@ -39,27 +43,45 @@ export interface MfmContentProps {
    * 省くと（平文のメッセージ）、今までどおり本文の `@name` をすべてメンションとして表示する。
    */
   mentions?: MentionAllowlist;
+  /**
+   * 検索結果で強調する語。本文の文字（リンクの文字を含む）の中で当たった部分を `<mark>` にする。
+   * コード・数式・絵文字・メンションの中は強調しない。
+   */
+  highlight?: readonly string[];
 }
 const ShortcodeContext = createContext<Readonly<Record<string, string>>>({});
 const linkClass = `${inlineLinkClassName} underline`;
-function externalLink(url: string, children: ReactNode): ReactNode {
+/**
+ * 本文中のリンク。このアプリのチャンネル・メッセージへのリンクだけ、同じタブで移動する。
+ * `bare` は、リンクの文字が URL そのものであること。行き先が分かれば、短い表示に置き換えてよい。
+ */
+function bodyLink(url: string, children: ReactNode, bare = false): ReactNode {
   return (
-    <ExternalLink href={url} className="underline [overflow-wrap:anywhere]">
+    <ContentLink href={url} className="underline [overflow-wrap:anywhere]" bare={bare}>
       {children}
-    </ExternalLink>
+    </ContentLink>
   );
 }
-function text(content: string, mentions?: MentionAllowlist): ReactNode {
+function text(
+  content: string,
+  mentions?: MentionAllowlist,
+  highlight?: readonly string[],
+): ReactNode {
   return messageTextSegments(content).map((segment, index) => (
     <Fragment key={index}>
       {segment.kind === "link" ? (
-        externalLink(segment.value, segment.value.replace(/^https?:\/\//i, ""))
+        bodyLink(
+          segment.value,
+          highlightText(segment.value.replace(/^https?:\/\//i, ""), highlight),
+          // 検索語を強調している間は、強調する URL の文字を短い表示に置き換えない。
+          !highlight?.length,
+        )
       ) : segment.kind === "mention" && (!mentions || isAllowedMention(segment.value, mentions)) ? (
         <span className="rounded bg-brand-muted px-0.5 font-medium text-brand-muted-foreground">
           <AccountGlyph name={segment.value.slice(1)} mention />
         </span>
       ) : (
-        segment.value
+        highlightText(segment.value, highlight)
       )}
     </Fragment>
   ));
@@ -83,6 +105,27 @@ function loadRegistry() {
     .catch(() => ({}));
   return registryRequest;
 }
+function KitchenCode({ value }: { value: string }) {
+  const { catalog } = useKitchenCatalog(true);
+  const url = catalog ? kitchenImageUrl(catalog, value) : null;
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const label = kitchenLabel(value);
+  return url && failedUrl !== url ? (
+    <img
+      src={url}
+      alt={label}
+      title={label}
+      className="mfm-custom-emoji"
+      style={{ width: "1.5em", height: "1.5em" }}
+      loading="lazy"
+      referrerPolicy="no-referrer"
+      onError={() => setFailedUrl(url)}
+    />
+  ) : (
+    label
+  );
+}
+
 function EmojiCode({
   name,
   emojiUrls,
@@ -116,6 +159,8 @@ function EmojiCode({
         loading="lazy"
       />
     );
+  const kitchen = kitchenFromShortcode(name);
+  if (kitchen) return <KitchenCode value={kitchen} />;
   return Object.hasOwn(shortcodes, name) ? shortcodes[name] : `:${name}:`;
 }
 function MathFormula({ formula, block }: { formula: string; block: boolean }) {
@@ -175,7 +220,9 @@ function renderNode(
   const children = () => render(node.children ?? []);
   switch (node.type) {
     case "text":
-      return inLink ? node.props.text : text(node.props.text, options.mentions);
+      return inLink
+        ? highlightText(node.props.text, options.highlight)
+        : text(node.props.text, options.mentions, options.highlight);
     case "unicodeEmoji":
       return node.props.emoji;
     case "emojiCode":
@@ -198,7 +245,11 @@ function renderNode(
     case "blockCode":
       return <CodeBlock {...node.props} />;
     case "plain":
-      return node.children.map((child) => child.props.text).join("");
+      // 再解析はせず、MFM の記法を文字のまま出す（強調だけ付ける）。
+      return highlightText(
+        node.children.map((child) => child.props.text).join(""),
+        options.highlight,
+      );
     case "quote":
       return (
         <blockquote className="border-l-2 border-muted-foreground pl-3">{children()}</blockquote>
@@ -209,14 +260,14 @@ function renderNode(
     case "mathBlock":
       return <MathFormula formula={node.props.formula} block={node.type === "mathBlock"} />;
     case "url":
-      return inLink ? node.props.url : text(node.props.url, options.mentions);
+      return inLink ? node.props.url : text(node.props.url, options.mentions, options.highlight);
     case "link": {
       if (inLink) return children();
       const label = node.children.map((child, index) => (
         <Fragment key={index}>{renderNode(child, options, true, scale)}</Fragment>
       ));
       return /^https?:\/\//i.test(node.props.url)
-        ? externalLink(node.props.url, label)
+        ? bodyLink(node.props.url, label)
         : toString(node);
     }
     case "mention": {
@@ -226,10 +277,7 @@ function renderNode(
       // メンションとして扱わず、素の文字列で出す。
       if (host && options.mentions) return node.props.acct;
       return !inLink && host && /^[a-z\d.-]+(?::\d+)?$/i.test(host)
-        ? externalLink(
-            `https://${host}/@${encodeURIComponent(node.props.username)}`,
-            node.props.acct,
-          )
+        ? bodyLink(`https://${host}/@${encodeURIComponent(node.props.username)}`, node.props.acct)
         : inLink
           ? node.props.acct
           : text(node.props.acct, options.mentions);

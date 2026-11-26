@@ -23,6 +23,7 @@ pub fn router() -> Router<AppState> {
 
 async fn config(_actor: AuthUser) -> Result<Json<Value>, AppError> {
     Ok(Json(json!({
+        "voip": true,
         "sandbox": ApnsConfig::from_env("sandbox").map_err(AppError::Internal)?.is_some(),
         "production": ApnsConfig::from_env("production").map_err(AppError::Internal)?.is_some(),
     })))
@@ -30,6 +31,8 @@ async fn config(_actor: AuthUser) -> Result<Json<Value>, AppError> {
 
 #[derive(Deserialize)]
 struct Registration {
+    #[serde(default)]
+    kind: crate::apns::PushKind,
     device_token: String,
     environment: String,
     revocation_secret: String,
@@ -54,7 +57,9 @@ async fn subscribe(
             "iPhoneへの通知が設定されていません".into(),
         ));
     }
-    let id = digest(&format!("{}:{}", body.environment, body.device_token));
+    let id = body
+        .kind
+        .registration_id(&body.environment, &body.device_token);
     let secret_hash = digest(&body.revocation_secret);
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
@@ -117,11 +122,36 @@ async fn subscribe(
             .id(id.as_str())
             .user_id(actor.id)
             .device_token(body.device_token)
-            .environment(body.environment)
+            .environment(body.environment.as_str())
             .revocation_hash(secret_hash)
             .created_at(confirmed_at)
             .exec(&mut tx)
-            .await?;
+            .await
+            .map_err(|error| {
+                if AppError::is_unique_violation(&error, None) {
+                    // 秘密値を記録せず、登録用途と競合した制約だけを切り分ける。
+                    let constraint = [
+                        "apns_subscriptions_device_token_environment_key",
+                        "apns_subscriptions_token_environment_kind_key",
+                        "apns_subscriptions_pkey",
+                    ]
+                    .into_iter()
+                    .find(|name| AppError::is_unique_violation(&error, Some(name)))
+                    .unwrap_or("unknown");
+                    tracing::warn!(
+                        operation = "apns_subscribe",
+                        kind = if body.kind == crate::apns::PushKind::Voip {
+                            "voip"
+                        } else {
+                            "alert"
+                        },
+                        environment = body.environment.as_str(),
+                        constraint,
+                        "通知登録で一意制約の競合が発生しました"
+                    );
+                }
+                AppError::from(error)
+            })?;
     }
     tx.commit().await?;
     Ok(Json(json!({"id": id})))

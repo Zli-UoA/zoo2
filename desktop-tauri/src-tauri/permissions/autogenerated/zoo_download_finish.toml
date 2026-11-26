@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-zoo-download-finish"
+description = "Enables the zoo_download_finish command without any pre-configured scope."
+commands.allow = ["zoo_download_finish"]
+
+[[permission]]
+identifier = "deny-zoo-download-finish"
+description = "Denies the zoo_download_finish command without any pre-configured scope."
+commands.deny = ["zoo_download_finish"]

@@ -10,7 +10,9 @@ internal class EncryptedChannelHistory(private val platform: Platform, config: C
     private val mutex = Mutex()
     private val known = mutableSetOf<String>()
     private var persisted = emptySet<String>()
-    private var loaded = false
+    /** 保存した記録を読み終えたか。 */
+    var loaded = false
+        private set
 
     fun observe(id: String) { known += id }
     fun contains(id: String): Boolean = id in known

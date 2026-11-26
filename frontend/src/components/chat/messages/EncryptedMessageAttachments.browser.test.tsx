@@ -41,27 +41,32 @@ function attachment(): AttachmentInfo {
   };
 }
 
-it("does not fetch and decrypt again when a virtualized row remounts", async () => {
-  const loader = vi.fn(async (info: AttachmentInfo) => new Blob([PNG], { type: info.mimetype }));
-  const element = () => (
-    <LocaleProvider>
-      <EncryptedAttachmentLoaderContext.Provider value={loader}>
-        <EncryptedMessageAttachments attachments={[attachment()]} />
-      </EncryptedAttachmentLoaderContext.Provider>
-    </LocaleProvider>
-  );
+it(
+  "does not fetch and decrypt again when a virtualized row remounts",
+  { timeout: 30_000 },
+  async () => {
+    const loader = vi.fn(async (info: AttachmentInfo) => new Blob([PNG], { type: info.mimetype }));
+    const element = () => (
+      <LocaleProvider>
+        <EncryptedAttachmentLoaderContext.Provider value={loader}>
+          <EncryptedMessageAttachments attachments={[attachment()]} />
+        </EncryptedAttachmentLoaderContext.Provider>
+      </LocaleProvider>
+    );
 
-  const first = render(element());
-  const image = (await screen.findByRole("img", { name: "wide.png" })) as HTMLImageElement;
-  await waitFor(() => expect(image.naturalWidth).toBe(3));
-  first.unmount();
+    const first = render(element());
+    const image = (await screen.findByRole("img", { name: "wide.png" })) as HTMLImageElement;
+    // 画像のデコードは並列で動くブラウザーテストの負荷で1秒を超えることがある。
+    await waitFor(() => expect(image.naturalWidth).toBe(3), { timeout: 10_000 });
+    first.unmount();
 
-  // 戻ってきた行は、スピナーを挟まずにキャッシュの画像を出す。
-  render(element());
-  const again = screen.getByRole("img", { name: "wide.png" }) as HTMLImageElement;
-  await waitFor(() => expect(again.naturalWidth).toBe(3));
-  expect(loader).toHaveBeenCalledTimes(1);
-});
+    // 戻ってきた行は、スピナーを挟まずにキャッシュの画像を出す。
+    render(element());
+    const again = screen.getByRole("img", { name: "wide.png" }) as HTMLImageElement;
+    await waitFor(() => expect(again.naturalWidth).toBe(3), { timeout: 10_000 });
+    expect(loader).toHaveBeenCalledTimes(1);
+  },
+);
 
 it("does not reuse decrypted attachments across crypto scopes (another worker or account)", async () => {
   const first = vi.fn(async (info: AttachmentInfo) => new Blob([PNG], { type: info.mimetype }));

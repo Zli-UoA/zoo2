@@ -150,8 +150,14 @@ async fn like(
     let mut tx = db.transaction().await?;
     query(&mut tx,"SELECT '{}'::text FROM (SELECT pg_advisory_xact_lock(hashtextextended($1||':'||$2,0))) locked",&[&user.id,&body.post_id]).await?;
     let requested = body.reaction.as_deref().unwrap_or("❤️");
-    let mut selected = None;
-    if requested.starts_with(':') {
+    // An explicit image ID identifies a custom/received image even when its
+    // name happens to match a Kitchen shortcode.
+    let mut selected = if body.emoji_id.is_none() {
+        super::kitchen::emoji(requested)
+    } else {
+        None
+    };
+    if selected.is_none() && requested.starts_with(':') {
         selected = emoji::workspace_options(&mut tx)
             .await?
             .into_iter()

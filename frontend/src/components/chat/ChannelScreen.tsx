@@ -46,7 +46,7 @@ export function ChannelScreen({
   const { t } = useTranslation();
   const shell = useShell();
   const { locale } = useLocale();
-  const { currentUserId } = useCurrentUser();
+  const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
   const channelsQuery = useActiveChannels();
   const usersQuery = useUsers();
   const channels = channelsQuery.data ?? [];
@@ -147,6 +147,13 @@ export function ChannelScreen({
                 isMember={access.isMember}
                 canModerate={!channel.is_dm && access.canManageChannel}
                 readOnly={access.isArchived}
+                // 閲覧はできるまま、書き込みだけを止める（投稿権限は管理者・作成者のみ）。
+                // 現在のユーザー（管理者か）が確定するまでは止めない。
+                postingForbidden={
+                  !currentUserLoading &&
+                  channel.posting_policy === "managers" &&
+                  !access.canManageChannel
+                }
                 encrypted={channel.encrypted === true}
                 membershipEpoch={channel.membership_epoch ?? null}
                 channelName={channel.channel_name}

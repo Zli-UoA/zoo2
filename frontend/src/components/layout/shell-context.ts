@@ -11,13 +11,13 @@ export interface ShellContextValue {
   pane: ShellPane;
   showSidebar: () => void;
   showChat: () => void;
-  /** メンバー（Members）パネル・画面の開閉。 */
+  /** チャンネルのメンバー（画面中央のダイアログ）の開閉。 */
   membersOpen: boolean;
   setMembersOpen: (open: boolean) => void;
   toggleMembers: () => void;
   /** ワイド画面で開いているスレッドのルートメッセージ id（未表示なら null）。 */
   threadRootId: string | null;
-  /** スレッドを開く。メンバーパネルとは排他にする。 */
+  /** スレッドを開く。 */
   openThread: (rootId: string) => void;
   closeThread: () => void;
   /** 現在選択中のチャンネル id（未選択なら null）。 */

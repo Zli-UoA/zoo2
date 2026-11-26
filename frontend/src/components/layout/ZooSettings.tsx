@@ -9,6 +9,7 @@ import { SettingsSection } from "../ui/control-panel";
 import {
   ArrowLeftIcon,
   BellIcon,
+  DownloadIcon,
   LanguagesIcon,
   LogOutIcon,
   PaletteIcon,
@@ -24,6 +25,7 @@ import { ModeToggle } from "../theme/ModeToggle";
 import { PwaControls } from "../pwa/PwaControls";
 import { isDesktopSession } from "../../lib/desktop";
 import { DesktopNotificationSelect } from "../desktop/DesktopNotificationSelect";
+import { DesktopDownloadSettings } from "../desktop/DesktopDownloadSettings";
 import { AppsPanel } from "../chat/AppsDialog";
 import { CallSettingsDevices } from "../call/CallSettingsDevices";
 import { CallSoundsSwitch } from "../call/CallSoundsSwitch";
@@ -159,6 +161,16 @@ export function ZooSettings() {
                   <PwaControls presentation="select" />
                 </SettingRow>
               )}
+              {isDesktopSession() ? (
+                // デスクトップ版は、WebView 任せにせず OS の保存ダイアログで保存する (lib/desktopDownloads.ts)。
+                <SettingRow
+                  icon={<DownloadIcon />}
+                  label={t("downloads.desktopTitle")}
+                  description={t("downloads.desktopDescription")}
+                >
+                  <DesktopDownloadSettings />
+                </SettingRow>
+              ) : null}
             </div>
             {config.oidc ? (
               <div className="mt-6 overflow-hidden rounded-lg border border-destructive/50">

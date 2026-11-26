@@ -111,7 +111,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const relevant = workflowChanges(workflow, changes);
   let selection = {
     ...selectSuites(process.env.GITHUB_EVENT_NAME, relevant),
-    ...selectOtherJobs(process.env.GITHUB_EVENT_NAME, relevant, { base, selectOnPush: workflow === 'ci-tui' }),
+    ...selectOtherJobs(process.env.GITHUB_EVENT_NAME, relevant),
   };
   if (base && changes) {
     const jobs = workflowJobs(workflow, changes, { base });
@@ -121,7 +121,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   selection.androidMedia = !relevant?.length || relevant.some(({ path }) =>
     path === '.github/workflows/ci-android.yaml' ||
     (path.startsWith('frontend/') && !/^(?:frontend\/src\/(?:android-phone|lib\/(?:sip|call))\/|frontend\/vite\.android-phone\.config\.ts$|frontend\/scripts\/android-phone-smoke\.mjs$)/.test(path)));
-  selection.desktopTauri ??= { check: true, macos: true };
+  selection.desktopTauri ??= { check: true, macos: true, windows: true };
   selection.backend.check ??= true;
   selection.backend.deploy ??= selection.backend.full;
   console.log(JSON.stringify(selection, null, 2));

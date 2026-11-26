@@ -2,15 +2,28 @@
 
 自動選択を使うジョブは、publicリポジトリでは **GitHub-hostedを優先**します。標準Runnerは無料で分数の上限がないため、kubecampの空きを調べるAPIや課金APIは呼びません。選択時に空きがあってもRunnerは予約されず、複数workflowの後続ジョブが同じkubecampへ集中して待つことがあるためです。フロントのWasm生成と単体テストもこの選択に従います。
 
-privateリポジトリと公開範囲が不明な場合は、Docker不要ジョブを **kubecamp → GitHub-hosted → zli-k8s** の順に選びます。Docker必須ジョブと2GiBを超える大容量ジョブは **GitHub-hosted → zli-k8s** の順です。kubecampのラベルは `zli-kubecamp-no-docker`、zoo2 ARCは `zli-k8s` です。kubecampはPodSecurityでprivilegedを許可せず、DinDを置けません。zli-k8sのDinDはクラスタのetcdと同じディスクへの書き込みでAPI停止の原因になっていたため、最後の受け皿です。
+privateリポジトリと公開範囲が不明な場合は、Docker不要ジョブを **kubecamp → GitHub-hosted → zli-k8s** の順に選びます。Docker必須ジョブと2GiBを超える大容量ジョブは **GitHub-hosted → zli-k8s** の順です。kubecampのラベルは `zli-kubecamp-no-docker` です。`zli-k8s` は、zoo2-infraのARCがprivateのリポジトリ（zoo2-infra・AuthZ・emoji・oki）に登録する、共通のラベルです。runnerは共有ではなく、**scale setはリポジトリごとに分かれていて、他のリポジトリの空きrunnerは使えません。メモリlimitと台数も、各リポジトリのscale setによります**（たとえば、zoo2-infraはrunner 6Gi・待機1台、AuthZ・emoji・okiはrunner 4Gi・オンデマンド）。**zoo2には `zli-k8s` は登録されておらず、zoo2のselectorは選びません**（zoo2はpublicで、Docker必須ジョブと大容量ジョブは、既定でGitHub-hostedです）。zoo2に登録されているのは、重いジョブ用の `zli-k8s-heavy`（runnerのメモリlimitは9GiB、後述の `CI_LARGE_RUNNER` で切り替え）だけです。この段落の順序は、privateのリポジトリのselectorの挙動の説明です（`select-runner.yaml` は同じ実装をprivateでも使います）。kubecampはPodSecurityでprivilegedを許可せず、DinDを置けません。zli-k8sのDinDはクラスタのetcdと同じディスクへの書き込みでAPI停止の原因になっていたため、最後の受け皿です。
 
-`runner` ジョブはcheckoutせずに選択し、Docker不要用の `runs-on`、Docker用の `docker-runs-on`、大容量用の `large-runs-on` を返します。Docker用と大容量用は同じ値です。privateではonlineかつidleのkubecampをDocker不要ジョブに使い、不在・全台busyの場合はHostedの無料枠を確認した結果に従います。
+`runner` ジョブはcheckoutせずに選択し、Docker不要用の `runs-on`、Docker用の `docker-runs-on`、大容量用の `large-runs-on` を返します。Docker用と大容量用は、既定では同じ値です。publicのリポジトリだけ、Actions variable `CI_LARGE_RUNNER` に `zli-k8s-heavy` を設定すると、大容量用だけが [zoo2-infra の heavy runner](https://github.com/Zli-UoA/zoo2-infra/blob/main/docs/arc.md#runner-の種類待機オンデマンドheavy)（zoo07・zoo08の64コア、メモリlimit 9Gi）になります。空のとき、forkのPR、merge groupはHostedです。他の値は警告して無視します。
+
+heavyが埋まっているときは、重いジョブだけHostedに逃がします（試験的）。`large-runs-on` を使う `ci-backend.yaml` と `ci-frontend.yaml` だけが、`select-runner` に入力 `large: true` を渡し、その場合だけ、選択時点の `zli-k8s-heavy` のジョブ（実行中と待ち）の数を読みます。`ci-backend.yaml` と `ci-frontend.yaml` の実行中・待ちの実行について、ジョブ一覧のAPIで数え、zoo2-infraのheavyの台数（2台）以上になった時点で止めて、Hostedを選びます。Runnerの一覧は読みません。各workflowの実行一覧は `queued`、`in_progress` の順に取得し、両方に現れたrunは一度だけ数えます。`queued` 一覧の取得後に作られ、次の取得時点でも待機中のrunは次回の判定対象になります。複数runの合計が2件に達した場合は、先に数えたrunのジョブを共通の予算と期限内で読み直します。読み直した先のrunだけで2件に達したときは、現在のrunの読み直しが失敗しても、Hostedを選びます。一覧の後続ページや、2つ目の一覧の取得が失敗したときも、それまでに取得したrunは確認し、2件が分かればHosted、分からなければ警告してheavyのままにします。**この読み取りは、`RUNNER_STATUS_TOKEN` ではなく、ワークフロー自身の `GITHUB_TOKEN` で、Node の `fetch` から直接行います**（github-script がスクリプトに渡すクライアントは、`RUNNER_STATUS_TOKEN` で動いていて、別のトークンのクライアントを作る手段は渡されないため）。 `RUNNER_STATUS_TOKEN`（fine-grained PAT）には `Actions: Read` がなく、使うと403になるためです。公開リポジトリのActionsは、権限なしのトークンでも読めるはずですが、実際のAPIでは未確認です（読めないときは403になり、警告を出してheavyのままになります。検証手順は下記を参照してください）。`select` ジョブには権限を要求しません（再利用workflowは、呼び出し元の権限を増やせず、要求すると、呼び出し元が起動前に拒否されます）。選択はworkflowの開始時に一度だけで、予約ではありません。同時に始まるworkflowは同じ結果を見て、どちらもheavyを選ぶことがあります（その場合は待ちます）。先にheavyを選んだ実行でも、後続ジョブが `needs`（`crypto-wasm` や `test-selection`）を待っている間は `runs-on` がまだ評価されず、heavyラベル付きの `queued` / `in_progress` ジョブとして数えられません。この間に別のworkflowがheavyを選ぶと、前段ジョブの完了後に2台分を超えるジョブが並ぶことがあります。`ci-frontend` は重いジョブを3つ持つので、heavyが1台空いていても、2台に3つが並びます。**一覧とジョブの取得は、ページごとに1リクエストとして数え、合計30リクエストまでです。** 超えたときと、読めないとき（403、ネットワーク）は、heavyの使用状況を不明として、heavyのままにし、警告を出します。取得全体の期限は20秒で、超えたら、実行中のリクエストを止め（abort）、以降のリクエストも出しません。`select` が失敗して出力が空になったときの重いジョブの実行先は、Hostedです（zoo2に登録されるRunnerは `zli-k8s-heavy` だけで、`zli-k8s` は存在しないため）。
 
 GitHub-hostedを使えるかは、リポジトリの公開範囲で決めます。publicなら常に使えます。privateか公開範囲が分からない場合は、Billing API（`GET /organizations/{org}/settings/billing/usage`）で当月のActionsの実行料金（Linux以外のOSも含みます。ストレージは除きます）を合計し、Linuxの単価で割ってLinux換算の分数にします。WindowsやmacOSも料金に応じて同じ無料枠を消費するためです。合計の対象はorgのprivateリポジトリの分だけです。合計が1,900分（無料枠2,000分から、使用量の反映遅れの分を引いた値）未満ならGitHub-hostedを、それ以上ならzli-k8sを選びます。無料枠を使い切ると、privateリポジトリのGitHub-hostedのジョブは開始できなくなるためです。
 
 forkの `pull_request` は、選択処理と各ジョブの両方でGitHub-hostedに固定します。`pull_request_target` は既定ブランチのコードだけを実行し、PRのコードをcheckoutしません。Runner Groupはアクセス範囲の管理に使えますが、Group自体に順序付きfallbackを指定する機能はありません。[GitHubの実行先指定](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job)
 
 マージキュー（`merge_group`）には元PRがforkかどうかの情報がなく、fork PRのコードもキューでは同じ条件で実行されます。そのため、`merge-queue.yaml` とそこから呼び出すworkflowは、`github.event_name == 'merge_group'` のときも各ジョブと選択処理をGitHub-hostedに固定します。
+
+### heavyを有効にする手順
+
+**変数を設定する前に、heavy runnerが使える状態になっている必要があります。** heavyが無い（未配備、または登録できていない）状態で `CI_LARGE_RUNNER=zli-k8s-heavy` を設定すると、heavyを選んだ重いジョブ（`ci-backend` の `check`、`ci-frontend` の `check`・`build`・`browser-test`）は、`zli-k8s-heavy` のRunnerを待ち続けます（`timeout-minutes` はキューの待ち時間に効きません）。
+
+1. [zoo2-infra#205](https://github.com/Zli-UoA/zoo2-infra/pull/205) をマージして反映します。GitHub Appのインストールに、zoo2のリポジトリが含まれている必要があります（含まれていないと、listenerが登録できません）。
+2. heavyが使えることを確認します。`kubectl -n arc-runners get autoscalingrunnerset zli-k8s-zoo2-heavy` でscale setがあること、zoo2のSettings → Actions → Runnersに、ラベル `zli-k8s-heavy` のscale setが登録されていることを確認します。
+3. その後で、zoo2のActions variable `CI_LARGE_RUNNER` を `zli-k8s-heavy` に設定します。戻すときは、変数を空にします（次のrunからHostedに戻ります）。
+4. `large: true` を渡すCI BackendまたはCI Frontendを起動し、selectのログで `Heavy runner usage checked: <件数>/2` を確認します。`Heavy runner usage unavailable` または `Heavy runner usage unknown` が出た実行では、使用状況の確認に失敗しています。
+5. **heavyを選んだジョブが、実際にheavyで起動することを確認します。** 上のログは、使用状況のAPIを読めたことしか示しません。scale setが登録済みでも、Runner Podの起動が失敗すると（イメージのpull、ノードの空き、`arc-github-app` のSecretなど）、heavyを選んだ重いジョブは待ち続けます。重いジョブ（`ci-backend` の `check`、`ci-frontend` の `check`・`build`・`browser-test`）のジョブの画面で、Runner名が `zli-k8s-zoo2-heavy-runner-…`、ラベルが `zli-k8s-heavy` になって、数分以内に実行が始まることを確認します。`kubectl -n arc-runners get pods -o wide` で、`zli-k8s-zoo2-heavy-runner-…` のPodが `Running` になっていることも確認できます。
+6. **数分たっても起動しない（ジョブが `queued` のまま）ときは、戻します。** 次の順に行います。(a) zoo2のActions variable `CI_LARGE_RUNNER` を空にします。(b) 待っているrunを**キャンセル**します（ジョブが `queued` の間は、runが完了していないので、そのままでは再実行できません）。(c) キャンセルが完了してから、「Re-run all jobs」で選び直します。「Re-run failed jobs」は前回の選択を使うので、heavyのままになります。原因の調査は、zoo2-infra側（`kubectl -n arc-runners describe pod`、listenerのログ）で行います。
 
 ## 判定ジョブの実行先
 
@@ -22,11 +35,11 @@ privateで判定ジョブが起動待ちになると後続も待ちます。`tim
 
 各リポジトリのRepository Secret `RUNNER_STATUS_TOKEN` に登録します。publicリポジトリではOrg Secretの共有も使えますが、GitHub FreeのprivateリポジトリはOrg Secretを利用できません。fine-grained PATならOrganization permissionsのSelf-hosted runners: Read-onlyを使います。privateリポジトリで無料枠を判定するには、さらにOrganization permissionsのAdministration: Read-only（Billing API用。発行者はorg ownerかbilling manager）と、Repository accessのAll repositories（privateリポジトリ一覧の取得用）が必要です。判定ジョブ以外には渡しません。
 
-publicでは状態確認用トークンがなくても全選択出力がGitHub-hostedになります。privateでトークン不足・API障害によりkubecampの状態を確認できない場合、Docker不要ジョブはkubecampで待機します。privateリポジトリでトークン不足や権限不足のために無料枠を確認できない場合は、課金で止まらないようzli-k8sを選びます。
+publicでは状態確認用トークンがなくても、通常用とDocker用の出力がGitHub-hostedになります。Actions variable `CI_LARGE_RUNNER` が `zli-k8s-heavy` のとき、大容量ジョブの実行先候補にheavyが加わります。`RUNNER_STATUS_TOKEN` は不要で、使用状況の取得にはワークフローの `GITHUB_TOKEN` を使います。heavyのジョブが2件以上ならGitHub-hostedを選びます。forkのPRとmerge groupは常にGitHub-hostedです。privateでトークン不足・API障害によりkubecampの状態を確認できない場合、Docker不要ジョブはkubecampで待機します。privateリポジトリでトークン不足や権限不足のために無料枠を確認できない場合は、課金で止まらないようzli-k8sを選びます。
 
 判定の失敗は、どこで失敗したかで扱いが変わります。
 
-- selector内の `select` ジョブが失敗した場合: `continue-on-error` で成功扱いになり、出力が空になります。各ジョブの `runs-on` のfallbackが使われます。Docker不要ジョブはkubecamp、Docker必須ジョブはGitHub-hosted、大容量ジョブはzli-k8sです。
+- selector内の `select` ジョブが失敗した場合: `continue-on-error` で成功扱いになり、出力が空になります。各ジョブの `runs-on` のfallbackが使われます。Docker不要ジョブはkubecamp、Docker必須ジョブと大容量ジョブはGitHub-hostedです（zoo2に登録されるRunnerは `zli-k8s-heavy` だけで、`zli-k8s` は存在しないため、大容量ジョブの `runs-on` のfallbackもGitHub-hostedです）。
 - 呼び出し側の `runner` ジョブ自体がfailure・skipped・cancelledになった場合: 後続ジョブは `needs` の成功条件を満たさずskipされます。`runs-on` のfallbackには到達しません。Re-run all jobsで選び直してください。
 - 判定ジョブがキュー待ちの間は、後続ジョブも待ちます。
 
@@ -42,7 +55,9 @@ kubecampは1ジョブごとの使い捨てPodです。7台の補充は毎分のC
 - Docker不要: Rustのbuild／lint／単体テスト、frontendのcheck／単体検証、イメージ計画、ラベル付与、イメージ清掃、Flux通知、Storybookのbuild／deploy、automerge gate。
 - イメージのpromote／publishはregistryのmanifestを操作するだけです。常設CLIの `docker buildx imagetools` と `docker login` を使い、daemonを起動するsetup-buildxは実行しません。kubecampのDocker daemonがない実Runnerで、公開manifestのinspect成功を確認しました。実際のタグ更新・発行は別途CIで確認します。
 
-frontendの `check` は型チェック中に2GiBのRunnerとの通信が途絶えたため、`large-runs-on` を使います。ローカルでも型チェックの子プロセスの最大RSSは約1.5GiBで、Runner自体のメモリも必要です。Storybookを含む `browser-test` も、1CPU・2GiB制約で直列化・heap制限でもOOMを再現したため `large-runs-on` を使います。どちらもDockerは不要ですが、必要なメモリを持つHosted、またはARC（Runner limit 6GiB）を選びます。テスト内容や失敗条件は維持します。
+frontendの `check` は型チェック中に2GiBのRunnerとの通信が途絶えたため、`large-runs-on` を使います。ローカルでも型チェックの子プロセスの最大RSSは約1.5GiBで、Runner自体のメモリも必要です。Storybookを含む `browser-test` も、1CPU・2GiB制約で直列化・heap制限でもOOMを再現したため `large-runs-on` を使います。どちらもDockerは不要ですが、必要なメモリを持つHosted（既定）か、`CI_LARGE_RUNNER=zli-k8s-heavy` のときの heavy（runnerのメモリlimit 9GiB）を選びます。privateのリポジトリ向けの `zli-k8s`（メモリlimitは、各リポジトリのscale setによります。zoo2-infraは6GiB、AuthZ・emoji・okiは4GiB）は、zoo2には登録されていないので、選びません。OOMの見積もりは、Hostedなら16GB、heavyなら9GiBを前提にします。テスト内容や失敗条件は維持します。
+
+なお、`frontend/vite.config.ts` の `browser` プロジェクトは Linux の `chromium-headless-shell` でアニメーション停止時に `requestAnimationFrame` が停滞する問題を避けるため、`CHROME_BIN` 未指定時（CI 等）はフル Chromium（`channel: "chromium"`）を使います（Linux の `nix develop` では、`browser` と `storybook` が `CHROME_BIN` の Nix 版 Chromium を使います。`vrt` は常に、`storybook` は `CHROME_BIN` 未指定時に、既存の基準画像・設定に合わせて既定の `chromium-headless-shell` を使います）。
 
 ## kubecamp固定と自動選択
 
@@ -94,7 +109,7 @@ Vitestのbrowser・VRTは、ファイル単位の`related`に加え、ケース�
 
 GitHub BotとSDKのNodeテストは、import・再export・静的なdynamic import・`new URL(..., import.meta.url)`の資源を解析し、変更ファイルへ依存するテストファイルを実行します。computed importや未解決の依存を持つテストは必ず含め、設定・データ資源・削除では全件へ戻します。PWAとavatar-cacheのスクリプトも、この依存解析で変更に無関係なら実行しません。Botのテストだけの変更ではイメージ生成とコンテナsmokeも省きます。Botだけの変更でSDK暗号テストは起動せず、SDK暗号部分だけの変更でBotのイメージ検証を起動しません。
 
-バックエンドの共有テストfixtureだけの変更はバックエンドを全件検証し、アプリ本体が変わらないフロントE2Eは省きます。proxyの検証はNodeのモックサーバーを使うため、proxyだけの変更ではWasm・フロントの型検査／ビルド・アプリのテストを省きます。nginx／entrypointだけの変更はコンテナ検証を選びます。独立したテストの変更ではアプリ本体のビルドも省きます。RustクライアントはCargoのpath依存で区分し、Reactだけの変更でTUI本体を検証しません。desktopは実際にincludeするCSS・翻訳と、既存スキャナーで抽出したlucide importの変化で選びます。バックエンドだけの変更ではStorybookプレビューを生成しません。
+バックエンドの共有テストfixtureだけの変更はバックエンドを全件検証し、アプリ本体が変わらないフロントE2Eは省きます。proxyの検証はNodeのモックサーバーを使うため、proxyだけの変更ではWasm・フロントの型検査／ビルド・アプリのテストを省きます。nginx／entrypointだけの変更はコンテナ検証を選びます。独立したテストの変更ではアプリ本体のビルドも省きます。RustクライアントはCargoのpath依存で区分し、Reactだけの変更でTUI本体を検証しません。バックエンドだけの変更ではStorybookプレビューを生成しません。
 
 ## 待機しないマージゲート
 

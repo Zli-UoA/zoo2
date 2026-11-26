@@ -10,9 +10,7 @@ import io.ktor.client.engine.okhttp.*
 import io.ktor.client.plugins.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
-import io.ktor.utils.io.core.readText
 import io.ktor.utils.io.readAvailable
-import io.ktor.utils.io.readRemaining
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
@@ -27,6 +25,18 @@ internal class UpdatePreferences(context: Context) {
         set(value) {
             values.edit().putBoolean("enabled", value).apply()
         }
+
+    fun installing(release: UpdateRelease) {
+        check(values.edit().putLong("installingVersion", release.versionCode)
+            .putString("status", "${release.versionName} をインストールしています").commit())
+    }
+
+    fun confirmInstalledUpdate(version: Long, name: String) {
+        val pending = values.getLong("installingVersion", 0)
+        if (pending != 0L && version >= pending) {
+            values.edit().remove("installingVersion").putString("status", "$name への更新が完了しました").apply()
+        }
+    }
 
     var status: String
         get() = values.getString("status", "更新はまだ確認していません").orEmpty()
@@ -104,15 +114,7 @@ class UpdateWorker(context: Context, parameters: WorkerParameters) :
                 }
             try {
                 prefs.status = "main の更新を確認しています"
-                val raw =
-                    http.prepareGet(UPDATE_FEED).execute { response ->
-                        check(response.status.value == 200) {
-                            "更新情報を取得できません (HTTP ${response.status.value})"
-                        }
-                        response.bodyAsChannel().readRemaining(16_385).readText()
-                    }
-                require(raw.toByteArray().size <= 16_384) { "更新情報が大きすぎます" }
-                val release = UpdateRelease.parse(raw)
+                val release = fetchUpdateRelease(http)
                 val current =
                     applicationContext.packageManager.installed(applicationContext.packageName)
                 if (release.versionCode <= current.version()) {
@@ -166,10 +168,10 @@ class UpdateWorker(context: Context, parameters: WorkerParameters) :
                 )
                 currentCoroutineContext().ensureActive()
                 if (!manual && !prefs.enabled) return@withLock Result.success()
-                prefs.status = "${release.versionName} をインストールしています"
+                prefs.installing(release)
                 val result = ShizukuInstaller(applicationContext).install(apk)
                 check(result == "Success") { result }
-                prefs.status = "${release.versionName} への更新が完了しました"
+                prefs.confirmInstalledUpdate(release.versionCode, release.versionName)
                 Result.success()
             } catch (cancelled: CancellationException) {
                 throw cancelled

@@ -31,6 +31,8 @@ class AndroidMessageEncryption(
     constructor(manager: E2eeDeviceManager, api: ZooApi, scope: CoroutineScope) :
         this(manager.readyStore, api, scope, { manager.setup?.uploadKeyBackup(); Unit })
     override val changes = MutableStateFlow(0L)
+    override val recipients = MutableStateFlow<Map<String, RecipientNotice>>(emptyMap())
+    override val attachmentCipher: AttachmentCipher = UniffiAttachmentCipher
     private val sending = Mutex()
     private class SendingSession(val owner: CryptoStore, val session: OutboundSession) {
         val shared = mutableSetOf<String>()
@@ -99,14 +101,15 @@ class AndroidMessageEncryption(
 
     private suspend fun recipients(store: CryptoStore, channel: String, minimum: ULong): Pair<ULong, List<VerifiedDeviceKeys>> {
         var pages = pages(channel, minimum)
-        repeat(5) {
+        // 初めて見た相手は、ピンを置けるまで配布先に入らない。置けたら同じスナップショットで判定し直す。
+        for (round in 0..MAX_PIN_ROUNDS) {
             val distribution = crypto { store.recipients(pages) }
             var handedOff = false
             try {
-                if (distribution.newPins.isEmpty()) {
-                    // 配れない参加者を黙って除外しない。Web での確認・再検証後に再試行できる。
-                    check(distribution.warnings.isEmpty() && distribution.users.values.all { it.state is UserState.Trusted })
-                    check(distribution.users.keys.all { user -> user == store.userId || distribution.devices.any { it.userId() == user } })
+                if (distribution.newPins.isEmpty() || round >= MAX_PIN_ROUNDS) {
+                    // 配れない相手は配布先から外し、送信画面に理由を出す（Web の `EncryptionRecipientsNotice`）。
+                    // 送信は止めない。
+                    noteRecipients(store, channel, pages, distribution)
                     handedOff = true
                     return pages.first().text("membership_epoch").toULong() to distribution.devices
                 }
@@ -133,7 +136,20 @@ class AndroidMessageEncryption(
         error("TOFU のピンを確定できませんでした")
     }
 
-    private suspend fun share(store: CryptoStore, outbound: OutboundSession, devices: List<VerifiedDeviceKeys>) {
+    private suspend fun noteRecipients(store: CryptoStore, channel: String, pages: List<JsonObject>, distribution: Distribution) {
+        val members = pages.flatMap { page -> (page["user_ids"] as? JsonArray).orEmpty().mapNotNull { (it as? JsonPrimitive)?.contentOrNull } }
+        val added = crypto { store.noteRecipients(channel, members) }
+        val undeliverable = distribution.users.entries.sortedBy { it.key }
+            .mapNotNull { (user, trust) -> undeliverableReason(trust.state)?.let { user to it } }
+        recipients.value = recipients.value + (channel to RecipientNotice(added, undeliverable))
+    }
+
+    /**
+     * まだ配っていない端末に `zoo.room_key` を配り、配れた端末を返す。ワンタイム鍵もフォールバック鍵も払い出され
+     * なかった端末と、to-device の `undelivered` の端末は返さないので、次の送信の前にまた配る（Web と同じ）。
+     */
+    private suspend fun share(store: CryptoStore, outbound: OutboundSession, devices: List<VerifiedDeviceKeys>): Set<String> {
+        val delivered = mutableSetOf<String>()
         for (batch in devices.chunked(100)) {
             val needs = crypto { batch.filter { store.needsOlm(it) } }
             val claim = buildJsonObject {
@@ -144,30 +160,39 @@ class AndroidMessageEncryption(
             val claimed = if (needs.isEmpty()) JsonObject(emptyMap()) else
                 request("/api/e2ee/keys/claim", "POST", buildJsonObject { put("one_time_keys", claim) })["one_time_keys"]?.jsonObject
                     ?: JsonObject(emptyMap())
+            val sentTo = mutableListOf<VerifiedDeviceKeys>()
             val messages = buildJsonObject {
                 batch.groupBy { it.userId() }.forEach { (user, keys) ->
-                    put(user, buildJsonObject {
+                    val forUser = buildJsonObject {
                         for (device in keys) {
                             val key = ((claimed[user] as? JsonObject)?.get(device.deviceId()) as? JsonObject)?.values?.singleOrNull()
-                            val encrypted = crypto { store.shareKey(device, outbound, key?.toString()) }
-                            checkNotNull(encrypted) { "受信端末の鍵を取得できませんでした" }
+                            val encrypted = crypto { store.shareKey(device, outbound, key?.toString()) } ?: continue
                             put(device.deviceId(), encrypted)
+                            sentTo += device
                         }
-                    })
+                    }
+                    if (forUser.isNotEmpty()) put(user, forUser)
                 }
             }
+            if (messages.isEmpty()) continue
             val sent = request("/api/e2ee/to_device", "POST", buildJsonObject {
                 put("device_id", store.deviceId)
                 put("txn_id", UUID.randomUUID().toString())
                 put("type", "m.room.encrypted")
                 put("messages", messages)
             })
-            check((sent["undelivered"] as? JsonArray).orEmpty().isEmpty()) { "受信端末に鍵を配れませんでした" }
+            val skipped = (sent["undelivered"] as? JsonArray).orEmpty().mapNotNull { target ->
+                (target as? JsonObject)?.let { "${it.text("user_id")}|${it.text("device_id")}" }
+            }.toSet()
+            sentTo.filter { "${it.userId()}|${it.deviceId()}" !in skipped }.mapTo(delivered, ::deviceKey)
         }
+        return delivered
     }
 
-    override suspend fun send(channel: String, id: String, parent: String?, body: String) =
-        submit(channel, id, parent, body, 0uL, false)
+    override suspend fun send(
+        channel: String, id: String, parent: String?, body: String,
+        mentions: EncryptedMentions, attachments: List<JsonObject>,
+    ) = submit(channel, id, parent, body, 0uL, false, mentions = mentions, newAttachments = attachments)
 
     override suspend fun edit(message: Row, body: String) {
         check(message["ciphertext"] != null && message["ciphertext"] != JsonNull) { "e2ee.legacy.editForbidden" }
@@ -177,7 +202,11 @@ class AndroidMessageEncryption(
             message.text("kind").ifEmpty { "message" })
     }
 
-    private suspend fun submit(channel: String, id: String, parent: String?, body: String, revision: ULong, edit: Boolean, editEpoch: ULong? = null, editCiphertext: String? = null, editKind: String = "message") {
+    private suspend fun submit(
+        channel: String, id: String, parent: String?, body: String, revision: ULong, edit: Boolean,
+        editEpoch: ULong? = null, editCiphertext: String? = null, editKind: String = "message",
+        mentions: EncryptedMentions = EncryptedMentions(), newAttachments: List<JsonObject> = emptyList(),
+    ) {
         sending.withLock {
             val store = store()
             var minimum = latestEpochs[channel] ?: 0uL
@@ -187,22 +216,27 @@ class AndroidMessageEncryption(
                 try {
                     val now = System.currentTimeMillis().toULong()
                     val cached = outbound[channel]
-                    if (cached != null && (cached.owner !== store || cached.session.needsRotation(now, epoch))) discard(channel)
+                    // 鍵を配った端末が配布先から外れたら（再検証が必要になった、配れなくなった、など）、その端末が
+                    // 持つ鍵で次の本文を読めないよう、セッションを作り直す。
+                    val distributed = devices.map(::deviceKey).toSet()
+                    if (cached != null && (cached.owner !== store || cached.session.needsRotation(now, epoch) ||
+                            !distributed.containsAll(cached.shared))) discard(channel)
                     val current = outbound.getOrPut(channel) { SendingSession(store, OutboundSession(channel, epoch, now)) }
                     val session = current.session
                     try {
                         val pending = devices.filter { deviceKey(it) !in current.shared }
-                        share(store, session, pending)
-                        current.shared += pending.map(::deviceKey)
-                        val mentions = Mentions(emptyList(), false, false)
+                        current.shared += share(store, session, pending)
                         val previous = if (edit) crypto {
                             store.decrypt(EncryptedMessage(channel, id, parent, store.userId, editKind, editEpoch!!,
                                 revision - 1uL, editCiphertext!!)).also { check(it.revision == RevisionStatus.Latest) { "e2ee.editConflict" } }
                         } else null
                         val kind = previous?.payload?.content?.kind ?: "message"
-                        val attachments = previous?.payload?.attachments.orEmpty()
+                        // 編集では、元の版の添付（鍵を含む）と mentions をそのまま入れる（Web の `editEncryptedMessage`）。
+                        val attachments = previous?.payload?.attachments ?: newAttachments.map(::attachmentInfo)
+                        val payloadMentions = previous?.payload?.mentions
+                            ?: Mentions(mentions.userIds, mentions.channel, mentions.here)
                         val encrypted = crypto { store.encrypt(session, OutgoingMessage(id, parent, revision,
-                            MessageContent(body, "mfm", kind), mentions, attachments)) }
+                            MessageContent(body, "mfm", kind), payloadMentions, attachments)) }
                         try {
                             request(if (edit) "/api/messages/$id" else "/api/messages", if (edit) "PATCH" else "POST", buildJsonObject {
                                 if (!edit) { put("id", id); put("channel_id", channel) }
@@ -213,8 +247,12 @@ class AndroidMessageEncryption(
                                 put("ciphertext", encrypted)
                                 parent?.let { put("parent_id", it) }
                                 if (!edit) put("mentions", buildJsonObject {
-                                    put("user_ids", JsonArray(emptyList())); put("channel", false); put("here", false)
+                                    put("user_ids", JsonArray(mentions.userIds.map(::JsonPrimitive)))
+                                    put("channel", mentions.channel); put("here", mentions.here)
                                 })
+                                if (!edit && attachments.isNotEmpty()) {
+                                    put("attachment_ids", JsonArray(attachments.map { JsonPrimitive(it.attachmentId) }))
+                                }
                             })
                             changes.value++
                             return@withLock
@@ -255,9 +293,42 @@ class AndroidMessageEncryption(
                 decrypted.origin == SessionOrigin.BACKUP -> "e2ee.sender.unauthenticated"
                 !decrypted.senderVerified -> "e2ee.sender.unverified"
                 else -> null
-            })
+            }, attachments = decrypted.payload.attachments.map(::attachmentJson),
+                mentions = decrypted.payload.mentions.let { EncryptedMentions(it.userIds.sorted(), it.channel, it.here) })
         }
     } catch (failure: CancellationException) { throw failure }
     catch (_: ZooCryptoException.MissingRoomKey) { DecryptedBody(notice = "e2ee.undecryptable.keyMissing") }
-    catch (_: Exception) { DecryptedBody(notice = "e2ee.undecryptable.invalid") }
+    catch (_: ZooCryptoException.Rejected) { DecryptedBody(notice = "e2ee.undecryptable.invalid") }
+    catch (_: Exception) { DecryptedBody(notice = "e2ee.undecryptable.failed") }
 }
+
+/** 送信を止めずに配布先を判定し直す回数（ピンを置いたあと。Web の `MAX_PIN_ROUNDS`）。 */
+private const val MAX_PIN_ROUNDS = 2
+
+/** 配れない理由（Web の `undeliverableReason`）。配れる相手と、解錠し直しが要る自分は `null`。 */
+internal fun undeliverableReason(state: UserState): UndeliverableReason? = when (state) {
+    is UserState.Trusted, UserState.NeedsUnlock -> null
+    UserState.NoCrossSigningKeys -> UndeliverableReason.NOT_SET_UP
+    UserState.InvalidCrossSigningKeys -> UndeliverableReason.INVALID_KEYS
+    is UserState.NeedsReverification -> UndeliverableReason.NEEDS_REVERIFICATION
+    UserState.PinPending -> UndeliverableReason.PIN_PENDING
+    UserState.Blocked -> UndeliverableReason.BLOCKED
+}
+
+/** 本文の `attachments` の JSON（[zoo.encryptedAttachmentInfo]）を UniFFI の値にする。 */
+internal fun attachmentInfo(info: JsonObject): AttachmentInfo = AttachmentInfo(
+    attachmentId = info.text("attachment_id"),
+    name = info.text("name"),
+    mimetype = info.text("mimetype"),
+    size = info.getValue("size").jsonPrimitive.long.toULong(),
+    width = (info["width"] as? JsonPrimitive)?.intOrNull?.toUInt(),
+    height = (info["height"] as? JsonPrimitive)?.intOrNull?.toUInt(),
+    sensitive = (info["sensitive"] as? JsonPrimitive)?.booleanOrNull == true,
+    file = info.getValue("file").toString(),
+)
+
+/** UniFFI の添付を、表示と取得に使う JSON（[zoo.encryptedAttachmentInfo] と同じ形）にする。 */
+internal fun attachmentJson(info: AttachmentInfo): JsonObject = encryptedAttachmentInfo(
+    info.attachmentId, info.name, info.mimetype, info.size.toInt(),
+    json.parseToJsonElement(info.file).jsonObject, info.width?.toInt(), info.height?.toInt(), info.sensitive,
+)

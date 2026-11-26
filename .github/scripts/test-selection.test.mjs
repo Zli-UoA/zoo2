@@ -58,7 +58,7 @@ test('merge groups select the union across queued changes', () => {
   assert.deepEqual(plan.backend.targets, ['threads_test']);
   assert.deepEqual(plan.backend.legs, ['core']);
   assert.equal(plan.backend.full, false);
-  assert.deepEqual(selectOtherJobs('merge_group', changes).clients, { tui: false, desktop: false });
+  assert.deepEqual(selectOtherJobs('merge_group', changes).clients, { tui: false });
   assert.equal(selectSuites('merge_group', [...changes, change('infra/db/schema.sql')]).backend.full, true);
 });
 
@@ -99,25 +99,19 @@ test('proxy-only edits do not compile the frontend or Wasm; nginx-only edits sel
   assert.equal(selectSuites('pull_request', [change('frontend/src/lib/time.test.ts')]).frontendBuild.build, false);
 });
 
-test('React edits do not run TUI; desktop follows its actual icon imports and resources', () => {
-  const source = 'import { Bell as NotificationIcon } from "lucide-react";\nexport const count = 1;';
-  const opts = { base: 'base', read: (ref) => ref === 'HEAD' ? source.replace('count = 1', 'count = 2') : source };
-  const changes = [change('frontend/src/components/Example.tsx')];
-  const unchangedIcons = selectOtherJobs('pull_request', changes, opts);
-  assert.deepEqual(unchangedIcons.clients, { tui: false, desktop: false });
-  assert.equal(unchangedIcons.storybookPreview, true);
-  assert.equal(selectOtherJobs('pull_request', changes, { read: ref => ref === 'HEAD' ? source.replace('Bell as', 'Heart as') : source }).clients.desktop, true);
-  assert.equal(selectOtherJobs('pull_request', changes, { read() { throw new Error('unavailable'); } }).clients.desktop, true);
+test('React edits do not run TUI', () => {
+  const plan = selectOtherJobs('pull_request', [change('frontend/src/components/Example.tsx')]);
+  assert.deepEqual(plan.clients, { tui: false });
+  assert.equal(plan.storybookPreview, true);
   for (const path of ['frontend/src/styles.css', 'frontend/src/lib/i18n/locales/ja.json']) {
-    assert.deepEqual(selectOtherJobs('pull_request', [change(path)]).clients, { tui: false, desktop: true });
+    assert.deepEqual(selectOtherJobs('pull_request', [change(path)]).clients, { tui: false });
   }
-  assert.deepEqual(selectOtherJobs('pull_request', [change('frontend/src/example.browser.test.tsx')]).clients, { tui: false, desktop: false });
+  assert.deepEqual(selectOtherJobs('pull_request', [change('frontend/src/example.browser.test.tsx')]).clients, { tui: false });
 });
 
 test('Rust clients follow package path dependencies and Bot changes do not trigger SDK crypto', () => {
-  assert.deepEqual(selectOtherJobs('pull_request', [change('tui/src/main.rs')]).clients, { tui: true, desktop: false });
-  assert.deepEqual(selectOtherJobs('pull_request', [change('desktop/src/main.rs')]).clients, { tui: false, desktop: true });
-  assert.deepEqual(selectOtherJobs('pull_request', [change('client-core/src/lib.rs')]).clients, { tui: true, desktop: true });
+  assert.deepEqual(selectOtherJobs('pull_request', [change('tui/src/main.rs')]).clients, { tui: true });
+  assert.deepEqual(selectOtherJobs('pull_request', [change('client-core/src/lib.rs')]).clients, { tui: true });
   assert.deepEqual(selectOtherJobs('pull_request', [change('apps/github-bot/src/cards.ts')]).bots, { bot: true, sdk: false, image: true });
   assert.deepEqual(selectOtherJobs('pull_request', [change('sdk/src/e2ee.ts')]).bots, { bot: false, sdk: true, image: false });
   assert.deepEqual(selectOtherJobs('pull_request', [change('sdk/src/index.ts')]).bots, { bot: true, sdk: true, image: true });
@@ -125,19 +119,17 @@ test('Rust clients follow package path dependencies and Bot changes do not trigg
   assert.equal(selectOtherJobs('pull_request', [change('backend/src/main.rs')]).storybookPreview, false);
 });
 
-test('shared component schema versions verify both Rust clients', () => {
+test('shared component schema versions verify TUI', () => {
   const changes = [change('crates/zoo-components/src/lib.rs')];
-  assert.deepEqual(selectOtherJobs('pull_request', changes).clients, { tui: true, desktop: true });
-  assert.deepEqual(selectOtherJobs('merge_group', changes).clients, { tui: true, desktop: true });
-  assert.equal(selectOtherJobs('pull_request', [change('frontend/src/android-phone/engine.ts')], {
-    read: () => 'export const version = 1;',
-  }).storybookPreview, false);
+  assert.deepEqual(selectOtherJobs('pull_request', changes).clients, { tui: true });
+  assert.deepEqual(selectOtherJobs('merge_group', changes).clients, { tui: true });
+  assert.equal(selectOtherJobs('pull_request', [change('frontend/src/android-phone/engine.ts')]).storybookPreview, false);
 });
 
 test('main, unknown configuration, deletions and missing diffs retain all cross-package jobs', () => {
   for (const [event, changes] of [['push', [change('tui/src/main.rs')]], ['pull_request', undefined], ['pull_request', [{ status: 'D', path: 'tui/src/main.rs' }]], ['pull_request', [change('.github/scripts/test-selection-jobs.mjs')]]]) {
     const plan = selectOtherJobs(event, changes);
-    assert.deepEqual(plan.clients, { tui: true, desktop: true });
+    assert.deepEqual(plan.clients, { tui: true });
     assert.deepEqual(plan.bots, { bot: true, sdk: true, image: true });
   }
 });

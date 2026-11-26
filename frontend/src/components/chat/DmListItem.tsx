@@ -1,4 +1,5 @@
 import { sidebarItemClassName } from "./sidebarStyles";
+import { DropIndicator } from "./DropIndicator";
 import { useTranslation } from "react-i18next";
 import { Link } from "@tanstack/react-router";
 import { LockKeyholeIcon, UsersIcon } from "lucide-react";
@@ -80,16 +81,7 @@ export function DmListItem({
       }
       onKeyDown={onKeyDown}
     >
-      {dropIndicator ? (
-        <span
-          aria-hidden="true"
-          data-drop-indicator={dropIndicator}
-          className={cn(
-            "pointer-events-none absolute inset-x-0 z-20 h-[2px] rounded-full bg-foreground",
-            dropIndicator === "before" ? "-top-px" : "-bottom-px",
-          )}
-        />
-      ) : null}
+      {dropIndicator ? <DropIndicator edge={dropIndicator} /> : null}
       <Link
         to="/channels/$channelId"
         params={{ channelId: channel.id }}

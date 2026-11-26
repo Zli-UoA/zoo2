@@ -65,8 +65,9 @@ test('CI-only changes are narrowed per workflow; application changes never use t
   assert.equal(workflowJobs('ci-backend', [{ status: 'D', path }]), null);
 });
 
-test('Tauri Linux-only edits do not select macOS; frontend proxy-only edits need no Wasm', () => {
-  assert.deepEqual(restrictWorkflow({}, 'ci-desktop-tauri', new Set(['check'])).desktopTauri, { check: true, macos: false });
+test('Tauri Linux-only edits do not select macOS or Windows; frontend proxy-only edits need no Wasm', () => {
+  assert.deepEqual(restrictWorkflow({}, 'ci-desktop-tauri', new Set(['check'])).desktopTauri, { check: true, macos: false, windows: false });
+  assert.deepEqual(restrictWorkflow({}, 'ci-desktop-tauri', new Set(['windows'])).desktopTauri, { check: false, macos: false, windows: true });
   const plan = restrictWorkflow({ frontend: {} }, 'ci-frontend', new Set(['proxy', 'runner', 'test-selection']));
   assert.equal(plan.frontend.proxy, true);
   assert.equal(plan.frontend.browser, false);
@@ -88,10 +89,11 @@ test('checks deferred on PRs remain wired into the merge queue gate', () => {
     'ci-frontend-auth-e2e': ['crypto-wasm'],
     'ci-frontend-e2ee-e2e': ['crypto-wasm'],
     'ci-android': ['android'],
-    'ci-desktop-tauri': ['check', 'macos'],
+    'ci-desktop-tauri': ['check', 'macos', 'windows'],
     'ci-home-query-budget': ['query-budget'],
     'ci-components-query-budget': ['query-budget'],
     'ci-phone-query-budget': ['query-budget'],
+    'ci-search-query-budget': ['query-budget'],
     'ci-read-state-worker-budget': ['query-budget'],
   };
   for (const [workflow, jobs] of Object.entries(deferred)) {
@@ -115,8 +117,8 @@ test('PR gate and merge queue agree on platform and test ownership', () => {
   const scenarios = [
     ['frontend-compose/androidApp/src/main/App.kt', ['ci-android']],
     ['crates/zoo-crypto-ffi/src/lib.rs', ['ci-android']],
-    ['frontend/src/android-phone/engine.ts', ['ci-android', 'ci-tui']],
-    ['frontend/src/media-preview-entry.tsx', ['ci-android', 'ci-tui']],
+    ['frontend/src/android-phone/engine.ts', ['ci-android']],
+    ['frontend/src/media-preview-entry.tsx', ['ci-android']],
     ['frontend/scripts/media-preview-bundle.test.mjs', ['ci-android']],
     ['frontend/e2e/oidc.spec.ts', ['ci-frontend-auth-e2e']],
     ['frontend/e2e/e2ee.spec.ts', ['ci-frontend-e2ee-e2e']],
@@ -124,6 +126,7 @@ test('PR gate and merge queue agree on platform and test ownership', () => {
     ['backend/tests/home_scale_test.rs', ['ci-backend', 'ci-home-query-budget']],
     ['infra/db/erd.sh', ['ci-db-erd']],
     ['infra/db/compare-phone-work.py', ['ci-phone-query-budget']],
+    ['infra/db/compare-search-work.py', ['ci-search-query-budget']],
     ['sdk/src/e2ee.ts', ['ci-github-bot']],
   ];
   for (const [path, expected] of scenarios) {
