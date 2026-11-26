@@ -653,6 +653,8 @@ pub enum DeleteOutcome {
 }
 
 const LOGOUT_REVOCATION_TIMEOUT: Duration = Duration::from_secs(2);
+/// ログアウトが、進行中の token の更新を待つ上限。
+const LOGOUT_IN_FLIGHT_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Lock the current session, revoke its latest refresh token, then remove only
 /// that session. Concurrent refreshes and logins using this protocol wait for
@@ -1145,6 +1147,13 @@ impl TokenManager {
         *self.persist.lock().unwrap_or_else(|e| e.into_inner()) = false;
         // この manager が持つ session だけを対象にする。保存先が別のログインに
         // 置き換わっていたら、失効も削除もしない。
+        // 進行中の更新が終わるのを待ち、その結果（保存できなかった新しい refresh token を含む）を
+        // 反映した状態で、失効の対象を決める。以後の更新は始まらない。
+        let _ = tokio::time::timeout(
+            LOGOUT_IN_FLIGHT_REFRESH_TIMEOUT,
+            self.task_tracker.shutdown_and_wait(),
+        )
+        .await;
         let (expected, unsaved) = {
             let state = self.state.lock().await;
             // 更新には成功したが保存できなかった refresh token は、ファイルにない。
@@ -3367,6 +3376,74 @@ mod tests {
         }
 
         assert!(manager.sign_out_and_revoke().await.unwrap());
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn sign_out_and_revoke_waits_for_a_refresh_in_flight_and_revokes_its_token() {
+        let server = MockServer::start().await;
+        let issuer = format!("{}/api/auth", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/api/auth/.well-known/openid-configuration"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "issuer": issuer,
+                "token_endpoint": format!("{}/token", server.uri()),
+                "revocation_endpoint": format!("{}/revoke", server.uri())
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(400))
+                    .set_body_json(json!({
+                        "access_token": "rotated-access",
+                        "refresh_token": "rotated-refresh",
+                        "expires_in": 300
+                    })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/revoke"))
+            .and(body_string_contains("token=rotated-refresh"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/revoke"))
+            .and(body_string_contains("token=old-refresh"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let config = oidc(&issuer);
+        let path = temp_path("sign-out-and-revoke-in-flight");
+        let initial = tokens(&config, now() + 30, Some("old-refresh"));
+        save(&path, &initial).unwrap();
+        let manager = std::sync::Arc::new(TokenManager::new(
+            reqwest::Client::new(),
+            config,
+            path.clone(),
+            initial,
+        ));
+        let refreshing = tokio::spawn({
+            let manager = manager.clone();
+            async move { manager.access_token().await }
+        });
+        while !server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .any(|request| request.url.path() == "/token")
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        manager.sign_out_and_revoke().await.unwrap();
+        let _ = refreshing.await;
         assert!(!path.exists());
     }
 
