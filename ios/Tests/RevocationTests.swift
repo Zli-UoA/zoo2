@@ -191,6 +191,30 @@ struct RevocationTests {
         #expect(throws: (any Error).self) { _ = try storage.unlockWithRecoveryKey(recoveryKey: old) }
     }
 
+    @Test func 端末を作り直すと途中の失効の記録を捨て破棄したことを再起動後も覚えて確認すると消える() async throws {
+        let (device, server, unlocked, _) = try await prepared()
+        defer { device.cleanUp() }
+        let revocation = E2eeRevocation(store: { device.store }, api: server, setup: device.setup, userID: user)
+        _ = try await revocation.begin(scope: .deviceOnly, deletedDevices: [], unlocked: unlocked)
+        #expect(try revocation.savedSummary() != nil && !device.store.revocationDropped)
+
+        // 端末が別の端末から削除されて作り直された。古い端末アカウントで封をした失効の記録は開けないので、捨てる。
+        try device.store.replaceDevice()
+        #expect(try revocation.savedSummary() == nil)
+        #expect(device.store.revocationDropped)
+        // アプリを開き直しても、破棄したことを覚えている。
+        try device.restart()
+        #expect(device.store.revocationDropped)
+        // 確認すると消え、開き直しても出ない。
+        try device.store.acknowledgeRevocationDropped()
+        #expect(!device.store.revocationDropped)
+        try device.restart()
+        #expect(!device.store.revocationDropped)
+        // 失効の記録がなかった端末は、作り直しても、破棄したとは言わない。
+        try device.store.replaceDevice()
+        #expect(!device.store.revocationDropped)
+    }
+
     @Test func 全範囲をSSSSの保存の前に止めたら最初からやり直す() async throws {
         let (device, server, unlocked, _) = try await prepared()
         defer { device.cleanUp() }
