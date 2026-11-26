@@ -51,7 +51,7 @@ internal fun ProfileHeader(profile: AndroidScreen.Profile, colors: AndroidColors
             }
             Text("投稿", Modifier.padding(top = 18.dp, bottom = 4.dp), color = colors.foreground,
                 fontWeight = AndroidWeights.emphasis, fontSize = 16.sp)
-            if (profile.posts.isEmpty()) {
+            if (profile.posts.isEmpty() && !profile.postsPending) {
                 Text("表示できる投稿はありません", Modifier.padding(vertical = 16.dp), color = colors.secondary, fontSize = 14.sp)
             }
         }

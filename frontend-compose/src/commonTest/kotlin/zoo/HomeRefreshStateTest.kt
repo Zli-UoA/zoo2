@@ -58,6 +58,79 @@ class HomeRefreshStateTest {
         } finally { feed.close(); app.close(); http.close() }
     }
 
+    @Test
+    fun audienceChangeClearsCachedPostsBeforeTheServerResponds() = runTest {
+        val revalidated = CompletableDeferred<Unit>()
+        var requests = 0
+        val post = obj("id" to "followers-only", "sort_key" to "1")
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler {
+                    if (requests++ == 0) respond(JsonArray(listOf(post)).toString())
+                    else {
+                        revalidated.await()
+                        respond("[]")
+                    }
+                }
+            }
+        }
+        val app = Session(Repository(Config("https://zoo.test", "/shapes", "alice", false),
+            TestPlatform(), http, backgroundScope, synchronize = false), backgroundScope, Environment())
+        val feed = HomeTimeline(app, backgroundScope)
+        try {
+            feed.refresh()
+            runCurrent()
+            assertEquals(listOf(post), feed.posts)
+            app.homeTimelines.preparePost(post)
+
+            feed.reloadAfterAudienceChange()
+            assertTrue(feed.posts.isEmpty())
+            assertNull(app.homeTimelines.takePost("followers-only"))
+            runCurrent()
+            assertEquals(2, requests)
+            assertTrue(feed.posts.isEmpty())
+
+            revalidated.complete(Unit)
+            runCurrent()
+            assertTrue(feed.posts.isEmpty())
+        } finally { feed.close(); app.close(); http.close() }
+    }
+
+    @Test
+    fun removingAPostRejectsAnOlderTimelineResponse() = runTest {
+        val lateResponse = CompletableDeferred<Unit>()
+        var requests = 0
+        val post = obj("id" to "deleted", "sort_key" to "1")
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler {
+                    if (requests++ > 0) lateResponse.await()
+                    respond(JsonArray(listOf(post)).toString())
+                }
+            }
+        }
+        val app = Session(Repository(Config("https://zoo.test", "/shapes", "alice", false),
+            TestPlatform(), http, backgroundScope, synchronize = false), backgroundScope, Environment())
+        val feed = HomeTimeline(app, backgroundScope)
+        try {
+            feed.refresh()
+            runCurrent()
+            assertEquals(listOf(post), feed.posts)
+            feed.refresh(retain = true)
+            runCurrent()
+            assertEquals(2, requests)
+
+            feed.remove("deleted")
+            lateResponse.complete(Unit)
+            runCurrent()
+
+            assertTrue(feed.posts.isEmpty())
+            assertFalse(feed.updating)
+        } finally { feed.close(); app.close(); http.close() }
+    }
+
     private class TestPlatform : Platform {
         override suspend fun headers() = emptyMap<String, String>()
         override suspend fun readCache(key: String): String? = null
@@ -213,6 +286,38 @@ class HomeRefreshStateTest {
             feed.older(); runCurrent()
             assertFalse(feed.olderError)
             assertFalse(feed.hasMore)
+        } finally { feed.close(); app.close(); http.close() }
+    }
+
+    @Test
+    fun aCompleteRefreshClearsTheErrorForAnOlderPageThatNoLongerExists() = runTest {
+        var headSize = 50
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    if (request.url.parameters["before"] != null) respond("{}", HttpStatusCode.ServiceUnavailable)
+                    else respond(JsonArray((headSize downTo 1).map { obj("id" to "$it") }).toString())
+                }
+            }
+        }
+        val app = Session(Repository(Config("https://zoo.test", "/shapes", "alice", false), TestPlatform(), http,
+            backgroundScope, synchronize = false), backgroundScope, Environment())
+        val feed = HomeTimeline(app, backgroundScope)
+        try {
+            feed.refresh()
+            runCurrent()
+            feed.older()
+            runCurrent()
+            assertTrue(feed.olderError)
+
+            headSize = 3
+            feed.refresh(retain = true)
+            runCurrent()
+
+            assertEquals(3, feed.posts.size)
+            assertFalse(feed.hasMore)
+            assertFalse(feed.olderError)
         } finally { feed.close(); app.close(); http.close() }
     }
 

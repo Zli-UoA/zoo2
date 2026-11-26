@@ -147,7 +147,10 @@ class HomeTimeline(
                         posts = if (retain && postId == null)
                             mergeHomeWindow(posts, head, if (complete) posts.map(::key) else if (checkedSuccessfully) check else emptyList(), checked, fetchHead && atTop || complete)
                         else head
-                        if (fetchHead && (!retain || complete || posts.size <= 50)) hasMore = !complete && postId == null && head.size == 50
+                        if (fetchHead && (!retain || complete || posts.size <= 50)) {
+                            hasMore = !complete && postId == null && head.size == 50
+                            if (!hasMore) olderError = false
+                        }
                         if (fetchHead && headApplied) {
                             pendingHead = false
                             checkedAt = kotlin.time.Clock.System.now().toEpochMilliseconds()
@@ -181,9 +184,28 @@ class HomeTimeline(
             }
     }
 
+    fun reloadAfterAudienceChange() {
+        app.homeTimelines.clear()
+        posts = emptyList()
+        hasMore = false
+        refresh()
+    }
+
     fun remove(postId: String) {
+        generation++
+        refreshJob?.cancel()
+        refreshJob = null
+        olderJob?.cancel()
+        olderJob = null
+        loading = false
+        loadingOlder = false
+        updating = false
+        refreshing = false
+        deferred = false
+        deferredHead = false
+        checkedAt = 0
         app.homeTimelines.remove(postId)
-        posts = posts.filterNot { it.nested("post").text("id").ifBlank { it.text("id") } == postId }
+        posts = posts.mapNotNull { it.withoutUnavailableHomePost(postId) }
     }
 
     suspend fun awaitUpdate() { refreshJob?.join() }

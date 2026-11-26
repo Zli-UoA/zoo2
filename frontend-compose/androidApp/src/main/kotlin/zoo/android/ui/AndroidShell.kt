@@ -29,11 +29,13 @@ import androidx.compose.ui.text.intl.LocaleList
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-internal val LocalAndroidTranslation = staticCompositionLocalOf<(String) -> String> { { it } }
+internal val LocalAndroidTranslation = staticCompositionLocalOf<(String, Array<out Pair<String, String>>) -> String> {
+    { key, _ -> key }
+}
 
 @Composable
-internal fun androidLabel(key: String, fallback: String): String =
-    LocalAndroidTranslation.current(key).takeUnless { it == key } ?: fallback
+internal fun androidLabel(key: String, fallback: String, vararg args: Pair<String, String>): String =
+    LocalAndroidTranslation.current(key, args).takeUnless { it == key } ?: fallback
 
 internal enum class TopPage(val title: String, val icon: UiIcon, val translationKey: String) {
     Home("ホーム", UiIcon.Home, "home.title"),
