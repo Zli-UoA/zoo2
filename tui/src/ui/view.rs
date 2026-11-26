@@ -16,7 +16,7 @@ use super::{
     e2ee_chat::{self, ChannelEncryption, CreateForm, CreateKind},
     encryption::Screen,
     global_search,
-    links::CiphertextRows,
+    links::DrawCache,
     timeline::{self, Context, Timeline},
 };
 use crate::api::SearchKind;
@@ -714,8 +714,8 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         .reaction_groups_by_message(&channel_id, &app.me.id);
     let encrypted = app.channel_encryption(&channel_id).treat_as_encrypted();
     let now = Instant::now();
-    let seen = CiphertextRows::default();
-    let body_links = |body: &str| app.body_links(body, now, &seen);
+    let cache = DrawCache::default();
+    let body_links = |body: &str| app.body_links(body, now, &cache);
     let ctx = Context {
         store: &app.store,
         me_name: &app.me.user_name,
@@ -780,7 +780,7 @@ fn near_links(app: &App, built: &Timeline, scroll: usize, height: usize) -> Vec<
 /// 選択中のメッセージにリンクがいくつもあるとき、開くものを選ぶ。
 fn draw_links(frame: &mut Frame, app: &App, targets: &[LinkTarget], index: usize) {
     let now = Instant::now();
-    let seen = CiphertextRows::default();
+    let cache = DrawCache::default();
     // 画面に収まらないときは、選んでいる候補が見える範囲だけを出す（枠と操作の案内の分を空ける）。
     // 候補は 1 行にする。
     let room = usize::from(frame.area().height).saturating_sub(4).max(1);
@@ -791,7 +791,7 @@ fn draw_links(frame: &mut Frame, app: &App, targets: &[LinkTarget], index: usize
         .skip(index.saturating_sub(room - 1))
         .take(room)
         .map(|(i, target)| {
-            let view = super::links::view(&app.link_state(target, now, &seen), &app.store);
+            let view = app.link_view(target, now, &cache);
             let label = view
                 .inline
                 .or_else(|| view.header.first().map(|line| line.to_string()))
@@ -879,8 +879,8 @@ fn draw_thread(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut reply_counts = app.store.reply_counts(&channel_id);
     reply_counts.remove(&thread.root_id);
     let now = Instant::now();
-    let seen = CiphertextRows::default();
-    let body_links = |body: &str| app.body_links(body, now, &seen);
+    let cache = DrawCache::default();
+    let body_links = |body: &str| app.body_links(body, now, &cache);
     let ctx = Context {
         store: &app.store,
         me_name: &app.me.user_name,

@@ -391,14 +391,14 @@ impl Inline<'_> {
         if rest.starts_with('[') || rest.starts_with("?[") {
             return link(scan, i, base);
         }
-        let at_boundary = previous.is_none_or(is_boundary);
-        if at_boundary && (rest.starts_with("https://") || rest.starts_with("http://")) {
-            let url = trim_url(rest.split(char::is_whitespace).next().unwrap_or(rest));
+        // URL は、日本語の文に続けて書いてもリンクにする（Web と同じ）。
+        if let Some(url) = leading_url(rest) {
             return Some((
                 url.len(),
                 vec![Span::link(url.to_string(), url, base.patch(LINK))],
             ));
         }
+        let at_boundary = previous.is_none_or(is_boundary);
         if at_boundary && rest.starts_with('@') {
             return self.mention(rest, base);
         }
@@ -582,33 +582,37 @@ fn is_boundary(ch: char) -> bool {
     ch.is_whitespace() || "([{<（「『\"'。、".contains(ch)
 }
 
-/// URL の末尾の句読点と、対応しない閉じ括弧を除く。
-fn trim_url(url: &str) -> &str {
-    let count = |ch: char| url.chars().filter(|c| *c == ch).count();
-    // 括弧の数は一度だけ数え、末尾を削るたびに減らす。
-    let (open_paren, mut close_paren) = (count('('), count(')'));
-    let (open_bracket, mut close_bracket) = (count('['), count(']'));
-    let mut url = url;
-    loop {
-        let Some(last) = url.chars().next_back() else {
-            return url;
+/// `text` の先頭の `http://` か `https://` の URL。Web（`mfm-js`）と同じく、URL に使う ASCII の
+/// 文字と、対応のとれた括弧までを URL とし、末尾の句読点は除く。日本語や全角の記号が続いても、
+/// そこで終わる。表示と、本文のリンクの抽出（[`crate::links`]）で同じ位置で切る。
+pub(crate) fn leading_url(text: &str) -> Option<&str> {
+    let scheme = ["https://", "http://"]
+        .into_iter()
+        .find(|scheme| text.starts_with(scheme))?
+        .len();
+    // 閉じていない括弧の位置と、対応する閉じ括弧。
+    let mut open: Vec<(usize, char)> = Vec::new();
+    let mut end = text.len();
+    for (at, ch) in text.char_indices().skip(scheme) {
+        let used = match ch {
+            '(' | '[' => {
+                open.push((at, if ch == '(' { ')' } else { ']' }));
+                true
+            }
+            ')' | ']' => open.pop().is_some_and(|(_, close)| close == ch),
+            _ => ch.is_ascii_alphanumeric() || "._,/:%#@$&?!~=+-".contains(ch),
         };
-        let trim = match last {
-            ')' => open_paren < close_paren,
-            ']' => open_bracket < close_bracket,
-            '(' | '[' => false,
-            _ => ".,!?;:'\"".contains(last),
-        };
-        if !trim {
-            return url;
+        if !used {
+            end = at;
+            break;
         }
-        match last {
-            ')' => close_paren -= 1,
-            ']' => close_bracket -= 1,
-            _ => {}
-        }
-        url = &url[..url.len() - last.len_utf8()];
     }
+    // 閉じていない括弧は、URL に含めない。
+    if let Some((at, _)) = open.first() {
+        end = *at;
+    }
+    let url = text[..end].trim_end_matches(['.', ',', '!', '?', ':']);
+    (url.len() > scheme).then_some(url)
 }
 
 /// `[label](url)` と `?[label](url)`。ラベルの後に URL を添える。
@@ -764,6 +768,32 @@ mod tests {
         assert!(styled.contains(&("@alice".into(), MENTION.reversed())));
         assert!(styled.contains(&("@bob".into(), MENTION)));
         assert!(!styled.iter().any(|(text, _)| text == "@b"));
+    }
+
+    #[test]
+    fn urls_end_where_the_web_ends_them() {
+        let url = "https://zli.chat/channels/a?message=m";
+        for text in [
+            format!("{url}を見て"),
+            format!("詳しくは{url}。"),
+            format!("「{url}」"),
+            format!("（{url}）"),
+            format!("({url})."),
+            format!("<{url}>"),
+            format!("{url}(未閉じ"),
+        ] {
+            let hrefs: Vec<String> = parse(&text, None)
+                .into_iter()
+                .flat_map(|line| line.spans)
+                .filter_map(|span| span.href)
+                .collect();
+            assert_eq!(hrefs, [url], "{text}");
+        }
+        assert_eq!(
+            leading_url("https://ja.wikipedia.org/wiki/A_(b)_[c] x"),
+            Some("https://ja.wikipedia.org/wiki/A_(b)_[c]")
+        );
+        assert_eq!(leading_url("https://あ"), None);
     }
 
     #[test]

@@ -27,6 +27,9 @@ pub const LOAD_TIMEOUT: Duration = Duration::from_secs(10);
 pub const RELEASE_DELAY: Duration = Duration::from_secs(30);
 /// 取得できた結果を覚える件数。
 const CACHE_SIZE: usize = 256;
+/// 同時に購読するチャンネルの数の上限。backend のアカウントごとのシェイプの上限は、ほかの画面や
+/// 端末と分け合うので、少なくする。
+pub const MAX_CHANNELS: usize = 8;
 
 /// リンク先のメッセージ (チャンネル ID, メッセージ ID)。
 pub type Key = (String, String);
@@ -47,6 +50,8 @@ pub struct Links {
     order: VecDeque<Key>,
     failed: HashSet<Key>,
     started: HashMap<Key, Instant>,
+    /// 購読するチャンネルの上限を超えて、取得していないリンク先。
+    over_limit: HashSet<Key>,
     /// 直近の描画で画面の近くに出ていた、取得が要るリンク先。
     pub visible: Vec<Key>,
 }
@@ -64,7 +69,9 @@ impl Links {
         match self.results.get(key) {
             Some(Some(message)) => LinkedFetch::Found(message.clone()),
             Some(None) => LinkedFetch::Missing,
-            None if self.failed.contains(key) => LinkedFetch::Failed,
+            None if self.failed.contains(key) || self.over_limit.contains(key) => {
+                LinkedFetch::Failed
+            }
             None => LinkedFetch::Loading {
                 stalled: self
                     .started
@@ -88,8 +95,21 @@ impl Links {
         now: Instant,
         mut spawn: impl FnMut(String, mpsc::UnboundedReceiver<String>) -> JoinHandle<()>,
     ) {
+        self.over_limit.clear();
+        for (channel_id, _) in &self.visible {
+            if let Some(fetching) = self.channels.get_mut(channel_id) {
+                fetching.last_wanted = now;
+            }
+        }
         for key in self.visible.clone() {
             let (channel_id, message_id) = &key;
+            if !self.channels.contains_key(channel_id)
+                && self.channels.len() >= MAX_CHANNELS
+                && !self.release_idle()
+            {
+                self.over_limit.insert(key.clone());
+                continue;
+            }
             let fetching = self.channels.entry(channel_id.clone()).or_insert_with(|| {
                 let (ids, receiver) = mpsc::unbounded_channel();
                 Fetching {
@@ -117,15 +137,35 @@ impl Links {
             .map(|(id, _)| id.clone())
             .collect();
         for channel_id in expired {
-            if let Some(fetching) = self.channels.remove(&channel_id) {
-                fetching.task.abort();
-            }
-            // 失敗は覚えず、次に表示したときに取り直す。取得できた結果は残し、戻ったときに先に出す。
-            self.failed.retain(|(channel, _)| *channel != channel_id);
-            self.started
-                .retain(|(channel, _), _| *channel != channel_id);
+            self.release(&channel_id);
         }
         self.evict();
+    }
+
+    fn release(&mut self, channel_id: &str) {
+        if let Some(fetching) = self.channels.remove(channel_id) {
+            fetching.task.abort();
+        }
+        // 失敗は覚えず、次に表示したときに取り直す。取得できた結果は残し、戻ったときに先に出す。
+        self.failed.retain(|(channel, _)| channel != channel_id);
+        self.started.retain(|(channel, _), _| channel != channel_id);
+    }
+
+    /// 画面の近くにリンクがないチャンネルのうち、いちばん前に使った購読を閉じる。なければ `false`。
+    fn release_idle(&mut self) -> bool {
+        let idle = self
+            .channels
+            .iter()
+            .filter(|(id, _)| !self.visible.iter().any(|(channel, _)| channel == *id))
+            .min_by_key(|(_, fetching)| fetching.last_wanted)
+            .map(|(id, _)| id.clone());
+        match idle {
+            Some(id) => {
+                self.release(&id);
+                true
+            }
+            None => false,
+        }
     }
 
     /// 覚える件数を超えた分を古い順に捨てる。購読中のチャンネルの結果は残す。取得のタスクは
@@ -201,8 +241,14 @@ pub struct LinkView {
     pub body_lines: usize,
 }
 
-/// チャンネルごとの、読み込んでいる行に暗号文の行があるかの結果（1 回の描画の間だけ使う）。
-pub type CiphertextRows = RefCell<HashMap<String, bool>>;
+/// 1 回の描画の間だけ使う、リンクの表示の覚え書き（次の描画では作り直す）。
+#[derive(Default)]
+pub struct DrawCache {
+    /// チャンネルごとの、読み込んでいる行に暗号文の行があるか。
+    pub ciphertext: RefCell<HashMap<String, bool>>,
+    /// リンク先ごとの表示。
+    pub views: RefCell<HashMap<LinkTarget, LinkView>>,
+}
 
 /// 1 つの本文のアプリ内リンクの表示と、取得の対象。
 #[derive(Debug, Clone, Default)]
@@ -384,6 +430,38 @@ mod tests {
             links.fetch(&key("m1"), late),
             LinkedFetch::Found(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn limits_the_channels_subscribed_at_once() {
+        let mut links = Links::default();
+        let start = Instant::now();
+        // 受信側を持っておく（捨てると、送れずに取得の失敗になる）。
+        let mut receivers = Vec::new();
+        let mut idle = |_: String, receiver| {
+            receivers.push(receiver);
+            tokio::spawn(std::future::pending())
+        };
+        let channel = |n: usize| (format!("c{n}"), "m".to_owned());
+        links.visible = (0..MAX_CHANNELS + 2).map(channel).collect();
+        links.sync(start, &mut idle);
+        assert_eq!(links.channels.len(), MAX_CHANNELS);
+        // 超えた分は取得せず、読み込めなかったものとする。
+        assert_eq!(
+            links.fetch(&channel(MAX_CHANNELS), start),
+            LinkedFetch::Failed
+        );
+        assert_ne!(links.fetch(&channel(0), start), LinkedFetch::Failed);
+        // 画面の近くから外れた購読があれば、閉じて空ける。
+        links.visible = vec![channel(MAX_CHANNELS), channel(1)];
+        links.sync(start + Duration::from_secs(1), &mut idle);
+        assert_eq!(links.channels.len(), MAX_CHANNELS);
+        assert!(links.channels.contains_key("c1"));
+        assert!(links.channels.contains_key(&format!("c{MAX_CHANNELS}")));
+        assert_ne!(
+            links.fetch(&channel(MAX_CHANNELS), start),
+            LinkedFetch::Failed
+        );
     }
 
     #[tokio::test]
