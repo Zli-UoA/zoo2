@@ -188,6 +188,7 @@ class MainActivity : ComponentActivity() {
         var restoreJob by remember { mutableStateOf<Job?>(null) }
         var canRestore by remember { mutableStateOf(false) }
         var restoreError by remember { mutableStateOf("") }
+        var restoreDiagnostics by remember { mutableStateOf("") }
         val current = active
         var callPresentation by remember(current) { mutableIntStateOf(0) }
         LaunchedEffect(current) {
@@ -211,9 +212,9 @@ class MainActivity : ComponentActivity() {
         }
         DisposableEffect(Unit) { onDispose { active?.close() } }
 
-        suspend fun connect(connection: LoginConnection, refresh: String?) {
+        suspend fun connect(connection: LoginConnection, refresh: String?, stage: (LoginStage) -> Unit) {
             active = openSession(
-                connection, loginStore, dark, refresh,
+                connection, loginStore, dark, refresh, stage,
                 onExpired = { expiredAuth ->
                     scope.launch {
                         val running = active
@@ -254,19 +255,24 @@ class MainActivity : ComponentActivity() {
             restoring = loginStore.hasSession
             restoreCancelRequested = false
             restoreError = ""
+            restoreDiagnostics = ""
+            val stages = mutableListOf(LoginStage.SavedSession)
             try {
                 val saved = loginStore.load()
                 canRestore = saved != null
                 if (saved == null) PushBinding(this@MainActivity).forgetAll()
-                if (saved != null) connect(saved.connection, saved.refreshToken)
+                if (saved != null) connect(saved.connection, saved.refreshToken) { stages.add(it) }
             } catch (failure: CancellationException) {
                 throw failure
             } catch (failure: LoginFailure) {
                 canRestore = loginStore.hasSession
                 restoreError = failure.message.orEmpty()
-            } catch (_: Exception) {
+                restoreDiagnostics = loginDiagnosticLog(stages, failure)
+            } catch (failure: Exception) {
                 canRestore = loginStore.hasSession
-                restoreError = "自動ログインできませんでした。ネットワークを確認して再試行してください。"
+                restoreError = loginNetworkMessage(failure, captivePortal = false)
+                    ?: "自動ログインできませんでした。ネットワークを確認して再試行してください。"
+                restoreDiagnostics = loginDiagnosticLog(stages, failure)
             } finally {
                 canRestore = loginStore.hasSession
                 restoring = false
@@ -280,11 +286,13 @@ class MainActivity : ComponentActivity() {
                     restoreCancelRequested = true
                     restoreJob?.cancel()
                 }),
-                connect = { connection ->
+                restoreDiagnostics = restoreDiagnostics,
+                connect = { connection, stage ->
+                    restoreDiagnostics = ""
                     canRestore = false
                     loginStore.clear()
                     PushBinding(this@MainActivity).forgetAll()
-                    connect(connection, null)
+                    connect(connection, null, stage)
                 },
             )
         } else {
@@ -369,6 +377,7 @@ class MainActivity : ComponentActivity() {
         loginStore: AndroidLoginStore,
         dark: Boolean,
         savedRefresh: String?,
+        stage: (LoginStage) -> Unit,
         onExpired: (DeviceAuth) -> Unit,
         logout: () -> Unit,
     ): RunningSession {
@@ -401,9 +410,13 @@ class MainActivity : ComponentActivity() {
         val reauthenticator = AndroidReauth(this, http, connection, ::launchAuthTab)
         reauth = reauthenticator
         try {
-            if (savedRefresh == null)
-                auth.acceptBrowserLogin(connection, reauthenticator.signIn())
-            else auth.restore(connection.issuer, connection.client, connection.resource, savedRefresh)
+            if (savedRefresh == null) {
+                auth.acceptBrowserLogin(connection, reauthenticator.signIn(stage))
+            } else {
+                stage(LoginStage.Restore)
+                auth.restore(connection.issuer, connection.client, connection.resource, savedRefresh)
+            }
+            stage(LoginStage.ZooApi)
             val authHeaders = auth.headers()
             val response = http.get(endpoint(connection.base, "/api/users/me")) {
                 headers { authHeaders.forEach { (key, value) -> append(key, value) } }
@@ -415,6 +428,7 @@ class MainActivity : ComponentActivity() {
             val me = json.parseToJsonElement(response.bodyAsText()).jsonObject
             require(me.text("id").isNotBlank())
             currentCoroutineContext().ensureActive()
+            stage(LoginStage.Session)
             val lifetime = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
             val platform = AndroidPlatform(
                 this, http, auth, connection.base, me.text("id"), logout, ::chooseFiles, recentPhotos, ::requestRecentPhotos, ::confirmUnbackedKeys,

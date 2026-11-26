@@ -16,9 +16,6 @@ import kotlinx.serialization.json.*
 import zoo.*
 import java.net.ConnectException
 import java.net.UnknownHostException
-import java.net.SocketTimeoutException
-import javax.net.ssl.SSLException
-import io.ktor.client.plugins.HttpRequestTimeoutException
 import kotlinx.coroutines.CancellationException
 
 /** Public-client token holder. Sign-in is the browser authorization code flow (PKCE, see AndroidReauth). Access tokens stay in memory; refresh persistence is owned by the app. */
@@ -233,14 +230,11 @@ internal const val wifiSignInMessage = "Wi-Fiのログインが必要です。An
 
 internal fun loginNetworkMessage(failure: Throwable, captivePortal: Boolean): String? {
     if (captivePortal) return wifiSignInMessage
-    for (cause in generateSequence(failure) { it.cause }.take(8)) {
-        when (cause) {
-            is UnknownHostException -> return "接続先の名前を解決できません。Wi-Fiの接続状態を確認してください。"
-            is SSLException -> return "接続先の証明書を確認できません。端末の日時とWi-Fiの接続状態を確認してください。"
-            is ConnectTimeoutException, is HttpRequestTimeoutException, is SocketTimeoutException ->
-                return "接続先から時間内に応答がありませんでした。ネットワークを切り替えるか、再試行してください。"
-            is ConnectException -> return "接続先に接続できません。Wi-Fiの接続状態を確認してください。"
-        }
+    return when (loginNetworkIssue(failure)) {
+        LoginNetworkIssue.Dns -> "接続先の名前を解決できません。Wi-Fiの接続状態を確認してください。"
+        LoginNetworkIssue.Certificate -> "接続先の証明書を確認できません。端末の日時とWi-Fiの接続状態を確認してください。"
+        LoginNetworkIssue.Timeout -> "接続先から時間内に応答がありませんでした。ネットワークを切り替えるか、再試行してください。"
+        LoginNetworkIssue.Connection, LoginNetworkIssue.Io -> "接続先に接続できません。Wi-Fiの接続状態を確認してください。"
+        null -> null
     }
-    return null
 }

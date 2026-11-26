@@ -57,9 +57,10 @@ internal class AndroidReauth(
     suspend fun reauthenticate(): String =
         requireNotNull(authorize(forceReauth = true).tokens.text("id_token"))
 
-    suspend fun signIn(): BrowserAuthorization = authorize(forceReauth = false)
+    suspend fun signIn(stage: (LoginStage) -> Unit): BrowserAuthorization = authorize(forceReauth = false, stage = stage)
 
-    private suspend fun authorize(forceReauth: Boolean): BrowserAuthorization {
+    private suspend fun authorize(forceReauth: Boolean, stage: (LoginStage) -> Unit = {}): BrowserAuthorization {
+        stage(LoginStage.Discovery)
         val discovery = discover()
         val request =
             ReauthRequest.create(
@@ -74,6 +75,7 @@ internal class AndroidReauth(
         val waiting = Pending(request, CompletableDeferred())
         check(pending.compareAndSet(null, waiting)) { "認証はすでに進行中です" }
         try {
+            stage(LoginStage.OpenBrowser)
             withContext(Dispatchers.Main) {
                 try {
                     val url = Uri.parse(request.url)
@@ -85,6 +87,7 @@ internal class AndroidReauth(
                     throw ReauthException(ReauthException.Reason.BROWSER_UNAVAILABLE, "ブラウザーを開けません")
                 }
             }
+            stage(LoginStage.BrowserCallback)
             val code =
                 when (val callback =
                     withTimeoutOrNull(ReauthRequest.TIMEOUT_MILLIS) { waiting.result.await() }
@@ -92,6 +95,7 @@ internal class AndroidReauth(
                     is ReauthCallback.Code -> callback.code
                     is ReauthCallback.Error -> throw ReauthException(ReauthException.Reason.DENIED, "認証が取り消されました")
                 }
+            stage(LoginStage.Exchange)
             return exchange(discovery, request, code)
         } finally {
             pending.compareAndSet(waiting, null)
@@ -186,10 +190,10 @@ internal suspend fun readOidcDiscovery(
 internal fun authTabCallback(code: Int, uri: String?, request: ReauthRequest): ReauthCallback =
     when (code) {
         AuthTabIntent.RESULT_OK -> uri?.let { ReauthCallbacks.parse(it, request) }
-            ?: throw ReauthException(ReauthException.Reason.DENIED, "認証の戻り先を確認できませんでした")
+            ?: throw ReauthException(ReauthException.Reason.INVALID_CALLBACK, "認証の戻り先を確認できませんでした")
         AuthTabIntent.RESULT_VERIFICATION_FAILED, AuthTabIntent.RESULT_VERIFICATION_TIMED_OUT ->
-            throw ReauthException(ReauthException.Reason.DENIED, "認証の戻り先をブラウザーで検証できませんでした")
-        else -> throw ReauthException(ReauthException.Reason.DENIED, "認証が取り消されました")
+            throw ReauthException(ReauthException.Reason.CALLBACK_VERIFICATION_FAILED, "認証の戻り先をブラウザーで検証できませんでした")
+        else -> throw ReauthException(ReauthException.Reason.CANCELLED, "認証が取り消されました")
     }
 
 private fun JsonObject.text(key: String): String? = (this[key] as? JsonPrimitive)?.contentOrNull

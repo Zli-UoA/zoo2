@@ -1,18 +1,24 @@
 package zoo.android
 
+import android.content.ClipData
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import androidx.activity.compose.BackHandler
 import kotlinx.coroutines.Job
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CancellationException
@@ -26,7 +32,8 @@ internal fun SignInRoute(
     error: String,
     retry: (() -> Unit)?,
     cancelRestore: (() -> Unit)?,
-    connect: suspend (LoginConnection) -> Unit,
+    restoreDiagnostics: String,
+    connect: suspend (LoginConnection, (LoginStage) -> Unit) -> Unit,
 ) {
     val context = LocalContext.current
     val preferences = remember(context) { context.getSharedPreferences("connection", Context.MODE_PRIVATE) }
@@ -37,6 +44,10 @@ internal fun SignInRoute(
     var editing by rememberSaveable { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var signInError by remember { mutableStateOf("") }
+    var signInDiagnostics by rememberSaveable { mutableStateOf("") }
+    var showDiagnostics by rememberSaveable { mutableStateOf(false) }
+    val diagnostics = signInDiagnostics.ifBlank { restoreDiagnostics }
+    val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
     var loginJob by remember { mutableStateOf<Job?>(null) }
     BackHandler(editing && !busy && !restoring) { editing = false }
@@ -45,26 +56,27 @@ internal fun SignInRoute(
             busy = true
             loginJob = scope.launch {
                 signInError = ""
+                signInDiagnostics = ""
+                val stages = mutableListOf(LoginStage.Network)
                 try {
                     if (wifiNeedsSignIn(context)) {
                         throw LoginFailure(wifiSignInMessage)
                     }
+                    stages.add(LoginStage.Configuration)
                     val connection = LoginConnection(server.trim().trimEnd('/'), issuer.trim(), client.trim(), resource.trim())
                     connection.validate()
                     preferences.edit().putString("base", connection.base).putString("issuer", connection.issuer)
                         .putString("client", connection.client).putString("resource", connection.resource).apply()
-                    connect(connection)
+                    connect(connection) { stages.add(it) }
                 } catch (failure: CancellationException) {
                     throw failure
-                } catch (failure: zoo.crypto.ReauthException) {
-                    signInError = failure.message.orEmpty()
-                } catch (failure: LoginFailure) {
-                    signInError = failure.message.orEmpty()
-                } catch (failure: IllegalArgumentException) {
-                    signInError = failure.message.orEmpty()
                 } catch (failure: Exception) {
-                    signInError = loginNetworkMessage(failure, wifiNeedsSignIn(context))
-                        ?: "ログインできません。接続先とネットワークを確認してください。"
+                    signInDiagnostics = loginDiagnosticLog(stages, failure)
+                    signInError = when (failure) {
+                        is zoo.crypto.ReauthException, is LoginFailure, is IllegalArgumentException -> failure.message.orEmpty()
+                        else -> loginNetworkMessage(failure, wifiNeedsSignIn(context))
+                            ?: "ログインできません。接続先とネットワークを確認してください。"
+                    }
                 } finally {
                     busy = false
                     loginJob = null
@@ -82,6 +94,8 @@ internal fun SignInRoute(
                 OutlinedTextField(client, { client = it }, Modifier.fillMaxWidth(), label = { Text("Android 用 public client ID") }, singleLine = true)
                 OutlinedTextField(resource, { resource = it }, Modifier.fillMaxWidth(), label = { Text("Resource / audience") }, singleLine = true)
                 (signInError.ifBlank { error }).takeIf(String::isNotEmpty)?.let { Text(it, color = colors.foreground) }
+                if (diagnostics.isNotBlank()) TextAction("診断ログを見る", colors, icon = UiIcon.Document,
+                    style = TextActionStyle.Plain) { showDiagnostics = true }
                 TextAction("ログイン", colors, icon = UiIcon.SignIn, enabled = client.isNotBlank(), click = submit)
             }
         } else {
@@ -97,6 +111,8 @@ internal fun SignInRoute(
                 } else if (busy) {
                     TextAction("キャンセル", colors, icon = UiIcon.Close, style = TextActionStyle.Plain) { loginJob?.cancel() }
                 } else {
+                    if (diagnostics.isNotBlank()) TextAction("診断ログを見る", colors, icon = UiIcon.Document,
+                        style = TextActionStyle.Plain) { showDiagnostics = true }
                     retry?.let { TextAction("自動ログインを再試行", colors, icon = UiIcon.Refresh, style = TextActionStyle.Plain, click = it) }
                     if (client.isNotBlank()) {
                         TextAction("接続先の設定", colors, icon = UiIcon.Settings, style = TextActionStyle.Plain) { editing = true }
@@ -108,6 +124,23 @@ internal fun SignInRoute(
                 }
             }
         }
+    }
+    if (showDiagnostics && diagnostics.isNotBlank()) {
+        AlertDialog(
+            onDismissRequest = { showDiagnostics = false },
+            title = { Text("ログインの診断ログ") },
+            text = {
+                SelectionContainer {
+                    Text(diagnostics, Modifier.heightIn(max = 280.dp).verticalScroll(rememberScrollState()))
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch { clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("Zoo", diagnostics))) }
+                }) { Text("コピー") }
+            },
+            dismissButton = { TextButton(onClick = { showDiagnostics = false }) { Text("閉じる") } },
+        )
     }
 }
 
