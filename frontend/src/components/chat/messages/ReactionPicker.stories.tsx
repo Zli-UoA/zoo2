@@ -4,7 +4,10 @@ import { delay, http, HttpResponse } from "msw";
 import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
 import { useState } from "react";
 
-import { manyCustomEmojiFixtures } from "../../../../.storybook/preference-fixtures";
+import {
+  customEmojiFixture,
+  manyCustomEmojiFixtures,
+} from "../../../../.storybook/preference-fixtures";
 
 import { RECENT_EMOJIS_STORAGE_KEY } from "../../../lib/emoji/recents";
 import { Button } from "../../ui/button";
@@ -143,6 +146,40 @@ export const ManyCustomEmojis: Story = {
     );
     await userEvent.click(last);
     await expect(args.onSelect).toHaveBeenCalledWith(":scroll_199:");
+  }),
+};
+
+const rankedSearchFixtures = [
+  { ...customEmojiFixture, name: "xkusa", category: "Zoo", aliases: [] },
+  { ...customEmojiFixture, name: "kusa_hayasu", category: "Zoo", aliases: [] },
+  { ...customEmojiFixture, name: "kusa", category: "Zoo", aliases: [] },
+  { ...customEmojiFixture, name: "kusaa", category: "Zoo", aliases: [] },
+];
+
+export const SearchExactFirst: Story = {
+  parameters: {
+    a11y: { test: "error" },
+    msw: { handlers: [http.get("*/api/emojis", () => HttpResponse.json(rankedSearchFixtures))] },
+  },
+  play: playForImplementation(async () => {
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("tab", { name: "カスタム絵文字" }));
+    await within(dialog).findByRole("button", { name: ":kusa:" });
+    await userEvent.type(within(dialog).getByRole("searchbox", { name: "絵文字を検索" }), "kusa");
+    const region = within(dialog).getByRole("region", { name: "カスタム絵文字" });
+    // 完全一致、前方一致（短い順）、部分一致の順に並ぶ。
+    await waitFor(() =>
+      expect(
+        within(region)
+          .getAllByRole("button")
+          .map((button) => button.getAttribute("aria-label")),
+      ).toEqual([":kusa:", ":kusaa:", ":kusa_hayasu:", ":xkusa:"]),
+    );
+    // カーソルを載せると、登録名をツールチップで表示する。
+    await userEvent.hover(within(region).getByRole("button", { name: ":kusa:" }));
+    await expect(
+      await screen.findByText(":kusa:", { selector: '[data-slot="tooltip-content"]' }),
+    ).toBeVisible();
   }),
 };
 

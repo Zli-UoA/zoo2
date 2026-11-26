@@ -16,6 +16,9 @@ vi.mock("../../../lib/emoji/workspace", () => ({
         category: "Greetings",
         aliases: ["挨拶"],
       },
+      { name: "xkusa", url: "/api/emoji-images/x", category: "B", aliases: [] },
+      { name: "kusa", url: "/api/emoji-images/k", category: "B", aliases: [] },
+      { name: "kusaa", url: "/api/emoji-images/ka", category: "A", aliases: [] },
     ],
     loading: false,
     failed: false,
@@ -171,6 +174,21 @@ describe("ReactionPicker", () => {
     await click(document.querySelector('button[aria-label=":zoo_wave:"]')!);
     expect(selected).toEqual([":zoo_wave:"]);
     expect(openChanges).toEqual([false]);
+  });
+  it("keeps ranked order for custom emoji search even when categories alternate", async () => {
+    await click(buttonWithText("カスタム絵文字"));
+    const input = document.querySelector<HTMLInputElement>('input[aria-label="絵文字を検索"]')!;
+    await flush(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+        input,
+        "kusa",
+      );
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const shown = Array.from(
+      document.querySelectorAll('[role="region"] button[aria-label^=":"]'),
+    ).map((b) => b.getAttribute("aria-label"));
+    expect(shown.slice(0, 3)).toEqual([":kusa:", ":kusaa:", ":xkusa:"]);
   });
   it("shows all tabs and selects an emoji while recording it as recent", async () => {
     const tabs = Array.from(document.querySelectorAll('[role="tab"]'));
