@@ -234,6 +234,8 @@ final class E2eeDeviceManager {
     /// 補充をして、to-device を処理する。終わらない（失敗で抜ける）。
     private func serve(_ store: CryptoStore, connected: () -> Void) async throws {
         let deviceID = store.deviceID
+        // 前の実行で、処理済みにしたが、届け先に渡せなかった検証のメッセージ（保存したもの）を、先に届ける。
+        if let leftover = try? store.takeVerifications(), !leftover.isEmpty { onVerifications?(leftover) }
         try await replenish(store, counts: try await uploadKeys(deviceID, [:], [:]))
         readyStore = store
         onReady?()
@@ -285,15 +287,15 @@ final class E2eeDeviceManager {
         let result: CryptoStore.ToDeviceResult
         do { result = try store.processToDevice(rows, keysQuery: keys) }
         catch {
-            // 途中の行で保存に失敗しても、すでに処理済みにした行の検証メッセージは、再試行では復号できないので、ここで届ける。
-            let delivered = store.takeVerifications()
-            if !delivered.isEmpty { onVerifications?(delivered) }
+            // 途中の行で保存に失敗しても、すでに処理済みにした行の検証メッセージは、再試行では復号できないので、ここで届ける
+            // （保存したものは、開き直したあとにも取り出せる）。
+            if let delivered = try? store.takeVerifications(), !delivered.isEmpty { onVerifications?(delivered) }
             throw error
         }
         // 処理済みの印は、もう保存した。この先の ack や鍵の補充が通信で失敗しても、再試行では復号を省くので、鍵と検証のメッセージは、
         // ここで届ける（ack より前。届け先が覚えておく）。
         if result.roomKeys > 0 { onKeysReceived?() }
-        if !result.verifications.isEmpty { onVerifications?(result.verifications) }
+        if let delivered = try? store.takeVerifications(), !delivered.isEmpty { onVerifications?(delivered) }
         if !result.processed.isEmpty {
             do { try await api.ackToDevice(deviceID: deviceID, ids: result.processed) }
             catch let failure as E2eeAPIError where failure.isDeviceNotFound { throw DeviceGone(deviceID: deviceID, failure: failure) }

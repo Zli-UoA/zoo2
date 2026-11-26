@@ -27,6 +27,19 @@ func makeFiles(_ key: MemoryKey = MemoryKey()) -> (CryptoStoreFiles, MemoryKey, 
 }
 
 struct CryptoStoreTests {
+    @Test func 届け先に渡す前の検証メッセージは処理済みの印と同じ状態に保存され古い状態でも読める() throws {
+        // 古い `state.json`（項目がない）は、空として読める。
+        let old = #"{"version":1,"user_id":"u","device_id":"d","registered":true,"account":"a"}"#
+        let decoded = try JSONDecoder().decode(StoreState.self, from: Data(old.utf8))
+        #expect(decoded.pending_verifications == [] && decoded.processed_to_device == [])
+        // 処理済みの ID と、届け先に渡す前のメッセージは、同じ状態として書いて読める（同じ書き込みで、両方が残るか、どちらも残らない）。
+        var state = decoded
+        state.processed_to_device = ["row-1"]
+        state.pending_verifications = [#"{"type":"m.key.verification.request"}"#]
+        let again = try JSONDecoder().decode(StoreState.self, from: JSONEncoder().encode(state))
+        #expect(again.processed_to_device == ["row-1"] && again.pending_verifications == state.pending_verifications)
+    }
+
     @Test func 暗号化チャンネルとして見たチャンネルは開き直しても覚えている() throws {
         let (files, _, directory) = makeFiles()
         defer { try? FileManager.default.removeItem(at: directory) }
