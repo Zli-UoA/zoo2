@@ -371,3 +371,25 @@ fn backup_upload_proof_matches_the_vector_and_the_server_check() {
             .is_err()
     );
 }
+
+#[test]
+fn trust_store_lists_recorded_users_without_the_own_user() {
+    const BOB: &str = "00000000-0000-4000-8000-00000000000b";
+    let alice = CrossSigningKeys::generate(ALICE.into()).unwrap();
+    let bob = CrossSigningKeys::generate(BOB.into()).unwrap();
+    let store = TrustStore::new(ALICE.into()).unwrap();
+    store.trust_own_master_key(&alice.master()).unwrap();
+    store
+        .record_own_user_signing_key(&alice.user_signing())
+        .unwrap();
+    assert!(store.recorded_users().is_empty());
+    // 相手のマスター鍵を受け入れると、その相手の記録ができる（自分は含めない）。
+    store
+        .accept_master_key(
+            &alice.user_signing(),
+            BOB.into(),
+            bob.master().public_key_json(),
+        )
+        .unwrap();
+    assert_eq!(store.recorded_users(), vec![BOB.to_owned()]);
+}

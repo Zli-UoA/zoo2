@@ -119,7 +119,9 @@ final class E2eeRevocation {
         let keysQuery = try await ownKeysQuery()
         let versions = try await api.call("api/e2ee/key_backup/versions", method: "GET", query: [:], body: nil, reauth: nil, headers: [:])
         let pins = try await allPins()
+        // 署名し直す候補：ピンのある相手と、この端末の信頼の記録がある相手（記録だけの相手のピンは、記録から作る）。
         var targets = Set(pins.compactMap { $0.object?["target_user_id"]?.string })
+        targets.formUnion(store.recordedUsers())
         targets.remove(userID)
         let targetsQuery = targets.isEmpty ? JSONValue.object([:]) : try await queryKeys(Array(targets))
         let input: JSONValue = .object([

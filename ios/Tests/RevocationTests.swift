@@ -248,6 +248,8 @@ struct ReverifyTests {
         #expect(accepted.signature.targetUserId == other)
         #expect(accepted.pin.contains(other))
         try device.store.confirmAcceptedMasterKey(userID: other, masterKey: master)
+        // 記録のある相手は、失効で署名し直す候補になる（自分は含まない）。
+        #expect(device.store.recordedUsers() == [other])
     }
 }
 

@@ -754,6 +754,9 @@ final class CryptoStore: @unchecked Sendable {
         }
     }
 
+    /// 暗号化チャンネルを共有する相手として、信頼の記録がある相手（自分を除く。失効で署名し直す候補を集める）。
+    func recordedUsers() -> [String] { lock.withLock { trust.recordedUsers() } }
+
     /// この端末の端末鍵（JSON。失効の署名に使う）。
     func deviceKeysJSON() -> String { lock.withLock { account.deviceKeys() } }
 
