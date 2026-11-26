@@ -351,6 +351,7 @@ fn draw_global_search(frame: &mut Frame, app: &App) {
     let room = (usize::from(frame.area().height).saturating_sub(fixed) / 2).max(1);
     let first = search.selected.saturating_sub(room.saturating_sub(1));
     let terms = global_search::highlight_terms(search);
+    let now = jiff::Zoned::now();
     for (index, item) in search.items.iter().enumerate().skip(first).take(room) {
         let selected = index == search.selected;
         let place = match app.store.channel(&item.channel_id) {
@@ -365,10 +366,7 @@ fn draw_global_search(frame: &mut Frame, app: &App) {
             head.push(Span::styled(format!("  {author}"), DIM));
         }
         head.push(Span::styled(
-            format!(
-                "  {}",
-                global_search::result_day(&item.created_at, &jiff::tz::TimeZone::system())
-            ),
+            format!("  {}", global_search::result_time(&item.created_at, &now)),
             DIM,
         ));
         if item.parent_id.is_some() {

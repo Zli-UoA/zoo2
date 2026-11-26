@@ -3,7 +3,6 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   authorLabel,
   formatClock,
-  formatEmbedTimestamp,
   formatRelativeDay,
   formatTime,
   isSameLocalDay,
@@ -56,6 +55,24 @@ describe("formatTime", () => {
   it("shows the month and day across a local midnight in the same year", () => {
     const value = new Date(2026, 9, 19, 23, 59).toISOString();
     expect(formatTime(value, "ja", new Date(2026, 9, 20, 0, 1))).toBe("10/19 23:59");
+  });
+
+  it.each([new Date(2026, 2, 8), new Date(2026, 10, 1)])(
+    "compares calendar days across DST transitions on %s",
+    (now) => {
+      const late = new Date(now);
+      late.setHours(23, 30);
+      expect(formatTime(late.toISOString(), "en", now)).toBe("23:30");
+      const tomorrow = new Date(now);
+      tomorrow.setDate(now.getDate() + 1);
+      expect(formatTime(late.toISOString(), "en", tomorrow)).toBe(
+        now.getMonth() === 2 ? "03/08 23:30" : "11/01 23:30",
+      );
+    },
+  );
+
+  it("keeps an invalid timestamp readable", () => {
+    expect(formatTime("invalid")).toBe("invalid");
   });
 
   it("uses the local year boundary for past and future messages", () => {
@@ -217,16 +234,4 @@ it("localizes new message announcements without translating user content", () =>
   expect(newMessageAnnouncement(message({ content: "" }), createI18n("yue").t)).toBe(
     "Alice 傳咗新訊息",
   );
-});
-
-describe("formatEmbedTimestamp", () => {
-  // 端末のタイムゾーンに依らないよう、端末のローカル時刻の正午から作る（UTC の固定値だと、UTC+12 以上の
-  // 端末では日付が翌日になる）。
-  const value = new Date(2026, 10, 23, 12).toISOString();
-
-  it.each(["ja", "en"] as const)("埋め込みでも当日・同年・別の年を区別する (%s)", (locale) => {
-    expect(formatEmbedTimestamp(value, locale, new Date(2026, 10, 23, 23))).toBe("12:00");
-    expect(formatEmbedTimestamp(value, locale, new Date(2026, 11, 1))).toBe("11/23 12:00");
-    expect(formatEmbedTimestamp(value, locale, new Date(2027, 0, 1))).toBe("2026/11/23 12:00");
-  });
 });

@@ -508,20 +508,18 @@ internal class ConnectedScreenState(
     fun searchScreen(users: Map<String, Row>, channels: List<Row>, members: List<Row>): AndroidScreen.Search {
         val search = app.globalSearch
         val channelsById = channels.associateBy { it.text("id") }
-        val year = platform.day(platform.now()).substringBefore('/')
         return AndroidScreen.Search(SearchScreenState(
             searchText, search.query, search.type,
             search.items.map { row ->
                 val file = isGlobalSearchFile(row, search.type)
                 val user = users[row.text("user_id")] ?: row.nested("author").takeIf { it.isNotEmpty() }
                 val createdAt = row.text("created_at")
-                val day = platform.day(createdAt).let { if (it.substringBefore('/') == year) it.substringAfter('/') else it }
                 SearchResultItem(
                     key = globalSearchKey(row, search.type),
                     author = user?.let(::author)?.ifBlank { null } ?: row.text("user_id"),
                     // Like Web, keep the first hit within the three lines of a narrow screen.
                     body = if (file) row.text("file_name") else focusSnippet(row.text("snippet"), searchTerms(search.query)),
-                    time = listOf(day, platform.time(createdAt)).filter { it.isNotBlank() }.joinToString(" "),
+                    time = platform.messageTimestamp(createdAt),
                     destination = searchDestination(row, channelsById[row.text("channel_id")], users, members),
                     dm = isDm(row, channelsById[row.text("channel_id")]),
                     inThread = row.text("parent_id").isNotEmpty(),

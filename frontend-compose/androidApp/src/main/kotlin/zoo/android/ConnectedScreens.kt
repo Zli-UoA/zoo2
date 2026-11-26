@@ -1,5 +1,10 @@
 package zoo.android
 
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import androidx.core.content.ContextCompat
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -65,6 +70,21 @@ internal fun ConnectedScreens(
     // 添付・リアクションは、メッセージ行の display_data から出す（別 Shape は購読しない）。
     val reactions = remember(rows) { rows.flatMap(::displayReactions) }
     val context = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    DisposableEffect(platform, context) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                platform.refreshCalendarDay()
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_DATE_CHANGED)
+            addAction(Intent.ACTION_TIME_CHANGED)
+            addAction(Intent.ACTION_TIMEZONE_CHANGED)
+        }
+        ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        platform.refreshCalendarDay()
+        onDispose { context.unregisterReceiver(receiver) }
+    }
     val emojiCatalog = remember(context) { AndroidEmojiCatalog(context) }
     val needsWorkspaceEmoji = reactions.any { it.text("emoji").startsWith(':') }
     LaunchedEffect(session, needsWorkspaceEmoji, env.online, env.visible) {
@@ -82,7 +102,7 @@ internal fun ConnectedScreens(
     // 暗号ストアが変わったら（解錠、鍵の受信、鍵バックアップの取り込み）、表示中の行を復号し直す。
     val encryption = platform.messageEncryption
     val cryptoChanges by (encryption?.changes ?: remember { kotlinx.coroutines.flow.MutableStateFlow(0L) }).collectAsState()
-    val messageEntries by produceState(emptyList<TimelineItem>(), rows, usersById, encrypted, canPost, cryptoChanges, session.workspaceEmojis) {
+    val decryptedRows by produceState(emptyList<Pair<Row, DecryptedBody?>>(), rows, encryption, cryptoChanges, encrypted) {
         val ordered = rows.filterNot { it.present("deleted_at") }.sortedWith(compareBy({ it.text("created_at") }, { it.text("id") }))
         value = ordered.map { row ->
             val decrypted = if (row.present("ciphertext")) {
@@ -90,6 +110,12 @@ internal fun ConnectedScreens(
                 catch (cancelled: CancellationException) { throw cancelled }
                 catch (_: Exception) { DecryptedBody(notice = "e2ee.undecryptable.failed") }
             } else null
+            row to decrypted
+        }
+    }
+    // 日付や表示名だけが変わったときは、手元の復号結果から表示を作り直す。
+    val messageEntries = remember(decryptedRows, usersById, encrypted, canPost, session.workspaceEmojis, platform.calendarDay) {
+        decryptedRows.map { (row, decrypted) ->
             val data = if (decrypted != null) row + ("content" to JsonPrimitive(decrypted.body.orEmpty())) else row
             val entry = state.entry(kotlinx.serialization.json.JsonObject(data), usersById,
                 if (decrypted != null) emptyList() else displayAttachments(row),

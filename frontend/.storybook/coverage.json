@@ -1899,6 +1899,13 @@
       "checks": ["src/components/sip/SipProvider.browser.test.tsx"]
     },
     {
+      "file": "src/components/chat/messages/PostTimestamp.tsx",
+      "story": "src/components/chat/messages/MessageRow.stories.tsx",
+      "composed": true,
+      "reason": "転送カードの投稿日時を ForwardedMessage で確認する。通知・検索・引用も同じ部品を使う。",
+      "checks": ["src/components/chat/messages/messageFormat.test.ts"]
+    },
+    {
       "file": "src/components/chat/messages/MessageBody.tsx",
       "story": "src/components/chat/messages/MessageRow.stories.tsx",
       "composed": true,

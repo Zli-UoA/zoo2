@@ -227,26 +227,49 @@ test("App actions open from the upper-right menu", async ({ page, isMobile }) =>
   await expect(page.locator("html")).toHaveAttribute("data-app-message-id", /.+/);
 });
 
-test("hover preserves a short grouped row and centers its timestamp", async ({
-  page,
-  isMobile,
-}) => {
-  test.skip(isMobile, "Hover layout applies to pointer devices");
-  await page.goto("/e2e/fixtures/layout.html");
-  const row = page.locator('[data-index="39"]');
-  await expect(row).toBeVisible();
-  const before = await row.boundingBox();
-  await row.hover();
-  await expect(row.locator("time")).toHaveCSS("opacity", "1");
-  const after = await row.boundingBox();
-  expect(after!.height).toBeCloseTo(before!.height, 1);
-  expect(after!.y).toBeCloseTo(before!.y, 1);
-  const time = await row.locator("time").boundingBox();
-  const body = await row.locator(".mfm-body").boundingBox();
-  expect(Math.abs(time!.y + time!.height / 2 - body!.y - body!.height / 2)).toBeLessThan(1);
-  const toolbar = row.locator("[data-message-toolbar]");
-  await expect(toolbar.getByRole("button", { name: "More actions" })).toBeVisible();
-  await expect(toolbar.getByRole("button", { name: "Edit message", exact: true })).toBeVisible();
+test.describe("grouped timestamps", () => {
+  test.use({ timezoneId: "Asia/Tokyo" });
+  test("hover preserves a short grouped row and centers its timestamp", async ({
+    page,
+    isMobile,
+  }) => {
+    test.skip(isMobile, "Hover layout applies to pointer devices");
+    await page.clock.setFixedTime(new Date("2026-01-02T00:00:00Z"));
+    await page.goto("/e2e/fixtures/layout.html");
+    const row = page.locator('[data-index="39"]');
+    await expect(row).toBeVisible();
+    const before = await row.boundingBox();
+    await expect(row.locator("time")).toHaveText("09:00");
+    await expect(row.locator("time")).toHaveCSS("opacity", "0");
+    await row.hover();
+    await expect(row.locator("time")).toHaveCSS("opacity", "1");
+    const after = await row.boundingBox();
+    expect(after!.height).toBeCloseTo(before!.height, 1);
+    expect(after!.y).toBeCloseTo(before!.y, 1);
+    const time = await row.locator("time").boundingBox();
+    const body = await row.locator(".mfm-body").boundingBox();
+    expect(Math.abs(time!.y + time!.height / 2 - body!.y - body!.height / 2)).toBeLessThan(1);
+    const toolbar = row.locator("[data-message-toolbar]");
+    await expect(toolbar.getByRole("button", { name: "More actions" })).toBeVisible();
+    await expect(toolbar.getByRole("button", { name: "Edit message", exact: true })).toBeVisible();
+  });
+
+  test("older grouped rows show their date above the body when a tab regains focus", async ({
+    page,
+  }) => {
+    await page.clock.setFixedTime(new Date("2026-01-02T00:00:00Z"));
+    await page.goto("/e2e/fixtures/layout.html");
+    const row = page.locator('[data-index="39"]');
+    const stamp = row.locator("time");
+    await expect(stamp).toHaveText("09:00");
+    await page.clock.setFixedTime(new Date("2027-01-02T00:00:00Z"));
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect(stamp).toHaveText("2026/01/02 09:00");
+    await expect(stamp).toHaveCSS("opacity", "1");
+    const time = await stamp.boundingBox();
+    const body = await row.locator(".mfm-body").boundingBox();
+    expect(time!.y + time!.height).toBeLessThanOrEqual(body!.y);
+  });
 });
 
 test("copies the original text from the upper-right message menu", async ({ page, context }) => {

@@ -2,7 +2,7 @@ import { MENTION_PATTERN } from "./mentions";
 import type { MegolmCiphertext, MessageDisplayData } from "../../../lib/electric/types";
 import type { TFunction } from "i18next";
 import { DEFAULT_LOCALE, INTL_LOCALES, type Locale } from "../../../lib/i18n/locale";
-import { normalizeUtcTimestamp, parseUtcTimestamp } from "../../../lib/timestamps";
+import { parseUtcTimestamp } from "../../../lib/timestamps";
 
 /**
  * `messageFeedQuery` の select 結果。`users` の結合がまだ届いていない行では
@@ -179,6 +179,7 @@ export function formatTime(
   now: Date = new Date(),
 ): string {
   const date = parseUtcTimestamp(value);
+  if (Number.isNaN(date.getTime())) return value;
   const time = formatClock(date, locale);
   if (isSameLocalDay(date, now)) return time;
   const monthDay = `${pad(date.getMonth() + 1)}/${pad(date.getDate())}`;
@@ -187,18 +188,10 @@ export function formatTime(
   return `${day} ${time}`;
 }
 
-/** 埋め込みカードも投稿と同じ日時表記にする。 */
-export function formatEmbedTimestamp(
-  value: string,
-  locale: Locale = DEFAULT_LOCALE,
-  now: Date = new Date(),
-): string {
-  return formatTime(value, locale, now);
-}
-
 /** タイトル属性向けの完全な日時。 */
 export function fullTimestamp(value: string, locale: Locale = DEFAULT_LOCALE): string {
-  return new Date(normalizeUtcTimestamp(value)).toLocaleString(INTL_LOCALES[locale]);
+  const date = parseUtcTimestamp(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString(INTL_LOCALES[locale]);
 }
 
 /** 端末ローカルの暦日が同じか。 */
@@ -243,5 +236,6 @@ export function formatDateSeparator(
   locale: Locale,
   now: Date = new Date(),
 ): string {
-  return formatRelativeDay(parseUtcTimestamp(value), now, t, locale);
+  const date = parseUtcTimestamp(value);
+  return Number.isNaN(date.getTime()) ? value : formatRelativeDay(date, now, t, locale);
 }

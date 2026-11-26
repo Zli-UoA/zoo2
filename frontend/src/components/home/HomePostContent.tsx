@@ -1,3 +1,4 @@
+import { PostTimestamp } from "../chat/messages/PostTimestamp";
 import { Link } from "@tanstack/react-router";
 import { memo, type ReactNode } from "react";
 import { SensitiveMedia } from "../ui/sensitive-media";
@@ -67,7 +68,7 @@ function QuotePostLink({
 }
 
 function QuoteCard({ quote }: { quote: HomeQuote }) {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const post = quote.post;
   const name = post?.display_name || post?.user_name || "";
   return (
@@ -96,9 +97,7 @@ function QuoteCard({ quote }: { quote: HomeQuote }) {
             previewLinks={false}
           />
           <QuotePostLink quote={quote} className="mt-2 inline-block text-xs text-link">
-            <time dateTime={post.created_at}>
-              {new Date(post.created_at).toLocaleString(i18n.language)}
-            </time>
+            <PostTimestamp createdAt={post.created_at} />
           </QuotePostLink>
         </>
       ) : (

@@ -103,10 +103,13 @@ interface Platform {
 
     fun time(timestamp: String): String
 
+    fun today(): String = day(now())
+
     fun messageTimestamp(timestamp: String): String {
         val date = day(timestamp)
-        val today = day(now())
         val clock = time(timestamp)
+        if (clock == timestamp) return timestamp
+        val today = today()
         if (date == today) return clock
         val label = if (date.substringBefore('/') == today.substringBefore('/')) date.substringAfter('/') else date
         return "$label $clock"
@@ -115,8 +118,6 @@ interface Platform {
     fun fullTimestamp(timestamp: String): String = "${day(timestamp)} ${time(timestamp)}"
 
     fun relativeTimestamp(timestamp: String): String = fullTimestamp(timestamp)
-
-    fun notificationTime(timestamp: String): String = "${day(timestamp)} ${time(timestamp)}"
 
     fun day(timestamp: String): String
 

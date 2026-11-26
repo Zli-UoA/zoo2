@@ -1,3 +1,4 @@
+import { PostTimestamp } from "../chat/messages/PostTimestamp";
 import { toast } from "sonner";
 import { createHomeTimelineCache } from "../../lib/homeTimelineCache";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -870,9 +871,7 @@ function HomeScreenContent({
                               onClick={() => preparePost(post)}
                               className="shrink-0 hover:underline"
                             >
-                              <time dateTime={post.created_at}>
-                                {new Date(post.created_at).toLocaleString(i18n.language)}
-                              </time>
+                              <PostTimestamp createdAt={post.created_at} />
                             </Link>
                             <ActivityPubBadge
                               visibility={post.visibility ?? "local"}

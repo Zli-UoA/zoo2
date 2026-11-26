@@ -158,6 +158,18 @@ it("uses a machine-readable datetime for the notification timestamp", () => {
   expect(html).not.toMatch(/datetime="2026-01-02 09:00:00\.000"/i);
 });
 
+it("renders a past notification with the same local date and time as its post", () => {
+  const now = new Date(2026, 9, 20, 0, 1);
+  const posted = new Date(2026, 9, 19, 23, 59).toISOString();
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    vi.setSystemTime(now);
+    expect(render([{ ...rows[0], created_at: posted }])).toMatch(/>10\/19 23:59<\/time>/);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("labels ordinary direct messages independently from replies", () => {
   const html = render([{ ...rows[0], notification_type: "dm" }]);
   expect(html).toContain("ダイレクトメッセージが届きました");

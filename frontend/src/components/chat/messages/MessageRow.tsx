@@ -45,12 +45,10 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../../ui/tooltip";
 import { Textarea } from "../../ui/textarea";
 import { Dialog, DialogContent, DialogTitle } from "../../ui/dialog";
-import { normalizeUtcTimestamp, parseUtcTimestamp } from "../../../lib/timestamps";
+import { usePostTimestamp } from "./PostTimestamp";
 import {
   authorLabel,
   formatDateSeparator,
-  formatTime,
-  fullTimestamp,
   isSameLocalDay,
   messageTextSegments,
 } from "./messageFormat";
@@ -181,18 +179,15 @@ export function RevisionWarningBadge({ warning }: { warning: "stale" | "conflict
   );
 }
 
-function DateSeparator({ value }: { value: string }) {
+function DateSeparator({ value, today }: { value: string; today: Date }) {
   const { t } = useTranslation();
   const { locale } = useLocale();
+  const label = formatDateSeparator(value, t, locale, today);
   return (
-    <div
-      className="flex items-center gap-3 py-2"
-      role="separator"
-      aria-label={formatDateSeparator(value, t, locale)}
-    >
+    <div className="flex items-center gap-3 py-2" role="separator" aria-label={label}>
       <span className="h-px flex-1 bg-border" />
       <span className="rounded-full border bg-background/80 px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground">
-        {formatDateSeparator(value, t, locale)}
+        {label}
       </span>
       <span className="h-px flex-1 bg-border" />
     </div>
@@ -249,10 +244,10 @@ export function MessageRow({
   highlightRun,
 }: MessageRowProps) {
   const { t } = useTranslation();
-  const { locale } = useLocale();
   const { message } = item;
-  const now = new Date();
-  const isToday = isSameLocalDay(parseUtcTimestamp(message.created_at), now);
+  const { dateTime, title, label, today } = usePostTimestamp(message.created_at);
+  const isToday = isSameLocalDay(new Date(dateTime), today);
+  const showHeader = item.isGroupStart || message.apub || !isToday;
   const isEncryptedChannel = useEncryptedChannel();
   const decryptionFromPane = useMessageDecryption(message.id);
   // 暗号化に切り替える前の平文のメッセージ（#367）。本文はそのまま出し、編集させない。
@@ -397,7 +392,7 @@ export function MessageRow({
 
   return (
     <>
-      {item.showDateSeparator ? <DateSeparator value={message.created_at} /> : null}
+      {item.showDateSeparator ? <DateSeparator value={message.created_at} today={today} /> : null}
       <div
         onPointerDown={rememberTouchStart}
         onClick={openSheetOnTap}
@@ -428,28 +423,28 @@ export function MessageRow({
           />
         ) : (
           <div className="flex h-lh w-8 shrink-0 items-center justify-end text-sm leading-relaxed">
-            {isToday ? (
+            {!showHeader ? (
               <time
                 className="text-[10px] leading-none text-muted-foreground tabular-nums opacity-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100"
-                dateTime={normalizeUtcTimestamp(message.created_at)}
-                title={fullTimestamp(message.created_at, locale)}
+                dateTime={dateTime}
+                title={title}
               >
-                {formatTime(message.created_at, locale, now)}
+                {label}
               </time>
             ) : null}
           </div>
         )}
 
         <div className="min-w-0 flex-1">
-          {item.isGroupStart || message.apub || !isToday ? (
+          {showHeader ? (
             <div className="flex flex-wrap items-center gap-2">
               {item.isGroupStart ? <AuthorIdentity message={message} /> : null}
               <time
                 className="shrink-0 text-[11px] text-muted-foreground tabular-nums"
-                dateTime={normalizeUtcTimestamp(message.created_at)}
-                title={fullTimestamp(message.created_at, locale)}
+                dateTime={dateTime}
+                title={title}
               >
-                {formatTime(message.created_at, locale, now)}
+                {label}
               </time>
               {message.apub ? (
                 <ActivityPubBadge visibility={message.apub_visibility ?? "public"} />

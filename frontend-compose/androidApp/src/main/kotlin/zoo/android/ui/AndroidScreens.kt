@@ -589,8 +589,9 @@ private fun Timeline(
                         if (posts && entry.postHeader != null) {
                             PostHeader(entry.author, entry.postHeader, colors)
                         } else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(entry.author, color = colors.foreground, fontWeight = AndroidWeights.entryAuthor, fontSize = entryTextSize)
-                            Text(entry.time, color = colors.secondary, fontSize = 12.sp)
+                            Text(entry.author, Modifier.weight(1f, fill = false), color = colors.foreground, fontWeight = AndroidWeights.entryAuthor,
+                                fontSize = entryTextSize, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(entry.time, color = colors.secondary, fontSize = 12.sp, maxLines = 1)
                         }
                         if (entry.marks.isNotEmpty()) EntryMarks(entry.marks, colors)
                         entry.notice?.let {

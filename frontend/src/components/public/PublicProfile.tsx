@@ -1,3 +1,4 @@
+import { PostTimestamp } from "../chat/messages/PostTimestamp";
 import { Link } from "@tanstack/react-router";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -26,7 +27,7 @@ export interface PublicProfileData {
 }
 
 export function PublicProfile({ userId, before }: { userId: string; before?: string }) {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const [data, setData] = useState<PublicProfileData | null>(null);
   const [error, setError] = useState<number | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -141,9 +142,7 @@ export function PublicProfile({ userId, before }: { userId: string; before?: str
                     href={`#post-${post.id}`}
                     className="text-sm text-muted-foreground underline-offset-4 hover:underline"
                   >
-                    <time dateTime={post.created_at}>
-                      {new Date(post.created_at).toLocaleString(i18n.language)}
-                    </time>
+                    <PostTimestamp createdAt={post.created_at} />
                   </a>
                   <HomePostContent content={post.content} emojis={post.emojis} media={post.media} />
                 </article>

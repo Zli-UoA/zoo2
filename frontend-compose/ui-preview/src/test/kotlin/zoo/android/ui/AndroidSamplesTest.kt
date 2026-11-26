@@ -589,6 +589,26 @@ class AndroidSamplesTest {
     }
 
     @Test
+    @Config(qualifiers = "ja-rJP-w320dp-h760dp-xhdpi")
+    fun aLongAuthorLeavesRoomForTheFullTimestamp() {
+        val entry = TimelineItem("m", "とても長い表示名".repeat(12), "本文", "2025/12/31 23:59")
+        var screen by mutableStateOf<AndroidScreen>(AndroidScreen.Conversation("dev", "開発", "", listOf(entry), InputState()))
+        ui.setContent { AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> } }
+        fun assertTimeFits() {
+            val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+            ui.onNodeWithText(entry.time, useUnmergedTree = true).assertIsDisplayed()
+                .performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
+            check(layouts.single().lineCount == 1 && !layouts.single().hasVisualOverflow)
+        }
+        assertTimeFits()
+        ui.runOnIdle {
+            screen = AndroidScreen.Home(listOf(entry.copy(postHeader = PostHeaderData("@name", entry.time, PostAudience.Public, null, null))))
+        }
+        ui.waitForIdle()
+        assertTimeFits()
+    }
+
+    @Test
     fun opensContextSheetAndSlidesToThreadWithOptionalHaptics() {
         val root = TimelineItem("root", "はる", "スレッドを試すメッセージ", "12:08",
             editable = true, canReact = true)
