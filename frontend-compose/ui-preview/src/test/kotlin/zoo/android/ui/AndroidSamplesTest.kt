@@ -646,6 +646,18 @@ class AndroidSamplesTest {
     }
 
     @Test
+    fun unavailableReactionRemainsVisibleButCannotBeTapped() {
+        var toggles = 0
+        ui.setContent {
+            TimelineReactionChip(TimelineReaction(":star:", ":star:", "2", false, canToggle = false), AndroidColors(false)) {
+                toggles++
+            }
+        }
+        ui.onNodeWithText(":star:").assertIsDisplayed().assertIsNotEnabled().performTouchInput { click() }
+        ui.runOnIdle { check(toggles == 0) }
+    }
+
+    @Test
     fun emojiPickerFitsSixColumnsOnPhone() {
         assertEmojiColumns(6)
     }

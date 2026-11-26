@@ -57,12 +57,16 @@ internal class PushBinding(private val context: Context) {
     }
 
     private fun retireCurrent() {
+        prefs.getString("binding", null)?.let { pushImageDirectory(context, it).deleteRecursively() }
         val base = prefs.getString("base", null) ?: return
         val user = prefs.getString("user", null) ?: return
         prefs.getString("endpoint", null)?.let { deferRemoval(base, user, it) }
     }
 
     fun bind(base: String, user: String): String = synchronized(lock) {
+        val active = prefs.getString("binding", null)
+        context.cacheDir.resolve("push-images").listFiles()?.filter { it.name != active }
+            ?.forEach { it.deleteRecursively() }
         if (prefs.getString("base", null) == base && prefs.getString("user", null) == user) {
             prefs.getString("binding", null)?.let { return@synchronized it }
         }
@@ -332,6 +336,8 @@ internal fun clearNotifications(context: Context, user: String) {
         .forEach { manager.cancel(it.tag, it.id) }
 }
 
+private fun pushImageDirectory(context: Context, binding: String) = context.cacheDir.resolve("push-images/$binding")
+
 /** Data-only delivery also runs while no Activity or Session is present. */
 class ZooMessagingService : FirebaseMessagingService() {
     override fun onNewToken(token: String) { AndroidPushRegistration.tokenChanged() }
@@ -349,15 +355,21 @@ class ZooMessagingService : FirebaseMessagingService() {
             }
             try {
                 val proxy = AndroidMediaProxy(this@ZooMessagingService, base)
-                val directory = cacheDir.resolve("push-images/${posted.binding}")
+                val directory = pushImageDirectory(this@ZooMessagingService, posted.binding)
+                // Push can run without a session; its disk cache has a separate owner.
                 AndroidImageCache(directory, maxBytes = 32L * 1024 * 1024, timeoutMillis = 3_000).use { images ->
                     enrichPushNotification(this@ZooMessagingService, posted) { url, maxEdge ->
-                        val bytes = proxy.image(url, client, images, limit = 4 * 1024 * 1024)
+                        val bytes = proxy.image(url, client, images, online = false, limit = 4 * 1024 * 1024)
                         withContext(Dispatchers.Default) { decodeOrientedBitmap(bytes, maxEdge) }
                     }
                 }
             } finally {
                 client.close()
+                synchronized(PushBinding.lock) {
+                    if (!PushBinding(this@ZooMessagingService).matches(posted.binding, posted.user)) {
+                        pushImageDirectory(this@ZooMessagingService, posted.binding).deleteRecursively()
+                    }
+                }
             }
         }
     }

@@ -33,6 +33,8 @@ internal class AndroidImageCache(
 
     suspend fun image(url: String): ByteArray = loadPublicImage(http, url)
 
+    suspend fun signedImage(url: String): ByteArray = loadPublicImage(http, url, noStore = true)
+
     suspend fun imageIfCached(request: ImageRequest, limit: Int): ByteArray? =
         try {
             loadPublicImage(http, request.url, limit, cacheOnly = true, restrictOrigin = request.proxied)

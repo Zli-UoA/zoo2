@@ -2,6 +2,7 @@ package zoo.android
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import zoo.android.ui.TimelineMedia
@@ -11,6 +12,12 @@ import zoo.obj
 class TimelineImageSourcesTest {
     private val base = "https://zoo.example"
     private val imageId = "a".repeat(64)
+
+    @Test fun retainsRemovalOfSelectedPostReactionsButDisablesUnsupportedReactions() {
+        assertFalse(timelineReactionCanToggle(":star:", selected = false, canReact = false, post = true))
+        assertTrue(timelineReactionCanToggle(":star:", selected = true, canReact = false, post = true))
+        assertFalse(timelineReactionCanToggle("apub:$imageId::star:", selected = true, canReact = true, post = false))
+    }
 
     @Test
     fun avatarAndEmojiResolveAgainstTheApiAndRemoteImagesUseTheRegisteredProxy() {

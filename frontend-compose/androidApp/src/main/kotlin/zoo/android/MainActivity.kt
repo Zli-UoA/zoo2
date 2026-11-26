@@ -416,8 +416,7 @@ class MainActivity : ComponentActivity() {
             if (savedRefresh == null) {
                 auth.acceptBrowserLogin(connection, reauthenticator.signIn(stage))
             } else {
-                stage(LoginStage.Restore)
-                auth.restore(connection.issuer, connection.client, connection.resource, savedRefresh)
+                auth.restore(connection.issuer, connection.client, connection.resource, savedRefresh, stage)
             }
             stage(LoginStage.ZooApi)
             val authHeaders = auth.headers()

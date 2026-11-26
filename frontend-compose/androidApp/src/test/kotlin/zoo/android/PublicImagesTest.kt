@@ -7,6 +7,16 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.*
 
 class PublicImagesTest {
+    @Test fun cacheOnly504IsReportedAsAMiss() = runTest {
+        val http = HttpClient(MockEngine { request ->
+            assertTrue(request.headers[HttpHeaders.CacheControl].orEmpty().contains("only-if-cached"))
+            respond("", HttpStatusCode.GatewayTimeout)
+        })
+        try {
+            assertFailsWith<ImageCacheMiss> { loadPublicImage(http, "https://proxy.example/image", cacheOnly = true) }
+        } finally { http.close() }
+    }
+
     @Test fun queryOnlyRedirectKeepsTheImagePath() = runTest {
         val urls = mutableListOf<String>()
         val http = HttpClient(MockEngine { request ->

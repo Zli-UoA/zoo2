@@ -244,14 +244,14 @@ internal class ConnectedScreenState(
             val (label, fallback) = timelineReactionEmoji(app.config.apiBaseUrl, value, reactionEmoji)
             TimelineReaction(value, label, it.text("count"), it.flag("selected"),
                 timelineEmojiUrl(app.config.apiBaseUrl, icon) ?: fallback, imageId(icon.text("image_id")),
-                canToggle = it.text("can_react") != "false" || it.flag("selected"))
+                canToggle = timelineReactionCanToggle(value, it.flag("selected"), it.text("can_react") != "false", post = true))
         } else reactions.groupBy { it.text("emoji") }.map { (value, rows) ->
             val (label, image) = timelineReactionEmoji(app.config.apiBaseUrl, value, reactionEmoji)
             val account = value.takeIf { it.startsWith(":@") && it.endsWith(':') }
                 ?.removePrefix(":@")?.removeSuffix(":")
                 ?.let { username -> users.values.firstOrNull { it.text("user_name") == username } }
             TimelineReaction(value, label, rows.size.toString(), rows.any { it.text("user_id") == app.config.userId },
-                image ?: account?.let { timelineAvatarUrl(app.config.apiBaseUrl, it) }, canToggle = !value.startsWith("apub:"))
+                image ?: account?.let { timelineAvatarUrl(app.config.apiBaseUrl, it) }, canToggle = timelineReactionCanToggle(value, selected = false, canReact = true, post = false))
         }
         val fileRows = (attachments + metadata.array("attachments").rows()).distinctBy { it.text("id") }
         val attachmentMedia = if (allowPreview && !data.present("ciphertext")) fileRows.mapNotNull { file ->

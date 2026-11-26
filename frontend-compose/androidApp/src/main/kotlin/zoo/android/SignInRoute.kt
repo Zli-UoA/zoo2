@@ -51,6 +51,7 @@ internal fun SignInRoute(
     val scope = rememberCoroutineScope()
     var loginJob by remember { mutableStateOf<Job?>(null) }
     BackHandler(editing && !busy && !restoring) { editing = false }
+    var allowPortalAttempt by remember { mutableStateOf(false) }
     val submit = {
         if (!busy) {
             busy = true
@@ -59,7 +60,8 @@ internal fun SignInRoute(
                 signInDiagnostics = ""
                 val stages = mutableListOf(LoginStage.Network)
                 try {
-                    if (wifiNeedsSignIn(context)) {
+                    if (wifiNeedsSignIn(context) && !allowPortalAttempt) {
+                        allowPortalAttempt = true
                         throw LoginFailure(wifiSignInMessage)
                     }
                     stages.add(LoginStage.Configuration)
@@ -96,7 +98,7 @@ internal fun SignInRoute(
                 (signInError.ifBlank { error }).takeIf(String::isNotEmpty)?.let { Text(it, color = colors.foreground) }
                 if (diagnostics.isNotBlank()) TextAction("診断ログを見る", colors, icon = UiIcon.Document,
                     style = TextActionStyle.Plain) { showDiagnostics = true }
-                TextAction("ログイン", colors, icon = UiIcon.SignIn, enabled = client.isNotBlank(), click = submit)
+                TextAction(if (signInError == wifiSignInMessage) "それでも試す" else "ログイン", colors, icon = UiIcon.SignIn, enabled = client.isNotBlank(), click = submit)
             }
         } else {
             val pending = restoring || busy
@@ -117,7 +119,7 @@ internal fun SignInRoute(
                     if (client.isNotBlank()) {
                         TextAction("接続先の設定", colors, icon = UiIcon.Settings, style = TextActionStyle.Plain) { editing = true }
                     }
-                    TextAction(if (client.isBlank()) "接続先を設定" else "ログイン", colors,
+                    TextAction(if (client.isBlank()) "接続先を設定" else if (signInError == wifiSignInMessage) "それでも試す" else "ログイン", colors,
                         icon = if (client.isBlank()) UiIcon.Settings else UiIcon.SignIn) {
                         if (client.isBlank()) editing = true else submit()
                     }

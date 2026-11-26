@@ -258,7 +258,7 @@ internal class AndroidPlatform(
         mediaProxy.image(url, http, images, env.online)
 
     override suspend fun attachmentImage(url: String): ByteArray =
-        images.imageFromCacheFirst(ImageRequest(url))
+        images.signedImage(url)
 
     override suspend fun invoke(name: String, payload: String): String =
         when (name) {

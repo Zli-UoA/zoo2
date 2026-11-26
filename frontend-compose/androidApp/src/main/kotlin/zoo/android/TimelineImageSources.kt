@@ -32,6 +32,9 @@ internal fun timelineAvatarUrl(base: String, row: Row, user: Row? = null): Strin
         }
         ?: user?.let { timelineImageUrl(base, it.text("avatar_url")) }
 
+internal fun timelineReactionCanToggle(value: String, selected: Boolean, canReact: Boolean, post: Boolean): Boolean =
+    if (post) selected || canReact else !value.startsWith("apub:")
+
 internal fun timelineReactionEmoji(base: String, value: String, known: Map<String, String?>): Pair<String, String?> {
     val remote = remoteReactionPattern.matchEntire(value)
     if (remote != null) {

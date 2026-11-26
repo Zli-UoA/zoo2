@@ -62,10 +62,12 @@ internal class DeviceAuth(
             accept(grant.tokens)
         }
 
-    suspend fun restore(issuer: String, client: String, audience: String, savedRefresh: String) =
+    suspend fun restore(issuer: String, client: String, audience: String, savedRefresh: String, stage: (LoginStage) -> Unit = {}) =
         lock.withLock {
             require(savedRefresh.isNotBlank())
+            stage(LoginStage.Discovery)
             discover(issuer, client, audience)
+            stage(LoginStage.Restore)
             refresh = savedRefresh
             renew()
         }

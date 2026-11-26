@@ -15,6 +15,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.Role
@@ -139,7 +140,7 @@ internal fun TimelineReactionChip(reaction: TimelineReaction, colors: AndroidCol
     } else reaction.image
     val image = timelineIcon(url)
     Row(
-        Modifier.heightIn(min = AndroidControlSize.target)
+        Modifier.alpha(if (reaction.canToggle) 1f else 0.55f).heightIn(min = AndroidControlSize.target)
             .background(if (reaction.selected) colors.headerLight else colors.background, CircleShape)
             .clickable(enabled = reaction.canToggle, role = Role.Button, onClick = toggle).padding(horizontal = 10.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
