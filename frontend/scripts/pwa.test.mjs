@@ -77,6 +77,10 @@ function worker(overrides = {}) {
   const cacheContext = overrides.caches ?? memoryCaches();
   const baseFetch = async (input) => {
     const key = requestKey(input);
+    if (key === `${ORIGIN}/offline.html`)
+      return basicResponse('<meta name="zoo-offline" content="true" />offline', {
+        headers: { "content-type": "text/html" },
+      });
     return basicResponse(`network:${key}`);
   };
   const context = {
@@ -275,9 +279,12 @@ test("activation removes older cache versions and claims clients", async () => {
 });
 
 test("offline navigation falls back to the cached app shell, then offline.html", async () => {
+  const offlinePage = '<meta name="zoo-offline" content="true" />offline';
   const { handlers, cacheContext } = worker({
     fetch: async (input) => {
       if (requestKey(input).includes("/channels/")) throw new Error("offline");
+      if (requestKey(input) === `${ORIGIN}/offline.html`)
+        return basicResponse(offlinePage, { headers: { "content-type": "text/html" } });
       return basicResponse(`network:${requestKey(input)}`);
     },
   });
@@ -287,7 +294,7 @@ test("offline navigation falls back to the cached app shell, then offline.html",
   shell.delete(`${ORIGIN}/index.html`);
   shell.delete(`${ORIGIN}/`);
   let response = await fetchThrough(handlers, navigation(`${ORIGIN}/channels/123`));
-  assert.equal(await response.text(), "network:https://zoo.example/offline.html");
+  assert.equal(await response.text(), offlinePage);
 
   shell.set(
     `${ORIGIN}/index.html`,
@@ -817,7 +824,7 @@ test("a manifest served as octet-stream by nginx is still accepted", async () =>
 });
 
 test("opening offline.html online refreshes its cached copy", async () => {
-  let html = "<html>old offline</html>";
+  let html = '<html><meta name="zoo-offline" content="true" />old offline</html>';
   const { handlers, cacheContext } = worker({
     fetch: async (input) => {
       if (requestKey(input) === `${ORIGIN}/offline.html`)
@@ -826,15 +833,62 @@ test("opening offline.html online refreshes its cached copy", async () => {
     },
   });
   await dispatch(handlers, "install");
-  html = "<html>new offline</html>";
+  html = '<html><meta name="zoo-offline" content="true" />new offline</html>';
 
   const response = await fetchThrough(handlers, navigation(`${ORIGIN}/offline.html`));
-  assert.equal(await response.text(), "<html>new offline</html>");
+  assert.equal(
+    await response.text(),
+    '<html><meta name="zoo-offline" content="true" />new offline</html>',
+  );
   const cache = await cacheContext.api.open("zoo-shell-v2");
   assert.equal(
     await (await cache.match(`${ORIGIN}/offline.html`)).text(),
-    "<html>new offline</html>",
+    '<html><meta name="zoo-offline" content="true" />new offline</html>',
   );
+});
+
+test("an index.html fallback is not stored as the offline page", async () => {
+  let html = '<html><meta name="zoo-offline" content="true" />old offline</html>';
+  const { handlers, cacheContext } = worker({
+    fetch: async (input) => {
+      if (requestKey(input) === `${ORIGIN}/offline.html`)
+        return basicResponse(html, { headers: { "content-type": "text/html" } });
+      return basicResponse(`network:${requestKey(input)}`);
+    },
+  });
+  await dispatch(handlers, "install");
+  html = "<html>app shell fallback</html>";
+
+  const response = await fetchThrough(handlers, navigation(`${ORIGIN}/offline.html`));
+  assert.match(await response.text(), /zoo-offline/);
+  const cache = await cacheContext.api.open("zoo-shell-v2");
+  assert.match(await (await cache.match(`${ORIGIN}/offline.html`)).text(), /zoo-offline/);
+});
+
+test("a fresh manifest is served even when the cache cannot be opened", async () => {
+  let manifest = '{"background_color":"#ffffff"}';
+  const cacheContext = memoryCaches();
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async (input) => {
+      if (requestKey(input) === `${ORIGIN}/manifest.webmanifest`)
+        return basicResponse(manifest, {
+          headers: { "content-type": "application/manifest+json" },
+        });
+      return basicResponse(`network:${requestKey(input)}`);
+    },
+  });
+  await dispatch(handlers, "install");
+  cacheContext.api.open = async () => {
+    throw new Error("CacheStorage unavailable");
+  };
+  manifest = '{"background_color":"#000000"}';
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+  });
+  assert.equal(await response.text(), '{"background_color":"#000000"}');
 });
 
 test("push displays sender, channel and message preview from the decrypted payload", async () => {

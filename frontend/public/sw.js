@@ -242,7 +242,10 @@ async function precacheShell() {
     SHELL.filter((path) => path !== "/" && path !== "/index.html").map(async (path) => {
       try {
         const response = await fetch(path, { cache: "reload" });
-        if (response.ok) await cacheResponse(cache, path, response);
+        if (!response.ok) return;
+        // nginx の try_files が欠けた /offline.html を index.html で返しても保存しない。
+        if (path === "/offline.html" && !(await isOfflinePage(response))) return;
+        await cacheResponse(cache, path, response);
       } catch {
         /* Offline installs fall back to the runtime cache. */
       }
@@ -337,30 +340,48 @@ async function isFreshManifest(response) {
   }
 }
 
-async function handleFreshAsset(request) {
-  const cache = await caches.open(await findActiveShellCache());
-  const path = new URL(request.url, self.location.origin).pathname;
+async function isOfflinePage(response) {
   try {
-    const response = await fetch(request, { cache: "reload" });
-    const acceptable =
-      response.ok &&
-      isFreshAssetResponse(path, response) &&
-      (path !== "/manifest.webmanifest" || (await isFreshManifest(response)));
-    if (acceptable) {
-      if (response.type !== "basic") return response;
-      // 保存に失敗しても取得できた最新の応答は返す。古いキャッシュへ戻さない。
-      const fresh = response.clone();
-      try {
-        await cacheResponse(cache, request, response);
-      } catch {
-        /* Storage quota or Cache API failure: still serve the fresh response. */
-      }
-      return fresh;
-    }
+    return (await response.clone().text()).includes('name="zoo-offline"');
   } catch {
-    /* Offline: fall back to the precached copy. */
+    return false;
   }
-  return (await cache.match(request)) || Response.error();
+}
+
+async function handleFreshAsset(request) {
+  const path = new URL(request.url, self.location.origin).pathname;
+  let response;
+  try {
+    response = await fetch(request, { cache: "reload" });
+  } catch {
+    return await cachedFreshAsset(request);
+  }
+  const acceptable =
+    response.ok &&
+    isFreshAssetResponse(path, response) &&
+    (path !== "/manifest.webmanifest" || (await isFreshManifest(response))) &&
+    (path !== "/offline.html" || (await isOfflinePage(response)));
+  if (acceptable) {
+    if (response.type !== "basic") return response;
+    // 保存に失敗しても取得できた最新の応答は返す。古いキャッシュへ戻さない。
+    const fresh = response.clone();
+    try {
+      const cache = await caches.open(await findActiveShellCache());
+      await cacheResponse(cache, request, response);
+    } catch {
+      /* Storage quota or Cache API failure: still serve the fresh response. */
+    }
+    return fresh;
+  }
+  return await cachedFreshAsset(request);
+}
+
+async function cachedFreshAsset(request) {
+  try {
+    return (await caches.match(request)) || Response.error();
+  } catch {
+    return Response.error();
+  }
 }
 
 // Public AuthZ avatars have their own bounded cache, retained across shell upgrades.
