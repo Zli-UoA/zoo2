@@ -101,15 +101,22 @@ fn segments(content: &str) -> Vec<(bool, &str)> {
 /// コードブロックの外を、インラインコードと `<plain>` かどうかで分ける。
 fn inline_segments(content: &str) -> Vec<(bool, &str)> {
     let mut result = Vec::new();
+    // 閉じ記号がもうないと分かった記法は、後ろで探し直さない。
+    let mut unclosed = [false; 3];
     let mut start = 0;
     let mut at = 0;
     while at < content.len() {
         let rest = &content[at..];
         let literal = [("```", "```"), ("<plain>", "</plain>"), ("`", "`")]
             .into_iter()
-            .find(|(open, _)| rest.starts_with(open))
-            .and_then(|(open, close)| {
-                let end = rest[open.len()..].find(close)?;
+            .enumerate()
+            .find(|(_, (open, _))| rest.starts_with(open))
+            .filter(|(kind, _)| !unclosed[*kind])
+            .and_then(|(kind, (open, close))| {
+                let Some(end) = rest[open.len()..].find(close) else {
+                    unclosed[kind] = true;
+                    return None;
+                };
                 if open == "`" && rest[1..1 + end].contains('\n') {
                     return None;
                 }
@@ -133,24 +140,41 @@ fn inline_segments(content: &str) -> Vec<(bool, &str)> {
     result
 }
 
-/// `[文字](URL)` と `?[文字](URL)` を、`replace(文字, silent)` の結果に置き換える。
+/// `[文字](URL)` と `?[文字](URL)` を、`replace(文字, URL, silent)` の結果に置き換える。
 fn replace_markdown_links(text: &str, replace: impl Fn(&str, &str, bool) -> String) -> String {
     let mut result = String::new();
     let mut at = 0;
+    // 次の `)` か空白の位置。閉じない `[](URL` が並ぶ本文で、同じ部分を繰り返し調べないように覚える。
+    let mut next_stop: Option<Option<usize>> = None;
     while at < text.len() {
         let rest = &text[at..];
         let silent = rest.starts_with("?[");
         let open = if silent { 2 } else { 1 };
         let link = (silent || rest.starts_with('['))
             .then(|| {
-                let label_end = open + rest[open..].find("](")?;
-                let label = &rest[open..label_end];
-                let url_start = label_end + 2;
-                let url = &rest[url_start..url_start + rest[url_start..].find(')')?];
-                let valid = (url.starts_with("https://") || url.starts_with("http://"))
-                    && !url.contains(char::is_whitespace)
-                    && !label.contains(['\n', '[']);
-                valid.then(|| (label, url, url_start + url.len() + 1))
+                let label_end = open + label_length(&rest[open..])?;
+                let url_start = at + label_end + 2;
+                let after = &text[url_start..];
+                if !(after.starts_with("https://") || after.starts_with("http://")) {
+                    return None;
+                }
+                let stop = match next_stop {
+                    Some(stop) if stop.is_none_or(|stop| stop >= url_start) => stop,
+                    _ => {
+                        let stop = after
+                            .find(|c: char| c == ')' || c.is_whitespace())
+                            .map(|length| url_start + length);
+                        next_stop = Some(stop);
+                        stop
+                    }
+                }?;
+                text[stop..].starts_with(')').then(|| {
+                    (
+                        &rest[open..label_end],
+                        &text[url_start..stop],
+                        stop + 1 - at,
+                    )
+                })
             })
             .flatten();
         match link {
@@ -166,6 +190,19 @@ fn replace_markdown_links(text: &str, replace: impl Fn(&str, &str, bool) -> Stri
         }
     }
     result
+}
+
+/// `[` の直後から、`](` の手前までの長さ。文字に `[` や改行を含むものはリンクにしないので、そこで探すのを
+/// やめる。
+fn label_length(text: &str) -> Option<usize> {
+    for (at, ch) in text.char_indices() {
+        match ch {
+            '[' | '\n' => return None,
+            ']' if text[at + 1..].starts_with('(') => return Some(at),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// 本文に出てくる順の URL（重複を除く）。コードと `<plain>` の中は除く。
@@ -626,6 +663,40 @@ mod tests {
         assert!(ids("  ```rs\nhttps://zli.chat/channels/a\n本文```").is_empty());
         assert_eq!(ids("```\nx\n```\nhttps://zli.chat/channels/c"), ["c"]);
         assert_eq!(excerpt("前\n```\n**コード**"), "前 **コード**");
+    }
+
+    #[test]
+    fn long_unclosed_markup_is_scanned_in_linear_time() {
+        // 閉じ記号のない記法を上限近くまで並べた本文でも、すぐに調べ終える。
+        let started = std::time::Instant::now();
+        let brackets = "[".repeat(40_000);
+        for content in [
+            brackets.clone(),
+            format!("{brackets}](https://a)"),
+            "[](https://a".repeat(3_000),
+            format!("{} )", "[](https://a".repeat(3_000)),
+            "https://a(".repeat(4_000),
+            "https://a[".repeat(4_000),
+            "<plain>".repeat(5_000),
+        ] {
+            app_links(&content, APP);
+            embedded_links(&content, APP);
+            crate::mfm::parse(&content, None);
+        }
+        // 2 乗の時間がかかると、これを大きく超える。
+        assert!(started.elapsed() < std::time::Duration::from_secs(15));
+    }
+
+    #[test]
+    fn markdown_links_keep_their_rules() {
+        let urls = |content: &str| urls(content, true);
+        assert_eq!(urls("[a]b](https://x.test/1)"), ["https://x.test/1"]);
+        assert_eq!(urls("[[a](https://x.test/2)"), ["https://x.test/2"]);
+        assert_eq!(
+            urls("[a](https://x.test/3 ) [b](https://x.test/4)"),
+            ["https://x.test/3", "https://x.test/4"]
+        );
+        assert_eq!(app_links("[](https://zli.chat/channels/a", APP).len(), 1);
     }
 
     #[test]

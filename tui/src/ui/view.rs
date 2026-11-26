@@ -1636,6 +1636,51 @@ mod tests {
         assert!(screen.contains("Esc: 閉じる"), "{screen}");
     }
 
+    #[tokio::test]
+    async fn the_chooser_fetches_links_beyond_the_per_message_limit() {
+        let content: String = (1..=5)
+            .map(|n| format!("http://127.0.0.1:9/channels/c2?message=n{n} "))
+            .collect();
+        let mut app = app_with_link(&content);
+        render(&mut app);
+        assert_eq!(app.links.visible.len(), 3);
+        press(&mut app, KeyCode::Char('o'));
+        render(&mut app);
+        app.sync_links();
+        assert_eq!(app.links.visible.len(), 3 + 5);
+        app.on_app_event(AppEvent::Linked(crate::electric::LinkedEvent::Rows {
+            channel_id: "c2".into(),
+            rows: vec![("n5".into(), None)],
+        }));
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Char('j'));
+        }
+        assert!(render(&mut app).contains("5. メッセージを表示できません"));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.current.as_deref(), Some("c1"));
+        assert_eq!(
+            app.notice.as_ref().map(|(text, _)| text.as_str()),
+            Some("メッセージを表示できません")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_link_that_turns_out_to_be_missing_is_reported() {
+        let mut app = app_with_link(SECRET_LINK);
+        // 取得の前に開き、行がそろってから、ないと分かる。
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.selected.as_deref(), Some("s1"));
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c2".into()),
+            batch(Vec::new()),
+        ));
+        assert_eq!(app.selected, None);
+        assert_eq!(
+            app.notice.as_ref().map(|(text, _)| text.as_str()),
+            Some("メッセージを表示できません")
+        );
+    }
+
     fn sas_view(phase: zoo_crypto::SasPhase) -> crate::e2ee::verification::SasView {
         crate::e2ee::verification::SasView {
             transaction_id: "txn-1".into(),

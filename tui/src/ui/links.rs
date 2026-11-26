@@ -4,6 +4,7 @@
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet, VecDeque},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -14,7 +15,7 @@ use ratatui::{
 use tokio::{sync::mpsc, task::JoinHandle};
 use zoo2_client_core::{
     electric::LinkedEvent,
-    links::{LinkState, LinkTarget, LinkedFetch, MessagePreview, PreviewBody},
+    links::{self, LinkState, LinkTarget, LinkedFetch, MessagePreview, PreviewBody},
     store::Store,
 };
 
@@ -248,6 +249,50 @@ pub struct DrawCache {
     pub ciphertext: RefCell<HashMap<String, bool>>,
     /// リンク先ごとの表示。
     pub views: RefCell<HashMap<LinkTarget, LinkView>>,
+}
+
+/// 1 つの本文を調べて分かる、アプリ内リンク。
+#[derive(Debug, Default)]
+pub struct Parsed {
+    /// 本文のアプリ内リンクのすべて。
+    pub all: Vec<(String, LinkTarget)>,
+    /// 投稿の下に埋め込むもの。
+    pub embedded: Vec<(String, LinkTarget)>,
+    /// 取得するもの。
+    pub targets: Vec<LinkTarget>,
+}
+
+/// 覚える本文の数。超えたら全部捨てて覚え直す。
+const PARSED_LIMIT: usize = 20_000;
+
+/// 本文ごとの [`Parsed`]。タイムラインは描画のたびに読み込んだ全部の投稿を組み立てるので、描画を
+/// またいで覚え、同じ本文を調べ直さない。接続先は変わらないものとする。
+#[derive(Default)]
+pub struct ParsedLinks(RefCell<HashMap<String, Arc<Parsed>>>);
+
+impl ParsedLinks {
+    pub fn get(&self, body: &str, app_base_url: &str) -> Arc<Parsed> {
+        if let Some(parsed) = self.0.borrow().get(body) {
+            return parsed.clone();
+        }
+        let all = links::app_links(body, app_base_url);
+        let parsed = Arc::new(if all.is_empty() {
+            Parsed::default()
+        } else {
+            let embedded = links::embedded_links(body, app_base_url);
+            Parsed {
+                targets: links::fetch_targets(body, app_base_url, &embedded, &all),
+                all,
+                embedded,
+            }
+        });
+        let mut cache = self.0.borrow_mut();
+        if cache.len() >= PARSED_LIMIT {
+            cache.clear();
+        }
+        cache.insert(body.to_owned(), parsed.clone());
+        parsed
+    }
 }
 
 /// 1 つの本文のアプリ内リンクの表示と、取得の対象。

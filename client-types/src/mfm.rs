@@ -582,8 +582,11 @@ fn is_boundary(ch: char) -> bool {
     ch.is_whitespace() || "([{<（「『\"'。、".contains(ch)
 }
 
+/// 閉じていない括弧の対応を探す長さ。閉じない括弧が並ぶ本文で、同じ部分を繰り返し調べないようにする。
+const URL_BRACKET_LOOKAHEAD: usize = 1024;
+
 /// `text` の先頭の `http://` か `https://` の URL。Web（`mfm-js`）と同じく、URL に使う ASCII の
-/// 文字と、対応のとれた括弧までを URL とし、末尾の句読点は除く。日本語や全角の記号が続いても、
+/// 文字と、対応のとれた括弧までを URL とし、末尾の `.` と `,` は除く。日本語や全角の記号が続いても、
 /// そこで終わる。表示と、本文のリンクの抽出（[`crate::links`]）で同じ位置で切る。
 pub(crate) fn leading_url(text: &str) -> Option<&str> {
     let scheme = ["https://", "http://"]
@@ -594,13 +597,40 @@ pub(crate) fn leading_url(text: &str) -> Option<&str> {
     let mut open: Vec<(usize, char)> = Vec::new();
     let mut end = text.len();
     for (at, ch) in text.char_indices().skip(scheme) {
+        if open
+            .first()
+            .is_some_and(|(from, _)| at - from > URL_BRACKET_LOOKAHEAD)
+        {
+            end = at;
+            break;
+        }
         let used = match ch {
             '(' | '[' => {
                 open.push((at, if ch == '(' { ')' } else { ']' }));
                 true
             }
             ')' | ']' => open.pop().is_some_and(|(_, close)| close == ch),
-            _ => ch.is_ascii_alphanumeric() || "._,/:%#@$&?!~=+-".contains(ch),
+            _ => {
+                ch.is_ascii_alphanumeric()
+                    || matches!(
+                        ch,
+                        '.' | '_'
+                            | ','
+                            | '/'
+                            | ':'
+                            | '%'
+                            | '#'
+                            | '@'
+                            | '$'
+                            | '&'
+                            | '?'
+                            | '!'
+                            | '~'
+                            | '='
+                            | '+'
+                            | '-'
+                    )
+            }
         };
         if !used {
             end = at;
@@ -611,7 +641,7 @@ pub(crate) fn leading_url(text: &str) -> Option<&str> {
     if let Some((at, _)) = open.first() {
         end = *at;
     }
-    let url = text[..end].trim_end_matches(['.', ',', '!', '?', ':']);
+    let url = text[..end].trim_end_matches(['.', ',']);
     (url.len() > scheme).then_some(url)
 }
 
@@ -794,6 +824,15 @@ mod tests {
             Some("https://ja.wikipedia.org/wiki/A_(b)_[c]")
         );
         assert_eq!(leading_url("https://あ"), None);
+        // 末尾で除くのは `.` と `,` だけ。
+        assert_eq!(
+            leading_url("https://a.example/x!, y"),
+            Some("https://a.example/x!")
+        );
+        assert_eq!(
+            leading_url("https://a.example/x?q=1?."),
+            Some("https://a.example/x?q=1?")
+        );
     }
 
     #[test]

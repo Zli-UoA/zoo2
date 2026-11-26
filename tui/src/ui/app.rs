@@ -19,6 +19,9 @@ use super::e2ee_chat::{
 };
 use super::global_search::{self, GlobalSearch};
 use super::links::{BodyLinks, DrawCache, LinkView};
+
+/// リンクを選ぶ画面で、選んでいる位置の前後それぞれ何件の行き先を取得するか。
+const CHOOSER_FETCH: usize = 8;
 use crate::{
     api::{ApiClient, Me, ReadState, ThreadSummary, TypingUser, stale_revision},
     e2ee::{
@@ -302,6 +305,7 @@ pub struct App {
     typing_poll: PollGate,
     /// 本文のアプリ内リンクの、リンク先の取得。
     pub links: super::links::Links,
+    parsed_links: super::links::ParsedLinks,
     /// リンクで開いた、まだ同期していないメッセージ (チャンネル, メッセージ)。返信と分かれば
     /// スレッドを開く。
     pending_link: Option<(String, String)>,
@@ -411,6 +415,7 @@ impl App {
             known_encrypted_store: None,
             known_encrypted_in_flight: false,
             links: Default::default(),
+            parsed_links: Default::default(),
             pending_link: None,
         };
         for id in [
@@ -1883,6 +1888,17 @@ impl App {
 
     /// 直近の描画で画面の近くに出ていたリンク先を取得し、使わなくなった購読を閉じる。
     pub fn sync_links(&mut self) {
+        // 開くリンクを選んでいる間は、一覧に出ている行き先も取得する（本文ごとの取得の上限を超えた
+        // リンクも、選ぶ前に分かるように）。
+        if let Mode::Links { targets, index } = &self.mode {
+            let shown: Vec<_> = targets
+                .iter()
+                .skip(index.saturating_sub(CHOOSER_FETCH))
+                .take(CHOOSER_FETCH * 2)
+                .filter_map(|target| self.link_key(target))
+                .collect();
+            self.links.visible.extend(shown);
+        }
         let (http, base, credentials, tx) = (
             self.http.clone(),
             self.api_base_url.clone(),
@@ -2006,19 +2022,18 @@ impl App {
     /// 本文のアプリ内リンクの表示と、取得の対象。
     pub fn body_links(&self, body: &str, now: Instant, cache: &DrawCache) -> BodyLinks {
         let mut result = BodyLinks::default();
-        // このアプリのリンクがなければ、何もしない。
-        let all = links::app_links(body, &self.api_base_url);
-        if all.is_empty() {
+        // このアプリのリンクは URL なので、ないことが分かる本文は調べない。
+        if !body.contains("http") {
             return result;
         }
-        let embedded = links::embedded_links(body, &self.api_base_url);
-        for (_, target) in &embedded {
+        let parsed = self.parsed_links.get(body, &self.api_base_url);
+        for (_, target) in &parsed.embedded {
             result.embeds.push(self.link_view(target, now, cache));
         }
-        result.targets = links::fetch_targets(body, &self.api_base_url, &embedded, &all);
-        for (url, target) in all {
-            if let Some(label) = self.link_view(&target, now, cache).inline {
-                result.inline.insert(url, label);
+        result.targets = parsed.targets.clone();
+        for (url, target) in &parsed.all {
+            if let Some(label) = self.link_view(target, now, cache).inline {
+                result.inline.insert(url.clone(), label);
             }
         }
         result
@@ -2138,11 +2153,13 @@ impl App {
         if self.thread.is_some() || self.selected.as_deref() != Some(message_id.as_str()) {
             return;
         }
-        if let Some(parent_id) = self
-            .store
-            .message(channel_id, &message_id)
-            .and_then(|message| message.parent_id.clone())
-        {
+        let Some(message) = self.store.message(channel_id, &message_id) else {
+            // 行がそろっても見つからなければ、選ばずに知らせる。
+            self.selected = None;
+            self.notify("メッセージを表示できません");
+            return;
+        };
+        if let Some(parent_id) = message.parent_id.clone() {
             self.selected = None;
             self.open_search_result(global_search::Destination {
                 channel_id: channel_id.to_owned(),
