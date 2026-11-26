@@ -256,6 +256,7 @@ struct EncryptionSetupView: View {
         case E2eeSetupError.conflict: "別の端末が先に初回設定を始めました。画面を閉じて、解錠からやり直してください。"
         case E2eeSetupError.serverKeyMismatch: "サーバーの鍵が、保存した鍵と一致しません。失効が途中か、鍵が書き換えられた可能性があります。"
         case E2eeSetupError.noSecretStorage: "暗号化はまだ設定されていません。"
+        case E2eeSetupError.secretsChanged: "暗号化の鍵が別の端末で更新されました。もう一度、解錠してください。"
         case PasskeyError.cancelled: "パスキーの操作を取りやめました。"
         case PasskeyError.prfUnsupported: "このパスキーの保存先は、暗号化の解錠に使えません。別の保存先のパスキーか、リカバリーキーをお使いください。"
         case PasskeyError.originNotAllowed: "このアプリでは、まだパスキーを使えません。リカバリーキーをお使いください。"

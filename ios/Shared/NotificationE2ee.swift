@@ -53,8 +53,8 @@ enum NotificationE2ee {
                       let state = try? JSONDecoder().decode(State.self, from: data),
                       state.user_id.lowercased() == recipient.lowercased(),
                       let storageKey = loadKey(directory.lastPathComponent), storageKey.count == 32 else { continue }
-                let key = String(decoding: (try? JSONEncoder().encode([channelID, senderKey, sessionID])) ?? Data(), as: UTF8.self)
-                guard let stored = state.inbound_sessions?[key],
+                guard let keyData = try? JSONEncoder().encode([channelID, senderKey, sessionID]), let key = String(data: keyData, encoding: .utf8),
+                      let stored = state.inbound_sessions?[key],
                       let account = try? DeviceAccount.fromPickle(pickle: state.account, storageKey: storageKey,
                                                                   userId: state.user_id, deviceId: state.device_id) else { continue }
                 let sessions = InboundSessionStore()

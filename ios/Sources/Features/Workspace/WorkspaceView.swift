@@ -11,6 +11,12 @@ struct WorkspaceView: View {
     @State private var selectedPhotos: [PhotosPickerItem] = []
     @State private var messageActionSheet: MessageActionSheet?
 
+    /// 受けた検証の要求があり、ほかのシートを開いていなければ、検証の画面を出す。
+    private func presentPendingVerification() {
+        let pending = workspace.e2ee?.verification?.entries.contains { $0.view.phase == "incoming" } ?? false
+        if pending, case .none = workspace.presentedSheet { workspace.presentedSheet = .verification }
+    }
+
     var body: some View {
         Group {
             if horizontalSizeClass == .regular {
@@ -20,8 +26,12 @@ struct WorkspaceView: View {
             }
         }
         // 相手から検証の要求が届いたら、ほかのシートを開いていなければ、検証の画面を出す。
-        .onChange(of: workspace.e2ee?.verification?.entries.filter { $0.view.phase == "incoming" }.map(\.id) ?? []) { _, ids in
-            if !ids.isEmpty, case .none = workspace.presentedSheet { workspace.presentedSheet = .verification }
+        .onChange(of: workspace.e2ee?.verification?.entries.filter { $0.view.phase == "incoming" }.map(\.id) ?? []) { _, _ in
+            presentPendingVerification()
+        }
+        // 別のシートを開いていて見送った検証の要求は、そのシートを閉じたときに出す。
+        .onChange(of: workspace.presentedSheet?.id) { _, id in
+            if id == nil { presentPendingVerification() }
         }
         // 開閉で一覧や会話が入れ替わっても、入力中のシートを破棄しない。
         .sheet(item: $workspace.presentedSheet, onDismiss: {

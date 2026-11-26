@@ -128,7 +128,11 @@ struct RevocationView: View {
     @ViewBuilder private func failed(_ message: String) -> some View {
         Section("失効を続けられません") {
             Text(message)
-            Button("もう一度試す") { phase = .unlock; resuming = true }
+            Button("もう一度試す") {
+                // 保存した失効があれば続ける。なければ（解錠に失敗しただけなど）、新しく始める。
+                resuming = (try? revocation.savedSummary()) != nil
+                phase = .unlock
+            }
             Button("捨ててやり直す", role: .destructive) { Task { await abandon() } }
         }
     }
@@ -143,13 +147,13 @@ struct RevocationView: View {
             unlocked = opened
             if resuming {
                 let summary = try revocation.resume(unlocked: opened)
-                if summary.scope == "full", !summary.reached("secret_storage_saved") { phase = .newKey(try revocation.newRecoveryKey()) }
+                if summary.scope == "full", !summary.reached("secret_storage_saved") { phase = .newKey(try newKey()) }
                 else { await execute() }
                 return
             }
             try await revocation.deleteDevices(Array(selected))
             _ = try await revocation.begin(scope: scope, deletedDevices: Array(selected), unlocked: opened)
-            if scope == .full { phase = .newKey(try revocation.newRecoveryKey()) } else { await execute() }
+            if scope == .full { phase = .newKey(try newKey()) } else { await execute() }
         } catch ZooCryptoError.RevocationRestart {
             // 全範囲を、SSSS の保存の前に止めていた。最初からやり直す。
             try? revocation.abandon()
@@ -183,7 +187,14 @@ struct RevocationView: View {
         }
     }
 
+    /// 新しいリカバリーキーを作る。新しいキーごとに、控えたかを確かめ直す。
+    private func newKey() throws -> String {
+        savedKey = false
+        return try revocation.newRecoveryKey()
+    }
+
     private func abandon() async {
+        savedKey = false
         try? revocation.abandon()
         pending = nil
         resuming = false

@@ -32,10 +32,11 @@ struct CryptoStoreFiles: Sendable {
             root = group.appendingPathComponent("e2ee", isDirectory: true)
         }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        if root != support, let old = try? FileManager.default.contentsOfDirectory(at: support, includingPropertiesForKeys: nil) {
-            for directory in old {
+        if root != support, FileManager.default.fileExists(atPath: support.path) {
+            for directory in try FileManager.default.contentsOfDirectory(at: support, includingPropertiesForKeys: nil) {
                 let target = root.appendingPathComponent(directory.lastPathComponent)
-                if !FileManager.default.fileExists(atPath: target.path) { try? FileManager.default.moveItem(at: directory, to: target) }
+                // 移せなかったら、新しい置き場を使わない（使うと、新しい端末を作ってしまい、前の端末と受信用セッションを失う）。
+                if !FileManager.default.fileExists(atPath: target.path) { try FileManager.default.moveItem(at: directory, to: target) }
             }
         }
         var values = URLResourceValues()
@@ -94,6 +95,8 @@ struct StoreState: Codable {
     var encrypted_channels: [String] = []
     /// チャンネルごとの、前回の送信で配布先にしたユーザー（「前回から増えた配布先」の基準）。
     var recipient_members: [String: [String]] = [:]
+    /// E2EE のリセットで、SSSS を新しい鍵に作り直したが、まだクロス署名鍵などを差し替え終えていないときの、新しい SSSS 鍵の ID（解錠して続けるときに、リセットの続きを選ぶ）。
+    var reset_key_id: String?
 
     init(version: Int, user_id: String, device_id: String, registered: Bool, account: String, trust_store: String?) {
         self.version = version; self.user_id = user_id; self.device_id = device_id
@@ -120,6 +123,7 @@ struct StoreState: Codable {
         revocation = try c.decodeIfPresent(String.self, forKey: .revocation)
         encrypted_channels = try c.decodeIfPresent([String].self, forKey: .encrypted_channels) ?? []
         recipient_members = try c.decodeIfPresent([String: [String]].self, forKey: .recipient_members) ?? [:]
+        reset_key_id = try c.decodeIfPresent(String.self, forKey: .reset_key_id)
     }
 }
 
@@ -325,6 +329,9 @@ final class CryptoStore: @unchecked Sendable {
             nextState.own_keys = nil
             nextState.secrets_revision = nil
             nextState.imported_backup_version = nil
+            // 終わっていない失効の進み具合は、古い端末アカウントで封をしてあるので、開けない。捨てる（失効は、解錠し直して、最初からやり直す）。
+            nextState.revocation = nil
+            nextState.reset_key_id = nil
             nextState.trust_store = try TrustStore(userId: state.user_id).pickle(account: next, storageKey: storageKey)
             nextState.account = try next.pickle(storageKey: storageKey)
             // Olm セッションは古い端末の鍵との間のものなので捨てる。受信用セッションは、古い端末で開いて新しい端末で封をし直す
@@ -655,6 +662,19 @@ final class CryptoStore: @unchecked Sendable {
             state = next
         }
     }
+
+    /// リセットの途中の印（SSSS を新しい鍵に作り直した）。`nil` で外す。
+    func setResetKeyID(_ id: String?) throws {
+        try lock.withLock {
+            try ensureOpen()
+            var next = state
+            next.reset_key_id = id
+            try save(next)
+            state = next
+        }
+    }
+
+    var resetKeyID: String? { lock.withLock { state.reset_key_id } }
 
     /// チャンネルの、前回の送信で配布先にしたユーザー（なければ `nil`）。
     func recordedMembers(channel: String) -> [String]? { lock.withLock { state.recipient_members[channel] } }

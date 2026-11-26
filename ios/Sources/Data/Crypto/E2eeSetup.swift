@@ -210,6 +210,9 @@ final class E2eeSetup {
 
     /// 1 回に送るセッションの数（サーバーの上限）。
     static let backupUploadBatch = 1000
+    /// 鍵バックアップの取り込みの上限（docs/e2ee.md）。
+    static let backupImportMaxPages = 1000
+    static let backupImportMaxRows = 1000
     /// 鍵バックアップの送信と取り込みを 1 つずつにする（呼び出し元が端末の管理でも画面でも、重ねない）。
     private var backupChain: Task<Void, Never>?
 
@@ -269,7 +272,11 @@ final class E2eeSetup {
             var imported = 0
             var after: String?
             var seen = Set<String>()
+            var pages = 0
             repeat {
+                // 終わらないカーソルで、排他を占有し続けない（総ページ数は 1000、1 ページの行数は 1000 まで）。
+                pages += 1
+                guard pages <= Self.backupImportMaxPages else { throw ZooError.invalidResponse }
                 let page = try await self.api.backupKeys(version: version, after: after)
                 guard case .object(let object) = try JSONDecoder().decode(JSONValue.self, from: Data(page.utf8)),
                       case .array(let sessions)? = object["sessions"] else { throw ZooError.invalidResponse }
@@ -279,6 +286,7 @@ final class E2eeSetup {
                 case .string(let next)?: after = next
                 default: throw ZooError.invalidResponse
                 }
+                guard sessions.count <= Self.backupImportMaxRows else { throw ZooError.invalidResponse }
                 imported += try store.importBackupRows(try sessions.map(jsonText))
                 // 同じカーソルを返し続けるサーバーに、閉じ込められない（排他を占有し続けない）。
                 if let after, !seen.insert(after).inserted { throw ZooError.invalidResponse }
@@ -366,6 +374,8 @@ final class E2eeSetup {
             guard try jsonObject(current).string("default_key_id") == session.keyId() else { throw E2eeSetupError.conflict }
             revision = Self.secretsRevision(current)
         }
+        // SSSS を新しい鍵に作り直した。この先で止まっても、新しいリカバリーキーで解錠して、リセットの続きから終えられるよう、印を残す。
+        try await store().setResetKeyID(session.keyId())
         try await saveRemaining(session, secretsRevision: revision, reauth: reauth, reset: true)
     }
 
@@ -405,6 +415,9 @@ final class E2eeSetup {
     /// 送り直しても、同じ鍵なら成功する（サーバーの冪等の規則）。続きの保存は、作った（開けた）SSSS 鍵が
     /// サーバーの既定の鍵のままであることを前提にする（`expected_default_key_id`）。
     func saveRemaining(_ session: SetupSession, secretsRevision: UInt64?, reauth: String?, reset: Bool = false) async throws {
+        // リセットの途中で止まっていた鍵（SSSS だけ作り直し済み）を、解錠して続けるときも、リセットの続き（置き換える前の鍵が前提）を選ぶ。
+        let resumingReset = try await isResetResume(session)
+        let reset = reset || resumingReset
         let plan = try await planRemaining(session, reset: reset)
         let keyID = session.keyId()
         func withPrecondition(_ body: String) throws -> String {
@@ -421,14 +434,25 @@ final class E2eeSetup {
             throw Self.mapReauth(failure)
         }
         try await store().saveOwnKeys(session, secretsRevision: secretsRevision)
+        if reset { try await store().setResetKeyID(nil) }
         // 解錠した（または初回設定を終えた）ので、手元のセッションを今の版に送り、過去のセッションを取り込む。
         // 失敗しても解錠は済んでいる（取り込みは、次の起動時の確認で続きを行う）。
+        var ssssConflict = false
         do {
-            _ = try await uploadKeyBackup()
-            if !session.isCreated() { _ = try await importKeyBackup() }
+            // SSSS が書き換えられていたら（`E2EE_SSSS_CONFLICT`）、解錠できたとは言えない。通信の失敗とは分けて、呼び出し元へ返す。
+            if case .conflict(let code) = try await uploadKeyBackup(), code == "E2EE_SSSS_CONFLICT" { ssssConflict = true }
+            else if !session.isCreated() { _ = try await importKeyBackup() }
         } catch is CancellationError {
             throw CancellationError()
+        } catch let failure as E2eeAPIError where failure.code == "E2EE_SSSS_CONFLICT" {
+            ssssConflict = true
         } catch {}
+        if ssssConflict { throw E2eeSetupError.secretsChanged }
+    }
+
+    /// 解錠した鍵が、リセットの途中で止まっていた新しい SSSS 鍵か。
+    private func isResetResume(_ session: SetupSession) async throws -> Bool {
+        try await store().resetKeyID == session.keyId()
     }
 
     private func planRemaining(_ session: SetupSession, reset: Bool = false) async throws -> ResumePlan {
@@ -467,7 +491,7 @@ final class E2eeSetup {
         }
         if let slotID { try? await api.markKeySlotUsed(slotID) }
         let revision = session.secretsRevision()
-        let plan = try await planRemaining(session)
+        let plan = try await planRemaining(session, reset: try await isResetResume(session))
         if plan.crossSigning != nil { return UnlockResult(session: session, secretsRevision: revision, needsReauth: true) }
         do {
             try await saveRemaining(session, secretsRevision: revision, reauth: nil)

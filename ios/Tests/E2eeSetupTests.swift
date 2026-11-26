@@ -325,6 +325,48 @@ struct E2eeSetupTests {
         #expect(third.store.hasOwnKeys)
     }
 
+    @Test func E2EEのリセットをSSSSの保存後に止めても新しいリカバリーキーで解錠してリセットの続きから終える() async throws {
+        let server = FakeSetupServer(userID: user)
+        let first = try Device(server)
+        let start = try first.setup.begin()
+        try await first.setup.completeSetup(start.session, reauth: "t")
+        let oldMaster = server.keys["master_key"]
+        let second = try Device(server)
+        defer { first.cleanUp(); second.cleanUp() }
+        let (reset, expectation) = try await second.setup.beginReset()
+        // SSSS は新しい鍵で保存できたが、クロス署名鍵の保存で止まる（置き換える前のマスター鍵が残る）。
+        server.failNext.insert("cross_signing")
+        await #expect(throws: (any Error).self) {
+            try await second.setup.completeReset(reset.session, expectation: expectation, reauth: "t")
+        }
+        #expect(server.defaultKeyID == reset.session.keyId() && server.keys["master_key"] == oldMaster)
+        #expect(second.store.resetKeyID == reset.session.keyId())
+        // アプリを開き直して、新しいリカバリーキーで解錠する。リセットの続きなので、置き換える前の鍵が前提の要求で終わる。
+        try second.restart()
+        let unlocked = try await second.setup.unlock(.recovery(reset.recoveryKey))
+        #expect(unlocked.needsReauth)
+        try await second.setup.saveRemaining(unlocked.session, secretsRevision: unlocked.secretsRevision, reauth: "t")
+        #expect(server.keys["master_key"] != oldMaster && server.versions.count == 2)
+        #expect(second.store.resetKeyID == nil && second.store.hasOwnKeys)
+    }
+
+    @Test func SSSSが書き換えられていたら解錠できたとは返さず解錠し直しを求める() async throws {
+        let server = FakeSetupServer(userID: user)
+        let first = try Device(server)
+        let start = try first.setup.begin()
+        try await first.setup.completeSetup(start.session, reauth: "t")
+        let second = try Device(server)
+        defer { first.cleanUp(); second.cleanUp() }
+        _ = try await second.setup.unlock(.recovery(start.recoveryKey))
+        // 鍵バックアップに送れていない受信用セッションを 1 つ作る（自分が送った本文のもの）。
+        let capture = CapturingRequests(user: user, store: { second.store }, setupServer: server)
+        try await MessageEncryption(store: { second.store }, api: capture).send(
+            channel: "00000000-0000-4000-8000-0000000000c1", id: "00000000-0000-4000-8000-0000000000d1", parent: nil, body: "x")
+        server.backupConflict = "E2EE_SSSS_CONFLICT"
+        // 解錠の保存の末尾で、鍵バックアップの送信が SSSS の競合になる。解錠できたとは返さない。
+        await #expect(throws: E2eeSetupError.secretsChanged) { _ = try await second.setup.unlock(.recovery(start.recoveryKey)) }
+    }
+
     @Test func E2EEのリセットは前提の版が古ければ別の端末が先にリセットしたとして止まる() async throws {
         let server = FakeSetupServer(userID: user)
         let first = try Device(server)
@@ -526,3 +568,4 @@ struct ReauthTests {
         #expect(throws: ReauthError.self) { try validateIDToken("not-a-jwt", issuer: "i", clientID: "c", nonce: "n") }
     }
 }
+

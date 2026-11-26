@@ -167,7 +167,10 @@ struct QrScannerView: UIViewControllerRepresentable {
         }
 
         private func configure() async {
-            guard await AVCaptureDevice.requestAccess(for: .video),
+            let granted = await AVCaptureDevice.requestAccess(for: .video)
+            // 許可を待つあいだに、画面が取り除かれて止められていたら（相手が検証を中止したなど）、何も始めない。
+            guard !finished else { return }
+            guard granted,
                   let device = AVCaptureDevice.default(for: .video),
                   let input = try? AVCaptureDeviceInput(device: device), session.canAddInput(input) else {
                 onUnavailable?()

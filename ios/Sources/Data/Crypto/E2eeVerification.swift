@@ -362,8 +362,13 @@ final class E2eeVerification {
         }
     }
 
-    /// 送るメッセージを、相手の端末ごとに Olm で暗号化して to-device で送る。鍵がなければ `keys/claim` する。
+    /// 送るメッセージを、順に、1 つずつ、相手の端末ごとに Olm で暗号化して to-device で送る。同じ端末あての複数のメッセージ
+    /// （`mac` と `done` など）が、1 つの要求の中で上書きされないよう、メッセージごとに別の要求にする。
     private func send(_ outgoing: [VerificationOutgoing]) async throws {
+        for out in outgoing { try await sendOne(out) }
+    }
+
+    private func sendOne(_ out: VerificationOutgoing) async throws {
         let store = try currentStore()
         var undelivered = 0
         var messages: [String: JSONValue] = [:]
@@ -371,21 +376,19 @@ final class E2eeVerification {
         for round in 0..<2 {
             messages = [:]
             var claim: [String: JSONValue] = [:]
-            for out in outgoing {
-                for device in out.devices {
-                    let user = device.userId(), id = device.deviceId()
-                    let single = claimed[user]?[id]?.object.flatMap { $0.count == 1 ? $0.values.first : nil }
-                    guard let content = try store.encryptVerification(device, eventType: out.eventType, content: out.content,
-                                                                       claimed: single.map(sasJSONText)) else {
-                        var perUser = claim[user]?.object ?? [:]
-                        perUser[id] = .string("signed_curve25519")
-                        claim[user] = .object(perUser)
-                        continue
-                    }
-                    var perUser = messages[user]?.object ?? [:]
-                    perUser[id] = try JSONDecoder().decode(JSONValue.self, from: Data(content.utf8))
-                    messages[user] = .object(perUser)
+            for device in out.devices {
+                let user = device.userId(), id = device.deviceId()
+                let single = claimed[user]?[id]?.object.flatMap { $0.count == 1 ? $0.values.first : nil }
+                guard let content = try store.encryptVerification(device, eventType: out.eventType, content: out.content,
+                                                                   claimed: single.map(sasJSONText)) else {
+                    var perUser = claim[user]?.object ?? [:]
+                    perUser[id] = .string("signed_curve25519")
+                    claim[user] = .object(perUser)
+                    continue
                 }
+                var perUser = messages[user]?.object ?? [:]
+                perUser[id] = try JSONDecoder().decode(JSONValue.self, from: Data(content.utf8))
+                messages[user] = .object(perUser)
             }
             if claim.isEmpty || round == 1 {
                 if !claim.isEmpty { undelivered += claim.values.reduce(0) { $0 + ($1.object?.count ?? 0) } }
@@ -393,9 +396,7 @@ final class E2eeVerification {
             }
             for (user, devices) in try await api.claim(claim) { claimed[user] = devices.object ?? [:] }
         }
-        // 暗号化できた分は、同じ端末への順序（`mac` と `done`）を守るため、1 回の要求にまとめる。
-        guard let deviceID = store.deviceID as String? else { return }
-        if !messages.isEmpty { undelivered += try await api.sendToDevice(deviceID: deviceID, messages: messages) }
+        if !messages.isEmpty { undelivered += try await api.sendToDevice(deviceID: store.deviceID, messages: messages) }
         if undelivered > 0 { throw ZooError.invalidResponse }
     }
 

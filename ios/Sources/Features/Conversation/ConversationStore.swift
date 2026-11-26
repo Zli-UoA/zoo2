@@ -460,12 +460,11 @@ final class ConversationStore {
                 if let mentions = result.payload?.mentions {
                     shown.e2eeMentions = DecryptedMentions(userIDs: Set(mentions.userIds), channel: mentions.channel, here: mentions.here)
                 }
-                let infos = result.payload?.attachments ?? []
-                if !infos.isEmpty {
-                    var display = shown.display_data ?? MessageDisplayData()
-                    display.attachments = infos.map { MessageAttachment(decrypted: $0) }
-                    shown.display_data = display
-                }
+                // 暗号化メッセージの添付は、復号した本文の `attachments` だけを根拠にする（サーバーの添付の行は、`encrypted.bin` で、
+                // 中身も大きさも信用できない）。空でも、サーバー由来の添付を残さない。
+                var display = shown.display_data ?? MessageDisplayData()
+                display.attachments = (result.payload?.attachments ?? []).map { MessageAttachment(decrypted: $0) }
+                shown.display_data = display
                 shown.e2eeNotice = result.notice ?? (result.revision == .stale ? E2eeText.revisionStale
                     : result.revision == .conflict ? E2eeText.revisionConflict : nil)
                 rows[id] = shown
@@ -507,7 +506,7 @@ final class ConversationStore {
         }
         if matching == nil, let previous, previous.messageAttempted {
             // 応答が失われた投稿に紐付いている可能性があるため、別の投稿では添付も作り直す。
-            for id in previous.attachmentIDs { uploadedAttachmentIDs[id] = nil }
+            for id in previous.attachmentIDs { uploadedAttachmentIDs[id] = nil; encryptedUploads[id] = nil }
         }
         let pending = matching
             ?? PendingSend(id: UUID().uuidString.lowercased(), content: content, attachmentIDs: attachmentIDs,
@@ -689,7 +688,9 @@ final class ConversationStore {
     }
 
     func attachments(for message: Message) -> [MessageAttachment] {
-        message.display_data?.attachments ?? fallbackAttachments[message.id] ?? []
+        // 暗号化メッセージは、復号した結果（`display_data`）だけを使い、サーバーの添付の行は使わない。
+        if message.ciphertext != nil { return message.display_data?.attachments ?? [] }
+        return message.display_data?.attachments ?? fallbackAttachments[message.id] ?? []
     }
 
     private func clearAttachments() {

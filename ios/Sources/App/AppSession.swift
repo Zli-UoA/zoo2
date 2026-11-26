@@ -238,11 +238,16 @@ final class AppSession {
     /// 暗号鍵をまだバックアップに送れていないまま、ログアウトしようとしている（確認の対象。`nil` なら確認なし）。
     struct LogoutPrompt: Equatable { let unbackedSessions: Int? }
     var logoutPrompt: LogoutPrompt?
+    /// ログアウトの確認を始めたときのセッション（確認のあいだに別のセッションになったら、何もしない）。
+    @ObservationIgnored private var loggingOutWorkspace: WorkspaceStore?
 
     /// 利用者のログアウト。暗号化があれば、送れていない鍵を確かめる（0 でなければ確認を出す）。
     func beginLogout() async {
-        guard let e2ee = workspace?.e2ee else { logout(); return }
+        guard let workspace, let e2ee = workspace.e2ee else { logout(); return }
+        // 確認を出しているあいだにセッションが終わったり、別のセッションになったりしたら、古い確認では何もしない。
+        loggingOutWorkspace = workspace
         let count = await e2ee.prepareLogout()
+        guard self.workspace === workspace else { return }
         if count == 0 { await completeLogout() } else { logoutPrompt = LogoutPrompt(unbackedSessions: count) }
     }
 
@@ -250,17 +255,24 @@ final class AppSession {
 
     func cancelLogout() {
         logoutPrompt = nil
-        workspace?.e2ee?.cancelLogout()
+        loggingOutWorkspace?.e2ee?.cancelLogout()
+        loggingOutWorkspace = nil
     }
 
     private func completeLogout() async {
+        // 確認した時のセッションと、今のセッションが同じときだけ行う（違えば、確認は古いので、何もしない）。
+        guard let target = loggingOutWorkspace, target === workspace else { logoutPrompt = nil; return }
         // 端末の削除にはトークンが要るので、認証情報を消す前に、端末を消して暗号ストアを消す。
-        await workspace?.e2ee?.finishLogout()
+        await target.e2ee?.finishLogout()
+        guard target === workspace else { logoutPrompt = nil; return }
         logoutPrompt = nil
+        loggingOutWorkspace = nil
         logout()
     }
 
     func logout() {
+        logoutPrompt = nil
+        loggingOutWorkspace = nil
         cancelConnection()
         destinationDelivery?.task.cancel()
         destinationDelivery = nil

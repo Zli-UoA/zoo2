@@ -11,6 +11,8 @@ struct OwnDevicesView: View {
     @State private var draftName = ""
     @State private var removing: OwnDevice?
     @State private var revoking = false
+    /// 取得ごとに進める（古い取得の結果が、新しい一覧を上書きしない）。
+    @State private var loadGeneration = 0
 
     var body: some View {
         List {
@@ -60,11 +62,18 @@ struct OwnDevicesView: View {
     }
 
     private func load() async {
+        loadGeneration += 1
+        let generation = loadGeneration
         do {
-            devices = try await e2ee.ownDevices()
+            let loaded = try await e2ee.ownDevices()
+            guard generation == loadGeneration else { return }
+            devices = loaded
             error = nil
-        } catch { self.error = "端末の一覧を読み込めませんでした。" }
-        loading = false
+        } catch {
+            guard generation == loadGeneration else { return }
+            self.error = "端末の一覧を読み込めませんでした。"
+        }
+        if generation == loadGeneration { loading = false }
     }
 
     private func rename(_ device: OwnDevice) async {

@@ -259,8 +259,6 @@ final class E2eeDeviceManager {
             if !waiting.isEmpty {
                 let result = try await process(store, deviceID: deviceID, rows: waiting)
                 acknowledged.formUnion(result.processed)
-                if result.roomKeys > 0 { onKeysReceived?() }
-                if !result.verifications.isEmpty { onVerifications?(result.verifications) }
             }
         }
         // 止められたときは、購読の終了を待たずに抜ける（defer が購読を取り消す）。
@@ -285,6 +283,10 @@ final class E2eeDeviceManager {
         senders.insert(userID)
         let keys = try await api.queryKeys(userIDs: senders.sorted())
         let result = try store.processToDevice(rows, keysQuery: keys)
+        // 処理済みの印は、もう保存した。この先の ack や鍵の補充が通信で失敗しても、再試行では復号を省くので、鍵と検証のメッセージは、
+        // ここで届ける（ack より前。届け先が覚えておく）。
+        if result.roomKeys > 0 { onKeysReceived?() }
+        if !result.verifications.isEmpty { onVerifications?(result.verifications) }
         if !result.processed.isEmpty {
             do { try await api.ackToDevice(deviceID: deviceID, ids: result.processed) }
             catch let failure as E2eeAPIError where failure.isDeviceNotFound { throw DeviceGone(deviceID: deviceID, failure: failure) }
