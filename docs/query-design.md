@@ -69,8 +69,9 @@ Home検証の条件・結果・再実行方法は [home-performance.md](home-per
 - 実測（`zoo`、U=100,107、C=3、M=2、`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`）: 実行 0.095ms、shared hit+read 11 blocks、users 側は Index Only Scan、除外行 0。変更前の全件 Shape は 10.5MB を転送し、同条件の `id = $1 OR ...` は Seq Scan（16.0ms、2,134 blocks、100,115 行除外）。
 - 全ユーザーが必要な画面（ディレクトリ・DM 作成・メンバー追加・通話ダイヤルなど）は `?all=1` で旧来の全件 Shape を明示的に購読する（`useAllUsers()`）。画面またはダイアログを開いたときに購読し、起動時には購読しない。ゲストは `?all=1` を付けても絞り込みを維持する。
 - 追加実測（`zoo_scale`、U=1,000,000、C=1、M=2）: 0.139ms、shared hit+read 15 blocks、返却3行。U=1,000,000・C=1・M=300,000 では 970ms、903,415 blocks、返却300,000行で、`M` に比例する。
-- 未検証: 1,000,000 件で `M` が大きい場合の8同時・書き込み同時、API 全体の p50/p95/最大値。`M` が大きいワークスペースでは共有チャンネル単位の追加絞り込みを別途設計する。
-- クライアント共通化: この絞り込みは API の外形を壊さないが、TUI / Android が全ユーザー一覧を前提とする画面を持つ場合は追従が必要（理由付き issue で管理する）。
+- 同時実行（`zoo_scale2`、U=1,000,000、`EXPLAIN` ではなく `SELECT count(*)` を docker exec の psql で30回実行。プロセス起動時間を含む）: M=2 は単独 p50 84.8ms / p95 88.3ms / max 92.2ms、8同時 p50 110.6ms / p95 199.6ms / max 199.7ms。M=300,000 は単独 p50 116.3ms / p95 126.3ms / max 130.1ms、8同時 p50 157.0ms / p95 330.0ms / max 339.3ms。書き込みを並べた reads は p50 179.6ms / p95 324.4ms / max 330.3ms。
+- 未検証: 本番相当の HTTPS / HTTP2 での API 全体の p50/p95/最大値、および 1,000,000 件を超える規模。`M` が大きいワークスペースでは共有チャンネル単位の追加絞り込みを別途設計する。
+- クライアント共通化: この絞り込みは API の外形を壊さないが、TUI / Android / desktop-tauri が全ユーザー一覧を前提とする画面を持つ場合は追従が必要（理由付き issue #713 で管理する）。
 
 ## SupabaseのPostgreSQLベストプラクティスとの照合
 

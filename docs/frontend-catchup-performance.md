@@ -15,7 +15,7 @@
 
 ## キャッチアップ「既読にする」が有効になるまで
 
-スクリプトは `/tmp/opencode/bench-clean.mjs` を使った。5 runs の中央値で比較する。
+スクリプトは `frontend/scripts/bench-catchup.mjs` を使った。5 runs の中央値で比較する。
 
 | 条件 | before | after |
 | --- | --- | --- |
@@ -27,10 +27,10 @@
 再現例:
 
 ```sh
-node /tmp/opencode/bench-clean.mjs 5 label
+BENCH_BASE_URL=http://127.0.0.1:4173 node frontend/scripts/bench-catchup.mjs 5 label
 ```
 
-`bench-clean.mjs` は `http://127.0.0.1:4173/catch-up` を開き、`a[href="/catch-up"]` をクリックしてから「既読にする」が有効になるまでの `Date.now()` 差を測る。
+`bench-catchup.mjs` は `http://127.0.0.1:4173/catch-up` を開き、`a[href="/catch-up"]` をクリックしてから「既読にする」が有効になるまでの `Date.now()` 差を測る。
 
 ## ページロード
 
