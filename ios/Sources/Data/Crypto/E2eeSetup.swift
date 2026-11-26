@@ -273,11 +273,14 @@ final class E2eeSetup {
             var after: String?
             var seen = Set<String>()
             var pages = 0
+            // 取り込みの途中で解錠が失われた（`secrets_revision` が消えた、変わった）ら、残りは取り込まず、完了も記録しない。
+            let startRevision = store.secretsRevision
             repeat {
                 // 終わらないカーソルで、排他を占有し続けない（総ページ数は 1000、1 ページの行数は 1000 まで）。
                 pages += 1
                 guard pages <= Self.backupImportMaxPages else { throw ZooError.invalidResponse }
                 let page = try await self.api.backupKeys(version: version, after: after)
+                guard store.secretsRevision == startRevision else { return imported }
                 guard case .object(let object) = try JSONDecoder().decode(JSONValue.self, from: Data(page.utf8)),
                       case .array(let sessions)? = object["sessions"] else { throw ZooError.invalidResponse }
                 // `next` は文字列か null だけ。ほかの値は不正なページなので、取り込み完了を記録しない。
@@ -291,6 +294,7 @@ final class E2eeSetup {
                 // 同じカーソルを返し続けるサーバーに、閉じ込められない（排他を占有し続けない）。
                 if let after, !seen.insert(after).inserted { throw ZooError.invalidResponse }
             } while after != nil
+            guard store.secretsRevision == startRevision else { return imported }
             try store.backupImported(version)
             return imported
         }

@@ -53,6 +53,30 @@ struct CryptoStoreTests {
         store.close()
     }
 
+    @Test func 保存鍵を失っても暗号化チャンネルの記録は引き継ぎ端末を作り直す() throws {
+        let (files, _, directory) = makeFiles()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var store = try #require(try CryptoStore.open(files, userID: user)).store
+        let oldDevice = store.deviceID
+        try store.rememberEncryptedChannels(["c1"])
+        store.close()
+        try files.keys.delete()
+        store = try #require(try CryptoStore.open(files, userID: user)).store
+        #expect(store.deviceID != oldDevice)
+        #expect(store.isRememberedEncrypted("c1"))
+        store.close()
+    }
+
+    @Test func 端末を作り直してもリセットの途中の印は残る() throws {
+        let (files, _, directory) = makeFiles()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try #require(try CryptoStore.open(files, userID: user)).store
+        try store.setResetKeyID("reset-key")
+        try store.replaceDevice()
+        #expect(store.resetKeyID == "reset-key")
+        store.close()
+    }
+
     @Test func 保存鍵は作ったあと同じ値を返し32バイトである() throws {
         let store = StorageKeyStore(backing: MemoryKey())
         let first = try store.loadOrCreate()

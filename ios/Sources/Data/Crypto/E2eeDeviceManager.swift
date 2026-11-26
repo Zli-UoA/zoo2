@@ -170,8 +170,9 @@ final class E2eeDeviceManager {
         started = false
         running.cancel()
         await running.value
-        // 止めている間に別の `stop()` が終えていたら、何もしない。
-        if loop == running { loop = nil }
+        // 止めている間に別の `stop()` が終えて、新しい処理が始まっていたら、その処理の暗号ストアには触れない。
+        guard loop == running else { return }
+        loop = nil
         readyStore = nil
         store?.close()
         store = nil

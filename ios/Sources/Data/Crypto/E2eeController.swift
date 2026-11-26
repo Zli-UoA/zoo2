@@ -83,6 +83,9 @@ final class E2eeController: ConversationEncryption {
         manager.onReady = { [weak self] in self?.refreshStatus() }
         manager.onKeysReceived = { [weak self] in
             guard let self else { return }
+            // 新しい鍵（検証済みの鍵が、検証できなかった鍵を置き換えることがある）で、同じ行の復号の結果が変わりうるので、
+            // 復号のキャッシュを捨てて、読み直させる。
+            self.decrypted = [:]
             self.revision += 1
             // 届いた部屋の鍵（受信用のセッション）を鍵バックアップへ送る。失敗しても、次の起動時や次の鍵で再び試す。
             let startedAt = self.unlockGeneration
@@ -213,7 +216,9 @@ final class E2eeController: ConversationEncryption {
                 statusError = nil
                 revision += 1
             } catch {
-                statusError = error.localizedDescription
+                // 古い読み直しの通信エラーは表示しない（あとから始めた読み直しが成功して消したエラーを、再表示しない）。
+                // SSSS の競合は、下で別に扱う。
+                if generation == refreshGeneration { statusError = error.localizedDescription }
                 // SSSS が書き換えられたと分かったのに読み直せないときは、解錠済みの表示を残さない（解錠し直しが要る）。
                 // あとから始めた読み直しがあっても、競合を検出した結果は捨てない（そちらも失敗すれば、ロックが残る）。
                 // 競合のあとに、利用者が解錠し直していたら、その結果は取り消さない。

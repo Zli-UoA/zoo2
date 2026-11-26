@@ -36,7 +36,14 @@ struct CryptoStoreFiles: Sendable {
             for directory in try FileManager.default.contentsOfDirectory(at: support, includingPropertiesForKeys: nil) {
                 let target = root.appendingPathComponent(directory.lastPathComponent)
                 // 移せなかったら、新しい置き場を使わない（使うと、新しい端末を作ってしまい、前の端末と受信用セッションを失う）。
-                if !FileManager.default.fileExists(atPath: target.path) { try FileManager.default.moveItem(at: directory, to: target) }
+                if FileManager.default.fileExists(atPath: target.appendingPathComponent(CryptoStore.stateFile).path),
+                   FileManager.default.fileExists(atPath: directory.appendingPathComponent(CryptoStore.stateFile).path) {
+                    // 同じ ID の暗号ストアが両方にある（App Group を使えない間に、前の置き場へ保存した）。どちらも変えず、競合として返す
+                    // （片方を開くと、もう片方にしかない受信用セッションを失う）。
+                    throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: target.path])
+                }
+                if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) }
+                try FileManager.default.moveItem(at: directory, to: target)
             }
         }
         var values = URLResourceValues()
@@ -250,6 +257,7 @@ final class CryptoStore: @unchecked Sendable {
     private static func openUnlocked(_ files: CryptoStoreFiles, userID: String, create: Bool, reservation: UUID) throws -> Opened? {
         let stateURL = files.directory.appendingPathComponent(stateFile)
         var pending: [String] = []
+        var carriedChannels: [String] = []
         if let stored = try readState(stateURL) {
             guard stored.version == stateVersion else { throw CocoaError(.fileReadCorruptFile) }
             guard stored.user_id == userID else { throw CocoaError(.fileReadCorruptFile) }
@@ -279,6 +287,8 @@ final class CryptoStore: @unchecked Sendable {
             // 新しい状態（これが前の `state.json` を置き換える）に入れる。置き換える前に消さないので、
             // 途中で失敗しても、前の `state.json` から同じ ID を取り出せる。
             pending = stored.pending_deletions + [stored.device_id]
+            // 暗号化チャンネルの記録は、復号に要らない（保存鍵で封をしていない）ので、引き継ぐ。格下げの検出を失わない。
+            carriedChannels = stored.encrypted_channels
             guard create else { return nil }
             try files.keys.delete()
         }
@@ -297,6 +307,7 @@ final class CryptoStore: @unchecked Sendable {
                                registered: false, account: try account.pickle(storageKey: key),
                                trust_store: try trust.pickle(account: account, storageKey: key))
         state.pending_deletions = pending
+        state.encrypted_channels = carriedChannels
         let store = CryptoStore(directory: files.directory, storageKey: key, account: account, trust: trust,
                                 olmSessions: OlmSessionStore(), state: state, reservation: reservation)
         try store.save()
@@ -339,7 +350,8 @@ final class CryptoStore: @unchecked Sendable {
             // 終わっていない失効の進み具合は、古い端末アカウントで封をしてあるので、開けない。捨てる（失効は、解錠し直して、最初からやり直す）。
             if state.revocation != nil { nextState.revocation_dropped = true }
             nextState.revocation = nil
-            nextState.reset_key_id = nil
+            // `reset_key_id`（リセットで保存した新しい SSSS 鍵の ID）は、端末アカウントで封をしていないので残す
+            // （消すと、SSSS を保存したあとに端末を作り直した場合に、同じリカバリーキーでリセットを再開できない）。
             nextState.trust_store = try TrustStore(userId: state.user_id).pickle(account: next, storageKey: storageKey)
             nextState.account = try next.pickle(storageKey: storageKey)
             // Olm セッションは古い端末の鍵との間のものなので捨てる。受信用セッションは、古い端末で開いて新しい端末で封をし直す
@@ -533,7 +545,16 @@ final class CryptoStore: @unchecked Sendable {
                     unsaved = true
                 } else {
                     if row.type == "m.room.encrypted" {
-                        switch try processEncrypted(row, query: query, keysQuery: keysQuery) {
+                        // 途中で失敗したら、進めた Olm 状態をメモリーから戻す（処理済みの印なしで、あとの保存に入れない。
+                        // 入れると、行が再配信されたとき、進みすぎたセッションで復号できず、鍵を失う）。
+                        let snapshot = state
+                        let outcome: Encrypted
+                        do { outcome = try processEncrypted(row, query: query, keysQuery: keysQuery) }
+                        catch {
+                            try? rollbackLive(to: snapshot)
+                            throw error
+                        }
+                        switch outcome {
                         case .dropped: dropped += 1
                         case .verification(let created, let message):
                             newOlm += created
@@ -557,6 +578,22 @@ final class CryptoStore: @unchecked Sendable {
             return ToDeviceResult(processed: processed, roomKeys: roomKeys, dropped: dropped, newOlmSessions: newOlm,
                                   verifiedRoomKeys: verified, verifications: state.pending_verifications)
         }
+    }
+
+    /// 保存済みの状態から、アカウント・Olm セッション・信頼の記録・受信用セッションのメモリー上の状態を作り直す。
+    private func rollbackLive(to snapshot: StoreState) throws {
+        let restoredAccount = try DeviceAccount.fromPickle(pickle: snapshot.account, storageKey: storageKey,
+                                                           userId: snapshot.user_id, deviceId: snapshot.device_id)
+        let restoredOlm = OlmSessionStore()
+        for session in snapshot.olm_sessions { _ = try restoredOlm.restoreSession(account: restoredAccount, pickle: session.pickle, storageKey: storageKey) }
+        let restoredTrust = try snapshot.trust_store.map { try TrustStore.fromPickle(pickle: $0, account: restoredAccount, storageKey: storageKey) }
+            ?? TrustStore(userId: snapshot.user_id)
+        state = snapshot
+        account = restoredAccount
+        olmSessions = restoredOlm
+        trust = restoredTrust
+        inbound = InboundSessionStore()
+        loadedInbound = []
     }
 
     private enum Encrypted {
