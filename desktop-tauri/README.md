@@ -202,7 +202,7 @@ Linux / macOS は `~/.config/zoo2-desktop-tauri/config.toml`、Windows は `%APP
 
 | `config.toml` | 環境変数 | 既定値 | 内容 |
 |---|---|---|---|
-| `api_base_url` | `ZOO_API_BASE_URL` | `https://zli.chat` | backend の URL |
+| `api_base_url` | `ZOO_API_BASE_URL` | `https://zli.chat` | backend の URL。ログインして使う場合は `https://` (`http://` は `localhost` などこの端末の中に限る。`dev_user` を指定したときは制限なし) |
 | `oidc_issuer` | `ZOO_OIDC_ISSUER` | `https://account.zli.works/api/auth` | AuthZ の issuer |
 | `oidc_client_id` | `ZOO_OIDC_CLIENT_ID` | AuthZ の「Zoo for Desktop」の ID | AuthZ に登録したデスクトップ版の public client の ID |
 | `oidc_resource` | `ZOO_OIDC_RESOURCE` | `https://zli.chat/api` | 要求する resource。backend の `OIDC_AUDIENCE` と同じ値にする |

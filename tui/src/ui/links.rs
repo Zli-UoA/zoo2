@@ -105,7 +105,7 @@ impl Links {
         for key in self.visible.clone() {
             let (channel_id, message_id) = &key;
             if !self.channels.contains_key(channel_id)
-                && self.channels.len() >= MAX_CHANNELS
+                && self.running() >= MAX_CHANNELS
                 && !self.release_idle()
             {
                 self.over_limit.insert(key.clone());
@@ -152,12 +152,22 @@ impl Links {
         self.started.retain(|(channel, _), _| channel != channel_id);
     }
 
-    /// 画面の近くにリンクがないチャンネルのうち、いちばん前に使った購読を閉じる。なければ `false`。
+    /// 動いている購読の数。権限の失敗などで止まった購読は、取り直さないよう残すが、数えない。
+    fn running(&self) -> usize {
+        self.channels
+            .values()
+            .filter(|fetching| !fetching.ids.is_closed())
+            .count()
+    }
+
+    /// 画面の近くにリンクがないチャンネルのうち、いちばん前に使った動いている購読を閉じる。なければ `false`。
     fn release_idle(&mut self) -> bool {
         let idle = self
             .channels
             .iter()
-            .filter(|(id, _)| !self.visible.iter().any(|(channel, _)| channel == *id))
+            .filter(|(id, fetching)| {
+                !fetching.ids.is_closed() && !self.visible.iter().any(|(channel, _)| channel == *id)
+            })
             .min_by_key(|(_, fetching)| fetching.last_wanted)
             .map(|(id, _)| id.clone());
         match idle {
@@ -525,6 +535,30 @@ mod tests {
             links.fetch(&channel(MAX_CHANNELS), start),
             LinkedFetch::Failed
         );
+    }
+
+    #[tokio::test]
+    async fn stopped_subscriptions_do_not_take_a_slot() {
+        let mut links = Links::default();
+        let start = Instant::now();
+        let mut receivers = Vec::new();
+        // c0 の購読は、権限の失敗などで止まる（受け取り側がなくなる）。
+        let mut spawn = |channel: String, receiver| {
+            if channel != "c0" {
+                receivers.push(receiver);
+            }
+            tokio::spawn(std::future::pending())
+        };
+        let channel = |n: usize| (format!("c{n}"), "m".to_owned());
+        links.visible = (0..=MAX_CHANNELS).map(channel).collect();
+        links.sync(start, &mut spawn);
+        assert_ne!(
+            links.fetch(&channel(MAX_CHANNELS), start),
+            LinkedFetch::Failed
+        );
+        // 止まった購読は残し、作り直さない。
+        links.sync(start + Duration::from_secs(1), |_, _| unreachable!());
+        assert_eq!(links.fetch(&channel(0), start), LinkedFetch::Failed);
     }
 
     #[tokio::test]

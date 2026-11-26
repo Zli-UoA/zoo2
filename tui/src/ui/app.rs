@@ -2105,15 +2105,26 @@ impl App {
             self.notify("メッセージを表示できません");
             return;
         }
-        let fetched = self.linked_fetch(&target.channel_id, &message_id, now);
-        let parent_id = match &fetched {
-            LinkedFetch::Found(message) => message.parent_id.clone(),
+        let found_parent = match self.linked_fetch(&target.channel_id, &message_id, now) {
+            LinkedFetch::Found(message) => Some(message.parent_id.clone()),
             _ => None,
-        }
-        .or_else(|| target.thread_id.clone());
-        // まだ取得できていなければ、行が届いた時点で、返信ならスレッドを開き、なければ知らせる。
-        let pending = (!matches!(fetched, LinkedFetch::Found(_)))
-            .then(|| (target.channel_id.clone(), message_id.clone()));
+        };
+        // 返信なら実際の親のスレッドを開く。`?thread=` だけのリンクは、そのスレッドを開く。`?message=` の行が
+        // ルート投稿なら `?thread=` は使わず、行が分かるまでは `?thread=` を手がかりにする。
+        let parent_id = match (found_parent, &target.message_id) {
+            (Some(Some(parent_id)), _) => Some(parent_id),
+            (_, None) => Some(message_id.clone()),
+            (Some(None), Some(_)) => None,
+            (None, Some(_)) => target.thread_id.clone(),
+        };
+        // 開いているチャンネルの同期済みの行で確かめられなければ（覚えていた結果を含む）、行がそろった時点で、
+        // 返信ならスレッドを開き、なければ知らせる。
+        let confirmed = self.synced_channel(&target.channel_id)
+            && self
+                .store
+                .message(&target.channel_id, &message_id)
+                .is_some();
+        let pending = (!confirmed).then(|| (target.channel_id.clone(), message_id.clone()));
         // スレッドの親ではないメッセージへ移るときは、開いているスレッドを閉じる。
         if parent_id.is_none() && self.thread.is_some() {
             self.close_thread();
@@ -2165,6 +2176,9 @@ impl App {
                     .as_ref()
                     .is_none_or(|thread| thread.root_id != parent_id) =>
             {
+                if self.switching_would_move_draft() {
+                    return;
+                }
                 if !in_thread {
                     self.selected = None;
                 }
@@ -2174,8 +2188,44 @@ impl App {
                     parent_id: Some(parent_id),
                 });
             }
+            // ルート投稿なのに、`?thread=` を手がかりに別のスレッドを開いていたら、タイムラインで選ぶ。
+            Some(None)
+                if self
+                    .thread
+                    .as_ref()
+                    .is_some_and(|thread| thread.root_id != message_id) =>
+            {
+                if self.switching_would_move_draft() {
+                    return;
+                }
+                self.close_thread();
+                self.selected = Some(message_id);
+                self.inner_scroll = 0;
+            }
             Some(_) => {}
         }
+    }
+
+    /// あとから分かった行き先へ表示を切り替えると、書いている返信の送り先が画面とずれるか。ずれるなら知らせる。
+    fn switching_would_move_draft(&mut self) -> bool {
+        let writing = self.mode == Mode::Insert
+            || (matches!(self.target, Target::Reply(_)) && !self.composer.is_empty());
+        if writing {
+            self.notify("入力中の本文があるため、リンク先へは切り替えていません");
+        }
+        writing
+    }
+
+    /// 開いているスレッドが、リンクの手がかりで開いたもので、実際の親をまだ確かめていないか。
+    fn thread_unconfirmed(&self) -> bool {
+        let Some((channel_id, message_id)) = &self.pending_link else {
+            return false;
+        };
+        self.current.as_ref() == Some(channel_id)
+            && self
+                .thread
+                .as_ref()
+                .is_some_and(|thread| thread.selected.as_ref() == Some(message_id))
     }
 
     fn on_search_key(&mut self, key: KeyEvent, mut query: String) {
@@ -2674,6 +2724,11 @@ impl App {
         // 書きかけの編集 (送信に失敗して戻ったものを含む) は、編集のまま続ける。
         if matches!(self.target, Target::Edit(_)) && !self.composer.is_empty() {
             self.mode = Mode::Insert;
+            return;
+        }
+        // リンクで開いたスレッドは、行がそろうまで実際の親が分からないので、返信を書き始めない。
+        if self.focus == Focus::Thread && self.thread_unconfirmed() {
+            self.notify("リンク先を確認しています。少し待ってから返信してください");
             return;
         }
         let target = match (&self.thread, self.focus) {

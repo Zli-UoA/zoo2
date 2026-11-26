@@ -745,10 +745,11 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     app.links.visible.extend(near);
     app.scroll = scroll;
     app.inner_scroll = inner_scroll;
-    // 全文検索の画面、端末と検証の画面、検証のダイアログが覆っている間は、背後のタイムラインを読んだことに
-    // しない（既読を進めない）。
+    // 全文検索の画面、端末と検証の画面、検証のダイアログ、リンクを選ぶ画面が覆っている間は、背後の
+    // タイムラインを読んだことにしない（既読を進めない）。
     if app.mode != Mode::GlobalSearch
         && app.mode != Mode::Devices
+        && !matches!(app.mode, Mode::Links { .. })
         && !app.devices.has_open_verification()
     {
         app.newest_shown = built
@@ -1740,6 +1741,127 @@ mod tests {
         let thread = app.thread.as_ref().unwrap();
         assert_eq!(thread.root_id, "m2");
         assert_eq!(thread.selected.as_deref(), Some("s1"));
+    }
+
+    /// c2 の `s1`（`m2` への返信）と、ルート投稿の `m2`・`other` を届ける。
+    fn arrive_in_c2(app: &mut App) {
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c2".into()),
+            batch(vec![
+                (
+                    "m2",
+                    json!({ "id": "m2", "user_id": "u2", "channel_id": "c2", "content": "親",
+                            "created_at": "2026-11-01 01:00:00" }),
+                ),
+                (
+                    "other",
+                    json!({ "id": "other", "user_id": "u2", "channel_id": "c2", "content": "別の親",
+                            "created_at": "2026-11-01 01:30:00" }),
+                ),
+                (
+                    "s1",
+                    json!({ "id": "s1", "user_id": "u2", "channel_id": "c2", "content": "返信",
+                            "created_at": "2026-11-01 02:00:00", "parent_id": "m2" }),
+                ),
+            ]),
+        ));
+    }
+
+    const WRONG_THREAD_LINK: &str = "http://127.0.0.1:9/channels/c2?thread=other&message=s1";
+
+    fn notice(app: &App) -> Option<&str> {
+        app.notice.as_ref().map(|(text, _)| text.as_str())
+    }
+
+    #[tokio::test]
+    async fn replies_wait_until_the_linked_thread_is_confirmed() {
+        let mut app = app_with_link(WRONG_THREAD_LINK);
+        press(&mut app, KeyCode::Char('o'));
+        // 実際の親が分かるまでは、返信を書き始めない。
+        press(&mut app, KeyCode::Char('i'));
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(
+            notice(&app),
+            Some("リンク先を確認しています。少し待ってから返信してください")
+        );
+        arrive_in_c2(&mut app);
+        press(&mut app, KeyCode::Char('i'));
+        assert_eq!(app.mode, Mode::Insert);
+        assert_eq!(app.target, Target::Reply("m2".into()));
+    }
+
+    #[tokio::test]
+    async fn a_reply_being_written_keeps_its_thread() {
+        let mut app = app_with_link(WRONG_THREAD_LINK);
+        press(&mut app, KeyCode::Char('o'));
+        // 書きかけの返信（送れずに戻したものなど）の送り先は、あとから分かった行き先に切り替えない。
+        app.target = Target::Reply("other".into());
+        app.mode = Mode::Insert;
+        arrive_in_c2(&mut app);
+        assert_eq!(app.thread.as_ref().unwrap().root_id, "other");
+        assert_eq!(app.target, Target::Reply("other".into()));
+        assert_eq!(
+            notice(&app),
+            Some("入力中の本文があるため、リンク先へは切り替えていません")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_root_message_link_ignores_the_thread_parameter() {
+        let link = "http://127.0.0.1:9/channels/c2?thread=other&message=m2";
+        // 行が分かる前は `?thread=` のスレッドを開き、ルート投稿と分かったらタイムラインで選ぶ。
+        let mut app = app_with_link(link);
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.thread.as_ref().unwrap().root_id, "other");
+        arrive_in_c2(&mut app);
+        assert!(app.thread.is_none());
+        assert_eq!(app.selected.as_deref(), Some("m2"));
+        assert_eq!(app.focus, Focus::Messages);
+        // 行が分かっていれば、はじめからタイムラインで選ぶ。
+        let mut app = app_with_link(link);
+        app.on_app_event(AppEvent::Linked(crate::electric::LinkedEvent::Rows {
+            channel_id: "c2".into(),
+            rows: vec![(
+                "m2".into(),
+                json!({ "id": "m2", "user_id": "u2", "channel_id": "c2", "content": "親",
+                        "created_at": "2026-11-01 01:00:00" })
+                .as_object()
+                .cloned(),
+            )],
+        }));
+        press(&mut app, KeyCode::Char('o'));
+        assert!(app.thread.is_none());
+        assert_eq!(app.selected.as_deref(), Some("m2"));
+    }
+
+    #[tokio::test]
+    async fn a_remembered_row_is_checked_again_after_opening() {
+        let mut app = app_with_link(SECRET_LINK);
+        linked_row(&mut app, "覚えている本文", json!({}));
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.selected.as_deref(), Some("s1"));
+        // 覚えている間に削除されていたら、行がそろった時点で知らせる。
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c2".into()),
+            batch(Vec::new()),
+        ));
+        assert_eq!(app.selected, None);
+        assert_eq!(notice(&app), Some("メッセージを表示できません"));
+    }
+
+    #[tokio::test]
+    async fn the_link_chooser_does_not_mark_the_timeline_as_read() {
+        let mut app = app_with_link(&format!(
+            "http://127.0.0.1:9/channels/c1?message=m1 {SECRET_LINK}"
+        ));
+        press(&mut app, KeyCode::Char('o'));
+        assert!(matches!(app.mode, Mode::Links { .. }));
+        app.newest_shown = None;
+        render(&mut app);
+        assert_eq!(app.newest_shown, None, "the popup covers the timeline");
+        press(&mut app, KeyCode::Esc);
+        render(&mut app);
+        assert!(app.newest_shown.is_some());
     }
 
     #[tokio::test]
