@@ -367,8 +367,10 @@ async function isFreshManifest(response) {
 async function isOfflinePage(response) {
   try {
     const text = await response.clone().text();
-    // 旧形式の案内ページにもマーカーはないが、title で app shell と区別できる。
-    return text.includes('name="zoo-offline"') || text.includes("<title>Zoo — Offline</title>");
+    // 旧形式の案内ページにもマーカーはない。title の閉じタグは改行で split されていたため空白を許容する。
+    return (
+      text.includes('name="zoo-offline"') || /<title>\s*Zoo — Offline\s*<\/title\s*>/.test(text)
+    );
   } catch {
     return false;
   }

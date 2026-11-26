@@ -1001,6 +1001,61 @@ test("saved HTML is not carried over as a manifest", async () => {
   assert.equal(await cache.match(`${ORIGIN}/manifest.webmanifest`), undefined);
 });
 
+test("a legacy offline page with a split title tag is carried over", async () => {
+  // merge-base の real な offline.html。title の閉じタグが `</title` + 改行 + `>`。
+  const legacy = `<!doctype html>
+<html lang="ja">
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#FFD600" />
+  <link rel="icon" type="image/svg+xml" href="/icons/zoo.svg" />
+  <title>Zoo — Offline</title
+  ><style>
+    body {
+      font-family: system-ui;
+      max-width: 32rem;
+      margin: 15vh auto;
+      padding: 2rem;
+      color: #000000;
+      background: #ffffff;
+    }
+    a {
+      color: inherit;
+    }
+  </style>
+  <img src="/icons/zoo.svg" alt="" width="64" height="64" style="border-radius: 1rem" />
+  <h1>Zoo</h1>
+  <p>オフラインです。接続が戻ったら、再読み込みしてください。</p>
+  <p>You are offline. Reconnect and reload to open your chats.</p>
+  <a href="/">再読み込み / Reload</a>
+</html>
+`;
+  const cacheContext = memoryCaches([
+    ["zoo-shell-old", `${ORIGIN}/offline.html`, basicResponse(legacy)],
+  ]);
+  const old = await cacheContext.api.open("zoo-shell-old");
+  await old.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("1"));
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async (input) => {
+      const key = requestKey(input);
+      if (key === `${ORIGIN}/offline.html`)
+        return basicResponse("<html>app shell</html>", {
+          headers: { "content-type": "text/html" },
+        });
+      return basicResponse(`network:${key}`);
+    },
+  });
+  await dispatch(handlers, "install");
+  const offline = worker({
+    caches: cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const response = await fetchThrough(offline.handlers, navigation(`${ORIGIN}/offline.html`));
+  assert.equal(await response.text(), legacy);
+});
+
 test("install does not store an offline page served as text/plain", async () => {
   const { handlers, cacheContext } = worker({
     fetch: async (input) => {
