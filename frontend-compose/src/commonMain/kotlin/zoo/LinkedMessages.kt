@@ -65,6 +65,9 @@ private val LINK_SUBSET_TIMEOUT = 15.seconds
 private val LINK_SUBSET_RETRY = 1.seconds
 private val LINK_SUBSET_MAX_RETRY = 30.seconds
 
+/** 打ち切ったあと、再開した live が追いつくのを待つ時間の上限。 */
+private val LINK_LIVE_WINDOW = 5.seconds
+
 /** 失敗が続く取得の打ち切り。Electric クライアントが再試行しない例外にする。 */
 private class SubsetYield : Exception("subset の取得を一度打ち切った")
 
@@ -157,7 +160,8 @@ interface LinkedChannelSource {
  * live で届く。
  *
  * Electric クライアントは、取得を再試行している間、live の読み取りとほかの取得を待たせる。サーバーのエラーなどで
- * 失敗が続く取得は、[LINK_SUBSET_ATTEMPTS] 回で打ち切り、間隔を空けて取り直す。
+ * 失敗が続く取得は、[LINK_SUBSET_ATTEMPTS] 回で打ち切り、live が追いつくのを待ってから次の取得に進む。打ち切った
+ * 取得は、間隔を空けて取り直す。
  */
 class LinkedChannelTable(
     channelId: String,
@@ -174,6 +178,8 @@ class LinkedChannelTable(
     private val requested = mutableSetOf<String>()
     /** 最初の up-to-date（`changes_only` では空）を受け取ったか。subset はそのあとに取る。 */
     private val synced = MutableStateFlow(false)
+    /** 受け取った up-to-date の数。 */
+    private val caughtUp = MutableStateFlow(0)
     private var generation = 0
     private var refetching = false
     /** subset の取得は 1 件ずつ。[sent] は、いまの取得で送った要求の数。 */
@@ -224,7 +230,10 @@ class LinkedChannelTable(
         // 保持しない行でも、暗号文が届いたことは覚える（暗号化の格下げの判定に使う）。
         val ciphertext = batch.any { (it.jsonObject["value"] as? JsonObject)?.present("ciphertext") == true }
         val upToDate = batch.any { control(it) == "up-to-date" }
-        if (upToDate) synced.value = true
+        if (upToDate) {
+            synced.value = true
+            caughtUp.update { it + 1 }
+        }
         values.update { it.copy(rows = currentRows(), hasCiphertext = it.hasCiphertext || ciphertext) }
         if (upToDate && refetching) {
             refetching = false
@@ -261,21 +270,28 @@ class LinkedChannelTable(
                 var wait = LINK_SUBSET_RETRY
                 // 取り直し（must-refetch）になったら、そちらの取得に任せる。
                 while (startedAt == generation && values.value.failure == null) {
-                    try {
-                        fetching.withLock {
-                            sent.value = 0
+                    val done = fetching.withLock {
+                        sent.value = 0
+                        val before = caughtUp.value
+                        try {
                             stream.requestSnapshot(
                                 SubsetParams(where = "id = \$1", params = mapOf("1" to JsonPrimitive(messageId)))
                             )
+                            true
+                        } catch (_: SubsetYield) {
+                            // 次の取得が live をすぐにまた止めないように、追いつくのを待ってから順番を譲る。
+                            withTimeoutOrNull(LINK_LIVE_WINDOW) { caughtUp.first { it > before } }
+                            false
                         }
+                    }
+                    if (done) {
                         if (startedAt == generation) {
                             values.update { it.copy(rows = currentRows(), fetched = it.fetched + messageId) }
                         }
                         return@launch
-                    } catch (_: SubsetYield) {
-                        delay(wait)
-                        wait = minOf(wait * 2, LINK_SUBSET_MAX_RETRY)
                     }
+                    delay(wait)
+                    wait = minOf(wait * 2, LINK_SUBSET_MAX_RETRY)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -339,11 +355,16 @@ class LinkedMessages(
     fun peek(channelId: String, messageId: String): LinkedMessageState {
         if (!fetchable(messageId)) return LinkedMessageState(LinkedRow.Missing)
         val rows = openRows(channelId)?.value
-        val ciphertext = sawCiphertext(channelId, rows, entries[channelId]?.source?.state?.value)
+        val source = entries[channelId]?.source?.state?.value
+        val ciphertext = sawCiphertext(channelId, rows, source)
         val open = rows?.firstOrNull { it.text("id") == messageId }
-        val row = if (open != null) LinkedRow.Found(open)
-        else results[Key(channelId, messageId)] ?: LinkedRow.Loading
-        return LinkedMessageState(row, ciphertext)
+        if (open != null) return LinkedMessageState(LinkedRow.Found(open), ciphertext)
+        // 拒否された取得は、画面に戻っても読み込み中に戻さない。
+        if (source?.rejects(messageId) == true) return LinkedMessageState(LinkedRow.Failed, ciphertext)
+        val key = Key(channelId, messageId)
+        val row = results[key] ?: LinkedRow.Loading
+        val stalled = row == LinkedRow.Loading && started[key]?.let { it.elapsedNow() >= stallAfter } == true
+        return LinkedMessageState(row, ciphertext, stalled)
     }
 
     fun observe(channelId: String, messageId: String): Flow<LinkedMessageState> {
@@ -397,7 +418,7 @@ class LinkedMessages(
         val row = state.rows[key.messageId]
         // 再試行されない失敗（認証や権限の 4xx）は、その前に取得できた行があっても出さない。
         val current = when {
-            key.messageId in state.failed || state.failure != null -> LinkedRow.Failed
+            state.rejects(key.messageId) -> LinkedRow.Failed
             row != null -> LinkedRow.Found(row)
             key.messageId in state.fetched -> LinkedRow.Missing
             else -> null
@@ -406,7 +427,7 @@ class LinkedMessages(
             started.remove(key)
             remember(key, current!!)
         }
-        if (current == LinkedRow.Failed) results.remove(key)
+        discardRejected(key.channelId, state)
         // 取り直しや再試行の間は、前に取得できた結果を出す。
         val shown = current ?: results[key]
         return LinkedMessageState(
@@ -414,6 +435,15 @@ class LinkedMessages(
             sawCiphertext(key.channelId, source = state),
             stalled = late && current == null,
         )
+    }
+
+    /** 購読そのものか、その ID の取得が、再試行されない失敗になったか。 */
+    private fun LinkedChannelSource.State.rejects(messageId: String): Boolean =
+        failure != null || messageId in failed
+
+    /** 拒否された取得の、前の結果を捨てる。購読そのものの失敗では、そのチャンネルのすべてを捨てる。 */
+    private fun discardRejected(channelId: String, state: LinkedChannelSource.State) {
+        results.keys.removeAll { it.channelId == channelId && state.rejects(it.messageId) }
     }
 
     private fun remember(key: Key, row: LinkedRow) {
@@ -470,6 +500,7 @@ class LinkedMessages(
         // 閉じたあとの取得は、改めて時間を数える。
         started.keys.removeAll { it.channelId == channelId }
         sawCiphertext(channelId, source = entry.source.state.value)
+        discardRejected(channelId, entry.source.state.value)
         entry.source.close()
     }
 

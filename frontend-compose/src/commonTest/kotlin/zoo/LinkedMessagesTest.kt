@@ -4,8 +4,12 @@ import electric4k.RuntimeVisibilityAdapter
 import electric4k.ShapeStreamOptions
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.MockEngineConfig
+import io.ktor.client.engine.mock.MockRequestHandleScope
 import io.ktor.client.engine.mock.respond
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.HttpRequestData
+import io.ktor.client.request.HttpResponseData
 import io.ktor.http.Headers
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
@@ -20,10 +24,12 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -175,7 +181,26 @@ class LinkedMessagesTest {
         observe(loader).job.cancel()
         advanceTimeBy(11.seconds)
         runCurrent()
+        // 最初の描画（peek）も、読み込めなかった表示のまま。
+        assertTrue(loader.peek("c1", "m1").stalled)
         assertTrue(observe(loader).states.first().stalled)
+    }
+
+    @Test
+    fun aFailedSubscriptionDiscardsEveryResultOfTheChannel() = runTest {
+        val loader = loader()
+        val first = observe(loader)
+        sources.single().deliver(message)
+        runCurrent()
+        first.job.cancel()
+        val other = observe(loader, id = "m2")
+        sources.single().state.update { it.copy(failure = IllegalStateException("403")) }
+        runCurrent()
+        other.job.cancel()
+        advanceTimeBy(31.seconds)
+        runCurrent()
+        // 失敗したときに表示していなかったリンクの結果も出さない。
+        assertEquals(LinkedRow.Loading, loader.peek("c1", "m1").row)
     }
 
     @Test
@@ -203,6 +228,11 @@ class LinkedMessagesTest {
         sources.last().state.update { it.copy(failure = IllegalStateException("403")) }
         runCurrent()
         assertEquals(LinkedRow.Failed, again.last.row)
+        // 購読が残る間は、画面に戻っても読み込み中に戻さない。閉じたあとも、捨てた結果は出さない。
+        assertEquals(LinkedRow.Failed, loader.peek("c1", "m1").row)
+        again.job.cancel()
+        advanceTimeBy(31.seconds)
+        runCurrent()
         assertEquals(LinkedRow.Loading, loader.peek("c1", "m1").row)
     }
 
@@ -417,6 +447,116 @@ class LinkedChannelTableTest {
             assertTrue(failures >= 3, failures.toString())
             assertTrue(state.failed.isEmpty())
             assertNull(state.failure)
+        } finally {
+            table.close()
+            http.close()
+        }
+    }
+
+    /** 応答もテストの仮想の時刻で返す代役。[subset] は subset の要求、[catchUp] は追いつくための要求に答える。 */
+    private fun TestScope.timedHttp(
+        subset: suspend MockRequestHandleScope.(params: String) -> HttpResponseData,
+        catchUp: suspend () -> Unit = {},
+    ): HttpClient {
+        var cursor = 1
+        val engine = MockEngineConfig().apply {
+            dispatcher = StandardTestDispatcher(testScheduler)
+            addHandler { request ->
+                val params = request.url.parameters["subset__params"]
+                // 実際の Electric と同じく cursor を進める。同じままだと、up-to-date が抑止される。
+                val next = Headers.build {
+                    appendAll(headers)
+                    set("electric-cursor", "${cursor++}")
+                }
+                when {
+                    params != null -> subset(params)
+                    request.url.parameters["live"] == "true" -> awaitCancellation()
+                    else -> {
+                        catchUp()
+                        respond("""[{"headers":{"control":"up-to-date"}}]""", headers = next)
+                    }
+                }
+            }
+        }
+        return HttpClient(MockEngine(engine)) { install(HttpTimeout) }
+    }
+
+    private fun TestScope.timedTable(channelId: String, http: HttpClient) = LinkedChannelTable(
+        channelId, config, LinkPlatform(), http, backgroundScope,
+        options.copy(liveSse = false, liveRequestTimeoutMillis = null),
+    )
+
+    @Test
+    fun aRejectedMessageFailsAloneAndTheOthersContinue() = runTest {
+        val http = timedHttp(subset = { params ->
+            if ("denied" in params) respond("{}", HttpStatusCode.Forbidden) else respond(snapshot("good"), headers = headers)
+        })
+        val table = timedTable("denied", http)
+        try {
+            table.request("denied")
+            table.request("good")
+            val state = table.state.first { "denied" in it.failed && "good" in it.fetched }
+            assertEquals(setOf("denied"), state.failed)
+            assertNull(state.failure)
+        } finally {
+            table.close()
+            http.close()
+        }
+    }
+
+    @Test
+    fun aRequestWithoutAResponseTimesOutAndYields() = runTest {
+        val sentAt = mutableListOf<Long>()
+        val hanging = CompletableDeferred<Unit>()
+        val http = timedHttp(subset = { params ->
+            if ("hang" in params) {
+                sentAt += testScheduler.currentTime
+                hanging.complete(Unit)
+                awaitCancellation()
+            }
+            respond(snapshot("good"), headers = headers)
+        })
+        val table = timedTable("hanging", http)
+        try {
+            table.request("hang")
+            hanging.await()
+            table.request("good")
+            val state = table.state.first { "good" in it.fetched }
+            // 要求 1 回は 15 秒で打ち切り、3 回で後の取得に譲る。
+            assertEquals(3, sentAt.size, sentAt.toString())
+            assertTrue(sentAt[1] - sentAt[0] >= 15_000, sentAt.toString())
+            assertTrue(state.failed.isEmpty())
+        } finally {
+            table.close()
+            http.close()
+        }
+    }
+
+    @Test
+    fun liveCatchesUpBetweenFailingMessages() = runTest {
+        val log = mutableListOf<String>()
+        val second = CompletableDeferred<Unit>()
+        val http = timedHttp(
+            subset = { params ->
+                if ("second" in params) {
+                    log += "second"
+                    second.complete(Unit)
+                } else log += "first"
+                respond("{}", HttpStatusCode.InternalServerError)
+            },
+            // 応答まで少しかかる。途中で次の取得に止められると、記録されない。
+            catchUp = {
+                delay(100)
+                log += "live"
+            },
+        )
+        val table = timedTable("catching-up", http)
+        try {
+            table.request("first")
+            table.request("second")
+            second.await()
+            val between = log.subList(log.lastIndexOf("first") + 1, log.indexOf("second"))
+            assertTrue("live" in between, log.toString())
         } finally {
             table.close()
             http.close()
