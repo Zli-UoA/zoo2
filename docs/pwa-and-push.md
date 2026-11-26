@@ -11,7 +11,7 @@ Zoo はホーム画面へのインストールと Web Push に対応する。左
 
 インストール済みの PWA を開いた直後に出る OS のスプラッシュ画面は、`public/manifest.webmanifest` の `background_color` で決まる。Zoo は `#000000` に固定している。Android の Chrome はスプラッシュに `prefers-color-scheme` を反映せず、Web 側から起動ごとに色を変える方法もないため、ライトモードの端末でも一瞬だけ黒くなる。白いスプラッシュは夜に眩しいため、暗い色を選ぶ。
 
-ステータスバーは起動後 `<meta name="theme-color">` が OS の明深色に合わせて黄色／黒を切り替える。OS ダークでは変更前の黄色から黒に変わる。スプラッシュとステータスバーのどちらも OS の設定だけに従い、アプリ内のテーマ設定（`zoo-theme`）は反映されない。OS がダークでアプリ内がライトに設定されている場合、ステータスバーは黒、画面はライトになる。
+スプラッシュの背景は OS の配色設定に従わず、常に manifest の `background_color`（黒）になる。一方、起動後のステータスバーは `<meta name="theme-color">` が OS の明深色に合わせて黄色／黒を切り替える。OS ダークでは変更前の黄色から黒に変わる。どちらもアプリ内のテーマ設定（`zoo-theme`）には従わないため、OS がダークでアプリ内がライトの場合はステータスバーが黒、画面がライトになる。
 
 `/manifest.webmanifest` は Service Worker が毎回 network-first で取り直し、オフラインのときだけ precache を使う（`public/sw.js`）。そのため manifest を変えれば、新しい Service Worker の install を待たずに配信できる。OS がスプラッシュの配色をキャッシュしている場合は、端末側の更新または再インストールが必要になることがある。
 

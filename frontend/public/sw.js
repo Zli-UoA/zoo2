@@ -319,13 +319,30 @@ async function handleAsset(request) {
   }
 }
 
+// nginx の try_files は見つからないファイルに index.html を返す。HTML を manifest として
+// 保存するとオフライン起動の配色まで壊れるため、ContentType で受け入れるか決める。
+function isExpectedFreshAsset(path, response) {
+  const type = (response.headers.get("content-type") || "").toLowerCase();
+  return path === "/offline.html"
+    ? type.includes("text/html")
+    : type.includes("manifest+json") || type.includes("application/json");
+}
+
 async function handleFreshAsset(request) {
   const cache = await caches.open(await findActiveShellCache());
+  const path = new URL(request.url, self.location.origin).pathname;
   try {
     const response = await fetch(request, { cache: "reload" });
-    if (response.ok) {
-      if (response.type === "basic") return await cacheResponse(cache, request, response);
-      return response;
+    if (response.ok && isExpectedFreshAsset(path, response)) {
+      if (response.type !== "basic") return response;
+      // 保存に失敗しても取得できた最新の応答は返す。古いキャッシュへ戻さない。
+      const fresh = response.clone();
+      try {
+        await cacheResponse(cache, request, response);
+      } catch {
+        /* Storage quota or Cache API failure: still serve the fresh response. */
+      }
+      return fresh;
     }
   } catch {
     /* Offline: fall back to the precached copy. */
@@ -546,10 +563,11 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin) return;
   if (isPrivatePath(url.pathname) || url.pathname === "/sw.js") return;
 
-  if (event.request.mode === "navigate") {
-    event.respondWith(handleNavigation(event.request, event));
-  } else if (FRESH_ASSETS.has(url.pathname)) {
+  if (FRESH_ASSETS.has(url.pathname)) {
+    // /offline.html を直接開いたナビゲーションもここで取り直してキャッシュを更新する。
     event.respondWith(handleFreshAsset(event.request));
+  } else if (event.request.mode === "navigate") {
+    event.respondWith(handleNavigation(event.request, event));
   } else if (isCacheableAsset(url)) {
     event.respondWith(handleAsset(event.request));
   }

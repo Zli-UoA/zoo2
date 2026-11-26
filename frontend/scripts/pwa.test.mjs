@@ -710,6 +710,84 @@ test("the manifest is revalidated so installed apps receive the new splash color
   );
 });
 
+test("a failed manifest cache write still returns the fresh response", async () => {
+  let manifest = '{"background_color":"#ffffff"}';
+  const cacheContext = memoryCaches();
+  const realOpen = cacheContext.api.open.bind(cacheContext.api);
+  cacheContext.api.open = async (name) => {
+    const cache = await realOpen(name);
+    return {
+      ...cache,
+      put: async (request, response) => {
+        if (requestKey(request) === `${ORIGIN}/manifest.webmanifest`)
+          throw new Error("QuotaExceededError");
+        return cache.put(request, response);
+      },
+    };
+  };
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () =>
+      basicResponse(manifest, { headers: { "content-type": "application/manifest+json" } }),
+  });
+  await dispatch(handlers, "install");
+  manifest = '{"background_color":"#000000"}';
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+  });
+  assert.equal(await response.text(), '{"background_color":"#000000"}');
+});
+
+test("an HTML fallback for a missing manifest does not overwrite the cached manifest", async () => {
+  let body = '{"background_color":"#ffffff"}';
+  let type = "application/manifest+json";
+  const { handlers, cacheContext } = worker({
+    fetch: async (input) => {
+      if (requestKey(input) === `${ORIGIN}/manifest.webmanifest`)
+        return basicResponse(body, { headers: { "content-type": type } });
+      return basicResponse(`network:${requestKey(input)}`);
+    },
+  });
+  await dispatch(handlers, "install");
+  body = "<html>not a manifest</html>";
+  type = "text/html";
+
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+  });
+  assert.equal(await response.text(), '{"background_color":"#ffffff"}');
+  const cache = await cacheContext.api.open("zoo-shell-v2");
+  assert.equal(
+    await (await cache.match(`${ORIGIN}/manifest.webmanifest`)).text(),
+    '{"background_color":"#ffffff"}',
+  );
+});
+
+test("opening offline.html online refreshes its cached copy", async () => {
+  let html = "<html>old offline</html>";
+  const { handlers, cacheContext } = worker({
+    fetch: async (input) => {
+      if (requestKey(input) === `${ORIGIN}/offline.html`)
+        return basicResponse(html, { headers: { "content-type": "text/html" } });
+      return basicResponse(`network:${requestKey(input)}`);
+    },
+  });
+  await dispatch(handlers, "install");
+  html = "<html>new offline</html>";
+
+  const response = await fetchThrough(handlers, navigation(`${ORIGIN}/offline.html`));
+  assert.equal(await response.text(), "<html>new offline</html>");
+  const cache = await cacheContext.api.open("zoo-shell-v2");
+  assert.equal(
+    await (await cache.match(`${ORIGIN}/offline.html`)).text(),
+    "<html>new offline</html>",
+  );
+});
+
 test("push displays sender, channel and message preview from the decrypted payload", async () => {
   const { handlers, notifications } = worker();
   await dispatch(handlers, "push", {
