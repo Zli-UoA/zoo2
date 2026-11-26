@@ -11,14 +11,24 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use tui_textarea::TextArea;
 use zoo2_client_core::poll::PollGate;
 
+use super::e2ee_chat::{
+    self, ChannelEncryption, CreateForm, CreateKind, Decryptions, RowKey, Shown,
+};
+use super::global_search::{self, GlobalSearch};
 use crate::{
-    api::{ApiClient, Me, ReadState, ThreadSummary, TypingUser},
+    api::{ApiClient, Me, ReadState, ThreadSummary, TypingUser, stale_revision},
+    e2ee::{
+        send::{self, ChannelSender, SendContext},
+        store::{Decryption, EncryptedRow, RecipientSummary},
+    },
     electric::{self, Batch, ShapeEvent, ShapeId},
-    http::Credentials,
+    http::{ApiError, Credentials},
     store::Store,
 };
 
 const NOTICE_TTL: Duration = Duration::from_secs(6);
+/// 暗号化したメッセージを、本文の代わりに出すところ（スレッドの一覧など）。
+const ENCRYPTED_PLACEHOLDER: &str = "🔒 暗号化されたメッセージ";
 /// `on_tick` の間隔。`ui::run` の interval と合わせる。
 pub const TICK: Duration = Duration::from_millis(500);
 /// 入力中の通知は2秒に1回まで送り、3秒止まったら取り消す。
@@ -41,6 +51,8 @@ pub enum AppEvent {
         channel_id: String,
         target: Target,
         content: String,
+        /// 暗号化したメッセージの編集を始めたときの版（#361）。下書きと一緒に戻す。
+        edit_base: Option<u64>,
     },
     ReadStates(Vec<ReadState>),
     Threads {
@@ -62,6 +74,22 @@ pub enum AppEvent {
     ThreadsChanged {
         reopened: Option<String>,
     },
+    /// 移行中、未移行の子スレッドへの返信がサーバーで最上位へ正規化された。
+    ThreadRedirected {
+        from: String,
+        to: String,
+    },
+    ThreadLeft(String),
+    /// 全文検索の 1 ページ（`generation` が今のものと違えば捨てる）。
+    SearchResults {
+        generation: u64,
+        append: bool,
+        page: crate::api::SearchPage,
+    },
+    SearchFailed {
+        generation: u64,
+        message: String,
+    },
     ReadStatesPollFinished,
     EmojiPollFinished,
     TypingPollFinished,
@@ -74,6 +102,44 @@ pub enum AppEvent {
     },
     /// 暗号化の画面の裏の処理の結果（#360）。
     Encryption(super::encryption::EncryptionEvent),
+    /// 端末と検証の画面の裏の処理の結果（#362）。
+    Devices(super::devices::DevicesEvent),
+    /// 他のユーザーの検証の知らせ（#368）。
+    Verification(crate::e2ee::verification::VerificationEvent),
+    /// 暗号化したメッセージの復号の結果（メッセージ ID、行の版、結果）と、そのときの暗号ストアの
+    /// 受信用セッションの数え（#361）。
+    Decrypted {
+        channel_id: String,
+        results: Vec<(String, RowKey, Decryption)>,
+        generation: Option<u64>,
+    },
+    /// 暗号化チャンネルの配布先を判定し直した（#361）。
+    Recipients {
+        channel_id: String,
+        summary: RecipientSummary,
+    },
+    /// 暗号ストアに記録した、暗号化チャンネルの ID と、保存できずに記録し直すもの（#361）。
+    KnownEncryptedChannels {
+        known: Vec<String>,
+        failed: Vec<String>,
+    },
+    /// 暗号化したメッセージの編集が 409 `E2EE_STALE_REVISION` になった（#361）。今の版の本文が
+    /// 送ろうとした本文と同じなら、応答をなくしただけなので成功として扱う。
+    EditConflict {
+        channel_id: String,
+        message_id: String,
+        current_revision: u64,
+        content: String,
+        edit_base: Option<u64>,
+    },
+    /// ピン留めの並びの版（`GET /api/channel-pins` または書き込みの応答）。
+    PinsVersion(i64),
+    /// チャンネルか DM を作った（#361）。開く。`encrypted` は応答の値。
+    Created {
+        channel_id: String,
+        requested_encryption: bool,
+        encrypted: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,8 +152,17 @@ pub enum Focus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SidebarItem {
     Channel(String),
-    Thread { channel_id: String, id: String },
-    MoreThreads { archived: bool },
+    /// サイドバー先頭のピン留め。通常の一覧にも同じチャンネルが出る。
+    Pinned(String),
+    Thread {
+        channel_id: String,
+        id: String,
+        /// ピン留めの行の下に出すスレッドか。通常の一覧にも同じスレッドが出るので、選択位置を区別する。
+        pinned: bool,
+    },
+    MoreThreads {
+        archived: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,9 +181,19 @@ pub enum Mode {
     },
     /// チャンネル名で絞り込む。
     Search(String),
+    /// 全文検索（状態は `App::global_search`）。
+    GlobalSearch,
     Help,
     /// 暗号化の画面（初回設定と解錠。#360）。
     Encryption,
+    /// 端末と検証の画面（端末一覧と失効、他のユーザーの検証、鍵スロット。#362）。
+    Devices,
+    /// チャンネルか DM を作る（#361）。
+    Create(CreateForm),
+    /// 暗号化チャンネルの配布先の詳細（#361）。`scroll` 行目から出す。
+    Recipients {
+        scroll: usize,
+    },
 }
 
 /// 入力欄の送り先。
@@ -125,6 +210,8 @@ pub struct FailedDraft {
     pub channel_id: String,
     pub target: Target,
     pub content: String,
+    /// 暗号化したメッセージの編集を始めたときの版（#361）。戻したときの競合の確かめに使う。
+    pub edit_base: Option<u64>,
 }
 
 pub struct ThreadView {
@@ -171,6 +258,8 @@ pub struct App {
     /// 選択中のメッセージがペインより長いときの、メッセージ内の表示位置。
     pub inner_scroll: usize,
     pub thread: Option<ThreadView>,
+    /// 全文検索の語と結果。閉じても残し、開き直したときに続きから使う。
+    pub global_search: GlobalSearch,
     /// 直近の描画でタイムラインに出ていた最も新しいメッセージ (チャンネル, メッセージ)。
     /// 既読はここまでしか進めない。
     pub newest_shown: Option<(String, String)>,
@@ -185,6 +274,8 @@ pub struct App {
 
     /// 未読のあるチャンネル。
     pub unread: HashSet<String>,
+    /// ピン留めの並びの版。書き込みのたびに更新し、409 のときは取り直す。
+    pub pin_version: i64,
     /// チャンネルごとに既読を送った最新メッセージ。同じ位置を何度も送らない。
     marked_read: HashMap<String, String>,
     /// 開いているチャンネルで入力中のユーザー。キーはスレッドの親 (None はタイムライン)。
@@ -200,6 +291,30 @@ pub struct App {
     typing_poll: PollGate,
     /// 暗号化の画面と、その裏の処理。
     pub encryption: super::encryption::Encryption,
+    /// 端末と検証の画面と、その裏の処理（#362、#368）。
+    pub devices: super::devices::Devices,
+    /// 検証の期限切れと送り直しを最後に確かめた時刻。
+    verification_tick: Option<Instant>,
+    /// 暗号化したメッセージの復号の結果（#361）。
+    pub decryptions: Decryptions,
+    /// 暗号化チャンネルごとの、最後に判定した配布先（送信画面に出す。#361）。
+    pub recipients: HashMap<String, RecipientSummary>,
+    /// 暗号化チャンネルへの送信の直列化と、知っている epoch（#361）。
+    channel_sender: ChannelSender,
+    /// 入力欄の暗号化したメッセージの編集を始めたときの版（メッセージ ID と版。#361）。下書きを
+    /// 戻すときは、下書きと一緒に保存した版に戻す。
+    edit_base: Option<(String, u64)>,
+    /// `state.json` の暗号化チャンネルの記録を読めなかった（暗号ストアから読むまで平文で送らない）。
+    known_encrypted_unreadable: bool,
+    /// 暗号ストアの置き場所（暗号化チャンネルの記録を、その場で書く）。
+    crypto_root: Option<std::path::PathBuf>,
+    /// 暗号ストアに記録していない、`encrypted = true` を見たチャンネル（#361）。
+    unrecorded_encrypted: HashSet<String>,
+    /// 暗号ストアの記録を読んだか。
+    known_encrypted_loaded: bool,
+    /// 記録を読んだ暗号ストア（開き直したら読み直す）。
+    known_encrypted_store: Option<usize>,
+    known_encrypted_in_flight: bool,
 }
 
 impl App {
@@ -215,8 +330,11 @@ impl App {
         crate::mfm::set_emoji_catalog(HashMap::new(), HashSet::new());
         let encryption =
             super::encryption::Encryption::new(api.clone(), http.clone(), app_tx.clone());
+        let devices = super::devices::Devices::new(api.clone(), http.clone(), app_tx.clone());
         let mut app = Self {
             encryption,
+            devices,
+            verification_tick: None,
             api,
             http,
             api_base_url,
@@ -241,6 +359,7 @@ impl App {
             thread_cursors: [None, None],
             thread_has_additional_pages: [false; 2],
             thread_failed_append: [None, None],
+            global_search: GlobalSearch::default(),
             current: None,
             selected: None,
             scroll: 0,
@@ -254,6 +373,7 @@ impl App {
             update_available: None,
             should_quit: false,
             unread: HashSet::new(),
+            pin_version: 0,
             marked_read: HashMap::new(),
             typing: HashMap::new(),
             typing_session: uuid::Uuid::new_v4().to_string(),
@@ -264,10 +384,26 @@ impl App {
             read_poll: PollGate::new(Duration::from_secs(10), Duration::from_secs(10)),
             emoji_poll: PollGate::new(Duration::from_secs(60), Duration::from_secs(60)),
             typing_poll: PollGate::new(Duration::from_millis(1500), Duration::from_secs(5)),
+            decryptions: Decryptions::default(),
+            recipients: HashMap::new(),
+            channel_sender: ChannelSender::default(),
+            edit_base: None,
+            known_encrypted_unreadable: false,
+            crypto_root: None,
+            unrecorded_encrypted: HashSet::new(),
+            known_encrypted_loaded: false,
+            known_encrypted_store: None,
+            known_encrypted_in_flight: false,
         };
-        for id in [ShapeId::Channels, ShapeId::Users, ShapeId::ChannelUsers] {
+        for id in [
+            ShapeId::Channels,
+            ShapeId::Users,
+            ShapeId::ChannelUsers,
+            ShapeId::UserPinnedChannels,
+        ] {
             app.subscribe(id);
         }
+        app.refresh_pin_version();
         app
     }
 
@@ -383,10 +519,16 @@ impl App {
                 self.store.apply(&id, batch);
                 if is_channels {
                     for channel in self.store.channels() {
-                        if channel.encrypted {
-                            self.known_encrypted_channels.insert(channel.id.clone());
+                        if channel.encrypted
+                            && self.known_encrypted_channels.insert(channel.id.clone())
+                        {
+                            self.record_encrypted(&channel.id);
+                            self.unrecorded_encrypted.insert(channel.id.clone());
                         }
                     }
+                }
+                if matches!(id, ShapeId::Messages(_)) {
+                    self.decryptions.dirty = true;
                 }
             }
             ShapeEvent::Failed(id, err) => {
@@ -469,6 +611,77 @@ impl App {
                 self.store.account_profiles = profiles;
             }
             AppEvent::Encryption(event) => self.encryption.on_event(event),
+            AppEvent::Devices(event) => self.devices.on_event(event),
+            AppEvent::Verification(event) => self.on_verification(event),
+            AppEvent::Decrypted {
+                channel_id,
+                results,
+                generation,
+            } => {
+                self.decryptions.in_flight = false;
+                if let Some(generation) = generation {
+                    self.decryptions.generations.insert(channel_id, generation);
+                }
+                for (message_id, row, decryption) in results {
+                    self.decryptions.apply(&message_id, row, decryption);
+                }
+            }
+            AppEvent::Recipients {
+                channel_id,
+                summary,
+            } => {
+                self.recipients.insert(channel_id, summary);
+            }
+            AppEvent::KnownEncryptedChannels { known, failed } => {
+                self.known_encrypted_in_flight = false;
+                self.known_encrypted_loaded = true;
+                self.known_encrypted_channels.extend(known);
+                self.unrecorded_encrypted.extend(failed);
+            }
+            AppEvent::EditConflict {
+                channel_id,
+                message_id,
+                current_revision,
+                content,
+                edit_base,
+            } => {
+                let applied = self
+                    .store
+                    .message(&channel_id, &message_id)
+                    .and_then(|message| self.decryptions.editable(message))
+                    .is_some_and(|(shown, revision)| {
+                        revision == current_revision && shown.body == content
+                    });
+                if !applied {
+                    self.notify(
+                        "このメッセージはほかの場所で編集されました。読み込み直してから編集してください",
+                    );
+                    self.on_app_event(AppEvent::RestoreDraft {
+                        channel_id,
+                        target: Target::Edit(message_id),
+                        content,
+                        edit_base,
+                    });
+                }
+            }
+            AppEvent::Created {
+                channel_id,
+                requested_encryption,
+                encrypted,
+            } => {
+                if encrypted {
+                    if self.known_encrypted_channels.insert(channel_id.clone()) {
+                        self.record_encrypted(&channel_id);
+                        self.unrecorded_encrypted.insert(channel_id.clone());
+                    }
+                } else if requested_encryption {
+                    // 暗号化を求めたのに平文のチャンネルが返った。このプロセスのあいだは送らない。
+                    self.known_encrypted_channels.insert(channel_id.clone());
+                    self.notify(e2ee_chat::DOWNGRADED);
+                }
+                self.focus = Focus::Messages;
+                self.open_channel(channel_id);
+            }
             AppEvent::Threads {
                 requested_at,
                 threads,
@@ -498,6 +711,7 @@ impl App {
                     selected = Some(SidebarItem::Thread {
                         channel_id: first.channel_id.clone(),
                         id: first.id.clone(),
+                        pinned: false,
                     });
                 }
                 self.thread_has_additional_pages[scope] = append || threads.len() > 100;
@@ -563,7 +777,42 @@ impl App {
                     "スレッド一覧を取得できませんでした: {message}。一覧の再試行を選んでください"
                 ));
             }
+            AppEvent::SearchResults {
+                generation,
+                append,
+                page,
+            } => self.global_search.apply(generation, append, page),
+            AppEvent::SearchFailed {
+                generation,
+                message,
+            } => self.global_search.fail(generation, message),
+            AppEvent::ThreadLeft(id) => {
+                // 退出の応答を待つあいだにカーソルを動かしていても、同じ行に残す（行が消えて添字がずれるため）。
+                let selected = self.selected_sidebar_item();
+                self.active_threads.retain(|thread| thread.id != id);
+                self.archived_threads.retain(|thread| thread.id != id);
+                self.restore_sidebar_selection(selected);
+                self.threads_requested_at = [Some(Instant::now()); 2];
+                self.refresh_threads();
+            }
+            AppEvent::ThreadRedirected { from, to } => {
+                // 一覧にない `from` の一時の行が消える（`to` が一覧にあれば、その行が代わりになる）と、
+                // 添字がずれるので、カーソルは同じ行に残す。
+                let selected = self.selected_sidebar_item();
+                if let Some(thread) = self.thread.as_mut().filter(|t| t.root_id == from) {
+                    thread.root_id = to.clone();
+                    thread.selected = None;
+                    thread.scroll = 0;
+                    thread.inner_scroll = 0;
+                }
+                if self.target == Target::Reply(from) {
+                    self.target = Target::Reply(to);
+                }
+                self.restore_sidebar_selection(selected);
+            }
             AppEvent::ThreadsChanged { reopened } => {
+                // 再Openしたスレッドの行が増えて添字がずれるので、カーソルは同じ行に残す。
+                let selected = self.selected_sidebar_item();
                 if let Some(id) = reopened {
                     self.locally_reopened_threads.insert(
                         id.clone(),
@@ -575,6 +824,7 @@ impl App {
                         .insert(id.clone(), (false, Instant::now()));
                     self.ensure_active_thread(&id);
                 }
+                self.restore_sidebar_selection(selected);
                 // 書き込み前の一覧で、確定済みの状態を上書きしない。
                 self.threads_requested_at = [Some(Instant::now()); 2];
                 self.refresh_threads();
@@ -587,17 +837,20 @@ impl App {
                 channel_id,
                 target,
                 content,
+                edit_base,
             } => {
                 // 入力欄に書きかけの本文があるか別のチャンネルにいるときは、上書きせずに取っておく。
                 if self.current.as_deref() == Some(channel_id.as_str()) && self.composer.is_empty()
                 {
                     self.composer = composer_with(&content);
+                    self.set_edit_base(&target, edit_base);
                     self.target = target;
                 } else {
                     self.failed_drafts.push(FailedDraft {
                         channel_id,
                         target,
                         content,
+                        edit_base,
                     });
                     self.notify(format!(
                         "送れなかった本文を保存しました ({}件)。R で入力欄に戻せます",
@@ -607,6 +860,7 @@ impl App {
             }
             AppEvent::ReadStatesPollFinished => self.read_poll.finish(Instant::now(), true),
             AppEvent::EmojiPollFinished => self.emoji_poll.finish(Instant::now(), true),
+            AppEvent::PinsVersion(version) => self.pin_version = version,
             AppEvent::TypingPollFinished => self.typing_poll.finish(
                 Instant::now(),
                 self.typing.values().any(|users| !users.is_empty()) || self.typing_sent.is_some(),
@@ -640,11 +894,77 @@ impl App {
 
     /// 端末の管理のタスクと OIDC の設定を、暗号化の画面につなぐ（#360）。
     pub fn attach_encryption(&mut self, context: super::encryption::E2eeContext) {
+        // 暗号ストアを開く前から、記録した暗号化チャンネルを暗号化として扱う（開くまでの平文の送信を止める）。
+        // 記録を読めなかったときは、暗号ストアから読めるまで平文で送らない（記録がないものとして送ると、
+        // 暗号化チャンネルの格下げを見逃すため）。
+        self.crypto_root = context.crypto_root.clone();
+        if let Some(root) = &context.crypto_root {
+            match crate::e2ee::store::read_encrypted_channels(root, &self.me.id) {
+                Ok(ids) => self.known_encrypted_channels.extend(ids),
+                Err(_) => self.known_encrypted_unreadable = true,
+            }
+        }
+        let mut context = context;
+        if let Some(events) = context.events.take() {
+            self.devices.attach(
+                context.oidc.clone(),
+                context.stores.clone(),
+                Some(events.device_limit),
+            );
+            // 端末の管理のタスクが受け取った検証のメッセージを、検証の処理に渡す。
+            if let Some(sas) = self.devices.sas.clone() {
+                let mut verifications = events.verifications;
+                tokio::spawn(async move {
+                    while let Some(messages) = verifications.recv().await {
+                        sas.handle_messages(messages);
+                    }
+                });
+            }
+        } else {
+            self.devices
+                .attach(context.oidc.clone(), context.stores.clone(), None);
+        }
         self.encryption.attach(context);
+    }
+
+    /// 他のユーザーの検証の知らせ。届いた要求は前面に出す。入力の途中などでは、キー操作を奪わないよう、
+    /// ステータス行で知らせて `D` で開いてもらう。
+    fn on_verification(&mut self, event: crate::e2ee::verification::VerificationEvent) {
+        let fresh = self.devices.on_verification(event);
+        if fresh && !matches!(self.mode, Mode::Normal | Mode::Devices) {
+            self.devices.sas_open = None;
+            self.notify("検証の要求が届いています（D で開く）");
+        }
+    }
+
+    /// 暗号化チャンネル（削除されていないもの）を共有する相手（Web の `useEncryptedPeers`）。
+    pub fn encrypted_peers(&self) -> Vec<String> {
+        let me = self.me.id.as_str();
+        let mut peers: Vec<String> = self
+            .store
+            .channels()
+            .into_iter()
+            .filter(|channel| channel.encrypted && self.store.is_member(&channel.id, me))
+            .flat_map(|channel| self.store.channel_members(&channel.id))
+            .map(|user| user.id.clone())
+            .filter(|id| id != me)
+            .collect();
+        peers.sort();
+        peers.dedup();
+        peers
     }
 
     pub fn on_tick(&mut self) {
         self.encryption.on_tick(self.mode == Mode::Encryption);
+        if self
+            .verification_tick
+            .is_none_or(|at| at.elapsed() >= crate::e2ee::verification::TICK_INTERVAL)
+        {
+            self.verification_tick = Some(Instant::now());
+            self.devices.on_tick();
+        }
+        self.sync_known_encrypted();
+        self.request_decryptions();
         if self.terminal_active {
             for archived in [false, true] {
                 let scope = usize::from(archived);
@@ -777,34 +1097,14 @@ impl App {
 
     /// 再開成功・購読で確認した再開を、一覧の再取得を待たず反映する。
     fn ensure_active_thread(&mut self, id: &str) {
-        let archived = self
-            .archived_threads
-            .iter()
-            .position(|thread| thread.id == id)
-            .map(|index| self.archived_threads.remove(index));
+        // Reopening alone is not joining. Only the participant-filtered API
+        // may add a persistent entry; the viewed Open thread has its own row.
         if let Some(thread) = self
             .active_threads
             .iter_mut()
             .find(|thread| thread.id == id)
         {
             thread.thread_archive_at = None;
-            return;
-        }
-        let cached = archived.or_else(|| {
-            self.store.channels().into_iter().find_map(|channel| {
-                let root = self.store.message(&channel.id, id)?;
-                Some(ThreadSummary {
-                    id: root.id.clone(),
-                    channel_id: root.channel_id.clone(),
-                    content: root.content.chars().take(160).collect(),
-                    thread_archive_at: None,
-                    reply_count: self.store.replies(&channel.id, id).len() as u64,
-                })
-            })
-        });
-        if let Some(mut thread) = cached {
-            thread.thread_archive_at = None;
-            self.active_threads.insert(0, thread);
         }
     }
 
@@ -835,6 +1135,22 @@ impl App {
 
     /// 一覧外の一時表示にも、描画と検索で同じ本文を使う。
     pub fn thread_content(&self, channel_id: &str, id: &str) -> Option<&str> {
+        // 暗号化したスレッドの親は、復号できた本文を出す（一覧の本文はサーバーにないので空）。
+        if let Some(root) = self.store.message(channel_id, id)
+            && root.ciphertext.is_some()
+        {
+            return Some(match self.decryptions.shown(root, true) {
+                Shown::Decrypted { message, .. } => message.body.as_str(),
+                _ => ENCRYPTED_PLACEHOLDER,
+            });
+        }
+        if self.known_encrypted_channels.contains(channel_id)
+            && self
+                .threads()
+                .any(|thread| thread.id == id && thread.content.is_empty())
+        {
+            return Some(ENCRYPTED_PLACEHOLDER);
+        }
         self.threads()
             .find(|thread| thread.id == id && thread.channel_id == channel_id)
             .map(|thread| thread.content.as_str())
@@ -866,41 +1182,65 @@ impl App {
         !archived
     }
 
+    /// チャンネルの下に出すスレッドの行。通常の一覧とピン留めで、同じスレッドを同じ並びで出す。
+    /// 参加していないチャンネルは、閲覧中の1件だけを出す。
+    fn thread_rows(&self, channel_id: &str, pinned: bool) -> Vec<SidebarItem> {
+        let joined = self
+            .store
+            .channel(channel_id)
+            .is_some_and(|channel| !channel.is_dm)
+            && self.store.is_member(channel_id, &self.me.id);
+        let row = |id: &str| SidebarItem::Thread {
+            channel_id: channel_id.to_owned(),
+            id: id.to_owned(),
+            pinned,
+        };
+        let mut rows: Vec<SidebarItem> = self
+            .threads()
+            .filter(|thread| {
+                joined
+                    && thread.channel_id == channel_id
+                    && !self.thread_is_archived(channel_id, &thread.id)
+            })
+            .map(|thread| row(&thread.id))
+            .collect();
+        if self.current.as_deref() == Some(channel_id)
+            && let Some(thread) = &self.thread
+        {
+            let selected = row(&thread.root_id);
+            if !rows.contains(&selected)
+                && self.store.message(channel_id, &thread.root_id).is_some()
+                && !self.thread_is_archived(channel_id, &thread.root_id)
+                && !self.store.replies(channel_id, &thread.root_id).is_empty()
+            {
+                rows.push(selected);
+            }
+        }
+        rows
+    }
+
     pub fn sidebar_items(&self) -> Vec<SidebarItem> {
         let mut items = Vec::new();
-        for channel in self.store.channels() {
-            items.push(SidebarItem::Channel(channel.id.clone()));
-            let joined = !channel.is_dm && self.store.is_member(&channel.id, &self.me.id);
-            for thread in self.threads().filter(|thread| {
-                joined
-                    && thread.channel_id == channel.id
-                    && (!self.thread_is_archived(&channel.id, &thread.id)
-                        || (self.current.as_deref() == Some(channel.id.as_str())
-                            && self
-                                .thread
-                                .as_ref()
-                                .is_some_and(|selected| selected.root_id == thread.id)))
-            }) {
-                items.push(SidebarItem::Thread {
-                    channel_id: channel.id.clone(),
-                    id: thread.id.clone(),
-                });
-            }
-            if self.current.as_deref() == Some(channel.id.as_str())
-                && let Some(thread) = &self.thread
-            {
-                let selected = SidebarItem::Thread {
-                    channel_id: channel.id.clone(),
-                    id: thread.root_id.clone(),
-                };
-                if !items.contains(&selected)
-                    && self.store.message(&channel.id, &thread.root_id).is_some()
-                    && (self.thread_is_archived(&channel.id, &thread.root_id)
-                        || !self.store.replies(&channel.id, &thread.root_id).is_empty())
-                {
-                    items.push(selected);
+        // ピン留めは先頭に出す。アーカイブ中は通常の一覧だけに残す（アンアーカイブで戻る）。
+        // 通常のチャンネルには、通常の一覧と同じスレッドを下に出す（DM には出さない）。
+        for pin in self.store.pinned_channels() {
+            let visible = self.store.channel(&pin.channel_id).is_some_and(|channel| {
+                channel.deleted_at.is_none() && channel.archive_at.is_none()
+            });
+            if visible {
+                items.push(SidebarItem::Pinned(pin.channel_id.clone()));
+                let is_dm = self
+                    .store
+                    .channel(&pin.channel_id)
+                    .is_some_and(|channel| channel.is_dm);
+                if !is_dm {
+                    items.extend(self.thread_rows(&pin.channel_id, true));
                 }
             }
+        }
+        for channel in self.store.channels() {
+            items.push(SidebarItem::Channel(channel.id.clone()));
+            items.extend(self.thread_rows(&channel.id, false));
         }
         for archived in [false, true] {
             if !archived
@@ -911,6 +1251,11 @@ impl App {
             }
         }
         items
+    }
+
+    /// カーソルがある行。一時のスレッドの行が増減する操作の前に控えて、あとで `restore_sidebar_selection` に渡す。
+    fn selected_sidebar_item(&self) -> Option<SidebarItem> {
+        self.sidebar_items().get(self.sidebar_index).cloned()
     }
 
     fn restore_sidebar_selection(&mut self, selected: Option<SidebarItem>) {
@@ -1087,6 +1432,12 @@ impl App {
             self.should_quit = true;
             return;
         }
+        // 前面に出した他のユーザーの検証は、ほかの画面より先にキーを受け取る。
+        if matches!(self.mode, Mode::Normal | Mode::Devices) && self.devices.has_open_verification()
+        {
+            self.devices.on_verification_key(key);
+            return;
+        }
         match self.mode.clone() {
             Mode::Normal => self.on_normal_key(key),
             Mode::Insert => self.on_insert_key(key),
@@ -1113,6 +1464,7 @@ impl App {
                 self.mode = Mode::Normal;
             }
             Mode::Search(query) => self.on_search_key(key, query),
+            Mode::GlobalSearch => self.on_global_search_key(key),
             Mode::React { message_id, input } => self.on_react_key(key, message_id, input),
             Mode::Help => self.mode = Mode::Normal,
             Mode::Encryption => {
@@ -1120,6 +1472,32 @@ impl App {
                 if !self.encryption.on_key(key, &user_id) {
                     self.mode = Mode::Normal;
                 }
+            }
+            Mode::Devices => {
+                // 読み直し（`r`）では、同期が進んで増えた、暗号化チャンネルを共有する相手も取り直す。
+                if key.code == KeyCode::Char('r') {
+                    self.devices.set_peers(self.encrypted_peers());
+                }
+                if !self.devices.on_key(key) {
+                    self.mode = Mode::Normal;
+                }
+            }
+            Mode::Create(form) => self.on_create_key(key, form),
+            Mode::Recipients { scroll } => {
+                let last = super::view::recipient_details(self)
+                    .map_or(0, |lines| lines.len().saturating_sub(1));
+                self.mode = match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => Mode::Recipients {
+                        scroll: (scroll + 1).min(last),
+                    },
+                    KeyCode::Char('k') | KeyCode::Up => Mode::Recipients {
+                        scroll: scroll.saturating_sub(1),
+                    },
+                    KeyCode::Char('g') | KeyCode::Home => Mode::Recipients { scroll: 0 },
+                    KeyCode::Char('G') | KeyCode::End => Mode::Recipients { scroll: last },
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('V') => Mode::Normal,
+                    _ => Mode::Recipients { scroll },
+                };
             }
         }
     }
@@ -1132,14 +1510,36 @@ impl App {
                 self.mode = Mode::Encryption;
                 self.encryption.open();
             }
+            KeyCode::Char('D') => {
+                self.mode = Mode::Devices;
+                let peers = self.encrypted_peers();
+                self.devices.open(peers);
+                // 知らせただけの検証の要求があれば、前面に出す。
+                if !self.devices.has_open_verification() {
+                    self.devices.sas_open = self
+                        .devices
+                        .sas_entries
+                        .iter()
+                        .find(|(_, entry)| !entry.view.finished())
+                        .map(|(txn, _)| txn.clone());
+                }
+            }
             KeyCode::Tab => self.cycle_focus(true),
             KeyCode::BackTab => self.cycle_focus(false),
+            // ピン留めの並び替えは Alt+↑↓ と [ / ]。通常の選択移動より先に判定する。
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => self.move_pinned(-1),
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => self.move_pinned(1),
+            KeyCode::Char('[') => self.move_pinned(-1),
+            KeyCode::Char(']') => self.move_pinned(1),
             KeyCode::Char('j') | KeyCode::Down => self.move_selection(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_selection(-1),
             KeyCode::Char('g') | KeyCode::Home => self.move_selection(isize::MIN),
             KeyCode::Char('G') | KeyCode::End => self.move_selection(isize::MAX),
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.scroll_inside(true)
+            }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.mode = Mode::GlobalSearch
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.scroll_inside(false)
@@ -1161,12 +1561,120 @@ impl App {
                     };
                 }
             }
+            KeyCode::Char('p') => self.toggle_pin(),
+            // J はピン留め行でもチャンネル参加。並び替えは [ / ] と Alt+↑↓ に分ける。
             KeyCode::Char('J') => self.join_or_leave(true),
             KeyCode::Char('L') => self.join_or_leave(false),
             KeyCode::Char('/') => self.mode = Mode::Search(String::new()),
+            KeyCode::Char('S') => self.mode = Mode::GlobalSearch,
             KeyCode::Char('R') => self.restore_failed_draft(),
             KeyCode::Char('u') => self.reopen_thread(),
+            KeyCode::Char('c') => self.mode = Mode::Create(CreateForm::channel()),
+            KeyCode::Char('m') => self.mode = Mode::Create(CreateForm::dm()),
+            KeyCode::Char('V') => {
+                if self
+                    .current
+                    .as_ref()
+                    .is_some_and(|id| self.recipients.contains_key(id))
+                {
+                    self.mode = Mode::Recipients { scroll: 0 };
+                } else {
+                    self.notify("まだ配布先を判定していません。暗号化チャンネルに送ると判定します");
+                }
+            }
             _ => {}
+        }
+    }
+
+    /// チャンネルか DM の作成の入力欄（#361）。Tab で公開範囲（暗号化するか）を切り替える。
+    fn on_create_key(&mut self, key: KeyEvent, mut form: CreateForm) {
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                return;
+            }
+            KeyCode::Enter => {
+                self.mode = Mode::Normal;
+                self.create(form);
+                return;
+            }
+            KeyCode::Tab | KeyCode::BackTab => form.toggle(),
+            KeyCode::Backspace => {
+                form.input.pop();
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                form.input.push(c)
+            }
+            _ => {}
+        }
+        self.mode = Mode::Create(form);
+    }
+
+    /// チャンネルか DM を作り、作れたら開く。暗号化を求めたのに、サーバーが暗号化されていない
+    /// チャンネルを返したら、平文では送らない（docs/e2ee.md の「暗号化チャンネル」）。
+    fn create(&mut self, form: CreateForm) {
+        let encrypted = form.encrypted();
+        let api = self.api.clone();
+        let tx = self.app_tx.clone();
+        match form.kind {
+            CreateKind::Channel => {
+                let name = form.input.trim().to_owned();
+                if name.is_empty() {
+                    self.notify("チャンネル名を入れてください");
+                    return;
+                }
+                let private = form.visibility != e2ee_chat::Visibility::Public;
+                tokio::spawn(async move {
+                    let result = if encrypted {
+                        api.create_encrypted_channel(&name, None).await
+                    } else {
+                        api.create_channel(None, &name, None, private).await
+                    };
+                    let _ = tx.send(match result {
+                        Ok((channel, _)) => AppEvent::Created {
+                            channel_id: channel.id,
+                            requested_encryption: encrypted,
+                            encrypted: channel.encrypted,
+                        },
+                        Err(err) => AppEvent::Notice(e2ee_chat::create_error(&err)),
+                    });
+                });
+            }
+            CreateKind::Dm => {
+                let mut ids = Vec::new();
+                for name in form.input.split_whitespace() {
+                    let name = name.trim_start_matches('@');
+                    let found = self
+                        .store
+                        .users()
+                        .find(|user| user.user_name == name)
+                        .map(|user| user.id.clone());
+                    match found {
+                        Some(id) if id == self.me.id => {}
+                        Some(id) => ids.push(id),
+                        None => {
+                            self.notify(format!("ユーザーが見つかりません: @{name}"));
+                            return;
+                        }
+                    }
+                }
+                ids.sort();
+                ids.dedup();
+                if ids.is_empty() {
+                    self.notify("相手のユーザー名を入れてください");
+                    return;
+                }
+                tokio::spawn(async move {
+                    let _ = tx.send(match api.create_dm(&ids, encrypted).await {
+                        Ok((channel, _)) => AppEvent::Created {
+                            channel_id: channel.id,
+                            requested_encryption: encrypted,
+                            encrypted: channel.encrypted,
+                        },
+                        Err(err) => AppEvent::Notice(e2ee_chat::create_error(&err)),
+                    });
+                });
+            }
         }
     }
 
@@ -1198,6 +1706,21 @@ impl App {
             self.encryption.on_paste(text);
             return;
         }
+        if self.mode == Mode::Devices {
+            self.devices.on_paste(text);
+            return;
+        }
+        if let Mode::Create(form) = &mut self.mode {
+            form.input.extend(text.chars().filter(|c| !c.is_control()));
+            return;
+        }
+        if self.mode == Mode::GlobalSearch {
+            // 検索語に足すだけ。検索は Enter で行う。
+            self.global_search
+                .query
+                .extend(text.chars().filter(|c| !c.is_control()));
+            return;
+        }
         if self.mode != Mode::Insert {
             return;
         }
@@ -1205,6 +1728,131 @@ impl App {
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         if self.composer.insert_str(text) {
             self.touch_typing();
+        }
+    }
+
+    fn on_global_search_key(&mut self, key: KeyEvent) {
+        match self.global_search.on_key(key) {
+            global_search::Action::None => {}
+            global_search::Action::Close => self.mode = Mode::Normal,
+            global_search::Action::Search => self.fetch_search(false),
+            global_search::Action::More => self.fetch_search(true),
+            global_search::Action::Open => {
+                if let Some(target) = self.global_search.destination() {
+                    self.mode = Mode::Normal;
+                    self.open_search_result(target);
+                }
+            }
+        }
+    }
+
+    /// 全文検索の 1 ページを取る。古い取得の結果は番号で捨てる（取り消しはしない）。
+    fn fetch_search(&mut self, append: bool) {
+        let Some((generation, query, kind, cursor)) = self.global_search.start(append) else {
+            return;
+        };
+        // `from:@名前`・`in:#チャンネル`（複数可）・`after:`・`before:`・`with:me`・`-is:bot` を絞り込みにする
+        // （名前は同期済みの一覧で引く）。
+        let parsed = global_search::parse_modifiers(&query);
+        // 日付は端末の暦の日として、その 0 時で区切る。
+        let tz = self
+            .global_search
+            .time_zone
+            .clone()
+            .unwrap_or_else(jiff::tz::TimeZone::system);
+        let midnight = |day: Option<String>| day.map(|d| global_search::local_midnight(&d, &tz));
+        let mut filters = crate::api::SearchFilters {
+            after: midnight(parsed.after),
+            before: midnight(parsed.before),
+            exclude_bots: parsed.no_bots,
+            involving_me: parsed.with_me,
+            ..Default::default()
+        };
+        for name in &parsed.from {
+            match self
+                .store
+                .users()
+                .find(|user| user.user_name.eq_ignore_ascii_case(name))
+            {
+                Some(user) => filters.user_ids.push(user.id.clone()),
+                None => {
+                    self.global_search
+                        .fail(generation, format!("@{name} という人は見つかりません"));
+                    return;
+                }
+            }
+        }
+        for name in &parsed.channels {
+            match self
+                .store
+                .channels()
+                .into_iter()
+                .find(|channel| !channel.is_dm && channel.channel_name.eq_ignore_ascii_case(name))
+            {
+                Some(channel) => filters.channel_ids.push(channel.id.clone()),
+                None => {
+                    self.global_search.fail(
+                        generation,
+                        format!("#{name} というチャンネルは見つかりません"),
+                    );
+                    return;
+                }
+            }
+        }
+        if filters.user_ids.len() > 20 || filters.channel_ids.len() > 20 {
+            self.global_search.fail(
+                generation,
+                "from: と in: は、それぞれ 20 個まで書けます".into(),
+            );
+            return;
+        }
+        if parsed.terms.is_empty() {
+            self.global_search.fail(
+                generation,
+                "絞り込みのほかに、探す語を入れてください".into(),
+            );
+            return;
+        }
+        let terms = parsed.terms;
+        let api = self.api.clone();
+        let tx = self.app_tx.clone();
+        tokio::spawn(async move {
+            let event = match api.search(kind, &terms, &filters, cursor.as_deref()).await {
+                Ok(page) => AppEvent::SearchResults {
+                    generation,
+                    append,
+                    page,
+                },
+                Err(error) => AppEvent::SearchFailed {
+                    generation,
+                    message: format!("{error:#}"),
+                },
+            };
+            let _ = tx.send(event);
+        });
+    }
+
+    /// 検索結果のメッセージを開く。スレッドの返信ならスレッドを開いてその返信を選ぶ。
+    /// 行がまだ同期されていなくても、選択は届いた時点で効く（描画時に位置を探す）。
+    fn open_search_result(&mut self, target: global_search::Destination) {
+        self.open_channel(target.channel_id);
+        match target.parent_id {
+            Some(root_id) => {
+                self.thread = Some(ThreadView {
+                    root_id,
+                    selected: Some(target.message_id),
+                    scroll: 0,
+                    inner_scroll: 0,
+                });
+                self.focus = Focus::Thread;
+                self.poll_typing();
+            }
+            None => {
+                self.selected = Some(target.message_id);
+                // 前に選んでいたメッセージの中のスクロールを持ち越さない（`move_selection` と同じ）。
+                self.inner_scroll = 0;
+                self.focus = Focus::Messages;
+            }
         }
     }
 
@@ -1278,6 +1926,173 @@ impl App {
         }
     }
 
+    /// サイドバーで選択中のチャンネル。スレッド選択中はその親チャンネル。
+    fn selected_sidebar_channel(&self) -> Option<String> {
+        match self.focus {
+            Focus::Sidebar => self
+                .sidebar_items()
+                .get(self.sidebar_index)
+                .and_then(|item| match item {
+                    SidebarItem::Channel(id) | SidebarItem::Pinned(id) => Some(id.clone()),
+                    SidebarItem::Thread { channel_id, .. } => Some(channel_id.clone()),
+                    SidebarItem::MoreThreads { .. } => None,
+                }),
+            _ => self.current.clone(),
+        }
+    }
+
+    /// ピン留めの版を取り直す。起動時と、409 のあとに使う。
+    fn refresh_pin_version(&self) {
+        let api = self.api.clone();
+        let tx = self.app_tx.clone();
+        tokio::spawn(async move {
+            if let Ok(pins) = api.channel_pins().await {
+                let _ = tx.send(AppEvent::PinsVersion(pins.version));
+            }
+        });
+    }
+
+    /// 選択中のチャンネルのピン留めを切り替える。409 のときは最新の版で 1 回やり直す。
+    fn toggle_pin(&mut self) {
+        let Some(channel_id) = self.selected_sidebar_channel() else {
+            self.notify("チャンネルを選んでください");
+            return;
+        };
+        let pinned = self.store.is_pinned(&channel_id);
+        if !pinned && let Some(channel) = self.store.channel(&channel_id) {
+            // アーカイブ中・削除済みは新しくピン留めできない。サーバーと同じ条件を
+            // 先に確かめ、押しただけで API を送らない。ピン済みなら解除できる。
+            // チャンネル行がまだ届いていない場合は、同期前の有効な操作を誤って
+            // 拒否しないよう、サーバーの判定に任せる。
+            if channel.deleted_at.is_some() {
+                self.notify("削除済みのチャンネルはピン留めできません");
+                return;
+            }
+            if channel.archive_at.is_some() {
+                self.notify("アーカイブ中のチャンネルはピン留めできません");
+                return;
+            }
+            // `channel_user` の初回同期前は、未参加と「まだ届いていない」を区別できない。
+            // 同期済みのときだけゲストの未参加を理由に止める。
+            let is_guest = self
+                .store
+                .user(&self.me.id)
+                .is_some_and(|user| user.is_guest);
+            if is_guest
+                && self.store.is_synced(&ShapeId::Users)
+                && self.store.is_synced(&ShapeId::ChannelUsers)
+                && !self.store.is_member(&channel_id, &self.me.id)
+            {
+                self.notify("ゲストは参加していない公開チャンネルをピン留めできません");
+                return;
+            }
+        }
+        let api = self.api.clone();
+        let tx = self.app_tx.clone();
+        let version = self.pin_version;
+        self.spawn_api(
+            if pinned {
+                "ピン留めの解除"
+            } else {
+                "ピン留め"
+            },
+            async move {
+                let result = if pinned {
+                    api.unpin_channel(&channel_id, version).await
+                } else {
+                    api.pin_channel(&channel_id, version).await
+                };
+                match result {
+                    Ok(version) => {
+                        let _ = tx.send(AppEvent::PinsVersion(version));
+                        Ok(())
+                    }
+                    Err(err) if ApiError::has_code(&err, "CHANNEL_PINS_CONFLICT") => {
+                        let latest = api.channel_pins().await?;
+                        let version = if pinned {
+                            api.unpin_channel(&channel_id, latest.version).await?
+                        } else {
+                            api.pin_channel(&channel_id, latest.version).await?
+                        };
+                        let _ = tx.send(AppEvent::PinsVersion(version));
+                        Ok(())
+                    }
+                    Err(err) => Err(err),
+                }
+            },
+        );
+    }
+
+    /// 選択中のピン留めを `delta` だけ動かす。409 のときは最新の版で 1 回やり直し、
+    /// 相手が先に解除していたら復活させない。
+    fn move_pinned(&mut self, delta: isize) {
+        let selected = match self.focus {
+            Focus::Sidebar => match self.sidebar_items().get(self.sidebar_index) {
+                Some(SidebarItem::Pinned(id)) => id.clone(),
+                _ => {
+                    self.notify("ピン留めを選んでください");
+                    return;
+                }
+            },
+            _ => return,
+        };
+        let ids: Vec<String> = self
+            .store
+            .pinned_channels()
+            .into_iter()
+            .filter(|pin| {
+                self.store.channel(&pin.channel_id).is_some_and(|channel| {
+                    channel.deleted_at.is_none() && channel.archive_at.is_none()
+                })
+            })
+            .map(|pin| pin.channel_id.clone())
+            .collect();
+        let Some(index) = ids.iter().position(|id| id == &selected) else {
+            return;
+        };
+        let target = (index as isize + delta).clamp(0, ids.len() as isize - 1) as usize;
+        if target == index {
+            return;
+        }
+        let mut order = ids;
+        order.remove(index);
+        order.insert(target, selected.clone());
+        let moved = selected.clone();
+        let api = self.api.clone();
+        let tx = self.app_tx.clone();
+        let version = self.pin_version;
+        self.spawn_api("ピン留めの並び替え", async move {
+            match api.reorder_channel_pins(&order, version).await {
+                Ok(version) => {
+                    let _ = tx.send(AppEvent::PinsVersion(version));
+                    Ok(())
+                }
+                Err(err) if ApiError::has_code(&err, "CHANNEL_PINS_CONFLICT") => {
+                    let latest = api.channel_pins().await?;
+                    let _ = tx.send(AppEvent::PinsVersion(latest.version));
+                    let latest_active: Vec<String> = latest
+                        .pins
+                        .iter()
+                        .filter(|pin| !pin.archived)
+                        .map(|pin| pin.channel_id.clone())
+                        .collect();
+                    if !latest_active.contains(&moved) {
+                        return Err(anyhow::anyhow!(
+                            "別の端末でピン留めが解除またはアーカイブされたため、並びを変えませんでした"
+                        ));
+                    }
+                    // ほかの端末が追加したピンは落とさず、最新の有効なピンの上で
+                    // 動かした項目だけを、意図した並びの隣を目印に入れ直す。
+                    let next = merge_pinned_order(&order, &moved, &latest_active);
+                    let version = api.reorder_channel_pins(&next, latest.version).await?;
+                    let _ = tx.send(AppEvent::PinsVersion(version));
+                    Ok(())
+                }
+                Err(err) => Err(err),
+            }
+        });
+    }
+
     /// チャンネル名・スレッド名に `query` を含む行の添字。
     pub fn search_matches(&self, query: &str) -> Vec<usize> {
         let query = query.to_lowercase();
@@ -1286,13 +2101,13 @@ impl App {
             .enumerate()
             .filter(|(_, item)| {
                 let label = match item {
-                    SidebarItem::Channel(id) => self
+                    SidebarItem::Channel(id) | SidebarItem::Pinned(id) => self
                         .store
                         .channel(id)
                         .map(|channel| self.store.channel_label(channel, &self.me.id))
                         .unwrap_or_default(),
                     SidebarItem::MoreThreads { .. } => return false,
-                    SidebarItem::Thread { channel_id, id } => self
+                    SidebarItem::Thread { channel_id, id, .. } => self
                         .thread_content(channel_id, id)
                         .unwrap_or_default()
                         .to_owned(),
@@ -1344,7 +2159,13 @@ impl App {
                 else {
                     return;
                 };
-                let mut ids = vec![thread.root_id.clone()];
+                // 親が削除されて描かれないときは、候補を描いている返信だけにする（見えない親を選ばない）。
+                let mut ids: Vec<String> = self
+                    .store
+                    .message(&channel_id, &thread.root_id)
+                    .map(|root| root.id.clone())
+                    .into_iter()
+                    .collect();
                 ids.extend(
                     self.store
                         .replies(&channel_id, &thread.root_id)
@@ -1385,29 +2206,41 @@ impl App {
                 thread
                     .selected
                     .as_ref()
-                    .filter(|id| **id != thread.root_id)
+                    .filter(|id| {
+                        self.current
+                            .as_deref()
+                            .is_some_and(|channel| !self.store.replies(channel, id).is_empty())
+                    })
                     .cloned()
             }),
         };
         if let Some(root_id) = root_id {
             self.typing_poll.wake();
+            // 一覧にないスレッドを開くと、その下に一時の行が増えるので、カーソルは同じ行に残す。
+            let selected = self.selected_sidebar_item();
             self.thread = Some(ThreadView {
                 root_id,
                 selected: None,
                 scroll: 0,
                 inner_scroll: 0,
             });
+            self.restore_sidebar_selection(selected);
             self.focus = Focus::Thread;
         }
     }
 
     fn activate_sidebar(&mut self) {
-        match self.sidebar_items().get(self.sidebar_index).cloned() {
-            Some(SidebarItem::Channel(channel_id)) => {
+        match self.selected_sidebar_item() {
+            Some(SidebarItem::Channel(channel_id) | SidebarItem::Pinned(channel_id)) => {
+                // カーソルは `open_channel` が、押した行に残す。
                 self.open_channel(channel_id);
                 self.focus = Focus::Messages;
             }
-            Some(SidebarItem::Thread { channel_id, id }) => {
+            Some(SidebarItem::Thread {
+                channel_id,
+                id,
+                pinned,
+            }) => {
                 self.open_channel(channel_id);
                 self.thread = Some(ThreadView {
                     root_id: id.clone(),
@@ -1415,9 +2248,11 @@ impl App {
                     scroll: 0,
                     inner_scroll: 0,
                 });
+                // 開いた行（ピン留めの下か通常の一覧か）に、カーソルを残す。
                 self.restore_sidebar_selection(Some(SidebarItem::Thread {
                     channel_id: self.current.clone().unwrap_or_default(),
                     id: id.clone(),
+                    pinned,
                 }));
                 self.focus = Focus::Thread;
                 self.poll_typing();
@@ -1431,6 +2266,9 @@ impl App {
     }
 
     pub fn open_channel(&mut self, channel_id: String) {
+        // 別チャンネルの、一覧にないスレッドを閲覧中は、一時の行（ピン留めの下を含む）が出ている。
+        // チャンネルを開くとスレッドが閉じてその行が消え、添字がずれるので、カーソルは同じ行に残す。
+        let selected = self.selected_sidebar_item();
         if self.current.as_deref() != Some(channel_id.as_str()) {
             let previous: Vec<_> = self
                 .subscriptions
@@ -1468,6 +2306,7 @@ impl App {
         self.subscribe(ShapeId::Messages(channel_id.clone()));
 
         self.current = Some(channel_id);
+        self.restore_sidebar_selection(selected);
         self.poll_typing();
     }
 
@@ -1483,7 +2322,10 @@ impl App {
     /// スレッドを閉じる。返信を書きかけていたら、送り先をチャンネルに戻す。
     fn close_thread(&mut self) {
         self.typing_poll.wake();
+        // 一覧にないスレッドを閉じると、その下の一時の行が消えるので、カーソルは同じ行に残す。
+        let selected = self.selected_sidebar_item();
         self.thread = None;
+        self.restore_sidebar_selection(selected);
         self.focus = Focus::Messages;
         if matches!(self.target, Target::Reply(_)) {
             self.target = Target::Channel;
@@ -1544,8 +2386,17 @@ impl App {
             self.focus = Focus::Messages;
         }
         self.composer = composer_with(&draft.content);
+        self.set_edit_base(&draft.target, draft.edit_base);
         self.target = draft.target;
         self.mode = Mode::Insert;
+    }
+
+    /// 戻した下書きの、編集を始めたときの版を入力欄に戻す（ほかの下書きの版で確かめないため）。
+    fn set_edit_base(&mut self, target: &Target, edit_base: Option<u64>) {
+        self.edit_base = match (target, edit_base) {
+            (Target::Edit(message_id), Some(revision)) => Some((message_id.clone(), revision)),
+            _ => None,
+        };
     }
 
     /// フォーカス中のペインで選択しているメッセージ。
@@ -1573,12 +2424,35 @@ impl App {
             self.notify("自分のメッセージだけを編集できます");
             return;
         }
+        // 暗号化チャンネルでは、復号できた最新の版の本文を編集する（#361）。暗号化前の平文の
+        // メッセージは編集できない（サーバーも 409 `E2EE_LEGACY_IMMUTABLE` で拒否する。#367）。
+        let encrypted = self.channel_encryption(&channel_id).treat_as_encrypted();
+        let body = match self.decryptions.shown(message, encrypted) {
+            Shown::Plain => message.content.clone(),
+            Shown::BeforeEncryption => {
+                self.notify("暗号化前のメッセージは編集できません");
+                return;
+            }
+            Shown::Decrypted { warning: None, .. } => match self.decryptions.editable(message) {
+                Some((decrypted, revision)) => {
+                    // 編集を始めた版を覚え、送るときに版が進んでいたら送らない（別の端末の編集を、
+                    // 古い版から作った本文で上書きしないため）。
+                    self.edit_base = Some((message_id.clone(), revision));
+                    decrypted.body.clone()
+                }
+                None => return,
+            },
+            Shown::Decrypted { .. } | Shown::Undecryptable(_) => {
+                self.notify("復号できていないメッセージは編集できません");
+                return;
+            }
+        };
         // 編集は入力欄を本文で置き換えるので、書きかけの下書きがあれば始めない。
         if !matches!(self.target, Target::Edit(_)) && !self.composer.is_empty() {
             self.notify("書きかけの下書きがあります。送信するか消してから編集してください");
             return;
         }
-        self.composer = composer_with(&message.content);
+        self.composer = composer_with(&body);
         self.target = Target::Edit(message_id);
         self.mode = Mode::Insert;
     }
@@ -1603,12 +2477,35 @@ impl App {
 
     /// サイドバーでは選択中のチャンネル、それ以外では開いているチャンネルを対象にする。
     fn join_or_leave(&mut self, join: bool) {
+        let thread_id = match self.focus {
+            Focus::Thread => self.thread.as_ref().map(|thread| thread.root_id.clone()),
+            Focus::Sidebar => match self.sidebar_items().get(self.sidebar_index) {
+                Some(SidebarItem::Thread { id, .. }) => Some(id.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(id) = thread_id {
+            let api = self.api.clone();
+            let tx = self.app_tx.clone();
+            self.spawn_api("スレッドの参加・退出", async move {
+                if join {
+                    api.join_thread(&id).await?;
+                    let _ = tx.send(AppEvent::ThreadsChanged { reopened: None });
+                } else {
+                    api.leave_thread(&id).await?;
+                    let _ = tx.send(AppEvent::ThreadLeft(id));
+                }
+                Ok(())
+            });
+            return;
+        }
         let channel_id = match self.focus {
             Focus::Sidebar => self
                 .sidebar_items()
                 .get(self.sidebar_index)
                 .and_then(|item| match item {
-                    SidebarItem::Channel(id) => Some(id.clone()),
+                    SidebarItem::Channel(id) | SidebarItem::Pinned(id) => Some(id.clone()),
                     SidebarItem::Thread { channel_id, .. } => Some(channel_id.clone()),
                     SidebarItem::MoreThreads { .. } => None,
                 }),
@@ -1634,21 +2531,163 @@ impl App {
         }
     }
 
-    /// 暗号化チャンネルか。TUI はまだ Megolm で暗号化して送れないので、平文を送らないために使う。
-    fn is_encrypted_channel(&self, channel_id: &str) -> bool {
-        self.known_encrypted_channels.contains(channel_id)
-            || self.store.channel(channel_id).is_some_and(|c| c.encrypted)
+    /// チャンネルの暗号化の扱い（docs/e2ee.md の「暗号化の格下げを防ぐ」）。一度 `encrypted = true` を
+    /// 見た（暗号ストアに記録した）、名前が `edm:`、暗号文のある行がある、のどれかで `encrypted = false`
+    /// なら格下げとして送信を止める。
+    pub fn channel_encryption(&self, channel_id: &str) -> ChannelEncryption {
+        let has_ciphertext = self
+            .store
+            .visible_messages(channel_id)
+            .any(|message| message.ciphertext.is_some());
+        ChannelEncryption::of(
+            self.store.channel(channel_id),
+            self.known_encrypted_channels.contains(channel_id),
+            has_ciphertext,
+        )
+    }
+
+    /// `encrypted = true` を見たチャンネルを、暗号ストアを待たずにその場で記録する（暗号ストアに記録する
+    /// 前に終了しても、起動し直したあとに格下げを見つけられるように）。書けなくても、暗号ストアへの記録は
+    /// 続ける。
+    fn record_encrypted(&self, channel_id: &str) {
+        if let Some(root) = &self.crypto_root {
+            let _ = crate::e2ee::store::record_encrypted_channels(
+                root,
+                &self.me.id,
+                &[channel_id.to_owned()],
+            );
+        }
+    }
+
+    /// `encrypted = true` を見たチャンネルを暗号ストアに記録し、記録済みのものを読む（開き直したあとも
+    /// 格下げを見つけられるように）。暗号ストアが開いていなければ、次の機会にする。
+    fn sync_known_encrypted(&mut self) {
+        if self.known_encrypted_in_flight {
+            return;
+        }
+        let Some((_, store)) = self.encryption.store() else {
+            return;
+        };
+        // 暗号ストアを開き直した（作り直した）ら、読み直して、今見えている暗号化チャンネルを記録し直す。
+        let identity = std::sync::Arc::as_ptr(&store) as usize;
+        if self.known_encrypted_store != Some(identity) {
+            self.known_encrypted_store = Some(identity);
+            self.known_encrypted_loaded = false;
+            let visible: Vec<String> = self
+                .store
+                .channels()
+                .into_iter()
+                .filter(|channel| channel.encrypted)
+                .map(|channel| channel.id.clone())
+                .collect();
+            self.unrecorded_encrypted.extend(visible);
+        }
+        if self.known_encrypted_loaded && self.unrecorded_encrypted.is_empty() {
+            return;
+        }
+        let ids: Vec<String> = self.unrecorded_encrypted.drain().collect();
+        self.known_encrypted_in_flight = true;
+        let tx = self.app_tx.clone();
+        tokio::spawn(async move {
+            let mut store = store.lock().await;
+            // 保存できなかったものは、次の機会に記録し直す（記録がないまま起動し直すと、格下げを見つけられない）。
+            let failed = ids
+                .into_iter()
+                .filter(|id| store.remember_encrypted_channel(id).is_err())
+                .collect();
+            let known = store.known_encrypted_channels().cloned().collect();
+            drop(store);
+            let _ = tx.send(AppEvent::KnownEncryptedChannels { known, failed });
+        });
+    }
+
+    /// 開いているチャンネルの暗号化したメッセージを、暗号ストアで復号する（#361）。行が届いたときと、
+    /// 鍵を待っているメッセージがあって受信用セッションが増えたときに、1 つずつ行う。
+    fn request_decryptions(&mut self) {
+        if self.decryptions.in_flight {
+            return;
+        }
+        let Some(channel_id) = self.current.clone() else {
+            return;
+        };
+        let Some((_, store)) = self.encryption.store() else {
+            return;
+        };
+        // 受信用セッションが増えたら（Olm で鍵が届いた、鍵バックアップから取り込んだ）、鍵待ちの行と、
+        // 鍵バックアップ由来で復号した行を復号し直す。増えたかはチャンネルごとの数えで決める（別の
+        // チャンネルを開いているあいだに鍵が届いても、戻ったときに復号し直す）。
+        let generation = store
+            .try_lock()
+            .ok()
+            .map(|store| store.inbound_generation());
+        let retry = generation.is_some_and(|generation| {
+            self.decryptions.generations.get(&channel_id) != Some(&generation)
+        });
+        if !self.decryptions.dirty && !retry {
+            return;
+        }
+        // 復号するときは、鍵待ちの行も必ず含める。タスクはロックを取ったあとの数えを記録するので、
+        // 鍵待ちの行を試さずに数えだけを進めると、鍵が届いていても復号し直さなくなるため（ロックを取れずに
+        // 数えが増えたかを確かめられなかったときも同じ）。鍵待ちの行の復号は手元だけで済む。
+        let rows: Vec<(RowKey, EncryptedRow)> = self
+            .store
+            .visible_messages(&channel_id)
+            .filter(|message| self.decryptions.needs(message, true))
+            .filter_map(|message| {
+                let row = EncryptedRow {
+                    channel_id: message.channel_id.clone(),
+                    message_id: message.id.clone(),
+                    parent_id: message.parent_id.clone(),
+                    user_id: message.user_id.clone(),
+                    message_kind: message
+                        .message_kind
+                        .clone()
+                        .unwrap_or_else(|| "message".into()),
+                    epoch: message.epoch,
+                    revision: message.revision,
+                    ciphertext: message.ciphertext.clone()?,
+                };
+                Some((RowKey::of(message), row))
+            })
+            .collect();
+        self.decryptions.dirty = false;
+        if rows.is_empty() {
+            // 復号し直す行がなければ、数えだけを記録する（tick ごとに確かめ直さないため）。
+            if let Some(generation) = generation {
+                self.decryptions.generations.insert(channel_id, generation);
+            }
+            return;
+        }
+        self.decryptions.in_flight = true;
+        let tx = self.app_tx.clone();
+        tokio::spawn(async move {
+            let mut store = store.lock().await;
+            let generation = store.inbound_generation();
+            let results = rows
+                .into_iter()
+                .map(|(key, row)| {
+                    let decryption = store.decrypt_message(&row);
+                    (row.message_id, key, decryption)
+                })
+                .collect();
+            drop(store);
+            let _ = tx.send(AppEvent::Decrypted {
+                channel_id,
+                results,
+                generation: Some(generation),
+            });
+        });
     }
 
     fn submit(&mut self) {
-        // 暗号化チャンネルには、暗号化の送信を入れるまで投稿、返信、編集を送らない（docs/e2ee.md、#361）。
-        // サーバーは平文を拒否するが、拒否の前に本文が届いてしまうため、ここで止める。下書きは残す。
-        if self
+        let encryption = self
             .current
             .as_deref()
-            .is_some_and(|id| self.is_encrypted_channel(id))
-        {
-            self.notify("暗号化チャンネルには、このバージョンの TUI からはまだ送信できません");
+            .map(|id| self.channel_encryption(id))
+            .unwrap_or(ChannelEncryption::Plain);
+        // サーバーが暗号化チャンネルを平文と返しても、平文では送らない（下書きは残す）。
+        if encryption == ChannelEncryption::Downgraded {
+            self.notify(e2ee_chat::DOWNGRADED);
             return;
         }
         // Channels の再同期でチャンネルの行がないあいだは、暗号化か分からないので送らない（下書きは残す）。
@@ -1658,6 +2697,17 @@ impl App {
             .is_some_and(|id| self.store.channel(id).is_none())
         {
             self.notify("チャンネルの情報を同期しています。少し待ってから送ってください");
+            return;
+        }
+        if encryption == ChannelEncryption::Encrypted {
+            self.submit_encrypted();
+            return;
+        }
+        // 暗号化チャンネルの記録を読めなかったあいだは、暗号ストアから読めるまで平文で送らない。
+        if self.known_encrypted_unreadable && !self.known_encrypted_loaded {
+            self.notify(
+                "暗号化チャンネルの記録を読めないため、確かめられるまで送信を止めています。少し待ってから送ってください",
+            );
             return;
         }
         if let Target::Edit(message_id) = self.target.clone()
@@ -1684,29 +2734,219 @@ impl App {
         }
         tokio::spawn(async move {
             let id = uuid::Uuid::new_v4().to_string();
+            let mut resolved_parent: Option<String> = None;
             let result = match &target {
                 Target::Channel => api.send_message(&id, &channel_id, &content, None).await,
-                Target::Reply(root_id) => {
-                    api.send_message(&id, &channel_id, &content, Some(root_id))
-                        .await
-                }
+                Target::Reply(root_id) => api
+                    .send_reply(&id, &channel_id, &content, root_id)
+                    .await
+                    .map(|(txid, parent)| {
+                        resolved_parent = parent.filter(|parent| parent != root_id);
+                        txid
+                    }),
                 Target::Edit(message_id) => api.edit_message(message_id, &content).await,
             };
             if let Err(err) = result {
-                let _ = tx.send(AppEvent::Notice(format!("送信に失敗しました: {err}")));
+                let _ = tx.send(AppEvent::Notice(send_failure_notice(&target, &err)));
                 let _ = tx.send(AppEvent::RestoreDraft {
                     channel_id,
                     target,
                     content,
+                    edit_base: None,
                 });
             } else {
                 let reopened = match target {
-                    Target::Reply(root_id) => Some(root_id),
+                    Target::Reply(root_id) => {
+                        if let Some(parent) = resolved_parent {
+                            let _ = tx.send(AppEvent::ThreadRedirected {
+                                from: root_id,
+                                to: parent.clone(),
+                            });
+                            Some(parent)
+                        } else {
+                            Some(root_id)
+                        }
+                    }
                     _ => None,
                 };
                 let _ = tx.send(AppEvent::ThreadsChanged { reopened });
             }
         });
+    }
+
+    /// 暗号化チャンネルに送る（docs/e2ee.md の「membership_epoch と送信の順序」。#361）。本文は送る直前に
+    /// 暗号化し、平文はサーバーに送らない。送れなければ、平文の下書きとして入力欄に戻す。
+    fn submit_encrypted(&mut self) {
+        if let Target::Edit(message_id) = self.target.clone()
+            && !self.can_change_message(&message_id)
+        {
+            return;
+        }
+        let content = self.composer.lines().join("\n");
+        if content.trim().is_empty() {
+            return;
+        }
+        let Some(channel_id) = self.current.clone() else {
+            return;
+        };
+        // 編集は、始めたときの版を基準にする。そのあとに版が進んでいたら（別の端末で編集された）、
+        // 下書きを残したまま知らせ、送らない。
+        if let Target::Edit(message_id) = &self.target {
+            let current = self
+                .store
+                .message(&channel_id, message_id)
+                .and_then(|message| self.decryptions.editable(message))
+                .map(|(_, revision)| revision);
+            let base = self
+                .edit_base
+                .as_ref()
+                .filter(|(id, _)| id == message_id)
+                .map(|(_, revision)| *revision);
+            match (base, current) {
+                (Some(base), Some(current)) if base == current => {}
+                (None, _) => {
+                    self.notify("編集を始めた版が分かりません。e で編集し直してください");
+                    return;
+                }
+                (Some(_), None) => {
+                    self.notify("復号できていないメッセージは編集できません");
+                    return;
+                }
+                (Some(_), Some(_)) => {
+                    self.notify(
+                        "このメッセージはほかの場所で編集されました。読み込み直してから編集してください",
+                    );
+                    return;
+                }
+            }
+        }
+        let Some((_, store)) = self.encryption.store() else {
+            self.notify(
+                "この端末では、まだ暗号化の準備ができていません。少し待ってから送ってください",
+            );
+            return;
+        };
+        let shape_epoch = self
+            .store
+            .channel(&channel_id)
+            .and_then(|channel| channel.membership_epoch);
+        let mentions = crate::mentions::encrypted_mentions(
+            &content,
+            self.store
+                .channel_members(&channel_id)
+                .into_iter()
+                .map(|user| (user.id.as_str(), user.user_name.as_str())),
+        );
+        let target = self.target.clone();
+        let edit_base = match &target {
+            Target::Edit(_) => self.edit_base.as_ref().map(|(_, revision)| *revision),
+            _ => None,
+        };
+        // 編集は、復号できた最新の版を基準にする（行が先に進んでいれば 409 になる）。
+        let edit = match &target {
+            Target::Edit(message_id) => {
+                let Some(message) = self.store.message(&channel_id, message_id) else {
+                    return;
+                };
+                let Some((decrypted, row_revision)) = self.decryptions.editable(message) else {
+                    self.notify("復号できていないメッセージは編集できません");
+                    return;
+                };
+                Some(send::Edit {
+                    channel_id: channel_id.clone(),
+                    shape_epoch,
+                    message_id: message_id.clone(),
+                    parent_id: message.parent_id.clone(),
+                    revision: row_revision + 1,
+                    body: content.clone(),
+                    kind: decrypted.kind.clone(),
+                    mentions: mentions.clone(),
+                    attachments: decrypted.attachments.clone(),
+                })
+            }
+            _ => None,
+        };
+        let ctx = SendContext {
+            api: self.api.clone(),
+            store,
+            sender: self.channel_sender.clone(),
+        };
+        let tx = self.app_tx.clone();
+        self.composer = new_composer();
+        self.stop_typing();
+        if matches!(target, Target::Edit(_)) {
+            self.target = Target::Channel;
+            self.mode = Mode::Normal;
+        }
+        tokio::spawn(async move {
+            let mut recipients = None;
+            let result = match &edit {
+                Some(edit) => send::edit_encrypted_message(&ctx, edit, &mut recipients).await,
+                None => {
+                    let message = send::NewMessage {
+                        channel_id: channel_id.clone(),
+                        shape_epoch,
+                        message_id: uuid::Uuid::new_v4().to_string(),
+                        parent_id: match &target {
+                            Target::Reply(root_id) => Some(root_id.clone()),
+                            _ => None,
+                        },
+                        body: content.clone(),
+                        mentions,
+                    };
+                    send::send_encrypted_message(&ctx, &message, &mut recipients).await
+                }
+            };
+            // 暗号ストアを手放してから知らせる（端末の管理のタスクが開き直せるように）。
+            drop(ctx);
+            if let Some(summary) = recipients {
+                let _ = tx.send(AppEvent::Recipients {
+                    channel_id: channel_id.clone(),
+                    summary,
+                });
+            }
+            match result {
+                Ok(()) => {
+                    let reopened = match target {
+                        Target::Reply(root_id) => Some(root_id),
+                        _ => None,
+                    };
+                    let _ = tx.send(AppEvent::ThreadsChanged { reopened });
+                }
+                Err(err) => {
+                    if let (Some(current_revision), Target::Edit(message_id)) =
+                        (stale_revision(&err), &target)
+                    {
+                        let _ = tx.send(AppEvent::EditConflict {
+                            channel_id,
+                            message_id: message_id.clone(),
+                            current_revision,
+                            content,
+                            edit_base,
+                        });
+                        return;
+                    }
+                    let _ = tx.send(AppEvent::Notice(send_failure_notice(&target, &err)));
+                    let _ = tx.send(AppEvent::RestoreDraft {
+                        channel_id,
+                        target,
+                        content,
+                        edit_base,
+                    });
+                }
+            }
+        });
+    }
+}
+
+/// 送信に失敗したときの通知。参加行があるスレッドへ未参加・退出済みのまま返信すると 403 になるので、
+/// 参加（`J`）すれば送れることを伝える。投稿権限がないなど、ほかの失敗は原因をそのまま出す。
+fn send_failure_notice(target: &Target, err: &anyhow::Error) -> String {
+    if matches!(target, Target::Reply(_)) && zoo2_client_core::http::is_thread_join_required(err) {
+        "このスレッドに参加していません。Esc で入力を終え、J で参加してから返信してください（アーカイブ済みなら、先に u で再Openします。下書きは残しています）"
+            .to_string()
+    } else {
+        format!("送信に失敗しました: {err}")
     }
 }
 
@@ -1749,9 +2989,75 @@ fn move_id(ids: &[String], current: Option<&str>, delta: isize) -> Option<String
     step(index, delta, ids.len()).map(|index| ids[index].clone())
 }
 
+/// 競合したあとに送り直す並び。ほかの端末が追加したピンは最新の並びのまま残し、
+/// 動かした項目だけを、意図した並びで隣にある既存の項目を目印に入れ直す
+/// （末尾へ動かしたときは直前の項目の後ろ）。最新の添字をそのまま使うと、
+/// 他端末が前へピンを足したぶんだけ位置がずれる。
+fn merge_pinned_order(intended: &[String], moved: &str, latest_active: &[String]) -> Vec<String> {
+    let mut base: Vec<String> = latest_active
+        .iter()
+        .filter(|id| id.as_str() != moved)
+        .cloned()
+        .collect();
+    let Some(moved_index) = intended.iter().position(|id| id == moved) else {
+        return base;
+    };
+    // 動かした項目より後ろで、最新にも残っている最初の要素の前に置く。
+    for id in intended.iter().skip(moved_index + 1) {
+        if let Some(anchor) = base.iter().position(|candidate| candidate == id) {
+            base.insert(anchor, moved.to_owned());
+            return base;
+        }
+    }
+    // 末尾へ動かした場合は、直前の既存要素の後ろに置く。
+    for id in intended.iter().take(moved_index).rev() {
+        if let Some(anchor) = base.iter().position(|candidate| candidate == id) {
+            base.insert(anchor + 1, moved.to_owned());
+            return base;
+        }
+    }
+    base.insert(
+        if moved_index == 0 { 0 } else { base.len() },
+        moved.to_owned(),
+    );
+    base
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reply_to_a_thread_the_user_has_not_joined_points_to_join() {
+        let join_required: anyhow::Error = zoo2_client_core::http::HttpError::Status {
+            status: reqwest::StatusCode::FORBIDDEN,
+            message: zoo2_client_core::http::THREAD_JOIN_REQUIRED_MESSAGE.into(),
+            code: None,
+        }
+        .into();
+        let notice = send_failure_notice(&Target::Reply("root".into()), &join_required);
+        assert!(notice.contains("J で参加"), "{notice}");
+        // 暗号化チャンネルの API は ApiError でエラーを返す。
+        let coded: anyhow::Error = zoo2_client_core::http::ApiError {
+            status: reqwest::StatusCode::FORBIDDEN,
+            code: None,
+            message: zoo2_client_core::http::THREAD_JOIN_REQUIRED_MESSAGE.into(),
+            body: serde_json::Value::Null,
+        }
+        .into();
+        assert!(send_failure_notice(&Target::Reply("root".into()), &coded).contains("J で参加"));
+        // 返信以外では参加しても直らないので、原因をそのまま出す。
+        let notice = send_failure_notice(&Target::Channel, &join_required);
+        assert!(notice.starts_with("送信に失敗しました"), "{notice}");
+        let forbidden: anyhow::Error = zoo2_client_core::http::HttpError::Status {
+            status: reqwest::StatusCode::FORBIDDEN,
+            message: "Only channel managers may post here".into(),
+            code: None,
+        }
+        .into();
+        let notice = send_failure_notice(&Target::Reply("root".into()), &forbidden);
+        assert!(notice.contains("Only channel managers"), "{notice}");
+    }
 
     fn api_test_app(base: &str) -> (App, mpsc::UnboundedReceiver<AppEvent>) {
         let http = reqwest::Client::new();
@@ -1941,11 +3247,12 @@ mod tests {
             .unwrap();
         assert!(matches!(&event, AppEvent::ThreadsChanged { reopened: Some(id) } if id == "root"));
         app.on_app_event(event);
-        assert!(app.active_threads[0].thread_archive_at.is_none());
+        assert!(app.active_threads.is_empty());
         app.close_thread();
-        assert!(app.sidebar_items().contains(&SidebarItem::Thread {
+        assert!(!app.sidebar_items().contains(&SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "root".into(),
+            pinned: false,
         }));
         let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
             .await
@@ -1953,7 +3260,7 @@ mod tests {
             .unwrap();
         assert!(matches!(&event, AppEvent::ThreadsFailed { .. }));
         app.on_app_event(event);
-        assert!(app.active_threads[0].thread_archive_at.is_none());
+        assert!(app.active_threads.is_empty());
         assert!(
             app.notice
                 .as_ref()
@@ -2153,6 +3460,814 @@ mod tests {
         );
     }
 
+    /// 鍵待ちの行があるときに、端末の管理のタスクが暗号ストアのロックを持ったまま鍵を取り込み、
+    /// そのあいだに別の行が届いても、鍵待ちの行を復号し直す（数えだけを進めない）。
+    #[tokio::test]
+    async fn rows_waiting_for_keys_are_retried_even_when_the_lock_was_busy() {
+        use crate::e2ee::store::{CryptoStore, ToDeviceRow, UndecryptableReason};
+        const ME: &str = "00000000-0000-4000-8000-0000000000b0";
+        const SENDER: &str = "00000000-0000-4000-8000-0000000000a0";
+        const CHANNEL: &str = "00000000-0000-4000-8000-0000000000c0";
+        let dir = tempfile::tempdir().unwrap();
+        let mut opened = CryptoStore::open(dir.path(), ME).unwrap().store;
+        opened.mark_registered().unwrap();
+        let store = std::sync::Arc::new(tokio::sync::Mutex::new(opened));
+        let server = wiremock::MockServer::start().await;
+        let (mut app, mut rx) = api_test_app(&server.uri());
+        let (_stores_tx, stores) =
+            tokio::sync::watch::channel(Some((ME.to_owned(), store.clone())));
+        app.attach_encryption(super::super::encryption::E2eeContext {
+            oidc: None,
+            stores,
+            crypto_root: None,
+            events: None,
+        });
+        app.current = Some(CHANNEL.into());
+
+        // 送信者の端末のセッション。鍵（インデックス 0 から）は、あとで届ける。
+        let sender =
+            zoo_crypto::DeviceAccount::new(SENDER, &uuid::Uuid::new_v4().to_string()).unwrap();
+        let mut outbound = zoo_crypto::OutboundSession::new(CHANNEL, 1, 0);
+        let room_key = outbound.room_key();
+        let mut encrypted_row = |id: &str| {
+            let ciphertext = outbound
+                .encrypt(
+                    &sender,
+                    &zoo_crypto::OutgoingMessage {
+                        message_id: id.into(),
+                        parent_id: None,
+                        revision: 0,
+                        content: zoo_crypto::MessageContent {
+                            body: format!("本文 {id}"),
+                            format: "mfm".into(),
+                            kind: "message".into(),
+                        },
+                        mentions: Default::default(),
+                        attachments: Vec::new(),
+                    },
+                )
+                .unwrap();
+            serde_json::json!({ "id": id, "user_id": SENDER, "channel_id": CHANNEL, "content": "",
+                                "created_at": "2026-11-01 04:00:00", "epoch": "1", "revision": "0",
+                                "ciphertext": ciphertext.to_string() })
+        };
+        let x = encrypted_row("x");
+        let y = encrypted_row("y");
+        fn feed(app: &mut App, id: &str, row: serde_json::Value) {
+            app.on_shape(ShapeEvent::Batch(
+                ShapeId::Messages(CHANNEL.into()),
+                Batch {
+                    changes: vec![electric::Change::Upsert {
+                        key: id.into(),
+                        row: row.as_object().unwrap().clone(),
+                    }],
+                    up_to_date: true,
+                    ..Default::default()
+                },
+            ));
+        }
+        async fn decrypted(app: &mut App, rx: &mut mpsc::UnboundedReceiver<AppEvent>) {
+            loop {
+                match rx.recv().await.expect("イベントが届く") {
+                    event @ AppEvent::Decrypted { .. } => {
+                        app.on_app_event(event);
+                        return;
+                    }
+                    other => app.on_app_event(other),
+                }
+            }
+        }
+        fn shown(app: &App, id: &str) -> Result<String, UndecryptableReason> {
+            let message = app.store.message(CHANNEL, id).unwrap();
+            match app.decryptions.shown(message, true) {
+                Shown::Decrypted { message, .. } => Ok(message.body.clone()),
+                Shown::Undecryptable(reason) => Err(reason),
+                _ => panic!("暗号化したメッセージとして出す"),
+            }
+        }
+
+        feed(&mut app, "x", x);
+        app.request_decryptions();
+        decrypted(&mut app, &mut rx).await;
+        assert_eq!(shown(&app, "x"), Err(UndecryptableReason::KeyMissing));
+
+        // 端末の管理のタスクがロックを持ったまま鍵を取り込む。そのあいだに行 Y が届き、復号を頼む
+        // （ロックを取れないので、鍵待ちの行を復号し直すかは確かめられない）。
+        let mut guard = store.lock().await;
+        feed(&mut app, "y", y);
+        app.request_decryptions();
+        let request = guard.registration_request();
+        let recipient =
+            zoo_crypto::verify_device_keys(&request["device_keys"], ME, guard.device_id()).unwrap();
+        let fallback = guard
+            .prepare_key_upload(50, false)
+            .unwrap()
+            .unwrap()
+            .fallback_keys;
+        let key = fallback
+            .as_object()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        let mut olm = sender
+            .create_outbound_olm_session(&recipient, &key)
+            .unwrap();
+        let content = sender
+            .encrypt_room_key(&mut olm, &recipient, &room_key)
+            .unwrap();
+        let row = ToDeviceRow {
+            id: "1".into(),
+            sender_user_id: SENDER.into(),
+            r#type: "m.room.encrypted".into(),
+            content,
+        };
+        let device_keys =
+            serde_json::json!({ SENDER: { sender.device_id(): sender.device_keys() } });
+        let result = guard
+            .process_to_device(std::slice::from_ref(&row), &device_keys)
+            .unwrap();
+        assert_eq!(result.room_keys, 1);
+        drop(guard);
+        decrypted(&mut app, &mut rx).await;
+        assert_eq!(shown(&app, "y").as_deref(), Ok("本文 y"));
+        assert_eq!(
+            shown(&app, "x").as_deref(),
+            Ok("本文 x"),
+            "鍵が届いたので、鍵待ちの行も復号し直す"
+        );
+    }
+
+    fn upsert_rows(app: &mut App, shape: ShapeId, rows: &[(&str, serde_json::Value)]) {
+        for (key, row) in rows {
+            app.on_shape(ShapeEvent::Batch(
+                shape.clone(),
+                Batch {
+                    changes: vec![electric::Change::Upsert {
+                        key: (*key).into(),
+                        row: row.as_object().unwrap().clone(),
+                    }],
+                    ..Default::default()
+                },
+            ));
+        }
+    }
+
+    fn mark_synced(app: &mut App, shape: ShapeId) {
+        app.on_shape(ShapeEvent::Batch(
+            shape,
+            Batch {
+                up_to_date: true,
+                ..Default::default()
+            },
+        ));
+    }
+
+    fn pinned_test_app(server: &wiremock::MockServer) -> (App, mpsc::UnboundedReceiver<AppEvent>) {
+        let (mut app, rx) = api_test_app(&server.uri());
+        upsert_rows(
+            &mut app,
+            ShapeId::Channels,
+            &[
+                (
+                    "c1",
+                    serde_json::json!({
+                        "id": "c1", "channel_name": "general", "is_private": "f"
+                    }),
+                ),
+                (
+                    "c2",
+                    serde_json::json!({
+                        "id": "c2", "channel_name": "design", "is_private": "f"
+                    }),
+                ),
+            ],
+        );
+        upsert_rows(
+            &mut app,
+            ShapeId::UserPinnedChannels,
+            &[
+                (
+                    "p1",
+                    serde_json::json!({
+                        "user_id": "u1", "channel_id": "c1", "position": 0,
+                        "created_at": "2026-11-11 00:00:00", "updated_at": "2026-11-11 00:00:00"
+                    }),
+                ),
+                (
+                    "p2",
+                    serde_json::json!({
+                        "user_id": "u1", "channel_id": "c2", "position": 1,
+                        "created_at": "2026-11-11 00:00:00", "updated_at": "2026-11-11 00:00:00"
+                    }),
+                ),
+            ],
+        );
+        app.focus = Focus::Sidebar;
+        app.sidebar_index = 0;
+        (app, rx)
+    }
+
+    #[tokio::test]
+    async fn pressing_p_on_an_archived_unpinned_channel_does_not_send_a_request() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/channel-pins"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {},
+                "txid": "1"
+            })))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let (mut app, _rx) = api_test_app(&server.uri());
+        upsert_rows(
+            &mut app,
+            ShapeId::Channels,
+            &[(
+                "c1",
+                serde_json::json!({
+                    "id": "c1", "channel_name": "archived", "is_private": "f",
+                    "archive_at": "2026-11-10 00:00:00"
+                }),
+            )],
+        );
+        app.focus = Focus::Sidebar;
+        app.sidebar_index = 0;
+
+        app.on_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('p'),
+            KeyModifiers::NONE,
+        )));
+
+        assert!(
+            app.notice
+                .as_ref()
+                .is_some_and(|(message, _)| message.contains("アーカイブ")),
+            "unexpected notice: {:?}",
+            app.notice
+        );
+        let posts = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| {
+                request.method == wiremock::http::Method::POST
+                    && request.url.path() == "/api/channel-pins"
+            })
+            .count();
+        assert_eq!(posts, 0);
+    }
+
+    #[tokio::test]
+    async fn pressing_p_on_an_unjoined_public_channel_as_a_guest_does_not_send_a_request() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/channel-pins"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {},
+                "txid": "1"
+            })))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let (mut app, _rx) = api_test_app(&server.uri());
+        upsert_rows(
+            &mut app,
+            ShapeId::Users,
+            &[(
+                "u1",
+                serde_json::json!({
+                    "id": "u1", "user_name": "alice", "display_name": "Alice",
+                    "is_guest": "t"
+                }),
+            )],
+        );
+        mark_synced(&mut app, ShapeId::Users);
+        upsert_rows(
+            &mut app,
+            ShapeId::Channels,
+            &[(
+                "c1",
+                serde_json::json!({
+                    "id": "c1", "channel_name": "public", "is_private": "f"
+                }),
+            )],
+        );
+        mark_synced(&mut app, ShapeId::ChannelUsers);
+        app.focus = Focus::Sidebar;
+        app.sidebar_index = 0;
+
+        app.on_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('p'),
+            KeyModifiers::NONE,
+        )));
+
+        assert!(
+            app.notice
+                .as_ref()
+                .is_some_and(|(message, _)| message.contains("ゲスト")),
+            "unexpected notice: {:?}",
+            app.notice
+        );
+        let posts = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| {
+                request.method == wiremock::http::Method::POST
+                    && request.url.path() == "/api/channel-pins"
+            })
+            .count();
+        assert_eq!(posts, 0);
+    }
+
+    #[tokio::test]
+    async fn pressing_p_on_a_joined_public_channel_as_a_guest_sends_a_request() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/channel-pins"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "version": 1 },
+                "txid": "1"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (mut app, _rx) = api_test_app(&server.uri());
+        upsert_rows(
+            &mut app,
+            ShapeId::Users,
+            &[(
+                "u1",
+                serde_json::json!({
+                    "id": "u1", "user_name": "alice", "display_name": "Alice",
+                    "is_guest": "t"
+                }),
+            )],
+        );
+        mark_synced(&mut app, ShapeId::Users);
+        upsert_rows(
+            &mut app,
+            ShapeId::Channels,
+            &[(
+                "c1",
+                serde_json::json!({
+                    "id": "c1", "channel_name": "public", "is_private": "f"
+                }),
+            )],
+        );
+        upsert_rows(
+            &mut app,
+            ShapeId::ChannelUsers,
+            &[(
+                "u1:c1",
+                serde_json::json!({ "user_id": "u1", "channel_id": "c1" }),
+            )],
+        );
+        mark_synced(&mut app, ShapeId::ChannelUsers);
+        app.focus = Focus::Sidebar;
+        app.sidebar_index = 0;
+
+        app.on_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('p'),
+            KeyModifiers::NONE,
+        )));
+
+        let mut sent = false;
+        for _ in 0..100 {
+            if server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .any(|request| {
+                    request.method == wiremock::http::Method::POST
+                        && request.url.path() == "/api/channel-pins"
+                })
+            {
+                sent = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(sent, "a joined guest should be able to pin the channel");
+    }
+
+    #[tokio::test]
+    async fn pressing_p_for_a_channel_not_yet_in_the_store_sends_a_request() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/channel-pins"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "version": 1 },
+                "txid": "1"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (mut app, _rx) = api_test_app(&server.uri());
+        // 作成直後など、チャンネル行がまだ Shape で届いていない状態。
+        app.focus = Focus::Messages;
+        app.current = Some("new-channel".into());
+
+        app.on_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('p'),
+            KeyModifiers::NONE,
+        )));
+
+        let mut sent = false;
+        for _ in 0..100 {
+            if server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .any(|request| {
+                    request.method == wiremock::http::Method::POST
+                        && request.url.path() == "/api/channel-pins"
+                })
+            {
+                sent = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            sent,
+            "a channel missing from the store should be left to the server"
+        );
+    }
+
+    #[tokio::test]
+    async fn j_on_a_pinned_row_joins_instead_of_reordering() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/channels/c1/join"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {},
+                "txid": "42"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (mut app, _rx) = pinned_test_app(&server);
+        assert!(matches!(app.sidebar_items()[0], SidebarItem::Pinned(_)));
+
+        app.on_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('J'),
+            KeyModifiers::NONE,
+        )));
+
+        let mut joined = false;
+        for _ in 0..100 {
+            if server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .any(|request| {
+                    request.method == wiremock::http::Method::POST
+                        && request.url.path() == "/api/channels/c1/join"
+                })
+            {
+                joined = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(joined, "J should join the channel on a pinned row");
+    }
+
+    #[tokio::test]
+    async fn brackets_and_alt_arrows_reorder_pinned_rows() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/channel-pins/order"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "version": 1, "pins": [] },
+                "txid": "43"
+            })))
+            .mount(&server)
+            .await;
+        let (mut app, _rx) = pinned_test_app(&server);
+
+        async fn reorder_count(server: &wiremock::MockServer) -> usize {
+            server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|request| {
+                    request.method == wiremock::http::Method::PATCH
+                        && request.url.path() == "/api/channel-pins/order"
+                })
+                .count()
+        }
+
+        app.on_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char(']'),
+            KeyModifiers::NONE,
+        )));
+        for _ in 0..100 {
+            if reorder_count(&server).await == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        app.sidebar_index = 1;
+        app.on_terminal_event(Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT)));
+        for _ in 0..100 {
+            if reorder_count(&server).await >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let requests = server.received_requests().await.unwrap();
+        let bodies: Vec<serde_json::Value> = requests
+            .iter()
+            .filter(|request| {
+                request.method == wiremock::http::Method::PATCH
+                    && request.url.path() == "/api/channel-pins/order"
+            })
+            .map(|request| serde_json::from_slice(&request.body).unwrap())
+            .collect();
+        assert_eq!(bodies.len(), 2);
+        assert_eq!(bodies[0]["channel_ids"], serde_json::json!(["c2", "c1"]));
+        assert_eq!(bodies[1]["channel_ids"], serde_json::json!(["c2", "c1"]));
+    }
+
+    #[tokio::test]
+    async fn reorder_retry_keeps_pins_added_on_another_device() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/channel-pins"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "pins": [
+                    { "channel_id": "c1", "position": 0, "archived": false },
+                    { "channel_id": "c2", "position": 1, "archived": false },
+                    { "channel_id": "c3", "position": 2, "archived": false }
+                ],
+                "version": 7
+            })))
+            .mount(&server)
+            .await;
+        // 最初の要求は 409 になり、最新には他端末が追加した c3 が入っている。
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = attempts.clone();
+        Mock::given(method("PATCH"))
+            .and(path("/api/channel-pins/order"))
+            .respond_with(move |_request: &wiremock::Request| {
+                if counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(409).set_body_json(serde_json::json!({
+                        "code": "CHANNEL_PINS_CONFLICT",
+                        "version": 7,
+                        "pins": [
+                            { "channel_id": "c2", "position": 0, "archived": false },
+                            { "channel_id": "c1", "position": 1, "archived": false },
+                            { "channel_id": "c3", "position": 2, "archived": false }
+                        ]
+                    }))
+                } else {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "data": { "version": 8, "pins": [] },
+                        "txid": "44"
+                    }))
+                }
+            })
+            .mount(&server)
+            .await;
+        let (mut app, _rx) = pinned_test_app(&server);
+        app.pin_version = 6;
+        app.sidebar_index = 0;
+
+        app.on_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char(']'),
+            KeyModifiers::NONE,
+        )));
+        for _ in 0..100 {
+            if server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|request| request.method == wiremock::http::Method::PATCH)
+                .count()
+                >= 2
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let requests = server.received_requests().await.unwrap();
+        let bodies: Vec<serde_json::Value> = requests
+            .iter()
+            .filter(|request| {
+                request.method == wiremock::http::Method::PATCH
+                    && request.url.path() == "/api/channel-pins/order"
+            })
+            .map(|request| serde_json::from_slice(&request.body).unwrap())
+            .collect();
+        assert_eq!(bodies.len(), 2);
+        assert_eq!(
+            bodies[1]["channel_ids"],
+            serde_json::json!(["c2", "c1", "c3"])
+        );
+        assert_eq!(bodies[1]["expected_version"], 7);
+    }
+
+    #[tokio::test]
+    async fn reorder_retry_places_the_moved_pin_next_to_its_neighbor_when_another_device_inserted_before_it()
+     {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        // 手元は [c1, c2] で c1 を下へ動かす。ほかの端末が先頭に c3 を足している。
+        Mock::given(method("GET"))
+            .and(path("/api/channel-pins"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "pins": [
+                    { "channel_id": "c3", "position": 0, "archived": false },
+                    { "channel_id": "c1", "position": 1, "archived": false },
+                    { "channel_id": "c2", "position": 2, "archived": false }
+                ],
+                "version": 7
+            })))
+            .mount(&server)
+            .await;
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = attempts.clone();
+        Mock::given(method("PATCH"))
+            .and(path("/api/channel-pins/order"))
+            .respond_with(move |_request: &wiremock::Request| {
+                if counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(409).set_body_json(serde_json::json!({
+                        "code": "CHANNEL_PINS_CONFLICT",
+                        "version": 7,
+                        "pins": [
+                            { "channel_id": "c3", "position": 0, "archived": false },
+                            { "channel_id": "c1", "position": 1, "archived": false },
+                            { "channel_id": "c2", "position": 2, "archived": false }
+                        ]
+                    }))
+                } else {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "data": { "version": 8, "pins": [] },
+                        "txid": "45"
+                    }))
+                }
+            })
+            .mount(&server)
+            .await;
+        let (mut app, _rx) = pinned_test_app(&server);
+        app.pin_version = 6;
+        app.sidebar_index = 0;
+
+        app.on_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char(']'),
+            KeyModifiers::NONE,
+        )));
+        for _ in 0..100 {
+            if server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|request| request.method == wiremock::http::Method::PATCH)
+                .count()
+                >= 2
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let requests = server.received_requests().await.unwrap();
+        let bodies: Vec<serde_json::Value> = requests
+            .iter()
+            .filter(|request| {
+                request.method == wiremock::http::Method::PATCH
+                    && request.url.path() == "/api/channel-pins/order"
+            })
+            .map(|request| serde_json::from_slice(&request.body).unwrap())
+            .collect();
+        assert_eq!(bodies.len(), 2);
+        // 最新の添字 (1) ではなく、`c1` の直後に置いた `c2` の手前へ戻す。
+        assert_eq!(
+            bodies[1]["channel_ids"],
+            serde_json::json!(["c3", "c2", "c1"])
+        );
+        assert_eq!(bodies[1]["expected_version"], 7);
+    }
+
+    #[tokio::test]
+    async fn reorder_conflict_stops_when_the_moved_pin_is_archived_or_deleted_elsewhere() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        for latest_pins in [
+            serde_json::json!([
+                { "channel_id": "c1", "position": 0, "archived": true },
+                { "channel_id": "c2", "position": 1, "archived": false }
+            ]),
+            serde_json::json!([
+                { "channel_id": "c2", "position": 0, "archived": false }
+            ]),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/api/channel-pins"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "pins": latest_pins,
+                    "version": 7
+                })))
+                .mount(&server)
+                .await;
+            Mock::given(method("PATCH"))
+                .and(path("/api/channel-pins/order"))
+                .respond_with(ResponseTemplate::new(409).set_body_json(serde_json::json!({
+                    "code": "CHANNEL_PINS_CONFLICT",
+                    "version": 7,
+                    "pins": []
+                })))
+                .mount(&server)
+                .await;
+            let (mut app, mut rx) = pinned_test_app(&server);
+            app.pin_version = 6;
+            app.sidebar_index = 0;
+
+            app.on_terminal_event(Event::Key(KeyEvent::new(
+                KeyCode::Char(']'),
+                KeyModifiers::NONE,
+            )));
+            let mut notice = None;
+            for _ in 0..100 {
+                match tokio::time::timeout(Duration::from_millis(50), rx.recv()).await {
+                    Ok(Some(AppEvent::Notice(message))) => {
+                        notice = Some(message);
+                        break;
+                    }
+                    Ok(Some(_)) => {}
+                    _ => break,
+                }
+            }
+            assert!(
+                notice
+                    .as_deref()
+                    .is_some_and(|message| message.contains("アーカイブ")),
+                "unexpected notice: {notice:?}"
+            );
+            let patches = server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|request| request.method == wiremock::http::Method::PATCH)
+                .count();
+            assert_eq!(
+                patches, 1,
+                "must not retry after an archived/deleted conflict"
+            );
+        }
+    }
+
     #[test]
     fn step_clamps_and_starts_from_latest() {
         assert_eq!(step(None, 1, 0), None);
@@ -2182,5 +4297,46 @@ mod tests {
         let ids = vec!["a".to_string(), "b".to_string()];
         assert_eq!(move_id(&ids, Some("a"), 1).as_deref(), Some("b"));
         assert_eq!(move_id(&ids, Some("gone"), -1).as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn merge_pinned_order_keeps_a_pin_added_before_the_moved_one() {
+        fn ids(values: &[&str]) -> Vec<String> {
+            values.iter().map(|value| (*value).to_string()).collect()
+        }
+        // 手元は [c1, c2] で c1 を下へ。ほかの端末が先頭に c3 を足している。
+        // 最新の添字 1 に入れると [c3, c1, c2] に戻ってしまう。
+        assert_eq!(
+            merge_pinned_order(&ids(&["c2", "c1"]), "c1", &ids(&["c3", "c1", "c2"])),
+            ids(&["c3", "c2", "c1"])
+        );
+        // 上へ動かすときも、意図した並びで直後にある c1 の手前へ戻す。
+        assert_eq!(
+            merge_pinned_order(&ids(&["c2", "c1"]), "c2", &ids(&["c3", "c1", "c2"])),
+            ids(&["c3", "c2", "c1"])
+        );
+        // 末尾へ動かすときは、直前の既存要素の後ろに置く。
+        assert_eq!(
+            merge_pinned_order(
+                &ids(&["c2", "c3", "c1"]),
+                "c1",
+                &ids(&["c4", "c1", "c2", "c3"])
+            ),
+            ids(&["c4", "c2", "c3", "c1"])
+        );
+        // 隣の目印が無くなったときは、最初へ動かした場合だけ先頭に置く。
+        assert_eq!(
+            merge_pinned_order(&ids(&["c2", "c1"]), "c1", &ids(&["c3"])),
+            ids(&["c3", "c1"])
+        );
+        assert_eq!(
+            merge_pinned_order(&ids(&["c3", "c2"]), "c3", &ids(&["c1"])),
+            ids(&["c3", "c1"])
+        );
+        // 動かした項目が意図した並びに無ければ、最新の並びをそのまま使う。
+        assert_eq!(
+            merge_pinned_order(&ids(&["c2"]), "gone", &ids(&["c1", "c2"])),
+            ids(&["c1", "c2"])
+        );
     }
 }

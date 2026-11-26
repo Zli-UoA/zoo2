@@ -25,9 +25,12 @@ export class ZooDouble implements Zoo {
     const id = input.id ?? randomUUID();
     this.posts.push({ ...input, id });
     const existing = this.messages.get(id);
+    // 実際のバックエンドは、別のチャンネルにある ID を存在しないチャンネルと同じ 404 で隠す
+    if (existing && existing.channel_id !== input.channel_id)
+      throw new ZooError(404, "Channel not found");
     if (
       existing &&
-      (existing.channel_id !== input.channel_id ||
+      (
         existing.content !== input.content ||
         existing.parent_id !== input.parent_id)
     )
@@ -47,11 +50,15 @@ export class ZooDouble implements Zoo {
     this.messages.delete(id);
     return { id };
   };
-  setBlocks: Zoo["setBlocks"] = async (id, blocks) => {
-    this.calls.push({ id, blocks });
+  setComponents: Zoo["setComponents"] = async (id, document) => {
+    this.calls.push({ id, components: document });
     const message = this.messages.get(id);
-    if (message) message.blocks = structuredClone(blocks);
-    return { id };
+    if (message) {
+      message.components = structuredClone(document);
+      // テストが読みやすいよう、部品から見出しとカードを読み戻して blocks に入れる
+      message.blocks = cardModel(document);
+    }
+    return { id, components: document };
   };
 }
 export function fixture(overrides: Partial<Config> = {}, database?: Store) {
@@ -270,4 +277,47 @@ export function command(text: string, channel = "channel"): AppEvent {
     channel_id: channel,
     data: { name: "github", values: { text } },
   };
+}
+
+/** MFM の `<plain>` を外す（部品の文字を、テストで元の文字と比べるため）。 */
+export function unplain(text: string): string {
+  return text.replace(/<\/plain><plain><\/<\/plain><plain>plain>/g, "</plain>").replace(/<\/?plain>/g, "");
+}
+
+/** github-bot の部品（cards.ts の cardComponents）から、見出しとカードを読み戻す。 */
+export function cardModel(document: Json): Json[] {
+  const parts: Json[] = document.components;
+  const heading = parts.find((c) => c.id === 1);
+  const box = parts.find((c) => c.type === 17);
+  const text = (id: number) => box?.components.find((c: Json) => c.id === id)?.content as string | undefined;
+  const title = (text(2) ?? "").replace(/ `[^`]*`$/, "");
+  const link = /^\*\*\[(.*)\]\((.*)\)\*\*$/s.exec(title);
+  const fields = (text(4) ?? "")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const m = /^\*\*(.*?)\*\*: (.*)$/s.exec(line)!;
+      let value = m[2];
+      let url = "";
+      const linked = /^\[(.*)\]\((.*)\)$/s.exec(value);
+      if (linked) [value, url] = [linked[1], linked[2]];
+      const code = /^`(.*)`$/s.exec(value);
+      return { title: unplain(m[1]), value: unplain(code ? code[1] : value), url, code: Boolean(code) };
+    });
+  const footer = unplain((text(5) ?? "").replace(/^<small>|<\/small>$/g, "")).split(" · ");
+  return [
+    { type: "text", text: heading ? unplain(heading.content) : "" },
+    {
+      type: "card",
+      card: {
+        title: unplain(link ? link[1] : title.replace(/^\*\*|\*\*$/g, "")),
+        url: link ? link[2] : "",
+        description: unplain(text(3) ?? ""),
+        color: box?.accent_color === undefined ? "" : `#${box.accent_color.toString(16).padStart(6, "0")}`,
+        source: footer[0] ?? "",
+        context: footer[1] ?? "",
+        fields,
+      },
+    },
+  ];
 }

@@ -461,3 +461,33 @@ fn setup_session_tells_typos_from_wrong_keys() {
             .is_none()
     );
 }
+
+#[test]
+fn setup_session_adds_passkey_slots_and_unlocks_with_them() {
+    let (mut created, _) = SetupSession::begin(ALICE).unwrap();
+    let salt = [3u8; 32];
+    created
+        .add_passkey_slot("Y3JlZA", &salt, &[4u8; 32], None)
+        .unwrap();
+    // 同じパスキーを選び直したら、前のスロットを置き換える。
+    created
+        .add_passkey_slot("Y3JlZA", &salt, &[5u8; 32], Some("Pixel".into()))
+        .unwrap();
+    assert_eq!(created.pending_slots().len(), 2);
+    let response = storage_response(&created.secret_storage_request().unwrap(), 1);
+    let storage = SecretStorage::from_json(ALICE, &response).unwrap().unwrap();
+    let unlocked = storage.unlock_with_passkey("Y3JlZA", &[5u8; 32]).unwrap();
+    let session = SetupSession::from_unlocked(&unlocked).unwrap();
+    assert_eq!(session.key_id(), created.key_id());
+    assert!(matches!(
+        storage.unlock_with_passkey("Y3JlZA", &[4u8; 32]),
+        Err(CryptoError::KeySlotUnlock)
+    ));
+
+    // 解錠で取り出した鍵には足さない。
+    let mut session = session;
+    assert!(matches!(
+        session.add_passkey_slot("b3RoZXI", &salt, &[6u8; 32], None),
+        Err(CryptoError::InvalidSecretStorage(_))
+    ));
+}

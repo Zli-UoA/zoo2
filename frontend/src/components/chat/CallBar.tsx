@@ -18,6 +18,7 @@ import { useCallInviteApi, useCallInvites } from "../../hooks/useCallInvites";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useCall } from "../../lib/call/call-context";
 import { cancelCallInvite, inviteToCall } from "../../lib/call/call-invites";
+import { startRingback } from "../../lib/call/call-sounds";
 import { useOptionalCollections } from "../../lib/electric/collections-context";
 import type { ChannelRow } from "../../lib/electric/types";
 import { isLocale } from "../../lib/i18n/locale";
@@ -72,6 +73,13 @@ export function CallBar({ channels = [] }: CallBarProps) {
 
   const channel = channels.find((c) => c.id === currentChannelId);
   const channelOutgoing = outgoing.filter((invite) => invite.channel_id === currentChannelId);
+
+  // 呼んでいる相手がいる間、発信側の呼び出し音を鳴らす（通話に入っているときだけ）。
+  const calling = channelOutgoing.length > 0 && connectionState !== "idle";
+  useEffect(() => {
+    if (!calling) return;
+    return startRingback();
+  }, [calling]);
   const userName = (id: string) => {
     const user = users.find((row) => row.id === id);
     return user?.display_name || user?.user_name || id;
@@ -204,7 +212,7 @@ export function CallBar({ channels = [] }: CallBarProps) {
                     role="img"
                     aria-label={label}
                     title={label}
-                    className={`relative flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-medium transition-all ${
+                    className={`relative flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-medium transition-shadow ${
                       isSpeaking ? "ring-2 ring-emerald-500" : ""
                     }`}
                   >

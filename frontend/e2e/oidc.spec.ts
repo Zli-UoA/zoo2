@@ -149,7 +149,7 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
   // 現在ユーザー（/api/users/me）が解決され、自分のメッセージには編集/削除が出る。
   const ownRow = page.getByRole("listitem").filter({ hasText: message });
   await ownRow.hover();
-  await expect(ownRow.getByRole("button", { name: "編集" })).toBeVisible();
+  await expect(ownRow.getByRole("button", { name: "メッセージを編集" })).toBeVisible();
   await expect(ownRow.getByRole("button", { name: "削除" })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("04-own-message-controls.png") });
 
@@ -214,7 +214,7 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
   const otherRow = page.getByRole("listitem").filter({ hasText: message });
   await expect(otherRow).toBeVisible();
   await otherRow.hover();
-  await expect(otherRow.getByRole("button", { name: "編集" })).toHaveCount(0);
+  await expect(otherRow.getByRole("button", { name: "メッセージを編集" })).toHaveCount(0);
   await expect(otherRow.getByRole("button", { name: "削除" })).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath("07-other-users-message.png") });
 
@@ -225,6 +225,10 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
   );
   await page.getByRole("button", { name: "退出", exact: true }).click();
   await leaveResponse;
+  // メンバーは画面中央のダイアログ。閉じてから、背面の参加の案内を確かめる。
+  await expect(page.getByRole("button", { name: "参加", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "参加して投稿" })).toBeVisible();
   await expect(page.getByPlaceholder("メッセージを送信")).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath("08-join-to-post.png") });
@@ -242,12 +246,13 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
   await page.getByRole("button", { name: "送信" }).click();
   const beeRow = page.getByRole("listitem").filter({ hasText: ownMessage });
   await beeRow.hover();
-  await expect(beeRow.getByRole("button", { name: "編集" })).toBeVisible();
+  await expect(beeRow.getByRole("button", { name: "メッセージを編集" })).toBeVisible();
   await expect(beeRow.getByRole("button", { name: "削除" })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("09-own-message-second-user.png") });
 
   // 退出の本人確認は /api/users/me で解決した id で行われる（#49）。
-  // 1 回目の退出でメンバーペインは開いたままなので、そのまま退出する。
+  // メンバーのダイアログは閉じたので、開き直して退出する。
+  await page.getByRole("button", { name: /メンバー/ }).click();
   const finalLeaveResponse = page.waitForResponse(
     (response) => response.request().method() === "POST" && response.url().endsWith("/leave"),
   );
@@ -255,6 +260,8 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
   await finalLeaveResponse;
   await expect(page.getByRole("button", { name: "参加", exact: true })).toBeVisible();
   await expect(page.getByText("あなた", { exact: true })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "参加して投稿" })).toBeVisible();
   await expect(page.getByPlaceholder("メッセージを送信")).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath("10-join-leave.png") });

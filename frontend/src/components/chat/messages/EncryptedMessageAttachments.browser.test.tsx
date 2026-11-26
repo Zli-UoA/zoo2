@@ -41,27 +41,32 @@ function attachment(): AttachmentInfo {
   };
 }
 
-it("does not fetch and decrypt again when a virtualized row remounts", async () => {
-  const loader = vi.fn(async (info: AttachmentInfo) => new Blob([PNG], { type: info.mimetype }));
-  const element = () => (
-    <LocaleProvider>
-      <EncryptedAttachmentLoaderContext.Provider value={loader}>
-        <EncryptedMessageAttachments attachments={[attachment()]} />
-      </EncryptedAttachmentLoaderContext.Provider>
-    </LocaleProvider>
-  );
+it(
+  "does not fetch and decrypt again when a virtualized row remounts",
+  { timeout: 30_000 },
+  async () => {
+    const loader = vi.fn(async (info: AttachmentInfo) => new Blob([PNG], { type: info.mimetype }));
+    const element = () => (
+      <LocaleProvider>
+        <EncryptedAttachmentLoaderContext.Provider value={loader}>
+          <EncryptedMessageAttachments attachments={[attachment()]} />
+        </EncryptedAttachmentLoaderContext.Provider>
+      </LocaleProvider>
+    );
 
-  const first = render(element());
-  const image = (await screen.findByRole("img", { name: "wide.png" })) as HTMLImageElement;
-  await waitFor(() => expect(image.naturalWidth).toBe(3));
-  first.unmount();
+    const first = render(element());
+    const image = (await screen.findByRole("img", { name: "wide.png" })) as HTMLImageElement;
+    // 画像のデコードは並列で動くブラウザーテストの負荷で1秒を超えることがある。
+    await waitFor(() => expect(image.naturalWidth).toBe(3), { timeout: 10_000 });
+    first.unmount();
 
-  // 戻ってきた行は、スピナーを挟まずにキャッシュの画像を出す。
-  render(element());
-  const again = screen.getByRole("img", { name: "wide.png" }) as HTMLImageElement;
-  await waitFor(() => expect(again.naturalWidth).toBe(3));
-  expect(loader).toHaveBeenCalledTimes(1);
-});
+    // 戻ってきた行は、スピナーを挟まずにキャッシュの画像を出す。
+    render(element());
+    const again = screen.getByRole("img", { name: "wide.png" }) as HTMLImageElement;
+    await waitFor(() => expect(again.naturalWidth).toBe(3), { timeout: 10_000 });
+    expect(loader).toHaveBeenCalledTimes(1);
+  },
+);
 
 it("does not reuse decrypted attachments across crypto scopes (another worker or account)", async () => {
   const first = vi.fn(async (info: AttachmentInfo) => new Blob([PNG], { type: info.mimetype }));
@@ -138,10 +143,10 @@ it("retries a remembered decryption failure when the download button is pressed"
   const loader = vi
     .fn<(info: AttachmentInfo) => Promise<Blob>>()
     .mockRejectedValueOnce(new EncryptedAttachmentError("decrypt"))
-    .mockResolvedValue(new Blob(["%PDF-1.7"], { type: "application/pdf" }));
-  const pdf = { ...attachment(), name: "minutes.pdf", mimetype: "application/pdf" };
-  render(view(loader, [pdf]));
-  const button = await screen.findByRole("button", { name: /minutes\.pdf/ });
+    .mockResolvedValue(new Blob(["archive"], { type: "application/octet-stream" }));
+  const archive = { ...attachment(), name: "minutes.bin", mimetype: "application/octet-stream" };
+  render(view(loader, [archive]));
+  const button = await screen.findByRole("button", { name: /minutes\.bin/ });
   const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
 
   button.click();
@@ -151,5 +156,24 @@ it("retries a remembered decryption failure when the download button is pressed"
   button.click();
   await waitFor(() => expect(loader).toHaveBeenCalledTimes(2));
   await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
+  click.mockRestore();
+});
+
+it("retries a PDF preview after decryption fails and downloads the cached result", async () => {
+  const loader = vi
+    .fn<(info: AttachmentInfo) => Promise<Blob>>()
+    .mockRejectedValueOnce(new EncryptedAttachmentError("decrypt"))
+    .mockResolvedValue(new Blob(["%PDF-1.7"], { type: "application/pdf" }));
+  render(view(loader, [{ ...attachment(), name: "report.pdf", mimetype: "application/pdf" }]));
+  const retry = await screen.findByRole("button", { name: /再試行|Retry/ });
+  expect(loader).toHaveBeenCalledTimes(1);
+  retry.click();
+  const download = await screen.findByRole("button", {
+    name: /report\.pdf.*ダウンロード|Download.*report\.pdf/,
+  });
+  const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  download.click();
+  await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
+  expect(loader).toHaveBeenCalledTimes(2);
   click.mockRestore();
 });

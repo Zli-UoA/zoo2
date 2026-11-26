@@ -11,6 +11,17 @@ import kotlin.test.*
 class DeviceAuthRestoreTest {
     private val discovery = """{"issuer":"https://id.example","token_endpoint":"https://id.example/token"}"""
 
+    @Test fun restoreReportsDiscoveryFailureBeforeTokenRenewal() = runTest {
+        val http = HttpClient(MockEngine { throw java.net.UnknownHostException("test") })
+        val stages = mutableListOf<LoginStage>()
+        try {
+            assertFailsWith<java.net.UnknownHostException> {
+                DeviceAuth(http).restore("https://id.example", "client", "", "saved") { stages.add(it) }
+            }
+            assertEquals(listOf(LoginStage.Discovery), stages)
+        } finally { http.close() }
+    }
+
     @Test
     fun resumesWithoutDeviceGrantAndPersistsRotatedTokenBeforeReturningHeaders() = runTest {
         val saved = mutableListOf<String?>()
@@ -34,6 +45,34 @@ class DeviceAuthRestoreTest {
             assertEquals("Bearer access", auth.headers()["Authorization"])
             assertEquals(2, refreshes)
         } finally { http.close() }
+    }
+
+    @Test
+    fun logoutHeadersDoNotRenewNearExpiryOrWaitForAnInFlightRefresh() = runTest {
+        var exchanges = 0
+        val waiting = CompletableDeferred<Unit>()
+        val response = CompletableDeferred<Unit>()
+        val http = HttpClient(MockEngine { request ->
+            if (request.url.encodedPath.endsWith("openid-configuration")) respond(discovery)
+            else {
+                if (++exchanges > 1) { waiting.complete(Unit); response.await() }
+                respond("""{"access_token":"access","refresh_token":"rotated","expires_in":1}""")
+            }
+        })
+        try {
+            val auth = DeviceAuth(http)
+            auth.restore("https://id.example", "client", "", "saved")
+            assertEquals("Bearer access", auth.headersWithoutRefresh()["Authorization"])
+            assertEquals(1, exchanges)
+            val renewal = launch { runCatching { auth.headers() } }
+            waiting.await()
+            assertEquals("Bearer access", auth.headersWithoutRefresh()["Authorization"])
+            auth.forget()
+            assertFailsWith<IllegalStateException> { auth.headersWithoutRefresh() }
+            response.complete(Unit)
+            renewal.join()
+            assertFailsWith<IllegalStateException> { auth.headersWithoutRefresh() }
+        } finally { response.complete(Unit); http.close() }
     }
 
     @Test

@@ -9,6 +9,8 @@
 //!   再起動しても、控えたリカバリーキーで開け直して、同じ鍵のまま最後まで終わる。
 //! - 鍵バックアップへの送信は、解錠したあとだけ。今の版の検証（マスター鍵の署名、公開鍵の一致、
 //!   版の巻き戻り）を通らなければ送らない。
+//! - 鍵バックアップへの送信には、今の版の `upload_key` へのアップロードの証明を付ける。証明が合わない
+//!   （403）なら送るのをやめ、セッションは送信待ちに残す。
 
 use std::sync::{Arc, Mutex as StdMutex};
 
@@ -16,7 +18,8 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate, matchers::any};
 use zoo_crypto::{
-    BackupDecryptionKey, CrossSigningKeys, DeviceAccount, OutboundSession, verify_device_keys,
+    BACKUP_PROOF_HEADER, BackupDecryptionKey, BackupUploadKey, CrossSigningKeys,
+    Curve25519PublicKey, DeviceAccount, OutboundSession, verify_device_keys,
 };
 use zoo2_tui::api::ApiClient;
 use zoo2_tui::e2ee::setup::{
@@ -49,6 +52,10 @@ struct State {
     signatures: Vec<Value>,
     versions: Vec<Value>,
     uploaded_sessions: usize,
+    /// アップロードの証明付きで受け取ったセッションの数。
+    proven_sessions: usize,
+    /// アップロードの証明を確かめる鍵（実際のサーバーは版ごとに作るが、ここではすべての版で同じ）。
+    upload_key: Option<BackupUploadKey>,
     stop: Option<Stop>,
 }
 
@@ -219,11 +226,17 @@ impl Respond for Backend {
                     return ok(json!({ "version": version }));
                 }
                 let number = (state.versions.len() + 1).to_string();
+                let upload_key = state
+                    .upload_key
+                    .get_or_insert_with(BackupUploadKey::generate)
+                    .public_key()
+                    .to_base64();
                 state.versions.push(json!({
                     "version": number,
                     "algorithm": body["algorithm"],
                     "auth_data": body["auth_data"],
                     "deleted": false,
+                    "upload_key": upload_key,
                 }));
                 ok(json!({ "version": number }))
             }
@@ -242,7 +255,27 @@ impl Respond for Backend {
                 if Some(state.secrets_revision().to_string()) != query("secrets_revision") {
                     return conflict(state);
                 }
+                // 実際のサーバーと同じく、証明があれば今の版の公開鍵で確かめる。
+                let proof = request
+                    .headers
+                    .get(BACKUP_PROOF_HEADER)
+                    .and_then(|value| value.to_str().ok());
                 let count = body["sessions"].as_array().unwrap().len();
+                if let Some(proof) = proof {
+                    let current = state.current_version().unwrap();
+                    let backup_key = Curve25519PublicKey::from_base64(
+                        current["auth_data"]["public_key"].as_str().unwrap(),
+                    )
+                    .unwrap();
+                    let version = current["version"].as_str().unwrap().to_owned();
+                    let valid = state.upload_key.as_ref().is_some_and(|key| {
+                        key.verify_proof(&backup_key, BOB, &version, proof)
+                    });
+                    if !valid {
+                        return coded(403, "E2EE_BACKUP_PROOF_INVALID", Value::Null);
+                    }
+                    state.proven_sessions += count;
+                }
                 state.uploaded_sessions += count;
                 ok(json!({ "count": count }))
             }
@@ -567,7 +600,7 @@ async fn backs_up_room_keys_only_after_unlocking_and_checks_the_version() {
         let mut state = backend.0.lock().unwrap();
         let rogue_master = CrossSigningKeys::generate(BOB).unwrap().master;
         let rogue = BackupDecryptionKey::generate()
-            .create_version_request(&rogue_master, Some("1"))
+            .create_version_request(&rogue_master, Some("1"), 2)
             .unwrap();
         state.versions.push(json!({
             "version": "2",
@@ -582,11 +615,11 @@ async fn backs_up_room_keys_only_after_unlocking_and_checks_the_version() {
     ));
     assert_eq!(backend.0.lock().unwrap().uploaded_sessions, 2);
 
-    // 版を巻き戻されても（前に見た 2 より古い 1 を今の版として返されても）送らない。
+    // 前の版の auth_data を大きい番号の版として見せられても（版の番号は署名に入っているので）送らない。
+    // 前に見た版より古い版への巻き戻しの検出は、zoo-crypto のテスト（tests/rollback.rs）で確かめる。
     backend.0.lock().unwrap().versions.pop();
     {
         let mut state = backend.0.lock().unwrap();
-        // 見た版の最大を 2 にするため、自分の鍵の正しい版 2 を一度見せる。
         let version = state.versions[0].clone();
         state.versions.push(json!({
             "version": "2",
@@ -597,14 +630,103 @@ async fn backs_up_room_keys_only_after_unlocking_and_checks_the_version() {
     }
     assert!(matches!(
         setup::upload_key_backup(&api, &store).await.unwrap(),
-        BackupUploadResult::Done { .. }
-    ));
-    backend.0.lock().unwrap().versions.pop();
-    receive_room_key(&store).await;
-    assert!(matches!(
-        setup::upload_key_backup(&api, &store).await.unwrap(),
         BackupUploadResult::Rejected(_)
     ));
+    assert_eq!(backend.0.lock().unwrap().uploaded_sessions, 2);
+    // 本物の今の版（版 1）に戻れば送る。
+    backend.0.lock().unwrap().versions.pop();
+    assert!(matches!(
+        setup::upload_key_backup(&api, &store).await.unwrap(),
+        BackupUploadResult::Done { .. }
+    ));
+}
+
+#[tokio::test]
+async fn backups_carry_the_upload_proof_and_stop_when_the_server_rejects_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    let (server, backend, api) = backend().await;
+    let store = open(&root);
+    let (session, _) = zoo_crypto::SetupSession::begin(BOB).unwrap();
+    setup::complete_setup(&api, &store, BOB, &session, Some(FRESH))
+        .await
+        .unwrap();
+
+    // 送った行は、すべて証明付きとしてサーバーが受け付ける。
+    receive_room_key(&store).await;
+    assert_eq!(
+        setup::upload_key_backup(&api, &store).await.unwrap(),
+        BackupUploadResult::Done { uploaded: 1 }
+    );
+    {
+        let state = backend.0.lock().unwrap();
+        assert_eq!(state.uploaded_sessions, 1);
+        assert_eq!(state.proven_sessions, 1);
+    }
+    let requests = server.received_requests().await.unwrap();
+    let uploads: Vec<_> = requests
+        .iter()
+        .filter(|r| r.method.as_str() == "POST" && r.url.path() == "/api/e2ee/key_backup/keys")
+        .collect();
+    assert!(!uploads.is_empty());
+    assert!(
+        uploads
+            .iter()
+            .all(|r| r.headers.get(BACKUP_PROOF_HEADER).is_some())
+    );
+
+    // サーバーが確かめる鍵と違う upload_key を見せられたら、証明が合わず 403 になる。送るのをやめ、
+    // セッションは送信待ちに残す。
+    receive_room_key(&store).await;
+    let advertised = {
+        let mut state = backend.0.lock().unwrap();
+        let advertised = state.versions[0]["upload_key"].clone();
+        state.versions[0]["upload_key"] =
+            json!(BackupUploadKey::generate().public_key().to_base64());
+        advertised
+    };
+    assert_eq!(
+        setup::upload_key_backup(&api, &store).await.unwrap(),
+        BackupUploadResult::Conflict("E2EE_BACKUP_PROOF_INVALID".to_owned())
+    );
+    assert_eq!(backend.0.lock().unwrap().uploaded_sessions, 1);
+    assert_eq!(store.lock().await.pending_backup_count(), 1);
+
+    // upload_key が鍵の形でなければ（文字列でない値も）、証明を省かずに送らない。
+    for invalid in [json!("not-a-key"), Value::Null, json!(42), json!({})] {
+        backend.0.lock().unwrap().versions[0]["upload_key"] = invalid.clone();
+        assert!(
+            matches!(
+                setup::upload_key_backup(&api, &store).await.unwrap(),
+                BackupUploadResult::Rejected(_)
+            ),
+            "{invalid}"
+        );
+        assert_eq!(backend.0.lock().unwrap().uploaded_sessions, 1);
+        assert_eq!(store.lock().await.pending_backup_count(), 1);
+    }
+
+    // 正しい upload_key に戻れば、送信待ちのセッションを証明付きで送る。
+    backend.0.lock().unwrap().versions[0]["upload_key"] = advertised;
+    assert_eq!(
+        setup::upload_key_backup(&api, &store).await.unwrap(),
+        BackupUploadResult::Done { uploaded: 1 }
+    );
+    assert_eq!(backend.0.lock().unwrap().proven_sessions, 2);
+
+    // upload_key のない版（証明を足す前のサーバー）には、証明を付けずに送る。
+    backend.0.lock().unwrap().versions[0]
+        .as_object_mut()
+        .unwrap()
+        .remove("upload_key");
+    receive_room_key(&store).await;
+    assert_eq!(
+        setup::upload_key_backup(&api, &store).await.unwrap(),
+        BackupUploadResult::Done { uploaded: 1 }
+    );
+    let state = backend.0.lock().unwrap();
+    assert_eq!(state.uploaded_sessions, 3);
+    assert_eq!(state.proven_sessions, 2);
 }
 
 #[tokio::test]
@@ -720,13 +842,18 @@ async fn a_conflict_while_running_stops_backups_until_unlocked_again() {
         .unwrap();
 
     // 稼働中に今の版が変わってから鍵を受け取っても、新しい版を検証して、手元のセッションを送り直す。
+    // 版の番号は auth_data の署名に入るので、版 2 の auth_data に署名し直す。
     {
         let mut state = backend.0.lock().unwrap();
+        let secrets = session.secrets();
         let version = state.versions[0].clone();
         state.versions.push(json!({
             "version": "2",
             "algorithm": version["algorithm"],
-            "auth_data": version["auth_data"],
+            "auth_data": secrets
+                .backup_key
+                .auth_data(&secrets.cross_signing.master, 2)
+                .unwrap(),
             "deleted": false,
         }));
     }

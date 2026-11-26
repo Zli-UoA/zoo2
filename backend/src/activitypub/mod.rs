@@ -4,10 +4,13 @@ pub(crate) mod client_ip;
 mod emoji;
 pub(crate) mod emoji_cache;
 mod inbox;
+mod instance_colors;
 pub(crate) mod interactions;
+mod kitchen;
 mod note_identity;
 mod profile;
 mod public_profile;
+pub(crate) mod quotes;
 mod reposts;
 mod routes;
 mod transport;
@@ -148,7 +151,13 @@ pub fn note_value(post: &Value) -> Result<Value, AppError> {
         }
         note["tag"] = json!([{"type":"Mention","href":recipient,"name":recipient}]);
     }
-    if let Some(emojis) = post["emojis"].as_array() {
+    let mut emojis = post["emojis"].as_array().cloned().unwrap_or_default();
+    for kitchen in kitchen::content_emojis(string(post, "content")?) {
+        if !emojis.iter().any(|e| e["name"] == kitchen["name"]) {
+            emojis.push(kitchen);
+        }
+    }
+    if post["emojis"].is_array() || !emojis.is_empty() {
         let tags = note
             .as_object_mut()
             .unwrap()
@@ -166,34 +175,49 @@ async fn with_workspace_emojis(
     tx: &mut toasty::Transaction<'_>,
     post: &Value,
 ) -> Result<Value, AppError> {
-    let mut post = post.clone();
-    let content = string(&post, "content")?;
-    let mut emojis = vec![];
-    for emoji in emoji::workspace_options(tx).await? {
-        if content.contains(string(&emoji, "name")?) {
-            emojis.push(emoji.clone());
-        }
-        if let Some(aliases) = emoji["aliases"].as_array() {
-            for alias in aliases.iter().filter_map(Value::as_str) {
-                if !alias.bytes().all(|c| {
-                    c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'_' | b'-')
-                }) {
-                    continue;
-                }
-                let name = format!(":{alias}:");
-                if content.contains(&name) {
-                    let mut tag = emoji.clone();
-                    tag["name"] = json!(name);
-                    emojis.push(tag);
+    let mut posts = vec![post.clone()];
+    decorate_workspace_posts(tx, &mut posts).await?;
+    Ok(posts.remove(0))
+}
+
+// One option/attachment lookup per page, including anonymous profiles/outboxes.
+async fn decorate_workspace_posts(
+    tx: &mut toasty::Transaction<'_>,
+    posts: &mut [Value],
+) -> Result<(), AppError> {
+    if posts.is_empty() {
+        return Ok(());
+    }
+    let options = emoji::workspace_options(tx).await?;
+    for post in posts.iter_mut() {
+        let content = string(post, "content")?;
+        let mut emojis = vec![];
+        for emoji in &options {
+            if content.contains(string(emoji, "name")?) {
+                emojis.push(emoji.clone());
+            }
+            if let Some(aliases) = emoji["aliases"].as_array() {
+                for alias in aliases.iter().filter_map(Value::as_str) {
+                    if !alias.bytes().all(|c| {
+                        c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'_' | b'-')
+                    }) {
+                        continue;
+                    }
+                    let name = format!(":{alias}:");
+                    if content.contains(&name) {
+                        let mut tag = emoji.clone();
+                        tag["name"] = json!(name);
+                        emojis.push(tag);
+                    }
                 }
             }
         }
+        post["emojis"] = json!(emojis);
     }
-    if post["channel_id"].is_string() {
-        crate::routes::home_images::decorate(tx, std::slice::from_mut(&mut post)).await?;
+    if posts.iter().any(|post| post["channel_id"].is_string()) {
+        crate::routes::home_images::decorate(tx, posts).await?;
     }
-    post["emojis"] = json!(emojis);
-    Ok(post)
+    Ok(())
 }
 fn delivery_activity(payload: &Value) -> Result<Value, AppError> {
     if payload.get("zoo_post").is_none() {

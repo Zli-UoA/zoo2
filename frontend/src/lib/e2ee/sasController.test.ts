@@ -6,7 +6,7 @@ import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { ApiError, type ApiClient, type RequestOptions } from "../api/client";
 import type { CryptoWorker } from "./cryptoWorker";
 import { CryptoOperations, toCryptoFailure } from "./operations";
-import type { CryptoOperation, ToDeviceRow } from "./protocol";
+import type { CryptoOperation, KeysQueryResponse, ToDeviceRow } from "./protocol";
 import { SasController, type SasEntry } from "./sasController";
 import { REAUTH_HEADER } from "./secretStorageApi";
 import { MemoryCryptoBackend } from "./store/backend";
@@ -210,14 +210,11 @@ class FakeServer {
         );
         if (mine.length === 0) continue;
         const senders = [...new Set(mine.map((row) => row.sender_user_id))];
-        const deviceKeys = this.keysQuery(party.userId, senders).device_keys as Record<
-          string,
-          Record<string, JsonObject>
-        >;
+        const keysQuery = this.keysQuery(party.userId, senders) as unknown as KeysQueryResponse;
         const result = await party.worker.request({
           op: "processToDevice",
           rows: mine,
-          deviceKeys,
+          keysQuery,
         });
         expect(result.dropped).toBe(0);
         await party.sas.handleMessages(result.verifications);
@@ -304,18 +301,32 @@ function only(party: Party): SasEntry {
   return entries[0]!;
 }
 
-/** Alice が Bob に検証を求め、Bob が受け入れて、双方が絵文字を見る段階まで進める。 */
-async function startVerification(server: FakeServer, alice: Party, bob: Party) {
+/** Alice が Bob に検証を求め、Bob が受け入れて、双方が QR か絵文字かを選ぶ段階まで進める。 */
+async function acceptRequest(server: FakeServer, alice: Party, bob: Party) {
   const txnId = await alice.sas.request(BOB);
   expect(only(alice).view.phase).toBe("requested");
+  // 要求した側は、相手の受け入れより前から QR を出す。
+  expect(only(alice).view.qr_code).not.toBeNull();
   await server.pump();
   expect(only(bob).view).toMatchObject({
     transaction_id: txnId,
     their_user_id: ALICE,
     phase: "incoming",
     we_requested: false,
+    qr_code: null,
   });
   await bob.sas.accept(txnId);
+  await server.pump();
+  expect(only(alice).view).toMatchObject({ phase: "choose_method", can_scan_qr_code: true });
+  expect(only(bob).view).toMatchObject({ phase: "choose_method", can_scan_qr_code: true });
+  expect(only(bob).view.qr_code).not.toBeNull();
+  return txnId;
+}
+
+/** Alice が Bob に検証を求め、Bob が受け入れ、Alice が絵文字を選んで、双方が絵文字を見る段階まで進める。 */
+async function startVerification(server: FakeServer, alice: Party, bob: Party) {
+  const txnId = await acceptRequest(server, alice, bob);
+  await alice.sas.startSas(txnId);
   await server.pump();
   expect(only(alice).view.phase).toBe("compare");
   expect(only(bob).view.phase).toBe("compare");
@@ -444,8 +455,11 @@ describe("絵文字 SAS 検証", () => {
     // 期限の確認で試し直すと進む。
     await alice.sas.expire();
     await server.pump();
-    expect(only(alice).view.phase).toBe("compare");
+    expect(only(alice).view.phase).toBe("choose_method");
     expect(only(alice).error).toBeNull();
+    await alice.sas.startSas(txnId);
+    await server.pump();
+    expect(only(alice).view.phase).toBe("compare");
 
     // key、mac、done の処理では keys/query を取らないので、失敗していても検証は終わる。
     server.failKeysQuery = 1_000;
@@ -491,11 +505,8 @@ describe("絵文字 SAS 検証", () => {
     server.beforeKeysQuery = async () => {
       await alice.sas.cancel(txnId);
       const rows = server.queue.splice(0);
-      const deviceKeys = server.keysQuery(BOB, [ALICE]).device_keys as Record<
-        string,
-        Record<string, JsonObject>
-      >;
-      const result = await bob.worker.request({ op: "processToDevice", rows, deviceKeys });
+      const keysQuery = server.keysQuery(BOB, [ALICE]) as unknown as KeysQueryResponse;
+      const result = await bob.worker.request({ op: "processToDevice", rows, keysQuery });
       void bob.sas.handleMessages(result.verifications);
       server.failKeysQuery = 2;
     };
@@ -541,5 +552,102 @@ describe("絵文字 SAS 検証", () => {
     expect(only(alice).view.cancel).toEqual({ code: "m.timeout", by_us: true });
     await server.pump();
     expect(only(bob).view.cancel).toEqual({ code: "m.timeout", by_us: false });
+  });
+});
+
+describe("QR コードによる検証", () => {
+  it("Bob が Alice の QR を読み取り、Alice が答えると、双方が相手のマスター鍵に署名して検証済みになる", async () => {
+    const server = new FakeServer();
+    const alice = await join(server, ALICE);
+    const bob = await join(server, BOB);
+    const txnId = await acceptRequest(server, alice, bob);
+    const qr = Uint8Array.from(only(alice).view.qr_code!);
+
+    await expect(bob.sas.scanQr(txnId, qr)).resolves.toBe("accepted");
+    expect(only(bob).view).toMatchObject({ phase: "qr_scanned", method: "qr" });
+    await server.pump();
+    expect(only(alice).view).toMatchObject({ phase: "qr_confirm", method: "qr" });
+    // 利用者が答えるまでは署名しない。
+    expect(server.signatures).toEqual([]);
+
+    await alice.sas.confirmQr(txnId, Promise.resolve(TOKEN));
+    await server.pump();
+    expect(only(alice).view.phase).toBe("done");
+    expect(only(bob).view.phase).toBe("done");
+    await until(() => only(alice).save === "saved");
+    // 読み取った側は、読み取りがクリックではないので、まだ再認証していない。
+    await until(() => only(bob).save === "login");
+    expect(server.signatures.map((s) => [s.signer_user_id, s.target_user_id])).toEqual([
+      [ALICE, BOB],
+    ]);
+    await bob.sas.retrySave(txnId, Promise.resolve(TOKEN));
+    expect(only(bob).save).toBe("saved");
+    expect(server.signatures.map((s) => [s.signer_user_id, s.target_user_id])).toEqual([
+      [ALICE, BOB],
+      [BOB, ALICE],
+    ]);
+    expect(
+      server.requests.filter((r) => r.route === "POST /api/e2ee/tofu_pins").every((r) => r.reauth),
+    ).toBe(true);
+
+    for (const [viewer, target] of [
+      [alice, BOB],
+      [bob, ALICE],
+    ] as const) {
+      const evaluation = await viewer.worker.request({
+        op: "trustEvaluate",
+        keysQuery: server.keysQuery(viewer.userId, [target]),
+        userIds: [target],
+      });
+      expect(evaluation.users[target]?.state).toEqual({
+        state: "trusted",
+        basis: "user_signing_signature",
+      });
+      expect(viewer.store.trustStore.record(target)).toMatchObject({ pin_pending: false });
+    }
+  });
+
+  it("別の検証の QR や形の正しくないものは、取りやめずに読み直す", async () => {
+    const server = new FakeServer();
+    const alice = await join(server, ALICE);
+    const bob = await join(server, BOB);
+    const other = await alice.sas.request(BOB);
+    const otherQr = Uint8Array.from(
+      alice.sas.getSnapshot().find((e) => e.view.transaction_id === other)!.view.qr_code!,
+    );
+    await alice.sas.dismiss(other);
+    await server.pump();
+    for (const entry of bob.sas.getSnapshot()) await bob.sas.dismiss(entry.view.transaction_id);
+    const txnId = await acceptRequest(server, alice, bob);
+
+    await expect(bob.sas.scanQr(txnId, otherQr)).resolves.toBe("retry");
+    await expect(bob.sas.scanQr(txnId, new TextEncoder().encode("hello"))).resolves.toBe("retry");
+    expect(only(bob).view.phase).toBe("choose_method");
+    expect(only(bob).error).toBeNull();
+  });
+
+  it("QR の鍵が keys/query の鍵と違えば、双方で取りやめ、署名しない", async () => {
+    const server = new FakeServer();
+    const alice = await join(server, ALICE);
+    const bob = await join(server, BOB);
+    const txnId = await acceptRequest(server, alice, bob);
+    const qr = Uint8Array.from(only(alice).view.qr_code!);
+    // 1 つめの鍵（Alice のマスター鍵）を、別の正しい鍵（2 つめの鍵 = Bob のマスター鍵）に差し替える。
+    // ビットを変えただけの鍵は、鍵として正しくないので、読み直し（retry）になる。
+    const key1 = 10 + txnId.length;
+    qr.copyWithin(key1, key1 + 32, key1 + 64);
+
+    await expect(bob.sas.scanQr(txnId, qr)).resolves.toBe("accepted");
+    expect(only(bob).view).toMatchObject({
+      phase: "cancelled",
+      method: "qr",
+      cancel: { code: "m.key_mismatch", by_us: true },
+    });
+    await server.pump();
+    expect(only(alice).view).toMatchObject({
+      phase: "cancelled",
+      cancel: { code: "m.key_mismatch", by_us: false },
+    });
+    expect(server.signatures).toEqual([]);
   });
 });

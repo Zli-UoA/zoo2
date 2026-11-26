@@ -22,8 +22,14 @@ jobs:
     timeout-minutes: 5
     outputs:
       ci-backend: ${{ steps.match.outputs.ci-backend }}
+      ci-home-query-budget: ${{ steps.match.outputs.ci-home-query-budget }}
+      ci-read-state-worker-budget: ${{ steps.match.outputs.ci-read-state-worker-budget }}
+      ci-phone-query-budget: ${{ steps.match.outputs.ci-phone-query-budget }}
+      ci-search-query-budget: ${{ steps.match.outputs.ci-search-query-budget }}
+      ci-components-query-budget: ${{ steps.match.outputs.ci-components-query-budget }}
       ci-frontend: ${{ steps.match.outputs.ci-frontend }}
       ci-frontend-auth-e2e: ${{ steps.match.outputs.ci-frontend-auth-e2e }}
+      ci-frontend-e2ee-e2e: ${{ steps.match.outputs.ci-frontend-e2ee-e2e }}
       ci-tui: ${{ steps.match.outputs.ci-tui }}
       ci-desktop-tauri: ${{ steps.match.outputs.ci-desktop-tauri }}
       ci-crypto: ${{ steps.match.outputs.ci-crypto }}
@@ -33,7 +39,9 @@ jobs:
       terraform-r2: ${{ steps.match.outputs.terraform-r2 }}
       ci-android: ${{ steps.match.outputs.ci-android }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - id: match
         env:
           BASE_SHA: ${{ github.event.merge_group.base_sha }}
@@ -45,6 +53,31 @@ jobs:
     uses: ./.github/workflows/ci-backend.yaml
     secrets: inherit
 
+  ci-home-query-budget:
+    needs: changes
+    if: needs.changes.outputs.ci-home-query-budget == 'true'
+    uses: ./.github/workflows/ci-home-query-budget.yaml
+
+  ci-read-state-worker-budget:
+    needs: changes
+    if: needs.changes.outputs.ci-read-state-worker-budget == 'true'
+    uses: ./.github/workflows/ci-read-state-worker-budget.yaml
+
+  ci-phone-query-budget:
+    needs: changes
+    if: needs.changes.outputs.ci-phone-query-budget == 'true'
+    uses: ./.github/workflows/ci-phone-query-budget.yaml
+
+  ci-search-query-budget:
+    needs: changes
+    if: needs.changes.outputs.ci-search-query-budget == 'true'
+    uses: ./.github/workflows/ci-search-query-budget.yaml
+
+  ci-components-query-budget:
+    needs: changes
+    if: needs.changes.outputs.ci-components-query-budget == 'true'
+    uses: ./.github/workflows/ci-components-query-budget.yaml
+
   ci-frontend:
     needs: changes
     if: needs.changes.outputs.ci-frontend == 'true'
@@ -55,6 +88,12 @@ jobs:
     needs: changes
     if: needs.changes.outputs.ci-frontend-auth-e2e == 'true'
     uses: ./.github/workflows/ci-frontend-auth-e2e.yaml
+    secrets: inherit
+
+  ci-frontend-e2ee-e2e:
+    needs: changes
+    if: needs.changes.outputs.ci-frontend-e2ee-e2e == 'true'
+    uses: ./.github/workflows/ci-frontend-e2ee-e2e.yaml
     secrets: inherit
 
   ci-tui:
@@ -115,8 +154,14 @@ jobs:
     needs:
       - changes
       - ci-backend
+      - ci-home-query-budget
+      - ci-read-state-worker-budget
+      - ci-phone-query-budget
+      - ci-search-query-budget
+      - ci-components-query-budget
       - ci-frontend
       - ci-frontend-auth-e2e
+      - ci-frontend-e2ee-e2e
       - ci-tui
       - ci-desktop-tauri
       - ci-crypto
@@ -132,7 +177,7 @@ jobs:
     permissions:
       statuses: write
     steps:
-      - uses: actions/github-script@v9
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           NEEDS: ${{ toJSON(needs) }}
         with:

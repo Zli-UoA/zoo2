@@ -17,6 +17,11 @@ on:
       - "infra/Dockerfile-proxy-deploy*"
       - "infra/proxy/**"
       - "infra/compose.stack*.yaml"
+      - ".github/scripts/*test-selection*.mjs"
+      - ".github/scripts/backend-e2e-selection.mjs"
+      - ".github/workflows/select-tests.yaml"
+      - ".github/scripts/crypto-wasm-cache.test.mjs"
+      - ".github/actions/crypto-wasm/**"
       - ".github/workflows/ci-frontend.yaml"
       - ".github/workflows/select-runner.yaml"
   pull_request:
@@ -33,21 +38,38 @@ on:
       - "infra/Dockerfile-proxy-deploy*"
       - "infra/proxy/**"
       - "infra/compose.stack*.yaml"
+      - ".github/scripts/*test-selection*.mjs"
+      - ".github/scripts/backend-e2e-selection.mjs"
+      - ".github/workflows/select-tests.yaml"
+      - ".github/scripts/crypto-wasm-cache.test.mjs"
+      - ".github/actions/crypto-wasm/**"
       - ".github/workflows/ci-frontend.yaml"
       - ".github/workflows/select-runner.yaml"
   workflow_dispatch:
+permissions:
+  contents: read
 concurrency:
+  # PR と merge queue は新しい実行で古いものを止める。main は実行中のものを止めない（待機中の古いものは最新に置き換わる）。
+  # 止めると、成功したジョブの最後に保存する Rust などのキャッシュが main に残らず、PR が cold build になる。
   group: ci-frontend-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 # runner ジョブがDocker不要用とDocker必須用の実行先を選びます。
 jobs:
+  test-selection:
+    uses: ./.github/workflows/select-tests.yaml
+    with:
+      workflow: ci-frontend
+
   runner:
     uses: ./.github/workflows/select-runner.yaml
+    with:
+      large: true
     secrets:
       runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
 
   container:
-    needs: runner
+    if: fromJSON(needs.test-selection.outputs.frontend).container
+    needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     env:
       POSTGRES_PASSWORD: container-test
@@ -57,15 +79,18 @@ jobs:
       CSP_AVATAR_SRC: https://avatars.example
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 2
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6
         with:
           version: 12.11.2
 
       - name: Setup Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
           cache: pnpm
@@ -76,7 +101,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Restore Playwright browsers
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
@@ -87,13 +112,13 @@ jobs:
         run: pnpm exec playwright install ${{ runner.environment == 'github-hosted' && '--with-deps' || '' }} chromium
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
         with:
           driver-opts: default-load=true
 
       # docker compose build の type=gha が、Actions のキャッシュサービスに接続するために要る。
       - name: Expose the Actions cache runtime to docker
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
@@ -104,6 +129,12 @@ jobs:
           files=(-f infra/compose.stack.yaml -f infra/compose.ci-cache.yaml)
           if [ "$GITHUB_REF" = refs/heads/main ]; then files+=(-f infra/compose.ci-cache-write.yaml); fi
           docker compose --project-directory . "${files[@]}" up -d --build --wait --wait-timeout 60 frontend
+
+      - name: Check frontend build revision
+        run: |
+          html=$(docker compose --project-directory . -f infra/compose.stack.yaml exec -T frontend \
+            wget -q -O - http://127.0.0.1:3000/)
+          printf '%s' "$html" | grep -Fq "data-zoo-build-sha=\"$GITHUB_SHA\""
 
       - name: Check SPA routes and security headers
         run: |
@@ -132,6 +163,19 @@ jobs:
               printf '%s\n' "$connect" | tr ' ' '\n' | grep -Fxq "$origin"
             done
             case "$images $connect" in *avater.zliusercontent.com*) echo "Avatar CSP override was ignored" >&2; exit 1 ;; esac
+          done
+
+      - name: Check .mjs assets are served as JavaScript
+        run: |
+          # PDF.js の worker（.mjs）は module worker として読み込むため、JavaScript の
+          # MIME タイプで配信されている必要がある（#631）。
+          workers=$(docker compose --project-directory . -f infra/compose.stack.yaml exec -T frontend \
+            find /usr/share/nginx/html/assets -name '*.mjs')
+          test -n "$workers"
+          for file in $workers; do
+            headers=$(docker compose --project-directory . -f infra/compose.stack.yaml exec -T frontend \
+              wget -S -O /dev/null "http://127.0.0.1:3000${file#/usr/share/nginx/html}" 2>&1)
+            printf "%s" "$headers" | grep -Eqi "Content-Type: (text|application)/javascript"
           done
 
       - name: Check default avatar CSP in image and Compose
@@ -179,6 +223,46 @@ jobs:
             exit 1
           fi
 
+      # Android の E2EE の再認証（#360）の App Links。docs/e2ee.md の「クロス署名」の再認証の確かめ方。
+      - name: Android App Links (assetlinks.json and the reauth callback page)
+        run: |
+          # 指紋を設定していなければ 404（SPA の index.html を 200 で返さない）。
+          if docker compose --project-directory . -f infra/compose.stack.yaml exec -T frontend \
+            wget -q -O /dev/null http://127.0.0.1:3000/.well-known/assetlinks.json; then
+            echo "assetlinks.json without fingerprints must not be served" >&2
+            exit 1
+          fi
+          page=$(docker compose --project-directory . -f infra/compose.stack.yaml exec -T frontend \
+            wget -S -O - "http://127.0.0.1:3000/android/reauth-callback?code=c&state=s" 2>&1)
+          printf "%s" "$page" | grep -qi "Referrer-Policy: no-referrer"
+          printf "%s" "$page" | grep -qi "Cache-Control: no-store"
+          printf "%s" "$page" | grep -qi "Content-Security-Policy: default-src 'none'"
+          printf "%s" "$page" | grep -q "Zoo アプリ"
+          case "$page" in *"<script"*) echo "the reauth callback page must not run scripts" >&2; exit 1 ;; esac
+          # ダミーの指紋で起動すると、application/json で返す。
+          image=$(docker compose --project-directory . -f infra/compose.stack.yaml images -q frontend)
+          name="zoo2-assetlinks-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          trap 'docker rm -f "$name" >/dev/null' EXIT
+          fingerprint="$(printf 'AB:%.0s' $(seq 1 31))CD"
+          docker run -d --name "$name" -e ANDROID_APP_CERT_SHA256="$(printf '%s' "$fingerprint" | tr 'A-F' 'a-f')" "$image"
+          for attempt in $(seq 1 30); do
+            if docker exec "$name" wget -Y off -q -O /dev/null http://127.0.0.1:3000/; then break; fi
+            sleep 1
+          done
+          headers=$(docker exec "$name" wget -Y off -S -O /dev/null http://127.0.0.1:3000/.well-known/assetlinks.json 2>&1)
+          printf "%s" "$headers" | grep -qi "Content-Type: application/json"
+          docker exec "$name" wget -Y off -q -O - http://127.0.0.1:3000/.well-known/assetlinks.json |
+            FINGERPRINT="$fingerprint" python3 -c 'import json, os, sys
+          links = json.load(sys.stdin)
+          assert links[0]["relation"] == ["delegate_permission/common.handle_all_urls"], links
+          target = links[0]["target"]
+          assert target == {"namespace": "android_app", "package_name": "works.zli.zoo", "sha256_cert_fingerprints": [os.environ["FINGERPRINT"]]}, target'
+          # 指紋の形式が違えば、起動しない（設定の誤りを見逃さない）。
+          if timeout 60 docker run --rm -e ANDROID_APP_CERT_SHA256=AA:BB "$image" nginx -t; then
+            echo "an invalid ANDROID_APP_CERT_SHA256 must stop the container" >&2
+            exit 1
+          fi
+
       # compose はホストにポートを公開しないため、検証用に同じイメージを 3100 で起動する。
       - name: Start frontend for CSP browser test
         run: |
@@ -198,7 +282,7 @@ jobs:
         working-directory: ./frontend
         env:
           E2E_BASE_URL: http://127.0.0.1:3100
-        run: pnpm test:e2e:csp
+        run: node ../.github/scripts/playwright-test-selection.mjs csp
 
       - name: Container logs
         if: failure()
@@ -215,34 +299,27 @@ jobs:
           docker compose --project-directory . -f infra/compose.stack.yaml down
 
   proxy:
-    needs: runner
+    if: fromJSON(needs.test-selection.outputs.frontend).proxy
+    needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     env:
       POSTGRES_PASSWORD: proxy-test
       PROXY_PORT: 18080
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
         with:
           driver-opts: default-load=true
 
-      # docker compose build の type=gha が、Actions のキャッシュサービスに接続するために要る。
-      - name: Expose the Actions cache runtime to docker
-        uses: actions/github-script@v9
-        with:
-          script: |
-            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
-
       - name: Build proxy
         run: |
-          files=(-f infra/compose.stack.yaml -f infra/compose.ci-cache.yaml)
-          if [ "$GITHUB_REF" = refs/heads/main ]; then files+=(-f infra/compose.ci-cache-write.yaml); fi
-          docker compose --project-directory . "${files[@]}" build proxy
+          docker compose --project-directory . -f infra/compose.stack.yaml build proxy
       - name: Start proxy with mock frontend and Rust
         run: docker compose --project-directory . -f infra/compose.stack.yaml -f infra/proxy/test/compose.yaml up -d --no-build --no-deps --wait frontend backend proxy
       - name: Check routing, header stripping, and streaming
@@ -256,74 +333,54 @@ jobs:
 
   # E2EE の wasm（crates/zoo-crypto-wasm/pkg）を 1 回だけ作り、check・unit-test・browser-test に渡す。
   crypto-wasm:
-    needs: runner
+    if: fromJSON(needs.test-selection.outputs.frontendBuild).wasm
+    needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
-      - name: Read Rust toolchain and wasm-bindgen version
-        id: versions
-        run: |
-          echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
-          echo "wasm-bindgen=$(sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' crates/zoo-crypto-wasm/Cargo.toml)" >> "$GITHUB_OUTPUT"
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          toolchain: ${{ steps.versions.outputs.channel }}
-          targets: wasm32-unknown-unknown
-      - name: Restore Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          # キャッシュの保存は main だけにする。PR ごとに数百 MB ずつ保存すると、容量の上限（10GB）を超えて、main のキャッシュも追い出される。
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          workspaces: crates/zoo-crypto-wasm
-      # cargo install は毎回ソースからビルドして約90秒かかるので、版ごとにバイナリーをキャッシュする。
-      - name: Restore wasm-bindgen-cli
-        id: wasm-bindgen-cli
-        uses: actions/cache@v6
-        with:
-          path: ~/.cargo-tools
-          key: cargo-tools-${{ runner.os }}-${{ runner.arch }}-wasm-bindgen-cli-${{ steps.versions.outputs.wasm-bindgen }}
-      - name: Install wasm-bindgen-cli
-        # crates/zoo-crypto-wasm/Cargo.toml で = 固定した wasm-bindgen と同じ版にする（build.sh が照合する）。
-        if: steps.wasm-bindgen-cli.outputs.cache-hit != 'true'
-        run: cargo install --locked --root "$HOME/.cargo-tools" wasm-bindgen-cli --version "${{ steps.versions.outputs.wasm-bindgen }}"
-      - name: Add cached tools to PATH
-        run: echo "$HOME/.cargo-tools/bin" >> "$GITHUB_PATH"
-      - name: Build wasm package
-        run: crates/zoo-crypto-wasm/build.sh
+          persist-credentials: false
+      - name: Restore or build Wasm package
+        uses: ./.github/actions/crypto-wasm
       - name: Upload wasm package
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: zoo-crypto-wasm
           path: crates/zoo-crypto-wasm/pkg
           if-no-files-found: error
           retention-days: 1
 
+  # check と build は同じ Wasm を使い、互いの成功を待たずに実行する。
   check:
-    needs: crypto-wasm
-    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
+    if: fromJSON(needs.test-selection.outputs.frontendBuild).check
+    needs: [runner, crypto-wasm, test-selection]
+    # Native type analysis needs headroom beyond kubecamp's 2GiB limit,
+    # including the runner processes. Use the shared large-job selector.
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"ubuntu-latest"') }}
     defaults:
       run:
         working-directory: ./frontend
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Download wasm package
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: zoo-crypto-wasm
           path: crates/zoo-crypto-wasm/pkg
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6
         with:
           version: 12.11.2
 
       - name: Setup Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
           cache: pnpm
@@ -332,38 +389,84 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Browser case selection regression tests
+        run: node --test ../.github/scripts/browser-test-selection.test.mjs ../.github/scripts/crypto-wasm-cache.test.mjs
+
       - name: Storybook catalog audit
         run: pnpm check:storybook
 
       - name: format / lint / typecheck
         run: pnpm check
 
-      - name: build
-        run: pnpm build
+      # 翻訳キーの欠落・プレースホルダ不一致・動的キーの未検査箇所を検出する。
+      - name: i18n check
+        run: pnpm check:i18n
 
-  unit-test:
-    needs: crypto-wasm
-    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
+  build:
+    if: fromJSON(needs.test-selection.outputs.frontendBuild).build
+    needs: [runner, crypto-wasm, test-selection]
+    # Build concurrently with check, with enough memory for bundling.
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"ubuntu-latest"') }}
     defaults:
       run:
         working-directory: ./frontend
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Download wasm package
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: zoo-crypto-wasm
           path: crates/zoo-crypto-wasm/pkg
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6
         with:
           version: 12.11.2
 
       - name: Setup Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: build
+        run: pnpm build
+
+  unit-test:
+    if: fromJSON(needs.test-selection.outputs.frontend).unit || fromJSON(needs.test-selection.outputs.frontend).pwa
+    needs: [runner, crypto-wasm, test-selection]
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
+    defaults:
+      run:
+        working-directory: ./frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Download wasm package
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: zoo-crypto-wasm
+          path: crates/zoo-crypto-wasm/pkg
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6
+        with:
+          version: 12.11.2
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
           cache: pnpm
@@ -373,34 +476,49 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: unit test
-        run: |
-          pnpm test
-          pnpm test:pwa
+        if: fromJSON(needs.test-selection.outputs.frontend).unit
+        run: node ../.github/scripts/frontend-test-selection.mjs unit
+
+      - name: PWA tests
+        if: fromJSON(needs.test-selection.outputs.frontend).pwa
+        run: node ../.github/scripts/node-test-selection.mjs pwa
 
   browser-test:
-    needs: [runner, crypto-wasm]
+    if: >-
+      fromJSON(needs.test-selection.outputs.frontend).browser ||
+      fromJSON(needs.test-selection.outputs.frontend).vrt ||
+      fromJSON(needs.test-selection.outputs.frontend).storybook ||
+      fromJSON(needs.test-selection.outputs.frontend).avatar ||
+      fromJSON(needs.test-selection.outputs.frontend).offline ||
+      fromJSON(needs.test-selection.outputs.frontend).i18n ||
+      fromJSON(needs.test-selection.outputs.frontend).layout ||
+      fromJSON(needs.test-selection.outputs.frontend)['frontend-selection']
+    needs: [runner, crypto-wasm, test-selection]
     # Storybook exceeds the 2GiB kubecamp limit, even with a single test page.
-    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"zli-k8s"') }}
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"ubuntu-latest"') }}
     defaults:
       run:
         working-directory: ./frontend
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 2
 
       - name: Download wasm package
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: zoo-crypto-wasm
           path: crates/zoo-crypto-wasm/pkg
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6
         with:
           version: 12.11.2
 
       - name: Setup Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
           cache: pnpm
@@ -410,7 +528,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Restore Playwright browsers
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-firefox-chromium-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
@@ -420,23 +538,31 @@ jobs:
         run: pnpm exec playwright install ${{ runner.environment == 'github-hosted' && '--with-deps' || '' }} firefox chromium
 
       - name: Avatar cache Service Worker browser test
-        run: node scripts/avatar-cache.test.mjs
+        if: fromJSON(needs.test-selection.outputs.frontend)['avatar']
+        run: node ../.github/scripts/node-test-selection.mjs avatar
 
       - name: SQLite CSP cold and warm cache tests
+        if: fromJSON(needs.test-selection.outputs.frontend)['offline']
         run: |
           pnpm test:csp:offline
           node scripts/offline-csp.test.mjs --warm
 
+      - name: Build app for selected i18n tests
+        if: fromJSON(needs.test-selection.outputs.frontend).i18n && !fromJSON(needs.test-selection.outputs.frontend).offline
+        run: pnpm build
+
       - name: i18n browser tests
-        run: pnpm test:e2e:i18n
+        if: fromJSON(needs.test-selection.outputs.frontend)['i18n']
+        run: node ../.github/scripts/playwright-test-selection.mjs i18n
 
       - name: Retired Compose selection falls back to React
+        if: fromJSON(needs.test-selection.outputs.frontend)['frontend-selection']
         working-directory: frontend
-        run: pnpm exec playwright test --config playwright.frontend-selection.config.ts
+        run: node ../.github/scripts/playwright-test-selection.mjs frontend-selection
 
       - name: Upload frontend selection failure traces
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: frontend-selection-failure
           path: frontend/test-results/frontend-selection/
@@ -444,22 +570,31 @@ jobs:
           if-no-files-found: ignore
 
       - name: Message layout browser tests
-        run: pnpm test:e2e:layout
+        if: fromJSON(needs.test-selection.outputs.frontend)['layout']
+        run: node ../.github/scripts/playwright-test-selection.mjs layout
 
       - name: browser test
-        run: pnpm test:browser
+        if: fromJSON(needs.test-selection.outputs.frontend)['browser']
+        run: node ../.github/scripts/frontend-test-selection.mjs browser
+
+      - name: APK media viewer bundle smoke test
+        run: pnpm test:media-preview-bundle
 
       - name: vrt
-        run: pnpm test:vrt
+        if: fromJSON(needs.test-selection.outputs.frontend)['vrt']
+        run: node ../.github/scripts/frontend-test-selection.mjs vrt
 
       - name: storybook test
-        run: pnpm test:storybook --run --maxWorkers=1 --fileParallelism=false
+        if: fromJSON(needs.test-selection.outputs.frontend)['storybook']
+        run: node ../.github/scripts/frontend-test-selection.mjs storybook
 
       - name: build storybook
+        if: fromJSON(needs.test-selection.outputs.frontend)['storybook']
         run: pnpm build-storybook
 
       - name: Upload Storybook static catalog
-        uses: actions/upload-artifact@v7
+        if: fromJSON(needs.test-selection.outputs.frontend)['storybook']
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: storybook-static
           path: frontend/storybook-static
@@ -468,7 +603,7 @@ jobs:
 
       - name: Upload VRT failure screenshots
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: vitest-vrt-artifacts
           path: frontend/.vitest/attachments

@@ -32,8 +32,9 @@ pub mod command {
     // (a)・(b) 共通
     /// 引数なし。[`super::SessionInfo`] を返す。
     pub const SESSION: &str = "zoo_session";
-    /// 引数なし。デバイスコードのログインを始め、[`super::DeviceLogin`] を返す。
-    /// 承認を待つ間は [`super::event::SESSION`] で状態を知らせる。
+    /// `{ method?: LoginMethod }`。省略すると `browser`。ログインを始め、[`super::LoginPrompt`] を返す。
+    /// `browser` は認可コード + PKCE（ループバックのリダイレクト）、`device` はデバイスコード
+    /// (RFC 8628)。承認を待つ間は [`super::event::SESSION`] で状態を知らせる。
     pub const START_LOGIN: &str = "zoo_start_login";
     /// 引数なし。承認待ちをやめる。
     pub const CANCEL_LOGIN: &str = "zoo_cancel_login";
@@ -41,6 +42,9 @@ pub mod command {
     pub const LOGOUT: &str = "zoo_logout";
     /// [`super::FocusState`]。通知を抑えるために、前面かどうかと表示中のチャンネルを知らせる。
     pub const SET_FOCUS: &str = "zoo_set_focus";
+    /// `{ count: i64 }`。Dock やランチャーのアイコンに出す未読数。`0` 以下で消す。
+    /// 古い版のアプリにはないので、呼べなかったら何もしない (`PROTOCOL_VERSION` は上げない)。
+    pub const SET_BADGE: &str = "zoo_set_badge";
     /// 引数なし。[`super::NotificationSettings`] を返す。アプリが OS の通知を出すかどうか。
     /// 古い版のアプリにはないので、呼べなかったら設定を出さない (`PROTOCOL_VERSION` は上げない)。
     pub const NOTIFICATION_SETTINGS: &str = "zoo_notification_settings";
@@ -56,6 +60,9 @@ pub mod command {
     pub const ACCOUNT_PROFILES: &str = "zoo_account_profiles";
     /// [`super::SendMessage`]。[`super::SendResult`] を返す。
     pub const SEND_MESSAGE: &str = "zoo_send_message";
+    /// [`super::InvokeAppAction`]。メッセージ部品のボタン・選択肢を押したことをアプリへ送る。
+    /// 古い版のアプリにはないので、呼べなかったら知らせる (`PROTOCOL_VERSION` は上げない)。
+    pub const INVOKE_APP_ACTION: &str = "zoo_invoke_app_action";
 
     // (b) React だけ
     /// 引数なし。[`super::AccessToken`] を返す。期限が近ければ Rust 側で更新してから返す。
@@ -66,7 +73,40 @@ pub mod command {
     /// 外から偽装できない、Rust 側だけが残す印。古い版のアプリにはないので、呼べなかったら何もしない
     /// (`PROTOCOL_VERSION` は上げない)。
     pub const TAKE_CALL_ACCEPT: &str = "zoo_take_call_accept";
+    /// 引数なし。E2EE の再認証の ID トークン（文字列）を返す。既定のブラウザーで AuthZ に
+    /// ログインし直してもらい、ループバックのリダイレクトで受け取る。古い版のアプリにはないので、
+    /// 呼べなかったら Web 側はアプリの更新を案内する (`PROTOCOL_VERSION` は上げない)。
+    pub const REAUTHENTICATE: &str = "zoo_reauthenticate";
+    /// 引数なし。[`super::DownloadSettings`] を返す。添付の保存先の設定。
+    /// 古い版のアプリにはないので、呼べなかったら Web 側はブラウザーの保存に戻す
+    /// (`PROTOCOL_VERSION` は上げない)。
+    pub const DOWNLOAD_SETTINGS: &str = "zoo_download_settings";
+    /// [`super::DownloadSettingsUpdate`]。確認の有無を変えて、保存する。新しい設定を返す。
+    pub const SET_DOWNLOAD_SETTINGS: &str = "zoo_set_download_settings";
+    /// 引数なし。OS のフォルダーの選択を出し、選ばれた保存先を Rust 側で保存して、新しい
+    /// [`super::DownloadSettings`] を返す。閉じたら `null`。パスは JS に決めさせない。
+    pub const PICK_DOWNLOAD_DIRECTORY: &str = "zoo_pick_download_directory";
+    /// [`super::DownloadBegin`]。保存先を決め、書き込み先の ID を返す。確認なし保存が
+    /// 有効で選択済みフォルダーを使え、対象形式が許可リストに含まれる場合はダイアログを
+    /// 出さない。それ以外は OS の保存ダイアログを出す。添付の大きさを受け取り、1 件の
+    /// 上限に使う。
+    pub const DOWNLOAD_BEGIN: &str = "zoo_download_begin";
+    /// 本文は octet-stream。`x-zoo-download-id` ヘッダーの ID に追記する。
+    /// x-zoo-download-offset を付けると、その位置への書き込みだけを受け付ける。
+    pub const DOWNLOAD_WRITE: &str = "zoo_download_write";
+    /// `{ id: String }`。`.part` を本来の名前へ置き換える。
+    pub const DOWNLOAD_FINISH: &str = "zoo_download_finish";
+    /// `{ id: String }`。途中までのファイルを消す。
+    pub const DOWNLOAD_CANCEL: &str = "zoo_download_cancel";
 }
+
+/// [`command::DOWNLOAD_WRITE`] の、書き込み先の ID を渡すヘッダー。
+pub const DOWNLOAD_ID_HEADER: &str = "x-zoo-download-id";
+/// DOWNLOAD_WRITE の本文が、保存先のどの位置に対応するか（10進のバイト数）。
+/// ヘッダーがある場合は、その位置にだけ書く。期待位置と異なる場合は拒否するが、
+/// 直前に書いた同一チャンク（offset + len == 現在位置）の再送は no-op で成功を返す。
+/// ヘッダーを省略した場合は位置検査を行わず、現在位置へ追記する。
+pub const DOWNLOAD_OFFSET_HEADER: &str = "x-zoo-download-offset";
 
 /// Rust 側から WebView へ送るイベントの名前。
 pub mod event {
@@ -76,6 +116,8 @@ pub mod event {
     pub const SHAPE: &str = "zoo://shape";
     /// [`super::ShapeFailed`]。(a) だけ。回復できない購読のエラー。
     pub const SHAPE_FAILED: &str = "zoo://shape-failed";
+    /// [`super::LoginFailed`]。(a) だけ。ブラウザーでのログインが、始まったあとで失敗したとき。
+    pub const LOGIN_FAILED: &str = "zoo://login-failed";
     /// [`super::OpenTarget`]。通知やトレイ、ディープリンクから、あるメッセージを開くとき。
     pub const OPEN: &str = "zoo://open";
     /// 中身なし。着信のトーストの「応答」が押された。`zoo_take_call_accept` で印を取りに来る合図で、
@@ -108,9 +150,9 @@ pub enum SessionState {
     /// 保存済みのトークンを確かめている間。
     Starting,
     LoggedOut,
-    /// デバイスコードの承認を待っている。
+    /// ブラウザーでの承認を待っている。
     LoggingIn {
-        login: DeviceLogin,
+        login: LoginPrompt,
     },
     Ready {
         me: Me,
@@ -121,12 +163,41 @@ pub enum SessionState {
     },
 }
 
+/// ログインの方式。ブラウザーを開ける環境では認可コード + PKCE を使い（RFC 8252）、ブラウザーを
+/// 開けない・ループバックで受けられない環境のために、デバイスコードを残す。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoginMethod {
+    #[default]
+    Browser,
+    Device,
+}
+
+/// 承認待ちの画面に出す内容。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LoginPrompt {
+    Browser(BrowserLogin),
+    Device(DeviceLogin),
+}
+
+/// 認可コード + PKCE のログインの、画面に出す部分。code verifier、`state`、`nonce` は Rust 側だけが持つ。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserLogin {
+    /// 既定のブラウザーで開く認可リクエストの URL（開けなかったときに手動で開く）。
+    pub url: String,
+    /// UNIX 秒。これを過ぎたらやり直す。
+    pub expires_at: i64,
+}
+
 /// デバイスコード (RFC 8628) の、画面に出す部分。`device_code` は Rust 側だけが持つ。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceLogin {
     pub user_code: String,
     pub verification_uri: String,
     pub verification_uri_complete: Option<String>,
+    /// ブラウザーを自動で開く対象かどうか。実際に開けたかどうかは表さない。
+    pub auto_open: bool,
     /// UNIX 秒。これを過ぎたらやり直す。
     pub expires_at: i64,
 }
@@ -141,6 +212,73 @@ impl Default for NotificationSettings {
     fn default() -> Self {
         Self { enabled: true }
     }
+}
+
+/// 添付を保存するときの、デスクトップ版の設定。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DownloadSettings {
+    /// 保存のたびに OS の「名前を付けて保存」を出すか。既定は出す。
+    #[serde(default = "ask_every_time_default")]
+    pub ask_every_time: bool,
+    /// 「都度確認」がオフのときの保存先（絶対パス）。確認なしで保存するには必須。
+    /// 画面に出すためだけに返す。JS からは変えられず、OS のフォルダーの選択でだけ決まる。
+    #[serde(default)]
+    pub directory: Option<String>,
+}
+
+/// [`command::SET_DOWNLOAD_SETTINGS`] の引数。
+///
+/// 保存先のパスは受け取らない。保存先を決められるのは OS のフォルダーの選択
+/// （[`command::PICK_DOWNLOAD_DIRECTORY`]）だけで、リモートの画面から任意の場所へ
+/// 書き込めないようにするため。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DownloadSettingsUpdate {
+    /// 保存のたびに OS の「名前を付けて保存」を出すか。
+    pub ask_every_time: bool,
+    /// 選んだ保存先を消して、保存のたびに確認する設定へ戻すか。
+    #[serde(default)]
+    pub reset_directory: bool,
+}
+
+fn ask_every_time_default() -> bool {
+    true
+}
+
+impl Default for DownloadSettings {
+    fn default() -> Self {
+        Self {
+            ask_every_time: true,
+            directory: None,
+        }
+    }
+}
+
+/// [`command::DOWNLOAD_BEGIN`] の引数。保存するファイルの名前（拡張子を含む）。
+/// Rust 側で使えない文字を除くので、そのまま渡してよい。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DownloadBegin {
+    pub file_name: String,
+    /// 添付の大きさ（平文のバイト数）。分からなければ `None`。Rust 側はこの値から
+    /// 1 件の上限を決める（サーバーの添付の上限を上げても、ここが連動する）。
+    /// 上限は 512 MiB で頭打ちになる。サーバーの添付の上限をそれより大きくするときは、
+    /// `desktop-tauri/src-tauri/src/downloads.rs` の天井も上げること。
+    #[serde(default)]
+    pub size: Option<u64>,
+}
+
+/// [`command::DOWNLOAD_BEGIN`] の結果。保存先が決まったか、利用者がダイアログを閉じたか。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum DownloadStart {
+    /// 書き込み先の ID と、保存するファイルのパス（画面に出すためだけ）。
+    /// `prompted` はこの保存で OS の保存ダイアログを出したか。
+    Started {
+        id: String,
+        path: String,
+        prompted: bool,
+    },
+    /// 利用者が保存ダイアログをキャンセルした。
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -163,6 +301,17 @@ pub struct SendMessage {
     pub channel_id: String,
     pub content: String,
     pub parent_id: Option<String>,
+}
+
+/// メッセージ部品の操作 ([`command::INVOKE_APP_ACTION`])。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InvokeAppAction {
+    pub app_id: String,
+    pub channel_id: String,
+    pub message_id: String,
+    pub custom_id: String,
+    /// ボタンの `value`、選んだ値 (select は配列)
+    pub value: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -189,6 +338,12 @@ pub struct ObservedNotifications {
 pub struct ShapeBatch {
     pub shape: ShapeId,
     pub batch: Batch,
+}
+
+/// ブラウザーでのログインが失敗した理由。`START_LOGIN` はもう成功を返しているので、イベントで知らせる。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoginFailed {
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -219,8 +374,16 @@ pub enum ErrorCode {
     WrongMode,
     /// 通信の失敗。再試行してよい。
     Network,
-    /// backend が 4xx を返した。
+    /// backend が 4xx を返した。再認証では、AuthZ が拒んだ、または ID トークンを受け付けられない。
     Rejected,
+    /// 時間内に終わらなかった (再認証で、利用者がログインし直すのを待ちきれなかった)。
+    Timeout,
+    /// 新しい操作を始めたので、前の操作を取り消した。
+    Cancelled,
+    /// 保存先が、既存のファイルを上書きせずに保存する操作に対応していない。
+    UnsupportedDestination,
+    /// 同時に保存できる件数の上限に達した。ほかの保存が終われば保存できる。
+    TooManyDownloads,
     Internal,
 }
 
@@ -300,6 +463,99 @@ mod tests {
             serde_json::to_value(IpcError::new(ErrorCode::NotLoggedIn, "x")).unwrap(),
             json!({ "code": "not_logged_in", "message": "x" })
         );
+        assert_eq!(
+            serde_json::to_value(IpcError::new(ErrorCode::TooManyDownloads, "x")).unwrap(),
+            json!({ "code": "too_many_downloads", "message": "x" })
+        );
+    }
+
+    #[test]
+    fn download_json_is_stable() {
+        assert_eq!(
+            serde_json::to_value(DownloadStart::Started {
+                id: "abc".into(),
+                path: "C:\\Users\\a\\file.pdf".into(),
+                prompted: true,
+            })
+            .unwrap(),
+            json!({
+                "status": "started",
+                "id": "abc",
+                "path": "C:\\Users\\a\\file.pdf",
+                "prompted": true
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(DownloadStart::Cancelled).unwrap(),
+            json!({ "status": "cancelled" })
+        );
+        // 添付の大きさは任意。古い画面が大きさを送らなくても読める。
+        assert_eq!(
+            serde_json::from_value::<DownloadBegin>(json!({ "file_name": "a.pdf" })).unwrap(),
+            DownloadBegin {
+                file_name: "a.pdf".into(),
+                size: None
+            }
+        );
+        assert_eq!(
+            serde_json::from_value::<DownloadBegin>(json!({ "file_name": "a.pdf", "size": 1234 }))
+                .unwrap(),
+            DownloadBegin {
+                file_name: "a.pdf".into(),
+                size: Some(1234)
+            }
+        );
+        // 古い設定ファイルに項目がなくても、既定 (都度確認する) で読める。
+        assert_eq!(
+            serde_json::from_value::<DownloadSettings>(json!({})).unwrap(),
+            DownloadSettings::default()
+        );
+        assert_eq!(
+            serde_json::from_value::<DownloadSettings>(json!({ "directory": null })).unwrap(),
+            DownloadSettings {
+                ask_every_time: true,
+                directory: None
+            }
+        );
+        // 更新の引数は保存先のパスを受け取らない（`directory` を足しても無視される）。
+        assert_eq!(
+            serde_json::from_value::<DownloadSettingsUpdate>(
+                json!({ "ask_every_time": false, "directory": "C:\\Windows" })
+            )
+            .unwrap(),
+            DownloadSettingsUpdate {
+                ask_every_time: false,
+                reset_directory: false
+            }
+        );
+    }
+
+    #[test]
+    fn login_prompt_is_tagged_and_the_method_defaults_to_browser() {
+        let browser = LoginPrompt::Browser(BrowserLogin {
+            url: "https://issuer/authorize?x=1".into(),
+            expires_at: 10,
+        });
+        let value = serde_json::to_value(&browser).unwrap();
+        assert_eq!(value["kind"], "browser");
+        assert_eq!(value["url"], "https://issuer/authorize?x=1");
+        assert_eq!(
+            serde_json::from_value::<LoginPrompt>(value).unwrap(),
+            browser
+        );
+        let device = LoginPrompt::Device(DeviceLogin {
+            user_code: "ABCD-EFGH".into(),
+            verification_uri: "https://issuer/device".into(),
+            verification_uri_complete: None,
+            auto_open: true,
+            expires_at: 10,
+        });
+        assert_eq!(serde_json::to_value(&device).unwrap()["kind"], "device");
+        assert_eq!(LoginMethod::default(), LoginMethod::Browser);
+        assert_eq!(
+            serde_json::from_value::<LoginMethod>(json!("device")).unwrap(),
+            LoginMethod::Device
+        );
     }
 
     #[test]
@@ -311,12 +567,21 @@ mod tests {
             command::CANCEL_LOGIN,
             command::LOGOUT,
             command::SET_FOCUS,
+            command::SET_BADGE,
             command::OPEN_CHANNEL,
             command::RESYNC,
             command::SEND_MESSAGE,
             command::ACCESS_TOKEN,
             command::NOTIFICATIONS_OBSERVED,
             command::TAKE_CALL_ACCEPT,
+            command::REAUTHENTICATE,
+            command::DOWNLOAD_SETTINGS,
+            command::SET_DOWNLOAD_SETTINGS,
+            command::PICK_DOWNLOAD_DIRECTORY,
+            command::DOWNLOAD_BEGIN,
+            command::DOWNLOAD_WRITE,
+            command::DOWNLOAD_FINISH,
+            command::DOWNLOAD_CANCEL,
         ] {
             assert!(
                 name.chars().all(|c| c.is_ascii_lowercase() || c == '_'),

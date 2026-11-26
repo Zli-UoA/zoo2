@@ -512,7 +512,7 @@ pub struct PutSecretsRequest {
     secrets: std::collections::BTreeMap<String, EncryptedSecret>,
 }
 
-/// `POST /api/e2ee/secret_storage/secrets`：既定の鍵で暗号化した秘密を足すか置き換える。
+/// `POST /api/e2ee/secret_storage/secrets`：既定の鍵で暗号化した秘密を足すか置き換える（直前の再認証が要る）。
 async fn put_secrets(
     State(state): State<AppState>,
     actor: AuthUser,
@@ -546,19 +546,11 @@ async fn put_secrets(
         }
         Some(_) => {}
     }
-    let names = json!(req.secrets.keys().collect::<Vec<_>>()).to_string();
-    let replaces = first(
-        &mut tx,
-        "SELECT '{}'::text FROM e2ee_secrets
-         WHERE user_id = $1 AND name IN (SELECT jsonb_array_elements_text($2::jsonb)) LIMIT 1",
-        &[&actor.id, &names],
-    )
-    .await?
-    .is_some();
-    if replaces {
-        // 前に取得した古い暗号文を送り直して、失効の前の秘密鍵に戻せないようにする。
-        reauth.require()?;
-    }
+    // 置き換えも追加も、直前の再認証が要る。置き換えは、前に取得した古い暗号文を送り直して、失効の前の
+    // 秘密鍵に戻せないようにするため。追加は、トークンだけで `zoo.megolm_backup.previous` に開けない値を
+    // 入れられると、`secrets_revision` が進んでほかの端末のアップロードが止まり、解錠した端末も古い版を
+    // 移せなくなるため（docs/e2ee.md の Secret Storage の API）。
+    reauth.require()?;
     exec(
         &mut tx,
         "INSERT INTO e2ee_secrets (user_id, name, key_id, iv, ciphertext, mac)
@@ -593,7 +585,8 @@ pub struct AddSlotRequest {
 }
 
 /// `POST /api/e2ee/secret_storage/slots`：既定の鍵にスロットを足す。同じ credential ID のパスキーの
-/// スロットか、リカバリーキーのスロットがあれば置き換える（置き換えには直前の再認証が要る）。
+/// スロットか、リカバリーキーのスロットがあれば置き換える。足すのにも置き換えるのにも直前の再認証が要る
+/// （同じスロットの再送だけは要らない）。
 async fn add_slot(
     State(state): State<AppState>,
     actor: AuthUser,
@@ -634,6 +627,8 @@ async fn add_slot(
         }
         return Err(bad("slot.id", "already used"));
     }
+    // トークンだけで開けないスロットを上限まで足して、利用者がパスキーを足せないようにさせない。
+    reauth.require()?;
     let replaced = first(
         &mut tx,
         "SELECT to_json(id)::text FROM e2ee_secret_storage_key_slots
@@ -648,7 +643,6 @@ async fn add_slot(
     )
     .await?;
     if let Some(replaced) = replaced.as_ref().and_then(Value::as_str) {
-        reauth.require()?;
         exec(
             &mut tx,
             "DELETE FROM e2ee_secret_storage_key_slots WHERE id = $1 AND user_id = $2",

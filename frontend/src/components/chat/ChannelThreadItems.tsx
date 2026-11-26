@@ -90,7 +90,8 @@ export function ChannelThreadItems({
   );
   if (
     selected &&
-    (selected.thread_archive_at || selected.reply_count > 0) &&
+    !selected.thread_archive_at &&
+    selected.reply_count > 0 &&
     !visible.some((thread) => thread.id === selected.id)
   )
     visible.push(selected);

@@ -62,14 +62,37 @@ pub(super) fn media(value: &Value) -> Vec<Value> {
         .iter()
         .take(10)
         .filter_map(|item| {
-            let mime = item["mediaType"].as_str().unwrap_or("");
-            if !matches!(
-                mime,
-                "image/png" | "image/jpeg" | "image/gif" | "image/webp"
-            ) {
+            let mime = item["mediaType"]
+                .as_str()
+                .unwrap_or("")
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase();
+            let mime = mime.as_str();
+            let document = mime.starts_with("text/")
+                || mime.starts_with("application/vnd.openxmlformats-officedocument.")
+                || mime.starts_with("application/vnd.oasis.opendocument.")
+                || matches!(
+                    mime,
+                    "message/rfc822"
+                        | "application/vnd.ms-outlook"
+                        | "application/zip"
+                        | "application/x-zip-compressed"
+                        | "application/json"
+                        | "application/xml"
+                );
+            if (!crate::storage::is_inline_allowed_mime(mime) && !document) || mime == "image/avif"
+            {
                 return None;
             }
             let mut image = avatar(item)?;
+            // Only raster images use the size-limited image proxy. Other media are
+            // played directly by the browser and must not enter the image registry.
+            if !mime.starts_with("image/") {
+                image.as_object_mut()?.remove("image_id");
+            }
             image["media_type"] = json!(mime);
             image["is_sensitive"] = json!(item["sensitive"] == true);
             image["name"] = json!(
@@ -387,12 +410,15 @@ fn quote_url(value: &str) -> Option<reqwest::Url> {
         .then_some(url)
 }
 
-pub(super) fn note_content(note: &Value) -> Result<String, AppError> {
-    // Quote metadata is otherwise lost when HTML is flattened or MFM source is preferred.
-    // Keep only a link: an embedded quote is not proof of the quoted post's author/audience.
-    let quote = ["quoteUrl", "quoteUri", "_misskey_quote"]
+pub(super) fn note_quote_uri(note: &Value) -> Option<reqwest::Url> {
+    ["quoteUrl", "quoteUri", "_misskey_quote", "quote"]
         .into_iter()
-        .find_map(|key| note[key].as_str().and_then(quote_url));
+        .find_map(|key| note[key].as_str().and_then(quote_url))
+}
+
+pub(super) fn note_content(note: &Value) -> Result<String, AppError> {
+    // Keep the URL in the content for clients that do not render quote cards.
+    let quote = note_quote_uri(note);
     let html = match note["content"].as_str() {
         Some(content) => content,
         None if quote.is_some() && note["content"].is_null() => "",
@@ -532,6 +558,36 @@ mod media_proxy_tests {
 #[cfg(test)]
 mod media_metadata_tests {
     use super::*;
+
+    #[test]
+    fn preserves_passive_media_without_registering_them_as_images() {
+        for mime in [
+            "application/pdf",
+            "video/mp4",
+            "audio/mpeg",
+            "message/rfc822",
+            "text/plain",
+            "application/zip",
+            "application/x-zip-compressed",
+        ] {
+            let received = media(&json!({"url":"https://peer.example/file", "mediaType":mime}));
+            assert_eq!(received.len(), 1);
+            assert_eq!(received[0]["media_type"], mime);
+            assert!(received[0].get("image_id").is_none());
+        }
+        for mime in [
+            "image/svg+xml",
+            "application/javascript",
+            "application/x-msdownload",
+        ] {
+            assert!(
+                media(&json!({"url":"https://peer.example/file", "mediaType":mime})).is_empty()
+            );
+        }
+        assert!(
+            media(&json!({"url":"http://peer.example/file", "mediaType":"video/mp4"})).is_empty()
+        );
+    }
 
     #[test]
     fn preserves_federated_metadata_and_ignores_invalid_optional_values() {

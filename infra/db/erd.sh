@@ -7,7 +7,8 @@
 # 必要なもの: atlas (https://atlasgo.io) と docker。
 #
 # schema.sql にはトリガーと関数があり、Atlas の無償版は file:// の schema.sql をそのまま
-# 読めない(Pro 機能)。そのため使い捨ての postgres:16 に schema.sql を流し込み、
+# 読めない(Pro 機能)。そのため使い捨ての postgres(pg_bigm 入り。infra/db/postgres を
+# ビルドしたもの)に schema.sql を流し込み、
 # その DB を検査する。検査時に関数とトリガーは除外する(ER 図には不要)。
 #
 # 図が大きくなりすぎるので、テーブル名の接頭辞で機能ごとに分割する(group_of)。
@@ -37,9 +38,10 @@ cleanup() {
 trap cleanup EXIT
 
 start_db() {
+  docker build -q -t zoo2-postgres-bigm:16 postgres >/dev/null
   docker run -d --rm --name "$name" \
     -e POSTGRES_PASSWORD="$pw" -e POSTGRES_DB=erd \
-    -p 127.0.0.1::5432 postgres:16 >/dev/null
+    -p 127.0.0.1::5432 zoo2-postgres-bigm:16 >/dev/null
   for _ in $(seq 1 60); do
     docker exec "$name" pg_isready -h 127.0.0.1 -U postgres -d erd -q && return 0
     sleep 1

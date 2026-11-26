@@ -9,6 +9,7 @@ import { useShell } from "../layout/shell-context";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
 import { AppBlocks } from "./AppBlocks";
+import { apiPath } from "../../lib/api/path";
 
 type Surface = {
   id: string;
@@ -16,7 +17,7 @@ type Surface = {
   app_id: string;
   name: string;
   channel_id: string | null;
-  document: { blocks?: unknown };
+  document: { blocks?: unknown; components?: unknown; flags?: number };
 };
 export function AppSurfaceHost() {
   const { currentUserId } = useCurrentUser();
@@ -54,7 +55,7 @@ function UserSurfaces() {
   }
   async function dismiss(id: string) {
     try {
-      await client.request(`/api/app-surfaces/${id}`, { method: "DELETE" });
+      await client.request(apiPath`/api/app-surfaces/${id}`, { method: "DELETE" });
       remove(id);
     } catch {
       /* Retry on the next interaction. */
@@ -80,7 +81,7 @@ function UserSurfaces() {
               appId={modal.app_id}
               surfaceId={modal.id}
               channelId={modal.channel_id}
-              blocks={modal.document.blocks}
+              blocks={modal.document}
               submit
               onDone={() => remove(modal.id)}
             />
@@ -110,7 +111,7 @@ function UserSurfaces() {
                 appId={surface.app_id}
                 surfaceId={surface.id}
                 channelId={surface.channel_id}
-                blocks={surface.document.blocks}
+                blocks={surface.document}
               />
             </section>
           ))}

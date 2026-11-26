@@ -1,8 +1,12 @@
+pub mod apns;
 pub mod attachments;
 pub mod bubble_chat;
+pub mod call_sfu;
 pub mod calls;
+pub mod channel_pins;
 pub mod channel_webhooks;
 pub mod channels;
+pub mod default_channels;
 pub mod dms;
 pub mod e2ee;
 pub mod e2ee_channels;
@@ -11,16 +15,22 @@ pub mod e2ee_cross_signing;
 pub mod e2ee_key_backup;
 pub mod e2ee_reauth;
 pub mod e2ee_secret_storage;
+pub mod forwards;
 pub mod health;
 pub mod home;
 pub mod home_images;
 pub mod home_live;
 pub mod messages;
 pub mod notifications;
+pub mod pbx;
+pub mod phone_sessions;
 pub mod push;
 pub mod read_states;
 pub mod response;
+pub mod search;
+pub mod shape_limit;
 pub mod shapes;
+pub mod sip;
 pub mod telemetry;
 pub mod threads;
 pub mod typing;
@@ -58,6 +68,7 @@ pub fn create_router(state: AppState) -> Router {
         ])
         // dev の `X-Dev-User`, Bearer の `Authorization`, JSON 書き込みの `Content-Type`,
         // E2EE の直前の再認証の `X-Zoo-Reauth`（docs/e2ee.md の「クロス署名」）,
+        // 鍵バックアップのアップロードの証明の `X-Zoo-Backup-Proof`（docs/e2ee.md の鍵バックアップの API）,
         // OpenTelemetry のトレースコンテキスト伝播 (`traceparent`, `tracestate`)
         .allow_headers([
             header::AUTHORIZATION,
@@ -65,6 +76,7 @@ pub fn create_router(state: AppState) -> Router {
             header::ACCEPT,
             HeaderName::from_static("x-dev-user"),
             HeaderName::from_static(e2ee_reauth::REAUTH_HEADER),
+            HeaderName::from_static("x-zoo-backup-proof"),
             HeaderName::from_static("traceparent"),
             HeaderName::from_static("tracestate"),
         ])
@@ -79,6 +91,7 @@ pub fn create_router(state: AppState) -> Router {
 
     Router::new()
         .merge(health::router())
+        .merge(default_channels::router())
         .merge(home::router())
         .merge(crate::activitypub::router())
         .merge(crate::apps::management::router())
@@ -91,6 +104,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(crate::apps::events::router())
         .merge(crate::apps::resources::router())
         .merge(channel_webhooks::router())
+        .merge(channel_pins::router())
         .merge(users::router())
         .merge(channels::router())
         .merge(dms::router())
@@ -100,8 +114,10 @@ pub fn create_router(state: AppState) -> Router {
         .merge(e2ee_cross_signing::router())
         .merge(e2ee_secret_storage::router())
         .merge(e2ee_key_backup::router())
+        .merge(forwards::router())
         .merge(messages::router())
         .merge(threads::router())
+        .merge(search::router())
         .merge(attachments::router())
         .merge(crate::slack::import::router())
         .merge(crate::slack::link::router())
@@ -110,8 +126,13 @@ pub fn create_router(state: AppState) -> Router {
         .merge(typing::router())
         .merge(bubble_chat::router())
         .merge(calls::router())
+        .merge(call_sfu::router())
+        .merge(sip::router())
+        .merge(phone_sessions::router())
+        .merge(pbx::router())
         .merge(notifications::router())
         .merge(push::router())
+        .merge(apns::router())
         .merge(read_states::router())
         .merge(shapes::router())
         .merge(telemetry::router())

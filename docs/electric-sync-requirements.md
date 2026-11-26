@@ -99,7 +99,7 @@ Atlas は宣言的スキーマでの `REPLICA IDENTITY` の差分検知を標準
 現行の主キーは `text` です。サブクエリへリテラルを埋め込む際の安全性検証や、API と Shape 間の型の一貫性を考えると、UUID（`uuid` 型）に寄せる選択肢もあります。どちらに統一するかは「7. 要検討事項」とします。
 
 ### 論理削除の扱い
-`Channel.deleted_at` や `Message.deleted_at` による論理削除は、そのまま Shape で配信し、フロントエンドのクエリ側で除外する方針で対応可能です。
+`Channel.deleted_at` や `Message.deleted_at` による論理削除は、そのまま Shape で配信し、フロントエンドのクエリ側で除外する方針で対応可能です。ただし、論理削除したメッセージは、DB のトリガー（`messages_clear_deleted_content`）が本文（`content`、`card`、`metadata`、`display_data`、`app_*`）を空にします。Shape に残るのは、削除を知らせるための墓石の行だけです。
 
 ## 4. 認証・認可と CORS 設定
 
@@ -148,4 +148,4 @@ React・Android・TUI・デスクトップは同じShapeプロキシを使い、
 
 この変更は通知の全メッセージ依存を除くもので、ElectricのOOM解消を保証するものではない。
 反映後はメモリ使用量・再起動回数・初期同期量を監視する。
-リアクションの全履歴同期と、Android・TUI・GPUIの本文ページングは別の改善対象とする。
+リアクションの全履歴同期と、Android・TUIの本文ページングは別の改善対象とする。

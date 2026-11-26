@@ -1,7 +1,16 @@
 import "../../../styles.css";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  Outlet,
+  RouterProvider,
+} from "@tanstack/react-router";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { ApiError } from "../../../lib/api/client";
+import { HomePostContent } from "../../home/HomePostContent";
 import { LinkPreviews } from "./LinkPreviews.tsx";
 import { DEFAULT_CONFIG } from "../../../lib/config";
 import { http, HttpResponse } from "msw";
@@ -10,7 +19,8 @@ import { mockServer } from "../../../test/browser-setup";
 const previewConfig = { ...DEFAULT_CONFIG, summalyUrl: "https://summaly.example/url" };
 const api = vi.hoisted(() => ({ get: vi.fn() }));
 vi.mock("../../../lib/summaly", () => ({ createSummalyClient: () => api }));
-vi.mock("../../../lib/electric/collections-context", () => ({
+vi.mock("../../../lib/electric/collections-context", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../lib/electric/collections-context")>()),
   useOptionalCollections: () => ({
     config: previewConfig,
   }),
@@ -19,6 +29,7 @@ afterEach(() => {
   api.get.mockReset();
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 it("renders metadata and loads the thumbnail directly from the runtime proxy endpoint", async () => {
@@ -170,4 +181,256 @@ it("does not retry permanent API failures", async () => {
   expect(api.get).toHaveBeenCalledTimes(1);
   expect(screen.getByRole("link")).toBeInTheDocument();
   expect(screen.getByRole("link").getBoundingClientRect().height).toBe(128);
+});
+
+it("resolves quoted renotes in Home and shares a pending lookup with chat", async () => {
+  // Home cards are deferred. Fire the observer synchronously so all three cards
+  // join the shared request before the test removes one of them.
+  vi.stubGlobal(
+    "IntersectionObserver",
+    class {
+      constructor(callback: (entries: { isIntersecting: boolean }[]) => void) {
+        this.notify = () => callback([{ isIntersecting: true }]);
+      }
+      private notify: () => void;
+      observe() {
+        this.notify();
+      }
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  const url = "https://misskey.example/notes/home-quoted-original";
+  let finish!: (data: unknown) => void;
+  api.get.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const view = render(
+    <>
+      <HomePostContent content={`**引用へのコメント**\n\n<${url}>`} />
+      <HomePostContent content={`<${url}>`} />
+      <LinkPreviews content={url} />
+    </>,
+  );
+  await waitFor(() => expect(api.get).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+  // All consumers attach in the same effect flush. Let it finish before one unmounts.
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(api.get).toHaveBeenCalledWith(url, expect.any(Object));
+  expect(screen.getByText("引用へのコメント")).toBeInTheDocument();
+  // Removing one consumer must not cancel the other cards' shared request.
+  view.rerender(
+    <>
+      <HomePostContent content={`<${url}>`} />
+    </>,
+  );
+  expect(api.get.mock.calls[0][1].signal.aborted).toBe(false);
+  finish({ title: "引用元の投稿", description: "引用元の本文", image: null });
+  const card = await screen.findByRole("link", { name: /引用元の投稿/ }, { timeout: 10_000 });
+  expect(card).toHaveAttribute("href", url);
+  expect(screen.getByText("引用元の本文")).toBeInTheDocument();
+  for (const width of [280, 960]) {
+    view.container.style.width = `${width}px`;
+    expect(card.getBoundingClientRect().width).toBeLessThanOrEqual(width);
+    expect(card.scrollWidth).toBeLessThanOrEqual(card.clientWidth);
+  }
+  expect(api.get).toHaveBeenCalledTimes(1);
+});
+
+it("keeps the quote link when its Home preview cannot be resolved", async () => {
+  const url = "https://misskey.example/notes/home-missing-quote";
+  api.get.mockRejectedValue(new ApiError(404, "missing"));
+  render(<HomePostContent content={`<${url}>`} />);
+  await waitFor(() => expect(api.get).toHaveBeenCalledTimes(1));
+  expect(screen.getAllByRole("link").every((link) => link.getAttribute("href") === url)).toBe(true);
+  expect(screen.getByRole("link", { name: url.replace("https://", "") })).toBeInTheDocument();
+});
+
+it("defers Home requests until nearby, shares active views and cancels offscreen or hidden work", async () => {
+  const callbacks: ((entries: { isIntersecting: boolean }[]) => void)[] = [];
+  const disconnect = vi.fn();
+  vi.stubGlobal(
+    "IntersectionObserver",
+    class {
+      constructor(
+        callback: (entries: { isIntersecting: boolean }[]) => void,
+        options: IntersectionObserverInit,
+      ) {
+        expect(options.rootMargin).toBe("200px 0px");
+        callbacks.push(callback);
+      }
+      observe() {}
+      disconnect = disconnect;
+    },
+  );
+  const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  const pending: { signal: AbortSignal; finish: (data: unknown) => void }[] = [];
+  api.get.mockImplementation(
+    (_url: string, { signal }: { signal: AbortSignal }) =>
+      new Promise((resolve, reject) => {
+        pending.push({ signal, finish: resolve });
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      }),
+  );
+  const url = "https://example.com/deferred-home-preview";
+  const view = render(
+    <>
+      <HomePostContent content={url} />
+      <HomePostContent content={url} />
+    </>,
+  );
+  await waitFor(() => expect(callbacks).toHaveLength(2));
+  expect(api.get).not.toHaveBeenCalled();
+  expect(screen.getAllByRole("link")).toHaveLength(2);
+  await act(async () => callbacks[0]([{ isIntersecting: true }]));
+  await waitFor(() => expect(api.get).toHaveBeenCalledTimes(1));
+  expect(screen.getAllByRole("link")).toHaveLength(2);
+  await act(async () => callbacks[1]([{ isIntersecting: true }]));
+  expect(api.get).toHaveBeenCalledTimes(1);
+  await act(async () => callbacks[0]([{ isIntersecting: false }]));
+  expect(pending[0].signal.aborted).toBe(false);
+  await act(async () => callbacks[1]([{ isIntersecting: false }]));
+  expect(pending[0].signal.aborted).toBe(true);
+  await act(async () => callbacks[0]([{ isIntersecting: true }]));
+  await waitFor(() => expect(api.get).toHaveBeenCalledTimes(2));
+  visibility.mockReturnValue("hidden");
+  await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+  expect(pending[1].signal.aborted).toBe(true);
+  visibility.mockReturnValue("visible");
+  await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+  await waitFor(() => expect(api.get).toHaveBeenCalledTimes(3));
+  await act(async () =>
+    pending[2].finish({ title: "取得できたHomeカード", description: "説明", image: null }),
+  );
+  await waitFor(() =>
+    expect(screen.getAllByRole("link", { name: /取得できたHomeカード/ })).toHaveLength(2),
+  );
+  await act(async () => callbacks[1]([{ isIntersecting: true }]));
+  await waitFor(() =>
+    expect(screen.getAllByRole("link", { name: /取得できたHomeカード/ })).toHaveLength(2),
+  );
+  expect(api.get).toHaveBeenCalledTimes(3);
+  await act(async () => {
+    callbacks[0]([{ isIntersecting: false }]);
+    callbacks[1]([{ isIntersecting: false }]);
+  });
+  expect(screen.getAllByRole("link", { name: /取得できたHomeカード/ })).toHaveLength(2);
+  view.unmount();
+  expect(disconnect).toHaveBeenCalledTimes(2);
+});
+
+it("prefetches within 200px of the real scrolling pane and defers more distant posts", async () => {
+  const near = "https://example.com/near-scroll-preview";
+  const far = "https://example.com/far-scroll-preview";
+  api.get.mockImplementation(async (url: string) => ({
+    title: url === near ? "画面の100px下のカード" : "遠い投稿のカード",
+    description: "説明",
+    image: null,
+  }));
+  const view = render(
+    <div style={{ height: 160, overflowY: "auto" }}>
+      <div style={{ height: 260 }} />
+      <HomePostContent content={near} />
+      <div style={{ height: 1000 }} />
+      <HomePostContent content={far} />
+    </div>,
+  );
+  await waitFor(() => expect(api.get).toHaveBeenCalledWith(near, expect.any(Object)), {
+    timeout: 10_000,
+  });
+  await screen.findByRole("link", { name: /画面の100px下のカード/ }, { timeout: 10_000 });
+  expect(api.get).toHaveBeenCalledTimes(1);
+  const scroller = view.container.firstElementChild!;
+  scroller.scrollTop = scroller.scrollHeight;
+  fireEvent.scroll(scroller);
+  await waitFor(() => expect(api.get).toHaveBeenCalledWith(far, expect.any(Object)), {
+    timeout: 10_000,
+  });
+  await screen.findByRole("link", { name: /遠い投稿のカード/ }, { timeout: 10_000 });
+  expect(api.get).toHaveBeenCalledTimes(2);
+});
+
+it("shows the cached card during a slow background refresh and replaces every mounted copy", async () => {
+  vi.useFakeTimers();
+  const url = "https://example.com/stale-preview-card";
+  api.get.mockResolvedValueOnce({
+    title: "保存済みのカード",
+    description: "前の説明",
+    image: null,
+  });
+  const first = render(<LinkPreviews content={url} />);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(screen.getByRole("link", { name: /保存済みのカード/ })).toBeInTheDocument();
+  first.unmount();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(300_001);
+  });
+  let finish!: (data: unknown) => void;
+  api.get.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  render(
+    <>
+      <LinkPreviews content={url} />
+      <LinkPreviews content={url} />
+    </>,
+  );
+  expect(screen.getAllByRole("link", { name: /保存済みのカード/ })).toHaveLength(2);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(api.get).toHaveBeenCalledTimes(2);
+  expect(screen.getAllByRole("link", { name: /保存済みのカード/ })).toHaveLength(2);
+  await act(async () => {
+    finish({ title: "更新済みのカード", description: "新しい説明", image: null });
+  });
+  expect(screen.getAllByRole("link", { name: /更新済みのカード/ })).toHaveLength(2);
+  expect(screen.queryByText("保存済みのカード")).toBeNull();
+});
+
+function renderInRouter(content: string) {
+  const root = createRootRoute({ component: Outlet });
+  const home = createRoute({
+    getParentRoute: () => root,
+    path: "/",
+    component: () => <LinkPreviews content={content} />,
+  });
+  const channel = createRoute({
+    getParentRoute: () => root,
+    path: "/channels/$channelId",
+    component: () => <p>Channel opened</p>,
+  });
+  const router = createRouter({
+    routeTree: root.addChildren([home, channel]),
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+  });
+  render(<RouterProvider router={router} />);
+  return router;
+}
+
+it("opens the card of this app's message link in the same tab, but other cards in a new tab", async () => {
+  api.get.mockRejectedValue(new Error("unavailable"));
+  const own = `${window.location.origin}/channels/c1?message=m1`;
+  const router = renderInRouter(`${own} https://example.com/page`);
+  const cards = await screen.findAllByRole("link");
+  expect(cards).toHaveLength(2);
+  const [ownCard, externalCard] = cards;
+  expect(ownCard!.getAttribute("target")).toBeNull();
+  expect(ownCard!.getAttribute("href")).toBe("/channels/c1?message=m1");
+  expect(externalCard!.getAttribute("target")).toBe("_blank");
+  expect(externalCard!.getAttribute("rel")).toBe("noopener noreferrer");
+  expect(externalCard!.getAttribute("href")).toBe("https://example.com/page");
+
+  fireEvent.click(ownCard!);
+  await screen.findByText("Channel opened");
+  expect(router.state.location.href).toBe("/channels/c1?message=m1");
 });

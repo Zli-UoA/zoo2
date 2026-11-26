@@ -242,6 +242,14 @@ export class RevocationSession {
   }
 
   /**
+   * 新しい版 `version` へのアップロードの証明（`X-Zoo-Backup-Proof` の値）を、新しいバックアップ鍵で作る。
+   * `uploadKey` は新しい版の `upload_key`（docs/e2ee.md の「アップロードの証明」）。
+   */
+  uploadProof(uploadKey: string, version: string): string {
+    return this.require().uploadProof(uploadKey, this.userId(), version);
+  }
+
+  /**
    * 保存のあとに読み直した値を、作った鍵と比べる。一致したら失効の記録を消し、メモリーの秘密を捨てる。
    * 一致しなければ `ServerKeyMismatch`（SSSS を開け直してやり直す）。
    */

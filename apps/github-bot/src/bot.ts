@@ -2,13 +2,15 @@ import { ZooError, type AppEvent } from "../../../sdk/src/index.ts";
 import { Store, type Job } from "./store.ts";
 import { GitHub, GitHubError } from "./github.ts";
 import { notices, summary, type Notice } from "./events.ts";
-import { messageBlocks, displayRepository } from "./cards.ts";
+import { messageBlocks, messageComponents, cardComponents, displayRepository } from "./cards.ts";
+import { plain } from "../../../sdk/src/components.ts";
 import { subscription, permits, words } from "./subscriptions.ts";
 import { preview } from "./previews.ts";
 import {
   BotError,
   actor,
   id,
+  keyedId,
   matches,
   repoName,
   resource,
@@ -51,7 +53,7 @@ export class GitHubBot {
       kind: "ephemeral",
       user_id: actor,
       channel_id: channel,
-      blocks: [{ type: "text", text: text(message, 3900) }],
+      components: [{ type: 10, content: plain(text(message, 3900)) }],
     });
   }
   async publishMessage(
@@ -67,11 +69,18 @@ export class GitHubBot {
       } catch (error) {
         // The POST may have succeeded before a crash or a lost response. Our deterministic
         // UUID still identifies the same message, even if GitHub's current body has changed.
-        if (error instanceof ZooError && error.status === 409)
-          await this.zoo.updateMessage(input.id, input.content);
-        else throw error;
+        if (error instanceof ZooError && error.status === 409) {
+          try {
+            await this.zoo.updateMessage(input.id, input.content);
+          } catch (updateError) {
+            // この bot が公開していないメッセージが、同じ ID を使っている。通知を捨てずに、ジョブを失敗にして残す
+            if ([403, 404, 409].includes(Number((updateError as { status?: number }).status)))
+              throw new BotError("message_id_conflict");
+            throw updateError;
+          }
+        } else throw error;
       }
-    if (blocks) await this.zoo.setBlocks(input.id, blocks);
+    if (blocks) await this.zoo.setComponents(input.id, messageComponents(blocks));
   }
   async tick() {
     if (this.busy || this.stopping) return;
@@ -195,6 +204,8 @@ export class GitHubBot {
         notice.stateChange = true;
       }
     const snapshots = new Map<string, Json>();
+    // 1 つの送信先で ID が衝突しても、ほかの送信先への配信を続け、最後にジョブの失敗として残す
+    let conflict: BotError | undefined;
     for (const notice of list) {
       const groups = new Map<string, typeof subscriptions>();
       for (const sub of subscriptions)
@@ -233,7 +244,10 @@ export class GitHubBot {
             channel: sub.channel,
             message:
               existing?.message ??
-              id(`thread:${sub.channel}:${repo}:${notice.target.kind}:${notice.target.number}`),
+              keyedId(
+                this.config.encryptionKey,
+                `thread:${sub.channel}:${repo}:${notice.target.kind}:${notice.target.number}`,
+              ),
             snapshot,
           };
           this.store.saveThread(thread);
@@ -267,8 +281,16 @@ export class GitHubBot {
             !refreshOnly && notice.child && !initial && (notice.action !== "edited" || childSource);
           if (shouldReply) {
             const childKey = `child:${sub.channel}:${repo}:${notice.child}`,
-              child = id(childKey),
-              known = this.store.get<boolean>(childKey);
+              stored = this.store.get<boolean | string>(childKey),
+              known = Boolean(stored),
+              // 記録済みの返信は、記録した ID (古い記録は、これまでの計算で出した ID) で更新・削除する。
+              // 新しい返信は、外から計算できない ID にする
+              child =
+                typeof stored === "string"
+                  ? stored
+                  : stored
+                    ? id(childKey)
+                    : keyedId(this.config.encryptionKey, childKey);
             if (notice.deleteChild) {
               if (known) {
                 try {
@@ -303,14 +325,19 @@ export class GitHubBot {
               Boolean(known),
               messageBlocks(notice, snapshot, p, true),
             );
-            this.store.set(childKey, true);
+            this.store.set(childKey, child);
           }
         } catch (error) {
+          if (error instanceof BotError && error.code === "message_id_conflict") {
+            conflict ??= error;
+            continue;
+          }
           if ([403, 404].includes(Number((error as { status?: number }).status))) continue;
           throw error;
         }
       }
     }
+    if (conflict) throw conflict;
   }
   async current(notice: Notice, existing: Thread | undefined, payload: Json): Promise<Json> {
     try {
@@ -445,7 +472,7 @@ export class GitHubBot {
             await this.zoo.request(
               "POST",
               `/messages/${encodeURIComponent(event.data.id)}/unfurls`,
-              card,
+              { url: card.url, components: cardComponents(undefined, card.card) },
             );
         }
       }
@@ -605,7 +632,7 @@ export class GitHubBot {
           }
         if (lines.length)
           await this.zoo.postMessage({
-            id: id(`reminder:${channel}:${day}`),
+            id: keyedId(this.config.encryptionKey, `reminder:${channel}:${day}`),
             channel_id: channel,
             content: `レビュー依頼リマインダー (${config.zone})\n${Array.from(lines.join("\n")).slice(0, 3500).join("")}`,
           });

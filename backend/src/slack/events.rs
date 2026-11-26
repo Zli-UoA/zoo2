@@ -1,12 +1,13 @@
 //! Slack の Events API の受信口 (#293)。
 //!
 //! 方針は「Slack API のポーリング (差分同期、`sync.rs`) を正とし、イベントは『このチャンネルを今すぐ同期して』
-//! という合図にだけ使う」。この受信口は、署名を検証し、イベントからチームとチャンネルだけを取り出して、
+//! という合図に使う」。この受信口は、署名を検証し、イベントからチームとチャンネルだけを取り出して、
 //! `slack_channel_wakes` に 1 行書き (編集・削除・リアクションなら、確かめ直すメッセージの指定を `slack_message_hints` にも書き)、すぐ 200 を返す (Slack は 3 秒以内の応答を求める)。反映は差分同期が行う。
 //!
 //! - 認証のない経路なので、署名の検証より前に DB には触れない。ボディの上限は `MAX_BODY`。
 //! - イベントの本文は読み捨てる。保存もログにも出さない (非公開チャンネルの内容を含みうる)。
-//! - 登録されていないワークスペース・チャンネルは、何も書かずに 200 を返す (存在の有無を教えない)。
+//! - 登録されていないワークスペース・チャンネルは、同期用の行を書かずに 200 を返す。
+//! - 設定されたチームの人の新規投稿には、非同期で本人限定の移行案内を送る (`migration_notice`)。
 //! - 再送 (`X-Slack-Retry-Num`) や重複は、同じ行への UPSERT なので、結果が変わらない。
 //! - 署名の Secret (`SLACK_SIGNING_SECRET`) が未設定なら 404 (機能が無効)。
 
@@ -286,6 +287,7 @@ async fn receive(
         statement.exec(&mut tx).await?;
     }
     tx.commit().await?;
+    super::migration_notice::dispatch(&s, &payload, headers.contains_key("x-slack-retry-num"));
     Ok(StatusCode::OK.into_response())
 }
 

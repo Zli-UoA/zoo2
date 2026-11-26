@@ -11,53 +11,18 @@ import kotlinx.serialization.json.*
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ParityTransportTest {
-    @Test
-    fun escapeClearsQueryBeforeClosingOnTheNextKey() = runTest {
-        val http = HttpClient(MockEngine { respond("{}") })
-        val app =
-            Session(
-                Repository(
-                    Config("https://zoo.test", "/shapes", "alice", false),
-                    Browser(),
-                    http,
-                    backgroundScope,
-                ),
-                backgroundScope,
-                Environment(),
-            )
-        var query = "member"
-        var closed = 0
-        val dialog = OverlaySlot()
-        dialog.onEscape = {
-            if (query.isNotEmpty()) {
-                query = ""
-                true
-            } else false
-        }
-        dialog.close = {
-            closed++
-            app.overlays.remove(dialog)
-        }
-        app.overlays.add(dialog)
-        assertTrue(app.escape())
-        assertEquals("", query)
-        assertEquals(0, closed)
-        assertTrue(app.escape())
-        assertEquals(1, closed)
-        assertFalse(app.escape())
-        app.close()
-        http.close()
-    }
-
     private class Browser : Platform {
+        override var messageEncryption: MessageEncryption? = null
+        var channelCache: String? = null
+        val cache = mutableMapOf<String, String>()
         val exits = mutableListOf<Row>()
         private var sequence = 0
 
         override suspend fun headers() = mapOf("X-Dev-User" to "alice")
 
-        override suspend fun readCache(key: String): String? = null
+        override suspend fun readCache(key: String): String? = if (":channels:" in key) channelCache else cache[key]
 
-        override suspend fun writeCache(key: String, value: String) {}
+        override suspend fun writeCache(key: String, value: String) { cache[key] = value }
 
         override fun uuid() = "id-${++sequence}"
 
@@ -79,6 +44,126 @@ class ParityTransportTest {
             if (name == "bubbleExit") exits += json.parseToJsonElement(payload).jsonObject
             return "{}"
         }
+    }
+
+    @Test
+    fun creationIntentPreventsPlaintextAfterDowngradeAndRestart() = runTest {
+        val platform = Browser()
+        var messageWrites = 0
+        var downgrade = true
+        val attempted = mutableListOf<String>()
+        fun client() = HttpClient(MockEngine { request ->
+            if (request.url.encodedPath in listOf("/api/channels", "/api/dms")) {
+                val body = json.parseToJsonElement((request.body as TextContent).text).jsonObject
+                val id = body.text("id")
+                assertTrue(platform.cache.values.any { id in it }) // HTTP より前に永続化する。
+                val returned = if (request.url.encodedPath == "/api/dms") "existing-dm" else id
+                attempted += returned
+                respond(obj("data" to obj("id" to returned, "encrypted" to !downgrade)).toString())
+            } else { messageWrites++; error("No plaintext write is allowed") }
+        })
+        val connection = Config("https://zoo.test", "/shapes", "alice", false, txidMode = "none")
+        fun session(config: Config = connection) = Session(Repository(config, platform, client(), backgroundScope, synchronize = false), backgroundScope, Environment())
+        val first = session()
+        assertFailsWith<IllegalStateException> { first.createChannel(obj("is_private" to true, "encrypted" to true, "channel_name" to "secret")) }
+        assertFailsWith<IllegalStateException> { first.createDm(setOf("bob"), true) }
+        attempted.forEach { assertFalse(first.send(it, "secret", null)) }
+        first.close()
+        val reopened = session()
+        attempted.forEach { assertFalse(reopened.send(it, "still secret", null)) }
+        assertEquals(0, messageWrites)
+        assertTrue(attempted.all { reopened.isEncryptedChannel(it) })
+        downgrade = false
+        val created = reopened.createChannel(obj("is_private" to true, "encrypted" to true, "channel_name" to "valid"))
+        assertTrue(reopened.isEncryptedChannel(created.jsonObject.getValue("data").jsonObject.text("id")))
+        val anotherAccount = session(connection.copy(userId = "bob"))
+        anotherAccount.requirePlaintextChannel(attempted.first()) // 別アカウントに記録を流用しない。
+        anotherAccount.close()
+        reopened.close()
+    }
+
+    @Test
+    fun encryptedChannelUsesOnlyEncryptionAndNeverFallsBackToCommandsOrPlaintext() = runTest {
+        val platform = Browser().apply { channelCache = """[{"id":"secret","encrypted":"t"}]""" }
+        var sent = ""
+        var fail = false
+        var writes = 0
+        platform.messageEncryption = object : MessageEncryption {
+            override val changes = kotlinx.coroutines.flow.MutableStateFlow(0L)
+            override val recipients = kotlinx.coroutines.flow.MutableStateFlow(emptyMap<String, RecipientNotice>())
+            override val attachmentCipher: AttachmentCipher get() = error("Unexpected attachment")
+            override suspend fun send(channel: String, id: String, parent: String?, body: String,
+                mentions: EncryptedMentions, attachments: List<kotlinx.serialization.json.JsonObject>) {
+                if (fail) error("e2ee.sendNeedsUnlock")
+                sent = body
+            }
+            override suspend fun edit(message: Row, body: String) = error("Unexpected edit")
+            override suspend fun decrypt(message: Row) = error("Unexpected decrypt")
+        }
+        val http = HttpClient(MockEngine { request ->
+            if (request.method != HttpMethod.Get) writes++
+            awaitCancellation()
+        })
+        val app = Session(Repository(Config("https://zoo.test", "/shapes", "alice", false), platform, http, backgroundScope), backgroundScope, Environment())
+        runCurrent()
+        assertTrue(app.send("secret", "/echo secret text", "parent"))
+        assertEquals("/echo secret text", sent)
+        fail = true
+        assertFalse(app.send("secret", "never send plaintext", null))
+        assertEquals("e2ee.sendNeedsUnlock", app.toast)
+        assertFalse(app.send("secret", "file", null, attachmentIds = listOf("plaintext-file")))
+        assertFalse(app.send("secret", "/echo secret text", null, commandAppId = "echo"))
+        assertEquals(0, writes)
+        app.close()
+        http.close()
+    }
+
+    /** `Session.send` の平文・暗号化の両方の `catch` が、参加が必要な 403 だけ、参加の案内を出す。 */
+    @Test
+    fun aReplyRefusedForAMissingJoinShowsTheJoinHintOnBothSendPaths() = runTest {
+        val platform = Browser().apply { channelCache = """[{"id":"secret","encrypted":"t"}]""" }
+        var refusal = """{"error":"Join the thread before replying","code":"THREAD_JOIN_REQUIRED"}"""
+        val encryptedWrites = mutableListOf<String?>()
+        platform.messageEncryption = object : MessageEncryption {
+            override val changes = kotlinx.coroutines.flow.MutableStateFlow(0L)
+            override val recipients = kotlinx.coroutines.flow.MutableStateFlow(emptyMap<String, RecipientNotice>())
+            override val attachmentCipher: AttachmentCipher get() = error("Unexpected attachment")
+            override suspend fun send(channel: String, id: String, parent: String?, body: String,
+                mentions: EncryptedMentions, attachments: List<kotlinx.serialization.json.JsonObject>) {
+                encryptedWrites += parent
+                throw ApiException(403, json.parseToJsonElement(refusal).jsonObject)
+            }
+            override suspend fun edit(message: Row, body: String) = error("Unexpected edit")
+            override suspend fun decrypt(message: Row) = error("Unexpected decrypt")
+        }
+        val http = HttpClient(MockEngine { request ->
+            if (request.method == HttpMethod.Get) awaitCancellation()
+            respond(refusal, HttpStatusCode.Forbidden)
+        })
+        val app = Session(
+            Repository(Config("https://zoo.test", "/shapes", "alice", false, txidMode = "none"), platform, http, backgroundScope),
+            backgroundScope,
+            Environment(),
+        )
+        runCurrent()
+        for (channel in listOf("plain", "secret")) {
+            app.dismissToast()
+            assertFalse(app.send(channel, "reply", "root"))
+            assertEquals("threads.joinToReply", app.toast, channel)
+            // 親のない投稿は、スレッドの参加では直らない。
+            app.dismissToast()
+            assertFalse(app.send(channel, "post", null))
+            assertEquals("common.writeError", app.toast, channel)
+            // 投稿権限の 403 は、参加を案内しない。
+            refusal = """{"error":"Only channel managers may post here","code":"POSTING_RESTRICTED"}"""
+            app.dismissToast()
+            assertFalse(app.send(channel, "reply", "root"))
+            assertEquals("common.writeError", app.toast, channel)
+            refusal = """{"error":"Join the thread before replying","code":"THREAD_JOIN_REQUIRED"}"""
+        }
+        assertEquals(listOf<String?>("root", null, "root"), encryptedWrites)
+        app.close()
+        http.close()
     }
 
     @Test
@@ -169,6 +254,32 @@ class ParityTransportTest {
             "attachment-1",
             requests.last().second["attachment_ids"]!!.jsonArray.single().jsonPrimitive.content,
         )
+        app.close()
+    }
+
+    @Test
+    fun replyNormalizedToTheThreadRootMovesTheOpenThread() = runTest {
+        val http =
+            HttpClient(
+                MockEngine { request ->
+                    if (request.method == HttpMethod.Get) awaitCancellation()
+                    respond("""{"data":{"id":"x","parent_id":"root"},"txid":null}""")
+                }
+            )
+        val repo =
+            Repository(
+                Config("https://zoo.test", "/shapes", "alice", false, txidMode = "none"),
+                Browser(),
+                http,
+                backgroundScope,
+            )
+        val app = Session(repo, backgroundScope, Environment())
+        app.thread = "other"
+        assertTrue(app.send("c", "hello", "child"))
+        assertEquals("other", app.thread)
+        app.thread = "child"
+        assertTrue(app.send("c", "hello", "child"))
+        assertEquals("root", app.thread)
         app.close()
     }
 

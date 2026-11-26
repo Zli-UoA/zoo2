@@ -118,20 +118,41 @@ pub struct AppState {
     pub config: Config,
     pub http_client: reqwest::Client,
     pub electric_client: reqwest::Client,
+    pub phone_http_client: reqwest::Client,
     pub s3_client: aws_sdk_s3::Client,
     pub jwks_verifier: JwksVerifier,
     pub user_cache: UserResolutionCache,
     pub call_registry: CallRegistry,
+    /// 通話の SFU（docs/calls-sfu.md）。`CALL_SFUS_JSON` が未設定なら `None` で、通話は mesh だけ。
+    pub call_sfu: Option<crate::call_sfu::CallSfu>,
+    pub shape_streams: crate::routes::shape_limit::ShapeStreamLimiter,
 }
 
 impl AppState {
     pub fn new(db: toasty::Db, config: Config) -> Self {
+        // 設定の誤りは起動時（main）に止めるので、ここでは読めたものだけを使う。
+        let call_sfu = crate::call_sfu::CallSfuConfig::from_env().ok().flatten();
+        Self::with_call_sfu_config(db, config, call_sfu)
+    }
+
+    /// `new` と同じだが、通話の SFU の設定を環境変数から読まずに受け取る。テストが、プロセスの環境変数を
+    /// 書き換えずに SFU の設定（`CallSfuConfig::from_lookup`）を渡し、その設定で退出の worker を起動する。
+    pub fn with_call_sfu_config(
+        db: toasty::Db,
+        config: Config,
+        call_sfu: Option<crate::call_sfu::CallSfuConfig>,
+    ) -> Self {
         let http_client = Self::default_http_client();
         let electric_client = Self::default_electric_client();
         let s3_client = crate::storage::create_s3_client(&config.s3);
         let jwks_verifier = JwksVerifier::new(http_client.clone());
         let user_cache = UserResolutionCache::new();
         let call_registry = CallRegistry::new();
+        let call_sfu = call_sfu.map(crate::call_sfu::CallSfu::new);
+        if let Some(sfu) = &call_sfu {
+            call_registry.set_sfu_wakers(sfu.departures_wake.clone(), sfu.bridge_wake.clone());
+            sfu.start_departure_worker(db.clone());
+        }
         call_registry.start_listener(config.database_url.clone());
         call_registry.start_sweeper(db.clone());
 
@@ -141,10 +162,13 @@ impl AppState {
             config,
             http_client,
             electric_client,
+            phone_http_client: crate::phone_gateway::http_client(),
             s3_client,
             jwks_verifier,
             user_cache,
             call_registry,
+            call_sfu,
+            shape_streams: Default::default(),
         }
     }
 
@@ -157,10 +181,13 @@ impl AppState {
             db,
             http_client: http_client.clone(),
             electric_client: Self::default_electric_client(),
+            phone_http_client: crate::phone_gateway::http_client(),
             s3_client: crate::storage::create_s3_client(&config.s3),
             jwks_verifier: JwksVerifier::new(http_client),
             user_cache: UserResolutionCache::new(),
             call_registry: CallRegistry::new(),
+            call_sfu: None,
+            shape_streams: Default::default(),
             config,
         }
     }
@@ -206,10 +233,13 @@ impl AppState {
             config,
             http_client,
             electric_client,
+            phone_http_client: crate::phone_gateway::http_client(),
             s3_client,
             jwks_verifier,
             user_cache,
             call_registry,
+            call_sfu: None,
+            shape_streams: Default::default(),
         }
     }
 
@@ -234,10 +264,13 @@ impl AppState {
             config,
             http_client,
             electric_client,
+            phone_http_client: crate::phone_gateway::http_client(),
             s3_client,
             jwks_verifier,
             user_cache,
             call_registry,
+            call_sfu: None,
+            shape_streams: Default::default(),
         }
     }
 
@@ -260,10 +293,13 @@ impl AppState {
             config,
             http_client,
             electric_client,
+            phone_http_client: crate::phone_gateway::http_client(),
             s3_client,
             jwks_verifier,
             user_cache,
             call_registry,
+            call_sfu: None,
+            shape_streams: Default::default(),
         }
     }
 }

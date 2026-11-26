@@ -1,4 +1,16 @@
 {
+  "a11y": {
+    "skipToContent": "Skip to content"
+  },
+  "aboutZoo": {
+    "title": "About Zoo",
+    "version": "Version: {{version}}",
+    "versionUnknown": "Unknown"
+  },
+  "notFoundPage": {
+    "title": "Page not found",
+    "description": "The page you are looking for may have moved or no longer exists."
+  },
   "nav": {
     "main": "Main navigation"
   },
@@ -10,6 +22,10 @@
     "unread": "Unread messages",
     "editTitle": "Edit channel",
     "editHelp": "Use up to 80 letters, numbers, hyphens (-), or underscores (_) for the channel name. Spaces, emoji, other symbols, and reserved names are not allowed.",
+    "nameRequired": "Enter a channel name.",
+    "nameTooLong": "Use {{max}} characters or fewer for the channel name (currently {{length}}).",
+    "nameReserved": "'{{name}}' is a reserved name and cannot be used.",
+    "invalidName": "Channel names can only contain letters, numbers, hyphens (-), and underscores (_).",
     "saveName": "Save",
     "savingName": "Saving…",
     "title": "Channels",
@@ -44,6 +60,7 @@
     "notFound": "Channel not found.",
     "duplicateName": "A channel with this name already exists.",
     "privateMessages": "This channel is private. You can view messages once you are invited.",
+    "postingManagersOnly": "Only channel managers can post in this channel.",
     "back": "Back to channels",
     "noDescription": "No description yet",
     "visibilityHelp": "Anyone can join a public channel. Private channels are invite-only.",
@@ -122,8 +139,7 @@
     "candidates": "Member suggestions",
     "usersLoading": "Loading users…",
     "usersError": "Failed to load users.",
-    "usersEmpty": "No matching users.",
-    "back": "Back to channel"
+    "usersEmpty": "No matching users."
   },
   "moderation": {
     "archived": "Archived",
@@ -159,6 +175,11 @@
     "invalidState": "This action cannot be performed in the current state."
   },
   "settings": {
+    "appearance": "Appearance",
+    "interaction": "Gestures",
+    "swipeReply": "Swipe to reply",
+    "operationHaptics": "Haptic feedback",
+    "navTitle": "Settings",
     "admin": "Administrator",
     "member": "Member",
     "makeAdmin": "Make administrator",
@@ -198,13 +219,16 @@
     "description": "Select a channel from the list to view the conversation."
   },
   "messages": {
+    "loadingOlder": "Loading older messages…",
     "typing": "{{names}} typing…",
     "typingSeparator": ", ",
     "compose": "Write a message",
     "send": "Send",
     "edit": "Edit",
+    "editMessage": "Edit message",
     "delete": "Delete",
     "more": "More actions",
+    "actions": "Message actions",
     "editLabel": "Edit message",
     "loadError": "Failed to load messages",
     "retryHelp": "Check your connection and try again.",
@@ -224,9 +248,58 @@
     "copyRaw": "Copy original text",
     "copied": "Original text copied",
     "copyFailed": "Could not copy the original text",
-    "edited": "Edited"
+    "copyLink": "Copy message link",
+    "linkCopied": "Message link copied",
+    "linkCopyFailed": "Could not copy the message link",
+    "edited": "Edited",
+    "forward": "Forward message…",
+    "forwardTitle": "Forward this message",
+    "forwardSearchPlaceholder": "Search channels or members",
+    "forwardDestinationLabel": "Destination",
+    "forwardDestinationSelected": "Selected {{name}} as destination",
+    "forwardClearDestination": "Remove {{name}}",
+    "forwardNoDestinations": "No channels or DMs available to forward to",
+    "forwardCommentPlaceholder": "Add a message (optional)",
+    "forwardCommentLabel": "Comment",
+    "forwardPreviewLabel": "Forwarded message preview",
+    "forwardSubmit": "Forward",
+    "forwarding": "Forwarding…",
+    "forwarded": "Message forwarded",
+    "forwardedTo": "Forwarded to {{channel}}",
+    "forwardSourceUnavailable": "The original message does not exist or cannot be forwarded",
+    "forwardLoading": "Loading forwarded message",
+    "forwardDeleted": "This message was deleted",
+    "forwardUnavailable": "You don't have permission to view this message",
+    "forwardLoadError": "Couldn't load forwarded message",
+    "forwardSourceChannel": "Posted in {{channel}}",
+    "forwardSourceThread": "Reply in thread in {{channel}}",
+    "forwardQuoteLabel": "Forwarded message from {{author}}",
+    "forwardAttachmentCount_one": "{{count}} attachment",
+    "forwardAttachmentCount_other": "{{count}} attachments",
+    "forwardNestedCompact": "This post also includes a forwarded message",
+    "forwardNestedNote": "Includes another forwarded message · View original"
+  },
+  "channelLink": {
+    "inlineMessage": "{{name}}: {{channel}}",
+    "thread": "Thread in {{channel}}",
+    "encrypted": "This message is encrypted",
+    "messageUnavailable": "Unable to display this message",
+    "channelUnavailable": "Unable to display this channel",
+    "loading": "Loading the linked item",
+    "loadFailed": "Couldn't load the linked item",
+    "appMessage": "App message",
+    "attachments_one": "{{count}} attachment",
+    "attachments_other": "{{count}} attachments",
+    "privateChannel": "Private channel",
+    "encryptedChannel": "Encrypted channel"
   },
   "attachments": {
+    "recentPhotos": "Recent photos",
+    "systemPhotos": "Open photo picker",
+    "allowRecentPhotos": "Allow photo access",
+    "noRecentPhotos": "No photos available",
+    "play": "Play",
+    "pause": "Pause",
     "add": "Attach files",
     "selected": "Files to attach",
     "remove": "Remove {{name}}",
@@ -243,12 +316,37 @@
     "download": "Download {{name}}",
     "downloadShort": "Download",
     "downloadError": "Could not download the file.",
+    "previewSaveUnsupported": "This file cannot be saved by the app. Open the link in a new tab to save it.",
+    "downloadSaved": "Saved as {{name}}.",
+    "downloadDestinationUnsupported": "This folder cannot be used to save the file. Choose another folder, or change the save location in Settings > Downloads.",
+    "downloadDestinationUnsupportedAskEveryTimeOff": "This folder cannot be used to save the file. Change the save location in Settings > Downloads, or turn on \"Ask where to save each time\".",
+    "downloadTooMany": "Too many downloads are running at once. Wait for the other downloads to finish, then try again.",
+    "downloading": "Downloading",
+    "saving": "Saving…",
+    "cancelDownload": "Cancel downloading {{name}}",
+    "cancelDownloadShort": "Cancel",
     "retry": "Try again",
     "sensitive": "Sensitive image",
     "markSensitive": "Mark images as sensitive",
     "showSensitive": "Show image",
     "hideSensitive": "Hide image",
-    "sensitiveShort": "Sensitive"
+    "sensitiveShort": "Sensitive",
+    "documentSummary": "Simplified text and cell preview. Formatting and layout may differ from the original.",
+    "previewLimit": "This preview exceeds the size, file count or processing time limit. Download the file to view it.",
+    "emptyPreview": "No content",
+    "containedFiles": "Contained files",
+    "previousPage": "Previous page",
+    "nextPage": "Next page",
+    "pageNumber": "Page number",
+    "pdfPages": "PDF pages",
+    "pdfPage": "PDF page {{page}}",
+    "mail": {
+      "subject": "Subject",
+      "from": "From",
+      "to": "To",
+      "cc": "Cc",
+      "date": "Date"
+    }
   },
   "threads": {
     "title": "Thread",
@@ -273,7 +371,22 @@
     "archiveForChannel": "Archived threads in {{channel}}",
     "untitled": "Untitled thread",
     "targetTooOld": "This message is too old to load here",
-    "unreadTooOld": "Older unread messages are not loaded"
+    "unreadTooOld": "Older unread messages are not loaded",
+    "join": "Join thread",
+    "leave": "Leave thread",
+    "reopen": "Reopen",
+    "reopenOnSend": "Sending a reply will reopen this thread.",
+    "membershipError": "Could not update thread participation.",
+    "participants_one": "{{count}} participant",
+    "participants_other": "{{count}} participants",
+    "participantsMore": "and {{count}} more",
+    "participantsEmpty": "No participants",
+    "threadStarter": "Thread starter",
+    "participantsSearch": "Search by name",
+    "participantsFilterPartial": "Searching only the first {{loaded}} people loaded ({{count}} more can't be searched).",
+    "participantsDescription": "People who have joined this thread.",
+    "joinToReply": "Join the thread to reply.",
+    "reopenAndJoin": "Reopen and join"
   },
   "reactions": {
     "showUsers": "Show users who reacted with {{emoji}}",
@@ -307,7 +420,6 @@
     "noSearchResults": "No matching emojis",
     "tabEmoji": "Emoji",
     "tabKitchen": "Emoji Kitchen",
-    "emojiDescription": "Pick any emoji to react with.",
     "emojiLoading": "Loading emojis…",
     "recent": "Recent emojis",
     "skinTone": "Skin tone"
@@ -328,6 +440,15 @@
     "yesterday": "Yesterday"
   },
   "composer": {
+    "editorTitle": "Edit message",
+    "expand": "Expand editor",
+    "collapse": "Collapse editor",
+    "dragHandle": "Swipe the editor handle up or down",
+    "formatting": "Formatting",
+    "bold": "Bold",
+    "italic": "Italic",
+    "strike": "Strikethrough",
+    "code": "Code block",
     "mac": "⌘ (Cmd)+Enter to send / Enter for a new line",
     "ctrl": "Ctrl+Enter to send / Enter for a new line",
     "other": "Cmd / Ctrl+Enter to send / Enter for a new line",
@@ -336,6 +457,8 @@
     "channels": "Channel suggestions"
   },
   "notifications": {
+    "filterAll": "All",
+    "filterMentions": "Mentions",
     "label": "Notifications",
     "close": "Dismiss notification",
     "title": "Notifications",
@@ -364,7 +487,8 @@
     "unreadStatus": "Unread",
     "readStatus": "Read",
     "actors_one": "{{actor}} and 1 other",
-    "actors_other": "{{actor}} and {{count}} others"
+    "actors_other": "{{actor}} and {{count}} others",
+    "forwardedPreview": "Forwarded a message"
   },
   "webhooks": {
     "title": "Webhook settings",
@@ -390,6 +514,11 @@
   },
   "mentions": {
     "suggestions": "Mention suggestions"
+  },
+  "appUpdate": {
+    "title": "A new version is available",
+    "description": "Reload to use the new version. If you are typing something, send it first.",
+    "reload": "Reload"
   },
   "offline": {
     "bannerTitle": "You're offline",
@@ -421,6 +550,19 @@
     "desktopTitle": "Notifications",
     "desktopValue": "System notifications",
     "desktopDescription": "The app shows mentions and DMs as system notifications. If notifications for zoo2 are turned off in your system settings, turn them on there as well."
+  },
+  "downloads": {
+    "desktopTitle": "Downloads",
+    "desktopDescription": "Where the app saves attachments. Choose whether to confirm the location each time, or save to a folder you set in advance.",
+    "askEveryTime": "Ask where to save each time",
+    "noFolder": "No folder selected",
+    "chooseFolder": "Choose folder",
+    "resetDirectory": "Clear folder and ask each time",
+    "olderAppValue": "The app's default folder",
+    "olderAppDescription": "This version of the app saves attachments to the folder chosen by the app. Update the app to change where files are saved.",
+    "loadError": "Could not load the save location settings.",
+    "retry": "Reload",
+    "error": "Could not change the download settings. Please try again."
   },
   "mfm": {
     "suggestions": "MFM suggestions",
@@ -528,6 +670,7 @@
     "micNotFound": "No microphone found."
   },
   "bubbleChat": {
+    "navTitle": "Bubble",
     "title": "Bubble Chat",
     "description": "A room where text appears in real time as you type",
     "emptyTitle": "No one is typing right now",
@@ -544,6 +687,30 @@
     "active": "In room",
     "you": "You",
     "closeParticipants": "Close participants list"
+  },
+  "channelPins": {
+    "title": "Pinned",
+    "menu": "Channel options",
+    "channelMenu": "Channel options for {{name}}",
+    "dmMenu": "Conversation options for {{name}}",
+    "pin": "Pin",
+    "unpin": "Unpin",
+    "moveUp": "Move up",
+    "moveDown": "Move down",
+    "dragHandle": "Drag to reorder",
+    "dismissError": "Dismiss",
+    "errors": {
+      "conflict": "Pinned channels changed on another device. The latest order was loaded; try again.",
+      "limitExceeded": "You can pin up to 50 channels.",
+      "reorderConflict": "The pinned order changed on another device. The latest order was loaded; try again."
+    },
+    "announce": {
+      "pinned": "Pinned.",
+      "unpinned": "Unpinned.",
+      "moved": "Moved the pinned item.",
+      "reorderConflict": "This item is no longer pinned on another device, so it was not moved.",
+      "reorderArchived": "This channel was archived, so it was not moved."
+    }
   },
   "dms": {
     "title": "Direct messages",
@@ -687,6 +854,20 @@
       "addEncrypted": "Add to the encrypted channel",
       "notReady": "This app has not set up encryption (registered its device) yet. Start the app and try again.",
       "encryptedHint": "Adding an app to an encrypted channel needs a member's permission."
+    },
+    "components": {
+      "unsupported": "This component is not supported yet",
+      "more": "More actions",
+      "choose": "Choose",
+      "search": "Search",
+      "noOptions": "No options",
+      "uploading": "Uploading…",
+      "page": "Page {{page}} of {{pages}}",
+      "spoiler": "Contains a spoiler (open it in the web app)",
+      "webOnly": "Use the web app for this control",
+      "date": "Date",
+      "time": "Time",
+      "datetime": "Date and time"
     }
   },
   "search": {
@@ -703,6 +884,13 @@
     "showLess": "Show less"
   },
   "home": {
+    "navTitle": "Home",
+    "back": "Back",
+    "deleted": "Post deleted",
+    "newPosts": "View new posts ({{count}})",
+    "quotedPost": "Quoted post",
+    "quoteUnavailable": "This quoted post is unavailable",
+    "openQuotedPost": "Open quoted post",
     "image": "Image",
     "imageError": "Could not add image. Choose up to 10 PNG, JPEG, GIF or WebP images (8 MiB each), then try again.",
     "title": "Home",
@@ -712,6 +900,7 @@
     "post": "Post",
     "sending": "Posting…",
     "sendError": "Could not post. Your draft is still here; try again.",
+    "postForbidden": "You can't post in this channel.",
     "loadError": "Could not load the timeline.",
     "loading": "Loading…",
     "empty": "No posts yet",
@@ -1122,9 +1311,23 @@
     },
     "tab": "Encryption",
     "title": "End-to-end encryption",
-    "description": "Messages in encrypted channels and DMs can only be read on your devices. Your keys are protected by a passkey or a recovery key.",
+    "description": "Messages in encrypted channels and DMs can only be read on your devices.",
     "loading": "Loading encryption status…",
-    "unavailable": "Encryption isn't ready on this device yet. Wait a moment, or close other zoo tabs and reopen this page.",
+    "notReady": {
+      "unsupported": "This browser can't use encryption (OPFS, Web Workers, or Web Locks is missing). Private windows may not support it. Open zoo in a normal window or another browser.",
+      "signedOut": "Couldn't confirm the signed-in user. Sign in again.",
+      "userUnavailable": "Couldn't load the signed-in user's information. Wait a moment, or reload the page.",
+      "offline": "Encryption can't get ready while you're offline. It will continue automatically once you're back online.",
+      "otherTab": "Another zoo tab or window is using this device's encryption keys. Close that tab and this one will take over.",
+      "starting": "Getting encryption ready (registering this device)…",
+      "deviceLimit": "You've reached the limit of 20 registered devices. Remove devices you no longer use from the list below.",
+      "failedServer": "Couldn't register this device (server responded {{status}}).",
+      "failedServerCode": "Couldn't register this device (server responded {{status}} {{code}}).",
+      "failedNetwork": "Couldn't reach the server to register this device.",
+      "failedLocal": "Couldn't open the encryption key storage on this device.",
+      "failedLocalNamed": "Couldn't open the encryption key storage on this device ({{name}}).",
+      "retrying": "It will retry automatically. If it doesn't recover, reload the page."
+    },
     "retry": "Try again",
     "notSetUpTitle": "Encryption isn't set up yet",
     "notSetUpDescription": "Set it up to use encrypted channels and DMs. You'll get a recovery key, so be ready to store it.",
@@ -1183,6 +1386,7 @@
       "popupBlocked": "Couldn't open the sign-in window. Allow pop-ups and try again.",
       "reauthFailed": "Couldn't sign in again. Please try again; your keys are kept.",
       "reauthTimeout": "Sign-in didn't finish in time. Please try again.",
+      "desktopOutdated": "This version of the desktop app can't sign you in again. Update the app and try again.",
       "setupConflict": "Another device started setting up encryption first. The recovery key shown here won't work. Unlock with the recovery key or passkey from that device.",
       "mismatch": "A key revocation may be unfinished, or the keys on the server may have been tampered with. This device wasn't signed. Redo the revocation or reset encryption.",
       "invalidRecoveryKey": "That recovery key isn't valid. Check for typos.",
@@ -1201,12 +1405,19 @@
       "renameFailed": "Could not rename the device. Please try again.",
       "revocationFailed": "Could not finish saving the revocation. Its progress is kept on this device. Press “Revoke” again.",
       "verifyFailed": "Could not save the verification. Please try again.",
+      "reverifyKeyChanged": "Their key changed again after you checked it. Nothing was saved. Start again from “Verify again”.",
       "tooManyMembers": "Encrypted channels can have up to 200 members.",
       "sasFailed": "We couldn't start the emoji verification. Check that they have set up encryption, then try again."
     },
     "reunlockToAdd": "Unlock again to add a passkey",
     "reunlockToAddDescription": "Unlock again with a passkey or your recovery key to add a passkey or regenerate the recovery key. This device stays unlocked either way.",
     "badge": "Encrypted",
+    "memberUnreadable": {
+      "notSetUp": "No encryption",
+      "notSetUpDescription": "Hasn't set up encryption, so they can't read new messages in this channel.",
+      "noDevices": "No devices",
+      "noDevicesDescription": "Has no device for encryption, so they can't read new messages in this channel."
+    },
     "encryptChannel": "Encrypt end-to-end",
     "encryptChannelHelp": "Only members' verified devices can read messages. Encryption can't be turned off later.",
     "encryptChannelPrivateOnly": "Only private channels can be encrypted.",
@@ -1247,15 +1458,13 @@
     "sendStaleEpoch": "The member list kept changing, so the message wasn't sent. Try again.",
     "editConflict": "This message was edited elsewhere. Reload it and edit again.",
     "recipients": {
-      "summary": "Encrypted for {{users}} people on {{devices}} devices.",
       "added": "New since your last message: {{names}}"
     },
     "downgraded": "This channel was encrypted, but the server now says it isn't. Messages won't be sent unencrypted.",
     "checking": "Checking this channel's encryption…",
-    "devicesTab": "Devices",
     "devices": {
       "title": "Devices",
-      "description": "Devices that hold encryption keys. Anyone can set a device name, so tell devices apart by when they were added and last used.",
+      "description": "Devices that hold encryption keys.",
       "unnamed": "Unnamed device",
       "current": "This device",
       "unsigned": "Not signed",
@@ -1272,7 +1481,14 @@
       "limitDescription": "This device cannot be registered. Choose devices you no longer use and delete them. Deleting is not revocation, so if a device was lost, also revoke it after this device is registered.",
       "limitStale": "Not used for 30 days or more",
       "limitDelete": "Delete selected devices",
-      "limitDeleted": "Deleted. This device will register again shortly."
+      "limitDeleted": "Deleted. This device will register again shortly.",
+      "stale": "Not used for {{days}}+ days",
+      "notUnlockedStale": "Not unlocked, unused for {{days}}+ days"
+    },
+    "deviceName": {
+      "withOs": "{{browser}} ({{os}})",
+      "app": "{{browser}} (app)",
+      "appWithOs": "{{browser}} ({{os}}, app)"
     },
     "revocation": {
       "pendingTitle": "A revocation is unfinished",
@@ -1356,7 +1572,16 @@
       },
       "reverify": "Verify again",
       "confirmTitle": "Trust {{name}}'s current key?",
-      "confirmDescription": "Confirm outside the channel (in person or another way) that they really replaced their keys. You will sign in again to confirm it is you before saving.",
+      "confirmDescription": "Compare the fingerprint below with the one on {{name}}'s screen (Encryption settings, “Your key fingerprint”) outside the channel (in person or another way), and trust it only if they match. You will sign in again to confirm it is you before saving.",
+      "currentFingerprint": "Current key fingerprint",
+      "previousFingerprint": "Previously trusted key fingerprint",
+      "keyChanged": "This key differs from the one you trusted before. Make sure they really replaced their keys.",
+      "keyUnchanged": "This is the same key you trusted before.",
+      "sasRecommended": "If you can, use “Verify” instead to check with a QR code or emoji. It checks that you both see the same key without reading out the fingerprint.",
+      "confirmEffect": "Trusting signs this key with your user-signing key, and all your devices will trust it.",
+      "confirmTrust": "Trust this key",
+      "ownFingerprint": "Your key fingerprint",
+      "ownFingerprintHelp": "Others compare this fingerprint when they verify you again.",
       "warning": {
         "own_identity_unknown": "Your master key has not been checked yet. Unlock to check it.",
         "own_master_key_changed": "The master key on the server differs from the one this device checked. No keys are sent to any device until you unlock again.",
@@ -1383,7 +1608,7 @@
       "regenerate": "Replace recovery key",
       "create": "Create recovery key",
       "newTitle": "New recovery key",
-      "newDescription": "After saving, the old recovery key no longer unlocks. Deleting or replacing a key slot is not revocation; if the old recovery key may have leaked, also revoke from the Devices tab.",
+      "newDescription": "After saving, the old recovery key no longer unlocks. Deleting or replacing a key slot is not revocation; if the old recovery key may have leaked, also revoke from the Devices section on this tab.",
       "save": "Save",
       "removeDescription": "This recovery key will no longer unlock. Keys already obtained stay valid. If it may have leaked, revoke."
     },
@@ -1396,8 +1621,8 @@
       "blocked": "This file type is blocked for safety"
     },
     "legacy": {
-      "badge": "Before encryption",
-      "badgeHelp": "This message was sent before the channel was encrypted. It is not encrypted, so the server can read or change it.",
+      "unencryptedBadge": "Not encrypted",
+      "unencryptedBadgeHelp": "This unencrypted message appears after encrypted messages. A trustworthy server cannot create such a message in an encrypted channel, so the server may have added or changed it.",
       "divider": "Messages below are encrypted",
       "editCancelled": "This channel is now encrypted, so editing a message sent before encryption was cancelled.",
       "editForbidden": "Messages sent before encryption can't be edited. You can still delete them."
@@ -1412,7 +1637,7 @@
       "description": "After you turn on encryption:",
       "points": {
         "future": "New messages and attachments can be read only by members' verified devices.",
-        "earlier": "Earlier messages stay unencrypted on the server. They are marked “Before encryption” and can no longer be edited (you can still delete them).",
+        "earlier": "Earlier messages stay unencrypted on the server and can no longer be edited (you can still delete them).",
         "published": "Posts already shared to Home or ActivityPub are not withdrawn.",
         "integrations": "Slack imports and sync stop. Remove apps (bots) and incoming webhooks first.",
         "irreversible": "Encryption can't be turned off later."
@@ -1427,9 +1652,9 @@
       }
     },
     "sas": {
-      "start": "Verify with emoji",
+      "start": "Verify",
       "incomingTitle": "{{name}} wants to verify with you",
-      "incomingDescription": "You'll both check that the same emoji appear on your screens to confirm each other's keys. Accept only when you can compare screens outside this channel, such as in person or on a call.",
+      "incomingDescription": "You'll confirm each other's keys by scanning a QR code or by checking that the same emoji appear on both screens. Accept only when you can compare screens outside this channel, such as in person or on a call.",
       "accept": "Accept",
       "decline": "Decline",
       "requestedTitle": "Waiting for {{name}} to accept",
@@ -1530,6 +1755,246 @@
         "62": "Folder",
         "63": "Pin"
       }
+    },
+    "qr": {
+      "title": "Verify {{name}}",
+      "codeLabel": "Verification QR code",
+      "showHint": "Ask {{name}} to scan this QR code with their device. If a camera isn't available or you're apart, verify with emoji instead.",
+      "waitingForAccept": "Once {{name}} accepts the request, they can scan this QR code with their device.",
+      "scan": "Scan their QR code",
+      "showOwn": "Show my QR code",
+      "useEmoji": "Verify with emoji",
+      "scanHint": "Point the camera at the QR code on the other person's screen.",
+      "otherCode": "This QR code isn't for this verification. Point the camera at the QR code currently on the other person's screen.",
+      "scannedTitle": "Waiting for {{name}} to confirm",
+      "waitingForConfirm": "Waiting for the other person to confirm the scan on their screen…",
+      "confirmTitle": "Did {{name}} scan the QR code?",
+      "confirmDescription": "Choose “Scanned” only if {{name}} scanned this QR code with their device in front of you. You'll sign in again to confirm it's you, then their key will be saved as verified.",
+      "confirmYes": "Scanned",
+      "confirmNo": "Not scanned",
+      "verifiedTitle": "Confirmed {{name}}'s key with the QR code",
+      "needsLogin": "Sign in again to confirm it's you and save the key as verified.",
+      "login": "Sign in and save",
+      "keyMismatch": "The key in the QR code didn't match the key from the server, so the verification was stopped. A key may have been replaced.",
+      "camera": {
+        "label": "Camera view",
+        "starting": "Starting the camera…",
+        "unsupported": "The camera can't be used in this browser. Ask the other person to scan this device's QR code, or verify with emoji.",
+        "denied": "Camera access wasn't allowed. Allow it in your browser settings, or verify with emoji.",
+        "noCamera": "No camera was found. Ask the other person to scan this device's QR code, or verify with emoji.",
+        "failed": "The camera couldn't be started. Verify with emoji instead."
+      }
+    },
+    "android": {
+      "saveDescription": "Before saving, you will sign in again. A browser opens, and you return to this screen when you finish signing in.",
+      "continueDescription": "Sign in again to save the rest of the interrupted setup. A browser will open.",
+      "reauthWaiting": "Waiting for you to sign in again in the browser…",
+      "reauthCancel": "Stop signing in",
+      "browserUnavailable": "Could not open a browser to sign in. Install or enable a browser and press again."
     }
+  },
+  "defaultChannels": {
+    "refreshed": "Some channels are no longer available. The list has been refreshed. Review your selection and save again.",
+    "limit": "You can select up to 100 public channels.",
+    "title": "Default channels for new accounts",
+    "description": "Select public channels to join automatically when an account is created. Existing accounts are unaffected.",
+    "empty": "No public channels are available.",
+    "saved": "Saved."
+  },
+  "androidUpdate": {
+    "title": "App updates"
+  },
+  "androidNotifications": {
+    "enable": "Enable notifications",
+    "scope": "Receive new notifications while your signed-in session is syncing.",
+    "mentions": "Mentions and replies",
+    "messages": "Direct messages",
+    "reactions": "Reactions"
+  },
+  "onboarding": {
+    "replay": "Quick tour",
+    "next": "Next",
+    "back": "Back",
+    "skip": "Skip tour",
+    "finish": "Start using Zoo",
+    "progress": "{{current}} / {{total}}",
+    "welcome": {
+      "title": "Welcome to Zoo",
+      "description": "Explore Zoo using the real screens. Next opens the channel list. You can skip and restart with the compass button."
+    },
+    "channels": {
+      "title": "Find a channel",
+      "description": "Choose a channel in the highlighted list. Use Browse channels to find and join more conversations."
+    },
+    "messages": {
+      "title": "Join the conversation",
+      "description": "You can post in the highlighted message box in the channel you opened. Use threads for replies and reactions for quick responses."
+    },
+    "notifications": {
+      "title": "Keep up with notifications",
+      "description": "This is Notifications. Check mentions and replies here, then select a notification to open its conversation."
+    },
+    "settings": {
+      "title": "Make Zoo your own",
+      "description": "This is General settings. Use the highlighted tabs to adjust display and behavior. You can restart the tour with the compass button."
+    },
+    "slack": {
+      "title": "Connect Slack",
+      "description": "This is Slack settings. Link your Slack account to associate imported past posts with your Zoo account. You can also import private channels you created. Ask an administrator if integration is not configured."
+    },
+    "title": "Getting started",
+    "chooseChannel": "Choose a channel to continue. If needed, use Browse channels to join one.",
+    "navigationError": "Could not open the screen. Please try again."
+  },
+  "sip": {
+    "title": "Phone (SIP)",
+    "description": "Manage personal and circle-shared lines and phones. Connect one selected line to make and receive calls. Incoming calls require this browser to remain open and connected.",
+    "refresh": "Refresh",
+    "addLine": "Add line",
+    "loading": "Loading…",
+    "loadError": "Could not load lines. Refresh to try again.",
+    "disabled": "Phone service is not enabled yet. An administrator must configure the infrastructure.",
+    "channelBusy": "SIP is unavailable during a channel call.",
+    "line": "Line for calls",
+    "selectLine": "Select a line",
+    "personal": "Personal",
+    "shared": "Circle shared",
+    "connect": "Connect and receive calls",
+    "disconnect": "Disconnect",
+    "number": "Phone or extension number",
+    "dial": "Call",
+    "empty": "No lines are available yet.",
+    "edit": "Edit",
+    "delete": "Delete",
+    "lineForm": "Add or edit line",
+    "name": "Line name",
+    "ownership": "Ownership",
+    "phone_number": "External number (optional)",
+    "websocket_path": "SIP connection path",
+    "sip_domain": "SIP domain",
+    "username": "SIP username",
+    "password": "SIP password",
+    "keepPassword": "Leave blank to keep the current password",
+    "members": "Allowed members",
+    "membersHelp": "Only selected members may connect. Select yourself too if needed. Members share SIP credentials; rotate the password on the PBX when removing a member.",
+    "phones": "Phone and site contacts",
+    "phonesHelp": "Register a name and extension, then configure the displayed SIP account on the phone.",
+    "gatewayAccount": "Site gateway SIP account",
+    "phoneAccount": "Phone SIP account",
+    "phoneName": "Phone or site name",
+    "extension": "Destination number",
+    "removePhone": "Remove contact",
+    "addPhone": "Add phone",
+    "pbxHelp": "Register the PBX domain and account provided by your administrator. The server handles SIP connections. Restrict outbound trunks and numbers on the PBX too.",
+    "writeError": "Could not save. Check the values and permissions and try again.",
+    "save": "Save",
+    "saving": "Saving…",
+    "cancel": "Cancel",
+    "deleteTitle": "Delete this line?",
+    "deleteHelp": "Removes the line and contacts from zoo2. Disable the extension and credentials on the PBX separately.",
+    "answer": "Answer",
+    "hangup": "End or decline call",
+    "mute": "Mute",
+    "unmute": "Unmute",
+    "dtmf": "Touch tone (0–9, *, #)",
+    "sendTone": "Send",
+    "callError": "Connection or operation failed. Check line permissions, PBX and media relay configuration.",
+    "status": {
+      "offline": "Disconnected",
+      "connecting": "Connecting…",
+      "ready": "Ready for calls",
+      "dialing": "Calling…",
+      "incoming": "Incoming call",
+      "active": "In call"
+    },
+    "unavailableMember": "Unavailable member"
+  },
+  "androidPhone": {
+    "description": "Use personal or shared SIP lines and DM voice calls with your device’s calling features.",
+    "nativeCalls": "Device call integration",
+    "nativeHelp": "A call notification appears when a call comes in. Allow notifications to receive DM calls in the background on supported devices. Keep Zoo open in the foreground while waiting for SIP calls or for DM calls on devices without FCM. Device call controls support answering, ending calls and routing audio. Microphone permission is required.",
+    "minimizeCall": "Minimize",
+    "expandCall": "Expand call",
+    "floatCall": "Picture-in-picture",
+    "pipUnavailable": "Check Picture-in-picture in Android settings.",
+    "incomingScreenSettings": "Full-screen call settings",
+    "receiveDm": "Receive DM calls",
+    "callError": "Could not prepare or control the call. Check microphone permission, device calling support, network and line configuration.",
+    "speaker": "Speaker",
+    "waiting": "Waiting for incoming calls",
+    "dmCall": "Call"
+  },
+  "globalSearch": {
+    "title": "Search",
+    "placeholder": "Search messages and files",
+    "kinds": {
+      "all": "All",
+      "messages": "Messages",
+      "files": "Files"
+    },
+    "prompt": "Type the words to search for. Separate words with spaces to find results containing all of them.",
+    "empty": "No results.",
+    "emptyOlder": "No results through {{month}}. You can search further back.",
+    "searchedUntil": "Searched through {{month}}",
+    "searchOlder": "Search older results",
+    "loading": "Searching…",
+    "loadError": "Search failed.",
+    "retry": "Retry",
+    "tooManyTerms": "You can search for up to {{max}} words. Remove some words and try again.",
+    "termTooLong": "Each word can be up to {{max}} characters. Shorten the word and try again.",
+    "encryptedNote": "Encrypted channels are not included in search.",
+    "openNav": "Search",
+    "inThread": "Thread reply",
+    "filters": {
+      "label": "Filters",
+      "from": "From",
+      "in": "In",
+      "kind": "Type",
+      "period": "Date",
+      "anytime": "Any time",
+      "last7": "Last 7 days",
+      "last30": "Last 30 days",
+      "last365": "Last year",
+      "custom": "Custom range",
+      "after": "From date",
+      "before": "To date",
+      "reversed": "The start date must be on or before the end date.",
+      "reset": "Reset filters",
+      "me": "{{name}} (you)",
+      "searchPeople": "Search by name",
+      "searchChannels": "Search channels",
+      "noMatches": "No matches",
+      "clearSelection": "Clear selection",
+      "selectedCount": "{{label}}: {{count}}",
+      "max": "You can choose up to {{count}}",
+      "mine": "Involving me",
+      "noBots": "Exclude bots"
+    }
+  },
+  "catchUp": {
+    "navUnread_one": "{{count}} unread conversation to catch up",
+    "navUnread_other": "{{count}} unread conversations to catch up",
+    "title": "Catch up",
+    "close": "Done",
+    "count_one": "{{count}} unread message",
+    "count_other": "{{count}} unread messages",
+    "overCount_one": "{{count}}+ unread messages",
+    "overCount_other": "{{count}}+ unread messages",
+    "progress": "{{current}} / {{total}}",
+    "markRead": "Mark as read",
+    "keepUnread": "Keep unread",
+    "readError": "Could not mark this conversation as read. Please try again.",
+    "loadError": "Could not load unread conversations",
+    "retry": "Retry",
+    "loading": "Loading unread conversations",
+    "empty": "No unread conversations",
+    "emptyDescription": "Check back when new messages arrive",
+    "complete": "All caught up",
+    "summary": "{{read}} marked read · {{skipped}} left unread",
+    "refresh": "Refresh",
+    "conversation": "Conversation",
+    "unreadTooOld": "Some older unread messages are still outside the loaded range. Load more before marking as read.",
+    "loadMore": "Load more",
+    "unreadChanged": "New unread messages arrived while reading. Keep this conversation unread and continue."
   }
 }

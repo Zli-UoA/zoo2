@@ -35,6 +35,11 @@ export type SasSaveState =
   | "saved"
   /** 再認証できなかった、または古くなった（5 分）。再認証し直して保存する。 */
   | "reauth"
+  /**
+   * まだ再認証していない（QR を読み取った側。読み取りはクリックではないので、再認証の別のウィンドウを
+   * 開けない）。「ログインして保存」で再認証して保存する。
+   */
+  | "login"
   | "failed";
 
 export type SasErrorCode =
@@ -70,8 +75,11 @@ function codeOf(error: unknown): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
+/** 読み取った QR の結果。`retry` は、取りやめずに読み直す（別の QR、形が正しくない）。 */
+export type QrScanResult = "accepted" | "retry";
+
 /**
- * 他のユーザーの絵文字 SAS 検証（#368）を、画面のスレッドで進める。
+ * 他のユーザーの絵文字 SAS 検証（#368）と QR コードによる検証を、画面のスレッドで進める。
  *
  * - 状態機械と鍵は Worker（`SasVerifications`）にあり、ここは届いたメッセージを Worker に渡し、
  *   Worker が返したメッセージを暗号化して to-device で送る。Worker の処理と送信は 1 つずつ順に行う
@@ -235,6 +243,44 @@ export class SasController {
     return this.act(txnId, () => this.deps.worker.request({ op: "sasConfirm", txnId }));
   }
 
+  /** 絵文字で検証することを選んだ（QR を読み取らずに、絵文字 SAS を始める）。 */
+  startSas(txnId: string): Promise<void> {
+    return this.act(txnId, () => this.deps.worker.request({ op: "sasStartSas", txnId }));
+  }
+
+  /**
+   * 相手の QR を読み取った。別の QR や形の正しくないものは `retry`（取りやめずに読み直す）。鍵が
+   * 違えば取りやめになり、`accepted` を返す（結果は `view.phase` に出る）。
+   */
+  scanQr(txnId: string, bytes: Uint8Array): Promise<QrScanResult> {
+    return this.serial(async () => {
+      this.patch(txnId, { busy: true, error: null });
+      try {
+        const update = await this.deps.worker.request({ op: "sasScanQr", txnId, bytes });
+        if (!update) return "retry";
+        await this.apply(update);
+        return "accepted";
+      } catch (error) {
+        this.patch(txnId, {
+          error: codeOf(error) === SAS_NEEDS_UNLOCK ? "needsUnlock" : "failed",
+        });
+        return "accepted";
+      } finally {
+        this.patch(txnId, { busy: false });
+      }
+    });
+  }
+
+  /**
+   * 相手がこの端末の QR を読み取ったと、利用者が答えた。`reauth` は、このクリックの中で開いた再認証
+   * （ID トークン）。その ID トークンで署名とピンを保存する。
+   */
+  confirmQr(txnId: string, reauth: Promise<string | null>): Promise<void> {
+    reauth.catch(() => undefined);
+    this.reauths.set(txnId, reauth);
+    return this.act(txnId, () => this.deps.worker.request({ op: "sasConfirmQr", txnId }));
+  }
+
   mismatch(txnId: string): Promise<void> {
     return this.act(txnId, () => this.deps.worker.request({ op: "sasMismatch", txnId }));
   }
@@ -345,7 +391,9 @@ export class SasController {
     const theirUserId = entry.view.their_user_id;
     const reauth = this.reauths.get(txnId);
     if (!reauth) {
-      this.patch(txnId, { save: "reauth" });
+      // QR を読み取った側は、まだ再認証していない。
+      if (entry.save === "idle") this.patch(txnId, { save: "login" });
+      else this.patch(txnId, { save: "reauth" });
       return;
     }
     this.patch(txnId, { save: "saving" });

@@ -1,7 +1,7 @@
 import { HomeLiveProvider } from "../../hooks/useHomeLive";
 import { delay, http, HttpResponse } from "msw";
 import { mockServer } from "../browser-setup";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser/context";
 import { useRef, useState, type ComponentProps, type ReactNode } from "react";
@@ -10,7 +10,7 @@ import "../../styles.css";
 import { LocaleProvider } from "../../components/i18n/LocaleProvider";
 import { ChannelBrowserDialog } from "../../components/chat/ChannelBrowserDialog";
 import { ChannelSidebar } from "../../components/chat/ChannelSidebar";
-import { MembersPanel } from "../../components/chat/MembersPanel";
+import { ChannelMembersDialog } from "../../components/chat/ChannelMembersDialog";
 import { MessageList } from "../../components/chat/messages/MessageList";
 import { Composer } from "../../components/chat/messages/Composer";
 import { MessageRow } from "../../components/chat/messages/MessageRow";
@@ -21,6 +21,7 @@ import { NotificationCard } from "../../components/chat/notifications/Notificati
 import { StoryShell } from "../../../.storybook/shell";
 import { StoryRouter } from "../../../.storybook/decorators";
 import { NotificationsProvider } from "../../hooks/useUnifiedNotifications";
+import { UnreadProvider } from "../../hooks/useUnread";
 import { CollectionsProvider } from "../../lib/electric/collections-context";
 import {
   createStoryCollections,
@@ -158,9 +159,11 @@ function WithCollections({
       <CollectionsProvider value={bundle}>
         <HomeLiveProvider>
           <NotificationsProvider>
-            <StoryRouter>
-              <StoryShell>{children}</StoryShell>
-            </StoryRouter>
+            <UnreadProvider>
+              <StoryRouter>
+                <StoryShell>{children}</StoryShell>
+              </StoryRouter>
+            </UnreadProvider>
           </NotificationsProvider>
         </HomeLiveProvider>
       </CollectionsProvider>
@@ -286,7 +289,9 @@ function NotificationCardVrt() {
       <ul>
         <NotificationCard
           group={reactionGroup}
-          channel={storyChannels.find((channel) => channel.id === "channel-general")}
+          channel={storyChannels.find(
+            (channel) => channel.id === "00000000-0000-4000-8000-000000000001",
+          )}
           users={new Map(storyUsers.map((user) => [user.id, user]))}
           onRead={noop}
           scrollRoot={scrollRoot}
@@ -383,7 +388,7 @@ describe("catalog surfaces", () => {
         <NotificationsScreen />
       </div>,
     );
-    await screen.findByRole("status");
+    await within(await screen.findByRole("region", { name: "通知" })).findByRole("status");
     await expect(page).toMatchScreenshot("notifications-loading-desktop-light");
   });
 
@@ -403,7 +408,8 @@ describe("catalog surfaces", () => {
         );
         await screen.findByText(/今日のリリースは 18:00/);
         await screen.findByText(/リリースノートの下書き/);
-        await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+        const region = await screen.findByRole("region", { name: "通知" });
+        await waitFor(() => expect(within(region).queryByRole("status")).toBeNull());
         await document.fonts.ready;
         await expect(page).toMatchScreenshot(`notifications-full-width-${state.name}`);
       } finally {
@@ -436,18 +442,19 @@ describe("catalog surfaces", () => {
     await expect(page).toMatchScreenshot("channel-sidebar-mobile-light");
   });
 
-  it("members panel desktop light", async () => {
+  it("channel members dialog desktop light", async () => {
     await renderScreen(
       { theme: "light", width: 1440, height: 900 },
-      <div className="flex h-screen justify-end bg-background">
-        <MembersPanel
-          channel={storyChannels.find((channel) => channel.id === "channel-general")!}
-          className="flex w-80 border-l"
-        />
-      </div>,
+      <ChannelMembersDialog
+        open
+        onOpenChange={noop}
+        channel={storyChannels.find(
+          (channel) => channel.id === "00000000-0000-4000-8000-000000000001",
+        )!}
+      />,
     );
     await screen.findByText("Alice");
-    await expect(page).toMatchScreenshot("members-panel-desktop-light");
+    await expect(page).toMatchScreenshot("channel-members-dialog-desktop-light");
   });
 
   it("channel browser dialog desktop light", async () => {
@@ -457,7 +464,9 @@ describe("catalog surfaces", () => {
         open
         onOpenChange={noop}
         channels={storyChannels}
-        joinedChannelIds={new Set(["channel-general", "channel-design", "channel-secret"])}
+        joinedChannelIds={
+          new Set(["00000000-0000-4000-8000-000000000001", "channel-design", "channel-secret"])
+        }
         onJoinChannel={async () => {}}
       />,
     );

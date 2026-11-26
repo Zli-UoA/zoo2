@@ -1,3 +1,6 @@
+import { toast } from "sonner";
+import { createHomeTimelineCache } from "../../lib/homeTimelineCache";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { coalescedRefresh } from "../../lib/coalescedRefresh";
 import { useUsers } from "../../hooks/useRealtime";
 import { useKitchenCatalog } from "../../hooks/useKitchenCatalog";
@@ -5,9 +8,10 @@ import { ReactionEmoji } from "../chat/messages/ReactionEmoji";
 import { ActivityPubBadge } from "./ActivityPubBadge";
 import { HomePostContent } from "./HomePostContent";
 import {
-  timelinePosition,
-  reachedTimelineTail,
-  type TimelinePosition,
+  timelineEntryId,
+  mergeTimelineWindow,
+  countNewTimelineEntries,
+  visibleTimelineTail,
 } from "../../lib/homeTimeline";
 import {
   ActivityPubText,
@@ -18,7 +22,7 @@ import {
 import { ActivityPubProfile } from "./ActivityPubProfile";
 import { HomeReactionPicker, type ReactionChoice } from "./HomeReactionPicker";
 import { useHomeLive } from "../../hooks/useHomeLive";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate, useRouter } from "@tanstack/react-router";
 import {
   homePostSettingsKey,
   homeTimelineKey,
@@ -32,6 +36,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useTranslation } from "react-i18next";
 import {
   HomeIcon,
+  ArrowLeftIcon,
   RefreshCwIcon,
   UserSearchIcon,
   ArrowDownIcon,
@@ -41,8 +46,9 @@ import {
   ReplyIcon,
   Repeat2Icon,
   SmilePlusIcon,
+  ExternalLinkIcon,
 } from "lucide-react";
-import { createConfiguredApiClient } from "../../lib/api/client";
+import { ApiError, createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
 import { THREADS_CHANGED } from "../../lib/electric/threads";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
@@ -63,6 +69,7 @@ import {
 import type { AttachmentMetadata } from "../../lib/attachments";
 
 export interface HomePost {
+  quote?: import("./HomePostContent").HomeQuote | null;
   media?: import("./HomePostContent").HomeMedia[];
   id: string;
   user_id: string;
@@ -102,6 +109,8 @@ export interface HomePost {
   repost_created_at?: string;
 }
 
+const timelineCache = createHomeTimelineCache<HomePost>();
+
 type HomeScreenProps = { postId?: string; actorId?: string };
 export function HomeScreen(props: HomeScreenProps) {
   const { currentUserId } = useCurrentUser();
@@ -114,6 +123,15 @@ function HomeScreenContent({
 }: HomeScreenProps & { currentUserId: string | null }) {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
+  const router = useRouter();
+  const [historyKey] = useState(
+    () => router.state.location.state.__TSR_key ?? router.state.location.href,
+  );
+  const goBack = () => {
+    if ((router.state.location.state.__TSR_index ?? 0) > 0 && router.history.canGoBack())
+      router.history.back();
+    else void navigate({ to: "/home", replace: true });
+  };
   const { config } = useCollections();
   const usersQuery = useUsers();
   const avatarUrls = useMemo(
@@ -174,8 +192,9 @@ function HomeScreenContent({
   }, [client]);
   const scheduleControls = useRef<() => void>(() => {});
   useEffect(() => {
-    const scheduler = coalescedRefresh(() =>
-      document.visibilityState === "hidden" ? undefined : loadControls(),
+    const scheduler = coalescedRefresh(
+      () => (document.visibilityState === "hidden" ? undefined : loadControls()),
+      60_000,
     );
     scheduleControls.current = scheduler.request;
     scheduler.request();
@@ -197,14 +216,36 @@ function HomeScreenContent({
       setControlsPending(false);
     }
   };
-  const [posts, setPosts] = useState<HomePost[]>([]);
+  const cacheScope = JSON.stringify([config.apiBaseUrl, currentUserId]) + ":";
+  const cacheKey = cacheScope + JSON.stringify([historyKey, timelineQuery]);
+  const detailCacheKey = (id: string) => cacheScope + JSON.stringify(["post", id]);
+  const preparePost = (post: HomePost) => {
+    // Hand off the DTO in account-scoped tab memory, without persisting it in browser history.
+    timelineCache.save(detailCacheKey(post.id), {
+      posts: [{ ...post, entry_id: post.id, tree_depth: 0, reposted_by: null }],
+      hasMore: false,
+      scrollOffset: 0,
+      listOffset: 0,
+      measurements: [],
+    });
+  };
+  const initialDetailKey = postId ? detailCacheKey(postId) : null;
+  const restored = useMemo(
+    () => timelineCache.get(initialDetailKey ?? cacheKey),
+    [cacheKey, initialDetailKey],
+  );
+  const [posts, setPosts] = useState<HomePost[]>(() => restored?.posts ?? []);
+  const [newPosts, setNewPosts] = useState(0);
   const { catalog } = useKitchenCatalog(
     posts.some((post) => post.reactions?.some((r) => r.reaction.startsWith("kitchen:"))),
   );
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!restored);
   const [loadingOlder, setLoadingOlder] = useState(false);
-  const [hasMore, setHasMore] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [hasMore, setHasMore] = useState(restored?.hasMore ?? false);
   const [error, setError] = useState(false);
+  const [viewportError, setViewportError] = useState(false);
+  const [olderError, setOlderError] = useState(restored?.olderError ?? false);
   const [pendingLike, setPendingLike] = useState<string | null>(null);
   const [reactionError, setReactionError] = useState<string | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -215,100 +256,165 @@ function HomeScreenContent({
   const refreshRequest = useRef<AbortController | null>(null);
   const olderRequest = useRef<AbortController | null>(null);
 
-  const anchor = useRef<{ id: string; offset: number } | null>(null);
-  useLayoutEffect(() => {
-    if (!anchor.current || !scrollRoot.current) return;
-    const root = scrollRoot.current;
-    const element = Array.from(root.querySelectorAll<HTMLElement>("[data-home-post]")).find(
-      (node) => node.dataset.homePost === anchor.current?.id,
-    );
-    if (element)
-      root.scrollTop +=
-        element.getBoundingClientRect().top -
-        root.getBoundingClientRect().top -
-        anchor.current.offset;
-    anchor.current = null;
-  }, [posts]);
-  const loadedCount = useRef(50);
-  const loadedTail = useRef<TimelinePosition | null>(null);
+  const deletedPosts = useRef(new Set<string>());
+  const olderErrorRef = useRef(olderError);
+  olderErrorRef.current = olderError;
+  const headRequested = useRef(true);
+  const hasMoreRef = useRef(hasMore);
+  hasMoreRef.current = hasMore;
+  const postsRef = useRef(posts);
+  postsRef.current = posts;
+  const visibleIds = useRef<string[]>([]);
+  const lastHead = useRef<HomePost[]>([]);
   const deferredRefresh = useRef(false);
+  const scheduleRefresh = useRef<(includeHead?: boolean) => void>(() => {});
   const refresh = useCallback(
-    async (retain = false) => {
+    async (retain = false, includeHead = true) => {
       if (retain && (olderRequest.current || refreshRequest.current)) {
         deferredRefresh.current = true;
+        headRequested.current ||= includeHead;
         return;
       }
       deferredRefresh.current = false;
-      const limit = retain ? Math.max(50, loadedCount.current) : 50;
+      if (!retain) {
+        if (scrollRoot.current) scrollRoot.current.scrollTop = 0;
+        setNewPosts(0);
+        setOlderError(false);
+      }
       const version = ++generation.current;
       refreshRequest.current?.abort();
       olderRequest.current?.abort();
+      olderRequest.current = null;
       setLoadingOlder(false);
       const controller = new AbortController();
       refreshRequest.current = controller;
+      setRefreshing(true);
+      const current = postsRef.current;
+      const checkedIds = retain && !postId ? visibleIds.current.slice(0, 100) : [];
       try {
-        const rows: HomePost[] = [];
-        const tail = retain ? loadedTail.current : null;
-        let reachedTail = !tail;
-        let more = false;
-        while (rows.length < limit || !reachedTail) {
-          const size = Math.min(500, Math.max(50, limit - rows.length));
-          const before = rows.length
-            ? `&before=${encodeURIComponent(rows[rows.length - 1].entry_id ?? rows[rows.length - 1].id)}`
-            : "";
-          const page = postId
-            ? await client.get<HomePost[]>(`/api/home/${encodeURIComponent(postId)}/thread`, {
-                signal: controller.signal,
-              })
-            : await client.get<HomePost[]>(
-                `/api/home?timeline=${timelineQuery}${size !== 50 ? `&limit=${size}` : ""}${before}`,
+        const fetchedHead =
+          includeHead || !current.length || postId
+            ? await client.get<HomePost[]>(
+                postId
+                  ? `/api/home/${encodeURIComponent(postId)}/thread`
+                  : `/api/home?timeline=${timelineQuery}`,
                 { signal: controller.signal },
-              );
-          rows.push(...page);
-          reachedTail = reachedTimelineTail(rows, tail);
-          more = !postId && page.length === size;
-          if (!more) break;
+              )
+            : null;
+        const head = (fetchedHead ?? []).filter((post) => !deletedPosts.current.has(post.id));
+        const complete = !!fetchedHead && !postId && fetchedHead.length < 50;
+        const headIds = new Set(head.map(timelineEntryId));
+        const missingIds = complete ? [] : checkedIds.filter((id) => !headIds.has(id));
+        const query = new URLSearchParams(`timeline=${timelineQuery}`);
+        let checked: HomePost[] = [];
+        let checkedSuccessfully = true;
+        try {
+          if (missingIds.length)
+            checked = await client.request<HomePost[]>("/api/home/entries", {
+              method: "POST",
+              body: {
+                entries: missingIds,
+                timeline: query.get("timeline"),
+                author: query.get("author"),
+              },
+              signal: controller.signal,
+            });
+        } catch {
+          if (controller.signal.aborted || version !== generation.current) return;
+          checkedSuccessfully = false;
         }
         if (version !== generation.current) return;
-        // Replace the current window so deletions on other devices disappear too.
-        const root = scrollRoot.current;
-        if (retain && root && root.scrollTop > 0) {
-          const top = root.getBoundingClientRect().top;
-          const first = Array.from(root.querySelectorAll<HTMLElement>("[data-home-post]")).find(
-            (node) =>
-              node.getBoundingClientRect().bottom > top &&
-              rows.some((post) => (post.entry_id ?? post.id) === node.dataset.homePost),
+        const atTop = (scrollRoot.current?.scrollTop ?? 0) < 80;
+        if (fetchedHead && retain && !postId && current.length && !atTop) {
+          const added = countNewTimelineEntries(
+            head,
+            lastHead.current.length ? lastHead.current : current,
           );
-          if (first)
-            anchor.current = {
-              id: first.dataset.homePost!,
-              offset: first.getBoundingClientRect().top - top,
-            };
+          if (added) setNewPosts((value) => value + added);
         }
-        loadedCount.current = rows.length;
-        const last = rows.at(-1);
-        loadedTail.current = last ? timelinePosition(last) : null;
-        setPosts(rows);
-        setHasMore(more);
-        setError(false);
-      } catch {
-        if (!controller.signal.aborted) setError(true);
+        if (fetchedHead) {
+          lastHead.current = head;
+          if (atTop) setNewPosts(0);
+        }
+        const rows =
+          retain && !postId
+            ? mergeTimelineWindow(
+                current,
+                head,
+                complete ? current.map(timelineEntryId) : checkedSuccessfully ? checkedIds : [],
+                checked,
+                complete || (!!fetchedHead && atTop),
+              )
+            : head;
+        const visibleRows = rows.filter((post) => !deletedPosts.current.has(post.id));
+        postsRef.current = visibleRows;
+        setPosts(visibleRows);
+        if (
+          fetchedHead &&
+          (!retain ||
+            complete ||
+            !current.length ||
+            postId ||
+            (atTop &&
+              !head.some((p) =>
+                current.some((old) => timelineEntryId(old) === timelineEntryId(p)),
+              )))
+        ) {
+          setHasMore(!postId && head.length === 50);
+        }
+        if (fetchedHead) setError(false);
+        setViewportError(!checkedSuccessfully);
+      } catch (cause) {
+        if (!controller.signal.aborted) {
+          if (postId && cause instanceof ApiError && [403, 404].includes(cause.status)) {
+            timelineCache.forget(cacheScope + JSON.stringify(["post", postId]));
+            postsRef.current = [];
+            setPosts([]);
+          }
+          setError(true);
+        }
       } finally {
         if (version === generation.current) setLoading(false);
         if (refreshRequest.current === controller) {
           refreshRequest.current = null;
-          if (deferredRefresh.current && document.visibilityState !== "hidden") void refresh(true);
+          setRefreshing(false);
+          if (deferredRefresh.current && document.visibilityState !== "hidden")
+            scheduleRefresh.current(false);
         }
       }
     },
-    [client, timelineQuery, postId],
+    [client, timelineQuery, postId, cacheScope],
   );
 
   useEffect(() => {
-    setLoading(true);
-    setPosts([]);
-    void refresh();
+    const snapshot = restored;
+    setLoading(!snapshot);
+    setPosts(snapshot?.posts ?? []);
+    postsRef.current = snapshot?.posts ?? [];
+    visibleIds.current = [];
+    lastHead.current = [];
+    setHasMore(snapshot?.hasMore ?? false);
+    setOlderError(snapshot?.olderError ?? false);
+    setError(false);
+    setViewportError(false);
+    setNewPosts(0);
+    headRequested.current = true;
+    if (scrollRoot.current) scrollRoot.current.scrollTop = snapshot?.scrollOffset ?? 0;
+    // Start the initial load through the same gate as live/viewport refreshes.
+    const scheduler = coalescedRefresh(() => {
+      if (document.visibilityState === "hidden") return;
+      const includeHead = headRequested.current;
+      headRequested.current = false;
+      return refresh(true, includeHead);
+    });
+    scheduleRefresh.current = (includeHead = true) => {
+      headRequested.current ||= includeHead;
+      scheduler.request();
+    };
+    scheduler.request();
     return () => {
+      scheduler.dispose();
+      scheduleRefresh.current = () => {};
       generation.current++;
       deferredRefresh.current = false;
       refreshRequest.current?.abort();
@@ -316,45 +422,162 @@ function HomeScreenContent({
       refreshRequest.current = null;
       olderRequest.current = null;
     };
-  }, [refresh]);
+  }, [refresh, cacheKey, postId, restored]);
   useHomeLive(() => {
-    void refresh(true);
+    scheduleRefresh.current();
     scheduleControls.current();
   });
 
-  const older = async () => {
-    if (loadingOlder || !posts.length) return;
+  const older = useCallback(async () => {
+    const current = postsRef.current;
+    if (olderRequest.current || refreshRequest.current || !current.length || postId) return;
     setLoadingOlder(true);
     const version = generation.current;
     const controller = new AbortController();
     olderRequest.current = controller;
     try {
       const rows = await client.get<HomePost[]>(
-        `/api/home?timeline=${timelineQuery}&before=${encodeURIComponent(posts[posts.length - 1].entry_id ?? posts[posts.length - 1].id)}`,
+        `/api/home?timeline=${timelineQuery}&before=${encodeURIComponent(timelineEntryId(current[current.length - 1]))}`,
         { signal: controller.signal },
       );
       if (version !== generation.current) return;
-      loadedCount.current += rows.length;
-      const last = rows.at(-1);
-      if (last) loadedTail.current = timelinePosition(last);
-      setPosts((current) => [
+      const ids = new Set(current.map(timelineEntryId));
+      const next = [
         ...current,
         ...rows.filter(
-          (p) => !current.some((old) => (old.entry_id ?? old.id) === (p.entry_id ?? p.id)),
+          (row) => !ids.has(timelineEntryId(row)) && !deletedPosts.current.has(row.id),
         ),
-      ]);
-      setHasMore(rows.length === 50);
-      setError(false);
+      ];
+      postsRef.current = next;
+      setPosts(next);
+      setHasMore(rows.length === 50 && next.length > current.length);
+      setOlderError(false);
     } catch {
-      if (!controller.signal.aborted) setError(true);
+      if (!controller.signal.aborted) setOlderError(true);
     } finally {
       if (olderRequest.current === controller) {
         olderRequest.current = null;
         setLoadingOlder(false);
-        if (deferredRefresh.current && document.visibilityState !== "hidden") void refresh(true);
+        if (deferredRefresh.current && document.visibilityState !== "hidden")
+          scheduleRefresh.current(false);
       }
     }
-  };
+  }, [client, timelineQuery, postId]);
+
+  const listRef = useRef<HTMLOListElement>(null);
+  const [listOffset, setListOffset] = useState(restored?.listOffset ?? 0);
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    const root = scrollRoot.current;
+    if (!list || !root) return;
+    const measure = () =>
+      setListOffset(
+        list.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop,
+      );
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(root);
+    // Profile, timeline controls and pull-to-refresh can change the list's offset.
+    if (list.parentElement) observer.observe(list.parentElement);
+    return () => observer.disconnect();
+  }, [loading, actorId]);
+  const virtualizer = useVirtualizer({
+    count: posts.length,
+    initialOffset: restored?.scrollOffset ?? 0,
+    initialMeasurementsCache: restored?.measurements,
+    getScrollElement: () => scrollRoot.current,
+    estimateSize: () => 240,
+    getItemKey: (index) => timelineEntryId(posts[index]),
+    overscan: 6,
+    scrollMargin: listOffset,
+    // Keep the reading key across prepends/deletions, but never pin resize
+    // measurements to the bottom as newly appended rows replace estimates.
+    anchorTo: (scrollRoot.current?.scrollTop ?? 0) > 80 ? "end" : "start",
+    followOnAppend: false,
+    scrollEndThreshold: Number.NEGATIVE_INFINITY,
+    useAnimationFrameWithResizeObserver: true,
+  });
+  const virtualizerRef = useRef(virtualizer);
+  virtualizerRef.current = virtualizer;
+  useLayoutEffect(() => {
+    const root = scrollRoot.current;
+    if (!root || postId) return;
+    return () => {
+      const measured = virtualizerRef.current;
+      timelineCache.save(cacheKey, {
+        posts: postsRef.current,
+        hasMore: hasMoreRef.current,
+        olderError: olderErrorRef.current,
+        scrollOffset: root.scrollTop,
+        listOffset: measured.options.scrollMargin ?? 0,
+        measurements: measured.takeSnapshot(),
+        anchor: (() => {
+          const top = root.getBoundingClientRect().top;
+          const row = Array.from(root.querySelectorAll<HTMLElement>("[data-home-post]")).find(
+            (node) => node.getBoundingClientRect().bottom > top,
+          );
+          return row
+            ? { id: row.dataset.homePost!, offset: row.getBoundingClientRect().top - top }
+            : undefined;
+        })(),
+      });
+    };
+  }, [cacheKey, postId]);
+  const restoreAnchor = useRef(restored?.anchor);
+  const virtualRows = virtualizer.getVirtualItems();
+  useLayoutEffect(() => {
+    const root = scrollRoot.current,
+      anchor = restoreAnchor.current;
+    if (!root || !anchor) return;
+    const row = Array.from(root.querySelectorAll<HTMLElement>("[data-home-post]")).find(
+      (node) => node.dataset.homePost === anchor.id,
+    );
+    if (!row) return;
+    root.scrollTop +=
+      row.getBoundingClientRect().top - root.getBoundingClientRect().top - anchor.offset;
+    restoreAnchor.current = undefined;
+  }, [posts, listOffset, virtualRows]);
+  const viewportKey = virtualRows.map((row) => timelineEntryId(posts[row.index])).join("\n");
+  useEffect(() => {
+    visibleIds.current = viewportKey ? viewportKey.split("\n") : [];
+    // Revalidate history as it enters the viewport, so edits/deletions are not lost.
+    // This uses the same five-second gate as live updates, with no polling.
+    const headIds = new Set(lastHead.current.map(timelineEntryId));
+    if (viewportKey && !loading && visibleIds.current.some((id) => !headIds.has(id)))
+      scheduleRefresh.current(false);
+  }, [viewportKey, loading]);
+  useEffect(() => {
+    const root = scrollRoot.current;
+    // Timeline changes and anchor restoration can reset the DOM scroll position
+    // before the virtualizer observes it. Read the current viewport here, after
+    // layout effects, rather than fetching from a previous timeline's range.
+    const lastVisibleIndex = root
+      ? visibleTimelineTail(virtualRows, root.scrollTop, root.clientHeight)
+      : -1;
+    if (
+      !loading &&
+      !refreshing &&
+      !loadingOlder &&
+      !error &&
+      !olderError &&
+      hasMore &&
+      lastVisibleIndex >= 0 &&
+      lastVisibleIndex >= posts.length - 10 &&
+      document.visibilityState === "visible"
+    ) {
+      void older();
+    }
+  }, [
+    virtualRows,
+    posts.length,
+    hasMore,
+    loading,
+    refreshing,
+    loadingOlder,
+    error,
+    olderError,
+    older,
+  ]);
   const react = (post: HomePost, choice: ReactionChoice, remove = false) => {
     if (pendingLike) return;
     setPendingLike(post.id);
@@ -372,6 +595,13 @@ function HomeScreenContent({
     <section className="relative flex min-h-0 flex-1 flex-col" aria-labelledby="home-title">
       <ScreenHeader
         icon={HomeIcon}
+        leading={
+          postId || actorId ? (
+            <Button variant="ghost" size="icon" aria-label={t("home.back")} onClick={goBack}>
+              <ArrowLeftIcon />
+            </Button>
+          ) : undefined
+        }
         titleId="home-title"
         title={t(postId ? "activitypubSettings.post" : actorId ? "home.userDetails" : "home.title")}
         actions={
@@ -395,9 +625,29 @@ function HomeScreenContent({
           </>
         }
       />
+      {newPosts > 0 && !postId ? (
+        <div className="absolute inset-x-0 top-20 z-10 flex justify-center pointer-events-none">
+          <Button
+            className="pointer-events-auto rounded-full shadow-md"
+            onClick={() => {
+              virtualizer.scrollToOffset(0);
+              setNewPosts(0);
+              void refresh(true);
+            }}
+          >
+            <ArrowDownIcon className="rotate-180" />
+            {t("home.newPosts", { count: newPosts })}
+          </Button>
+        </div>
+      ) : null}
       <div
         ref={scrollRoot}
-        className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain pb-24"
+        data-home-scroll
+        onScroll={() => {
+          if ((scrollRoot.current?.scrollTop ?? 0) < 80 && newPosts > 0)
+            scheduleRefresh.current(true);
+        }}
+        className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain pb-24 [overflow-anchor:none]"
         onTouchStart={(event) => {
           touchStart.current =
             event.touches.length === 1 && (scrollRoot.current?.scrollTop ?? 0) <= 0
@@ -438,6 +688,13 @@ function HomeScreenContent({
                   variant={timeline === value ? "secondary" : "ghost"}
                   aria-pressed={timeline === value}
                   onClick={() => {
+                    if (value === timeline) {
+                      void refresh();
+                      return;
+                    }
+                    timelineCache.forget(cacheScope + JSON.stringify([historyKey, value]));
+                    restoreAnchor.current = undefined;
+                    virtualizer.scrollToOffset(0);
                     setTimeline(value);
                     saveHomeTimeline(timelineStorageKey, value);
                   }}
@@ -446,11 +703,7 @@ function HomeScreenContent({
                 </Button>
               ))}
             </div>
-          ) : (
-            <Link to="/home" className="inline-block p-3 text-sm text-link">
-              {t("home.title")}
-            </Link>
-          )}
+          ) : null}
           {pull > 0 || pulling ? (
             <div
               role="status"
@@ -467,10 +720,10 @@ function HomeScreenContent({
               )}
             </div>
           ) : null}
-          {error ? (
+          {error || viewportError ? (
             <p role="alert" className="p-4 text-sm text-destructive">
               {t("home.loadError")}{" "}
-              <Button variant="link" onClick={() => void refresh()}>
+              <Button variant="link" onClick={() => void refresh(!error, error)}>
                 {t("home.refresh")}
               </Button>
             </p>
@@ -486,342 +739,394 @@ function HomeScreenContent({
               <p className="text-sm text-muted-foreground">{t("home.emptyHint")}</p>
             </div>
           ) : (
-            <ol aria-label={t("home.timeline")}>
-              {posts.map((post) => (
-                <li
-                  key={post.entry_id ?? post.id}
-                  data-home-post={post.entry_id ?? post.id}
-                  className="border-b p-4"
-                  style={
-                    postId
-                      ? { marginInlineStart: `${Math.min(post.tree_depth ?? 0, 6) * 16}px` }
-                      : undefined
-                  }
-                  aria-current={postId === post.id ? "true" : undefined}
-                >
-                  {!postId && post.parent_id ? (
-                    <div className="mb-3 rounded border-s-2 ps-3 text-sm text-muted-foreground">
-                      <Link
-                        to="/home/posts/$postId"
-                        params={{ postId: post.parent_id }}
-                        className="flex items-center gap-1 hover:underline"
-                      >
-                        <ReplyIcon className="size-3" />
-                        {t("home.replyTo", {
-                          name:
-                            post.parent?.display_name ||
-                            post.parent?.user_name ||
-                            t("activitypubSettings.post"),
-                        })}
-                      </Link>
-                      {post.parent ? (
-                        <HomePostContent
-                          content={post.parent.content}
-                          emojis={post.parent.emojis}
-                          attachments={post.parent.attachments}
-                          media={post.parent.media}
-                        />
-                      ) : null}
-                    </div>
-                  ) : null}
-                  {post.reposted_by ? (
-                    <p className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
-                      <Repeat2Icon className="size-3" />
-                      {t("home.repostedBy", { name: post.reposted_by })}
-                    </p>
-                  ) : null}
-                  <article
-                    className="flex min-w-0 cursor-pointer gap-3"
-                    onClick={(event) => {
-                      if (editingId === (post.entry_id ?? post.id)) return;
-                      if (
-                        (event.target as HTMLElement).closest(
-                          "a,button,input,textarea,[role=button],pre",
-                        ) ||
-                        window.getSelection()?.toString()
-                      )
-                        return;
-                      void navigate({ to: "/home/posts/$postId", params: { postId: post.id } });
+            <ol
+              ref={listRef}
+              aria-label={t("home.timeline")}
+              style={{
+                position: "relative",
+                height: virtualizer.getTotalSize(),
+                overflowAnchor: "none",
+              }}
+            >
+              {virtualRows.map((virtualRow) => {
+                const post = posts[virtualRow.index];
+                return (
+                  <li
+                    key={post.entry_id ?? post.id}
+                    data-home-post={post.entry_id ?? post.id}
+                    data-index={virtualRow.index}
+                    ref={virtualizer.measureElement}
+                    aria-posinset={virtualRow.index + 1}
+                    aria-setsize={hasMore ? -1 : posts.length}
+                    className="border-b px-4 pt-4 pb-2"
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      left: 0,
+                      width: "100%",
+                      transform: `translateY(${virtualRow.start - listOffset}px)`,
+                      paddingInlineStart: postId
+                        ? `${16 + Math.min(post.tree_depth ?? 0, 6) * 16}px`
+                        : undefined,
                     }}
+                    aria-current={postId === post.id ? "true" : undefined}
                   >
-                    <Link
-                      to="/home/users/$actorId"
-                      params={{ actorId: post.user_id }}
-                      className="shrink-0 rounded-full focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      <ActivityPubAvatar
-                        avatar={post.remote ? post.avatar : null}
-                        avatarUrl={
-                          post.remote
-                            ? undefined
-                            : avatarUrls.get(post.user_id) !== undefined
-                              ? avatarUrls.get(post.user_id)
-                              : post.avatar_url
-                        }
-                        name={post.display_name || post.user_name}
-                      />
-                    </Link>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                    {!postId && post.parent_id ? (
+                      <div className="mb-3 rounded border-s-2 ps-3 text-sm text-muted-foreground">
                         <Link
-                          to="/home/users/$actorId"
-                          params={{ actorId: post.user_id }}
-                          className="break-all text-sm font-semibold text-foreground hover:underline"
-                        >
-                          <ActivityPubText
-                            text={post.display_name || post.user_name}
-                            emojis={post.actor_emojis}
-                          />
-                        </Link>
-                        <Link
-                          to="/home/users/$actorId"
-                          params={{ actorId: post.user_id }}
-                          className="hover:underline"
-                        >
-                          <FederatedAccount
-                            userName={post.user_name}
-                            actorId={post.user_id}
-                            remote={post.remote}
-                          />
-                        </Link>
-                        <span className="inline-flex min-w-0 max-w-full items-center gap-2">
-                          <Link
-                            to="/home/posts/$postId"
-                            params={{ postId: post.id }}
-                            className="shrink-0 hover:underline"
-                          >
-                            <time dateTime={post.created_at}>
-                              {new Date(post.created_at).toLocaleString(i18n.language)}
-                            </time>
-                          </Link>
-                          <ActivityPubBadge
-                            visibility={post.visibility ?? "local"}
-                            federated={post.apub ?? post.remote ?? false}
-                          />
-                          {post.channel_id && !post.remote ? (
-                            <Link
-                              className="min-w-0 truncate text-link"
-                              title={`#${post.channel_name ?? post.channel_id}`}
-                              to="/channels/$channelId"
-                              params={{ channelId: post.channel_id }}
-                              search={{ message: post.id }}
-                            >
-                              #{post.channel_name ?? post.channel_id}
-                            </Link>
-                          ) : null}
-                        </span>
-                      </div>
-                      {editingId === (post.entry_id ?? post.id) ? (
-                        <form
-                          className="mt-2 space-y-2"
-                          onSubmit={(e) => {
-                            e.preventDefault();
-                            if (editPending) return;
-                            setEditPending(true);
-                            setEditError(false);
-                            void client
-                              .request(`/api/home/${encodeURIComponent(post.id)}`, {
-                                method: "PATCH",
-                                body: { content: editText },
-                              })
-                              .then(async () => {
-                                window.dispatchEvent(new Event(THREADS_CHANGED));
-                                setEditingId(null);
-                                await refresh();
-                              })
-                              .catch(() => setEditError(true))
-                              .finally(() => setEditPending(false));
+                          to="/home/posts/$postId"
+                          params={{ postId: post.parent_id }}
+                          onClick={() => {
+                            if (post.parent) preparePost(post.parent);
                           }}
+                          className="flex items-center gap-1 hover:underline"
                         >
-                          <Textarea
-                            aria-label={t("home.edit")}
-                            value={editText}
-                            disabled={editPending}
-                            onChange={(e) => setEditText(e.target.value)}
+                          <ReplyIcon className="size-3" />
+                          {t("home.replyTo", {
+                            name:
+                              post.parent?.display_name ||
+                              post.parent?.user_name ||
+                              t("activitypubSettings.post"),
+                          })}
+                        </Link>
+                        {post.parent ? (
+                          <HomePostContent
+                            content={post.parent.content}
+                            emojis={post.parent.emojis}
+                            attachments={post.parent.attachments}
+                            media={post.parent.media}
+                            quote={post.parent.quote}
                           />
-                          <Button
-                            type="submit"
-                            disabled={
-                              editPending || !editText.trim() || Array.from(editText).length > 40000
-                            }
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {post.reposted_by ? (
+                      <p className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+                        <Repeat2Icon className="size-3" />
+                        {t("home.repostedBy", { name: post.reposted_by })}
+                      </p>
+                    ) : null}
+                    <article
+                      className="flex min-w-0 cursor-pointer gap-3"
+                      onClick={(event) => {
+                        if (editingId === (post.entry_id ?? post.id) || post.id === postId) return;
+                        const target = event.target;
+                        // Dialog portals bubble clicks through React even outside the article.
+                        if (
+                          !(target instanceof Element) ||
+                          !event.currentTarget.contains(target) ||
+                          target.closest("a,button,input,textarea,[role=button],pre") ||
+                          window.getSelection()?.toString()
+                        )
+                          return;
+                        preparePost(post);
+                        void navigate({ to: "/home/posts/$postId", params: { postId: post.id } });
+                      }}
+                    >
+                      <Link
+                        to="/home/users/$actorId"
+                        params={{ actorId: post.user_id }}
+                        className="shrink-0 rounded-full focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <ActivityPubAvatar
+                          avatar={post.remote ? post.avatar : null}
+                          avatarUrl={
+                            post.remote
+                              ? undefined
+                              : avatarUrls.get(post.user_id) !== undefined
+                                ? avatarUrls.get(post.user_id)
+                                : post.avatar_url
+                          }
+                          name={post.display_name || post.user_name}
+                        />
+                      </Link>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                          <Link
+                            to="/home/users/$actorId"
+                            params={{ actorId: post.user_id }}
+                            className="break-all text-sm font-semibold text-foreground hover:underline"
                           >
-                            {t("home.save")}
+                            <ActivityPubText
+                              text={post.display_name || post.user_name}
+                              emojis={post.actor_emojis}
+                            />
+                          </Link>
+                          <Link
+                            to="/home/users/$actorId"
+                            params={{ actorId: post.user_id }}
+                            className="hover:underline"
+                          >
+                            <FederatedAccount
+                              userName={post.user_name}
+                              actorId={post.user_id}
+                              remote={post.remote}
+                            />
+                          </Link>
+                          <span className="inline-flex min-w-0 max-w-full items-center gap-2">
+                            <Link
+                              to="/home/posts/$postId"
+                              params={{ postId: post.id }}
+                              onClick={() => preparePost(post)}
+                              className="shrink-0 hover:underline"
+                            >
+                              <time dateTime={post.created_at}>
+                                {new Date(post.created_at).toLocaleString(i18n.language)}
+                              </time>
+                            </Link>
+                            <ActivityPubBadge
+                              visibility={post.visibility ?? "local"}
+                              federated={post.apub ?? post.remote ?? false}
+                            />
+                            {post.channel_id && !post.remote ? (
+                              <Link
+                                className="min-w-0 truncate text-link"
+                                title={`#${post.channel_name ?? post.channel_id}`}
+                                to="/channels/$channelId"
+                                params={{ channelId: post.channel_id }}
+                                search={{ message: post.id }}
+                              >
+                                #{post.channel_name ?? post.channel_id}
+                              </Link>
+                            ) : null}
+                          </span>
+                        </div>
+                        {editingId === (post.entry_id ?? post.id) ? (
+                          <form
+                            className="mt-2 space-y-2"
+                            onSubmit={(e) => {
+                              e.preventDefault();
+                              if (editPending) return;
+                              setEditPending(true);
+                              setEditError(false);
+                              void client
+                                .request(`/api/home/${encodeURIComponent(post.id)}`, {
+                                  method: "PATCH",
+                                  body: { content: editText },
+                                })
+                                .then(async () => {
+                                  window.dispatchEvent(new Event(THREADS_CHANGED));
+                                  setEditingId(null);
+                                  await refresh();
+                                })
+                                .catch(() => setEditError(true))
+                                .finally(() => setEditPending(false));
+                            }}
+                          >
+                            <Textarea
+                              aria-label={t("home.edit")}
+                              value={editText}
+                              disabled={editPending}
+                              onChange={(e) => setEditText(e.target.value)}
+                            />
+                            <Button
+                              type="submit"
+                              disabled={
+                                editPending ||
+                                !editText.trim() ||
+                                Array.from(editText).length > 40000
+                              }
+                            >
+                              {t("home.save")}
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              disabled={editPending}
+                              onClick={() => setEditingId(null)}
+                            >
+                              {t("common.cancel")}
+                            </Button>
+                            {editError ? (
+                              <p role="alert" className="text-xs text-destructive">
+                                {t("home.controlsError")}
+                              </p>
+                            ) : null}
+                          </form>
+                        ) : (
+                          <HomePostContent
+                            quote={post.quote}
+                            content={post.content}
+                            emojis={post.emojis}
+                            attachments={post.attachments}
+                            media={post.media}
+                          />
+                        )}
+                        {post.reactions?.length ? (
+                          <div className="mt-2 flex flex-wrap gap-1">
+                            {post.reactions.map((r) => (
+                              <Button
+                                key={`${r.reaction}:${r.emoji?.image_id ?? ""}`}
+                                variant={r.selected ? "secondary" : "outline"}
+                                size="sm"
+                                aria-label={`${r.reaction} ${r.count}`}
+                                aria-pressed={r.selected}
+                                disabled={
+                                  pendingLike !== null || (r.can_react === false && !r.selected)
+                                }
+                                onClick={() =>
+                                  react(
+                                    post,
+                                    {
+                                      reaction: r.reaction,
+                                      ...(r.emoji ? { emoji_id: r.emoji.image_id } : {}),
+                                    },
+                                    r.selected,
+                                  )
+                                }
+                              >
+                                {r.emoji ? (
+                                  <ActivityPubEmoji emoji={r.emoji} />
+                                ) : (
+                                  <ReactionEmoji emoji={r.reaction} catalog={catalog} />
+                                )}
+                                <span>{r.count}</span>
+                              </Button>
+                            ))}
+                          </div>
+                        ) : null}
+                        <div
+                          role="group"
+                          aria-label={t("home.actions")}
+                          className="mt-1 flex items-center justify-between gap-2 text-muted-foreground"
+                        >
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            aria-label={`${t("home.reply")} ${post.replies ?? 0}`}
+                            onClick={() => composerRef.current?.reply(post)}
+                          >
+                            <ReplyIcon />
+                            <span>{post.replies ?? 0}</span>
                           </Button>
                           <Button
                             variant="ghost"
-                            disabled={editPending}
-                            onClick={() => setEditingId(null)}
-                          >
-                            {t("common.cancel")}
-                          </Button>
-                          {editError ? (
-                            <p role="alert" className="text-xs text-destructive">
-                              {t("home.controlsError")}
-                            </p>
-                          ) : null}
-                        </form>
-                      ) : (
-                        <HomePostContent
-                          content={post.content}
-                          emojis={post.emojis}
-                          attachments={post.attachments}
-                          media={post.media}
-                        />
-                      )}
-                      {post.reactions?.length ? (
-                        <div className="mt-2 flex flex-wrap gap-1">
-                          {post.reactions.map((r) => (
-                            <Button
-                              key={`${r.reaction}:${r.emoji?.image_id ?? ""}`}
-                              variant={r.selected ? "secondary" : "outline"}
-                              size="sm"
-                              aria-label={`${r.reaction} ${r.count}`}
-                              aria-pressed={r.selected}
-                              disabled={
-                                pendingLike !== null || (r.can_react === false && !r.selected)
-                              }
-                              onClick={() =>
-                                react(
-                                  post,
-                                  {
-                                    reaction: r.reaction,
-                                    ...(r.emoji ? { emoji_id: r.emoji.image_id } : {}),
-                                  },
-                                  r.selected,
-                                )
-                              }
-                            >
-                              {r.emoji ? (
-                                <ActivityPubEmoji emoji={r.emoji} />
-                              ) : (
-                                <ReactionEmoji emoji={r.reaction} catalog={catalog} />
-                              )}
-                              <span>{r.count}</span>
-                            </Button>
-                          ))}
-                        </div>
-                      ) : null}
-                      <div
-                        role="group"
-                        aria-label={t("home.actions")}
-                        className="mt-2 flex items-center justify-between gap-2 text-muted-foreground"
-                      >
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          aria-label={`${t("home.reply")} ${post.replies ?? 0}`}
-                          onClick={() => composerRef.current?.reply(post)}
-                        >
-                          <ReplyIcon />
-                          <span>{post.replies ?? 0}</span>
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          aria-label={`${t(post.reposted ? "home.undoRepost" : "home.repost")} ${post.reposts ?? 0}`}
-                          aria-pressed={post.reposted ?? false}
-                          disabled={pendingRepost !== null || post.visibility === "followers"}
-                          title={
-                            post.visibility === "followers" ? t("home.privateRepost") : undefined
-                          }
-                          onClick={() => {
-                            if (pendingRepost) return;
-                            setPendingRepost(post.id);
-                            setReactionError(null);
-                            void client
-                              .request("/api/activitypub/reposts", {
-                                method: post.reposted ? "DELETE" : "POST",
-                                body: { post_id: post.id },
-                              })
-                              .then(() => refresh(true))
-                              .catch(() => setReactionError(post.id))
-                              .finally(() => setPendingRepost(null));
-                          }}
-                        >
-                          <Repeat2Icon />
-                          <span>{post.reposts ?? 0}</span>
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          aria-label={`${t("home.react")} ${post.likes ?? 0}`}
-                          onClick={() => setReactionPost(post)}
-                        >
-                          <SmilePlusIcon />
-                          <span>{post.likes ?? 0}</span>
-                        </Button>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger
-                            render={
-                              <Button
-                                variant="ghost"
-                                size="icon-sm"
-                                aria-label={t("home.postActions")}
-                              />
+                            size="sm"
+                            aria-label={`${t(post.reposted ? "home.undoRepost" : "home.repost")} ${post.reposts ?? 0}`}
+                            aria-pressed={post.reposted ?? false}
+                            disabled={pendingRepost !== null || post.visibility === "followers"}
+                            title={
+                              post.visibility === "followers" ? t("home.privateRepost") : undefined
                             }
+                            onClick={() => {
+                              if (pendingRepost) return;
+                              setPendingRepost(post.id);
+                              setReactionError(null);
+                              void client
+                                .request("/api/activitypub/reposts", {
+                                  method: post.reposted ? "DELETE" : "POST",
+                                  body: { post_id: post.id },
+                                })
+                                .then(() => refresh(true))
+                                .catch(() => setReactionError(post.id))
+                                .finally(() => setPendingRepost(null));
+                            }}
                           >
-                            <MoreHorizontalIcon />
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            {post.user_id === currentUserId && !post.remote ? (
-                              <>
-                                <DropdownMenuItem
-                                  onClick={() => {
-                                    setEditingId(post.entry_id ?? post.id);
-                                    setEditText(post.content);
-                                    setEditError(false);
-                                  }}
-                                >
-                                  <PencilIcon />
-                                  {t("home.edit")}
-                                </DropdownMenuItem>
-                                <DropdownMenuItem
-                                  variant="destructive"
-                                  onClick={() => {
-                                    setDeleteError(false);
-                                    setDeleteId(post.id);
-                                  }}
-                                >
-                                  <Trash2Icon />
-                                  {t("home.delete")}
-                                </DropdownMenuItem>
-                              </>
-                            ) : null}
-                            <DropdownMenuItem
-                              onClick={() => {
-                                if (!navigator.clipboard) {
-                                  setReactionError(post.id);
-                                  return;
-                                }
-                                void navigator.clipboard
-                                  .writeText(post.content)
-                                  .catch(() => setReactionError(post.id));
-                              }}
+                            <Repeat2Icon />
+                            <span>{post.reposts ?? 0}</span>
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            aria-label={`${t("home.react")} ${post.likes ?? 0}`}
+                            onClick={() => setReactionPost(post)}
+                          >
+                            <SmilePlusIcon />
+                            <span>{post.likes ?? 0}</span>
+                          </Button>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger
+                              render={
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  aria-label={t("home.postActions")}
+                                />
+                              }
                             >
-                              {t("home.copyContent")}
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                              <MoreHorizontalIcon />
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent
+                              align="end"
+                              onClick={(event) => event.stopPropagation()}
+                            >
+                              {post.user_id === currentUserId && !post.remote ? (
+                                <>
+                                  <DropdownMenuItem
+                                    onClick={() => {
+                                      setEditingId(post.entry_id ?? post.id);
+                                      setEditText(post.content);
+                                      setEditError(false);
+                                    }}
+                                  >
+                                    <PencilIcon />
+                                    {t("home.edit")}
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    variant="destructive"
+                                    onClick={() => {
+                                      setDeleteError(false);
+                                      setDeleteId(post.id);
+                                    }}
+                                  >
+                                    <Trash2Icon />
+                                    {t("home.delete")}
+                                  </DropdownMenuItem>
+                                </>
+                              ) : null}
+                              {post.remote && post.url?.startsWith("https://") ? (
+                                <DropdownMenuItem
+                                  render={
+                                    <ExternalLink
+                                      href={post.url}
+                                      className="text-popover-foreground"
+                                    />
+                                  }
+                                >
+                                  <ExternalLinkIcon />
+                                  {t("home.original")}
+                                </DropdownMenuItem>
+                              ) : null}
+                              <DropdownMenuItem
+                                onClick={() => {
+                                  if (!navigator.clipboard) {
+                                    toast.error(t("messages.copyFailed"));
+                                    return;
+                                  }
+                                  void navigator.clipboard
+                                    .writeText(post.content)
+                                    .then(() => toast.success(t("messages.copied")))
+                                    .catch(() => toast.error(t("messages.copyFailed")));
+                                }}
+                              >
+                                {t("home.copyContent")}
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
+                        {reactionError === post.id ? (
+                          <p role="alert" className="text-xs text-destructive">
+                            {t("home.controlsError")}
+                          </p>
+                        ) : null}
                       </div>
-                      {reactionError === post.id ? (
-                        <p role="alert" className="text-xs text-destructive">
-                          {t("home.controlsError")}
-                        </p>
-                      ) : null}
-                      {post.remote && post.url?.startsWith("https://") ? (
-                        <ExternalLink className="text-xs" href={post.url}>
-                          {t("home.original")}
-                        </ExternalLink>
-                      ) : null}
-                    </div>
-                  </article>
-                </li>
-              ))}
+                    </article>
+                  </li>
+                );
+              })}
             </ol>
           )}
           {hasMore ? (
-            <div className="flex justify-center p-4">
-              <Button variant="outline" disabled={loadingOlder} onClick={() => void older()}>
+            <div className="flex flex-col items-center gap-2 p-4">
+              {olderError ? (
+                <p role="alert" className="text-sm text-destructive">
+                  {t("home.loadError")}
+                </p>
+              ) : null}
+              <Button
+                variant="outline"
+                disabled={loadingOlder || refreshing}
+                onClick={() => void older()}
+              >
                 {t(loadingOlder ? "home.loading" : "home.older")}
               </Button>
             </div>
@@ -1008,8 +1313,31 @@ function HomeScreenContent({
           try {
             await client.request(`/api/home/${encodeURIComponent(deleteId)}`, { method: "DELETE" });
             window.dispatchEvent(new Event(THREADS_CHANGED));
+            deletedPosts.current.add(deleteId);
+            const clearReferences = (post: HomePost): HomePost => ({
+              ...post,
+              parent: post.parent?.id === deleteId ? null : post.parent,
+              quote: post.quote?.post?.id === deleteId ? { ...post.quote, post: null } : post.quote,
+            });
+            timelineCache.remove(cacheScope, deleteId, clearReferences);
+            // Cancel reads started before the successful deletion: they must not resurrect it.
+            generation.current++;
+            refreshRequest.current?.abort();
+            olderRequest.current?.abort();
+            refreshRequest.current = null;
+            olderRequest.current = null;
+            setRefreshing(false);
+            setLoadingOlder(false);
+            const remaining = postsRef.current
+              .filter((post) => post.id !== deleteId)
+              .map(clearReferences);
+            postsRef.current = remaining;
+            setPosts(remaining);
+            const removedSelectedPost = postId === deleteId;
             setDeleteId(null);
-            await refresh();
+            toast.success(t("home.deleted"));
+            if (removedSelectedPost) goBack();
+            else scheduleRefresh.current();
           } catch {
             setDeleteError(true);
           } finally {

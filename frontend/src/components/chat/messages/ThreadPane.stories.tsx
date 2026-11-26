@@ -1,12 +1,13 @@
 import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import { StoryShell } from "../../../../.storybook/shell";
-import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, userEvent, within } from "storybook/test";
+import type { Decorator, Meta, StoryObj } from "@storybook/react-vite";
+import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
 
 import { MfmChannelsProvider } from "./MfmChannels";
 import { storyChannels, storyUsers } from "../../../../.storybook/fixtures";
 import { reactionUserLabel } from "../../../lib/emoji/reactions";
 import { storyCommands, storyDeploymentCard } from "../../../../.storybook/app-fixtures";
+import { MessageDecryptionsProvider } from "../../../lib/e2ee/messageDecryption";
 import { ThreadPane } from "./ThreadPane";
 import { ThreadPaneStatus } from "./ThreadPaneStatus";
 import type { FeedMessage } from "./messageFormat";
@@ -124,13 +125,13 @@ export const WithReplies: Story = {
 export const Archived: Story = {
   parameters: { a11y: { test: "error" } },
   args: { replies, isArchived: true, currentUserId: null, canReact: false },
-  play: playForImplementation(async ({ canvasElement, args }) => {
-    const canvas = within(canvasElement);
-    await expect(await canvas.findByText("アーカイブ済み")).toBeVisible();
-    await expect(canvas.queryByRole("button", { name: "スレッドを再開" })).not.toBeInTheDocument();
-    const input = canvas.getByRole("textbox", { name: "返信を送信" });
+  play: playForImplementation(async ({ args }) => {
+    // 狭幅ではダイアログが Portal に出るため canvasElement ではなく screen で探す。
+    await expect(await screen.findByText("アーカイブ済み")).toBeVisible();
+    await expect(screen.queryByRole("button", { name: "スレッドを再開" })).not.toBeInTheDocument();
+    const input = screen.getByRole("textbox", { name: "返信を送信" });
     await userEvent.type(input, "このスレッドで続きを話します");
-    await userEvent.click(canvas.getByRole("button", { name: "送信" }));
+    await userEvent.click(screen.getByRole("button", { name: "送信" }));
     await expect(args.onSendReply).toHaveBeenCalledWith("このスレッドで続きを話します");
   }),
 };
@@ -185,6 +186,19 @@ export const Mobile: Story = {
       </div>
     ),
   ],
+};
+
+// 狭幅のオーバーレイはダイアログとして開く。Escape で閉じる要求が呼び出し元に届くことを確認する。
+export const MobileDialog: Story = {
+  globals: { viewport: { value: "mobile" } },
+  parameters: { a11y: { test: "error" } },
+  args: { replies },
+  play: playForImplementation(async ({ args }) => {
+    const dialog = await screen.findByRole("dialog", { name: "スレッド" });
+    await expect(dialog).toHaveAttribute("aria-modal", "true");
+    await userEvent.keyboard("{Escape}");
+    await expect(args.onClose).toHaveBeenCalled();
+  }),
 };
 
 export const Completions: Story = {
@@ -243,5 +257,311 @@ export const RootLoadError: Story = {
     await expect(args.onRetry).toHaveBeenCalledTimes(1);
     await userEvent.click(canvas.getByRole("button", { name: "スレッドを閉じる" }));
     await expect(args.onClose).toHaveBeenCalledTimes(1);
+  }),
+};
+
+export const NotParticipating: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: { replies, membership: "none", participantCount: 2, onJoinThread: fn() },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: "参加する" }));
+    await expect(args.onJoinThread).toHaveBeenCalledOnce();
+    await expect(canvas.queryByRole("button", { name: "スレッドを開く" })).not.toBeInTheDocument();
+  }),
+};
+const memberPeople = [
+  { id: "user-bob", user_name: "bob", display_name: null, avatar_url: null },
+  { id: "user-alice", user_name: "alice", display_name: "Alice", avatar_url: null },
+  { id: "user-carol", user_name: "carol", display_name: "Carol", avatar_url: null },
+];
+/**
+ * メンバーのダイアログを見つけ、開くアニメーション（フェードイン）が進んで、見えるようになるまで待つ。
+ * ダイアログが DOM に現れた直後は、不透明度が 0 で、`toBeVisible` が失敗する（CI の描画で再現した）。
+ */
+async function findMembersDialog() {
+  const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+  await waitFor(() => expect(dialog).toBeVisible(), { timeout: 5000 });
+  return dialog;
+}
+async function closeMembers() {
+  await userEvent.keyboard("{Escape}");
+  // 負荷の高い環境でも安定するよう、閉じる処理の完了を待つ時間を長めにする（既定は1秒）。
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: /メンバー/ })).toBeNull(), {
+    timeout: 5000,
+  });
+}
+export const Participating: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: { replies, membership: "joined", onLeaveThread: fn() },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    // 人数をまだ読み込めていなくても、メンバーのダイアログから退出できる。
+    await userEvent.click(within(canvasElement).getByRole("button", { name: "メンバー" }));
+    const dialog = await findMembersDialog();
+    await expect(within(dialog).getByText("参加中")).toBeVisible();
+    await userEvent.click(within(dialog).getByRole("button", { name: "退出する" }));
+    await expect(args.onLeaveThread).toHaveBeenCalledOnce();
+    await closeMembers();
+  }),
+};
+export const WithParticipants: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    replies,
+    membership: "joined",
+    onLeaveThread: fn(),
+    participantCount: 53,
+    participants: memberPeople,
+  },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    const toggle = canvas.getByRole("button", { name: "参加者 53人" });
+    await userEvent.click(toggle);
+    // ほかのポップアウトと同じ、画面の中央に出すダイアログ。中身はチャンネルのメンバー一覧にそろえる。
+    const dialog = await findMembersDialog();
+    const list = within(within(dialog).getByRole("list", { name: "参加者 53人" }));
+    const rows = list.getAllByRole("listitem");
+    // スレ主（Carol）が先頭で、「スレ主」の印が付く。自分（Alice）には「あなた」の印が付く。
+    await expect(rows).toHaveLength(3);
+    await expect(rows[0]).toHaveTextContent("Carol");
+    await expect(within(rows[0]!).getByText("スレ主")).toBeVisible();
+    await expect(rows[1]).toHaveTextContent("Alice");
+    await expect(within(rows[1]!).getByText("あなた")).toBeVisible();
+    // 表示名がないときは、ユーザー名を表示名として出す。
+    await expect(rows[2]).toHaveTextContent("bob");
+    await expect(within(dialog).getByText("ほか 50人")).toBeVisible();
+    // 名前で絞り込める。絞り込み中は「ほか」を出さない。
+    const search = within(dialog).getByRole("searchbox", { name: "名前で検索" });
+    await userEvent.type(search, "ALI");
+    await expect(list.getAllByRole("listitem")).toHaveLength(1);
+    await expect(within(dialog).queryByText("ほか 50人")).not.toBeInTheDocument();
+    await userEvent.clear(search);
+    await userEvent.type(search, "zzz");
+    await expect(await within(dialog).findByText("該当するユーザーがいません。")).toBeVisible();
+    // 50人を超えるスレッドでは、絞り込みが読み込んだ範囲だけであることを示す。
+    await expect(
+      within(dialog).getByText(
+        "読み込んだ先頭3人の中から絞り込んでいます（ほか 50人は検索できません）。",
+      ),
+    ).toBeVisible();
+    await userEvent.clear(search);
+    await expect(list.getAllByRole("listitem")).toHaveLength(3);
+    // 参加状態と退出の操作も、ここにある。
+    await expect(within(dialog).getByText("参加中")).toBeVisible();
+    await userEvent.click(within(dialog).getByRole("button", { name: "退出する" }));
+    await expect(args.onLeaveThread).toHaveBeenCalledOnce();
+    // Escape で一覧だけを閉じ、ボタンへフォーカスが戻る。
+    await closeMembers();
+    // フォーカスはダイアログが閉じ終わってから戻るので、待つ。
+    await waitFor(() => expect(toggle).toHaveFocus(), { timeout: 5000 });
+  }),
+};
+export const ParticipantsMembershipFailed: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    replies,
+    membership: "joined",
+    participantCount: 3,
+    participants: memberPeople,
+    onLeaveThread: fn(),
+    membershipError: true,
+    onMembershipRetry: fn(),
+  },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    await userEvent.click(within(canvasElement).getByRole("button", { name: "参加者 3人" }));
+    const dialog = await findMembersDialog();
+    // 参加・退出の失敗は、背面のペインではなく、ダイアログの中に出る。
+    const alert = within(dialog).getByRole("alert");
+    await expect(alert).toHaveTextContent("スレッドの参加状態を更新できませんでした。");
+    await userEvent.click(within(alert).getByRole("button", { name: "再試行" }));
+    await expect(args.onMembershipRetry).toHaveBeenCalledOnce();
+    await closeMembers();
+  }),
+};
+export const ParticipantsJoinFromDialog: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    replies,
+    membership: "none",
+    participantCount: 3,
+    participants: memberPeople,
+    onJoinThread: fn(),
+  },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    await userEvent.click(within(canvasElement).getByRole("button", { name: "参加者 3人" }));
+    const dialog = await findMembersDialog();
+    await expect(within(dialog).getByText("未参加")).toBeVisible();
+    await userEvent.click(within(dialog).getByRole("button", { name: "参加する" }));
+    await expect(args.onJoinThread).toHaveBeenCalledOnce();
+    await closeMembers();
+  }),
+};
+export const ReopenAndJoin: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    replies,
+    isArchived: true,
+    membership: "none",
+    participantCount: 2,
+    onReopenAndJoinThread: fn(),
+  },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.queryByRole("textbox", { name: "返信を送信" })).not.toBeInTheDocument();
+    // 入力欄が無いので「送信すると再Openして参加します」の注記も出さない。
+    await expect(canvas.queryByText("送信すると再Openします。")).not.toBeInTheDocument();
+    await userEvent.click(canvas.getByRole("button", { name: "再Openして参加する" }));
+    await expect(args.onReopenAndJoinThread).toHaveBeenCalledOnce();
+  }),
+};
+export const MembershipLoadingBlocksComposer: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: { replies, membershipLoading: true },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(
+      await within(canvasElement).findByRole("textbox", { name: "返信を送信" }),
+    ).toBeDisabled();
+  }),
+};
+export const LeftWithNoParticipants: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: { replies: [], membership: "left", participantCount: 0, onJoinThread: fn() },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("button", { name: "参加する" })).toBeEnabled();
+    await expect(canvas.queryByRole("textbox", { name: "返信を送信" })).not.toBeInTheDocument();
+  }),
+};
+// 返信がまだないメッセージも、最初の返信の前に参加する（入力欄の代わりに参加ボタンを出す）。
+export const NoRepliesYet: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: { replies: [], membership: "none", participantCount: 0, onJoinThread: fn() },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.queryByRole("textbox", { name: "返信を送信" })).not.toBeInTheDocument();
+    await userEvent.click(canvas.getByRole("button", { name: "参加する" }));
+    await expect(args.onJoinThread).toHaveBeenCalledOnce();
+  }),
+};
+export const PostingForbidden: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    replies,
+    membership: "joined",
+    participantCount: 2,
+    postingForbidden: true,
+    composeDisabledReason: "このチャンネルは管理者のみ投稿できます。",
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // 閲覧はできるまま、入力欄だけが理由付きで止まる。
+    await expect(await canvas.findByRole("textbox", { name: "返信を送信" })).toBeDisabled();
+    // 理由は入力欄の placeholder に出る（テキストノードではない）。
+    await expect(
+      canvas.getByPlaceholderText("このチャンネルは管理者のみ投稿できます。"),
+    ).toBeDisabled();
+  }),
+};
+export const PostingForbiddenNotJoined: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    replies,
+    membership: "left",
+    participantCount: 2,
+    postingForbidden: true,
+    composeDisabledReason: "このチャンネルは管理者のみ投稿できます。",
+    onJoinThread: fn(),
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("このチャンネルは管理者のみ投稿できます。")).toBeVisible();
+    // 参加は投稿権限と無関係にできる。返信を促す文は出さない。
+    await expect(canvas.getByRole("button", { name: "参加する" })).toBeEnabled();
+    await expect(
+      canvas.queryByText("参加するとこのスレッドに返信できます。"),
+    ).not.toBeInTheDocument();
+  }),
+};
+export const LeftThread: Story = {
+  ...NotParticipating,
+  args: { ...NotParticipating.args, membership: "left" },
+};
+export const MembershipPending: Story = {
+  ...NotParticipating,
+  args: { ...NotParticipating.args, membershipPending: true },
+  play: undefined,
+};
+export const MembershipFailed: Story = {
+  ...NotParticipating,
+  args: { ...NotParticipating.args, membershipError: true, onMembershipRetry: fn() },
+  play: undefined,
+};
+export const ReopenArchived: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    replies,
+    isArchived: true,
+    membership: "joined",
+    onReopenThread: fn(),
+    onLeaveThread: fn(),
+  },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: "再Open" }));
+    await expect(args.onReopenThread).toHaveBeenCalledOnce();
+    await expect(canvas.getByText("送信すると再Openします。")).toBeVisible();
+  }),
+};
+
+export const LegacyNestedReply: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    replies: [
+      {
+        ...replies[0]!,
+        display_data: { emojis: {}, attachments: [], reactions: [], reply_count: 2 },
+      },
+      replies[1]!,
+    ],
+    onOpenThread: fn(),
+  },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: /2.*返信/ }));
+    await expect(args.onOpenThread).toHaveBeenCalledWith("reply-1");
+  }),
+};
+
+// 暗号化チャンネルで、チャンネルのうち最初の暗号化したメッセージより後の平文の行（正しいサーバーは作れない）に、
+// スレッドのペインでも警告を付ける（#367）。それより前の行（切り替える前のメッセージ）には付けない。
+const encryptedSince =
+  (since: string): Decorator =>
+  (Story) => (
+    <MessageDecryptionsProvider
+      decryptions={new Map()}
+      mentionUserNames={new Map()}
+      encrypted
+      encryptedSince={since}
+    >
+      <Story />
+    </MessageDecryptionsProvider>
+  );
+
+export const EncryptedRepliesAfterEncryption: Story = {
+  decorators: [encryptedSince("2026-01-02 09:05:30.000")],
+  args: { replies },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // 親（09:05）は切り替える前なので印を付けず、後の返信 3 件だけに警告を付ける。
+    await expect(await canvas.findAllByText("暗号化されていません")).toHaveLength(3);
+  }),
+};
+
+export const EncryptedRootAfterEncryption: Story = {
+  decorators: [encryptedSince("2026-01-02 09:00:00.000")],
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // 親も、最初の暗号化したメッセージより後なら警告を付ける。
+    await expect(await canvas.findAllByText("暗号化されていません")).toHaveLength(1);
   }),
 };

@@ -22,6 +22,7 @@ import { AppConnections } from "./AppConnections";
 import { AppBlocks } from "./AppBlocks";
 import { AppAvatar } from "./AppIdentity";
 import { AppEncryptedChannelConsent } from "./AppEncryptedChannelConsent";
+import { apiPath } from "../../lib/api/path";
 
 type Manifest = {
   scopes?: string[];
@@ -49,7 +50,7 @@ type Surface = {
   id: string;
   kind: string;
   channel_id: string | null;
-  document: { blocks?: unknown };
+  document: { blocks?: unknown; components?: unknown; flags?: number };
 };
 export function AppDialogs() {
   const [open, setOpen] = useState(false);
@@ -202,7 +203,9 @@ function UserAppsDialog({
     let watchUntil = 0;
     const polling = visiblePoll(
       async (signal) => {
-        const rows = await client.get<Surface[]>(`/api/apps/${selected}/surfaces`, { signal });
+        const rows = await client.get<Surface[]>(apiPath`/api/apps/${selected}/surfaces`, {
+          signal,
+        });
         if (!signal.aborted) setSurfaces(rows);
         return rows.length > 0 || Date.now() < watchUntil;
       },
@@ -240,7 +243,7 @@ function UserAppsDialog({
     if (!app || !targetChannelId || consent?.pending) return;
     setConsent({ pending: true, error: "" });
     try {
-      await client.request(`/api/apps/${app.id}/channels/${targetChannelId}`, {
+      await client.request(apiPath`/api/apps/${app.id}/channels/${targetChannelId}`, {
         method: "POST",
         body: { e2ee_allowed: true },
       });
@@ -267,7 +270,7 @@ function UserAppsDialog({
   }
   async function invoke(kind: string, command?: string) {
     await run(() =>
-      client.request(`/api/apps/${selected}/invoke`, {
+      client.request(apiPath`/api/apps/${selected}/invoke`, {
         method: "POST",
         body: {
           kind,
@@ -500,9 +503,12 @@ function UserAppsDialog({
                           encryptedTarget
                             ? setConsent({ pending: false, error: "" })
                             : void run(() =>
-                                client.request(`/api/apps/${app.id}/channels/${targetChannelId}`, {
-                                  method: "POST",
-                                }),
+                                client.request(
+                                  apiPath`/api/apps/${app.id}/channels/${targetChannelId}`,
+                                  {
+                                    method: "POST",
+                                  },
+                                ),
                               )
                         }
                       >
@@ -515,7 +521,9 @@ function UserAppsDialog({
                     disabled={busy}
                     onClick={() =>
                       void run(() =>
-                        client.request(`/api/apps/${app.id}/authorization`, { method: "DELETE" }),
+                        client.request(apiPath`/api/apps/${app.id}/authorization`, {
+                          method: "DELETE",
+                        }),
                       )
                     }
                   >
@@ -574,7 +582,7 @@ function UserAppsDialog({
                         aria-label={t(surface.kind === "modal" ? "apps.form" : "apps.home")}
                       >
                         <AppBlocks
-                          blocks={surface.document.blocks}
+                          blocks={surface.document}
                           appId={app.id}
                           surfaceId={surface.id}
                           channelId={surface.channel_id}

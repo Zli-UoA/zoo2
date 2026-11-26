@@ -919,6 +919,8 @@ pub async fn cleanup_expired(db: &toasty::Db) -> Result<(), AppError> {
         "DELETE FROM app_socket_tickets WHERE expires_at<now()-interval '1 day'",
         "DELETE FROM app_ui WHERE expires_at<now()",
         "DELETE FROM app_responses WHERE expires_at<now()",
+        // モーダルで送ったファイルの、アプリが取得できる期限（1 日）
+        "DELETE FROM app_submitted_files WHERE expires_at<now()",
         "DELETE FROM app_oauth_codes WHERE expires_at<now()-interval '1 day'",
         "DELETE FROM app_socket_sessions WHERE expires_at<now()",
         "DELETE FROM app_socket_presence_limits WHERE window_start<now()-interval '1 hour'",

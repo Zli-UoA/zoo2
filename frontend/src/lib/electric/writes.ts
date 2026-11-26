@@ -5,7 +5,7 @@ import type {
   UpdateMutationFnParams,
 } from "@tanstack/react-db";
 
-import type { ApiClient } from "../api/client";
+import { createChannelPinsApi, type ApiClient } from "../api/client";
 import type {
   AddChannelUserRequest,
   CreateChannelRequest,
@@ -16,7 +16,7 @@ import type {
 import { reactionKey } from "../emoji/kitchen";
 import type { TxidMode } from "../config";
 import { changeMessageMatcher, syncTxid } from "./txid";
-import { THREADS_CHANGED } from "./threads";
+import { THREADS_CHANGED, THREAD_REPLY_REDIRECTED, type ThreadReplyRedirect } from "./threads";
 import type {
   ChannelRow,
   ChannelUserRow,
@@ -24,6 +24,7 @@ import type {
   MessageRow,
   NotificationRow,
 } from "./types";
+import { apiPath } from "../api/path";
 
 export interface WriteDependencies {
   client: ApiClient;
@@ -96,27 +97,30 @@ export interface MessageWriteMetadata {
   attachment_ids?: string[];
   sensitive?: boolean;
   sensitive_attachment_ids?: string[];
+  forwarded_message_ids?: string[];
 }
 
 function readMessageMetadata(metadata: unknown): MessageWriteMetadata {
-  if (!metadata || typeof metadata !== "object" || !("attachment_ids" in metadata)) {
+  if (!metadata || typeof metadata !== "object") {
     return {};
   }
-  const value = (metadata as { attachment_ids?: unknown }).attachment_ids;
-  if (!Array.isArray(value)) {
-    return {};
+  const typed = metadata as MessageWriteMetadata;
+  const out: MessageWriteMetadata = {};
+  if (Array.isArray(typed.attachment_ids)) {
+    out.attachment_ids = typed.attachment_ids.filter((id): id is string => typeof id === "string");
+    if (typed.sensitive) out.sensitive = true;
+    if (Array.isArray(typed.sensitive_attachment_ids)) {
+      out.sensitive_attachment_ids = typed.sensitive_attachment_ids.filter(
+        (id): id is string => typeof id === "string",
+      );
+    }
   }
-  return {
-    ...((metadata as MessageWriteMetadata).sensitive ? { sensitive: true } : {}),
-    ...(Array.isArray((metadata as MessageWriteMetadata).sensitive_attachment_ids)
-      ? {
-          sensitive_attachment_ids: (
-            metadata as MessageWriteMetadata
-          ).sensitive_attachment_ids!.filter((id): id is string => typeof id === "string"),
-        }
-      : {}),
-    attachment_ids: value.filter((id): id is string => typeof id === "string"),
-  };
+  if (Array.isArray(typed.forwarded_message_ids)) {
+    out.forwarded_message_ids = typed.forwarded_message_ids.filter(
+      (id): id is string => typeof id === "string",
+    );
+  }
+  return out;
 }
 
 /**
@@ -140,15 +144,28 @@ export function createMessageWrites({ client, txidMode }: WriteDependencies) {
       if (row.parent_id) {
         body.parent_id = row.parent_id;
       }
-      const attachmentIds = readMessageMetadata(mutation.metadata).attachment_ids;
+      const meta = readMessageMetadata(mutation.metadata);
+      const attachmentIds = meta.attachment_ids;
       if (attachmentIds?.length) {
         body.attachment_ids = attachmentIds;
-        const metadata = readMessageMetadata(mutation.metadata);
-        if (metadata.sensitive) body.sensitive = true;
-        if (metadata.sensitive_attachment_ids?.length)
-          body.sensitive_attachment_ids = metadata.sensitive_attachment_ids;
+        if (meta.sensitive) body.sensitive = true;
+        if (meta.sensitive_attachment_ids?.length)
+          body.sensitive_attachment_ids = meta.sensitive_attachment_ids;
       }
-      const { txid } = await client.post<MessageRow>("/api/messages", body);
+      if (meta.forwarded_message_ids?.length) {
+        body.forwarded_message_ids = meta.forwarded_message_ids;
+      } else if (row.forwarded_message_ids?.length) {
+        body.forwarded_message_ids = row.forwarded_message_ids;
+      }
+      const { data, txid } = await client.post<MessageRow>("/api/messages", body);
+      if (row.parent_id && data?.parent_id && data.parent_id !== row.parent_id) {
+        // 未移行の子スレッドからの返信は最上位へ正規化される。表示先も追従させる。
+        window.dispatchEvent(
+          new CustomEvent<ThreadReplyRedirect>(THREAD_REPLY_REDIRECTED, {
+            detail: { from: row.parent_id, to: data.parent_id },
+          }),
+        );
+      }
       if (row.parent_id) {
         // 保存が確定した返信は、Electric の同期や定期取得を待たず一覧に反映する。
         window.dispatchEvent(new Event(THREADS_CHANGED));
@@ -169,7 +186,7 @@ export function createMessageWrites({ client, txidMode }: WriteDependencies) {
       const isSoftDelete = "deleted_at" in changes && changes.deleted_at != null;
 
       if (isSoftDelete) {
-        const { txid } = await client.delete<MessageRow>(`/api/messages/${row.id}`);
+        const { txid } = await client.delete<MessageRow>(apiPath`/api/messages/${row.id}`);
         window.dispatchEvent(new Event(THREADS_CHANGED));
         await syncTxid({
           mode: txidMode,
@@ -184,7 +201,7 @@ export function createMessageWrites({ client, txidMode }: WriteDependencies) {
       }
 
       const body: UpdateMessageRequest = { content: row.content };
-      const { txid } = await client.patch<MessageRow>(`/api/messages/${row.id}`, body);
+      const { txid } = await client.patch<MessageRow>(apiPath`/api/messages/${row.id}`, body);
       window.dispatchEvent(new Event(THREADS_CHANGED));
       await syncTxid({
         mode: txidMode,
@@ -201,7 +218,7 @@ export function createMessageWrites({ client, txidMode }: WriteDependencies) {
   async function onDelete({ transaction, collection }: MessageDeleteParams): Promise<void> {
     for (const mutation of transaction.mutations) {
       const row = mutation.original;
-      const { txid } = await client.delete<MessageRow>(`/api/messages/${row.id}`);
+      const { txid } = await client.delete<MessageRow>(apiPath`/api/messages/${row.id}`);
       window.dispatchEvent(new Event(THREADS_CHANGED));
       await syncTxid({
         mode: txidMode,
@@ -260,7 +277,7 @@ export function createChannelWrites({ client, txidMode }: WriteDependencies) {
         body.is_private = changes.is_private;
       }
 
-      const { txid } = await client.patch<ChannelRow>(`/api/channels/${row.id}`, body);
+      const { txid } = await client.patch<ChannelRow>(apiPath`/api/channels/${row.id}`, body);
       await syncTxid({
         mode: txidMode,
         txid,
@@ -301,7 +318,7 @@ export function createChannelUserWrites({ client, txidMode, getCurrentUserId }: 
       if (action === "add") {
         const body: AddChannelUserRequest = { user_id: row.user_id };
         const { txid } = await client.post<ChannelUserRow>(
-          `/api/channels/${row.channel_id}/users`,
+          apiPath`/api/channels/${row.channel_id}/users`,
           body,
         );
         if (row.user_id === getCurrentUserId()) window.dispatchEvent(new Event(THREADS_CHANGED));
@@ -309,7 +326,9 @@ export function createChannelUserWrites({ client, txidMode, getCurrentUserId }: 
         continue;
       }
 
-      const { txid } = await client.post<ChannelUserRow>(`/api/channels/${row.channel_id}/join`);
+      const { txid } = await client.post<ChannelUserRow>(
+        apiPath`/api/channels/${row.channel_id}/join`,
+      );
       window.dispatchEvent(new Event(THREADS_CHANGED));
       await waitForChannelUserSync("insert", row, collection.utils, txid, txidMode);
     }
@@ -324,7 +343,9 @@ export function createChannelUserWrites({ client, txidMode, getCurrentUserId }: 
           `/leave only removes the current user's membership; refusing to leave for user ${row.user_id}`,
         );
       }
-      const { txid } = await client.post<ChannelUserRow>(`/api/channels/${row.channel_id}/leave`);
+      const { txid } = await client.post<ChannelUserRow>(
+        apiPath`/api/channels/${row.channel_id}/leave`,
+      );
       window.dispatchEvent(new Event(THREADS_CHANGED));
       await waitForChannelUserSync("delete", row, collection.utils, txid, txidMode);
     }
@@ -366,7 +387,7 @@ export function createReactionWrites({ client, txidMode, getCurrentUserId }: Wri
       if (!getCurrentUserId() || row.user_id !== getCurrentUserId())
         throw new Error("自分のリアクションだけ追加できます");
       const { data, txid } = await client.post<MessageReactionRow>(
-        `/api/messages/${row.message_id}/reactions`,
+        apiPath`/api/messages/${row.message_id}/reactions`,
         { id: row.id, emoji: row.emoji },
       );
       // A concurrent tab may have added this reaction already. In that case the
@@ -393,7 +414,7 @@ export function createReactionWrites({ client, txidMode, getCurrentUserId }: Wri
       if (!getCurrentUserId() || row.user_id !== getCurrentUserId())
         throw new Error("自分のリアクションだけ解除できます");
       const { txid } = await client.delete<MessageReactionRow>(
-        `/api/messages/${row.message_id}/reactions?${new URLSearchParams({ emoji: row.emoji })}`,
+        `/api/messages/${encodeURIComponent(row.message_id)}/reactions?${new URLSearchParams({ emoji: row.emoji })}`,
       );
       await syncTxid({
         mode: txidMode,
@@ -411,6 +432,17 @@ export function createReactionWrites({ client, txidMode, getCurrentUserId }: Wri
     }
   }
   return { onInsert, onDelete };
+}
+
+/**
+ * チャンネル・DM のピン留め。
+ *
+ * 並び順と `version` をサーバーが持つため、コレクションの楽観更新ではなく
+ * `hooks/usePinnedChannels.tsx` が応答をそのまま採用する。409 の競合では
+ * 応答の `version` / `pins` を使い、最新の状態の上でやり直す。
+ */
+export function createChannelPinWrites({ client }: Pick<WriteDependencies, "client">) {
+  return createChannelPinsApi(client);
 }
 
 /** 通知の既読化。まとめて更新する場合は read-all API を使う。 */
@@ -441,7 +473,7 @@ export function createNotificationWrites({
       mutations.length > 1
         ? await client.post<{ updated_count: number }>("/api/notifications/read-all")
         : await client.patch<NotificationRow>(
-            `/api/notifications/${mutations[0]!.modified.id}/read`,
+            apiPath`/api/notifications/${mutations[0]!.modified.id}/read`,
           );
     const ids = new Set(mutations.map((mutation) => mutation.modified.id));
     await syncTxid({

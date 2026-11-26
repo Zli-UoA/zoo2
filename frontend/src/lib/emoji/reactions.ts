@@ -15,7 +15,7 @@ export interface ReactionGroup {
 }
 
 export function groupReactions(
-  rows: (MessageReactionRow & { display_name?: string; user_name?: string })[],
+  rows: (MessageReactionRow & { display_name?: string; user_name?: string })[] | null | undefined,
   currentUserId: string | null,
 ): Map<string, ReactionGroup[]> {
   const messages = new Map<
@@ -23,7 +23,7 @@ export function groupReactions(
     Map<string, { emoji: string; users: Set<string>; ownId: string | null }>
   >();
   const names: Record<string, string> = {};
-  for (const row of rows) {
+  for (const row of rows ?? []) {
     if (row.user_name)
       names[row.user_id] = reactionUserLabel({
         display_name: row.display_name ?? "",

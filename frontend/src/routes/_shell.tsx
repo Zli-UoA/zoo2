@@ -1,3 +1,5 @@
+import { SipProvider } from "../components/sip/SipProvider";
+import { SipCallBanner } from "../components/sip/SipPanel";
 import { HomeLiveProvider } from "../hooks/useHomeLive";
 import { Outlet, createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
@@ -9,7 +11,9 @@ import { SasVerificationHost } from "../components/e2ee/SasVerificationHost";
 import { ShellSkeleton } from "../components/layout/ShellSkeleton";
 import { IncomingCallDialog } from "../components/call/IncomingCallDialog";
 import { CallProvider } from "../lib/call/call-context";
+import { PinnedChannelsProvider } from "../hooks/usePinnedChannels";
 import { NotificationsProvider } from "../hooks/useUnifiedNotifications";
+import { UnreadProvider } from "../hooks/useUnread";
 import { resolveConfig } from "../lib/config";
 
 export const Route = createFileRoute("/_shell")({ component: ShellLayout });
@@ -31,15 +35,22 @@ function ShellLayout() {
     <OfflineProvider config={config}>
       <E2eeProvider config={config}>
         <CallProvider config={config}>
-          <HomeLiveProvider>
-            <NotificationsProvider>
-              <AppShell>
-                <Outlet />
-              </AppShell>
-              <SasVerificationHost />
-              <IncomingCallDialog />
-            </NotificationsProvider>
-          </HomeLiveProvider>
+          <SipProvider config={config}>
+            <HomeLiveProvider>
+              <NotificationsProvider>
+                <UnreadProvider>
+                  <PinnedChannelsProvider>
+                    <AppShell>
+                      <Outlet />
+                    </AppShell>
+                    <SasVerificationHost />
+                    <IncomingCallDialog />
+                  </PinnedChannelsProvider>
+                </UnreadProvider>
+              </NotificationsProvider>
+            </HomeLiveProvider>
+            <SipCallBanner />
+          </SipProvider>
         </CallProvider>
       </E2eeProvider>
     </OfflineProvider>

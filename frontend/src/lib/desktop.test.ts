@@ -2,21 +2,37 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   DESKTOP_PROTOCOL_VERSION,
+  DesktopDownloadDestinationError,
+  DesktopDownloadLimitError,
   desktopAccessToken,
+  desktopDownloadBegin,
+  desktopDownloadCancel,
+  desktopDownloadFinish,
+  desktopDownloadSettings,
+  desktopDownloadWrite,
+  desktopDetectionFailure,
   desktopNotificationSettings,
+  desktopPickDownloadDirectory,
+  desktopSetBadge,
+  desktopSetDownloadSettings,
   desktopSetNotifications,
   desktopTakeCallAccept,
   detectDesktop,
   hasDesktopBridge,
   isDesktopSession,
+  isMissingCommandError,
   resetDesktopForTest,
 } from "./desktop";
+import type { AppConfig } from "./config";
+import { ReauthError, startReauth } from "./e2ee/reauth";
 
 type Internals = { invoke: ReturnType<typeof vi.fn>; transformCallback: ReturnType<typeof vi.fn> };
 
-function install(handler: (cmd: string) => unknown): Internals {
+function install(handler: (cmd: string, args?: unknown, options?: unknown) => unknown): Internals {
   const internals = {
-    invoke: vi.fn(async (cmd: string) => handler(cmd)),
+    invoke: vi.fn(async (cmd: string, args?: unknown, options?: unknown) =>
+      handler(cmd, args, options),
+    ),
     transformCallback: vi.fn(() => 1),
   };
   // unit テストは node で動くので、Tauri の WebView の window を差し込む。
@@ -56,6 +72,20 @@ describe("detectDesktop", () => {
     install(() => session(DESKTOP_PROTOCOL_VERSION, "leptos"));
     await expect(detectDesktop()).resolves.toBe(false);
   });
+
+  it("does not remember a temporary failure of the session check", async () => {
+    install((cmd) => {
+      if (cmd === "zoo_session") throw new Error("通信に失敗しました");
+      return undefined;
+    });
+    await expect(detectDesktop()).resolves.toBe(false);
+    expect(desktopDetectionFailure()).toBeInstanceOf(Error);
+
+    // 失敗を覚えないので、次はもう一度確かめる。
+    install(() => session(DESKTOP_PROTOCOL_VERSION, "remote"));
+    await expect(detectDesktop()).resolves.toBe(true);
+    expect(desktopDetectionFailure()).toBeNull();
+  });
 });
 
 describe("desktopNotificationSettings", () => {
@@ -80,6 +110,144 @@ describe("desktopNotificationSettings", () => {
     });
     await detectDesktop();
     await expect(desktopNotificationSettings()).resolves.toBeNull();
+  });
+});
+
+describe("download commands", () => {
+  it("reads and writes the save location used by the app", async () => {
+    const internals = install((cmd, args) => {
+      if (cmd === "zoo_session") return session(DESKTOP_PROTOCOL_VERSION, "remote");
+      if (cmd === "zoo_download_settings") return { ask_every_time: true, directory: null };
+      if (cmd === "zoo_set_download_settings")
+        return {
+          ask_every_time:
+            (args as { settings?: { ask_every_time?: boolean } }).settings?.ask_every_time ?? true,
+          directory: null,
+        };
+      if (cmd === "zoo_pick_download_directory")
+        return { ask_every_time: false, directory: "C:\\Users\\zoo\\Downloads" };
+      return undefined;
+    });
+    await detectDesktop();
+
+    await expect(desktopDownloadSettings()).resolves.toEqual({
+      ask_every_time: true,
+      directory: null,
+    });
+    await expect(desktopSetDownloadSettings({ ask_every_time: false })).resolves.toEqual({
+      ask_every_time: false,
+      directory: null,
+    });
+    expect(internals.invoke).toHaveBeenLastCalledWith("zoo_set_download_settings", {
+      settings: { ask_every_time: false },
+    });
+    await expect(desktopPickDownloadDirectory()).resolves.toEqual({
+      ask_every_time: false,
+      directory: "C:\\Users\\zoo\\Downloads",
+    });
+  });
+
+  it("passes raw bytes and the download id in a header", async () => {
+    const internals = install((cmd) => {
+      if (cmd === "zoo_session") return session(DESKTOP_PROTOCOL_VERSION, "remote");
+      if (cmd === "zoo_download_begin")
+        return { status: "started", id: "d1", path: "C:\\a\\b.pdf" };
+      return null;
+    });
+    await detectDesktop();
+
+    await expect(desktopDownloadBegin("b.pdf", 1234)).resolves.toEqual({
+      status: "started",
+      id: "d1",
+      path: "C:\\a\\b.pdf",
+    });
+    expect(internals.invoke).toHaveBeenLastCalledWith("zoo_download_begin", {
+      begin: { file_name: "b.pdf", size: 1234 },
+    });
+
+    const bytes = new Uint8Array([1, 2, 3]);
+    await desktopDownloadWrite("d1", bytes, 0);
+    expect(internals.invoke).toHaveBeenLastCalledWith("zoo_download_write", bytes, {
+      headers: { "x-zoo-download-id": "d1", "x-zoo-download-offset": "0" },
+    });
+
+    await desktopDownloadFinish("d1");
+    expect(internals.invoke).toHaveBeenLastCalledWith("zoo_download_finish", { id: "d1" });
+    await desktopDownloadCancel("d1");
+    expect(internals.invoke).toHaveBeenLastCalledWith("zoo_download_cancel", { id: "d1" });
+  });
+
+  it("returns the name that was actually saved", async () => {
+    install((cmd) => {
+      if (cmd === "zoo_session") return session(DESKTOP_PROTOCOL_VERSION, "remote");
+      if (cmd === "zoo_download_finish") return "a (1).txt";
+      throw new Error(`unexpected command: ${cmd}`);
+    });
+    await detectDesktop();
+
+    await expect(desktopDownloadFinish("d1")).resolves.toBe("a (1).txt");
+  });
+
+  it("marks a save destination that cannot be written without overwriting", async () => {
+    install((cmd) => {
+      if (cmd === "zoo_session") return session(DESKTOP_PROTOCOL_VERSION, "remote");
+      throw { code: "unsupported_destination", message: "この保存先には保存できません" };
+    });
+    await detectDesktop();
+
+    await expect(desktopDownloadBegin("a.exe")).rejects.toBeInstanceOf(
+      DesktopDownloadDestinationError,
+    );
+  });
+
+  it("marks a download limit so the UI can ask the user to wait", async () => {
+    install((cmd) => {
+      if (cmd === "zoo_session") return session(DESKTOP_PROTOCOL_VERSION, "remote");
+      throw { code: "too_many_downloads", message: "同時に保存できるのは 3 件までです" };
+    });
+    await detectDesktop();
+
+    await expect(desktopDownloadBegin("a.exe")).rejects.toBeInstanceOf(DesktopDownloadLimitError);
+  });
+
+  it("is null when an older app does not have the download commands", async () => {
+    install((cmd) => {
+      if (cmd === "zoo_session") return session(DESKTOP_PROTOCOL_VERSION, "remote");
+      throw new Error(`command ${cmd} not found`);
+    });
+    await detectDesktop();
+    await expect(desktopDownloadSettings()).resolves.toBeNull();
+  });
+
+  it("keeps a temporary settings failure instead of calling the app old", async () => {
+    install((cmd) => {
+      if (cmd === "zoo_session") return session(DESKTOP_PROTOCOL_VERSION, "remote");
+      throw new Error("設定を読めません");
+    });
+    await detectDesktop();
+    await expect(desktopDownloadSettings()).rejects.toThrow("設定を読めません");
+  });
+});
+
+describe("isMissingCommandError", () => {
+  it("recognizes the IPC messages for a missing or denied command", () => {
+    expect(isMissingCommandError("Command zoo_download_settings not found")).toBe(true);
+    expect(
+      isMissingCommandError(new Error("Command zoo_download_settings not allowed by ACL")),
+    ).toBe(true);
+    // デバッグ版は `Command` を付けず、コマンド名だけを出す。
+    expect(
+      isMissingCommandError(
+        new Error(
+          "zoo_download_settings not allowed. Permissions associated with this command: ...",
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("does not treat other failures that mention 'not found' as a missing command", () => {
+    expect(isMissingCommandError(new Error("settings not found"))).toBe(false);
+    expect(isMissingCommandError(new Error("No such file or directory (os error 2)"))).toBe(false);
   });
 });
 
@@ -152,5 +320,86 @@ describe("desktopAccessToken", () => {
     });
     await detectDesktop();
     await expect(desktopAccessToken()).resolves.toBeNull();
+  });
+});
+
+describe("startReauth on the desktop app", () => {
+  const config = {} as AppConfig;
+
+  async function desktop(reauth: () => unknown) {
+    const internals = install((cmd) =>
+      cmd === "zoo_session" ? session(DESKTOP_PROTOCOL_VERSION, "remote") : reauth(),
+    );
+    await detectDesktop();
+    return internals;
+  }
+
+  it("asks the app instead of opening a window", async () => {
+    const internals = await desktop(() => "id-token");
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    await expect(startReauth(config)()).resolves.toBe("id-token");
+    expect(internals.invoke).toHaveBeenLastCalledWith("zoo_reauthenticate", undefined);
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it("needs no re-authentication when the app runs in dev mode", async () => {
+    await desktop(() => {
+      throw { code: "wrong_mode", message: "dev" };
+    });
+    await expect(startReauth(config)()).resolves.toBeNull();
+  });
+
+  it.each([
+    [{ code: "timeout", message: "t" }, "timeout"],
+    [{ code: "cancelled", message: "c" }, "aborted"],
+    [{ code: "rejected", message: "r" }, "denied"],
+    // 古い版のアプリには、コマンドがない（型の付かない文字列のエラーになる）。
+    ["Command zoo_reauthenticate not found", "desktopOutdated"],
+  ])("maps %j to %s", async (failure, code) => {
+    await desktop(() => {
+      throw failure;
+    });
+    const result = startReauth(config)();
+    await expect(result).rejects.toBeInstanceOf(ReauthError);
+    await expect(result).rejects.toMatchObject({ code });
+  });
+});
+
+describe("desktopSetBadge", () => {
+  it("sends one call at a time and only the latest pending value", async () => {
+    const releases: Array<() => void> = [];
+    const internals = install((cmd) =>
+      cmd === "zoo_session"
+        ? session(DESKTOP_PROTOCOL_VERSION, "remote")
+        : new Promise<void>((resolve) => {
+            releases.push(resolve);
+          }),
+    );
+    await detectDesktop();
+    internals.invoke.mockClear();
+    desktopSetBadge(5);
+    desktopSetBadge(3);
+    desktopSetBadge(0);
+    expect(internals.invoke).toHaveBeenCalledTimes(1);
+    expect(internals.invoke).toHaveBeenLastCalledWith("zoo_set_badge", { count: 5 });
+    releases[0]?.();
+    await vi.waitFor(() => expect(internals.invoke).toHaveBeenCalledTimes(2));
+    expect(internals.invoke).toHaveBeenLastCalledWith("zoo_set_badge", { count: 0 });
+    releases[1]?.();
+  });
+
+  it("clamps negative and non-finite counts to zero", async () => {
+    const internals = install((cmd) =>
+      cmd === "zoo_session" ? session(DESKTOP_PROTOCOL_VERSION, "remote") : undefined,
+    );
+    await detectDesktop();
+    internals.invoke.mockClear();
+    desktopSetBadge(Number.NaN);
+    await vi.waitFor(() => expect(internals.invoke).toHaveBeenCalledTimes(1));
+    expect(internals.invoke).toHaveBeenLastCalledWith("zoo_set_badge", { count: 0 });
+    desktopSetBadge(-4);
+    await vi.waitFor(() => expect(internals.invoke).toHaveBeenCalledTimes(2));
+    expect(internals.invoke).toHaveBeenLastCalledWith("zoo_set_badge", { count: 0 });
   });
 });

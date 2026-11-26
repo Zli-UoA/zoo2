@@ -10,6 +10,13 @@ import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.*
 
 class Session(val repo: Repository, val scope: CoroutineScope, initial: Environment) {
+    internal val homeTimelines = HomeTimelineCache()
+    internal val notificationContexts = mutableMapOf<String, Row>()
+    internal val accountDetails = mutableMapOf<String, Row>()
+    internal val homeComposerState by lazy {
+        HomeComposerState(homePreferenceKey(this, "zoo-home-post-settings:v1:"))
+    }
+
     val api
         get() = repo.api
 
@@ -83,7 +90,6 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         surfaceChanges.tryEmit(Unit)
     }
     var env by mutableStateOf(initial)
-    val overlays = mutableStateListOf<OverlaySlot>()
     var dialog by mutableStateOf<String?>(null)
     var appDetailId by mutableStateOf<String?>(null)
     var thread by mutableStateOf<String?>(null)
@@ -103,6 +109,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             if (
                 initial.path.startsWith("/channels/") ||
                     initial.path.startsWith("/notifications") ||
+                    isGlobalSearchPath(initial.path) ||
                     isHomePath(initial.path)
             )
                 "chat"
@@ -144,6 +151,8 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     private val assetClient = HttpClient()
     val assets = mutableMapOf<String, JsonElement>()
     val activityPubNotifications by lazy { ActivityPubNotificationsState(this) }
+    val globalSearch by lazy { GlobalSearchController(this) }
+    internal val notificationReads = NotificationReadQueue(this)
     val previews = PreviewLoader(this)
     val attachmentLinks = AttachmentLinks(this)
     val channelId: String?
@@ -183,13 +192,18 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         }
     }
 
-    fun escape(): Boolean {
-        val top = overlays.lastOrNull { it.visible && !it.tooltip } ?: return false
-        if (top.onEscape?.invoke() != true) top.close()
-        return true
-    }
-
     fun navigate(path: String) = platform.navigate(path)
+
+    /**
+     * 本文のリンクと埋め込みカードから、アプリ内でチャンネル・メッセージへ移動する。[parentId] は、分かって
+     * いればリンク先の返信の親（そのスレッドを開く）。
+     */
+    fun openChannelLink(target: ChannelLinkTarget, parentId: String?) {
+        val next = parentId ?: target.threadId
+        // 同じチャンネル内の移動では `update` がスレッドを変えないので、ここで切り替える。
+        if (channelId == target.channelId) thread = next
+        navigate(channelLinkDestination(target, next, kotlin.time.Clock.System.now().toEpochMilliseconds()))
+    }
 
     fun openApp(id: String) {
         target = null
@@ -232,22 +246,39 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                 )
                 .also { assets[path] = it }
 
-    suspend fun image(url: String): ByteArray =
-        platform.image(if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url)
-            ?: assetClient
-                .get(if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url)
-                .body()
+    private val imageCache = ImageCache(scope)
+    private val bitmapCache = AssetCache<androidx.compose.ui.graphics.ImageBitmap>(scope, maxBytes = 64 * 1024 * 1024) {
+        (it.width.toLong() * it.height * 4).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    }
 
-    fun update(next: Environment) {
+    suspend fun image(url: String, signedAttachment: Boolean = false): ByteArray {
+        val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
+        return imageCache.get(if (signedAttachment) "attachment:$resolved" else resolved) {
+            val bytes = if (signedAttachment) platform.attachmentImage(resolved) else platform.image(resolved)
+            bytes ?: assetClient.get(resolved).body()
+        }
+    }
+
+    /** Static images use the same platform decoder as attachments and animated media. */
+    suspend fun imageBitmap(url: String, signedAttachment: Boolean = false): androidx.compose.ui.graphics.ImageBitmap {
+        val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
+        return bitmapCache.get(if (signedAttachment) "attachment:$resolved" else resolved) {
+            platform.imageFrames(image(resolved, signedAttachment)).first()
+        }
+    }
+
+    fun update(next: Environment): Unit = androidx.compose.runtime.snapshots.Snapshot.withMutableSnapshot {
         val old = env
         env = next
         toastController.setVisible(next.visible)
         if (old.path.substringBefore('?') != next.path.substringBefore('?')) {
-            thread = null
+            // アプリ内のリンクで別のチャンネルのスレッドを開くときは、移動先のパスで決まる。
+            thread = linkedThread(next.path)
             pane =
                 if (
                     channelId != null ||
                         next.path.startsWith("/notifications") ||
+                        isGlobalSearchPath(next.path) ||
                         isHomePath(next.path)
                 )
                     "chat"
@@ -256,12 +287,83 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         if (!old.online && next.online) repo.refresh()
     }
 
+    private val encryptedChannels by lazy { EncryptedChannelHistory(platform, config) }
+
+    suspend fun rememberEncryptedChannel(id: String) = encryptedChannels.remember(listOf(id))
+
+    private val encryptionRecordsLoader by lazy {
+        EncryptionRecordsLoader(scope, { encryptedChannels.loaded }, ::loadEncryptionRecords)
+    }
+
+    /** 端末の暗号化チャンネルの記録の、いまの読み込み状態。 */
+    val currentEncryptionRecords: EncryptionRecords get() = encryptionRecordsLoader.current()
+
+    /** 端末の暗号化チャンネルの記録を読み込みながら、状態を返す（本文を出す前の確認に使う）。 */
+    fun encryptionRecords(): Flow<EncryptionRecords> = encryptionRecordsLoader.states()
+
+    private suspend fun loadEncryptionRecords(): Boolean =
+        try {
+            encryptedChannels.remember()
+            true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            false
+        }
+
+    suspend fun requirePlaintextChannel(id: String) {
+        encryptedChannels.remember()
+        check(!isEncryptedChannel(id)) { "e2ee.downgraded" }
+    }
+
+    /** 作成前に UUID と暗号化の指定を保存し、応答の格下げも拒否する。 */
+    suspend fun createChannel(body: Row): JsonElement {
+        val id = body.text("id").ifEmpty { platform.uuid() }
+        val requested = body.flag("is_private") && body.flag("encrypted")
+        if (requested) rememberEncryptedChannel(id)
+        val result = repo.channels.write(api, "/api/channels", "POST", JsonObject(body + ("id" to JsonPrimitive(id))))
+        if (requested) verifyEncryptedCreation(result, id)
+        return result
+    }
+
+    suspend fun createDm(targets: Set<String>, encrypted: Boolean): String {
+        val id = platform.uuid()
+        if (encrypted) rememberEncryptedChannel(id)
+        val result = api.request("/api/dms", "POST", buildJsonObject {
+            put("id", id)
+            put("target_user_ids", JsonArray(targets.map(::JsonPrimitive)))
+            if (encrypted) put("encrypted", true)
+        })
+        if (encrypted) verifyEncryptedCreation(result, id)
+        return result.jsonObject.getValue("data").jsonObject.text("id")
+    }
+
+    private suspend fun verifyEncryptedCreation(result: JsonElement, requestedId: String) {
+        val row = (result as? JsonObject)?.get("data") as? JsonObject ?: error("e2ee.downgraded")
+        val id = row.text("id").ifEmpty { requestedId }
+        // 既存の 1 対 1 DM が返る場合も、応答を信用する前に暗号化指定を記録する。
+        rememberEncryptedChannel(id)
+        check(row.flag("encrypted")) { "e2ee.downgraded" }
+    }
+
     fun start() {
         if (isPublicProfilePath(env.path)) return
+        scope.launch {
+            repo.channels.rows.collect { rows ->
+                try { encryptedChannels.remember(rows.filter { it.flag("encrypted") }.map { it.text("id") }) }
+                catch (failure: CancellationException) { throw failure }
+                catch (_: Exception) { toast = t("common.writeError") }
+            }
+        }
         activityPubNotifications.ensureLoaded()
         searchPreferences.ensureLoaded()
         pane =
-            if (channelId != null || env.path.startsWith("/notifications") || isHomePath(env.path))
+            if (
+                channelId != null ||
+                    env.path.startsWith("/notifications") ||
+                    isGlobalSearchPath(env.path) ||
+                    isHomePath(env.path)
+            )
                 "chat"
             else "sidebar"
         scope.launch {
@@ -321,12 +423,34 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         commandAppId: String? = null,
         attachmentIds: List<String> = emptyList(),
         sensitiveAttachmentIds: List<String> = emptyList(),
+        /** 暗号化チャンネルの添付（[uploadEncryptedAttachment] の戻り値）。平文チャンネルでは使わない。 */
+        encryptedAttachments: List<JsonObject> = emptyList(),
     ): Boolean {
-        // 暗号化チャンネルには、暗号化の送信を入れるまで本文もコマンドも送らない（docs/e2ee.md、#361）。
+        try { encryptedChannels.remember() }
+        catch (failure: CancellationException) { throw failure }
+        catch (_: Exception) { toast = t("common.writeError"); return false }
         if (isEncryptedChannel(channel)) {
-            toast = t("e2ee.sendUnavailable")
-            return false
+            // 観測済みの設定も、本文を送る前に保存する。
+            try { rememberEncryptedChannel(channel) }
+            catch (failure: CancellationException) { throw failure }
+            catch (_: Exception) { toast = t("common.writeError"); return false }
+            val encryption = platform.messageEncryption
+            if (encryption == null || attachmentIds.isNotEmpty() || commandAppId != null) {
+                toast = t("e2ee.sendUnavailable")
+                return false
+            }
+            return try {
+                val users = repo.users.rows.value.map { it.text("id") to it.text("user_name") }
+                encryption.send(channel, platform.uuid(), parent, content, encryptedMentions(content, users), encryptedAttachments)
+                true
+            } catch (failure: CancellationException) { throw failure }
+            catch (failure: Exception) {
+                // 暗号化チャンネルでも、参加が必要なスレッドへの返信は、参加を案内する。
+                toast = t(sendFailureKey(parent, failure, encrypted = true))
+                false
+            }
         }
+        if (encryptedAttachments.isNotEmpty()) { toast = t("common.writeError"); return false }
         val command = Regex("^/([a-zA-Z0-9_-]+)(?:\\s+([\\s\\S]*))?$").matchEntire(content.trim())
         if (command != null && attachmentIds.isEmpty()) {
             try {
@@ -377,18 +501,27 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             if (sensitiveAttachmentIds.isNotEmpty()) put("sensitive_attachment_ids", JsonArray(sensitiveAttachmentIds.map(::JsonPrimitive)))
         }
         return try {
-            repo.messages(channel).write(api, "/api/messages", "POST", body, row)
+            val result = repo.messages(channel).write(api, "/api/messages", "POST", body, row)
+            // 移行中、未移行の子スレッドへの返信はサーバーで最上位の親へ正規化される。
+            // 開いているスレッドを確定した親へ移し、送った返信が画面から外れないようにする。
+            val resolved = ((result as? JsonObject)?.get("data") as? JsonObject)
+                ?.get("parent_id")?.jsonPrimitive?.contentOrNull
+            if (parent != null && resolved != null && resolved != parent && thread == parent) thread = resolved
             true
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
-            toast = t("common.writeError")
+        } catch (e: Exception) {
+            // 参加が必要なスレッドへの返信は、参加（スレッドの「参加する」）を案内する。
+            toast = t(sendFailureKey(parent, e, encrypted = false))
             false
         }
     }
 
     /** 暗号化チャンネルか。Channels の Shape の行の `encrypted` で決める。 */
-    fun isEncryptedChannel(channel: String): Boolean = isEncryptedChannel(repo.channels.rows.value, channel)
+    fun isEncryptedChannel(channel: String): Boolean {
+        if (isEncryptedChannel(repo.channels.rows.value, channel)) encryptedChannels.observe(channel)
+        return encryptedChannels.contains(channel)
+    }
 
     fun configureMembersLayout(wide: Boolean) {
         if (membersWide != wide) {
@@ -450,15 +583,32 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
 
     fun close() {
         if (homeLiveState.isInitialized()) homeLiveState.value.close()
+        notificationReads.close()
         activityPubNotifications.close()
         toastController.close()
         if (preferenceState.isInitialized()) preferenceState.value.close()
+        homeTimelines.clear()
+        notificationContexts.clear()
+        accountDetails.clear()
+        bitmapCache.close()
+        imageCache.close()
         assetClient.close()
         repo.close()
     }
 }
 
 fun String.decodeURLPart(): String = decodeURLQueryComponent()
+
+/**
+ * 返信の送信に失敗したときの、案内の翻訳キー。参加行があるスレッドへ、参加せずに返信したとき
+ * （[requiresThreadJoin]）は、平文でも暗号化チャンネルでも、参加を案内する（親のない投稿には出さない）。
+ * 暗号化の送信が投げる `e2ee.` で始まる理由は、暗号化チャンネルのときだけ、そのまま使う。
+ */
+internal fun sendFailureKey(parent: String?, failure: Exception, encrypted: Boolean): String {
+    if (parent != null && failure is ApiException && failure.requiresThreadJoin) return "threads.joinToReply"
+    if (encrypted) return failure.message?.takeIf { it.startsWith("e2ee.") } ?: "common.writeError"
+    return "common.writeError"
+}
 
 /** 件数に合う複数形のキー (`key_one` / `key_other`) */
 fun pluralKey(key: String, count: Int): String = "${key}_${if (count == 1) "one" else "other"}"

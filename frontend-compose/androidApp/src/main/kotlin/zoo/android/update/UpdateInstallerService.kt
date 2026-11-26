@@ -1,7 +1,10 @@
 package zoo.android.update
 
 import android.os.ParcelFileDescriptor
+import android.util.Log
 import androidx.annotation.Keep
+import java.io.IOException
+import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
 
 /**
@@ -29,6 +32,10 @@ class UpdateInstallerService : IUpdateInstaller.Stub() {
     @Synchronized
     override fun install(apk: ParcelFileDescriptor, size: Long, userId: Int): String {
         require(size in 1..MAX_APK_BYTES && userId >= 0)
+        Log.i(
+            "ZooUpdaterService",
+            "Install started: uid=${android.os.Process.myUid()}, user=$userId, bytes=$size",
+        )
         val process =
             ProcessBuilder(
                     "/system/bin/pm",
@@ -40,6 +47,9 @@ class UpdateInstallerService : IUpdateInstaller.Stub() {
                     "works.zli.zoo",
                     "-S",
                     size.toString(),
+                    // End option parsing before the stdin path; some Android
+                    // versions otherwise reject '-' as an unknown option.
+                    "--",
                     "-",
                 )
                 .redirectErrorStream(true)
@@ -81,11 +91,82 @@ class UpdateInstallerService : IUpdateInstaller.Stub() {
             process.waitFor()
             reader.join(5000)
             val result = output.toString(Charsets.UTF_8.name()).trim()
-            if (process.exitValue() == 0 && result.lineSequence().any { it == "Success" }) "Success"
-            else "インストールできませんでした: ${result.take(1000)}"
+            Log.i(
+                "ZooUpdaterService",
+                "Install finished: exit=${process.exitValue()}, output=${result.take(1000)}",
+            )
+            completeInstall(process.exitValue(), result) { restartApp(userId) }
+        } catch (failure: IOException) {
+            // pm may reject the install before consuming stdin. Preserve its
+            // diagnostic instead of sending an IOException through Binder.
+            val exited = process.waitFor(5, TimeUnit.SECONDS)
+            if (!exited) process.destroyForcibly()
+            reader.join(5000)
+            val result = output.toString(Charsets.UTF_8.name()).trim().take(1000)
+            val exit = if (exited) process.exitValue().toString() else "timeout"
+            Log.e(
+                "ZooUpdaterService",
+                "Install transfer failed: exit=$exit, output=$result",
+                failure,
+            )
+            "インストールできませんでした: ${result.ifBlank { failure.toString() }} (exit=$exit)"
+        } catch (failure: Exception) {
+            Log.e("ZooUpdaterService", "Install failed", failure)
+            throw failure
         } finally {
             process.destroy()
             watchdog.interrupt()
         }
     }
+    // The Zoo process is replaced by Package Manager. Relaunch from this shell daemon instead.
+    private fun restartApp(userId: Int) {
+        try {
+            val launch = ProcessBuilder(restartCommand(userId)).redirectErrorStream(true).start()
+            val rejected = FutureTask {
+                launch.inputStream.bufferedReader().use { reader ->
+                    var failure = false
+                    reader.lineSequence().forEach { raw ->
+                        val line = raw.trim()
+                        if (line.startsWith("Error", ignoreCase = true) ||
+                            line.contains("SecurityException", ignoreCase = true) ||
+                            line.startsWith("Exception", ignoreCase = true) ||
+                            line.startsWith("Status: timeout", ignoreCase = true)
+                        ) failure = true
+                    }
+                    failure
+                }
+            }
+            Thread(rejected, "Zoo restart output").apply { isDaemon = true; start() }
+            try {
+                if (!launch.waitFor(10, TimeUnit.SECONDS)) {
+                    Log.w("ZooUpdaterService", "Zoo restart timed out")
+                } else if (rejected.get(2, TimeUnit.SECONDS)) {
+                    Log.w("ZooUpdaterService", "Android rejected the restart after installation")
+                } else if (launch.exitValue() != 0) {
+                    Log.w("ZooUpdaterService", "Zoo restart failed with exit code ${launch.exitValue()}")
+                }
+            } finally {
+                launch.destroyForcibly()
+                rejected.cancel(true)
+            }
+        } catch (failure: Exception) {
+            Log.w("ZooUpdaterService", "Could not reopen Zoo after installation", failure)
+        }
+    }
+
 }
+
+
+internal fun completeInstall(exitCode: Int, output: String, restart: () -> Unit): String {
+    if (exitCode != 0 || output.lineSequence().none { it.trim() == "Success" }) {
+        return "インストールできませんでした: ${output.take(1000)}"
+    }
+    restart()
+    return "Success"
+}
+
+internal fun restartCommand(userId: Int): List<String> = listOf(
+    "/system/bin/am", "start", "--user", userId.toString(),
+    "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER",
+    "-n", "works.zli.zoo/zoo.android.MainActivity",
+)

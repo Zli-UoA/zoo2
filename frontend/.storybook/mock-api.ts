@@ -84,6 +84,7 @@ const notificationContexts: Record<string, NotificationContextFixture> = {
 export const storybookApiHandlers = [
   http.get("*/api/emoji-accounts", () => HttpResponse.json({ accounts: [] })),
   http.get("*/api/threads", () => HttpResponse.json({ items: [], next_cursor: null })),
+  http.get("*/api/channel-pins", () => HttpResponse.json({ pins: [], version: 0 })),
   http.get("*/api/emoji-shortcodes", () => HttpResponse.json({ shortcodes: {} })),
   http.get("*/api/emoji-service", () => HttpResponse.json({ url: null })),
   http.get("*/api/channels/:id/federated-reactions", () => HttpResponse.json([])),
@@ -143,7 +144,8 @@ export const storybookApiHandlers = [
     }),
   ),
   http.get(/\/api\/channels\/[^/]+\/read-state$/, ({ request }) => {
-    const channelId = new URL(request.url).pathname.split("/")[3] ?? "channel-general";
+    const channelId =
+      new URL(request.url).pathname.split("/")[3] ?? "00000000-0000-4000-8000-000000000001";
     return HttpResponse.json({
       channel_id: channelId,
       last_read_at: lastReadAt,
@@ -151,7 +153,8 @@ export const storybookApiHandlers = [
     });
   }),
   http.post(/\/api\/channels\/[^/]+\/read-state$/, ({ request }) => {
-    const channelId = new URL(request.url).pathname.split("/")[3] ?? "channel-general";
+    const channelId =
+      new URL(request.url).pathname.split("/")[3] ?? "00000000-0000-4000-8000-000000000001";
     return HttpResponse.json({
       channel_id: channelId,
       last_read_at: lastReadAt,

@@ -50,8 +50,12 @@ it.each([160, 640])(
     expect(image.getBoundingClientRect().width / image.getBoundingClientRect().height).toBeCloseTo(
       3,
     );
+    // Explicitly start the image request and await decoding, rather than
+    // depending on lazy loading and waitFor's short polling deadline.
+    image.loading = "eager";
     release();
-    await waitFor(() => expect(image.naturalWidth).toBe(3));
+    await image.decode();
+    expect(image.naturalWidth).toBe(3);
     expect(marker.getBoundingClientRect().top).toBeCloseTo(initial, 1);
     expect(metadataRequests).toBe(0);
     view.unmount();

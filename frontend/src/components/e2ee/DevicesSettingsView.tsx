@@ -3,10 +3,12 @@ import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import {
   CheckIcon,
+  ClockIcon,
   CopyIcon,
   ExternalLinkIcon,
   FingerprintIcon,
   KeyRoundIcon,
+  LoaderCircleIcon,
   MonitorSmartphoneIcon,
   PencilIcon,
   ShieldAlertIcon,
@@ -22,11 +24,31 @@ import type {
   UserState,
 } from "@zoo/crypto-wasm";
 
+import { cn } from "cn";
+
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { SettingsSection } from "../ui/control-panel";
 import { ConfirmActionDialog } from "../ui/confirm-action-dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "../ui/alert-dialog";
+import {
+  NOT_UNLOCKED_UNUSED_DAYS,
+  STALE_DEVICE_DAYS,
+  cleanupReasons,
+  type CleanupReason,
+} from "../../lib/e2ee/deviceCleanup";
+import { formatKeyFingerprint } from "../../lib/e2ee/masterKey";
 import { Spinner } from "../ui/spinner";
+import type { E2eeNotReadyReason } from "../../lib/e2ee/notReady";
 import type { EncryptionErrorCode } from "./EncryptionSettingsView";
 
 /** 端末一覧の 1 行。 */
@@ -37,6 +59,17 @@ export interface DeviceRowView {
   lastSeenAt: string | null;
   current: boolean;
   signed: boolean;
+}
+
+/**
+ * 再検証の確認の画面に出す鍵（`previewReverify`）。署名するのは `masterKey` だけで、確認のあとに
+ * サーバーの鍵が変わっていたら署名しない。
+ */
+export interface ReverifyPreviewView {
+  /** 相手の今のマスター鍵の公開鍵。 */
+  masterKey: string;
+  /** この端末が前に信頼した鍵（記録）。記録がなければ `null`。 */
+  previousMasterKey: string | null;
 }
 
 /** 他のユーザーの検証状態の 1 行。 */
@@ -91,12 +124,13 @@ export type DevicesErrorCode =
   | "renameFailed"
   | "revocationFailed"
   | "verifyFailed"
+  /** 確認の画面に出した鍵から、相手の鍵が変わった（再検証を止めた）。 */
+  | "reverifyKeyChanged"
   /** 絵文字 SAS の検証を始められなかった（#368）。 */
   | "sasFailed";
 
 export type DevicesViewState =
   | { step: "loading" }
-  | { step: "unavailable" }
   | { step: "loadFailed" }
   | {
       step: "ready";
@@ -109,6 +143,11 @@ export type DevicesViewState =
       warnings: TrustWarning[];
       /** この端末が解錠済みか（失効と再検証は解錠済みの端末だけ）。 */
       unlocked: boolean;
+      /**
+       * 自分のマスター鍵の公開鍵（解錠して信頼したもの）。相手が再検証で比べる指紋として出す。
+       * 未解錠なら `null`。
+       */
+      ownMasterKey?: string | null;
       /** 終わっていない失効（あれば、続けるよう表示する）。 */
       pendingRevocation: { scope: RevocationScope; stage: RevocationStage } | null;
       /** AuthZ のセッションとサービス接続の画面。OIDC を設定していなければ `null`。 */
@@ -117,6 +156,8 @@ export type DevicesViewState =
       passkeyAvailable: boolean;
       busy: "rename" | "delete" | "revocation" | "verify" | null;
       error: DevicesErrorCode | null;
+      /** 削除を勧める端末を判定する時刻（ミリ秒）。省いたら今（Story で固定する）。 */
+      now?: number;
     };
 
 export interface DevicesSettingsHandlers {
@@ -137,7 +178,13 @@ export interface DevicesSettingsHandlers {
   onRestart: () => void;
   onCancelRevocation: () => void;
   onFinish: () => void;
-  onReverify: (userId: string) => void;
+  /**
+   * 再検証の確認の画面に出す鍵を読む（相手の今のマスター鍵と、前に信頼した鍵）。読めなければ `null`
+   * （エラーは画面の状態に出す）。
+   */
+  onPrepareReverify: (userId: string) => Promise<ReverifyPreviewView | null>;
+  /** 確認の画面で見せた鍵（`masterKey`）を受け入れる。サーバーの鍵が変わっていたら署名しない。 */
+  onReverify: (userId: string, masterKey: string) => void;
   /**
    * 絵文字 SAS で検証する（#368）。この端末で検証を進められないとき（暗号ストアを開いていない
    * タブなど）は渡さない（ボタンを出さない）。
@@ -179,8 +226,17 @@ function Busy({ label }: { label: string }) {
   );
 }
 
-/** 端末の名前と日時。端末名は攻撃者も付けられるので、登録日時と最後に使った日時を並べる。 */
-export function DeviceSummary({ device }: { device: DeviceRowView }) {
+/**
+ * 端末の名前と日時。端末名は攻撃者も付けられるので、登録日時と最後に使った日時を並べる。
+ * `cleanup` は削除を勧める理由（長く使っていない端末に印を付ける。未署名は署名の有無で出す）。
+ */
+export function DeviceSummary({
+  device,
+  cleanup = [],
+}: {
+  device: DeviceRowView;
+  cleanup?: CleanupReason[];
+}) {
   const { t, i18n } = useTranslation();
   const created = formatDate(device.createdAt, i18n.language);
   const used = formatDate(device.lastSeenAt, i18n.language);
@@ -199,6 +255,16 @@ export function DeviceSummary({ device }: { device: DeviceRowView }) {
             {t("e2ee.devices.unsigned")}
           </span>
         ) : null}
+        {cleanup.length > 0 ? (
+          // 削除を勧める理由を文字でも出す（背景の色だけで区別しない）。30 日の印があれば、7 日の印は
+          // 重ねない。
+          <span className="flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-800 dark:text-amber-300">
+            <ClockIcon aria-hidden="true" className="size-3" />
+            {cleanup.includes("stale")
+              ? t("e2ee.devices.stale", { days: STALE_DEVICE_DAYS })
+              : t("e2ee.devices.notUnlockedStale", { days: NOT_UNLOCKED_UNUSED_DAYS })}
+          </span>
+        ) : null}
       </p>
       <p className="text-xs text-muted-foreground">
         {[
@@ -215,7 +281,51 @@ export function DeviceSummary({ device }: { device: DeviceRowView }) {
   );
 }
 
-/** 設定の「端末」タブ（端末一覧、失効、他のユーザーの検証。#362）。 */
+function notReadyMessage(t: TFunction, reason: E2eeNotReadyReason): string {
+  switch (reason.kind) {
+    case "failed": {
+      const failure = reason.failure;
+      if (failure.source === "network") return t("e2ee.notReady.failedNetwork");
+      if (failure.source === "local") {
+        return failure.name
+          ? t("e2ee.notReady.failedLocalNamed", { name: failure.name })
+          : t("e2ee.notReady.failedLocal");
+      }
+      return failure.code
+        ? t("e2ee.notReady.failedServerCode", { status: failure.status, code: failure.code })
+        : t("e2ee.notReady.failedServer", { status: failure.status });
+    }
+    default:
+      return t(`e2ee.notReady.${reason.kind}`);
+  }
+}
+
+/**
+ * このタブで暗号ストアをまだ開けていない理由（設定の「暗号化」タブの上に 1 回だけ出す）。
+ * ほかのタブが開いている、登録に失敗して試し直している、などを区別して伝える。
+ */
+export function E2eeNotReadyNotice({ reason }: { reason: E2eeNotReadyReason }) {
+  const { t } = useTranslation();
+  return (
+    <div role="status" className="space-y-1 text-sm text-muted-foreground">
+      <p className="flex items-center gap-2">
+        {reason.kind === "starting" && (
+          <LoaderCircleIcon
+            className="size-4 shrink-0 animate-spin motion-reduce:animate-none"
+            aria-hidden="true"
+          />
+        )}
+        <span>{notReadyMessage(t, reason)}</span>
+      </p>
+      {reason.kind === "failed" && <p className="text-xs">{t("e2ee.notReady.retrying")}</p>}
+    </div>
+  );
+}
+
+/**
+ * 設定の「暗号化」タブの、端末（一覧、削除、失効）と他のユーザーの検証のセクション（#362）。
+ * 状態は `DevicesSettings` が持つ。
+ */
 export function DevicesSettingsView({
   state,
   handlers,
@@ -225,9 +335,6 @@ export function DevicesSettingsView({
 }) {
   const { t } = useTranslation();
   if (state.step === "loading") return <Busy label={t("e2ee.loading")} />;
-  if (state.step === "unavailable") {
-    return <p className="text-sm text-muted-foreground">{t("e2ee.unavailable")}</p>;
-  }
   if (state.step === "loadFailed") {
     return (
       <div className="space-y-2">
@@ -266,6 +373,11 @@ function DeviceList({ state, handlers }: { state: Ready; handlers: DevicesSettin
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
   const [deleting, setDeleting] = useState<DeviceRowView | null>(null);
   const busy = state.busy !== null;
+  const now = state.now ?? Date.now();
+  const anySigned = state.devices.some((device) => device.signed);
+  const cleanup = new Map(
+    state.devices.map((device) => [device.deviceId, cleanupReasons(device, { now, anySigned })]),
+  );
   return (
     <SettingsSection title={t("e2ee.devices.title")} description={t("e2ee.devices.description")}>
       <ErrorMessage code={state.error} />
@@ -276,7 +388,13 @@ function DeviceList({ state, handlers }: { state: Ready; handlers: DevicesSettin
       ) : null}
       <ul className="divide-y rounded-md border">
         {state.devices.map((device) => (
-          <li key={device.deviceId} className="flex items-start justify-between gap-3 p-3">
+          <li
+            key={device.deviceId}
+            className={cn(
+              "flex items-start justify-between gap-3 p-3",
+              (cleanup.get(device.deviceId)?.length ?? 0) > 0 && "bg-amber-500/5",
+            )}
+          >
             <div className="flex min-w-0 items-start gap-3">
               <MonitorSmartphoneIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
               {renaming?.id === device.deviceId ? (
@@ -302,7 +420,7 @@ function DeviceList({ state, handlers }: { state: Ready; handlers: DevicesSettin
                   </Button>
                 </form>
               ) : (
-                <DeviceSummary device={device} />
+                <DeviceSummary device={device} cleanup={cleanup.get(device.deviceId)} />
               )}
             </div>
             <div className="flex shrink-0 gap-1">
@@ -383,7 +501,10 @@ function VerificationList({
   handlers: DevicesSettingsHandlers;
 }) {
   const { t } = useTranslation();
-  const [confirming, setConfirming] = useState<VerificationRowView | null>(null);
+  const [confirming, setConfirming] = useState<{
+    row: VerificationRowView;
+    preview: ReverifyPreviewView;
+  } | null>(null);
   const needs = state.verifications.filter((v) => v.state.state === "needs_reverification");
   const others = state.verifications.filter((v) => v.state.state !== "needs_reverification");
   return (
@@ -391,6 +512,15 @@ function VerificationList({
       title={t("e2ee.verification.title")}
       description={t("e2ee.verification.description")}
     >
+      {state.ownMasterKey ? (
+        <div className="space-y-1">
+          <p className="text-sm font-medium">{t("e2ee.verification.ownFingerprint")}</p>
+          <KeyFingerprint publicKey={state.ownMasterKey} />
+          <p className="text-xs text-muted-foreground">
+            {t("e2ee.verification.ownFingerprintHelp")}
+          </p>
+        </div>
+      ) : null}
       {state.warnings.map((warning) => (
         <p key={warning} role="alert" className="flex items-start gap-2 text-sm text-destructive">
           <ShieldAlertIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
@@ -442,7 +572,11 @@ function VerificationList({
                       variant="outline"
                       size="sm"
                       disabled={state.busy !== null}
-                      onClick={() => setConfirming(row)}
+                      onClick={() => {
+                        void handlers.onPrepareReverify(row.userId).then((preview) => {
+                          if (preview) setConfirming({ row, preview });
+                        });
+                      }}
                     >
                       {t("e2ee.verification.reverify")}
                     </Button>
@@ -454,20 +588,122 @@ function VerificationList({
         </ul>
       )}
       {state.busy === "verify" ? <Busy label={t("e2ee.saving")} /> : null}
-      <ConfirmActionDialog
-        open={confirming !== null}
-        onOpenChange={(open) => {
-          if (!open) setConfirming(null);
-        }}
-        title={t("e2ee.verification.confirmTitle", { name: confirming?.name ?? "" })}
-        description={t("e2ee.verification.confirmDescription")}
-        confirmLabel={t("e2ee.verification.reverify")}
-        onConfirm={() => {
-          if (confirming) handlers.onReverify(confirming.userId);
+      <ReverifyDialog
+        target={confirming}
+        onClose={() => setConfirming(null)}
+        onConfirm={(userId, masterKey) => {
+          handlers.onReverify(userId, masterKey);
           setConfirming(null);
         }}
+        onSasVerify={
+          handlers.onSasVerify
+            ? (userId) => {
+                handlers.onSasVerify?.(userId);
+                setConfirming(null);
+              }
+            : undefined
+        }
       />
     </SettingsSection>
+  );
+}
+
+/** 鍵の指紋（公開鍵を 4 文字ずつに区切ったもの）。 */
+export function KeyFingerprint({ publicKey }: { publicKey: string }) {
+  return (
+    <p className="flex flex-wrap gap-x-2 rounded-md border bg-muted/50 px-3 py-2 font-mono text-sm">
+      {/* 4 文字の区切りの途中では折り返さない（読み合わせやすいように）。 */}
+      {formatKeyFingerprint(publicKey)
+        .split(" ")
+        .map((group, index) => (
+          <span key={index}>{group}</span>
+        ))}
+    </p>
+  );
+}
+
+/**
+ * 再検証の確認（セキュリティレビュー M-2）。相手の今のマスター鍵の指紋と、前に信頼した鍵から
+ * 変わったかを見せ、チャンネルの外で比べてもらう。絵文字 SAS で検証できるなら、そちらを勧める。
+ * 受け入れると、見せた鍵（`preview.masterKey`）にだけ署名する。
+ */
+export function ReverifyDialog({
+  target,
+  onClose,
+  onConfirm,
+  onSasVerify,
+}: {
+  target: { row: VerificationRowView; preview: ReverifyPreviewView } | null;
+  onClose: () => void;
+  onConfirm: (userId: string, masterKey: string) => void;
+  onSasVerify?: (userId: string) => void;
+}) {
+  const { t } = useTranslation();
+  const preview = target?.preview;
+  const previous = preview?.previousMasterKey ?? null;
+  const changed = previous !== null && previous !== preview?.masterKey;
+  return (
+    <AlertDialog
+      open={target !== null}
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            {t("e2ee.verification.confirmTitle", { name: target?.row.name ?? "" })}
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            {t("e2ee.verification.confirmDescription", { name: target?.row.name ?? "" })}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        {preview ? (
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <p className="text-sm font-medium">{t("e2ee.verification.currentFingerprint")}</p>
+              <KeyFingerprint publicKey={preview.masterKey} />
+            </div>
+            {changed ? (
+              <>
+                <p role="alert" className="flex items-start gap-2 text-sm text-destructive">
+                  <ShieldAlertIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+                  {t("e2ee.verification.keyChanged")}
+                </p>
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-muted-foreground">
+                    {t("e2ee.verification.previousFingerprint")}
+                  </p>
+                  <KeyFingerprint publicKey={previous} />
+                </div>
+              </>
+            ) : previous !== null ? (
+              <p className="text-sm text-muted-foreground">{t("e2ee.verification.keyUnchanged")}</p>
+            ) : null}
+            {onSasVerify ? (
+              <p className="text-sm">{t("e2ee.verification.sasRecommended")}</p>
+            ) : null}
+            <p className="text-xs text-muted-foreground">{t("e2ee.verification.confirmEffect")}</p>
+          </div>
+        ) : null}
+        <AlertDialogFooter>
+          <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+          {onSasVerify && target ? (
+            <Button variant="outline" onClick={() => onSasVerify(target.row.userId)}>
+              {t("e2ee.sas.start")}
+            </Button>
+          ) : null}
+          <AlertDialogAction
+            variant="destructive"
+            onClick={() => {
+              if (target) onConfirm(target.row.userId, target.preview.masterKey);
+            }}
+          >
+            {t("e2ee.verification.confirmTrust")}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 
@@ -480,17 +716,18 @@ export function AuthzSteps({
   after: boolean;
 }) {
   const { t } = useTranslation();
+  // キーを配列で回すと x18n が追えないので、訳文をリテラルキーから作る。
   const steps = after
-    ? (["e2ee.authz.disconnectAgain", "e2ee.authz.signOut"] as const)
-    : (["e2ee.authz.revokeSessions", "e2ee.authz.disconnect"] as const);
+    ? [t("e2ee.authz.disconnectAgain"), t("e2ee.authz.signOut")]
+    : [t("e2ee.authz.revokeSessions"), t("e2ee.authz.disconnect")];
   return (
     <div className="space-y-2 rounded-md border p-3">
       <p className="text-sm font-medium">
         {t(after ? "e2ee.authz.afterTitle" : "e2ee.authz.beforeTitle")}
       </p>
       <ol className="list-decimal space-y-1 pl-5 text-sm">
-        {steps.map((key) => (
-          <li key={key}>{t(key)}</li>
+        {steps.map((step, index) => (
+          <li key={index}>{step}</li>
         ))}
       </ol>
       <p className="text-xs text-muted-foreground">{t("e2ee.authz.note")}</p>
@@ -882,6 +1119,7 @@ export function DeviceLimitView({
   const stale = new Set(staleIds);
   return (
     <SettingsSection
+      className="border-destructive/50"
       title={t("e2ee.devices.limitTitle")}
       description={t("e2ee.devices.limitDescription")}
     >

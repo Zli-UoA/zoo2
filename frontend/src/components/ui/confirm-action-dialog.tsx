@@ -19,6 +19,8 @@ export function ConfirmActionDialog({
   onConfirm,
   pending = false,
   error,
+  cancelLabel,
+  confirmVariant = "destructive",
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -28,6 +30,9 @@ export function ConfirmActionDialog({
   onConfirm: () => void | Promise<void>;
   pending?: boolean;
   error?: string;
+  /** 取り消しボタンの文字（省略時は「キャンセル」） */
+  cancelLabel?: string;
+  confirmVariant?: "destructive" | "default";
 }) {
   const { t } = useTranslation();
   return (
@@ -48,9 +53,11 @@ export function ConfirmActionDialog({
           </p>
         ) : null}
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={pending}>{t("common.cancel")}</AlertDialogCancel>
+          <AlertDialogCancel disabled={pending}>
+            {cancelLabel ?? t("common.cancel")}
+          </AlertDialogCancel>
           <AlertDialogAction
-            variant="destructive"
+            variant={confirmVariant}
             disabled={pending}
             onClick={() => void onConfirm()}
           >

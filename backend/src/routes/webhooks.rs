@@ -1,9 +1,7 @@
 //! Token authentication and card persistence for Slack-compatible incoming webhooks.
 use super::messages::{CreateMessageRequest, create_message_impl};
-use crate::cards::cards_content as message_content;
-use crate::{
-    auth::AuthUser, cards::MessageCard, error::AppError, models::Message, state::AppState,
-};
+use crate::components::Ingested;
+use crate::{auth::AuthUser, error::AppError, models::Message, state::AppState};
 use axum::http::StatusCode;
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
@@ -43,16 +41,20 @@ pub(super) fn verify_token(secret: &str, hex: &str) -> bool {
     mac.verify_slice(&bytes).is_ok()
 }
 
-pub(super) async fn persist_card(
+/// 受信 Webhook の投稿を保存する。部品があれば `components` に入れ、本文には代わりの文字を入れる。
+/// 本文のメンションは通知しない（`notify` は false）。
+pub(super) async fn persist_components(
     state: AppState,
     settings: Settings,
-    cards: Vec<MessageCard>,
+    ingested: Ingested,
     delivery: &str,
 ) -> Result<StatusCode, AppError> {
-    let Some(card_data) = crate::cards::encode_cards(&cards)? else {
-        return Err(AppError::BadRequest("Empty webhook message".into()));
-    };
-    let content = message_content(&cards);
+    let components = ingested.doc.as_ref().map(|d| d.to_json());
+    let content: String = ingested
+        .content
+        .chars()
+        .take(crate::validation::MAX_MESSAGE_CONTENT_LENGTH)
+        .collect();
     uuid::Uuid::parse_str(delivery)
         .map_err(|_| AppError::BadRequest("Missing or invalid webhook delivery ID".into()))?;
     // Retain the legacy namespace so retries of existing generic deliveries remain idempotent.
@@ -91,9 +93,10 @@ pub(super) async fn persist_card(
             epoch: None,
             revision: None,
             mentions: None,
+            forwarded_message_ids: None,
         },
         false,
-        Some(card_data),
+        components,
         None,
         None,
         None,
@@ -106,27 +109,21 @@ pub(super) async fn persist_card(
 mod tests {
     use super::*;
     #[test]
-    fn message_content_includes_slack_text_and_flux_attachment_bodies() {
-        let cards = crate::cards::parse_webhook_cards(br#"{"text":"Deployment results","attachments":[{"text":"Reconciliation failed"},{"title":"Production","text":"Ready"},{"title":"Title only"}]}"#).unwrap();
+    fn content_includes_slack_text_and_flux_attachment_bodies() {
+        let i = crate::components::webhook(br#"{"text":"Deployment results","attachments":[{"text":"Reconciliation failed"},{"title":"Production","text":"Ready"},{"title":"Title only"}]}"#).unwrap();
         assert_eq!(
-            message_content(&cards),
-            "Deployment results\nReconciliation failed\nProduction\nReady\nTitle only"
+            i.content,
+            "Deployment results\nReconciliation failed\n**Production**\nReady\n**Title only**"
         );
     }
 
     #[test]
-    fn message_content_is_bounded_without_truncating_stored_cards_or_splitting_unicode() {
-        let payload = serde_json::json!({"attachments": vec![serde_json::json!({"title": "a".repeat(500), "text": "通知😀".repeat(1000)}); 100]});
-        let cards = crate::cards::parse_webhook_cards(payload.to_string().as_bytes()).unwrap();
-        let content = message_content(&cards);
-        assert_eq!(
-            content.chars().count(),
-            crate::validation::MAX_MESSAGE_CONTENT_LENGTH
-        );
-        assert!(crate::validation::validate_message_content(&content).is_ok());
-        assert!(content.contains("通知😀"));
-        assert_eq!(cards.len(), 100);
-        assert_eq!(cards[99].description, "通知😀".repeat(1000));
+    fn content_is_bounded_without_splitting_unicode() {
+        let payload = serde_json::json!({"attachments": vec![serde_json::json!({"title": "a".repeat(100), "text": "通知😀".repeat(20)}); 30]});
+        let i = crate::components::webhook(payload.to_string().as_bytes()).unwrap();
+        assert!(i.content.chars().count() <= crate::validation::MAX_MESSAGE_CONTENT_LENGTH);
+        assert!(crate::validation::validate_message_content(&i.content).is_ok());
+        assert!(i.content.contains("通知😀"));
     }
     #[test]
     fn verifies_webhook_url_tokens() {

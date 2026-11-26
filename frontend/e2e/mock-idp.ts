@@ -24,6 +24,12 @@ export interface MockIdpOptions {
   scope?: string;
   /** 待ち受けるポート。未指定なら空きポートを自動で使う。 */
   port?: number;
+  /**
+   * issuer のホスト名。既定は `127.0.0.1`。待ち受けは常に `127.0.0.1`。
+   * パスキーの RP ID は issuer のホスト名で、IP アドレスは RP ID にできないので、
+   * E2EE の E2E（#363）は `localhost` にする（docs/e2ee.md の「RP ID の決め方」）。
+   */
+  host?: string;
 }
 
 export interface MockIdpTokens {
@@ -137,15 +143,21 @@ export async function startMockIdp(options: MockIdpOptions = {}): Promise<MockId
     email: options.user?.email ?? "smoke@example.com",
   };
 
+  // 認可したときのユーザーを、認可コードとリフレッシュトークンに残す。複数のユーザーが
+  // 別々のブラウザーのコンテキストで同時にログインしていても、リフレッシュで別のユーザーの
+  // claim を返さないようにするため（E2EE の E2E は 2 人のユーザーを同時に使う）。
   interface AuthorizationCode {
     challenge: string;
     redirectUri: string;
     nonce: string;
     used: boolean;
+    user: MockIdpUser;
+    /** ログインを許可した時刻（秒）。ID トークンの `authenticated_at`（AuthZ#97）に入れる。 */
+    authenticatedAt: number;
   }
 
   const codes = new Map<string, AuthorizationCode>();
-  const refreshTokens = new Map<string, { sub: string }>();
+  const refreshTokens = new Map<string, { user: MockIdpUser }>();
   const issuedRefreshTokens: string[] = [];
   let lastAccessToken: string | null = null;
 
@@ -165,7 +177,12 @@ export async function startMockIdp(options: MockIdpOptions = {}): Promise<MockId
 
   const nowSeconds = () => Math.floor(Date.now() / 1000);
 
-  const issueTokens = (sub: string, nonce: string): MockIdpTokens => {
+  const issueTokens = (
+    tokenUser: MockIdpUser,
+    nonce: string,
+    authenticatedAt?: number,
+  ): MockIdpTokens => {
+    const sub = tokenUser.sub;
     const accessToken = signJwt(
       { alg: "ES256", typ: "at+jwt", kid },
       {
@@ -176,14 +193,14 @@ export async function startMockIdp(options: MockIdpOptions = {}): Promise<MockId
         iat: nowSeconds(),
         nbf: nowSeconds(),
         scope,
-        preferred_username: user.preferredUsername,
-        name: user.name,
-        email: user.email,
+        preferred_username: tokenUser.preferredUsername,
+        name: tokenUser.name,
+        email: tokenUser.email,
       },
     );
     lastAccessToken = accessToken;
     const refreshToken = randomUUID();
-    refreshTokens.set(refreshToken, { sub });
+    refreshTokens.set(refreshToken, { user: tokenUser });
     issuedRefreshTokens.push(refreshToken);
     const idToken = signJwt(
       { alg: "ES256", typ: "JWT", kid },
@@ -194,6 +211,9 @@ export async function startMockIdp(options: MockIdpOptions = {}): Promise<MockId
         exp: nowSeconds() + 300,
         iat: nowSeconds(),
         nonce,
+        // AuthZ と同じく、認可コードのグラントで発行した ID トークンにだけ入れる。
+        // backend は E2EE の再認証（X-Zoo-Reauth）でこの時刻が 5 分以内かを確かめる。
+        ...(authenticatedAt === undefined ? {} : { authenticated_at: authenticatedAt }),
       },
     );
     return {
@@ -285,7 +305,14 @@ export async function startMockIdp(options: MockIdpOptions = {}): Promise<MockId
         return;
       }
       const code = randomUUID();
-      codes.set(code, { challenge, redirectUri, nonce, used: false });
+      codes.set(code, {
+        challenge,
+        redirectUri,
+        nonce,
+        used: false,
+        user: { ...user },
+        authenticatedAt: nowSeconds(),
+      });
       const location = new URL(redirectUri);
       location.searchParams.set("code", code);
       location.searchParams.set("state", state);
@@ -319,7 +346,7 @@ export async function startMockIdp(options: MockIdpOptions = {}): Promise<MockId
           sendJson(response, 400, { error: "invalid_grant" });
           return;
         }
-        sendJson(response, 200, issueTokens(user.sub, stored.nonce));
+        sendJson(response, 200, issueTokens(stored.user, stored.nonce, stored.authenticatedAt));
         return;
       }
       if (grantType === "refresh_token") {
@@ -331,7 +358,7 @@ export async function startMockIdp(options: MockIdpOptions = {}): Promise<MockId
         }
         // Kanidm 同様、refresh_token は使い捨て。使ったら無効化してローテーションする。
         refreshTokens.delete(token);
-        sendJson(response, 200, issueTokens(stored.sub, ""));
+        sendJson(response, 200, issueTokens(stored.user, ""));
         return;
       }
       sendJson(response, 400, { error: "unsupported_grant_type" });
@@ -357,7 +384,7 @@ export async function startMockIdp(options: MockIdpOptions = {}): Promise<MockId
     server.listen(options.port ?? 0, "127.0.0.1", () => resolve());
   });
   const address = server.address() as AddressInfo;
-  origin = `http://127.0.0.1:${address.port}`;
+  origin = `http://${options.host ?? "127.0.0.1"}:${address.port}`;
   issuer = `${origin}/oauth2/openid/${clientId}`;
 
   return {

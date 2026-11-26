@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fixture, job, command } from "./helpers.ts";
+import { fixture, job, command, unplain } from "./helpers.ts";
 import { preview } from "../src/previews.ts";
 
 test("late workflow and deployment transitions keep their historical reply state", async (t) => {
@@ -144,5 +144,43 @@ test("link previews use the canonical name from GitHub metadata", async (t) => {
   assert.match(card!.card.url, /github\.com\/Acme\/Project\/issues\/7/);
   await f.bot.zooEvent(command("subscribe ACME/PROJECT"));
   const response = f.zoo.calls.findLast((c) => c.path === "/surfaces")!;
-  assert.match(response.body.blocks[0].text, /^Acme\/Project:/);
+  assert.match(unplain(response.body.components[0].content), /^Acme\/Project:/);
+});
+
+test("link previews keep the author and state in components", async () => {
+  const { cardComponents } = await import("../src/cards.ts");
+  const parts = cardComponents(undefined, { title: "Acme/Project #7", url: "https://github.com/Acme/Project/issues/7", author: "alice", badge: "closed", source: "GitHub" });
+  const text = JSON.stringify(parts);
+  assert.match(text, /alice/);
+  assert.match(text, /`closed`/);
+});
+
+test("large cards stay within the component text limit", async () => {
+  const { cardComponents, TEXT_BUDGET } = await import("../src/cards.ts");
+  const many = (n: number, label: string) => Array.from({ length: n }, (_, i) => `${label}-${i}-${"x".repeat(20)}`).join(", ");
+  const card = {
+    title: "T".repeat(500),
+    url: "https://github.com/Acme/Project/pull/1",
+    description: "D".repeat(1500),
+    source: "Acme/Project",
+    context: "2026-11-17T00:00:00Z",
+    fields: [
+      { title: "Labels", value: many(20, "label") },
+      { title: "Reviews", value: many(20, "review") },
+      { title: "Checks", value: many(20, "check") },
+      { title: "Assignees", value: many(20, "user") },
+    ],
+  };
+  const parts = cardComponents("Pull request opened by alice", card);
+  const texts: string[] = [];
+  const walk = (c: any) => {
+    if (typeof c.content === "string") texts.push(c.content);
+    (c.components ?? []).forEach(walk);
+  };
+  parts.forEach(walk);
+  const total = texts.reduce((n, t) => n + [...t].length, 0);
+  assert.ok(total <= 4000, `total ${total}`);
+  assert.ok(total <= TEXT_BUDGET);
+  // タイトルとフッターは残る
+  assert.match(JSON.stringify(parts), /Acme\/Project/);
 });

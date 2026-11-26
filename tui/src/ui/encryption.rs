@@ -32,6 +32,10 @@ pub struct E2eeContext {
     pub oidc: Option<OidcConfig>,
     /// 端末の管理のタスクが開いた暗号ストア。
     pub stores: StoreWatch,
+    /// 暗号ストアの置き場所（暗号化チャンネルの記録を、暗号ストアを開く前に読む。#361）。
+    pub crypto_root: Option<std::path::PathBuf>,
+    /// 端末の管理のタスクから届く、検証のメッセージと端末の上限（#362、#368）。
+    pub events: Option<crate::e2ee::manager::ManagerEvents>,
 }
 
 /// 秘密を Debug に出さないための包み。
@@ -178,7 +182,9 @@ impl Encryption {
         self.stores = Some(context.stores);
     }
 
-    fn store(&self) -> Option<(String, SharedStore)> {
+    /// 端末の管理のタスクが開いた暗号ストア（ユーザー ID と組）。登録を終えるまでと、作り直している
+    /// あいだは `None`。手放さずに持ち続けると、端末の管理のタスクが開き直せないので、使い終えたら捨てる。
+    pub(crate) fn store(&self) -> Option<(String, SharedStore)> {
         self.stores.as_ref().and_then(|rx| rx.borrow().clone())
     }
 

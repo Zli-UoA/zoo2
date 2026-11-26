@@ -1,4 +1,16 @@
 {
+  "a11y": {
+    "skipToContent": "跳去主要內容"
+  },
+  "aboutZoo": {
+    "title": "關於 Zoo",
+    "version": "版本：{{version}}",
+    "versionUnknown": "未知"
+  },
+  "notFoundPage": {
+    "title": "搵唔到頁面",
+    "description": "你要搵嘅頁面可能已經搬咗或者唔存在。"
+  },
   "nav": {
     "main": "主要導覽"
   },
@@ -10,6 +22,10 @@
     "unread": "有未讀訊息",
     "editTitle": "編輯頻道",
     "editHelp": "頻道名最多80個字元，只可以用文字、數字、半形連字號（-）同底線（_）。唔可以用空格、表情符號、其他符號或者保留名稱。",
+    "nameRequired": "請輸入頻道名。",
+    "nameTooLong": "頻道名最多{{max}}個字元（而家{{length}}個）。",
+    "nameReserved": "「{{name}}」係保留名稱，唔可以用。",
+    "invalidName": "頻道名只可以用文字、數字、半形連字號（-）同底線（_）。",
     "saveName": "儲存",
     "savingName": "儲存緊…",
     "title": "頻道",
@@ -44,6 +60,7 @@
     "notFound": "搵唔到頻道。",
     "duplicateName": "同名頻道已經存在。",
     "privateMessages": "呢個係私人頻道，收到邀請之後就可以睇訊息。",
+    "postingManagersOnly": "呢個頻道淨係管理員先可以發文。",
     "back": "返去頻道列表",
     "noDescription": "仲未有簡介",
     "visibilityHelp": "任何人都可以加入公開頻道。私人頻道就要開頻道嘅人邀請先入得。",
@@ -122,8 +139,7 @@
     "candidates": "成員建議",
     "usersLoading": "載入緊用戶…",
     "usersError": "載入唔到用戶。",
-    "usersEmpty": "搵唔到符合嘅用戶。",
-    "back": "返去頻道"
+    "usersEmpty": "搵唔到符合嘅用戶。"
   },
   "moderation": {
     "archived": "已封存",
@@ -159,6 +175,11 @@
     "invalidState": "而家嘅狀態做唔到呢個操作。"
   },
   "settings": {
+    "appearance": "外觀",
+    "interaction": "手勢操作",
+    "swipeReply": "撥動回覆",
+    "operationHaptics": "觸感回饋",
+    "navTitle": "設定",
     "admin": "管理員",
     "member": "成員",
     "makeAdmin": "設為管理員",
@@ -198,13 +219,16 @@
     "description": "喺左邊列表揀個頻道，就可以睇對話。"
   },
   "messages": {
+    "loadingOlder": "正在載入較早嘅訊息…",
     "typing": "{{names}}輸入緊…",
     "typingSeparator": "、",
     "compose": "輸入訊息",
     "send": "傳送",
     "edit": "編輯",
+    "editMessage": "編輯訊息",
     "delete": "刪除",
     "more": "更多操作",
+    "actions": "操作訊息",
     "editLabel": "編輯訊息",
     "loadError": "載入唔到訊息",
     "retryHelp": "請檢查連線再試多次。",
@@ -224,9 +248,58 @@
     "copyRaw": "複製原文",
     "copied": "已複製原文",
     "copyFailed": "複製唔到原文",
-    "edited": "已編輯"
+    "copyLink": "複製訊息連結",
+    "linkCopied": "已複製訊息連結",
+    "linkCopyFailed": "複製唔到訊息連結",
+    "edited": "已編輯",
+    "forward": "轉寄訊息…",
+    "forwardTitle": "轉寄呢個訊息",
+    "forwardSearchPlaceholder": "搜尋頻道或者成員",
+    "forwardDestinationLabel": "轉寄去",
+    "forwardDestinationSelected": "已揀選 {{name}} 做轉寄目標",
+    "forwardClearDestination": "移除 {{name}}",
+    "forwardNoDestinations": "冇可以轉寄嘅頻道或者私訊",
+    "forwardCommentPlaceholder": "加註解（可留空）",
+    "forwardCommentLabel": "註解",
+    "forwardPreviewLabel": "轉寄訊息預覽",
+    "forwardSubmit": "轉寄",
+    "forwarding": "轉寄緊…",
+    "forwarded": "已轉寄訊息",
+    "forwardedTo": "已轉寄去 {{channel}}",
+    "forwardSourceUnavailable": "原本嘅訊息唔存在，或者你冇權限轉寄",
+    "forwardLoading": "載入轉寄訊息中",
+    "forwardDeleted": "呢個訊息已經刪除",
+    "forwardUnavailable": "你冇權限睇呢個訊息",
+    "forwardLoadError": "載入唔到轉寄嘅訊息",
+    "forwardSourceChannel": "發佈喺 {{channel}}",
+    "forwardSourceThread": "{{channel}} 子討論嘅回覆",
+    "forwardQuoteLabel": "來自 {{author}} 嘅轉寄訊息",
+    "forwardAttachmentCount_one": "{{count}} 個附件",
+    "forwardAttachmentCount_other": "{{count}} 個附件",
+    "forwardNestedCompact": "呢個訊息入面亦包含轉寄內容",
+    "forwardNestedNote": "呢個訊息仲包含轉寄內容 · 睇原訊息"
+  },
+  "channelLink": {
+    "inlineMessage": "{{name}}：{{channel}}",
+    "thread": "{{channel}} 入面嘅子討論",
+    "encrypted": "呢條訊息已加密",
+    "messageUnavailable": "無法顯示呢條訊息",
+    "channelUnavailable": "無法顯示呢個頻道",
+    "loading": "載入緊連結內容",
+    "loadFailed": "載入唔到連結內容",
+    "appMessage": "App 嘅訊息",
+    "attachments_one": "{{count}} 個附件",
+    "attachments_other": "{{count}} 個附件",
+    "privateChannel": "私人頻道",
+    "encryptedChannel": "加密頻道"
   },
   "attachments": {
+    "recentPhotos": "最近相片",
+    "systemPhotos": "開啟相片選擇器",
+    "allowRecentPhotos": "允許存取相片",
+    "noRecentPhotos": "冇相片可以顯示",
+    "play": "播放",
+    "pause": "暫停",
     "add": "附加檔案",
     "selected": "要附加嘅檔案",
     "remove": "移除{{name}}",
@@ -243,12 +316,37 @@
     "download": "下載{{name}}",
     "downloadShort": "下載",
     "downloadError": "下載唔到檔案。",
+    "previewSaveUnsupported": "呢個檔案唔可以由 app 儲存入。開連結喺新分頁再存。",
+    "downloadSaved": "已存成 {{name}}。",
+    "downloadDestinationUnsupported": "呢個位置存唔到檔案。請揀第二個資料夾，或者喺設定嘅「下載」改儲存位置。",
+    "downloadTooMany": "同時下載嘅數量已經到上限。等其他下載完成之後再試。",
+    "downloading": "下載緊",
+    "saving": "儲存緊…",
+    "cancelDownload": "取消下載 {{name}}",
+    "cancelDownloadShort": "取消",
     "retry": "再試",
     "sensitive": "敏感圖片",
     "markSensitive": "將圖片標記為敏感內容",
     "showSensitive": "顯示圖片",
     "hideSensitive": "隱藏圖片",
-    "sensitiveShort": "敏感圖片"
+    "sensitiveShort": "敏感圖片",
+    "documentSummary": "內文同儲存格嘅簡單預覽，格式同版面可能同原檔唔同。",
+    "previewLimit": "預覽超出大小、檔案數量或處理時間限制，請下載檔案查看。",
+    "emptyPreview": "冇內容",
+    "containedFiles": "包含嘅檔案",
+    "previousPage": "上一頁",
+    "nextPage": "下一頁",
+    "pageNumber": "頁碼",
+    "pdfPages": "PDF 頁面列表",
+    "pdfPage": "PDF 第{{page}}頁",
+    "mail": {
+      "subject": "主旨",
+      "from": "寄件者",
+      "to": "收件者",
+      "cc": "副本",
+      "date": "日期"
+    },
+    "downloadDestinationUnsupportedAskEveryTimeOff": "呢個位置存唔到檔案。請喺設定嘅「下載」改儲存位置，或者開返「每次儲存都確認」。"
   },
   "threads": {
     "title": "子討論",
@@ -273,7 +371,22 @@
     "archiveForChannel": "{{channel}}嘅已封存討論串",
     "untitled": "未命名子討論",
     "targetTooOld": "呢則訊息太舊，喺度載入唔到",
-    "unreadTooOld": "更早嘅未讀訊息未載入"
+    "unreadTooOld": "更早嘅未讀訊息未載入",
+    "join": "加入討論串",
+    "leave": "退出討論串",
+    "reopen": "重新開啟",
+    "reopenOnSend": "傳送回覆會重新開啟呢個討論串。",
+    "membershipError": "無法更新討論串參與狀態。",
+    "participants_one": "參加者 {{count}} 人",
+    "participants_other": "參加者 {{count}} 人",
+    "participantsMore": "仲有 {{count}} 人",
+    "participantsEmpty": "冇參加者",
+    "threadStarter": "討論串發起人",
+    "participantsSearch": "搜尋個名",
+    "participantsFilterPartial": "淨係喺載入咗嘅頭 {{loaded}} 人入面搵（仲有 {{count}} 人搵唔到）。",
+    "participantsDescription": "已經加入呢個討論串嘅人。",
+    "joinToReply": "參加之後就可以喺呢個討論串回覆。",
+    "reopenAndJoin": "重開並參加"
   },
   "reactions": {
     "showUsers": "查看用 {{emoji}} 回應嘅用戶",
@@ -307,7 +420,6 @@
     "noSearchResults": "搵唔到符合嘅表情",
     "tabEmoji": "表情符號",
     "tabKitchen": "Emoji Kitchen",
-    "emojiDescription": "可以喺所有表情符號度揀。",
     "emojiLoading": "載入緊表情符號…",
     "recent": "最近用過嘅表情符號",
     "skinTone": "膚色"
@@ -328,6 +440,15 @@
     "yesterday": "尋日"
   },
   "composer": {
+    "editorTitle": "編輯訊息",
+    "expand": "全屏展開編輯器",
+    "collapse": "收起編輯器",
+    "dragHandle": "上下掃輸入框頂部嘅拖曳列",
+    "formatting": "格式",
+    "bold": "粗體",
+    "italic": "斜體",
+    "strike": "刪除線",
+    "code": "程式碼區塊",
     "mac": "⌘（Cmd）+Enter 傳送 / Enter 換行",
     "ctrl": "Ctrl+Enter 傳送 / Enter 換行",
     "other": "Cmd / Ctrl+Enter 傳送 / Enter 換行",
@@ -336,6 +457,8 @@
     "channels": "頻道建議"
   },
   "notifications": {
+    "filterAll": "全部通知",
+    "filterMentions": "提到你",
     "label": "通知",
     "close": "關閉通知",
     "title": "通知",
@@ -364,7 +487,8 @@
     "unreadStatus": "未讀",
     "readStatus": "已讀",
     "actors_one": "{{actor}} 同另外 1 人",
-    "actors_other": "{{actor}} 同另外 {{count}} 人"
+    "actors_other": "{{actor}} 同另外 {{count}} 人",
+    "forwardedPreview": "轉寄咗一個訊息"
   },
   "webhooks": {
     "title": "Webhook 設定",
@@ -390,6 +514,11 @@
   },
   "mentions": {
     "suggestions": "提及建議"
+  },
+  "appUpdate": {
+    "title": "有新版本嘅畫面",
+    "description": "重新載入就會用新版本。如果有緊打嘅內容，請先送出。",
+    "reload": "重新載入"
   },
   "offline": {
     "bannerTitle": "你而家離線",
@@ -421,6 +550,19 @@
     "desktopTitle": "通知",
     "desktopValue": "系統通知",
     "desktopDescription": "App 會用系統通知話你知有人提及你同埋收到 DM。如果你喺系統設定度熄咗 zoo2 嘅通知，請喺嗰度都開返。"
+  },
+  "downloads": {
+    "desktopTitle": "下載",
+    "desktopDescription": "附件檔案嘅儲存位置。你可以揀每次儲存都確認位置，或者預先設定資料夾。",
+    "askEveryTime": "每次儲存都確認",
+    "noFolder": "未揀選資料夾",
+    "chooseFolder": "揀資料夾",
+    "resetDirectory": "清除資料夾並每次儲存都確認",
+    "olderAppValue": "App 預設儲存位置",
+    "olderAppDescription": "呢個版本嘅 app 會將附件儲存喺 app 決定嘅位置。想改儲存位置，就要更新 app。",
+    "loadError": "儲存位置嘅設定載入唔到。",
+    "retry": "再載入",
+    "error": "未能更改下載設定，請再試一次。"
   },
   "mfm": {
     "suggestions": "MFM 建議",
@@ -528,6 +670,7 @@
     "micNotFound": "搵唔到麥克風。"
   },
   "bubbleChat": {
+    "navTitle": "Bubble",
     "title": "Bubble Chat",
     "description": "打緊嘅字會即時顯示喺呢個房入面",
     "emptyTitle": "而家冇人打緊字",
@@ -544,6 +687,30 @@
     "active": "喺房入面",
     "you": "你",
     "closeParticipants": "關閉參加者名單"
+  },
+  "channelPins": {
+    "title": "置頂",
+    "menu": "頻道操作",
+    "channelMenu": "{{name}} 頻道操作",
+    "dmMenu": "{{name}} DM 操作",
+    "pin": "置頂",
+    "unpin": "取消置頂",
+    "moveUp": "上移",
+    "moveDown": "下移",
+    "dragHandle": "拖曳以重新排序",
+    "dismissError": "閂咗",
+    "errors": {
+      "conflict": "另一個裝置改咗置頂嘅頻道。已經重新載入最新次序，請再試一次。",
+      "limitExceeded": "最多只可以置頂 50 個頻道。",
+      "reorderConflict": "另一個裝置改咗置頂次序。已經重新載入最新次序，請再試一次。"
+    },
+    "announce": {
+      "pinned": "已經置頂。",
+      "unpinned": "已經取消置頂。",
+      "moved": "已經移動置頂項目。",
+      "reorderConflict": "另一個裝置已經取消置頂呢個項目，所以冇移動。",
+      "reorderArchived": "呢個頻道已經封存，所以冇移動。"
+    }
   },
   "dms": {
     "title": "私訊",
@@ -687,6 +854,20 @@
       "addEncrypted": "加入加密頻道",
       "notReady": "呢個 App 未準備好加密（未登記裝置）。請開咗 App 之後再試。",
       "encryptedHint": "將 App 加入加密頻道，要成員批准。"
+    },
+    "components": {
+      "unsupported": "暫時未支援呢個元件",
+      "more": "更多操作",
+      "choose": "請揀",
+      "search": "搜尋",
+      "noOptions": "冇選項",
+      "uploading": "上載緊…",
+      "page": "第 {{page}} / {{pages}} 頁",
+      "spoiler": "有劇透內容（可以喺網頁版睇）",
+      "webOnly": "請喺網頁版做呢個操作",
+      "date": "日期",
+      "time": "時間",
+      "datetime": "日期同時間"
     }
   },
   "search": {
@@ -703,6 +884,13 @@
     "showLess": "收起"
   },
   "home": {
+    "navTitle": "主頁",
+    "back": "返回",
+    "deleted": "已刪除帖文",
+    "newPosts": "睇新帖文（{{count}}）",
+    "quotedPost": "引用嘅帖文",
+    "quoteUnavailable": "無法顯示引用嘅帖文",
+    "openQuotedPost": "開啟引用嘅帖文",
     "image": "圖片",
     "imageError": "加唔到圖片。請揀最多10張PNG、JPEG、GIF或WebP圖片（每張唔超過8MiB），再試一次。",
     "title": "首頁",
@@ -712,6 +900,7 @@
     "post": "發佈",
     "sending": "發佈中…",
     "sendError": "發佈失敗，草稿仲喺度，請再試。",
+    "postForbidden": "你唔可以喺呢個頻道發佈。",
     "loadError": "載入唔到時間線。",
     "loading": "載入中…",
     "empty": "仲未有帖文",
@@ -1122,9 +1311,23 @@
     },
     "tab": "加密",
     "title": "端對端加密",
-    "description": "加密頻道同私訊入面嘅訊息，淨係可以喺你嘅裝置度睇。金鑰由通行金鑰或者復原金鑰保護。",
+    "description": "加密頻道同私訊入面嘅訊息，淨係可以喺你嘅裝置度睇。",
     "loading": "載入緊加密狀態…",
-    "unavailable": "呢部裝置仲未準備好加密。請等一陣，或者閂咗其他 zoo 分頁再開過呢頁。",
+    "notReady": {
+      "unsupported": "呢個瀏覽器用唔到加密（冇 OPFS、Web Worker 或者 Web Locks）。私人視窗可能用唔到。請用一般視窗或者第二個瀏覽器開。",
+      "signedOut": "確認唔到登入咗嘅用戶。請重新登入。",
+      "userUnavailable": "讀取唔到登入咗嘅用戶資料。請等一陣，或者重新開過呢頁。",
+      "offline": "離線緊，準備唔到加密。連返線之後會自動繼續。",
+      "otherTab": "另一個 zoo 分頁或者視窗用緊呢部裝置嘅加密金鑰。閂咗嗰個分頁，呢個分頁就會接手。",
+      "starting": "準備緊加密（登記緊呢部裝置）…",
+      "deviceLimit": "登記咗嘅裝置已經到咗 20 部嘅上限。請喺下面嘅裝置清單刪除唔再用嘅裝置。",
+      "failedServer": "登記唔到呢部裝置（伺服器回應：{{status}}）。",
+      "failedServerCode": "登記唔到呢部裝置（伺服器回應：{{status}} {{code}}）。",
+      "failedNetwork": "連唔到伺服器，登記唔到呢部裝置。",
+      "failedLocal": "喺呢部裝置開唔到加密金鑰嘅儲存位置。",
+      "failedLocalNamed": "喺呢部裝置開唔到加密金鑰嘅儲存位置（{{name}}）。",
+      "retrying": "等一陣會自動再試。如果都係唔得，請重新開過呢頁。"
+    },
     "retry": "重試",
     "notSetUpTitle": "仲未設定加密",
     "notSetUpDescription": "設定之後就可以用加密頻道同私訊。會產生復原金鑰，請準備好抄低。",
@@ -1183,6 +1386,7 @@
       "popupBlocked": "開唔到登入視窗。請容許彈出視窗之後再撳一次。",
       "reauthFailed": "重新登入唔到。請再撳一次，金鑰會保持唔變。",
       "reauthTimeout": "登入冇喺時限內完成，請再撳一次。",
+      "desktopOutdated": "呢個版本嘅桌面 App 冇辦法重新登入。請更新 App 之後再撳一次。",
       "setupConflict": "另一部裝置已經搶先開始設定加密。呢個畫面顯示嘅復原金鑰用唔到。請用嗰部裝置抄低嘅復原金鑰或者通行金鑰解鎖。",
       "mismatch": "金鑰撤銷可能未完成，或者伺服器上嘅金鑰可能俾人改過。呢部裝置冇簽署。請重新撤銷或者重設加密。",
       "invalidRecoveryKey": "復原金鑰格式唔啱，請檢查有冇打錯。",
@@ -1201,12 +1405,19 @@
       "renameFailed": "改唔到裝置名稱。請再試一次。",
       "revocationFailed": "撤銷未能夠儲存晒。進度留咗喺呢部裝置。請再撳一次「執行撤銷」。",
       "verifyFailed": "儲存唔到重新驗證。請再試一次。",
+      "reverifyKeyChanged": "你確認完之後，對方嘅金鑰又變咗。乜都冇儲存。請由「重新驗證」再確認一次。",
       "tooManyMembers": "加密頻道最多可以有 200 個成員。",
       "sasFailed": "開始唔到表情符號驗證。請確認對方已經設定咗加密，再試一次。"
     },
     "reunlockToAdd": "重新解鎖嚟加通行金鑰",
     "reunlockToAddDescription": "要加通行金鑰或者重新整復原金鑰，請用通行金鑰或者復原金鑰再解鎖一次。呢部裝置嘅解鎖狀態唔會變。",
     "badge": "已加密",
+    "memberUnreadable": {
+      "notSetUp": "未設定加密",
+      "notSetUpDescription": "未設定加密，所以讀唔到呢個頻道嘅新訊息。",
+      "noDevices": "冇裝置",
+      "noDevicesDescription": "冇可以用嚟加密嘅裝置，所以讀唔到呢個頻道嘅新訊息。"
+    },
     "encryptChannel": "端對端加密",
     "encryptChannelHelp": "只有成員已驗證嘅裝置先睇到訊息。加密之後唔可以取消。",
     "encryptChannelPrivateOnly": "只有私人頻道先可以加密。",
@@ -1247,15 +1458,13 @@
     "sendStaleEpoch": "成員一直變緊，所以傳唔到訊息。請再傳一次。",
     "editConflict": "呢條訊息喺其他地方改過。請重新載入再改。",
     "recipients": {
-      "summary": "為 {{users}} 個人嘅 {{devices}} 部裝置加密。",
       "added": "上次傳送之後新加嘅收件人：{{names}}"
     },
     "downgraded": "呢個頻道之前係加密嘅，但伺服器而家話冇加密。唔會用明文傳送。",
     "checking": "確認緊呢個頻道嘅加密…",
-    "devicesTab": "裝置",
     "devices": {
       "title": "裝置",
-      "description": "持有加密金鑰嘅裝置清單。任何人都可以改裝置名稱，請用加入時間同最後使用時間分辨。",
+      "description": "持有加密金鑰嘅裝置清單。",
       "unnamed": "冇名嘅裝置",
       "current": "呢部裝置",
       "unsigned": "未簽署",
@@ -1272,7 +1481,14 @@
       "limitDescription": "登記唔到呢部裝置。請揀唔再用嘅裝置刪除。刪除唔等於撤銷，如果有唔見咗嘅裝置，請喺呢部裝置登記之後再撤銷。",
       "limitStale": "30 日以上冇用過嘅裝置",
       "limitDelete": "刪除所選裝置",
-      "limitDeleted": "刪咗喇。等陣會重新登記呢部裝置。"
+      "limitDeleted": "刪咗喇。等陣會重新登記呢部裝置。",
+      "stale": "{{days}} 日以上冇用過",
+      "notUnlockedStale": "未解鎖，{{days}} 日以上冇用過"
+    },
+    "deviceName": {
+      "withOs": "{{browser}}（{{os}}）",
+      "app": "{{browser}}（應用程式）",
+      "appWithOs": "{{browser}}（{{os}}·應用程式）"
     },
     "revocation": {
       "pendingTitle": "撤銷未完成",
@@ -1356,7 +1572,16 @@
       },
       "reverify": "重新驗證",
       "confirmTitle": "要信任 {{name}} 而家嘅金鑰嗎？",
-      "confirmDescription": "請喺頻道以外（當面或者其他聯絡方法）確認對方真係重新產生咗金鑰先信任。儲存之前要重新登入確認身分。",
+      "confirmDescription": "請喺頻道以外（當面或者其他聯絡方法），將下面嘅指紋同 {{name}} 嘅畫面（設定「加密」入面嘅「你嘅金鑰指紋」）對一對，一樣先信任。儲存之前要重新登入確認身分。",
+      "currentFingerprint": "而家金鑰嘅指紋",
+      "previousFingerprint": "之前信任嘅金鑰指紋",
+      "keyChanged": "同之前信任嘅金鑰唔同。請確認對方真係重新產生咗金鑰。",
+      "keyUnchanged": "同之前信任嘅金鑰一樣。",
+      "sasRecommended": "可以嘅話，請用「驗證」，用 QR 碼或者表情符號驗證。唔使逐個字對指紋，都可以確認你哋睇緊同一條金鑰。",
+      "confirmEffect": "信任之後，會用你嘅使用者簽署金鑰簽署呢條金鑰，你所有裝置都會信任佢。",
+      "confirmTrust": "信任呢條金鑰",
+      "ownFingerprint": "你嘅金鑰指紋",
+      "ownFingerprintHelp": "其他人重新驗證你嗰陣，會對呢個指紋。",
       "warning": {
         "own_identity_unknown": "未確認你嘅主金鑰。解鎖之後就可以確認。",
         "own_master_key_changed": "伺服器上面嘅主金鑰同呢部裝置確認過嘅唔同。重新解鎖之前唔會發金鑰畀任何裝置。",
@@ -1383,7 +1608,7 @@
       "regenerate": "重新產生復原金鑰",
       "create": "產生復原金鑰",
       "newTitle": "新的復原金鑰",
-      "newDescription": "儲存之後，舊嘅復原金鑰會解鎖唔到。刪除或者重建金鑰槽唔等於撤銷；如果舊嘅復原金鑰可能洩漏咗，請喺「裝置」度撤銷。",
+      "newDescription": "儲存之後，舊嘅復原金鑰會解鎖唔到。刪除或者重建金鑰槽唔等於撤銷；如果舊嘅復原金鑰可能洩漏咗，請喺呢個分頁嘅「裝置」度撤銷。",
       "save": "儲存",
       "removeDescription": "以後唔可以再用呢個復原金鑰解鎖。已經攞咗嘅金鑰唔會失效。如果可能洩漏咗，請撤銷。"
     },
@@ -1396,8 +1621,8 @@
       "blocked": "為咗安全，呢種檔案唔可以開"
     },
     "legacy": {
-      "badge": "加密之前",
-      "badgeHelp": "呢條訊息係頻道加密之前傳送嘅。佢冇加密，伺服器可以讀取或者改佢嘅內容。",
+      "unencryptedBadge": "冇加密",
+      "unencryptedBadgeHelp": "呢條冇加密嘅訊息喺加密訊息之後。喺加密頻道入面，正常嘅伺服器整唔到咁嘅訊息，所以可能係伺服器加咗或者改咗佢。",
       "divider": "由呢度開始已經加密",
       "editCancelled": "呢個頻道已經加密，所以取消咗編輯加密之前嘅訊息。",
       "editForbidden": "加密之前傳送嘅訊息唔可以編輯，但係可以刪除。"
@@ -1412,7 +1637,7 @@
       "description": "開啟加密之後：",
       "points": {
         "future": "之後嘅訊息同附件，淨係成員已驗證嘅裝置先讀到。",
-        "earlier": "之前嘅訊息唔會加密，會原封不動留喺伺服器。佢哋會標示「加密之前」，之後唔可以再編輯（仍然可以刪除）。",
+        "earlier": "之前嘅訊息唔會加密，會原封不動留喺伺服器，之後唔可以再編輯（仍然可以刪除）。",
         "published": "已經發佈去 Home 或者 ActivityPub 嘅帖文唔會撤回。",
         "integrations": "Slack 匯入同同步會停止。請先移除應用程式（機械人）同 Incoming Webhook。",
         "irreversible": "加密之後唔可以關閉。"
@@ -1427,9 +1652,9 @@
       }
     },
     "sas": {
-      "start": "用表情符號驗證",
+      "start": "驗證",
       "incomingTitle": "{{name}} 想同你驗證",
-      "incomingDescription": "雙方睇吓螢幕上面係咪出現同一組表情符號，嚟確認對方嘅金鑰。要喺頻道以外（當面或者通話）可以對螢幕嗰陣先好接受。",
+      "incomingDescription": "掃 QR 碼，或者睇吓雙方螢幕上面係咪出現同一組表情符號，嚟確認對方嘅金鑰。要喺頻道以外（當面或者通話）可以對螢幕嗰陣先好接受。",
       "accept": "接受",
       "decline": "拒絕",
       "requestedTitle": "等緊 {{name}} 接受",
@@ -1530,6 +1755,246 @@
         "62": "文件夾",
         "63": "圖釘"
       }
+    },
+    "qr": {
+      "title": "驗證 {{name}}",
+      "codeLabel": "驗證 QR 碼",
+      "showHint": "請 {{name}} 用佢部機掃呢個 QR 碼。用唔到相機或者唔喺身邊嘅話，可以用表情符號驗證。",
+      "waitingForAccept": "{{name}} 接受咗請求之後，就可以用佢部機掃呢個 QR 碼。",
+      "scan": "掃對方嘅 QR 碼",
+      "showOwn": "顯示我嘅 QR 碼",
+      "useEmoji": "用表情符號驗證",
+      "scanHint": "請將相機對住對方螢幕上面嘅 QR 碼。",
+      "otherCode": "呢個 QR 碼唔係而家呢個驗證嘅。請對住對方螢幕上面而家顯示緊嘅 QR 碼。",
+      "scannedTitle": "等緊 {{name}} 確認",
+      "waitingForConfirm": "等緊對方喺佢嘅螢幕確認掃咗…",
+      "confirmTitle": "{{name}} 掃咗個 QR 碼未？",
+      "confirmDescription": "淨係喺 {{name}} 喺你面前用佢部機掃咗呢個 QR 碼嘅時候，先好撳「掃咗」。撳咗之後，要重新登入確認身份，然後將對方嘅金鑰儲存做已驗證。",
+      "confirmYes": "掃咗",
+      "confirmNo": "未掃",
+      "verifiedTitle": "已經用 QR 碼確認咗 {{name}} 嘅金鑰",
+      "needsLogin": "要儲存做已驗證，請重新登入確認身份。",
+      "login": "登入並儲存",
+      "keyMismatch": "QR 碼入面嘅金鑰同伺服器傳嚟嘅金鑰唔一樣，驗證已經中止。金鑰可能已經俾人換咗。",
+      "camera": {
+        "label": "相機畫面",
+        "starting": "開緊相機…",
+        "unsupported": "呢個瀏覽器用唔到相機。請對方掃呢部機嘅 QR 碼，或者用表情符號驗證。",
+        "denied": "冇准用相機。請喺瀏覽器設定度允許，或者用表情符號驗證。",
+        "noCamera": "搵唔到相機。請對方掃呢部機嘅 QR 碼，或者用表情符號驗證。",
+        "failed": "開唔到相機。請用表情符號驗證。"
+      }
+    },
+    "android": {
+      "saveDescription": "儲存之前要再登入一次。瀏覽器會打開，登入完之後會返嚟呢個畫面。",
+      "continueDescription": "請再登入一次，儲存中斷咗嘅初次設定。瀏覽器會打開。",
+      "reauthWaiting": "等緊你喺瀏覽器再登入…",
+      "reauthCancel": "唔登入住",
+      "browserUnavailable": "開唔到用嚟登入嘅瀏覽器。請安裝或者啟用瀏覽器，再撳多一次。"
     }
+  },
+  "defaultChannels": {
+    "refreshed": "部分頻道已經用唔到，清單已更新。請確認選擇後再儲存。",
+    "limit": "最多可以揀100個公開頻道。",
+    "title": "新帳戶嘅預設頻道",
+    "description": "揀建立帳戶時自動加入嘅公開頻道。現有帳戶唔受影響。",
+    "empty": "冇可用嘅公開頻道。",
+    "saved": "已儲存。"
+  },
+  "androidUpdate": {
+    "title": "應用程式更新"
+  },
+  "androidNotifications": {
+    "enable": "啟用通知",
+    "scope": "登入階段同步期間接收新通知。",
+    "mentions": "提及同回覆",
+    "messages": "私訊",
+    "reactions": "回應"
+  },
+  "onboarding": {
+    "replay": "開啟入門導覽",
+    "next": "下一步",
+    "back": "上一步",
+    "skip": "跳過",
+    "finish": "開始用 Zoo",
+    "progress": "{{current}} / {{total}}",
+    "welcome": {
+      "title": "歡迎嚟到 Zoo",
+      "description": "一邊操作實際畫面，一邊認識 Zoo。撳下一步去頻道列表。可以跳過，之後用指南針掣重開。"
+    },
+    "channels": {
+      "title": "搵頻道",
+      "description": "喺框住嘅列表揀頻道。可以透過瀏覽頻道搵其他對話加入。"
+    },
+    "messages": {
+      "title": "參與對話",
+      "description": "喺你揀嘅頻道，用框住嘅輸入欄發文。可以用討論串回覆，或者加表情回應。"
+    },
+    "notifications": {
+      "title": "睇通知",
+      "description": "而家係通知頁面。喺呢度睇提及同回覆，揀通知就可以開啟相關對話。"
+    },
+    "settings": {
+      "title": "調整個人設定",
+      "description": "而家係一般設定。用框住嘅分頁調整顯示同操作。之後可以撳指南針掣重睇導覽。"
+    },
+    "slack": {
+      "title": "連結 Slack",
+      "description": "呢度係 Slack 設定。連結 Slack 帳戶可以將已匯入嘅舊貼文連到 Zoo，亦可以匯入你建立嘅私人頻道。工作區未設定嘅話，請聯絡管理員。"
+    },
+    "title": "使用導覽",
+    "chooseChannel": "揀一個頻道就可以繼續。有需要可以喺瀏覽頻道加入。",
+    "navigationError": "開唔到頁面，請再試。"
+  },
+  "sip": {
+    "title": "電話（SIP）",
+    "description": "管理個人同社團共用嘅線路及電話機。連接揀咗嘅一條線路打出或接聽電話。接聽來電需要瀏覽器保持開啟同連線。",
+    "refresh": "重新整理",
+    "addLine": "新增線路",
+    "loading": "載入中…",
+    "loadError": "載入唔到線路，請重新整理再試。",
+    "disabled": "電話功能尚未啟用，需要管理員設定基礎設施。",
+    "channelBusy": "頻道通話期間無法使用SIP連線。",
+    "line": "通話線路",
+    "selectLine": "選擇線路",
+    "personal": "個人",
+    "shared": "社團共用",
+    "connect": "連線並等候來電",
+    "disconnect": "中斷連線",
+    "number": "電話號碼或分機號碼",
+    "dial": "撥號",
+    "empty": "暫時冇可用線路。",
+    "edit": "編輯",
+    "delete": "刪除",
+    "lineForm": "新增或編輯線路",
+    "name": "線路名稱",
+    "ownership": "擁有權",
+    "phone_number": "外線號碼（選填）",
+    "websocket_path": "SIP連線路徑",
+    "sip_domain": "SIP網域",
+    "username": "SIP使用者名稱",
+    "password": "SIP密碼",
+    "keepPassword": "留空以保留目前的密碼",
+    "members": "允許使用的成員",
+    "membersHelp": "只有揀咗嘅成員先可以連線，管理員要用都要揀。成員共用SIP憑證，移除成員時亦要喺PBX更改密碼。",
+    "phones": "電話機和據點聯絡人",
+    "phonesHelp": "登記名稱同分機號碼之後，將顯示嘅 SIP 帳號設定到電話機。",
+    "gatewayAccount": "據點閘道 SIP 帳號",
+    "phoneAccount": "電話機 SIP 帳號",
+    "phoneName": "電話機或據點名稱",
+    "extension": "目標號碼",
+    "removePhone": "移除聯絡人",
+    "addPhone": "新增電話機",
+    "pbxHelp": "請登記管理員提供嘅PBX網域同帳戶。SIP連線由伺服器處理。PBX亦要限制可用嘅外線同號碼。",
+    "writeError": "儲存唔到，請檢查輸入同權限再試。",
+    "save": "儲存",
+    "saving": "儲存中…",
+    "cancel": "取消",
+    "deleteTitle": "刪除此線路？",
+    "deleteHelp": "從zoo2移除線路和聯絡人。請另外在PBX停用分機和憑證。",
+    "answer": "接聽",
+    "hangup": "掛斷或拒接",
+    "mute": "靜音",
+    "unmute": "取消靜音",
+    "dtmf": "按鍵音（0–9、*、#）",
+    "sendTone": "傳送",
+    "callError": "連線或操作失敗，請檢查線路權限、PBX和音訊中繼設定。",
+    "status": {
+      "offline": "未連線",
+      "connecting": "連線中…",
+      "ready": "等候來電",
+      "dialing": "撥號中…",
+      "incoming": "來電",
+      "active": "通話中"
+    },
+    "unavailableMember": "無法使用嘅成員"
+  },
+  "androidPhone": {
+    "description": "透過裝置嘅通話功能使用個人或共用SIP線路同私訊語音通話。",
+    "nativeCalls": "裝置通話整合",
+    "nativeHelp": "有來電嗰陣會顯示通話通知。允許通知之後，支援嘅裝置喺背景都可以收到私訊來電。等 SIP 來電，或者喺用唔到 FCM 嘅裝置等私訊來電嗰陣，請保持 Zoo 喺前景。可以用裝置嘅通話控制接聽、掛斷同切換音訊輸出，需要咪高峰權限。",
+    "minimizeCall": "最小化",
+    "expandCall": "開啟通話",
+    "floatCall": "浮動視窗",
+    "pipUnavailable": "請喺 Android 設定入面檢查子母畫面。",
+    "incomingScreenSettings": "全螢幕來電設定",
+    "receiveDm": "接收私訊來電",
+    "callError": "準備或操作通話失敗，請檢查咪高峰權限、裝置通話支援、網絡同線路設定。",
+    "speaker": "揚聲器",
+    "waiting": "正在等候來電",
+    "dmCall": "通話"
+  },
+  "globalSearch": {
+    "title": "搵嘢",
+    "placeholder": "搵訊息同檔案",
+    "kinds": {
+      "all": "全部",
+      "messages": "訊息",
+      "files": "檔案"
+    },
+    "prompt": "請輸入要搵嘅字詞。用空格分開嘅話，會搵包含晒所有字詞嘅結果。",
+    "empty": "搵唔到結果。",
+    "emptyOlder": "到 {{month}} 為止搵唔到結果。可以再搵更早嘅內容。",
+    "searchedUntil": "已經搵到 {{month}}",
+    "searchOlder": "搵更早嘅結果",
+    "loading": "搵緊…",
+    "loadError": "搵唔到。",
+    "retry": "再試",
+    "tooManyTerms": "最多可以搜尋 {{max}} 個詞。請減少啲詞。",
+    "termTooLong": "每個詞最多 {{max}} 個字。請將個詞縮短啲。",
+    "encryptedNote": "加密頻道唔喺搜尋範圍入面。",
+    "openNav": "搵嘢",
+    "inThread": "子討論回覆",
+    "filters": {
+      "label": "篩選",
+      "from": "傳送者",
+      "in": "頻道",
+      "kind": "類型",
+      "period": "日期",
+      "anytime": "唔限",
+      "last7": "過去 7 日",
+      "last30": "過去 30 日",
+      "last365": "過去 1 年",
+      "custom": "揀日期",
+      "after": "開始日期",
+      "before": "結束日期",
+      "reversed": "開始日期唔可以遲過結束日期。",
+      "reset": "重設條件",
+      "me": "{{name}}（我）",
+      "searchPeople": "用名搵",
+      "searchChannels": "搵頻道",
+      "noMatches": "搵唔到",
+      "clearSelection": "取消揀選",
+      "selectedCount": "{{label}}：{{count}} 個",
+      "max": "最多可以揀 {{count}} 個",
+      "mine": "我有參與嘅",
+      "noBots": "唔包機械人"
+    }
+  },
+  "catchUp": {
+    "navUnread_one": "{{count}} 個未讀對話待睇",
+    "navUnread_other": "{{count}} 個未讀對話待睇",
+    "title": "未讀訊息速睇",
+    "close": "結束",
+    "count_one": "{{count}} 則未讀訊息",
+    "count_other": "{{count}} 則未讀訊息",
+    "overCount_one": "{{count}}+ 則未讀訊息",
+    "overCount_other": "{{count}}+ 則未讀訊息",
+    "progress": "{{current}} / {{total}}",
+    "markRead": "標為已讀",
+    "keepUnread": "保持未讀去下一個",
+    "readError": "標唔到已讀，請再試一次",
+    "loadError": "載入唔到未讀對話",
+    "retry": "重試",
+    "loading": "載入緊未讀對話",
+    "empty": "冇未讀對話",
+    "emptyDescription": "有新訊息時再返嚟睇",
+    "complete": "全部睇完",
+    "summary": "已讀 {{read}} 個 · 保持未讀 {{skipped}} 個",
+    "refresh": "更新",
+    "conversation": "對話",
+    "unreadTooOld": "部分較舊嘅未讀訊息仲喺讀取範圍外。請先載入更多再標為已讀。",
+    "loadMore": "載入更多",
+    "unreadChanged": "閱讀期間有新的未讀訊息。請保持呢個對話未讀並繼續。"
   }
 }

@@ -1,0 +1,13 @@
+# 通話の sfu-bridge（docs/calls-sfu.md）。Go の版は flake.nix の go_1_26 とそろえる。
+FROM golang:1.26.8-bookworm AS build
+WORKDIR /src
+COPY sfu-bridge/go.mod sfu-bridge/go.sum ./
+RUN go mod download
+COPY sfu-bridge/ ./
+RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/sfu-bridge .
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/sfu-bridge /sfu-bridge
+USER nonroot:nonroot
+EXPOSE 8080
+ENTRYPOINT ["/sfu-bridge"]

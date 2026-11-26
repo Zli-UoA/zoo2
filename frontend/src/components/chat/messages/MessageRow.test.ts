@@ -27,31 +27,78 @@ function buildItem(overrides: Partial<MessageItem["message"]> = {}): MessageItem
 
 function noop() {}
 
-function render(item: MessageItem, isOwn = false, props: Partial<MessageRowProps> = {}): string {
+function render(
+  item: MessageItem,
+  isOwn = false,
+  props: Partial<MessageRowProps> = {},
+  userNames: ReadonlyMap<string, string> = new Map(),
+): string {
   return renderToStaticMarkup(
-    createElement(LocaleProvider, {
-      children: createElement(MessageRow, {
-        item,
-        isOwn,
-        isEditing: false,
-        editingText: "",
-        onEditingTextChange: noop,
-        onStartEdit: noop,
-        onCancelEdit: noop,
-        onSaveEdit: noop,
-        onRequestDelete: noop,
-        reactions: [],
-        kitchenCatalog: null,
-        canReact: false,
-        onReaction: noop,
-        onPickReaction: noop,
-        ...props,
+    createElement(MentionUserNamesContext.Provider, {
+      value: userNames,
+      children: createElement(LocaleProvider, {
+        children: createElement(MessageRow, {
+          item,
+          isOwn,
+          isEditing: false,
+          editingText: "",
+          onEditingTextChange: noop,
+          onStartEdit: noop,
+          onCancelEdit: noop,
+          onSaveEdit: noop,
+          onRequestDelete: noop,
+          reactions: [],
+          kitchenCatalog: null,
+          canReact: false,
+          onReaction: noop,
+          onPickReaction: noop,
+          ...props,
+        }),
       }),
     }),
   );
 }
 
 describe("MessageRow", () => {
+  it.each([
+    { authorId: "user-bob", content: "@alice @bob", highlighted: true },
+    { authorId: "user-alice", content: "@alice @bob", highlighted: true },
+    { authorId: "user-alice", content: "@channel", highlighted: true },
+    { authorId: "user-alice", content: "@here", highlighted: true },
+    { authorId: "user-alice", content: "@bob", highlighted: false },
+    { authorId: "user-alice", content: "@Alice", highlighted: false },
+  ])(
+    "highlights mentions independently of the author: $authorId / $content",
+    ({ authorId, content, highlighted }) => {
+      const html = renderToStaticMarkup(
+        createElement(MentionUserNamesContext.Provider, {
+          value: new Map([["user-alice", "alice"]]),
+          children: createElement(LocaleProvider, {
+            children: createElement(MessageRow, {
+              item: buildItem({ user_id: authorId, content }),
+              mentionUserId: "user-alice",
+              isOwn: authorId === "user-alice",
+              isEditing: false,
+              editingText: "",
+              onEditingTextChange: noop,
+              onStartEdit: noop,
+              onCancelEdit: noop,
+              onSaveEdit: noop,
+              onRequestDelete: noop,
+              reactions: [],
+              kitchenCatalog: null,
+              canReact: false,
+              onReaction: noop,
+              onPickReaction: noop,
+            }),
+          }),
+        }),
+      );
+      expect(html.includes("bg-mention/[0.08]")).toBe(highlighted);
+      expect(html).not.toContain("bg-primary");
+    },
+  );
+
   it("keeps the full text fallback out of the feed when the app provides a card", () => {
     const html = renderToStaticMarkup(
       createElement(MessageBody, {
@@ -130,12 +177,57 @@ describe("MessageRow", () => {
   it("offers deletion without editing for moderators", () => {
     const html = render(buildItem(), false, { canDelete: true });
     expect(html).toContain('aria-label="削除"');
-    expect(html).not.toContain('aria-label="編集"');
+    expect(html).not.toContain('aria-label="メッセージを編集"');
     expect(render(buildItem())).not.toContain('aria-label="削除"');
   });
 });
 
 describe("暗号化メッセージのメンション", () => {
+  it.each([
+    { body: "@alice", userIds: ["u-alice"], channel: false, here: false, highlighted: true },
+    { body: "@alice", userIds: [], channel: false, here: false, highlighted: false },
+    { body: "@alice", userIds: ["u-bob"], channel: false, here: false, highlighted: false },
+    { body: "@channel", userIds: [], channel: true, here: false, highlighted: true },
+    { body: "@channel", userIds: [], channel: false, here: false, highlighted: false },
+    { body: "@here", userIds: [], channel: false, here: true, highlighted: true },
+    { body: "@here", userIds: [], channel: false, here: false, highlighted: false },
+    { body: "@bob", userIds: ["u-alice"], channel: true, here: true, highlighted: false },
+    { body: "@bob @channel", userIds: ["u-bob"], channel: false, here: false, highlighted: false },
+  ])(
+    "復号した本文と許可リストの両方にある自分宛ての行だけを強調する: $body / $userIds / $channel / $here",
+    ({ body, userIds, channel, here, highlighted }) => {
+      const html = render(
+        buildItem({
+          content: "",
+          ciphertext: {
+            algorithm: "m.megolm.v1.aes-sha2",
+            sender_key: "sender-key",
+            device_id: "device",
+            session_id: "session",
+            ciphertext: "AwgAEhA",
+          },
+        }),
+        false,
+        {
+          mentionUserId: "u-alice",
+          decryption: {
+            status: "decrypted",
+            body,
+            kind: "message",
+            mentions: { user_ids: userIds, channel, here },
+            sender: "verified",
+          },
+        },
+        new Map([
+          ["u-alice", "alice"],
+          ["u-bob", "bob"],
+        ]),
+      );
+      expect(html).toContain(body.split(" ")[0]!);
+      expect(html.includes("bg-mention/[0.08]")).toBe(highlighted);
+    },
+  );
+
   it("本文の @name ではなく、復号した mentions だけでメンションを表示する", () => {
     const html = renderToStaticMarkup(
       createElement(MentionUserNamesContext.Provider, {

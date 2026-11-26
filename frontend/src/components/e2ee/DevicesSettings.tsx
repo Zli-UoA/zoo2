@@ -15,6 +15,7 @@ import {
   RevocationConflictError,
   RevocationPendingError,
   type RevocationResult,
+  ReverifyKeyChangedError,
   abandonRevocation,
   addRevocationPasskey,
   beginRevocation,
@@ -24,6 +25,7 @@ import {
   loadVerifications,
   newRevocationRecoveryKey,
   openSecretStorage,
+  previewReverify,
   resumeRevocation,
   revocationStatus,
   reverifyUser,
@@ -69,6 +71,7 @@ function useEncryptedPeers(userId: string | null): string[] {
 
 function toDevicesError(error: unknown, fallback: DevicesErrorCode): DevicesErrorCode {
   if (error instanceof RevocationConflictError) return "mismatch";
+  if (error instanceof ReverifyKeyChangedError) return "reverifyKeyChanged";
   if (error instanceof RevocationPendingError || error instanceof RevocationChangedError) {
     return "revocationPending";
   }
@@ -76,15 +79,11 @@ function toDevicesError(error: unknown, fallback: DevicesErrorCode): DevicesErro
   return code === "saveFailed" ? fallback : code;
 }
 
-/** 設定の「端末」タブ（端末一覧、失効、他のユーザーの検証。#362）。 */
-export function DevicesSettings() {
-  const { deviceLimit } = useE2ee();
-  if (deviceLimit) return <DeviceLimit staleIds={deviceLimit.map((d) => d.device_id)} />;
-  return <DevicesPanel />;
-}
-
-/** 20 台の上限でこの端末を登録できなかったときに、削除する端末を選んでもらう。 */
-function DeviceLimit({ staleIds }: { staleIds: string[] }) {
+/**
+ * 20 台の上限でこの端末を登録できなかったときに、削除する端末を選んでもらう。暗号ストアを開けて
+ * いないので、`EncryptionTab` が理由のすぐ下に出す。
+ */
+export function DeviceLimit({ staleIds }: { staleIds: string[] }) {
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const [devices, setDevices] = useState<DevicesViewState | null>(null);
@@ -153,7 +152,23 @@ function DeviceLimit({ staleIds }: { staleIds: string[] }) {
   );
 }
 
-function DevicesPanel() {
+/**
+ * 設定の「暗号化」タブの、端末（一覧、削除、失効）と他のユーザーの検証のセクション（#362）。暗号
+ * ストアを開いてから出す。
+ *
+ * 同じタブの状態と解錠のセクションとは `EncryptionTab` を通して知らせ合う。`refreshKey` が変わったら
+ * （上のセクションで解錠か初回設定を終えたとき）、端末と検証状態を読み直す。`onKeysChanged` は、失効を
+ * 終えて鍵スロットが変わったとき。`onSettled` は、読み込み中でなくなったか。
+ */
+export function DevicesSettings({
+  refreshKey = 0,
+  onKeysChanged,
+  onSettled,
+}: {
+  refreshKey?: number;
+  onKeysChanged?: () => void;
+  onSettled?: (settled: boolean) => void;
+} = {}) {
   const e2ee = useE2ee();
   const { worker, userId, deviceId, sas } = e2ee;
   const { config } = useCollections();
@@ -219,10 +234,8 @@ function DevicesPanel() {
   const load = useCallback(
     async (): Promise<boolean> => {
       const seq = ++loadSeq.current;
-      if (!deps) {
-        setState({ step: "unavailable" });
-        return true;
-      }
+      // 暗号ストアを開くまでは、`EncryptionTab` がこの画面を出さない。
+      if (!deps) return true;
       try {
         const [devices, unlocked, pending] = await Promise.all([
           loadDevices(deps, deviceId),
@@ -232,6 +245,7 @@ function DevicesPanel() {
         const verifications = unlocked
           ? await loadVerifications(deps, peers)
           : { users: [], warnings: [] };
+        const ownMasterKey = unlocked ? await deps.worker.request({ op: "ownMasterKey" }) : null;
         // あとから始めた読み直しがある。結果はそちらに任せる。
         if (seq !== loadSeq.current) return true;
         const data = {
@@ -239,6 +253,7 @@ function DevicesPanel() {
           verifications: verifications.users.map((row) => ({ ...row, name: nameOf(row.userId) })),
           warnings: verifications.warnings,
           unlocked,
+          ownMasterKey,
           pendingRevocation: pending ? { scope: pending.scope, stage: pending.stage } : null,
           accountUrls,
         };
@@ -269,6 +284,17 @@ function DevicesPanel() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const loadedKey = useRef(refreshKey);
+  useEffect(() => {
+    if (refreshKey === loadedKey.current) return;
+    loadedKey.current = refreshKey;
+    void load();
+  }, [refreshKey, load]);
+
+  useEffect(() => {
+    onSettled?.(state.step !== "loading");
+  }, [state.step, onSettled]);
 
   // 絵文字 SAS で相手を検証して保存できたら、検証状態を読み直す（「検証済み」にする）。
   useEffect(() => sas?.onSaved(() => void load()), [sas, load]);
@@ -491,6 +517,8 @@ function DevicesPanel() {
           // 手元の受信用セッションを、新しい版に送り直す（版が変わったので、すべて送り直す）。
           e2ee.requestKeyBackup();
           void load();
+          // リカバリーキーとパスキーのスロットが変わった。上のセクションに読み直してもらう。
+          onKeysChanged?.();
         } catch (error) {
           if (error instanceof RevocationChangedError) {
             setPhase(null);
@@ -539,10 +567,27 @@ function DevicesPanel() {
       setPhase(null);
       void load();
     },
-    onReverify: (target) => {
+    onPrepareReverify: async (target) => {
+      if (!deps) return null;
+      ready((current) => ({ ...current, busy: "verify", error: null }));
+      try {
+        const preview = await previewReverify(deps, target);
+        ready((current) => ({ ...current, busy: null }));
+        return preview;
+      } catch (error) {
+        ready((current) => ({
+          ...current,
+          busy: null,
+          error: toDevicesError(error, "verifyFailed"),
+        }));
+        return null;
+      }
+    },
+    onReverify: (target, masterKey) => {
       if (!deps) return;
+      // 再認証のウィンドウは、押した操作の中で開く（ポップアップを止められないように）。
       const reauth = startReauth(config);
-      run("verify", async () => reverifyUser(deps, target, await reauth()));
+      run("verify", async () => reverifyUser(deps, target, masterKey, await reauth()));
     },
     // 検証の画面はシェルのダイアログ（SasVerificationHost）に出る。
     onSasVerify: sas

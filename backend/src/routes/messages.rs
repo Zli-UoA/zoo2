@@ -15,7 +15,7 @@ use crate::{
     db::get_current_txid,
     error::AppError,
     models::{Attachment, Channel, ChannelUser, Message, MessageReaction},
-    routes::{e2ee_channels, response::ApiResponse},
+    routes::{e2ee_channels, forwards, response::ApiResponse},
     state::AppState,
     validation::{normalize_and_validate_emoji, validate_message_content_with_options},
 };
@@ -49,6 +49,9 @@ pub struct CreateMessageRequest {
     /// 平文チャンネルでは使わず、今までどおり本文から作る（docs/e2ee.md の「機能ごとの扱い」）。
     #[serde(default)]
     pub mentions: Option<e2ee_channels::Mentions>,
+    /// 転送（引用）元のメッセージ ID 一覧（ユーザー投稿では最大 1 件、省略可）。
+    #[serde(default)]
+    pub forwarded_message_ids: Option<Vec<String>>,
 }
 
 fn default_message_kind() -> String {
@@ -91,6 +94,8 @@ pub struct MessageResponse {
     pub content: String,
     pub card: Option<String>,
     #[serde(default)]
+    pub components: Option<String>,
+    #[serde(default)]
     pub apub: bool,
     pub apub_visibility: Option<String>,
     pub created_at: String,
@@ -104,6 +109,9 @@ pub struct MessageResponse {
     pub epoch: Option<i64>,
     #[serde(default)]
     pub revision: i64,
+    /// 転送（引用）元のメッセージ ID 一覧。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forwarded_message_ids: Option<Vec<String>>,
 }
 
 impl From<Message> for MessageResponse {
@@ -114,6 +122,7 @@ impl From<Message> for MessageResponse {
             channel_id: m.channel_id,
             content: m.content,
             card: m.card,
+            components: m.components,
             apub: m.apub,
             apub_visibility: m.apub_visibility,
             created_at: m.created_at.to_string(),
@@ -124,11 +133,12 @@ impl From<Message> for MessageResponse {
             ciphertext: None,
             epoch: None,
             revision: 0,
+            forwarded_message_ids: None,
         }
     }
 }
 
-/// `ciphertext`、`epoch`、`revision`（toasty のモデルに含めない列）を DB から読んで埋める。
+/// `ciphertext`、`epoch`、`revision`、`forwarded_message_ids`（toasty のモデルに含めない列）を DB から読んで埋める。
 pub(crate) async fn fill_e2ee_fields(
     executor: &mut dyn toasty::Executor,
     messages: &mut [MessageResponse],
@@ -139,7 +149,7 @@ pub(crate) async fn fill_e2ee_fields(
     let ids = serde_json::Value::from(messages.iter().map(|m| m.id.clone()).collect::<Vec<_>>())
         .to_string();
     let rows = toasty::sql::query(
-        "SELECT json_build_object('id', id, 'ciphertext', ciphertext, 'epoch', epoch, 'revision', revision)::text
+        "SELECT json_build_object('id', id, 'ciphertext', ciphertext, 'epoch', epoch, 'revision', revision, 'forwarded_message_ids', forwarded_message_ids)::text
          FROM messages WHERE id IN (SELECT jsonb_array_elements_text($1::jsonb))",
     )
     .bind(ids.as_str())
@@ -160,6 +170,12 @@ pub(crate) async fn fill_e2ee_fields(
             message.ciphertext = Some(value["ciphertext"].clone()).filter(|v| !v.is_null());
             message.epoch = value["epoch"].as_i64();
             message.revision = value["revision"].as_i64().unwrap_or(0);
+            message.forwarded_message_ids = serde_json::from_value::<Option<Vec<String>>>(
+                value["forwarded_message_ids"].clone(),
+            )
+            .ok()
+            .flatten()
+            .filter(|v| !v.is_empty());
         }
     }
     Ok(())
@@ -223,6 +239,24 @@ fn get_or_create_test_gate(key: &str) -> Arc<Notify> {
         .clone()
 }
 
+/// The test gate of `key`, for a test that runs the router in its own process: it waits for a
+/// request to reach a gate (`TestGate::reached`) and releases one that waits (`TestGate::wait`).
+#[doc(hidden)]
+pub fn test_gate(key: &str) -> Arc<Notify> {
+    get_or_create_test_gate(key)
+}
+
+/// A request that pauses after its first idempotency check (development authentication only).
+/// `X-Test-Gate-Wait` names the gate it waits at; `X-Test-Gate-Reached` names a gate it signals on
+/// arriving (a permit, so a test that looks later still sees it); `X-Test-Gate-Wait-Ms` is how long
+/// it waits at most (default 1000). A test that needs an exact order releases the gate itself and
+/// uses the timeout only so that it cannot hang.
+pub(crate) struct TestGate {
+    wait: String,
+    reached: Option<String>,
+    timeout_ms: u64,
+}
+
 async fn create_message(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -239,10 +273,14 @@ async fn create_message(
         None
     };
     let test_gate_wait = if state.config.dev_auth_enabled {
-        headers
-            .get("X-Test-Gate-Wait")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string())
+        let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+        header("X-Test-Gate-Wait").map(|wait| TestGate {
+            wait: wait.to_string(),
+            reached: header("X-Test-Gate-Reached").map(str::to_string),
+            timeout_ms: header("X-Test-Gate-Wait-Ms")
+                .and_then(|ms| ms.parse::<u64>().ok())
+                .map_or(1000, |ms| ms.min(30_000)),
+        })
     } else {
         None
     };
@@ -267,6 +305,7 @@ async fn create_message(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn check_idempotent_existing_message(
     db: &mut toasty::Db,
     id: &str,
@@ -278,6 +317,7 @@ pub(crate) async fn check_idempotent_existing_message(
     broadcast: bool,
     metadata: Option<&serde_json::Value>,
     attachment_ids: &[String],
+    forwarded_message_ids: &[String],
 ) -> Result<Option<MessageResponse>, AppError> {
     // 本文（モデル）、オプション、revision などの追加の列を別々の SELECT で読むので、同じスナップショットにそろえる。
     // そろえないと、間に編集がコミットしたとき、編集前の本文に編集後の revision を付けて返す（一覧と同じ）。
@@ -296,6 +336,7 @@ pub(crate) async fn check_idempotent_existing_message(
         broadcast,
         metadata,
         attachment_ids,
+        forwarded_message_ids,
     )
     .await;
     match result {
@@ -322,6 +363,7 @@ async fn idempotent_existing_message_in_snapshot(
     broadcast: bool,
     metadata: Option<&serde_json::Value>,
     attachment_ids: &[String],
+    forwarded_message_ids: &[String],
 ) -> Result<Option<MessageResponse>, AppError> {
     let existing = Message::filter(Message::fields().id().eq(id))
         .first()
@@ -341,6 +383,9 @@ async fn idempotent_existing_message_in_snapshot(
     // 暗号化チャンネルでは、同じ id、user_id、channel_id の行があれば、新しい暗号文を保存せずに既存の行を返す
     // （応答をなくした再送。暗号文は送り直すたびに変わるので、内容では比べない）。
     if Channel::get_by_id(&mut *tx, channel_id).await?.encrypted {
+        if !forwarded_message_ids.is_empty() {
+            return Err(e2ee_channels::plaintext_forbidden());
+        }
         if existing_msg.user_id == auth_user_id {
             return Ok(Some(
                 with_e2ee_fields(&mut *tx, MessageResponse::from(existing_msg)).await?,
@@ -360,9 +405,11 @@ async fn idempotent_existing_message_in_snapshot(
 
     let opt_rows = toasty::sql::query(
         "SELECT json_build_object(
+            'reply_target_id', reply_target_id,
             'kind', COALESCE(message_kind, 'message'),
             'broadcast', COALESCE(broadcast, false),
-            'metadata', CASE WHEN metadata IS NOT NULL AND metadata <> '' THEN metadata::jsonb ELSE NULL END
+            'metadata', CASE WHEN metadata IS NOT NULL AND metadata <> '' THEN metadata::jsonb ELSE NULL END,
+            'forwarded_message_ids', COALESCE(forwarded_message_ids, '[]'::jsonb)
          )::text FROM messages WHERE id = $1",
     )
     .bind(id)
@@ -370,23 +417,31 @@ async fn idempotent_existing_message_in_snapshot(
     .await?;
 
     let mut options_match = false;
+    let mut parent_matches = existing_msg.parent_id.as_deref() == parent_id;
     if let Some(toasty::stmt::Value::Record(r)) = opt_rows.into_iter().next()
         && let Some(toasty::stmt::Value::String(s)) = r.fields.into_iter().next()
         && let Ok(saved_opts) = serde_json::from_str::<serde_json::Value>(&s)
     {
+        parent_matches |=
+            parent_id.is_some() && saved_opts["reply_target_id"].as_str() == parent_id;
         let saved_kind = saved_opts["kind"].as_str().unwrap_or("message");
         let saved_broadcast = saved_opts["broadcast"].as_bool().unwrap_or(false);
         let saved_metadata = saved_opts.get("metadata").filter(|v| !v.is_null()).cloned();
         let req_metadata = metadata.filter(|v| !v.is_null()).cloned();
+        let saved_forwards =
+            serde_json::from_value::<Vec<String>>(saved_opts["forwarded_message_ids"].clone())
+                .unwrap_or_default();
 
-        options_match =
-            saved_kind == kind && saved_broadcast == broadcast && saved_metadata == req_metadata;
+        options_match = saved_kind == kind
+            && saved_broadcast == broadcast
+            && saved_metadata == req_metadata
+            && same_forwarded_message_ids(&saved_forwards, forwarded_message_ids);
     }
 
     if existing_msg.user_id == auth_user_id
         && existing_msg.channel_id == channel_id
         && existing_msg.content == content
-        && existing_msg.parent_id.as_deref() == parent_id
+        && parent_matches
         && existing_msg.deleted_at.is_none()
         && req_att_ids == existing_att_ids
         && options_match
@@ -399,14 +454,42 @@ async fn idempotent_existing_message_in_snapshot(
     Err(AppError::Conflict("Idempotency key already used".into()))
 }
 
+/// `code` of the 403 for a reply to a thread that tracks participants, from someone who has not
+/// joined it. Joining (after reopening an archived thread) lets the same reply go through.
+pub const THREAD_JOIN_REQUIRED_CODE: &str = "THREAD_JOIN_REQUIRED";
+
+fn same_forwarded_message_ids(a: &[String], b: &[String]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b.iter()).all(|(lhs, rhs)| {
+            match (Uuid::parse_str(lhs.trim()), Uuid::parse_str(rhs.trim())) {
+                (Ok(lu), Ok(ru)) => lu == ru,
+                _ => lhs == rhs,
+            }
+        })
+}
+
+/// Reply gate lookup (`$1` = thread root, `$2` = author): whether the thread has participant
+/// rows and whether the author is joined. Shared with the scale test so it measures exactly the
+/// SQL the write path runs.
+///
+/// Both terms are bounded independent of other threads' rows. `joined` is one primary-key probe
+/// on (thread_id,user_id). `tracked` only asks whether any row exists, as a scalar subquery with
+/// a real `ORDER BY user_id LIMIT 1`: inside `EXISTS` the planner drops the `ORDER BY`, and for a
+/// thread that holds a few percent of the table it then chose a sequential scan that skipped
+/// every other thread's rows. With the `LIMIT` kept, it reads the first index entry of this
+/// thread instead.
+pub fn reply_participation_sql() -> &'static str {
+    "SELECT json_build_object('tracked',(SELECT true FROM thread_participants WHERE thread_id=$1 ORDER BY user_id LIMIT 1) IS NOT NULL,'joined',EXISTS(SELECT 1 FROM thread_participants WHERE thread_id=$1 AND user_id=$2 AND left_at IS NULL))::text"
+}
+
 pub(crate) async fn create_message_impl(
     state: AppState,
     auth_user: AuthUser,
     payload: CreateMessageRequest,
     notify: bool,
-    card: Option<String>,
+    components: Option<String>,
     test_delay_ms: Option<u64>,
-    test_gate_wait: Option<String>,
+    test_gate_wait: Option<TestGate>,
     test_gate_notify: Option<String>,
 ) -> Result<(HeaderMap, Json<ApiResponse<MessageResponse>>), AppError> {
     let attachment_ids = payload.attachment_ids.unwrap_or_default();
@@ -437,12 +520,19 @@ pub(crate) async fn create_message_impl(
     if let Some(metadata) = &payload.metadata {
         crate::apps::events::object(metadata)?;
     }
+    let forwarded_ids = forwards::normalize_forwarded_message_ids(
+        payload.forwarded_message_ids.as_deref().unwrap_or(&[]),
+        forwards::MAX_FORWARDED_MESSAGES_USER_POST,
+    )?;
     // 暗号化の項目のない要求（平文チャンネル向け）は、チャンネルを読む前に本文を検証する（#357 より前と同じ順）。
     // 暗号化チャンネルの要求は content が空なので、チャンネルを読んだあとで分岐して検証する。
     let plaintext_request =
         payload.ciphertext.is_none() && payload.epoch.is_none() && payload.revision.is_none();
     if plaintext_request {
-        validate_message_content_with_options(&payload.content, !attachment_ids.is_empty())?;
+        validate_message_content_with_options(
+            &payload.content,
+            !attachment_ids.is_empty() || !forwarded_ids.is_empty(),
+        )?;
     }
 
     Uuid::parse_str(&payload.channel_id).map_err(|_| {
@@ -531,7 +621,7 @@ pub(crate) async fn create_message_impl(
 
     // 暗号化チャンネルは content を空にして ciphertext を送る。平文チャンネルに暗号化の項目は送れない。
     let sender = if channel.encrypted {
-        if !payload.content.is_empty() {
+        if !payload.content.is_empty() || !forwarded_ids.is_empty() {
             return Err(e2ee_channels::plaintext_forbidden());
         }
         let Some(ciphertext) = payload.ciphertext.as_ref().filter(|v| !v.is_null()) else {
@@ -569,8 +659,8 @@ pub(crate) async fn create_message_impl(
     };
 
     // クライアント指定の ID が既に存在する場合、同一属性（本文・チャンネル・親・添付ファイル）の再送であれば既存メッセージを返して成功とする (冪等性)
-    if supplied_id.is_some() {
-        if let Some(msg_res) = check_idempotent_existing_message(
+    if supplied_id.is_some()
+        && let Some(msg_res) = check_idempotent_existing_message(
             &mut db,
             &id,
             &auth_user.id,
@@ -581,17 +671,23 @@ pub(crate) async fn create_message_impl(
             payload.broadcast,
             payload.metadata.as_ref(),
             &attachment_ids,
+            &forwarded_ids,
         )
         .await?
-        {
-            return Ok((HeaderMap::new(), Json(ApiResponse::new(msg_res, None))));
-        }
+    {
+        return Ok((HeaderMap::new(), Json(ApiResponse::new(msg_res, None))));
     }
 
-    if let Some(gate_key) = test_gate_wait {
-        let gate = get_or_create_test_gate(&gate_key);
-        let _ =
-            tokio::time::timeout(tokio::time::Duration::from_millis(1000), gate.notified()).await;
+    if let Some(test_gate) = test_gate_wait {
+        if let Some(reached) = &test_gate.reached {
+            get_or_create_test_gate(reached).notify_one();
+        }
+        let gate = get_or_create_test_gate(&test_gate.wait);
+        let _ = tokio::time::timeout(
+            tokio::time::Duration::from_millis(test_gate.timeout_ms),
+            gate.notified(),
+        )
+        .await;
     }
 
     if let Some(delay_ms) = test_delay_ms {
@@ -648,6 +744,7 @@ pub(crate) async fn create_message_impl(
                         payload.broadcast,
                         payload.metadata.as_ref(),
                         &attachment_ids,
+                        &forwarded_ids,
                     )
                     .await?
                     {
@@ -729,8 +826,8 @@ pub(crate) async fn create_message_impl(
     }
 
     // プライベートチャンネルの場合、所属していなければ 404 で存在を隠蔽（アーカイブ確認より前に検証）
-    if channel.is_private || bot_actor || crate::apps::events::guest(&mut tx, &auth_user.id).await?
-    {
+    let guest_actor = crate::apps::events::guest(&mut tx, &auth_user.id).await?;
+    if channel.is_private || bot_actor || guest_actor {
         let membership = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
@@ -809,7 +906,124 @@ pub(crate) async fn create_message_impl(
             )));
         }
 
+        let roots = crate::apps::query(&mut tx,
+            "SELECT json_build_object('id',r.id,'deleted',r.deleted_at IS NOT NULL)::text FROM messages r WHERE r.id=thread_root($1) AND (SELECT phase FROM thread_rollout WHERE id)<>'collecting'",
+            &[parent_id]).await?;
+        if let Some(root) = roots.first() {
+            if root["deleted"].as_bool() == Some(true) {
+                return Err(AppError::NotFound("Thread root has been deleted".into()));
+            }
+            if sender.is_some() && root["id"].as_str() != Some(parent_id.as_str()) {
+                return Err(AppError::BadRequest(
+                    "Encrypted replies must target the thread root; encrypt again with that parent_id".into(),
+                ));
+            }
+        }
+
+        // Like a channel, replying needs membership: join the thread first. The first reply
+        // creates the thread, so only threads that already track participants are gated.
+        // The target is the one join/leave act on (the requested ID until a staged migration has
+        // moved the thread), and the row is locked as a leave does, so a leave and a reply serialize.
+        // Lock order matches thread_operation: the canonical root first, then the join target.
+        crate::apps::query(
+            &mut tx,
+            "SELECT '{}'::text FROM messages WHERE id=thread_root($1) FOR NO KEY UPDATE",
+            &[parent_id.as_str()],
+        )
+        .await?;
+        let gate = crate::apps::one(&mut tx,
+            "SELECT json_build_object('id',CASE WHEN (SELECT phase FROM thread_rollout WHERE id)='collecting' OR ((SELECT phase FROM thread_rollout WHERE id)='normalizing' AND NOT EXISTS(SELECT 1 FROM thread_migration_completed done WHERE done.thread_id=thread_root($1))) THEN $1 ELSE thread_root($1) END)::text",
+            &[parent_id.as_str()]).await?;
+        let gate_root = gate["id"].as_str().unwrap_or(parent_id.as_str()).to_owned();
+        crate::apps::query(
+            &mut tx,
+            "SELECT '{}'::text FROM messages WHERE id=$1 FOR NO KEY UPDATE",
+            &[gate_root.as_str()],
+        )
+        .await?;
+        let participation = crate::apps::one(
+            &mut tx,
+            reply_participation_sql(),
+            &[gate_root.as_str(), auth_user.id.as_str()],
+        )
+        .await?;
+        // Bots (Apps API) have no way to join a thread, so they are not gated.
+        if participation["tracked"] == true && participation["joined"] != true && !bot_actor {
+            // A concurrent request with the same ID may have committed (and its author then left)
+            // while this one waited for the root lock. That is a retry of a stored post, not a
+            // new reply, so return it instead of refusing.
+            let _ = tx.rollback().await;
+            if supplied_id.is_some() {
+                let mut retry_db = state.db.clone();
+                match check_idempotent_existing_message(
+                    &mut retry_db,
+                    &id,
+                    &auth_user.id,
+                    &payload.channel_id,
+                    &payload.content,
+                    payload.parent_id.as_deref(),
+                    &payload.kind,
+                    payload.broadcast,
+                    payload.metadata.as_ref(),
+                    &attachment_ids,
+                    &forwarded_ids,
+                )
+                .await
+                {
+                    Ok(Some(msg_res)) => {
+                        let mut headers = HeaderMap::new();
+                        // Lets a test tell this branch from the ordinary path of the same answer.
+                        if state.config.dev_auth_enabled {
+                            headers.insert("X-Test-Fallback", "thread-join-retry".parse().unwrap());
+                        }
+                        return Ok((headers, Json(ApiResponse::new(msg_res, None))));
+                    }
+                    // Not a retry of this author's stored post. A reused ID that belongs to
+                    // someone else (409) or to another channel (404) must not reveal that the
+                    // ID exists to a non-participant, so it falls through to the 403 below.
+                    Ok(None) | Err(AppError::Conflict(_) | AppError::NotFound(_)) => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            // Clients decide on `code` (a changed or translated message cannot break them). The message
+            // text stays as it was: clients released before the code existed match it instead.
+            return Err(AppError::Coded {
+                status: axum::http::StatusCode::FORBIDDEN,
+                code: THREAD_JOIN_REQUIRED_CODE,
+                message: "Join the thread before replying".into(),
+                extra: serde_json::Map::new(),
+            });
+        }
+
         parent_author_id = Some(parent.user_id);
+    }
+
+    let forwarded_ids = forwards::verify_forward_sources(
+        &mut tx,
+        &auth_user.id,
+        bot_actor,
+        guest_actor,
+        &forwarded_ids,
+    )
+    .await?;
+
+    // Slack 転送の未取り込み参照に予約された決定的 ID（大文字・別表記を含む）は事前作成させない
+    // （Slack 側の予約登録との競合はアドバイザリロックで直列化する）。
+    if supplied_id.is_some() {
+        let canonical_id = Uuid::parse_str(&id)
+            .map(|u| u.to_string())
+            .unwrap_or_else(|_| id.clone());
+        crate::slack::lock_message_id_reservation(&mut tx, std::slice::from_ref(&canonical_id))
+            .await?;
+        let reserved = crate::apps::query(
+            &mut tx,
+            "SELECT json_build_object('ok', true)::text FROM slack_forward_targets WHERE message_id = $1",
+            &[canonical_id.as_str()],
+        )
+        .await?;
+        if !reserved.is_empty() {
+            return Err(AppError::Conflict("Message ID is reserved".into()));
+        }
     }
 
     let now = crate::models::now_utc_millis();
@@ -823,17 +1037,39 @@ pub(crate) async fn create_message_impl(
             .map(|v| v.to_string())
             .unwrap_or_default();
         let inserted = toasty::sql::statement(
-            "INSERT INTO messages (id, user_id, channel_id, content, card, created_at, parent_id, ciphertext, epoch, revision)
+            "INSERT INTO messages (id, user_id, channel_id, content, components, created_at, parent_id, ciphertext, epoch, revision)
              VALUES ($1, $2, $3, '', NULLIF($4, ''), $5::timestamp, NULLIF($6, ''), $7::jsonb, $8::bigint, 0)",
         )
         .bind(id.as_str())
         .bind(auth_user.id.as_str())
         .bind(payload.channel_id.as_str())
-        .bind(card.as_deref().unwrap_or_default())
+        .bind(components.as_deref().unwrap_or_default())
         .bind(now.to_string())
         .bind(payload.parent_id.as_deref().unwrap_or_default())
         .bind(ciphertext.as_str())
         .bind(payload.epoch.unwrap_or(0).to_string())
+        .exec(&mut tx)
+        .await;
+        match inserted {
+            Ok(_) => Message::get_by_id(&mut tx, id.as_str()).await,
+            Err(err) => Err(err),
+        }
+    } else if !forwarded_ids.is_empty() {
+        // forwarded_message_ids は toasty のモデルに含めない列なので、SQL で入れる。
+        let forwarded_json =
+            serde_json::to_string(&forwarded_ids).map_err(|err| AppError::Internal(err.into()))?;
+        let inserted = toasty::sql::statement(
+            "INSERT INTO messages (id, user_id, channel_id, content, components, created_at, parent_id, forwarded_message_ids)
+             VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6::timestamp, NULLIF($7, ''), $8::jsonb)",
+        )
+        .bind(id.as_str())
+        .bind(auth_user.id.as_str())
+        .bind(payload.channel_id.as_str())
+        .bind(payload.content.as_str())
+        .bind(components.as_deref().unwrap_or_default())
+        .bind(now.to_string())
+        .bind(payload.parent_id.as_deref().unwrap_or_default())
+        .bind(forwarded_json.as_str())
         .exec(&mut tx)
         .await;
         match inserted {
@@ -846,7 +1082,8 @@ pub(crate) async fn create_message_impl(
             user_id: auth_user.id.as_str(),
             channel_id: payload.channel_id.as_str(),
             content: payload.content.as_str(),
-            card,
+            card: None,
+            components,
             apub: false,
             apub_visibility: None,
             created_at: now,
@@ -859,7 +1096,8 @@ pub(crate) async fn create_message_impl(
     };
 
     let message = match create_result {
-        Ok(msg) => msg,
+        // Toasty can return supplied fields without re-reading BEFORE-trigger changes.
+        Ok(_) => Message::get_by_id(&mut tx, id.as_str()).await?,
         Err(err) if supplied_id.is_some() && AppError::is_unique_violation(&err, None) => {
             let _ = tx.rollback().await;
             let mut retry_db = state.db.clone();
@@ -876,6 +1114,7 @@ pub(crate) async fn create_message_impl(
                     payload.broadcast,
                     payload.metadata.as_ref(),
                     &attachment_ids,
+                    &forwarded_ids,
                 )
                 .await?
                 {
@@ -945,6 +1184,7 @@ pub(crate) async fn create_message_impl(
                     payload.broadcast,
                     payload.metadata.as_ref(),
                     &attachment_ids,
+                    &forwarded_ids,
                 )
                 .await?
                 {
@@ -969,6 +1209,9 @@ pub(crate) async fn create_message_impl(
     if sender.is_some() {
         response.ciphertext = payload.ciphertext.clone();
         response.epoch = payload.epoch;
+    }
+    if !forwarded_ids.is_empty() {
+        response.forwarded_message_ids = Some(forwarded_ids);
     }
     Ok((HeaderMap::new(), Json(ApiResponse::new(response, txid))))
 }
@@ -1040,7 +1283,17 @@ pub(crate) async fn update_message(
         ));
     }
 
-    if message.card.is_some() {
+    // Webhook と Slack の取り込みの部品は、本文が部品の代わりの文字なので編集させない。
+    // アプリが自分のメッセージに付けた部品（app_origin_id がある）は、本文と別に持つので編集してよい。
+    let integration_components = message.components.is_some()
+        && crate::apps::one(
+            &mut tx,
+            "SELECT json_build_object('app',app_origin_id IS NOT NULL)::text FROM messages WHERE id=$1",
+            &[message.id.as_str()],
+        )
+        .await?["app"]
+            != true;
+    if message.card.is_some() || integration_components {
         return Err(AppError::Forbidden(
             "Integration cards cannot be edited through the user API".into(),
         ));
@@ -1133,7 +1386,18 @@ pub(crate) async fn update_message(
                     .exec(&mut tx)
                     .await?
                     .is_some();
-            validate_message_content_with_options(&payload.content, has_attachments)?;
+            let has_extras = if has_attachments {
+                true
+            } else {
+                crate::apps::one(
+                    &mut tx,
+                    "SELECT json_build_object('has', forwarded_message_ids IS NOT NULL AND jsonb_typeof(forwarded_message_ids) = 'array' AND jsonb_array_length(forwarded_message_ids) > 0)::text FROM messages WHERE id = $1",
+                    &[id.as_str()],
+                )
+                .await?["has"]
+                    == true
+            };
+            validate_message_content_with_options(&payload.content, has_extras)?;
         }
         toasty::sql::statement(
             "UPDATE messages SET content = $2, updated_at = $3::timestamp, revision = revision + 1

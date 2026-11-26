@@ -38,13 +38,15 @@ function rowKey(message: FeedMessage, channelId: string): string | null {
  *
  * 結果はメッセージの ID ごとに返す。Worker がない（このタブが暗号ストアを開いていない、まだ登録中）
  * あいだは空で、行は「この端末で解錠していない」と表示される。鍵が届いたら（`roomKeysVersion`）、
- * 「鍵がまだ届いていない」行を復号し直す。復号した平文はメモリーにだけ置き、保存しない。
+ * 「鍵がまだ届いていない」行と「未検証の送信者」の行を復号し直す。「未検証の送信者」の行があれば、
+ * 送信端末を判定し直すよう頼む（上げられたら `roomKeysVersion` が進む）。復号した平文はメモリーにだけ
+ * 置き、保存しない。
  */
 export function useMessageDecryptions(
   channelId: string,
   messages: readonly FeedMessage[],
 ): ReadonlyMap<string, MessageDecryption> {
-  const { worker, roomKeysVersion } = useE2ee();
+  const { worker, roomKeysVersion, requestSenderReverify } = useE2ee();
   // 行ごとの復号の結果と、Worker の版の照合の結果。
   const cache = useRef(new Map<string, { value: MessageDecryption; check: RevisionCheck }>());
   // メッセージごとに見た最新の版。キャッシュを使い回したときも、古い版の行を最新として出さない。
@@ -71,7 +73,10 @@ export function useMessageDecryptions(
     if (retried.current !== roomKeysVersion) {
       retried.current = roomKeysVersion;
       for (const [key, { value }] of cache.current) {
-        if (value.status === "undecryptable" && value.reason === "keyMissing") {
+        if (
+          (value.status === "undecryptable" && value.reason === "keyMissing") ||
+          (value.status === "decrypted" && value.sender === "unverified")
+        ) {
           cache.current.delete(key);
         }
       }
@@ -115,6 +120,13 @@ export function useMessageDecryptions(
         // Worker が変わっていれば捨てる（キャッシュにも最新の版にも入れない）。新しい Worker で復号し直す。
         // チャンネルを離れただけなら、最新の版は覚えておく。
         if (generation !== workerGeneration.current) return;
+        if (
+          outcomes.some(
+            (outcome) => outcome.status === "decrypted" && outcome.sender === "unverified",
+          )
+        ) {
+          requestSenderReverify();
+        }
         pending.forEach((message, index) => {
           const outcome = outcomes[index];
           const key = rowKey(message, channelId);
@@ -143,7 +155,7 @@ export function useMessageDecryptions(
     return () => {
       active = false;
     };
-  }, [channelId, messages, roomKeysVersion, worker]);
+  }, [channelId, messages, requestSenderReverify, roomKeysVersion, worker]);
 
   return results;
 }

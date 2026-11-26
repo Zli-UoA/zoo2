@@ -19,28 +19,45 @@
 - 既存のShape・DTOにあるデータを別APIで取り直さない。取得中の更新は集約し、ポーリングには必要性・頻度・停止条件を明記する。
 - 接続数・リクエスト数、遅い応答、非表示・復帰、アカウント切替を検証する。
 
+# SQLの設計と実行計画の探索上限
+
+- SQL・ORM・集計・DBトリガー・同期処理を追加／変更するときは、必ず `docs/query-design.md` に従う。同文書のSupabase Postgres Best Practicesへの参照・照合項目も確認する。既存クエリの性能改善にも適用する。
+- 実装前に、総行数・対象ユーザーの行数・フォロー数・ページ件数・返信数などを変数にし、探索・結合・ソート・集計の計算量と最悪時の探索上限を書く。`LIMIT` の返却件数だけを探索上限とみなさない。
+- WHERE・JOIN・ORDER BYに対応する複合／部分インデックス、keysetページング、再帰の深さと件数の上限を設計し、実際の実行計画で利用を確認する。全履歴の展開、深いOFFSET、N+1、上限のない集計・再帰を残さない。
+- アプリケーションの各SQLは、実行計画の走査行数×loops、除外行、中間行、ソート入力、再帰訪問数に、対象件数・ページ件数などから求めた探索上限を必須とする。総履歴を増やしても、無関係な履歴の走査が比例して増えないことを複数規模で検証する。トリガー内SQLと書き込み全体も対象とし、入れ子の実行計画または論理バッファアクセスと競合テストを確認する。
+- 30万件と100万件以上、偏ったデータ分布、深いページ、空／閲覧不可の結果、初回／再実行、同時アクセスで測定し、実行計画・走査量・計算量・計測条件と結果をPRに残す。詳細な合否判定は `docs/query-design.md` に従う。
+- 探索上限の超過、履歴に比例する不要な走査、未検証の必要条件は未完了とする。100msは実行環境に依存する参考値とし、時間だけでCIの合否を決めない。初回準備・計画・実行・ロック待ち、接続待ち、SQL往復とAPI全体のp50・p95・最大値は引き続き報告する。タイムアウトやSQLの細分化によって問題を隠さない。
+
 # フロントエンドの一貫性と再利用
 
 - フロントエンドの実装・修正・リファクタリングでは `.agents/skills/frontend-consistency/SKILL.md` に従う。
 - mainの取り込みでフロントエンドを調整するときも、既存の共通UI・機能部品・処理を優先し、新機能と既存の表示・操作方針を両立させる。
 
+# Android のデザイン
+
+- Android の画面・Compose 部品・余白・サイズを追加や変更するときは `.agents/skills/android-design/SKILL.md` と `docs/android-design.md` に従う。画面の役割と操作体験を基準にし、数値は `AndroidDesign.kt`、表示・操作は既存の共通部品に集約する。
+
 # Compose の開発方針
 
 - Compose for Web は、動作が重く実用に耐えないため実験を中止する。Web の開発は React で継続する。
 - React の変更や main の取り込みで、Compose Web への機能・UI追従、Kotlin/Wasm のビルド・ブラウザーテスト、Storybook の Kotlin 登録を必須にしない。
-- Compose for Android は継続する。`frontend-compose/` の `commonMain`、`androidMain`、`androidApp`、Electric4k、翻訳・フォント・アイコン生成など Android が利用する資源を維持する。
+- Compose for Android に廃止予定はなく、開発・検証・署名付き配布を継続する。実験中止の対象は Compose for Web のみであり、Compose 全体や `frontend-compose/` 全体を廃止対象として扱わない。`frontend-compose/` の `commonMain`、`androidMain`、`androidApp`、Electric4k、翻訳・フォント・アイコン生成など Android が利用する資源を維持する。
 - 共通 Kotlin・API・認証・同期を変更するときは Android への影響を確認し、必要な修正と Android の検証を同じ PR に含める。Android の開発・検証・署名付き配布を Web 実験と一緒に停止しない。
 - Web 専用コード・テストは削除済み。Android が利用する共有資源を削除しない。詳細は `docs/android.md` を参照する。
 
 # クライアントごとの機能の範囲
 
-- すべての機能は Web 版（React）に実装する。
-- 管理者向けの機能と、必須ではないユーザー向けの機能は、Android 版や iOS 版などには実装しない。
+- モバイルは Android と iOS で UI をできるだけ揃える。
+- 管理者向け機能は Web 版（React）のみとし、そのほかのクライアントでは実装しない。
+- 管理者向け以外のユーザー向け機能は、すべてのクライアントで実装する。実装しないクライアントがある場合は、その旨を明示する。
+- 管理者向け以外の機能の追加や変更は、すべてのクライアントで実装する。Android だけ、iOS だけを実装してタスクを残さない。PR は分割してもよい。
+- クライアントの性質上、実装できない機能（例: TUI版の音声通話）は、その理由を PR の本文に書く。issue は作らない。
+- 管理者向け以外の機能で、実装できるが今回は実装しない場合は、その理由と対象クライアントを書いた issue を作成し、PR の本文からリンクする。
 
 # TUI版の追従
 
-- フロントエンド・バックエンドの機能、UI、API、Electricのshape、認証を変更する場合、およびmainを取り込む場合は、TUI版（`tui/`）も修正する。
-- TUI版の修正と検証（`make tui-check`）は同じPRに含めて完了する。TUI版に反映しない場合は、その理由をPRの本文に書く。
+- フロントエンド・バックエンドの機能、UI、API、Electricのshape、認証を変更する場合、およびmainを取り込む場合は、TUI版（`tui/`）も修正する。管理者向け機能は Web 版のみのため、TUI版の修正も、反映しない理由の issue も不要。
+- TUI版の修正と検証（`make tui-check`）は同じPRに含めて完了する。TUI版の性質上、反映できない機能（音声通話など）は、その理由をPRの本文に書く。反映できるが反映しない場合、または反映したが `make tui-check` を実行できず検証を省略する場合は、その理由を書いた issue を作成し、PRの本文からリンクする。
 - `tui/` または `client-core/` の変更で TUI の利用者に影響する変更（機能、修正、既定値、依存の更新）を含むPRでは、`tui/Cargo.toml` の `version` を上げ、`tui/Cargo.lock` の `zoo2-tui` の版も合わせる。mainに入ると、新しい版のときだけ `tui-v<version>` のリリースが作られる。版が同じままだと、変更は配布されない。
 - 版は、修正ならパッチ（`0.1.0` → `0.1.1`）、機能の追加や互換性のない変更なら中間の桁（`0.1.1` → `0.2.0`）を上げる。READMEやテストだけの変更など、配布物が変わらないPRでは上げなくてよい。
 
@@ -61,6 +78,15 @@
 - main にある適用済みのマイグレーションファイルは編集・削除しない。直すときは新しいファイルを追加する。
 - main を取り込んで `atlas.sum` が衝突したら、自分のマイグレーションのファイル名のタイムスタンプを main の最新より後に付け直し、`atlas migrate hash --dir file://infra/db/migrations` で `atlas.sum` を作り直す。本番に適用済みのものより古いタイムスタンプのファイルは、Atlas が適用を拒否する。
 - main へはマージキューから入れる。PRをmainの最新に追従させる必要はない。キューがmainと合わせた状態でCIを実行し、通ったものだけをmainに入れる。
+
+# 環境変数・Secret の管理とクラスタの操作
+
+- 本番と preview の環境変数（Deployment の `env`、ConfigMap）と Secret は、すべて Git で管理する。置き場所は `Zli-UoA/zoo2-infra` で、Secret は下の「Secret」のとおり sops で暗号化して置く。
+- クラスタを直接変えない。`kubectl patch`、`kubectl edit`、`kubectl set env`、`kubectl create`、`kubectl apply`、`kubectl scale`、`kubectl delete` などで、設定やリソースを手で変える作業はしない。変更は zoo2-infra の PR にし、Flux で反映する（手で変えても、Flux が Git の値に戻すか、Git とクラスタが食い違う）。
+- 調べるための読み取り（`kubectl get`、`kubectl describe`、`kubectl logs`）はしてよい。Secret の値は画面・ログ・履歴に出さない。
+- 今は手動で作っているもの（ConfigMap `zoo2-oidc`、zoo2-infra の `docs/operations.md`「秘密情報」の表で手動のものなど）に値を足したり変えたりする必要が出たら、手で patch せず、Git に移す PR を出す。
+- 例外は、Git に置けないものだけ：sops の復号鍵（`sops-age`）と、CNPG などが生成するもの（`zoo2-db-app` など）。
+- docs と PR 本文にも、`kubectl patch` などでクラスタを手で変える手順を書かない。必要な設定は、zoo2-infra の PR を示す。
 
 # Secret
 

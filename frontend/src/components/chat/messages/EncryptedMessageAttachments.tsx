@@ -1,12 +1,13 @@
 import type { AttachmentInfo } from "@zoo/crypto-wasm";
-import { DownloadIcon, LoaderCircleIcon, LockIcon, PaperclipIcon } from "lucide-react";
+import { LockIcon, PaperclipIcon } from "lucide-react";
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { toast } from "sonner";
 
+import { useDesktopSave } from "../../../hooks/useDesktopSave";
 import { forgetAttachmentUrl, resolveAttachmentUrl } from "../../../lib/api/attachmentUrls";
+import { saveBlob } from "../../../lib/api/attachments";
 import { createConfiguredApiClient } from "../../../lib/api/client";
-import { formatAttachmentSize, isInlineImage } from "../../../lib/attachments";
+import { formatAttachmentSize, mediaPreviewKind } from "../../../lib/attachments";
 import {
   EncryptedAttachmentError,
   fetchEncryptedAttachment,
@@ -20,11 +21,10 @@ import {
 import { useE2ee } from "../../../lib/e2ee/e2ee-context";
 import { useCollections } from "../../../lib/electric/collections-context";
 import type { AttachmentRow } from "../../../lib/electric/types";
+import { DownloadProgressButton } from "../../desktop/DownloadProgressButton";
 import { useLocale } from "../../i18n/LocaleProvider";
-import { Button } from "../../ui/button";
-import { Dialog, DialogContent, DialogTitle } from "../../ui/dialog";
+import { MediaPreview } from "../../ui/media-preview";
 import { SensitiveMedia } from "../../ui/sensitive-media";
-import { Spinner } from "../../ui/spinner";
 
 /** 本文の `AttachmentInfo` から、復号した中身を返す。 */
 export type EncryptedAttachmentLoader = (info: AttachmentInfo) => Promise<Blob>;
@@ -41,7 +41,16 @@ export const EncryptedAttachmentLoaderContext = createContext<EncryptedAttachmen
 export interface EncryptedAttachmentSource {
   peek(info: AttachmentInfo): Blob | undefined;
   failed(info: AttachmentInfo): boolean;
-  load(info: AttachmentInfo, options?: { retry?: boolean }): Promise<Blob>;
+  load(
+    info: AttachmentInfo,
+    options?: {
+      retry?: boolean;
+      /** 取得を中止する。復号の途中でも、取得が終わった時点で呼び出し側が確かめる。 */
+      signal?: AbortSignal;
+      /** 暗号文を読んだ量（平文の大きさではない）。全体が分からなければ `total` は null。 */
+      onProgress?: (received: number, total: number | null) => void;
+    },
+  ): Promise<Blob>;
 }
 
 /**
@@ -58,30 +67,51 @@ export function useEncryptedAttachmentSource(): EncryptedAttachmentSource {
   return useMemo(() => {
     const scope = override ?? worker;
     const cache = scope ? decryptedAttachmentCacheFor(scope) : null;
-    const loader: EncryptedAttachmentLoader = override
-      ? override
-      : async (info) => {
-          if (!worker) throw new EncryptedAttachmentError("decrypt");
-          try {
-            return await fetchEncryptedAttachment(
-              client,
-              info,
-              workerAttachmentCrypto(worker),
-              fetch,
-              (attachmentId) => resolveAttachmentUrl(client, config, attachmentId),
-            );
-          } catch (error) {
-            // 期限切れなどで取得できなかった URL は、次に試すときに取り直す。
-            if (error instanceof EncryptedAttachmentError && error.reason === "download") {
-              forgetAttachmentUrl(config, info.attachment_id);
-            }
-            throw error;
-          }
-        };
+    const loadFromNetwork = async (
+      info: AttachmentInfo,
+      options: {
+        signal?: AbortSignal;
+        onProgress?: (received: number, total: number | null) => void;
+      } = {},
+    ): Promise<Blob> => {
+      if (override) {
+        options.onProgress?.(0, null);
+        const blob = await override(info);
+        options.onProgress?.(blob.size, blob.size);
+        return blob;
+      }
+      if (!worker) throw new EncryptedAttachmentError("decrypt");
+      try {
+        return await fetchEncryptedAttachment(
+          client,
+          info,
+          workerAttachmentCrypto(worker),
+          fetch,
+          (attachmentId) => resolveAttachmentUrl(client, config, attachmentId),
+          options,
+        );
+      } catch (error) {
+        // 期限切れなどで取得できなかった URL は、次に試すときに取り直す。中止は失敗ではないので残す。
+        if (
+          error instanceof EncryptedAttachmentError &&
+          error.reason === "download" &&
+          !options.signal?.aborted
+        ) {
+          forgetAttachmentUrl(config, info.attachment_id);
+        }
+        throw error;
+      }
+    };
     return {
       peek: (info) => cache?.peek(info),
       failed: (info) => cache?.failed(info) ?? false,
-      load: (info, options) => (cache ? cache.load(info, loader, options) : loader(info)),
+      load: (info, options = {}) => {
+        const { retry, ...progress } = options;
+        const loadOne = () => loadFromNetwork(info, progress);
+        return cache
+          ? cache.load(info, loadOne, { retry, isolated: progress.signal !== undefined })
+          : loadOne();
+      },
     };
   }, [override, worker, client, config]);
 }
@@ -177,24 +207,24 @@ export function EncryptedMessageAttachments({
       sensitive: Boolean(attachment.sensitive) || serverSensitive.has(attachment.attachment_id),
     };
   });
-  const images = shown.filter(({ info, blocked }) => !blocked && isInlineImage(info.mimetype));
-  const files = shown.filter(({ info, blocked }) => blocked || !isInlineImage(info.mimetype));
+  const previews = shown.filter(
+    ({ info, blocked }) => !blocked && mediaPreviewKind(info.mimetype, info.name),
+  );
+  const files = shown.filter(
+    ({ info, blocked }) => blocked || !mediaPreviewKind(info.mimetype, info.name),
+  );
   return (
     <div className="mt-2 flex max-w-xl flex-col gap-2">
-      {images.length > 0 ? (
-        <div
-          className={
-            images.length === 1 ? "w-fit max-w-full" : "grid w-full max-w-sm grid-cols-2 gap-2"
-          }
-        >
-          {images.map(({ info, sensitive }) => (
+      {previews.length > 0 ? (
+        <div className="grid w-full grid-cols-1 gap-2">
+          {previews.map(({ info, sensitive }) => (
             <SensitiveMedia
               key={`${info.attachment_id}:${sensitive}`}
               sensitive={sensitive}
               preview={{ width: info.width ?? null, height: info.height ?? null }}
-              className={images.length === 1 ? "w-64 max-w-full" : "w-full"}
+              className="w-full"
             >
-              <EncryptedImage attachment={info} multiple={images.length > 1} />
+              <EncryptedPreview attachment={info} />
             </SensitiveMedia>
           ))}
         </div>
@@ -212,72 +242,26 @@ export function EncryptedMessageAttachments({
   );
 }
 
-function EncryptedImage({
-  attachment,
-  multiple,
-}: {
-  attachment: AttachmentInfo;
-  multiple: boolean;
-}) {
-  const { t } = useTranslation();
+function EncryptedPreview({ attachment }: { attachment: AttachmentInfo }) {
   const { state, url, retry } = useDecryptedAttachment(attachment);
-  const [open, setOpen] = useState(false);
-  const aspectRatio =
-    attachment.width && attachment.height ? `${attachment.width} / ${attachment.height}` : "4 / 3";
-
   if (state.status === "error") {
     return <EncryptedFileCard attachment={attachment} failed onRetry={retry} />;
   }
   return (
-    <>
-      <div
-        className={
-          multiple
-            ? "aspect-square w-full overflow-hidden rounded-lg border bg-muted"
-            : "w-64 max-w-full overflow-hidden rounded-lg border bg-muted"
-        }
-        style={!multiple ? { aspectRatio, minHeight: 80, maxHeight: 384 } : undefined}
-      >
-        {state.status === "loading" || !url ? (
-          <Spinner label={t("attachments.loading")} className="size-full" />
-        ) : (
-          <button
-            type="button"
-            aria-label={t("attachments.preview", { name: attachment.name })}
-            className="block size-full cursor-zoom-in outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-            onClick={() => setOpen(true)}
-          >
-            <img
-              src={url}
-              alt={attachment.name}
-              className={
-                multiple
-                  ? "size-full object-cover transition-opacity hover:opacity-90"
-                  : "size-full object-contain transition-opacity hover:opacity-90"
-              }
-            />
-          </button>
-        )}
-      </div>
-      {state.status === "ready" && url ? (
-        <Dialog open={open} onOpenChange={setOpen}>
-          <DialogContent className="w-auto max-w-[calc(100vw-2rem)] p-2 sm:max-w-[min(96vw,80rem)]">
-            <DialogTitle className="sr-only">{attachment.name}</DialogTitle>
-            <img
-              src={url}
-              alt={attachment.name}
-              className="mx-auto max-h-[78vh] max-w-full object-contain"
-            />
-            <div className="flex items-center justify-between gap-3 px-1">
-              <span className="min-w-0 truncate text-xs text-muted-foreground">
-                {attachment.name}
-              </span>
-              <EncryptedDownloadButton attachment={attachment} blob={state.blob} showLabel />
-            </div>
-          </DialogContent>
-        </Dialog>
-      ) : null}
-    </>
+    <MediaPreview
+      src={url}
+      name={attachment.name}
+      contentType={attachment.mimetype}
+      width={attachment.width ?? null}
+      height={attachment.height ?? null}
+      loading={state.status === "loading"}
+      onRetry={retry}
+      footer={
+        state.status === "ready" ? (
+          <EncryptedDownloadButton attachment={attachment} blob={state.blob} showLabel />
+        ) : undefined
+      }
+    />
   );
 }
 
@@ -332,58 +316,54 @@ function EncryptedDownloadButton({
 }) {
   const { t } = useTranslation();
   const source = useEncryptedAttachmentSource();
-  const [downloading, setDownloading] = useState(false);
-
-  async function download() {
-    if (downloading) return;
-    setDownloading(true);
-    try {
+  const {
+    state: desktopState,
+    pending,
+    download,
+    cancel,
+  } = useDesktopSave({
+    id: attachment.attachment_id,
+    fileName: attachment.name,
+    source: {
+      kind: "blob",
+      size: attachment.size,
+      load: async (signal, report) => {
+        if (blob) {
+          report(1);
+          return blob;
+        }
+        // 押したことを、利用者の明示的な再試行として扱う（覚えている復号の失敗も取り直す）。
+        return source.load(attachment, {
+          retry: true,
+          signal,
+          onProgress: (received, total) =>
+            report(total && total > 0 ? Math.min(1, received / total) : null),
+        });
+      },
+    },
+    fallback: async () => {
       // 押したことを、利用者の明示的な再試行として扱う（覚えている復号の失敗も取り直す）。
       saveBlob(blob ?? (await source.load(attachment, { retry: true })), attachment.name);
-    } catch (error) {
-      toast.error(
-        error instanceof EncryptedAttachmentError && error.reason === "decrypt"
-          ? t("e2ee.attachments.decryptFailed")
-          : t("attachments.downloadError"),
-      );
-    } finally {
-      setDownloading(false);
-    }
-  }
+    },
+    describeError: (error) =>
+      error instanceof EncryptedAttachmentError && error.reason === "decrypt"
+        ? { message: t("e2ee.attachments.decryptFailed") }
+        : undefined,
+  });
 
-  const label = t("attachments.download", { name: attachment.name });
   return (
-    <Button
-      type="button"
-      variant="ghost"
-      size={showLabel ? "sm" : "icon-sm"}
-      className={showLabel ? "shrink-0 gap-1 text-xs" : "text-muted-foreground"}
-      aria-label={label}
-      title={label}
-      disabled={downloading}
-      onClick={() => void download()}
-    >
-      {downloading ? (
-        <LoaderCircleIcon className="size-4 animate-spin" aria-hidden="true" />
-      ) : (
-        <DownloadIcon className="size-4" aria-hidden="true" />
-      )}
-      {showLabel ? t("attachments.downloadShort") : null}
-    </Button>
+    <DownloadProgressButton
+      state={desktopState}
+      pending={pending}
+      showLabel={showLabel}
+      downloadLabel={t("attachments.download", { name: attachment.name })}
+      downloadShortLabel={t("attachments.downloadShort")}
+      cancelLabel={t("attachments.cancelDownload", { name: attachment.name })}
+      cancelShortLabel={t("attachments.cancelDownloadShort")}
+      finishingLabel={t("attachments.saving")}
+      progressLabel={t("attachments.downloading")}
+      onDownload={() => void download()}
+      onCancel={cancel}
+    />
   );
-}
-
-function saveBlob(blob: Blob, name: string) {
-  const objectUrl = URL.createObjectURL(blob);
-  try {
-    const anchor = document.createElement("a");
-    anchor.href = objectUrl;
-    anchor.download = name;
-    anchor.rel = "noopener";
-    document.body.append(anchor);
-    anchor.click();
-    anchor.remove();
-  } finally {
-    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000);
-  }
 }

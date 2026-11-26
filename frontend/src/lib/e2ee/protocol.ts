@@ -12,6 +12,7 @@ import type {
   RevocationStage,
   RevocationSummary,
   StartupCheck,
+  TrustRecord,
   VerificationMessage,
   VerificationOutgoing,
 } from "@zoo/crypto-wasm";
@@ -26,18 +27,27 @@ import type {
 } from "./store/megolm";
 
 import type { PasskeySlotInput, ResetExpectation, UnlockSecret } from "./setupSession";
-import type { BackupUploadRequest } from "./store/cryptoStore";
+import type { BackupImportStart, BackupUploadRequest } from "./store/cryptoStore";
 import type { SasEncrypted, SasUpdate } from "./store/verification";
 
 import type {
   DeviceKeysByUser,
   KeyUpload,
+  KeysQueryResponse,
   RegistrationRequest,
+  ReverifyRequest,
   ToDeviceResult,
   ToDeviceRow,
 } from "./store/cryptoStore";
 
-export type { DeviceKeysByUser, KeyUpload, RegistrationRequest, ToDeviceResult, ToDeviceRow };
+export type {
+  DeviceKeysByUser,
+  KeyUpload,
+  KeysQueryResponse,
+  RegistrationRequest,
+  ToDeviceResult,
+  ToDeviceRow,
+};
 export type { ClaimedKeys, DecryptOutcome, RecipientSummary, SharePlan, ShareResult };
 export type { KeySlot, PasskeySlotInput, ResetExpectation, ResumePlan, StartupCheck, UnlockSecret };
 export type { RevocationBeginInput, TrustEvaluation };
@@ -65,10 +75,15 @@ export type CryptoOperation =
     }
   | { op: "registrationRequest" }
   | { op: "markRegistered" }
+  /** 削除待ちに残せた（または消せた）前の端末を、暗号ストアの外の記録から外す。 */
+  | { op: "forgetReplacedDevices"; deviceIds: string[] }
   | { op: "prepareKeyUpload"; oneTimeKeyCount: number; hasUnusedFallbackKey: boolean }
   | { op: "markKeysPublished" }
-  | { op: "processToDevice"; rows: ToDeviceRow[]; deviceKeys: DeviceKeysByUser }
+  | { op: "processToDevice"; rows: ToDeviceRow[]; keysQuery: KeysQueryResponse }
   | { op: "acknowledged"; ids: string[] }
+  // 「未検証の送信者」のセッションの判定し直し（docs/e2ee.md の「受信時の検証」）。
+  | { op: "reverifyCandidateUsers" }
+  | { op: "reverifySenders"; request: ReverifyRequest; keysQuery: KeysQueryResponse }
   | { op: "pendingBackupCount" }
   | { op: "close" }
   // 初回設定と解錠（#360）。秘密は Worker のメモリーにだけ置き、要求の本文だけを返す。
@@ -89,6 +104,8 @@ export type CryptoOperation =
   | { op: "prepareBackupUpload"; currentVersion: JsonObject | null; limit: number }
   | { op: "backupUploaded"; uploadId: number }
   | { op: "backupUploadFailed"; uploadId: number }
+  | { op: "beginBackupImport"; currentVersion: JsonObject | null }
+  | { op: "importBackupPage"; version: string; rows: JsonObject[]; next: string | null }
   | { op: "discardSecrets" }
   | { op: "forgetOwnKeys" }
   // 失効の手順と、他のユーザーの検証（#362）。
@@ -108,6 +125,7 @@ export type CryptoOperation =
   | { op: "revocationBackupCreated"; revocationId: string; version: string }
   | { op: "revocationVersionsToMigrate"; revocationId: string; versions: JsonObject }
   | { op: "revocationReencrypt"; revocationId: string; version: string; rows: JsonObject[] }
+  | { op: "revocationUploadProof"; revocationId: string; uploadKey: string; version: string }
   | {
       op: "revocationVerify";
       revocationId: string;
@@ -119,7 +137,17 @@ export type CryptoOperation =
   | { op: "trustRecordedUsers" }
   | { op: "trustEvaluate"; keysQuery: JsonObject; userIds: string[] }
   | { op: "trustPinResult"; pin: NewTofuPin; registered: boolean }
-  | { op: "acceptMasterKey"; targetUserId: string; masterKey: JsonObject }
+  | {
+      op: "acceptMasterKey";
+      targetUserId: string;
+      masterKey: JsonObject;
+      /** 確認の画面で見せた公開鍵。`masterKey` がこの鍵でなければ署名しない。 */
+      expectedMasterKey: string;
+    }
+  /** 相手の記録（前に信頼したマスター鍵）。再検証の確認の画面に出す。 */
+  | { op: "trustRecord"; targetUserId: string }
+  /** 解錠して信頼した自分のマスター鍵の公開鍵（相手が再検証で指紋を比べるために出す）。 */
+  | { op: "ownMasterKey" }
   | { op: "confirmAcceptedMasterKey"; targetUserId: string; masterKey: string }
   // 他のユーザーの絵文字 SAS 検証（#368）。検証は Worker のメモリーにだけ置く。
   | { op: "sasRequest"; targetUserId: string; keysQuery: JsonObject; now: number }
@@ -127,6 +155,10 @@ export type CryptoOperation =
   | { op: "sasAccept"; txnId: string }
   | { op: "sasConfirm"; txnId: string }
   | { op: "sasMismatch"; txnId: string }
+  // QR コードによる検証（docs/e2ee.md の「QR コードによる検証」）。
+  | { op: "sasStartSas"; txnId: string }
+  | { op: "sasScanQr"; txnId: string; bytes: Uint8Array }
+  | { op: "sasConfirmQr"; txnId: string }
   | { op: "sasCancel"; txnId: string }
   | { op: "sasExpire"; now: number }
   | { op: "sasForget"; txnId: string }
@@ -150,6 +182,20 @@ export type CryptoOperation =
       op: "destroy";
       namespace: string;
     }
+  | {
+      /**
+       * 端末が別の端末から削除されていた（確かめたあと）。暗号ストアを消さずに、端末アカウントだけを
+       * 作り直して開き直す（`CryptoStore.replaceDevice`）。開いている `namespace` の暗号ストアに当てる。
+       */
+      op: "replaceDevice";
+      namespace: string;
+      userId: string;
+      /**
+       * 消されたと確かめた端末。開いている暗号ストアがすでに別の端末なら（前の作り直しを保存したあと、
+       * 開き直しだけが失敗した）、作り直さずにその端末を返す。
+       */
+      deviceId: string;
+    }
   // 暗号化した添付（#364）。暗号ストアを使わない。
   | { op: "encryptAttachment"; plaintext: Uint8Array }
   | { op: "decryptAttachment"; file: EncryptedFile; ciphertext: Uint8Array };
@@ -167,8 +213,12 @@ export interface OpenedCryptoStore {
   deviceId: string;
   /** サーバーへの登録が済んでいるか。 */
   registered: boolean;
-  /** 保存鍵を開けずに作り直したとき、前の端末の ID（サーバーから消す）。 */
-  replacedDeviceId: string | null;
+  /**
+   * 前の端末（サーバーから消す）。保存鍵を開けずに作り直したときと、暗号ストアの外の記録
+   * （`store/deviceRecord.ts`）にある同じユーザーの端末が今の端末と違うとき（ファイルが消えたなど）。
+   * 削除待ちに渡すまで（`forgetReplacedDevices`）、開くたびに返す。`registered` は登録が済んでいたか。
+   */
+  replacedDevices: { deviceId: string; registered: boolean }[];
 }
 
 export interface CryptoResults {
@@ -176,13 +226,17 @@ export interface CryptoResults {
   open: OpenedCryptoStore;
   registrationRequest: RegistrationRequest;
   markRegistered: null;
+  forgetReplacedDevices: null;
   prepareKeyUpload: KeyUpload | null;
   markKeysPublished: null;
   processToDevice: ToDeviceResult;
   acknowledged: null;
+  reverifyCandidateUsers: ReverifyRequest;
+  reverifySenders: number;
   pendingBackupCount: number;
   close: null;
   destroy: null;
+  replaceDevice: OpenedCryptoStore;
   setupBegin: { recoveryKey: string; keyId: string };
   setupAddPasskeySlot: null;
   setupSecretStorageRequest: JsonObject;
@@ -198,6 +252,8 @@ export interface CryptoResults {
   prepareBackupUpload: BackupUploadRequest;
   backupUploaded: null;
   backupUploadFailed: null;
+  beginBackupImport: BackupImportStart;
+  importBackupPage: { imported: number; dropped: number };
   discardSecrets: null;
   forgetOwnKeys: null;
   revocationStatus: RevocationSummary | null;
@@ -216,18 +272,24 @@ export interface CryptoResults {
   revocationVersionsToMigrate: string[];
   revocationDropStaleMasterKeys: string[];
   revocationReencrypt: { rows: JsonObject[]; dropped: number };
+  revocationUploadProof: string;
   revocationVerify: null;
   revocationAbandon: null;
   trustRecordedUsers: string[];
   trustEvaluate: TrustEvaluation;
   trustPinResult: null;
   acceptMasterKey: AcceptedMasterKey;
+  trustRecord: TrustRecord | null;
+  ownMasterKey: string | null;
   confirmAcceptedMasterKey: null;
   sasRequest: SasUpdate;
   sasReceive: SasUpdate | null;
   sasAccept: SasUpdate;
   sasConfirm: SasUpdate;
   sasMismatch: SasUpdate;
+  sasStartSas: SasUpdate;
+  sasScanQr: SasUpdate | null;
+  sasConfirmQr: SasUpdate;
   sasCancel: SasUpdate | null;
   sasExpire: SasUpdate[];
   sasForget: null;

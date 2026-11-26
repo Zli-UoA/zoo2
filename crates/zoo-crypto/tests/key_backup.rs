@@ -22,7 +22,7 @@ fn version(number: &str, backup_key: &BackupDecryptionKey, keys: &CrossSigningKe
     json!({
         "version": number,
         "algorithm": BACKUP_ALGORITHM,
-        "auth_data": backup_key.auth_data(&keys.master).unwrap(),
+        "auth_data": backup_key.auth_data(&keys.master, number.parse().unwrap()).unwrap(),
         "count": 0,
     })
 }

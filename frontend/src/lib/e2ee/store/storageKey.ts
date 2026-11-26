@@ -8,6 +8,11 @@
  */
 
 const IDB_NAME = "zoo-crypto-keys";
+/**
+ * 包む鍵（キーは暗号ストアの DB 名）と、今の端末の記録（キーは `device:<DB 名>`。`deviceRecord.ts`）。
+ * 版を上げて別の object store を足すと、版 1 で開く古い Service Worker（Push の復号）が開けなく
+ * なるので、同じ object store にキーを分けて置く。
+ */
 const IDB_STORE = "wrapping-keys";
 /** `meta` に置く、包んだ保存鍵（`iv ‖ 暗号文` の base64）。 */
 export const WRAPPED_STORAGE_KEY_META = "wrapped_storage_key";
@@ -41,7 +46,7 @@ function openKeyDatabase(): Promise<IDBDatabase> {
   return request(req);
 }
 
-async function withStore<T>(
+export async function withStore<T>(
   mode: IDBTransactionMode,
   fn: (store: IDBObjectStore) => IDBRequest<T>,
 ): Promise<T> {

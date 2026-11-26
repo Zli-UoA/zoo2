@@ -1,0 +1,1 @@
+EXISTS(SELECT 1 FROM apub_remote_recipients WHERE post_id=p.id AND user_id=$1 OFFSET 0) AND (p.actor_id IN (SELECT actor_id FROM apub_follows WHERE user_id=$1 AND direction='outgoing' AND accepted) OR EXISTS(SELECT 1 FROM home_posts parent WHERE parent.id=p.parent_id AND parent.user_id=$1 OFFSET 0))

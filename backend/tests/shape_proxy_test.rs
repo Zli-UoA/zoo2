@@ -399,6 +399,150 @@ async fn test_notifications_shape_proxy() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// ピン留めしたチャンネルの Shape は、ユーザーごとの認可付きで配信し、
+/// 共有キャッシュに載らないヘッダーを返す。Electric は wiremock に置き換え、
+/// 実際に送られたクエリ（通常ユーザーとゲストで異なる where 句）まで検証する。
+#[tokio::test]
+async fn test_user_pinned_channels_shape_proxy() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+
+    let mock_electric = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/shape"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("electric-handle", "mock-handle")
+                .insert_header("electric-offset", "0_0")
+                .set_body_string("[]"),
+        )
+        .mount(&mock_electric)
+        .await;
+
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.electric_url = mock_electric.uri();
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db, config));
+
+    let alice_id = uuid::Uuid::new_v4().to_string();
+    let guest_id = uuid::Uuid::new_v4().to_string();
+    for (id, name) in [(&alice_id, "alice"), (&guest_id, "guest")] {
+        let payload = json!({
+            "id": id,
+            "user_name": format!("{name}_{}", uuid::Uuid::new_v4().simple()),
+            "display_name": name,
+        });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/users")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&payload)?))?,
+            )
+            .await?;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/users/{guest_id}/guest"))
+                .header("content-type", "application/json")
+                .header("X-Dev-User", backend::auth::DEFAULT_DEV_USER_ID)
+                .body(Body::from(r#"{"kind":"multi"}"#))?,
+        )
+        .await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    for user_id in [&alice_id, &guest_id] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/shapes/user_pinned_channels?offset=-1")
+                    .header("X-Dev-User", user_id)
+                    .body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(
+            resp.headers().contains_key("electric-handle"),
+            "electric-handle header must be present"
+        );
+
+        let vary = resp
+            .headers()
+            .get("vary")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_lowercase();
+        assert!(vary.contains("authorization"), "{user_id}: {vary}");
+        assert!(vary.contains("x-dev-user"), "{user_id}: {vary}");
+        let cache_control = resp
+            .headers()
+            .get("cache-control")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_lowercase();
+        assert!(
+            cache_control.contains("private") && cache_control.contains("no-cache"),
+            "{user_id}: {cache_control}"
+        );
+    }
+
+    let requests = mock_electric.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    for (user_id, is_guest) in [(&alice_id, false), (&guest_id, true)] {
+        let request = requests
+            .iter()
+            .find(|request| {
+                request
+                    .url
+                    .query_pairs()
+                    .any(|(key, value)| key == "params[1]" && value == user_id.as_str())
+            })
+            .unwrap_or_else(|| panic!("shape request for {user_id}"));
+        let pairs: Vec<_> = request.url.query_pairs().collect();
+        assert!(
+            pairs
+                .iter()
+                .any(|(key, value)| { key == "table" && value == "user_pinned_channels" })
+        );
+        let where_clause = pairs
+            .iter()
+            .find(|(key, _)| key == "where")
+            .map(|(_, value)| value.to_string())
+            .unwrap_or_default();
+        assert!(where_clause.starts_with("user_id = $1"), "{where_clause}");
+        assert!(
+            where_clause.contains("deleted_at IS NULL"),
+            "{where_clause}"
+        );
+        if is_guest {
+            assert!(
+                !where_clause.contains("is_private = false AND is_dm = false"),
+                "guest must not see unjoined public channels: {where_clause}"
+            );
+        } else {
+            assert!(
+                where_clause.contains("is_private = false AND is_dm = false"),
+                "{where_clause}"
+            );
+        }
+        assert!(
+            where_clause.contains("SELECT channel_id FROM channel_user WHERE user_id = $1"),
+            "{where_clause}"
+        );
+    }
+
+    Ok(())
+}
+
 /// #65 回帰テスト (CI 用): http_client に短いタイムアウトが設定されていても、
 /// proxy_shape が electric_client を使用しているためタイムアウトエラー (500) にならず正常応答することを確認
 #[tokio::test]
@@ -556,5 +700,83 @@ async fn test_shape_proxy_electric_secret_query() -> anyhow::Result<()> {
         assert!(!request.headers.contains_key("authorization"));
     }
 
+    Ok(())
+}
+
+/// 共有キャッシュに載せない `cache-control` は、プロキシに頼らずバックエンドが付ける。
+/// 配る列を絞った shape は、同じ列を `queryable_columns` として Electric に渡す。
+#[tokio::test]
+async fn test_shape_proxy_sets_private_cache_and_queryable_columns() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+
+    let mock_electric = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/shape"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("cache-control", "public, max-age=60")
+                .set_body_string("[]"),
+        )
+        .mount(&mock_electric)
+        .await;
+
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.electric_url = mock_electric.uri();
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db, config));
+
+    for uri in [
+        "/api/shapes/users?offset=-1",
+        "/api/shapes/e2ee_devices?offset=-1",
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header("X-Dev-User", "00000000-0000-0000-0000-000000000001")
+                    .body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(resp.status(), StatusCode::OK, "{uri}");
+        let cache_control = resp
+            .headers()
+            .get_all("cache-control")
+            .iter()
+            .map(|v| v.to_str().unwrap().to_lowercase())
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(
+            cache_control.contains("private") && !cache_control.contains("public"),
+            "{uri}: {cache_control}"
+        );
+        assert!(
+            cache_control.contains("no-store") || cache_control.contains("no-cache"),
+            "{uri}: {cache_control}"
+        );
+    }
+
+    let requests = mock_electric.received_requests().await.unwrap();
+    let devices = requests
+        .iter()
+        .find(|r| {
+            r.url
+                .query_pairs()
+                .any(|(k, v)| k == "table" && v == "e2ee_devices")
+        })
+        .expect("e2ee_devices request");
+    let pairs: Vec<_> = devices.url.query_pairs().collect();
+    let columns = pairs
+        .iter()
+        .find(|(k, _)| k == "columns")
+        .map(|(_, v)| v.clone());
+    let queryable = pairs
+        .iter()
+        .find(|(k, _)| k == "queryable_columns")
+        .map(|(_, v)| v.clone());
+    assert!(columns.is_some());
+    assert_eq!(columns, queryable);
     Ok(())
 }

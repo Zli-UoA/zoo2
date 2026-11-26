@@ -68,4 +68,20 @@ class RequestSchedulingTest {
         job.cancel()
     }
 
+    @Test fun skippedInitialLoadDoesNotDelayRecovery() = runTest {
+        var allowed = false
+        var calls = 0
+        val updates = CoalescedRefresh(backgroundScope, interval = 30_000, allowed = { allowed }) { calls++ }
+        updates.request(); runCurrent()
+        assertEquals(0, calls)
+        advanceTimeBy(2000)
+        allowed = true
+        updates.request(); runCurrent()
+        assertEquals(1, calls)
+        updates.request(); advanceTimeBy(29_999); runCurrent()
+        assertEquals(1, calls)
+        advanceTimeBy(1); runCurrent()
+        assertEquals(2, calls)
+        updates.close()
+    }
 }

@@ -1,5 +1,5 @@
 import "../../styles.css";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
   createRootRoute,
@@ -14,21 +14,35 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser/context";
 import { AppShell } from "./AppShell";
 import { useShell } from "./shell-context";
+import { LocaleProvider } from "../i18n/LocaleProvider";
 
 vi.mock("../preferences/SearchPreferences", () => ({
   SearchPreferencesProvider: ({ children }: { children: import("react").ReactNode }) => children,
 }));
+// 未読数はこのテストの対象外で、NotificationsProvider が要るので外す。
+vi.mock("../pwa/AppBadgeBridge", () => ({ AppBadgeBridge: () => null }));
 vi.mock("../pwa/PwaControls", () => ({
   PwaProvider: ({ children }: { children: import("react").ReactNode }) => children,
 }));
-vi.mock("../../hooks/useCurrentUser", () => ({
-  useCurrentUser: () => ({
-    currentUserId: "user-1",
+const auth = vi.hoisted(() => ({
+  state: {
+    currentUserId: "user-1" as string | null,
     isLoading: false,
     isAdmin: false,
     error: null,
-  }),
+  },
+  listeners: new Set<() => void>(),
 }));
+vi.mock("../../hooks/useCurrentUser", async () => {
+  const { useSyncExternalStore } = await import("react");
+  const subscribe = (listener: () => void) => {
+    auth.listeners.add(listener);
+    return () => {
+      auth.listeners.delete(listener);
+    };
+  };
+  return { useCurrentUser: () => useSyncExternalStore(subscribe, () => auth.state) };
+});
 
 vi.mock("../../hooks/usePresence", () => ({
   usePresence: () => {},
@@ -36,7 +50,7 @@ vi.mock("../../hooks/usePresence", () => ({
 }));
 vi.mock("../../hooks/useRealtime", () => ({
   useActiveChannels: () => ({
-    data: [{ id: "general", channel_name: "general", is_dm: false }],
+    data: [{ id: "123e4567-e89b-12d3-a456-426614174000", channel_name: "general", is_dm: false }],
     isLoading: false,
     isError: false,
   }),
@@ -49,16 +63,24 @@ vi.mock("../chat/ChannelSidebar", () => ({
     </aside>
   ),
 }));
-vi.mock("../chat/MembersPanel", () => ({
-  MembersPanel: ({ onBack }: { onBack?: () => void }) =>
-    onBack ? (
-      <section aria-label="Members screen">
-        <button onClick={onBack}>Back to channel</button>
+vi.mock("../chat/ChannelMembersDialog", () => ({
+  ChannelMembersDialog: ({
+    open,
+    onOpenChange,
+  }: {
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+  }) =>
+    open ? (
+      <section aria-label="Members dialog">
+        <button onClick={() => onOpenChange(false)}>Close members</button>
       </section>
     ) : null,
 }));
 vi.mock("../offline/OfflineBanner", () => ({ OfflineBanner: () => null }));
-vi.mock("./LeftRail", () => ({ LeftRail: () => null }));
+vi.mock("./LeftRail", () => ({
+  LeftRail: () => <button>Rail action</button>,
+}));
 
 function Channel() {
   const shell = useShell();
@@ -92,7 +114,10 @@ function setup(entries: string[]) {
     getParentRoute: () => root,
     path: "/",
     component: () => (
-      <Link to="/channels/$channelId" params={{ channelId: "general" }}>
+      <Link
+        to="/channels/$channelId"
+        params={{ channelId: "123e4567-e89b-12d3-a456-426614174000" }}
+      >
         General
       </Link>
     ),
@@ -102,7 +127,6 @@ function setup(entries: string[]) {
     path: "/channels/$channelId",
     validateSearch: (search: Record<string, unknown>) => ({
       thread: typeof search.thread === "string" ? search.thread : undefined,
-      members: search.members === true ? true : undefined,
     }),
     component: Channel,
   });
@@ -120,14 +144,51 @@ function setup(entries: string[]) {
     routeTree: root.addChildren([home, channel, settings, bubble]),
     history: createMemoryHistory({ initialEntries: entries }),
   });
-  render(<RouterProvider router={router} />);
+  render(
+    <LocaleProvider>
+      <RouterProvider router={router} />
+    </LocaleProvider>,
+  );
   return router;
 }
+
+beforeEach(() => {
+  auth.state = { currentUserId: "user-1", isLoading: false, isAdmin: false, error: null };
+  localStorage.setItem("zoo:onboarding:v1:user-1", "done");
+});
 
 describe("shell navigation", () => {
   beforeEach(async () => {
     await page.viewport(1440, 900);
   });
+
+  it("provides a skip link that moves focus to the main landmark without navigating", async () => {
+    const router = setup(["/"]);
+    const skip = await screen.findByRole("link", { name: "本文へスキップ" });
+    expect(skip).toHaveAttribute("href", "#main-content");
+    const main = document.getElementById("main-content");
+    expect(main?.tagName).toBe("MAIN");
+    expect(main).toHaveAttribute("tabindex", "-1");
+    skip.focus();
+    expect(document.activeElement).toBe(skip);
+    await userEvent.keyboard("{Enter}");
+    expect(document.activeElement).toBe(main);
+    // フラグメント移動を起こさないので、thread の閉じる処理が使う履歴が壊れない。
+    expect(router.state.location.hash).toBe("");
+  });
+
+  it("sends the skip link to the visible sidebar on narrow home screens", async () => {
+    await page.viewport(390, 844);
+    setup(["/"]);
+    const skip = await screen.findByRole("link", { name: "本文へスキップ" });
+    skip.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(document.activeElement?.id).toBe("sidebar-content");
+    // スキップ後は共通ナビゲーション（LeftRail）ではなく本文側へ進む。
+    await userEvent.tab();
+    expect(screen.getByRole("button", { name: "Rail action" })).not.toHaveFocus();
+  });
+
   it("restores channel and thread views with Back and Forward", async () => {
     const router = setup(["/"]);
     await userEvent.click(await screen.findByRole("link", { name: "General" }));
@@ -140,7 +201,7 @@ describe("shell navigation", () => {
     await screen.findByText("thread:root");
     router.history.back();
     await waitFor(() => expect(screen.queryByText("thread:root")).toBeNull());
-    expect(screen.getByText("channel:general")).toBeVisible();
+    expect(screen.getByText("channel:123e4567-e89b-12d3-a456-426614174000")).toBeVisible();
     router.history.forward();
     await screen.findByText("thread:root");
     await userEvent.click(screen.getByRole("button", { name: "Close thread" }));
@@ -151,34 +212,40 @@ describe("shell navigation", () => {
   });
 
   it("closes a deep-linked thread without leaving its channel", async () => {
-    const router = setup(["/", "/channels/general?thread=root"]);
+    const router = setup(["/", "/channels/123e4567-e89b-12d3-a456-426614174000?thread=root"]);
     await userEvent.click(await screen.findByRole("button", { name: "Open thread" }));
     await userEvent.click(await screen.findByRole("button", { name: "Close thread" }));
     await waitFor(() => expect(screen.queryByText("thread:root")).toBeNull());
-    expect(router.state.location.pathname).toBe("/channels/general");
+    expect(router.state.location.pathname).toBe("/channels/123e4567-e89b-12d3-a456-426614174000");
     await userEvent.click(screen.getByRole("button", { name: "Back" }));
     await screen.findByRole("link", { name: "General" });
   });
-  it("restores a thread with Forward after the members panel was opened", async () => {
-    await page.viewport(1440, 900);
-    const router = setup(["/", "/channels/general"]);
+  it("opens the members dialog without closing the thread or adding history", async () => {
+    const router = setup(["/", "/channels/123e4567-e89b-12d3-a456-426614174000"]);
     await userEvent.click(await screen.findByRole("button", { name: "Open thread" }));
     await screen.findByText("thread:root");
+    const historyIndex = router.state.location.state.__TSR_index;
+    await userEvent.click(screen.getByRole("button", { name: "Open members" }));
+    expect(await screen.findByRole("region", { name: "Members dialog" })).toBeVisible();
+    expect(screen.getByText("members:open")).toBeVisible();
+    // 右ペインと排他だったころと違い、ダイアログはスレッドを閉じない。
+    expect(screen.getByText("thread:root")).toBeVisible();
+    expect(router.state.location.search).toEqual({ thread: "root" });
+    expect(router.state.location.state.__TSR_index).toBe(historyIndex);
+    await userEvent.click(screen.getByRole("button", { name: "Close members" }));
+    await waitFor(() => expect(screen.getByText("members:closed")).toBeVisible());
+    expect(screen.getByText("thread:root")).toBeVisible();
+  });
+
+  it("closes the members dialog when leaving the channel", async () => {
+    const router = setup(["/", "/channels/123e4567-e89b-12d3-a456-426614174000"]);
+    await userEvent.click(await screen.findByRole("button", { name: "Open members" }));
+    await screen.findByRole("region", { name: "Members dialog" });
     router.history.back();
-    await waitFor(() => expect(screen.queryByText("thread:root")).toBeNull());
-    await userEvent.click(screen.getByRole("button", { name: "Open members" }));
-    await screen.findByText("members:open");
+    await screen.findByRole("link", { name: "General" });
     router.history.forward();
-    await waitFor(() => {
-      expect(screen.getByText("members:closed")).toBeVisible();
-      expect(screen.getByText("thread:root")).toBeVisible();
-      expect(router.state.location.search).toMatchObject({ thread: "root" });
-    });
-    await userEvent.click(screen.getByRole("button", { name: "Open members" }));
-    await waitFor(() => {
-      expect(screen.getByText("members:open")).toBeVisible();
-      expect(screen.queryByText("thread:root")).toBeNull();
-    });
+    await screen.findByText("members:closed");
+    expect(screen.queryByRole("region", { name: "Members dialog" })).toBeNull();
   });
 });
 
@@ -186,11 +253,11 @@ it.each([390, 1440])(
   "keeps Bubble Chat standalone across history navigation at %ipx",
   async (width) => {
     await page.viewport(width, 900);
-    const router = setup(["/channels/general", "/bubble"]);
+    const router = setup(["/channels/123e4567-e89b-12d3-a456-426614174000", "/bubble"]);
     await expect.element(page.getByRole("heading", { name: "Bubble room" })).toBeVisible();
     expect(screen.getByText("Channel navigation")).not.toBeVisible();
     router.history.back();
-    await screen.findByText("channel:general");
+    await screen.findByText("channel:123e4567-e89b-12d3-a456-426614174000");
     if (width >= 768) expect(screen.getByText("Channel navigation")).toBeVisible();
     else expect(screen.getByText("Channel navigation")).not.toBeVisible();
     router.history.forward();
@@ -200,41 +267,48 @@ it.each([390, 1440])(
 );
 
 it.each([390, 900])(
-  "returns from the members screen to the same thread and draft at %ipx",
+  "keeps the thread and draft behind the members dialog at %ipx",
   async (width) => {
     await page.viewport(width, 900);
-    const router = setup(["/channels/general"]);
+    const router = setup(["/channels/123e4567-e89b-12d3-a456-426614174000"]);
     await userEvent.type(await screen.findByLabelText("Draft"), "Keep this draft");
     await userEvent.click(screen.getByRole("button", { name: "Open thread" }));
     await screen.findByText("thread:root");
     await userEvent.click(screen.getByRole("button", { name: "Open members" }));
-    expect(await screen.findByRole("region", { name: "Members screen" })).toBeVisible();
-    expect(screen.queryByRole("dialog")).toBeNull();
-    expect(screen.getByText("Channel navigation")).not.toBeVisible();
-    expect(router.state.location.search).toMatchObject({ thread: "root", members: true });
-    router.history.back();
-    await waitFor(() =>
-      expect(screen.queryByRole("region", { name: "Members screen" })).toBeNull(),
-    );
+    expect(await screen.findByRole("region", { name: "Members dialog" })).toBeVisible();
+    // 狭幅でも全画面に切り替えず、チャンネルの画面の上にダイアログを重ねる。
     expect(screen.getByText("thread:root")).toBeVisible();
-    expect(screen.getByLabelText("Draft")).toHaveValue("Keep this draft");
-    router.history.forward();
-    await screen.findByRole("region", { name: "Members screen" });
-    await userEvent.click(screen.getByRole("button", { name: "Back to channel" }));
+    expect(router.state.location.search).toEqual({ thread: "root" });
+    await userEvent.click(screen.getByRole("button", { name: "Close members" }));
     await waitFor(() =>
-      expect(screen.queryByRole("region", { name: "Members screen" })).toBeNull(),
+      expect(screen.queryByRole("region", { name: "Members dialog" })).toBeNull(),
     );
     expect(screen.getByText("thread:root")).toBeVisible();
     expect(screen.getByLabelText("Draft")).toHaveValue("Keep this draft");
   },
 );
-it("closes a directly opened members screen without leaving its channel or thread", async () => {
-  await page.viewport(390, 844);
-  const router = setup(["/channels/general?thread=root&members=true"]);
-  await userEvent.click(await screen.findByRole("button", { name: "Back to channel" }));
-  await waitFor(() => expect(screen.queryByRole("region", { name: "Members screen" })).toBeNull());
-  expect(router.state.location.pathname).toBe("/channels/general");
-  expect(router.state.location.search).toMatchObject({ thread: "root" });
-  expect(router.state.location.search).not.toHaveProperty("members", true);
-  expect(router.history.canGoBack()).toBe(false);
+
+it("waits for the initial account before mounting inputs and preserves them during refresh", async () => {
+  auth.state = { ...auth.state, currentUserId: null, isLoading: true };
+  setup(["/channels/123e4567-e89b-12d3-a456-426614174000"]);
+  await waitFor(() => expect(document.querySelector("[data-app-shell]")).not.toBeNull());
+  expect(screen.queryByRole("textbox", { name: "Draft" })).toBeNull();
+  await act(async () => {
+    auth.state = { ...auth.state, currentUserId: "user-1", isLoading: false };
+    auth.listeners.forEach((listener) => listener());
+  });
+  const draft = await screen.findByRole("textbox", { name: "Draft" });
+  await userEvent.type(draft, "Keep this draft");
+  await act(async () => {
+    auth.state = { ...auth.state, isLoading: true };
+    auth.listeners.forEach((listener) => listener());
+  });
+  expect(screen.getByRole("textbox", { name: "Draft" })).toBe(draft);
+  expect(draft).toHaveValue("Keep this draft");
+  await act(async () => {
+    auth.state = { ...auth.state, isLoading: false };
+    auth.listeners.forEach((listener) => listener());
+  });
+  expect(screen.getByRole("textbox", { name: "Draft" })).toBe(draft);
+  expect(draft).toHaveValue("Keep this draft");
 });

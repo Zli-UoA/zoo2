@@ -9,7 +9,8 @@ export type TableName =
   | "channel_leave"
   | "call_invites"
   | "notifications"
-  | "attachments";
+  | "attachments"
+  | "user_pinned_channels";
 
 export type UserRow = {
   id: string;
@@ -50,6 +51,8 @@ export type ChannelRow = {
    * 正準な整数にする。
    */
   membership_epoch?: string;
+  /** 投稿できる人。`managers` はチャンネル作成者とワークスペース管理者だけ。読み書きの権限は別（閲覧は誰でもできる）。 */
+  posting_policy?: "members" | "managers";
 };
 
 export type MessageRow = {
@@ -59,6 +62,7 @@ export type MessageRow = {
   channel_id: string;
   content: string;
   card?: string | null;
+  components?: string | null;
   app_blocks?: string | null;
   app_attachments?: string | null;
   app_unfurls?: string | null;
@@ -86,6 +90,8 @@ export type MessageRow = {
    * （docs/e2ee.md の「受信時の検証」）。
    */
   message_kind?: string | null;
+  /** 転送（引用）元のメッセージ ID 一覧（平文チャンネルのみ）。 */
+  forwarded_message_ids?: string[] | null;
 };
 
 export type MessageReactionRow = {
@@ -107,6 +113,15 @@ export type ChannelLeaveRow = {
   user_id: string;
   channel_id: string;
   left_at: TimestampString;
+};
+
+/** 自分がピン留めしたチャンネル・DM と、その並び順。本人の行だけが届く。 */
+export type UserPinnedChannelRow = {
+  user_id: string;
+  channel_id: string;
+  position: number;
+  created_at: TimestampString;
+  updated_at: TimestampString;
 };
 
 /** 通話の招待（呼び出し）。呼び出し中（`pending`）の行だけが届く。docs/calls.md。 */
@@ -163,6 +178,7 @@ export type NotificationDisplayData = {
     id: string;
     user_id: string;
     content: string;
+    has_forwards?: boolean;
     emojis?: Record<string, DisplayEmoji>;
   } | null;
   reactions: MessageDisplayData["reactions"];
@@ -193,4 +209,5 @@ export type TableRowMap = {
   channel_leave: ChannelLeaveRow;
   call_invites: CallInviteRow;
   attachments: AttachmentRow;
+  user_pinned_channels: UserPinnedChannelRow;
 };

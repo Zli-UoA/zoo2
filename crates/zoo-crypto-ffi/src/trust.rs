@@ -16,6 +16,8 @@ pub struct TrustRecord {
     pub master_key: String,
     pub confirmed_usk: Option<String>,
     pub pin_pending: bool,
+    /// 記録から置き換えた古いマスター鍵（古い順）。
+    pub replaced_master_keys: Vec<String>,
 }
 
 /// TOFU で作ったピン（[`core::NewTofuPin`]）。`pin` は署名付きの `zoo.tofu_pin` の JSON。
@@ -115,6 +117,9 @@ pub struct Distribution {
     /// 登録待ちのピン。
     pub new_pins: Vec<NewTofuPin>,
     pub warnings: Vec<TrustWarning>,
+    /// 規則 3 で、記録と違う新しいマスター鍵に自分のユーザー署名鍵の署名があったので記録を置き換えた
+    /// 相手（自分の別の端末で受け入れた鍵）。「鍵が変わり、別の端末で確認済み」と知らせる。
+    pub signed_master_key_changes: Vec<String>,
 }
 
 /// 利用者が新しいマスター鍵を受け入れたときに送るもの（[`core::AcceptedMasterKey`]）。
@@ -128,7 +133,7 @@ pub struct AcceptedMasterKey {
 /// 配布先の判定に使う記録（[`core::TrustStore`]）。
 #[derive(uniffi::Object)]
 pub struct TrustStore {
-    inner: Mutex<core::TrustStore>,
+    pub(crate) inner: Mutex<core::TrustStore>,
 }
 
 #[uniffi::export]
@@ -203,6 +208,7 @@ impl TrustStore {
                 master_key: r.master_key.clone(),
                 confirmed_usk: r.confirmed_usk.clone(),
                 pin_pending: r.pin_pending,
+                replaced_master_keys: r.replaced_master_keys.clone(),
             })
     }
 
@@ -251,6 +257,26 @@ impl TrustStore {
     pub fn discard_tofu_pin(&self, pin: NewTofuPin) -> Result<()> {
         lock(&self.inner).discard_tofu_pin(&pin.try_into()?);
         Ok(())
+    }
+
+    /// 受信鍵の送信者をクロス署名と保存済みの信頼記録で判定する。
+    pub fn sender_trust(
+        &self,
+        keys_query: String,
+        sender: String,
+        sender_device: String,
+        own_self_signing: Option<String>,
+    ) -> Result<Option<crate::SenderTrust>> {
+        let snapshot = core::KeySnapshot::from_json(&parse_json("keys_query", &keys_query)?)?;
+        let own = own_self_signing
+            .map(|key| crate::ed25519_from_base64(&key))
+            .transpose()?;
+        Ok(lock(&self.inner)
+            .sender_trust(&snapshot, &sender, &sender_device, own.as_ref())
+            .map(|trust| crate::SenderTrust {
+                self_signing_key: trust.self_signing_key.to_base64(),
+                signature: trust.signature,
+            }))
     }
 
     /// 配布先を判定する。`snapshot_pages` は同じ `membership_epoch` のスナップショット（JSON）のページ。
@@ -302,6 +328,7 @@ impl From<core::Distribution> for Distribution {
                 .collect(),
             new_pins: d.new_pins.into_iter().map(Into::into).collect(),
             warnings: d.warnings.into_iter().map(Into::into).collect(),
+            signed_master_key_changes: d.signed_master_key_changes,
         }
     }
 }

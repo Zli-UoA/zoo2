@@ -12,8 +12,10 @@
 
 export const DESKTOP_PROTOCOL_VERSION = 1;
 
+type InvokeOptions = { headers?: Record<string, string> };
+
 type TauriInternals = {
-  invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+  invoke: (cmd: string, args?: unknown, options?: InvokeOptions) => Promise<unknown>;
   transformCallback: (callback: (payload: unknown) => void, once?: boolean) => number;
 };
 
@@ -52,21 +54,39 @@ export function hasDesktopBridge(): boolean {
 
 let detected: Promise<boolean> | null = null;
 let isDesktop = false;
+/** 直前の `detectDesktop` が失敗した理由。成功したか、まだ確かめていなければ null。 */
+let detectFailure: unknown = null;
 
-/** デスクトップ版の (b) として動くかを確かめる。結果は覚えておく。 */
+/**
+ * デスクトップ版の (b) として動くかを確かめる。結果は覚えておく。
+ * `zoo_session` の一時的な失敗は覚えず、次に呼ばれたらもう一度確かめる
+ * （失敗を「デスクトップ版ではない」として固定すると、通信が戻ってもブラウザーの保存に切り替わったままになる）。
+ */
 export function detectDesktop(): Promise<boolean> {
   detected ??= (async () => {
     const bridge = internals();
     if (!bridge) return false;
     try {
-      const info = (await bridge.invoke("zoo_session")) as DesktopSessionInfo;
+      // まずマイクロタスクへ移してから呼ぶ。`invoke` が同期的に投げても、
+      // 下の catch が「覚えた失敗」を残さないようにするため。
+      const info = (await Promise.resolve().then(() =>
+        bridge.invoke("zoo_session"),
+      )) as DesktopSessionInfo;
+      detectFailure = null;
       isDesktop = info.protocol === DESKTOP_PROTOCOL_VERSION && info.ui === "remote";
-    } catch {
+    } catch (error) {
+      detectFailure = error;
+      detected = null;
       isDesktop = false;
     }
     return isDesktop;
   })();
   return detected;
+}
+
+/** 直前の `detectDesktop` が失敗した理由（[`detectDesktop`] が false を返したときだけ使う）。 */
+export function desktopDetectionFailure(): unknown {
+  return detectFailure;
 }
 
 /** `detectDesktop` が済んだ後の結果。済む前は false。 */
@@ -130,6 +150,32 @@ export function desktopSetFocus(channelId: string | null): void {
   }).catch(() => {});
 }
 
+let badgeInFlight = false;
+let badgePending: number | null = null;
+
+/**
+ * Dock やランチャーのアイコンに未読数を出す。`0` 以下で消す。古い版のアプリでは何も起きない。
+ * IPC の呼び出しは到着の順番が保証されないので、前の呼び出しが終わってから次を送る。
+ * 待っている間に変わった値は、最後の 1 つだけ送る。
+ */
+export function desktopSetBadge(count: number): void {
+  badgePending = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  if (badgeInFlight) return;
+  badgeInFlight = true;
+  void (async () => {
+    while (badgePending !== null) {
+      const next = badgePending;
+      badgePending = null;
+      try {
+        await invoke("zoo_set_badge", { count: next });
+      } catch {
+        // 古い版のアプリにはこのコマンドがない。表示が出ないだけなので無視する。
+      }
+    }
+    badgeInFlight = false;
+  })();
+}
+
 /** アプリが OS の通知を出すかどうか。 */
 export type DesktopNotificationSettings = { enabled: boolean };
 
@@ -150,6 +196,176 @@ export async function desktopSetNotifications(enabled: boolean): Promise<void> {
   await invoke("zoo_set_notifications", { settings: { enabled } });
 }
 
+/** 添付を保存するときの設定。`directory` は画面に出すためだけで、JS からは指定できない。 */
+export type DesktopDownloadSettings = {
+  ask_every_time: boolean;
+  directory: string | null;
+};
+
+/** 設定の変更。保存先のパスは送らず、変えられるのは確認の有無と既定への復帰だけ。 */
+export type DesktopDownloadSettingsUpdate = {
+  ask_every_time: boolean;
+  reset_directory?: boolean;
+};
+
+/** `zoo_download_begin` の結果。`path` は保存する場所（画面に出すためだけ）。 */
+export type DesktopDownloadStart =
+  | { status: "started"; id: string; path: string; prompted: boolean }
+  | { status: "cancelled" };
+
+/**
+ * アプリにコマンドが無い（または実行を許可されていない）ことによる失敗か。古い版のアプリでは、
+ * この失敗だけを「保存のコマンドが無い」として扱う。設定ファイルの読み込みの競合など、
+ * 一時的な失敗は区別する。
+ *
+ * Tauri は、コマンドが見つからないとき `Command {name} not found`、ACL で拒否されたとき
+ * `Command {name} not allowed ...` を返す。デバッグ版は `zoo_download_settings not allowed.`
+ * のようにコマンド名だけを出すこともある。`not found` だけを見ると、`settings not found`
+ * のような関係のない失敗まで古い版とみなすので、コマンド名を伴うものだけにする。
+ */
+export function isMissingCommandError(error: unknown): boolean {
+  const message =
+    typeof error === "string"
+      ? error
+      : typeof (error as { message?: unknown } | null)?.message === "string"
+        ? String((error as { message: string }).message)
+        : "";
+  return (
+    /コマンドがありません/.test(message) ||
+    /\bcommand\b[^\n]*\bnot found\b/i.test(message) ||
+    /\bcommand\b[^\n]*\bnot allowed\b/i.test(message) ||
+    /\bzoo_[a-z0-9_]+\b[^\n]*\bnot allowed\b/i.test(message)
+  );
+}
+
+/**
+ * 添付の保存の設定を読む。古い版のアプリにはこのコマンドがないので、そのときだけ null
+ * （画面はブラウザーの保存に戻す）。設定を読めなかっただけのときは、更新を促さずに
+ * 呼び出し側で再読み込みできるよう、失敗を返す。
+ */
+export async function desktopDownloadSettings(): Promise<DesktopDownloadSettings | null> {
+  try {
+    return await invoke<DesktopDownloadSettings>("zoo_download_settings");
+  } catch (error) {
+    if (isMissingCommandError(error)) return null;
+    throw error;
+  }
+}
+
+/**
+ * 保存の設定を読む。古い版のアプリ（コマンドがない）か、一時的な失敗かを呼び出し側で
+ * 分けられるよう、失敗をそのまま返す。
+ */
+export async function probeDesktopDownloadSettings(): Promise<DesktopDownloadSettings> {
+  return invoke<DesktopDownloadSettings>("zoo_download_settings");
+}
+
+/** 確認の有無を変える。Rust 側が保存し、新しい設定を返す。保存先のパスは送らない。 */
+export async function desktopSetDownloadSettings(
+  settings: DesktopDownloadSettingsUpdate,
+): Promise<DesktopDownloadSettings> {
+  return invoke<DesktopDownloadSettings>("zoo_set_download_settings", { settings });
+}
+
+/**
+ * OS のフォルダーの選択。選ばれた保存先は Rust 側が保存する。閉じられたら null。
+ * パスは返してもらうだけで、保存先として送ることはない。
+ */
+export async function desktopPickDownloadDirectory(): Promise<DesktopDownloadSettings | null> {
+  return (await invoke<DesktopDownloadSettings | null>("zoo_pick_download_directory")) ?? null;
+}
+
+/**
+ * 保存先が、既存のファイルを上書きせずに保存する操作に対応していない。
+ * Rust 側の `ErrorCode::UnsupportedDestination` を、画面が文言を変えられる形にしたもの。
+ */
+export class DesktopDownloadDestinationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DesktopDownloadDestinationError";
+  }
+}
+
+/**
+ * 同時に保存できる件数の上限に達した。ほかの保存が終われば保存できる。
+ * Rust 側の `ErrorCode::TooManyDownloads` を、画面が文言を変えられる形にしたもの。
+ */
+export class DesktopDownloadLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DesktopDownloadLimitError";
+  }
+}
+
+function downloadError(error: unknown): unknown {
+  const code = (error as { code?: unknown } | null)?.code;
+  const message = (error as { message?: unknown } | null)?.message;
+  if (code === "unsupported_destination") {
+    return new DesktopDownloadDestinationError(
+      typeof message === "string" ? message : "この保存先には保存できません",
+    );
+  }
+  if (code === "too_many_downloads") {
+    return new DesktopDownloadLimitError(
+      typeof message === "string" ? message : "同時に保存できる件数の上限に達しました",
+    );
+  }
+  return error;
+}
+
+/** OS の保存ダイアログを出し、書き込み先を決める。`size` は添付の大きさ（分かれば）。 */
+export async function desktopDownloadBegin(
+  fileName: string,
+  size?: number | null,
+): Promise<DesktopDownloadStart> {
+  const begin: { file_name: string; size?: number } = { file_name: fileName };
+  if (typeof size === "number" && Number.isFinite(size) && size > 0) {
+    begin.size = Math.floor(size);
+  }
+  try {
+    return await invoke<DesktopDownloadStart>("zoo_download_begin", { begin });
+  } catch (error) {
+    throw downloadError(error);
+  }
+}
+
+function invokeRaw(
+  cmd: string,
+  body: Uint8Array,
+  headers: Record<string, string>,
+): Promise<unknown> {
+  const bridge = internals();
+  if (!bridge || !isDesktop) return Promise.reject(new Error("デスクトップ版の中ではありません"));
+  // CSP が IPC のオリジンを許可していない画面では、Tauri が postMessage に切り替え、
+  // 本文を 0〜255 の JSON 配列にして送る。Rust 側はどちらの形も受ける。
+  return bridge.invoke(cmd, body, { headers });
+}
+
+/** 本文の一部を、書き込み中のファイルに追記する（octet-stream）。 */
+export async function desktopDownloadWrite(
+  id: string,
+  bytes: Uint8Array,
+  offset?: number,
+): Promise<void> {
+  const headers: Record<string, string> = { "x-zoo-download-id": id };
+  if (offset !== undefined) headers["x-zoo-download-offset"] = String(offset);
+  await invokeRaw("zoo_download_write", bytes, headers);
+}
+
+/** `.part` を本来の名前に置き換え、実際に保存された名前を返す。 */
+export async function desktopDownloadFinish(id: string): Promise<string> {
+  try {
+    return await invoke<string>("zoo_download_finish", { id });
+  } catch (error) {
+    throw downloadError(error);
+  }
+}
+
+/** 中止して、途中までのファイルを消す。 */
+export async function desktopDownloadCancel(id: string): Promise<void> {
+  await invoke("zoo_download_cancel", { id });
+}
+
 /** 着信のトーストの「応答」を押した、と Rust 側が知らせるイベント（中身なし）。印は `desktopTakeCallAccept` で取る。 */
 export const DESKTOP_CALL_ACCEPT_EVENT = "zoo://call-accept";
 
@@ -163,6 +379,35 @@ export async function desktopTakeCallAccept(): Promise<string | null> {
     return typeof inviteId === "string" ? inviteId : null;
   } catch {
     return null;
+  }
+}
+
+/** `desktopReauthenticate` の失敗。`code` は Rust 側の `ErrorCode`（`client-types/src/ipc.rs`）。 */
+export class DesktopReauthError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "DesktopReauthError";
+  }
+}
+
+/**
+ * E2EE の再認証。Rust 側が既定のブラウザーで AuthZ にログインし直してもらい（`max_age=0`）、
+ * ループバックのリダイレクトで受け取った ID トークンを返す。Rust 側が dev モード
+ * （`ZOO_DEV_USER`。backend も再認証を確かめない）のときは null。
+ * 古い版のアプリにはこのコマンドがないので、`code` が `unsupported` の失敗にする。
+ */
+export async function desktopReauthenticate(): Promise<string | null> {
+  try {
+    return await invoke<string>("zoo_reauthenticate");
+  } catch (error) {
+    const code = (error as { code?: unknown } | null)?.code;
+    if (code === "wrong_mode") return null;
+    if (typeof code === "string") throw new DesktopReauthError(code, errorMessage(error));
+    // 型の付いたエラーでないのは、コマンドがない（古い版のアプリ）か、許されていないとき。
+    throw new DesktopReauthError("unsupported", String(error));
   }
 }
 
@@ -195,7 +440,10 @@ export async function desktopListen<T>(
 
 /** テスト用。判定の結果とトークンのキャッシュを捨てる。 */
 export function resetDesktopForTest(): void {
+  badgeInFlight = false;
+  badgePending = null;
   detected = null;
+  detectFailure = null;
   isDesktop = false;
   cachedToken = null;
 }

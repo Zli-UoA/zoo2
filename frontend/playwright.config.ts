@@ -20,10 +20,11 @@ const devUserId = process.env.VITE_DEV_USER_ID ?? "00000000-0000-0000-0000-00000
  */
 export default defineConfig({
   testDir: "./e2e",
-  // OIDC・i18n・nginx CSP・レイアウト・オフライン・frontend-selection は専用設定で実行するため、
-  // 既定のスモークからは除外する。`pnpm test:e2e:oidc` / `test:e2e:i18n` /
+  // OIDC・E2EE・i18n・nginx CSP・レイアウト・オフライン・frontend-selection は専用設定で実行するため、
+  // 既定のスモークからは除外する。`pnpm test:e2e:oidc` / `test:e2e:e2ee` / `test:e2e:i18n` /
   // `test:e2e:csp` / `test:e2e:layout` / `test:e2e:offline` を参照。
-  testIgnore: /(oidc|i18n|csp|layout|offline|frontend-selection|compose(?:-[\w-]+)?)\.spec\.ts/,
+  testIgnore:
+    /(oidc|e2ee|i18n|csp|layout|offline|frontend-selection|compose(?:-[\w-]+)?)\.spec\.ts/,
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,

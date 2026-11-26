@@ -513,6 +513,41 @@ async fn test_recheck_applies_missed_edits_and_deletes_only_what_slack_dropped()
 }
 
 #[tokio::test]
+async fn test_recheck_does_not_rewrite_a_bot_post_imported_as_a_legacy_card() -> anyhow::Result<()>
+{
+    let _serial = SERIAL.lock().await;
+    let f = fixture(Some(SECRET), None).await?;
+    let t1 = ts_at(10);
+    let bot = |text: &str| {
+        json!([{"type":"message","subtype":"bot_message","bot_id":"B1","ts":&t1,"text":"",
+            "attachments":[{"title":"Ready","title_link":"https://example.com","text":text,"color":"good"}]}])
+    };
+    history(&f, bot("Healthy")).await;
+    deliver(&f, &message_event(&f.team, "C1", &t1, None)).await?;
+    let id = backend::slack::message_id(&f.team, "C1", &t1);
+    // 部品の導入前の取り込み (本文と `card` だけ。キーは当時の encode_cards のとおり辞書順)
+    let card = r##"{"author":"","badge":"","color":"#2eb886","context":"","description":"Healthy","source":"","title":"Ready","url":"https://example.com"}"##;
+    sql(
+        &f.state,
+        "UPDATE messages SET content='Ready\nHealthy',card=$2,components=NULL WHERE id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&id, card],
+    )
+    .await?;
+    let before = row(&f, &id).await;
+    // 30 分ごとの再確認でも、Slack 側が同じなら書き換えない
+    trigger(&f, true).await?;
+    assert_eq!(row(&f, &id).await["revision"], before["revision"]);
+    // attachments が変わったときは書き換える
+    history(&f, bot("Degraded")).await;
+    trigger(&f, true).await?;
+    assert_eq!(
+        row(&f, &id).await["revision"].as_i64().unwrap(),
+        before["revision"].as_i64().unwrap() + 1
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_recheck_does_not_delete_when_most_posts_seem_to_be_missing() -> anyhow::Result<()> {
     let _serial = SERIAL.lock().await;
     let f = fixture(Some(SECRET), None).await?;

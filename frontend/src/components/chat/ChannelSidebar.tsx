@@ -1,23 +1,13 @@
-import { sidebarItemClassName } from "./sidebarStyles";
 import { useTranslation } from "react-i18next";
-import { Link } from "@tanstack/react-router";
 import { useLiveQuery } from "@tanstack/react-db";
 import { cn } from "cn";
-import {
-  HashIcon,
-  HeadphonesIcon,
-  LockIcon,
-  LockKeyholeIcon,
-  PlusIcon,
-  SearchIcon,
-} from "lucide-react";
+import { HashIcon, PlusIcon, SearchIcon } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 
 import { useThreadIndex } from "../../hooks/useThreadIndex";
-import { useUnreadChannels } from "../../hooks/useUnreadChannels";
+import { useUnread } from "../../hooks/useUnread";
 import { useChannelLeaveDates } from "../../hooks/useChannelLeaveDates";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
-import { useCall } from "../../lib/call/call-context";
 import { useUsers } from "../../hooks/useRealtime";
 import { useCollections } from "../../lib/electric/collections-context";
 import type { ChannelRow } from "../../lib/electric/types";
@@ -35,6 +25,9 @@ import { CreateChannelDialog } from "./CreateChannelDialog";
 import { CreateDmDialog } from "./CreateDmDialog";
 import { DmSection } from "./DmSection";
 import { ChannelThreadItems } from "./ChannelThreadItems";
+import { ChannelListItem } from "./ChannelListItem";
+import { ChannelPinMenu } from "./ChannelPinMenu";
+import { PinnedSection } from "./PinnedSection";
 
 const SKELETON_ROWS = [0, 1, 2, 3, 4];
 
@@ -52,11 +45,10 @@ export function ChannelSidebar({
 }) {
   const { t } = useTranslation();
   const shell = useShell();
-  const call = useCall();
   const { channelUsers } = useCollections();
   const usersQuery = useUsers();
   const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
-  const unreadChannelIds = useUnreadChannels(currentUserId);
+  const { unreadChannelIds } = useUnread();
   const [createOpen, setCreateOpen] = useState(false);
   const [browserOpen, setBrowserOpen] = useState(false);
   const [dmOpen, setDmOpen] = useState(false);
@@ -121,6 +113,7 @@ export function ChannelSidebar({
 
   return (
     <aside
+      data-onboarding="channels"
       aria-label={t("channels.title")}
       className={cn(
         "min-w-0 flex-1 flex-col border-r bg-sidebar text-sidebar-foreground md:w-72 md:flex-none",
@@ -128,6 +121,19 @@ export function ChannelSidebar({
       )}
     >
       <ScrollArea className="min-h-0 flex-1 py-1">
+        <PinnedSection
+          channels={channels}
+          memberships={membershipsQuery.data ?? []}
+          users={usersQuery.data ?? []}
+          joinedChannelIds={joinedChannelIds}
+          currentUserId={currentUserId}
+          activeChannelId={shell.selectedChannelId}
+          unreadChannelIds={unreadChannelIds}
+          threads={threadIndex.threads}
+          onObserveThread={threadIndex.observeThread}
+          onOpen={() => shell.showChat()}
+          loading={sidebarLoading}
+        />
         <CollapsibleSection
           title={t("channels.title")}
           icon={<HashIcon />}
@@ -181,48 +187,17 @@ export function ChannelSidebar({
               sidebarChannels.map((channel) => {
                 const isUnread = unreadChannelIds.has(channel.id);
                 const isActive = shell.selectedChannelId === channel.id;
-                const hasActiveCall = (call.activeCalls.get(channel.id) ?? 0) > 0;
                 return (
                   <div key={channel.id}>
-                    <Link
-                      to="/channels/$channelId"
-                      params={{ channelId: channel.id }}
-                      aria-current={isActive ? "page" : undefined}
-                      onClick={() => shell.showChat()}
-                      className={sidebarItemClassName(isActive, isUnread)}
-                    >
-                      {channel.encrypted ? (
-                        <span role="img" aria-label={t("e2ee.badge")} title={t("e2ee.badge")}>
-                          <LockKeyholeIcon className="size-4 shrink-0" aria-hidden="true" />
-                        </span>
-                      ) : channel.is_private ? (
-                        <LockIcon className="size-4 shrink-0" aria-hidden="true" />
-                      ) : (
-                        <HashIcon className="size-4 shrink-0 opacity-60" aria-hidden="true" />
-                      )}
-                      <span className="min-w-0 flex-1 truncate">{channel.channel_name}</span>
-                      {channel.is_nsfw ? (
-                        <span className="shrink-0 text-xs text-muted-foreground">NSFW</span>
-                      ) : null}
-                      {hasActiveCall ? (
-                        <span
-                          role="img"
-                          title={t("call.inCall")}
-                          aria-label={t("call.inCall")}
-                          className="flex items-center text-emerald-500"
-                        >
-                          <HeadphonesIcon className="size-3 animate-pulse" />
-                        </span>
-                      ) : null}
-                      {isUnread ? (
-                        <span
-                          role="img"
-                          aria-label={t("channels.unread")}
-                          title={t("channels.unread")}
-                          className="size-2 shrink-0 rounded-full bg-brand"
-                        />
-                      ) : null}
-                    </Link>
+                    <ChannelListItem
+                      channel={channel}
+                      active={isActive}
+                      unread={isUnread}
+                      onOpen={() => shell.showChat()}
+                      actions={
+                        <ChannelPinMenu channelId={channel.id} itemLabel={channel.channel_name} />
+                      }
+                    />
                     {!channel.is_dm ? (
                       <ChannelThreadItems
                         channel={channel}

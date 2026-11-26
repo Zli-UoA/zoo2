@@ -14,14 +14,13 @@ internal class CoalescedRefresh(
     private val pending = Channel<Unit>(Channel.CONFLATED)
     private val worker = scope.launch {
         for (event in pending) {
-            if (allowed()) {
-                try {
-                    load()
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    // Retry on the next invalidation.
-                }
+            if (!allowed()) continue
+            try {
+                load()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Retry on the next invalidation.
             }
             delay(interval)
         }

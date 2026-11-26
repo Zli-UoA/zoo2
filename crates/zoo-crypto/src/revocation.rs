@@ -24,7 +24,7 @@ use vodozemac::{Ed25519PublicKey, base64_encode};
 use zeroize::Zeroizing;
 
 use crate::backup::{
-    BackupDecryptionKey, BackupEncryptionKey, BackupRow, BackupVersionInfo,
+    BackupDecryptionKey, BackupEncryptionKey, BackupRow, BackupVersionInfo, next_backup_version,
     select_previous_backup_keys,
 };
 use crate::cross_signing::{
@@ -379,6 +379,11 @@ pub struct RevocationState {
     pub expected_secrets_revision: Option<u64>,
     /// 始める前の今の版（`expected_current_version`）。
     pub expected_current_version: Option<String>,
+    /// 作る版の番号（始める前の版の一覧から [`next_backup_version`] で決め、`auth_data` に入れて署名する）。
+    /// 保存形式に後から足した項目なので、ない状態（以前の版で始めた失効）は、`expected_current_version`
+    /// の次の番号（今の版がなければ 1）を使う。
+    #[serde(default)]
+    pub next_backup_version: Option<u64>,
     /// 新しい既定の SSSS 鍵（2〜5）。端末だけの失効では、始める前の鍵と同じ。
     pub key_id: String,
     /// 作った鍵の公開鍵。
@@ -637,6 +642,7 @@ impl Revocation {
             expected_default_key_id: input.unlocked.key().key_id().to_owned(),
             expected_secrets_revision: input.unlocked.secrets_revision(),
             expected_current_version: current,
+            next_backup_version: Some(next_backup_version(&input.server.backup_versions)),
             key_id: ssss.key_id().to_owned(),
             new_keys: PublicCrossSigningKeys::of(&secrets.cross_signing),
             new_backup_public_key: secrets.backup_key.public_key().to_base64(),
@@ -665,20 +671,28 @@ impl Revocation {
     /// 止まった失効を続ける。`unlocked` は開け直した SSSS（2〜5 では新しい SSSS 鍵のスロットで
     /// 開けたもの）。
     ///
-    /// - [`RevocationStage::Prepared`] で止まった 2〜5 の失効は続けられない
-    ///   （[`CryptoError::RevocationRestart`]。最初からやり直す）。
+    /// - [`RevocationStage::Prepared`] で止まった 2〜5 の失効は、SSSS を保存する前に止まっていれば
+    ///   続けられない（[`CryptoError::RevocationRestart`]。最初からやり直す）。SSSS を保存したあと、
+    ///   記録する前に止まっていれば（開け直した SSSS の既定の鍵がこの失効の新しい鍵なら）、保存した
+    ///   SSSS の秘密を照合して [`RevocationStage::SecretStorageSaved`] から続ける（やり直すと、利用者が
+    ///   控えた新しいリカバリーキーが使えなくなるため）。
     /// - SSSS の鍵や秘密が、記録した鍵と違えば [`CryptoError::ServerKeyMismatch`]（別の端末の失効が
     ///   入り混じった。やり直す）。
     pub fn resume(
-        state: RevocationState,
+        mut state: RevocationState,
         unlocked: &UnlockedSecretStorage,
     ) -> Result<Self, CryptoError> {
         let previous = state.previous_backup_keys()?;
-        if state.stage == RevocationStage::Prepared {
-            // SSSS を保存する前。端末だけの失効は同じ SSSS 鍵で開け直せば続けられる。
-            if state.scope == RevocationScope::Full {
+        if state.stage == RevocationStage::Prepared && state.scope == RevocationScope::Full {
+            if unlocked.key().key_id() != state.key_id {
                 return Err(CryptoError::RevocationRestart);
             }
+            // 新しい SSSS 鍵で開けた。秘密は下で、作った鍵と照合する。
+            state.secrets_revision = unlocked.secrets_revision();
+            state.stage = RevocationStage::SecretStorageSaved;
+        }
+        if state.stage == RevocationStage::Prepared {
+            // SSSS を保存する前。端末だけの失効は同じ SSSS 鍵で開け直せば続けられる。
             if unlocked.key().key_id() != state.expected_default_key_id {
                 return Err(CryptoError::ServerKeyMismatch(
                     "既定の SSSS 鍵が、失効を始めたときと違います".into(),
@@ -857,9 +871,22 @@ impl Revocation {
     /// 直前の再認証が要る。`expected_default_key_id` と `expected_secrets_revision` は
     /// [`Self::cross_signing_request`] と同じ。
     pub fn backup_version_request(&self) -> Result<Value, CryptoError> {
+        let expected = self.state.expected_current_version.as_deref();
+        let version = match (self.state.next_backup_version, expected) {
+            (Some(version), _) => version,
+            (None, Some(current)) => current
+                .parse::<u64>()
+                .ok()
+                .and_then(|n| n.checked_add(1))
+                .ok_or_else(|| {
+                    CryptoError::InvalidBackup(format!("今の版の番号が正しくありません: {current}"))
+                })?,
+            (None, None) => 1,
+        };
         let mut body = self.secrets.backup_key.create_version_request(
             &self.secrets.cross_signing.master,
-            self.state.expected_current_version.as_deref(),
+            expected,
+            version,
         )?;
         body["expected_default_key_id"] = json!(self.state.key_id);
         self.add_secrets_revision(&mut body);
@@ -933,6 +960,29 @@ impl Revocation {
             }
         }
         (out, dropped)
+    }
+
+    /// 読み直した SSSS（`GET /api/e2ee/secret_storage`）に、この失効の秘密が保存されているか。SSSS の
+    /// 保存で 409 を受けたあと、応答をなくした自分の書き込みが済んでいたかを見る。端末だけの失効は既定の
+    /// 鍵 ID が変わらないので、鍵 ID ではなく、開けた秘密を作った鍵と比べる。
+    pub fn secret_storage_matches(&self, secret_storage: &Value) -> Result<bool, CryptoError> {
+        let Some(storage) = SecretStorage::from_json(&self.state.user_id, secret_storage)? else {
+            return Ok(false);
+        };
+        if storage.default_key_id() != self.ssss.key_id() {
+            return Ok(false);
+        }
+        // 別の書き込みで開けない・読めない秘密は、自分の書き込みではない。
+        let Ok(unlocked) = storage.unlock_with_key(&self.ssss) else {
+            return Ok(false);
+        };
+        let Ok(stored) = OwnSecrets::from_unlocked(&unlocked) else {
+            return Ok(false);
+        };
+        Ok(
+            PublicCrossSigningKeys::of(&stored.cross_signing) == self.state.new_keys
+                && stored.backup_key.public_key() == self.secrets.backup_key.public_key(),
+        )
     }
 
     /// 保存を終えたあとに読み直した値を、自分が作った鍵と比べる（docs/e2ee.md の「失効を行う端末は、

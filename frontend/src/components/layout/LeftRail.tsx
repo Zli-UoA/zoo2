@@ -1,3 +1,4 @@
+import { OnboardingButton } from "./OnboardingTour";
 import { useShell } from "./shell-context";
 import { useTranslation } from "react-i18next";
 import { Link } from "@tanstack/react-router";
@@ -8,6 +9,7 @@ import {
   HomeIcon,
   MessageCircleMoreIcon,
   type LucideIcon,
+  SearchIcon,
   SettingsIcon,
 } from "lucide-react";
 
@@ -17,9 +19,12 @@ import { useCollections } from "../../lib/electric/collections-context";
 import { isDesktopSession } from "../../lib/desktop";
 import { accountProfileUrl } from "../../lib/oidc/accountUrl";
 import { AppAvatar } from "../chat/AppIdentity";
+import { Button } from "../ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "../ui/dialog";
 import { Separator } from "../ui/separator";
 import { AppDialogs } from "../chat/AppsDialog";
 import { NotificationsButton } from "../chat/NotificationsButton";
+import { CatchUpButton } from "../chat/CatchUpButton";
 import { PaneHeader } from "./PaneHeader";
 
 function RailLink({
@@ -28,7 +33,7 @@ function RailLink({
   label,
   exact = false,
 }: {
-  to: "/home" | "/" | "/bubble" | "/realtime";
+  to: "/home" | "/" | "/search" | "/bubble" | "/realtime";
   icon: LucideIcon;
   label: string;
   exact?: boolean;
@@ -52,6 +57,8 @@ function RailLink({
  */
 export function LeftRail() {
   const { t } = useTranslation();
+  const version =
+    document.documentElement.dataset.zooBuildSha?.slice(0, 12) || t("aboutZoo.versionUnknown");
   const shell = useShell();
   const { config } = useCollections();
   const { currentUserId } = useCurrentUser();
@@ -73,11 +80,25 @@ export function LeftRail() {
       )}
     >
       <PaneHeader className="mb-1 w-full justify-center px-0">
-        <img src="/icons/zoo.svg" alt="Zoo" width={36} height={36} className="size-9 rounded-xl" />
+        <Dialog>
+          <DialogTrigger
+            aria-label={t("aboutZoo.title")}
+            title={t("aboutZoo.title")}
+            render={<Button size="icon" variant="ghost" className="size-11 rounded-xl" />}
+          >
+            <img src="/icons/zoo.svg" alt="" width={36} height={36} className="size-9 rounded-xl" />
+          </DialogTrigger>
+          <DialogContent>
+            <DialogTitle className="pr-8">{t("aboutZoo.title")}</DialogTitle>
+            <DialogDescription>{t("aboutZoo.version", { version })}</DialogDescription>
+          </DialogContent>
+        </Dialog>
       </PaneHeader>
       <RailLink to="/home" icon={HomeIcon} label={t("home.title")} exact />
       <RailLink to="/" icon={HashIcon} label={t("channels.title")} exact />
+      <RailLink to="/search" icon={SearchIcon} label={t("globalSearch.openNav")} />
       <NotificationsButton />
+      <CatchUpButton />
       <RailLink to="/bubble" icon={MessageCircleMoreIcon} label={t("bubbleChat.title")} exact />
       <AppDialogs />
       {/* 同期の状態（/realtime）は開発時の確認用。本番ビルドでは出さない。 */}
@@ -86,6 +107,7 @@ export function LeftRail() {
       ) : null}
 
       <div className="mt-auto flex flex-col items-center gap-2">
+        <OnboardingButton />
         <Link
           to="/settings"
           search={{ channel: shell.selectedChannelId ?? undefined }}

@@ -11,7 +11,7 @@ import { MessagePane } from "./MessagePane";
 
 function PaneFrame({ children }: { children: ReactNode }) {
   return (
-    <StoryShell selectedChannelId="channel-general">
+    <StoryShell selectedChannelId="00000000-0000-4000-8000-000000000001">
       <div className="flex h-[720px] min-w-0 flex-1 bg-background">
         <div className="flex min-w-0 flex-1 flex-col">{children}</div>
       </div>
@@ -28,7 +28,7 @@ const meta = {
     isMember: { control: "boolean" },
   },
   args: {
-    channelId: "channel-general",
+    channelId: "00000000-0000-4000-8000-000000000001",
     isMember: true,
   },
   render: (args) => (
@@ -62,6 +62,18 @@ export const NotJoined: Story = {
   args: {
     isMember: false,
   },
+};
+
+// 管理者のみ投稿できるチャンネルの一般メンバー。閲覧はでき、入力欄だけが理由付きで止まる。
+export const PostingForbidden: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: { postingForbidden: true },
+  play: playForImplementation(async () => {
+    await expect(await screen.findByText(/今日のリリースは 18:00/)).toBeVisible();
+    await expect(
+      screen.getByPlaceholderText("このチャンネルは管理者のみ投稿できます。"),
+    ).toBeDisabled();
+  }),
 };
 
 export const Mobile: Story = {
@@ -126,6 +138,11 @@ export const Encrypted: Story = {
     );
     await expect(composer).toBeDisabled();
     await expect(screen.queryByRole("button", { name: "ファイルを添付" })).not.toBeInTheDocument();
+    // 配布先の表示が空でも、読み上げの live region は置いておく（後から配れない相手が出ても読み上げる）。
+    const recipientsRegion = screen.getByTestId("encryption-recipients-status");
+    await expect(recipientsRegion).toHaveAttribute("role", "status");
+    await expect(recipientsRegion).toHaveAttribute("aria-live", "polite");
+    await expect(recipientsRegion).toBeEmptyDOMElement();
   }),
 };
 
