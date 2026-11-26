@@ -7,6 +7,16 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.*
 
 class PublicImagesTest {
+    @Test fun cacheOnly504IsReportedAsAMiss() = runTest {
+        val http = HttpClient(MockEngine { request ->
+            assertTrue(request.headers[HttpHeaders.CacheControl].orEmpty().contains("only-if-cached"))
+            respond("", HttpStatusCode.GatewayTimeout)
+        })
+        try {
+            assertFailsWith<ImageCacheMiss> { loadPublicImage(http, "https://proxy.example/image", cacheOnly = true) }
+        } finally { http.close() }
+    }
+
     @Test fun queryOnlyRedirectKeepsTheImagePath() = runTest {
         val urls = mutableListOf<String>()
         val http = HttpClient(MockEngine { request ->
@@ -64,4 +74,18 @@ class PublicImagesTest {
             assertEquals(6, requests)
         } finally { http.close() }
     }
+    @Test fun doesNotFollowMediaProxyRedirectToTheOriginalHost() = runTest {
+        val urls = mutableListOf<String>()
+        val http = HttpClient(MockEngine { request ->
+            urls += request.url.toString()
+            respond("", HttpStatusCode.Found, headersOf(HttpHeaders.Location, "https://external.example/image"))
+        }) { followRedirects = false }
+        try {
+            assertFailsWith<IllegalArgumentException> {
+                loadPublicImage(http, "https://proxy.example/image", restrictOrigin = true)
+            }
+            assertEquals(listOf("https://proxy.example/image"), urls)
+        } finally { http.close() }
+    }
+
 }

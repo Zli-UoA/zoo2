@@ -9,6 +9,8 @@ import androidx.browser.auth.AuthTabIntent
 import androidx.browser.customtabs.CustomTabsClient
 import androidx.browser.customtabs.CustomTabsIntent
 import io.ktor.client.HttpClient
+import io.ktor.client.engine.okhttp.OkHttp
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.forms.submitForm
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
@@ -40,6 +42,7 @@ internal class AndroidReauth(
     private val http: HttpClient,
     private val connection: LoginConnection,
     private val launchAuthTab: (AuthTabIntent, Uri, Uri, (AuthTabIntent.AuthResult) -> Unit) -> Boolean,
+    private val readDiscovery: suspend (String) -> JsonObject = { readOidcDiscovery(it) },
 ) {
     private class Pending(val request: ReauthRequest, val result: CompletableDeferred<ReauthCallback>)
 
@@ -55,9 +58,10 @@ internal class AndroidReauth(
     suspend fun reauthenticate(): String =
         requireNotNull(authorize(forceReauth = true).tokens.text("id_token"))
 
-    suspend fun signIn(): BrowserAuthorization = authorize(forceReauth = false)
+    suspend fun signIn(stage: (LoginStage) -> Unit): BrowserAuthorization = authorize(forceReauth = false, stage = stage)
 
-    private suspend fun authorize(forceReauth: Boolean): BrowserAuthorization {
+    private suspend fun authorize(forceReauth: Boolean, stage: (LoginStage) -> Unit = {}): BrowserAuthorization {
+        stage(LoginStage.Discovery)
         val discovery = discover()
         val request =
             ReauthRequest.create(
@@ -72,6 +76,7 @@ internal class AndroidReauth(
         val waiting = Pending(request, CompletableDeferred())
         check(pending.compareAndSet(null, waiting)) { "認証はすでに進行中です" }
         try {
+            stage(LoginStage.OpenBrowser)
             withContext(Dispatchers.Main) {
                 try {
                     val url = Uri.parse(request.url)
@@ -83,6 +88,7 @@ internal class AndroidReauth(
                     throw ReauthException(ReauthException.Reason.BROWSER_UNAVAILABLE, "ブラウザーを開けません")
                 }
             }
+            stage(LoginStage.BrowserCallback)
             val code =
                 when (val callback =
                     withTimeoutOrNull(ReauthRequest.TIMEOUT_MILLIS) { waiting.result.await() }
@@ -90,6 +96,7 @@ internal class AndroidReauth(
                     is ReauthCallback.Code -> callback.code
                     is ReauthCallback.Error -> throw ReauthException(ReauthException.Reason.DENIED, "認証が取り消されました")
                 }
+            stage(LoginStage.Exchange)
             return exchange(discovery, request, code)
         } finally {
             pending.compareAndSet(waiting, null)
@@ -118,11 +125,7 @@ internal class AndroidReauth(
     private suspend fun discover(): JsonObject {
         val issuer = connection.issuer
         require(Url(issuer).protocol == URLProtocol.HTTPS) { "認証先は HTTPS を指定してください" }
-        val response = http.get("${issuer.trimEnd('/')}/.well-known/openid-configuration")
-        if (response.status.value !in 200..299) {
-            throw ReauthException(ReauthException.Reason.DENIED, "認証先の設定を取得できません (HTTP ${response.status.value})")
-        }
-        val discovery = json.parseToJsonElement(response.bodyAsText()) as JsonObject
+        val discovery = readDiscovery(issuer)
         if (discovery.text("issuer")?.trimEnd('/') != issuer.trimEnd('/')) {
             throw ReauthException(ReauthException.Reason.DENIED, "issuer が一致しません")
         }
@@ -161,13 +164,37 @@ internal class AndroidReauth(
     }
 }
 
+// Discovery is read-only. Allow another IP address when the first network route fails.
+internal suspend fun readOidcDiscovery(
+    issuer: String,
+    transport: okhttp3.OkHttpClient.Builder.() -> Unit = {},
+): JsonObject = HttpClient(OkHttp) {
+    followRedirects = false
+    engine {
+        config {
+            retryOnConnectionFailure(true)
+            followRedirects(false)
+            followSslRedirects(false)
+            transport()
+        }
+    }
+    install(HttpTimeout) { requestTimeoutMillis = 30_000 }
+}.use { client ->
+    val response = client.get("${issuer.trimEnd('/')}/.well-known/openid-configuration")
+    if (response.status.value !in 200..299) {
+        throw ReauthException(ReauthException.Reason.DENIED,
+            "認証先の設定を取得できません (HTTP ${response.status.value})")
+    }
+    response.loginJson("認証先の設定取得")
+}
+
 internal fun authTabCallback(code: Int, uri: String?, request: ReauthRequest): ReauthCallback =
     when (code) {
         AuthTabIntent.RESULT_OK -> uri?.let { ReauthCallbacks.parse(it, request) }
-            ?: throw ReauthException(ReauthException.Reason.DENIED, "認証の戻り先を確認できませんでした")
+            ?: throw ReauthException(ReauthException.Reason.INVALID_CALLBACK, "認証の戻り先を確認できませんでした")
         AuthTabIntent.RESULT_VERIFICATION_FAILED, AuthTabIntent.RESULT_VERIFICATION_TIMED_OUT ->
-            throw ReauthException(ReauthException.Reason.DENIED, "認証の戻り先をブラウザーで検証できませんでした")
-        else -> throw ReauthException(ReauthException.Reason.DENIED, "認証が取り消されました")
+            throw ReauthException(ReauthException.Reason.CALLBACK_VERIFICATION_FAILED, "認証の戻り先をブラウザーで検証できませんでした")
+        else -> throw ReauthException(ReauthException.Reason.CANCELLED, "認証が取り消されました")
     }
 
 private fun JsonObject.text(key: String): String? = (this[key] as? JsonPrimitive)?.contentOrNull
