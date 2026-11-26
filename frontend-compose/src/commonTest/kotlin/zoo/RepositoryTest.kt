@@ -627,6 +627,7 @@ class RepositoryTest {
     fun onDemandConsecutiveMustRefetchCancelsTheOldRefetchAndPagingResumes() = runTest {
         val platform = FakePlatform()
         var subsetCalls = 0
+        var offsetCounter = 1
         val secondSubsetStarted = CompletableDeferred<Unit>()
         // live の要求が来たら、この数だけ 409（must-refetch）で返す。待っている間に取り消された要求は数えない。
         val invalidations = kotlinx.coroutines.flow.MutableStateFlow(0)
@@ -652,10 +653,13 @@ class RepositoryTest {
                             invalidations.value = invalidations.value - 1
                             respond("[]", HttpStatusCode.Conflict, headersOf("electric-handle" to listOf("next-handle")))
                         }
-                        // 最初の購読と、must-refetch の後の取り直しの購読（changes_only は offset=now から始まる）。
-                        p["offset"] == "now" || p["offset"] == "-1" ->
-                            respond("""[{"headers":{"control":"up-to-date"}}]""", headers = protocolHeaders())
-                        else -> awaitCancellation()
+                        // 購読（最初の offset=now、snapshot の後の追いつき、must-refetch の後の取り直し）。
+                        // 追いつきの要求も、live に進めるよう up-to-date で返す。offset は毎回進める。
+                        else ->
+                            respond(
+                                """[{"headers":{"control":"up-to-date"}}]""",
+                                headers = protocolHeaders(offset = "${++offsetCounter}_0"),
+                            )
                     }
                 }
             )
