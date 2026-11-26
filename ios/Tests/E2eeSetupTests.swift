@@ -26,6 +26,8 @@ final class FakeSetupServer: E2eeSetupAPI {
     var reauthHeaders: [String] = []
     var usedSlots: [String] = []
     var failNext: Set<String> = []
+    /// 保存したあとに、応答を失う（通信エラーにする）操作。
+    var failAfterSave: Set<String> = []
     /// 版の作成にも、直前の再認証を求める（過去の版があるユーザーの版の作り直し）。
     var requireReauthForVersions = false
 
@@ -92,6 +94,7 @@ final class FakeSetupServer: E2eeSetupAPI {
         }
         if case .array(let incoming) = body["slots"] { slots += incoming }
         revision += 1
+        if failAfterSave.remove("secret_storage") != nil { throw Network() }
         return revision
     }
 
@@ -365,6 +368,30 @@ struct E2eeSetupTests {
         server.backupConflict = "E2EE_SSSS_CONFLICT"
         // 解錠の保存の末尾で、鍵バックアップの送信が SSSS の競合になる。解錠できたとは返さない。
         await #expect(throws: E2eeSetupError.secretsChanged) { _ = try await second.setup.unlock(.recovery(start.recoveryKey)) }
+    }
+
+    @Test func SSSSを保存したあとに応答を失って再起動しても新しいリカバリーキーでリセットを完了できる() async throws {
+        let server = FakeSetupServer(userID: user)
+        let first = try Device(server)
+        let start = try first.setup.begin()
+        try await first.setup.completeSetup(start.session, reauth: "t")
+        let oldMaster = server.keys["master_key"]
+        let second = try Device(server)
+        defer { first.cleanUp(); second.cleanUp() }
+        let (reset, expectation) = try await second.setup.beginReset()
+        // サーバーは SSSS を新しい鍵で保存したが、応答を失う（そのあと、アプリが終わる）。
+        server.failAfterSave.insert("secret_storage")
+        await #expect(throws: (any Error).self) {
+            try await second.setup.completeReset(reset.session, expectation: expectation, reauth: "t")
+        }
+        #expect(server.defaultKeyID == reset.session.keyId() && server.keys["master_key"] == oldMaster)
+        try second.restart()
+        // 新しいリカバリーキーで解錠する。リセットの続き（置き換える前のクロス署名鍵が前提）で終える。
+        let unlocked = try await second.setup.unlock(.recovery(reset.recoveryKey))
+        #expect(unlocked.needsReauth)
+        try await second.setup.saveRemaining(unlocked.session, secretsRevision: unlocked.secretsRevision, reauth: "t")
+        #expect(server.keys["master_key"] != oldMaster && server.versions.count == 2)
+        #expect(second.store.resetKeyID == nil && second.store.hasOwnKeys)
     }
 
     @Test func リセットの印はSSSSの保存の要求を送る前に残す() async throws {
