@@ -276,7 +276,6 @@ internal fun ConnectedScreens(
             showFullCall -> background()
             sipRoute && state.overlay == null -> platform.navigate("/settings")
             state.overlay == "edit-entry" -> state.finishEditing()
-            state.overlay == "post" && state.replyExpanded -> state.replyExpanded = false
             state.overlay == "post" -> state.closePost()
             state.overlay == "profile" -> state.overlay = "people"
             state.overlay == "thread-members" -> state.overlay = "thread-settings"
@@ -284,7 +283,6 @@ internal fun ConnectedScreens(
             state.overlay in setOf("members", "rename", "archive", "unarchive") -> state.overlay = "channel-settings"
             state.overlay == "add-member" -> state.overlay = "members"
             state.overlay != null -> state.overlay = null
-            route == "/bubble" && state.bubbleExpanded -> state.bubbleExpanded = false
             state.collapseInput(channelId, currentThread) -> Unit
             currentThread != null -> session.thread = null
             platform.back() -> Unit
@@ -345,13 +343,13 @@ internal fun ConnectedScreens(
             AndroidScreen.SettingsDetail("スレッド設定", state.threadSettings(currentThread, canPost, member))
         state.overlay == "thread-members" -> AndroidScreen.Directory("スレッドの参加者", state.query,
             state.threadDetails.array("participants").rows().filter { author(it).contains(state.query, true) }
-                .map { SelectionItem(it.text("id"), author(it), isUserName = true) })
+                .map { SelectionItem(it.text("id"), author(it), isUserName = true) }, scopeId = currentThread)
         state.overlay == "add-member" -> AndroidScreen.Directory("メンバーを追加", state.query,
             users.filter { u -> channelMembers.none { it.text("user_id") == u.text("id") } && author(u).contains(state.query, true) }
-                .map { SelectionItem(it.text("id"), author(it), isUserName = true) })
+                .map { SelectionItem(it.text("id"), author(it), isUserName = true) }, scopeId = channelId)
         state.overlay == "members" -> AndroidScreen.Directory("メンバー", state.query,
             users.filter { u -> channelMembers.any { it.text("user_id") == u.text("id") } && author(u).contains(state.query, true) }
-                .map { SelectionItem(it.text("id"), author(it), isUserName = true) })
+                .map { SelectionItem(it.text("id"), author(it), isUserName = true) }, scopeId = channelId)
         state.overlay == "create" || state.overlay == "rename" -> AndroidScreen.EditChannel(
             if (state.overlay == "create") "チャンネルを作成" else "チャンネルを編集",
             state.channelName, state.channelDescription, if (state.overlay == "create") "作成" else "保存",
@@ -374,14 +372,14 @@ internal fun ConnectedScreens(
         state.overlay == "post" && state.postDetail.isNotEmpty() -> {
             val entries = state.postDetail.map { state.entry(it, usersById, previewService = previewService) }
             val root = entries.firstOrNull { it.id == state.openedPostId } ?: entries.first()
-            AndroidScreen.Post(root, entries.filter { it.id != root.id }, InputState(state.replyDraft, expanded = state.replyExpanded, canSend = env.online && !state.saving,
+            AndroidScreen.Post(root, entries.filter { it.id != root.id }, InputState(state.replyDraft, canSend = env.online && !state.saving,
                 selection = state.replySelection, focusRequest = state.replyFocusRequest, lastSend = state.replyLastSend))
         }
         state.overlay in setOf("theme", "language", "notifications", "search-engine") -> state.settingsDetail(env)
         searching -> state.searchScreen(usersById, channels, memberships)
         route == "/home" -> AndroidScreen.Home(posts, state.home.timeline, state.home.canLoadOlder)
         route == "/notifications" -> state.inbox.screen()
-        route == "/bubble" -> AndroidScreen.Bubble(bubbles.map { state.entry(it, usersById) }, InputState(bubbleDraft, expanded = state.bubbleExpanded, live = true), bubbleParticipants.map { it.title })
+        route == "/bubble" -> AndroidScreen.Bubble(bubbles.map { state.entry(it, usersById) }, InputState(bubbleDraft, live = true), bubbleParticipants.map { it.title })
         route == "/settings" -> AndroidScreen.Settings(state.settings(env, openIncomingSettings != null))
         channel != null && (threadRoot != null || deletedRoot) -> {
           // 暗号化の境目は、スレッドの画面に出す親と返信の中で決める。
@@ -401,13 +399,15 @@ internal fun ConnectedScreens(
                 users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }).copy(notices = recipientLines), focusMessage,
             focusRequest = focusRequest,
             loadOlder = pageStates[PageScope.Replies(currentThread.orEmpty())]?.let { it.hasOlder && !it.loading } == true,
+            historyReady = !env.online || pageStates[PageScope.Replies(currentThread.orEmpty())]?.loaded == true,
           )
         }
         channel != null -> AndroidScreen.Conversation(channelId.orEmpty(), channel.text("channel_name"), channel.text("description"),
             withEncryptionBoundary(messages.filter { it.id in conversationEntries }, rowsById, encrypted, session::t), state.input(channelId.orEmpty(), canPost,
                 users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }).copy(notices = recipientLines),
             canCall = channel.flag("is_dm") && member && !encrypted, focusMessage = focusMessage, focusRequest = focusRequest,
-            loadOlder = pageStates[PageScope.Main]?.let { it.hasOlder && !it.loading } == true)
+            loadOlder = pageStates[PageScope.Main]?.let { it.hasOlder && !it.loading } == true,
+            historyReady = !env.online || pageStates[PageScope.Main]?.loaded == true)
         else -> AndroidScreen.Channels(state.channelSections(channels, usersById, memberships))
     }
     val instanceHosts = when (screen) {

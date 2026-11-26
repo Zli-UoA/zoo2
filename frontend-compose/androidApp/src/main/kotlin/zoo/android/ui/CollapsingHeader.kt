@@ -20,10 +20,12 @@ import androidx.compose.ui.unit.dp
 @Composable
 internal fun CollapsingHeader(
     header: @Composable () -> Unit,
+    forceVisible: Boolean = false,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val threshold = with(LocalDensity.current) { 20.dp.toPx() }
     var visible by rememberSaveable { mutableStateOf(true) }
+    LaunchedEffect(forceVisible) { if (forceVisible) visible = true }
     val scroll = remember(threshold) {
         object : NestedScrollConnection {
             private var distance = 0f
@@ -45,7 +47,7 @@ internal fun CollapsingHeader(
     }
     Column(Modifier.fillMaxSize().nestedScroll(scroll)) {
         AnimatedVisibility(
-            visible = visible,
+            visible = visible || forceVisible,
             enter = expandVertically(expandFrom = Alignment.Top),
             exit = shrinkVertically(shrinkTowards = Alignment.Top),
         ) { header() }

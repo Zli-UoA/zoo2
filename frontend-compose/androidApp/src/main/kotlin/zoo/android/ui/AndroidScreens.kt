@@ -110,6 +110,7 @@ internal sealed interface AndroidScreen {
         val focusRequest: String? = focusMessage,
         /** 古いページが残っていて、いま取れる。 */
         val loadOlder: Boolean = false,
+        val historyReady: Boolean = true,
     ) : AndroidScreen
     data class Thread(
         val channelName: String, val root: TimelineItem, val replies: List<TimelineItem>, val input: InputState,
@@ -117,6 +118,7 @@ internal sealed interface AndroidScreen {
         /** Changes on each request to show [focusMessage] (a search result opened again), unlike the id. */
         val focusRequest: String? = focusMessage,
         val loadOlder: Boolean = false,
+        val historyReady: Boolean = true,
     ) : AndroidScreen
     data class Post(val root: TimelineItem, val replies: List<TimelineItem>, val input: InputState) : AndroidScreen
     data class ChannelSettings(val channel: String, val groups: List<SettingsGroup>, val id: String = channel) : AndroidScreen
@@ -134,6 +136,7 @@ internal sealed interface AndroidScreen {
     data class Directory(
         val title: String, val query: String, val results: List<SelectionItem>,
         val submit: String? = null, val canSubmit: Boolean = false, val encryption: Boolean? = null,
+        val scopeId: String? = null,
     ) : AndroidScreen
     data class EditEntry(val input: InputState) : AndroidScreen
     data class Search(val state: SearchScreenState) : AndroidScreen
@@ -232,6 +235,16 @@ internal fun AndroidScreens(
     photo: @Composable (RecentPhoto, Modifier) -> Unit,
 ) {
     val systemHaptics = LocalHapticFeedback.current
+    pageState.SaveableStateProvider("screen-history") {
+        var recentRoutes by rememberSaveable { mutableStateOf(arrayListOf<String>()) }
+        val route = screen.routeKey()
+        LaunchedEffect(pageState, route) {
+            val updated = recentRoutes.filterNot { it == route } + route
+            val retained = updated.takeLast(32)
+            updated.dropLast(retained.size).forEach(pageState::removeState)
+            recentRoutes = ArrayList(retained)
+        }
+    }
     CompositionLocalProvider(LocalHapticFeedback provides if (interaction.haptics) systemHaptics else SilentHaptics) {
         AnimatedContent(
             targetState = screen,
@@ -266,7 +279,7 @@ private fun AndroidScreen.routeKey(): String = when (this) {
     is AndroidScreen.Profile -> "profile:$id"
     is AndroidScreen.ChannelSettings -> "channel-settings:$id"
     is AndroidScreen.SettingsDetail -> "settings-detail:$title"
-    is AndroidScreen.Directory -> "directory:$title"
+    is AndroidScreen.Directory -> "directory:$title:${scopeId.orEmpty()}"
     else -> this::class.simpleName.orEmpty()
 }
 
@@ -316,7 +329,7 @@ private fun RenderAndroidScreen(
                     color = colors.secondary, fontSize = 13.sp)
                 // 入力途中の URL で行き先を取得しないよう、Bubble（Web と同じく素の表示）ではアプリ内リンクを扱わない。
                 CompositionLocalProvider(LocalChannelLinks provides null) {
-                    TimelineWithInput(screen.entries, screen.input, colors, dispatch)
+                    TimelineWithInput(screen.entries, screen.input, colors, dispatch, canResize = false)
                 }
             }
             is AndroidScreen.Settings -> SettingsPage(screen.groups, colors, openSetting, toggle)
@@ -328,7 +341,7 @@ private fun RenderAndroidScreen(
                             { dispatch(AndroidUiAction.StartCall) })
                     }
                 }) {
-                    TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = interaction.swipeReply, allowThreads = true, focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true,
+                    TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = interaction.swipeReply, allowThreads = true, focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true, historyReady = screen.historyReady,
                         loadEarlier = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderMessages) } } else null)
                 }
             }
@@ -338,12 +351,12 @@ private fun RenderAndroidScreen(
                 Text("# ${screen.channelName}", Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                     color = colors.secondary, fontSize = 13.sp)
                 TimelineWithInput(listOf(screen.root) + screen.replies, screen.input, colors, dispatch,
-                    focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true,
+                    focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true, historyReady = screen.historyReady,
                     loadEarlier = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderMessages) } } else null)
             }
             is AndroidScreen.Post -> {
                 PageHeader("投稿", colors, onBack = back)
-                TimelineWithInput(listOf(screen.root) + screen.replies, screen.input, colors, dispatch, posts = true)
+                TimelineWithInput(listOf(screen.root) + screen.replies, screen.input, colors, dispatch, posts = true, canResize = false)
             }
             is AndroidScreen.EditEntry -> {
                 PageHeader("編集", colors, onBack = back)
@@ -388,7 +401,7 @@ private fun RenderAndroidScreen(
 
 @Composable
 private fun HomePage(screen: AndroidScreen.Home, colors: AndroidColors, dispatch: (AndroidUiAction) -> Unit) {
-    CollapsingHeader(header = {
+    CollapsingHeader(forceVisible = screen.posts.isEmpty(), header = {
         Column {
             PageHeader(androidLabel("home.title", "ホーム"), colors) {
                 UiIconButton(UiIcon.Search, "ユーザーを検索", colors.foreground,
@@ -438,8 +451,8 @@ private fun ChannelMenuButton(colors: AndroidColors, dispatch: (AndroidUiAction)
 private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, dispatch: (AndroidUiAction) -> Unit) {
     PageHeader(androidLabel("channels.title", "チャンネル"), colors) { ChannelMenuButton(colors, dispatch) }
     val scroll = rememberLazyListState()
-    if (screen.sections.isEmpty()) return
-    LazyColumn(state = scroll, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
+    val visibleScroll = if (screen.sections.any { it.channels.isNotEmpty() }) scroll else rememberLazyListState()
+    LazyColumn(state = visibleScroll, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
         screen.sections.forEach { section ->
             item {
                 Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -492,6 +505,8 @@ private fun ColumnScope.TimelineWithInput(
     focusRequest: String? = focusMessage,
     posts: Boolean = false,
     hideIdleHandle: Boolean = false,
+    canResize: Boolean = true,
+    historyReady: Boolean = true,
     loadEarlier: (() -> Unit)? = null,
 ) {
     val scroll = rememberLazyListState()
@@ -531,27 +546,35 @@ private fun ColumnScope.TimelineWithInput(
     var followEnd by rememberSaveable { mutableStateOf(false) }
     val focusedIndex = entries.indexOfFirst { it.id == focusMessage }
     val restoredIndex = if (restorePending && !followEnd) entries.indexOfFirst { it.entryKey == restoredAnchor } else -1
-    LaunchedEffect(input.expanded, input.lastSend, focusRequest, focusedIndex, entries.isNotEmpty(), restoredIndex) {
+    LaunchedEffect(input.expanded, input.lastSend, focusRequest, focusedIndex, entries.isNotEmpty(), restoredIndex, historyReady) {
         if (input.expanded || entries.isEmpty()) return@LaunchedEffect
         when {
+            focusRequest != null && openedTarget != focusRequest -> {
+                followedSend = input.lastSend
+                restorePending = false
+                followEnd = false
+                if (focusedIndex >= 0) {
+                    scroll.requestScrollToItem(focusedIndex)
+                    openedTarget = focusRequest
+                    positioned = true
+                }
+            }
             input.lastSend != null && input.lastSend != followedSend -> {
                 followedSend = input.lastSend
                 restorePending = false
-                openedTarget = focusRequest
                 followEnd = true
                 positioned = true
                 scroll.requestScrollToItem(entries.lastIndex)
             }
-            focusedIndex >= 0 && openedTarget != focusRequest -> {
-                scroll.requestScrollToItem(focusedIndex)
-                restorePending = false
-                followEnd = false
-                openedTarget = focusRequest
-                positioned = true
-            }
             restoredIndex >= 0 -> {
                 scroll.requestScrollToItem(restoredIndex, restoredOffset)
                 restorePending = false
+            }
+            restorePending && !followEnd && historyReady -> {
+                restorePending = false
+                followEnd = allowThreads
+                positioned = true
+                scroll.requestScrollToItem(if (allowThreads) entries.lastIndex else 0)
             }
             focusMessage == null && allowThreads && !positioned -> {
                 scroll.scrollToItem(entries.lastIndex)
@@ -565,11 +588,8 @@ private fun ColumnScope.TimelineWithInput(
     // Only follow those changes while the reader is at the end or has just sent a message.
     LaunchedEffect(scroll) {
         var wasScrolling = false
-        var previousLayout = scroll.layoutInfo
         snapshotFlow { Triple(scroll.isScrollInProgress, scroll.layoutInfo, followEnd) }
             .collect { (scrolling, layout, _) ->
-                val remeasured = layout !== previousLayout
-                previousLayout = layout
                 if (scrolling) {
                     wasScrolling = true
                     restorePending = false
@@ -579,7 +599,6 @@ private fun ColumnScope.TimelineWithInput(
                         wasScrolling = false
                     }
                     if (layout.viewportSize.height > 0 && layout.totalItemsCount > 0) {
-                        if (remeasured && !scroll.canScrollForward && !restorePending) followEnd = true
                         if (followEnd && scroll.canScrollForward) {
                             val lastIndex = layout.totalItemsCount - 1
                             val offset = layout.visibleItemsInfo.lastOrNull()?.takeIf { it.index == lastIndex }?.size ?: 0
@@ -603,7 +622,7 @@ private fun ColumnScope.TimelineWithInput(
         onMention = { dispatch(AndroidUiAction.Mention(it)) },
         onSelection = { dispatch(AndroidUiAction.SelectInput(it)) },
         onRemoveFile = { dispatch(AndroidUiAction.RemoveFile(it)) },
-        hideIdleHandle = hideIdleHandle)
+        hideIdleHandle = hideIdleHandle, canResize = canResize)
 }
 
 @Composable

@@ -136,6 +136,52 @@ class ConversationScrollTest {
     }
 
     @Test
+    fun openingAThreadKeepsItsRootVisibleWhenRepliesArrive() {
+        val root = TimelineItem("root", "はる", "親メッセージ", "12:00")
+        var screen by mutableStateOf(AndroidScreen.Thread("開発", root, emptyList(), InputState(), historyReady = false))
+        ui.setContent { AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> } }
+
+        val parent = ui.onNodeWithTag("timeline-entry-root")
+        parent.assertIsDisplayed()
+        ui.runOnIdle { screen = screen.copy(replies = entries, historyReady = true) }
+        parent.assertIsDisplayed()
+    }
+
+    @Test
+    fun aRequestedMessageTakesPriorityOverAnUnseenSend() {
+        var screen by mutableStateOf<AndroidScreen>(channel)
+        ui.setContent { AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> } }
+
+        ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
+        ui.runOnIdle {
+            screen = channel.copy(entries = entries.drop(10), input = InputState(lastSend = "send-1"),
+                focusMessage = "e3")
+        }
+        ui.onNodeWithTag("timeline-entry-e3").assertDoesNotExist()
+        ui.runOnIdle {
+            screen = channel.copy(input = InputState(lastSend = "send-1"), focusMessage = "e3")
+        }
+        ui.onNodeWithTag("timeline-entry-e3").assertIsDisplayed()
+    }
+
+    @Test
+    fun missingSavedMessageReturnsToTheEndAfterHistoryLoads() {
+        var screen by mutableStateOf<AndroidScreen>(channel)
+        ui.setContent { AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> } }
+        val list = ui.onNodeWithTag("conversation-timeline")
+        list.performTouchInput { swipeDown() }
+        list.performScrollToIndex(12)
+        ui.onNodeWithTag("timeline-entry-e13").assertIsDisplayed()
+
+        ui.runOnIdle { screen = AndroidScreen.Channels(emptyList()) }
+        list.assertDoesNotExist()
+        ui.runOnIdle { screen = channel.copy(entries = entries.drop(18), historyReady = false) }
+        list.assertIsDisplayed()
+        ui.runOnIdle { screen = channel.copy(entries = entries.drop(18), historyReady = true) }
+        ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
+    }
+
+    @Test
     fun returningToHomeAndChannelsRestoresTheirOwnScrollPositions() {
         val home = AndroidScreen.Home(entries)
         val channels = AndroidScreen.Channels(listOf(
