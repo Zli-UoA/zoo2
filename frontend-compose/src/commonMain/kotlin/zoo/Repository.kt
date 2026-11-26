@@ -501,6 +501,7 @@ class SyncedTable(
                                 refetchTargets = targets
                                 requested.value = emptyList()
                                 pages.value = emptyMap()
+                                val epoch = refetchEpoch
                                 refetchJob =
                                     launch {
                                         var attempt = 0
@@ -519,8 +520,11 @@ class SyncedTable(
                                         targets.mapNotNull { it.aroundId }.forEach { id ->
                                             retry { fetchAround(id).isSuccess }
                                         }
-                                        refetchTargets = emptyList()
-                                        refetching.value = false
+                                        // 取り消しは協調的なので、世代も確かめる。次の取り直しが始まっていたら、解除しない。
+                                        if (epoch == refetchEpoch) {
+                                            refetchTargets = emptyList()
+                                            refetching.value = false
+                                        }
                                     }
                             }
                             if (accepting.value && (changed || upToDate)) acceptSnapshot(materialized.currentRows)
