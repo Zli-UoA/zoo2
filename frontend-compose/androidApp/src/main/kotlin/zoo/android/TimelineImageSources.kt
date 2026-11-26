@@ -9,6 +9,7 @@ import zoo.publicUrl
 import zoo.text
 import zoo.android.ui.TimelineMedia
 import zoo.android.ui.TimelineMediaKind
+import zoo.android.ui.timelineMediaKind
 
 private val imageIdPattern = Regex("[a-f0-9]{64}")
 private val remoteReactionPattern = Regex("apub:([a-f0-9]{64}):(:[A-Za-z0-9_+-]+:)")
@@ -50,6 +51,24 @@ internal fun workspaceReactionImages(base: String, values: Set<String>, emojis: 
             }
         }
     }
+}
+
+private val localMediaPath = Regex("/api/home/images/[a-fA-F0-9-]+")
+
+internal fun timelinePostMedia(base: String, row: Row): TimelineMedia? {
+    val raw = row.text("url")
+    val local = raw.matches(localMediaPath)
+    val id = imageId(row.text("image_id"))
+    val kind = timelineMediaKind(row.text("media_type"))
+        ?: if (local || id != null) TimelineMediaKind.Image else return null
+    val preview = if (kind == TimelineMediaKind.Image && id != null) {
+        timelineImageUrl(base, "/api/activitypub/media-images/$id")
+    } else null
+    if (kind == TimelineMediaKind.Image && !local && preview == null) return null
+    val original = if (local || !raw.startsWith('/')) timelineImageUrl(base, raw) else null
+    val url = original ?: preview ?: return null
+    val name = row.text("name").ifBlank { if (kind == TimelineMediaKind.Video) "動画" else "画像" }
+    return TimelineMedia(url, name, kind, row.flag("is_sensitive"), url = url, previewUrl = preview)
 }
 
 internal fun selectTimelineMedia(post: List<TimelineMedia>, attachments: List<TimelineMedia>, preferAttachments: Boolean) =

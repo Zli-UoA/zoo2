@@ -324,20 +324,7 @@ internal class ConnectedScreenState(
         }
     }
 
-    private fun postMedia(row: Row): TimelineMedia? {
-        val raw = row.text("url")
-        val local = raw.matches(Regex("/api/home/images/[a-fA-F0-9-]+"))
-        val url = if (local) endpoint(app.config.apiBaseUrl, raw) else raw
-        val safe = publicUrl(url)?.takeIf { it.protocol.name == "https" } ?: return null
-        val kind = timelineMediaKind(row.text("media_type")) ?:
-            if (local) TimelineMediaKind.Image else return null
-        val imageId = imageId(row.text("image_id"))
-        if (kind == TimelineMediaKind.Image && !local && imageId == null) return null
-        val previewUrl = imageId?.let { endpoint(app.config.apiBaseUrl, "/api/activitypub/media-images/$it") }
-        val name = row.text("name").ifBlank { if (kind == TimelineMediaKind.Video) "動画" else "画像" }
-        return TimelineMedia(safe.toString(), name, kind, row.flag("is_sensitive"),
-            url = safe.toString(), previewUrl = previewUrl)
-    }
+    private fun postMedia(row: Row): TimelineMedia? = timelinePostMedia(app.config.apiBaseUrl, row)
 
     private fun runEntryAction(action: AndroidUiAction.ActOnEntry, post: Boolean, encrypted: Boolean) {
         val id = action.item.id.encodeURLParameter()

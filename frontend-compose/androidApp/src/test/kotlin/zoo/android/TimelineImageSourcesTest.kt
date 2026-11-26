@@ -24,6 +24,16 @@ class TimelineImageSourcesTest {
     }
 
     @Test
+    fun registeredMediaUsesTheProxyEvenWhenTheOriginalIsNotHttps() {
+        val media = timelinePostMedia(base, obj(
+            "url" to "http://remote.example/old.png", "media_type" to "image/png", "image_id" to imageId,
+        ))
+        assertEquals("$base/api/activitypub/media-images/$imageId", media?.previewUrl)
+        assertEquals(media?.previewUrl, media?.url)
+        assertNull(timelinePostMedia(base, obj("url" to "https://remote.example/unregistered.png", "media_type" to "image/png")))
+    }
+
+    @Test
     fun linkedPostsUseAttachmentPresentationOnce() {
         val post = TimelineMedia("https://zoo.example/api/home/images/123", "photo", TimelineMediaKind.Image)
         val attachment = TimelineMedia("123", "photo", TimelineMediaKind.Image, attachmentId = "123")
