@@ -28,6 +28,11 @@ describe("rankCustomEmojis", () => {
     ]);
   });
 
+  it("returns every emoji in registration order for an empty query", () => {
+    const options = [e("longer_name"), e("a"), e("mid")];
+    expect(rankCustomEmojis(options, "").map((x) => x.name)).toEqual(["longer_name", "a", "mid"]);
+  });
+
   it("keeps the original order for equal rank and length", () => {
     expect(rankCustomEmojis([e("ab1"), e("ab2")], "ab").map((x) => x.name)).toEqual(["ab1", "ab2"]);
   });
