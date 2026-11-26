@@ -18,6 +18,23 @@ import zoo.publicUrl
 
 private val proxyDownloads = Semaphore(2)
 
+internal suspend fun <T> downloadThroughProxy(push: Boolean, load: suspend () -> T): T {
+    if (!push) return proxyDownloads.withPermit { load() }
+    check(proxyDownloads.tryAcquire()) { "Image proxy is busy" }
+    try { return load() } finally { proxyDownloads.release() }
+}
+
+internal suspend fun <T : Any> downloadProxyImage(push: Boolean, load: suspend () -> T): T =
+    withTimeoutOrNull(if (push) 2_500L else 15_000L) {
+        try {
+            downloadThroughProxy(push, load)
+        } catch (failure: ImageHttpFailure) {
+            if (failure.status != 429 && failure.status !in 500..599) throw failure
+            delay(350)
+            downloadThroughProxy(push, load)
+        }
+    } ?: error("Image proxy download timed out")
+
 internal data class ImageRequest(val url: String, val proxied: Boolean = false)
 
 internal fun sameImageOrigin(left: Url, right: Url) =
@@ -41,25 +58,20 @@ internal class AndroidMediaProxy(context: Context, private val base: String, pri
 
     suspend fun image(
         source: String, http: HttpClient, cache: AndroidImageCache,
-        online: Boolean = true, limit: Int = 20 * 1024 * 1024, preferSavedProxy: Boolean = false,
+        online: Boolean = true, limit: Int = 20 * 1024 * 1024, push: Boolean = false,
     ): ByteArray {
         val cachedRoute = imageRequest(base, source, prefs.getString(base, "").orEmpty())
         if (cachedRoute != null) cache.imageIfCached(cachedRoute, limit)?.let { return it }
-        val route = if (preferSavedProxy && cachedRoute != null) cachedRoute else request(source, http, online)
+        val route = if (push) {
+            withTimeoutOrNull(750) { request(source, http, online, timeoutMillis = 700) }
+                ?: requireNotNull(cachedRoute) { "Image proxy lookup timed out" }
+        } else request(source, http, online)
         if (route != cachedRoute) cache.imageIfCached(route, limit)?.let { return it }
         if (!route.proxied) return cache.download(route, limit)
-        return proxyDownloads.withPermit {
-            try {
-                cache.download(route, limit)
-            } catch (failure: ImageHttpFailure) {
-                if (failure.status != 429 && failure.status !in 500..599) throw failure
-                delay(350)
-                cache.download(route, limit)
-            }
-        }
+        return downloadProxyImage(push) { cache.download(route, limit) }
     }
 
-    internal suspend fun request(source: String, http: HttpClient, online: Boolean): ImageRequest {
+    internal suspend fun request(source: String, http: HttpClient, online: Boolean, timeoutMillis: Long = 5_000): ImageRequest {
         imageRequest(base, source, "")?.let { return it }
         val proxy = lock.withLock {
             val now = clock()
@@ -68,7 +80,7 @@ internal class AndroidMediaProxy(context: Context, private val base: String, pri
                 return@withLock saved
             }
             val configured = try {
-                withTimeoutOrNull(5_000) {
+                withTimeoutOrNull(timeoutMillis) {
                     val response = http.get(endpoint(base, "/media-proxy-endpoint"))
                     if (response.status.value == 404) ""
                     else if (response.status.value == 200 && response.headers["Content-Type"].orEmpty().startsWith("text/plain")) {

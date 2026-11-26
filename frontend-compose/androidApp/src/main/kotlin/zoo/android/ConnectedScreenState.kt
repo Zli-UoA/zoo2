@@ -197,6 +197,10 @@ internal class ConnectedScreenState(
         enabled = true
     }
 
+    private val workspaceReactionIndex by derivedStateOf {
+        workspaceReactionImages(app.config.apiBaseUrl, app.workspaceEmojis)
+    }
+
     fun entry(
         row: Row, users: Map<String, Row>, attachments: List<Row> = emptyList(),
         reactions: List<Row> = emptyList(), previewService: String = "", writable: Boolean = false,
@@ -236,7 +240,7 @@ internal class ConnectedScreenState(
         val reactionEmoji = if (allowPreview && !data.present("ciphertext")) {
             val values = if (isPost) metadata.array("reactions").rows().map { it.text("reaction") }
             else reactions.map { it.text("emoji") }
-            workspaceReactionImages(app.config.apiBaseUrl, values.toSet(), app.workspaceEmojis) + emoji.mapValues { it.value.url }
+            values.associateWith { emoji[it]?.url ?: workspaceReactionIndex[it] }
         } else emptyMap()
         val badges = if (isPost) metadata.array("reactions").rows().map {
             val value = it.text("reaction")

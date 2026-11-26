@@ -43,7 +43,7 @@ internal fun SignInRoute(
     var resource by rememberSaveable { mutableStateOf(preferences.getString("resource", "https://zli.chat/api").orEmpty()) }
     var editing by rememberSaveable { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
-    var signInError by remember { mutableStateOf("") }
+    var signInError by rememberSaveable { mutableStateOf("") }
     var signInDiagnostics by rememberSaveable { mutableStateOf("") }
     var showDiagnostics by rememberSaveable { mutableStateOf(false) }
     val diagnostics = signInDiagnostics.ifBlank { restoreDiagnostics }
@@ -114,7 +114,12 @@ internal fun SignInRoute(
                 } else {
                     if (diagnostics.isNotBlank()) TextAction("診断ログを見る", colors, icon = UiIcon.Document,
                         style = TextActionStyle.Plain) { showDiagnostics = true }
-                    retry?.let { TextAction("自動ログインを再試行", colors, icon = UiIcon.Refresh, style = TextActionStyle.Plain, click = it) }
+                    retry?.let { TextAction("自動ログインを再試行", colors, icon = UiIcon.Refresh, style = TextActionStyle.Plain) {
+                        signInError = ""
+                        signInDiagnostics = ""
+                        showDiagnostics = false
+                        it()
+                    } }
                     if (client.isNotBlank()) {
                         TextAction("接続先の設定", colors, icon = UiIcon.Settings, style = TextActionStyle.Plain) { editing = true }
                     }

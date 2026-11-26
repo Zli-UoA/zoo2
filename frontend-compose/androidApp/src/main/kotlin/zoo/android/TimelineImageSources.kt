@@ -44,15 +44,11 @@ internal fun timelineReactionEmoji(base: String, value: String, known: Map<Strin
     return value to known[value]
 }
 
-internal fun workspaceReactionImages(base: String, values: Set<String>, emojis: List<Row>): Map<String, String> {
-    if (values.none { it.startsWith(':') }) return emptyMap()
-    return buildMap {
-        emojis.forEach { emoji ->
-            val names = listOf(emoji.text("name")) + emoji.array("aliases").map { it.toString().trim('"') }
-            names.map { ":${it.trim(':')}:" }.filter { it in values }.forEach { name ->
-                timelineImageUrl(base, emoji.text("url"))?.let { put(name, it) }
-            }
-        }
+internal fun workspaceReactionImages(base: String, emojis: List<Row>): Map<String, String> = buildMap {
+    for (emoji in emojis) {
+        val url = timelineImageUrl(base, emoji.text("url")) ?: continue
+        val names = listOf(emoji.text("name")) + emoji.array("aliases").map { it.toString().trim('"') }
+        names.forEach { put(":${it.trim(':')}:", url) }
     }
 }
 

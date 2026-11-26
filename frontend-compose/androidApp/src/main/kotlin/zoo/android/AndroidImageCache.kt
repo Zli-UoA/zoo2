@@ -43,7 +43,7 @@ internal class AndroidImageCache(
         }
 
     suspend fun download(request: ImageRequest, limit: Int): ByteArray =
-        loadPublicImage(http, request.url, limit, restrictOrigin = request.proxied)
+        loadPublicImage(http, request.url, limit, restrictOrigin = request.proxied, revalidate = true)
 
     suspend fun imageFromCacheFirst(request: ImageRequest, limit: Int = 20 * 1024 * 1024): ByteArray =
         imageIfCached(request, limit) ?: download(request, limit)

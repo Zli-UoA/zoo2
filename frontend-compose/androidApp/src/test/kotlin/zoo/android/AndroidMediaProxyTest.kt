@@ -53,8 +53,12 @@ class AndroidMediaProxyTest {
         var now = 1_000L
         var requests = 0
         val http = HttpClient(MockEngine {
-            if (++requests == 1) respond("", HttpStatusCode.NotFound)
-            else respond("/proxy", headers = headersOf(HttpHeaders.ContentType, "text/plain"))
+            when (++requests) {
+                1 -> respond("", HttpStatusCode.NotFound)
+                2 -> respond("/proxy", headers = headersOf(HttpHeaders.ContentType, "text/plain"))
+                3 -> respond("<html>unavailable</html>", headers = headersOf(HttpHeaders.ContentType, "text/html"))
+                else -> respond("/new-proxy", headers = headersOf(HttpHeaders.ContentType, "text/plain"))
+            }
         })
         try {
             val proxy = AndroidMediaProxy(context, base) { now }
@@ -67,6 +71,14 @@ class AndroidMediaProxyTest {
             assertEquals(route, restarted.request(source, http, online = true))
             assertEquals(route, restarted.request(source, http, online = false))
             assertEquals(2, requests)
+            now += 86_400_001
+            assertEquals(route, restarted.request(source, http, online = true, timeoutMillis = 700))
+            assertEquals(route, restarted.request(source, http, online = true, timeoutMillis = 700))
+            assertEquals(3, requests)
+            now += 30_001
+            val refreshed = restarted.request(source, http, online = true, timeoutMillis = 700)
+            assertEquals("/new-proxy", Url(refreshed.url).encodedPath)
+            assertEquals(4, requests)
         } finally { http.close() }
     }
 

@@ -90,4 +90,28 @@ class AndroidImageCacheTest {
         }
     }
 
+    @Test fun cachedMissingImageCanRecover() = runBlocking {
+        Fixture().use { f ->
+            f.server.enqueue(MockResponse().setResponseCode(404).setHeader("Cache-Control", "public, max-age=600"))
+            f.server.enqueue(MockResponse().setBody("recovered"))
+            f.cache().use { cache ->
+                assertFailsWith<ImageHttpFailure> { cache.image(f.url) }
+                assertEquals("recovered", cache.imageFromCacheFirst(ImageRequest(f.url)).decodeToString())
+                assertEquals(2, f.server.requestCount)
+            }
+        }
+    }
+
+    @Test fun signedImagesAreNotStoredOnDisk() = runBlocking {
+        Fixture().use { f ->
+            repeat(2) { f.server.enqueue(MockResponse().setHeader("Cache-Control", "public, max-age=600").setBody("photo")) }
+            f.cache().use { cache ->
+                cache.signedImage(f.url)
+                assertNull(cache.imageIfCached(ImageRequest(f.url), 1024))
+                cache.signedImage(f.url)
+            }
+            repeat(2) { assertTrue(f.server.takeRequest().getHeader("Cache-Control").orEmpty().contains("no-store")) }
+        }
+    }
+
 }

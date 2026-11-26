@@ -13,7 +13,7 @@ internal class ImageCacheMiss : IllegalStateException("Image is not in the disk 
 
 internal suspend fun loadPublicImage(
     http: HttpClient, url: String, limit: Int = 20 * 1024 * 1024,
-    cacheOnly: Boolean = false, restrictOrigin: Boolean = false, noStore: Boolean = false,
+    cacheOnly: Boolean = false, restrictOrigin: Boolean = false, noStore: Boolean = false, revalidate: Boolean = false,
 ): ByteArray {
     var current = url
     repeat(6) {
@@ -23,14 +23,17 @@ internal suspend fun loadPublicImage(
         var bytes: ByteArray? = null
         http.prepareGet(current) {
             if (noStore) header(HttpHeaders.CacheControl, "no-store, no-cache")
+            if (revalidate) header(HttpHeaders.CacheControl, "no-cache")
             if (cacheOnly) header(HttpHeaders.CacheControl, "only-if-cached, max-stale=86400")
         }.execute { response ->
-            if (cacheOnly && response.status.value == 504) throw ImageCacheMiss()
             if (response.status.value in setOf(301, 302, 303, 307, 308)) {
                 val location = response.headers[HttpHeaders.Location] ?: error("Missing image redirect")
                 current = current.toHttpUrl().resolve(location)?.toString() ?: error("Invalid image redirect")
             } else {
-                if (response.status.value !in 200..299) throw ImageHttpFailure(response.status.value)
+                if (response.status.value !in 200..299) {
+                    if (cacheOnly) throw ImageCacheMiss()
+                    throw ImageHttpFailure(response.status.value)
+                }
                 bytes = readImageResponse(response, limit)
             }
         }
