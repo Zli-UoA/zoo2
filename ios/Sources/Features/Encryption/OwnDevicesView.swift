@@ -88,7 +88,7 @@ struct OwnDevicesView: View {
         catch { self.error = "端末を削除できませんでした。" }
     }
 
-    private static func format(_ iso: String?) -> String {
+    static func format(_ iso: String?) -> String {
         guard let iso else { return "なし" }
         let parser = ISO8601DateFormatter()
         parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

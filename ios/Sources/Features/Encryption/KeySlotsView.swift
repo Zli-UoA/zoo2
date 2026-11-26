@@ -23,7 +23,7 @@ struct KeySlotsView: View {
                 ForEach(slots.slots) { slot in
                     VStack(alignment: .leading, spacing: 2) {
                         Label(slot.title, systemImage: slot.kind == "passkey" ? "person.badge.key" : "key.horizontal")
-                        Text("追加 " + (slot.createdAt ?? "不明") + "　最後に使った日時 " + (slot.lastUsedAt ?? "なし"))
+                        Text("追加 " + (slot.createdAt.map { OwnDevicesView.format($0) } ?? "不明") + "　最後に使った日時 " + OwnDevicesView.format(slot.lastUsedAt))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     .swipeActions { Button("削除", role: .destructive) { removing = slot } }
