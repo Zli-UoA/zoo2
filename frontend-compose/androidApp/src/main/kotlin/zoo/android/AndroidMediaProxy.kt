@@ -79,21 +79,24 @@ internal class AndroidMediaProxy(context: Context, private val base: String, pri
             if (!online || now < retryAfter || (saved.isNotEmpty() && now - prefs.getLong("$base:checked", 0L) < 24 * 60 * 60 * 1000L)) {
                 return@withLock saved
             }
-            val configured = try {
+            val lookup = try {
                 withTimeoutOrNull(timeoutMillis) {
                     val response = http.get(endpoint(base, "/media-proxy-endpoint"))
-                    if (response.status.value == 404) ""
+                    val endpoint = if (response.status.value == 404) ""
                     else if (response.status.value == 200 && response.headers["Content-Type"].orEmpty().startsWith("text/plain")) {
                         response.bodyAsText().trim()
                     } else null
+                    Result.success(endpoint)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
-            } catch (_: Exception) {
-                null
+            } catch (failure: Exception) {
+                Result.failure<String?>(failure)
             }
+            val configured = lookup?.getOrNull()
             if (configured == null) {
                 retryAfter = now + 30_000
+                require(lookup != null || saved.isNotBlank()) { "Image proxy lookup timed out" }
                 saved
             } else {
                 if (configured.isBlank()) retryAfter = now + 30_000

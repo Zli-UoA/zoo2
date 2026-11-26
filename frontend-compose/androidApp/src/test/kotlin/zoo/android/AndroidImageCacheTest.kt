@@ -10,7 +10,7 @@ import okhttp3.tls.HandshakeCertificates
 import okhttp3.tls.HeldCertificate
 
 class AndroidImageCacheTest {
-    private class Fixture : Closeable {
+    internal class Fixture : Closeable {
         val directory = Files.createTempDirectory("zoo-image-cache").toFile()
         private val certificate = HeldCertificate.Builder()
             .commonName("localhost").addSubjectAlternativeName("localhost").build()
