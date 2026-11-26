@@ -48,7 +48,24 @@ describe("formatClock", () => {
 
 describe("formatTime", () => {
   it("renders a HH:mm clock for a naive UTC timestamp", () => {
-    expect(formatTime("2026-01-02 03:04:05.000")).toMatch(/^\d{2}:\d{2}$/);
+    expect(formatTime("2026-01-02 03:04:05.000", "ja", new Date("2026-01-02T03:04:05Z"))).toMatch(
+      /^\d{2}:\d{2}$/,
+    );
+  });
+
+  it("adds the full date across a local midnight, even when less than a day has passed", () => {
+    const value = new Date(2026, 9, 19, 23, 59).toISOString();
+    expect(formatTime(value, "ja", new Date(2026, 9, 20, 0, 1))).toBe("2026/10/19 23:59");
+  });
+
+  it("zero-pads dates and includes the year for future and previous-year messages", () => {
+    const now = new Date(2026, 0, 1, 12);
+    expect(formatTime(new Date(2025, 11, 31, 19, 18).toISOString(), "ja", now)).toBe(
+      "2025/12/31 19:18",
+    );
+    expect(formatTime(new Date(2026, 0, 2, 3, 4).toISOString(), "en", now)).toBe(
+      "2026/01/02 03:04",
+    );
   });
 });
 
@@ -209,19 +226,19 @@ describe("formatEmbedTimestamp", () => {
   // 端末では日付が翌日になる）。
   const value = new Date(2026, 10, 23, 12).toISOString();
 
-  it("今年の日時は、年を付けずに月日と時刻を出す", () => {
+  it("今日以外は年・月・日と時刻を出す", () => {
     const text = formatEmbedTimestamp(value, "ja", new Date("2026-12-01T00:00:00Z"));
-    expect(text).toMatch(/^11月23日 \d{2}:\d{2}$/);
+    expect(text).toMatch(/^2026\/11\/23 \d{2}:\d{2}$/);
   });
 
   it("今年でない日時は、年も付ける", () => {
     const text = formatEmbedTimestamp(value, "ja", new Date("2027-01-05T00:00:00Z"));
-    expect(text).toMatch(/^2026年11月23日 \d{2}:\d{2}$/);
+    expect(text).toMatch(/^2026\/11\/23 \d{2}:\d{2}$/);
   });
 
-  it("ロケールに合わせた表記にする", () => {
+  it("英語でも同じ年月日の表記にする", () => {
     const text = formatEmbedTimestamp(value, "en", new Date("2026-12-01T00:00:00Z"));
-    expect(text).toMatch(/^Nov 23 \d{2}:\d{2}$/);
+    expect(text).toMatch(/^2026\/11\/23 \d{2}:\d{2}$/);
   });
 
   it("時刻は 24 時間表記の HH:mm で、日付と同じ端末のローカル時刻にそろえる", () => {

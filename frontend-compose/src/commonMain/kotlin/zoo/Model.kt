@@ -98,6 +98,9 @@ interface Platform {
 
     fun time(timestamp: String): String
 
+    fun messageTimestamp(timestamp: String): String =
+        if (day(timestamp) == day(now())) time(timestamp) else fullTimestamp(timestamp)
+
     fun fullTimestamp(timestamp: String): String = "${day(timestamp)} ${time(timestamp)}"
 
     fun relativeTimestamp(timestamp: String): String = fullTimestamp(timestamp)

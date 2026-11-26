@@ -95,6 +95,16 @@ export const Grouped: Story = {
   args: { item: { ...item, isGroupStart: false } },
 };
 
+export const GroupedToday: Story = {
+  args: {
+    item: {
+      ...item,
+      isGroupStart: false,
+      message: { ...item.message, created_at: new Date().toISOString() },
+    },
+  },
+};
+
 export const OwnMessage: Story = {
   args: {
     isOwn: true,

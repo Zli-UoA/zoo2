@@ -662,15 +662,23 @@ fn MessageView(message: Message, name: String) -> impl IntoView {
     }
 }
 
-/// UTC の作成時刻を、WebView のタイムゾーンの `MM/DD HH:MM` にする。夏時間で今と
+/// UTC の作成時刻を、WebView のタイムゾーンの 今日なら `HH:mm`、それ以外は `YYYY/MM/DD HH:mm` にする。夏時間で今と
 /// オフセットが違う時期の投稿もずれないよう、投稿の時刻から JS の Date を作って変換する。
 fn local_time(message: &Message) -> String {
     let Ok(zoned) = message.created_at.to_zoned(jiff::tz::TimeZone::UTC) else {
         return String::new();
     };
     let date = js_sys::Date::new(&(zoned.timestamp().as_millisecond() as f64).into());
+    let now = js_sys::Date::new_0();
+    if date.get_full_year() == now.get_full_year()
+        && date.get_month() == now.get_month()
+        && date.get_date() == now.get_date()
+    {
+        return format!("{:02}:{:02}", date.get_hours(), date.get_minutes());
+    }
     format!(
-        "{:02}/{:02} {:02}:{:02}",
+        "{:04}/{:02}/{:02} {:02}:{:02}",
+        date.get_full_year(),
         date.get_month() + 1,
         date.get_date(),
         date.get_hours(),

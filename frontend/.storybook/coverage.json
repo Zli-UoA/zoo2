@@ -392,6 +392,7 @@
         "ActivityPubUnlisted",
         "ActivityPubGrouped",
         "Grouped",
+        "GroupedToday",
         "SensitiveAttachments",
         "EncryptedDecrypted",
         "EncryptedUnverifiedSender",

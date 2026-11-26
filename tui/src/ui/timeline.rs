@@ -120,7 +120,14 @@ fn message_lines(
     unencrypted_after_encrypted: bool,
 ) -> Vec<Line<'static>> {
     let time = created
-        .map(|zoned| zoned.strftime("%H:%M").to_string())
+        .map(|zoned| {
+            let pattern = if zoned.date() == Zoned::now().date() {
+                "%H:%M"
+            } else {
+                "%Y/%m/%d %H:%M"
+            };
+            zoned.strftime(pattern).to_string()
+        })
         .unwrap_or_default();
     let author = ctx.store.user(&message.user_id);
     let mut header = vec![

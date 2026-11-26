@@ -247,7 +247,7 @@ internal class ConnectedScreenState(
         val files = fileRows.filterNot { it.text("id") in previewIds }.map { it.text("id") to it.text("file_name") }
         val media = (data.array("media").rows().mapNotNull(::postMedia) + attachmentMedia).distinctBy { it.key }
         val createdAt = data.text("created_at")
-        val time = platform.time(createdAt)
+        val time = platform.messageTimestamp(createdAt)
         val postHeader = if (isPost) {
             val username = data.text("user_name").ifBlank { users[data.text("user_id")]?.text("user_name").orEmpty() }
             val handle = username.trimStart('@').substringBefore('@').takeIf { it.isNotBlank() }?.let { "@$it" }
@@ -256,7 +256,7 @@ internal class ConnectedScreenState(
             val server = if (remote) {
                 publicUrl(data.text("user_id"))?.host ?: publicUrl(data.text("url"))?.host
             } else publicUrl(app.config.apiBaseUrl)?.host
-            PostHeaderData(handle, listOf(platform.day(createdAt).substringAfter('/'), time).filter { it.isNotBlank() }.joinToString(" "),
+            PostHeaderData(handle, time,
                 PostAudience.fromApi(data.text("visibility")), channelName, server,
                 remoteServer = remote, serverRgb = if (remote && server != null) instanceColors[server] else null)
         } else null
