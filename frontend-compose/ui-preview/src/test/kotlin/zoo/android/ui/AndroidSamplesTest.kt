@@ -104,6 +104,8 @@ class AndroidSamplesTest {
             TimelineMedia("channel-video", "添付動画", TimelineMediaKind.Video, attachmentId = "channel-video"),
         ))
         val richPost = homePosts.first().copy(
+            avatar = "fixture-avatar",
+            reactions = listOf(TimelineReaction(":star:", ":star:", "2", false, "fixture-emoji")),
             body = "# リリースノート\n**今日の変更** は _ここ_ で確認できます。 :party:\n> 次回の予定\n~~旧手順~~ → [新しい手順](https://example.test/guide)",
             emoji = mapOf(":party:" to TimelineMedia("fixture-emoji", "party", TimelineMediaKind.Image)),
             linkCard = EntryCard("Zoo Android ガイド", "通話、通知、投稿の使い方", "https://example.test/guide", "example.test"),
@@ -269,6 +271,9 @@ class AndroidSamplesTest {
                 if (name == "home-rich") {
                     ui.onNodeWithText("Zoo Android ガイド", useUnmergedTree = true).assertIsDisplayed()
                     ui.onNodeWithContentDescription(":party:", useUnmergedTree = true).assertIsDisplayed()
+                    ui.onNodeWithContentDescription(":star:", useUnmergedTree = true).assertIsDisplayed()
+                    ui.onNodeWithTag("timeline-avatar", useUnmergedTree = true).assertIsDisplayed()
+                    ui.onNodeWithContentDescription("はる", useUnmergedTree = true).assertDoesNotExist()
                 }
                 if (name == "channels") {
                     // The list has no search field; finding and creating channels start from the header's ＋.
@@ -638,6 +643,18 @@ class AndroidSamplesTest {
         capture("post-menu-light", withSheet = true)
         ui.runOnIdle { dark = true }
         capture("post-menu-dark", withSheet = true)
+    }
+
+    @Test
+    fun unavailableReactionRemainsVisibleButCannotBeTapped() {
+        var toggles = 0
+        ui.setContent {
+            TimelineReactionChip(TimelineReaction(":star:", ":star:", "2", false, canToggle = false), AndroidColors(false)) {
+                toggles++
+            }
+        }
+        ui.onNodeWithText(":star:").assertIsDisplayed().assertIsNotEnabled().performTouchInput { click() }
+        ui.runOnIdle { check(toggles == 0) }
     }
 
     @Test

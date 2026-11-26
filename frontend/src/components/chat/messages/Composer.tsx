@@ -550,7 +550,9 @@ export function Composer({
               ? "composer.commands"
               : kind === "channelSuggestions"
                 ? "composer.channels"
-                : `${kind}.suggestions`,
+                : kind === "mfm"
+                  ? "mfm.suggestions"
+                  : "mentions.suggestions",
           )}
           className="mb-2 max-h-48 overflow-y-auto rounded-lg border bg-popover p-1"
         >

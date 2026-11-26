@@ -28,7 +28,9 @@ export function PreviewUserSwitcher() {
         >
           {PREVIEW_USERS.map((user) => (
             <option key={user.id} value={user.id}>
-              {t(user.labelKey, { name: user.name })}
+              {user.role === "admin"
+                ? t("settings.admin", { name: user.name })
+                : t("auth.previewMember", { name: user.name })}
             </option>
           ))}
         </select>

@@ -60,8 +60,19 @@ internal fun ConnectedScreens(
         val states by messageTable.pageStates.collectAsState()
         states
     }
-    val previewEndpoints by session.previews.endpoints.collectAsState()
-    val previewService = previewEndpoints.first
+    // 添付・リアクションは、メッセージ行の display_data から出す（別 Shape は購読しない）。
+    val reactions = remember(rows) { rows.flatMap(::displayReactions) }
+    val context = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    val emojiCatalog = remember(context) { AndroidEmojiCatalog(context) }
+    val needsWorkspaceEmoji = reactions.any { it.text("emoji").startsWith(':') }
+    LaunchedEffect(session, needsWorkspaceEmoji, env.online, env.visible) {
+        if (needsWorkspaceEmoji && env.online && env.visible) {
+            try { session.loadWorkspaceEmojis() }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { /* Keep shortcode fallbacks if the catalog is unavailable. */ }
+        }
+    }
+    val previewService by session.previews.summalyEndpoint.collectAsState()
     val usersById = remember(users) { users.associateBy { it.text("id") } }
     val posts = state.home.posts.map { state.entry(it, usersById, previewService = previewService) }
     val encrypted = channel?.let { session.isEncryptedChannel(it.text("id")) } == true
@@ -69,7 +80,7 @@ internal fun ConnectedScreens(
     // 暗号ストアが変わったら（解錠、鍵の受信、鍵バックアップの取り込み）、表示中の行を復号し直す。
     val encryption = platform.messageEncryption
     val cryptoChanges by (encryption?.changes ?: remember { kotlinx.coroutines.flow.MutableStateFlow(0L) }).collectAsState()
-    val messageEntries by produceState(emptyList<TimelineItem>(), rows, usersById, encrypted, canPost, cryptoChanges) {
+    val messageEntries by produceState(emptyList<TimelineItem>(), rows, usersById, encrypted, canPost, cryptoChanges, session.workspaceEmojis) {
         val ordered = rows.filterNot { it.present("deleted_at") }.sortedWith(compareBy({ it.text("created_at") }, { it.text("id") }))
         value = ordered.map { row ->
             val decrypted = if (row.present("ciphertext")) {
@@ -289,10 +300,7 @@ internal fun ConnectedScreens(
     val remoteProfile = profile.flag("remote")
     val profileUrl = profile.text("url").takeIf { publicUrl(it) != null }
     val profileHost = profileUrl?.let { Url(it).host }.orEmpty()
-    val profileAvatarUrl = if (remoteProfile) {
-        profile.nested("avatar").text("image_id").takeIf { it.matches(Regex("[a-f0-9]{64}")) }
-            ?.let { "/api/activitypub/emoji-images/$it" }
-    } else profile.text("avatar_url").takeIf { it.startsWith("https://") && publicUrl(it) != null }
+    val profileAvatarUrl = timelineAvatarUrl(session.config.apiBaseUrl, profile)
     val profileAvatar = if (state.overlay == "profile" && profileAvatarUrl != null) {
         key(profile.text("id"), profileAvatarUrl) {
             produceState<ImageBitmap?>(null) {
@@ -433,6 +441,7 @@ internal fun ConnectedScreens(
             } else {
                 CompositionLocalProvider(
                     LocalTimelineImage provides { media -> timelineImage(session, media) },
+                    LocalKitchenReactionImage provides emojiCatalog::kitchenReaction,
                     LocalAndroidTranslation provides { session.t(it) },
                 ) {
                     AndroidScreens(screen, env.dark, env.visible && env.focused,
@@ -453,7 +462,7 @@ internal fun ConnectedScreens(
                         remoteAudioLevel = { phone.remoteAudioLevel },
                         loadNotificationReactions = state.inbox::loadReactions,
                         loadNotificationAvatar = { url ->
-                            try { session.imageBitmap(url) }
+                            try { timelineImageUrl(session.config.apiBaseUrl, url)?.let { session.imageBitmap(it) } }
                             catch (cancelled: CancellationException) { throw cancelled }
                             catch (_: Exception) { null }
                         }) { item, modifier ->
@@ -493,8 +502,6 @@ internal fun ConnectedScreens(
     }
     val reaction = state.confirmingEntry?.takeIf { it.operation == EntryOperation.React }
     val insertingEmoji = state.inputMenu == InputTool.Emoji
-    val context = androidx.compose.ui.platform.LocalContext.current.applicationContext
-    val emojiCatalog = remember(context) { AndroidEmojiCatalog(context) }
     val recentEmojis = remember(session) { mutableStateListOf<EmojiChoice>() }
     if (insertingEmoji || reaction != null) {
         val unicode by produceState(emptyList<EmojiChoice>(), emojiCatalog) { value = emojiCatalog.unicode() }
@@ -526,7 +533,7 @@ internal fun ConnectedScreens(
             customError = session.workspaceEmojiError,
             loadKitchen = emojiCatalog::kitchen,
             loadImage = { url ->
-                try { session.imageBitmap(url) }
+                try { timelineImageUrl(session.config.apiBaseUrl, url)?.let { session.imageBitmap(it) } }
                 catch (cancelled: CancellationException) { throw cancelled }
                 catch (_: Exception) { null }
             },

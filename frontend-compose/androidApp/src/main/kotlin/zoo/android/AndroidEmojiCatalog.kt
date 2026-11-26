@@ -28,6 +28,18 @@ internal class AndroidEmojiCatalog(private val readAsset: (String) -> String) {
 
     suspend fun kitchen(): KitchenChoices = withContext(Dispatchers.IO) { kitchen }
 
+    suspend fun kitchenReaction(value: String): String? {
+        if (!value.startsWith("kitchen:")) return null
+        val parts = value.removePrefix("kitchen:").split('_')
+        if (parts.size != 2) return null
+        val normalized = parts.map(::kitchenComponentCode).sorted()
+        val first = normalized.first()
+        val key = "kitchen:" + normalized.joinToString("_")
+        val catalog = kitchen()
+        val component = catalog.components.firstOrNull { kitchenComponentCode(it.value) == first } ?: return null
+        return catalog.combinations(component).firstOrNull { it.value == key }?.image
+    }
+
     private fun read(name: String): JsonObject = Json.parseToJsonElement(readAsset(name)).jsonObject
 }
 
@@ -42,6 +54,9 @@ internal fun accountEmojiChoices(rows: List<Row>): List<EmojiChoice> = rows.mapN
     val label = "@$username"
     EmojiChoice(":$label:", "", label, row.text("avatar_url").ifBlank { null }, row.text("display_name"))
 }
+
+private fun kitchenComponentCode(value: String) =
+    value.lowercase().split('-').map { it.trimStart('0').ifEmpty { "0" } }.filterNot { it == "fe0f" }.joinToString("-")
 
 private fun parseKitchen(data: JsonObject): KitchenChoices {
     val components = data.array("emojis").map { row ->
@@ -61,9 +76,7 @@ private fun parseKitchen(data: JsonObject): KitchenChoices {
             val (left, right) = (if (packed % 2 == 0) listOf(low, high) else listOf(high, low)).map { i ->
                 components[i].value.split('-').joinToString("-") { "u$it" }
             }
-            val code = listOf(first.value, second.value).map { value ->
-                value.split('-').filterNot { it == "fe0f" }.joinToString("-")
-            }.sorted().joinToString("_")
+            val code = listOf(first.value, second.value).map(::kitchenComponentCode).sorted().joinToString("_")
             second.copy(value = "kitchen:$code", glyph = first.glyph + second.glyph,
                 image = "https://www.gstatic.com/android/keyboard/emojikitchen/$date/$left/${left}_$right.png")
         }

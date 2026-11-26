@@ -197,6 +197,10 @@ internal class ConnectedScreenState(
         enabled = true
     }
 
+    private val workspaceReactionIndex by derivedStateOf {
+        workspaceReactionImages(app.config.apiBaseUrl, app.workspaceEmojis)
+    }
+
     fun entry(
         row: Row, users: Map<String, Row>, attachments: List<Row> = emptyList(),
         reactions: List<Row> = emptyList(), previewService: String = "", writable: Boolean = false,
@@ -217,24 +221,41 @@ internal class ConnectedScreenState(
             TimelineQuote(
                 uri, original.text("id").takeIf { it.isNotBlank() && !original.flag("remote") },
                 original.text("display_name").ifBlank { original.text("user_name") },
-                original.text("content"), original.array("media").rows().mapNotNull(::postMedia),
+                original.text("content"), distinctTimelineMedia(original.array("media").rows().mapNotNull(::postMedia)),
                 displayEmoji(original, original, isPost = true),
+                avatar = timelineAvatarUrl(app.config.apiBaseUrl, original, users[original.text("user_id")]),
             )
         }
         val body = data.text("content").let { content ->
-            if (quote != null && content.trimEnd().endsWith(quote.uri)) {
-                content.trimEnd().removeSuffix(quote.uri).trimEnd()
-            } else content
+            val rawQuoteUrl = quoteRow.text("uri")
+            if (quote == null) content
+            else content.trimEnd().removeSuffix("<$rawQuoteUrl>").removeSuffix(rawQuoteUrl).trimEnd()
         }
         val richContent = if (!isPost && !data.present("ciphertext")) messageRichContent(data) else EntryRichContent()
-        val url = if (allowPreview && !data.present("ciphertext") && !richContent.hidesBody) {
-            previewUrls(body, quoteUri).firstOrNull()
-        } else null
+        val linkUrls = if (allowPreview && !data.present("ciphertext") && !richContent.hidesBody) {
+            previewUrls(body, quoteUri)
+        } else emptyList()
         val metadata = display.ifEmpty { data }
+        val emoji = if (allowPreview && !data.present("ciphertext")) displayEmoji(data, metadata, isPost) else emptyMap()
+        val reactionEmoji = if (allowPreview && !data.present("ciphertext")) {
+            val values = if (isPost) metadata.array("reactions").rows().map { it.text("reaction") }
+            else reactions.map { it.text("emoji") }
+            values.associateWith { emoji[it]?.url ?: workspaceReactionIndex[it] }
+        } else emptyMap()
         val badges = if (isPost) metadata.array("reactions").rows().map {
-            "${it.text("reaction")} ${it.text("count")}" to it.flag("selected")
-        } else reactions.groupBy { it.text("emoji") }.map { (emoji, rows) ->
-            "$emoji ${rows.size}" to rows.any { it.text("user_id") == app.config.userId }
+            val value = it.text("reaction")
+            val icon = it.nested("emoji")
+            val (label, fallback) = timelineReactionEmoji(app.config.apiBaseUrl, value, reactionEmoji)
+            TimelineReaction(value, label, it.text("count"), it.flag("selected"),
+                timelineEmojiUrl(app.config.apiBaseUrl, icon) ?: fallback, imageId(icon.text("image_id")),
+                canToggle = timelineReactionCanToggle(value, it.flag("selected"), it.text("can_react") != "false", post = true))
+        } else reactions.groupBy { it.text("emoji") }.map { (value, rows) ->
+            val (label, image) = timelineReactionEmoji(app.config.apiBaseUrl, value, reactionEmoji)
+            val account = value.takeIf { it.startsWith(":@") && it.endsWith(':') }
+                ?.removePrefix(":@")?.removeSuffix(":")
+                ?.let { username -> users.values.firstOrNull { it.text("user_name") == username } }
+            TimelineReaction(value, label, rows.size.toString(), rows.any { it.text("user_id") == app.config.userId },
+                image ?: account?.let { timelineAvatarUrl(app.config.apiBaseUrl, it) }, canToggle = timelineReactionCanToggle(value, selected = false, canReact = true, post = false))
         }
         val fileRows = (attachments + metadata.array("attachments").rows()).distinctBy { it.text("id") }
         val attachmentMedia = if (allowPreview && !data.present("ciphertext")) fileRows.mapNotNull { file ->
@@ -245,7 +266,11 @@ internal class ConnectedScreenState(
         } else emptyList()
         val previewIds = attachmentMedia.mapNotNull { it.attachmentId }.toSet()
         val files = fileRows.filterNot { it.text("id") in previewIds }.map { it.text("id") to it.text("file_name") }
-        val media = (data.array("media").rows().mapNotNull(::postMedia) + attachmentMedia).distinctBy { it.key }
+        val postMedia = data.array("media").rows().mapNotNull(::postMedia)
+        // A channel-linked post exposes its attachments through both representations.
+        val media = selectTimelineMedia(postMedia, attachmentMedia, isPost && fileRows.isNotEmpty())
+        val mediaUrls = timelineImageIdentities(postMedia + quote?.media.orEmpty())
+        val url = linkUrls.firstOrNull { it !in mediaUrls }
         val createdAt = data.text("created_at")
         val time = platform.time(createdAt)
         val postHeader = if (isPost) {
@@ -266,7 +291,7 @@ internal class ConnectedScreenState(
             canRepost = isPost && data.text("visibility") in setOf("public", "local", "unlisted"),
             reposted = metadata.flag("reposted"), reactions = badges, attachments = files, link = url,
             richContent = richContent,
-            emoji = if (allowPreview && !data.present("ciphertext")) displayEmoji(data, metadata, isPost) else emptyMap(),
+            emoji = emoji, attachedImageUrls = mediaUrls, avatar = timelineAvatarUrl(app.config.apiBaseUrl, data, users[data.text("user_id")]),
             entryKey = HomeTimeline.key(row).ifBlank { id }, media = media, postHeader = postHeader, quote = quote,
             repostedBy = data.text("reposted_by").ifBlank { data.text("reposter_actor") }.ifBlank { null },
         ), previewService)
@@ -275,30 +300,22 @@ internal class ConnectedScreenState(
     fun withLinkCard(entry: TimelineItem, service: String): TimelineItem {
         val url = entry.link ?: return entry
         val preview = app.previews.cached(service, url) ?: return entry
-        val proxy = app.previews.endpoints.value.second
-        val imageUrl = proxyImageUrl(
-            if (proxy.startsWith('/') && !proxy.startsWith("//")) endpoint(app.config.assetsBaseUrl, proxy) else proxy,
-            preview.image,
-        )
-        val image = imageUrl?.let { TimelineMedia(it, "", TimelineMediaKind.Image, url = it) }
+        val previewSource = publicUrlString(preview.image)
+        val alreadyAttached = previewSource != null && previewSource in entry.attachedImageUrls
+        val image = previewSource?.takeUnless { alreadyAttached }?.let { TimelineMedia(it, "", TimelineMediaKind.Image, url = it) }
         return entry.copy(linkCard = EntryCard(preview.title, preview.description, url, preview.site, image = image,
             formatted = false))
     }
 
     private fun displayEmoji(data: Row, metadata: Row, isPost: Boolean): Map<String, TimelineMedia> {
-        val emojis = if (isPost) data.array("emojis").rows().map { it.text("name") to it }
+        val inline = if (isPost) data.array("emojis").rows().map { it.text("name") to it }
         else metadata.nested("emojis").ifEmpty { data.nested("display_data").nested("emojis") }
             .mapNotNull { (name, value) -> (value as? JsonObject)?.let { name to it } }
         return buildMap {
-            for ((name, emoji) in emojis.take(256)) {
-                val raw = if (isPost && !emoji.flag("local")) {
-                    val imageId = emoji.text("image_id").takeIf { it.matches(Regex("[a-f0-9]{64}")) } ?: continue
-                    "/api/activitypub/emoji-images/$imageId"
-                } else emoji.text("url")
-                val url = if (raw.startsWith('/') && !raw.startsWith("//")) {
-                    endpoint(app.config.apiBaseUrl, raw)
-                } else raw
-                val safe = publicUrl(url)?.toString() ?: continue
+            for ((name, emoji) in inline.take(256)) {
+                val safe = if (isPost) timelineEmojiUrl(app.config.apiBaseUrl, emoji)
+                else timelineImageUrl(app.config.apiBaseUrl, emoji.text("url"))
+                if (safe == null || name.isBlank()) continue
                 val media = TimelineMedia(safe, name, TimelineMediaKind.Image, url = safe, previewUrl = safe)
                 put(":${name.trim(':')}:", media)
                 emoji.array("aliases").take(32).mapNotNull { (it as? JsonPrimitive)?.content }
@@ -307,20 +324,7 @@ internal class ConnectedScreenState(
         }
     }
 
-    private fun postMedia(row: Row): TimelineMedia? {
-        val raw = row.text("url")
-        val local = raw.matches(Regex("/api/home/images/[a-fA-F0-9-]+"))
-        val url = if (local) endpoint(app.config.apiBaseUrl, raw) else raw
-        val safe = publicUrl(url)?.takeIf { it.protocol.name == "https" } ?: return null
-        val kind = timelineMediaKind(row.text("media_type")) ?:
-            if (local) TimelineMediaKind.Image else return null
-        val imageId = row.text("image_id").takeIf { it.matches(Regex("[a-f0-9]{64}")) }
-        if (kind == TimelineMediaKind.Image && !local && imageId == null) return null
-        val previewUrl = imageId?.let { endpoint(app.config.apiBaseUrl, "/api/activitypub/media-images/$it") }
-        val name = row.text("name").ifBlank { if (kind == TimelineMediaKind.Video) "動画" else "画像" }
-        return TimelineMedia(safe.toString(), name, kind, row.flag("is_sensitive"),
-            url = safe.toString(), previewUrl = previewUrl)
-    }
+    private fun postMedia(row: Row): TimelineMedia? = timelinePostMedia(app.config.apiBaseUrl, row)
 
     private fun runEntryAction(action: AndroidUiAction.ActOnEntry, post: Boolean, encrypted: Boolean) {
         val id = action.item.id.encodeURLParameter()
@@ -339,9 +343,14 @@ internal class ConnectedScreenState(
                 if (action.value.isBlank()) {
                     confirmingEntry = action
                 } else request {
-                    val selected = action.item.reactions.any { it.second && it.first.substringBeforeLast(" ") == action.value }
+                    val selectedReaction = action.item.reactions.firstOrNull {
+                        it.selected && it.value == action.value &&
+                            (action.reactionImageId == null || it.imageId == action.reactionImageId)
+                    }
+                    val selected = selectedReaction != null
                     if (post) app.api.request("/api/activitypub/reactions", if (selected) "DELETE" else "POST",
-                        obj("post_id" to action.item.id, "reaction" to action.value))
+                        obj("post_id" to action.item.id, "reaction" to action.value,
+                            "emoji_id" to (action.reactionImageId ?: selectedReaction?.imageId)))
                     else if (selected) app.api.request("$path/reactions?emoji=${action.value.encodeURLParameter()}", "DELETE")
                     else app.api.request("$path/reactions", "POST", obj("emoji" to action.value))
                     confirmingEntry = null
