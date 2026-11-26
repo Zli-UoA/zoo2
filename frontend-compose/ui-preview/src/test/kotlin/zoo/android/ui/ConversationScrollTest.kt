@@ -155,11 +155,11 @@ class ConversationScrollTest {
         ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
         ui.runOnIdle {
             screen = channel.copy(entries = entries.drop(10), input = InputState(lastSend = "send-1"),
-                focusMessage = "e3")
+                focusMessage = "e3", focusRequest = "open-e3")
         }
         ui.onNodeWithTag("timeline-entry-e3").assertDoesNotExist()
         ui.runOnIdle {
-            screen = channel.copy(input = InputState(lastSend = "send-1"), focusMessage = "e3")
+            screen = channel.copy(input = InputState(lastSend = "send-1"), focusMessage = "e3", focusRequest = "open-e3")
         }
         ui.onNodeWithTag("timeline-entry-e3").assertIsDisplayed()
     }
