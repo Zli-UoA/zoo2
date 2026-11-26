@@ -41,6 +41,28 @@ class TimelineImageSourcesTest {
     }
 
     @Test
+    fun postAndChannelImagesUseStoredDimensions() {
+        val hash = "LEHV6nWB2yk8pyo0adR*.7kCMdnj"
+        val post = timelinePostMedia(base, obj(
+            "url" to "https://remote.example/photo.png", "media_type" to "image/png", "image_id" to imageId,
+            "width" to 1200, "height" to 600, "blurhash" to hash,
+        ))
+        val attachment = timelineAttachmentMedia(obj(
+            "id" to "123", "content_type" to "image/png", "width" to "600", "height" to "1200", "blurhash" to hash,
+        ))
+        assertEquals(2f, post?.imageAspectRatio)
+        assertEquals(0.5f, attachment?.imageAspectRatio)
+        assertEquals(hash, post?.blurhash)
+        assertEquals(hash, attachment?.blurhash)
+        assertNull(timelineAttachmentMedia(obj(
+            "id" to "123", "content_type" to "image/png", "width" to 600, "height" to 0,
+        ))?.imageAspectRatio)
+        assertEquals(2f, distinctTimelineMedia(listOf(
+            checkNotNull(post).copy(imageAspectRatio = null), post,
+        )).single().imageAspectRatio)
+    }
+
+    @Test
     fun linkedPostsUseAttachmentPresentationOnce() {
         val post = TimelineMedia("https://zoo.example/api/home/images/123", "photo", TimelineMediaKind.Image)
         val attachment = TimelineMedia("123", "photo", TimelineMediaKind.Image, attachmentId = "123")

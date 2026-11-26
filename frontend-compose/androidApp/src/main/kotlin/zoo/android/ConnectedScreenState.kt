@@ -255,12 +255,8 @@ internal class ConnectedScreenState(
                 image ?: account?.let { timelineAvatarUrl(app.config.apiBaseUrl, it) }, canToggle = timelineReactionCanToggle(value, selected = false, canReact = true, post = false))
         }
         val fileRows = (attachments + metadata.array("attachments").rows()).distinctBy { it.text("id") }
-        val attachmentMedia = if (allowPreview && !data.present("ciphertext")) fileRows.mapNotNull { file ->
-            val id = file.text("id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            val kind = timelineMediaKind(file.text("content_type")) ?: return@mapNotNull null
-            val name = file.text("file_name").ifBlank { if (kind == TimelineMediaKind.Video) "動画" else "画像" }
-            TimelineMedia(id, name, kind, file.flag("is_sensitive"), attachmentId = id)
-        } else emptyList()
+        val attachmentMedia = if (allowPreview && !data.present("ciphertext")) fileRows.mapNotNull(::timelineAttachmentMedia)
+        else emptyList()
         val previewIds = attachmentMedia.mapNotNull { it.attachmentId }.toSet()
         val files = fileRows.filterNot { it.text("id") in previewIds }.map { it.text("id") to it.text("file_name") }
         val postMedia = data.array("media").rows().mapNotNull(::postMedia)

@@ -10,6 +10,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -17,21 +19,27 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 internal enum class TimelineMediaKind { Image, Video }
 
 internal data class TimelineMedia(
     val key: String, val name: String, val kind: TimelineMediaKind, val sensitive: Boolean = false,
     val url: String? = null, val attachmentId: String? = null, val previewUrl: String? = null,
+    val imageAspectRatio: Float? = null, val blurhash: String? = null,
 )
 
 internal data class TimelineQuote(
@@ -96,21 +104,58 @@ internal fun TimelineQuoteCard(
 
 @Composable
 internal fun TimelineMediaTile(media: TimelineMedia, colors: AndroidColors, open: () -> Unit) {
-    val bitmap = rememberTimelineImage(media.takeIf { it.kind == TimelineMediaKind.Image && !it.sensitive })
-    Column(Modifier.fillMaxWidth().padding(top = 6.dp).clip(RoundedCornerShape(8.dp))
-        .background(colors.inputSurface).clickable(role = Role.Button, onClick = open)) {
-        if (bitmap != null) Image(bitmap, media.name, Modifier.fillMaxWidth().heightIn(max = 220.dp)
-            .aspectRatio((bitmap.width.toFloat() / bitmap.height).coerceIn(0.85f, 2.4f)), contentScale = ContentScale.Crop)
-        else Row(Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target).padding(horizontal = 10.dp),
+    val video = media.kind == TimelineMediaKind.Video
+    if (video && !media.sensitive) {
+        Row(Modifier.fillMaxWidth().padding(top = 6.dp).clip(RoundedCornerShape(8.dp))
+            .background(colors.inputSurface).clickable(role = Role.Button, onClick = open)
+            .heightIn(min = AndroidControlSize.target).padding(horizontal = 10.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            val video = media.kind == TimelineMediaKind.Video
-            UiGlyph(if (video) UiIcon.Play else UiIcon.Photo, colors.secondary, AndroidControlSize.inlineIcon)
-            val label = when {
-                media.sensitive -> if (video) "センシティブな動画を開く" else "センシティブな画像を開く"
-                video -> "動画を再生"
-                else -> media.name
+            UiGlyph(UiIcon.Play, colors.secondary, AndroidControlSize.inlineIcon)
+            Text("動画を再生", color = colors.foreground, fontSize = 14.sp)
+        }
+        return
+    }
+    var revealed by remember(media.key, media.url, media.previewUrl, media.sensitive) { mutableStateOf(false) }
+    val hidden = media.sensitive && !revealed
+    val bitmap = rememberTimelineImage(media.takeIf { !hidden && !video })
+    val hash = media.blurhash
+    val placeholder = if (bitmap == null && hash != null) key(hash) {
+        produceState<ImageBitmap?>(null) {
+            value = withContext(Dispatchers.Default) { decodeBlurHash(hash) }
+        }.value
+    } else null
+    val showLabel = if (video) "動画を表示" else androidLabel("attachments.showSensitive", "画像を表示")
+    val hideLabel = if (video) "動画を隠す" else androidLabel("attachments.hideSensitive", "画像を隠す")
+    val playLabel = androidLabel("attachments.play", "再生")
+    val aspectRatio = (media.imageAspectRatio ?: 4f / 3f).coerceIn(0.85f, 2.4f)
+    BoxWithConstraints(Modifier.fillMaxWidth().padding(top = 6.dp).clip(RoundedCornerShape(8.dp))
+        .background(colors.inputSurface)) {
+        Box(Modifier.fillMaxWidth().height((maxWidth / aspectRatio).coerceIn(AndroidControlSize.target, 220.dp))) {
+            Box(Modifier.matchParentSize().clickable(
+                role = Role.Button, onClickLabel = showLabel.takeIf { hidden },
+                onClick = { if (hidden) revealed = true else open() },
+            ), contentAlignment = Alignment.Center) {
+                when {
+                    bitmap != null -> Image(bitmap, media.name, Modifier.matchParentSize(), contentScale = ContentScale.Crop)
+                    placeholder != null -> Image(placeholder, null, Modifier.matchParentSize().testTag("media-blurhash"),
+                        contentScale = ContentScale.FillBounds)
+                    !hidden && !video -> Text(media.name, Modifier.padding(horizontal = 10.dp), color = colors.foreground,
+                        fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                if (video && !hidden) {
+                    Box(Modifier.semantics { contentDescription = playLabel }) {
+                        UiGlyph(UiIcon.Play, colors.foreground)
+                    }
+                }
             }
-            Text(label, color = colors.foreground, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (media.sensitive) {
+                UiIconButton(
+                    if (hidden) UiIcon.Eye else UiIcon.EyeOff,
+                    if (hidden) showLabel else hideLabel,
+                    Color.White, { revealed = hidden }, fill = Color.Black.copy(alpha = 0.65f),
+                    modifier = Modifier.align(Alignment.TopEnd).padding(4.dp),
+                )
+            }
         }
     }
 }

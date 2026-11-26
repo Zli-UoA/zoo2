@@ -7,12 +7,15 @@ import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -22,6 +25,8 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
 import java.io.File
+import kotlinx.coroutines.CompletableDeferred
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -36,6 +41,83 @@ import zoo.GlobalSearchType
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class AndroidSamplesTest {
     @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
+
+    @Test
+    fun sensitiveVideoRevealsThePlayActionWithoutStartingPlayback() {
+        var opens = 0
+        ui.setContent {
+            TimelineMediaTile(TimelineMedia("video", "動画", TimelineMediaKind.Video, sensitive = true), AndroidColors(false)) {
+                opens++
+            }
+        }
+        ui.onNodeWithContentDescription("再生").assertDoesNotExist()
+        ui.onNodeWithContentDescription("動画を表示").performClick()
+        ui.runOnIdle { assertEquals(0, opens) }
+        ui.onNodeWithContentDescription("再生").performClick()
+        ui.runOnIdle { assertEquals(1, opens) }
+    }
+
+    @Test
+    fun sensitiveImageCanBeRevealedAndHiddenInPlace() {
+        val media = TimelineMedia("photo", "写真", TimelineMediaKind.Image, sensitive = true,
+            imageAspectRatio = 2f, blurhash = "LEHV6nWB2yk8pyo0adR*.7kCMdnj")
+        val bitmap = Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888).asImageBitmap()
+        var loads = 0
+        ui.setContent {
+            CompositionLocalProvider(LocalTimelineImage provides { loads++; bitmap }) {
+                Column(Modifier.width(240.dp)) {
+                    TimelineMediaTile(media, AndroidColors(false)) { error("Eye button must not open the image viewer") }
+                    Text("後続の投稿")
+                }
+            }
+        }
+        val following = ui.onNodeWithText("後続の投稿")
+        val before = following.getUnclippedBoundsInRoot()
+        ui.onNodeWithContentDescription("写真").assertDoesNotExist()
+        ui.runOnIdle { assertEquals(0, loads) }
+        ui.onNodeWithContentDescription("画像を表示").performClick()
+        ui.onNodeWithContentDescription("写真").assertExists()
+        val hide = ui.onNodeWithContentDescription("画像を隠す")
+        val imageBounds = ui.onNodeWithContentDescription("写真").getUnclippedBoundsInRoot()
+        val hideBounds = hide.getUnclippedBoundsInRoot()
+        org.junit.Assert.assertTrue(hideBounds.left > imageBounds.left + 120.dp)
+        org.junit.Assert.assertTrue(hideBounds.top < imageBounds.top + 12.dp)
+        hide.performClick()
+        ui.onNodeWithContentDescription("写真").assertDoesNotExist()
+        ui.onNodeWithContentDescription("画像を表示").assertExists()
+        assertEquals(before, following.getUnclippedBoundsInRoot())
+        ui.runOnIdle { assertEquals(1, loads) }
+    }
+
+    @Test
+    fun imagePreviewReservesItsStoredAspectRatioBeforeDecoding() {
+        val media = TimelineMedia("photo", "写真", TimelineMediaKind.Image, imageAspectRatio = 2f,
+            blurhash = "LEHV6nWB2yk8pyo0adR*.7kCMdnj")
+        // The decoder can return a different size from the stored source metadata.
+        val bitmap = Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888).asImageBitmap()
+        val decoded = CompletableDeferred<ImageBitmap>()
+        ui.setContent {
+            CompositionLocalProvider(LocalTimelineImage provides { decoded.await() }) {
+                Column(Modifier.width(240.dp)) {
+                    TimelineMediaTile(media, AndroidColors(false)) {}
+                    Text("後続の投稿")
+                }
+            }
+        }
+        val blurhash = ui.onNodeWithTag("media-blurhash", useUnmergedTree = true)
+        ui.waitUntil(timeoutMillis = 5_000) {
+            ui.onAllNodesWithTag("media-blurhash", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
+        }
+        blurhash.assertHeightIsEqualTo(120.dp)
+        val following = ui.onNodeWithText("後続の投稿")
+        val before = following.getUnclippedBoundsInRoot()
+        decoded.complete(bitmap)
+        ui.waitUntil(timeoutMillis = 5_000) {
+            ui.onAllNodesWithContentDescription("写真").fetchSemanticsNodes().isNotEmpty()
+        }
+        ui.onNodeWithContentDescription("写真").assertHeightIsEqualTo(120.dp)
+        assertEquals(before, following.getUnclippedBoundsInRoot())
+    }
 
     @Test
     fun cachedAvatarIsComposedWithoutRunningTheLoader() {
@@ -312,7 +394,6 @@ class AndroidSamplesTest {
                     val author = ui.onNodeWithText("@haru", useUnmergedTree = true).getUnclippedBoundsInRoot()
                     check(repost.left < author.left && repost.bottom <= author.top)
                     ui.onNodeWithText("引用 · なぎ").assertIsDisplayed().performClick()
-                    ui.onNodeWithText("センシティブな動画を開く").assertIsDisplayed().performClick()
                     ui.onNodeWithContentDescription("投稿画像").assertIsDisplayed()
                 }
                 if (name == "channel-media") {
