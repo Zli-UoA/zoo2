@@ -533,12 +533,12 @@ fn Main() -> impl IntoView {
                 <ChannelList />
             </nav>
             <main class="channel">
+                <Notice />
                 {move || match ctx.channel.get() {
                     Some(channel_id) => view! {
                         <ChannelHeading channel_id=channel_id.clone() />
-                        <Notice />
                         <Timeline channel_id=channel_id.clone() />
-                        <Composer channel_id=channel_id />
+                        <Footer channel_id=channel_id />
                     }
                     .into_any(),
                     None => view! { <p class="empty">"チャンネルを選んでください"</p> }.into_any(),
@@ -566,18 +566,45 @@ fn ChannelHeading(channel_id: String) -> impl IntoView {
     move || label().map(|label| view! { <header class="channel-head">{label}</header> })
 }
 
+/// 知らせ。読み上げに伝わるよう、領域は常に置いて中身を入れ替える。
 #[component]
 fn Notice() -> impl IntoView {
     let ctx = expect_context::<Ctx>();
-    move || {
+    let notice = move || {
         ctx.notice.get().map(|text| {
             view! {
                 <button type="button" class="notice" title="閉じる" on:click=move |_| ctx.notice.set(None)>
-                    <span role="status">{text}</span>
+                    <span>{text}</span>
                     <span aria-hidden="true">"×"</span>
                 </button>
             }
         })
+    };
+    view! { <div role="status">{notice}</div> }
+}
+
+/// 入力欄。リンクで開いたアーカイブ済みのチャンネルには投稿できないので、理由を出す。
+#[component]
+fn Footer(channel_id: String) -> impl IntoView {
+    let ctx = expect_context::<Ctx>();
+    let archived = {
+        let channel_id = channel_id.clone();
+        // 値が変わったときだけ作り直し、入力欄の書きかけを保つ。
+        Memo::new(move |_| {
+            ctx.store.with(|store| {
+                store
+                    .channel(&channel_id)
+                    .is_some_and(|channel| channel.archive_at.is_some())
+            })
+        })
+    };
+    move || {
+        if archived.get() {
+            view! { <p class="composer archived">"アーカイブされたチャンネルには投稿できません"</p> }
+                .into_any()
+        } else {
+            view! { <Composer channel_id=channel_id.clone() /> }.into_any()
+        }
     }
 }
 

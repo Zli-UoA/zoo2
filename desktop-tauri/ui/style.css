@@ -331,6 +331,7 @@ a.link-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 .link-card time, .link-card .sub, .link-card.note { color: var(--muted); font-size: 12px; }
 .link-card .excerpt { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
 .link-card .excerpt.short { -webkit-line-clamp: 2; line-clamp: 2; }
+.composer.archived { margin: 0; color: var(--muted); font-size: 12px; }
 .channel-head { padding: 10px 16px; border-bottom: 1px solid var(--line); font-weight: 600; }
 button.notice { display: flex; justify-content: space-between; gap: 12px; align-items: center; width: 100%; padding: 8px 16px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; font-size: 12px; text-align: left; }
 .message.jumped { animation: jumped 2.5s ease-out; }

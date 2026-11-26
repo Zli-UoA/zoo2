@@ -279,7 +279,8 @@ pub fn MessageIcon() -> impl IntoView {
     }
 }
 
-/// 投稿の下の埋め込み。
+/// 投稿の下の埋め込み。読み込み中・失敗・見られないことは、読み上げに伝わるよう、常に置く
+/// `status` の領域に出す。
 #[component]
 pub fn LinkCard(url: String, target: LinkTarget) -> impl IntoView {
     let ctx = expect_context::<Ctx>();
@@ -287,49 +288,64 @@ pub fn LinkCard(url: String, target: LinkTarget) -> impl IntoView {
         let target = target.clone();
         Memo::new(move |_| ctx.link_display(&target).card)
     };
-    move || {
+    let status = move || {
+        let text = match card.get() {
+            Card::Loading => "リンク先を読み込み中…",
+            Card::Note(text) => text,
+            Card::Channel { .. } | Card::Message { .. } => return None,
+        };
+        Some(view! { <div class="link-card note">{text}</div> })
+    };
+    let link = move || {
         let open = {
             let target = target.clone();
             move |event: ev::MouseEvent| ctx.click_link(&event, &target)
         };
         match card.get() {
-            Card::Loading => {
-                view! { <div class="link-card note">"リンク先を読み込み中…"</div> }.into_any()
-            }
-            Card::Note(text) => view! { <div class="link-card note">{text}</div> }.into_any(),
+            Card::Loading | Card::Note(_) => None,
             Card::Channel {
                 name,
                 note,
                 description,
-            } => view! {
-                <a class="link-card" href=url.clone() on:click=open>
-                    <span class="title">{name}</span>
-                    {note.map(|note| view! { <span class="sub">{note}</span> })}
-                    {(!description.is_empty())
-                        .then(|| view! { <span class="excerpt short sub">{description}</span> })}
-                </a>
-            }
-            .into_any(),
+            } => Some(
+                view! {
+                    <a class="link-card" href=url.clone() on:click=open>
+                        <span class="title">{name}</span>
+                        {note.map(|note| view! { <span class="sub">{note}</span> })}
+                        {(!description.is_empty())
+                            .then(|| view! { <span class="excerpt short sub">{description}</span> })}
+                    </a>
+                }
+                .into_any(),
+            ),
             Card::Message {
                 author,
                 created_at,
                 place,
                 body,
-            } => view! {
-                <a class="link-card" href=url.clone() on:click=open>
-                    <span class="meta">
-                        <span class="title">{author}</span>
-                        <time>{card_time(created_at)}</time>
-                    </span>
-                    <span class="sub">{place}</span>
-                    {body
-                        .map(|(text, note)| {
-                            view! { <span class="excerpt" class:sub=note>{text}</span> }
-                        })}
-                </a>
-            }
-            .into_any(),
+            } => Some(
+                view! {
+                    <a class="link-card" href=url.clone() on:click=open>
+                        <span class="meta">
+                            <span class="title">{author}</span>
+                            <time>{card_time(created_at)}</time>
+                        </span>
+                        <span class="sub">{place}</span>
+                        {body
+                            .map(|(text, note)| {
+                                view! { <span class="excerpt" class:sub=note>{text}</span> }
+                            })}
+                    </a>
+                }
+                .into_any(),
+            ),
         }
+    };
+    view! {
+        <div role="status" aria-busy=move || (card.get() == Card::Loading).then_some("true")>
+            {status}
+        </div>
+        {link}
     }
 }
 
