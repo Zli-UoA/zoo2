@@ -598,7 +598,9 @@ class AndroidSamplesTest {
             val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
             ui.onNodeWithText(entry.time, useUnmergedTree = true).assertIsDisplayed()
                 .performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
-            check(layouts.single().lineCount == 1 && !layouts.single().hasVisualOverflow)
+            val layout = layouts.single()
+            check(layout.lineCount == 1 && layout.getLineEnd(0, visibleEnd = true) == entry.time.length)
+            check(layout.getLineLeft(0) >= 0 && layout.getLineRight(0) <= layout.size.width)
         }
         assertTimeFits()
         ui.runOnIdle {
