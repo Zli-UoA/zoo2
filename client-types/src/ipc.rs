@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     api::Me,
+    links::LinkedFetch,
     shape::{Batch, ShapeId},
 };
 
@@ -63,6 +64,9 @@ pub mod command {
     /// [`super::InvokeAppAction`]。メッセージ部品のボタン・選択肢を押したことをアプリへ送る。
     /// 古い版のアプリにはないので、呼べなかったら知らせる (`PROTOCOL_VERSION` は上げない)。
     pub const INVOKE_APP_ACTION: &str = "zoo_invoke_app_action";
+    /// [`super::WatchLinks`]。画面の近くにある本文のリンクの、取得が要るリンク先を入れ替える。
+    /// 結果は [`super::event::LINKED`] で返す。
+    pub const WATCH_LINKS: &str = "zoo_watch_links";
 
     // (b) React だけ
     /// 引数なし。[`super::AccessToken`] を返す。期限が近ければ Rust 側で更新してから返す。
@@ -114,6 +118,8 @@ pub mod event {
     pub const SESSION: &str = "zoo://session";
     /// [`super::ShapeBatch`]。(a) だけ。
     pub const SHAPE: &str = "zoo://shape";
+    /// [`super::Linked`] の配列。(a) だけ。[`super::command::WATCH_LINKS`] のリンク先で分かったこと。
+    pub const LINKED: &str = "zoo://linked";
     /// [`super::ShapeFailed`]。(a) だけ。回復できない購読のエラー。
     pub const SHAPE_FAILED: &str = "zoo://shape-failed";
     /// [`super::LoginFailed`]。(a) だけ。ブラウザーでのログインが、始まったあとで失敗したとき。
@@ -292,6 +298,26 @@ pub struct FocusState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenChannel {
     pub channel_id: String,
+}
+
+/// 本文のリンクが指すメッセージ。
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct LinkedMessage {
+    pub channel_id: String,
+    pub message_id: String,
+}
+
+/// [`command::WATCH_LINKS`] の引数。画面の近くにある、取得が要るリンク先のすべて（空なら、なし）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WatchLinks {
+    pub targets: Vec<LinkedMessage>,
+}
+
+/// [`event::LINKED`] の 1 件。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Linked {
+    pub target: LinkedMessage,
+    pub fetch: LinkedFetch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

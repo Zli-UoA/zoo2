@@ -17,7 +17,7 @@ use anyhow::{Result, anyhow};
 use jiff::{civil::DateTime, tz::TimeZone};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::{
-    sync::{Mutex, mpsc},
+    sync::{Mutex, Notify, mpsc},
     task::{AbortHandle, JoinHandle},
 };
 use zoo2_client_core::{
@@ -29,16 +29,17 @@ use zoo2_client_core::{
         token::{self, StoredTokens, TokenManager},
     },
     config::{AuthConfig, Config, OidcConfig, config_dir_for},
-    electric::{self, ShapeEvent},
+    electric::{self, LinkedCache, LinkedEvent, LinkedKey, ShapeEvent},
     http::{Credentials, HttpError},
 };
 use zoo2_client_types::{
     api::Me,
     ipc::{
-        BrowserLogin, DeviceLogin, ErrorCode, FocusState, IpcError, LoginFailed, LoginMethod,
-        LoginPrompt, NotificationSettings, OpenTarget, PROTOCOL_VERSION, SessionInfo, SessionState,
-        ShapeBatch, ShapeFailed, UiMode, event,
+        BrowserLogin, DeviceLogin, ErrorCode, FocusState, IpcError, Linked, LinkedMessage,
+        LoginFailed, LoginMethod, LoginPrompt, NotificationSettings, OpenTarget, PROTOCOL_VERSION,
+        SessionInfo, SessionState, ShapeBatch, ShapeFailed, UiMode, event,
     },
+    links::LinkedFetch,
     notify::{self, NotifyContext, Toast},
     shape::{Batch, Replica, ShapeId},
     store::Store,
@@ -179,6 +180,11 @@ struct Session {
     messages: Option<(String, JoinHandle<()>)>,
     replica: Replica,
     store: Store,
+    /// (a) 本文のリンクが指すメッセージの取得。
+    links: LinkedCache,
+    link_events: mpsc::UnboundedSender<LinkedEvent>,
+    /// 画面の近くのリンク先を入れ替えたとき、時刻の予定を立て直してもらう合図。
+    links_changed: Arc<Notify>,
 }
 
 struct EndingSession {
@@ -412,6 +418,8 @@ impl Core {
             return;
         }
         let (events, receiver) = mpsc::unbounded_channel();
+        let (link_events, link_receiver) = mpsc::unbounded_channel();
+        let links_changed = Arc::new(Notify::new());
         let mut session = Session {
             tokens,
             api: api.clone(),
@@ -422,6 +430,9 @@ impl Core {
             messages: None,
             replica: Replica::default(),
             store: Store::default(),
+            links: LinkedCache::default(),
+            link_events,
+            links_changed: links_changed.clone(),
         };
         // 着信のトーストのために、通話の招待はどちらの画面でも Rust 側が購読する（WebView は、
         // 表示のための購読を別に持つ。招待の行は通常 0〜数行）。
@@ -448,6 +459,11 @@ impl Core {
             .tasks
             .push(self.spawn_event_loop(generation, receiver));
         session.tasks.push(self.spawn_dnd_refresh(generation, api));
+        if self.ui == UiMode::Leptos {
+            session
+                .tasks
+                .push(self.spawn_link_loop(generation, link_receiver, links_changed));
+        }
         inner.session = Some(session);
         inner.dnd_until = None;
         inner.dnd_checked = false;
@@ -484,6 +500,104 @@ impl Core {
                 }
             }
         })
+    }
+
+    /// リンク先の取得の結果を画面に送る。取得の時間切れと、使わなくなった購読を閉じる時刻にも
+    /// 同期する。予定がなければ待つだけで、定期的には起きない。
+    fn spawn_link_loop(
+        self: &Arc<Self>,
+        generation: u64,
+        mut receiver: mpsc::UnboundedReceiver<LinkedEvent>,
+        changed: Arc<Notify>,
+    ) -> JoinHandle<()> {
+        enum Wake {
+            Event(LinkedEvent),
+            Changed,
+            Deadline,
+        }
+        let core = self.clone();
+        tokio::spawn(async move {
+            let mut deadline: Option<Instant> = None;
+            loop {
+                // 条件が偽でも式は評価されるので、予定がないときの時刻も用意する。
+                let at = tokio::time::Instant::from_std(deadline.unwrap_or_else(Instant::now));
+                let wake = tokio::select! {
+                    event = receiver.recv() => match event {
+                        Some(event) => Wake::Event(event),
+                        None => return,
+                    },
+                    () = changed.notified() => Wake::Changed,
+                    () = tokio::time::sleep_until(at), if deadline.is_some() => Wake::Deadline,
+                };
+                let mut inner = core.inner.lock().await;
+                if inner.generation != generation {
+                    return;
+                }
+                let Some(session) = inner.session.as_mut() else {
+                    return;
+                };
+                let now = Instant::now();
+                match wake {
+                    Wake::Event(event) => {
+                        let keys = session.links.apply(event);
+                        core.emit_links(&session.links, &keys, now);
+                    }
+                    Wake::Deadline => {
+                        let fetcher = core.link_fetcher(session);
+                        session.links.sync(now, fetcher);
+                        core.emit_links(&session.links, &session.links.visible, now);
+                    }
+                    Wake::Changed => {}
+                }
+                deadline = session.links.next_deadline(now);
+            }
+        })
+    }
+
+    /// リンク先のチャンネルの取得のタスクを起動する関数。
+    fn link_fetcher(
+        &self,
+        session: &Session,
+    ) -> impl FnMut(String, mpsc::UnboundedReceiver<String>) -> JoinHandle<()> + use<> {
+        let http = self.http.clone();
+        let base = self.api_base_url().unwrap_or_default().to_string();
+        let credentials = session.credentials.clone();
+        let events = session.link_events.clone();
+        move |channel_id, ids| {
+            let events = events.clone();
+            electric::spawn_linked(
+                http.clone(),
+                &base,
+                credentials.clone(),
+                channel_id,
+                ids,
+                move |event| events.send(event).is_ok(),
+            )
+        }
+    }
+
+    fn emit_links(&self, links: &LinkedCache, keys: &[LinkedKey], now: Instant) {
+        let updates = link_updates(links, keys, now);
+        if !updates.is_empty() {
+            let _ = self.app.emit(event::LINKED, updates);
+        }
+    }
+
+    /// (a) 画面の近くのリンク先を入れ替える。分かっていることは、すぐに送り直す
+    /// （読み込み直した画面のため）。
+    pub async fn watch_links(&self, targets: Vec<LinkedMessage>) -> Result<(), IpcError> {
+        let mut inner = self.inner.lock().await;
+        let session = inner.session.as_mut().ok_or_else(not_logged_in)?;
+        let keys: Vec<LinkedKey> = targets
+            .into_iter()
+            .map(|target| (target.channel_id, target.message_id))
+            .collect();
+        let now = Instant::now();
+        let fetcher = self.link_fetcher(session);
+        session.links.watch(now, keys, fetcher);
+        self.emit_links(&session.links, &session.links.visible, now);
+        session.links_changed.notify_one();
+        Ok(())
     }
 
     fn spawn_dnd_refresh(self: &Arc<Self>, generation: u64, api: ApiClient) -> JoinHandle<()> {
@@ -1378,6 +1492,23 @@ fn reauth_error(error: anyhow::Error) -> IpcError {
     }
 }
 
+/// 画面に送るリンク先。まだ何も分からないものは、画面が読み込み中として出しているので送らない
+/// （前に分かったことを、読み込み中で上書きしない）。
+fn link_updates(links: &LinkedCache, keys: &[LinkedKey], now: Instant) -> Vec<Linked> {
+    keys.iter()
+        .filter_map(|key| {
+            let fetch = links.fetch(key, now);
+            (fetch != LinkedFetch::Loading { stalled: false }).then(|| Linked {
+                target: LinkedMessage {
+                    channel_id: key.0.clone(),
+                    message_id: key.1.clone(),
+                },
+                fetch,
+            })
+        })
+        .collect()
+}
+
 fn now_utc() -> DateTime {
     jiff::Timestamp::now().to_zoned(TimeZone::UTC).datetime()
 }
@@ -1823,6 +1954,25 @@ mod tests {
         atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     };
+
+    #[tokio::test]
+    async fn only_known_link_states_are_sent_to_the_screen() {
+        let mut links = super::LinkedCache::default();
+        let start = Instant::now();
+        let key = ("c1".to_string(), "m1".to_string());
+        links.watch(start, vec![key.clone()], |_, _| {
+            tokio::spawn(std::future::pending())
+        });
+        // まだ何も分からないものは送らない（前に分かったことを、読み込み中で上書きしない）。
+        assert!(super::link_updates(&links, &links.visible, start).is_empty());
+        let late = start + Duration::from_secs(10);
+        let updates = super::link_updates(&links, &links.visible, late);
+        assert_eq!(updates[0].target.message_id, "m1");
+        assert_eq!(
+            updates[0].fetch,
+            super::LinkedFetch::Loading { stalled: true }
+        );
+    }
 
     #[test]
     fn login_url_origin_validation_requires_same_https_or_loopback_origin() {

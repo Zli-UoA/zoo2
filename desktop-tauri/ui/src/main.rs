@@ -1,22 +1,30 @@
-//! (a) 同梱の Leptos の画面。ログイン、チャンネル一覧、タイムライン、入力欄だけを持つ。
+//! (a) 同梱の Leptos の画面。ログイン、チャンネル一覧、タイムライン（本文のチャンネル・メッセージの
+//! リンクの埋め込みを含む）、入力欄だけを持つ。
 //!
 //! 行は Rust 側から `zoo://shape` で届き、ここでは `Store` の写しに適用するだけ。起動や
 //! 読み込み直しの後は `zoo_resync` で全体を送り直してもらう (`reset` 付きなので何度でもよい)。
 
 mod components;
+mod links;
+mod records;
 mod tauri;
 
 use leptos::{ev, html, prelude::*, task::spawn_local};
 use zoo2_client_types::{
     ipc::{
-        FocusState, IpcError, LoginFailed, LoginPrompt, OpenChannel, OpenTarget, SendMessage,
-        SendResult, SessionInfo, SessionState, ShapeBatch, ShapeFailed, UiMode, command, event,
+        FocusState, IpcError, Linked, LinkedMessage, LoginFailed, LoginPrompt, OpenChannel,
+        OpenTarget, SendMessage, SendResult, SessionInfo, SessionState, ShapeBatch, ShapeFailed,
+        UiMode, command, event,
     },
+    link_store,
+    links::{bare_links, embedded_links, parse_channel_link},
     mfm::{self, Tone},
     rows::Message,
     shape::ShapeId,
     store::Store,
 };
+
+use crate::links::{LinkCard, MessageIcon};
 
 fn main() {
     console_error_panic_hook::set_once();
@@ -33,6 +41,15 @@ struct Ctx {
     profile_checked: RwSignal<f64>,
     generation: RwSignal<u64>,
     starting: RwSignal<bool>,
+    /// 本文のリンクが指すメッセージで、Rust 側が取った結果。
+    linked: RwSignal<link_store::Fetched>,
+    /// Rust 側に伝えるリンク先と、伝えている途中かどうか。
+    watched: StoredValue<Option<Vec<LinkedMessage>>>,
+    watching: StoredValue<bool>,
+    /// リンクで開いたメッセージ（その行が届くまで）。
+    jump: RwSignal<Option<links::Jump>>,
+    /// リンクで開けなかったときなどの知らせ。
+    notice: RwSignal<Option<&'static str>>,
 }
 
 impl Ctx {
@@ -74,11 +91,17 @@ impl Ctx {
             self.profile_checked.set(0.0);
             self.store.set(Store::default());
             self.channel.set(None);
+            self.linked.set(Default::default());
+            self.watched.set_value(None);
+            self.jump.set(None);
+            self.notice.set(None);
         }
     }
 
     /// チャンネルを切り替える。前のチャンネルの行は捨ててから購読を切り替えてもらう。
     fn open_channel(&self, channel_id: String) {
+        self.jump.set(None);
+        self.notice.set(None);
         if let Some(old) = self.channel.get_untracked() {
             if old == channel_id {
                 return;
@@ -147,6 +170,11 @@ fn App() -> impl IntoView {
         profile_checked: RwSignal::new(0.0),
         generation: RwSignal::new(0),
         starting: RwSignal::new(false),
+        linked: RwSignal::new(Default::default()),
+        watched: StoredValue::new(None),
+        watching: StoredValue::new(false),
+        jump: RwSignal::new(None),
+        notice: RwSignal::new(None),
     };
     provide_context(ctx);
     if let Ok(timer) = set_interval_with_handle(
@@ -161,8 +189,31 @@ fn App() -> impl IntoView {
     spawn_local(async move {
         // SHAPE を先に購読する。SESSION の Ready で呼ぶ `zoo_resync` の行を取りこぼさないため。
         tauri::listen(event::SHAPE, move |batch: ShapeBatch| {
+            let channels = batch.shape == ShapeId::Channels;
             ctx.store
                 .update(|store| store.apply(&batch.shape, batch.batch));
+            // 画面を描き直す前に、暗号化チャンネルを記録する。
+            if channels {
+                ctx.store.with_untracked(|store| {
+                    records::remember(
+                        store
+                            .channels()
+                            .into_iter()
+                            .filter(|channel| channel.encrypted)
+                            .map(|channel| channel.id.as_str()),
+                    )
+                });
+            }
+        })
+        .await;
+        tauri::listen(event::LINKED, move |updates: Vec<Linked>| {
+            ctx.linked.update(|linked| {
+                linked.extend(
+                    updates
+                        .into_iter()
+                        .map(|update| (update.target, update.fetch)),
+                )
+            });
         })
         .await;
         tauri::listen(event::SESSION, move |info: SessionInfo| {
@@ -473,11 +524,50 @@ fn Main() -> impl IntoView {
             </nav>
             <main class="channel">
                 {move || match ctx.channel.get() {
-                    Some(channel_id) => view! { <Timeline channel_id=channel_id.clone() /> <Composer channel_id=channel_id /> }.into_any(),
+                    Some(channel_id) => view! {
+                        <ChannelHeading channel_id=channel_id.clone() />
+                        <Notice />
+                        <Timeline channel_id=channel_id.clone() />
+                        <Composer channel_id=channel_id />
+                    }
+                    .into_any(),
                     None => view! { <p class="empty">"チャンネルを選んでください"</p> }.into_any(),
                 }}
             </main>
         </div>
+    }
+}
+
+/// 一覧にないチャンネル（未参加の公開チャンネルや、アーカイブしたもの）をリンクで開いたときの名前。
+#[component]
+fn ChannelHeading(channel_id: String) -> impl IntoView {
+    let ctx = expect_context::<Ctx>();
+    let label = move || {
+        let me = ctx.me().map(|me| me.id).unwrap_or_default();
+        ctx.store.with(|store| {
+            store
+                .channel(&channel_id)
+                .filter(|channel| {
+                    channel.archive_at.is_some() || !store.is_member(&channel.id, &me)
+                })
+                .map(|channel| store.channel_label(channel, &me))
+        })
+    };
+    move || label().map(|label| view! { <header class="channel-head">{label}</header> })
+}
+
+#[component]
+fn Notice() -> impl IntoView {
+    let ctx = expect_context::<Ctx>();
+    move || {
+        ctx.notice.get().map(|text| {
+            view! {
+                <button type="button" class="notice" title="閉じる" on:click=move |_| ctx.notice.set(None)>
+                    <span role="status">{text}</span>
+                    <span aria-hidden="true">"×"</span>
+                </button>
+            }
+        })
     }
 }
 
@@ -538,23 +628,9 @@ fn Timeline(channel_id: String) -> impl IntoView {
         })
     };
     let list = NodeRef::<html::Div>::new();
-    // 新しい行が届いたときだけ一番下まで送る。ほかの Shape の更新でもこの Effect は
-    // 走るので、件数が増えていなければスクロールの位置を変えない。
-    Effect::new(move |previous: Option<usize>| {
-        let count = messages.with(Vec::len);
-        if previous.is_none_or(|previous| count > previous) {
-            // Effect の時点では新しい行がまだ描画されていないので、次の描画のときに
-            // 伸びた後の `scrollHeight` を読んで末尾へ送る。
-            request_animation_frame(move || {
-                if let Some(list) = list.get_untracked() {
-                    list.set_scroll_top(list.scroll_height());
-                }
-            });
-        }
-        count
-    });
+    let on_scroll = links::follow_timeline(channel_id, list, messages);
     view! {
-        <div class="timeline" node_ref=list>
+        <div class="timeline" node_ref=list on:scroll=move |_| on_scroll()>
             <For
                 each=move || messages.get()
                 key=|(message, name)| (message.id.clone(), message.updated_at, name.clone())
@@ -582,14 +658,20 @@ fn AccountIcon(url: Option<String>, initial: String, label: String) -> impl Into
     }
 }
 
-/// MFM の本文を行ごとに描画する。部品の文字 (`components.rs`) も同じ描画を使う。
+/// MFM の文字を行ごとに描画する。部品の文字 (`components.rs`) が使う。
 fn mfm_view(content: String) -> AnyView {
+    mfm_lines(content, false)
+}
+
+/// `shorten` なら、URL の文字そのものを書いたアプリ内リンクを短くする（メッセージの本文だけ）。
+fn mfm_lines(content: String, shorten: bool) -> AnyView {
     let ctx = expect_context::<Ctx>();
     let me = ctx.me().map(|me| me.user_name);
     let lines = move || {
         let lines = ctx.store.with(|store| {
             mfm::parse_with_accounts(&content, me.as_deref(), &store.account_profiles)
         });
+        let base = ctx.api_base_url();
         lines
         .into_iter()
         .map(|line| {
@@ -617,9 +699,26 @@ fn mfm_view(content: String) -> AnyView {
                     }
                     match style.tone {
                         Tone::Link => match span.href {
-                            Some(href) => {
-                                view! { <a class=class href=href>{span.content}</a> }.into_any()
-                            }
+                            Some(href) => match parse_channel_link(&href, &base) {
+                                // このアプリのリンクは、WebView を移動させずにアプリの中で開く。
+                                Some(target) => {
+                                    let short = (shorten && span.content == href)
+                                        .then(|| ctx.link_display(&target).inline)
+                                        .flatten();
+                                    let (icon, text) = match short {
+                                        Some(short) => (short.message, short.text),
+                                        None => (false, span.content),
+                                    };
+                                    view! {
+                                        <a class=class href=href on:click=move |event| ctx.click_link(&event, &target)>
+                                            {icon.then(|| view! { <MessageIcon /> })}
+                                            {text}
+                                        </a>
+                                    }
+                                    .into_any()
+                                }
+                                None => view! { <a class=class href=href>{span.content}</a> }.into_any(),
+                            },
                             None => view! { <span class=class>{span.content}</span> }.into_any(),
                         },
                         tone => {
@@ -645,37 +744,50 @@ fn mfm_view(content: String) -> AnyView {
 
 #[component]
 fn MessageView(message: Message, name: String) -> impl IntoView {
+    let ctx = expect_context::<Ctx>();
     // メッセージ部品 (`components` 列。移行前の行は `card` 列から作る)。フラグがあれば本文を出さない
     let doc = message.components_document();
-    let hides = doc.as_ref().is_some_and(|d| d.hides_content());
-    let body = (!hides).then(|| mfm_view(message.content.clone()));
+    let content = links::shown_content(&message).map(str::to_owned);
+    let base = untrack(|| ctx.api_base_url());
+    let text = content.as_deref().unwrap_or_default();
+    let embeds = embedded_links(text, &base);
+    // 画面の近くに来たときに、リンク先を取得する行。
+    let has_links = !embeds.is_empty() || !bare_links(text, &base).is_empty();
+    let body = content.map(|content| mfm_lines(content, true));
     let parts = doc.map(|doc| components::render(doc, &message));
+    let cards = embeds
+        .into_iter()
+        .map(|(url, target)| view! { <LinkCard url=url target=target /> })
+        .collect_view();
+    let (_, time) = local_time(message.created_at);
     view! {
-        <article class="message">
+        <article class="message" data-id=message.id.clone() data-links=has_links.then_some("")>
             <header>
                 <span class="author">{name}</span>
-                <time>{local_time(&message)}</time>
+                <time>{time}</time>
             </header>
             {body}
             {parts}
+            {cards}
         </article>
     }
 }
 
-/// UTC の作成時刻を、WebView のタイムゾーンの `MM/DD HH:MM` にする。夏時間で今と
+/// UTC の作成時刻を、WebView のタイムゾーンの年と `MM/DD HH:MM` にする。夏時間で今と
 /// オフセットが違う時期の投稿もずれないよう、投稿の時刻から JS の Date を作って変換する。
-fn local_time(message: &Message) -> String {
-    let Ok(zoned) = message.created_at.to_zoned(jiff::tz::TimeZone::UTC) else {
-        return String::new();
+fn local_time(created_at: jiff::civil::DateTime) -> (Option<u32>, String) {
+    let Ok(zoned) = created_at.to_zoned(jiff::tz::TimeZone::UTC) else {
+        return (None, String::new());
     };
     let date = js_sys::Date::new(&(zoned.timestamp().as_millisecond() as f64).into());
-    format!(
+    let time = format!(
         "{:02}/{:02} {:02}:{:02}",
         date.get_month() + 1,
         date.get_date(),
         date.get_hours(),
         date.get_minutes()
-    )
+    );
+    (Some(date.get_full_year()), time)
 }
 
 /// 入力欄。日本語の変換中 (`isComposing`) の Enter では送らない。値は DOM が持ち、

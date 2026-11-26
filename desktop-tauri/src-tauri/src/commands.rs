@@ -11,7 +11,7 @@ use zoo2_client_types::{
         AccessToken, DOWNLOAD_ID_HEADER, DOWNLOAD_OFFSET_HEADER, DownloadBegin, DownloadSettings,
         DownloadSettingsUpdate, DownloadStart, ErrorCode, FocusState, InvokeAppAction, IpcError,
         LoginMethod, LoginPrompt, NotificationSettings, ObservedNotifications, OpenChannel,
-        SendMessage, SendResult, SessionInfo, UiMode,
+        SendMessage, SendResult, SessionInfo, UiMode, WatchLinks,
     },
     shape::ShapeId,
 };
@@ -177,6 +177,17 @@ pub async fn zoo_invoke_app_action(
     .await
     .map_err(to_ipc)?;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn zoo_watch_links(
+    webview: Webview,
+    core: Core_<'_>,
+    links: WatchLinks,
+) -> Result<(), IpcError> {
+    require(&webview, &core, BUNDLED)?;
+    leptos_only(&core)?;
+    core.watch_links(links.targets).await
 }
 
 #[tauri::command]
