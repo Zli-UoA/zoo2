@@ -19,7 +19,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonPrimitive
 import zoo.*
 import zoo.android.ui.*
@@ -114,8 +113,9 @@ internal fun ConnectedScreens(
         val target = focusMessage ?: return@LaunchedEffect
         if (table.rows.value.none { it.text("id") == target }) table.loadAround(target)
         // 行は、最初のメインのページが画面に反映されるまで rows に入らない。入るのを待ってから広げる。
-        val row = withTimeoutOrNull(10_000) { table.rows.first { rows -> rows.any { it.text("id") == target } } }
-            ?.first { it.text("id") == target } ?: return@LaunchedEffect
+        // 時間では打ち切らない（遅い回線でも、入った時点で広げる）。画面を離れる・対象が変わると、Effect ごと取り消される。
+        val row = table.rows.first { rows -> rows.any { it.text("id") == target } }
+            .first { it.text("id") == target }
         val range = row.text("parent_id").takeIf { it.isNotEmpty() }?.let(PageScope::Replies) ?: PageScope.Main
         // 上限は取れたページ数だけで数える。ほかの処理が取っている間の待機と、失敗は、別に数える。
         var pages = 0
