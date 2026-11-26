@@ -44,6 +44,8 @@ export function useActiveChannels() {
 export interface MessageFeedOptions {
   /** スレッドの返信を購読する場合のルート ID。未指定はチャンネル直下。 */
   parentId?: string | null;
+  /** 1ページで取得する件数。キャッチアップでは未読範囲を早く覆うため大きくする。 */
+  pageSize?: number;
 }
 
 /**
@@ -61,7 +63,7 @@ export function useMessageFeed(channelId: string, options: MessageFeedOptions = 
   const parentId = options.parentId ?? null;
   const query = useLiveInfiniteQuery(
     (q) => messageFeedQuery(q, { messages: messages(channelId), users }, { parentId }),
-    { pageSize: MESSAGE_PAGE_SIZE },
+    { pageSize: options.pageSize ?? MESSAGE_PAGE_SIZE },
   );
   // クエリは新しい順。画面は古い順に並べる。
   const oldestFirst = useMemo(() => [...(query.data ?? [])].reverse(), [query.data]);
