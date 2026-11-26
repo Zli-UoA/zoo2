@@ -165,13 +165,19 @@ class ConversationScrollTest {
     }
 
     @Test
-    fun aLaterSendFollowsTheEndWhenTheRequestedMessageNeverArrives() {
+    fun aLaterSendFollowsTheEndWhenTheRequestedMessageIsUnavailable() {
         val initial = channel.copy(focusMessage = "missing", focusRequest = "open-missing")
         var screen by mutableStateOf(initial)
         ui.setContent { AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> } }
 
         ui.onNodeWithTag("timeline-entry-e1").assertIsDisplayed()
         ui.runOnIdle { screen = initial.copy(input = InputState(lastSend = "new-send")) }
+        ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
+
+        ui.runOnIdle {
+            screen = initial.copy(entries = listOf(TimelineItem("missing", "はる", "遅れて届いた行", "11:59")) + entries,
+                input = InputState(lastSend = "new-send"))
+        }
         ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
     }
 

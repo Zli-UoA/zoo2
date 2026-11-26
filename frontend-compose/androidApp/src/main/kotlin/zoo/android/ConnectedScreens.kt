@@ -110,7 +110,9 @@ internal fun ConnectedScreens(
     val threadRoot = messages.find { it.id == currentThread }
     val threadReplies = rows.filter { it.text("parent_id") == currentThread }.map { it.text("id") }.toSet()
     val route = env.path.substringBefore('?')
-    val focusMessage = env.path.substringAfter("?message=", "").substringBefore('&').ifBlank { null }
+    var focusFailed by remember(env.path) { mutableStateOf(false) }
+    val focusMessage = if (focusFailed) null
+        else env.path.substringAfter("?message=", "").substringBefore('&').ifBlank { null }
     val focusRequest = focusMessage?.let { env.path.substringAfter('?') }
     val focusRow = rows.find { it.text("id") == focusMessage }
     val focusParent = focusRow?.text("parent_id")
@@ -122,7 +124,7 @@ internal fun ConnectedScreens(
         if (!focusParent.isNullOrBlank()) session.thread = focusParent
     }
     // 窓の外の対象（通知・リンク・検索）は、1 行だけ先に取ってから、含むまで古い方へ 1 ページずつ広げる（回数に上限あり）。
-    LaunchedEffect(messageTable, focusMessage) {
+    LaunchedEffect(messageTable, focusRequest) {
         val table = messageTable ?: return@LaunchedEffect
         val target = focusMessage ?: return@LaunchedEffect
         if (table.rows.value.none { it.text("id") == target }) {
@@ -134,6 +136,7 @@ internal fun ConnectedScreens(
                 if (!found && ++tries < MAX_FOCUS_FAILURES) delay(500L * tries)
             }
             if (!found) {
+                focusFailed = true
                 session.toast = session.t("common.errors.network")
                 return@LaunchedEffect
             }

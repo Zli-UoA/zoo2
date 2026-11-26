@@ -559,20 +559,20 @@ private fun ColumnScope.TimelineWithInput(
         }
         if (input.expanded || entries.isEmpty()) return@LaunchedEffect
         when {
-            focusedIndex >= 0 && openedTarget != focusRequest -> {
+            input.lastSend != null && input.lastSend != followedSend -> {
                 followedSend = input.lastSend
+                openedTarget = focusRequest
+                restorePending = false
+                followEnd = true
+                positioned = true
+                scroll.requestScrollToItem(entries.lastIndex)
+            }
+            focusedIndex >= 0 && openedTarget != focusRequest -> {
                 restorePending = false
                 followEnd = false
                 scroll.requestScrollToItem(focusedIndex)
                 openedTarget = focusRequest
                 positioned = true
-            }
-            input.lastSend != null && input.lastSend != followedSend -> {
-                followedSend = input.lastSend
-                restorePending = false
-                followEnd = true
-                positioned = true
-                scroll.requestScrollToItem(entries.lastIndex)
             }
             restoredIndex >= 0 -> {
                 scroll.requestScrollToItem(restoredIndex, restoredOffset)
