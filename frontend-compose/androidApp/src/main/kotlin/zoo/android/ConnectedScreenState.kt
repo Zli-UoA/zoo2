@@ -227,9 +227,11 @@ internal class ConnectedScreenState(
             } else content
         }
         val richContent = if (!isPost && !data.present("ciphertext")) messageRichContent(data) else EntryRichContent()
-        val url = if (allowPreview && !data.present("ciphertext") && !richContent.hidesBody) {
-            previewUrls(body, quoteUri).firstOrNull()
-        } else null
+        // このアプリのリンクは自分のデータから埋め込み、外へ送らないので、暗号化チャンネルでも出す。
+        // 外部の URL のカードだけを Summaly で取得する。
+        val links = if (!richContent.hidesBody) messageLinks(body, app.config.apiBaseUrl, quoteUri)
+            else MessageLinks(emptyList(), null)
+        val url = links.external.takeIf { allowPreview && !data.present("ciphertext") }
         val metadata = display.ifEmpty { data }
         val badges = if (isPost) metadata.array("reactions").rows().map {
             "${it.text("reaction")} ${it.text("count")}" to it.flag("selected")
@@ -265,7 +267,7 @@ internal class ConnectedScreenState(
             canReact = writable || isPost,
             canRepost = isPost && data.text("visibility") in setOf("public", "local", "unlisted"),
             reposted = metadata.flag("reposted"), reactions = badges, attachments = files, link = url,
-            richContent = richContent,
+            richContent = richContent, channelLinks = links.channels.map { it.first },
             emoji = if (allowPreview && !data.present("ciphertext")) displayEmoji(data, metadata, isPost) else emptyMap(),
             entryKey = HomeTimeline.key(row).ifBlank { id }, media = media, postHeader = postHeader, quote = quote,
             repostedBy = data.text("reposted_by").ifBlank { data.text("reposter_actor") }.ifBlank { null },
@@ -990,6 +992,12 @@ internal class ConnectedScreenState(
             }
             InputTool.Format, InputTool.Emoji -> inputMenu = tool
         }
+    }
+
+    /** 本文のリンクと埋め込みカードから、アプリ内でチャンネル・メッセージへ移動する。 */
+    fun openChannelLink(target: ChannelLinkTarget, parentId: String?) {
+        overlay = null
+        app.openChannelLink(target, parentId)
     }
 
     private fun replyVisibility(id: String): String {

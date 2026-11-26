@@ -415,6 +415,16 @@ class Repository(
     fun cachedMessages(channelId: String): List<Row> =
         dynamic["messages" to channelId]?.replicatedRows?.value.orEmpty()
 
+    private val linked = lazy {
+        LinkedMessages(
+            scope,
+            openRows = { channelId -> dynamic["messages" to channelId]?.replicatedRows },
+            openSource = { channelId -> LinkedChannelTable(channelId, config, platform, http, scope) },
+        )
+    }
+    /** 本文のリンクが指すメッセージ（開いていないチャンネルの 1 件を取る）。 */
+    val linkedMessages: LinkedMessages get() = linked.value
+
     fun table(name: String, channelId: String = ""): SyncedTable =
         when (name) {
             "channels" -> channels
@@ -457,6 +467,7 @@ class Repository(
     }
 
     fun close() {
+        if (linked.isInitialized()) linked.value.close()
         (listOf(channels, users, members, notifications) + dynamic.values).forEach { it.close() }
         dynamic.clear()
         http.close()

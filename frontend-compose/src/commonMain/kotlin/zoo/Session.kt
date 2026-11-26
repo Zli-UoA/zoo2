@@ -194,6 +194,17 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
 
     fun navigate(path: String) = platform.navigate(path)
 
+    /**
+     * 本文のリンクと埋め込みカードから、アプリ内でチャンネル・メッセージへ移動する。[parentId] は、分かって
+     * いればリンク先の返信の親（そのスレッドを開く）。
+     */
+    fun openChannelLink(target: ChannelLinkTarget, parentId: String?) {
+        val next = parentId ?: target.threadId
+        // 同じチャンネル内の移動では `update` がスレッドを変えないので、ここで切り替える。
+        if (channelId == target.channelId) thread = next
+        navigate(channelLinkDestination(target, next, kotlin.time.Clock.System.now().toEpochMilliseconds()))
+    }
+
     fun openApp(id: String) {
         target = null
         appDetailId = id
@@ -258,7 +269,8 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         env = next
         toastController.setVisible(next.visible)
         if (old.path.substringBefore('?') != next.path.substringBefore('?')) {
-            thread = null
+            // アプリ内のリンクで別のチャンネルのスレッドを開くときは、移動先のパスで決まる。
+            thread = linkedThread(next.path)
             pane =
                 if (
                     channelId != null ||
@@ -275,6 +287,20 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     private val encryptedChannels by lazy { EncryptedChannelHistory(platform, config) }
 
     suspend fun rememberEncryptedChannel(id: String) = encryptedChannels.remember(listOf(id))
+
+    /** 端末の暗号化チャンネルの記録を読み終えたか。 */
+    val encryptionRecordsLoaded: Boolean get() = encryptedChannels.loaded
+
+    /** 端末の暗号化チャンネルの記録を読み込む。読めなければ false（本文を出す前の確認に使う）。 */
+    suspend fun loadEncryptionRecords(): Boolean =
+        try {
+            encryptedChannels.remember()
+            true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            false
+        }
 
     suspend fun requirePlaintextChannel(id: String) {
         encryptedChannels.remember()

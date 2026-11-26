@@ -31,6 +31,8 @@ fun publicUrl(raw: String): Url? =
 fun publicUrlString(raw: String): String? = publicUrl(raw)?.toString()
 
 /** Only visible links create cards: code, plain and MFM silent links stay private. */
+private val markdownLink = Regex("\\[[^\\[\\]\\n]*]\\((https?://(?:[^\\s()]++|\\([^\\s()]*+\\))++)\\)")
+
 fun previewUrls(content: String, excludeUrl: String? = null): List<String> {
     val visible =
         content.replace(
@@ -39,9 +41,19 @@ fun previewUrls(content: String, excludeUrl: String? = null): List<String> {
             ),
             " ",
         )
-    return Regex("https?://[^\\s<>\\\"\\[\\]]+")
-        .findAll(visible)
-        .mapNotNull { publicUrl(it.value.trimEnd(')', ',', '.', '!', '?', '、', '。'))?.toString() }
+        // `[文字](URL)` は行き先だけを残す（文字に書いた URL は行き先ではない）。
+        .replace(markdownLink) { " ${it.groupValues[1]} " }
+    return sequence {
+        var from = 0
+        while (true) {
+            val at = visible.indexOf("http", from).takeIf { it >= 0 } ?: break
+            val url = leadingUrl(visible, at)
+            if (url != null) yield(url)
+            // URL の中に書いた URL は数えない。
+            from = at + (url?.length ?: "http".length)
+        }
+    }
+        .mapNotNull { publicUrl(it)?.toString() }
         .distinct()
         .filter { it != publicUrl(excludeUrl.orEmpty())?.toString() }
         .take(3)

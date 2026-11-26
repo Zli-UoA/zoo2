@@ -230,9 +230,11 @@ private class MfmScanner(length: Int) {
                                 !it.isLetterOrDigit() && it !in "_/@"
                             } != false
                             if (kind !in setOf("mention", "hashtag") || boundary) {
-                                val trimmed = if (kind == "link") trimMfmUrl(value) else value
-                                token = Inline(trimmed, kind, trimmed.takeIf { kind == "link" })
-                                end = at + trimmed.length
+                                val trimmed = if (kind == "link") leadingUrl(value) else value
+                                if (trimmed != null) {
+                                    token = Inline(trimmed, kind, trimmed.takeIf { kind == "link" })
+                                    end = at + trimmed.length
+                                }
                             }
                         }
                     }
@@ -365,16 +367,38 @@ fun messageHeadingBlocks(content: String): List<MessageHeadingBlock> {
     return blocks
 }
 
-private fun trimMfmUrl(value: String): String {
-    var result = value.trimEnd('.', ',', '!', '?', ';', ':')
-    for ((open, close) in listOf('(' to ')', '[' to ']', '{' to '}')) {
-        var excess = result.count { it == close } - result.count { it == open }
-        while (excess > 0 && result.endsWith(close)) {
-            result = result.dropLast(1)
-            excess--
+/** 閉じていない括弧の対応を探す長さ。閉じない括弧が並ぶ本文で、同じ部分を繰り返し調べないようにする。 */
+private const val URL_BRACKET_LOOKAHEAD = 1024
+
+/**
+ * [text] の [start] から始まる `http://` か `https://` の URL。Web（`mfm-js`）と同じく、URL に使う ASCII の
+ * 文字と、対応のとれた括弧までを URL とし、末尾の `.` と `,` は除く。日本語や全角の記号が続いても、そこで終わる。
+ * 表示と、本文のリンクの抽出（[previewUrls]）で同じ位置で切る。
+ */
+internal fun leadingUrl(text: String, start: Int = 0): String? {
+    val scheme = listOf("https://", "http://").firstOrNull { text.startsWith(it, start) } ?: return null
+    // 閉じていない括弧の位置と、対応する閉じ括弧。
+    val open = mutableListOf<Pair<Int, Char>>()
+    var end = start + scheme.length
+    while (end < text.length) {
+        val unclosed = open.firstOrNull()
+        if (unclosed != null && end - unclosed.first > URL_BRACKET_LOOKAHEAD) break
+        val ch = text[end]
+        val used = when (ch) {
+            '(', '[' -> {
+                open.add(end to if (ch == '(') ')' else ']')
+                true
+            }
+            ')', ']' -> open.removeLastOrNull()?.second == ch
+            else -> ch in 'a'..'z' || ch in 'A'..'Z' || ch in '0'..'9' || ch in "._,/:%#@$&?!~=+-"
         }
+        if (!used) break
+        end++
     }
-    return result
+    // 閉じていない括弧は、URL に含めない。
+    open.firstOrNull()?.let { end = it.first }
+    val url = text.substring(start, end).trimEnd('.', ',')
+    return url.takeIf { it.length > scheme.length }
 }
 
 data class MfmRuby(val base: String, val reading: String)
