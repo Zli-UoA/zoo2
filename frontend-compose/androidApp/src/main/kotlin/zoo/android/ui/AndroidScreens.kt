@@ -538,6 +538,7 @@ private fun ColumnScope.TimelineWithInput(
         requestEarlier?.invoke()
     }
     var openedTarget by rememberSaveable { mutableStateOf<String?>(null) }
+    var seenFocusRequest by rememberSaveable { mutableStateOf<String?>(null) }
     var followedSend by rememberSaveable { mutableStateOf<String?>(null) }
     var anchor by rememberSaveable { mutableStateOf<String?>(null) }
     val restoredAnchor = remember { anchor }
@@ -547,17 +548,24 @@ private fun ColumnScope.TimelineWithInput(
     val focusedIndex = entries.indexOfFirst { it.id == focusMessage }
     val restoredIndex = if (restorePending && !followEnd) entries.indexOfFirst { it.entryKey == restoredAnchor } else -1
     LaunchedEffect(input.expanded, input.lastSend, focusRequest, focusedIndex, entries.isNotEmpty(), restoredIndex, historyReady) {
+        if (seenFocusRequest != focusRequest) {
+            seenFocusRequest = focusRequest
+            if (focusRequest != null) {
+                followedSend = input.lastSend
+                followEnd = false
+            } else {
+                openedTarget = null
+            }
+        }
         if (input.expanded || entries.isEmpty()) return@LaunchedEffect
         when {
-            focusRequest != null && openedTarget != focusRequest -> {
+            focusedIndex >= 0 && openedTarget != focusRequest -> {
                 followedSend = input.lastSend
                 restorePending = false
                 followEnd = false
-                if (focusedIndex >= 0) {
-                    scroll.requestScrollToItem(focusedIndex)
-                    openedTarget = focusRequest
-                    positioned = true
-                }
+                scroll.requestScrollToItem(focusedIndex)
+                openedTarget = focusRequest
+                positioned = true
             }
             input.lastSend != null && input.lastSend != followedSend -> {
                 followedSend = input.lastSend
@@ -582,7 +590,6 @@ private fun ColumnScope.TimelineWithInput(
                 positioned = true
             }
         }
-        if (focusMessage == null) openedTarget = null
     }
     // Viewport, row height and item count can all change without user scrolling.
     // Only follow those changes while the reader is at the end or has just sent a message.
