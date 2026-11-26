@@ -5603,95 +5603,103 @@ mod tests {
             "id": slack_id,
             "real_name": " ",
         }));
-        {
-            let mut tx = db.transaction().await?;
-            ensure_user(&mut tx, &team, &slack_id, Some(&spaced), None).await?;
-            tx.commit().await?;
+        let result = async {
+            {
+                let mut tx = db.transaction().await?;
+                ensure_user(&mut tx, &team, &slack_id, Some(&spaced), None).await?;
+                tx.commit().await?;
+            }
+            let stored = query(
+                &mut db.transaction().await?,
+                "SELECT json_build_object('real_name',s.real_name,'display_name',u.display_name)::text \
+                 FROM slack_users s JOIN users u ON u.id=s.user_id \
+                 WHERE s.team_id=$1 AND s.slack_user_id=$2",
+                &[&team, &slack_id],
+            )
+            .await?;
+            anyhow::ensure!(
+                stored.len() == 1 && stored[0]["real_name"] == "",
+                "whitespace-only real_name must be stored as empty: {stored:?}"
+            );
+            {
+                let mut tx = db.transaction().await?;
+                ensure_user(&mut tx, &team, &slack_id, None, Some("alice")).await?;
+                tx.commit().await?;
+            }
+            let updated = query(
+                &mut db.transaction().await?,
+                "SELECT json_build_object('display_name',u.display_name,'name',s.name,'profile_source',s.profile_source)::text \
+                 FROM slack_users s JOIN users u ON u.id=s.user_id \
+                 WHERE s.team_id=$1 AND s.slack_user_id=$2",
+                &[&team, &slack_id],
+            )
+            .await?;
+            anyhow::ensure!(
+                updated.len() == 1
+                    && updated[0]["display_name"] == "alice"
+                    && updated[0]["name"] == "alice"
+                    && updated[0]["profile_source"] == "fallback",
+                "a public username fallback must populate a placeholder whose real_name was only whitespace: {updated:?}"
+            );
+            // Recreate a pre-normalization row with a meaningful Zoo display name.
+            let mut legacy = db.transaction().await?;
+            exec(
+                &mut legacy,
+                "UPDATE slack_users SET name=$2, real_name=' ', profile_source='unknown' WHERE team_id=$1 AND slack_user_id=$2",
+                &[&team, &slack_id],
+            )
+            .await?;
+            exec(
+                &mut legacy,
+                "UPDATE users SET display_name='Alice Ops' WHERE id=$1",
+                &[&placeholder_id],
+            )
+            .await?;
+            ensure_user(&mut legacy, &team, &slack_id, None, Some("zip-author")).await?;
+            let legacy_rows = query(
+                &mut legacy,
+                "SELECT json_build_object('display_name',display_name)::text FROM users WHERE id=$1",
+                &[&placeholder_id],
+            )
+            .await?;
+            anyhow::ensure!(
+                legacy_rows[0]["display_name"] == "Alice Ops",
+                "a fallback must preserve a meaningful legacy display name: {legacy_rows:?}"
+            );
+            exec(
+                &mut legacy,
+                "UPDATE users SET display_name=$2 WHERE id=$1",
+                &[&placeholder_id, &slack_id],
+            )
+            .await?;
+            ensure_user(&mut legacy, &team, &slack_id, None, Some("zip-author")).await?;
+            let legacy_rows = query(
+                &mut legacy,
+                "SELECT json_build_object('display_name',display_name)::text FROM users WHERE id=$1",
+                &[&placeholder_id],
+            )
+            .await?;
+            anyhow::ensure!(
+                legacy_rows[0]["display_name"] == "zip-author",
+                "a fallback must replace the Slack ID on a generic legacy row: {legacy_rows:?}"
+            );
+            legacy.rollback().await?;
+            Ok(())
         }
-        let stored = query(
-            &mut db.transaction().await?,
-            "SELECT json_build_object('real_name',s.real_name,'display_name',u.display_name)::text \
-             FROM slack_users s JOIN users u ON u.id=s.user_id \
-             WHERE s.team_id=$1 AND s.slack_user_id=$2",
-            &[&team, &slack_id],
-        )
-        .await?;
-        anyhow::ensure!(
-            stored.len() == 1 && stored[0]["real_name"] == "",
-            "whitespace-only real_name must be stored as empty: {stored:?}"
-        );
-        {
-            let mut tx = db.transaction().await?;
-            ensure_user(&mut tx, &team, &slack_id, None, Some("alice")).await?;
-            tx.commit().await?;
+        .await;
+        let cleanup_result = async {
+            let mut cleanup = db.transaction().await?;
+            exec(
+                &mut cleanup,
+                "DELETE FROM users WHERE id=$1",
+                &[&placeholder_id],
+            )
+            .await?;
+            cleanup.commit().await?;
+            Ok(())
         }
-        let updated = query(
-            &mut db.transaction().await?,
-            "SELECT json_build_object('display_name',u.display_name,'name',s.name,'profile_source',s.profile_source)::text \
-             FROM slack_users s JOIN users u ON u.id=s.user_id \
-             WHERE s.team_id=$1 AND s.slack_user_id=$2",
-            &[&team, &slack_id],
-        )
-        .await?;
-        anyhow::ensure!(
-            updated.len() == 1
-                && updated[0]["display_name"] == "alice"
-                && updated[0]["name"] == "alice"
-                && updated[0]["profile_source"] == "fallback",
-            "a public username fallback must populate a placeholder whose real_name was only whitespace: {updated:?}"
-        );
-        // Recreate a pre-normalization row with a meaningful Zoo display name.
-        let mut legacy = db.transaction().await?;
-        exec(
-            &mut legacy,
-            "UPDATE slack_users SET name=$2, real_name=' ', profile_source='unknown' WHERE team_id=$1 AND slack_user_id=$2",
-            &[&team, &slack_id],
-        )
-        .await?;
-        exec(
-            &mut legacy,
-            "UPDATE users SET display_name='Alice Ops' WHERE id=$1",
-            &[&placeholder_id],
-        )
-        .await?;
-        ensure_user(&mut legacy, &team, &slack_id, None, Some("zip-author")).await?;
-        let legacy_rows = query(
-            &mut legacy,
-            "SELECT json_build_object('display_name',display_name)::text FROM users WHERE id=$1",
-            &[&placeholder_id],
-        )
-        .await?;
-        anyhow::ensure!(
-            legacy_rows[0]["display_name"] == "Alice Ops",
-            "a fallback must preserve a meaningful legacy display name: {legacy_rows:?}"
-        );
-        exec(
-            &mut legacy,
-            "UPDATE users SET display_name=$2 WHERE id=$1",
-            &[&placeholder_id, &slack_id],
-        )
-        .await?;
-        ensure_user(&mut legacy, &team, &slack_id, None, Some("zip-author")).await?;
-        let legacy_rows = query(
-            &mut legacy,
-            "SELECT json_build_object('display_name',display_name)::text FROM users WHERE id=$1",
-            &[&placeholder_id],
-        )
-        .await?;
-        anyhow::ensure!(
-            legacy_rows[0]["display_name"] == "zip-author",
-            "a fallback must replace the Slack ID on a generic legacy row: {legacy_rows:?}"
-        );
-        legacy.rollback().await?;
-        let mut cleanup = db.transaction().await?;
-        exec(
-            &mut cleanup,
-            "DELETE FROM users WHERE id=$1",
-            &[&placeholder_id],
-        )
-        .await?;
-        cleanup.commit().await?;
-        Ok(())
+        .await;
+        finish_with_cleanup(result, cleanup_result)
     }
 
     #[test]

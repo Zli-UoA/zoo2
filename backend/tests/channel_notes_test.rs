@@ -1081,7 +1081,8 @@ async fn concurrent_creates_by_different_members_get_distinct_positions() -> any
     let second_notes = notes.clone();
     let first_actor = first_member.clone();
     let second_actor = second_member.clone();
-    let mut first = tokio::spawn(async move {
+    let mut creates = tokio::task::JoinSet::new();
+    creates.spawn(async move {
         request(
             &first_app,
             "POST",
@@ -1091,7 +1092,7 @@ async fn concurrent_creates_by_different_members_get_distinct_positions() -> any
         )
         .await
     });
-    let mut second = tokio::spawn(async move {
+    creates.spawn(async move {
         request(
             &second_app,
             "POST",
@@ -1108,20 +1109,21 @@ async fn concurrent_creates_by_different_members_get_distinct_positions() -> any
         "both creates must wait on the channel-notes advisory lock: {waiting_pids:?}"
     );
     blocker_tx.commit().await?;
-    let (first, second) = match tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        tokio::join!(&mut first, &mut second)
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while let Some(created) = creates.join_next().await {
+            let (status, body) = created?;
+            anyhow::ensure!(status == StatusCode::OK, "{status}: {body}");
+        }
+        Ok::<_, anyhow::Error>(())
     })
-    .await
-    {
-        Ok((first, second)) => (first?, second?),
+    .await;
+    match result {
+        Ok(result) => result?,
         Err(_) => {
-            first.abort();
-            second.abort();
+            creates.shutdown().await;
             anyhow::bail!("concurrent creates did not finish after releasing the advisory lock");
         }
-    };
-    assert_eq!(first.0, StatusCode::OK, "{}", first.1);
-    assert_eq!(second.0, StatusCode::OK, "{}", second.1);
+    }
 
     for round in 1..20 {
         let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
