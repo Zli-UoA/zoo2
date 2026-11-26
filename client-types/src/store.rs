@@ -24,6 +24,8 @@ pub struct Store {
     user_keys: HashMap<String, String>,
     channel_users: HashMap<String, ChannelUser>,
     messages: HashMap<String, HashMap<String, Message>>,
+    /// チャンネルごとの、メッセージの ID からシェイプのキーを引く索引。
+    message_keys: HashMap<String, HashMap<String, String>>,
     reactions: HashMap<String, HashMap<String, Reaction>>,
     attachments: HashMap<String, HashMap<String, Attachment>>,
     notifications: HashMap<String, Notification>,
@@ -63,12 +65,26 @@ impl Store {
                 batch.changes,
                 &mut invalid,
             ),
-            ShapeId::Messages(channel_id) => apply_rows(
-                self.messages.entry(channel_id.clone()).or_default(),
-                batch.reset,
-                batch.changes,
-                &mut invalid,
-            ),
+            ShapeId::Messages(channel_id) => {
+                let keys = self.message_keys.entry(channel_id.clone()).or_default();
+                if batch.reset {
+                    keys.clear();
+                }
+                // 消した行の索引は残っても、行がないので引けない。
+                for change in &batch.changes {
+                    if let Change::Upsert { key, row } = change
+                        && let Some(id) = row.get("id").and_then(|id| id.as_str())
+                    {
+                        keys.insert(id.to_owned(), key.clone());
+                    }
+                }
+                apply_rows(
+                    self.messages.entry(channel_id.clone()).or_default(),
+                    batch.reset,
+                    batch.changes,
+                    &mut invalid,
+                )
+            }
             ShapeId::Reactions(channel_id) => apply_rows(
                 self.reactions.entry(channel_id.clone()).or_default(),
                 batch.reset,
@@ -127,6 +143,7 @@ impl Store {
         match id {
             ShapeId::Messages(channel_id) => {
                 self.messages.remove(channel_id);
+                self.message_keys.remove(channel_id);
             }
             ShapeId::Reactions(channel_id) => {
                 self.reactions.remove(channel_id);
@@ -356,8 +373,11 @@ impl Store {
     }
 
     pub fn message(&self, channel_id: &str, message_id: &str) -> Option<&Message> {
-        self.visible_messages(channel_id)
-            .find(|message| message.id == message_id)
+        let key = self.message_keys.get(channel_id)?.get(message_id)?;
+        self.messages
+            .get(channel_id)?
+            .get(key)
+            .filter(|message| message.id == message_id && message.deleted_at.is_none())
     }
 
     /// 既読位置に使う、最新のルートメッセージ。

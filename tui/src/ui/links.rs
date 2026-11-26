@@ -26,8 +26,14 @@ pub struct LinkView {
     pub body_lines: usize,
 }
 
-/// チャンネルごとの、読み込んでいる行に暗号文の行があるかの結果（1 回の描画の間だけ使う）。
-pub type CiphertextRows = RefCell<HashMap<String, bool>>;
+/// 1 回の描画の間だけ使う、リンクの表示の覚え書き（次の描画では作り直す）。
+#[derive(Default)]
+pub struct DrawCache {
+    /// チャンネルごとの、読み込んでいる行に暗号文の行があるか。
+    pub ciphertext: RefCell<HashMap<String, bool>>,
+    /// リンク先ごとの表示。
+    pub views: RefCell<HashMap<LinkTarget, LinkView>>,
+}
 
 /// 1 つの本文のアプリ内リンクの表示と、取得の対象。
 #[derive(Debug, Clone, Default)]

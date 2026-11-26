@@ -20,8 +20,9 @@ pub fn has_ciphertext(store: &Store, channel_id: &str) -> bool {
         .any(|message| message.ciphertext.is_some())
 }
 
-/// 画面の近くにある本文 (`contents`) の、取得が要るリンク先。一覧にあるチャンネルのメッセージのうち、
-/// 開いているチャンネル（同期した行を使う）以外のものを、重複なく返す。
+/// 画面の近くにある本文 (`contents`) の、取得が要るリンク先。本文ごとに
+/// [`links::MAX_FETCHED_PER_BODY`] 件までのうち、一覧にあるチャンネルのメッセージで、開いている
+/// チャンネル（同期した行を使う）以外のものを、重複なく返す。
 pub fn wanted<'a>(
     store: &Store,
     open: Option<&str>,
@@ -31,11 +32,14 @@ pub fn wanted<'a>(
     let mut result: Vec<LinkedMessage> = contents
         .into_iter()
         .flat_map(|content| {
-            let mut found = links::embedded_links(content, app_base_url);
-            found.extend(links::bare_links(content, app_base_url));
-            found
+            links::fetch_targets(
+                content,
+                app_base_url,
+                &links::embedded_links(content, app_base_url),
+                &links::app_links(content, app_base_url),
+            )
         })
-        .filter_map(|(_, target)| {
+        .filter_map(|target| {
             let message_id = target.linked_message_id()?.to_owned();
             let channel = store.channel(&target.channel_id)?;
             (channel.deleted_at.is_none() && open != Some(channel.id.as_str())).then_some(
@@ -218,14 +222,23 @@ mod tests {
         let contents = [
             "https://zli.chat/channels/there?message=a https://zli.chat/channels/here?message=m1",
             "https://zli.chat/channels/hidden?message=b https://zli.chat/channels/there",
-            // 4 件目より後でも、URL の文字そのものを書いたリンクは短くするので取る。
+            // 4 件目より後の URL でも、URL の文字そのものを書いたリンクは短くするので取る。
             "https://example.com/1 https://example.com/2 https://example.com/3 \
              https://zli.chat/channels/there?thread=t [x](https://zli.chat/channels/there?message=z)",
             "https://zli.chat/channels/there?message=a",
+            // 1 つの本文からは 3 件まで。
+            "https://zli.chat/channels/there?message=b https://zli.chat/channels/there?message=c \
+             https://zli.chat/channels/there?message=d https://zli.chat/channels/there?message=e",
         ];
         assert_eq!(
             wanted(&store, Some("here"), contents, APP),
-            [key("there", "a"), key("there", "t")]
+            [
+                key("there", "a"),
+                key("there", "b"),
+                key("there", "c"),
+                key("there", "d"),
+                key("there", "t")
+            ]
         );
     }
 

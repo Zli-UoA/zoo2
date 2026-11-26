@@ -18,7 +18,7 @@ use super::e2ee_chat::{
     self, ChannelEncryption, CreateForm, CreateKind, Decryptions, RowKey, Shown,
 };
 use super::global_search::{self, GlobalSearch};
-use super::links::{BodyLinks, CiphertextRows};
+use super::links::{BodyLinks, DrawCache, LinkView};
 use crate::{
     api::{ApiClient, Me, ReadState, ThreadSummary, TypingUser, stale_revision},
     e2ee::{
@@ -1935,10 +1935,10 @@ impl App {
         Some((target.channel_id.clone(), message_id.to_owned()))
     }
 
-    /// このチャンネルで読み込んでいる行に、暗号文の行があるか。`seen` に覚えて、1 回の描画で
-    /// 何度も行を調べない（描画ごとに作り直す）。
-    fn linked_ciphertext(&self, channel_id: &str, seen: &CiphertextRows) -> bool {
-        if let Some(found) = seen.borrow().get(channel_id) {
+    /// このチャンネルで読み込んでいる行に、暗号文の行があるか。`cache` に覚えて、1 回の描画で
+    /// 何度も行を調べない。
+    fn linked_ciphertext(&self, channel_id: &str, cache: &DrawCache) -> bool {
+        if let Some(found) = cache.ciphertext.borrow().get(channel_id) {
             return *found;
         }
         let found = self.links.has_ciphertext(channel_id)
@@ -1946,7 +1946,10 @@ impl App {
                 .store
                 .visible_messages(channel_id)
                 .any(|message| message.ciphertext.is_some());
-        seen.borrow_mut().insert(channel_id.to_owned(), found);
+        cache
+            .ciphertext
+            .borrow_mut()
+            .insert(channel_id.to_owned(), found);
         found
     }
 
@@ -1954,7 +1957,7 @@ impl App {
         &self,
         target: &LinkTarget,
         now: Instant,
-        seen: &CiphertextRows,
+        cache: &DrawCache,
     ) -> LinkState<'_> {
         let channel = self.store.channel(&target.channel_id);
         let fetch = target
@@ -1964,7 +1967,7 @@ impl App {
             });
         // 暗号化の扱いは、サーバーの `encrypted` だけで決めない（記録、`edm:` の名前、読み込み済みの
         // 暗号文の行）。
-        let has_ciphertext = self.linked_ciphertext(&target.channel_id, seen);
+        let has_ciphertext = self.linked_ciphertext(&target.channel_id, cache);
         let encrypted = ChannelEncryption::of(
             channel,
             self.known_encrypted_channels.contains(&target.channel_id),
@@ -1989,21 +1992,35 @@ impl App {
         )
     }
 
-    /// 本文のアプリ内リンクの表示。
-    pub fn body_links(&self, body: &str, now: Instant, seen: &CiphertextRows) -> BodyLinks {
-        let mut result = BodyLinks::default();
-        for (_, target) in links::embedded_links(body, &self.api_base_url) {
-            let state = self.link_state(&target, now, seen);
-            result.embeds.push(super::links::view(&state, &self.store));
-            result.targets.push(target);
+    /// リンク先の表示。同じ行き先は、1 回の描画で一度だけ解く。
+    pub fn link_view(&self, target: &LinkTarget, now: Instant, cache: &DrawCache) -> LinkView {
+        if let Some(view) = cache.views.borrow().get(target) {
+            return view.clone();
         }
-        for (url, target) in links::app_links(body, &self.api_base_url) {
-            let state = self.link_state(&target, now, seen);
-            if let Some(label) = super::links::view(&state, &self.store).inline {
+        let view = super::links::view(&self.link_state(target, now, cache), &self.store);
+        cache
+            .views
+            .borrow_mut()
+            .insert(target.clone(), view.clone());
+        view
+    }
+
+    /// 本文のアプリ内リンクの表示と、取得の対象。
+    pub fn body_links(&self, body: &str, now: Instant, cache: &DrawCache) -> BodyLinks {
+        let mut result = BodyLinks::default();
+        // このアプリのリンクがなければ、何もしない。
+        let all = links::app_links(body, &self.api_base_url);
+        if all.is_empty() {
+            return result;
+        }
+        let embedded = links::embedded_links(body, &self.api_base_url);
+        for (_, target) in &embedded {
+            result.embeds.push(self.link_view(target, now, cache));
+        }
+        result.targets = links::fetch_targets(body, &self.api_base_url, &embedded, &all);
+        for (url, target) in all {
+            if let Some(label) = self.link_view(&target, now, cache).inline {
                 result.inline.insert(url, label);
-            }
-            if !result.targets.contains(&target) {
-                result.targets.push(target);
             }
         }
         result
@@ -2083,7 +2100,7 @@ impl App {
         let now = Instant::now();
         // 削除したなど、見られないと分かったメッセージへは移動しない。
         if matches!(
-            self.link_state(&target, now, &CiphertextRows::default()),
+            self.link_state(&target, now, &DrawCache::default()),
             LinkState::Unavailable { .. }
         ) {
             self.notify("メッセージを表示できません");

@@ -39,7 +39,6 @@ use zoo2_client_types::{
         LoginFailed, LoginMethod, LoginPrompt, NotificationSettings, OpenTarget, PROTOCOL_VERSION,
         SessionInfo, SessionState, ShapeBatch, ShapeFailed, UiMode, event,
     },
-    links::LinkedFetch,
     notify::{self, NotifyContext, Toast},
     shape::{Batch, Replica, ShapeId},
     store::Store,
@@ -1492,19 +1491,17 @@ fn reauth_error(error: anyhow::Error) -> IpcError {
     }
 }
 
-/// 画面に送るリンク先。まだ何も分からないものは、画面が読み込み中として出しているので送らない
-/// （前に分かったことを、読み込み中で上書きしない）。
+/// 画面に送るリンク先（分かったことがあるものだけ。[`LinkedCache::known`]）。
 fn link_updates(links: &LinkedCache, keys: &[LinkedKey], now: Instant) -> Vec<Linked> {
-    keys.iter()
-        .filter_map(|key| {
-            let fetch = links.fetch(key, now);
-            (fetch != LinkedFetch::Loading { stalled: false }).then(|| Linked {
-                target: LinkedMessage {
-                    channel_id: key.0.clone(),
-                    message_id: key.1.clone(),
-                },
-                fetch,
-            })
+    links
+        .known(keys, now)
+        .into_iter()
+        .map(|((channel_id, message_id), fetch)| Linked {
+            target: LinkedMessage {
+                channel_id,
+                message_id,
+            },
+            fetch,
         })
         .collect()
 }
@@ -1954,25 +1951,6 @@ mod tests {
         atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     };
-
-    #[tokio::test]
-    async fn only_known_link_states_are_sent_to_the_screen() {
-        let mut links = super::LinkedCache::default();
-        let start = Instant::now();
-        let key = ("c1".to_string(), "m1".to_string());
-        links.watch(start, vec![key.clone()], |_, _| {
-            tokio::spawn(std::future::pending())
-        });
-        // まだ何も分からないものは送らない（前に分かったことを、読み込み中で上書きしない）。
-        assert!(super::link_updates(&links, &links.visible, start).is_empty());
-        let late = start + Duration::from_secs(10);
-        let updates = super::link_updates(&links, &links.visible, late);
-        assert_eq!(updates[0].target.message_id, "m1");
-        assert_eq!(
-            updates[0].fetch,
-            super::LinkedFetch::Loading { stalled: true }
-        );
-    }
 
     #[test]
     fn login_url_origin_validation_requires_same_https_or_loopback_origin() {

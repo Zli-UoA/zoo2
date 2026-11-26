@@ -15,6 +15,10 @@ pub const EXCERPT_MAX_CHARS: usize = 200;
 /// 投稿の下に埋め込みの対象にする、本文の URL の数（Web と同じく、外部の URL も数える）。
 const MAX_PREVIEW_URLS: usize = 3;
 
+/// 1 つの本文から取得する、リンク先のメッセージの数。他の人が書いた 1 件の投稿で、購読や要求が
+/// 増え続けないようにする。超えた分は、すでに分かっていなければ URL のまま表示する。
+pub const MAX_FETCHED_PER_BODY: usize = 3;
+
 /// アプリ内リンクの行き先。`message_id` は `?message=`、`thread_id` は `?thread=`。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LinkTarget {
@@ -181,23 +185,19 @@ fn urls(content: &str, include_silent: bool) -> Vec<String> {
             }
         });
         let mut rest = visible.as_str();
-        while let Some(index) = [rest.find("https://"), rest.find("http://")]
-            .into_iter()
-            .flatten()
-            .min()
-        {
+        while let Some(index) = rest.find("http") {
             let candidate = &rest[index..];
-            let end = candidate
-                .find(|c: char| c.is_whitespace() || "<>\"[]".contains(c))
-                .unwrap_or(candidate.len());
-            let url = candidate[..end].trim_end_matches([')', ',', '.', '!', '?', '、', '。']);
+            let Some(url) = crate::mfm::leading_url(candidate) else {
+                rest = &candidate["http".len()..];
+                continue;
+            };
             if Url::parse(url).is_ok_and(|url| {
                 url.host_str().is_some() && url.username().is_empty() && url.password().is_none()
             }) && !result.iter().any(|seen| seen == url)
             {
                 result.push(url.to_owned());
             }
-            rest = &candidate[end..];
+            rest = &candidate[url.len()..];
         }
     }
     result
@@ -219,6 +219,43 @@ pub fn app_links(content: &str, app_base_url: &str) -> Vec<(String, LinkTarget)>
         .into_iter()
         .filter_map(|url| parse_channel_link(&url, app_base_url).map(|target| (url, target)))
         .collect()
+}
+
+/// 本文から取得するリンク先。埋め込みの対象を先に、続けて URL の文字そのものを書いたリンクを、
+/// メッセージごとに数えて [`MAX_FETCHED_PER_BODY`] 件まで。`embedded` と `all` は、同じ本文の
+/// [`embedded_links`] と [`app_links`]（描画のたびに本文を調べ直さないよう、呼ぶ側から渡す）。
+pub fn fetch_targets(
+    content: &str,
+    app_base_url: &str,
+    embedded: &[(String, LinkTarget)],
+    all: &[(String, LinkTarget)],
+) -> Vec<LinkTarget> {
+    let mut result: Vec<LinkTarget> = Vec::new();
+    let mut add = |links: &[(String, LinkTarget)]| {
+        for (_, target) in links {
+            let Some(message_id) = target.linked_message_id() else {
+                continue;
+            };
+            if result.len() < MAX_FETCHED_PER_BODY
+                && !result.iter().any(|seen| {
+                    seen.channel_id == target.channel_id
+                        && seen.linked_message_id() == Some(message_id)
+                })
+            {
+                result.push(target.clone());
+            }
+        }
+        result.len() < MAX_FETCHED_PER_BODY
+    };
+    // URL の文字そのものを書いたリンクを調べるのは本文の解析が要るので、ほかのリンクがあるときだけ。
+    if add(embedded)
+        && all
+            .iter()
+            .any(|(url, _)| !embedded.iter().any(|(shown, _)| shown == url))
+    {
+        add(&bare_links(content, app_base_url));
+    }
+    result
 }
 
 /// URL の文字そのものを書いたアプリ内リンク（短い表示にするもの）。
@@ -634,6 +671,30 @@ mod tests {
         assert!(ids("  ```rs\nhttps://zli.chat/channels/a\n本文```").is_empty());
         assert_eq!(ids("```\nx\n```\nhttps://zli.chat/channels/c"), ["c"]);
         assert_eq!(excerpt("前\n```\n**コード**"), "前 **コード**");
+    }
+
+    #[test]
+    fn one_body_fetches_only_a_few_messages() {
+        let link = |n: u32| format!("https://zli.chat/channels/c{n}?message=m{n}");
+        let content = format!(
+            "https://zli.chat/channels/only {0}と{0} https://example.com/x \
+             詳しくは{1}。 {2} {3} {4}",
+            link(1),
+            link(2),
+            link(3),
+            link(4),
+            link(5),
+        );
+        let ids: Vec<String> = fetch_targets(
+            &content,
+            APP,
+            &embedded_links(&content, APP),
+            &app_links(&content, APP),
+        )
+        .into_iter()
+        .map(|target| target.channel_id)
+        .collect();
+        assert_eq!(ids, ["c1", "c2", "c3"]);
     }
 
     #[test]
