@@ -262,7 +262,7 @@ final class WorkspaceStore {
     }
 
     func markChannelRead(_ channel: Channel) async {
-        guard active, !Task.isCancelled, !channel.is_dm, channel.encrypted != true,
+        guard active, !Task.isCancelled, !channel.is_dm,
               channel.deleted_at == nil, unread.contains(channel.id),
               markingReadChannelIDs.insert(channel.id).inserted else { return }
         readUpdateError = nil
@@ -566,7 +566,7 @@ final class WorkspaceStore {
 
     func openThread(_ parentID: String, in store: ConversationStore, focusComposer: Bool) {
         guard active, path.last == .channel(store.channel.id), !store.blocked,
-              store.channel.encrypted != true, store.message(id: parentID) != nil else { return }
+              store.message(id: parentID) != nil else { return }
         let route = ChatRoute.thread(channelID: store.channel.id, parentID: parentID, focusComposer: focusComposer)
         if store.channel.is_dm { dmPath.append(route) }
         else { channelPath.append(route) }
@@ -580,7 +580,7 @@ final class WorkspaceStore {
 
     func openListedThread(_ parentID: String, in channel: Channel) {
         guard active, selectedTab == .channels, joinedChannelIDs.contains(channel.id),
-              !channel.is_dm, channel.encrypted != true else { return }
+              !channel.is_dm else { return }
         let store = conversation(for: channel)
         guard !store.blocked else { report(ZooError.rejected(403, "この会話を閲覧できません。")); return }
         store.prepareForThread(parentID)

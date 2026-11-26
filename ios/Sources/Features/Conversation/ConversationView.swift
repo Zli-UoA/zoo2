@@ -23,7 +23,7 @@ struct ConversationView: View {
 
     private var threadUnavailable: Bool {
         guard let parentID else { return false }
-        return store.blocked || store.channel.encrypted == true ||
+        return store.blocked ||
             (!store.loading && !store.showingCachedMessages && store.syncError == nil && store.message(id: parentID) == nil)
     }
 

@@ -623,7 +623,7 @@ final class ConversationStore {
     func markRead(through messageID: String) async {
         let epoch = accessGeneration
         var delay = 2
-        while active, !blocked, channel.encrypted != true, epoch == accessGeneration, !Task.isCancelled,
+        while active, !blocked, epoch == accessGeneration, !Task.isCancelled,
               lastReadID != messageID {
             do {
                 try await client.markRead(channelID: channel.id, messageID: messageID)
