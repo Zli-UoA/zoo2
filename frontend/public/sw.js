@@ -268,7 +268,24 @@ async function precacheShell() {
         if (!saved) continue;
         // 旧 SW は本文を検証せずに保存していたため、コピーする前に確認する。
         if (path === "/manifest.webmanifest" && !(await isFreshManifest(saved))) continue;
-        if (path === "/offline.html" && !(await isOfflinePage(saved))) continue;
+        if (path === "/offline.html") {
+          if (!isFreshAssetResponse(path, saved) || !(await isOfflinePage(saved))) continue;
+          // CSP が変わった場合は、今回取得した index.html のポリシーを適用する。
+          const copy = saved.clone();
+          const headers = new Headers(copy.headers);
+          const csp = cached.headers.get("content-security-policy");
+          if (csp) headers.set("content-security-policy", csp);
+          else headers.delete("content-security-policy");
+          await cache.put(
+            path,
+            new Response(await copy.arrayBuffer(), {
+              status: copy.status,
+              statusText: copy.statusText,
+              headers,
+            }),
+          );
+          continue;
+        }
         await cache.put(path, saved.clone());
       }
     } catch {
@@ -358,7 +375,16 @@ function isFreshAssetResponse(path, response) {
 async function isFreshManifest(response) {
   try {
     const parsed = JSON.parse(await response.clone().text());
-    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed);
+    return (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed) &&
+      typeof parsed.name === "string" &&
+      typeof parsed.background_color === "string" &&
+      typeof parsed.start_url === "string" &&
+      Array.isArray(parsed.icons) &&
+      parsed.icons.length > 0
+    );
   } catch {
     return false;
   }
