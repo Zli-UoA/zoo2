@@ -1182,16 +1182,29 @@ impl TokenManager {
         // 保存できなかった最新の refresh token は、この manager の session のものなので、
         // ファイル側の結果（保存先がない、ロックを取れない、別のログインに置き換わった、
         // 一時ファイルの回収に失敗した）にかかわらず失効を要求する。
-        if let Some(refresh_token) = unsaved {
+        // 待機が終わってから更新に成功したものを逃さないよう、状態を取り直して加える。
+        let mut unsaved: Vec<String> = unsaved.into_iter().collect();
+        {
+            let state = self.state.lock().await;
+            if let Some(token) = state.tokens.refresh_token.clone()
+                && state.pending_persist.is_some()
+                && !unsaved.contains(&token)
+            {
+                unsaved.push(token);
+            }
+        }
+        if !unsaved.is_empty() {
             let revoke = async {
                 let discovery = discover(&self.http, &self.oidc.issuer).await?;
                 if let Some(endpoint) = discovery.revocation_endpoint {
-                    let form = [
-                        ("token", refresh_token.as_str()),
-                        ("token_type_hint", "refresh_token"),
-                        ("client_id", self.oidc.client_id.as_str()),
-                    ];
-                    let _ = self.http.post(&endpoint).form(&form).send().await;
+                    for refresh_token in &unsaved {
+                        let form = [
+                            ("token", refresh_token.as_str()),
+                            ("token_type_hint", "refresh_token"),
+                            ("client_id", self.oidc.client_id.as_str()),
+                        ];
+                        let _ = self.http.post(&endpoint).form(&form).send().await;
+                    }
                 }
                 Ok::<(), anyhow::Error>(())
             };
