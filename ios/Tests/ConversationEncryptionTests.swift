@@ -22,6 +22,8 @@ private final class FakeEncryption: ConversationEncryption {
         sentAttachments.append(attachments)
     }
     func edit(_ message: Message, body: String, mentions: EncryptedMentions) async throws { edited.append((message.id, body)) }
+    var summary: MessageEncryption.RecipientSummary?
+    func recipientSummary(channelID: String) async -> MessageEncryption.RecipientSummary? { summary }
 }
 
 @MainActor
@@ -195,6 +197,27 @@ struct ConversationEncryptionTests {
         let own = message("00000000-0000-4000-8000-0000000000e1", content: "")
         #expect(await store.edit(own, content: "編集") == false)
         #expect(encryption.edited.isEmpty)
+    }
+
+    @Test("配布先の要約は、あるときだけ出し、鍵を配れない相手は名前と理由で説明する")
+    func recipientSummaryAndUndeliverableText() async {
+        let encryption = FakeEncryption()
+        let store = store(encryption)
+        store.displayName = { $0 == "u1" ? "あおい" : "不明" }
+        await store.refreshRecipientSummary()
+        #expect(store.recipientSummary == nil)
+        encryption.summary = MessageEncryption.RecipientSummary(added: ["u1"], undeliverable: [
+            MessageEncryption.Undeliverable(userID: "u1", reason: .needsReverification)])
+        await store.refreshRecipientSummary()
+        #expect(store.recipientSummary?.added == ["u1"] && store.recipientSummary?.undeliverable.count == 1)
+        encryption.summary = MessageEncryption.RecipientSummary()
+        await store.refreshRecipientSummary()
+        #expect(store.recipientSummary == nil)
+        let text = store.describe(MessageEncryptionError.undeliverableUsers([
+            MessageEncryption.Undeliverable(userID: "u1", reason: .needsReverification),
+            MessageEncryption.Undeliverable(userID: "u2", reason: .notSetUp)]))
+        #expect(text.contains("あおい：鍵が変わりました。再検証が必要です") && text.contains("不明：暗号化を設定していません"))
+        #expect(store.describe(MessageEncryptionError.sendStaleEpoch) == MessageEncryptionError.sendStaleEpoch.localizedDescription)
     }
 
     @Test("暗号化チャンネルの編集は暗号化の経路へ渡す")

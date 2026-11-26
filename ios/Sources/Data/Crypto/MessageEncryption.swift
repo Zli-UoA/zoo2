@@ -31,6 +31,8 @@ enum MessageEncryptionError: Error, Equatable, LocalizedError {
     case undeliverable(String)
     /// 暗号化を求めたのに、サーバーが暗号化しない会話にした（格下げ）。
     case downgraded
+    /// 鍵を配れない参加者がいる（理由つき。名前は、画面が付ける）。
+    case undeliverableUsers([MessageEncryption.Undeliverable])
 
     var errorDescription: String? {
         switch self {
@@ -40,6 +42,7 @@ enum MessageEncryptionError: Error, Equatable, LocalizedError {
         case .editConflict: E2eeText.editConflict
         case .editForbidden: E2eeText.editForbidden
         case .undeliverable(let reason): reason
+        case .undeliverableUsers: "鍵を配れない参加者がいます。"
         case .downgraded: "暗号化を求めましたが、暗号化されない会話になりました。安全のため、この会話は使わないでください。"
         }
     }
@@ -188,23 +191,32 @@ final class MessageEncryption {
         throw MessageEncryptionError.sendStaleEpoch
     }
 
-    /// 配布先の端末。新しい TOFU のピンは、サーバーに登録してから確定する（競合したら読み直す）。
-    private func recipients(_ store: CryptoStore, channel: String, minimum: UInt64) async throws -> (UInt64, [VerifiedDeviceKeys]) {
+    /// 鍵を配れない相手と、その理由（暗号化の設定がない、鍵が不正、再検証が必要、など）。
+    struct Undeliverable: Equatable, Sendable {
+        enum Reason: String, Equatable, Sendable { case notSetUp, invalidKeys, needsReverification, needsUnlock, pinPending, blocked, warning }
+        let userID: String
+        let reason: Reason
+    }
+
+    /// 送信欄の上に出す、配布先の要約（docs/e2ee.md の「送信画面の表示」）。
+    struct RecipientSummary: Equatable, Sendable {
+        /// 前回の送信から、配布先に増えたユーザー。
+        var added: [String] = []
+        /// 鍵を配れない相手と理由。
+        var undeliverable: [Undeliverable] = []
+        var isEmpty: Bool { added.isEmpty && undeliverable.isEmpty }
+    }
+
+    /// 配布先の判定。新しい TOFU のピンは、サーバーに登録してから確定する（競合したら読み直す）。
+    private func evaluate(_ store: CryptoStore, channel: String, minimum: UInt64) async throws -> (epoch: UInt64, distribution: Distribution) {
         var pages = try await pages(channel, minimum: minimum)
         for _ in 0..<5 {
             let distribution: Distribution
             do { distribution = try store.recipients(pages: pages.map { jsonText(.object($0)) }) }
             catch E2eeStoreError.sendNeedsUnlock { throw MessageEncryptionError.sendNeedsUnlock }
             if distribution.newPins.isEmpty {
-                // 配れない参加者を黙って除外しない。Web での確認・再検証後に再試行できる。
-                guard distribution.warnings.isEmpty, distribution.users.values.allSatisfy({ if case .trusted = $0.state { true } else { false } }) else {
-                    throw MessageEncryptionError.undeliverable("鍵を配れない参加者がいます")
-                }
-                guard distribution.users.keys.allSatisfy({ user in user == store.userID || distribution.devices.contains { $0.userId() == user } }) else {
-                    throw MessageEncryptionError.undeliverable("鍵を配れない参加者がいます")
-                }
                 guard let epoch = pages.first?["membership_epoch"]?.uint else { throw ZooError.invalidResponse }
-                return (epoch, distribution.devices)
+                return (epoch, distribution)
             }
             var conflict = false
             for pin in distribution.newPins {
@@ -222,6 +234,51 @@ final class MessageEncryption {
             if conflict { pages = try await self.pages(channel, minimum: minimum) }
         }
         throw MessageEncryptionError.undeliverable("TOFU のピンを確定できませんでした")
+    }
+
+    /// 鍵を配れない相手と理由。配れない相手がいなければ空。
+    private func undeliverable(_ store: CryptoStore, _ distribution: Distribution) -> [Undeliverable] {
+        var result: [Undeliverable] = []
+        for (user, trust) in distribution.users.sorted(by: { $0.key < $1.key }) {
+            switch trust.state {
+            case .trusted:
+                // 信頼できても、鍵を配れる端末がなければ、配れない（暗号化の設定をしていない）。
+                if user != store.userID, !distribution.devices.contains(where: { $0.userId() == user }) {
+                    result.append(Undeliverable(userID: user, reason: .notSetUp))
+                }
+            case .noCrossSigningKeys: result.append(Undeliverable(userID: user, reason: .notSetUp))
+            case .invalidCrossSigningKeys: result.append(Undeliverable(userID: user, reason: .invalidKeys))
+            case .needsReverification: result.append(Undeliverable(userID: user, reason: .needsReverification))
+            case .needsUnlock: result.append(Undeliverable(userID: user, reason: .needsUnlock))
+            case .pinPending: result.append(Undeliverable(userID: user, reason: .pinPending))
+            case .blocked: result.append(Undeliverable(userID: user, reason: .blocked))
+            }
+        }
+        // 利用者に関わる警告（自分のマスター鍵の変更など）は、ユーザーに結び付かないので、自分の分として出す。
+        if !distribution.warnings.isEmpty, result.isEmpty { result.append(Undeliverable(userID: store.userID, reason: .warning)) }
+        return result
+    }
+
+    /// 送る前の要約。前回の送信から増えた配布先と、鍵を配れない相手（送信はしない。ピンの確定と記録の保存だけ行う）。
+    func summary(channel: String) async throws -> RecipientSummary {
+        let store = try currentStore()
+        let (epoch, distribution) = try await evaluate(store, channel: channel, minimum: latestEpochs[channel] ?? 0)
+        latestEpochs[channel] = epoch
+        let current = Set(distribution.users.keys).subtracting([store.userID])
+        let previous = Set(store.recordedMembers(channel: channel) ?? [])
+        // 記録がなければ（初めて）、増えたとは言わない。
+        let added = store.recordedMembers(channel: channel) == nil ? [] : current.subtracting(previous).sorted()
+        return RecipientSummary(added: added, undeliverable: undeliverable(store, distribution))
+    }
+
+    /// 配布先の端末。鍵を配れない参加者がいれば、黙って除外せずに、送らない（Web での再検証のあとで、再び試せる）。
+    private func recipients(_ store: CryptoStore, channel: String, minimum: UInt64) async throws -> (UInt64, [VerifiedDeviceKeys]) {
+        let (epoch, distribution) = try await evaluate(store, channel: channel, minimum: minimum)
+        let blocked = undeliverable(store, distribution)
+        guard blocked.isEmpty else { throw MessageEncryptionError.undeliverableUsers(blocked) }
+        // 送れるので、配布先を記録する（次の「前回から増えた配布先」の基準）。
+        try? store.recordMembers(channel: channel, users: Array(Set(distribution.users.keys).subtracting([store.userID])))
+        return (epoch, distribution.devices)
     }
 
     /// セッションの鍵を、受信端末に Olm で配る。配れなかった端末があれば投げる。

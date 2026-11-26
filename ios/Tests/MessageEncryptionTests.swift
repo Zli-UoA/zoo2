@@ -224,6 +224,18 @@ struct MessageEncryptionTests {
         #expect(decrypted.payload?.mentions.userIds == mentions.userIDs && decrypted.payload?.mentions.channel == true)
     }
 
+    @Test func 送信できると配布先を記録し自分だけの会話では要約は空のまま() async throws {
+        let (server, sender, receiver, encryption, _) = try await makePair()
+        defer { sender.cleanUp(); receiver.cleanUp() }
+        #expect(sender.store.recordedMembers(channel: channel) == nil)
+        #expect(try await encryption.summary(channel: channel).isEmpty)
+        try await encryption.send(channel: channel, id: messageID, parent: nil, body: "記録")
+        // 送れたので、配布先（自分以外。この会話は自分だけ）を記録する。
+        #expect(sender.store.recordedMembers(channel: channel) == [])
+        #expect(try await encryption.summary(channel: channel).isEmpty)
+        _ = server
+    }
+
     @Test func 送信した本文は送信端末でも再起動後に読める() async throws {
         let (server, sender, receiver, encryption, _) = try await makePair()
         defer { sender.cleanUp(); receiver.cleanUp() }

@@ -12,6 +12,8 @@ protocol ConversationEncryption: AnyObject {
     func decrypt(_ message: Message) -> DecryptedBody
     func send(channelID: String, id: String, parentID: String?, body: String, attachments: [AttachmentInfo], mentions: EncryptedMentions) async throws
     func edit(_ message: Message, body: String, mentions: EncryptedMentions) async throws
+    /// 送る前の、配布先の要約（前回から増えた配布先と、鍵を配れない相手）。確かめられなければ `nil`。
+    func recipientSummary(channelID: String) async -> MessageEncryption.RecipientSummary?
 }
 
 /// ログインしているユーザーの E2EE（#685）。端末の管理、初回設定と解錠、暗号化チャンネルの送受信をまとめ、
@@ -380,6 +382,11 @@ final class E2eeController: ConversationEncryption {
 
     func send(channelID: String, id: String, parentID: String?, body: String, attachments: [AttachmentInfo], mentions: EncryptedMentions) async throws {
         try await encryption.send(channel: channelID, id: id, parent: parentID, body: body, attachments: attachments, mentions: mentions)
+    }
+
+    func recipientSummary(channelID: String) async -> MessageEncryption.RecipientSummary? {
+        guard isReady else { return nil }
+        return try? await encryption.summary(channel: channelID)
     }
 
     func edit(_ message: Message, body: String, mentions: EncryptedMentions) async throws {

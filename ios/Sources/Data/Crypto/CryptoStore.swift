@@ -92,6 +92,8 @@ struct StoreState: Codable {
     var revocation: String?
     /// 暗号化チャンネルとして見たことがあるチャンネルの ID（サーバーが後から `encrypted = false` と返しても、格下げとして扱う）。
     var encrypted_channels: [String] = []
+    /// チャンネルごとの、前回の送信で配布先にしたユーザー（「前回から増えた配布先」の基準）。
+    var recipient_members: [String: [String]] = [:]
 
     init(version: Int, user_id: String, device_id: String, registered: Bool, account: String, trust_store: String?) {
         self.version = version; self.user_id = user_id; self.device_id = device_id
@@ -117,6 +119,7 @@ struct StoreState: Codable {
         imported_backup_version = try c.decodeIfPresent(String.self, forKey: .imported_backup_version)
         revocation = try c.decodeIfPresent(String.self, forKey: .revocation)
         encrypted_channels = try c.decodeIfPresent([String].self, forKey: .encrypted_channels) ?? []
+        recipient_members = try c.decodeIfPresent([String: [String]].self, forKey: .recipient_members) ?? [:]
     }
 }
 
@@ -648,6 +651,22 @@ final class CryptoStore: @unchecked Sendable {
             guard !added.isEmpty else { return }
             var next = state
             next.encrypted_channels += Set(added).sorted()
+            try save(next)
+            state = next
+        }
+    }
+
+    /// チャンネルの、前回の送信で配布先にしたユーザー（なければ `nil`）。
+    func recordedMembers(channel: String) -> [String]? { lock.withLock { state.recipient_members[channel] } }
+
+    /// 配布先を記録する（変わったときだけ保存する）。
+    func recordMembers(channel: String, users: [String]) throws {
+        try lock.withLock {
+            try ensureOpen()
+            let sorted = Set(users).sorted()
+            guard state.recipient_members[channel] != sorted else { return }
+            var next = state
+            next.recipient_members[channel] = sorted
             try save(next)
             state = next
         }

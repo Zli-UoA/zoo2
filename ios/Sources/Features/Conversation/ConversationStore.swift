@@ -49,6 +49,37 @@ final class ConversationStore {
     /// ユーザー名からユーザー ID を引く（暗号化チャンネルの送信に付ける `mentions` を作る）。
     /// 暗号化チャンネルだったはずなのに、サーバーが平文だと返している（格下げ）。送信を止める。
     @ObservationIgnored var isDowngraded: () -> Bool = { false }
+    /// ユーザー ID から表示名を引く（鍵を配れない相手の表示に使う）。
+    @ObservationIgnored var displayName: (String) -> String = { $0 }
+    /// 送信欄の上に出す、配布先の要約（暗号化チャンネルで、気付いてほしいことがあるときだけ）。
+    private(set) var recipientSummary: MessageEncryption.RecipientSummary?
+
+    /// 配布先の要約を読み直す（会話を開いたとき、鍵が届いたとき、送信のあと）。
+    func refreshRecipientSummary() async {
+        guard channel.encrypted == true, let e2ee, e2ee.isReady else { recipientSummary = nil; return }
+        let summary = await e2ee.recipientSummary(channelID: channel.id)
+        recipientSummary = (summary?.isEmpty ?? true) ? nil : summary
+    }
+
+    /// 鍵を配れない相手を、名前と理由で説明する。
+    func describe(_ error: any Error) -> String {
+        guard case MessageEncryptionError.undeliverableUsers(let users) = error else { return error.localizedDescription }
+        let lines = users.map { "・\(displayName($0.userID))：\(Self.reasonText($0.reason))" }
+        return "鍵を配れない参加者がいるため、送りませんでした。\n" + lines.joined(separator: "\n")
+    }
+
+    static func reasonText(_ reason: MessageEncryption.Undeliverable.Reason) -> String {
+        switch reason {
+        case .notSetUp: "暗号化を設定していません"
+        case .invalidKeys: "鍵が正しくありません"
+        case .needsReverification: "鍵が変わりました。再検証が必要です"
+        case .needsUnlock: "この端末が解錠されていません"
+        case .pinPending: "鍵の確認を保存できていません"
+        case .blocked: "鍵を配れません"
+        case .warning: "鍵の警告があります"
+        }
+    }
+
     @ObservationIgnored var userIDForName: (String) -> String? = { _ in nil }
 
     private func encryptedMentions(_ content: String) -> EncryptedMentions {
@@ -516,6 +547,7 @@ final class ConversationStore {
                 uploadStatus[key] = attachments.isEmpty ? nil : "メッセージを送信中…"
                 pendingSends[key]?.messageAttempted = true
                 try await e2ee.send(channelID: channel.id, id: pending.id, parentID: parentID, body: content, attachments: infos, mentions: encryptedMentions(content))
+                Task { await refreshRecipientSummary() }
                 try Task.checkCancellation()
                 guard active, !blocked, epoch == accessGeneration else { return }
                 pendingSends[key] = nil
@@ -569,7 +601,7 @@ final class ConversationStore {
         } catch {
             guard active, epoch == accessGeneration, !Task.isCancelled, !(error is CancellationError) else { return }
             if case ZooError.expiredSession = error { onExpiredSession?(); return }
-            sendErrors[key] = "送信できませんでした。本文と添付を保持しています。\(error.localizedDescription)"
+            sendErrors[key] = "送信できませんでした。本文と添付を保持しています。\(describe(error))"
         }
     }
 

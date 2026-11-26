@@ -41,6 +41,23 @@ struct ConversationView: View {
                 if store.channel.encrypted == true, let e2ee = workspace.e2ee, !e2ee.isReady {
                     EncryptionUnlockBanner(e2ee: e2ee) { workspace.presentedSheet = .encryption }
                 }
+                if let summary = store.recipientSummary {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if !summary.added.isEmpty {
+                            Label("前回の送信から、配布先に加わった人：" + summary.added.map(store.displayName).joined(separator: "、"),
+                                  systemImage: "person.badge.plus").font(.caption)
+                        }
+                        if !summary.undeliverable.isEmpty {
+                            Label("鍵を配れない相手がいます（送れません）", systemImage: "exclamationmark.shield").font(.caption.bold())
+                            ForEach(summary.undeliverable, id: \.userID) { entry in
+                                Text("・\(store.displayName(entry.userID))：\(ConversationStore.reasonText(entry.reason))").font(.caption)
+                            }
+                        }
+                    }
+                    .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.orange.opacity(0.12))
+                    .accessibilityIdentifier("encryption-recipients-notice")
+                }
                 if store.isDowngraded() {
                     Label(MessageEncryptionError.downgraded.localizedDescription, systemImage: "exclamationmark.shield")
                         .font(.caption).padding(12).frame(maxWidth: .infinity, alignment: .leading)
@@ -66,6 +83,10 @@ struct ConversationView: View {
             }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { navigationContentWidth = $0 }
+        // 暗号化チャンネルは、開いたとき、鍵が届いたとき、解錠したときに、配布先の要約を読み直す。
+        .task(id: "\(store.channel.id)|\(workspace.e2ee?.revision ?? 0)|\(workspace.e2ee?.isReady == true)") {
+            await store.refreshRecipientSummary()
+        }
         .background(AppDesign.background.ignoresSafeArea())
         .navigationTitle(parentID == nil ? workspace.name(for: store.channel) : "スレッド")
         .navigationBarTitleDisplayMode(.inline)

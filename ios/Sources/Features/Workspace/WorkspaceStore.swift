@@ -459,6 +459,7 @@ final class WorkspaceStore {
         let store = ConversationStore(channel: channel, client: client, userID: user.id)
         store.e2ee = e2ee
         store.isDowngraded = { [weak self] in self?.downgradedChannelIDs.contains(channel.id) == true }
+        store.displayName = { [weak self] id in self?.people[id]?.name ?? "不明なユーザー" }
         store.userIDForName = { [weak self] name in self?.people.values.first { $0.user_name == name }?.id }
         store.canonicalEmoji = { [weak self] value in
             self?.emojisByKey[value].map { ":\($0.name):" } ?? ReactionEmoji.key(value)
