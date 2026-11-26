@@ -7,7 +7,7 @@
 #endif
 
 #ifndef AppVersion
-  #define AppVersion "0.3.0"
+  #define AppVersion "0.3.1"
 #endif
 #ifndef ExePath
   #define ExePath "..\src-tauri\target\release\zoo2-desktop-tauri.exe"
