@@ -260,7 +260,7 @@ internal class AndroidPlatform(
         mediaProxy.image(url, http, images, env.online)
 
     override suspend fun refreshImage(url: String): ByteArray =
-        mediaProxy.image(url, http, images, env.online, revalidate = true)
+        mediaProxy.image(url, http, images, env.online, bypassCache = true)
 
     override suspend fun attachmentImage(url: String): ByteArray =
         images.signedImage(url)

@@ -83,6 +83,7 @@ internal fun ConnectedScreens(
     val encryption = platform.messageEncryption
     val cryptoChanges by (encryption?.changes ?: remember { kotlinx.coroutines.flow.MutableStateFlow(0L) }).collectAsState()
     val messageEntries by produceState(emptyList<TimelineItem>(), rows, usersById, encrypted, canPost, cryptoChanges, session.workspaceEmojis) {
+        state.forgetSearchPreviews(rows)
         val ordered = rows.filterNot { it.present("deleted_at") }.sortedWith(compareBy({ it.text("created_at") }, { it.text("id") }))
         value = ordered.map { row ->
             val decrypted = if (row.present("ciphertext")) {

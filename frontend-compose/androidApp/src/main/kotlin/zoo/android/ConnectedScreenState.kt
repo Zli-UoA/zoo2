@@ -268,6 +268,8 @@ internal class ConnectedScreenState(
         val links = if (!richContent.hidesBody) messageLinks(body, app.config.apiBaseUrl, quoteUri, mediaUrls)
             else MessageLinks(emptyList(), null)
         val url = links.external.takeIf { allowPreview && !data.present("ciphertext") }
+        if (!isPost) searchPreviewLinks.remember(data, url.takeUnless { data.present("deleted_at") })
+
         val createdAt = data.text("created_at")
         val time = platform.time(createdAt)
         val postHeader = if (isPost) {
@@ -388,6 +390,7 @@ internal class ConnectedScreenState(
             val endpoint = if (post) "home" else "messages"
             app.api.request("/api/$endpoint/${action.item.id.encodeURLParameter()}", "DELETE")
             confirmingEntry = null
+            if (!post) searchPreviewLinks.removeMessage(action.item.id)
             if (post) {
                 if (openedPostId == action.item.id) {
                     closePost()
@@ -505,6 +508,16 @@ internal class ConnectedScreenState(
         )
     }
 
+    private val searchPreviewLinks = SearchPreviewLinks()
+
+    fun forgetSearchPreviews(rows: List<Row>) {
+        rows.forEach { row ->
+            if (row.present("deleted_at") || row.present("ciphertext")) {
+                searchPreviewLinks.remove(row.text("channel_id"), row.text("id"))
+            }
+        }
+    }
+
     fun searchScreen(
         users: Map<String, Row>, channels: List<Row>, members: List<Row>, previewService: String,
     ): AndroidScreen.Search {
@@ -519,13 +532,14 @@ internal class ConnectedScreenState(
                 val file = isGlobalSearchFile(row, search.type)
                 val searchAuthor = row.nested("author")
                 val user = users[row.text("user_id")] ?: searchAuthor
-                // Only a locally synced full body can establish whether the link is visible.
-                val link = if (file || row.text("kind") == "note") null else {
-                    messagesByChannel.getOrPut(row.text("channel_id")) {
+                val link = if (file || channel == null || row.text("kind") == "note") null else {
+                    val current = messagesByChannel.getOrPut(row.text("channel_id")) {
                         app.repo.cachedMessages(row.text("channel_id")).associateBy { it.text("id") }
                     }[row.text("id")]
-                        ?.takeUnless { it.present("ciphertext") || it.text("deleted_at").isNotEmpty() }
-                        ?.let { messageLinks(it.text("content"), app.config.apiBaseUrl).external }
+                    if (current != null) {
+                        current.takeUnless { it.present("ciphertext") || it.present("deleted_at") }
+                            ?.let { messageLinks(it.text("content"), app.config.apiBaseUrl).external }
+                    } else searchPreviewLinks.cached(row)
                 }
                 val createdAt = row.text("created_at")
                 val day = platform.day(createdAt).let { if (it.substringBefore('/') == year) it.substringAfter('/') else it }

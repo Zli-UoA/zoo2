@@ -75,6 +75,26 @@ class AndroidImageCacheTest {
         }
     }
 
+    @Test fun retryDoesNotSendTheCachedValidatorOrReuseTheBrokenBody() = runBlocking {
+        Fixture().use { fixture ->
+            fixture.server.enqueue(MockResponse().setHeader("Cache-Control", "public, max-age=3600")
+                .setHeader("ETag", "\"v1\"").setBody("broken"))
+            fixture.server.enqueue(MockResponse().setHeader("Cache-Control", "public, max-age=3600")
+                .setHeader("ETag", "\"v1\"").setBody("repaired"))
+            fixture.cache().use { cache ->
+                val request = ImageRequest(fixture.url)
+                assertEquals("broken", cache.imageFromCacheFirst(request).decodeToString())
+                assertEquals("repaired", cache.download(request, 1024, bypassCache = true).decodeToString())
+                assertEquals("repaired", cache.imageFromCacheFirst(request).decodeToString())
+                assertEquals(2, fixture.server.requestCount)
+                assertNotNull(fixture.server.takeRequest(5, TimeUnit.SECONDS))
+                val retry = assertNotNull(fixture.server.takeRequest(5, TimeUnit.SECONDS))
+                assertNull(retry.getHeader("If-None-Match"))
+                assertEquals("no-cache", retry.getHeader("Cache-Control"))
+            }
+        }
+    }
+
     @Test fun cacheFirstRevalidatesNoCacheImagesWithTheirEtag() = runBlocking {
         Fixture().use { f ->
             f.server.enqueue(MockResponse().setHeader("Cache-Control", "public, no-cache")

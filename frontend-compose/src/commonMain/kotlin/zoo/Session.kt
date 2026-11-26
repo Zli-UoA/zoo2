@@ -276,7 +276,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                 val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
                 imageCache.remove(imageCacheKey(url, signedAttachment))
                 (if (signedAttachment) platform.attachmentImage(resolved) else platform.refreshImage(resolved))
-                    ?: assetClient.get(resolved) { header("Cache-Control", "max-age=0") }.body()
+                    ?: assetClient.get(resolved) { header("Cache-Control", "no-cache") }.body()
             }
             platform.imageFrames(bytes).first()
         }
