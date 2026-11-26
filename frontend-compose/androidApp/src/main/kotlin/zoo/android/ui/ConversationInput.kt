@@ -65,7 +65,7 @@ internal fun ConversationInput(
     }
     var focused by remember { mutableStateOf(false) }
     val full = state.expanded
-    var drag by remember(full) { mutableStateOf(0.dp) }
+    var dragDistance by remember(full) { mutableStateOf(0.dp) }
     var compactHeight by remember { mutableStateOf(0.dp) }
     val showTools = full || focused || state.text.isNotEmpty()
     val density = LocalDensity.current
@@ -74,13 +74,17 @@ internal fun ConversationInput(
         val minimum = maxOf(compactHeight, AndroidControlSize.target * 2 + AndroidControlSize.inputHandleHeight)
             .coerceAtMost(maxHeight)
         val maxTravel = if (full) maxHeight - minimum else (maxHeight - compactHeight).coerceAtLeast(0.dp)
+        val drag = if (full) dragDistance.coerceIn(-maxTravel, 0.dp) else dragDistance.coerceIn(0.dp, maxTravel)
         val height = when {
             full -> (maxHeight + drag).coerceIn(minimum, maxHeight)
             drag > 0.dp -> (compactHeight + drag).coerceAtMost(maxHeight)
             else -> null
         }
         val adjustable = height != null
-        val dragLimit by rememberUpdatedState(maxTravel)
+        val dragThreshold by rememberUpdatedState(
+            if (maxTravel > 0.dp) minOf(AndroidControlSize.inputExpandThreshold, maxTravel)
+            else AndroidControlSize.inputExpandThreshold,
+        )
         Column(Modifier.fillMaxWidth()
             .then(if (height != null) Modifier.height(height) else Modifier)
             .onSizeChanged {
@@ -106,19 +110,13 @@ internal fun ConversationInput(
                 Modifier.fillMaxWidth().height(AndroidControlSize.inputHandleHeight)
                     .pointerInput(full) {
                         detectVerticalDragGestures(
-                            onDragCancel = { drag = 0.dp },
+                            onDragCancel = { dragDistance = 0.dp },
                             onDragEnd = {
-                                val distance = if (full) -drag else drag
-                                if (distance > 0.dp && distance >= minOf(AndroidControlSize.inputExpandThreshold, dragLimit)) {
-                                    expand()
-                                }
-                                drag = 0.dp
+                                val distance = if (full) -dragDistance else dragDistance
+                                if (distance >= dragThreshold) expand()
+                                dragDistance = 0.dp
                             },
-                        ) { _, delta ->
-                            val heightChange = drag - delta.toDp()
-                            drag = if (full) heightChange.coerceIn(-dragLimit, 0.dp)
-                                else heightChange.coerceIn(0.dp, dragLimit)
-                        }
+                        ) { _, delta -> dragDistance -= delta.toDp() }
                     }.clickable(role = Role.Button, onClick = expand)
                     .semantics { contentDescription = if (full) "入力欄を縮める" else "入力欄を広げる" },
                 contentAlignment = Alignment.Center,

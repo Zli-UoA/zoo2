@@ -56,6 +56,29 @@ class ConversationScrollTest {
     }
 
     @Test
+    fun expandedInputCollapsesEvenWhenTheHandleHasNoRoomToMove() {
+        var expanded by mutableStateOf(true)
+        ui.setContent {
+            Box(Modifier.height(112.dp)) {
+                ConversationInput(InputState("下書き", expanded = expanded), AndroidColors(false),
+                    textChanged = {}, onTool = { if (it == InputTool.Expand) expanded = false })
+            }
+        }
+
+        val handle = ui.onNodeWithContentDescription("入力欄を縮める")
+        val top = handle.fetchSemanticsNode().boundsInRoot.top
+        val distance = with(ui.density) { 90.dp.toPx() }
+        handle.performTouchInput { down(center); moveBy(Offset(0f, distance)) }
+        assertEquals(top, handle.fetchSemanticsNode().boundsInRoot.top, 1f)
+        handle.performTouchInput { cancel() }
+        handle.performTouchInput { down(center); moveBy(Offset(0f, distance / 3)); up() }
+        handle.assertIsDisplayed()
+
+        handle.performTouchInput { down(center); moveBy(Offset(0f, distance)); up() }
+        ui.onNodeWithContentDescription("入力欄を広げる").assertIsDisplayed()
+    }
+
+    @Test
     fun viewportChangesFollowTheEndAndSuccessfulSendReturnsFromHistory() {
         var screen by mutableStateOf(channel)
         var height by mutableStateOf(750.dp)
