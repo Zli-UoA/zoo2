@@ -71,6 +71,11 @@ describe("formatTime", () => {
     },
   );
 
+  it("pads a three-digit local year", () => {
+    const post = new Date(999, 9, 19, 19, 18);
+    expect(formatTime(post.toISOString(), "ja", new Date(2026, 9, 19))).toBe("0999/10/19 19:18");
+  });
+
   it("keeps an invalid timestamp readable", () => {
     expect(formatTime("invalid")).toBe("invalid");
   });

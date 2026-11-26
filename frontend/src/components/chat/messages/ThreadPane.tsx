@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { ArrowLeftIcon, UsersIcon, XIcon } from "lucide-react";
-import { type KeyboardEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import type { CommandSuggestion } from "./composerSuggestions";
 import type { UploadedAttachment } from "../../../lib/api/attachments";
@@ -23,7 +23,7 @@ import {
 } from "./ThreadParticipantsDialog";
 import { MessageRow } from "./MessageRow";
 import type { FeedMessage } from "./messageFormat";
-import { buildMessageItems } from "./messageGrouping";
+import { useMessageItems } from "./messageGrouping";
 import { isNearBottom } from "./messageScroll";
 import { useMessageJumpRequest, useMessageTargetFlash } from "./messageTarget";
 
@@ -182,7 +182,7 @@ export function ThreadPane({
   // 狭幅（sm 未満）は absolute のオーバーレイ。ダイアログとして扱うのはこのときだけ。
   // 広幅の sm:static なサイドペインは従来どおりインラインのままにする。
   const isWidePane = useMediaQuery("(min-width: 640px)");
-  const items = useMemo(() => buildMessageItems(replies), [replies]);
+  const items = useMessageItems(replies);
   const paneRef = useRef<HTMLDivElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
   // チャンネルと同様、参加してから返信する。返信がまだないメッセージも同じで、最初の返信の前に参加する

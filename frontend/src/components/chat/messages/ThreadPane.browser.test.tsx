@@ -3,7 +3,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { page } from "vite-plus/test/browser/context";
+import { cdp, page } from "vite-plus/test/browser/context";
 
 import { LocaleProvider } from "../../i18n/LocaleProvider";
 import type { FeedMessage } from "./messageFormat";
@@ -48,6 +48,29 @@ function paneProps(overrides: Partial<ThreadPaneProps> = {}): ThreadPaneProps {
     ...overrides,
   };
 }
+
+it("regroups replies when a time zone change puts midnight between them", async () => {
+  const replies = [
+    message({ id: "r1", created_at: "2026-10-19T14:59:00Z" }),
+    message({ id: "r2", created_at: "2026-10-19T15:01:00Z" }),
+  ];
+  try {
+    await cdp().send("Emulation.setTimezoneOverride", { timezoneId: "UTC" });
+    const view = render(
+      <LocaleProvider>
+        <ThreadPane {...paneProps({ replies })} />
+      </LocaleProvider>,
+    );
+    const separators = () => view.container.querySelectorAll('[role="separator"][aria-label]');
+    expect(separators()).toHaveLength(1);
+    await cdp().send("Emulation.setTimezoneOverride", { timezoneId: "Asia/Tokyo" });
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(separators()).toHaveLength(2));
+  } finally {
+    await cdp().send("Emulation.setTimezoneOverride", { timezoneId: "" });
+    window.dispatchEvent(new Event("focus"));
+  }
+});
 
 /** 呼び出し元のボタンを残したまま ThreadPane を開閉する。 */
 function Harness({ onClose }: { onClose?: () => void }) {

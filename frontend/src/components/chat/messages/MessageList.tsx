@@ -21,7 +21,7 @@ import { Button } from "../../ui/button";
 import { Skeleton } from "../../ui/skeleton";
 import { newMessageAnnouncement, type FeedMessage } from "./messageFormat";
 import { useMessageJumpRequest, useMessageTargetFlash } from "./messageTarget";
-import { buildMessageItems } from "./messageGrouping";
+import { useMessageItems, type MessageItem } from "./messageGrouping";
 import { MessageRow } from "./MessageRow";
 import {
   isPlaintextBeforeEncryption,
@@ -155,8 +155,6 @@ function useLoadingTimeout(active: boolean, timeoutMs = LOADING_TIMEOUT_MS): boo
   return active && timedOut;
 }
 
-type MessageItem = ReturnType<typeof buildMessageItems>[number];
-
 interface MessageScrollViewportProps {
   channelId?: string;
   targetMessageId?: string;
@@ -253,10 +251,7 @@ export function MessageList({
       : readStateLoading || readStateError
         ? null
         : firstUnreadId;
-  const items = useMemo(
-    () => buildMessageItems(messages, undefined, boundaryId),
-    [messages, boundaryId],
-  );
+  const items = useMessageItems(messages, boundaryId);
   const readBoundary = unreadBoundaryAt ?? lastRead;
   // 暗号化チャンネルで、読み込んだうちで最初の暗号化したメッセージ（#367）。ここに「ここから暗号化されています」の
   // 区切りを出す。これより後ろの暗号文のない行は、正しいサーバーが作れないので警告の印を付ける。

@@ -224,6 +224,7 @@ internal class ConnectedScreenState(
                 original.text("content"), distinctTimelineMedia(original.array("media").rows().mapNotNull(::postMedia)),
                 displayEmoji(original, original, isPost = true),
                 avatar = timelineAvatarUrl(app.config.apiBaseUrl, original, users[original.text("user_id")]),
+                time = original.text("created_at").takeIf(String::isNotBlank)?.let(platform::messageTimestamp),
             )
         }
         val body = data.text("content").let { content ->

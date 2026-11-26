@@ -55,6 +55,10 @@ function subscribe(listener: () => void) {
   };
 }
 
+export function useLocalTimeZone() {
+  return useSyncExternalStore(subscribe, snapshot, snapshot).zone;
+}
+
 export function useLocalDay() {
   return new Date(useSyncExternalStore(subscribe, snapshot, snapshot).midnight);
 }

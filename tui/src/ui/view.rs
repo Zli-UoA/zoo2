@@ -365,10 +365,12 @@ fn draw_global_search(frame: &mut Frame, app: &App) {
         if let Some(author) = &item.author {
             head.push(Span::styled(format!("  {author}"), DIM));
         }
-        head.push(Span::styled(
+        let timestamp = Span::styled(
             format!("  {}", global_search::result_time(&item.created_at, &now)),
             DIM,
-        ));
+        );
+        head = truncate_spans(head, inner.saturating_sub(timestamp.width()));
+        head.push(timestamp);
         if item.parent_id.is_some() {
             head.push(Span::styled("  スレッドの返信", DIM));
         }
@@ -2966,7 +2968,7 @@ mod tests {
             .map(|i| {
                 serde_json::from_value(json!({
                     "id": format!("m{i}"), "channel_id": "c1", "channel_name": "general",
-                    "snippet": "会議の資料", "created_at": "2026-11-21T00:00:00.000"
+                    "author": "Long author name", "snippet": "会議の資料", "created_at": "2001-11-21T00:00:00.000"
                 }))
                 .unwrap()
             })
@@ -2982,6 +2984,9 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
+        let timestamp =
+            global_search::result_time(&app.global_search.items[0].created_at, &jiff::Zoned::now());
+        assert!(screen.contains(&timestamp), "{screen}");
         assert!(screen.contains("Esc"), "{screen}");
     }
 

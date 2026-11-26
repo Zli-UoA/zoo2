@@ -620,6 +620,8 @@ class AndroidSamplesTest {
         val embedded = entry.copy(time = "10:00", body = url, channelLinks = listOf(url))
         val screens = listOf(
             AndroidScreen.Home(listOf(entry.copy(postHeader = PostHeaderData("@name", entry.time, PostAudience.Public, null, null)))),
+            AndroidScreen.Home(listOf(entry.copy(time = "10:00", quote = TimelineQuote(
+                "https://zoo.test/post", "original", entry.author, "引用元", emptyList(), time = entry.time)))),
             AndroidScreen.Search(SearchScreenState("本文", "本文", GlobalSearchType.All,
                 listOf(SearchResultItem("message:m", entry.author, "本文", entry.time, "開発")), loaded = true)),
             AndroidScreen.Notifications(listOf(InboxItem("reply", listOf(InboxActor("u", entry.author)),

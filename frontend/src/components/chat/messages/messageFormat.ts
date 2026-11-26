@@ -184,7 +184,9 @@ export function formatTime(
   if (isSameLocalDay(date, now)) return time;
   const monthDay = `${pad(date.getMonth() + 1)}/${pad(date.getDate())}`;
   const day =
-    date.getFullYear() === now.getFullYear() ? monthDay : `${date.getFullYear()}/${monthDay}`;
+    date.getFullYear() === now.getFullYear()
+      ? monthDay
+      : `${String(date.getFullYear()).padStart(4, "0")}/${monthDay}`;
   return `${day} ${time}`;
 }
 
