@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
-import { useUsers } from "../../hooks/useRealtime";
+import { useAllUsers } from "../../hooks/useRealtime";
 import { ApiError, createConfiguredApiClient } from "../../lib/api/client";
 import { getCurrentUserStore } from "../../lib/currentUser";
 import { useCollections } from "../../lib/electric/collections-context";
@@ -20,7 +20,7 @@ export function WorkspaceMembers() {
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const { isAdmin, currentUserId } = useCurrentUser();
-  const usersQuery = useUsers();
+  const usersQuery = useAllUsers();
   const [query, setQuery] = useState("");
   const [admins, setAdmins] = useState<Set<string>>(new Set());
   const [protectedIds, setProtectedIds] = useState<Set<string>>(new Set());

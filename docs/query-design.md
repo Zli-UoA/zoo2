@@ -60,6 +60,17 @@
 
 Home検証の条件・結果・再実行方法は [home-performance.md](home-performance.md) を参照する。
 
+## Users Shape の共同チャンネル絞り込み
+
+- 用途／識別子: `backend/src/routes/shapes.rs` の `users_shape`。Electric の `users` Shape を起動時に購読するたびに1回（初回 snapshot と live 変更で同じ `where` を使う）。
+- 入力変数: `U` = `users` の総数、`C` = 本人が参加しているチャンネル数、`M` = そのチャンネルの他参加者の延べ人数。返却件数は `M + 1`（本人）。
+- 計算量: `channel_user` を `user_id` で引いて `channel_id` 集合を作り、そこから `user_id` を集めて `users` の主キーへ Index Only Scan を当てる。`O(C log C + M log U)`。探索上限は `M`（全員と同じチャンネルにいる場合は `U` に近づく）。`id = $1 OR id IN (...)` は `users` 全体の Seq Scan になるため使わない。`UNION` は Electric の `where` バリデータが拒否するため使わない。
+- インデックス: `idx_channel_user_channel_id (channel_id, user_id)` と `users` の主キー。新しいインデックス・マイグレーションは不要。
+- 実測（`zoo`、U=100,107、C=3、M=2、`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`）: 実行 0.095ms、shared hit+read 11 blocks、users 側は Index Only Scan、除外行 0。変更前の全件 Shape は 10.5MB を転送し、同条件の `id = $1 OR ...` は Seq Scan（16.0ms、2,134 blocks、100,115 行除外）。
+- 全ユーザーが必要な画面（ディレクトリ・DM 作成・メンバー追加・通話ダイヤルなど）は `?all=1` で旧来の全件 Shape を明示的に購読する（`useAllUsers()`）。ダイアログが開くまで購読しない。
+- 未検証: U=300,000 / 1,000,000 での再実行・8同時・書き込み同時の計測は未実施。`M` が大きいワークスペースでは `M` に比例するため、必要なら共有チャンネル単位の追加絞り込みを別途設計する。
+- クライアント共通化: この絞り込みは API の外形を壊さないが、TUI / Android が全ユーザー一覧を前提とする画面を持つ場合は追従が必要（理由付き issue で管理する）。
+
 ## SupabaseのPostgreSQLベストプラクティスとの照合
 
 [Supabase Postgres Best Practices](https://github.com/supabase/agent-skills/tree/main/skills/supabase-postgres-best-practices)（skill version 1.1.1）も参照する。Supabase専用の設定例をそのまま導入せず、本リポジトリの認証・接続先・移行方式へ適用できるか確認する。本リポジトリでは実行計画の走査量・探索上限を必須条件とし、100msは参考値として扱う。

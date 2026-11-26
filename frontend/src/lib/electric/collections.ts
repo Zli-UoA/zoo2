@@ -154,6 +154,29 @@ function usersCollection(config: AppConfig, persistence?: PersistedCollectionPer
 }
 
 /**
+ * 全ユーザーのディレクトリ用。起動時の `users` Shape は同じチャンネルの成员だけを流すため、
+ * ディレクトリ・DM 作成など「全件が必要な画面」だけがこのコレクションを購読する。
+ * 初回描画には使わないよう、呼び出し側で遅延マウントする。
+ */
+function allUsersCollection(
+  config: AppConfig,
+  persistence?: PersistedCollectionPersistence | null,
+) {
+  return createCollection(
+    withPersistence(
+      electricCollectionOptions<UserRow>({
+        id: "allUsers",
+        getKey: (row) => row.id,
+        defaultIndexType: BasicIndex,
+        shapeOptions: shapeOptions("allUsers", config),
+      }),
+      persistence,
+      (row: UserRow) => row.id,
+    ),
+  );
+}
+
+/**
  * メンバー一覧用の channel_user。今は `channel_id` を指定せず購読し、
  * `useChannelMembers` がチャンネル単位で絞り込む。`shapeQueryParams` の
  * `channelUsers` + `channelId` 分岐は、将来チャンネル単位で購読する場合用。
@@ -343,6 +366,7 @@ function notificationsCollection(
 export type NotificationsCollection = ReturnType<typeof notificationsCollection>;
 export type ChannelsCollection = ReturnType<typeof channelsCollection>;
 export type UsersCollection = ReturnType<typeof usersCollection>;
+export type AllUsersCollection = ReturnType<typeof allUsersCollection>;
 export type ChannelUsersCollection = ReturnType<typeof channelUsersCollection>;
 export type ChannelLeavesCollection = ReturnType<typeof channelLeavesCollection>;
 export type UserPinnedChannelsCollection = ReturnType<typeof userPinnedChannelsCollection>;
@@ -360,6 +384,7 @@ export interface CollectionsBundle {
   notifications: (userId: string) => NotificationsCollection;
   channels: ChannelsCollection;
   users: UsersCollection;
+  allUsers: AllUsersCollection;
   channelUsers: ChannelUsersCollection;
   /** 自分の退出日。ユーザー単位で生成しキャッシュする。 */
   channelLeaves: (userId: string) => ChannelLeavesCollection;
@@ -452,6 +477,7 @@ export function getCollections(
     },
     channels: channelsCollection(resolved, dependencies, persistence),
     users: usersCollection(resolved, persistence),
+    allUsers: allUsersCollection(resolved, persistence),
     channelUsers: channelUsersCollection(resolved, dependencies, persistence),
     channelLeaves: (userId) => {
       let collection = channelLeaveCache.get(userId);

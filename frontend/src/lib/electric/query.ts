@@ -28,6 +28,9 @@ export function shapeQueryParams(
   options: ShapeQueryOptions = {},
 ): ShapeQueryParams {
   if (config.shapeMode === "proxy") {
+    if (shape === "allUsers") {
+      return { all: "1" };
+    }
     if (
       (shape === "messages" ||
         shape === "messageReactions" ||

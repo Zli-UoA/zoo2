@@ -2,7 +2,7 @@ import { useLiveQuery } from "@tanstack/react-db";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RevocationScope, RevocationSummary } from "@zoo/crypto-wasm";
 
-import { useUsers } from "../../hooks/useRealtime";
+import { useAllUsers } from "../../hooks/useRealtime";
 import { createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
 import { deleteDevice } from "../../lib/e2ee/api";
@@ -177,7 +177,7 @@ export function DevicesSettings({
   const [prfSupported, setPrfSupported] = useState(false);
   const [state, setState] = useState<DevicesViewState>({ step: "loading" });
   const peers = useEncryptedPeers(userId);
-  const usersQuery = useUsers();
+  const usersQuery = useAllUsers();
   const names = useMemo(() => {
     const map = new Map<string, string>();
     for (const user of usersQuery.data ?? []) {

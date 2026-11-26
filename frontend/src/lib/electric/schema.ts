@@ -42,6 +42,7 @@ export type ShapeName =
   | "messages"
   | "messageReactions"
   | "users"
+  | "allUsers"
   | "channelUsers"
   | "channelLeaves"
   | "notifications"
@@ -60,6 +61,7 @@ export const SHAPE_META: Record<ShapeName, ShapeMeta> = {
   messages: { table: "messages", proxyPath: "messages" },
   messageReactions: { table: "message_reactions", proxyPath: "message_reactions" },
   users: { table: "users", proxyPath: "users" },
+  allUsers: { table: "users", proxyPath: "users" },
   channelUsers: { table: "channel_user", proxyPath: "channel_users" },
   channelLeaves: { table: "channel_leave", proxyPath: "channel_leaves" },
   callInvites: { table: "call_invites", proxyPath: "call_invites" },
