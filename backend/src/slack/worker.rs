@@ -1057,7 +1057,11 @@ async fn ensure_user(
         let source = found["profile_source"].as_str().unwrap_or("unknown");
         let generic_legacy_row = source == "unknown"
             && found["name"].as_str() == Some(slack_id)
-            && found["real_name"].as_str().unwrap_or_default().is_empty();
+            && found["real_name"]
+                .as_str()
+                .unwrap_or_default()
+                .trim()
+                .is_empty();
         // A sparse entry (blank name/display/real_name/avatar, not even the bot
         // flag) must not, by itself, let a message fallback overwrite a stored
         // placeholder. Only a profile that really contributes something does.
@@ -1172,7 +1176,14 @@ async fn ensure_user(
         ],
     )
     .await?;
+    // 空白だけの `real_name` は、値がないのと同じに扱う。そのまま保存すると、
+    // 後から公開チャンネルの `username` が届いても「実名あり」と誤認して置き換えられない。
     let real_name = profile.map(|p| p.real_name.as_str()).unwrap_or("");
+    let real_name = if real_name.trim().is_empty() {
+        ""
+    } else {
+        real_name
+    };
     // `profile_source` records what actually supplied the name/fields. A sparse
     // profile (blank name/display/real_name/avatar — even with `is_bot`) did not
     // supply them, so the row keeps the fallback or `"unknown"` instead.
@@ -1610,10 +1621,13 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             }
             // 取り込んだ日付ファイルの記録は、投稿と同じトランザクションでコミットする (再開位置)
             progress.insert(channel.id.clone(), entry);
-            exec(
+            // 行のロックを待っている間にリースを奪われていたら、この日の投稿を 1 件も
+            // コミットしない。`run_once_until` は `LEASE_LOST` を失敗として記録しない。
+            let progress_rows = query(
                 &mut tx,
                 "UPDATE slack_import_jobs SET processed_messages=$3::bigint,import_progress=$4,updated_at=now() \
-                 WHERE id=$1 AND lease_token=$2",
+                 WHERE id=$1 AND lease_token=$2 \
+                 RETURNING json_build_object('ok',true)::text",
                 &[
                     &job.id,
                     &job.token,
@@ -1622,6 +1636,10 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
                 ],
             )
             .await?;
+            if progress_rows.is_empty() {
+                let _ = tx.rollback().await;
+                return Err(AppError::Conflict(LEASE_LOST.into()));
+            }
             tx.commit().await?;
         }
 
@@ -5550,6 +5568,85 @@ mod tests {
         assert_eq!(merged.handle, "U1");
         assert_eq!(merged.display, "");
         assert_eq!(merged.profile_source, "unknown");
+    }
+
+    #[ignore = "requires an explicitly configured disposable SLACK_IMPORT_TEST_DATABASE_URL"]
+    #[tokio::test]
+    async fn whitespace_only_real_name_profile_accepts_a_later_username_fallback()
+    -> anyhow::Result<()> {
+        dotenvy::dotenv().ok();
+        dotenvy::from_filename("../.env").ok();
+        let database_url = std::env::var("SLACK_IMPORT_TEST_DATABASE_URL")?;
+        let (guard, driver) = tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+        tokio::spawn(driver);
+        let database: String = guard
+            .query_one("SELECT current_database()", &[])
+            .await?
+            .get(0);
+        anyhow::ensure!(
+            database.contains("test") || database.contains("rereview"),
+            "refusing non-test database `{database}`"
+        );
+        let mut db = crate::db::init_db(&database_url).await?;
+        let team = format!("TWS{}", uuid::Uuid::new_v4().simple());
+        let slack_id = format!(
+            "U{}",
+            uuid::Uuid::new_v4()
+                .simple()
+                .to_string()
+                .to_ascii_uppercase()
+        );
+        let placeholder_id = super::super::user_id(&team, &slack_id);
+        let spaced = slack_user_profile(serde_json::json!({
+            "id": slack_id,
+            "real_name": " ",
+        }));
+        {
+            let mut tx = db.transaction().await?;
+            ensure_user(&mut tx, &team, &slack_id, Some(&spaced), None).await?;
+            tx.commit().await?;
+        }
+        let stored = query(
+            &mut db.transaction().await?,
+            "SELECT json_build_object('real_name',s.real_name,'display_name',u.display_name)::text \
+             FROM slack_users s JOIN users u ON u.id=s.user_id \
+             WHERE s.team_id=$1 AND s.slack_user_id=$2",
+            &[&team, &slack_id],
+        )
+        .await?;
+        anyhow::ensure!(
+            stored.len() == 1 && stored[0]["real_name"] == "",
+            "whitespace-only real_name must be stored as empty: {stored:?}"
+        );
+        {
+            let mut tx = db.transaction().await?;
+            ensure_user(&mut tx, &team, &slack_id, None, Some("alice")).await?;
+            tx.commit().await?;
+        }
+        let updated = query(
+            &mut db.transaction().await?,
+            "SELECT json_build_object('display_name',u.display_name,'name',s.name,'profile_source',s.profile_source)::text \
+             FROM slack_users s JOIN users u ON u.id=s.user_id \
+             WHERE s.team_id=$1 AND s.slack_user_id=$2",
+            &[&team, &slack_id],
+        )
+        .await?;
+        anyhow::ensure!(
+            updated.len() == 1
+                && updated[0]["display_name"] == "alice"
+                && updated[0]["name"] == "alice"
+                && updated[0]["profile_source"] == "fallback",
+            "a public username fallback must populate a placeholder whose real_name was only whitespace: {updated:?}"
+        );
+        let mut cleanup = db.transaction().await?;
+        exec(
+            &mut cleanup,
+            "DELETE FROM users WHERE id=$1",
+            &[&placeholder_id],
+        )
+        .await?;
+        cleanup.commit().await?;
+        Ok(())
     }
 
     #[test]

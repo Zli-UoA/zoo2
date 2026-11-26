@@ -387,7 +387,7 @@ Slack の Events API は、同期については「このチャンネルを今�
 ```sh
 export SLACK_IMPORT_TEST_DATABASE_URL="postgres://postgres@127.0.0.1:5432/zoo_test?sslmode=disable"
 # DB のみで動くロック順・競合のユニットテスト（S3 不要。worker.rs・api_import.rs・sync.rs・hints.rs）
-cargo test --manifest-path backend/Cargo.toml --lib slack:: -- --ignored
+cargo test --manifest-path backend/Cargo.toml --lib slack:: -- --ignored --test-threads=1
 # ZIP 取り込みの結合テスト（RustFS / S3 が必要。S3_ENDPOINT 等を設定して実行）
 cargo test --manifest-path backend/Cargo.toml --test slack_import_test -- --ignored
 # 付け替えのユーザー行ロック順テスト（S3 不要。同じテスト専用 DB を使える）

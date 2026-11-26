@@ -47,24 +47,6 @@ async fn ensure_guest_can_dm(
     Ok(())
 }
 
-/// users 行をロックしたあとの無効化の再確認。認証時の検査（`active_user`）とは別
-/// トランザクションのため、ロック待ちの間に無効化が確定した場合にここで 403 にする。
-/// 無効化は users 行の UPDATE なので、`lock_membership_users` / `lock_members` が取った
-/// 行ロックと直列になる（ゲスト再確認と同じタイミングで同じ行を読む）。
-async fn ensure_actor_not_deactivated(
-    tx: &mut toasty::Transaction<'_>,
-    auth_user_id: &str,
-) -> Result<(), AppError> {
-    let rows = toasty::sql::query("SELECT id FROM users WHERE id = $1 AND NOT is_deactivated")
-        .bind(auth_user_id)
-        .exec(&mut *tx)
-        .await?;
-    if rows.is_empty() {
-        return Err(AppError::Forbidden("Account is deactivated".into()));
-    }
-    Ok(())
-}
-
 /// 1 対 1 DM の作成・復帰を最大 2 回試す。PostgreSQL のデッドロック
 /// (`deadlock_detected`, SQLSTATE 40P01) だけを 1 回再試行し、既存の UNIQUE
 /// 制約違反による `Ok(None)` (呼び出し側の再試行) はそのまま保つ。
@@ -125,7 +107,7 @@ async fn try_create_or_get_1on1_dm_once(
     }
     // users 行をロックした後に、待機中にゲストへ変更されていないか再確認する（ロック順は users → 読み取り専用 SELECT）。
     // 無効化も同様に、ロック待ちの間に確定していたら 403 にする。
-    ensure_actor_not_deactivated(&mut tx, auth_user_id).await?;
+    e2ee_channels::ensure_actor_not_deactivated(&mut tx, auth_user_id).await?;
     ensure_guest_can_dm(&mut tx, auth_user_id, &[target_id]).await?;
 
     let existing = Channel::filter(
@@ -429,7 +411,7 @@ pub(crate) async fn create_or_get_dm(
     }
     // users 行をロックした後に、待機中にゲストへ変更されていないか再確認する（ロック順は users → 読み取り専用 SELECT）。
     // 無効化も同様に、ロック待ちの間に確定していたら 403 にする。
-    ensure_actor_not_deactivated(&mut tx, &auth_user.id).await?;
+    e2ee_channels::ensure_actor_not_deactivated(&mut tx, &auth_user.id).await?;
     ensure_guest_can_dm(&mut tx, &auth_user.id, &target_refs).await?;
     let channel_id = payload.id.unwrap_or_else(|| Uuid::new_v4().to_string());
     let group_uuid = Uuid::new_v4().to_string();

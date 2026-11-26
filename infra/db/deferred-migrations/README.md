@@ -15,7 +15,7 @@ inserts into `channel_user` that touch several users must therefore pre-lock
 the target `users` rows in ascending `id` order before inserting, for example:
 
 ```sql
-SELECT id FROM users WHERE id = ANY($1) ORDER BY id FOR NO KEY UPDATE;
+SELECT id FROM users WHERE id = ANY($1) ORDER BY id COLLATE "C" FOR NO KEY UPDATE;
 ```
 
 Without that pre-lock, two concurrent bulk inserts that meet the same users in

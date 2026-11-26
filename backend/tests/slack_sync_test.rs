@@ -1484,6 +1484,17 @@ async fn test_slack_sync_reset_on_remap_does_not_resume_the_old_page_cursor() ->
     assert_eq!(count_messages(&state, &channel_a).await, 1);
     assert_eq!(count_messages(&state, &channel_b).await, 0);
 
+    // 実行中のリースが残っている状態で付け替える。リースが残ると、旧対応先の
+    // 途中経過を書き込もうとした古いワーカーがリース喪失で巻き戻せなくなる
+    sql(
+        &state,
+        "UPDATE slack_channel_syncs SET lease_token='stale-lease', lease_until=now()+interval '1 hour' \
+         WHERE team_id=$1 AND slack_channel_id='C1' \
+         RETURNING json_build_object('ok',true)::text",
+        &[&team],
+    )
+    .await?;
+
     // 対応先を A から B へ付け替える。トリガーが途中経過を捨てる
     sql(
         &state,
@@ -1494,7 +1505,8 @@ async fn test_slack_sync_reset_on_remap_does_not_resume_the_old_page_cursor() ->
     .await?;
     let reset = sql(
         &state,
-        "SELECT json_build_object('running',running,'cursor',page_cursor,'phase',phase)::text \
+        "SELECT json_build_object('running',running,'cursor',page_cursor,'phase',phase, \
+         'lease_token',lease_token,'lease_until',lease_until)::text \
          FROM slack_channel_syncs WHERE team_id=$1 AND slack_channel_id='C1'",
         &[&team],
     )
@@ -1502,6 +1514,8 @@ async fn test_slack_sync_reset_on_remap_does_not_resume_the_old_page_cursor() ->
     assert_eq!(reset[0]["running"], false, "{reset:?}");
     assert!(reset[0]["cursor"].is_null(), "{reset:?}");
     assert_eq!(reset[0]["phase"], "history", "{reset:?}");
+    assert!(reset[0]["lease_token"].is_null(), "{reset:?}");
+    assert!(reset[0]["lease_until"].is_null(), "{reset:?}");
 
     due_now(&state, &team).await;
     drain(&state).await;

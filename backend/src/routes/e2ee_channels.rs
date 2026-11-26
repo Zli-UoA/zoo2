@@ -419,6 +419,24 @@ pub async fn lock_membership_users(
     Ok(())
 }
 
+/// users 行をロックしたあとの無効化の再確認。認証時の検査（`active_user`）とは別
+/// トランザクションのため、ロック待ちの間に無効化が確定した場合にここで 403 にする。
+/// 無効化は users 行の UPDATE なので、`lock_membership_users` / `lock_members` が取った
+/// 行ロックと直列になる（ゲスト再確認と同じタイミングで同じ行を読む）。
+pub(crate) async fn ensure_actor_not_deactivated(
+    tx: &mut toasty::Transaction<'_>,
+    auth_user_id: &str,
+) -> Result<(), AppError> {
+    let rows = toasty::sql::query("SELECT id FROM users WHERE id = $1 AND NOT is_deactivated")
+        .bind(auth_user_id)
+        .exec(&mut *tx)
+        .await?;
+    if rows.is_empty() {
+        return Err(AppError::Forbidden("Account is deactivated".into()));
+    }
+    Ok(())
+}
+
 /// 送信と編集で、チャンネルの行をロックした（`lock_channel_epoch`）あとに、まだメンバーであることを確かめる。
 /// ロックより前の確認のあとで退出、キックが確定していたら、ここで 404 にする。
 pub async fn require_member(

@@ -13,6 +13,8 @@ BEGIN
       pending_threads='[]',
       swept_at=NULL,
       run_light=false,
+      lease_token=NULL,
+      lease_until=NULL,
       updated_at=now()
   WHERE team_id=NEW.team_id AND slack_channel_id=NEW.slack_channel_id;
   RETURN NEW;

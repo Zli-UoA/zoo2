@@ -4,7 +4,7 @@
 --
 -- Direct-SQL bulk inserts into channel_user that touch multiple users must first
 -- lock the target users rows in ascending id order, for example:
---   SELECT id FROM users WHERE id = ANY($1) ORDER BY id FOR NO KEY UPDATE;
+--   SELECT id FROM users WHERE id = ANY($1) ORDER BY id COLLATE "C" FOR NO KEY UPDATE;
 -- The trigger below locks each NEW.user_id one row at a time, so two concurrent
 -- bulk inserts that meet the same users in opposite order can deadlock (40P01).
 CREATE OR REPLACE FUNCTION app_guest_membership_rules() RETURNS trigger LANGUAGE plpgsql AS $$

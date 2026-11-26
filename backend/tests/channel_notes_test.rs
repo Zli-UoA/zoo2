@@ -108,6 +108,52 @@ async fn wait_until_blocked_by(
     }
 }
 
+/// Wait until at least two distinct sessions are waiting on an advisory lock held by
+/// `blocker_pid`. Used by the concurrent-create test to prove both API requests are
+/// serialized on the channel's note lock rather than racing for positions.
+async fn wait_until_two_advisory_waiters(
+    observer: &tokio_postgres::Client,
+    blocker_pid: i32,
+) -> anyhow::Result<Vec<i32>> {
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let waiting = observer
+                .query(
+                    "SELECT DISTINCT pid FROM pg_locks \
+                     WHERE locktype = 'advisory' AND NOT granted \
+                       AND $1 = ANY(pg_blocking_pids(pid))",
+                    &[&blocker_pid],
+                )
+                .await?;
+            if waiting.len() >= 2 {
+                break Ok::<Vec<i32>, anyhow::Error>(
+                    waiting.into_iter().map(|row| row.get(0)).collect(),
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    match result {
+        Ok(result) => result,
+        Err(error) => {
+            let sessions = observer
+                .query(
+                    "SELECT format('%s|%s|%s|%s', pid, coalesce(wait_event_type, ''), query, pg_blocking_pids(pid)) \
+                     FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()",
+                    &[],
+                )
+                .await?
+                .into_iter()
+                .map(|row| row.get::<_, String>(0))
+                .collect::<Vec<_>>();
+            anyhow::bail!(
+                "timed out waiting for two sessions blocked by {blocker_pid}; current sessions: {sessions:?}; {error}"
+            );
+        }
+    }
+}
+
 async fn wait_until_application_blocked_by(
     observer: &tokio_postgres::Client,
     application_name: &str,
@@ -922,12 +968,45 @@ async fn api_update_and_direct_sql_update_do_not_deadlock() -> anyhow::Result<()
         "API must wait on pg_advisory_xact_lock before touching channel_notes rows"
     );
 
+    // API が advisory ロックより先に channel_notes の行ロックを取っていたら、この
+    // UPDATE は待ち続ける。2 秒で打ち切り、ロック順の退行として失敗させる
     direct_tx
+        .execute("SET LOCAL lock_timeout = '2s'", &[])
+        .await?;
+    if let Err(error) = direct_tx
         .execute(
             "UPDATE channel_notes SET title = 'direct' WHERE id = $1",
             &[&note_id],
         )
-        .await?;
+        .await
+    {
+        let _ = direct_tx.rollback().await;
+        let mut update = update;
+        match tokio::time::timeout(std::time::Duration::from_secs(10), &mut update).await {
+            Ok(Ok((status, body))) => {
+                panic!(
+                    "lock-order regression: the API held the channel_notes row before the \
+                     channel-notes advisory lock (direct UPDATE failed: {error}; API returned \
+                     {status} {body})"
+                );
+            }
+            Ok(Err(join_error)) => {
+                panic!(
+                    "lock-order regression: the API held the channel_notes row before the \
+                     channel-notes advisory lock (direct UPDATE failed: {error}; API task failed: \
+                     {join_error})"
+                );
+            }
+            Err(_) => {
+                update.abort();
+                panic!(
+                    "lock-order regression: the API held the channel_notes row before the \
+                     channel-notes advisory lock (direct UPDATE failed: {error}; API task did not \
+                     finish after the blocker rolled back)"
+                );
+            }
+        }
+    }
 
     direct_tx.commit().await?;
     let (status, body) = tokio::time::timeout(std::time::Duration::from_secs(10), update).await??;
@@ -940,7 +1019,10 @@ async fn api_update_and_direct_sql_update_do_not_deadlock() -> anyhow::Result<()
 async fn concurrent_creates_by_different_members_get_distinct_positions() -> anyhow::Result<()> {
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
-    let db = init_db(&config.database_url).await?;
+    let database_url = config.database_url.clone();
+    // 2 つの API リクエストと advisory ロックを持つ接続が、環境の
+    // DB_MAX_POOL_SIZE に関係なく同時に接続できるようにする
+    let db = init_db_with_pool(&database_url, 4).await?;
     let app = create_router(AppState::new(db.clone(), config));
     let owner = Uuid::new_v4().to_string();
     let first_member = Uuid::new_v4().to_string();
@@ -973,7 +1055,65 @@ async fn concurrent_creates_by_different_members_get_distinct_positions() -> any
         );
     }
     let notes = format!("/api/channels/{channel}/notes");
-    for round in 0..20 {
+    // チャンネルの advisory ロックを別の接続で保持したまま、2 人の作成を同時に投げる。
+    // 両方が同じロックで待つ (別々の DB 接続を使う) ことを確かめてから解放する
+    let (mut blocker, blocker_driver) =
+        tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(blocker_driver);
+    let blocker_pid: i32 = blocker
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
+    let blocker_tx = blocker.transaction().await?;
+    blocker_tx
+        .query_one(
+            "SELECT pg_advisory_xact_lock(hashtextextended('channel-notes:' || $1, 0))",
+            &[&channel],
+        )
+        .await?;
+    let (observer, observer_driver) =
+        tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(observer_driver);
+
+    let first_app = app.clone();
+    let second_app = app.clone();
+    let first_notes = notes.clone();
+    let second_notes = notes.clone();
+    let first_actor = first_member.clone();
+    let second_actor = second_member.clone();
+    let first = tokio::spawn(async move {
+        request(
+            &first_app,
+            "POST",
+            &first_notes,
+            &first_actor,
+            json!({"title":"A0","content":""}),
+        )
+        .await
+    });
+    let second = tokio::spawn(async move {
+        request(
+            &second_app,
+            "POST",
+            &second_notes,
+            &second_actor,
+            json!({"title":"B0","content":""}),
+        )
+        .await
+    });
+    let waiting_pids = wait_until_two_advisory_waiters(&observer, blocker_pid).await?;
+    assert_eq!(
+        waiting_pids.len(),
+        2,
+        "both creates must wait on the channel-notes advisory lock: {waiting_pids:?}"
+    );
+    blocker_tx.commit().await?;
+    let first = first.await?;
+    let second = second.await?;
+    assert_eq!(first.0, StatusCode::OK, "{}", first.1);
+    assert_eq!(second.0, StatusCode::OK, "{}", second.1);
+
+    for round in 1..20 {
         let (first, second) = tokio::join!(
             request(
                 &app,
@@ -1108,6 +1248,9 @@ async fn concurrent_restore_create_and_reorder_delete_keep_active_order_consiste
         .map(|note| note["id"].as_str().unwrap().to_owned())
         .collect::<Vec<_>>();
     assert_eq!(ids.len(), 3);
+    let created_id = created.1["data"]["id"].as_str().unwrap().to_owned();
+    let restored_id = restored.1["data"]["id"].as_str().unwrap().to_owned();
+    let requested_order = vec![item_b.clone(), created_id, restored_id];
     let order_path = format!("{notes}/order");
     let delete_path = format!("{notes}/{item_b}");
     let (reordered, deleted) = tokio::join!(
@@ -1116,7 +1259,7 @@ async fn concurrent_restore_create_and_reorder_delete_keep_active_order_consiste
             "PATCH",
             &order_path,
             &owner,
-            json!({"expected_note_ids":ids.clone(),"note_ids":[item_b.clone(), created.1["data"]["id"].as_str().unwrap(), restored.1["data"]["id"].as_str().unwrap()]}),
+            json!({"expected_note_ids":ids.clone(),"note_ids":requested_order.clone()}),
         ),
         request(
             &app,
@@ -1136,28 +1279,55 @@ async fn concurrent_restore_create_and_reorder_delete_keep_active_order_consiste
 
     let mut position_db = db;
     let rows = toasty::sql::query(
-        "SELECT position FROM channel_notes WHERE channel_id = $1 AND deleted_at IS NULL ORDER BY position",
+        "SELECT id, position FROM channel_notes WHERE channel_id = $1 AND deleted_at IS NULL ORDER BY position",
     )
     .bind(channel.as_str())
     .exec(&mut position_db)
     .await?;
-    let positions = rows
-        .iter()
-        .map(|row| match row {
-            toasty::stmt::Value::Record(record) => match record.fields.first() {
-                Some(toasty::stmt::Value::I32(value)) => *value,
-                other => panic!("unexpected position: {other:?}"),
-            },
-            other => panic!("unexpected result: {other:?}"),
-        })
-        .collect::<Vec<_>>();
-    let mut actual = positions.clone();
-    actual.sort_unstable();
-    actual.dedup();
+    let mut actual_ids = Vec::with_capacity(rows.len());
+    let mut positions = Vec::with_capacity(rows.len());
+    for row in rows {
+        let toasty::stmt::Value::Record(record) = row else {
+            panic!("unexpected result: {row:?}");
+        };
+        let mut fields = record.fields.into_iter();
+        let Some(toasty::stmt::Value::String(id)) = fields.next() else {
+            panic!("unexpected note id");
+        };
+        let Some(toasty::stmt::Value::I32(position)) = fields.next() else {
+            panic!("unexpected note position");
+        };
+        actual_ids.push(id);
+        positions.push(position);
+    }
+    let mut unique_positions = positions.clone();
+    unique_positions.sort_unstable();
+    unique_positions.dedup();
     assert_eq!(
-        actual.len(),
+        unique_positions.len(),
         positions.len(),
-        "active positions must be unique"
+        "active positions must be unique: {positions:?}"
+    );
+    if reordered.0 == StatusCode::OK {
+        // 並び替えが確定したときは 0,1,... の連番を振り直す。その後ろで削除が
+        // 確定すると、削除したノートの分だけ先頭がずれた連番になる
+        let first = positions.first().copied().unwrap_or(0);
+        let expected_positions = (first..first + positions.len() as i32).collect::<Vec<_>>();
+        assert_eq!(
+            positions, expected_positions,
+            "a committed reorder must leave contiguous positions: {positions:?}"
+        );
+    }
+    let mut expected_ids = if reordered.0 == StatusCode::OK {
+        requested_order
+    } else {
+        ids
+    };
+    expected_ids.retain(|id| id != &item_b);
+    assert_eq!(
+        actual_ids, expected_ids,
+        "remaining notes must keep the order the reorder either committed or refused: reorder={} {}",
+        reordered.0, reordered.1
     );
     Ok(())
 }
