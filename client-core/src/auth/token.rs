@@ -1163,21 +1163,25 @@ impl TokenManager {
                 .and(state.tokens.refresh_token.clone());
             (state.tokens.clone(), unsaved)
         };
-        let Some(lock) = token_file_lock_async(&self.path, false).await? else {
-            return Ok(false);
-        };
-        let (lock, cleanup_error) = cleanup_stale_token_temps_async(&self.path, lock).await?;
-        let result = logout_with_cleanup_result(
-            &self.path,
-            &self.oidc,
-            &self.http,
-            Some(expected),
-            lock,
-            cleanup_error,
-        )
+        let result = async {
+            let Some(lock) = token_file_lock_async(&self.path, false).await? else {
+                return Ok(DeleteOutcome::Missing);
+            };
+            let (lock, cleanup_error) = cleanup_stale_token_temps_async(&self.path, lock).await?;
+            logout_with_cleanup_result(
+                &self.path,
+                &self.oidc,
+                &self.http,
+                Some(expected),
+                lock,
+                cleanup_error,
+            )
+            .await
+        }
         .await;
         // 保存できなかった最新の refresh token は、この manager の session のものなので、
-        // ファイルの結果（別のログインに置き換わった、一時ファイルの回収に失敗した）にかかわらず失効を要求する。
+        // ファイル側の結果（保存先がない、ロックを取れない、別のログインに置き換わった、
+        // 一時ファイルの回収に失敗した）にかかわらず失効を要求する。
         if let Some(refresh_token) = unsaved {
             let revoke = async {
                 let discovery = discover(&self.http, &self.oidc.issuer).await?;
@@ -1193,8 +1197,7 @@ impl TokenManager {
             };
             let _ = tokio::time::timeout(LOGOUT_REVOCATION_TIMEOUT, revoke).await;
         }
-        let outcome = result?;
-        Ok(matches!(outcome, DeleteOutcome::Deleted))
+        Ok(matches!(result?, DeleteOutcome::Deleted))
     }
 
     fn signed_out(&self) -> bool {
@@ -3445,6 +3448,40 @@ mod tests {
         manager.sign_out_and_revoke().await.unwrap();
         let _ = refreshing.await;
         assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn sign_out_and_revoke_revokes_an_unsaved_token_even_without_a_token_file() {
+        let server = MockServer::start().await;
+        let issuer = format!("{}/api/auth", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/api/auth/.well-known/openid-configuration"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "issuer": issuer,
+                "token_endpoint": format!("{}/token", server.uri()),
+                "revocation_endpoint": format!("{}/revoke", server.uri())
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/revoke"))
+            .and(body_string_contains("token=unsaved-refresh"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let config = oidc(&issuer);
+        // 保存先のディレクトリがない。
+        let path = temp_path("sign-out-and-revoke-no-file");
+        let initial = tokens(&config, now() + 3600, Some("old-refresh"));
+        let manager = TokenManager::new(reqwest::Client::new(), config, path, initial.clone());
+        {
+            let mut state = manager.state.lock().await;
+            state.tokens.refresh_token = Some("unsaved-refresh".into());
+            state.pending_persist = Some(initial);
+        }
+        let _ = manager.sign_out_and_revoke().await;
     }
 
     #[tokio::test]
