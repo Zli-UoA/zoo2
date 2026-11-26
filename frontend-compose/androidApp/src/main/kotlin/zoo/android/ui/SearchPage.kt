@@ -21,6 +21,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,7 +43,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import zoo.GlobalSearchType
 import zoo.SearchQueryProblem
+import kotlinx.coroutines.flow.collectLatest
 import zoo.searchTerms
+
+internal val LocalSearchPreviewLoader = staticCompositionLocalOf<suspend (List<String>) -> Unit> { {} }
 
 /** One `/api/search` hit, already resolved to display text by the adapter. */
 internal data class SearchResultItem(
@@ -58,6 +62,10 @@ internal data class SearchResultItem(
     val fileSize: String? = null,
     /** Custom emoji in the snippet, drawn as in conversations. */
     val emoji: Map<String, TimelineMedia> = emptyMap(),
+    val avatar: String? = null,
+    val media: TimelineMedia? = null,
+    val link: String? = null,
+    val linkCard: EntryCard? = null,
 )
 
 /**
@@ -143,6 +151,13 @@ internal fun ColumnScope.SearchPage(screen: AndroidScreen.Search, colors: Androi
                         savedOffset = offset
                     }
                 }
+                val loadPreviews = LocalSearchPreviewLoader.current
+                val links = state.results.map { it.link }
+                LaunchedEffect(scroll, links, loadPreviews) {
+                    snapshotFlow {
+                        scroll.layoutInfo.visibleItemsInfo.mapNotNull { links.getOrNull(it.index) }.distinct()
+                    }.collectLatest(loadPreviews)
+                }
                 val highlight = remember(state.query, colors.searchHighlight) {
                     EntryHighlight(searchTerms(state.query),
                         SpanStyle(color = colors.searchHighlightText, background = colors.searchHighlight))
@@ -153,7 +168,9 @@ internal fun ColumnScope.SearchPage(screen: AndroidScreen.Search, colors: Androi
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                 ) {
                     items(state.results, key = { it.key }) { item ->
-                        SearchResult(item, colors, highlight) { dispatch(AndroidUiAction.OpenSearchResult(item.key)) }
+                        SearchResult(item, colors, highlight,
+                            open = { dispatch(AndroidUiAction.OpenSearchResult(item.key)) },
+                            openMedia = { dispatch(AndroidUiAction.OpenSearchMedia(item.key)) })
                     }
                     item("search-footer") { SearchFooter(state, colors, dispatch) }
                 }
@@ -196,7 +213,9 @@ private fun SearchField(text: String, colors: AndroidColors, submit: () -> Unit,
 }
 
 @Composable
-private fun SearchResult(item: SearchResultItem, colors: AndroidColors, highlight: EntryHighlight, open: () -> Unit) {
+private fun SearchResult(
+    item: SearchResultItem, colors: AndroidColors, highlight: EntryHighlight, open: () -> Unit, openMedia: () -> Unit,
+) {
     val thread = androidLabel("globalSearch.inThread", "スレッドの返信")
     val destination = listOfNotNull(item.destination, thread.takeIf { item.inThread }).joinToString(" · ")
     Row(
@@ -206,9 +225,7 @@ private fun SearchResult(item: SearchResultItem, colors: AndroidColors, highligh
             .padding(vertical = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Box(Modifier.size(36.dp).background(colors.quietSurface, CircleShape), contentAlignment = Alignment.Center) {
-            Text(item.author.take(1), color = colors.secondary, fontSize = 13.sp)
-        }
+        TimelineAvatar(item.author, item.avatar, colors)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(item.author, Modifier.weight(1f, fill = false), color = colors.foreground,
@@ -227,6 +244,8 @@ private fun SearchResult(item: SearchResultItem, colors: AndroidColors, highligh
                 EntryBody(item.body, colors.foreground, entryTextSize, item.emoji, maxLines = 3, highlight = highlight,
                     lineHeight = 23.sp, links = false)
             }
+            item.media?.let { media -> TimelineMediaGroup(listOf(media), colors, apub = false) { openMedia() } }
+            item.linkCard?.let { EntryCards(listOf(it), colors) }
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 UiGlyph(if (item.dm) UiIcon.Person else UiIcon.Channels, colors.secondary,
                     iconSize = AndroidControlSize.metadataIcon)

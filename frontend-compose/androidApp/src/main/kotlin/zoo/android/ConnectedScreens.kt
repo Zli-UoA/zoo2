@@ -373,7 +373,7 @@ internal fun ConnectedScreens(
             AndroidScreen.Post(root, entries.filter { it.id != root.id }, InputState(state.replyDraft, canSend = env.online && !state.saving, selection = state.replySelection, focusRequest = state.replyFocusRequest))
         }
         state.overlay in setOf("theme", "language", "notifications", "search-engine") -> state.settingsDetail(env)
-        searching -> state.searchScreen(usersById, channels, memberships)
+        searching -> state.searchScreen(usersById, channels, memberships, previewService)
         route == "/home" -> AndroidScreen.Home(posts, state.home.timeline, state.home.canLoadOlder)
         route == "/notifications" -> state.inbox.screen()
         route == "/bubble" -> AndroidScreen.Bubble(bubbles.map { state.entry(it, usersById) }, InputState(bubbleDraft, live = true), bubbleParticipants.map { it.title })
@@ -447,6 +447,13 @@ internal fun ConnectedScreens(
                 CompositionLocalProvider(
                     LocalTimelineImage provides remember(session) { { media -> timelineImage(session, media) } },
                     LocalCachedTimelineImage provides remember(session) { { media -> cachedTimelineImage(session, media) } },
+                    LocalSearchPreviewLoader provides remember(session, previewService, env.visible, env.online) {
+                        { links ->
+                            if (previewService.isNotBlank() && env.visible && env.online) {
+                                for (link in links) session.previews.load(previewService, link)
+                            }
+                        }
+                    },
                     LocalKitchenReactionImage provides emojiCatalog::kitchenReaction,
                     LocalAndroidTranslation provides { session.t(it) },
                     LocalChannelLinks provides channelLinks,
@@ -491,12 +498,24 @@ internal fun ConnectedScreens(
     LaunchedEffect(env.visible, showFullCall) {
         if (!env.visible || showFullCall) state.mediaPreview = null
     }
-    state.mediaPreview?.takeIf { env.visible && !showFullCall }?.let { media ->
-        key(media.key) {
-            TimelineMediaPreview(session, media, AndroidColors(env.dark), dismiss = { state.mediaPreview = null }) {
-                val id = media.attachmentId
-                if (id != null) session.attachmentLinks.download(obj("id" to id, "file_name" to media.name))
-                else media.url?.let { platform.action("open:$it") }
+    state.mediaPreview?.takeIf { env.visible && !showFullCall }?.let { selection ->
+        key(selection) {
+            val media = selection.selected
+            val dismiss = { state.mediaPreview = null }
+            if (media.kind == TimelineMediaKind.Image) {
+                CompositionLocalProvider(
+                    LocalTimelineImage provides remember(session) { { image -> timelineImage(session, image) } },
+                    LocalCachedTimelineImage provides remember(session) { { image -> cachedTimelineImage(session, image) } },
+                    LocalAndroidTranslation provides { session.t(it) },
+                ) {
+                    TimelineImageViewer(selection, dismiss)
+                }
+            } else {
+                TimelineVideoPreview(session, media, AndroidColors(env.dark), dismiss) {
+                    val id = media.attachmentId
+                    if (id != null) session.attachmentLinks.download(obj("id" to id, "file_name" to media.name))
+                    else media.url?.let { platform.action("open:$it") }
+                }
             }
         }
     }

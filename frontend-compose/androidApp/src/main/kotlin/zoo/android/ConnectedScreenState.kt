@@ -141,7 +141,7 @@ internal class ConnectedScreenState(
         private set
     var editing by mutableStateOf<AndroidUiAction.ActOnEntry?>(null)
         private set
-    var mediaPreview by mutableStateOf<TimelineMedia?>(null)
+    var mediaPreview by mutableStateOf<TimelineMediaSelection?>(null)
     var confirmingEntry by mutableStateOf<AndroidUiAction.ActOnEntry?>(null)
     private var editingPost = false
     private var returnOverlay: String? = null
@@ -296,12 +296,15 @@ internal class ConnectedScreenState(
 
     fun withLinkCard(entry: TimelineItem, service: String): TimelineItem {
         val url = entry.link ?: return entry
-        val preview = app.previews.cached(service, url) ?: return entry
-        val previewSource = publicUrlString(preview.image)
-        val alreadyAttached = previewSource != null && previewSource in entry.attachedImageUrls
-        val image = previewSource?.takeUnless { alreadyAttached }?.let { TimelineMedia(it, "", TimelineMediaKind.Image, url = it) }
-        return entry.copy(linkCard = EntryCard(preview.title, preview.description, url, preview.site, image = image,
-            formatted = false))
+        return entry.copy(linkCard = summalyCard(service, url, entry.attachedImageUrls))
+    }
+
+    private fun summalyCard(service: String, url: String, attachedImages: Set<String> = emptySet()): EntryCard? {
+        val preview = app.previews.cached(service, url) ?: return null
+        val image = publicUrlString(preview.image)?.takeUnless { it in attachedImages }
+            ?.let { TimelineMedia(it, "", TimelineMediaKind.Image, url = it) }
+        return EntryCard(preview.title, preview.description, url, preview.site, image = image,
+            formatted = false, summaly = true)
     }
 
     private fun displayEmoji(data: Row, metadata: Row, isPost: Boolean): Map<String, TimelineMedia> {
@@ -368,7 +371,8 @@ internal class ConnectedScreenState(
             }
             EntryOperation.Link -> if (!encrypted && publicUrl(action.value) != null) platform.action("open:${action.value}")
             EntryOperation.Media -> if (!encrypted) {
-                mediaPreview = (action.item.media + action.item.quote?.media.orEmpty()).firstOrNull { it.key == action.value }
+                val media = if (action.quotedMedia) action.item.quote?.media.orEmpty() else action.item.media
+                mediaPreview = selectMediaPreview(media, action.value)
             }
             EntryOperation.Quote -> action.item.quote?.let { quote ->
                 val postId = quote.postId
@@ -501,7 +505,9 @@ internal class ConnectedScreenState(
         )
     }
 
-    fun searchScreen(users: Map<String, Row>, channels: List<Row>, members: List<Row>): AndroidScreen.Search {
+    fun searchScreen(
+        users: Map<String, Row>, channels: List<Row>, members: List<Row>, previewService: String,
+    ): AndroidScreen.Search {
         val search = app.globalSearch
         val channelsById = channels.associateBy { it.text("id") }
         val year = platform.day(platform.now()).substringBefore('/')
@@ -509,12 +515,14 @@ internal class ConnectedScreenState(
             searchText, search.query, search.type,
             search.items.map { row ->
                 val file = isGlobalSearchFile(row, search.type)
-                val user = users[row.text("user_id")] ?: row.nested("author").takeIf { it.isNotEmpty() }
+                val searchAuthor = row.nested("author")
+                val user = users[row.text("user_id")] ?: searchAuthor
+                val link = if (file) null else previewUrls(row.text("snippet"), null).firstOrNull { '…' !in it }
                 val createdAt = row.text("created_at")
                 val day = platform.day(createdAt).let { if (it.substringBefore('/') == year) it.substringAfter('/') else it }
                 SearchResultItem(
                     key = globalSearchKey(row, search.type),
-                    author = user?.let(::author)?.ifBlank { null } ?: row.text("user_id"),
+                    author = author(user).ifBlank { row.text("user_id") },
                     // Like Web, keep the first hit within the three lines of a narrow screen.
                     body = if (file) row.text("file_name") else focusSnippet(row.text("snippet"), searchTerms(search.query)),
                     time = listOf(day, platform.time(createdAt)).filter { it.isNotBlank() }.joinToString(" "),
@@ -524,6 +532,10 @@ internal class ConnectedScreenState(
                     file = file,
                     fileSize = if (file) attachmentSize(row.text("file_size")) else null,
                     emoji = if (file) emptyMap() else displayEmoji(row, row, isPost = false),
+                    avatar = timelineAvatarUrl(app.config.apiBaseUrl, user, searchAuthor),
+                    media = if (file) timelineAttachmentMedia(row)?.takeIf { it.kind == TimelineMediaKind.Image } else null,
+                    link = link,
+                    linkCard = link?.let { summalyCard(previewService, it) },
                 )
             },
             loading = search.loading, loadingOlder = search.loadingOlder, error = search.error, loaded = search.loaded,
@@ -748,6 +760,13 @@ internal class ConnectedScreenState(
                     // `open` makes each tap a new request: the conversation keeps the last opened target and
                     // would otherwise stay where it was scrolled when the same result is opened again.
                     ?.let { platform.navigate(globalSearchDestination(it, search.type) + "&open=${kotlin.time.Clock.System.now().toEpochMilliseconds()}") }
+            }
+            is AndroidUiAction.OpenSearchMedia -> {
+                val search = app.globalSearch
+                val media = search.items.firstOrNull {
+                    isGlobalSearchFile(it, search.type) && globalSearchKey(it, search.type) == action.key
+                }?.let(::timelineAttachmentMedia)?.takeIf { it.kind == TimelineMediaKind.Image }
+                if (media != null) mediaPreview = TimelineMediaSelection(listOf(media), 0)
             }
             AndroidUiAction.LoadOlderResults -> app.globalSearch.loadOlder()
             AndroidUiAction.RetrySearch -> app.globalSearch.retry()

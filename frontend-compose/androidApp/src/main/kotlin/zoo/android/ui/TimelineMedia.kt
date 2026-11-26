@@ -4,6 +4,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -35,6 +37,17 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 internal enum class TimelineMediaKind { Image, Video }
+
+internal data class TimelineMediaSelection(val items: List<TimelineMedia>, val initialPage: Int) {
+    val selected get() = items[initialPage]
+}
+
+internal fun selectMediaPreview(items: List<TimelineMedia>, key: String): TimelineMediaSelection? {
+    val selected = items.firstOrNull { it.key == key } ?: return null
+    val pages = if (selected.kind == TimelineMediaKind.Image) items.filter { it.kind == TimelineMediaKind.Image }
+        else listOf(selected)
+    return TimelineMediaSelection(pages, pages.indexOf(selected))
+}
 
 internal data class TimelineMedia(
     val key: String, val name: String, val kind: TimelineMediaKind, val sensitive: Boolean = false,
@@ -98,7 +111,79 @@ internal fun TimelineQuoteCard(
             }
             if (quote.body.isNotBlank()) EntryBody(quote.body, colors.foreground, entryTextSize, quote.emoji, maxLines = 4)
         }
-        quote.media.forEach { media -> TimelineMediaTile(media, colors) { openMedia(media) } }
+        TimelineMediaGroup(quote.media, colors, apub = true, open = openMedia)
+    }
+}
+
+private val TimelineMedia.aspect: Float
+    get() = imageAspectRatio?.takeIf { it.isFinite() && it > 0f } ?: 4f / 3f
+
+@Composable
+internal fun TimelineMediaGroup(
+    media: List<TimelineMedia>, colors: AndroidColors, apub: Boolean, open: (TimelineMedia) -> Unit,
+) {
+    val images = media.filter { it.kind == TimelineMediaKind.Image }
+    if (images.isNotEmpty()) {
+        if (apub) ApubImageGrid(images, colors, open)
+        else ChannelImageStrip(images, colors, open)
+    }
+    media.filter { it.kind == TimelineMediaKind.Video }.forEach { video ->
+        key(video.key) { TimelineMediaTile(video, colors) { open(video) } }
+    }
+}
+
+@Composable
+private fun ApubImageGrid(images: List<TimelineMedia>, colors: AndroidColors, open: (TimelineMedia) -> Unit) {
+    val ratio = if (images.size == 1) images.first().aspect.coerceIn(3f / 4f, 16f / 9f) else 16f / 9f
+    val gap = 2.dp
+    Box(Modifier.padding(top = 6.dp).fillMaxWidth().aspectRatio(ratio)
+        .clip(RoundedCornerShape(8.dp)).testTag("apub-image-grid")) {
+        if (images.size == 1) {
+            MediaFrame(images.first(), colors, Modifier.matchParentSize()) { open(images.first()) }
+        } else {
+            Row(Modifier.matchParentSize(), horizontalArrangement = Arrangement.spacedBy(gap)) {
+                val columns = when (images.size) {
+                    2 -> listOf(listOf(0), listOf(1))
+                    3 -> listOf(listOf(0), listOf(1, 2))
+                    else -> listOf(listOf(0, 2), listOf(1, 3))
+                }
+                columns.forEach { column ->
+                    Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(gap)) {
+                        column.forEach { index ->
+                            val image = images[index]
+                            key(image.key) {
+                                MediaFrame(image, colors, Modifier.weight(1f).fillMaxWidth(),
+                                    more = if (index == 3) images.size - 4 else 0) { open(image) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChannelImageStrip(images: List<TimelineMedia>, colors: AndroidColors, open: (TimelineMedia) -> Unit) {
+    BoxWithConstraints(Modifier.fillMaxWidth().padding(top = 6.dp)) {
+        val availableWidth = maxWidth
+        if (images.size == 1) {
+            val image = images.first()
+            val height = (availableWidth / image.aspect).coerceAtMost(220.dp)
+            MediaFrame(image, colors, Modifier.size((height * image.aspect).coerceAtMost(availableWidth), height)
+                .clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Fit) { open(image) }
+        } else {
+            val maxTileWidth = (availableWidth - 24.dp).coerceAtLeast(availableWidth / 2)
+            val rowHeight = images.maxOf { (maxTileWidth / it.aspect).coerceAtMost(160.dp) }
+            LazyRow(Modifier.fillMaxWidth().height(rowHeight).testTag("channel-image-strip"),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                items(images, key = { it.key }) { image ->
+                    val height = (maxTileWidth / image.aspect).coerceAtMost(160.dp)
+                    MediaFrame(image, colors, Modifier.size((height * image.aspect).coerceAtMost(maxTileWidth), height)
+                        .clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Fit) { open(image) }
+                }
+            }
+        }
     }
 }
 
@@ -115,47 +200,64 @@ internal fun TimelineMediaTile(media: TimelineMedia, colors: AndroidColors, open
         }
         return
     }
+    BoxWithConstraints(Modifier.fillMaxWidth().padding(top = 6.dp).clip(RoundedCornerShape(8.dp))) {
+        val ratio = media.aspect.coerceIn(0.85f, 2.4f)
+        MediaFrame(media, colors,
+            Modifier.fillMaxWidth().height((maxWidth / ratio).coerceIn(AndroidControlSize.target, 220.dp)), open = open)
+    }
+}
+
+@Composable
+internal fun rememberMediaBlurHash(hash: String?): ImageBitmap? = if (hash != null) key(hash) {
+    produceState<ImageBitmap?>(null) {
+        value = withContext(Dispatchers.Default) { decodeBlurHash(hash) }
+    }.value
+} else null
+
+@Composable
+private fun MediaFrame(
+    media: TimelineMedia, colors: AndroidColors, modifier: Modifier,
+    contentScale: ContentScale = ContentScale.Crop, more: Int = 0, open: () -> Unit,
+) {
+    val video = media.kind == TimelineMediaKind.Video
     var revealed by remember(media.key, media.url, media.previewUrl, media.sensitive) { mutableStateOf(false) }
     val hidden = media.sensitive && !revealed
     val bitmap = rememberTimelineImage(media.takeIf { !hidden && !video })
-    val hash = media.blurhash
-    val placeholder = if (bitmap == null && hash != null) key(hash) {
-        produceState<ImageBitmap?>(null) {
-            value = withContext(Dispatchers.Default) { decodeBlurHash(hash) }
-        }.value
-    } else null
+    val placeholder = rememberMediaBlurHash(media.blurhash.takeIf { bitmap == null })
     val showLabel = if (video) "動画を表示" else androidLabel("attachments.showSensitive", "画像を表示")
     val hideLabel = if (video) "動画を隠す" else androidLabel("attachments.hideSensitive", "画像を隠す")
     val playLabel = androidLabel("attachments.play", "再生")
-    val aspectRatio = (media.imageAspectRatio ?: 4f / 3f).coerceIn(0.85f, 2.4f)
-    BoxWithConstraints(Modifier.fillMaxWidth().padding(top = 6.dp).clip(RoundedCornerShape(8.dp))
-        .background(colors.inputSurface)) {
-        Box(Modifier.fillMaxWidth().height((maxWidth / aspectRatio).coerceIn(AndroidControlSize.target, 220.dp))) {
-            Box(Modifier.matchParentSize().clickable(
-                role = Role.Button, onClickLabel = showLabel.takeIf { hidden },
-                onClick = { if (hidden) revealed = true else open() },
-            ), contentAlignment = Alignment.Center) {
-                when {
-                    bitmap != null -> Image(bitmap, media.name, Modifier.matchParentSize(), contentScale = ContentScale.Crop)
-                    placeholder != null -> Image(placeholder, null, Modifier.matchParentSize().testTag("media-blurhash"),
-                        contentScale = ContentScale.FillBounds)
-                    !hidden && !video -> Text(media.name, Modifier.padding(horizontal = 10.dp), color = colors.foreground,
-                        fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-                if (video && !hidden) {
-                    Box(Modifier.semantics { contentDescription = playLabel }) {
-                        UiGlyph(UiIcon.Play, colors.foreground)
-                    }
+    Box(modifier.background(colors.inputSurface)) {
+        Box(Modifier.matchParentSize().clickable(
+            role = Role.Button, onClickLabel = showLabel.takeIf { hidden },
+            onClick = { if (hidden) revealed = true else open() },
+        ), contentAlignment = Alignment.Center) {
+            when {
+                bitmap != null -> Image(bitmap, media.name, Modifier.matchParentSize(), contentScale = contentScale)
+                placeholder != null -> Image(placeholder, null, Modifier.matchParentSize().testTag("media-blurhash"),
+                    contentScale = ContentScale.FillBounds)
+                !hidden && !video -> Text(media.name, Modifier.padding(horizontal = 10.dp), color = colors.foreground,
+                    fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            if (video && !hidden) {
+                Box(Modifier.semantics { contentDescription = playLabel }) {
+                    UiGlyph(UiIcon.Play, colors.foreground)
                 }
             }
-            if (media.sensitive) {
-                UiIconButton(
-                    if (hidden) UiIcon.Eye else UiIcon.EyeOff,
-                    if (hidden) showLabel else hideLabel,
-                    Color.White, { revealed = hidden }, fill = Color.Black.copy(alpha = 0.65f),
-                    modifier = Modifier.align(Alignment.TopEnd).padding(4.dp),
-                )
+        }
+        if (more > 0) {
+            Box(Modifier.matchParentSize().background(Color.Black.copy(alpha = 0.55f)),
+                contentAlignment = Alignment.Center) {
+                Text("+$more", color = Color.White, fontSize = 24.sp, fontWeight = AndroidWeights.emphasis)
             }
+        }
+        if (media.sensitive) {
+            UiIconButton(
+                if (hidden) UiIcon.Eye else UiIcon.EyeOff,
+                if (hidden) showLabel else hideLabel,
+                Color.White, { revealed = hidden }, fill = Color.Black.copy(alpha = 0.65f),
+                modifier = Modifier.align(Alignment.TopEnd).padding(4.dp),
+            )
         }
     }
 }
