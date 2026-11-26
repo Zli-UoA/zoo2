@@ -35,9 +35,10 @@ internal class KitchenChoices(
 )
 
 /**
- * Keeps only the choices matching every word of [query]. With a query, exact name matches come
- * first, then name prefix, name substring, and other (glyph/keyword) matches; shorter names first
- * within a tier, then the original order. An empty query keeps the original order.
+ * Keeps only the choices matching every word of [query]. With a query, ranks (lower first):
+ * 0 exact name, 1 name prefix, 2 name substring, then 3 exact / 4 prefix / 5 substring over the
+ * keywords, and 6 anything else (e.g. the glyph). Shorter names first within a rank, then the
+ * original order. An empty query keeps the original order.
  */
 internal fun rankEmojiChoices(choices: List<EmojiChoice>, query: String): List<EmojiChoice> {
     val words = query.trim().replace('_', ' ').split(Regex("\\s+")).filter { it.isNotEmpty() }
@@ -47,12 +48,15 @@ internal fun rankEmojiChoices(choices: List<EmojiChoice>, query: String): List<E
         val searchable = "${choice.name} ${choice.glyph} ${choice.keywords.replace('_', ' ')}"
         if (!words.all { searchable.contains(it, ignoreCase = true) }) return@mapNotNull null
         val name = choice.name.replace('_', ' ').trim(':', ' ')
+        val keywords = choice.keywords.replace('_', ' ').split(',', ' ').filter { it.isNotEmpty() }
         val rank = when {
             name.equals(whole, ignoreCase = true) -> 0
             name.startsWith(whole, ignoreCase = true) -> 1
             name.contains(whole, ignoreCase = true) -> 2
-            choice.keywords.replace('_', ' ').split(',', ' ').any { it.equals(whole, ignoreCase = true) } -> 3
-            else -> 4
+            keywords.any { it.equals(whole, ignoreCase = true) } -> 3
+            keywords.any { it.startsWith(whole, ignoreCase = true) } -> 4
+            keywords.any { it.contains(whole, ignoreCase = true) } -> 5
+            else -> 6
         }
         Triple(rank, choice.name.length, index) to choice
     }.sortedWith(compareBy({ it.first.first }, { it.first.second }, { it.first.third })).map { it.second }
