@@ -3484,6 +3484,60 @@ mod tests {
         let _ = manager.sign_out_and_revoke().await;
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sign_out_and_revoke_revokes_an_unsaved_token_when_stale_temp_cleanup_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        let server = MockServer::start().await;
+        let issuer = format!("{}/api/auth", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/api/auth/.well-known/openid-configuration"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "issuer": issuer,
+                "token_endpoint": format!("{}/token", server.uri()),
+                "revocation_endpoint": format!("{}/revoke", server.uri())
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/revoke"))
+            .and(body_string_contains("token=unsaved-refresh"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/revoke"))
+            .and(body_string_contains("token=old-refresh"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let config = oidc(&issuer);
+        let path = temp_path("sign-out-and-revoke-stale-temp");
+        let on_disk = tokens(&config, now() + 3600, Some("old-refresh"));
+        save(&path, &on_disk).unwrap();
+        let stale = unique_temporary_path(&path);
+        std::fs::write(&stale, b"stale").unwrap();
+        std::fs::set_permissions(&stale, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let manager = TokenManager::new(
+            reqwest::Client::new(),
+            config,
+            path.clone(),
+            on_disk.clone(),
+        );
+        {
+            let mut state = manager.state.lock().await;
+            state.tokens.refresh_token = Some("unsaved-refresh".into());
+            state.pending_persist = Some(on_disk);
+        }
+
+        // 一時ファイルを回収できないので、結果はエラーだが、token.json は消え、失効は要求される。
+        assert!(manager.sign_out_and_revoke().await.is_err());
+        assert!(!path.exists());
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
     #[tokio::test]
     async fn refresh_finishing_after_sign_out_does_not_recreate_the_file() {
         let server = MockServer::start().await;
