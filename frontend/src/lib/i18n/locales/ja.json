@@ -893,6 +893,7 @@
     "deleted": "投稿を削除しました",
     "newPosts": "新しい投稿を見る（{{count}}件）",
     "quotedPost": "引用元の投稿",
+    "postUnavailable": "投稿を表示できません",
     "quoteUnavailable": "引用元の投稿を表示できません",
     "openQuotedPost": "引用元を開く",
     "image": "画像",
@@ -923,6 +924,7 @@
       "unlisted": "ホーム",
       "followers": "フォロワー限定"
     },
+    "followersAudience": "フォロワー",
     "audienceHint": {
       "local": "Zoo内だけに表示します。外部には配送しません。",
       "public": "誰でも閲覧でき、外部のフォロワーにも配送します。",
@@ -956,6 +958,7 @@
     "userSearch": "ユーザーを検索",
     "search": "検索",
     "noUsers": "ユーザーが見つかりません",
+    "openAuthorProfile": "「{{author}}」のプロフィールを開く",
     "userDetails": "ユーザー詳細",
     "joinedAt": "登録日: {{date}}",
     "pullRefresh": "引っ張って更新",

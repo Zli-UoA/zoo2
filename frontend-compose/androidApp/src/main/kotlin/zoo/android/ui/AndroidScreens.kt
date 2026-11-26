@@ -23,6 +23,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -87,6 +88,7 @@ internal data class TimelineItem(
     val divider: String? = null,
     /** 暗号化した添付（`attachment_id` → 本文の `attachments` の値の JSON。鍵を含むので表示と取得にだけ使う）。 */
     val encryptedFiles: Map<String, String> = emptyMap(),
+    val postAuthor: zoo.Row? = null,
 )
 internal data class ChannelItem(
     val id: String,
@@ -97,7 +99,10 @@ internal data class ChannelItem(
 internal data class ChannelSection(val label: String, val channels: List<ChannelItem>)
 
 internal sealed interface AndroidScreen {
-    data class Home(val posts: List<TimelineItem>, val timeline: String? = null, val loadOlder: Boolean = false) : AndroidScreen
+    data class Home(
+        val posts: List<TimelineItem>, val timeline: String? = null, val loadOlder: Boolean = false,
+        val loadFailed: Boolean = false, val loading: Boolean = false, val online: Boolean = true,
+    ) : AndroidScreen
     data class Channels(val sections: List<ChannelSection>) : AndroidScreen
     data class Notifications(val items: List<InboxItem>, val nextCursor: String? = null, val loadFailed: Boolean = false) : AndroidScreen
     data class Bubble(val entries: List<TimelineItem>, val input: InputState, val participants: List<String> = emptyList()) : AndroidScreen
@@ -120,7 +125,11 @@ internal sealed interface AndroidScreen {
         val loadOlder: Boolean = false,
         val historyReady: Boolean = true,
     ) : AndroidScreen
-    data class Post(val root: TimelineItem, val replies: List<TimelineItem>, val input: InputState) : AndroidScreen
+    data class PostLoading(val online: Boolean, val failed: Boolean) : AndroidScreen
+    data class Post(
+        val root: TimelineItem, val replies: List<TimelineItem>, val input: InputState,
+        val loadFailed: Boolean = false, val online: Boolean = true,
+    ) : AndroidScreen
     data class ChannelSettings(val channel: String, val groups: List<SettingsGroup>, val id: String = channel) : AndroidScreen
     data class SettingsDetail(val title: String, val groups: List<SettingsGroup>) : AndroidScreen
     data class EditChannel(
@@ -145,6 +154,7 @@ internal sealed interface AndroidScreen {
         val handle: String? = null, val avatar: ImageBitmap? = null,
         val originalAvailable: Boolean = false,
         val id: String = handle ?: name,
+        val postsPending: Boolean = false, val postsLoadFailed: Boolean = false, val online: Boolean = true,
     ) : AndroidScreen
     data class NewPost(val input: InputState, val recent: List<RecentPhoto>, val showPhotos: Boolean,
         val visibility: String? = null, val attached: List<RecentPhoto> = emptyList(), val federate: Boolean? = null) : AndroidScreen
@@ -169,6 +179,10 @@ internal sealed interface AndroidUiAction {
     data class OpenChannel(val id: String) : AndroidUiAction
     data class OpenChannelSettings(val id: String) : AndroidUiAction
     data class OpenPost(val id: String) : AndroidUiAction
+    data object RetryPost : AndroidUiAction
+    data object RetryProfile : AndroidUiAction
+    data object RetryTimeline : AndroidUiAction
+    data class OpenProfile(val author: zoo.Row) : AndroidUiAction
     data class ReplyToPost(val id: String) : AndroidUiAction
     data class OpenThread(val id: String) : AndroidUiAction
     data class OpenSetting(val id: String) : AndroidUiAction
@@ -277,7 +291,7 @@ private fun AndroidScreen.routeKey(): String = when (this) {
     is AndroidScreen.Conversation -> "channel:$id"
     is AndroidScreen.Thread -> "thread:${root.id}"
     is AndroidScreen.Post -> "post:${root.id}"
-    is AndroidScreen.Profile -> "profile:$id"
+    is AndroidScreen.Profile -> if (postsPending && posts.isEmpty()) "profile-loading:$id" else "profile:$id"
     is AndroidScreen.ChannelSettings -> "channel-settings:$id"
     is AndroidScreen.SettingsDetail -> "settings-detail:$title"
     is AndroidScreen.Directory -> "directory:$title:${scopeId.orEmpty()}"
@@ -355,8 +369,23 @@ private fun RenderAndroidScreen(
                     focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true, historyReady = screen.historyReady,
                     loadEarlier = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderMessages) } } else null)
             }
+            is AndroidScreen.PostLoading -> {
+                PageHeader("投稿", colors, onBack = back)
+                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    when {
+                        !screen.online -> Text(androidLabel("offline.bannerTitle", "オフラインです"), color = colors.secondary)
+                        screen.failed -> TextAction(androidLabel("offline.retry", "再試行"), colors) {
+                            dispatch(AndroidUiAction.RetryPost)
+                        }
+                        else -> CircularProgressIndicator(color = colors.accent)
+                    }
+                }
+            }
             is AndroidScreen.Post -> {
                 PageHeader("投稿", colors, onBack = back)
+                if (screen.loadFailed && screen.online) FeedLoadError(androidLabel("common.errors.network", "通信エラー"), colors) {
+                    dispatch(AndroidUiAction.RetryPost)
+                }
                 TimelineWithInput(listOf(screen.root) + screen.replies, screen.input, colors, dispatch, posts = true, canResize = false)
             }
             is AndroidScreen.EditEntry -> {
@@ -381,7 +410,20 @@ private fun RenderAndroidScreen(
                         { dispatch(AndroidUiAction.OpenSetting("profile-original")) })
                 }
                 Timeline(screen.posts, colors, Modifier.weight(1f), dispatch, posts = true, header = {
-                    ProfileHeader(screen, colors) { dispatch(AndroidUiAction.OpenSetting("profile-follow")) }
+                    Column {
+                        ProfileHeader(screen, colors) { dispatch(AndroidUiAction.OpenSetting("profile-follow")) }
+                        if (screen.postsPending) {
+                            Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
+                                when {
+                                    !screen.online -> Text(androidLabel("offline.bannerTitle", "オフラインです"), color = colors.secondary)
+                                    screen.postsLoadFailed -> TextAction(androidLabel("offline.retry", "再試行"), colors) {
+                                        dispatch(AndroidUiAction.RetryProfile)
+                                    }
+                                    else -> CircularProgressIndicator(color = colors.accent)
+                                }
+                            }
+                        }
+                    }
                 })
             }
             is AndroidScreen.NewPost -> NewPostPage(screen, colors, dispatch, photo)
@@ -409,21 +451,48 @@ private fun HomePage(screen: AndroidScreen.Home, colors: AndroidColors, dispatch
                     { dispatch(AndroidUiAction.OpenSetting("people")) })
             }
             if (screen.timeline != null) Row(Modifier.fillMaxWidth()) {
-                for ((id, title) in listOf("home" to "フォロー中", "local" to "ローカル", "social" to "連合")) {
-                    TextAction(title, colors, style = if (id == screen.timeline) TextActionStyle.Neutral else TextActionStyle.Plain,
+                for ((id, title) in listOf("home" to "ホーム", "local" to "ローカル", "social" to "ソーシャル")) {
+                    TextAction(androidLabel("home.timelineLabels.$id", title), colors, style = if (id == screen.timeline) TextActionStyle.Neutral else TextActionStyle.Plain,
                         modifier = Modifier.weight(1f)) { dispatch(AndroidUiAction.SelectTimeline(id)) }
                 }
             }
         }
     }) {
         Box(Modifier.fillMaxSize()) {
-            Timeline(screen.posts, colors, Modifier.fillMaxSize(), dispatch, posts = true,
-                loadOlder = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderPosts) } } else null)
+            Column(Modifier.fillMaxSize()) {
+                if (screen.posts.isNotEmpty() && screen.loadFailed && screen.online) {
+                    TimelineLoadError(colors) { dispatch(AndroidUiAction.RetryTimeline) }
+                }
+                Timeline(screen.posts, colors, Modifier.weight(1f).fillMaxWidth(), dispatch, posts = true,
+                    loadOlder = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderPosts) } } else null)
+            }
+            if (screen.posts.isEmpty()) {
+                Column(Modifier.align(Alignment.Center).padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    when {
+                        !screen.online -> Text(androidLabel("offline.bannerTitle", "オフラインです"), color = colors.secondary)
+                        screen.loading -> CircularProgressIndicator(color = colors.accent)
+                        screen.loadFailed -> TimelineLoadError(colors) { dispatch(AndroidUiAction.RetryTimeline) }
+                    }
+                }
+            }
             Box(Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
                 UiIconButton(UiIcon.Create, "新しい投稿", Color.Black,
                     action = { dispatch(AndroidUiAction.ComposePost) }, fill = colors.accent)
             }
         }
+    }
+}
+
+@Composable
+private fun TimelineLoadError(colors: AndroidColors, retry: () -> Unit) {
+    FeedLoadError(androidLabel("home.loadError", "タイムラインを取得できませんでした。"), colors, retry)
+}
+
+@Composable
+private fun FeedLoadError(message: String, colors: AndroidColors, retry: () -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(message, color = colors.secondary)
+        TextAction(androidLabel("offline.retry", "再試行"), colors, click = retry)
     }
 }
 
@@ -667,11 +736,14 @@ private fun Timeline(
             ) {
                 entry.divider?.let { EncryptionDivider(it, colors) }
                 entry.repostedBy?.let { RepostAttribution(it, colors) }
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    TimelineAvatar(entry.author, entry.avatar, colors)
+                val openProfile = entry.postAuthor.takeIf { posts }?.let { author ->
+                    { dispatch(AndroidUiAction.OpenProfile(author)) }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(if (openProfile == null) 12.dp else 0.dp)) {
+                    TimelineAvatar(entry.author, entry.avatar, colors, openProfile = openProfile)
                     Column(Modifier.weight(1f)) {
                         if (posts && entry.postHeader != null) {
-                            PostHeader(entry.author, entry.postHeader, colors)
+                            PostHeader(entry.author, entry.postHeader, colors, openProfile)
                         } else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text(entry.author, color = colors.foreground, fontWeight = AndroidWeights.entryAuthor, fontSize = entryTextSize)
                             Text(entry.time, color = colors.secondary, fontSize = 12.sp)
@@ -695,6 +767,9 @@ private fun Timeline(
                         entry.quote?.let { quote ->
                             TimelineQuoteCard(quote, colors,
                                 open = { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Quote)) },
+                                openProfile = quote.postAuthor.takeIf { posts }?.let { author ->
+                                    { dispatch(AndroidUiAction.OpenProfile(author)) }
+                                },
                                 openMedia = { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Media, it.key, quotedMedia = true)) })
                         }
                         entry.channelLinks.forEach { url -> ChannelLinkCard(url, colors, menu = { menuId = entry.id }) }

@@ -207,6 +207,14 @@ internal fun ConnectedScreens(
                 SelectionItem(it.text("user_id"), author(it), isUserName = true)
             }
     }
+    LaunchedEffect(state.overlay, state.openedPostId, state.postRevision,
+        state.feedScreenRevision, state.postReloadRequest, env.online, env.visible) {
+        if (env.online && env.visible) state.reloadActivePost()
+    }
+    LaunchedEffect(state.overlay, state.profile.text("id"), state.postRevision,
+        state.feedScreenRevision, state.profileReloadRequest, env.online, env.visible) {
+        if (env.online && env.visible) state.reloadActiveProfile()
+    }
     LaunchedEffect(route, env.online, env.visible) {
         if (env.online && env.visible) try { state.refreshPins() }
         catch (cancelled: CancellationException) { throw cancelled }
@@ -274,14 +282,16 @@ internal fun ConnectedScreens(
     }
     val sipRoute = route == "/settings" && env.path.substringAfter('?', "").split('&').contains("tab=sip")
     fun back() {
-        state.invalidatePostRequest()
         when {
             state.mediaPreview != null -> state.mediaPreview = null
             showFullCall -> background()
-            sipRoute && state.overlay == null -> platform.navigate("/settings")
+            sipRoute && state.overlay == null -> {
+                state.invalidatePostNavigation()
+                platform.navigate("/settings")
+            }
             state.overlay == "edit-entry" -> state.finishEditing()
             state.overlay == "post" -> state.closePost()
-            state.overlay == "profile" -> state.overlay = "people"
+            state.overlay == "profile" -> state.closeProfile()
             state.overlay == "thread-members" -> state.overlay = "thread-settings"
             state.overlay == "thread-settings" -> state.overlay = null
             state.overlay in setOf("members", "rename", "archive", "unarchive") -> state.overlay = "channel-settings"
@@ -289,8 +299,11 @@ internal fun ConnectedScreens(
             state.overlay != null -> state.overlay = null
             state.collapseInput(channelId, currentThread) -> Unit
             currentThread != null -> session.thread = null
-            platform.back() -> Unit
-            else -> background()
+            platform.back() -> state.invalidatePostNavigation()
+            else -> {
+                state.invalidatePostNavigation()
+                background()
+            }
         }
     }
     BackHandler { back() }
@@ -335,6 +348,7 @@ internal fun ConnectedScreens(
                 if (remoteProfile && profileHost.isNotBlank()) "@$name@$profileHost" else "@$name"
             },
             avatar = profileAvatar, originalAvailable = profileUrl != null, id = profile.text("id"),
+            postsPending = state.profilePostsPending, postsLoadFailed = state.profilePostsLoadFailed, online = env.online,
         )
         state.overlay == "bubble-participants" -> AndroidScreen.Directory("参加者", state.query,
             bubbleParticipants.filter { it.title.contains(state.query, true) })
@@ -371,7 +385,7 @@ internal fun ConnectedScreens(
             InputState(state.postDraft, canSend = env.online && !state.saving && state.postFiles.canSend(state.postDraft), selection = state.postSelection),
             state.recent, state.photosOpen, state.postVisibility,
             state.postFiles.items.map { RecentPhoto(it.file.text("id"), it.name) },
-            state.federatePost.takeIf { state.federationAvailable && state.postVisibility != "local" },
+            state.federatePost.takeIf { state.federationAvailable },
         )
         state.overlay == "edit-entry" -> AndroidScreen.EditEntry(
             InputState(state.editDraft, expanded = true, canSend = env.online && !state.saving && state.editDraft.isNotBlank(),
@@ -380,11 +394,14 @@ internal fun ConnectedScreens(
             val entries = state.postDetail.map { state.entry(it, usersById, previewService = previewService) }
             val root = entries.firstOrNull { it.id == state.openedPostId } ?: entries.first()
             AndroidScreen.Post(root, entries.filter { it.id != root.id }, InputState(state.replyDraft, canSend = env.online && !state.saving,
-                selection = state.replySelection, focusRequest = state.replyFocusRequest, lastSend = state.replyLastSend))
+                selection = state.replySelection, focusRequest = state.replyFocusRequest, lastSend = state.replyLastSend),
+                loadFailed = state.postLoadFailed, online = env.online)
         }
+        state.overlay == "post" -> AndroidScreen.PostLoading(env.online, state.postLoadFailed)
         state.overlay in setOf("theme", "language", "notifications", "search-engine") -> state.settingsDetail(env)
         searching -> state.searchScreen(usersById, channels, memberships, previewService)
-        route == "/home" -> AndroidScreen.Home(posts, state.home.timeline, state.home.canLoadOlder)
+        route == "/home" -> AndroidScreen.Home(posts, state.home.timeline, state.home.canLoadOlder,
+            loadFailed = state.home.error || state.home.olderError, loading = state.home.loading || state.home.updating, online = env.online)
         route == "/notifications" -> state.inbox.screen()
         route == "/bubble" -> AndroidScreen.Bubble(bubbles.map { state.entry(it, usersById) }, InputState(bubbleDraft, live = true), bubbleParticipants.map { it.title })
         route == "/settings" -> AndroidScreen.Settings(state.settings(env, openIncomingSettings != null))
@@ -460,7 +477,7 @@ internal fun ConnectedScreens(
                     LocalTimelineImage provides remember(session) { { media -> timelineImage(session, media) } },
                     LocalCachedTimelineImage provides remember(session) { { media -> cachedTimelineImage(session, media) } },
                     LocalKitchenReactionImage provides emojiCatalog::kitchenReaction,
-                    LocalAndroidTranslation provides { session.t(it) },
+                    LocalAndroidTranslation provides { key, args -> session.t(key, *args) },
                     LocalChannelLinks provides channelLinks,
                 ) {
                     AndroidScreens(screen, env.dark, env.visible && env.focused,

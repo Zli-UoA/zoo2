@@ -893,6 +893,7 @@
     "deleted": "Post deleted",
     "newPosts": "View new posts ({{count}})",
     "quotedPost": "Quoted post",
+    "postUnavailable": "This post can’t be displayed",
     "quoteUnavailable": "This quoted post is unavailable",
     "openQuotedPost": "Open quoted post",
     "image": "Image",
@@ -923,6 +924,7 @@
       "unlisted": "Home",
       "followers": "Followers only"
     },
+    "followersAudience": "Followers",
     "audienceHint": {
       "local": "Visible inside Zoo only. Not delivered to other servers.",
       "public": "Anyone can read this. Delivered to remote followers.",
@@ -956,6 +958,7 @@
     "userSearch": "Search users",
     "search": "Search",
     "noUsers": "No users found",
+    "openAuthorProfile": "Open profile for {{author}}",
     "userDetails": "User details",
     "joinedAt": "Joined: {{date}}",
     "pullRefresh": "Pull to refresh",

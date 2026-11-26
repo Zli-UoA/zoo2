@@ -191,7 +191,9 @@ class AndroidSamplesTest {
         }.asImageBitmap()
         val illustratedPost = homePosts.first().copy(
             repostedBy = "みずき",
-            quote = TimelineQuote("https://example.test/notes/42", null, "なぎ", "引用元の投稿を共有します。", emptyList()),
+            postAuthor = zoo.obj("id" to "haru"),
+            quote = TimelineQuote("https://example.test/notes/42", null, "なぎ", "引用元の投稿を共有します。", emptyList(),
+                postAuthor = zoo.obj("id" to "nagi")),
             media = listOf(TimelineMedia("post-image", "投稿画像", TimelineMediaKind.Image, imageAspectRatio = 16f / 9f),
                 TimelineMedia("post-video", "投稿動画", TimelineMediaKind.Video, sensitive = true)),
         )
@@ -408,7 +410,8 @@ class AndroidSamplesTest {
                     val dateBounds = ui.onNodeWithText("11/21 12:05", useUnmergedTree = true).getUnclippedBoundsInRoot()
                     val serverBounds = ui.onNodeWithText("misskey.io", useUnmergedTree = true).getUnclippedBoundsInRoot()
                     check(nameBounds.right < dateBounds.left && serverBounds.top > dateBounds.top)
-                    ui.onNodeWithContentDescription("公開", useUnmergedTree = true).assertIsDisplayed()
+                    ui.onNodeWithContentDescription("パブリック", useUnmergedTree = true).assertIsDisplayed()
+                    ui.onNodeWithContentDescription("ローカルのみ", useUnmergedTree = true).assertIsDisplayed()
                     val channelBounds = ui.onNodeWithText("#開発", useUnmergedTree = true)
                         .assertIsDisplayed().getUnclippedBoundsInRoot()
                     check(channelBounds.bottom - channelBounds.top == serverBounds.bottom - serverBounds.top)
@@ -481,7 +484,7 @@ class AndroidSamplesTest {
                     ui.onNodeWithText("フォロー").assertHasClickAction()
                 }
                 if (name == "post-compose") {
-                    val audience = ui.onNodeWithContentDescription("公開範囲：公開").assertHasClickAction()
+                    val audience = ui.onNodeWithContentDescription("公開範囲：パブリック").assertHasClickAction()
                     val federation = ui.onNodeWithContentDescription("ActivityPub で配信").assertIsOn()
                     check(audience.getUnclippedBoundsInRoot().top == federation.getUnclippedBoundsInRoot().top)
                     val toolbar = ui.onNodeWithTag("post-actions").getUnclippedBoundsInRoot()
@@ -493,7 +496,7 @@ class AndroidSamplesTest {
                     ) { "Expected an 8dp inset around the post actions: $post / $photos / $toolbar" }
                 }
                 if (name == "post-compose-federation-off") {
-                    ui.onNodeWithContentDescription("公開範囲：未収載").assertIsDisplayed()
+                    ui.onNodeWithContentDescription("公開範囲：ホーム").assertIsDisplayed()
                     ui.onNodeWithContentDescription("ActivityPub で配信").assertIsOff()
                 }
                 if (name == "call") {
@@ -536,11 +539,12 @@ class AndroidSamplesTest {
             ui.onNodeWithContentDescription("cat duo").performClick()
         }
         ui.runOnIdle { screen = cases.first { it.first == "post-compose" }.second }
-        ui.onNodeWithContentDescription("公開範囲：公開").performClick()
-        for (audience in listOf("公開", "未収載", "フォロワー限定", "ローカル")) {
+        ui.onNodeWithContentDescription("公開範囲：パブリック").performClick()
+        for (audience in listOf("パブリック", "ホーム", "フォロワー")) {
             ui.onNodeWithText(audience).assertIsDisplayed()
         }
-        ui.onNodeWithText("未収載").performClick()
+        ui.onNodeWithText("ローカルのみ").assertDoesNotExist()
+        ui.onNodeWithText("ホーム").performClick()
         ui.onNodeWithContentDescription("ActivityPub で配信").performClick()
         ui.runOnIdle {
             check(actions.takeLast(2) == listOf(
@@ -738,6 +742,140 @@ class AndroidSamplesTest {
         capture("post-menu-light", withSheet = true)
         ui.runOnIdle { dark = true }
         capture("post-menu-dark", withSheet = true)
+    }
+
+    @Test
+    fun homeTabsAndAuthorAvatarsDispatchTheirOwnActions() {
+        val author = zoo.obj("id" to "haru")
+        val quotedAuthor = zoo.obj("id" to "https://social.example/users/yui")
+        val post = TimelineItem("post", "はる", "投稿本文", "12:05", postAuthor = author,
+            postHeader = PostHeaderData("@haru", "12:05", PostAudience.Public, null, null),
+            quote = TimelineQuote("https://social.example/posts/1", null, "ゆい", "引用本文", emptyList(),
+                postAuthor = quotedAuthor))
+        val actions = mutableListOf<AndroidUiAction>()
+        ui.setContent {
+            AndroidScreens(AndroidScreen.Home(listOf(post), timeline = "home"), false, true,
+                dispatch = { actions.add(it) }, language = "ja") { _, _ -> }
+        }
+        ui.onNodeWithText("ローカル").performClick()
+        ui.onNodeWithText("ソーシャル").performClick()
+        for (authorName in listOf("はる", "ゆい")) {
+            ui.onNodeWithContentDescription("「${authorName}」のプロフィールを開く")
+                .assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
+                .performTouchInput { click(center.copy(x = width - 1f)) }
+        }
+        for (name in listOf("はる", "@haru")) {
+            ui.onNodeWithText(name, useUnmergedTree = true).performTouchInput { click() }
+        }
+        ui.onNodeWithText("引用本文", useUnmergedTree = true).performTouchInput { click() }
+        ui.onNodeWithText("投稿本文", useUnmergedTree = true).performTouchInput { click() }
+        ui.runOnIdle {
+            check(actions == listOf(
+                AndroidUiAction.SelectTimeline("local"), AndroidUiAction.SelectTimeline("social"),
+                AndroidUiAction.OpenProfile(author), AndroidUiAction.OpenProfile(quotedAuthor),
+                AndroidUiAction.OpenProfile(author), AndroidUiAction.OpenProfile(author),
+                AndroidUiAction.ActOnEntry(post, EntryOperation.Quote), AndroidUiAction.OpenPost(post.id),
+            )) { actions.toString() }
+        }
+    }
+
+    @Test
+    fun closingAnAuthorProfileRestoresTheHomeAndPostTimelinePositions() {
+        val posts = (0..40).map { index ->
+            TimelineItem("post-$index", "投稿者 $index", "投稿 $index", "12:05",
+                postAuthor = zoo.obj("id" to "author-$index"))
+        }
+        val home = AndroidScreen.Home(posts, timeline = "local")
+        val thread = AndroidScreen.Post(posts.first(), posts.drop(1), InputState())
+        var previous: AndroidScreen = home
+        var screen by mutableStateOf<AndroidScreen>(home)
+        ui.setContent {
+            AndroidScreens(screen, false, true, dispatch = { action ->
+                when (action) {
+                    is AndroidUiAction.OpenProfile -> screen = AndroidScreen.Profile("投稿者 24", "", emptyList())
+                    AndroidUiAction.Back -> screen = previous
+                    else -> Unit
+                }
+            }, language = "ja") { _, _ -> }
+        }
+        for (surface in listOf(home, thread)) {
+            ui.runOnIdle { previous = surface; screen = surface }
+            ui.onNode(hasScrollAction() and hasAnyDescendant(hasTestTag("timeline-entry-post-0")))
+                .performScrollToIndex(24)
+            ui.onNodeWithContentDescription("「投稿者 24」のプロフィールを開く").performClick()
+            ui.onNodeWithContentDescription("戻る").performClick()
+            ui.onNodeWithTag("timeline-entry-post-24").assertIsDisplayed()
+            ui.onNodeWithTag("timeline-entry-post-0").assertDoesNotExist()
+        }
+    }
+
+    @Test
+    fun profileKeepsItsScrollPositionWhileThePostsAreRevalidated() {
+        val posts = (0..40).map { index -> TimelineItem("post-$index", "はる", "投稿 $index", "12:05") }
+        val profile = AndroidScreen.Profile("はる", "", posts, id = "haru")
+        val loading = profile.copy(posts = emptyList(), postsPending = true, online = false)
+        var screen by mutableStateOf<AndroidScreen>(profile)
+        ui.setContent {
+            AndroidScreens(screen, false, true, dispatch = { action ->
+                when (action) {
+                    is AndroidUiAction.OpenPost -> screen = AndroidScreen.Post(posts[24], emptyList(), InputState())
+                    AndroidUiAction.Back -> screen = loading
+                    else -> Unit
+                }
+            }, language = "ja") { _, _ -> }
+        }
+
+        ui.onNode(hasScrollAction()).performScrollToIndex(25)
+        ui.onNodeWithTag("timeline-entry-post-24").performClick()
+        ui.onNodeWithContentDescription("戻る").performClick()
+        ui.onNodeWithText("オフラインです").assertIsDisplayed()
+        ui.onNodeWithTag("timeline-entry-post-24").assertDoesNotExist()
+        ui.runOnIdle { screen = profile }
+        ui.onNodeWithTag("timeline-entry-post-24").assertIsDisplayed()
+        ui.onNodeWithTag("timeline-entry-post-0").assertDoesNotExist()
+    }
+
+    @Test
+    fun profileRefreshFailureShowsRetryInsteadOfAnEmptyFeed() {
+        val actions = mutableListOf<AndroidUiAction>()
+        ui.setContent {
+            AndroidScreens(AndroidScreen.Profile("はる", "", emptyList(), postsPending = true, postsLoadFailed = true),
+                false, true, dispatch = { actions.add(it) }, language = "ja") { _, _ -> }
+        }
+        ui.onNodeWithText("表示できる投稿はありません").assertDoesNotExist()
+        ui.onNodeWithText("再試行").assertIsDisplayed().performClick()
+        ui.runOnIdle { check(actions == listOf(AndroidUiAction.RetryProfile)) }
+    }
+
+    @Test
+    fun feedsOfferRetryWithoutRemovingLoadedPosts() {
+        val actions = mutableListOf<AndroidUiAction>()
+        val post = TimelineItem("post", "はる", "取得済みの本文", "12:05")
+        var screen by mutableStateOf<AndroidScreen>(AndroidScreen.Home(emptyList(), timeline = "home", loadFailed = true))
+        ui.setContent {
+            AndroidScreens(screen, false, true, dispatch = { actions.add(it) }, language = "ja") { _, _ -> }
+        }
+        ui.onNodeWithText("タイムラインを取得できませんでした。").assertIsDisplayed()
+        ui.onNodeWithText("再試行").assertIsDisplayed().performClick()
+        ui.runOnIdle { screen = AndroidScreen.Home(listOf(post), timeline = "home", loadFailed = true) }
+        ui.onNodeWithText("取得済みの本文").assertIsDisplayed()
+        ui.onNodeWithText("再試行").performClick()
+        ui.runOnIdle { screen = AndroidScreen.Post(post, emptyList(), InputState(), loadFailed = true) }
+        ui.onNodeWithText("取得済みの本文").assertIsDisplayed()
+        ui.onNodeWithText("再試行").performClick()
+        ui.runOnIdle {
+            check(actions == listOf(AndroidUiAction.RetryTimeline, AndroidUiAction.RetryTimeline, AndroidUiAction.RetryPost))
+        }
+    }
+
+    @Test
+    fun unavailableLocalQuoteHasNoExternalLink() {
+        ui.setContent {
+            TimelineQuoteCard(TimelineQuote("https://zoo.example/home/posts/removed", null, "", "", emptyList(), local = true),
+                AndroidColors(false), open = { error("Unavailable quote was opened") }, openMedia = {})
+        }
+        ui.onNodeWithText("引用元の投稿を表示できません").assertIsDisplayed().assertHasNoClickAction()
+        ui.onNodeWithText("引用元を開く").assertDoesNotExist()
     }
 
     @Test

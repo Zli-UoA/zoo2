@@ -65,7 +65,11 @@ internal data class TimelineQuote(
     val uri: String, val postId: String?, val author: String, val body: String, val media: List<TimelineMedia>,
     val emoji: Map<String, TimelineMedia> = emptyMap(),
     val avatar: String? = null,
-)
+    val postAuthor: zoo.Row? = null,
+    val local: Boolean = false,
+) {
+    val canOpen: Boolean get() = postId != null || !local
+}
 
 internal val LocalKitchenReactionImage = staticCompositionLocalOf<suspend (String) -> String?> { { null } }
 
@@ -104,18 +108,40 @@ internal fun RepostAttribution(actor: String, colors: AndroidColors) {
 @Composable
 internal fun TimelineQuoteCard(
     quote: TimelineQuote, colors: AndroidColors, open: () -> Unit, openMedia: (TimelineMedia) -> Unit,
+    openProfile: (() -> Unit)? = null,
 ) {
     Column(Modifier.fillMaxWidth().padding(top = 6.dp).clip(RoundedCornerShape(8.dp))
         .background(colors.inputSurface).padding(horizontal = 10.dp, vertical = 6.dp)) {
-        Column(Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target)
-            .clickable(role = Role.Button, onClick = open), verticalArrangement = Arrangement.Center) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (quote.author.isNotBlank()) TimelineAvatar(quote.author, quote.avatar, colors, 20.dp)
-                Text(if (quote.author.isBlank()) "引用元を開く" else "引用 · ${quote.author}",
+        if (!quote.canOpen) {
+            Text(androidLabel("home.quoteUnavailable", "引用元の投稿を表示できません"), color = colors.secondary)
+            return@Column
+        }
+        val quoteLink = Modifier.heightIn(min = AndroidControlSize.target)
+            .clickable(role = Role.Button, onClick = open)
+        val title: @Composable () -> Unit = {
+            Text(if (quote.author.isBlank()) "引用元を開く" else "引用 · ${quote.author}",
                 color = colors.secondary, fontSize = if (quote.author.isBlank()) 12.sp else entryTextSize,
-                    fontWeight = if (quote.author.isBlank()) AndroidWeights.label else AndroidWeights.entryAuthor)
-            }
+                fontWeight = if (quote.author.isBlank()) AndroidWeights.label else AndroidWeights.entryAuthor)
+        }
+        val body: @Composable () -> Unit = {
             if (quote.body.isNotBlank()) EntryBody(quote.body, colors.foreground, entryTextSize, quote.emoji, maxLines = 4)
+        }
+        if (openProfile != null) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                TimelineAvatar(quote.author, quote.avatar, colors, 20.dp, openProfile, Alignment.CenterStart)
+                Column(Modifier.weight(1f).then(quoteLink), verticalArrangement = Arrangement.Center) {
+                    title()
+                    body()
+                }
+            }
+        } else {
+            Column(Modifier.fillMaxWidth().then(quoteLink), verticalArrangement = Arrangement.Center) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (quote.author.isNotBlank()) TimelineAvatar(quote.author, quote.avatar, colors, 20.dp)
+                    title()
+                }
+                body()
+            }
         }
         TimelineMediaGroup(quote.media, colors, apub = true, open = openMedia)
     }
@@ -323,11 +349,25 @@ private fun timelineIcon(url: String?): ImageBitmap? =
     rememberTimelineImage(url?.let { TimelineMedia(it, "", TimelineMediaKind.Image, url = it) })
 
 @Composable
-internal fun TimelineAvatar(author: String, url: String?, colors: AndroidColors, size: Dp = 36.dp) {
+internal fun TimelineAvatar(
+    author: String, url: String?, colors: AndroidColors, size: Dp = 36.dp, openProfile: (() -> Unit)? = null,
+    avatarAlignment: Alignment = Alignment.TopStart,
+) {
     val image = timelineIcon(url)
-    Box(Modifier.size(size).clip(CircleShape).background(colors.background), contentAlignment = Alignment.Center) {
-        if (image == null) Text(author.take(1), Modifier.clearAndSetSemantics {}, color = colors.secondary, fontSize = 13.sp)
-        else Image(image, contentDescription = null, Modifier.matchParentSize().testTag("timeline-avatar"), contentScale = ContentScale.Crop)
+    val imageContent: @Composable () -> Unit = {
+        Box(Modifier.size(size).clip(CircleShape).background(colors.background), contentAlignment = Alignment.Center) {
+            if (image == null) Text(author.take(1), Modifier.clearAndSetSemantics {}, color = colors.secondary, fontSize = 13.sp)
+            else Image(image, contentDescription = null, Modifier.matchParentSize().testTag("timeline-avatar"), contentScale = ContentScale.Crop)
+        }
+    }
+    if (openProfile == null) imageContent()
+    else {
+        val label = androidLabel("home.openAuthorProfile", "「${author}」のプロフィールを開く", "author" to author)
+        Box(Modifier.size(AndroidControlSize.target)
+            .clickable(role = Role.Button, onClick = openProfile)
+            .semantics { contentDescription = label },
+            contentAlignment = avatarAlignment,
+        ) { imageContent() }
     }
 }
 

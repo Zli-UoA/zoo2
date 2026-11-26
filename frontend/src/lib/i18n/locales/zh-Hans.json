@@ -893,6 +893,7 @@
     "deleted": "帖子已删除",
     "newPosts": "查看新帖子（{{count}}）",
     "quotedPost": "引用的帖子",
+    "postUnavailable": "无法显示这条帖子",
     "quoteUnavailable": "无法显示引用的帖子",
     "openQuotedPost": "打开引用的帖子",
     "image": "图片",
@@ -923,6 +924,7 @@
       "unlisted": "主页",
       "followers": "仅关注者"
     },
+    "followersAudience": "关注者",
     "audienceHint": {
       "local": "仅在 Zoo 内显示，不发送到其他服务器。",
       "public": "任何人都可阅读，并发送给远程关注者。",
@@ -956,6 +958,7 @@
     "userSearch": "搜索用户",
     "search": "搜索",
     "noUsers": "未找到用户",
+    "openAuthorProfile": "打开 {{author}} 的个人资料",
     "userDetails": "用户详情",
     "joinedAt": "加入日期：{{date}}",
     "pullRefresh": "下拉刷新",
