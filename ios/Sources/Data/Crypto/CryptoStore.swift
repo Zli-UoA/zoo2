@@ -36,8 +36,9 @@ struct CryptoStoreFiles: Sendable {
             for directory in try FileManager.default.contentsOfDirectory(at: support, includingPropertiesForKeys: nil) {
                 let target = root.appendingPathComponent(directory.lastPathComponent)
                 // 移せなかったら、新しい置き場を使わない（使うと、新しい端末を作ってしまい、前の端末と受信用セッションを失う）。
-                if FileManager.default.fileExists(atPath: target.appendingPathComponent(CryptoStore.stateFile).path),
-                   FileManager.default.fileExists(atPath: directory.appendingPathComponent(CryptoStore.stateFile).path) {
+                // 移す状態がない（初期保存に失敗して空のまま残った）ものは、移さない。移行先の状態は、消さない。
+                guard FileManager.default.fileExists(atPath: directory.appendingPathComponent(CryptoStore.stateFile).path) else { continue }
+                if FileManager.default.fileExists(atPath: target.appendingPathComponent(CryptoStore.stateFile).path) {
                     // 同じ ID の暗号ストアが両方にある（App Group を使えない間に、前の置き場へ保存した）。どちらも変えず、競合として返す
                     // （片方を開くと、もう片方にしかない受信用セッションを失う）。
                     throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: target.path])
@@ -484,7 +485,9 @@ final class CryptoStore: @unchecked Sendable {
     }
 
     /// 閉じたストアには書かない（閉じたあとに、古いインスタンスが開き直したストアの状態を書き換えないため）。
-    private func ensureOpen() throws { if closed { throw E2eeStoreError.closed } }
+    /// 巻き戻しに失敗して、メモリー上の状態が保存済みと食い違うおそれがあるとき、開き直すまで書き込みを拒む。
+    private var needsReopen = false
+    private func ensureOpen() throws { if closed || needsReopen { throw E2eeStoreError.closed } }
 
     private func save(_ next: StoreState) throws {
         try ensureOpen()
@@ -551,7 +554,7 @@ final class CryptoStore: @unchecked Sendable {
                         let outcome: Encrypted
                         do { outcome = try processEncrypted(row, query: query, keysQuery: keysQuery) }
                         catch {
-                            try? rollbackLive(to: snapshot)
+                            do { try rollbackLive(to: snapshot) } catch { needsReopen = true }
                             throw error
                         }
                         switch outcome {
