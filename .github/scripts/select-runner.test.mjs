@@ -7,7 +7,11 @@ const root = new URL('../../', import.meta.url);
 const yaml = readFileSync(new URL('.github/workflows/select-runner.yaml', root), 'utf8');
 const script = yaml.split('          script: |\n')[1].split('\n').map(l => l.replace(/^ {12}/, '')).join('\n');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const select = new AsyncFunction('core', 'context', 'github', script);
+// 固定した actions/github-script（ed597411）が、スクリプトに渡す引数と同じもの。これ以外（getOctokit など）は渡さない。
+// 本番にない関数をテストが供給すると、本番で ReferenceError になるのに、テストが通ってしまう。
+const SCRIPT_ARGS = ['context', 'core', 'github', 'octokit', 'exec', 'glob', 'io', 'require', '__original_require__'];
+const compiled = new AsyncFunction(...SCRIPT_ARGS, script);
+const select = (core, context, github) => compiled(context, core, github, github, {}, {}, {}, () => { throw new Error('require is not available'); }, () => { throw new Error('require is not available'); });
 const K = 'zli-kubecamp-no-docker';
 const A = 'zli-k8s';
 const H = 'ubuntu-latest';
@@ -49,6 +53,47 @@ const cases = [
     warning: 'Hosted minutes unavailable: GET /organizations/{org}/settings/billing/usage (403; accepted permissions: administration=read)'}, A, A],
   ['repository list error names the call', {payload: privateRepo, reposError: true, warning: 'Hosted minutes unavailable: GET /orgs/{org}/repos (403)'}, A, A],
   ['private without token uses ARC', {payload: privateRepo, token: false}, K, A],
+  // 重いジョブだけ、public でも CI_LARGE_RUNNER で heavy に切り替えられる。
+  ['public with CI_LARGE_RUNNER sends only large jobs to heavy', {payload: {repository: {private: false}}, large: 'zli-k8s-heavy', largeExpected: 'zli-k8s-heavy', heavyCalls: {runs: 4, jobs: 0}}, H, H],
+  ['public with CI_LARGE_RUNNER does not need the status token', {payload: {repository: {private: false}}, token: false, large: 'zli-k8s-heavy', largeExpected: 'zli-k8s-heavy', heavyCalls: {runs: 4, jobs: 0}}, H, H],
+  ['public with another CI_LARGE_RUNNER stays hosted', {payload: {repository: {private: false}}, large: 'zli-k8s', warning: 'CI_LARGE_RUNNER must be empty or zli-k8s-heavy; using hosted'}, H, H],
+  ['fork PR ignores CI_LARGE_RUNNER', {event: 'pull_request', payload: {...pull('someone/repo'), repository: {private: false}}, large: 'zli-k8s-heavy'}, H, H],
+  ['merge group ignores CI_LARGE_RUNNER', {event: 'merge_group', payload: {repository: {private: false}}, large: 'zli-k8s-heavy'}, H, H],
+  // heavy が埋まっているときは、重いジョブだけ Hosted に逃がす（選択時点の使用状況。予約ではない）。
+  ...(() => {
+    const pub = {repository: {private: false}};
+    const base = {payload: pub, large: 'zli-k8s-heavy'};
+    const job = (status, label = 'zli-k8s-heavy') => ({status, labels: [label]});
+    return [
+      ['heavy idle: no heavy jobs', {...base, largeExpected: 'zli-k8s-heavy', heavyCalls: {runs: 4, jobs: 0}}, H, H],
+      ['heavy has a free runner: one running job', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}]}, heavyJobs: {1: [job('in_progress')]}, heavyCalls: {runs: 4, jobs: 1}}, H, H],
+      ['heavy full: two running jobs go to hosted', {...base, largeExpected: H, heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}]}, heavyJobs: {1: [job('in_progress'), job('in_progress')]}, heavyCalls: {runs: 2, jobs: 1}}, H, H],
+      ['heavy full: running and queued jobs across workflows', {...base, largeExpected: H, heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}], 'ci-frontend.yaml:queued': [{id: 2}]}, heavyJobs: {1: [job('in_progress')], 2: [job('queued')]}, heavyCalls: {runs: 4, jobs: 4}}, H, H],
+      ['a full queued run is counted when the second listing fails', {...base, largeExpected: H, heavyError: 2, heavyRuns: {'ci-backend.yaml:queued': [{id: 1}]}, heavyJobs: {1: [job('queued'), job('queued')]}, heavyCalls: {runs: 2, jobs: 1}}, H, H],
+      ['an incomplete listing warns when the queued run is below capacity', {...base, largeExpected: 'zli-k8s-heavy', heavyError: 2, heavyRuns: {'ci-backend.yaml:queued': [{id: 1}]}, heavyJobs: {1: [job('queued')]}, warning: 'Heavy runner usage unavailable (403); using zli-k8s-heavy', heavyCalls: {runs: 2, jobs: 1}}, H, H],
+      ['the latest run can finish during confirmation', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}], 'ci-frontend.yaml:queued': [{id: 2}]}, heavyJobs: {1: [job('in_progress')], 2: [job('queued')]}, finishedRun: '2', heavyCalls: {runs: 4, jobs: 4}}, H, H],
+      ['a completed job from an earlier run does not make heavy full', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}], 'ci-frontend.yaml:queued': [{id: 2}]}, heavyJobs: {1: [...Array.from({length: 100}, () => job('completed')), job('in_progress')], 2: [job('queued')]}, finishedRun: '1', heavyCalls: {runs: 4, jobs: 4}}, H, H],
+      // 後続ページの取得が失敗しても、取得済みのページの run を確認する。2件が分かれば Hosted、分からなければ警告して heavy のまま。
+      ['a failing second page still checks the runs already fetched: full means hosted', {...base, largeExpected: H, heavyError: 2, heavyRuns: {'ci-backend.yaml:queued': [{id: 1}, ...Array.from({length: 99}, (_, i) => ({id: 100 + i}))]}, heavyJobs: {1: [job('queued'), job('queued')]}, heavyCalls: {runs: 2, jobs: 1}}, H, H],
+      ['a failing second page with many fetched runs runs out of budget and keeps heavy', {...base, largeExpected: 'zli-k8s-heavy', heavyError: 2, heavyRuns: {'ci-backend.yaml:queued': [{id: 1}, ...Array.from({length: 99}, (_, i) => ({id: 100 + i}))]}, heavyJobs: {1: [job('queued')]}, warning: 'Heavy runner usage unknown: the API request budget (30) ran out; using zli-k8s-heavy', heavyCalls: {runs: 2, jobs: 28}}, H, H],
+      ['a failing second page warns and keeps heavy when the fetched runs are not full', {...base, largeExpected: 'zli-k8s-heavy', heavyError: 2, heavyRuns: {'ci-backend.yaml:queued': [{id: 1}]}, heavyJobs: {1: [job('queued')]}, warning: 'Heavy runner usage unavailable (403); using zli-k8s-heavy', heavyCalls: {runs: 2, jobs: 1}}, H, H],
+      // 先に数えた run の再取得だけで2件に達したら、現在の run の再取得が失敗しても、Hosted を選ぶ。
+      ['the refreshed earlier runs alone fill heavy even if the current run cannot be refreshed', {...base, largeExpected: H, heavyRuns: {'ci-backend.yaml:queued': [{id: 1}, {id: 2}]}, jobSequence: {1: [[job('queued')], [job('queued'), job('queued')]], 2: [[job('queued')], 'error']}, heavyCalls: {runs: 2, jobs: 3}}, H, H],
+      ['a run moving out of queued is counted', {...base, largeExpected: H, movingRun: true, heavyJobs: {1: [job('in_progress'), job('in_progress')]}, heavyCalls: {runs: 2, jobs: 1}}, H, H],
+      ['a padded runner label is rejected', {...base, large: 'zli-k8s-heavy ', largeExpected: H, warning: 'CI_LARGE_RUNNER must be empty or zli-k8s-heavy; using hosted'}, H, H],
+      ['other labels and finished jobs are not counted', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}]}, heavyJobs: {1: [job('in_progress', 'ubuntu-latest'), job('completed'), job('waiting'), job('queued', 'zli-k8s')]}, heavyCalls: {runs: 4, jobs: 1}}, H, H],
+      ['the current run is not counted', {...base, runId: 1, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}]}, heavyJobs: {1: [job('in_progress'), job('in_progress')]}, heavyCalls: {runs: 4, jobs: 0}}, H, H],
+      ['unreadable heavy usage keeps heavy', {...base, largeExpected: 'zli-k8s-heavy', heavyError: true, warning: 'Heavy runner usage unavailable (403); using zli-k8s-heavy', heavyCalls: {runs: 1, jobs: 0}}, H, H],
+      ['a run listed as in_progress and queued is counted once', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}], 'ci-backend.yaml:queued': [{id: 1}]}, heavyJobs: {1: [job('in_progress')]}, heavyCalls: {runs: 4, jobs: 1}}, H, H],
+      ['callers that do not use large-runs-on do not read heavy usage', {...base, largeCaller: false, largeExpected: H}, H, H],
+      ['slow heavy usage times out and keeps heavy', {...base, largeExpected: 'zli-k8s-heavy', heavyHang: 200, heavyTimeout: true, warning: 'Heavy runner usage unavailable (timeout); using zli-k8s-heavy', heavyCalls: {runs: 1, jobs: 0}}, H, H],
+      // リクエストの総数（ページを含む）が予算（30）を超えると、heavy の使用状況は不明として、heavy のままにする。
+      ['API requests are bounded and an exhausted budget is reported', {...base, largeExpected: 'zli-k8s-heavy', warning: 'Heavy runner usage unknown: the API request budget (30) ran out; using zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': Array.from({length: 50}, (_, i) => ({id: 100 + i}))}, heavyCalls: {runs: 2, jobs: 28}}, H, H],
+      ['extra pages count against the same budget', {...base, largeExpected: 'zli-k8s-heavy', warning: 'Heavy runner usage unknown: the API request budget (30) ran out; using zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': Array.from({length: 250}, (_, i) => ({id: 100 + i}))}, heavyCalls: {runs: 4, jobs: 26}}, H, H],
+      ['paging ends at the first short page', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': Array.from({length: 100}, (_, i) => ({id: 100 + i}))}, warning: 'Heavy runner usage unknown: the API request budget (30) ran out; using zli-k8s-heavy', heavyCalls: {runs: 3, jobs: 27}}, H, H],
+    ];
+  })(),
+  ['private ignores CI_LARGE_RUNNER', {payload: privateRepo, large: 'zli-k8s-heavy', runners: [camp()], usage: [usage('repo', 1000)]}, K, H],
 ];
 for (const [name, input, expected, hostedExpected] of cases) {
   test(`select-runner: ${name}`, async () => {
@@ -58,45 +103,119 @@ for (const [name, input, expected, hostedExpected] of cases) {
     const payload = input.payload || privateRepo;
     const fork = input.event === 'pull_request' && payload.pull_request.head.repo.full_name !== 'Zli-UoA/repo';
     process.env.HAS_STATUS_TOKEN = String(input.token !== false);
+    process.env.LARGE_RUNNER = input.large || '';
+    process.env.LARGE_CALLER = String(input.largeCaller !== false);
+    process.env.HEAVY_TIMEOUT_MS = input.heavyTimeout ? '50' : '';
+    process.env.ACTIONS_READ_TOKEN = 'workflow-token';
     const rest = {actions: {listSelfHostedRunnersForOrg: {}}, repos: {listForOrg: {}}};
-    await select({setOutput(key, value) {outputs[key] = JSON.parse(value);}, info() {}, warning(m) {warnings.push(m);}},
-      {eventName: input.event || 'push', payload, repo: {owner: 'Zli-UoA', repo: 'repo'}},
-      {rest, paginate: async (method, params) => {
-        assert.equal(params.org, 'Zli-UoA');
-        assert.equal(params.per_page, 100);
-        assert.equal(params.request.timeout, 10000);
-        if (method === rest.repos.listForOrg) {
-          calls.repos++;
-          if (input.reposError) throw Object.assign(new Error('private response must not be logged'), {status: 403});
-          assert.equal(params.type, 'private');
-          return privateRepos;
+    const heavy = {runs: 0, jobs: 0, tokens: new Set(), aborted: undefined};
+    // heavy の使用状況は、ワークフロー自身のトークンで、Node の fetch から、公開リポジトリの Actions のジョブ一覧を直接読む。
+    // Runner の一覧は読まない。状態確認用のトークン（PAT）のクライアント（github）は使わない。
+    const jobReads = new Map();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      const u = new URL(url);
+      const [, , owner, repo, , kind, ...rest2] = u.pathname.split('/');
+      assert.equal(u.origin, 'https://api.github.com');
+      assert.equal(`${owner}/${repo}`, 'Zli-UoA/repo');
+      assert.equal(u.searchParams.get('per_page'), '100');
+      heavy.tokens.add(init.headers.authorization);
+      assert.equal(init.headers['x-github-api-version'], '2022-11-28');
+      const hang = async () => {
+        if (!input.heavyHang) return;
+        // 期限（abort）が来たら、実行中のリクエストが止まること。
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(resolve, input.heavyHang);
+          init.signal.addEventListener('abort', () => { heavy.aborted = true; clearTimeout(timer); reject(Object.assign(new Error('aborted'), {name: 'AbortError'})); });
+        });
+      };
+      const paged = (items, key) => {
+        const n = Number(u.searchParams.get('page'));
+        return {ok: true, status: 200, json: async () => ({[key]: items.slice((n - 1) * 100, n * 100)})};
+      };
+      if (kind === 'workflows') {
+        heavy.runs++;
+        if (input.heavyError === true || input.heavyError === heavy.runs) return {ok: false, status: 403, json: async () => { throw new Error('response must not be read'); }};
+        await hang();
+        const [workflow] = rest2;
+        if (input.movingRun && workflow === 'ci-backend.yaml') {
+          const activeStatus = heavy.runs === 1 ? 'queued' : 'in_progress';
+          return paged(u.searchParams.get('status') === activeStatus ? [{id: 1}] : [], 'workflow_runs');
         }
-        calls.runners++;
-        if (input.error) throw Object.assign(new Error('private response must not be logged'), {status: 403});
-        return input.runners || [];
-      }, request: async (route, params) => {
-        calls.billing++;
-        assert.equal(route, 'GET /organizations/{org}/settings/billing/usage');
-        assert.equal(params.org, 'Zli-UoA');
-        assert.ok(params.year >= 2026 && params.month >= 1 && params.month <= 12);
-        if (input.billingError) throw Object.assign(new Error('private response must not be logged'), {status: 403, response: {headers: {'x-accepted-github-permissions': 'administration=read'}}});
-        return {data: {usageItems: input.usage || []}};
-      }});
-    assert.deepEqual(outputs, {'runs-on': expected, 'docker-runs-on': hostedExpected, 'large-runs-on': hostedExpected});
-    const hostedOnly = fork || input.event === 'merge_group' || payload.repository?.private === false;
-    const checksMinutes = !hostedOnly && input.token !== false;
-    assert.deepEqual(calls, {
-      runners: hostedOnly || input.token === false ? 0 : 1,
-      repos: checksMinutes ? 1 : 0,
-      billing: checksMinutes && !input.reposError ? 1 : 0,
-    });
-    assert.ok(warnings.every(m => !m.includes('private response')));
-    if (input.warning) assert.deepEqual(warnings, [input.warning]);
+        return paged((input.heavyRuns || {})[`${workflow}:${u.searchParams.get('status')}`] || [], 'workflow_runs');
+      }
+      assert.equal(kind, 'runs');
+      heavy.jobs++;
+      assert.equal(u.searchParams.get('filter'), 'latest');
+      const [runId] = rest2;
+      if (input.movingRun && heavy.runs < 2) return paged([], 'jobs');
+      if (u.searchParams.get('page') === '1') {
+        jobReads.set(runId, (jobReads.get(runId) || 0) + 1);
+      }
+      // 同じ run のジョブを読むたびに、順番に違う結果を返す（'error' は HTTP 503）。
+      const sequence = (input.jobSequence || {})[runId];
+      if (sequence) {
+        const entry = sequence[Math.min(jobReads.get(runId), sequence.length) - 1];
+        if (entry === 'error') return {ok: false, status: 503, json: async () => { throw new Error('response must not be read'); }};
+        return paged(entry, 'jobs');
+      }
+      if (input.finishedRun === runId && jobReads.get(runId) > 1) return paged([], 'jobs');
+      return paged((input.heavyJobs || {})[runId] || [], 'jobs');
+    };
+    try {
+      await select({setOutput(key, value) {outputs[key] = JSON.parse(value);}, info() {}, warning(m) {warnings.push(m);}},
+        {eventName: input.event || 'push', payload, repo: {owner: 'Zli-UoA', repo: 'repo'}, runId: input.runId},
+        {rest, paginate: async (method, params) => {
+          assert.equal(params.org, 'Zli-UoA');
+          assert.equal(params.per_page, 100);
+          assert.equal(params.request.timeout, 10000);
+          if (method === rest.repos.listForOrg) {
+            calls.repos++;
+            if (input.reposError) throw Object.assign(new Error('private response must not be logged'), {status: 403});
+            assert.equal(params.type, 'private');
+            return privateRepos;
+          }
+          calls.runners++;
+          if (input.error) throw Object.assign(new Error('private response must not be logged'), {status: 403});
+          return input.runners || [];
+        }, request: async (route, params) => {
+          calls.billing++;
+          assert.equal(route, 'GET /organizations/{org}/settings/billing/usage');
+          assert.equal(params.org, 'Zli-UoA');
+          assert.ok(params.year >= 2026 && params.month >= 1 && params.month <= 12);
+          if (input.billingError) throw Object.assign(new Error('private response must not be logged'), {status: 403, response: {headers: {'x-accepted-github-permissions': 'administration=read'}}});
+          return {data: {usageItems: input.usage || []}};
+        }});
+      assert.deepEqual(outputs, {'runs-on': expected, 'docker-runs-on': hostedExpected, 'large-runs-on': input.largeExpected ?? hostedExpected});
+      const hostedOnly = fork || input.event === 'merge_group' || payload.repository?.private === false;
+      const checksMinutes = !hostedOnly && input.token !== false;
+      assert.deepEqual(calls, {
+        runners: hostedOnly || input.token === false ? 0 : 1,
+        repos: checksMinutes ? 1 : 0,
+        billing: checksMinutes && !input.reposError ? 1 : 0,
+      });
+      // 期限が来たあとに、リクエストが続かないこと（遅い応答が返ったあとも、次のリクエストを出さない）。
+      if (input.heavyHang) await new Promise(resolve => setTimeout(resolve, input.heavyHang + 100));
+      const {tokens, aborted, ...calledHeavy} = heavy;
+      if (input.heavyCalls) {
+        assert.deepEqual(calledHeavy, input.heavyCalls);
+        assert.deepEqual([...tokens], ['Bearer workflow-token'], 'Actions reads use the workflow token, not the status token');
+      } else {
+        assert.deepEqual(calledHeavy, {runs: 0, jobs: 0}, 'heavy usage is read only when CI_LARGE_RUNNER selects heavy');
+        assert.equal(tokens.size, 0);
+      }
+      if (input.heavyHang) assert.equal(aborted, true, 'the deadline aborts the request in flight');
+      assert.ok(warnings.every(m => !m.includes('private response') && !m.includes('response must not be logged')));
+      if (input.warning) assert.deepEqual(warnings, [input.warning]);
+      else if (input.heavyCalls) assert.deepEqual(warnings, []);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 }
 
 const fixedJobs = {"pr-assign.yaml": ["assign"], "flux-status.yaml": ["report"],"cd-preview-label.yaml": ["label"], "cd-image-cleanup.yaml": ["cleanup"], "ci-flux-status.yaml": ["test"], "cd-images.yaml": ["promote", "publish"], "cd-storybook.yaml": ["deploy"], "cd-db-erd.yaml": ["deploy"], "deployment-badges.yaml": ["test", "publish"], "terraform-r2.yaml": ["apply", "plan", "validate"]};
-const dockerJobs = {"cd-db-erd.yaml": ["build"], "ci-github-bot.yaml": ["test", "publish"], "ci-backend.yaml": ["deploy-image", "e2e", "shared-emoji-projection"], "ci-frontend.yaml": ["container", "proxy"], "ci-frontend-auth-e2e.yaml": ["oidc-e2e"], "ci-frontend-e2ee-e2e.yaml": ["e2ee-e2e"], "cd-images.yaml": ["build"], "ci-db-erd.yaml": ["check"]};
+const dockerJobs = {"cd-db-erd.yaml": ["build"], "ci-github-bot.yaml": ["test", "publish"], "ci-backend.yaml": ["deploy-image", "e2e", "shared-emoji-projection"], "ci-frontend.yaml": ["container", "proxy"], "ci-frontend-auth-e2e.yaml": ["oidc-e2e"], "ci-frontend-e2ee-e2e.yaml": ["e2ee-e2e"], "cd-images.yaml": ["build"], "ci-db-erd.yaml": ["check"], "ci-sfu-bridge.yaml": ["test"]};
 // Kotlin builds use hosted runners for memory and the preinstalled Android SDK.
 const hostedJobs = {"cd-images.yaml": ["plan"], "automerge-gate.yaml": ["resolve", "gate"], "pr-review-relay.yaml": ["relay"], "select-tests.yaml": ["select"], "ci-android.yaml": ["android", "publish-main"], "cd-storybook.yaml": ["build"],
   "ci-desktop-tauri.yaml": ["check"],
@@ -280,7 +399,8 @@ test('every workload uses the right output and protects fork PRs', () => {
           assert.ok(block.includes(`docker-runs-on || '"${H}"'`), `${file}/${id}: Docker fallback must be hosted`);
         }
         if (large) {
-          assert.ok(block.includes(`large-runs-on || '"zli-k8s"'`), `${file}/${id}: large-job fallback must be ARC`);
+          // zoo2 に登録される runner は zli-k8s-heavy だけ。select が失敗しても、重いジョブが存在しないラベルで待たないように Hosted にする。
+          assert.ok(block.includes(`large-runs-on || '"${H}"'`), `${file}/${id}: large-job fallback must be hosted`);
         }
       }
       const line = block.split('\n').find(x => x.startsWith('    runs-on:'));
@@ -361,3 +481,28 @@ test('ER diagram deployment only publishes main artifacts without checking out c
   assert.match(deploy, /actions\/download-artifact/);
   assert.doesNotMatch(deploy, /actions\/checkout/);
 });
+
+test('only workflows that read large-runs-on ask the selector to scan heavy usage', () => {
+  assert.match(yaml, /inputs:\n {6}# [^\n]*\n {6}large:\n {8}type: boolean\n {8}default: false/);
+  const dir = new URL('.github/workflows/', root);
+  for (const file of readdirSync(dir).filter(x => /\.ya?ml$/.test(x) && !x.startsWith('select-runner'))) {
+    const text = readFileSync(new URL(file, dir), 'utf8');
+    const block = text.split(/^jobs:\s*$/m)[1]?.split(/^  runner:\n/m)[1]?.split(/^  \S/m)[0];
+    if (!block) continue;
+    const readsLarge = text.includes('needs.runner.outputs.large-runs-on');
+    assert.equal(/^    with:\n      large: true$/m.test(block), readsLarge, `${file}: large input matches large-runs-on use`);
+  }
+});
+
+test('the selector needs no permissions, so reusable-workflow callers need no change', () => {
+  // 再利用 workflow は、呼び出し元の権限を増やせない。select に権限を要求すると、呼び出し元の9本が起動前に拒否される
+  // （startup_failure）。Actions の読み取りは、権限なしの GITHUB_TOKEN で、公開リポジトリのデータだけを読む。
+  assert.doesNotMatch(yaml, /actions: read/);
+  assert.match(yaml, /^  select:\n(?:.*\n)*?    permissions: \{\}\n/m);
+  // heavy の使用状況は、状態確認用のトークン（PAT）ではなく、ワークフロー自身のトークンで読む。
+  // github-script は、別のトークンのクライアントを作る手段（getOctokit）をスクリプトに渡さないので、fetch を直接使う。
+  assert.match(yaml, /ACTIONS_READ_TOKEN: \$\{\{ github\.token \}\}/);
+  assert.match(script, /authorization: `Bearer \$\{process\.env\.ACTIONS_READ_TOKEN\}`/);
+  assert.doesNotMatch(script, /getOctokit\(/);
+});
+

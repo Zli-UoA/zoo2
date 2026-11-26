@@ -1,6 +1,6 @@
 # Deferred migrations
 
-`20261201010010_guest_membership_lock_order.sql` replaces
+`20261204000010_guest_membership_lock_order.sql` replaces
 `app_guest_membership_rules()` with the version that always locks the `users`
 row (`FOR NO KEY UPDATE`) before checking the single-channel guest rule.
 
@@ -42,7 +42,7 @@ or be skipped as already applied. The canonical history stays untouched, so
 migrations. The follow-up that integrates this change into canonical history
 must add a **new** migration file in `infra/db/migrations` whose version
 timestamp is newer than the latest canonical migration at merge time (for
-example `20261202000000_...sql`, not a reuse of `20261201010010`) and contains
+example `20261204000011_...sql`, not a reuse of `20261204000010`) and contains
 the same idempotent `CREATE OR REPLACE FUNCTION` definition. Regenerate
 `atlas.sum` with `atlas migrate hash` after adding it. Reusing the deferred
 version would place it before canonical migrations added after this file, and
@@ -68,13 +68,13 @@ table can then be dropped together with the deferred file.
 へロールバックすると、適用を遅らせたのと同じデッドロック (SQLSTATE 40P01) が
 再現する。バックエンドを旧版へ戻す必要がある場合は、先にこの移行の効果を戻すこと。
 同じ DB に対して canonical 側の条件付き定義
-（`infra/db/migrations/20261201010001_guest_membership_no_key_update.sql` の
+（`infra/db/migrations/20261204000001_guest_membership_no_key_update.sql` の
 `CREATE OR REPLACE FUNCTION app_guest_membership_rules()`）を再実行すれば、
 トリガー定義は常にロックしない版へ戻り、`atlas_schema_revisions_deferred` の
-記録はそのまま残る（記録の削除は不要）。ただし、`20261201010010` の適用記録が
+記録はそのまま残る（記録の削除は不要）。ただし、`20261204000010` の適用記録が
 残った状態では `atlas migrate apply --allow-dirty` を再実行しても既適用とみなされ
 SQL が再実行されないため、切り戻し後に新バックエンドへ再移行するときは、旧版が
-すべて停止したことを確認してから `infra/db/deferred-migrations/20261201010010_guest_membership_lock_order.sql`
+すべて停止したことを確認してから `infra/db/deferred-migrations/20261204000010_guest_membership_lock_order.sql`
 の `CREATE OR REPLACE FUNCTION app_guest_membership_rules()` を直接実行し、
 `SELECT pg_get_functiondef('app_guest_membership_rules()'::regprocedure);` で常時
 `users` 行をロックする定義に戻ったことを確認すること。バックエンドのロールバック中は、

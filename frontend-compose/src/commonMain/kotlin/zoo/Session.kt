@@ -388,6 +388,8 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         commandAppId: String? = null,
         attachmentIds: List<String> = emptyList(),
         sensitiveAttachmentIds: List<String> = emptyList(),
+        /** 暗号化チャンネルの添付（[uploadEncryptedAttachment] の戻り値）。平文チャンネルでは使わない。 */
+        encryptedAttachments: List<JsonObject> = emptyList(),
     ): Boolean {
         try { encryptedChannels.remember() }
         catch (failure: CancellationException) { throw failure }
@@ -403,7 +405,8 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                 return false
             }
             return try {
-                encryption.send(channel, platform.uuid(), parent, content)
+                val users = repo.users.rows.value.map { it.text("id") to it.text("user_name") }
+                encryption.send(channel, platform.uuid(), parent, content, encryptedMentions(content, users), encryptedAttachments)
                 true
             } catch (failure: CancellationException) { throw failure }
             catch (failure: Exception) {
@@ -412,6 +415,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                 false
             }
         }
+        if (encryptedAttachments.isNotEmpty()) { toast = t("common.writeError"); return false }
         val command = Regex("^/([a-zA-Z0-9_-]+)(?:\\s+([\\s\\S]*))?$").matchEntire(content.trim())
         if (command != null && attachmentIds.isEmpty()) {
             try {

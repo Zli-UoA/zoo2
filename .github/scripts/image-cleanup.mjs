@@ -98,7 +98,7 @@ export default async function cleanup({github, context, core}) {
     // open な PR と main の head は最初に一度だけ取得する。各バージョンは削除の直前に確認し直す。
     open = await listOpen();
     const mainHead = await getMainHead();
-    for (const component of ['frontend', 'backend', 'migrate']) {
+    for (const component of ['frontend', 'backend', 'migrate', 'sfu-bridge']) {
       const package_name = `zoo2-${component}`;
       const params = {org: owner, package_type: 'container', package_name};
       const versions = await ignoreMissing(() => github.paginate(github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg, {...params, per_page: 100}));

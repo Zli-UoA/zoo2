@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { useTranslation } from "react-i18next";
 
 import { parseUtcTimestamp } from "../../lib/timestamps";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
@@ -9,13 +10,14 @@ import {
   firstEncryptedAt,
   withUnencryptedRows,
 } from "../../lib/e2ee/messageDecryption";
-import { useKitchenCatalog } from "../../hooks/useKitchenCatalog";
 import { useMessageAttachments } from "../../hooks/useAttachments";
-import { useMessageFeed, useMessageReactions, useUsers } from "../../hooks/useRealtime";
+import { ForwardedMessagesProvider, useForwardedMessages } from "../../hooks/useForwardedMessages";
+import { useMessageFeed, useUsers } from "../../hooks/useRealtime";
 import { groupAttachmentsByMessage } from "../../lib/attachments";
-import { groupReactions, reactionUserLabel } from "../../lib/emoji/reactions";
 import { useOfflineStatus } from "../../lib/offline/offline-context";
 import { MessageList } from "./messages/MessageList";
+import { ReactionPicker } from "./messages/ReactionPicker";
+import { useChannelReactions } from "./messages/useChannelReactions";
 import type { FeedMessage } from "./messages/messageFormat";
 
 /** How many pages back we look for the unread divider before leaving it to scrolling. */
@@ -29,6 +31,7 @@ export function CatchUpMessagePage({
   channelId,
   channelName,
   encrypted = false,
+  readOnly = false,
   firstUnreadAt,
   onBoundaryMessage,
   onRangeReady,
@@ -37,21 +40,34 @@ export function CatchUpMessagePage({
   channelId: string;
   channelName?: string;
   encrypted?: boolean;
+  readOnly?: boolean;
   firstUnreadAt: string | null;
   onBoundaryMessage: (messageId: string | null, createdAt: number | null) => void;
   onRangeReady?: (ready: boolean, exhausted: boolean, boundaryTooOld: boolean) => void;
   loadOlderRef?: MutableRefObject<(() => void) | null>;
 }) {
+  const { t } = useTranslation();
   const feed = useMessageFeed(channelId);
   const { currentUserId } = useCurrentUser();
   const messages = feed.data as FeedMessage[];
   const usersQuery = useUsers();
-  const reactionsQuery = useMessageReactions(channelId);
   const { isOnline } = useOfflineStatus();
-  const reactionRows = reactionsQuery.data ?? [];
-  const { catalog } = useKitchenCatalog(
-    reactionRows.some((row) => row.emoji.startsWith("kitchen:")),
-  );
+  const {
+    reactionGroups,
+    kitchenCatalog,
+    canReact,
+    isError: reactionsError,
+    reactionMessageId,
+    openReactionPicker,
+    closeReactionPicker,
+    handleReaction,
+  } = useChannelReactions({
+    channelId,
+    currentUserId,
+    users: usersQuery.data,
+    usersLoading: usersQuery.isLoading,
+    readOnly: readOnly || !isOnline || feed.isLoading || feed.isError,
+  });
   const attachmentsQuery = useMessageAttachments(
     channelId,
     messages.some((row) => !row.display_data),
@@ -82,19 +98,11 @@ export function CatchUpMessagePage({
     () => new Map((usersQuery.data ?? []).map((user) => [user.id, user.user_name])),
     [usersQuery.data],
   );
-  const reactionGroups = useMemo(() => {
-    const names = Object.fromEntries(
-      (usersQuery.data ?? []).map((user) => [user.id, reactionUserLabel(user)]),
-    );
-    const groups = groupReactions(reactionRows, null);
-    for (const reactions of groups.values()) {
-      for (const reaction of reactions) {
-        reaction.userNames = { ...reaction.userNames, ...names };
-        reaction.usersLoading = usersQuery.isLoading;
-      }
-    }
-    return groups;
-  }, [reactionRows, usersQuery.data, usersQuery.isLoading]);
+  const forwardedIds = useMemo(
+    () => (treatAsEncrypted ? [] : messages.flatMap((row) => row.forwarded_message_ids ?? [])),
+    [messages, treatAsEncrypted],
+  );
+  const forwardedMessages = useForwardedMessages(forwardedIds, !treatAsEncrypted);
 
   // The boundary is the newest message visible when the page opens. Messages
   // arriving while reading stay unread for the next catch-up.
@@ -193,36 +201,59 @@ export function CatchUpMessagePage({
       encrypted={treatAsEncrypted}
       encryptedSince={encryptedSince}
     >
-      <MessageList
-        key={channelId}
-        channelId={undefined}
-        messages={messages}
-        isLoading={feed.isLoading}
-        isError={feed.isError}
-        currentUserId={null}
-        viewerId={currentUserId}
-        editingId={null}
-        editingText=""
-        onEditingTextChange={() => {}}
-        onStartEdit={() => {}}
-        onCancelEdit={() => {}}
-        onSaveEdit={() => {}}
-        onRequestDelete={() => {}}
-        reactions={reactionGroups}
-        attachments={attachments}
-        kitchenCatalog={catalog}
-        canReact={false}
-        onReaction={() => {}}
-        onPickReaction={() => {}}
-        canCompose={false}
-        isOffline={!isOnline}
-        unreadBoundaryId={firstUnreadId}
-        unreadBoundaryAt={firstUnreadAt ? parseUtcTimestamp(firstUnreadAt).getTime() : null}
-        hasOlder={feed.hasOlder}
-        isLoadingOlder={feed.isLoadingOlder}
-        onLoadOlder={() => void feed.loadOlder()}
-        onRetry={() => window.location.reload()}
-      />
+      <ForwardedMessagesProvider value={forwardedMessages}>
+        {reactionsError ? (
+          <div
+            role="status"
+            className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-2"
+          >
+            <span className="text-xs text-destructive">{t("reactions.fetchError")}</span>
+          </div>
+        ) : null}
+        <MessageList
+          key={channelId}
+          channelId={undefined}
+          messages={messages}
+          isLoading={feed.isLoading}
+          isError={feed.isError}
+          currentUserId={null}
+          viewerId={currentUserId}
+          editingId={null}
+          editingText=""
+          onEditingTextChange={() => {}}
+          onStartEdit={() => {}}
+          onCancelEdit={() => {}}
+          onSaveEdit={() => {}}
+          onRequestDelete={() => {}}
+          reactions={reactionGroups}
+          attachments={attachments}
+          kitchenCatalog={kitchenCatalog}
+          canReact={canReact}
+          onReaction={handleReaction}
+          onPickReaction={openReactionPicker}
+          canCompose={false}
+          isOffline={!isOnline}
+          unreadBoundaryId={firstUnreadId}
+          unreadBoundaryAt={firstUnreadAt ? parseUtcTimestamp(firstUnreadAt).getTime() : null}
+          hasOlder={feed.hasOlder}
+          isLoadingOlder={feed.isLoadingOlder}
+          onLoadOlder={() => void feed.loadOlder()}
+          onRetry={() => window.location.reload()}
+        />
+        <ReactionPicker
+          open={reactionMessageId !== null}
+          onOpenChange={(open) => {
+            if (!open) {
+              closeReactionPicker();
+            }
+          }}
+          onSelect={(emoji) => {
+            if (reactionMessageId) {
+              void handleReaction(reactionMessageId, emoji);
+            }
+          }}
+        />
+      </ForwardedMessagesProvider>
     </MessageDecryptionsProvider>
   );
 }

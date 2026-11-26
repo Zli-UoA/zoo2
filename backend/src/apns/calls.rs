@@ -23,12 +23,15 @@ const CALL_PAYLOAD_SQL: &str = "WITH device AS MATERIALIZED (
  WHERE i.id=$1::uuid AND i.status='pending' AND i.expires_at>clock_timestamp()
    AND (NOT c.is_private AND NOT c.is_dm AND NOT u.is_guest OR EXISTS(
        SELECT 1 FROM channel_user WHERE user_id=u.id AND channel_id=c.id))
-   AND NOT EXISTS(SELECT 1 FROM user_event_settings WHERE user_id=u.id AND dnd_until>now())";
+   AND NOT EXISTS(SELECT 1 FROM user_event_settings WHERE user_id=u.id AND dnd_until>now())
+   AND (NOT $4::bool OR NOT EXISTS(
+       SELECT 1 FROM call_rooms r WHERE r.channel_id=c.id AND r.mode='sfu'))";
 
 async fn call_payload(
     db: &mut dyn toasty::db::Executor,
     sub: &ApnsSubscription,
     invite: &str,
+    sfu_enabled: bool,
 ) -> anyhow::Result<Option<Value>> {
     if !is_voip(sub) {
         return Ok(None);
@@ -37,6 +40,7 @@ async fn call_payload(
         .bind(invite)
         .bind(sub.id.as_str())
         .bind(sub.revocation_hash.as_str())
+        .bind(sfu_enabled)
         .exec(db)
         .await?;
     let Some(row) = rows.first() else {
@@ -48,7 +52,17 @@ async fn call_payload(
     Ok(Some(serde_json::from_str(body)?))
 }
 
-pub(crate) fn dispatch_call_invites(db: toasty::Db, invites: Vec<CallInvitePush>) {
+/// iOS への着信（VoIP）を送る。`sfu_enabled` のとき、SFU モードの部屋への招待は送らない。
+///
+/// iOS は SFU に対応しておらず、SFU の部屋には入れない（409 `CALL_SFU_UNSUPPORTED`、docs/calls-sfu.md）。
+/// 着信を鳴らしても応答できないので、iOS の端末には知らせない（Web・Android の通知は今までどおり送る）。
+/// 部屋のモードは、端末ごとの送信直前の照会（`CALL_PAYLOAD_SQL` の `$4`）で見る。照会の失敗は、APNs の
+/// 失敗と分けて記録し（`deliver_device`）、その端末には送らず、ほかの宛先の配信は止めない。
+pub(crate) fn dispatch_call_invites(
+    db: toasty::Db,
+    invites: Vec<CallInvitePush>,
+    sfu_enabled: bool,
+) {
     tokio::spawn(async move {
         let result: anyhow::Result<()> = async {
             let configs = delivery_configs()?;
@@ -57,7 +71,7 @@ pub(crate) fn dispatch_call_invites(db: toasty::Db, invites: Vec<CallInvitePush>
             }
             let client = client()?;
             deliver_calls(db, invites, |db, sub, invite| {
-                deliver_device(&client, &configs, db, sub, invite)
+                deliver_device(&client, &configs, db, sub, invite, sfu_enabled)
             })
             .await;
             Ok(())
@@ -105,6 +119,7 @@ async fn deliver_device(
     mut db: toasty::Db,
     sub: ApnsSubscription,
     invite: String,
+    sfu_enabled: bool,
 ) {
     let Some((_, config)) = configs.iter().find(|(name, _)| *name == sub.environment) else {
         return;
@@ -116,7 +131,15 @@ async fn deliver_device(
             &sub.device_token,
             &config.authorization().await?,
         )?;
-        send_if_allowed(request, call_payload(&mut db, &sub, &invite)).await
+        // 照会の失敗は、APNs への送信の失敗と分けて記録する。
+        let payload = async {
+            let payload = call_payload(&mut db, &sub, &invite, sfu_enabled).await;
+            if let Err(e) = &payload {
+                tracing::warn!(error = ?e, "VoIP通知の着信の内容をDBから照会できませんでした");
+            }
+            payload
+        };
+        send_if_allowed(request, payload).await
     }
     .await;
     match result {
@@ -302,7 +325,7 @@ mod tests {
             .created_at(crate::models::now_utc_millis())
             .exec(&mut tx)
             .await?;
-        assert!(call_payload(&mut tx, &sub, &invite).await?.is_none());
+        assert!(call_payload(&mut tx, &sub, &invite, false).await?.is_none());
         toasty::sql::statement(
             "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,now())",
         )
@@ -310,19 +333,31 @@ mod tests {
         .bind(channel.as_str())
         .exec(&mut tx)
         .await?;
-        let payload = call_payload(&mut tx, &sub, &invite).await?.unwrap();
+        let payload = call_payload(&mut tx, &sub, &invite, false).await?.unwrap();
         assert_eq!(payload["user_id"], user);
         assert_eq!(payload["invite_id"], invite);
         assert_eq!(payload["caller_name"], "発信者");
         assert_eq!(payload["type"], "call_invite");
         assert!(payload["expires_at"].as_str().unwrap().ends_with('Z'));
+        // SFU モードの部屋への招待は、SFU が有効なときだけ iOS に送らない。
+        toasty::sql::statement("INSERT INTO call_rooms(channel_id,mode) VALUES($1,'sfu')")
+            .bind(channel.as_str())
+            .exec(&mut tx)
+            .await?;
+        assert!(call_payload(&mut tx, &sub, &invite, true).await?.is_none());
+        assert!(call_payload(&mut tx, &sub, &invite, false).await?.is_some());
+        toasty::sql::statement("UPDATE call_rooms SET mode='mesh' WHERE channel_id=$1")
+            .bind(channel.as_str())
+            .exec(&mut tx)
+            .await?;
+        assert!(call_payload(&mut tx, &sub, &invite, true).await?.is_some());
         // チャンネルの暗号化はメッセージ本文の設定であり、通話招待を抑制しない。
         toasty::sql::statement("UPDATE channels SET encrypted=true WHERE id=$1")
             .bind(channel.as_str())
             .exec(&mut tx)
             .await?;
         assert_eq!(
-            call_payload(&mut tx, &sub, &invite).await?,
+            call_payload(&mut tx, &sub, &invite, false).await?,
             Some(payload.clone())
         );
         toasty::sql::statement("DELETE FROM channel_user WHERE user_id=$1 AND channel_id=$2")
@@ -330,7 +365,7 @@ mod tests {
             .bind(channel.as_str())
             .exec(&mut tx)
             .await?;
-        assert!(call_payload(&mut tx, &sub, &invite).await?.is_none());
+        assert!(call_payload(&mut tx, &sub, &invite, false).await?.is_none());
         toasty::sql::statement(
             "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,now())",
         )
@@ -340,21 +375,29 @@ mod tests {
         .await?;
         let mut wrong = sub.clone();
         wrong.revocation_hash = digest("別の解除情報");
-        assert!(call_payload(&mut tx, &wrong, &invite).await?.is_none());
+        assert!(
+            call_payload(&mut tx, &wrong, &invite, false)
+                .await?
+                .is_none()
+        );
         wrong = sub.clone();
         wrong.id = PushKind::Alert.registration_id(&wrong.environment, &wrong.device_token);
-        assert!(call_payload(&mut tx, &wrong, &invite).await?.is_none());
+        assert!(
+            call_payload(&mut tx, &wrong, &invite, false)
+                .await?
+                .is_none()
+        );
         for status in ["accepted", "declined", "cancelled", "missed"] {
             toasty::sql::statement("UPDATE call_invites SET status=$2 WHERE id=$1::uuid")
                 .bind(invite.as_str())
                 .bind(status)
                 .exec(&mut tx)
                 .await?;
-            assert!(call_payload(&mut tx, &sub, &invite).await?.is_none());
+            assert!(call_payload(&mut tx, &sub, &invite, false).await?.is_none());
         }
         toasty::sql::statement("UPDATE call_invites SET status='pending', expires_at=now()-interval '1 second' WHERE id=$1::uuid")
             .bind(invite.as_str()).exec(&mut tx).await?;
-        assert!(call_payload(&mut tx, &sub, &invite).await?.is_none());
+        assert!(call_payload(&mut tx, &sub, &invite, false).await?.is_none());
         toasty::sql::statement(
             "UPDATE call_invites SET expires_at=now()+interval '30 seconds' WHERE id=$1::uuid",
         )
@@ -367,7 +410,7 @@ mod tests {
         .bind(user.as_str())
         .exec(&mut tx)
         .await?;
-        assert!(call_payload(&mut tx, &sub, &invite).await?.is_none());
+        assert!(call_payload(&mut tx, &sub, &invite, false).await?.is_none());
         tx.rollback().await?;
         Ok(())
     }

@@ -177,7 +177,7 @@ describe("MessageRow", () => {
   it("offers deletion without editing for moderators", () => {
     const html = render(buildItem(), false, { canDelete: true });
     expect(html).toContain('aria-label="削除"');
-    expect(html).not.toContain('aria-label="編集"');
+    expect(html).not.toContain('aria-label="メッセージを編集"');
     expect(render(buildItem())).not.toContain('aria-label="削除"');
   });
 });

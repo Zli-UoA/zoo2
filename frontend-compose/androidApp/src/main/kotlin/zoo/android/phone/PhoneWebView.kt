@@ -103,7 +103,7 @@ internal class PhoneWebView(
         } else event(value.text("event"), payload)
     }
     override suspend fun command(method: String, payload: Row) = withContext(Dispatchers.Main.immediate) {
-        check(method in setOf("rtc.start", "rtc.event", "mute"))
+        check(method in setOf("rtc.start", "rtc.event", "rtc.sfu.reply", "mute"))
         withTimeout(15_000) {
             loaded.await(); check(!closed)
             val id = ++serial; val done = CompletableDeferred<Unit>(); commands[id] = done

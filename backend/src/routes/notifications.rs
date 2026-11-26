@@ -82,6 +82,8 @@ struct MessagePreview {
     id: String,
     user_id: String,
     content: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    has_forwards: bool,
 }
 
 #[derive(Serialize)]
@@ -176,12 +178,25 @@ async fn notification_context(
     } else {
         Vec::new()
     };
+    let has_forwards = match message.as_ref() {
+        Some(msg) => {
+            crate::apps::one(
+                &mut tx,
+                "SELECT json_build_object('has', forwarded_message_ids IS NOT NULL AND jsonb_typeof(forwarded_message_ids) = 'array' AND jsonb_array_length(forwarded_message_ids) > 0)::text FROM messages WHERE id = $1",
+                &[msg.id.as_str()],
+            )
+            .await?["has"]
+                == true
+        }
+        None => false,
+    };
     let context = NotificationContext {
         // Include one extra character so the client can indicate that the preview was truncated.
         message: message.map(|row| MessagePreview {
             id: row.id,
             user_id: row.user_id,
             content: row.content.chars().take(281).collect(),
+            has_forwards,
         }),
         reactions,
     };

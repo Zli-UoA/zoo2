@@ -200,6 +200,8 @@ impl NotificationPayload {
 
 /// 暗号化チャンネルの Web Push の本文。
 pub const ENCRYPTED_MESSAGE_BODY: &str = "新しいメッセージ";
+/// 本文が空で転送（引用）のみを含む平文メッセージの Web Push 本文。
+pub const FORWARDED_MESSAGE_BODY: &str = "メッセージを転送しました";
 
 #[derive(Serialize)]
 pub(crate) struct NotificationPreview {
@@ -244,15 +246,21 @@ fn notification_payload(
     actor: &User,
     channel: &Channel,
     message: Option<&Message>,
+    has_forwards: bool,
 ) -> NotificationPayload {
+    let visible_body = message.filter(|_| !channel.encrypted).map(|message| {
+        if message.content.trim().is_empty() && has_forwards {
+            FORWARDED_MESSAGE_BODY
+        } else {
+            message.content.as_str()
+        }
+    });
     let preview = NotificationPreview::new(
         notification,
         display_name(actor),
         &channel.channel_name,
         channel.is_dm,
-        message
-            .filter(|_| !channel.encrypted)
-            .map(|message| message.content.as_str()),
+        visible_body,
     );
     let url = match message {
         Some(message) => format!("/channels/{}?message={}", channel.id, message.id),
@@ -330,7 +338,32 @@ async fn build_payload(
     }
     let actor = User::get_by_id(db, notification.actor_id.as_str()).await?;
     let channel = Channel::get_by_id(db, notification.channel_id.as_str()).await?;
-    let mut payload = notification_payload(notification, &actor, &channel, Some(&message));
+    let has_forwards = if !channel.encrypted && message.content.trim().is_empty() {
+        let rows = toasty::sql::query(
+            "SELECT json_build_object('has', forwarded_message_ids IS NOT NULL AND jsonb_typeof(forwarded_message_ids) = 'array' AND jsonb_array_length(forwarded_message_ids) > 0)::text FROM messages WHERE id = $1",
+        )
+        .bind(message.id.as_str())
+        .exec(db)
+        .await?;
+        rows.into_iter()
+            .next()
+            .and_then(|row| match row {
+                toasty::stmt::Value::Record(r) => match r.fields.into_iter().next() {
+                    Some(toasty::stmt::Value::String(s)) => {
+                        serde_json::from_str::<serde_json::Value>(&s)
+                            .ok()
+                            .and_then(|v| v["has"].as_bool())
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .unwrap_or(false)
+    } else {
+        false
+    };
+    let mut payload =
+        notification_payload(notification, &actor, &channel, Some(&message), has_forwards);
     if channel.encrypted {
         payload.e2ee = encrypted_push(db, notification, &message).await?;
     }
@@ -641,7 +674,13 @@ async fn missed_call_payload(
 ) -> anyhow::Result<NotificationPayload> {
     let actor = User::get_by_id(db, notification.actor_id.as_str()).await?;
     let channel = Channel::get_by_id(db, notification.channel_id.as_str()).await?;
-    Ok(notification_payload(notification, &actor, &channel, None))
+    Ok(notification_payload(
+        notification,
+        &actor,
+        &channel,
+        None,
+        false,
+    ))
 }
 
 /// 通話の招待の、Web Push に必要な値。
@@ -654,11 +693,12 @@ pub struct CallInvitePush {
 }
 
 /// 招待の着信を、呼ばれた人の Push 購読へ送る。コミットの後に呼ぶ。失敗しても呼び出しは続く。
-pub fn dispatch_call_invites(db: toasty::Db, invites: Vec<CallInvitePush>) {
+/// `sfu_enabled` は通話の SFU が有効か（SFU の部屋では iOS の着信を送らないため）。
+pub fn dispatch_call_invites(db: toasty::Db, invites: Vec<CallInvitePush>, sfu_enabled: bool) {
     if invites.is_empty() {
         return;
     }
-    crate::apns::dispatch_call_invites(db.clone(), invites.clone());
+    crate::apns::dispatch_call_invites(db.clone(), invites.clone(), sfu_enabled);
     tokio::spawn(async move {
         if deliver_call_invites(db, invites, false).await.is_err() {
             tracing::warn!("Push call invite delivery failed");
@@ -1081,7 +1121,7 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
             "message_id":"message", "notification_type":"mention", "is_read":false, "created_at":now
         }))
         .unwrap();
-        let payload = notification_payload(&notification, &actor, &channel, Some(&message));
+        let payload = notification_payload(&notification, &actor, &channel, Some(&message), false);
         assert_eq!(payload.title, "Alice · #general");
         assert_eq!(
             payload.body,
@@ -1094,14 +1134,32 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
             auth: URL_SAFE_NO_PAD.encode(auth),
         };
         assert!(keys.encrypt(&payload).unwrap().len() <= 4096);
+        let mut forward_only = message.clone();
+        forward_only.content = "".into();
+        assert_eq!(
+            notification_payload(&notification, &actor, &channel, Some(&forward_only), true).body,
+            FORWARDED_MESSAGE_BODY
+        );
+        assert_eq!(
+            notification_payload(&notification, &actor, &channel, Some(&forward_only), false).body,
+            ""
+        );
+        assert_eq!(
+            notification_payload(&notification, &actor, &channel, Some(&message), true).body,
+            message.content.chars().take(240).collect::<String>()
+        );
         channel.is_dm = true;
         assert_eq!(
-            notification_payload(&notification, &actor, &channel, Some(&message)).title,
+            notification_payload(&notification, &actor, &channel, Some(&message), false).title,
             "Alice"
         );
         channel.encrypted = true;
         assert_eq!(
-            notification_payload(&notification, &actor, &channel, Some(&message)).body,
+            notification_payload(&notification, &actor, &channel, Some(&message), false).body,
+            ENCRYPTED_MESSAGE_BODY
+        );
+        assert_eq!(
+            notification_payload(&notification, &actor, &channel, Some(&forward_only), true).body,
             ENCRYPTED_MESSAGE_BODY
         );
     }

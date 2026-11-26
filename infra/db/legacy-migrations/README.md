@@ -5,7 +5,7 @@ Files here are retained for reference only and are not part of Atlas's canonical
 `20261123000001_channel_notes_expiry_index.sql` before main reached migration
 `20261126000000`; keeping it in the canonical directory makes Atlas reject main
 history as out of order. The later canonical migration
-`20261201010002_channel_notes_expiry_index.sql` drops the conflicting index by
+`20261204000002_channel_notes_expiry_index.sql` drops the conflicting index by
 name and recreates it with the current `(channel_id, deleted_at, id)` order.
 This preserves both applied histories and their stored checksums while fixing
 the old index; `IF NOT EXISTS` alone would leave the old definition in place.
@@ -95,7 +95,7 @@ and the canonical replacement:
 SELECT version, description, hash
 FROM atlas_schema_revisions.atlas_schema_revisions
 WHERE version IN (
-  '20261123000001', '20261123100000', '20261201010002'
+  '20261123000001', '20261123100000', '20261204000002'
 )
 ORDER BY version;
 
@@ -108,25 +108,26 @@ Then run `atlas migrate status --dir file://infra/db/migrations --url
 branch's migrations were numbered `20261129020001`–`20261129020008` then, and
 the canonical directory had 107 files), the runs were repeated on PostgreSQL
 16.15 with Atlas `v1.3.9-1824371-canary`. Main later advanced through
-`20261130020001` and `20261201000000`, so this branch's migrations were
-renumbered twice more; they are now `20261201010001`–`20261201010009` (deferred
-`20261201010010`), and the merged canonical directory now has 114 files.
+`20261130020001`, `20261201000000`, and `20261203000003`, so this branch's
+migrations were renumbered again; they are now `20261204000001`–`20261204000009`
+(deferred `20261204000010`), and the merged canonical directory now has 120
+files.
 
 The versions recorded in that run were `20261129020002` (expiry) and
-`20261129020008` (current). They correspond to the current `20261201010002` and
-`20261201010008`; the table shows the recorded version first and the current
+`20261129020008` (current). They correspond to the current `20261204000002` and
+`20261204000008`; the table shows the recorded version first and the current
 equivalent in parentheses. The counts and status are from the earlier run and
 were not re-measured after the renumbering, so a rerun applies the additional
 `main` migrations as well. The observed results were:
 
 | History | Atlas apply result | SQL evidence | Atlas status |
 | --- | --- | --- | --- |
-| Old expiry only | 76 legacy + 32 canonical files succeeded | old `20261123000001` hash stayed `1oYCJ/km4b0vq3OcL8NQX8b/ng4A8ZnnWcoIVGTIrt0=`; canonical expiry `20261129020002` (now `20261201010002`) was added with hash `VjLQTcA1tlAqZJzv3cZOSAxoUMHySINfjgH9eetcOo4=` | OK, recorded current `20261129020008` (now `20261201010008`), 108 executed, 0 pending |
-| Old expiry + main through `20261126010000` | 84 legacy + 24 canonical files succeeded | old expiry hash stayed `1oYCJ/km4b0vq3OcL8NQX8b/ng4A8ZnnWcoIVGTIrt0=`; the stored `20261123100000` hash stayed `POd7u0AyUQe9zRF52nGhH8JaJRfulbiCx631+eUs57s=`; canonical expiry `20261129020002` (now `20261201010002`) was added with hash `VjLQTcA1tlAqZJzv3cZOSAxoUMHySINfjgH9eetcOo4=` | OK, recorded current `20261129020008` (now `20261201010008`), 108 executed, 0 pending |
-| Clean current history | 107 canonical files succeeded | no old expiry revision; canonical expiry `20261129020002` (now `20261201010002`) hash `VjLQTcA1tlAqZJzv3cZOSAxoUMHySINfjgH9eetcOo4=` | OK, recorded current `20261129020008` (now `20261201010008`), 107 executed, 0 pending |
+| Old expiry only | 76 legacy + 32 canonical files succeeded | old `20261123000001` hash stayed `1oYCJ/km4b0vq3OcL8NQX8b/ng4A8ZnnWcoIVGTIrt0=`; canonical expiry `20261129020002` (now `20261204000002`) was added with hash `VjLQTcA1tlAqZJzv3cZOSAxoUMHySINfjgH9eetcOo4=` | OK, recorded current `20261129020008` (now `20261204000008`), 108 executed, 0 pending |
+| Old expiry + main through `20261126010000` | 84 legacy + 24 canonical files succeeded | old expiry hash stayed `1oYCJ/km4b0vq3OcL8NQX8b/ng4A8ZnnWcoIVGTIrt0=`; the stored `20261123100000` hash stayed `POd7u0AyUQe9zRF52nGhH8JaJRfulbiCx631+eUs57s=`; canonical expiry `20261129020002` (now `20261204000002`) was added with hash `VjLQTcA1tlAqZJzv3cZOSAxoUMHySINfjgH9eetcOo4=` | OK, recorded current `20261129020008` (now `20261204000008`), 108 executed, 0 pending |
+| Clean current history | 107 canonical files succeeded | no old expiry revision; canonical expiry `20261129020002` (now `20261204000002`) hash `VjLQTcA1tlAqZJzv3cZOSAxoUMHySINfjgH9eetcOo4=` | OK, recorded current `20261129020008` (now `20261204000008`), 107 executed, 0 pending |
 
 These results show the old revision remains intact where it was applied, and
-the corrective `20261129020002` migration (now `20261201010002`) converges both
+the corrective `20261129020002` migration (now `20261204000002`) converges both
 legacy histories from `main` (or the pre-`20261123000001` branch). Do not
 delete or edit rows in `atlas_schema_revisions` on those databases; let Atlas
 apply the new canonical migration without manual revision-table rewrites.
@@ -141,11 +142,12 @@ rebase onto `main` `20261128030003`), or that applied this branch's
 migrations under the pre-merge numbering `20261129000001`–`20261129000008`
 (deferred `20261129000009`), or the later `20261129020001`–`20261129020008`
 versions (deferred `20261129020009`), or an intermediate renumbering before
-the current `20261201010001`–`20261201010009` (deferred `20261201010010`) —
+the previous `20261201010001`–`20261201010009` (deferred `20261201010010`) —
 including the prior `20261201010001`–`20261201010008` draft whose deferred
 revision was `20261201010009` — must be recreated rather than upgraded in place:
 the renumbered versions are new revisions and would be re-applied on top of the
-old ones.
+old ones. The current numbering is `20261204000001`–`20261204000009` (deferred
+`20261204000010`).
 
 Compare each final application schema with the checked-in `schema.sql`. Give
 each comparison its own empty dev database: Atlas imports `schema.sql` into

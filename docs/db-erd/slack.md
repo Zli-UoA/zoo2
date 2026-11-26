@@ -72,6 +72,13 @@ erDiagram
     slack_files }o--o| slack_import_jobs : slack_files_job_id_fkey
     slack_files }o--o| messages : slack_files_message_id_fkey
     slack_files }o--o| users : slack_files_uploader_id_fkey
+    slack_forward_targets {
+      text message_id PK
+      text team_id
+      text slack_channel_id
+      text ts
+      timestamptz created_at
+    }
     slack_import_jobs {
       text id PK
       text created_by FK

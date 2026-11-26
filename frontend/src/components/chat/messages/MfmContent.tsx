@@ -17,8 +17,9 @@ import { emojiImageStyle } from "../../../lib/emoji/dimensions";
 import { useKitchenCatalog } from "../../../hooks/useKitchenCatalog";
 import { kitchenFromShortcode, kitchenImageUrl, kitchenLabel } from "../../../lib/emoji/kitchen";
 import { useShortcodes } from "../../../lib/emoji/shortcodes";
-import { ExternalLink, inlineLinkClassName } from "../../ui/external-link";
+import { inlineLinkClassName } from "../../ui/external-link";
 import { highlightText } from "../../ui/highlighted-text";
+import { ContentLink } from "./ContentLink";
 import { MfmSearch } from "./MfmSearch";
 import { ChannelHashtag } from "./MfmChannels";
 import { AccountGlyph } from "./MfmAccounts";
@@ -50,11 +51,15 @@ export interface MfmContentProps {
 }
 const ShortcodeContext = createContext<Readonly<Record<string, string>>>({});
 const linkClass = `${inlineLinkClassName} underline`;
-function externalLink(url: string, children: ReactNode): ReactNode {
+/**
+ * 本文中のリンク。このアプリのチャンネル・メッセージへのリンクだけ、同じタブで移動する。
+ * `bare` は、リンクの文字が URL そのものであること。行き先が分かれば、短い表示に置き換えてよい。
+ */
+function bodyLink(url: string, children: ReactNode, bare = false): ReactNode {
   return (
-    <ExternalLink href={url} className="underline [overflow-wrap:anywhere]">
+    <ContentLink href={url} className="underline [overflow-wrap:anywhere]" bare={bare}>
       {children}
-    </ExternalLink>
+    </ContentLink>
   );
 }
 function text(
@@ -65,9 +70,11 @@ function text(
   return messageTextSegments(content).map((segment, index) => (
     <Fragment key={index}>
       {segment.kind === "link" ? (
-        externalLink(
+        bodyLink(
           segment.value,
           highlightText(segment.value.replace(/^https?:\/\//i, ""), highlight),
+          // 検索語を強調している間は、強調する URL の文字を短い表示に置き換えない。
+          !highlight?.length,
         )
       ) : segment.kind === "mention" && (!mentions || isAllowedMention(segment.value, mentions)) ? (
         <span className="rounded bg-brand-muted px-0.5 font-medium text-brand-muted-foreground">
@@ -260,7 +267,7 @@ function renderNode(
         <Fragment key={index}>{renderNode(child, options, true, scale)}</Fragment>
       ));
       return /^https?:\/\//i.test(node.props.url)
-        ? externalLink(node.props.url, label)
+        ? bodyLink(node.props.url, label)
         : toString(node);
     }
     case "mention": {
@@ -270,10 +277,7 @@ function renderNode(
       // メンションとして扱わず、素の文字列で出す。
       if (host && options.mentions) return node.props.acct;
       return !inLink && host && /^[a-z\d.-]+(?::\d+)?$/i.test(host)
-        ? externalLink(
-            `https://${host}/@${encodeURIComponent(node.props.username)}`,
-            node.props.acct,
-          )
+        ? bodyLink(`https://${host}/@${encodeURIComponent(node.props.username)}`, node.props.acct)
         : inLink
           ? node.props.acct
           : text(node.props.acct, options.mentions);

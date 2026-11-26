@@ -43,6 +43,11 @@
 | メッセージ・投稿の編集 | [ライト](images/android-design/rebuild/entry-edit-light.png) | [ダーク](images/android-design/rebuild/entry-edit-dark.png) |
 | ユーザー検索 | [ライト](images/android-design/rebuild/people-search-light.png) | [ダーク](images/android-design/rebuild/people-search-dark.png) |
 | Bubble 参加者 | [ライト](images/android-design/rebuild/bubble-participants-light.png) | [ダーク](images/android-design/rebuild/bubble-participants-dark.png) |
+| 全文検索・入力前 | [ライト](images/android-design/rebuild/search-prompt-light.png) | [ダーク](images/android-design/rebuild/search-prompt-dark.png) |
+| 全文検索・すべて | [ライト](images/android-design/rebuild/search-light.png) | [ダーク](images/android-design/rebuild/search-dark.png) |
+| 全文検索・ファイル | [ライト](images/android-design/rebuild/search-files-light.png) | [ダーク](images/android-design/rebuild/search-files-dark.png) |
+| 全文検索・古い月が残る | [ライト](images/android-design/rebuild/search-older-light.png) | [ダーク](images/android-design/rebuild/search-older-dark.png) |
+| 全文検索・エラー | [ライト](images/android-design/rebuild/search-error-light.png) | [ダーク](images/android-design/rebuild/search-error-dark.png) |
 
 絵文字ピッカーは画面幅に応じて列数を変える。720dp幅の表示では14列になる。[ワイド表示（1440×1520px）](images/android-design/rebuild/emoji-picker-wide-light.png)
 

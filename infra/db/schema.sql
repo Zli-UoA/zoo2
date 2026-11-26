@@ -1416,6 +1416,16 @@ CREATE TABLE call_presence (
   is_muted boolean NOT NULL DEFAULT false,
   joined_at text NOT NULL,
   expires_at timestamptz NOT NULL,
+  -- The client can use an SFU (docs/calls-sfu.md). A room switches to SFU only when every participant can.
+  sfu_capable boolean NOT NULL DEFAULT false,
+  -- The SFU this session was assigned to ('livekit' or 'cloudflare'), its LiveKit room, and its
+  -- Cloudflare Realtime session.
+  sfu_id text,
+  sfu_room text,
+  cf_session_id text,
+  -- The LiveKit identity of this assignment ('{session_id}.{n}', new for each assignment). The departure
+  -- worker removes exactly this identity, so a late removal never matches a later assignment's connection.
+  livekit_identity text,
   PRIMARY KEY (channel_id, session_id),
   CONSTRAINT call_presence_channel_id_fkey
     FOREIGN KEY (channel_id) REFERENCES channels (id)
@@ -1427,6 +1437,94 @@ CREATE TABLE call_presence (
 
 CREATE INDEX idx_call_presence_channel ON call_presence (channel_id, expires_at);
 CREATE INDEX idx_call_presence_expires_at ON call_presence (expires_at);
+
+-- sfu-bridge looks up rooms that have LiveKit participants (docs/calls-sfu.md).
+CREATE INDEX idx_call_presence_livekit ON call_presence (channel_id) WHERE sfu_id = 'livekit';
+
+-- Media mode of a call room. 'mesh' is P2P between clients; 'sfu' routes audio through an SFU.
+-- epoch increases each time an empty room is reopened, so stale clients and the bridge can tell rooms apart.
+CREATE TABLE call_rooms (
+  channel_id text PRIMARY KEY REFERENCES channels(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  mode text NOT NULL DEFAULT 'mesh' CHECK (mode IN ('mesh','sfu')),
+  epoch bigint NOT NULL DEFAULT 0,
+  track_version bigint NOT NULL DEFAULT 0,
+  bridge_epoch bigint,
+  bridge_room_gen bigint
+);
+
+-- Audio tracks published on Cloudflare Realtime. 'direct' is pushed by the speaker's client; 'bridge' is a
+-- LiveKit speaker relayed by sfu-bridge. Rows go away with the speaker's presence.
+CREATE TABLE call_sfu_tracks (
+  channel_id text NOT NULL,
+  session_id uuid NOT NULL,
+  source text NOT NULL CHECK (source IN ('direct','bridge')),
+  cf_session_id text NOT NULL,
+  track_name text NOT NULL,
+  bridge_epoch bigint,
+  bridge_publish_id text,
+  bridge_room_gen bigint,
+  PRIMARY KEY (channel_id, session_id, source),
+  CONSTRAINT call_sfu_tracks_presence_fkey
+    FOREIGN KEY (channel_id, session_id) REFERENCES call_presence (channel_id, session_id)
+    ON UPDATE CASCADE ON DELETE CASCADE
+);
+
+-- Sessions that left while assigned to an SFU. A backend worker closes their SFU media and deletes the row.
+-- claimed_until: a worker claims rows in a short statement and calls the SFU APIs outside any transaction.
+-- Another worker can take the row after this time (crashed worker), and failed rows wait until it to retry.
+-- The newest registered sfu-bridge. Tracks pushed by an older bridge are rejected, so a bridge that
+-- outlives its replacement cannot overwrite the new bridge's rows.
+CREATE TABLE call_sfu_bridge (
+  id smallint PRIMARY KEY CHECK (id = 1),
+  epoch bigint NOT NULL
+);
+
+CREATE TABLE call_sfu_departures (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  channel_id text NOT NULL,
+  session_id uuid NOT NULL,
+  sfu_id text NOT NULL,
+  sfu_room text,
+  cf_session_id text,
+  livekit_identity text,
+  attempts integer NOT NULL DEFAULT 0,
+  claimed_until timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- The departure worker claims each SFU's rows separately (sfu_id = '<sfu>' ORDER BY id). When that SFU has
+-- few rows, the claim uses this index and does not read the other SFU's rows (e.g. LiveKit rows kept while
+-- LiveKit is disabled). When it has many, the planner may scan the primary key instead and filter out the
+-- other SFU's older rows, at most the other SFU's open departures.
+CREATE INDEX idx_call_sfu_departures_sfu ON call_sfu_departures (sfu_id, id);
+
+-- Every path that deletes call_presence (leave, sweep, kick, channel delete) records SFU departures here,
+-- bumps the room's track list version, and wakes the backends.
+CREATE FUNCTION record_call_sfu_departures() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE room record;
+BEGIN
+  INSERT INTO call_sfu_departures (channel_id, session_id, sfu_id, sfu_room, cf_session_id, livekit_identity)
+  SELECT channel_id, session_id, sfu_id, sfu_room, cf_session_id, livekit_identity
+  FROM departed_presence WHERE sfu_id IS NOT NULL;
+  IF FOUND THEN
+    FOR room IN
+      UPDATE call_rooms r SET track_version = r.track_version + 1
+      FROM (SELECT DISTINCT channel_id FROM departed_presence WHERE sfu_id IS NOT NULL) d
+      WHERE r.channel_id = d.channel_id
+      RETURNING r.channel_id, r.epoch, r.track_version
+    LOOP
+      PERFORM pg_notify('zoo_call_events', json_build_object(
+        'type', 'sfu_tracks_changed', 'channel_id', room.channel_id,
+        'epoch', room.epoch, 'version', room.track_version)::text);
+    END LOOP;
+    PERFORM pg_notify('zoo_call_events', json_build_object('type', 'sfu_departed')::text);
+  END IF;
+  RETURN NULL;
+END;
+$$;
+CREATE TRIGGER call_presence_after_delete AFTER DELETE ON call_presence
+  REFERENCING OLD TABLE AS departed_presence
+  FOR EACH STATEMENT EXECUTE FUNCTION record_call_sfu_departures();
 
 -- Call invitations (ringing). A pending row is a live ring; the sweeper turns an expired one into 'missed'.
 CREATE TABLE call_invites (
@@ -1991,6 +2089,18 @@ CREATE TABLE slack_message_map (
   CONSTRAINT slack_message_map_message_fkey
     FOREIGN KEY (message_id) REFERENCES messages (id)
     ON UPDATE CASCADE ON DELETE CASCADE
+);
+
+-- Slack から取り込む投稿が未取り込みチャンネル等の投稿を転送・引用している場合、決定的メッセージ ID と
+-- 参照元 `(team_id, slack_channel_id, ts)` を予約する。POST /api/messages での同一 ID なりすまし作成と、
+-- 偽造行を誤って転送先として解決してしまう問題を防止する（Electric の Shape には含めない内部表）。
+CREATE TABLE slack_forward_targets (
+  message_id text NOT NULL,
+  team_id text NOT NULL,
+  slack_channel_id text NOT NULL,
+  ts text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (message_id)
 );
 
 -- エクスポートに実体が含まれない添付ファイル。トークンで取得して attachments に移す。
@@ -4402,6 +4512,135 @@ BEGIN
     WHERE id=NEW.parent_id;
   RETURN NULL;
 END $$;
+
+-- メッセージ転送（引用）機能の参照先 ID 配列。NULL 許容・FK なしで後方互換と Slack 順不同取り込みを保つ。
+ALTER TABLE messages ADD COLUMN forwarded_message_ids jsonb;
+
+-- DM 転送元の参加者取得などで channel_id 先頭の参照に使う（ChannelUser_pkey は (user_id, channel_id)）。
+CREATE INDEX idx_channel_user_channel_id ON channel_user (channel_id, user_id);
+
+CREATE OR REPLACE FUNCTION messages_clear_deleted_content() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.content := '';
+  NEW.card := NULL;
+  NEW.components := NULL;
+  NEW.metadata := NULL;
+  NEW.display_data := '{}'::jsonb;
+  NEW.app_blocks := NULL;
+  NEW.app_attachments := NULL;
+  NEW.app_unfurls := NULL;
+  NEW.forwarded_message_ids := NULL;
+  RETURN NEW;
+END $$;
+DROP TRIGGER messages_clear_deleted_content ON messages;
+CREATE TRIGGER messages_clear_deleted_content BEFORE INSERT OR UPDATE ON messages
+  FOR EACH ROW WHEN (NEW.deleted_at IS NOT NULL AND (
+    NEW.content <> '' OR NEW.card IS NOT NULL OR NEW.components IS NOT NULL OR NEW.metadata IS NOT NULL
+    OR NEW.display_data <> '{}'::jsonb
+    OR NEW.app_blocks IS NOT NULL OR NEW.app_attachments IS NOT NULL OR NEW.app_unfurls IS NOT NULL
+    OR NEW.forwarded_message_ids IS NOT NULL))
+  EXECUTE FUNCTION messages_clear_deleted_content();
+
+CREATE OR REPLACE FUNCTION e2ee_reject_plaintext_messages() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  enc boolean;
+BEGIN
+  -- encrypted の条件を WHERE に入れると、切り替える前の版で条件に合わない行はロックされず、切り替えを待たない。
+  SELECT encrypted INTO enc FROM channels WHERE id = NEW.channel_id FOR KEY SHARE;
+  IF NOT COALESCE(enc, false) THEN
+    RETURN NEW;
+  END IF;
+  -- 別のチャンネルから移した行は、切り替える前からこのチャンネルにあった行ではないので、例外にしない。
+  IF TG_OP = 'UPDATE' AND OLD.channel_id = NEW.channel_id AND OLD.epoch IS NULL AND OLD.ciphertext IS NULL THEN
+    IF NEW.ciphertext IS NOT NULL OR NEW.epoch IS NOT NULL
+       OR (NEW.content IS DISTINCT FROM OLD.content AND NEW.content <> '')
+       OR (NULLIF(NEW.app_attachments, '') IS DISTINCT FROM NULLIF(OLD.app_attachments, '') AND NULLIF(NEW.app_attachments, '') IS NOT NULL)
+       OR (NULLIF(NEW.app_blocks, '') IS DISTINCT FROM NULLIF(OLD.app_blocks, '') AND NULLIF(NEW.app_blocks, '') IS NOT NULL)
+       OR (NULLIF(NEW.app_unfurls, '') IS DISTINCT FROM NULLIF(OLD.app_unfurls, '') AND NULLIF(NEW.app_unfurls, '') IS NOT NULL)
+       OR (NULLIF(NEW.metadata, '') IS DISTINCT FROM NULLIF(OLD.metadata, '') AND NULLIF(NEW.metadata, '') IS NOT NULL)
+       OR (NULLIF(NEW.card, '') IS DISTINCT FROM NULLIF(OLD.card, '') AND NULLIF(NEW.card, '') IS NOT NULL)
+       OR (NULLIF(NEW.components, '') IS DISTINCT FROM NULLIF(OLD.components, '') AND NULLIF(NEW.components, '') IS NOT NULL)
+       OR (NEW.forwarded_message_ids IS DISTINCT FROM OLD.forwarded_message_ids AND NEW.forwarded_message_ids IS NOT NULL)
+       OR (NEW.home_post_id IS DISTINCT FROM OLD.home_post_id AND NEW.home_post_id IS NOT NULL)
+       OR (NEW.apub AND NOT OLD.apub)
+       OR (OLD.deleted_at IS NOT NULL AND NEW.deleted_at IS NULL) THEN
+      RAISE EXCEPTION 'messages written before the channel was encrypted cannot be changed to carry new content' USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+  END IF;
+  -- 削除済みの行は本文が空になる（messages_clear_deleted_content）。それでも、別のチャンネルから暗号文のない
+  -- 行を移してくることは、削除済みかどうかにかかわらず認めない。
+  IF NEW.content <> '' OR (NEW.deleted_at IS NULL AND NEW.ciphertext IS NULL)
+     OR (TG_OP = 'UPDATE' AND OLD.channel_id IS DISTINCT FROM NEW.channel_id AND NEW.ciphertext IS NULL) THEN
+    RAISE EXCEPTION 'messages in an encrypted channel require ciphertext and empty content' USING ERRCODE = '23514';
+  END IF;
+  IF NULLIF(NEW.app_attachments, '') IS NOT NULL OR NULLIF(NEW.app_blocks, '') IS NOT NULL
+     OR NULLIF(NEW.app_unfurls, '') IS NOT NULL OR NULLIF(NEW.metadata, '') IS NOT NULL
+     OR NULLIF(NEW.card, '') IS NOT NULL OR NULLIF(NEW.components, '') IS NOT NULL
+     OR NEW.forwarded_message_ids IS NOT NULL
+     -- Home との同期（sync_home_post）は、削除済みの行を INSERT ... ON CONFLICT で書き戻す。削除済みの行は本文が空なので、
+     -- Home との紐付けだけは認める。
+     OR (NEW.deleted_at IS NULL AND (NEW.home_post_id IS NOT NULL OR NEW.apub)) THEN
+    RAISE EXCEPTION 'messages in an encrypted channel cannot carry plaintext fields' USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END $$;
+
+CREATE OR REPLACE VIEW notification_display AS
+SELECT n.id, jsonb_build_object(
+  'message', CASE WHEN m.deleted_at IS NULL AND m.id IS NOT NULL THEN
+    jsonb_build_object('id',m.id,'user_id',m.user_id,'content',left(m.content,281),
+      'has_forwards',(m.forwarded_message_ids IS NOT NULL AND jsonb_typeof(m.forwarded_message_ids)='array' AND jsonb_array_length(m.forwarded_message_ids)>0),
+      'emojis',COALESCE((SELECT jsonb_object_agg(e.key,e.value)
+        FROM jsonb_each(COALESCE(m.display_data->'emojis','{}'::jsonb)) e
+        WHERE strpos(left(m.content,281),':'||e.key||':')>0 OR
+          badge.reaction->>'emoji' IN (e.key,':'||e.key||':')), '{}'::jsonb)) ELSE NULL END,
+  'reactions', CASE WHEN n.notification_type='reaction' AND m.deleted_at IS NULL AND badge.reaction IS NOT NULL
+    THEN jsonb_build_array(badge.reaction) ELSE '[]'::jsonb END,
+  'actor', jsonb_build_object('id',u.id,'user_name',u.user_name,'display_name',u.display_name,
+    'avatar_url',u.avatar_url,'is_bot',u.is_bot,'app_id',u.app_id),
+  'channel', jsonb_build_object('id',c.id,'channel_name',c.channel_name,'description',c.description,'created_user_id',c.created_user_id,'is_private',c.is_private,'is_dm',c.is_dm,'created_at',c.created_at,'updated_at',c.updated_at,'archive_at',c.archive_at,'deleted_at',c.deleted_at,'imported_from_slack',c.imported_from_slack,'slack_import_kind',c.slack_import_kind,'slack_imported_at',c.slack_imported_at,'topic',c.topic,'posting_policy',c.posting_policy,'encrypted',c.encrypted,'is_nsfw',c.is_nsfw)
+) AS display_data
+FROM notification_events n JOIN users u ON u.id=n.actor_id JOIN channels c ON c.id=n.channel_id
+LEFT JOIN messages m ON m.id=n.message_id AND m.channel_id=n.channel_id
+LEFT JOIN LATERAL (
+  SELECT entry.value AS reaction FROM jsonb_array_elements(COALESCE(m.display_data->'reactions','[]'::jsonb)) AS entry(value)
+  WHERE n.notification_type='reaction' AND entry.value->>'user_id'=n.actor_id
+  ORDER BY entry.value->>'created_at' DESC,entry.value->>'id' LIMIT 1
+) badge ON true
+WHERE n.source='channel';
+
+CREATE OR REPLACE FUNCTION sync_message_notifications_display() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE target text;
+BEGIN
+  IF current_setting('zoo.display_refresh',true)='metadata' THEN
+    INSERT INTO display_refresh_queue(kind,target) SELECT 'notification',id FROM notification_events
+      WHERE source='channel' AND message_id=NEW.id ORDER BY id ON CONFLICT DO NOTHING;
+    RETURN NULL;
+  END IF;
+  FOR target IN SELECT n.id FROM notification_events n
+    WHERE n.source='channel' AND n.message_id=NEW.id AND (
+      OLD.content IS DISTINCT FROM NEW.content OR OLD.user_id IS DISTINCT FROM NEW.user_id OR
+      OLD.deleted_at IS DISTINCT FROM NEW.deleted_at OR
+      OLD.forwarded_message_ids IS DISTINCT FROM NEW.forwarded_message_ids OR
+      (OLD.display_data-'reactions') IS DISTINCT FROM (NEW.display_data-'reactions') OR
+      n.notification_type='reaction' AND n.actor_id IN (
+        SELECT reaction->>'user_id' FROM (
+          (SELECT value AS reaction FROM jsonb_array_elements(COALESCE(OLD.display_data->'reactions','[]'))
+           EXCEPT SELECT value FROM jsonb_array_elements(COALESCE(NEW.display_data->'reactions','[]')))
+          UNION
+          (SELECT value FROM jsonb_array_elements(COALESCE(NEW.display_data->'reactions','[]'))
+           EXCEPT SELECT value FROM jsonb_array_elements(COALESCE(OLD.display_data->'reactions','[]')))
+        ) changed
+      )
+    ) ORDER BY n.id LOOP
+    PERFORM refresh_notification_display(target);
+  END LOOP;
+  RETURN NULL;
+END;
+$$;
+DROP TRIGGER IF EXISTS message_notifications_display ON messages;
+CREATE TRIGGER message_notifications_display AFTER UPDATE OF content,user_id,display_data,deleted_at,forwarded_message_ids ON messages FOR EACH ROW EXECUTE FUNCTION sync_message_notifications_display();
 
 -- Slack チャンネルの対応先 (取り込み先) を付け替えたら、同期の途中経過を捨てる。
 -- 途中経過 (ページのカーソル・残りのスレッド・今回の最大 ts) は、古い対応先のためのものなので、

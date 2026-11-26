@@ -1,0 +1,4 @@
+**
+!sfu-bridge/
+!sfu-bridge/**
+sfu-bridge/**/*_test.go

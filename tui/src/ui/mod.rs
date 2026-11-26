@@ -1,4 +1,6 @@
 mod app;
+mod devices;
+mod devices_view;
 mod e2ee_chat;
 pub mod encryption;
 mod global_search;

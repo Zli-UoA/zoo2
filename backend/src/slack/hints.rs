@@ -352,7 +352,7 @@ async fn apply(
             other => other,
         })?;
     if let Some(message) = &message
-        && message.is_importable()
+        && message.is_importable_for_team(Some(team))
     {
         lookup_profiles(db, slack, ctx, std::slice::from_ref(message)).await?;
     }
@@ -366,6 +366,7 @@ async fn apply(
     if let Some(message) = &message {
         let pre_state = load_message_state(&mut tx, team, slack_channel, zoo_channel, ts).await?;
         let (slack_ids, _fallbacks) = collect_apply_users(
+            team,
             ctx.app_id.as_deref(),
             message,
             full_reactions.as_deref(),
@@ -415,6 +416,7 @@ async fn apply(
             existing: existing.clone(),
         };
         let (required_users, _) = collect_apply_users(
+            team,
             ctx.app_id.as_deref(),
             message,
             full_reactions.as_deref(),
@@ -455,7 +457,7 @@ async fn apply(
             }
             match existing {
                 None => {
-                    if has("reply") && message.is_importable() {
+                    if has("reply") && message.is_importable_for_team(Some(team)) {
                         // `users` が省略されていたら、取り直した完全なリアクションの一覧で入れる
                         let full = full_reactions.as_ref().map(|reactions| SlackMessage {
                             reactions: reactions.clone(),
@@ -475,7 +477,7 @@ async fn apply(
                 }
                 Some(row) if row["deleted"] == true => {}
                 Some(row) => {
-                    if has("changed") && !zoo_origin && message.is_importable() {
+                    if has("changed") && !zoo_origin && message.is_importable_for_team(Some(team)) {
                         edit(&mut tx, ctx, &id, message, row).await?;
                     }
                     if has("reaction") || has("changed") {
@@ -568,7 +570,7 @@ async fn load_message_state(
     };
     let existing = query(
         tx,
-        "SELECT json_build_object('deleted',deleted_at IS NOT NULL,'content',content,'card',COALESCE(card,''),'components',COALESCE(components,''))::text \
+        "SELECT json_build_object('deleted',deleted_at IS NOT NULL,'content',content,'card',COALESCE(card,''),'components',COALESCE(components,''),'forwarded_message_ids',forwarded_message_ids)::text \
          FROM messages WHERE id=$1 AND channel_id=$2 \
          AND ($3='' OR created_at=(to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3))",
         &[
@@ -592,6 +594,7 @@ async fn load_message_state(
 }
 
 fn collect_apply_users(
+    team: &str,
     app_id: Option<&str>,
     message: &SlackMessage,
     full_reactions: Option<&[SlackReaction]>,
@@ -606,7 +609,11 @@ fn collect_apply_users(
     match &state.existing {
         None => {
             let app_origin = app_id.is_some() && message.app_id.as_deref() == app_id;
-            if has_reply && message.is_importable() && !app_origin && !state.zoo_origin {
+            if has_reply
+                && message.is_importable_for_team(Some(team))
+                && !app_origin
+                && !state.zoo_origin
+            {
                 let author = message.author().unwrap_or_default();
                 members.push(author.to_string());
                 if let Some((_, name)) = message_fallback_name(message) {
@@ -622,7 +629,7 @@ fn collect_apply_users(
         }
         Some(row) if row["deleted"] == true => {}
         Some(_) => {
-            if has_changed && !state.zoo_origin && message.is_importable() {
+            if has_changed && !state.zoo_origin && message.is_importable_for_team(Some(team)) {
                 // edit() は edited か bot_id のない投稿では誰も解決せずに戻り、進む
                 // ときは render_message が本文のメンション先を解決する。投稿者は
                 // 既存メッセージの書き込み (edit と insert_reactions) では解決しない。
@@ -678,8 +685,34 @@ pub(super) async fn edit(
         .as_ref()
         .map(|e| e.ts.as_str())
         .filter(|ts| super::is_valid_ts(ts));
-    // 人の投稿は、編集の日時があるものだけ。bot の投稿 (`chat.update` には `edited` が付かない) は、表示内容が違うとき
+    let forwarded_ids = super::worker::resolve_forwarded_ids(tx, &ctx.team, message, true).await?;
+    let forwarded_json = if forwarded_ids.is_empty() {
+        String::new()
+    } else {
+        serde_json::to_string(&forwarded_ids).map_err(|err| AppError::Internal(err.into()))?
+    };
+    let stored_forwards: Vec<String> = stored
+        .get("forwarded_message_ids")
+        .and_then(|v| serde_json::from_value::<Option<Vec<String>>>(v.clone()).ok())
+        .flatten()
+        .unwrap_or_default();
+    let forwards_missing_backfill = stored
+        .get("forwarded_message_ids")
+        .is_none_or(|v| v.is_null())
+        && !forwarded_ids.is_empty();
+    // 人の投稿は、編集の日時があるものだけ。ただし既存の取り込み済み行やリンク展開で
+    // forwarded_message_ids だけが未設定なら、updated_at / revision を変えずに補完する。
     if edited.is_none() && message.bot_id.is_none() {
+        if forwards_missing_backfill {
+            query(
+                tx,
+                "UPDATE messages SET forwarded_message_ids=$2::jsonb \
+                 WHERE id=$1 AND deleted_at IS NULL AND forwarded_message_ids IS NULL \
+                 RETURNING json_build_object('ok',true)::text",
+                &[id, &forwarded_json],
+            )
+            .await?;
+        }
         return Ok(());
     }
     let rendered = render_message(tx, ctx, message).await?;
@@ -687,12 +720,13 @@ pub(super) async fn edit(
     // 本文の違いが書式の変換だけなら書き換えない (内容は同じなのに、「編集済み」の印が付くため)
     let formatting_only = edited.is_none()
         && stored["content"].as_str() == Some(mrkdwn_to_mfm_legacy(&message.text, &*ctx).as_str());
-    let same = (stored["content"].as_str() == Some(rendered.content.as_str()) || formatting_only)
-        && stored["components"].as_str().unwrap_or_default() == rendered.components;
+    let content_and_components_same =
+        (stored["content"].as_str() == Some(rendered.content.as_str()) || formatting_only)
+            && stored["components"].as_str().unwrap_or_default() == rendered.components;
     // 部品の導入前に `card` で取り込んだ行 (バックフィル後も `card` は残る) は、保存した部品が旧カードから作られて
     // いて、attachments から作り直した部品とは形式が違う。形式の違いだけで「編集済み」にしないよう、
     // 当時の変換で作り直した本文と `card` を、保存したものとバイト単位で比べる
-    let same = same || {
+    let content_and_components_same = content_and_components_same || {
         let card = stored["card"].as_str().unwrap_or_default();
         !card.is_empty() && {
             let (content, legacy) = super::legacy_card::render(message, &*ctx);
@@ -704,19 +738,44 @@ pub(super) async fn edit(
             legacy == card && stored["content"].as_str() == Some(content)
         }
     };
-    if same {
-        return Ok(());
+    if content_and_components_same {
+        if stored_forwards == forwarded_ids {
+            return Ok(());
+        }
+        if forwards_missing_backfill {
+            query(
+                tx,
+                "UPDATE messages SET forwarded_message_ids=$2::jsonb \
+                 WHERE id=$1 AND deleted_at IS NULL AND forwarded_message_ids IS NULL \
+                 AND ($3='' OR updated_at IS NULL OR updated_at<=(to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3)) \
+                 RETURNING json_build_object('ok',true)::text",
+                &[id, &forwarded_json, edited.unwrap_or_default()],
+            )
+            .await?;
+            return Ok(());
+        }
+        // `edited` のない bot 投稿では、古い Slack 応答で転送参照が空に見えただけで
+        // 既に保存済みの転送参照を消したり revision / updated_at を進めない。
+        if edited.is_none() && forwarded_ids.is_empty() {
+            return Ok(());
+        }
     }
     let updated = query(
         tx,
-        "UPDATE messages SET content=$2,components=NULLIF($3,''),card=NULL,\
+        "UPDATE messages SET content=$2,components=NULLIF($3,''),card=NULL,forwarded_message_ids=NULLIF($5,'')::jsonb,\
          updated_at=CASE WHEN $4='' THEN (now() AT TIME ZONE 'UTC')::timestamp(3) \
            ELSE (to_timestamp($4::numeric) AT TIME ZONE 'UTC')::timestamp(3) END,\
          revision=revision+1 \
          WHERE id=$1 AND deleted_at IS NULL \
          AND ($4='' OR updated_at IS NULL OR updated_at<(to_timestamp($4::numeric) AT TIME ZONE 'UTC')::timestamp(3)) \
          RETURNING json_build_object('ok',true)::text",
-        &[id, &rendered.content, &rendered.components, edited.unwrap_or_default()],
+        &[
+            id,
+            &rendered.content,
+            &rendered.components,
+            edited.unwrap_or_default(),
+            &forwarded_json,
+        ],
     )
     .await?;
     if updated.is_empty() {
@@ -770,8 +829,16 @@ mod tests {
             users: vec!["U_TRUNCATED".into(), "UD".into()],
             count: Some(2),
         }];
-        let (ids, fallbacks) =
-            collect_apply_users(None, &reply, Some(&full), &missing, true, false, false);
+        let (ids, fallbacks) = collect_apply_users(
+            "T1",
+            None,
+            &reply,
+            Some(&full),
+            &missing,
+            true,
+            false,
+            false,
+        );
         assert_eq!(ids, vec!["UB", "UC", "U_TRUNCATED", "UD"]);
         assert_eq!(
             fallbacks.get("UB").map(String::as_str),
@@ -780,7 +847,7 @@ mod tests {
 
         // Non-reply hints on a missing message do not resolve users.
         let (ignored_ids, _) =
-            collect_apply_users(None, &reply, Some(&full), &missing, false, true, true);
+            collect_apply_users("T1", None, &reply, Some(&full), &missing, false, true, true);
         assert!(ignored_ids.is_empty());
 
         // App-origin replies are ignored by insert_message.
@@ -790,8 +857,16 @@ mod tests {
             "app_id": "A1",
             "text": "from bridge <@UC>"
         }));
-        let (app_ids, _) =
-            collect_apply_users(Some("A1"), &app_msg, None, &missing, true, false, false);
+        let (app_ids, _) = collect_apply_users(
+            "T1",
+            Some("A1"),
+            &app_msg,
+            None,
+            &missing,
+            true,
+            false,
+            false,
+        );
         assert!(app_ids.is_empty());
 
         // Existing non-deleted message: human edit without edited.ts skips mentions,
@@ -808,7 +883,7 @@ mod tests {
             "reactions": [{"name": "thumbsup", "users": ["UR"], "count": 1}]
         }));
         let (unfurl_ids, _) =
-            collect_apply_users(None, &unfurl, None, &present, false, true, false);
+            collect_apply_users("T1", None, &unfurl, None, &present, false, true, false);
         assert_eq!(unfurl_ids, vec!["UR"]);
 
         // zoo_origin skips edit mentions but still pre-resolves reaction users.
@@ -825,7 +900,7 @@ mod tests {
             "reactions": [{"name": "heart", "users": ["UZ"], "count": 1}]
         }));
         let (zoo_ids, _) =
-            collect_apply_users(None, &zoo_msg, None, &zoo_present, false, true, true);
+            collect_apply_users("T1", None, &zoo_msg, None, &zoo_present, false, true, true);
         assert_eq!(zoo_ids, vec!["UZ"]);
 
         // Deleted messages never pre-resolve users.
@@ -834,8 +909,16 @@ mod tests {
             zoo_origin: false,
             existing: Some(json!({"deleted": true, "content": "", "card": ""})),
         };
-        let (deleted_ids, _) =
-            collect_apply_users(None, &zoo_msg, Some(&full), &deleted, true, true, true);
+        let (deleted_ids, _) = collect_apply_users(
+            "T1",
+            None,
+            &zoo_msg,
+            Some(&full),
+            &deleted,
+            true,
+            true,
+            true,
+        );
         assert!(deleted_ids.is_empty());
     }
 

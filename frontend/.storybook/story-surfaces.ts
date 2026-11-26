@@ -19,4 +19,5 @@ export const storySurfaces = {
   "Features/Chat/MessageCard": "mx-auto max-w-3xl bg-background p-6",
   "Features/Chat/MessageComponents": "mx-auto max-w-3xl bg-background p-6",
   "Features/Chat/LinkPreviews": "mx-auto max-w-4xl p-4",
+  "Features/Chat/ChannelLinkEmbed": "mx-auto max-w-2xl bg-background p-4 text-sm text-foreground",
 } as const;

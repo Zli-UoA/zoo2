@@ -170,7 +170,7 @@ async fn run_inner(
     super::sync::refresh_slack_privacy(slack, slack_channel, slack_private).await?;
     let importable: Vec<SlackMessage> = messages
         .iter()
-        .filter(|m| m.is_importable())
+        .filter(|m| m.is_importable_for_team(Some(team)))
         .cloned()
         .collect();
     lookup_profiles(db, slack, ctx, &importable).await?;
@@ -298,7 +298,7 @@ async fn load_chunk_state(
         .collect();
     for row in query(
         tx,
-        "SELECT json_build_object('id',m.id,'content',m.content,'card',COALESCE(m.card,''),'components',COALESCE(m.components,''),'deleted',m.deleted_at IS NOT NULL)::text \
+        "SELECT json_build_object('id',m.id,'content',m.content,'card',COALESCE(m.card,''),'components',COALESCE(m.components,''),'forwarded_message_ids',m.forwarded_message_ids,'deleted',m.deleted_at IS NOT NULL)::text \
          FROM messages m JOIN jsonb_to_recordset($1::jsonb) AS x(id text,ts text) ON x.id=m.id \
          WHERE m.channel_id=$2 \
          AND (x.ts='' OR m.created_at=(to_timestamp(x.ts::numeric) AT TIME ZONE 'UTC')::timestamp(3))",
@@ -313,13 +313,15 @@ async fn load_chunk_state(
     Ok(ChunkState { mapped, ids, rows })
 }
 
-fn collect_chunk_users(chunk: &[SlackMessage], state: &ChunkState) -> Vec<String> {
+fn collect_chunk_users(team: &str, chunk: &[SlackMessage], state: &ChunkState) -> Vec<String> {
     let mut members = Vec::new();
     for (message, id) in chunk.iter().zip(&state.ids) {
         if state.rows.get(id).is_none_or(|r| r["deleted"] == true) {
             continue;
         }
-        if message.subtype.as_deref() == Some("tombstone") || !message.is_importable() {
+        if message.subtype.as_deref() == Some("tombstone")
+            || !message.is_importable_for_team(Some(team))
+        {
             continue;
         }
         let zoo_origin = state.mapped.get(&message.ts).is_some_and(|(_, zoo)| *zoo);
@@ -359,7 +361,7 @@ async fn apply_chunk(
     // sync::store / hints::apply と同じロック順 (advisory -> users -> slack_channels -> slack_channel_syncs -> channels) を保つ。
     lock_zip_target_advisory(&mut tx, team, slack_channel).await?;
     let pre_state = load_chunk_state(&mut tx, team, slack_channel, zoo_channel, chunk).await?;
-    let slack_ids = collect_chunk_users(chunk, &pre_state);
+    let slack_ids = collect_chunk_users(team, chunk, &pre_state);
     resolve_users(&mut tx, ctx, &slack_ids, &HashMap::new()).await?;
     super::sync::ensure_target_unchanged(&mut tx, team, slack_channel, zoo_channel).await?;
     let leased = query(
@@ -378,7 +380,7 @@ async fn apply_chunk(
     // 同期の途中で取り込み先が公開に変わったら、非公開の Slack チャンネルの内容を書かない
     super::sync::ensure_private_target(&mut tx, zoo_channel, slack_private).await?;
     let state = load_chunk_state(&mut tx, team, slack_channel, zoo_channel, chunk).await?;
-    let required_users = collect_chunk_users(chunk, &state);
+    let required_users = collect_chunk_users(team, chunk, &state);
     if let Some(missing) = required_users
         .iter()
         .find(|id| !ctx.users.contains_key(*id))
@@ -399,7 +401,7 @@ async fn apply_chunk(
             }
             continue;
         }
-        if !message.is_importable() {
+        if !message.is_importable_for_team(Some(team)) {
             continue;
         }
         if !zoo_origin {

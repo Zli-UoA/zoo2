@@ -185,6 +185,10 @@ export class AudioCallMedia {
       }
     }
   }
+  /** 送信中のマイク（SFU に移るときに複製して使う。docs/calls-sfu.md）。 */
+  micTrack(): MediaStreamTrack | null {
+    return this.stream?.getAudioTracks()[0] ?? null;
+  }
   mute(muted: boolean) {
     this.stream?.getAudioTracks().forEach((track) => {
       track.enabled = !muted;

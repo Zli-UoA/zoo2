@@ -1,6 +1,7 @@
 pub mod apns;
 pub mod attachments;
 pub mod bubble_chat;
+pub mod call_sfu;
 pub mod calls;
 pub mod channel_notes;
 pub mod channel_pins;
@@ -15,6 +16,7 @@ pub mod e2ee_cross_signing;
 pub mod e2ee_key_backup;
 pub mod e2ee_reauth;
 pub mod e2ee_secret_storage;
+pub mod forwards;
 pub mod health;
 pub mod home;
 pub mod home_images;
@@ -114,6 +116,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(e2ee_cross_signing::router())
         .merge(e2ee_secret_storage::router())
         .merge(e2ee_key_backup::router())
+        .merge(forwards::router())
         .merge(messages::router())
         .merge(threads::router())
         .merge(search::router())
@@ -125,6 +128,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(typing::router())
         .merge(bubble_chat::router())
         .merge(calls::router())
+        .merge(call_sfu::router())
         .merge(sip::router())
         .merge(phone_sessions::router())
         .merge(pbx::router())

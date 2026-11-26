@@ -7,8 +7,9 @@ import {
   createRoute,
   createRouter,
   useNavigate,
+  useRouterState,
 } from "@tanstack/react-router";
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { useLayoutEffect, useRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -22,6 +23,8 @@ import {
   getChannelMeasurementCache,
 } from "./messageScroll";
 import { MessageList } from "./MessageList";
+import { requestMessageJump } from "./messageLink";
+import { MESSAGE_TARGET_FLASH_MS } from "./messageTarget";
 import { ThreadPane } from "./ThreadPane";
 
 const mockCollection = {
@@ -1077,6 +1080,209 @@ describe("MessageList and ThreadPane initial bottom landing & channel switch", (
       expect(tr.top).toBeGreaterThanOrEqual(sr.top - 4);
       expect(tr.bottom).toBeLessThanOrEqual(sr.bottom + 4);
     });
+  });
+
+  /** URL が `?message=j-8` を指すチャンネルを描く。j-47 の本文に、j-8 へのリンクがある。 */
+  function renderJumpChannel() {
+    const channelId = "chan-jump";
+    const link = `${window.location.origin}/channels/${channelId}?message=j-8`;
+    const messages = Array.from({ length: 50 }, (_, index) => ({
+      ...makeMessage(`j-${index}`, index, 2, channelId),
+      // 末尾に近い投稿が、URL がすでに指している j-8 へのリンクを含む。
+      ...(index === 47 ? { content: `詳細は ${link} を見てください` } : {}),
+    }));
+
+    function Channel() {
+      const location = useRouterState({ select: (state) => state.location });
+      const { message } = location.search as { message?: string };
+      return (
+        <CollectionsProvider value={testCollections}>
+          <LocaleProvider>
+            <div style={{ width: 640, height: 420, display: "flex", flexDirection: "column" }}>
+              <MessageList
+                key={channelId}
+                {...listProps(channelId, messages, { targetMessageId: message })}
+              />
+            </div>
+          </LocaleProvider>
+        </CollectionsProvider>
+      );
+    }
+    const root = createRootRoute();
+    const route = createRoute({
+      getParentRoute: () => root,
+      path: "/channels/$channelId",
+      validateSearch: (search: Record<string, unknown>): { message?: string } => ({
+        message: typeof search.message === "string" ? search.message : undefined,
+      }),
+      component: Channel,
+    });
+    const router = createRouter({
+      routeTree: root.addChildren([route]),
+      history: createMemoryHistory({ initialEntries: [`/channels/${channelId}?message=j-8`] }),
+    });
+    render(<RouterProvider router={router} />);
+
+    const scroller = () => document.querySelector<HTMLElement>('[data-testid="message-scroll"]')!;
+    const targetInView = () => {
+      const row = scroller().querySelector<HTMLElement>('[data-message-id="j-8"]');
+      if (!row) return false;
+      const sr = scroller().getBoundingClientRect();
+      const tr = row.getBoundingClientRect();
+      return tr.top >= sr.top - 4 && tr.bottom <= sr.bottom + 4;
+    };
+    const bodyLink = () =>
+      scroller().querySelector<HTMLAnchorElement>(`a[href="/channels/${channelId}?message=j-8"]`);
+
+    const targetOverlay = () =>
+      scroller().querySelector<HTMLElement>(
+        '[data-message-id="j-8"] [data-message-target-highlight]',
+      );
+    return { channelId, router, scroller, targetInView, bodyLink, targetOverlay };
+  }
+
+  it("scrolls back to the target when a link to the already-targeted message is pressed again", async () => {
+    const { channelId, router, scroller, targetInView, bodyLink, targetOverlay } =
+      renderJumpChannel();
+    await waitFor(() => expect(targetInView()).toBe(true));
+    // 対象の行へスクロールしたら、その行だけを強調する（常時の枠線は付けない）。
+    await waitFor(() => expect(targetOverlay()).toBeTruthy());
+    expect(scroller().querySelector('[data-message-id="j-8"]')!.className).not.toContain("ring");
+    expect(scroller().querySelectorAll("[data-message-target-highlight]")).toHaveLength(1);
+    const firstOverlay = targetOverlay()!;
+
+    // 読み進めて、対象から離れる。URL は `?message=j-8` のまま。
+    scroller().scrollTop = scroller().scrollHeight;
+    await waitFor(() => {
+      expect(targetInView()).toBe(false);
+      expect(bodyLink()).toBeTruthy();
+    });
+    expect(router.state.location.href).toBe(`/channels/${channelId}?message=j-8`);
+
+    // 修飾キーつきのクリックは、ブラウザーに任せる。この画面は動かさない（実際の遷移は止める）。
+    const stopNavigation = (event: MouseEvent) => event.preventDefault();
+    document.addEventListener("click", stopNavigation);
+    try {
+      fireEvent.click(bodyLink()!, { ctrlKey: true });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(targetInView()).toBe(false);
+    } finally {
+      document.removeEventListener("click", stopNavigation);
+    }
+
+    // 普通のクリックで、同じ場所への移動になっても、対象の行へ戻り、強調を最初から再生し直す。
+    fireEvent.click(bodyLink()!);
+    await waitFor(() => expect(targetInView()).toBe(true));
+    await waitFor(() => {
+      expect(targetOverlay()).toBeTruthy();
+      expect(targetOverlay()).not.toBe(firstOverlay);
+    });
+    expect(router.state.location.href).toBe(`/channels/${channelId}?message=j-8`);
+  });
+
+  it("does not replay an ended highlight when the target row is mounted again before the state is cleared", async () => {
+    const { scroller, targetInView, targetOverlay } = renderJumpChannel();
+    await waitFor(() => expect(targetInView()).toBe(true));
+    await waitFor(() => expect(targetOverlay()).toBeTruthy());
+
+    // 読み進めると、対象の行は仮想リストから外れる。
+    scroller().scrollTop = scroller().scrollHeight;
+    await waitFor(() => expect(scroller().querySelector('[data-message-id="j-8"]')).toBeNull());
+
+    // 時刻だけを進める。強調は終わっているが、状態を消すタイマーはまだ動いていない。
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + MESSAGE_TARGET_FLASH_MS + 1);
+      // 対象の行が、もう一度描かれる。終わった強調を、先頭から再生し直してはいけない。
+      scroller().scrollTop = 0;
+      await waitFor(() => expect(scroller().querySelector('[data-message-id="j-8"]')).toBeTruthy());
+      expect(targetOverlay()).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("highlights the target reply in ThreadPane once and replays it when the link is pressed again", async ({
+    onTestFinished,
+  }) => {
+    vi.useFakeTimers({ toFake: ["requestAnimationFrame", "cancelAnimationFrame"] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+
+    const root = makeMessage("root-h", 0, 2, "chan-thread-h");
+    const replies = Array.from(
+      { length: 40 },
+      (_, index) =>
+        ({
+          ...makeMessage(`reply-${index}`, index + 1, 4, "chan-thread-h"),
+          parent_id: "root-h",
+        }) as FeedMessage,
+    );
+    render(
+      <CollectionsProvider value={testCollections}>
+        <LocaleProvider>
+          <div style={{ position: "relative", width: 800, height: 480, display: "flex" }}>
+            <ThreadPane
+              root={root}
+              replies={replies}
+              targetMessageId="reply-3"
+              isLoading={false}
+              isError={false}
+              currentUserId="alice"
+              reactions={new Map()}
+              kitchenCatalog={null}
+              canReact={false}
+              onReaction={noop}
+              onPickReaction={noop}
+              editingId={null}
+              editingText=""
+              onEditingTextChange={noop}
+              onStartEdit={noop}
+              onCancelEdit={noop}
+              onSaveEdit={noop}
+              onRequestDelete={noop}
+              onSendReply={async () => true}
+              onClose={noop}
+            />
+          </div>
+        </LocaleProvider>
+      </CollectionsProvider>,
+    );
+    const scroller = () =>
+      document.querySelector<HTMLElement>('[data-scroll-restoration-id="thread-scroll:root-h"]')!;
+    const row = () => scroller().querySelector<HTMLElement>('[data-message-id="reply-3"]')!;
+    const overlay = () =>
+      row().querySelector<HTMLElement>("[data-message-target-highlight]") ?? undefined;
+    const inView = () => {
+      const sr = scroller().getBoundingClientRect();
+      const tr = row().getBoundingClientRect();
+      return tr.top >= sr.top - 4 && tr.bottom <= sr.bottom + 4;
+    };
+
+    // 最初の位置合わせで強調し、次のフレームで位置を合わせ直しても再生し直さない。
+    const first = overlay();
+    expect(first).toBeTruthy();
+    act(() => {
+      vi.advanceTimersToNextFrame();
+    });
+    expect(overlay()).toBe(first);
+    await waitFor(() => expect(inView()).toBe(true));
+    expect(row().className).not.toContain("ring");
+    expect(scroller().querySelectorAll("[data-message-target-highlight]")).toHaveLength(1);
+
+    // 離れてから、すでに表示中の対象へのリンクをもう一度押すと、戻って最初から強調し直す。
+    scroller().scrollTop = scroller().scrollHeight;
+    await waitFor(() => expect(inView()).toBe(false));
+    act(() => requestMessageJump("reply-3"));
+    const replay = overlay();
+    expect(replay).toBeTruthy();
+    expect(replay).not.toBe(first);
+    act(() => {
+      vi.advanceTimersToNextFrame();
+    });
+    expect(overlay()).toBe(replay);
+    await waitFor(() => expect(inView()).toBe(true));
   });
 
   it("opens directly at bottom (or targetMessageId) in ThreadPane without an initial scrollTop=0 flash", async () => {

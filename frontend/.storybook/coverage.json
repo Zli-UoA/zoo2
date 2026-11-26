@@ -199,6 +199,7 @@
         "Loading",
         "LoadError",
         "Complete",
+        "WithReactions",
         "Dark",
         "Mobile"
       ]
@@ -298,6 +299,29 @@
       ]
     },
     {
+      "file": "src/components/chat/messages/ChannelLinkEmbed.stories.tsx",
+      "states": [
+        "Message",
+        "InMessageRow",
+        "ThreadReply",
+        "Encrypted",
+        "CiphertextInPlainChannel",
+        "AppMessage",
+        "NotJoined",
+        "MessageDeleted",
+        "MessageNotFound",
+        "Channel",
+        "PrivateAndEncryptedChannels",
+        "ChannelNotJoined",
+        "DirectMessage",
+        "AttachmentsOnly",
+        "LongText",
+        "Mobile",
+        "LoadingDirectory",
+        "InEncryptedPost"
+      ]
+    },
+    {
       "file": "src/components/chat/messages/LinkPreviews.stories.tsx",
       "states": ["CachedOnReturn", "Landscape", "Portrait", "TextOnly", "Mobile"]
     },
@@ -345,6 +369,8 @@
         "Default",
         "MentionedMessage",
         "MentionedChannelMessage",
+        "LinkTargetHighlight",
+        "LinkTargetHighlightMentioned",
         "EncryptedBeforeEncryptionRow",
         "EncryptedUnencryptedAfterEncryptedRow",
         "OwnMessage",
@@ -376,7 +402,25 @@
         "EncryptedLocked",
         "EncryptedInvalid",
         "EncryptedWithAttachments",
-        "EncryptedAttachmentDecryptFailed"
+        "EncryptedAttachmentDecryptFailed",
+        "ForwardedMessage",
+        "ForwardedCommentless",
+        "ForwardedDeleted",
+        "ForwardedUnavailable",
+        "ForwardedNested",
+        "ForwardedWithMenu"
+      ]
+    },
+    {
+      "file": "src/components/chat/messages/ForwardMessageDialog.stories.tsx",
+      "states": [
+        "Default",
+        "SelectedDestination",
+        "SearchEmpty",
+        "NoDestinations",
+        "Submitting",
+        "Error",
+        "Mobile"
       ]
     },
     {
@@ -384,6 +428,7 @@
       "states": [
         "Default",
         "InlineLinks",
+        "InAppLinks",
         "LongUrl",
         "CodeAndMath",
         "SearchHighlight",
@@ -1200,12 +1245,12 @@
       "file": "src/components/chat/CatchUpMessagePage.tsx",
       "story": "src/components/chat/CatchUpScreen.stories.tsx",
       "composed": true,
-      "reason": "Default・LongUnread・Dark・Mobile で読み取り専用のメッセージ一覧と未読区切りを確認する。"
+      "reason": "Default・LongUnread・Dark・Mobile・WithReactions で未読メッセージ一覧、未読区切り、リアクションの追加・解除を確認する。"
     },
     {
       "file": "src/components/chat/CatchUpScreen.tsx",
       "story": "src/components/chat/CatchUpScreen.stories.tsx",
-      "reason": "通常・長い未読・空・読込中・読込失敗・完了・ダーク・モバイルを確認する。既読書き込みの失敗は CatchUpScreen.test.ts で検証する。"
+      "reason": "通常・長い未読・空・読込中・読込失敗・完了・リアクション操作・ダーク・モバイルを確認する。既読書き込みの失敗とアーカイブ時の読み取り専用切替は CatchUpScreen.test.ts で検証する。"
     },
     {
       "file": "src/components/chat/NotificationsButton.tsx",
@@ -1261,12 +1306,28 @@
       "reason": "DefaultとSearchEmptyが標準ピッカーを、ManyCustomEmojisとManyCustomEmojisMobileが大量のカスタム絵文字のスクロールと選択を確認する。"
     },
     {
+      "file": "src/components/chat/messages/ChannelLinkEmbed.tsx",
+      "story": "src/components/chat/messages/ChannelLinkEmbed.stories.tsx",
+      "checks": [
+        "src/components/chat/messages/ChannelLinkEmbed.browser.test.tsx",
+        "src/components/chat/messages/ChannelLinkEmbed.requests.browser.test.tsx",
+        "src/components/chat/messages/ChannelLinkEmbed.stalled.browser.test.tsx"
+      ]
+    },
+    {
+      "file": "src/components/chat/messages/channelLinkLabel.tsx",
+      "story": "src/components/chat/messages/ChannelLinkEmbed.stories.tsx",
+      "composed": true,
+      "reason": "MessageとChannelで、リンクの短い表示（「○○さん: #チャンネル名」「#チャンネル名」）を確認する。DMの総称はDirectMessage、見られないリンク先でURLのまま残ることはNotJoinedで確認する。ChannelLinkEmbed.browser.test.tsxでも検証する。"
+    },
+    {
       "file": "src/components/chat/messages/LinkPreviews.tsx",
       "story": "src/components/chat/messages/LinkPreviews.stories.tsx",
       "checks": [
         "src/components/chat/messages/LinkPreviews.browser.test.tsx",
         "src/components/home/HomePostContent.browser.test.tsx",
-        "src/components/home/HomePostContent.no-summaly.browser.test.tsx"
+        "src/components/home/HomePostContent.no-summaly.browser.test.tsx",
+        "src/components/chat/messages/ChannelLinkEmbed.browser.test.tsx"
       ]
     },
     {
@@ -1313,6 +1374,12 @@
       "story": "src/components/chat/messages/MfmContent.stories.tsx",
       "composed": true,
       "reason": "Defaultで実Providerから公開チャンネルのハッシュタグを解決する。MfmChannels.browser.test.tsxでアプリ内遷移・戻る・進む・下書き保持を検証する。"
+    },
+    {
+      "file": "src/components/chat/messages/ContentLink.tsx",
+      "story": "src/components/chat/messages/MfmContent.stories.tsx",
+      "composed": true,
+      "reason": "InAppLinksで、このアプリのメッセージ・チャンネルのリンクを同じタブのリンクに、外部URLを別タブのリンクに描くことを確認する。移動・修飾キー・ルーターの外でのフォールバックはContentLink.browser.test.tsxで検証する。"
     },
     {
       "file": "src/components/chat/messages/MfmContent.tsx",
@@ -1820,6 +1887,24 @@
       "file": "src/components/sip/SipProvider.tsx",
       "reason": "アカウント単位の一覧取得・認証終了・チャンネル通話との排他を所有する制御層。ブラウザー統合テストで通信数と破棄を確認する。",
       "checks": ["src/components/sip/SipProvider.browser.test.tsx"]
+    },
+    {
+      "file": "src/components/chat/messages/MessageBody.tsx",
+      "story": "src/components/chat/messages/MessageRow.stories.tsx",
+      "composed": true,
+      "reason": "MessageRowのメッセージ本文・編集済みマーカー・MFM・リンクプレビューを描画する共通コンポーネントで、MessageRowのDefault・Edited・ForwardedMessageおよびForwardedMessageCardで実表示を確認する。"
+    },
+    {
+      "file": "src/components/chat/messages/ForwardedMessageCard.tsx",
+      "story": "src/components/chat/messages/MessageRow.stories.tsx",
+      "composed": true,
+      "reason": "MessageRowのForwardedMessage・ForwardedCommentless・ForwardedDeleted・ForwardedUnavailable・ForwardedNestedの各ストーリーで転送元カードの解決状態と表示を確認する。",
+      "checks": ["src/components/chat/messages/ForwardedMessageCard.browser.test.tsx"]
+    },
+    {
+      "file": "src/components/chat/messages/ForwardMessageDialog.tsx",
+      "story": "src/components/chat/messages/ForwardMessageDialog.stories.tsx",
+      "checks": ["src/components/chat/messages/ForwardMessageDialog.browser.test.tsx"]
     }
   ]
 }

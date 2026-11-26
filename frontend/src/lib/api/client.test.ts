@@ -9,11 +9,18 @@ import {
   unwrapEnvelope,
   type FetchLike,
 } from "./client";
-import { setAuthorizedHandler, setUnauthorizedHandler } from "../auth";
+import {
+  notifyAuthSessionEnded,
+  resetTokenProvider,
+  setAuthorizedHandler,
+  setTokenProvider,
+  setUnauthorizedHandler,
+} from "../auth";
 import { resolveConfig } from "../config";
 import { OidcClient } from "../oidc/client";
 
 afterEach(() => {
+  resetTokenProvider();
   setUnauthorizedHandler(null);
   setAuthorizedHandler(null);
 });
@@ -327,6 +334,39 @@ describe("createApiClient", () => {
     await client.get("/api/ping");
 
     expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts without invoking fetch when auth session, tokenProvider, or signal changes while waiting for token", async () => {
+    for (const mode of ["logout", "provider", "signal"] as const) {
+      let resolveToken!: (token: string | null) => void;
+      setTokenProvider(
+        () =>
+          new Promise<string | null>((resolve) => {
+            resolveToken = resolve;
+          }),
+      );
+      const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({ data: {}, txid: "1" }));
+      const controller = new AbortController();
+      const client = createApiClient({ baseUrl: "http://localhost:8000", fetch: fetchMock });
+
+      const pending = client.post(
+        "/api/messages/forwards/resolve",
+        { ids: ["m1"] },
+        { signal: controller.signal },
+      );
+
+      if (mode === "logout") {
+        notifyAuthSessionEnded("logout");
+      } else if (mode === "provider") {
+        setTokenProvider(() => "new-token");
+      } else {
+        controller.abort();
+      }
+
+      resolveToken("stale-token");
+      await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+      expect(fetchMock).not.toHaveBeenCalled();
+    }
   });
 });
 

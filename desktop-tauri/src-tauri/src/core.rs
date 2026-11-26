@@ -35,8 +35,9 @@ use zoo2_client_core::{
 use zoo2_client_types::{
     api::Me,
     ipc::{
-        DeviceLogin, ErrorCode, FocusState, IpcError, NotificationSettings, OpenTarget,
-        PROTOCOL_VERSION, SessionInfo, SessionState, ShapeBatch, ShapeFailed, UiMode, event,
+        BrowserLogin, DeviceLogin, ErrorCode, FocusState, IpcError, LoginFailed, LoginMethod,
+        LoginPrompt, NotificationSettings, OpenTarget, PROTOCOL_VERSION, SessionInfo, SessionState,
+        ShapeBatch, ShapeFailed, UiMode, event,
     },
     notify::{self, NotifyContext, Toast},
     shape::{Batch, Replica, ShapeId},
@@ -788,22 +789,155 @@ impl Core {
         self.inner.lock().await.generation
     }
 
-    pub async fn start_login(self: &Arc<Self>) -> Result<DeviceLogin, IpcError> {
-        let (config, oidc) = self.oidc()?;
-        let generation = {
-            let mut inner = self.inner.lock().await;
-            if matches!(inner.state, SessionState::Ready { .. }) {
-                return Err(IpcError::new(ErrorCode::WrongMode, "ログイン済みです"));
-            }
-            if let Some(task) = inner.login_task.take() {
-                task.abort();
-            }
-            let prev = inner.generation;
-            inner.generation += 1;
-            // 前の試行がまだブラウザー起動待ちにあれば、置き換え時点で失効させる。
+    /// ログインを始める。ブラウザーを開ける環境では認可コード + PKCE（RFC 8252）を第一に使い、
+    /// デバイスコード (RFC 8628) は、ブラウザーを開けないときのために `LoginMethod::Device` で残す。
+    pub async fn start_login(
+        self: &Arc<Self>,
+        method: LoginMethod,
+    ) -> Result<LoginPrompt, IpcError> {
+        match method {
+            LoginMethod::Browser => self.start_browser_login().await,
+            LoginMethod::Device => self.start_device_login().await,
+        }
+    }
+
+    /// 新しいログインの試行を始める。ログイン済みなら断り、進行中の試行は取り消して、新しい世代を返す。
+    async fn begin_login_attempt(&self) -> Result<u64, IpcError> {
+        let mut inner = self.inner.lock().await;
+        if matches!(inner.state, SessionState::Ready { .. }) {
+            return Err(IpcError::new(ErrorCode::WrongMode, "ログイン済みです"));
+        }
+        if let Some(task) = inner.login_task.take() {
+            task.abort();
+        }
+        let prev = inner.generation;
+        inner.generation += 1;
+        // 前の試行がまだブラウザー起動待ちにあれば、置き換え時点で失効させる。承認待ちの画面は
+        // 取り消した旧試行のものなので、その場で外す（新しい開始が失敗しても、使えないリンクが残らない）。
+        // 開始に成功すれば、新しいプロンプトがすぐ表示される。
+        if matches!(inner.state, SessionState::LoggingIn { .. }) {
+            self.browser_launch.cancel_before_transition(prev, || {
+                self.set_state(&mut inner, SessionState::LoggedOut);
+            });
+        } else {
             self.browser_launch.cancel(prev);
-            inner.generation
+        }
+        Ok(inner.generation)
+    }
+
+    /// 認可コード + PKCE のログイン。`127.0.0.1` の空きポートで待ち受け、既定のブラウザーで認可
+    /// リクエストを開き、ループバックのリダイレクトで受け取った認可コードをトークンに換える。
+    async fn start_browser_login(self: &Arc<Self>) -> Result<LoginPrompt, IpcError> {
+        let (config, oidc) = self.oidc()?;
+        let generation = self.begin_login_attempt().await?;
+        let discovery = tokio::time::timeout(
+            REAUTH_HTTP_TIMEOUT,
+            auth::discover(&self.http, &oidc.issuer),
+        )
+        .await
+        .map_err(|_| {
+            IpcError::new(
+                ErrorCode::Timeout,
+                "認証サーバーの応答がタイムアウトしました",
+            )
+        })?
+        .map_err(to_ipc)?;
+        let pending = LoopbackReauth::start_login(&discovery, oidc)
+            .await
+            .map_err(to_ipc)?;
+        let url = pending.url().to_owned();
+        // 認可エンドポイントは Discovery の値。issuer と別のオリジンなら、開かない。
+        if !is_same_issuer_origin(&url, &oidc.issuer) {
+            return Err(IpcError::new(
+                ErrorCode::Rejected,
+                "認可エンドポイントが認証サーバーのオリジンと一致しません",
+            ));
+        }
+        let login = BrowserLogin {
+            url: url.clone(),
+            expires_at: token::now() + REAUTH_TIMEOUT.as_secs() as i64,
         };
+
+        let mut inner = self.inner.lock().await;
+        if inner.generation != generation {
+            return Err(IpcError::new(ErrorCode::Internal, "ログインを中止しました"));
+        }
+        let core = self.clone();
+        let (config, oidc) = (config.clone(), oidc.clone());
+        inner.login_task = Some(tokio::spawn(async move {
+            let result = async {
+                let response = pending
+                    .finish_login(&core.http, &discovery, &oidc, REAUTH_TIMEOUT)
+                    .await?;
+                let tokens = StoredTokens::new(&oidc, &config.api_base_url, response, token::now());
+                let path = core.token_path()?;
+                token::save(&path, &tokens)?;
+                anyhow::Ok(Arc::new(TokenManager::new(
+                    core.http.clone(),
+                    oidc.clone(),
+                    path,
+                    tokens,
+                )))
+            }
+            .await;
+            match result {
+                Ok(manager) => {
+                    core.browser_launch.cancel(generation);
+                    core.finish_login(
+                        generation,
+                        Credentials::Bearer(manager.clone()),
+                        Some(manager),
+                    )
+                    .await
+                }
+                Err(error) => {
+                    let message = browser_login_failure_message(&error);
+                    let mut inner = core.inner.lock().await;
+                    core.browser_launch
+                        .cancel_before_transition(generation, || {
+                            if inner.generation == generation {
+                                core.set_state(&mut inner, SessionState::LoggedOut);
+                                // `START_LOGIN` は成功を返したあとなので、理由はイベントで知らせる。
+                                let _ = core.app.emit(event::LOGIN_FAILED, LoginFailed { message });
+                            }
+                        });
+                }
+            }
+        }));
+        // 状態遷移・通知前にゲートを有効化し、直後の cancel_login と順序を揃える。
+        self.browser_launch.arm(generation);
+        self.set_state(
+            &mut inner,
+            SessionState::LoggingIn {
+                login: LoginPrompt::Browser(login.clone()),
+            },
+        );
+        drop(inner);
+        // 既定のブラウザーを自動で開く。開けなくても、画面のリンクから手動で進められる。
+        let gate = self.browser_launch.clone();
+        let app = self.app.clone();
+        tauri::async_runtime::spawn(async move {
+            if !gate.is_active(generation) {
+                return;
+            }
+            if let Err(err) = tokio::task::spawn_blocking(move || {
+                gate.launch_if_active(generation, || {
+                    if let Err(err) = open_in_browser(&app, &url) {
+                        eprintln!("ログイン URL をブラウザーで開けませんでした: {err}");
+                    }
+                });
+            })
+            .await
+            {
+                eprintln!("ログイン URL をブラウザーで開く処理が失敗しました: {err}");
+            }
+        });
+        Ok(LoginPrompt::Browser(login))
+    }
+
+    async fn start_device_login(self: &Arc<Self>) -> Result<LoginPrompt, IpcError> {
+        let (config, oidc) = self.oidc()?;
+        let generation = self.begin_login_attempt().await?;
         let discovery = tokio::time::timeout(
             REAUTH_HTTP_TIMEOUT,
             auth::discover(&self.http, &oidc.issuer),
@@ -901,7 +1035,7 @@ impl Core {
         self.set_state(
             &mut inner,
             SessionState::LoggingIn {
-                login: login.clone(),
+                login: LoginPrompt::Device(login.clone()),
             },
         );
         drop(inner);
@@ -948,7 +1082,7 @@ impl Core {
                 }
             });
         }
-        Ok(login)
+        Ok(LoginPrompt::Device(login))
     }
 
     pub async fn cancel_login(&self) {
@@ -956,12 +1090,24 @@ impl Core {
         if let Some(task) = inner.login_task.take() {
             task.abort();
         }
-        if matches!(inner.state, SessionState::LoggingIn { .. }) {
-            let cancelled = inner.generation;
-            inner.generation += 1;
-            self.browser_launch.cancel_before_transition(cancelled, || {
-                self.set_state(&mut inner, SessionState::LoggedOut);
-            });
+        match inner.state {
+            SessionState::LoggingIn { .. } => {
+                let cancelled = inner.generation;
+                inner.generation += 1;
+                self.browser_launch.cancel_before_transition(cancelled, || {
+                    self.set_state(&mut inner, SessionState::LoggedOut);
+                });
+            }
+            // 開始処理の途中（Discovery や、デバイスコードの発行を待っている間）は、状態が
+            // `LoggedOut` のままで、`login_task` もまだない。世代を進めておけば、その試行は
+            // 世代の確認で止まり、プロンプトの表示もブラウザーの起動もしない。進行中の試行が
+            // なければ、世代が進むだけで何も起きない。
+            SessionState::LoggedOut => {
+                let cancelled = inner.generation;
+                inner.generation += 1;
+                self.browser_launch.cancel(cancelled);
+            }
+            _ => {}
         }
     }
 
@@ -1206,6 +1352,19 @@ fn open_in_browser(app: &AppHandle, url: &str) -> Result<()> {
     app.opener()
         .open_url(url, None::<&str>)
         .map_err(|error| anyhow!("ブラウザーを開けませんでした: {error}"))
+}
+
+/// ブラウザーでのログインが失敗した理由を、利用者に見せる文にする。認可エンドポイントが
+/// `invalid_redirect_uri` などで拒否した場合、エラーはブラウザーに表示されるだけで、ループバックには
+/// 戻らない。そのため時間切れのときに、リダイレクト URI の未登録の可能性と、確認コード方式を案内する。
+fn browser_login_failure_message(error: &anyhow::Error) -> String {
+    match error.downcast_ref::<ReauthError>() {
+        Some(ReauthError::Timeout) => "ブラウザーでのログインが時間内に終わりませんでした。\
+            ブラウザーに認証サーバーのエラーが出ていたら、アプリのリダイレクト URI が未登録の可能性があります。\
+            「確認コードでログイン」も使えます。"
+            .to_owned(),
+        _ => format!("ログインできませんでした: {error:#}"),
+    }
 }
 
 /// 再認証の失敗を、Web の画面が見分けられる IPC のエラーにする。

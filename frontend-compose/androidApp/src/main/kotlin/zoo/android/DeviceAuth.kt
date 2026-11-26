@@ -10,7 +10,6 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
@@ -18,7 +17,7 @@ import zoo.*
 import java.net.ConnectException
 import java.net.UnknownHostException
 
-/** Public-client device grant. Access tokens stay in memory; refresh persistence is owned by the app. */
+/** Public-client token holder. Sign-in is the browser authorization code flow (PKCE, see AndroidReauth). Access tokens stay in memory; refresh persistence is owned by the app. */
 internal class DeviceAuth(
     private val http: HttpClient,
     private val persistRefresh: (String?) -> Unit = {},
@@ -130,60 +129,6 @@ internal class DeviceAuth(
         }
     }
 
-    suspend fun login(
-        issuer: String,
-        client: String,
-        audience: String,
-        show: (String, String) -> Unit,
-    ) {
-        val discovery = discover(issuer, client, audience)
-        val deviceEndpoint = discovery.text("device_authorization_endpoint")
-        require(
-            Url(endpoint).protocol == URLProtocol.HTTPS &&
-                Url(deviceEndpoint).protocol == URLProtocol.HTTPS
-        )
-        val response =
-            http.submitForm(
-                deviceEndpoint,
-                parameters {
-                    append("client_id", client)
-                    append("scope", "openid profile offline_access")
-                    if (audience.isNotBlank()) append("resource", audience)
-                },
-            )
-        val device = response.loginJson("確認コードの発行")
-        if (response.status.value !in 200..299) {
-            throw oauthLoginFailure("確認コードの発行", response.status.value, device.text("error"))
-        }
-        val link =
-            device.text("verification_uri_complete").ifEmpty { device.text("verification_uri") }
-        require(Url(link).protocol == URLProtocol.HTTPS)
-        show(device.text("user_code"), link)
-        val deadline = System.currentTimeMillis() + device.text("expires_in").toLong() * 1000
-        var interval = (device.text("interval").toLongOrNull() ?: 5).coerceAtLeast(1) * 1000
-        while (System.currentTimeMillis() < deadline) {
-            delay(interval)
-            if (System.currentTimeMillis() >= deadline) {
-                throw LoginFailure("コードの期限が切れました。ログインし直してください")
-            }
-            val grant = mapOf(
-                "grant_type" to "urn:ietf:params:oauth:grant-type:device_code",
-                "device_code" to device.text("device_code"),
-            )
-            val result = exchange(grant)
-            when (result.text("error")) {
-                "" -> {
-                    accept(result)
-                    return
-                }
-                "authorization_pending" -> Unit
-                "slow_down" -> interval += 5000
-                else -> throw oauthLoginFailure("ログイン", null, result.text("error"))
-            }
-        }
-        throw LoginFailure("コードの期限が切れました。ログインし直してください")
-    }
-
     private suspend fun exchange(fields: Map<String, String>): Row {
         val response =
             http.submitForm(
@@ -196,8 +141,7 @@ internal class DeviceAuth(
             )
         val result = response.loginJson("トークンの取得")
         val error = result.text("error")
-        val pending = error in setOf("authorization_pending", "slow_down")
-        if (!pending && (response.status.value !in 200..299 || error.isNotEmpty())) {
+        if (response.status.value !in 200..299 || error.isNotEmpty()) {
             throw oauthLoginFailure("トークンの取得", response.status.value, error)
         }
         return result
@@ -250,13 +194,12 @@ private suspend fun HttpResponse.loginJson(stage: String): Row {
 private fun oauthLoginFailure(stage: String, status: Int?, code: String): LoginFailure {
     val hint =
         when (code) {
-            "unauthorized_client" -> "AuthZ で Public client のデバイスコード認証を許可してください"
+            "unauthorized_client" -> "AuthZ で Public client の認可コードと refresh_token の認証を許可してください"
             "invalid_target" -> "Resource / audience と、AuthZ の API 設定・クライアントへの紐付けを確認してください"
             "invalid_scope" -> "openid profile offline_access の利用が許可されているか確認してください"
             "invalid_client" -> "Client ID と、クライアントが有効な Public client であることを確認してください"
             "access_denied" -> "ブラウザーでログインが拒否されました。もう一度ログインしてください"
-            "expired_token" -> "確認コードの期限が切れました。もう一度ログインしてください"
-            "invalid_grant" -> "認証情報が無効か、期限が切れています。もう一度ログインしてください"
+                        "invalid_grant" -> "認証情報が無効か、期限が切れています。もう一度ログインしてください"
             else -> null
         }
     // Do not echo error_description, response bodies, or unrecognized server values.

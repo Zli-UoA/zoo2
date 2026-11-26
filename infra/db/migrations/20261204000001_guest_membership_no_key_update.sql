@@ -1,5 +1,5 @@
 -- The always-lock version of app_guest_membership_rules is deferred to
--- infra/db/deferred-migrations/20261201010010_guest_membership_lock_order.sql.
+-- infra/db/deferred-migrations/20261204000010_guest_membership_lock_order.sql.
 -- Applying it before the new backend replaces old instances can deadlock with
 -- the old lock_members order. The standard deploy applies only this canonical
 -- directory; the follow-up migration is applied after the rollout.

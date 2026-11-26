@@ -30,13 +30,14 @@ import { SettingsSection } from "../ui/control-panel";
 import { Spinner } from "../ui/spinner";
 import { describeImportError } from "./SlackImportPanel";
 
-const LINK_ERRORS = {
-  denied: "slackLink.errors.denied",
-  invalid_state: "slackLink.errors.invalid_state",
-  team_mismatch: "slackLink.errors.team_mismatch",
-  already_linked: "slackLink.errors.already_linked",
-  linked_other_account: "slackLink.errors.linked_other_account",
-  failed: "slackLink.errors.failed",
+// 辞書のキーは `slackLink.errors.` + 接尾辞。x18n が前方一致で追えるようにする。
+const LINK_ERROR_SUFFIXES = {
+  denied: "denied",
+  invalid_state: "invalid_state",
+  team_mismatch: "team_mismatch",
+  already_linked: "already_linked",
+  linked_other_account: "linked_other_account",
+  failed: "failed",
 } as const;
 
 export function SlackLinkPanel({ navigateTo = (url: string) => window.location.assign(url) }) {
@@ -80,7 +81,10 @@ export function SlackLinkPanel({ navigateTo = (url: string) => window.location.a
     void navigate({ to: "/settings", search: { tab: "slack" }, replace: true });
     const fail = (reason: string) => {
       // toast は消えるので、理由が分かるようパネル内に残す
-      setError(t(LINK_ERRORS[reason as keyof typeof LINK_ERRORS] ?? LINK_ERRORS.failed));
+      const suffix = Object.hasOwn(LINK_ERROR_SUFFIXES, reason)
+        ? LINK_ERROR_SUFFIXES[reason as keyof typeof LINK_ERROR_SUFFIXES]
+        : LINK_ERROR_SUFFIXES.failed;
+      setError(t(`slackLink.errors.${suffix}`));
     };
     if (result.status === "error") {
       fail(result.reason);

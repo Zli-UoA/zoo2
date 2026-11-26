@@ -20,6 +20,7 @@ interface PhoneTelecom {
     fun ended(id: String)
     fun speaker(id: String, enabled: Boolean)
 }
+private val SFU_OPS = setOf("join", "cf/publish", "cf/pull", "cf/answer")
 class PhoneController(
     parent: CoroutineScope,
     private val request: suspend (String, String, Row?) -> JsonElement,
@@ -263,6 +264,7 @@ class PhoneController(
                                 "ended" -> hangup()
                                 "failed" -> { hangup(); error = true }
                                 "signal" -> signal(next.target, session, epoch, payload)
+                                "sfu_request" -> sfuRequest(next.target, session, epoch, payload)
                             }
                         }
                         dm = engine
@@ -298,6 +300,26 @@ class PhoneController(
             } catch (timeout: TimeoutCancellationException) { if (epoch == callEpoch) { hangup(); error = true } }
             catch (cancel: CancellationException) { throw cancel }
             catch (_: Exception) { if (epoch == callEpoch) { hangup(); error = true } }
+        }
+    }
+    /** The WebView engine cannot reach the API itself; only these SFU calls are relayed (docs/calls-sfu.md). */
+    private fun sfuRequest(channel: String, session: String, epoch: Int, payload: Row) {
+        val id = payload["id"] as? JsonPrimitive ?: return
+        val op = payload.text("op")
+        scope.launch {
+            val reply = try {
+                check(op in SFU_OPS) { "Unknown SFU request" }
+                val body = buildJsonObject {
+                    (payload["body"] as? JsonObject)?.forEach { (key, value) -> if (key != "session_id") put(key, value) }
+                    put("session_id", session)
+                }
+                obj("id" to id, "ok" to true, "data" to api("/api/channels/${channel.encodeURLPathPart()}/call/sfu/$op", "POST", body))
+            }
+            // api() の 15 秒の制限は CancellationException の派生なので、先に失敗の返信にする（エンジンの待機を終わらせる）。
+            catch (_: TimeoutCancellationException) { obj("id" to id, "ok" to false) }
+            catch (cancel: CancellationException) { throw cancel }
+            catch (_: Exception) { obj("id" to id, "ok" to false) }
+            if (epoch == callEpoch) runCatching { dm?.command("rtc.sfu.reply", reply) }
         }
     }
     private fun operation(epoch: Int, fatal: Boolean = true, block: suspend () -> Unit) {

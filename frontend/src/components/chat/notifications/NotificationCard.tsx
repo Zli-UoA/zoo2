@@ -96,6 +96,14 @@ export function NotificationCard({
     return () => onPreviewChange?.(notification.id, null);
   }, [notification.id, isVisible, context.isLoading, channel?.id, onPreviewChange]);
   const message = context.data?.message;
+  const isForwardedOnlyPreview = Boolean(
+    message && message.content.trim() === "" && message.has_forwards,
+  );
+  const messagePreviewLabel = message
+    ? isForwardedOnlyPreview
+      ? t("notifications.forwardedPreview")
+      : quotePreview(message.content)
+    : "";
   const avatarReaction = isReaction
     ? notificationReactionGroups(context.data?.reactions ?? [], [group.actorIds[0]!])[0]?.emoji
     : undefined;
@@ -259,7 +267,13 @@ export function NotificationCard({
           {isMissedCall ? null : channel && message ? (
             <blockquote>
               <div className="mfm-body line-clamp-3 whitespace-pre-wrap break-words text-sm leading-relaxed">
-                <MfmContent content={quotePreview(message.content)} emojis={message.emojis} />
+                {isForwardedOnlyPreview ? (
+                  <span className="text-muted-foreground">
+                    {t("notifications.forwardedPreview")}
+                  </span>
+                ) : (
+                  <MfmContent content={quotePreview(message.content)} emojis={message.emojis} />
+                )}
               </div>
             </blockquote>
           ) : (
@@ -277,7 +291,7 @@ export function NotificationCard({
               search={{ message: message ? (notification.message_id ?? undefined) : undefined }}
               onClick={() => shell.showChat()}
               title={channelLabel}
-              aria-label={`${contextLabel !== channelLabel ? `${contextLabel} · ` : ""}${channelLabel} — ${label}${message ? `: ${quotePreview(message.content)}` : ""}`}
+              aria-label={`${contextLabel !== channelLabel ? `${contextLabel} · ` : ""}${channelLabel} — ${label}${message ? `: ${messagePreviewLabel}` : ""}`}
               className="block w-fit max-w-full rounded-sm outline-none hover:underline hover:underline-offset-4 focus-visible:ring-2 focus-visible:ring-ring/50"
             >
               {destination}

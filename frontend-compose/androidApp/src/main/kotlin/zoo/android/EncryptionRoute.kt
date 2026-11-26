@@ -23,6 +23,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import zoo.*
+import kotlinx.serialization.json.JsonPrimitive
 import zoo.android.ui.*
 import zoo.crypto.E2eeStatus
 import zoo.crypto.UnlockMethod
@@ -46,6 +47,7 @@ internal fun EncryptionRoute(
     var passkeyAdded by remember { mutableStateOf(false) }
     var failure by remember { mutableStateOf(false) }
     var devices by remember { mutableStateOf<List<Row>>(emptyList()) }
+    var unsigned by remember { mutableStateOf<Set<String>>(emptySet()) }
     var rename by remember { mutableStateOf<Row?>(null) }
     var deviceName by remember { mutableStateOf("") }
     var remove by remember { mutableStateOf<Row?>(null) }
@@ -55,7 +57,13 @@ internal fun EncryptionRoute(
     val passkey = platform.passkey
     suspend fun reload() {
         val loadedStatus = setup?.loadStatus()
-        devices = session.api.request("/api/e2ee/devices").rows()
+        val loaded = session.api.request("/api/e2ee/devices").rows()
+        // 「未署名」の表示のため、自分の自己署名鍵と署名を読む（表示だけ。配布先の判定は署名を検証する）。
+        val keys = session.api.request("/api/e2ee/keys/query", "POST",
+            obj("user_ids" to kotlinx.serialization.json.JsonArray(listOf(JsonPrimitive(session.config.userId)))))
+        unsigned = zoo.crypto.unsignedDevices(keys as? kotlinx.serialization.json.JsonObject ?: obj(),
+            session.config.userId, loaded.map { it.text("device_id") })
+        devices = loaded
         status = loadedStatus
     }
     fun perform(block: suspend () -> Unit) {
@@ -173,18 +181,80 @@ internal fun EncryptionRoute(
                 TextAction("状態を読み直す", colors, enabled, icon = UiIcon.Refresh, style = TextActionStyle.Neutral) { perform { reload() } }
             }
             if (devices.isNotEmpty()) {
-                Text("登録済みの端末", color = colors.foreground, fontWeight = AndroidWeights.label)
+                Text(session.t("e2ee.devices.title"), color = colors.foreground, fontWeight = AndroidWeights.label)
+                Text(session.t("e2ee.devices.description"), color = colors.secondary, fontSize = 14.sp)
                 devices.forEach { device ->
-                    val current = device.text("device_id") == manager.currentDeviceId
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        TextAction(device.text("display_name").ifBlank { device.text("device_id") }, colors, enabled,
-                            style = TextActionStyle.Plain, modifier = Modifier.weight(1f), icon = UiIcon.Format) {
-                            deviceName = device.text("display_name")
-                            rename = device
+                    val id = device.text("device_id")
+                    val current = id == manager.currentDeviceId
+                    Column(Modifier.fillMaxWidth()) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                            TextAction(device.text("display_name").ifBlank { session.t("e2ee.devices.unnamed") }, colors, enabled,
+                                style = TextActionStyle.Plain, modifier = Modifier.weight(1f), icon = UiIcon.Format) {
+                                deviceName = device.text("display_name")
+                                rename = device
+                            }
+                            if (current) Text(session.t("e2ee.devices.current"), color = colors.secondary, fontSize = 14.sp)
+                            else TextAction(session.t("e2ee.devices.delete"), colors, enabled && manager.currentDeviceId != null,
+                                icon = UiIcon.Delete, style = TextActionStyle.Neutral) { remove = device }
                         }
-                        if (current) Text("この端末", color = colors.secondary)
-                        else TextAction("削除", colors, enabled && manager.currentDeviceId != null, icon = UiIcon.Delete,
-                            style = TextActionStyle.Neutral) { remove = device }
+                        val details = listOfNotNull(
+                            id.takeIf { id in unsigned }?.let { session.t("e2ee.devices.unsigned") },
+                            device.text("created_at").takeIf { it.isNotBlank() }?.let {
+                                session.t("e2ee.devices.created", "date" to "${platform.day(it)} ${platform.time(it)}")
+                            },
+                            device.text("last_seen_at").takeIf { it.isNotBlank() }?.let {
+                                session.t("e2ee.devices.lastSeen", "date" to "${platform.day(it)} ${platform.time(it)}")
+                            },
+                            id,
+                        )
+                        Text(details.joinToString(" · "), Modifier.padding(start = 4.dp), color = colors.secondary, fontSize = 12.sp)
+                    }
+                }
+                Text(session.t("e2ee.devices.deleteIsNotRevocation"), color = colors.secondary, fontSize = 14.sp)
+            }
+            val revocation = manager.revocation
+            val pendingRevocation by (revocation?.summary ?: remember { kotlinx.coroutines.flow.MutableStateFlow(null) }).collectAsState()
+            LaunchedEffect(revocation, store) {
+                try { revocation?.status() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { }
+            }
+            // 終わっていない失効は、解錠していなくても続けられるようにする（SSSS を保存したあと、クロス署名鍵を保存する
+            // 前に止まると、secrets_revision が変わって解錠し直しが要る状態になるため。Web と同じ）。
+            // 一度出した失効の画面は、この設定の画面を閉じるまで残す（解錠していない状態から続けて終えたとき、記録が
+            // 消えて親の状態が読み直されるまでのあいだに、結果（未署名の端末、AuthZ の後の手順）を消さないため）。
+            var revocationShown by remember { mutableStateOf(false) }
+            if (!revocationShown && revocation != null && (status is E2eeStatus.Unlocked || pendingRevocation != null)) revocationShown = true
+            if (revocation != null && (status is E2eeStatus.Unlocked || pendingRevocation != null || revocationShown)) {
+                RevocationSection(session, platform, revocation, manager.currentDeviceId, colors, enabled,
+                    unlocked = status is E2eeStatus.Unlocked) {
+                    scope.launch { try { reload() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { } }
+                }
+            } else if (revocation != null && status is E2eeStatus.Locked) {
+                Text(session.t("e2ee.revocation.needsUnlock"), color = colors.secondary, fontSize = 14.sp)
+            }
+            val sas = manager.sas
+            if (status is E2eeStatus.Unlocked && sas != null) {
+                // 他のユーザーの検証：暗号化チャンネル（削除されていないもの）を共有する相手（Web の `DevicesSettings`）。
+                val channels by session.repo.channels.rows.collectAsState()
+                val members by session.repo.members.rows.collectAsState()
+                val users by session.repo.users.rows.collectAsState()
+                val peers = remember(channels, members, users) {
+                    val encrypted = channels.filter { it.flag("encrypted") && !it.present("deleted_at") }.map { it.text("id") }.toSet()
+                    val ids = members.filter { it.text("channel_id") in encrypted }.map { it.text("user_id") }
+                        .filter { it != session.config.userId }.distinct()
+                    ids.map { id -> id to (users.firstOrNull { it.text("id") == id }?.let(::author)?.ifBlank { null } ?: id) }
+                        .sortedBy { it.second }
+                }
+                Text(session.t("e2ee.verification.title"), color = colors.foreground, fontWeight = AndroidWeights.label)
+                Text(session.t("e2ee.verification.description"), color = colors.secondary, fontSize = 14.sp)
+                if (peers.isEmpty()) Text(session.t("e2ee.verification.empty"), color = colors.secondary, fontSize = 14.sp)
+                peers.forEach { (id, name) ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        Text(name, Modifier.weight(1f), color = colors.foreground)
+                        TextAction(session.t("e2ee.sas.start"), colors, enabled, icon = UiIcon.Check, style = TextActionStyle.Neutral) {
+                            perform { sas.request(id) }
+                        }
                     }
                 }
             }
@@ -193,7 +263,7 @@ internal fun EncryptionRoute(
     rename?.let { device ->
         AlertDialog(
             onDismissRequest = { rename = null },
-            title = { Text("端末名を編集") },
+            title = { Text(session.t("e2ee.devices.rename")) },
             text = { OutlinedTextField(deviceName, { deviceName = it }, singleLine = true) },
             confirmButton = {
                 DialogAction("保存", UiIcon.Save, enabled = deviceName.isNotBlank() && deviceName.codePointCount() <= 100) {
@@ -212,10 +282,11 @@ internal fun EncryptionRoute(
     remove?.let { device ->
         AlertDialog(
             onDismissRequest = { remove = null },
-            title = { Text("暗号化端末を削除しますか？") },
-            text = { Text(device.text("display_name")) },
+            title = { Text(session.t("e2ee.devices.deleteConfirmTitle")) },
+            text = { Text(listOf(device.text("display_name").ifBlank { session.t("e2ee.devices.unnamed") },
+                session.t("e2ee.devices.deleteConfirmDescription")).joinToString("\n\n")) },
             confirmButton = {
-                DialogAction("削除", UiIcon.Delete) {
+                DialogAction(session.t("e2ee.devices.deleteOnly"), UiIcon.Delete) {
                     remove = null
                     perform {
                         check(device.text("device_id") != manager.currentDeviceId)
