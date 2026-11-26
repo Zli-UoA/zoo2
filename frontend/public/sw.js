@@ -88,6 +88,35 @@ async function findActiveShellCache(prefix = POLICY_PREFIX) {
   return prefix === POLICY_PREFIX ? DEFAULT_CACHE : null;
 }
 
+const TRANSPORT_HEADERS = [
+  "content-encoding",
+  "content-length",
+  "transfer-encoding",
+  "cache-control",
+  "etag",
+  "last-modified",
+  "expires",
+  "pragma",
+  "age",
+  "date",
+  "connection",
+  "keep-alive",
+  "vary",
+  "set-cookie",
+];
+
+function cacheHeaders(response, validators = false) {
+  const headers = new Headers(response.headers);
+  if (validators) {
+    for (const name of ["etag", "last-modified"])
+      if (headers.has(name)) headers.set(`x-zoo-${name}`, headers.get(name));
+  }
+  for (const name of TRANSPORT_HEADERS) headers.delete(name);
+  // The browser may otherwise revalidate a cached response with the network.
+  headers.set("cache-control", "no-store");
+  return headers;
+}
+
 /**
  * Store a decoded response without transport encoding headers.
  *
@@ -97,31 +126,7 @@ async function findActiveShellCache(prefix = POLICY_PREFIX) {
  */
 async function cacheResponse(cache, request, response, validators = false) {
   const body = await response.arrayBuffer();
-  const headers = new Headers(response.headers);
-  if (validators) {
-    for (const name of ["etag", "last-modified"])
-      if (headers.has(name)) headers.set(`x-zoo-${name}`, headers.get(name));
-  }
-  for (const name of [
-    "content-encoding",
-    "content-length",
-    "transfer-encoding",
-    "cache-control",
-    "etag",
-    "last-modified",
-    "expires",
-    "pragma",
-    "age",
-    "date",
-    "connection",
-    "keep-alive",
-    "vary",
-    "set-cookie",
-  ]) {
-    headers.delete(name);
-  }
-  // The browser may otherwise revalidate a cached response with the network.
-  headers.set("cache-control", "no-store");
+  const headers = cacheHeaders(response, validators);
   const sanitized = new Response(body, {
     status: response.status,
     statusText: response.statusText,
@@ -389,8 +394,7 @@ async function isFreshManifest(response) {
       parsed !== null &&
       typeof parsed === "object" &&
       !Array.isArray(parsed) &&
-      typeof parsed.name === "string" &&
-      typeof parsed.background_color === "string" &&
+      (typeof parsed.name === "string" || typeof parsed.short_name === "string") &&
       typeof parsed.start_url === "string" &&
       Array.isArray(parsed.icons) &&
       parsed.icons.length > 0
@@ -413,7 +417,7 @@ async function isOfflinePage(response) {
 }
 
 async function withPolicyHeaders(saved, csp) {
-  const headers = new Headers(saved.headers);
+  const headers = cacheHeaders(saved);
   if (csp) headers.set("content-security-policy", csp);
   else headers.delete("content-security-policy");
   return new Response(await saved.arrayBuffer(), {
@@ -474,10 +478,10 @@ async function cachedFreshAsset(path) {
     for (const { name, current } of candidates) {
       const cache = await caches.open(name);
       if (current && !currentPolicyKnown) {
-        const index = await cache.match("/index.html");
-        if (index) {
+        const shell = (await cache.match("/index.html")) || (await cache.match("/"));
+        if (shell) {
           currentPolicyKnown = true;
-          csp = index.headers.get("content-security-policy");
+          csp = shell.headers.get("content-security-policy");
         }
       }
       const saved = await cache.match(path);
@@ -488,7 +492,9 @@ async function cachedFreshAsset(path) {
         (path === "/offline.html" && !(await isOfflinePage(saved)))
       )
         continue;
-      if (current || path !== "/offline.html" || !currentPolicyKnown) return saved;
+      if (current || path !== "/offline.html") return saved;
+      // 現行のポリシーが確認できないときは、旧世代の案内ページを使わない。
+      if (!currentPolicyKnown) continue;
       // 旧世代の案内ページには現行の CSP を付ける（現行にヘッダーが無ければ削除）。
       return await withPolicyHeaders(saved.clone(), csp);
     }
