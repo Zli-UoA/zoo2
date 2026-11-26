@@ -38,7 +38,7 @@ pub fn render_linked(
                         let label = span
                             .href
                             .as_ref()
-                            .filter(|href| **href == span.content)
+                            .filter(|_| span.bare)
                             .and_then(|href| short.get(href));
                         Span::styled(
                             label.cloned().unwrap_or(span.content),

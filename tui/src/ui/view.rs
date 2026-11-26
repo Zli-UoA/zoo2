@@ -1716,6 +1716,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_reply_opens_its_real_thread_once_known() {
+        // `?thread=` が実際の親と違っていても、行が届いたら実際の親のスレッドを開く。
+        let mut app = app_with_link("http://127.0.0.1:9/channels/c2?thread=other&message=s1");
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.thread.as_ref().unwrap().root_id, "other");
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c2".into()),
+            batch(vec![
+                (
+                    "m2",
+                    json!({ "id": "m2", "user_id": "u2", "channel_id": "c2", "content": "親",
+                            "created_at": "2026-11-01 01:00:00" }),
+                ),
+                (
+                    "s1",
+                    json!({ "id": "s1", "user_id": "u2", "channel_id": "c2", "content": "返信",
+                            "created_at": "2026-11-01 02:00:00", "parent_id": "m2" }),
+                ),
+            ]),
+        ));
+        let thread = app.thread.as_ref().unwrap();
+        assert_eq!(thread.root_id, "m2");
+        assert_eq!(thread.selected.as_deref(), Some("s1"));
+    }
+
+    #[tokio::test]
     async fn a_link_that_turns_out_to_be_missing_is_reported() {
         let mut app = app_with_link(SECRET_LINK);
         // 取得の前に開き、行がそろってから、ないと分かる。

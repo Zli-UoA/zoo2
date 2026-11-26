@@ -2158,8 +2158,16 @@ impl App {
                 }
                 self.notify("メッセージを表示できません");
             }
-            Some(Some(parent_id)) if !in_thread => {
-                self.selected = None;
+            // 返信なら、実際の親のスレッドを開く（`?thread=` が違っていても）。
+            Some(Some(parent_id))
+                if self
+                    .thread
+                    .as_ref()
+                    .is_none_or(|thread| thread.root_id != parent_id) =>
+            {
+                if !in_thread {
+                    self.selected = None;
+                }
                 self.open_search_result(global_search::Destination {
                     channel_id: channel_id.to_owned(),
                     message_id,

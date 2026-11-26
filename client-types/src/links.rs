@@ -300,7 +300,7 @@ pub fn bare_links(content: &str, app_base_url: &str) -> Vec<(String, LinkTarget)
         .into_iter()
         .flat_map(|line| line.spans)
         .filter_map(|span| {
-            let url = span.href.filter(|href| *href == span.content)?;
+            let url = span.href.filter(|_| span.bare)?;
             let target = parse_channel_link(&url, app_base_url)?;
             Some((url, target))
         })
@@ -663,6 +663,14 @@ mod tests {
         assert!(ids("  ```rs\nhttps://zli.chat/channels/a\n本文```").is_empty());
         assert_eq!(ids("```\nx\n```\nhttps://zli.chat/channels/c"), ["c"]);
         assert_eq!(excerpt("前\n```\n**コード**"), "前 **コード**");
+        // 文字に URL を書いた `[文字](URL)` は、短くする対象ではない。
+        assert!(
+            bare_links(
+                "[https://zli.chat/channels/b](https://zli.chat/channels/b)",
+                APP
+            )
+            .is_empty()
+        );
     }
 
     #[test]

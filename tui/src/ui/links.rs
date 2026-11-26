@@ -262,35 +262,62 @@ pub struct Parsed {
     pub targets: Vec<LinkTarget>,
 }
 
-/// 覚える本文の数。超えた分は覚えない（全部捨てると、次の描画で同じ本文をすべて調べ直す）。
+/// 新しい方に覚える本文の数。古い方と合わせて、この 2 倍までを覚える。
 const PARSED_LIMIT: usize = 20_000;
 
 /// 本文ごとの [`Parsed`]。タイムラインは描画のたびに読み込んだ全部の投稿を組み立てるので、描画を
 /// またいで覚え、同じ本文を調べ直さない。接続先は変わらないものとする。
-#[derive(Default)]
-pub struct ParsedLinks(RefCell<HashMap<String, Arc<Parsed>>>);
+///
+/// 新旧 2 つに分けて持ち、新しい方がいっぱいになったら古い方を捨てて入れ替える。使った本文は
+/// 新しい方へ移るので、画面で使っている本文は残り、新しい本文も覚えられる。
+pub struct ParsedLinks {
+    limit: usize,
+    /// (新しい方, 古い方)
+    entries: RefCell<(ParsedMap, ParsedMap)>,
+}
+
+type ParsedMap = HashMap<String, Arc<Parsed>>;
+
+impl Default for ParsedLinks {
+    fn default() -> Self {
+        Self::with_limit(PARSED_LIMIT)
+    }
+}
 
 impl ParsedLinks {
+    fn with_limit(limit: usize) -> Self {
+        Self {
+            limit,
+            entries: Default::default(),
+        }
+    }
+
     pub fn get(&self, body: &str, app_base_url: &str) -> Arc<Parsed> {
-        if let Some(parsed) = self.0.borrow().get(body) {
+        if let Some(parsed) = self.entries.borrow().0.get(body) {
             return parsed.clone();
         }
-        let all = links::app_links(body, app_base_url);
-        let parsed = Arc::new(if all.is_empty() {
-            Parsed::default()
-        } else {
-            let embedded = links::embedded_links(body, app_base_url);
-            Parsed {
-                targets: links::fetch_targets(body, app_base_url, &embedded, &all),
-                all,
-                embedded,
-            }
-        });
-        let mut cache = self.0.borrow_mut();
-        if cache.len() < PARSED_LIMIT {
-            cache.insert(body.to_owned(), parsed.clone());
+        let old = self.entries.borrow_mut().1.remove(body);
+        let parsed = old.unwrap_or_else(|| Arc::new(parse(body, app_base_url)));
+        let mut entries = self.entries.borrow_mut();
+        let (new, old) = &mut *entries;
+        if new.len() >= self.limit {
+            *old = std::mem::take(new);
         }
+        new.insert(body.to_owned(), parsed.clone());
         parsed
+    }
+}
+
+fn parse(body: &str, app_base_url: &str) -> Parsed {
+    let all = links::app_links(body, app_base_url);
+    if all.is_empty() {
+        return Parsed::default();
+    }
+    let embedded = links::embedded_links(body, app_base_url);
+    Parsed {
+        targets: links::fetch_targets(body, app_base_url, &embedded, &all),
+        all,
+        embedded,
     }
 }
 
@@ -563,6 +590,21 @@ mod tests {
             links.fetch(&key("m1"), Instant::now()),
             LinkedFetch::Found(_)
         ));
+    }
+
+    #[test]
+    fn parsed_bodies_in_use_are_kept_past_the_limit() {
+        let cache = ParsedLinks::with_limit(2);
+        let get = |body: &str| cache.get(body, "https://zli.chat");
+        let (a, b) = (get("a"), get("b"));
+        let c = get("c");
+        // 使い続ける本文は残り、上限を超えたあとの本文も覚える。
+        assert!(Arc::ptr_eq(&a, &get("a")));
+        assert!(Arc::ptr_eq(&c, &get("c")));
+        get("d");
+        assert!(Arc::ptr_eq(&a, &get("a")));
+        // 使わなかった本文は捨てる。
+        assert!(!Arc::ptr_eq(&b, &get("b")));
     }
 
     #[test]

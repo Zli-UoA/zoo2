@@ -212,6 +212,8 @@ pub struct Span {
     /// リンクの行き先 (`http://` か `https://` で始まるものだけ)。`[label](url)` では
     /// `content` がラベルになるので、行き先はこちらを使う。
     pub href: Option<String>,
+    /// URL の文字そのものを書いたリンクか（`[label](url)` は、ラベルが URL でも違う）。
+    pub bare: bool,
     pub avatar_url: Option<String>,
     pub avatar_fallback: Option<String>,
 }
@@ -222,6 +224,7 @@ impl Span {
             content,
             style,
             href: None,
+            bare: false,
             avatar_url: None,
             avatar_fallback: None,
         }
@@ -232,6 +235,7 @@ impl Span {
             content,
             style,
             href: Some(href.to_string()),
+            bare: false,
             avatar_url: None,
             avatar_fallback: None,
         }
@@ -395,7 +399,10 @@ impl Inline<'_> {
         if let Some(url) = leading_url(rest) {
             return Some((
                 url.len(),
-                vec![Span::link(url.to_string(), url, base.patch(LINK))],
+                vec![Span {
+                    bare: true,
+                    ..Span::link(url.to_string(), url, base.patch(LINK))
+                }],
             ));
         }
         let at_boundary = previous.is_none_or(is_boundary);
@@ -609,7 +616,14 @@ pub(crate) fn leading_url(text: &str) -> Option<&str> {
                 open.push((at, if ch == '(' { ')' } else { ']' }));
                 true
             }
-            ')' | ']' => open.pop().is_some_and(|(_, close)| close == ch),
+            ')' | ']' => {
+                // 対応しないときは、開き括弧を残す（閉じていない括弧として、URL から除くため）。
+                let paired = open.last().is_some_and(|(_, close)| *close == ch);
+                if paired {
+                    open.pop();
+                }
+                paired
+            }
             _ => {
                 ch.is_ascii_alphanumeric()
                     || matches!(
@@ -824,6 +838,10 @@ mod tests {
             Some("https://ja.wikipedia.org/wiki/A_(b)_[c]")
         );
         assert_eq!(leading_url("https://あ"), None);
+        assert_eq!(
+            leading_url("https://example.com/a(b]"),
+            Some("https://example.com/a")
+        );
         // 末尾で除くのは `.` と `,` だけ。
         assert_eq!(
             leading_url("https://a.example/x!, y"),
