@@ -153,6 +153,23 @@ describe("MessageRow", () => {
     }
   });
 
+  it("refreshes visible timestamps when the zone changes without a focus event", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    vi.setSystemTime(new Date("2026-10-19T14:30:00Z"));
+    try {
+      await cdp().send("Emulation.setTimezoneOverride", { timezoneId: "Asia/Tokyo" });
+      const { unmount } = renderRow(buildItem({ created_at: "2026-10-19T12:00:00Z" }));
+      expect(screen.getByText("21:00")).toBeInTheDocument();
+      await cdp().send("Emulation.setTimezoneOverride", { timezoneId: "Pacific/Noumea" });
+      await act(() => vi.advanceTimersByTimeAsync(60_000));
+      expect(screen.getByText("10/19 23:00")).toBeInTheDocument();
+      unmount();
+    } finally {
+      await cdp().send("Emulation.setTimezoneOverride", { timezoneId: "" });
+      vi.useRealTimers();
+    }
+  });
+
   it("moves a grouped timestamp from the gutter to the header at local New Year", async () => {
     const now = new Date(2026, 11, 31, 23, 59, 59);
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });

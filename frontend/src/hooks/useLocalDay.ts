@@ -3,6 +3,7 @@ import { useSyncExternalStore } from "react";
 // All mounted timestamps share one timeout, including when a suspended tab wakes up.
 const listeners = new Set<() => void>();
 let timer: number;
+const visibleCheckInterval = 60_000;
 
 function readCalendar() {
   return {
@@ -15,7 +16,11 @@ let calendar = readCalendar();
 
 function updateCalendar() {
   const next = readCalendar();
-  if (next.midnight !== calendar.midnight || next.zone !== calendar.zone) calendar = next;
+  if (next.midnight !== calendar.midnight || next.zone !== calendar.zone) {
+    calendar = next;
+    return true;
+  }
+  return false;
 }
 
 function snapshot() {
@@ -23,25 +28,29 @@ function snapshot() {
   return calendar;
 }
 
-function scheduleMidnight() {
+function scheduleCheck() {
   window.clearTimeout(timer);
   const now = new Date();
   const midnight = new Date(now);
   midnight.setHours(24, 0, 0, 0);
-  timer = window.setTimeout(refresh, midnight.getTime() - now.getTime());
+  const untilMidnight = midnight.getTime() - now.getTime();
+  timer = window.setTimeout(
+    refresh,
+    document.hidden ? untilMidnight : Math.min(untilMidnight, visibleCheckInterval),
+  );
 }
 
 function refresh() {
-  updateCalendar();
-  scheduleMidnight();
-  for (const listener of listeners) listener();
+  const changed = updateCalendar();
+  scheduleCheck();
+  if (changed) for (const listener of listeners) listener();
 }
 
 function subscribe(listener: () => void) {
   listeners.add(listener);
   if (listeners.size === 1) {
     updateCalendar();
-    scheduleMidnight();
+    scheduleCheck();
     document.addEventListener("visibilitychange", refresh);
     window.addEventListener("focus", refresh);
   }

@@ -365,17 +365,12 @@ fn draw_global_search(frame: &mut Frame, app: &App) {
         if let Some(author) = &item.author {
             head.push(Span::styled(format!("  {author}"), DIM));
         }
-        let timestamp = Span::styled(
-            format!("  {}", global_search::result_time(&item.created_at, &now)),
-            DIM,
-        );
-        head = truncate_spans(head, inner.saturating_sub(timestamp.width()));
-        head.push(timestamp);
-        if item.parent_id.is_some() {
-            head.push(Span::styled("  スレッドの返信", DIM));
-        }
-        // 見出しも 1 行に収める（折り返すと 1 件 2 行の前提が崩れ、狭い端末で選択や案内が画面外に出る）。
-        lines.push(Line::from(truncate_spans(head, inner)));
+        let time = global_search::result_time(&item.created_at, &now);
+        let metadata = search_result_metadata(&time, item.parent_id.is_some(), inner);
+        let reserved = metadata.as_ref().map_or(0, Span::width);
+        head = truncate_spans(head, inner.saturating_sub(reserved));
+        head.extend(metadata);
+        lines.push(Line::from(head));
         let text = item.file_name.as_deref().unwrap_or(&item.snippet);
         let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
         // 検索語に当たった部分を強調する（Web の `<mark>` と同じ）。
@@ -398,6 +393,29 @@ fn draw_global_search(frame: &mut Frame, app: &App) {
     }
     lines.extend(footer);
     draw_popup_sized(frame, "全文検索", lines, WIDTH);
+}
+
+/// 選択マークと行き先の先頭を残し、残り幅に収まる日時・返信ラベルを選ぶ。
+fn search_result_metadata(time: &str, reply: bool, width: usize) -> Option<Span<'static>> {
+    use unicode_width::UnicodeWidthStr;
+    let available = width.saturating_sub(5);
+    let clock = time.rsplit_once(' ').map_or(time, |(_, clock)| clock);
+    let labels: &[&str] = if reply {
+        &[" スレッドの返信", " 返信"]
+    } else {
+        &[""]
+    };
+    for stamp in [time, clock] {
+        for &label in labels {
+            if stamp.width() + label.width() < available {
+                return Some(Span::styled(format!(" {stamp}{label}"), DIM));
+            }
+        }
+    }
+    if reply && " 返信".width() <= available {
+        return Some(Span::styled(" 返信", DIM));
+    }
+    None
 }
 
 /// 表示幅で切り詰める（全角は 2）。切ったら末尾を `…` にする。
@@ -445,17 +463,18 @@ fn truncate_spans(spans: Vec<Span<'_>>, width: usize) -> Vec<Span<'_>> {
 }
 
 fn truncate_width(text: &str, width: usize) -> String {
-    use unicode_width::UnicodeWidthChar;
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
     let mut out = String::new();
     let mut used = 0;
-    for ch in text.chars() {
-        let w = ch.width().unwrap_or(0);
+    for cluster in text.graphemes(true) {
+        let w = cluster.width();
         if used + w > width.saturating_sub(1) {
             out.push('…');
-            return out;
+            break;
         }
         used += w;
-        out.push(ch);
+        out.push_str(cluster);
     }
     out
 }
@@ -2899,6 +2918,7 @@ mod tests {
         let text: String = out.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.width() <= 16, "{text}");
         assert!(text.ends_with('…'), "{text}");
+        assert_eq!(truncate_width("👩‍💻abcdef", 5), "👩‍💻ab…");
         let short = truncate_spans(vec![Span::raw("ab"), Span::raw("cd")], 16);
         assert_eq!(short.len(), 2);
         // 前の span が幅を使い切ったら、`…` も足さずに止める。
@@ -2968,25 +2988,39 @@ mod tests {
             .map(|i| {
                 serde_json::from_value(json!({
                     "id": format!("m{i}"), "channel_id": "c1", "channel_name": "general",
-                    "author": "Long author name", "snippet": "会議の資料", "created_at": "2001-11-21T00:00:00.000"
+                    "author": {"display_name": "Long author name 👩‍💻"}, "snippet": "会議の資料", "created_at": "2001-11-21T00:00:00.000"
                 }))
                 .unwrap()
             })
             .collect();
-        let mut terminal = Terminal::new(TestBackend::new(40, 24)).unwrap();
-        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        let buffer = terminal.backend().buffer();
-        let screen: String = (0..buffer.area.height)
-            .map(|y| {
-                (0..buffer.area.width)
-                    .map(|x| buffer[(x, y)].symbol())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        let screen = render_sized(&mut app, 40, 24);
         let timestamp =
             global_search::result_time(&app.global_search.items[0].created_at, &jiff::Zoned::now());
-        assert!(screen.contains(&timestamp), "{screen}");
+        let selected = screen
+            .lines()
+            .find(|line| line.contains("▶ #general"))
+            .unwrap();
+        assert!(
+            selected.contains("Long") && selected.contains(&timestamp),
+            "{screen}"
+        );
+        app.global_search.items[0].parent_id = Some("parent".into());
+        let reply_screen = render_sized(&mut app, 40, 36);
+        let reply = reply_screen
+            .lines()
+            .find(|line| line.contains("▶ #"))
+            .unwrap();
+        assert!(
+            reply.contains(&timestamp) && reply.contains("スレッドの返信"),
+            "{reply_screen}"
+        );
+        let narrow = render_sized(&mut app, 20, 40);
+        let selected = narrow.lines().find(|line| line.contains("▶ #g")).unwrap();
+        assert!(
+            selected.contains(timestamp.split_whitespace().last().unwrap())
+                && selected.contains("返信"),
+            "{narrow}"
+        );
         assert!(screen.contains("Esc"), "{screen}");
     }
 
