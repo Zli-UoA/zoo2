@@ -10,7 +10,7 @@ import okhttp3.tls.HandshakeCertificates
 import okhttp3.tls.HeldCertificate
 
 class AndroidImageCacheTest {
-    private class Fixture : Closeable {
+    internal class Fixture : Closeable {
         val directory = Files.createTempDirectory("zoo-image-cache").toFile()
         private val certificate = HeldCertificate.Builder()
             .commonName("localhost").addSubjectAlternativeName("localhost").build()
@@ -44,14 +44,14 @@ class AndroidImageCacheTest {
         }
     }
 
-    @Test fun revalidatesExpiredImagesWithTheirEtag() = runBlocking {
+    @Test fun cacheFirstRevalidatesNoCacheImagesWithTheirEtag() = runBlocking {
         Fixture().use { f ->
-            f.server.enqueue(MockResponse().setHeader("Cache-Control", "public, max-age=0")
+            f.server.enqueue(MockResponse().setHeader("Cache-Control", "public, no-cache")
                 .setHeader("ETag", "\"v1\"").setBody("original"))
             f.server.enqueue(MockResponse().setResponseCode(304).setHeader("Cache-Control", "public, max-age=3600"))
             f.cache().use { cache ->
-                assertEquals("original", cache.image(f.url).decodeToString())
-                assertEquals("original", cache.image(f.url).decodeToString())
+                assertEquals("original", cache.imageFromCacheFirst(ImageRequest(f.url)).decodeToString())
+                assertEquals("original", cache.imageFromCacheFirst(ImageRequest(f.url)).decodeToString())
             }
             assertEquals(2, f.server.requestCount)
             f.server.takeRequest()
@@ -69,4 +69,49 @@ class AndroidImageCacheTest {
             assertEquals(2, f.server.requestCount)
         }
     }
+    @Test fun cacheFirstDisplaysPreviouslyStoredImagesWithoutRevalidation() = runBlocking {
+        Fixture().use { f ->
+            f.server.enqueue(MockResponse().setHeader("Cache-Control", "public, max-age=0").setBody("photo"))
+            f.cache().use { cache -> assertEquals("photo", cache.imageFromCacheFirst(ImageRequest(f.url)).decodeToString()) }
+            f.cache().use { cache -> assertEquals("photo", cache.imageFromCacheFirst(ImageRequest(f.url)).decodeToString()) }
+            assertEquals(1, f.server.requestCount)
+        }
+    }
+
+    @Test fun cacheFirstStillHonorsNoStore() = runBlocking {
+        Fixture().use { f ->
+            f.server.enqueue(MockResponse().setHeader("Cache-Control", "no-store").setBody("first"))
+            f.server.enqueue(MockResponse().setHeader("Cache-Control", "no-store").setBody("second"))
+            f.cache().use { cache ->
+                assertEquals("first", cache.imageFromCacheFirst(ImageRequest(f.url)).decodeToString())
+                assertEquals("second", cache.imageFromCacheFirst(ImageRequest(f.url)).decodeToString())
+            }
+            assertEquals(2, f.server.requestCount)
+        }
+    }
+
+    @Test fun cachedMissingImageCanRecover() = runBlocking {
+        Fixture().use { f ->
+            f.server.enqueue(MockResponse().setResponseCode(404).setHeader("Cache-Control", "public, max-age=600"))
+            f.server.enqueue(MockResponse().setBody("recovered"))
+            f.cache().use { cache ->
+                assertFailsWith<ImageHttpFailure> { cache.image(f.url) }
+                assertEquals("recovered", cache.imageFromCacheFirst(ImageRequest(f.url)).decodeToString())
+                assertEquals(2, f.server.requestCount)
+            }
+        }
+    }
+
+    @Test fun signedImagesAreNotStoredOnDisk() = runBlocking {
+        Fixture().use { f ->
+            repeat(2) { f.server.enqueue(MockResponse().setHeader("Cache-Control", "public, max-age=600").setBody("photo")) }
+            f.cache().use { cache ->
+                cache.signedImage(f.url)
+                assertNull(cache.imageIfCached(ImageRequest(f.url), 1024))
+                cache.signedImage(f.url)
+            }
+            repeat(2) { assertTrue(f.server.takeRequest().getHeader("Cache-Control").orEmpty().contains("no-store")) }
+        }
+    }
+
 }

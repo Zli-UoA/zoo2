@@ -1,6 +1,7 @@
 import { AccountGlyph, useMfmAccounts } from "./MfmAccounts";
 import { useWorkspaceEmojis } from "../../../lib/emoji/workspace";
 import { Button } from "../../ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../../ui/tooltip";
 import { noAutofill } from "../../ui/autofill";
 import { EmojiPicker as Frimousse } from "frimousse";
 import { SearchIcon } from "lucide-react";
@@ -39,7 +40,9 @@ const SCROLL_CORRECTION_WINDOW_MS = 200;
  * localStorage after the first load. `resolveMultilingualEmojiData` also loads
  * `search-index.json` once so every language (and pinyin) is searchable.
  */
-const KeyboardNavigationContext = createContext<{ current: number }>({ current: 0 });
+const KeyboardNavigationContext = createContext<{ current: number }>({
+  current: 0,
+});
 
 /** Owns the frimousse state (search, skin tone, keyboard navigation) for its children. */
 export function EmojiPickerRoot({
@@ -256,6 +259,39 @@ export type CustomEmojiOption = {
   height?: number | null;
 };
 
+/**
+ * Lower is better: 0 exact name, 1 name prefix, 2 name substring, then the same three
+ * tiers (3 exact, 4 prefix, 5 substring) over aliases and category, which rank equally.
+ * Null when nothing matches.
+ */
+function customEmojiRank(e: CustomEmojiOption, needle: string): number | null {
+  const name = e.name.toLowerCase();
+  const others = [...(e.aliases ?? []), e.category]
+    .map((v) => v?.toLowerCase())
+    .filter((v): v is string => Boolean(v));
+  if (name === needle) return 0;
+  if (name.startsWith(needle)) return 1;
+  if (name.includes(needle)) return 2;
+  if (others.includes(needle)) return 3;
+  if (others.some((v) => v.startsWith(needle))) return 4;
+  if (others.some((v) => v.includes(needle))) return 5;
+  return null;
+}
+
+/** Exact matches first, then prefix, then substring; shorter names first within a rank. */
+export function rankCustomEmojis(
+  options: CustomEmojiOption[],
+  needle: string,
+): CustomEmojiOption[] {
+  // No query: keep the registration order (every emoji would otherwise rank as a prefix match).
+  if (needle === "") return options;
+  return options
+    .map((e, index) => ({ e, index, rank: customEmojiRank(e, needle) }))
+    .filter((x): x is { e: CustomEmojiOption; index: number; rank: number } => x.rank !== null)
+    .sort((a, b) => a.rank - b.rank || a.e.name.length - b.e.name.length || a.index - b.index)
+    .map((x) => x.e);
+}
+
 /** Workspace custom emoji plus account avatars, filtered by `query`. */
 export function useCustomEmojiSearch(query: string) {
   const { emojis, loading, failed, retry, imageUrl } = useWorkspaceEmojis();
@@ -270,12 +306,8 @@ export function useCustomEmojiSearch(query: string) {
     })),
   ];
   const needle = query.trim().toLowerCase();
-  const filtered = options.filter((e) =>
-    [e.name, e.category, ...(e.aliases ?? [])].some((value) =>
-      value?.toLowerCase().includes(needle),
-    ),
-  );
-  return { filtered, loading, failed, retry, imageUrl };
+  const filtered = rankCustomEmojis(options, needle);
+  return { filtered, searching: needle !== "", loading, failed, retry, imageUrl };
 }
 
 type CustomEmojiSearch = ReturnType<typeof useCustomEmojiSearch>;
@@ -298,6 +330,42 @@ function customEmojiImageStyle(emoji: CustomEmojiOption): CSSProperties | undefi
   return { aspectRatio: `auto ${emoji.width} / ${emoji.height}` };
 }
 
+function CustomEmojiButton({
+  emoji: e,
+  imageUrl,
+  onSelect,
+}: {
+  emoji: CustomEmojiOption;
+  imageUrl: (url: string) => string;
+  onSelect: (value: string) => void;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            variant="ghost"
+            aria-label={`:${e.name}:`}
+            onClick={() => onSelect(`:${e.name}:`)}
+          />
+        }
+      >
+        {e.name.startsWith("@") ? (
+          <AccountGlyph name={e.name.slice(1)} />
+        ) : (
+          <img
+            src={imageUrl(e.url)}
+            alt={`:${e.name}:`}
+            className="h-7 w-auto max-w-40 object-contain"
+            style={customEmojiImageStyle(e)}
+          />
+        )}
+      </TooltipTrigger>
+      <TooltipContent>{`:${e.name}:`}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 function CustomEmojiGroups({
   search,
   onSelect,
@@ -306,37 +374,34 @@ function CustomEmojiGroups({
   onSelect: (value: string) => void;
 }) {
   const { t } = useTranslation();
-  const { filtered, imageUrl } = search;
+  const { filtered, imageUrl, searching } = search;
+  // While searching, keep the ranked order (exact matches first): split into runs
+  // of consecutive same-category emoji instead of regrouping by category, which
+  // would let a weaker match jump ahead of a stronger one.
+  const groups: { category: string; emojis: CustomEmojiOption[] }[] = [];
+  if (searching) {
+    for (const e of filtered) {
+      const category = e.category ?? "";
+      const last = groups[groups.length - 1];
+      if (last?.category === category) last.emojis.push(e);
+      else groups.push({ category, emojis: [e] });
+    }
+  } else {
+    for (const category of new Set(filtered.map((e) => e.category ?? ""))) {
+      groups.push({ category, emojis: filtered.filter((e) => (e.category ?? "") === category) });
+    }
+  }
   return (
     <>
-      {[...new Set(filtered.map((e) => e.category ?? ""))].map((category) => (
-        <section key={category}>
+      {groups.map(({ category, emojis }, index) => (
+        <section key={`${index}:${category}`}>
           <h3 className="text-sm text-muted-foreground">
             {category || t("customEmoji.uncategorized")}
           </h3>
           <div className="flex flex-wrap gap-2">
-            {filtered
-              .filter((e) => (e.category ?? "") === category)
-              .map((e) => (
-                <Button
-                  key={e.name}
-                  variant="ghost"
-                  aria-label={`:${e.name}:`}
-                  title={`:${e.name}:`}
-                  onClick={() => onSelect(`:${e.name}:`)}
-                >
-                  {e.name.startsWith("@") ? (
-                    <AccountGlyph name={e.name.slice(1)} />
-                  ) : (
-                    <img
-                      src={imageUrl(e.url)}
-                      alt={`:${e.name}:`}
-                      className="h-7 w-auto max-w-40 object-contain"
-                      style={customEmojiImageStyle(e)}
-                    />
-                  )}
-                </Button>
-              ))}
+            {emojis.map((e) => (
+              <CustomEmojiButton key={e.name} emoji={e} imageUrl={imageUrl} onSelect={onSelect} />
+            ))}
           </div>
         </section>
       ))}

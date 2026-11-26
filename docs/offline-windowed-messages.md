@@ -3,7 +3,8 @@
 ## 目的
 
 - チャンネルを開いたとき、新しい方から 50 件だけを初期表示し、上スクロールで古い方へ 1 ページずつ広げる。
-- **端末に同期するのは、いま見ている範囲だけ**にする（全件を同期しない）。Slack から取り込んだ数万件の履歴があるチャンネルでも、初回の同期は 1 ページ（約 30 KB）で済む。
+- **メッセージ本体は、いま見ている範囲だけ**を端末に同期する（全件を同期しない）。Slack から取り込んだ数万件の履歴があるチャンネルでも、メッセージの初回の同期は 1 ページ（約 30 KB）で済む。
+  ただし `message_reactions` はチャンネル全件を eager に同期し（`useChannelReactions`）、添付も `display_data` を持たない行があれば購読する。メッセージ本体と同じ範囲にはなっていない。
 - 一度同期したチャンネル・メッセージを端末（OPFS）に保存し、オフラインでも表示する。メッセージは、各チャンネルの最新ページの控え（IndexedDB）で表示する（下の「永続化」を参照）。
 - Service Worker で静的 app shell を配信し、オフラインでリロードしてもアプリを起動する。
 
@@ -60,6 +61,26 @@ Electric の subset snapshot（`subset__where` / `subset__order_by` / `subset__l
 - OPFS 非対応・初期化失敗・quota 超過時はメモリのみにフォールバックし、アプリは動かす。
 - ログアウト時は該当ユーザーの DB（`-journal` / `-wal` を含む）を削除する。削除に失敗しても
   ログアウトは続行する（DB はユーザー単位で分離済み）。
+
+## Android（Compose）
+
+Android も、メッセージを on-demand の subset snapshot で取る。以前は `channel_id = $1` だけの Shape で全件を購読し、全行をメモリと
+同期キャッシュ（全行を 1 本の JSON 文字列）に載せていたため、メッセージの多いチャンネルを開くとクラッシュしていた。
+
+- `SyncedTable`（`frontend-compose/.../Repository.kt`）の `onDemand` 表は `log=changes_only` で購読する。最初の up-to-date は空なので、行は反映しない。
+  Electric4k の `ShapeStream.requestSnapshot`（GET の `subset__where` / `subset__order_by` / `subset__limit`）で 1 ページ（`MESSAGE_PAGE_SIZE = 50`）ずつ取る。
+  バックエンドのプロキシは `subset__*` と `log` をそのまま転送するので、変更はない。
+- 並びは `created_at DESC, id DESC`。次のページは `created_at < $1 OR (created_at = $1 AND id < $2)` で、同じ時刻の行を取りこぼさない。
+  メイン一覧は `parent_id IS NULL AND deleted_at IS NULL`、スレッドは `parent_id = $1`。`hasOlder` と読み込み中は範囲ごとに持つ（`PageState`）。
+  直前のページが満杯でなければ、それより古い行はない。
+- 古いページは、画面の先頭に来たときに 1 ページだけ取る（`TimelineWithInput` の先頭トリガー）。チャンネルは末尾への初期位置合わせが済むまで、
+  スレッドは利用者がドラッグするまで呼ばない。既存の `Timeline.loadOlder` は末尾で呼ぶ Home 用で、チャンネルには使わない。
+- 通知・リンク・検索の対象と、スレッドの親は `id = $1` の subset で 1 行だけ取り、対象を含むまで 1 ページずつ古い方へ広げる（最大 20 ページ）。
+- 添付・リアクションは別 Shape をやめ、メッセージ行の `display_data` から出す。ActivityPub のリアクション（`apub:` で始まる `emoji`）は表示しない。
+- 新着・編集・削除は、取得済みの行について live で届く。窓の外の行への更新は無視される。送信の確認（txid）は、live で届いたもののほか、
+  取得した snapshot に含まれて捨てられた変更も、確認済みとして扱う。送信は最初のページが反映されるまで待つ。
+- オフライン用の控えは、メイン一覧の最新 50 件だけ（キー `v3`）。最初のページが届くまでは控えを残し、空の結果で上書きしない。
+  旧キー（`v2`。messages / attachments / message_reactions）は起動時に消す。暗号化チャンネルは、これまでどおり復号後の本文を保存しない。
 
 ## Service Worker
 

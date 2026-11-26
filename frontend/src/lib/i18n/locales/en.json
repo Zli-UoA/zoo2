@@ -316,6 +316,7 @@
     "download": "Download {{name}}",
     "downloadShort": "Download",
     "downloadError": "Could not download the file.",
+    "previewSaveUnsupported": "This file cannot be saved by the app. Open the link in a new tab to save it.",
     "downloadSaved": "Saved as {{name}}.",
     "downloadDestinationUnsupported": "This folder cannot be used to save the file. Choose another folder, or change the save location in Settings > Downloads.",
     "downloadDestinationUnsupportedAskEveryTimeOff": "This folder cannot be used to save the file. Change the save location in Settings > Downloads, or turn on \"Ask where to save each time\".",

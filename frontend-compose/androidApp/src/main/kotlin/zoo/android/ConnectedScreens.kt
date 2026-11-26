@@ -16,6 +16,7 @@ import androidx.compose.ui.unit.dp
 import io.ktor.http.Url
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonPrimitive
@@ -23,6 +24,10 @@ import zoo.*
 import zoo.android.ui.*
 import zoo.phone.PhoneController
 import zoo.android.phone.rememberCallImage
+
+/** 窓の外の対象まで古い方へ広げる、1 ページずつの読み込みの上限。 */
+private const val MAX_FOCUS_PAGES = 20
+private const val MAX_FOCUS_FAILURES = 3
 
 @Composable
 internal fun ConnectedScreens(
@@ -37,6 +42,8 @@ internal fun ConnectedScreens(
 ) {
     val state = remember(session) { ConnectedScreenState(session, platform, phone) }
     DisposableEffect(state) { onDispose { state.close() } }
+    val openChannelLink = remember(state) { { target: ChannelLinkTarget, parent: String? -> state.openChannelLink(target, parent) } }
+    val channelLinks = rememberChannelLinks(session, platform, openChannelLink)
     val env = platform.env
     val channels by session.repo.channels.rows.collectAsState()
     val users by session.repo.users.rows.collectAsState()
@@ -45,26 +52,29 @@ internal fun ConnectedScreens(
     val channel = channels.find { it.text("id") == channelId }
     val channelMembers = memberships.filter { it.text("channel_id") == channelId }
     val member = channelMembers.any { it.text("user_id") == session.config.userId }
-    val rows = if (channelId == null) emptyList() else {
-        val table = remember(channelId) { session.repo.messages(channelId) }
-        DisposableEffect(channelId) { onDispose { session.repo.releaseChannel(channelId) } }
-        val messages by table.rows.collectAsState()
+    val messageTable = if (channelId == null) null else remember(channelId) { session.repo.messages(channelId) }
+    if (channelId != null) DisposableEffect(channelId) { onDispose { session.repo.releaseChannel(channelId) } }
+    val rows = if (messageTable == null) emptyList() else {
+        val messages by messageTable.rows.collectAsState()
         messages
     }
-    val files = if (channelId == null) emptyList() else {
-        val table = remember(channelId) { session.repo.attachments(channelId) }
-        val values by table.rows.collectAsState()
-        values
+    val pageStates = if (messageTable == null) emptyMap() else {
+        val states by messageTable.pageStates.collectAsState()
+        states
     }
-    val reactions = if (channelId == null) emptyList() else {
-        val table = remember(channelId) { session.repo.reactions(channelId) }
-        val values by table.rows.collectAsState()
-        values
+    // 添付・リアクションは、メッセージ行の display_data から出す（別 Shape は購読しない）。
+    val reactions = remember(rows) { rows.flatMap(::displayReactions) }
+    val context = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    val emojiCatalog = remember(context) { AndroidEmojiCatalog(context) }
+    val needsWorkspaceEmoji = reactions.any { it.text("emoji").startsWith(':') }
+    LaunchedEffect(session, needsWorkspaceEmoji, env.online, env.visible) {
+        if (needsWorkspaceEmoji && env.online && env.visible) {
+            try { session.loadWorkspaceEmojis() }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { /* Keep shortcode fallbacks if the catalog is unavailable. */ }
+        }
     }
-    val filesByMessage = remember(files) { files.groupBy { it.text("message_id") } }
-    val reactionsByMessage = remember(reactions) { reactions.groupBy { it.text("message_id") } }
-    val previewEndpoints by session.previews.endpoints.collectAsState()
-    val previewService = previewEndpoints.first
+    val previewService by session.previews.summalyEndpoint.collectAsState()
     val usersById = remember(users) { users.associateBy { it.text("id") } }
     val posts = state.home.posts.map { state.entry(it, usersById, previewService = previewService) }
     val encrypted = channel?.let { session.isEncryptedChannel(it.text("id")) } == true
@@ -72,10 +82,9 @@ internal fun ConnectedScreens(
     // 暗号ストアが変わったら（解錠、鍵の受信、鍵バックアップの取り込み）、表示中の行を復号し直す。
     val encryption = platform.messageEncryption
     val cryptoChanges by (encryption?.changes ?: remember { kotlinx.coroutines.flow.MutableStateFlow(0L) }).collectAsState()
-    val messageEntries by produceState(emptyList<TimelineItem>(), rows, usersById, encrypted, filesByMessage, reactionsByMessage, canPost, cryptoChanges) {
-        val ordered = rows.filterNot { it.present("deleted_at") }.sortedBy { it.text("created_at") }
+    val messageEntries by produceState(emptyList<TimelineItem>(), rows, usersById, encrypted, canPost, cryptoChanges, session.workspaceEmojis) {
+        val ordered = rows.filterNot { it.present("deleted_at") }.sortedWith(compareBy({ it.text("created_at") }, { it.text("id") }))
         value = ordered.map { row ->
-            val id = row.text("id")
             val decrypted = if (row.present("ciphertext")) {
                 try { encryption?.decrypt(row) ?: DecryptedBody(notice = "e2ee.sendUnavailable") }
                 catch (cancelled: CancellationException) { throw cancelled }
@@ -83,8 +92,8 @@ internal fun ConnectedScreens(
             } else null
             val data = if (decrypted != null) row + ("content" to JsonPrimitive(decrypted.body.orEmpty())) else row
             val entry = state.entry(kotlinx.serialization.json.JsonObject(data), usersById,
-                if (decrypted != null) emptyList() else filesByMessage[id].orEmpty(),
-                reactionsByMessage[id].orEmpty(), writable = canPost, allowPreview = !encrypted)
+                if (decrypted != null) emptyList() else displayAttachments(row),
+                displayReactions(row), writable = canPost, allowPreview = !encrypted)
             encryptedEntry(entry, row, decrypted, encrypted, session::t)
         }
     }
@@ -109,6 +118,61 @@ internal fun ConnectedScreens(
         rows.find { it.text("id") == currentThread }?.present("deleted_at") == true
     LaunchedEffect(focusMessage, focusParent) {
         if (!focusParent.isNullOrBlank()) session.thread = focusParent
+    }
+    // 窓の外の対象（通知・リンク・検索）は、1 行だけ先に取ってから、含むまで古い方へ 1 ページずつ広げる（回数に上限あり）。
+    LaunchedEffect(messageTable, focusMessage) {
+        val table = messageTable ?: return@LaunchedEffect
+        val target = focusMessage ?: return@LaunchedEffect
+        if (table.rows.value.none { it.text("id") == target }) {
+            // 通信の失敗は、間隔を空けて数回やり直す。取れなければ待たずに終え、利用者が開き直せるようにする。
+            var found = false
+            var tries = 0
+            while (!found && tries < MAX_FOCUS_FAILURES) {
+                found = table.loadAround(target)
+                if (!found && ++tries < MAX_FOCUS_FAILURES) delay(500L * tries)
+            }
+            if (!found) {
+                session.toast = session.t("common.errors.network")
+                return@LaunchedEffect
+            }
+        }
+        // 行は、最初のメインのページが画面に反映されるまで rows に入らない。入るのを待ってから広げる。
+        // 時間では打ち切らない（遅い回線でも、入った時点で広げる）。画面を離れる・対象が変わると、Effect ごと取り消される。
+        val row = table.rows.first { rows -> rows.any { it.text("id") == target } }
+            .first { it.text("id") == target }
+        val range = row.text("parent_id").takeIf { it.isNotEmpty() }?.let(PageScope::Replies) ?: PageScope.Main
+        // 上限は、取れたページ数と失敗の回数で数える。待機は数えない。
+        var pages = 0
+        var failures = 0
+        while (pages < MAX_FOCUS_PAGES && failures < MAX_FOCUS_FAILURES) {
+            val state = table.pageStates.value[range]
+            if (pageCovers(state?.oldest, row.text("created_at"), row.text("id"))) return@LaunchedEffect
+            if (state != null && state.loaded && !state.hasOlder) return@LaunchedEffect
+            // ほかの処理が取っている間は、時間では打ち切らず待つ（取り消されるまで）。
+            if (state?.loading == true || state == null) { delay(100); continue }
+            if (table.loadOlder(range)) pages++ else { failures++; delay(100) }
+        }
+    }
+    // スレッドの親（窓の外かもしれない）と、返信の最新の 1 ページ。
+    LaunchedEffect(messageTable, currentThread) {
+        val table = messageTable ?: return@LaunchedEffect
+        val thread = currentThread ?: return@LaunchedEffect
+        if (table.rows.value.none { it.text("id") == thread }) {
+            // 親が取れないと、スレッド画面を選べない。対象行と同じく、数回やり直し、取れなければ通知して返信へは進まない。
+            var found = false
+            var tries = 0
+            while (!found && tries < MAX_FOCUS_FAILURES) {
+                found = table.loadAround(thread)
+                if (!found && ++tries < MAX_FOCUS_FAILURES) delay(500L * tries)
+            }
+            if (!found) {
+                session.toast = session.t("common.errors.network")
+                return@LaunchedEffect
+            }
+        }
+        // 親行は、最初のメインのページが画面に反映されるまで rows に入らない。入るのを待ってから返信を取る。
+        table.rows.first { rows -> rows.any { it.text("id") == thread } }
+        table.loadOlder(PageScope.Replies(thread))
     }
     val call = phone.call
     val callChannelId = call?.target ?: channelId
@@ -238,10 +302,7 @@ internal fun ConnectedScreens(
     val remoteProfile = profile.flag("remote")
     val profileUrl = profile.text("url").takeIf { publicUrl(it) != null }
     val profileHost = profileUrl?.let { Url(it).host }.orEmpty()
-    val profileAvatarUrl = if (remoteProfile) {
-        profile.nested("avatar").text("image_id").takeIf { it.matches(Regex("[a-f0-9]{64}")) }
-            ?.let { "/api/activitypub/emoji-images/$it" }
-    } else profile.text("avatar_url").takeIf { it.startsWith("https://") && publicUrl(it) != null }
+    val profileAvatarUrl = timelineAvatarUrl(session.config.apiBaseUrl, profile)
     val profileAvatar = if (state.overlay == "profile" && profileAvatarUrl != null) {
         key(profile.text("id"), profileAvatarUrl) {
             produceState<ImageBitmap?>(null) {
@@ -331,12 +392,14 @@ internal fun ConnectedScreens(
                 (!threadDetail.flag("tracked") || threadDetail.text("membership") == "joined"),
                 users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }).copy(notices = recipientLines), focusMessage,
             focusRequest = focusRequest,
+            loadOlder = pageStates[PageScope.Replies(currentThread.orEmpty())]?.let { it.hasOlder && !it.loading } == true,
           )
         }
         channel != null -> AndroidScreen.Conversation(channelId.orEmpty(), channel.text("channel_name"), channel.text("description"),
             withEncryptionBoundary(messages.filter { it.id in conversationEntries }, rowsById, encrypted, session::t), state.input(channelId.orEmpty(), canPost,
                 users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }).copy(notices = recipientLines),
-            canCall = channel.flag("is_dm") && member && !encrypted, focusMessage = focusMessage, focusRequest = focusRequest)
+            canCall = channel.flag("is_dm") && member && !encrypted, focusMessage = focusMessage, focusRequest = focusRequest,
+            loadOlder = pageStates[PageScope.Main]?.let { it.hasOlder && !it.loading } == true)
         else -> AndroidScreen.Channels(state.channelSections(channels, usersById, memberships))
     }
     val instanceHosts = when (screen) {
@@ -380,7 +443,9 @@ internal fun ConnectedScreens(
             } else {
                 CompositionLocalProvider(
                     LocalTimelineImage provides { media -> timelineImage(session, media) },
+                    LocalKitchenReactionImage provides emojiCatalog::kitchenReaction,
                     LocalAndroidTranslation provides { session.t(it) },
+                    LocalChannelLinks provides channelLinks,
                 ) {
                     AndroidScreens(screen, env.dark, env.visible && env.focused,
                         dispatch = { action ->
@@ -400,7 +465,7 @@ internal fun ConnectedScreens(
                         remoteAudioLevel = { phone.remoteAudioLevel },
                         loadNotificationReactions = state.inbox::loadReactions,
                         loadNotificationAvatar = { url ->
-                            try { session.imageBitmap(url) }
+                            try { timelineImageUrl(session.config.apiBaseUrl, url)?.let { session.imageBitmap(it) } }
                             catch (cancelled: CancellationException) { throw cancelled }
                             catch (_: Exception) { null }
                         }) { item, modifier ->
@@ -440,8 +505,6 @@ internal fun ConnectedScreens(
     }
     val reaction = state.confirmingEntry?.takeIf { it.operation == EntryOperation.React }
     val insertingEmoji = state.inputMenu == InputTool.Emoji
-    val context = androidx.compose.ui.platform.LocalContext.current.applicationContext
-    val emojiCatalog = remember(context) { AndroidEmojiCatalog(context) }
     val recentEmojis = remember(session) { mutableStateListOf<EmojiChoice>() }
     if (insertingEmoji || reaction != null) {
         val unicode by produceState(emptyList<EmojiChoice>(), emojiCatalog) { value = emojiCatalog.unicode() }
@@ -473,7 +536,7 @@ internal fun ConnectedScreens(
             customError = session.workspaceEmojiError,
             loadKitchen = emojiCatalog::kitchen,
             loadImage = { url ->
-                try { session.imageBitmap(url) }
+                try { timelineImageUrl(session.config.apiBaseUrl, url)?.let { session.imageBitmap(it) } }
                 catch (cancelled: CancellationException) { throw cancelled }
                 catch (_: Exception) { null }
             },

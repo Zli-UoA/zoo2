@@ -130,7 +130,8 @@ export async function fetchAttachmentBlob(
   }
 }
 
-function saveBlob(blob: Blob, fileName: string): void {
+/** 取得済みの `Blob` をブラウザーの保存として書き出す（デスクトップ版の保存が使えないとき）。 */
+export function saveBlob(blob: Blob, fileName: string): void {
   const objectUrl = URL.createObjectURL(blob);
   try {
     const anchor = document.createElement("a");

@@ -121,6 +121,31 @@ dependencies {
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
 }
 
+// Fetch the SDKs used by @Config through Gradle's dependency cache before starting Robolectric.
+val robolectricSdkDirectory = layout.buildDirectory.dir("robolectric-sdks")
+val prepareRobolectricSdks by tasks.registering(Sync::class) {
+    val sdkVersions = listOf(
+        "8.0.0_r4-robolectric-r1-i7", // API 26
+        "9-robolectric-4913185-2-i7", // API 28
+        "13-robolectric-9030017-i7", // API 33
+        "15-robolectric-13954326-i7", // API 35
+    )
+    sdkVersions.forEach { version ->
+        // Separate configurations preserve every SDK version during conflict resolution.
+        from(configurations.detachedConfiguration(dependencies.create("org.robolectric:android-all-instrumented:$version")).apply {
+            isTransitive = false
+        })
+    }
+    into(robolectricSdkDirectory)
+}
+
+tasks.withType<Test>().configureEach {
+    dependsOn(prepareRobolectricSdks)
+    inputs.dir(robolectricSdkDirectory).withPathSensitivity(PathSensitivity.RELATIVE)
+    systemProperty("robolectric.offline", "true")
+    systemProperty("robolectric.dependency.dir", robolectricSdkDirectory.get().asFile.absolutePath)
+}
+
 val electricLicense by
     tasks.registering(Sync::class) {
         dependsOn(":electric4k:unpackUpstream")

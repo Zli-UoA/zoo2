@@ -231,12 +231,19 @@ async function run(
   size: number | null | undefined,
   runner: Runner,
   retryDelayMs?: number,
+  preparedController?: AbortController,
 ): Promise<string | null> {
-  // 同じ添付を二重に保存しない（円を押したときは中止になる）。保存していないので名前は返さない。
-  if (states.has(id)) return null;
-  const controller = new AbortController();
-  controllers.set(id, controller);
-  setState(id, { status: "preparing" });
+  // 保存ダイアログの前の確認で登録済みの controller があれば、その中止と状態を受け継ぐ。
+  let controller = preparedController;
+  if (!controller) {
+    // 同じ添付を二重に保存しない（円を押したときは中止になる）。保存していないので名前は返さない。
+    if (states.has(id)) return null;
+    controller = new AbortController();
+    controllers.set(id, controller);
+    setState(id, { status: "preparing" });
+  } else if (controllers.get(id) !== controller) {
+    return null;
+  }
   let downloadId: string | null = null;
   const begin = async (): Promise<{ id: string; prompted: boolean }> => {
     const started =
@@ -324,15 +331,60 @@ async function run(
   }
 }
 
+/** 保存ダイアログの前に確認した値と、その待機に使った中止の controller。 */
+export type PreparedDesktopDownload<T> = { value: T; controller: AbortController };
+
+/**
+ * 本文の確認の間も進捗表示と中止を有効にする。成功した controller は `run()` へ渡して使い回す。
+ * 二重開始のときは `null` を返し、失敗したときは状態と controller を片付ける。
+ */
+export async function prepareDesktopDownload<T>(
+  id: string,
+  prepare: (signal: AbortSignal) => Promise<T>,
+): Promise<PreparedDesktopDownload<T> | null> {
+  if (states.has(id) || controllers.has(id)) return null;
+  const controller = new AbortController();
+  controllers.set(id, controller);
+  setState(id, { status: "preparing" });
+  let succeeded = false;
+  try {
+    const value = await raceAbort(controller.signal, prepare(controller.signal));
+    if (controller.signal.aborted) throw new DesktopDownloadCancelledError();
+    succeeded = true;
+    return { value, controller };
+  } catch (error) {
+    // 確認の待機中に中止されたら、fetch の AbortError などを外へ出さず中止として伝える。
+    if (controller.signal.aborted && !(error instanceof DesktopDownloadCancelledError))
+      throw new DesktopDownloadCancelledError();
+    throw error;
+  } finally {
+    if (!succeeded) {
+      controllers.delete(id);
+      setState(id, undefined);
+    }
+  }
+}
+
 function delay(ms: number, signal: AbortSignal): Promise<void> {
   return abortable(new Promise<void>((resolve) => setTimeout(resolve, ms)), signal);
 }
 
 function contentLength(response: Response): number | null {
+  // 圧縮された応答の Content-Length は展開後の受信バイト数と一致しない。
+  // 確認時と同じく総量として使わず、進捗を不定表示にする。
+  // CORS では Content-Encoding が読めないことがあるため、その場合も総量に使わない。
+  const encoding = response.headers.get("content-encoding");
+  const encodingKnownIdentity = encoding === "identity" || (!encoding && response.type !== "cors");
+  if (!encodingKnownIdentity) return null;
   const raw = response.headers.get("content-length");
   if (!raw) return null;
   const value = Number(raw);
   return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/** 開いただけで書き込まなかった応答の本文を捨てる。 */
+function discardResponse(response: Response | undefined): void {
+  if (response?.body) void response.body.cancel().catch(() => {});
 }
 
 async function writeChunk(
@@ -363,12 +415,16 @@ async function writeResponse(
   response: Response,
   signal: AbortSignal,
   report: ProgressReporter,
+  knownTotal?: number | null,
 ): Promise<void> {
-  const total = contentLength(response);
+  const total =
+    contentLength(response) ?? (knownTotal != null && knownTotal > 0 ? knownTotal : null);
   const reader = response.body?.getReader();
   const written = { value: 0 };
   if (!reader) {
-    const bytes = new Uint8Array(await readBody(() => response.arrayBuffer(), signal));
+    const bytes = new Uint8Array(
+      await readBody(() => raceAbort(signal, response.arrayBuffer()), signal),
+    );
     if (signal.aborted) throw new DesktopDownloadCancelledError();
     await writeChunk(downloadId, bytes, written);
     report(1);
@@ -377,7 +433,7 @@ async function writeResponse(
   let received = 0;
   try {
     for (;;) {
-      const { done, value } = await readBody(() => reader.read(), signal);
+      const { done, value } = await readBody(() => raceAbort(signal, reader.read()), signal);
       if (done) break;
       if (signal.aborted) throw new DesktopDownloadCancelledError();
       await writeChunk(downloadId, value, written);
@@ -401,7 +457,12 @@ export async function downloadUrlToDesktop(
   id: string,
   fileName: string,
   resolveUrl: AttachmentUrlResolver,
-  options: { retryDelayMs?: number; size?: number | null } = {},
+  options: {
+    retryDelayMs?: number;
+    size?: number | null;
+    /** `prepareDesktopDownload()` が返した controller。確認中の中止を受け継ぐ。 */
+    controller?: AbortController;
+  } = {},
 ): Promise<string | null> {
   const retryDelayMs = options.retryDelayMs ?? RETRY_DELAY_MS;
   return run(
@@ -420,6 +481,7 @@ export async function downloadUrlToDesktop(
           throw new AttachmentDownloadError("network", { cause: error });
         }
         if (!response.ok) {
+          void response.body?.cancel().catch(() => {});
           throw new AttachmentDownloadError("http", { status: response.status });
         }
         return response;
@@ -433,9 +495,14 @@ export async function downloadUrlToDesktop(
         if (signal.aborted) throw error;
         response = await open(true);
       }
-      await writeResponse(downloadId, response, signal, report);
+      if (signal.aborted) {
+        discardResponse(response);
+        throw new DesktopDownloadCancelledError();
+      }
+      await writeResponse(downloadId, response, signal, report, options.size);
     },
     retryDelayMs,
+    options.controller,
   );
 }
 

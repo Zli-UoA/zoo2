@@ -316,6 +316,7 @@
     "download": "下載{{name}}",
     "downloadShort": "下載",
     "downloadError": "無法下載檔案。",
+    "previewSaveUnsupported": "應用程式無法儲存此檔案。請在新分頁開啟連結後儲存。",
     "downloadSaved": "已儲存為 {{name}}。",
     "downloadDestinationUnsupported": "無法儲存到此位置。請選擇其他資料夾，或在設定的「下載」中變更儲存位置。",
     "downloadTooMany": "同時儲存的數量已達上限。請等待其他下載完成後再試。",

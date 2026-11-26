@@ -6,10 +6,12 @@ import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.ParagraphStyle
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
@@ -42,21 +44,42 @@ import zoo.parseInline
 import zoo.highlightSegments
 import zoo.publicUrlString
 import zoo.richSegments
+import zoo.previewUrls
+import zoo.fetchedLinks
 
 private const val emojiTag = "zoo-entry-emoji"
+private const val channelLinkIconId = "zoo-channel-link-message"
+/** アイコンに置き換わる文字。幅も読みもない文字にして、読み上げとコピーに入れない。 */
+private const val channelLinkIconText = "\u2060"
+private const val channelLinkTag = "zoo-channel-link"
+/** 1 つの本文で、短い表示にするアプリ内リンクの上限（取得する行き先の数を抑える）。 */
+private const val maxResolvedLinks = 20
 private val linked = SpanStyle(textDecoration = TextDecoration.Underline)
 private val monospace = SpanStyle(fontFamily = FontFamily.Monospace)
 
 /** Search terms to mark in the text parts of an entry; code, math, emoji and mentions are left as they are. */
 internal class EntryHighlight(val terms: List<String>, val style: SpanStyle)
 
-/** What [formatEntry] draws besides the MFM: custom emoji, search marks, and whether links can be opened. */
-private class EntryFormat(val emoji: Set<String>, val mark: EntryHighlight?, val links: Boolean)
+/** このアプリのチャンネル・メッセージへのリンク。`label` は行き先が分かったときの短い表示。 */
+internal class EntryChannelLink(val label: String?, val messageIcon: Boolean, val open: () -> Unit)
+
+/**
+ * What [formatEntry] draws besides the MFM: custom emoji, search marks, whether links can be opened, and the
+ * links into this app (`channelLink` returns `null` for other URLs; `bare` tells that the URL itself was written).
+ */
+private class EntryFormat(
+    val emoji: Set<String>, val mark: EntryHighlight?, val links: Boolean,
+    val channelLink: ((url: String, bare: Boolean) -> EntryChannelLink?)?,
+) {
+    /** リンクのラベル用。中の URL は、リンクにせず、短くせず、行き先も取らない。 */
+    fun withoutLinks() = EntryFormat(emoji, mark, links = false, channelLink = null)
+}
 
 internal fun formatEntry(
     body: String, emoji: Set<String> = emptySet(), highlight: EntryHighlight? = null, links: Boolean = true,
+    channelLink: ((url: String, bare: Boolean) -> EntryChannelLink?)? = null,
 ) = buildAnnotatedString {
-    val format = EntryFormat(emoji, highlight?.takeIf { it.terms.isNotEmpty() }, links)
+    val format = EntryFormat(emoji, highlight?.takeIf { it.terms.isNotEmpty() }, links, channelLink)
     messageHeadingBlocks(body).forEachIndexed { index, block ->
         if (index > 0) append('\n')
         val level = block.level
@@ -134,12 +157,29 @@ private fun AnnotatedString.Builder.appendMfm(body: String, format: EntryFormat,
                     // Plain text with the link's formatting; a bare URL is not parsed again.
                     if (value == token.url) appendHighlighted(value, format.mark) else appendMfm(value, format, depth + 1)
                 }
-                else withLink(LinkAnnotation.Url(url, TextLinkStyles(style = linked))) {
-                    // A label may contain formatting. Strip its link annotations to avoid nested links.
-                    val label = buildAnnotatedString {
-                        if (value == token.url) appendHighlighted(value, format.mark) else appendMfm(value, format, depth + 1)
+                else {
+                    val bare = token.bare
+                    val app = format.channelLink?.invoke(url, bare)
+                    val annotation = if (app == null) LinkAnnotation.Url(url, TextLinkStyles(style = linked))
+                    else LinkAnnotation.Clickable(channelLinkTag, TextLinkStyles(style = linked)) { app.open() }
+                    withLink(annotation) {
+                        // 短くするのは URL の文字そのものだけ。検索語を強調している間は書き換えない。
+                        val short = app?.label?.takeIf { bare && format.mark == null }
+                        if (short != null) {
+                            if (app.messageIcon) {
+                                appendInlineContent(channelLinkIconId, channelLinkIconText)
+                                append(' ')
+                            }
+                            append(short)
+                        } else {
+                            // A label may contain formatting. Strip its link annotations to avoid nested links.
+                            val label = buildAnnotatedString {
+                                if (value == token.url) appendHighlighted(value, format.mark)
+                                else appendMfm(value, format.withoutLinks(), depth + 1)
+                            }
+                            append(AnnotatedString(label.text, label.spanStyles))
+                        }
                     }
-                    append(AnnotatedString(label.text, label.spanStyles))
                 }
             }
             "emoji" -> {
@@ -192,13 +232,71 @@ internal fun entryLabel(value: String, url: String?) = buildAnnotatedString {
     else withLink(LinkAnnotation.Url(url, TextLinkStyles(style = linked))) { append(value) }
 }
 
+/**
+ * [body] のうち、このアプリへのリンクと、その行き先の短い表示。行き先は、URL の文字そのものを書いたリンクだけ
+ * 取得する。アプリ内のリンクを扱わない画面や、リンクがない本文では `null`。
+ */
+@Composable
+private fun entryChannelLinks(body: String, links: Boolean): Map<String, EntryChannelLink>? {
+    val provider = LocalChannelLinks.current
+    // アプリ内リンクがありえない本文は、リンクを探す解析をしない。
+    if (provider == null || !links || "/channels/" !in body) return null
+    val found = remember(body, provider) {
+        val urls = linkedMapOf<String, Boolean>()
+        formatEntry(body, channelLink = { url, bare ->
+            if (provider.target(url) != null) urls[url] = bare || urls[url] == true
+            null
+        })
+        urls.toList()
+    }
+    if (found.isEmpty()) return null
+    // 取得するリンク先は本文ごとに上限がある。超えた分は URL のまま出す。
+    val fetched = remember(found, provider) {
+        fetchedLinks(
+            previewUrls(body).mapNotNull { provider.target(it) },
+            found.filter { it.second }.mapNotNull { provider.target(it.first) },
+        )
+    }
+    var resolved = 0
+    val result = found.associate { (url, bare) ->
+        url to key(url) {
+            val target = checkNotNull(provider.target(url))
+            val allowed = target.linkedMessageId?.let { (target.channelId to it) in fetched } ?: true
+            val view = if (bare && allowed && resolved++ < maxResolvedLinks) provider.view(target) else null
+            val parent = (view as? ChannelLinkView.Message)?.parentId
+            val label = when (view) {
+                is ChannelLinkView.Message -> view.inlineLabel
+                is ChannelLinkView.Channel -> view.channel
+                else -> null
+            }
+            ChannelLinkState(label, view is ChannelLinkView.Message, target, parent)
+        }
+    }
+    return remember(result, provider) {
+        result.mapValues { (_, link) ->
+            EntryChannelLink(link.label, link.messageIcon) { provider.open(link.target, link.parentId) }
+        }
+    }
+}
+
+private data class ChannelLinkState(
+    val label: String?, val messageIcon: Boolean, val target: zoo.ChannelLinkTarget, val parentId: String?,
+)
+
 @Composable
 internal fun EntryBody(
     body: String, color: Color, fontSize: TextUnit, emoji: Map<String, TimelineMedia>, maxLines: Int = Int.MAX_VALUE,
     highlight: EntryHighlight? = null, lineHeight: TextUnit = TextUnit.Unspecified, links: Boolean = true,
+    /** アプリ内リンクを短くして、行き先を取るか。 */
+    appLinks: Boolean = true,
 ) {
     val loader = LocalTimelineImage.current
-    val formatted = remember(body, emoji, highlight, links) { formatEntry(body, emoji.keys, highlight, links) }
+    val channelLinks = entryChannelLinks(body, links && appLinks)
+    val formatted = remember(body, emoji, highlight, links, channelLinks) {
+        val lookup: ((String, Boolean) -> EntryChannelLink?)? =
+            channelLinks?.let { found -> { url: String, _: Boolean -> found[url] } }
+        formatEntry(body, emoji.keys, highlight, links, lookup)
+    }
     val images = remember(formatted, emoji, loader) { mutableStateMapOf<String, ImageBitmap>() }
     LaunchedEffect(formatted, emoji, loader) {
         formatted.getStringAnnotations(emojiTag, 0, formatted.length).map { it.item }.distinct().take(32).forEach { code ->
@@ -208,11 +306,14 @@ internal fun EntryBody(
             }
         }
     }
+    val iconSize = with(LocalDensity.current) { (if (fontSize == TextUnit.Unspecified) entryTextSize else fontSize).toDp() }
     val inline = images.toMap().mapValues { (code, image) ->
         InlineTextContent(Placeholder(1.3.em, 1.3.em, PlaceholderVerticalAlign.TextCenter)) {
             Image(image, contentDescription = code)
         }
-    }
+    } + (channelLinkIconId to InlineTextContent(Placeholder(1.em, 1.em, PlaceholderVerticalAlign.TextCenter)) {
+        UiGlyph(UiIcon.Bubble, color, iconSize)
+    })
     Text(formatted, color = color, fontSize = fontSize, lineHeight = lineHeight, inlineContent = inline, maxLines = maxLines,
         overflow = TextOverflow.Ellipsis)
 }
