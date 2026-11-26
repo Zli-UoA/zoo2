@@ -5907,8 +5907,10 @@ dependencies = [
  "anyhow",
  "emojis",
  "jiff",
+ "percent-encoding",
  "serde",
  "serde_json",
+ "url",
  "zoo-components",
 ]
 

@@ -9,19 +9,23 @@ use std::{
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tokio::{sync::mpsc, task::JoinHandle};
 use tui_textarea::TextArea;
-use zoo2_client_core::poll::PollGate;
+use zoo2_client_core::{
+    links::{self, EncryptionCheck, LinkState, LinkTarget, LinkedFetch},
+    poll::PollGate,
+};
 
 use super::e2ee_chat::{
     self, ChannelEncryption, CreateForm, CreateKind, Decryptions, RowKey, Shown,
 };
 use super::global_search::{self, GlobalSearch};
+use super::links::BodyLinks;
 use crate::{
     api::{ApiClient, Me, ReadState, ThreadSummary, TypingUser, stale_revision},
     e2ee::{
         send::{self, ChannelSender, SendContext},
         store::{Decryption, EncryptedRow, RecipientSummary},
     },
-    electric::{self, Batch, ShapeEvent, ShapeId},
+    electric::{self, Batch, LinkedEvent, ShapeEvent, ShapeId},
     http::{ApiError, Credentials},
     store::Store,
 };
@@ -41,6 +45,8 @@ const INNER_SCROLL_STEP: usize = 10;
 #[derive(Debug)]
 pub enum AppEvent {
     Notice(String),
+    /// 本文のリンクが指すメッセージの取得の結果。
+    Linked(LinkedEvent),
     AccountProfiles(zoo2_client_core::store::AccountProfiles),
     EmojiCatalog {
         shortcodes: HashMap<String, String>,
@@ -194,6 +200,11 @@ pub enum Mode {
     Recipients {
         scroll: usize,
     },
+    /// 選択中のメッセージにアプリ内リンクがいくつもあるとき、開くものを選ぶ。
+    Links {
+        targets: Vec<LinkTarget>,
+        index: usize,
+    },
 }
 
 /// 入力欄の送り先。
@@ -289,6 +300,11 @@ pub struct App {
     read_poll: PollGate,
     emoji_poll: PollGate,
     typing_poll: PollGate,
+    /// 本文のアプリ内リンクの、リンク先の取得。
+    pub links: super::links::Links,
+    /// リンクで開いた、まだ同期していないメッセージ (チャンネル, メッセージ)。返信と分かれば
+    /// スレッドを開く。
+    pending_link: Option<(String, String)>,
     /// 暗号化の画面と、その裏の処理。
     pub encryption: super::encryption::Encryption,
     /// 端末と検証の画面と、その裏の処理（#362、#368）。
@@ -394,6 +410,8 @@ impl App {
             known_encrypted_loaded: false,
             known_encrypted_store: None,
             known_encrypted_in_flight: false,
+            links: Default::default(),
+            pending_link: None,
         };
         for id in [
             ShapeId::Channels,
@@ -602,6 +620,9 @@ impl App {
                     || after.contains_key(&thread.id)
             });
         }
+        if let Some(channel_id) = self.current.clone() {
+            self.follow_pending_link(&channel_id);
+        }
         self.restore_sidebar_selection(selected);
     }
 
@@ -632,6 +653,7 @@ impl App {
             } => {
                 self.recipients.insert(channel_id, summary);
             }
+            AppEvent::Linked(event) => self.links.apply(event),
             AppEvent::KnownEncryptedChannels { known, failed } => {
                 self.known_encrypted_in_flight = false;
                 self.known_encrypted_loaded = true;
@@ -965,6 +987,7 @@ impl App {
         }
         self.sync_known_encrypted();
         self.request_decryptions();
+        self.sync_links();
         if self.terminal_active {
             for archived in [false, true] {
                 let scope = usize::from(archived);
@@ -1440,6 +1463,7 @@ impl App {
         }
         match self.mode.clone() {
             Mode::Normal => self.on_normal_key(key),
+            Mode::Links { targets, index } => self.on_links_key(key, targets, index),
             Mode::Insert => self.on_insert_key(key),
             Mode::ConfirmDelete { message_id } => {
                 if matches!(key.code, KeyCode::Char('y' | 'Y'))
@@ -1569,6 +1593,7 @@ impl App {
             KeyCode::Char('S') => self.mode = Mode::GlobalSearch,
             KeyCode::Char('R') => self.restore_failed_draft(),
             KeyCode::Char('u') => self.reopen_thread(),
+            KeyCode::Char('o') => self.open_link(),
             KeyCode::Char('c') => self.mode = Mode::Create(CreateForm::channel()),
             KeyCode::Char('m') => self.mode = Mode::Create(CreateForm::dm()),
             KeyCode::Char('V') => {
@@ -1853,6 +1878,234 @@ impl App {
                 self.inner_scroll = 0;
                 self.focus = Focus::Messages;
             }
+        }
+    }
+
+    /// 直近の描画で画面の近くに出ていたリンク先を取得し、使わなくなった購読を閉じる。
+    pub fn sync_links(&mut self) {
+        let (http, base, credentials, tx) = (
+            self.http.clone(),
+            self.api_base_url.clone(),
+            self.credentials.clone(),
+            self.app_tx.clone(),
+        );
+        self.links.sync(Instant::now(), |channel_id, ids| {
+            let tx = tx.clone();
+            electric::spawn_linked(
+                http.clone(),
+                &base,
+                credentials.clone(),
+                channel_id,
+                ids,
+                move |event| tx.send(AppEvent::Linked(event)).is_ok(),
+            )
+        });
+    }
+
+    /// 開いているチャンネルのメッセージは、同期済みの行を使う（取り直さない）。
+    fn synced_channel(&self, channel_id: &str) -> bool {
+        self.current.as_deref() == Some(channel_id)
+            && self
+                .store
+                .is_synced(&ShapeId::Messages(channel_id.to_owned()))
+    }
+
+    fn linked_fetch(&self, channel_id: &str, message_id: &str, now: Instant) -> LinkedFetch {
+        if let Some(message) = self.store.message(channel_id, message_id) {
+            return LinkedFetch::Found(Box::new(message.clone()));
+        }
+        if self.synced_channel(channel_id) {
+            return LinkedFetch::Missing;
+        }
+        self.links
+            .fetch(&(channel_id.to_owned(), message_id.to_owned()), now)
+    }
+
+    /// 取得が要るリンク先。見られるチャンネルのメッセージで、開いているチャンネル以外のもの。
+    pub fn link_key(&self, target: &LinkTarget) -> Option<super::links::Key> {
+        let message_id = target.linked_message_id()?;
+        if self.current.as_deref() == Some(target.channel_id.as_str()) {
+            return None;
+        }
+        self.store
+            .channel(&target.channel_id)
+            .filter(|channel| channel.deleted_at.is_none())?;
+        Some((target.channel_id.clone(), message_id.to_owned()))
+    }
+
+    pub fn link_state(&self, target: &LinkTarget, now: Instant) -> LinkState<'_> {
+        let channel = self.store.channel(&target.channel_id);
+        let fetch = target
+            .linked_message_id()
+            .map_or(LinkedFetch::Missing, |message_id| {
+                self.linked_fetch(&target.channel_id, message_id, now)
+            });
+        // 暗号化の扱いは、サーバーの `encrypted` だけで決めない（記録、`edm:` の名前、読み込み済みの
+        // 暗号文の行）。
+        let has_ciphertext = self.links.has_ciphertext(&target.channel_id)
+            || self
+                .store
+                .visible_messages(&target.channel_id)
+                .any(|message| message.ciphertext.is_some());
+        let encrypted = ChannelEncryption::of(
+            channel,
+            self.known_encrypted_channels.contains(&target.channel_id),
+            has_ciphertext,
+        )
+        .treat_as_encrypted();
+        // 記録を読めなかったときは、暗号ストアから読めるまで平文の本文を出さない。
+        let check = if !self.known_encrypted_unreadable || self.known_encrypted_loaded {
+            EncryptionCheck::Done
+        } else if self.encryption.store().is_some() {
+            EncryptionCheck::Waiting
+        } else {
+            EncryptionCheck::Stalled
+        };
+        links::resolve(
+            target,
+            channel,
+            self.store.is_synced(&ShapeId::Channels),
+            &fetch,
+            encrypted,
+            check,
+        )
+    }
+
+    /// 本文のアプリ内リンクの表示。
+    pub fn body_links(&self, body: &str, now: Instant) -> BodyLinks {
+        let mut result = BodyLinks::default();
+        for (_, target) in links::embedded_links(body, &self.api_base_url) {
+            let state = self.link_state(&target, now);
+            result.embeds.push(super::links::view(&state, &self.store));
+            result.targets.push(target);
+        }
+        for (url, target) in links::app_links(body, &self.api_base_url) {
+            let state = self.link_state(&target, now);
+            if let Some(label) = super::links::view(&state, &self.store).inline {
+                result.inline.insert(url, label);
+            }
+            if !result.targets.contains(&target) {
+                result.targets.push(target);
+            }
+        }
+        result
+    }
+
+    /// 選択中のメッセージのアプリ内リンクを開く。いくつもあれば、選ぶ画面を出す。
+    fn open_link(&mut self) {
+        let Some((channel_id, message_id)) = self.focused_message() else {
+            self.notify("リンクを開くメッセージを j / k で選んでください");
+            return;
+        };
+        let Some(message) = self.store.message(&channel_id, &message_id) else {
+            return;
+        };
+        let encrypted = self.channel_encryption(&channel_id).treat_as_encrypted();
+        let body = match self.decryptions.shown(message, encrypted) {
+            Shown::Plain | Shown::BeforeEncryption if !links::replaces_content(message) => {
+                message.content.as_str()
+            }
+            Shown::Decrypted { message, .. } => message.body.as_str(),
+            _ => "",
+        };
+        let mut targets: Vec<LinkTarget> = Vec::new();
+        for (_, target) in links::app_links(body, &self.api_base_url) {
+            if !targets.contains(&target) {
+                targets.push(target);
+            }
+        }
+        match targets.len() {
+            0 => {
+                self.notify("このメッセージには、開けるチャンネル・メッセージのリンクがありません")
+            }
+            1 => self.follow_link(targets.swap_remove(0)),
+            _ => self.mode = Mode::Links { targets, index: 0 },
+        }
+    }
+
+    fn on_links_key(&mut self, key: KeyEvent, targets: Vec<LinkTarget>, mut index: usize) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.mode = Mode::Normal;
+                return;
+            }
+            KeyCode::Enter => {
+                self.mode = Mode::Normal;
+                if let Some(target) = targets.into_iter().nth(index) {
+                    self.follow_link(target);
+                }
+                return;
+            }
+            KeyCode::Char('j') | KeyCode::Down => index = (index + 1).min(targets.len() - 1),
+            KeyCode::Char('k') | KeyCode::Up => index = index.saturating_sub(1),
+            _ => {}
+        }
+        self.mode = Mode::Links { targets, index };
+    }
+
+    /// リンクの行き先を開く。返信と `?thread=` のリンクはスレッドを開く。
+    fn follow_link(&mut self, target: LinkTarget) {
+        if self
+            .store
+            .channel(&target.channel_id)
+            .is_none_or(|channel| channel.deleted_at.is_some())
+        {
+            self.notify(if target.linked_message_id().is_some() {
+                "メッセージを表示できません"
+            } else {
+                "チャンネルを表示できません"
+            });
+            return;
+        }
+        let Some(message_id) = target.linked_message_id().map(str::to_owned) else {
+            self.open_channel(target.channel_id);
+            self.focus = Focus::Messages;
+            return;
+        };
+        let fetched = self.linked_fetch(&target.channel_id, &message_id, Instant::now());
+        let parent_id = match &fetched {
+            LinkedFetch::Found(message) => message.parent_id.clone(),
+            _ => None,
+        }
+        .or_else(|| target.thread_id.clone());
+        // 返信かどうかがまだ分からなければ、行が届いた時点でスレッドを開く。
+        self.pending_link = (parent_id.is_none() && !matches!(fetched, LinkedFetch::Found(_)))
+            .then(|| (target.channel_id.clone(), message_id.clone()));
+        // スレッドの親ではないメッセージへ移るときは、開いているスレッドを閉じる。
+        if parent_id.is_none() && self.thread.is_some() {
+            self.close_thread();
+        }
+        self.open_search_result(global_search::Destination {
+            channel_id: target.channel_id,
+            message_id,
+            parent_id,
+        });
+    }
+
+    /// [`Self::follow_link`] で開いたメッセージが返信と分かったら、スレッドを開く。
+    fn follow_pending_link(&mut self, channel_id: &str) {
+        let Some((pending, message_id)) = self.pending_link.clone() else {
+            return;
+        };
+        if pending != channel_id || !self.synced_channel(channel_id) {
+            return;
+        }
+        self.pending_link = None;
+        // 利用者がほかを選んでいたら、移動しない。
+        if self.selected.as_deref() != Some(message_id.as_str()) {
+            return;
+        }
+        if let Some(parent_id) = self
+            .store
+            .message(channel_id, &message_id)
+            .and_then(|message| message.parent_id.clone())
+        {
+            self.selected = None;
+            self.open_search_result(global_search::Destination {
+                channel_id: channel_id.to_owned(),
+                message_id,
+                parent_id: Some(parent_id),
+            });
         }
     }
 

@@ -1,6 +1,8 @@
 //! 画面の描画。左にチャンネル一覧、中央にタイムライン、右にスレッド (開いたときだけ)、
 //! 下に入力欄と状態表示を置く。
 
+use std::time::Instant;
+
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -14,12 +16,13 @@ use super::{
     e2ee_chat::{self, ChannelEncryption, CreateForm, CreateKind},
     encryption::Screen,
     global_search,
-    timeline::{self, Context},
+    timeline::{self, Context, Timeline},
 };
 use crate::api::SearchKind;
 use crate::e2ee::reauth;
 use crate::e2ee::setup::{E2eeStatus, LockReason};
 use crate::electric::ShapeId;
+use zoo2_client_core::links::LinkTarget;
 
 const ACCENT: Color = Color::Cyan;
 const DIM: Style = Style::new().fg(Color::DarkGray);
@@ -27,6 +30,8 @@ const DIM: Style = Style::new().fg(Color::DarkGray);
 const HIGHLIGHT: Style = Style::new().fg(Color::Black).bg(Color::Yellow);
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    // 画面の近くに出ているリンク先は、描くたびに集め直す。
+    app.links.visible.clear();
     let composer_height = (app.composer.lines().len() as u16).clamp(1, 6) + 2;
     // 長い表示（増えた配布先、配れない相手）は、タイムラインと同じ折り返し（表示幅で切る）で自分で
     // 折り返し、その行数を高さにする（画面の半分まで）。`Paragraph` の語ごとの折り返しでは、行数が
@@ -86,6 +91,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             draw_recipients(frame, app, scroll);
         }
         Mode::GlobalSearch => draw_global_search(frame, app),
+        Mode::Links { targets, index } => draw_links(frame, app, targets, *index),
         _ => {}
     }
     // 他のユーザーの検証は、どの画面にいても前面に出す。
@@ -706,6 +712,8 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         .store
         .reaction_groups_by_message(&channel_id, &app.me.id);
     let encrypted = app.channel_encryption(&channel_id).treat_as_encrypted();
+    let now = Instant::now();
+    let body_links = |body: &str| app.body_links(body, now);
     let ctx = Context {
         store: &app.store,
         me_name: &app.me.user_name,
@@ -717,6 +725,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         selected: app.selected.as_deref(),
         reply_counts: Some(&counts),
         reactions: &reactions,
+        links: Some(&body_links),
     };
     let built = timeline::build(&messages, &ctx, inner.width);
     let height = usize::from(inner.height);
@@ -725,6 +734,8 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         // 未選択なら最新を表示し続ける。
         None => (built.lines.len().saturating_sub(height), 0),
     };
+    let near = near_links(app, &built, scroll, height);
+    app.links.visible.extend(near);
     app.scroll = scroll;
     app.inner_scroll = inner_scroll;
     // 全文検索の画面、端末と検証の画面、検証のダイアログが覆っている間は、背後のタイムラインを読んだことに
@@ -741,6 +752,48 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     let visible: Vec<Line> = built.lines.into_iter().skip(scroll).take(height).collect();
     frame.render_widget(Paragraph::new(visible), inner);
+}
+
+/// 表示範囲と、その前後の半画面にあるメッセージの、取得が要るリンク先。
+fn near_links(app: &App, built: &Timeline, scroll: usize, height: usize) -> Vec<super::links::Key> {
+    let near = scroll.saturating_sub(height / 2)..scroll + height + height / 2;
+    built
+        .links
+        .iter()
+        .filter(|(id, _)| {
+            built
+                .range_of(id)
+                .is_some_and(|range| range.start < near.end && range.end > near.start)
+        })
+        .flat_map(|(_, targets)| targets)
+        .filter_map(|target| app.link_key(target))
+        .collect()
+}
+
+/// 選択中のメッセージにリンクがいくつもあるとき、開くものを選ぶ。
+fn draw_links(frame: &mut Frame, app: &App, targets: &[LinkTarget], index: usize) {
+    let now = Instant::now();
+    let mut lines: Vec<Line<'static>> = targets
+        .iter()
+        .enumerate()
+        .map(|(i, target)| {
+            let view = super::links::view(&app.link_state(target, now), &app.store);
+            let label = view
+                .inline
+                .or_else(|| view.header.first().map(|line| line.to_string()))
+                .unwrap_or_default();
+            let marker = if i == index { "▶ " } else { "  " };
+            let style = if i == index {
+                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)
+            } else {
+                Style::new()
+            };
+            Line::styled(format!("{marker}{}. {label}", i + 1), style)
+        })
+        .collect();
+    lines.push(Line::from(""));
+    lines.push(Line::styled("j k: 選ぶ / Enter: 開く / Esc: 閉じる", DIM));
+    draw_popup(frame, "リンクを開く", lines);
 }
 
 fn draw_thread(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -810,6 +863,8 @@ fn draw_thread(frame: &mut Frame, app: &mut App, area: Rect) {
         .flatten();
     let mut reply_counts = app.store.reply_counts(&channel_id);
     reply_counts.remove(&thread.root_id);
+    let now = Instant::now();
+    let body_links = |body: &str| app.body_links(body, now);
     let ctx = Context {
         store: &app.store,
         me_name: &app.me.user_name,
@@ -820,6 +875,7 @@ fn draw_thread(frame: &mut Frame, app: &mut App, area: Rect) {
         selected: thread.selected.as_deref(),
         reply_counts: Some(&reply_counts),
         reactions: &reactions,
+        links: Some(&body_links),
     };
     let built = timeline::build(&messages, &ctx, inner.width);
     let height = usize::from(inner.height);
@@ -828,6 +884,8 @@ fn draw_thread(frame: &mut Frame, app: &mut App, area: Rect) {
         Some(range) => timeline::scroll_to(thread.scroll, range, height, thread.inner_scroll),
         None => (built.lines.len().saturating_sub(height), 0),
     };
+    let near = near_links(app, &built, scroll, height);
+    app.links.visible.extend(near);
     if let Some(thread) = app.thread.as_mut() {
         thread.scroll = scroll;
         thread.inner_scroll = inner_scroll;
@@ -947,6 +1005,7 @@ const HELP: &[(&str, &str)] = &[
     ("Ctrl+D / Ctrl+U", "長いメッセージの中を下 / 上へ"),
     ("Enter", "チャンネルを開く / スレッドを開く"),
     ("Esc", "選択を外す / スレッドを閉じる"),
+    ("o", "選択中のメッセージのリンクを開く"),
     ("i", "書く (スレッドでは返信)"),
     ("e", "自分のメッセージを編集"),
     ("d", "自分のメッセージを削除"),
@@ -1355,6 +1414,143 @@ mod tests {
 
     fn press(app: &mut App, code: KeyCode) {
         app.on_terminal_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    }
+
+    /// c1 を開き、`content` のメッセージ `l1` を足して選ぶ。接続先は [`app`] の `http://127.0.0.1:9`。
+    fn app_with_link(content: &str) -> App {
+        let mut app = app();
+        app.open_channel("c1".into());
+        // 開き直しで消えた行を入れ直す。
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![
+                (
+                    "m1",
+                    json!({ "id": "m1", "user_id": "u2", "channel_id": "c1",
+                            "content": "親の本文", "created_at": "2026-11-01 03:00:00" }),
+                ),
+                (
+                    "r1",
+                    json!({ "id": "r1", "user_id": "u1", "channel_id": "c1", "content": "返信です",
+                            "created_at": "2026-11-01 03:01:00", "parent_id": "m1" }),
+                ),
+                (
+                    "l1",
+                    json!({ "id": "l1", "user_id": "u1", "channel_id": "c1", "content": content,
+                            "created_at": "2026-11-01 03:05:00" }),
+                ),
+            ]),
+        ));
+        app.focus = Focus::Messages;
+        app.selected = Some("l1".into());
+        app
+    }
+
+    fn linked_row(app: &mut App, content: &str, extra: Value) {
+        let mut row = json!({ "id": "s1", "user_id": "u2", "channel_id": "c2", "content": content,
+                              "created_at": "2026-11-01 02:00:00" });
+        row.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        app.on_app_event(AppEvent::Linked(crate::electric::LinkedEvent::Rows {
+            channel_id: "c2".into(),
+            rows: vec![("s1".into(), Some(row.as_object().unwrap().clone()))],
+        }));
+    }
+
+    const SECRET_LINK: &str = "http://127.0.0.1:9/channels/c2?message=s1";
+
+    #[tokio::test]
+    async fn links_to_other_channels_are_fetched_shortened_and_embedded() {
+        let mut app = app_with_link(&format!("見て {SECRET_LINK}"));
+        let screen = render(&mut app);
+        assert!(screen.contains("┃ リンク先を読み込み中…"), "{screen}");
+        assert!(screen.contains(SECRET_LINK), "{screen}");
+        // 画面に出ているリンク先だけを取得する。
+        assert_eq!(app.links.visible, [("c2".to_owned(), "s1".to_owned())]);
+        app.sync_links();
+
+        linked_row(&mut app, "**秘密**の話", json!({}));
+        let screen = render(&mut app);
+        assert!(screen.contains("見て 💬 Bobさん: #secret"), "{screen}");
+        assert!(!screen.contains(SECRET_LINK), "{screen}");
+        assert!(screen.contains("┃ #secret"), "{screen}");
+        assert!(screen.contains("┃ 秘密の話"), "{screen}");
+
+        // 開くと、そのチャンネルのメッセージを選ぶ。
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.current.as_deref(), Some("c2"));
+        assert_eq!(app.selected.as_deref(), Some("s1"));
+        assert!(app.thread.is_none());
+    }
+
+    #[tokio::test]
+    async fn encrypted_and_app_messages_do_not_show_content() {
+        let mut app = app_with_link(SECRET_LINK);
+        linked_row(&mut app, "平文の差し込み", json!({ "ciphertext": "{}" }));
+        let screen = render(&mut app);
+        assert!(
+            screen.contains("このメッセージは暗号化されています"),
+            "{screen}"
+        );
+        assert!(!screen.contains("平文の差し込み"), "{screen}");
+
+        let mut app = app_with_link(SECRET_LINK);
+        linked_row(
+            &mut app,
+            "通知の本文",
+            json!({ "card": r#"{"title":"通知"}"# }),
+        );
+        let screen = render(&mut app);
+        assert!(screen.contains("┃ Appのメッセージ"), "{screen}");
+        assert!(!screen.contains("通知の本文"), "{screen}");
+    }
+
+    #[tokio::test]
+    async fn unlisted_destinations_are_not_revealed_or_opened() {
+        let link = "http://127.0.0.1:9/channels/hidden?message=s1";
+        let mut app = app_with_link(link);
+        let screen = render(&mut app);
+        assert!(screen.contains("┃ メッセージを表示できません"), "{screen}");
+        assert!(screen.contains(link), "{screen}");
+        assert!(app.links.visible.is_empty());
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.current.as_deref(), Some("c1"));
+        assert!(screen.contains(link));
+        assert_eq!(
+            app.notice.as_ref().map(|(text, _)| text.as_str()),
+            Some("メッセージを表示できません")
+        );
+    }
+
+    #[tokio::test]
+    async fn links_in_the_open_channel_use_its_rows_and_open_threads() {
+        let reply = "http://127.0.0.1:9/channels/c1?thread=m1&message=r1";
+        let mut app = app_with_link(reply);
+        let screen = render(&mut app);
+        assert!(screen.contains("💬 Aliceさん: #general"), "{screen}");
+        assert!(screen.contains("┃ #general 内のスレッド"), "{screen}");
+        assert!(app.links.visible.is_empty(), "同期済みの行は取り直さない");
+        press(&mut app, KeyCode::Char('o'));
+        let thread = app.thread.as_ref().expect("スレッドを開く");
+        assert_eq!(thread.root_id, "m1");
+        assert_eq!(thread.selected.as_deref(), Some("r1"));
+        assert_eq!(app.focus, Focus::Thread);
+    }
+
+    #[tokio::test]
+    async fn a_message_with_several_links_asks_which_to_open() {
+        let mut app = app_with_link(&format!(
+            "http://127.0.0.1:9/channels/c1?message=m1 [秘密](http://127.0.0.1:9/channels/c2) と {SECRET_LINK}"
+        ));
+        press(&mut app, KeyCode::Char('o'));
+        let screen = render(&mut app);
+        assert!(screen.contains("リンクを開く"), "{screen}");
+        assert!(screen.contains("2. #secret"), "{screen}");
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.current.as_deref(), Some("c2"));
     }
 
     fn sas_view(phase: zoo_crypto::SasPhase) -> crate::e2ee::verification::SasView {

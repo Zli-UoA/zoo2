@@ -25,6 +25,11 @@ struct Message {
 }
 
 #[derive(Debug, Deserialize)]
+struct Subset {
+    data: Vec<Message>,
+}
+
+#[derive(Debug, Deserialize)]
 struct MessageHeaders {
     operation: Option<String>,
     control: Option<String>,
@@ -41,6 +46,8 @@ pub struct ShapeStream {
     live: bool,
     cache_buster: Option<String>,
     rows: HashMap<String, Row>,
+    /// `log=changes_only` の購読の開始位置は `now`、通常は `-1`。
+    initial_offset: &'static str,
 }
 
 impl ShapeStream {
@@ -62,7 +69,93 @@ impl ShapeStream {
             live: false,
             cache_buster: None,
             rows: HashMap::new(),
+            initial_offset: "-1",
         }
+    }
+
+    /// 今の時点からの変化だけを受け取る購読（`log=changes_only`）。行は [`Self::subset`] で取る。
+    /// 取り直し（409・`must-refetch`）のあとは、同じ行を `subset` で取り直す。
+    pub fn changes_only(
+        http: reqwest::Client,
+        url: String,
+        mut params: Vec<(String, String)>,
+        credentials: Credentials,
+    ) -> Self {
+        params.push(("log".into(), "changes_only".into()));
+        let mut stream = Self::new(http, url, params, credentials);
+        stream.initial_offset = "now";
+        stream.offset = "now".into();
+        stream
+    }
+
+    /// 最初の応答を受け取り、`subset` を取れる状態か。
+    pub fn is_started(&self) -> bool {
+        self.handle.is_some() && self.offset != self.initial_offset
+    }
+
+    /// 条件に合う行だけの snapshot を取り、保持している行に足す。条件の値は `$1` の順に渡す。
+    /// 取り直しが要る（409）ときは `None` を返し、行を捨てる。
+    pub async fn subset(
+        &mut self,
+        where_clause: &str,
+        values: &[&str],
+        order_by: &str,
+        limit: usize,
+    ) -> Result<Option<Vec<Row>>> {
+        let params: HashMap<String, &str> = values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| ((index + 1).to_string(), *value))
+            .collect();
+        let params = serde_json::to_string(&params)?;
+        let limit = limit.to_string();
+        let mut query: Vec<(&str, &str)> = self
+            .params
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        query.push(("offset", &self.offset));
+        if let Some(handle) = &self.handle {
+            query.push(("handle", handle));
+        }
+        query.extend([
+            ("subset__where", where_clause),
+            ("subset__params", params.as_str()),
+            ("subset__order_by", order_by),
+            ("subset__limit", limit.as_str()),
+        ]);
+        let request = self.http.get(&self.url).query(&query);
+        let response = self.credentials.apply(request).await?.send().await?;
+        let headers = response.headers().clone();
+        if response.status() == StatusCode::CONFLICT {
+            self.restart(header(&headers, "electric-handle"));
+            return Ok(None);
+        }
+        let body = error_for_status(response).await?.text().await?;
+        // 別の shape に切り替わった応答は、live の位置と合わないので取り直す。
+        if header(&headers, "electric-handle").is_some_and(|handle| Some(handle) != self.handle) {
+            self.restart(None);
+            return Ok(None);
+        }
+        let snapshot: Subset =
+            serde_json::from_str(&body).context("シェイプの応答を解釈できません")?;
+        let mut rows = Vec::new();
+        for message in snapshot.data {
+            if let Some(Change::Upsert { row, .. }) =
+                self.apply("insert", message.key, message.value)
+            {
+                rows.push(row);
+            }
+        }
+        Ok(Some(rows))
+    }
+
+    /// 保持している行のうち、`id` 列が `id` の行のキー。
+    pub fn key_of(&self, id: &str) -> Option<String> {
+        self.rows
+            .iter()
+            .find(|(_, row)| row.get("id").and_then(|value| value.as_str()) == Some(id))
+            .map(|(key, _)| key.clone())
     }
 
     /// 次の変化を1回分取得する。live 中は変化があるかサーバーのタイムアウトまで待つ。
@@ -161,7 +254,7 @@ impl ShapeStream {
     /// 行を捨てて最初から取り直す。同じ URL の古い応答を避けるためキャッシュバスターを付ける。
     fn restart(&mut self, handle: Option<String>) {
         self.handle = handle;
-        self.offset = "-1".into();
+        self.offset = self.initial_offset.into();
         self.cursor = None;
         self.live = false;
         self.rows.clear();
