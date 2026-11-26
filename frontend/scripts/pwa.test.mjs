@@ -767,6 +767,31 @@ test("an HTML fallback for a missing manifest does not overwrite the cached mani
   );
 });
 
+test("an octet-stream HTML fallback cannot overwrite a valid cached manifest", async () => {
+  let body = '{"background_color":"#ffffff"}';
+  const { handlers, cacheContext } = worker({
+    fetch: async (input) => {
+      if (requestKey(input) === `${ORIGIN}/manifest.webmanifest`)
+        return basicResponse(body, { headers: { "content-type": "application/octet-stream" } });
+      return basicResponse(`network:${requestKey(input)}`);
+    },
+  });
+  await dispatch(handlers, "install");
+  body = "<html>not a manifest</html>";
+
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+  });
+  assert.equal(await response.text(), '{"background_color":"#ffffff"}');
+  const cache = await cacheContext.api.open("zoo-shell-v2");
+  assert.equal(
+    await (await cache.match(`${ORIGIN}/manifest.webmanifest`)).text(),
+    '{"background_color":"#ffffff"}',
+  );
+});
+
 test("a manifest served as octet-stream by nginx is still accepted", async () => {
   let manifest = '{"background_color":"#ffffff"}';
   const { handlers, cacheContext } = worker({

@@ -328,12 +328,25 @@ function isFreshAssetResponse(path, response) {
   return path === "/offline.html" ? type.includes("text/html") : !type.includes("text/html");
 }
 
+async function isFreshManifest(response) {
+  try {
+    const parsed = JSON.parse(await response.clone().text());
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
+}
+
 async function handleFreshAsset(request) {
   const cache = await caches.open(await findActiveShellCache());
   const path = new URL(request.url, self.location.origin).pathname;
   try {
     const response = await fetch(request, { cache: "reload" });
-    if (response.ok && isFreshAssetResponse(path, response)) {
+    const acceptable =
+      response.ok &&
+      isFreshAssetResponse(path, response) &&
+      (path !== "/manifest.webmanifest" || (await isFreshManifest(response)));
+    if (acceptable) {
       if (response.type !== "basic") return response;
       // 保存に失敗しても取得できた最新の応答は返す。古いキャッシュへ戻さない。
       const fresh = response.clone();
