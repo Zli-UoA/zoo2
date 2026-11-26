@@ -367,6 +367,22 @@ struct E2eeSetupTests {
         await #expect(throws: E2eeSetupError.secretsChanged) { _ = try await second.setup.unlock(.recovery(start.recoveryKey)) }
     }
 
+    @Test func リセットの印はSSSSの保存の要求を送る前に残す() async throws {
+        let server = FakeSetupServer(userID: user)
+        let first = try Device(server)
+        let start = try first.setup.begin()
+        try await first.setup.completeSetup(start.session, reauth: "t")
+        let second = try Device(server)
+        defer { first.cleanUp(); second.cleanUp() }
+        let (reset, expectation) = try await second.setup.beginReset()
+        // SSSS の保存の要求が通らなくても（応答をなくす、アプリが終わる場合も同じ）、印は残っている。
+        server.failNext.insert("secret_storage")
+        await #expect(throws: (any Error).self) {
+            try await second.setup.completeReset(reset.session, expectation: expectation, reauth: "t")
+        }
+        #expect(second.store.resetKeyID == reset.session.keyId())
+    }
+
     @Test func E2EEのリセットは前提の版が古ければ別の端末が先にリセットしたとして止まる() async throws {
         let server = FakeSetupServer(userID: user)
         let first = try Device(server)

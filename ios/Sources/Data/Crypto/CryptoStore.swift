@@ -97,6 +97,8 @@ struct StoreState: Codable {
     var recipient_members: [String: [String]] = [:]
     /// E2EE のリセットで、SSSS を新しい鍵に作り直したが、まだクロス署名鍵などを差し替え終えていないときの、新しい SSSS 鍵の ID（解錠して続けるときに、リセットの続きを選ぶ）。
     var reset_key_id: String?
+    /// 端末を作り直したときに、終わっていない失効の記録を捨てた（利用者に知らせて、最初からやり直してもらう）。
+    var revocation_dropped = false
 
     init(version: Int, user_id: String, device_id: String, registered: Bool, account: String, trust_store: String?) {
         self.version = version; self.user_id = user_id; self.device_id = device_id
@@ -124,6 +126,7 @@ struct StoreState: Codable {
         encrypted_channels = try c.decodeIfPresent([String].self, forKey: .encrypted_channels) ?? []
         recipient_members = try c.decodeIfPresent([String: [String]].self, forKey: .recipient_members) ?? [:]
         reset_key_id = try c.decodeIfPresent(String.self, forKey: .reset_key_id)
+        revocation_dropped = try c.decodeIfPresent(Bool.self, forKey: .revocation_dropped) ?? false
     }
 }
 
@@ -330,6 +333,7 @@ final class CryptoStore: @unchecked Sendable {
             nextState.secrets_revision = nil
             nextState.imported_backup_version = nil
             // 終わっていない失効の進み具合は、古い端末アカウントで封をしてあるので、開けない。捨てる（失効は、解錠し直して、最初からやり直す）。
+            if state.revocation != nil { nextState.revocation_dropped = true }
             nextState.revocation = nil
             nextState.reset_key_id = nil
             nextState.trust_store = try TrustStore(userId: state.user_id).pickle(account: next, storageKey: storageKey)
@@ -675,6 +679,20 @@ final class CryptoStore: @unchecked Sendable {
     }
 
     var resetKeyID: String? { lock.withLock { state.reset_key_id } }
+
+    /// 端末を作り直したときに、終わっていない失効の記録を捨てたか（利用者に知らせる）。
+    var revocationDropped: Bool { lock.withLock { state.revocation_dropped } }
+
+    func acknowledgeRevocationDropped() throws {
+        try lock.withLock {
+            try ensureOpen()
+            guard state.revocation_dropped else { return }
+            var next = state
+            next.revocation_dropped = false
+            try save(next)
+            state = next
+        }
+    }
 
     /// チャンネルの、前回の送信で配布先にしたユーザー（なければ `nil`）。
     func recordedMembers(channel: String) -> [String]? { lock.withLock { state.recipient_members[channel] } }

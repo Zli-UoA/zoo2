@@ -22,6 +22,7 @@ struct RevocationView: View {
     @State private var busy = false
     @State private var resuming = false
     @State private var pending: RevocationSummary?
+    @State private var dropped = false
     @State private var unlocked: UnlockedSecretStorage?
 
     private var others: [OwnDevice] { devices.filter { $0.device_id != e2ee.currentDeviceID } }
@@ -29,6 +30,12 @@ struct RevocationView: View {
     var body: some View {
         NavigationStack {
             Form {
+                if dropped, phase == .intro {
+                    Section("途中だった失効を破棄しました") {
+                        Text("この端末を作り直したため、途中だった失効の記録を捨てました。解錠したうえで、失効を最初からやり直してください。")
+                        Button("確認しました") { e2ee.acknowledgeRevocationDropped(); dropped = false }
+                    }
+                }
                 if let pending, phase == .intro {
                     Section("終わっていない失効があります") {
                         Text("途中で止まった失効があります（\(stageName(pending.stage))まで保存済み）。続けるか、捨ててやり直してください。")
@@ -50,7 +57,10 @@ struct RevocationView: View {
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("閉じる") { dismiss() } } }
             .disabled(busy)
             .interactiveDismissDisabled(busy)
-            .task { pending = try? revocation.savedSummary() }
+            .task {
+                pending = try? revocation.savedSummary()
+                dropped = e2ee.revocationWasDropped
+            }
         }
     }
 

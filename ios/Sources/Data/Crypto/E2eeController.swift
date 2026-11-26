@@ -138,6 +138,10 @@ final class E2eeController: ConversationEncryption {
         try await devicesAPI?.removeDevice(id)
     }
 
+    /// 端末を作り直したので、終わっていなかった失効の記録を捨てた（失効を、最初からやり直してもらう）。
+    var revocationWasDropped: Bool { manager.readyStore?.revocationDropped == true }
+    func acknowledgeRevocationDropped() { try? manager.readyStore?.acknowledgeRevocationDropped() }
+
     /// 暗号化チャンネルとして見たチャンネルを記録する（暗号ストアを開けていなければ、何もしない）。
     func rememberEncryptedChannels(_ channels: [Channel]) {
         let ids = channels.filter { $0.encrypted == true }.map(\.id)

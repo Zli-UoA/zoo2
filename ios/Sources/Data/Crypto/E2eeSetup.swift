@@ -364,6 +364,9 @@ final class E2eeSetup {
     func completeReset(_ session: SetupSession, expectation: ResetExpectation, reauth: String?) async throws {
         let body = try session.resetSecretStorageRequest(expectedDefaultKeyId: expectation.defaultKeyID,
                                                          expectedSecretsRevision: expectation.secretsRevision)
+        // SSSS の保存の要求を送る前に、リセットの印（新しい SSSS 鍵の ID）を残す。要求が通ったあとに、応答をなくしたり、アプリが
+        // 終わったりしても、新しいリカバリーキーで解錠して、リセットの続きから終えられる（要求が通らなかったときは、印は使われない）。
+        try await store().setResetKeyID(session.keyId())
         let revision: UInt64?
         do {
             revision = try await api.createSecretStorageKey(body, reauth: reauth)
@@ -374,8 +377,6 @@ final class E2eeSetup {
             guard try jsonObject(current).string("default_key_id") == session.keyId() else { throw E2eeSetupError.conflict }
             revision = Self.secretsRevision(current)
         }
-        // SSSS を新しい鍵に作り直した。この先で止まっても、新しいリカバリーキーで解錠して、リセットの続きから終えられるよう、印を残す。
-        try await store().setResetKeyID(session.keyId())
         try await saveRemaining(session, secretsRevision: revision, reauth: reauth, reset: true)
     }
 
