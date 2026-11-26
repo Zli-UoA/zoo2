@@ -152,6 +152,8 @@ jobs:
         working-directory: crates/zoo-crypto-ffi
         run: cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked
       - name: Build, test and lint Android
+        env:
+          JAVA_TOOL_OPTIONS: -Drobolectric.dependency.repo.url=https://repo.maven.apache.org/maven2
         working-directory: frontend-compose
         run: ./gradlew --no-daemon -Pzoo.android=true -Pzoo.uiPreview=true testDebugUnitTest :assembleDebugAndroidTest :androidApp:testDebugUnitTest :androidApp:assembleDebug :androidApp:lintDebug :ui-preview:testDebugUnitTest
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

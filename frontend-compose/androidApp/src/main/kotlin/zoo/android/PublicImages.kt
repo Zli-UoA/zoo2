@@ -23,7 +23,7 @@ internal suspend fun loadPublicImage(
         var bytes: ByteArray? = null
         http.prepareGet(current) {
             if (noStore) header(HttpHeaders.CacheControl, "no-store, no-cache")
-            if (revalidate) header(HttpHeaders.CacheControl, "no-cache")
+            if (revalidate) header(HttpHeaders.CacheControl, "max-age=0")
             if (cacheOnly) header(HttpHeaders.CacheControl, "only-if-cached, max-stale=86400")
         }.execute { response ->
             if (response.status.value in setOf(301, 302, 303, 307, 308)) {

@@ -44,14 +44,14 @@ class AndroidImageCacheTest {
         }
     }
 
-    @Test fun revalidatesExpiredImagesWithTheirEtag() = runBlocking {
+    @Test fun cacheFirstRevalidatesNoCacheImagesWithTheirEtag() = runBlocking {
         Fixture().use { f ->
-            f.server.enqueue(MockResponse().setHeader("Cache-Control", "public, max-age=0")
+            f.server.enqueue(MockResponse().setHeader("Cache-Control", "public, no-cache")
                 .setHeader("ETag", "\"v1\"").setBody("original"))
             f.server.enqueue(MockResponse().setResponseCode(304).setHeader("Cache-Control", "public, max-age=3600"))
             f.cache().use { cache ->
-                assertEquals("original", cache.image(f.url).decodeToString())
-                assertEquals("original", cache.image(f.url).decodeToString())
+                assertEquals("original", cache.imageFromCacheFirst(ImageRequest(f.url)).decodeToString())
+                assertEquals("original", cache.imageFromCacheFirst(ImageRequest(f.url)).decodeToString())
             }
             assertEquals(2, f.server.requestCount)
             f.server.takeRequest()
