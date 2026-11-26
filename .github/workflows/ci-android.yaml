@@ -24,6 +24,8 @@ on:
       - "frontend/src/lib/call/**"
       - "frontend/vite.android-phone.config.ts"
       - "frontend/scripts/android-phone-smoke.mjs"
+      - "frontend/scripts/media-preview-bundle.test.mjs"
+      - "frontend/.storybook/fixtures/**"
       - "frontend/src/lib/i18n/locales/**"
       - "frontend/public/icons/**"
       # zoo-crypto の UniFFI バインディング（#353）。APK に .so を入れ、単体テストでも使う。
@@ -57,6 +59,8 @@ on:
       - "frontend/src/lib/call/**"
       - "frontend/vite.android-phone.config.ts"
       - "frontend/scripts/android-phone-smoke.mjs"
+      - "frontend/scripts/media-preview-bundle.test.mjs"
+      - "frontend/.storybook/fixtures/**"
       - "frontend/src/lib/i18n/locales/**"
       - "frontend/public/icons/**"
       # zoo-crypto の UniFFI バインディング（#353）。APK に .so を入れ、単体テストでも使う。
@@ -74,7 +78,14 @@ concurrency:
   group: ci-android-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
+  test-selection:
+    if: github.event_name != 'pull_request'
+    uses: ./.github/workflows/select-tests.yaml
+    with:
+      workflow: ci-android
   android:
+    if: github.event_name != 'pull_request'
+    needs: test-selection
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -154,6 +165,12 @@ jobs:
       - name: Build, test and lint Android
         working-directory: frontend-compose
         run: ./gradlew --no-daemon -Pzoo.android=true -Pzoo.uiPreview=true testDebugUnitTest :assembleDebugAndroidTest :androidApp:testDebugUnitTest :androidApp:assembleDebug :androidApp:lintDebug :ui-preview:testDebugUnitTest
+      - name: Install Chromium for the APK media viewer test
+        if: needs.test-selection.outputs.androidMedia == 'true'
+        run: pnpm --dir frontend exec playwright install --with-deps chromium
+      - name: APK media viewer bundle smoke test
+        if: needs.test-selection.outputs.androidMedia == 'true'
+        run: node frontend/scripts/media-preview-bundle.test.mjs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: zoo-android-debug

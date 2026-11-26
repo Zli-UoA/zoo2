@@ -8,6 +8,11 @@ on:
       - 'backend/tests/phone_query_budget_test.rs'
       - 'infra/db/*phone-work.py'
       - 'infra/db/**'
+      - "!infra/db/erd.sh"
+      - "!infra/db/compare-*.py"
+      - "!infra/db/test-*.py"
+      - "infra/db/compare-phone-work.py"
+      - "infra/db/test-phone-work.py"
       - 'rust-toolchain.toml'
       - '.github/workflows/ci-phone-query-budget.yaml'
   workflow_call:
@@ -18,6 +23,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   query-budget:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:

@@ -35,12 +35,13 @@ concurrency:
 # AppImage は NixOS では作れないので、ここで deb と一緒に作って成果物にする。
 jobs:
   test-selection:
+    if: github.event_name != 'pull_request'
     uses: ./.github/workflows/select-tests.yaml
     with:
       workflow: ci-desktop-tauri
 
   check:
-    if: fromJSON(needs.test-selection.outputs.desktopTauri).check
+    if: github.event_name != 'pull_request' && fromJSON(needs.test-selection.outputs.desktopTauri).check
     needs: test-selection
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -142,7 +143,7 @@ jobs:
   # macOS でもビルドできることを確かめる。リリース (cd-desktop-tauri-release.yaml) と同じ universal の
   # .app を作る。Developer ID の署名と公証はまだしない (ad-hoc 署名だけ)。
   macos:
-    if: fromJSON(needs.test-selection.outputs.desktopTauri).macos
+    if: github.event_name != 'pull_request' && fromJSON(needs.test-selection.outputs.desktopTauri).macos
     needs: test-selection
     runs-on: macos-15
     timeout-minutes: 60
@@ -220,7 +221,7 @@ jobs:
 
   # Windows でもビルドと Inno Setup インストーラー生成ができることを確かめる。
   windows:
-    if: fromJSON(needs.test-selection.outputs.desktopTauri).windows
+    if: github.event_name != 'pull_request' && fromJSON(needs.test-selection.outputs.desktopTauri).windows
     needs: test-selection
     runs-on: windows-latest
     timeout-minutes: 60

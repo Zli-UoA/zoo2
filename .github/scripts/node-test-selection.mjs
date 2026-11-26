@@ -1,9 +1,9 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { readFileSync, statSync, readdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, resolve, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { readChanges } from './test-selection-diff.mjs';
+import { readChanges, testBaseSha, usesSelectiveTests, workflowChanges } from './test-selection-diff.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const requireBot = createRequire(new URL('../../apps/github-bot/package.json', import.meta.url));
@@ -81,11 +81,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     : group === 'sdk' ? ['sdk/src/e2ee.test.ts', 'examples/e2ee-echo-bot/echo.test.ts']
       : [group === 'pwa' ? 'frontend/scripts/pwa.test.mjs' : 'frontend/scripts/avatar-cache.test.mjs'];
   let selected = entries;
-  if (process.env.GITHUB_EVENT_NAME === 'pull_request') {
+  const eventName = process.env.GITHUB_EVENT_NAME;
+  if (usesSelectiveTests(eventName)) {
     try {
       const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
-      const compiler = ['bot', 'sdk'].includes(group) ? requireBot('typescript') : requireFrontend('typescript');
-      selected = selectNodeTests(entries, readChanges(event.pull_request?.base?.sha, execFileSync), { compiler, frontendAliases: ['pwa', 'avatar'].includes(group) });
+      const bot = ['bot', 'sdk'].includes(group);
+      const compiler = bot ? requireBot('typescript') : requireFrontend('typescript');
+      const changes = workflowChanges(bot ? 'ci-github-bot' : 'ci-frontend', readChanges(testBaseSha(eventName, event)));
+      selected = selectNodeTests(entries, changes, { compiler, frontendAliases: !bot });
     } catch { console.log('Node Test Selection: analysis unavailable; running all tests'); }
   }
   console.log(`Node Test Selection (${group}): ${selected.length}/${entries.length}: ${selected.join(', ')}`);

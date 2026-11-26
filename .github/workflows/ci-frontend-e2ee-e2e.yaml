@@ -23,6 +23,9 @@ on:
       - "frontend/src/components/chat/dm.ts"
       - "frontend/src/routes/_shell.tsx"
       - "frontend/src/routes/_shell.settings.tsx"
+      - "!frontend/src/**/*.test.ts"
+      - "!frontend/src/**/*.test.tsx"
+      - "!frontend/src/**/*.stories.tsx"
       - "frontend/public/auth/**"
       - "frontend/e2e/e2ee.spec.ts"
       - "frontend/e2e/mock-idp.ts"
@@ -44,9 +47,13 @@ on:
       - "backend/Cargo.toml"
       - "backend/Cargo.lock"
       - "crates/zoo-crypto/**"
+      - "crates/zoo-components/**"
       - "crates/zoo-crypto-wasm/**"
       - "rust-toolchain.toml"
       - "infra/db/**"
+      - "!infra/db/erd.sh"
+      - "!infra/db/compare-*.py"
+      - "!infra/db/test-*.py"
       - ".github/scripts/*test-selection*.mjs"
       - ".github/scripts/backend-e2e-selection.mjs"
       - ".github/workflows/select-tests.yaml"
@@ -69,6 +76,9 @@ on:
       - "frontend/src/components/chat/dm.ts"
       - "frontend/src/routes/_shell.tsx"
       - "frontend/src/routes/_shell.settings.tsx"
+      - "!frontend/src/**/*.test.ts"
+      - "!frontend/src/**/*.test.tsx"
+      - "!frontend/src/**/*.stories.tsx"
       - "frontend/public/auth/**"
       - "frontend/e2e/e2ee.spec.ts"
       - "frontend/e2e/mock-idp.ts"
@@ -90,9 +100,13 @@ on:
       - "backend/Cargo.toml"
       - "backend/Cargo.lock"
       - "crates/zoo-crypto/**"
+      - "crates/zoo-components/**"
       - "crates/zoo-crypto-wasm/**"
       - "rust-toolchain.toml"
       - "infra/db/**"
+      - "!infra/db/erd.sh"
+      - "!infra/db/compare-*.py"
+      - "!infra/db/test-*.py"
       - ".github/scripts/*test-selection*.mjs"
       - ".github/scripts/backend-e2e-selection.mjs"
       - ".github/workflows/select-tests.yaml"
@@ -108,18 +122,20 @@ concurrency:
 # runner ジョブがDocker不要用とDocker必須用の実行先を選びます。
 jobs:
   test-selection:
+    if: github.event_name != 'pull_request'
     uses: ./.github/workflows/select-tests.yaml
     with:
       workflow: ci-frontend-e2ee-e2e
 
   runner:
+    if: github.event_name != 'pull_request'
     uses: ./.github/workflows/select-runner.yaml
     secrets:
       runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
 
   # E2EE の wasm（crates/zoo-crypto-wasm/pkg）。アプリが lib/e2ee を読むので、dev サーバーの起動に要る（#359）。
   crypto-wasm:
-    if: fromJSON(needs.test-selection.outputs.frontend).e2ee
+    if: github.event_name != 'pull_request' && fromJSON(needs.test-selection.outputs.frontend).e2ee
     needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
     timeout-minutes: 30
