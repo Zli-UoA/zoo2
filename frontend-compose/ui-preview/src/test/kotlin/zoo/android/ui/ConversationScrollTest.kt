@@ -1,14 +1,33 @@
 package zoo.android.ui
 
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.*
+import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
 import org.junit.Assert.assertEquals
@@ -41,10 +60,18 @@ class ConversationScrollTest {
         }
 
         val compact = ui.onNodeWithContentDescription("入力欄を広げる")
+        compact.performTouchInput { click() }
+        compact.assertIsDisplayed()
+        val list = ui.onNodeWithTag("conversation-timeline")
+        val viewport = list.fetchSemanticsNode().boundsInRoot
+        val last = ui.onNodeWithTag("timeline-entry-e40")
+        val lastTop = last.fetchSemanticsNode().positionInRoot.y
         val compactTop = compact.fetchSemanticsNode().boundsInRoot.top
         val delta = with(ui.density) { 120.dp.toPx() }
         compact.performTouchInput { down(center); moveBy(Offset(0f, -delta)) }
         assertTrue(compact.fetchSemanticsNode().boundsInRoot.top < compactTop - delta / 2)
+        assertEquals(viewport, list.fetchSemanticsNode().boundsInRoot)
+        assertEquals(lastTop, last.fetchSemanticsNode().positionInRoot.y, 1f)
         compact.performTouchInput { up() }
 
         val expanded = ui.onNodeWithContentDescription("入力欄を縮める")
@@ -53,6 +80,46 @@ class ConversationScrollTest {
         assertTrue(expanded.fetchSemanticsNode().boundsInRoot.top > expandedTop + delta / 2)
         expanded.performTouchInput { cancel() }
         assertEquals(expandedTop, expanded.fetchSemanticsNode().boundsInRoot.top, 1f)
+
+        expanded.performTouchInput { down(center); moveBy(Offset(0f, delta)); up() }
+        compact.assertIsDisplayed()
+        assertEquals(viewport, list.fetchSemanticsNode().boundsInRoot)
+        assertEquals(lastTop, last.fetchSemanticsNode().positionInRoot.y, 1f)
+    }
+
+    @Test
+    fun theHandleSupportsPhysicalKeyboardExpansionAndCollapse() {
+        var expanded by mutableStateOf(false)
+        ui.setContent {
+            ConversationInput(InputState("下書き", expanded = expanded), AndroidColors(false), textChanged = {},
+                onTool = { if (it == InputTool.Expand) expanded = !expanded })
+        }
+
+        val compact = ui.onNodeWithContentDescription("入力欄を広げる")
+        compact.performSemanticsAction(SemanticsActions.RequestFocus)
+        compact.performKeyInput { pressKey(Key.Enter) }
+
+        val expandedHandle = ui.onNodeWithContentDescription("入力欄を縮める")
+        expandedHandle.performSemanticsAction(SemanticsActions.RequestFocus)
+        expandedHandle.performKeyInput { pressKey(Key.Spacebar) }
+        compact.assertIsDisplayed()
+        compact.performSemanticsAction(SemanticsActions.RequestFocus)
+        compact.performKeyInput { pressKey(Key.DirectionCenter) }
+        expandedHandle.performSemanticsAction(SemanticsActions.RequestFocus)
+        expandedHandle.performKeyInput { pressKey(Key.NumPadEnter) }
+        compact.assertIsDisplayed()
+    }
+
+    @Test
+    fun expandingRemovesTheCoveredAttachmentFromKeyboardFocus() {
+        val item = entries.first().copy(attachments = listOf("file" to "添付ファイル"))
+        var screen by mutableStateOf(channel.copy(entries = listOf(item), input = InputState("下書き")))
+        ui.setContent { AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> } }
+
+        val attachment = ui.onNodeWithText("添付ファイル", useUnmergedTree = true)
+        attachment.assert(SemanticsMatcher.keyIsDefined(SemanticsActions.RequestFocus))
+        ui.runOnIdle { screen = screen.copy(input = screen.input.copy(expanded = true)) }
+        attachment.assertDoesNotExist()
     }
 
     @Test
@@ -76,6 +143,260 @@ class ConversationScrollTest {
 
         handle.performTouchInput { down(center); moveBy(Offset(0f, distance)); up() }
         ui.onNodeWithContentDescription("入力欄を広げる").assertIsDisplayed()
+    }
+
+    @Test
+    fun hidingAndRevealingTheHeaderDoesNotResizeTheList() {
+        ui.setContent { AndroidScreens(channel, false, true, dispatch = {}) { _, _ -> } }
+
+        val list = ui.onNodeWithTag("conversation-timeline")
+        val header = ui.onNodeWithText("開発")
+        header.assertIsDisplayed()
+        val viewport = list.fetchSemanticsNode().boundsInRoot
+        list.performTouchInput { swipeDown(startY = height * .25f) }
+        list.performTouchInput { swipeDown(startY = height * .25f) }
+        list.performTouchInput { swipeUp() }
+        header.assertDoesNotExist()
+        assertEquals(viewport, list.fetchSemanticsNode().boundsInRoot)
+        list.performTouchInput { swipeDown(startY = height * .25f) }
+        header.assertIsDisplayed()
+        assertEquals(viewport, list.fetchSemanticsNode().boundsInRoot)
+    }
+
+    @Test
+    fun theOverlayHeaderBlocksTapsOnCoveredContentAndKeepsItsButtonWorking() {
+        var contentTaps = 0
+        var headerButtonTaps = 0
+        ui.setContent {
+            CollapsingHeader(header = {
+                Box(Modifier.fillMaxWidth().height(56.dp).testTag("overlay-header")) {
+                    Box(Modifier.size(48.dp).clickable { headerButtonTaps++ }.testTag("header-button"))
+                }
+            }) { _, _ ->
+                Box(Modifier.fillMaxSize().clickable { contentTaps++ }.testTag("behind-header"))
+            }
+        }
+
+        ui.onNodeWithTag("overlay-header", useUnmergedTree = true).performTouchInput { click(center) }
+        ui.onNodeWithTag("header-button").performTouchInput { click() }
+        ui.runOnIdle {
+            assertEquals(0, contentTaps)
+            assertEquals(1, headerButtonTaps)
+        }
+        ui.onNodeWithTag("behind-header").performTouchInput { click(center) }
+        ui.runOnIdle { assertEquals(1, contentTaps) }
+    }
+
+    @OptIn(ExperimentalFoundationApi::class)
+    @Test
+    fun bringingATallRowIntoViewAlignsItsTopBelowTheHeader() {
+        val overlay = 56.dp
+        var reveal by mutableStateOf(false)
+        ui.setContent {
+            val initialScroll = with(LocalDensity.current) { 80.dp.roundToPx() }
+            val scroll = rememberLazyListState(initialFirstVisibleItemScrollOffset = initialScroll)
+            val requester = remember { BringIntoViewRequester() }
+            LaunchedEffect(reveal) { if (reveal) requester.bringIntoView() }
+            WithHeaderBringIntoView(overlay) {
+                LazyColumn(Modifier.height(500.dp), state = scroll) {
+                    item { Spacer(Modifier.height(110.dp)) }
+                    item { Box(Modifier.size(48.dp, 480.dp).bringIntoViewRequester(requester).testTag("covered-control")) }
+                    item { Spacer(Modifier.height(700.dp)) }
+                }
+            }
+        }
+
+        val control = ui.onNodeWithTag("covered-control")
+        val headerBottom = with(ui.density) { overlay.toPx() }
+        assertTrue(control.fetchSemanticsNode().positionInRoot.y < headerBottom)
+        ui.runOnIdle { reveal = true }
+        assertEquals(headerBottom, control.fetchSemanticsNode().positionInRoot.y, 1f)
+    }
+
+    @Test
+    fun aSearchResultOpenedInTheFullComposerTakesPriorityOverImeTracking() {
+        var imeHeight by mutableStateOf(0.dp)
+        var expanded by mutableStateOf(false)
+        var target by mutableStateOf<String?>(null)
+        ui.setContent {
+            val imePixels = with(LocalDensity.current) { imeHeight.roundToPx() }
+            Column(Modifier.height(700.dp - imeHeight)) {
+                TimelineWithInput(entries, InputState(expanded = expanded), AndroidColors(false), dispatch = {},
+                    allowThreads = true, focusMessage = target, imeInsets = WindowInsets(bottom = imePixels))
+            }
+        }
+
+        val list = ui.onNodeWithTag("conversation-timeline")
+        list.performTouchInput { swipeDown() }
+        list.performScrollToIndex(12)
+        ui.runOnIdle { expanded = true }
+        list.assertDoesNotExist()
+        ui.runOnIdle { target = "e3" }
+        ui.waitForIdle()
+        ui.runOnIdle { imeHeight = 120.dp }
+        ui.waitForIdle()
+        ui.runOnIdle { expanded = false }
+        val result = ui.onNodeWithTag("timeline-entry-e3")
+        result.assertIsDisplayed()
+        ui.runOnIdle { imeHeight = 0.dp }
+        result.assertIsDisplayed()
+    }
+
+    @Test
+    fun openingTheImeMovesVisibleHistoryWithoutJumpingToTheEnd() {
+        var imeHeight by mutableStateOf(0.dp)
+        ui.setContent {
+            val imePixels = with(LocalDensity.current) { imeHeight.roundToPx() }
+            Column(Modifier.height(700.dp - imeHeight)) {
+                TimelineWithInput(entries, InputState(), AndroidColors(false), dispatch = {},
+                    allowThreads = true, imeInsets = WindowInsets(bottom = imePixels))
+            }
+        }
+
+        val list = ui.onNodeWithTag("conversation-timeline")
+        list.performTouchInput { swipeDown() }
+        list.performScrollToIndex(12)
+        val history = ui.onNodeWithTag("timeline-entry-e17")
+        val originalTop = history.fetchSemanticsNode().positionInRoot.y
+        val opening = 120.dp
+        val openingPixels = with(ui.density) { opening.toPx() }
+        ui.runOnIdle { imeHeight = opening }
+        assertEquals(originalTop - openingPixels, history.fetchSemanticsNode().positionInRoot.y, 1f)
+        ui.onNodeWithTag("timeline-entry-e40").assertIsNotDisplayed()
+        ui.runOnIdle { imeHeight = 0.dp }
+        assertEquals(originalTop, history.fetchSemanticsNode().positionInRoot.y, 1f)
+
+        ui.runOnIdle { imeHeight = opening }
+        list.performTouchInput { swipeDown(startY = height * .25f) }
+        list.performScrollToIndex(8)
+        val older = ui.onNodeWithTag("timeline-entry-e9")
+        val afterScroll = older.fetchSemanticsNode().positionInRoot.y
+        ui.runOnIdle { imeHeight = 0.dp }
+        assertEquals(afterScroll, older.fetchSemanticsNode().positionInRoot.y, 1f)
+    }
+
+    @Test
+    fun closingTheImeWhileExpandedRestoresHistoryWhenTheComposerCollapses() {
+        var imeHeight by mutableStateOf(0.dp)
+        var expanded by mutableStateOf(false)
+        ui.setContent {
+            val imePixels = with(LocalDensity.current) { imeHeight.roundToPx() }
+            Column(Modifier.height(700.dp - imeHeight)) {
+                TimelineWithInput(entries, InputState(expanded = expanded), AndroidColors(false), dispatch = {},
+                    allowThreads = true, imeInsets = WindowInsets(bottom = imePixels))
+            }
+        }
+
+        val list = ui.onNodeWithTag("conversation-timeline")
+        list.performTouchInput { swipeDown() }
+        list.performScrollToIndex(12)
+        val history = ui.onNodeWithTag("timeline-entry-e17")
+        val originalTop = history.fetchSemanticsNode().positionInRoot.y
+        ui.runOnIdle { imeHeight = 120.dp }
+        assertTrue(history.fetchSemanticsNode().positionInRoot.y < originalTop)
+
+        ui.runOnIdle { expanded = true }
+        list.assertDoesNotExist()
+        ui.runOnIdle { imeHeight = 0.dp }
+        ui.runOnIdle { expanded = false }
+        assertEquals(originalTop, history.fetchSemanticsNode().positionInRoot.y, 1f)
+
+        ui.runOnIdle { imeHeight = 120.dp }
+        val keyboardTop = history.fetchSemanticsNode().positionInRoot.y
+        ui.runOnIdle { expanded = true }
+        list.assertDoesNotExist()
+        ui.runOnIdle { imeHeight = 0.dp }
+        ui.waitForIdle()
+        ui.runOnIdle { imeHeight = 120.dp }
+        ui.waitForIdle()
+        ui.runOnIdle { expanded = false }
+        assertEquals(keyboardTop, history.fetchSemanticsNode().positionInRoot.y, 1f)
+    }
+
+    @Test
+    fun openingTheImeInTheFullComposerAdjustsHistoryAfterCollapse() {
+        var imeHeight by mutableStateOf(0.dp)
+        var expanded by mutableStateOf(false)
+        var rows by mutableStateOf(entries)
+        ui.setContent {
+            val imePixels = with(LocalDensity.current) { imeHeight.roundToPx() }
+            Column(Modifier.height(700.dp - imeHeight)) {
+                TimelineWithInput(rows, InputState(expanded = expanded), AndroidColors(false), dispatch = {},
+                    allowThreads = true, imeInsets = WindowInsets(bottom = imePixels))
+            }
+        }
+
+        val list = ui.onNodeWithTag("conversation-timeline")
+        list.performTouchInput { swipeDown() }
+        list.performScrollToIndex(12)
+        val history = ui.onNodeWithTag("timeline-entry-e17")
+        val originalTop = history.fetchSemanticsNode().positionInRoot.y
+        ui.runOnIdle { expanded = true }
+        list.assertDoesNotExist()
+        ui.runOnIdle {
+            rows = (1..5).map { TimelineItem("earlier-$it", "はる", "過去 $it", "11:00") } + entries
+        }
+        list.assertDoesNotExist()
+        val opening = 120.dp
+        val openingPixels = with(ui.density) { opening.toPx() }
+        ui.runOnIdle { imeHeight = opening }
+        ui.waitForIdle()
+        ui.runOnIdle { expanded = false }
+        assertEquals(originalTop - openingPixels, history.fetchSemanticsNode().positionInRoot.y, 1f)
+    }
+
+    @Test
+    fun restoringTheScreenWhileTheImeIsOpenKeepsTheOriginalHistoryAnchor() {
+        var imeHeight by mutableStateOf(0.dp)
+        val restoration = StateRestorationTester(ui)
+        restoration.setContent {
+            val imePixels = with(LocalDensity.current) { imeHeight.roundToPx() }
+            Column(Modifier.height(700.dp - imeHeight)) {
+                TimelineWithInput(entries, InputState(), AndroidColors(false), dispatch = {},
+                    allowThreads = true, imeInsets = WindowInsets(bottom = imePixels))
+            }
+        }
+
+        val list = ui.onNodeWithTag("conversation-timeline")
+        list.performTouchInput { swipeDown() }
+        list.performScrollToIndex(12)
+        val history = ui.onNodeWithTag("timeline-entry-e17")
+        val originalTop = history.fetchSemanticsNode().positionInRoot.y
+        ui.runOnIdle { imeHeight = 120.dp }
+        val withKeyboard = history.fetchSemanticsNode().positionInRoot.y
+        restoration.emulateSavedInstanceStateRestore()
+        assertEquals(withKeyboard, history.fetchSemanticsNode().positionInRoot.y, 1f)
+        ui.runOnIdle { imeHeight = 0.dp }
+        assertEquals(originalTop, history.fetchSemanticsNode().positionInRoot.y, 1f)
+    }
+
+    @Test
+    fun openingTheImeNearTheEndWaitsForTheListToHaveRoom() {
+        var imeHeight by mutableStateOf(0.dp)
+        var viewportHeight by mutableStateOf(700.dp)
+        ui.setContent {
+            val imePixels = with(LocalDensity.current) { imeHeight.roundToPx() }
+            Column(Modifier.height(viewportHeight)) {
+                TimelineWithInput(entries, InputState(), AndroidColors(false), dispatch = {},
+                    allowThreads = true, imeInsets = WindowInsets(bottom = imePixels))
+            }
+        }
+
+        val list = ui.onNodeWithTag("conversation-timeline")
+        val opening = 120.dp
+        val openingPixels = with(ui.density) { opening.toPx() }
+        list.performSemanticsAction(SemanticsActions.ScrollBy) { it(0f, -openingPixels / 4f) }
+        val message = ui.onNodeWithTag("timeline-entry-e38")
+        val originalTop = message.fetchSemanticsNode().positionInRoot.y
+        ui.runOnIdle { imeHeight = opening }
+        list.assertIsDisplayed()
+        ui.runOnIdle { viewportHeight -= opening }
+        assertEquals(originalTop - openingPixels, message.fetchSemanticsNode().positionInRoot.y, 1f)
+
+        ui.runOnIdle { viewportHeight += opening }
+        list.assertIsDisplayed()
+        ui.runOnIdle { imeHeight = 0.dp }
+        assertEquals(originalTop, message.fetchSemanticsNode().positionInRoot.y, 1f)
     }
 
     @Test
