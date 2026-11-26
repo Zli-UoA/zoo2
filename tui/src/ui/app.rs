@@ -25,7 +25,7 @@ use crate::{
         send::{self, ChannelSender, SendContext},
         store::{Decryption, EncryptedRow, RecipientSummary},
     },
-    electric::{self, Batch, LinkedEvent, ShapeEvent, ShapeId},
+    electric::{self, Batch, LinkedCache, LinkedEvent, LinkedKey, ShapeEvent, ShapeId},
     http::{ApiError, Credentials},
     store::Store,
 };
@@ -301,7 +301,7 @@ pub struct App {
     emoji_poll: PollGate,
     typing_poll: PollGate,
     /// 本文のアプリ内リンクの、リンク先の取得。
-    pub links: super::links::Links,
+    pub links: LinkedCache,
     /// リンクで開いた、まだ同期していないメッセージ (チャンネル, メッセージ)。返信と分かれば
     /// スレッドを開く。
     pending_link: Option<(String, String)>,
@@ -653,7 +653,9 @@ impl App {
             } => {
                 self.recipients.insert(channel_id, summary);
             }
-            AppEvent::Linked(event) => self.links.apply(event),
+            AppEvent::Linked(event) => {
+                self.links.apply(event);
+            }
             AppEvent::KnownEncryptedChannels { known, failed } => {
                 self.known_encrypted_in_flight = false;
                 self.known_encrypted_loaded = true;
@@ -1922,7 +1924,7 @@ impl App {
     }
 
     /// 取得が要るリンク先。見られるチャンネルのメッセージで、開いているチャンネル以外のもの。
-    pub fn link_key(&self, target: &LinkTarget) -> Option<super::links::Key> {
+    pub fn link_key(&self, target: &LinkTarget) -> Option<LinkedKey> {
         let message_id = target.linked_message_id()?;
         if self.current.as_deref() == Some(target.channel_id.as_str()) {
             return None;
