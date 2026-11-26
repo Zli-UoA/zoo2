@@ -41,6 +41,12 @@ struct ConversationView: View {
                 if store.channel.encrypted == true, let e2ee = workspace.e2ee, !e2ee.isReady {
                     EncryptionUnlockBanner(e2ee: e2ee) { workspace.presentedSheet = .encryption }
                 }
+                if store.isDowngraded() {
+                    Label(MessageEncryptionError.downgraded.localizedDescription, systemImage: "exclamationmark.shield")
+                        .font(.caption).padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.red.opacity(0.12))
+                        .accessibilityIdentifier("encryption-downgraded-banner")
+                }
                 if let error = store.syncError ?? store.reactionSyncError ?? store.attachmentSyncError {
                     HStack {
                         Label(error, systemImage: "wifi.exclamationmark").font(.caption)

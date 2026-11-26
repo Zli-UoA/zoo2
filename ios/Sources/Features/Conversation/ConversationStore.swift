@@ -47,6 +47,8 @@ final class ConversationStore {
     /// 暗号化チャンネルの復号と送信（#685）。ないとき（プレビューなど）は、暗号化チャンネルを開けない。
     @ObservationIgnored var e2ee: (any ConversationEncryption)?
     /// ユーザー名からユーザー ID を引く（暗号化チャンネルの送信に付ける `mentions` を作る）。
+    /// 暗号化チャンネルだったはずなのに、サーバーが平文だと返している（格下げ）。送信を止める。
+    @ObservationIgnored var isDowngraded: () -> Bool = { false }
     @ObservationIgnored var userIDForName: (String) -> String? = { _ in nil }
 
     private func encryptedMentions(_ content: String) -> EncryptedMentions {
@@ -486,6 +488,7 @@ final class ConversationStore {
         do {
             if channel.encrypted == true {
                 // 暗号化チャンネル：本文を暗号化して送る。サーバーに平文は渡らない。添付は、まだ送れない。
+                guard !isDowngraded() else { throw MessageEncryptionError.downgraded }
                 guard let e2ee else { throw ZooError.rejected(403, "この会話には投稿できません。") }
                 var infos: [AttachmentInfo] = []
                 for (index, attachment) in attachments.enumerated() {
@@ -577,6 +580,7 @@ final class ConversationStore {
         defer { if epoch == accessGeneration { mutationInProgress = false } }
         if channel.encrypted == true {
             do {
+                guard !isDowngraded() else { actionError = MessageEncryptionError.downgraded.localizedDescription; return false }
                 guard let e2ee, !message.e2eeLegacy else { return false }
                 try await e2ee.edit(message, body: content, mentions: encryptedMentions(content))
                 try Task.checkCancellation()

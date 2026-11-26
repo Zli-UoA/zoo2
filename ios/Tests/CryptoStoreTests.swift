@@ -27,6 +27,19 @@ func makeFiles(_ key: MemoryKey = MemoryKey()) -> (CryptoStoreFiles, MemoryKey, 
 }
 
 struct CryptoStoreTests {
+    @Test func 暗号化チャンネルとして見たチャンネルは開き直しても覚えている() throws {
+        let (files, _, directory) = makeFiles()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var store = try #require(try CryptoStore.open(files, userID: user)).store
+        #expect(!store.isRememberedEncrypted("c1"))
+        try store.rememberEncryptedChannels(["c1", "c2", "c1"])
+        #expect(store.isRememberedEncrypted("c1") && store.isRememberedEncrypted("c2") && !store.isRememberedEncrypted("c3"))
+        store.close()
+        store = try #require(try CryptoStore.open(files, userID: user)).store
+        #expect(store.isRememberedEncrypted("c1") && store.isRememberedEncrypted("c2"))
+        store.close()
+    }
+
     @Test func 保存鍵は作ったあと同じ値を返し32バイトである() throws {
         let store = StorageKeyStore(backing: MemoryKey())
         let first = try store.loadOrCreate()

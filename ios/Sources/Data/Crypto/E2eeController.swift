@@ -136,6 +136,18 @@ final class E2eeController: ConversationEncryption {
         try await devicesAPI?.removeDevice(id)
     }
 
+    /// 暗号化チャンネルとして見たチャンネルを記録する（暗号ストアを開けていなければ、何もしない）。
+    func rememberEncryptedChannels(_ channels: [Channel]) {
+        let ids = channels.filter { $0.encrypted == true }.map(\.id)
+        guard !ids.isEmpty, let store = manager.readyStore else { return }
+        try? store.rememberEncryptedChannels(ids)
+    }
+
+    /// 暗号化チャンネルだったはずなのに、サーバーが `encrypted = false` を返している（格下げ）。
+    func isDowngraded(_ channel: Channel) -> Bool {
+        channel.encrypted != true && manager.readyStore?.isRememberedEncrypted(channel.id) == true
+    }
+
     /// 待っているパスキーの要求を取り消す。
     func cancelPasskey() { (passkeys as? SystemPasskeyClient)?.cancel() }
 

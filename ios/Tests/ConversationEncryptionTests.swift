@@ -182,6 +182,21 @@ struct ConversationEncryptionTests {
         #expect(store.draftAttachments["root"]?.isEmpty ?? true)
     }
 
+    @Test("暗号化チャンネルだったはずが平文だと返されたら（格下げ）、送信も編集も止める")
+    func downgradedChannelBlocksSendAndEdit() async {
+        let encryption = FakeEncryption()
+        let store = store(encryption)
+        store.isDowngraded = { true }
+        store.drafts["root"] = "送ってはいけない"
+        await store.send()
+        #expect(encryption.sent.isEmpty)
+        #expect(store.sendErrors["root"]?.contains(MessageEncryptionError.downgraded.localizedDescription) == true)
+        #expect(store.drafts["root"] == "送ってはいけない")
+        let own = message("00000000-0000-4000-8000-0000000000e1", content: "")
+        #expect(await store.edit(own, content: "編集") == false)
+        #expect(encryption.edited.isEmpty)
+    }
+
     @Test("暗号化チャンネルの編集は暗号化の経路へ渡す")
     func editsThroughEncryption() async {
         let encryption = FakeEncryption()

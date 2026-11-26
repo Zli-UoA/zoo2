@@ -90,6 +90,8 @@ struct StoreState: Codable {
     var imported_backup_version: String?
     /// 終わっていない失効の進み具合（`Revocation.pickle`。マスター鍵の秘密鍵と SSSS 鍵は入らない）。
     var revocation: String?
+    /// 暗号化チャンネルとして見たことがあるチャンネルの ID（サーバーが後から `encrypted = false` と返しても、格下げとして扱う）。
+    var encrypted_channels: [String] = []
 
     init(version: Int, user_id: String, device_id: String, registered: Bool, account: String, trust_store: String?) {
         self.version = version; self.user_id = user_id; self.device_id = device_id
@@ -114,6 +116,7 @@ struct StoreState: Codable {
         backup_upload = try c.decodeIfPresent(String.self, forKey: .backup_upload)
         imported_backup_version = try c.decodeIfPresent(String.self, forKey: .imported_backup_version)
         revocation = try c.decodeIfPresent(String.self, forKey: .revocation)
+        encrypted_channels = try c.decodeIfPresent([String].self, forKey: .encrypted_channels) ?? []
     }
 }
 
@@ -633,6 +636,24 @@ final class CryptoStore: @unchecked Sendable {
             return try inbound.decrypt(message: message)
         }
     }
+
+    // MARK: - 暗号化チャンネルの記録（格下げの検出）
+
+    /// 暗号化チャンネルとして見たチャンネルを記録する（新しいものがあるときだけ保存する）。
+    func rememberEncryptedChannels(_ ids: [String]) throws {
+        try lock.withLock {
+            try ensureOpen()
+            let known = Set(state.encrypted_channels)
+            let added = ids.filter { !known.contains($0) }
+            guard !added.isEmpty else { return }
+            var next = state
+            next.encrypted_channels += Set(added).sorted()
+            try save(next)
+            state = next
+        }
+    }
+
+    func isRememberedEncrypted(_ id: String) -> Bool { lock.withLock { state.encrypted_channels.contains(id) } }
 
     // MARK: - 失効（#362）
 
