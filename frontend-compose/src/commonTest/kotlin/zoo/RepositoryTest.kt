@@ -628,6 +628,9 @@ class RepositoryTest {
         val platform = FakePlatform()
         var subsetCalls = 0
         var offsetCounter = 1
+        // 409 のたびに、サーバーは新しい handle を返す。古い handle のままだと、取り直しが「期限切れの handle」として扱われる。
+        var handle = "h0"
+        var handleCounter = 0
         val secondSubsetStarted = CompletableDeferred<Unit>()
         // live の要求が来たら、この数だけ 409（must-refetch）で返す。待っている間に取り消された要求は数えない。
         val invalidations = kotlinx.coroutines.flow.MutableStateFlow(0)
@@ -639,26 +642,27 @@ class RepositoryTest {
                         p["subset__where"] != null -> {
                             subsetCalls++
                             when (subsetCalls) {
-                                1 -> respond(snapshot(listOf(message(1))), headers = protocolHeaders())
+                                1 -> respond(snapshot(listOf(message(1))), headers = protocolHeaders(handle))
                                 // 1 回目の取り直し: 失敗させて、ジョブを再試行の待機に入れる。
                                 2 -> {
                                     secondSubsetStarted.complete(Unit)
                                     respond("{}", HttpStatusCode.BadRequest)
                                 }
-                                else -> respond(snapshot(listOf(message(10))), headers = protocolHeaders())
+                                else -> respond(snapshot(listOf(message(10))), headers = protocolHeaders(handle))
                             }
                         }
                         p["live"] == "true" || p["live_sse"] == "true" -> {
                             invalidations.first { it > 0 }
                             invalidations.value = invalidations.value - 1
-                            respond("[]", HttpStatusCode.Conflict, headersOf("electric-handle" to listOf("next-handle")))
+                            handle = "h${++handleCounter}"
+                            respond("[]", HttpStatusCode.Conflict, headersOf("electric-handle" to listOf(handle)))
                         }
                         // 購読（最初の offset=now、snapshot の後の追いつき、must-refetch の後の取り直し）。
                         // 追いつきの要求も、live に進めるよう up-to-date で返す。offset は毎回進める。
                         else ->
                             respond(
                                 """[{"headers":{"control":"up-to-date"}}]""",
-                                headers = protocolHeaders(offset = "${++offsetCounter}_0"),
+                                headers = protocolHeaders(handle, "${++offsetCounter}_0"),
                             )
                     }
                 }
