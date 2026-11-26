@@ -2,6 +2,28 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 use anyhow::Result;
 
+use crate::config::is_secure_transport;
+
+/// API と認可サーバーに使う HTTP クライアント。秘密を送ってよい接続先（HTTPS と、この端末の中の HTTP）への
+/// 要求は、そうでない接続先への転送を追わない。同じホストとポートの平文の HTTP へ転送されると、
+/// `Authorization` が付いたまま送られるため。
+pub fn client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(redirect_policy())
+        .build()
+        .expect("HTTP クライアントを作れません")
+}
+
+fn redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let secure = attempt.previous().first().is_some_and(is_secure_transport);
+        if secure && !is_secure_transport(attempt.url()) {
+            return attempt.error("HTTPS でない接続先への転送は追いません");
+        }
+        reqwest::redirect::Policy::default().redirect(attempt)
+    })
+}
+
 /// OIDC のアクセストークンを返すもの。期限が近ければ更新してから返す。
 pub trait BearerSource: Send + Sync {
     fn bearer(&self) -> Pin<Box<dyn Future<Output = Result<String>> + Send + '_>>;
@@ -213,6 +235,37 @@ pub async fn error_for_status_coded(response: reqwest::Response) -> Result<reqwe
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn secrets_do_not_follow_redirects_to_plain_http() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
+
+        let server = MockServer::start().await;
+        Mock::given(path("/downgrade"))
+            .respond_with(
+                ResponseTemplate::new(307).insert_header("location", "http://zoo.example/steal"),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(path("/moved"))
+            .respond_with(ResponseTemplate::new(307).insert_header("location", "/here"))
+            .mount(&server)
+            .await;
+        Mock::given(path("/here"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let get = |at: &str| {
+            super::client()
+                .get(format!("{}{at}", server.uri()))
+                .bearer_auth("token")
+                .send()
+        };
+        let error = get("/downgrade").await.unwrap_err();
+        assert!(error.is_redirect(), "{error}");
+        // 安全な接続先どうしの転送は追う。
+        assert!(get("/moved").await.unwrap().status().is_success());
+    }
+
     use super::*;
 
     fn status(status: reqwest::StatusCode, message: &str) -> anyhow::Error {

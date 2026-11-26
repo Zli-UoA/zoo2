@@ -2117,24 +2117,21 @@ impl App {
             (Some(None), Some(_)) => None,
             (None, Some(_)) => target.thread_id.clone(),
         };
-        // 開いているチャンネルの同期済みの行で確かめられなければ（覚えていた結果を含む）、行がそろった時点で、
-        // 返信ならスレッドを開き、なければ知らせる。
-        let confirmed = self.synced_channel(&target.channel_id)
-            && self
-                .store
-                .message(&target.channel_id, &message_id)
-                .is_some();
-        let pending = (!confirmed).then(|| (target.channel_id.clone(), message_id.clone()));
         // スレッドの親ではないメッセージへ移るときは、開いているスレッドを閉じる。
         if parent_id.is_none() && self.thread.is_some() {
             self.close_thread();
         }
+        let channel_id = target.channel_id;
         self.open_search_result(global_search::Destination {
-            channel_id: target.channel_id,
-            message_id,
+            channel_id: channel_id.clone(),
+            message_id: message_id.clone(),
             parent_id,
         });
-        self.pending_link = pending;
+        // 開いたあとの同期済みの行で確かめられなければ（覚えていた結果や、止まった購読を取り直すときを含む）、
+        // 行がそろった時点で、返信ならスレッドを開き、なければ知らせる。
+        let confirmed = self.synced_channel(&channel_id)
+            && self.store.message(&channel_id, &message_id).is_some();
+        self.pending_link = (!confirmed).then_some((channel_id, message_id));
     }
 
     /// [`Self::follow_link`] で開いたメッセージが返信と分かったら、スレッドを開く。

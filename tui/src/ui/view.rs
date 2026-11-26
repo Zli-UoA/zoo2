@@ -1850,6 +1850,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_link_is_checked_again_when_the_channel_is_resubscribed() {
+        let mut app = app_with_link("http://127.0.0.1:9/channels/c1?message=m1");
+        // c1 の購読が止まっていて、開くと取り直す。
+        let stopped = tokio::spawn(async {});
+        while !stopped.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        app.subscriptions
+            .insert(ShapeId::Messages("c1".into()), stopped);
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.selected.as_deref(), Some("m1"));
+        // 取り直したら、削除されていた。
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(Vec::new()),
+        ));
+        assert_eq!(app.selected, None);
+        assert_eq!(notice(&app), Some("メッセージを表示できません"));
+    }
+
+    #[tokio::test]
     async fn the_link_chooser_does_not_mark_the_timeline_as_read() {
         let mut app = app_with_link(&format!(
             "http://127.0.0.1:9/channels/c1?message=m1 {SECRET_LINK}"

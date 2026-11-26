@@ -173,10 +173,18 @@ fn resolve_for(app_name: &str, file: FileConfig, env: &HashMap<String, String>) 
     };
 
     // ログインで得たトークンは、経路上で読める平文の HTTP には送らない。
-    if matches!(auth, AuthConfig::Oidc(_)) && !is_secure_transport(&api_url) {
-        bail!(
-            "api_base_url は https:// にしてください (http:// はこの端末の中の localhost などに限ります): {api_base_url}"
-        );
+    if let AuthConfig::Oidc(oidc) = &auth {
+        if !is_secure_transport(&api_url) {
+            bail!(
+                "api_base_url は https:// にしてください (http:// はこの端末の中の localhost などに限ります): {api_base_url}"
+            );
+        }
+        if !url::Url::parse(&oidc.issuer).is_ok_and(|issuer| is_secure_transport(&issuer)) {
+            bail!(
+                "oidc_issuer は https:// にしてください (http:// はこの端末の中の localhost などに限ります): {}",
+                oidc.issuer
+            );
+        }
     }
 
     let check_updates = match pick("ZOO_CHECK_UPDATES", None) {
@@ -283,6 +291,14 @@ mod tests {
         ] {
             let config = resolve(FileConfig::default(), &env(&[("ZOO_API_BASE_URL", url)]));
             assert_eq!(config.is_ok(), accepted, "{url}");
+        }
+        for (issuer, accepted) in [
+            ("https://account.example/api/auth", true),
+            ("http://127.0.0.1:8080/api/auth", true),
+            ("http://account.example/api/auth", false),
+        ] {
+            let config = resolve(FileConfig::default(), &env(&[("ZOO_OIDC_ISSUER", issuer)]));
+            assert_eq!(config.is_ok(), accepted, "{issuer}");
         }
         // 開発用の `X-Dev-User` の接続は、トークンを送らないので HTTP でもよい。
         let dev = env(&[

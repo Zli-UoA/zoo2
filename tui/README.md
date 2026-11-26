@@ -281,7 +281,7 @@ SSH の先で TUI を動かしていて、ブラウザーが手元のマシン�
 
 | `config.toml` | 環境変数 | 既定値 | 内容 |
 |---|---|---|---|
-| `api_base_url` | `ZOO_API_BASE_URL` | `https://zli.chat` | backend の URL。ログインして使う場合は `https://` (`http://` は `localhost` などこの端末の中に限る。`dev_user` を指定したときは制限なし) |
+| `api_base_url` | `ZOO_API_BASE_URL` | `https://zli.chat` | backend の URL。ログインして使う場合は `https://` (`http://` は `localhost` などこの端末の中に限る。`dev_user` を指定したときは制限なし)。ログインの `oidc_issuer` と、そこから分かる接続先も同じ。HTTPS からの `http://` (この端末の外) への転送は追わない |
 | `dev_user` | `ZOO_DEV_USER` | なし | dev モードのユーザー。指定したときだけ dev モードで接続し、ログインは使わない |
 | `oidc_issuer` | `ZOO_OIDC_ISSUER` | `https://account.zli.works/api/auth` | AuthZ の issuer |
 | `oidc_client_id` | `ZOO_OIDC_CLIENT_ID` | 本番の TUI 用クライアントの ID | AuthZ に登録した TUI 用の public client の ID |
