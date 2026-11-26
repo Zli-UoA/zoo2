@@ -2,6 +2,7 @@ import {
   getToken as defaultGetToken,
   getAuthRequestGeneration,
   getAuthSessionGeneration,
+  getTokenProviderGeneration,
   notifyAuthorized,
   notifyUnauthorized,
   type AuthorizedHandler,
@@ -9,6 +10,13 @@ import {
   type UnauthorizedHandler,
 } from "../auth";
 import { joinUrl, type AppConfig } from "../config";
+import type {
+  ChannelPinsResponse,
+  PinChannelResult,
+  ReorderChannelPinsResult,
+  UnpinChannelResult,
+} from "./types";
+import { assertSafeApiPath } from "./path";
 import { normalizeRouteGroup, reportApiError } from "../telemetry/capture";
 import { runWithHttpSpan } from "../telemetry/tracer";
 
@@ -153,26 +161,46 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
   async function buildHeaders(
     explicit: Record<string, string> | undefined,
     hasBody: boolean,
-  ): Promise<Headers> {
+  ): Promise<{ headers: Headers; authHeaders: Headers }> {
     const headers = new Headers(explicit);
     const authHeaders = await buildAuthHeaders({ getToken: tokenProvider, devUserId });
-    lastAuthHeaders = new Headers(authHeaders);
     authHeaders.forEach((value, key) => headers.set(key, value));
     headers.set("Accept", "application/json");
     if (hasBody) {
       headers.set("Content-Type", "application/json");
     }
 
-    return headers;
+    return { headers, authHeaders };
+  }
+
+  function assertRequestStillValid(
+    signal: AbortSignal | undefined,
+    expectedAuthSessionGen: number,
+    expectedTokenProviderGen: number,
+  ): void {
+    if (signal?.aborted) {
+      throw signal.reason ?? new DOMException("The operation was aborted.", "AbortError");
+    }
+    if (
+      expectedAuthSessionGen !== getAuthSessionGeneration() ||
+      (!options.getToken && expectedTokenProviderGen !== getTokenProviderGeneration())
+    ) {
+      throw new DOMException("The operation was aborted.", "AbortError");
+    }
   }
 
   async function request<T>(path: string, requestOptions: RequestOptions = {}): Promise<T> {
     const authSessionGeneration = getAuthSessionGeneration();
     const authRequestGeneration = getAuthRequestGeneration();
+    const tokenProviderGeneration = getTokenProviderGeneration();
+    assertSafeApiPath(path);
+    assertRequestStillValid(requestOptions.signal, authSessionGeneration, tokenProviderGeneration);
     const hasBody = requestOptions.body !== undefined;
     const method = requestOptions.method ?? "GET";
     const requestRoute = telemetry ? normalizeRouteGroup() : undefined;
-    const headers = await buildHeaders(requestOptions.headers, hasBody);
+    const { headers, authHeaders } = await buildHeaders(requestOptions.headers, hasBody);
+    assertRequestStillValid(requestOptions.signal, authSessionGeneration, tokenProviderGeneration);
+    lastAuthHeaders = new Headers(authHeaders);
     const url = joinUrl(baseUrl, path);
     const startedAt = Date.now();
 
@@ -278,4 +306,35 @@ export function createConfiguredApiClient(
     telemetry: config.telemetryEnabled,
     ...options,
   });
+}
+
+/**
+ * ユーザーごとのチャンネル・DM のピン留め API。
+ *
+ * 読み取りは `GET /api/channel-pins`、書き込みは `POST` / `DELETE` /
+ * `PATCH /api/channel-pins/order`。競合したときの 409 応答は `ApiError.body` に
+ * `{ error, code: "CHANNEL_PINS_CONFLICT", version, pins }` を持つ。
+ */
+export function createChannelPinsApi(client: ApiClient) {
+  return {
+    getChannelPins: () => client.get<ChannelPinsResponse>("/api/channel-pins"),
+    pinChannel: (channelId: string, expectedVersion?: number) =>
+      client.post<PinChannelResult>("/api/channel-pins", {
+        channel_id: channelId,
+        ...(expectedVersion === undefined ? {} : { expected_version: expectedVersion }),
+      }),
+    unpinChannel: (channelId: string, expectedVersion?: number) =>
+      client.delete<UnpinChannelResult>(
+        `/api/channel-pins/${encodeURIComponent(channelId)}${
+          expectedVersion === undefined
+            ? ""
+            : `?${new URLSearchParams({ expected_version: String(expectedVersion) })}`
+        }`,
+      ),
+    reorderChannelPins: (channelIds: string[], expectedVersion: number) =>
+      client.patch<ReorderChannelPinsResult>("/api/channel-pins/order", {
+        channel_ids: channelIds,
+        expected_version: expectedVersion,
+      }),
+  };
 }

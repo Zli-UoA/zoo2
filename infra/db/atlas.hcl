@@ -1,6 +1,7 @@
 env "local" {
   url = getenv("DATABASE_URL")
-  dev = "docker://postgres/16/dev?search_path=public"
+  # Built from infra/db/postgres (pg_bigm); `make db-up` builds it first.
+  dev = "docker+postgres://_/zoo2-postgres-bigm:16/dev?search_path=public"
 
   schema {
     src = "file://db/schema.sql"

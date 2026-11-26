@@ -78,7 +78,7 @@ sdk-test:
 	node --experimental-strip-types --test sdk/src/index.test.ts
 
 # TUI クライアント。tui-dev は backend の dev モード (make backend-dev) に X-Dev-User で接続する。
-.PHONY: tui-dev tui-build tui-check desktop-dev desktop-build desktop-check desktop-gallery
+.PHONY: tui-dev tui-build tui-check
 tui-dev:
 	cd tui && ZOO_API_BASE_URL=$${ZOO_API_BASE_URL:-http://localhost:8000} ZOO_DEV_USER=$${ZOO_DEV_USER:-00000000-0000-0000-0000-000000000001} cargo run -- run
 
@@ -109,21 +109,6 @@ crypto-ffi-check:
 .PHONY: crypto-ffi-android
 crypto-ffi-android:
 	cd crates/zoo-crypto-ffi && cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -P 26 build --locked --release --lib
-
-# デスクトップクライアント (GPUI)。desktop-dev は backend の dev モードに X-Dev-User で接続する。
-desktop-dev:
-	cd desktop && ZOO_API_BASE_URL=$${ZOO_API_BASE_URL:-http://localhost:8000} ZOO_DEV_USER=$${ZOO_DEV_USER:-00000000-0000-0000-0000-000000000001} cargo run
-
-desktop-build:
-	cd desktop && cargo build --release
-
-desktop-check:
-	cd client-core && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
-	cd desktop && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
-
-# 色・フォント・アイコンの確認画面。THEME=dark で暗い配色にする。
-desktop-gallery:
-	cd desktop && cargo run -- gallery --theme $${THEME:-light}
 
 # ローカル監視スタック (Prometheus / Loki / Alloy / Grafana / Tempo)
 .PHONY: observability-up observability-up-traces observability-down observability-reset observability-logs

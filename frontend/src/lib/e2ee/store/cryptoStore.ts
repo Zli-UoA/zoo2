@@ -1,8 +1,10 @@
 import {
   BackupUploadState,
   DeviceAccount,
+  type BackupRow,
   type BackupUpload,
   InboundSessionStore,
+  KeySnapshot,
   OlmSessions,
   OwnKeys,
   Revocation,
@@ -11,13 +13,29 @@ import {
   type RevocationSummary,
   type UnlockedSecretStorage,
   type JsonObject,
+  type SenderTrust,
   type SessionRef,
   type VerificationMessage,
 } from "@zoo/crypto-wasm";
 
-import { inboundSessionKey, type CryptoBackend, type CryptoStoreWrite } from "./backend";
-import { MegolmChannels } from "./megolm";
+import {
+  inboundSessionKey,
+  type CryptoBackend,
+  type CryptoStoreWrite,
+  type InboundSessionKey,
+} from "./backend";
+import { BACKUP_IMPORT_MAX_PAGES, BACKUP_IMPORT_PAGE_SIZE } from "../backupImportLimits";
+import { masterPublicKey } from "../masterKey";
+import { ENCRYPTED_CHANNEL_META_PREFIX, MegolmChannels, RECIPIENTS_META_PREFIX } from "./megolm";
 import { SasVerifications } from "./verification";
+import {
+  deleteDeviceRecord,
+  readDeviceRecord,
+  writeDeviceRecord,
+  type DeviceRecord,
+  type DeviceRecordStore,
+  type ReplacedDevice,
+} from "./deviceRecord";
 import {
   StorageKeyUnavailableError,
   WRAPPED_STORAGE_KEY_META,
@@ -50,6 +68,46 @@ const META_REVOCATION = "revocation";
  */
 const META_BACKUP_UPLOAD = "backup_upload";
 
+/**
+ * 鍵バックアップからの取り込みの進み具合（{@link BackupImportProgress} の JSON）。秘密は入らない。
+ * 途中で止まったら、同じ版なら続きから取り込み、版が変わったら始めから取り込む。
+ */
+const META_BACKUP_IMPORT = "backup_import";
+
+/**
+ * 端末を作り直すとき（{@link CryptoStore.replaceDevice}）に引き継ぐ `meta`。ほか（`own_keys`、
+ * `secrets_revision`、`revocation`、`backup_import`、`outbound_olm:*` など）は捨てる。前置きで
+ * 引き継ぐもの（`recipients:*`、`encrypted_channel:*`）は `replaceDevice` で見る。
+ */
+const CARRIED_META = new Set([WRAPPED_STORAGE_KEY_META, META_USER_ID, META_BACKUP_UPLOAD]);
+
+interface BackupImportProgress {
+  /** 取り込んでいる（取り込んだ）版。 */
+  version: string;
+  /** 次に読むページのカーソル（`GET /api/e2ee/key_backup/keys` の `after`）。 */
+  after: string | null;
+  /**
+   * 最後のページまで取り込んだ。1 行も読まなかったときは済みにしない（サーバーが一時的に、または
+   * わざと空を返しても、その版を読み直せるように。空の版の読み直しは 1 回の要求で済む）。
+   */
+  done: boolean;
+  /** この版で読んだ行の数。 */
+  rows: number;
+  /** この版で読んだページの数（{@link BACKUP_IMPORT_MAX_PAGES} を超えて読まない）。 */
+  pages: number;
+}
+
+/** {@link CryptoStore.beginBackupImport} の結果。 */
+export type BackupImportStart =
+  /** `after` のカーソル（`null` なら最初）から読んで取り込む。`pages` はこの版で読んだページの数。 */
+  | { kind: "import"; version: string; after: string | null; pages: number }
+  /** この版は取り込み終えている。 */
+  | { kind: "done"; version: string }
+  /** 解錠していない、または今の版がない。 */
+  | { kind: "none" }
+  /** 今の版を使えない（アップロードの `rejected` と同じ）。取り込まない。 */
+  | { kind: "rejected"; code: string };
+
 /** 鍵バックアップへの 1 回のアップロード（`POST /api/e2ee/key_backup/keys`）。 */
 export type BackupUploadRequest =
   | {
@@ -60,15 +118,29 @@ export type BackupUploadRequest =
       secretsRevision: number;
       body: JsonObject;
       count: number;
+      /**
+       * アップロードの証明（`X-Zoo-Backup-Proof` の値。docs/e2ee.md の「アップロードの証明」）。
+       * 今の版に `upload_key` がない（証明を足す前のサーバー）なら `null` で、ヘッダーを送らない。
+       */
+      proof: string | null;
     }
   /** 送るものがない（未解錠、今の版がない、送信待ちがない）。 */
   | { kind: "none" }
   /**
    * 今の版を使えない（`code` は zoo-crypto の誤り。マスター鍵の署名がない `Signature` や
    * `MissingSignature`、公開鍵が SSSS と違う `BackupKeyMismatch`、版の巻き戻り
-   * `BackupVersionRollback` など）。送らない。
+   * `BackupVersionRollback`、`upload_key` が鍵の形でないなど）。送らない。
    */
   | { kind: "rejected"; code: string };
+
+/**
+ * 判定し直しで問い合わせる送信ユーザー（{@link CryptoStore.reverifyCandidateUsers}）。`generation` は
+ * 問い合わせを始めたときの信頼の世代で、結果を渡すとき（{@link CryptoStore.reverifySenders}）に戻す。
+ */
+export interface ReverifyRequest {
+  userIds: string[];
+  generation: number;
+}
 
 /** to-device の Shape の行のうち、処理に使う列。 */
 export interface ToDeviceRow {
@@ -81,6 +153,18 @@ export interface ToDeviceRow {
 
 /** `keys/query` の応答の `device_keys`（ユーザー、端末の順）。 */
 export type DeviceKeysByUser = Record<string, Record<string, JsonObject>>;
+
+/**
+ * `keys/query` の応答（50 人ずつ問い合わせてまとめたもの）。`KeySnapshot.fromJson` にそのまま渡せる。
+ */
+export type KeysQueryResponse = {
+  device_keys: DeviceKeysByUser;
+  master_keys: Record<string, JsonObject>;
+  self_signing_keys: Record<string, JsonObject>;
+  user_signing_keys: Record<string, JsonObject>;
+  tofu_pins: Record<string, JsonObject>;
+  signatures: JsonObject[];
+};
 
 export interface RegistrationRequest {
   device_keys: JsonObject;
@@ -112,10 +196,25 @@ export interface ToDeviceResult {
 /** 絵文字 SAS の検証のメッセージの `type` の接頭辞。 */
 const VERIFICATION_TYPE_PREFIX = "m.key.verification.";
 
+/**
+ * 「未検証の送信者」のセッションを判定し直したあと、同じセッションを次に問い合わせるまでの間隔。
+ * 判定できなかった（相手を信頼していない、署名がない）セッションのメッセージを表示するたびに
+ * `keys/query` を送らないため。解錠や相手の検証のあとは、待たずに判定し直す。
+ */
+const REVERIFY_RETRY_MS = 10 * 60_000;
+
 export interface OpenedStore {
   store: CryptoStore;
-  /** 保存鍵を開けずに暗号ストアを作り直したとき、前の端末の ID（サーバーから消す）。 */
-  replacedDeviceId: string | null;
+  /**
+   * 前の端末（サーバーから消す）。保存鍵を開けずに暗号ストアを作り直したとき、または、暗号
+   * ストアの外の記録（{@link DeviceRecord}）にある同じユーザーの端末が、今の端末と違うとき
+   * （暗号ストアのファイルだけが消えて、新しい端末を作ったときなど）。
+   *
+   * 呼び出し側が削除待ちに残す（または消す）まで記録に残り、開くたびに知らせる。渡せたら
+   * {@link CryptoStore.forgetReplacedDevices} で外す。`registered` が偽なら、削除 API の 404 でも
+   * すぐには消えたものとしない（登録の応答をなくしただけかもしれない）。
+   */
+  replacedDevices: ReplacedDevice[];
 }
 
 interface OpenOptions {
@@ -124,6 +223,8 @@ interface OpenOptions {
   userId: string;
   reset: () => Promise<CryptoBackend>;
   keys?: WrappingKeyStore;
+  /** 今の端末の記録の置き場所。省いたら記録しない（テスト）。 */
+  devices?: DeviceRecordStore;
 }
 
 /**
@@ -152,6 +253,29 @@ export class CryptoStore {
   private broken = false;
   private megolmChannels: MegolmChannels | null = null;
   private sasVerifications: SasVerifications | null = null;
+  /** 削除待ちにまだ渡していない前の端末（{@link DeviceRecord.replaced}）。 */
+  private replaced: ReplacedDevice[] = [];
+  /**
+   * 開いたときに記録を読めたか。読めなかったら、この store では記録を書き換えない（前の端末の ID を
+   * 上書きして失わないため。次に開いたときに読み直す）。
+   */
+  private recordWritable = false;
+  /**
+   * 復号で「未検証の送信者」になった Olm 由来のセッション（判定し直す候補）。検証済みに上げるか、
+   * 未検証でなくなるまで残す（判定に失敗しても、解錠や相手の検証のあとに判定し直すため）。メモリーに
+   * だけ置き、開き直したら、表示して復号したときにまた入る。
+   */
+  private readonly reverifyCandidates = new Map<InboundSessionKey, SessionRef>();
+  /**
+   * 候補を最後に判定し直した時刻（{@link REVERIFY_RETRY_MS}）。解錠、相手の受け入れ、失効の
+   * あとは消して、すべての候補を待たずに判定し直す。
+   */
+  private readonly reverifyAttempts = new Map<InboundSessionKey, number>();
+  /**
+   * 信頼が変わった回数（{@link forgetReverifyAttempts} で進める）。`keys/query` を待つあいだに信頼が
+   * 変わったら、その前の問い合わせの結果では試した時刻を付けない（古い情報で 10 分待たせないため）。
+   */
+  private reverifyGeneration = 0;
 
   private constructor(
     private readonly backend: CryptoBackend,
@@ -162,6 +286,7 @@ export class CryptoStore {
     private trust: TrustStore,
     private registered: boolean,
     processedToDevice: string[],
+    private readonly devices: DeviceRecordStore | undefined,
   ) {
     this.processedToDevice = new Set(processedToDevice);
   }
@@ -170,6 +295,11 @@ export class CryptoStore {
    * 暗号ストアを開く。端末アカウントがなければ作る（新しい `device_id` は UUID v4）。
    *
    * `reset` は、保存鍵を開けないときに保存先を消して作り直す関数（新しい空の保存先を返す）。
+   *
+   * 今の端末を暗号ストアの外にも記録し（`devices`）、記録にある同じユーザーの端末が今の端末と違えば、
+   * 前の端末として `replacedDevices` で知らせる。前の端末は、記録を新しい端末に進めるときに
+   * 記録の `replaced` に移し、呼び出し側が削除待ちに渡すまで残す（渡す前にタブを閉じても失わない）。
+   * 別のユーザーの記録は使わずに上書きする。今の端末は知らせない。
    */
   static async open(options: OpenOptions): Promise<OpenedStore> {
     const current = { backend: options.backend };
@@ -189,10 +319,16 @@ export class CryptoStore {
     let backend = current.backend;
     const keys = options.keys ?? indexedDbWrappingKeys;
     let snapshot = await backend.read();
-    let replacedDeviceId: string | null = null;
     if (snapshot.meta[META_USER_ID] && snapshot.meta[META_USER_ID] !== options.userId) {
       throw new Error("暗号ストアが別のユーザーのものです");
     }
+    // 同じユーザーの記録だけを使う（別のユーザーの記録は上書きする）。
+    const { readable, record: read } = await readDeviceRecord(options.devices, options.name);
+    const record = read?.userId === options.userId ? read : undefined;
+    const replaced: ReplacedDevice[] = [...(record?.replaced ?? [])];
+    const addReplaced = (device: ReplacedDevice) => {
+      if (!replaced.some((entry) => entry.deviceId === device.deviceId)) replaced.push(device);
+    };
     let storageKey: Uint8Array;
     try {
       storageKey = await loadStorageKey({
@@ -204,7 +340,8 @@ export class CryptoStore {
     } catch (error) {
       if (!(error instanceof StorageKeyUnavailableError)) throw error;
       // 保存鍵がなければ、どの値も読めない。作り直して、新しい端末として登録し直す。
-      replacedDeviceId = snapshot.meta[META_DEVICE_ID] ?? null;
+      const lost = snapshot.meta[META_DEVICE_ID];
+      if (lost) addReplaced({ deviceId: lost, registered: snapshot.meta[META_REGISTERED] === "1" });
       // 開いたままのファイルは消せないので、先に閉じる。
       await backend.close().catch(() => undefined);
       backend = await options.reset();
@@ -217,6 +354,10 @@ export class CryptoStore {
         keys,
       });
     }
+
+    // 記録の端末は、暗号ストアがその前に持っていた端末（ファイルだけが消えた、または新しい端末を
+    // 作ったあとで記録を書けなかった）。今の端末でなければ前の端末にする（下で今の端末を除く）。
+    if (record) addReplaced({ deviceId: record.deviceId, registered: record.registered });
 
     const deviceId = snapshot.meta[META_DEVICE_ID];
     if (snapshot.account && deviceId) {
@@ -236,6 +377,7 @@ export class CryptoStore {
         account.free();
         throw error;
       }
+      const registered = snapshot.meta[META_REGISTERED] === "1";
       const store = new CryptoStore(
         backend,
         keys,
@@ -243,8 +385,9 @@ export class CryptoStore {
         storageKey,
         account,
         trust,
-        snapshot.meta[META_REGISTERED] === "1",
+        registered,
         snapshot.processedToDevice,
+        options.devices,
       );
       try {
         for (const session of snapshot.olmSessions) {
@@ -254,7 +397,11 @@ export class CryptoStore {
         store.free();
         throw error;
       }
-      return { store, replacedDeviceId };
+      store.replaced = replaced.filter((device) => device.deviceId !== deviceId);
+      // 記録のない暗号ストア（前の版で作ったもの）は、今の端末を記録するだけ。
+      store.recordWritable = readable;
+      await store.recordDevice(read);
+      return { store, replacedDevices: [...store.replaced] };
     }
 
     const account = new DeviceAccount(options.userId, crypto.randomUUID());
@@ -270,6 +417,7 @@ export class CryptoStore {
       trust,
       false,
       [],
+      options.devices,
     );
     try {
       await backend.write({
@@ -285,7 +433,43 @@ export class CryptoStore {
       store.free();
       throw error;
     }
-    return { store, replacedDeviceId };
+    // 新しい端末を暗号ストアに保存したあとで、記録を新しい端末に進め、前の端末を `replaced` に移す
+    // （保存に失敗したら、前の端末の記録を残す）。知らせるのは、記録に書いたあと。
+    store.replaced = replaced.filter((device) => device.deviceId !== account.deviceId);
+    store.recordWritable = readable;
+    await store.recordDevice(read);
+    return { store, replacedDevices: [...store.replaced] };
+  }
+
+  /** 削除待ちにまだ渡していない前の端末。 */
+  get replacedDevices(): ReplacedDevice[] {
+    return [...this.replaced];
+  }
+
+  /**
+   * 呼び出し側が削除待ちに残せた（または消せた）前の端末を、記録の `replaced` から外す。外せなくても
+   * 投げない（次に開いたときにもう一度知らせ、削除 API は冪等）。
+   */
+  async forgetReplacedDevices(deviceIds: string[]): Promise<void> {
+    const before = this.replaced.length;
+    this.replaced = this.replaced.filter((device) => !deviceIds.includes(device.deviceId));
+    if (this.replaced.length !== before) await this.recordDevice(undefined);
+  }
+
+  /**
+   * 暗号ストアの外の記録を今の端末と、渡していない前の端末に合わせる（`current` は読んだ記録。
+   * 同じなら書かない）。
+   */
+  private async recordDevice(current: DeviceRecord | undefined): Promise<void> {
+    const next: DeviceRecord = {
+      userId: this.userId,
+      deviceId: this.deviceId,
+      registered: this.registered,
+      replaced: this.replaced,
+    };
+    if (!this.recordWritable) return;
+    if (current && JSON.stringify(current) === JSON.stringify(next)) return;
+    await writeDeviceRecord(this.devices, this.name, next);
   }
 
   get userId(): string {
@@ -311,6 +495,7 @@ export class CryptoStore {
       write: (changes) => this.write(changes),
       readMeta: async () => (await this.backend.read()).meta,
       ownKeys: () => this.ownKeys(),
+      onUnverified: (ref) => this.noteUnverified(ref),
     });
     return this.megolmChannels;
   }
@@ -350,6 +535,7 @@ export class CryptoStore {
       account: this.account.pickle(this.storageKey),
     });
     this.registered = true;
+    await this.recordDevice(undefined);
   }
 
   /**
@@ -399,12 +585,12 @@ export class CryptoStore {
    * 1 つのトランザクションで保存する。ack が届く前に終了しても、次の起動で同じメッセージを
    * 処理し直さない（Olm のメッセージは 2 回は復号できないため）。
    *
-   * `deviceKeys` は送信ユーザーの `keys/query` の応答。送信端末の検証済みかの判定（手順 4）は、
-   * クロス署名を扱う #360 以降で足す。それまでは「未検証の送信者」として保存する。
+   * `keysQuery` は送信ユーザーと自分の `keys/query` の応答。端末鍵（手順 1）と、送信端末を
+   * 検証済みにするかの判定（手順 4。送信ユーザーの信頼したマスター鍵と自己署名鍵）に使う。
    */
   async processToDevice(
     rows: ToDeviceRow[],
-    deviceKeys: DeviceKeysByUser,
+    keysQuery: KeysQueryResponse,
   ): Promise<ToDeviceResult> {
     const result: ToDeviceResult = {
       processed: [],
@@ -413,27 +599,33 @@ export class CryptoStore {
       newOlmSessions: 0,
       verifications: [],
     };
-    for (const row of rows) {
-      if (this.processedToDevice.has(row.id)) {
-        result.processed.push(row.id);
-        continue;
-      }
-      const changes: CryptoStoreWrite = { addProcessedToDevice: [row.id] };
-      try {
-        if (row.type === "m.room.encrypted") {
-          await this.processEncrypted(row, deviceKeys, changes, result);
-        } else {
-          result.dropped += 1;
+    const ownSelfSigningKey = rows.length > 0 ? await this.ownSelfSigningKey() : null;
+    const senders = new SenderTrustCache(this.trust, keysQuery, ownSelfSigningKey);
+    try {
+      for (const row of rows) {
+        if (this.processedToDevice.has(row.id)) {
+          result.processed.push(row.id);
+          continue;
         }
-        await this.write(changes);
-      } catch (error) {
-        // 復号で進んだメモリーの状態を保存できていない。書き込みに限らず（保存済みのセッションの
-        // 読み取りなど）途中で失敗したら、開き直すまで使わない。
-        this.broken = true;
-        throw error;
+        const changes: CryptoStoreWrite = { addProcessedToDevice: [row.id] };
+        try {
+          if (row.type === "m.room.encrypted") {
+            await this.processEncrypted(row, keysQuery.device_keys, senders, changes, result);
+          } else {
+            result.dropped += 1;
+          }
+          await this.write(changes);
+        } catch (error) {
+          // 復号で進んだメモリーの状態を保存できていない。書き込みに限らず（保存済みのセッションの
+          // 読み取りなど）途中で失敗したら、開き直すまで使わない。
+          this.broken = true;
+          throw error;
+        }
+        this.processedToDevice.add(row.id);
+        result.processed.push(row.id);
       }
-      this.processedToDevice.add(row.id);
-      result.processed.push(row.id);
+    } finally {
+      senders.free();
     }
     return result;
   }
@@ -441,6 +633,7 @@ export class CryptoStore {
   private async processEncrypted(
     row: ToDeviceRow,
     deviceKeys: DeviceKeysByUser,
+    senders: SenderTrustCache,
     changes: CryptoStoreWrite,
     result: ToDeviceResult,
   ): Promise<void> {
@@ -478,9 +671,15 @@ export class CryptoStore {
         }
         return;
       }
+      // 手順 4：送信ユーザーの、信頼したマスター鍵で署名された自己署名鍵。信頼できなければ `null`
+      // （未解錠、再検証待ち、初めて見た相手など）で、セッションは「未検証の送信者」になる。
+      const trust = sender && senderDevice ? senders.get(sender, senderDevice) : null;
+      if (senders.takeTrustChanged()) {
+        changes.trustStore = this.trust.pickle(this.account, this.storageKey);
+      }
       let roomKey;
       try {
-        roomKey = decrypted.verifyRoomKey(this.account, listed ?? null, null);
+        roomKey = decrypted.verifyRoomKey(this.account, listed ?? null, trust);
       } catch {
         result.dropped += 1;
         return;
@@ -500,6 +699,124 @@ export class CryptoStore {
     } finally {
       decrypted.free();
     }
+  }
+
+  /**
+   * 暗号ストアの自分の自己署名鍵の公開鍵（未解錠なら `null`）。自分の別の端末は、この鍵（解錠して
+   * 取り出した今の鍵）とサーバーの自己署名鍵が同じときだけ検証済みにする（失効で置き換えた古い鍵への
+   * 巻き戻しを受け入れない）。
+   */
+  private async ownSelfSigningKey(): Promise<string | null> {
+    const own = await this.ownKeys();
+    if (!own) return null;
+    const selfSigning = own.keys.selfSigning;
+    try {
+      return selfSigning.publicKey;
+    } finally {
+      selfSigning.free();
+      own.keys.free();
+    }
+  }
+
+  private noteUnverified(ref: SessionRef): void {
+    this.reverifyCandidates.set(inboundSessionKey(ref), ref);
+  }
+
+  /**
+   * 判定し直しの待ち時間を消す。自分の鍵か相手の信頼が変わったので、判定できなかった候補もすぐに
+   * 判定し直してよい（解錠、相手の受け入れと SAS、失効、TOFU のピンの確定）。
+   */
+  forgetReverifyAttempts(): void {
+    this.reverifyAttempts.clear();
+    this.reverifyGeneration += 1;
+  }
+
+  /** 候補を今判定し直してよいか（前に試してから {@link REVERIFY_RETRY_MS} が過ぎた）。 */
+  private reverifyDue(key: InboundSessionKey, now: number): boolean {
+    const attempted = this.reverifyAttempts.get(key);
+    return attempted === undefined || now - attempted >= REVERIFY_RETRY_MS;
+  }
+
+  /**
+   * 今判定し直す候補（{@link reverifySenders}）の送信ユーザー。`keys/query` で問い合わせる（自分も
+   * 足す）。未解錠のときは、どの送信者も判定できないので空を返し、候補は解錠のあとまで残す
+   * （問い合わせて結果を捨てないため）。未検証でなくなった候補は、ここで外す。`generation` は
+   * {@link reverifySenders} にそのまま渡す。
+   */
+  async reverifyCandidateUsers(): Promise<ReverifyRequest> {
+    const generation = this.reverifyGeneration;
+    if (this.reverifyCandidates.size === 0 || !(await this.hasOwnKeys())) {
+      return { userIds: [], generation };
+    }
+    const now = Date.now();
+    const users = new Set<string>();
+    for (const [key, ref] of this.reverifyCandidates) {
+      const sender = this.inbound.unverifiedOlmSender(ref);
+      if (!sender) {
+        this.reverifyCandidates.delete(key);
+        this.reverifyAttempts.delete(key);
+      } else if (this.reverifyDue(key, now)) {
+        users.add(sender.user_id);
+      }
+    }
+    return { userIds: [...users].sort(), generation };
+  }
+
+  /**
+   * 受け取ったときに送信端末を検証済みにできなかった Olm 由来のセッションを、`keysQuery`（候補の
+   * 送信ユーザーと自分の `keys/query`）で判定し直す（docs/e2ee.md の「受信時の検証」の手順 4 の
+   * やり直し）。to-device を受け取ったときと同じ {@link TrustStore.senderTrust} で信頼した自己署名鍵を
+   * 求め、受け取ったときと同じ端末鍵がその鍵で署名されていれば、検証済みに上げて保存する。
+   *
+   * 判定するのは、`request.userIds`（{@link reverifyCandidateUsers} が返し、`keysQuery` で問い合わせた
+   * ユーザー）の候補だけ。問い合わせを待つあいだに増えた別のユーザーの候補は、試したことにしない。
+   * 問い合わせを待つあいだに信頼が変わった（`request.generation` が今と違う）ときは、上げられた
+   * 候補だけを上げ、上げられなかった候補にも試した時刻を付けない（今の情報で問い合わせ直す）。
+   * 上げられなかった候補は残し、{@link REVERIFY_RETRY_MS} あけるか、解錠や相手の検証のあとに
+   * 判定し直す。
+   *
+   * 古いクライアントで受け取った、解錠の前に受け取った、相手をあとで検証したなどで「未検証の送信者」
+   * のまま残ったセッションを直す。上げた数を返す（1 以上なら、表示を復号し直す）。
+   */
+  async reverifySenders(request: ReverifyRequest, keysQuery: KeysQueryResponse): Promise<number> {
+    if (this.reverifyCandidates.size === 0) return 0;
+    const current = request.generation === this.reverifyGeneration;
+    const ownSelfSigningKey = await this.ownSelfSigningKey();
+    // 未解錠では、自分のマスター鍵を信頼できず、どの送信者も判定できない。候補は解錠のあとまで残す。
+    if (ownSelfSigningKey === null) return 0;
+    const queried = new Set(request.userIds);
+    const senders = new SenderTrustCache(this.trust, keysQuery, ownSelfSigningKey);
+    const upgraded: { key: InboundSessionKey; pickle: string }[] = [];
+    try {
+      const now = Date.now();
+      for (const [key, ref] of this.reverifyCandidates) {
+        const sender = this.inbound.unverifiedOlmSender(ref);
+        if (!sender) {
+          this.reverifyCandidates.delete(key);
+          this.reverifyAttempts.delete(key);
+          continue;
+        }
+        if (!queried.has(sender.user_id) || !this.reverifyDue(key, now)) continue;
+        if (current) this.reverifyAttempts.set(key, now);
+        const listed = keysQuery.device_keys[sender.user_id]?.[sender.device_id];
+        if (!listed) continue;
+        const trust = senders.get(sender.user_id, sender.device_id);
+        if (!trust || !this.inbound.reverifyOlmSession(ref, listed, trust)) continue;
+        this.reverifyCandidates.delete(key);
+        this.reverifyAttempts.delete(key);
+        const pickle = this.inbound.pickleSession(ref, this.account, this.storageKey);
+        if (pickle) upgraded.push({ key, pickle });
+      }
+      const changes: CryptoStoreWrite = {};
+      if (upgraded.length > 0) changes.inboundSessions = upgraded;
+      if (senders.takeTrustChanged()) {
+        changes.trustStore = this.trust.pickle(this.account, this.storageKey);
+      }
+      if (changes.inboundSessions || changes.trustStore) await this.write(changes);
+    } finally {
+      senders.free();
+    }
+    return upgraded.length;
   }
 
   /** 保存済みの同じキーのセッションを、比べるためにメモリーへ読む。 */
@@ -556,6 +873,8 @@ export class CryptoStore {
         },
         trustStore: this.trust.pickle(this.account, this.storageKey),
       });
+      // 解錠したので、判定できなかったセッションを待たずに判定し直す。
+      this.forgetReverifyAttempts();
     } finally {
       keys.free();
       crossSigning.free();
@@ -585,44 +904,15 @@ export class CryptoStore {
     currentVersion: JsonObject | null,
     limit: number,
   ): Promise<BackupUploadRequest> {
-    const own = await this.ownKeys();
-    if (!own) return { kind: "none" };
-    const state = await this.loadBackupState();
-    try {
-      state.setSecretsRevision(own.secretsRevision ?? undefined);
-      if (!currentVersion) {
-        state.suspend();
-        return { kind: "none" };
-      }
-      let change: string;
-      try {
-        change = state.acceptCurrentVersion(
-          currentVersion,
-          own.keys.masterPublicKey,
-          own.keys.backupKey,
-        );
-      } catch (error) {
-        const code = (error as { code?: unknown }).code;
-        return { kind: "rejected", code: typeof code === "string" ? code : "Unknown" };
-      }
-      if (change === "changed") {
-        try {
-          await this.backend.resetBackedUp();
-        } catch (error) {
-          // 新しい版を見たことは、送信待ちに戻せたあとでだけ記録する。次の呼び出しで、保存した
-          // 状態から読み直して、もう一度戻す。
-          this.backupState?.free();
-          this.backupState = null;
-          throw error;
-        }
-      }
-      await this.saveBackupState(state);
-    } finally {
-      own.keys.free();
-    }
+    const accepted = await this.acceptBackupVersion(currentVersion);
+    if (accepted.kind !== "accepted") return accepted;
+    const state = accepted.state;
 
     const sessions = await this.backend.pendingBackupSessions(limit);
     if (sessions.length === 0) return { kind: "none" };
+    // `currentVersion` は受け入れた今の版なので null ではない。
+    const proof = await this.backupUploadProof(currentVersion as JsonObject, accepted.version);
+    if (typeof proof === "object" && proof !== null) return proof;
     for (const session of sessions) {
       const ref = JSON.parse(session.key) as [string, string, string];
       const sessionRef = { channel_id: ref[0], sender_key: ref[1], session_id: ref[2] };
@@ -644,7 +934,223 @@ export class CryptoStore {
       secretsRevision: upload.secretsRevision,
       body: upload.body,
       count: sent.size,
+      proof,
     };
+  }
+
+  /**
+   * 受け入れた今の版 `version` へのアップロードの証明を、SSSS のバックアップ鍵で作る（docs/e2ee.md の
+   * 「アップロードの証明」）。版に `upload_key` のフィールドがなければ `null`（ヘッダーを送らない）。
+   * フィールドがあって鍵の形でなければ（文字列でない `null`、数値、オブジェクトも）`rejected`。証明を
+   * 黙って省いて、未証明の行を送信済みにしないため。
+   */
+  private async backupUploadProof(
+    currentVersion: JsonObject,
+    version: string,
+  ): Promise<string | null | { kind: "rejected"; code: string }> {
+    if (!("upload_key" in currentVersion)) return null;
+    const uploadKey = currentVersion.upload_key;
+    if (typeof uploadKey !== "string") return { kind: "rejected", code: "BackupUploadKeyInvalid" };
+    const own = await this.ownKeys();
+    if (!own) return null;
+    const backupKey = own.keys.backupKey;
+    try {
+      return backupKey.uploadProof(uploadKey, this.userId, version);
+    } catch (error) {
+      const code = (error as { code?: unknown }).code;
+      return { kind: "rejected", code: typeof code === "string" ? code : "Unknown" };
+    } finally {
+      backupKey.free();
+      own.keys.free();
+    }
+  }
+
+  /**
+   * 今の版を検証して受け入れる（アップロードと取り込みの前に行う。docs/e2ee.md の「鍵バックアップ」）。
+   *
+   * `auth_data` に自分のマスター鍵の署名があり、公開鍵が SSSS のバックアップ鍵と同じで、前に見た版より
+   * 古くないときだけ受け入れる。版が変わったら、すべての受信用セッションを送信待ちに戻す。
+   */
+  private async acceptBackupVersion(
+    currentVersion: JsonObject | null,
+  ): Promise<
+    | { kind: "accepted"; state: BackupUploadState; version: string }
+    | { kind: "none" }
+    | { kind: "rejected"; code: string }
+  > {
+    const own = await this.ownKeys();
+    if (!own) return { kind: "none" };
+    const state = await this.loadBackupState();
+    try {
+      state.setSecretsRevision(own.secretsRevision ?? undefined);
+      if (!currentVersion) {
+        state.suspend();
+        return { kind: "none" };
+      }
+      let change: string;
+      const backupKey = own.keys.backupKey;
+      try {
+        change = state.acceptCurrentVersion(currentVersion, own.keys.masterPublicKey, backupKey);
+      } catch (error) {
+        const code = (error as { code?: unknown }).code;
+        return { kind: "rejected", code: typeof code === "string" ? code : "Unknown" };
+      } finally {
+        backupKey.free();
+      }
+      if (change === "changed") {
+        try {
+          await this.backend.resetBackedUp();
+        } catch (error) {
+          // 新しい版を見たことは、送信待ちに戻せたあとでだけ記録する。次の呼び出しで、保存した
+          // 状態から読み直して、もう一度戻す。
+          this.backupState?.free();
+          this.backupState = null;
+          throw error;
+        }
+      }
+      await this.saveBackupState(state);
+    } finally {
+      own.keys.free();
+    }
+    const verified = state.currentVersion();
+    if (!verified) return { kind: "none" };
+    return { kind: "accepted", state, version: verified.version };
+  }
+
+  /**
+   * 鍵バックアップからの取り込みを始める（docs/e2ee.md の「新しい端末での解錠」の手順 5）。
+   *
+   * `currentVersion` は `GET /api/e2ee/key_backup/versions/current` の応答。アップロードと同じ検証を
+   * 通った今の版だけから取り込む。途中で止まった取り込みは、同じ版なら続きのカーソルから始める。
+   * その版を取り込み終えていれば `done`。
+   */
+  async beginBackupImport(currentVersion: JsonObject | null): Promise<BackupImportStart> {
+    const accepted = await this.acceptBackupVersion(currentVersion);
+    if (accepted.kind !== "accepted") return accepted;
+    const progress = await this.backupImportProgress();
+    if (progress?.version !== accepted.version) {
+      return { kind: "import", version: accepted.version, after: null, pages: 0 };
+    }
+    if (progress.done) return { kind: "done", version: accepted.version };
+    return {
+      kind: "import",
+      version: accepted.version,
+      after: progress.after,
+      pages: progress.pages,
+    };
+  }
+
+  /**
+   * `GET /api/e2ee/key_backup/keys` の 1 ページを取り込む。`next` は応答の `next`（最後のページなら
+   * `null`）で、取り込んだセッションと一緒に進み具合として保存する。
+   *
+   * 取り込んだセッションは「バックアップ由来」として保存し、Olm 由来のセッションを置き換えない
+   * （`InboundSessionStore.importBackupSession`）。復号できない行、平文が行と合わない行、`session_key`
+   * から導いた `session_id` が合わない行は捨てる。同じ版には上げ直さない（送信済みとして保存する）。
+   */
+  async importBackupPage(
+    version: string,
+    rows: JsonObject[],
+    next: string | null,
+  ): Promise<{ imported: number; dropped: number }> {
+    // 受け入れた今の版からだけ取り込む（取り込みの途中で版が変わったら、始め直させる）。
+    const accepted = this.backupState?.currentVersion();
+    if (!accepted || accepted.version !== version) {
+      throw new Error("鍵バックアップの今の版が変わりました");
+    }
+    if (rows.length > BACKUP_IMPORT_PAGE_SIZE) {
+      throw new Error("鍵バックアップの 1 ページの行が多すぎます");
+    }
+    const previous = await this.backupImportProgress();
+    const counted = previous?.version === version ? previous : { rows: 0, pages: 0 };
+    if (counted.pages >= BACKUP_IMPORT_MAX_PAGES) {
+      throw new Error("鍵バックアップのページが多すぎます");
+    }
+    const own = await this.ownKeys();
+    if (!own) throw new Error("解錠していません");
+    const backupKey = own.keys.backupKey;
+    const sessions = new Map<InboundSessionKey, string>();
+    let imported = 0;
+    let dropped = 0;
+    try {
+      for (const row of rows) {
+        let session;
+        try {
+          session = backupKey.decryptRow(row as unknown as BackupRow);
+        } catch {
+          dropped += 1;
+          continue;
+        }
+        const ref: SessionRef = {
+          channel_id: session.channelId,
+          sender_key: session.senderKey,
+          session_id: session.sessionId,
+        };
+        try {
+          await this.loadInboundSession(ref);
+        } catch (error) {
+          session.free();
+          throw error;
+        }
+        let outcome;
+        try {
+          // `session` は渡すと wasm 側に移る（ここで解放される）。
+          outcome = this.inbound.importBackupSession(session);
+        } catch {
+          dropped += 1;
+          continue;
+        }
+        if (outcome === "kept") continue;
+        const pickle = this.inbound.pickleSession(ref, this.account, this.storageKey);
+        if (pickle) sessions.set(inboundSessionKey(ref), pickle);
+        imported += 1;
+      }
+    } catch (error) {
+      // 取り込んだ行がメモリーに残っている。同じストアで試し直すと、その行は「保存済み」として
+      // 扱われ（`kept`）、保存されないまま進み具合だけが進むので、開き直すまで使わない。
+      this.broken = true;
+      throw error;
+    } finally {
+      backupKey.free();
+      own.keys.free();
+    }
+    const total = counted.rows + rows.length;
+    // 1 行も読まずに最後のページまで来たら、次は始めから読み直すので、ページの数も 0 に戻す
+    // （空の版を何度読み直しても、ページの上限に届かないように）。
+    const emptyVersion = next === null && total === 0;
+    const progress: BackupImportProgress = {
+      version,
+      after: next,
+      done: next === null && total > 0,
+      rows: total,
+      pages: emptyVersion ? 0 : counted.pages + 1,
+    };
+    await this.write({
+      meta: { [META_BACKUP_IMPORT]: JSON.stringify(progress) },
+      inboundSessions: [...sessions].map(([key, pickle]) => ({ key, pickle, fromBackup: true })),
+    });
+    return { imported, dropped };
+  }
+
+  private async backupImportProgress(): Promise<BackupImportProgress | null> {
+    const { meta } = await this.backend.read();
+    const saved = meta[META_BACKUP_IMPORT];
+    if (!saved) return null;
+    try {
+      const value = JSON.parse(saved) as Partial<BackupImportProgress>;
+      if (typeof value.version !== "string" || typeof value.done !== "boolean") return null;
+      const count = (n: unknown) =>
+        typeof n === "number" && Number.isSafeInteger(n) && n >= 0 ? n : 0;
+      return {
+        version: value.version,
+        after: typeof value.after === "string" ? value.after : null,
+        done: value.done,
+        rows: count(value.rows),
+        pages: count(value.pages),
+      };
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -726,9 +1232,15 @@ export class CryptoStore {
   async confirmAcceptedMasterKey(targetUserId: string, masterKey: string): Promise<void> {
     this.trust.confirmAcceptedMasterKey(targetUserId, masterKey);
     await this.saveTrustStore();
+    // 相手を信頼したので、その相手の「未検証の送信者」のセッションを待たずに判定し直す。
+    this.forgetReverifyAttempts();
   }
 
-  async acceptMasterKey(targetUserId: string, masterKey: JsonObject) {
+  async acceptMasterKey(targetUserId: string, masterKey: JsonObject, expectedMasterKey: string) {
+    // 利用者に指紋を見せた鍵にだけ署名する（再検証の確認。docs/e2ee.md の「他のユーザーの再検証」）。
+    if (masterPublicKey(masterKey) !== expectedMasterKey) {
+      throw new Error("確認した鍵と、署名するマスター鍵が違います");
+    }
     const own = await this.ownKeys();
     if (!own) throw new Error("解錠していません");
     const userSigning = own.keys.userSigning;
@@ -785,9 +1297,89 @@ export class CryptoStore {
         },
         trustStore: this.trust.pickle(this.account, this.storageKey),
       });
+      // 自分の鍵が変わったので、判定できなかったセッションを待たずに判定し直す。
+      this.forgetReverifyAttempts();
     } finally {
       keys.free();
       secrets.free();
+    }
+  }
+
+  /**
+   * 端末が別の端末から削除されていた（docs/e2ee.md の「端末が削除されていたとき」。呼び出し側が
+   * `GET /api/e2ee/devices` で確かめてから呼ぶ）。暗号ストアを消さずに、端末アカウントだけを作り直す。
+   *
+   * サーバーの応答だけで信頼の記録と送っていないセッションを失わないよう、ユーザーに属する記録は
+   * 新しい端末アカウントで封をし直して引き継ぐ（封の AAD に `device_id` が入るため）。
+   *
+   * - 引き継ぐ：`TrustStore`、受信用セッション（鍵バックアップに送ったかどうかも）、鍵バックアップの
+   *   アップロードの状態（見た版の最大）、配布先とチャンネルの記録（`recipients:*`、`encrypted_channel:*`）
+   * - 捨てる：Olm セッション（送信用を含む）、処理済みの to-device、解錠した自分の鍵と
+   *   `secrets_revision`（利用者は解錠し直す）、終わっていない失効、鍵バックアップからの取り込みの進み具合
+   * - 開けない受信用セッションは捨てる。
+   *
+   * 1 つのトランザクションで書く。呼んだあとは、この store を閉じて開き直す。
+   */
+  async replaceDevice(): Promise<{ deviceId: string; carried: number; dropped: number }> {
+    const { meta } = await this.backend.read();
+    const rows = await this.backend.readAllInboundSessions();
+    const account = new DeviceAccount(this.userId, crypto.randomUUID());
+    try {
+      account.generateOneTimeKeys(account.maxNumberOfOneTimeKeys);
+      account.generateFallbackKey();
+      const inboundSessions: { key: string; pickle: string }[] = [];
+      const droppedInboundSessions: string[] = [];
+      for (const row of rows) {
+        // 1 行ずつ開き直す（すべてをメモリーに載せない）。
+        const sessions = new InboundSessionStore();
+        try {
+          const ref = sessions.restoreSession(row.pickle, this.account, this.storageKey);
+          const pickle = sessions.pickleSession(ref, account, this.storageKey);
+          if (pickle) inboundSessions.push({ key: row.key, pickle });
+          else droppedInboundSessions.push(row.key);
+        } catch {
+          droppedInboundSessions.push(row.key);
+        } finally {
+          sessions.free();
+        }
+      }
+      const carriedMeta: Record<string, string> = {};
+      for (const [key, value] of Object.entries(meta)) {
+        if (
+          CARRIED_META.has(key) ||
+          key.startsWith(RECIPIENTS_META_PREFIX) ||
+          key.startsWith(ENCRYPTED_CHANNEL_META_PREFIX)
+        ) {
+          carriedMeta[key] = value;
+        }
+      }
+      carriedMeta[META_USER_ID] = this.userId;
+      carriedMeta[META_DEVICE_ID] = account.deviceId;
+      carriedMeta[META_REGISTERED] = "0";
+      await this.backend.replaceDevice({
+        meta: carriedMeta,
+        account: account.pickle(this.storageKey),
+        trustStore: this.trust.pickle(account, this.storageKey),
+        inboundSessions,
+        droppedInboundSessions,
+      });
+      // 前の端末はサーバーで削除済みなので、記録は新しい端末に進める（前の端末を消させない）。
+      // 渡していない前の端末は残す。
+      if (this.recordWritable) {
+        await writeDeviceRecord(this.devices, this.name, {
+          userId: this.userId,
+          deviceId: account.deviceId,
+          registered: false,
+          replaced: this.replaced,
+        });
+      }
+      return {
+        deviceId: account.deviceId,
+        carried: inboundSessions.length,
+        dropped: droppedInboundSessions.length,
+      };
+    } finally {
+      account.free();
     }
   }
 
@@ -813,6 +1405,8 @@ export class CryptoStore {
       removeFiles: () => this.backend.destroy(),
       deleteWrappingKey: () => this.keys.delete(this.name),
     });
+    // ログアウトでは、呼び出し側が今の端末を消す（削除待ちにも残す）。
+    await deleteDeviceRecord(this.devices, this.name);
   }
 
   private free(): void {
@@ -827,6 +1421,56 @@ export class CryptoStore {
     this.discardPendingUpload();
     this.backupState?.free();
     this.backupState = null;
+  }
+}
+
+/**
+ * 1 回の to-device の処理で使う、送信ユーザーごとの {@link TrustStore.senderTrust} の結果。
+ *
+ * 判定（`senderTrust`）は記録を変えることがある（規則 3 の署名や共有ピンの採用）。変わったかは
+ * 保存した文字列と比べて調べ、変わったら同じ行の書き込みで記録も保存する。
+ */
+class SenderTrustCache {
+  private snapshot: KeySnapshot | null = null;
+  private readonly results = new Map<string, SenderTrust | null>();
+  private saved: string;
+
+  constructor(
+    private readonly trust: TrustStore,
+    private readonly keysQuery: KeysQueryResponse,
+    /** 暗号ストアの自分の自己署名鍵の公開鍵（未解錠なら `null`）。 */
+    private readonly ownSelfSigningKey: string | null,
+  ) {
+    this.saved = trust.toJson();
+  }
+
+  get(sender: string, senderDevice: string): SenderTrust | null {
+    const key = JSON.stringify([sender, senderDevice]);
+    if (!this.results.has(key)) {
+      let trust: SenderTrust | null = null;
+      try {
+        this.snapshot ??= KeySnapshot.fromJson(this.keysQuery as unknown as JsonObject);
+        trust = this.trust.senderTrust(this.snapshot, sender, senderDevice, this.ownSelfSigningKey);
+      } catch {
+        // 応答を読めなければ、確かめられないものとして扱う（「未検証の送信者」）。
+        trust = null;
+      }
+      this.results.set(key, trust);
+    }
+    return this.results.get(key) ?? null;
+  }
+
+  /** 前に呼んでから記録が変わったか。 */
+  takeTrustChanged(): boolean {
+    const now = this.trust.toJson();
+    if (now === this.saved) return false;
+    this.saved = now;
+    return true;
+  }
+
+  free(): void {
+    this.snapshot?.free();
+    this.snapshot = null;
   }
 }
 

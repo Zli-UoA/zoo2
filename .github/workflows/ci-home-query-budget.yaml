@@ -1,0 +1,76 @@
+name: Home query budget
+on:
+  pull_request:
+    paths:
+      - 'backend/**'
+      - 'infra/db/**'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/ci-home-query-budget.yaml'
+  workflow_call:
+permissions:
+  contents: read
+concurrency:
+  group: home-budget-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  query-budget:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      DATABASE_URL: postgres://root:password@localhost:5432/zoo?sslmode=disable
+      ACTIVITYPUB_BASE_URL: https://zoo.example.com
+      DB_MAX_POOL_SIZE: '2'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      # Migrations need pg_bigm; service containers cannot build images.
+      - name: Start PostgreSQL with pg_bigm
+        run: |
+          docker build -t zoo2-postgres-bigm:16 infra/db/postgres
+          docker run -d --name postgres -p 5432:5432 -e POSTGRES_USER=root \
+            -e POSTGRES_PASSWORD=password -e POSTGRES_DB=zoo zoo2-postgres-bigm:16
+          for _ in $(seq 60); do
+            docker exec postgres pg_isready -U root -d zoo -h 127.0.0.1 && exit 0
+            sleep 2
+          done
+          docker logs postgres
+          exit 1
+      - name: Read Rust version
+        id: rust
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: ${{ steps.rust.outputs.channel }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          workspaces: backend
+          shared-key: backend-check
+      - uses: ariga/setup-atlas@28f0b75814c08b1a265b75713c120cfad46433ae
+      - name: Verify interrupted preview migration recovery
+        run: python3 infra/db/test-migrate-recovery.py
+      - name: Build benchmark before measuring
+        run: cargo test --manifest-path backend/Cargo.toml --test home_scale_test --no-run
+      - name: Measure 300k and 1m posts
+        shell: bash
+        env:
+          PGPASSWORD: password
+        run: |
+          set -euo pipefail
+          mkdir -p performance-results
+          lscpu > performance-results/cpu.txt
+          free -m > performance-results/memory.txt
+          psql "$DATABASE_URL" -Atc "SELECT name,setting,unit FROM pg_settings WHERE name IN ('server_version','shared_buffers','work_mem','effective_cache_size','max_connections','jit','plan_cache_mode') ORDER BY name" > performance-results/postgres.txt
+          for count in 300000 1000000; do
+            db="budget_${count}"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE DATABASE $db"
+            export DATABASE_URL="postgres://root:password@localhost:5432/$db?sslmode=disable"
+            atlas migrate apply --dir file://infra/db/migrations --url "$DATABASE_URL"
+            SCALE_PLAN_DIR="$PWD/performance-results/${count}-plans" SCALE_POSTS="$count" SCALE_BUDGET=1 cargo test --manifest-path backend/Cargo.toml --test home_scale_test timeline_work_is_bounded -- --ignored --nocapture 2>&1 | tee "performance-results/${count}.log"
+            cargo test --manifest-path backend/Cargo.toml --test home_scale_test persisted_home_handler_budget -- --ignored --nocapture 2>&1 | tee "performance-results/${count}-http.log"
+          done
+          python3 infra/db/compare-home-plan-work.py performance-results/300000-plans performance-results/1000000-plans | tee performance-results/plan-comparison.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: home-query-budget
+          path: performance-results

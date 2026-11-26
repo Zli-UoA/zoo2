@@ -1472,6 +1472,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "qrcodegen"
+version = "1.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4339fc7a1021c9c1621d87f5e3505f2805c8c105420ba2f2a4df86814590c142"
+
+[[package]]
 name = "quinn"
 version = "0.11.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2814,6 +2820,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
+name = "zoo-components"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "zoo-crypto"
 version = "0.1.0"
 dependencies = [
@@ -2837,6 +2851,7 @@ name = "zoo2-client-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "directories",
  "futures-util",
  "jiff",
@@ -2862,11 +2877,12 @@ dependencies = [
  "jiff",
  "serde",
  "serde_json",
+ "zoo-components",
 ]
 
 [[package]]
 name = "zoo2-tui"
-version = "0.8.1"
+version = "0.19.0"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -2875,6 +2891,7 @@ dependencies = [
  "getrandom 0.4.3",
  "jiff",
  "libc",
+ "qrcodegen",
  "ratatui",
  "reqwest",
  "serde",

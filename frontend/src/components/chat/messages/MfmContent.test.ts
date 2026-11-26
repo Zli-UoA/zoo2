@@ -19,6 +19,29 @@ const render = (content: string, options: Omit<MfmContentProps, "content"> = {})
   );
 
 describe("MfmContent", () => {
+  it("renders Kitchen body shortcodes with a readable fallback while preserving literal contexts", () => {
+    expect(render("**:kitchen_1f431_1f600:**")).toBe("<strong>🐱 + 😀</strong>");
+    expect(render("`:kitchen_1f431_1f600:`")).toContain(":kitchen_1f431_1f600:</code>");
+    expect(render("<plain>:kitchen_1f431_1f600:</plain>")).toBe(":kitchen_1f431_1f600:");
+    expect(render(":kitchen_110000_1f431:")).toBe(":kitchen_110000_1f431:");
+  });
+  it("prefers supplied emoji renderers and metadata over a matching Kitchen name", () => {
+    const name = "kitchen_1f431_1f600";
+    expect(
+      render(`:${name}:`, {
+        renderEmoji: (value) =>
+          value === name
+            ? createElement("img", { src: "/remote-custom.png", alt: "remote" })
+            : undefined,
+      }),
+    ).toContain('src="/remote-custom.png"');
+    expect(
+      render(`:${name}:`, {
+        emojis: { [name]: { url: "/joined-custom.png", width: 2, height: 1 } },
+      }),
+    ).toContain('src="http://localhost:8000/joined-custom.png"');
+    expect(render(`:${name}:`, { renderEmoji: () => undefined, emojis: {} })).toBe("🐱 + 😀");
+  });
   it("resolves account icons and mention labels only from the AuthZ directory", () => {
     const html = renderToStaticMarkup(
       createElement(LocaleProvider, {
@@ -33,6 +56,7 @@ describe("MfmContent", () => {
     );
     expect(html).toContain('aria-label=":@alice:"');
     expect(html).toContain("AuthZ Name");
+    expect(html).toContain('class="sr-only">@alice</span>');
     expect(html).toContain(":@unknown:");
     expect(html).toContain("@unknown");
     expect(html).toContain("<code");
@@ -88,6 +112,27 @@ describe("MfmContent", () => {
     expect(html).toContain("mfm-effect mfm-jelly");
     expect(html).toContain("animation-duration:2s");
     expect(html).toContain("<strong>🎉</strong>");
+  });
+  // Slack の本文を変換した結果 (backend/src/slack/convert.rs) が、Web で書式として描画される
+  it("renders the formatting that the Slack import produces", () => {
+    expect(render("これは**太字**です")).toContain("<strong>太字</strong>");
+    expect(render("今度一緒に~~ご範囲効果~~ご飯")).toContain("<del>ご範囲効果</del>");
+    expect(render("かなり<i>斜め</i>だ")).toContain("<em>斜め</em>");
+    expect(render("**bold ~~and gone~~**")).toContain("<strong>bold <del>and gone</del></strong>");
+    expect(render("`**x**`")).toContain("<code");
+  });
+  it("shows MFM syntax that Slack displays as text, once the import breaks it with U+200B", () => {
+    const html = render(
+      "*\u200b*\u200bx*\u200b* $\u200b[spin x] <\u200bb>y<\u200b/b> [a]\u200b(https://x.test)",
+    );
+    expect(html).not.toContain("<strong>");
+    expect(html).not.toContain("<em>");
+    expect(render("5 *\u200b 3 * 4")).not.toContain("<em>");
+    expect(html).not.toContain("mfm-spin");
+    // `[a](https://x.test)` の記法はリンクにならず、文字のまま残る。本文中の URL の自動リンクは維持される
+    expect(html).not.toContain(">a</a>");
+    expect(html).toContain("[a]");
+    expect(html).toContain('href="https://x.test"');
   });
   it("accepts time units, negative delay and spin axes/direction", () => {
     const html = render("$[spin.x,left,speed=2500ms,delay=-1s 🐱]");
@@ -214,7 +259,7 @@ describe("MfmContent", () => {
     const html = render("@alice @bob **@channel** @here @carol@example.com", {
       mentions: { userNames: new Set(["alice"]), channel: true, here: false },
     });
-    // メンションの表示（bg-brand-muted）は @alice と @channel の 2 つだけ。
+    // メンションの表示（bg-brand-muted）は alice と channel の 2 つだけ。
     expect(html.match(/bg-brand-muted/g)).toHaveLength(2);
     expect(html).toContain("@alice</span>");
     expect(html).toContain("@channel</span>");

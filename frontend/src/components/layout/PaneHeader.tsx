@@ -1,4 +1,4 @@
-import type { ComponentProps, ReactNode } from "react";
+import type { ComponentProps, ReactNode, Ref } from "react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "cn";
 
@@ -17,32 +17,44 @@ export function PaneHeader({ className, ...props }: ComponentProps<"header">) {
 
 export function ScreenHeader({
   icon: Icon,
+  leading,
   iconClassName,
   title,
   titleId,
+  titleRef,
   description,
   actions,
 }: {
   icon: LucideIcon;
+  leading?: ReactNode;
   iconClassName?: string;
   title: string;
   titleId: string;
+  /** 見出しへフォーカスを移す呼び出し元が渡す。渡すと `tabIndex={-1}` も設定される。 */
+  titleRef?: Ref<HTMLHeadingElement>;
   description?: string;
   actions?: ReactNode;
 }) {
   return (
     <PaneHeader className="bg-background/80 backdrop-blur supports-backdrop-filter:bg-background/60">
-      <div
-        className={cn(
-          "flex size-8 shrink-0 items-center justify-center rounded-lg bg-brand-muted text-brand-muted-foreground",
-          iconClassName,
-        )}
-        aria-hidden="true"
-      >
-        <Icon className="size-4" />
-      </div>
+      {leading ?? (
+        <div
+          className={cn(
+            "flex size-8 shrink-0 items-center justify-center rounded-lg bg-brand-muted text-brand-muted-foreground",
+            iconClassName,
+          )}
+          aria-hidden="true"
+        >
+          <Icon className="size-4" />
+        </div>
+      )}
       <div className="min-w-0 flex-1">
-        <h1 id={titleId} className="truncate text-sm font-semibold">
+        <h1
+          id={titleId}
+          ref={titleRef}
+          tabIndex={titleRef ? -1 : undefined}
+          className="truncate text-sm font-semibold"
+        >
           {title}
         </h1>
         {description ? (

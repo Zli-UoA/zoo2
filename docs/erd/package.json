@@ -1,0 +1,10 @@
+{
+  "name": "zoo2-erd",
+  "private": true,
+  "scripts": {
+    "build": "bash build.sh"
+  },
+  "devDependencies": {
+    "@liam-hq/cli": "0.7.24"
+  }
+}

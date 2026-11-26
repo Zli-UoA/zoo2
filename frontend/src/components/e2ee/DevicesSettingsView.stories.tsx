@@ -1,103 +1,16 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, screen, userEvent, within } from "storybook/test";
 
-import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import {
-  DeviceLimitView,
-  DevicesSettingsView,
-  type DeviceRowView,
-  type DevicesSettingsHandlers,
-  type DevicesViewState,
-} from "./DevicesSettingsView";
-
-const RECOVERY_KEY = "EsTc 5rJ7 kQ2m 8NvP x3Lw 9aHd 4ZfY 6bGs 2CtR 7uWe 1MnK pXqV";
-const LOST = "9c3e2b1a-7d6f-4a5b-8c9d-0e1f2a3b4c5d";
-
-const handlers = (): DevicesSettingsHandlers => ({
-  onRetry: fn(),
-  onRename: fn(),
-  onDelete: fn(),
-  onStartRevocation: fn(),
-  onSelectionChange: fn(),
-  onScopeChange: fn(),
-  onConfirmSelection: fn(),
-  onResumeRevocation: fn(),
-  onUnlockWithPasskey: fn(),
-  onUnlockWithRecoveryKey: fn(),
-  onAddRevocationPasskey: fn(),
-  onRecoveryKeySaved: fn(),
-  onExecute: fn(),
-  onRestart: fn(),
-  onCancelRevocation: fn(),
-  onFinish: fn(),
-  onReverify: fn(),
-  onSasVerify: fn(),
-});
-
-const devices: DeviceRowView[] = [
-  {
-    deviceId: "1a8a1c2e-5b7d-4e9f-a1b2-c3d4e5f60718",
-    displayName: "Firefox（Linux）",
-    createdAt: "2026-10-20T09:00:00Z",
-    lastSeenAt: "2026-11-13T08:00:00Z",
-    current: true,
-    signed: true,
-  },
-  {
-    deviceId: "5b7d1a8a-1c2e-4e9f-a1b2-c3d4e5f60718",
-    displayName: "Pixel 9",
-    createdAt: "2026-11-01T09:00:00Z",
-    lastSeenAt: "2026-11-12T22:10:00Z",
-    current: false,
-    signed: true,
-  },
-  {
-    deviceId: LOST,
-    displayName: "Pixel 9",
-    createdAt: "2026-11-13T03:00:00Z",
-    lastSeenAt: "2026-11-13T03:05:00Z",
-    current: false,
-    signed: false,
-  },
-];
-
-const ready: Extract<DevicesViewState, { step: "ready" }> = {
-  step: "ready",
-  devices,
-  verifications: [
-    {
-      userId: "00000000-0000-4000-8000-0000000000b1",
-      name: "伊藤さくら",
-      state: { state: "needs_reverification", reason: "master_key_changed" },
-    },
-    {
-      userId: "00000000-0000-4000-8000-0000000000b2",
-      name: "佐藤ひろし",
-      state: { state: "trusted", basis: "user_signing_signature" },
-    },
-    {
-      userId: "00000000-0000-4000-8000-0000000000b3",
-      name: "山田はな",
-      state: { state: "trusted", basis: "record" },
-    },
-    {
-      userId: "00000000-0000-4000-8000-0000000000b4",
-      name: "鈴木けん",
-      state: { state: "no_cross_signing_keys" },
-    },
-  ],
-  warnings: [],
-  unlocked: true,
-  pendingRevocation: null,
-  accountUrls: {
-    security: "https://account.zli.works/settings/security",
-    services: "https://account.zli.works/settings/services",
-  },
-  revocation: null,
-  passkeyAvailable: true,
-  busy: null,
-  error: null,
-};
+  E2EE_RECOVERY_KEY as RECOVERY_KEY,
+  LOST_DEVICE_ID as LOST,
+  REVERIFY_NEW_MASTER_KEY,
+  deviceRows as devices,
+  devicesHandlers as handlers,
+  devicesReady as ready,
+} from "../../../.storybook/e2ee-fixtures";
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
+import { DeviceLimitView, DevicesSettingsView } from "./DevicesSettingsView";
 
 const notes = [
   {
@@ -152,30 +65,101 @@ export const Ready: Story = {
   }),
 };
 
-/** 鍵が変わった相手を、再検証する（確認のダイアログを経る）。 */
+/**
+ * 鍵が変わった相手を、再検証する。確認のダイアログに、新しい鍵の指紋と、前に信頼した鍵から変わった
+ * ことを出し、絵文字での検証を勧める。受け入れると、見せた鍵にだけ署名する。
+ */
 export const Reverify: Story = {
   args: { state: ready, handlers: handlers() },
   play: playForImplementation(async ({ args, canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByRole("button", { name: "再検証する" }));
-    await userEvent.click(await screen.findByRole("button", { name: "再検証する" }));
+    await expect(args.handlers.onPrepareReverify).toHaveBeenCalledWith(
+      "00000000-0000-4000-8000-0000000000b1",
+    );
+    const dialog = await screen.findByRole("alertdialog");
+    await expect(within(dialog).getByText("nE7w")).toBeInTheDocument();
+    await expect(within(dialog).getByText("BnQ")).toBeInTheDocument();
+    await expect(within(dialog).getByRole("alert")).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "この鍵を信頼する" }));
     await expect(args.handlers.onReverify).toHaveBeenCalledWith(
       "00000000-0000-4000-8000-0000000000b1",
+      REVERIFY_NEW_MASTER_KEY,
     );
   }),
 };
 
-/** 検証済みでない相手を、絵文字 SAS で検証する（#368。画面はシェルのダイアログに出る）。 */
+/** 再検証の確認から、QR か絵文字での検証に切り替える。 */
+export const ReverifyWithSas: Story = {
+  args: { state: ready, handlers: handlers() },
+  play: playForImplementation(async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: "再検証する" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "検証する" }));
+    await expect(args.handlers.onSasVerify).toHaveBeenCalledWith(
+      "00000000-0000-4000-8000-0000000000b1",
+    );
+    await expect(args.handlers.onReverify).not.toHaveBeenCalled();
+  }),
+};
+
+/** 検証済みでない相手を、QR か絵文字 SAS で検証する（#368。画面はシェルのダイアログに出る）。 */
 export const SasVerify: Story = {
   args: { state: ready, handlers: handlers() },
   play: playForImplementation(async ({ args, canvasElement }) => {
     const canvas = within(canvasElement);
     // 鍵が変わった相手と、最初に見た鍵を信頼している相手に出す。検証済みの相手には出さない。
-    const buttons = canvas.getAllByRole("button", { name: "絵文字で検証" });
+    const buttons = canvas.getAllByRole("button", { name: "検証する" });
     await expect(buttons).toHaveLength(2);
     await userEvent.click(buttons[1]);
     await expect(args.handlers.onSasVerify).toHaveBeenCalledWith(
       "00000000-0000-4000-8000-0000000000b3",
+    );
+  }),
+};
+
+/**
+ * 長く使っていない端末と、解錠しないまま使っていない端末に印を付け、削除を勧める。自動では消さず、
+ * 消すかは利用者が一覧から決める（Safari のタブとホーム画面のアプリは、別の端末になる）。
+ */
+export const CleanupSuggested: Story = {
+  args: {
+    state: {
+      ...ready,
+      now: Date.parse("2026-11-15T09:00:00Z"),
+      devices: [
+        devices[0],
+        {
+          deviceId: "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+          displayName: "Safari（macOS）",
+          createdAt: "2026-08-02T09:00:00Z",
+          lastSeenAt: "2026-09-20T12:00:00Z",
+          current: false,
+          signed: true,
+        },
+        {
+          deviceId: "7e8f9a0b-1c2d-4e3f-9a4b-5c6d7e8f9a0b",
+          displayName: "Safari（iOS・アプリ）",
+          createdAt: "2026-11-03T21:00:00Z",
+          lastSeenAt: "2026-11-03T21:05:00Z",
+          current: false,
+          signed: false,
+        },
+        devices[1],
+      ],
+    },
+    handlers: handlers(),
+  },
+  play: playForImplementation(async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("30 日以上使っていない")).toBeInTheDocument();
+    await expect(canvas.getByText("解錠しないまま 7 日以上使っていない")).toBeInTheDocument();
+    // 削除は、これまでどおり確認してから行う。
+    await userEvent.click(canvas.getAllByRole("button", { name: "端末を削除" })[0]);
+    await userEvent.click(await screen.findByRole("button", { name: "削除だけ行う" }));
+    await expect(args.handlers.onDelete).toHaveBeenCalledWith(
+      "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
     );
   }),
 };

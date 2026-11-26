@@ -37,6 +37,7 @@ export interface MessageResponse {
   updated_at: TimestampString | null;
   deleted_at: TimestampString | null;
   parent_id: string | null;
+  forwarded_message_ids?: string[] | null;
 }
 
 export interface MessageReactionResponse {
@@ -96,6 +97,56 @@ export interface CreateMessageRequest {
   attachment_ids?: string[];
   sensitive?: boolean;
   sensitive_attachment_ids?: string[];
+  forwarded_message_ids?: string[];
+}
+
+export interface ForwardDmParticipant {
+  id: string;
+  user_name: string;
+  display_name: string;
+}
+
+export interface ForwardAuthor {
+  id: string;
+  user_name: string;
+  display_name: string;
+  avatar_url?: string | null;
+  is_bot?: boolean;
+  app_id?: string | null;
+}
+
+export interface ResolvedForwardMessage {
+  id: string;
+  channel_id: string;
+  channel_name: string;
+  is_private: boolean;
+  is_dm: boolean;
+  dm_participants?: ForwardDmParticipant[];
+  parent_id: string | null;
+  user_id: string;
+  created_at: TimestampString;
+  updated_at: TimestampString | null;
+  content: string;
+  card: string | null;
+  components: string | null;
+  message_kind: string | null;
+  author: ForwardAuthor | null;
+  emojis: Record<string, import("../electric/types").DisplayEmoji>;
+  attachments: import("../electric/types").AttachmentRow[];
+  has_forwards: boolean;
+}
+
+export type ForwardResolutionItem =
+  | ({ status: "ok" } & ResolvedForwardMessage)
+  | { status: "deleted" }
+  | { status: "unavailable" };
+
+export interface ResolveForwardsRequest {
+  ids: string[];
+}
+
+export interface ResolveForwardsResponse {
+  items: Record<string, ForwardResolutionItem>;
 }
 
 export interface PresignAttachmentRequest {
@@ -131,4 +182,37 @@ export interface AddReactionRequest {
 export interface LeaveChannelResponse {
   user_id: string;
   channel_id: string;
+}
+
+/** ユーザーごとにピン留めしたチャンネル・DM の 1 行。 */
+export interface UserPinnedChannelResponse {
+  user_id: string;
+  channel_id: string;
+  position: number;
+  /** アーカイブ中のチャンネルのピン。位置は保ち、表示だけを止める。 */
+  archived?: boolean;
+  created_at: TimestampString;
+  updated_at: TimestampString;
+}
+
+export interface ChannelPinsResponse {
+  pins: UserPinnedChannelResponse[];
+  version: number;
+}
+
+export interface PinChannelResult {
+  pin: UserPinnedChannelResponse;
+  version: number;
+  pins: UserPinnedChannelResponse[];
+}
+
+export interface UnpinChannelResult {
+  removed: boolean;
+  version: number;
+  pins: UserPinnedChannelResponse[];
+}
+
+export interface ReorderChannelPinsResult {
+  version: number;
+  pins: UserPinnedChannelResponse[];
 }

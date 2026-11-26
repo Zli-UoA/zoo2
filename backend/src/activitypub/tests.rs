@@ -513,7 +513,7 @@ fn sensitive_media_is_emitted_on_note_and_document() -> anyhow::Result<()> {
 #[test]
 fn quoted_notes_keep_a_safe_reference_with_html_mfm_and_empty_comments() {
     let quote = "https://peer.example/notes/quoted";
-    for field in ["quoteUrl", "quoteUri", "_misskey_quote"] {
+    for field in ["quoteUrl", "quoteUri", "_misskey_quote", "quote"] {
         for source in [None, Some("**MFM comment**")] {
             let mut note = json!({"content":"<p>HTML comment</p>"});
             note[field] = json!(quote);
@@ -588,7 +588,7 @@ fn quote_urls_are_normalized_before_becoming_visible_links() {
             "https://peer.example/original",
         ),
     ] {
-        for field in ["quoteUrl", "quoteUri", "_misskey_quote"] {
+        for field in ["quoteUrl", "quoteUri", "_misskey_quote", "quote"] {
             let mut note = json!({"content":"Comment"});
             note[field] = json!(raw);
             assert_eq!(
@@ -597,4 +597,21 @@ fn quote_urls_are_normalized_before_becoming_visible_links() {
             );
         }
     }
+}
+
+#[test]
+#[ignore = "requires ACTIVITYPUB_BASE_URL"]
+fn kitchen_body_has_federated_emoji_tag_and_preserves_source() -> anyhow::Result<()> {
+    let content = "Hello :kitchen_1f431_1f600:";
+    let post = json!({"id":"kitchen-post","user_id":"alice","content":content,"visibility":"public","created_at":"2026-01-01T00:00:00Z"});
+    let note = note_value(&post)?;
+    assert_eq!(note["source"]["content"], content);
+    assert_eq!(note["_misskey_content"], content);
+    assert_eq!(note["tag"][0]["type"], "Emoji");
+    assert_eq!(note["tag"][0]["name"], ":kitchen_1f431_1f600:");
+    assert_eq!(
+        note["tag"][0]["icon"]["url"],
+        "https://www.gstatic.com/android/keyboard/emojikitchen/20230301/u1f600/u1f600_u1f431.png"
+    );
+    Ok(())
 }

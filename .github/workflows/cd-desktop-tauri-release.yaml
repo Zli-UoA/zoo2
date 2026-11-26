@@ -1,18 +1,24 @@
 name: CD Desktop Tauri Release
 on:
   workflow_dispatch:
+    inputs:
+      verify_only:
+        description: macOS の署名・公証および Windows の署名・latest.json 生成を検証し、リリースを公開しない
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths:
       - "client-core/**"
       - "client-types/**"
+      - "crates/zoo-components/**"
       - "desktop-tauri/**"
       - "rust-toolchain.toml"
       - ".github/workflows/cd-desktop-tauri-release.yaml"
 permissions:
   contents: read
 concurrency:
-  group: desktop-tauri-release
+  group: ${{ inputs.verify_only && format('desktop-tauri-verify-{0}', github.ref) || 'desktop-tauri-release' }}
   cancel-in-progress: false
 # desktop-tauri/src-tauri/Cargo.toml の version を上げて main に入れると、desktop-tauri-v<version> の
 # タグで GitHub Release を作り、アプリの自動更新が読む latest.json を desktop-tauri-updater の
@@ -24,10 +30,14 @@ concurrency:
 # - Secrets: TAURI_SIGNING_PRIVATE_KEY と TAURI_SIGNING_PRIVATE_KEY_PASSWORD (秘密鍵とそのパスワード)
 # - Variables: TAURI_UPDATER_PUBKEY (公開鍵。アプリに入れて、更新の署名を確かめる)
 # どれかがなければ、リリースを作らずに終わります。
+# macOS の新規リリースには、Developer ID 署名・公証用の APPLE_* Secrets も必須です。
+# 登録する値と手順は docs/desktop-tauri.md の「macOS の署名と公証」にあります。
 jobs:
   version:
-    # 手動実行でも、レビュー前の作業ブランチからは公開しない。
-    if: github.ref == 'refs/heads/main'
+    # 作業ブランチでは、明示した手動検証だけを許可する。
+    if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && inputs.verify_only)
+    # 本番と手動検証で同じ署名鍵を使う。許可するブランチや承認者は Environment で設定する。
+    environment: desktop-tauri-release
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -37,24 +47,43 @@ jobs:
       publish: ${{ steps.version.outputs.publish }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Check version and signing keys
         id: version
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          VERIFY_ONLY: ${{ inputs.verify_only || false }}
           HAS_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
           HAS_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY != '' }}
+          HAS_APPLE_SIGNING: >-
+            ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' &&
+                secrets.APPLE_SIGNING_IDENTITY != '' && secrets.APPLE_ID != '' &&
+                secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' desktop-tauri/src-tauri/Cargo.toml | head -n 1)
           tag="desktop-tauri-v$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          if [ "$HAS_PRIVATE_KEY" != true ] || [ "$HAS_PUBKEY" != true ]; then
+          if [ "$VERIFY_ONLY" = true ]; then
+            if [ "$HAS_PRIVATE_KEY" != true ] || [ "$HAS_PUBKEY" != true ] || [ "$HAS_APPLE_SIGNING" != true ]; then
+              echo "::error::署名・公証の検証に必要な Secrets または TAURI_UPDATER_PUBKEY が不足しています。"
+              exit 1
+            fi
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "macOS の署名・公証および Windows の署名・更新マニフェスト生成を検証します。成果物は Actions に保存し、リリースは公開しません。" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$HAS_PRIVATE_KEY" != true ] || [ "$HAS_PUBKEY" != true ]; then
             echo "更新の署名の鍵 (Secrets の TAURI_SIGNING_PRIVATE_KEY、Variables の TAURI_UPDATER_PUBKEY) がないので、リリースを作りません。" >> "$GITHUB_STEP_SUMMARY"
             echo "build=false" >> "$GITHUB_OUTPUT"
             echo "publish=false" >> "$GITHUB_OUTPUT"
           elif ! gh release view "$tag" > /dev/null 2>&1; then
+            if [ "$HAS_APPLE_SIGNING" != true ]; then
+              echo "::error::macOS の署名・公証用 Secrets が不足しています。docs/desktop-tauri.md の「macOS の署名と公証」に従って登録してください。"
+              exit 1
+            fi
             echo "build=true" >> "$GITHUB_OUTPUT"
             echo "publish=true" >> "$GITHUB_OUTPUT"
           else
@@ -72,22 +101,20 @@ jobs:
   build:
     needs: version
     if: needs.version.outputs.build == 'true'
+    # 本番と手動検証で同じ署名鍵を使う。許可するブランチや承認者は Environment で設定する。
+    environment: desktop-tauri-release
     strategy:
       fail-fast: true
       matrix:
-        include:
-          # deb が依存する glibc と WebKitGTK を古めに合わせ、Ubuntu 22.04 でも入るようにする。
-          - name: linux
-            os: ubuntu-22.04
-          # Apple Silicon と Intel の両方で動く universal の .app と .dmg。
-          # Developer ID の署名と公証はまだしていない (ad-hoc 署名だけ。README の「macOS」)。
-          - name: macos
-            os: macos-15
+        # 手動検証は macOS と Windows。本番では Linux (Ubuntu 22.04)・macOS・Windows 版を作る。
+        include: ${{ fromJSON(inputs.verify_only && '[{"name":"macos","os":"macos-15"},{"name":"windows","os":"windows-latest"}]' || '[{"name":"linux","os":"ubuntu-22.04"},{"name":"macos","os":"macos-15"},{"name":"windows","os":"windows-latest"}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -105,42 +132,138 @@ jobs:
             file
       - name: Read Rust toolchain
         id: rust-toolchain
+        shell: bash
         run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ steps.rust-toolchain.outputs.channel }}
           targets: ${{ runner.os == 'macOS' && 'wasm32-unknown-unknown,aarch64-apple-darwin,x86_64-apple-darwin' || 'wasm32-unknown-unknown' }}
+      - name: Install Inno Setup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+          if (-not $iscc -and (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) {
+            $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          }
+          $probe = "#if Ver < EncodeVer(6, 5, 2)`n#error old`n#endif`n[Setup]`nAppName=t`nAppVersion=1.0`nDefaultDirName={autopf}\t"
+          $needInstall = $true
+          if ($iscc -and (Test-Path $iscc)) {
+            $probe | & $iscc /Q /O- - | Out-Null
+            if ($LASTEXITCODE -eq 0) { $needInstall = $false }
+          }
+          if ($needInstall) {
+            choco upgrade innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $iscc = $null
+            if (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe") {
+              $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+            } else {
+              $iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+            }
+          }
+          if (-not $iscc -or -not (Test-Path $iscc)) { throw "ISCC.exe not found" }
+          $probe | & $iscc /Q /O- - | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw "ISCC.exe >= 6.5.2 is required (resolved: $iscc)"
+          }
+          Split-Path -Parent $iscc | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Install trunk, wasm-bindgen and tauri-cli
+        if: runner.os != 'Windows'
         # ci-desktop-tauri.yaml と同じ版にする。
         run: |
           case "$RUNNER_OS" in
-            Linux) trunk_target=x86_64-unknown-linux-gnu ;;
-            macOS) trunk_target=aarch64-apple-darwin ;;
+            Linux) trunk_target=x86_64-unknown-linux-gnu; trunk_sha256=f2b4680cd239693a646a2795e4633c625328d7b2a044fbe749fa3a2fe9e7036b ;;
+            macOS) trunk_target=aarch64-apple-darwin; trunk_sha256=764e299dd50d89442a4e96a236349f57961984b701e74d3dbdb39cd1c9f5101e ;;
           esac
           # trunk は ~/.cargo/bin がない実行先 (macOS) もあるので、専用の場所に置いて PATH に足す。
           trunk_bin="$HOME/.local/trunk/bin"
           mkdir -p "$trunk_bin"
           echo "$trunk_bin" >> "$GITHUB_PATH"
-          curl -fsSL "https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-$trunk_target.tar.gz" | tar -xz -C "$trunk_bin"
+          # チェックサムを確かめてから展開する（macOS には sha256sum がないので shasum を使う）。
+          curl -fsSL -o "$RUNNER_TEMP/trunk.tar.gz" "https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-$trunk_target.tar.gz"
+          echo "$trunk_sha256  $RUNNER_TEMP/trunk.tar.gz" | shasum -a 256 -c -
+          tar -xz -C "$trunk_bin" -f "$RUNNER_TEMP/trunk.tar.gz"
           cargo install --locked wasm-bindgen-cli --version 0.2.129
           cargo install --locked tauri-cli --version 2.11.4
+      - name: Install trunk, wasm-bindgen and tauri-cli (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $trunkBin = Join-Path $env:USERPROFILE ".local\trunk\bin"
+          New-Item -ItemType Directory -Force -Path $trunkBin | Out-Null
+          $trunkBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $trunkZip = Join-Path $env:RUNNER_TEMP "trunk.zip"
+          Invoke-WebRequest -Uri "https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-pc-windows-msvc.zip" -OutFile $trunkZip
+          $actualHash = (Get-FileHash -Algorithm SHA256 $trunkZip).Hash.ToLowerInvariant()
+          $expectedHash = "cd6ac15b9daff0365e5695036791ef2ce3c63f61c014f5a8c532363266e4569c"
+          if ($actualHash -ne $expectedHash) {
+            throw "trunk SHA-256 mismatch: expected $expectedHash, got $actualHash"
+          }
+          Expand-Archive -Path $trunkZip -DestinationPath $trunkBin -Force
+          cargo install --locked wasm-bindgen-cli --version 0.2.129
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo install --locked tauri-cli --version 2.11.4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       # 公開鍵をアプリに入れ、更新用の署名 (.sig) も作る。
-      - name: Bundle
+      - name: 配布物を作成する
+        if: runner.os != 'Windows'
         working-directory: ./desktop-tauri/src-tauri
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+          APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ runner.os == 'macOS' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
         run: |
           config=$(jq -nc --arg pubkey "$PUBKEY" \
-            '{bundle: {createUpdaterArtifacts: true, macOS: {signingIdentity: "-"}}, plugins: {updater: {pubkey: $pubkey}}}')
+            '{bundle: {createUpdaterArtifacts: true}, plugins: {updater: {pubkey: $pubkey}}}')
           if [ "$RUNNER_OS" = macOS ]; then
-            cargo tauri build --target universal-apple-darwin --bundles app,dmg --config "$config" -- --locked
+            case "$APPLE_SIGNING_IDENTITY" in
+              "Developer ID Application: "*) ;;
+              *) echo "::error::APPLE_SIGNING_IDENTITY には Developer ID Application 証明書の名前を指定してください。"; exit 1 ;;
+            esac
+            exec bash ../scripts/build-macos.sh "$config"
           else
             cargo tauri build --bundles deb,appimage --config "$config" -- --locked
           fi
+      - name: 配布物を作成する (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $configPath = Join-Path $env:RUNNER_TEMP "updater-config.json"
+          $json = @{ plugins = @{ updater = @{ pubkey = $env:PUBKEY } } } | ConvertTo-Json -Compress -Depth 4
+          [System.IO.File]::WriteAllText($configPath, $json, [System.Text.UTF8Encoding]::new($false))
+          Push-Location desktop-tauri\src-tauri
+          try {
+            cargo tauri build --no-bundle --config $configPath -- --locked
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally {
+            Pop-Location
+          }
+          iscc.exe "/DAppVersion=$env:VERSION" desktop-tauri\installer\zoo2.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: macOS の署名と公証を検証する
+        if: runner.os == 'macOS'
+        working-directory: ./desktop-tauri/src-tauri
+        run: |
+          app=target/universal-apple-darwin/release/bundle/macos/zoo2.app
+          codesign --verify --deep --strict --verbose=2 "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=2 "$app"
       - name: Collect
+        shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -159,17 +282,32 @@ jobs:
           }
           if [ "$RUNNER_OS" = macOS ]; then
             bundle=desktop-tauri/src-tauri/target/universal-apple-darwin/release/bundle
-            # .app.tar.gz は自動更新が使う。.dmg はインストール用なので署名は要らない。
+            # .app.tar.gz は自動更新が使う。.dmg には自動更新用の .sig は要らない。
             collect "$bundle/macos/zoo2.app.tar.gz" "zoo2_${VERSION}_universal.app.tar.gz"
             cp "$bundle/dmg/zoo2_${VERSION}_universal.dmg" dist/
+          elif [ "$RUNNER_OS" = Windows ]; then
+            bundle=desktop-tauri/src-tauri/target/release/bundle
+            collect "$bundle/inno/zoo2_${VERSION}_x64-setup.exe" "zoo2_${VERSION}_x64-setup.exe"
           else
             bundle=desktop-tauri/src-tauri/target/release/bundle
             collect "$bundle/deb/zoo2_${VERSION}_amd64.deb" "zoo2_${VERSION}_amd64.deb"
             collect "$bundle/appimage/zoo2_${VERSION}_amd64.AppImage" "zoo2_${VERSION}_amd64.AppImage"
           fi
           ls -l dist
+      - name: Windows の署名と公開鍵埋め込みを検証する
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          node desktop-tauri/scripts/verify-tauri-updater.mjs \
+            --sig "dist/zoo2_${VERSION}_x64-setup.exe" \
+            --sig-file "dist/zoo2_${VERSION}_x64-setup.exe.sig" \
+            --pubkey "$PUBKEY" \
+            --exe "desktop-tauri/src-tauri/target/release/zoo2-desktop-tauri.exe"
       - name: Upload
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: zoo2-desktop-tauri-release-${{ matrix.name }}
           path: dist/*
@@ -177,40 +315,50 @@ jobs:
 
   release:
     needs: [version, build]
-    # ビルドを飛ばしたとき (リリース済みで latest.json だけ公開し直すとき) も動かす。
-    if: ${{ !cancelled() && needs.version.outputs.publish == 'true' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    # ビルドを飛ばしたとき (リリース済みで latest.json だけ公開し直すとき) と verify_only でも動かす。
+    if: >-
+      ${{ !cancelled() &&
+          (needs.build.result == 'success' || needs.build.result == 'skipped') &&
+          ((github.ref == 'refs/heads/main' && !inputs.verify_only && needs.version.outputs.publish == 'true') ||
+           (github.event_name == 'workflow_dispatch' && inputs.verify_only && needs.version.outputs.build == 'true')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
     steps:
+      - name: Checkout verification script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: desktop-tauri/scripts
       - name: Download
         if: needs.version.outputs.build == 'true'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: zoo2-desktop-tauri-release-*
           merge-multiple: true
           path: dist
-      # リリース済みのときは、そのリリースの署名から latest.json を作り直す。
-      - name: Download signatures from the existing release
+      # リリース済みのときは、そのリリースの成果物と署名を取得して latest.json を作り直す。
+      - name: Download existing release assets and signatures
         if: needs.version.outputs.build != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.version.outputs.tag }}
-        run: gh release download "$TAG" --pattern '*.sig' --dir dist
+        run: gh release download "$TAG" --dir dist
       # アプリの自動更新 (tauri-plugin-updater) が読む形式。インストールの形ごとに、ファイルと署名を書く。
       - name: Generate latest.json and checksums
         env:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.version.outputs.tag }}
           VERSION: ${{ needs.version.outputs.version }}
+          BUILD: ${{ needs.version.outputs.build }}
         run: |
           base="https://github.com/$GH_REPO/releases/download/$TAG"
-          # platforms に、ファイルと署名の組を 1 つ足す。署名がない形 (前の版にない形) は飛ばす。
+          # platforms に、ファイルと署名の組を 1 つ足す。ファイルか署名がない形は飛ばす。
           platforms='{}'
           add() {
-            [ -f "dist/$2.sig" ] || return 0
+            [ -f "dist/$2" ] && [ -f "dist/$2.sig" ] || return 0
             platforms=$(jq -c --arg key "$1" --arg url "$base/$2" --rawfile sig "dist/$2.sig" \
               '. + {($key): {url: $url, signature: $sig}}' <<< "$platforms")
           }
@@ -223,19 +371,51 @@ jobs:
           add darwin-x86_64 "$app"
           add darwin-aarch64-app "$app"
           add darwin-x86_64-app "$app"
+          add windows-x86_64 "zoo2_${VERSION}_x64-setup.exe"
           jq -n \
             --arg version "$VERSION" \
             --arg notes "https://github.com/$GH_REPO/releases/tag/$TAG" \
             --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --argjson platforms "$platforms" \
             '{version: $version, notes: $notes, pub_date: $pub_date, platforms: $platforms}' > dist/latest.json
-          # ビルドしたとき (インストール用のファイルがあるとき) だけ作る。
-          if [ -f "dist/zoo2_${VERSION}_amd64.deb" ]; then
-            (cd dist && sha256sum -- *.deb *.AppImage *.dmg *.app.tar.gz > SHA256SUMS)
+          if [ "$BUILD" = true ]; then
+            shopt -s nullglob
+            (
+              cd dist
+              files=(*.deb *.AppImage *.dmg *.app.tar.gz *.exe)
+              if [ "${#files[@]}" -gt 0 ]; then
+                sha256sum -- "${files[@]}" > SHA256SUMS
+              fi
+            )
           fi
           cat dist/latest.json
+      - name: Verify latest.json and signatures
+        env:
+          PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+          BUILD: ${{ needs.version.outputs.build }}
+          VERIFY_ONLY: ${{ inputs.verify_only || false }}
+        run: |
+          args=(--manifest dist/latest.json --dir dist --pubkey "$PUBKEY" --verify-files)
+          if [ "$BUILD" = true ]; then
+            if [ "$VERIFY_ONLY" = true ]; then
+              args+=(--require "darwin-aarch64,darwin-x86_64,windows-x86_64")
+            else
+              args+=(--require "linux-x86_64-deb,linux-x86_64-appimage,darwin-aarch64,darwin-x86_64,windows-x86_64")
+            fi
+          fi
+          node desktop-tauri/scripts/verify-tauri-updater.mjs "${args[@]}"
+      - name: Upload verification manifest
+        if: inputs.verify_only
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: zoo2-desktop-tauri-verify-manifest
+          path: |
+            dist/latest.json
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
       - name: Create release
-        if: needs.version.outputs.build == 'true'
+        if: github.ref == 'refs/heads/main' && !inputs.verify_only && needs.version.outputs.build == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -256,6 +436,7 @@ jobs:
             --latest=false
       # アプリはこの決まった場所の latest.json を読む。リリースは最初の 1 回だけ作り、以後は置き直す。
       - name: Publish latest.json for the updater
+        if: github.ref == 'refs/heads/main' && !inputs.verify_only && needs.version.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

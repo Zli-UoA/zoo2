@@ -11,6 +11,11 @@ const row = {
 };
 
 describe("reaction groups", () => {
+  it("handles missing reactions in cached message projections without crashing", () => {
+    expect(groupReactions(undefined, "u1")).toEqual(new Map());
+    expect(groupReactions(null, "u1")).toEqual(new Map());
+    expect(groupReactions([], "u1")).toEqual(new Map());
+  });
   it("distinguishes users with the same display name by username", () => {
     expect(reactionUserLabel({ display_name: "Alex", user_name: "alex1" })).toBe("Alex (@alex1)");
     expect(reactionUserLabel({ display_name: "Alex", user_name: "alex2" })).toBe("Alex (@alex2)");

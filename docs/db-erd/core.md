@@ -10,6 +10,25 @@ erDiagram
       boolean id PK
       text ltl_channel_pattern
     }
+    apns_revocation_capacity {
+      boolean id PK
+      bigint records
+    }
+    apns_revocations {
+      text id PK
+      timestamp(3) revoked_at
+      timestamp(3) invalidated_at
+    }
+    apns_subscriptions {
+      text id PK
+      text user_id FK
+      text device_token
+      text environment
+      text revocation_hash
+      timestamp(3) created_at
+      timestamptz last_test_at
+    }
+    apns_subscriptions }o--o| users : apns_subscriptions_user_id_fkey
     assistant_sessions {
       text id PK
       text installation_id FK
@@ -78,9 +97,50 @@ erDiagram
       boolean is_muted
       text joined_at
       timestamptz expires_at
+      boolean sfu_capable
+      text sfu_id
+      text sfu_room
+      text cf_session_id
+      text livekit_identity
     }
     call_presence }o--o| channels : call_presence_channel_id_fkey
     call_presence }o--o| users : call_presence_user_id_fkey
+    call_rooms {
+      text channel_id PK,FK
+      text mode
+      bigint epoch
+      bigint track_version
+      bigint bridge_epoch
+      bigint bridge_room_gen
+    }
+    call_rooms |o--o| channels : call_rooms_channel_id_fkey
+    call_sfu_bridge {
+      smallint id PK
+      bigint epoch
+    }
+    call_sfu_departures {
+      bigint id PK
+      text channel_id
+      uuid session_id
+      text sfu_id
+      text sfu_room
+      text cf_session_id
+      text livekit_identity
+      integer attempts
+      timestamptz claimed_until
+      timestamptz created_at
+    }
+    call_sfu_tracks {
+      text channel_id PK,FK
+      uuid session_id PK,FK
+      text source PK
+      text cf_session_id
+      text track_name
+      bigint bridge_epoch
+      text bridge_publish_id
+      bigint bridge_room_gen
+    }
+    call_sfu_tracks }o--o| call_presence : call_sfu_tracks_presence_fkey
     channel_leave {
       text user_id PK,FK
       text channel_id PK,FK
@@ -88,6 +148,13 @@ erDiagram
     }
     channel_leave }o--o| channels : channel_leave_channel_id_fkey
     channel_leave }o--o| users : channel_leave_user_id_fkey
+    channel_message_authors {
+      text channel_id PK,FK
+      text user_id PK,FK
+      timestamp(3) latest_at
+    }
+    channel_message_authors }o--o| channels : channel_message_authors_channel_id_fkey
+    channel_message_authors }o--o| users : channel_message_authors_user_id_fkey
     channel_notes {
       text id PK
       text channel_id FK
@@ -210,10 +277,29 @@ erDiagram
       text reply_actor
       text reply_user_id FK
       jsonb media
+      text reply_target_id
     }
     home_posts }o--o| channels : home_posts_channel_id_fkey
     home_posts }o--o| users : home_posts_reply_user_id_fkey
     home_posts }o--o| users : home_posts_user_id_fkey
+    home_private_repost_totals {
+      text user_id PK,FK
+      text post_id PK
+      bigint n
+    }
+    home_private_repost_totals }o--o| users : home_private_repost_totals_user_id_fkey
+    home_reaction_totals {
+      text post_id PK
+      smallint source_kind PK
+      text group_key PK
+      text reaction
+      jsonb emoji
+      bigint n
+    }
+    home_repost_totals {
+      text post_id PK
+      bigint n
+    }
     message_reactions {
       text id PK
       text message_id FK
@@ -249,6 +335,9 @@ erDiagram
       jsonb ciphertext
       bigint epoch
       integer revision
+      text reply_target_id
+      text components
+      jsonb forwarded_message_ids
     }
     messages }o--o| apps : messages_app_origin_id_fkey
     messages }o--o| channels : messages_channel_id_fkey
@@ -288,6 +377,20 @@ erDiagram
     notifications }o--o| channels : notifications_channel_id_fkey
     notifications }o--o| messages : notifications_message_id_fkey
     notifications }o--o| users : notifications_user_id_fkey
+    phone_sessions {
+      text id PK
+      text user_id FK
+      text line_id FK
+      timestamptz line_revision
+      text peer_id
+      bigint gateway_session_id
+      bigint gateway_handle_id
+      text lease_owner
+      timestamptz expires_at
+      timestamptz created_at
+    }
+    phone_sessions }o--o| sip_lines : phone_sessions_line_id_fkey
+    phone_sessions }o--o| users : phone_sessions_user_id_fkey
     push_subscriptions {
       text id PK
       text user_id FK
@@ -324,6 +427,52 @@ erDiagram
       text image_id
       timestamptz updated_at
     }
+    sip_line_members {
+      text line_id PK,FK
+      text user_id PK,FK
+    }
+    sip_line_members }o--o| sip_lines : sip_line_members_line_id_fkey
+    sip_line_members }o--o| users : sip_line_members_user_id_fkey
+    sip_lines {
+      text id PK
+      text name
+      text owner_user_id FK
+      text websocket_path
+      text sip_domain
+      text username
+      text password_ciphertext
+      text phone_number
+      text created_by FK
+      timestamptz updated_at
+    }
+    sip_lines }o--o| users : sip_lines_created_by_fkey
+    sip_lines }o--o| users : sip_lines_owner_user_id_fkey
+    sip_phones {
+      text id PK
+      text line_id FK
+      text name
+      text extension
+    }
+    sip_phones }o--o| sip_lines : sip_phones_line_id_fkey
+    thread_migration_completed {
+      text thread_id PK,FK
+      timestamptz completed_at
+    }
+    thread_migration_completed |o--o| messages : thread_migration_completed_thread_id_fkey
+    thread_participants {
+      text thread_id PK,FK
+      text user_id PK,FK
+      timestamp(3) joined_at
+      timestamp(3) left_at
+      timestamp(3) updated_at
+    }
+    thread_participants }o--o| messages : thread_participants_thread_id_fkey
+    thread_participants }o--o| users : thread_participants_user_id_fkey
+    thread_rollout {
+      boolean id PK
+      text phase
+      text migration_after
+    }
     typing_presence {
       text channel_id PK,FK
       text parent_id FK
@@ -334,6 +483,12 @@ erDiagram
     typing_presence }o--o| channels : typing_presence_channel_id_fkey
     typing_presence }o--o| messages : typing_presence_parent_id_fkey
     typing_presence }o--o| users : typing_presence_user_id_fkey
+    user_channel_pin_states {
+      text user_id PK,FK
+      bigint version
+      timestamp(3) updated_at
+    }
+    user_channel_pin_states |o--o| users : user_channel_pin_states_user_id_fkey
     user_event_settings {
       text user_id PK,FK
       text preferences
@@ -352,6 +507,15 @@ erDiagram
       timestamp(3) updated_at
     }
     user_identities }o--o| users : user_identities_user_id_fkey
+    user_pinned_channels {
+      text user_id PK,FK
+      text channel_id PK,FK
+      integer position
+      timestamp(3) created_at
+      timestamp(3) updated_at
+    }
+    user_pinned_channels }o--o| channels : user_pinned_channels_channel_id_fkey
+    user_pinned_channels }o--o| users : user_pinned_channels_user_id_fkey
     user_reminders {
       text id PK
       text user_id FK

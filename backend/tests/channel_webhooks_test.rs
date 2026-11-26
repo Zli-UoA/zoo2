@@ -138,10 +138,12 @@ async fn manages_channel_webhooks_and_credentials() -> anyhow::Result<()> {
         .await?;
     assert_eq!(messages.len(), 1);
     assert_ne!(messages[0].user_id, owner);
-    assert_eq!(
-        serde_json::from_str::<Value>(messages[0].card.as_ref().unwrap())?["source"],
-        "Build service"
-    );
+    // Webhook の投稿は部品（Discord Components V2 形式）として保存する
+    let doc: Value = serde_json::from_str(messages[0].components.as_ref().unwrap())?;
+    assert_eq!(doc["flags"], 32768);
+    assert_eq!(doc["components"][0]["type"], 17);
+    assert!(doc.to_string().contains("Build service"));
+    assert!(messages[0].card.is_none());
     assert!(!messages[0].content.starts_with("zoo:github:v1\n"));
     let bot = &messages[0].user_id;
     assert_eq!(
@@ -187,11 +189,12 @@ async fn manages_channel_webhooks_and_credentials() -> anyhow::Result<()> {
         "POST",
         "/api/messages",
         &owner,
-        json!({"channel_id":channel, "content":forged, "card":"{\"title\":\"Fake\"}"}),
+        json!({"channel_id":channel, "content":forged, "card":"{\"title\":\"Fake\"}", "components":{"flags":32768,"components":[{"type":10,"content":"Fake"}]}}),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert!(human["data"]["card"].is_null());
+    assert!(human["data"]["components"].is_null());
     let human_id = human["data"]["id"].as_str().unwrap();
     let (status, edited, _) = request(
         &app,
@@ -203,6 +206,7 @@ async fn manages_channel_webhooks_and_credentials() -> anyhow::Result<()> {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert!(edited["data"]["card"].is_null());
+    assert!(edited["data"]["components"].is_null());
     // The existing endpoint now accepts only Slack messages, with URL authentication.
     assert_eq!(
         slack_delivery(
@@ -251,18 +255,20 @@ async fn manages_channel_webhooks_and_credentials() -> anyhow::Result<()> {
     let slack_messages = messages
         .iter()
         .filter(|m| {
-            m.card
+            m.components
                 .as_ref()
                 .is_some_and(|c| c.contains("Flux deployment"))
         })
         .collect::<Vec<_>>();
     assert_eq!(slack_messages.len(), 1);
-    let cards: Value = serde_json::from_str(slack_messages[0].card.as_ref().unwrap())?;
-    assert_eq!(cards["cards"][1]["color"], "#2eb886");
-    assert_eq!(cards["cards"][2]["color"], "#ff0000");
+    let doc: Value = serde_json::from_str(slack_messages[0].components.as_ref().unwrap())?;
+    // text は先頭の text_display、attachments は色付きの container になる
+    assert_eq!(doc["components"][0]["content"], "Flux deployment");
+    assert_eq!(doc["components"][1]["accent_color"], 0x2eb886);
+    assert_eq!(doc["components"][2]["accent_color"], 0xff0000);
     assert_eq!(
         slack_messages[0].content,
-        "Flux deployment\nReady\nproduction\nFailed\nstaging"
+        "Flux deployment\n**Ready**\nproduction\n**Failed**\nstaging"
     );
     // Flux sends credentials as Secret.token, keeping retry error URLs public.
     let (endpoint, token) = receive.split_once("?token=").unwrap();
@@ -297,11 +303,17 @@ async fn manages_channel_webhooks_and_credentials() -> anyhow::Result<()> {
         .exec(&mut db)
         .await?;
     assert!(stored.iter().any(|m| m.content == "Reconciliation failed"));
-    let long = stored.iter().find(|m| m.content.starts_with("界")).unwrap();
+    let long = stored
+        .iter()
+        .find(|m| m.content.starts_with("**界"))
+        .unwrap();
     assert_eq!(long.content.chars().count(), 40_000);
-    let full: Value = serde_json::from_str(long.card.as_ref().unwrap())?;
-    assert_eq!(full["cards"].as_array().unwrap().len(), 100);
-    assert_eq!(full["cards"][99]["title"], "界".repeat(500));
+    let full: Value = serde_json::from_str(long.components.as_ref().unwrap())?;
+    assert_eq!(full["components"].as_array().unwrap().len(), 100);
+    assert_eq!(
+        full["components"][99]["components"][0]["content"],
+        format!("**{}**", "界".repeat(500))
+    );
     assert_eq!(
         slack_delivery(
             &app,
@@ -320,8 +332,31 @@ async fn manages_channel_webhooks_and_credentials() -> anyhow::Result<()> {
             json!({"attachments":[{"text":"x", "color":"invalid"}]})
         )
         .await,
-        StatusCode::BAD_REQUEST
+        // 形式が正しい通知は、知らない色でも 400 にせず、色なしで表示する
+        StatusCode::OK
     );
+    // Block Kit と Discord Components V2 も受け付ける（これまで blocks は 400 だった）
+    for body in [
+        json!({"text":"fallback","blocks":[{"type":"section","text":{"type":"mrkdwn","text":"*hi*"}},
+            {"type":"actions","elements":[{"type":"button","text":{"type":"plain_text","text":"Go"},"action_id":"go"}]},
+            {"type":"future_block","text":{"type":"plain_text","text":"later"}}]}),
+        json!({"flags":32768,"components":[{"type":17,"components":[{"type":10,"content":"-# discord"}]}]}),
+        json!({"content":"embed","embeds":[{"title":"Build","color":65280}]}),
+    ] {
+        assert_eq!(
+            slack_delivery(&app, receive, &Uuid::new_v4().to_string(), body).await,
+            StatusCode::OK
+        );
+    }
+    let stored = Message::filter(Message::fields().channel_id().eq(channel.as_str()))
+        .exec(&mut db)
+        .await?;
+    let block_kit = stored.iter().find(|m| m.content == "fallback").unwrap();
+    let doc: Value = serde_json::from_str(block_kit.components.as_ref().unwrap())?;
+    // 受け取るアプリがないので、ボタンは押せない状態にする。知らないブロックは文字だけ残す
+    assert_eq!(doc["components"][1]["components"][0]["disabled"], true);
+    assert_eq!(doc["components"][2]["type"], 1000);
+    assert!(stored.iter().any(|m| m.content == "<small>discord</small>"));
     // Slack clients do not need custom headers or a delivery ID.
     let response = app
         .clone()

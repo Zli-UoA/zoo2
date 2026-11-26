@@ -12,6 +12,7 @@ import { AppAvatar } from "../chat/AppIdentity";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { ConfirmActionDialog } from "../ui/confirm-action-dialog";
+import { apiPath } from "../../lib/api/path";
 
 export function WorkspaceMembers() {
   const { t } = useTranslation();
@@ -65,7 +66,7 @@ export function WorkspaceMembers() {
     setPending(true);
     setError("");
     try {
-      await client.request(`/api/users/${target.user.id}/admin`, {
+      await client.request(apiPath`/api/users/${target.user.id}/admin`, {
         method: "PATCH",
         body: { is_admin: !target.isAdmin },
       });

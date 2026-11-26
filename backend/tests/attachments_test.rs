@@ -836,42 +836,61 @@ async fn test_attachments_upload_verification_and_message_linking() -> anyhow::R
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
-    // 9. 画像以外のファイル (例: PDF) では Content-Disposition が attachment になること
-    let pdf_payload = json!({
-        "channel_id": channel_id,
-        "file_name": "manual.pdf",
-        "file_size": 1024,
-        "content_type": "application/pdf"
-    });
-
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/attachments/presign")
-        .header("content-type", "application/json")
-        .header("X-Dev-User", &alice_id)
-        .body(Body::from(serde_json::to_vec(&pdf_payload)?))?;
-
-    let resp = app.clone().oneshot(req).await?;
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let body = to_bytes(resp.into_body(), usize::MAX).await?;
-    let res: Value = serde_json::from_slice(&body)?;
-    let pdf_attachment_id = res["data"]["attachment_id"].as_str().unwrap();
-
-    let req = Request::builder()
-        .method("GET")
-        .uri(format!("/api/attachments/{pdf_attachment_id}/url"))
-        .header("X-Dev-User", &alice_id)
-        .body(Body::empty())?;
-
-    let resp = app.clone().oneshot(req).await?;
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let body = to_bytes(resp.into_body(), usize::MAX).await?;
-    let res: Value = serde_json::from_slice(&body)?;
-    let download_url = res["data"]["download_url"].as_str().unwrap();
-    assert!(download_url.contains("attachment"));
-    assert!(!download_url.contains("inline"));
+    // 9. プレビュー可能な形式はinline、能動的な文書はattachmentで配信する。
+    for (file_name, content_type, expected_disposition) in [
+        ("manual.pdf", "application/pdf", "inline"),
+        ("movie.mp4", "video/mp4", "inline"),
+        ("recording.mp3", "audio/mpeg", "inline"),
+        ("page.html", "text/html", "attachment"),
+    ] {
+        let payload = json!({
+            "channel_id": channel_id,
+            "file_name": file_name,
+            "file_size": 1024,
+            "content_type": content_type
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/attachments/presign")
+            .header("content-type", "application/json")
+            .header("X-Dev-User", &alice_id)
+            .body(Body::from(serde_json::to_vec(&payload)?))?;
+        let resp = app.clone().oneshot(req).await?;
+        assert_eq!(resp.status(), StatusCode::OK, "{content_type}");
+        let body = to_bytes(resp.into_body(), usize::MAX).await?;
+        let res: Value = serde_json::from_slice(&body)?;
+        let attachment_id = res["data"]["attachment_id"].as_str().unwrap();
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!("/api/attachments/{attachment_id}/url"))
+            .header("X-Dev-User", &alice_id)
+            .body(Body::empty())?;
+        let resp = app.clone().oneshot(req).await?;
+        assert_eq!(resp.status(), StatusCode::OK, "{content_type}");
+        let body = to_bytes(resp.into_body(), usize::MAX).await?;
+        let res: Value = serde_json::from_slice(&body)?;
+        let url = reqwest::Url::parse(res["data"]["download_url"].as_str().unwrap())?;
+        let disposition = url
+            .query_pairs()
+            .find(|(name, _)| name == "response-content-disposition")
+            .map(|(_, value)| value.into_owned())
+            .expect("signed URL must specify Content-Disposition");
+        assert!(
+            disposition.starts_with(&format!("{expected_disposition};")),
+            "{content_type}: {disposition}"
+        );
+        assert!(
+            disposition.contains(&format!("filename=\"{file_name}\"")),
+            "{content_type}: {disposition}"
+        );
+        assert_eq!(
+            url.query_pairs()
+                .find(|(name, _)| name == "response-content-type")
+                .map(|(_, value)| value.into_owned())
+                .as_deref(),
+            Some(content_type)
+        );
+    }
 
     Ok(())
 }

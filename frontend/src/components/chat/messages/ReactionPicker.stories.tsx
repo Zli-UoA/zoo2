@@ -4,7 +4,10 @@ import { delay, http, HttpResponse } from "msw";
 import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
 import { useState } from "react";
 
-import { manyCustomEmojiFixtures } from "../../../../.storybook/preference-fixtures";
+import {
+  customEmojiFixture,
+  manyCustomEmojiFixtures,
+} from "../../../../.storybook/preference-fixtures";
 
 import { RECENT_EMOJIS_STORAGE_KEY } from "../../../lib/emoji/recents";
 import { Button } from "../../ui/button";
@@ -72,6 +75,10 @@ export const Kitchen: Story = {
 };
 
 export const SearchEmpty: Story = {
+  parameters: {
+    // カスタム絵文字の取得に失敗すると「検索結果なし」ではなく再試行を出すため、空の一覧を返す。
+    msw: { handlers: [http.get("*/api/emojis", () => HttpResponse.json([]))] },
+  },
   play: playForImplementation(async () => {
     const search = await screen.findByPlaceholderText("絵文字を検索");
     await userEvent.type(search, "zzzzzzzz");
@@ -127,15 +134,52 @@ export const ManyCustomEmojis: Story = {
     );
     viewport.scrollTo({ top: viewport.scrollHeight });
     await waitFor(() => expect(viewport.scrollTop).toBeGreaterThan(0));
-    await expect(last.getBoundingClientRect().bottom).toBeLessThanOrEqual(
-      viewport.getBoundingClientRect().bottom,
+    // スクロールが滑らかに進む場合があるため、最後の絵文字が見えるまで待つ。
+    await waitFor(() =>
+      expect(last.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+        viewport.getBoundingClientRect().bottom,
+      ),
     );
     // 開始アニメーション中は親ダイアログのopacityが0でも、入力欄はDOMから取得できる。
     await waitFor(() =>
-      expect(within(dialog).getByRole("textbox", { name: "絵文字を検索" })).toBeVisible(),
+      expect(within(dialog).getByRole("searchbox", { name: "絵文字を検索" })).toBeVisible(),
     );
     await userEvent.click(last);
     await expect(args.onSelect).toHaveBeenCalledWith(":scroll_199:");
+  }),
+};
+
+const rankedSearchFixtures = [
+  { ...customEmojiFixture, name: "xkusa", category: "Zoo", aliases: [] },
+  { ...customEmojiFixture, name: "kusa_hayasu", category: "Zoo", aliases: [] },
+  { ...customEmojiFixture, name: "kusa", category: "Zoo", aliases: [] },
+  { ...customEmojiFixture, name: "kusaa", category: "Zoo", aliases: [] },
+];
+
+export const SearchExactFirst: Story = {
+  parameters: {
+    a11y: { test: "error" },
+    msw: { handlers: [http.get("*/api/emojis", () => HttpResponse.json(rankedSearchFixtures))] },
+  },
+  play: playForImplementation(async () => {
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("tab", { name: "カスタム絵文字" }));
+    await within(dialog).findByRole("button", { name: ":kusa:" });
+    await userEvent.type(within(dialog).getByRole("searchbox", { name: "絵文字を検索" }), "kusa");
+    const region = within(dialog).getByRole("region", { name: "カスタム絵文字" });
+    // 完全一致、前方一致（短い順）、部分一致の順に並ぶ。
+    await waitFor(() =>
+      expect(
+        within(region)
+          .getAllByRole("button")
+          .map((button) => button.getAttribute("aria-label")),
+      ).toEqual([":kusa:", ":kusaa:", ":kusa_hayasu:", ":xkusa:"]),
+    );
+    // カーソルを載せると、登録名をツールチップで表示する。
+    await userEvent.hover(within(region).getByRole("button", { name: ":kusa:" }));
+    await expect(
+      await screen.findByText(":kusa:", { selector: '[data-slot="tooltip-content"]' }),
+    ).toBeVisible();
   }),
 };
 

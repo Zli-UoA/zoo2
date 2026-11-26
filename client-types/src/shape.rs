@@ -40,6 +40,8 @@ pub enum ShapeId {
     Notifications,
     /// 自分が呼んだ・呼ばれた、呼び出し中の通話の招待 (`call_invites`)。docs/calls.md。
     CallInvites,
+    /// 自分がピン留めしたチャンネル・DM (`user_pinned_channels`)。
+    UserPinnedChannels,
 }
 
 impl ShapeId {
@@ -55,6 +57,7 @@ impl ShapeId {
             ShapeId::Attachments(id) => ("attachments", channel(id)),
             ShapeId::Notifications => ("notifications", Vec::new()),
             ShapeId::CallInvites => ("call_invites", Vec::new()),
+            ShapeId::UserPinnedChannels => ("user_pinned_channels", Vec::new()),
         }
     }
 }
@@ -150,6 +153,14 @@ mod tests {
             json!({ "shape": "call_invites" })
         );
         assert_eq!(ShapeId::CallInvites.path_and_params().0, "call_invites");
+        assert_eq!(
+            serde_json::to_value(ShapeId::UserPinnedChannels).unwrap(),
+            json!({ "shape": "user_pinned_channels" })
+        );
+        assert_eq!(
+            ShapeId::UserPinnedChannels.path_and_params().0,
+            "user_pinned_channels"
+        );
         assert_eq!(
             serde_json::to_value(Change::Delete { key: "k".into() }).unwrap(),
             json!({ "op": "delete", "key": "k" })

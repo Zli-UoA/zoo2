@@ -122,7 +122,7 @@ impl Alice {
         }));
         let version = secrets
             .backup_key
-            .create_version_request(&secrets.cross_signing.master, None)
+            .create_version_request(&secrets.cross_signing.master, None, 1)
             .unwrap();
         alice.apply_version(&version);
         (alice, secrets)
@@ -142,6 +142,8 @@ impl Alice {
 
     fn apply_version(&mut self, body: &Value) -> String {
         let number = (self.versions.len() + 1).to_string();
+        // サーバーは、署名した版の番号が振る番号と違う要求を 409 で拒む。
+        assert_eq!(body["auth_data"]["version"], json!(number));
         self.versions.push(json!({
             "version": number,
             "algorithm": body["algorithm"],
@@ -484,6 +486,76 @@ fn full_revocation_stopped_before_saving_ssss_restarts() {
     assert_eq!(
         resumed.secrets().cross_signing.self_signing.public_key(),
         revocation.secrets().cross_signing.self_signing.public_key()
+    );
+}
+
+#[test]
+fn full_revocation_stopped_after_saving_ssss_resumes_with_the_new_recovery_key() {
+    let (mut alice, secrets) = Alice::new();
+    let revocation = begin(&alice, &secrets, RevocationScope::Full);
+    let recovery = RecoveryKey::generate();
+    let slot = KeySlot::new_recovery(ALICE, revocation.ssss_key(), &recovery).unwrap();
+    // SSSS を保存したが、`secret_storage_saved` を記録する前に止まった（記録は Prepared のまま）。
+    alice
+        .storage
+        .apply_keys(&revocation.secret_storage_request(&[slot]).unwrap());
+    let state = revocation.state().clone();
+    assert_eq!(state.stage, RevocationStage::Prepared);
+
+    // 新しいリカバリーキーで開け直すと、保存した SSSS を照合して、保存のあとから続ける。
+    alice.recovery = recovery;
+    let resumed = Revocation::resume(state.clone(), &alice.unlock()).unwrap();
+    assert_eq!(resumed.state().stage, RevocationStage::SecretStorageSaved);
+    assert_eq!(
+        resumed.state().secrets_revision,
+        Some(alice.storage.revision())
+    );
+    assert_eq!(resumed.state().new_keys, revocation.state().new_keys);
+
+    // 別の失効が同じ範囲で SSSS を作り直していたら、続けない。
+    let other = begin(&alice, &secrets, RevocationScope::Full);
+    let other_recovery = RecoveryKey::generate();
+    let other_slot = KeySlot::new_recovery(ALICE, other.ssss_key(), &other_recovery).unwrap();
+    alice
+        .storage
+        .apply_keys(&other.secret_storage_request(&[other_slot]).unwrap());
+    alice.recovery = other_recovery;
+    assert!(matches!(
+        Revocation::resume(state, &alice.unlock()),
+        Err(CryptoError::RevocationRestart)
+    ));
+}
+
+#[test]
+fn secret_storage_matches_only_this_revocations_write() {
+    let (mut alice, secrets) = Alice::new();
+    let mut first = begin(&alice, &secrets, RevocationScope::DeviceOnly);
+    let second = begin(&alice, &secrets, RevocationScope::DeviceOnly);
+    // 保存する前は、自分の書き込みではない。
+    assert!(
+        !first
+            .secret_storage_matches(&alice.storage.response)
+            .unwrap()
+    );
+    alice
+        .storage
+        .apply_secrets(&first.secret_storage_request(&[]).unwrap());
+    // 応答をなくしても、読み直した SSSS で自分の書き込みが済んだと分かる。
+    assert!(
+        first
+            .secret_storage_matches(&alice.storage.response)
+            .unwrap()
+    );
+    assert!(
+        !second
+            .secret_storage_matches(&alice.storage.response)
+            .unwrap()
+    );
+    first.secret_storage_saved(Some(alice.storage.revision()));
+    assert!(
+        first
+            .secret_storage_matches(&alice.storage.response)
+            .unwrap()
     );
 }
 

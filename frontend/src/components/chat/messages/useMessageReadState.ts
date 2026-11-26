@@ -2,12 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 
-import { READ_STATE_CHANGED, type ChannelReadState } from "../../../hooks/useUnreadChannels";
+import { READ_STATE_CHANGED, type ChannelReadState } from "../../../hooks/useUnread";
 import { createConfiguredApiClient } from "../../../lib/api/client";
 import { getCollections } from "../../../lib/electric/collections";
 import { useOptionalCollections } from "../../../lib/electric/collections-context";
 import { parseUtcTimestamp } from "../../../lib/timestamps";
 import type { FeedMessage } from "./messageFormat";
+import { apiPath } from "../../../lib/api/path";
 
 export function firstUnreadMessage(
   messages: FeedMessage[],
@@ -38,7 +39,7 @@ export function useMessageReadState(
     () => (enabled && config ? createConfiguredApiClient(config) : null),
     [config, enabled],
   );
-  const path = `/api/channels/${channelId}/read-state`;
+  const path = apiPath`/api/channels/${channelId}/read-state`;
   const [lastRead, setLastRead] = useState<number | null>(null);
   const [isError, setIsError] = useState(false);
   const saved = useRef(0);

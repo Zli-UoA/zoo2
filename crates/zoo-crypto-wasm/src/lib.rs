@@ -134,7 +134,13 @@ export interface SignatureUpload {
   signer_key_id: string;
   signature: string;
 }
-export interface TrustRecord { master_key: string; confirmed_usk: string | null; pin_pending: boolean }
+export interface TrustRecord {
+  master_key: string;
+  confirmed_usk: string | null;
+  pin_pending: boolean;
+  /** 記録から置き換えた古いマスター鍵（古い順）。空のときは省く。 */
+  replaced_master_keys?: string[];
+}
 export interface NewTofuPin { target_user_id: string; master_key: string; pin: JsonObject }
 export interface AcceptedMasterKey {
   target_user_id: string;
@@ -158,9 +164,15 @@ export interface VerificationOutgoing {
 export type SasPhase =
   | "requested"
   | "incoming"
+  /** 双方が受け入れた。QR を出し、QR を読み取るか絵文字で検証するかを選ぶ。 */
+  | "choose_method"
   | "exchanging"
   | "compare"
   | "confirmed"
+  /** 相手の QR を読み取った。相手の確認を待っている。 */
+  | "qr_scanned"
+  /** 相手がこの端末の QR を読み取った。相手の端末で読み取ったかを利用者に聞く。 */
+  | "qr_confirm"
   | "done"
   | "cancelled";
 export interface SasView {
@@ -174,6 +186,14 @@ export interface SasView {
   emoji: number[] | null;
   cancel: { code: string; by_us: boolean } | null;
   verified_master_key: string | null;
+  /** `start` を送るか受けて決まった方式。 */
+  method: "sas" | "qr" | null;
+  /** 相手に読み取ってもらう QR のバイト列（Matrix の形）。出さない段階では `null`。 */
+  qr_code: number[] | null;
+  /** 相手の QR を読み取れる段階か。 */
+  can_scan_qr_code: boolean;
+  /** 絵文字の検証を選べる段階か。 */
+  can_start_sas: boolean;
 }
 export interface SasRequest { verification: SasVerification; outgoing: VerificationOutgoing[] }
 export type UserState =
@@ -207,6 +227,12 @@ export interface Distribution {
   users: Record<string, { state: UserState; excluded_devices: Record<string, DeviceExclusion> }>;
   new_pins: NewTofuPin[];
   warnings: TrustWarning[];
+  /**
+   * 規則 3 で、記録と違う新しいマスター鍵に自分のユーザー署名鍵の署名があったので記録を置き換えた
+   * 相手（自分の別の端末で受け入れた鍵）。「鍵が変わり、別の端末で確認済み」と知らせる。
+   * `evaluate` は常に入れる（以前の型で作ったオブジェクトとの互換のため省略可にしている）。
+   */
+  signed_master_key_changes?: string[];
 }
 export interface SsssKeyDescription { algorithm: string; iv: string; mac: string }
 export interface EncryptedSecret { key_id?: string | null; iv: string; ciphertext: string; mac: string }
@@ -266,6 +292,7 @@ export interface ZooCryptoConstants {
   RECOVERY_KEY_CHARS: number;
   BACKUP_ALGORITHM: string;
   MAX_UPLOAD_SESSIONS: number;
+  BACKUP_PROOF_HEADER: string;
   ENCRYPTED_ATTACHMENT_FILE_NAME: string;
   ENCRYPTED_ATTACHMENT_CONTENT_TYPE: string;
   MAX_ATTACHMENTS: number;
@@ -294,6 +321,7 @@ pub fn constants() -> Result<JsValue, JsValue> {
         "RECOVERY_KEY_CHARS": core::RECOVERY_KEY_CHARS,
         "BACKUP_ALGORITHM": core::BACKUP_ALGORITHM,
         "MAX_UPLOAD_SESSIONS": core::MAX_UPLOAD_SESSIONS,
+        "BACKUP_PROOF_HEADER": core::BACKUP_PROOF_HEADER,
         "ENCRYPTED_ATTACHMENT_FILE_NAME": core::ENCRYPTED_ATTACHMENT_FILE_NAME,
         "ENCRYPTED_ATTACHMENT_CONTENT_TYPE": core::ENCRYPTED_ATTACHMENT_CONTENT_TYPE,
         "MAX_ATTACHMENTS": core::MAX_ATTACHMENTS,

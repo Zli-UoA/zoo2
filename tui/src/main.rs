@@ -25,6 +25,7 @@ const USAGE: &str = "\
   run      チャット画面を開く (省略時の既定)
   login    ブラウザでコードを承認してログインする
   logout   この端末の暗号の鍵と、保存したトークンを消す
+  default-channels [--set [ID ...]]  新規アカウントの参加チャンネルを表示・設定 (管理者)
   help     このヘルプを表示する
 
 設定は ~/.config/zoo2-tui/config.toml と環境変数 ZOO_* から読み込みます。";
@@ -36,6 +37,7 @@ async fn main() -> Result<()> {
         "run" => run().await,
         "login" => login().await,
         "logout" => logout().await,
+        "default-channels" => default_channels().await,
         "help" | "-h" | "--help" => {
             println!("{USAGE}");
             Ok(())
@@ -62,6 +64,43 @@ fn token_file() -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("設定ディレクトリが見つかりません"))
 }
 
+async fn default_channels() -> Result<()> {
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    if !args.is_empty() && args[0] != "--set" {
+        bail!("使い方: zoo2-tui default-channels [--set [ID ...]]");
+    }
+    let config = Config::load()?;
+    let http = reqwest::Client::new();
+    let credentials = credentials(&config, &http).await?;
+    let api = ApiClient::new(http, &config.api_base_url, credentials);
+    let settings = if args.is_empty() {
+        api.default_channels().await?
+    } else {
+        api.set_default_channels(&args[1..]).await?
+    };
+    println!("{settings:#}");
+    Ok(())
+}
+
+async fn credentials(config: &Config, http: &reqwest::Client) -> Result<Credentials> {
+    Ok(match &config.auth {
+        AuthConfig::Dev { user_id } => Credentials::Dev(user_id.clone()),
+        AuthConfig::Oidc(oidc) => {
+            let path = token_file()?;
+            let tokens =
+                token::load_async(&path, oidc, Some(&config.api_base_url)).await?.ok_or_else(|| {
+                    anyhow!("ログインしていません。先に `zoo2-tui login` を実行してください。接続先や OIDC の設定を変えたときも、ログインし直してください")
+                })?;
+            Credentials::Bearer(Arc::new(TokenManager::new(
+                http.clone(),
+                oidc.clone(),
+                path,
+                tokens,
+            )))
+        }
+    })
+}
+
 async fn run() -> Result<()> {
     let config = Config::load()?;
     let http = reqwest::Client::new();
@@ -86,7 +125,8 @@ async fn run() -> Result<()> {
         }
     };
     // 端末の登録と to-device の処理は、画面と並行して裏で行う（#359）。
-    let crypto_task = config::config_dir().map(|dir| {
+    let crypto_root = config::config_dir().map(|dir| e2ee::store::crypto_root(&dir));
+    let crypto = config::config_dir().map(|dir| {
         let user_id = match &credentials {
             Credentials::Dev(user_id) => Some(user_id.clone()),
             Credentials::Bearer(_) => None,
@@ -100,7 +140,33 @@ async fn run() -> Result<()> {
             user_id,
         )
     });
-    let result = ui::run(http, config.api_base_url, credentials, config.check_updates).await;
+    let (crypto_task, e2ee) = match crypto {
+        Some((task, stores, events)) => {
+            // 初回設定と解錠の再認証（#360）。dev モードではサーバーも再認証を確かめない。
+            let oidc = match &config.auth {
+                AuthConfig::Oidc(oidc) => Some(oidc.clone()),
+                AuthConfig::Dev { .. } => None,
+            };
+            (
+                Some(task),
+                Some(ui::encryption::E2eeContext {
+                    oidc,
+                    stores,
+                    crypto_root,
+                    events: Some(events),
+                }),
+            )
+        }
+        None => (None, None),
+    };
+    let result = ui::run(
+        http,
+        config.api_base_url,
+        credentials,
+        config.check_updates,
+        e2ee,
+    )
+    .await;
     if let Some(task) = crypto_task {
         task.abort();
     }
@@ -205,6 +271,20 @@ async fn clear_encryption(
     let targets = e2ee::manager::open_for_logout(&root)?;
     if targets.is_empty() {
         return Ok(true);
+    }
+    // 終わっていない失効があれば、ログアウトの前に警告する（ログアウトすると進み具合が消える。#362）。
+    if targets.iter().any(|target| target.pending_revocation) {
+        println!("失効が終わっていません。");
+        println!(
+            "ログアウトすると、この端末に残した失効の進み具合が消えます。別の端末で SSSS を開け直して、失効をやり直す必要があります。"
+        );
+        print!("ログアウトしますか？ [y/N] ");
+        std::io::Write::flush(&mut std::io::stdout())?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !matches!(answer.trim(), "y" | "Y" | "yes") {
+            return Ok(false);
+        }
     }
     let pending: usize = targets.iter().map(|target| target.pending_backup).sum();
     if pending > 0 {

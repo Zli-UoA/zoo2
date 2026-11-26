@@ -11,21 +11,45 @@ use ratatui::{
 
 use super::{
     app::{App, Focus, Mode, SidebarItem, Target},
+    e2ee_chat::{self, ChannelEncryption, CreateForm, CreateKind},
+    encryption::Screen,
+    global_search,
     timeline::{self, Context},
 };
+use crate::api::SearchKind;
+use crate::e2ee::reauth;
+use crate::e2ee::setup::{E2eeStatus, LockReason};
 use crate::electric::ShapeId;
 
 const ACCENT: Color = Color::Cyan;
 const DIM: Style = Style::new().fg(Color::DarkGray);
+/// 全文検索の結果で、検索語に当たった部分。
+const HIGHLIGHT: Style = Style::new().fg(Color::Black).bg(Color::Yellow);
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let composer_height = (app.composer.lines().len() as u16).clamp(1, 6) + 2;
-    let [main, composer, status] = Layout::vertical([
+    // 長い表示（増えた配布先、配れない相手）は、タイムラインと同じ折り返し（表示幅で切る）で自分で
+    // 折り返し、その行数を高さにする（画面の半分まで）。`Paragraph` の語ごとの折り返しでは、行数が
+    // 表示幅から計算した数より増えて、末尾が切れることがあるため。収まらなければ人数だけを出し、
+    // 全員は `V` の詳細の画面で確かめる。
+    // 入れられる行数は、画面の半分と、タイムライン（5 行）、入力欄、状態表示を残した残りの少ない方。
+    let room = frame
+        .area()
+        .height
+        .saturating_sub(5 + composer_height + 1)
+        .min(frame.area().height / 2);
+    let notice = encryption_notice(app, usize::from(frame.area().width), usize::from(room));
+    let notice_height = notice.len() as u16;
+    let [main, notice_area, composer, status] = Layout::vertical([
         Constraint::Min(5),
+        Constraint::Length(notice_height),
         Constraint::Length(composer_height),
         Constraint::Length(1),
     ])
     .areas(frame.area());
+    if !notice.is_empty() {
+        frame.render_widget(Paragraph::new(notice), notice_area);
+    }
 
     let sidebar_width = (main.width / 4).clamp(18, 32);
     let [sidebar, rest] =
@@ -54,8 +78,432 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 Line::from("y: 削除 / その他: やめる"),
             ],
         ),
+        Mode::Encryption => draw_encryption(frame, app),
+        Mode::Devices => super::devices_view::draw(frame, app),
+        Mode::Create(form) => draw_create(frame, form),
+        Mode::Recipients { scroll } => {
+            let scroll = *scroll;
+            draw_recipients(frame, app, scroll);
+        }
+        Mode::GlobalSearch => draw_global_search(frame, app),
         _ => {}
     }
+    // 他のユーザーの検証は、どの画面にいても前面に出す。
+    if app.devices.has_open_verification() {
+        super::devices_view::draw_verification(frame, app);
+    }
+}
+
+/// 暗号化チャンネルの送信画面の表示（docs/e2ee.md の「鍵の配布先の判定」。React の
+/// `EncryptionRecipientsNotice` と同じ）。入力欄の上に、前回から増えた配布先と、鍵を配れない相手と理由を、
+/// あるときだけ出す。配布先の数は、毎回同じで読み流されるので出さない（`V` の詳細の画面で確かめられる）。
+/// 格下げを見つけたら、送らないことを出す。解錠していなければ解錠を案内する。平文のチャンネルでは何も出さない。
+fn encryption_notice(app: &App, width: usize, max_lines: usize) -> Vec<Line<'static>> {
+    let wrap = |lines: Vec<Line<'static>>| -> Vec<Line<'static>> {
+        lines
+            .into_iter()
+            .flat_map(|line| timeline::wrap(line, width))
+            .collect()
+    };
+    let Some(channel_id) = app.current.as_deref() else {
+        return Vec::new();
+    };
+    match app.channel_encryption(channel_id) {
+        ChannelEncryption::Plain => return Vec::new(),
+        ChannelEncryption::Downgraded => {
+            return wrap(vec![Line::styled(
+                format!(" ⚠ {}", e2ee_chat::DOWNGRADED),
+                Style::new().fg(Color::Red),
+            )]);
+        }
+        ChannelEncryption::Encrypted => {}
+    }
+    let Some(summary) = app.recipients.get(channel_id) else {
+        // 配布先をまだ判定していない。解錠していなければ、送る前に解錠を案内する。
+        if matches!(app.encryption.status, Some(E2eeStatus::Unlocked)) {
+            return Vec::new();
+        }
+        return wrap(vec![Line::styled(
+            " 🔒 暗号化チャンネルに送るには、この端末で暗号化を解錠してください (E)",
+            DIM,
+        )]);
+    };
+    if summary.added_user_ids.is_empty() && summary.undeliverable.is_empty() {
+        return Vec::new();
+    }
+    let name = |id: &str| app.store.display_name(id);
+    let added_style = Style::new().add_modifier(Modifier::BOLD);
+    let warn = Style::new().fg(Color::Yellow);
+    // 全部を出す形。全員は `V` の詳細の画面でも確かめられる。
+    let mut full = vec![Line::styled(" 🔒 V: 配布先の詳細", DIM)];
+    if !summary.added_user_ids.is_empty() {
+        let names: Vec<String> = summary.added_user_ids.iter().map(|id| name(id)).collect();
+        full.push(Line::styled(
+            format!(" 前回の送信から増えた配布先：{}", names.join(", ")),
+            added_style,
+        ));
+    }
+    if !summary.undeliverable.is_empty() {
+        let reasons: Vec<String> = summary
+            .undeliverable
+            .iter()
+            .map(|(id, reason)| reason.describe(&name(id)))
+            .collect();
+        full.push(Line::styled(
+            format!(
+                " 次の人は新しいメッセージを読めません：{}",
+                reasons.join("、")
+            ),
+            warn,
+        ));
+    }
+    let full = wrap(full);
+    if full.len() <= max_lines {
+        return full;
+    }
+    // 収まらなければ人数だけを出し、全員は `V` の詳細の画面で確かめてもらう（増えた人と配れない人を、
+    // 末尾が切れて見落とさないように、どちらも必ず 1 行は出す）。
+    let mut compact = Vec::new();
+    if !summary.added_user_ids.is_empty() {
+        compact.push(Line::styled(
+            format!(
+                " 前回の送信から増えた配布先：{} 人（V で一覧）",
+                summary.added_user_ids.len()
+            ),
+            added_style,
+        ));
+    }
+    if !summary.undeliverable.is_empty() {
+        compact.push(Line::styled(
+            format!(
+                " 次の人は新しいメッセージを読めません：{} 人（V で一覧）",
+                summary.undeliverable.len()
+            ),
+            warn,
+        ));
+    }
+    let compact = wrap(compact);
+    if compact.len() <= max_lines {
+        return compact;
+    }
+    // それでも収まらない小さな端末では、両方の人数と詳細の案内を短い 1 行にまとめる（配れない人を先に
+    // 出す。幅 40 でも折り返さない長さにする）。
+    let mut counts = Vec::new();
+    if !summary.undeliverable.is_empty() {
+        counts.push(format!("読めない人 {}", summary.undeliverable.len()));
+    }
+    if !summary.added_user_ids.is_empty() {
+        counts.push(format!("増えた人 {}", summary.added_user_ids.len()));
+    }
+    counts.push("V で詳細".to_owned());
+    let style = if summary.undeliverable.is_empty() {
+        added_style
+    } else {
+        warn
+    };
+    let mut minimal = wrap(vec![Line::styled(
+        format!(" 🔒 {}", counts.join("・")),
+        style,
+    )]);
+    minimal.truncate(max_lines.max(1));
+    minimal
+}
+
+/// 配布先の詳細（`V`）。増えた配布先と、鍵を配れない相手と理由を、1 人 1 行で全員出す。
+pub(super) fn recipient_details(app: &App) -> Option<Vec<Line<'static>>> {
+    let channel_id = app.current.as_deref()?;
+    let summary = app.recipients.get(channel_id)?;
+    let name = |id: &str| app.store.display_name(id);
+    let mut lines = vec![Line::from(format!(
+        "{} 人の {} 台の端末あてに暗号化しています。",
+        summary.user_count, summary.device_count
+    ))];
+    lines.push(Line::from(""));
+    lines.push(Line::styled(
+        format!(
+            "前回の送信から増えた配布先（{} 人）",
+            summary.added_user_ids.len()
+        ),
+        Style::new().add_modifier(Modifier::BOLD),
+    ));
+    for id in &summary.added_user_ids {
+        lines.push(Line::from(format!("  {}", name(id))));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::styled(
+        format!(
+            "次の人は新しいメッセージを読めません（{} 人）",
+            summary.undeliverable.len()
+        ),
+        Style::new().fg(Color::Yellow),
+    ));
+    for (id, reason) in &summary.undeliverable {
+        lines.push(Line::from(format!("  {}", reason.describe(&name(id)))));
+    }
+    Some(lines)
+}
+
+/// 配布先の詳細の画面。`scroll` 行目から、画面に入るだけ出す。
+fn draw_recipients(frame: &mut Frame, app: &App, scroll: usize) {
+    let Some(lines) = recipient_details(app) else {
+        return;
+    };
+    let height = usize::from(frame.area().height.saturating_sub(4)).max(1);
+    let total = lines.len();
+    let scroll = scroll.min(total.saturating_sub(1));
+    let mut visible: Vec<Line<'static>> = lines.into_iter().skip(scroll).take(height).collect();
+    visible.push(Line::styled(
+        format!(
+            "j/k: スクロール ({}-{} / {}) / Esc: 閉じる",
+            scroll + 1,
+            (scroll + height).min(total),
+            total
+        ),
+        DIM,
+    ));
+    draw_popup_sized(frame, "配布先の詳細", visible, 72);
+}
+
+/// 全文検索の画面（docs/search.md）。結果は 2 行ずつ（行き先・投稿者・日付と、抜粋）。
+fn draw_global_search(frame: &mut Frame, app: &App) {
+    const WIDTH: u16 = 84;
+    let search = &app.global_search;
+    let accent = Style::new().fg(ACCENT);
+    let inner = usize::from(WIDTH.min(frame.area().width).saturating_sub(2));
+    let kind = |value: SearchKind, label: &'static str| {
+        if search.kind == value {
+            Span::styled(format!("[{label}]"), accent.add_modifier(Modifier::BOLD))
+        } else {
+            Span::styled(format!(" {label} "), DIM)
+        }
+    };
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("検索: ", accent),
+            // 検索語は残したまま、入力欄は 1 行にする。長ければ末尾（入力位置）が見えるよう先頭を省く。
+            Span::raw(tail_width(&search.query, inner.saturating_sub(7))),
+            Span::styled("▏", accent),
+        ]),
+        Line::from(vec![
+            kind(SearchKind::All, "すべて"),
+            Span::raw(" "),
+            kind(SearchKind::Messages, "メッセージ"),
+            Span::raw(" "),
+            kind(SearchKind::Files, "ファイル"),
+            Span::styled(
+                "   絞り込み: from:@名前 in:#チャンネル after:/before:YYYY-MM-DD with:me -is:bot",
+                DIM,
+            ),
+        ]),
+        Line::from(""),
+    ];
+    let status = if search.loading {
+        Line::styled("検索中…", DIM)
+    } else if let Some(error) = &search.error {
+        Line::styled(
+            format!("検索できませんでした: {error}  Enter で再試行します。"),
+            Style::new().fg(Color::Red),
+        )
+    } else if search.searched.is_none() {
+        Line::styled(
+            "語を入れて Enter。空白で区切ると、すべての語を含むものを探します。",
+            DIM,
+        )
+    } else {
+        match (
+            &search.next_cursor,
+            &search.searched_until,
+            search.items.is_empty(),
+        ) {
+            (Some(_), Some(month), true) => Line::styled(
+                format!("{month} までに見つかりませんでした。↓ でさらに古い期間を検索します。"),
+                DIM,
+            ),
+            (Some(_), Some(month), false) => Line::styled(
+                format!(
+                    "{month} まで検索しました。末尾で ↓ を押すと、さらに古い結果を検索します。"
+                ),
+                DIM,
+            ),
+            // 最後まで見終わったときも、どこまで見たかは出す。
+            (None, Some(month), true) => Line::styled(
+                format!("{month} まで検索しました。見つかりませんでした。"),
+                DIM,
+            ),
+            (None, Some(month), false) => Line::styled(
+                format!("{} 件（{month} まで検索しました）", search.items.len()),
+                DIM,
+            ),
+            (_, _, true) => Line::styled("見つかりませんでした。", DIM),
+            _ => Line::styled(format!("{} 件", search.items.len()), DIM),
+        }
+    };
+    let footer = vec![
+        Line::from(""),
+        status,
+        Line::styled("暗号化されたチャンネルは検索の対象外です。", DIM),
+        Line::styled("Enter: 検索 / 開く  ↑↓: 選ぶ  Tab: 種類  Esc: 閉じる", DIM),
+    ];
+    // 結果は 1 件 2 行（見出しと抜粋はどちらも 1 行に切り詰める）。見出しと末尾の案内が折り返した後の
+    // 行数と枠の 2 行を先に取り、残りの高さに入る件数だけ、選択が見える範囲を出す。
+    let width = WIDTH.min(frame.area().width);
+    let fixed = popup_rows(&lines, width) + popup_rows(&footer, width) + 2;
+    let room = (usize::from(frame.area().height).saturating_sub(fixed) / 2).max(1);
+    let first = search.selected.saturating_sub(room.saturating_sub(1));
+    let terms = global_search::highlight_terms(search);
+    for (index, item) in search.items.iter().enumerate().skip(first).take(room) {
+        let selected = index == search.selected;
+        let place = match app.store.channel(&item.channel_id) {
+            Some(channel) if channel.is_dm => app.store.channel_label(channel, &app.me.id),
+            _ => format!("#{}", item.channel_name),
+        };
+        let mut head = vec![
+            Span::styled(if selected { "▶ " } else { "  " }, accent),
+            Span::styled(place, if selected { accent } else { Style::new() }),
+        ];
+        if let Some(author) = &item.author {
+            head.push(Span::styled(format!("  {author}"), DIM));
+        }
+        head.push(Span::styled(
+            format!(
+                "  {}",
+                global_search::result_day(&item.created_at, &jiff::tz::TimeZone::system())
+            ),
+            DIM,
+        ));
+        if item.parent_id.is_some() {
+            head.push(Span::styled("  スレッドの返信", DIM));
+        }
+        // 見出しも 1 行に収める（折り返すと 1 件 2 行の前提が崩れ、狭い端末で選択や案内が画面外に出る）。
+        lines.push(Line::from(truncate_spans(head, inner)));
+        let text = item.file_name.as_deref().unwrap_or(&item.snippet);
+        let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        // 検索語に当たった部分を強調する（Web の `<mark>` と同じ）。
+        let base = if selected {
+            Style::new().add_modifier(Modifier::BOLD)
+        } else {
+            Style::new()
+        };
+        // 一致箇所が後ろにあっても見えるよう、その前を省いてから末尾を切り詰める。
+        let body = global_search::focus_first_hit(
+            global_search::highlight_segments(&text, &terms),
+            inner.saturating_sub(4),
+        )
+        .into_iter()
+        .map(|(piece, hit)| Span::styled(piece, if hit { base.patch(HIGHLIGHT) } else { base }))
+        .collect();
+        let mut row = vec![Span::raw("    ")];
+        row.extend(truncate_spans(body, inner.saturating_sub(4)));
+        lines.push(Line::from(row));
+    }
+    lines.extend(footer);
+    draw_popup_sized(frame, "全文検索", lines, WIDTH);
+}
+
+/// 表示幅で切り詰める（全角は 2）。切ったら末尾を `…` にする。
+/// 幅 `width` に収まるよう末尾を残し、先頭を省いたら `…` を付ける（全角は 2）。
+fn tail_width(text: &str, width: usize) -> String {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if text.width() <= width {
+        return text.to_string();
+    }
+    let mut kept = Vec::new();
+    let mut used = 1; // `…`
+    for ch in text.chars().rev() {
+        let w = ch.width().unwrap_or(0);
+        if used + w > width {
+            break;
+        }
+        used += w;
+        kept.push(ch);
+    }
+    std::iter::once('…').chain(kept.into_iter().rev()).collect()
+}
+
+/// 幅 `width` に収まるよう、はみ出す span を `…` で切り、その後ろを捨てる。
+fn truncate_spans(spans: Vec<Span<'_>>, width: usize) -> Vec<Span<'_>> {
+    use unicode_width::UnicodeWidthStr;
+    let mut out = Vec::new();
+    let mut used = 0;
+    for span in spans {
+        if used >= width {
+            break;
+        }
+        let w = span.content.width();
+        if used + w <= width {
+            used += w;
+            out.push(span);
+            continue;
+        }
+        out.push(Span::styled(
+            truncate_width(&span.content, width - used),
+            span.style,
+        ));
+        break;
+    }
+    out
+}
+
+fn truncate_width(text: &str, width: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let w = ch.width().unwrap_or(0);
+        if used + w > width.saturating_sub(1) {
+            out.push('…');
+            return out;
+        }
+        used += w;
+        out.push(ch);
+    }
+    out
+}
+
+/// チャンネルか DM の作成の入力欄（#361）。
+fn draw_create(frame: &mut Frame, form: &CreateForm) {
+    let accent = Style::new().fg(ACCENT);
+    let (title, label) = match form.kind {
+        CreateKind::Channel => ("新しいチャンネル", "名前: "),
+        CreateKind::Dm => ("新しい DM", "相手 (@ユーザー名を空白区切り): "),
+    };
+    let mut lines = vec![Line::from(vec![
+        Span::styled(label, accent),
+        Span::raw(form.input.clone()),
+        Span::styled("▏", accent),
+    ])];
+    lines.push(Line::from(""));
+    match form.kind {
+        CreateKind::Channel => lines.push(Line::from(vec![
+            Span::styled("公開範囲: ", accent),
+            Span::raw(form.visibility.label()),
+        ])),
+        CreateKind::Dm => lines.push(Line::from(vec![
+            Span::styled("暗号化: ", accent),
+            Span::raw(if form.encrypted() {
+                "エンドツーエンドで暗号化する"
+            } else {
+                "しない"
+            }),
+        ])),
+    }
+    if form.encrypted() {
+        let help = match form.kind {
+            CreateKind::Channel => {
+                "メッセージはメンバーの検証済みの端末だけが読めます。暗号化はあとから解除できません。"
+            }
+            CreateKind::Dm => {
+                "メッセージは参加者の検証済みの端末だけが読めます。暗号化はあとから解除できません。"
+            }
+        };
+        lines.push(Line::styled(help, DIM));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::styled(
+        "Tab: 切り替え / Enter: 作る / Esc: やめる",
+        DIM,
+    ));
+    draw_popup(frame, title, lines);
 }
 
 fn pane(title: Line<'static>, focused: bool) -> Block<'static> {
@@ -81,7 +529,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         .iter()
         .enumerate()
         .filter_map(|(index, item)| {
-            if let SidebarItem::Thread { id, channel_id } = item {
+            if let SidebarItem::Thread { id, channel_id, .. } = item {
                 let thread = app.threads().find(|thread| thread.id == *id);
                 let archived = app.thread_is_archived(channel_id, id);
                 let content = app.thread_content(channel_id, id)?;
@@ -140,8 +588,10 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
                     },
                 ));
             }
-            let SidebarItem::Channel(id) = item else {
-                return None;
+            let (id, pinned) = match item {
+                SidebarItem::Channel(id) => (id, false),
+                SidebarItem::Pinned(id) => (id, true),
+                _ => return None,
             };
             let channel = app.store.channel(id)?;
             let member = app.store.is_member(&channel.id, &app.me.id);
@@ -160,10 +610,17 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             if unread {
                 style = style.add_modifier(Modifier::BOLD);
             }
-            let mut spans = vec![
-                Span::styled(if unread { "● " } else { "  " }, Style::new().fg(ACCENT)),
-                Span::styled(app.store.channel_label(channel, &app.me.id), style),
-            ];
+            let mut spans = vec![Span::styled(
+                if unread { "● " } else { "  " },
+                Style::new().fg(ACCENT),
+            )];
+            if pinned {
+                spans.push(Span::styled("★ ", Style::new().fg(Color::Yellow)));
+            }
+            spans.push(Span::styled(
+                app.store.channel_label(channel, &app.me.id),
+                style,
+            ));
             if channel.is_private && !channel.is_dm {
                 spans.push(Span::styled(" 🔒", DIM));
             }
@@ -211,6 +668,14 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             .unwrap_or_default(),
         Style::new().add_modifier(Modifier::BOLD),
     ));
+    match app.channel_encryption(&channel_id) {
+        ChannelEncryption::Encrypted => title.push(Span::styled(" 🔒 暗号化", DIM)),
+        ChannelEncryption::Downgraded => title.push(Span::styled(
+            " ⚠ 暗号化の状態が変わりました",
+            Style::new().fg(Color::Red),
+        )),
+        ChannelEncryption::Plain => {}
+    }
     if let Some(description) = channel
         .and_then(|c| c.description.as_deref())
         .filter(|d| !d.is_empty())
@@ -240,9 +705,15 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     let reactions = app
         .store
         .reaction_groups_by_message(&channel_id, &app.me.id);
+    let encrypted = app.channel_encryption(&channel_id).treat_as_encrypted();
     let ctx = Context {
         store: &app.store,
         me_name: &app.me.user_name,
+        me_id: &app.me.id,
+        decryptions: &app.decryptions,
+        encrypted,
+        // チャンネルの一覧は、並びの中で最初の暗号化したメッセージを見て決める。
+        encrypted_since: None,
         selected: app.selected.as_deref(),
         reply_counts: Some(&counts),
         reactions: &reactions,
@@ -256,11 +727,18 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     app.scroll = scroll;
     app.inner_scroll = inner_scroll;
-    app.newest_shown = built
-        .ranges
-        .iter()
-        .rfind(|(_, range)| range.start < scroll + height)
-        .map(|(id, _)| (channel_id.clone(), id.clone()));
+    // 全文検索の画面、端末と検証の画面、検証のダイアログが覆っている間は、背後のタイムラインを読んだことに
+    // しない（既読を進めない）。
+    if app.mode != Mode::GlobalSearch
+        && app.mode != Mode::Devices
+        && !app.devices.has_open_verification()
+    {
+        app.newest_shown = built
+            .ranges
+            .iter()
+            .rfind(|(_, range)| range.start < scroll + height)
+            .map(|(id, _)| (channel_id.clone(), id.clone()));
+    }
     let visible: Vec<Line> = built.lines.into_iter().skip(scroll).take(height).collect();
     frame.render_widget(Paragraph::new(visible), inner);
 }
@@ -279,30 +757,68 @@ fn draw_thread(frame: &mut Frame, app: &mut App, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let Some(root) = app.store.message(&channel_id, &thread.root_id) else {
-        frame.render_widget(
-            Paragraph::new(Line::styled(
-                if app.store.is_synced(&ShapeId::Messages(channel_id.clone())) {
+    let replies = app.store.replies(&channel_id, &thread.root_id);
+    let mut inner = inner;
+    let mut messages = Vec::new();
+    match app.store.message(&channel_id, &thread.root_id) {
+        Some(root) => messages.push(root),
+        None => {
+            let synced = app.store.is_synced(&ShapeId::Messages(channel_id.clone()));
+            let notice = Paragraph::new(Line::styled(
+                if synced {
                     "元のメッセージは削除されました"
                 } else {
                     "読み込み中…"
                 },
                 DIM,
-            )),
-            inner,
-        );
-        return;
-    };
-    let mut messages = vec![root];
-    messages.extend(app.store.replies(&channel_id, &thread.root_id));
+            ));
+            // 親が削除されても返信は残る（全文検索から開くこともある）。返信があれば、知らせの下に描く。
+            if !synced || replies.is_empty() {
+                frame.render_widget(notice, inner);
+                return;
+            }
+            frame.render_widget(
+                notice,
+                Rect {
+                    height: 1.min(inner.height),
+                    ..inner
+                },
+            );
+            inner = Rect {
+                y: inner.y + 1.min(inner.height),
+                height: inner.height.saturating_sub(1),
+                ..inner
+            };
+        }
+    }
+    messages.extend(replies);
     let reactions = app
         .store
         .reaction_groups_by_message(&channel_id, &app.me.id);
+    let encrypted = app.channel_encryption(&channel_id).treat_as_encrypted();
+    // スレッドは親と返信だけを描くので、チャンネルのうち最初の暗号化したメッセージの日時を渡し、それより後の
+    // 平文の親や返信にも警告を付ける（#367。Web の `encryptedSince` と同じ）。
+    let encrypted_since = encrypted
+        .then(|| {
+            app.store
+                .root_messages(&channel_id)
+                .into_iter()
+                .filter(|message| message.ciphertext.is_some() || message.epoch.is_some())
+                .map(|message| message.created_at)
+                .min()
+        })
+        .flatten();
+    let mut reply_counts = app.store.reply_counts(&channel_id);
+    reply_counts.remove(&thread.root_id);
     let ctx = Context {
         store: &app.store,
         me_name: &app.me.user_name,
+        me_id: &app.me.id,
+        decryptions: &app.decryptions,
+        encrypted,
+        encrypted_since,
         selected: thread.selected.as_deref(),
-        reply_counts: None,
+        reply_counts: Some(&reply_counts),
         reactions: &reactions,
     };
     let built = timeline::build(&messages, &ctx, inner.width);
@@ -407,6 +923,17 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
                 Style::new().fg(Color::Green),
             ));
         }
+        match app.encryption.status {
+            Some(E2eeStatus::NotSetUp) => spans.push(Span::styled(
+                "  暗号化: 未設定 (E)",
+                Style::new().fg(Color::Yellow),
+            )),
+            Some(E2eeStatus::Locked(_)) => spans.push(Span::styled(
+                "  暗号化: 解錠が必要 (E)",
+                Style::new().fg(Color::Yellow),
+            )),
+            _ => {}
+        }
         spans.push(Span::styled("  ?: ヘルプ  q: 終了", DIM));
         Line::from(spans)
     };
@@ -424,10 +951,17 @@ const HELP: &[(&str, &str)] = &[
     ("e", "自分のメッセージを編集"),
     ("d", "自分のメッセージを削除"),
     ("r", "リアクションを付ける / 外す"),
-    ("J / L", "チャンネルに参加 / 退出"),
+    ("p", "ピン留め / 解除"),
+    ("[ / ] / Alt+↑↓", "ピン留めを上 / 下へ (ピン留め選択中)"),
+    ("J / L", "チャンネル・スレッドに参加 / 退出"),
     ("/", "チャンネル・スレッドを検索"),
+    ("S / Ctrl+F", "メッセージ・ファイルを全文検索"),
     ("u", "選択中のスレッドを再開"),
+    ("c / m", "チャンネル / DM を作る (Tab で暗号化)"),
+    ("V", "暗号化チャンネルの配布先の詳細"),
     ("R", "送れなかった本文を入力欄に戻す"),
+    ("E", "暗号化（初回設定・解錠）"),
+    ("D", "端末と検証（失効・再検証・絵文字の検証）"),
     ("q / Ctrl+C", "終了"),
 ];
 
@@ -444,9 +978,232 @@ fn draw_help(frame: &mut Frame) {
     draw_popup(frame, "キー操作", lines);
 }
 
+/// 暗号化の画面（#360）。
+fn draw_encryption(frame: &mut Frame, app: &mut App) {
+    let encryption = &app.encryption;
+    let key = |text: &str| Span::styled(text.to_owned(), Style::new().fg(ACCENT));
+    let warn = |text: String| Line::styled(text, Style::new().fg(Color::Yellow));
+    let error = |text: String| Line::styled(text, Style::new().fg(Color::Red));
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    match &encryption.screen {
+        Screen::Loading => lines.push(Line::from("状態を読んでいます…")),
+        Screen::Unavailable(message) => {
+            lines.push(error(message.clone()));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                key("Enter"),
+                Span::raw(": 読み直す / "),
+                key("Esc"),
+                Span::raw(": 閉じる"),
+            ]));
+        }
+        Screen::NotSetUp => {
+            lines.push(Line::from(
+                "暗号化チャンネルを使うには、最初に鍵を作ります。",
+            ));
+            lines.push(Line::from(
+                "リカバリーキーを表示するので、控えてください。新しい端末の解錠に使います。",
+            ));
+            lines.push(Line::from(
+                "保存の直前に、ブラウザーでログインし直します（再認証）。",
+            ));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                key("Enter"),
+                Span::raw(": 初回設定を始める / "),
+                key("Esc"),
+                Span::raw(": 閉じる"),
+            ]));
+        }
+        Screen::RecoveryKey(recovery_key) => {
+            lines.push(Line::from(
+                "リカバリーキー（紙やパスワードマネージャーに控えてください）:",
+            ));
+            lines.push(Line::from(""));
+            lines.push(Line::styled(
+                format!("  {}", recovery_key.as_str()),
+                Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
+            ));
+            lines.push(Line::from(""));
+            lines.push(Line::from(
+                "このキーをなくし、ほかに解錠できる端末もないと、暗号化したメッセージを読めなくなります。",
+            ));
+            lines.push(Line::from(
+                "この画面を閉じると、このキーは二度と表示しません。",
+            ));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                key("y"),
+                Span::raw(": 控えたので保存する / "),
+                key("Esc"),
+                Span::raw(": やめる"),
+            ]));
+        }
+        Screen::Reauth { url, port } => {
+            lines.push(Line::from(
+                "ブラウザーでログインし直してください（再認証）。",
+            ));
+            match (url, port) {
+                (Some(url), Some(port)) => {
+                    if !encryption.over_ssh {
+                        lines.push(Line::from(
+                            "ブラウザーが開かないときは、次の URL を開いてください。",
+                        ));
+                    }
+                    lines.push(Line::from(""));
+                    lines.push(Line::styled(url.clone(), Style::new().fg(ACCENT)));
+                    lines.push(Line::from(""));
+                    if encryption.over_ssh {
+                        for line in reauth::ssh_guidance(*port) {
+                            lines.push(warn(line));
+                        }
+                        lines.push(Line::from(""));
+                    }
+                    lines.push(Line::styled(
+                        format!(
+                            "戻り先: http://127.0.0.1:{port}/callback（この端末で待っています）"
+                        ),
+                        DIM,
+                    ));
+                }
+                _ => lines.push(Line::from("準備しています…")),
+            }
+            lines.push(Line::from(vec![
+                key("Esc"),
+                Span::raw(": 再認証をやめる（鍵はそのまま）"),
+            ]));
+        }
+        Screen::Working(message) => lines.push(Line::from(*message)),
+        Screen::Locked {
+            reason,
+            input,
+            error: message,
+        } => {
+            lines.push(Line::from(match reason {
+                LockReason::New => "この端末はまだ解錠していません。",
+                LockReason::Resume => "初回設定が途中です。リカバリーキーで開け直して続けます。",
+                LockReason::Mismatch => "鍵が変わりました。リカバリーキーで解錠し直してください。",
+            }));
+            lines.push(Line::from(
+                "リカバリーキーを入力してください（空白は無視します）。",
+            ));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::raw("> "),
+                Span::raw(input.as_str().to_owned()),
+                Span::styled("▏", Style::new().fg(ACCENT)),
+            ]));
+            if let Some(message) = message {
+                lines.push(Line::from(""));
+                lines.push(error(message.clone()));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                key("Enter"),
+                Span::raw(": 解錠する / "),
+                key("Ctrl+U"),
+                Span::raw(": 消す / "),
+                key("Esc"),
+                Span::raw(": 閉じる"),
+            ]));
+        }
+        Screen::NeedsReauth => {
+            lines.push(Line::from(
+                "解錠しました。初回設定の続きを保存するには、再認証が必要です。",
+            ));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                key("Enter"),
+                Span::raw(": 再認証して保存する / "),
+                key("Esc"),
+                Span::raw(": 閉じる"),
+            ]));
+        }
+        Screen::SaveFailed { message, retry } => {
+            lines.push(error(message.clone()));
+            lines.push(Line::from(""));
+            if *retry {
+                lines.push(Line::from(vec![
+                    key("Enter"),
+                    Span::raw(": 同じ鍵のまま、再認証して保存し直す / "),
+                    key("Esc"),
+                    Span::raw(": 閉じる"),
+                ]));
+            } else {
+                lines.push(Line::from(vec![
+                    key("Enter"),
+                    Span::raw(": 読み直す / "),
+                    key("Esc"),
+                    Span::raw(": 閉じる"),
+                ]));
+            }
+        }
+        Screen::Stopped(message) => {
+            lines.push(error(message.clone()));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                key("Enter"),
+                Span::raw(": 読み直す / "),
+                key("Esc"),
+                Span::raw(": 閉じる"),
+            ]));
+        }
+        Screen::Unlocked => {
+            lines.push(Line::from("この端末は解錠済みです。"));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                key("Enter"),
+                Span::raw(" / "),
+                key("Esc"),
+                Span::raw(": 閉じる"),
+            ]));
+        }
+    }
+    // リカバリーキーを全部表示できない（端末が小さい）ときは、キーを出さずに広げるよう求め、保存にも
+    // 進めない（見えていないキーを控えたことにしない）。
+    if matches!(app.encryption.screen, Screen::RecoveryKey(_)) {
+        let width = ENCRYPTION_POPUP_WIDTH.min(frame.area().width);
+        let fits = popup_rows(&lines, width) + 2 <= usize::from(frame.area().height);
+        app.encryption.recovery_key_shown = fits;
+        if !fits {
+            lines = vec![
+                error("端末が小さいため、リカバリーキーを全部表示できません。".into()),
+                Line::from("端末を広げてください（広げるまで保存には進めません）。"),
+                Line::from(vec![key("Esc"), Span::raw(": やめる")]),
+            ];
+        }
+    }
+    draw_popup_sized(frame, "暗号化", lines, ENCRYPTION_POPUP_WIDTH);
+}
+
+const ENCRYPTION_POPUP_WIDTH: u16 = 76;
+
+/// 幅 `width` の枠に入れたときの行数（枠を除く）。単語の区切りで折り返すと 1 行増えうるので、
+/// 折り返す行には 1 行足す。
+fn popup_rows(lines: &[Line<'_>], width: u16) -> usize {
+    let inner = usize::from(width.saturating_sub(2)).max(1);
+    lines
+        .iter()
+        .map(|line| {
+            let width = line.width();
+            if width <= inner {
+                1
+            } else {
+                width.div_ceil(inner) + 1
+            }
+        })
+        .sum()
+}
+
 fn draw_popup(frame: &mut Frame, title: &str, lines: Vec<Line<'static>>) {
-    let width = 56.min(frame.area().width);
-    let height = (lines.len() as u16 + 2).min(frame.area().height);
+    draw_popup_sized(frame, title, lines, 56);
+}
+
+fn draw_popup_sized(frame: &mut Frame, title: &str, lines: Vec<Line<'static>>, width: u16) {
+    let width = width.min(frame.area().width);
+    // 折り返す行（再認証の URL など）も入る高さにする。
+    let rows = popup_rows(&lines, width);
+    let height = (rows as u16).saturating_add(2).min(frame.area().height);
     let area = Rect {
         x: frame.area().width.saturating_sub(width) / 2,
         y: frame.area().height.saturating_sub(height) / 2,
@@ -476,7 +1233,7 @@ mod tests {
         api::{ApiClient, Me, ReadState, ThreadSummary, TypingUser},
         electric::{Batch, Change, ShapeEvent},
         http::Credentials,
-        ui::app::AppEvent,
+        ui::{app::AppEvent, encryption::EncryptionEvent},
     };
 
     fn batch(rows: Vec<(&str, Value)>) -> Batch {
@@ -600,8 +1357,85 @@ mod tests {
         app.on_terminal_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     }
 
+    fn sas_view(phase: zoo_crypto::SasPhase) -> crate::e2ee::verification::SasView {
+        crate::e2ee::verification::SasView {
+            transaction_id: "txn-1".into(),
+            their_user_id: "u2".into(),
+            their_device_id: Some("D2".into()),
+            we_requested: false,
+            started_at_ms: 0,
+            phase,
+            emoji: None,
+            cancellation: None,
+            method: None,
+            qr_code: None,
+            can_start_sas: false,
+        }
+    }
+
     #[tokio::test]
-    async fn archives_open_from_replies_and_appear_only_while_viewing() {
+    async fn an_incoming_verification_comes_to_the_front_without_stealing_typing() {
+        use crate::e2ee::verification::VerificationEvent;
+        let mut app = app();
+        let (_tx, stores) = tokio::sync::watch::channel(None);
+        app.attach_encryption(crate::ui::encryption::E2eeContext {
+            oidc: None,
+            stores,
+            crypto_root: None,
+            events: None,
+        });
+        // 入力の途中では、キー操作を奪わずに知らせる。
+        app.mode = Mode::Insert;
+        app.on_app_event(AppEvent::Verification(VerificationEvent::View(sas_view(
+            zoo_crypto::SasPhase::Incoming,
+        ))));
+        assert!(!app.devices.has_open_verification());
+        assert!(render(&mut app).contains("検証の要求が届いています（D で開く）"));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Normal);
+        // `D` で開くと、前面に出す。
+        press(&mut app, KeyCode::Char('D'));
+        assert_eq!(app.mode, Mode::Devices);
+        assert!(app.devices.has_open_verification());
+        let screen = render_sized(&mut app, 100, 30);
+        assert!(screen.contains("さんが検証を求めています"), "{screen}");
+        assert!(screen.contains("受け入れる"), "{screen}");
+
+        // 通常の画面では、届いたらすぐに前面に出す。
+        let mut app = self::app();
+        let (_tx, stores) = tokio::sync::watch::channel(None);
+        app.attach_encryption(crate::ui::encryption::E2eeContext {
+            oidc: None,
+            stores,
+            crypto_root: None,
+            events: None,
+        });
+        app.on_app_event(AppEvent::Verification(VerificationEvent::View(sas_view(
+            zoo_crypto::SasPhase::Cancelled,
+        ))));
+        assert!(
+            !app.devices.has_open_verification(),
+            "終わった検証は出さない"
+        );
+        let mut view = sas_view(zoo_crypto::SasPhase::Incoming);
+        view.transaction_id = "txn-2".into();
+        app.on_app_event(AppEvent::Verification(VerificationEvent::View(view)));
+        assert!(app.devices.has_open_verification());
+        assert!(render_sized(&mut app, 100, 30).contains("さんが検証を求めています"));
+    }
+
+    #[tokio::test]
+    async fn the_devices_screen_opens_with_d_and_closes_with_esc() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('D'));
+        assert_eq!(app.mode, Mode::Devices);
+        assert!(render_sized(&mut app, 100, 30).contains("端末と検証"));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[tokio::test]
+    async fn archives_open_from_replies_without_appearing_in_the_tree() {
         let mut app = app();
         app.archived_threads.push(ThreadSummary {
             id: "r1".into(),
@@ -623,8 +1457,9 @@ mod tests {
         let selected = SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "r1".into(),
+            pinned: false,
         };
-        assert!(app.sidebar_items().contains(&selected));
+        assert!(!app.sidebar_items().contains(&selected));
         press(&mut app, KeyCode::Esc);
         assert!(app.thread.is_none());
         assert!(!app.sidebar_items().contains(&selected));
@@ -649,6 +1484,7 @@ mod tests {
         let row = SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "empty".into(),
+            pinned: false,
         };
         assert!(app.thread.is_some());
         assert!(!app.sidebar_items().contains(&row));
@@ -661,11 +1497,47 @@ mod tests {
                 "thread_archive_at":"2026-11-10 00:00:00"}),
             )]),
         ));
-        assert!(app.sidebar_items().contains(&row));
+        assert!(!app.sidebar_items().contains(&row));
     }
 
     #[tokio::test]
-    async fn enter_opens_an_archived_nested_thread_from_its_parent_reply() {
+    async fn enter_on_a_reply_without_children_does_not_open_a_nested_thread() {
+        let mut app = app();
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "r1",
+                json!({"id":"r1","user_id":"u1","channel_id":"c1",
+                "content":"Nested root","parent_id":"m1","created_at":"2026-11-01 03:01:00",
+                "thread_archive_at":"2026-11-10 00:00:00"}),
+            )]),
+        ));
+        let row = SidebarItem::Thread {
+            channel_id: "c1".into(),
+            id: "r1".into(),
+            pinned: false,
+        };
+        assert!(!app.sidebar_items().contains(&row));
+        app.current = Some("c1".into());
+        app.focus = Focus::Messages;
+        app.selected = Some("m1".into());
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.thread.as_ref().unwrap().selected.as_deref(), Some("r1"));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.thread.as_ref().unwrap().root_id, "m1");
+        assert!(!app.sidebar_items().contains(&row));
+        let screen = render(&mut app);
+        assert!(screen.contains("Nested root"), "{screen}");
+        assert!(!screen.contains("アーカイブ / u:再開"), "{screen}");
+        assert!(!screen.contains("Nested reply"), "{screen}");
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.sidebar_items().contains(&row));
+        assert!(app.thread_is_archived("c1", "r1"));
+    }
+
+    #[tokio::test]
+    async fn enter_on_a_legacy_reply_with_children_opens_it_read_only_for_migration() {
         let mut app = app();
         app.on_shape(ShapeEvent::Batch(
             ShapeId::Messages("c1".into()),
@@ -686,6 +1558,7 @@ mod tests {
         let row = SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "r1".into(),
+            pinned: false,
         };
         assert!(!app.sidebar_items().contains(&row));
         app.current = Some("c1".into());
@@ -697,8 +1570,9 @@ mod tests {
         assert_eq!(app.thread.as_ref().unwrap().selected.as_deref(), Some("r1"));
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.thread.as_ref().unwrap().root_id, "r1");
-        assert!(app.sidebar_items().contains(&row));
+        assert!(!app.sidebar_items().contains(&row));
         let screen = render(&mut app);
+        assert!(screen.contains("Nested root"), "{screen}");
         assert!(screen.contains("Nested reply"), "{screen}");
         assert!(screen.contains("アーカイブ / u:再開"), "{screen}");
         press(&mut app, KeyCode::Esc);
@@ -707,51 +1581,591 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unlisted_selected_archive_stays_under_its_channel() {
+    async fn reply_normalized_to_the_root_moves_the_open_thread() {
+        let mut app = app();
+        app.current = Some("c1".into());
+        app.focus = Focus::Thread;
+        app.thread = Some(crate::ui::app::ThreadView {
+            root_id: "child".into(),
+            selected: Some("x".into()),
+            scroll: 3,
+            inner_scroll: 1,
+        });
+        app.target = Target::Reply("child".into());
+        app.on_app_event(AppEvent::ThreadRedirected {
+            from: "other".into(),
+            to: "root".into(),
+        });
+        assert_eq!(app.thread.as_ref().unwrap().root_id, "child");
+        app.on_app_event(AppEvent::ThreadRedirected {
+            from: "child".into(),
+            to: "root".into(),
+        });
+        let thread = app.thread.as_ref().unwrap();
+        assert_eq!(thread.root_id, "root");
+        assert_eq!(thread.selected, None);
+        assert_eq!(app.target, Target::Reply("root".into()));
+    }
+
+    #[tokio::test]
+    async fn pinned_channels_render_first_with_a_star() {
         let mut app = app();
         app.on_shape(ShapeEvent::Batch(
-            ShapeId::Messages("c1".into()),
+            ShapeId::UserPinnedChannels,
+            batch(vec![
+                (
+                    "p1",
+                    json!({
+                        "user_id": "u1", "channel_id": "c2", "position": "0",
+                        "created_at": "2026-11-11 00:00:00",
+                        "updated_at": "2026-11-11 00:00:00"
+                    }),
+                ),
+                (
+                    "p2",
+                    json!({
+                        "user_id": "u1", "channel_id": "c1", "position": "1",
+                        "created_at": "2026-11-11 00:00:00",
+                        "updated_at": "2026-11-11 00:00:00"
+                    }),
+                ),
+            ]),
+        ));
+        let items = app.sidebar_items();
+        assert_eq!(items[0], SidebarItem::Pinned("c2".into()));
+        assert_eq!(items[1], SidebarItem::Pinned("c1".into()));
+        assert_eq!(items[2], SidebarItem::Channel("c1".into()));
+        assert!(render(&mut app).contains("★"));
+    }
+
+    fn pin_c1(app: &mut App) {
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::UserPinnedChannels,
             batch(vec![(
-                "m1",
-                json!({"id":"m1","user_id":"u2","channel_id":"c1",
-                "content":"Old conversation","created_at":"2026-11-01 03:00:00",
-                "thread_archive_at":"2026-11-10 00:00:00"}),
+                "p1",
+                json!({
+                    "user_id": "u1", "channel_id": "c1", "position": "0",
+                    "created_at": "2026-11-11 00:00:00",
+                    "updated_at": "2026-11-11 00:00:00"
+                }),
             )]),
         ));
-        assert!(app.active_threads.is_empty());
-        assert!(app.archived_threads.is_empty());
+        app.active_threads.push(ThreadSummary {
+            id: "m1".into(),
+            channel_id: "c1".into(),
+            content: "hello".into(),
+            thread_archive_at: None,
+            reply_count: 1,
+        });
+    }
+
+    #[tokio::test]
+    async fn pinned_channels_show_their_threads_like_the_channel_list() {
+        let mut app = app();
+        pin_c1(&mut app);
+        let thread = |pinned| SidebarItem::Thread {
+            channel_id: "c1".into(),
+            id: "m1".into(),
+            pinned,
+        };
+        let items = app.sidebar_items();
+        // ピン留めの行の下にも、通常の一覧と同じスレッドを出す。通常の一覧のスレッドも残る。
+        assert_eq!(items[0], SidebarItem::Pinned("c1".into()));
+        assert_eq!(items[1], thread(true));
+        assert_eq!(items[2], SidebarItem::Channel("c1".into()));
+        assert_eq!(items[3], thread(false));
+        // 閲覧中のスレッドは、どちらの行の下にも残る。
+        app.current = Some("c1".into());
+        app.thread = Some(crate::ui::app::ThreadView {
+            root_id: "m1".into(),
+            selected: None,
+            scroll: 0,
+            inner_scroll: 0,
+        });
+        let items = app.sidebar_items();
+        assert_eq!(
+            items.iter().filter(|item| **item == thread(true)).count(),
+            1
+        );
+        assert_eq!(
+            items.iter().filter(|item| **item == thread(false)).count(),
+            1
+        );
+        assert_eq!(render(&mut app).matches("hello (1)").count(), 2);
+    }
+
+    #[tokio::test]
+    async fn opening_a_pinned_thread_keeps_the_cursor_on_the_pinned_row() {
+        for pinned in [true, false] {
+            let mut app = app();
+            pin_c1(&mut app);
+            let row = SidebarItem::Thread {
+                channel_id: "c1".into(),
+                id: "m1".into(),
+                pinned,
+            };
+            app.focus = Focus::Sidebar;
+            app.sidebar_index = app
+                .sidebar_items()
+                .iter()
+                .position(|item| *item == row)
+                .unwrap();
+            press(&mut app, KeyCode::Enter);
+            assert_eq!(app.focus, Focus::Thread);
+            assert_eq!(
+                app.thread.as_ref().map(|thread| thread.root_id.as_str()),
+                Some("m1")
+            );
+            // 開いたあとも、カーソルは押した行（ピン留めの下か通常の一覧か）にある。
+            assert_eq!(app.sidebar_items()[app.sidebar_index], row, "{pinned}");
+        }
+    }
+
+    /// 別チャンネル (c2) の、一覧にないスレッド (r1) の一時の行。ピン留めの下にも、通常の一覧の下にも出る。
+    fn temporary_row(pinned: bool) -> SidebarItem {
+        SidebarItem::Thread {
+            channel_id: "c2".into(),
+            id: "r1".into(),
+            pinned,
+        }
+    }
+
+    /// c2（参加済み）に、返信のあるスレッド r1 がある。一覧 (`active_threads`) には載せない。
+    /// `viewing` なら c2 を開いて r1 を閲覧中にして、c2 の下に一時の行を出す。
+    fn app_with_unlisted_c2_thread(pin_c2: bool, viewing: bool) -> App {
+        let mut app = app();
+        let feed =
+            |app: &mut App, id: ShapeId, rows| app.on_shape(ShapeEvent::Batch(id, batch(rows)));
+        feed(
+            &mut app,
+            ShapeId::ChannelUsers,
+            vec![("m2", json!({ "user_id": "u1", "channel_id": "c2" }))],
+        );
+        feed(
+            &mut app,
+            ShapeId::Messages("c2".into()),
+            vec![
+                (
+                    "r1",
+                    json!({ "id": "r1", "user_id": "u2", "channel_id": "c2",
+                               "content": "root", "created_at": "2026-11-01 03:00:00" }),
+                ),
+                (
+                    "r2",
+                    json!({ "id": "r2", "user_id": "u1", "channel_id": "c2", "content": "reply",
+                               "created_at": "2026-11-01 03:01:00", "parent_id": "r1" }),
+                ),
+            ],
+        );
+        if pin_c2 {
+            feed(
+                &mut app,
+                ShapeId::UserPinnedChannels,
+                vec![(
+                    "p2",
+                    json!({
+                        "user_id": "u1", "channel_id": "c2", "position": "0",
+                        "created_at": "2026-11-11 00:00:00",
+                        "updated_at": "2026-11-11 00:00:00"
+                    }),
+                )],
+            );
+        }
+        app.current = Some("c2".into());
+        if viewing {
+            app.thread = Some(crate::ui::app::ThreadView {
+                root_id: "r1".into(),
+                selected: None,
+                scroll: 0,
+                inner_scroll: 0,
+            });
+        }
+        app
+    }
+
+    fn put_cursor_on(app: &mut App, row: &SidebarItem) {
+        app.sidebar_index = app
+            .sidebar_items()
+            .iter()
+            .position(|item| item == row)
+            .unwrap();
+    }
+
+    fn cursor_row(app: &App) -> SidebarItem {
+        app.sidebar_items()[app.sidebar_index].clone()
+    }
+
+    // 一時のスレッドの行が増減しても、カーソルは同じ行に残る。
+    // ピン留めの下の行は c1 より前にあるので、増減すると、c1 の添字がずれる。
+
+    #[tokio::test]
+    async fn opening_a_channel_keeps_the_cursor_when_a_temporary_thread_row_disappears() {
+        for pin_c2 in [true, false] {
+            let mut app = app_with_unlisted_c2_thread(pin_c2, true);
+            let before = app.sidebar_items();
+            assert!(before.contains(&temporary_row(false)), "{pin_c2}");
+            assert_eq!(before.contains(&temporary_row(true)), pin_c2, "{pin_c2}");
+
+            let target = SidebarItem::Channel("c1".into());
+            app.focus = Focus::Sidebar;
+            put_cursor_on(&mut app, &target);
+            press(&mut app, KeyCode::Enter);
+
+            assert_eq!(app.current.as_deref(), Some("c1"));
+            assert!(app.thread.is_none());
+            assert_eq!(app.focus, Focus::Messages);
+            let after = app.sidebar_items();
+            assert!(
+                !after.contains(&temporary_row(false)) && !after.contains(&temporary_row(true))
+            );
+            assert_eq!(cursor_row(&app), target, "{pin_c2}");
+        }
+    }
+
+    #[tokio::test]
+    async fn closing_a_thread_keeps_the_cursor_when_a_temporary_thread_row_disappears() {
+        for pin_c2 in [true, false] {
+            let mut app = app_with_unlisted_c2_thread(pin_c2, true);
+            // c1 の行にカーソルを置いたまま、スレッドへ戻って Esc で閉じる。
+            let target = SidebarItem::Channel("c1".into());
+            put_cursor_on(&mut app, &target);
+            app.focus = Focus::Thread;
+            press(&mut app, KeyCode::Esc);
+
+            assert!(app.thread.is_none());
+            assert_eq!(app.focus, Focus::Messages);
+            assert!(!app.sidebar_items().contains(&temporary_row(true)));
+            assert_eq!(cursor_row(&app), target, "{pin_c2}");
+        }
+    }
+
+    #[tokio::test]
+    async fn opening_a_thread_keeps_the_cursor_when_a_temporary_thread_row_appears() {
+        for pin_c2 in [true, false] {
+            let mut app = app_with_unlisted_c2_thread(pin_c2, false);
+            assert!(!app.sidebar_items().contains(&temporary_row(true)));
+            let target = SidebarItem::Channel("c1".into());
+            put_cursor_on(&mut app, &target);
+            // メッセージ欄で、返信のあるメッセージを選んで Enter でスレッドを開く。
+            app.focus = Focus::Messages;
+            app.selected = Some("r1".into());
+            press(&mut app, KeyCode::Enter);
+
+            assert_eq!(app.focus, Focus::Thread);
+            assert_eq!(
+                app.thread.as_ref().map(|thread| thread.root_id.as_str()),
+                Some("r1")
+            );
+            assert_eq!(
+                app.sidebar_items().contains(&temporary_row(true)),
+                pin_c2,
+                "{pin_c2}"
+            );
+            assert_eq!(cursor_row(&app), target, "{pin_c2}");
+        }
+    }
+
+    #[tokio::test]
+    async fn restoring_a_failed_draft_keeps_the_cursor_when_a_temporary_thread_row_disappears() {
+        let mut app = app_with_unlisted_c2_thread(true, true);
+        let target = SidebarItem::Channel("c1".into());
+        put_cursor_on(&mut app, &target);
+        app.focus = Focus::Sidebar;
+        // 別のチャンネル (c1) の送れなかった本文を戻すと、c1 を開き、c2 のスレッドは閉じる。
+        app.on_app_event(AppEvent::RestoreDraft {
+            channel_id: "c1".into(),
+            target: Target::Channel,
+            content: "戻す本文".into(),
+            edit_base: None,
+        });
+        press(&mut app, KeyCode::Char('R'));
+
+        assert_eq!(app.current.as_deref(), Some("c1"));
+        assert_eq!(app.composer.lines(), ["戻す本文"]);
+        assert!(!app.sidebar_items().contains(&temporary_row(true)));
+        assert_eq!(cursor_row(&app), target);
+    }
+
+    #[tokio::test]
+    async fn leaving_a_thread_keeps_the_cursor_when_thread_rows_disappear() {
+        for pinned in [true, false] {
+            let mut app = app();
+            if pinned {
+                pin_c1(&mut app);
+            } else {
+                app.active_threads.push(ThreadSummary {
+                    id: "m1".into(),
+                    channel_id: "c1".into(),
+                    content: "hello".into(),
+                    thread_archive_at: None,
+                    reply_count: 1,
+                });
+            }
+            let target = SidebarItem::Channel("c1".into());
+            put_cursor_on(&mut app, &target);
+            let before = app.sidebar_items().len();
+            // 退出の応答を待つあいだに動かしたカーソルは、スレッドの行が消えても、同じ行に残る。
+            // ピン留めの下の行は c1 より前にあるので、消えると c1 の添字がずれる。
+            app.on_app_event(AppEvent::ThreadLeft("m1".into()));
+
+            assert!(app.sidebar_items().len() < before, "{pinned}");
+            assert!(
+                app.sidebar_items()
+                    .iter()
+                    .all(|item| !matches!(item, SidebarItem::Thread { .. }))
+            );
+            assert_eq!(cursor_row(&app), target, "{pinned}");
+        }
+    }
+
+    #[tokio::test]
+    async fn reopening_a_thread_keeps_the_cursor_when_a_thread_row_appears() {
+        for pinned in [true, false] {
+            let mut app = app();
+            if pinned {
+                pin_c1(&mut app);
+            } else {
+                app.active_threads.push(ThreadSummary {
+                    id: "m1".into(),
+                    channel_id: "c1".into(),
+                    content: "hello".into(),
+                    thread_archive_at: None,
+                    reply_count: 1,
+                });
+            }
+            // m1 はアーカイブ済みで、一覧には出ていない。
+            let mut archived = app.active_threads.remove(0);
+            archived.thread_archive_at = Some("2026-11-10T00:00:00".into());
+            app.archived_threads.push(archived);
+            assert!(
+                app.sidebar_items()
+                    .iter()
+                    .all(|item| !matches!(item, SidebarItem::Thread { .. }))
+            );
+            let target = SidebarItem::Channel("c2".into());
+            put_cursor_on(&mut app, &target);
+
+            // 再Openすると、c1 の下に行が増える。c2 の添字がずれても、カーソルは c2 に残る。
+            app.on_app_event(AppEvent::ThreadsChanged {
+                reopened: Some("m1".into()),
+            });
+
+            assert!(
+                app.sidebar_items()
+                    .iter()
+                    .any(|item| matches!(item, SidebarItem::Thread { .. })),
+                "{pinned}"
+            );
+            assert_eq!(cursor_row(&app), target, "{pinned}");
+        }
+    }
+
+    #[tokio::test]
+    async fn redirecting_a_thread_keeps_the_cursor_when_a_temporary_thread_row_disappears() {
+        for pin_c2 in [true, false] {
+            let mut app = app_with_unlisted_c2_thread(pin_c2, true);
+            // 返信先は、一覧にあるスレッド r0。閲覧中の r1 は一覧になく、一時の行が出ている。
+            app.active_threads.push(ThreadSummary {
+                id: "r0".into(),
+                channel_id: "c2".into(),
+                content: "listed".into(),
+                thread_archive_at: None,
+                reply_count: 1,
+            });
+            let temporary = |pinned| SidebarItem::Thread {
+                channel_id: "c2".into(),
+                id: "r1".into(),
+                pinned,
+            };
+            assert!(app.sidebar_items().contains(&temporary(false)), "{pin_c2}");
+            let target = SidebarItem::Channel("c1".into());
+            put_cursor_on(&mut app, &target);
+
+            // 返信すると、バックエンドは返信先を親 r0 に正規化する。r1 の行は消え、r0 の行が代わりになる。
+            app.on_app_event(AppEvent::ThreadRedirected {
+                from: "r1".into(),
+                to: "r0".into(),
+            });
+
+            assert_eq!(
+                app.thread.as_ref().map(|thread| thread.root_id.as_str()),
+                Some("r0")
+            );
+            let after = app.sidebar_items();
+            assert!(!after.contains(&temporary(false)) && !after.contains(&temporary(true)));
+            assert_eq!(cursor_row(&app), target, "{pin_c2}");
+        }
+    }
+
+    #[tokio::test]
+    async fn pinned_dms_and_archived_threads_have_no_thread_rows() {
+        let mut app = app();
+        pin_c1(&mut app);
+        app.archived_threads.push(ThreadSummary {
+            id: "m1".into(),
+            channel_id: "c1".into(),
+            content: "hello".into(),
+            thread_archive_at: Some("2026-11-10T00:00:00".into()),
+            reply_count: 1,
+        });
+        // アーカイブ済みは、ピン留めの下にも出さない。
+        app.active_threads.clear();
+        assert!(
+            app.sidebar_items()
+                .iter()
+                .all(|item| !matches!(item, SidebarItem::Thread { .. }))
+        );
+        // 参加していないチャンネルは、ピン留めしても、スレッドを出さない（通常の一覧と同じ）。
+        app.active_threads.push(ThreadSummary {
+            id: "m2".into(),
+            channel_id: "c2".into(),
+            content: "secret".into(),
+            thread_archive_at: None,
+            reply_count: 1,
+        });
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::UserPinnedChannels,
+            batch(vec![(
+                "p2",
+                json!({
+                    "user_id": "u1", "channel_id": "c2", "position": "1",
+                    "created_at": "2026-11-11 00:00:00",
+                    "updated_at": "2026-11-11 00:00:00"
+                }),
+            )]),
+        ));
+        assert!(
+            app.sidebar_items()
+                .iter()
+                .all(|item| !matches!(item, SidebarItem::Thread { .. }))
+        );
+
+        // 参加済みの DM をピン留めして、その DM で、返信のあるスレッドを閲覧中にしても、ピン留めの下にスレッドの行を
+        // 出さない。DM の除外は、未参加による除外とは別の条件なので、参加済みの DM で確かめる
+        // （通常の一覧の DM の下には、閲覧中のスレッドが出る。ピン留めの下には出さない）
+        let feed =
+            |app: &mut App, id: ShapeId, rows| app.on_shape(ShapeEvent::Batch(id, batch(rows)));
+        feed(
+            &mut app,
+            ShapeId::Channels,
+            vec![(
+                "d1",
+                json!({ "id": "d1", "channel_name": "dm:u1:u2", "is_private": "t", "is_dm": "t" }),
+            )],
+        );
+        feed(
+            &mut app,
+            ShapeId::ChannelUsers,
+            vec![("dm-m", json!({ "user_id": "u1", "channel_id": "d1" }))],
+        );
+        feed(
+            &mut app,
+            ShapeId::Messages("d1".into()),
+            vec![
+                (
+                    "dr1",
+                    json!({ "id": "dr1", "user_id": "u2", "channel_id": "d1",
+                               "content": "dm root", "created_at": "2026-11-01 03:00:00" }),
+                ),
+                (
+                    "dr2",
+                    json!({ "id": "dr2", "user_id": "u1", "channel_id": "d1", "content": "dm reply",
+                               "created_at": "2026-11-01 03:01:00", "parent_id": "dr1" }),
+                ),
+            ],
+        );
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::UserPinnedChannels,
+            batch(vec![(
+                "p3",
+                json!({
+                    "user_id": "u1", "channel_id": "d1", "position": "2",
+                    "created_at": "2026-11-11 00:00:00",
+                    "updated_at": "2026-11-11 00:00:00"
+                }),
+            )]),
+        ));
+        app.active_threads.push(ThreadSummary {
+            id: "dr1".into(),
+            channel_id: "d1".into(),
+            content: "dm root".into(),
+            thread_archive_at: None,
+            reply_count: 1,
+        });
+        app.current = Some("d1".into());
+        app.thread = Some(crate::ui::app::ThreadView {
+            root_id: "dr1".into(),
+            selected: None,
+            scroll: 0,
+            inner_scroll: 0,
+        });
+        let items = app.sidebar_items();
+        assert!(items.contains(&SidebarItem::Pinned("d1".into())));
+        // 設定が、閲覧中のスレッドの行を出す経路に届いていることの確認（通常の一覧の DM の下には出る）
+        assert!(items.contains(&SidebarItem::Thread {
+            channel_id: "d1".into(),
+            id: "dr1".into(),
+            pinned: false,
+        }));
+        assert!(
+            !items.iter().any(|item| matches!(
+                item,
+                SidebarItem::Thread { channel_id, pinned: true, .. } if channel_id == "d1"
+            )),
+            "{items:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn archived_pins_are_hidden_until_unarchived() {
+        let mut app = app();
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![(
+                "c1",
+                json!({
+                    "id": "c1", "channel_name": "general", "is_private": "f",
+                    "archive_at": "2026-11-10 00:00:00"
+                }),
+            )]),
+        ));
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::UserPinnedChannels,
+            batch(vec![(
+                "p1",
+                json!({
+                    "user_id": "u1", "channel_id": "c1", "position": "0",
+                    "created_at": "2026-11-11 00:00:00",
+                    "updated_at": "2026-11-11 00:00:00"
+                }),
+            )]),
+        ));
+        assert!(
+            !app.sidebar_items()
+                .iter()
+                .any(|item| matches!(item, SidebarItem::Pinned(_)))
+        );
+    }
+
+    #[tokio::test]
+    async fn unlisted_selected_archive_is_not_searchable_in_the_tree() {
+        let mut app = app();
+        app.on_shape(ShapeEvent::Batch(ShapeId::Messages("c1".into()), batch(vec![("m1",json!({"id":"m1","user_id":"u2","channel_id":"c1","content":"Old conversation","created_at":"2026-11-01 03:00:00","thread_archive_at":"2026-11-10 00:00:00"}))])));
         app.current = Some("c1".into());
         app.focus = Focus::Messages;
         app.selected = Some("m1".into());
         press(&mut app, KeyCode::Enter);
-        assert_eq!(
-            app.sidebar_items(),
-            vec![
-                SidebarItem::Channel("c1".into()),
-                SidebarItem::Thread {
-                    channel_id: "c1".into(),
-                    id: "m1".into()
-                },
-                SidebarItem::Channel("c2".into()),
-            ]
-        );
-        assert!(app.thread_is_archived("c1", "m1"));
-        assert_eq!(app.search_matches("Old conversation"), vec![1]);
-        press(&mut app, KeyCode::Char('/'));
-        for ch in "Old conversation".chars() {
-            press(&mut app, KeyCode::Char(ch));
-        }
-        press(&mut app, KeyCode::Enter);
-        assert_eq!(app.sidebar_index, 1);
         assert_eq!(app.thread.as_ref().unwrap().root_id, "m1");
-        press(&mut app, KeyCode::Esc);
+        assert!(app.thread_is_archived("c1", "m1"));
+        assert!(app.search_matches("Old conversation").is_empty());
         assert_eq!(
             app.sidebar_items(),
             vec![
                 SidebarItem::Channel("c1".into()),
-                SidebarItem::Channel("c2".into()),
+                SidebarItem::Channel("c2".into())
             ]
         );
+        assert!(render(&mut app).contains("Old conversation"));
     }
 
     #[tokio::test]
@@ -774,7 +2188,7 @@ mod tests {
         app.selected = Some("m1".into());
         press(&mut app, KeyCode::Enter);
         let screen = render(&mut app);
-        assert!(screen.contains("Old (1)"), "{screen}");
+        assert!(!screen.contains("Old (1)"), "{screen}");
         assert!(screen.contains("返信 1 件"), "{screen}");
     }
 
@@ -810,6 +2224,7 @@ mod tests {
         let row = SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "m1".into(),
+            pinned: false,
         };
         assert!(!app.sidebar_items().contains(&row));
         app.on_app_event(AppEvent::Threads {
@@ -869,6 +2284,7 @@ mod tests {
                 let row = SidebarItem::Thread {
                     channel_id: "c1".into(),
                     id: "m1".into(),
+                    pinned: false,
                 };
                 assert!(app.sidebar_items().contains(&row));
                 let mut snapshot = batch(vec![(
@@ -944,6 +2360,7 @@ mod tests {
             let row = SidebarItem::Thread {
                 channel_id: "c1".into(),
                 id: "m1".into(),
+                pinned: false,
             };
             app.focus = Focus::Messages;
             app.selected = Some("m1".into());
@@ -1038,6 +2455,7 @@ mod tests {
             let row = SidebarItem::Thread {
                 channel_id: "c1".into(),
                 id: "m1".into(),
+                pinned: false,
             };
             assert!(app.sidebar_items().contains(&row));
             if root_exists {
@@ -1096,6 +2514,21 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         app.on_app_event(AppEvent::ThreadsChanged {
             reopened: Some("pending".into()),
+        });
+        let mut joined = app.active_threads.clone();
+        joined.push(ThreadSummary {
+            id: "pending".into(),
+            channel_id: "c1".into(),
+            content: "New thread".into(),
+            thread_archive_at: None,
+            reply_count: 0,
+        });
+        app.on_app_event(AppEvent::Threads {
+            archived: false,
+            append: false,
+            requested_at: std::time::Instant::now(),
+            next_cursor: None,
+            threads: joined,
         });
         let mut snapshot = batch(vec![
             ("pending", pending),
@@ -1184,6 +2617,7 @@ mod tests {
             let row = SidebarItem::Thread {
                 channel_id: "c1".into(),
                 id: "m1".into(),
+                pinned: false,
             };
             assert!(app.sidebar_items().contains(&row));
             if archived {
@@ -1230,7 +2664,7 @@ mod tests {
                 requested_at: std::time::Instant::now(),
                 message: "unavailable".into(),
             });
-            assert_eq!(app.sidebar_items().contains(&row), archived);
+            assert!(!app.sidebar_items().contains(&row));
             if archived {
                 assert!(app.thread_is_archived("c1", "m1"));
                 press(&mut app, KeyCode::Esc);
@@ -1257,6 +2691,21 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         app.on_app_event(AppEvent::ThreadsChanged {
             reopened: Some("new-root".into()),
+        });
+        let mut joined = app.active_threads.clone();
+        joined.push(ThreadSummary {
+            id: "new-root".into(),
+            channel_id: "c1".into(),
+            content: "New thread".into(),
+            thread_archive_at: None,
+            reply_count: 0,
+        });
+        app.on_app_event(AppEvent::Threads {
+            archived: false,
+            append: false,
+            requested_at: std::time::Instant::now(),
+            next_cursor: None,
+            threads: joined,
         });
         assert_eq!(app.active_threads[0].reply_count, 0);
         let stale_request = std::time::Instant::now();
@@ -1294,7 +2743,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shape_reopen_survives_close_stale_index_and_failed_refresh() {
+    async fn shape_reopen_does_not_join_a_viewer_even_after_a_failed_refresh() {
         let mut app = app();
         app.open_channel("c1".into());
         app.on_shape(ShapeEvent::Batch(
@@ -1325,9 +2774,10 @@ mod tests {
         let row = SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "m1".into(),
+            pinned: false,
         };
         assert!(app.thread.is_none());
-        assert!(app.sidebar_items().contains(&row));
+        assert!(!app.sidebar_items().contains(&row));
         assert!(!app.thread_is_archived("c1", "m1"));
         assert!(render(&mut app).contains("Reopened remotely"));
         app.on_app_event(AppEvent::Threads {
@@ -1337,21 +2787,21 @@ mod tests {
             next_cursor: None,
             requested_at: stale_request,
         });
-        assert!(app.sidebar_items().contains(&row));
+        assert!(!app.sidebar_items().contains(&row));
         app.on_app_event(AppEvent::ThreadsFailed {
             archived: false,
             append: false,
             requested_at: std::time::Instant::now(),
             message: "unavailable".into(),
         });
-        assert!(app.sidebar_items().contains(&row));
+        assert!(!app.sidebar_items().contains(&row));
         app.open_channel("c2".into());
         assert!(app.store.message("c1", "m1").is_none());
-        assert!(app.sidebar_items().contains(&row));
+        assert!(!app.sidebar_items().contains(&row));
     }
 
     #[tokio::test]
-    async fn unlisted_reopen_success_survives_close_and_failed_refresh() {
+    async fn unlisted_reopen_does_not_join_the_operator() {
         let mut app = app();
         app.open_channel("c1".into());
         app.on_shape(ShapeEvent::Batch(
@@ -1375,8 +2825,9 @@ mod tests {
         let row = SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "m1".into(),
+            pinned: false,
         };
-        assert!(app.sidebar_items().contains(&row));
+        assert!(!app.sidebar_items().contains(&row));
         assert!(!app.thread_is_archived("c1", "m1"));
         app.on_app_event(AppEvent::ThreadsFailed {
             archived: false,
@@ -1384,7 +2835,7 @@ mod tests {
             requested_at: std::time::Instant::now(),
             message: "unavailable".into(),
         });
-        assert!(app.sidebar_items().contains(&row));
+        assert!(!app.sidebar_items().contains(&row));
     }
 
     #[tokio::test]
@@ -1434,6 +2885,133 @@ mod tests {
                 .collect();
             assert_eq!(ids, expected);
         }
+    }
+
+    #[test]
+    fn truncate_spans_keeps_the_heading_on_one_line() {
+        use unicode_width::UnicodeWidthStr;
+        let spans = vec![
+            Span::raw("▶ "),
+            Span::raw("#とても長いチャンネル名"),
+            Span::raw("  投稿者"),
+        ];
+        let out = truncate_spans(spans, 16);
+        let text: String = out.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.width() <= 16, "{text}");
+        assert!(text.ends_with('…'), "{text}");
+        let short = truncate_spans(vec![Span::raw("ab"), Span::raw("cd")], 16);
+        assert_eq!(short.len(), 2);
+        // 前の span が幅を使い切ったら、`…` も足さずに止める。
+        let full = truncate_spans(vec![Span::raw("ab"), Span::raw("c")], 2);
+        let text: String = full.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "ab");
+    }
+
+    #[tokio::test]
+    async fn thread_with_deleted_root_still_shows_its_replies() {
+        let mut app = app();
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![
+                (
+                    "r2",
+                    json!({ "id": "r2", "user_id": "u1", "channel_id": "c1", "content": "親なしの返信",
+                               "created_at": "2026-11-01 03:05:00", "parent_id": "gone" }),
+                ),
+                (
+                    "r3",
+                    json!({ "id": "r3", "user_id": "u1", "channel_id": "c1", "content": "次の返信",
+                               "created_at": "2026-11-01 03:06:00", "parent_id": "gone" }),
+                ),
+            ]),
+        ));
+        app.open_channel("c1".into());
+        app.focus = Focus::Thread;
+        app.thread = Some(crate::ui::app::ThreadView {
+            root_id: "gone".into(),
+            selected: Some("r2".into()),
+            scroll: 0,
+            inner_scroll: 0,
+        });
+        let screen = render(&mut app);
+        assert!(
+            screen.contains("元のメッセージは削除されました"),
+            "{screen}"
+        );
+        assert!(screen.contains("親なしの返信"), "{screen}");
+        // 描かれていない親は選べない。先頭は最初の返信。
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.thread.as_ref().unwrap().selected.as_deref(), Some("r2"));
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('g'));
+        assert_eq!(app.thread.as_ref().unwrap().selected.as_deref(), Some("r2"));
+    }
+
+    #[test]
+    fn tail_width_keeps_the_end_of_a_long_query() {
+        use unicode_width::UnicodeWidthStr;
+        let text = tail_width(&"a".repeat(1000), 20);
+        assert_eq!(text.width(), 20);
+        assert!(text.starts_with('…') && text.ends_with('a'));
+        assert_eq!(tail_width("会議", 20), "会議");
+        assert_eq!(tail_width("あいうえお", 5), "…えお");
+    }
+
+    #[tokio::test]
+    async fn global_search_keeps_the_help_line_on_a_small_terminal() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('S'));
+        app.global_search.searched = Some(("会議".into(), SearchKind::All));
+        // 長い検索語を貼り付けても、入力欄は 1 行で、末尾の案内は残る。
+        app.global_search.query = "x".repeat(1000);
+        app.global_search.items = (0..6)
+            .map(|i| {
+                serde_json::from_value(json!({
+                    "id": format!("m{i}"), "channel_id": "c1", "channel_name": "general",
+                    "snippet": "会議の資料", "created_at": "2026-11-21T00:00:00.000"
+                }))
+                .unwrap()
+            })
+            .collect();
+        let mut terminal = Terminal::new(TestBackend::new(40, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let screen: String = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(screen.contains("Esc"), "{screen}");
+    }
+
+    #[tokio::test]
+    async fn global_search_shows_the_searched_month_after_the_last_page() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('S'));
+        app.global_search.searched = Some(("会議".into(), SearchKind::All));
+        app.global_search.searched_until = Some("2025-12".into());
+        app.global_search.next_cursor = None;
+        assert!(render(&mut app).contains("2025-12 まで検索しました。見つかりませんでした。"));
+    }
+
+    #[tokio::test]
+    async fn global_search_takes_pastes_and_does_not_mark_the_timeline_read() {
+        let mut app = app();
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('S'));
+        assert_eq!(app.mode, Mode::GlobalSearch);
+        app.on_terminal_event(Event::Paste("会議\n資料".into()));
+        assert_eq!(app.global_search.query, "会議資料");
+        assert!(app.composer.is_empty());
+        app.newest_shown = None;
+        render(&mut app);
+        assert_eq!(app.newest_shown, None, "the popup covers the timeline");
+        press(&mut app, KeyCode::Esc);
+        render(&mut app);
+        assert!(app.newest_shown.is_some());
     }
 
     #[tokio::test]
@@ -1565,7 +3143,8 @@ mod tests {
             app.sidebar_items()[app.sidebar_index],
             SidebarItem::Thread {
                 channel_id: "c1".into(),
-                id: "older".into()
+                id: "older".into(),
+                pinned: false,
             }
         );
         assert!(render(&mut app).contains("Older thread"));
@@ -1640,6 +3219,9 @@ mod tests {
             channel_id: "c2".into(),
             has_unread: true,
             last_read_at: None,
+            unread_count: 1,
+            unread_count_truncated: false,
+            first_unread_at: None,
         }]));
         assert!(render(&mut app).contains("● #secret"));
 
@@ -1671,6 +3253,9 @@ mod tests {
             channel_id: "c1".into(),
             has_unread: true,
             last_read_at: None,
+            unread_count: 1,
+            unread_count_truncated: false,
+            first_unread_at: None,
         }]));
         press(&mut app, KeyCode::Enter);
         // まだ描画していないので、最新を見たとは言えない。
@@ -1687,6 +3272,9 @@ mod tests {
             channel_id: "c1".into(),
             has_unread: true,
             last_read_at: None,
+            unread_count: 1,
+            unread_count_truncated: false,
+            first_unread_at: None,
         }]));
         assert!(app.unread.contains("c1"));
     }
@@ -1748,7 +3336,8 @@ mod tests {
             app.subscriptions
                 .contains_key(&ShapeId::Messages("c2".into()))
         );
-        assert_eq!(app.subscriptions.len(), 4);
+        // Channels / Users / ChannelUsers / UserPinnedChannels / 開いているチャンネルの Messages。
+        assert_eq!(app.subscriptions.len(), 5);
         app.on_terminal_event(Event::FocusLost);
         assert!(app.typing.is_empty());
         app.on_tick();
@@ -1763,6 +3352,7 @@ mod tests {
             channel_id: channel_id.into(),
             target: Target::Edit("r1".into()),
             content: "直した返信".into(),
+            edit_base: None,
         };
 
         // 別のチャンネルの失敗は入力欄に入れず、保存しておく。
@@ -1791,6 +3381,7 @@ mod tests {
             channel_id: "c1".into(),
             target: Target::Channel,
             content: "先の本文".into(),
+            edit_base: None,
         });
         assert_eq!(app.composer.lines(), ["次の本文"]);
         assert_eq!(app.failed_drafts.len(), 1);
@@ -1844,5 +3435,759 @@ mod tests {
         assert!(render(&mut app).contains("検索: sec"));
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.current.as_deref(), Some("c2"));
+    }
+
+    fn render_sized(app: &mut App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let mut screen = String::new();
+        for y in 0..buffer.area.height {
+            let mut x = 0;
+            while x < buffer.area.width {
+                let symbol = buffer[(x, y)].symbol();
+                screen.push_str(symbol);
+                x += symbol.width().max(1) as u16;
+            }
+            screen.push('\n');
+        }
+        screen
+    }
+
+    fn encryption_event(app: &mut App, event: impl FnOnce(u64) -> EncryptionEvent) {
+        let generation = app.encryption.generation();
+        app.on_app_event(AppEvent::Encryption(event(generation)));
+    }
+
+    #[tokio::test]
+    async fn encryption_screen_walks_through_first_setup() {
+        let mut app = app();
+        app.me.id = "00000000-0000-4000-8000-00000000000b".into();
+        // テストでブラウザーを開かない。
+        app.encryption.over_ssh = true;
+        press(&mut app, KeyCode::Char('E'));
+        assert_eq!(app.mode, Mode::Encryption);
+        // 端末の登録が済むまでは、暗号ストアがない。
+        assert!(render_sized(&mut app, 100, 30).contains("端末を登録しています"));
+
+        encryption_event(&mut app, |generation| EncryptionEvent::Status {
+            generation,
+            result: Ok(E2eeStatus::NotSetUp),
+        });
+        assert!(render_sized(&mut app, 100, 30).contains("初回設定を始める"));
+        press(&mut app, KeyCode::Enter);
+        let screen = render_sized(&mut app, 100, 30);
+        assert!(screen.contains("リカバリーキー"), "{screen}");
+        let Screen::RecoveryKey(key) = &app.encryption.screen else {
+            panic!("リカバリーキーを表示していない");
+        };
+        assert!(screen.contains(key.as_str()), "{screen}");
+
+        // 再認証の待ち受け。SSH の先では、ポートの転送か、Web か Android での初回設定を案内する。
+        encryption_event(&mut app, |generation| EncryptionEvent::ReauthWaiting {
+            generation,
+            url: "https://account.example/authorize?max_age=0".into(),
+            port: 41234,
+        });
+        let screen = render_sized(&mut app, 100, 30);
+        assert!(screen.contains("ssh -L 41234:127.0.0.1:41234"), "{screen}");
+        assert!(screen.contains("Web か Android"), "{screen}");
+        assert!(screen.contains("max_age=0"), "{screen}");
+
+        // 再認証をやめても、鍵は捨てずに、もう一度再認証できる。
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Encryption);
+        assert!(render_sized(&mut app, 100, 30).contains("同じ鍵のまま"));
+
+        // 保存が 403 になったら、同じ鍵のまま再認証してやり直せる。
+        encryption_event(&mut app, |generation| EncryptionEvent::Failed {
+            generation,
+            failure: crate::ui::encryption::Failure::Reauth("再認証が必要です".into()),
+        });
+        assert!(render_sized(&mut app, 100, 30).contains("再認証して保存し直す"));
+        encryption_event(&mut app, |generation| EncryptionEvent::Saved { generation });
+        assert!(render_sized(&mut app, 100, 30).contains("解錠済み"));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[tokio::test]
+    async fn encryption_screen_takes_a_recovery_key_and_shows_the_status() {
+        let mut app = app();
+        app.encryption.over_ssh = true;
+        press(&mut app, KeyCode::Char('E'));
+        encryption_event(&mut app, |generation| EncryptionEvent::Status {
+            generation,
+            result: Ok(E2eeStatus::Locked(LockReason::Resume)),
+        });
+        let screen = render_sized(&mut app, 100, 30);
+        assert!(screen.contains("初回設定が途中です"), "{screen}");
+        app.on_terminal_event(Event::Paste("EsTc 1234".into()));
+        press(&mut app, KeyCode::Backspace);
+        assert!(render_sized(&mut app, 100, 30).contains("> EsTc 123"));
+        // 打ち間違いは、入力欄を空にして知らせる。
+        encryption_event(&mut app, |generation| EncryptionEvent::Failed {
+            generation,
+            failure: crate::ui::encryption::Failure::WrongKey(
+                "リカバリーキーの形式が違います".into(),
+            ),
+        });
+        assert!(render_sized(&mut app, 100, 30).contains("リカバリーキーの形式が違います"));
+        // 古い世代の結果は捨てる。
+        app.on_app_event(AppEvent::Encryption(EncryptionEvent::Saved {
+            generation: 0,
+        }));
+        assert!(!render_sized(&mut app, 100, 30).contains("解錠済み"));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Normal);
+        // 閉じても、解錠が要ることをステータス行に出す。
+        assert!(render_sized(&mut app, 100, 30).contains("暗号化: 解錠が必要 (E)"));
+    }
+
+    #[tokio::test]
+    async fn a_recovery_key_that_does_not_fit_cannot_be_confirmed() {
+        let mut app = app();
+        app.me.id = "00000000-0000-4000-8000-00000000000b".into();
+        app.encryption.over_ssh = true;
+        press(&mut app, KeyCode::Char('E'));
+        encryption_event(&mut app, |generation| EncryptionEvent::Status {
+            generation,
+            result: Ok(E2eeStatus::NotSetUp),
+        });
+        press(&mut app, KeyCode::Enter);
+        let Screen::RecoveryKey(key) = &app.encryption.screen else {
+            panic!("リカバリーキーを表示していない");
+        };
+        let key = key.as_str().to_owned();
+        // いったんキー全体を表示してから、表示中に端末を縮める。キーを出さずに広げるよう求め、y では
+        // 保存に進まない（画面は、キー操作の前に必ず描き直す）。
+        assert!(render_sized(&mut app, 100, 30).contains(&key));
+        assert!(app.encryption.recovery_key_shown);
+        let screen = render_sized(&mut app, 100, 8);
+        assert!(screen.contains("端末を広げてください"), "{screen}");
+        assert!(!screen.contains(&key));
+        assert!(!app.encryption.recovery_key_shown);
+        press(&mut app, KeyCode::Char('y'));
+        assert!(matches!(app.encryption.screen, Screen::RecoveryKey(_)));
+        // 広げてキー全体が見えたら、保存に進める。
+        assert!(render_sized(&mut app, 100, 30).contains(&key));
+        press(&mut app, KeyCode::Char('y'));
+        assert!(!matches!(app.encryption.screen, Screen::RecoveryKey(_)));
+    }
+
+    #[tokio::test]
+    async fn a_backup_conflict_while_running_asks_to_unlock_again() {
+        let user = "00000000-0000-4000-8000-00000000000b";
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::e2ee::store::crypto_root(dir.path());
+        let mut store = crate::e2ee::store::CryptoStore::open(&root, user)
+            .unwrap()
+            .store;
+        let (session, _) = zoo_crypto::SetupSession::begin(user).unwrap();
+        store.save_own_keys(session.secrets(), Some(1)).unwrap();
+        let store = std::sync::Arc::new(tokio::sync::Mutex::new(store));
+        let (tx, stores) = tokio::sync::watch::channel(Some((user.to_owned(), store.clone())));
+        let mut app = app();
+        app.me.id = user.into();
+        app.attach_encryption(crate::ui::encryption::E2eeContext {
+            oidc: None,
+            stores,
+            crypto_root: None,
+            events: None,
+        });
+        press(&mut app, KeyCode::Char('E'));
+        encryption_event(&mut app, |generation| EncryptionEvent::Status {
+            generation,
+            result: Ok(E2eeStatus::Unlocked),
+        });
+        app.on_tick();
+        assert!(render_sized(&mut app, 100, 30).contains("解錠済み"));
+        // 端末の管理のタスクが、鍵バックアップの送信で 409 E2EE_SSSS_CONFLICT を受けた。
+        store.lock().await.forget_secrets_revision().unwrap();
+        app.on_tick();
+        let screen = render_sized(&mut app, 100, 30);
+        assert!(
+            screen.contains("リカバリーキーで解錠し直してください"),
+            "{screen}"
+        );
+        assert!(screen.contains("暗号化: 解錠が必要 (E)"), "{screen}");
+        drop(tx);
+    }
+
+    /// 暗号化チャンネル `c3`（メンバーは自分と Bob）と、その行を入れる。
+    fn encrypted_app(name: &str, encrypted: bool) -> App {
+        let mut app = app();
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![(
+                "c3",
+                json!({ "id": "c3", "channel_name": name, "is_private": "t",
+                        "encrypted": if encrypted { "t" } else { "f" }, "membership_epoch": "1" }),
+            )]),
+        ));
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::ChannelUsers,
+            batch(vec![
+                ("m31", json!({ "user_id": "u1", "channel_id": "c3" })),
+                ("m32", json!({ "user_id": "u2", "channel_id": "c3" })),
+            ]),
+        ));
+        app.focus = Focus::Messages;
+        app.open_channel("c3".into());
+        app
+    }
+
+    fn encrypted_row(id: &str, at: &str, ciphertext: bool, epoch: Option<u64>) -> (String, Value) {
+        let mut row = json!({ "id": id, "user_id": "u2", "channel_id": "c3", "content": "",
+                              "created_at": at, "revision": "0" });
+        if ciphertext {
+            row["ciphertext"] = json!(
+                r#"{"algorithm":"m.megolm.v1.aes-sha2","sender_key":"k","device_id":"d","session_id":"s","ciphertext":"x"}"#
+            );
+        }
+        if let Some(epoch) = epoch {
+            row["epoch"] = json!(epoch.to_string());
+        }
+        (id.to_owned(), row)
+    }
+
+    #[tokio::test]
+    async fn shows_decrypted_and_undecryptable_messages_in_encrypted_channels() {
+        use crate::e2ee::store::{Decrypted, Decryption, SenderTrust, UndecryptableReason};
+        let mut app = encrypted_app("secret-e2ee", true);
+        let rows = [
+            encrypted_row("e1", "2026-11-01 04:00:00", true, Some(1)),
+            encrypted_row("e2", "2026-11-01 04:01:00", true, Some(1)),
+            encrypted_row("e3", "2026-11-01 04:02:00", true, Some(1)),
+            encrypted_row("e4", "2026-11-01 04:03:00", false, Some(1)),
+            {
+                let (id, mut row) = encrypted_row("e5", "2026-11-01 03:59:00", false, None);
+                row["content"] = json!("切り替える前の本文");
+                (id, row)
+            },
+            {
+                // 暗号化したメッセージより後ろの、切り替える前の形の行（正しいサーバーは作れない）。
+                let (id, mut row) = encrypted_row("e6", "2026-11-01 04:04:00", false, None);
+                row["content"] = json!("紛れ込んだ平文");
+                (id, row)
+            },
+        ];
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c3".into()),
+            batch(
+                rows.iter()
+                    .map(|(id, row)| (id.as_str(), row.clone()))
+                    .collect(),
+            ),
+        ));
+        let key = |id: &str| {
+            crate::ui::e2ee_chat::RowKey::of(app.store.message("c3", id).expect("行がある"))
+        };
+        let results = vec![
+            (
+                "e1".into(),
+                key("e1"),
+                Decryption::Decrypted(Decrypted {
+                    body: "復号した本文".into(),
+                    kind: "message".into(),
+                    mentions: Default::default(),
+                    sender: SenderTrust::Unverified,
+                    revision: zoo_crypto::RevisionStatus::Latest,
+                    attachments: vec![zoo_crypto::AttachmentInfo {
+                        attachment_id: uuid::Uuid::new_v4().to_string(),
+                        name: "plan.pdf".into(),
+                        mimetype: "application/pdf".into(),
+                        size: 3,
+                        width: None,
+                        height: None,
+                        sensitive: false,
+                        file: zoo_crypto::encrypt_attachment(b"pdf").file,
+                    }],
+                }),
+            ),
+            (
+                "e2".into(),
+                key("e2"),
+                Decryption::Undecryptable(UndecryptableReason::KeyMissing),
+            ),
+        ];
+        app.on_app_event(AppEvent::Decrypted {
+            channel_id: "c3".into(),
+            results,
+            generation: Some(1),
+        });
+        let screen = render_sized(&mut app, 140, 40);
+        assert!(screen.contains("🔒 暗号化"), "{screen}");
+        assert!(screen.contains("復号した本文"), "{screen}");
+        assert!(screen.contains("[未検証の送信者]"), "{screen}");
+        assert!(screen.contains("plan.pdf"), "{screen}");
+        assert!(screen.contains("鍵がまだ届いていません"), "{screen}");
+        // まだ結果のない行は、本文（空）を出さずに待つ。
+        assert!(screen.contains("準備ができると"), "{screen}");
+        assert!(
+            screen.contains("暗号化されていないため表示しません"),
+            "{screen}"
+        );
+        assert!(screen.contains("切り替える前の本文"), "{screen}");
+        // 切り替える前のメッセージには印を付けず、区切りを 1 つ出し、後ろに紛れ込んだ行だけに警告を付ける。
+        assert!(!screen.contains("[暗号化前]"), "{screen}");
+        assert_eq!(
+            screen.matches("ここから暗号化されています").count(),
+            1,
+            "{screen}"
+        );
+        assert_eq!(
+            screen.matches("[暗号化されていません]").count(),
+            1,
+            "{screen}"
+        );
+        let warned = screen
+            .lines()
+            .position(|line| line.contains("[暗号化されていません]"))
+            .expect("警告の行がある");
+        assert!(
+            screen
+                .lines()
+                .nth(warned + 1)
+                .is_some_and(|line| line.contains("紛れ込んだ平文")),
+            "{screen}"
+        );
+        // 解錠していない端末には、送る前に解錠を案内する。
+        assert!(screen.contains("暗号化を解錠してください"), "{screen}");
+
+        // 配布先を判定したら、入力欄の上に数と、増えた人、配れない人を出す。
+        app.on_app_event(AppEvent::Recipients {
+            channel_id: "c3".into(),
+            summary: crate::e2ee::store::RecipientSummary {
+                epoch: 1,
+                user_count: 1,
+                device_count: 2,
+                user_ids: vec!["u1".into(), "u2".into()],
+                added_user_ids: vec!["u2".into()],
+                undeliverable: vec![(
+                    "u2".into(),
+                    crate::e2ee::store::UndeliverableReason::NotSetUp,
+                )],
+                new_pins: Vec::new(),
+            },
+        });
+        let screen = render_sized(&mut app, 140, 40);
+        // 配布先の数は出さず、増えた人と配れない人だけを出す。
+        assert!(
+            !screen.contains("台の端末あてに暗号化しています"),
+            "{screen}"
+        );
+        assert!(
+            screen.contains("前回の送信から増えた配布先：Bob"),
+            "{screen}"
+        );
+        // 狭い端末でも、配れない相手の理由を折り返して末尾まで出す。
+        let narrow: String = render_sized(&mut app, 50, 40)
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '│')
+            .collect();
+        assert!(
+            narrow.contains("Bobさんは暗号化を設定していません"),
+            "{narrow}"
+        );
+        assert!(
+            screen.contains("Bob さんは暗号化を設定していません"),
+            "{screen}"
+        );
+
+        // 暗号化前のメッセージと、復号できていないメッセージは編集できない（自分のメッセージにして試す）。
+        let mut mine = rows[4].1.clone();
+        mine["user_id"] = json!("u1");
+        let mut missing = rows[1].1.clone();
+        missing["user_id"] = json!("u1");
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c3".into()),
+            batch(vec![("e5", mine), ("e2", missing)]),
+        ));
+        app.selected = Some("e5".into());
+        press(&mut app, KeyCode::Char('e'));
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(render_sized(&mut app, 140, 40).contains("暗号化前のメッセージは編集できません"));
+        app.selected = Some("e2".into());
+        press(&mut app, KeyCode::Char('e'));
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(
+            render_sized(&mut app, 140, 40).contains("復号できていないメッセージは編集できません")
+        );
+    }
+
+    #[tokio::test]
+    async fn edits_are_not_sent_when_another_device_edited_after_starting() {
+        use crate::e2ee::store::{Decrypted, Decryption, SenderTrust};
+        let mut app = encrypted_app("secret-e2ee", true);
+        let feed = |app: &mut App, revision: u64, body: &str| {
+            let (id, mut row) = encrypted_row("e1", "2026-11-01 04:00:00", true, Some(1));
+            row["user_id"] = json!("u1");
+            row["revision"] = json!(revision.to_string());
+            app.on_shape(ShapeEvent::Batch(
+                ShapeId::Messages("c3".into()),
+                batch(vec![(id.as_str(), row)]),
+            ));
+            let key =
+                crate::ui::e2ee_chat::RowKey::of(app.store.message("c3", "e1").expect("行がある"));
+            app.on_app_event(AppEvent::Decrypted {
+                channel_id: "c3".into(),
+                results: vec![(
+                    "e1".into(),
+                    key,
+                    Decryption::Decrypted(Decrypted {
+                        body: body.into(),
+                        kind: "message".into(),
+                        mentions: Default::default(),
+                        sender: SenderTrust::Verified,
+                        revision: zoo_crypto::RevisionStatus::Latest,
+                        attachments: Vec::new(),
+                    }),
+                )],
+                generation: Some(1),
+            });
+        };
+        feed(&mut app, 0, "元の本文");
+        app.selected = Some("e1".into());
+        press(&mut app, KeyCode::Char('e'));
+        assert_eq!(app.mode, Mode::Insert);
+        assert_eq!(app.composer.lines(), ["元の本文"]);
+        app.composer.insert_str("（直した）");
+        // 編集しているあいだに、別の端末の編集（版 1）が届いた。
+        feed(&mut app, 1, "別の端末で直した本文");
+        press(&mut app, KeyCode::Enter);
+        // 版 1 を基準に送り直さず、下書きを残して知らせる。
+        assert_eq!(app.composer.lines(), ["元の本文（直した）"]);
+        assert_eq!(app.target, Target::Edit("e1".into()));
+        assert!(
+            render_sized(&mut app, 140, 40).contains("ほかの場所で編集されました"),
+            "競合を知らせる"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_restored_edit_draft_keeps_the_revision_it_started_from() {
+        use crate::e2ee::store::{Decrypted, Decryption, SenderTrust};
+        let mut app = encrypted_app("secret-e2ee", true);
+        let feed = |app: &mut App, revision: u64, body: &str| {
+            let (id, mut row) = encrypted_row("e1", "2026-11-01 04:00:00", true, Some(1));
+            row["user_id"] = json!("u1");
+            row["revision"] = json!(revision.to_string());
+            app.on_shape(ShapeEvent::Batch(
+                ShapeId::Messages("c3".into()),
+                batch(vec![(id.as_str(), row)]),
+            ));
+            let key =
+                crate::ui::e2ee_chat::RowKey::of(app.store.message("c3", "e1").expect("行がある"));
+            app.on_app_event(AppEvent::Decrypted {
+                channel_id: "c3".into(),
+                results: vec![(
+                    "e1".into(),
+                    key,
+                    Decryption::Decrypted(Decrypted {
+                        body: body.into(),
+                        kind: "message".into(),
+                        mentions: Default::default(),
+                        sender: SenderTrust::Verified,
+                        revision: zoo_crypto::RevisionStatus::Latest,
+                        attachments: Vec::new(),
+                    }),
+                )],
+                generation: Some(1),
+            });
+        };
+        feed(&mut app, 0, "元の本文");
+        // 版 0 から始めた編集が送れずに、失敗した下書きとして残った。
+        app.composer.insert_str("書きかけ");
+        app.on_app_event(AppEvent::RestoreDraft {
+            channel_id: "c3".into(),
+            target: Target::Edit("e1".into()),
+            content: "版 0 から直した本文".into(),
+            edit_base: Some(0),
+        });
+        assert_eq!(app.failed_drafts.len(), 1);
+        app.composer = tui_textarea::TextArea::default();
+        // 別の端末の版 1 が届き、版 1 から編集を始めてからやめる。
+        feed(&mut app, 1, "別の端末で直した本文");
+        app.selected = Some("e1".into());
+        press(&mut app, KeyCode::Char('e'));
+        assert_eq!(app.mode, Mode::Insert);
+        press(&mut app, KeyCode::Esc);
+        app.composer = tui_textarea::TextArea::default();
+        app.target = Target::Channel;
+        // 版 0 の下書きを戻して送ると、版 1 を上書きせずに知らせる。
+        press(&mut app, KeyCode::Char('R'));
+        assert_eq!(app.composer.lines(), ["版 0 から直した本文"]);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.composer.lines(), ["版 0 から直した本文"]);
+        assert!(
+            render_sized(&mut app, 140, 40).contains("ほかの場所で編集されました"),
+            "競合を知らせる"
+        );
+    }
+
+    #[tokio::test]
+    async fn encrypted_channels_are_recorded_right_away() {
+        let mut app = app();
+        let me = "00000000-0000-4000-8000-0000000000b0";
+        app.me.id = me.into();
+        let dir = tempfile::tempdir().unwrap();
+        let (_tx, stores) = tokio::sync::watch::channel(None);
+        app.attach_encryption(crate::ui::encryption::E2eeContext {
+            oidc: None,
+            stores,
+            crypto_root: Some(dir.path().to_owned()),
+            events: None,
+        });
+        // 暗号ストアがまだ開いていなくても、`encrypted = true` を見たらその場で記録する。
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![(
+                "c3",
+                json!({ "id": "c3", "channel_name": "secret-e2ee", "is_private": "t", "encrypted": "t" }),
+            )]),
+        ));
+        assert_eq!(
+            crate::e2ee::store::read_encrypted_channels(dir.path(), me).unwrap(),
+            vec!["c3".to_owned()]
+        );
+    }
+
+    #[tokio::test]
+    async fn plaintext_is_held_back_while_the_records_are_unreadable() {
+        let mut app = app();
+        let me = "00000000-0000-4000-8000-0000000000b0";
+        app.me.id = me.into();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(me)).unwrap();
+        std::fs::write(dir.path().join(me).join("state.json"), b"{broken").unwrap();
+        let (_tx, stores) = tokio::sync::watch::channel(None);
+        app.attach_encryption(crate::ui::encryption::E2eeContext {
+            oidc: None,
+            stores,
+            crypto_root: Some(dir.path().to_owned()),
+            events: None,
+        });
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('i'));
+        app.composer.insert_str("平文");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.composer.lines(), ["平文"]);
+        assert!(render_sized(&mut app, 140, 30).contains("記録を読めないため"));
+    }
+
+    #[tokio::test]
+    async fn long_recipient_lists_fall_back_to_counts_and_a_details_screen() {
+        use crate::e2ee::store::{RecipientSummary, UndeliverableReason};
+        let summary = |added: usize, undeliverable: usize| RecipientSummary {
+            epoch: 1,
+            user_count: 2,
+            device_count: 3,
+            user_ids: Vec::new(),
+            added_user_ids: (0..added).map(|i| format!("added-user-{i:05}")).collect(),
+            undeliverable: (0..undeliverable)
+                .map(|i| {
+                    (
+                        format!("missing-user-{i:03}"),
+                        UndeliverableReason::NotSetUp,
+                    )
+                })
+                .collect(),
+            new_pins: Vec::new(),
+        };
+        let squash = |screen: String| -> String {
+            screen
+                .chars()
+                .filter(|c| !c.is_whitespace() && *c != '│')
+                .collect()
+        };
+
+        // 増えた人も配れない人もいなければ、入力欄の上には何も出さない（配布先の数も出さない）。
+        let mut app = encrypted_app("secret-e2ee", true);
+        app.on_app_event(AppEvent::Recipients {
+            channel_id: "c3".into(),
+            summary: summary(0, 0),
+        });
+        let screen = squash(render_sized(&mut app, 50, 40));
+        assert!(!screen.contains("配布先"), "{screen}");
+        assert!(!screen.contains("台の端末"), "{screen}");
+
+        // 4 人ずつなら、幅 50 でも折り返して全員を出す。
+        app.on_app_event(AppEvent::Recipients {
+            channel_id: "c3".into(),
+            summary: summary(4, 4),
+        });
+        let screen = squash(render_sized(&mut app, 50, 40));
+        assert!(screen.contains("added-user-00003"), "{screen}");
+        assert!(
+            screen.contains("missing-user-003さんは暗号化を設定していません"),
+            "{screen}"
+        );
+
+        // 収まらなければ人数だけを出し、増えた人と配れない人の両方を必ず出す。
+        app.on_app_event(AppEvent::Recipients {
+            channel_id: "c3".into(),
+            summary: summary(30, 5),
+        });
+        let screen = squash(render_sized(&mut app, 50, 20));
+        assert!(
+            screen.contains("前回の送信から増えた配布先：30人（Vで一覧）"),
+            "{screen}"
+        );
+        assert!(
+            screen.contains("次の人は新しいメッセージを読めません：5人（Vで一覧）"),
+            "{screen}"
+        );
+
+        // とても小さな端末でも、両方の人数と詳細の案内を出す。
+        for height in [8, 12] {
+            let screen = squash(render_sized(&mut app, 40, height));
+            assert!(
+                screen.contains("読めない人5・増えた人30・Vで詳細"),
+                "{height}: {screen}"
+            );
+        }
+
+        // `V` の詳細の画面では、スクロールして全員を確かめられる。
+        app.focus = Focus::Messages;
+        press(&mut app, KeyCode::Char('V'));
+        assert!(matches!(app.mode, Mode::Recipients { .. }));
+        let screen = squash(render_sized(&mut app, 50, 20));
+        assert!(screen.contains("配布先の詳細"), "{screen}");
+        assert!(screen.contains("added-user-00000"), "{screen}");
+        assert!(!screen.contains("missing-user-004"), "{screen}");
+        press(&mut app, KeyCode::Char('G'));
+        let screen = squash(render_sized(&mut app, 50, 20));
+        assert!(
+            screen.contains("missing-user-004さんは暗号化を設定していません"),
+            "{screen}"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[tokio::test]
+    async fn downgraded_channels_warn_and_keep_the_draft() {
+        let mut app = encrypted_app("edm:u1:u2", false);
+        let screen = render_sized(&mut app, 140, 30);
+        assert!(screen.contains("暗号化の状態が変わりました"), "{screen}");
+        assert!(screen.contains("平文では送信しません"), "{screen}");
+        press(&mut app, KeyCode::Char('i'));
+        app.composer.insert_str("送らない本文");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.composer.lines(), ["送らない本文"]);
+    }
+
+    #[tokio::test]
+    async fn creates_encrypted_channels_and_dms_from_the_dialog() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('c'));
+        for ch in "proj".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        let screen = render_sized(&mut app, 120, 30);
+        assert!(screen.contains("新しいチャンネル"), "{screen}");
+        assert!(screen.contains("名前: proj"), "{screen}");
+        assert!(
+            screen.contains("非公開・エンドツーエンドで暗号化する"),
+            "{screen}"
+        );
+        assert!(screen.contains("あとから解除できません"), "{screen}");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Normal);
+
+        // DM は、知らないユーザー名なら作らない。
+        press(&mut app, KeyCode::Char('m'));
+        for ch in "@nobody".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        press(&mut app, KeyCode::Tab);
+        assert!(render_sized(&mut app, 120, 30).contains("エンドツーエンドで暗号化する"));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(render_sized(&mut app, 120, 30).contains("ユーザーが見つかりません: @nobody"));
+
+        // 暗号化を求めたのに平文のチャンネルが返ったら、送らない。
+        app.on_app_event(AppEvent::Created {
+            channel_id: "c2".into(),
+            requested_encryption: true,
+            encrypted: false,
+        });
+        assert_eq!(app.current.as_deref(), Some("c2"));
+        assert_eq!(
+            app.channel_encryption("c2"),
+            crate::ui::e2ee_chat::ChannelEncryption::Downgraded
+        );
+    }
+
+    #[tokio::test]
+    async fn global_search_lists_results_and_opens_a_thread_reply() {
+        let mut app = app();
+        app.on_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('S'),
+            KeyModifiers::SHIFT,
+        )));
+        assert_eq!(app.mode, Mode::GlobalSearch);
+        for ch in "会議".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        // 取得はつながらない宛先へ出るが、結果は直接入れる。
+        let (generation, ..) = app.global_search.start(false).unwrap();
+        let page: crate::api::SearchPage = serde_json::from_value(json!({
+            "items": [
+                {"id":"m1","channel_id":"c1","channel_name":"general","parent_id":null,
+                 "author":{"display_name":"Bob"},"snippet":"…ああああああああああああああああああああああああああああああああああああああああ明日の会議の資料","created_at":"2026-11-20T09:00:00.000"},
+                {"id":"m2","channel_id":"c2","channel_name":"random","parent_id":"root",
+                 "author":{"display_name":"Carol"},"snippet":"会議は中止","created_at":"2026-11-19T09:00:00.000"}
+            ],
+            "next_cursor":"{\"m\":24322}","searched_until":"2025-12"
+        }))
+        .unwrap();
+        app.on_app_event(AppEvent::SearchResults {
+            generation,
+            append: false,
+            page,
+        });
+        let screen = render_sized(&mut app, 100, 30);
+        assert!(screen.contains("全文検索"), "{screen}");
+        assert!(
+            screen.contains("#general") && screen.contains("Bob"),
+            "{screen}"
+        );
+        // 一致箇所の前に全角 40 文字があっても、検索語は欄の中に見える。
+        assert!(screen.contains("明日の会議の資料"), "{screen}");
+        assert!(screen.contains("スレッドの返信"), "{screen}");
+        // 検索語の「会議」だけを強調する。
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let highlighted: String = (0..buffer.area.height)
+            .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+            .filter(|&p| buffer[p].bg == Color::Yellow)
+            .map(|p| buffer[p].symbol().to_string())
+            .collect();
+        assert_eq!(highlighted, "会議会議", "{screen}");
+        assert!(screen.contains("2025-12 まで検索しました"), "{screen}");
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.current.as_deref(), Some("c2"));
+        let thread = app.thread.as_ref().expect("thread opens");
+        assert_eq!(
+            (thread.root_id.as_str(), thread.selected.as_deref()),
+            ("root", Some("m2"))
+        );
+        // 長いメッセージを読み進めた後でも、トップレベルの結果は先頭から表示する。
+        app.inner_scroll = 7;
+        app.on_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('S'),
+            KeyModifiers::SHIFT,
+        )));
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.selected.as_deref(), Some("m1"));
+        assert_eq!(app.inner_scroll, 0);
     }
 }

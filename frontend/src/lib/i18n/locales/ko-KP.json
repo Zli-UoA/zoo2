@@ -1,4 +1,16 @@
 {
+  "a11y": {
+    "skipToContent": "본문으로 건너뛰기"
+  },
+  "aboutZoo": {
+    "title": "Zoo 정보",
+    "version": "판본: {{version}}",
+    "versionUnknown": "알 수 없음"
+  },
+  "notFoundPage": {
+    "title": "페이지를 찾을 수 없습니다",
+    "description": "요청하신 페이지가 옮겨졌거나 더 이상 존재하지 않을수 있습니다."
+  },
   "nav": {
     "main": "주요 탐색"
   },
@@ -10,6 +22,10 @@
     "unread": "읽지 않은 통보문이 있습니다",
     "editTitle": "통로 편집",
     "editHelp": "통로 이름은 조선글 등의 글자와 수자, 반각 하이픈(-), 밑줄(_)로 80자 이내여야 합니다. 공백, 그림글자, 그 밖의 기호와 예약어는 쓸수 없습니다.",
+    "nameRequired": "통로 이름을 입력하십시오.",
+    "nameTooLong": "통로 이름은 {{max}}자 이내여야 합니다 (현재 {{length}}자).",
+    "nameReserved": "'{{name}}'은 예약어라 쓸수 없습니다.",
+    "invalidName": "통로 이름에는 글자, 수자, 반각 하이픈(-), 밑줄(_)만 쓸수 있습니다.",
     "saveName": "저장",
     "savingName": "저장하는 중…",
     "title": "통로",
@@ -44,6 +60,7 @@
     "notFound": "통로를 찾을수 없습니다.",
     "duplicateName": "같은 이름의 통로가 이미 있습니다.",
     "privateMessages": "이 통로는 비공개입니다. 초대를 받으면 통보문을 볼수 있습니다.",
+    "postingManagersOnly": "이 통로에는 관리자만 통보문을 올릴수 있습니다.",
     "back": "통로 목록으로 돌아가기",
     "noDescription": "설명이 아직 없습니다",
     "visibilityHelp": "공개 통로에는 누구나 참가할수 있습니다. 비공개 통로에는 만든 사람이 초대한 사람만 참가할수 있습니다.",
@@ -122,8 +139,7 @@
     "candidates": "성원 후보",
     "usersLoading": "사용자를 불러오는 중…",
     "usersError": "사용자를 얻지 못했습니다.",
-    "usersEmpty": "해당하는 사용자가 없습니다.",
-    "back": "통로로 돌아가기"
+    "usersEmpty": "해당하는 사용자가 없습니다."
   },
   "moderation": {
     "archived": "보관됨",
@@ -159,6 +175,11 @@
     "invalidState": "이 조작은 현재 상태에서는 실행할수 없습니다."
   },
   "settings": {
+    "appearance": "겉모양",
+    "interaction": "조작",
+    "swipeReply": "밀어서 답변",
+    "operationHaptics": "촉각 되알림",
+    "navTitle": "설정",
     "admin": "관리자",
     "member": "성원",
     "makeAdmin": "관리자로 지정",
@@ -198,13 +219,16 @@
     "description": "왼쪽 목록에서 통로를 선택하면 통보문 교환내용이 표시됩니다."
   },
   "messages": {
+    "loadingOlder": "이전 통보문을 불러오는 중…",
     "typing": "{{names}}이(가) 입력하는 중…",
     "typingSeparator": ", ",
     "compose": "통보문 보내기",
     "send": "보내기",
     "edit": "편집",
+    "editMessage": "통보문 편집",
     "delete": "삭제",
     "more": "다른 조작",
+    "actions": "메시지 조작",
     "editLabel": "통보문 편집",
     "loadError": "통보문을 얻지 못했습니다",
     "retryHelp": "접속상태를 확인하고 다시 시도하십시오.",
@@ -224,9 +248,58 @@
     "copyRaw": "원문 복사",
     "copied": "원문을 복사했습니다",
     "copyFailed": "원문을 복사하지 못했습니다",
-    "edited": "편집됨"
+    "copyLink": "통보문 주소 복사",
+    "linkCopied": "통보문 주소를 복사했습니다",
+    "linkCopyFailed": "통보문 주소를 복사하지 못했습니다",
+    "edited": "편집됨",
+    "forward": "통보문 전송…",
+    "forwardTitle": "이 통보문 전송",
+    "forwardSearchPlaceholder": "통로 또는 성원 검색",
+    "forwardDestinationLabel": "전송 대상",
+    "forwardDestinationSelected": "{{name}}을(를) 전송 대상으로 선택했습니다",
+    "forwardClearDestination": "{{name}} 선택 해제",
+    "forwardNoDestinations": "전송할 수 있는 통로나 직접 대화가 없습니다",
+    "forwardCommentPlaceholder": "설명 추가(선택)",
+    "forwardCommentLabel": "설명",
+    "forwardPreviewLabel": "전송할 통보문 미리보기",
+    "forwardSubmit": "전송",
+    "forwarding": "전송 중…",
+    "forwarded": "통보문을 전송했습니다",
+    "forwardedTo": "{{channel}}에 전송했습니다",
+    "forwardSourceUnavailable": "원본 통보문이 없거나 전송할 권한이 없습니다",
+    "forwardLoading": "전송된 통보문 불러오는 중",
+    "forwardDeleted": "이 통보문은 삭제되였습니다",
+    "forwardUnavailable": "열람 권한이 없어 이 통보문을 표시할 수 없습니다",
+    "forwardLoadError": "전송된 통보문을 불러오지 못했습니다",
+    "forwardSourceChannel": "{{channel}}의 통보문",
+    "forwardSourceThread": "{{channel}} 타래의 응답",
+    "forwardQuoteLabel": "{{author}}의 전송 통보문",
+    "forwardAttachmentCount_one": "첨부 파일 {{count}}개",
+    "forwardAttachmentCount_other": "첨부 파일 {{count}}개",
+    "forwardNestedCompact": "이 통보문에도 전송된 내용이 포함되여 있습니다",
+    "forwardNestedNote": "이 통보문에도 인용된 내용이 있습니다 · 원본 보기"
+  },
+  "channelLink": {
+    "inlineMessage": "{{name}} 님: {{channel}}",
+    "thread": "{{channel}}의 타래",
+    "encrypted": "이 통보문은 암호화되여 있습니다",
+    "messageUnavailable": "통보문을 표시할수 없습니다",
+    "channelUnavailable": "통로를 표시할수 없습니다",
+    "loading": "련결대상을 불러오는중",
+    "loadFailed": "련결대상을 불러오지 못하였습니다",
+    "appMessage": "App 통보문",
+    "attachments_one": "첨부파일 {{count}}건",
+    "attachments_other": "첨부파일 {{count}}건",
+    "privateChannel": "비공개 통로",
+    "encryptedChannel": "암호화 통로"
   },
   "attachments": {
+    "recentPhotos": "최근 사진",
+    "systemPhotos": "사진 선택기 열기",
+    "allowRecentPhotos": "사진 접근 허용",
+    "noRecentPhotos": "표시할 사진이 없습니다",
+    "play": "재생",
+    "pause": "일시 정지",
     "add": "화일 첨부",
     "selected": "첨부할 화일",
     "remove": "{{name}} 삭제",
@@ -243,12 +316,37 @@
     "download": "{{name}} 내려받기",
     "downloadShort": "내려받기",
     "downloadError": "내려받지 못했습니다.",
+    "previewSaveUnsupported": "이 파일은 앱에서 저장할 수 없습니다. 링크를 새 탭에서 열어 저장하십시오.",
+    "downloadSaved": "{{name}}(으)로 저장했습니다.",
+    "downloadDestinationUnsupported": "이 저장 위치에는 저장할 수 없습니다. 다른 폴더를 선택하거나 설정의 \"내려받기\"에서 저장 위치를 변경하십시오.",
+    "downloadTooMany": "동시에 내려받을 수 있는 수가 넘었습니다. 다른 내려받기가 끝난 다음에 다시 시도하십시오.",
+    "downloading": "내려받는 중",
+    "saving": "저장 중…",
+    "cancelDownload": "{{name}} 내려받기 취소",
+    "cancelDownloadShort": "취소",
     "retry": "다시 시도",
     "sensitive": "민감한 화상",
     "markSensitive": "화상을 민감한 내용으로 표시",
     "showSensitive": "화상 표시",
     "hideSensitive": "화상 숨기기",
-    "sensitiveShort": "민감한 화상"
+    "sensitiveShort": "민감한 화상",
+    "documentSummary": "본문과 셀의 간단한 미리보기입니다. 서식과 배치는 원본과 다를 수 있습니다.",
+    "previewLimit": "미리보기의 크기, 파일 수 또는 처리 시간 제한을 초과했습니다. 파일을 내려받아 확인하십시오.",
+    "emptyPreview": "내용 없음",
+    "containedFiles": "포함된 파일",
+    "previousPage": "이전 페지",
+    "nextPage": "다음 페지",
+    "pageNumber": "페지 번호",
+    "pdfPages": "PDF 페지 목록",
+    "pdfPage": "PDF {{page}}페지",
+    "mail": {
+      "subject": "제목",
+      "from": "보낸 사람",
+      "to": "받는 사람",
+      "cc": "참조",
+      "date": "날자"
+    },
+    "downloadDestinationUnsupportedAskEveryTimeOff": "이 저장 위치에는 저장할 수 없습니다. 설정의 \"내려받기\"에서 저장 위치를 변경하거나, \"내려받을 때마다 확인\"을 켜십시오."
   },
   "threads": {
     "title": "타래",
@@ -273,7 +371,22 @@
     "archiveForChannel": "{{channel}}의 보관된 스레드",
     "untitled": "제목 없는 타래",
     "targetTooOld": "이 통보문은 너무 오래되여 여기서 불러올수 없습니다",
-    "unreadTooOld": "이보다 오래된 읽지 않은 통보문은 불러오지 않았습니다"
+    "unreadTooOld": "이보다 오래된 읽지 않은 통보문은 불러오지 않았습니다",
+    "join": "스레드 참가",
+    "leave": "스레드 나가기",
+    "reopen": "다시 열기",
+    "reopenOnSend": "답장을 보내면 스레드를 다시 엽니다.",
+    "membershipError": "스레드 참가 상태를 변경하지 못했습니다.",
+    "participants_one": "참가자 {{count}}명",
+    "participants_other": "참가자 {{count}}명",
+    "participantsMore": "그밖에 {{count}}명",
+    "participantsEmpty": "참가자가 없습니다",
+    "threadStarter": "스레드 만든 사람",
+    "participantsSearch": "이름으로 검색",
+    "participantsFilterPartial": "불러온 처음 {{loaded}}명 가운데서만 검색합니다(그밖에 {{count}}명은 검색할수 없습니다).",
+    "participantsDescription": "이 스레드에 참가중인 사람입니다.",
+    "joinToReply": "스레드에 참가하면 답글을 보낼 수 있습니다.",
+    "reopenAndJoin": "다시 열고 참가하기"
   },
   "reactions": {
     "showUsers": "{{emoji}}에 반응한 사용자 표시",
@@ -307,7 +420,6 @@
     "noSearchResults": "일치하는 그림글자가 없습니다",
     "tabEmoji": "그림글자",
     "tabKitchen": "Emoji Kitchen",
-    "emojiDescription": "모든 그림글자에서 선택할수 있습니다.",
     "emojiLoading": "그림글자를 불러오는 중…",
     "recent": "최근에 쓴 그림글자",
     "skinTone": "피부색"
@@ -328,6 +440,15 @@
     "yesterday": "어제"
   },
   "composer": {
+    "editorTitle": "통보문 편집",
+    "expand": "입력칸을 전체 화면으로 펼치기",
+    "collapse": "입력칸 접기",
+    "dragHandle": "입력칸 손잡이를 우아래로 밀기",
+    "formatting": "서식",
+    "bold": "굵은 글씨",
+    "italic": "기울임 글씨",
+    "strike": "취소선",
+    "code": "코드 블로크",
     "mac": "⌘(Cmd)+Enter로 보내기 / Enter로 줄바꾸기",
     "ctrl": "Ctrl+Enter로 보내기 / Enter로 줄바꾸기",
     "other": "Cmd / Ctrl+Enter로 보내기 / Enter로 줄바꾸기",
@@ -336,6 +457,8 @@
     "channels": "통로 후보"
   },
   "notifications": {
+    "filterAll": "전체",
+    "filterMentions": "언급",
     "label": "알림",
     "close": "알림 닫기",
     "title": "알림",
@@ -364,7 +487,8 @@
     "unreadStatus": "안읽음",
     "readStatus": "읽음",
     "actors_one": "{{actor}} 님 외 1명",
-    "actors_other": "{{actor}} 님 외 {{count}}명"
+    "actors_other": "{{actor}} 님 외 {{count}}명",
+    "forwardedPreview": "통보문을 전송했습니다"
   },
   "webhooks": {
     "title": "Webhook 설정",
@@ -390,6 +514,11 @@
   },
   "mentions": {
     "suggestions": "지명 후보"
+  },
+  "appUpdate": {
+    "title": "새 판의 화면이 있습니다",
+    "description": "다시 읽으면 새 판이 적용됩니다. 입력하던 내용이 있으면 먼저 보내십시오.",
+    "reload": "다시 읽기"
   },
   "offline": {
     "bannerTitle": "오프라인입니다",
@@ -421,6 +550,19 @@
     "desktopTitle": "알림",
     "desktopValue": "체계 알림",
     "desktopDescription": "언급과 DM을 앱이 체계 알림으로 알려줍니다. 체계 설정에서 zoo2 알림을 꺼두었다면 그쪽도 켜주십시오."
+  },
+  "downloads": {
+    "desktopTitle": "내려받기",
+    "desktopDescription": "첨부 파일을 보관할 위치입니다. 내려받을 때마다 위치를 확인하거나, 미리 정한 폴더에 보관할 수 있습니다.",
+    "askEveryTime": "내려받을 때마다 확인",
+    "noFolder": "폴더 미선택",
+    "chooseFolder": "폴더 선택",
+    "resetDirectory": "보관 폴더를 지우고 내려받을 때마다 확인",
+    "olderAppValue": "프로그램의 기본 보관 위치",
+    "olderAppDescription": "이 판의 프로그램에서는 프로그램이 정한 위치에 보관합니다. 보관 위치를 바꾸려면 프로그램을 갱신하십시오.",
+    "loadError": "보관 위치 설정을 읽지 못했습니다.",
+    "retry": "다시 읽기",
+    "error": "보관 위치 설정을 바꾸지 못했습니다. 다시 시도해 주십시오."
   },
   "mfm": {
     "suggestions": "MFM 후보",
@@ -528,6 +670,7 @@
     "micNotFound": "마이크를 찾을수 없었습니다."
   },
   "bubbleChat": {
+    "navTitle": "Bubble",
     "title": "Bubble Chat",
     "description": "입력하는 글자가 그대로 실시간으로 표시되는 방입니다",
     "emptyTitle": "현재 입력하고 있는 사용자가 없습니다",
@@ -544,6 +687,30 @@
     "active": "입실중",
     "you": "당신",
     "closeParticipants": "참가자 목록 닫기"
+  },
+  "channelPins": {
+    "title": "고정",
+    "menu": "채널 조작",
+    "channelMenu": "{{name}} 채널 조작",
+    "dmMenu": "{{name}} DM 조작",
+    "pin": "고정",
+    "unpin": "고정 풀기",
+    "moveUp": "위로 이동",
+    "moveDown": "아래로 이동",
+    "dragHandle": "끌어서 순서 바꾸기",
+    "dismissError": "닫기",
+    "errors": {
+      "conflict": "다른 기기에서 고정한 채널이 바뀌었습니다. 최신 순서를 다시 읽어왔으니 다시 해보십시오.",
+      "limitExceeded": "채널은 최대 50개까지 고정할 수 있습니다.",
+      "reorderConflict": "다른 기기에서 고정 순서가 바뀌었습니다. 최신 순서를 다시 읽어왔으니 다시 해보십시오."
+    },
+    "announce": {
+      "pinned": "고정하였습니다.",
+      "unpinned": "고정을 풀었습니다.",
+      "moved": "고정한 항목을 이동하였습니다.",
+      "reorderConflict": "다른 기기에서 고정이 풀려 이동하지 않았습니다.",
+      "reorderArchived": "통로가 보관되여 이동하지 않았습니다."
+    }
   },
   "dms": {
     "title": "직접통보문",
@@ -687,6 +854,20 @@
       "addEncrypted": "암호화통로에 추가",
       "notReady": "이 응용프로그람은 아직 암호화준비(단말등록)를 마치지 않았습니다. 응용프로그람을 기동한 뒤 다시 시도하십시오.",
       "encryptedHint": "암호화통로에 응용프로그람을 넣으려면 성원의 허가가 필요합니다."
+    },
+    "components": {
+      "unsupported": "아직 지원하지 않는 요소입니다",
+      "more": "기타 조작",
+      "choose": "선택하십시오",
+      "search": "검색",
+      "noOptions": "후보가 없습니다",
+      "uploading": "올리는 중…",
+      "page": "{{page}} / {{pages}} 페지",
+      "spoiler": "미리보기를 가린 요소입니다(웨브판에서 볼수 있습니다)",
+      "webOnly": "이 조작은 웨브판에서 할수 있습니다",
+      "date": "날자",
+      "time": "시간",
+      "datetime": "날자와 시간"
     }
   },
   "search": {
@@ -703,6 +884,13 @@
     "showLess": "접기"
   },
   "home": {
+    "navTitle": "홈",
+    "back": "뒤로",
+    "deleted": "게시물을 삭제했습니다",
+    "newPosts": "새 게시물 보기 ({{count}}개)",
+    "quotedPost": "인용한 게시물",
+    "quoteUnavailable": "인용한 게시물을 표시할 수 없습니다",
+    "openQuotedPost": "인용한 게시물 열기",
     "image": "화상",
     "imageError": "화상을 추가하지 못했습니다. PNG·JPEG·GIF·WebP(각각 8MiB 이하, 최대 10장)를 선택하여 다시 시도하십시오.",
     "title": "Home",
@@ -712,6 +900,7 @@
     "post": "올리기",
     "sending": "올리는 중…",
     "sendError": "올리지 못했습니다. 초안은 남아있습니다. 다시 시도하십시오.",
+    "postForbidden": "이 통로에는 올릴수 없습니다.",
     "loadError": "시간선을 얻지 못했습니다.",
     "loading": "불러오는 중…",
     "empty": "아직 올린 글이 없습니다",
@@ -1122,9 +1311,23 @@
     },
     "tab": "암호화",
     "title": "종단 간 암호화",
-    "description": "암호화된 통로과 DM의 통보문는 내 장치에서만 읽을 수 있습니다. 키는 패스키 또는 복구 키로 보호됩니다.",
+    "description": "암호화된 통로과 DM의 통보문는 내 장치에서만 읽을 수 있습니다.",
     "loading": "암호화 상태를 불러오는 중…",
-    "unavailable": "이 장치에서는 아직 암호화가 준비되지 않았습니다. 잠시 기다리거나 다른 zoo 탭을 닫고 이 페이지를 다시 여십시오.",
+    "notReady": {
+      "unsupported": "이 열람기에서는 암호화를 리용할수 없습니다(OPFS, Web Worker, Web Locks 가운데 하나가 없습니다). 비공개창에서는 리용할수 없을수 있습니다. 보통창이나 다른 열람기에서 여십시오.",
+      "signedOut": "로그인한 사용자를 확인할수 없습니다. 다시 로그인하십시오.",
+      "userUnavailable": "로그인한 사용자 정보를 읽어들이지 못했습니다. 잠시 기다리거나 페지를 다시 여십시오.",
+      "offline": "련결되지 않아 암호화를 준비할수 없습니다. 련결되면 자동으로 계속합니다.",
+      "otherTab": "다른 zoo 탭이나 창에서 이 장치의 암호열쇠를 쓰고있습니다. 그 탭을 닫으면 이 탭이 이어받습니다.",
+      "starting": "암호화를 준비하고있습니다(이 장치를 등록하는중)…",
+      "deviceLimit": "등록할수 있는 장치가 20대 한도에 이르렀습니다. 아래의 장치 목록에서 쓰지 않는 장치를 삭제하십시오.",
+      "failedServer": "이 장치를 등록하지 못했습니다(봉사기 응답: {{status}}).",
+      "failedServerCode": "이 장치를 등록하지 못했습니다(봉사기 응답: {{status}} {{code}}).",
+      "failedNetwork": "봉사기에 련결할수 없어 이 장치를 등록하지 못했습니다.",
+      "failedLocal": "이 장치에서 암호열쇠 보관소를 열지 못했습니다.",
+      "failedLocalNamed": "이 장치에서 암호열쇠 보관소를 열지 못했습니다({{name}}).",
+      "retrying": "잠시후 자동으로 다시 시도합니다. 해결되지 않으면 페지를 다시 여십시오."
+    },
     "retry": "다시 시도",
     "notSetUpTitle": "아직 암호화를 설정하지 않았습니다",
     "notSetUpDescription": "설정하면 암호화된 통로과 DM을 사용할 수 있습니다. 복구 키가 만들어지니 기록할 준비를 하십시오.",
@@ -1183,6 +1386,7 @@
       "popupBlocked": "로그인 창을 열지 못했습니다. 팝업을 허용하고 다시 누르십시오.",
       "reauthFailed": "다시 로그인하지 못했습니다. 다시 누르십시오. 키는 그대로 유지됩니다.",
       "reauthTimeout": "제한 시간 안에 로그인을 마치지 못했습니다. 다시 누르십시오.",
+      "desktopOutdated": "이 판본의 데스크톱 앱에서는 다시 로그인할 수 없습니다. 앱을 갱신한 뒤 다시 누르십시오.",
       "setupConflict": "다른 장치에서 먼저 암호화 설정을 시작했습니다. 이 화면에 표시된 복구 키는 사용할 수 없습니다. 그 장치에서 기록한 복구 키나 패스키로 잠금을 해제하십시오.",
       "mismatch": "키 폐기가 끝나지 않았거나 서버의 키가 변조되었을 수 있습니다. 이 장치에는 서명하지 않았습니다. 폐기를 다시 하거나 암호화를 재설정하십시오.",
       "invalidRecoveryKey": "복구 키 형식이 올바르지 않습니다. 오타가 없는지 확인하십시오.",
@@ -1201,12 +1405,19 @@
       "renameFailed": "장치 이름을 바꾸지 못했습니다. 다시 시도하십시오.",
       "revocationFailed": "폐기를 끝까지 저장하지 못했습니다. 진행 상황은 이 장치에 남아 있습니다. ‘폐기 실행’을 다시 누르십시오.",
       "verifyFailed": "재검증을 저장하지 못했습니다. 다시 시도하십시오.",
+      "reverifyKeyChanged": "확인한 뒤에 상대의 키가 다시 바뀌였습니다. 아무것도 저장하지 않았습니다. “다시 검증”부터 다시 확인하십시오.",
       "tooManyMembers": "암호화된 통로의 성원은 200명까지입니다.",
       "sasFailed": "이모지 검증을 시작하지 못했습니다. 상대가 암호화를 설정했는지 확인한 뒤 다시 시도하세요."
     },
     "reunlockToAdd": "다시 잠금 해제하고 패스키 추가",
     "reunlockToAddDescription": "패스키를 추가하거나 복구 키를 다시 만들려면 패스키 또는 복구 키로 다시 잠금을 해제하십시오. 이 장치의 잠금 해제 상태는 바뀌지 않습니다.",
     "badge": "암호화됨",
+    "memberUnreadable": {
+      "notSetUp": "암호화 미설정",
+      "notSetUpDescription": "암호화를 설정하지 않아 이 통로의 새 통보문을 읽을수 없습니다.",
+      "noDevices": "장치 없음",
+      "noDevicesDescription": "암호화에 쓸수 있는 장치가 없어 이 통로의 새 통보문을 읽을수 없습니다."
+    },
     "encryptChannel": "종단간 암호화하기",
     "encryptChannelHelp": "성원의 확인된 장치만 통보문을 읽을수 있습니다. 암호화는 후에 해제할수 없습니다.",
     "encryptChannelPrivateOnly": "비공개 통로만 암호화할수 있습니다.",
@@ -1247,15 +1458,13 @@
     "sendStaleEpoch": "성원이 계속 바뀌여 통보문을 보내지 못했습니다. 다시 보내십시오.",
     "editConflict": "이 통보문은 다른 곳에서 편집되였습니다. 다시 불러온 다음 편집하십시오.",
     "recipients": {
-      "summary": "{{users}}명의 장치 {{devices}}대에 맞추어 암호화합니다.",
       "added": "지난번 송신이후 늘어난 수신자: {{names}}"
     },
     "downgraded": "이 통로는 암호화되여있었지만 봉사기가 암호화되지 않았다고 응답합니다. 암호화하지 않은 통보문은 보내지 않습니다.",
     "checking": "이 통로의 암호화를 확인하고 있습니다…",
-    "devicesTab": "장치",
     "devices": {
       "title": "장치",
-      "description": "암호화 키를 가진 장치 목록입니다. 장치 이름은 누구나 붙일 수 있으므로, 등록 일시와 마지막 사용 일시로 구별하십시오.",
+      "description": "암호화 키를 가진 장치 목록입니다.",
       "unnamed": "이름 없는 장치",
       "current": "이 장치",
       "unsigned": "서명 안 됨",
@@ -1272,7 +1481,14 @@
       "limitDescription": "이 장치를 등록할 수 없습니다. 쓰지 않는 장치를 골라 삭제하십시오. 삭제는 폐기가 아니므로, 잃어버린 장치가 있다면 등록한 뒤에 폐기도 하십시오.",
       "limitStale": "30일 이상 쓰지 않은 장치",
       "limitDelete": "선택한 장치 삭제",
-      "limitDeleted": "삭제했습니다. 곧 이 장치를 다시 등록합니다."
+      "limitDeleted": "삭제했습니다. 곧 이 장치를 다시 등록합니다.",
+      "stale": "{{days}}일 이상 사용 안 함",
+      "notUnlockedStale": "잠금 해제 안 한 채 {{days}}일 이상 사용 안 함"
+    },
+    "deviceName": {
+      "withOs": "{{browser}} ({{os}})",
+      "app": "{{browser}} (응용프로그람)",
+      "appWithOs": "{{browser}} ({{os}}, 응용프로그람)"
     },
     "revocation": {
       "pendingTitle": "폐기가 끝나지 않았습니다",
@@ -1356,7 +1572,16 @@
       },
       "reverify": "다시 검증",
       "confirmTitle": "{{name}} 님의 현재 키를 신뢰하겠습니까?",
-      "confirmDescription": "채널 밖(직접 만나거나 다른 연락 수단)에서 상대가 정말 키를 새로 만들었는지 확인한 뒤 신뢰하십시오. 저장하기 전에 다시 로그인해 본인 확인을 합니다.",
+      "confirmDescription": "아래 지문을 {{name}} 님의 화면(설정의 “암호화”에 있는 “내 키의 지문”)과 채널 밖(직접 만나거나 다른 연락 수단)에서 맞춰 보고, 같을 때만 신뢰하십시오. 저장하기 전에 다시 로그인해 본인 확인을 합니다.",
+      "currentFingerprint": "현재 키의 지문",
+      "previousFingerprint": "이전에 신뢰한 키의 지문",
+      "keyChanged": "이전에 신뢰한 키에서 바뀌였습니다. 상대가 정말 키를 새로 만들었는지 확인하십시오.",
+      "keyUnchanged": "이전에 신뢰한 키와 같습니다.",
+      "sasRecommended": "가능하면 “검증하기”에서 QR 코드나 이모지로 검증하십시오. 지문을 맞춰 보지 않아도 상대와 같은 키를 보고 있는지 확인할 수 있습니다.",
+      "confirmEffect": "신뢰하면 내 사용자 서명 키로 이 키에 서명하고, 내 모든 기기가 이 키를 신뢰합니다.",
+      "confirmTrust": "이 키를 신뢰",
+      "ownFingerprint": "내 키의 지문",
+      "ownFingerprintHelp": "상대가 나를 다시 검증할 때 맞춰 보는 지문입니다.",
       "warning": {
         "own_identity_unknown": "자기의 마스터 키를 아직 확인하지 않았습니다. 잠금 해제하면 확인할 수 있습니다.",
         "own_master_key_changed": "봉사기에 있는 마스터 키가 이 장치에서 확인한 키와 다릅니다. 다시 잠금 해제할 때까지 어느 장치에도 키를 보내지 않습니다.",
@@ -1383,7 +1608,7 @@
       "regenerate": "복구 키 새로 만들기",
       "create": "복구 키 만들기",
       "newTitle": "새 복구 키",
-      "newDescription": "저장하면 이전 복구 키로 잠금 해제할 수 없습니다. 키 슬롯을 삭제하거나 다시 만드는 것은 폐기가 아니므로, 이전 복구 키가 유출되었을 수 있다면 ‘장치’에서 폐기도 하십시오.",
+      "newDescription": "저장하면 이전 복구 키로 잠금 해제할 수 없습니다. 키 슬롯을 삭제하거나 다시 만드는 것은 폐기가 아니므로, 이전 복구 키가 유출되었을 수 있다면 이 탭의 ‘장치’에서 폐기도 하십시오.",
       "save": "저장",
       "removeDescription": "이 복구 키로 더 이상 잠금 해제할 수 없습니다. 이미 받은 키는 무효가 되지 않습니다. 유출되었을 수 있다면 폐기하십시오."
     },
@@ -1396,8 +1621,8 @@
       "blocked": "안전을 위해 이 종류의 파일은 열수 없습니다"
     },
     "legacy": {
-      "badge": "암호화전",
-      "badgeHelp": "이 통로를 암호화하기 전에 보낸 통보문입니다. 암호화되지 않았으므로 봉사기가 내용을 읽거나 고칠수 있습니다.",
+      "unencryptedBadge": "암호화되지 않음",
+      "unencryptedBadgeHelp": "암호화된 통보문 뒤에 있는 암호화되지 않은 통보문입니다. 암호화된 통로에서 정상적인 봉사기는 이런 통보문을 만들수 없으므로 봉사기가 추가하거나 고쳤을수 있습니다.",
       "divider": "여기부터 암호화되여있습니다",
       "editCancelled": "이 통로가 암호화되여 암호화전 통보문의 편집을 그만두었습니다.",
       "editForbidden": "암호화전에 보낸 통보문은 편집할수 없습니다. 삭제는 할수 있습니다."
@@ -1412,7 +1637,7 @@
       "description": "암호화하면 다음과 같이 됩니다.",
       "points": {
         "future": "앞으로의 통보문과 첨부파일은 성원들의 검증된 단말기에서만 읽을수 있습니다.",
-        "earlier": "지금까지의 통보문은 암호화되지 않고 봉사기에 그대로 남습니다. 《암호화전》 표식이 붙고 편집할수 없게 됩니다(삭제는 할수 있습니다).",
+        "earlier": "지금까지의 통보문은 암호화되지 않고 봉사기에 그대로 남으며 편집할수 없게 됩니다(삭제는 할수 있습니다).",
         "published": "Home이나 ActivityPub에 이미 내보낸 게시물은 취소되지 않습니다.",
         "integrations": "Slack 가져오기와 동기화가 멈춥니다. 응용프로그람(로보트)과 Incoming Webhook을 먼저 제거하십시오.",
         "irreversible": "암호화는 후에 해제할수 없습니다."
@@ -1427,9 +1652,9 @@
       }
     },
     "sas": {
-      "start": "이모지로 검증",
+      "start": "검증하기",
       "incomingTitle": "{{name}} 님이 검증을 요청했습니다",
-      "incomingDescription": "서로의 화면에 같은 이모지가 나오는지 비교해 상대의 키를 확인합니다. 직접 만나거나 통화하는 등 채널 밖에서 화면을 비교할 수 있을 때 수락하세요.",
+      "incomingDescription": "QR 코드를 스캔하거나 서로의 화면에 같은 이모지가 나오는지 비교해 상대의 키를 확인합니다. 직접 만나거나 통화하는 등 채널 밖에서 화면을 비교할 수 있을 때 수락하세요.",
       "accept": "수락",
       "decline": "거절",
       "requestedTitle": "{{name}} 님의 수락을 기다리는 중",
@@ -1530,6 +1755,246 @@
         "62": "폴더",
         "63": "압정"
       }
+    },
+    "qr": {
+      "title": "{{name}} 님 검증",
+      "codeLabel": "검증 QR 코드",
+      "showHint": "{{name}} 님의 기기로 이 QR 코드를 스캔해 달라고 하십시오. 카메라를 쓸 수 없거나 멀리 떨어져 있으면 이모지로 검증할 수 있습니다.",
+      "waitingForAccept": "{{name}} 님이 요청을 수락하면 상대의 기기로 이 QR 코드를 스캔할 수 있습니다.",
+      "scan": "상대의 QR 스캔",
+      "showOwn": "내 QR 표시",
+      "useEmoji": "이모지로 검증",
+      "scanHint": "상대 화면의 QR 코드를 카메라에 비추십시오.",
+      "otherCode": "이 QR 코드는 지금 검증의 것이 아닙니다. 상대 화면에 나온 QR 코드를 비추십시오.",
+      "scannedTitle": "{{name}} 님의 확인을 기다리는 중",
+      "waitingForConfirm": "상대 화면에서 스캔을 확인하기를 기다리는 중…",
+      "confirmTitle": "{{name}} 님이 QR 코드를 스캔했나요?",
+      "confirmDescription": "{{name}} 님이 눈앞에서 자신의 기기로 이 QR 코드를 스캔했을 때만 ‘스캔함’을 누르십시오. 누르면 다시 로그인해 본인 확인을 한 뒤 상대의 키를 검증됨으로 저장합니다.",
+      "confirmYes": "스캔함",
+      "confirmNo": "스캔하지 않음",
+      "verifiedTitle": "QR 코드로 {{name}} 님의 키를 확인했습니다",
+      "needsLogin": "검증됨으로 저장하려면 다시 로그인해 본인 확인을 하십시오.",
+      "login": "로그인하고 저장",
+      "keyMismatch": "QR 코드의 키가 서버에서 받은 키와 일치하지 않아 검증을 중단했습니다. 키가 바뀌었을 수 있습니다.",
+      "camera": {
+        "label": "카메라 화면",
+        "starting": "카메라를 켜는 중…",
+        "unsupported": "이 브라우저에서는 카메라를 쓸 수 없습니다. 상대에게 이 기기의 QR 코드를 스캔해 달라고 하거나 이모지로 검증하십시오.",
+        "denied": "카메라 사용이 허용되지 않았습니다. 브라우저 설정에서 허용하거나 이모지로 검증하십시오.",
+        "noCamera": "카메라를 찾을 수 없습니다. 상대에게 이 기기의 QR 코드를 스캔해 달라고 하거나 이모지로 검증하십시오.",
+        "failed": "카메라를 켤 수 없습니다. 이모지로 검증하십시오."
+      }
+    },
+    "android": {
+      "saveDescription": "저장하기 전에 다시 로그인해야 합니다. 브라우저가 열리며, 로그인을 마치면 이 화면으로 돌아옵니다.",
+      "continueDescription": "중단된 초기 설정을 마저 저장하려면 다시 로그인하십시오. 브라우저가 열립니다.",
+      "reauthWaiting": "브라우저에서 다시 로그인하기를 기다리고 있습니다…",
+      "reauthCancel": "로그인 그만두기",
+      "browserUnavailable": "로그인할 브라우저를 열 수 없습니다. 브라우저를 설치하거나 활성화한 뒤 다시 누르십시오."
     }
+  },
+  "defaultChannels": {
+    "refreshed": "일부 통로를 더는 선택할 수 없어 목록을 새로 불러왔습니다. 선택을 확인하고 다시 보관해 주십시오.",
+    "limit": "공개 통로는 최대 100개까지 선택할 수 있습니다.",
+    "title": "새 계정의 기본 통로",
+    "description": "계정을 만들 때 자동으로 참가할 공개 통로를 선택합니다. 기존 계정에는 적용되지 않습니다.",
+    "empty": "사용할 수 있는 공개 통로가 없습니다.",
+    "saved": "보관했습니다."
+  },
+  "androidUpdate": {
+    "title": "앱 갱신"
+  },
+  "androidNotifications": {
+    "enable": "알림 사용",
+    "scope": "로그인한 세션이 동기화되는 동안 새 알림을 받습니다.",
+    "mentions": "멘션 및 답글",
+    "messages": "다이렉트 메시지",
+    "reactions": "반응"
+  },
+  "onboarding": {
+    "replay": "시작 안내 열기",
+    "next": "다음",
+    "back": "이전",
+    "skip": "건너뛰기",
+    "finish": "Zoo 시작하기",
+    "progress": "{{current}} / {{total}}",
+    "welcome": {
+      "title": "Zoo에 오신 것을 환영합니다",
+      "description": "실제 화면을 조작하며 Zoo를 알아보세요. 다음을 누르면 채널 목록으로 이동합니다. 나침반 단추로 다시 시작할 수 있습니다."
+    },
+    "channels": {
+      "title": "채널 찾기",
+      "description": "강조된 목록에서 채널을 선택하세요. 채널 찾기로 다른 대화에 참여할 수 있습니다."
+    },
+    "messages": {
+      "title": "대화 참여하기",
+      "description": "선택한 채널의 강조된 입력란에서 글을 작성하세요. 스레드로 답글을 달거나 반응을 추가할 수 있습니다."
+    },
+    "notifications": {
+      "title": "알림 확인하기",
+      "description": "알림 화면입니다. 언급과 답글을 확인하고 알림을 선택해 해당 대화를 열 수 있습니다."
+    },
+    "settings": {
+      "title": "개인 설정 바꾸기",
+      "description": "일반 설정 화면입니다. 강조된 탭에서 표시와 조작을 조정하세요. 나침반 단추로 안내를 다시 열 수 있습니다."
+    },
+    "slack": {
+      "title": "Slack 련결하기",
+      "description": "Slack 설정 화면입니다. 계정을 련결하면 가져온 과거 게시물을 Zoo 계정에 련결할 수 있습니다. 직접 만든 비공개 채널도 가져올 수 있습니다. 설정되지 않은 작업공간은 관리자에게 문의하세요."
+    },
+    "title": "사용 안내",
+    "chooseChannel": "채널을 선택하면 계속할 수 있습니다. 필요하면 채널 찾기에서 참여하세요.",
+    "navigationError": "화면을 열 수 없습니다. 다시 시도하세요."
+  },
+  "sip": {
+    "title": "전화(SIP)",
+    "description": "개인 및 동아리 공유 회선과 전화기를 관리합니다. 선택한 회선 하나에 연결해 전화를 걸고 받습니다. 수신하려면 브라우저를 열고 연결을 유지해야 합니다.",
+    "refresh": "새로 고침",
+    "addLine": "회선 등록",
+    "loading": "불러오는 중…",
+    "loadError": "회선을 불러올 수 없습니다. 새로 고침 후 다시 시도하세요.",
+    "disabled": "전화 기능이 아직 활성화되지 않았습니다. 관리자의 기반 설정이 필요합니다.",
+    "channelBusy": "채널 통화 중에는 SIP 연결을 사용할 수 없습니다.",
+    "line": "통화 회선",
+    "selectLine": "회선 선택",
+    "personal": "개인용",
+    "shared": "동아리 공유",
+    "connect": "연결 및 수신 대기",
+    "disconnect": "연결 해제",
+    "number": "전화번호 또는 내선번호",
+    "dial": "전화 걸기",
+    "empty": "사용 가능한 회선이 없습니다.",
+    "edit": "편집",
+    "delete": "삭제",
+    "lineForm": "회선 등록 및 편집",
+    "name": "회선 이름",
+    "ownership": "소유 구분",
+    "phone_number": "외선번호(선택 사항)",
+    "websocket_path": "SIP 연결 경로",
+    "sip_domain": "SIP 도메인",
+    "username": "SIP 사용자 이름",
+    "password": "SIP 비밀번호",
+    "keepPassword": "비워 두면 기존 비밀번호 유지",
+    "members": "사용 가능한 구성원",
+    "membersHelp": "선택한 구성원만 연결할 수 있습니다. 관리자도 사용하려면 선택하세요. SIP 인증 정보를 공유하므로 구성원 삭제 시 PBX에서도 비밀번호를 변경하세요.",
+    "phones": "전화기 및 거점 연락처",
+    "phonesHelp": "이름과 내선번호를 등록한 다음 표시된 SIP계정을 전화기에 설정하십시오.",
+    "gatewayAccount": "거점 중계기 SIP계정",
+    "phoneAccount": "전화기 SIP계정",
+    "phoneName": "전화기 또는 거점 이름",
+    "extension": "대상 번호",
+    "removePhone": "연락처 삭제",
+    "addPhone": "전화기 추가",
+    "pbxHelp": "관리자가 제공한 PBX 도메인과 계정을 등록하세요. SIP 연결은 서버에서 처리합니다. 발신 가능한 외선과 번호도 PBX에서 제한하세요.",
+    "writeError": "저장할 수 없습니다. 입력과 권한을 확인한 후 다시 시도하세요.",
+    "save": "저장",
+    "saving": "저장 중…",
+    "cancel": "취소",
+    "deleteTitle": "이 회선을 삭제할까요?",
+    "deleteHelp": "zoo2에서 회선과 연락처를 삭제합니다. PBX의 내선과 인증 정보는 별도로 비활성화하세요.",
+    "answer": "응답",
+    "hangup": "종료 또는 거절",
+    "mute": "음소거",
+    "unmute": "음소거 해제",
+    "dtmf": "누름음(0–9, *, #)",
+    "sendTone": "보내기",
+    "callError": "연결 또는 작업에 실패했습니다. 회선 권한, PBX 및 음성 중계 설정을 확인하세요.",
+    "status": {
+      "offline": "연결 안 됨",
+      "connecting": "연결 중…",
+      "ready": "수신 대기 중",
+      "dialing": "발신 중…",
+      "incoming": "수신 중",
+      "active": "통화 중"
+    },
+    "unavailableMember": "사용할 수 없는 구성원"
+  },
+  "androidPhone": {
+    "description": "개인 또는 공유 SIP 회선과 DM 음성 통화를 기기의 통화 기능과 함께 사용합니다.",
+    "nativeCalls": "기기 통화 기능 연동",
+    "nativeHelp": "전화가 오면 통화 알림이 표시됩니다. 알림을 허용하면 지원되는 기기에서 배경에서도 DM 전화를 받을 수 있습니다. SIP 전화를 기다리거나 FCM을 사용할 수 없는 기기에서 DM 전화를 기다릴 때는 Zoo를 화면에 열어 두세요. 기기의 통화 제어로 응답, 종료 및 음성 출력을 조작할 수 있으며 마이크 권한이 필요합니다.",
+    "minimizeCall": "최소화",
+    "expandCall": "통화 열기",
+    "floatCall": "작은 창으로 보기",
+    "pipUnavailable": "안드로이드 설정에서 화면 속 화면을 확인하세요.",
+    "incomingScreenSettings": "전체 화면 수신 설정",
+    "receiveDm": "DM 전화 받기",
+    "callError": "통화 준비 또는 조작에 실패했습니다. 마이크 권한, 기기의 통화 지원, 네트워크와 회선 설정을 확인하세요.",
+    "speaker": "스피커",
+    "waiting": "전화 수신 대기 중",
+    "dmCall": "통화"
+  },
+  "globalSearch": {
+    "title": "검색",
+    "placeholder": "통보문과 화일 검색",
+    "kinds": {
+      "all": "전체",
+      "messages": "통보문",
+      "files": "화일"
+    },
+    "prompt": "검색할 단어를 입력하십시오. 공백으로 구분하면 모든 단어를 포함한 결과를 찾습니다.",
+    "empty": "결과가 없습니다.",
+    "emptyOlder": "{{month}}까지 결과가 없습니다. 더 이전 기간을 검색할수 있습니다.",
+    "searchedUntil": "{{month}}까지 검색하였습니다",
+    "searchOlder": "이전 결과 더 검색",
+    "loading": "검색중…",
+    "loadError": "검색하지 못하였습니다.",
+    "retry": "다시 시도",
+    "tooManyTerms": "검색어는 최대 {{max}}개까지 입력할수 있습니다. 단어를 줄여주십시오.",
+    "termTooLong": "한 단어는 최대 {{max}}자까지 입력할수 있습니다. 단어를 짧게 줄여주십시오.",
+    "encryptedNote": "암호화된 통로는 검색대상에서 제외됩니다.",
+    "openNav": "검색",
+    "inThread": "타래 답글",
+    "filters": {
+      "label": "거르기",
+      "from": "보낸 사람",
+      "in": "통로",
+      "kind": "종류",
+      "period": "기간",
+      "anytime": "지정하지 않음",
+      "last7": "지난 7일",
+      "last30": "지난 30일",
+      "last365": "지난 1년",
+      "custom": "날자 지정",
+      "after": "시작날자",
+      "before": "마감날자",
+      "reversed": "시작일은 종료일과 같거나 그 이전이여야 합니다.",
+      "reset": "조건 초기화",
+      "me": "{{name}} (나)",
+      "searchPeople": "이름으로 찾기",
+      "searchChannels": "통로 이름으로 찾기",
+      "noMatches": "찾을수 없습니다",
+      "clearSelection": "선택 해제",
+      "selectedCount": "{{label}}: {{count}}개",
+      "max": "최대 {{count}}개까지 선택할수 있습니다",
+      "mine": "내가 참가중",
+      "noBots": "보트 제외"
+    }
+  },
+  "catchUp": {
+    "navUnread_one": "안 읽은 대화 {{count}}개",
+    "navUnread_other": "안 읽은 대화 {{count}}개",
+    "title": "안 읽은 메시지 확인",
+    "close": "닫기",
+    "count_one": "읽지 않은 메시지 {{count}}개",
+    "count_other": "읽지 않은 메시지 {{count}}개",
+    "overCount_one": "읽지 않은 메시지 {{count}}개 이상",
+    "overCount_other": "읽지 않은 메시지 {{count}}개 이상",
+    "progress": "{{current}} / {{total}}",
+    "markRead": "읽음으로 표시",
+    "keepUnread": "읽지 않고 다음으로",
+    "readError": "읽음으로 표시할 수 없습니다. 다시 시도해 주세요.",
+    "loadError": "안 읽은 대화를 불러올 수 없습니다",
+    "retry": "다시 시도",
+    "loading": "안 읽은 대화를 불러오는 중",
+    "empty": "안 읽은 대화가 없습니다",
+    "emptyDescription": "새 메시지가 오면 다시 확인해 주세요",
+    "complete": "모두 확인했습니다",
+    "summary": "읽음 {{read}}개 · 읽지 않음 {{skipped}}개",
+    "refresh": "새로 고침",
+    "conversation": "대화",
+    "unreadTooOld": "이전 안 읽은 메시지가 아직 범위 밖에 있습니다. 더 불러온 뒤 읽음으로 표시하세요.",
+    "loadMore": "더 불러오기",
+    "unreadChanged": "읽는 동안 새로운 안 읽은 메시지가 도착했습니다. 이 대화는 읽지 않은 상태로 다음으로 넘어가세요."
   }
 }

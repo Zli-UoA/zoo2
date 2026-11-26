@@ -24,6 +24,10 @@ pub struct Channel {
     /// 暗号化チャンネル（作成時だけ指定でき、変わらない。docs/e2ee.md）。
     #[serde(default)]
     pub encrypted: bool,
+    /// 暗号化チャンネルの `membership_epoch`（docs/e2ee.md の「membership_epoch と送信の順序」）。
+    /// Electric は int8 を文字列で配る。平文のチャンネルや古いスキーマでは `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub membership_epoch: Option<u64>,
     pub archive_at: Option<DateTime>,
     pub deleted_at: Option<DateTime>,
 }
@@ -44,6 +48,16 @@ pub struct ChannelUser {
     pub channel_id: String,
 }
 
+/// 自分がピン留めしたチャンネル・DM と、その並び順（`user_pinned_channels`）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UserPinnedChannel {
+    pub user_id: String,
+    pub channel_id: String,
+    pub position: i64,
+    pub created_at: DateTime,
+    pub updated_at: DateTime,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     pub id: String,
@@ -51,6 +65,12 @@ pub struct Message {
     pub channel_id: String,
     pub content: String,
     pub card: Option<String>,
+    /// メッセージ部品（Discord Components V2 形式の JSON）。[`Message::components_document`] で読む。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub components: Option<String>,
+    /// 部品を付けたアプリの ID。ボタンなどを押したとき、このアプリに送る。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_origin_id: Option<String>,
     pub created_at: DateTime,
     pub updated_at: Option<DateTime>,
     pub deleted_at: Option<DateTime>,
@@ -61,6 +81,32 @@ pub struct Message {
     pub display_attachments: Option<Vec<Attachment>>,
     #[serde(default)]
     pub thread_archive_at: Option<DateTime>,
+    /// 暗号化チャンネルのメッセージの Megolm の暗号文（`messages.ciphertext`。docs/e2ee.md の
+    /// 「messages.ciphertext の形式」）。平文のメッセージと、削除した行では `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ciphertext: Option<Value>,
+    /// 暗号化して送ったときの `membership_epoch`。平文のメッセージ（暗号化に切り替える前の行を含む）では `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<u64>,
+    /// 版の番号（編集のたびにサーバーが 1 増やす）。
+    #[serde(default)]
+    pub revision: u64,
+    /// `message` か `emote`（`messages.message_kind`）。古いスキーマでは `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_kind: Option<String>,
+}
+
+impl Message {
+    /// メッセージ部品を読む。`components` が無く、旧形式の `card` だけがある行（移行前）は、
+    /// 旧形式から作る。壊れていれば None（本文を表示する）。
+    pub fn components_document(&self) -> Option<zoo_components::Document> {
+        if let Some(json) = self.components.as_deref().filter(|s| !s.trim().is_empty()) {
+            return zoo_components::Document::parse(json);
+        }
+        let card: Value = serde_json::from_str(self.card.as_deref()?).ok()?;
+        let doc = zoo_components::legacy::cards(&card);
+        (!doc.components.is_empty()).then_some(doc)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -153,6 +199,7 @@ pub struct CardData {
 }
 
 /// JSON 文字列から 1 個または複数の CardData をパースする。
+/// 旧形式（`messages.card`）。新しいクライアントは [`Message::components_document`] を使う。
 pub fn parse_message_cards(value: &str) -> Vec<CardData> {
     if value.trim().is_empty() {
         return Vec::new();
@@ -191,6 +238,7 @@ impl FromRow for Channel {
             is_dm: opt_boolean(row, "is_dm")?.unwrap_or(false),
             // 古いスキーマには encrypted がないため、無ければ平文のチャンネルとして扱う。
             encrypted: opt_boolean(row, "encrypted")?.unwrap_or(false),
+            membership_epoch: opt_unsigned(row, "membership_epoch")?,
             archive_at: opt_time(row, "archive_at")?,
             deleted_at: opt_time(row, "deleted_at")?,
         })
@@ -206,6 +254,18 @@ impl FromRow for User {
             is_bot: opt_boolean(row, "is_bot")?.unwrap_or(false),
             bot_mentionable: opt_boolean(row, "bot_mentionable")?.unwrap_or(false),
             is_guest: opt_boolean(row, "is_guest")?.unwrap_or(false),
+        })
+    }
+}
+
+impl FromRow for UserPinnedChannel {
+    fn from_row(row: &Row) -> Result<Self> {
+        Ok(Self {
+            user_id: text(row, "user_id")?,
+            channel_id: text(row, "channel_id")?,
+            position: integer(row, "position")?,
+            created_at: time(row, "created_at")?,
+            updated_at: time(row, "updated_at")?,
         })
     }
 }
@@ -227,6 +287,8 @@ impl FromRow for Message {
             channel_id: text(row, "channel_id")?,
             content: opt_text(row, "content").unwrap_or_default(),
             card: opt_text(row, "card"),
+            components: opt_text(row, "components"),
+            app_origin_id: opt_text(row, "app_origin_id"),
             created_at: time(row, "created_at")?,
             updated_at: opt_time(row, "updated_at")?,
             deleted_at: opt_time(row, "deleted_at")?,
@@ -234,6 +296,10 @@ impl FromRow for Message {
             display_reactions: display_reactions(row)?,
             display_attachments: display_attachments(row)?,
             thread_archive_at: opt_time(row, "thread_archive_at")?,
+            ciphertext: opt_json(row, "ciphertext")?,
+            epoch: opt_unsigned(row, "epoch")?,
+            revision: opt_unsigned(row, "revision")?.unwrap_or(0),
+            message_kind: opt_text(row, "message_kind"),
         })
     }
 }
@@ -355,6 +421,13 @@ fn opt_integer(row: &Row, column: &str) -> Result<Option<i64>> {
     }
 }
 
+/// 0 以上の int8 の列（`membership_epoch`、`epoch`、`revision`）。
+fn opt_unsigned(row: &Row, column: &str) -> Result<Option<u64>> {
+    opt_integer(row, column)?
+        .map(|value| u64::try_from(value).map_err(|_| anyhow!("列 {column} が負の数です: {value}")))
+        .transpose()
+}
+
 fn integer(row: &Row, column: &str) -> Result<i64> {
     opt_integer(row, column)?.ok_or_else(|| anyhow!("列 {column} がありません"))
 }
@@ -424,12 +497,46 @@ mod tests {
         })))
         .unwrap();
         assert!(channel.encrypted);
+        assert_eq!(channel.membership_epoch, Some(3));
         assert!(!channel.is_private);
         assert!(channel.is_nsfw);
         assert!(channel.is_dm);
         assert_eq!(
             channel.archive_at.unwrap().to_string(),
             "2026-11-01T01:02:03.456"
+        );
+    }
+
+    #[test]
+    fn parses_encrypted_message_columns() {
+        let message = Message::from_row(&row(json!({
+            "id": "m1", "user_id": "u1", "channel_id": "c1", "content": "",
+            "created_at": "2026-11-01 01:02:03", "ciphertext": "{\"algorithm\":\"m.megolm.v1.aes-sha2\"}",
+            "epoch": "4", "revision": "2", "message_kind": "emote"
+        })))
+        .unwrap();
+        assert_eq!(
+            message.ciphertext,
+            Some(json!({ "algorithm": "m.megolm.v1.aes-sha2" }))
+        );
+        assert_eq!(message.epoch, Some(4));
+        assert_eq!(message.revision, 2);
+        assert_eq!(message.message_kind.as_deref(), Some("emote"));
+
+        let plain = Message::from_row(&row(json!({
+            "id": "m2", "user_id": "u1", "channel_id": "c1", "content": "hi",
+            "created_at": "2026-11-01 01:02:03", "ciphertext": null, "epoch": null
+        })))
+        .unwrap();
+        assert_eq!(plain.ciphertext, None);
+        assert_eq!(plain.epoch, None);
+        assert_eq!(plain.revision, 0);
+        assert!(
+            Message::from_row(&row(json!({
+                "id": "m3", "user_id": "u1", "channel_id": "c1",
+                "created_at": "2026-11-01 01:02:03", "revision": "-1"
+            })))
+            .is_err()
         );
     }
 
@@ -501,9 +608,22 @@ mod tests {
             Some("{\"title\":\"zoo2\",\"url\":\"https://zoo2.app\"}")
         );
 
-        let cards = parse_message_cards(message.card.as_deref().unwrap());
-        assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].title, "zoo2");
-        assert_eq!(cards[0].url, "https://zoo2.app");
+        // 移行前の行は、旧形式のカードから部品を作る
+        let doc = message.components_document().unwrap();
+        assert!(doc.hides_content());
+        assert!(doc.fallback_text(100).contains("[zoo2](https://zoo2.app)"));
+
+        let message = Message::from_row(&row(json!({
+            "id": "m2", "user_id": "u1", "channel_id": "c1", "content": "fallback",
+            "components": "{\"flags\":32768,\"components\":[{\"type\":10,\"content\":\"hi\"}]}",
+            "app_origin_id": "app1",
+            "created_at": "2026-11-01T00:00:00"
+        })))
+        .unwrap();
+        assert_eq!(message.app_origin_id.as_deref(), Some("app1"));
+        assert_eq!(
+            message.components_document().unwrap().fallback_text(100),
+            "hi"
+        );
     }
 }

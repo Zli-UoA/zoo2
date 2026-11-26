@@ -1,15 +1,21 @@
 import { storySurfaces } from "../../../../.storybook/story-surfaces";
 import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
+import { expect, fireEvent, fn, screen, userEvent, waitFor, within } from "storybook/test";
 
 import { StoryShell } from "../../../../.storybook/shell";
 import { storyUsers } from "../../../../.storybook/fixtures";
+import encryptedAttachmentImage from "../../../../.storybook/fixtures/encrypted-attachment.png?inline";
 import { reactionUserLabel } from "../../../lib/emoji/reactions";
+import { RECENT_EMOJIS_STORAGE_KEY } from "../../../lib/emoji/recents";
 import {
   EncryptedChannelContext,
   MentionUserNamesContext,
 } from "../../../lib/e2ee/messageDecryption";
+import {
+  ForwardedMessagesProvider,
+  type ForwardEntryState,
+} from "../../../hooks/useForwardedMessages";
 import { storyAttachments } from "../../../../.storybook/attachment-fixtures";
 import { EncryptedAttachmentError } from "../../../lib/e2ee/attachments";
 import { EncryptedAttachmentLoaderContext } from "./EncryptedMessageAttachments";
@@ -19,6 +25,7 @@ import type { MessageItem } from "./messageGrouping";
 const item: MessageItem = {
   message: {
     id: "message-1",
+    channel_id: "channel-1",
     user_id: "user-1",
     content:
       "こんにちは。今日のリリースは 18:00 です。詳細は https://example.com/docs を参照してください。",
@@ -102,7 +109,7 @@ export const HoverActions: Story = {
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.hover(await canvas.findByText(/こんにちは/));
-    await expect(canvas.getByRole("button", { name: "編集" })).toBeInTheDocument();
+    await expect(canvas.getByRole("button", { name: "メッセージを編集" })).toBeInTheDocument();
   }),
 };
 
@@ -318,6 +325,11 @@ export const CopyOriginalMenu: Story = {
     await waitFor(() =>
       expect(screen.getByRole("menuitem", { name: "原文をコピー" })).toBeVisible(),
     );
+    // メッセージリンクのコピーは、原文のコピーの隣に並ぶ。
+    const labels = screen.getAllByRole("menuitem").map((menuItem) => menuItem.textContent);
+    await expect(labels.indexOf("メッセージリンクをコピー")).toBe(
+      labels.indexOf("原文をコピー") + 1,
+    );
   }),
 };
 
@@ -438,6 +450,94 @@ export const EncryptedDecrypted: Story = {
 
 const storyUserNames = new Map(storyUsers.map((user) => [user.id, user.user_name]));
 
+export const MentionedMessage: Story = {
+  decorators: [
+    (Story) => (
+      <MentionUserNamesContext.Provider value={new Map([["user-viewer", "amesyu"]])}>
+        <Story />
+      </MentionUserNamesContext.Provider>
+    ),
+  ],
+  args: {
+    isOwn: true,
+    item: {
+      ...item,
+      message: {
+        ...item.message,
+        user_id: "user-viewer",
+        user_name: "amesyu",
+        display_name: "amesyu",
+        content: "@amesyu 確認をお願いします。",
+      },
+    },
+    mentionUserId: "user-viewer",
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const row = [...canvasElement.querySelectorAll("div")].find((element) =>
+      element.classList.contains("group/row"),
+    );
+    await expect(row).toBeDefined();
+    await waitFor(async () => {
+      await expect(getComputedStyle(row!).backgroundColor).toMatch(/(?:,|\/)\s*0\.08\)$/);
+    });
+    await expect(getComputedStyle(row!, "::before").width).toBe("3px");
+    const swatch = document.createElement("span");
+    swatch.style.color = "var(--mention)";
+    row!.append(swatch);
+    const mentionColor = getComputedStyle(swatch).color;
+    swatch.remove();
+    await expect(getComputedStyle(row!, "::before").backgroundColor).toBe(mentionColor);
+  }),
+};
+
+/** メッセージリンクなどで開いた行。青の背景と左端のアクセントが、3 回点滅してから 1.5 秒点灯し、フェードアウトする。 */
+export const LinkTargetHighlight: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: { highlightRun: 1 },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const overlay = canvasElement.querySelector<HTMLElement>("[data-message-target-highlight]");
+    await expect(overlay).not.toBeNull();
+    // 読み上げには出さず、操作も妨げない。
+    await expect(overlay!.getAttribute("aria-hidden")).toBe("true");
+    await expect(getComputedStyle(overlay!).pointerEvents).toBe("none");
+    // メンションの強調と同じ形式で、左端に 3px のアクセントを持つ。
+    await expect(getComputedStyle(overlay!, "::before").width).toBe("3px");
+  }),
+};
+
+/** メンションの強調がある行でも、同じ強調を重ねる。フェードアウトのあとは、メンションの強調だけが残る。 */
+export const LinkTargetHighlightMentioned: Story = {
+  ...MentionedMessage,
+  parameters: { a11y: { test: "error" } },
+  args: { ...MentionedMessage.args, highlightRun: 1 },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const row = [...canvasElement.querySelectorAll("div")].find((element) =>
+      element.classList.contains("group/row"),
+    );
+    const overlay = canvasElement.querySelector<HTMLElement>("[data-message-target-highlight]");
+    await expect(overlay).not.toBeNull();
+    await expect(overlay!.parentElement).toBe(row);
+    await waitFor(async () => {
+      await expect(getComputedStyle(row!).backgroundColor).toMatch(/(?:,|\/)\s*0\.08\)$/);
+    });
+  }),
+};
+
+export const MentionedChannelMessage: Story = {
+  ...MentionedMessage,
+  args: {
+    ...MentionedMessage.args,
+    item: {
+      ...item,
+      message: {
+        ...item.message,
+        user_id: "user-viewer",
+        content: "@channel 確認をお願いします。",
+      },
+    },
+  },
+};
+
 /**
  * 暗号化メッセージのメンションは、復号した `mentions` だけで表示する。本文に `@bob` や `@channel` が
  * あっても、`mentions` になければメンションとして表示しない（docs/e2ee.md の「Megolm の平文」）。
@@ -530,7 +630,7 @@ export const EncryptedBeforeEncryptionRow: Story = {
     ),
   ],
   args: {
-    // 暗号化に切り替える前の平文のメッセージ（#367）。本文を出し、印を付け、編集させない。
+    // 暗号化に切り替える前の平文のメッセージ（#367）。本文を出し、印は付けず、編集させない。
     item: {
       ...item,
       message: { ...item.message, id: "message-before-encryption", ciphertext: null, epoch: null },
@@ -539,9 +639,28 @@ export const EncryptedBeforeEncryptionRow: Story = {
   },
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByText("暗号化前")).toBeVisible();
     await expect(canvas.getByText(/今日のリリースは 18:00 です/)).toBeVisible();
-    await expect(canvas.queryByRole("button", { name: "編集" })).not.toBeInTheDocument();
+    await expect(canvas.queryByText("暗号化されていません")).not.toBeInTheDocument();
+    await expect(
+      canvas.queryByRole("button", { name: "メッセージを編集" }),
+    ).not.toBeInTheDocument();
+  }),
+};
+
+export const EncryptedUnencryptedAfterEncryptedRow: Story = {
+  decorators: EncryptedBeforeEncryptionRow.decorators,
+  args: {
+    // 暗号化したメッセージより後ろの、暗号文のない行（#367）。正しいサーバーは作れないので警告する。
+    ...EncryptedBeforeEncryptionRow.args,
+    unencryptedAfterEncrypted: true,
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("暗号化されていません")).toBeVisible();
+    await expect(canvas.getByText(/今日のリリースは 18:00 です/)).toBeVisible();
+    await expect(
+      canvas.queryByRole("button", { name: "メッセージを編集" }),
+    ).not.toBeInTheDocument();
   }),
 };
 
@@ -572,6 +691,8 @@ export const EncryptedKeyMissing: Story = {
     await userEvent.keyboard("{Enter}");
     await waitFor(() => expect(screen.getByRole("menu")).toBeVisible());
     await expect(screen.queryByRole("menuitem", { name: "原文をコピー" })).not.toBeInTheDocument();
+    // メッセージリンクは ID だけで作れるので、読めないメッセージでも出す。
+    await expect(screen.getByRole("menuitem", { name: "メッセージリンクをコピー" })).toBeVisible();
   }),
 };
 
@@ -587,21 +708,10 @@ export const EncryptedInvalid: Story = {
 };
 
 // 暗号化した添付（#364）。Storybook では暗号の Worker の代わりに、決まった中身を返す。
-async function storyImage(): Promise<Blob> {
-  const canvas = document.createElement("canvas");
-  canvas.width = 320;
-  canvas.height = 200;
-  const context = canvas.getContext("2d")!;
-  const gradient = context.createLinearGradient(0, 0, 320, 200);
-  gradient.addColorStop(0, "#6366f1");
-  gradient.addColorStop(1, "#22d3ee");
-  context.fillStyle = gradient;
-  context.fillRect(0, 0, 320, 200);
-  context.fillStyle = "#ffffff";
-  context.font = "bold 28px sans-serif";
-  context.fillText("🔒 decrypted", 70, 110);
-  return new Promise((resolve) => canvas.toBlob((blob) => resolve(blob!), "image/png"));
-}
+const storyImage = new Blob(
+  [Uint8Array.from(atob(encryptedAttachmentImage.split(",")[1]!), (char) => char.charCodeAt(0))],
+  { type: "image/png" },
+);
 
 const storyEncryptedFile = {
   v: "v2" as const,
@@ -652,7 +762,7 @@ export const EncryptedWithAttachments: Story = {
       <EncryptedAttachmentLoaderContext.Provider
         value={async (info) =>
           info.mimetype.startsWith("image/")
-            ? storyImage()
+            ? storyImage
             : new Blob(["%PDF-1.7"], { type: info.mimetype })
         }
       >
@@ -662,9 +772,67 @@ export const EncryptedWithAttachments: Story = {
   ],
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByRole("img", { name: "architecture.png" })).toBeVisible();
+    const image = await canvas.findByRole<HTMLImageElement>("img", { name: "architecture.png" });
+    await waitFor(async () => {
+      await expect(image).toBeVisible();
+      await expect(image.naturalWidth).toBe(320);
+    });
     await expect(canvas.getByText("議事録.pdf")).toBeVisible();
     await expect(canvas.queryByText("encrypted.bin")).not.toBeInTheDocument();
+  }),
+};
+
+export const TouchActionSheet: Story = {
+  globals: { viewport: { value: "mobile" } },
+  parameters: { a11y: { test: "error" } },
+  args: {
+    isOwn: true,
+    canReact: true,
+    onOpenThread: fn(),
+    onPickReaction: fn(),
+    onRequestDelete: fn(),
+  },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    const previous = localStorage.getItem(RECENT_EMOJIS_STORAGE_KEY);
+    localStorage.setItem(RECENT_EMOJIS_STORAGE_KEY, JSON.stringify(["🎉", "👍"]));
+    try {
+      const body = await within(canvasElement).findByText(/こんにちは/);
+      await fireEvent.pointerDown(body, { pointerType: "touch", clientX: 10, clientY: 10 });
+      await fireEvent.click(body, { clientX: 10, clientY: 10 });
+      const sheet = await screen.findByRole("dialog", { name: "メッセージを操作" });
+      await waitFor(async () => {
+        await expect(within(sheet).getByRole("button", { name: "スレッドを開く" })).toBeVisible();
+      });
+      await expect(within(sheet).getByRole("button", { name: "リアクションを追加" })).toBeVisible();
+      await expect(
+        within(sheet).getByRole("button", { name: "メッセージリンクをコピー" }),
+      ).toBeVisible();
+      await expect(within(sheet).getByRole("button", { name: "削除" })).toBeVisible();
+      // 「…」メニューと同じ順序で並ぶ（最近使った絵文字の行は一覧の外）。
+      const order = [
+        "リアクションを追加",
+        "スレッドを開く",
+        "メッセージを編集",
+        "原文をコピー",
+        "メッセージリンクをコピー",
+        "Appでメッセージを操作",
+        "削除",
+      ];
+      const labels = within(sheet)
+        .getAllByRole("button")
+        .map((button) => button.textContent?.trim() ?? "")
+        .filter((label) => order.includes(label));
+      await expect(labels).toEqual(order);
+
+      const recent = within(sheet).getByRole("group", { name: "最近使った絵文字" });
+      await expect(within(recent).getByRole("button", { name: "🎉" })).toBeVisible();
+      await expect(within(recent).getByRole("button", { name: "👍" })).toBeVisible();
+      await userEvent.click(within(recent).getByRole("button", { name: "🎉" }));
+      await expect(args.onReaction).toHaveBeenCalledWith("🎉");
+    } finally {
+      if (previous === null) localStorage.removeItem(RECENT_EMOJIS_STORAGE_KEY);
+      else localStorage.setItem(RECENT_EMOJIS_STORAGE_KEY, previous);
+    }
   }),
 };
 
@@ -695,5 +863,203 @@ export const EncryptedAttachmentDecryptFailed: Story = {
     await expect(
       await within(canvasElement).findByText(/添付を復号できませんでした/),
     ).toBeVisible();
+  }),
+};
+
+const forwardEntries = new Map<string, ForwardEntryState>([
+  [
+    "fwd-ok",
+    {
+      status: "ok",
+      id: "fwd-ok",
+      channel_id: "ch-src",
+      channel_name: "z_yuip",
+      is_private: false,
+      is_dm: false,
+      dm_participants: [],
+      parent_id: null,
+      user_id: "user-1",
+      created_at: "2026-01-02 20:20:00.000",
+      updated_at: null,
+      content: "あああてすと",
+      card: null,
+      components: null,
+      message_kind: "message",
+      author: {
+        id: "user-1",
+        user_name: "alice",
+        display_name: "ゆいぴー",
+        avatar_url: null,
+        is_bot: false,
+        app_id: null,
+      },
+      emojis: {},
+      attachments: [],
+      has_forwards: false,
+    },
+  ],
+  [
+    "fwd-nested",
+    {
+      status: "ok",
+      id: "fwd-nested",
+      channel_id: "ch-src",
+      channel_name: "general",
+      is_private: false,
+      is_dm: false,
+      dm_participants: [],
+      parent_id: "thread-1",
+      user_id: "user-2",
+      created_at: "2026-01-02 19:10:00.000",
+      updated_at: null,
+      content: "さらに元のメッセージ",
+      card: null,
+      components: null,
+      message_kind: "message",
+      author: {
+        id: "user-2",
+        user_name: "bob",
+        display_name: "Bob",
+        avatar_url: null,
+        is_bot: false,
+        app_id: null,
+      },
+      emojis: {},
+      attachments: [],
+      has_forwards: true,
+    },
+  ],
+  ["fwd-deleted", { status: "deleted" }],
+  ["fwd-unavailable", { status: "unavailable" }],
+]);
+
+export const ForwardedMessage: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    item: {
+      ...item,
+      message: {
+        ...item.message,
+        content: "てんそうしたよ",
+        forwarded_message_ids: ["fwd-ok"],
+      },
+    },
+  },
+  decorators: [
+    (Story) => (
+      <StoryShell>
+        <ForwardedMessagesProvider
+          value={{ entries: forwardEntries, retry: fn(), currentUserId: "user-1" }}
+        >
+          <Story />
+        </ForwardedMessagesProvider>
+      </StoryShell>
+    ),
+  ],
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("てんそうしたよ")).toBeVisible();
+    await expect(canvas.getByText("あああてすと")).toBeVisible();
+    await expect(canvas.getByRole("link", { name: "#z_yuip への投稿" })).toBeVisible();
+  }),
+};
+
+export const ForwardedCommentless: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    item: {
+      ...item,
+      message: {
+        ...item.message,
+        content: "",
+        forwarded_message_ids: ["fwd-ok"],
+      },
+    },
+  },
+  decorators: ForwardedMessage.decorators,
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(await within(canvasElement).findByText("あああてすと")).toBeVisible();
+  }),
+};
+
+export const ForwardedDeleted: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    item: {
+      ...item,
+      message: {
+        ...item.message,
+        content: "",
+        forwarded_message_ids: ["fwd-deleted"],
+      },
+    },
+  },
+  decorators: ForwardedMessage.decorators,
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(
+      await within(canvasElement).findByText("このメッセージは削除されました"),
+    ).toBeVisible();
+  }),
+};
+
+export const ForwardedUnavailable: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    item: {
+      ...item,
+      message: {
+        ...item.message,
+        content: "",
+        forwarded_message_ids: ["fwd-unavailable"],
+      },
+    },
+  },
+  decorators: ForwardedMessage.decorators,
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(
+      await within(canvasElement).findByText("このメッセージは閲覧権限がないため表示できません"),
+    ).toBeVisible();
+  }),
+};
+
+export const ForwardedNested: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    item: {
+      ...item,
+      message: {
+        ...item.message,
+        content: "スレッドから転送",
+        forwarded_message_ids: ["fwd-nested"],
+      },
+    },
+  },
+  decorators: ForwardedMessage.decorators,
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(
+      await within(canvasElement).findByRole("link", {
+        name: "この投稿にも転送（引用）があります · 元の投稿を見る",
+      }),
+    ).toBeVisible();
+  }),
+};
+
+export const ForwardedWithMenu: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    isOwn: true,
+    onOpenThread: fn(),
+    onForward: fn(),
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    (await within(canvasElement).findByRole("button", { name: "その他の操作" })).focus();
+    await userEvent.keyboard("{Enter}");
+    const items = await screen.findAllByRole("menuitem");
+    const labels = items.map((el) => el.textContent?.trim() ?? "");
+    const threadIdx = labels.indexOf("スレッドを開く");
+    const forwardIdx = labels.indexOf("メッセージを転送…");
+    const editIdx = labels.indexOf("メッセージを編集");
+    await expect(forwardIdx).toBeGreaterThan(threadIdx);
+    await expect(editIdx).toBeGreaterThan(forwardIdx);
   }),
 };

@@ -1839,10 +1839,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
+name = "zoo-components"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "zoo2-client-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "directories",
  "futures-util",
  "jiff",
@@ -1869,4 +1878,5 @@ dependencies = [
  "jiff",
  "serde",
  "serde_json",
+ "zoo-components",
 ]

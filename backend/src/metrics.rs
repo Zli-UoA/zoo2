@@ -29,6 +29,7 @@ pub struct Metrics {
     frontend_web_vitals_seconds: Histogram<f64>,
     frontend_electric_sync_events_total: Counter<u64>,
     frontend_webrtc_events_total: Counter<u64>,
+    message_components_total: Counter<u64>,
 }
 
 impl Metrics {
@@ -94,6 +95,10 @@ impl Metrics {
             frontend_webrtc_events_total: meter
                 .u64_counter("zoo_frontend_webrtc_events")
                 .with_description("Frontend WebRTC connectivity/quality events.")
+                .build(),
+            message_components_total: meter
+                .u64_counter("zoo_message_components")
+                .with_description("Message component documents written, by source, input format and whether unsupported types were kept as text.")
                 .build(),
         }
     }
@@ -302,6 +307,22 @@ pub fn record_app_error(service: &'static str, kind: &'static str) {
         &[
             KeyValue::new("service", service),
             KeyValue::new("kind", kind),
+        ],
+    );
+}
+
+/// 部品の文書を書いた回数。`format` は discord・slack・legacy、`unsupported` は未対応の部品を含んだか。
+/// 未対応の部品の type 名はラベルにせず（値が増え続けるため）、ログに出す。
+pub fn record_message_components(source: &'static str, format: &'static str, unsupported: bool) {
+    let Some(m) = METRICS.get() else {
+        return;
+    };
+    m.message_components_total.add(
+        1,
+        &[
+            KeyValue::new("source", source),
+            KeyValue::new("format", format),
+            KeyValue::new("unsupported", unsupported),
         ],
     );
 }

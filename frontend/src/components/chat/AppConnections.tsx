@@ -8,6 +8,7 @@ import { useCollections } from "../../lib/electric/collections-context";
 import { useShell } from "../layout/shell-context";
 import { inputClassName } from "../ui/input-styles";
 import { Button } from "../ui/button";
+import { apiPath } from "../../lib/api/path";
 
 type Session = { id: string; app_id: string; title: string; state: string };
 export function AppConnections({
@@ -40,7 +41,7 @@ export function AppConnections({
         const results = await Promise.allSettled([
           connections
             ? client
-                .get<{ state: string }>(`/api/apps/${appId}/connection`, { signal })
+                .get<{ state: string }>(apiPath`/api/apps/${appId}/connection`, { signal })
                 .then((value) => {
                   if (!signal.aborted) setConnection(value.state);
                   active ||= ["pending", "connecting", "requested"].includes(value.state);
@@ -68,7 +69,7 @@ export function AppConnections({
     if (!assistant || !selectedChannelId) return;
     const controller = new AbortController();
     void client
-      .request(`/api/apps/${appId}/context`, {
+      .request(apiPath`/api/apps/${appId}/context`, {
         method: "POST",
         body: {
           channel_id: selectedChannelId,
@@ -107,7 +108,9 @@ export function AppConnections({
             variant="outline"
             disabled={busy || connection === null}
             onClick={() =>
-              void run(`/api/apps/${appId}/connection`, { connect: connection === "disconnected" })
+              void run(apiPath`/api/apps/${appId}/connection`, {
+                connect: connection === "disconnected",
+              })
             }
           >
             {t(
@@ -149,7 +152,7 @@ export function AppConnections({
                   onBlur={(e) => {
                     if (e.target.value !== s.title)
                       void run(
-                        `/api/assistant-sessions/${s.id}`,
+                        apiPath`/api/assistant-sessions/${s.id}`,
                         { title: e.target.value },
                         "PATCH",
                       );
@@ -159,7 +162,11 @@ export function AppConnections({
                   variant="ghost"
                   disabled={busy}
                   onClick={() =>
-                    void run(`/api/assistant-sessions/${s.id}`, { state: "stopped" }, "PATCH")
+                    void run(
+                      apiPath`/api/assistant-sessions/${s.id}`,
+                      { state: "stopped" },
+                      "PATCH",
+                    )
                   }
                 >
                   {t("apps.assistant.stop")}

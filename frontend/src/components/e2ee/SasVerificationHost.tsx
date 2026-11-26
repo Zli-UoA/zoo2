@@ -11,8 +11,8 @@ const NO_ENTRIES: SasEntry[] = [];
 const noop = () => () => {};
 
 /**
- * 絵文字 SAS の検証（#368）のダイアログを、シェルのどの画面の上にも出す。届いた要求も、
- * 設定の「端末」タブから始めた検証も、ここに出る。一度に 1 つ（始まった順）だけを出す。
+ * 他のユーザーの検証（#368 の絵文字 SAS と、QR コードによる検証）のダイアログを、シェルのどの画面の上にも出す。届いた要求も、
+ * 設定の「暗号化」タブの他のユーザーの検証から始めた検証も、ここに出る。一度に 1 つ（始まった順）だけを出す。
  */
 export function SasVerificationHost() {
   const { sas } = useE2ee();
@@ -63,6 +63,16 @@ function SasDialog({ sas, entry }: { sas: SasController; entry: SasEntry | null 
         },
         onClose: () => {
           if (txnId) void sas.dismiss(txnId);
+        },
+        onStartSas: () => {
+          if (txnId) void sas.startSas(txnId);
+        },
+        onScanQr: (bytes) => (txnId ? sas.scanQr(txnId, bytes) : Promise.resolve("retry")),
+        // 「読み取った」を押したクリックの中で、再認証の別のウィンドウを開く。
+        onQrConfirm: () => {
+          if (!txnId) return;
+          const reauth = startReauth(config);
+          void sas.confirmQr(txnId, reauth());
         },
       }}
     />

@@ -4,15 +4,23 @@ import {
   ApiError,
   buildAuthHeaders,
   createApiClient,
+  createChannelPinsApi,
   createConfiguredApiClient,
   unwrapEnvelope,
   type FetchLike,
 } from "./client";
-import { setAuthorizedHandler, setUnauthorizedHandler } from "../auth";
+import {
+  notifyAuthSessionEnded,
+  resetTokenProvider,
+  setAuthorizedHandler,
+  setTokenProvider,
+  setUnauthorizedHandler,
+} from "../auth";
 import { resolveConfig } from "../config";
 import { OidcClient } from "../oidc/client";
 
 afterEach(() => {
+  resetTokenProvider();
   setUnauthorizedHandler(null);
   setAuthorizedHandler(null);
 });
@@ -327,6 +335,39 @@ describe("createApiClient", () => {
 
     expect(handler).toHaveBeenCalledTimes(1);
   });
+
+  it("aborts without invoking fetch when auth session, tokenProvider, or signal changes while waiting for token", async () => {
+    for (const mode of ["logout", "provider", "signal"] as const) {
+      let resolveToken!: (token: string | null) => void;
+      setTokenProvider(
+        () =>
+          new Promise<string | null>((resolve) => {
+            resolveToken = resolve;
+          }),
+      );
+      const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({ data: {}, txid: "1" }));
+      const controller = new AbortController();
+      const client = createApiClient({ baseUrl: "http://localhost:8000", fetch: fetchMock });
+
+      const pending = client.post(
+        "/api/messages/forwards/resolve",
+        { ids: ["m1"] },
+        { signal: controller.signal },
+      );
+
+      if (mode === "logout") {
+        notifyAuthSessionEnded("logout");
+      } else if (mode === "provider") {
+        setTokenProvider(() => "new-token");
+      } else {
+        controller.abort();
+      }
+
+      resolveToken("stale-token");
+      await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+      expect(fetchMock).not.toHaveBeenCalled();
+    }
+  });
 });
 
 describe("createConfiguredApiClient", () => {
@@ -361,4 +402,62 @@ it("starts an exit write synchronously using the latest resolved auth without re
   expect(options.headers.get("Authorization")).toBe("Bearer first-token");
   expect(JSON.parse(options.body).content).toBe("");
   await sent;
+});
+
+describe("createChannelPinsApi", () => {
+  it("keeps the structured conflict body so the caller can recover", async () => {
+    const fetchMock = vi.fn<FetchLike>(async () =>
+      jsonResponse(
+        {
+          error: "conflict",
+          code: "CHANNEL_PINS_CONFLICT",
+          version: 7,
+          pins: [{ channel_id: "c1", position: 0 }],
+        },
+        { status: 409 },
+      ),
+    );
+    const client = createApiClient({
+      baseUrl: "http://localhost:8000",
+      fetch: fetchMock,
+    });
+    const pins = createChannelPinsApi(client);
+
+    await expect(pins.pinChannel("c2", 6)).rejects.toMatchObject({
+      name: "ApiError",
+      status: 409,
+      body: {
+        code: "CHANNEL_PINS_CONFLICT",
+        version: 7,
+        pins: [{ channel_id: "c1", position: 0 }],
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8000/api/channel-pins",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ channel_id: "c2", expected_version: 6 }),
+      }),
+    );
+  });
+
+  it("sends the full order on PATCH /api/channel-pins/order", async () => {
+    const fetchMock = vi.fn<FetchLike>(async () =>
+      jsonResponse({ data: { version: 8, pins: [] }, txid: "12" }),
+    );
+    const client = createApiClient({
+      baseUrl: "http://localhost:8000",
+      fetch: fetchMock,
+    });
+    const pins = createChannelPinsApi(client);
+
+    await pins.reorderChannelPins(["c2", "c1"], 7);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8000/api/channel-pins/order",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ channel_ids: ["c2", "c1"], expected_version: 7 }),
+      }),
+    );
+  });
 });

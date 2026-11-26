@@ -1,0 +1,60 @@
+name: Select tests
+on:
+  workflow_call:
+    inputs:
+      workflow:
+        description: Calling workflow ID for job-level CI configuration validation
+        type: string
+        required: false
+        default: ""
+    outputs:
+      frontend:
+        description: Frontend test suites selected from the complete PR diff
+        value: ${{ jobs.select.outputs.frontend }}
+      backend:
+        description: Backend integration test targets and partitions
+        value: ${{ jobs.select.outputs.backend }}
+      frontendBuild:
+        description: Frontend compilation and Wasm dependencies
+        value: ${{ jobs.select.outputs.frontendBuild }}
+      clients:
+        description: Rust client package and resource dependencies
+        value: ${{ jobs.select.outputs.clients }}
+      bots:
+        description: GitHub bot and SDK dependencies
+        value: ${{ jobs.select.outputs.bots }}
+      storybookPreview:
+        description: Whether Storybook build inputs changed
+        value: ${{ jobs.select.outputs.storybookPreview }}
+      desktopTauri:
+        description: Tauri platform jobs to validate
+        value: ${{ jobs.select.outputs.desktopTauri }}
+permissions:
+  contents: read
+jobs:
+  select:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      frontend: ${{ steps.select.outputs.frontend }}
+      backend: ${{ steps.select.outputs.backend }}
+      storybookPreview: ${{ steps.select.outputs.storybookPreview }}
+      bots: ${{ steps.select.outputs.bots }}
+      clients: ${{ steps.select.outputs.clients }}
+      frontendBuild: ${{ steps.select.outputs.frontendBuild }}
+      desktopTauri: ${{ steps.select.outputs.desktopTauri }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          # A PR merge commit normally has the event base as its first parent.
+          fetch-depth: 2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24
+      - name: Test Selection regression tests
+        run: node --test .github/scripts/frontend-test-selection.test.mjs .github/scripts/test-selection.test.mjs .github/scripts/select-runner.test.mjs .github/scripts/workflow-test-selection.test.mjs
+      - id: select
+        env:
+          TEST_WORKFLOW: ${{ inputs.workflow }}
+        run: node .github/scripts/test-selection.mjs

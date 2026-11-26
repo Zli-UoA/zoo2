@@ -38,8 +38,14 @@ const CACHEABLE_PREFIXES = ["/assets/", "/icons/", "/emojibase-data/"];
 // 検査で読み直させる（握りつぶすと、復号できない Service Worker が sw.js の次の変更まで残る）。
 if (typeof importScripts === "function") importScripts("/sw-push.js");
 
+// /android/ は Android アプリの E2EE の再認証のリダイレクト先（#360）。App Links でアプリに渡らなかった
+// ときに nginx の案内のページを出すため、app shell を返さない。
 function isPrivatePath(pathname) {
-  return pathname.startsWith("/api/") || pathname.startsWith("/auth/");
+  return (
+    pathname.startsWith("/api/") ||
+    pathname.startsWith("/auth/") ||
+    pathname.startsWith("/android/")
+  );
 }
 
 function isCacheableAsset(url) {
@@ -277,7 +283,7 @@ async function handleNavigation(request, event) {
   const spaRoute =
     url.pathname === "/" ||
     url.pathname === "/index.html" ||
-    /^\/(?:channels|home|settings|notifications|bubble|apps|apps-authorize|realtime|public\/users)(?:\/|$)/.test(
+    /^\/(?:channels|home|settings|notifications|catch-up|bubble|apps|apps-authorize|realtime|public\/users)(?:\/|$)/.test(
       url.pathname,
     );
   const cache = await caches.open(await findActiveShellCache());

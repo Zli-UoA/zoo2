@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 
+import { PinnedChannelsProvider } from "../src/hooks/usePinnedChannels";
 import {
   ShellContext,
   type ShellContextValue,
@@ -8,7 +9,7 @@ import {
 
 export function StoryShell({
   children,
-  selectedChannelId = "channel-general",
+  selectedChannelId = "00000000-0000-4000-8000-000000000001",
   initialPane = "chat",
   initialMembersOpen = false,
   initialThreadRootId = null,
@@ -55,5 +56,9 @@ export function StoryShell({
     ],
   );
 
-  return <ShellContext.Provider value={value}>{children}</ShellContext.Provider>;
+  return (
+    <ShellContext.Provider value={value}>
+      <PinnedChannelsProvider>{children}</PinnedChannelsProvider>
+    </ShellContext.Provider>
+  );
 }

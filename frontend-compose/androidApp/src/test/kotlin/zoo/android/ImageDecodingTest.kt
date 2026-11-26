@@ -2,6 +2,13 @@ package zoo.android
 
 import android.graphics.Bitmap
 import android.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.mock.MockEngine
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.test.runTest
+import zoo.*
 import java.io.ByteArrayOutputStream
 import kotlin.test.*
 import org.junit.Test
@@ -14,6 +21,79 @@ import org.robolectric.annotation.GraphicsMode
 @Config(sdk = [26, 28], manifest = Config.NONE)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class ImageDecodingTest {
+    @Test
+    fun staticPreviewIconAndAvatarUseTheBoundedPlatformDecoder() = runTest {
+        val original = Bitmap.createBitmap(4096, 32, Bitmap.Config.ARGB_8888)
+        val stream = ByteArrayOutputStream()
+        assertTrue(original.compress(Bitmap.CompressFormat.PNG, 100, stream))
+        original.recycle()
+        val bytes = stream.toByteArray()
+        val requested = mutableListOf<String>()
+        var decodes = 0
+        val platform = object : Platform {
+            override suspend fun headers() = emptyMap<String, String>()
+            override suspend fun readCache(key: String): String? = null
+            override suspend fun writeCache(key: String, value: String) {}
+            override fun uuid() = "static-image"
+            override fun now() = "2026-11-15T00:00:00Z"
+            override fun navigate(path: String) {}
+            override fun action(name: String) {}
+            override fun translate(key: String, args: Map<String, String>) = key
+            override fun time(timestamp: String) = timestamp
+            override fun day(timestamp: String) = timestamp
+            override suspend fun image(url: String): ByteArray { requested += url; return bytes }
+            override fun imageFrames(bytes: ByteArray) = flow {
+                decodes++
+                emit(decodeOrientedBitmap(bytes).asImageBitmap())
+            }
+        }
+        val app = Session(
+            Repository(zoo.Config("https://zoo.test", "/api/shapes", "alice", false), platform,
+                HttpClient(MockEngine { error("Unexpected API request") }), backgroundScope, synchronize = false),
+            backgroundScope, Environment(),
+        )
+        try {
+            for (kind in listOf("preview", "icon", "avatar")) {
+                val image = app.imageBitmap("https://media.test/$kind")
+                assertEquals(2048, image.width)
+                assertEquals(16, image.height)
+                image.asAndroidBitmap().recycle()
+            }
+            assertEquals(3, decodes)
+            assertEquals(listOf("https://media.test/preview", "https://media.test/icon", "https://media.test/avatar"), requested)
+        } finally { app.close() }
+    }
+
+    @Test
+    fun largePreviewsAreSampledBeforeDecoding() {
+        assertEquals(8, imageSampleSize(2048, 2048, maxEdge = 256))
+        assertEquals(16, imageSampleSize(2049, 100, maxEdge = 256))
+        assertEquals(1, imageSampleSize(2048, 2048))
+        assertEquals(2, imageSampleSize(2049, 100))
+        assertEquals(4, imageSampleSize(8000, 6000))
+        assertEquals(4, imageSampleSize(100, 8192))
+        assertEquals(1 shl 20, imageSampleSize(Int.MAX_VALUE, 1))
+        assertFailsWith<IllegalArgumentException> { imageSampleSize(-1, 100) }
+        assertFailsWith<IllegalArgumentException> { imageSampleSize(100, 0) }
+    }
+
+    @Test
+    fun oversizedBitmapIsActuallyDecodedAtThePreviewSize() {
+        val original = Bitmap.createBitmap(4096, 32, Bitmap.Config.ARGB_8888)
+        val stream = ByteArrayOutputStream()
+        assertTrue(original.compress(Bitmap.CompressFormat.PNG, 100, stream))
+        original.recycle()
+        val decoded = decodeOrientedBitmap(stream.toByteArray())
+        assertEquals(2048, decoded.width)
+        assertEquals(16, decoded.height)
+        decoded.recycle()
+    }
+
+    @Test
+    fun invalidBytesFailWithoutAllocatingAnImage() {
+        assertFailsWith<IllegalArgumentException> { decodeOrientedBitmap(byteArrayOf(1, 2, 3)) }
+    }
+
     private fun jpeg(orientation: Int): ByteArray {
         val bitmap = Bitmap.createBitmap(40, 20, Bitmap.Config.ARGB_8888)
         for (y in 0 until 20) for (x in 0 until 40) {

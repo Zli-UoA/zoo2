@@ -1,4 +1,16 @@
 {
+  "a11y": {
+    "skipToContent": "跳到主要内容"
+  },
+  "aboutZoo": {
+    "title": "关于 Zoo",
+    "version": "版本：{{version}}",
+    "versionUnknown": "未知"
+  },
+  "notFoundPage": {
+    "title": "找不到页面",
+    "description": "你访问的页面可能已移动或不存在。"
+  },
   "nav": {
     "main": "主导航"
   },
@@ -10,6 +22,10 @@
     "unread": "有未读消息",
     "editTitle": "编辑频道",
     "editHelp": "频道名最多80个字符，仅限文字、数字、半角连字符（-）和下划线（_）。不能使用空格、表情符号、其他符号或保留名称。",
+    "nameRequired": "请输入频道名。",
+    "nameTooLong": "频道名请控制在{{max}}个字符以内（当前{{length}}个字符）。",
+    "nameReserved": "“{{name}}”是保留名称，无法使用。",
+    "invalidName": "频道名只能使用文字、数字、半角连字符（-）和下划线（_）。",
     "saveName": "保存",
     "savingName": "保存中…",
     "title": "频道",
@@ -44,6 +60,7 @@
     "notFound": "找不到频道。",
     "duplicateName": "同名频道已存在。",
     "privateMessages": "此频道为私密频道，受邀后即可查看消息。",
+    "postingManagersOnly": "此频道仅管理员可以发帖。",
     "back": "返回频道列表",
     "noDescription": "暂无描述",
     "visibilityHelp": "任何人都可以加入公开频道。私密频道仅限创建者邀请的人加入。",
@@ -122,8 +139,7 @@
     "candidates": "成员建议",
     "usersLoading": "正在加载用户…",
     "usersError": "无法加载用户。",
-    "usersEmpty": "找不到匹配的用户。",
-    "back": "返回频道"
+    "usersEmpty": "找不到匹配的用户。"
   },
   "moderation": {
     "archived": "已归档",
@@ -159,6 +175,11 @@
     "invalidState": "当前状态无法执行此操作。"
   },
   "settings": {
+    "appearance": "外观",
+    "interaction": "操作方式",
+    "swipeReply": "滑动回复",
+    "operationHaptics": "触感反馈",
+    "navTitle": "设置",
     "admin": "管理员",
     "member": "成员",
     "makeAdmin": "设为管理员",
@@ -198,13 +219,16 @@
     "description": "从左侧列表选择频道，即可查看对话。"
   },
   "messages": {
+    "loadingOlder": "正在加载较早的消息…",
     "typing": "{{names}}正在输入…",
     "typingSeparator": "、",
     "compose": "输入消息",
     "send": "发送",
     "edit": "编辑",
+    "editMessage": "编辑消息",
     "delete": "删除",
     "more": "更多操作",
+    "actions": "操作消息",
     "editLabel": "编辑消息",
     "loadError": "无法加载消息",
     "retryHelp": "请检查连接后重试。",
@@ -224,9 +248,58 @@
     "copyRaw": "复制原文",
     "copied": "已复制原文",
     "copyFailed": "无法复制原文",
-    "edited": "已编辑"
+    "copyLink": "复制消息链接",
+    "linkCopied": "已复制消息链接",
+    "linkCopyFailed": "无法复制消息链接",
+    "edited": "已编辑",
+    "forward": "转发消息…",
+    "forwardTitle": "转发此消息",
+    "forwardSearchPlaceholder": "搜索频道或成员",
+    "forwardDestinationLabel": "转发目标",
+    "forwardDestinationSelected": "已选择 {{name}} 作为转发目标",
+    "forwardClearDestination": "移除 {{name}}",
+    "forwardNoDestinations": "没有可转发的频道或私信",
+    "forwardCommentPlaceholder": "添加附言（可选）",
+    "forwardCommentLabel": "附言",
+    "forwardPreviewLabel": "转发消息预览",
+    "forwardSubmit": "转发",
+    "forwarding": "转发中…",
+    "forwarded": "已转发消息",
+    "forwardedTo": "已转发到 {{channel}}",
+    "forwardSourceUnavailable": "原消息不存在，或您无权转发",
+    "forwardLoading": "正在加载转发的消息",
+    "forwardDeleted": "此消息已被删除",
+    "forwardUnavailable": "您无权查看此消息",
+    "forwardLoadError": "无法加载转发的消息",
+    "forwardSourceChannel": "发布于 {{channel}}",
+    "forwardSourceThread": "{{channel}} 子线程中的回复",
+    "forwardQuoteLabel": "来自 {{author}} 的转发消息",
+    "forwardAttachmentCount_one": "{{count}} 个附件",
+    "forwardAttachmentCount_other": "{{count}} 个附件",
+    "forwardNestedCompact": "此消息中还包含转发的内容",
+    "forwardNestedNote": "此消息还包含转发内容 · 查看原消息"
+  },
+  "channelLink": {
+    "inlineMessage": "{{name}}：{{channel}}",
+    "thread": "{{channel}} 中的子线程",
+    "encrypted": "此消息已加密",
+    "messageUnavailable": "无法显示此消息",
+    "channelUnavailable": "无法显示此频道",
+    "loading": "正在加载链接内容",
+    "loadFailed": "无法加载链接内容",
+    "appMessage": "App 的消息",
+    "attachments_one": "{{count}} 个附件",
+    "attachments_other": "{{count}} 个附件",
+    "privateChannel": "私密频道",
+    "encryptedChannel": "加密频道"
   },
   "attachments": {
+    "recentPhotos": "最近的照片",
+    "systemPhotos": "打开照片选择器",
+    "allowRecentPhotos": "允许访问照片",
+    "noRecentPhotos": "没有可显示的照片",
+    "play": "播放",
+    "pause": "暂停",
     "add": "添加文件",
     "selected": "要附加的文件",
     "remove": "删除{{name}}",
@@ -243,12 +316,37 @@
     "download": "下载{{name}}",
     "downloadShort": "下载",
     "downloadError": "无法下载文件。",
+    "previewSaveUnsupported": "应用无法保存此文件。请在新标签页中打开链接后保存。",
+    "downloadSaved": "已保存为 {{name}}。",
+    "downloadDestinationUnsupported": "无法保存到此位置。请选择其他文件夹，或在设置的“下载”中更改保存位置。",
+    "downloadTooMany": "同时保存的数量已达上限。请等待其他下载完成后再试。",
+    "downloading": "正在下载",
+    "saving": "正在保存…",
+    "cancelDownload": "取消下载 {{name}}",
+    "cancelDownloadShort": "取消",
     "retry": "重试",
     "sensitive": "敏感图片",
     "markSensitive": "将图片标记为敏感内容",
     "showSensitive": "显示图片",
     "hideSensitive": "隐藏图片",
-    "sensitiveShort": "敏感图片"
+    "sensitiveShort": "敏感图片",
+    "documentSummary": "正文与单元格的简化预览，格式和布局可能与原文件不同。",
+    "previewLimit": "预览超出大小、文件数量或处理时间限制，请下载文件查看。",
+    "emptyPreview": "无内容",
+    "containedFiles": "包含的文件",
+    "previousPage": "上一页",
+    "nextPage": "下一页",
+    "pageNumber": "页码",
+    "pdfPages": "PDF 页面列表",
+    "pdfPage": "PDF 第{{page}}页",
+    "mail": {
+      "subject": "主题",
+      "from": "发件人",
+      "to": "收件人",
+      "cc": "抄送",
+      "date": "日期"
+    },
+    "downloadDestinationUnsupportedAskEveryTimeOff": "无法保存到此位置。请在设置的“下载”中更改保存位置，或开启“每次保存时确认”。"
   },
   "threads": {
     "title": "子线程",
@@ -273,7 +371,22 @@
     "archiveForChannel": "{{channel}}的已归档讨论串",
     "untitled": "未命名子线程",
     "targetTooOld": "这条消息太久远，无法在此加载",
-    "unreadTooOld": "更早的未读消息未加载"
+    "unreadTooOld": "更早的未读消息未加载",
+    "join": "加入讨论串",
+    "leave": "退出讨论串",
+    "reopen": "重新打开",
+    "reopenOnSend": "发送回复将重新打开此讨论串。",
+    "membershipError": "无法更新讨论串参与状态。",
+    "participants_one": "参与者 {{count}} 人",
+    "participants_other": "参与者 {{count}} 人",
+    "participantsMore": "另有 {{count}} 人",
+    "participantsEmpty": "没有参与者",
+    "threadStarter": "讨论串发起人",
+    "participantsSearch": "搜索姓名",
+    "participantsFilterPartial": "仅在已加载的前 {{loaded}} 人中筛选（另有 {{count}} 人无法搜索）。",
+    "participantsDescription": "已加入此讨论串的人。",
+    "joinToReply": "参与后才能回复此讨论串。",
+    "reopenAndJoin": "重新打开并参与"
   },
   "reactions": {
     "showUsers": "查看用 {{emoji}} 回应的用户",
@@ -307,7 +420,6 @@
     "noSearchResults": "没有匹配的表情",
     "tabEmoji": "表情符号",
     "tabKitchen": "Emoji Kitchen",
-    "emojiDescription": "可以从所有表情符号中选择。",
     "emojiLoading": "正在加载表情符号…",
     "recent": "最近使用的表情符号",
     "skinTone": "肤色"
@@ -328,6 +440,15 @@
     "yesterday": "昨天"
   },
   "composer": {
+    "editorTitle": "编辑消息",
+    "expand": "全屏展开编辑器",
+    "collapse": "收起编辑器",
+    "dragHandle": "上下滑动输入框顶部的拖动条",
+    "formatting": "格式",
+    "bold": "粗体",
+    "italic": "斜体",
+    "strike": "删除线",
+    "code": "代码块",
     "mac": "⌘（Cmd）+Enter 发送 / Enter 换行",
     "ctrl": "Ctrl+Enter 发送 / Enter 换行",
     "other": "Cmd / Ctrl+Enter 发送 / Enter 换行",
@@ -336,6 +457,8 @@
     "channels": "频道建议"
   },
   "notifications": {
+    "filterAll": "全部",
+    "filterMentions": "提及",
     "label": "通知",
     "close": "关闭通知",
     "title": "通知",
@@ -364,7 +487,8 @@
     "unreadStatus": "未读",
     "readStatus": "已读",
     "actors_one": "{{actor}} 和另外 1 人",
-    "actors_other": "{{actor}} 和另外 {{count}} 人"
+    "actors_other": "{{actor}} 和另外 {{count}} 人",
+    "forwardedPreview": "转发了一条消息"
   },
   "webhooks": {
     "title": "Webhook 设置",
@@ -390,6 +514,11 @@
   },
   "mentions": {
     "suggestions": "提及建议"
+  },
+  "appUpdate": {
+    "title": "有新版本的界面",
+    "description": "重新加载即可使用新版本。如有正在输入的内容，请先发送。",
+    "reload": "重新加载"
   },
   "offline": {
     "bannerTitle": "你已离线",
@@ -421,6 +550,19 @@
     "desktopTitle": "通知",
     "desktopValue": "系统通知",
     "desktopDescription": "应用会通过系统通知提醒你被提及和收到私信。如果在系统设置中关闭了 zoo2 的通知，请在那里也将其打开。"
+  },
+  "downloads": {
+    "desktopTitle": "下载",
+    "desktopDescription": "附件文件的保存位置。可以选择每次保存时确认位置，或保存到预先设置的文件夹。",
+    "askEveryTime": "每次保存时确认",
+    "noFolder": "未选择文件夹",
+    "chooseFolder": "选择文件夹",
+    "resetDirectory": "清除文件夹并每次保存时确认",
+    "olderAppValue": "应用默认保存位置",
+    "olderAppDescription": "此版本的应用会将附件保存到应用决定的位置。若要更改保存位置，请更新应用。",
+    "loadError": "无法读取保存位置的设置。",
+    "retry": "重新加载",
+    "error": "无法更改下载设置，请重试。"
   },
   "mfm": {
     "suggestions": "MFM 候选",
@@ -528,6 +670,7 @@
     "micNotFound": "未找到麦克风设备。"
   },
   "bubbleChat": {
+    "navTitle": "Bubble",
     "title": "Bubble Chat",
     "description": "输入的文字会实时显示在此房间中",
     "emptyTitle": "当前没有人在输入",
@@ -544,6 +687,30 @@
     "active": "在房间中",
     "you": "你",
     "closeParticipants": "关闭参与者列表"
+  },
+  "channelPins": {
+    "title": "置顶",
+    "menu": "频道操作",
+    "channelMenu": "{{name}} 频道操作",
+    "dmMenu": "{{name}} 私信操作",
+    "pin": "置顶",
+    "unpin": "取消置顶",
+    "moveUp": "上移",
+    "moveDown": "下移",
+    "dragHandle": "拖动以重新排序",
+    "dismissError": "关闭",
+    "errors": {
+      "conflict": "置顶的频道已在另一台设备上更改。已重新载入最新顺序，请重试。",
+      "limitExceeded": "最多只能置顶 50 个频道。",
+      "reorderConflict": "置顶顺序已在另一台设备上更改。已重新载入最新顺序，请重试。"
+    },
+    "announce": {
+      "pinned": "已置顶。",
+      "unpinned": "已取消置顶。",
+      "moved": "已移动置顶项目。",
+      "reorderConflict": "该项目已在另一台设备上取消置顶，因此未移动。",
+      "reorderArchived": "该频道已归档，因此未移动。"
+    }
   },
   "dms": {
     "title": "私信",
@@ -687,6 +854,20 @@
       "addEncrypted": "添加到加密频道",
       "notReady": "此应用尚未完成加密准备（注册设备）。请启动应用后重试。",
       "encryptedHint": "将应用添加到加密频道需要成员许可。"
+    },
+    "components": {
+      "unsupported": "暂不支持此组件",
+      "more": "更多操作",
+      "choose": "请选择",
+      "search": "搜索",
+      "noOptions": "没有选项",
+      "uploading": "正在上传…",
+      "page": "第 {{page}} / {{pages}} 页",
+      "spoiler": "包含剧透内容（可在网页版查看）",
+      "webOnly": "请在网页版进行此操作",
+      "date": "日期",
+      "time": "时间",
+      "datetime": "日期和时间"
     }
   },
   "search": {
@@ -703,6 +884,13 @@
     "showLess": "收起"
   },
   "home": {
+    "navTitle": "首页",
+    "back": "返回",
+    "deleted": "帖子已删除",
+    "newPosts": "查看新帖子（{{count}}）",
+    "quotedPost": "引用的帖子",
+    "quoteUnavailable": "无法显示引用的帖子",
+    "openQuotedPost": "打开引用的帖子",
     "image": "图片",
     "imageError": "无法添加图片。请选择最多10张PNG、JPEG、GIF或WebP图片（每张不超过8MiB），然后重试。",
     "title": "首页",
@@ -712,6 +900,7 @@
     "post": "发布",
     "sending": "发布中…",
     "sendError": "发布失败，草稿已保留，请重试。",
+    "postForbidden": "你无法在此频道发布。",
     "loadError": "无法加载时间线。",
     "loading": "加载中…",
     "empty": "还没有帖子",
@@ -1122,9 +1311,23 @@
     },
     "tab": "加密",
     "title": "端到端加密",
-    "description": "加密频道和私信中的消息只能在你的设备上读取。密钥由通行密钥或恢复密钥保护。",
+    "description": "加密频道和私信中的消息只能在你的设备上读取。",
     "loading": "正在加载加密状态…",
-    "unavailable": "此设备尚未准备好加密。请稍候，或关闭其他 zoo 标签页后重新打开此页。",
+    "notReady": {
+      "unsupported": "此浏览器无法使用加密（缺少 OPFS、Web Worker 或 Web Locks）。无痕窗口可能不支持。请在普通窗口或其他浏览器中打开。",
+      "signedOut": "无法确认已登录的用户。请重新登录。",
+      "userUnavailable": "无法读取已登录用户的信息。请稍候，或重新打开此页。",
+      "offline": "当前离线，无法准备加密。联网后会自动继续。",
+      "otherTab": "另一个 zoo 标签页或窗口正在使用此设备的加密密钥。关闭那个标签页后，此标签页会接管。",
+      "starting": "正在准备加密（正在注册此设备）…",
+      "deviceLimit": "已注册的设备达到 20 台的上限。请在下方的设备列表中删除不再使用的设备。",
+      "failedServer": "无法注册此设备（服务器响应：{{status}}）。",
+      "failedServerCode": "无法注册此设备（服务器响应：{{status}} {{code}}）。",
+      "failedNetwork": "无法连接服务器，未能注册此设备。",
+      "failedLocal": "无法在此设备上打开加密密钥的存储位置。",
+      "failedLocalNamed": "无法在此设备上打开加密密钥的存储位置（{{name}}）。",
+      "retrying": "稍后会自动重试。如果仍未恢复，请重新打开此页。"
+    },
     "retry": "重试",
     "notSetUpTitle": "尚未设置加密",
     "notSetUpDescription": "设置后即可使用加密频道和私信。系统会生成恢复密钥，请准备好记下来。",
@@ -1183,6 +1386,7 @@
       "popupBlocked": "无法打开登录窗口。请允许弹出窗口后再按一次。",
       "reauthFailed": "无法重新登录。请再按一次，密钥会保持不变。",
       "reauthTimeout": "登录未在规定时间内完成，请再按一次。",
+      "desktopOutdated": "此版本的桌面应用无法重新登录。请更新应用后再按一次。",
       "setupConflict": "另一台设备已先开始设置加密。此页面显示的恢复密钥无法使用。请用该设备记下的恢复密钥或通行密钥解锁。",
       "mismatch": "密钥吊销可能尚未完成，或服务器上的密钥可能被篡改。此设备未签名。请重新吊销或重置加密。",
       "invalidRecoveryKey": "恢复密钥格式不正确，请检查是否输错。",
@@ -1201,12 +1405,19 @@
       "renameFailed": "无法修改设备名称。请重试。",
       "revocationFailed": "无法完成吊销的保存。进度保留在此设备上。请再次点击“执行吊销”。",
       "verifyFailed": "无法保存重新验证。请重试。",
+      "reverifyKeyChanged": "确认之后，对方的密钥又变了。没有保存任何内容。请从“重新验证”重新确认。",
       "tooManyMembers": "加密频道最多可有 200 名成员。",
       "sasFailed": "无法开始表情符号验证。请确认对方已设置加密，然后重试。"
     },
     "reunlockToAdd": "重新解锁以添加通行密钥",
     "reunlockToAddDescription": "要添加通行密钥或重新生成恢复密钥，请使用通行密钥或恢复密钥重新解锁。此设备的解锁状态不会改变。",
     "badge": "已加密",
+    "memberUnreadable": {
+      "notSetUp": "未设置加密",
+      "notSetUpDescription": "尚未设置加密，因此无法读取此频道的新消息。",
+      "noDevices": "无设备",
+      "noDevicesDescription": "没有可用于加密的设备，因此无法读取此频道的新消息。"
+    },
     "encryptChannel": "端到端加密",
     "encryptChannelHelp": "只有成员已验证的设备才能读取消息。加密之后无法取消。",
     "encryptChannelPrivateOnly": "只有私密频道可以加密。",
@@ -1247,15 +1458,13 @@
     "sendStaleEpoch": "成员一直在变化，消息未能发送。请重试。",
     "editConflict": "此消息已在其他地方被编辑。请重新加载后再编辑。",
     "recipients": {
-      "summary": "正在为 {{users}} 人的 {{devices}} 台设备加密。",
       "added": "自上次发送以来新增的接收者：{{names}}"
     },
     "downgraded": "此频道曾经加密，但服务器现在表示未加密。不会以明文发送消息。",
     "checking": "正在确认此频道的加密状态…",
-    "devicesTab": "设备",
     "devices": {
       "title": "设备",
-      "description": "持有加密密钥的设备列表。任何人都可以设置设备名称，请根据添加时间和最后使用时间来辨别。",
+      "description": "持有加密密钥的设备列表。",
       "unnamed": "未命名的设备",
       "current": "此设备",
       "unsigned": "未签名",
@@ -1272,7 +1481,14 @@
       "limitDescription": "无法注册此设备。请选择不再使用的设备并删除。删除不等于吊销，如有丢失的设备，请在此设备注册后再进行吊销。",
       "limitStale": "30 天以上未使用的设备",
       "limitDelete": "删除所选设备",
-      "limitDeleted": "已删除。稍后将重新注册此设备。"
+      "limitDeleted": "已删除。稍后将重新注册此设备。",
+      "stale": "{{days}} 天以上未使用",
+      "notUnlockedStale": "未解锁，{{days}} 天以上未使用"
+    },
+    "deviceName": {
+      "withOs": "{{browser}}（{{os}}）",
+      "app": "{{browser}}（应用）",
+      "appWithOs": "{{browser}}（{{os}}·应用）"
     },
     "revocation": {
       "pendingTitle": "吊销尚未完成",
@@ -1356,7 +1572,16 @@
       },
       "reverify": "重新验证",
       "confirmTitle": "要信任 {{name}} 的当前密钥吗？",
-      "confirmDescription": "请在频道之外（当面或其他联系方式）确认对方确实重新生成了密钥后再信任。保存前需要重新登录确认身份。",
+      "confirmDescription": "请在频道之外（当面或其他联系方式），将下面的指纹与 {{name}} 的屏幕（设置“加密”中的“你的密钥指纹”）进行核对，一致时才信任。保存前需要重新登录确认身份。",
+      "currentFingerprint": "当前密钥的指纹",
+      "previousFingerprint": "之前信任的密钥指纹",
+      "keyChanged": "与之前信任的密钥不同。请确认对方确实重新生成了密钥。",
+      "keyUnchanged": "与之前信任的密钥相同。",
+      "sasRecommended": "如果可以，请使用“验证”，通过二维码或表情符号验证。无需逐字核对指纹，也能确认双方看到的是同一个密钥。",
+      "confirmEffect": "信任后，将用你的用户签名密钥为此密钥签名，你的所有设备都会信任它。",
+      "confirmTrust": "信任此密钥",
+      "ownFingerprint": "你的密钥指纹",
+      "ownFingerprintHelp": "其他人重新验证你时，会核对这个指纹。",
       "warning": {
         "own_identity_unknown": "尚未确认你的主密钥。解锁后即可确认。",
         "own_master_key_changed": "服务器上的主密钥与此设备确认过的不同。在重新解锁之前不会向任何设备分发密钥。",
@@ -1383,7 +1608,7 @@
       "regenerate": "重新生成恢复密钥",
       "create": "生成恢复密钥",
       "newTitle": "新的恢复密钥",
-      "newDescription": "保存后，旧的恢复密钥将无法解锁。删除或重建密钥槽不等于吊销；如果旧的恢复密钥可能已泄露，请在“设备”中进行吊销。",
+      "newDescription": "保存后，旧的恢复密钥将无法解锁。删除或重建密钥槽不等于吊销；如果旧的恢复密钥可能已泄露，请在本标签页的“设备”中进行吊销。",
       "save": "保存",
       "removeDescription": "将无法再用此恢复密钥解锁。已获取的密钥不会失效。如可能已泄露，请进行吊销。"
     },
@@ -1396,8 +1621,8 @@
       "blocked": "出于安全考虑，无法打开此类文件"
     },
     "legacy": {
-      "badge": "加密前",
-      "badgeHelp": "这条消息是在频道加密之前发送的。它没有加密，服务器可以读取或修改其内容。",
+      "unencryptedBadge": "未加密",
+      "unencryptedBadgeHelp": "这条未加密的消息位于加密消息之后。在加密频道中，正常的服务器无法创建这样的消息，因此可能是服务器添加或修改了它。",
       "divider": "以下消息已加密",
       "editCancelled": "此频道已加密，已取消编辑加密前的消息。",
       "editForbidden": "加密前发送的消息无法编辑，但可以删除。"
@@ -1412,7 +1637,7 @@
       "description": "开启加密后：",
       "points": {
         "future": "之后的消息和附件只有成员已验证的设备可以读取。",
-        "earlier": "之前的消息不会加密，会原样保留在服务器上。它们会标记为“加密前”，并且无法再编辑（仍可删除）。",
+        "earlier": "之前的消息不会加密，会原样保留在服务器上，并且无法再编辑（仍可删除）。",
         "published": "已发布到 Home 或 ActivityPub 的帖子不会撤回。",
         "integrations": "Slack 导入和同步将停止。请先移除应用（机器人）和 Incoming Webhook。",
         "irreversible": "加密之后无法关闭。"
@@ -1427,9 +1652,9 @@
       }
     },
     "sas": {
-      "start": "用表情符号验证",
+      "start": "验证",
       "incomingTitle": "{{name}} 请求验证",
-      "incomingDescription": "双方比对屏幕上是否出现相同的表情符号，以确认彼此的密钥。请在能于频道之外（当面或通话）比对屏幕时接受。",
+      "incomingDescription": "通过扫描二维码，或比对双方屏幕上是否出现相同的表情符号，来确认彼此的密钥。请在能于频道之外（当面或通话）比对屏幕时接受。",
       "accept": "接受",
       "decline": "拒绝",
       "requestedTitle": "正在等待 {{name}} 接受",
@@ -1530,6 +1755,246 @@
         "62": "文件夹",
         "63": "图钉"
       }
+    },
+    "qr": {
+      "title": "验证 {{name}}",
+      "codeLabel": "验证二维码",
+      "showHint": "请让 {{name}} 用其设备扫描此二维码。无法使用摄像头或不在身边时，可以用表情符号验证。",
+      "waitingForAccept": "{{name}} 接受请求后，即可用其设备扫描此二维码。",
+      "scan": "扫描对方的二维码",
+      "showOwn": "显示我的二维码",
+      "useEmoji": "用表情符号验证",
+      "scanHint": "请将摄像头对准对方屏幕上的二维码。",
+      "otherCode": "此二维码不属于当前的验证。请对准对方屏幕上正在显示的二维码。",
+      "scannedTitle": "正在等待 {{name}} 确认",
+      "waitingForConfirm": "正在等待对方在其屏幕上确认扫描…",
+      "confirmTitle": "{{name}} 扫描了二维码吗？",
+      "confirmDescription": "仅当 {{name}} 在你面前用其设备扫描了此二维码时，才按“已扫描”。按下后，需要重新登录确认身份，然后将对方的密钥保存为已验证。",
+      "confirmYes": "已扫描",
+      "confirmNo": "未扫描",
+      "verifiedTitle": "已用二维码确认 {{name}} 的密钥",
+      "needsLogin": "要保存为已验证，请重新登录确认身份。",
+      "login": "登录并保存",
+      "keyMismatch": "二维码中的密钥与服务器发来的密钥不一致，验证已中止。密钥可能已被替换。",
+      "camera": {
+        "label": "摄像头画面",
+        "starting": "正在启动摄像头…",
+        "unsupported": "此浏览器无法使用摄像头。请让对方扫描本设备的二维码，或用表情符号验证。",
+        "denied": "未获准使用摄像头。请在浏览器设置中允许，或用表情符号验证。",
+        "noCamera": "未找到摄像头。请让对方扫描本设备的二维码，或用表情符号验证。",
+        "failed": "无法启动摄像头。请用表情符号验证。"
+      }
+    },
+    "android": {
+      "saveDescription": "保存前需要重新登录。浏览器会打开，登录完成后会回到此界面。",
+      "continueDescription": "请重新登录，以保存中断的初始设置的剩余部分。浏览器将会打开。",
+      "reauthWaiting": "正在等待你在浏览器中重新登录…",
+      "reauthCancel": "停止登录",
+      "browserUnavailable": "无法打开用于登录的浏览器。请安装或启用浏览器后再按一次。"
     }
+  },
+  "defaultChannels": {
+    "refreshed": "部分频道已不可用，列表已更新。请确认选择后重新保存。",
+    "limit": "最多可选择100个公开频道。",
+    "title": "新账号的默认频道",
+    "description": "选择创建账号时自动加入的公开频道。不会影响现有账号。",
+    "empty": "没有可用的公开频道。",
+    "saved": "已保存。"
+  },
+  "androidUpdate": {
+    "title": "应用更新"
+  },
+  "androidNotifications": {
+    "enable": "启用通知",
+    "scope": "登录会话同步期间接收新通知。",
+    "mentions": "提及和回复",
+    "messages": "私信",
+    "reactions": "回应"
+  },
+  "onboarding": {
+    "replay": "打开入门导览",
+    "next": "下一步",
+    "back": "上一步",
+    "skip": "跳过",
+    "finish": "开始使用 Zoo",
+    "progress": "{{current}} / {{total}}",
+    "welcome": {
+      "title": "欢迎来到 Zoo",
+      "description": "一边操作实际页面，一边了解 Zoo。点击下一步进入频道列表。可以跳过，之后通过指南针按钮重开。"
+    },
+    "channels": {
+      "title": "寻找频道",
+      "description": "从高亮列表中选择频道。可通过浏览频道寻找并加入其他会话。"
+    },
+    "messages": {
+      "title": "参与会话",
+      "description": "在所选频道的高亮输入框中发帖。使用讨论串回复，或添加表情回应。"
+    },
+    "notifications": {
+      "title": "查看通知",
+      "description": "已进入通知页面。在这里查看提及和回复，选择通知即可打开对应会话。"
+    },
+    "settings": {
+      "title": "设置适合自己的 Zoo",
+      "description": "已进入常规设置。通过高亮选项卡调整显示和操作。之后可通过指南针按钮重新打开导览。"
+    },
+    "slack": {
+      "title": "连接 Slack",
+      "description": "这是 Slack 设置。连接 Slack 账号可将已导入的历史发帖关联到 Zoo，也可以导入自己创建的私密频道。工作区尚未配置时，请联系管理员。"
+    },
+    "title": "使用导览",
+    "chooseChannel": "选择一个频道即可继续。需要时可从浏览频道中加入。",
+    "navigationError": "无法打开页面，请重试。"
+  },
+  "sip": {
+    "title": "电话（SIP）",
+    "description": "管理个人和社团共享的线路及电话机。连接所选的一条线路进行呼入和呼出。接听来电需要浏览器保持打开并连接。",
+    "refresh": "刷新",
+    "addLine": "添加线路",
+    "loading": "正在加载…",
+    "loadError": "无法加载线路，请刷新后重试。",
+    "disabled": "电话功能尚未启用，需要管理员配置基础设施。",
+    "channelBusy": "频道通话期间无法使用SIP连接。",
+    "line": "通话线路",
+    "selectLine": "选择线路",
+    "personal": "个人",
+    "shared": "社团共享",
+    "connect": "连接并等待来电",
+    "disconnect": "断开连接",
+    "number": "电话号码或分机号",
+    "dial": "拨号",
+    "empty": "暂无可用线路。",
+    "edit": "编辑",
+    "delete": "删除",
+    "lineForm": "添加或编辑线路",
+    "name": "线路名称",
+    "ownership": "所有权",
+    "phone_number": "外线号码（可选）",
+    "websocket_path": "SIP连接路径",
+    "sip_domain": "SIP域名",
+    "username": "SIP用户名",
+    "password": "SIP密码",
+    "keepPassword": "留空以保留当前密码",
+    "members": "允许使用的成员",
+    "membersHelp": "只有选中的成员可以连接。管理员如需使用也须选中。成员共享SIP凭据，移除成员时也请在PBX上更换密码。",
+    "phones": "电话机和站点联系人",
+    "phonesHelp": "登记名称和分机号后，将显示的 SIP 账号配置到电话机。",
+    "gatewayAccount": "站点网关 SIP 账号",
+    "phoneAccount": "电话机 SIP 账号",
+    "phoneName": "电话机或站点名称",
+    "extension": "目标号码",
+    "removePhone": "移除联系人",
+    "addPhone": "添加电话机",
+    "pbxHelp": "请登记管理员提供的PBX域名和账户。SIP连接由服务器处理。PBX也须限制允许使用的外线和号码。",
+    "writeError": "无法保存，请检查输入和权限后重试。",
+    "save": "保存",
+    "saving": "正在保存…",
+    "cancel": "取消",
+    "deleteTitle": "删除此线路？",
+    "deleteHelp": "从zoo2移除线路和联系人。请另行在PBX禁用分机和凭据。",
+    "answer": "接听",
+    "hangup": "挂断或拒接",
+    "mute": "静音",
+    "unmute": "取消静音",
+    "dtmf": "按键音（0–9、*、#）",
+    "sendTone": "发送",
+    "callError": "连接或操作失败，请检查线路权限、PBX和音频中继配置。",
+    "status": {
+      "offline": "未连接",
+      "connecting": "正在连接…",
+      "ready": "等待来电",
+      "dialing": "正在呼叫…",
+      "incoming": "来电",
+      "active": "通话中"
+    },
+    "unavailableMember": "不可用的成员"
+  },
+  "androidPhone": {
+    "description": "通过设备的通话功能使用个人或共享SIP线路及私信语音通话。",
+    "nativeCalls": "设备通话集成",
+    "nativeHelp": "有来电时会显示通话通知。允许通知后，受支持的设备可在后台接收私信来电。等待 SIP 来电，或在无法使用 FCM 的设备上等待私信来电时，请将 Zoo 保持在前台。可通过设备的通话控件接听、挂断和切换音频输出，需要麦克风权限。",
+    "minimizeCall": "最小化",
+    "expandCall": "展开通话",
+    "floatCall": "画中画",
+    "pipUnavailable": "请在 Android 设置中检查画中画。",
+    "incomingScreenSettings": "全屏来电设置",
+    "receiveDm": "接收私信来电",
+    "callError": "无法准备或操作通话，请检查麦克风权限、设备通话支持、网络和线路设置。",
+    "speaker": "扬声器",
+    "waiting": "正在等待来电",
+    "dmCall": "通话"
+  },
+  "globalSearch": {
+    "title": "搜索",
+    "placeholder": "搜索消息和文件",
+    "kinds": {
+      "all": "全部",
+      "messages": "消息",
+      "files": "文件"
+    },
+    "prompt": "请输入要搜索的词。用空格分隔时，将查找包含所有词的结果。",
+    "empty": "没有找到结果。",
+    "emptyOlder": "截至 {{month}} 没有找到结果。可以继续搜索更早的内容。",
+    "searchedUntil": "已搜索到 {{month}}",
+    "searchOlder": "搜索更早的结果",
+    "loading": "正在搜索…",
+    "loadError": "搜索失败。",
+    "retry": "重试",
+    "tooManyTerms": "最多可以搜索 {{max}} 个词。请减少词数。",
+    "termTooLong": "每个词最多 {{max}} 个字符。请缩短该词。",
+    "encryptedNote": "加密频道不在搜索范围内。",
+    "openNav": "搜索",
+    "inThread": "子线程回复",
+    "filters": {
+      "label": "筛选",
+      "from": "发送者",
+      "in": "频道",
+      "kind": "类型",
+      "period": "日期",
+      "anytime": "不限",
+      "last7": "过去 7 天",
+      "last30": "过去 30 天",
+      "last365": "过去 1 年",
+      "custom": "指定日期",
+      "after": "开始日期",
+      "before": "结束日期",
+      "reversed": "开始日期不能晚于结束日期。",
+      "reset": "重置条件",
+      "me": "{{name}}（我）",
+      "searchPeople": "按名称搜索",
+      "searchChannels": "搜索频道",
+      "noMatches": "没有找到",
+      "clearSelection": "取消选择",
+      "selectedCount": "{{label}}：{{count}} 个",
+      "max": "最多可选择 {{count}} 个",
+      "mine": "我参与的",
+      "noBots": "排除机器人"
+    }
+  },
+  "catchUp": {
+    "navUnread_one": "{{count}} 个未读会话待查看",
+    "navUnread_other": "{{count}} 个未读会话待查看",
+    "title": "未读消息速览",
+    "close": "结束",
+    "count_one": "{{count}} 条未读消息",
+    "count_other": "{{count}} 条未读消息",
+    "overCount_one": "{{count}}+ 条未读消息",
+    "overCount_other": "{{count}}+ 条未读消息",
+    "progress": "{{current}} / {{total}}",
+    "markRead": "标为已读",
+    "keepUnread": "保持未读并前往下一条",
+    "readError": "无法标为已读，请重试",
+    "loadError": "无法加载未读会话",
+    "retry": "重试",
+    "loading": "正在加载未读会话",
+    "empty": "没有未读会话",
+    "emptyDescription": "有新消息时再回来查看",
+    "complete": "全部看完",
+    "summary": "已读 {{read}} 个 · 保持未读 {{skipped}} 个",
+    "refresh": "刷新",
+    "conversation": "会话",
+    "unreadTooOld": "部分较早的未读消息仍在加载范围外。请先加载更多再标为已读。",
+    "loadMore": "加载更多",
+    "unreadChanged": "阅读期间有新的未读消息。请保持此会话未读并继续。"
   }
 }

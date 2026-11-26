@@ -28,7 +28,10 @@ export type TelemetryWebrtcState =
   | "connection_failed"
   | "heartbeat_timeout"
   | "poor_quality"
-  | "recovered";
+  | "recovered"
+  | "sfu_join_failed"
+  | "sfu_fallback"
+  | "sfu_failed";
 
 export type TelemetryCandidateType = "host" | "srflx" | "prflx" | "relay" | "unknown";
 

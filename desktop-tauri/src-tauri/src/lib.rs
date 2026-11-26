@@ -11,6 +11,7 @@ mod commands;
 #[cfg(test)]
 mod commands_list;
 mod core;
+mod downloads;
 mod toast;
 mod update;
 mod updater_window;
@@ -22,7 +23,7 @@ use tauri::Manager;
 use zoo2_client_core::config::{AuthConfig, Config, desktop_ui_for};
 use zoo2_client_types::ipc::UiMode;
 
-/// 設定ディレクトリとトークンの置き場所の名前。GPUI 版 (`zoo2-desktop`) や TUI とは分ける。
+/// 設定ディレクトリとトークンの置き場所の名前。TUI とは分ける。
 pub const APP_NAME: &str = "zoo2-desktop-tauri";
 
 /// 画面の種類。`desktop_ui` (`ZOO_DESKTOP_UI`) で `remote` か `leptos` を選ぶ。
@@ -54,10 +55,23 @@ pub fn run() {
     };
     tauri::Builder::default()
         // 単一インスタンスは最初に登録する (2 つ目のプロセスを、他の初期化より前に止めるため)。
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            #[cfg(not(target_os = "windows"))]
+            let _ = &args;
+            #[cfg(target_os = "windows")]
+            if let Some(failure) = update::take_inno_failure(args.into_iter().skip(1)) {
+                update::show_inno_failure(app, &failure);
+            }
             window::show_main(app);
         }))
-        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        // opener の既定は、`target="_blank"` のリンクのクリックを横取りして、確かめずに開くスクリプトを
+        // 入れる。リンクは `on_navigation` と `on_new_window` に任せ、外部のサイトは確かめてから開く。
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             commands::zoo_session,
@@ -65,19 +79,31 @@ pub fn run() {
             commands::zoo_cancel_login,
             commands::zoo_logout,
             commands::zoo_set_focus,
+            commands::zoo_set_badge,
             commands::zoo_notification_settings,
             commands::zoo_set_notifications,
             commands::zoo_open_channel,
             commands::zoo_resync,
             commands::zoo_account_profiles,
             commands::zoo_send_message,
+            commands::zoo_invoke_app_action,
             commands::zoo_access_token,
             commands::zoo_notifications_observed,
             commands::zoo_take_call_accept,
+            commands::zoo_reauthenticate,
+            commands::zoo_download_settings,
+            commands::zoo_set_download_settings,
+            commands::zoo_pick_download_directory,
+            commands::zoo_download_begin,
+            commands::zoo_download_write,
+            commands::zoo_download_finish,
+            commands::zoo_download_cancel,
         ])
         .setup(move |app| {
             #[cfg(target_os = "macos")]
             toast::request_permission_macos();
+            #[cfg(target_os = "windows")]
+            toast::ensure_windows_aumid(app.handle());
             // 設定を読めないときは確かめる (直した版を届けられるように)。
             let check_updates = !matches!(&config, Ok(config) if !config.check_updates);
             let core = Arc::new(core::Core::new(app.handle().clone(), ui, config));
@@ -94,7 +120,20 @@ pub fn run() {
         .on_window_event(window::on_window_event)
         .build(tauri::generate_context!())
         .expect("Tauri の初期化に失敗しました")
-        .run(|_app, _event| {});
+        .run(|app, event| match event {
+            #[cfg(target_os = "windows")]
+            tauri::RunEvent::ExitRequested { code, api, .. } => {
+                update::on_exit_requested(app, code, &api);
+            }
+            // `App::run` はまだ書き込み中のダウンロードの `Drop` を呼ばずにプロセスを
+            // 終えるので、ここで `.part` を消す。待ちきれなかったものは次の起動で消す。
+            tauri::RunEvent::Exit => {
+                if let Some(core) = app.try_state::<Arc<core::Core>>() {
+                    core.downloads().shutdown(std::time::Duration::from_secs(1));
+                }
+            }
+            _ => {}
+        });
 }
 
 #[cfg(test)]
@@ -120,15 +159,25 @@ mod tests {
             command::CANCEL_LOGIN,
             command::LOGOUT,
             command::SET_FOCUS,
+            command::SET_BADGE,
             command::NOTIFICATION_SETTINGS,
             command::SET_NOTIFICATIONS,
             command::OPEN_CHANNEL,
             command::RESYNC,
             command::ACCOUNT_PROFILES,
             command::SEND_MESSAGE,
+            command::INVOKE_APP_ACTION,
             command::ACCESS_TOKEN,
             command::NOTIFICATIONS_OBSERVED,
             command::TAKE_CALL_ACCEPT,
+            command::REAUTHENTICATE,
+            command::DOWNLOAD_SETTINGS,
+            command::SET_DOWNLOAD_SETTINGS,
+            command::PICK_DOWNLOAD_DIRECTORY,
+            command::DOWNLOAD_BEGIN,
+            command::DOWNLOAD_WRITE,
+            command::DOWNLOAD_FINISH,
+            command::DOWNLOAD_CANCEL,
         ];
         assert_eq!(super::commands_list::COMMANDS, ipc);
     }

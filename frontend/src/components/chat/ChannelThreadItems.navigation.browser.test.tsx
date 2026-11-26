@@ -151,23 +151,20 @@ it("opens from a parent, restores the URL, and removes the temporary entry on na
   await tree.findByRole("link", { name: /Active conversation/ });
   expect(tree.queryByRole("link", { name: /archived conversation/ })).toBeNull();
   await userEvent.click(screen.getByRole("button", { name: "Reply to parent" }));
-  expect(
-    (await tree.findByRole("link", { name: /Old archived conversation/ })).getAttribute(
-      "aria-current",
-    ),
-  ).toBe("page");
+  await screen.findByText("Viewing:old");
+  expect(tree.queryByRole("link", { name: /Old archived conversation/ })).toBeNull();
   const url = first.router.state.location.href;
   first.unmount();
   const restored = setup(url);
   const restoredTree = within(await screen.findByRole("complementary", { name: "Thread tree" }));
-  await restoredTree.findByRole("link", { name: /Old archived conversation/ });
+  await screen.findByText("Viewing:old");
   expect(screen.getByText("Viewing:old")).toBeTruthy();
   await restored.router.navigate({
     to: "/channels/$channelId",
     params: { channelId: "general" },
     search: { thread: "other" },
   });
-  await restoredTree.findByRole("link", { name: /Other archived conversation/ });
+  await screen.findByText("Viewing:other");
   expect(restoredTree.queryByRole("link", { name: /Old archived conversation/ })).toBeNull();
   await userEvent.click(screen.getByRole("button", { name: "Close conversation" }));
   await waitFor(() =>
@@ -188,10 +185,10 @@ it("has no archive history or search entry and never requests an archive list", 
   expect(fixture.get.mock.calls.every(([path]) => !path.includes("archived=true"))).toBe(true);
 });
 
-it("keeps a URL-selected archive visible when the list fails", async () => {
+it("opens a URL-selected archive without a tree entry when the list fails", async () => {
   fixture.get.mockRejectedValue(new Error("offline"));
   setup("/channels/general?thread=old");
-  await screen.findByRole("link", { name: /Old archived conversation/ });
+  await screen.findByText("Viewing:old");
   expect(screen.getByText("Viewing:old")).toBeTruthy();
   expect(fixture.post).not.toHaveBeenCalled();
 });
@@ -203,13 +200,13 @@ it("removes a viewed archive on navigation even when the active list still conta
   });
   const { router } = setup("/channels/general?thread=old");
   const tree = within(await screen.findByRole("complementary", { name: "Thread tree" }));
-  await tree.findByRole("link", { name: /Old archived conversation/ });
+  await screen.findByText("Viewing:old");
   await router.navigate({
     to: "/channels/$channelId",
     params: { channelId: "general" },
     search: { thread: "other" },
   });
-  await tree.findByRole("link", { name: /Other archived conversation/ });
+  await screen.findByText("Viewing:other");
   expect(tree.queryByRole("link", { name: /Old archived conversation/ })).toBeNull();
   expect(fixture.post).not.toHaveBeenCalled();
 });
@@ -225,13 +222,13 @@ it("keeps observed archives hidden after appending a page", async () => {
   const { router } = setup("/channels/general?thread=old");
   const tree = within(await screen.findByRole("complementary", { name: "Thread tree" }));
   await waitFor(() => expect(fixture.hasMore).toBe(true));
-  await tree.findByRole("link", { name: /Old archived conversation/ });
+  await screen.findByText("Viewing:old");
   await router.navigate({
     to: "/channels/$channelId",
     params: { channelId: "general" },
     search: { thread: "other" },
   });
-  await tree.findByRole("link", { name: /Other archived conversation/ });
+  await screen.findByText("Viewing:other");
   expect(tree.queryByRole("link", { name: /Old archived conversation/ })).toBeNull();
   await act(async () => fixture.loadMore());
   await tree.findByRole("link", { name: /Active conversation/ });
@@ -259,7 +256,7 @@ it("accepts a freshly fetched active state after preserving an archive correctio
     params: { channelId: "general" },
     search: { thread: "other" },
   });
-  await tree.findByRole("link", { name: /Other archived conversation/ });
+  await screen.findByText("Viewing:other");
   expect(tree.queryByRole("link", { name: /Old archived conversation/ })).toBeNull();
   await act(async () => window.dispatchEvent(new Event("focus")));
   await tree.findByRole("link", { name: /Old archived conversation/ });
@@ -295,9 +292,9 @@ it("keeps an observed archive hidden when an earlier refresh finishes late", asy
       });
     await navigate("other");
     await navigate("old");
-    await tree.findByRole("link", { name: /Old archived conversation/ });
+    await screen.findByText("Viewing:old");
     await navigate("other");
-    await tree.findByRole("link", { name: /Other archived conversation/ });
+    await screen.findByText("Viewing:other");
     expect(tree.queryByRole("link", { name: /Old archived conversation/ })).toBeNull();
     await act(async () =>
       resolveRefresh({ items: [{ ...stale }, { ...fixture.roots[2] }], next_cursor: null }),
@@ -311,27 +308,27 @@ it("keeps an observed archive hidden when an earlier refresh finishes late", asy
   }
 });
 
-it("retains a reopened unlisted root after closing while refresh fails", async () => {
+it("removes a reopened unjoined root after closing even when refresh fails", async () => {
   fixture.get.mockRejectedValue(new Error("offline"));
   const archiveAt = fixture.roots[0].thread_archive_at;
   const view = setup("/channels/general?thread=old");
-  await screen.findByRole("link", { name: /Old archived conversation/ });
+  await screen.findByText("Viewing:old");
   try {
     fixture.roots[0].thread_archive_at = null;
     await act(async () => window.dispatchEvent(new Event("zoo-threads-changed")));
     await waitFor(() => expect(fixture.get).toHaveBeenCalledTimes(2));
     await userEvent.click(screen.getByRole("button", { name: "Close conversation" }));
-    expect(await screen.findByRole("link", { name: /Old archived conversation/ })).toBeTruthy();
-    // キャッシュの購読を外して戻っても確定済みの行が残る。
+    expect(screen.queryByRole("link", { name: /Old archived conversation/ })).toBeNull();
+    // 再マウントしても未参加の行は通常一覧に残らない。
     view.unmount();
     setup("/channels/general");
-    expect(await screen.findByRole("link", { name: /Old archived conversation/ })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /Old archived conversation/ })).toBeNull();
   } finally {
     fixture.roots[0].thread_archive_at = archiveAt;
   }
 });
 
-it("does not add a reply-free ordinary post but still shows an archived root", async () => {
+it("does not add reply-free posts or archives to the tree", async () => {
   const root = fixture.roots[0];
   const original = { ...root };
   root.thread_archive_at = null;
@@ -344,7 +341,7 @@ it("does not add a reply-free ordinary post but still shows an archived root", a
     view.unmount();
     root.thread_archive_at = original.thread_archive_at;
     setup("/channels/general?thread=old");
-    expect(await screen.findByRole("link", { name: /Old archived conversation/ })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /Old archived conversation/ })).toBeNull();
   } finally {
     Object.assign(root, original);
   }
@@ -371,5 +368,23 @@ it("removes a thread after observing its last reply deleted even when refresh fa
     expect(screen.queryByRole("link", { name: /Active conversation/ })).toBeNull();
   } finally {
     root.reply_count = count;
+  }
+});
+
+it("shows an unjoined Open thread only while viewing without joining it", async () => {
+  const root = fixture.roots[0];
+  const archive = root.thread_archive_at;
+  root.thread_archive_at = null;
+  fixture.get.mockResolvedValue({ items: [fixture.roots[2]], next_cursor: null });
+  try {
+    setup("/channels/general?thread=old");
+    await screen.findByRole("link", { name: /Old archived conversation/ });
+    await userEvent.click(screen.getByRole("button", { name: "Close conversation" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("link", { name: /Old archived conversation/ })).toBeNull(),
+    );
+    expect(fixture.post).not.toHaveBeenCalled();
+  } finally {
+    root.thread_archive_at = archive;
   }
 });

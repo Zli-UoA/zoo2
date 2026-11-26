@@ -1,3 +1,4 @@
+import { SipPanel } from "../sip/SipPanel";
 import { ExternalLink } from "../ui/external-link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createConfiguredApiClient } from "../../lib/api/client";
@@ -8,6 +9,7 @@ import { SettingsSection } from "../ui/control-panel";
 import {
   ArrowLeftIcon,
   BellIcon,
+  DownloadIcon,
   LanguagesIcon,
   LogOutIcon,
   PaletteIcon,
@@ -23,16 +25,17 @@ import { ModeToggle } from "../theme/ModeToggle";
 import { PwaControls } from "../pwa/PwaControls";
 import { isDesktopSession } from "../../lib/desktop";
 import { DesktopNotificationSelect } from "../desktop/DesktopNotificationSelect";
+import { DesktopDownloadSettings } from "../desktop/DesktopDownloadSettings";
 import { AppsPanel } from "../chat/AppsDialog";
 import { CallSettingsDevices } from "../call/CallSettingsDevices";
 import { CallSoundsSwitch } from "../call/CallSoundsSwitch";
+import { DefaultChannelsSettings } from "./DefaultChannelsSettings";
 import { WorkspaceMembers } from "./WorkspaceMembers";
-import { EncryptionSettings } from "../e2ee/EncryptionSettings";
-import { DevicesSettings } from "../e2ee/DevicesSettings";
+import { EncryptionTab } from "../e2ee/EncryptionTab";
 import { SlackImportPanel } from "./SlackImportPanel";
 import { SlackLinkPanel } from "./SlackLinkPanel";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
-import type { SettingsTab } from "../../routes/_shell.settings";
+import { normalizeSettingsSearch, type SettingsTab } from "./settingsSearch";
 import { Button } from "../ui/button";
 import { SettingRow, panelTabClassName } from "../ui/control-panel";
 import { useShell } from "./shell-context";
@@ -47,14 +50,25 @@ export function ZooSettings() {
   const { t } = useTranslation();
   const shell = useShell();
   const navigate = useNavigate();
-  const search = useRouterState({
-    select: (state) => state.location.search as { tab?: SettingsTab; channel?: string },
+  const rawSearch = useRouterState({
+    select: (state) => state.location.search as Record<string, unknown>,
   });
+  // 古い `?tab=devices` も、ここで暗号化タブの端末のセクションに直す。
+  const search = useMemo(() => normalizeSettingsSearch(rawSearch), [rawSearch]);
   const { config } = useCollections();
   const { isAdmin } = useCurrentUser();
   // 管理者向けのタブは、権限がなければ一般タブに戻す
   const tab: SettingsTab =
     search.tab && (isAdmin || !ADMIN_TABS.includes(search.tab)) ? search.tab : "general";
+  const clearSection = useCallback(
+    () =>
+      void navigate({
+        to: "/settings",
+        search: { ...search, section: undefined },
+        replace: true,
+      }),
+    [navigate, search],
+  );
   return (
     <section className="flex h-full min-h-0 flex-col" aria-labelledby="zoo-settings-title">
       <PaneHeader>
@@ -77,13 +91,14 @@ export function ZooSettings() {
           onValueChange={(value) =>
             void navigate({
               to: "/settings",
-              search: { ...search, tab: value as SettingsTab },
+              search: { ...search, tab: value as SettingsTab, section: undefined },
               replace: true,
             })
           }
           className="flex w-full min-h-0 flex-col gap-4"
         >
           <Tabs.List
+            data-onboarding="settings"
             className="flex shrink-0 flex-wrap gap-1 rounded-lg bg-muted p-1"
             aria-label={t("settings.zooTitle")}
           >
@@ -93,11 +108,11 @@ export function ZooSettings() {
             <Tabs.Tab value="call" className={panelTabClassName}>
               {t("call.settingsTab")}
             </Tabs.Tab>
+            <Tabs.Tab value="sip" className={panelTabClassName}>
+              {t("sip.title")}
+            </Tabs.Tab>
             <Tabs.Tab value="encryption" className={panelTabClassName}>
               {t("e2ee.tab")}
-            </Tabs.Tab>
-            <Tabs.Tab value="devices" className={panelTabClassName}>
-              {t("e2ee.devicesTab")}
             </Tabs.Tab>
             <Tabs.Tab value="activitypub" className={panelTabClassName}>
               ActivityPub
@@ -146,6 +161,16 @@ export function ZooSettings() {
                   <PwaControls presentation="select" />
                 </SettingRow>
               )}
+              {isDesktopSession() ? (
+                // デスクトップ版は、WebView 任せにせず OS の保存ダイアログで保存する (lib/desktopDownloads.ts)。
+                <SettingRow
+                  icon={<DownloadIcon />}
+                  label={t("downloads.desktopTitle")}
+                  description={t("downloads.desktopDescription")}
+                >
+                  <DesktopDownloadSettings />
+                </SettingRow>
+              ) : null}
             </div>
             {config.oidc ? (
               <div className="mt-6 overflow-hidden rounded-lg border border-destructive/50">
@@ -171,13 +196,16 @@ export function ZooSettings() {
               <CallSettingsDevices />
             </div>
           </Tabs.Panel>
+          <Tabs.Panel value="sip" className="min-h-0">
+            <h2 className="sr-only">{t("sip.title")}</h2>
+            <SipPanel />
+          </Tabs.Panel>
           <Tabs.Panel value="encryption" className="min-h-0">
             <h2 className="sr-only">{t("e2ee.tab")}</h2>
-            <EncryptionSettings />
-          </Tabs.Panel>
-          <Tabs.Panel value="devices" className="min-h-0">
-            <h2 className="sr-only">{t("e2ee.devicesTab")}</h2>
-            <DevicesSettings />
+            <EncryptionTab
+              focusDevices={search.section === "devices"}
+              onDevicesFocused={clearSection}
+            />
           </Tabs.Panel>
           <Tabs.Panel value="activitypub" className="min-h-0">
             <h2 className="sr-only">ActivityPub</h2>
@@ -191,7 +219,9 @@ export function ZooSettings() {
           <Tabs.Panel value="apps" className="min-h-0">
             <AppsPanel channelId={search.channel} onClose={() => {}} />
           </Tabs.Panel>
-          <Tabs.Panel value="members" className="min-h-0">
+          <Tabs.Panel value="members" className="min-h-0 space-y-4">
+            <h2 className="sr-only">{t("members.title")}</h2>
+            {isAdmin ? <DefaultChannelsSettings /> : null}
             <WorkspaceMembers />
           </Tabs.Panel>
           <Tabs.Panel value="slack" className="min-h-0">

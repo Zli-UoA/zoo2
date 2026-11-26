@@ -433,6 +433,7 @@ where
         if !file_type.is_file() {
             continue;
         }
+        #[cfg_attr(not(unix), allow(unused_variables))]
         let metadata = match std::fs::symlink_metadata(entry.path()) {
             Ok(metadata) if metadata.file_type().is_file() => metadata,
             Ok(_) => continue,
@@ -1142,10 +1143,23 @@ impl TokenManager {
     /// 失効の要求は期限付きで、IdP に届かなくてもローカルのログアウトは進む。
     pub async fn sign_out_and_revoke(&self) -> Result<bool> {
         *self.persist.lock().unwrap_or_else(|e| e.into_inner()) = false;
-        Ok(matches!(
-            logout(&self.path, &self.oidc, &self.http).await?,
-            DeleteOutcome::Deleted
-        ))
+        // この manager が持つ session だけを対象にする。保存先が別のログインに
+        // 置き換わっていたら、失効も削除もしない。
+        let expected = self.state.lock().await.tokens.clone();
+        let Some(lock) = token_file_lock_async(&self.path, false).await? else {
+            return Ok(false);
+        };
+        let (lock, cleanup_error) = cleanup_stale_token_temps_async(&self.path, lock).await?;
+        let outcome = logout_with_cleanup_result(
+            &self.path,
+            &self.oidc,
+            &self.http,
+            Some(expected),
+            lock,
+            cleanup_error,
+        )
+        .await?;
+        Ok(matches!(outcome, DeleteOutcome::Deleted))
     }
 
     fn signed_out(&self) -> bool {
@@ -3024,6 +3038,7 @@ mod tests {
         delete(&path).unwrap();
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn independent_process_logout_invalidates_a_rotated_token_held_only_in_memory() {
         const WORKER_PATH: &str = "ZOO2_TUI_LOGOUT_WORKER_PATH";
@@ -3101,6 +3116,7 @@ mod tests {
         assert_eq!(load(&path, &config, Some(API)).unwrap(), None);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn pending_refresh_persistence_does_not_restore_logout_or_replace_another_account() {
         let server = MockServer::start().await;
@@ -3249,6 +3265,39 @@ mod tests {
         assert!(manager.sign_out_and_revoke().await.unwrap());
         assert!(!path.exists());
         assert!(manager.access_token().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn sign_out_and_revoke_keeps_a_newer_login_in_the_same_file() {
+        let server = MockServer::start().await;
+        let issuer = format!("{}/api/auth", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/api/auth/.well-known/openid-configuration"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "issuer": issuer,
+                "token_endpoint": format!("{}/token", server.uri()),
+                "revocation_endpoint": format!("{}/revoke", server.uri())
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/revoke"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let config = oidc(&issuer);
+        let path = temp_path("sign-out-and-revoke-newer-login");
+        let old = tokens(&config, now() + 3600, Some("old-refresh"));
+        save(&path, &old).unwrap();
+        let manager = TokenManager::new(reqwest::Client::new(), config.clone(), path.clone(), old);
+        let mut newer = tokens(&config, now() + 3600, Some("newer-refresh"));
+        newer.session_id = "newer-session".into();
+        save(&path, &newer).unwrap();
+
+        assert!(!manager.sign_out_and_revoke().await.unwrap());
+        assert_eq!(load(&path, &config, Some(API)).unwrap().unwrap(), newer);
     }
 
     #[tokio::test]

@@ -8,8 +8,6 @@ use serde::Deserialize;
 const DEFAULT_API_BASE_URL: &str = "https://zli.chat";
 const DEFAULT_OIDC_ISSUER: &str = "https://account.zli.works/api/auth";
 const TUI_DEFAULT_OIDC_CLIENT_ID: &str = "ldwuljsObQHzxCdMwnTsYLTrCwgHaRii";
-/// デスクトップ版向けの既定 client_id (Phase 2 で AuthZ に desktop 用 public client を登録した際にその ID へ置き換える)。
-const DESKTOP_DEFAULT_OIDC_CLIENT_ID: &str = "zoo2-desktop";
 /// Tauri 版 (`desktop-tauri`) 向けの既定 client_id。AuthZ の「Zoo for Desktop」(デバイスコードと refresh_token を許可した public client)。
 const DESKTOP_TAURI_DEFAULT_OIDC_CLIENT_ID: &str = "MwrfTPwsaaelMmxBdQGjWYuywWrsMHMe";
 /// AuthZ に登録した API の URL で、backend の `OIDC_AUDIENCE` と完全に一致させる。これを要求すると `typ: at+jwt` のアクセストークンが得られる。
@@ -96,7 +94,6 @@ fn pick_desktop_ui(file: Option<String>, env: Option<String>) -> Option<String> 
 fn default_oidc_client_id(app_name: &str) -> &str {
     match app_name {
         "zoo2-tui" => TUI_DEFAULT_OIDC_CLIENT_ID,
-        "zoo2-desktop" => DESKTOP_DEFAULT_OIDC_CLIENT_ID,
         "zoo2-desktop-tauri" => DESKTOP_TAURI_DEFAULT_OIDC_CLIENT_ID,
         other => other,
     }
@@ -205,18 +202,6 @@ mod tests {
                 scope: DEFAULT_SCOPE.into(),
             })
         );
-
-        let desktop = resolve_for("zoo2-desktop", FileConfig::default(), &env(&[])).unwrap();
-        assert_eq!(
-            desktop.auth,
-            AuthConfig::Oidc(OidcConfig {
-                issuer: "https://account.zli.works/api/auth".into(),
-                client_id: DESKTOP_DEFAULT_OIDC_CLIENT_ID.into(),
-                resource: Some("https://zli.chat/api".into()),
-                scope: DEFAULT_SCOPE.into(),
-            })
-        );
-        assert_ne!(TUI_DEFAULT_OIDC_CLIENT_ID, DESKTOP_DEFAULT_OIDC_CLIENT_ID);
 
         let tauri = resolve_for("zoo2-desktop-tauri", FileConfig::default(), &env(&[])).unwrap();
         assert_eq!(

@@ -28,10 +28,10 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {
+  // 増えた人も配れない人もいなければ、何も出さない（配布先の数は出さない）。
   play: playForImplementation(async ({ canvasElement }) => {
-    await expect(
-      within(canvasElement).getByText("2 人の 4 台の端末あてに暗号化しています。"),
-    ).toBeVisible();
+    await expect(within(canvasElement).queryByText(/配布先|読めません/)).not.toBeInTheDocument();
+    await expect(within(canvasElement).queryByText(/台の端末/)).not.toBeInTheDocument();
   }),
 };
 
@@ -68,4 +68,8 @@ export const AddedRecipients: Story = {
       addedUserIds: [carol!.id],
     },
   },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(within(canvasElement).getByText(/前回の送信から増えた配布先/)).toBeVisible();
+    await expect(within(canvasElement).queryByText(/台の端末/)).not.toBeInTheDocument();
+  }),
 };

@@ -1,6 +1,6 @@
 use super::{
     response::ApiResponse,
-    webhooks::{Settings, persist_card, verify_token, webhook_token},
+    webhooks::{Settings, persist_components, verify_token, webhook_token},
 };
 use crate::{
     auth::{
@@ -295,19 +295,19 @@ async fn receive(
     if !verify_token(&hook.secret, token) {
         return Err(AppError::Unauthorized("Invalid webhook token".into()));
     }
-    let cards = crate::cards::parse_webhook_cards(&body)?;
+    let ingested = crate::components::webhook(&body)?;
     let generated_delivery = Uuid::new_v4().to_string();
     let delivery = headers
         .get("x-webhook-delivery")
         .and_then(|v| v.to_str().ok())
         .unwrap_or(&generated_delivery);
-    persist_card(
+    persist_components(
         state,
         Settings {
             channel: hook.channel_id,
             user: hook.user_id,
         },
-        cards,
+        ingested,
         delivery,
     )
     .await?;

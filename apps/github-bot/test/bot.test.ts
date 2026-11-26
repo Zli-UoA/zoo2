@@ -6,7 +6,7 @@ import { GitHubError } from "../src/github.ts";
 import { preview } from "../src/previews.ts";
 import { subscription, words, permits } from "../src/subscriptions.ts";
 import { ZooError } from "../../../sdk/src/index.ts";
-import type { Json } from "../src/types.ts";
+import { BotError, id, keyedId, type Json } from "../src/types.ts";
 
 test("GitHub repository writes are impossible, including Zoo thread replies and action events", async (t) => {
   const f = fixture();
@@ -476,6 +476,31 @@ test("reminders post an untrusted PR title as plain text", async (t) => {
   assert.equal(content.split("</plain>").length, 2);
 });
 
+test("reminders never cut a plain wrapper when the body is long", async (t) => {
+  const f = fixture();
+  t.after(() => f.store.close());
+  f.remote.pr.requested_reviewers = [{ login: "alice" }];
+  f.remote.pr.title = `${"x".repeat(140)} [spoof](https://evil.example/phish)`;
+  f.remote.pulls = Array.from({ length: 30 }, (_, i) => ({ ...f.remote.pr, number: 100 + i }));
+  f.store.set("reminder:channel", { time: "00:00", zone: "Asia/Tokyo" });
+  await f.bot.reminders();
+  const content = [...f.zoo.messages.values()][0].content;
+  assert.ok(content.length <= 3600);
+  assert.equal(content.split("<plain>").length, content.split("</plain>").length);
+});
+
+test("the opening message posts untrusted GitHub text as plain text", async (t) => {
+  const f = fixture();
+  t.after(() => f.store.close());
+  f.remote.issue.title = "Fix [github.com/acme/project/pull/8](https://evil.example/t)";
+  f.remote.issue.body = "Body [docs](https://evil.example/b)";
+  await f.bot.githubEvent(job("issues", { action: "opened", issue: f.remote.issue }));
+  const root = [...f.zoo.messages.values()].find((m) => !m.parent_id)!;
+  assert.match(root.content, /<plain>Fix \[github\.com\/acme\/project\/pull\/8\]/);
+  assert.match(root.content, /<plain>Body \[docs\]\(https:\/\/evil\.example\/b\)<\/plain>/);
+  assert.equal(root.content.split("<plain>").length, root.content.split("</plain>").length);
+});
+
 test("untrusted comment text is posted as plain text per line", async (t) => {
   const f = fixture();
   t.after(() => f.store.close());
@@ -707,4 +732,41 @@ test("a burst of Checks refreshes the canonical PR card once without replaying e
   assert.equal(f.zoo.messages.size, 1);
   assert.match(JSON.stringify([...f.zoo.messages.values()][0].blocks), /CI: success/);
   assert.ok(f.remote.readRequests.length < 10, `Unexpected API request count: ${f.remote.readRequests.length}`);
+});
+
+test("message IDs cannot be computed from public values", async (t) => {
+  const f = fixture();
+  t.after(() => f.store.close());
+  await f.bot.githubEvent(job("issues", { action: "opened", issue: f.remote.issue }));
+  const root = f.store.thread("channel", { repo: "acme/project", kind: "issue", number: "7" })!;
+  assert.notEqual(root.message, id("thread:channel:acme/project:issue:7"));
+  assert.equal(root.message, keyedId(f.config.encryptionKey, "thread:channel:acme/project:issue:7"));
+  assert.notEqual(
+    keyedId(f.config.encryptionKey, "thread:channel:acme/project:issue:7"),
+    keyedId(Buffer.alloc(32, 8), "thread:channel:acme/project:issue:7"),
+  );
+});
+
+test("a message that this bot did not publish under its ID fails the job without blocking other channels", async (t) => {
+  const f = fixture({
+    rules: [
+      { repository: "acme/project", installationId: 10, channels: ["aaa-conflict", "channel"] },
+    ],
+  });
+  t.after(() => f.store.close());
+  f.store.subscribe({ repo: "acme/project", channel: "aaa-conflict", features: ["issues"] });
+  const taken = keyedId(f.config.encryptionKey, "thread:aaa-conflict:acme/project:issue:7");
+  // Another member's message in the same channel already uses the ID: POST conflicts and the edit is forbidden.
+  f.zoo.messages.set(taken, { id: taken, channel_id: "aaa-conflict", content: "occupied" });
+  const update = f.zoo.updateMessage;
+  f.zoo.updateMessage = async (messageId, content) => {
+    if (messageId === taken) throw new ZooError(403, "Forbidden");
+    return update(messageId, content);
+  };
+  await assert.rejects(
+    f.bot.githubEvent(job("issues", { action: "opened", issue: f.remote.issue })),
+    (error) => error instanceof BotError && error.code === "message_id_conflict" && !error.retryable,
+  );
+  assert.equal([...f.zoo.messages.values()].filter((m) => m.channel_id === "channel").length, 1);
+  assert.equal(f.zoo.messages.get(taken)!.content, "occupied");
 });

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { MegolmCiphertext } from "../electric/types";
 import {
+  firstEncryptedAt,
   isEncryptedMessage,
   isPlaintextBeforeEncryption,
   resolveMessageDecryption,
@@ -69,6 +70,27 @@ describe("isPlaintextBeforeEncryption", () => {
     // 暗号化チャンネルとして送った行は、削除して暗号文が消えても epoch が残る。
     expect(isPlaintextBeforeEncryption({ ciphertext: null, epoch: "2" })).toBe(false);
     expect(isPlaintextBeforeEncryption({ ciphertext, epoch: "2" })).toBe(false);
+  });
+});
+
+describe("firstEncryptedAt", () => {
+  it("暗号文か epoch のある行のうち、いちばん早い作成日時を返す", () => {
+    const ciphertext = {} as MegolmCiphertext;
+    expect(
+      firstEncryptedAt([
+        { ciphertext: null, epoch: null, created_at: "2026-01-01 00:00:00.000" },
+        { ciphertext, epoch: "2", created_at: "2026-01-03 00:00:00.000" },
+        // 削除した暗号化メッセージ（暗号文は DB が消し、epoch は残る）も含める。
+        { ciphertext: null, epoch: "1", created_at: "2026-01-02 00:00:00.000" },
+      ]),
+    ).toBe("2026-01-02 00:00:00.000");
+  });
+
+  it("暗号化したメッセージがなければ null", () => {
+    expect(firstEncryptedAt([])).toBeNull();
+    expect(
+      firstEncryptedAt([{ ciphertext: null, epoch: null, created_at: "2026-01-01 00:00:00.000" }]),
+    ).toBeNull();
   });
 });
 

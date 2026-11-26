@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
-import { previewUrls, proxyImageUrl } from "./linkPreviews";
+import { proxyImageUrl } from "../../../lib/media-proxy";
+import { previewUrls } from "./linkPreviews";
 
 describe("link previews", () => {
   it("extracts visible links, deduplicates and limits cards", () => {
@@ -16,6 +17,22 @@ describe("link previews", () => {
         "`https://code.example`\n```\nhttps://block.example\n```\n<plain>https://plain.example</plain> ?[silent](https://silent.example) [bad](javascript:alert)",
       ),
     ).toEqual([]);
+  });
+  it("extracts the autolinks stored for quoted renotes, with or without a comment", () => {
+    const url = "https://misskey.example/notes/quoted-original";
+    expect(previewUrls(`**引用へのコメント**\n\n<${url}>`)).toEqual([url]);
+    expect(previewUrls(`<${url}>`)).toEqual([url]);
+  });
+  it("excludes a dedicated quote before limiting ordinary previews without changing chat's limit", () => {
+    const quote = "https://misskey.example/notes/quoted-original";
+    const links = [
+      "https://example.com/one",
+      "https://example.com/two",
+      "https://example.com/three",
+    ];
+    const content = `<${quote}> ${links.join(" ")}`;
+    expect(previewUrls(content, quote)).toEqual(links);
+    expect(previewUrls(content)).toEqual([quote, ...links.slice(0, 2)]);
   });
   it("sends images only to the configured proxy without smaller thumbnail presets", () => {
     const image = "https://images.example/a.png?x=1&y=2";

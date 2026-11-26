@@ -11,6 +11,7 @@ import type {
   MessageRow,
   NotificationRow,
   UserRow,
+  UserPinnedChannelRow,
   CallInviteRow,
 } from "../src/lib/electric/types";
 
@@ -25,6 +26,7 @@ export interface StoryCollectionsInput {
   reactions?: MessageReactionRow[];
   notifications?: NotificationRow[];
   attachments?: AttachmentRow[];
+  userPinnedChannels?: UserPinnedChannelRow[];
   config?: Partial<AppConfig>;
 }
 
@@ -164,6 +166,12 @@ export function createStoryCollections(input: StoryCollectionsInput = {}): Colle
       createStoryChannelLeaveCollection(
         (input.channelLeaves ?? []).filter((row) => row.user_id === userId),
       ) as unknown as ReturnType<CollectionsBundle["channelLeaves"]>,
+    userPinnedChannels: (userId: string) =>
+      rowsCollection<UserPinnedChannelRow>(
+        "userPinnedChannels",
+        (row) => `${row.user_id}:${row.channel_id}`,
+        (input.userPinnedChannels ?? []).filter((row) => row.user_id === userId),
+      ) as unknown as ReturnType<CollectionsBundle["userPinnedChannels"]>,
     notifications: (userId: string) => {
       let collection = notificationCache.get(userId);
       if (!collection) {
@@ -272,7 +280,7 @@ export const storyUsers: UserRow[] = [
 
 export const storyChannels: ChannelRow[] = [
   {
-    id: "channel-general",
+    id: "00000000-0000-4000-8000-000000000001",
     channel_name: "general",
     description: "チーム全体のお知らせと雑談",
     created_user_id: "user-alice",
@@ -349,15 +357,31 @@ export const storyChannels: ChannelRow[] = [
 ];
 
 export const storyChannelUsers: ChannelUserRow[] = [
-  { user_id: "user-alice", channel_id: "channel-general", joined_at: timestamp(1, 0) },
-  { user_id: "user-bob", channel_id: "channel-general", joined_at: timestamp(1, 0) },
-  { user_id: "user-carol", channel_id: "channel-general", joined_at: timestamp(1, 0) },
+  {
+    user_id: "user-alice",
+    channel_id: "00000000-0000-4000-8000-000000000001",
+    joined_at: timestamp(1, 0),
+  },
+  {
+    user_id: "user-bob",
+    channel_id: "00000000-0000-4000-8000-000000000001",
+    joined_at: timestamp(1, 0),
+  },
+  {
+    user_id: "user-carol",
+    channel_id: "00000000-0000-4000-8000-000000000001",
+    joined_at: timestamp(1, 0),
+  },
   { user_id: "user-alice", channel_id: "channel-design", joined_at: timestamp(1, 0) },
   { user_id: "user-carol", channel_id: "channel-design", joined_at: timestamp(1, 0) },
   { user_id: "user-dave", channel_id: "channel-design", joined_at: timestamp(1, 0) },
   { user_id: "user-alice", channel_id: "channel-secret", joined_at: timestamp(1, 0) },
   { user_id: "user-bob", channel_id: "channel-secret", joined_at: timestamp(1, 0) },
-  { user_id: "user-admin", channel_id: "channel-general", joined_at: timestamp(1, 0) },
+  {
+    user_id: "user-admin",
+    channel_id: "00000000-0000-4000-8000-000000000001",
+    joined_at: timestamp(1, 0),
+  },
   { user_id: "user-admin", channel_id: "channel-archive", joined_at: timestamp(1, 0) },
 ];
 
@@ -365,7 +389,7 @@ export const storyMessages: MessageRow[] = [
   {
     id: "message-hello",
     user_id: "user-alice",
-    channel_id: "channel-general",
+    channel_id: "00000000-0000-4000-8000-000000000001",
     content:
       "おはようございます。今日のリリースは 18:00 です。詳細は https://example.com/docs を参照してください。",
     created_at: timestamp(2, 9),
@@ -376,7 +400,7 @@ export const storyMessages: MessageRow[] = [
   {
     id: "message-bob-reply",
     user_id: "user-bob",
-    channel_id: "channel-general",
+    channel_id: "00000000-0000-4000-8000-000000000001",
     content: "了解です！デプロイ後に確認します 👍",
     created_at: timestamp(2, 9, 2),
     updated_at: null,
@@ -386,7 +410,7 @@ export const storyMessages: MessageRow[] = [
   {
     id: "message-thread-root",
     user_id: "user-carol",
-    channel_id: "channel-general",
+    channel_id: "00000000-0000-4000-8000-000000000001",
     content: "リリースノートの下書きを共有しました。レビューをお願いします。",
     created_at: timestamp(2, 9, 5),
     updated_at: null,
@@ -396,7 +420,7 @@ export const storyMessages: MessageRow[] = [
   {
     id: "message-thread-reply",
     user_id: "user-bob",
-    channel_id: "channel-general",
+    channel_id: "00000000-0000-4000-8000-000000000001",
     content: "確認しました。2 点だけコメントしました。",
     created_at: timestamp(2, 9, 6),
     updated_at: null,
@@ -406,7 +430,7 @@ export const storyMessages: MessageRow[] = [
   {
     id: "message-thread-reply-2",
     user_id: "user-alice",
-    channel_id: "channel-general",
+    channel_id: "00000000-0000-4000-8000-000000000001",
     content: "ありがとうございます。修正して再共有します。",
     created_at: timestamp(2, 9, 7),
     updated_at: null,
@@ -416,7 +440,7 @@ export const storyMessages: MessageRow[] = [
   {
     id: "message-card",
     user_id: "user-alice",
-    channel_id: "channel-general",
+    channel_id: "00000000-0000-4000-8000-000000000001",
     content: "デプロイが完了しました",
     card: JSON.stringify({
       title: "Deploy complete",
@@ -495,7 +519,7 @@ export const storyNotifications: NotificationRow[] = [
     id: "notification-mention",
     user_id: "user-alice",
     actor_id: "user-bob",
-    channel_id: "channel-general",
+    channel_id: "00000000-0000-4000-8000-000000000001",
     message_id: "message-hello",
     notification_type: "mention",
     is_read: false,
@@ -505,7 +529,7 @@ export const storyNotifications: NotificationRow[] = [
     id: "notification-reply",
     user_id: "user-alice",
     actor_id: "user-carol",
-    channel_id: "channel-general",
+    channel_id: "00000000-0000-4000-8000-000000000001",
     message_id: "message-thread-reply",
     notification_type: "reply",
     is_read: false,
@@ -515,7 +539,7 @@ export const storyNotifications: NotificationRow[] = [
     id: "notification-reaction",
     user_id: "user-alice",
     actor_id: "user-bob",
-    channel_id: "channel-general",
+    channel_id: "00000000-0000-4000-8000-000000000001",
     message_id: "message-thread-root",
     notification_type: "reaction",
     is_read: false,
@@ -525,7 +549,7 @@ export const storyNotifications: NotificationRow[] = [
     id: "notification-reaction-read",
     user_id: "user-alice",
     actor_id: "user-carol",
-    channel_id: "channel-general",
+    channel_id: "00000000-0000-4000-8000-000000000001",
     message_id: "message-bob-reply",
     notification_type: "reaction",
     is_read: true,

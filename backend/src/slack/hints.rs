@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use super::{
-    convert::reaction_emoji,
+    convert::{mrkdwn_to_mfm_legacy, reaction_emoji},
     export::{SlackMessage, SlackReaction},
     sync::{Slack, SyncError, lookup_profiles, parse_messages},
     worker::{
@@ -328,7 +328,7 @@ async fn apply(
         }
     }
     if let Some(message) = &message
-        && message.is_importable()
+        && message.is_importable_for_team(Some(team))
     {
         lookup_profiles(db, slack, ctx, std::slice::from_ref(message)).await?;
     }
@@ -351,15 +351,16 @@ async fn apply(
     super::worker::ensure_plaintext_allowed(&mut tx, zoo_channel).await?;
     // `slack_message_map` に行があれば、その Zoo のメッセージを使う。Zoo で作った投稿 (`zoo`) は Zoo が正なので、
     // Slack での編集・削除は反映しない。Slack からのリアクションと返信は、その投稿に付ける
-    let (id, zoo_origin) = match mapped(&mut tx, team, slack_channel, ts).await? {
-        Some((id, origin)) => (id, origin == "zoo"),
-        None => (super::message_id(team, slack_channel, ts), false),
+    let (id, zoo_origin, zoo_mapped) = match mapped(&mut tx, team, slack_channel, ts).await? {
+        Some((id, origin)) => (id, origin == "zoo", true),
+        None => (super::message_id(team, slack_channel, ts), false, false),
     };
     let existing = query(
         &mut tx,
-        "SELECT json_build_object('deleted',deleted_at IS NOT NULL,'content',content,'card',COALESCE(card,''))::text \
-         FROM messages WHERE id=$1 AND channel_id=$2",
-        &[&id, zoo_channel],
+        "SELECT json_build_object('deleted',deleted_at IS NOT NULL,'content',content,'card',COALESCE(card,''),'components',COALESCE(components,''),'forwarded_message_ids',forwarded_message_ids)::text \
+         FROM messages WHERE id=$1 AND channel_id=$2 \
+         AND ($3='' OR created_at=(to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3))",
+        &[&id, zoo_channel, if zoo_mapped || !super::is_valid_ts(ts) { "" } else { ts }],
     )
     .await?
     .into_iter()
@@ -387,7 +388,7 @@ async fn apply(
             }
             match existing {
                 None => {
-                    if has("reply") && message.is_importable() {
+                    if has("reply") && message.is_importable_for_team(Some(team)) {
                         // `users` が省略されていたら、取り直した完全なリアクションの一覧で入れる
                         let full = full_reactions.as_ref().map(|reactions| SlackMessage {
                             reactions: reactions.clone(),
@@ -399,6 +400,7 @@ async fn apply(
                             slack_channel,
                             zoo_channel,
                             "",
+                            true,
                             full.as_ref().unwrap_or(message),
                         )
                         .await?;
@@ -406,7 +408,7 @@ async fn apply(
                 }
                 Some(row) if row["deleted"] == true => {}
                 Some(row) => {
-                    if has("changed") && !zoo_origin && message.is_importable() {
+                    if has("changed") && !zoo_origin && message.is_importable_for_team(Some(team)) {
                         edit(&mut tx, ctx, &id, message, row).await?;
                     }
                     if has("reaction") || has("changed") {
@@ -508,26 +510,97 @@ pub(super) async fn edit(
         .as_ref()
         .map(|e| e.ts.as_str())
         .filter(|ts| super::is_valid_ts(ts));
-    // 人の投稿は、編集の日時があるものだけ。bot の投稿 (`chat.update` には `edited` が付かない) は、表示内容が違うとき
+    let forwarded_ids = super::worker::resolve_forwarded_ids(tx, &ctx.team, message, true).await?;
+    let forwarded_json = if forwarded_ids.is_empty() {
+        String::new()
+    } else {
+        serde_json::to_string(&forwarded_ids).map_err(|err| AppError::Internal(err.into()))?
+    };
+    let stored_forwards: Vec<String> = stored
+        .get("forwarded_message_ids")
+        .and_then(|v| serde_json::from_value::<Option<Vec<String>>>(v.clone()).ok())
+        .flatten()
+        .unwrap_or_default();
+    let forwards_missing_backfill = stored
+        .get("forwarded_message_ids")
+        .is_none_or(|v| v.is_null())
+        && !forwarded_ids.is_empty();
+    // 人の投稿は、編集の日時があるものだけ。ただし既存の取り込み済み行やリンク展開で
+    // forwarded_message_ids だけが未設定なら、updated_at / revision を変えずに補完する。
     if edited.is_none() && message.bot_id.is_none() {
+        if forwards_missing_backfill {
+            query(
+                tx,
+                "UPDATE messages SET forwarded_message_ids=$2::jsonb \
+                 WHERE id=$1 AND deleted_at IS NULL AND forwarded_message_ids IS NULL \
+                 RETURNING json_build_object('ok',true)::text",
+                &[id, &forwarded_json],
+            )
+            .await?;
+        }
         return Ok(());
     }
     let rendered = render_message(tx, ctx, message).await?;
-    let same = stored["content"].as_str() == Some(rendered.content.as_str())
-        && stored["card"].as_str().unwrap_or_default() == rendered.card;
-    if same {
-        return Ok(());
+    // 書式の変換を入れる前に取り込んだ本文は、記号が変換されないまま保存されている。`edited` のない投稿 (bot) は、
+    // 本文の違いが書式の変換だけなら書き換えない (内容は同じなのに、「編集済み」の印が付くため)
+    let formatting_only = edited.is_none()
+        && stored["content"].as_str() == Some(mrkdwn_to_mfm_legacy(&message.text, &*ctx).as_str());
+    let content_and_components_same =
+        (stored["content"].as_str() == Some(rendered.content.as_str()) || formatting_only)
+            && stored["components"].as_str().unwrap_or_default() == rendered.components;
+    // 部品の導入前に `card` で取り込んだ行 (バックフィル後も `card` は残る) は、保存した部品が旧カードから作られて
+    // いて、attachments から作り直した部品とは形式が違う。形式の違いだけで「編集済み」にしないよう、
+    // 当時の変換で作り直した本文と `card` を、保存したものとバイト単位で比べる
+    let content_and_components_same = content_and_components_same || {
+        let card = stored["card"].as_str().unwrap_or_default();
+        !card.is_empty() && {
+            let (content, legacy) = super::legacy_card::render(message, &*ctx);
+            let content = if content.trim().is_empty() {
+                rendered.content.as_str()
+            } else {
+                content.as_str()
+            };
+            legacy == card && stored["content"].as_str() == Some(content)
+        }
+    };
+    if content_and_components_same {
+        if stored_forwards == forwarded_ids {
+            return Ok(());
+        }
+        if forwards_missing_backfill {
+            query(
+                tx,
+                "UPDATE messages SET forwarded_message_ids=$2::jsonb \
+                 WHERE id=$1 AND deleted_at IS NULL AND forwarded_message_ids IS NULL \
+                 AND ($3='' OR updated_at IS NULL OR updated_at<=(to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3)) \
+                 RETURNING json_build_object('ok',true)::text",
+                &[id, &forwarded_json, edited.unwrap_or_default()],
+            )
+            .await?;
+            return Ok(());
+        }
+        // `edited` のない bot 投稿では、古い Slack 応答で転送参照が空に見えただけで
+        // 既に保存済みの転送参照を消したり revision / updated_at を進めない。
+        if edited.is_none() && forwarded_ids.is_empty() {
+            return Ok(());
+        }
     }
     let updated = query(
         tx,
-        "UPDATE messages SET content=$2,card=NULLIF($3,''),\
+        "UPDATE messages SET content=$2,components=NULLIF($3,''),card=NULL,forwarded_message_ids=NULLIF($5,'')::jsonb,\
          updated_at=CASE WHEN $4='' THEN (now() AT TIME ZONE 'UTC')::timestamp(3) \
            ELSE (to_timestamp($4::numeric) AT TIME ZONE 'UTC')::timestamp(3) END,\
          revision=revision+1 \
          WHERE id=$1 AND deleted_at IS NULL \
          AND ($4='' OR updated_at IS NULL OR updated_at<(to_timestamp($4::numeric) AT TIME ZONE 'UTC')::timestamp(3)) \
          RETURNING json_build_object('ok',true)::text",
-        &[id, &rendered.content, &rendered.card, edited.unwrap_or_default()],
+        &[
+            id,
+            &rendered.content,
+            &rendered.components,
+            edited.unwrap_or_default(),
+            &forwarded_json,
+        ],
     )
     .await?;
     if updated.is_empty() {

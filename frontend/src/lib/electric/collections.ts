@@ -22,6 +22,7 @@ import type {
   MessageReactionRow,
   MessageRow,
   NotificationRow,
+  UserPinnedChannelRow,
   UserRow,
 } from "./types";
 import {
@@ -67,7 +68,13 @@ function shapeOptions(shape: ShapeName, config: AppConfig, options: ShapeQueryOp
   };
 }
 
-type PersistentRow = ChannelRow | UserRow | ChannelUserRow | MessageRow | NotificationRow;
+type PersistentRow =
+  | ChannelRow
+  | UserRow
+  | ChannelUserRow
+  | MessageRow
+  | NotificationRow
+  | UserPinnedChannelRow;
 
 /**
  * Electric のコレクションを、指定があれば TanStack DB の SQLite 永続化で包む。
@@ -177,6 +184,32 @@ function channelUsersCollection(
     ),
   );
   // channel_id 単位に絞り込む `useChannelMembers` の述語に合わせて索引を張る。
+  collection.createIndex((row) => row.channel_id);
+  return collection;
+}
+
+/**
+ * 自分がピン留めしたチャンネル・DM。proxy ではバックエンドが認証ユーザーの行だけに絞る。
+ * `position` の小さい順に並べ、端末をまたいだ変更を Electric で受ける。並びの版は
+ * `GET /api/channel-pins` と書き込みの応答で管理する（`hooks/usePinnedChannels.tsx`）。
+ */
+function userPinnedChannelsCollection(
+  userId: string,
+  config: AppConfig,
+  persistence?: PersistedCollectionPersistence | null,
+) {
+  const collection = createCollection(
+    withPersistence(
+      electricCollectionOptions<UserPinnedChannelRow>({
+        id: `user_pinned_channels:${userId}`,
+        getKey: (row) => `${row.user_id}:${row.channel_id}`,
+        defaultIndexType: BasicIndex,
+        shapeOptions: shapeOptions("userPinnedChannels", config, { userId }),
+      }),
+      persistence,
+      (row: UserPinnedChannelRow) => `${row.user_id}:${row.channel_id}`,
+    ),
+  );
   collection.createIndex((row) => row.channel_id);
   return collection;
 }
@@ -312,6 +345,7 @@ export type ChannelsCollection = ReturnType<typeof channelsCollection>;
 export type UsersCollection = ReturnType<typeof usersCollection>;
 export type ChannelUsersCollection = ReturnType<typeof channelUsersCollection>;
 export type ChannelLeavesCollection = ReturnType<typeof channelLeavesCollection>;
+export type UserPinnedChannelsCollection = ReturnType<typeof userPinnedChannelsCollection>;
 export type CallInvitesCollection = ReturnType<typeof callInvitesCollection>;
 export type MessagesCollection = ReturnType<typeof messagesCollection>;
 export type ReactionsCollection = ReturnType<typeof reactionsCollection>;
@@ -329,6 +363,8 @@ export interface CollectionsBundle {
   channelUsers: ChannelUsersCollection;
   /** 自分の退出日。ユーザー単位で生成しキャッシュする。 */
   channelLeaves: (userId: string) => ChannelLeavesCollection;
+  /** 自分がピン留めしたチャンネル。ユーザー単位で生成しキャッシュする。 */
+  userPinnedChannels: (userId: string) => UserPinnedChannelsCollection;
   /** 自分が呼んだ・呼ばれた、呼び出し中の通話の招待。ユーザー単位で生成しキャッシュする。 */
   callInvites: (userId: string) => CallInvitesCollection;
   /** `channel_id` 単位で生成しキャッシュした messages コレクションを返す。 */
@@ -388,6 +424,7 @@ export function getCollections(
 
   const notificationCache = new Map<string, NotificationsCollection>();
   const channelLeaveCache = new Map<string, ChannelLeavesCollection>();
+  const userPinnedChannelCache = new Map<string, UserPinnedChannelsCollection>();
   const callInviteCache = new Map<string, CallInvitesCollection>();
   const messageCache = new Map<string, MessagesCollection>();
   const reactionCache = new Map<string, ReactionsCollection>();
@@ -421,6 +458,14 @@ export function getCollections(
       if (!collection) {
         collection = channelLeavesCollection(userId, resolved);
         channelLeaveCache.set(userId, collection);
+      }
+      return collection;
+    },
+    userPinnedChannels: (userId) => {
+      let collection = userPinnedChannelCache.get(userId);
+      if (!collection) {
+        collection = userPinnedChannelsCollection(userId, resolved, persistence);
+        userPinnedChannelCache.set(userId, collection);
       }
       return collection;
     },

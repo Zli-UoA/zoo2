@@ -8,6 +8,12 @@ use serde_json::{Value, json};
 
 use crate::http::{Credentials, TokenPersistenceReport, error_for_status};
 
+mod e2ee;
+pub use e2ee::{
+    DeviceTarget, KEYS_CLAIM_BATCH, REAUTH_HEADER, TO_DEVICE_BATCH, json_u64, stale_epoch,
+    stale_revision,
+};
+
 #[derive(Clone)]
 pub struct ApiClient {
     http: reqwest::Client,
@@ -26,6 +32,15 @@ pub struct ReadState {
     /// 最後に読んだ位置の時刻 (UTC)。一度も読んでいなければ `None`。未読の線を置くのに使う。
     #[serde(default)]
     pub last_read_at: Option<String>,
+    /// 自分以外の未読ルート投稿数 (最大1000)。
+    #[serde(default)]
+    pub unread_count: u32,
+    /// 上限に達して件数が切り詰められているか。
+    #[serde(default)]
+    pub unread_count_truncated: bool,
+    /// 最古の未読投稿時刻 (UTC)。未読がなければ `None`。
+    #[serde(default)]
+    pub first_unread_at: Option<String>,
 }
 
 /// 閲覧権限で絞り込まれた `GET /api/threads` の1件。
@@ -43,6 +58,111 @@ pub struct ThreadSummary {
 pub struct ThreadPage {
     pub items: Vec<ThreadSummary>,
     pub next_cursor: Option<String>,
+}
+
+/// `GET /api/search` の種類。`All`（既定）はメッセージとファイルをまとめて探す。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SearchKind {
+    #[default]
+    All,
+    Messages,
+    Files,
+    Notes,
+}
+
+/// `GET /api/search` の絞り込み。期間は `YYYY-MM-DD`（UTC のその日の 0 時）か、オフセット付きの時刻
+/// （RFC 3339。端末の日付の 0 時）。`after` は含み、`before` は含まない。送信者とチャンネルは、どれか
+/// （空なら絞らない。最大 20 個）。`exclude_bots` はボット（アプリ）の投稿を除き、`involving_me` は自分が
+/// 参加中の会話（所属するチャンネル・DM、参加しているスレッド、メンションされたスレッド）に絞る。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SearchFilters {
+    pub user_ids: Vec<String>,
+    pub channel_ids: Vec<String>,
+    pub after: Option<String>,
+    pub before: Option<String>,
+    pub exclude_bots: bool,
+    pub involving_me: bool,
+}
+
+impl SearchKind {
+    fn as_query(self) -> &'static str {
+        match self {
+            SearchKind::All => "all",
+            SearchKind::Messages => "messages",
+            SearchKind::Files => "files",
+            SearchKind::Notes => "notes",
+        }
+    }
+}
+
+/// 全文検索の 1 件（docs/search.md）。種類によって埋まる列が違う。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SearchItem {
+    /// メッセージ・添付・ノートの ID。
+    pub id: String,
+    /// `message`・`file`・`note`。
+    #[serde(default)]
+    pub kind: Option<String>,
+    pub channel_id: String,
+    pub channel_name: String,
+    #[serde(default)]
+    pub is_dm: bool,
+    /// スレッドの返信なら親の ID（メッセージ・ファイル）。
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    /// 添付が付いているメッセージ（ファイル）。
+    #[serde(default)]
+    pub message_id: Option<String>,
+    #[serde(default)]
+    pub user_id: Option<String>,
+    /// 投稿者の表示名（メッセージ・ファイル）。
+    #[serde(default, deserialize_with = "author_name")]
+    pub author: Option<String>,
+    #[serde(default)]
+    pub file_name: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    pub snippet: String,
+    pub created_at: String,
+}
+
+fn author_name<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    let value = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(value.and_then(|v| {
+        v.get("display_name")
+            .or_else(|| v.get("user_name"))
+            .and_then(|n| n.as_str())
+            .map(str::to_string)
+    }))
+}
+
+/// 検索の 1 ページ。`items` が少なくても `next_cursor` があれば古い月が残っている。
+#[derive(Debug, Clone, Deserialize)]
+pub struct SearchPage {
+    pub items: Vec<SearchItem>,
+    pub next_cursor: Option<String>,
+    /// どの月（`YYYY-MM`）まで見たか。
+    #[serde(default)]
+    pub searched_until: Option<String>,
+}
+
+/// ピン留めの 1 行（`GET /api/channel-pins`）。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct PinnedChannel {
+    pub channel_id: String,
+    pub position: i64,
+    /// アーカイブ中のチャンネルのピン。位置は保ち、表示だけを止める。
+    #[serde(default)]
+    pub archived: bool,
+}
+
+/// 自分のピン留めと、並びの版。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ChannelPins {
+    pub pins: Vec<PinnedChannel>,
+    pub version: i64,
 }
 
 /// `GET /api/channels/{id}/typing`
@@ -77,6 +197,9 @@ pub struct CreatedChannel {
     pub channel_name: String,
     pub description: Option<String>,
     pub is_private: bool,
+    /// 暗号化チャンネルか（docs/e2ee.md の「暗号化チャンネル」）。暗号化を求めたのに `false` なら送信しない。
+    #[serde(default)]
+    pub encrypted: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -243,6 +366,23 @@ impl ApiClient {
         }
         Ok((shortcodes, names))
     }
+    /// Administrator settings for newly created accounts.
+    pub async fn default_channels(&self) -> Result<Value> {
+        self.get("/api/workspace/default-channels").await
+    }
+
+    pub async fn set_default_channels(&self, channel_ids: &[String]) -> Result<Value> {
+        Ok(self
+            .send(
+                Method::PATCH,
+                "/api/workspace/default-channels",
+                Some(json!({"channel_ids":channel_ids})),
+            )
+            .await?
+            .json()
+            .await?)
+    }
+
     pub async fn me(&self) -> Result<Me> {
         self.get("/api/users/me").await
     }
@@ -260,9 +400,13 @@ impl ApiClient {
     const E2EE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
     /// E2EE の要求を送り、応答の封筒 `{data, txid}` の `data` を返す。
+    ///
+    /// エラーは [`crate::http::ApiError`] にする（401 を除く）。端末が消された候補は、409
+    /// `E2EE_DEVICE_EXISTS` と 404 `E2EE_DEVICE_NOT_FOUND` のようにコードで見分けるため
+    /// （docs/e2ee.md の「端末が削除されていたとき」）。
     async fn write_data(&self, method: Method, path: &str, body: Option<Value>) -> Result<Value> {
         let envelope: Envelope = self
-            .send_with_timeout(method, path, body, Some(Self::E2EE_TIMEOUT))
+            .send_e2ee(method, path, body, None)
             .await?
             .json()
             .await?;
@@ -296,8 +440,22 @@ impl ApiClient {
     }
 
     /// `POST /api/e2ee/keys/query`（封筒なしの JSON）。一度に 50 人までにする。
+    ///
+    /// 応答の `device_keys`、`master_keys`、`self_signing_keys`、`user_signing_keys`、`tofu_pins` は
+    /// ユーザーごとにまとめ、`signatures` はつなげる（送信端末の検証に使う。docs/e2ee.md の「受信時の検証」）。
     pub async fn e2ee_query_keys(&self, user_ids: &[String]) -> Result<Value> {
-        let mut device_keys = serde_json::Map::new();
+        const BY_USER: [&str; 5] = [
+            "device_keys",
+            "master_keys",
+            "self_signing_keys",
+            "user_signing_keys",
+            "tofu_pins",
+        ];
+        let mut merged: serde_json::Map<String, Value> = BY_USER
+            .iter()
+            .map(|field| (field.to_string(), Value::Object(Default::default())))
+            .collect();
+        let mut signatures = Vec::new();
         for chunk in user_ids.chunks(50) {
             let response: Value = self
                 .send_with_timeout(
@@ -309,11 +467,19 @@ impl ApiClient {
                 .await?
                 .json()
                 .await?;
-            if let Some(Value::Object(users)) = response.get("device_keys") {
-                device_keys.extend(users.clone());
+            for field in BY_USER {
+                if let (Some(Value::Object(users)), Some(Value::Object(into))) =
+                    (response.get(field), merged.get_mut(field))
+                {
+                    into.extend(users.clone());
+                }
+            }
+            if let Some(Value::Array(rows)) = response.get("signatures") {
+                signatures.extend(rows.iter().cloned());
             }
         }
-        Ok(serde_json::json!({ "device_keys": device_keys }))
+        merged.insert("signatures".into(), Value::Array(signatures));
+        Ok(Value::Object(merged))
     }
 
     /// `POST /api/e2ee/to_device/ack`。一度に 1000 件までにする。
@@ -329,6 +495,29 @@ impl ApiClient {
         Ok(())
     }
 
+    /// `GET /api/e2ee/devices`：自分の、削除されていない端末の `device_id`（封筒なしの配列）。
+    /// 配列でない、または `device_id` のない要素があれば、一覧を取れなかったものとしてエラーにする。
+    pub async fn e2ee_device_ids(&self) -> Result<Vec<String>> {
+        let value: Value = self
+            .send_e2ee(Method::GET, "/api/e2ee/devices", None, None)
+            .await?
+            .json()
+            .await?;
+        let devices = value
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("端末の一覧が配列ではありません"))?;
+        devices
+            .iter()
+            .map(|device| {
+                device
+                    .get("device_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .ok_or_else(|| anyhow::anyhow!("端末の一覧に device_id のない要素があります"))
+            })
+            .collect()
+    }
+
     /// `DELETE /api/e2ee/devices/{device_id}`。削除済みでも成功する（冪等）。
     pub async fn e2ee_delete_device(&self, device_id: &str) -> Result<()> {
         self.write_data(
@@ -338,6 +527,39 @@ impl ApiClient {
         )
         .await?;
         Ok(())
+    }
+
+    /// 全文検索（`GET /api/search`）。暗号化チャンネルは対象外。
+    pub async fn search(
+        &self,
+        kind: SearchKind,
+        query: &str,
+        filters: &SearchFilters,
+        cursor: Option<&str>,
+    ) -> Result<SearchPage> {
+        let mut path = format!("/api/search?type={}&q={}", kind.as_query(), segment(query));
+        let user_ids = (!filters.user_ids.is_empty()).then(|| filters.user_ids.join(","));
+        let channel_ids = (!filters.channel_ids.is_empty()).then(|| filters.channel_ids.join(","));
+        for (name, value) in [
+            ("user_id", &user_ids),
+            ("channel_id", &channel_ids),
+            ("after", &filters.after),
+            ("before", &filters.before),
+        ] {
+            if let Some(value) = value {
+                path.push_str(&format!("&{name}={}", segment(value)));
+            }
+        }
+        if filters.exclude_bots {
+            path.push_str("&exclude_bots=true");
+        }
+        if filters.involving_me {
+            path.push_str("&involving_me=true");
+        }
+        if let Some(cursor) = cursor {
+            path.push_str(&format!("&cursor={}", segment(cursor)));
+        }
+        self.get(&path).await
     }
 
     pub async fn threads(&self, archived: bool, before: Option<&str>) -> Result<ThreadPage> {
@@ -360,8 +582,30 @@ impl ApiClient {
         self.get(&path).await
     }
 
+    /// Thread membership does not grant channel access. Joining is available
+    /// without having sent a message; leaving persists across reopen operations.
+    /// The three operations ask for the answer without the participant count and list
+    /// (`participants=none`): these clients never show them, and reading them costs O(P).
+    pub async fn join_thread(&self, id: &str) -> Result<Option<String>> {
+        self.write(
+            Method::POST,
+            &format!("/api/threads/{}/join?participants=none", segment(id)),
+            None,
+        )
+        .await
+    }
+
+    pub async fn leave_thread(&self, id: &str) -> Result<Option<String>> {
+        self.write(
+            Method::POST,
+            &format!("/api/threads/{}/leave?participants=none", segment(id)),
+            None,
+        )
+        .await
+    }
+
     pub async fn unarchive_thread(&self, id: &str) -> Result<Option<String>> {
-        let path = format!("/api/threads/{}/unarchive", segment(id));
+        let path = format!("/api/threads/{}/unarchive?participants=none", segment(id));
         self.write(Method::POST, &path, None).await
     }
 
@@ -381,6 +625,49 @@ impl ApiClient {
     ) -> Result<Option<String>> {
         self.send_message_with_attachments(id, channel_id, content, parent_id, None)
             .await
+    }
+
+    /// 返信を送り、サーバーが確定した親 ID も返す。移行中は子スレッドへの返信が
+    /// 最上位の親へ正規化されるため、呼び出し側は表示先をこの親へ移す。
+    pub async fn send_reply(
+        &self,
+        id: &str,
+        channel_id: &str,
+        content: &str,
+        parent_id: &str,
+    ) -> Result<(Option<String>, Option<String>)> {
+        self.send_message_resolved(id, channel_id, content, Some(parent_id), None)
+            .await
+    }
+
+    /// 添付付きでも使える送信。`txid` と、サーバーが確定した親 ID を返す。
+    pub async fn send_message_resolved(
+        &self,
+        id: &str,
+        channel_id: &str,
+        content: &str,
+        parent_id: Option<&str>,
+        attachment_ids: Option<Vec<String>>,
+    ) -> Result<(Option<String>, Option<String>)> {
+        let body = serde_json::to_value(NewMessage {
+            id,
+            channel_id,
+            content,
+            parent_id,
+            attachment_ids,
+        })?;
+        let envelope: Envelope = self
+            .send(Method::POST, "/api/messages", Some(body))
+            .await?
+            .json()
+            .await?;
+        let resolved = envelope
+            .data
+            .as_ref()
+            .and_then(|data| data.get("parent_id"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        Ok((envelope.txid, resolved))
     }
 
     /// 添付ファイル ID を含むメッセージ送信。
@@ -480,6 +767,67 @@ impl ApiClient {
         Ok((channel, envelope.txid))
     }
 
+    /// 暗号化チャンネルを作る（`POST /api/channels` の `encrypted: true`。非公開のときだけ作れる）。
+    /// エラーは [`crate::http::ApiError`]（403 `E2EE_DISABLED` などを `code` で分けるため）。
+    pub async fn create_encrypted_channel(
+        &self,
+        channel_name: &str,
+        description: Option<&str>,
+    ) -> Result<(CreatedChannel, Option<String>)> {
+        let body = json!({
+            "channel_name": channel_name,
+            "description": description,
+            "is_private": true,
+            "encrypted": true,
+        });
+        let envelope: Envelope<CreatedChannel> = self
+            .send_coded(Method::POST, "/api/channels", Some(body))
+            .await?
+            .json()
+            .await?;
+        let channel = envelope
+            .data
+            .ok_or_else(|| anyhow::anyhow!("作成されたチャンネルのデータがありません"))?;
+        Ok((channel, envelope.txid))
+    }
+
+    /// DM を作るか、あれば返す（`POST /api/dms`）。`encrypted` なら暗号化 DM（1 対 1 は `edm:` の名前で、
+    /// 平文の DM とは別の行になる）。エラーは [`crate::http::ApiError`]。
+    pub async fn create_dm(
+        &self,
+        target_user_ids: &[String],
+        encrypted: bool,
+    ) -> Result<(CreatedChannel, Option<String>)> {
+        let body = json!({ "target_user_ids": target_user_ids, "encrypted": encrypted });
+        let envelope: Envelope<CreatedChannel> = self
+            .send_coded(Method::POST, "/api/dms", Some(body))
+            .await?
+            .json()
+            .await?;
+        let channel = envelope
+            .data
+            .ok_or_else(|| anyhow::anyhow!("DM のデータがありません"))?;
+        Ok((channel, envelope.txid))
+    }
+
+    /// [`Self::send`] と同じだが、エラーを [`crate::http::ApiError`] にする。
+    async fn send_coded(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<reqwest::Response> {
+        let mut request = self
+            .http
+            .request(method, format!("{}{path}", self.base_url))
+            .header(reqwest::header::ACCEPT, "application/json");
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        let request = self.credentials.apply(request).await?;
+        crate::http::error_for_status_coded(request.send().await?).await
+    }
+
     pub async fn edit_message(&self, id: &str, content: &str) -> Result<Option<String>> {
         let path = format!("/api/messages/{}", segment(id));
         self.write(Method::PATCH, &path, Some(json!({ "content": content })))
@@ -489,6 +837,30 @@ impl ApiClient {
     pub async fn delete_message(&self, id: &str) -> Result<Option<String>> {
         let path = format!("/api/messages/{}", segment(id));
         self.write(Method::DELETE, &path, None).await
+    }
+
+    /// メッセージ部品のボタン・選択肢を押したことをアプリへ送る（`/api/apps/{id}/invoke` の `action`）。
+    pub async fn invoke_app_action(
+        &self,
+        app_id: &str,
+        channel_id: &str,
+        message_id: &str,
+        custom_id: &str,
+        value: Value,
+    ) -> Result<Value> {
+        let path = format!("/api/apps/{}/invoke", segment(app_id));
+        let body = json!({
+            "kind": "action",
+            "channel_id": channel_id,
+            "message_id": message_id,
+            "action_id": custom_id,
+            "values": { custom_id: value },
+        });
+        Ok(self
+            .send(Method::POST, &path, Some(body))
+            .await?
+            .json()
+            .await?)
     }
 
     pub async fn add_reaction(
@@ -519,6 +891,55 @@ impl ApiClient {
     pub async fn leave_channel(&self, channel_id: &str) -> Result<Option<String>> {
         let path = format!("/api/channels/{}/leave", segment(channel_id));
         self.write(Method::POST, &path, None).await
+    }
+
+    /// 自分のピン留めと、並びの版。
+    pub async fn channel_pins(&self) -> Result<ChannelPins> {
+        self.get("/api/channel-pins").await
+    }
+
+    /// チャンネルをピン留めする。成功したら新しい版を返す。409 `CHANNEL_PINS_CONFLICT` は
+    /// [`crate::http::ApiError`] として返るので、`channel_pins()` で最新の版を取ってやり直せる。
+    pub async fn pin_channel(&self, channel_id: &str, expected_version: i64) -> Result<i64> {
+        let body = json!({
+            "channel_id": channel_id,
+            "expected_version": expected_version,
+        });
+        self.pin_write(Method::POST, "/api/channel-pins", Some(body))
+            .await
+    }
+
+    /// ピン留めを解除する。成功したら新しい版を返す（解除する行がなくても版は変わらない）。
+    pub async fn unpin_channel(&self, channel_id: &str, expected_version: i64) -> Result<i64> {
+        let path = format!(
+            "/api/channel-pins/{}?expected_version={}",
+            segment(channel_id),
+            expected_version
+        );
+        self.pin_write(Method::DELETE, &path, None).await
+    }
+
+    /// ピンの並びを保存する。`channel_ids` は、いまピン留めされている有効なチャンネルの
+    /// 完全な並びでなければならない（追加・削除には使えない）。
+    pub async fn reorder_channel_pins(
+        &self,
+        channel_ids: &[String],
+        expected_version: i64,
+    ) -> Result<i64> {
+        let body = json!({
+            "channel_ids": channel_ids,
+            "expected_version": expected_version,
+        });
+        self.pin_write(Method::PATCH, "/api/channel-pins/order", Some(body))
+            .await
+    }
+
+    async fn pin_write(&self, method: Method, path: &str, body: Option<Value>) -> Result<i64> {
+        let envelope: Envelope<Value> = self.send_coded(method, path, body).await?.json().await?;
+        envelope
+            .data
+            .and_then(|data| data["version"].as_i64())
+            .ok_or_else(|| anyhow::anyhow!("ピン留めの応答に版がありません"))
     }
 
     pub async fn read_states(&self) -> Result<Vec<ReadState>> {
@@ -591,6 +1012,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::http::ApiError;
     use crate::http::HttpError;
 
     fn client(server: &MockServer) -> ApiClient {
@@ -628,6 +1050,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn administrator_can_read_and_clear_default_channels() {
+        let server = MockServer::start().await;
+        let settings = json!({"channel_ids":[], "channels":[]});
+        Mock::given(method("GET"))
+            .and(path("/api/workspace/default-channels"))
+            .and(header("X-Dev-User", "u1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&settings))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/workspace/default-channels"))
+            .and(body_json(json!({"channel_ids":[]})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&settings))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let api = client(&server);
+        assert_eq!(api.default_channels().await.unwrap(), settings);
+        assert_eq!(api.set_default_channels(&[]).await.unwrap(), settings);
+    }
+
+    #[tokio::test]
     async fn custom_names_survive_standard_dictionary_failure() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -646,6 +1091,26 @@ mod tests {
         assert!(standard.is_empty());
         assert!(custom.contains("smile"));
         assert!(custom.contains("custom_alias"));
+    }
+
+    #[tokio::test]
+    async fn send_reply_returns_the_parent_the_server_resolved() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/messages"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(
+                    json!({ "data": { "id": "x", "parent_id": "root" }, "txid": "7" }),
+                ),
+            )
+            .mount(&server)
+            .await;
+        let (txid, parent) = client(&server)
+            .send_reply("x", "c1", "hi", "child")
+            .await
+            .unwrap();
+        assert_eq!(txid.as_deref(), Some("7"));
+        assert_eq!(parent.as_deref(), Some("root"));
     }
 
     #[tokio::test]
@@ -687,6 +1152,48 @@ mod tests {
 
         let txid = client(&server).remove_reaction("m1", "👍").await.unwrap();
         assert_eq!(txid, None);
+    }
+
+    #[tokio::test]
+    async fn searches_with_escaped_query_and_cursor() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/search"))
+            .and(wiremock::matchers::query_param("type", "files"))
+            .and(wiremock::matchers::query_param("q", "会議 資料&x"))
+            .and(wiremock::matchers::query_param("cursor", "{\"m\":1}"))
+            .and(wiremock::matchers::query_param("user_id", "u1,u2"))
+            .and(wiremock::matchers::query_param("exclude_bots", "true"))
+            .and(wiremock::matchers::query_param("involving_me", "true"))
+            .and(wiremock::matchers::query_param("after", "2026-11-01"))
+            .and(header("X-Dev-User", "u1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"items":[
+                {"id":"a1","message_id":"m1","channel_id":"c1","channel_name":"general","is_dm":false,
+                 "parent_id":null,"user_id":"u2","author":{"id":"u2","user_name":"bob","display_name":"Bob"},
+                 "file_name":"議事録.pdf","snippet":"議事録.pdf","created_at":"2026-11-21T01:02:03.456"}
+            ],"next_cursor":null,"searched_until":"2025-12"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let page = client(&server)
+            .search(
+                SearchKind::Files,
+                "会議 資料&x",
+                &SearchFilters {
+                    user_ids: vec!["u1".into(), "u2".into()],
+                    after: Some("2026-11-01".into()),
+                    exclude_bots: true,
+                    involving_me: true,
+                    ..Default::default()
+                },
+                Some("{\"m\":1}"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.items[0].author.as_deref(), Some("Bob"));
+        assert_eq!(page.items[0].message_id.as_deref(), Some("m1"));
+        assert_eq!(page.searched_until.as_deref(), Some("2025-12"));
+        assert!(page.next_cursor.is_none());
     }
 
     #[tokio::test]
@@ -797,7 +1304,11 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/api/channel-read-states"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!([
-                { "channel_id": "c1", "last_read_at": null, "has_unread": true }
+                {
+                    "channel_id": "c1", "last_read_at": null, "has_unread": true,
+                    "unread_count": 2, "unread_count_truncated": false,
+                    "first_unread_at": "2026-01-01T00:00:00Z"
+                }
             ])))
             .mount(&server)
             .await;
@@ -810,6 +1321,9 @@ mod tests {
                 channel_id: "c1".into(),
                 has_unread: true,
                 last_read_at: None,
+                unread_count: 2,
+                unread_count_truncated: false,
+                first_unread_at: Some("2026-01-01T00:00:00Z".into()),
             }]
         );
     }
@@ -833,7 +1347,9 @@ mod tests {
         let api = client(&server);
         let err = api.join_channel("c1").await.unwrap_err();
         match err.downcast_ref::<HttpError>() {
-            Some(HttpError::Status { status, message }) => {
+            Some(HttpError::Status {
+                status, message, ..
+            }) => {
                 assert_eq!(status.as_u16(), 404);
                 assert_eq!(message, "Channel not found");
             }
@@ -844,6 +1360,68 @@ mod tests {
             err.downcast_ref::<HttpError>(),
             Some(HttpError::Unauthorized)
         ));
+    }
+
+    #[tokio::test]
+    async fn device_errors_keep_the_code_and_lists_own_devices() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/e2ee/devices"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(
+                json!({ "error": "The device ID is already used", "code": "E2EE_DEVICE_EXISTS" }),
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/e2ee/keys/upload"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(
+                json!({ "error": "Device not found", "code": "E2EE_DEVICE_NOT_FOUND" }),
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/e2ee/to_device/ack"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/e2ee/devices"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!([{ "device_id": "d1" }, { "device_id": "d2" }])),
+            )
+            .mount(&server)
+            .await;
+
+        let api = client(&server);
+        let err = api.e2ee_register_device(json!({})).await.unwrap_err();
+        assert!(crate::http::ApiError::has_code(&err, "E2EE_DEVICE_EXISTS"));
+        assert_eq!(
+            crate::http::ApiError::status_of(&err),
+            Some(reqwest::StatusCode::CONFLICT)
+        );
+        let err = api
+            .e2ee_upload_keys("d1", json!({}), json!({}))
+            .await
+            .unwrap_err();
+        assert!(crate::http::ApiError::has_code(
+            &err,
+            "E2EE_DEVICE_NOT_FOUND"
+        ));
+        // コードのない 404 は、状態だけを読める。
+        let err = api
+            .e2ee_ack_to_device("d1", &["1".into()])
+            .await
+            .unwrap_err();
+        assert!(!crate::http::ApiError::has_code(
+            &err,
+            "E2EE_DEVICE_NOT_FOUND"
+        ));
+        assert_eq!(
+            crate::http::ApiError::status_of(&err),
+            Some(reqwest::StatusCode::NOT_FOUND)
+        );
+        assert_eq!(api.e2ee_device_ids().await.unwrap(), vec!["d1", "d2"]);
     }
 
     #[tokio::test]
@@ -971,5 +1549,66 @@ mod tests {
         assert_eq!(created.id, "c_new");
         assert_eq!(created.channel_name, "dev");
         assert_eq!(txid.as_deref(), Some("100"));
+    }
+
+    #[tokio::test]
+    async fn pin_writes_send_the_version_and_keep_the_conflict_code() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/channel-pins"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "pins": [{ "channel_id": "c1", "position": 0 }],
+                "version": 4
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/channel-pins"))
+            .and(body_json(json!({
+                "channel_id": "c2",
+                "expected_version": 4
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": { "version": 5 },
+                "txid": "10"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/channel-pins/c1"))
+            .and(query_param("expected_version", "5"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+                "error": "conflict",
+                "code": "CHANNEL_PINS_CONFLICT",
+                "version": 6,
+                "pins": []
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/channel-pins/order"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": { "version": 7 },
+                "txid": "11"
+            })))
+            .mount(&server)
+            .await;
+
+        let api = client(&server);
+        let pins = api.channel_pins().await.unwrap();
+        assert_eq!(pins.version, 4);
+        assert_eq!(pins.pins[0].channel_id, "c1");
+        assert_eq!(api.pin_channel("c2", 4).await.unwrap(), 5);
+        assert_eq!(
+            api.reorder_channel_pins(&["c1".into()], 5).await.unwrap(),
+            7
+        );
+
+        let err = api.unpin_channel("c1", 5).await.unwrap_err();
+        assert!(ApiError::has_code(&err, "CHANNEL_PINS_CONFLICT"));
+        assert_eq!(
+            ApiError::status_of(&err),
+            Some(reqwest::StatusCode::CONFLICT)
+        );
     }
 }

@@ -12,10 +12,13 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as ShellRouteImport } from './routes/_shell'
 import { Route as RealtimeRouteImport } from './routes/realtime'
 import { Route as ShellIndexRouteImport } from './routes/_shell.index'
+import { Route as ShellSplatRouteImport } from './routes/_shell.$'
 import { Route as ShellAppsAuthorizeRouteImport } from './routes/_shell.apps-authorize'
 import { Route as ShellBubbleRouteImport } from './routes/_shell.bubble'
+import { Route as ShellCatchUpRouteImport } from './routes/_shell.catch-up'
 import { Route as ShellHomeRouteImport } from './routes/_shell.home'
 import { Route as ShellNotificationsRouteImport } from './routes/_shell.notifications'
+import { Route as ShellSearchRouteImport } from './routes/_shell.search'
 import { Route as ShellSettingsRouteImport } from './routes/_shell.settings'
 import { Route as ShellAppsIndexRouteImport } from './routes/_shell.apps.index'
 import { Route as ShellAppsAppIdRouteImport } from './routes/_shell.apps.$appId'
@@ -38,6 +41,11 @@ const ShellIndexRoute = ShellIndexRouteImport.update({
   path: '/',
   getParentRoute: () => ShellRoute,
 } as any)
+const ShellSplatRoute = ShellSplatRouteImport.update({
+  id: '/$',
+  path: '/$',
+  getParentRoute: () => ShellRoute,
+} as any)
 const ShellAppsAuthorizeRoute = ShellAppsAuthorizeRouteImport.update({
   id: '/apps-authorize',
   path: '/apps-authorize',
@@ -48,6 +56,11 @@ const ShellBubbleRoute = ShellBubbleRouteImport.update({
   path: '/bubble',
   getParentRoute: () => ShellRoute,
 } as any)
+const ShellCatchUpRoute = ShellCatchUpRouteImport.update({
+  id: '/catch-up',
+  path: '/catch-up',
+  getParentRoute: () => ShellRoute,
+} as any)
 const ShellHomeRoute = ShellHomeRouteImport.update({
   id: '/home',
   path: '/home',
@@ -56,6 +69,11 @@ const ShellHomeRoute = ShellHomeRouteImport.update({
 const ShellNotificationsRoute = ShellNotificationsRouteImport.update({
   id: '/notifications',
   path: '/notifications',
+  getParentRoute: () => ShellRoute,
+} as any)
+const ShellSearchRoute = ShellSearchRouteImport.update({
+  id: '/search',
+  path: '/search',
   getParentRoute: () => ShellRoute,
 } as any)
 const ShellSettingsRoute = ShellSettingsRouteImport.update({
@@ -97,10 +115,13 @@ const ShellHomeUsersActorIdRoute = ShellHomeUsersActorIdRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof ShellIndexRoute
   '/realtime': typeof RealtimeRoute
+  '/$': typeof ShellSplatRoute
   '/apps-authorize': typeof ShellAppsAuthorizeRoute
   '/bubble': typeof ShellBubbleRoute
+  '/catch-up': typeof ShellCatchUpRoute
   '/home': typeof ShellHomeRoute
   '/notifications': typeof ShellNotificationsRoute
+  '/search': typeof ShellSearchRoute
   '/settings': typeof ShellSettingsRoute
   '/apps/$appId': typeof ShellAppsAppIdRoute
   '/channels/$channelId': typeof ShellChannelsChannelIdRoute
@@ -111,10 +132,13 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/realtime': typeof RealtimeRoute
+  '/$': typeof ShellSplatRoute
   '/apps-authorize': typeof ShellAppsAuthorizeRoute
   '/bubble': typeof ShellBubbleRoute
+  '/catch-up': typeof ShellCatchUpRoute
   '/home': typeof ShellHomeRoute
   '/notifications': typeof ShellNotificationsRoute
+  '/search': typeof ShellSearchRoute
   '/settings': typeof ShellSettingsRoute
   '/': typeof ShellIndexRoute
   '/apps/$appId': typeof ShellAppsAppIdRoute
@@ -128,10 +152,13 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_shell': typeof ShellRouteWithChildren
   '/realtime': typeof RealtimeRoute
+  '/_shell/$': typeof ShellSplatRoute
   '/_shell/apps-authorize': typeof ShellAppsAuthorizeRoute
   '/_shell/bubble': typeof ShellBubbleRoute
+  '/_shell/catch-up': typeof ShellCatchUpRoute
   '/_shell/home': typeof ShellHomeRoute
   '/_shell/notifications': typeof ShellNotificationsRoute
+  '/_shell/search': typeof ShellSearchRoute
   '/_shell/settings': typeof ShellSettingsRoute
   '/_shell/': typeof ShellIndexRoute
   '/_shell/apps/$appId': typeof ShellAppsAppIdRoute
@@ -146,10 +173,13 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/realtime'
+    | '/$'
     | '/apps-authorize'
     | '/bubble'
+    | '/catch-up'
     | '/home'
     | '/notifications'
+    | '/search'
     | '/settings'
     | '/apps/$appId'
     | '/channels/$channelId'
@@ -160,10 +190,13 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/realtime'
+    | '/$'
     | '/apps-authorize'
     | '/bubble'
+    | '/catch-up'
     | '/home'
     | '/notifications'
+    | '/search'
     | '/settings'
     | '/'
     | '/apps/$appId'
@@ -176,10 +209,13 @@ export interface FileRouteTypes {
     | '__root__'
     | '/_shell'
     | '/realtime'
+    | '/_shell/$'
     | '/_shell/apps-authorize'
     | '/_shell/bubble'
+    | '/_shell/catch-up'
     | '/_shell/home'
     | '/_shell/notifications'
+    | '/_shell/search'
     | '/_shell/settings'
     | '/_shell/'
     | '/_shell/apps/$appId'
@@ -219,6 +255,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellIndexRouteImport
       parentRoute: typeof ShellRoute
     }
+    '/_shell/$': {
+      id: '/_shell/$'
+      path: '/$'
+      fullPath: '/$'
+      preLoaderRoute: typeof ShellSplatRouteImport
+      parentRoute: typeof ShellRoute
+    }
     '/_shell/apps-authorize': {
       id: '/_shell/apps-authorize'
       path: '/apps-authorize'
@@ -233,6 +276,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellBubbleRouteImport
       parentRoute: typeof ShellRoute
     }
+    '/_shell/catch-up': {
+      id: '/_shell/catch-up'
+      path: '/catch-up'
+      fullPath: '/catch-up'
+      preLoaderRoute: typeof ShellCatchUpRouteImport
+      parentRoute: typeof ShellRoute
+    }
     '/_shell/home': {
       id: '/_shell/home'
       path: '/home'
@@ -245,6 +295,13 @@ declare module '@tanstack/react-router' {
       path: '/notifications'
       fullPath: '/notifications'
       preLoaderRoute: typeof ShellNotificationsRouteImport
+      parentRoute: typeof ShellRoute
+    }
+    '/_shell/search': {
+      id: '/_shell/search'
+      path: '/search'
+      fullPath: '/search'
+      preLoaderRoute: typeof ShellSearchRouteImport
       parentRoute: typeof ShellRoute
     }
     '/_shell/settings': {
@@ -300,10 +357,13 @@ declare module '@tanstack/react-router' {
 }
 
 interface ShellRouteChildren {
+  ShellSplatRoute: typeof ShellSplatRoute
   ShellAppsAuthorizeRoute: typeof ShellAppsAuthorizeRoute
   ShellBubbleRoute: typeof ShellBubbleRoute
+  ShellCatchUpRoute: typeof ShellCatchUpRoute
   ShellHomeRoute: typeof ShellHomeRoute
   ShellNotificationsRoute: typeof ShellNotificationsRoute
+  ShellSearchRoute: typeof ShellSearchRoute
   ShellSettingsRoute: typeof ShellSettingsRoute
   ShellIndexRoute: typeof ShellIndexRoute
   ShellAppsAppIdRoute: typeof ShellAppsAppIdRoute
@@ -314,10 +374,13 @@ interface ShellRouteChildren {
 }
 
 const ShellRouteChildren: ShellRouteChildren = {
+  ShellSplatRoute: ShellSplatRoute,
   ShellAppsAuthorizeRoute: ShellAppsAuthorizeRoute,
   ShellBubbleRoute: ShellBubbleRoute,
+  ShellCatchUpRoute: ShellCatchUpRoute,
   ShellHomeRoute: ShellHomeRoute,
   ShellNotificationsRoute: ShellNotificationsRoute,
+  ShellSearchRoute: ShellSearchRoute,
   ShellSettingsRoute: ShellSettingsRoute,
   ShellIndexRoute: ShellIndexRoute,
   ShellAppsAppIdRoute: ShellAppsAppIdRoute,

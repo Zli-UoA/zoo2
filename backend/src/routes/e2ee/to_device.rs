@@ -128,7 +128,7 @@ pub(crate) async fn send_to_device(
     let mut tx = db.transaction().await?;
     lock_active_user(&mut tx, &actor.id).await?;
     if !own_active_device(&mut tx, &actor.id, &req.device_id).await? {
-        return Err(AppError::NotFound("Device not found".into()));
+        return Err(super::device_not_found());
     }
     if recipients.is_empty() {
         tx.commit().await?;
@@ -279,7 +279,7 @@ pub(crate) async fn ack_to_device(
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     if !own_active_device(&mut tx, &actor.id, &req.device_id).await? {
-        return Err(AppError::NotFound("Device not found".into()));
+        return Err(super::device_not_found());
     }
     let deleted = first(
         &mut tx,

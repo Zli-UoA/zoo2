@@ -145,15 +145,48 @@ export async function getCurrentBackupVersion(client: ApiClient): Promise<JsonOb
   }
 }
 
-/** `POST /api/e2ee/key_backup/keys`。 */
+/**
+ * `GET /api/e2ee/key_backup/keys` の 1 ページ（1000 件まで）。`after` は前のページの `next`。
+ * 版が消えていれば（404）`null`。
+ */
+export async function getBackupKeysPage(
+  client: ApiClient,
+  version: string,
+  after: string | null,
+): Promise<{ sessions: JsonObject[]; next: string | null } | null> {
+  const query = new URLSearchParams({ version });
+  if (after) query.set("after", after);
+  try {
+    const page = await client.get<{ sessions?: JsonObject[]; next?: string | null }>(
+      `/api/e2ee/key_backup/keys?${query.toString()}`,
+    );
+    return { sessions: page.sessions ?? [], next: page.next ?? null };
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
+/** アップロードの証明のヘッダー（docs/e2ee.md の「アップロードの証明」。zoo-crypto の `BACKUP_PROOF_HEADER`）。 */
+export const BACKUP_PROOF_HEADER = "X-Zoo-Backup-Proof";
+
+/** アップロードの証明のヘッダー。証明がなければ（`upload_key` のない版）送らない。 */
+export function backupProofHeaders(proof: string | null): Record<string, string> | undefined {
+  return proof ? { [BACKUP_PROOF_HEADER]: proof } : undefined;
+}
+
+/** `POST /api/e2ee/key_backup/keys`。`proof` はアップロードの証明（なければ `null`）。 */
 export async function uploadBackupKeys(
   client: ApiClient,
   version: string,
   secretsRevision: number,
   body: JsonObject,
+  proof: string | null,
 ): Promise<void> {
   const query = new URLSearchParams({ version, secrets_revision: String(secretsRevision) });
-  await client.post(`/api/e2ee/key_backup/keys?${query.toString()}`, body);
+  await client.post(`/api/e2ee/key_backup/keys?${query.toString()}`, body, {
+    headers: backupProofHeaders(proof),
+  });
 }
 
 /** `POST /api/e2ee/key_backup/versions`。作った（または同じ公開鍵の今の）版を返す。 */

@@ -165,17 +165,36 @@ pub(super) async fn resolve_announce(
     }
     one(&mut tx,"SELECT '{}'::text FROM apub_follows WHERE user_id=$1 AND actor_id=$2 AND direction='outgoing' AND accepted",&[user,string(activity,"actor")?]).await?;
     drop(tx);
+    resolve_public_note(state, user, object).await
+}
+
+/// Fetch exactly one original from its origin; never trust third-party embedded content.
+pub(super) async fn resolve_public_note(
+    state: &AppState,
+    user: &str,
+    object: &str,
+) -> Result<(), AppError> {
     let note = transport::fetch_json_with_retry(state, Some(user), object).await?;
-    let (author, visibility, published, updated) = validate_public_note(&note, object)?;
+    store_public_note(state, user, object, &note).await
+}
+
+pub(super) async fn store_public_note(
+    state: &AppState,
+    user: &str,
+    object: &str,
+    note: &Value,
+) -> Result<(), AppError> {
+    let mut db = state.db.clone();
+    let (author, visibility, published, updated) = validate_public_note(note, object)?;
     remote_actor(state, Some(user), &author, false).await?;
-    let proof = note_identity::Proof::from_note(&note, object)?;
+    let proof = note_identity::Proof::from_note(note, object)?;
     let emojis = emoji::tags(&note["tag"]);
-    let media = emoji::note_media(&note);
+    let media = emoji::note_media(note);
     let mut tx = db.transaction().await?;
     note_identity::reconcile(&mut tx, object, &author, Some(&proof)).await?;
     emoji::remember(&mut tx, &emojis).await?;
     emoji::remember(&mut tx, &media).await?;
-    toasty::sql::statement("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,emojis,origin_verified,media) SELECT $1,$2,$3,$4,$5::timestamptz,$6::timestamptz,$7::jsonb,true,$8::jsonb WHERE NOT EXISTS(SELECT 1 FROM apub_remote_tombstones WHERE id=$1 AND actor_id=$2) ON CONFLICT(id) DO UPDATE SET origin_verified=true WHERE apub_remote_posts.actor_id=EXCLUDED.actor_id").bind(object).bind(author).bind(emoji::note_content(&note)?).bind(visibility).bind(published.to_string()).bind(updated.to_string()).bind(json!(emojis).to_string()).bind(json!(media).to_string()).exec(&mut tx).await?;
+    toasty::sql::statement("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,emojis,origin_verified,media,quote_uri) SELECT $1,$2,$3,$4,$5::timestamptz,$6::timestamptz,$7::jsonb,true,$8::jsonb,NULLIF($9,'') WHERE NOT EXISTS(SELECT 1 FROM apub_remote_tombstones WHERE id=$1 AND actor_id=$2) ON CONFLICT(id) DO UPDATE SET origin_verified=true,content=EXCLUDED.content,visibility=EXCLUDED.visibility,emojis=EXCLUDED.emojis,media=EXCLUDED.media,quote_uri=EXCLUDED.quote_uri,updated_at=EXCLUDED.updated_at WHERE apub_remote_posts.actor_id=EXCLUDED.actor_id AND apub_remote_posts.deleted_at IS NULL AND apub_remote_posts.updated_at<=EXCLUDED.updated_at").bind(object).bind(author).bind(emoji::note_content(note)?).bind(visibility).bind(published.to_string()).bind(updated.to_string()).bind(json!(emojis).to_string()).bind(json!(media).to_string()).bind(emoji::note_quote_uri(note).map(|url| url.to_string()).unwrap_or_default()).exec(&mut tx).await?;
     tx.commit().await?;
     Ok(())
 }

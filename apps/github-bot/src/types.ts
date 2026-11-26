@@ -1,9 +1,9 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import type { ZooApp, AppEvent } from "../../../sdk/src/index.ts";
 export type Json = Record<string, any>;
 export type Zoo = Pick<
   ZooApp,
-  "request" | "postMessage" | "updateMessage" | "deleteMessage" | "setBlocks"
+  "request" | "postMessage" | "updateMessage" | "deleteMessage" | "setComponents"
 >;
 export type Kind =
   | "issue"
@@ -68,6 +68,11 @@ export function id(key: string): string {
   const h = createHash("sha256").update(key).digest("hex");
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }
+/** Zoo の外から計算できないメッセージ ID。鍵はこの bot だけが持つので、他の人が先に同じ ID を使えない。 */
+export function keyedId(secret: Buffer, key: string): string {
+  const h = createHmac("sha256", secret).update(`github-bot:${key}`).digest("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
 export function repoName(value: string): string {
   if (
     !/^[a-z\d](?:[a-z\d-]{0,38})\/(?:[a-z\d_.-]{1,100}|\*)$/i.test(value) ||
@@ -120,7 +125,7 @@ export function text(value: unknown, max = 1500): string {
 // Wrap untrusted GitHub text so Zoo renders it as plain text, not MFM (links, mentions, etc.).
 // MFM is parsed per line, so each non-empty line is wrapped on its own. Any `<plain>` tag in the
 // input is removed first, so the text cannot close the wrapper early.
-export function plain(value: string): string {
+export function plainMfm(value: string): string {
   return value
     .split("\n")
     .map((line) => {
@@ -132,6 +137,17 @@ export function plain(value: string): string {
       return clean.trim() ? `<plain>${clean}</plain>` : clean;
     })
     .join("\n");
+}
+// Join whole lines up to `max` characters. A line that does not fit is dropped with the rest, so a
+// `<plain>…</plain>` wrapper is never cut in the middle.
+export function capLines(lines: string[], max: number): string {
+  let out = "";
+  for (const line of lines) {
+    const next = out ? `${out}\n${line}` : line;
+    if (Array.from(next).length > max) break;
+    out = next;
+  }
+  return out;
 }
 export function actor(event: AppEvent): string {
   if (!event.actor_id || !event.channel_id)

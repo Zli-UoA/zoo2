@@ -1,5 +1,7 @@
 import { createRouter as createTanStackRouter } from "@tanstack/react-router";
 import { routeTree } from "./routeTree.gen";
+import { createAppHistory } from "./lib/pwa/history";
+import { NotFoundScreen } from "./components/layout/NotFoundScreen";
 
 const RELOAD_GUARD_KEY = "zoo2:preload-error-reload-at";
 const RELOAD_GUARD_MS = 60_000;
@@ -22,6 +24,11 @@ function installPreloadErrorReload() {
 
 let preloadErrorReloadInstalled = false;
 
+/** チャンネル画面は自前で末尾・未読位置を管理するため、ルーター側のスクロール復元から除外する。 */
+export function shouldRestoreScroll({ location }: { location: { pathname: string } }): boolean {
+  return !location.pathname.startsWith("/channels/");
+}
+
 export function getRouter() {
   if (typeof window !== "undefined" && !preloadErrorReloadInstalled) {
     preloadErrorReloadInstalled = true;
@@ -30,9 +37,13 @@ export function getRouter() {
 
   const router = createTanStackRouter({
     routeTree,
-    scrollRestoration: true,
+    history: typeof window !== "undefined" ? createAppHistory() : undefined,
+    scrollRestoration: shouldRestoreScroll,
     defaultPreload: "intent",
     defaultPreloadStaleTime: 0,
+    // 未知のパスは _shell/$ の catch-all がシェル内で描画する。loader などで
+    // notFound が投げられたときのフォールバックとしても同じ画面を使う。
+    defaultNotFoundComponent: () => <NotFoundScreen />,
   });
 
   return router;

@@ -1,8 +1,7 @@
 import type { JsonObject, SignatureUpload } from "@zoo/crypto-wasm";
 
 import { ApiError, type ApiClient } from "../api/client";
-import { KEYS_QUERY_BATCH } from "./api";
-import { REAUTH_HEADER, errorCode } from "./secretStorageApi";
+import { REAUTH_HEADER, backupProofHeaders, errorCode } from "./secretStorageApi";
 
 /**
  * 端末一覧、失効、他のユーザーの検証で使う API（docs/e2ee.md の「端末とワンタイム鍵」「クロス署名」
@@ -117,31 +116,7 @@ export async function uploadSignaturesWithReauth(
   }
 }
 
-/** `keys/query`（50 人ずつ）。`master_keys`、`signatures` などをまとめる。 */
-export async function queryKeys(client: ApiClient, userIds: string[]): Promise<JsonObject> {
-  const merged: Record<string, unknown> = {
-    device_keys: {},
-    master_keys: {},
-    self_signing_keys: {},
-    user_signing_keys: {},
-    tofu_pins: {},
-    signatures: [],
-  };
-  for (let start = 0; start < userIds.length; start += KEYS_QUERY_BATCH) {
-    const page = await client.request<Record<string, unknown>>("/api/e2ee/keys/query", {
-      method: "POST",
-      body: { user_ids: userIds.slice(start, start + KEYS_QUERY_BATCH) },
-    });
-    for (const key of Object.keys(merged)) {
-      if (key === "signatures") {
-        (merged.signatures as unknown[]).push(...((page.signatures as unknown[]) ?? []));
-      } else {
-        Object.assign(merged[key] as object, (page[key] as object) ?? {});
-      }
-    }
-  }
-  return merged as JsonObject;
-}
+export { queryKeys } from "./api";
 
 /** `POST /api/e2ee/secret_storage/secrets`（端末だけの失効）。増やしたあとの `secrets_revision`。 */
 export async function putSecrets(
@@ -161,6 +136,21 @@ export async function putSecrets(
 export async function currentBackupVersion(client: ApiClient): Promise<JsonObject | null> {
   try {
     return await client.get<JsonObject>("/api/e2ee/key_backup/versions/current");
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
+/** `GET /api/e2ee/key_backup/versions/{version}`。消した版と、ない版は `null`。 */
+export async function getBackupVersion(
+  client: ApiClient,
+  version: string,
+): Promise<JsonObject | null> {
+  try {
+    return await client.get<JsonObject>(
+      `/api/e2ee/key_backup/versions/${encodeURIComponent(version)}`,
+    );
   } catch (error) {
     if (error instanceof ApiError && error.status === 404) return null;
     throw error;
@@ -193,16 +183,22 @@ export async function listBackupSessions(
 /** 1 回のアップロードの上限（サーバーの `backup_sessions`）。 */
 export const BACKUP_UPLOAD_BATCH = 1000;
 
+/**
+ * 新しい版へ移行の行を送る。`proof` はアップロードの証明（docs/e2ee.md の「アップロードの証明」。版に
+ * `upload_key` がなければ `null` で、ヘッダーを送らない）。
+ */
 export async function uploadBackupSessions(
   client: ApiClient,
   version: string,
   secretsRevision: number,
   sessions: JsonObject[],
+  proof: string | null,
 ): Promise<void> {
   for (let start = 0; start < sessions.length; start += BACKUP_UPLOAD_BATCH) {
     await client.post(
       `/api/e2ee/key_backup/keys?version=${encodeURIComponent(version)}&secrets_revision=${secretsRevision}`,
       { sessions: sessions.slice(start, start + BACKUP_UPLOAD_BATCH) },
+      { headers: backupProofHeaders(proof) },
     );
   }
 }

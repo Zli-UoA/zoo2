@@ -279,7 +279,7 @@ impl SecretStorage {
 /// 解錠した SSSS（[`core::UnlockedSecretStorage`]）。
 #[derive(uniffi::Object)]
 pub struct UnlockedSecretStorage {
-    inner: core::UnlockedSecretStorage,
+    pub(crate) inner: core::UnlockedSecretStorage,
 }
 
 #[uniffi::export]

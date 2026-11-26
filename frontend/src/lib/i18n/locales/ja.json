@@ -1,4 +1,16 @@
 {
+  "a11y": {
+    "skipToContent": "本文へスキップ"
+  },
+  "aboutZoo": {
+    "title": "Zooについて",
+    "version": "バージョン: {{version}}",
+    "versionUnknown": "不明"
+  },
+  "notFoundPage": {
+    "title": "ページが見つかりません",
+    "description": "お探しのページは移動または削除された可能性があります。"
+  },
   "nav": {
     "main": "メインナビゲーション"
   },
@@ -10,6 +22,10 @@
     "unread": "未読メッセージあり",
     "editTitle": "チャンネルを編集",
     "editHelp": "チャンネル名は日本語などの文字・数字と半角ハイフン（-）・アンダースコア（_）で80文字以内にしてください。空白・絵文字・その他の記号・予約語は使用できません。",
+    "nameRequired": "チャンネル名を入力してください。",
+    "nameTooLong": "チャンネル名は{{max}}文字以内で入力してください（現在{{length}}文字）。",
+    "nameReserved": "「{{name}}」は予約語のため使用できません。",
+    "invalidName": "チャンネル名には文字・数字・半角ハイフン（-）・半角アンダースコア（_）のみ使用できます。",
     "saveName": "保存",
     "savingName": "保存中…",
     "title": "チャンネル",
@@ -44,6 +60,7 @@
     "notFound": "チャンネルが見つかりません。",
     "duplicateName": "同名のチャンネルが既に存在します。",
     "privateMessages": "このチャンネルは非公開です。招待されるとメッセージを表示できます。",
+    "postingManagersOnly": "このチャンネルは管理者のみ投稿できます。",
     "back": "チャンネル一覧へ戻る",
     "noDescription": "説明はまだありません",
     "visibilityHelp": "公開チャンネルは誰でも参加できます。非公開は作成者が招待した人だけが参加できます。",
@@ -122,8 +139,7 @@
     "candidates": "メンバー候補",
     "usersLoading": "ユーザーを読み込み中…",
     "usersError": "ユーザー取得に失敗しました。",
-    "usersEmpty": "該当するユーザーがいません。",
-    "back": "チャンネルに戻る"
+    "usersEmpty": "該当するユーザーがいません。"
   },
   "moderation": {
     "archived": "アーカイブ済み",
@@ -159,6 +175,11 @@
     "invalidState": "この操作は現在の状態では実行できません。"
   },
   "settings": {
+    "appearance": "外観",
+    "interaction": "操作",
+    "swipeReply": "スワイプで返信",
+    "operationHaptics": "触覚フィードバック",
+    "navTitle": "設定",
     "admin": "管理者",
     "member": "メンバー",
     "makeAdmin": "管理者にする",
@@ -198,13 +219,16 @@
     "description": "左のリストからチャンネルを選択すると、メッセージのやり取りを表示します。"
   },
   "messages": {
+    "loadingOlder": "古いメッセージを読み込み中…",
     "typing": "{{names}}が入力中…",
     "typingSeparator": "、",
     "compose": "メッセージを送信",
     "send": "送信",
     "edit": "編集",
+    "editMessage": "メッセージを編集",
     "delete": "削除",
     "more": "その他の操作",
+    "actions": "メッセージを操作",
     "editLabel": "メッセージを編集",
     "loadError": "メッセージの取得に失敗しました",
     "retryHelp": "接続を確認して、もう一度お試しください。",
@@ -224,9 +248,58 @@
     "copyRaw": "原文をコピー",
     "copied": "原文をコピーしました",
     "copyFailed": "原文をコピーできませんでした",
-    "edited": "編集済み"
+    "copyLink": "メッセージリンクをコピー",
+    "linkCopied": "メッセージリンクをコピーしました",
+    "linkCopyFailed": "メッセージリンクをコピーできませんでした",
+    "edited": "編集済み",
+    "forward": "メッセージを転送…",
+    "forwardTitle": "このメッセージを転送する",
+    "forwardSearchPlaceholder": "チャンネルまたはメンバーを検索する",
+    "forwardDestinationLabel": "転送先",
+    "forwardDestinationSelected": "{{name}} を転送先に選択しました",
+    "forwardClearDestination": "{{name}} を選択から外す",
+    "forwardNoDestinations": "転送できるチャンネルまたは DM がありません",
+    "forwardCommentPlaceholder": "コメントを追加（任意）",
+    "forwardCommentLabel": "コメント",
+    "forwardPreviewLabel": "転送するメッセージのプレビュー",
+    "forwardSubmit": "転送する",
+    "forwarding": "転送中…",
+    "forwarded": "メッセージを転送しました",
+    "forwardedTo": "{{channel}} に転送しました",
+    "forwardSourceUnavailable": "元のメッセージが存在しないか、転送する権限がありません",
+    "forwardLoading": "転送されたメッセージを読み込み中",
+    "forwardDeleted": "このメッセージは削除されました",
+    "forwardUnavailable": "このメッセージは閲覧権限がないため表示できません",
+    "forwardLoadError": "転送されたメッセージを取得できませんでした",
+    "forwardSourceChannel": "{{channel}} への投稿",
+    "forwardSourceThread": "{{channel}} のスレッドへの返信",
+    "forwardQuoteLabel": "{{author}} さんの転送メッセージ",
+    "forwardAttachmentCount_one": "添付ファイル {{count}} 件",
+    "forwardAttachmentCount_other": "添付ファイル {{count}} 件",
+    "forwardNestedCompact": "この投稿にも転送（引用）が含まれます",
+    "forwardNestedNote": "この投稿にも転送（引用）があります · 元の投稿を見る"
+  },
+  "channelLink": {
+    "inlineMessage": "{{name}}さん: {{channel}}",
+    "thread": "{{channel}} 内のスレッド",
+    "encrypted": "このメッセージは暗号化されています",
+    "messageUnavailable": "メッセージを表示できません",
+    "channelUnavailable": "チャンネルを表示できません",
+    "loading": "リンク先を読み込み中",
+    "loadFailed": "リンク先を読み込めませんでした",
+    "appMessage": "Appのメッセージ",
+    "attachments_one": "添付ファイル {{count}} 件",
+    "attachments_other": "添付ファイル {{count}} 件",
+    "privateChannel": "非公開チャンネル",
+    "encryptedChannel": "暗号化チャンネル"
   },
   "attachments": {
+    "recentPhotos": "最近の写真",
+    "systemPhotos": "写真アプリで選ぶ",
+    "allowRecentPhotos": "写真へのアクセスを許可",
+    "noRecentPhotos": "表示できる写真がありません",
+    "play": "再生",
+    "pause": "一時停止",
     "add": "ファイルを添付",
     "selected": "添付するファイル",
     "remove": "{{name}}を削除",
@@ -243,12 +316,37 @@
     "download": "{{name}}をダウンロード",
     "downloadShort": "ダウンロード",
     "downloadError": "ダウンロードできませんでした。",
+    "previewSaveUnsupported": "このファイルはアプリから保存できません。リンクを別のタブで開いて保存してください。",
+    "downloadSaved": "{{name}}を保存しました。",
+    "downloadDestinationUnsupported": "この保存先には保存できません。別のフォルダーを選ぶか、設定の「ダウンロード」で保存先を変えてください。",
+    "downloadDestinationUnsupportedAskEveryTimeOff": "この保存先には保存できません。設定の「ダウンロード」で保存先を変えるか、「保存のたびに確認する」をオンにしてください。",
+    "downloadTooMany": "同時に保存できる件数の上限に達しました。ほかの保存が終わってから、もう一度お試しください。",
+    "downloading": "ダウンロード中",
+    "saving": "保存しています…",
+    "cancelDownload": "{{name}}のダウンロードを中止",
+    "cancelDownloadShort": "中止",
     "retry": "再試行",
     "sensitive": "センシティブな画像",
     "markSensitive": "画像をセンシティブとして投稿",
     "showSensitive": "画像を表示",
     "hideSensitive": "画像を隠す",
-    "sensitiveShort": "センシティブ"
+    "sensitiveShort": "センシティブ",
+    "documentSummary": "本文・セルの簡易表示です。書式・レイアウトは原本と異なる場合があります。",
+    "previewLimit": "プレビューのサイズ・件数・処理時間の上限を超えました。ファイルをダウンロードして確認してください。",
+    "emptyPreview": "内容がありません",
+    "containedFiles": "含まれるファイル",
+    "previousPage": "前のページ",
+    "nextPage": "次のページ",
+    "pageNumber": "ページ番号",
+    "pdfPages": "PDFページ一覧",
+    "pdfPage": "PDF {{page}}ページ",
+    "mail": {
+      "subject": "件名",
+      "from": "差出人",
+      "to": "宛先",
+      "cc": "CC",
+      "date": "日時"
+    }
   },
   "threads": {
     "title": "スレッド",
@@ -273,7 +371,22 @@
     "archiveForChannel": "{{channel}}のアーカイブ済みスレッド",
     "untitled": "無題のスレッド",
     "targetTooOld": "このメッセージは古すぎて、ここまで読み込めませんでした",
-    "unreadTooOld": "これより古い未読は読み込まれていません"
+    "unreadTooOld": "これより古い未読は読み込まれていません",
+    "join": "参加する",
+    "leave": "退出する",
+    "reopen": "再Open",
+    "reopenOnSend": "送信すると再Openします。",
+    "membershipError": "スレッドの参加状態を更新できませんでした。",
+    "participants_one": "参加者 {{count}}人",
+    "participants_other": "参加者 {{count}}人",
+    "participantsMore": "ほか {{count}}人",
+    "participantsEmpty": "参加者はいません",
+    "threadStarter": "スレ主",
+    "participantsSearch": "名前で検索",
+    "participantsFilterPartial": "読み込んだ先頭{{loaded}}人の中から絞り込んでいます（ほか {{count}}人は検索できません）。",
+    "participantsDescription": "このスレッドに参加している人です。",
+    "joinToReply": "参加するとこのスレッドに返信できます。",
+    "reopenAndJoin": "再Openして参加する"
   },
   "reactions": {
     "showUsers": "{{emoji}} にリアクションしたユーザーを表示",
@@ -307,7 +420,6 @@
     "noSearchResults": "一致する絵文字がありません",
     "tabEmoji": "絵文字",
     "tabKitchen": "Emoji Kitchen",
-    "emojiDescription": "すべての絵文字から選べます。",
     "emojiLoading": "絵文字を読み込み中…",
     "recent": "最近使った絵文字",
     "skinTone": "肌の色"
@@ -328,6 +440,15 @@
     "yesterday": "昨日"
   },
   "composer": {
+    "editorTitle": "メッセージの編集",
+    "expand": "入力欄を全画面に広げる",
+    "collapse": "入力欄を小さく戻す",
+    "dragHandle": "入力欄を上下にスワイプ",
+    "formatting": "書式設定",
+    "bold": "太字",
+    "italic": "斜体",
+    "strike": "取り消し線",
+    "code": "コードブロック",
     "mac": "⌘（Cmd）+Enter で送信 / Enter で改行",
     "ctrl": "Ctrl+Enter で送信 / Enter で改行",
     "other": "Cmd / Ctrl+Enter で送信 / Enter で改行",
@@ -336,6 +457,8 @@
     "channels": "チャンネル候補"
   },
   "notifications": {
+    "filterAll": "すべて",
+    "filterMentions": "メンション",
     "label": "通知",
     "close": "通知を閉じる",
     "title": "通知",
@@ -364,7 +487,8 @@
     "unreadStatus": "未読",
     "readStatus": "既読",
     "actors_one": "{{actor}} さんほか1人",
-    "actors_other": "{{actor}} さんほか{{count}}人"
+    "actors_other": "{{actor}} さんほか{{count}}人",
+    "forwardedPreview": "メッセージを転送しました"
   },
   "webhooks": {
     "title": "Webhook設定",
@@ -390,6 +514,11 @@
   },
   "mentions": {
     "suggestions": "メンション候補"
+  },
+  "appUpdate": {
+    "title": "新しい版の画面があります",
+    "description": "再読み込みすると、新しい版になります。入力中の内容があれば、送信してから再読み込みしてください。",
+    "reload": "再読み込み"
   },
   "offline": {
     "bannerTitle": "オフラインです",
@@ -421,6 +550,19 @@
     "desktopTitle": "通知",
     "desktopValue": "OS の通知",
     "desktopDescription": "メンションや DM を、アプリが OS の通知で知らせます。OS の設定で zoo2 の通知を止めている場合は、そちらもオンにしてください。"
+  },
+  "downloads": {
+    "desktopTitle": "ダウンロード",
+    "desktopDescription": "添付ファイルの保存先です。保存のたびに場所を確認するか、あらかじめ決めたフォルダーへ保存するかを選べます。",
+    "askEveryTime": "保存のたびに確認する",
+    "noFolder": "フォルダー未選択",
+    "chooseFolder": "フォルダーを選ぶ",
+    "resetDirectory": "保存先フォルダーを消して毎回確認する",
+    "olderAppValue": "アプリの既定の保存先",
+    "olderAppDescription": "この版のアプリでは、アプリが決めた保存先に保存されます。保存先を変えるには、アプリを更新してください。",
+    "loadError": "保存先の設定を読み込めませんでした。",
+    "retry": "再読み込み",
+    "error": "保存先の設定を変更できませんでした。もう一度お試しください。"
   },
   "mfm": {
     "suggestions": "MFMの候補",
@@ -528,6 +670,7 @@
     "micNotFound": "マイクが見つかりませんでした。"
   },
   "bubbleChat": {
+    "navTitle": "Bubble",
     "title": "Bubble Chat",
     "description": "入力中の文字がそのままリアルタイムに表示されるルームです",
     "emptyTitle": "現在入力中のユーザーはいません",
@@ -544,6 +687,30 @@
     "active": "入室中",
     "you": "あなた",
     "closeParticipants": "参加者一覧を閉じる"
+  },
+  "channelPins": {
+    "title": "ピン留め",
+    "menu": "チャンネルの操作",
+    "channelMenu": "{{name}} のチャンネル操作",
+    "dmMenu": "{{name}} の DM 操作",
+    "pin": "ピン留め",
+    "unpin": "ピン留めを解除",
+    "moveUp": "上へ移動",
+    "moveDown": "下へ移動",
+    "dragHandle": "ドラッグして並べ替え",
+    "dismissError": "閉じる",
+    "errors": {
+      "conflict": "別の端末でピン留めが変わりました。最新の並びを読み直しました。もう一度お試しください。",
+      "limitExceeded": "ピン留めできるチャンネルは 50 件までです。",
+      "reorderConflict": "別の端末で並びが変わりました。最新の並びを読み直しました。もう一度お試しください。"
+    },
+    "announce": {
+      "pinned": "ピン留めしました。",
+      "unpinned": "ピン留めを解除しました。",
+      "moved": "ピン留めを移動しました。",
+      "reorderConflict": "別の端末でピン留めが解除されたため、移動しませんでした。",
+      "reorderArchived": "チャンネルがアーカイブされたため、移動しませんでした。"
+    }
   },
   "dms": {
     "title": "ダイレクトメッセージ",
@@ -687,6 +854,20 @@
       "addEncrypted": "暗号化チャンネルに追加",
       "notReady": "この App は暗号化の準備（端末の登録）がまだ済んでいません。App を起動してから、もう一度試してください。",
       "encryptedHint": "暗号化チャンネルに入れるには、メンバーの許可が要ります。"
+    },
+    "components": {
+      "unsupported": "この部品にはまだ対応していません",
+      "more": "その他の操作",
+      "choose": "選択してください",
+      "search": "検索",
+      "noOptions": "候補がありません",
+      "uploading": "アップロード中…",
+      "page": "{{page}} / {{pages}} ページ",
+      "spoiler": "ネタバレを含む部品です（Web 版で表示できます）",
+      "webOnly": "この操作は Web 版で行えます",
+      "date": "日付",
+      "time": "時刻",
+      "datetime": "日時"
     }
   },
   "search": {
@@ -703,6 +884,13 @@
     "showLess": "折りたたむ"
   },
   "home": {
+    "navTitle": "ホーム",
+    "back": "戻る",
+    "deleted": "投稿を削除しました",
+    "newPosts": "新しい投稿を見る（{{count}}件）",
+    "quotedPost": "引用元の投稿",
+    "quoteUnavailable": "引用元の投稿を表示できません",
+    "openQuotedPost": "引用元を開く",
     "image": "画像",
     "imageError": "画像を追加できませんでした。PNG・JPEG・GIF・WebP（各8MiB以下、最大10枚）を選んで再度お試しください。",
     "title": "Home",
@@ -712,6 +900,7 @@
     "post": "投稿",
     "sending": "投稿中…",
     "sendError": "投稿できませんでした。下書きは残っています。もう一度お試しください。",
+    "postForbidden": "このチャンネルには投稿できません。",
     "loadError": "タイムラインを取得できませんでした。",
     "loading": "読み込み中…",
     "empty": "まだ投稿がありません",
@@ -1122,9 +1311,23 @@
     },
     "tab": "暗号化",
     "title": "エンドツーエンド暗号化",
-    "description": "暗号化したチャンネルと DM のメッセージは、あなたの端末でだけ読めます。鍵はパスキーかリカバリーキーで守ります。",
+    "description": "暗号化したチャンネルと DM のメッセージは、あなたの端末でだけ読めます。",
     "loading": "暗号化の状態を読み込んでいます…",
-    "unavailable": "この端末では、まだ暗号化の準備ができていません。しばらく待つか、ほかのタブを閉じてから開き直してください。",
+    "notReady": {
+      "unsupported": "このブラウザーでは暗号化を使えません（OPFS、Web Worker、Web Locks のどれかがありません）。プライベートウィンドウでは使えないことがあります。通常のウィンドウか、別のブラウザーで開いてください。",
+      "signedOut": "ログインしているユーザーを確かめられません。ログインし直してください。",
+      "userUnavailable": "ログインしているユーザーの情報を読み込めませんでした。しばらく待つか、ページを開き直してください。",
+      "offline": "オフラインのため、暗号化の準備ができません。つながると自動で続けます。",
+      "otherTab": "ほかの zoo のタブかウィンドウが、この端末の暗号の鍵を使っています。そのタブを閉じると、このタブが引き継ぎます。",
+      "starting": "暗号化の準備をしています（この端末を登録しています）…",
+      "deviceLimit": "登録できる端末が 20 台の上限に達しています。下の端末の一覧で、使っていない端末を削除してください。",
+      "failedServer": "この端末を登録できませんでした（サーバーの応答：{{status}}）。",
+      "failedServerCode": "この端末を登録できませんでした（サーバーの応答：{{status}} {{code}}）。",
+      "failedNetwork": "サーバーにつながらず、この端末を登録できませんでした。",
+      "failedLocal": "この端末で、暗号の鍵の保存先を開けませんでした。",
+      "failedLocalNamed": "この端末で、暗号の鍵の保存先を開けませんでした（{{name}}）。",
+      "retrying": "しばらくすると自動で試し直します。直らないときは、ページを開き直してください。"
+    },
     "retry": "もう一度試す",
     "notSetUpTitle": "暗号化はまだ設定していません",
     "notSetUpDescription": "設定すると、暗号化したチャンネルと DM を使えるようになります。リカバリーキーを作るので、控える準備をしてください。",
@@ -1183,6 +1386,7 @@
       "popupBlocked": "ログイン用のウィンドウを開けませんでした。ポップアップを許可して、もう一度押してください。",
       "reauthFailed": "ログインし直せませんでした。もう一度押してください。鍵はそのまま使います。",
       "reauthTimeout": "ログインが時間内に終わりませんでした。もう一度押してください。",
+      "desktopOutdated": "このバージョンのデスクトップアプリでは、ログインし直せません。アプリを更新してから、もう一度押してください。",
       "setupConflict": "別の端末が先に暗号化の設定を始めました。この画面で表示したリカバリーキーは使えません。その端末で控えたリカバリーキーかパスキーで解錠してください。",
       "mismatch": "鍵の失効が終わっていないか、サーバーの鍵が書き換えられた可能性があります。この端末には署名していません。失効をやり直すか、暗号化をリセットしてください。",
       "invalidRecoveryKey": "リカバリーキーの形式が正しくありません。打ち間違いがないか確かめてください。",
@@ -1201,12 +1405,19 @@
       "renameFailed": "端末名を変えられませんでした。もう一度試してください。",
       "revocationFailed": "失効を最後まで保存できませんでした。進み具合はこの端末に残っています。もう一度「失効を実行」を押してください。",
       "verifyFailed": "再検証を保存できませんでした。もう一度試してください。",
+      "reverifyKeyChanged": "確認したあとに、相手の鍵がまた変わりました。何も保存していません。もう一度「再検証する」から確かめてください。",
       "tooManyMembers": "暗号化チャンネルのメンバーは 200 人までです。",
       "sasFailed": "絵文字の検証を始められませんでした。相手が暗号化を設定しているか確かめて、もう一度試してください。"
     },
     "reunlockToAdd": "解錠し直してパスキーを追加",
     "reunlockToAddDescription": "パスキーの追加やリカバリーキーの作り直しのために、パスキーかリカバリーキーで SSSS を開け直してください。この端末の解錠の状態は変わりません。",
     "badge": "暗号化",
+    "memberUnreadable": {
+      "notSetUp": "暗号化未設定",
+      "notSetUpDescription": "暗号化を設定していないので、このチャンネルの新しいメッセージを読めません。",
+      "noDevices": "端末なし",
+      "noDevicesDescription": "暗号化に使える端末がないので、このチャンネルの新しいメッセージを読めません。"
+    },
     "encryptChannel": "エンドツーエンドで暗号化する",
     "encryptChannelHelp": "メッセージはメンバーの検証済みの端末だけが読めます。暗号化はあとから解除できません。",
     "encryptChannelPrivateOnly": "暗号化できるのは非公開チャンネルだけです。",
@@ -1247,15 +1458,13 @@
     "sendStaleEpoch": "メンバーが変わり続けたため、送信できませんでした。もう一度送ってください。",
     "editConflict": "このメッセージはほかの場所で編集されました。読み込み直してから編集してください。",
     "recipients": {
-      "summary": "{{users}} 人の {{devices}} 台の端末あてに暗号化しています。",
       "added": "前回の送信から増えた配布先：{{names}}"
     },
     "downgraded": "このチャンネルは暗号化されていましたが、サーバーが暗号化されていないと返しています。平文では送信しません。",
     "checking": "このチャンネルの暗号化を確かめています…",
-    "devicesTab": "端末",
     "devices": {
       "title": "端末",
-      "description": "暗号化の鍵を持つ端末の一覧です。端末名は誰でも付けられるので、登録日時と最後に使った日時で見分けてください。",
+      "description": "暗号化の鍵を持つ端末の一覧です。",
       "unnamed": "名前のない端末",
       "current": "この端末",
       "unsigned": "未署名",
@@ -1272,7 +1481,14 @@
       "limitDescription": "この端末を登録できません。使っていない端末を選んで削除してください。削除は失効ではないので、なくした端末があれば、登録できたあとに失効も行ってください。",
       "limitStale": "30 日以上使っていない端末",
       "limitDelete": "選んだ端末を削除する",
-      "limitDeleted": "削除しました。まもなくこの端末を登録し直します。"
+      "limitDeleted": "削除しました。まもなくこの端末を登録し直します。",
+      "stale": "{{days}} 日以上使っていない",
+      "notUnlockedStale": "解錠しないまま {{days}} 日以上使っていない"
+    },
+    "deviceName": {
+      "withOs": "{{browser}}（{{os}}）",
+      "app": "{{browser}}（アプリ）",
+      "appWithOs": "{{browser}}（{{os}}・アプリ）"
     },
     "revocation": {
       "pendingTitle": "失効が終わっていません",
@@ -1356,7 +1572,16 @@
       },
       "reverify": "再検証する",
       "confirmTitle": "{{name}} さんの今の鍵を信頼しますか",
-      "confirmDescription": "相手が鍵を作り直したことを、チャンネルの外（対面や別の連絡手段）で確かめてから信頼してください。ログインし直して本人確認をしてから保存します。",
+      "confirmDescription": "下の指紋を、{{name}} さんの画面（設定の「暗号化」の「あなたの鍵の指紋」）と、チャンネルの外（対面や別の連絡手段）で読み合わせ、同じときだけ信頼してください。ログインし直して本人確認をしてから保存します。",
+      "currentFingerprint": "今の鍵の指紋",
+      "previousFingerprint": "前に信頼した鍵の指紋",
+      "keyChanged": "前に信頼した鍵から変わっています。相手が本当に鍵を作り直したか確かめてください。",
+      "keyUnchanged": "前に信頼した鍵と同じです。",
+      "sasRecommended": "できれば「検証する」から、QR コードか絵文字で検証してください。指紋を読み合わせなくても、相手と同じ鍵を見ているか確かめられます。",
+      "confirmEffect": "信頼すると、あなたの署名鍵でこの鍵に署名し、あなたのすべての端末がこの鍵を信頼します。",
+      "confirmTrust": "この鍵を信頼する",
+      "ownFingerprint": "あなたの鍵の指紋",
+      "ownFingerprintHelp": "相手があなたを再検証するときに、読み合わせる指紋です。",
       "warning": {
         "own_identity_unknown": "自分のマスター鍵をまだ確かめていません。解錠すると確かめられます。",
         "own_master_key_changed": "サーバーにあるあなたのマスター鍵が、この端末で確かめた鍵と違います。解錠し直すまで、どの端末にも鍵を配りません。",
@@ -1383,7 +1608,7 @@
       "regenerate": "リカバリーキーを作り直す",
       "create": "リカバリーキーを作る",
       "newTitle": "新しいリカバリーキー",
-      "newDescription": "保存すると、古いリカバリーキーでは解錠できなくなります。鍵スロットの削除や作り直しは失効ではないので、古いリカバリーキーが漏れたなら、端末タブから失効も行ってください。",
+      "newDescription": "保存すると、古いリカバリーキーでは解錠できなくなります。鍵スロットの削除や作り直しは失効ではないので、古いリカバリーキーが漏れたなら、このタブの「端末」から失効も行ってください。",
       "save": "保存する",
       "removeDescription": "このリカバリーキーで解錠できなくなります。すでに取得された鍵は無効になりません。漏れた可能性があれば、失効を行ってください。"
     },
@@ -1396,8 +1621,8 @@
       "blocked": "安全のため、この種類のファイルは開けません"
     },
     "legacy": {
-      "badge": "暗号化前",
-      "badgeHelp": "このチャンネルを暗号化する前に送られたメッセージです。暗号化されていないので、サーバーが内容を読んだり書き換えたりできます。",
+      "unencryptedBadge": "暗号化されていません",
+      "unencryptedBadgeHelp": "暗号化したメッセージより後ろにある、暗号化されていないメッセージです。暗号化したチャンネルでは、正しいサーバーはこのようなメッセージを作れません。サーバーが足したか、書き換えたおそれがあります。",
       "divider": "ここから暗号化されています",
       "editCancelled": "このチャンネルが暗号化されたので、暗号化前のメッセージの編集をやめました。",
       "editForbidden": "暗号化する前のメッセージは編集できません。削除はできます。"
@@ -1412,7 +1637,7 @@
       "description": "暗号化すると、次のようになります。",
       "points": {
         "future": "これからのメッセージと添付は、メンバーの検証済みの端末だけが読めます。",
-        "earlier": "これまでのメッセージは暗号化されず、サーバーにそのまま残ります。「暗号化前」の印が付き、編集できなくなります（削除はできます）。",
+        "earlier": "これまでのメッセージは暗号化されず、サーバーにそのまま残ります。編集できなくなります（削除はできます）。",
         "published": "Home や ActivityPub にすでに出した投稿は、取り消されません。",
         "integrations": "Slack からの取り込みと同期は止まります。App（Bot）と Incoming Webhook は、先に外してください。",
         "irreversible": "暗号化はあとから解除できません。"
@@ -1427,9 +1652,9 @@
       }
     },
     "sas": {
-      "start": "絵文字で検証",
+      "start": "検証する",
       "incomingTitle": "{{name}} さんが検証を求めています",
-      "incomingDescription": "互いの画面に同じ絵文字が出るかを見比べて、相手の鍵を確かめます。対面や通話など、チャンネルの外で相手と画面を見比べられるときに受け入れてください。",
+      "incomingDescription": "QR コードを読み取るか、互いの画面に同じ絵文字が出るかを見比べて、相手の鍵を確かめます。対面や通話など、チャンネルの外で相手と画面を見比べられるときに受け入れてください。",
       "accept": "受け入れる",
       "decline": "断る",
       "requestedTitle": "{{name}} さんの承認を待っています",
@@ -1530,6 +1755,246 @@
         "62": "フォルダー",
         "63": "画びょう"
       }
+    },
+    "qr": {
+      "title": "{{name}} さんを検証します",
+      "codeLabel": "検証の QR コード",
+      "showHint": "{{name}} さんの端末で、この QR コードを読み取ってもらってください。カメラが使えないときや、離れた相手とは、絵文字で検証できます。",
+      "waitingForAccept": "{{name}} さんが要求を受け入れると、相手の端末でこの QR コードを読み取れます。",
+      "scan": "相手の QR を読み取る",
+      "showOwn": "自分の QR を出す",
+      "useEmoji": "絵文字で検証する",
+      "scanHint": "相手の画面の QR コードを、カメラに映してください。",
+      "otherCode": "この QR コードは、今の検証のものではありません。相手の画面に出ている QR コードを映してください。",
+      "scannedTitle": "{{name}} さんの確認を待っています",
+      "waitingForConfirm": "相手の画面で、読み取れたことを確かめてもらっています…",
+      "confirmTitle": "{{name}} さんが QR コードを読み取りましたか？",
+      "confirmDescription": "{{name}} さんの端末で、目の前でこの QR コードを読み取ったときだけ「読み取った」を押してください。押すと、ログインし直して本人確認をしてから、相手の鍵を検証済みとして保存します。",
+      "confirmYes": "読み取った",
+      "confirmNo": "読み取っていない",
+      "verifiedTitle": "{{name}} さんの鍵を QR コードで確かめました",
+      "needsLogin": "検証済みとして保存するには、ログインし直して本人確認をしてください。",
+      "login": "ログインして保存",
+      "keyMismatch": "QR コードの鍵が、サーバーから届いた鍵と一致しなかったため、検証を中止しました。鍵が置き換えられている可能性があります。",
+      "camera": {
+        "label": "カメラの映像",
+        "starting": "カメラを起動しています…",
+        "unsupported": "このブラウザーではカメラを使えません。相手にこの端末の QR コードを読み取ってもらうか、絵文字で検証してください。",
+        "denied": "カメラの使用が許可されませんでした。ブラウザーの設定で許可するか、絵文字で検証してください。",
+        "noCamera": "カメラが見つかりません。相手にこの端末の QR コードを読み取ってもらうか、絵文字で検証してください。",
+        "failed": "カメラを起動できませんでした。絵文字で検証してください。"
+      }
+    },
+    "android": {
+      "saveDescription": "保存の前に、もう一度ログインしてもらいます。ブラウザーが開くので、ログインが終わるとこの画面に戻ります。",
+      "continueDescription": "止まっていた初回設定の続きを保存するために、もう一度ログインしてください。ブラウザーが開きます。",
+      "reauthWaiting": "ブラウザーでログインし直すのを待っています…",
+      "reauthCancel": "ログインをやめる",
+      "browserUnavailable": "ログイン用のブラウザーを開けませんでした。ブラウザーを入れるか有効にして、もう一度押してください。"
     }
+  },
+  "defaultChannels": {
+    "refreshed": "参加先に選べないチャンネルがあったため、一覧を更新しました。選択を確認して保存し直してください。",
+    "limit": "公開チャンネルは100件まで選択できます。",
+    "title": "新規アカウントの参加チャンネル",
+    "description": "アカウント作成時に自動参加する公開チャンネルを選択します。既存アカウントには適用されません。",
+    "empty": "選択できる公開チャンネルがありません。",
+    "saved": "保存しました。"
+  },
+  "androidUpdate": {
+    "title": "アプリの更新"
+  },
+  "androidNotifications": {
+    "enable": "通知を有効にする",
+    "scope": "ログイン中に同期した新着通知を受信します。",
+    "mentions": "メンションと返信",
+    "messages": "ダイレクトメッセージ",
+    "reactions": "リアクション"
+  },
+  "onboarding": {
+    "replay": "初期ツアーを開く",
+    "next": "次へ",
+    "back": "戻る",
+    "skip": "スキップ",
+    "finish": "Zooを使い始める",
+    "progress": "{{current}} / {{total}}",
+    "welcome": {
+      "title": "Zooへようこそ",
+      "description": "実際の画面を操作しながらご案内します。「次へ」でチャンネル一覧へ移動しましょう。スキップしてもコンパスボタンから再開できます。"
+    },
+    "channels": {
+      "title": "チャンネルを探す",
+      "description": "枠で示した一覧から、見たいチャンネルを選んでください。未参加の会話は「チャンネルを探す」から探せます。"
+    },
+    "messages": {
+      "title": "会話に参加する",
+      "description": "今開いたチャンネルの、枠で示した入力欄から投稿できます。投稿への返信はスレッド、短い返事はリアクションも使えます。"
+    },
+    "notifications": {
+      "title": "通知を確認する",
+      "description": "通知画面に移動しました。メンションや返信をここで確認できます。通知を選ぶと元の会話を開けます。"
+    },
+    "settings": {
+      "title": "自分に合う設定にする",
+      "description": "一般設定に移動しました。枠で示したタブから、表示や操作の好みを調整できます。完了後もコンパスボタンからツアーを開けます。"
+    },
+    "slack": {
+      "title": "Slackと連携する",
+      "description": "Slack連携の設定画面です。「Slack と連携」で、取り込み済みの自分の投稿をZooアカウントに紐付けられます。自分が作った非公開チャンネルの取り込みもここから行えます。未設定のワークスペースでは管理者に確認してください。"
+    },
+    "title": "使い方ツアー",
+    "chooseChannel": "一覧からチャンネルを選ぶと、次へ進めます。未参加の場合は「チャンネルを探す」から参加してください。",
+    "navigationError": "画面を移動できませんでした。もう一度お試しください。"
+  },
+  "sip": {
+    "title": "電話（SIP）",
+    "description": "個人用とサークル共有の回線・電話機を管理します。選択して接続した1回線で発着信します。着信にはこの画面を開いたブラウザーの接続が必要です。",
+    "refresh": "更新",
+    "addLine": "回線を登録",
+    "loading": "読み込み中…",
+    "loadError": "回線を取得できませんでした。更新して再試行してください。",
+    "disabled": "電話機能はまだ有効になっていません。管理者による基盤設定が必要です。",
+    "channelBusy": "チャンネル通話中はSIP接続を利用できません。",
+    "line": "発着信に使う回線",
+    "selectLine": "回線を選択",
+    "personal": "個人用",
+    "shared": "サークル共有",
+    "connect": "接続して待ち受け",
+    "disconnect": "切断",
+    "number": "電話番号・内線番号",
+    "dial": "発信",
+    "empty": "利用できる回線はまだありません。",
+    "edit": "編集",
+    "delete": "削除",
+    "lineForm": "回線の登録・編集",
+    "name": "回線名",
+    "ownership": "所有区分",
+    "phone_number": "外線番号（任意）",
+    "websocket_path": "SIP接続パス",
+    "sip_domain": "SIPドメイン",
+    "username": "SIPユーザー名",
+    "password": "SIPパスワード",
+    "keepPassword": "空欄で現在のパスワードを保持",
+    "members": "利用できるメンバー",
+    "membersHelp": "チェックしたメンバーだけが接続できます。管理者も利用する場合は選択してください。共有するSIP認証情報は全員が利用できるため、メンバー削除時にはPBX側でもパスワードを変更してください。",
+    "phones": "電話機・拠点の連絡先",
+    "phonesHelp": "名前と内線番号を登録します。保存後に表示されるSIPアカウントを電話機へ設定してください。",
+    "gatewayAccount": "拠点ゲートウェイのSIPアカウント",
+    "phoneAccount": "電話機のSIPアカウント",
+    "phoneName": "電話機・拠点名",
+    "extension": "発信先番号",
+    "removePhone": "連絡先を削除",
+    "addPhone": "電話機を追加",
+    "pbxHelp": "管理者が指定したPBXのドメインとアカウントを登録します。SIP接続はサーバーが処理します。発信できる外線回線・番号はPBX側でも制限してください。",
+    "writeError": "保存できませんでした。入力内容と権限を確認して再試行してください。",
+    "save": "保存",
+    "saving": "保存中…",
+    "cancel": "キャンセル",
+    "deleteTitle": "回線を削除しますか？",
+    "deleteHelp": "回線と連絡先をzoo2から削除します。PBXの内線や認証情報は残るため、PBX側でも無効化してください。",
+    "answer": "応答",
+    "hangup": "通話を終了・拒否",
+    "mute": "ミュート",
+    "unmute": "ミュート解除",
+    "dtmf": "プッシュ音（0–9・*・#）",
+    "sendTone": "送信",
+    "callError": "接続または操作に失敗しました。回線の権限・PBX・音声中継設定を確認してください。",
+    "status": {
+      "offline": "未接続",
+      "connecting": "接続中…",
+      "ready": "待ち受け中",
+      "dialing": "呼び出し中…",
+      "incoming": "着信中",
+      "active": "通話中"
+    },
+    "unavailableMember": "利用できないメンバー"
+  },
+  "androidPhone": {
+    "description": "個人用・共有回線のSIP電話とDM音声通話を、端末の通話機能と連携して利用できます。",
+    "nativeCalls": "端末の通話機能との連携",
+    "nativeHelp": "着信時に通話通知を表示します。通知を許可すると、対応端末ではDM着信をバックグラウンドでも受け取れます。SIPの着信待ちと、FCMが使えない端末でのDMの着信待ちでは、Zooを前面に開いてください。応答・切断・音声出力は端末の通話機能と連携し、マイクの許可が必要です。",
+    "minimizeCall": "最小化",
+    "expandCall": "通話を開く",
+    "floatCall": "フローティング表示",
+    "pipUnavailable": "Androidの設定でピクチャーインピクチャーを確認してください。",
+    "incomingScreenSettings": "着信時の全画面表示を設定",
+    "receiveDm": "DM通話の着信を受ける",
+    "callError": "通話の準備または操作に失敗しました。マイク権限、端末の通話対応、ネットワークと回線設定を確認してください。",
+    "speaker": "スピーカー",
+    "waiting": "電話の着信を待ち受け中",
+    "dmCall": "通話"
+  },
+  "globalSearch": {
+    "title": "検索",
+    "placeholder": "メッセージとファイルを検索",
+    "kinds": {
+      "all": "すべて",
+      "messages": "メッセージ",
+      "files": "ファイル"
+    },
+    "prompt": "検索する語を入力してください。空白で区切ると、すべての語を含むものを探します。",
+    "empty": "見つかりませんでした。",
+    "emptyOlder": "{{month}} までに見つかりませんでした。さらに古い期間を検索できます。",
+    "searchedUntil": "{{month}} まで検索しました",
+    "searchOlder": "さらに古い結果を検索",
+    "loading": "検索中…",
+    "loadError": "検索できませんでした。",
+    "retry": "再試行",
+    "tooManyTerms": "検索できる語は {{max}} 個までです。語を減らしてください。",
+    "termTooLong": "1 つの語は {{max}} 文字までです。語を短くしてください。",
+    "encryptedNote": "暗号化されたチャンネルは検索の対象外です。",
+    "openNav": "検索",
+    "inThread": "スレッドの返信",
+    "filters": {
+      "label": "絞り込み",
+      "from": "送信者",
+      "in": "チャンネル",
+      "kind": "種類",
+      "period": "期間",
+      "anytime": "指定なし",
+      "last7": "過去 7 日間",
+      "last30": "過去 30 日間",
+      "last365": "過去 1 年間",
+      "custom": "日付を指定",
+      "after": "開始日",
+      "before": "終了日",
+      "reversed": "開始日は終了日と同じか、それより前にしてください。",
+      "reset": "条件をリセット",
+      "me": "{{name}}（自分）",
+      "searchPeople": "名前で探す",
+      "searchChannels": "チャンネル名で探す",
+      "noMatches": "見つかりません",
+      "clearSelection": "選択を外す",
+      "selectedCount": "{{label}}: {{count}} 件",
+      "max": "選べるのは {{count}} 件までです",
+      "mine": "自分が参加中",
+      "noBots": "ボットを除く"
+    }
+  },
+  "catchUp": {
+    "navUnread_one": "未読キャッチアップ {{count}} 件",
+    "navUnread_other": "未読キャッチアップ {{count}} 件",
+    "title": "未読キャッチアップ",
+    "close": "終了",
+    "count_one": "未読 {{count}} 件",
+    "count_other": "未読 {{count}} 件",
+    "overCount_one": "未読 {{count}} 件以上",
+    "overCount_other": "未読 {{count}} 件以上",
+    "progress": "{{current}} / {{total}}",
+    "markRead": "既読にする",
+    "keepUnread": "未読のまま次へ",
+    "readError": "既読にできませんでした。もう一度お試しください",
+    "loadError": "未読の会話を読み込めませんでした",
+    "retry": "再試行",
+    "loading": "未読の会話を読み込み中",
+    "empty": "未読の会話はありません",
+    "emptyDescription": "未読が届いたら、もう一度開いてください",
+    "complete": "キャッチアップ完了",
+    "summary": "既読 {{read}} 件・未読のまま {{skipped}} 件",
+    "refresh": "更新",
+    "conversation": "会話",
+    "unreadTooOld": "古い未読がまだ範囲外です。もっと読んでから既読にしてください。",
+    "loadMore": "もっと読む",
+    "unreadChanged": "表示中に新しい未読が届きました。この会話は未読のまま次へ進んでください。"
   }
 }

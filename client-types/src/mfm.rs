@@ -61,7 +61,25 @@ pub fn resolve_emoji(input: &str) -> Option<String> {
     EMOJI_CATALOG.read().unwrap().resolve_emoji(input)
 }
 pub fn unicode_shortcode(name: &str) -> Option<String> {
-    EMOJI_CATALOG.read().unwrap().unicode(name)
+    kitchen_shortcode_label(name).or_else(|| EMOJI_CATALOG.read().unwrap().unicode(name))
+}
+
+// Text clients show the two source glyphs for image-only Kitchen shortcodes.
+fn kitchen_shortcode_label(name: &str) -> Option<String> {
+    let pair = name.strip_prefix("kitchen_")?;
+    if pair.len() > 256 {
+        return None;
+    }
+    let (left, right) = pair.split_once('_')?;
+    let glyph = |hex: &str| -> Option<String> {
+        let value: String = hex
+            .split('-')
+            .map(|part| char::from_u32(u32::from_str_radix(part, 16).ok()?))
+            .collect::<Option<String>>()?;
+        emojis::get(&value)?;
+        Some(value)
+    };
+    Some(format!("{} + {}", glyph(left)?, glyph(right)?))
 }
 
 #[cfg(test)]
@@ -456,7 +474,6 @@ impl Inline<'_> {
             icon.avatar_url = profile.avatar_url.clone();
             icon.avatar_fallback = Some(account_initial(profile));
             vec![
-                Span::styled("@".to_owned(), style),
                 icon,
                 Span::styled(
                     format!(
@@ -673,6 +690,21 @@ mod tests {
         );
     }
 
+    /// Slack の取り込み (`backend/src/slack/convert.rs`) が出す書式が、TUI でも書式になる
+    #[test]
+    fn styles_what_the_slack_import_produces() {
+        let styled = spans("これは**太字**で~~消し~~と<i>斜め</i>");
+        assert!(styled.contains(&("太字".into(), Style::new().bold())));
+        assert!(styled.contains(&("消し".into(), Style::new().crossed_out())));
+        assert!(styled.contains(&("斜め".into(), Style::new().italic())));
+        // U+200B で無効にした記法は、書式にならない
+        assert_eq!(
+            texts("*\u{200b}*\u{200b}x*\u{200b}*"),
+            ["*\u{200b}*\u{200b}x*\u{200b}*"]
+        );
+        assert_eq!(texts("<\u{200b}b>y"), ["<\u{200b}b>y"]);
+    }
+
     #[test]
     fn renders_code_blocks_and_quotes_per_line() {
         assert_eq!(
@@ -781,6 +813,8 @@ mod tests {
         );
         let text: String = spans.iter().map(|span| span.content.as_str()).collect();
         assert!(text.contains("AuthZ Name"));
+        assert!(text.contains("◉ AuthZ Name"));
+        assert!(!text.contains("@◉ AuthZ Name"));
         assert!(text.contains(":@unknown:"));
         assert!(text.contains(":@alice: @alice"));
         assert!(text.ends_with(":@alice:"));
@@ -818,5 +852,20 @@ mod tests {
             parse_with_accounts(":@unknown:", None, &profiles)[0].spans[0].avatar_fallback,
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod kitchen_shortcode_tests {
+    use super::*;
+    #[test]
+    fn image_shortcodes_have_readable_text_fallbacks() {
+        assert_eq!(
+            unicode_shortcode("kitchen_1f431_1f600").as_deref(),
+            Some("🐱 + 😀")
+        );
+        assert!(kitchen_shortcode_label("kitchen_0_1").is_none());
+        assert!(kitchen_shortcode_label("kitchen_d800_1f431").is_none());
+        assert!(kitchen_shortcode_label("kitchen_1f431_1f600_extra").is_none());
     }
 }
