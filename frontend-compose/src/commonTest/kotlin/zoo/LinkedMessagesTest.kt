@@ -248,6 +248,7 @@ class LinkedMessagesTest {
         val third = observe(loader, channel = "c3")
         assertEquals(2, sources.size)
         assertEquals(LinkedRow.Failed, third.last.row)
+        assertEquals(LinkedRow.Failed, loader.peek("c3", "m1").row)
         // 使う行がなくなった購読があれば、閉じて空ける。
         first.job.cancel()
         runCurrent()
@@ -264,9 +265,7 @@ class LinkedMessagesTest {
         val result = CompletableDeferred<Boolean>()
         var loaded = false
         var loads = 0
-        val records = EncryptionRecordsLoader(
-            backgroundScope, { loaded }, { loads++; result.await() }, 10.seconds, testScheduler.timeSource,
-        )
+        val records = EncryptionRecordsLoader(backgroundScope, { loaded }, { loads++; result.await() }, 10.seconds)
         val states = mutableListOf<EncryptionRecords>()
         val first = backgroundScope.launch { records.states().collect { states += it } }
         runCurrent()
@@ -301,10 +300,12 @@ class LinkedMessagesTest {
                     loaded = true
                 }
                 loaded
-            }, 10.seconds, testScheduler.timeSource,
+            }, 10.seconds,
         )
-        backgroundScope.launch { records.states().collect {} }
+        val first = mutableListOf<EncryptionRecords>()
+        backgroundScope.launch { records.states().collect { first += it } }
         runCurrent()
+        assertEquals(EncryptionRecords.Unreadable, first.last())
         // 失敗で終わったあとの最初の描画も、読み直す間も、読み込み中の枠に戻さない。
         assertEquals(EncryptionRecords.Unreadable, records.current())
         val again = mutableListOf<EncryptionRecords>()
@@ -315,6 +316,8 @@ class LinkedMessagesTest {
         retry.complete(Unit)
         runCurrent()
         assertEquals(listOf(EncryptionRecords.Unreadable, EncryptionRecords.Loaded), again)
+        // 失敗したときから表示しているリンクも、読み直しで読めたら切り替わる。
+        assertEquals(EncryptionRecords.Loaded, first.last())
         assertEquals(2, loads)
     }
 
@@ -622,6 +625,63 @@ class LinkedChannelTableTest {
             table.close()
             http.close()
         }
+    }
+
+    /**
+     * `one` と `two` は最初の 3 回だけ失敗して、1 回ずつ打ち切られる。`one` の打ち切りで live を待って時間切れになった
+     * あと、[between] をはさんで `two` を打ち切り、`two` の最後の要求から `three` の要求までの時間を返す。
+     * 追いつくための要求には、[healthy] の間だけ応答する。
+     */
+    private suspend fun TestScope.waitAfterSecondYield(
+        channelId: String, healthy: () -> Boolean, between: suspend (LinkedChannelTable) -> Unit,
+    ): Long {
+        val sent = mutableListOf<Pair<String, Long>>()
+        val third = CompletableDeferred<Unit>()
+        var catchUps = 0
+        val http = timedHttp(
+            subset = { params ->
+                val id = listOf("one", "two", "three").first { it in params }
+                sent += id to testScheduler.currentTime
+                if (id == "three") third.complete(Unit)
+                if (id != "three" && sent.count { it.first == id } <= 3) {
+                    respond("{}", HttpStatusCode.InternalServerError)
+                } else respond(snapshot(id), headers = headers)
+            },
+            // 最初の同期には、いつでも応答する。そのあとは、healthy になるまで応答を待たせる。
+            catchUp = { if (catchUps++ > 0) while (!healthy()) delay(100) },
+        )
+        val table = timedTable(channelId, http)
+        try {
+            table.request("one")
+            table.state.first { "one" in it.fetched }
+            between(table)
+            table.request("two")
+            table.request("three")
+            third.await()
+            val start = sent.indexOfFirst { it.first == "three" }
+            return sent[start].second - sent.subList(0, start).last { it.first == "two" }.second
+        } finally {
+            table.close()
+            http.close()
+        }
+    }
+
+    @Test
+    fun aRecoveredLiveReadIsWaitedForAgain() = runTest {
+        var healthy = false
+        val waited = waitAfterSecondYield("recovered", { healthy }) {
+            // up-to-date を受け取ってから、もう一度止まる。
+            healthy = true
+            delay(1_000)
+            healthy = false
+        }
+        assertTrue(waited >= 5_000, waited.toString())
+    }
+
+    @Test
+    fun aStuckLiveReadIsWaitedForAgainAfterAWhile() = runTest {
+        val waited = waitAfterSecondYield("rechecked", { false }) { delay(30_000) }
+        assertTrue(waited >= 5_000, waited.toString())
     }
 
     @Test

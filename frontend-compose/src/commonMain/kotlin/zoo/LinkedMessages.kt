@@ -15,7 +15,6 @@ import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -78,45 +77,41 @@ private class SubsetYield : Exception("subset の取得を一度打ち切った"
 const val LINK_MAX_CHANNELS = 8
 
 /**
- * 端末の暗号化チャンネルの記録の読み込み。1 回の読み込みを、表示するすべてのリンクで共有する。始めてから [timeout]
- * （画面を離れた間も数える）で終わらなければ読めないものとし、あとで読めれば切り替える。
+ * 端末の暗号化チャンネルの記録の読み込み。状態と読み込みは、表示するすべてのリンクで共有する。始めてから [timeout]
+ * （画面を離れた間も数える）で終わらないか、失敗したら、読めないものとする。次の [states] で読み直し、読めたら
+ * 表示中のリンクもすべて切り替える。
  */
 class EncryptionRecordsLoader(
     private val scope: CoroutineScope,
     private val isLoaded: () -> Boolean,
     private val load: suspend () -> Boolean,
     private val timeout: Duration = LINK_LOAD_TIMEOUT,
-    private val clock: TimeSource = TimeSource.Monotonic,
 ) {
-    private var pending: Pair<TimeMark, Deferred<Boolean>>? = null
-    /** 前の読み込みが失敗で終わった。読み直す間も、読めないものとして出す。 */
-    private var failed = false
+    private val state = MutableStateFlow(EncryptionRecords.Loading)
+    private var loading: Job? = null
 
     /** 読み込みを始めずに、いま分かっている状態を返す（最初の描画用）。 */
-    fun current(): EncryptionRecords {
-        if (isLoaded()) return EncryptionRecords.Loaded
-        // 終わっても読めていなければ、失敗している。
-        val unreadable = pending?.let { (since, result) -> result.isCompleted || since.elapsedNow() >= timeout } == true
-        return if (failed || unreadable) EncryptionRecords.Unreadable else EncryptionRecords.Loading
+    fun current(): EncryptionRecords = if (isLoaded()) EncryptionRecords.Loaded else state.value
+
+    /** 状態の変化を返し続ける。読み込んでいなければ読み込みを始める（失敗したあとは読み直す）。 */
+    fun states(): Flow<EncryptionRecords> = flow {
+        start()
+        emitAll(state)
     }
 
-    fun states(): Flow<EncryptionRecords> = flow {
+    private fun start() {
         if (isLoaded()) {
-            emit(EncryptionRecords.Loaded)
-            return@flow
+            state.value = EncryptionRecords.Loaded
+            return
         }
-        if (pending?.second?.isCompleted == true) failed = true
-        val (since, result) = pending?.takeUnless { it.second.isCompleted }
-            ?: (clock.markNow() to scope.async { load() }).also { pending = it }
-        val remaining = timeout - since.elapsedNow()
-        if (!failed && remaining.isPositive()) {
-            emit(EncryptionRecords.Loading)
-            if (withTimeoutOrNull(remaining) { result.await() } == null) emit(EncryptionRecords.Unreadable)
-        } else {
-            emit(EncryptionRecords.Unreadable)
+        if (loading?.isActive == true) return
+        // 読み直す間は、読み込み中に戻さず、読めないものとして出したままにする。
+        loading = scope.launch {
+            val result = async { load() }
+            if (withTimeoutOrNull(timeout) { result.await() } == null) state.value = EncryptionRecords.Unreadable
+            state.value = if (result.await()) EncryptionRecords.Loaded else EncryptionRecords.Unreadable
         }
-        emit(if (result.await()) EncryptionRecords.Loaded else EncryptionRecords.Unreadable)
-    }.distinctUntilChanged()
+    }
 }
 
 /** リンク先のメッセージ 1 件の取得の状態。 */
@@ -383,7 +378,8 @@ class LinkedMessages(
         // 拒否された取得は、画面に戻っても読み込み中に戻さない。
         if (source?.rejects(messageId) == true) return LinkedMessageState(LinkedRow.Failed, ciphertext)
         val key = Key(channelId, messageId)
-        val row = results[key] ?: LinkedRow.Loading
+        // 購読の上限で取得できないリンクも、読み込み中に戻さない。
+        val row = results[key] ?: if (isFull(channelId)) LinkedRow.Failed else LinkedRow.Loading
         val stalled = row == LinkedRow.Loading && started[key]?.let { it.elapsedNow() >= stallAfter } == true
         return LinkedMessageState(row, ciphertext, stalled)
     }
@@ -483,6 +479,10 @@ class LinkedMessages(
         }
         return channelId in ciphertextChannels.value
     }
+
+    /** [channelId] の購読がなく、上限まで使っていて空けられないか。 */
+    private fun isFull(channelId: String): Boolean =
+        channelId !in entries && entries.size >= maxChannels && entries.values.none { it.users == 0 }
 
     /** 購読を使い始める。上限まで使っていて空けられなければ `null`。 */
     private fun acquire(channelId: String): Entry? {
