@@ -66,9 +66,15 @@ class ConversationScrollTest {
         }
 
         val list = ui.onNodeWithTag("conversation-timeline")
-        ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
+        fun assertAtEnd(id: String) {
+            val last = ui.onNodeWithTag("timeline-entry-$id").assertIsDisplayed().fetchSemanticsNode()
+            assertEquals(list.fetchSemanticsNode().boundsInRoot.bottom, last.positionInRoot.y + last.size.height, 1f)
+        }
+        assertAtEnd("e40")
+        ui.onNode(hasSetTextAction()).performClick()
+        assertAtEnd("e40")
         ui.runOnIdle { height = 430.dp }
-        ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
+        assertAtEnd("e40")
 
         list.performTouchInput { swipeDown() }
         list.performScrollToIndex(12)
@@ -78,9 +84,9 @@ class ConversationScrollTest {
         history.assertIsDisplayed()
 
         ui.runOnIdle { screen = screen.copy(input = InputState(lastSend = "send-1")) }
-        ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
+        assertAtEnd("e40")
         ui.runOnIdle { screen = screen.copy(entries = entries + TimelineItem("sent", "はる", "送信済み", "12:01")) }
-        ui.onNodeWithTag("timeline-entry-sent").assertIsDisplayed()
+        assertAtEnd("sent")
     }
 
     @Test
@@ -97,7 +103,7 @@ class ConversationScrollTest {
         val originalTop = history.fetchSemanticsNode().boundsInRoot.top
 
         ui.runOnIdle { screen = AndroidScreen.Channels(emptyList()) }
-        ui.onNodeWithText("チャンネル").assertIsDisplayed()
+        list.assertDoesNotExist()
         val earlier = (1..5).map { TimelineItem("earlier-$it", "はる", "過去 $it", "11:00") }
         ui.runOnIdle { screen = channel.copy(entries = emptyList()) }
         ui.onNodeWithTag("conversation-timeline").assertDoesNotExist()

@@ -565,8 +565,11 @@ private fun ColumnScope.TimelineWithInput(
     // Only follow those changes while the reader is at the end or has just sent a message.
     LaunchedEffect(scroll) {
         var wasScrolling = false
+        var previousLayout = scroll.layoutInfo
         snapshotFlow { Triple(scroll.isScrollInProgress, scroll.layoutInfo, followEnd) }
             .collect { (scrolling, layout, _) ->
+                val remeasured = layout !== previousLayout
+                previousLayout = layout
                 if (scrolling) {
                     wasScrolling = true
                     restorePending = false
@@ -576,7 +579,7 @@ private fun ColumnScope.TimelineWithInput(
                         wasScrolling = false
                     }
                     if (layout.viewportSize.height > 0 && layout.totalItemsCount > 0) {
-                        if (!scroll.canScrollForward && !restorePending) followEnd = true
+                        if (remeasured && !scroll.canScrollForward && !restorePending) followEnd = true
                         if (followEnd && scroll.canScrollForward) {
                             val lastIndex = layout.totalItemsCount - 1
                             val offset = layout.visibleItemsInfo.lastOrNull()?.takeIf { it.index == lastIndex }?.size ?: 0

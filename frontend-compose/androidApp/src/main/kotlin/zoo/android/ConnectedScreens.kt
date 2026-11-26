@@ -296,11 +296,13 @@ internal fun ConnectedScreens(
     // 始めた検証も出せるよう、画面を切り替える早期の return より前に置く。
     VerificationHost(session, platform)
     if (call == null && state.overlay == "app-update") {
-        zoo.android.update.UpdateSettings(androidx.compose.ui.platform.LocalContext.current, env.dark, env.locale, ::back)
+        pageState.SaveableStateProvider("app-update") {
+            zoo.android.update.UpdateSettings(androidx.compose.ui.platform.LocalContext.current, env.dark, env.locale, ::back)
+        }
         return
     }
     if (call == null && state.overlay == "encryption" && platform.e2ee != null) {
-        EncryptionRoute(session, platform, ::back)
+        pageState.SaveableStateProvider("encryption") { EncryptionRoute(session, platform, ::back) }
         return
     }
     val profile = state.profile
@@ -445,7 +447,7 @@ internal fun ConnectedScreens(
         }
         Box(Modifier.weight(1f)) {
             if (!showFullCall && (state.overlay == "sip" || (state.overlay == null && sipRoute))) {
-                SipRoute(session, phone, users, ::back)
+                pageState.SaveableStateProvider("sip") { SipRoute(session, phone, users, ::back) }
             } else {
                 CompositionLocalProvider(
                     LocalTimelineImage provides { media -> timelineImage(session, media) },
