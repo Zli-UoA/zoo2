@@ -636,7 +636,10 @@ export class GitHubBot {
           await this.zoo.postMessage({
             id: keyedId(this.config.encryptionKey, `reminder:${channel}:${day}`),
             channel_id: channel,
-            content: `レビュー依頼リマインダー (${config.zone})\n${capLines(lines, 3500)}`,
+            content: `レビュー依頼リマインダー (${config.zone})\n${capLines(
+              lines.flatMap((line) => line.split("\n")),
+              3500,
+            )}`,
           });
         this.store.set(`reminder-sent:${channel}`, day);
       } catch (error) {

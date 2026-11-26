@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { verify, randomUUID } from "node:crypto";
 import { fixture, job, command, pair } from "./helpers.ts";
 import { GitHubError } from "../src/github.ts";
+import { summary } from "../src/events.ts";
 import { preview } from "../src/previews.ts";
 import { subscription, words, permits } from "../src/subscriptions.ts";
 import { ZooError } from "../../../sdk/src/index.ts";
@@ -769,4 +770,13 @@ test("a message that this bot did not publish under its ID fails the job without
   );
   assert.equal([...f.zoo.messages.values()].filter((m) => m.channel_id === "channel").length, 1);
   assert.equal(f.zoo.messages.get(taken)!.content, "occupied");
+});
+
+test("a multi-line title keeps the canonical URL within the length cap", () => {
+  const out = summary(
+    { repo: "acme/project", kind: "pull", number: "8" },
+    { title: "x\n".repeat(249) + "x", state: "open" },
+  );
+  assert.ok(out.includes("https://github.com/acme/project/pull/8"));
+  assert.equal(out.split("<plain>").length, out.split("</plain>").length);
 });

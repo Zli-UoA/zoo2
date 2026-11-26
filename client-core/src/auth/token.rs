@@ -1145,7 +1145,15 @@ impl TokenManager {
         *self.persist.lock().unwrap_or_else(|e| e.into_inner()) = false;
         // この manager が持つ session だけを対象にする。保存先が別のログインに
         // 置き換わっていたら、失効も削除もしない。
-        let expected = self.state.lock().await.tokens.clone();
+        let (expected, unsaved) = {
+            let state = self.state.lock().await;
+            // 更新には成功したが保存できなかった refresh token は、ファイルにない。
+            let unsaved = state
+                .pending_persist
+                .as_ref()
+                .and(state.tokens.refresh_token.clone());
+            (state.tokens.clone(), unsaved)
+        };
         let Some(lock) = token_file_lock_async(&self.path, false).await? else {
             return Ok(false);
         };
@@ -1159,6 +1167,23 @@ impl TokenManager {
             cleanup_error,
         )
         .await?;
+        if let Some(refresh_token) = unsaved
+            && outcome != DeleteOutcome::Changed
+        {
+            let revoke = async {
+                let discovery = discover(&self.http, &self.oidc.issuer).await?;
+                if let Some(endpoint) = discovery.revocation_endpoint {
+                    let form = [
+                        ("token", refresh_token.as_str()),
+                        ("token_type_hint", "refresh_token"),
+                        ("client_id", self.oidc.client_id.as_str()),
+                    ];
+                    let _ = self.http.post(&endpoint).form(&form).send().await;
+                }
+                Ok::<(), anyhow::Error>(())
+            };
+            let _ = tokio::time::timeout(LOGOUT_REVOCATION_TIMEOUT, revoke).await;
+        }
         Ok(matches!(outcome, DeleteOutcome::Deleted))
     }
 

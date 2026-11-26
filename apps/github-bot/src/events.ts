@@ -225,7 +225,8 @@ export function summary(target: Target, s: Json): string {
     plainMfm(
       `${text(target.repo, 160)} · ${target.kind} ${["issue", "pull", "discussion"].includes(target.kind) ? "#" : ""}${text(target.number, 100)} · ${text(state, 100)}`,
     ),
-    plainMfm(text(title, 500)),
+    // タイトルは 1 行で表示する。改行を残すと、行ごとの囲みで長さが増え、URL の行が入らなくなる。
+    plainMfm(text(title, 500).replace(/\s*\n\s*/g, " ")),
     resource(target),
     plainMfm(text(s.body ?? s.latest?.description ?? s.description, 900)),
     labels ? plainMfm(`Labels: ${labels}`) : "",
@@ -237,5 +238,8 @@ export function summary(target: Target, s: Json): string {
       : "",
     s.checkSummary ? plainMfm(`Checks: ${text(s.checkSummary, 500)}`) : "",
   ].filter(Boolean);
-  return capLines(lines, 3800);
+  return capLines(
+    lines.flatMap((line) => line.split("\n")),
+    3800,
+  );
 }
