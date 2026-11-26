@@ -117,7 +117,7 @@ internal fun NotificationPage(
                             Text(if (item.actors.size > 1) "$author ほか" else author, Modifier.weight(1f),
                                 color = colors.foreground, fontWeight = AndroidWeights.entryAuthor, fontSize = entryTextSize, maxLines = 1,
                                 overflow = TextOverflow.Ellipsis)
-                            Text(item.time, color = colors.secondary, fontSize = 12.sp)
+                            Text(item.time, color = colors.secondary, fontSize = 12.sp, maxLines = 1)
                             if (item.unread) Box(
                                 Modifier.size(8.dp).background(colors.accent, CircleShape).border(1.dp, colors.secondary, CircleShape)
                                     .semantics { contentDescription = "未読" },

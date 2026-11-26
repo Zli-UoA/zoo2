@@ -144,7 +144,7 @@ internal class AndroidPlatform(
     }
 
     fun visible(value: Boolean) {
-        if (value) refreshCalendarDay()
+        if (value) calendar.refreshCalendarDay()
         env = env.copy(visible = value, reducedMotion = reducedMotion())
     }
 
@@ -177,16 +177,9 @@ internal class AndroidPlatform(
             timestamp
         }
 
-    private fun localMidnight() = ZoneId.systemDefault().let { zone ->
-        java.time.LocalDate.now(zone).atStartOfDay(zone)
-    }
+    val calendar = AndroidMessageCalendar()
 
-    var calendarDay by mutableStateOf(localMidnight())
-        private set
-
-    fun refreshCalendarDay() { calendarDay = localMidnight() }
-
-    override fun today() = day(calendarDay.toInstant().toString())
+    override fun messageCalendar() = calendar.value
 
     override fun time(timestamp: String) = format(timestamp, "HH:mm")
 

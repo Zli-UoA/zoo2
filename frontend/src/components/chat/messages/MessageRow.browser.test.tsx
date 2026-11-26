@@ -137,6 +137,22 @@ function renderRow(item: MessageItem, isOwn = false, props: Partial<MessageRowPr
 }
 
 describe("MessageRow", () => {
+  it("refreshes historical times after switching zones with identical winter offsets", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-26T12:00:00Z"));
+    try {
+      await cdp().send("Emulation.setTimezoneOverride", { timezoneId: "America/Denver" });
+      renderRow(buildItem({ created_at: "2026-07-01T12:00:00Z" }));
+      expect(screen.getByText("07/01 06:00")).toBeInTheDocument();
+      await cdp().send("Emulation.setTimezoneOverride", { timezoneId: "America/Phoenix" });
+      fireEvent.focus(window);
+      expect(screen.getByText("07/01 05:00")).toBeInTheDocument();
+    } finally {
+      await cdp().send("Emulation.setTimezoneOverride", { timezoneId: "" });
+      vi.useRealTimers();
+    }
+  });
+
   it("moves a grouped timestamp from the gutter to the header at local New Year", async () => {
     const now = new Date(2026, 11, 31, 23, 59, 59);
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });

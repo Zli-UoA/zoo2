@@ -593,21 +593,44 @@ class AndroidSamplesTest {
     fun aLongAuthorLeavesRoomForTheFullTimestamp() {
         val entry = TimelineItem("m", "とても長い表示名".repeat(12), "本文", "2025/12/31 23:59")
         var screen by mutableStateOf<AndroidScreen>(AndroidScreen.Conversation("dev", "開発", "", listOf(entry), InputState()))
-        ui.setContent { AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> } }
+        val url = "https://zoo.test/channels/dev?message=target"
+        val links = ChannelLinkProvider(
+            target = { link -> if (link == url) zoo.ChannelLinkTarget("dev", "target") else null },
+            view = { ChannelLinkView.Message("リンク先", entry.author, entry.time, "#開発", null, null) },
+            open = { _, _ -> },
+        )
+        ui.setContent {
+            CompositionLocalProvider(LocalChannelLinks provides links) {
+                AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> }
+            }
+        }
         fun assertTimeFits() {
             val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
             ui.onNodeWithText(entry.time, useUnmergedTree = true).assertIsDisplayed()
                 .performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
             val layout = layouts.single()
-            check(layout.lineCount == 1 && layout.getLineEnd(0, visibleEnd = true) == entry.time.length)
-            check(layout.getLineLeft(0) >= 0 && layout.getLineRight(0) <= layout.size.width)
+            val end = layout.getLineEnd(0, visibleEnd = true)
+            val left = layout.getLineLeft(0)
+            val right = layout.getLineRight(0)
+            check(layout.lineCount == 1 && end == entry.time.length && left >= 0 && right <= layout.size.width) {
+                "${screen.javaClass.simpleName}: lines=${layout.lineCount}, visibleEnd=$end/${entry.time.length}, left=$left, right=$right, width=${layout.size.width}"
+            }
         }
         assertTimeFits()
-        ui.runOnIdle {
-            screen = AndroidScreen.Home(listOf(entry.copy(postHeader = PostHeaderData("@name", entry.time, PostAudience.Public, null, null))))
+        val embedded = entry.copy(time = "10:00", body = url, channelLinks = listOf(url))
+        val screens = listOf(
+            AndroidScreen.Home(listOf(entry.copy(postHeader = PostHeaderData("@name", entry.time, PostAudience.Public, null, null)))),
+            AndroidScreen.Search(SearchScreenState("本文", "本文", GlobalSearchType.All,
+                listOf(SearchResultItem("message:m", entry.author, "本文", entry.time, "開発")), loaded = true)),
+            AndroidScreen.Notifications(listOf(InboxItem("reply", listOf(InboxActor("u", entry.author)),
+                "投稿に返信しました", "本文", entry.time, true, kind = "reply", destination = "開発"))),
+            AndroidScreen.Conversation("dev", "開発", "", listOf(embedded), InputState()),
+        )
+        for (next in screens) {
+            ui.runOnIdle { screen = next }
+            ui.waitForIdle()
+            assertTimeFits()
         }
-        ui.waitForIdle()
-        assertTimeFits()
     }
 
     @Test

@@ -1,10 +1,5 @@
 package zoo.android
 
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
-import androidx.core.content.ContextCompat
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -71,19 +66,8 @@ internal fun ConnectedScreens(
     val reactions = remember(rows) { rows.flatMap(::displayReactions) }
     val context = androidx.compose.ui.platform.LocalContext.current.applicationContext
     DisposableEffect(platform, context) {
-        val receiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context, intent: Intent) {
-                platform.refreshCalendarDay()
-            }
-        }
-        val filter = IntentFilter().apply {
-            addAction(Intent.ACTION_DATE_CHANGED)
-            addAction(Intent.ACTION_TIME_CHANGED)
-            addAction(Intent.ACTION_TIMEZONE_CHANGED)
-        }
-        ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
-        platform.refreshCalendarDay()
-        onDispose { context.unregisterReceiver(receiver) }
+        val stop = platform.calendar.observe(context)
+        onDispose { stop() }
     }
     val emojiCatalog = remember(context) { AndroidEmojiCatalog(context) }
     val needsWorkspaceEmoji = reactions.any { it.text("emoji").startsWith(':') }
@@ -114,7 +98,7 @@ internal fun ConnectedScreens(
         }
     }
     // 日付や表示名だけが変わったときは、手元の復号結果から表示を作り直す。
-    val messageEntries = remember(decryptedRows, usersById, encrypted, canPost, session.workspaceEmojis, platform.calendarDay) {
+    val messageEntries = remember(decryptedRows, usersById, encrypted, canPost, session.workspaceEmojis, platform.calendar.value) {
         decryptedRows.map { (row, decrypted) ->
             val data = if (decrypted != null) row + ("content" to JsonPrimitive(decrypted.body.orEmpty())) else row
             val entry = state.entry(kotlinx.serialization.json.JsonObject(data), usersById,

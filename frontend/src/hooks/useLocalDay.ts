@@ -4,8 +4,23 @@ import { useSyncExternalStore } from "react";
 const listeners = new Set<() => void>();
 let timer: number;
 
-function startOfToday() {
-  return new Date().setHours(0, 0, 0, 0);
+function readCalendar() {
+  return {
+    midnight: new Date().setHours(0, 0, 0, 0),
+    zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  };
+}
+
+let calendar = readCalendar();
+
+function updateCalendar() {
+  const next = readCalendar();
+  if (next.midnight !== calendar.midnight || next.zone !== calendar.zone) calendar = next;
+}
+
+function snapshot() {
+  if (!listeners.size) updateCalendar();
+  return calendar;
 }
 
 function scheduleMidnight() {
@@ -17,6 +32,7 @@ function scheduleMidnight() {
 }
 
 function refresh() {
+  updateCalendar();
   scheduleMidnight();
   for (const listener of listeners) listener();
 }
@@ -24,6 +40,7 @@ function refresh() {
 function subscribe(listener: () => void) {
   listeners.add(listener);
   if (listeners.size === 1) {
+    updateCalendar();
     scheduleMidnight();
     document.addEventListener("visibilitychange", refresh);
     window.addEventListener("focus", refresh);
@@ -39,5 +56,5 @@ function subscribe(listener: () => void) {
 }
 
 export function useLocalDay() {
-  return new Date(useSyncExternalStore(subscribe, startOfToday, startOfToday));
+  return new Date(useSyncExternalStore(subscribe, snapshot, snapshot).midnight);
 }

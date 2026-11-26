@@ -103,17 +103,9 @@ interface Platform {
 
     fun time(timestamp: String): String
 
-    fun today(): String = day(now())
+    fun messageCalendar(): MessageCalendar = MessageCalendar.current()
 
-    fun messageTimestamp(timestamp: String): String {
-        val date = day(timestamp)
-        val clock = time(timestamp)
-        if (clock == timestamp) return timestamp
-        val today = today()
-        if (date == today) return clock
-        val label = if (date.substringBefore('/') == today.substringBefore('/')) date.substringAfter('/') else date
-        return "$label $clock"
-    }
+    fun messageTimestamp(timestamp: String): String = messageCalendar().format(timestamp)
 
     fun fullTimestamp(timestamp: String): String = "${day(timestamp)} ${time(timestamp)}"
 
