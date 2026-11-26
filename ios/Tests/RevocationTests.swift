@@ -20,6 +20,8 @@ private final class RevocationServer: E2eeRevocationAPI {
     var requests: [String] = []
     var reauthSeen: [String?] = []
     var requireReauth = true
+    /// 次の 1 回だけ、このパスの要求を通信エラーにする（途中で止めて再開するテスト）。
+    var failOnce: String?
 
     init(from server: FakeSetupServer, userID: String) async throws {
         storage = parse(try await server.secretStorage())
@@ -34,7 +36,26 @@ private final class RevocationServer: E2eeRevocationAPI {
         let guardedWrite = method != "GET" && method != "DELETE" && path != "api/e2ee/keys/query"
         if guardedWrite, requireReauth, reauth == nil, path != "api/e2ee/key_backup/keys" { throw E2eeAPIError(status: 403, code: "E2EE_REAUTH_REQUIRED") }
         reauthSeen.append(reauth)
+        if failOnce == path { failOnce = nil; throw E2eeAPIError(status: 500, code: nil) }
         switch (method, path) {
+        case ("POST", "api/e2ee/secret_storage/keys"):
+            // 全範囲：サーバーの今の既定の鍵と版が前提のときだけ、新しい SSSS 鍵に作り直す（鍵スロットも置き換える）。
+            guard body?["expected_default_key_id"]?.string == storage["default_key_id"]?.string,
+                  body?["expected_secrets_revision"]?.uint == storage["secrets_revision"]?.uint else {
+                throw E2eeAPIError(status: 409, code: "E2EE_SSSS_CONFLICT")
+            }
+            let keyID = body?["key_id"] ?? .null
+            var secrets = body?["secrets"]?.object ?? [:]
+            for (name, secret) in secrets {
+                guard case .object(var value) = secret else { continue }
+                value["key_id"] = keyID
+                secrets[name] = .object(value)
+            }
+            let revision = (storage["secrets_revision"]?.uint ?? 0) + 1
+            storage = ["default_key_id": keyID, "keys": .object([keyID.string ?? "": body?["key"] ?? .null]),
+                       "secrets": .object(secrets), "secrets_revision": .number(Double(revision)),
+                       "slots": body?["slots"] ?? .array([])]
+            return .object(["secrets_revision": .number(Double(revision))])
         case ("GET", "api/e2ee/secret_storage"): return .object(storage)
         case ("POST", "api/e2ee/secret_storage/secrets"):
             let revision = (storage["secrets_revision"]?.uint ?? 0) + 1
@@ -100,7 +121,7 @@ private final class RevocationServer: E2eeRevocationAPI {
 @MainActor
 struct RevocationTests {
     /// 初回設定を済ませた端末と、その状態から始まる模擬サーバーと、開けた SSSS。
-    private func prepared() async throws -> (Device, RevocationServer, UnlockedSecretStorage, FakeSetupServer) {
+    private func prepared() async throws -> (Device, RevocationServer, UnlockedSecretStorage, String) {
         let fake = FakeSetupServer(userID: user)
         let device = try Device(fake)
         let start = try device.setup.begin()
@@ -108,11 +129,11 @@ struct RevocationTests {
         let server = try await RevocationServer(from: fake, userID: user)
         let storage = try #require(try parseSecretStorage(userId: user, response: try await fake.secretStorage()))
         let unlocked = try storage.unlockWithRecoveryKey(recoveryKey: try RecoveryKey.parse(input: start.recoveryKey))
-        return (device, server, unlocked, fake)
+        return (device, server, unlocked, start.recoveryKey)
     }
 
     @Test func 端末だけの失効は鍵を作り直して保存し記録を消す() async throws {
-        let (device, server, unlocked, fake) = try await prepared()
+        let (device, server, unlocked, firstRecoveryKey) = try await prepared()
         defer { device.cleanUp() }
         let revocation = E2eeRevocation(store: { device.store }, api: server, setup: device.setup, userID: user)
         let oldMaster = server.keys["master_keys"]
@@ -140,6 +161,70 @@ struct RevocationTests {
         #expect(server.requests.contains("POST api/e2ee/cross_signing/signatures"))
         // 暗号ストアの自分の鍵は、保存した新しい鍵にそろい、新しい SSSS の版を覚えている。
         #expect(device.store.secretsRevision == 2)
-        _ = fake
+    }
+
+    @Test func 全範囲の失効は新しいSSSS鍵とマスター鍵を作り直し古いリカバリーキーを使えなくする() async throws {
+        let (device, server, unlocked, firstRecoveryKey) = try await prepared()
+        defer { device.cleanUp() }
+        let revocation = E2eeRevocation(store: { device.store }, api: server, setup: device.setup, userID: user)
+        let oldKeyID = server.storage["default_key_id"]?.string
+        let oldMaster = server.keys["master_keys"]
+        _ = try await revocation.begin(scope: .full, deletedDevices: [], unlocked: unlocked)
+        // 鍵スロットがないと、保存の要求を作れない。
+        await #expect(throws: (any Error).self) { try await revocation.run(reauth: "token") }
+        let recoveryKey = try revocation.newRecoveryKey()
+
+        let finished = try await revocation.run(reauth: "token")
+        #expect(finished.stage == "verified")
+        #expect(try revocation.savedSummary() == nil)
+        // 新しい SSSS 鍵（版が進む）、新しいマスター鍵、新しい版（古い版は消える）。
+        #expect(server.storage["default_key_id"]?.string != oldKeyID)
+        #expect(server.storage["secrets_revision"]?.uint == 2)
+        #expect(server.keys["master_keys"] != oldMaster)
+        #expect(server.storage["slots"]?.array?.count == 1)
+        #expect(server.versions.count == 2 && server.deleted == ["1"])
+        #expect(device.store.secretsRevision == 2)
+        // 新しいリカバリーキーだけが、新しい SSSS を開ける。
+        let storage = try #require(try parseSecretStorage(userId: user, response: text(.object(server.storage))))
+        _ = try storage.unlockWithRecoveryKey(recoveryKey: try RecoveryKey.parse(input: recoveryKey))
+        let old = try RecoveryKey.parse(input: firstRecoveryKey)
+        #expect(throws: (any Error).self) { _ = try storage.unlockWithRecoveryKey(recoveryKey: old) }
+    }
+
+    @Test func 全範囲をSSSSの保存の前に止めたら最初からやり直す() async throws {
+        let (device, server, unlocked, _) = try await prepared()
+        defer { device.cleanUp() }
+        let revocation = E2eeRevocation(store: { device.store }, api: server, setup: device.setup, userID: user)
+        _ = try await revocation.begin(scope: .full, deletedDevices: [], unlocked: unlocked)
+        // アプリを閉じて開き直した（メモリーの秘密は消え、進み具合だけが暗号ストアにある）。
+        let reopened = E2eeRevocation(store: { device.store }, api: server, setup: device.setup, userID: user)
+        #expect(try reopened.savedSummary()?.stage == "prepared")
+        #expect(throws: ZooCryptoError.self) { _ = try reopened.resume(unlocked: unlocked) }
+        // 捨てれば、新しい失効を始められる。
+        try reopened.abandon()
+        #expect(try reopened.savedSummary() == nil)
+    }
+
+    @Test func 全範囲をクロス署名鍵の保存で止めても新しいSSSSを開け直して続きから終える() async throws {
+        let (device, server, unlocked, _) = try await prepared()
+        defer { device.cleanUp() }
+        let revocation = E2eeRevocation(store: { device.store }, api: server, setup: device.setup, userID: user)
+        _ = try await revocation.begin(scope: .full, deletedDevices: [], unlocked: unlocked)
+        let recoveryKey = try revocation.newRecoveryKey()
+        server.failOnce = "api/e2ee/cross_signing/keys"
+        await #expect(throws: (any Error).self) { try await revocation.run(reauth: "token") }
+        // SSSS は新しい鍵で保存済みで、進み具合は暗号ストアにある。
+        #expect(try revocation.savedSummary()?.stage == "secret_storage_saved")
+
+        // アプリを開き直して、新しいリカバリーキーで SSSS を開け直し、続きから終える。
+        let reopened = E2eeRevocation(store: { device.store }, api: server, setup: device.setup, userID: user)
+        let storage = try #require(try parseSecretStorage(userId: user, response: text(.object(server.storage))))
+        let again = try storage.unlockWithRecoveryKey(recoveryKey: try RecoveryKey.parse(input: recoveryKey))
+        let resumed = try reopened.resume(unlocked: again)
+        #expect(resumed.reached("secret_storage_saved") && !resumed.reached("cross_signing_saved"))
+        let finished = try await reopened.run(reauth: "token")
+        #expect(finished.stage == "verified")
+        #expect(try reopened.savedSummary() == nil)
+        #expect(server.versions.count == 2)
     }
 }
