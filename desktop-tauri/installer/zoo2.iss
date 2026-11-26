@@ -7,14 +7,19 @@
 #endif
 
 #ifndef AppVersion
-  #define AppVersion "0.3.1"
+  #define AppVersion "0.4.0"
 #endif
 ; プレリリース版 (例: 0.3.1-rc.1) でも数値専用の VersionInfo 項目へ渡せるように、
 ; ハイフン以降を除いた数値部分を AppVersionNumeric として定義する。
-#if Pos("-", AppVersion) != 0
-  #define AppVersionNumeric Copy(AppVersion, 1, Pos("-", AppVersion) - 1)
+#if Pos("+", AppVersion) != 0
+  #define AppVersionWithoutBuild Copy(AppVersion, 1, Pos("+", AppVersion) - 1)
 #else
-  #define AppVersionNumeric AppVersion
+  #define AppVersionWithoutBuild AppVersion
+#endif
+#if Pos("-", AppVersionWithoutBuild) != 0
+  #define AppVersionNumeric Copy(AppVersionWithoutBuild, 1, Pos("-", AppVersionWithoutBuild) - 1)
+#else
+  #define AppVersionNumeric AppVersionWithoutBuild
 #endif
 #ifndef ExePath
   #define ExePath "..\src-tauri\target\release\zoo2-desktop-tauri.exe"
