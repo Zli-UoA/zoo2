@@ -498,6 +498,14 @@ internal fun ConnectedScreens(
         if (!env.visible || showFullCall || !canKeepMedia) state.mediaPreview = null
     }
     mediaSelection?.takeIf { env.visible && !showFullCall && canKeepMedia }?.let { selection ->
+        val target = selection.searchTarget
+        if (target?.messageId != null) {
+            LaunchedEffect(selection) {
+                session.repo.linkedMessages.observe(target.channelId, checkNotNull(target.messageId)).collect {
+                    state.dismissUnavailableSearchPreview(selection, it)
+                }
+            }
+        }
         key(selection) {
             val media = selection.selected
             val dismiss = { state.mediaPreview = null }
@@ -506,7 +514,7 @@ internal fun ConnectedScreens(
                     val id = original.attachmentId
                     if (id != null) session.attachmentLinks.download(
                         obj("id" to id, "file_name" to original.name),
-                        force = selection.searchChannelId != null,
+                        force = selection.searchTarget != null,
                     ) else original.url?.let { platform.action("open:$it") }
                 } else dismiss()
             }

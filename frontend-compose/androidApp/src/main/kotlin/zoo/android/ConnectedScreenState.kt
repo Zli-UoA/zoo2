@@ -390,7 +390,10 @@ internal class ConnectedScreenState(
             val endpoint = if (post) "home" else "messages"
             app.api.request("/api/$endpoint/${action.item.id.encodeURLParameter()}", "DELETE")
             confirmingEntry = null
-            if (!post) searchPreviewLinks.removeMessage(action.item.id)
+            if (!post) {
+                searchPreviewLinks.removeMessage(action.item.id)
+                app.channelId?.let { app.globalSearch.removeDeletedMessage(it, action.item.id) }
+            }
             if (post) {
                 if (openedPostId == action.item.id) {
                     closePost()
@@ -514,6 +517,7 @@ internal class ConnectedScreenState(
         rows.forEach { row ->
             if (row.present("deleted_at") || row.present("ciphertext")) {
                 searchPreviewLinks.remove(row.text("channel_id"), row.text("id"))
+                if (row.present("deleted_at")) app.globalSearch.removeDeletedMessage(row.text("channel_id"), row.text("id"))
             }
         }
     }
@@ -586,9 +590,59 @@ internal class ConnectedScreenState(
     }
 
     fun canKeepMediaPreview(selection: TimelineMediaSelection): Boolean {
-        val id = selection.searchChannelId ?: return true
-        val channel = currentSearchChannel(id) ?: return false
-        return !channel.flag("is_nsfw") || selection.selected.sensitive
+        val target = selection.searchTarget ?: return true
+        val channel = currentSearchChannel(target.channelId) ?: return false
+        if (channel.flag("is_nsfw") && !selection.selected.sensitive) return false
+        val message = target.messageId?.let { app.repo.linkedMessages.peek(target.channelId, it) }
+        return message == null || !searchParentUnavailable(message)
+    }
+
+    fun dismissUnavailableSearchPreview(selection: TimelineMediaSelection, message: LinkedMessageState) {
+        if (mediaPreview != selection || !searchParentUnavailable(message)) return
+        val target = selection.searchTarget ?: return
+        val parent = message.row
+        if (parent is LinkedRow.Missing || (parent is LinkedRow.Found && parent.row.present("deleted_at"))) {
+            target.messageId?.let { app.globalSearch.removeDeletedMessage(target.channelId, it) }
+        }
+        mediaPreview = null
+    }
+
+    private fun searchParentUnavailable(message: LinkedMessageState): Boolean =
+        message.hasCiphertext || when (val parent = message.row) {
+            LinkedRow.Missing, LinkedRow.Failed -> true
+            is LinkedRow.Found -> parent.row.present("deleted_at") || parent.row.present("ciphertext")
+            LinkedRow.Loading -> false
+        }
+
+    private var searchMediaRequest = 0
+
+    private fun openSearchMedia(action: AndroidUiAction.OpenSearchMedia) {
+        val search = app.globalSearch
+        val row = search.items.firstOrNull {
+            isGlobalSearchFile(it, search.type) && globalSearchKey(it, search.type) == action.key
+        } ?: return
+        val id = row.text("channel_id")
+        val parent = row.text("message_id").takeIf { it.isNotBlank() } ?: return
+        val media = currentSearchChannel(id)?.let { searchImage(row, it) } ?: return
+        if (media.sensitive && !action.revealedSensitive) return
+        val attachmentId = media.attachmentId ?: return
+        val selection = TimelineMediaSelection(listOf(media), 0, ChannelLinkTarget(id, parent))
+        if (!canKeepMediaPreview(selection)) return
+        val requestId = ++searchMediaRequest
+        val path = platform.env.path
+        request {
+            // Cached signed URLs can outlive deletion. Ask the attachment API to authorize this open.
+            try {
+                app.attachmentLinks.get(attachmentId, force = true)
+            } catch (failure: ApiException) {
+                if (failure.status !in setOf(403, 404, 410)) throw failure
+                return@request
+            }
+            if (requestId == searchMediaRequest && path == platform.env.path &&
+                row in search.items && canKeepMediaPreview(selection)) {
+                mediaPreview = selection
+            }
+        }
     }
 
     private fun searchImage(row: Row, channel: Row): TimelineMedia? =
@@ -811,19 +865,7 @@ internal class ConnectedScreenState(
                     // would otherwise stay where it was scrolled when the same result is opened again.
                     ?.let { platform.navigate(globalSearchDestination(it, search.type) + "&open=${kotlin.time.Clock.System.now().toEpochMilliseconds()}") }
             }
-            is AndroidUiAction.OpenSearchMedia -> {
-                val search = app.globalSearch
-                val row = search.items.firstOrNull {
-                    isGlobalSearchFile(it, search.type) && globalSearchKey(it, search.type) == action.key
-                }
-                if (row != null) {
-                    val id = row.text("channel_id")
-                    val media = currentSearchChannel(id)?.let { searchImage(row, it) }
-                    if (media != null && (!media.sensitive || action.revealedSensitive)) {
-                        mediaPreview = TimelineMediaSelection(listOf(media), 0, searchChannelId = id)
-                    }
-                }
-            }
+            is AndroidUiAction.OpenSearchMedia -> openSearchMedia(action)
             AndroidUiAction.LoadOlderResults -> app.globalSearch.loadOlder()
             AndroidUiAction.RetrySearch -> app.globalSearch.retry()
             is AndroidUiAction.SelectResult -> when (overlay) {

@@ -37,12 +37,13 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import zoo.ChannelLinkTarget
 import kotlinx.coroutines.withContext
 
 internal enum class TimelineMediaKind { Image, Video }
 
 internal data class TimelineMediaSelection(
-    val items: List<TimelineMedia>, val initialPage: Int, val searchChannelId: String? = null,
+    val items: List<TimelineMedia>, val initialPage: Int, val searchTarget: ChannelLinkTarget? = null,
 ) {
     val selected get() = items[initialPage]
 }
