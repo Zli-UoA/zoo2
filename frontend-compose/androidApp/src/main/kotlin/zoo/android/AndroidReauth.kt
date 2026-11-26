@@ -9,6 +9,8 @@ import androidx.browser.auth.AuthTabIntent
 import androidx.browser.customtabs.CustomTabsClient
 import androidx.browser.customtabs.CustomTabsIntent
 import io.ktor.client.HttpClient
+import io.ktor.client.engine.okhttp.OkHttp
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.forms.submitForm
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
@@ -118,11 +120,7 @@ internal class AndroidReauth(
     private suspend fun discover(): JsonObject {
         val issuer = connection.issuer
         require(Url(issuer).protocol == URLProtocol.HTTPS) { "認証先は HTTPS を指定してください" }
-        val response = http.get("${issuer.trimEnd('/')}/.well-known/openid-configuration")
-        if (response.status.value !in 200..299) {
-            throw ReauthException(ReauthException.Reason.DENIED, "認証先の設定を取得できません (HTTP ${response.status.value})")
-        }
-        val discovery = response.loginJson("認証先の設定取得")
+        val discovery = readOidcDiscovery(issuer)
         if (discovery.text("issuer")?.trimEnd('/') != issuer.trimEnd('/')) {
             throw ReauthException(ReauthException.Reason.DENIED, "issuer が一致しません")
         }
@@ -159,6 +157,30 @@ internal class AndroidReauth(
         validateIdToken(idToken, connection.issuer, connection.client, request.nonce, System.currentTimeMillis() / 1000)
         return BrowserAuthorization(endpoint, result)
     }
+}
+
+// Discovery is read-only. Allow another IP address when the first network route fails.
+internal suspend fun readOidcDiscovery(
+    issuer: String,
+    transport: okhttp3.OkHttpClient.Builder.() -> Unit = {},
+): JsonObject = HttpClient(OkHttp) {
+    followRedirects = false
+    engine {
+        config {
+            retryOnConnectionFailure(true)
+            followRedirects(false)
+            followSslRedirects(false)
+            transport()
+        }
+    }
+    install(HttpTimeout) { requestTimeoutMillis = 30_000 }
+}.use { client ->
+    val response = client.get("${issuer.trimEnd('/')}/.well-known/openid-configuration")
+    if (response.status.value !in 200..299) {
+        throw ReauthException(ReauthException.Reason.DENIED,
+            "認証先の設定を取得できません (HTTP ${response.status.value})")
+    }
+    response.loginJson("認証先の設定取得")
 }
 
 internal fun authTabCallback(code: Int, uri: String?, request: ReauthRequest): ReauthCallback =
