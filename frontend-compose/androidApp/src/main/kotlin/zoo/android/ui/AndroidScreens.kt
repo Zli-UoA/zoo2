@@ -25,10 +25,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
@@ -102,12 +105,15 @@ internal sealed interface AndroidScreen {
         val focusMessage: String? = null,
         /** Changes on each request to show [focusMessage] (a search result opened again), unlike the id. */
         val focusRequest: String? = focusMessage,
+        /** 古いページが残っていて、いま取れる。 */
+        val loadOlder: Boolean = false,
     ) : AndroidScreen
     data class Thread(
         val channelName: String, val root: TimelineItem, val replies: List<TimelineItem>, val input: InputState,
         val focusMessage: String? = null,
         /** Changes on each request to show [focusMessage] (a search result opened again), unlike the id. */
         val focusRequest: String? = focusMessage,
+        val loadOlder: Boolean = false,
     ) : AndroidScreen
     data class Post(val root: TimelineItem, val replies: List<TimelineItem>, val input: InputState) : AndroidScreen
     data class ChannelSettings(val channel: String, val groups: List<SettingsGroup>) : AndroidScreen
@@ -187,6 +193,8 @@ internal sealed interface AndroidUiAction {
     data object CreateChannel : AndroidUiAction
     data object CreateDm : AndroidUiAction
     data object LoadOlderPosts : AndroidUiAction
+    /** チャンネル（開いているスレッドがあれば、その返信）の、次の古い 1 ページ。 */
+    data object LoadOlderMessages : AndroidUiAction
     data class SelectTimeline(val id: String) : AndroidUiAction
     data class SelectPostVisibility(val id: String) : AndroidUiAction
     data object StartCall : AndroidUiAction
@@ -319,7 +327,8 @@ private fun RenderAndroidScreen(
                             { dispatch(AndroidUiAction.StartCall) })
                     }
                 }) {
-                    TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = interaction.swipeReply, allowThreads = true, focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true)
+                    TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = interaction.swipeReply, allowThreads = true, focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true,
+                        loadEarlier = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderMessages) } } else null)
                 }
             }
             is AndroidScreen.Thread -> {
@@ -328,7 +337,8 @@ private fun RenderAndroidScreen(
                 Text("# ${screen.channelName}", Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                     color = colors.secondary, fontSize = 13.sp)
                 TimelineWithInput(listOf(screen.root) + screen.replies, screen.input, colors, dispatch,
-                    focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true)
+                    focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true,
+                    loadEarlier = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderMessages) } } else null)
             }
             is AndroidScreen.Post -> {
                 PageHeader("投稿", colors, onBack = back)
@@ -479,9 +489,36 @@ private fun ColumnScope.TimelineWithInput(
     focusRequest: String? = focusMessage,
     posts: Boolean = false,
     hideIdleHandle: Boolean = false,
+    loadEarlier: (() -> Unit)? = null,
 ) {
     val scroll = rememberLazyListState()
     var positioned by rememberSaveable { mutableStateOf(false) }
+    // スレッドは、親が先頭にあるので、最初から先頭に見える。利用者がスクロールするまでは、古い返信を読まない。
+    var drags by remember { mutableIntStateOf(0) }
+    // ドラッグだけでなく、フリングやアクセシビリティ操作のスクロールも、1 回の操作として数える。
+    LaunchedEffect(scroll) {
+        snapshotFlow { scroll.isScrollInProgress }.collect { if (it) drags++ }
+    }
+    var servedDrags by remember { mutableIntStateOf(0) }
+    // 最後に要求したときの行数。行数が変わらないまま Effect が再起動したとき（取得の失敗で loadEarlier が
+    // 偽から真に戻ったとき）は、利用者がもう一度スクロールするまで、同じページを要求しない。
+    var requestedAtSize by remember { mutableIntStateOf(-1) }
+    val atTop by remember { derivedStateOf { scroll.firstVisibleItemIndex == 0 } }
+    val requestEarlier by rememberUpdatedState(loadEarlier)
+    // 先頭に来たら、古い 1 ページを取る。末尾へ初期位置を合わせる前に呼ぶと、開いた直後に全履歴を読んでしまう。
+    // チャンネルは、ページが増える（行数が変わる）か、新しくドラッグしたときだけ要求する。成功すると行数が増え、
+    // まだ先頭にいれば続けて取る。失敗では行数が変わらないので、ドラッグを待つ。
+    // スレッドは、親が先頭に残るので、ページが増えても先頭のまま。スクロール 1 回につき 1 ページだけ取る。
+    LaunchedEffect(atTop, positioned, drags, loadEarlier != null, entries.size.takeIf { allowThreads }) {
+        if (!atTop || requestEarlier == null) return@LaunchedEffect
+        val newDrag = drags > servedDrags
+        if (allowThreads) {
+            if (!positioned || !(newDrag || entries.size != requestedAtSize)) return@LaunchedEffect
+            requestedAtSize = entries.size
+        } else if (!newDrag) return@LaunchedEffect
+        servedDrags = drags
+        requestEarlier?.invoke()
+    }
     var openedTarget by rememberSaveable { mutableStateOf<String?>(null) }
     val focusedIndex = entries.indexOfFirst { it.id == focusMessage }
     LaunchedEffect(input.expanded, focusMessage, focusRequest, focusedIndex, entries.size) {

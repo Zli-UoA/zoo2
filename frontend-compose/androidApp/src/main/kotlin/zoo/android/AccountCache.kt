@@ -42,6 +42,12 @@ internal class AccountCache(private val directory: File) {
     }
 
     @Synchronized
+    fun delete(key: String) {
+        if (closed) return
+        file(key).delete()
+    }
+
+    @Synchronized
     fun clear() {
         closed = true
         directory.deleteRecursively()
