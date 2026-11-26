@@ -148,8 +148,6 @@ internal class ConnectedScreenState(
     private var postOrigin: String? = null
     var editSelection by mutableStateOf<TextRange?>(null)
         private set
-    var bubbleExpanded by mutableStateOf(false)
-    var replyExpanded by mutableStateOf(false)
     var replyLastSend by mutableStateOf<String?>(null)
     var replyFocusRequest by mutableIntStateOf(0)
         private set
@@ -916,8 +914,6 @@ internal class ConnectedScreenState(
     private fun inputTool(tool: InputTool, screen: AndroidScreen, channelId: String, key: String, rows: List<Row>) {
         when (tool) {
             InputTool.Expand -> when (screen) {
-                is AndroidScreen.Post -> replyExpanded = !replyExpanded
-                is AndroidScreen.Bubble -> bubbleExpanded = !bubbleExpanded
                 is AndroidScreen.Conversation, is AndroidScreen.Thread -> {
                     val draft = drafts[key] ?: InputState()
                     drafts[key] = draft.copy(expanded = !draft.expanded)
@@ -950,10 +946,7 @@ internal class ConnectedScreenState(
                 saving = true
                 try {
                     when (screen) {
-                        is AndroidScreen.Bubble -> {
-                            bubble.edit("")
-                            bubbleExpanded = false
-                        }
+                        is AndroidScreen.Bubble -> bubble.edit("")
                         is AndroidScreen.EditEntry -> {
                             val action = editing ?: return@request
                             val row = rows.firstOrNull { it.text("id") == action.item.id }
@@ -1001,7 +994,6 @@ internal class ConnectedScreenState(
                                 if (replyDraft == text) {
                                     replyDraft = ""
                                     replySelection = null
-                                    replyExpanded = false
                                 }
                             }
                             val detail = app.api.request("/api/home/${screen.root.id.encodeURLParameter()}/thread").rows()
@@ -1057,7 +1049,6 @@ internal class ConnectedScreenState(
                 if (source != "post") postOrigin = source
                 if (openedPostId != id) {
                     replyLastSend = null
-                    replyExpanded = false
                     replyDraft = ""
                     replySelection = null
                 }
@@ -1073,7 +1064,6 @@ internal class ConnectedScreenState(
         invalidatePostRequest()
         openedPostId = null
         replyLastSend = null
-        replyExpanded = false
         postDetail = emptyList()
         replyDraft = ""
         replySelection = null

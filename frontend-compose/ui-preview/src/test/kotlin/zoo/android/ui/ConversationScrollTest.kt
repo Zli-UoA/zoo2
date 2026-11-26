@@ -136,6 +136,89 @@ class ConversationScrollTest {
     }
 
     @Test
+    fun openingAThreadKeepsItsRootVisibleWhenRepliesArrive() {
+        val root = TimelineItem("root", "はる", "親メッセージ", "12:00")
+        var screen by mutableStateOf(AndroidScreen.Thread("開発", root, emptyList(), InputState(), historyReady = false))
+        ui.setContent { AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> } }
+
+        val parent = ui.onNodeWithTag("timeline-entry-root")
+        parent.assertIsDisplayed()
+        ui.runOnIdle { screen = screen.copy(replies = entries, historyReady = true) }
+        parent.assertIsDisplayed()
+    }
+
+    @Test
+    fun aRequestedMessageTakesPriorityOverAnUnseenSend() {
+        var screen by mutableStateOf<AndroidScreen>(channel)
+        ui.setContent { AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> } }
+
+        ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
+        ui.runOnIdle {
+            screen = channel.copy(entries = entries.drop(10), input = InputState(lastSend = "send-1"),
+                focusMessage = "e3", focusRequest = "open-e3")
+        }
+        ui.onNodeWithTag("timeline-entry-e3").assertDoesNotExist()
+        ui.runOnIdle {
+            screen = channel.copy(input = InputState(lastSend = "send-1"), focusMessage = "e3", focusRequest = "open-e3")
+        }
+        ui.onNodeWithTag("timeline-entry-e3").assertIsDisplayed()
+    }
+
+    @Test
+    fun aLaterSendFollowsTheEndWhenTheRequestedMessageIsUnavailable() {
+        val initial = channel.copy(focusMessage = "missing", focusRequest = "open-missing")
+        var screen by mutableStateOf(initial)
+        ui.setContent { AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> } }
+
+        ui.onNodeWithTag("timeline-entry-e1").assertIsDisplayed()
+        ui.runOnIdle { screen = initial.copy(input = InputState(lastSend = "new-send")) }
+        ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
+
+        ui.runOnIdle {
+            screen = initial.copy(entries = listOf(TimelineItem("missing", "はる", "遅れて届いた行", "11:59")) + entries,
+                input = InputState(lastSend = "new-send"))
+        }
+        ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
+    }
+
+    @Test
+    fun sendingFromTheChannelWorksAfterReturningFromAFocusedReply() {
+        val request = "open-reply"
+        val focusedChannel = channel.copy(focusMessage = "reply", focusRequest = request)
+        val reply = TimelineItem("reply", "はる", "指定された返信", "12:01")
+        var screen by mutableStateOf<AndroidScreen>(focusedChannel)
+        ui.setContent { AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> } }
+
+        ui.onNodeWithTag("timeline-entry-e1").assertIsDisplayed()
+        ui.runOnIdle {
+            screen = AndroidScreen.Thread("開発", entries.first(), listOf(reply), InputState(),
+                focusMessage = reply.id, focusRequest = request)
+        }
+        ui.onNodeWithTag("timeline-entry-reply").assertIsDisplayed()
+        ui.runOnIdle { screen = focusedChannel }
+        ui.onNodeWithTag("timeline-entry-e1").assertIsDisplayed()
+        ui.runOnIdle { screen = focusedChannel.copy(input = InputState(lastSend = "channel-send")) }
+        ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
+    }
+
+    @Test
+    fun missingSavedMessageReturnsToTheEndAfterHistoryLoads() {
+        var screen by mutableStateOf<AndroidScreen>(channel)
+        ui.setContent { AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> } }
+        val list = ui.onNodeWithTag("conversation-timeline")
+        list.performTouchInput { swipeDown() }
+        list.performScrollToIndex(12)
+        ui.onNodeWithTag("timeline-entry-e13").assertIsDisplayed()
+
+        ui.runOnIdle { screen = AndroidScreen.Channels(emptyList()) }
+        list.assertDoesNotExist()
+        ui.runOnIdle { screen = channel.copy(entries = entries.drop(18), historyReady = false) }
+        list.assertIsDisplayed()
+        ui.runOnIdle { screen = channel.copy(entries = entries.drop(18), historyReady = true) }
+        ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
+    }
+
+    @Test
     fun returningToHomeAndChannelsRestoresTheirOwnScrollPositions() {
         val home = AndroidScreen.Home(entries)
         val channels = AndroidScreen.Channels(listOf(
