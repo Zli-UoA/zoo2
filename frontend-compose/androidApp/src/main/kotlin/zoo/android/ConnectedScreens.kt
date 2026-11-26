@@ -551,7 +551,7 @@ internal fun ConnectedScreens(
                     LocalTimelineImage provides remember(session) { { image -> timelineImage(session, image) } },
                     LocalTimelineImageRetry provides remember(session) { { image -> timelineImage(session, image, retry = true) } },
                     LocalCachedTimelineImage provides remember(session) { { image -> cachedTimelineImage(session, image) } },
-                    LocalAndroidTranslation provides { session.t(it) },
+                    LocalAndroidTranslation provides { key, args -> session.t(key, *args) },
                 ) {
                     TimelineImageViewer(selection, dismiss, openOriginal)
                 }
