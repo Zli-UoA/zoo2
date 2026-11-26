@@ -73,8 +73,7 @@ internal fun ConnectedScreens(
             catch (_: Exception) { /* Keep shortcode fallbacks if the catalog is unavailable. */ }
         }
     }
-    val previewEndpoints by session.previews.endpoints.collectAsState()
-    val previewService = previewEndpoints.first
+    val previewService by session.previews.summalyEndpoint.collectAsState()
     val usersById = remember(users) { users.associateBy { it.text("id") } }
     val posts = state.home.posts.map { state.entry(it, usersById, previewService = previewService) }
     val encrypted = channel?.let { session.isEncryptedChannel(it.text("id")) } == true

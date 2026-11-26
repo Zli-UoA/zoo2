@@ -64,4 +64,18 @@ class PublicImagesTest {
             assertEquals(6, requests)
         } finally { http.close() }
     }
+    @Test fun doesNotFollowMediaProxyRedirectToTheOriginalHost() = runTest {
+        val urls = mutableListOf<String>()
+        val http = HttpClient(MockEngine { request ->
+            urls += request.url.toString()
+            respond("", HttpStatusCode.Found, headersOf(HttpHeaders.Location, "https://external.example/image"))
+        }) { followRedirects = false }
+        try {
+            assertFailsWith<IllegalArgumentException> {
+                loadPublicImage(http, "https://proxy.example/image", restrictOrigin = true)
+            }
+            assertEquals(listOf("https://proxy.example/image"), urls)
+        } finally { http.close() }
+    }
+
 }

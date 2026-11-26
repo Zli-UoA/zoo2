@@ -34,7 +34,8 @@ internal suspend fun timelineMediaUrl(session: Session, media: TimelineMedia): S
     media.url ?: session.attachmentLinks.get(requireNotNull(media.attachmentId))
 
 internal suspend fun timelineImage(session: Session, media: TimelineMedia): ImageBitmap? = try {
-    session.imageBitmap(media.previewUrl ?: timelineMediaUrl(session, media))
+    val usesSignedUrl = media.previewUrl == null && media.url == null && media.attachmentId != null
+    session.imageBitmap(media.previewUrl ?: timelineMediaUrl(session, media), signedAttachment = usesSignedUrl)
 } catch (cancelled: CancellationException) {
     throw cancelled
 } catch (_: Exception) {

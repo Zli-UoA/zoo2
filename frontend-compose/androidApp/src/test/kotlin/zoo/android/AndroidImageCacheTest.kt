@@ -69,4 +69,25 @@ class AndroidImageCacheTest {
             assertEquals(2, f.server.requestCount)
         }
     }
+    @Test fun cacheFirstDisplaysPreviouslyStoredImagesWithoutRevalidation() = runBlocking {
+        Fixture().use { f ->
+            f.server.enqueue(MockResponse().setHeader("Cache-Control", "public, max-age=0").setBody("photo"))
+            f.cache().use { cache -> assertEquals("photo", cache.imageFromCacheFirst(ImageRequest(f.url)).decodeToString()) }
+            f.cache().use { cache -> assertEquals("photo", cache.imageFromCacheFirst(ImageRequest(f.url)).decodeToString()) }
+            assertEquals(1, f.server.requestCount)
+        }
+    }
+
+    @Test fun cacheFirstStillHonorsNoStore() = runBlocking {
+        Fixture().use { f ->
+            f.server.enqueue(MockResponse().setHeader("Cache-Control", "no-store").setBody("first"))
+            f.server.enqueue(MockResponse().setHeader("Cache-Control", "no-store").setBody("second"))
+            f.cache().use { cache ->
+                assertEquals("first", cache.imageFromCacheFirst(ImageRequest(f.url)).decodeToString())
+                assertEquals("second", cache.imageFromCacheFirst(ImageRequest(f.url)).decodeToString())
+            }
+            assertEquals(2, f.server.requestCount)
+        }
+    }
+
 }

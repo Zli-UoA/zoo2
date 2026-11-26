@@ -340,6 +340,7 @@ class ZooMessagingService : FirebaseMessagingService() {
         // 暗号化チャンネルの通知は、端末の暗号ストアで復号できたら本文を置き換える（#510）。
         val posted = showPushNotification(this, message.data, decryptPushBody(this, message.data)) ?: return
         if (posted.avatarUrl == null && posted.imageUrl == null) return
+        val base = PushBinding(this).base(posted.binding) ?: return
         runBlocking {
             val client = HttpClient(OkHttp) {
                 followRedirects = false
@@ -347,9 +348,13 @@ class ZooMessagingService : FirebaseMessagingService() {
                 install(HttpTimeout) { requestTimeoutMillis = 3_000 }
             }
             try {
-                enrichPushNotification(this@ZooMessagingService, posted) { url, maxEdge ->
-                    val bytes = loadPublicImage(client, url, limit = 4 * 1024 * 1024)
-                    withContext(Dispatchers.Default) { decodeOrientedBitmap(bytes, maxEdge) }
+                val proxy = AndroidMediaProxy(this@ZooMessagingService, base)
+                val directory = cacheDir.resolve("push-images/${posted.binding}")
+                AndroidImageCache(directory, maxBytes = 32L * 1024 * 1024, timeoutMillis = 3_000).use { images ->
+                    enrichPushNotification(this@ZooMessagingService, posted) { url, maxEdge ->
+                        val bytes = proxy.image(url, client, images, limit = 4 * 1024 * 1024)
+                        withContext(Dispatchers.Default) { decodeOrientedBitmap(bytes, maxEdge) }
+                    }
                 }
             } finally {
                 client.close()

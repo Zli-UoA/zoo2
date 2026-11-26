@@ -296,14 +296,9 @@ internal class ConnectedScreenState(
     fun withLinkCard(entry: TimelineItem, service: String): TimelineItem {
         val url = entry.link ?: return entry
         val preview = app.previews.cached(service, url) ?: return entry
-        val proxy = app.previews.endpoints.value.second
-        val imageUrl = proxyImageUrl(
-            if (proxy.startsWith('/') && !proxy.startsWith("//")) endpoint(app.config.assetsBaseUrl, proxy) else proxy,
-            preview.image,
-        )
         val previewSource = publicUrlString(preview.image)
         val alreadyAttached = previewSource != null && previewSource in entry.attachedImageUrls
-        val image = imageUrl?.takeUnless { alreadyAttached }?.let { TimelineMedia(it, "", TimelineMediaKind.Image, url = it) }
+        val image = previewSource?.takeUnless { alreadyAttached }?.let { TimelineMedia(it, "", TimelineMediaKind.Image, url = it) }
         return entry.copy(linkCard = EntryCard(preview.title, preview.description, url, preview.site, image = image,
             formatted = false))
     }
