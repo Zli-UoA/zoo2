@@ -628,6 +628,7 @@ class RepositoryTest {
         val platform = FakePlatform()
         var subsetCalls = 0
         var offsetCounter = 1
+        val requestLog = mutableListOf<String>()
         // 409 のたびに、サーバーは新しい handle を返す。古い handle のままだと、取り直しが「期限切れの handle」として扱われる。
         var handle = "h0"
         var handleCounter = 0
@@ -638,6 +639,8 @@ class RepositoryTest {
             HttpClient(
                 MockEngine { request ->
                     val p = request.url.parameters
+                    requestLog += listOf("offset", "handle", "live", "live_sse", "cursor", "subset__where", "log")
+                        .mapNotNull { k -> p[k]?.let { "$k=${it.take(24)}" } }.joinToString(",")
                     when {
                         p["subset__where"] != null -> {
                             subsetCalls++
@@ -676,7 +679,7 @@ class RepositoryTest {
                 // 実時間で区切る。仮想時間で区切ると、別スレッドの応答を待つ間に、時計だけが進んで打ち切ってしまう。
                 withContext(Dispatchers.Default) { withTimeout(20_000) { block() } }
             } catch (e: TimeoutCancellationException) {
-                fail("did not finish: $name (subsetCalls=$subsetCalls, invalidations=${invalidations.value})")
+                fail("did not finish: $name (subsetCalls=$subsetCalls, invalidations=${invalidations.value}) requests=${requestLog.takeLast(25)}")
             }
         try {
             step("first page") { table.rows.first { rows -> rows.any { it.text("id") == "m001" } } }
