@@ -41,7 +41,9 @@ import kotlinx.coroutines.withContext
 
 internal enum class TimelineMediaKind { Image, Video }
 
-internal data class TimelineMediaSelection(val items: List<TimelineMedia>, val initialPage: Int) {
+internal data class TimelineMediaSelection(
+    val items: List<TimelineMedia>, val initialPage: Int, val searchChannelId: String? = null,
+) {
     val selected get() = items[initialPage]
 }
 

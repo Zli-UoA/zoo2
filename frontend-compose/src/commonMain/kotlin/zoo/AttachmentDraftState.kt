@@ -204,12 +204,12 @@ class AttachmentLinks(private val app: Session) {
         }
     }
 
-    fun download(file: Row) {
+    fun download(file: Row, force: Boolean = false) {
         app.run {
             try {
                 app.platform.invoke(
                     "attachmentDownload",
-                    obj("url" to get(file.text("id")), "name" to file.text("file_name")).toString(),
+                    obj("url" to get(file.text("id"), force = force), "name" to file.text("file_name")).toString(),
                 )
             } catch (e: CancellationException) {
                 throw e

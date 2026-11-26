@@ -523,23 +523,25 @@ internal class ConnectedScreenState(
     ): AndroidScreen.Search {
         val search = app.globalSearch
         val channelsById = channels.associateBy { it.text("id") }
+        val memberChannels = searchMemberChannels(members)
+        val guest = isSearchGuest(users[app.config.userId])
         val messagesByChannel = mutableMapOf<String, Map<String, Row>>()
         val year = platform.day(platform.now()).substringBefore('/')
         return AndroidScreen.Search(SearchScreenState(
             searchText, search.query, search.type,
-            search.items.filterNot { app.isEncryptedChannel(it.text("channel_id")) }.map { row ->
-                val channel = channelsById[row.text("channel_id")]
+            search.items.mapNotNull { row ->
+                val channelId = row.text("channel_id")
+                val channel = channelsById[channelId]?.takeIf {
+                    canViewSearchChannel(it, channelId in memberChannels, guest)
+                } ?: return@mapNotNull null
                 val file = isGlobalSearchFile(row, search.type)
                 val searchAuthor = row.nested("author")
                 val user = users[row.text("user_id")] ?: searchAuthor
-                val link = if (file || channel == null || row.text("kind") == "note") null else {
+                val link = if (file || row.text("kind") == "note") null else {
                     val current = messagesByChannel.getOrPut(row.text("channel_id")) {
                         app.repo.cachedMessages(row.text("channel_id")).associateBy { it.text("id") }
                     }[row.text("id")]
-                    if (current != null) {
-                        current.takeUnless { it.present("ciphertext") || it.present("deleted_at") }
-                            ?.let { messageLinks(it.text("content"), app.config.apiBaseUrl).external }
-                    } else searchPreviewLinks.cached(row)
+                    searchPreviewLinks.cached(row, current)
                 }
                 val createdAt = row.text("created_at")
                 val day = platform.day(createdAt).let { if (it.substringBefore('/') == year) it.substringAfter('/') else it }
@@ -549,8 +551,8 @@ internal class ConnectedScreenState(
                     // Like Web, keep the first hit within the three lines of a narrow screen.
                     body = if (file) row.text("file_name") else focusSnippet(row.text("snippet"), searchTerms(search.query)),
                     time = listOf(day, platform.time(createdAt)).filter { it.isNotBlank() }.joinToString(" "),
-                    destination = searchDestination(row, channelsById[row.text("channel_id")], users, members),
-                    dm = isDm(row, channelsById[row.text("channel_id")]),
+                    destination = searchDestination(row, channel, users, members),
+                    dm = isDm(row, channel),
                     inThread = row.text("parent_id").isNotEmpty(),
                     file = file,
                     fileSize = if (file) attachmentSize(row.text("file_size")) else null,
@@ -567,11 +569,31 @@ internal class ConnectedScreenState(
         ))
     }
 
-    private fun searchImage(row: Row, channel: Row?): TimelineMedia? {
-        if (channel == null || app.isEncryptedChannel(row.text("channel_id"))) return null
-        val image = timelineAttachmentMedia(row)?.takeIf { it.kind == TimelineMediaKind.Image } ?: return null
-        return image.copy(sensitive = image.sensitive || channel.flag("is_nsfw"))
+    private fun searchMemberChannels(members: List<Row>): Set<String> =
+        members.asSequence().filter { it.text("user_id") == app.config.userId && !it.present("deleted_at") }
+            .map { it.text("channel_id") }.toSet()
+
+    private fun isSearchGuest(user: Row?): Boolean = user == null || user.flag("is_guest")
+
+    private fun canViewSearchChannel(channel: Row, member: Boolean, guest: Boolean): Boolean =
+        searchChannelVisible(channel, member, guest, app.isEncryptedChannel(channel.text("id")))
+
+    private fun currentSearchChannel(id: String): Row? {
+        val members = searchMemberChannels(app.repo.members.rows.value)
+        val guest = isSearchGuest(app.repo.users.rows.value.firstOrNull { it.text("id") == app.config.userId })
+        return app.repo.channels.rows.value.firstOrNull { it.text("id") == id }
+            ?.takeIf { canViewSearchChannel(it, id in members, guest) }
     }
+
+    fun canKeepMediaPreview(selection: TimelineMediaSelection): Boolean {
+        val id = selection.searchChannelId ?: return true
+        val channel = currentSearchChannel(id) ?: return false
+        return !channel.flag("is_nsfw") || selection.selected.sensitive
+    }
+
+    private fun searchImage(row: Row, channel: Row): TimelineMedia? =
+        timelineAttachmentMedia(row)?.takeIf { it.kind == TimelineMediaKind.Image }
+            ?.let { it.copy(sensitive = it.sensitive || channel.flag("is_nsfw")) }
 
     /** Web's picker choices: the user first, then names in order; channels that search can reach (no DMs or encrypted ones). */
     private fun searchFilters(users: Map<String, Row>, channels: List<Row>): SearchFilterState {
@@ -791,14 +813,15 @@ internal class ConnectedScreenState(
             }
             is AndroidUiAction.OpenSearchMedia -> {
                 val search = app.globalSearch
-                val media = search.items.firstOrNull {
+                val row = search.items.firstOrNull {
                     isGlobalSearchFile(it, search.type) && globalSearchKey(it, search.type) == action.key
-                }?.let { row ->
-                    val channel = app.repo.channels.rows.value.firstOrNull { it.text("id") == row.text("channel_id") }
-                    searchImage(row, channel)
                 }
-                if (media != null && (!media.sensitive || action.revealedSensitive)) {
-                    mediaPreview = TimelineMediaSelection(listOf(media), 0)
+                if (row != null) {
+                    val id = row.text("channel_id")
+                    val media = currentSearchChannel(id)?.let { searchImage(row, it) }
+                    if (media != null && (!media.sensitive || action.revealedSensitive)) {
+                        mediaPreview = TimelineMediaSelection(listOf(media), 0, searchChannelId = id)
+                    }
                 }
             }
             AndroidUiAction.LoadOlderResults -> app.globalSearch.loadOlder()

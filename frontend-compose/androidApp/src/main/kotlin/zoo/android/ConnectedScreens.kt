@@ -489,17 +489,26 @@ internal fun ConnectedScreens(
             }
         }
     }
-    LaunchedEffect(env.visible, showFullCall) {
-        if (!env.visible || showFullCall) state.mediaPreview = null
+    val mediaSelection = state.mediaPreview
+    // Observe the current Shapes so a change to channel visibility closes an open search image.
+    val canKeepMedia = remember(mediaSelection, channels, memberships, users) {
+        mediaSelection?.let(state::canKeepMediaPreview) ?: true
     }
-    state.mediaPreview?.takeIf { env.visible && !showFullCall }?.let { selection ->
+    LaunchedEffect(env.visible, showFullCall, canKeepMedia) {
+        if (!env.visible || showFullCall || !canKeepMedia) state.mediaPreview = null
+    }
+    mediaSelection?.takeIf { env.visible && !showFullCall && canKeepMedia }?.let { selection ->
         key(selection) {
             val media = selection.selected
             val dismiss = { state.mediaPreview = null }
             val openOriginal: (TimelineMedia) -> Unit = { original ->
-                val id = original.attachmentId
-                if (id != null) session.attachmentLinks.download(obj("id" to id, "file_name" to original.name))
-                else original.url?.let { platform.action("open:$it") }
+                if (state.canKeepMediaPreview(selection)) {
+                    val id = original.attachmentId
+                    if (id != null) session.attachmentLinks.download(
+                        obj("id" to id, "file_name" to original.name),
+                        force = selection.searchChannelId != null,
+                    ) else original.url?.let { platform.action("open:$it") }
+                } else dismiss()
             }
             if (media.kind == TimelineMediaKind.Image) {
                 CompositionLocalProvider(
