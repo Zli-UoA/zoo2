@@ -500,9 +500,9 @@ final class PreviewChatClient: ChatClient {
         }
         readPositions[channelID] = allMessages.first { $0.id == messageID }?.created_at
     }
-    func createChannel(id: String, name: String, description: String, isPrivate: Bool) async throws -> Channel {
+    func createChannel(id: String, name: String, description: String, isPrivate: Bool, encrypted: Bool) async throws -> Channel {
         let channel = Channel(id: id, channel_name: name, description: description, is_private: isPrivate, is_dm: false,
-                              created_user_id: currentUser.id)
+                              encrypted: encrypted ? true : nil, created_user_id: currentUser.id)
         allChannels.append(channel)
         return channel
     }
@@ -538,11 +538,11 @@ final class PreviewChatClient: ChatClient {
         if id == discoverableID { joinedPublic = true }
     }
 
-    func directMessage(userIDs: [String]) async throws -> Channel {
+    func directMessage(userIDs: [String], encrypted: Bool) async throws -> Channel {
         let id = UUID().uuidString.lowercased()
         let name = userIDs.count == 1 ? "dm:\(currentUser.id):\(userIDs[0])" : "dm:group:\(id)"
         if let channel = allChannels.first(where: { $0.channel_name == name }) { return channel }
-        let channel = Channel(id: id, channel_name: name, is_private: true, is_dm: true)
+        let channel = Channel(id: id, channel_name: name, is_private: true, is_dm: true, encrypted: encrypted ? true : nil)
         memberships += ([currentUser.id] + userIDs).map { ChannelMembership(channel_id: id, user_id: $0) }
         allChannels.append(channel)
         return channel

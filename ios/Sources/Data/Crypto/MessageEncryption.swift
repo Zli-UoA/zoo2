@@ -29,6 +29,8 @@ enum E2eeText {
 enum MessageEncryptionError: Error, Equatable, LocalizedError {
     case deviceNotReady, sendNeedsUnlock, sendStaleEpoch, editConflict, editForbidden
     case undeliverable(String)
+    /// 暗号化を求めたのに、サーバーが暗号化しない会話にした（格下げ）。
+    case downgraded
 
     var errorDescription: String? {
         switch self {
@@ -38,6 +40,7 @@ enum MessageEncryptionError: Error, Equatable, LocalizedError {
         case .editConflict: E2eeText.editConflict
         case .editForbidden: E2eeText.editForbidden
         case .undeliverable(let reason): reason
+        case .downgraded: "暗号化を求めましたが、暗号化されない会話になりました。安全のため、この会話は使わないでください。"
         }
     }
 }

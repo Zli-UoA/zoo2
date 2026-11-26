@@ -393,13 +393,22 @@ struct NativeChatClient: ChatClient {
         return state
     }
 
-    func createChannel(id: String, name: String, description: String, isPrivate: Bool) async throws -> Channel {
-        try await api.write("api/channels", body: ["id": .string(try segment(id)), "channel_name": .string(name),
-                                                  "description": .string(description), "is_private": .bool(isPrivate)])
+    func createChannel(id: String, name: String, description: String, isPrivate: Bool, encrypted: Bool) async throws -> Channel {
+        var body: [String: JSONValue] = ["id": .string(try segment(id)), "channel_name": .string(name),
+                                         "description": .string(description), "is_private": .bool(isPrivate)]
+        if encrypted { body["encrypted"] = .bool(true) }
+        let channel: Channel = try await api.write("api/channels", body: body)
+        // 暗号化を求めたのに、そうでない応答は、格下げ（サーバーが平文のチャンネルにした）。受け入れない。
+        if encrypted, channel.encrypted != true { throw MessageEncryptionError.downgraded }
+        return channel
     }
 
-    func directMessage(userIDs: [String]) async throws -> Channel {
-        try await api.write("api/dms", body: ["target_user_ids": .array(try userIDs.map { .string(try segment($0)) })])
+    func directMessage(userIDs: [String], encrypted: Bool) async throws -> Channel {
+        var body: [String: JSONValue] = ["target_user_ids": .array(try userIDs.map { .string(try segment($0)) })]
+        if encrypted { body["encrypted"] = .bool(true) }
+        let channel: Channel = try await api.write("api/dms", body: body)
+        if encrypted, channel.encrypted != true { throw MessageEncryptionError.downgraded }
+        return channel
     }
 
     func updateChannel(id: String, name: String?, description: String) async throws -> Channel {

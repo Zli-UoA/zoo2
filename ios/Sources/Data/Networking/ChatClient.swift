@@ -37,10 +37,10 @@ protocol ChatClient: InboxClient, CallClient, TypingClient {
     func delete(id: String) async throws
     func markRead(channelID: String, messageID: String) async throws
     func markChannelRead(channelID: String) async throws -> ChannelReadState
-    func createChannel(id: String, name: String, description: String, isPrivate: Bool) async throws -> Channel
+    func createChannel(id: String, name: String, description: String, isPrivate: Bool, encrypted: Bool) async throws -> Channel
     func updateChannel(id: String, name: String?, description: String) async throws -> Channel
     func archiveChannel(id: String) async throws -> Channel
-    func directMessage(userIDs: [String]) async throws -> Channel
+    func directMessage(userIDs: [String], encrypted: Bool) async throws -> Channel
     func dmMemberships() async throws -> [ChannelMembership]
     func joinChannel(id: String) async throws
 }
@@ -69,5 +69,15 @@ extension ChatClient {
     }
     func observeMessageFeed(channelID: String, request: MessageFeedRequest, receive: @MainActor (MessageFeedSnapshot) -> Void) async throws {
         try await observeMessages(channelID: channelID) { receive(MessageFeedSnapshot(messages: $0)) }
+    }
+}
+
+extension ChatClient {
+    func createChannel(id: String, name: String, description: String, isPrivate: Bool) async throws -> Channel {
+        try await createChannel(id: id, name: name, description: description, isPrivate: isPrivate, encrypted: false)
+    }
+
+    func directMessage(userIDs: [String]) async throws -> Channel {
+        try await directMessage(userIDs: userIDs, encrypted: false)
     }
 }

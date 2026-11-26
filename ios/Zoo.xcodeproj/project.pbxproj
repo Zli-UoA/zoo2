@@ -32,6 +32,7 @@
 		1E45AF3447442D972CC66160 /* ShortcutActionsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A207CEFA59094C7050CE45B8 /* ShortcutActionsUITests.swift */; };
 		1E7120C4C61C002DCC2A219B /* Passkeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11C88737BD962A470DDDCD69 /* Passkeys.swift */; };
 		1F6A754BDC30EAD03664B785 /* CryptoBindingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD8C8688E49CEFE743C30BBB /* CryptoBindingTests.swift */; };
+		209574D140E71A595E4057D8 /* EncryptedCreationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9440DE64D36A834FE4868F6 /* EncryptedCreationTests.swift */; };
 		21FBA003EE25E46B71570538 /* EncryptionSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A81E691EC7FDF48530929C7 /* EncryptionSetupView.swift */; };
 		22EAEABA4DD9FED299B5D4D0 /* ResetView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17F0A8F07AE43C6093D6527A /* ResetView.swift */; };
 		26CF4C18C8BEB0A8CF709993 /* ReactionGlyph.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA787668A52085815A631603 /* ReactionGlyph.swift */; };
@@ -520,6 +521,7 @@
 		F60D13FAC3AF4D27673E7AD3 /* AttachmentVideoTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentVideoTests.swift; sourceTree = "<group>"; };
 		F707CC3FCDB8E4157249FAA5 /* EncryptedAttachments.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EncryptedAttachments.swift; sourceTree = "<group>"; };
 		F9013878118EB556FFF8679B /* ConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationView.swift; sourceTree = "<group>"; };
+		F9440DE64D36A834FE4868F6 /* EncryptedCreationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EncryptedCreationTests.swift; sourceTree = "<group>"; };
 		F9F30F10363C425009A500BC /* SyncCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncCache.swift; sourceTree = "<group>"; };
 		FAAD47FFF6738DD5E157A6A9 /* GlobalSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalSearch.swift; sourceTree = "<group>"; };
 		FAE32E0372A8264D9FF55707 /* ZooCrypto */ = {isa = PBXFileReference; lastKnownFileType = folder; name = ZooCrypto; path = ZooCrypto; sourceTree = SOURCE_ROOT; };
@@ -629,6 +631,7 @@
 				5B55811C2D4DEF2C5310391F /* E2eeDeviceManagerTests.swift */,
 				EB4705B390A717E20A055E9C /* E2eeSetupTests.swift */,
 				659DEA088FB41035E2DEAF39 /* ElectricPersistenceTests.swift */,
+				F9440DE64D36A834FE4868F6 /* EncryptedCreationTests.swift */,
 				BEAA78949AED7FC4384146CD /* EncryptedMentionsTests.swift */,
 				10E68D0BFA3AD771F645D5F4 /* GlobalSearchTests.swift */,
 				D25EF17EDFF59E2344458187 /* ImagePreviewTests.swift */,
@@ -1293,6 +1296,7 @@
 				B3B8C0625AB8BAC8740D5A55 /* E2eeDeviceManagerTests.swift in Sources */,
 				5AD71F79A03DAD18C534159F /* E2eeSetupTests.swift in Sources */,
 				8838C2693D6E37CC008AB3FA /* ElectricPersistenceTests.swift in Sources */,
+				209574D140E71A595E4057D8 /* EncryptedCreationTests.swift in Sources */,
 				53E71662EFF1B1E93D7057ED /* EncryptedMentionsTests.swift in Sources */,
 				718B5FC14955CAF0EDA62737 /* GlobalSearchTests.swift in Sources */,
 				50C6DB856F12CDBA0AA46EBD /* ImagePreviewTests.swift in Sources */,
