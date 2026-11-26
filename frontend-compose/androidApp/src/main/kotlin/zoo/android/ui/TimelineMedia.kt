@@ -10,6 +10,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -122,24 +123,37 @@ private val TimelineMedia.aspect: Float
 internal fun TimelineMediaGroup(
     media: List<TimelineMedia>, colors: AndroidColors, apub: Boolean, open: (TimelineMedia) -> Unit,
 ) {
-    val images = media.filter { it.kind == TimelineMediaKind.Image }
-    if (images.isNotEmpty()) {
-        if (apub) ApubImageGrid(images, colors, open)
-        else ChannelImageStrip(images, colors, open)
-    }
-    media.filter { it.kind == TimelineMediaKind.Video }.forEach { video ->
-        key(video.key) { TimelineMediaTile(video, colors) { open(video) } }
+    var start = 0
+    while (start < media.size) {
+        val first = media[start]
+        if (first.kind == TimelineMediaKind.Video) {
+            key(first.key) { TimelineMediaTile(first, colors) { open(first) } }
+            start++
+        } else {
+            var end = start + 1
+            while (end < media.size && media[end].kind == TimelineMediaKind.Image) end++
+            val images = media.subList(start, end)
+            key(first.key) {
+                if (apub) ApubImageGrid(images, colors, open)
+                else ChannelImageStrip(images, colors, open)
+            }
+            start = end
+        }
     }
 }
 
 @Composable
 private fun ApubImageGrid(images: List<TimelineMedia>, colors: AndroidColors, open: (TimelineMedia) -> Unit) {
-    val ratio = if (images.size == 1) images.first().aspect.coerceIn(3f / 4f, 16f / 9f) else 16f / 9f
+    val single = images.singleOrNull()
+    var decodedRatio by remember(single) { mutableStateOf<Float?>(null) }
+    val ratio = if (single == null) 16f / 9f
+        else (single.imageAspectRatio ?: decodedRatio ?: single.aspect).coerceIn(3f / 4f, 16f / 9f)
     val gap = 2.dp
     Box(Modifier.padding(top = 6.dp).fillMaxWidth().aspectRatio(ratio)
         .clip(RoundedCornerShape(8.dp)).testTag("apub-image-grid")) {
-        if (images.size == 1) {
-            MediaFrame(images.first(), colors, Modifier.matchParentSize()) { open(images.first()) }
+        if (single != null) {
+            MediaFrame(single, colors, Modifier.matchParentSize(),
+                onImageRatio = if (single.imageAspectRatio == null) ({ decodedRatio = it }) else null) { open(single) }
         } else {
             Row(Modifier.matchParentSize(), horizontalArrangement = Arrangement.spacedBy(gap)) {
                 val columns = when (images.size) {
@@ -217,15 +231,19 @@ internal fun rememberMediaBlurHash(hash: String?): ImageBitmap? = if (hash != nu
 @Composable
 private fun MediaFrame(
     media: TimelineMedia, colors: AndroidColors, modifier: Modifier,
-    contentScale: ContentScale = ContentScale.Crop, more: Int = 0, open: () -> Unit,
+    contentScale: ContentScale = ContentScale.Crop, more: Int = 0,
+    onImageRatio: ((Float) -> Unit)? = null, open: () -> Unit,
 ) {
     val video = media.kind == TimelineMediaKind.Video
     var revealed by remember(media.key, media.url, media.previewUrl, media.sensitive) { mutableStateOf(false) }
     val hidden = media.sensitive && !revealed
     val bitmap = rememberTimelineImage(media.takeIf { !hidden && !video })
+    if (bitmap != null && onImageRatio != null) {
+        SideEffect { onImageRatio(bitmap.width.toFloat() / bitmap.height) }
+    }
     val placeholder = rememberMediaBlurHash(media.blurhash.takeIf { bitmap == null })
-    val showLabel = if (video) "動画を表示" else androidLabel("attachments.showSensitive", "画像を表示")
-    val hideLabel = if (video) "動画を隠す" else androidLabel("attachments.hideSensitive", "画像を隠す")
+    val showLabel = if (video) androidLabel("attachments.showSensitiveVideo", "動画を表示") else androidLabel("attachments.showSensitive", "画像を表示")
+    val hideLabel = if (video) androidLabel("attachments.hideSensitiveVideo", "動画を隠す") else androidLabel("attachments.hideSensitive", "画像を隠す")
     val playLabel = androidLabel("attachments.play", "再生")
     Box(modifier.background(colors.inputSurface)) {
         Box(Modifier.matchParentSize().clickable(
@@ -234,7 +252,7 @@ private fun MediaFrame(
         ), contentAlignment = Alignment.Center) {
             when {
                 bitmap != null -> Image(bitmap, media.name, Modifier.matchParentSize(), contentScale = contentScale)
-                placeholder != null -> Image(placeholder, null, Modifier.matchParentSize().testTag("media-blurhash"),
+                placeholder != null -> Image(placeholder, media.name.takeUnless { hidden }, Modifier.matchParentSize().testTag("media-blurhash"),
                     contentScale = ContentScale.FillBounds)
                 !hidden && !video -> Text(media.name, Modifier.padding(horizontal = 10.dp), color = colors.foreground,
                     fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)

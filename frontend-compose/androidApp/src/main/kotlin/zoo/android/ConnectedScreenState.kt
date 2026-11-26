@@ -517,7 +517,8 @@ internal class ConnectedScreenState(
                 val file = isGlobalSearchFile(row, search.type)
                 val searchAuthor = row.nested("author")
                 val user = users[row.text("user_id")] ?: searchAuthor
-                val link = if (file) null else previewUrls(row.text("snippet"), null).firstOrNull { '…' !in it }
+                // A clipped snippet can lose code or silent-link markers. Only look up existing cards.
+                val link = if (file) null else messageLinks(row.text("snippet"), app.config.apiBaseUrl).external
                 val createdAt = row.text("created_at")
                 val day = platform.day(createdAt).let { if (it.substringBefore('/') == year) it.substringAfter('/') else it }
                 SearchResultItem(
@@ -534,7 +535,6 @@ internal class ConnectedScreenState(
                     emoji = if (file) emptyMap() else displayEmoji(row, row, isPost = false),
                     avatar = timelineAvatarUrl(app.config.apiBaseUrl, user, searchAuthor),
                     media = if (file) timelineAttachmentMedia(row)?.takeIf { it.kind == TimelineMediaKind.Image } else null,
-                    link = link,
                     linkCard = link?.let { summalyCard(previewService, it) },
                 )
             },

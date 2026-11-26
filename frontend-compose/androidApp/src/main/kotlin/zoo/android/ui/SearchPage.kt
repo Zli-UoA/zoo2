@@ -21,7 +21,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
-import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,10 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import zoo.GlobalSearchType
 import zoo.SearchQueryProblem
-import kotlinx.coroutines.flow.collectLatest
 import zoo.searchTerms
-
-internal val LocalSearchPreviewLoader = staticCompositionLocalOf<suspend (List<String>) -> Unit> { {} }
 
 /** One `/api/search` hit, already resolved to display text by the adapter. */
 internal data class SearchResultItem(
@@ -64,7 +60,6 @@ internal data class SearchResultItem(
     val emoji: Map<String, TimelineMedia> = emptyMap(),
     val avatar: String? = null,
     val media: TimelineMedia? = null,
-    val link: String? = null,
     val linkCard: EntryCard? = null,
 )
 
@@ -150,13 +145,6 @@ internal fun ColumnScope.SearchPage(screen: AndroidScreen.Search, colors: Androi
                         savedIndex = index
                         savedOffset = offset
                     }
-                }
-                val loadPreviews = LocalSearchPreviewLoader.current
-                val links = state.results.map { it.link }
-                LaunchedEffect(scroll, links, loadPreviews) {
-                    snapshotFlow {
-                        scroll.layoutInfo.visibleItemsInfo.mapNotNull { links.getOrNull(it.index) }.distinct()
-                    }.collectLatest(loadPreviews)
                 }
                 val highlight = remember(state.query, colors.searchHighlight) {
                     EntryHighlight(searchTerms(state.query),

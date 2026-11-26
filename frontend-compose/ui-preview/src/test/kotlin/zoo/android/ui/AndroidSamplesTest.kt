@@ -113,7 +113,7 @@ class AndroidSamplesTest {
         val before = following.getUnclippedBoundsInRoot()
         decoded.complete(bitmap)
         ui.waitUntil(timeoutMillis = 5_000) {
-            ui.onAllNodesWithContentDescription("写真").fetchSemanticsNodes().isNotEmpty()
+            ui.onAllNodesWithTag("media-blurhash", useUnmergedTree = true).fetchSemanticsNodes().isEmpty()
         }
         ui.onNodeWithContentDescription("写真").assertHeightIsEqualTo(120.dp)
         assertEquals(before, following.getUnclippedBoundsInRoot())

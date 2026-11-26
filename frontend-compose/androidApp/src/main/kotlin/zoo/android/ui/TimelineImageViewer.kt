@@ -10,6 +10,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.runtime.*
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Text
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -33,7 +36,7 @@ import kotlin.math.roundToInt
 import kotlin.math.sign
 
 @Composable
-internal fun TimelineImageViewer(selection: TimelineMediaSelection, dismiss: () -> Unit) {
+internal fun TimelineImageViewer(selection: TimelineMediaSelection, dismiss: () -> Unit, openOriginal: (TimelineMedia) -> Unit) {
     Dialog(onDismissRequest = dismiss, properties = DialogProperties(
         usePlatformDefaultWidth = false, decorFitsSystemWindows = false,
     )) {
@@ -47,12 +50,14 @@ internal fun TimelineImageViewer(selection: TimelineMediaSelection, dismiss: () 
                 }
             }
         }
-        TimelineImagePages(selection, dismiss)
+        TimelineImagePages(selection, openOriginal, dismiss)
     }
 }
 
 @Composable
-internal fun TimelineImagePages(selection: TimelineMediaSelection, dismiss: () -> Unit) {
+internal fun TimelineImagePages(
+    selection: TimelineMediaSelection, openOriginal: (TimelineMedia) -> Unit = {}, dismiss: () -> Unit,
+) {
     val pager = rememberPagerState(initialPage = selection.initialPage) { selection.items.size }
     val revealed = remember(selection) { mutableStateMapOf(selection.initialPage to true) }
     var offset by remember(selection) { mutableFloatStateOf(0f) }
@@ -78,11 +83,23 @@ internal fun TimelineImagePages(selection: TimelineMediaSelection, dismiss: () -
         ) { index ->
             val image = selection.items[index]
             val hidden = image.sensitive && revealed[index] != true
-            val bitmap = rememberTimelineImage(image.takeUnless { hidden })
+            val cached = LocalCachedTimelineImage.current
+            val load = LocalTimelineImage.current
+            var attempt by remember(image) { mutableIntStateOf(0) }
+            val initial = remember(image, hidden, attempt, cached) { if (hidden) null else cached(image) }
+            val result by key(image, hidden, attempt, cached, load) {
+                produceState(ViewerImage(initial)) {
+                    if (!hidden && initial == null) {
+                        val loaded = load(image)
+                        value = ViewerImage(loaded, failed = loaded == null)
+                    }
+                }
+            }
+            val bitmap = result.bitmap
             val blur = rememberMediaBlurHash(image.blurhash.takeIf { bitmap == null })
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 if (bitmap != null) {
-                    Image(bitmap, null, Modifier.fillMaxSize().testTag("viewer-image-$index"), contentScale = ContentScale.Fit)
+                    Image(bitmap, image.name, Modifier.fillMaxSize().testTag("viewer-image-$index"), contentScale = ContentScale.Fit)
                 } else {
                     blur?.let {
                         BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -92,16 +109,40 @@ internal fun TimelineImagePages(selection: TimelineMediaSelection, dismiss: () -
                         }
                     }
                 }
-                if (image.sensitive) {
-                    UiIconButton(
-                        if (hidden) UiIcon.Eye else UiIcon.EyeOff,
-                        if (hidden) androidLabel("attachments.showSensitive", "画像を表示")
-                        else androidLabel("attachments.hideSensitive", "画像を隠す"),
-                        Color.White, { revealed[index] = hidden }, fill = Color.Black.copy(alpha = 0.65f),
-                        modifier = Modifier.align(Alignment.TopEnd).safeDrawingPadding().padding(8.dp),
-                    )
+                if (!hidden && bitmap == null) {
+                    if (result.failed) {
+                        Column(Modifier.background(Color.Black.copy(alpha = 0.75f)).padding(12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(androidLabel("attachments.imagePreviewFailed", "画像を読み込めませんでした"), color = Color.White)
+                            UiIconButton(UiIcon.Refresh, androidLabel("attachments.retry", "再試行"), Color.White,
+                                { attempt++ })
+                        }
+                    } else if (blur == null) {
+                        CircularProgressIndicator(color = Color.White)
+                    }
+                }
+                if (index == pager.currentPage) {
+                    Row(Modifier.align(Alignment.TopEnd).safeDrawingPadding().padding(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        val fill = Color.Black.copy(alpha = 0.65f)
+                        if (!hidden && (image.attachmentId != null || image.url != null)) {
+                            UiIconButton(if (image.attachmentId != null) UiIcon.Download else UiIcon.External,
+                                androidLabel("attachments.openOriginal", "元のファイル"), Color.White,
+                                { openOriginal(image) }, fill = fill)
+                        }
+                        if (image.sensitive) {
+                            UiIconButton(
+                                if (hidden) UiIcon.Eye else UiIcon.EyeOff,
+                                if (hidden) androidLabel("attachments.showSensitive", "画像を表示")
+                                else androidLabel("attachments.hideSensitive", "画像を隠す"),
+                                Color.White, { revealed[index] = hidden }, fill = fill,
+                            )
+                        }
+                    }
                 }
             }
         }
     }
 }
+
+private data class ViewerImage(val bitmap: ImageBitmap?, val failed: Boolean = false)

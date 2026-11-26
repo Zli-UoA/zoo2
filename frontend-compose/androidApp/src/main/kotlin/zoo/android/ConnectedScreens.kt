@@ -447,13 +447,6 @@ internal fun ConnectedScreens(
                 CompositionLocalProvider(
                     LocalTimelineImage provides remember(session) { { media -> timelineImage(session, media) } },
                     LocalCachedTimelineImage provides remember(session) { { media -> cachedTimelineImage(session, media) } },
-                    LocalSearchPreviewLoader provides remember(session, previewService, env.visible, env.online) {
-                        { links ->
-                            if (previewService.isNotBlank() && env.visible && env.online) {
-                                for (link in links) session.previews.load(previewService, link)
-                            }
-                        }
-                    },
                     LocalKitchenReactionImage provides emojiCatalog::kitchenReaction,
                     LocalAndroidTranslation provides { session.t(it) },
                     LocalChannelLinks provides channelLinks,
@@ -502,19 +495,22 @@ internal fun ConnectedScreens(
         key(selection) {
             val media = selection.selected
             val dismiss = { state.mediaPreview = null }
+            val openOriginal: (TimelineMedia) -> Unit = { original ->
+                val id = original.attachmentId
+                if (id != null) session.attachmentLinks.download(obj("id" to id, "file_name" to original.name))
+                else original.url?.let { platform.action("open:$it") }
+            }
             if (media.kind == TimelineMediaKind.Image) {
                 CompositionLocalProvider(
                     LocalTimelineImage provides remember(session) { { image -> timelineImage(session, image) } },
                     LocalCachedTimelineImage provides remember(session) { { image -> cachedTimelineImage(session, image) } },
                     LocalAndroidTranslation provides { session.t(it) },
                 ) {
-                    TimelineImageViewer(selection, dismiss)
+                    TimelineImageViewer(selection, dismiss, openOriginal)
                 }
             } else {
                 TimelineVideoPreview(session, media, AndroidColors(env.dark), dismiss) {
-                    val id = media.attachmentId
-                    if (id != null) session.attachmentLinks.download(obj("id" to id, "file_name" to media.name))
-                    else media.url?.let { platform.action("open:$it") }
+                    openOriginal(media)
                 }
             }
         }

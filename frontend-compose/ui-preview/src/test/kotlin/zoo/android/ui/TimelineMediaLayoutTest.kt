@@ -134,6 +134,46 @@ class TimelineMediaLayoutTest {
     }
 
     @Test
+    fun viewerRetriesAnUnavailableImageAndOpensTheOriginal() {
+        val bitmap = Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888).asImageBitmap()
+        val image = images.first().copy(attachmentId = "original")
+        var loads = 0
+        var opened: TimelineMedia? = null
+        ui.setContent {
+            CompositionLocalProvider(LocalTimelineImage provides { if (++loads == 1) null else bitmap }) {
+                TimelineImagePages(TimelineMediaSelection(listOf(image), 0), openOriginal = { opened = it }) {}
+            }
+        }
+        ui.onNodeWithText("画像を読み込めませんでした").assertIsDisplayed()
+        ui.onNodeWithContentDescription("再試行").performClick()
+        ui.onNodeWithContentDescription(image.name).assertIsDisplayed()
+        ui.onNodeWithContentDescription("元のファイル").performClick()
+        ui.runOnIdle {
+            assertEquals(2, loads)
+            assertEquals(image, opened)
+        }
+    }
+
+    @Test
+    fun mixedMediaKeepsAttachmentOrderAndUsesDecodedRatioWhenDimensionsAreMissing() {
+        val image = images.first().copy(imageAspectRatio = null)
+        val bitmap = Bitmap.createBitmap(24, 8, Bitmap.Config.ARGB_8888).asImageBitmap()
+        val video = TimelineMedia("video", "video", TimelineMediaKind.Video)
+        ui.setContent {
+            CompositionLocalProvider(LocalCachedTimelineImage provides { bitmap }) {
+                Box(Modifier.width(240.dp)) {
+                    TimelineMediaGroup(listOf(video, image, video.copy(key = "second")), AndroidColors(false), apub = true) {}
+                }
+            }
+        }
+        val videos = ui.onAllNodesWithText("動画を再生")
+        val preview = ui.onNodeWithTag("apub-image-grid").assertHeightIsEqualTo(135.dp).getUnclippedBoundsInRoot()
+        val first = videos[0].getUnclippedBoundsInRoot()
+        val last = videos[1].getUnclippedBoundsInRoot()
+        assertTrue(first.bottom <= preview.top && preview.bottom <= last.top)
+    }
+
+    @Test
     fun viewerSwipesBetweenImagesAndDismissesVertically() {
         val bitmap = Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888).asImageBitmap()
         var dismissed = false
