@@ -250,7 +250,9 @@ async function precacheShell() {
         if (path === "/offline.html") {
           if (!isFreshAssetResponse(path, response) || !(await isOfflinePage(response))) return;
         }
-        if (path === "/manifest.webmanifest" && !(await isFreshManifest(response))) return;
+        if (path === "/manifest.webmanifest") {
+          if (!isFreshAssetResponse(path, response) || !(await isFreshManifest(response))) return;
+        }
         await cacheResponse(cache, path, response);
       } catch {
         /* Offline installs fall back to the runtime cache. */
@@ -267,7 +269,9 @@ async function precacheShell() {
         const saved = await previous.match(path);
         if (!saved) continue;
         // 旧 SW は本文を検証せずに保存していたため、コピーする前に確認する。
-        if (path === "/manifest.webmanifest" && !(await isFreshManifest(saved))) continue;
+        if (path === "/manifest.webmanifest") {
+          if (!isFreshAssetResponse(path, saved) || !(await isFreshManifest(saved))) continue;
+        }
         if (path === "/offline.html") {
           if (!isFreshAssetResponse(path, saved) || !(await isOfflinePage(saved))) continue;
           // CSP が変わった場合は、今回取得した index.html のポリシーを適用する。
@@ -433,17 +437,28 @@ async function handleFreshAsset(request) {
 
 async function cachedFreshAsset(path) {
   try {
-    // 更新中は新旧のキャッシュが併存するため、有効なものを順に探す。
+    // 現行のポリシーのキャッシュを優先する。別世代から補う場合は現行の CSP を適用する。
     const candidates = [];
     for (const name of (await caches.keys()).filter((name) => name.startsWith(CACHE_PREFIX))) {
       const cache = await caches.open(name);
       const meta = await cache.match(META_PATH);
       const installedAt = meta ? Number(await meta.text()) : 0;
-      candidates.push({ name, installedAt: Number.isFinite(installedAt) ? installedAt : 0 });
+      candidates.push({
+        name,
+        current: name.startsWith(POLICY_PREFIX),
+        installedAt: Number.isFinite(installedAt) ? installedAt : 0,
+      });
     }
-    candidates.sort((a, b) => b.installedAt - a.installedAt);
-    for (const { name } of candidates) {
+    candidates.sort(
+      (a, b) => Number(b.current) - Number(a.current) || b.installedAt - a.installedAt,
+    );
+    let csp = null;
+    for (const { name, current } of candidates) {
       const cache = await caches.open(name);
+      if (current && csp === null) {
+        const index = await cache.match("/index.html");
+        if (index) csp = index.headers.get("content-security-policy");
+      }
       const saved = await cache.match(path);
       if (!saved) continue;
       if (
@@ -452,7 +467,15 @@ async function cachedFreshAsset(path) {
         (path === "/offline.html" && !(await isOfflinePage(saved)))
       )
         continue;
-      return saved;
+      if (current || path !== "/offline.html" || !csp) return saved;
+      // 旧世代の案内ページには現行の CSP を付けて返す。
+      const headers = new Headers(saved.headers);
+      headers.set("content-security-policy", csp);
+      return new Response(await saved.arrayBuffer(), {
+        status: saved.status,
+        statusText: saved.statusText,
+        headers,
+      });
     }
   } catch {
     /* No usable cached copy. */
