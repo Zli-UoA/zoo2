@@ -147,6 +147,7 @@ export function fixture(overrides: Partial<Config> = {}, database?: Store) {
       labels: { nodes: [] },
     } as Json,
     readRequests: [] as Json[],
+    pulls: null as Json[] | null,
     extra: undefined as undefined | ((url: URL, init: RequestInit) => Response | undefined),
   };
   const fetcher: typeof fetch = async (input, options) => {
