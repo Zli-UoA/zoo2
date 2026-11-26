@@ -528,13 +528,13 @@ final class CryptoStore: @unchecked Sendable {
                 if state.processed_to_device.contains(row.id) {
                     unsaved = true
                 } else {
+                    var rowVerification: String?
                     if row.type == "m.room.encrypted" {
                         switch try processEncrypted(row, query: query, keysQuery: keysQuery) {
                         case .dropped: dropped += 1
                         case .verification(let created, let message):
                             newOlm += created
-                            // 後の行の保存が失敗して投げても、保存済みの行の検証メッセージを失わないよう、ストアに溜める。
-                            if let message { undeliveredVerifications.append(message) } else { dropped += 1 }
+                            if let message { rowVerification = message } else { dropped += 1 }
                         case .decrypted(let created, let roomKey, let rejected, let isVerified):
                             newOlm += created
                             if roomKey { roomKeys += 1 } else if rejected { dropped += 1 }
@@ -546,6 +546,9 @@ final class CryptoStore: @unchecked Sendable {
                     state.processed_to_device.append(row.id)
                     try save(state)
                     unsaved = false
+                    // この行の処理済みの印が保存できてから、検証メッセージを溜める。後の行の保存が失敗して投げても、保存済みの行の
+                    // 検証メッセージは失わず、保存できなかった行のものは（再試行で、もう一度復号するので）溜めない。
+                    if let rowVerification { undeliveredVerifications.append(rowVerification) }
                 }
                 processed.append(row.id)
             }
