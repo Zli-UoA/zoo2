@@ -32,7 +32,7 @@ internal fun encryptedEntry(
         if (isPlaintextBeforeEncryption(row)) return entry.copy(editable = false)
         // epoch があるのに暗号文のない行は、正しいサーバーは作らない。本文を出さない（Web の `withUnencryptedRows`）。
         return entry.copy(body = "", notice = t("e2ee.undecryptable.unencrypted"), editable = false,
-            attachments = emptyList(), media = emptyList(), link = null, linkCard = null)
+            attachments = emptyList(), media = emptyList(), link = null, linkCard = null, channelLinks = emptyList())
     }
     val marks = listOfNotNull(
         decrypted.notice?.takeIf { decrypted.senderWarning }?.let(t),

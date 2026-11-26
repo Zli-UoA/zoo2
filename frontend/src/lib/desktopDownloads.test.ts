@@ -49,6 +49,7 @@ import {
   desktopDownloadsAvailable,
   downloadBlobToDesktop,
   downloadUrlToDesktop,
+  prepareDesktopDownload,
   resetDesktopDownloadsForTest,
   subscribeDesktopDownloads,
 } from "./desktopDownloads";
@@ -151,6 +152,32 @@ describe("desktopDownloadsAvailable", () => {
   });
 });
 
+describe("prepareDesktopDownload", () => {
+  it("keeps the preparing state and aborts a pending preparation", async () => {
+    let prepareSignal: AbortSignal | undefined;
+    const promise = prepareDesktopDownload("prep1", (signal) => {
+      prepareSignal = signal;
+      return new Promise(() => {});
+    });
+
+    expect(desktopDownloadState("prep1")).toEqual({ status: "preparing" });
+    await vi.waitFor(() => expect(prepareSignal).toBeDefined());
+    cancelDesktopDownload("prep1");
+
+    await expect(promise).rejects.toBeInstanceOf(DesktopDownloadCancelledError);
+    expect(prepareSignal?.aborted).toBe(true);
+    expect(desktopDownloadState("prep1")).toBeUndefined();
+  });
+
+  it("rejects a second preparation without changing the first one", async () => {
+    const promise = prepareDesktopDownload("prep2", () => new Promise(() => {}));
+    await expect(prepareDesktopDownload("prep2", () => Promise.resolve(1))).resolves.toBeNull();
+
+    cancelDesktopDownload("prep2");
+    await expect(promise).rejects.toBeInstanceOf(DesktopDownloadCancelledError);
+  });
+});
+
 describe("downloadUrlToDesktop", () => {
   it("streams the response into the app and reports progress", async () => {
     desktop.detect.mockResolvedValue(true);
@@ -178,6 +205,72 @@ describe("downloadUrlToDesktop", () => {
     expect(desktopDownloadState("a1")).toBeUndefined();
     expect(fractions.at(-1)).toBe(1);
     expect(Math.max(...fractions.filter((value): value is number => value !== null))).toBe(1);
+  });
+
+  it("reports progress for a CORS response when attachment size is known", async () => {
+    desktop.detect.mockResolvedValue(true);
+    desktop.settings.mockResolvedValue({ ask_every_time: true, directory: null });
+    desktop.begin.mockResolvedValue(started());
+    desktop.write.mockResolvedValue(undefined);
+    desktop.finish.mockResolvedValue("a.txt");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        const response = new Response(new Uint8Array([1, 2, 3, 4]), {
+          headers: { "content-length": "4" },
+        });
+        Object.defineProperty(response, "type", { value: "cors" });
+        return response;
+      }),
+    );
+    const resolve = vi.fn().mockResolvedValue("https://files.test/a");
+    const fractions: Array<number | null> = [];
+    const unsubscribe = subscribeDesktopDownloads(() => {
+      const state = desktopDownloadState("cors-known");
+      if (state?.status === "downloading") fractions.push(state.fraction);
+    });
+
+    await expect(downloadUrlToDesktop("cors-known", "a.txt", resolve, { size: 4 })).resolves.toBe(
+      "a.txt",
+    );
+
+    unsubscribe();
+    expect(fractions.at(-1)).toBe(1);
+    // CORS 応答でも既知の添付サイズがあれば進捗割合を出せる。
+    expect(fractions.some((value) => typeof value === "number" && value >= 0)).toBe(true);
+    expect(fractions).not.toContain(null);
+  });
+
+  it("reports indeterminate progress for a compressed response", async () => {
+    desktop.detect.mockResolvedValue(true);
+    desktop.settings.mockResolvedValue({ ask_every_time: true, directory: null });
+    desktop.begin.mockResolvedValue(started());
+    desktop.write.mockResolvedValue(undefined);
+    desktop.finish.mockResolvedValue("a.txt");
+    // Content-Length は圧縮後の 2 バイトだが、実際に読む本文は 4 バイト。
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(new Uint8Array([1, 2, 3, 4]), {
+            headers: { "content-length": "2", "content-encoding": "gzip" },
+          }),
+      ),
+    );
+    const resolve = vi.fn().mockResolvedValue("https://files.test/a");
+    const fractions: Array<number | null> = [];
+    const unsubscribe = subscribeDesktopDownloads(() => {
+      const state = desktopDownloadState("compressed");
+      if (state?.status === "downloading") fractions.push(state.fraction);
+    });
+
+    await expect(downloadUrlToDesktop("compressed", "a.txt", resolve)).resolves.toBe("a.txt");
+
+    unsubscribe();
+    expect(desktop.begin).toHaveBeenCalledWith("a.txt");
+    expect(fractions).toContain(null);
+    expect(fractions.filter((value) => value !== null && value > 0 && value < 1)).toEqual([]);
+    expect(fractions.at(-1)).toBe(1);
   });
 
   it("passes the attachment size to the app so the app can set the limit", async () => {
@@ -356,6 +449,59 @@ describe("downloadUrlToDesktop", () => {
     expect(desktop.cancel).toHaveBeenCalledWith("d5");
     expect(desktop.finish).not.toHaveBeenCalled();
     expect(desktopDownloadState("a5")).toBeUndefined();
+  });
+
+  it("cancels while waiting for the next chunk even when the body ignores the fetch signal", async () => {
+    desktop.begin.mockResolvedValue(started("dPrepRead"));
+    desktop.cancel.mockResolvedValue(undefined);
+    let pullStarted!: () => void;
+    const pullBegan = new Promise<void>((resolve) => (pullStarted = resolve));
+    // highWaterMark を 0 にして、reader.read() が呼ばれるまで pull() を遅らせる。
+    // これで「応答を開いた直後の中止」ではなく「次のチャンク待ちの中止」を検証できる。
+    const stream = new ReadableStream<Uint8Array>(
+      {
+        pull() {
+          pullStarted();
+          // 本文が中止を無視しても、raceAbort が待機を終わらせる必要がある。
+          return new Promise<void>(() => {});
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(stream, { headers: { "content-length": "10" } })),
+    );
+
+    const promise = downloadUrlToDesktop("aPrepRead", "a.txt", vi.fn().mockResolvedValue("u"));
+    await pullBegan;
+    cancelDesktopDownload("aPrepRead");
+
+    await expect(promise).rejects.toBeInstanceOf(DesktopDownloadCancelledError);
+    expect(desktop.cancel).toHaveBeenCalledWith("dPrepRead");
+    expect(desktop.finish).not.toHaveBeenCalled();
+    expect(desktopDownloadState("aPrepRead")).toBeUndefined();
+  });
+
+  it("continues a prepared download with the same state and controller", async () => {
+    const prepared = await prepareDesktopDownload("aPrep", () => Promise.resolve(1234));
+    expect(prepared).not.toBeNull();
+    desktop.begin.mockResolvedValue(started("dPrep"));
+    desktop.write.mockResolvedValue(undefined);
+    desktop.finish.mockResolvedValue("saved.txt");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => blobResponse([1])),
+    );
+
+    const promise = downloadUrlToDesktop("aPrep", "a.txt", vi.fn().mockResolvedValue("u"), {
+      size: prepared?.value,
+      controller: prepared?.controller,
+    });
+    expect(desktopDownloadState("aPrep")).toEqual({ status: "preparing" });
+    await expect(promise).resolves.toBe("saved.txt");
+    expect(desktop.begin).toHaveBeenCalledWith("a.txt", 1234);
+    expect(desktopDownloadState("aPrep")).toBeUndefined();
   });
 
   it("finishes at 100% even when the response has no content-length", async () => {

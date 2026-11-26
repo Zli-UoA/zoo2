@@ -70,6 +70,8 @@ interface Platform {
 
     suspend fun image(url: String): ByteArray? = null
 
+    suspend fun attachmentImage(url: String): ByteArray? = image(url)
+
     suspend fun rasterizeSvg(svg: String, width: Int, height: Int): ByteArray? = null
 
     suspend fun headers(): Map<String, String>
@@ -81,6 +83,9 @@ interface Platform {
     suspend fun readCache(key: String): String?
 
     suspend fun writeCache(key: String, value: String)
+
+    /** 同期キャッシュを 1 件消す。キーごとに消せない保存先では何もしない。 */
+    suspend fun removeCache(key: String) {}
 
     fun uuid(): String
 

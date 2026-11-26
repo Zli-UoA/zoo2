@@ -11,6 +11,7 @@ import okhttp3.OkHttpClient
 internal class AndroidImageCache(
     directory: File,
     maxBytes: Long = 512L * 1024 * 1024,
+    private val timeoutMillis: Long = 120_000,
     configure: OkHttpClient.Builder.() -> Unit = {},
 ) : java.io.Closeable {
     private val disk = Cache(directory, maxBytes)
@@ -25,12 +26,27 @@ internal class AndroidImageCache(
         followRedirects = false
         engine { preconfigured = client }
         install(HttpTimeout) {
-            requestTimeoutMillis = 120_000
-            socketTimeoutMillis = 90_000
+            requestTimeoutMillis = timeoutMillis
+            socketTimeoutMillis = minOf(timeoutMillis, 90_000)
         }
     }
 
     suspend fun image(url: String): ByteArray = loadPublicImage(http, url)
+
+    suspend fun signedImage(url: String): ByteArray = loadPublicImage(http, url, noStore = true)
+
+    suspend fun imageIfCached(request: ImageRequest, limit: Int): ByteArray? =
+        try {
+            loadPublicImage(http, request.url, limit, cacheOnly = true, restrictOrigin = request.proxied)
+        } catch (_: ImageCacheMiss) {
+            null
+        }
+
+    suspend fun download(request: ImageRequest, limit: Int): ByteArray =
+        loadPublicImage(http, request.url, limit, restrictOrigin = request.proxied, revalidate = true)
+
+    suspend fun imageFromCacheFirst(request: ImageRequest, limit: Int = 20 * 1024 * 1024): ByteArray =
+        imageIfCached(request, limit) ?: download(request, limit)
 
     override fun close() {
         http.close()

@@ -148,8 +148,8 @@ internal fun NotificationPage(
                         }
                     }
                     item.detail?.let {
-                        Text(formatEntry(it), color = colors.foreground, fontSize = entryTextSize,
-                            maxLines = 3, overflow = TextOverflow.Ellipsis)
+                        // 本文と同じく、このアプリのリンクは短くし、アプリ内で移動する。
+                        EntryBody(it, colors.foreground, entryTextSize, emptyMap(), maxLines = 3)
                     }
                     item.destination?.let {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {

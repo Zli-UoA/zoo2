@@ -204,7 +204,7 @@ internal class AndroidNotifications(
         val job = app.scope.launch(start = CoroutineStart.LAZY) {
             val bitmap = try {
                 withTimeoutOrNull(8_000) {
-                    val bytes = app.image(app.attachmentLinks.get(id))
+                    val bytes = app.image(app.attachmentLinks.get(id), signedAttachment = true)
                     withContext(avatarDispatcher) { decodeOrientedBitmap(bytes, maxEdge = 720) }
                 }
             } catch (e: CancellationException) { throw e }

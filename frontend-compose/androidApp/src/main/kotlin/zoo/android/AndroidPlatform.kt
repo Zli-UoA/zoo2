@@ -66,6 +66,7 @@ internal class AndroidPlatform(
     private val cacheDirectory = java.io.File(activity.cacheDir, "accounts/${hash("$base:$userId")}")
     private val cache = AccountCache(cacheDirectory)
     private val encryptionHistory = AccountCache(java.io.File(activity.noBackupFilesDir, "e2ee-channel-history/${hash("$base:$userId")}"))
+    private val mediaProxy = AndroidMediaProxy(activity, base)
     private val images = AndroidImageCache(cacheDirectory.resolve("images"))
     private val dictionaries = mutableMapOf<String, Row>()
 
@@ -92,6 +93,8 @@ internal class AndroidPlatform(
         withContext(Dispatchers.IO) {
             cache.write(key, value)
         }
+
+    override suspend fun removeCache(key: String) = withContext(Dispatchers.IO) { cache.delete(key) }
 
     fun close() { images.close() }
 
@@ -253,7 +256,11 @@ internal class AndroidPlatform(
             }
         }
 
-    override suspend fun image(url: String): ByteArray = images.image(url)
+    override suspend fun image(url: String): ByteArray =
+        mediaProxy.image(url, http, images, env.online)
+
+    override suspend fun attachmentImage(url: String): ByteArray =
+        images.signedImage(url)
 
     override suspend fun invoke(name: String, payload: String): String =
         when (name) {

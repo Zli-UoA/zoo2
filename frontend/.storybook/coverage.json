@@ -457,6 +457,7 @@
         "KitchenLoading",
         "Mobile",
         "ManyCustomEmojis",
+        "SearchExactFirst",
         "ManyCustomEmojisMobile"
       ]
     },
@@ -1485,6 +1486,14 @@
     {
       "file": "src/components/desktop/DownloadProgressButton.tsx",
       "story": "src/components/desktop/DownloadProgressButton.stories.tsx"
+    },
+    {
+      "file": "src/components/desktop/PreviewDownloadButton.tsx",
+      "reason": "進捗・中止の表示は DownloadProgressButton.stories.tsx で確認する。デスクトップ判定、Web のリンク、CORS 失敗時の案内と別タブへの切替は PreviewDownloadButton.browser.test.tsx で確認する。",
+      "checks": [
+        "src/components/desktop/DownloadProgressButton.stories.tsx",
+        "src/components/desktop/PreviewDownloadButton.browser.test.tsx"
+      ]
     },
     {
       "file": "src/components/desktop/DesktopDownloadSettings.tsx",

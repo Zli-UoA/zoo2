@@ -2,23 +2,12 @@ import type { AttachmentInfo } from "@zoo/crypto-wasm";
 import { LockIcon, PaperclipIcon } from "lucide-react";
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { toast } from "sonner";
 
+import { useDesktopSave } from "../../../hooks/useDesktopSave";
 import { forgetAttachmentUrl, resolveAttachmentUrl } from "../../../lib/api/attachmentUrls";
+import { saveBlob } from "../../../lib/api/attachments";
 import { createConfiguredApiClient } from "../../../lib/api/client";
 import { formatAttachmentSize, mediaPreviewKind } from "../../../lib/attachments";
-import {
-  DesktopDownloadDestinationError,
-  DesktopDownloadLimitError,
-  desktopDownloadSettings,
-} from "../../../lib/desktop";
-import {
-  DesktopDownloadCancelledError,
-  cancelDesktopDownload,
-  desktopDownloadsAvailable,
-  downloadBlobToDesktop,
-  useDesktopDownloadState,
-} from "../../../lib/desktopDownloads";
 import {
   EncryptedAttachmentError,
   fetchEncryptedAttachment,
@@ -327,75 +316,45 @@ function EncryptedDownloadButton({
 }) {
   const { t } = useTranslation();
   const source = useEncryptedAttachmentSource();
-  const [downloading, setDownloading] = useState(false);
-  const desktopState = useDesktopDownloadState(attachment.attachment_id);
-
-  function reportFailure(error: unknown) {
-    if (error instanceof DesktopDownloadDestinationError) {
-      void desktopDownloadSettings()
-        .then((settings) => {
-          toast.error(
-            settings?.ask_every_time === false
-              ? t("attachments.downloadDestinationUnsupportedAskEveryTimeOff")
-              : t("attachments.downloadDestinationUnsupported"),
-          );
-        })
-        .catch(() => toast.error(t("attachments.downloadDestinationUnsupported")));
-      return;
-    }
-    if (error instanceof DesktopDownloadLimitError) {
-      // 同時保存の上限。ほかの保存が終われば再試行できる。
-      toast.error(t("attachments.downloadTooMany"));
-      return;
-    }
-    toast.error(
-      error instanceof EncryptedAttachmentError && error.reason === "decrypt"
-        ? t("e2ee.attachments.decryptFailed")
-        : t("attachments.downloadError"),
-    );
-  }
-
-  async function download() {
-    if (downloading || desktopState) return;
-    setDownloading(true);
-    try {
-      // デスクトップ版では OS の保存ダイアログと保存先の設定を使う。復号した `Blob` を同じ書き込み先へ渡す。
-      if (await desktopDownloadsAvailable()) {
-        const savedName = await downloadBlobToDesktop(
-          attachment.attachment_id,
-          attachment.name,
-          async (signal, report) => {
-            if (blob) {
-              report(1);
-              return blob;
-            }
-            // 押したことを、利用者の明示的な再試行として扱う（覚えている復号の失敗も取り直す）。
-            return source.load(attachment, {
-              retry: true,
-              signal,
-              onProgress: (received, total) =>
-                report(total && total > 0 ? Math.min(1, received / total) : null),
-            });
-          },
-          attachment.size,
-        );
-        // 番号が足された場合もあるので、実際の名前を伝える。
-        if (savedName) toast.success(t("attachments.downloadSaved", { name: savedName }));
-      } else {
+  const {
+    state: desktopState,
+    pending,
+    download,
+    cancel,
+  } = useDesktopSave({
+    id: attachment.attachment_id,
+    fileName: attachment.name,
+    source: {
+      kind: "blob",
+      size: attachment.size,
+      load: async (signal, report) => {
+        if (blob) {
+          report(1);
+          return blob;
+        }
         // 押したことを、利用者の明示的な再試行として扱う（覚えている復号の失敗も取り直す）。
-        saveBlob(blob ?? (await source.load(attachment, { retry: true })), attachment.name);
-      }
-    } catch (error) {
-      if (!(error instanceof DesktopDownloadCancelledError)) reportFailure(error);
-    } finally {
-      setDownloading(false);
-    }
-  }
+        return source.load(attachment, {
+          retry: true,
+          signal,
+          onProgress: (received, total) =>
+            report(total && total > 0 ? Math.min(1, received / total) : null),
+        });
+      },
+    },
+    fallback: async () => {
+      // 押したことを、利用者の明示的な再試行として扱う（覚えている復号の失敗も取り直す）。
+      saveBlob(blob ?? (await source.load(attachment, { retry: true })), attachment.name);
+    },
+    describeError: (error) =>
+      error instanceof EncryptedAttachmentError && error.reason === "decrypt"
+        ? { message: t("e2ee.attachments.decryptFailed") }
+        : undefined,
+  });
 
   return (
     <DownloadProgressButton
       state={desktopState}
-      pending={downloading}
+      pending={pending}
       showLabel={showLabel}
       downloadLabel={t("attachments.download", { name: attachment.name })}
       downloadShortLabel={t("attachments.downloadShort")}
@@ -404,22 +363,7 @@ function EncryptedDownloadButton({
       finishingLabel={t("attachments.saving")}
       progressLabel={t("attachments.downloading")}
       onDownload={() => void download()}
-      onCancel={() => cancelDesktopDownload(attachment.attachment_id)}
+      onCancel={cancel}
     />
   );
-}
-
-function saveBlob(blob: Blob, name: string) {
-  const objectUrl = URL.createObjectURL(blob);
-  try {
-    const anchor = document.createElement("a");
-    anchor.href = objectUrl;
-    anchor.download = name;
-    anchor.rel = "noopener";
-    document.body.append(anchor);
-    anchor.click();
-    anchor.remove();
-  } finally {
-    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000);
-  }
 }
