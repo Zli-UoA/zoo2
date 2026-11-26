@@ -1214,6 +1214,58 @@ test("a fresh manifest is served even when the cache cannot be opened", async ()
   assert.equal(await response.text(), validManifest("#000000"));
 });
 
+test("an invalid cached manifest is not returned offline", async () => {
+  const cacheContext = memoryCaches([
+    [
+      "zoo-shell-v2",
+      `${ORIGIN}/manifest.webmanifest`,
+      basicResponse("<html>app shell</html>", { headers: { "content-type": "text/html" } }),
+    ],
+  ]);
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+  });
+  assert.equal(response.type, "error");
+});
+
+test("a queried offline.html is cached and read under its pathname", async () => {
+  let html = '<html><meta name="zoo-offline" content="true" />old</html>';
+  const { handlers, cacheContext } = worker({
+    fetch: async (input) => {
+      const key = requestKey(input);
+      if (new URL(key).pathname === "/offline.html")
+        return basicResponse(html, { headers: { "content-type": "text/html" } });
+      if (key === `${ORIGIN}/manifest.webmanifest`)
+        return basicResponse(validManifest("#ffffff"), {
+          headers: { "content-type": "application/manifest+json" },
+        });
+      return basicResponse(`network:${key}`);
+    },
+  });
+  await dispatch(handlers, "install");
+  html = '<html><meta name="zoo-offline" content="true" />new</html>';
+  await fetchThrough(handlers, navigation(`${ORIGIN}/offline.html?v=2`));
+  const cache = await cacheContext.api.open("zoo-shell-v2");
+  assert.equal(await (await cache.match(`${ORIGIN}/offline.html`)).text(), html);
+
+  const offline = worker({
+    caches: cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const response = await fetchThrough(offline.handlers, navigation(`${ORIGIN}/offline.html`));
+  assert.equal(await response.text(), html);
+});
+
 test("push displays sender, channel and message preview from the decrypted payload", async () => {
   const { handlers, notifications } = worker();
   await dispatch(handlers, "push", {

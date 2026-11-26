@@ -408,7 +408,7 @@ async function handleFreshAsset(request) {
   try {
     response = await fetch(request, { cache: "reload" });
   } catch {
-    return await cachedFreshAsset(request);
+    return await cachedFreshAsset(path);
   }
   const acceptable =
     response.ok &&
@@ -421,23 +421,43 @@ async function handleFreshAsset(request) {
     const fresh = response.clone();
     try {
       const cache = await caches.open(await findActiveShellCache());
-      await cacheResponse(cache, request, response);
+      // クエリ付きで開いても同じ案内／manifest を使うため、pathname をキーにする。
+      await cacheResponse(cache, path, response);
     } catch {
       /* Storage quota or Cache API failure: still serve the fresh response. */
     }
     return fresh;
   }
-  return await cachedFreshAsset(request);
+  return await cachedFreshAsset(path);
 }
 
-async function cachedFreshAsset(request) {
+async function cachedFreshAsset(path) {
   try {
-    // 更新中は新旧のキャッシュが併存するため、有効な方から読む。
-    const cache = await caches.open(await findActiveShellCache());
-    return (await cache.match(request)) || Response.error();
+    // 更新中は新旧のキャッシュが併存するため、有効なものを順に探す。
+    const candidates = [];
+    for (const name of (await caches.keys()).filter((name) => name.startsWith(CACHE_PREFIX))) {
+      const cache = await caches.open(name);
+      const meta = await cache.match(META_PATH);
+      const installedAt = meta ? Number(await meta.text()) : 0;
+      candidates.push({ name, installedAt: Number.isFinite(installedAt) ? installedAt : 0 });
+    }
+    candidates.sort((a, b) => b.installedAt - a.installedAt);
+    for (const { name } of candidates) {
+      const cache = await caches.open(name);
+      const saved = await cache.match(path);
+      if (!saved) continue;
+      if (
+        !isFreshAssetResponse(path, saved) ||
+        (path === "/manifest.webmanifest" && !(await isFreshManifest(saved))) ||
+        (path === "/offline.html" && !(await isOfflinePage(saved)))
+      )
+        continue;
+      return saved;
+    }
   } catch {
-    return Response.error();
+    /* No usable cached copy. */
   }
+  return Response.error();
 }
 
 // Public AuthZ avatars have their own bounded cache, retained across shell upgrades.
