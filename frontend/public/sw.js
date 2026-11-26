@@ -274,19 +274,10 @@ async function precacheShell() {
         }
         if (path === "/offline.html") {
           if (!isFreshAssetResponse(path, saved) || !(await isOfflinePage(saved))) continue;
-          // CSP が変わった場合は、今回取得した index.html のポリシーを適用する。
-          const copy = saved.clone();
-          const headers = new Headers(copy.headers);
-          const csp = cached.headers.get("content-security-policy");
-          if (csp) headers.set("content-security-policy", csp);
-          else headers.delete("content-security-policy");
+          // 今回取得した index.html の CSP を案内ページにも適用する（無ければ削除）。
           await cache.put(
             path,
-            new Response(await copy.arrayBuffer(), {
-              status: copy.status,
-              statusText: copy.statusText,
-              headers,
-            }),
+            await withPolicyHeaders(saved.clone(), cached.headers.get("content-security-policy")),
           );
           continue;
         }
@@ -294,6 +285,21 @@ async function precacheShell() {
       }
     } catch {
       /* An unavailable old cache is not a reason to fail the install. */
+    }
+  }
+  // 初期版の SW は案内ページを zoo-offline-v1 に持っていた。シェルに無ければ引き継ぐ。
+  if (!(await cache.match("/offline.html"))) {
+    try {
+      const legacy = await caches.open("zoo-offline-v1");
+      const saved = await legacy.match("/offline.html");
+      if (saved && isFreshAssetResponse("/offline.html", saved) && (await isOfflinePage(saved))) {
+        await cache.put(
+          "/offline.html",
+          await withPolicyHeaders(saved.clone(), cached.headers.get("content-security-policy")),
+        );
+      }
+    } catch {
+      /* An unavailable legacy cache is not a reason to fail the install. */
     }
   }
   // Write the marker last so a partially precached cache is not selected.
@@ -406,6 +412,17 @@ async function isOfflinePage(response) {
   }
 }
 
+async function withPolicyHeaders(saved, csp) {
+  const headers = new Headers(saved.headers);
+  if (csp) headers.set("content-security-policy", csp);
+  else headers.delete("content-security-policy");
+  return new Response(await saved.arrayBuffer(), {
+    status: saved.status,
+    statusText: saved.statusText,
+    headers,
+  });
+}
+
 async function handleFreshAsset(request) {
   const path = new URL(request.url, self.location.origin).pathname;
   let response;
@@ -453,11 +470,15 @@ async function cachedFreshAsset(path) {
       (a, b) => Number(b.current) - Number(a.current) || b.installedAt - a.installedAt,
     );
     let csp = null;
+    let currentPolicyKnown = false;
     for (const { name, current } of candidates) {
       const cache = await caches.open(name);
-      if (current && csp === null) {
+      if (current && !currentPolicyKnown) {
         const index = await cache.match("/index.html");
-        if (index) csp = index.headers.get("content-security-policy");
+        if (index) {
+          currentPolicyKnown = true;
+          csp = index.headers.get("content-security-policy");
+        }
       }
       const saved = await cache.match(path);
       if (!saved) continue;
@@ -467,15 +488,9 @@ async function cachedFreshAsset(path) {
         (path === "/offline.html" && !(await isOfflinePage(saved)))
       )
         continue;
-      if (current || path !== "/offline.html" || !csp) return saved;
-      // 旧世代の案内ページには現行の CSP を付けて返す。
-      const headers = new Headers(saved.headers);
-      headers.set("content-security-policy", csp);
-      return new Response(await saved.arrayBuffer(), {
-        status: saved.status,
-        statusText: saved.statusText,
-        headers,
-      });
+      if (current || path !== "/offline.html" || !currentPolicyKnown) return saved;
+      // 旧世代の案内ページには現行の CSP を付ける（現行にヘッダーが無ければ削除）。
+      return await withPolicyHeaders(saved.clone(), csp);
     }
   } catch {
     /* No usable cached copy. */
