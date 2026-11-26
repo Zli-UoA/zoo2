@@ -100,12 +100,13 @@ internal fun EmojiPicker(
     ModalBottomSheet(
         onDismissRequest = dismiss,
         modifier = Modifier.semantics { paneTitle = title },
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberModalBottomSheetState(),
+        dragHandle = { BottomSheetDefaults.DragHandle(Modifier.testTag("emoji-sheet-handle")) },
         sheetMaxWidth = Dp.Unspecified,
         containerColor = colors.background,
         contentColor = colors.foreground,
     ) {
-        Column(Modifier.fillMaxWidth().heightIn(max = 520.dp).imePadding().padding(horizontal = 16.dp)) {
+        Column(Modifier.fillMaxWidth().fillMaxHeight().imePadding().padding(horizontal = 16.dp)) {
             PrimaryTabRow(
                 selectedTabIndex = tab.ordinal, containerColor = colors.background, contentColor = colors.foreground,
                 indicator = {

@@ -5,12 +5,15 @@ import android.graphics.Canvas
 import android.graphics.Color as AndroidColor
 import android.view.View
 import androidx.activity.ComponentActivity
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.unit.dp
 import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -44,6 +47,22 @@ class EmojiPickerSearchSampleTest {
         }.filter { it in names }
         assertEquals(listOf("kusa", "kusaa", "kusa_hayasu", "xkusa"), order)
         capture("emoji-picker-search-exact-first")
+    }
+
+    @Test
+    fun thePickerHandleMovesBeforeRelease() {
+        ui.setContent {
+            EmojiPicker(
+                "絵文字", AndroidColors(false), unicode = listOf(EmojiChoice("🌱", "🌱", "seedling")),
+                custom = emptyList(), loadKitchen = { null }, loadImage = { null }, dismiss = {}, select = {},
+            )
+        }
+        val handle = ui.onNodeWithTag("emoji-sheet-handle", useUnmergedTree = true)
+        val initialTop = handle.fetchSemanticsNode().boundsInRoot.top
+        val distance = with(ui.density) { 120.dp.toPx() }
+        handle.performTouchInput { down(center); moveBy(Offset(0f, -distance)) }
+        assertTrue(handle.fetchSemanticsNode().boundsInRoot.top < initialTop - distance / 2)
+        handle.performTouchInput { up() }
     }
 
     private fun capture(name: String) {

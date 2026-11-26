@@ -34,6 +34,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.SaveableStateHolder
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -118,7 +119,7 @@ internal sealed interface AndroidScreen {
         val loadOlder: Boolean = false,
     ) : AndroidScreen
     data class Post(val root: TimelineItem, val replies: List<TimelineItem>, val input: InputState) : AndroidScreen
-    data class ChannelSettings(val channel: String, val groups: List<SettingsGroup>) : AndroidScreen
+    data class ChannelSettings(val channel: String, val groups: List<SettingsGroup>, val id: String = channel) : AndroidScreen
     data class SettingsDetail(val title: String, val groups: List<SettingsGroup>) : AndroidScreen
     data class EditChannel(
         val title: String,
@@ -140,6 +141,7 @@ internal sealed interface AndroidScreen {
         val name: String, val bio: String, val posts: List<TimelineItem>, val follow: String? = null,
         val handle: String? = null, val avatar: ImageBitmap? = null,
         val originalAvailable: Boolean = false,
+        val id: String = handle ?: name,
     ) : AndroidScreen
     data class NewPost(val input: InputState, val recent: List<RecentPhoto>, val showPhotos: Boolean,
         val visibility: String? = null, val attached: List<RecentPhoto> = emptyList(), val federate: Boolean? = null) : AndroidScreen
@@ -226,10 +228,10 @@ internal fun AndroidScreens(
     remoteAudioLevel: () -> Float = { 0f },
     loadNotificationAvatar: suspend (String) -> ImageBitmap? = { null },
     loadNotificationReactions: suspend (InboxReactionContext) -> List<InboxReactionEmoji> = { emptyList() },
+    pageState: SaveableStateHolder = rememberSaveableStateHolder(),
     photo: @Composable (RecentPhoto, Modifier) -> Unit,
 ) {
     val systemHaptics = LocalHapticFeedback.current
-    val conversationState = rememberSaveableStateHolder()
     CompositionLocalProvider(LocalHapticFeedback provides if (interaction.haptics) systemHaptics else SilentHaptics) {
         AnimatedContent(
             targetState = screen,
@@ -248,18 +250,7 @@ internal fun AndroidScreens(
             },
             label = "Android screen",
         ) { visibleScreen ->
-            // Conversations and search keep their scroll position while an opened message or result is shown.
-            val savedKey = when (visibleScreen) {
-                is AndroidScreen.Conversation -> visibleScreen.id
-                is AndroidScreen.Search -> "search"
-                else -> null
-            }
-            if (savedKey != null) {
-                conversationState.SaveableStateProvider(savedKey) {
-                    RenderAndroidScreen(visibleScreen, dark, foreground && visibleScreen == screen,
-                        dispatch, language, interaction, remoteAudioLevel, loadNotificationAvatar, loadNotificationReactions, photo)
-                }
-            } else {
+            pageState.SaveableStateProvider(visibleScreen.routeKey()) {
                 RenderAndroidScreen(visibleScreen, dark, foreground && visibleScreen == screen,
                     dispatch, language, interaction, remoteAudioLevel, loadNotificationAvatar, loadNotificationReactions, photo)
             }
@@ -268,9 +259,14 @@ internal fun AndroidScreens(
 }
 
 private fun AndroidScreen.routeKey(): String = when (this) {
+    is AndroidScreen.Home -> "home:$timeline"
     is AndroidScreen.Conversation -> "channel:$id"
     is AndroidScreen.Thread -> "thread:${root.id}"
     is AndroidScreen.Post -> "post:${root.id}"
+    is AndroidScreen.Profile -> "profile:$id"
+    is AndroidScreen.ChannelSettings -> "channel-settings:$id"
+    is AndroidScreen.SettingsDetail -> "settings-detail:$title"
+    is AndroidScreen.Directory -> "directory:$title"
     else -> this::class.simpleName.orEmpty()
 }
 
@@ -353,7 +349,7 @@ private fun RenderAndroidScreen(
                 PageHeader("編集", colors, onBack = back)
                 ConversationInput(screen.input, colors, { dispatch(AndroidUiAction.TextChanged(it)) },
                     { dispatch(AndroidUiAction.UseInputTool(it)) }, Modifier.weight(1f),
-                    onSelection = { dispatch(AndroidUiAction.SelectInput(it)) })
+                    onSelection = { dispatch(AndroidUiAction.SelectInput(it)) }, canResize = false)
             }
             is AndroidScreen.SettingsDetail -> SettingsPage(screen.groups, colors, openSetting, toggle, screen.title, back)
             is AndroidScreen.ChannelSettings -> SettingsPage(screen.groups, colors, openSetting, toggle, screen.channel, back)
@@ -441,7 +437,9 @@ private fun ChannelMenuButton(colors: AndroidColors, dispatch: (AndroidUiAction)
 @Composable
 private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, dispatch: (AndroidUiAction) -> Unit) {
     PageHeader(androidLabel("channels.title", "チャンネル"), colors) { ChannelMenuButton(colors, dispatch) }
-    LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
+    val scroll = rememberLazyListState()
+    if (screen.sections.isEmpty()) return
+    LazyColumn(state = scroll, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
         screen.sections.forEach { section ->
             item {
                 Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -525,25 +523,83 @@ private fun ColumnScope.TimelineWithInput(
         requestEarlier?.invoke()
     }
     var openedTarget by rememberSaveable { mutableStateOf<String?>(null) }
+    var followedSend by rememberSaveable { mutableStateOf<String?>(null) }
+    var anchor by rememberSaveable { mutableStateOf<String?>(null) }
+    val restoredAnchor = remember { anchor }
+    val restoredOffset = remember { scroll.firstVisibleItemScrollOffset }
+    var restorePending by remember { mutableStateOf(restoredAnchor != null) }
+    var followEnd by rememberSaveable { mutableStateOf(false) }
     val focusedIndex = entries.indexOfFirst { it.id == focusMessage }
-    LaunchedEffect(input.expanded, focusMessage, focusRequest, focusedIndex, entries.size) {
-        if (input.expanded) return@LaunchedEffect
-        if (focusMessage == null) {
-            openedTarget = null
-            if (allowThreads && entries.isNotEmpty() && !positioned) {
-                scroll.scrollToItem(entries.lastIndex)
+    val restoredIndex = if (restorePending && !followEnd) entries.indexOfFirst { it.entryKey == restoredAnchor } else -1
+    LaunchedEffect(input.expanded, input.lastSend, focusRequest, focusedIndex, entries.isNotEmpty(), restoredIndex) {
+        if (input.expanded || entries.isEmpty()) return@LaunchedEffect
+        when {
+            input.lastSend != null && input.lastSend != followedSend -> {
+                followedSend = input.lastSend
+                restorePending = false
+                openedTarget = focusRequest
+                followEnd = true
+                positioned = true
+                scroll.requestScrollToItem(entries.lastIndex)
+            }
+            focusedIndex >= 0 && openedTarget != focusRequest -> {
+                scroll.requestScrollToItem(focusedIndex)
+                restorePending = false
+                followEnd = false
+                openedTarget = focusRequest
                 positioned = true
             }
-        } else if (focusedIndex >= 0 && openedTarget != focusRequest) {
-            scroll.scrollToItem(focusedIndex)
-            openedTarget = focusRequest
-            positioned = true
+            restoredIndex >= 0 -> {
+                scroll.requestScrollToItem(restoredIndex, restoredOffset)
+                restorePending = false
+            }
+            focusMessage == null && allowThreads && !positioned -> {
+                scroll.scrollToItem(entries.lastIndex)
+                followEnd = true
+                positioned = true
+            }
+        }
+        if (focusMessage == null) openedTarget = null
+    }
+    // Viewport, row height and item count can all change without user scrolling.
+    // Only follow those changes while the reader is at the end or has just sent a message.
+    LaunchedEffect(scroll) {
+        var wasScrolling = false
+        var previousLayout = scroll.layoutInfo
+        snapshotFlow { Triple(scroll.isScrollInProgress, scroll.layoutInfo, followEnd) }
+            .collect { (scrolling, layout, _) ->
+                val remeasured = layout !== previousLayout
+                previousLayout = layout
+                if (scrolling) {
+                    wasScrolling = true
+                    restorePending = false
+                } else {
+                    if (wasScrolling) {
+                        followEnd = !scroll.canScrollForward
+                        wasScrolling = false
+                    }
+                    if (layout.viewportSize.height > 0 && layout.totalItemsCount > 0) {
+                        if (remeasured && !scroll.canScrollForward && !restorePending) followEnd = true
+                        if (followEnd && scroll.canScrollForward) {
+                            val lastIndex = layout.totalItemsCount - 1
+                            val offset = layout.visibleItemsInfo.lastOrNull()?.takeIf { it.index == lastIndex }?.size ?: 0
+                            scroll.requestScrollToItem(lastIndex, offset)
+                        } else if (!restorePending || followEnd) {
+                            anchor = layout.visibleItemsInfo.firstOrNull { it.index == scroll.firstVisibleItemIndex }?.key as? String
+                        }
+                    }
+                }
+            }
+    }
+
+    BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+        if (maxHeight > 0.dp && entries.isNotEmpty()) {
+            Timeline(entries, colors, Modifier.fillMaxSize().testTag("conversation-timeline"), dispatch, posts = posts,
+                swipeReply = swipeReply, allowThreads = allowThreads, scroll = scroll)
         }
     }
-    if (!input.expanded) Timeline(entries, colors, Modifier.weight(1f), dispatch, posts = posts,
-        swipeReply = swipeReply, allowThreads = allowThreads, scroll = scroll)
     ConversationInput(input, colors, { dispatch(AndroidUiAction.TextChanged(it)) },
-        { dispatch(AndroidUiAction.UseInputTool(it)) }, if (input.expanded) Modifier.weight(1f) else Modifier,
+        { dispatch(AndroidUiAction.UseInputTool(it)) },
         onMention = { dispatch(AndroidUiAction.Mention(it)) },
         onSelection = { dispatch(AndroidUiAction.SelectInput(it)) },
         onRemoveFile = { dispatch(AndroidUiAction.RemoveFile(it)) },
@@ -560,6 +616,7 @@ private fun Timeline(
     header: (@Composable () -> Unit)? = null,
     scroll: LazyListState = rememberLazyListState(),
 ) {
+    if (entries.isEmpty() && header == null) return
     var menuId by remember { mutableStateOf<String?>(null) }
     val lastVisible = scroll.layoutInfo.visibleItemsInfo.lastOrNull()?.index
     val requestOlder by rememberUpdatedState(loadOlder)
