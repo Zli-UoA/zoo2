@@ -1,7 +1,7 @@
 //! 画面の描画。左にチャンネル一覧、中央にタイムライン、右にスレッド (開いたときだけ)、
 //! 下に入力欄と状態表示を置く。
 
-use std::time::Instant;
+use std::{collections::HashMap, time::Instant};
 
 use ratatui::{
     Frame,
@@ -16,6 +16,7 @@ use super::{
     e2ee_chat::{self, ChannelEncryption, CreateForm, CreateKind},
     encryption::Screen,
     global_search,
+    links::CiphertextRows,
     timeline::{self, Context, Timeline},
 };
 use crate::api::SearchKind;
@@ -713,7 +714,8 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         .reaction_groups_by_message(&channel_id, &app.me.id);
     let encrypted = app.channel_encryption(&channel_id).treat_as_encrypted();
     let now = Instant::now();
-    let body_links = |body: &str| app.body_links(body, now);
+    let seen = CiphertextRows::default();
+    let body_links = |body: &str| app.body_links(body, now, &seen);
     let ctx = Context {
         store: &app.store,
         me_name: &app.me.user_name,
@@ -757,12 +759,17 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
 /// 表示範囲と、その前後の半画面にあるメッセージの、取得が要るリンク先。
 fn near_links(app: &App, built: &Timeline, scroll: usize, height: usize) -> Vec<super::links::Key> {
     let near = scroll.saturating_sub(height / 2)..scroll + height + height / 2;
+    let ranges: HashMap<&str, &std::ops::Range<usize>> = built
+        .ranges
+        .iter()
+        .map(|(id, range)| (id.as_str(), range))
+        .collect();
     built
         .links
         .iter()
         .filter(|(id, _)| {
-            built
-                .range_of(id)
+            ranges
+                .get(id.as_str())
                 .is_some_and(|range| range.start < near.end && range.end > near.start)
         })
         .flat_map(|(_, targets)| targets)
@@ -773,11 +780,18 @@ fn near_links(app: &App, built: &Timeline, scroll: usize, height: usize) -> Vec<
 /// 選択中のメッセージにリンクがいくつもあるとき、開くものを選ぶ。
 fn draw_links(frame: &mut Frame, app: &App, targets: &[LinkTarget], index: usize) {
     let now = Instant::now();
+    let seen = CiphertextRows::default();
+    // 画面に収まらないときは、選んでいる候補が見える範囲だけを出す（枠と操作の案内の分を空ける）。
+    // 候補は 1 行にする。
+    let room = usize::from(frame.area().height).saturating_sub(4).max(1);
+    let width = usize::from(frame.area().width.min(POPUP_WIDTH).saturating_sub(2));
     let mut lines: Vec<Line<'static>> = targets
         .iter()
         .enumerate()
+        .skip(index.saturating_sub(room - 1))
+        .take(room)
         .map(|(i, target)| {
-            let view = super::links::view(&app.link_state(target, now), &app.store);
+            let view = super::links::view(&app.link_state(target, now, &seen), &app.store);
             let label = view
                 .inline
                 .or_else(|| view.header.first().map(|line| line.to_string()))
@@ -788,7 +802,8 @@ fn draw_links(frame: &mut Frame, app: &App, targets: &[LinkTarget], index: usize
             } else {
                 Style::new()
             };
-            Line::styled(format!("{marker}{}. {label}", i + 1), style)
+            let line = Line::styled(format!("{marker}{}. {label}", i + 1), style);
+            timeline::wrap(line, width).swap_remove(0)
         })
         .collect();
     lines.push(Line::from(""));
@@ -864,7 +879,8 @@ fn draw_thread(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut reply_counts = app.store.reply_counts(&channel_id);
     reply_counts.remove(&thread.root_id);
     let now = Instant::now();
-    let body_links = |body: &str| app.body_links(body, now);
+    let seen = CiphertextRows::default();
+    let body_links = |body: &str| app.body_links(body, now, &seen);
     let ctx = Context {
         store: &app.store,
         me_name: &app.me.user_name,
@@ -1254,8 +1270,10 @@ fn popup_rows(lines: &[Line<'_>], width: u16) -> usize {
         .sum()
 }
 
+const POPUP_WIDTH: u16 = 56;
+
 fn draw_popup(frame: &mut Frame, title: &str, lines: Vec<Line<'static>>) {
-    draw_popup_sized(frame, title, lines, 56);
+    draw_popup_sized(frame, title, lines, POPUP_WIDTH);
 }
 
 fn draw_popup_sized(frame: &mut Frame, title: &str, lines: Vec<Line<'static>>, width: u16) {
@@ -1551,6 +1569,71 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.mode, Mode::Normal);
         assert_eq!(app.current.as_deref(), Some("c2"));
+    }
+
+    #[tokio::test]
+    async fn missing_messages_are_not_opened() {
+        let mut app = app_with_link(SECRET_LINK);
+        app.on_app_event(AppEvent::Linked(crate::electric::LinkedEvent::Rows {
+            channel_id: "c2".into(),
+            rows: vec![("s1".into(), None)],
+        }));
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.current.as_deref(), Some("c1"));
+        assert_eq!(app.selected.as_deref(), Some("l1"));
+        assert_eq!(
+            app.notice.as_ref().map(|(text, _)| text.as_str()),
+            Some("メッセージを表示できません")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pending_link_does_not_replace_where_the_user_went_next() {
+        let rows = || {
+            batch(vec![
+                (
+                    "m2",
+                    json!({ "id": "m2", "user_id": "u2", "channel_id": "c2", "content": "親",
+                            "created_at": "2026-11-01 01:00:00" }),
+                ),
+                (
+                    "s1",
+                    json!({ "id": "s1", "user_id": "u2", "channel_id": "c2", "content": "返信",
+                            "created_at": "2026-11-01 02:00:00", "parent_id": "m2" }),
+                ),
+            ])
+        };
+        let arrive =
+            |app: &mut App| app.on_shape(ShapeEvent::Batch(ShapeId::Messages("c2".into()), rows()));
+        // 返信と分からないうちに開くと、行が届いた時点でスレッドを開く。
+        let mut app = app_with_link(SECRET_LINK);
+        press(&mut app, KeyCode::Char('o'));
+        arrive(&mut app);
+        assert_eq!(app.thread.as_ref().unwrap().root_id, "m2");
+
+        // その前に自分でスレッドを開いて閉じたら、移動しない。
+        let mut app = app_with_link(SECRET_LINK);
+        press(&mut app, KeyCode::Char('o'));
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Esc);
+        arrive(&mut app);
+        assert!(app.thread.is_none());
+    }
+
+    #[tokio::test]
+    async fn the_link_chooser_scrolls_to_the_selection() {
+        let content: String = (1..=24)
+            .map(|n| format!("http://127.0.0.1:9/channels/c2?message=n{n} "))
+            .collect();
+        let mut app = app_with_link(&content);
+        press(&mut app, KeyCode::Char('o'));
+        assert!(render(&mut app).contains("▶ 1. "));
+        for _ in 0..22 {
+            press(&mut app, KeyCode::Char('j'));
+        }
+        let screen = render(&mut app);
+        assert!(screen.contains("▶ 23. "), "{screen}");
+        assert!(screen.contains("Esc: 閉じる"), "{screen}");
     }
 
     fn sas_view(phase: zoo_crypto::SasPhase) -> crate::e2ee::verification::SasView {

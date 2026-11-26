@@ -2,6 +2,7 @@
 //! 表示」、docs/request-design.md の「メッセージリンクの埋め込み」）。
 
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet, VecDeque},
     time::{Duration, Instant},
 };
@@ -124,6 +125,7 @@ impl Links {
             self.started
                 .retain(|(channel, _), _| *channel != channel_id);
         }
+        self.evict();
     }
 
     /// 覚える件数を超えた分を古い順に捨てる。購読中のチャンネルの結果は残す。取得のタスクは
@@ -155,6 +157,10 @@ impl Links {
                         Some(Ok(message)) => Some(Box::new(message)),
                         // 読めない行は、取得できなかったものとする。
                         Some(Err(_)) => {
+                            self.started.remove(&key);
+                            if self.results.remove(&key).is_some() {
+                                self.order.retain(|old| *old != key);
+                            }
                             self.failed.insert(key);
                             continue;
                         }
@@ -194,6 +200,9 @@ pub struct LinkView {
     pub body: Option<Line<'static>>,
     pub body_lines: usize,
 }
+
+/// チャンネルごとの、読み込んでいる行に暗号文の行があるかの結果（1 回の描画の間だけ使う）。
+pub type CiphertextRows = RefCell<HashMap<String, bool>>;
 
 /// 1 つの本文のアプリ内リンクの表示と、取得の対象。
 #[derive(Debug, Clone, Default)]
@@ -409,14 +418,29 @@ mod tests {
             links.fetch(&key("m0"), start),
             LinkedFetch::Found(_)
         ));
+        // 購読を閉じたら、その場で上限まで捨てる。
         links.visible.clear();
         links.sync(start + RELEASE_DELAY, |_, _| unreachable!());
-        links.apply(LinkedEvent::Rows {
-            channel_id: "c2".into(),
-            rows: vec![("x".into(), None)],
-        });
         assert_eq!(links.results.len(), CACHE_SIZE);
         assert!(!links.results.contains_key(&key("m0")));
+    }
+
+    #[test]
+    fn an_unreadable_update_replaces_the_old_result() {
+        let mut links = Links::default();
+        links.apply(rows("m1", Some("本文")));
+        let broken = json!({ "id": "m1" }).as_object().unwrap().clone();
+        links.apply(LinkedEvent::Rows {
+            channel_id: "c1".into(),
+            rows: vec![("m1".into(), Some(broken))],
+        });
+        assert_eq!(links.fetch(&key("m1"), Instant::now()), LinkedFetch::Failed);
+        assert!(links.order.is_empty());
+        links.apply(rows("m1", Some("直った本文")));
+        assert!(matches!(
+            links.fetch(&key("m1"), Instant::now()),
+            LinkedFetch::Found(_)
+        ));
     }
 
     #[test]

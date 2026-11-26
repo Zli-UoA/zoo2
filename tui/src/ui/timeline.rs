@@ -300,10 +300,7 @@ fn embed_lines(view: &LinkView, width: usize) -> Vec<Line<'static>> {
         if wrapped.len() > view.body_lines {
             wrapped.truncate(view.body_lines);
             if let Some(last) = wrapped.pop() {
-                // `…` の分を空けて折り返し直した 1 行目を使う。
-                let mut shortened = wrap(last, inner - 1).swap_remove(0);
-                shortened.spans.push(Span::styled("…", DIM));
-                wrapped.push(shortened);
+                wrapped.push(with_ellipsis(last, inner));
             }
         }
         lines.extend(wrapped);
@@ -316,6 +313,27 @@ fn embed_lines(view: &LinkView, width: usize) -> Vec<Line<'static>> {
             Line::from(spans)
         })
         .collect()
+}
+
+/// 末尾に `…` を付けて、合わせて `width` に収まる書記素だけを残す。
+fn with_ellipsis(line: Line<'static>, width: usize) -> Line<'static> {
+    const ELLIPSIS: &str = "…";
+    let mut room = width.saturating_sub(ELLIPSIS.width());
+    let mut spans = Vec::new();
+    'spans: for span in line.spans {
+        let mut kept = String::new();
+        for grapheme in span.content.graphemes(true) {
+            if grapheme.width() > room {
+                spans.push(Span::styled(kept, span.style));
+                break 'spans;
+            }
+            room -= grapheme.width();
+            kept.push_str(grapheme);
+        }
+        spans.push(Span::styled(kept, span.style));
+    }
+    spans.push(Span::styled(ELLIPSIS, DIM));
+    Line::from(spans).style(line.style)
 }
 
 /// Emoji Kitchen の合成絵文字 (`kitchen:<a>_<b>`) は画像なので、元の2つを並べて示す。
@@ -428,6 +446,21 @@ mod tests {
         let line = Line::from(format!("aaaaa{thumbs}"));
         let wrapped: Vec<String> = wrap(line, 6).iter().map(|l| l.to_string()).collect();
         assert_eq!(wrapped, ["aaaaa".to_string(), thumbs.to_string()]);
+    }
+
+    #[test]
+    fn truncated_embeds_stay_within_the_width() {
+        let view = LinkView {
+            body: Some(Line::from("あいうえおかきくけこ")),
+            body_lines: 3,
+            ..Default::default()
+        };
+        for width in 4..10 {
+            let lines = embed_lines(&view, width);
+            assert_eq!(lines.len(), 3, "{width}");
+            assert!(lines.iter().all(|line| line.width() <= width), "{width}");
+            assert!(lines[2].to_string().ends_with('…'), "{width}");
+        }
     }
 
     #[test]

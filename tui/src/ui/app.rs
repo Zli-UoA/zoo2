@@ -18,7 +18,7 @@ use super::e2ee_chat::{
     self, ChannelEncryption, CreateForm, CreateKind, Decryptions, RowKey, Shown,
 };
 use super::global_search::{self, GlobalSearch};
-use super::links::BodyLinks;
+use super::links::{BodyLinks, CiphertextRows};
 use crate::{
     api::{ApiClient, Me, ReadState, ThreadSummary, TypingUser, stale_revision},
     e2ee::{
@@ -1933,7 +1933,27 @@ impl App {
         Some((target.channel_id.clone(), message_id.to_owned()))
     }
 
-    pub fn link_state(&self, target: &LinkTarget, now: Instant) -> LinkState<'_> {
+    /// このチャンネルで読み込んでいる行に、暗号文の行があるか。`seen` に覚えて、1 回の描画で
+    /// 何度も行を調べない（描画ごとに作り直す）。
+    fn linked_ciphertext(&self, channel_id: &str, seen: &CiphertextRows) -> bool {
+        if let Some(found) = seen.borrow().get(channel_id) {
+            return *found;
+        }
+        let found = self.links.has_ciphertext(channel_id)
+            || self
+                .store
+                .visible_messages(channel_id)
+                .any(|message| message.ciphertext.is_some());
+        seen.borrow_mut().insert(channel_id.to_owned(), found);
+        found
+    }
+
+    pub fn link_state(
+        &self,
+        target: &LinkTarget,
+        now: Instant,
+        seen: &CiphertextRows,
+    ) -> LinkState<'_> {
         let channel = self.store.channel(&target.channel_id);
         let fetch = target
             .linked_message_id()
@@ -1942,11 +1962,7 @@ impl App {
             });
         // 暗号化の扱いは、サーバーの `encrypted` だけで決めない（記録、`edm:` の名前、読み込み済みの
         // 暗号文の行）。
-        let has_ciphertext = self.links.has_ciphertext(&target.channel_id)
-            || self
-                .store
-                .visible_messages(&target.channel_id)
-                .any(|message| message.ciphertext.is_some());
+        let has_ciphertext = self.linked_ciphertext(&target.channel_id, seen);
         let encrypted = ChannelEncryption::of(
             channel,
             self.known_encrypted_channels.contains(&target.channel_id),
@@ -1972,15 +1988,15 @@ impl App {
     }
 
     /// 本文のアプリ内リンクの表示。
-    pub fn body_links(&self, body: &str, now: Instant) -> BodyLinks {
+    pub fn body_links(&self, body: &str, now: Instant, seen: &CiphertextRows) -> BodyLinks {
         let mut result = BodyLinks::default();
         for (_, target) in links::embedded_links(body, &self.api_base_url) {
-            let state = self.link_state(&target, now);
+            let state = self.link_state(&target, now, seen);
             result.embeds.push(super::links::view(&state, &self.store));
             result.targets.push(target);
         }
         for (url, target) in links::app_links(body, &self.api_base_url) {
-            let state = self.link_state(&target, now);
+            let state = self.link_state(&target, now, seen);
             if let Some(label) = super::links::view(&state, &self.store).inline {
                 result.inline.insert(url, label);
             }
@@ -2062,14 +2078,23 @@ impl App {
             self.focus = Focus::Messages;
             return;
         };
-        let fetched = self.linked_fetch(&target.channel_id, &message_id, Instant::now());
+        let now = Instant::now();
+        // 削除したなど、見られないと分かったメッセージへは移動しない。
+        if matches!(
+            self.link_state(&target, now, &CiphertextRows::default()),
+            LinkState::Unavailable { .. }
+        ) {
+            self.notify("メッセージを表示できません");
+            return;
+        }
+        let fetched = self.linked_fetch(&target.channel_id, &message_id, now);
         let parent_id = match &fetched {
             LinkedFetch::Found(message) => message.parent_id.clone(),
             _ => None,
         }
         .or_else(|| target.thread_id.clone());
         // 返信かどうかがまだ分からなければ、行が届いた時点でスレッドを開く。
-        self.pending_link = (parent_id.is_none() && !matches!(fetched, LinkedFetch::Found(_)))
+        let pending = (parent_id.is_none() && !matches!(fetched, LinkedFetch::Found(_)))
             .then(|| (target.channel_id.clone(), message_id.clone()));
         // スレッドの親ではないメッセージへ移るときは、開いているスレッドを閉じる。
         if parent_id.is_none() && self.thread.is_some() {
@@ -2080,6 +2105,7 @@ impl App {
             message_id,
             parent_id,
         });
+        self.pending_link = pending;
     }
 
     /// [`Self::follow_link`] で開いたメッセージが返信と分かったら、スレッドを開く。
@@ -2091,8 +2117,8 @@ impl App {
             return;
         }
         self.pending_link = None;
-        // 利用者がほかを選んでいたら、移動しない。
-        if self.selected.as_deref() != Some(message_id.as_str()) {
+        // 利用者がほかを選んだり、スレッドを開いたりしていたら、移動しない。
+        if self.thread.is_some() || self.selected.as_deref() != Some(message_id.as_str()) {
             return;
         }
         if let Some(parent_id) = self
@@ -2483,6 +2509,8 @@ impl App {
     }
 
     fn activate_sidebar(&mut self) {
+        // 自分で移動したら、リンクの行き先を追いかけない。
+        self.pending_link = None;
         match self.selected_sidebar_item() {
             Some(SidebarItem::Channel(channel_id) | SidebarItem::Pinned(channel_id)) => {
                 // カーソルは `open_channel` が、押した行に残す。
@@ -2574,6 +2602,7 @@ impl App {
 
     /// スレッドを閉じる。返信を書きかけていたら、送り先をチャンネルに戻す。
     fn close_thread(&mut self) {
+        self.pending_link = None;
         self.typing_poll.wake();
         // 一覧にないスレッドを閉じると、その下の一時の行が消えるので、カーソルは同じ行に残す。
         let selected = self.selected_sidebar_item();
