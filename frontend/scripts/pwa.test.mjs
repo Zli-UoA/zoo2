@@ -665,7 +665,49 @@ test("the offline page follows the system color scheme", () => {
     /name="theme-color" content="#FFD600" media="\(prefers-color-scheme: light\)"/,
   );
   assert.match(html, /name="theme-color" content="#000000" media="\(prefers-color-scheme: dark\)"/);
-  assert.match(html, /@media \(prefers-color-scheme: dark\)/);
+  const darkRule = html.slice(
+    html.indexOf("@media (prefers-color-scheme: dark)"),
+    html.indexOf("</style>"),
+  );
+  assert.match(darkRule, /body\s*\{/);
+  assert.match(darkRule, /color:\s*#ffffff/);
+  assert.match(darkRule, /background:\s*#000000/);
+});
+
+test("the manifest is revalidated so installed apps receive the new splash color", async () => {
+  let manifest = '{"background_color":"#ffffff"}';
+  const { handlers, cacheContext } = worker({
+    fetch: async (input) => {
+      if (requestKey(input) === `${ORIGIN}/manifest.webmanifest`)
+        return basicResponse(manifest, {
+          headers: { "content-type": "application/manifest+json" },
+        });
+      return basicResponse(`network:${requestKey(input)}`);
+    },
+  });
+  await dispatch(handlers, "install");
+  const request = { url: `${ORIGIN}/manifest.webmanifest`, method: "GET", mode: "cors" };
+
+  manifest = '{"background_color":"#000000"}';
+  const response = await fetchThrough(handlers, request);
+  assert.equal(await response.text(), '{"background_color":"#000000"}');
+  const cache = await cacheContext.api.open("zoo-shell-v2");
+  assert.equal(
+    await (await cache.match(`${ORIGIN}/manifest.webmanifest`)).text(),
+    '{"background_color":"#000000"}',
+  );
+
+  // オフラインでは precache に戻る。更新が届かないよりはましなフォールバック。
+  const offline = worker({
+    caches: cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  assert.equal(
+    await (await fetchThrough(offline.handlers, request)).text(),
+    '{"background_color":"#000000"}',
+  );
 });
 
 test("push displays sender, channel and message preview from the decrypted payload", async () => {

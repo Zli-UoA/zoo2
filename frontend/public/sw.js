@@ -30,6 +30,10 @@ const SHELL = [
   "/icons/icon-512.png",
 ];
 const CACHEABLE_PREFIXES = ["/assets/", "/icons/", "/emojibase-data/"];
+// manifest はインストール済みのアプリが配色を参照する。キャッシュ優先のままだと
+// background_color の変更が古い端末に届かないため、常に取り直す。offline.html も
+// 同じく最新の表示を優先する（オフライン時は precache に戻る）。
+const FRESH_ASSETS = new Set(["/manifest.webmanifest", "/offline.html"]);
 
 // 暗号化チャンネルの Push の復号（#365。docs/e2ee.md の「Web Push の復号」）。`pnpm build` が
 // src/sw/push.ts から作る /sw-push.js が `self.zooDecryptPush` を置く（dev サーバーでは、何もしない
@@ -51,7 +55,6 @@ function isPrivatePath(pathname) {
 function isCacheableAsset(url) {
   return (
     CACHEABLE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix)) ||
-    url.pathname === "/manifest.webmanifest" ||
     url.pathname === "/favicon.ico"
   );
 }
@@ -316,6 +319,20 @@ async function handleAsset(request) {
   }
 }
 
+async function handleFreshAsset(request) {
+  const cache = await caches.open(await findActiveShellCache());
+  try {
+    const response = await fetch(request, { cache: "reload" });
+    if (response.ok) {
+      if (response.type === "basic") return await cacheResponse(cache, request, response);
+      return response;
+    }
+  } catch {
+    /* Offline: fall back to the precached copy. */
+  }
+  return (await cache.match(request)) || Response.error();
+}
+
 // Public AuthZ avatars have their own bounded cache, retained across shell upgrades.
 const AVATAR_ORIGIN = "https://avater.zliusercontent.com";
 const AVATAR_CACHE = "zoo-avatars-v1";
@@ -531,6 +548,8 @@ self.addEventListener("fetch", (event) => {
 
   if (event.request.mode === "navigate") {
     event.respondWith(handleNavigation(event.request, event));
+  } else if (FRESH_ASSETS.has(url.pathname)) {
+    event.respondWith(handleFreshAsset(event.request));
   } else if (isCacheableAsset(url)) {
     event.respondWith(handleAsset(event.request));
   }
