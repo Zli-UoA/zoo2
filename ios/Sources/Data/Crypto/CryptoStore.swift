@@ -672,18 +672,21 @@ final class CryptoStore: @unchecked Sendable {
         }
     }
 
-    /// まだ届け先に渡していない検証のメッセージを取り出し、保存した一覧を空にする。保存に失敗したら投げる（一覧は残るので、あとで
-    /// 取り出せる）。`processToDevice` が途中で投げたあとや、開き直した直後にも、処理済みの行のメッセージを取り出せる。
-    func takeVerifications() throws -> [String] {
+    /// まだ届け先に渡していない検証のメッセージ（保存した一覧。取り出すだけで、消さない）。
+    func pendingVerifications() -> [String] { lock.withLock { state.pending_verifications } }
+
+    /// 届け先に渡したメッセージを、保存した一覧から外す。届けたあとに呼ぶ（外す保存に失敗しても、メッセージは失わず、あとで
+    /// もう一度届く。届け先が重複を捨てる）。
+    func discardVerifications(_ delivered: [String]) throws {
         try lock.withLock {
             try ensureOpen()
-            let taken = state.pending_verifications
-            guard !taken.isEmpty else { return [] }
+            var remaining = state.pending_verifications
+            for message in delivered { if let index = remaining.firstIndex(of: message) { remaining.remove(at: index) } }
+            guard remaining != state.pending_verifications else { return }
             var next = state
-            next.pending_verifications = []
+            next.pending_verifications = remaining
             try save(next)
             state = next
-            return taken
         }
     }
 

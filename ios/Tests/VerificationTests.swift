@@ -40,6 +40,10 @@ struct VerificationTests {
         #expect(verification.entries.isEmpty)
         // 暗号ストアを使えないあいだは、捨てずに残す（Olm のメッセージは、2 回は復号できない）。形が壊れたものは、捨てる。
         #expect(verification.pendingMessageCount == 1)
+        // 同じメッセージがもう一度届いても、重複して残さない。
+        verification.handle([message])
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(verification.pendingMessageCount == 1)
         verification.handle(["壊れたメッセージ"])
         try await Task.sleep(for: .milliseconds(200))
         #expect(verification.pendingMessageCount == 1)

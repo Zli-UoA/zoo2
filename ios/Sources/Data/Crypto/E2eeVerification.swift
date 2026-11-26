@@ -119,6 +119,8 @@ final class E2eeVerification {
     @ObservationIgnored private var inbox: [(message: String, receivedAt: UInt64)] = []
     @ObservationIgnored private var tail: Task<Void, Never>?
     @ObservationIgnored private var saving = Set<String>()
+    /// 受け取ったメッセージ（重複を捨てる）。
+    @ObservationIgnored private var handled = Set<String>()
 
     init(store: @escaping () -> CryptoStore?, api: any E2eeVerificationAPI,
          now: @escaping () -> UInt64 = { UInt64(Date().timeIntervalSince1970 * 1000) }) {
@@ -143,7 +145,12 @@ final class E2eeVerification {
     /// to-device で届いた検証のメッセージ（受信時の検証を通った JSON。`E2eeDeviceManager.onVerifications`）。
     func handle(_ messages: [String]) {
         let received = now()
-        for message in messages { inbox.append((message, received)) }
+        for message in messages {
+            // 同じメッセージが、もう一度届いても（届け先に渡したあとの保存の失敗など）、1 回だけ処理する。
+            guard handled.insert(message).inserted else { continue }
+            if handled.count > 2000 { handled = [message] }
+            inbox.append((message, received))
+        }
         Task { @MainActor in try? await self.drain() }
     }
 
