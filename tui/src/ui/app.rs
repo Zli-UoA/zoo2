@@ -2643,13 +2643,16 @@ impl App {
             self.notify("通知設定を読み込み中です。少し待ってからもう一度押してください");
             return;
         }
-        // 未完了の操作がなければ、他端末の変更が Shape で同期済みの値を失敗時の戻り先にする。
+        // 未完了の操作がなく、かつ選択値が解除されていれば、他端末の変更が Shape で
+        // 同期済みの値を失敗時の戻り先にする。選択値が残っている間は Shape が保存済みの
+        // 値に追いついていないので、Store で上書きすると直近の PATCH 成功値を失う。
         if self
             .notification_level_in_flight
             .get(&channel_id)
             .copied()
             .unwrap_or(0)
             == 0
+            && !self.notification_level_selected.contains_key(&channel_id)
         {
             self.notification_level_confirmed.insert(
                 channel_id.clone(),
@@ -3665,6 +3668,108 @@ mod tests {
         assert_eq!(
             notification_level_requests(&server, "c1", 2).await,
             ["mentions", "mute"]
+        );
+    }
+
+    #[tokio::test]
+    async fn notification_level_failure_keeps_the_last_saved_value_under_stale_shape() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{body_json, method, path},
+        };
+        let server = MockServer::start().await;
+        // 最初の all -> mentions は成功するが、Shape は all のまま届かない。
+        Mock::given(method("PATCH"))
+            .and(path("/api/channels/c1/notification-settings"))
+            .and(body_json(serde_json::json!({ "level": "mentions" })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "level": "mentions" },
+                "txid": "7",
+            })))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        // Shape が古い間に要求した mute は失敗する。
+        Mock::given(method("PATCH"))
+            .and(path("/api/channels/c1/notification-settings"))
+            .and(body_json(serde_json::json!({ "level": "mute" })))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_json(serde_json::json!({ "error": "NG" })),
+            )
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        // 再試行の mute は成功する。
+        Mock::given(method("PATCH"))
+            .and(path("/api/channels/c1/notification-settings"))
+            .and(body_json(serde_json::json!({ "level": "mute" })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "level": "mute" },
+                "txid": "7",
+            })))
+            .mount(&server)
+            .await;
+        let (mut app, mut rx) = api_test_app(&server.uri());
+        set_notification_level(&mut app, "c1", NotificationLevel::All);
+        app.current = Some("c1".into());
+        app.cycle_notification_level();
+        assert_eq!(
+            notification_level_requests(&server, "c1", 1).await,
+            ["mentions"]
+        );
+        for _ in 0..2 {
+            let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            app.on_app_event(event);
+        }
+        assert!(app.notification_level_in_flight.is_empty());
+        assert_eq!(
+            app.store.notification_level("c1", "u1"),
+            NotificationLevel::All
+        );
+        assert_eq!(
+            app.notification_level_confirmed.get("c1"),
+            Some(&NotificationLevel::Mentions)
+        );
+        assert_eq!(
+            app.notification_level_selected.get("c1"),
+            Some(&NotificationLevel::Mentions)
+        );
+
+        // Shape がまだ all の間に次の変更を失敗させる。
+        app.cycle_notification_level();
+        assert_eq!(
+            notification_level_requests(&server, "c1", 2).await,
+            ["mentions", "mute"]
+        );
+        for _ in 0..2 {
+            let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            app.on_app_event(event);
+        }
+        assert!(app.notification_level_in_flight.is_empty());
+        // 古い Store で上書きせず、直近の PATCH 成功値を戻り先に保つ。
+        assert_eq!(
+            app.notification_level_confirmed.get("c1"),
+            Some(&NotificationLevel::Mentions)
+        );
+        assert_eq!(
+            app.notification_level_selected.get("c1"),
+            Some(&NotificationLevel::Mentions)
+        );
+
+        // 再試行は保存済みの mentions を基準に mute を送る。古い all を基準にすると
+        // mentions を送ってしまい、サーバーの設定とずれたままになる。
+        app.cycle_notification_level();
+        assert_eq!(
+            notification_level_requests(&server, "c1", 3).await,
+            ["mentions", "mute", "mute"]
         );
     }
 

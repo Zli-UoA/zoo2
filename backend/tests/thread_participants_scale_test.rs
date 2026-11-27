@@ -303,11 +303,13 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
         .batch_execute("ANALYZE users; ANALYZE thread_participants; ANALYZE messages")
         .await?;
     // The membership probe is an index-only scan; a vacuumed table (as in production) has no heap
-    // fetches. VACUUM cannot run inside a multi-statement batch.
+    // fetches. VACUUM cannot run inside a multi-statement batch (PostgreSQL wraps several
+    // statements in one implicit transaction), so run each one on its own.
     client
-        .batch_execute(
-            "VACUUM (ANALYZE) channel_user; VACUUM (ANALYZE) user_channel_notification_settings",
-        )
+        .batch_execute("VACUUM (ANALYZE) channel_user")
+        .await?;
+    client
+        .batch_execute("VACUUM (ANALYZE) user_channel_notification_settings")
         .await?;
 
     let output = std::env::var_os("SCALE_PLAN_DIR").map(std::path::PathBuf::from);
@@ -622,16 +624,32 @@ async fn notification_participants_sql_does_not_scan_users() -> anyhow::Result<(
         &[&tag, &noise_channel, &users],
     )
     .await?;
+    // 無関係な設定行も同じだけ置く。無関係な channel_user を投入している間は
+    // session_replication_role=replica でトリガーが無効なので、設定行は自動で作られない。
+    // 30万/100万で設定テーブルの走査量を比較できるように、対象外チャンネルの設定行を
+    // SCALE_USERS 件追加する。クエリは (channel_id,user_id) の索引で P 行だけを参照し、
+    // これら無関係行は読まない (probed_settings <= P の検証が規模に効くようにする)。
+    tx.execute(
+        "INSERT INTO user_channel_notification_settings(user_id,channel_id,notification_level) \
+         SELECT $1||'-u-'||lpad(n::text,9,'0'),$2::text,'mentions' \
+         FROM generate_series(1,$3::integer)n \
+         ON CONFLICT DO NOTHING",
+        &[&tag, &noise_channel, &users],
+    )
+    .await?;
     tx.batch_execute("SET LOCAL session_replication_role=origin")
         .await?;
     tx.commit().await?;
     client
         .batch_execute("ANALYZE users; ANALYZE thread_participants")
         .await?;
+    // VACUUM cannot run inside a multi-statement batch (PostgreSQL wraps several statements in one
+    // implicit transaction), so run each one on its own.
     client
-        .batch_execute(
-            "VACUUM (ANALYZE) channel_user; VACUUM (ANALYZE) user_channel_notification_settings",
-        )
+        .batch_execute("VACUUM (ANALYZE) channel_user")
+        .await?;
+    client
+        .batch_execute("VACUUM (ANALYZE) user_channel_notification_settings")
         .await?;
 
     let output = std::env::var_os("SCALE_PLAN_DIR").map(std::path::PathBuf::from);

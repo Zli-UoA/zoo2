@@ -439,3 +439,239 @@ async fn legacy_notification_level_write_is_mirrored_and_redacted() -> anyhow::R
     drop(app);
     fixture.cleanup().await
 }
+
+/// PATCH の所属確認は `channel_user` 行を `FOR UPDATE` でロックし、コミットまで保持する。
+/// 別トランザクションが同じ行をロックしている間は PATCH が待ち、解放後に完了する。
+#[tokio::test]
+async fn patch_locks_channel_user_membership_until_commit() -> anyhow::Result<()> {
+    let fixture = thread_db::ThreadDb::new().await?;
+    let mut config = fixture.config.clone();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+
+    let owner = uuid::Uuid::new_v4().to_string();
+    ok(
+        &app,
+        &owner,
+        "POST",
+        "/api/users",
+        json!({"id": owner, "user_name": owner, "display_name": owner}),
+    )
+    .await?;
+    let channel = uuid::Uuid::new_v4().to_string();
+    ok(
+        &app,
+        &owner,
+        "POST",
+        "/api/channels",
+        json!({"id": channel, "channel_name": channel, "is_private": false}),
+    )
+    .await?;
+    let path = format!("/api/channels/{channel}/notification-settings");
+    assert_eq!(
+        ok(&app, &owner, "GET", &path, json!({})).await?,
+        json!({"level": "mentions"})
+    );
+
+    let (mut client, connection) =
+        tokio_postgres::connect(&fixture.config.database_url, NoTls).await?;
+    tokio::spawn(connection);
+    let holder_pid: i32 = client
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
+    let (observer, observer_connection) =
+        tokio_postgres::connect(&fixture.config.database_url, NoTls).await?;
+    tokio::spawn(observer_connection);
+    let tx = client.transaction().await?;
+    tx.execute(
+        "SELECT 1 FROM channel_user WHERE user_id=$1 AND channel_id=$2 FOR UPDATE",
+        &[&owner, &channel],
+    )
+    .await?;
+
+    let patch_app = app.clone();
+    let patch_owner = owner.clone();
+    let patch_path = path.clone();
+    let patch = tokio::spawn(async move {
+        ok(
+            &patch_app,
+            &patch_owner,
+            "PATCH",
+            &patch_path,
+            json!({"level": "all"}),
+        )
+        .await
+    });
+
+    // PATCH が channel_user の行ロックを待っていることを期限付きで確認する。
+    // 確認できなければ所属確認がロックを取っていないので失敗させ、ロックも解放する。
+    if let Err(err) = wait_until_patch_waits_on(&observer, holder_pid).await {
+        let _ = tx.rollback().await;
+        return Err(err);
+    }
+    tx.rollback().await?;
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(20), patch)
+        .await
+        .map_err(|_| anyhow::anyhow!("PATCH did not finish within 20s"))???;
+    assert_eq!(result["data"], json!({"level": "all"}));
+    assert!(result["txid"].is_string());
+    assert_eq!(
+        ok(&app, &owner, "GET", &path, json!({})).await?,
+        json!({"level": "all"})
+    );
+
+    drop(app);
+    fixture.cleanup().await
+}
+
+/// PATCH と退出が重なっても、退出トリガーが消した設定行を PATCH が作り直さない。
+/// 設定行のロックで PATCH を UPSERT の直前で止め、その間に退出を試す。退出は PATCH が持つ
+/// `channel_user` の行ロックで待たされ、PATCH のコミット後に参加行と設定行が消える。
+#[tokio::test]
+async fn patch_before_exit_does_not_restore_deleted_settings() -> anyhow::Result<()> {
+    let fixture = thread_db::ThreadDb::new().await?;
+    let mut config = fixture.config.clone();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+
+    let owner = uuid::Uuid::new_v4().to_string();
+    ok(
+        &app,
+        &owner,
+        "POST",
+        "/api/users",
+        json!({"id": owner, "user_name": owner, "display_name": owner}),
+    )
+    .await?;
+    let channel = uuid::Uuid::new_v4().to_string();
+    ok(
+        &app,
+        &owner,
+        "POST",
+        "/api/channels",
+        json!({"id": channel, "channel_name": channel, "is_private": false}),
+    )
+    .await?;
+    let path = format!("/api/channels/{channel}/notification-settings");
+    assert_eq!(
+        ok(&app, &owner, "GET", &path, json!({})).await?,
+        json!({"level": "mentions"})
+    );
+
+    // 設定行をロックして PATCH を書き込みの直前で止める。
+    let (mut holder, holder_connection) =
+        tokio_postgres::connect(&fixture.config.database_url, NoTls).await?;
+    tokio::spawn(holder_connection);
+    let holder_pid: i32 = holder
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
+    let (observer, observer_connection) =
+        tokio_postgres::connect(&fixture.config.database_url, NoTls).await?;
+    tokio::spawn(observer_connection);
+    let holder_tx = holder.transaction().await?;
+    holder_tx
+        .execute(
+            "SELECT 1 FROM user_channel_notification_settings \
+             WHERE user_id=$1 AND channel_id=$2 FOR UPDATE",
+            &[&owner, &channel],
+        )
+        .await?;
+
+    let patch_app = app.clone();
+    let patch_owner = owner.clone();
+    let patch_path = path.clone();
+    let patch = tokio::spawn(async move {
+        ok(
+            &patch_app,
+            &patch_owner,
+            "PATCH",
+            &patch_path,
+            json!({"level": "all"}),
+        )
+        .await
+    });
+    if let Err(err) = wait_until_patch_waits_on(&observer, holder_pid).await {
+        let _ = holder_tx.rollback().await;
+        return Err(err);
+    }
+    // 退出は別接続から。PATCH が channel_user をロックしているので待たされるはず。
+    let (exit_client, exit_connection) =
+        tokio_postgres::connect(&fixture.config.database_url, NoTls).await?;
+    tokio::spawn(exit_connection);
+    let exit_pid: i32 = exit_client
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
+    let exit_owner = owner.clone();
+    let exit_channel = channel.clone();
+    let exit = tokio::spawn(async move {
+        exit_client
+            .execute(
+                "DELETE FROM channel_user WHERE user_id=$1 AND channel_id=$2",
+                &[&exit_owner, &exit_channel],
+            )
+            .await
+    });
+
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let waiting: bool = observer
+                .query_one(
+                    "SELECT COALESCE(wait_event_type='Lock', false) FROM pg_stat_activity WHERE pid=$1",
+                    &[&exit_pid],
+                )
+                .await?
+                .get(0);
+            if waiting {
+                return anyhow::Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("exit DELETE did not wait on a lock"))??;
+
+    // 退出は設定行のロック保持者 (holder) ではなく、PATCH の channel_user ロックで待っている。
+    let blockers: Vec<i32> = observer
+        .query_one("SELECT pg_blocking_pids($1)", &[&exit_pid])
+        .await?
+        .get(0);
+    assert!(
+        !blockers.contains(&holder_pid),
+        "exit waited on the settings lock holder, not on PATCH's channel_user lock: {blockers:?}"
+    );
+
+    holder_tx.commit().await?;
+    let patch_result = tokio::time::timeout(std::time::Duration::from_secs(20), patch)
+        .await
+        .map_err(|_| anyhow::anyhow!("PATCH did not finish within 20s"))???;
+    let _exit_rows = tokio::time::timeout(std::time::Duration::from_secs(20), exit)
+        .await
+        .map_err(|_| anyhow::anyhow!("exit DELETE did not finish within 20s"))???;
+
+    assert_eq!(patch_result["data"], json!({"level": "all"}));
+    assert!(patch_result["txid"].is_string());
+
+    // 退出が後で確定したので、参加行も設定行も残らない (設定行が復活していない)。
+    let mut check = db.transaction().await?;
+    let rows = backend::apps::query(
+        &mut check,
+        "SELECT json_build_object( \
+           'members', (SELECT count(*) FROM channel_user WHERE user_id=$1 AND channel_id=$2), \
+           'settings', (SELECT count(*) FROM user_channel_notification_settings \
+                        WHERE user_id=$1 AND channel_id=$2))::text",
+        &[&owner, &channel],
+    )
+    .await?;
+    check.commit().await?;
+    assert_eq!(rows[0]["members"], json!(0));
+    assert_eq!(rows[0]["settings"], json!(0));
+
+    drop(app);
+    fixture.cleanup().await
+}

@@ -1,7 +1,10 @@
 -- 通知設定の正本を channel_user から分離する (#620)。
 -- 旧バックエンドが動いたままでも動くように、列は残し、既存の設定値は新しいテーブルへ写す。
 -- 古い列は実際の設定を残さない（ローリング更新中にメンバー一覧から読まれないようにするため）。
--- トリガーは値の移送と古い列の既定値化が済んでから作り、バックフィルを上書きしないようにする。
+-- 参加・退出トリガーは既存値の移送より前に作る。移送とトリガー作成の間に参加した行を拾うため。
+-- CREATE TRIGGER は channel_user への書き込みを待たせるため、作成後の参加行はトリガーで設定行が作られ、
+-- 既存行は ON CONFLICT DO NOTHING の補完で埋める（トリガーが書いた値は上書きしない）。
+-- 値移送用の BEFORE トリガーは、古い列の既定値化を打ち消さないよう、既定値化の後に作る。
 CREATE TABLE IF NOT EXISTS "user_channel_notification_settings" (
   "user_id" text NOT NULL,
   "channel_id" text NOT NULL,
@@ -14,14 +17,9 @@ CREATE TABLE IF NOT EXISTS "user_channel_notification_settings" (
 CREATE INDEX IF NOT EXISTS "idx_user_channel_notification_settings_channel_id"
   ON "user_channel_notification_settings" ("channel_id", "user_id");
 
--- 既存の設定を移す（行が無いメンバーは既定値の mentions として扱う）。
-INSERT INTO user_channel_notification_settings (user_id, channel_id, notification_level)
-SELECT user_id, channel_id, notification_level FROM channel_user
-ON CONFLICT (user_id, channel_id) DO NOTHING;
-UPDATE channel_user SET notification_level = 'mentions' WHERE notification_level <> 'mentions';
-
 ALTER TABLE user_channel_notification_settings REPLICA IDENTITY FULL;
 
+-- 参加・退出を設定テーブルへ反映するトリガーを先に作る。
 CREATE OR REPLACE FUNCTION user_channel_notification_settings_sync() RETURNS trigger AS $$
 BEGIN
   IF TG_OP = 'DELETE' THEN
@@ -40,6 +38,16 @@ CREATE TRIGGER channel_user_notification_settings_sync
   AFTER INSERT OR DELETE ON channel_user
   FOR EACH ROW EXECUTE FUNCTION user_channel_notification_settings_sync();
 
+-- 既存の設定を移す（行が無いメンバーは既定値の mentions として扱う）。
+-- 上記トリガー作成後に参加した行は設定行が既にあるため、ON CONFLICT でその値を守る。
+INSERT INTO user_channel_notification_settings (user_id, channel_id, notification_level)
+SELECT user_id, channel_id, notification_level FROM channel_user
+ON CONFLICT (user_id, channel_id) DO NOTHING;
+UPDATE channel_user SET notification_level = 'mentions' WHERE notification_level <> 'mentions';
+
+-- 旧アプリが channel_user.notification_level に書いた値を設定テーブルへ移送する。
+-- この BEFORE トリガーを既定値化より前に作ると、UPDATE の NEW 側（mentions）が移送され、
+-- 古い列の既定値化が打ち消されるため、ここで作る。
 CREATE OR REPLACE FUNCTION channel_user_notification_level_legacy() RETURNS trigger AS $$
 BEGIN
   IF TG_OP = 'INSERT' THEN

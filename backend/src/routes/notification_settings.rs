@@ -66,19 +66,33 @@ fn not_found(channel_id: &str) -> AppError {
 /// 参加を確認しつつ、設定テーブルの主キー `(user_id, channel_id)` を1回の参照で読む。
 /// 削除済みチャンネルは `channels` の主キー参照を JOIN して除く。設定行が無ければ
 /// 既定値の `mentions` を返す (ローリング更新中に移行前のメンバーが残っていても読めるようにする)。
+///
+/// `lock_membership` を付けると `channel_user` 行を `FOR UPDATE` でロックし、トランザクションの
+/// 終了まで保持する。PATCH は所属確認から設定行の書き込みまで同じトランザクションで行うため、
+/// 退出 (`channel_user` の DELETE) と順序が確定し、退出トリガーが消した設定行を PATCH が
+/// 作り直すことがない。行ロックは書き込み待ちも兼ねるので、並列 PATCH も直列化される。
+/// GET は読み取りだけなのでロックしない。
 async fn current_level(
     tx: &mut toasty::Transaction<'_>,
     user_id: &str,
     channel_id: &str,
+    lock_membership: bool,
 ) -> Result<Option<String>, AppError> {
+    let lock = if lock_membership {
+        " FOR UPDATE OF cu"
+    } else {
+        ""
+    };
     let rows = crate::apps::query(
         tx,
-        "SELECT json_build_object('level', COALESCE(s.notification_level, 'mentions'))::text \
-         FROM channel_user cu \
-         JOIN channels c ON c.id = cu.channel_id \
-         LEFT JOIN user_channel_notification_settings s \
-           ON s.user_id = cu.user_id AND s.channel_id = cu.channel_id \
-         WHERE cu.user_id = $1 AND cu.channel_id = $2 AND c.deleted_at IS NULL",
+        &format!(
+            "SELECT json_build_object('level', COALESCE(s.notification_level, 'mentions'))::text \
+             FROM channel_user cu \
+             JOIN channels c ON c.id = cu.channel_id \
+             LEFT JOIN user_channel_notification_settings s \
+               ON s.user_id = cu.user_id AND s.channel_id = cu.channel_id \
+             WHERE cu.user_id = $1 AND cu.channel_id = $2 AND c.deleted_at IS NULL{lock}"
+        ),
         &[user_id, channel_id],
     )
     .await?;
@@ -99,7 +113,7 @@ async fn get_notification_settings(
         .to_string();
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    let Some(level) = current_level(&mut tx, &auth_user.id, &channel_id).await? else {
+    let Some(level) = current_level(&mut tx, &auth_user.id, &channel_id, false).await? else {
         let _ = tx.rollback().await;
         return Err(not_found(&channel_id));
     };
@@ -120,7 +134,8 @@ async fn update_notification_settings(
         .to_string();
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    let Some(current) = current_level(&mut tx, &auth_user.id, &channel_id).await? else {
+    // 所属確認で channel_user 行をロックし、この tx が終わるまで退出を待たせる。
+    let Some(current) = current_level(&mut tx, &auth_user.id, &channel_id, true).await? else {
         let _ = tx.rollback().await;
         return Err(not_found(&channel_id));
     };
@@ -161,7 +176,8 @@ async fn update_notification_settings(
                 txid,
             )));
         }
-        match current_level(&mut tx, &auth_user.id, &channel_id).await? {
+        // 所属行は最初の確認でこの tx がロック済みなので、読み直しはロックなしでよい。
+        match current_level(&mut tx, &auth_user.id, &channel_id, false).await? {
             Some(level) if level == payload.level => {
                 let _ = tx.rollback().await;
                 return Ok(Json(ApiResponse::new(
