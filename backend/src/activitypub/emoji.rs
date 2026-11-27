@@ -79,12 +79,11 @@ async fn fill_media_blurhashes(
     }
     let hashes = futures_util::future::join_all(images.into_iter().map(|(id, url)| async move {
         let hash = if let Ok(url) = reqwest::Url::parse(&url) {
-            match emoji_cache::get_with_limits(
+            match emoji_cache::get_with_wait(
                 &format!("media:{id}"),
                 None,
                 Duration::from_secs(1),
-                Some(Duration::from_secs(5)),
-                || load_image(url, true),
+                || load_worker_image(url),
             )
             .await
             {
@@ -597,6 +596,11 @@ async fn serve_image(
     Ok(([(header::CONTENT_TYPE,cached.mime.as_str()),(header::CACHE_CONTROL,"public, max-age=300"),(header::X_CONTENT_TYPE_OPTIONS,"nosniff"),(header::CONTENT_SECURITY_POLICY,"sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'")],cached.bytes).into_response())
 }
 async fn load_image(url: reqwest::Url, media: bool) -> Result<emoji_cache::Image, AppError> {
+    let (mime, bytes) = download_image(url, media).await?;
+    decode_image(mime, bytes, media, false).await
+}
+
+async fn download_image(url: reqwest::Url, media: bool) -> Result<(String, Vec<u8>), AppError> {
     let response = transport::safe_client(&url)
         .await?
         .get(url)
@@ -604,7 +608,28 @@ async fn load_image(url: reqwest::Url, media: bool) -> Result<emoji_cache::Image
         .send()
         .await
         .map_err(|_| AppError::BadGateway("Emoji image request failed".into()))?;
-    read_image(response, media).await
+    read_image_bytes(response, media).await
+}
+
+async fn load_worker_image(
+    url: reqwest::Url,
+) -> Result<emoji_cache::Image, emoji_cache::FetchError> {
+    use emoji_cache::FetchError;
+    let (mime, bytes) = tokio::time::timeout(Duration::from_secs(5), download_image(url, true))
+        .await
+        .map_err(|_| {
+            FetchError::Uncached(AppError::BadGateway("Emoji image request timed out".into()))
+        })?
+        .map_err(FetchError::Cacheable)?;
+    decode_image(mime, bytes, true, true)
+        .await
+        .map_err(|error| {
+            if matches!(error, AppError::RateLimited) {
+                FetchError::Uncached(error)
+            } else {
+                FetchError::Cacheable(error)
+            }
+        })
 }
 
 pub(super) fn unavailable_image(message: &str) -> AppError {
@@ -616,10 +641,10 @@ pub(super) fn unavailable_image(message: &str) -> AppError {
     }
 }
 
-async fn read_image(
+async fn read_image_bytes(
     mut response: reqwest::Response,
     media: bool,
-) -> Result<emoji_cache::Image, AppError> {
+) -> Result<(String, Vec<u8>), AppError> {
     let status = response.status();
     if !status.is_success() {
         return Err(
@@ -657,12 +682,35 @@ async fn read_image(
         }
         data.extend_from_slice(&chunk);
     }
+    Ok((mime, data))
+}
+
+#[cfg(test)]
+async fn read_image(
+    response: reqwest::Response,
+    media: bool,
+) -> Result<emoji_cache::Image, AppError> {
+    let (mime, data) = read_image_bytes(response, media).await?;
+    decode_image(mime, data, media, false).await
+}
+
+async fn decode_image(
+    mime: String,
+    mut data: Vec<u8>,
+    media: bool,
+    worker: bool,
+) -> Result<emoji_cache::Image, AppError> {
     let blurhash = if media {
         let kind = mime.clone();
-        let permit = crate::routes::home_images::DECODERS
-            .acquire()
-            .await
-            .map_err(|_| AppError::RateLimited)?;
+        let decoders = &crate::routes::home_images::DECODERS;
+        let permit = if worker {
+            decoders.try_acquire().map_err(|_| AppError::RateLimited)?
+        } else {
+            decoders
+                .acquire()
+                .await
+                .map_err(|_| AppError::RateLimited)?
+        };
         let (returned_data, hash) = tokio::task::spawn_blocking(move || {
             // Keep the permit in the blocking task if the HTTP request is cancelled.
             let _permit = permit;
@@ -782,6 +830,17 @@ mod avatar_tests {
 #[cfg(test)]
 mod media_proxy_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn worker_classifies_a_busy_decoder_as_local_capacity() {
+        let slots = crate::routes::home_images::DECODERS
+            .acquire_many(2)
+            .await
+            .unwrap();
+        let result = decode_image("image/png".into(), png(0), true, true).await;
+        drop(slots);
+        assert!(matches!(result, Err(AppError::RateLimited)));
+    }
 
     async fn payload(
         bytes: Vec<u8>,

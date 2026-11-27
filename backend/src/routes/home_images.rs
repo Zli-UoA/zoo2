@@ -16,9 +16,9 @@ use base64::Engine;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
-    collections::HashSet,
+    collections::HashMap,
     sync::{LazyLock, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 pub fn router() -> Router<AppState> {
@@ -99,20 +99,23 @@ pub(crate) fn thumbnail_key(key: &str) -> String {
     format!("{key}.thumbnail.webp")
 }
 
-static THUMBNAIL_REPAIRS: LazyLock<Mutex<HashSet<String>>> =
-    LazyLock::new(|| Mutex::new(HashSet::new()));
+// None denotes an active repair. Completed attempts have a bounded cooldown.
+static THUMBNAIL_REPAIRS: LazyLock<Mutex<HashMap<String, Option<Instant>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 static THUMBNAIL_REPAIR_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 fn schedule_thumbnail_repair(client: &aws_sdk_s3::Client, bucket: &str, original: &str) {
     let Ok(slot) = THUMBNAIL_REPAIR_SLOTS.try_acquire() else {
         return;
     };
-    if !THUMBNAIL_REPAIRS
-        .lock()
-        .unwrap()
-        .insert(original.to_owned())
     {
-        return;
+        let mut repairs = THUMBNAIL_REPAIRS.lock().unwrap();
+        let now = Instant::now();
+        repairs.retain(|_, retry_at| retry_at.is_none_or(|retry_at| retry_at > now));
+        if repairs.contains_key(original) || repairs.len() >= 1024 {
+            return;
+        }
+        repairs.insert(original.to_owned(), None);
     }
     let client = client.clone();
     let bucket = bucket.to_owned();
@@ -120,11 +123,14 @@ fn schedule_thumbnail_repair(client: &aws_sdk_s3::Client, bucket: &str, original
     tokio::spawn(async move {
         let _slot = slot;
         let _ = tokio::time::timeout(
-            Duration::from_secs(20),
+            Duration::from_secs(180),
             repair_thumbnail(&client, &bucket, &original),
         )
         .await;
-        THUMBNAIL_REPAIRS.lock().unwrap().remove(&original);
+        THUMBNAIL_REPAIRS
+            .lock()
+            .unwrap()
+            .insert(original, Some(Instant::now() + Duration::from_secs(60)));
     });
 }
 
@@ -385,19 +391,26 @@ async fn reconcile_uploader_thumbnails(
         // Claim only the four objects that can start immediately, even if the caller times out.
         let rows = query(&mut tx,
             "WITH candidates AS MATERIALIZED (
-               SELECT id,file_size FROM home_images WHERE uploader_id=$1
-                 AND thumbnail_ready IS NULL AND thumbnail_bytes=0
+               (SELECT id, file_size AS reserved FROM home_images WHERE uploader_id=$1
+                 AND thumbnail_ready IS NULL AND NOT (thumbnail_bytes>0)
                  AND home_image_can_have_thumbnail(content_type,width,height)
                  AND thumbnail_check_at<=now()+interval '5 minutes'
-               ORDER BY thumbnail_check_at,id LIMIT 32
+               ORDER BY thumbnail_check_at,id LIMIT 32)
+               UNION ALL
+               (SELECT id, thumbnail_bytes AS reserved FROM home_images WHERE uploader_id=$1
+                 AND thumbnail_ready IS NULL AND (thumbnail_bytes>0)
+                 AND home_image_can_have_thumbnail(content_type,width,height)
+                 AND thumbnail_check_at<=now()
+               ORDER BY thumbnail_check_at,id LIMIT 32)
              )
              UPDATE home_images SET thumbnail_check_at=now()+interval '10 minutes'
              WHERE id IN (SELECT h.id FROM candidates c JOIN home_images h ON h.id=c.id
-               WHERE h.thumbnail_ready IS NULL AND h.thumbnail_bytes=0
-                 AND h.created_at<now()-interval '5 minutes'
-                 AND h.thumbnail_check_at<=now()+interval '5 minutes'
-               ORDER BY c.file_size DESC,h.id LIMIT 4 FOR UPDATE OF h SKIP LOCKED)
-             RETURNING json_build_object('id',id,'check_at',thumbnail_check_at,'eligible',true,'reserved',file_size)::text",
+               WHERE h.thumbnail_ready IS NULL
+                 AND CASE WHEN h.thumbnail_bytes>0 THEN h.thumbnail_check_at<=now()
+                   ELSE h.created_at<now()-interval '5 minutes'
+                     AND h.thumbnail_check_at<=now()+interval '5 minutes' END
+               ORDER BY c.reserved DESC,h.id LIMIT 4 FOR UPDATE OF h SKIP LOCKED)
+             RETURNING json_build_object('id',id,'check_at',thumbnail_check_at,'eligible',true,'reserved',CASE WHEN thumbnail_bytes>0 THEN thumbnail_bytes ELSE file_size END)::text",
             &[user]).await?;
         tx.commit().await?;
         if rows.is_empty() {
@@ -536,7 +549,7 @@ async fn upload(
         } else {
             // An ambiguous PUT can still finish. Delay the HEAD and retain the reservation.
             toasty::sql::statement(
-                "UPDATE home_images SET thumbnail_check_at=now()+interval '5 minutes' WHERE id=$1",
+                "UPDATE home_images SET thumbnail_check_at=statement_timestamp()+interval '5 minutes' WHERE id=$1",
             )
             .bind(id.as_str())
             .exec(&mut tx)

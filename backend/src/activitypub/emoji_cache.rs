@@ -109,19 +109,26 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<Image, AppError>>,
 {
-    get_with_limits(id, client, Duration::from_secs(15), None, fetch).await
+    get_with_wait(id, client, Duration::from_secs(15), || async {
+        fetch().await.map_err(FetchError::Cacheable)
+    })
+    .await
 }
 
-pub(super) async fn get_with_limits<F, Fut>(
+pub(super) enum FetchError {
+    Cacheable(AppError),
+    Uncached(AppError),
+}
+
+pub(super) async fn get_with_wait<F, Fut>(
     id: &str,
     client: Option<IpAddr>,
     wait: Duration,
-    fetch_deadline: Option<Duration>,
     fetch: F,
 ) -> Result<Image, AppError>
 where
     F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<Image, AppError>>,
+    Fut: Future<Output = Result<Image, FetchError>>,
 {
     {
         let mut cache = CACHE.lock().unwrap();
@@ -139,13 +146,10 @@ where
     if let Some(value) = CACHE.lock().unwrap().cached(id, Instant::now()) {
         return result(value);
     }
-    // A worker deadline is shorter than the public proxy's deadline. Do not cache it.
-    let fetched = if let Some(deadline) = fetch_deadline {
-        tokio::time::timeout(deadline, fetch())
-            .await
-            .map_err(|_| AppError::BadGateway("Emoji image request timed out".into()))?
-    } else {
-        fetch().await
+    let fetched = match fetch().await {
+        Err(FetchError::Uncached(error)) => return Err(error),
+        Err(FetchError::Cacheable(error)) => Err(error),
+        Ok(image) => Ok(image),
     };
     let value = fetched.map_err(|error| match error {
         AppError::BadRequest(_) | AppError::Forbidden(_) => Failure::BadRequest,
@@ -271,13 +275,11 @@ mod tests {
     #[tokio::test]
     async fn worker_deadline_does_not_cache_a_public_image_failure() {
         let id = uuid::Uuid::new_v4().to_string();
-        let expired = get_with_limits(
-            &id,
-            None,
-            Duration::from_secs(1),
-            Some(Duration::ZERO),
-            std::future::pending,
-        )
+        let expired = get_with_wait(&id, None, Duration::from_secs(1), || async {
+            Err(FetchError::Uncached(AppError::BadGateway(
+                "Worker deadline".into(),
+            )))
+        })
         .await;
         assert!(matches!(expired, Err(AppError::BadGateway(_))));
         let public = get(&id, None, || async {

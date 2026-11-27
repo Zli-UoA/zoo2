@@ -103,7 +103,18 @@ pub(crate) async fn uploaded_image_metadata(
     let mut body = object.body;
     let mut bytes = Vec::new();
     loop {
-        let chunk = match body.try_next().await {
+        let next = if legacy_thumbnail_etag.is_some() {
+            match tokio::time::timeout(std::time::Duration::from_secs(15), body.try_next()).await {
+                Ok(chunk) => chunk,
+                Err(_) => {
+                    tracing::debug!(key, "Attachment thumbnail repair transfer stalled");
+                    return Ok(None);
+                }
+            }
+        } else {
+            body.try_next().await
+        };
+        let chunk = match next {
             Ok(Some(chunk)) => chunk,
             Ok(None) => break,
             Err(error) => {
