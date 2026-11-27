@@ -236,7 +236,7 @@ SQL
 
 ### マイグレーション実行中の同時書き込みとロック待ち（20261208000002）
 
-- 目的: バックフィル前の `LOCK TABLE channel_user IN SHARE ROW EXCLUSIVE MODE`（`infra/db/migrations/20261208000002_user_channel_notification_settings.sql`）が30万／100万件で書き込みをどう待たせるか、コミット後に値が残るかを検証する。`atlas:txmode none` だと途中でロックが解放されるため、`psql -1`（単一トランザクション）で実行する。
+- 目的: バックフィル前の `LOCK TABLE channel_user IN SHARE ROW EXCLUSIVE MODE NOWAIT`（`infra/db/migrations/20261208000002_user_channel_notification_settings.sql`）が30万／100万件で書き込みをどう待たせるか、コミット後に値が残るかを検証する。`atlas:txmode none` だと途中でロックが解放されるため、`psql -1`（単一トランザクション）で実行する。`NOWAIT` により、取得できなければ約0.2秒で `could not obtain lock on relation "channel_user" (55P03)` となり、Atlas はファイルを未適用のままトランザクションを戻す。書き込みが続いて `backoffLimit: 3` をすべて使い切ると migrate Job は失敗するため、落ち着いた後の再デプロイで再試行する（旧バックエンドの動作は変わらない）。取得後は参加・退出・旧列の更新がバックフィル完了まで待ち、`SELECT` は止まらない。
 - 環境・fixture: `zoo2-pg-scale` の PostgreSQL 16 使い捨て DB（`zoo_lock_300k` / `zoo_lock_1m`）。移行前のスキーマをテンプレートに、`channel_user` を 300,000 / 1,000,000 行（1チャンネル）、うち半数を旧列 `notification_level='all'`、残りを既定値 `'mentions'` にする。同時書き込み対象の `u-1` は `'mentions'` のまま置く。
 - 再現手順:
 

@@ -150,6 +150,9 @@ pub fn extract_mentions(content: &str) -> MentionTargets {
     }
 }
 
+/// 1 投稿の通知先に関する運用上限 (docs/query-design.md)。超過しても配信は止めず、警告を出す。
+const MAX_NOTIFICATION_TARGETS: usize = 10_000;
+
 /// チャンネルの通知設定を `channel_id` で1クエリだけ読み、user_id -> level にする。
 ///
 /// `idx_user_channel_notification_settings_channel_id (channel_id, user_id)` の範囲走査で
@@ -395,6 +398,19 @@ pub async fn create_message_notifications(
                 targets_to_notify.remove(id);
             }
         }
+    }
+
+    // 運用上限を超える宛先が出た場合は記録だけ残す (配信は止めない)。
+    // 同じスレッドへの同時返信が重なると、ルート行のロック保持が累積するため。
+    if targets_to_notify.len() > MAX_NOTIFICATION_TARGETS {
+        tracing::warn!(
+            target: "notifications",
+            channel_id = %message.channel_id,
+            message_id = %message.id,
+            targets = targets_to_notify.len(),
+            limit = MAX_NOTIFICATION_TARGETS,
+            "notification targets exceed the operational limit"
+        );
     }
 
     // 宛先が数千人でも SQL 往復を1回にするため、ID は Rust で生成してまとめて INSERT する。
