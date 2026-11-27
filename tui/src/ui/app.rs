@@ -146,6 +146,8 @@ pub enum AppEvent {
         channel_id: String,
         /// 送信した値。
         level: NotificationLevel,
+        /// 開始時に振った操作 ID。最新の操作だけが保留や選択値を戻す。
+        op_id: u64,
         succeeded: bool,
     },
 }
@@ -295,6 +297,10 @@ pub struct App {
     notification_level_confirmed: HashMap<String, NotificationLevel>,
     /// 同じチャンネルへの PATCH を入力順に直列化するロック。別チャンネルは互いにブロックしない。
     notification_level_locks: HashMap<String, Arc<tokio::sync::Mutex<()>>>,
+    /// 通知レベルの操作に振る ID。同じ値を連続で送っても完了を区別できる。
+    notification_level_next_op_id: u64,
+    /// チャンネルごとの最新の操作 ID。古い操作の完了で状態を戻さないための照合に使う。
+    notification_level_latest_op: HashMap<String, u64>,
     /// チャンネルごとに既読を送った最新メッセージ。同じ位置を何度も送らない。
     marked_read: HashMap<String, String>,
     /// 開いているチャンネルで入力中のユーザー。キーはスレッドの親 (None はタイムライン)。
@@ -398,6 +404,8 @@ impl App {
             notification_level_selected: HashMap::new(),
             notification_level_confirmed: HashMap::new(),
             notification_level_locks: HashMap::new(),
+            notification_level_next_op_id: 0,
+            notification_level_latest_op: HashMap::new(),
             marked_read: HashMap::new(),
             typing: HashMap::new(),
             typing_session: uuid::Uuid::new_v4().to_string(),
@@ -874,11 +882,11 @@ impl App {
             AppEvent::NotificationLevelFinished {
                 channel_id,
                 level,
+                op_id,
                 succeeded,
             } => {
-                if self.notification_level_pending.get(&channel_id) == Some(&level) {
-                    self.notification_level_pending.remove(&channel_id);
-                }
+                // 未完了件数はすべての完了で減らす。最新でない操作の完了でも数を合わせないと、
+                // 最後の PATCH が終わっても Shape を正本に戻せなくなる。
                 if let Some(count) = self.notification_level_in_flight.get_mut(&channel_id) {
                     if *count <= 1 {
                         self.notification_level_in_flight.remove(&channel_id);
@@ -886,11 +894,20 @@ impl App {
                         *count -= 1;
                     }
                 }
+                // 値だけで照合すると、同じ値を連続で送ったときに古い操作の完了が
+                // 最新の操作の保留や選択値を消してしまう。ID が最新のときだけ状態を戻す。
+                let is_latest =
+                    self.notification_level_latest_op.get(&channel_id).copied() == Some(op_id);
+                if is_latest && self.notification_level_pending.get(&channel_id) == Some(&level) {
+                    self.notification_level_pending.remove(&channel_id);
+                }
                 if succeeded {
                     // 成功した値だけがサーバーに保存された。Shape が遅れていても失敗時の戻り先はこれ。
                     self.notification_level_confirmed
                         .insert(channel_id.clone(), level);
-                } else if self.notification_level_selected.get(&channel_id) == Some(&level) {
+                } else if is_latest
+                    && self.notification_level_selected.get(&channel_id) == Some(&level)
+                {
                     // 失敗した値のあとに別の操作がなければ、最後に確定した値へ戻す。
                     // 途中の未保存の値を戻すと、連続失敗のあと実際の設定からずれてしまう。
                     let confirmed = self
@@ -2681,6 +2698,10 @@ impl App {
             .or_default()
             .clone();
         let label = format!("通知を {} にしました", Self::notification_level_label(next));
+        let op_id = self.notification_level_next_op_id;
+        self.notification_level_next_op_id += 1;
+        self.notification_level_latest_op
+            .insert(channel_id.clone(), op_id);
         *self
             .notification_level_in_flight
             .entry(channel_id.clone())
@@ -2696,6 +2717,7 @@ impl App {
             let _ = tx.send(AppEvent::NotificationLevelFinished {
                 channel_id: channel_id.clone(),
                 level: next,
+                op_id,
                 succeeded,
             });
             result?;
@@ -3447,25 +3469,34 @@ mod tests {
     #[tokio::test]
     async fn notification_level_other_channels_are_not_blocked() {
         use wiremock::{
-            Mock, MockServer, ResponseTemplate,
+            Mock, MockServer, Request, ResponseTemplate,
             matchers::{body_json, method, path},
         };
-        let server = MockServer::start().await;
+        // c1 の PATCH の応答を明示的に保留する。到着通知を送ってから、解放されるまで
+        // wiremock のサーバースレッドを止めるため、c2 の要求は別のサーバーに送る。
+        let (release_c1, held_c1) = std::sync::mpsc::channel::<()>();
+        let (c1_arrived_tx, c1_arrived_rx) = std::sync::mpsc::channel::<()>();
+        let held_c1 = Arc::new(std::sync::Mutex::new(held_c1));
+        let c1_server = MockServer::start().await;
         Mock::given(method("PATCH"))
             .and(path("/api/channels/c1/notification-settings"))
             .and(body_json(serde_json::json!({ "level": "mentions" })))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_delay(Duration::from_millis(400))
-                    .set_body_json(serde_json::json!({
-                        "data": { "level": "mentions" },
-                        "txid": "7",
-                    })),
-            )
+            .respond_with(move |_: &Request| {
+                let _ = c1_arrived_tx.send(());
+                let _ = held_c1
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(10));
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "data": { "level": "mentions" },
+                    "txid": "7",
+                }))
+            })
             .up_to_n_times(1)
             .expect(1)
-            .mount(&server)
+            .mount(&c1_server)
             .await;
+        let c2_server = MockServer::start().await;
         Mock::given(method("PATCH"))
             .and(path("/api/channels/c2/notification-settings"))
             .and(body_json(serde_json::json!({ "level": "mentions" })))
@@ -3475,27 +3506,52 @@ mod tests {
             })))
             .up_to_n_times(1)
             .expect(1)
-            .mount(&server)
+            .mount(&c2_server)
             .await;
-        let (mut app, _rx) = api_test_app(&server.uri());
+        let (mut app, _rx) = api_test_app(&c1_server.uri());
         set_notification_level(&mut app, "c1", NotificationLevel::All);
         set_notification_level(&mut app, "c2", NotificationLevel::All);
         app.current = Some("c1".into());
         app.cycle_notification_level();
-        assert_eq!(
-            notification_level_requests(&server, "c1", 1).await,
-            ["mentions"]
-        );
-        // c1 の応答を待つあいだも、別チャンネルの操作は進む。
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if c1_arrived_rx.try_recv().is_ok() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("c1 の PATCH が届かなかった");
+        // c1 の応答がまだ返っていないことを確認してから、別チャンネルの操作をする。
         app.current = Some("c2".into());
+        app.api = ApiClient::new(
+            reqwest::Client::new(),
+            &c2_server.uri(),
+            Credentials::Dev("u1".into()),
+        );
         app.cycle_notification_level();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if !received_notification_level_requests(&c2_server, "c2")
+                    .await
+                    .is_empty()
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("c1 の応答を待つあいだに c2 の PATCH が届かなかった");
+        // c2 の到着を確認できたので、c1 の応答を解放する。
+        let _ = release_c1.send(());
         assert_eq!(
-            received_notification_level_requests(&server, "c2").await,
+            notification_level_requests(&c1_server, "c1", 1).await,
             ["mentions"]
         );
         assert_eq!(
-            notification_level_requests(&server, "c1", 1).await,
+            received_notification_level_requests(&c2_server, "c2").await,
             ["mentions"]
         );
     }
@@ -3883,6 +3939,80 @@ mod tests {
         assert_eq!(
             notification_level_requests(&server, "c1", 3).await,
             ["mentions", "mute", "mentions"]
+        );
+    }
+
+    #[tokio::test]
+    async fn notification_level_first_failure_does_not_undo_a_later_request_of_the_same_value() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{body_json, method, path},
+        };
+        let server = MockServer::start().await;
+        // 1 回目の Mentions だけ失敗させる。4 回目も Mentions なので、値だけで照合すると
+        // 1 回目の失敗が 4 回目の選択値を取り消してしまう。
+        Mock::given(method("PATCH"))
+            .and(path("/api/channels/c1/notification-settings"))
+            .and(body_json(serde_json::json!({ "level": "mentions" })))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_json(serde_json::json!({ "error": "NG" })),
+            )
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        for level in ["mentions", "mute", "all"] {
+            Mock::given(method("PATCH"))
+                .and(path("/api/channels/c1/notification-settings"))
+                .and(body_json(serde_json::json!({ "level": level })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "data": { "level": level },
+                    "txid": "7",
+                })))
+                .mount(&server)
+                .await;
+        }
+        let (mut app, mut rx) = api_test_app(&server.uri());
+        set_notification_level(&mut app, "c1", NotificationLevel::All);
+        app.current = Some("c1".into());
+        for _ in 0..4 {
+            app.cycle_notification_level();
+        }
+        assert_eq!(
+            notification_level_requests(&server, "c1", 4).await,
+            ["mentions", "mute", "all", "mentions"]
+        );
+        // 1 回目の失敗の完了だけを処理する。4 回目がまだ送信中なので選択値は Mentions のまま。
+        for _ in 0..2 {
+            let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            app.on_app_event(event);
+        }
+        assert!(app.notification_level_pending.contains_key("c1"));
+        assert_eq!(
+            app.notification_level_selected.get("c1"),
+            Some(&NotificationLevel::Mentions)
+        );
+        for _ in 0..6 {
+            let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            app.on_app_event(event);
+        }
+        assert!(app.notification_level_pending.is_empty());
+        assert!(app.notification_level_in_flight.is_empty());
+        // 最新の操作が成功したので確定値は Mentions。次の操作は Mute を送る。
+        assert_eq!(
+            app.notification_level_confirmed.get("c1"),
+            Some(&NotificationLevel::Mentions)
+        );
+        app.cycle_notification_level();
+        assert_eq!(
+            notification_level_requests(&server, "c1", 5).await,
+            ["mentions", "mute", "all", "mentions", "mute"]
         );
     }
 

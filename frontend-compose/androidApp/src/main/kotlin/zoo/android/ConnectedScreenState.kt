@@ -1184,12 +1184,18 @@ internal class ConnectedScreenState(
                 action.id.startsWith("notification:") && channel != null -> {
                     val level = action.id.substringAfter(':')
                     if (level in setOf("all", "mentions", "mute")) {
-                        val lock = notificationLevelLocks.getOrPut(channelId) { Mutex() }
-                        request {
-                            lock.withLock {
-                                app.api.request(
-                                    "/api/channels/${channelId.encodeURLParameter()}/notification-settings",
-                                    "PATCH", obj("level" to level))
+                        if (!platform.env.online) {
+                            // request() はオフラインだと PATCH を送らず黙って戻るので、
+                            // 選択が保存されなかったことを利用者に伝える（共通の通信エラー表示）。
+                            app.toast = app.t("common.errors.network")
+                        } else {
+                            val lock = notificationLevelLocks.getOrPut(channelId) { Mutex() }
+                            request {
+                                lock.withLock {
+                                    app.api.request(
+                                        "/api/channels/${channelId.encodeURLParameter()}/notification-settings",
+                                        "PATCH", obj("level" to level))
+                                }
                             }
                         }
                     }

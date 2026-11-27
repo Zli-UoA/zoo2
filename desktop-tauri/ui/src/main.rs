@@ -107,6 +107,17 @@ impl Drop for MutexGuard {
     }
 }
 
+/// 通知設定の保存要求。開始時の世代と要求 ID を持たせ、アカウント切替や連続操作で
+/// 古い完了が新しい表示を壊さないようにする。`in_flight` はこのチャンネルの未完了件数で、
+/// 自世代の完了ごとに減算する（TUI の `notification_level_in_flight` と同じ方針）。
+#[derive(Clone)]
+struct NotificationSave {
+    generation: u64,
+    request: u64,
+    level: NotificationLevel,
+    in_flight: usize,
+}
+
 #[derive(Clone, Copy)]
 struct Ctx {
     session: RwSignal<Option<SessionInfo>>,
@@ -123,7 +134,10 @@ struct Ctx {
     /// チャンネルごとに最後に選んだ値。Shape がこの値に追いつくまで表示と同値判定に使う。
     notification_saved: RwSignal<HashMap<String, NotificationLevel>, LocalStorage>,
     /// 保存中のチャンネル。別チャンネルに移っても保存中であることを保つ。
-    notification_pending: RwSignal<HashMap<String, NotificationLevel>, LocalStorage>,
+    /// 世代と要求 ID を持たせ、古い保存の完了が新しい保存の表示を上書きしないようにする。
+    notification_pending: RwSignal<HashMap<String, NotificationSave>, LocalStorage>,
+    /// 保存要求の連番。アカウントをまたいで単調に増やし、同じ値の連続選択も識別する。
+    notification_request: RwSignal<u64>,
 }
 
 impl Ctx {
@@ -244,6 +258,7 @@ fn App() -> impl IntoView {
         notification_locks: StoredValue::new_local(HashMap::new()),
         notification_saved: RwSignal::new_local(HashMap::new()),
         notification_pending: RwSignal::new_local(HashMap::new()),
+        notification_request: RwSignal::new(0),
     };
     provide_context(ctx);
     if let Ok(timer) = set_interval_with_handle(
@@ -651,6 +666,8 @@ fn ChannelList() -> impl IntoView {
 /// 保存した値は Shape が追いつくまで保ち、表示と同値判定に使う。Shape が届く前に別の値を選んでも
 /// 古い値との同値判定で PATCH が省略されないようにするため。同じチャンネルへの PATCH は
 /// アプリ全体のロックで送信順に直列化し、別チャンネルは並列で送る（TUI と同じ方針）。
+/// 各保存は開始時の世代と要求 ID を持ち、完了時にそれが最新のときだけ表示を更新するので、
+/// アカウント切替後に古い保存が完了しても新しい選択を上書きしない。
 #[component]
 fn ChannelNotificationSettings() -> impl IntoView {
     let ctx = expect_context::<Ctx>();
@@ -694,11 +711,28 @@ fn ChannelNotificationSettings() -> impl IntoView {
             lock = Some(locks.entry(channel_id.clone()).or_default().clone());
         });
         let lock = lock.expect("通知設定のロックを取得できませんでした");
+        // 開始時の世代と要求 ID を保存する。アカウント切替後に古い完了が届いても、
+        // 新しい保存の表示を上書きしないようにするため (TUI の世代判定と同じ方針)。
+        let generation = ctx.generation.get_untracked();
+        let request_id = ctx.notification_request.get_untracked() + 1;
+        ctx.notification_request.set(request_id);
         ctx.notification_saved.update(|saved| {
             saved.insert(channel_id.clone(), next);
         });
         ctx.notification_pending.update(|pending| {
-            pending.insert(channel_id.clone(), next);
+            let in_flight = pending
+                .get(&channel_id)
+                .filter(|save| save.generation == generation)
+                .map_or(1, |save| save.in_flight + 1);
+            pending.insert(
+                channel_id.clone(),
+                NotificationSave {
+                    generation,
+                    request: request_id,
+                    level: next,
+                    in_flight,
+                },
+            );
         });
         spawn_local(async move {
             let _guard = lock.lock().await;
@@ -712,17 +746,34 @@ fn ChannelNotificationSettings() -> impl IntoView {
             )
             .await;
             let succeeded = result.is_ok();
-            // 後の操作がなければ保存中を解除する。ロック待ちの操作があるときは残す。
-            if ctx
-                .notification_pending
-                .with(|pending| pending.get(&channel_id) == Some(&next))
-            {
+            // 未完了件数は自世代の完了ごとに減算する。ロック待ちの要求が残っていれば 0 に
+            // ならないので、最後の完了まで保存中を保てる。アカウント切替後の要求は
+            // 古い完了では減算しない。
+            let mut latest = false;
+            let mut finished = false;
+            if ctx.notification_pending.with(|pending| {
+                pending
+                    .get(&channel_id)
+                    .is_some_and(|save| save.generation == generation)
+            }) {
+                ctx.notification_pending.update(|pending| {
+                    if let Some(save) = pending.get_mut(&channel_id) {
+                        if save.generation == generation {
+                            save.in_flight = save.in_flight.saturating_sub(1);
+                            latest = save.request == request_id && save.level == next;
+                            finished = save.in_flight == 0;
+                        }
+                    }
+                });
+            }
+            if finished {
                 ctx.notification_pending.update(|pending| {
                     pending.remove(&channel_id);
                 });
             }
-            // 失敗した値がまだ選ばれていなければ、書き込み前の値に戻す。後の操作があればそのままにする。
+            // 失敗した値が最新の選択のときだけ、書き込み前の値に戻す。
             if !succeeded
+                && latest
                 && ctx
                     .notification_saved
                     .with(|saved| saved.get(&channel_id) == Some(&next))
@@ -731,8 +782,10 @@ fn ChannelNotificationSettings() -> impl IntoView {
                     saved.insert(channel_id.clone(), previous);
                 });
             }
-            if let Err(err) = result {
-                ctx.error.set(Some(err.message));
+            if latest {
+                if let Err(err) = result {
+                    ctx.error.set(Some(err.message));
+                }
             }
             // 成功した値は Shape が届くまで保持し、届いたら App の SHAPE 処理が解除する。
         });

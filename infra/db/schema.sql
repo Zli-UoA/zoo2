@@ -126,12 +126,14 @@ BEGIN
     NEW.notification_level := 'mentions';
     RETURN NEW;
   END IF;
-  IF NEW.notification_level IS DISTINCT FROM OLD.notification_level THEN
-    INSERT INTO user_channel_notification_settings (user_id, channel_id, notification_level)
-    VALUES (NEW.user_id, NEW.channel_id, NEW.notification_level)
-    ON CONFLICT (user_id, channel_id) DO UPDATE SET notification_level = EXCLUDED.notification_level
-     WHERE user_channel_notification_settings.notification_level <> EXCLUDED.notification_level;
-  END IF;
+  -- UPDATE OF notification_level で発火したときは、旧列が既定値の mentions に戻されているため
+  -- OLD と NEW が同じでも指定値を正本へ反映する。旧値との比較で判定すると、旧アプリが
+  -- 現在の mentions をそのまま書いたときに正本の all/mute が更新されない。
+  -- 同値更新の抑止は正本側の ON CONFLICT ... WHERE で行う。
+  INSERT INTO user_channel_notification_settings (user_id, channel_id, notification_level)
+  VALUES (NEW.user_id, NEW.channel_id, NEW.notification_level)
+  ON CONFLICT (user_id, channel_id) DO UPDATE SET notification_level = EXCLUDED.notification_level
+   WHERE user_channel_notification_settings.notification_level <> EXCLUDED.notification_level;
   -- 旧アプリが読む列には実際の設定を残さない。
   NEW.notification_level := OLD.notification_level;
   RETURN NEW;

@@ -5,6 +5,17 @@
 -- CREATE TRIGGER は channel_user への書き込みを待たせるため、作成後の参加行はトリガーで設定行が作られ、
 -- 既存行は ON CONFLICT DO NOTHING の補完で埋める（トリガーが書いた値は上書きしない）。
 -- 値移送用の BEFORE トリガーは、古い列の既定値化を打ち消さないよう、既定値化の後に作る。
+--
+-- バックフィルから値移送トリガーの作成まで、channel_user を SHARE ROW EXCLUSIVE でロックして
+-- 同じトランザクションで保持する。CREATE TRIGGER 自身も同じロックを取るが、それだけでは
+-- バックフィル中に旧バックエンドが旧列へ書いた値が移送トリガーの無い間に失われ、
+-- メンバー一覧から実際の設定が読めてしまう。先にロックすれば旧バックエンドの
+-- INSERT/UPDATE/DELETE はコミットまで待ち、書込みを取りこぼさずに移行できる。
+-- atlas:txmode none を使うと途中でロックが解放されるため使わない。
+-- 運用影響: ロック保持中は channel_user への参加・退出・通知レベル更新が待たされる（SELECT は可）。
+-- バックフィルは channel_user の全行を走査して新テーブルへ書くため、所属行数が多いほど
+-- 待ち時間が伸びる。移行の実行時間とロック待ちを監視する。
+LOCK TABLE channel_user IN SHARE ROW EXCLUSIVE MODE;
 CREATE TABLE IF NOT EXISTS "user_channel_notification_settings" (
   "user_id" text NOT NULL,
   "channel_id" text NOT NULL,
@@ -60,12 +71,14 @@ BEGIN
     NEW.notification_level := 'mentions';
     RETURN NEW;
   END IF;
-  IF NEW.notification_level IS DISTINCT FROM OLD.notification_level THEN
-    INSERT INTO user_channel_notification_settings (user_id, channel_id, notification_level)
-    VALUES (NEW.user_id, NEW.channel_id, NEW.notification_level)
-    ON CONFLICT (user_id, channel_id) DO UPDATE SET notification_level = EXCLUDED.notification_level
-     WHERE user_channel_notification_settings.notification_level <> EXCLUDED.notification_level;
-  END IF;
+  -- UPDATE OF notification_level で発火したときは、旧列が既定値の mentions に戻されているため
+  -- OLD と NEW が同じでも指定値を正本へ反映する。旧値との比較で判定すると、旧アプリが
+  -- 現在の mentions をそのまま書いたときに正本の all/mute が更新されない。
+  -- 同値更新の抑止は正本側の ON CONFLICT ... WHERE で行う。
+  INSERT INTO user_channel_notification_settings (user_id, channel_id, notification_level)
+  VALUES (NEW.user_id, NEW.channel_id, NEW.notification_level)
+  ON CONFLICT (user_id, channel_id) DO UPDATE SET notification_level = EXCLUDED.notification_level
+   WHERE user_channel_notification_settings.notification_level <> EXCLUDED.notification_level;
   NEW.notification_level := OLD.notification_level;
   RETURN NEW;
 END;

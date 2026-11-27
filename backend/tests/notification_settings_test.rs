@@ -332,7 +332,8 @@ async fn concurrent_same_value_patch_is_a_noop() -> anyhow::Result<()> {
 }
 
 /// ローリング更新中に旧バックエンドが古い列へ書いても、実際の設定は新しいテーブルにだけ入り、
-/// メンバー一覧が配る古い列には残らない。参加・退出で設定行が追随することも確認する。
+/// メンバー一覧が配る古い列には残らない。旧列が既に mentions のときに同じ値が書かれても
+/// 正本へ反映されることと、参加・退出で設定行が追随することも確認する。
 #[tokio::test]
 async fn legacy_notification_level_write_is_mirrored_and_redacted() -> anyhow::Result<()> {
     let fixture = thread_db::ThreadDb::new().await?;
@@ -390,6 +391,20 @@ async fn legacy_notification_level_write_is_mirrored_and_redacted() -> anyhow::R
     check.commit().await?;
     assert_eq!(rows[0]["level"], "mute");
     assert_eq!(rows[0]["legacy"], "mentions");
+
+    // 旧列は mentions に戻されているため、旧アプリが同じ mentions を書いたときも
+    // 指定値を正本へ反映する。OLD との比較で判定すると all/mute が残ってしまう。
+    toasty::sql::statement(
+        "UPDATE channel_user SET notification_level='mentions' WHERE user_id=$1 AND channel_id=$2",
+    )
+    .bind(owner.as_str())
+    .bind(channel.as_str())
+    .exec(&mut db)
+    .await?;
+    assert_eq!(
+        ok(&app, &owner, "GET", &path, json!({})).await?,
+        json!({"level": "mentions"})
+    );
 
     // 退出で参加行が消えると、設定行も消える。
     toasty::sql::statement("DELETE FROM channel_user WHERE user_id=$1 AND channel_id=$2")
