@@ -171,8 +171,9 @@ internal fun ConnectedScreens(
     val threadReplies = rows.filter { it.text("parent_id") == currentThread }.map { it.text("id") }.toSet()
     val route = env.path.substringBefore('?')
     var focusFailed by remember(env.path) { mutableStateOf(false) }
-    val focusMessage = if (focusFailed) null
-        else env.path.substringAfter("?message=", "").substringBefore('&').ifBlank { null }
+    val focusMessage = env.path.substringAfter("?message=", "").substringBefore('&').takeIf {
+        it.isNotBlank() && !focusFailed && rowsById[it]?.present("deleted_at") != true
+    }
     val focusRequest = focusMessage?.let { env.path.substringAfter('?') }
     val emptyGeneration = remember { MutableStateFlow(0) }
     val generation by (messageTable?.pageGeneration ?: emptyGeneration).collectAsState()
@@ -206,9 +207,10 @@ internal fun ConnectedScreens(
         (!needsUnreadHistory || !env.online || focusMessage != null)
     val mainPageReady = mainPage?.loaded == true
     val awaitingInitialRead = env.online && channel?.present("archive_at") != true &&
-        (member || membershipsLoading) && (!mainPageReady || currentReadPosition == null)
-    val unreadPositionPending = awaitingInitialRead ||
-        (env.online && currentThread == null && focusMessage == null && needsUnreadHistory)
+        (member || membershipsLoading) && (if (currentReadPosition == null)
+            !session.channelReadPositionsChecked else !mainPageReady)
+    val unreadPositionPending = !unreadPositioned && (awaitingInitialRead ||
+        (env.online && currentThread == null && focusMessage == null && needsUnreadHistory))
     val unreadId = firstUnreadInWindow.takeUnless {
         unreadHistoryOutsideWindow(visiblePage, visitHistoryPosition) || awaitingInitialRead
     }
@@ -219,7 +221,7 @@ internal fun ConnectedScreens(
             rowsById, unreadId, platform::day, session::dayLabel, session.t("messages.new"),
         )
     }
-    val focusRow = rows.find { it.text("id") == focusMessage }
+    val focusRow = focusMessage?.let(rowsById::get)
     val focusParent = focusRow?.text("parent_id")
     // Keep a deleted parent's thread readable and prevent replies to it.
     val deletedRoot = currentThread?.let { rowsById[it]?.present("deleted_at") } == true
@@ -405,7 +407,11 @@ internal fun ConnectedScreens(
             state.overlay == "add-member" -> state.overlay = "members"
             state.overlay != null -> state.overlay = null
             state.collapseInput(channelId, currentThread) -> Unit
-            currentThread != null -> session.thread = null
+            currentThread != null -> {
+                // A notification for a reply has no target in the channel's timeline.
+                if (focusParent == currentThread) platform.replace(route)
+                session.thread = null
+            }
             platform.back() -> Unit
             else -> {
                 background()
@@ -521,14 +527,15 @@ internal fun ConnectedScreens(
                       if (threadRoot == null) it.copy(editable = false, canReact = false, canRepost = false) else it
                   },
               rowsById, encrypted, session::t)
+          val threadFocus = focusMessage.takeIf { it == currentThread || focusParent == currentThread }
           AndroidScreen.Thread(
             channel.text("channel_name"),
             thread.first(),
             thread.drop(1),
             state.input("$channelId:$currentThread", canPost && threadRoot != null && !threadDetail.present("thread_archive_at") &&
                 (!threadDetail.flag("tracked") || threadDetail.text("membership") == "joined"),
-                users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }).copy(notices = recipientLines), focusMessage,
-            focusRequest = focusRequest,
+                users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }).copy(notices = recipientLines), threadFocus,
+            focusRequest = focusRequest.takeIf { threadFocus != null },
             loadOlder = pageStates[PageScope.Replies(currentThread.orEmpty())]?.let { it.hasOlder && !it.loading } == true,
             historyReady = !env.online || pageStates[PageScope.Replies(currentThread.orEmpty())]?.loaded == true,
           )
@@ -543,8 +550,8 @@ internal fun ConnectedScreens(
             historyReady = !env.online || mainPageReady,
             unreadPositionPending = unreadPositionPending,
             unreadHistoryIncomplete = unreadHistoryIncomplete,
-            onUnreadPositioned = onUnreadPositioned.takeIf { env.online && !unreadPositioned },
-            onReadThrough = onReadThrough,
+            onUnreadPositioned = onUnreadPositioned.takeIf { env.online && currentReadPosition != null && !unreadPositioned },
+            onReadThrough = onReadThrough.takeIf { unreadPositioned },
             retrySync = if (dmSyncDelayed && env.online) {
                 { session.repo.channels.refresh(); session.repo.members.refresh(); dmSyncRetry++ }
             } else null)
@@ -565,7 +572,7 @@ internal fun ConnectedScreens(
         }
     }
     val readEnabled = screen is AndroidScreen.Conversation && member && env.online &&
-        env.visible && env.focused && currentReadPosition != null &&
+        env.visible && env.focused && currentReadPosition != null && unreadPositioned &&
         !unreadPositionPending && !unreadHistoryOutsideWindow && mainPageReady
     LaunchedEffect(session, channelId, messageTable, readEnabled) {
         if (!readEnabled || channelId == null || messageTable == null) return@LaunchedEffect
