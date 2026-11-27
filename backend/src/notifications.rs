@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Instant,
+};
 use uuid::Uuid;
 
 use crate::{
@@ -6,6 +9,19 @@ use crate::{
     models::{Channel, ChannelUser, Message, Notification, User, now_utc_millis},
     routes::e2ee_channels::Mentions,
 };
+
+/// API 全体の内訳計測（docs/query-design.md）。`notify_timing` 目標の低コスト event として、
+/// 各 SQL の「往復を含む実行時間」をメッセージ ID 単位で残す。SQL の計画だけは toasty
+/// ドライバから分離できないため、ここでは往復込みの時間として記録する。
+/// subscriber が無効なら `info!` は静的なレベルチェックで終わり、挙動は変わらない。
+pub(crate) fn emit_timing(stage: &'static str, message_id: &str, began: Instant) {
+    tracing::info!(
+        target: "notify_timing",
+        stage = stage,
+        message_id = message_id,
+        elapsed_us = u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX),
+    );
+}
 
 pub(crate) async fn create_federated_notification(
     tx: &mut toasty::Transaction<'_>,
@@ -224,7 +240,9 @@ pub async fn create_message_notifications(
     explicit_mentions: Option<&Mentions>,
 ) -> Result<Vec<Notification>, AppError> {
     // チャンネル情報を取得 (公開かプライベートかで通知先ポリシーを判定)
+    let began = Instant::now();
     let channel = Channel::get_by_id(tx, message.channel_id.as_str()).await?;
+    emit_timing("notif_channel", &message.id, began);
 
     let (mentions, mentioned_ids) = if channel.encrypted {
         let explicit = explicit_mentions.cloned().unwrap_or_default();
@@ -243,19 +261,23 @@ pub async fn create_message_notifications(
     // チャンネル所属メンバーを1回で取得 (走査は M 行、メンバーごとの再問い合わせはしない)。
     // 通知レベルは別テーブルを channel_id で1回だけ読み、メンバーごとの設定行が無ければ
     // 既定値の mentions として扱う (ローリング更新中でも設定が読めるようにする)。
+    let began = Instant::now();
     let channel_users =
         ChannelUser::filter(ChannelUser::fields().channel_id().eq(&message.channel_id))
             .exec(tx)
             .await?;
+    emit_timing("notif_members", &message.id, began);
     let mut member_levels: HashMap<String, String> = channel_users
         .into_iter()
         .map(|cu| (cu.user_id, "mentions".to_owned()))
         .collect();
+    let began = Instant::now();
     for (user_id, level) in channel_notification_levels(tx, message.channel_id.as_str()).await? {
         if let Some(current) = member_levels.get_mut(&user_id) {
             *current = level;
         }
     }
+    emit_timing("notif_levels", &message.id, began);
     let member_ids: HashSet<String> = member_levels.keys().cloned().collect();
 
     // スレッド参加者 (#620) を1回で読む。退出済みの行も返し、Rust 側で `left_at` を見て除く。
@@ -264,12 +286,14 @@ pub async fn create_message_notifications(
     let mut participant_levels: HashMap<String, String> = HashMap::new();
     let mut left_participants: HashSet<String> = HashSet::new();
     if let Some(root_id) = thread_root_id {
+        let began = Instant::now();
         let participants = crate::apps::query(
             tx,
             notification_participants_sql(),
             &[root_id, message.channel_id.as_str()],
         )
         .await?;
+        emit_timing("notif_participants", &message.id, began);
         for participant in participants {
             let Some(user_id) = participant["user_id"].as_str() else {
                 continue;
@@ -402,7 +426,9 @@ pub async fn create_message_notifications(
     if !targets_to_notify.is_empty() {
         let ids = serde_json::json!(targets_to_notify.keys().collect::<Vec<_>>()).to_string();
         // ID 配列を駆動側にして users の主キーを T 回だけ引く (U に比例する Seq Scan を避ける)。
+        let began = Instant::now();
         let excluded = crate::apps::query(tx, "SELECT json_build_object('id',u.id,'guest',u.is_guest,'bot',u.is_bot,'deactivated',u.is_deactivated)::text FROM jsonb_array_elements_text($1::jsonb) AS ids(id) JOIN users u ON u.id=ids.id WHERE u.is_bot OR u.is_deactivated OR u.is_guest", &[&ids]).await?;
+        emit_timing("notif_excluded", &message.id, began);
         for row in excluded {
             if let Some(id) = row["id"].as_str()
                 && (row["bot"] == true
@@ -443,6 +469,7 @@ pub async fn create_message_notifications(
                 "created_at": now.to_string(),
             }));
         }
+        let began = Instant::now();
         let inserted = toasty::sql::statement(
             "INSERT INTO channel_notifications(id,user_id,actor_id,channel_id,message_id,notification_type,is_read,created_at) \
              SELECT e->>'id', e->>'user_id', e->>'actor_id', e->>'channel_id', e->>'message_id', \
@@ -452,6 +479,7 @@ pub async fn create_message_notifications(
         .bind(serde_json::json!(rows).to_string())
         .exec(tx)
         .await?;
+        emit_timing("notif_insert", &message.id, began);
         if inserted != created_notifications.len() as u64 {
             return Err(AppError::Internal(anyhow::anyhow!(
                 "inserted {inserted} notifications for {} recipients",

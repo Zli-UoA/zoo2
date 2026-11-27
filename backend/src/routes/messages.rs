@@ -5,6 +5,7 @@ use axum::{
     routing::{patch, post},
 };
 use serde::{Deserialize, Serialize};
+use std::time::Instant;
 use uuid::Uuid;
 
 use crate::{
@@ -791,7 +792,9 @@ pub(crate) async fn create_message_impl(
         }
     }
 
+    let conn_began = Instant::now();
     let mut tx = db.transaction().await?;
+    crate::notifications::emit_timing("conn_acquire", &id, conn_began);
     crate::apps::events::actor_context(&mut tx, &auth_user.id).await?;
     let options = serde_json::json!({"kind":payload.kind,"broadcast":payload.broadcast,"metadata":payload.metadata});
     crate::apps::one(
@@ -927,6 +930,7 @@ pub(crate) async fn create_message_impl(
         // The target is the one join/leave act on (the requested ID until a staged migration has
         // moved the thread), and the row is locked as a leave does, so a leave and a reply serialize.
         // Lock order matches thread_operation: the canonical root first, then the join target.
+        let root_lock_began = Instant::now();
         crate::apps::query(
             &mut tx,
             "SELECT '{}'::text FROM messages WHERE id=thread_root($1) FOR NO KEY UPDATE",
@@ -943,6 +947,7 @@ pub(crate) async fn create_message_impl(
             &[gate_root.as_str()],
         )
         .await?;
+        crate::notifications::emit_timing("root_lock", &id, root_lock_began);
         let participation = crate::apps::one(
             &mut tx,
             reply_participation_sql(),
@@ -1173,7 +1178,10 @@ pub(crate) async fn create_message_impl(
     };
 
     let txid = get_current_txid(&mut tx).await?;
-    if let Err(err) = tx.commit().await {
+    let commit_began = Instant::now();
+    let commit_result = tx.commit().await;
+    crate::notifications::emit_timing("commit", &id, commit_began);
+    if let Err(err) = commit_result {
         if supplied_id.is_some() && AppError::is_unique_violation(&err, None) {
             let mut retry_db = state.db.clone();
             for _ in 0..10 {

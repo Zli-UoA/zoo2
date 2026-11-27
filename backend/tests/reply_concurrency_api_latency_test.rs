@@ -8,13 +8,14 @@
 //!
 //! Times the whole in-process request: router, extractors, dev auth, pool wait, all SQL round trips
 //! and the JSON response body. Reports p50 / p95 / max. HTTP network is excluded because the
-//! router runs in-process. A probe acquires a connection from the same pool under the same load to
-//! time pool wait separately. SQL planning/execution time and individual SQL round trips are not
-//! measured separately: the router owns the pool and the toasty driver emits no per-query
-//! start/finish hooks, so splitting them would require production code changes. The SQL-layer
-//! numbers in `docs/query-design.md` (lock wait, INSERT + COMMIT) are a subset of this request:
-//! they do not include the member/setting reads, the message writes or the response. The build is
-//! unoptimized and the database is local, so these are not production numbers.
+//! router runs in-process. The write path also emits `notify_timing` events at `info!` level; a
+//! layer installed for this test collects them per reply (keyed by message ID) so connection
+//! acquisition, root-row lock, each notification SQL call and COMMIT can be reported separately.
+//! Each per-SQL figure is a round trip including Postgres planning and execution: toasty exposes no
+//! hook that splits those two, so only a whole-`EXPLAIN` could separate `Planning Time`. A probe
+//! acquires a connection from the same pool under the same load as an independent reference. The
+//! SQL-layer numbers in `docs/query-design.md` (lock wait, INSERT + COMMIT) are a subset of this
+//! request. The build is unoptimized and the database is local, so these are not production numbers.
 //!
 //! Run (a database whose role may `SET session_replication_role`; the test makes its own schema):
 //! `DATABASE_URL=postgres://… ACTIVITYPUB_BASE_URL=https://zoo.test cargo test --manifest-path
@@ -31,14 +32,95 @@ use axum::{
 use backend::{db::init_db, routes::create_router, state::AppState};
 use serde_json::{Value, json};
 use std::{
-    sync::Arc,
+    collections::{HashMap, HashSet},
+    fmt,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use tokio::sync::Barrier;
 use tower::ServiceExt;
+use tracing::field::{Field, Visit};
+use tracing_subscriber::{Layer, layer::Context, prelude::*};
 
 const WRITERS: usize = 8;
 const RECIPIENTS: i32 = 10_000;
+
+/// One `notify_timing` event from the reply write path, correlated by message ID.
+struct TimingEvent {
+    message_id: String,
+    stage: String,
+    elapsed_us: u64,
+}
+
+#[derive(Default)]
+struct TimingVisitor {
+    message_id: Option<String>,
+    stage: Option<String>,
+    elapsed_us: Option<u64>,
+}
+
+impl Visit for TimingVisitor {
+    fn record_str(&mut self, field: &Field, value: &str) {
+        match field.name() {
+            "message_id" => self.message_id = Some(value.to_owned()),
+            "stage" => self.stage = Some(value.to_owned()),
+            _ => {}
+        }
+    }
+
+    fn record_u64(&mut self, field: &Field, value: u64) {
+        if field.name() == "elapsed_us" {
+            self.elapsed_us = Some(value);
+        }
+    }
+
+    /// `%`-formatted fields are recorded through `Debug` (e.g. IDs); keep them readable.
+    fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+        let rendered = format!("{value:?}");
+        match field.name() {
+            "message_id" => self.message_id = Some(rendered),
+            "stage" => self.stage = Some(rendered),
+            _ => {}
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct TimingCollector(Arc<Mutex<Vec<TimingEvent>>>);
+
+impl<S> Layer<S> for TimingCollector
+where
+    S: tracing::Subscriber,
+{
+    fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+        if event.metadata().target() != "notify_timing" {
+            return;
+        }
+        let mut visitor = TimingVisitor::default();
+        event.record(&mut visitor);
+        if let (Some(message_id), Some(stage), Some(elapsed_us)) =
+            (visitor.message_id, visitor.stage, visitor.elapsed_us)
+        {
+            self.0.lock().unwrap().push(TimingEvent {
+                message_id,
+                stage,
+                elapsed_us,
+            });
+        }
+    }
+}
+
+const TIMING_STAGES: [&str; 9] = [
+    "conn_acquire",
+    "root_lock",
+    "notif_channel",
+    "notif_members",
+    "notif_levels",
+    "notif_participants",
+    "notif_excluded",
+    "notif_insert",
+    "commit",
+];
 
 async fn call(
     app: &Router,
@@ -221,6 +303,14 @@ async fn eight_concurrent_replies_api_latency() -> anyhow::Result<()> {
     let prepare_ms = prepared.elapsed().as_secs_f64() * 1000.;
     eprintln!("T={targets} prepare_ms={prepare_ms:.1} rounds={rounds}");
 
+    // Replies run on tokio worker threads, so the collector has to be the global default: a
+    // thread-local `with_default` on the test thread would miss events from the spawned tasks.
+    // Installed after the fixture is ready, so only the measured replies are collected.
+    let timing = TimingCollector::default();
+    let subscriber = tracing_subscriber::registry().with(timing.clone());
+    tracing::subscriber::set_global_default(subscriber)
+        .map_err(|error| anyhow::anyhow!("set_global_default: {error}"))?;
+
     // A barrier per round keeps exactly WRITERS replies and one pool-acquire probe in flight;
     // truncate only after everyone has answered, as the SQL-layer measurement did.
     let starts: Vec<_> = (0..rounds)
@@ -391,6 +481,59 @@ async fn eight_concurrent_replies_api_latency() -> anyhow::Result<()> {
         "pool_acquire_probe".into(),
         summary("Pool acquire probe (same pool, 8 concurrent)", pool_samples),
     );
+    // Attribute every event to its reply by message ID. Other posts (fixture setup) are filtered
+    // out, and an incomplete set of stages for any one reply fails the measurement instead of
+    // silently mixing a partial breakdown into the percentiles.
+    let reply_ids_all: HashSet<&str> = reply_ids.iter().flatten().map(String::as_str).collect();
+    let mut stage_samples: HashMap<&'static str, Vec<f64>> = TIMING_STAGES
+        .iter()
+        .map(|stage| (*stage, Vec::new()))
+        .collect();
+    let mut stages_per_reply: HashMap<String, HashSet<&'static str>> = HashMap::new();
+    for event in timing.0.lock().unwrap().iter() {
+        if !reply_ids_all.contains(event.message_id.as_str()) {
+            continue;
+        }
+        let Some(stage) = TIMING_STAGES
+            .iter()
+            .find(|candidate| **candidate == event.stage)
+        else {
+            continue;
+        };
+        stage_samples
+            .get_mut(*stage)
+            .unwrap()
+            .push(event.elapsed_us as f64 / 1000.);
+        stages_per_reply
+            .entry(event.message_id.clone())
+            .or_default()
+            .insert(*stage);
+    }
+    for stage in TIMING_STAGES {
+        let count = stage_samples[stage].len();
+        anyhow::ensure!(
+            count == rounds * WRITERS,
+            "{stage}: {count} events, expected {}",
+            rounds * WRITERS
+        );
+    }
+    anyhow::ensure!(
+        stages_per_reply.len() == rounds * WRITERS,
+        "timings for {} replies, expected {}",
+        stages_per_reply.len(),
+        rounds * WRITERS
+    );
+    let mut breakdown = serde_json::Map::new();
+    for stage in TIMING_STAGES {
+        breakdown.insert(
+            stage.into(),
+            summary(
+                &format!("{stage} (round trip incl. execution, 8 concurrent)"),
+                stage_samples.remove(stage).unwrap(),
+            ),
+        );
+    }
+    report.insert("api_stage_ms".into(), Value::Object(breakdown));
     eprintln!("REPLY_LATENCY_JSON {}", Value::Object(report));
     fixture.cleanup().await?;
     Ok(())
