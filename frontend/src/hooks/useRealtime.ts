@@ -26,7 +26,10 @@ export function useUsers() {
 /** 全ユーザーが必要な画面専用。起動時の全件購読を避けるため、ここだけが allUsers Shape を使う。 */
 export function useAllUsers(enabled = true) {
   const { allUsers } = useCollections();
-  const query = useLiveQuery((q) => (enabled ? q.from({ users: allUsers }) : undefined));
+  const query = useLiveQuery({
+    query: (q) => (enabled ? q.from({ users: allUsers }) : undefined),
+    queryKey: ["allUsers", enabled, allUsers.id],
+  });
   return {
     ...query,
     isLoading: query.isLoading && !(query.isPersistedReady && query.data?.length),
