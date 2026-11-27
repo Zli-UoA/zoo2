@@ -967,7 +967,7 @@ internal class ConnectedScreenState(
                 "zh-Hans" to "简体中文", "zh-Hant" to "繁體中文", "yue" to "粵語").map {
                 SettingsEntry.Destination("locale:${it.first}", it.second, if (env.locale == it.first) "選択中" else null)
             }
-            "navigation-cache" -> app.t("androidNavigationCache.title") to buildList {
+            "navigation-cache" -> app.t("androidNavigationCache.title") to buildList<SettingsEntry> {
                 add(SettingsEntry.Information("navigation-cache-info", app.t("androidNavigationCache.description")))
                 navigationCacheLimits.forEach { limit ->
                     add(SettingsEntry.Destination("navigation-cache:$limit", cacheLimitLabel(limit),
