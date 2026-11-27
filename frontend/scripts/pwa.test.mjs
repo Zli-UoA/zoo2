@@ -1285,11 +1285,11 @@ test("an invalid cached manifest is not returned offline", async () => {
 });
 
 test("install fetches manifest and offline page with a timeout", async () => {
-  const signals = [];
+  const signals = new Map();
   const { handlers } = worker({
     fetch: async (input, init) => {
-      signals.push(init?.signal);
       const key = requestKey(input);
+      signals.set(new URL(key).pathname, init?.signal);
       if (key === `${ORIGIN}/manifest.webmanifest`)
         return basicResponse(validManifest("#ffffff"), {
           headers: { "content-type": "application/manifest+json" },
@@ -1302,10 +1302,31 @@ test("install fetches manifest and offline page with a timeout", async () => {
     },
   });
   await dispatch(handlers, "install");
-  assert.ok(
-    signals.some((signal) => signal instanceof AbortSignal),
-    "manifest / offline.html should be fetched with a bounded signal",
-  );
+  for (const path of ["/manifest.webmanifest", "/offline.html"])
+    assert.ok(signals.get(path) instanceof AbortSignal, `${path} should have a timeout signal`);
+});
+
+test("an aborted fresh fetch falls back to the cached manifest", async () => {
+  const manifest = validManifest("#000000");
+  const cacheContext = memoryCaches([
+    ["zoo-shell-v2", `${ORIGIN}/manifest.webmanifest`, basicResponse(manifest)],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async (input, init) =>
+      new Promise((resolve, reject) => {
+        init.signal.addEventListener("abort", () => reject(new Error("timeout")), { once: true });
+        Object.defineProperty(init.signal, "aborted", { value: true, configurable: true });
+        init.signal.dispatchEvent(new Event("abort"));
+      }),
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+  });
+  assert.equal(await response.text(), manifest);
 });
 
 test("fresh asset requests are time bounded", async () => {
