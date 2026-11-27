@@ -623,18 +623,17 @@ async function writeFreshAsset(path, cache, response, sequence) {
   // ただし 304 で確認済みの版と同じ ETag なら、記録した最大の番号を維持して保存する。
   const previous = freshAssetWrites.get(path);
   const incomingEtag = response.headers.get("etag");
-  const sameVersion = previous?.etag && incomingEtag === previous.etag;
-  const effective = sameVersion ? Math.max(previous.sequence, sequence) : sequence;
-  if (previous && previous.sequence > effective) return;
+  const sameVersion = (entry) => entry?.etag && incomingEtag === entry.etag;
+  const effective = sameVersion(previous) ? Math.max(previous.sequence, sequence) : sequence;
+  const stale = (entry) => entry && entry.sequence > effective && !sameVersion(entry);
+  if (stale(previous)) return;
   const work = (previous?.promise ?? Promise.resolve())
     .catch(() => {})
     .then(async () => {
-      const current = freshAssetWrites.get(path);
-      if (current && current.sequence > effective) return;
+      if (stale(freshAssetWrites.get(path))) return;
       const body = await response.arrayBuffer();
-      // 本文を読んでいる間に 304 が届くことがあるので、保存直前に再度確認する。
-      const latest = freshAssetWrites.get(path);
-      if (latest && latest.sequence > effective) return;
+      // 本文を読んでいる間に 304 が届くことがある。同じ版なら保存を続ける。
+      if (stale(freshAssetWrites.get(path))) return;
       const sanitized = new Response(body, {
         status: response.status,
         statusText: response.statusText,
@@ -645,8 +644,9 @@ async function writeFreshAsset(path, cache, response, sequence) {
     });
   freshAssetWrites.set(path, {
     sequence: effective,
-    etag: sameVersion ? previous.etag : incomingEtag,
-    promise: work,
+    etag: sameVersion(previous) ? previous.etag : incomingEtag,
+    // 保存失敗は呼び出し側へ返すが、共有する promise は未処理例外にしない。
+    promise: work.catch(() => {}),
   });
   return await work;
 }
@@ -800,6 +800,14 @@ async function cachedFreshAsset(path, networkResponse = null) {
       /* An unreadable cache has an unknown age. */
     }
     candidates.push({ name, current: name.startsWith(POLICY_PREFIX), installedAt });
+  }
+  // まず使用中のシェルに有効な保存版があれば、それを採用する。
+  try {
+    const active = await findActiveShellCache();
+    const saved = await (await caches.open(active)).match(path);
+    if (await isUsableFreshAsset(path, saved)) return saved;
+  } catch {
+    /* Try the other generations below. */
   }
   let best = null;
   let bestTime = -Infinity;

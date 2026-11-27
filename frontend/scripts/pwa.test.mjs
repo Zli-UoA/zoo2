@@ -2122,6 +2122,10 @@ test("a 304 with the same ETag allows the matching full response to be saved", a
 test("a 304 during a body read prevents the stale manifest from being saved", async () => {
   const cacheContext = memoryCaches();
   let releaseBody;
+  let bodyReading;
+  const bodyStarted = new Promise((resolve) => {
+    bodyReading = resolve;
+  });
   const { handlers } = worker({
     caches: cacheContext.api,
     fetch: async (input) => {
@@ -2131,10 +2135,12 @@ test("a 304 during a body read prevents the stale manifest from being saved", as
           headers: { "content-type": "application/manifest+json", ETag: '"old"' },
         });
         const original = response.arrayBuffer.bind(response);
-        response.arrayBuffer = () =>
-          new Promise((resolve) => {
+        response.arrayBuffer = () => {
+          bodyReading();
+          return new Promise((resolve) => {
             releaseBody = () => original().then(resolve);
           });
+        };
         return response;
       }
       return new Response(null, { status: 304, headers: { ETag: '"new"' } });
@@ -2146,7 +2152,7 @@ test("a 304 during a body read prevents the stale manifest from being saved", as
     headers: { get: (name) => (name.toLowerCase() === "if-none-match" ? tag : null) },
   });
   const older = fetchThrough(handlers, conditional('"old"'));
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await bodyStarted;
   await fetchThrough(handlers, conditional('"new"'));
   releaseBody();
   await older;
