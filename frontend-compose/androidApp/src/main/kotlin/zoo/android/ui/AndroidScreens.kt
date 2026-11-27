@@ -720,7 +720,8 @@ internal fun ColumnScope.TimelineWithInput(
             focusedIndex >= 0 && openedTarget != focusRequest -> {
                 restorePending = false
                 followEnd = false
-                scroll.requestScrollToItem(focusedIndex)
+                // Complete the layout before the read observer can see this request as handled.
+                scroll.scrollToItem(focusedIndex)
                 openedTarget = focusRequest
                 positioned = true
                 onUnreadPositioned?.invoke()

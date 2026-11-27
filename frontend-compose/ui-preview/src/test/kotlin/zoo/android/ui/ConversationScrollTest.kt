@@ -118,6 +118,24 @@ class ConversationScrollTest {
     }
 
     @Test
+    fun focusingAnOlderMessageDoesNotReportThePreviousEndLayout() {
+        val reported = mutableListOf<String>()
+        var foreground by mutableStateOf(false)
+        var screen by mutableStateOf(channel.copy(onReadThrough = { id -> if (id != null) reported.add(id) }))
+        ui.setContent { AndroidScreens(screen, false, foreground, dispatch = {}) { _, _ -> } }
+        ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
+
+        ui.runOnIdle {
+            screen = screen.copy(focusMessage = "e3", focusRequest = "open-e3")
+            foreground = true
+        }
+        ui.onNodeWithTag("timeline-entry-e4").assertIsDisplayed()
+        ui.runOnIdle { assertTrue(reported.isEmpty()) }
+        ui.onNodeWithTag("conversation-timeline").performScrollToIndex(entries.lastIndex)
+        ui.runOnIdle { assertEquals("e40", reported.last()) }
+    }
+
+    @Test
     fun incompleteUnreadHistoryIsShownBelowTheConversationHeader() {
         ui.setContent {
             AndroidScreens(channel.copy(unreadHistoryIncomplete = true), false, true, dispatch = {}) { _, _ -> }

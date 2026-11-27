@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import io.ktor.http.Url
+import java.time.LocalDate
 import java.time.ZoneId
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -200,9 +201,8 @@ internal fun ConnectedScreens(
     val unreadId = firstUnreadInWindow.takeUnless {
         unreadHistoryOutsideWindow(visiblePage, visitHistoryPosition) || awaitingInitialRead
     }
-    val timeZone by rememberConversationTimeZone(context)
-    val localDay = platform.day(platform.now())
-    val conversationMessages = remember(messages, conversationEntries, rowsById, encrypted, unreadId, env.locale, timeZone, localDay, session) {
+    val localDay by rememberConversationDay(context)
+    val conversationMessages = remember(messages, conversationEntries, rowsById, encrypted, unreadId, env.locale, localDay, session) {
         withConversationDividers(
             withEncryptionBoundary(messages.filter { it.id in conversationEntries }, rowsById, encrypted, session::t),
             rowsById, unreadId, platform::day, session::dayLabel, session.t("messages.new"),
@@ -824,16 +824,24 @@ internal fun ConnectedScreens(
 }
 
 
+private fun currentConversationDay(): Pair<ZoneId, LocalDate> {
+    val zone = ZoneId.systemDefault()
+    return zone to LocalDate.now(zone)
+}
+
 @Composable
-private fun rememberConversationTimeZone(context: Context): State<ZoneId> =
-    produceState(ZoneId.systemDefault(), context) {
+private fun rememberConversationDay(context: Context): State<Pair<ZoneId, LocalDate>> =
+    produceState(currentConversationDay(), context) {
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
-                if (intent.action == Intent.ACTION_TIMEZONE_CHANGED) value = ZoneId.systemDefault()
+                value = currentConversationDay()
             }
         }
-        ContextCompat.registerReceiver(context, receiver, IntentFilter(Intent.ACTION_TIMEZONE_CHANGED),
-            ContextCompat.RECEIVER_NOT_EXPORTED)
-        value = ZoneId.systemDefault()
+        val filter = IntentFilter(Intent.ACTION_TIMEZONE_CHANGED).apply {
+            addAction(Intent.ACTION_DATE_CHANGED)
+            addAction(Intent.ACTION_TIME_CHANGED)
+        }
+        ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        value = currentConversationDay()
         awaitDispose { context.unregisterReceiver(receiver) }
     }
