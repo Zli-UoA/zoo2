@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { FeedMessage } from "../components/chat/messages/messageFormat";
+import { asWasmCiphertext } from "../lib/electric/rowTypes";
 import { useE2ee } from "../lib/e2ee/e2ee-context";
 import {
   applyRevision,
@@ -19,7 +20,7 @@ function toEncryptedMessage(message: FeedMessage, channelId: string): EncryptedM
     message_kind: message.message_kind ?? "message",
     epoch: Number(message.epoch ?? 0),
     revision: message.revision ?? 0,
-    ciphertext: message.ciphertext as unknown as EncryptedMessage["ciphertext"],
+    ciphertext: asWasmCiphertext(message.ciphertext),
   };
 }
 
