@@ -1167,6 +1167,20 @@ final class ZooUITests: XCTestCase {
     }
 
     @MainActor
+    func testChannelRemainsResponsiveWithEncryptionController() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting-workspace", "--uitesting-e2ee"]
+        app.launch()
+        let channel = app.buttons["channel-11111111-1111-4111-8111-111111111111"]
+        XCTAssertTrue(channel.waitForExistence(timeout: 10))
+        channel.tap()
+        let details = app.buttons["channel-details"]
+        XCTAssertTrue(details.waitForExistence(timeout: 5))
+        details.tap()
+        XCTAssertTrue(app.navigationBars["チャンネル詳細"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
     func testNativeConversationSendsAndReplies() {
         let app = launchWorkspace(liveMessage: true)
         capture(app, name: "チャンネル一覧")

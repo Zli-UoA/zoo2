@@ -1,6 +1,8 @@
 import ZooCrypto
 import Foundation
 import Testing
+import Observation
+import Synchronization
 @testable import Zoo
 
 @MainActor
@@ -39,6 +41,32 @@ private final class FakeEncryption: ConversationEncryption {
 struct ConversationEncryptionTests {
     private let channel = Channel(id: UUID().uuidString, channel_name: "秘密", is_private: true, is_dm: false, encrypted: true)
     private let userID = UUID().uuidString
+
+    @Test("同じ会話の再描画で暗号化状態を再通知しない", arguments: ["平文", "暗号化", "格下げ"])
+    func resolvingConversationDoesNotInvalidateRendering(mode: String) throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let (files, _, directory) = makeFiles()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let workspace = WorkspaceStore(client: harness.client,
+            user: Person(id: userID, user_name: "test", display_name: "利用者"), recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        var target = channel
+        target.encrypted = mode == "暗号化"
+        if mode == "格下げ" {
+            _ = try files.loadEncryptionHistory(userID: userID)
+            try files.saveEncryptionHistory([target.id], userID: userID)
+        }
+        workspace.e2ee = E2eeController.make(api: harness.api, userID: userID, files: files)
+        let initial = workspace.conversation(for: target)
+        let changed = Mutex(false)
+        withObservationTracking {
+            _ = workspace.conversation(for: target)
+            _ = initial.isDowngraded()
+        } onChange: { changed.withLock { $0 = true } }
+        #expect(workspace.conversation(for: target) === initial)
+        #expect(!changed.withLock { $0 })
+    }
 
     @Test("Shape の message_kind と REST の kind を読み分けて暗号文の種類を保つ")
     func decodesMessageKind() throws {

@@ -385,10 +385,10 @@ final class WorkspaceStore {
         guard let e2ee else { return channel }
         e2ee.rememberEncryptedChannels([channel])
         if e2ee.isDowngraded(channel) {
-            downgradedChannelIDs.insert(channel.id)
+            if !downgradedChannelIDs.contains(channel.id) { downgradedChannelIDs.insert(channel.id) }
             channel.encrypted = true
             channel.encryptionIsLocalOverride = true
-        } else {
+        } else if downgradedChannelIDs.contains(channel.id) {
             downgradedChannelIDs.remove(channel.id)
         }
         return channel
