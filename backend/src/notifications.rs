@@ -348,7 +348,8 @@ pub async fn create_message_notifications(
     // 取り込んだチャンネルの @here・@channel で、メンバーの数だけ通知と配信の問い合わせを作らないため
     if !targets_to_notify.is_empty() {
         let ids = serde_json::json!(targets_to_notify.keys().collect::<Vec<_>>()).to_string();
-        let excluded = crate::apps::query(tx, "SELECT json_build_object('id',id,'guest',is_guest,'bot',is_bot,'deactivated',is_deactivated)::text FROM users WHERE (is_bot OR is_deactivated OR is_guest) AND id IN (SELECT jsonb_array_elements_text($1::jsonb))", &[&ids]).await?;
+        // ID 配列を駆動側にして users の主キーを T 回だけ引く (U に比例する Seq Scan を避ける)。
+        let excluded = crate::apps::query(tx, "SELECT json_build_object('id',u.id,'guest',u.is_guest,'bot',u.is_bot,'deactivated',u.is_deactivated)::text FROM jsonb_array_elements_text($1::jsonb) AS ids(id) JOIN users u ON u.id=ids.id WHERE u.is_bot OR u.is_deactivated OR u.is_guest", &[&ids]).await?;
         for row in excluded {
             if let Some(id) = row["id"].as_str()
                 && (row["bot"] == true

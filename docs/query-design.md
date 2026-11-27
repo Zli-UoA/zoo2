@@ -106,9 +106,9 @@ Home検証の条件・結果・再実行方法は [home-performance.md](home-per
 
 | SQL / 呼び出し元 | 記載済みの探索上限 | M規模の実測 |
 | --- | --- | --- |
-| `ChannelUser::filter(channel_id)`（`create_message_notifications`） | `idx_channel_user_channel_id` の範囲走査で `<= M` 行、loops=1、ソート0、ユーザーへの追加問い合わせなし | 未実施 |
-| bot・無効化・特権のないゲストの一括除外（`users WHERE (is_bot OR is_deactivated OR is_guest) AND id IN (...)`） | `users` 参照 `<= T`、loops=1（宛先ごとの再問い合わせなし） | 未実施 |
-| 通知行の一括 INSERT（`INSERT ... SELECT ... FROM jsonb_array_elements($1)`） | SQL 往復1回、挿入 `<= T` 行、行ごとの双方向トリガー・`display_data` 投影あり | 未実施 |
+| `ChannelUser::filter(channel_id)`（`create_message_notifications`） | 対象チャンネルが全行なら Seq Scan（`<= M` 行、loops=1、ソート0、ユーザーへの追加問い合わせなし）。複数チャンネルでは `idx_channel_user_channel_id` の範囲走査 | 実測: M=30万 22.7ms / 30万行、M=100万 75.4ms / 100万行。走査は `M` に比例し `<= M` |
+| bot・無効化・ゲストの一括除外（ID 配列を駆動側にして `users` を主キーで引く） | `users` の主キー参照 `<= T`、loops=1（宛先ごとの再問い合わせなし、`U` に比例する Seq Scan なし） | 実測: T=15万で M=30万 1,518ms、M=100万 1,393ms。`User_pkey` の Index Scan で走査は `T` のみ、`U` の3.3倍でも増えない |
+| 通知行の一括 INSERT（`INSERT ... SELECT ... FROM jsonb_array_elements($1)`） | SQL 往復1回、挿入 `<= T` 行、行ごとの双方向トリガー・`display_data` 投影あり | 実測: T=15万で 42.2s（30万）/ 42.5s（100万）。トリガーを含む書込費用は `T` に比例し、`M` には比例しない。大量の `all` 設定者がいるチャンネルでは返信 API のロック保持時間が増えるため、`all` は利用者が明示的に選ぶ設定として運用する |
 
 再現コマンド。移行済みの使い捨て DB で、対象チャンネルの `channel_user` 行数 `M` を30万と100万に変えてそれぞれ実行する（`M` の作り方は `backend/tests/thread_participants_scale_test.rs` の fixture を参照）。既存のスケール用 DB を流用するときは、対象チャンネルの割合が高すぎて Seq Scan に切り替わらないことと、`idx_channel_user_channel_id` が存在することを確かめる。索引のない DB や割合の偏った DB の値は、上の設計の検証には使えない。`:'recipients'` は (2) ではユーザーIDの配列、(3) では通知行オブジェクトの配列を渡す。
 
@@ -121,11 +121,15 @@ EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
 SELECT user_id, channel_id, joined_at, notification_level
 FROM channel_user WHERE channel_id = :'channel_id';
 
--- (2) 一括除外: users を id IN (...) で1回だけ引く
+-- (2) 一括除外: ID 配列を駆動側にし、users は主キーで T 回だけ引く
 EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
-SELECT id, is_guest, is_bot, is_deactivated FROM users
-WHERE (is_bot OR is_deactivated OR is_guest)
-  AND id IN (SELECT jsonb_array_elements_text(:'recipients'::jsonb));
+WITH recipients AS (
+  SELECT jsonb_agg('u-'||g) AS ids FROM generate_series(1, 150000) g
+)
+SELECT u.id, u.is_guest, u.is_bot, u.is_deactivated
+FROM jsonb_array_elements_text((SELECT ids FROM recipients)) AS ids(id)
+JOIN users u ON u.id = ids.id
+WHERE u.is_bot OR u.is_deactivated OR u.is_guest;
 
 -- (3) 一括 INSERT: 実際に書くため、ロールバックして計測する
 BEGIN;
