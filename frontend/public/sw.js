@@ -302,6 +302,7 @@ async function precacheShell() {
   const name = cacheNameForIndex(html);
   const existed = (await caches.keys()).includes(name);
   const cache = await caches.open(name);
+  const savedPaths = new Set();
   try {
     if (!(await precacheIndexAssets(cache, index))) {
       throw new Error("Cannot install an app shell without its entry assets");
@@ -326,6 +327,7 @@ async function precacheShell() {
             if (!isFreshAssetResponse(path, response) || !(await isFreshManifest(response))) return;
           }
           await cacheResponse(cache, path, response, bounded);
+          savedPaths.add(path);
         } catch {
           /* Offline installs fall back to the runtime cache. */
         }
@@ -338,6 +340,8 @@ async function precacheShell() {
     // ファイルごとに、新しい世代から順に有効なコピーを探す。
     const sources = await shellCacheNamesNewestFirst(name);
     for (const path of ["/manifest.webmanifest", "/offline.html"]) {
+      // 今回の取得に成功したパスは上書きしない。
+      if (savedPaths.has(path)) continue;
       let savedHere = null;
       let destinationUnreadable = false;
       let hereUsable = false;
@@ -353,7 +357,7 @@ async function precacheShell() {
         continue;
       }
       let readFailed = false;
-      let restored = hereUsable;
+      let restored = false;
       let best = hereUsable ? savedHere : null;
       let bestTime = best ? Date.parse(best.headers.get("x-zoo-last-modified") || "") : -Infinity;
       let bestHasTime = Number.isFinite(bestTime);
@@ -377,6 +381,7 @@ async function precacheShell() {
           readFailed = true;
         }
       }
+      restored = bestFromHere;
       if (best && !bestFromHere) {
         // 案内ページ自身の CSP を保持したまま、転送ヘッダーだけ除いてコピーする。
         try {
@@ -804,37 +809,33 @@ async function cachedFreshAsset(path, networkResponse = null) {
     }
     candidates.push({ name, current: name.startsWith(POLICY_PREFIX), installedAt });
   }
-  let best = null;
-  let bestTime = -Infinity;
-  let bestInstalled = -Infinity;
-  let bestHasTime = false;
-  let bestCurrent = false;
+  // 現行ポリシーのグループを優先し、各グループ内は更新日時（無ければインストール日時）で
+  // 最大のものを選ぶ。候補を集めてから決めるので列挙順に左右されない。
+  let currentBest = null;
+  let currentTime = -Infinity;
+  let otherBest = null;
+  let otherTime = -Infinity;
   for (const { name, current, installedAt } of candidates) {
     try {
       const cache = await caches.open(name);
       const saved = await cache.match(path);
       if (!(await isUsableFreshAsset(path, saved))) continue;
       const modified = Date.parse(saved.headers.get("x-zoo-last-modified") || "");
-      const hasTime = Number.isFinite(modified);
-      // 両方に更新日時があり値が違う場合だけ時刻で比較する。
-      // それ以外は現行ポリシー→シェルのインストール日時で決め、列挙順に左右されないようにする。
-      const comparable = hasTime && bestHasTime && modified !== bestTime;
-      const better =
-        !best ||
-        (comparable
-          ? modified > bestTime
-          : current > bestCurrent || (current === bestCurrent && installedAt > bestInstalled));
-      if (better) {
-        best = saved;
-        bestTime = hasTime ? modified : -Infinity;
-        bestInstalled = installedAt;
-        bestHasTime = hasTime;
-        bestCurrent = current;
+      const updatedAt = Number.isFinite(modified) ? modified : installedAt;
+      if (current) {
+        if (!currentBest || updatedAt > currentTime) {
+          currentBest = saved;
+          currentTime = updatedAt;
+        }
+      } else if (!otherBest || updatedAt > otherTime) {
+        otherBest = saved;
+        otherTime = updatedAt;
       }
     } catch {
       /* Try the next generation when one cache cannot be read. */
     }
   }
+  const best = currentBest || otherBest;
   return best || networkResponse || Response.error();
 }
 
