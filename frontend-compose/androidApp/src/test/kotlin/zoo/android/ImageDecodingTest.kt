@@ -157,6 +157,63 @@ class ImageDecodingTest {
     }
 
     @Test
+    fun revocationDuringDecodingInvalidatesMemoryEvenIfTheSameLinkIsAuthorizedAgain() = runTest {
+        val oldBitmap = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888).asImageBitmap()
+        val newBitmap = Bitmap.createBitmap(3, 3, Bitmap.Config.ARGB_8888).asImageBitmap()
+        val decoding = CompletableDeferred<Unit>()
+        val finishDecoding = CompletableDeferred<Unit>()
+        val url = "https://storage.test/photo"
+        var requests = 0
+        var downloads = 0
+        val http = HttpClient(MockEngine {
+            when (++requests) {
+                2 -> respond("{}", HttpStatusCode.NotFound)
+                else -> respond("""{"download_url":"$url"}""")
+            }
+        })
+        val platform = object : Platform {
+            override suspend fun headers() = emptyMap<String, String>()
+            override suspend fun readCache(key: String): String? = null
+            override suspend fun writeCache(key: String, value: String) {}
+            override fun uuid() = "preview"
+            override fun now() = "2026-11-15T00:00:00Z"
+            override fun navigate(path: String) {}
+            override fun action(name: String) {}
+            override fun translate(key: String, args: Map<String, String>) = key
+            override fun time(timestamp: String) = timestamp
+            override fun day(timestamp: String) = timestamp
+            override suspend fun attachmentImage(url: String, cacheKey: String?, retry: Boolean) =
+                byteArrayOf((++downloads).toByte())
+            override fun imageFrames(bytes: ByteArray) = flow {
+                if (bytes[0] == 1.toByte()) {
+                    decoding.complete(Unit)
+                    finishDecoding.await()
+                    emit(oldBitmap)
+                } else emit(newBitmap)
+            }
+        }
+        val app = Session(
+            Repository(zoo.Config("https://zoo.test", "/api/shapes", "alice", false), platform,
+                http, backgroundScope, synchronize = false), backgroundScope, Environment(),
+        )
+        val key = "photo:original"
+        try {
+            app.attachmentLinks.getLinks("photo")
+            val pending = async {
+                assertFailsWith<ApiException> { app.imageBitmap(url, signedAttachment = true, cacheKey = key) }
+            }
+            decoding.await()
+            assertEquals(404, assertFailsWith<ApiException> { app.attachmentLinks.getLinks("photo", force = true) }.status)
+            app.attachmentLinks.getLinks("photo", force = true)
+            finishDecoding.complete(Unit)
+            assertEquals(403, pending.await().status)
+            assertNull(app.cachedImageBitmap(url, signedAttachment = true, cacheKey = key))
+            assertSame(newBitmap, app.imageBitmap(url, signedAttachment = true, cacheKey = key))
+            assertEquals(2, downloads)
+        } finally { app.close(); http.close() }
+    }
+
+    @Test
     fun staticPreviewIconAndAvatarUseTheBoundedPlatformDecoder() = runTest {
         val original = Bitmap.createBitmap(4096, 32, Bitmap.Config.ARGB_8888)
         val stream = ByteArrayOutputStream()
