@@ -29,7 +29,7 @@ vi.mock("../../../hooks/useCurrentUser", () => ({
 }));
 vi.mock("../../../hooks/useRealtime", async (original) => ({
   ...(await original<typeof import("../../../hooks/useRealtime")>()),
-  useAllUsers: () => ({
+  useUsers: () => ({
     data: [
       { id: "me", display_name: "Me", user_name: "me" },
       { id: "bot", display_name: "Echo", user_name: "echo_bot" },

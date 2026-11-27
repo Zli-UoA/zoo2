@@ -13,7 +13,6 @@ import type {
   TableRowMap,
   UserRow,
 } from "./types";
-import { asTableRow } from "./rowTypes";
 
 export type ElectricType =
   | "bool"
@@ -44,7 +43,6 @@ export type ShapeName =
   | "messages"
   | "messageReactions"
   | "users"
-  | "allUsers"
   | "channelUsers"
   | "channelNotificationSettings"
   | "channelLeaves"
@@ -64,7 +62,6 @@ export const SHAPE_META: Record<ShapeName, ShapeMeta> = {
   messages: { table: "messages", proxyPath: "messages" },
   messageReactions: { table: "message_reactions", proxyPath: "message_reactions" },
   users: { table: "users", proxyPath: "users" },
-  allUsers: { table: "users", proxyPath: "users" },
   channelUsers: { table: "channel_user", proxyPath: "channel_users" },
   // 実テーブルは channel_user だが、自分の通知設定だけを配信する別の Shape を使う。
   channelNotificationSettings: {
@@ -303,5 +300,5 @@ export function coerceElectricRow<K extends TableName>(
       coerced[column] = coerceElectricValue(type, coerced[column]);
     }
   }
-  return asTableRow<K>(coerced);
+  return coerced as unknown as TableRowMap[K];
 }

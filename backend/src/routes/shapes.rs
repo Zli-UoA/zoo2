@@ -636,32 +636,11 @@ pub(crate) async fn users_shape(
     auth_user: AuthUser,
     Query(raw_query): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    // 既定は従来どおり全件。Web の初期表示だけ `?scope=shared` で共同チャンネル member に
-    // 絞り込む。他クライアントと Apps API はパラメーターなしなので影響しない。
-    // ゲストはフラグに関係なく絞り込みを維持する（従来の境界を保つ）。
-    // `id = $1 OR ...` は users 全体の Seq Scan になる。自分の行は channel_user 経由で
-    // 含まれるため、OR を外して主キー Index Only Scan が使える形にする。
     let mut db = state.db.clone();
-    let is_guest = crate::apps::events::guest_in_db(&mut db, &auth_user.id).await?;
-    // ゲストは従来どおり本人の行も返す（所属0件でも消えないようにする）。
-    let guest_where = "id = $1 OR id IN (SELECT user_id FROM channel_user WHERE channel_id IN (SELECT channel_id FROM channel_user WHERE user_id = $1))";
-    let narrow_where = "id IN (SELECT user_id FROM channel_user WHERE channel_id IN (SELECT channel_id FROM channel_user WHERE user_id = $1))";
-    let shared_only = raw_query
-        .get("scope")
-        .is_some_and(|value| value == "shared");
-    if !shared_only && !is_guest {
-        return proxy_shape(&state, "users", None, &[], &raw_query, false, &auth_user.id).await;
+    if crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
+        return proxy_shape(&state,"users",Some("id = $1 OR id IN (SELECT user_id FROM channel_user WHERE channel_id IN (SELECT channel_id FROM channel_user WHERE user_id = $1))"),&[("params[1]",auth_user.id.as_str())],&raw_query,true,&auth_user.id).await;
     }
-    proxy_shape(
-        &state,
-        "users",
-        Some(if is_guest { guest_where } else { narrow_where }),
-        &[("params[1]", auth_user.id.as_str())],
-        &raw_query,
-        true,
-        &auth_user.id,
-    )
-    .await
+    proxy_shape(&state, "users", None, &[], &raw_query, false, &auth_user.id).await
 }
 
 /// Channel Users Shape (メンバー一覧)

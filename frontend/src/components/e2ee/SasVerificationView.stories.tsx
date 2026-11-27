@@ -4,8 +4,6 @@ import type { SasView } from "@zoo/crypto-wasm";
 
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { SasEntry } from "../../lib/e2ee/sasController";
-import { QrCodeImage } from "./QrCodeImage";
-import { QrCodeScanner } from "./QrCodeScanner";
 import { SasVerificationView, type SasVerificationHandlers } from "./SasVerificationView";
 
 const handlers = (): SasVerificationHandlers => ({
@@ -67,16 +65,6 @@ const meta = {
 } satisfies Meta<typeof SasVerificationView>;
 export default meta;
 type Story = StoryObj<typeof meta>;
-
-/** 遅延読み込みする QR の部品単体。生成したバイト列と、カメラを使えない状態の表示を確かめる。 */
-export const QrParts: Story = {
-  render: () => (
-    <div className="flex flex-wrap items-start gap-6">
-      <QrCodeImage bytes={qrCode} label="検証の QR コード" />
-      <QrCodeScanner initialState="unsupported" onScan={fn(async () => "retry" as const)} />
-    </div>
-  ),
-};
 
 /** 相手から検証を求められた。受け入れるか断る。 */
 export const Incoming: Story = {

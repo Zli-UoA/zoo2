@@ -13,13 +13,7 @@ import { useOfflineStatus } from "../../lib/offline/offline-context";
 import { OfflineProvider } from "./OfflineProvider";
 
 const mocks = vi.hoisted(() => ({
-  state: {
-    currentUserId: null,
-    isLoading: true,
-    isAdmin: false,
-    me: null,
-    error: null,
-  } as CurrentUserState,
+  state: { currentUserId: null, isLoading: true, isAdmin: false, error: null } as CurrentUserState,
   listeners: new Set<() => void>(),
   online: true,
   ensureLoaded: vi.fn(async () => {}),
@@ -54,7 +48,7 @@ vi.mock("../layout/ShellSkeleton", () => ({ ShellSkeleton: () => <p>Loading</p> 
 
 beforeEach(() => {
   clearChannelMeasurementCache();
-  mocks.state = { currentUserId: null, isLoading: true, isAdmin: false, me: null, error: null };
+  mocks.state = { currentUserId: null, isLoading: true, isAdmin: false, error: null };
   mocks.online = true;
   mocks.ensureLoaded.mockReset();
   mocks.ensureLoaded.mockResolvedValue(undefined);
@@ -114,13 +108,7 @@ it("does not reload after a background deployment when retrying or changing name
 it("resolves the current user again after reconnecting from an offline startup", async () => {
   localStorage.setItem("zoo.offline.lastUser", "user-a");
   mocks.online = false;
-  mocks.state = {
-    currentUserId: null,
-    isLoading: false,
-    isAdmin: false,
-    me: null,
-    error: "Offline",
-  };
+  mocks.state = { currentUserId: null, isLoading: false, isAdmin: false, error: "Offline" };
   const config = { devUserId: null, oidc: {} } as AppConfig;
   const view = (
     <OfflineProvider config={config}>
@@ -131,13 +119,7 @@ it("resolves the current user again after reconnecting from an offline startup",
   await screen.findByRole("button", { name: "Cached channel" });
   mocks.ensureLoaded.mockClear();
   mocks.ensureLoaded.mockImplementation(async () => {
-    mocks.state = {
-      currentUserId: "user-a",
-      isLoading: false,
-      isAdmin: false,
-      me: null,
-      error: null,
-    };
+    mocks.state = { currentUserId: "user-a", isLoading: false, isAdmin: false, error: null };
     for (const listener of mocks.listeners) listener();
   });
   mocks.online = true;
@@ -163,13 +145,7 @@ it("waits for user resolution before opening storage and mounting interactive ch
   expect(mocks.prepare).toHaveBeenCalledOnce();
 
   await act(async () => {
-    mocks.state = {
-      currentUserId: "user-a",
-      isLoading: false,
-      isAdmin: false,
-      me: null,
-      error: null,
-    };
+    mocks.state = { currentUserId: "user-a", isLoading: false, isAdmin: false, error: null };
     for (const listener of mocks.listeners) listener();
   });
   expect(await screen.findByRole("button", { name: "Create channel" })).toBeTruthy();
@@ -192,7 +168,7 @@ it.each([
 
 it("does not open the previous user's cache after online user resolution fails", async () => {
   localStorage.setItem("zoo.offline.lastUser", "previous-user");
-  mocks.state = { ...mocks.state, isLoading: false, me: null, error: "Request timed out" };
+  mocks.state = { ...mocks.state, isLoading: false, error: "Request timed out" };
   render(
     <OfflineProvider config={{ devUserId: null, oidc: {} } as AppConfig}>
       <button>App</button>
@@ -241,13 +217,7 @@ function ClearUserData() {
 it.each([false, true])(
   "React logout clears only this user's Compose drafts and channel scroll cache even if OPFS deletion fails: %s",
   async (fails) => {
-    mocks.state = {
-      currentUserId: "user-a",
-      isLoading: false,
-      isAdmin: false,
-      me: null,
-      error: null,
-    };
+    mocks.state = { currentUserId: "user-a", isLoading: false, isAdmin: false, error: null };
     localStorage.setItem("zoo-compose:user-a:draft:private:", "private draft");
     localStorage.setItem("zoo-compose:user-ab:draft:private:", "other user's draft");
     const scrollCacheKey = buildChannelScrollKey("ch-logout", "user-a");

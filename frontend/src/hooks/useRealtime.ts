@@ -13,23 +13,10 @@ import type { FeedMessage as FeedRow } from "../components/chat/messages/message
 import { canAddChannelMember, canManageChannel } from "./channelPermissions";
 import { useCurrentUser } from "./useCurrentUser";
 
-/** 投稿者名の解決に使うユーザーのうち、本人と共同チャンネルにいるものを購読する。 */
+/** 投稿者名の解決に使う全ユーザーを購読する。 */
 export function useUsers() {
   const { users } = useCollections();
   const query = useLiveQuery((q) => q.from({ users }));
-  return {
-    ...query,
-    isLoading: query.isLoading && !(query.isPersistedReady && query.data?.length),
-  };
-}
-
-/** 全ユーザーが必要な画面専用。起動時の全件購読を避けるため、ここだけが allUsers Shape を使う。 */
-export function useAllUsers(enabled = true) {
-  const { allUsers } = useCollections();
-  const query = useLiveQuery({
-    query: (q) => (enabled ? q.from({ users: allUsers }) : undefined),
-    queryKey: ["allUsers", enabled, allUsers.id],
-  });
   return {
     ...query,
     isLoading: query.isLoading && !(query.isPersistedReady && query.data?.length),
@@ -57,8 +44,6 @@ export function useActiveChannels() {
 export interface MessageFeedOptions {
   /** スレッドの返信を購読する場合のルート ID。未指定はチャンネル直下。 */
   parentId?: string | null;
-  /** 1ページで取得する件数。キャッチアップでは未読範囲を早く覆うため大きくする。 */
-  pageSize?: number;
 }
 
 /**
@@ -76,7 +61,7 @@ export function useMessageFeed(channelId: string, options: MessageFeedOptions = 
   const parentId = options.parentId ?? null;
   const query = useLiveInfiniteQuery(
     (q) => messageFeedQuery(q, { messages: messages(channelId), users }, { parentId }),
-    { pageSize: options.pageSize ?? MESSAGE_PAGE_SIZE },
+    { pageSize: MESSAGE_PAGE_SIZE },
   );
   // クエリは新しい順。画面は古い順に並べる。
   const oldestFirst = useMemo(() => [...(query.data ?? [])].reverse(), [query.data]);
@@ -332,8 +317,6 @@ export interface ChannelAccess {
    * 揃うまで保留する。解決前に「非公開です」を出すのを避ける。
    */
   isMembershipPending: boolean;
-  /** 本人IDとメンバー購読の初回同期が揃うまで参加判定を保留するか。 */
-  isSyncing: boolean;
   /** メンバー購読の失敗。 */
   isError: boolean;
 }
@@ -375,7 +358,6 @@ export function useChannelAccess(channel: ChannelRow | null): ChannelAccess {
     isMembershipPending:
       !!channel?.is_private &&
       (currentUserLoading || (!isMember && membersQuery.isInitialSyncLoading)),
-    isSyncing: currentUserLoading || membersQuery.isInitialSyncLoading,
     isError: membersQuery.isError,
   };
 }

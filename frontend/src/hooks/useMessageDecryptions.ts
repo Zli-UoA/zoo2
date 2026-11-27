@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { FeedMessage } from "../components/chat/messages/messageFormat";
-import { asWasmCiphertext } from "../lib/electric/rowTypes";
-import type { MegolmCiphertext } from "../lib/electric/types";
 import { useE2ee } from "../lib/e2ee/e2ee-context";
 import {
   applyRevision,
@@ -12,11 +10,7 @@ import {
 } from "../lib/e2ee/messageDecryption";
 import type { EncryptedMessage } from "@zoo/crypto-wasm";
 
-function toEncryptedMessage(
-  message: FeedMessage,
-  channelId: string,
-  ciphertext: MegolmCiphertext,
-): EncryptedMessage {
+function toEncryptedMessage(message: FeedMessage, channelId: string): EncryptedMessage {
   return {
     channel_id: channelId,
     message_id: message.id,
@@ -25,7 +19,7 @@ function toEncryptedMessage(
     message_kind: message.message_kind ?? "message",
     epoch: Number(message.epoch ?? 0),
     revision: message.revision ?? 0,
-    ciphertext: asWasmCiphertext(ciphertext),
+    ciphertext: message.ciphertext as unknown as EncryptedMessage["ciphertext"],
   };
 }
 
@@ -34,8 +28,9 @@ function toEncryptedMessage(
  * 暗号文の送信端末とセッション）をすべて入れる。どれかが変われば（編集や同期元の書き換え）、前の
  * 結果を使わずに復号と照合をやり直す。
  */
-function rowKey(message: FeedMessage, channelId: string, ciphertext: MegolmCiphertext): string {
-  return JSON.stringify(toEncryptedMessage(message, channelId, ciphertext));
+function rowKey(message: FeedMessage, channelId: string): string | null {
+  if (!message.ciphertext) return null;
+  return JSON.stringify(toEncryptedMessage(message, channelId));
 }
 
 /**
@@ -86,18 +81,15 @@ export function useMessageDecryptions(
         }
       }
     }
-    const pending = messages.flatMap((message) => {
-      if (!message.ciphertext) return [];
-      const ciphertext = message.ciphertext;
-      const key = rowKey(message, channelId, ciphertext);
-      return cache.current.has(key) ? [] : [{ message, ciphertext }];
+    const pending = messages.filter((message) => {
+      const key = rowKey(message, channelId);
+      return key !== null && !cache.current.has(key);
     });
     const publish = () => {
       const next = new Map<string, MessageDecryption>();
       for (const message of messages) {
-        if (!message.ciphertext) continue;
-        const key = rowKey(message, channelId, message.ciphertext);
-        const entry = cache.current.get(key);
+        const key = rowKey(message, channelId);
+        const entry = key ? cache.current.get(key) : undefined;
         if (!entry) continue;
         const value = applyRevision(
           latest.current,
@@ -122,9 +114,7 @@ export function useMessageDecryptions(
     void worker
       .request({
         op: "megolmDecrypt",
-        rows: pending.map(({ message, ciphertext }) =>
-          toEncryptedMessage(message, channelId, ciphertext),
-        ),
+        rows: pending.map((message) => toEncryptedMessage(message, channelId)),
       })
       .then((outcomes) => {
         // Worker が変わっていれば捨てる（キャッシュにも最新の版にも入れない）。新しい Worker で復号し直す。
@@ -137,10 +127,10 @@ export function useMessageDecryptions(
         ) {
           requestSenderReverify();
         }
-        pending.forEach(({ message, ciphertext }, index) => {
+        pending.forEach((message, index) => {
           const outcome = outcomes[index];
-          const key = rowKey(message, channelId, ciphertext);
-          if (!outcome) return;
+          const key = rowKey(message, channelId);
+          if (!outcome || !key) return;
           const value: MessageDecryption =
             outcome.status === "decrypted"
               ? {

@@ -14,7 +14,7 @@ import {
 } from "react";
 
 import { useCurrentUser } from "../../hooks/useCurrentUser";
-import { useAllUsers } from "../../hooks/useRealtime";
+import { useUsers } from "../../hooks/useRealtime";
 import { localizeApiError } from "../../lib/i18n/apiError";
 import { createOrGetDm } from "../../lib/api/dms";
 import { createConfiguredApiClient } from "../../lib/api/client";
@@ -58,7 +58,7 @@ export function CreateDmDialog({
   const navigate = useNavigate();
   const collections = useCollections();
   const client = useMemo(() => createConfiguredApiClient(collections.config), [collections]);
-  const usersQuery = useAllUsers(open);
+  const usersQuery = useUsers();
   const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
   const [query, setQuery] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);

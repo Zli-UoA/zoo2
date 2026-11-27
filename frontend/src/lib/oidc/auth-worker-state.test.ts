@@ -184,16 +184,6 @@ it.each([0, -1, null, "300"])("rejects invalid expires_in: %s", async (expires_i
   await expect(h.state.run(h.request)).rejects.toThrow("invalid_token_response");
 });
 
-it("resumes a session after two days idle", async () => {
-  const h = harness();
-  await h.state.run(h.request);
-  h.advance(2 * 24 * 60 * 60 * 1000);
-  const result = await new AuthWorkerState(h.environment).run(h.request);
-  expect(result?.access_token).toBe("access-2");
-  const form = new URLSearchParams(h.fetch.mock.calls[1][1].body as string);
-  expect(form.get("refresh_token")).toBe("refresh-1");
-});
-
 it("clears idle credentials on the next worker start, keeping a tombstone", async () => {
   const h = harness();
   await h.state.run(h.request);

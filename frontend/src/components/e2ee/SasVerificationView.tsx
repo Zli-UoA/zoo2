@@ -1,20 +1,12 @@
-import { lazy, Suspense, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { CameraIcon, QrCodeIcon, ShieldAlertIcon, ShieldCheckIcon, SmileIcon } from "lucide-react";
 
 import type { QrScanResult, SasEntry } from "../../lib/e2ee/sasController";
 import { SAS_EMOJI } from "../../lib/e2ee/sasEmoji";
-import type { QrCodeScannerProps } from "./QrCodeScanner";
-
-// QR の生成・読み取りは検証ダイアログを開いたときだけ要る。jsqr / qrcode-generator を
-// 初期チャンクから外すため、ダイアログ内の部品だけ遅延読み込みする。
-const QrCodeImage = lazy(() =>
-  import("./QrCodeImage").then((module) => ({ default: module.QrCodeImage })),
-);
-const QrCodeScanner = lazy(() =>
-  import("./QrCodeScanner").then((module) => ({ default: module.QrCodeScanner })),
-);
+import { QrCodeImage } from "./QrCodeImage";
+import { QrCodeScanner, type QrCodeScannerProps } from "./QrCodeScanner";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -126,14 +118,10 @@ function ChooseMethod({
   return (
     <div className="flex flex-col items-center gap-3">
       {showScanner ? (
-        <Suspense fallback={null}>
-          <QrCodeScanner onScan={handlers.onScanQr} {...scannerProps} />
-        </Suspense>
+        <QrCodeScanner onScan={handlers.onScanQr} {...scannerProps} />
       ) : view.qr_code ? (
         <>
-          <Suspense fallback={null}>
-            <QrCodeImage bytes={view.qr_code} label={t("e2ee.qr.codeLabel")} />
-          </Suspense>
+          <QrCodeImage bytes={view.qr_code} label={t("e2ee.qr.codeLabel")} />
           <p className="text-center text-sm text-muted-foreground">
             {view.phase === "requested"
               ? t("e2ee.qr.waitingForAccept", { name })

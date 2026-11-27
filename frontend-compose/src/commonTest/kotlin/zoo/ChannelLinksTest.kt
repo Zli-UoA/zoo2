@@ -35,9 +35,8 @@ class ChannelLinksTest {
         stalled: Boolean = false,
         records: EncryptionRecords = EncryptionRecords.Loaded,
         hidesContent: Boolean = false,
-        customEmojis: (Row) -> Set<String> = { emptySet() },
     ) = resolveChannelLink(
-        target, channel, ready, LinkedMessageState(row, ciphertext, stalled), recorded, records, users, customEmojis,
+        target, channel, ready, LinkedMessageState(row, ciphertext, stalled), recorded, records, users,
     ) { hidesContent }
 
     private fun shown(info: ChannelLinkInfo) = assertIs<ChannelLinkInfo.Message>(info).message
@@ -179,13 +178,6 @@ class ChannelLinksTest {
             putJsonArray("attachments") { repeat(2) { add(buildJsonObject { put("id", "a$it") }) } }
         }))))
         assertEquals(2, files.attachmentCount)
-    }
-
-    @Test
-    fun linkExcerptRetainsRegisteredEmojiInTheRubyBase() {
-        val content = "\$[ruby **星**:猫:ねこ]"
-        val linked = resolve(LinkedRow.Found(row("content" to content)), customEmojis = { setOf(":猫:") })
-        assertEquals("星:猫:", shown(linked).excerpt)
     }
 
     @Test

@@ -6,13 +6,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
@@ -75,7 +71,6 @@ internal data class TimelineQuote(
     val avatar: String? = null,
     val postAuthor: zoo.Row? = null,
     val local: Boolean = false,
-    val remotePostAvailable: Boolean = false,
 ) {
     val canOpen: Boolean get() = postId != null || !local
 }
@@ -128,7 +123,6 @@ internal fun TimelineQuoteCard(
     quote: TimelineQuote, colors: AndroidColors, open: () -> Unit, openMedia: (TimelineMedia) -> Unit,
     openProfile: (() -> Unit)? = null,
 ) {
-    var showOriginal by remember(quote.uri, quote.remotePostAvailable) { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().padding(top = 6.dp).clip(RoundedCornerShape(8.dp))
         .background(colors.inputSurface).padding(horizontal = 10.dp, vertical = 6.dp)) {
         if (!quote.canOpen) {
@@ -136,7 +130,7 @@ internal fun TimelineQuoteCard(
             return@Column
         }
         val quoteLink = Modifier.heightIn(min = AndroidControlSize.target)
-            .clickable(role = Role.Button) { if (quote.remotePostAvailable) showOriginal = true else open() }
+            .clickable(role = Role.Button, onClick = open)
         val title: @Composable () -> Unit = {
             Text(if (quote.author.isBlank()) "引用元を開く" else "引用 · ${quote.author}",
                 color = colors.secondary, fontSize = if (quote.author.isBlank()) 12.sp else entryTextSize,
@@ -163,30 +157,6 @@ internal fun TimelineQuoteCard(
             }
         }
         TimelineMediaGroup(quote.media, colors, apub = true, open = openMedia)
-    }
-    if (showOriginal) {
-        AlertDialog(
-            onDismissRequest = { showOriginal = false },
-            title = { Text(androidLabel("home.quotedPost", "引用元の投稿")) },
-            text = {
-                Column(Modifier.verticalScroll(rememberScrollState())) {
-                    if (quote.author.isNotBlank()) Text(quote.author)
-                    EntryBody(quote.body, colors.foreground, entryTextSize, quote.emoji)
-                    TimelineMediaGroup(quote.media, colors, apub = true) { media ->
-                        showOriginal = false
-                        openMedia(media)
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showOriginal = false }) { Text(androidLabel("common.close", "閉じる")) }
-            },
-            dismissButton = {
-                TextButton(onClick = { showOriginal = false; open() }) {
-                    Text(androidLabel("home.openQuotedPost", "引用元を開く"))
-                }
-            },
-        )
     }
 }
 

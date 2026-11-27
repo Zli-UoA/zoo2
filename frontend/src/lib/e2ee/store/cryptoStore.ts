@@ -1076,7 +1076,6 @@ export class CryptoStore {
       for (const row of rows) {
         let session;
         try {
-          // 鍵バックアップの行は JsonObject で届くが wasm は BackupRow を要求する（JSON 境界）。
           session = backupKey.decryptRow(row as unknown as BackupRow);
         } catch {
           dropped += 1;
@@ -1450,7 +1449,6 @@ class SenderTrustCache {
     if (!this.results.has(key)) {
       let trust: SenderTrust | null = null;
       try {
-        // keys/query の JSON を wasm の入力へ渡す（JSON 境界で DB アダプタの対象外）。
         this.snapshot ??= KeySnapshot.fromJson(this.keysQuery as unknown as JsonObject);
         trust = this.trust.senderTrust(this.snapshot, sender, senderDevice, this.ownSelfSigningKey);
       } catch {

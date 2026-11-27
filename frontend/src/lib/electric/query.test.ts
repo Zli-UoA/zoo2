@@ -79,13 +79,7 @@ describe("shapeQueryParams", () => {
 
   it("adds no filter for whole-table shapes", () => {
     expect(shapeQueryParams("channels", directConfig, { channelId: "ignored" })).toEqual({});
-    expect(shapeQueryParams("allUsers", proxyConfig)).toEqual({});
-  });
-
-  it("requests the shared-channel scope only for the Web users shape", () => {
-    expect(shapeQueryParams("users", proxyConfig, { channelId: "ignored" })).toEqual({
-      scope: "shared",
-    });
+    expect(shapeQueryParams("users", proxyConfig, { channelId: "ignored" })).toEqual({});
   });
 });
 

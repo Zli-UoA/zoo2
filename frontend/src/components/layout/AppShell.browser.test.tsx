@@ -49,7 +49,6 @@ vi.mock("../../hooks/usePresence", () => ({
   useConversationView: () => {},
 }));
 vi.mock("../../hooks/useRealtime", () => ({
-  useAllUsers: () => ({ data: [] }),
   useActiveChannels: () => ({
     data: [{ id: "123e4567-e89b-12d3-a456-426614174000", channel_name: "general", is_dm: false }],
     isLoading: false,

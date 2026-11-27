@@ -21,7 +21,7 @@ const fixture = vi.hoisted(() => ({
 vi.mock("../../lib/electric/collections-context", () => ({
   useCollections: () => ({ config: fixture.config }),
 }));
-vi.mock("../../hooks/useRealtime", () => ({ useAllUsers: () => ({ data: [] }) }));
+vi.mock("../../hooks/useRealtime", () => ({ useUsers: () => ({ data: [] }) }));
 vi.mock("../../lib/api/client", () => ({
   createConfiguredApiClient: () => ({
     get: async () => ({

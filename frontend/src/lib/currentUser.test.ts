@@ -56,19 +56,7 @@ describe("resolveCurrentUser", () => {
   it("resolves the id and is_admin from GET /api/users/me with X-Dev-User in dev", async () => {
     const fetchMock = vi.fn<FetchLike>(async () => jsonResponse(userResponse("dev-user-1", true)));
     const resolved = await resolveCurrentUser(DEV_CONFIG, { fetch: fetchMock });
-    expect(resolved).toEqual({
-      currentUserId: "dev-user-1",
-      isAdmin: true,
-      me: {
-        id: "dev-user-1",
-        user_name: "smoke",
-        display_name: "Smoke User",
-        avatar_url: null,
-        created_at: "2026-01-01T00:00:00Z",
-        updated_at: null,
-      },
-      error: null,
-    });
+    expect(resolved).toEqual({ currentUserId: "dev-user-1", isAdmin: true, error: null });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe("http://localhost:8000/api/users/me");
@@ -78,18 +66,13 @@ describe("resolveCurrentUser", () => {
   it("falls back to VITE_DEV_USER_ID when the dev /me request fails", async () => {
     const fetchMock = vi.fn(async () => jsonResponse({ error: "boom" }, 500));
     const resolved = await resolveCurrentUser(DEV_CONFIG, { fetch: fetchMock });
-    expect(resolved).toEqual({
-      currentUserId: "dev-user-1",
-      isAdmin: false,
-      me: null,
-      error: null,
-    });
+    expect(resolved).toEqual({ currentUserId: "dev-user-1", isAdmin: false, error: null });
   });
 
   it("keeps the current user unresolved in dev direct mode without VITE_DEV_USER_ID", async () => {
     const fetchMock = vi.fn();
     const resolved = await resolveCurrentUser(DIRECT_DEV_CONFIG, { fetch: fetchMock });
-    expect(resolved).toEqual({ currentUserId: null, isAdmin: false, me: null, error: null });
+    expect(resolved).toEqual({ currentUserId: null, isAdmin: false, error: null });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -97,19 +80,7 @@ describe("resolveCurrentUser", () => {
     setTokenProvider(() => "token-123");
     const fetchMock = vi.fn<FetchLike>(async () => jsonResponse(userResponse("user-1", true)));
     const resolved = await resolveCurrentUser(OIDC_CONFIG, { fetch: fetchMock });
-    expect(resolved).toEqual({
-      currentUserId: "user-1",
-      isAdmin: true,
-      me: {
-        id: "user-1",
-        user_name: "smoke",
-        display_name: "Smoke User",
-        avatar_url: null,
-        created_at: "2026-01-01T00:00:00Z",
-        updated_at: null,
-      },
-      error: null,
-    });
+    expect(resolved).toEqual({ currentUserId: "user-1", isAdmin: true, error: null });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe("http://localhost:8000/api/users/me");
@@ -128,19 +99,7 @@ describe("resolveCurrentUser", () => {
       }),
     );
     const resolved = await resolveCurrentUser(OIDC_CONFIG, { fetch: fetchMock });
-    expect(resolved).toEqual({
-      currentUserId: "user-1",
-      isAdmin: false,
-      me: {
-        id: "user-1",
-        user_name: "smoke",
-        display_name: "Smoke User",
-        avatar_url: null,
-        created_at: "2026-01-01T00:00:00Z",
-        updated_at: null,
-      },
-      error: null,
-    });
+    expect(resolved).toEqual({ currentUserId: "user-1", isAdmin: false, error: null });
   });
 
   it("returns null and leaves re-login to the unauthorized handler on 401", async () => {
@@ -148,7 +107,7 @@ describe("resolveCurrentUser", () => {
     setUnauthorizedHandler(onUnauthorized);
     const fetchMock = vi.fn(async () => jsonResponse({ error: "unauthorized" }, 401));
     const resolved = await resolveCurrentUser(OIDC_CONFIG, { fetch: fetchMock });
-    expect(resolved).toEqual({ currentUserId: null, isAdmin: false, me: null, error: null });
+    expect(resolved).toEqual({ currentUserId: null, isAdmin: false, error: null });
     expect(onUnauthorized).toHaveBeenCalledTimes(1);
   });
 
@@ -168,7 +127,6 @@ describe("createCurrentUserStore", () => {
       currentUserId: "dev-user-1",
       isLoading: false,
       isAdmin: false,
-      me: null,
       error: null,
     });
   });
@@ -184,14 +142,6 @@ describe("createCurrentUserStore", () => {
       currentUserId: "dev-user-1",
       isLoading: false,
       isAdmin: true,
-      me: {
-        id: "dev-user-1",
-        user_name: "smoke",
-        display_name: "Smoke User",
-        avatar_url: null,
-        created_at: "2026-01-01T00:00:00Z",
-        updated_at: null,
-      },
       error: null,
     });
   });
@@ -206,7 +156,6 @@ describe("createCurrentUserStore", () => {
       currentUserId: null,
       isLoading: true,
       isAdmin: false,
-      me: null,
       error: null,
     });
 
@@ -218,14 +167,6 @@ describe("createCurrentUserStore", () => {
       currentUserId: "user-1",
       isLoading: false,
       isAdmin: true,
-      me: {
-        id: "user-1",
-        user_name: "smoke",
-        display_name: "Smoke User",
-        avatar_url: null,
-        created_at: "2026-01-01T00:00:00Z",
-        updated_at: null,
-      },
       error: null,
     });
     expect(states.at(-1)?.currentUserId).toBe("user-1");
@@ -281,14 +222,6 @@ describe("createCurrentUserStore", () => {
       currentUserId: "new-session-user",
       isLoading: false,
       isAdmin: true,
-      me: {
-        id: "new-session-user",
-        user_name: "smoke",
-        display_name: "Smoke User",
-        avatar_url: null,
-        created_at: "2026-01-01T00:00:00Z",
-        updated_at: null,
-      },
       error: null,
     });
 
@@ -316,14 +249,6 @@ describe("createCurrentUserStore", () => {
       currentUserId: "user-1",
       isLoading: false,
       isAdmin: false,
-      me: {
-        id: "user-1",
-        user_name: "smoke",
-        display_name: "Smoke User",
-        avatar_url: null,
-        created_at: "2026-01-01T00:00:00Z",
-        updated_at: null,
-      },
       error: null,
     });
   });
@@ -341,7 +266,6 @@ describe("createCurrentUserStore", () => {
       currentUserId: null,
       isLoading: false,
       isAdmin: false,
-      me: null,
       error: null,
     });
   });

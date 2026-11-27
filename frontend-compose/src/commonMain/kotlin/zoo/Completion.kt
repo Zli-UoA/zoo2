@@ -52,7 +52,7 @@ private val mfmTemplates =
 fun completionAt(value: String, caret: Int): CompletionRange? {
     if (caret !in 0..value.length) return null
     val prefix = value.take(caret)
-    val inCode = insideCode(value, caret)
+    if (insideCode(value, caret)) return null
     Regex("^/([a-zA-Z0-9_-]*)$").find(prefix)?.let {
         return CompletionRange(0, caret, it.groupValues[1].lowercase(), false, "command")
     }
@@ -63,7 +63,7 @@ fun completionAt(value: String, caret: Int): CompletionRange? {
             value[channelStart - 1] !in "#.,!?<>()[]{}「」『』、。！？"
     ) channelStart--
     if (
-        !inCode && channelStart > 0 &&
+        channelStart > 0 &&
             value[channelStart - 1] == '#' &&
             (channelStart == 1 ||
                 value[channelStart - 2].isWhitespace() ||
@@ -77,7 +77,7 @@ fun completionAt(value: String, caret: Int): CompletionRange? {
             "channel",
         )
     val mfm = Regex("\\$\\[?([a-zA-Z0-9]*)$").find(prefix)
-    if (!inCode && mfm != null && !Regex("https?://[^\\s]*$").containsMatchIn(prefix)) {
+    if (mfm != null && !Regex("https?://[^\\s]*$").containsMatchIn(prefix)) {
         val escapes = prefix.take(mfm.range.first).takeLastWhile { it == '\\' }.length
         val code =
             prefix.take(mfm.range.first).count { it == '`' } % 2 == 1 ||
@@ -85,9 +85,15 @@ fun completionAt(value: String, caret: Int): CompletionRange? {
         if (escapes % 2 == 0 && !code)
             return CompletionRange(mfm.range.first, caret, mfm.groupValues[1].lowercase(), true)
     }
-    val mention = mentionQueryPattern.find(prefix) ?: return null
-    val query = mention.groupValues[1]
-    return CompletionRange(caret - query.length - 1, caret, normalizeMentionSearch(query), false)
+    var start = caret
+    while (start > 0 && value[start - 1].let { it.isLetterOrDigit() || it in "._-" }) start--
+    if (
+        start > 0 &&
+            value[start - 1] == '@' &&
+            (start == 1 || value[start - 2].isWhitespace() || value[start - 2] in "([{<（「『\"'。、")
+    )
+        return CompletionRange(start - 1, caret, value.substring(start, caret), false)
+    return null
 }
 
 fun completionOptions(
@@ -114,19 +120,17 @@ fun completionOptions(
         return mfmFunctions
             .filter { it.startsWith(range.query) }
             .map { CompletionOption(it, "mfm.functions.$it") }
-    val search = normalizeMentionSearch(range.query)
     return (listOf(CompletionOption("channel", "@channel"), CompletionOption("here", "@here")) +
             users
                 .filter {
                     it.text("id") in memberIds &&
                         // Slack から取り込んだ未連携のプレースホルダなど、無効化済みのユーザーは選ばせない
                         !it.flag("is_deactivated") &&
-                        (!it.flag("is_bot") || it.flag("bot_mentionable")) &&
-                        mentionNamePattern.matches(it.text("user_name")) &&
+                        Regex("[a-zA-Z0-9._-]+").matches(it.text("user_name")) &&
                         it.text("user_name").lowercase() !in setOf("channel", "here")
                 }
                 .map { CompletionOption(it.text("user_name"), author(it)) })
-        .filter { normalizeMentionSearch(it.name).contains(search) || normalizeMentionSearch(it.label).contains(search) }
+        .filter { (it.name + " " + it.label).contains(range.query, true) }
         .take(8)
 }
 

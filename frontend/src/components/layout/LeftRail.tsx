@@ -22,7 +22,7 @@ import { AppAvatar } from "../chat/AppIdentity";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "../ui/dialog";
 import { Separator } from "../ui/separator";
-import { AppDialogHost } from "../chat/AppDialogHost";
+import { AppDialogs } from "../chat/AppsDialog";
 import { NotificationsButton } from "../chat/NotificationsButton";
 import { CatchUpButton } from "../chat/CatchUpButton";
 import { PaneHeader } from "./PaneHeader";
@@ -61,10 +61,9 @@ export function LeftRail() {
     document.documentElement.dataset.zooBuildSha?.slice(0, 12) || t("aboutZoo.versionUnknown");
   const shell = useShell();
   const { config } = useCollections();
-  const { currentUserId, me: myProfile } = useCurrentUser();
+  const { currentUserId } = useCurrentUser();
   const usersQuery = useUsers();
-  // Shared Shape に本人が居ないとき（所属0件・ゲスト）は /me のプロフィールを使う。
-  const me = (usersQuery.data ?? []).find((user) => user.id === currentUserId) ?? myProfile;
+  const me = (usersQuery.data ?? []).find((user) => user.id === currentUserId);
   // プロフィールは AuthZ で編集する。保存後にこの画面へ戻れるよう、現在の origin を渡す。
   // デスクトップ版では AuthZ が既定のブラウザーで開き、戻り先もブラウザーの Web 版になるため付けない。
   const profileUrl = config.oidc
@@ -101,7 +100,7 @@ export function LeftRail() {
       <NotificationsButton />
       <CatchUpButton />
       <RailLink to="/bubble" icon={MessageCircleMoreIcon} label={t("bubbleChat.title")} exact />
-      <AppDialogHost />
+      <AppDialogs />
       {/* 同期の状態（/realtime）は開発時の確認用。本番ビルドでは出さない。 */}
       {import.meta.env.DEV ? (
         <RailLink to="/realtime" icon={ActivityIcon} label={t("sync.title")} exact />

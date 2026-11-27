@@ -36,7 +36,7 @@ it.each([true, false])(
     const channel = { id: message.channel_id, channel_name: "Saved channel", deleted_at: null };
     const membership = { user_id: user.id, channel_id: channel.id, joined_at: message.created_at };
     const snapshots: Record<string, { key: string; value: Record<string, unknown> }[]> = {
-      sharedUsers: [{ key: user.id, value: user }],
+      users: [{ key: user.id, value: user }],
       channels: [{ key: channel.id, value: channel }],
       channel_user: [{ key: `${user.id}:${channel.id}`, value: membership }],
       [`messages:${channel.id}`]: [{ key: message.id, value: message }],

@@ -47,12 +47,6 @@ internal data class EntryRichContent(
     val hidesBody: Boolean = false,
 )
 
-internal fun EntryContentBlock.displayedText(): Sequence<String> = when (this) {
-    is EntryContentText -> sequenceOf(body)
-    is EntryContentPanel -> blocks.asSequence().flatMap { it.displayedText() }
-    is EntryCard -> emptySequence()
-}
-
 @Composable
 internal fun EntryBlocks(
     blocks: List<EntryContentBlock>, colors: AndroidColors, fontSize: TextUnit, emoji: Map<String, TimelineMedia>,

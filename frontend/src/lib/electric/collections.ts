@@ -12,7 +12,6 @@ import { OFFLINE_SCHEMA_VERSION } from "../offline/schema";
 import { createShapeFetch, type ShapeFetchSource } from "./headers";
 import { MESSAGE_INDEX_COMPARE_OPTIONS } from "./messageOrder";
 import { buildShapeRequestUrl, resolveShapeUrl, type ShapeQueryOptions } from "./query";
-import { asElectricOptions, asPersistedOptions } from "./rowTypes";
 import { SHAPE_META, coerceElectricRow, type ShapeName } from "./schema";
 import type {
   AttachmentRow,
@@ -106,21 +105,17 @@ function withPersistence<
     return options;
   }
   // 永続化ラッパーは型に schema / utils を足すが、アプリ側の公開型は
-  // 従来の Electric コレクションのまま扱う。境界キャストは rowTypes.ts に集約する。
-  return asElectricOptions<TOptions>(
-    persistedCollectionOptions(
-      asPersistedOptions({
-        ...options,
-        getKey,
-        persistence,
-        schemaVersion: OFFLINE_SCHEMA_VERSION,
-        // `initialRender` は eager の同期でだけ使える (on-demand では、永続化の設定がエラーにする)。
-        ...(networkFirst
-          ? { initialRender: { strategy: "network-first", networkTimeoutMs: 2_000 } }
-          : {}),
-      }),
-    ),
-  );
+  // 従来の Electric コレクションのまま扱う。
+  return persistedCollectionOptions({
+    ...options,
+    getKey,
+    persistence,
+    schemaVersion: OFFLINE_SCHEMA_VERSION,
+    // `initialRender` は eager の同期でだけ使える (on-demand では、永続化の設定がエラーにする)。
+    ...(networkFirst
+      ? { initialRender: { strategy: "network-first", networkTimeoutMs: 2_000 } }
+      : {}),
+  } as unknown as Parameters<typeof persistedCollectionOptions>[0]) as unknown as TOptions;
 }
 
 function channelsCollection(
@@ -151,8 +146,7 @@ function usersCollection(config: AppConfig, persistence?: PersistedCollectionPer
   const collection = createCollection(
     withPersistence(
       electricCollectionOptions<UserRow>({
-        // 旧版の全件コレクションの ID は全件用へ引き継ぐため、共有用には新しい ID を使う。
-        id: "sharedUsers",
+        id: "users",
         getKey: (row) => row.id,
         defaultIndexType: BasicIndex,
         shapeOptions: shapeOptions("users", config),
@@ -164,30 +158,6 @@ function usersCollection(config: AppConfig, persistence?: PersistedCollectionPer
   // messages ⋈ users の結合キー。live query の警告を避けるため索引を張る。
   collection.createIndex((row) => row.id);
   return collection;
-}
-
-/**
- * 全ユーザーのディレクトリ用。起動時の `users` Shape は同じチャンネルの成员だけを流すため、
- * ディレクトリ・DM 作成など「全件が必要な画面」だけがこのコレクションを購読する。
- * 初回描画には使わないよう、呼び出し側で遅延マウントする。
- */
-function allUsersCollection(
-  config: AppConfig,
-  persistence?: PersistedCollectionPersistence | null,
-) {
-  return createCollection(
-    withPersistence(
-      electricCollectionOptions<UserRow>({
-        // 旧版が全件 Shape を保存していた ID をそのまま使い、更新後の再ダウンロードを避ける。
-        id: "users",
-        getKey: (row) => row.id,
-        defaultIndexType: BasicIndex,
-        shapeOptions: shapeOptions("allUsers", config),
-      }),
-      persistence,
-      (row: UserRow) => row.id,
-    ),
-  );
 }
 
 /**
@@ -410,7 +380,6 @@ function notificationsCollection(
 export type NotificationsCollection = ReturnType<typeof notificationsCollection>;
 export type ChannelsCollection = ReturnType<typeof channelsCollection>;
 export type UsersCollection = ReturnType<typeof usersCollection>;
-export type AllUsersCollection = ReturnType<typeof allUsersCollection>;
 export type ChannelUsersCollection = ReturnType<typeof channelUsersCollection>;
 export type ChannelNotificationSettingsCollection = ReturnType<
   typeof channelNotificationSettingsCollection
@@ -431,7 +400,6 @@ export interface CollectionsBundle {
   notifications: (userId: string) => NotificationsCollection;
   channels: ChannelsCollection;
   users: UsersCollection;
-  allUsers: AllUsersCollection;
   channelUsers: ChannelUsersCollection;
   /** 自分のチャンネル通知設定。ユーザー単位で生成しキャッシュする。 */
   channelNotificationSettings: (userId: string) => ChannelNotificationSettingsCollection;
@@ -513,10 +481,6 @@ export function getCollections(
     txidMode: resolved.txidMode,
     getCurrentUserId: () => currentUserStore.getState().currentUserId,
   };
-  // direct モードでは全件 Shape を1つだけ作り、users / allUsers の両方から使う。
-  const users = usersCollection(resolved, persistence);
-  const allUsers =
-    resolved.shapeMode === "direct" ? users : allUsersCollection(resolved, persistence);
   const bundle: CollectionsBundle = {
     config: resolved,
     persistence,
@@ -530,8 +494,7 @@ export function getCollections(
       return collection;
     },
     channels: channelsCollection(resolved, dependencies, persistence),
-    users,
-    allUsers,
+    users: usersCollection(resolved, persistence),
     channelUsers: channelUsersCollection(resolved, dependencies, persistence),
     channelNotificationSettings: (userId) => {
       let collection = notificationSettingsCache.get(userId);

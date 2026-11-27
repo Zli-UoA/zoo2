@@ -103,9 +103,6 @@ class MfmFunctionsTest {
             "`漢 字` かんじ" to MfmRuby("`漢 字`", "かんじ"),
             "<plain>漢 字</plain> かんじ" to MfmRuby("<plain>漢 字</plain>", "かんじ"),
             "**漢字**" to MfmRuby("**漢字**", ""),
-            "**星**ほし" to MfmRuby("**星**", "ほし"),
-            "New **York** よーく" to MfmRuby("New **York**", "よーく"),
-            "**星** \\*" to MfmRuby("**星**", "*"),
             "漢字\tかんじ" to MfmRuby("漢字", "かんじ"),
             "" to MfmRuby("", ""),
         )

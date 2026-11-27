@@ -31,7 +31,7 @@ vi.mock("../../hooks/useCurrentUser", () => ({
 }));
 
 vi.mock("../../hooks/useRealtime", () => ({
-  useAllUsers: () => ({ data: [] }),
+  useUsers: () => ({ data: [] }),
 }));
 
 it("grows the bubble chat input up to its 180px cap and then scrolls", async () => {

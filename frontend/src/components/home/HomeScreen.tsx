@@ -30,8 +30,6 @@ import {
   saveHomeTimeline,
 } from "../../lib/homePreferences";
 import { HomeComposer, type HomeComposerHandle } from "./HomeComposer";
-import { usePostEditState } from "./usePostEditState";
-import { usePullToRefresh } from "./usePullToRefresh";
 import { Input } from "../ui/input";
 import { ExternalLink } from "../ui/external-link";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -173,24 +171,16 @@ function HomeScreenContent({
   const [searchPending, setSearchPending] = useState(false);
   const [searchError, setSearchError] = useState(false);
   const searchVersion = useRef(0);
+  const [pull, setPull] = useState(0);
+  const [pulling, setPulling] = useState(false);
+  const touchStart = useRef<number | null>(null);
   const [account, setAccount] = useState("");
   const [controlsPending, setControlsPending] = useState(false);
   const [controlsError, setControlsError] = useState(false);
-  const { pull, pulling, onTouchStart, onTouchMove, onTouchCancel, onTouchEnd } = usePullToRefresh(
-    () => refresh(),
-    () => scrollRoot.current?.scrollTop ?? 0,
-  );
-  const {
-    editingId,
-    editText,
-    setEditText,
-    editError,
-    setEditError,
-    editPending,
-    setEditPending,
-    startEdit,
-    cancelEdit,
-  } = usePostEditState();
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editText, setEditText] = useState("");
+  const [editError, setEditError] = useState(false);
+  const [editPending, setEditPending] = useState(false);
   const loadControls = useCallback(async () => {
     const results = await Promise.allSettled([
       client.get<typeof federation>("/api/activitypub/status"),
@@ -658,10 +648,35 @@ function HomeScreenContent({
             scheduleRefresh.current(true);
         }}
         className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain pb-24 [overflow-anchor:none]"
-        onTouchStart={onTouchStart}
-        onTouchMove={onTouchMove}
-        onTouchCancel={onTouchCancel}
-        onTouchEnd={onTouchEnd}
+        onTouchStart={(event) => {
+          touchStart.current =
+            event.touches.length === 1 && (scrollRoot.current?.scrollTop ?? 0) <= 0
+              ? event.touches[0].clientY
+              : null;
+        }}
+        onTouchMove={(event) => {
+          if (touchStart.current === null || pulling) return;
+          if ((scrollRoot.current?.scrollTop ?? 0) > 0 || event.touches.length !== 1) {
+            touchStart.current = null;
+            setPull(0);
+            return;
+          }
+          setPull(Math.min(100, Math.max(0, (event.touches[0].clientY - touchStart.current) / 2)));
+        }}
+        onTouchCancel={() => {
+          touchStart.current = null;
+          setPull(0);
+        }}
+        onTouchEnd={() => {
+          touchStart.current = null;
+          if (pull >= 60 && !pulling) {
+            setPulling(true);
+            void refresh().finally(() => {
+              setPulling(false);
+              setPull(0);
+            });
+          } else setPull(0);
+        }}
       >
         <div className="mx-auto w-full max-w-2xl">
           {actorId ? <ActivityPubProfile actorId={actorId} avatarUrls={avatarUrls} /> : null}
@@ -891,7 +906,7 @@ function HomeScreenContent({
                                 })
                                 .then(async () => {
                                   window.dispatchEvent(new Event(THREADS_CHANGED));
-                                  cancelEdit();
+                                  setEditingId(null);
                                   await refresh();
                                 })
                                 .catch(() => setEditError(true))
@@ -914,7 +929,11 @@ function HomeScreenContent({
                             >
                               {t("home.save")}
                             </Button>
-                            <Button variant="ghost" disabled={editPending} onClick={cancelEdit}>
+                            <Button
+                              variant="ghost"
+                              disabled={editPending}
+                              onClick={() => setEditingId(null)}
+                            >
                               {t("common.cancel")}
                             </Button>
                             {editError ? (
@@ -1033,9 +1052,11 @@ function HomeScreenContent({
                               {post.user_id === currentUserId && !post.remote ? (
                                 <>
                                   <DropdownMenuItem
-                                    onClick={() =>
-                                      startEdit(post.entry_id ?? post.id, post.content)
-                                    }
+                                    onClick={() => {
+                                      setEditingId(post.entry_id ?? post.id);
+                                      setEditText(post.content);
+                                      setEditError(false);
+                                    }}
                                   >
                                     <PencilIcon />
                                     {t("home.edit")}

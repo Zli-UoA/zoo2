@@ -92,7 +92,6 @@ export async function loadDevices(deps: E2eeSetupDeps, currentDeviceId: string |
     queryOwnKeys(deps.client, deps.userId),
   ]);
   const selfSigning = crossSigningPublicKey(keysQuery, "self_signing_keys", deps.userId);
-  // keys/query の JsonObject から署名行を読む。JSON 固有の境界で DB アダプタの対象外。
   const rows = (keysQuery.signatures as unknown as SignatureRow[] | undefined) ?? [];
   const signed = new Set(
     rows
@@ -131,7 +130,6 @@ export async function openSecretStorage(
     const result = await evaluatePrfForUnlock(deps.rpId, storage.slots, deps.getCredential);
     await deps.worker.request({
       op: "unlock",
-      // SSSS の応答は REST の型、Worker protocol は JsonObject を要求する（JSON 境界）。
       response: storage as unknown as JsonObject,
       secret: { kind: "passkey", credentialId: result.credentialId, prfOutput: result.prfOutput },
     });
@@ -139,7 +137,6 @@ export async function openSecretStorage(
   } else {
     await deps.worker.request({
       op: "unlock",
-      // SSSS の応答は REST の型、Worker protocol は JsonObject を要求する（JSON 境界）。
       response: storage as unknown as JsonObject,
       secret: { kind: "recovery", recoveryKey: method.recoveryKey },
     });
@@ -182,7 +179,6 @@ export async function beginRevocation(
     return await deps.worker.request({
       op: "revocationBegin",
       scope,
-      // SSSS の応答を Worker protocol の JsonObject として渡す（JSON 境界）。
       secretStorage: secretStorage as unknown as JsonObject,
       keysQuery,
       versions,
@@ -239,7 +235,6 @@ export async function resumeRevocation(deps: E2eeSetupDeps): Promise<ResumeResul
   try {
     const summary = await deps.worker.request({
       op: "revocationResume",
-      // SSSS の応答を Worker protocol の JsonObject として渡す（JSON 境界）。
       secretStorage: secretStorage as unknown as JsonObject,
       expectedId: revocationId,
     });
@@ -527,7 +522,6 @@ async function runRevocation(
     await worker.request({
       op: "revocationVerify",
       revocationId,
-      // SSSS の応答を Worker protocol の JsonObject として渡す（JSON 境界）。
       secretStorage: secretStorage as unknown as JsonObject,
       keysQuery,
       currentVersion: current ?? {},

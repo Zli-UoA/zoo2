@@ -58,7 +58,6 @@ internal data class SearchResultItem(
     val fileSize: String? = null,
     /** Custom emoji in the snippet, drawn as in conversations. */
     val emoji: Map<String, TimelineMedia> = emptyMap(),
-    val needsWorkspaceEmoji: Boolean = false,
     val avatar: String? = null,
     val media: TimelineMedia? = null,
     val linkCard: EntryCard? = null,

@@ -65,15 +65,7 @@ vi.mock("../../hooks/useCurrentUser", () => ({
   }),
 }));
 
-vi.mock("../../hooks/useRealtime", () => ({
-  useAllUsers: () => ({ data: mockUsers }),
-}));
-
 vi.mock("../../lib/electric/collections-context", () => ({
-  useCollections: () => ({
-    users: {},
-    channelUsers: {},
-  }),
   useOptionalCollections: () => ({
     users: {},
     channelUsers: {},

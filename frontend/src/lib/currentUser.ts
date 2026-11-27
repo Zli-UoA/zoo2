@@ -2,7 +2,6 @@ import { ApiError, createConfiguredApiClient, type FetchLike } from "./api/clien
 import type { UserResponse } from "./api/types";
 import { getAuthSessionGeneration } from "./auth";
 import type { AppConfig } from "./config";
-import type { UserRow } from "./electric/types";
 
 /**
  * バックエンドの開発用固定管理者。`backend/src/auth.rs` の
@@ -17,14 +16,7 @@ const DEFAULT_DEV_ADMIN_ID = "00000000-0000-0000-0000-000000000001";
  */
 interface MeResponse extends UserResponse {
   is_admin?: boolean;
-  avatar_url?: string | null;
 }
-
-/** `/api/users/me` で得られる本人の表示情報。Shared Shape に無い場合の表示に使う。 */
-export type CurrentUserProfile = Pick<
-  UserRow,
-  "id" | "user_name" | "display_name" | "avatar_url" | "created_at" | "updated_at"
->;
 
 /** 現在ユーザーの解決結果。プロフィールの最新値は `users` Shape から別途引く。 */
 export interface CurrentUserState {
@@ -32,8 +24,6 @@ export interface CurrentUserState {
   isLoading: boolean;
   /** ワークスペース管理者かどうか（RBAC UI の出し分け用）。 */
   isAdmin: boolean;
-  /** `/api/users/me` のプロフィール。Shared Shape に本人が居ないときの表示に使う。 */
-  me: CurrentUserProfile | null;
   /** 401 以外で解決に失敗したときの理由（表示・調査用）。 */
   error: string | null;
 }
@@ -41,7 +31,6 @@ export interface CurrentUserState {
 export interface CurrentUserResolution {
   currentUserId: string | null;
   isAdmin: boolean;
-  me: CurrentUserProfile | null;
   error: string | null;
 }
 
@@ -67,39 +56,26 @@ export async function resolveCurrentUser(
 ): Promise<CurrentUserResolution> {
   // direct モードの dev は現在ユーザーを特定しない（従来どおり null）。
   if (!config.oidc && !config.devUserId) {
-    return { currentUserId: null, isAdmin: false, me: null, error: null };
+    return { currentUserId: null, isAdmin: false, error: null };
   }
   const client = createConfiguredApiClient(config, options);
   try {
     const me = await client.get<MeResponse>("/api/users/me", {
       signal: AbortSignal.timeout(8_000),
     });
-    return {
-      currentUserId: me.id,
-      isAdmin: me.is_admin === true,
-      me: {
-        id: me.id,
-        user_name: me.user_name,
-        display_name: me.display_name,
-        avatar_url: me.avatar_url ?? null,
-        created_at: me.created_at,
-        updated_at: me.updated_at,
-      },
-      error: null,
-    };
+    return { currentUserId: me.id, isAdmin: me.is_admin === true, error: null };
   } catch (cause) {
     if (!config.oidc) {
       return {
         currentUserId: config.devUserId,
         isAdmin: config.devUserId === DEFAULT_DEV_ADMIN_ID,
-        me: null,
         error: null,
       };
     }
     if (cause instanceof ApiError && cause.status === 401) {
-      return { currentUserId: null, isAdmin: false, me: null, error: null };
+      return { currentUserId: null, isAdmin: false, error: null };
     }
-    return { currentUserId: null, isAdmin: false, me: null, error: describeError(cause) };
+    return { currentUserId: null, isAdmin: false, error: describeError(cause) };
   }
 }
 
@@ -121,12 +97,11 @@ export function createCurrentUserStore(
   options: { fetch?: FetchLike } = {},
 ): CurrentUserStore {
   let state: CurrentUserState = config.oidc
-    ? { currentUserId: null, isLoading: true, isAdmin: false, me: null, error: null }
+    ? { currentUserId: null, isLoading: true, isAdmin: false, error: null }
     : {
         currentUserId: config.devUserId,
         isLoading: false,
         isAdmin: config.devUserId === DEFAULT_DEV_ADMIN_ID,
-        me: null,
         error: null,
       };
   let inflight: Promise<void> | null = null;
@@ -150,7 +125,7 @@ export function createCurrentUserStore(
     requestGeneration += 1;
     inflight = null;
     refreshing = null;
-    setState({ currentUserId: null, isLoading: true, isAdmin: false, me: null, error: null });
+    setState({ currentUserId: null, isLoading: true, isAdmin: false, error: null });
   }
 
   return {
@@ -190,7 +165,7 @@ export function createCurrentUserStore(
       syncAuthGeneration();
       if (!inflight) {
         if (config.oidc) {
-          setState({ currentUserId: null, isLoading: true, isAdmin: false, me: null, error: null });
+          setState({ currentUserId: null, isLoading: true, isAdmin: false, error: null });
         }
         const currentRequestGeneration = ++requestGeneration;
         const currentAuthGeneration = authGeneration;
@@ -205,7 +180,6 @@ export function createCurrentUserStore(
             currentUserId: resolved.currentUserId,
             isLoading: false,
             isAdmin: resolved.isAdmin,
-            me: resolved.me,
             error: resolved.error,
           });
           if (resolved.error !== null) {

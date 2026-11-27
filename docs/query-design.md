@@ -60,19 +60,6 @@
 
 Home検証の条件・結果・再実行方法は [home-performance.md](home-performance.md) を参照する。
 
-## Users Shape の共同チャンネル絞り込み
-
-- 用途／識別子: `backend/src/routes/shapes.rs` の `users_shape`。一般ユーザーは Web の起動時の `users` Shape（`?scope=shared`）だけが共同チャンネル絞り込みを使う。ゲストは `?scope=shared` の有無に関係なく、本人行を含む `id = $1 OR id IN (...)` を使う（従来の境界を維持）。初回 snapshot と live 変更で同じ述語。
-- 入力変数: `U` = `users` の総数、`C` = 本人が参加しているチャンネル数、`M` = そのチャンネルの他参加者の延べ人数（重複あり）。一般ユーザーの `scope=shared` では走査する `channel_user` 行は本人分を含む `C + M`、返却は重複を除いた共同メンバー数（本人が `channel_user` に居ない場合は本人を含まない）。ゲスト述語は `id = $1` を含むため、所属0件でも本人1行を返す。`IN` は重複を除くため、同じ相手と2チャンネルを共有すると `M = 2` でも返却は本人と相手の2行になる。
-- 計算量（一般ユーザーの `scope=shared`）: `channel_user` を `user_id` で引いて `channel_id` 集合を作り、そこから `user_id` を集めて `users` の主キーへ Index Only Scan を当てる。`O(C log C + M log U)`。探索上限は `M`（全員と同じチャンネルにいる場合は `U` に近づく）。`id = $1 OR id IN (...)` は `users` 全体の Seq Scan になるため一般ユーザーには使わない（ゲストは従来の境界を保つため使用）。`UNION` は Electric の `where` バリデータが拒否するため使わない。
-- インデックス: `idx_channel_user_channel_id (channel_id, user_id)` と `users` の主キー。新しいインデックス・マイグレーションは不要。主キーだけでは表示名やアバターを返せないため、実際の Shape は Index Scan 後に heap fetch が発生する。走査上限は所属行 `C + M`（重複を含む）とし、返却は重複を除いたユーザー数で別に数える。
-- 実測（`zoo`、U=100,107、C=3、M=2、`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`）: 一般ユーザーの `scope=shared` 述語で実行 0.095ms、shared hit+read 11 blocks、users 側は Index Only Scan、除外行 0。ゲスト述語の `id = $1 OR ...` は別タイミング（この測定時点の `U` は 100,119、本人と共同メンバー3人が該当）で Seq Scan（16.0ms、2,134 blocks、除外 100,115 行、返却4行）。変更前の全件 Shape は 10.5MB を転送。
-- 全ユーザーが必要な画面（ディレクトリ・DM 作成・メンバー追加・通話ダイヤルなど）は パラメーターなしの全件 Shape を購読する（`useAllUsers()`）。画面またはダイアログを開いたときに購読し、起動時には購読しない。ゲストはパラメーターの有無に関係なく絞り込みを維持する。
-- 追加実測（`zoo_scale`、U=1,000,000、C=1、M=2）: 0.139ms、shared hit+read 15 blocks、返却3行。U=1,000,000・C=1・M=300,000 では 970ms、903,415 blocks、返却300,000行で、`M` に比例する。
-- 同時実行（`zoo_scale2`、U=1,000,000、`EXPLAIN` ではなく `SELECT count(*)` を docker exec の psql で30回実行。プロセス起動時間を含む）: M=2 は単独 p50 84.8ms / p95 88.3ms / max 92.2ms、8同時 p50 110.6ms / p95 199.6ms / max 199.7ms。M=300,000 は単独 p50 116.3ms / p95 126.3ms / max 130.1ms、8同時 p50 157.0ms / p95 330.0ms / max 339.3ms。書き込みを並べた reads は p50 179.6ms / p95 324.4ms / max 330.3ms。
-- 未検証: 本番相当の HTTPS / HTTP2 での API 全体の p50/p95/最大値、および 1,000,000 件を超える規模。`M` が大きいワークスペースでは共有チャンネル単位の追加絞り込みを別途設計する。
-- クライアント共通化: この絞り込みは API の外形を壊さないが、TUI / Android / desktop-tauri が全ユーザー一覧を前提とする画面を持つ場合は追従が必要（理由付き issue #713 で管理する）。
-
 ## SupabaseのPostgreSQLベストプラクティスとの照合
 
 [Supabase Postgres Best Practices](https://github.com/supabase/agent-skills/tree/main/skills/supabase-postgres-best-practices)（skill version 1.1.1）も参照する。Supabase専用の設定例をそのまま導入せず、本リポジトリの認証・接続先・移行方式へ適用できるか確認する。本リポジトリでは実行計画の走査量・探索上限を必須条件とし、100msは参考値として扱う。

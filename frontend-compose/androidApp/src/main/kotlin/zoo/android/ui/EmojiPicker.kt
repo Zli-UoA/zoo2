@@ -6,7 +6,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -19,7 +18,6 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
@@ -28,7 +26,7 @@ import androidx.compose.ui.unit.sp
 
 internal data class EmojiChoice(
     val value: String, val glyph: String, val name: String,
-    val image: String? = null, val keywords: String = "", val category: String = "",
+    val image: String? = null, val keywords: String = "",
 )
 
 internal class KitchenChoices(
@@ -75,8 +73,7 @@ internal fun EmojiPicker(
     colors: AndroidColors,
     unicode: List<EmojiChoice>,
     custom: List<EmojiChoice>,
-    recent: List<String> = emptyList(),
-    recentCategory: String = "最近使った絵文字",
+    recent: List<EmojiChoice> = emptyList(),
     customLoading: Boolean = false,
     customError: Boolean = false,
     loadKitchen: suspend () -> KitchenChoices?,
@@ -91,29 +88,15 @@ internal fun EmojiPicker(
     LaunchedEffect(tab) {
         if (tab == EmojiTab.Kitchen && kitchen == null) kitchen = loadKitchen()
     }
-    val recentUnicode = remember(recent, unicode) {
-        val catalog = unicode.associateBy { it.value }
-        recent.mapNotNull(catalog::get)
-    }
-    val choices = remember(tab, unicode, custom, recentUnicode, kitchen, first) {
+    val choices = remember(tab, unicode, custom, recent, kitchen, first) {
         when (tab) {
-            EmojiTab.Unicode -> (recentUnicode + unicode)
+            EmojiTab.Unicode -> (recent.filter { it.image == null && it.glyph.isNotBlank() } + unicode)
                 .distinctBy { it.value }
             EmojiTab.Custom -> custom
             EmojiTab.Kitchen -> kitchen?.let { catalog -> first?.let(catalog.combinations) ?: catalog.components }.orEmpty()
         }
     }
     val filtered = remember(choices, query) { rankEmojiChoices(choices, query) }
-    val sections = remember(filtered, tab, query, unicode, recentUnicode, recentCategory) {
-        when {
-            query.isNotBlank() || tab == EmojiTab.Kitchen -> listOf("" to filtered)
-            tab == EmojiTab.Unicode -> buildList {
-                if (recentUnicode.isNotEmpty()) add(recentCategory to recentUnicode)
-                addAll(unicode.groupBy { it.category }.toList())
-            }
-            else -> filtered.groupBy { it.category }.toList()
-        }
-    }
     ModalBottomSheet(
         onDismissRequest = dismiss,
         modifier = Modifier.semantics { paneTitle = title },
@@ -176,35 +159,26 @@ internal fun EmojiPicker(
             } else key(tab, first, query) {
                 LazyVerticalGrid(GridCells.Adaptive(AndroidControlSize.target), Modifier.weight(1f, fill = false),
                     contentPadding = PaddingValues(bottom = 16.dp)) {
-                    sections.forEachIndexed { index, (category, section) ->
-                        if (category.isNotEmpty()) {
-                            item(key = "category:$index:$category", span = { GridItemSpan(maxLineSpan) }) {
-                                Text(category, Modifier.padding(top = 12.dp, bottom = 4.dp)
-                                    .semantics { heading() }, color = colors.secondary,
-                                    style = MaterialTheme.typography.titleSmall)
+                    items(filtered, key = { it.value }) { choice ->
+                        TooltipBox(
+                            positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                            tooltip = { PlainTooltip { Text(choice.name) } },
+                            state = rememberTooltipState(),
+                        ) {
+                        Box(Modifier.fillMaxWidth().height(AndroidControlSize.target).clickable(role = Role.Button) {
+                            if (tab == EmojiTab.Kitchen && first == null) {
+                                first = choice
+                                query = ""
+                            } else select(choice)
+                        }.semantics { contentDescription = choice.name }, contentAlignment = Alignment.Center) {
+                            val image by produceState<ImageBitmap?>(null, choice.image) {
+                                value = choice.image?.let { loadImage(it) }
                             }
+                            val bitmap = image
+                            if (bitmap != null) Image(bitmap, null, Modifier.size(32.dp))
+                            else if (choice.glyph.isNotBlank()) Text(choice.glyph, color = colors.foreground, fontSize = 22.sp)
+                            else Text(choice.name, color = colors.foreground, fontSize = 10.sp, maxLines = 1)
                         }
-                        items(section, key = { "emoji:$index:${it.value}" }) { choice ->
-                            TooltipBox(
-                                positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
-                                tooltip = { PlainTooltip { Text(choice.name) } },
-                                state = rememberTooltipState(),
-                            ) {
-                                Box(Modifier.fillMaxWidth().height(AndroidControlSize.target).clickable(role = Role.Button) {
-                                    if (tab == EmojiTab.Kitchen && first == null) {
-                                        first = choice
-                                        query = ""
-                                    } else select(choice)
-                                }.semantics { contentDescription = choice.name }, contentAlignment = Alignment.Center) {
-                                    val image by produceState<ImageBitmap?>(null, choice.image) {
-                                        value = choice.image?.let { loadImage(it) }
-                                    }
-                                    val bitmap = image
-                                    if (bitmap != null) Image(bitmap, null, Modifier.size(32.dp))
-                                    else if (choice.glyph.isNotBlank()) Text(choice.glyph, color = colors.foreground, fontSize = 22.sp)
-                                    else Text(choice.name, color = colors.foreground, fontSize = 10.sp, maxLines = 1)
-                                }
-                            }
                         }
                     }
                 }

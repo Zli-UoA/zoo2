@@ -176,22 +176,20 @@ class E2eeSetupTest {
             assertFailsWith<IllegalStateException> { encryption.send(channel, messageId, null, secret) }
             assertEquals(2, posts) // 一度確認した epoch より古い配布先には送らない。
             epoch = 2
-            encryption.edit(row, "EDITED-SECRET @here", EncryptedMentions(here = true))
+            encryption.edit(row, "EDITED-SECRET")
             assertEquals(3, posts)
             assertTrue(requests.none { "EDITED-SECRET" in it })
             assertEquals("1", accepted!!.getValue("revision").jsonPrimitive.content)
-            assertFalse("mentions" in accepted!!)
             assertEquals(2, delivered.size) // 同じ epoch の編集では、配布済みのセッションを再利用する。
             val editedRow = JsonObject(row + accepted!!)
             val displayed = EncryptedMessageDisplayState()
             displayed.receive(reopened.decrypt(editedRow))
-            assertEquals("EDITED-SECRET @here", displayed.decoded?.body)
+            assertEquals("EDITED-SECRET", displayed.decoded?.body)
             val stale = reopened.decrypt(row)
             assertEquals(MessageRevision.STALE, stale.revision)
             displayed.receive(stale)
-            assertEquals("EDITED-SECRET @here", displayed.decoded?.body)
+            assertEquals("EDITED-SECRET", displayed.decoded?.body)
             assertEquals("e2ee.revision.stale", displayed.decoded?.revisionNotice)
-            assertEquals(EncryptedMentions(here = true), displayed.decoded?.mentions)
             // 別セッションから同じ版の異なる本文が届いても、最初に確認した本文を保持する。
             displayed.receive(encryption.decrypt(editedRow))
             OutboundSession(channel, 2uL, 0uL).use { fork ->
@@ -200,7 +198,7 @@ class E2eeSetupTest {
                 val conflict = encryption.decrypt(JsonObject(editedRow + ("ciphertext" to alternate)))
                 assertEquals(MessageRevision.CONFLICT, conflict.revision)
                 displayed.receive(conflict)
-                assertEquals("EDITED-SECRET @here", displayed.decoded?.body)
+                assertEquals("EDITED-SECRET", displayed.decoded?.body)
             }
             // `undelivered` の端末があっても本文は送り（送信を止めない）、次の送信の前に同じセッションを配り直す
             // （Web の `shareWithPendingDevices`、TUI の `send.rs` と同じ）。

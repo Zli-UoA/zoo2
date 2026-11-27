@@ -2,7 +2,7 @@ import { useLiveQuery } from "@tanstack/react-db";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RevocationScope, RevocationSummary } from "@zoo/crypto-wasm";
 
-import { useAllUsers } from "../../hooks/useRealtime";
+import { useUsers } from "../../hooks/useRealtime";
 import { createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
 import { deleteDevice } from "../../lib/e2ee/api";
@@ -177,7 +177,7 @@ export function DevicesSettings({
   const [prfSupported, setPrfSupported] = useState(false);
   const [state, setState] = useState<DevicesViewState>({ step: "loading" });
   const peers = useEncryptedPeers(userId);
-  const usersQuery = useAllUsers();
+  const usersQuery = useUsers();
   const names = useMemo(() => {
     const map = new Map<string, string>();
     for (const user of usersQuery.data ?? []) {
@@ -186,10 +186,6 @@ export function DevicesSettings({
     return map;
   }, [usersQuery.data]);
   const nameOf = useCallback((id: string) => names.get(id) ?? id, [names]);
-  // 端末・鍵の再取得には名前の更新を含めない。表示名だけを別途差し替えるため、読み込み時は
-  // 最新の名前表を参照する。
-  const namesRef = useRef(names);
-  namesRef.current = names;
   /** 失効を始めたときの範囲と、削除した端末（やり直しと、止まった失効の再開に使う）。 */
   const planRef = useRef<{ scope: RevocationScope; selected: string[] }>({
     scope: "device_only",
@@ -230,7 +226,7 @@ export function DevicesSettings({
     ready((current) => ({ ...current, revocation, busy: null, error }));
 
   /**
-   * 端末一覧と検証状態を読み直す。`peers` は Electric の行が変わるたびに作り直されるので、
+   * 端末一覧と検証状態を読み直す。`peers` と `nameOf` は Electric の行が変わるたびに作り直されるので、
    * 失効の途中でも呼ばれる。そのため、一覧のデータだけを差し替え、失効の画面（`revocation`）、実行中の
    * 操作（`busy`）、エラーは変えない（それぞれの操作が自分で戻す）。読み直しに失敗しても、表示中の
    * 画面は残す（最初の読み込みだけ `loadFailed` にする）。
@@ -254,10 +250,7 @@ export function DevicesSettings({
         if (seq !== loadSeq.current) return true;
         const data = {
           devices,
-          verifications: verifications.users.map((row) => ({
-            ...row,
-            name: namesRef.current.get(row.userId) ?? row.userId,
-          })),
+          verifications: verifications.users.map((row) => ({ ...row, name: nameOf(row.userId) })),
           warnings: verifications.warnings,
           unlocked,
           ownMasterKey,
@@ -285,27 +278,12 @@ export function DevicesSettings({
     },
     // accountUrls は config から決まる。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [deps, deviceId, peers],
+    [deps, deviceId, peers, nameOf],
   );
 
   useEffect(() => {
     void load();
   }, [load]);
-
-  // 名前が変わっても端末・鍵は再取得しない。表示中の検証一覧の名前だけを更新する。
-  useEffect(() => {
-    setState((current) =>
-      current.step === "ready"
-        ? {
-            ...current,
-            verifications: current.verifications.map((row) => ({
-              ...row,
-              name: nameOf(row.userId),
-            })),
-          }
-        : current,
-    );
-  }, [nameOf]);
 
   const loadedKey = useRef(refreshKey);
   useEffect(() => {

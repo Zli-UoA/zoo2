@@ -16,7 +16,6 @@ import { useTranslation } from "react-i18next";
 
 import { useCallInviteApi, useCallInvites } from "../../hooks/useCallInvites";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
-import { useAllUsers } from "../../hooks/useRealtime";
 import { useCall } from "../../lib/call/call-context";
 import { cancelCallInvite, inviteToCall } from "../../lib/call/call-invites";
 import { startRingback } from "../../lib/call/call-sounds";
@@ -40,6 +39,9 @@ export function CallBar({ channels = [] }: CallBarProps) {
   const locale = isLocale(i18n.language) ? i18n.language : "ja";
   const { currentUserId } = useCurrentUser();
   const collections = useOptionalCollections();
+  const users =
+    useLiveQuery((q) => (collections ? q.from({ users: collections.users }) : undefined))?.data ??
+    [];
   const memberships =
     useLiveQuery((q) =>
       collections ? q.from({ channelUsers: collections.channelUsers }) : undefined,
@@ -58,9 +60,6 @@ export function CallBar({ channels = [] }: CallBarProps) {
     setMicrophone,
     setSpeaker,
   } = useCall();
-
-  // 通話中だけ招待候補の名前が必要。起動時の全件 Shape は購読しない。
-  const users = useAllUsers(connectionState !== "idle").data ?? [];
 
   const { outgoing } = useCallInvites();
   const inviteApi = useCallInviteApi();

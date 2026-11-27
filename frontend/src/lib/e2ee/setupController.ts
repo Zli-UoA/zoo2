@@ -442,7 +442,6 @@ export async function unlock(
     const result = await evaluatePrfForUnlock(deps.rpId, storage.slots, deps.getCredential);
     ({ secretsRevision, keyId } = await deps.worker.request({
       op: "unlock",
-      // SSSS の応答は REST の型、Worker protocol は JsonObject を要求する（JSON 境界）。
       response: storage as unknown as JsonObject,
       secret: { kind: "passkey", credentialId: result.credentialId, prfOutput: result.prfOutput },
     }));
@@ -450,7 +449,6 @@ export async function unlock(
   } else {
     ({ secretsRevision, keyId } = await deps.worker.request({
       op: "unlock",
-      // SSSS の応答は REST の型、Worker protocol は JsonObject を要求する（JSON 境界）。
       response: storage as unknown as JsonObject,
       secret: { kind: "recovery", recoveryKey: method.recoveryKey },
     }));

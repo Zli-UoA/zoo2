@@ -26,7 +26,7 @@ vi.mock("../../hooks/useCurrentUser", () => ({
   useCurrentUser: () => ({ currentUserId: "me", isAdmin: true }),
 }));
 vi.mock("../../hooks/useRealtime", () => ({
-  useAllUsers: () => ({ data: [] }),
+  useUsers: () => ({ data: [] }),
   useActiveChannels: () => ({ data: api.channels }),
 }));
 vi.mock("../layout/shell-context", () => ({

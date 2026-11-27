@@ -462,7 +462,7 @@ async fn list(
     .await?;
 
     rows = rows.into_iter().map(timeline_post).collect();
-    activitypub::quotes::decorate(&mut tx, &user.id, &mut rows).await?;
+    activitypub::quotes::decorate(&mut tx, &mut rows).await?;
     super::home_images::decorate(&mut tx, &mut rows).await?;
     activitypub::channel_reactions::decorate(&mut tx, &mut rows).await?;
     let parents: Vec<Value> = rows

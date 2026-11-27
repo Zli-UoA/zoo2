@@ -24,7 +24,7 @@ vi.mock("../../hooks/useCurrentUser", () => ({
   useCurrentUser: () => ({ currentUserId: "me", isAdmin: state.isAdmin }),
 }));
 vi.mock("../../hooks/useRealtime", () => ({
-  useAllUsers: () => ({
+  useUsers: () => ({
     data: [
       { id: "me", user_name: "alice", display_name: "Alice" },
       { id: "bob", user_name: "bob", display_name: "Bob" },

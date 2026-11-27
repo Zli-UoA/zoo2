@@ -1,18 +1,12 @@
 package zoo.android
 
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
-import zoo.android.ui.EntryContentPanel
-import zoo.android.ui.EntryContentText
-import zoo.android.ui.displayedText
 import zoo.android.ui.TimelineMedia
 import zoo.android.ui.TimelineMediaKind
-import zoo.messageExcerptNeedsWorkspaceEmoji
 import zoo.obj
 
 class TimelineImageSourcesTest {
@@ -34,98 +28,6 @@ class TimelineImageSourcesTest {
         assertEquals(":party:" to proxy, timelineReactionEmoji(base, "apub:$imageId::party:", emptyMap()))
         assertEquals("$base/api/emoji-images/party", timelineAvatarUrl(base, obj("avatar_url" to "/api/emoji-images/party")))
         assertNull(timelineImageUrl(base, "//remote.example/emoji.png"))
-    }
-
-    @Test
-    fun bodyUsesJoinedMetadataBeforeWorkspaceNamesAndAliases() {
-        val workspace = workspaceEmojiImages(base, listOf(
-            obj("name" to "party", "url" to "/api/emoji-images/party",
-                "aliases" to JsonArray(listOf(JsonPrimitive("celebrate"), JsonPrimitive("お祝い 猫")))),
-            obj("name" to "unused", "url" to "/api/emoji-images/unused"),
-        ))
-        val row = obj("display_data" to obj("emojis" to obj(
-            "party" to obj("url" to "/api/emoji-images/previous"),
-        )))
-        val body = ":party: :celebrate: :お祝い 猫: :unknown:"
-        val resolved = timelineBodyEmojis(base, row, obj("emojis" to obj()), body, false, workspace)
-        assertEquals(mapOf(
-            ":party:" to "$base/api/emoji-images/previous",
-            ":celebrate:" to "$base/api/emoji-images/party",
-            ":お祝い 猫:" to "$base/api/emoji-images/party",
-        ), resolved.mapValues { it.value.url })
-
-        val local = timelineBodyEmojis(base, obj(), obj(), body, true, workspace)
-        assertEquals("$base/api/emoji-images/party", local[":celebrate:"]?.url)
-        val remote = timelineBodyEmojis(base, obj("remote" to true, "emojis" to JsonArray(listOf(
-            obj("name" to ":party:", "image_id" to imageId),
-        ))), obj(), body, true, workspace)
-        assertEquals(mapOf(":party:" to "$base/api/activitypub/emoji-images/$imageId"), remote.mapValues { it.value.url })
-    }
-
-    @Test
-    fun displayedBlocksCanResolveAnAliasAbsentFromTheFallbackBody() {
-        val code = ":お祝い 猫:"
-        val url = "$base/api/emoji-images/party"
-        val resolved = timelineBodyEmojis(base, obj(), obj(), "Fallback text", false,
-            workspace = mapOf(code to url),
-            displayedBlocks = EntryContentPanel(listOf(EntryContentPanel(listOf(EntryContentText("Hello $code")))))
-                .displayedText().toList())
-        assertEquals(url, resolved[code]?.url)
-        assertTrue(hasMissingWorkspaceEmoji("Hello $code", emptyMap()))
-        assertFalse(hasMissingWorkspaceEmoji("Hello $code", resolved))
-        assertFalse(hasMissingWorkspaceEmoji("Hello : :@alice:", emptyMap()))
-        assertTrue(hasMissingWorkspaceEmoji(":@お祝い:", emptyMap()))
-        assertFalse(hasMissingWorkspaceEmoji("`:example:` <plain>:example:</plain>", emptyMap()))
-        assertFalse(hasMissingWorkspaceEmoji("```txt\n:example:\n```", emptyMap()))
-    }
-
-    @Test
-    fun ignoresMissingEmojiBeyondTheImageLimit() {
-        val known = (1..32).associate { index -> ":emoji$index:" to "$base/emoji/$index" }
-        val body = known.keys.joinToString(" ") + " :unknown:"
-        val resolved = timelineBodyEmojis(base, obj(), obj(), body, false, known)
-        assertFalse(hasMissingWorkspaceEmoji(body, resolved))
-        assertTrue(hasMissingWorkspaceEmoji(":unknown: $body", resolved))
-    }
-
-    @Test
-    fun linkExcerptRequestsTheCatalogWhenAnUnknownAliasChangesTheSummary() {
-        val code = ":猫:"
-        val body = "\$[ruby **星**:猫:ねこ]"
-        assertTrue(messageExcerptNeedsWorkspaceEmoji(body, emptySet()))
-        val images = timelineBodyEmojis(base, obj(), obj(), body, false, mapOf(code to "$base/emoji/cat"))
-        assertFalse(messageExcerptNeedsWorkspaceEmoji(body, images.keys))
-        assertFalse(messageExcerptNeedsWorkspaceEmoji("`$body`", emptySet()))
-        assertEquals("星:猫:", zoo.messageExcerpt(body, customEmojis = images.keys))
-
-        val adjacent = "\$[ruby **星**12:30:猫:ねこ]"
-        assertTrue(messageExcerptNeedsWorkspaceEmoji(adjacent, emptySet()))
-        assertTrue(messageExcerptNeedsWorkspaceEmoji(adjacent, images.keys))
-        assertFalse(messageExcerptNeedsWorkspaceEmoji(adjacent, images.keys, catalogFresh = true))
-        assertEquals("星12:30:猫:", zoo.messageExcerpt(adjacent, customEmojis = images.keys))
-
-        assertTrue(messageExcerptNeedsWorkspaceEmoji("\$[ruby :猫:ねこ]", emptySet()))
-        assertFalse(messageExcerptNeedsWorkspaceEmoji("\$[ruby :猫:ねこ]", images.keys))
-        assertFalse(messageExcerptNeedsWorkspaceEmoji((1..100).joinToString(" ") { ":e$it:" }, emptySet()))
-
-        val formattedAlias = ":**猫**:"
-        assertTrue(messageExcerptNeedsWorkspaceEmoji(formattedAlias, emptySet()))
-        assertFalse(messageExcerptNeedsWorkspaceEmoji(formattedAlias, setOf(formattedAlias)))
-        assertTrue(messageExcerptNeedsWorkspaceEmoji("\$[ruby 星 :猫:ねこ]", emptySet()))
-        assertTrue(messageExcerptNeedsWorkspaceEmoji(":**猫**:ok:", setOf(":ok:")))
-        assertTrue(messageExcerptNeedsWorkspaceEmoji(":猫\\*:", emptySet()))
-        assertFalse(messageExcerptNeedsWorkspaceEmoji("あ".repeat(201) + formattedAlias, emptySet()))
-        assertTrue(messageExcerptNeedsWorkspaceEmoji("\$[ruby 星 " + "あ".repeat(201) + ":猫:ねこ]", emptySet()))
-        assertTrue(messageExcerptNeedsWorkspaceEmoji("\$[ruby :猫:ok:ねこ]", setOf(":ok:")))
-        assertTrue(messageExcerptNeedsWorkspaceEmoji("\\*".repeat(101) + formattedAlias, emptySet()))
-        assertFalse(messageExcerptNeedsWorkspaceEmoji("あ".repeat(200) + formattedAlias, emptySet()))
-        assertFalse(messageExcerptNeedsWorkspaceEmoji("\$[ruby " + "あ".repeat(201) + " :猫:ねこ]", emptySet()))
-        assertFalse(messageExcerptNeedsWorkspaceEmoji("\$[ruby **" + "あ".repeat(201) + "** :猫:ねこ]", emptySet()))
-        assertFalse(messageExcerptNeedsWorkspaceEmoji("\$[ruby 星:猫: ねこ]", emptySet()))
-        assertTrue(messageExcerptNeedsWorkspaceEmoji("\$[ruby 星 :猫:ねこ]", emptySet()))
-        val aliasBeforeTerminalMarkup = "\$[ruby " + ":猫: ".repeat(100) + "**星**]"
-        assertFalse(messageExcerptNeedsWorkspaceEmoji(aliasBeforeTerminalMarkup, emptySet()))
-        assertFalse(messageExcerptNeedsWorkspaceEmoji(":unknown:", emptySet()))
     }
 
     @Test

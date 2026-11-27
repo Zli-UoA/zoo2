@@ -6,35 +6,9 @@ package zoo
  */
 data class Inline(val value: String, val kind: String = "text", val url: String? = null, val bare: Boolean = false)
 
-private const val accountEmojiPattern = ":@([A-Za-z0-9._-]+):"
-private val accountEmoji = Regex(accountEmojiPattern)
-
-fun accountEmojiName(code: String): String? = accountEmoji.matchEntire(code)?.groupValues?.get(1)
-
 private val atoms = Regex(
-    "https?://[^\\s<>]+|$accountEmojiPattern|@[A-Za-z0-9._-]+(?:@[A-Za-z0-9.-]+)?|#[^\\s#.,!?:;<>]+|:[a-zA-Z0-9_+-]+:"
+    "https?://[^\\s<>]+|:@[A-Za-z0-9._-]+:|@[A-Za-z0-9._-]+(?:@[A-Za-z0-9.-]+)?|#[^\\s#.,!?:;<>]+|:[a-zA-Z0-9_+-]+:"
 )
-// Shared emoji aliases may include Unicode and spaces. Only registered candidates become tokens.
-private val customEmojiShortcode = Regex(""":[^:\p{Cc}]{1,100}:""")
-
-fun findCustomEmojiShortcodes(source: String): Sequence<String> =
-    customEmojiMatches(source).map { it.value }
-
-internal fun customEmojiMatches(source: String): Sequence<MatchResult> = sequence {
-    var match = customEmojiShortcode.find(source)
-    while (match != null) {
-        yield(match)
-        // The closing colon of an unregistered candidate can open a registered shortcode.
-        match = customEmojiShortcode.find(source, match.range.first + 1)
-    }
-}
-
-fun isWorkspaceEmojiCandidate(code: String): Boolean =
-    code.startsWith(':') && code.endsWith(':') && accountEmojiName(code) == null &&
-        code.removeSurrounding(":").let { it.isNotEmpty() && it == it.trim() && ':' !in it }
-
-internal const val inlineEscapes = "\\`*_{}[]()#+-.!~$<>@:"
-
 private val functionHeader = Regex("[A-Za-z0-9_]+(?:\\.[A-Za-z0-9_=,+.\\-]+)?[ \\t\\n]")
 private val formats = listOf(
     Triple("<small>", "</small>", "small"),
@@ -49,13 +23,10 @@ private val formats = listOf(
     Triple("_", "_", "italic"),
 )
 
-internal data class InlineSlice(val token: Inline, val start: Int, val end: Int)
+private data class InlineSlice(val token: Inline, val start: Int, val end: Int)
 
-fun parseInline(source: String, customEmojis: Set<String> = emptySet()): List<Inline> =
-    inlineSlices(source, customEmojis).map { it.token }
-
-internal fun inlineSlices(source: String, customEmojis: Set<String> = emptySet()): List<InlineSlice> =
-    MfmScanner(source.length).inlineSlices(source, customEmojis)
+fun parseInline(source: String): List<Inline> = inlineSlices(source).map { it.token }
+private fun inlineSlices(source: String): List<InlineSlice> = MfmScanner(source.length).inlineSlices(source)
 fun richSegments(source: String): List<Pair<String, Boolean>> = MfmScanner(source.length).richSegments(source)
 
 /** A shared work limit bounds repeated searches as well as recursion depth. */
@@ -171,7 +142,7 @@ private class MfmScanner(length: Int) {
         ) to (urlEnd + 1)
     }
 
-    fun inlineSlices(source: String, customEmojis: Set<String>): List<InlineSlice> {
+    fun inlineSlices(source: String): List<InlineSlice> {
         val result = mutableListOf<InlineSlice>()
         var at = 0
         var pendingStart = 0
@@ -206,7 +177,7 @@ private class MfmScanner(length: Int) {
                     token = Inline(url, "link", url, bare = true)
                     end = close + 1
                 }
-            } else if (source[at] == '\\' && at + 1 < source.length && source[at + 1] in inlineEscapes) {
+            } else if (source[at] == '\\' && at + 1 < source.length && source[at + 1] in "\\`*_{}[]()#+-.!~$<>@:") {
                 pending.append(source[at + 1])
                 at += 2
                 continue
@@ -234,17 +205,8 @@ private class MfmScanner(length: Int) {
                         end = stop + close.length
                         break
                     }
-                    val atom = if (token == null) atoms.matchAt(source, at) else null
-                    val mayBeCustomEmoji = source[at] == ':' && customEmojis.isNotEmpty()
-                    if (token == null && mayBeCustomEmoji && atom?.value?.startsWith(":@") != true) {
-                        val shortcode = customEmojiShortcode.matchAt(source, at)?.value
-                        if (shortcode != null && shortcode in customEmojis) {
-                            token = Inline(shortcode, "emoji")
-                            end = at + shortcode.length
-                        }
-                    }
                     if (token == null) {
-                        val match = atom
+                        val match = atoms.matchAt(source, at)
                         if (match != null) {
                             val value = match.value
                             val kind = when {
@@ -257,9 +219,7 @@ private class MfmScanner(length: Int) {
                             val boundary = source.getOrNull(at - 1)?.let {
                                 !it.isLetterOrDigit() && it !in "_/@"
                             } != false
-                            val overlapsRegistered = kind == "emoji" && customEmojis.isNotEmpty() &&
-                                customEmojiShortcode.matchAt(source, match.range.last)?.value in customEmojis
-                            if (!overlapsRegistered && (kind !in setOf("mention", "hashtag") || boundary)) {
+                            if (kind !in setOf("mention", "hashtag") || boundary) {
                                 val trimmed = if (kind == "link") leadingUrl(value) else value
                                 if (trimmed != null) {
                                     token = Inline(trimmed, kind, trimmed.takeIf { kind == "link" }, kind == "link")
@@ -455,19 +415,16 @@ internal fun linkDestinationEnd(text: String, start: Int, step: () -> Boolean): 
 data class MfmRuby(val base: String, val reading: String)
 
 /** The reading is root text; spaces inside markup belong to the base. */
-fun mfmRuby(source: String, customEmojis: Set<String> = emptySet()): MfmRuby =
-    mfmRuby(source, inlineSlices(source, customEmojis))
-
-internal fun mfmRuby(source: String, slices: List<InlineSlice>): MfmRuby {
+fun mfmRuby(source: String): MfmRuby {
+    val slices = inlineSlices(source)
     val last = slices.lastOrNull() ?: return MfmRuby(source, "")
     if (last.token.kind != "text") return MfmRuby(source, "")
-    val rawSpace = (last.start until last.end).firstOrNull { source[it].isWhitespace() }
-    if (rawSpace == null) {
-        return if (slices.size > 1) MfmRuby(source.take(last.start), last.token.value.trim())
-        else MfmRuby(source, "")
+    if (slices.size == 1) {
+        val separator = source.indexOfFirst { it.isWhitespace() }
+        return if (separator < 0) MfmRuby(source, "")
+        else MfmRuby(source.take(separator), source.substring(separator + 1).trim())
     }
-    val reading = last.token.value.dropWhile { !it.isWhitespace() }.trim()
-    return MfmRuby(source.take(rawSpace), reading)
+    return MfmRuby(source.take(last.start).trimEnd(), last.token.value.trim())
 }
 
 data class MfmCodeBlock(val body: String, val language: String)
