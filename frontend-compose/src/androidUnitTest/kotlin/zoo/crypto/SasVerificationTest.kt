@@ -1,0 +1,510 @@
+package zoo.crypto
+
+import kotlin.test.AfterTest
+import kotlin.test.Test
+import kotlin.test.assertContentEquals
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import zoo.SAS_EMOJI
+import zoo.sasEmojiItems
+import zoo.crypto.ffi.SasPhase
+import zoo.crypto.ffi.VerificationMethod
+
+/**
+ * 他のユーザーの絵文字 SAS 検証と QR コードによる検証（#368 の Android の分）。Web の `sasController.test.ts` と同じ
+ * 観点を、2 人の実際の暗号ストア（zoo-crypto の UniFFI）と状態を持つ模擬サーバー（[SasWorld]）で確かめる。
+ * 検証のメッセージは Olm で暗号化して to-device で届け、[CryptoStore.processToDevice] から [SasController] に渡る。
+ */
+class SasVerificationTest {
+    private val world = SasWorld()
+
+    @AfterTest
+    fun cleanUp() = world.close()
+
+    /** Alice が Bob に検証を求め、Bob が受け入れて、双方が方式を選ぶ段階まで進める。 */
+    private fun chooseMethod(alice: SasWorld.SasDevice, bob: SasWorld.SasDevice): String = runBlocking {
+        val txn = alice.sas.request(BOB)
+        assertEquals(SasPhase.REQUESTED, alice.entry(txn).view.phase)
+        assertTrue(alice.entry(txn).view.weRequested)
+
+        // 検証のメッセージは processToDevice から渡り、受信用の鍵には数えない。
+        val received = bob.receive()
+        assertEquals(1, received.processed.size)
+        assertEquals(0, received.roomKeys)
+        assertEquals(0, received.dropped)
+        assertEquals(1, received.verifications.size)
+        val incoming = bob.entry(txn).view
+        assertEquals(SasPhase.INCOMING, incoming.phase)
+        assertEquals(ALICE, incoming.theirUserId)
+        assertEquals(alice.store.deviceId, incoming.theirDeviceId)
+        assertFalse(incoming.weRequested)
+
+        bob.sas.accept(txn)
+        alice.receive()
+        assertEquals(SasPhase.CHOOSE_METHOD, alice.entry(txn).view.phase)
+        assertEquals(SasPhase.CHOOSE_METHOD, bob.entry(txn).view.phase)
+        txn
+    }
+
+    /** 絵文字を比べる段階まで進める。 */
+    private fun compare(alice: SasWorld.SasDevice, bob: SasWorld.SasDevice): String = runBlocking {
+        val txn = chooseMethod(alice, bob)
+        assertTrue(alice.entry(txn).view.canStartSas)
+        alice.sas.startSas(txn)
+        assertEquals(VerificationMethod.SAS, alice.entry(txn).view.method)
+        bob.receive() // start → accept
+        alice.receive() // accept → key
+        bob.receive() // key → key
+        alice.receive() // key
+        assertEquals(SasPhase.COMPARE, alice.entry(txn).view.phase)
+        assertEquals(SasPhase.COMPARE, bob.entry(txn).view.phase)
+        txn
+    }
+
+    private fun masterKey(user: String): String =
+        world.setups.getValue(user).keys.getValue("master_key").jsonObject.getValue("keys").jsonObject.values.single().jsonPrimitive.content
+
+    @Test
+    fun emojiSasVerifiesBothUsersAndSavesTheReplacePinAndSignature() = runBlocking<Unit> {
+        val alice = world.device(ALICE, "alice")
+        val bob = world.device(BOB, "bob")
+        val txn = compare(alice, bob)
+
+        // 双方が同じ絵文字を見る。
+        val emoji = assertNotNull(alice.entry(txn).view.emoji)
+        assertEquals(7, emoji.size)
+        assertContentEquals(emoji, bob.entry(txn).view.emoji)
+        val items = sasEmojiItems(emoji) { it }
+        assertEquals(7, items.size)
+        assertTrue(items.all { it.emoji == SAS_EMOJI[it.index] && it.label == "e2ee.sas.emoji.${it.index}" })
+
+        alice.sas.confirm(txn, CompletableDeferred("alice-reauth"))
+        assertEquals(SasPhase.CONFIRMED, alice.entry(txn).view.phase)
+        bob.receive() // mac
+        bob.sas.confirm(txn, CompletableDeferred("bob-reauth")) // mac と done を送る
+        alice.receive() // mac → done、done
+        bob.receive() // done
+
+        val aliceDone = alice.await(txn) { it.save == SasSaveState.SAVED }
+        val bobDone = bob.await(txn) { it.save == SasSaveState.SAVED }
+        assertEquals(SasPhase.DONE, aliceDone.view.phase)
+        assertEquals(SasPhase.DONE, bobDone.view.phase)
+        assertEquals(masterKey(BOB), aliceDone.view.verifiedMasterKey)
+        assertEquals(masterKey(ALICE), bobDone.view.verifiedMasterKey)
+        assertNull(aliceDone.error)
+        assertNull(bobDone.error)
+
+        // `replace: true` のピンと、相手のマスター鍵への署名を、再認証の ID トークンを付けて保存した。
+        for ((user, target, token) in listOf(Triple(ALICE, BOB, "alice-reauth"), Triple(BOB, ALICE, "bob-reauth"))) {
+            val pin = world.pinUploads.single { it.caller == user }
+            assertTrue(pin.replace)
+            assertEquals(token, pin.reauth)
+            val body = pin.pins.single().jsonObject
+            assertEquals(target, body.getValue("target_user_id").jsonPrimitive.content)
+            assertEquals(masterKey(target), body.getValue("master_key").jsonPrimitive.content)
+            assertTrue(body.getValue("signatures") is JsonObject)
+            val signature = world.signatureUploads.single { it.caller == user }
+            assertEquals(token, signature.reauth)
+            assertEquals(target, signature.signatures.single().jsonObject.getValue("target_user_id").jsonPrimitive.content)
+        }
+
+        // 保存できたので、記録の登録待ちを外した（相手のマスター鍵を、検証した鍵として記録した）。
+        val record = assertNotNull(alice.store.trustStore.record(BOB))
+        assertEquals(masterKey(BOB), record.masterKey)
+        assertFalse(record.pinPending)
+        assertFalse(assertNotNull(bob.store.trustStore.record(ALICE)).pinPending)
+    }
+
+    @Test
+    fun undeliveredMessageIsResentWithoutResendingTheDeliveredOnes() = runBlocking<Unit> {
+        val alice = world.device(ALICE, "alice")
+        val bob = world.device(BOB, "bob")
+        val txn = compare(alice, bob)
+        alice.sas.confirm(txn, CompletableDeferred("alice-reauth"))
+        bob.receive() // mac
+        // Bob の mac は届き、続く done だけが（キューの上限などで）届かない。
+        var sends = 0
+        world.refuseSend = { caller -> caller == BOB && ++sends == 2 }
+        bob.sas.confirm(txn, CompletableDeferred("bob-reauth"))
+        world.refuseSend = null
+        assertEquals(SasErrorCode.SEND_FAILED, bob.entry(txn).error)
+        alice.receive() // mac → done
+        assertTrue(alice.entry(txn).view.phase != SasPhase.DONE)
+
+        // 次の確認で、届かなかった done だけを送り直す（受け付けられた mac は送り直さない）。Alice の done を受け取る前に
+        // 確かめるので、送り直したのは expire。
+        bob.sas.expire()
+        assertNull(bob.entry(txn).error)
+        val resent = alice.receive()
+        assertEquals(1, resent.verifications.size)
+        bob.receive() // done
+        assertEquals(SasPhase.DONE, alice.await(txn) { it.save == SasSaveState.SAVED }.view.phase)
+        assertEquals(SasPhase.DONE, bob.await(txn) { it.save == SasSaveState.SAVED }.view.phase)
+    }
+
+    @Test
+    fun cancellingTheSendKeepsTheUndeliveredMessage() = runBlocking<Unit> {
+        val alice = world.device(ALICE, "alice")
+        val bob = world.device(BOB, "bob")
+        val txn = compare(alice, bob)
+        alice.sas.confirm(txn, CompletableDeferred("alice-reauth"))
+        bob.receive() // mac
+        var sends = 0
+        world.refuseSend = { caller -> caller == BOB && ++sends == 2 }
+        bob.sas.confirm(txn, CompletableDeferred("bob-reauth")) // done は届かない
+        world.refuseSend = null
+        alice.receive() // mac → done
+
+        // Alice の done を受け取ると、届かなかった done を送り直す。その送信の途中で処理を取り消す。
+        world.sendGate = CompletableDeferred()
+        var job: kotlinx.coroutines.Job? = null
+        try {
+            val started = bob.receiveInBackground()
+            job = started
+            kotlinx.coroutines.withTimeout(30.seconds) { world.sendEntered.await() }
+            started.cancel()
+            kotlinx.coroutines.withTimeout(30.seconds) { started.join() }
+        } finally {
+            job?.cancel()
+            world.sendGate?.complete(Unit)
+            world.sendGate = null
+        }
+
+        // 取り出した done は捨てずに残り、次の確認で送り直す。
+        bob.sas.expire()
+        assertEquals(1, alice.receive().verifications.size)
+        assertEquals(SasPhase.DONE, alice.await(txn) { it.save == SasSaveState.SAVED }.view.phase)
+        // 取り消しで始まらなかった Bob の保存も、確認のときに始める。
+        assertEquals(SasPhase.DONE, bob.await(txn) { it.save == SasSaveState.SAVED }.view.phase)
+    }
+
+    @Test
+    fun messageWhoseResponseWasLostIsResentWithTheSameTxnIdAndArrivesOnce() = runBlocking<Unit> {
+        val alice = world.device(ALICE, "alice")
+        val bob = world.device(BOB, "bob")
+        val txn = compare(alice, bob)
+        alice.sas.confirm(txn, CompletableDeferred("alice-reauth"))
+        bob.receive() // mac
+        // Bob の done はキューに入ったが、応答をなくした。
+        var sends = 0
+        world.loseResponse = { caller -> caller == BOB && ++sends == 2 }
+        val before = synchronized(world) { world.sendAttempts.size }
+        bob.sas.confirm(txn, CompletableDeferred("bob-reauth"))
+        world.loseResponse = null
+        assertEquals(SasErrorCode.SEND_FAILED, bob.entry(txn).error)
+
+        // 同じ txn_id と暗号文で送り直すので、サーバーがまとめ、Alice には mac と done が 1 回ずつ届く。
+        bob.sas.expire()
+        assertNull(bob.entry(txn).error)
+        // expire が送り直したのは done の 1 回だけで、txn_id も暗号文も初めの送信と同じ（mac は送り直さない）。
+        val attempts = synchronized(world) { world.sendAttempts.drop(before).filter { it.caller == BOB } }
+        assertEquals(3, attempts.size)
+        val (mac, done, resent) = attempts
+        assertTrue(mac.txnId != done.txnId)
+        assertEquals(done.txnId, resent.txnId)
+        assertEquals(done.messages, resent.messages)
+        val received = alice.receive()
+        assertEquals(2, received.verifications.size)
+        bob.receive() // done
+        val aliceDone = alice.await(txn) { it.save == SasSaveState.SAVED }
+        assertEquals(SasPhase.DONE, aliceDone.view.phase)
+        assertNull(aliceDone.error)
+        assertEquals(SasPhase.DONE, bob.await(txn) { it.save == SasSaveState.SAVED }.view.phase)
+    }
+
+    @Test
+    fun verificationMessageOfARowWhoseSaveFailedIsDeliveredOnRetry() = runBlocking<Unit> {
+        val alice = world.device(ALICE, "alice")
+        val bob = world.device(BOB, "bob")
+        val txn = alice.sas.request(BOB)
+        // 届いた行は ack するまでサーバーに残る（同じ行がもう一度届く）。
+        val rows = synchronized(world) { world.inbox.remove("$BOB|${bob.store.deviceId}").orEmpty() }
+        val keys = world.keysQuery(BOB, rows.map { it.senderUserId })
+        val deviceKeys = keys.getValue("device_keys").jsonObject
+        val signatures = keys.getValue("signatures") as kotlinx.serialization.json.JsonArray
+        val original = CryptoStore.directorySync
+        try {
+            // 復号して印を付けたが、保存を確かめられなかった（印と Olm の状態はメモリーに残る）。
+            CryptoStore.directorySync = { throw java.io.IOException("sync failed") }
+            assertFailsWith<java.io.IOException> { bob.store.processToDevice(rows, deviceKeys, signatures, keys) }
+        } finally {
+            CryptoStore.directorySync = original
+        }
+        // 次の同期では復号し直せないが、残した検証のメッセージを、保存を確かめてから渡す。
+        val retry = bob.store.processToDevice(rows, deviceKeys, signatures, keys)
+        assertEquals(rows.map { it.id }, retry.processed)
+        assertEquals(1, retry.verifications.size)
+        bob.sas.handleMessages(retry.verifications).join()
+        assertEquals(SasPhase.INCOMING, bob.entry(txn).view.phase)
+    }
+
+    @Test
+    fun messageArrivingWhileTheStoreIsUnavailableIsKeptAndProcessedLater() = runBlocking<Unit> {
+        val alice = world.device(ALICE, "alice")
+        val bob = world.device(BOB, "bob")
+        val txn = alice.sas.request(BOB)
+        // つなぎ直しのあいだに届いた要求は、捨てずに残す（もう復号し直せない）。
+        bob.ready.value = null
+        bob.receive()
+        assertTrue(bob.sas.entries.value.isEmpty())
+        bob.ready.value = bob.store
+        bob.sas.expire()
+        assertEquals(SasPhase.INCOMING, bob.entry(txn).view.phase)
+    }
+
+    @Test
+    fun verificationMessageOfALaterRowWhoseSaveFailedSurvivesAReopen() = runBlocking<Unit> {
+        val alice = world.device(ALICE, "alice")
+        val bob = world.device(BOB, "bob")
+        val txn = alice.sas.request(BOB)
+        val rows = synchronized(world) { world.inbox.remove("$BOB|${bob.store.deviceId}").orEmpty() }
+        val first = ToDeviceRow("plain-first", ALICE, "m.other", JsonObject(emptyMap()))
+        val keys = world.keysQuery(BOB, listOf(ALICE))
+        val deviceKeys = keys.getValue("device_keys").jsonObject
+        val signatures = keys.getValue("signatures") as kotlinx.serialization.json.JsonArray
+        val original = CryptoStore.directorySync
+        var saves = 0
+        val partial =
+            try {
+                // 1 行目は保存でき、2 行目（暗号化された検証の要求）の保存を確かめられない。
+                CryptoStore.directorySync = { directory -> if (++saves == 2) throw java.io.IOException("sync failed") else original(directory) }
+                bob.store.processToDevice(listOf(first) + rows, deviceKeys, signatures, keys)
+            } finally {
+                CryptoStore.directorySync = original
+            }
+        assertEquals(listOf(first.id), partial.processed)
+        assertTrue(partial.verifications.isEmpty())
+        // 1 行目を ack すると、2 行目の印と Olm の状態も保存される。そのあと（つなぎ直しで）開き直す。
+        bob.store.acknowledged(partial.processed)
+        val reopened = bob.reopen()
+
+        // 2 行目はもう復号し直せないが、残した封筒から検証の要求を 1 回だけ渡す。
+        val retry = reopened.processToDevice(rows, deviceKeys, signatures, keys)
+        assertEquals(rows.map { it.id }, retry.processed)
+        assertEquals(1, retry.verifications.size)
+        bob.sas.handleMessages(retry.verifications).join()
+        assertEquals(SasPhase.INCOMING, bob.entry(txn).view.phase)
+        // ack するまでは、同じプロセスでは二重に渡さない。ack したら封筒を消す。
+        assertTrue(reopened.processToDevice(rows, deviceKeys, signatures, keys).verifications.isEmpty())
+        reopened.acknowledged(retry.processed)
+        assertTrue(reopened.processToDevice(rows, deviceKeys, signatures, keys).verifications.isEmpty())
+    }
+
+    @Test
+    fun messageReceivedWithAStoreClosedMeanwhileIsKeptAndProcessedLater() = runBlocking<Unit> {
+        val alice = world.device(ALICE, "alice")
+        val bob = world.device(BOB, "bob")
+        val txn = alice.sas.request(BOB)
+        val rows = synchronized(world) { world.inbox.remove("$BOB|${bob.store.deviceId}").orEmpty() }
+        val keys = world.keysQuery(BOB, rows.map { it.senderUserId })
+        val result = bob.store.processToDevice(rows, keys.getValue("device_keys").jsonObject, keys.getValue("signatures") as kotlinx.serialization.json.JsonArray, keys)
+        bob.store.acknowledged(result.processed)
+        // つなぎ直しで、ready を外す前に暗号ストアが閉じられた（取った暗号ストアが、受け取る前に閉じた）。
+        bob.store.close()
+        bob.sas.handleMessages(result.verifications).join()
+        // 受け付けなかったのではないので、捨てずに残す。
+        assertTrue(bob.sas.entries.value.isEmpty())
+        bob.reopen()
+        bob.sas.expire()
+        assertEquals(SasPhase.INCOMING, bob.entry(txn).view.phase)
+    }
+
+    @Test
+    fun cancellationBeforeTheReceiveRunsKeepsTheMessage() = runBlocking<Unit> {
+        val alice = world.device(ALICE, "alice")
+        val bob = world.device(BOB, "bob")
+        val txn = alice.sas.request(BOB)
+        val rows = synchronized(world) { world.inbox.remove("$BOB|${bob.store.deviceId}").orEmpty() }
+        val keys = world.keysQuery(BOB, rows.map { it.senderUserId })
+        val result = bob.store.processToDevice(rows, keys.getValue("device_keys").jsonObject, keys.getValue("signatures") as kotlinx.serialization.json.JsonArray, keys)
+        bob.store.acknowledged(result.processed)
+
+        // IO の処理を、送り出したところで止めておける dispatcher。
+        val dispatched = CompletableDeferred<Unit>()
+        val gate = java.util.concurrent.CountDownLatch(1)
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val io = object : kotlinx.coroutines.CoroutineDispatcher() {
+            override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) {
+                dispatched.complete(Unit)
+                executor.execute {
+                    gate.await()
+                    block.run()
+                }
+            }
+        }
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
+        val sas = SasController(world.api(BOB), kotlinx.coroutines.flow.MutableStateFlow(bob.store), scope, io = io, now = { world.now }, expireInterval = kotlin.time.Duration.ZERO)
+        try {
+            val job = sas.handleMessages(result.verifications)
+            // 受け取りの IO の処理を送り出したが、まだ始まっていないうちに取り消す。
+            kotlinx.coroutines.withTimeout(30.seconds) { dispatched.await() }
+            job.cancel()
+            gate.countDown()
+            kotlinx.coroutines.withTimeout(30.seconds) { job.join() }
+            // 処理を始めていないメッセージは捨てずに残り、次の確認で処理する。
+            assertTrue(sas.entries.value.isEmpty())
+            sas.expire()
+            assertEquals(SasPhase.INCOMING, sas.entries.value.single { it.view.transactionId == txn }.view.phase)
+        } finally {
+            gate.countDown()
+            sas.dispose()
+            scope.cancel()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun messagesArrivingAfterDisposeAreDropped() = runBlocking<Unit> {
+        val alice = world.device(ALICE, "alice")
+        val bob = world.device(BOB, "bob")
+        alice.sas.request(BOB)
+        bob.sas.dispose()
+        // 止めたあとに届いた分は受け取らない（受信箱に戻さない）。
+        bob.receive()
+        assertTrue(bob.sas.entries.value.isEmpty())
+    }
+
+    @Test
+    fun qrCodeShowAndScanVerifiesBothUsers() = runBlocking<Unit> {
+        val alice = world.device(ALICE, "alice")
+        val bob = world.device(BOB, "bob")
+        val txn = chooseMethod(alice, bob)
+
+        val qr = assertNotNull(alice.entry(txn).view.qrCode)
+        assertContentEquals("MATRIX".encodeToByteArray(), qr.copyOfRange(0, 6))
+        assertTrue(bob.entry(txn).view.canScanQrCode)
+
+        // 形の正しくない QR は、取りやめずに読み直す。
+        assertEquals(QrScanResult.RETRY, bob.sas.scanQr(txn, "MATRIX".encodeToByteArray()))
+        assertEquals(SasPhase.CHOOSE_METHOD, bob.entry(txn).view.phase)
+
+        assertEquals(QrScanResult.ACCEPTED, bob.sas.scanQr(txn, qr))
+        assertEquals(SasPhase.QR_SCANNED, bob.entry(txn).view.phase)
+        assertEquals(VerificationMethod.QR_CODE, bob.entry(txn).view.method)
+
+        alice.receive() // start（m.reciprocate.v1）
+        assertEquals(SasPhase.QR_CONFIRM, alice.entry(txn).view.phase)
+        alice.sas.confirmQr(txn, CompletableDeferred("alice-reauth"))
+        val aliceDone = alice.await(txn) { it.save == SasSaveState.SAVED }
+        assertEquals(masterKey(BOB), aliceDone.view.verifiedMasterKey)
+
+        bob.receive() // done → done
+        // 読み取った側は、まだ再認証していない。「ログインして保存」で保存する。
+        assertEquals(SasPhase.DONE, bob.await(txn) { it.save == SasSaveState.LOGIN }.view.phase)
+        assertTrue(world.pinUploads.none { it.caller == BOB })
+        bob.sas.retrySave(txn, CompletableDeferred("bob-reauth"))
+        assertEquals(SasSaveState.SAVED, bob.entry(txn).save)
+        assertEquals("bob-reauth", world.pinUploads.single { it.caller == BOB }.reauth)
+        assertFalse(assertNotNull(bob.store.trustStore.record(ALICE)).pinPending)
+        alice.receive() // Bob の done（もう終わっている）
+        assertEquals(SasPhase.DONE, alice.entry(txn).view.phase)
+    }
+
+    @Test
+    fun mismatchCancelsOnBothSides() = runBlocking<Unit> {
+        val alice = world.device(ALICE, "alice")
+        val bob = world.device(BOB, "bob")
+        val txn = compare(alice, bob)
+
+        alice.sas.mismatch(txn)
+        val mine = alice.entry(txn).view
+        assertEquals(SasPhase.CANCELLED, mine.phase)
+        assertEquals("m.mismatched_sas", mine.cancel?.code)
+        assertEquals(true, mine.cancel?.byUs)
+
+        bob.receive()
+        val theirs = bob.entry(txn).view
+        assertEquals(SasPhase.CANCELLED, theirs.phase)
+        assertEquals("m.mismatched_sas", theirs.cancel?.code)
+        assertEquals(false, theirs.cancel?.byUs)
+        assertNull(theirs.verifiedMasterKey)
+
+        // 取りやめたあとは確かめられない。保存もしない。
+        bob.sas.confirm(txn, CompletableDeferred("bob-reauth"))
+        assertEquals(SasErrorCode.FAILED, bob.entry(txn).error)
+        assertTrue(world.pinUploads.isEmpty())
+
+        // 画面を閉じたら忘れる。
+        bob.sas.dismiss(txn)
+        assertTrue(bob.sas.entries.value.isEmpty())
+    }
+
+    @Test
+    fun expiredVerificationIsCancelledWithTimeoutOnBothSides() = runBlocking<Unit> {
+        // Alice は期限切れを裏で確かめる（短い間隔）。Bob はテストから確かめる。
+        val alice = world.device(ALICE, "alice", expireInterval = 20.milliseconds)
+        val bob = world.device(BOB, "bob")
+        val txn = alice.sas.request(BOB)
+        bob.receive()
+        assertEquals(SasPhase.INCOMING, bob.entry(txn).view.phase)
+
+        // 期限の前は取りやめない。
+        world.now += 60_000
+        bob.sas.expire()
+        assertEquals(SasPhase.INCOMING, bob.entry(txn).view.phase)
+
+        world.now += 10 * 60 * 1000
+        val expired = alice.await(txn) { it.view.phase == SasPhase.CANCELLED }
+        assertEquals("m.timeout", expired.view.cancel?.code)
+        assertEquals(true, expired.view.cancel?.byUs)
+
+        // 表示は送信より先に変わるので、取りやめが Bob に届くまで待つ。
+        bob.awaitInbox()
+        bob.receive()
+        assertEquals(SasPhase.CANCELLED, bob.entry(txn).view.phase)
+        assertEquals("m.timeout", bob.entry(txn).view.cancel?.code)
+
+        // 古い要求は受け付けない（捨てる。取りやめも送らない）。
+        val stale = alice.sas.request(BOB)
+        world.now += 11 * 60 * 1000
+        bob.receive()
+        assertTrue(bob.sas.entries.value.none { it.view.transactionId == stale })
+    }
+
+    @Test
+    fun keysQueryFailureHoldsTheMessageAndRetriesOnTheNextCheck() = runBlocking<Unit> {
+        val alice = world.device(ALICE, "alice")
+        val bob = world.device(BOB, "bob")
+        val txn = alice.sas.request(BOB)
+        world.failKeysQuery = 1
+        bob.receive()
+        // 送信ユーザーの鍵を取れなかった要求は、捨てずに残す。
+        assertTrue(bob.sas.entries.value.isEmpty())
+        bob.sas.expire()
+        assertEquals(SasPhase.INCOMING, bob.entry(txn).view.phase)
+        assertNull(bob.entry(txn).error)
+    }
+
+    @Test
+    fun requestWhileLockedFails() = runBlocking<Unit> {
+        world.device(BOB, "bob")
+        // 初回設定も解錠もしていない端末。
+        val locked = world.device(ALICE, "alice", setUp = false)
+        val failure = assertFailsWith<SasException> { locked.sas.request(BOB) }
+        assertEquals(SasException.NEEDS_UNLOCK, failure.code)
+        assertTrue(locked.sas.entries.value.isEmpty())
+
+        // 解錠し直しが要る（secrets_revision を消した）端末も求められない。
+        val carol = world.device(CAROL, "carol")
+        carol.store.forgetSecretsRevision(assertNotNull(carol.store.secretsRevision))
+        assertEquals(SasException.NEEDS_UNLOCK, assertFailsWith<SasException> { carol.sas.request(BOB) }.code)
+    }
+
+    private companion object {
+        const val ALICE = "00000000-0000-4000-8000-00000000a11c"
+        const val BOB = "00000000-0000-4000-8000-000000000b0b"
+        const val CAROL = "00000000-0000-4000-8000-0000000ca201"
+    }
+}

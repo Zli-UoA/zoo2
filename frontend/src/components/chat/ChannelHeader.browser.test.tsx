@@ -1,6 +1,8 @@
+import "../../styles.css";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { cdp, page } from "vite-plus/test/browser/context";
 
 import { DEFAULT_CONFIG } from "../../lib/config";
 import { encryptionSendState, resetSeenEncryptedChannels } from "../../lib/e2ee/encryptionGuard";
@@ -146,12 +148,31 @@ vi.mock("../layout/shell-context", () => ({
 }));
 
 describe("ChannelHeader", () => {
+  afterEach(async () => {
+    await cdp().send("Emulation.setTouchEmulationEnabled", { enabled: false });
+  });
+
   beforeEach(() => {
     adminState.isArchived = false;
     pinsApi.pins = [];
     pinsApi.get.mockReset().mockImplementation(async () => ({ pins: pinsApi.pins, version: 1 }));
     pinsApi.post.mockReset();
     pinsApi.del.mockReset();
+  });
+
+  it("gives the members button a 44px touch target when the label is hidden", async () => {
+    await page.viewport(390, 844);
+    await cdp().send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+    render(
+      <LocaleProvider>
+        <ChannelHeader channel={channel} memberCount={undefined} />
+      </LocaleProvider>,
+    );
+    const button = screen.getByRole("button", { name: "メンバー" });
+    const { width, height } = button.getBoundingClientRect();
+
+    expect(width).toBeGreaterThanOrEqual(44);
+    expect(height).toBeGreaterThanOrEqual(44);
   });
 
   it("falls back to the no-description label for missing or whitespace descriptions", () => {
@@ -254,16 +275,21 @@ describe("ChannelHeader", () => {
       );
       await userEvent.click(screen.getByRole("button", { name: "チャンネル設定" }));
       await userEvent.click(await screen.findByRole("button", { name: "暗号化を有効にする" }));
-      expect(await screen.findByText("このチャンネルを暗号化しますか？")).toBeVisible();
+      expect(
+        await screen.findByRole("alertdialog", { name: "このチャンネルを暗号化しますか？" }),
+      ).toHaveAttribute("data-open");
 
       rerender(
         <LocaleProvider>
           <ChannelHeader channel={privateB} memberCount={3} />
         </LocaleProvider>,
       );
-      await waitFor(() =>
-        expect(screen.queryByText("このチャンネルを暗号化しますか？")).toBeNull(),
-      );
+      await waitFor(() => {
+        const dialog = screen.queryByRole("alertdialog", {
+          name: "このチャンネルを暗号化しますか？",
+        });
+        expect(dialog?.hasAttribute("data-open") ?? false).toBe(false);
+      });
       expect(encryptApi.encryptChannel).not.toHaveBeenCalled();
     });
 
@@ -281,10 +307,16 @@ describe("ChannelHeader", () => {
       );
       await userEvent.click(screen.getByRole("button", { name: "チャンネル設定" }));
       await userEvent.click(await screen.findByRole("button", { name: "暗号化を有効にする" }));
+      expect(
+        await screen.findByRole("alertdialog", { name: "このチャンネルを暗号化しますか？" }),
+      ).toHaveAttribute("data-open");
       await userEvent.click(await screen.findByRole("button", { name: "暗号化する" }));
-      await waitFor(() =>
-        expect(screen.queryByText("このチャンネルを暗号化しますか？")).toBeNull(),
-      );
+      await waitFor(() => {
+        const dialog = screen.queryByRole("alertdialog", {
+          name: "このチャンネルを暗号化しますか？",
+        });
+        expect(dialog?.hasAttribute("data-open") ?? false).toBe(false);
+      });
 
       expect(encryptApi.encryptChannel).toHaveBeenCalledWith(expect.anything(), "channel-a");
       // Shape はまだ `encrypted = false` のまま。それでも平文の送信を止める状態になる。

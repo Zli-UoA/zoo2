@@ -7,6 +7,7 @@ import { cn } from "cn";
 import { useCall } from "../../lib/call/call-context";
 import type { ChannelRow } from "../../lib/electric/types";
 import { sidebarItemClassName } from "./sidebarStyles";
+import { DropIndicator } from "./DropIndicator";
 
 /**
  * サイドバーの通常チャンネル行。チャンネル一覧とピン留めの両方で使い、
@@ -79,16 +80,7 @@ export function ChannelListItem({
       }
       onKeyDown={onKeyDown}
     >
-      {dropIndicator ? (
-        <span
-          aria-hidden="true"
-          data-drop-indicator={dropIndicator}
-          className={cn(
-            "pointer-events-none absolute inset-x-0 z-20 h-[2px] rounded-full bg-foreground",
-            dropIndicator === "before" ? "-top-px" : "-bottom-px",
-          )}
-        />
-      ) : null}
+      {dropIndicator ? <DropIndicator edge={dropIndicator} /> : null}
       <Link
         to="/channels/$channelId"
         params={{ channelId: channel.id }}

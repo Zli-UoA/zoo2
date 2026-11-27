@@ -1,7 +1,28 @@
 import { useMemo, useSyncExternalStore } from "react";
-import { createConfiguredApiClient, type ApiEnvelope } from "../lib/api/client";
+import { ApiError, createConfiguredApiClient, type ApiEnvelope } from "../lib/api/client";
 import { useCollections } from "../lib/electric/collections-context";
 import { THREADS_CHANGED } from "../lib/electric/threads";
+
+export interface ThreadParticipant {
+  id: string;
+  user_name: string;
+  display_name: string | null;
+  avatar_url: string | null;
+}
+/** `POST /api/messages` の 403 のうち、参加行があるスレッドへ、参加せずに返信したもの（`code` と本文）。 */
+const THREAD_JOIN_REQUIRED_CODE = "THREAD_JOIN_REQUIRED";
+const THREAD_JOIN_REQUIRED_MESSAGE = "Join the thread before replying";
+
+/**
+ * `error` が、スレッドへ参加してから返信するよう求める 403 か。投稿権限などの 403 は含まない。
+ * `code` を優先し、`code` のない応答（コードを返す前のサーバー）だけ、本文で判定する。
+ */
+export function isThreadJoinRequired(error: unknown): boolean {
+  if (!(error instanceof ApiError) || error.status !== 403) return false;
+  const { code, error: message } = (error.body ?? {}) as { code?: unknown; error?: unknown };
+  if (typeof code === "string") return code === THREAD_JOIN_REQUIRED_CODE;
+  return typeof message === "string" && message.includes(THREAD_JOIN_REQUIRED_MESSAGE);
+}
 
 export interface ThreadMembership {
   id: string;
@@ -9,6 +30,32 @@ export interface ThreadMembership {
   membership: "none" | "joined" | "left";
   thread_archive_at: string | null;
   can_participate: boolean;
+  /** 現在参加中の人数と、先頭から最大50人。 */
+  participant_count?: number;
+  /**
+   * 参加行が1つでもあるか（全員退出済みでも true）。サーバーは、true のスレッドへの未参加者の返信を
+   * 403（`THREAD_JOIN_REQUIRED`）で拒否する。Web の画面は、返信の有無によらず参加状態（`membership`）だけで
+   * 入力欄を出すので、この値は使わない。参加者を表示しないクライアントのために、応答に含まれる。
+   */
+  tracked?: boolean;
+  participants?: ThreadParticipant[];
+}
+/**
+ * 書き込み（参加・退出・再Open）や他の画面の通知で届いた値を、いまの値へ重ねる。応答に参加者の項目が
+ * ない（コミット後の読み取りに失敗した、など）ときは、前の人数と一覧を残す。値が消えると、ヘッダーの
+ * 参加人数のボタンが隠れてしまう。書き込みの応答は再取得せず反映する方針（docs/request-design.md）なので、
+ * 残した人数のずれは、次の定期取得（60秒）で直る。
+ */
+function mergeMembership(
+  previous: ThreadMembership | null,
+  next: ThreadMembership,
+): ThreadMembership {
+  if (!previous || previous.id !== next.id) return next;
+  return {
+    ...next,
+    participant_count: next.participant_count ?? previous.participant_count,
+    participants: next.participants ?? previous.participants,
+  };
 }
 type Snapshot = { data: ThreadMembership | null; pending: boolean; error: boolean };
 const empty: Snapshot = { data: null, pending: false, error: false };
@@ -63,8 +110,9 @@ function createStore(
   return {
     snapshot: () => state,
     refresh,
-    change: async (action: "join" | "leave" | "unarchive") => {
-      if (state.pending) return;
+    // 成功したときだけ true。失敗・実行中は false（呼び出し側が後続の操作を止められる）。
+    change: async (action: "join" | "leave" | "unarchive"): Promise<boolean> => {
+      if (state.pending) return false;
       generation += 1;
       set({ ...state, pending: true, error: false });
       try {
@@ -73,12 +121,14 @@ function createStore(
           {},
           { signal: AbortSignal.timeout(10_000) },
         );
-        set({ data: result.data, pending: false, error: false });
+        set({ data: mergeMembership(state.data, result.data), pending: false, error: false });
         window.dispatchEvent(
           new CustomEvent(THREADS_CHANGED, { detail: { ...result.data, userId, config } }),
         );
+        return true;
       } catch {
         set({ ...state, pending: false, error: true });
+        return false;
       } finally {
         if (queued) {
           queued = false;
@@ -95,7 +145,11 @@ function createStore(
           if (detail?.userId && (detail.userId !== userId || detail.config !== config)) return;
           generation += 1;
           if (detail?.id === id) {
-            set({ data: detail, pending: state.pending, error: false });
+            set({
+              data: mergeMembership(state.data, detail),
+              pending: state.pending,
+              error: false,
+            });
             return;
           }
           void refresh();

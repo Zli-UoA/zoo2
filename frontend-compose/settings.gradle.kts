@@ -26,3 +26,5 @@ rootProject.name = "zoo-compose"
 include(":electric4k")
 
 if (providers.gradleProperty("zoo.android").orNull == "true") include(":androidApp")
+
+if (providers.gradleProperty("zoo.uiPreview").orNull == "true") include(":ui-preview")

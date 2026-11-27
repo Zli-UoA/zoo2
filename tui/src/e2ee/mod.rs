@@ -4,6 +4,8 @@
 
 pub mod manager;
 pub mod reauth;
+pub mod revocation;
 pub mod send;
 pub mod setup;
 pub mod store;
+pub mod verification;

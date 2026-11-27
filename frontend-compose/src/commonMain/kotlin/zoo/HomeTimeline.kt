@@ -88,6 +88,7 @@ class HomeTimeline(
 
     fun select(value: String) {
         if (timeline == value) return
+        if (posts.isNotEmpty()) save()
         timeline = value
         selectionChanged = true
         scope.launch { writeHomePreference(app, settingsKey, value) }
@@ -96,12 +97,18 @@ class HomeTimeline(
         refreshJob?.cancel()
         olderJob?.cancel()
         posts = emptyList()
+        checkedAt = 0L
+        validatedIds = emptySet()
+        pendingHead = false
+        hasMore = false
+        viewportError = false
         loading = true
         loadingOlder = false
         olderError = false
         visibleIds = emptyList()
         atTop = true
-        refresh()
+        restore()
+        refresh(retain = posts.isNotEmpty())
     }
 
     fun refresh(retain: Boolean = false, includeHead: Boolean = true) {
@@ -147,7 +154,11 @@ class HomeTimeline(
                         posts = if (retain && postId == null)
                             mergeHomeWindow(posts, head, if (complete) posts.map(::key) else if (checkedSuccessfully) check else emptyList(), checked, fetchHead && atTop || complete)
                         else head
-                        if (fetchHead && (!retain || complete || posts.size <= 50)) hasMore = !complete && postId == null && head.size == 50
+                        if (posts.isEmpty()) app.homeTimelines.removeEntry(cacheKey)
+                        if (fetchHead && (!retain || complete || posts.size <= 50)) {
+                            hasMore = !complete && postId == null && head.size == 50
+                            if (!hasMore) olderError = false
+                        }
                         if (fetchHead && headApplied) {
                             pendingHead = false
                             checkedAt = kotlin.time.Clock.System.now().toEpochMilliseconds()
@@ -181,9 +192,28 @@ class HomeTimeline(
             }
     }
 
+    fun reloadAfterAudienceChange() {
+        app.homeTimelines.clear()
+        posts = emptyList()
+        hasMore = false
+        refresh()
+    }
+
     fun remove(postId: String) {
+        generation++
+        refreshJob?.cancel()
+        refreshJob = null
+        olderJob?.cancel()
+        olderJob = null
+        loading = false
+        loadingOlder = false
+        updating = false
+        refreshing = false
+        deferred = false
+        deferredHead = false
+        checkedAt = 0
         app.homeTimelines.remove(postId)
-        posts = posts.filterNot { it.text("id") == postId }
+        posts = posts.mapNotNull { it.withoutUnavailableHomePost(postId) }
     }
 
     suspend fun awaitUpdate() { refreshJob?.join() }
@@ -231,7 +261,9 @@ class HomeTimeline(
     private fun path(size: Int, before: String) = homeTimelinePath(timeline, actorId, size, before)
 
     companion object {
-        fun key(row: Row): String = row.text("entry_id").ifEmpty { row.text("id") }
+        fun key(row: Row): String = row.nested("display").text("entry_id").ifBlank {
+            row.text("entry_id").ifBlank { row.nested("post").text("id").ifBlank { row.text("id") } }
+        }
 
         internal fun numericCompare(a: String, b: String): Int {
             fun clean(s: String) = s.trimStart('0').ifEmpty { "0" }

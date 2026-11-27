@@ -25,12 +25,8 @@ const REORDER_KEY = "__order__";
 const CONFLICT_CODE = "CHANNEL_PINS_CONFLICT";
 const MAX_ATTEMPTS = 3;
 
-type AnnouncementKey =
-  | "channelPins.announce.pinned"
-  | "channelPins.announce.unpinned"
-  | "channelPins.announce.moved"
-  | "channelPins.announce.reorderConflict"
-  | "channelPins.announce.reorderArchived";
+// 辞書のキーは `channelPins.announce.` + 接尾辞。x18n が前方一致で追えるようにする。
+type AnnouncementSuffix = "pinned" | "unpinned" | "moved" | "reorderConflict" | "reorderArchived";
 
 export interface PinnedChannelsValue {
   /** Provider とコレクションがそろい、ピン留めを操作できるか。 */
@@ -296,8 +292,8 @@ function usePinnedChannelsState(): {
   }, []);
 
   const announce = useCallback(
-    (key: AnnouncementKey) => {
-      setAnnouncement(t(key));
+    (suffix: AnnouncementSuffix) => {
+      setAnnouncement(t(`channelPins.announce.${suffix}`));
       setAnnouncementId((id) => id + 1);
     },
     [t],
@@ -432,14 +428,11 @@ function usePinnedChannelsState(): {
   }, [currentUserId, livePins, liveSignature, pending]);
 
   const fail = useCallback(
-    (
-      cause: unknown,
-      fallbackKey?: "channelPins.errors.conflict" | "channelPins.errors.reorderConflict",
-    ) => {
+    (cause: unknown, fallbackSuffix?: "conflict" | "reorderConflict") => {
       const message = isChannelPinsLimit(cause)
         ? t("channelPins.errors.limitExceeded")
         : channelPinsConflict(cause)
-          ? t(fallbackKey ?? "channelPins.errors.conflict")
+          ? t(`channelPins.errors.${fallbackSuffix ?? "conflict"}`)
           : localizeApiError(cause, t);
       setWriteError(message);
       toast.error(message);
@@ -470,7 +463,7 @@ function usePinnedChannelsState(): {
               const { data } = await api.pinChannel(channelId, versionRef.current);
               if (stale()) return;
               adopt(data.pins, data.version);
-              announce("channelPins.announce.pinned");
+              announce("pinned");
               return;
             } catch (cause) {
               if (stale()) return;
@@ -479,7 +472,7 @@ function usePinnedChannelsState(): {
               adopt(conflict.pins, conflict.version);
               // ほかの端末が先にピンしていた。最新の状態をそのまま採用する。
               if (conflict.pins.some((pin) => pin.channel_id === channelId)) {
-                announce("channelPins.announce.pinned");
+                announce("pinned");
                 return;
               }
               if (attempt === MAX_ATTEMPTS - 1) throw cause;
@@ -531,7 +524,7 @@ function usePinnedChannelsState(): {
               const { data } = await api.unpinChannel(channelId, versionRef.current);
               if (stale()) return;
               adopt(data.pins, data.version);
-              announce("channelPins.announce.unpinned");
+              announce("unpinned");
               return;
             } catch (cause) {
               if (stale()) return;
@@ -540,7 +533,7 @@ function usePinnedChannelsState(): {
               adopt(conflict.pins, conflict.version);
               // ほかの端末が先に外していた。最新の状態をそのまま採用する。
               if (!conflict.pins.some((pin) => pin.channel_id === channelId)) {
-                announce("channelPins.announce.unpinned");
+                announce("unpinned");
                 return;
               }
               if (attempt === MAX_ATTEMPTS - 1) throw cause;
@@ -599,7 +592,7 @@ function usePinnedChannelsState(): {
               const { data } = await api.reorderChannelPins(order, versionRef.current);
               if (stale()) return;
               adopt(data.pins, data.version);
-              announce("channelPins.announce.moved");
+              announce("moved");
               return;
             } catch (cause) {
               if (stale()) return;
@@ -614,11 +607,7 @@ function usePinnedChannelsState(): {
                 const archivedElsewhere = conflict.pins.some(
                   (pin) => pin.channel_id === movedChannelId && pin.archived,
                 );
-                announce(
-                  archivedElsewhere
-                    ? "channelPins.announce.reorderArchived"
-                    : "channelPins.announce.reorderConflict",
-                );
+                announce(archivedElsewhere ? "reorderArchived" : "reorderConflict");
                 return;
               }
               if (attempt === MAX_ATTEMPTS - 1) throw cause;
@@ -641,7 +630,7 @@ function usePinnedChannelsState(): {
             pinsSignature(current) === pinsSignature(optimisticPins) ? previousPins : current,
           );
         }
-        fail(cause, "channelPins.errors.reorderConflict");
+        fail(cause, "reorderConflict");
         if (channelPinsConflict(cause)) await fetchAuthoritative();
       } finally {
         if (!stale()) endPending(REORDER_KEY);

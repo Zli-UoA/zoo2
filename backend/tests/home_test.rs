@@ -1203,7 +1203,7 @@ async fn home_image_limits_discard_and_gc_preserve_live_references() -> anyhow::
     );
     let rows = backend::apps::query(
         &mut db.transaction().await?,
-        "SELECT json_build_object('id',id)::text FROM home_image_deletions WHERE id=$1",
+        "SELECT json_build_object('id',id)::text FROM home_image_deletion_queue WHERE id=$1",
         &[draft_id],
     )
     .await?;
@@ -1211,7 +1211,7 @@ async fn home_image_limits_discard_and_gc_preserve_live_references() -> anyhow::
     backend::routes::home_images::collect_garbage(&state).await?;
     let remaining = backend::apps::query(
         &mut db.transaction().await?,
-        "SELECT json_build_object('id',id)::text FROM home_image_deletions WHERE id=$1",
+        "SELECT json_build_object('id',id)::text FROM home_image_deletion_queue WHERE id=$1",
         &[draft_id],
     )
     .await?;
@@ -1495,11 +1495,17 @@ async fn home_image_upload_failure_and_interruption_leave_durable_cleanup() -> a
     let _gc_test = HOME_IMAGE_GC_TESTS.lock().await;
     let storage = wiremock::MockServer::start().await;
     wiremock::Mock::given(wiremock::matchers::method("PUT"))
+        .and(wiremock::matchers::header("if-none-match", "*"))
         .respond_with(wiremock::ResponseTemplate::new(403))
         .mount(&storage)
         .await;
     wiremock::Mock::given(wiremock::matchers::method("DELETE"))
         .respond_with(wiremock::ResponseTemplate::new(204))
+        .mount(&storage)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("PUT"))
+        .and(wiremock::matchers::body_bytes(Vec::new()))
+        .respond_with(wiremock::ResponseTemplate::new(200))
         .mount(&storage)
         .await;
     let mut config = Config::from_env();
@@ -1531,15 +1537,37 @@ async fn home_image_upload_failure_and_interruption_leave_durable_cleanup() -> a
     );
     let queued = backend::apps::query(
         &mut db.transaction().await?,
-        "SELECT json_build_object('id',id)::text FROM home_image_deletions WHERE uploader_id=$1",
+        "SELECT json_build_object('id',id,'pending',original_write_pending,'file_size',file_size)::text FROM home_image_deletion_queue WHERE uploader_id=$1",
         &[&owner],
     )
     .await?;
     assert_eq!(queued.len(), 1, "even a failed PUT must be durably queued");
+    assert_eq!(queued[0]["pending"], true);
+    let legacy_quota = backend::apps::query(
+        &mut db.transaction().await?,
+        "SELECT json_build_object('bytes',(SELECT COALESCE(sum(file_size),0) FROM home_images WHERE uploader_id=$1)+(SELECT COALESCE(sum(file_size),0) FROM home_image_deletions WHERE uploader_id=$1))::text",
+        &[&owner],
+    )
+    .await?;
+    assert_eq!(legacy_quota[0]["bytes"], queued[0]["file_size"]);
+    let mut old_worker = db.transaction().await?;
+    let old_candidates = backend::apps::query(
+        &mut old_worker,
+        "SELECT json_build_object('id',id)::text FROM home_image_deletions ORDER BY created_at LIMIT 100 FOR UPDATE SKIP LOCKED",
+        &[],
+    )
+    .await?;
+    assert!(
+        !old_candidates
+            .iter()
+            .any(|row| row["id"] == queued[0]["id"])
+    );
+    old_worker.commit().await?;
+    let failed_id = queued[0]["id"].as_str().unwrap().to_owned();
     backend::routes::home_images::collect_garbage(&state).await?;
     let queued = backend::apps::query(
         &mut db.transaction().await?,
-        "SELECT json_build_object('id',id)::text FROM home_image_deletions WHERE uploader_id=$1",
+        "SELECT json_build_object('id',id)::text FROM home_image_deletion_queue WHERE uploader_id=$1",
         &[&owner],
     )
     .await?;
@@ -1599,13 +1627,24 @@ async fn home_image_upload_failure_and_interruption_leave_durable_cleanup() -> a
     .await?;
     backend::routes::home_images::collect_garbage(&state).await?;
     let requests = storage.received_requests().await.unwrap();
+    reserved.push(failed_id);
     for id in reserved {
         assert!(
             requests
                 .iter()
-                .any(|r| r.method == "DELETE" && r.url.path().ends_with(&id))
+                .any(|r| r.method == "PUT" && r.body.is_empty() && r.url.path().ends_with(&id))
         );
     }
+    let remaining = backend::apps::query(
+        &mut db.transaction().await?,
+        "SELECT json_build_object('id',id)::text FROM home_image_deletion_queue WHERE uploader_id=$1",
+        &[&owner],
+    )
+    .await?;
+    assert!(
+        remaining.is_empty(),
+        "successful fencing must clear the queue"
+    );
     Ok(())
 }
 

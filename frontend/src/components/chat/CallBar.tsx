@@ -212,7 +212,7 @@ export function CallBar({ channels = [] }: CallBarProps) {
                     role="img"
                     aria-label={label}
                     title={label}
-                    className={`relative flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-medium transition-all ${
+                    className={`relative flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-medium transition-shadow ${
                       isSpeaking ? "ring-2 ring-emerald-500" : ""
                     }`}
                   >

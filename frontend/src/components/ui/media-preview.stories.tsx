@@ -1,4 +1,4 @@
-import { expect, waitFor, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import cjkUrl from "../../../.storybook/fixtures/cjk.pdf?url";
 import jpxUrl from "../../../.storybook/fixtures/jpx.pdf?url";
@@ -30,8 +30,63 @@ export const Image: Story = {
     height: 480,
   },
 };
+const thumbnailUrl =
+  "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+export const Thumbnail: Story = {
+  args: { ...Image.args, thumbnailSrc: thumbnailUrl },
+  play: async ({ canvasElement, userEvent }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("img", { name: "sample.png" })).toHaveAttribute(
+      "src",
+      thumbnailUrl,
+    );
+    await userEvent.click(canvas.getByRole("button", { name: /sample\.png/ }));
+    const dialog = await within(canvasElement.ownerDocument.body).findByRole("dialog");
+    await expect(within(dialog).getByRole("img", { name: "sample.png" })).toHaveAttribute(
+      "src",
+      Image.args!.src,
+    );
+  },
+};
 export const PDF: Story = {
   args: { src: pdfUrl, name: "sample.pdf", contentType: "application/pdf" },
+};
+export const MultiPagePDF: Story = {
+  args: { src: pdfUrl, name: "sample.pdf", contentType: "application/pdf", initialOpen: true },
+  play: async ({ canvasElement }) => {
+    await assertPdfPainted(canvasElement);
+    const dialog = within(canvasElement.ownerDocument.body).getByRole("dialog");
+    const user = userEvent.setup();
+    const pageInput = within(dialog).getByRole("textbox", { name: "ページ番号" });
+    const scrollRegion = within(dialog).getByRole("region", { name: "PDFページ一覧" });
+    await expect(pageInput).toHaveValue("1");
+    await user.click(within(dialog).getByRole("button", { name: "次のページ" }));
+    await waitFor(() => expect(pageInput).toHaveValue("2"), { timeout: 10_000 });
+    const page3 = dialog.querySelector('[data-pdf-page="3"]') as HTMLElement;
+    scrollRegion.scrollTop = page3.offsetTop;
+    await waitFor(() => expect(pageInput).toHaveValue("3"), { timeout: 10_000 });
+    await user.click(pageInput);
+    await user.keyboard("10{Enter}");
+    await waitFor(() => expect(pageInput).toHaveValue("10"), { timeout: 10_000 });
+    await waitFor(
+      async () => {
+        const canvas = dialog.querySelector(
+          '[data-pdf-page="10"] canvas',
+        ) as HTMLCanvasElement | null;
+        await expect(canvas?.width).toBeGreaterThan(0);
+        const context = canvas?.getContext("2d");
+        if (!context || !canvas) throw new Error("page 10 canvas is unavailable");
+        const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
+        for (let i = 0; i < data.length; i += 4) {
+          if (data[i + 3] > 0 && (data[i] < 250 || data[i + 1] < 250 || data[i + 2] < 250)) {
+            return;
+          }
+        }
+        throw new Error("page 10 has not been painted");
+      },
+      { timeout: 10_000 },
+    );
+  },
 };
 export const Video: Story = {
   args: { src: videoUrl, name: "sample.webm", contentType: "video/webm" },

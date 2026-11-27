@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
-import { ArrowLeftIcon, XIcon } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { ArrowLeftIcon, UsersIcon, XIcon } from "lucide-react";
+import { type KeyboardEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { CommandSuggestion } from "./composerSuggestions";
 import type { UploadedAttachment } from "../../../lib/api/attachments";
@@ -8,15 +8,27 @@ import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import type { AttachmentRow } from "../../../lib/electric/types";
 import { groupReactions, type ReactionGroup } from "../../../lib/emoji/reactions";
 import { Button } from "../../ui/button";
+import type { ThreadParticipant } from "../../../hooks/useThreadMembership";
 import { PaneHeader } from "../../layout/PaneHeader";
+import { useMediaQuery } from "../../layout/useMediaQuery";
 
 import type { TypingUser } from "../../../hooks/useTyping";
 import { TypingIndicator } from "./TypingIndicator";
 import { Composer } from "./Composer";
+import { JoinPrompt } from "./JoinPrompt";
+import {
+  ThreadParticipantsDialog,
+  type ThreadParticipantsAction,
+  type ThreadParticipantsStatus,
+} from "./ThreadParticipantsDialog";
 import { MessageRow } from "./MessageRow";
 import type { FeedMessage } from "./messageFormat";
 import { buildMessageItems } from "./messageGrouping";
 import { isNearBottom } from "./messageScroll";
+import { useMessageJumpRequest, useMessageTargetFlash } from "./messageTarget";
+
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 export interface ThreadPaneProps {
   commands?: readonly CommandSuggestion[];
@@ -29,6 +41,8 @@ export interface ThreadPaneProps {
   isOffline?: boolean;
   /** 返信を送れない理由（暗号化チャンネルで暗号化の送信がまだ使えない、など）。指定すると入力欄を止める。 */
   composeDisabledReason?: string;
+  /** 投稿権限がない。閲覧と参加はでき、返信・再Openだけを止める（理由は `composeDisabledReason`）。 */
+  postingForbidden?: boolean;
   typingUsers?: TypingUser[];
   onTyping?: (active: boolean) => void;
   root: FeedMessage;
@@ -36,16 +50,36 @@ export interface ThreadPaneProps {
   membership?: "none" | "joined" | "left";
   membershipPending?: boolean;
   membershipError?: boolean;
+  /** 参加状態の初回取得中。確定するまで入力を止める（未参加で送れてしまうのを防ぐ）。 */
+  membershipLoading?: boolean;
+  /** 参加中の人数と一覧（先頭から最大50人）。 */
+  participantCount?: number;
+  participants?: ThreadParticipant[];
   onMembershipRetry?: () => void;
   onJoinThread?: () => void;
   onLeaveThread?: () => void;
   onReopenThread?: () => void;
+  /** アーカイブ済みを再Openして参加する（参加ボタンの代わりに出す）。 */
+  onReopenAndJoinThread?: () => void;
   isLoading: boolean;
   isError: boolean;
+  /**
+   * 編集・削除・リアクションなどの操作に使う自分の ID。アーカイブ済み・読み取り専用のときは、
+   * 操作を止めるために呼び出し元が null にする。
+   */
   currentUserId: string | null;
+  /**
+   * 本人の判定（メンバーのダイアログの「あなた」の印）に使う閲覧者の ID。操作可否では null にしない。
+   * 省略時は `currentUserId` を使う。
+   */
+  viewerId?: string | null;
+  /** 行のメンション強調に使う ID。null は強調を無効にし、省略時は閲覧者の ID を使う。 */
+  mentionUserId?: string | null;
   canModerate?: boolean;
   isArchived?: boolean;
   readOnly?: boolean;
+  /** 親が削除されている（検索・リンクから返信を開いたとき）。親の代わりに知らせを出し、読むだけにする。 */
+  rootDeleted?: boolean;
   reactions: Map<string, ReactionGroup[]>;
   attachments?: Map<string, AttachmentRow[]>;
   kitchenCatalog: KitchenCatalog | null;
@@ -76,6 +110,7 @@ export interface ThreadPaneProps {
   onRetry?: () => void;
   /** Read existing nested threads until their staged migration completes. */
   onOpenThread?: (id: string) => void;
+  onForward?: (message: FeedMessage, attachments: AttachmentRow[]) => void;
   onClose: () => void;
 }
 
@@ -90,12 +125,14 @@ export function ThreadPane({
   commands,
   onRequestCommands,
   onOpenThread,
+  onForward,
   targetMessageId,
   mentionUsers,
   mentionMemberIds,
   isMember = true,
   isOffline = false,
   composeDisabledReason,
+  postingForbidden = false,
   typingUsers = [],
   onTyping,
   root,
@@ -103,16 +140,23 @@ export function ThreadPane({
   membership,
   membershipPending = false,
   membershipError = false,
+  membershipLoading = false,
+  participantCount,
+  participants,
   onMembershipRetry,
   onJoinThread,
   onLeaveThread,
   onReopenThread,
+  onReopenAndJoinThread,
   isLoading,
   isError,
   currentUserId,
+  viewerId,
+  mentionUserId = viewerId === undefined ? currentUserId : viewerId,
   canModerate = false,
   isArchived = false,
   readOnly = false,
+  rootDeleted = false,
   reactions,
   attachments,
   kitchenCatalog,
@@ -135,25 +179,98 @@ export function ThreadPane({
   onClose,
 }: ThreadPaneProps) {
   const { t } = useTranslation();
+  // 狭幅（sm 未満）は absolute のオーバーレイ。ダイアログとして扱うのはこのときだけ。
+  // 広幅の sm:static なサイドペインは従来どおりインラインのままにする。
+  const isWidePane = useMediaQuery("(min-width: 640px)");
   const items = useMemo(() => buildMessageItems(replies), [replies]);
+  const paneRef = useRef<HTMLDivElement>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
+  // チャンネルと同様、参加してから返信する。返信がまだないメッセージも同じで、最初の返信の前に参加する
+  // （サーバーは、参加行がないスレッドの最初の返信を、旧版のクライアントのために、参加なしで受け付ける）。
+  // 参加状態の取得中（`membership` が未定）は、入力欄を止めるだけで、参加の案内は出さない。
+  const needsJoin = isMember && (membership === "none" || membership === "left");
+  // 参加ボタンを押したあと、入力欄が使えるようになったら、入力欄へフォーカスを移す。ボタンは消えるので、
+  // 何もしないとフォーカスが失われ、キーボード・スクリーンリーダーの利用者が入力欄を探し直すことになる。
+  const composerRef = useRef<HTMLDivElement>(null);
+  const focusComposerAfterJoin = useRef(false);
+  useEffect(() => {
+    if (!needsJoin && focusComposerAfterJoin.current) {
+      focusComposerAfterJoin.current = false;
+      composerRef.current?.querySelector("textarea")?.focus();
+    } else if (membershipError) {
+      // 参加に失敗したら、あとで別の理由で入力欄が使えるようになっても、フォーカスを奪わない。
+      focusComposerAfterJoin.current = false;
+    }
+  }, [needsJoin, membershipError]);
+  const joinThread = isArchived ? (onReopenAndJoinThread ?? onJoinThread) : onJoinThread;
+  // 参加者は、ヘッダーの人数ボタンから開く、中央のダイアログに出す。参加・退出の操作もそこに置く。
+  const [participantsOpen, setParticipantsOpen] = useState(false);
+  const participantsStatus: ThreadParticipantsStatus =
+    readOnly || !isMember
+      ? null
+      : membership === "joined"
+        ? "joined"
+        : membership === "none" || membership === "left"
+          ? "notJoined"
+          : "checking";
+  // 参加ボタンの出し方は、入力欄の代わりの案内（`ThreadJoinPrompt`）と同じ。アーカイブ済みの再Openは
+  // 投稿権限が要るので、権限がないときは出さない。
+  // 人数をまだ読み込めていなくても、自分の参加状態が確定していれば、参加・退出の操作のために出す。
+  // どちらも未確定（読み込み中）のあいだは、押しても何も出せないので出さない。
+  const showParticipants =
+    participantCount !== undefined ||
+    participantsStatus === "joined" ||
+    participantsStatus === "notJoined";
+  // ダイアログを描画しない間は、開いた状態も残さない。残すと、狭幅のペインが Escape・Tab を扱わないままになり、
+  // あとで人数や参加状態が戻ったときに、操作なしでダイアログが開いてしまう。
+  useEffect(() => {
+    if (!showParticipants) setParticipantsOpen(false);
+  }, [showParticipants]);
+  const participantsAction: ThreadParticipantsAction | null =
+    participantsStatus === "joined"
+      ? onLeaveThread
+        ? { kind: "leave", onClick: onLeaveThread, disabled: membershipPending || isOffline }
+        : null
+      : participantsStatus === "notJoined" && joinThread && !(isArchived && postingForbidden)
+        ? {
+            kind: isArchived ? "reopenAndJoin" : "join",
+            onClick: joinThread,
+            disabled: membershipPending || isOffline,
+          }
+        : null;
   const scrollRef = useRef<HTMLDivElement>(null);
-  const atBottomRef = useRef(true);
+  const hasTargetInReplies = Boolean(
+    targetMessageId && replies.some((reply) => reply.id === targetMessageId),
+  );
+  const atBottomRef = useRef(!hasTargetInReplies);
+  const scrolledTarget = useRef<string | undefined>(undefined);
+  // 表示中の対象の返信へのリンクをもう一度押したとき。URL が変わらないので、スクロール済みの印を消して、
+  // 下の効果をもう一度走らせる。対象の行へスクロールしたときには、強調（点滅 → 点灯 → フェードアウト）を再生する。
+  const jumpRequest = useMessageJumpRequest(targetMessageId, scrolledTarget);
+  const { play: playTargetFlash, runFor: targetFlashRun } = useMessageTargetFlash();
+  const prevRootIdRef = useRef(root.id);
   // 件数が上限のままでも、新着で末尾の返信が変わったら、最下部にいるときは追従する。
   const lastReplyId = replies[replies.length - 1]?.id;
 
-  useEffect(() => {
-    atBottomRef.current = true;
-  }, [root.id]);
+  useLayoutEffect(() => {
+    if (prevRootIdRef.current !== root.id) {
+      prevRootIdRef.current = root.id;
+      scrolledTarget.current = undefined;
+      atBottomRef.current = !hasTargetInReplies;
+    }
+  }, [root.id, hasTargetInReplies]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = scrollRef.current;
-    if (!element || !atBottomRef.current) {
+    if (
+      !element ||
+      !atBottomRef.current ||
+      (hasTargetInReplies && scrolledTarget.current !== targetMessageId)
+    ) {
       return;
     }
-    requestAnimationFrame(() => {
-      element.scrollTop = element.scrollHeight;
-    });
-  }, [items.length, lastReplyId, root.id]);
+    element.scrollTop = element.scrollHeight;
+  }, [items.length, lastReplyId, root.id, hasTargetInReplies, targetMessageId]);
 
   // 古い返信のページが先頭に足されたときは、読んでいた位置が動かないよう、増えた高さの分だけ補正する。
   const scrollSnapshot = useRef({ firstId: "", lastId: "", height: 0 });
@@ -173,33 +290,94 @@ export function ThreadPane({
     }
   }, [replies]);
 
-  const scrolledTarget = useRef<string | undefined>(undefined);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!targetMessageId) {
       scrolledTarget.current = undefined;
       return;
     }
     if (scrolledTarget.current === targetMessageId) return;
     if (!replies.some((reply) => reply.id === targetMessageId)) return;
-    const frame = requestAnimationFrame(() => {
+    const align = () => {
       const target = Array.from(
         scrollRef.current?.querySelectorAll<HTMLElement>("[data-message-id]") ?? [],
       ).find((element) => element.dataset.messageId === targetMessageId);
       if (target && scrollRef.current) {
+        // 位置合わせは 2 回走るので、強調は、最初にスクロールできたときだけ再生する。
+        const firstTime = scrolledTarget.current !== targetMessageId;
         atBottomRef.current = false;
         scrolledTarget.current = targetMessageId;
         scrollRef.current.scrollTop = target.offsetTop - scrollRef.current.offsetTop;
+        if (firstTime) playTargetFlash(targetMessageId);
       }
-    });
+    };
+    align();
+    const frame = requestAnimationFrame(align);
     return () => cancelAnimationFrame(frame);
-  }, [targetMessageId, replies]);
+  }, [targetMessageId, replies, jumpRequest, playTargetFlash]);
 
-  return (
-    <aside
-      aria-label={t("threads.title")}
-      className="absolute inset-0 z-20 flex min-h-0 min-w-0 flex-col border-l bg-background sm:static sm:z-auto sm:w-80 sm:shrink-0 xl:w-96"
-    >
-      <PaneHeader className="gap-2">
+  // 幅が変わっても同じ要素ツリーを保つため、ダイアログの属性とフォーカス制御は
+  // この要素にだけ付け外しする（Composer の下書きやスクロール位置を失わないため）。
+  useEffect(() => {
+    restoreFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    return () => restoreFocusRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (isWidePane) return;
+    // 広幅から狭幅へ戻ったとき、フォーカスが背後に残っていたらペイン内へ移す。
+    // すでにペイン内にある場合はユーザーのフォーカス位置を維持する。
+    const pane = paneRef.current;
+    if (pane && !pane.contains(document.activeElement)) pane.focus();
+  }, [isWidePane]);
+
+  function handlePaneKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (isWidePane) return;
+    // メンバーのダイアログが開いているあいだは、キー操作はそちらのもの。開いた直後で、まだ
+    // フォーカスがダイアログへ移っていないときの Escape で、ペインごと閉じないようにする。
+    if (participantsOpen) return;
+    // 削除確認やリアクションピッカーなど、子のダイアログが Escape を処理する場合は干渉しない。
+    if ((event.target as HTMLElement).closest('[role="dialog"]') !== event.currentTarget) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusables = Array.from(
+      event.currentTarget.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
+    ).filter(
+      (element) =>
+        element.getClientRects().length > 0 &&
+        !element.hasAttribute("disabled") &&
+        element.getAttribute("aria-disabled") !== "true",
+    );
+    if (focusables.length === 0) {
+      event.preventDefault();
+      event.currentTarget.focus();
+      return;
+    }
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (document.activeElement === event.currentTarget) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    } else if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  const paneClassName =
+    "absolute inset-0 z-20 flex min-h-0 min-w-0 flex-col border-l bg-background sm:static sm:z-auto sm:w-80 sm:shrink-0 xl:w-96";
+
+  const paneContent = (
+    <>
+      <PaneHeader className="gap-2" role="none">
         <Button
           variant="ghost"
           size="icon-sm"
@@ -222,6 +400,22 @@ export function ThreadPane({
         {isArchived ? (
           <span className="text-xs text-muted-foreground">{t("moderation.archived")}</span>
         ) : null}
+        {showParticipants ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-haspopup="dialog"
+            aria-label={
+              participantCount === undefined
+                ? t("members.title")
+                : t("threads.participants", { count: participantCount })
+            }
+            onClick={() => setParticipantsOpen(true)}
+          >
+            <UsersIcon aria-hidden="true" />
+            <span className="tabular-nums">{participantCount ?? "…"}</span>
+          </Button>
+        ) : null}
         <Button
           variant="ghost"
           size="icon-sm"
@@ -233,9 +427,28 @@ export function ThreadPane({
         </Button>
       </PaneHeader>
 
-      {!readOnly && isMember ? (
+      {showParticipants ? (
+        <ThreadParticipantsDialog
+          open={participantsOpen}
+          onOpenChange={setParticipantsOpen}
+          count={participantCount}
+          participants={participants ?? []}
+          creatorId={root.user_id}
+          // アーカイブ済み・読み取り専用でも、自分の行に「あなた」の印を付ける。
+          currentUserId={viewerId === undefined ? currentUserId : viewerId}
+          status={participantsStatus}
+          action={participantsAction}
+          // ペイン側の表示と同じ条件（メンバーでない人・読み取り専用には、参加・退出の操作がないので出さない）。
+          membershipError={!readOnly && isMember && membershipError}
+          onMembershipRetry={onMembershipRetry}
+        />
+      ) : null}
+
+      {!readOnly &&
+      isMember &&
+      ((isArchived && onReopenThread && !postingForbidden) || membershipError) ? (
         <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
-          {isArchived && onReopenThread ? (
+          {isArchived && onReopenThread && !postingForbidden ? (
             <Button
               variant="outline"
               size="sm"
@@ -243,25 +456,6 @@ export function ThreadPane({
               onClick={onReopenThread}
             >
               {t("threads.reopen")}
-            </Button>
-          ) : null}
-          {membership === "joined" && onLeaveThread ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={membershipPending || isOffline}
-              onClick={onLeaveThread}
-            >
-              {t("threads.leave")}
-            </Button>
-          ) : !isArchived && onJoinThread ? (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={membership === undefined || membershipPending || isOffline}
-              onClick={onJoinThread}
-            >
-              {t("threads.join")}
             </Button>
           ) : null}
           {membershipError ? (
@@ -275,32 +469,47 @@ export function ThreadPane({
         </div>
       ) : null}
       <div className="max-h-60 shrink-0 overflow-y-auto border-b bg-muted/30 px-2 py-2">
-        <MessageRow
-          item={{ message: root, isGroupStart: true, isGroupEnd: true, showDateSeparator: false }}
-          isOwn={!!currentUserId && root.user_id === currentUserId}
-          canDelete={canModerate || (!!currentUserId && root.user_id === currentUserId)}
-          isEditing={editingId === root.id}
-          editingText={editingText}
-          onEditingTextChange={onEditingTextChange}
-          onStartEdit={() => onStartEdit(root.id, root.content)}
-          onCancelEdit={onCancelEdit}
-          onSaveEdit={onSaveEdit}
-          onRequestDelete={() => onRequestDelete(root.id)}
-          reactions={
-            root.display_data
-              ? (groupReactions(root.display_data.reactions, currentUserId).get(root.id) ?? [])
-              : (reactions.get(root.id) ?? [])
-          }
-          attachments={root.display_data?.attachments ?? attachments?.get(root.id) ?? []}
-          kitchenCatalog={kitchenCatalog}
-          canReact={canReact}
-          onReaction={(emoji) => onReaction(root.id, emoji)}
-          onPickReaction={() => onPickReaction(root.id)}
-        />
+        {rootDeleted ? (
+          <p className="px-2 py-1 text-xs text-muted-foreground">{t("threads.rootDeleted")}</p>
+        ) : (
+          <MessageRow
+            item={{ message: root, isGroupStart: true, isGroupEnd: true, showDateSeparator: false }}
+            mentionUserId={mentionUserId}
+            isOwn={!!currentUserId && root.user_id === currentUserId}
+            canDelete={canModerate || (!!currentUserId && root.user_id === currentUserId)}
+            isEditing={editingId === root.id}
+            editingText={editingText}
+            onEditingTextChange={onEditingTextChange}
+            onStartEdit={() => onStartEdit(root.id, root.content)}
+            onCancelEdit={onCancelEdit}
+            onSaveEdit={onSaveEdit}
+            onRequestDelete={() => onRequestDelete(root.id)}
+            reactions={
+              root.display_data
+                ? (groupReactions(root.display_data.reactions, currentUserId).get(root.id) ?? [])
+                : (reactions.get(root.id) ?? [])
+            }
+            attachments={root.display_data?.attachments ?? attachments?.get(root.id) ?? []}
+            onForward={
+              onForward
+                ? () =>
+                    onForward(
+                      root,
+                      root.display_data?.attachments ?? attachments?.get(root.id) ?? [],
+                    )
+                : undefined
+            }
+            kitchenCatalog={kitchenCatalog}
+            canReact={canReact}
+            onReaction={(emoji) => onReaction(root.id, emoji)}
+            onPickReaction={() => onPickReaction(root.id)}
+          />
+        )}
       </div>
 
       <div
         ref={scrollRef}
+        data-scroll-restoration-id={`thread-scroll:${root.id}`}
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2"
         onScroll={(event) => {
           const element = event.currentTarget;
@@ -340,18 +549,11 @@ export function ThreadPane({
         ) : (
           <div role="list">
             {items.map((item) => (
-              <div
-                key={item.message.id}
-                data-message-id={item.message.id}
-                role="listitem"
-                className={
-                  item.message.id === targetMessageId
-                    ? "rounded-lg bg-brand-muted/40 ring-1 ring-brand"
-                    : undefined
-                }
-              >
+              <div key={item.message.id} data-message-id={item.message.id} role="listitem">
                 <MessageRow
                   item={item}
+                  highlightRun={targetFlashRun(item.message.id)}
+                  mentionUserId={mentionUserId}
                   isOwn={!!currentUserId && item.message.user_id === currentUserId}
                   canDelete={
                     canModerate || (!!currentUserId && item.message.user_id === currentUserId)
@@ -381,6 +583,17 @@ export function ThreadPane({
                     attachments?.get(item.message.id) ??
                     []
                   }
+                  onForward={
+                    onForward
+                      ? () =>
+                          onForward(
+                            item.message,
+                            item.message.display_data?.attachments ??
+                              attachments?.get(item.message.id) ??
+                              [],
+                          )
+                      : undefined
+                  }
                   kitchenCatalog={kitchenCatalog}
                   canReact={canReact}
                   onReaction={(emoji) => onReaction(item.message.id, emoji)}
@@ -394,27 +607,95 @@ export function ThreadPane({
 
       {!readOnly ? (
         <>
-          {isArchived ? (
+          {isArchived && !needsJoin && !postingForbidden ? (
             <p className="px-3 py-2 text-xs text-muted-foreground">{t("threads.reopenOnSend")}</p>
           ) : null}
           <TypingIndicator users={typingUsers} />
-          <Composer
-            commands={commands}
-            onRequestCommands={onRequestCommands}
-            mentionUsers={mentionUsers}
-            mentionMemberIds={mentionMemberIds}
-            disabled={!isMember || isOffline || composeDisabledReason !== undefined}
-            onTyping={onTyping}
-            onSend={onSendReply}
-            onUploadAttachment={onUploadAttachment}
-            placeholder={
-              composeDisabledReason ??
-              (isOffline ? t("offline.composeDisabled") : t("threads.compose"))
-            }
-            ariaLabel={t("threads.compose")}
-          />
+          {needsJoin ? (
+            <ThreadJoinPrompt
+              archived={!!isArchived}
+              reason={postingForbidden ? composeDisabledReason : undefined}
+              pending={membershipPending}
+              disabled={membership === undefined || isOffline}
+              onJoin={
+                joinThread
+                  ? () => {
+                      focusComposerAfterJoin.current = true;
+                      joinThread();
+                    }
+                  : undefined
+              }
+            />
+          ) : null}
+          {/* 参加が必要になっても Composer はアンマウントせず隠す。入力中の本文・添付の下書きを保つ。 */}
+          <div ref={composerRef} hidden={needsJoin}>
+            <Composer
+              commands={commands}
+              onRequestCommands={onRequestCommands}
+              mentionUsers={mentionUsers}
+              mentionMemberIds={mentionMemberIds}
+              disabled={
+                needsJoin ||
+                !isMember ||
+                isOffline ||
+                membershipLoading ||
+                composeDisabledReason !== undefined
+              }
+              onTyping={onTyping}
+              onSend={onSendReply}
+              onUploadAttachment={onUploadAttachment}
+              placeholder={
+                composeDisabledReason ??
+                (isOffline ? t("offline.composeDisabled") : t("threads.compose"))
+              }
+              ariaLabel={t("threads.compose")}
+            />
+          </div>
         </>
       ) : null}
-    </aside>
+    </>
+  );
+
+  return (
+    <div
+      ref={paneRef}
+      role={isWidePane ? "complementary" : "dialog"}
+      aria-modal={isWidePane ? undefined : true}
+      aria-label={t("threads.title")}
+      tabIndex={-1}
+      className={paneClassName}
+      onKeyDown={handlePaneKeyDown}
+    >
+      {paneContent}
+    </div>
+  );
+}
+
+function ThreadJoinPrompt({
+  archived,
+  reason,
+  pending,
+  disabled,
+  onJoin,
+}: {
+  archived: boolean;
+  /** 投稿権限がないときの理由。出すと、返信を促す文の代わりになる。 */
+  reason?: string;
+  pending: boolean;
+  disabled: boolean;
+  onJoin?: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <JoinPrompt
+      description={reason ?? t("threads.joinToReply")}
+      // アーカイブ済みの再Openは投稿権限が要るので、権限がないときはボタンを出さない。
+      actionLabel={
+        reason && archived ? undefined : archived ? t("threads.reopenAndJoin") : t("threads.join")
+      }
+      onAction={onJoin}
+      pending={pending}
+      disabled={disabled}
+    />
   );
 }

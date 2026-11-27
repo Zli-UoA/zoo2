@@ -3,19 +3,23 @@ import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEven
 import { useTranslation } from "react-i18next";
 
 import { moveWithin, usePinnedChannels } from "../../hooks/usePinnedChannels";
+import type { ThreadSummary } from "../../hooks/useThreadIndex";
 import type { ChannelRow, ChannelUserRow, UserRow } from "../../lib/electric/types";
 import { useLocale } from "../i18n/LocaleProvider";
 import { Button } from "../ui/button";
 import { CollapsibleSection } from "../ui/collapsible-section";
 import { ChannelListItem } from "./ChannelListItem";
 import { ChannelPinMenu } from "./ChannelPinMenu";
+import { ChannelThreadItems } from "./ChannelThreadItems";
 import { buildDmLabels, parseOneToOneDmIds } from "./dm";
 import { DmListItem } from "./DmListItem";
+import { DropIndicator } from "./DropIndicator";
 
 /**
  * サイドバー先頭の「ピン留め」。通常チャンネルと DM を、ユーザーごとの順で出す。
  * 並び替えはドラッグ、メニュー、`Alt+↑` / `Alt+↓` のどれでもできる。ほかの書き込みが
  * 終わるまでは、並びを変える操作を止める。
+ * 通常チャンネルの行の下には、チャンネル一覧と同じスレッドのツリーを出す（DM には出さない）。
  */
 export function PinnedSection({
   channels,
@@ -25,6 +29,8 @@ export function PinnedSection({
   currentUserId,
   activeChannelId,
   unreadChannelIds,
+  threads,
+  onObserveThread,
   onOpen,
   loading,
   className,
@@ -36,6 +42,9 @@ export function PinnedSection({
   currentUserId: string | null;
   activeChannelId: string | null;
   unreadChannelIds: ReadonlySet<string>;
+  /** サイドバー全体で共有するスレッド一覧（`useThreadIndex`）。ピン留めのために取り直さない。 */
+  threads: ThreadSummary[];
+  onObserveThread?: (thread: ThreadSummary) => void;
   onOpen: () => void;
   loading: boolean;
   className?: string;
@@ -210,7 +219,8 @@ export function PinnedSection({
         setDropTarget(null);
       },
       onDragOver: (event: DragEvent<HTMLDivElement>) => {
-        if (busy) {
+        // この一覧の行以外のドラッグ（スレッドのリンクなど）は、受け付けない。
+        if (busy || draggingIdRef.current === null) {
           return;
         }
         event.preventDefault();
@@ -349,23 +359,36 @@ export function PinnedSection({
               );
             }
             return (
-              <ChannelListItem
+              // 行とスレッドの行を囲むブロック全体を、挿入先にする。スレッドの行の上にも置けて、
+              // 「後ろ」の線は、スレッドの行の下（ブロックの下端）に出る。ドラッグの開始は、行だけが受け持つ。
+              <div
                 key={channel.id}
-                channel={channel}
-                active={active}
-                unread={unread}
-                onOpen={onOpen}
-                actions={actions}
-                onKeyDown={(event) => handleKeyDown(channel.id, event)}
-                draggable={dragProps.draggable}
-                dragging={draggingId === channel.id}
-                dropIndicator={dropTarget?.channelId === channel.id ? dropTarget.edge : null}
-                onDragStart={dragProps.onDragStart}
-                onDragEnd={dragProps.onDragEnd}
+                className="relative"
                 onDragOver={dragProps.onDragOver}
                 onDragLeave={dragProps.onDragLeave}
                 onDrop={dragProps.onDrop}
-              />
+              >
+                {dropTarget?.channelId === channel.id ? (
+                  <DropIndicator edge={dropTarget.edge} />
+                ) : null}
+                <ChannelListItem
+                  channel={channel}
+                  active={active}
+                  unread={unread}
+                  onOpen={onOpen}
+                  actions={actions}
+                  onKeyDown={(event) => handleKeyDown(channel.id, event)}
+                  draggable={dragProps.draggable}
+                  dragging={draggingId === channel.id}
+                  onDragStart={dragProps.onDragStart}
+                  onDragEnd={dragProps.onDragEnd}
+                />
+                <ChannelThreadItems
+                  channel={channel}
+                  threads={threads}
+                  onObserveThread={onObserveThread}
+                />
+              </div>
             );
           })}
         </div>

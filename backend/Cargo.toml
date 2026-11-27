@@ -98,3 +98,7 @@ path = "src/bin/zoo_slack_reformat.rs"
 [[bin]]
 name = "zoo_components_backfill"
 path = "src/bin/zoo_components_backfill.rs"
+
+[[bin]]
+name = "zoo_slack_backfill_forwards"
+path = "src/bin/zoo_slack_backfill_forwards.rs"

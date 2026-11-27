@@ -2,30 +2,28 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { escapePattern, readChangedCases } from './browser-test-selection.mjs';
-import { readChanges } from './test-selection-diff.mjs';
+import { readChanges, testBaseSha, usesSelectiveTests, workflowChanges } from './test-selection-diff.mjs';
 import { selectSourceCases } from './vitest-test-selection.mjs';
 export { readChanges } from './test-selection-diff.mjs';
 
 const frontend = fileURLToPath(new URL('../../frontend/', import.meta.url));
-const shaPattern = /^[a-f0-9]{40}$/;
+
+export function isRelatedFrontendModule(path) {
+  return /^frontend\/src\/.+\.(ts|tsx)$/.test(path) && !path.endsWith('.d.ts') &&
+    (!/^frontend\/src\/(test|routes|sw)\//.test(path) || /\.vrt\.test\.tsx$/.test(path)) &&
+    !/^frontend\/src\/lib\/(i18n|pwa|e2ee|oidc)\//.test(path) &&
+    !/(?:^|\/)(?:routeTree\.gen|router|main)\.[^/]+$/.test(path);
+}
 
 // Vitest follows imports. Changes outside that graph need the complete suite.
 export function selectTests(eventName, event, changes) {
   const full = reason => ({ mode: 'full', reason });
-  if (eventName !== 'pull_request') return full('main, merge queue and manual runs use the full suite');
-  const base = event?.pull_request?.base?.sha;
-  if (!shaPattern.test(base ?? '')) return full('missing or invalid pull request base');
+  if (!usesSelectiveTests(eventName)) return full('push and manual runs use the full suite');
+  if (!testBaseSha(eventName, event)) return full('missing or invalid event base');
   if (!changes?.length) return full('diff unavailable or empty');
   for (const { status, path } of changes) {
     if (!['A', 'M'].includes(status)) return full('deleted, renamed or unrecognized change');
-    if (!/^frontend\/src\/.+\.(ts|tsx)$/.test(path) || path.endsWith('.d.ts')) {
-      return full('configuration, dependencies or non-module resources changed');
-    }
-    if ((/^frontend\/src\/(test|routes|sw)\//.test(path) && !/\.vrt\.test\.tsx$/.test(path)) ||
-        /^frontend\/src\/lib\/(i18n|pwa|e2ee|oidc)\//.test(path) ||
-        /(?:^|\/)(?:routeTree\.gen|router|main)\.[^/]+$/.test(path)) {
-      return full('shared setup, workers, routes or runtime resources changed');
-    }
+    if (!isRelatedFrontendModule(path)) return full('configuration, shared setup or non-module resources changed');
   }
   return { mode: 'related', files: changes.map(({ path }) => path.slice('frontend/'.length)), reason: 'select tests through Vitest import dependencies' };
 }
@@ -67,14 +65,14 @@ export function selectCaseTitles(project, selection, changes, base, { git = exec
 
 export function runTests({ project, eventName, event, git = execFileSync, run = spawnSync, compiler, log = console.log }) {
   let changes;
-  if (eventName === 'pull_request') {
+  const base = testBaseSha(eventName, event);
+  if (usesSelectiveTests(eventName)) {
     try {
-      changes = readChanges(event?.pull_request?.base?.sha, git);
+      changes = workflowChanges('ci-frontend', readChanges(base, git));
     } catch {
       log('Test Selection: cannot read diff; running the full suite');
     }
   }
-  const base = event?.pull_request?.base?.sha;
   const selection = selectSourceCases(project, selectCaseTitles(project, selectTests(eventName, event, changes), changes, base, { git, compiler }), changes, base, { git, compiler, log });
   log(`Test Selection (${project}): ${selection.mode}; ${selection.reason}${selection.titles ? `; ${selection.titles.length} case titles` : ''}${selection.patterns ? `; ${selection.patterns.length} cases affected by source dependencies` : ''}`);
   // A real test failure is propagated; it is never retried as a full run.

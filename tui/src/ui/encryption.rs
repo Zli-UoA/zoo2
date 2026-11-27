@@ -34,6 +34,8 @@ pub struct E2eeContext {
     pub stores: StoreWatch,
     /// 暗号ストアの置き場所（暗号化チャンネルの記録を、暗号ストアを開く前に読む。#361）。
     pub crypto_root: Option<std::path::PathBuf>,
+    /// 端末の管理のタスクから届く、検証のメッセージと端末の上限（#362、#368）。
+    pub events: Option<crate::e2ee::manager::ManagerEvents>,
 }
 
 /// 秘密を Debug に出さないための包み。

@@ -1,11 +1,40 @@
 package zoo
 
-/** Tokens retain their source bodies so nested styles can be rendered in the same paragraph. */
-data class Inline(val value: String, val kind: String = "text", val url: String? = null)
+/**
+ * Tokens retain their source bodies so nested styles can be rendered in the same paragraph. [bare] marks a
+ * link written as its URL itself (a `[label](url)` link is not, even when the label is the URL).
+ */
+data class Inline(val value: String, val kind: String = "text", val url: String? = null, val bare: Boolean = false)
+
+private const val accountEmojiPattern = ":@([A-Za-z0-9._-]+):"
+private val accountEmoji = Regex(accountEmojiPattern)
+
+fun accountEmojiName(code: String): String? = accountEmoji.matchEntire(code)?.groupValues?.get(1)
 
 private val atoms = Regex(
-    "https?://[^\\s<>]+|:@[A-Za-z0-9._-]+:|@[A-Za-z0-9._-]+(?:@[A-Za-z0-9.-]+)?|#[^\\s#.,!?:;<>]+|:[a-zA-Z0-9_+-]+:"
+    "https?://[^\\s<>]+|$accountEmojiPattern|@[A-Za-z0-9._-]+(?:@[A-Za-z0-9.-]+)?|#[^\\s#.,!?:;<>]+|:[a-zA-Z0-9_+-]+:"
 )
+// Shared emoji aliases may include Unicode and spaces. Only registered candidates become tokens.
+private val customEmojiShortcode = Regex(""":[^:\p{Cc}]{1,100}:""")
+
+fun findCustomEmojiShortcodes(source: String): Sequence<String> =
+    customEmojiMatches(source).map { it.value }
+
+internal fun customEmojiMatches(source: String): Sequence<MatchResult> = sequence {
+    var match = customEmojiShortcode.find(source)
+    while (match != null) {
+        yield(match)
+        // The closing colon of an unregistered candidate can open a registered shortcode.
+        match = customEmojiShortcode.find(source, match.range.first + 1)
+    }
+}
+
+fun isWorkspaceEmojiCandidate(code: String): Boolean =
+    code.startsWith(':') && code.endsWith(':') && accountEmojiName(code) == null &&
+        code.removeSurrounding(":").let { it.isNotEmpty() && it == it.trim() && ':' !in it }
+
+internal const val inlineEscapes = "\\`*_{}[]()#+-.!~$<>@:"
+
 private val functionHeader = Regex("[A-Za-z0-9_]+(?:\\.[A-Za-z0-9_=,+.\\-]+)?[ \\t\\n]")
 private val formats = listOf(
     Triple("<small>", "</small>", "small"),
@@ -20,10 +49,13 @@ private val formats = listOf(
     Triple("_", "_", "italic"),
 )
 
-private data class InlineSlice(val token: Inline, val start: Int, val end: Int)
+internal data class InlineSlice(val token: Inline, val start: Int, val end: Int)
 
-fun parseInline(source: String): List<Inline> = inlineSlices(source).map { it.token }
-private fun inlineSlices(source: String): List<InlineSlice> = MfmScanner(source.length).inlineSlices(source)
+fun parseInline(source: String, customEmojis: Set<String> = emptySet()): List<Inline> =
+    inlineSlices(source, customEmojis).map { it.token }
+
+internal fun inlineSlices(source: String, customEmojis: Set<String> = emptySet()): List<InlineSlice> =
+    MfmScanner(source.length).inlineSlices(source, customEmojis)
 fun richSegments(source: String): List<Pair<String, Boolean>> = MfmScanner(source.length).richSegments(source)
 
 /** A shared work limit bounds repeated searches as well as recursion depth. */
@@ -131,28 +163,15 @@ private class MfmScanner(length: Int) {
         if (source.getOrNull(start) != '[') return null
         val labelEnd = closing(source, start + 1, "](", budget = budget + 1) ?: return null
         val urlStart = labelEnd + 2
-        if (!source.startsWith("https://", urlStart) && !source.startsWith("http://", urlStart)) return null
-        var cursor = urlStart
-        var parentheses = 1
-        while (cursor < source.length && !source[cursor].isWhitespace()) {
-            if (!step()) return null
-            if (source[cursor] == '(') parentheses++
-            if (source[cursor] == ')') {
-                parentheses--
-                if (parentheses == 0) {
-                    return Inline(
-                        source.substring(start + 1, labelEnd),
-                        "link",
-                        source.substring(urlStart, cursor),
-                    ) to (cursor + 1)
-                }
-            }
-            cursor++
-        }
-        return null
+        val urlEnd = linkDestinationEnd(source, urlStart) { step() } ?: return null
+        return Inline(
+            source.substring(start + 1, labelEnd),
+            "link",
+            source.substring(urlStart, urlEnd),
+        ) to (urlEnd + 1)
     }
 
-    fun inlineSlices(source: String): List<InlineSlice> {
+    fun inlineSlices(source: String, customEmojis: Set<String>): List<InlineSlice> {
         val result = mutableListOf<InlineSlice>()
         var at = 0
         var pendingStart = 0
@@ -184,10 +203,10 @@ private class MfmScanner(length: Int) {
                 val close = source.indexOf('>', at + 1)
                 if (close >= 0 && source.substring(at + 1, close).none { it.isWhitespace() }) {
                     val url = source.substring(at + 1, close)
-                    token = Inline(url, "link", url)
+                    token = Inline(url, "link", url, bare = true)
                     end = close + 1
                 }
-            } else if (source[at] == '\\' && at + 1 < source.length && source[at + 1] in "\\`*_{}[]()#+-.!~$<>@:") {
+            } else if (source[at] == '\\' && at + 1 < source.length && source[at + 1] in inlineEscapes) {
                 pending.append(source[at + 1])
                 at += 2
                 continue
@@ -215,8 +234,17 @@ private class MfmScanner(length: Int) {
                         end = stop + close.length
                         break
                     }
+                    val atom = if (token == null) atoms.matchAt(source, at) else null
+                    val mayBeCustomEmoji = source[at] == ':' && customEmojis.isNotEmpty()
+                    if (token == null && mayBeCustomEmoji && atom?.value?.startsWith(":@") != true) {
+                        val shortcode = customEmojiShortcode.matchAt(source, at)?.value
+                        if (shortcode != null && shortcode in customEmojis) {
+                            token = Inline(shortcode, "emoji")
+                            end = at + shortcode.length
+                        }
+                    }
                     if (token == null) {
-                        val match = atoms.matchAt(source, at)
+                        val match = atom
                         if (match != null) {
                             val value = match.value
                             val kind = when {
@@ -229,10 +257,14 @@ private class MfmScanner(length: Int) {
                             val boundary = source.getOrNull(at - 1)?.let {
                                 !it.isLetterOrDigit() && it !in "_/@"
                             } != false
-                            if (kind !in setOf("mention", "hashtag") || boundary) {
-                                val trimmed = if (kind == "link") trimMfmUrl(value) else value
-                                token = Inline(trimmed, kind, trimmed.takeIf { kind == "link" })
-                                end = at + trimmed.length
+                            val overlapsRegistered = kind == "emoji" && customEmojis.isNotEmpty() &&
+                                customEmojiShortcode.matchAt(source, match.range.last)?.value in customEmojis
+                            if (!overlapsRegistered && (kind !in setOf("mention", "hashtag") || boundary)) {
+                                val trimmed = if (kind == "link") leadingUrl(value) else value
+                                if (trimmed != null) {
+                                    token = Inline(trimmed, kind, trimmed.takeIf { kind == "link" }, kind == "link")
+                                    end = at + trimmed.length
+                                }
                             }
                         }
                     }
@@ -365,31 +397,77 @@ fun messageHeadingBlocks(content: String): List<MessageHeadingBlock> {
     return blocks
 }
 
-private fun trimMfmUrl(value: String): String {
-    var result = value.trimEnd('.', ',', '!', '?', ';', ':')
-    for ((open, close) in listOf('(' to ')', '[' to ']', '{' to '}')) {
-        var excess = result.count { it == close } - result.count { it == open }
-        while (excess > 0 && result.endsWith(close)) {
-            result = result.dropLast(1)
-            excess--
+/** 閉じていない括弧の対応を探す長さ。閉じない括弧が並ぶ本文で、同じ部分を繰り返し調べないようにする。 */
+private const val URL_BRACKET_LOOKAHEAD = 1024
+
+/**
+ * [text] の [start] から始まる `http://` か `https://` の URL。Web（`mfm-js`）と同じく、URL に使う ASCII の
+ * 文字と、対応のとれた括弧までを URL とし、末尾の `.` と `,` は除く。日本語や全角の記号が続いても、そこで終わる。
+ * 表示と、本文のリンクの抽出（[previewUrls]）で同じ位置で切る。
+ */
+internal fun leadingUrl(text: String, start: Int = 0): String? {
+    val scheme = listOf("https://", "http://").firstOrNull { text.startsWith(it, start) } ?: return null
+    // 閉じていない括弧の位置と、対応する閉じ括弧。
+    val open = mutableListOf<Pair<Int, Char>>()
+    var end = start + scheme.length
+    while (end < text.length) {
+        val unclosed = open.firstOrNull()
+        if (unclosed != null && end - unclosed.first > URL_BRACKET_LOOKAHEAD) break
+        val ch = text[end]
+        val used = when (ch) {
+            '(', '[' -> {
+                open.add(end to if (ch == '(') ')' else ']')
+                true
+            }
+            ')', ']' -> {
+                // 対応しないときは、開き括弧を残す（閉じていない括弧として、URL から除くため）。
+                val paired = open.lastOrNull()?.second == ch
+                if (paired) open.removeAt(open.lastIndex)
+                paired
+            }
+            else -> ch in 'a'..'z' || ch in 'A'..'Z' || ch in '0'..'9' || ch in "._,/:%#@$&?!~=+-"
         }
+        if (!used) break
+        end++
     }
-    return result
+    // 閉じていない括弧は、URL に含めない。
+    open.firstOrNull()?.let { end = it.first }
+    val url = text.substring(start, end).trimEnd('.', ',')
+    return url.takeIf { it.length > scheme.length }
+}
+
+/**
+ * `[文字](` の直後 [start] から始まる行き先の終わり（対応する `)` の位置）。行き先は空白を含まず、丸括弧は対にする。
+ * http(s) の URL でないとき、閉じないとき、[step] が打ち切ったときは `null`（リンクではない）。
+ */
+internal fun linkDestinationEnd(text: String, start: Int, step: () -> Boolean): Int? {
+    if (!text.startsWith("https://", start) && !text.startsWith("http://", start)) return null
+    var parentheses = 1
+    for (cursor in start until text.length) {
+        val ch = text[cursor]
+        if (ch.isWhitespace() || !step()) return null
+        if (ch == '(') parentheses++
+        if (ch == ')' && --parentheses == 0) return cursor
+    }
+    return null
 }
 
 data class MfmRuby(val base: String, val reading: String)
 
 /** The reading is root text; spaces inside markup belong to the base. */
-fun mfmRuby(source: String): MfmRuby {
-    val slices = inlineSlices(source)
+fun mfmRuby(source: String, customEmojis: Set<String> = emptySet()): MfmRuby =
+    mfmRuby(source, inlineSlices(source, customEmojis))
+
+internal fun mfmRuby(source: String, slices: List<InlineSlice>): MfmRuby {
     val last = slices.lastOrNull() ?: return MfmRuby(source, "")
     if (last.token.kind != "text") return MfmRuby(source, "")
-    if (slices.size == 1) {
-        val separator = source.indexOfFirst { it.isWhitespace() }
-        return if (separator < 0) MfmRuby(source, "")
-        else MfmRuby(source.take(separator), source.substring(separator + 1).trim())
+    val rawSpace = (last.start until last.end).firstOrNull { source[it].isWhitespace() }
+    if (rawSpace == null) {
+        return if (slices.size > 1) MfmRuby(source.take(last.start), last.token.value.trim())
+        else MfmRuby(source, "")
     }
-    return MfmRuby(source.take(last.start).trimEnd(), last.token.value.trim())
+    val reading = last.token.value.dropWhile { !it.isWhitespace() }.trim()
+    return MfmRuby(source.take(rawSpace), reading)
 }
 
 data class MfmCodeBlock(val body: String, val language: String)

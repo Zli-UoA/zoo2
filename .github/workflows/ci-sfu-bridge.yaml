@@ -1,0 +1,50 @@
+name: CI sfu-bridge
+# 通話の sfu-bridge（docs/calls-sfu.md）の vet・テスト・ビルド。Go の版は flake.nix と
+# infra/Dockerfile-sfu-bridge-deploy にそろえる。
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "sfu-bridge/**"
+      - "infra/Dockerfile-sfu-bridge-deploy*"
+      - ".github/workflows/ci-sfu-bridge.yaml"
+      - ".github/workflows/select-runner.yaml"
+  push:
+    branches: [main]
+    paths:
+      - "sfu-bridge/**"
+      - "infra/Dockerfile-sfu-bridge-deploy*"
+      - ".github/workflows/ci-sfu-bridge.yaml"
+      - ".github/workflows/select-runner.yaml"
+permissions:
+  contents: read
+concurrency:
+  group: sfu-bridge-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+jobs:
+  runner:
+    uses: ./.github/workflows/select-runner.yaml
+    secrets:
+      runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
+
+  test:
+    needs: runner
+    # golang のコンテナで動かすので、Docker のある実行先を使う。
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
+    timeout-minutes: 15
+    container: golang:1.26.8-bookworm
+    defaults:
+      run:
+        working-directory: sfu-bridge
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Format
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -buildvcs=false ./...
+      - name: Build
+        run: CGO_ENABLED=0 go build -buildvcs=false -o /tmp/sfu-bridge .

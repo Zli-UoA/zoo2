@@ -97,27 +97,30 @@ export interface MessageWriteMetadata {
   attachment_ids?: string[];
   sensitive?: boolean;
   sensitive_attachment_ids?: string[];
+  forwarded_message_ids?: string[];
 }
 
 function readMessageMetadata(metadata: unknown): MessageWriteMetadata {
-  if (!metadata || typeof metadata !== "object" || !("attachment_ids" in metadata)) {
+  if (!metadata || typeof metadata !== "object") {
     return {};
   }
-  const value = (metadata as { attachment_ids?: unknown }).attachment_ids;
-  if (!Array.isArray(value)) {
-    return {};
+  const typed = metadata as MessageWriteMetadata;
+  const out: MessageWriteMetadata = {};
+  if (Array.isArray(typed.attachment_ids)) {
+    out.attachment_ids = typed.attachment_ids.filter((id): id is string => typeof id === "string");
+    if (typed.sensitive) out.sensitive = true;
+    if (Array.isArray(typed.sensitive_attachment_ids)) {
+      out.sensitive_attachment_ids = typed.sensitive_attachment_ids.filter(
+        (id): id is string => typeof id === "string",
+      );
+    }
   }
-  return {
-    ...((metadata as MessageWriteMetadata).sensitive ? { sensitive: true } : {}),
-    ...(Array.isArray((metadata as MessageWriteMetadata).sensitive_attachment_ids)
-      ? {
-          sensitive_attachment_ids: (
-            metadata as MessageWriteMetadata
-          ).sensitive_attachment_ids!.filter((id): id is string => typeof id === "string"),
-        }
-      : {}),
-    attachment_ids: value.filter((id): id is string => typeof id === "string"),
-  };
+  if (Array.isArray(typed.forwarded_message_ids)) {
+    out.forwarded_message_ids = typed.forwarded_message_ids.filter(
+      (id): id is string => typeof id === "string",
+    );
+  }
+  return out;
 }
 
 /**
@@ -141,13 +144,18 @@ export function createMessageWrites({ client, txidMode }: WriteDependencies) {
       if (row.parent_id) {
         body.parent_id = row.parent_id;
       }
-      const attachmentIds = readMessageMetadata(mutation.metadata).attachment_ids;
+      const meta = readMessageMetadata(mutation.metadata);
+      const attachmentIds = meta.attachment_ids;
       if (attachmentIds?.length) {
         body.attachment_ids = attachmentIds;
-        const metadata = readMessageMetadata(mutation.metadata);
-        if (metadata.sensitive) body.sensitive = true;
-        if (metadata.sensitive_attachment_ids?.length)
-          body.sensitive_attachment_ids = metadata.sensitive_attachment_ids;
+        if (meta.sensitive) body.sensitive = true;
+        if (meta.sensitive_attachment_ids?.length)
+          body.sensitive_attachment_ids = meta.sensitive_attachment_ids;
+      }
+      if (meta.forwarded_message_ids?.length) {
+        body.forwarded_message_ids = meta.forwarded_message_ids;
+      } else if (row.forwarded_message_ids?.length) {
+        body.forwarded_message_ids = row.forwarded_message_ids;
       }
       const { data, txid } = await client.post<MessageRow>("/api/messages", body);
       if (row.parent_id && data?.parent_id && data.parent_id !== row.parent_id) {

@@ -5,13 +5,14 @@ import {candidates, referencedDigests, ignoreMissing} from './image-cleanup.mjs'
 const sha = n => n.toString(16).padStart(40, '0');
 const version = (id, tags, age = id) => ({id, name: `sha256:${sha(id)}`, created_at: new Date(Date.now() - age * 86400000).toISOString(), metadata: {container: {tags}}});
 test('component filters and common inputs', () => {
-  for (const c of ['frontend', 'backend', 'migrate']) {
+  for (const c of ['frontend', 'backend', 'migrate', 'sfu-bridge']) {
     assert.deepEqual(changedComponents([`infra/Dockerfile-${c}-deploy.dockerignore`]), [c]);
   }
   assert.deepEqual(changedComponents(['frontend/src/a.ts']), ['frontend']);
   assert.deepEqual(changedComponents(['frontend-compose/src/commonMain/kotlin/zoo/App.kt']), []);
   assert.deepEqual(changedComponents(['backend/Cargo.lock']), ['backend']);
   assert.deepEqual(changedComponents(['docs/slack-event-coverage.json']), ['backend']);
+  assert.deepEqual(changedComponents(['frontend/src/lib/emoji/emoji-kitchen.json']), ['frontend', 'backend']);
   // backend は E2EE の署名の検証に crates/zoo-crypto を path で依存する。
   assert.deepEqual(changedComponents(['crates/zoo-crypto/src/lib.rs']), ['frontend', 'backend']);
   assert.deepEqual(changedComponents(['crates/zoo-crypto-wasm/src/lib.rs']), ['frontend']);
@@ -19,7 +20,8 @@ test('component filters and common inputs', () => {
   assert.deepEqual(changedComponents(['.github/scripts/test-selection.mjs', '.github/actions/crypto-wasm/action.yaml']), []);
   assert.deepEqual(changedComponents(['.github/workflows/ci-backend.yaml', '.github/workflows/ci-frontend.yaml', '.github/workflows/ci-desktop-tauri.yaml', 'infra/compose.ci-cache.yaml', 'infra/compose.ci-cache-write.yaml']), []);
   assert.deepEqual(changedComponents(['infra/db/migrations/a.sql']), ['migrate']);
-  assert.equal(changedComponents(['.github/scripts/image-plan.mjs']).length, 3);
+  assert.deepEqual(changedComponents(['sfu-bridge/main.go']), ['sfu-bridge']);
+  assert.equal(changedComponents(['.github/scripts/image-plan.mjs']).length, 4);
   assert.deepEqual(changedComponents(['README.md']), []);
 });
 test('retain 15 main and preview versions, two open PR generations', () => {
@@ -61,18 +63,20 @@ test('release tags follow the main generation they were promoted with', () => {
   assert.deepEqual(candidates([version(1, ['0.0.1-rc'])], new Map()), []);
 });
 test('promotion tags migrate with the release tag last', () => {
-  const all = promotionAliases(['frontend', 'backend', 'migrate'], sha(1), '0.0.5');
+  const all = promotionAliases(['frontend', 'backend', 'migrate', 'sfu-bridge'], sha(1), '0.0.5');
   const image = c => `ghcr.io/zli-uoa/zoo2-${c}`;
   assert.deepEqual(all, [
     [image('frontend'), 'latest', sha(1)], [image('frontend'), 'preview', `preview-${sha(1)}`],
-    [image('backend'), 'latest', sha(1)], [image('migrate'), 'latest', sha(1)],
-    [image('frontend'), '0.0.5', sha(1)], [image('backend'), '0.0.5', sha(1)], [image('migrate'), '0.0.5', sha(1)],
+    [image('backend'), 'latest', sha(1)], [image('migrate'), 'latest', sha(1)], [image('sfu-bridge'), 'latest', sha(1)],
+    [image('frontend'), '0.0.5', sha(1)], [image('backend'), '0.0.5', sha(1)], [image('sfu-bridge'), '0.0.5', sha(1)],
+    [image('migrate'), '0.0.5', sha(1)],
   ]);
-  // Flux は3つに同じタグを使うので、1つでも欠けていればリリースタグを付けない。
+  // Flux はすべてに同じタグを使うので、1つでも欠けていればリリースタグを付けない。
   assert.ok(promotionAliases(['migrate', 'backend'], sha(1), '0.0.5').every(([, tag]) => tag === 'latest'));
-  assert.ok(promotionAliases(['frontend', 'backend', 'migrate'], sha(1), '').every(([, tag]) => tag !== '0.0.5'));
+  assert.ok(promotionAliases(['frontend', 'backend', 'migrate'], sha(1), '0.0.5').every(([, tag]) => tag === 'latest' || tag === 'preview'));
+  assert.ok(promotionAliases(['frontend', 'backend', 'migrate', 'sfu-bridge'], sha(1), '').every(([, tag]) => tag !== '0.0.5'));
   // matrix の順に関係なく migrate を最後にする。
-  assert.deepEqual(promotionAliases(['migrate', 'backend', 'frontend'], sha(1), '0.0.5').at(-1), [image('migrate'), '0.0.5', sha(1)]);
+  assert.deepEqual(promotionAliases(['migrate', 'sfu-bridge', 'backend', 'frontend'], sha(1), '0.0.5').at(-1), [image('migrate'), '0.0.5', sha(1)]);
 });
 test('release tags must match the form Flux follows', () => {
   assert.ok(['0.0.1', '0.0.999999'].every(isReleaseTag));
@@ -115,8 +119,8 @@ test('PR plan uses head SHA, paginated whole-PR diff, and aliases unchanged comp
   assert.equal(fixture.outputs.sha, sha(1));
   assert.equal(fixture.outputs.pr, '7');
   assert.equal(fixture.outputs.release, '');
-  assert.deepEqual(JSON.parse(fixture.outputs.tags), {frontend: `pr-7-${sha(1)}`, backend: `pr-7-${sha(1)}`, migrate: `pr-7-${sha(1)}`});
-  assert.deepEqual(JSON.parse(fixture.outputs.aliases), [{component: 'frontend', source: `preview-${sha(98)}`}, {component: 'migrate', source: sha(98)}]);
+  assert.deepEqual(JSON.parse(fixture.outputs.tags), {frontend: `pr-7-${sha(1)}`, backend: `pr-7-${sha(1)}`, migrate: `pr-7-${sha(1)}`, 'sfu-bridge': `pr-7-${sha(1)}`});
+  assert.deepEqual(JSON.parse(fixture.outputs.aliases), [{component: 'frontend', source: `preview-${sha(98)}`}, {component: 'migrate', source: sha(98)}, {component: 'sfu-bridge', source: sha(98)}]);
   assert.deepEqual(JSON.parse(fixture.outputs.matrix), {include: [{component: 'backend'}]});
 });
 test('the promoted main commit comes from the latest alias, not the newest version', async () => {
@@ -133,7 +137,7 @@ test('renames include the original path; huge diffs build all images', async () 
   assert.deepEqual(JSON.parse(rename.outputs.matrix).include, [{component: 'backend'}]);
   const huge = planFixture({files: Array.from({length: 3000}, () => ({filename: 'docs/a.md'}))});
   await plan(huge);
-  assert.equal(JSON.parse(huge.outputs.matrix).include.length, 3);
+  assert.equal(JSON.parse(huge.outputs.matrix).include.length, 4);
   // すべてビルドする場合は別名がなく、main の SHA も調べない。
   assert.deepEqual(JSON.parse(huge.outputs.aliases), []);
   assert.equal(huge.readVersions(), false);
@@ -156,8 +160,17 @@ test('docs-only PR publishes nothing and does not read the main SHA', async () =
 test('pullRequestComponents covers renames and huge diffs', () => {
   assert.deepEqual(pullRequestComponents([{filename: 'docs/a.md'}]), []);
   assert.deepEqual(pullRequestComponents([{filename: 'docs/a.rs', previous_filename: 'backend/a.rs'}]), ['backend']);
-  assert.equal(pullRequestComponents(Array.from({length: 3000}, () => ({filename: 'docs/a.md'}))).length, 3);
+  assert.equal(pullRequestComponents(Array.from({length: 3000}, () => ({filename: 'docs/a.md'}))).length, 4);
 });
+test('Android-only inputs, test files and DB measurement tooling do not build app images', () => {
+  const paths = ['frontend/src/android-phone/engine.ts', 'frontend/vite.media-preview.config.ts',
+    'frontend/scripts/media-preview-bundle.test.mjs', 'infra/db/compare-phone-work.py', 'infra/db/erd.sh',
+    'frontend/e2e/oidc.spec.ts', 'frontend/src/components/Button.browser.test.tsx', 'backend/tests/apns_test.rs'];
+  assert.deepEqual(changedComponents(paths), []);
+  assert.equal(wantsPreview(paths.map(filename => ({ filename }))), false);
+  assert.deepEqual(changedComponents([...paths, 'frontend/src/lib/sip/controller.ts', 'infra/db/schema.sql']), ['frontend', 'migrate']);
+});
+
 test('wantsPreview needs a frontend change', () => {
   for (const filename of ['frontend/src/main.tsx', 'infra/Dockerfile-frontend-deploy', 'infra/frontend-nginx.conf', 'infra/csp-hashes.mjs', 'infra/frontend-entrypoint.sh']) {
     assert.equal(wantsPreview([{filename}]), true, filename);
@@ -182,8 +195,8 @@ test('hadPreviewChanges treats a truncated Compare diff as already previewed', (
 test('main plans all images with full SHA tags', async () => {
   const fixture = planFixture(); fixture.context.payload = {}; fixture.context.runNumber = 42;
   await plan(fixture);
-  assert.equal(JSON.parse(fixture.outputs.matrix).include.length, 3);
-  assert.deepEqual(Object.values(JSON.parse(fixture.outputs.tags)), [sha(99), sha(99), sha(99)]);
+  assert.equal(JSON.parse(fixture.outputs.matrix).include.length, 4);
+  assert.deepEqual(Object.values(JSON.parse(fixture.outputs.tags)), [sha(99), sha(99), sha(99), sha(99)]);
   assert.deepEqual(JSON.parse(fixture.outputs.aliases), []);
   assert.equal(fixture.outputs.pr, '');
   assert.equal(fixture.outputs.release, '0.0.42');
@@ -197,7 +210,7 @@ test('main compares against the last promotion so a later docs push retains pend
   } };
   await plan(fixture);
   assert.equal(fixture.outputs.enabled, 'true');
-  assert.equal(JSON.parse(fixture.outputs.matrix).include.length, 3);
+  assert.equal(JSON.parse(fixture.outputs.matrix).include.length, 4);
   fixture.github.rest.repos.compareCommitsWithBasehead = async () => ({ data: { status: 'ahead', files: [{ filename: 'docs/later.md' }] } });
   assert.equal(await mainRequiresImages(fixture.github, fixture.context.repo, sha(99)), false);
 });
@@ -218,6 +231,7 @@ test('an interrupted promotion cannot hide application changes on a rerun or lat
     frontend: ['latest', sha(99), '0.0.11'],
     // Reused backend bytes retain the old release and multiple commit tags.
     backend: ['latest', sha(98), sha(99), '0.0.10', '0.0.11'],
+    'sfu-bridge': ['latest', sha(98), sha(99), '0.0.10', '0.0.11'],
     migrate: ['latest', sha(98), sha(99), '0.0.10'],
   };
   fixture.github.paginate = async (_, params) => [version(1, tags[params.package_name.replace('zoo2-', '')])];

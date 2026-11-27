@@ -1,4 +1,16 @@
 {
+  "a11y": {
+    "skipToContent": "Skip to content"
+  },
+  "aboutZoo": {
+    "title": "About Zoo",
+    "version": "Version: {{version}}",
+    "versionUnknown": "Unknown"
+  },
+  "notFoundPage": {
+    "title": "Page not found",
+    "description": "The page you are looking for may have moved or no longer exists."
+  },
   "nav": {
     "main": "Main navigation"
   },
@@ -10,6 +22,10 @@
     "unread": "Unread messages",
     "editTitle": "Edit channel",
     "editHelp": "Use up to 80 letters, numbers, hyphens (-), or underscores (_) for the channel name. Spaces, emoji, other symbols, and reserved names are not allowed.",
+    "nameRequired": "Enter a channel name.",
+    "nameTooLong": "Use {{max}} characters or fewer for the channel name (currently {{length}}).",
+    "nameReserved": "'{{name}}' is a reserved name and cannot be used.",
+    "invalidName": "Channel names can only contain letters, numbers, hyphens (-), and underscores (_).",
     "saveName": "Save",
     "savingName": "Saving…",
     "title": "Channels",
@@ -44,6 +60,7 @@
     "notFound": "Channel not found.",
     "duplicateName": "A channel with this name already exists.",
     "privateMessages": "This channel is private. You can view messages once you are invited.",
+    "postingManagersOnly": "Only channel managers can post in this channel.",
     "back": "Back to channels",
     "noDescription": "No description yet",
     "visibilityHelp": "Anyone can join a public channel. Private channels are invite-only.",
@@ -122,8 +139,7 @@
     "candidates": "Member suggestions",
     "usersLoading": "Loading users…",
     "usersError": "Failed to load users.",
-    "usersEmpty": "No matching users.",
-    "back": "Back to channel"
+    "usersEmpty": "No matching users."
   },
   "moderation": {
     "archived": "Archived",
@@ -159,6 +175,11 @@
     "invalidState": "This action cannot be performed in the current state."
   },
   "settings": {
+    "appearance": "Appearance",
+    "interaction": "Gestures",
+    "swipeReply": "Swipe to reply",
+    "operationHaptics": "Haptic feedback",
+    "navTitle": "Settings",
     "admin": "Administrator",
     "member": "Member",
     "makeAdmin": "Make administrator",
@@ -198,13 +219,16 @@
     "description": "Select a channel from the list to view the conversation."
   },
   "messages": {
+    "loadingOlder": "Loading older messages…",
     "typing": "{{names}} typing…",
     "typingSeparator": ", ",
     "compose": "Write a message",
     "send": "Send",
     "edit": "Edit",
+    "editMessage": "Edit message",
     "delete": "Delete",
     "more": "More actions",
+    "actions": "Message actions",
     "editLabel": "Edit message",
     "loadError": "Failed to load messages",
     "retryHelp": "Check your connection and try again.",
@@ -224,9 +248,56 @@
     "copyRaw": "Copy original text",
     "copied": "Original text copied",
     "copyFailed": "Could not copy the original text",
-    "edited": "Edited"
+    "copyLink": "Copy message link",
+    "linkCopied": "Message link copied",
+    "linkCopyFailed": "Could not copy the message link",
+    "edited": "Edited",
+    "forward": "Forward message…",
+    "forwardTitle": "Forward this message",
+    "forwardSearchPlaceholder": "Search channels or members",
+    "forwardDestinationLabel": "Destination",
+    "forwardDestinationSelected": "Selected {{name}} as destination",
+    "forwardClearDestination": "Remove {{name}}",
+    "forwardNoDestinations": "No channels or DMs available to forward to",
+    "forwardCommentPlaceholder": "Add a message (optional)",
+    "forwardCommentLabel": "Comment",
+    "forwardPreviewLabel": "Forwarded message preview",
+    "forwardSubmit": "Forward",
+    "forwarding": "Forwarding…",
+    "forwarded": "Message forwarded",
+    "forwardedTo": "Forwarded to {{channel}}",
+    "forwardSourceUnavailable": "The original message does not exist or cannot be forwarded",
+    "forwardLoading": "Loading forwarded message",
+    "forwardDeleted": "This message was deleted",
+    "forwardUnavailable": "You don't have permission to view this message",
+    "forwardLoadError": "Couldn't load forwarded message",
+    "forwardSourceChannel": "Posted in {{channel}}",
+    "forwardSourceThread": "Reply in thread in {{channel}}",
+    "forwardQuoteLabel": "Forwarded message from {{author}}",
+    "forwardAttachmentCount_one": "{{count}} attachment",
+    "forwardAttachmentCount_other": "{{count}} attachments",
+    "forwardNestedCompact": "This post also includes a forwarded message",
+    "forwardNestedNote": "Includes another forwarded message · View original"
+  },
+  "channelLink": {
+    "inlineMessage": "{{name}}: {{channel}}",
+    "thread": "Thread in {{channel}}",
+    "encrypted": "This message is encrypted",
+    "messageUnavailable": "Unable to display this message",
+    "channelUnavailable": "Unable to display this channel",
+    "loading": "Loading the linked item",
+    "loadFailed": "Couldn't load the linked item",
+    "appMessage": "App message",
+    "attachments_one": "{{count}} attachment",
+    "attachments_other": "{{count}} attachments",
+    "privateChannel": "Private channel",
+    "encryptedChannel": "Encrypted channel"
   },
   "attachments": {
+    "recentPhotos": "Recent photos",
+    "systemPhotos": "Open photo picker",
+    "allowRecentPhotos": "Allow photo access",
+    "noRecentPhotos": "No photos available",
     "play": "Play",
     "pause": "Pause",
     "add": "Attach files",
@@ -245,11 +316,24 @@
     "download": "Download {{name}}",
     "downloadShort": "Download",
     "downloadError": "Could not download the file.",
+    "previewSaveUnsupported": "This file cannot be saved by the app. Open the link in a new tab to save it.",
+    "downloadSaved": "Saved as {{name}}.",
+    "downloadDestinationUnsupported": "This folder cannot be used to save the file. Choose another folder, or change the save location in Settings > Downloads.",
+    "downloadDestinationUnsupportedAskEveryTimeOff": "This folder cannot be used to save the file. Change the save location in Settings > Downloads, or turn on \"Ask where to save each time\".",
+    "downloadTooMany": "Too many downloads are running at once. Wait for the other downloads to finish, then try again.",
+    "downloading": "Downloading",
+    "saving": "Saving…",
+    "cancelDownload": "Cancel downloading {{name}}",
+    "cancelDownloadShort": "Cancel",
     "retry": "Try again",
     "sensitive": "Sensitive image",
     "markSensitive": "Mark images as sensitive",
     "showSensitive": "Show image",
     "hideSensitive": "Hide image",
+    "showSensitiveVideo": "Show video",
+    "hideSensitiveVideo": "Hide video",
+    "openOriginal": "Original file",
+    "imagePreviewFailed": "Could not load the image",
     "sensitiveShort": "Sensitive",
     "documentSummary": "Simplified text and cell preview. Formatting and layout may differ from the original.",
     "previewLimit": "This preview exceeds the size, file count or processing time limit. Download the file to view it.",
@@ -257,6 +341,8 @@
     "containedFiles": "Contained files",
     "previousPage": "Previous page",
     "nextPage": "Next page",
+    "pageNumber": "Page number",
+    "pdfPages": "PDF pages",
     "pdfPage": "PDF page {{page}}",
     "mail": {
       "subject": "Subject",
@@ -293,8 +379,18 @@
     "join": "Join thread",
     "leave": "Leave thread",
     "reopen": "Reopen",
-    "reopenOnSend": "Sending a reply will reopen this thread and join it.",
-    "membershipError": "Could not update thread participation."
+    "reopenOnSend": "Sending a reply will reopen this thread.",
+    "membershipError": "Could not update thread participation.",
+    "participants_one": "{{count}} participant",
+    "participants_other": "{{count}} participants",
+    "participantsMore": "and {{count}} more",
+    "participantsEmpty": "No participants",
+    "threadStarter": "Thread starter",
+    "participantsSearch": "Search by name",
+    "participantsFilterPartial": "Searching only the first {{loaded}} people loaded ({{count}} more can't be searched).",
+    "participantsDescription": "People who have joined this thread.",
+    "joinToReply": "Join the thread to reply.",
+    "reopenAndJoin": "Reopen and join"
   },
   "reactions": {
     "showUsers": "Show users who reacted with {{emoji}}",
@@ -328,9 +424,9 @@
     "noSearchResults": "No matching emojis",
     "tabEmoji": "Emoji",
     "tabKitchen": "Emoji Kitchen",
-    "emojiDescription": "Pick any emoji to react with.",
     "emojiLoading": "Loading emojis…",
     "recent": "Recent emojis",
+    "accountEmojiCategory": "Accounts",
     "skinTone": "Skin tone"
   },
   "theme": {
@@ -366,6 +462,8 @@
     "channels": "Channel suggestions"
   },
   "notifications": {
+    "filterAll": "All",
+    "filterMentions": "Mentions",
     "label": "Notifications",
     "close": "Dismiss notification",
     "title": "Notifications",
@@ -394,7 +492,8 @@
     "unreadStatus": "Unread",
     "readStatus": "Read",
     "actors_one": "{{actor}} and 1 other",
-    "actors_other": "{{actor}} and {{count}} others"
+    "actors_other": "{{actor}} and {{count}} others",
+    "forwardedPreview": "Forwarded a message"
   },
   "webhooks": {
     "title": "Webhook settings",
@@ -456,6 +555,19 @@
     "desktopTitle": "Notifications",
     "desktopValue": "System notifications",
     "desktopDescription": "The app shows mentions and DMs as system notifications. If notifications for zoo2 are turned off in your system settings, turn them on there as well."
+  },
+  "downloads": {
+    "desktopTitle": "Downloads",
+    "desktopDescription": "Where the app saves attachments. Choose whether to confirm the location each time, or save to a folder you set in advance.",
+    "askEveryTime": "Ask where to save each time",
+    "noFolder": "No folder selected",
+    "chooseFolder": "Choose folder",
+    "resetDirectory": "Clear folder and ask each time",
+    "olderAppValue": "The app's default folder",
+    "olderAppDescription": "This version of the app saves attachments to the folder chosen by the app. Update the app to change where files are saved.",
+    "loadError": "Could not load the save location settings.",
+    "retry": "Reload",
+    "error": "Could not change the download settings. Please try again."
   },
   "mfm": {
     "suggestions": "MFM suggestions",
@@ -563,6 +675,7 @@
     "micNotFound": "No microphone found."
   },
   "bubbleChat": {
+    "navTitle": "Bubble",
     "title": "Bubble Chat",
     "description": "A room where text appears in real time as you type",
     "emptyTitle": "No one is typing right now",
@@ -776,10 +889,12 @@
     "showLess": "Show less"
   },
   "home": {
+    "navTitle": "Home",
     "back": "Back",
     "deleted": "Post deleted",
     "newPosts": "View new posts ({{count}})",
     "quotedPost": "Quoted post",
+    "postUnavailable": "This post can’t be displayed",
     "quoteUnavailable": "This quoted post is unavailable",
     "openQuotedPost": "Open quoted post",
     "image": "Image",
@@ -791,6 +906,7 @@
     "post": "Post",
     "sending": "Posting…",
     "sendError": "Could not post. Your draft is still here; try again.",
+    "postForbidden": "You can't post in this channel.",
     "loadError": "Could not load the timeline.",
     "loading": "Loading…",
     "empty": "No posts yet",
@@ -809,6 +925,7 @@
       "unlisted": "Home",
       "followers": "Followers only"
     },
+    "followersAudience": "Followers",
     "audienceHint": {
       "local": "Visible inside Zoo only. Not delivered to other servers.",
       "public": "Anyone can read this. Delivered to remote followers.",
@@ -842,6 +959,7 @@
     "userSearch": "Search users",
     "search": "Search",
     "noUsers": "No users found",
+    "openAuthorProfile": "Open profile for {{author}}",
     "userDetails": "User details",
     "joinedAt": "Joined: {{date}}",
     "pullRefresh": "Pull to refresh",
@@ -1691,6 +1809,15 @@
     "empty": "No public channels are available.",
     "saved": "Saved."
   },
+  "androidUpdate": {
+    "title": "App updates"
+  },
+  "androidNavigationCache": {
+    "title": "Navigation cache",
+    "description": "Sets the number of entries kept in memory for Home, post details and profiles, and separately for channels.",
+    "off": "Off",
+    "entries": "{{count}} entries"
+  },
   "androidNotifications": {
     "enable": "Enable notifications",
     "scope": "Receive new notifications while your signed-in session is syncing.",
@@ -1799,11 +1926,89 @@
   "androidPhone": {
     "description": "Use personal or shared SIP lines and DM voice calls with your device’s calling features.",
     "nativeCalls": "Device call integration",
-    "nativeHelp": "Enabling incoming calls keeps a connection with an ongoing notification. Answer, end calls and route audio using device call controls. Microphone permission is required.",
+    "nativeHelp": "A call notification appears when a call comes in. Allow notifications to receive DM calls in the background on supported devices. Keep Zoo open in the foreground while waiting for SIP calls or for DM calls on devices without FCM. Device call controls support answering, ending calls and routing audio. Microphone permission is required.",
+    "minimizeCall": "Minimize",
+    "expandCall": "Expand call",
+    "floatCall": "Picture-in-picture",
+    "pipUnavailable": "Check Picture-in-picture in Android settings.",
+    "incomingScreenSettings": "Full-screen call settings",
     "receiveDm": "Receive DM calls",
     "callError": "Could not prepare or control the call. Check microphone permission, device calling support, network and line configuration.",
     "speaker": "Speaker",
     "waiting": "Waiting for incoming calls",
     "dmCall": "Call"
+  },
+  "globalSearch": {
+    "title": "Search",
+    "placeholder": "Search messages and files",
+    "kinds": {
+      "all": "All",
+      "messages": "Messages",
+      "files": "Files"
+    },
+    "prompt": "Type the words to search for. Separate words with spaces to find results containing all of them.",
+    "empty": "No results.",
+    "emptyOlder": "No results through {{month}}. You can search further back.",
+    "searchedUntil": "Searched through {{month}}",
+    "searchOlder": "Search older results",
+    "loading": "Searching…",
+    "loadError": "Search failed.",
+    "retry": "Retry",
+    "tooManyTerms": "You can search for up to {{max}} words. Remove some words and try again.",
+    "termTooLong": "Each word can be up to {{max}} characters. Shorten the word and try again.",
+    "encryptedNote": "Encrypted channels are not included in search.",
+    "openNav": "Search",
+    "inThread": "Thread reply",
+    "filters": {
+      "label": "Filters",
+      "from": "From",
+      "in": "In",
+      "kind": "Type",
+      "period": "Date",
+      "anytime": "Any time",
+      "last7": "Last 7 days",
+      "last30": "Last 30 days",
+      "last365": "Last year",
+      "custom": "Custom range",
+      "after": "From date",
+      "before": "To date",
+      "reversed": "The start date must be on or before the end date.",
+      "reset": "Reset filters",
+      "me": "{{name}} (you)",
+      "searchPeople": "Search by name",
+      "searchChannels": "Search channels",
+      "noMatches": "No matches",
+      "clearSelection": "Clear selection",
+      "selectedCount": "{{label}}: {{count}}",
+      "max": "You can choose up to {{count}}",
+      "mine": "Involving me",
+      "noBots": "Exclude bots"
+    }
+  },
+  "catchUp": {
+    "navUnread_one": "{{count}} unread conversation to catch up",
+    "navUnread_other": "{{count}} unread conversations to catch up",
+    "title": "Catch up",
+    "close": "Done",
+    "count_one": "{{count}} unread message",
+    "count_other": "{{count}} unread messages",
+    "overCount_one": "{{count}}+ unread messages",
+    "overCount_other": "{{count}}+ unread messages",
+    "progress": "{{current}} / {{total}}",
+    "markRead": "Mark as read",
+    "keepUnread": "Keep unread",
+    "readError": "Could not mark this conversation as read. Please try again.",
+    "loadError": "Could not load unread conversations",
+    "retry": "Retry",
+    "loading": "Loading unread conversations",
+    "empty": "No unread conversations",
+    "emptyDescription": "Check back when new messages arrive",
+    "complete": "All caught up",
+    "summary": "{{read}} marked read · {{skipped}} left unread",
+    "refresh": "Refresh",
+    "conversation": "Conversation",
+    "unreadTooOld": "Some older unread messages are still outside the loaded range. Load more before marking as read.",
+    "loadMore": "Load more",
+    "unreadChanged": "New unread messages arrived while reading. Keep this conversation unread and continue."
   }
 }

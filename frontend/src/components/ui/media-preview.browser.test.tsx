@@ -1,31 +1,256 @@
 import type { ReactNode } from "react";
 import { render as renderComponent, screen, fireEvent, waitFor } from "@testing-library/react";
-import { expect, it } from "vite-plus/test";
+import userEvent from "@testing-library/user-event";
+import { expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser/context";
 import pdfUrl from "../../../.storybook/fixtures/media.pdf?url";
 import { MediaPreview } from "./media-preview";
 import "../../styles.css";
+import { resetDesktopForTest } from "../../lib/desktop";
+import { resetDesktopDownloadsForTest } from "../../lib/desktopDownloads";
+import { afterEach } from "vite-plus/test";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  delete (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  resetDesktopForTest();
+  resetDesktopDownloadsForTest();
+});
+
 import { LocaleProvider } from "../i18n/LocaleProvider";
 
 const render = (element: ReactNode) => renderComponent(<LocaleProvider>{element}</LocaleProvider>);
 
-it.each([390, 1280])("defers PDF loading and fits the viewer at %ipx", async (width) => {
-  await page.viewport(width, 844);
-  const view = render(
-    <div style={{ width: 280 }}>
-      <MediaPreview src={pdfUrl} name="Report" contentType="application/pdf" />
-    </div>,
+it.each([390, 1280])(
+  "defers PDF loading and supports vertical scroll, page buttons, and page jump at %ipx",
+  async (width) => {
+    await page.viewport(width, 844);
+    const user = userEvent.setup();
+    const view = render(
+      <div style={{ width: 280 }}>
+        <MediaPreview src={pdfUrl} name="Report" contentType="application/pdf" />
+      </div>,
+    );
+    expect(view.container.querySelector("canvas")).toBeNull();
+    fireEvent.click(screen.getByRole("button"));
+    const dialog = await screen.findByRole("dialog");
+    const canvas = dialog.querySelector("canvas")!;
+    await waitFor(() => expect(canvas.width).toBeGreaterThan(300), { timeout: 10_000 });
+    expect(canvas.getBoundingClientRect().width).toBeGreaterThan(280);
+
+    const scrollRegion = screen.getByRole("region", { name: "PDFページ一覧" });
+    const pageInput = screen.getByRole("textbox", { name: "ページ番号" }) as HTMLInputElement;
+    const prev = screen.getByRole("button", { name: "前のページ" });
+    const next = screen.getByRole("button", { name: "次のページ" });
+    await waitFor(() => expect(next).not.toBeDisabled(), { timeout: 10_000 });
+    expect(prev).toBeDisabled();
+    expect(pageInput.value).toBe("1");
+    expect(dialog.textContent).toContain("/ 12");
+
+    // Pages are stacked vertically in continuous order.
+    const slot1 = dialog.querySelector('[data-pdf-page="1"]')!;
+    const slot2 = dialog.querySelector('[data-pdf-page="2"]')!;
+    expect(slot2.getBoundingClientRect().top).toBeGreaterThan(slot1.getBoundingClientRect().bottom);
+
+    // Previous / Next buttons step across pages.
+    await user.click(next);
+    await waitFor(() => expect(pageInput.value).toBe("2"), { timeout: 10_000 });
+    await waitFor(
+      () =>
+        expect(
+          (dialog.querySelector('[data-pdf-page="2"] canvas') as HTMLCanvasElement | null)?.width,
+        ).toBeGreaterThan(300),
+      { timeout: 10_000 },
+    );
+
+    await user.click(prev);
+    await waitFor(() => expect(pageInput.value).toBe("1"), { timeout: 10_000 });
+
+    // Vertical scroll switches the current page and renders newly visible pages.
+    const slot3 = dialog.querySelector('[data-pdf-page="3"]') as HTMLElement;
+    scrollRegion.scrollTop = slot3.offsetTop;
+    fireEvent.scroll(scrollRegion);
+    await waitFor(() => expect(pageInput.value).toBe("3"), { timeout: 10_000 });
+    await waitFor(
+      () =>
+        expect(
+          (dialog.querySelector('[data-pdf-page="3"] canvas') as HTMLCanvasElement | null)?.width,
+        ).toBeGreaterThan(300),
+      { timeout: 10_000 },
+    );
+
+    // Typing a page number and pressing Enter jumps directly and releases far off-screen canvases.
+    await user.click(pageInput);
+    await user.keyboard("10{Enter}");
+    await waitFor(() => expect(pageInput.value).toBe("10"), { timeout: 10_000 });
+    await waitFor(
+      () =>
+        expect(
+          (dialog.querySelector('[data-pdf-page="10"] canvas') as HTMLCanvasElement | null)?.width,
+        ).toBeGreaterThan(300),
+      { timeout: 10_000 },
+    );
+    expect(dialog.querySelector('[data-pdf-page="1"] canvas')).toBeNull();
+
+    // Out-of-range numbers clamp cleanly and Previous page still steps back from the bottom.
+    await user.click(pageInput);
+    await user.keyboard("99{Enter}");
+    await waitFor(() => expect(pageInput.value).toBe("12"), { timeout: 10_000 });
+    expect(next).toBeDisabled();
+    await user.click(prev);
+    await waitFor(() => expect(pageInput.value).toBe("11"), { timeout: 10_000 });
+
+    // Invalid input reverts on blur, while clicking Prev/Next does not commit draft digits.
+    await user.click(pageInput);
+    await user.keyboard("abc");
+    scrollRegion.focus();
+    await waitFor(() => expect(pageInput.value).toBe("11"));
+
+    await user.click(pageInput);
+    await user.keyboard("2");
+    await user.click(prev);
+    await waitFor(() => expect(pageInput.value).toBe("10"), { timeout: 10_000 });
+
+    // Blurring after typing a valid number jumps (needed on touch numeric keypads without Enter).
+    await user.click(pageInput);
+    await user.keyboard("4");
+    scrollRegion.focus();
+    await waitFor(() => expect(pageInput.value).toBe("4"), { timeout: 10_000 });
+  },
+);
+
+it("does not jump while IME composition is active", async () => {
+  render(<MediaPreview src={pdfUrl} name="Report" contentType="application/pdf" initialOpen />);
+  const pageInput = (await screen.findByRole("textbox", {
+    name: "ページ番号",
+  })) as HTMLInputElement;
+  await waitFor(() => expect(pageInput).not.toBeDisabled(), { timeout: 10_000 });
+
+  fireEvent.focus(pageInput);
+  fireEvent.compositionStart(pageInput);
+  fireEvent.change(pageInput, { target: { value: "5" } });
+  fireEvent.keyDown(pageInput, { key: "Enter", isComposing: true });
+  fireEvent.submit(pageInput.closest("form")!);
+  expect(pageInput.value).toBe("5");
+  expect(screen.getByRole("button", { name: "前のページ" })).toBeDisabled();
+
+  fireEvent.compositionEnd(pageInput);
+  // Safari では compositionend が先に来ても keyCode 229 が残る。
+  fireEvent.keyDown(pageInput, { key: "Enter", isComposing: false, keyCode: 229 });
+  fireEvent.submit(pageInput.closest("form")!);
+  expect(pageInput.value).toBe("5");
+  expect(screen.getByRole("button", { name: "前のページ" })).toBeDisabled();
+
+  fireEvent.keyDown(pageInput, { key: "Enter", isComposing: false });
+  fireEvent.submit(pageInput.closest("form")!);
+  await waitFor(
+    () => expect(screen.getByRole("button", { name: "前のページ" })).not.toBeDisabled(),
+    { timeout: 10_000 },
   );
-  expect(view.container.querySelector("canvas")).toBeNull();
-  fireEvent.click(screen.getByRole("button"));
-  const dialog = await screen.findByRole("dialog");
-  const canvas = dialog.querySelector("canvas")!;
-  await waitFor(() => expect(canvas.width).toBeGreaterThan(300), { timeout: 10_000 });
-  expect(canvas.getBoundingClientRect().width).toBeGreaterThan(280);
+});
+
+it("treats keyCode 229 without a recent composition as a normal Enter", async () => {
+  await page.viewport(1280, 844);
+  render(<MediaPreview src={pdfUrl} name="Report" contentType="application/pdf" initialOpen />);
+  const pageInput = (await screen.findByRole("textbox", {
+    name: "ページ番号",
+  })) as HTMLInputElement;
+  await waitFor(() => expect(pageInput).not.toBeDisabled(), { timeout: 10_000 });
+
+  await userEvent.clear(pageInput);
+  await userEvent.type(pageInput, "5");
+  fireEvent.keyDown(pageInput, { key: "Enter", isComposing: false, keyCode: 229 });
+  fireEvent.submit(pageInput.closest("form")!);
+  await waitFor(() => expect(pageInput.value).toBe("5"), { timeout: 10_000 });
+  // 入力欄の値だけではジャンプせずにも通るため、実際に5ページへ移動したことを確認する。
+  fireEvent.click(screen.getByRole("button", { name: "前のページ" }));
+  await waitFor(() => expect(pageInput.value).toBe("4"), { timeout: 10_000 });
+});
+
+it("jumps on Enter even with full-width digits and surrounding spaces", async () => {
+  await page.viewport(1280, 844);
+  render(<MediaPreview src={pdfUrl} name="Report" contentType="application/pdf" initialOpen />);
+  const pageInput = (await screen.findByRole("textbox", {
+    name: "ページ番号",
+  })) as HTMLInputElement;
+  await waitFor(() => expect(pageInput).not.toBeDisabled(), { timeout: 10_000 });
+
+  await userEvent.clear(pageInput);
+  await userEvent.type(pageInput, " １２ ");
+  await userEvent.keyboard("{Enter}");
+  await waitFor(() => expect(pageInput.value).toBe("12"), { timeout: 10_000 });
+});
+
+it("commits the draft page when tab moves focus to a page button", async () => {
+  await page.viewport(1280, 844);
+  render(<MediaPreview src={pdfUrl} name="Report" contentType="application/pdf" initialOpen />);
+  const pageInput = (await screen.findByRole("textbox", {
+    name: "ページ番号",
+  })) as HTMLInputElement;
+  await waitFor(() => expect(pageInput).not.toBeDisabled(), { timeout: 10_000 });
+
+  await userEvent.clear(pageInput);
+  await userEvent.type(pageInput, "5");
+  await userEvent.tab();
+  await waitFor(() => expect(pageInput.value).toBe("5"), { timeout: 10_000 });
+  expect(screen.getByRole("button", { name: "前のページ" })).not.toBeDisabled();
+});
+
+it("discards the draft on a touch tap in the same order as pointerup, blur, click", async () => {
+  await page.viewport(1280, 844);
+  render(<MediaPreview src={pdfUrl} name="Report" contentType="application/pdf" initialOpen />);
+  const pageInput = (await screen.findByRole("textbox", {
+    name: "ページ番号",
+  })) as HTMLInputElement;
+  await waitFor(() => expect(pageInput).not.toBeDisabled(), { timeout: 10_000 });
+
+  await userEvent.clear(pageInput);
+  await userEvent.type(pageInput, "10{Enter}");
+  await waitFor(() => expect(pageInput.value).toBe("10"), { timeout: 10_000 });
+  await userEvent.clear(pageInput);
+  await userEvent.type(pageInput, "2");
+
+  const prev = screen.getByRole("button", { name: "前のページ" });
+  fireEvent.pointerDown(prev);
+  fireEvent.pointerUp(window);
+  fireEvent.blur(pageInput);
+  fireEvent.click(prev);
+  await waitFor(() => expect(pageInput.value).toBe("9"), { timeout: 10_000 });
+});
+
+it("keeps the draft when a touch scroll cancels the page-button press", async () => {
+  await page.viewport(1280, 844);
+  render(<MediaPreview src={pdfUrl} name="Report" contentType="application/pdf" initialOpen />);
+  const pageInput = (await screen.findByRole("textbox", {
+    name: "ページ番号",
+  })) as HTMLInputElement;
+  await waitFor(() => expect(pageInput).not.toBeDisabled(), { timeout: 10_000 });
+
+  await userEvent.clear(pageInput);
+  await userEvent.type(pageInput, "5");
   const next = screen.getByRole("button", { name: "次のページ" });
-  await waitFor(() => expect(next).not.toBeDisabled(), { timeout: 10_000 });
-  fireEvent.click(next);
-  await screen.findByText("2 / 12");
+  fireEvent.pointerDown(next);
+  fireEvent.pointerCancel(next);
+  fireEvent.blur(pageInput);
+  await waitFor(() => expect(pageInput.value).toBe("5"), { timeout: 10_000 });
+  expect(screen.getByRole("button", { name: "前のページ" })).not.toBeDisabled();
+});
+
+it("resets a stale page-button press when the input regains focus", async () => {
+  await page.viewport(1280, 844);
+  render(<MediaPreview src={pdfUrl} name="Report" contentType="application/pdf" initialOpen />);
+  const pageInput = (await screen.findByRole("textbox", {
+    name: "ページ番号",
+  })) as HTMLInputElement;
+  await waitFor(() => expect(pageInput).not.toBeDisabled(), { timeout: 10_000 });
+
+  fireEvent.pointerDown(screen.getByRole("button", { name: "次のページ" }));
+  fireEvent.pointerUp(window);
+  await userEvent.click(pageInput);
+  await userEvent.type(pageInput, "5");
+  fireEvent.blur(pageInput);
+  await waitFor(() => expect(pageInput.value).toBe("5"), { timeout: 10_000 });
 });
 
 it.each(["video/mp4", "audio/mpeg"])("provides controls without autoplay for %s", (contentType) => {

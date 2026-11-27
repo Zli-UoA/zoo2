@@ -1,7 +1,10 @@
-// Publish images（cd-images.yaml）の plan ジョブから呼ぶ。ビルドするコンポーネントと、付けるイメージタグを決める。
-export const components = ['frontend', 'backend', 'migrate'];
+import { isAndroidFrontendOnly } from './frontend-test-selection-paths.mjs';
 
-// main の昇格で3つのイメージに共通して付けるリリースタグ。zoo2-infra の Flux Operator が semver で最新を選ぶので、
+// Publish images（cd-images.yaml）の plan ジョブから呼ぶ。ビルドするコンポーネントと、付けるイメージタグを決める。
+// sfu-bridge は通話の SFU の中継（docs/calls-sfu.md）。ほかと同じリリースタグで Flux が配る。
+export const components = ['frontend', 'backend', 'migrate', 'sfu-bridge'];
+
+// main の昇格ですべてのイメージに共通して付けるリリースタグ。zoo2-infra の Flux Operator が semver で最新を選ぶので、
 // ワークフローの実行番号を patch に入れる。実行番号は実行ごとに増え、同じ実行の再実行では変わらない。
 export const releaseTag = runNumber => `0.0.${runNumber}`;
 
@@ -10,8 +13,8 @@ export const isReleaseTag = tag => /^0\.0\.[1-9][0-9]*$/.test(tag);
 
 // 昇格で付けるタグを、付ける順に返す。各要素は [イメージ, 付けるタグ, 元のタグ]。
 // latest・preview を先に付け替え、リリースタグは最後に付ける。zoo2-infra は migrate のリリースタグだけを見るので、
-// migrate を最後にして、そのタグが見えた時点でほかの2つにも同じタグが付いているようにする。
-// Flux は3つすべてに同じタグを使うため、3つすべてをビルドした場合だけリリースタグを付ける。
+// migrate を最後にして、そのタグが見えた時点でほかのイメージにも同じタグが付いているようにする。
+// Flux はすべてに同じタグを使うため、すべてをビルドした場合だけリリースタグを付ける。
 export function promotionAliases(selected, sha, release) {
   const image = component => `ghcr.io/zli-uoa/zoo2-${component}`;
   const aliases = selected.flatMap(component => [
@@ -37,13 +40,20 @@ export function changedComponents(files) {
 // infra/Dockerfile-frontend-deploy が frontend/ のほかに COPY するファイル。
 const frontendInfraFiles = ['infra/frontend-nginx.conf', 'infra/csp-hashes.mjs', 'infra/frontend-entrypoint.sh'];
 
+// Migration image COPY inputs from infra/Dockerfile-migrate-deploy.
+const migrationFiles = ['infra/db/atlas.hcl', 'infra/db/schema.sql', 'infra/db/migrate.sh'];
+
 // コンポーネント自身のソースと Dockerfile のファイルか。ビルド用の共有ファイルは含まない。
 function componentFile(c, f) {
+  if (c === 'frontend' && (isAndroidFrontendOnly(f) || f.startsWith('frontend/e2e/') ||
+      /^frontend\/playwright\..+\.config\.ts$/.test(f) ||
+      /^frontend\/(?:src|scripts)\/.+\.test\.(?:ts|tsx|mjs)$/.test(f))) return false;
+  if (c === 'backend' && f.startsWith('backend/tests/')) return false;
   return f.startsWith(`infra/Dockerfile-${c}-deploy`) ||
-    (c === 'migrate' ? f.startsWith('infra/db/') : f.startsWith(`${c}/`)) ||
+    (c === 'migrate' ? (f.startsWith('infra/db/migrations/') || migrationFiles.includes(f)) : f.startsWith(`${c}/`)) ||
     (c === 'frontend' && frontendInfraFiles.includes(f)) ||
     (c === 'frontend' && (f.startsWith('crates/zoo-crypto/') || f.startsWith('crates/zoo-crypto-wasm/') || f === 'rust-toolchain.toml')) ||
-    (c === 'backend' && (f === 'docs/slack-event-coverage.json' || f.startsWith('crates/zoo-crypto/') || f.startsWith('crates/zoo-components/')));
+    (c === 'backend' && (f === 'docs/slack-event-coverage.json' || f === 'frontend/src/lib/emoji/emoji-kitchen.json' || f.startsWith('crates/zoo-crypto/') || f.startsWith('crates/zoo-components/')));
 }
 
 const fileNames = files => files.flatMap(f => [f.filename, f.previous_filename].filter(Boolean));
@@ -90,7 +100,7 @@ export async function mainRequiresImages(github, repo, sha) {
     const common = latest[0].filter(tag => latest.every(tags => tags.includes(tag)));
     // latest aliases move before the terminal migrate release tag. An
     // interrupted promotion must not become a checkpoint for a later push.
-    // Require all three latest manifests to share a completed release and SHA.
+    // Require every latest manifest to share a completed release and SHA.
     if (!common.some(isReleaseTag)) return true;
     promoted = common.find(tag => /^[a-f0-9]{40}$/.test(tag));
     if (!promoted) return true;

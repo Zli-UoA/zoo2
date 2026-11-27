@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
-    matchers::{header, method, path, query_param},
+    matchers::{body_string_contains, header, method, path, query_param},
 };
 
 use backend::{
@@ -368,4 +368,630 @@ async fn test_user_imports_own_private_channel_through_the_api() -> anyhow::Resu
     .await?;
     assert_eq!(status, StatusCode::CONFLICT);
     Ok(())
+}
+
+#[tokio::test]
+async fn api_import_rechecks_guest_kind_after_waiting_for_user_lock() -> anyhow::Result<()> {
+    let key = [9u8; 32];
+    let team = format!("TLOCK{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let slack = MockServer::start().await;
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.client_id = Some("cid".into());
+    config.slack.client_secret = Some("sec".into());
+    config.slack.team_id = Some(team.clone());
+    config.slack.oauth_redirect_url = Some("https://zoo.example/api/slack/oauth/callback".into());
+    config.slack.token_encryption_key = Some(base64::engine::general_purpose::STANDARD.encode(key));
+    config.slack.api_base_url = slack.uri();
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db, config.clone());
+    let app = create_router(state.clone());
+    let alice = create_user(&app, "api_import_guest_race").await?;
+    link(
+        &state,
+        &key,
+        &alice,
+        &team,
+        "UA",
+        "xoxp-race",
+        PRIVATE_SCOPES,
+    )
+    .await?;
+    sql(
+        &state,
+        "INSERT INTO slack_users(team_id,slack_user_id,user_id,linked) VALUES($1,'UA',$2,true) RETURNING json_build_object('ok',true)::text",
+        &[&team, &alice],
+    )
+    .await?;
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .and(query_param("channel", "GLOCKRACE"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "channel": {"id":"GLOCKRACE", "name":"race", "creator":"UA", "created":1704067200,
+                "is_private":true, "purpose":{"value":""}},
+        })))
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.members"))
+        .and(query_param("channel", "GLOCKRACE"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true, "members":["UA"], "response_metadata":{"next_cursor":""},
+        })))
+        .mount(&slack)
+        .await;
+
+    // The ordinary guest reads in both API-import phases see the committed human
+    // version. Once the import reaches its membership lock, the transition owns
+    // the row and must be observed after it commits.
+    let (mut transition_connection, transition_driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(transition_driver);
+    let transition_pid: i32 = transition_connection
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
+    let transition = transition_connection.transaction().await?;
+    transition
+        .execute(
+            "UPDATE users SET guest_kind = 'multi' WHERE id = $1",
+            &[&alice],
+        )
+        .await?;
+
+    let import_app = app.clone();
+    let import_user = alice.clone();
+    let mut import = Some(tokio::spawn(async move {
+        request(
+            &import_app,
+            "POST",
+            "/api/slack/private-channels/import",
+            &import_user,
+            Some(json!({"slack_channel_id":"GLOCKRACE", "name":"race"})),
+        )
+        .await
+    }));
+    let (observer, observer_driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(observer_driver);
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if import.as_ref().unwrap().is_finished() {
+                let result = import.take().unwrap().await;
+                panic!("Slack API import finished before waiting for the guest-kind lock: {result:?}");
+            }
+            let waiting: bool = observer
+                .query_one(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%FOR NO KEY UPDATE%' AND $1 = ANY(pg_blocking_pids(pid)))",
+                    &[&transition_pid],
+                )
+                .await?
+                .get(0);
+            if waiting {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        Ok::<(), tokio_postgres::Error>(())
+    })
+    .await??;
+
+    transition.commit().await?;
+    let (status, body) =
+        tokio::time::timeout(std::time::Duration::from_secs(10), import.take().unwrap())
+            .await???;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let imported = sql(
+        &state,
+        "SELECT json_build_object('n',count(*))::text FROM slack_channels WHERE team_id=$1 AND slack_channel_id='GLOCKRACE'",
+        &[&team],
+    )
+    .await?;
+    assert_eq!(
+        imported[0]["n"], 0,
+        "guest must not create an imported channel"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn api_import_racing_slack_link_adds_the_linked_user_to_the_channel() -> anyhow::Result<()> {
+    let key = [10u8; 32];
+    let team = format!("TLINK{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let slack = MockServer::start().await;
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.client_id = Some("cid".into());
+    config.slack.client_secret = Some("sec".into());
+    config.slack.team_id = Some(team.clone());
+    config.slack.oauth_redirect_url = Some("https://zoo.example/api/slack/oauth/callback".into());
+    config.slack.token_encryption_key = Some(base64::engine::general_purpose::STANDARD.encode(key));
+    config.slack.api_base_url = slack.uri();
+    let db = backend::db::init_db_with_pool(
+        &config.database_url,
+        backend::db::configured_max_pool_size().max(2),
+    )
+    .await?;
+    let state = AppState::new(db, config.clone());
+    let app = create_router(state.clone());
+    let alice = create_user(&app, "api_link_race_alice").await?;
+    let bob = create_user(&app, "api_link_race_bob").await?;
+    link(
+        &state,
+        &key,
+        &alice,
+        &team,
+        "UA",
+        "xoxp-alice",
+        PRIVATE_SCOPES,
+    )
+    .await?;
+    sql(
+        &state,
+        "INSERT INTO slack_users(team_id,slack_user_id,user_id,linked) VALUES($1,'UA',$2,true) RETURNING json_build_object('ok',true)::text",
+        &[&team, &alice],
+    )
+    .await?;
+    let placeholder = backend::slack::user_id(&team, "UB");
+    sql(
+        &state,
+        "INSERT INTO users(id,user_name,display_name,guest_kind) VALUES($1,$2,'Slack placeholder','deactivated') RETURNING json_build_object('ok',true)::text",
+        &[&placeholder, &format!("api_link_race_{}", uuid::Uuid::new_v4().simple())],
+    )
+    .await?;
+    sql(
+        &state,
+        "INSERT INTO slack_users(team_id,slack_user_id,user_id,linked) VALUES($1,'UB',$2,false) RETURNING json_build_object('ok',true)::text",
+        &[&team, &placeholder],
+    )
+    .await?;
+
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .and(query_param("channel", "GLINKRACE"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "channel": {"id":"GLINKRACE", "name":"link-race", "creator":"UA", "created":1704067200,
+                "is_private":true, "purpose":{"value":""}},
+        })))
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.members"))
+        .and(query_param("channel", "GLINKRACE"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true, "members":["UA", "UB"], "response_metadata":{"next_cursor":""},
+        })))
+        .mount(&slack)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/oauth.v2.access"))
+        .and(header("authorization", "Basic Y2lkOnNlYw=="))
+        .and(body_string_contains("code=code-bob"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok":true,
+            "authed_user":{"id":"UB", "scope":"users:read", "access_token":"xoxp-bob", "token_type":"user"},
+            "team":{"id":team, "name":"Zli"},
+        })))
+        .mount(&slack)
+        .await;
+
+    let (status, started) = request(&app, "POST", "/api/slack/oauth/start", &bob, None).await?;
+    assert_eq!(status, StatusCode::OK);
+    let authorize_url = reqwest::Url::parse(started["authorize_url"].as_str().unwrap())?;
+    let oauth_state = authorize_url
+        .query_pairs()
+        .find(|(name, _)| name == "state")
+        .map(|(_, value)| value.into_owned())
+        .unwrap();
+    let channel_name = format!("link_race_{}", uuid::Uuid::new_v4().simple());
+
+    // Queue link first on the placeholder row. Without a shared Slack-link lock, the API
+    // resolves the old placeholder behind this link and can insert that stale ID after
+    // reassign has already moved the placeholder's existing memberships.
+    let (mut blocker_connection, blocker_driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(blocker_driver);
+    let blocker_pid: i32 = blocker_connection
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
+    let blocker = blocker_connection.transaction().await?;
+    blocker
+        .query_one(
+            "SELECT id FROM users WHERE id=$1 FOR UPDATE",
+            &[&placeholder],
+        )
+        .await?;
+
+    let link_app = app.clone();
+    let link_user = bob.clone();
+    let link_task = tokio::spawn(async move {
+        request(
+            &link_app,
+            "POST",
+            "/api/slack/oauth/complete",
+            &link_user,
+            Some(json!({"code":"code-bob", "state":oauth_state})),
+        )
+        .await
+    });
+    let (observer, observer_driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(observer_driver);
+    let link_pid = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let row = observer
+                .query_opt(
+                    "SELECT pid FROM pg_stat_activity WHERE wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%FOR NO KEY UPDATE%' LIMIT 1",
+                    &[&blocker_pid],
+                )
+                .await?;
+            if let Some(row) = row {
+                break Ok::<i32, anyhow::Error>(row.get(0));
+            }
+            if link_task.is_finished() {
+                anyhow::bail!("Slack link finished before waiting on the placeholder row");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await??;
+
+    let import_app = app.clone();
+    let import_user = alice.clone();
+    let import_task = tokio::spawn(async move {
+        request(
+            &import_app,
+            "POST",
+            "/api/slack/private-channels/import",
+            &import_user,
+            Some(json!({"slack_channel_id":"GLINKRACE", "name":channel_name})),
+        )
+        .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if link_task.is_finished() || import_task.is_finished() {
+                anyhow::bail!("an API operation finished before the placeholder lock was released");
+            }
+            let import_waiting: bool = observer
+                .query_one(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid<>$3 AND wait_event_type='Lock' AND ($1=ANY(pg_blocking_pids(pid)) OR $2=ANY(pg_blocking_pids(pid))))",
+                    &[&blocker_pid, &link_pid, &link_pid],
+                )
+                .await?
+                .get(0);
+            if import_waiting {
+                break Ok::<(), anyhow::Error>(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await??;
+
+    blocker.commit().await?;
+    let (link_status, link_body) =
+        tokio::time::timeout(std::time::Duration::from_secs(10), link_task).await???;
+    assert_eq!(link_status, StatusCode::OK, "{link_body}");
+    let (import_status, imported) =
+        tokio::time::timeout(std::time::Duration::from_secs(10), import_task).await???;
+    assert_eq!(import_status, StatusCode::OK, "{imported}");
+    let channel = imported["channel_id"].as_str().unwrap();
+    let memberships = sql(
+        &state,
+        "SELECT json_build_object('user_id',user_id)::text FROM channel_user WHERE channel_id=$1 AND user_id IN ($2,$3) ORDER BY user_id",
+        &[channel, &bob, &placeholder],
+    )
+    .await?;
+    assert_eq!(
+        memberships.len(),
+        1,
+        "the channel must have one of the linked identities"
+    );
+    assert_eq!(memberships[0]["user_id"], bob);
+    Ok(())
+}
+
+/// API 取り込みは、ZIP 取り込みと同じ `(team, Slack チャンネル)` 単位の advisory lock を、
+/// `slack_channels` の確認よりも前 (プレースホルダ作成よりも前) に取る。並行する ZIP
+/// 取り込みが対応を確定させたあとに解放されると、API 側は 409 になり、確定済みの対応を
+/// 上書きもプレースホルダの作成もしない。
+#[tokio::test]
+async fn api_import_waits_for_the_zip_target_lock_before_checking_the_mapping() -> anyhow::Result<()>
+{
+    let key = [11u8; 32];
+    let team = format!(
+        "TZIPLOCK{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    );
+    let slack = MockServer::start().await;
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.client_id = Some("cid".into());
+    config.slack.client_secret = Some("sec".into());
+    config.slack.team_id = Some(team.clone());
+    config.slack.oauth_redirect_url = Some("https://zoo.example/api/slack/oauth/callback".into());
+    config.slack.token_encryption_key = Some(base64::engine::general_purpose::STANDARD.encode(key));
+    config.slack.api_base_url = slack.uri();
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    let app = create_router(state.clone());
+    let alice = create_user(&app, "api_zip_lock_alice").await?;
+    link(
+        &state,
+        &key,
+        &alice,
+        &team,
+        "UA",
+        "xoxp-alice",
+        PRIVATE_SCOPES,
+    )
+    .await?;
+    sql(
+        &state,
+        "INSERT INTO slack_users(team_id,slack_user_id,user_id,linked) VALUES($1,'UA',$2,true) \
+         RETURNING json_build_object('ok',true)::text",
+        &[&team, &alice],
+    )
+    .await?;
+    mock_channel(&slack, "GZIPRACE", "zip-race", "UA", true).await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.members"))
+        .and(query_param("channel", "GZIPRACE"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true, "members": ["UA", "UU"], "response_metadata": {"next_cursor": ""},
+        })))
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/users.info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true, "user": {"id": "UU", "name": "uma", "real_name": "Uma", "profile": {"display_name": "uma"}},
+        })))
+        .mount(&slack)
+        .await;
+
+    // A zoo channel that the racing ZIP import already committed as the target
+    // mapping for this Slack channel while holding the target lock.
+    let zip_target = uuid::Uuid::new_v4().to_string();
+    let mut import_terminated = true;
+    let result: anyhow::Result<()> = async {
+        sql(
+            &state,
+            "INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1,$2,$3,true) \
+             RETURNING json_build_object('ok',true)::text",
+            &[&zip_target, &format!("zip_target_{}", uuid::Uuid::new_v4().simple()), &alice],
+        )
+        .await?;
+        // Hold the exact advisory lock the ZIP importer's mapping transaction takes,
+        // and leave the mapping uncommitted until the API import is observed waiting.
+        let (mut holder, holder_driver) =
+            tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+        tokio::spawn(holder_driver);
+        let holder_pid: i32 = holder
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await?
+            .get(0);
+        let holder_tx = holder.transaction().await?;
+        holder_tx
+            .query_one(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
+                &[&format!("slack-channel:{team}:GZIPRACE")],
+            )
+            .await?;
+
+        let import_app = app.clone();
+        let import_user = alice.clone();
+        let mut import_task = tokio::spawn(async move {
+            request(
+                &import_app,
+                "POST",
+                "/api/slack/private-channels/import",
+                &import_user,
+                Some(json!({"slack_channel_id": "GZIPRACE", "name": "zip-race"})),
+            )
+            .await
+        });
+        let inner: anyhow::Result<()> = async {
+            // The import must block on the target advisory lock itself (not on a
+            // users row or the mapping row): that is what serializes API and ZIP
+            // initial imports on the same target lock.
+            let (observer, observer_driver) =
+                tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+            tokio::spawn(observer_driver);
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    if import_task.is_finished() {
+                        anyhow::bail!(
+                            "the API import finished before waiting for the ZIP target lock"
+                        );
+                    }
+                    let waiting: bool = observer
+                        .query_one(
+                            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity \
+                             WHERE wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid)) \
+                             AND query LIKE '%pg_advisory_xact_lock%')",
+                            &[&holder_pid],
+                        )
+                        .await?
+                        .get(0);
+                    if waiting {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                Ok::<(), anyhow::Error>(())
+            })
+            .await??;
+
+            // While the import waits, the ZIP path commits its mapping under the same
+            // lock (the mapping insert is what the ZIP worker's first transaction
+            // does between the lock and its commit).
+            holder_tx
+                .execute(
+                    "INSERT INTO slack_channels(team_id,slack_channel_id,channel_id,last_ts) \
+                     VALUES($1,'GZIPRACE',$2,'0')",
+                    &[&team, &zip_target],
+                )
+                .await?;
+            holder_tx.commit().await?;
+
+            // Keep the handle instead of moving it into the timeout: on a timeout the
+            // import must be aborted and awaited to completion, or it stays alive in
+            // the background holding locks while the fixture cleanup deletes rows.
+            let (status, body) = match tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                &mut import_task,
+            )
+            .await
+            {
+                Ok(joined) => joined??,
+                Err(_) => {
+                    import_task.abort();
+                    if tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        &mut import_task,
+                    )
+                    .await
+                    .is_err()
+                    {
+                        import_terminated = false;
+                        anyhow::bail!(
+                            "the API import did not finish within 10s after the ZIP target lock was released, and abort termination timed out after 5s"
+                        );
+                    }
+                    anyhow::bail!(
+                        "the API import did not finish within 10s after the ZIP target lock was released"
+                    );
+                }
+            };
+            anyhow::ensure!(
+                status == StatusCode::CONFLICT,
+                "the racing API import must be refused with 409, got {status}: {body}"
+            );
+            // The racing mapping stays exactly as the ZIP path committed it.
+            let mapping = sql(
+                &state,
+                "SELECT json_build_object('channel_id',channel_id,'last_ts',last_ts)::text \
+                 FROM slack_channels WHERE team_id=$1 AND slack_channel_id='GZIPRACE'",
+                &[&team],
+            )
+            .await?;
+            anyhow::ensure!(
+                mapping.first().is_some_and(|row| row["channel_id"] == zip_target.as_str()),
+                "the API import must not overwrite the committed ZIP mapping: {mapping:?}"
+            );
+            anyhow::ensure!(
+                mapping.first().is_some_and(|row| row["last_ts"] == "0"),
+                "the mapping must keep its sync cursor"
+            );
+            // The import refused before resolving members or creating a channel: no
+            // placeholder for UU and no deterministic import channel exist.
+            let member_placeholder = backend::slack::user_id(&team, "UU");
+            let import_channel = backend::slack::channel_id(&team, "GZIPRACE");
+            let leaked = sql(
+                &state,
+                "SELECT json_build_object('n', (SELECT count(*) FROM users WHERE id=$1) \
+                 + (SELECT count(*) FROM channels WHERE id=$2))::text",
+                &[&member_placeholder, &import_channel],
+            )
+            .await?;
+            anyhow::ensure!(
+                leaked.first().is_some_and(|row| row["n"].as_i64() == Some(0)),
+                "the refused import must not create placeholders or a channel: {leaked:?}"
+            );
+            Ok(())
+        }
+        .await;
+        // 観測や統合に失敗したときは、後片付けの前に必ず止めて終わるまで待つ
+        // (成功時は完了済み。JoinHandle は完了後に再び待つと panic するので、
+        // まだ動いているときだけ abort して待つ)。
+        if !import_task.is_finished()
+            && let Err(error) = &inner
+        {
+            import_task.abort();
+            if tokio::time::timeout(std::time::Duration::from_secs(5), &mut import_task)
+                .await
+                .is_err()
+            {
+                import_terminated = false;
+                return Err(anyhow::anyhow!(
+                    "{error:#}; aborted import_task did not terminate within 5s, skipping cleanup"
+                ));
+            }
+        }
+        inner
+    }
+    .await;
+    if !import_terminated {
+        return result;
+    }
+    // Clean up only the rows this test created, even after a failure: the
+    // mapping, the ZIP target channel, the Slack link rows, and the placeholder
+    // (if a failed import left one behind). Cleanup failures are collected so
+    // they cannot mask the actual test result.
+    let member_placeholder = backend::slack::user_id(&team, "UU");
+    let import_channel = backend::slack::channel_id(&team, "GZIPRACE");
+    let cleanup_result: anyhow::Result<()> = async {
+        let mut cleanup_db = state.db.clone();
+        let mut tx = cleanup_db.transaction().await?;
+        // Take the same Slack-channel target lock the import path uses. An import
+        // transaction that outlived the abort (blocked on this very lock) then
+        // waits for this cleanup to commit instead of recreating rows after it.
+        toasty::sql::statement("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+            .bind(format!("slack-channel:{team}:GZIPRACE"))
+            .exec(&mut tx)
+            .await?;
+        for (statement, params) in [
+            (
+                "DELETE FROM slack_channels WHERE team_id=$1",
+                vec![team.as_str()],
+            ),
+            (
+                "DELETE FROM channel_user WHERE channel_id IN ($1,$2)",
+                vec![zip_target.as_str(), import_channel.as_str()],
+            ),
+            (
+                // create_user joins the workspace default channels, and
+                // channel_user.user_id is ON DELETE RESTRICT: drop both users'
+                // memberships (including the default channels) before users.
+                "DELETE FROM channel_user WHERE user_id IN ($1,$2)",
+                vec![member_placeholder.as_str(), alice.as_str()],
+            ),
+            (
+                "DELETE FROM channels WHERE id IN ($1,$2)",
+                vec![zip_target.as_str(), import_channel.as_str()],
+            ),
+            (
+                "DELETE FROM slack_users WHERE team_id=$1",
+                vec![team.as_str()],
+            ),
+            (
+                "DELETE FROM users WHERE id IN ($1,$2)",
+                vec![member_placeholder.as_str(), alice.as_str()],
+            ),
+        ] {
+            let mut query = toasty::sql::statement(statement);
+            for param in params {
+                query = query.bind(param);
+            }
+            query.exec(&mut tx).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+    .await;
+    let result = match (result, cleanup_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(test), Ok(())) => Err(test),
+        (Ok(()), Err(cleanup)) => Err(anyhow::anyhow!(
+            "test succeeded, but cleanup failed: {cleanup:#}"
+        )),
+        (Err(test), Err(cleanup)) => Err(anyhow::anyhow!(
+            "test failed: {test:#}; cleanup also failed: {cleanup:#}"
+        )),
+    };
+    result
 }

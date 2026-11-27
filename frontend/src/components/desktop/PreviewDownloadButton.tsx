@@ -1,0 +1,139 @@
+import { useCallback, useEffect, useId, useState } from "react";
+import { useTranslation } from "react-i18next";
+
+import { useDesktopSave, type DesktopSavePrepared } from "../../hooks/useDesktopSave";
+import {
+  AttachmentDownloadError,
+  downloadAttachmentWithRetry,
+  type AttachmentUrlResolver,
+} from "../../lib/api/attachments";
+import { ExternalLink } from "../ui/external-link";
+import { DownloadProgressButton } from "./DownloadProgressButton";
+
+/**
+ * `footer` を持たないプレビューの保存ボタン。デスクトップ版では共通の保存経路を使い、
+ * Web と古いアプリでは今どおりのリンクを出す。
+ *
+ * 外部の HTTPS を CORS なしで取得できないときは、案内を出して別タブのリンクに切り替える。
+ */
+export function PreviewDownloadButton({
+  id,
+  name,
+  src,
+  size,
+  showLabel = false,
+  className = "text-xs text-link",
+  resolveUrl,
+}: {
+  /** 同じファイルを表示する複数の場所で進捗と中止を共有するための識別子。 */
+  id?: string;
+  name: string;
+  src: string;
+  size?: number | null;
+  showLabel?: boolean;
+  className?: string;
+  /**
+   * 表示に使う URL を更新できる経路。署名付き URL の期限切れに備えて渡す。
+   * 現状の footer なし呼び出し先では未使用だが、将来の署名付き URL プレビュー用に残す。
+   */
+  resolveUrl?: AttachmentUrlResolver;
+}) {
+  const { t } = useTranslation();
+  const generatedId = useId();
+  const saveId = id ?? generatedId;
+  const [lockedSaveId, setLockedSaveId] = useState<string | null>(null);
+  const [externalSrc, setExternalSrc] = useState<string | null>(null);
+  const useExternalLink = externalSrc === src;
+  const staticUrl = useCallback(async () => src, [src]);
+  const urlResolver = resolveUrl ?? staticUrl;
+  // 失効した blob: URL は差し替える先がないため、外部リンクへは切り替えない。
+  const isBlob = src.startsWith("blob:");
+  // 保存ダイアログの前に本文を確認する。CORS で読めないときはダイアログを出さずに
+  // リンクへ切り替え、Content-Length があれば保存の上限判定に渡す。
+  const prepare = useCallback(
+    async (signal: AbortSignal): Promise<DesktopSavePrepared> => {
+      const url = await urlResolver({ refresh: false });
+      let response: Response;
+      try {
+        response = await fetch(url, { credentials: "omit", signal });
+      } catch (error) {
+        throw new AttachmentDownloadError("network", { cause: error });
+      }
+      if (!response.ok) {
+        void response.body?.cancel().catch(() => {});
+        throw new AttachmentDownloadError("http", { status: response.status });
+      }
+      const encoding = response.headers.get("content-encoding");
+      const raw = response.headers.get("content-length");
+      const parsed = raw ? Number(raw) : Number.NaN;
+      // Content-Encoding が identity と確認できるときだけ Content-Length を size に使う。
+      // CORS では encoding が読めないことがあり、圧縮後サイズを展開後サイズとして扱う危険がある。
+      const encodingKnownIdentity =
+        encoding === "identity" || (!encoding && response.type !== "cors");
+      const size =
+        encodingKnownIdentity && Number.isFinite(parsed) && parsed > 0
+          ? Math.floor(parsed)
+          : undefined;
+      // 保存先のダイアログの間は本文を読まない。接続を止めて、転送は保存時に開き直す。
+      await response.body?.cancel().catch(() => {});
+      return { size };
+    },
+    [urlResolver],
+  );
+  // src が保存中に変わっても、失敗通知は保存開始時の src にだけ適用する。
+  const effectiveSaveId = lockedSaveId ?? saveId;
+  const { state, pending, available, download, cancel } = useDesktopSave({
+    id: effectiveSaveId,
+    fileName: name,
+    source: { kind: "url", resolveUrl: urlResolver, size, prepare },
+    fallback: async () => {
+      await downloadAttachmentWithRetry(urlResolver, name);
+    },
+    // CORS やオフラインで本文が読めないときだけ、別タブのリンクへ案内する。
+    // URL の取得や HTTP のエラーは通常のダウンロード失敗として伝える。
+    describeError: (error) =>
+      error instanceof AttachmentDownloadError && error.reason === "network" && !isBlob
+        ? { message: t("attachments.previewSaveUnsupported") }
+        : undefined,
+    onFailure: (error) => {
+      if (error instanceof AttachmentDownloadError && error.reason === "network" && !isBlob) {
+        setExternalSrc(src);
+      }
+    },
+  });
+  useEffect(() => {
+    if (!state && !pending && lockedSaveId) setLockedSaveId(null);
+  }, [state, pending, lockedSaveId]);
+  const handleDownload = useCallback(() => {
+    if (!lockedSaveId && !state && !pending) setLockedSaveId(saveId);
+    void download();
+  }, [download, lockedSaveId, pending, saveId, state]);
+
+  if (useExternalLink || available === false) {
+    return src.startsWith("blob:") ? (
+      <a href={src} download={name} className={className}>
+        {t("attachments.downloadShort")}
+      </a>
+    ) : (
+      <ExternalLink href={src} className={className}>
+        {t("attachments.downloadShort")}
+      </ExternalLink>
+    );
+  }
+
+  return (
+    <DownloadProgressButton
+      state={state}
+      pending={pending}
+      showLabel={showLabel}
+      downloadLabel={t("attachments.download", { name })}
+      downloadShortLabel={t("attachments.downloadShort")}
+      cancelLabel={t("attachments.cancelDownload", { name })}
+      cancelShortLabel={t("attachments.cancelDownloadShort")}
+      finishingLabel={t("attachments.saving")}
+      progressLabel={t("attachments.downloading")}
+      onDownload={handleDownload}
+      onCancel={cancel}
+    />
+  );
+}

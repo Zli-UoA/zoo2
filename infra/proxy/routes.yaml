@@ -7,6 +7,12 @@ http:
       entryPoints: [web]
       middlewares: [app-private-response, strip-dev-headers]
       service: backend
+    home-images:
+      rule: 'Method(`GET`) && PathRegexp(`^/api/home/images/[^/]+$`)'
+      priority: 150
+      entryPoints: [web]
+      middlewares: [home-image-response, strip-dev-headers]
+      service: backend
     api:
       rule: 'Path(`/api`) || PathPrefix(`/api/`) || Path(`/.well-known/webfinger`)'
       priority: 100
@@ -20,6 +26,11 @@ http:
       service: frontend
 
   middlewares:
+    # Revalidate visibility even while old backends still send cacheable redirects.
+    home-image-response:
+      headers:
+        customResponseHeaders:
+          Cache-Control: "private, no-cache, no-store"
     app-private-response:
       headers:
         customResponseHeaders:

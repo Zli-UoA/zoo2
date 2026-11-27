@@ -3,7 +3,7 @@ import { memo, type ReactNode } from "react";
 import { SensitiveMedia } from "../ui/sensitive-media";
 import { MediaPreview } from "../ui/media-preview";
 import { type ImageMetadata } from "../../lib/imageMetadata";
-import { LinkPreviews } from "../chat/messages/LinkPreviews";
+import { LinkPreviews } from "../chat/messages/LinkPreviews.tsx";
 import { MessageAttachments } from "../chat/messages/MessageAttachments";
 import type { AttachmentMetadata } from "../../lib/attachments";
 import { useOptionalCollections } from "../../lib/electric/collections-context";
@@ -173,8 +173,12 @@ export const HomePostContent = memo(function HomePostContent({
                 <MediaPreview
                   {...image}
                   src={url}
+                  thumbnailSrc={
+                    path?.startsWith("/api/home/images/") ? `${url}?thumbnail=true` : undefined
+                  }
                   name={image.name || t("home.image")}
                   contentType={image.media_type}
+                  saveId={image.image_id ? `home:${image.image_id}` : `home:${url}`}
                 />
               </SensitiveMedia>
             );

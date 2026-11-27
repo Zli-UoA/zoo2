@@ -30,6 +30,8 @@ vi.mock("./useNotificationContext", () => ({
   }),
 }));
 vi.mock("@tanstack/react-router", () => ({
+  // ルーターの外で描くのと同じ。本文中のリンクは外部リンクのまま出る。
+  useRouter: () => null,
   Link: ({
     params,
     search,
