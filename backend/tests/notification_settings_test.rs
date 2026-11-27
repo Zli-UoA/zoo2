@@ -9,11 +9,7 @@ use axum::{
     body::{Body, to_bytes},
     http::{HeaderMap, Request, StatusCode},
 };
-use backend::{
-    db::init_db,
-    routes::create_router,
-    state::AppState,
-};
+use backend::{db::init_db, routes::create_router, state::AppState};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -103,14 +99,7 @@ async fn notification_settings_round_trip_and_authorization() -> anyhow::Result<
     assert_eq!(value, json!({"level": "mentions"}));
 
     // 保存して再取得。書き込みは data/txid 形式で、 Shape 変更があるので txid が入る。
-    let written = ok(
-        &app,
-        &owner,
-        "PATCH",
-        &path,
-        json!({"level": "all"}),
-    )
-    .await?;
+    let written = ok(&app, &owner, "PATCH", &path, json!({"level": "all"})).await?;
     assert_eq!(written["data"], json!({"level": "all"}));
     assert!(written["txid"].is_string());
     assert_eq!(
@@ -157,8 +146,17 @@ async fn notification_settings_round_trip_and_authorization() -> anyhow::Result<
     // 非メンバー・存在しないチャンネル・不正 ID はすべて 404。
     for (user, path) in [
         (&outsider, path.clone()),
-        (&owner, format!("/api/channels/{}/notification-settings", uuid::Uuid::new_v4())),
-        (&owner, "/api/channels/not-a-uuid/notification-settings".to_owned()),
+        (
+            &owner,
+            format!(
+                "/api/channels/{}/notification-settings",
+                uuid::Uuid::new_v4()
+            ),
+        ),
+        (
+            &owner,
+            "/api/channels/not-a-uuid/notification-settings".to_owned(),
+        ),
     ] {
         for method in ["GET", "PATCH"] {
             let (status, _, _) = send(&app, user, method, &path, json!({"level": "mute"})).await?;

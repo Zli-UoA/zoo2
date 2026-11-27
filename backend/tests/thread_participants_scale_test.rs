@@ -635,7 +635,11 @@ async fn notification_participants_sql_does_not_scan_users() -> anyhow::Result<(
         .map(|row| serde_json::from_str(row))
         .collect::<Result<_, _>>()?;
     assert_eq!(values.len() as i32, live);
-    assert!(values.iter().all(|v| v["level"] == "all" || v["level"] == "mute"));
+    assert!(
+        values
+            .iter()
+            .all(|v| v["level"] == "all" || v["level"] == "mute")
+    );
 
     for (mode, statement) in [
         ("custom", literal.clone()),
@@ -700,11 +704,20 @@ async fn notification_participants_sql_does_not_scan_users() -> anyhow::Result<(
                 scanned_participants <= f64::from(p) + 64.,
                 "{mode}/{run}: {scanned_participants}"
             );
-            assert!(probed_members <= f64::from(live), "{mode}/{run}: {probed_members}");
+            assert!(
+                probed_members <= f64::from(live),
+                "{mode}/{run}: {probed_members}"
+            );
             assert_eq!(read_users, 0., "{mode}/{run}: users must not be read");
-            assert!(sort_input <= f64::from(live), "{mode}/{run}: sort input {sort_input}");
+            assert!(
+                sort_input <= f64::from(live),
+                "{mode}/{run}: sort input {sort_input}"
+            );
             assert!(!external_sort, "{mode}/{run}: external sort");
-            assert!(max_loops <= f64::from(live) + 1., "{mode}/{run}: loops={max_loops}");
+            assert!(
+                max_loops <= f64::from(live) + 1.,
+                "{mode}/{run}: loops={max_loops}"
+            );
             assert!(
                 blocks <= 2. * f64::from(p) + BLOCKS_PER_KEY * f64::from(live) + 1024.,
                 "{mode}/{run}: blocks={blocks}"
@@ -715,7 +728,9 @@ async fn notification_participants_sql_does_not_scan_users() -> anyhow::Result<(
             );
         }
     }
-    client.batch_execute("DEALLOCATE ALL; RESET plan_cache_mode").await?;
+    client
+        .batch_execute("DEALLOCATE ALL; RESET plan_cache_mode")
+        .await?;
 
     // 単独30回と8同時30回（初回を捨てず、SQL往復と接続待ちを含む）。
     let timings = |mut samples: Vec<f64>| {

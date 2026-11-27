@@ -1192,7 +1192,8 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
         }))
         .unwrap();
         channel.encrypted = true;
-        let encrypted = notification_payload(&notification, &actor, &channel, Some(&message), false);
+        let encrypted =
+            notification_payload(&notification, &actor, &channel, Some(&message), false);
         let value = serde_json::to_value(&encrypted).unwrap();
         assert_eq!(value["notificationType"], "channel_message");
         assert_eq!(value["body"], ENCRYPTED_MESSAGE_BODY);

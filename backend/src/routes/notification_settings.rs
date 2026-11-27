@@ -48,12 +48,14 @@ pub fn router() -> Router<AppState> {
             "/api/channels/{id}/notification-settings",
             get(get_notification_settings).patch(update_notification_settings),
         )
-        .layer(middleware::map_response(|mut response: Response| async move {
-            response
-                .headers_mut()
-                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-            response
-        }))
+        .layer(middleware::map_response(
+            |mut response: Response| async move {
+                response
+                    .headers_mut()
+                    .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+                response
+            },
+        ))
 }
 
 fn not_found(channel_id: &str) -> AppError {
@@ -75,7 +77,10 @@ async fn current_level(
         &[user_id, channel_id],
     )
     .await?;
-    Ok(rows.first().and_then(|row| row["level"].as_str()).map(str::to_owned))
+    Ok(rows
+        .first()
+        .and_then(|row| row["level"].as_str())
+        .map(str::to_owned))
 }
 
 async fn get_notification_settings(

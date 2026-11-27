@@ -117,7 +117,8 @@ pub(super) mod tests {
             "created_at": crate::models::now_utc_millis()
         }))
         .unwrap();
-        let preview = NotificationPreview::new(&notification, "Alice", "general", false, Some("本文"));
+        let preview =
+            NotificationPreview::new(&notification, "Alice", "general", false, Some("本文"));
         assert_eq!(
             serde_json::to_value(&preview).unwrap()["notificationType"],
             "channel_message"
