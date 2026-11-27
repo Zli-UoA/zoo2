@@ -34,3 +34,17 @@ it.each([
   expect(dialog.props).toEqual([expected]);
   unmount();
 });
+
+it("clears the previous app id when a message action opens the same dialog", async () => {
+  dialog.props = [];
+  const { unmount } = render(<AppDialogHost />);
+  window.dispatchEvent(new CustomEvent("zoo:open-app", { detail: "app-1" }));
+  await waitFor(() => expect(screen.getByTestId("app-dialog")).toHaveTextContent("dialog:app-1"));
+
+  window.dispatchEvent(new CustomEvent("zoo:message-actions", { detail: "message-1" }));
+  await waitFor(() =>
+    expect(screen.getByTestId("app-dialog")).toHaveTextContent("dialog:message-1"),
+  );
+  expect(dialog.props.at(-1)).toEqual({ appId: undefined, messageId: "message-1" });
+  unmount();
+});

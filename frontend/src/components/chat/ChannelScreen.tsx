@@ -64,7 +64,13 @@ export function ChannelScreen({
   // 参加中・DM では共有ユーザーで足りる。未参加の公開チャンネルだけ人数判定に全件を使う。
   // 参加状態が確定する前は判定しない（loading 中に全件購読が始まらないようにする）。
   const needsAllUsers =
-    !!channel && !access.isLoading && !channel.is_dm && !channel.is_private && !access.isMember;
+    !!channel &&
+    !currentUserLoading &&
+    !access.isLoading &&
+    !access.isMembershipPending &&
+    !channel.is_dm &&
+    !channel.is_private &&
+    !access.isMember;
   const allUsersQuery = useAllUsers(needsAllUsers);
   const countUsers = needsAllUsers ? (allUsersQuery.data ?? []) : (usersQuery.data ?? []);
   const dm = useMemo(() => {
