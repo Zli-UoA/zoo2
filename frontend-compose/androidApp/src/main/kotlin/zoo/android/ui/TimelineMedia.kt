@@ -84,20 +84,24 @@ internal val LocalKitchenReactionImage = staticCompositionLocalOf<suspend (Strin
 
 internal val LocalTimelineImage = staticCompositionLocalOf<suspend (TimelineMedia) -> ImageBitmap?> { { null } }
 
+internal val LocalTimelineImageWithPreview =
+    staticCompositionLocalOf<(suspend (TimelineMedia, (ImageBitmap) -> Unit) -> ImageBitmap?)?> { null }
+
 internal val LocalCachedTimelineImage = staticCompositionLocalOf<(TimelineMedia) -> ImageBitmap?> { { null } }
 
 @Composable
 internal fun rememberTimelineImage(media: TimelineMedia?, revealed: Boolean = true): ImageBitmap? {
     val cached = LocalCachedTimelineImage.current
     val load = LocalTimelineImage.current
+    val loadWithPreview = LocalTimelineImageWithPreview.current
     val retry = LocalTimelineImageRetry.current
     val initial = remember(media, cached) { media?.let(cached) }
     val isRevealed = rememberUpdatedState(revealed)
-    return key(media, cached, load, retry) {
+    return key(media, cached, load, loadWithPreview, retry) {
         produceState(initial) {
             if (initial == null && media != null) {
                 val prefetching = !isRevealed.value
-                value = load(media)
+                value = if (loadWithPreview != null) loadWithPreview(media) { value = it } else load(media)
                 if (prefetching && value == null) {
                     snapshotFlow { isRevealed.value }.first { it }
                     value = retry(media)

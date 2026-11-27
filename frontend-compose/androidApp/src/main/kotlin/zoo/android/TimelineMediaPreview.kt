@@ -22,9 +22,11 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.*
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import zoo.ApiException
 import zoo.Session
 import zoo.android.ui.*
 
@@ -44,7 +46,12 @@ internal fun cachedTimelineImage(session: Session, media: TimelineMedia): ImageB
     return session.cachedImageBitmap(links.original, signedAttachment = true, cacheKey = "$id:original")
 }
 
-internal suspend fun timelineImage(session: Session, media: TimelineMedia, retry: Boolean = false): ImageBitmap? {
+internal suspend fun timelineImage(
+    session: Session,
+    media: TimelineMedia,
+    retry: Boolean = false,
+    onCached: ((ImageBitmap) -> Unit)? = null,
+): ImageBitmap? {
     suspend fun load(url: String, cacheKey: String? = null): ImageBitmap? = try {
         session.imageBitmap(url, signedAttachment = cacheKey != null, retry = retry, cacheKey = cacheKey)
     } catch (cancelled: CancellationException) {
@@ -59,10 +66,30 @@ internal suspend fun timelineImage(session: Session, media: TimelineMedia, retry
         return load(publicUrl)
     }
     val id = media.attachmentId ?: return null
+    val platform = session.platform as? AndroidPlatform
+    val cached = if (onCached != null && !retry && platform != null) {
+        suspend fun decode(key: String): ImageBitmap? = try {
+            platform.freshAttachmentImage(key)?.let { platform.imageFrames(it).first() }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
+        }
+        val thumbnail = if (media.useThumbnail) decode("$id:thumbnail") else null
+        (thumbnail ?: decode("$id:original"))?.also(onCached)
+    } else null
     val links = try {
         session.attachmentLinks.getLinks(id, force = retry)
     } catch (cancelled: CancellationException) {
         throw cancelled
+    } catch (failure: ApiException) {
+        if (failure.status in setOf(401, 403, 404, 410)) {
+            platform?.removeAttachmentImages(id)
+            return null
+        }
+        return cached.takeIf { failure.status == 429 || failure.status >= 500 }
+    } catch (_: IOException) {
+        return cached
     } catch (_: Exception) {
         return null
     }

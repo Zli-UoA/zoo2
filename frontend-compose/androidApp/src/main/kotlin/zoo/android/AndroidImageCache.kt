@@ -55,7 +55,16 @@ internal class AndroidImageCache(
 
     suspend fun image(url: String): ByteArray = loadPublicImage(http, url)
 
-    // Callers supplying a stable key resolve an authorized link before looking up the image.
+    suspend fun freshAttachmentImage(cacheKey: String): ByteArray? = withContext(Dispatchers.IO) {
+        attachments.read(cacheKey)?.takeIf { now() < it.expiresAt }?.bytes
+    }
+
+    suspend fun removeAttachmentImages(id: String) = withContext(Dispatchers.IO) {
+        attachments.remove("$id:thumbnail")
+        attachments.remove("$id:original")
+    }
+
+    // Network loads still use an authorized link.
     suspend fun signedImage(url: String, cacheKey: String? = null, retry: Boolean = false): ByteArray {
         if (cacheKey == null) return loadPublicImage(http, url, noStore = true)
         return withContext(Dispatchers.IO) {

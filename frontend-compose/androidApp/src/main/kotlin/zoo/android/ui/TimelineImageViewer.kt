@@ -89,13 +89,18 @@ internal fun TimelineImagePages(
             val hidden = image.sensitive && revealed[index] != true
             val cached = LocalCachedTimelineImage.current
             val load = LocalTimelineImage.current
+            val loadWithPreview = LocalTimelineImageWithPreview.current
             val retry = LocalTimelineImageRetry.current
             var attempt by remember(image) { mutableIntStateOf(0) }
             val initial = remember(image, hidden, attempt, cached) { if (hidden) null else cached(image) }
-            val result by key(image, hidden, attempt, cached, load, retry) {
+            val result by key(image, hidden, attempt, cached, load, loadWithPreview, retry) {
                 produceState(ViewerImage(initial)) {
                     if (!hidden && initial == null) {
-                        val loaded = if (attempt == 0) load(image) else retry(image)
+                        val loaded = when {
+                            attempt > 0 -> retry(image)
+                            loadWithPreview != null -> loadWithPreview(image) { value = ViewerImage(it) }
+                            else -> load(image)
+                        }
                         value = ViewerImage(loaded, failed = loaded == null)
                     }
                 }

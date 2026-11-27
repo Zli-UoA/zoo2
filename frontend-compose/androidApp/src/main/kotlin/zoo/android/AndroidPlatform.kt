@@ -281,6 +281,11 @@ internal class AndroidPlatform(
     override suspend fun refreshImage(url: String): ByteArray =
         mediaProxy.image(url, http, images, env.online, bypassCache = true)
 
+    internal suspend fun freshAttachmentImage(cacheKey: String): ByteArray? =
+        images.freshAttachmentImage(cacheKey)
+
+    internal suspend fun removeAttachmentImages(id: String) = images.removeAttachmentImages(id)
+
     override suspend fun attachmentImage(url: String, cacheKey: String?, retry: Boolean): ByteArray =
         images.signedImage(url, cacheKey, retry)
 

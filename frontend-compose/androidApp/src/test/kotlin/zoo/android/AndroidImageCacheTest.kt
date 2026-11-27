@@ -208,6 +208,29 @@ class AndroidImageCacheTest {
         }
     }
 
+    @Test fun readsOnlyFreshAttachmentPreviewsWithoutANetworkRequest() = runBlocking {
+        Fixture().use { f ->
+            var time = 1_000L
+            repeat(2) {
+                f.server.enqueue(MockResponse().setHeader("Cache-Control", "private, max-age=60").setBody("image"))
+            }
+            f.cache(now = { time }).use { cache ->
+                cache.signedImage(f.url, "id:thumbnail")
+                cache.signedImage(f.url, "id:original")
+            }
+            f.cache(now = { time }).use { cache ->
+                assertEquals("image", cache.freshAttachmentImage("id:thumbnail")?.decodeToString())
+                time += 60_000
+                assertNull(cache.freshAttachmentImage("id:thumbnail"))
+                cache.removeAttachmentImages("id")
+                time = 1_000L
+                assertNull(cache.freshAttachmentImage("id:thumbnail"))
+                assertNull(cache.freshAttachmentImage("id:original"))
+            }
+            assertEquals(2, f.server.requestCount)
+        }
+    }
+
     @Test fun reusesAThumbnailAcrossClientRestartsUntilItExpires() = runBlocking {
         Fixture().use { f ->
             var time = 1_000L
