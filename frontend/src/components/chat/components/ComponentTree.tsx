@@ -1159,7 +1159,9 @@ function EntitySelect({
   const ctx = useCtx();
   const users =
     useLiveQuery((q) =>
-      collections?.allUsers ? q.from({ users: collections.allUsers }) : undefined,
+      (c.type === T.UserSelect || c.type === T.MentionableSelect) && collections?.allUsers
+        ? q.from({ users: collections.allUsers })
+        : undefined,
     )?.data ?? [];
   const channels =
     useLiveQuery((q) =>

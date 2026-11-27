@@ -479,7 +479,11 @@ export function getCollections(
     },
     channels: channelsCollection(resolved, dependencies, persistence),
     users: usersCollection(resolved, persistence),
-    allUsers: allUsersCollection(resolved, persistence),
+    // direct モードでは両者とも同じ全件 Shape。二重購読と別IDの永続化を避ける。
+    allUsers:
+      resolved.shapeMode === "direct"
+        ? usersCollection(resolved, persistence)
+        : allUsersCollection(resolved, persistence),
     channelUsers: channelUsersCollection(resolved, dependencies, persistence),
     channelLeaves: (userId) => {
       let collection = channelLeaveCache.get(userId);

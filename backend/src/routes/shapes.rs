@@ -623,6 +623,8 @@ pub(crate) async fn users_shape(
     // 含まれるため、OR を外して主キー Index Only Scan が使える形にする。
     let mut db = state.db.clone();
     let is_guest = crate::apps::events::guest_in_db(&mut db, &auth_user.id).await?;
+    // ゲストは従来どおり本人の行も返す（所属0件でも消えないようにする）。
+    let guest_where = "id = $1 OR id IN (SELECT user_id FROM channel_user WHERE channel_id IN (SELECT channel_id FROM channel_user WHERE user_id = $1))";
     let narrow_where = "id IN (SELECT user_id FROM channel_user WHERE channel_id IN (SELECT channel_id FROM channel_user WHERE user_id = $1))";
     let shared_only = raw_query
         .get("scope")
@@ -633,7 +635,7 @@ pub(crate) async fn users_shape(
     proxy_shape(
         &state,
         "users",
-        Some(narrow_where),
+        Some(if is_guest { guest_where } else { narrow_where }),
         &[("params[1]", auth_user.id.as_str())],
         &raw_query,
         true,

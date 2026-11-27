@@ -3,7 +3,12 @@ import { ArchiveIcon, ArrowLeftIcon } from "lucide-react";
 import { useMemo } from "react";
 
 import { useCurrentUser } from "../../hooks/useCurrentUser";
-import { useActiveChannels, useChannelAccess, useUsers } from "../../hooks/useRealtime";
+import {
+  useActiveChannels,
+  useAllUsers,
+  useChannelAccess,
+  useUsers,
+} from "../../hooks/useRealtime";
 import { useLocale } from "../i18n/LocaleProvider";
 import { useShell } from "../layout/shell-context";
 import { Button } from "../ui/button";
@@ -49,6 +54,8 @@ export function ChannelScreen({
   const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
   const channelsQuery = useActiveChannels();
   const usersQuery = useUsers();
+  // ヘッダーの人数はメンバー一覧と同じ全ユーザーで判定する（共有外の無効化メンバーも差し引く）。
+  const allUsersQuery = useAllUsers();
   const channels = channelsQuery.data ?? [];
   const channel = useMemo(
     () => channels.find((candidate) => candidate.id === channelId) ?? null,
@@ -122,7 +129,7 @@ export function ChannelScreen({
             : access.canRead
               ? access.isLoading
                 ? null
-                : withoutDeactivatedMembers(access.members, usersQuery.data ?? []).length
+                : withoutDeactivatedMembers(access.members, allUsersQuery.data ?? []).length
               : undefined
         }
       />
