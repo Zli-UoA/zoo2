@@ -1284,6 +1284,30 @@ test("an invalid cached manifest is not returned offline", async () => {
   assert.equal(response.type, "error");
 });
 
+test("install fetches manifest and offline page with a timeout", async () => {
+  const signals = [];
+  const { handlers } = worker({
+    fetch: async (input, init) => {
+      signals.push(init?.signal);
+      const key = requestKey(input);
+      if (key === `${ORIGIN}/manifest.webmanifest`)
+        return basicResponse(validManifest("#ffffff"), {
+          headers: { "content-type": "application/manifest+json" },
+        });
+      if (key === `${ORIGIN}/offline.html`)
+        return basicResponse('<meta name="zoo-offline" content="true" />offline', {
+          headers: { "content-type": "text/html" },
+        });
+      return basicResponse(`network:${key}`);
+    },
+  });
+  await dispatch(handlers, "install");
+  assert.ok(
+    signals.some((signal) => signal instanceof AbortSignal),
+    "manifest / offline.html should be fetched with a bounded signal",
+  );
+});
+
 test("fresh asset requests are time bounded", async () => {
   let init;
   const { handlers } = worker({
@@ -1676,6 +1700,49 @@ test("borrowed offline page drops a stale CSP when current index has none", asyn
   const response = await fetchThrough(handlers, navigation(`${ORIGIN}/offline.html`));
   assert.match(await response.text(), /Zoo — Offline/);
   assert.equal(response.headers.get("content-security-policy"), null);
+});
+
+test("cached offline page is served with the current shell CSP", async () => {
+  const cacheContext = memoryCaches([
+    [
+      "zoo-shell-v2",
+      `${ORIGIN}/index.html`,
+      basicResponse("<html>app</html>", {
+        headers: { "content-type": "text/html", "content-security-policy": "new-policy" },
+      }),
+    ],
+    [
+      "zoo-shell-v2",
+      `${ORIGIN}/offline.html`,
+      basicResponse('<meta name="zoo-offline" content="true" />offline', {
+        headers: { "content-type": "text/html", "content-security-policy": "old-policy" },
+      }),
+    ],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const response = await fetchThrough(handlers, navigation(`${ORIGIN}/offline.html`));
+  assert.match(await response.text(), /offline/);
+  assert.equal(response.headers.get("content-security-policy"), "new-policy");
+});
+
+test("an HTTP error is returned when no cached manifest exists", async () => {
+  const { handlers } = worker({
+    fetch: async () =>
+      new Response("unavailable", { status: 503, headers: { "retry-after": "5" } }),
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+  });
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get("retry-after"), "5");
 });
 
 test("push displays sender, channel and message preview from the decrypted payload", async () => {

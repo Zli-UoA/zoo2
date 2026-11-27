@@ -249,7 +249,11 @@ async function precacheShell() {
   await Promise.all(
     SHELL.filter((path) => path !== "/" && path !== "/index.html").map(async (path) => {
       try {
-        const response = await fetch(path, { cache: "reload" });
+        const bounded = path === "/manifest.webmanifest" || path === "/offline.html";
+        const response = await fetch(path, {
+          cache: "reload",
+          ...(bounded ? { signal: AbortSignal.timeout(10_000) } : {}),
+        });
         if (!response.ok) return;
         // nginx の try_files が欠けたファイルを index.html で返しても保存しない。
         if (path === "/offline.html") {
@@ -502,10 +506,10 @@ async function handleFreshAsset(request) {
     }
     return fresh;
   }
-  return await cachedFreshAsset(path);
+  return await cachedFreshAsset(path, response.ok ? null : response);
 }
 
-async function cachedFreshAsset(path) {
+async function cachedFreshAsset(path, networkResponse = null) {
   try {
     // 現行のポリシーのキャッシュを優先する。別世代から補う場合は現行の CSP を適用する。
     const candidates = [];
@@ -532,22 +536,27 @@ async function cachedFreshAsset(path) {
         (path === "/offline.html" && !(await isOfflinePage(saved)))
       )
         continue;
-      if (current || path !== "/offline.html") return saved;
-      // 別世代の案内ページを読むときだけ現行の CSP が必要。確認できなければ使わない。
+      if (path !== "/offline.html") return saved;
+      // 同じキャッシュでも背景更新で index.html の CSP だけが変わることがある。
       let policy;
       try {
         policy = await currentShellPolicy();
       } catch {
+        if (current) return saved;
         continue;
       }
-      if (!policy.known) continue;
-      // 旧世代の案内ページには現行の CSP を付ける（現行にヘッダーが無ければ削除）。
+      if (!policy.known) {
+        if (current) return saved;
+        continue;
+      }
+      if (saved.headers.get("content-security-policy") === policy.csp) return saved;
+      // 現行の CSP を付ける（現行にヘッダーが無ければ削除）。
       return await withPolicyHeaders(saved.clone(), policy.csp);
     }
   } catch {
     /* No usable cached copy. */
   }
-  return Response.error();
+  return networkResponse ?? Response.error();
 }
 
 // Public AuthZ avatars have their own bounded cache, retained across shell upgrades.
