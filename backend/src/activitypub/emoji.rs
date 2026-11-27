@@ -57,10 +57,12 @@ fn needs_media_blurhash(item: &Value) -> bool {
     item["image_id"].is_string() && item["blurhash"].is_null()
 }
 
-async fn fill_media_blurhashes(media: &mut [Value]) -> (bool, bool) {
+async fn fill_media_blurhashes(media: &mut [Value], only: Option<&[Value]>) -> (bool, Vec<String>) {
     let mut images = std::collections::BTreeMap::new();
     for item in media.iter().filter(|item| needs_media_blurhash(item)) {
-        if let (Some(id), Some(url)) = (item["image_id"].as_str(), item["url"].as_str()) {
+        if let (Some(id), Some(url)) = (item["image_id"].as_str(), item["url"].as_str())
+            && only.is_none_or(|ids| ids.iter().any(|value| value.as_str() == Some(id)))
+        {
             images.insert(id.to_owned(), url.to_owned());
         }
     }
@@ -100,7 +102,11 @@ async fn fill_media_blurhashes(media: &mut [Value]) -> (bool, bool) {
             changed = true;
         }
     }
-    (changed, hashes.values().any(Result::is_err))
+    let retry = hashes
+        .into_iter()
+        .filter_map(|(id, result)| result.is_err().then_some(id))
+        .collect();
+    (changed, retry)
 }
 
 pub(super) async fn queue_media_blurhash(
@@ -111,7 +117,7 @@ pub(super) async fn queue_media_blurhash(
     if media.iter().any(needs_media_blurhash) {
         toasty::sql::statement(
             "INSERT INTO apub_media_blurhash_queue(post_id) VALUES($1)
-             ON CONFLICT(post_id) DO UPDATE SET available_at=now(), lease_id=NULL, attempts=0",
+             ON CONFLICT(post_id) DO UPDATE SET available_at=now(), lease_id=NULL, attempts=0, retry_image_ids=NULL",
         )
         .bind(post_id)
         .exec(tx)
@@ -143,10 +149,10 @@ async fn complete_next_media_blurhash(state: &AppState) -> Result<bool, AppError
              UPDATE apub_media_blurhash_queue SET available_at=now()+interval '30 seconds', lease_id=$1, attempts=attempts+1
              WHERE post_id=(SELECT post_id FROM apub_media_blurhash_queue WHERE available_at<=now()
                ORDER BY available_at,post_id LIMIT 1 FOR UPDATE SKIP LOCKED)
-             RETURNING post_id,attempts
+             RETURNING post_id,attempts,retry_image_ids
          )
          SELECT json_build_object('id',p.id,'actor_id',p.actor_id,'updated_at',p.updated_at,
-             'active',p.deleted_at IS NULL,'media',p.media,'attempts',claimed.attempts)::text
+             'active',p.deleted_at IS NULL,'media',p.media,'attempts',claimed.attempts,'retry_image_ids',claimed.retry_image_ids)::text
          FROM claimed JOIN apub_remote_posts p ON p.id=claimed.post_id",
         &[&lease],
     )
@@ -156,12 +162,16 @@ async fn complete_next_media_blurhash(state: &AppState) -> Result<bool, AppError
         return Ok(false);
     };
     let post_id = string(job, "id")?;
-    let mut retry = false;
+    let mut retry = Vec::new();
     if job["active"] == true
         && let Some(items) = job["media"].as_array()
     {
         let mut media = items.clone();
-        let (changed, retry_images) = fill_media_blurhashes(&mut media).await;
+        let (changed, retry_images) = fill_media_blurhashes(
+            &mut media,
+            job["retry_image_ids"].as_array().map(Vec::as_slice),
+        )
+        .await;
         retry = retry_images;
         if changed {
             let updated = string(job, "updated_at")?
@@ -178,22 +188,26 @@ async fn complete_next_media_blurhash(state: &AppState) -> Result<bool, AppError
             .await?;
         }
     }
-    let finish = if retry
+    if !retry.is_empty()
         && job["attempts"]
             .as_u64()
             .is_some_and(|attempts| attempts < 3)
     {
-        "UPDATE apub_media_blurhash_queue SET lease_id=NULL, available_at=now()+
-         CASE WHEN attempts=1 THEN interval '30 seconds' ELSE interval '2 minutes' END
-         WHERE post_id=$1 AND lease_id=$2"
+        toasty::sql::statement(
+            "UPDATE apub_media_blurhash_queue SET lease_id=NULL, retry_image_ids=$3::jsonb, available_at=now()+
+             CASE WHEN attempts=1 THEN interval '30 seconds' ELSE interval '2 minutes' END
+             WHERE post_id=$1 AND lease_id=$2",
+        )
+        .bind(post_id).bind(&lease).bind(json!(retry).to_string()).exec(&mut db).await?;
     } else {
-        "DELETE FROM apub_media_blurhash_queue WHERE post_id=$1 AND lease_id=$2"
-    };
-    toasty::sql::statement(finish)
+        toasty::sql::statement(
+            "DELETE FROM apub_media_blurhash_queue WHERE post_id=$1 AND lease_id=$2",
+        )
         .bind(post_id)
-        .bind(lease)
+        .bind(&lease)
         .exec(&mut db)
         .await?;
+    }
     Ok(true)
 }
 
@@ -758,11 +772,41 @@ mod media_proxy_tests {
             .await
             .unwrap();
 
-        assert_eq!(fill_media_blurhashes(&mut media).await, (true, false));
+        assert_eq!(
+            fill_media_blurhashes(&mut media, None).await,
+            (true, Vec::new())
+        );
 
         assert_eq!(media[0]["blurhash"], generated);
         assert_eq!(media[1]["blurhash"], original);
         assert!(media[2]["blurhash"].is_null());
+    }
+
+    #[tokio::test]
+    async fn blurhash_retry_keeps_only_the_temporarily_failed_image_ids() {
+        let mut media = note_media(&json!({"attachment":[
+            {"mediaType":"image/png","url":"https://example.test/permanent-blurhash.png"},
+            {"mediaType":"image/png","url":"https://example.test/temporary-blurhash.png"},
+        ]}));
+        let permanent = media[0]["image_id"].as_str().unwrap().to_owned();
+        let temporary = media[1]["image_id"].as_str().unwrap().to_owned();
+        let _ = emoji_cache::get(&format!("media:{permanent}"), None, || async {
+            Err(unavailable_image("Unsupported image"))
+        })
+        .await;
+        let _ = emoji_cache::get(&format!("media:{temporary}"), None, || async {
+            Err(AppError::BadGateway("Temporary image failure".into()))
+        })
+        .await;
+
+        assert_eq!(
+            fill_media_blurhashes(&mut media, None).await,
+            (false, vec![temporary])
+        );
+        assert_eq!(
+            fill_media_blurhashes(&mut media, Some(&[json!(permanent)])).await,
+            (false, Vec::new())
+        );
     }
 
     #[tokio::test]

@@ -204,23 +204,30 @@ async fn record_home_thumbnail(
     db: &mut impl toasty::db::Executor,
     id: &str,
     bytes: i64,
+    check_at: Option<&str>,
 ) -> Result<(), toasty::Error> {
     toasty::sql::statement(
         "UPDATE home_images SET thumbnail_ready=$2::boolean,thumbnail_bytes=$3::bigint
-         WHERE id=$1 AND thumbnail_ready IS NULL",
+         WHERE id=$1 AND thumbnail_ready IS NULL
+           AND ($4='' OR thumbnail_check_at=NULLIF($4,'')::timestamptz)",
     )
     .bind(id)
     .bind((bytes > 0).to_string())
     .bind(bytes.to_string())
+    .bind(check_at.unwrap_or_default())
     .exec(db)
     .await?;
     Ok(())
 }
 
-async fn reconcile_home_thumbnail(state: &AppState, id: &str) -> Result<Option<i64>, AppError> {
+async fn reconcile_home_thumbnail(
+    state: &AppState,
+    id: &str,
+    check_at: Option<&str>,
+) -> Result<Option<i64>, AppError> {
     let bytes = probe_home_thumbnail(state, id).await;
     if let Some(bytes) = bytes {
-        record_home_thumbnail(&mut state.db.clone(), id, bytes).await?;
+        record_home_thumbnail(&mut state.db.clone(), id, bytes, check_at).await?;
     }
     Ok(bytes)
 }
@@ -290,6 +297,7 @@ pub(crate) async fn store_thumbnail(
     key: &str,
     bytes: Option<Vec<u8>>,
     source_etag: Option<&str>,
+    match_etag: Option<&str>,
 ) -> bool {
     let Some(bytes) = bytes else { return false };
     let mut put = client
@@ -298,6 +306,7 @@ pub(crate) async fn store_thumbnail(
         .key(thumbnail_key(key))
         .content_type(THUMBNAIL_MIME)
         .cache_control(IMAGE_CACHE_CONTROL)
+        .set_if_match(match_etag.map(str::to_owned))
         .body(bytes.into());
     if let Some(etag) = source_etag {
         put = put.metadata("source-etag", etag);
@@ -307,6 +316,46 @@ pub(crate) async fn store_thumbnail(
         return false;
     }
     true
+}
+
+async fn home_quota(tx: &mut toasty::Transaction<'_>, user: &str) -> Result<(i64, i64), AppError> {
+    query(tx,"SELECT '{}'::text FROM (SELECT pg_advisory_xact_lock(hashtextextended('home-image-upload:' || $1,0))) locked",&[user]).await?;
+    let usage = one(tx,
+        "WITH current AS (
+           SELECT COALESCE(sum(file_size+thumbnail_bytes),0) AS bytes,
+                  COALESCE(sum(file_size) FILTER (WHERE thumbnail_ready IS NULL AND thumbnail_bytes=0
+                       AND home_image_can_have_thumbnail(content_type,width,height)),0) AS uncertain
+           FROM home_images WHERE uploader_id=$1
+         ), pending AS (
+           SELECT COALESCE(sum(CASE WHEN thumbnail_accounted THEN file_size ELSE file_size*2 END),0) AS bytes
+           FROM home_image_deletions WHERE uploader_id=$1
+         )
+         SELECT json_build_object('known',current.bytes+pending.bytes,'uncertain',current.uncertain)::text
+         FROM current,pending", &[user]).await?;
+    Ok((
+        usage["known"].as_i64().unwrap_or(MAX_USER_BYTES),
+        usage["uncertain"].as_i64().unwrap_or(0),
+    ))
+}
+
+async fn reconcile_uploader_thumbnails(state: &AppState, user: &str) -> Result<(), AppError> {
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    let rows = query(
+        &mut tx,
+        "UPDATE home_images SET thumbnail_check_at=now()+interval '10 minutes'
+         WHERE id IN (SELECT id FROM home_images WHERE uploader_id=$1
+           AND thumbnail_ready IS NULL AND thumbnail_bytes=0
+           AND home_image_can_have_thumbnail(content_type,width,height)
+           AND created_at<now()-interval '5 minutes'
+           AND thumbnail_check_at<=now()+interval '5 minutes'
+           ORDER BY file_size DESC,id LIMIT 100 FOR UPDATE SKIP LOCKED)
+         RETURNING json_build_object('id',id,'check_at',thumbnail_check_at,'eligible',true)::text",
+        &[user],
+    )
+    .await?;
+    tx.commit().await?;
+    reconcile_claimed_home_thumbnails(state, rows).await
 }
 
 async fn upload(
@@ -353,14 +402,31 @@ async fn upload(
     .await
     .map_err(|e| AppError::Internal(e.into()))??;
     let thumbnail_bytes = thumbnail.as_ref().map_or(0, Vec::len);
+    let required = (bytes.len() + thumbnail_bytes) as i64;
     let mut tx = db.transaction().await?;
-    query(&mut tx,"SELECT '{}'::text FROM (SELECT pg_advisory_xact_lock(hashtextextended('home-image-upload:' || $1,0))) locked",&[&user.id]).await?;
-    let usage = one(&mut tx,"SELECT json_build_object('bytes',(SELECT COALESCE(sum(file_size + CASE WHEN thumbnail_ready IS NULL AND thumbnail_bytes=0 AND home_image_can_have_thumbnail(content_type,width,height) THEN file_size ELSE thumbnail_bytes END),0) FROM home_images WHERE uploader_id=$1)+(SELECT COALESCE(sum(CASE WHEN thumbnail_accounted THEN file_size ELSE file_size * 2 END),0) FROM home_image_deletions WHERE uploader_id=$1))::text",&[&user.id]).await?;
-    if usage["bytes"].as_i64().unwrap_or(MAX_USER_BYTES) + (bytes.len() + thumbnail_bytes) as i64
-        > MAX_USER_BYTES
-    {
+    let (mut known, mut uncertain) = home_quota(&mut tx, &user.id).await?;
+    if known + required <= MAX_USER_BYTES && known + uncertain + required > MAX_USER_BYTES {
+        tx.commit().await?;
+        // Do not hold the uploader lock or a transaction during object-store I/O.
+        if let Ok(result) = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            reconcile_uploader_thumbnails(&state, &user.id),
+        )
+        .await
+        {
+            result?;
+        }
+        tx = db.transaction().await?;
+        (known, uncertain) = home_quota(&mut tx, &user.id).await?;
+    }
+    if known + required > MAX_USER_BYTES {
         return Err(AppError::BadRequest(
             "Home image storage limit is 1 GiB per user".into(),
+        ));
+    }
+    if known + uncertain + required > MAX_USER_BYTES {
+        return Err(AppError::ServiceUnavailable(
+            "Home image storage is being checked; retry the upload shortly".into(),
         ));
     }
     let file_size = bytes.len().to_string();
@@ -371,10 +437,12 @@ async fn upload(
     tx.commit().await?;
     let mut tx = db.transaction().await?;
     // Account deletion and GC must not delete the object before PUT finishes.
-    one(
+    let reserved = one(
         &mut tx,
-        "SELECT '{}'::text FROM home_images WHERE id=$1 FOR UPDATE",
-        &[&id],
+        "SELECT json_build_object('thumbnail_reserved',thumbnail_ready IS NULL
+             AND thumbnail_bytes=$2::bigint AND $2::bigint>0)::text
+         FROM home_images WHERE id=$1 FOR UPDATE",
+        &[&id, &thumbnail_bytes.to_string()],
     )
     .await?;
     let uploaded = state
@@ -396,17 +464,18 @@ async fn upload(
         tx.commit().await?;
         return Err(AppError::Internal(anyhow::anyhow!("Image upload failed")));
     }
-    if thumbnail_bytes > 0 {
+    if reserved["thumbnail_reserved"] == true {
         if store_thumbnail(
             &state.s3_client,
             &state.config.s3.bucket,
             &key,
             thumbnail,
             None,
+            None,
         )
         .await
         {
-            record_home_thumbnail(&mut tx, &id, thumbnail_bytes as i64).await?;
+            record_home_thumbnail(&mut tx, &id, thumbnail_bytes as i64, None).await?;
         } else {
             // An ambiguous PUT can still finish. Delay the HEAD and retain the reservation.
             toasty::sql::statement(
@@ -567,7 +636,7 @@ async fn image_redirect(
                     None
                 } else {
                     let image_id = key.trim_start_matches("home-images/");
-                    reconcile_home_thumbnail(&state, image_id)
+                    reconcile_home_thumbnail(&state, image_id, None)
                         .await?
                         .filter(|bytes| *bytes > 0)
                         .map(|_| thumbnail_key(key))
@@ -670,7 +739,6 @@ pub async fn collect_garbage(state: &AppState) -> Result<(), AppError> {
     Ok(())
 }
 async fn reconcile_home_thumbnails(state: &AppState) -> Result<(), AppError> {
-    use futures_util::{StreamExt, TryStreamExt};
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     let rows = query(
@@ -679,18 +747,27 @@ async fn reconcile_home_thumbnails(state: &AppState) -> Result<(), AppError> {
          WHERE id IN (SELECT id FROM home_images WHERE thumbnail_ready IS NULL
            AND thumbnail_check_at<=now() ORDER BY thumbnail_check_at,id LIMIT 100
            FOR UPDATE SKIP LOCKED)
-         RETURNING json_build_object('id',id,'eligible',home_image_can_have_thumbnail(content_type,width,height))::text",
+         RETURNING json_build_object('id',id,'check_at',thumbnail_check_at,
+           'eligible',home_image_can_have_thumbnail(content_type,width,height))::text",
         &[],
     )
     .await?;
     tx.commit().await?;
+    reconcile_claimed_home_thumbnails(state, rows).await
+}
+
+async fn reconcile_claimed_home_thumbnails(
+    state: &AppState,
+    rows: Vec<Value>,
+) -> Result<(), AppError> {
+    use futures_util::{StreamExt, TryStreamExt};
     futures_util::stream::iter(rows)
         .map(|row| async move {
-            if let Some(id) = row["id"].as_str() {
+            if let (Some(id), Some(check_at)) = (row["id"].as_str(), row["check_at"].as_str()) {
                 if row["eligible"] == true {
-                    reconcile_home_thumbnail(state, id).await?;
+                    reconcile_home_thumbnail(state, id, Some(check_at)).await?;
                 } else {
-                    record_home_thumbnail(&mut state.db.clone(), id, 0).await?;
+                    record_home_thumbnail(&mut state.db.clone(), id, 0, Some(check_at)).await?;
                 }
             }
             Ok::<(), AppError>(())

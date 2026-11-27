@@ -142,6 +142,7 @@ pub(crate) async fn uploaded_image_metadata(
                         key,
                         Some(bytes),
                         Some(etag),
+                        legacy_thumbnail_etag,
                     )
                     .await;
                 }
