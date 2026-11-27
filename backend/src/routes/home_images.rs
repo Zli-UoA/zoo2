@@ -15,6 +15,11 @@ use axum::{
 use base64::Engine;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::{
+    collections::HashMap,
+    sync::{Arc, LazyLock, Weak},
+};
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -94,54 +99,75 @@ pub(crate) fn thumbnail_key(key: &str) -> String {
     format!("{key}.thumbnail.webp")
 }
 
+type ThumbnailRepairs = HashMap<String, Weak<Mutex<()>>>;
+static THUMBNAIL_REPAIRS: LazyLock<Mutex<ThumbnailRepairs>> =
+    LazyLock::new(|| Mutex::new(ThumbnailRepairs::new()));
+
+async fn lock_thumbnail_repair(key: &str) -> OwnedMutexGuard<()> {
+    let lock = {
+        let mut repairs = THUMBNAIL_REPAIRS.lock().await;
+        repairs.retain(|_, lock| lock.strong_count() > 0);
+        let entry = repairs.entry(key.to_owned()).or_default();
+        if let Some(lock) = entry.upgrade() {
+            lock
+        } else {
+            let lock = Arc::new(Mutex::new(()));
+            *entry = Arc::downgrade(&lock);
+            lock
+        }
+    };
+    lock.lock_owned().await
+}
+
 pub(crate) async fn stored_thumbnail_key(
     client: &aws_sdk_s3::Client,
     bucket: &str,
     original: &str,
 ) -> Option<String> {
     let thumbnail = thumbnail_key(original);
-    let variant = client
-        .head_object()
-        .bucket(bucket)
-        .key(&thumbnail)
-        .send()
-        .await
-        .ok()?;
-    if original.starts_with("home-images/") {
-        return Some(thumbnail);
-    }
-    let variant = if variant
-        .metadata()
-        .is_some_and(|metadata| metadata.contains_key("source-etag"))
-    {
-        variant
-    } else {
-        // Older thumbnails have no source version. Rebuild them from the current original.
-        let source = client
-            .head_object()
-            .bucket(bucket)
-            .key(original)
-            .send()
-            .await
-            .ok()?;
-        crate::storage::verify::uploaded_image_metadata(
-            client,
-            bucket,
-            original,
-            source.content_length()?,
-            source.content_type()?,
-            variant.e_tag(),
-        )
-        .await
-        .ok()??;
+    let inspect = || async {
         client
             .head_object()
             .bucket(bucket)
             .key(&thumbnail)
             .send()
             .await
-            .ok()?
+            .ok()
     };
+    let mut variant = inspect().await?;
+    if original.starts_with("home-images/") {
+        return Some(thumbnail);
+    }
+    let versioned = |metadata: &aws_sdk_s3::operation::head_object::HeadObjectOutput| {
+        metadata
+            .metadata()
+            .is_some_and(|values| values.contains_key("source-etag"))
+    };
+    if !versioned(&variant) {
+        let _repair = lock_thumbnail_repair(original).await;
+        // Another request may have rebuilt or removed the legacy variant while we waited.
+        variant = inspect().await?;
+        if !versioned(&variant) {
+            let source = client
+                .head_object()
+                .bucket(bucket)
+                .key(original)
+                .send()
+                .await
+                .ok()?;
+            crate::storage::verify::uploaded_image_metadata(
+                client,
+                bucket,
+                original,
+                source.content_length()?,
+                source.content_type()?,
+                variant.e_tag(),
+            )
+            .await
+            .ok()??;
+            variant = inspect().await?;
+        }
+    }
     let source_etag = variant.metadata()?.get("source-etag")?;
     client
         .head_object()
@@ -329,7 +355,7 @@ async fn upload(
     let thumbnail_bytes = thumbnail.as_ref().map_or(0, Vec::len);
     let mut tx = db.transaction().await?;
     query(&mut tx,"SELECT '{}'::text FROM (SELECT pg_advisory_xact_lock(hashtextextended('home-image-upload:' || $1,0))) locked",&[&user.id]).await?;
-    let usage = one(&mut tx,"SELECT json_build_object('bytes',(SELECT COALESCE(sum(file_size + CASE WHEN thumbnail_ready IS NULL AND thumbnail_bytes=0 THEN file_size ELSE thumbnail_bytes END),0) FROM home_images WHERE uploader_id=$1)+(SELECT COALESCE(sum(CASE WHEN thumbnail_accounted THEN file_size ELSE file_size * 2 END),0) FROM home_image_deletions WHERE uploader_id=$1))::text",&[&user.id]).await?;
+    let usage = one(&mut tx,"SELECT json_build_object('bytes',(SELECT COALESCE(sum(file_size + CASE WHEN thumbnail_ready IS NULL AND thumbnail_bytes=0 AND home_image_can_have_thumbnail(content_type,width,height) THEN file_size ELSE thumbnail_bytes END),0) FROM home_images WHERE uploader_id=$1)+(SELECT COALESCE(sum(CASE WHEN thumbnail_accounted THEN file_size ELSE file_size * 2 END),0) FROM home_image_deletions WHERE uploader_id=$1))::text",&[&user.id]).await?;
     if usage["bytes"].as_i64().unwrap_or(MAX_USER_BYTES) + (bytes.len() + thumbnail_bytes) as i64
         > MAX_USER_BYTES
     {
@@ -371,7 +397,7 @@ async fn upload(
         return Err(AppError::Internal(anyhow::anyhow!("Image upload failed")));
     }
     if thumbnail_bytes > 0 {
-        let stored = if store_thumbnail(
+        if store_thumbnail(
             &state.s3_client,
             &state.config.s3.bucket,
             &key,
@@ -380,12 +406,15 @@ async fn upload(
         )
         .await
         {
-            Some(thumbnail_bytes as i64)
+            record_home_thumbnail(&mut tx, &id, thumbnail_bytes as i64).await?;
         } else {
-            probe_home_thumbnail(&state, &id).await
-        };
-        if let Some(bytes) = stored {
-            record_home_thumbnail(&mut tx, &id, bytes).await?;
+            // An ambiguous PUT can still finish. Delay the HEAD and retain the reservation.
+            toasty::sql::statement(
+                "UPDATE home_images SET thumbnail_check_at=now()+interval '5 minutes' WHERE id=$1",
+            )
+            .bind(id.as_str())
+            .exec(&mut tx)
+            .await?;
         }
     }
     tx.commit().await?;
@@ -525,7 +554,7 @@ async fn image_redirect(
     uuid::Uuid::parse_str(&id).map_err(|_| AppError::NotFound("Image".into()))?;
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    let item = one(&mut tx, "SELECT item::text FROM (SELECT json_build_object('name',name,'media_type',content_type,'storage_key','home-images/' || id,'thumbnail_ready',h.thumbnail_ready) AS item FROM home_images h WHERE id=$1 AND EXISTS(SELECT 1 FROM home_posts p LEFT JOIN channels c ON c.id=p.channel_id WHERE p.deleted_at IS NULL AND (p.channel_id IS NULL OR NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL) AND p.media @> jsonb_build_array(jsonb_build_object('url','/api/home/images/' || h.id))) UNION ALL SELECT json_build_object('name',a.file_name,'media_type',a.content_type,'storage_key',a.storage_key,'thumbnail_ready',h.thumbnail_ready) FROM attachments a LEFT JOIN home_images h ON h.id=substring(a.storage_key from 13) AND a.storage_key LIKE 'home-images/%' JOIN home_posts p ON p.id=a.message_id JOIN channels c ON c.id=p.channel_id WHERE a.id=$1 AND p.deleted_at IS NULL AND NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL AND a.content_type IN ('image/png','image/jpeg','image/gif','image/webp')) images LIMIT 1", &[&id]).await?;
+    let item = one(&mut tx, "SELECT item::text FROM (SELECT json_build_object('name',name,'media_type',content_type,'storage_key','home-images/' || id,'thumbnail_ready',CASE WHEN NOT home_image_can_have_thumbnail(h.content_type,h.width,h.height) THEN false ELSE h.thumbnail_ready END,'thumbnail_probe_allowed',h.thumbnail_bytes=0 OR h.thumbnail_check_at<=now()) AS item FROM home_images h WHERE id=$1 AND EXISTS(SELECT 1 FROM home_posts p LEFT JOIN channels c ON c.id=p.channel_id WHERE p.deleted_at IS NULL AND (p.channel_id IS NULL OR NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL) AND p.media @> jsonb_build_array(jsonb_build_object('url','/api/home/images/' || h.id))) UNION ALL SELECT json_build_object('name',a.file_name,'media_type',a.content_type,'storage_key',a.storage_key,'thumbnail_ready',CASE WHEN NOT home_image_can_have_thumbnail(h.content_type,h.width,h.height) THEN false ELSE h.thumbnail_ready END,'thumbnail_probe_allowed',h.thumbnail_bytes=0 OR h.thumbnail_check_at<=now()) FROM attachments a LEFT JOIN home_images h ON h.id=substring(a.storage_key from 13) AND a.storage_key LIKE 'home-images/%' JOIN home_posts p ON p.id=a.message_id JOIN channels c ON c.id=p.channel_id WHERE a.id=$1 AND p.deleted_at IS NULL AND NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL AND a.content_type IN ('image/png','image/jpeg','image/gif','image/webp')) images LIMIT 1", &[&id]).await?;
     let key = item["storage_key"].as_str().unwrap();
     let content_type = item["media_type"].as_str().unwrap();
     drop(tx);
@@ -534,11 +563,15 @@ async fn image_redirect(
             Some(true) => Some(thumbnail_key(key)),
             Some(false) => None,
             None if key.starts_with("home-images/") => {
-                let image_id = key.trim_start_matches("home-images/");
-                reconcile_home_thumbnail(&state, image_id)
-                    .await?
-                    .filter(|bytes| *bytes > 0)
-                    .map(|_| thumbnail_key(key))
+                if item["thumbnail_probe_allowed"] == false {
+                    None
+                } else {
+                    let image_id = key.trim_start_matches("home-images/");
+                    reconcile_home_thumbnail(&state, image_id)
+                        .await?
+                        .filter(|bytes| *bytes > 0)
+                        .map(|_| thumbnail_key(key))
+                }
             }
             None => stored_thumbnail_key(&state.s3_client, &state.config.s3.bucket, key).await,
         }
@@ -646,7 +679,7 @@ async fn reconcile_home_thumbnails(state: &AppState) -> Result<(), AppError> {
          WHERE id IN (SELECT id FROM home_images WHERE thumbnail_ready IS NULL
            AND thumbnail_check_at<=now() ORDER BY thumbnail_check_at,id LIMIT 100
            FOR UPDATE SKIP LOCKED)
-         RETURNING json_build_object('id',id)::text",
+         RETURNING json_build_object('id',id,'eligible',home_image_can_have_thumbnail(content_type,width,height))::text",
         &[],
     )
     .await?;
@@ -654,7 +687,11 @@ async fn reconcile_home_thumbnails(state: &AppState) -> Result<(), AppError> {
     futures_util::stream::iter(rows)
         .map(|row| async move {
             if let Some(id) = row["id"].as_str() {
-                reconcile_home_thumbnail(state, id).await?;
+                if row["eligible"] == true {
+                    reconcile_home_thumbnail(state, id).await?;
+                } else {
+                    record_home_thumbnail(&mut state.db.clone(), id, 0).await?;
+                }
             }
             Ok::<(), AppError>(())
         })

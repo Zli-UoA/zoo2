@@ -501,7 +501,7 @@ async fn load_image(url: reqwest::Url, media: bool) -> Result<emoji_cache::Image
     read_image(response, media).await
 }
 
-fn unavailable_image(message: &str) -> AppError {
+pub(super) fn unavailable_image(message: &str) -> AppError {
     AppError::Coded {
         status: axum::http::StatusCode::BAD_GATEWAY,
         code: "unsupported_federated_image",
@@ -704,16 +704,22 @@ mod media_proxy_tests {
                 .respond_with(wiremock::ResponseTemplate::new(status))
                 .mount(&upstream)
                 .await;
-            let response = reqwest::get(format!("{}/{status}", upstream.uri()))
-                .await
-                .unwrap();
-            assert_eq!(
-                matches!(
-                    read_image(response, true).await,
-                    Err(AppError::BadGateway(_))
-                ),
-                status != 404,
-            );
+            let url = format!("{}/{status}", upstream.uri());
+            let key = uuid::Uuid::new_v4().to_string();
+            let first = emoji_cache::get(&key, None, || async {
+                read_image(reqwest::get(&url).await.unwrap(), true).await
+            })
+            .await;
+            let cached = emoji_cache::get(&key, None, || async {
+                panic!("cached error was unexpectedly fetched again")
+            })
+            .await;
+            for result in [first, cached] {
+                assert_eq!(
+                    matches!(result, Err(AppError::BadGateway(_))),
+                    status != 404
+                );
+            }
         }
         assert!(matches!(
             payload(vec![], "video/mp4", true).await,

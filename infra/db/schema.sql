@@ -2350,11 +2350,18 @@ CREATE TABLE home_image_deletions (
 ALTER TABLE home_image_deletions
   ADD COLUMN thumbnail_accounted boolean NOT NULL DEFAULT false;
 
+CREATE FUNCTION home_image_can_have_thumbnail(content_type text, width integer, height integer)
+RETURNS boolean LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+  SELECT content_type IN ('image/png','image/jpeg','image/webp')
+    AND (width IS NULL OR height IS NULL OR GREATEST(width,height)>768)
+$$;
+
 CREATE FUNCTION queue_home_image_deletion() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   INSERT INTO home_image_deletions(id,uploader_id,file_size,thumbnail_accounted)
   VALUES(OLD.id,OLD.uploader_id,OLD.file_size + CASE
-    WHEN OLD.thumbnail_ready IS NULL AND OLD.thumbnail_bytes=0 THEN OLD.file_size
+    WHEN OLD.thumbnail_ready IS NULL AND OLD.thumbnail_bytes=0
+      AND home_image_can_have_thumbnail(OLD.content_type,OLD.width,OLD.height) THEN OLD.file_size
     ELSE OLD.thumbnail_bytes END,true) ON CONFLICT DO NOTHING;
   RETURN OLD;
 END $$;

@@ -13,9 +13,18 @@ pub(crate) struct Image {
     pub bytes: Vec<u8>,
     pub blurhash: Option<String>,
 }
+#[derive(Clone, Copy)]
+enum Failure {
+    BadRequest,
+    NotFound,
+    Unsupported,
+    Upstream,
+    RateLimited,
+}
+
 #[derive(Clone)]
 struct Entry {
-    value: Result<Image, u16>,
+    value: Result<Image, Failure>,
     until: Instant,
 }
 #[derive(Default)]
@@ -25,7 +34,7 @@ struct Cache {
     global: Option<(Instant, u32)>,
 }
 impl Cache {
-    fn cached(&mut self, id: &str, now: Instant) -> Option<Result<Image, u16>> {
+    fn cached(&mut self, id: &str, now: Instant) -> Option<Result<Image, Failure>> {
         self.images.retain(|_, v| v.until > now);
         self.images.get(id).map(|v| v.value.clone())
     }
@@ -50,7 +59,7 @@ impl Cache {
         bucket.1 += 1;
         true
     }
-    fn insert(&mut self, id: String, value: Result<Image, u16>, now: Instant) {
+    fn insert(&mut self, id: String, value: Result<Image, Failure>, now: Instant) {
         let ttl = if value.is_ok() { 300 } else { 30 };
         self.images.insert(
             id,
@@ -82,15 +91,13 @@ impl Cache {
 }
 static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(|| Mutex::new(Cache::default()));
 static FETCHES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8);
-fn result(value: Result<Image, u16>) -> Result<Image, AppError> {
-    value.map_err(|status| {
-        if status == 400 {
-            AppError::BadRequest("Emoji image unavailable".into())
-        } else if status == 404 {
-            AppError::NotFound("Emoji image unavailable".into())
-        } else {
-            AppError::BadGateway("Emoji image unavailable".into())
-        }
+fn result(value: Result<Image, Failure>) -> Result<Image, AppError> {
+    value.map_err(|failure| match failure {
+        Failure::BadRequest => AppError::BadRequest("Emoji image unavailable".into()),
+        Failure::NotFound => AppError::NotFound("Emoji image unavailable".into()),
+        Failure::Unsupported => emoji::unavailable_image("Emoji image unavailable"),
+        Failure::Upstream => AppError::BadGateway("Emoji image unavailable".into()),
+        Failure::RateLimited => AppError::RateLimited,
     })
 }
 pub(crate) async fn get<F, Fut>(
@@ -118,14 +125,15 @@ where
     if let Some(value) = CACHE.lock().unwrap().cached(id, Instant::now()) {
         return result(value);
     }
-    let value = fetch().await.map_err(|e| {
-        if matches!(e, AppError::BadRequest(_)) {
-            400
-        } else if matches!(e, AppError::NotFound(_)) {
-            404
-        } else {
-            502
-        }
+    let value = fetch().await.map_err(|error| match error {
+        AppError::BadRequest(_) | AppError::Forbidden(_) => Failure::BadRequest,
+        AppError::NotFound(_) => Failure::NotFound,
+        AppError::Coded {
+            code: "unsupported_federated_image",
+            ..
+        } => Failure::Unsupported,
+        AppError::RateLimited => Failure::RateLimited,
+        _ => Failure::Upstream,
     });
     CACHE
         .lock()
@@ -140,7 +148,7 @@ mod tests {
     fn cache_expiry_negative_entries_capacity_and_client_budget() {
         let mut cache = Cache::default();
         let now = Instant::now();
-        cache.insert("failure".into(), Err(502), now);
+        cache.insert("failure".into(), Err(Failure::Upstream), now);
         assert!(
             cache
                 .cached("failure", now + Duration::from_secs(29))
@@ -191,7 +199,7 @@ mod tests {
             now + Duration::from_secs(60)
         ));
         for n in 0..129 {
-            cache.insert(n.to_string(), Err(502), now);
+            cache.insert(n.to_string(), Err(Failure::Upstream), now);
         }
         assert_eq!(cache.images.len(), 128);
         for n in 0..20 {
