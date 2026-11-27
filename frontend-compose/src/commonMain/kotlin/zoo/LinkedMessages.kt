@@ -153,6 +153,8 @@ interface LinkedChannelSource {
     /** [messageId] の 1 件を取る。同じ ID の 2 回目以降は何もしない。 */
     fun request(messageId: String)
 
+    fun refresh() {}
+
     fun close()
 }
 
@@ -314,6 +316,22 @@ class LinkedChannelTable(
         if (liveStuck?.let { it.elapsedNow() < LINK_LIVE_RECHECK } == true) return
         if (withTimeoutOrNull(LINK_LIVE_WINDOW) { caughtUp.first { it > before } } == null) {
             liveStuck = clock.markNow()
+        }
+    }
+
+    private var refreshJob: Job? = null
+
+    override fun refresh() {
+        refreshJob?.cancel()
+        refreshJob = tableScope.launch {
+            if (stream.isPaused() || stream.error != null) return@launch
+            try {
+                stream.forceDisconnectAndRefresh()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // The subscriber reports stream failures. A subset fetch may also pause live.
+            }
         }
     }
 
@@ -523,6 +541,10 @@ class LinkedMessages(
         sawCiphertext(channelId, source = entry.source.state.value)
         discardRejected(channelId, entry.source.state.value)
         entry.source.close()
+    }
+
+    fun refresh() {
+        entries.values.toList().forEach { it.source.refresh() }
     }
 
     fun close() {

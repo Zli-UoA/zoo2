@@ -24,6 +24,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -399,6 +400,31 @@ class LinkedChannelTableTest {
                 assertEquals("Bearer token", it.headers["Authorization"])
             }
             assertEquals("id = $1", subsets.first().url.parameters["subset__where"])
+        } finally {
+            table.close()
+            http.close()
+        }
+    }
+
+    @Test
+    fun refreshReconnectsTheExistingLinkedShape() = runTest {
+        val requests = Channel<HttpRequestData>(Channel.UNLIMITED)
+        val http = HttpClient(MockEngine { request ->
+            requests.send(request)
+            if (request.url.parameters["offset"] != "now") awaitCancellation()
+            respond("""[{"headers":{"control":"up-to-date"}}]""", headers = headers)
+        })
+        val table = LinkedChannelTable("c1", config, LinkPlatform(), http, backgroundScope, options)
+        try {
+            assertEquals("now", requests.receive().url.parameters["offset"])
+            assertEquals("true", requests.receive().url.parameters["live"])
+
+            table.refresh()
+
+            val refresh = requests.receive().url.parameters
+            assertEquals("handle", refresh["handle"])
+            assertEquals("0_0", refresh["offset"])
+            assertFalse(refresh["live"] == "true")
         } finally {
             table.close()
             http.close()

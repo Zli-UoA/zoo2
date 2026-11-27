@@ -222,6 +222,35 @@ class RepositoryTest {
     }
 
     @Test
+    fun foregroundRecoveryRestartsAStalledInitialShapeRequest() = runTest {
+        val requests = Channel<Url>(Channel.UNLIMITED)
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    requests.send(request.url)
+                    awaitCancellation()
+                }
+            }
+        }
+        val table = SyncedTable("channels", config, FakePlatform(), http, backgroundScope, streamOptions = options)
+        try {
+            runCurrent()
+            val initial = requests.tryReceive().getOrThrow()
+            assertEquals("-1", initial.parameters["offset"])
+            assertTrue(table.loading.value)
+
+            table.refresh(reconnect = true)
+            runCurrent()
+            assertEquals(initial, requests.tryReceive().getOrThrow())
+            assertTrue(requests.tryReceive().isFailure)
+        } finally {
+            table.close()
+            http.close()
+        }
+    }
+
+    @Test
     fun restResolvesAuthenticationForEachRequestAndDoesNotSendSecretsInTheUrl() = runTest {
         val platform = FakePlatform()
         val tokens = mutableListOf<String?>()

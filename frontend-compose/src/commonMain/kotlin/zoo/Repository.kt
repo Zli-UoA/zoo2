@@ -721,9 +721,11 @@ class SyncedTable(
         tableScope.cancel()
     }
 
-    fun refresh() {
-        if (refreshJob?.isActive == true) return
+    fun refresh(reconnect: Boolean = false) {
+        val previous = refreshJob
+        if (!reconnect && previous?.isActive == true) return
         refreshJob = tableScope.launch {
+            if (reconnect) previous?.cancelAndJoin()
             val source = stream
             if (synchronize && (source?.error != null || !worker.isActive)) {
                 // A terminal Electric4k runner cannot be restarted by forceDisconnectAndRefresh.
@@ -734,7 +736,7 @@ class SyncedTable(
                 worker = startSync(readCache = false)
                 return@launch
             }
-            if (source == null || source.isPaused() || loading.value) return@launch
+            if (source == null || source.isPaused() || (!reconnect && loading.value)) return@launch
             try {
                 source.forceDisconnectAndRefresh()
             } catch (e: CancellationException) {
@@ -834,8 +836,9 @@ class Repository(
 
     fun messages(channelId: String) = table("messages", channelId)
 
-    fun refresh() {
-        (listOf(channels, users, members, notifications) + dynamic.values).forEach { it.refresh() }
+    fun refresh(reconnect: Boolean = false) {
+        (listOf(channels, users, members, notifications) + dynamic.values).forEach { it.refresh(reconnect) }
+        if (reconnect && linked.isInitialized()) linked.value.refresh()
     }
 
     fun close() {
