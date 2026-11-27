@@ -7,6 +7,7 @@ import {
   messageLinkTarget,
   messageLinkUrl,
   parseChannelLink,
+  sameChannelLinkTarget,
 } from "./messageLink";
 
 const origin = "https://zli.chat";
@@ -143,6 +144,55 @@ describe("parseChannelLink", () => {
     ["URL ではない文字列", "not a url"],
   ])("%s は、アプリ内のリンクとして扱わない", (_name, href) => {
     expect(parseChannelLink(href, origin)).toBeNull();
+  });
+});
+
+describe("sameChannelLinkTarget", () => {
+  const target = { channelId: "c1", search: { message: "m1" } };
+
+  it("チャンネル・メッセージ・スレッドが同じなら同じ移動先", () => {
+    expect(sameChannelLinkTarget(target, { channelId: "c1", search: { message: "m1" } })).toBe(
+      true,
+    );
+    expect(
+      sameChannelLinkTarget(
+        { channelId: "c1", search: { thread: "root", message: "m2" } },
+        { channelId: "c1", search: { message: "m2", thread: "root" } },
+      ),
+    ).toBe(true);
+  });
+
+  it("チャンネル・メッセージ・スレッドのどれかが違えば別の移動先", () => {
+    expect(sameChannelLinkTarget(target, { channelId: "c2", search: { message: "m1" } })).toBe(
+      false,
+    );
+    expect(sameChannelLinkTarget(target, { channelId: "c1", search: { message: "m2" } })).toBe(
+      false,
+    );
+    expect(
+      sameChannelLinkTarget(target, { channelId: "c1", search: { message: "m1", thread: "root" } }),
+    ).toBe(false);
+    expect(
+      sameChannelLinkTarget(
+        { channelId: "c1", search: { thread: "root", message: "m1" } },
+        { channelId: "c1", search: { thread: "other", message: "m1" } },
+      ),
+    ).toBe(false);
+  });
+
+  it("チャンネルだけの移動先は、メッセージやスレッド付きと区別する", () => {
+    expect(
+      sameChannelLinkTarget(
+        { channelId: "c1", search: {} },
+        { channelId: "c1", search: { message: "m1" } },
+      ),
+    ).toBe(false);
+    expect(
+      sameChannelLinkTarget(
+        { channelId: "c1", search: { thread: "root" } },
+        { channelId: "c1", search: {} },
+      ),
+    ).toBe(false);
   });
 });
 

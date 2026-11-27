@@ -5,7 +5,12 @@ import { useNearViewport } from "../../../hooks/useNearViewport";
 import { ExternalLink, inlineLinkClassName } from "../../ui/external-link";
 import { useChannelLinkInfo } from "./channelLinkInfo";
 import { useShortChannelLinkLabel } from "./channelLinkLabel";
-import { parseChannelLink, requestMessageJump, type ChannelLinkTarget } from "./messageLink";
+import {
+  parseChannelLink,
+  requestChannelLinkRevealIfSameDestination,
+  requestMessageJump,
+  type ChannelLinkTarget,
+} from "./messageLink";
 import { useChannelDirectory, type ChannelDirectory } from "./MfmChannels";
 
 /**
@@ -47,7 +52,9 @@ export function ChannelLink({
   anchorRef?: Ref<HTMLAnchorElement>;
   children: ReactNode;
 }) {
+  const router = useRouter({ warn: false });
   const message = target.search.message;
+  const linked = message ?? target.search.thread;
   return (
     <Link
       ref={anchorRef}
@@ -58,9 +65,15 @@ export function ChannelLink({
       onClick={(event) => {
         // 移動先がいま表示中の対象メッセージと同じだと、URL が変わらず、一覧が再スクロールしない。
         // ブラウザー既定の動作に任せる押し方（別タブなど）では、この画面を動かさない。
-        if (!message || event.button !== 0) return;
+        if (!linked || event.button !== 0) return;
         if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-        requestMessageJump(message);
+        // 同じ URL でも一覧を対象へ戻せるよう、メッセージを指す通常クリックでは常に送る。
+        if (message) requestMessageJump(message);
+        // 移動先が同じときだけ、ノート表示中でもスレッド・メッセージへ戻す合図を送る。
+        requestChannelLinkRevealIfSameDestination(
+          router?.state.location.href,
+          event.currentTarget.href,
+        );
       }}
     >
       {children}

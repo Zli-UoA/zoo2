@@ -16,6 +16,7 @@ import { beforeEach, expect, it, vi } from "vite-plus/test";
 import { ChannelThreadItems } from "./ChannelThreadItems";
 import { ShellContext } from "../layout/shell-context";
 import { LocaleProvider } from "../i18n/LocaleProvider";
+import { subscribeChannelLinkReveal } from "./messages/messageLink";
 import { useThreadIndex, type ThreadPage } from "../../hooks/useThreadIndex";
 import type { ChannelRow } from "../../lib/electric/types";
 
@@ -386,5 +387,33 @@ it("shows an unjoined Open thread only while viewing without joining it", async 
     expect(fixture.post).not.toHaveBeenCalled();
   } finally {
     root.thread_archive_at = archive;
+  }
+});
+
+it("requests reveal only when a sidebar thread link is the current destination", async () => {
+  const reveals: Array<{ channelId: string; search: { thread?: string } }> = [];
+  const unsubscribe = subscribeChannelLinkReveal((target) => reveals.push(target));
+  const first = setup("/channels/general?thread=active");
+  try {
+    const tree = within(await screen.findByRole("complementary", { name: "Thread tree" }));
+    const link = await tree.findByRole("link", { name: /Active conversation/ });
+    await userEvent.click(link);
+    expect(reveals).toEqual([{ channelId: "general", search: { thread: "active" } }]);
+    expect(first.router.state.location.href).toBe("/channels/general?thread=active");
+
+    await first.router.navigate({
+      to: "/channels/$channelId",
+      params: { channelId: "general" },
+      search: {},
+    });
+    await waitFor(() => expect(first.router.state.location.href).toBe("/channels/general"));
+    await userEvent.click(link);
+    await waitFor(() =>
+      expect(first.router.state.location.href).toBe("/channels/general?thread=active"),
+    );
+    expect(reveals).toHaveLength(1);
+  } finally {
+    unsubscribe();
+    first.unmount();
   }
 });

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link } from "@tanstack/react-router";
+import { Link, useRouter } from "@tanstack/react-router";
 import { MessageSquareIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
@@ -12,6 +12,7 @@ import {
 import { useThreadRoot } from "../../hooks/useThread";
 import type { ChannelRow } from "../../lib/electric/types";
 import { useShell } from "../layout/shell-context";
+import { requestChannelLinkRevealIfSameDestination } from "./messages/messageLink";
 import { sidebarItemClassName } from "./sidebarStyles";
 
 export function ChannelThreadItems({
@@ -24,6 +25,7 @@ export function ChannelThreadItems({
   onObserveThread?: (thread: ThreadSummary) => void;
 }) {
   const { t } = useTranslation();
+  const router = useRouter({ warn: false });
   const shell = useShell();
   const channelThreads = threads.filter((thread) => thread.channel_id === channel.id);
   const selectedId = shell.selectedChannelId === channel.id ? shell.threadRootId : null;
@@ -107,8 +109,14 @@ export function ChannelThreadItems({
         title: thread.content || t("threads.untitled"),
         count: thread.reply_count,
       })}
-      onClick={() => {
+      onClick={(event) => {
         shell.showChat();
+        if (event.button !== 0) return;
+        if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        requestChannelLinkRevealIfSameDestination(
+          router?.state.location.href,
+          event.currentTarget.href,
+        );
       }}
     >
       <MessageSquareIcon className="size-3 shrink-0" aria-hidden="true" />

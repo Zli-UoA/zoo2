@@ -86,6 +86,34 @@ export function linkedMessageId(target: ChannelLinkTarget): string | null {
   return target.search.message ?? target.search.thread ?? null;
 }
 
+/**
+ * 2 つの移動先が、同じチャンネル・メッセージ・スレッドを指すか。
+ * URL の表記（エスケープや検索パラメーターの順）ではなく、ルートが読む値で比べる。
+ */
+export function sameChannelLinkTarget(left: ChannelLinkTarget, right: ChannelLinkTarget): boolean {
+  return (
+    left.channelId === right.channelId &&
+    (left.search.message ?? null) === (right.search.message ?? null) &&
+    (left.search.thread ?? null) === (right.search.thread ?? null)
+  );
+}
+
+/**
+ * ルーターの現在地や実際のリンクが生成した href を、チャンネル画面の移動先に戻す。
+ * 相対 URL はアプリの origin で解決する。チャンネル画面ではない URL は `null`。
+ */
+export function channelLinkTargetFromHref(
+  href: string | undefined,
+  origin: string,
+): ChannelLinkTarget | null {
+  if (!href) return null;
+  try {
+    return parseChannelLink(new URL(href, origin).href, origin);
+  } catch {
+    return null;
+  }
+}
+
 const MESSAGE_JUMP_EVENT = "zoo:jump-to-message";
 
 /**
@@ -102,4 +130,42 @@ export function subscribeMessageJump(handler: (messageId: string) => void): () =
   const listener = (event: Event) => handler((event as CustomEvent<string>).detail);
   window.addEventListener(MESSAGE_JUMP_EVENT, listener);
   return () => window.removeEventListener(MESSAGE_JUMP_EVENT, listener);
+}
+
+const CHANNEL_LINK_REVEAL_EVENT = "zoo:reveal-current-channel-link";
+
+/**
+ * いま表示中の URL と同じチャンネル・メッセージ・スレッドを指すリンクを、通常の左クリックで押したことを知らせる。
+ * URL が変わらないため、ルーターも履歴の blocker も動かない。ノートを表示している ChannelScreen は、これを受けて
+ * 下書きの確認と保存中ガードを通してからメッセージタブへ戻す。異なる URL の移動前に発火すると、移動が拒否された
+ * ときにも表示が変わってしまうので、呼び出し側は現在の URL と同じときだけ発火する。
+ */
+export function requestChannelLinkReveal(target: ChannelLinkTarget): void {
+  window.dispatchEvent(
+    new CustomEvent<ChannelLinkTarget>(CHANNEL_LINK_REVEAL_EVENT, { detail: target }),
+  );
+}
+
+/**
+ * 現在の URL と、クリックしたリンクが生成した href が同じ移動先を指すときだけ、
+ * {@link requestChannelLinkReveal} を送る。異なる URL の移動前には送らない。
+ */
+export function requestChannelLinkRevealIfSameDestination(
+  currentHref: string | undefined,
+  clickedHref: string,
+  origin = window.location.origin,
+): void {
+  const current = channelLinkTargetFromHref(currentHref, origin);
+  const clicked = channelLinkTargetFromHref(clickedHref, origin);
+  if (!current || !clicked || !sameChannelLinkTarget(current, clicked)) return;
+  requestChannelLinkReveal(clicked);
+}
+
+/** {@link requestChannelLinkReveal} の合図を受け取る。戻り値で購読を解除する。 */
+export function subscribeChannelLinkReveal(
+  handler: (target: ChannelLinkTarget) => void,
+): () => void {
+  const listener = (event: Event) => handler((event as CustomEvent<ChannelLinkTarget>).detail);
+  window.addEventListener(CHANNEL_LINK_REVEAL_EVENT, listener);
+  return () => window.removeEventListener(CHANNEL_LINK_REVEAL_EVENT, listener);
 }

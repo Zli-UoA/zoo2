@@ -69,6 +69,8 @@ interface MessageListProps {
   messages: FeedMessage[];
   isLoading: boolean;
   isWritePending?: boolean;
+  /** 画面に表示されているか。非表示中は既読の書き込みを行わない。 */
+  isActive?: boolean;
   isError: boolean;
   currentUserId: string | null;
   /** 操作権限を伴わない閲覧者 ID。読み取り専用表示でメンションと自分のリアクションを判定する。 */
@@ -215,6 +217,7 @@ export function MessageList({
   onForward,
   canCompose = true,
   isOffline = false,
+  isActive = true,
   unreadBoundaryId,
   unreadBoundaryAt,
   onLoadOlder,
@@ -230,7 +233,14 @@ export function MessageList({
     markRead,
     isLoading: readStateLoading,
     isError: readStateError,
-  } = useMessageReadState(channelId, currentUserId, messages, isLoading || isError, isWritePending);
+  } = useMessageReadState(
+    channelId,
+    currentUserId,
+    messages,
+    isLoading || isError,
+    isWritePending,
+    isActive,
+  );
   // 古いページを取っている最中や、古いメッセージがないときは、要求しない (同じ要求を重ねない)。
   const loadOlder = useCallback(() => {
     if (hasOlder && !isLoadingOlder) onLoadOlder?.();

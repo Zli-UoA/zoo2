@@ -117,6 +117,10 @@
       ]
     },
     {
+      "file": "src/components/chat/notes/ChannelNotesScreen.stories.tsx",
+      "states": ["List", "Detail", "Mobile"]
+    },
+    {
       "file": "src/components/chat/ChannelSidebar.stories.tsx",
       "states": [
         "Default",
@@ -1181,6 +1185,15 @@
       "file": "src/components/chat/ChannelScreen.tsx",
       "story": "src/components/chat/ChannelScreen.stories.tsx",
       "checks": ["src/components/chat/ChannelScreen.browser.test.tsx"]
+    },
+    {
+      "file": "src/components/chat/notes/ChannelNotesScreen.tsx",
+      "story": "src/components/chat/notes/ChannelNotesScreen.stories.tsx",
+      "checks": [
+        "src/components/chat/notes/ChannelNotesScreen.browser.test.tsx",
+        "src/components/chat/notes/ChannelNotesScreen.navigation.browser.test.tsx"
+      ],
+      "reason": "List で一覧と本文、Detail で選択したノートだけの本文取得と表示専用 clickable、Mobile で一覧から本文への切替と戻る操作を確認する。保存競合・権限変更・ページング・復元・並べ替えはブラウザーテストで検証する。"
     },
     {
       "file": "src/components/chat/ChannelPinMenu.tsx",

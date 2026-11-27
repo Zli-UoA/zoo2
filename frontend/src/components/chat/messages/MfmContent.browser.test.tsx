@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { expect, it } from "vite-plus/test";
 import { http, HttpResponse } from "msw";
 import { mockServer, startMockServer } from "../../../test/browser-setup";
@@ -136,4 +136,24 @@ it("retains local rendering when the initial shortcode service request fails", a
   expect(view.container.textContent).toContain("😄");
   expect(view.container.textContent).toContain(":unknown_standard_code:");
   view.unmount();
+});
+
+it("keeps chat clickable events while note display mode produces none", () => {
+  const events: string[] = [];
+  const chat = render(<MfmContent content="$[clickable.ev=hello chat]" />);
+  chat.container.addEventListener("mfm-click", (event) => {
+    events.push((event as CustomEvent<string>).detail);
+  });
+  fireEvent.click(screen.getByRole("button", { name: "chat" }));
+  expect(events).toEqual(["hello"]);
+  chat.unmount();
+
+  const note = render(<MfmContent content="$[clickable.ev=hello note]" clickable="display" />);
+  note.container.addEventListener("mfm-click", (event) => {
+    events.push((event as CustomEvent<string>).detail);
+  });
+  expect(screen.queryByRole("button", { name: "note" })).toBeNull();
+  fireEvent.click(screen.getByText("note"));
+  expect(events).toEqual(["hello"]);
+  note.unmount();
 });

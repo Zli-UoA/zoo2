@@ -48,6 +48,12 @@ export interface MfmContentProps {
    * コード・数式・絵文字・メンションの中は強調しない。
    */
   highlight?: readonly string[];
+  /**
+   * `$[clickable]` の扱い。既定の `"interactive"` はチャットと同じく押せるボタンにし、
+   * `mfm-click` を発火する。`"display"` は表示専用のテキストとして描画し、ボタンも
+   * イベントも作らない（ノートの本文・プレビュー用）。
+   */
+  clickable?: "interactive" | "display";
 }
 const ShortcodeContext = createContext<Readonly<Record<string, string>>>({});
 const linkClass = `${inlineLinkClassName} underline`;
@@ -328,8 +334,8 @@ function renderNode(
         );
       }
       if (name === "clickable")
-        return inLink ? (
-          children()
+        return inLink || options.clickable === "display" ? (
+          <span>{children()}</span>
         ) : (
           <button
             type="button"
