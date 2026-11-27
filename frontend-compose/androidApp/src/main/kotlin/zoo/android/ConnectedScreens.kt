@@ -18,6 +18,8 @@ import io.ktor.http.Url
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
@@ -165,7 +167,7 @@ internal fun ConnectedScreens(
     val oldest = mainPage?.oldest?.first?.let(::timestampMillis)
     val needsUnreadHistory = env.online && currentThread == null && focusMessage == null &&
         readBoundary != null && readBoundary > 0 && oldest != null && oldest > readBoundary &&
-        mainPage?.hasOlder == true && visitRead?.hasUnread == true && unreadPages < MAX_UNREAD_PAGES && !unreadHistoryFailed
+        mainPage.hasOlder && visitRead.hasUnread && unreadPages < MAX_UNREAD_PAGES && !unreadHistoryFailed
     val focusRow = rows.find { it.text("id") == focusMessage }
     val focusParent = focusRow?.text("parent_id")
     // Keep a deleted parent's thread readable and prevent replies to it.
@@ -520,22 +522,27 @@ internal fun ConnectedScreens(
     }
     val readEnabled = screen is AndroidScreen.Conversation && member && env.online &&
         env.visible && env.focused && currentReadPosition != null
-    val latestRowsById by rememberUpdatedState(rowsById)
-    LaunchedEffect(session, channelId, readEnabled) {
-        if (!readEnabled || channelId == null) return@LaunchedEffect
-        snapshotFlow { visibleReadThrough }.collect { id ->
-            if (id == null) return@collect
-            val row = latestRowsById[id] ?: return@collect
-            if (row.present("deleted_at") || row.present("parent_id")) return@collect
-            val timestamp = timestampMillis(row.text("created_at")) ?: return@collect
-            try {
-                session.markChannelRead(channelId, id, timestamp)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                // Keep the last saved position. Reaching the end again or returning to the screen retries.
+    LaunchedEffect(session, channelId, messageTable, readEnabled) {
+        if (!readEnabled || channelId == null || messageTable == null) return@LaunchedEffect
+        snapshotFlow { visibleReadThrough }
+            .combine(messageTable.replicatedRows) { id, confirmed ->
+                // A locally inserted message can be used as a cursor only after sync confirms it.
+                if (id == null) return@combine null
+                val row = confirmed.firstOrNull { it.text("id") == id } ?: return@combine null
+                if (row.present("deleted_at") || row.present("parent_id")) return@combine null
+                timestampMillis(row.text("created_at"))?.let { id to it }
             }
-        }
+            .distinctUntilChanged()
+            .collect { cursor ->
+                val (id, timestamp) = cursor ?: return@collect
+                try {
+                    session.markChannelRead(channelId, id, timestamp)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    // Reaching the end again or returning to the screen retries the write.
+                }
+            }
     }
     val reaction = state.confirmingEntry?.takeIf { it.operation == EntryOperation.React }
     val insertingEmoji = state.inputMenu == InputTool.Emoji

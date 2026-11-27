@@ -717,7 +717,8 @@ internal fun ColumnScope.TimelineWithInput(
                 positioned = true
                 onUnreadPositioned?.invoke()
             }
-            seekUnread && focusMessage == null && !unreadPositionPending && unreadIndex >= 0 -> {
+            focusMessage == null && !unreadPositionPending && unreadIndex >= 0 &&
+                (seekUnread || (!positioned && !restorePending)) -> {
                 restorePending = false
                 followEnd = false
                 scroll.scrollToItem(unreadIndex, -with(density) { headerOverlayHeight.roundToPx() })
@@ -736,17 +737,13 @@ internal fun ColumnScope.TimelineWithInput(
                 scroll.requestScrollToItem(if (allowThreads) entries.lastIndex else 0)
             }
             focusMessage == null && allowThreads && !positioned && !unreadPositionPending -> {
-                if (unreadIndex >= 0) {
-                    scroll.scrollToItem(unreadIndex, -with(density) { headerOverlayHeight.roundToPx() })
-                } else {
-                    scroll.scrollToItem(entries.lastIndex)
-                }
-                followEnd = unreadIndex < 0 || !scroll.canScrollForward
+                scroll.scrollToItem(entries.lastIndex)
+                followEnd = true
                 positioned = true
             }
         }
         if (seekUnread && !unreadPositionPending && (unreadIndex < 0 || (focusRequest != null && openedTarget == focusRequest))) {
-            onUnreadPositioned?.invoke()
+            onUnreadPositioned()
         }
     }
     val latestEntry by rememberUpdatedState(entries.lastOrNull())
