@@ -18,6 +18,7 @@ data class DecryptedBody(
     val body: String? = null,
     val notice: String? = null,
     val revision: MessageRevision = MessageRevision.LATEST,
+    val mentions: MessageMentions = MessageMentions(),
 ) {
     val revisionNotice: String? get() = when (revision) {
         MessageRevision.LATEST -> null
@@ -38,6 +39,6 @@ internal class EncryptedMessageDisplayState {
 
     fun receive(result: DecryptedBody) {
         decoded = if (result.revision == MessageRevision.LATEST) result
-        else result.copy(body = decoded?.body, notice = decoded?.notice)
+        else result.copy(body = decoded?.body, notice = decoded?.notice, mentions = decoded?.mentions ?: MessageMentions())
     }
 }

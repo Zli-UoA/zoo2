@@ -5,6 +5,9 @@ import android.icu.util.ULocale
 import androidx.compose.ui.text.PlatformTextStyle
 import okhttp3.*
 
+internal actual fun normalizeMentionSearch(value: String): String =
+    java.text.Normalizer.normalize(value, java.text.Normalizer.Form.NFKC).lowercase()
+
 internal actual fun nativeSelectedText(): String = ""
 
 internal actual fun nativeAbsoluteUrl(url: String): String = url

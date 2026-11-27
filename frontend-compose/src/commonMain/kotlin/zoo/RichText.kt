@@ -35,6 +35,8 @@ private fun RichSelection(enabled: Boolean, content: @Composable () -> Unit) {
     if (enabled) SelectionContainer { content() } else content()
 }
 
+internal val LocalMentionAllowlist = staticCompositionLocalOf<MentionAllowlist?> { null }
+
 @OptIn(ExperimentalResourceApi::class)
 @Composable
 fun RichText(
@@ -210,6 +212,7 @@ private fun InlineParagraph(
     val channels by app.repo.channels.rows.collectAsState()
     val inheritedStyle = MaterialTheme.typography.bodyMedium.merge(LocalMfmStyle.current)
     val inheritedInLink = LocalMfmInLink.current
+    val mentionAllowlist = LocalMentionAllowlist.current
     val mentionForeground = MaterialTheme.colorScheme.onSecondaryContainer
     val mentionBackground = MaterialTheme.colorScheme.secondaryContainer
     val accent = LocalLinkColor.current
@@ -229,7 +232,7 @@ private fun InlineParagraph(
     val remoteEmojis = remember(activityPubEmojis, registeredEmojis) { activityPubEmojis + registeredEmojis }
     val paragraph = remember(
         app, segments, users, authzAccounts, shortcodes, fonts, channels, inheritedStyle,
-        mentionForeground, mentionBackground, accent, codeBackground, remoteEmojis, editedAt, inheritedInLink,
+        mentionForeground, mentionBackground, accent, codeBackground, remoteEmojis, editedAt, inheritedInLink, mentionAllowlist,
     ) {
         val mentions = mutableMapOf<String, String>()
         val emojiParts = mutableMapOf<String, Row>()
@@ -283,6 +286,9 @@ private fun InlineParagraph(
                                     !it.present("deleted_at")
                             }
                         else null
+                    val federatedMention = token.kind == "mention" && value.count { it == '@' } == 2
+                    val isMention = token.kind == "mention" &&
+                        (mentionAllowlist == null || !federatedMention && mentionAllowlist.allows(value))
                     val inlineWeight = if (token.kind == "bold") FontWeight.Bold else inheritedWeight
                     val style =
                         when (token.kind) {
@@ -291,7 +297,8 @@ private fun InlineParagraph(
                             "strike" -> SpanStyle(textDecoration = TextDecoration.LineThrough)
                             "small" -> SpanStyle(fontSize = (inheritedSpan.fontSize.value * .8f).sp)
                             "code" -> SpanStyle(fontFamily = fonts.mono, background = codeBackground)
-                            "mention" -> if (inLink) SpanStyle() else
+                            "mention" -> if (inLink || !isMention) SpanStyle() else if (federatedMention)
+                                SpanStyle(color = accent, textDecoration = TextDecoration.Underline) else
                                 SpanStyle(
                                     color = mentionForeground,
                                     background = mentionBackground,
@@ -302,14 +309,14 @@ private fun InlineParagraph(
                             else -> SpanStyle()
                         }
                     val remote =
-                        if (!inLink && token.kind == "mention" && value.count { it == '@' } == 2)
+                        if (!inLink && isMention && federatedMention)
                             value.drop(1).split('@').takeIf { it.size == 2 && it[1].contains('.') }
                         else null
                     val link = if (inLink) null else
                         token.url
                             ?: channel?.let { "/channels/${it.text("id")}" }
                             ?: remote?.let { "https://${it[1]}/@${it[0]}" }
-                    if (token.kind == "mention" && link == null && !inLink) {
+                    if (isMention && link == null && !inLink) {
                         val id = "mention-${mentions.size}"
                         mentions[id] = value
                         appendInlineContent(id, value)
@@ -378,7 +385,9 @@ private fun InlineParagraph(
     }
     val mentionContent = mentions.mapValues { (_, value) ->
         MfmInlineBody(PlaceholderVerticalAlign.TextCenter) {
-            val account = authzAccounts.find { it.text("username") == value.removePrefix("@") }
+            val name = value.removePrefix("@")
+            val account = if (name.equals("channel", true) || name.equals("here", true)) null
+                else authzAccounts.find { it.text("username") == name }
             Row(
                 Modifier.background(mentionBackground, RoundedCornerShape(4.dp))
                     .padding(horizontal = 2.dp),
@@ -386,8 +395,13 @@ private fun InlineParagraph(
                 horizontalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 if (account != null) {
-                    Text("@", color = mentionForeground)
-                    Avatar(account, size = with(density) { inheritedStyle.fontSize.toDp() })
+                    androidx.compose.material3.Text(
+                        "@",
+                        color = mentionForeground,
+                        style = inheritedStyle,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Avatar(account, size = with(density) { (inheritedStyle.fontSize * 1.15f).toDp() })
                 }
                 androidx.compose.material3.Text(
                     fontText(account?.let(::author) ?: value, fonts, FontWeight.Medium),

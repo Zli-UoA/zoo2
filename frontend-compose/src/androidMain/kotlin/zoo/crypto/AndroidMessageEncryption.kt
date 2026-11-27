@@ -27,9 +27,10 @@ class AndroidMessageEncryption(
     private val api: ZooApi,
     scope: CoroutineScope,
     private val uploadBackup: suspend () -> Unit = {},
+    private val users: () -> List<Row> = { emptyList() },
 ) : MessageEncryption {
-    constructor(manager: E2eeDeviceManager, api: ZooApi, scope: CoroutineScope) :
-        this(manager.readyStore, api, scope, { manager.setup?.uploadKeyBackup(); Unit })
+    constructor(manager: E2eeDeviceManager, api: ZooApi, scope: CoroutineScope, users: () -> List<Row>) :
+        this(manager.readyStore, api, scope, { manager.setup?.uploadKeyBackup(); Unit }, users)
     override val changes = MutableStateFlow(0L)
     private val sending = Mutex()
     private class SendingSession(val owner: CryptoStore, val session: OutboundSession) {
@@ -178,6 +179,8 @@ class AndroidMessageEncryption(
     }
 
     private suspend fun submit(channel: String, id: String, parent: String?, body: String, revision: ULong, edit: Boolean, editEpoch: ULong? = null, editCiphertext: String? = null, editKind: String = "message") {
+        val extracted = encryptedMentions(body, users())
+        val mentions = Mentions(extracted.userIds, extracted.channel, extracted.here)
         sending.withLock {
             val store = store()
             var minimum = latestEpochs[channel] ?: 0uL
@@ -194,7 +197,6 @@ class AndroidMessageEncryption(
                         val pending = devices.filter { deviceKey(it) !in current.shared }
                         share(store, session, pending)
                         current.shared += pending.map(::deviceKey)
-                        val mentions = Mentions(emptyList(), false, false)
                         val previous = if (edit) crypto {
                             store.decrypt(EncryptedMessage(channel, id, parent, store.userId, editKind, editEpoch!!,
                                 revision - 1uL, editCiphertext!!)).also { check(it.revision == RevisionStatus.Latest) { "e2ee.editConflict" } }
@@ -213,7 +215,9 @@ class AndroidMessageEncryption(
                                 put("ciphertext", encrypted)
                                 parent?.let { put("parent_id", it) }
                                 if (!edit) put("mentions", buildJsonObject {
-                                    put("user_ids", JsonArray(emptyList())); put("channel", false); put("here", false)
+                                    put("user_ids", JsonArray(mentions.userIds.map { JsonPrimitive(it) }))
+                                    put("channel", mentions.channel)
+                                    put("here", mentions.here)
                                 })
                             })
                             changes.value++
@@ -255,7 +259,7 @@ class AndroidMessageEncryption(
                 decrypted.origin == SessionOrigin.BACKUP -> "e2ee.sender.unauthenticated"
                 !decrypted.senderVerified -> "e2ee.sender.unverified"
                 else -> null
-            })
+            }, mentions = decrypted.payload.mentions.let { MessageMentions(it.userIds, it.channel, it.here) })
         }
     } catch (failure: CancellationException) { throw failure }
     catch (_: ZooCryptoException.MissingRoomKey) { DecryptedBody(notice = "e2ee.undecryptable.keyMissing") }

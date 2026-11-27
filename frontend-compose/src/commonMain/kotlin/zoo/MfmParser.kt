@@ -230,8 +230,15 @@ private class MfmScanner(length: Int) {
                                 !it.isLetterOrDigit() && it !in "_/@"
                             } != false
                             if (kind !in setOf("mention", "hashtag") || boundary) {
-                                val trimmed = if (kind == "link") trimMfmUrl(value) else value
-                                token = Inline(trimmed, kind, trimmed.takeIf { kind == "link" })
+                                val trimmed = when {
+                                    kind == "link" -> trimMfmUrl(value)
+                                    kind == "mention" && value.count { it == '@' } == 1 ->
+                                        value.trimEnd('.')
+                                    else -> value
+                                }
+                                if (kind != "mention" || trimmed.length > 1) {
+                                    token = Inline(trimmed, kind, trimmed.takeIf { kind == "link" })
+                                }
                                 end = at + trimmed.length
                             }
                         }

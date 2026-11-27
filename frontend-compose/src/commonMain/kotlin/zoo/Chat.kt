@@ -5,6 +5,8 @@ import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -28,6 +30,7 @@ import androidx.compose.ui.unit.*
 import io.ktor.http.encodeURLParameter
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.drop
 import kotlinx.serialization.json.*
 
 @Composable
@@ -367,13 +370,19 @@ internal fun MessageList(
         else null
     }
     val state = rememberLazyListState()
-    LaunchedEffect(app.query["message"], messages.size) {
-        val index = messages.indexOfFirst { it.text("id") == app.query["message"] }
-        if (index >= 0) state.scrollToItem(index * 2 + 1)
+    val targetMessageId = app.query["message"]
+    val targetIndex = remember(messages, targetMessageId) {
+        messages.indexOfFirst { it.text("id") == targetMessageId }
     }
     var previousSize by remember(channel.text("id"), parent) { mutableStateOf(0) }
-    var pinned by remember(channel.text("id"), parent) { mutableStateOf(true) }
+    var pinned by remember(channel.text("id"), parent) { mutableStateOf(targetIndex < 0) }
     var newBelow by remember(channel.text("id"), parent) { mutableStateOf(false) }
+    LaunchedEffect(targetMessageId, targetIndex >= 0) {
+        if (targetIndex >= 0) {
+            pinned = false
+            state.scrollToItem(targetIndex * 2 + 1)
+        }
+    }
     val scope = rememberCoroutineScope()
     suspend fun bottom() {
         if (messages.isNotEmpty()) {
@@ -385,6 +394,7 @@ internal fun MessageList(
     }
     LaunchedEffect(state) {
         snapshotFlow { state.isScrollInProgress }
+            .drop(1)
             .collect { moving ->
                 if (!moving) {
                     pinned = !state.canScrollForward
@@ -393,7 +403,7 @@ internal fun MessageList(
             }
     }
     LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty() && messages.size > previousSize) {
+        if (messages.size > previousSize && (previousSize > 0 || targetIndex < 0)) {
             if (previousSize == 0 || pinned || messages.last().text("user_id") == app.config.userId)
                 bottom()
             else newBelow = true
@@ -553,6 +563,7 @@ internal fun MessageList(
                             initialEditing = editingId == row.text("id"),
                             initialEditingText = editingText.takeIf { editingId == row.text("id") },
                             canReact = canReact,
+                            isTarget = index == targetIndex,
                             callbacks = callbacks?.invoke(row),
                             canOpenThread = parent == null ||
                                 (row.nested("display_data").text("reply_count").toIntOrNull() ?: 0) > 0 ||
@@ -622,6 +633,7 @@ internal fun Message(
     callbacks: MessageCallbacks? = null,
     ownOverride: Boolean? = null,
     canOpenThread: Boolean = true,
+    isTarget: Boolean = false,
 ) {
     val encryptedRow = message["ciphertext"]?.let { it != JsonNull } == true
     val encryptedChannel = encryptedRow || channel.flag("encrypted") || app.isEncryptedChannel(channel.text("id"))
@@ -629,6 +641,10 @@ internal fun Message(
     val payload = encryptedMessagePayload(message)
     val decryptedState = remember(message.text("channel_id"), message.text("id"), encryption) { EncryptedMessageDisplayState() }
     val decoded = decryptedState.decoded
+    val mentions = decoded?.mentions
+    val allowedMentions = remember(encryptedRow, mentions, users) {
+        if (encryptedRow) mentionAllowlist(mentions ?: MessageMentions(), users) else null
+    }
     LaunchedEffect(payload, encryption) {
         if (encryptedRow && encryption != null) {
             encryption.changes.collect { decryptedState.receive(encryption.decrypt(payload)) }
@@ -637,6 +653,8 @@ internal fun Message(
     val originalMessage = message
     val message = if (encryptedRow) JsonObject(message + ("content" to JsonPrimitive(decoded?.body.orEmpty()))) else message
     val id = message.text("id")
+    val colors = MaterialTheme.colorScheme
+    val messageShape = RoundedCornerShape(AndroidDesign.controlRadius)
     val messageTable = app.repo.messages(channel.text("id"))
     val reactionTable = app.repo.reactions(channel.text("id"))
     val messageEdits by messageTable.optimisticChanges.collectAsState()
@@ -739,11 +757,14 @@ internal fun Message(
                 .semantics { testTag = "message:$id" }
                 .fillMaxWidth()
                 .background(
-                    if (hovered || focused)
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .6f)
-                    else Color.Transparent,
-                    RoundedCornerShape(8.dp),
+                    when {
+                        isTarget -> colors.secondaryContainer.copy(alpha = .4f)
+                        hovered || focused -> colors.surfaceVariant.copy(alpha = .6f)
+                        else -> Color.Transparent
+                    },
+                    messageShape,
                 )
+                .then(if (isTarget) Modifier.border(1.dp, colors.secondary, messageShape) else Modifier)
                 .hoverable(interaction)
         ) {
             Row(
@@ -942,6 +963,7 @@ internal fun Message(
                             else {
                                 if (message.text("content").isNotEmpty()) {
                                     CompositionLocalProvider(
+                                        LocalMentionAllowlist provides allowedMentions,
                                         LocalMfmStyle provides
                                             androidx.compose.ui.text.TextStyle(
                                                 lineHeight = 22.75.sp
@@ -1345,7 +1367,7 @@ internal fun Composer(
                 throw e
             } catch (_: Exception) {}
     }
-    val range = if (enabled && !dismissed && !composing) completionAt(value, caret) else null
+    val range = if (enabled && !dismissed) completionAt(value, caret) else null
     val options =
         completionOptions(
             range,
@@ -1358,8 +1380,10 @@ internal fun Composer(
             channels,
             commandOptions ?: commands,
         )
+    val selectedOption = activeOption.coerceIn(0, options.lastIndex.coerceAtLeast(0))
+    val showingMentions = range?.kind == "mention"
     fun choose(option: CompletionOption) {
-        if (range != null) {
+        if (range != null && !composing) {
             if (range.kind == "command") selectedCommand = option
             val (next, position) = insertCompletion(value, range, option.name)
             value = next
@@ -1522,91 +1546,107 @@ internal fun Composer(
             else Dp.Infinity
             Column(Modifier.fillMaxWidth().heightIn(max = auxiliary)
                 .then(if (fullScreen && !scrollEditor) Modifier.verticalScroll(rememberScrollState()) else Modifier)) {
-            sendError?.let { error ->
-                Row(
-                    Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        error,
-                        Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Assertive },
-                        color = MaterialTheme.colorScheme.error,
-                        small = true,
-                    )
-                    IconButton("x", app.t("common.close"), size = 24.dp) { sendError = null }
-                }
-            }
-            DraftAttachments(app, attachments)
-            if (options.isNotEmpty())
-                Column(
-                    Modifier.fillMaxWidth()
-                        .padding(bottom = 8.dp)
-                        .heightIn(max = 192.dp)
-                        .verticalScroll(rememberScrollState())
-                        .then(
-                            webControlModifier(
-                                "listbox",
-                                attributes =
-                                    mapOf(
-                                        "aria-label" to
-                                            app.t(
-                                                when (range?.kind) {
-                                                    "command" -> "composer.commands"
-                                                    "channel" -> "composer.channels"
-                                                    "mfm" -> "mfm.suggestions"
-                                                    else -> "mentions.suggestions"
-                                                }
-                                            )
-                                    ),
-                            )
+                sendError?.let { error ->
+                    Row(
+                        Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            error,
+                            Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Assertive },
+                            color = MaterialTheme.colorScheme.error,
+                            small = true,
                         )
-                        .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
-                        .padding(4.dp)
-                ) {
-                    options.forEachIndexed { index, option ->
-                        val optionName =
-                            when (range?.kind) {
-                                "mfm" -> "$[${option.name}]"
-                                "channel" -> "#${option.name}"
-                                "command" -> "/${option.name}"
-                                else -> "@${option.name}"
-                            }
-                        val optionLabel = if (range?.mfm == true) app.t(option.label) else option.label
-                        Row(
-                            Modifier.fillMaxWidth()
-                                .then(
-                                    webControlModifier(
-                                        "option",
-                                        selected = index == activeOption,
-                                        attributes =
-                                            mapOf(
-                                                "aria-label" to
-                                                    if (optionLabel.isBlank()) optionName
-                                                    else "$optionName $optionLabel"
-                                            ),
-                                    )
+                        IconButton("x", app.t("common.close"), size = 24.dp) { sendError = null }
+                    }
+                }
+                DraftAttachments(app, attachments)
+                if (options.isNotEmpty()) {
+                    val colors = MaterialTheme.colorScheme
+                    val optionRadius = RoundedCornerShape(AndroidDesign.controlRadius)
+                    Column(
+                        Modifier.fillMaxWidth()
+                            .padding(bottom = 8.dp)
+                            .heightIn(max = 192.dp)
+                            .verticalScroll(rememberScrollState())
+                            .then(
+                                webControlModifier(
+                                    "listbox",
+                                    attributes =
+                                        mapOf(
+                                            "aria-label" to
+                                                app.t(
+                                                    when (range?.kind) {
+                                                        "command" -> "composer.commands"
+                                                        "channel" -> "composer.channels"
+                                                        "mfm" -> "mfm.suggestions"
+                                                        else -> "mentions.suggestions"
+                                                    }
+                                                )
+                                        ),
                                 )
-                                .background(
-                                    if (index == activeOption) MaterialTheme.colorScheme.surfaceVariant
-                                    else Color.Transparent,
-                                    RoundedCornerShape(4.dp),
-                                )
-                                .clickable { choose(option) }
-                                .padding(horizontal = 8.dp, vertical = 4.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            androidx.compose.material3.Text(
-                                fontText(
-                                    optionName,
-                                    LocalFonts.current.copy(latin = LocalFonts.current.mono),
-                                ),
-                                style =
-                                    MaterialTheme.typography.bodyMedium.copy(
-                                        fontFamily = LocalFonts.current.mono
-                                    ),
-                                color = MaterialTheme.colorScheme.onBackground,
                             )
-                            if (optionLabel.isNotBlank()) Text(optionLabel, muted = true, maxLines = 1)
+                            .background(colors.surface, optionRadius)
+                            .border(1.dp, colors.outline, optionRadius)
+                            .padding(AndroidDesign.spaceSmall)
+                    ) {
+                        options.forEachIndexed { index, option ->
+                            val optionName =
+                                when (range?.kind) {
+                                    "mfm" -> "$[${option.name}]"
+                                    "channel" -> "#${option.name}"
+                                    "command" -> "/${option.name}"
+                                    else -> "@${option.name}"
+                                }
+                            val optionLabel = if (range?.mfm == true) app.t(option.label) else option.label
+                            val selected = index == selectedOption
+                            val bringIntoView = remember { BringIntoViewRequester() }
+                            LaunchedEffect(selected, activeOption) {
+                                if (selected) bringIntoView.bringIntoView()
+                            }
+                            Row(
+                                Modifier.fillMaxWidth()
+                                    .bringIntoViewRequester(bringIntoView)
+                                    .semantics { this.selected = selected }
+                                    .then(
+                                        webControlModifier(
+                                            "option",
+                                            selected = selected,
+                                            attributes =
+                                                mapOf(
+                                                    "aria-label" to
+                                                        if (optionLabel.isBlank()) optionName
+                                                        else "$optionName $optionLabel"
+                                                ),
+                                        )
+                                    )
+                                    .background(
+                                        when {
+                                            !selected -> Color.Transparent
+                                            showingMentions -> colors.tertiaryContainer
+                                            else -> colors.surfaceVariant
+                                        },
+                                        RoundedCornerShape(AndroidDesign.spaceSmall),
+                                    )
+                                    .clickable(enabled = !composing) { choose(option) }
+                                    .then(if (showingMentions) Modifier.heightIn(min = AndroidDesign.touchTarget) else Modifier)
+                                    .padding(horizontal = AndroidDesign.spaceMedium, vertical = AndroidDesign.spaceSmall),
+                                horizontalArrangement = Arrangement.spacedBy(AndroidDesign.spaceMedium),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                androidx.compose.material3.Text(
+                                    fontText(
+                                        optionName,
+                                        LocalFonts.current.copy(latin = LocalFonts.current.mono),
+                                    ),
+                                    style =
+                                        (if (showingMentions) MaterialTheme.typography.bodySmall
+                                        else MaterialTheme.typography.bodyMedium)
+                                            .copy(fontFamily = LocalFonts.current.mono),
+                                    color = if (selected && showingMentions) colors.onTertiaryContainer else colors.onSurface,
+                                )
+                                if (optionLabel.isNotBlank()) Text(optionLabel, muted = true, small = showingMentions, maxLines = 1)
+                            }
                         }
                     }
                 }
@@ -1637,16 +1677,16 @@ internal fun Composer(
                             )
                                 when (it.key) {
                                     Key.DirectionDown -> {
-                                        activeOption = (activeOption + 1) % options.size
+                                        activeOption = (selectedOption + 1) % options.size
                                         true
                                     }
                                     Key.DirectionUp -> {
-                                        activeOption = (activeOption + options.size - 1) % options.size
+                                        activeOption = (selectedOption + options.size - 1) % options.size
                                         true
                                     }
                                     Key.Tab,
                                     Key.Enter -> {
-                                        choose(options[activeOption.coerceIn(0, options.lastIndex)])
+                                        choose(options[selectedOption])
                                         true
                                     }
                                     Key.Escape -> {

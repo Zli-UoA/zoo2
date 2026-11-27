@@ -258,6 +258,57 @@ class ReviewRegressionUiTest {
     }
 
     @Test
+    fun notificationLinkKeepsAnOlderMentionInView() {
+        val fixture = Fixture(Environment(touch = true, online = false, path = "/channels/general?message=m3"))
+        val channel = obj("id" to "general")
+        val messages = (0..20).map { index ->
+            obj("id" to "m$index", "channel_id" to "general", "user_id" to "u$index",
+                "created_at" to "2026-11-15T00:${index.toString().padStart(2, '0')}:00Z",
+                "content" to if (index == 3) "Hello @alice" else "Message $index")
+        }
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalTouchUi provides true, LocalApp provides fixture.app) {
+                    MaterialTheme {
+                        MessageList(
+                            fixture.app, channel, messages, emptyList(), emptyList(),
+                            parent = null, wide = false, modifier = Modifier.width(320.dp).height(360.dp),
+                            readState = false,
+                        )
+                    }
+                }
+            }
+            ui.onNodeWithTag("message:m3").assertIsDisplayed()
+            ui.onNodeWithTag("message:m20").assertDoesNotExist()
+        } finally { fixture.close() }
+    }
+
+    @Test
+    fun mentionSuggestionFitsNarrowComposerAndInsertsUsername() {
+        val fixture = Fixture(Environment(touch = true, online = false))
+        val users = listOf(obj("id" to "alice", "user_name" to "alice", "display_name" to "アリス"))
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalTouchUi provides true, LocalApp provides fixture.app) {
+                    MaterialTheme {
+                        NativeWindow(fixture.app, Modifier.width(320.dp).height(320.dp)) {
+                            Composer(fixture.app, "general", null, users, enabled = true,
+                                initialValue = "本文 ", mentionMemberIds = setOf("alice"), showTyping = false, onTyping = {})
+                        }
+                    }
+                }
+            }
+            val input = ui.onNodeWithContentDescription("messages.compose")
+            input.performTextInputSelection(TextRange("本文 ".length))
+            input.performTextInput("@ＡＬＩ")
+            ui.onNodeWithText("@alice").assertIsDisplayed().assertIsSelected()
+                .assertHeightIsAtLeast(AndroidDesign.touchTarget).performClick()
+            input.assertTextEquals("本文 @alice ")
+            ui.onNodeWithText("@alice").assertDoesNotExist()
+        } finally { fixture.close() }
+    }
+
+    @Test
     fun channelComposerSwipesToFullScreenAndPreservesSelectedJapaneseText() {
         val fixture = Fixture(Environment(touch = true, online = false))
         try {

@@ -91,7 +91,7 @@ class E2eeSetupTest {
         start.session.close()
         val channel = "00000000-0000-4000-8000-0000000000c1"
         val messageId = "00000000-0000-4000-8000-0000000000d1"
-        val secret = "SECRET-ANDROID-MESSAGE"
+        val secret = "SECRET-ANDROID-MESSAGE @alice. @here"
         val requests = mutableListOf<String>()
         val delivered = mutableListOf<ToDeviceRow>()
         var epoch = 1
@@ -152,12 +152,15 @@ class E2eeSetupTest {
         })
         val lifetime = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         try {
-            val encryption = AndroidMessageEncryption(MutableStateFlow(sender.store), ZooApi(Config("https://zoo.test", "/shapes", ALICE, false), platform, http), lifetime)
+            val encryption = AndroidMessageEncryption(MutableStateFlow(sender.store), ZooApi(Config("https://zoo.test", "/shapes", ALICE, false), platform, http), lifetime,
+                users = { listOf(obj("id" to ALICE, "user_name" to "alice")) })
             encryption.send(channel, messageId, null, secret)
             assertEquals(2, posts)
             assertTrue(requests.none { secret in it })
             assertEquals("", accepted!!.getValue("content").jsonPrimitive.content)
             assertEquals(2, accepted!!.getValue("epoch").jsonPrimitive.content.toInt())
+            assertEquals(obj("user_ids" to JsonArray(listOf(JsonPrimitive(ALICE))), "channel" to false, "here" to true),
+                accepted!!.getValue("mentions"))
             val snapshot = snapshot()
             assertFailsWith<IllegalStateException> {
                 sender.store.recipients(listOf(JsonObject(snapshot + ("self_signing_keys" to JsonObject(emptyMap())))))
@@ -166,7 +169,9 @@ class E2eeSetupTest {
                 snapshot.getValue("signatures").jsonArray, snapshot).verifiedRoomKeys)
             val row = JsonObject(accepted!! + buildJsonObject { put("user_id", ALICE) })
             val reader = AndroidMessageEncryption(MutableStateFlow(receiver.store), ZooApi(Config("https://zoo.test", "/shapes", ALICE, false), platform, http), lifetime)
-            assertEquals(secret, reader.decrypt(row).body)
+            val decrypted = reader.decrypt(row)
+            assertEquals(secret, decrypted.body)
+            assertEquals(MessageMentions(listOf(ALICE), here = true), decrypted.mentions)
             assertNull(reader.decrypt(row).notice)
             assertNull(reader.decrypt(JsonObject(row + ("channel_id" to JsonPrimitive("00000000-0000-4000-8000-0000000000c2")))).body)
             receiver.restart()
@@ -176,20 +181,22 @@ class E2eeSetupTest {
             assertFailsWith<IllegalStateException> { encryption.send(channel, messageId, null, secret) }
             assertEquals(2, posts) // 一度確認した epoch より古い配布先には送らない。
             epoch = 2
-            encryption.edit(row, "EDITED-SECRET")
+            encryption.edit(row, "EDITED-SECRET @channel")
             assertEquals(3, posts)
             assertTrue(requests.none { "EDITED-SECRET" in it })
             assertEquals("1", accepted!!.getValue("revision").jsonPrimitive.content)
             assertEquals(2, delivered.size) // 同じ epoch の編集では、配布済みのセッションを再利用する。
+            assertFalse("mentions" in accepted!!)
             val editedRow = JsonObject(row + accepted!!)
             val displayed = EncryptedMessageDisplayState()
             displayed.receive(reopened.decrypt(editedRow))
-            assertEquals("EDITED-SECRET", displayed.decoded?.body)
+            assertEquals("EDITED-SECRET @channel", displayed.decoded?.body)
             val stale = reopened.decrypt(row)
             assertEquals(MessageRevision.STALE, stale.revision)
             displayed.receive(stale)
-            assertEquals("EDITED-SECRET", displayed.decoded?.body)
+            assertEquals("EDITED-SECRET @channel", displayed.decoded?.body)
             assertEquals("e2ee.revision.stale", displayed.decoded?.revisionNotice)
+            assertEquals(MessageMentions(channel = true), displayed.decoded?.mentions)
             // 別セッションから同じ版の異なる本文が届いても、最初に確認した本文を保持する。
             displayed.receive(encryption.decrypt(editedRow))
             OutboundSession(channel, 2uL, 0uL).use { fork ->
@@ -198,7 +205,7 @@ class E2eeSetupTest {
                 val conflict = encryption.decrypt(JsonObject(editedRow + ("ciphertext" to alternate)))
                 assertEquals(MessageRevision.CONFLICT, conflict.revision)
                 displayed.receive(conflict)
-                assertEquals("EDITED-SECRET", displayed.decoded?.body)
+                assertEquals("EDITED-SECRET @channel", displayed.decoded?.body)
             }
             // 配れなかった鍵のセッションで本文を送らない。
             refuseDelivery = true

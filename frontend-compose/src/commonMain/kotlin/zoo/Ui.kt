@@ -151,6 +151,8 @@ internal fun zooColorScheme(dark: Boolean): ColorScheme =
             secondary = Color(0xffd9d9d9),
             secondaryContainer = Color(0xff303030),
             onSecondaryContainer = Color(0xffe5e5e5),
+            tertiaryContainer = Color(0xff2e2e2e),
+            onTertiaryContainer = Color.White,
         )
     else
         lightColorScheme(
@@ -169,6 +171,8 @@ internal fun zooColorScheme(dark: Boolean): ColorScheme =
             secondary = Color(0xff626262),
             secondaryContainer = Color(0xfffff6cc),
             onSecondaryContainer = Color.Black,
+            tertiaryContainer = Color(0xfffffbe8),
+            onTertiaryContainer = Color(0xff424242),
         )
 
 fun fontText(text: String, fonts: Fonts, weight: FontWeight? = null): AnnotatedString =

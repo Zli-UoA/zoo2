@@ -97,7 +97,7 @@ internal fun unifiedNotificationFeed(rows: List<Row>, federated: List<Row>, hasO
 internal fun Modifier.notificationSurface(read: Boolean): Modifier {
     val colors = MaterialTheme.colorScheme
     val shape = RoundedCornerShape(8.dp)
-    return fillMaxWidth().clip(shape).background(if (read) colors.background else colors.secondaryContainer.copy(alpha = .5f)).border(1.dp, colors.outlineVariant, shape)
+    return fillMaxWidth().clip(shape).background(if (read) colors.background else colors.tertiaryContainer.copy(alpha = .5f)).border(1.dp, colors.outlineVariant, shape)
 }
 
 @Composable
