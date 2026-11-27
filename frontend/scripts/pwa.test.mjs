@@ -1303,6 +1303,33 @@ test("fresh asset requests are time bounded", async () => {
   assert.equal(init.signal.aborted, false);
 });
 
+test("install applies the fetched shell's CSP to a fetched offline page", async () => {
+  const { handlers, cacheContext } = worker({
+    fetch: async (input) => {
+      const key = requestKey(input);
+      if (key === `${ORIGIN}/` || key === `${ORIGIN}/index.html`)
+        return basicResponse('<html><script src="/assets/index-new.js"></script></html>', {
+          headers: { "content-type": "text/html", "content-security-policy": "new-policy" },
+        });
+      if (key === `${ORIGIN}/offline.html`)
+        return basicResponse('<meta name="zoo-offline" content="true" />offline', {
+          headers: { "content-type": "text/html", "content-security-policy": "old-policy" },
+        });
+      if (key === `${ORIGIN}/manifest.webmanifest`)
+        return basicResponse(validManifest("#ffffff"), {
+          headers: { "content-type": "application/manifest+json" },
+        });
+      return basicResponse(`network:${key}`);
+    },
+  });
+  await dispatch(handlers, "install");
+  const cache = await cacheContext.api.open("zoo-shell-new");
+  assert.equal(
+    (await cache.match(`${ORIGIN}/offline.html`)).headers.get("content-security-policy"),
+    "new-policy",
+  );
+});
+
 test("a failed CSP lookup returns the fetched offline page without caching it", async () => {
   const cacheContext = memoryCaches([
     [
@@ -1331,6 +1358,53 @@ test("a failed CSP lookup returns the fetched offline page without caching it", 
   assert.match(await response.text(), /fresh/);
   const cache = await cacheContext.api.open("zoo-shell-v2");
   assert.match(await (await cache.match(`${ORIGIN}/offline.html`)).text(), /saved/);
+});
+
+test("an offline page is not cached when the current policy is unknown", async () => {
+  const cacheContext = memoryCaches([
+    [
+      "zoo-shell-v2",
+      `${ORIGIN}/offline.html`,
+      basicResponse('<meta name="zoo-offline" content="true" />saved', {
+        headers: { "content-type": "text/html" },
+      }),
+    ],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async (input) => {
+      if (new URL(requestKey(input)).pathname === "/offline.html")
+        return basicResponse('<meta name="zoo-offline" content="true" />fresh', {
+          headers: { "content-type": "text/html", "content-security-policy": "old-policy" },
+        });
+      return basicResponse(`network:${requestKey(input)}`);
+    },
+  });
+  const response = await fetchThrough(handlers, navigation(`${ORIGIN}/offline.html`));
+  assert.match(await response.text(), /fresh/);
+  const cache = await cacheContext.api.open("zoo-shell-v2");
+  assert.match(await (await cache.match(`${ORIGIN}/offline.html`)).text(), /saved/);
+});
+
+test("a valid cached manifest is returned without reading a shell policy", async () => {
+  const manifest = validManifest("#000000");
+  const cacheContext = memoryCaches([
+    ["zoo-shell-v2", `${ORIGIN}/manifest.webmanifest`, basicResponse(manifest)],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+  });
+  assert.equal(await response.text(), manifest);
 });
 
 test("an offline page with a stale CSP does not overwrite the current cache", async () => {

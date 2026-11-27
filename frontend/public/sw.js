@@ -254,6 +254,15 @@ async function precacheShell() {
         // nginx の try_files が欠けたファイルを index.html で返しても保存しない。
         if (path === "/offline.html") {
           if (!isFreshAssetResponse(path, response) || !(await isOfflinePage(response))) return;
+          // 同時に保存した index.html の CSP を案内ページにも適用する。
+          await cache.put(
+            path,
+            await withPolicyHeaders(
+              response.clone(),
+              cached.headers.get("content-security-policy"),
+            ),
+          );
+          return;
         }
         if (path === "/manifest.webmanifest") {
           if (!isFreshAssetResponse(path, response) || !(await isFreshManifest(response))) return;
@@ -476,7 +485,8 @@ async function handleFreshAsset(request) {
         // CSP を確認できない場合は保存せず、取得済みの応答だけを返す。
         return response;
       }
-      if (policy?.known && response.headers.get("content-security-policy") !== policy.csp) {
+      if (!policy?.known) return response;
+      if (response.headers.get("content-security-policy") !== policy.csp) {
         const cached = await cachedFreshAsset(path);
         return cached.type === "error" ? response : cached;
       }
@@ -512,7 +522,6 @@ async function cachedFreshAsset(path) {
     candidates.sort(
       (a, b) => Number(b.current) - Number(a.current) || b.installedAt - a.installedAt,
     );
-    const policy = await currentShellPolicy();
     for (const { name, current } of candidates) {
       const cache = await caches.open(name);
       const saved = await cache.match(path);
@@ -524,7 +533,13 @@ async function cachedFreshAsset(path) {
       )
         continue;
       if (current || path !== "/offline.html") return saved;
-      // 現行のポリシーが確認できないときは、旧世代の案内ページを使わない。
+      // 別世代の案内ページを読むときだけ現行の CSP が必要。確認できなければ使わない。
+      let policy;
+      try {
+        policy = await currentShellPolicy();
+      } catch {
+        continue;
+      }
       if (!policy.known) continue;
       // 旧世代の案内ページには現行の CSP を付ける（現行にヘッダーが無ければ削除）。
       return await withPolicyHeaders(saved.clone(), policy.csp);
