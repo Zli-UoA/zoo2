@@ -536,7 +536,18 @@ async function fetchConditionalAsset(request, path) {
     } catch {
       usable = false;
     }
-    if (usable) return response;
+    if (usable) {
+      if (response.type !== "basic") return response;
+      // 有効な全文が返ったなら、オフライン用の保存版も更新する。
+      const fresh = response.clone();
+      try {
+        const cache = await caches.open(await findActiveShellCache());
+        await cacheResponse(cache, path, response);
+      } catch {
+        /* Storage failure: still serve the fetched response. */
+      }
+      return fresh;
+    }
     // HTML フォールバックなどは manifest として届けない。
     if (precondition) return Response.error();
     return cachedForConditional(request, await cachedFreshAsset(path));
@@ -551,9 +562,10 @@ async function fetchRangeAsset(request, path, precondition) {
   // 部分応答は共有もキャッシュ更新もしないが、取得期限とオフライン代替は適用する。
   try {
     const response = await fetchBounded(request, { cache: "reload" });
-    // 206 / 416 / その他の 4xx はそのまま返す。
+    // 206 / 304 / 416 / その他の 4xx はそのまま返す。
     if (
       response.status === 206 ||
+      response.status === 304 ||
       response.status === 416 ||
       (response.status >= 400 && response.status < 500)
     )

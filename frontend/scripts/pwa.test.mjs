@@ -2452,6 +2452,48 @@ test("a conditional GET keeps a cached manifest when the server returns HTML", a
   assert.equal(await response.text(), manifest);
 });
 
+test("a conditional GET updates the cached manifest with a new 200 response", async () => {
+  const updated = validManifest("#000000");
+  const cacheContext = memoryCaches([
+    ["zoo-shell-v2", `${ORIGIN}/manifest.webmanifest`, basicResponse(validManifest("#ffffff"))],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () =>
+      basicResponse(updated, { headers: { "content-type": "application/manifest+json" } }),
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+    headers: { get: (name) => (name.toLowerCase() === "if-none-match" ? '"old"' : null) },
+  });
+  assert.equal(await response.text(), updated);
+  const cache = await cacheContext.api.open("zoo-shell-v2");
+  assert.equal(await (await cache.match(`${ORIGIN}/manifest.webmanifest`)).text(), updated);
+});
+
+test("a Range request with If-None-Match keeps a 304 response", async () => {
+  const { handlers } = worker({
+    fetch: async () => new Response(null, { status: 304 }),
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+    headers: {
+      get: (name) =>
+        name.toLowerCase() === "range"
+          ? "bytes=0-10"
+          : name.toLowerCase() === "if-none-match"
+            ? '"abc"'
+            : null,
+    },
+  });
+  assert.equal(response.status, 304);
+});
+
 test("If-Match with an unusable body does not use a cached version", async () => {
   const cacheContext = memoryCaches([
     ["zoo-shell-v2", `${ORIGIN}/manifest.webmanifest`, basicResponse(validManifest("#ffffff"))],
