@@ -121,6 +121,8 @@ class TimelineImageSourcesTest {
         assertFalse(messageExcerptNeedsWorkspaceEmoji("あ".repeat(200) + formattedAlias, emptySet()))
         assertFalse(messageExcerptNeedsWorkspaceEmoji("\$[ruby " + "あ".repeat(201) + " :猫:ねこ]", emptySet()))
         assertFalse(messageExcerptNeedsWorkspaceEmoji("\$[ruby **" + "あ".repeat(201) + "** :猫:ねこ]", emptySet()))
+        assertFalse(messageExcerptNeedsWorkspaceEmoji("\$[ruby 星:猫: ねこ]", emptySet()))
+        assertTrue(messageExcerptNeedsWorkspaceEmoji("\$[ruby 星 :猫:ねこ]", emptySet()))
         assertFalse(messageExcerptNeedsWorkspaceEmoji(":unknown:", emptySet()))
     }
 

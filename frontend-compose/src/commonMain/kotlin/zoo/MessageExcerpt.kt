@@ -81,10 +81,31 @@ private class ExcerptEmojiProbe(private val known: Set<String>) {
                 }
             }
         }
-        if (!changesText && rubyBaseEnd == null) return
+        if (!changesText && (rubyBaseEnd == null || !movesRubyBoundary(source, slices, end, rubyBaseEnd))) return
         val boundary = if (rubyBaseEnd == null) start else minOf(start, rubyBaseEnd)
         val plainPrefix = source.subSequence(initial.start, maxOf(initial.start, boundary))
         needsCatalog = excerptHasRoom(prefix, rubyPrefix, plainPrefix, includeEllipsisChange = rubyBaseEnd != null)
+    }
+
+    /**
+     * A recognized emoji is a non-text token. Ending one before an unchanged separator leaves
+     * the base alone; after that separator, trailing text can become a new reading.
+     */
+    private fun movesRubyBoundary(source: String, slices: List<InlineSlice>, end: Int, baseEnd: Int): Boolean {
+        val last = slices.last()
+        if (last.token.kind == "text" && end >= last.start) {
+            if (end == source.length) return end != baseEnd
+            if (baseEnd > end && source.getOrNull(baseEnd)?.isWhitespace() == true) return false
+            return end != baseEnd
+        }
+        // A candidate well before the final styled token cannot change the last reading token.
+        val previous = slices.getOrNull(slices.lastIndex - 1)
+        if (end <= (previous?.start ?: last.start)) return false
+        val tail = source.substring(end)
+        val tailLast = inlineSlices(tail, known).lastOrNull()
+        val readingStart = if (tailLast == null || tailLast.token.kind != "text") tail.length
+            else (tailLast.start until tailLast.end).firstOrNull { tail[it].isWhitespace() } ?: tailLast.start
+        return end + readingStart != baseEnd
     }
 
     fun inspectRuby(
