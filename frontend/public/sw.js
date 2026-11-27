@@ -243,10 +243,14 @@ async function fetchShellIndex() {
 }
 
 async function shellCacheNamesNewestFirst(except) {
+  let keys;
+  try {
+    keys = await caches.keys();
+  } catch {
+    return null;
+  }
   const candidates = [];
-  for (const name of (await caches.keys()).filter(
-    (name) => name.startsWith(CACHE_PREFIX) && name !== except,
-  )) {
+  for (const name of keys.filter((name) => name.startsWith(CACHE_PREFIX) && name !== except)) {
     let installedAt = 0;
     try {
       const cache = await caches.open(name);
@@ -306,69 +310,67 @@ async function precacheShell() {
     );
     // 欠けた／不正な応答で保存できなかった分は旧シェルから引き継ぐ。新しいキャッシュが
     // 選択されたあとにオフラインになっても、案内と配色設定を読めるようにする。
-    // 有効なコピーを見つけたのに保存できなければ、旧キャッシュを残すため install を失敗させる。
-    let carryOverFailed = false;
-    try {
-      // ファイルごとに、新しい世代から順に有効なコピーを探す。
-      const sources = await shellCacheNamesNewestFirst(name);
-      for (const path of ["/manifest.webmanifest", "/offline.html"]) {
-        // 保存先に無効なコピーが残っていても、有効な旧版で置き換える。
-        let savedHere = null;
-        let readFailed = false;
-        let restored = false;
-        try {
-          savedHere = await cache.match(path);
-        } catch {
-          /* The destination could not be read; keep searching older caches. */
-        }
-        if (await isUsableFreshAsset(path, savedHere)) continue;
-        for (const source of sources) {
-          try {
-            const saved = await (await caches.open(source)).match(path);
-            if (!(await isUsableFreshAsset(path, saved))) continue;
-            restored = true;
-            // 案内ページ自身の CSP を保持したまま、転送ヘッダーだけ除いてコピーする。
-            try {
-              await cache.put(
-                path,
-                path === "/manifest.webmanifest"
-                  ? saved.clone()
-                  : await sanitizedCopy(saved.clone()),
-              );
-            } catch {
-              carryOverFailed = true;
-            }
-            break;
-          } catch {
-            readFailed = true;
-            /* Try the next generation when one cache cannot be read. */
-          }
-        }
-        // 読み取りに失敗しただけなのに存在しない扱いにすると、旧キャッシュを消してしまう。
-        if (!restored && readFailed) carryOverFailed = true;
+    // 未解決のアセットだけを記録し、アセットごとに解消していく。
+    const unresolved = new Set();
+    // ファイルごとに、新しい世代から順に有効なコピーを探す。
+    const sources = await shellCacheNamesNewestFirst(name);
+    for (const path of ["/manifest.webmanifest", "/offline.html"]) {
+      let savedHere = null;
+      try {
+        savedHere = await cache.match(path);
+      } catch {
+        /* The destination could not be read; keep searching older caches. */
       }
-    } catch {
-      /* An unavailable old cache is not a reason to fail the install. */
+      if (await isUsableFreshAsset(path, savedHere)) continue;
+      if (!sources) {
+        unresolved.add(path);
+        continue;
+      }
+      let readFailed = false;
+      let restored = false;
+      for (const source of sources) {
+        try {
+          const saved = await (await caches.open(source)).match(path);
+          if (!(await isUsableFreshAsset(path, saved))) continue;
+          // 案内ページ自身の CSP を保持したまま、転送ヘッダーだけ除いてコピーする。
+          await cache.put(
+            path,
+            path === "/manifest.webmanifest" ? saved.clone() : await sanitizedCopy(saved.clone()),
+          );
+          restored = true;
+          break;
+        } catch {
+          // 本文が読めない／保存できない場合は、旧キャッシュを消さないため記録する。
+          readFailed = true;
+        }
+      }
+      if (!restored && readFailed) unresolved.add(path);
     }
     // 初期版の SW は案内ページを zoo-offline-v1 に持っていた。シェルに無ければ引き継ぐ。
-    // 保存先の確認自体が失敗しても install は完了させる。
-    try {
-      if (!(await isUsableFreshAsset("/offline.html", await cache.match("/offline.html")))) {
-        const legacy = await caches.open("zoo-offline-v1");
-        const saved = await legacy.match("/offline.html");
-        if (await isUsableFreshAsset("/offline.html", saved)) {
-          try {
+    const hasOffline = await isUsableFreshAsset(
+      "/offline.html",
+      await cache.match("/offline.html").catch(() => null),
+    ).catch(() => false);
+    if (!hasOffline) {
+      let legacyKeys = [];
+      try {
+        legacyKeys = await caches.keys();
+      } catch {
+        unresolved.add("/offline.html");
+      }
+      if (legacyKeys.includes("zoo-offline-v1")) {
+        try {
+          const saved = await (await caches.open("zoo-offline-v1")).match("/offline.html");
+          if (await isUsableFreshAsset("/offline.html", saved)) {
             await cache.put("/offline.html", await sanitizedCopy(saved.clone()));
-          } catch {
-            // 有効なコピーを見つけたのに保存できないなら、旧キャッシュを残す。
-            carryOverFailed = true;
+            unresolved.delete("/offline.html");
           }
+        } catch {
+          unresolved.add("/offline.html");
         }
       }
-    } catch {
-      /* An unavailable legacy cache is not a reason to fail the install. */
     }
-    if (carryOverFailed) throw new Error("Cannot carry over a cached app asset");
+    if (unresolved.size) throw new Error("Cannot carry over a cached app asset");
     // Write the marker last so a partially precached cache is not selected.
     await cache.put(META_PATH, new Response(String(Date.now())));
   } catch (error) {
@@ -455,8 +457,10 @@ function isFreshAssetResponse(path, response) {
 }
 
 async function isFreshManifest(response) {
+  // 本文が読めない場合は解析失敗と区別するため、読み取りエラーをそのまま送出する。
+  const text = await response.clone().text();
   try {
-    const parsed = JSON.parse(await response.clone().text());
+    const parsed = JSON.parse(text);
     return (
       parsed !== null &&
       typeof parsed === "object" &&
@@ -472,15 +476,9 @@ async function isFreshManifest(response) {
 }
 
 async function isOfflinePage(response) {
-  try {
-    const text = await response.clone().text();
-    // 旧形式の案内ページにもマーカーはない。title の閉じタグは改行で split されていたため空白を許容する。
-    return (
-      text.includes('name="zoo-offline"') || /<title>\s*Zoo — Offline\s*<\/title\s*>/.test(text)
-    );
-  } catch {
-    return false;
-  }
+  const text = await response.clone().text();
+  // 旧形式の案内ページにもマーカーはない。title の閉じタグは改行で split されていたため空白を許容する。
+  return text.includes('name="zoo-offline"') || /<title>\s*Zoo — Offline\s*<\/title\s*>/.test(text);
 }
 
 async function isUsableFreshAsset(path, response) {
@@ -506,7 +504,13 @@ function handleFreshAsset(request) {
   const path = new URL(request.url, self.location.origin).pathname;
   // Range / 条件付き GET は部分応答・304 になり得るので、共有もキャッシュ更新もしない。
   const headers = request.headers;
-  if (headers?.get("range") || headers?.get("if-none-match") || headers?.get("if-modified-since"))
+  if (
+    headers?.get("range") ||
+    headers?.get("if-none-match") ||
+    headers?.get("if-modified-since") ||
+    headers?.get("if-match") ||
+    headers?.get("if-unmodified-since")
+  )
     return fetch(request, { cache: "reload" });
   // 同じパスの同時取得を共有し、古い応答が新しい配色を上書きしないようにする。
   const pending = freshAssetWork.get(path);
@@ -525,7 +529,12 @@ async function fetchFreshAsset(request, path) {
   } catch {
     return await cachedFreshAsset(path);
   }
-  const acceptable = response.ok && (await isUsableFreshAsset(path, response));
+  let acceptable = false;
+  try {
+    acceptable = response.ok && (await isUsableFreshAsset(path, response));
+  } catch {
+    return await cachedFreshAsset(path, response.ok ? null : response);
+  }
   if (acceptable) {
     if (response.type !== "basic") return response;
     // 取得した案内ページ自身の CSP を保持するため、シェルの CSP では上書きしない。

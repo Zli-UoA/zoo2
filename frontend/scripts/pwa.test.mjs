@@ -1447,6 +1447,56 @@ test("an unreadable source keeps the old cache by failing install", async () => 
   assert.ok(await (await realOpen("zoo-shell-old")).match(`${ORIGIN}/manifest.webmanifest`));
 });
 
+test("an unreadable old manifest body keeps the old cache by failing install", async () => {
+  const cacheContext = memoryCaches([
+    ["zoo-shell-old", `${ORIGIN}/index.html`, basicResponse("<html>old</html>")],
+  ]);
+  const old = await cacheContext.api.open("zoo-shell-old");
+  await old.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("1"));
+  await old.put(
+    `${ORIGIN}/manifest.webmanifest`,
+    new Response("unreadable", { headers: { "content-type": "application/manifest+json" } }),
+  );
+  const realOpen = cacheContext.api.open.bind(cacheContext.api);
+  cacheContext.api.open = async (name) => {
+    const cache = await realOpen(name);
+    if (name !== "zoo-shell-old") return cache;
+    return {
+      ...cache,
+      match: async (request) => {
+        const response = await cache.match(request);
+        if (response && requestKey(request).includes("manifest.webmanifest"))
+          return {
+            headers: response.headers,
+            clone: () => ({
+              text: async () => {
+                throw new Error("body unavailable");
+              },
+            }),
+          };
+        return response;
+      },
+    };
+  };
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async (input) => {
+      const key = requestKey(input);
+      if (key === `${ORIGIN}/manifest.webmanifest`)
+        return basicResponse("<html>app shell</html>", {
+          headers: { "content-type": "text/html" },
+        });
+      if (key === `${ORIGIN}/offline.html`)
+        return basicResponse('<meta name="zoo-offline" content="true" />offline', {
+          headers: { "content-type": "text/html" },
+        });
+      return basicResponse(`network:${key}`);
+    },
+  });
+  await assert.rejects(dispatch(handlers, "install"), /carry over/);
+  assert.ok(await (await realOpen("zoo-shell-old")).match(`${ORIGIN}/manifest.webmanifest`));
+});
+
 test("an unreadable cache entry does not stop carry-over", async () => {
   const manifest = validManifest("#ffffff");
   const cacheContext = memoryCaches([
@@ -2265,7 +2315,10 @@ test("conditional GET requests are fetched separately", async () => {
   });
   const base = { url: `${ORIGIN}/manifest.webmanifest`, method: "GET", mode: "cors" };
   await Promise.all([
-    fetchThrough(handlers, { ...base, headers: { get: () => '"abc"' } }),
+    fetchThrough(handlers, {
+      ...base,
+      headers: { get: (name) => (name.toLowerCase() === "if-none-match" ? '"abc"' : null) },
+    }),
     fetchThrough(handlers, base),
   ]);
   assert.equal(calls, 2);
@@ -2424,6 +2477,35 @@ test("notification destinations stay inside the app and open directly when no wi
     });
   }
   assert.deepEqual(opened, ["https://zoo.example/channels/123?message=456", "/", "/", "/"]);
+});
+
+test("an unenumerable cache list keeps the old cache by failing install", async () => {
+  const cacheContext = memoryCaches([
+    ["zoo-shell-old", `${ORIGIN}/manifest.webmanifest`, basicResponse(validManifest("#ffffff"))],
+  ]);
+  const old = await cacheContext.api.open("zoo-shell-old");
+  await old.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("1"));
+  const realKeys = cacheContext.api.keys.bind(cacheContext.api);
+  cacheContext.api.keys = async () => {
+    throw new Error("CacheStorage unavailable");
+  };
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async (input) => {
+      const key = requestKey(input);
+      if (key === `${ORIGIN}/manifest.webmanifest`)
+        return basicResponse("<html>app shell</html>", {
+          headers: { "content-type": "text/html" },
+        });
+      if (key === `${ORIGIN}/offline.html`)
+        return basicResponse('<meta name="zoo-offline" content="true" />offline', {
+          headers: { "content-type": "text/html" },
+        });
+      return basicResponse(`network:${key}`);
+    },
+  });
+  await assert.rejects(dispatch(handlers, "install"));
+  assert.ok((await realKeys()).includes("zoo-shell-old"));
 });
 
 test("a partial new cache is removed when install fails", async () => {
