@@ -92,6 +92,7 @@ internal data class TimelineItem(
     /** 本文に書いた、このアプリのチャンネル・メッセージへのリンク（埋め込みカードを出す。外部には送らない）。 */
     val channelLinks: List<String> = emptyList(),
     val emoji: Map<String, TimelineMedia> = emptyMap(),
+    val needsWorkspaceEmoji: Boolean = false,
     val avatar: String? = null,
     val attachedImageUrls: Set<String> = emptySet(),
     /** 復号できなかった理由（docs/e2ee.md の「受信時の検証」）。本文の代わりに出す。 */

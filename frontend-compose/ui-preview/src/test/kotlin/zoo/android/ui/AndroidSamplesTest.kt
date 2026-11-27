@@ -343,13 +343,17 @@ class AndroidSamplesTest {
             }
             if (emojiPicker) {
                 val choices = remember {
-                    listOf("👍", "😊", "🎉", "❤️", "😀", "😂", "🥰", "😎", "🥳", "🙌", "👏", "👋", "✨", "🔥",
-                        "🌈", "🚀", "🌍", "🍕", "🍩", "☕", "⚽", "🎮", "🎵", "🎁", "🎂", "💡", "💯", "✅",
-                        "🐶", "🦊", "🐼", "🐻", "🐸", "🐵", "🦁", "🐯", "🐧", "🦄", "🦋", "🐙", "🌸", "🌻")
-                        .map { EmojiChoice(it, it, it) } + EmojiChoice("🐱", "🐱", "cat", keywords = "ねこ")
+                    listOf(
+                        "スマイリーと感情" to "😀 😊 😂 🥰 😎 🥳",
+                        "アクティビティ" to "🎉 🎁 ⚽ 🎮 🎈 🎊",
+                        "動物と自然" to "🐶 🦊 🐼 🐻 🐸 🐵 🦁 🐯 🐧 🦄 🦋 🐙 🌸 🌻",
+                        "飲み物・食べ物" to "🍕 🍩 ☕ 🎂",
+                    ).flatMap { (category, glyphs) ->
+                        glyphs.split(' ').map { EmojiChoice(it, it, it, category = category) }
+                    } + EmojiChoice("🐱", "🐱", "cat", keywords = "ねこ", category = "動物と自然")
                 }
                 EmojiPicker("絵文字", AndroidColors(dark), choices,
-                    custom = listOf(EmojiChoice(":party:", "", "party", "fixture-emoji")),
+                    custom = listOf(EmojiChoice(":party:", "", "party", "fixture-emoji", category = "イベント")),
                     loadKitchen = {
                         KitchenChoices(listOf(EmojiChoice("1f431", "🐱", "cat"))) {
                             listOf(EmojiChoice("kitchen:1f431_1f431", "🐱🐱", "cat duo", "fixture-emoji"))
@@ -537,12 +541,15 @@ class AndroidSamplesTest {
             ui.runOnIdle { screen = cases.first { it.first == "post-compose" }.second; dark = night }
             ui.onNodeWithContentDescription("絵文字").performClick()
             ui.onNodeWithText("🎉").assertIsDisplayed()
+            ui.onNodeWithText("スマイリーと感情").assertIsDisplayed()
+            ui.onNodeWithText("アクティビティ").assertIsDisplayed()
             capture("emoji-picker-${if (night) "dark" else "light"}", bottomDialog = true)
             ui.onNodeWithTag("emoji-search").performTextInput("cat")
             ui.onNodeWithContentDescription("cat").assertIsDisplayed()
             ui.onNodeWithText("🎉").assertDoesNotExist()
             ui.onNodeWithText("カスタム").performClick()
             ui.onNodeWithContentDescription("party").assertIsDisplayed()
+            ui.onNodeWithText("イベント").assertIsDisplayed()
             capture("emoji-picker-custom-${if (night) "dark" else "light"}", bottomDialog = true)
             ui.onNodeWithText("Emoji Kitchen").performClick()
             ui.onNodeWithContentDescription("cat").performClick()

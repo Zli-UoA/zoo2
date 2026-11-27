@@ -51,7 +51,7 @@
 | 全文検索・古い月が残る | [ライト](images/android-design/rebuild/search-older-light.png) | [ダーク](images/android-design/rebuild/search-older-dark.png) |
 | 全文検索・エラー | [ライト](images/android-design/rebuild/search-error-light.png) | [ダーク](images/android-design/rebuild/search-error-dark.png) |
 
-絵文字ピッカーは画面下部に開き、つまみを上にドラッグすると全画面へ広がる。画面幅に応じて列数を変える。720dp幅の表示では14列になる。[ワイド表示（1440×1520px）](images/android-design/rebuild/emoji-picker-wide-light.png)
+絵文字ピッカーは画面下部に開き、つまみを上にドラッグすると全画面へ広がる。標準絵文字は種類別、カスタム絵文字は登録カテゴリ別に並べる。検索時は一致する絵文字を関連度順に表示する。画面幅に応じて列数を変える。720dp幅の表示では14列になる。[ワイド表示（1440×1520px）](images/android-design/rebuild/emoji-picker-wide-light.png)
 
 ```sh
 cd frontend-compose

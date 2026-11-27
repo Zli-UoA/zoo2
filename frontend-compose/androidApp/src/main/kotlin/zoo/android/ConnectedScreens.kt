@@ -46,7 +46,7 @@ internal fun ConnectedScreens(
     val pageState = key(session.config.apiBaseUrl, session.config.userId) { rememberSaveableStateHolder() }
     DisposableEffect(state) { onDispose { state.close() } }
     val openChannelLink = remember(state) { { target: ChannelLinkTarget, parent: String? -> state.openChannelLink(target, parent) } }
-    val channelLinks = rememberChannelLinks(session, platform, openChannelLink)
+    val channelLinks = rememberChannelLinks(session, platform, state::workspaceEmojiIndex, state::setLinkEmojiDemand, openChannelLink)
     val env = platform.env
     val channels by session.repo.channels.rows.collectAsState()
     val users by session.repo.users.rows.collectAsState()
@@ -81,17 +81,10 @@ internal fun ConnectedScreens(
         val states by messageTable.pageStates.collectAsState()
         states
     }
-    // 添付・リアクションは、メッセージ行の display_data から出す（別 Shape は購読しない）。
-    val reactions = remember(rows) { rows.flatMap(::displayReactions) }
     val context = androidx.compose.ui.platform.LocalContext.current.applicationContext
-    val emojiCatalog = remember(context) { AndroidEmojiCatalog(context) }
-    val needsWorkspaceEmoji = reactions.any { it.text("emoji").startsWith(':') }
-    LaunchedEffect(session, needsWorkspaceEmoji, env.online, env.visible) {
-        if (needsWorkspaceEmoji && env.online && env.visible) {
-            try { session.loadWorkspaceEmojis() }
-            catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { /* Keep shortcode fallbacks if the catalog is unavailable. */ }
-        }
+    val uncategorizedEmoji = session.t("customEmoji.uncategorized")
+    val emojiCatalog = remember(context, env.locale, uncategorizedEmoji) {
+        AndroidEmojiCatalog(context, env.locale, uncategorizedEmoji)
     }
     val previewService by session.previews.summalyEndpoint.collectAsState()
     val usersById = remember(users) { users.associateBy { it.text("id") } }
@@ -475,6 +468,32 @@ internal fun ConnectedScreens(
             "channel:$channelId", session.t("common.loading"), env.online)
         else -> AndroidScreen.Channels(state.channelSections(channels, usersById, memberships))
     }
+    val reaction = state.confirmingEntry?.takeIf { it.operation == EntryOperation.React }
+    val insertingEmoji = state.inputMenu == InputTool.Emoji
+    val pickerOpen = insertingEmoji || reaction != null
+    val needsWorkspaceEmoji = when (screen) {
+        is AndroidScreen.Home -> screen.posts.any { it.needsWorkspaceEmoji }
+        is AndroidScreen.Profile -> screen.posts.any { it.needsWorkspaceEmoji }
+        is AndroidScreen.Post -> screen.root.needsWorkspaceEmoji || screen.replies.any { it.needsWorkspaceEmoji }
+        is AndroidScreen.Thread -> screen.root.needsWorkspaceEmoji || screen.replies.any { it.needsWorkspaceEmoji }
+        is AndroidScreen.Conversation -> screen.entries.any { it.needsWorkspaceEmoji }
+        is AndroidScreen.Bubble -> screen.entries.any { it.needsWorkspaceEmoji }
+        is AndroidScreen.Search -> screen.state.results.any { it.needsWorkspaceEmoji }
+        else -> false
+    }
+    val canLoadEmoji = env.online && env.visible
+    val pickerEmojiDemand by rememberUpdatedState(pickerOpen)
+    val entryEmojiDemand by rememberUpdatedState(needsWorkspaceEmoji)
+    LaunchedEffect(session, state, canLoadEmoji) {
+        if (!canLoadEmoji) return@LaunchedEffect
+        snapshotFlow { Triple(pickerEmojiDemand, entryEmojiDemand, state.linkEmojiDemandVersion) }.collect { (picker, entries, _) ->
+            if (picker || entries || state.linkEmojiDemandCount > 0) {
+                try { session.loadWorkspaceEmojis() }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { /* Keep shortcode fallbacks if the catalog is unavailable. */ }
+            }
+        }
+    }
     val instanceHosts = when (screen) {
         is AndroidScreen.Home -> screen.posts
         is AndroidScreen.Profile -> screen.posts
@@ -611,35 +630,25 @@ internal fun ConnectedScreens(
             confirmButton = { TextButton(onClick = phone::clearError) { Text(session.t("common.close")) } },
         )
     }
-    val reaction = state.confirmingEntry?.takeIf { it.operation == EntryOperation.React }
-    val insertingEmoji = state.inputMenu == InputTool.Emoji
-    val recentEmojis = remember(session) { mutableStateListOf<EmojiChoice>() }
-    if (insertingEmoji || reaction != null) {
+    val recentEmojis = remember(session) { mutableStateListOf<String>() }
+    if (pickerOpen) {
         val unicode by produceState(emptyList<EmojiChoice>(), emojiCatalog) { value = emojiCatalog.unicode() }
         val allowAccountEmoji = reaction == null || screen !is AndroidScreen.Home &&
             screen !is AndroidScreen.Post && screen !is AndroidScreen.Profile
-        LaunchedEffect(session, env.online, allowAccountEmoji) {
-            if (env.online) {
-                if (allowAccountEmoji) launch { session.loadAccountProfiles() }
-                try {
-                    session.loadWorkspaceEmojis()
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (_: Exception) {
-                    // The bundled Unicode list remains available when the workspace catalog fails.
-                }
-            }
+        LaunchedEffect(session, env.online, env.visible, allowAccountEmoji) {
+            if (env.online && env.visible && allowAccountEmoji) session.loadAccountProfiles()
         }
         val dismiss = { state.inputMenu = null; state.confirmingEntry = null }
         EmojiPicker(
             title = if (reaction == null) "絵文字" else "リアクション",
             colors = AndroidColors(env.dark),
             unicode = unicode,
-            custom = remember(session.workspaceEmojis, session.accountProfiles, allowAccountEmoji) {
-                workspaceEmojiChoices(session.workspaceEmojis) +
-                    (if (allowAccountEmoji) accountEmojiChoices(session.accountProfiles) else emptyList())
+            custom = remember(session.workspaceEmojis, session.accountProfiles, allowAccountEmoji, env.locale) {
+                workspaceEmojiChoices(session.workspaceEmojis, uncategorizedEmoji) +
+                    (if (allowAccountEmoji) accountEmojiChoices(session.accountProfiles, session.t("reactions.accountEmojiCategory")) else emptyList())
             },
             recent = recentEmojis.toList(),
+            recentCategory = session.t("reactions.recent"),
             customLoading = session.workspaceEmojiLoading,
             customError = session.workspaceEmojiError,
             loadKitchen = emojiCatalog::kitchen,
@@ -650,9 +659,11 @@ internal fun ConnectedScreens(
             },
             dismiss = dismiss,
         ) { choice ->
-            recentEmojis.removeAll { it.value == choice.value }
-            recentEmojis.add(0, choice)
-            if (recentEmojis.size > 24) recentEmojis.removeAt(recentEmojis.lastIndex)
+            if (choice.image == null && choice.glyph.isNotBlank()) {
+                recentEmojis.remove(choice.value)
+                recentEmojis.add(0, choice.value)
+                if (recentEmojis.size > 24) recentEmojis.removeAt(recentEmojis.lastIndex)
+            }
             if (reaction != null) {
                 dismiss()
                 state.dispatch(reaction.copy(value = choice.value), screen, channel, rows, dmPeer, null, enableNotifications)
