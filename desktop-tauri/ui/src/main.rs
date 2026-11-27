@@ -527,55 +527,97 @@ fn ChannelList() -> impl IntoView {
 
 /// 選択中のチャンネルの通知レベル。現在値と 3 段階の選択を出し、変更は IPC で保存する。
 ///
-/// 設定の Shape は Rust 側が購読して届くが、画面を待たせないため表示と保存後の値は
-/// コマンドの応答を使う。古いアプリにはコマンドがないので、そのときはエラーを出すだけ。
+/// 選択値と同値判定は本人用 Shape (`channel_notification_settings`) の行から読む。Android 等で
+/// 変えた値も `ctx.store` に届くので、コマンドの応答を待たずに表示が更新される。取得・保存は
+/// 開始ごとに世代を進め、古い応答が遅れて届いても現在の表示を壊さないようにする。
 #[component]
 fn ChannelNotificationSettings() -> impl IntoView {
     let ctx = expect_context::<Ctx>();
-    let level = RwSignal::new(None::<NotificationLevel>);
+    let generation = RwSignal::new(0u64);
+    let loading = RwSignal::new(false);
+    let failed = RwSignal::new(false);
     let saving = RwSignal::new(false);
 
-    // チャンネルを切り替えたら現在値を取り直す。古いチャンネルの値は残さない。
-    Effect::new(move |_| {
+    // 選択値はストアの設定行から読む。Shape の更新でリアクティブに再描画される。
+    // 行がまだ届いていなければ既定の `mentions` になる (Web 版と同じ)。
+    let level = Signal::derive(move || {
         let Some(channel_id) = ctx.channel.get() else {
-            level.set(None);
+            return NotificationLevel::default();
+        };
+        let Some(me) = ctx.me() else {
+            return NotificationLevel::default();
+        };
+        ctx.store
+            .with(|store| store.notification_level(&channel_id, &me.id))
+    });
+
+    // 取得・保存の開始ごとに世代を進める。応答が古ければ無視できる。
+    let next_generation = move || {
+        let current = generation.get_untracked() + 1;
+        generation.set(current);
+        current
+    };
+
+    // 表示中のチャンネルを取得する。応答の値は使わず、成否だけを見る。
+    // (値は Shape がストアに届けるので、取得は読み込み状態と再試行のためだけにある。)
+    let fetch = move || {
+        let current = next_generation();
+        let Some(channel_id) = ctx.channel.get_untracked() else {
+            loading.set(false);
+            failed.set(false);
             return;
         };
-        level.set(None);
-        let request = ChannelNotificationSettingsRequest {
-            channel_id: channel_id.clone(),
-        };
+        loading.set(true);
+        failed.set(false);
         spawn_local(async move {
-            match tauri::invoke::<ChannelNotificationSettings>(
+            let request = ChannelNotificationSettingsRequest { channel_id };
+            let result = tauri::invoke::<ChannelNotificationSettings>(
                 command::CHANNEL_NOTIFICATION_SETTINGS,
                 serde_json::json!({ "request": request }),
             )
-            .await
-            {
-                // 返事が遅れても、別のチャンネルの値を表示しない。
-                Ok(settings)
-                    if ctx.channel.get_untracked().as_deref() == Some(channel_id.as_str()) =>
-                {
-                    level.set(Some(settings.level))
-                }
-                Ok(_) => {}
-                Err(err) => ctx.error.set(Some(err.message)),
+            .await;
+            // 取得中にチャンネルを替えた・再取得したときは古い応答を捨てる。
+            if generation.get_untracked() != current {
+                return;
+            }
+            loading.set(false);
+            if let Err(err) = result {
+                failed.set(true);
+                ctx.error.set(Some(err.message));
             }
         });
+    };
+
+    // チャンネルを切り替えたら前の状態を捨てて取り直す。同じチャンネルの再選択では
+    // ここは走らないので、失敗時は「再試行」から表示中のチャンネルを取得し直す。
+    Effect::new(move |_| {
+        ctx.channel.get();
+        saving.set(false);
+        fetch();
     });
 
     let save = move |next: NotificationLevel| {
         let Some(channel_id) = ctx.channel.get_untracked() else {
             return;
         };
-        // TUI と同じく、前の書き込みが終わるまでは次の選択を受け付けない。
-        if saving.get_untracked() || level.get_untracked() == Some(next) {
+        let Some(me) = ctx.me() else {
+            return;
+        };
+        // 同値判定もストアの設定行から読む。
+        if saving.get_untracked()
+            || ctx
+                .store
+                .with(|store| store.notification_level(&channel_id, &me.id))
+                == next
+        {
             return;
         }
+        // TUI と同じく、前の書き込みが終わるまでは次の選択を受け付けない。
+        let current = next_generation();
         saving.set(true);
         spawn_local(async move {
             let request = SetChannelNotificationLevel {
-                channel_id: channel_id.clone(),
+                channel_id,
                 level: next,
             };
             let result = tauri::invoke::<ChannelNotificationSettings>(
@@ -583,16 +625,15 @@ fn ChannelNotificationSettings() -> impl IntoView {
                 serde_json::json!({ "request": request }),
             )
             .await;
-            saving.set(false);
-            match result {
-                Ok(settings)
-                    if ctx.channel.get_untracked().as_deref() == Some(channel_id.as_str()) =>
-                {
-                    level.set(Some(settings.level))
-                }
-                Ok(_) => {}
-                Err(err) => ctx.error.set(Some(err.message)),
+            // 保存中にチャンネルを替えたら、古い保存の終了で状態を戻さない。
+            if generation.get_untracked() != current {
+                return;
             }
+            saving.set(false);
+            if let Err(err) = result {
+                ctx.error.set(Some(err.message));
+            }
+            // 新しい値は Shape がストアに届けるので、ここでは level を触らない。
         });
     };
 
@@ -605,19 +646,29 @@ fn ChannelNotificationSettings() -> impl IntoView {
                         NotificationLevel::ALL
                             .into_iter()
                             .map(|candidate| {
-                                let label = match candidate {
-                                    NotificationLevel::All => "すべての投稿",
-                                    NotificationLevel::Mentions => "メンション",
-                                    NotificationLevel::Mute => "メンション以外を通知しない",
+                                let (label, help) = match candidate {
+                                    NotificationLevel::All => (
+                                        "すべてのメッセージ",
+                                        "通常の投稿も通知します。暗号化チャンネルでも選べます。",
+                                    ),
+                                    NotificationLevel::Mentions => (
+                                        "メンションと返信（既定）",
+                                        "あなたへのメンション、返信、DM、リアクションを通知します。",
+                                    ),
+                                    NotificationLevel::Mute => (
+                                        "ミュート",
+                                        "通常の通知は届きません。明示的なメンションは届きます。",
+                                    ),
                                 };
-                                let selected = move || level.get() == Some(candidate);
+                                let selected = move || level.get() == candidate;
                                 view! {
                                     <button
                                         class:selected=selected
-                                        disabled=move || saving.get() || level.get().is_none()
+                                        disabled=move || saving.get() || loading.get() || failed.get()
                                         on:click=move |_| save(candidate)
                                     >
-                                        {label}
+                                        <span class="label">{label}</span>
+                                        <small>{help}</small>
                                     </button>
                                 }
                                 .into_any()
@@ -625,6 +676,10 @@ fn ChannelNotificationSettings() -> impl IntoView {
                             .collect_view()
                     }}
                 </div>
+                <Show when=move || failed.get()>
+                    <p class="notification-help">"通知設定を取得できませんでした。"</p>
+                    <button type="button" class="retry" on:click=move |_| fetch()>"再試行"</button>
+                </Show>
             </section>
         </Show>
     }

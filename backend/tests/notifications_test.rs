@@ -1,3 +1,6 @@
+#[path = "support/thread_db.rs"]
+mod thread_db;
+
 use axum::{
     Router,
     body::{Body, to_bytes},
@@ -1249,95 +1252,89 @@ async fn test_bulk_notification_insert_projects_display_data_for_every_recipient
 }
 
 /// Home の「返信への返信」でも、スレッドのルートに紐づく参加者へ reply が届く (#620)。
+/// 共有 DB の `thread_rollout.phase` は書き換えず、テスト専用スキーマの phase を ready にする。
 #[tokio::test]
 async fn test_home_reply_to_reply_notifies_thread_participants() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     dotenvy::from_filename("../.env").ok();
-    let mut config = Config::from_env();
-    config.dev_auth_enabled = true;
-    let mut db = init_db(&config.database_url).await?;
-    // このケースは正規化済みのルートで参加者を引くため、フェーズを明示的に ready にする。
-    // (collecting では直接の返信先が参加キーになり、入れ子の返信は別スレッドとして扱われる)
-    let mut phase_tx = db.transaction().await?;
-    let phases = backend::apps::query(
-        &mut phase_tx,
-        "SELECT json_build_object('phase',phase)::text FROM thread_rollout",
-        &[],
-    )
-    .await?;
-    let previous_phase = phases[0]["phase"].as_str().unwrap().to_owned();
-    phase_tx.commit().await?;
-    toasty::sql::statement("UPDATE thread_rollout SET phase='ready'")
-        .exec(&mut db)
-        .await?;
-    let app = create_router(AppState::new(db.clone(), config));
+    let fixture = thread_db::ThreadDb::new().await?;
+    let config = fixture.config.clone();
+    // `?` で失敗しても cleanup まで進むように本体の結果を保持する。panic 時は ThreadDb の Drop が片付ける。
+    let result = async move {
+        let mut db = init_db(&config.database_url).await?;
+        // このケースは正規化済みのルートで参加者を引くため、専用スキーマのフェーズを ready にする。
+        // (collecting では直接の返信先が参加キーになり、入れ子の返信は別スレッドとして扱われる)
+        toasty::sql::statement("UPDATE thread_rollout SET phase='ready'")
+            .exec(&mut db)
+            .await?;
+        let app = create_router(AppState::new(db.clone(), config));
 
-    let author = create_user(&app, &format!("hroot-{}", uuid::Uuid::new_v4().simple())).await?;
-    let participant =
-        create_user(&app, &format!("hpart-{}", uuid::Uuid::new_v4().simple())).await?;
-    let target_author =
-        create_user(&app, &format!("htarget-{}", uuid::Uuid::new_v4().simple())).await?;
-    let actor = create_user(&app, &format!("hactor-{}", uuid::Uuid::new_v4().simple())).await?;
-    let channel = new_channel(&app, &author).await?;
-    for user in [&participant, &target_author, &actor] {
-        join_channel(&app, user, &channel).await?;
+        let author = create_user(&app, &format!("hroot-{}", uuid::Uuid::new_v4().simple())).await?;
+        let participant =
+            create_user(&app, &format!("hpart-{}", uuid::Uuid::new_v4().simple())).await?;
+        let target_author =
+            create_user(&app, &format!("htarget-{}", uuid::Uuid::new_v4().simple())).await?;
+        let actor = create_user(&app, &format!("hactor-{}", uuid::Uuid::new_v4().simple())).await?;
+        let channel = new_channel(&app, &author).await?;
+        for user in [&participant, &target_author, &actor] {
+            join_channel(&app, user, &channel).await?;
+        }
+
+        let (status, root) = post_json(
+            &app,
+            &author,
+            "POST",
+            "/api/home",
+            json!({"channel_id": channel, "content": "ルート"}),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED);
+        let root_id = root["id"].as_str().unwrap().to_string();
+
+        let (status, _) = post_json(
+            &app,
+            &participant,
+            "POST",
+            "/api/home",
+            json!({"in_reply_to": root_id, "content": "参加"}),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED);
+        let (status, target_reply) = post_json(
+            &app,
+            &target_author,
+            "POST",
+            "/api/home",
+            json!({"in_reply_to": root_id, "content": "返信先"}),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED);
+        let target_reply_id = target_reply["id"].as_str().unwrap().to_string();
+
+        let (status, nested) = post_json(
+            &app,
+            &actor,
+            "POST",
+            "/api/home",
+            json!({"in_reply_to": target_reply_id, "content": "返信への返信"}),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED);
+        let nested_id = nested["id"].as_str().unwrap().to_string();
+
+        let mut check_db = db.clone();
+        // 直接の返信先だけでなく、ルートに参加している別のメンバーにも届く。
+        assert_eq!(
+            notice_types(&mut check_db, &target_author, &nested_id).await?,
+            ["reply"]
+        );
+        assert_eq!(
+            notice_types(&mut check_db, &participant, &nested_id).await?,
+            ["reply"]
+        );
+        anyhow::Ok(())
     }
-
-    let (status, root) = post_json(
-        &app,
-        &author,
-        "POST",
-        "/api/home",
-        json!({"channel_id": channel, "content": "ルート"}),
-    )
-    .await?;
-    assert_eq!(status, StatusCode::CREATED);
-    let root_id = root["id"].as_str().unwrap().to_string();
-
-    let (status, _) = post_json(
-        &app,
-        &participant,
-        "POST",
-        "/api/home",
-        json!({"in_reply_to": root_id, "content": "参加"}),
-    )
-    .await?;
-    assert_eq!(status, StatusCode::CREATED);
-    let (status, target_reply) = post_json(
-        &app,
-        &target_author,
-        "POST",
-        "/api/home",
-        json!({"in_reply_to": root_id, "content": "返信先"}),
-    )
-    .await?;
-    assert_eq!(status, StatusCode::CREATED);
-    let target_reply_id = target_reply["id"].as_str().unwrap().to_string();
-
-    let (status, nested) = post_json(
-        &app,
-        &actor,
-        "POST",
-        "/api/home",
-        json!({"in_reply_to": target_reply_id, "content": "返信への返信"}),
-    )
-    .await?;
-    assert_eq!(status, StatusCode::CREATED);
-    let nested_id = nested["id"].as_str().unwrap().to_string();
-
-    let mut check_db = db.clone();
-    // 直接の返信先だけでなく、ルートに参加している別のメンバーにも届く。
-    assert_eq!(
-        notice_types(&mut check_db, &target_author, &nested_id).await?,
-        ["reply"]
-    );
-    assert_eq!(
-        notice_types(&mut check_db, &participant, &nested_id).await?,
-        ["reply"]
-    );
-    toasty::sql::statement("UPDATE thread_rollout SET phase=$1")
-        .bind(previous_phase.as_str())
-        .exec(&mut db)
-        .await?;
-    Ok(())
+    .await;
+    fixture.cleanup().await?;
+    result
 }

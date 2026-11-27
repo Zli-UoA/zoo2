@@ -777,12 +777,12 @@ class Repository(
     fun messages(channelId: String) = table("messages", channelId)
 
     fun refresh() {
-        (listOf(channels, users, members, notifications) + dynamic.values).forEach { it.refresh() }
+        (listOf(channels, users, members, notificationSettings, notifications) + dynamic.values).forEach { it.refresh() }
     }
 
     fun close() {
         if (linked.isInitialized()) linked.value.close()
-        (listOf(channels, users, members, notifications) + dynamic.values).forEach { it.close() }
+        (listOf(channels, users, members, notificationSettings, notifications) + dynamic.values).forEach { it.close() }
         dynamic.clear()
         recentMessages.clear()
         http.close()

@@ -381,6 +381,20 @@ export const NotificationMute: Story = {
   }),
 };
 
+/** Shape の行が届く前は、既定値を確定値として見せず、選択できないようにする。 */
+export const NotificationLoading: Story = {
+  parameters: { collections: { ...storyCollections, channelNotificationSettings: [] } },
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("button", { name: "通知設定" }));
+    const dialog = await screen.findByRole("dialog", { name: "チャンネルの通知設定" });
+    await expect(within(dialog).getByRole("status")).toHaveTextContent("通知設定を読み込み中");
+    for (const radio of within(dialog).getAllByRole("radio")) {
+      await expect(radio).toBeDisabled();
+      await expect(radio).not.toBeChecked();
+    }
+  }),
+};
+
 /** メニューを開いた状態。管理者でなくてもヘッダーから操作できる。 */
 export const NotificationDialogOpen: Story = {
   play: playForImplementation(async () => {

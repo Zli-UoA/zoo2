@@ -644,10 +644,17 @@ function ChannelNotificationDialog({
       : undefined,
   );
   const setting = settingsQuery.data?.[0];
-  const level: ChannelNotificationLevel = setting?.notification_level ?? "mentions";
 
   async function select(next: ChannelNotificationLevel) {
-    if (!currentUserId || !membership || next === level || write.isPending) {
+    // Shape の行が届く前は現在値が分からない。「メンション」既定として扱うと、同期前に
+    // 同じ値を選んでも no-op になり、届いた実際の値（例: all）と表示が食い違う。
+    if (
+      !currentUserId ||
+      !membership ||
+      !setting ||
+      next === setting.notification_level ||
+      write.isPending
+    ) {
       return;
     }
     await write.run(() =>
@@ -673,37 +680,45 @@ function ChannelNotificationDialog({
           <DialogDescription>{channel.channel_name}</DialogDescription>
         </DialogHeader>
         {membership ? (
-          <fieldset
-            role="radiogroup"
-            aria-label={t("notifications.levelTitle")}
-            className="space-y-2"
-            disabled={write.isPending}
-          >
-            <legend className="text-sm font-medium">{t("notifications.levelTitle")}</legend>
-            {NOTIFICATION_LEVELS.map((value) => (
-              <label
-                key={value}
-                className="flex cursor-pointer items-start gap-3 rounded-lg border p-3 has-[:checked]:border-primary has-[:checked]:bg-primary/5"
-              >
-                <input
-                  type="radio"
-                  name={`notification-level-${channel.id}`}
-                  value={value}
-                  checked={level === value}
-                  onChange={() => void select(value)}
-                  className="mt-0.5 size-4 shrink-0 accent-primary"
-                />
-                <span className="min-w-0">
-                  <span className="block text-sm font-medium">
-                    {t(`notifications.level${LEVEL_LABEL_SUFFIXES[value]}`)}
+          <>
+            {setting ? null : (
+              <p role="status" className="text-sm text-muted-foreground">
+                {t("notifications.levelLoading")}
+              </p>
+            )}
+            <fieldset
+              role="radiogroup"
+              aria-label={t("notifications.levelTitle")}
+              className="space-y-2"
+              // 同期前は現在値を確定できないため、楽観更新中と同じく操作を止める。
+              disabled={!setting || write.isPending}
+            >
+              <legend className="text-sm font-medium">{t("notifications.levelTitle")}</legend>
+              {NOTIFICATION_LEVELS.map((value) => (
+                <label
+                  key={value}
+                  className="flex cursor-pointer items-start gap-3 rounded-lg border p-3 has-[:checked]:border-primary has-[:checked]:bg-primary/5"
+                >
+                  <input
+                    type="radio"
+                    name={`notification-level-${channel.id}`}
+                    value={value}
+                    checked={setting?.notification_level === value}
+                    onChange={() => void select(value)}
+                    className="mt-0.5 size-4 shrink-0 accent-primary"
+                  />
+                  <span className="min-w-0">
+                    <span className="block text-sm font-medium">
+                      {t(`notifications.level${LEVEL_LABEL_SUFFIXES[value]}`)}
+                    </span>
+                    <span className="mt-0.5 block text-xs text-muted-foreground">
+                      {t(`notifications.level${LEVEL_HELP_SUFFIXES[value]}`)}
+                    </span>
                   </span>
-                  <span className="mt-0.5 block text-xs text-muted-foreground">
-                    {t(`notifications.level${LEVEL_HELP_SUFFIXES[value]}`)}
-                  </span>
-                </span>
-              </label>
-            ))}
-          </fieldset>
+                </label>
+              ))}
+            </fieldset>
+          </>
         ) : (
           <p role="status" className="text-sm text-muted-foreground">
             {t("notifications.notMember")}

@@ -22,6 +22,7 @@ import zoo.android.phone.DmCallPushAnswer
 import zoo.android.phone.IncomingCallActivity
 import zoo.android.phone.incomingCallerInitials
 import zoo.android.phone.phoneDictionaryLocale
+import zoo.obj
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33])
@@ -76,6 +77,27 @@ class AndroidPushTest {
         assertEquals(1, notifications.size)
         assertEquals(notificationTag(user, id), notifications.single().tag)
         assertEquals("新しいメッセージ", notifications.single().notification.extras.getString(Notification.EXTRA_TEXT))
+    }
+
+    /** 古い辞書に `notifications.channel_message` が無くても、キー名を出さず既存の文言へ落とす。 */
+    @Test fun channelMessageBodyFallsBackWhenTheDictionaryKeyIsMissing() {
+        val row = obj(
+            "notification_type" to "channel_message",
+            "display_data" to obj("actor" to obj("display_name" to "投稿者"), "message" to obj()),
+        )
+        // translateDictionary と同じく、未定義のキーはキー名を返す。
+        assertEquals("投稿者 さんがメッセージを投稿しました", notificationBody(row) { key, actor ->
+            when (key) {
+                "notifications.channelMessage" -> "{{actor}} さんがメッセージを投稿しました".replace("{{actor}}", actor)
+                else -> key
+            }
+        })
+        // 新しいキーが辞書にあれば、そちらを優先する。
+        assertEquals("新しいキー", notificationBody(row) { key, _ ->
+            if (key == "notifications.channel_message") "新しいキー" else key
+        })
+        // 既存のキーも無いときは、キー名ではなく一般的な本文を出す。
+        assertEquals("新しいメッセージ", notificationBody(row) { key, _ -> key })
     }
 
     /** 暗号化チャンネル（#510）：端末で復号した本文を出し、同期した通知が先に出ていても、そこに反映して印を残す。 */

@@ -201,6 +201,36 @@ async fn notification_level_update_does_not_fire_home_refresh_trigger() -> anyho
     fixture.cleanup().await
 }
 
+/// ロックを保持している backend の PID を、観測用の別接続から確認する。
+/// 固定時間の待機ではなく `pg_blocking_pids` を見るので、競合経路を通っていない実行は失敗する。
+async fn wait_until_patch_waits_on(
+    observer: &tokio_postgres::Client,
+    holder_pid: i32,
+) -> anyhow::Result<()> {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let waiting: bool = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                observer.query_one(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity \
+                     WHERE wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid)))",
+                    &[&holder_pid],
+                ),
+            )
+            .await??
+            .get(0);
+            if waiting {
+                return anyhow::Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!("PATCH did not wait on the channel_user row lock held by {holder_pid}")
+    })?
+}
+
 /// 同時に同じ値へ PATCH されたとき、片方は UPDATE が0件になり txid: null の no-op になる。
 /// 行ロックで UPDATE を待たせ、その間に別トランザクションで同じ値を確定させる。
 #[tokio::test]
@@ -238,6 +268,14 @@ async fn concurrent_same_value_patch_is_a_noop() -> anyhow::Result<()> {
     let (mut client, connection) =
         tokio_postgres::connect(&fixture.config.database_url, NoTls).await?;
     tokio::spawn(connection);
+    let holder_pid: i32 = client
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
+    // 観測はアプリのプールとは別の接続で行う (プールの接続がロック待ちに使われても止まらないように)。
+    let (observer, observer_connection) =
+        tokio_postgres::connect(&fixture.config.database_url, NoTls).await?;
+    tokio::spawn(observer_connection);
     let tx = client.transaction().await?;
     tx.execute(
         "SELECT 1 FROM channel_user WHERE user_id=$1 AND channel_id=$2 FOR UPDATE",
@@ -258,8 +296,12 @@ async fn concurrent_same_value_patch_is_a_noop() -> anyhow::Result<()> {
         )
         .await
     });
-    // PATCH が古い値を読み、UPDATE で行ロックを待つところまで進ませる。
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    // PATCH が古い値を読み、UPDATE で行ロックを待っていることを期限付きで確認する。
+    // 確認できなければ競合経路を通っていないので失敗させ、ロックも解放する。
+    if let Err(err) = wait_until_patch_waits_on(&observer, holder_pid).await {
+        let _ = tx.rollback().await;
+        return Err(err);
+    }
     tx.execute(
         "UPDATE channel_user SET notification_level='all' WHERE user_id=$1 AND channel_id=$2",
         &[&owner, &channel],
@@ -267,7 +309,9 @@ async fn concurrent_same_value_patch_is_a_noop() -> anyhow::Result<()> {
     .await?;
     tx.commit().await?;
 
-    let result = patch.await??;
+    let result = tokio::time::timeout(std::time::Duration::from_secs(20), patch)
+        .await
+        .map_err(|_| anyhow::anyhow!("PATCH did not finish within 20s"))???;
     assert_eq!(result["data"], json!({"level": "all"}));
     assert!(result["txid"].is_null());
     assert_eq!(

@@ -281,9 +281,14 @@ a { color: var(--accent); }
 .channels button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .channels button.selected { background: var(--selected-bg); color: var(--selected-fg); }
 .notification-settings { padding: 10px 12px; border-top: 1px solid var(--line); }
-.notification-settings .row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-.notification-settings button { padding: 4px 10px; font-size: 12px; }
+.notification-settings .row { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.notification-settings button { padding: 6px 10px; font-size: 12px; text-align: left; }
+.notification-settings button .label { display: block; font-weight: 600; }
+.notification-settings button small { display: block; font-size: 11px; font-weight: 400; line-height: 1.4; opacity: 0.75; }
 .notification-settings button.selected { background: var(--selected-bg); color: var(--selected-fg); border-color: var(--selected-bg); }
+.notification-settings button:disabled { cursor: default; opacity: 0.6; }
+.notification-settings .notification-help { margin: 6px 0 0; font-size: 11px; line-height: 1.4; color: var(--muted); }
+.notification-settings .retry { margin-top: 6px; align-self: flex-start; }
 .channel { display: flex; flex-direction: column; min-width: 0; height: 100vh; }
 .empty { margin: auto; color: var(--muted); }
 .timeline { flex: 1; overflow-y: auto; padding: 8px 16px; }

@@ -100,6 +100,45 @@ Home検証の条件・結果・再実行方法は [home-performance.md](home-per
 - 各ケースを初回と再実行、単独と8同時で30回以上測る。準備・計画・実行、接続待ち、SQL往復、API全体の p50・p95・最大値を別に残す。100ms は参考値で、時間だけで合否を決めない。上限超過、`users` / `thread_participants` / `channel_user` の Seq Scan と不要な走査、`P` を超えるソート入力や外部ソート、高い loops があれば未完了とする（fixture には無関係なメンバーシップも入れ、小さな表での Seq Scan を許さない）。
 - 書き込みは、同値 PATCH で WAL が増えないこと（txid: null）、変更時が1行更新であること、参加・退出と通知設定の同時操作で権限・レベルが整合することを HTTP テストで確認する。`backend/tests/notification_settings_test.rs` と `backend/tests/notifications_test.rs` が検証先。
 
+### M規模で未検証の項目
+
+参加者クエリ（`notification_participants_sql()`）の30万／100万件の実測は上に記載した。一方、次の3つは**探索上限を設計として記載しただけで、M=30万／100万の実測は未実施**である。未検証を隠さず、PR 本文にもこの節を残す。
+
+| SQL / 呼び出し元 | 記載済みの探索上限 | M規模の実測 |
+| --- | --- | --- |
+| `ChannelUser::filter(channel_id)`（`create_message_notifications`） | `idx_channel_user_channel_id` の範囲走査で `<= M` 行、loops=1、ソート0、ユーザーへの追加問い合わせなし | 未実施 |
+| bot・無効化・特権のないゲストの一括除外（`users WHERE (is_bot OR is_deactivated OR is_guest) AND id IN (...)`） | `users` 参照 `<= T`、loops=1（宛先ごとの再問い合わせなし） | 未実施 |
+| 通知行の一括 INSERT（`INSERT ... SELECT ... FROM jsonb_array_elements($1)`） | SQL 往復1回、挿入 `<= T` 行、行ごとの双方向トリガー・`display_data` 投影あり | 未実施 |
+
+再現コマンド。移行済みの使い捨て DB で、対象チャンネルの `channel_user` 行数 `M` を30万と100万に変えてそれぞれ実行する（`M` の作り方は `backend/tests/thread_participants_scale_test.rs` の fixture を参照）。既存のスケール用 DB を流用するときは、対象チャンネルの割合が高すぎて Seq Scan に切り替わらないことと、`idx_channel_user_channel_id` が存在することを確かめる。索引のない DB や割合の偏った DB の値は、上の設計の検証には使えない。`:'recipients'` は (2) ではユーザーIDの配列、(3) では通知行オブジェクトの配列を渡す。
+
+```sh
+psql "$DATABASE_URL" -v channel_id='<対象チャンネルID>' -v recipients='[...]' <<'SQL'
+\timing on
+-- (1) ChannelUser::filter(channel_id)
+EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+SELECT id, user_id, channel_id, notification_level
+FROM channel_user WHERE channel_id = :'channel_id';
+
+-- (2) 一括除外: users を id IN (...) で1回だけ引く
+EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+SELECT id, is_guest, is_bot, is_deactivated FROM users
+WHERE (is_bot OR is_deactivated OR is_guest)
+  AND id IN (SELECT jsonb_array_elements_text(:'recipients'::jsonb));
+
+-- (3) 一括 INSERT: 実際に書くため、ロールバックして計測する
+BEGIN;
+EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+INSERT INTO channel_notifications(id,user_id,actor_id,channel_id,message_id,notification_type,is_read,created_at)
+SELECT e->>'id', e->>'user_id', e->>'actor_id', e->>'channel_id', e->>'message_id',
+       e->>'notification_type', (e->>'is_read')::boolean, (e->>'created_at')::timestamp
+FROM jsonb_array_elements(:'recipients'::jsonb) AS e;
+ROLLBACK;
+SQL
+```
+
+測定する項目は (1)(2)(3) とも、`Node Type` と `Index Name`、`Actual Rows × Actual Loops`、`Rows Removed by Filter`、`Sort Method`、根节点の `Shared Hit Blocks + Shared Read Blocks`、`Execution Time` である。(1) は `M` の増加に伴って走査が増えるのが設計どおりで、`<= M` と1往復を超えないことを確認する。(2)(3) は `T` が同じなら `M` を3.3倍にしても走査行数・ブロック数・往復数が増えず、`users` の Seq Scan が出ないことを確認する。初回／再実行、単独／8同時を各30回以上測り、p50・p95・最大値と準備・SQL往復・API全体の時間を分けて残す。一括 INSERT は `EXPLAIN ANALYZE` にトリガー内の計画が出ないため、行ごとのトリガーと投影の費用は入れ子の計画または論理バッファの増加で別に確認する（「性能検証の合否」6 と同じ）。
+
 ### PR 本文用のメモ（クエリ設計・実行計画・探索上限・計測条件）
 
 - 用途・識別子・回数: チャンネル投稿の通知先選択（`notifications.rs::create_message_notifications`、投稿1回につき `channel_user` 走査1・参加者1・除外判定1・INSERT 最大 `T` を1回）、スレッド返信の参加者通知（`notification_participants_sql()`、返信1回につき1）、リアクション判定（`create_reaction_notification`、1回）、設定の GET/PATCH（`notification_settings.rs`、1〜2回、競合時は読み直し追加）。
@@ -110,9 +149,9 @@ Home検証の条件・結果・再実行方法は [home-performance.md](home-per
 
 | `users` / 無関係な参加行 | 参加走査 (custom / generic) | `channel_user` 参照 (custom / generic) | hit+read (custom / generic) | 単独 p50/p95/最大 (ms) | 8同時 p50/p95/最大 (ms) | 合否 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 30万 / 30万 | 10,000 / 10,000 | 9,500 / 10,000 | 700 / 59,716 | 9.9 / 11.0 / 11.4 | 60.2 / 65.9 / 70.9 | 合格（上限 参加 10,064 / `channel_user` 10,001 / ブロック 120,024 以内） |
+| 30万 / 30万 | 10,000 / 10,000 | 9,500 / 10,000 | 700 / 59,716 | 9.9 / 11.0 / 11.4 | 60.2 / 65.9 / 70.9 | 合格（上限 参加 10,064 / `channel_user` 10,001 / ブロック 121,024 以内） |
 | 100万 / 100万 | 10,000 / 10,000 | 9,500 / 10,000 | 703 / 59,720 | 9.6 / 9.7 / 9.9 | 57.7 / 61.4 / 69.3 | 合格（同上） |
 
-参加行の走査は `P` で頭打ち。SQL が `left_at` で絞らなくなったため、`channel_user` の参照は generic plan で `P` まで増えたが、上限 `P + 1` の内側にある。PostgreSQL 16 では上位ノードのブロック数に子ノードの使用量が含まれるため、根节点の `Shared Hit Blocks` + `Shared Read Blocks` だけを 1 回数えた（走査ノードと `Sort` ノードの両方で足すと二重計上になる）。`U` を30万→100万に3.3倍にしても、`thread_participants` の走査は約10,000行で変わらず、無関係な参加履歴 `H` は読んでいない。初回と再実行の差は計測誤差の範囲。100ms は参考値で、8同時の最大70.9 ms は時間だけの合否判定に使わない。
+参加行の走査は `P` で頭打ち。SQL が `left_at` で絞らなくなったため、`channel_user` の参照は generic plan で `P` まで増えたが、上限 `P + 1` の内側にある。PostgreSQL 16 では上位ノードのブロック数に子ノードの使用量が含まれるため、根节点の `Shared Hit Blocks` + `Shared Read Blocks` だけを 1 回数えた（走査ノードと `Sort` ノードの両方で足すと二重計上になる）。ブロック上限は `2P + BLOCKS_PER_KEY * P + 1024`（`BLOCKS_PER_KEY=10`、P=10,000 で 121,024）で、上の表の値と同じ式である。`U` を30万→100万に3.3倍にしても、`thread_participants` の走査は約10,000行で変わらず、無関係な参加履歴 `H` は読んでいない。初回と再実行の差は計測誤差の範囲。100ms は参考値で、8同時の最大70.9 ms は時間だけの合否判定に使わない。
 
 - **未検証の残り:** API 全体（ルーター・接続待ち・JSON・ロック待ち）の p50/p95/最大、参加・退出と設定変更の同時実行時のロック待ち・デッドロック、本番 PostgreSQL 16.15 の実データでの `P` 分布。E2E 全体（`make test-e2e`）は未実行だが、対象のバックエンド統合テスト（`notification_settings_test` / `notifications_test` / `notification_storage_test` / `shape_proxy_test`）はローカルの Docker DB で通っている。ER 図は `infra/db/erd.sh` で再生成し、`erd.sh --check` も通っている。
