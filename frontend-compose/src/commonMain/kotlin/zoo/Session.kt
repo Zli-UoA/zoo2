@@ -275,7 +275,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     suspend fun image(url: String, signedAttachment: Boolean = false, cacheKey: String? = null): ByteArray {
         val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
         return imageCache.get(imageCacheKey(url, signedAttachment, cacheKey)) {
-            val bytes = if (signedAttachment) platform.attachmentImage(resolved) else platform.image(resolved)
+            val bytes = if (signedAttachment) platform.attachmentImage(resolved, cacheKey) else platform.image(resolved)
             bytes ?: assetClient.get(resolved).body()
         }
     }
@@ -285,7 +285,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
 
     private fun imageCacheKey(url: String, signedAttachment: Boolean, cacheKey: String?): String {
         val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
-        return if (signedAttachment) "attachment:${cacheKey ?: resolved}" else resolved
+        return if (signedAttachment) "attachment:${cacheKey.orEmpty()}:$resolved" else resolved
     }
 
     /** Static images use the same platform decoder as attachments and animated media. */
@@ -296,7 +296,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             val bytes = if (!retry) image(url, signedAttachment, cacheKey) else {
                 val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
                 imageCache.remove(imageCacheKey(url, signedAttachment, cacheKey))
-                (if (signedAttachment) platform.attachmentImage(resolved) else platform.refreshImage(resolved))
+                (if (signedAttachment) platform.attachmentImage(resolved, cacheKey, retry = true) else platform.refreshImage(resolved))
                     ?: assetClient.get(resolved) { header("Cache-Control", "no-cache") }.body()
             }
             platform.imageFrames(bytes).first()
