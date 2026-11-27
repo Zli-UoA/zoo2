@@ -122,6 +122,25 @@ class ConversationScrollTest {
     }
 
     @Test
+    fun aCachedNotificationTargetWaitsForTheHeaderMeasurement() {
+        var headerMeasured by mutableStateOf(false)
+        ui.setContent {
+            val headerHeight = if (headerMeasured) 72.dp else 0.dp
+            Column(Modifier.fillMaxSize()) {
+                TimelineWithInput(entries, InputState(), AndroidColors(false), dispatch = {},
+                    allowThreads = true, focusMessage = "e18", headerMeasured = headerMeasured,
+                    topContentPadding = headerHeight, headerOverlayHeight = headerHeight)
+            }
+        }
+
+        ui.onNodeWithTag("conversation-timeline").assertDoesNotExist()
+        ui.runOnIdle { headerMeasured = true }
+        ui.onNodeWithTag("timeline-entry-e18").assertIsDisplayed()
+        ui.onNodeWithTag("timeline-entry-e1").assertDoesNotExist()
+        ui.onNodeWithTag("timeline-entry-e40").assertDoesNotExist()
+    }
+
+    @Test
     fun openingAtTheEndAlignsTheBottomOfATallLastMessage() {
         val tall = entries.last().copy(body = (1..90).joinToString("\n") { "本文 $it" })
         ui.setContent {

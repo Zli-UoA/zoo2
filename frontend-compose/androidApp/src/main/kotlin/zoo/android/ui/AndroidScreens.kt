@@ -407,6 +407,7 @@ private fun RenderAndroidScreen(
                         unreadPositionPending = screen.unreadPositionPending,
                         onUnreadPositioned = screen.onUnreadPositioned,
                         onReadThrough = screen.onReadThrough.takeIf { foreground && !screen.unreadHistoryIncomplete },
+                        headerMeasured = headerHeight > 0.dp,
                         topContentPadding = if (screen.unreadHistoryIncomplete) 0.dp else headerHeight,
                         headerOverlayHeight = if (screen.unreadHistoryIncomplete) 0.dp else visibleHeaderHeight,
                         loadEarlier = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderMessages) } } else null)
@@ -653,6 +654,7 @@ internal fun ColumnScope.TimelineWithInput(
     canResize: Boolean = true,
     historyReady: Boolean = true,
     loadEarlier: (() -> Unit)? = null,
+    headerMeasured: Boolean = true,
     topContentPadding: Dp = 0.dp,
     headerOverlayHeight: Dp = 0.dp,
     unreadPositionPending: Boolean = false,
@@ -734,8 +736,11 @@ internal fun ColumnScope.TimelineWithInput(
     val focusPending = focusRequest != null && openedTarget != focusRequest
     val shouldPositionUnread = focusMessage == null && !unreadPositionPending && unreadIndex >= 0 &&
         (seekUnread || (!positioned && !restorePending))
-    val waitingForPosition = if (focusPending) focusedIndex < 0
-        else unreadPositionPending || (restorePending && restoredIndex < 0 && !historyReady && !shouldPositionUnread)
+    val waitingForPosition = when {
+        !headerMeasured -> true
+        focusPending -> focusedIndex < 0
+        else -> unreadPositionPending || (restorePending && restoredIndex < 0 && !historyReady && !shouldPositionUnread)
+    }
 
     var firstLayoutRequested by remember { mutableStateOf(false) }
     SideEffect {
@@ -757,7 +762,7 @@ internal fun ColumnScope.TimelineWithInput(
         }
     }
     LaunchedEffect(input.expanded, input.lastSend, focusRequest, focusedIndex, entries.isNotEmpty(),
-        restoredIndex, historyReady, unreadPositionPending, unreadIndex, seekUnread) {
+        restoredIndex, historyReady, headerMeasured, unreadPositionPending, unreadIndex, seekUnread) {
         if (seenFocusRequest != focusRequest) {
             seenFocusRequest = focusRequest
             if (focusRequest != null) {
@@ -767,7 +772,7 @@ internal fun ColumnScope.TimelineWithInput(
                 openedTarget = null
             }
         }
-        if (input.expanded || entries.isEmpty()) return@LaunchedEffect
+        if (!headerMeasured || input.expanded || entries.isEmpty()) return@LaunchedEffect
         when {
             input.lastSend != null && input.lastSend != followedSend -> {
                 followedSend = input.lastSend
@@ -877,9 +882,11 @@ internal fun ColumnScope.TimelineWithInput(
                 .clearAndSetSemantics { hideFromAccessibility() }
             else Modifier,
         ) {
-            if (maxHeight > 0.dp && waitingForPosition && !input.expanded) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = colors.accent)
+            if (maxHeight > 0.dp && waitingForPosition) {
+                if (!input.expanded) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(color = colors.accent)
+                    }
                 }
             } else if (maxHeight > 0.dp && entries.isNotEmpty() && (!input.expanded || resizing)) {
                 Timeline(entries, colors, Modifier.fillMaxSize().testTag("conversation-timeline"), dispatch, posts = posts,
