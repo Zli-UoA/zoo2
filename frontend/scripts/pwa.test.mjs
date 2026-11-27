@@ -278,6 +278,27 @@ test("a restarted Service Worker still finds the build-specific shell cache", as
   assert.match(await response.text(), /network:https:\/\/zoo\.example\/index\.html/);
 });
 
+test("activation keeps caches when a later enumeration fails", async () => {
+  const cacheContext = memoryCaches([
+    ["zoo-shell-abc123", `${ORIGIN}/index.html`, basicResponse("<html>app</html>")],
+    ["zoo-shell-v2", `${ORIGIN}/index.html`, basicResponse("<html>old</html>")],
+  ]);
+  await cacheContext.api.open("zoo-shell-abc123");
+  await cacheContext.api.open("zoo-shell-v2");
+  const realKeys = cacheContext.api.keys.bind(cacheContext.api);
+  let calls = 0;
+  cacheContext.api.keys = async () => {
+    calls += 1;
+    if (calls === 2) throw new Error("denied");
+    return realKeys();
+  };
+  const { handlers } = worker({ caches: cacheContext.api });
+  await dispatch(handlers, "activate");
+  cacheContext.api.keys = realKeys;
+  const names = await cacheContext.api.keys();
+  assert.ok(names.includes("zoo-shell-abc123"));
+});
+
 test("activation keeps caches when the active shell cannot be determined", async () => {
   const cacheContext = memoryCaches([
     ["zoo-shell-abc123", `${ORIGIN}/index.html`, basicResponse("<html>app</html>")],
@@ -2034,6 +2055,39 @@ test("a Range request with If-Match does not use a cached version offline", asyn
   assert.equal(response.type, "error");
 });
 
+test("a 304 prevents an earlier pending response from overwriting the cache", async () => {
+  const cacheContext = memoryCaches();
+  let releaseOld;
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async (input) => {
+      const tag = input.headers?.get?.("if-none-match");
+      if (tag === '"old"')
+        return new Promise((resolve) => {
+          releaseOld = () =>
+            resolve(
+              basicResponse(validManifest("#ffffff"), {
+                headers: { "content-type": "application/manifest+json" },
+              }),
+            );
+        });
+      return new Response(null, { status: 304, headers: { ETag: '"new"' } });
+    },
+  });
+  const base = { url: `${ORIGIN}/manifest.webmanifest`, method: "GET", mode: "cors" };
+  const conditional = (tag) => ({
+    ...base,
+    headers: { get: (name) => (name.toLowerCase() === "if-none-match" ? tag : null) },
+  });
+  const older = fetchThrough(handlers, conditional('"old"'));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await fetchThrough(handlers, conditional('"new"'));
+  releaseOld();
+  await older;
+  const cache = await cacheContext.api.open("zoo-shell-v2");
+  assert.equal(await cache.match(`${ORIGIN}/manifest.webmanifest`), undefined);
+});
+
 test("a late older response does not overwrite the cached manifest", async () => {
   const cacheContext = memoryCaches();
   let releaseOld;
@@ -2836,6 +2890,32 @@ test("a conditional GET keeps a 304 response", async () => {
     headers: { get: (name) => (name.toLowerCase() === "if-none-match" ? '"abc"' : null) },
   });
   assert.equal(response.status, 304);
+});
+
+test("only-if-cached evaluates If-Match against the cached manifest", async () => {
+  const cacheContext = memoryCaches([
+    [
+      "zoo-shell-v2",
+      `${ORIGIN}/manifest.webmanifest`,
+      basicResponse(validManifest("#ffffff"), { headers: { "x-zoo-etag": '"current"' } }),
+    ],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () => {
+      throw new Error("network");
+    },
+  });
+  const request = (tag) => ({
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+    cache: "only-if-cached",
+    headers: { get: (name) => (name.toLowerCase() === "if-match" ? tag : null) },
+  });
+  assert.equal((await fetchThrough(handlers, request('"other"'))).status, 412);
+  assert.equal((await fetchThrough(handlers, request('"current"'))).status, 200);
 });
 
 test("only-if-cached conditional requests do not touch the network", async () => {

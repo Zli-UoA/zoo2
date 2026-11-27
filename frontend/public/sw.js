@@ -68,12 +68,16 @@ function cacheNameForIndex(html) {
  * 現在有効な app shell キャッシュを返す。install が書いたメタ情報のうち
  * 最新のものを選ぶ。メタ情報がない旧キャッシュは index.html の有無で拾う。
  */
-async function findActiveShellCache(prefix = POLICY_PREFIX, fallback = true) {
+async function findActiveShellCache(prefix = POLICY_PREFIX, fallback = true, knownNames = null) {
   let names = [];
-  try {
-    names = (await caches.keys()).filter((name) => name.startsWith(prefix));
-  } catch {
-    return fallback && prefix === POLICY_PREFIX ? DEFAULT_CACHE : null;
+  if (knownNames) {
+    names = knownNames.filter((name) => name.startsWith(prefix));
+  } else {
+    try {
+      names = (await caches.keys()).filter((name) => name.startsWith(prefix));
+    } catch {
+      return fallback && prefix === POLICY_PREFIX ? DEFAULT_CACHE : null;
+    }
   }
   let latest = null;
   for (const name of names) {
@@ -528,27 +532,32 @@ function notModified(cached) {
   return new Response(null, { status: 304, headers });
 }
 
+function parseETagList(value, weak) {
+  // 引用符内のカンマは区切りとして扱わない。
+  const tags = [];
+  let current = "";
+  let quoted = false;
+  for (const character of value || "") {
+    if (character === '"') {
+      quoted = !quoted;
+      current += character;
+    } else if (character === "," && !quoted) {
+      tags.push(current.trim());
+      current = "";
+    } else {
+      current += character;
+    }
+  }
+  tags.push(current.trim());
+  return tags.map((tag) => (weak ? tag.replace(/^W\//, "") : tag));
+}
+
 function cachedForConditional(request, cached) {
   if (cached.type === "error") return cached;
   const value = request.headers?.get?.("if-none-match");
   if (value) {
     // 前後の空白を除いてから W/ を処理する。ETag が指定されたらこれで判定を終える。
-    // 引用符内のカンマは区切りとして扱わない。
-    const tags = [];
-    let current = "";
-    let quoted = false;
-    for (const character of value) {
-      if (character === '"') {
-        quoted = !quoted;
-        current += character;
-      } else if (character === "," && !quoted) {
-        tags.push(current.trim().replace(/^W\//, ""));
-        current = "";
-      } else {
-        current += character;
-      }
-    }
-    tags.push(current.trim().replace(/^W\//, ""));
+    const tags = parseETagList(value, true);
     const etag = cached.headers.get("x-zoo-etag")?.trim().replace(/^W\//, "");
     // If-None-Match: * はどの版にも一致する。ETag は弱い比較で照合する。
     if (tags.includes("*") || (etag && tags.includes(etag))) return notModified(cached);
@@ -560,8 +569,31 @@ function cachedForConditional(request, cached) {
   return cached;
 }
 
+function cachedForOnlyIfCached(request, cached) {
+  if (cached.type === "error") return cached;
+  const evaluated = cachedForConditional(request, cached);
+  if (evaluated.status === 304) return evaluated;
+  const match = request.headers?.get?.("if-match");
+  if (match) {
+    const etag = cached.headers.get("x-zoo-etag")?.trim();
+    if (!etag || !parseETagList(match, false).includes(etag))
+      return new Response(null, { status: 412 });
+  }
+  const unmodified = request.headers?.get?.("if-unmodified-since");
+  const modified = cached.headers.get("x-zoo-last-modified");
+  if (unmodified && modified && Date.parse(modified) > Date.parse(unmodified))
+    return new Response(null, { status: 412 });
+  return evaluated;
+}
+
 const freshAssetWrites = new Map();
 let freshAssetSequence = 0;
+
+function noteFreshAssetSequence(path, sequence) {
+  const previous = freshAssetWrites.get(path);
+  if (!previous || previous.sequence < sequence)
+    freshAssetWrites.set(path, { sequence, promise: previous?.promise ?? Promise.resolve() });
+}
 
 async function writeFreshAsset(path, cache, response, sequence) {
   // 取得開始順が古い応答は、直後に届いても新しい保存版を上書きしない。
@@ -587,6 +619,7 @@ async function fetchConditionalAsset(request, path, sequence) {
     const response = await fetchBounded(request, { cache: "reload" });
     // 304 / 412 などの 4xx は呼び出し元へ届ける。キャッシュで上書きしない。
     if (response.status === 304 || !response.ok || response.status >= 600) {
+      if (response.status === 304) noteFreshAssetSequence(path, sequence);
       if (precondition && (response.status === 0 || response.status >= 500)) return response;
       if (precondition || response.status < 500) return response;
       const cached = cachedForConditional(request, await cachedFreshAsset(path));
@@ -645,7 +678,8 @@ function handleFreshAsset(request) {
   const key = url.href;
   const sequence = ++freshAssetSequence;
   // キャッシュだけを使う要求は、条件ヘッダーの有無にかかわらず通信しない。
-  if (request.cache === "only-if-cached") return cachedFreshAsset(path);
+  if (request.cache === "only-if-cached")
+    return cachedFreshAsset(path).then((cached) => cachedForOnlyIfCached(request, cached));
   // Range / 条件付き GET は部分応答・304 になり得るので、共有もキャッシュ更新もしない。
   const headers = request.headers;
   if (
@@ -866,7 +900,7 @@ self.addEventListener("activate", (event) => {
         await self.clients.claim();
         return;
       }
-      const active = await findActiveShellCache();
+      const active = await findActiveShellCache(POLICY_PREFIX, true, names);
       for (const name of names) {
         const managed = name.startsWith(CACHE_PREFIX) || name.startsWith("zoo-offline-");
         if (
