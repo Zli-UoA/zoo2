@@ -24,6 +24,17 @@ class EntryTextTest {
     }
 
     @Test
+    fun linkLabelsKeepEmojiWhileCodeAndPlainRegionsKeepShortcodes() {
+        val text = formatEntry("[**:party:**](https://example.test) `:party:` <plain>:party:</plain>",
+            emoji = setOf(":party:"))
+        assertEquals(":party: :party: :party:", text.text)
+        assertEquals("https://example.test", (text.getLinkAnnotations(0, text.length).single().item as LinkAnnotation.Url).url)
+        val emoji = text.getStringAnnotations("zoo-entry-emoji", 0, text.length).single()
+        assertEquals(0, emoji.start)
+        assertEquals(7, emoji.end)
+    }
+
+    @Test
     fun marksSearchTermsOnlyInTextParts() {
         val mark = SpanStyle(background = Color.Yellow)
         val text = formatEntry(

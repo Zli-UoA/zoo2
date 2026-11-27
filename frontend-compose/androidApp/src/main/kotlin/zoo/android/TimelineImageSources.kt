@@ -1,11 +1,15 @@
 package zoo.android
 
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import zoo.Row
 import zoo.array
 import zoo.endpoint
 import zoo.flag
 import zoo.nested
 import zoo.publicUrl
+import zoo.rows
 import zoo.text
 import zoo.android.ui.TimelineMedia
 import zoo.android.ui.TimelineMediaKind
@@ -44,13 +48,53 @@ internal fun timelineReactionEmoji(base: String, value: String, known: Map<Strin
     return value to known[value]
 }
 
-internal fun workspaceReactionImages(base: String, emojis: List<Row>): Map<String, String> = buildMap {
+internal fun workspaceEmojiImages(base: String, emojis: List<Row>): Map<String, String> = buildMap {
     for (emoji in emojis) {
         val url = timelineImageUrl(base, emoji.text("url")) ?: continue
-        val names = listOf(emoji.text("name")) + emoji.array("aliases").map { it.toString().trim('"') }
-        names.forEach { put(":${it.trim(':')}:", url) }
+        val names = listOf(emoji.text("name")) + emoji.array("aliases").mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+        names.map { it.trim(':') }.filter { it.isNotBlank() }.forEach { put(":$it:", url) }
     }
 }
+
+private val workspaceShortcode = Regex(":[a-z0-9_-]{1,64}:")
+
+internal fun timelineBodyEmojis(
+    base: String,
+    data: Row,
+    metadata: Row,
+    body: String,
+    isPost: Boolean,
+    workspace: Map<String, String>,
+): Map<String, TimelineMedia> {
+    val attached = if (isPost) data.array("emojis").rows().map { it.text("name") to it }
+    else (data.nested("display_data").nested("emojis") + metadata.nested("emojis"))
+        .mapNotNull { (name, value) -> (value as? JsonObject)?.let { name to it } }
+    return buildMap {
+        for ((rawName, emoji) in attached.take(256)) {
+            val name = rawName.trim(':')
+            if (name.isBlank()) continue
+            val url = if (isPost) timelineEmojiUrl(base, emoji)
+            else timelineImageUrl(base, emoji.text("url"))
+            if (url == null) continue
+            val media = inlineEmoji(name, url)
+            put(":$name:", media)
+            emoji.array("aliases").take(32).mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+                .map { it.trim(':') }.filter { it.isNotBlank() }
+                .forEach { put(":$it:", media) }
+        }
+        // A missing remote emoji must retain its shortcode rather than borrow a local image.
+        if (workspace.isNotEmpty() && (!isPost || !data.flag("remote"))) {
+            for (match in workspaceShortcode.findAll(body)) {
+                val code = match.value
+                val url = workspace[code] ?: continue
+                if (code !in this) put(code, inlineEmoji(code.trim(':'), url))
+            }
+        }
+    }
+}
+
+private fun inlineEmoji(name: String, url: String) =
+    TimelineMedia(url, name, TimelineMediaKind.Image, url = url, previewUrl = url)
 
 private val localMediaPath = Regex("/api/home/images/[a-fA-F0-9-]+")
 

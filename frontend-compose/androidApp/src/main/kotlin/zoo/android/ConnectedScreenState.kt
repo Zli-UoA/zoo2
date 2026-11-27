@@ -231,8 +231,8 @@ internal class ConnectedScreenState(
         enabled = true
     }
 
-    private val workspaceReactionIndex by derivedStateOf {
-        workspaceReactionImages(app.config.apiBaseUrl, app.workspaceEmojis)
+    private val workspaceEmojiIndex by derivedStateOf {
+        workspaceEmojiImages(app.config.apiBaseUrl, app.workspaceEmojis)
     }
 
     fun entry(
@@ -256,7 +256,7 @@ internal class ConnectedScreenState(
                 uri, original.text("id").takeIf { it.isNotBlank() && !original.flag("remote") },
                 original.text("display_name").ifBlank { original.text("user_name") },
                 original.text("content"), distinctTimelineMedia(original.array("media").rows().mapNotNull(::postMedia)),
-                displayEmoji(original, original, isPost = true),
+                displayEmoji(original, original, original.text("content"), isPost = true),
                 avatar = timelineAvatarUrl(app.config.apiBaseUrl, original, users[original.text("user_id")]),
                 postAuthor = postAuthor(original),
                 local = quoteRow.flag("local"),
@@ -269,11 +269,11 @@ internal class ConnectedScreenState(
         }
         val richContent = if (!isPost && !data.present("ciphertext")) messageRichContent(data) else EntryRichContent()
         val metadata = display.ifEmpty { data }
-        val emoji = if (allowPreview && !data.present("ciphertext")) displayEmoji(data, metadata, isPost) else emptyMap()
+        val emoji = if (allowPreview && !data.present("ciphertext")) displayEmoji(data, metadata, body, isPost) else emptyMap()
         val reactionEmoji = if (allowPreview && !data.present("ciphertext")) {
             val values = if (isPost) metadata.array("reactions").rows().map { it.text("reaction") }
             else reactions.map { it.text("emoji") }
-            values.associateWith { emoji[it]?.url ?: workspaceReactionIndex[it] }
+            values.associateWith { emoji[it]?.url ?: workspaceEmojiIndex[it] }
         } else emptyMap()
         val badges = if (isPost) metadata.array("reactions").rows().map {
             val value = it.text("reaction")
@@ -352,22 +352,8 @@ internal class ConnectedScreenState(
             formatted = false, summaly = true)
     }
 
-    private fun displayEmoji(data: Row, metadata: Row, isPost: Boolean): Map<String, TimelineMedia> {
-        val inline = if (isPost) data.array("emojis").rows().map { it.text("name") to it }
-        else metadata.nested("emojis").ifEmpty { data.nested("display_data").nested("emojis") }
-            .mapNotNull { (name, value) -> (value as? JsonObject)?.let { name to it } }
-        return buildMap {
-            for ((name, emoji) in inline.take(256)) {
-                val safe = if (isPost) timelineEmojiUrl(app.config.apiBaseUrl, emoji)
-                else timelineImageUrl(app.config.apiBaseUrl, emoji.text("url"))
-                if (safe == null || name.isBlank()) continue
-                val media = TimelineMedia(safe, name, TimelineMediaKind.Image, url = safe, previewUrl = safe)
-                put(":${name.trim(':')}:", media)
-                emoji.array("aliases").take(32).mapNotNull { (it as? JsonPrimitive)?.content }
-                    .forEach { put(":${it.trim(':')}:", media) }
-            }
-        }
-    }
+    private fun displayEmoji(data: Row, metadata: Row, body: String, isPost: Boolean): Map<String, TimelineMedia> =
+        timelineBodyEmojis(app.config.apiBaseUrl, data, metadata, body, isPost, workspaceEmojiIndex)
 
     private fun postMedia(row: Row): TimelineMedia? = timelinePostMedia(app.config.apiBaseUrl, row)
 
@@ -744,18 +730,19 @@ internal class ConnectedScreenState(
                 }
                 val createdAt = row.text("created_at")
                 val day = platform.day(createdAt).let { if (it.substringBefore('/') == year) it.substringAfter('/') else it }
+                // Like Web, keep the first hit within the three lines of a narrow screen.
+                val body = if (file) row.text("file_name") else focusSnippet(row.text("snippet"), searchTerms(search.query))
                 SearchResultItem(
                     key = globalSearchKey(row, search.type),
                     author = author(user).ifBlank { row.text("user_id") },
-                    // Like Web, keep the first hit within the three lines of a narrow screen.
-                    body = if (file) row.text("file_name") else focusSnippet(row.text("snippet"), searchTerms(search.query)),
+                    body = body,
                     time = listOf(day, platform.time(createdAt)).filter { it.isNotBlank() }.joinToString(" "),
                     destination = searchDestination(row, channel, users, members),
                     dm = isDm(row, channel),
                     inThread = row.text("parent_id").isNotEmpty(),
                     file = file,
                     fileSize = if (file) attachmentSize(row.text("file_size")) else null,
-                    emoji = if (file) emptyMap() else displayEmoji(row, row, isPost = false),
+                    emoji = if (file) emptyMap() else displayEmoji(row, row, body, isPost = false),
                     avatar = timelineAvatarUrl(app.config.apiBaseUrl, user, searchAuthor),
                     media = if (file) searchImage(row, channel) else null,
                     linkCard = link?.let { summalyCard(previewService, it) },

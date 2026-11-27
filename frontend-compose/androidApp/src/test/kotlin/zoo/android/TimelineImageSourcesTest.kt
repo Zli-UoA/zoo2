@@ -1,5 +1,7 @@
 package zoo.android
 
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -28,6 +30,31 @@ class TimelineImageSourcesTest {
         assertEquals(":party:" to proxy, timelineReactionEmoji(base, "apub:$imageId::party:", emptyMap()))
         assertEquals("$base/api/emoji-images/party", timelineAvatarUrl(base, obj("avatar_url" to "/api/emoji-images/party")))
         assertNull(timelineImageUrl(base, "//remote.example/emoji.png"))
+    }
+
+    @Test
+    fun bodyUsesJoinedMetadataBeforeWorkspaceNamesAndAliases() {
+        val workspace = workspaceEmojiImages(base, listOf(
+            obj("name" to "party", "url" to "/api/emoji-images/party",
+                "aliases" to JsonArray(listOf(JsonPrimitive("celebrate")))),
+            obj("name" to "unused", "url" to "/api/emoji-images/unused"),
+        ))
+        val row = obj("display_data" to obj("emojis" to obj(
+            "party" to obj("url" to "/api/emoji-images/previous"),
+        )))
+        val body = ":party: :celebrate: :unknown:"
+        val resolved = timelineBodyEmojis(base, row, obj("emojis" to obj()), body, false, workspace)
+        assertEquals(mapOf(
+            ":party:" to "$base/api/emoji-images/previous",
+            ":celebrate:" to "$base/api/emoji-images/party",
+        ), resolved.mapValues { it.value.url })
+
+        val local = timelineBodyEmojis(base, obj(), obj(), body, true, workspace)
+        assertEquals("$base/api/emoji-images/party", local[":celebrate:"]?.url)
+        val remote = timelineBodyEmojis(base, obj("remote" to true, "emojis" to JsonArray(listOf(
+            obj("name" to ":party:", "image_id" to imageId),
+        ))), obj(), body, true, workspace)
+        assertEquals(mapOf(":party:" to "$base/api/activitypub/emoji-images/$imageId"), remote.mapValues { it.value.url })
     }
 
     @Test

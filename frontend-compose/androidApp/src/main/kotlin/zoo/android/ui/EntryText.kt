@@ -172,12 +172,9 @@ private fun AnnotatedString.Builder.appendMfm(body: String, format: EntryFormat,
                             }
                             append(short)
                         } else {
-                            // A label may contain formatting. Strip its link annotations to avoid nested links.
-                            val label = buildAnnotatedString {
-                                if (value == token.url) appendHighlighted(value, format.mark)
-                                else appendMfm(value, format.withoutLinks(), depth + 1)
-                            }
-                            append(AnnotatedString(label.text, label.spanStyles))
+                            // Keep inline emoji annotations while suppressing links inside the label.
+                            if (value == token.url) appendHighlighted(value, format.mark)
+                            else appendMfm(value, format.withoutLinks(), depth + 1)
                         }
                     }
                 }

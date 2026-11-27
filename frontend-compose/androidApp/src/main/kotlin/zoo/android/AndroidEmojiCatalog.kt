@@ -16,11 +16,27 @@ internal class AndroidEmojiCatalog(private val readAsset: (String) -> String) {
     })
 
     private val standard by lazy {
-        val popular = listOf("😀", "😊", "😂", "🥰", "👍", "❤️", "🎉", "🙌", "👏", "✨", "🔥", "🙏")
-            .withIndex().associate { it.value.replace("\uFE0F", "") to it.index }
-        read("shortcodes.json").entries.groupBy({ it.value.jsonPrimitive.content }, { it.key }).map { (glyph, names) ->
-            EmojiChoice(glyph, glyph, names.first().replace('_', ' '), keywords = names.joinToString(" "))
-        }.sortedBy { popular[it.value.replace("\uFE0F", "")] ?: Int.MAX_VALUE }
+        val groups = read("messages.json").array("groups").associate {
+            val group = it.jsonObject
+            group.text("order") to group.text("message")
+        }
+        val metadata = Json.parseToJsonElement(readAsset("data.json")).jsonArray
+            .flatMap { entry ->
+                val row = entry.jsonObject
+                (listOf(row) + row.array("skins").map { it.jsonObject }).map {
+                    it.text("emoji").withoutVariationSelector() to row
+                }
+            }.toMap()
+        read("shortcodes.json").entries.groupBy({ it.value.jsonPrimitive.content }, { it.key })
+            .map { (glyph, names) ->
+                val row = metadata[glyph.withoutVariationSelector()]
+                EmojiChoice(
+                    glyph, glyph, names.first().replace('_', ' '),
+                    keywords = (names + listOfNotNull(row?.text("label")) +
+                        row?.array("tags").orEmpty().map { it.jsonPrimitive.content }).joinToString(" "),
+                    category = groups[row?.text("group")] ?: "その他",
+                ) to (row?.text("group")?.toIntOrNull() ?: Int.MAX_VALUE)
+            }.sortedBy { it.second }.map { it.first }
     }
     private val kitchen by lazy { parseKitchen(read("emoji-kitchen.json")) }
 
@@ -43,16 +59,19 @@ internal class AndroidEmojiCatalog(private val readAsset: (String) -> String) {
     private fun read(name: String): JsonObject = Json.parseToJsonElement(readAsset(name)).jsonObject
 }
 
+private fun String.withoutVariationSelector() = replace("\uFE0F", "")
+
 internal fun workspaceEmojiChoices(rows: List<Row>): List<EmojiChoice> = rows.mapNotNull { row ->
     val name = row.text("name").trim(':').takeIf { it.isNotBlank() } ?: return@mapNotNull null
     EmojiChoice(":$name:", "", name, row.text("url").ifBlank { null },
-        row.text("category") + " " + row.array("aliases").joinToString(" ") { it.jsonPrimitive.contentOrNull.orEmpty() })
+        row.text("category") + " " + row.array("aliases").joinToString(" ") { it.jsonPrimitive.contentOrNull.orEmpty() },
+        category = row.text("category").ifBlank { "未分類" })
 }
 
 internal fun accountEmojiChoices(rows: List<Row>): List<EmojiChoice> = rows.mapNotNull { row ->
     val username = row.text("username").takeIf { it.isNotBlank() } ?: return@mapNotNull null
     val label = "@$username"
-    EmojiChoice(":$label:", "", label, row.text("avatar_url").ifBlank { null }, row.text("display_name"))
+    EmojiChoice(":$label:", "", label, row.text("avatar_url").ifBlank { null }, row.text("display_name"), category = "アカウント")
 }
 
 private fun kitchenComponentCode(value: String) =

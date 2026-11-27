@@ -28,6 +28,8 @@ on:
       - "frontend/.storybook/fixtures/**"
       - "frontend/src/lib/i18n/locales/**"
       - "frontend/public/icons/**"
+      - "frontend/public/emojibase-data/ja/**"
+      - "frontend/public/emojibase-data/LICENSE"
       # zoo-crypto の UniFFI バインディング（#353）。APK に .so を入れ、単体テストでも使う。
       - "crates/zoo-crypto/**"
       - "crates/zoo-crypto-ffi/**"
@@ -63,6 +65,8 @@ on:
       - "frontend/.storybook/fixtures/**"
       - "frontend/src/lib/i18n/locales/**"
       - "frontend/public/icons/**"
+      - "frontend/public/emojibase-data/ja/**"
+      - "frontend/public/emojibase-data/LICENSE"
       # zoo-crypto の UniFFI バインディング（#353）。APK に .so を入れ、単体テストでも使う。
       - "crates/zoo-crypto/**"
       - "crates/zoo-crypto-ffi/**"
@@ -307,7 +311,7 @@ jobs:
           if [ "$latest" != "$GITHUB_SHA" ]; then
             # push の paths と同じ一覧。Android に関係しない新しいコミット (TUI など) はビルドを起動しないので、
             # それだけが後から入ったときは、このビルドが最新の Android と同じ内容として公開する。
-            paths=(frontend-compose frontend/src/android-phone frontend/src/lib/sip frontend/src/lib/call frontend/vite.android-phone.config.ts frontend/scripts/android-phone-smoke.mjs frontend/src/components/ui frontend/src/components/i18n frontend/src/lib/documents frontend/src/lib/i18n frontend/src/lib/attachments.ts frontend/src/lib/imageMetadata.ts frontend/src/styles.css frontend/src/media-preview-entry.tsx frontend/media-preview.html frontend/vite.media-preview.config.ts frontend/build frontend/package.json frontend/pnpm-lock.yaml frontend/tsconfig.json frontend/public/icons crates/zoo-crypto crates/zoo-crypto-ffi rust-toolchain.toml .github/workflows/ci-android.yaml '.github/scripts/android-update-manifest*.py')
+            paths=(frontend-compose frontend/src/android-phone frontend/src/lib/sip frontend/src/lib/call frontend/vite.android-phone.config.ts frontend/scripts/android-phone-smoke.mjs frontend/src/components/ui frontend/src/components/i18n frontend/src/lib/documents frontend/src/lib/i18n frontend/src/lib/attachments.ts frontend/src/lib/imageMetadata.ts frontend/src/styles.css frontend/src/media-preview-entry.tsx frontend/media-preview.html frontend/vite.media-preview.config.ts frontend/build frontend/package.json frontend/pnpm-lock.yaml frontend/tsconfig.json frontend/public/icons frontend/public/emojibase-data/ja frontend/public/emojibase-data/LICENSE crates/zoo-crypto crates/zoo-crypto-ffi rust-toolchain.toml .github/workflows/ci-android.yaml '.github/scripts/android-update-manifest*.py')
             git fetch --quiet origin "$latest"
             if ! git diff --quiet "$GITHUB_SHA" "$latest" -- "${paths[@]}"; then
               echo "A newer main commit changes Android; skip this older build."

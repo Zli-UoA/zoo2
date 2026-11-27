@@ -64,13 +64,11 @@ internal fun ConnectedScreens(
         val states by messageTable.pageStates.collectAsState()
         states
     }
-    // 添付・リアクションは、メッセージ行の display_data から出す（別 Shape は購読しない）。
-    val reactions = remember(rows) { rows.flatMap(::displayReactions) }
     val context = androidx.compose.ui.platform.LocalContext.current.applicationContext
     val emojiCatalog = remember(context) { AndroidEmojiCatalog(context) }
-    val needsWorkspaceEmoji = reactions.any { it.text("emoji").startsWith(':') }
-    LaunchedEffect(session, needsWorkspaceEmoji, env.online, env.visible) {
-        if (needsWorkspaceEmoji && env.online && env.visible) {
+    // Load the session-wide fallback even when the picker is closed. The Session coalesces catalog reads.
+    LaunchedEffect(session, env.online, env.visible) {
+        if (env.online && env.visible) {
             try { session.loadWorkspaceEmojis() }
             catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { /* Keep shortcode fallbacks if the catalog is unavailable. */ }
@@ -576,8 +574,8 @@ internal fun ConnectedScreens(
         val unicode by produceState(emptyList<EmojiChoice>(), emojiCatalog) { value = emojiCatalog.unicode() }
         val allowAccountEmoji = reaction == null || screen !is AndroidScreen.Home &&
             screen !is AndroidScreen.Post && screen !is AndroidScreen.Profile
-        LaunchedEffect(session, env.online, allowAccountEmoji) {
-            if (env.online) {
+        LaunchedEffect(session, env.online, env.visible, allowAccountEmoji) {
+            if (env.online && env.visible) {
                 if (allowAccountEmoji) launch { session.loadAccountProfiles() }
                 try {
                     session.loadWorkspaceEmojis()

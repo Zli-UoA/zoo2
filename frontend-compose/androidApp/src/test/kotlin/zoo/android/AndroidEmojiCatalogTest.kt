@@ -13,12 +13,19 @@ import zoo.obj
 class AndroidEmojiCatalogTest {
     @Test fun bundledCatalogsProvideUnicodeAndKitchenChoices() = runTest {
         val catalog = AndroidEmojiCatalog { name ->
-            File("../src/commonMain/composeResources/files", name).readText()
+            val directory = when (name) {
+                "data.json", "messages.json" -> "../../frontend/public/emojibase-data/ja"
+                else -> "../src/commonMain/composeResources/files"
+            }
+            File(directory, name).readText()
         }
         val unicode = catalog.unicode()
         assertTrue(unicode.size > 1_000)
         assertEquals(unicode.size, unicode.distinctBy { it.value }.size)
-        assertTrue(unicode.any { it.glyph == "🐱" && "cat" in it.keywords })
+        val catChoice = unicode.single { it.glyph == "🐱" }
+        assertTrue("cat" in catChoice.keywords)
+        assertEquals("動物と自然", catChoice.category)
+        assertEquals("スマイリーと感情", unicode.single { it.glyph == "😀" }.category)
 
         val kitchen = catalog.kitchen()
         val cat = kitchen.components.first { it.value == "1f431" }
@@ -43,6 +50,7 @@ class AndroidEmojiCatalogTest {
             "name" to "party", "aliases" to JsonArray(listOf(JsonPrimitive("celebration"))), "category" to "events",
         ))).single()
         assertEquals(":party:", custom.value)
+        assertEquals("events", custom.category)
         assertTrue("celebration" in custom.keywords)
     }
 }

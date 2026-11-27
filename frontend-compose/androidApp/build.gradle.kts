@@ -105,6 +105,10 @@ val emojiCatalogs by tasks.registering(Sync::class) {
     from("../src/commonMain/composeResources/files") {
         include("shortcodes.json", "emoji-kitchen.json")
     }
+    from("../../frontend/public/emojibase-data/ja") {
+        include("data.json", "messages.json")
+    }
+    from("../../frontend/public/emojibase-data/LICENSE")
     into(layout.buildDirectory.dir("generated/assets/emoji"))
 }
 
