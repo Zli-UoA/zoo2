@@ -426,6 +426,7 @@
     "tabKitchen": "Emoji Kitchen",
     "emojiLoading": "絵文字を読み込み中…",
     "recent": "最近使った絵文字",
+    "accountEmojiCategory": "アカウント",
     "skinTone": "肌の色"
   },
   "theme": {
@@ -1810,6 +1811,12 @@
   },
   "androidUpdate": {
     "title": "アプリの更新"
+  },
+  "androidNavigationCache": {
+    "title": "画面遷移キャッシュ",
+    "description": "Home・投稿詳細・プロフィールと、チャンネルにそれぞれ適用するメモリ上の保持件数です。",
+    "off": "オフ",
+    "entries": "{{count}} 件"
   },
   "androidNotifications": {
     "enable": "通知を有効にする",

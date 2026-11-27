@@ -18,6 +18,8 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,6 +39,7 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import zoo.ChannelLinkTarget
 import kotlinx.coroutines.withContext
 
@@ -80,13 +83,22 @@ internal val LocalTimelineImage = staticCompositionLocalOf<suspend (TimelineMedi
 internal val LocalCachedTimelineImage = staticCompositionLocalOf<(TimelineMedia) -> ImageBitmap?> { { null } }
 
 @Composable
-internal fun rememberTimelineImage(media: TimelineMedia?): ImageBitmap? {
+internal fun rememberTimelineImage(media: TimelineMedia?, revealed: Boolean = true): ImageBitmap? {
     val cached = LocalCachedTimelineImage.current
     val load = LocalTimelineImage.current
+    val retry = LocalTimelineImageRetry.current
     val initial = remember(media, cached) { media?.let(cached) }
-    return key(media, cached, load) {
+    val isRevealed = rememberUpdatedState(revealed)
+    return key(media, cached, load, retry) {
         produceState(initial) {
-            if (initial == null && media != null) value = load(media)
+            if (initial == null && media != null) {
+                val prefetching = !isRevealed.value
+                value = load(media)
+                if (prefetching && value == null) {
+                    snapshotFlow { isRevealed.value }.first { it }
+                    value = retry(media)
+                }
+            }
         }.value
     }
 }
@@ -293,7 +305,7 @@ private fun MediaFrame(
     val video = media.kind == TimelineMediaKind.Video
     var revealed by remember(media.key, media.url, media.previewUrl, media.sensitive) { mutableStateOf(false) }
     val hidden = media.sensitive && !revealed
-    val loaded = rememberTimelineImage(media.takeUnless { video })
+    val loaded = rememberTimelineImage(media.takeUnless { video }, revealed = !hidden)
     val bitmap = loaded.takeUnless { hidden }
     if (bitmap != null && onImageRatio != null) {
         SideEffect { onImageRatio(bitmap.width.toFloat() / bitmap.height) }

@@ -413,6 +413,7 @@ function Node({ c }: { c: Component }): ReactNode {
         </div>
       );
     case T.TaskCard:
+      // 部品の JSON は型上共通フィールドしか見えないが Task の形で届く（アプリ内の JSON 境界）。
       return <TaskRow task={c as unknown as Task} />;
     case T.Thumbnail:
       return (

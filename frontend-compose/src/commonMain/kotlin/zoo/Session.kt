@@ -11,6 +11,20 @@ import kotlinx.serialization.json.*
 
 class Session(val repo: Repository, val scope: CoroutineScope, initial: Environment) {
     internal val homeTimelines = HomeTimelineCache()
+
+    fun setNavigationCacheLimit(limit: Int) {
+        homeTimelines.limit = limit.coerceIn(0, 16)
+        repo.navigationCacheLimit = limit
+    }
+
+    fun cachedHomeDetail(key: String): List<Row> =
+        homeTimelines.get("detail:$key")?.posts.orEmpty()
+
+    fun removeCachedHomeDetail(key: String) = homeTimelines.removeEntry("detail:$key")
+
+    fun cacheHomeDetail(key: String, rows: List<Row>) {
+        homeTimelines.save("detail:$key", HomeTimelineSnapshot(rows, false, 0, 0, 0))
+    }
     internal val notificationContexts = mutableMapOf<String, Row>()
     internal val accountDetails = mutableMapOf<String, Row>()
     internal val homeComposerState by lazy {
@@ -61,13 +75,20 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         private set
     var workspaceEmojiError by mutableStateOf(false)
         private set
-    private var workspaceEmojiChecked = 0L
+    private var workspaceEmojiChecked by mutableLongStateOf(0L)
+
+    fun workspaceEmojiCatalogIsFresh(): Boolean =
+        workspaceEmojiCatalogIsFresh(kotlin.time.Clock.System.now().toEpochMilliseconds())
+
+    internal fun workspaceEmojiCatalogIsFresh(now: Long): Boolean =
+        workspaceEmojiChecked != 0L && now - workspaceEmojiChecked < 60_000
+
     private val workspaceEmojiMutex = kotlinx.coroutines.sync.Mutex()
     suspend fun loadWorkspaceEmojis(force: Boolean = false) {
         workspaceEmojiMutex.lock()
         try {
             val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
-            if (!force && workspaceEmojiChecked != 0L && now - workspaceEmojiChecked < 60_000) return
+            if (!force && workspaceEmojiCatalogIsFresh(now)) return
             workspaceEmojiLoading = true
             workspaceEmojiError = false
             try {
@@ -340,7 +361,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         return result
     }
 
-    suspend fun createDm(targets: Set<String>, encrypted: Boolean): String {
+    suspend fun createDm(targets: Set<String>, encrypted: Boolean): Row {
         val id = platform.uuid()
         if (encrypted) rememberEncryptedChannel(id)
         val result = api.request("/api/dms", "POST", buildJsonObject {
@@ -349,7 +370,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             if (encrypted) put("encrypted", true)
         })
         if (encrypted) verifyEncryptedCreation(result, id)
-        return result.jsonObject.getValue("data").jsonObject.text("id")
+        return result.jsonObject.getValue("data").jsonObject
     }
 
     private suspend fun verifyEncryptedCreation(result: JsonElement, requestedId: String) {

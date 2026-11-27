@@ -12,6 +12,6 @@ CI(`ci-db-erd`)が `infra/db/erd.sh --check` で更新漏れを検査します�
 |---|---|---|
 | [core](db-erd/core.md) | コア(ユーザー、チャンネル、メッセージ、通知など) | 60 |
 | [apps](db-erd/apps.md) | アプリ連携(apps と app_*) | 23 |
-| [activitypub](db-erd/activitypub.md) | ActivityPub(apub_*) | 18 |
+| [activitypub](db-erd/activitypub.md) | ActivityPub(apub_*) | 19 |
 | [e2ee](db-erd/e2ee.md) | E2EE(e2ee_*) | 17 |
 | [slack](db-erd/slack.md) | Slack 取り込み(slack_*) | 10 |

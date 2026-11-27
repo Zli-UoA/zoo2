@@ -20,7 +20,7 @@ internal class ConnectedScreenState(
     private val phone: PhoneController,
 ) {
     val home = HomeTimeline(app, app.scope)
-    val inbox = NotificationInboxBinding(zoo.NotificationInbox(app))
+    val inbox = NotificationInboxBinding(app)
     private val instanceColors = mutableStateMapOf<String, Int?>()
 
     suspend fun loadInstanceColors(hosts: List<String>) {
@@ -123,7 +123,6 @@ internal class ConnectedScreenState(
         }
     }
 
-    private var postNavigationRequest = 0
     var feedScreenRevision by mutableIntStateOf(0)
         private set
     private var currentOverlay by mutableStateOf<String?>(null)
@@ -131,7 +130,6 @@ internal class ConnectedScreenState(
         get() = currentOverlay
         set(value) {
             if (currentOverlay != value) {
-                invalidatePostNavigation()
                 feedScreenRevision++
             }
             currentOverlay = value
@@ -139,6 +137,18 @@ internal class ConnectedScreenState(
     var inputMenu by mutableStateOf<InputTool?>(null)
     var memberToRemove by mutableStateOf<SelectionItem?>(null)
     private var pins by mutableStateOf<List<String>>(emptyList())
+    private data class DmSelection(val members: Set<String>, val encrypted: Boolean)
+    private val pendingDms = mutableStateMapOf<DmSelection, Row>()
+
+    fun pendingDm(id: String?): Row? = pendingDms.values.firstOrNull { it.text("id") == id }
+
+    fun clearSyncedDms(channels: List<Row>, memberships: List<Row>) {
+        if (pendingDms.isEmpty()) return
+        val joined = memberships.asSequence().filter { it.text("user_id") == app.config.userId }
+            .map { it.text("channel_id") }.toSet()
+        val synced = channels.asSequence().map { it.text("id") }.filter { it in joined }.toSet()
+        pendingDms.entries.removeAll { it.value.text("id") in synced }
+    }
     var dmTargets by mutableStateOf<Set<String>>(emptySet())
         private set
     var encryptedDm by mutableStateOf(false)
@@ -159,7 +169,9 @@ internal class ConnectedScreenState(
     private val feedBackStack = ArrayDeque<FeedOrigin>()
     var postRevision by mutableIntStateOf(0)
         private set
-    private var postDetailRevision = -1
+    private var postDetailRevision by mutableIntStateOf(-1)
+    val postPending: Boolean get() = postDetailRevision != postRevision
+    private var notifyUnavailablePost = false
     var postReloadRequest by mutableIntStateOf(0)
         private set
     var postLoadFailed by mutableStateOf(false)
@@ -184,6 +196,10 @@ internal class ConnectedScreenState(
     private var profilePostsRevision by mutableIntStateOf(0)
     val profilePostsPending: Boolean get() = profilePostsRevision != postRevision
     var profilePostsLoadFailed by mutableStateOf(false)
+        private set
+    var profileAccountLoadFailed by mutableStateOf(false)
+        private set
+    var profileAccountRetry by mutableIntStateOf(0)
         private set
     var profileReloadRequest by mutableIntStateOf(0)
         private set
@@ -231,8 +247,19 @@ internal class ConnectedScreenState(
         enabled = true
     }
 
-    private val workspaceReactionIndex by derivedStateOf {
-        workspaceReactionImages(app.config.apiBaseUrl, app.workspaceEmojis)
+    var linkEmojiDemandCount by mutableIntStateOf(0)
+        private set
+
+    var linkEmojiDemandVersion by mutableLongStateOf(0L)
+        private set
+
+    fun setLinkEmojiDemand(active: Boolean) {
+        linkEmojiDemandCount += if (active) 1 else -1
+        if (active) linkEmojiDemandVersion++
+    }
+
+    val workspaceEmojiIndex by derivedStateOf {
+        workspaceEmojiImages(app.config.apiBaseUrl, app.workspaceEmojis)
     }
 
     fun entry(
@@ -256,7 +283,7 @@ internal class ConnectedScreenState(
                 uri, original.text("id").takeIf { it.isNotBlank() && !original.flag("remote") },
                 original.text("display_name").ifBlank { original.text("user_name") },
                 original.text("content"), distinctTimelineMedia(original.array("media").rows().mapNotNull(::postMedia)),
-                displayEmoji(original, original, isPost = true),
+                displayEmoji(original, original, original.text("content"), isPost = true),
                 avatar = timelineAvatarUrl(app.config.apiBaseUrl, original, users[original.text("user_id")]),
                 time = original.text("created_at").takeIf(String::isNotBlank)?.let(platform::messageTimestamp),
                 postAuthor = postAuthor(original),
@@ -270,11 +297,13 @@ internal class ConnectedScreenState(
         }
         val richContent = if (!isPost && !data.present("ciphertext")) messageRichContent(data) else EntryRichContent()
         val metadata = display.ifEmpty { data }
-        val emoji = if (allowPreview && !data.present("ciphertext")) displayEmoji(data, metadata, isPost) else emptyMap()
+        val emojiBodies = richContent.blocks.asSequence().flatMap { it.displayedText() }.toList()
+        val visibleBody = if (richContent.hidesBody) "" else body
+        val emoji = if (allowPreview && !data.present("ciphertext")) displayEmoji(data, metadata, visibleBody, isPost, emojiBodies) else emptyMap()
         val reactionEmoji = if (allowPreview && !data.present("ciphertext")) {
             val values = if (isPost) metadata.array("reactions").rows().map { it.text("reaction") }
             else reactions.map { it.text("emoji") }
-            values.associateWith { emoji[it]?.url ?: workspaceReactionIndex[it] }
+            values.associateWith { emoji[it]?.url ?: workspaceEmojiIndex[it] }
         } else emptyMap()
         val badges = if (isPost) metadata.array("reactions").rows().map {
             val value = it.text("reaction")
@@ -285,11 +314,13 @@ internal class ConnectedScreenState(
                 canToggle = timelineReactionCanToggle(value, it.flag("selected"), it.text("can_react") != "false", post = true))
         } else reactions.groupBy { it.text("emoji") }.map { (value, rows) ->
             val (label, image) = timelineReactionEmoji(app.config.apiBaseUrl, value, reactionEmoji)
-            val account = value.takeIf { it.startsWith(":@") && it.endsWith(':') }
-                ?.removePrefix(":@")?.removeSuffix(":")
-                ?.let { username -> users.values.firstOrNull { it.text("user_name") == username } }
+            val accountName = accountEmojiName(value)
+            val reactionImage = if (accountName == null) image else {
+                val account = users.values.firstOrNull { it.text("user_name") == accountName }
+                account?.let { timelineAvatarUrl(app.config.apiBaseUrl, it) }
+            }
             TimelineReaction(value, label, rows.size.toString(), rows.any { it.text("user_id") == app.config.userId },
-                image ?: account?.let { timelineAvatarUrl(app.config.apiBaseUrl, it) }, canToggle = timelineReactionCanToggle(value, selected = false, canReact = true, post = false))
+                reactionImage, canToggle = timelineReactionCanToggle(value, selected = false, canReact = true, post = false))
         }
         val fileRows = (attachments + metadata.array("attachments").rows()).distinctBy { it.text("id") }
         val attachmentMedia = if (allowPreview && !data.present("ciphertext")) fileRows.mapNotNull(::timelineAttachmentMedia)
@@ -327,6 +358,12 @@ internal class ConnectedScreenState(
             canRepost = isPost && data.text("visibility") in setOf("public", "local", "unlisted"),
             reposted = metadata.flag("reposted"), reactions = badges, attachments = files, link = url,
             richContent = richContent, channelLinks = links.channels.map { it.first },
+            needsWorkspaceEmoji = allowPreview && !data.present("ciphertext") && (
+                ((!isPost || !data.flag("remote")) && (
+                    hasMissingWorkspaceEmoji(visibleBody, emoji) || emojiBodies.any { hasMissingWorkspaceEmoji(it, emoji) } ||
+                        badges.any { it.image == null && isWorkspaceEmojiCandidate(it.value) }
+                )) || (quote != null && !original.flag("remote") && hasMissingWorkspaceEmoji(quote.body, quote.emoji))
+            ),
             emoji = emoji, attachedImageUrls = mediaUrls, avatar = timelineAvatarUrl(app.config.apiBaseUrl, data, users[data.text("user_id")]),
             entryKey = HomeTimeline.key(row).ifBlank { id }, media = media, postHeader = postHeader, quote = quote,
             postAuthor = if (isPost) postAuthor(data, name) else null,
@@ -353,22 +390,10 @@ internal class ConnectedScreenState(
             formatted = false, summaly = true)
     }
 
-    private fun displayEmoji(data: Row, metadata: Row, isPost: Boolean): Map<String, TimelineMedia> {
-        val inline = if (isPost) data.array("emojis").rows().map { it.text("name") to it }
-        else metadata.nested("emojis").ifEmpty { data.nested("display_data").nested("emojis") }
-            .mapNotNull { (name, value) -> (value as? JsonObject)?.let { name to it } }
-        return buildMap {
-            for ((name, emoji) in inline.take(256)) {
-                val safe = if (isPost) timelineEmojiUrl(app.config.apiBaseUrl, emoji)
-                else timelineImageUrl(app.config.apiBaseUrl, emoji.text("url"))
-                if (safe == null || name.isBlank()) continue
-                val media = TimelineMedia(safe, name, TimelineMediaKind.Image, url = safe, previewUrl = safe)
-                put(":${name.trim(':')}:", media)
-                emoji.array("aliases").take(32).mapNotNull { (it as? JsonPrimitive)?.content }
-                    .forEach { put(":${it.trim(':')}:", media) }
-            }
-        }
-    }
+    private fun displayEmoji(
+        data: Row, metadata: Row, body: String, isPost: Boolean, displayedBlocks: List<String> = emptyList(),
+    ): Map<String, TimelineMedia> =
+        timelineBodyEmojis(app.config.apiBaseUrl, data, metadata, body, isPost, workspaceEmojiIndex, displayedBlocks)
 
     private fun postMedia(row: Row): TimelineMedia? = timelinePostMedia(app.config.apiBaseUrl, row)
 
@@ -419,7 +444,6 @@ internal class ConnectedScreenState(
             EntryOperation.Media -> if (!encrypted) {
                 val media = if (action.quotedMedia) action.item.quote?.media.orEmpty() else action.item.media
                 selectMediaPreview(media, action.value)?.let {
-                    invalidatePostNavigation()
                     mediaPreview = it
                 }
             }
@@ -454,7 +478,6 @@ internal class ConnectedScreenState(
     }
 
     private fun discardPost(id: String) {
-        invalidatePostNavigation()
         postRevision++
         mediaPreview = null
         home.remove(id)
@@ -478,12 +501,19 @@ internal class ConnectedScreenState(
             val posts = loadProfilePosts(id)
             if (isCurrent()) {
                 profilePosts = posts
+                app.cacheHomeDetail("profile:$id", posts)
                 profilePostsRevision = revision
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (_: Exception) {
-            if (isCurrent()) profilePostsLoadFailed = true
+        } catch (failure: Exception) {
+            if (isCurrent()) {
+                if (failure is ApiException && failure.status in setOf(403, 404)) {
+                    app.removeCachedHomeDetail("profile:$id")
+                    profilePosts = emptyList()
+                }
+                profilePostsLoadFailed = true
+            }
         }
     }
 
@@ -510,12 +540,14 @@ internal class ConnectedScreenState(
                 closeUnavailablePost(id)
             } else {
                 postDetail = detail
+                app.cacheHomeDetail("post:$id", detail)
                 postDetailRevision = revision
             }
         }
     }
 
     private fun closeUnavailablePost(id: String) {
+        if (notifyUnavailablePost) app.toast = app.t("home.postUnavailable")
         discardPost(id)
         closePost()
         home.refresh(retain = true)
@@ -549,23 +581,6 @@ internal class ConnectedScreenState(
         home.reloadAfterAudienceChange()
     }
 
-    private suspend fun loadPostForNavigation(id: String, isCurrent: () -> Boolean): Pair<Int, List<Row>>? {
-        while (isCurrent()) {
-            val revision = postRevision
-            val detail = try {
-                app.api.request("/api/home/${id.encodeURLParameter()}/thread").rows()
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (failure: Exception) {
-                if (revision != postRevision) continue
-                if (isCurrent()) throw failure
-                return null
-            }
-            if (revision == postRevision && isCurrent()) return revision to detail
-        }
-        return null
-    }
-
     suspend fun searchPeople(term: String) {
         people = if (term.isBlank()) emptyList()
         else app.api.request("/api/activitypub/search?q=${term.encodeURLParameter()}").rows()
@@ -579,40 +594,57 @@ internal class ConnectedScreenState(
         val id = person.text("id")
         val source = overlay
         if (id.isBlank() || (source == "profile" && profile.text("id") == id)) return
-        val opening = ++postNavigationRequest
-        val path = app.env.path
-        fun isCurrent() = opening == postNavigationRequest && source == overlay && path == app.env.path
-        request {
-            val followRevision = followRevisions[id]
-            val account = try {
-                app.api.request("/api/activitypub/accounts?actor=${id.encodeURLParameter()}").jsonObject
-            } catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { obj() }
-            val following = if (!person.flag("remote") || id == app.config.userId) null else if (account.isNotEmpty()) {
-                when {
-                    !account.present("following") -> "フォロー"
-                    account.flag("following") -> "フォローを解除"
-                    else -> "申請を取り消す"
+        rememberFeedOrigin(source)
+        clearPost()
+        profilePostsLoadFailed = false
+        profile = person
+        profileAccountLoadFailed = false
+        profilePosts = app.cachedHomeDetail("profile:$id")
+        profilePostsRevision = -1
+        overlay = "profile"
+        feedScreenRevision++
+    }
+
+    suspend fun reloadProfileAccount() {
+        if (overlay != "profile") return
+        val person = profile
+        val id = person.text("id")
+        val screen = feedScreenRevision
+        val followRevision = followRevisions[id]
+        fun isCurrent() = overlay == "profile" && feedScreenRevision == screen && profile.text("id") == id
+        profileAccountLoadFailed = false
+        val account = try {
+            app.api.request("/api/activitypub/accounts?actor=${id.encodeURLParameter()}").jsonObject
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (failure: Exception) {
+            if (failure is ApiException && failure.status in setOf(403, 404)) {
+                app.removeCachedHomeDetail("profile:$id")
+                followStates.remove(id)
+                feedBackStack.removeAll { it is FeedOrigin.Profile && it.account.text("id") == id }
+                if (isCurrent()) {
+                    profile = obj()
+                    profilePosts = emptyList()
+                    closeProfile()
+                    app.toast = app.t("common.errors.notFound")
                 }
-            } else updateFollowState(id)
-            if (isCurrent()) {
-                rememberFeedOrigin(source)
-                if (source == "profile") feedScreenRevision++
-                clearPost()
-                profilePostsLoadFailed = false
-                profile = JsonObject(person + account)
-                profilePosts = emptyList()
-                profilePostsRevision = -1
-                if (id !in pendingFollows && followRevisions[id] == followRevision) {
-                    if (following == null) followStates.remove(id) else followStates[id] = following
-                }
-                overlay = "profile"
+            } else if (isCurrent()) {
+                profileAccountLoadFailed = true
+            }
+            return
+        }
+        if (!isCurrent()) return
+        profile = JsonObject(person + account)
+        if (id !in pendingFollows && followRevisions[id] == followRevision) {
+            if (!profile.flag("remote") || id == app.config.userId) followStates.remove(id)
+            else followStates[id] = when {
+                !account.present("following") -> "フォロー"
+                account.flag("following") -> "フォローを解除"
+                else -> "申請を取り消す"
             }
         }
     }
 
     fun closeProfile() {
-        invalidatePostNavigation()
         restoreFeedOrigin()
     }
 
@@ -743,18 +775,21 @@ internal class ConnectedScreenState(
                     searchPreviewLinks.cached(row, current)
                 }
                 val createdAt = row.text("created_at")
+                // Like Web, keep the first hit within the three lines of a narrow screen.
+                val body = if (file) row.text("file_name") else focusSnippet(row.text("snippet"), searchTerms(search.query))
+                val emoji = if (file) emptyMap() else displayEmoji(row, row, body, isPost = false)
                 SearchResultItem(
                     key = globalSearchKey(row, search.type),
                     author = author(user).ifBlank { row.text("user_id") },
-                    // Like Web, keep the first hit within the three lines of a narrow screen.
-                    body = if (file) row.text("file_name") else focusSnippet(row.text("snippet"), searchTerms(search.query)),
+                    body = body,
                     time = platform.messageTimestamp(createdAt),
                     destination = searchDestination(row, channel, users, members),
                     dm = isDm(row, channel),
                     inThread = row.text("parent_id").isNotEmpty(),
                     file = file,
                     fileSize = if (file) attachmentSize(row.text("file_size")) else null,
-                    emoji = if (file) emptyMap() else displayEmoji(row, row, isPost = false),
+                    emoji = emoji,
+                    needsWorkspaceEmoji = !file && hasMissingWorkspaceEmoji(body, emoji),
                     avatar = timelineAvatarUrl(app.config.apiBaseUrl, user, searchAuthor),
                     media = if (file) searchImage(row, channel) else null,
                     linkCard = link?.let { summalyCard(previewService, it) },
@@ -931,6 +966,7 @@ internal class ConnectedScreenState(
             SettingsEntry.Toggle("haptics", "触覚フィードバック", env.operationHaptics))),
         SettingsGroup("Zoo", listOf(SettingsEntry.Destination("search-engine", "検索エンジン", app.searchEngine),
             SettingsEntry.Destination("notifications", "通知"),
+            SettingsEntry.Destination("navigation-cache", app.t("androidNavigationCache.title"), cacheLimitLabel(platform.navigationCacheLimit)),
             SettingsEntry.Destination("app-update", "アプリの更新"),
             SettingsEntry.Destination("encryption", "エンドツーエンド暗号化"),
             SettingsEntry.Destination("logout", "ログアウト"))),
@@ -944,6 +980,9 @@ internal class ConnectedScreenState(
         }),
     )
 
+    private fun cacheLimitLabel(limit: Int) = if (limit == 0) app.t("androidNavigationCache.off")
+        else app.t("androidNavigationCache.entries", "count" to limit.toString())
+
     fun settingsDetail(env: Environment): AndroidScreen {
         val (title, entries) = when (overlay) {
             "theme" -> "テーマ" to listOf("system" to "端末に従う", "light" to "ライト", "dark" to "ダーク")
@@ -952,12 +991,20 @@ internal class ConnectedScreenState(
                 "zh-Hans" to "简体中文", "zh-Hant" to "繁體中文", "yue" to "粵語").map {
                 SettingsEntry.Destination("locale:${it.first}", it.second, if (env.locale == it.first) "選択中" else null)
             }
+            "navigation-cache" -> app.t("androidNavigationCache.title") to buildList<SettingsEntry> {
+                add(SettingsEntry.Information("navigation-cache-info", app.t("androidNavigationCache.description")))
+                navigationCacheLimits.forEach { limit ->
+                    add(SettingsEntry.Choice("navigation-cache:$limit", cacheLimitLabel(limit),
+                        platform.navigationCacheLimit == limit))
+                }
+            }
             "search-engine" -> "検索エンジン" to searchEngines.map {
                 SettingsEntry.Destination("engine:${it.key}", it.value, if (app.searchEngine == it.key) "選択中" else null)
             }
             else -> "通知" to listOf(SettingsEntry.Destination("os-notifications", "Androidの通知設定を開く"))
         }
-        return AndroidScreen.SettingsDetail(title, listOf(SettingsGroup(title, entries)))
+        val groupTitle = if (overlay == "navigation-cache") "" else title
+        return AndroidScreen.SettingsDetail(title, listOf(SettingsGroup(groupTitle, entries)))
     }
 
     fun dispatch(action: AndroidUiAction, screen: AndroidScreen, channel: Row?, rows: List<Row>, callPeerId: String?, callPeerName: String?, enableNotifications: () -> Unit) {
@@ -968,7 +1015,6 @@ internal class ConnectedScreenState(
                 screen is AndroidScreen.Home || screen is AndroidScreen.Post || screen is AndroidScreen.Profile,
                 channelId.isNotBlank() && app.isEncryptedChannel(channelId))
             is AndroidUiAction.Navigate -> {
-                invalidatePostNavigation()
                 overlay = null
                 if (action.page == TopPage.Search) searchText = app.globalSearch.query
                 platform.navigate(when (action.page) {
@@ -1030,6 +1076,7 @@ internal class ConnectedScreenState(
             is AndroidUiAction.OpenPost -> openPost(action.id)
             AndroidUiAction.RetryPost -> postReloadRequest++
             AndroidUiAction.RetryProfile -> profileReloadRequest++
+            AndroidUiAction.RetryProfileAccount -> profileAccountRetry++
             AndroidUiAction.RetryTimeline -> if (home.olderError) home.older()
                 else home.refresh(retain = home.posts.isNotEmpty())
             is AndroidUiAction.OpenProfile -> openProfile(action.author)
@@ -1086,9 +1133,13 @@ internal class ConnectedScreenState(
                 action.id == "submit-dm" && dmTargets.isNotEmpty() && !saving -> request {
                     saving = true
                     try {
-                        val id = app.createDm(dmTargets, encryptedDm)
+                        clearSyncedDms(app.repo.channels.rows.value, app.repo.members.rows.value)
+                        val selection = DmSelection(dmTargets, encryptedDm)
+                        val channel = pendingDms[selection] ?: app.createDm(selection.members, selection.encrypted).also {
+                            pendingDms[selection] = it
+                        }
                         overlay = null
-                        platform.navigate("/channels/${id.encodeURLParameter()}")
+                        platform.navigate("/channels/${channel.text("id").encodeURLParameter()}")
                     } finally { saving = false }
                 }
                 action.id == "channel-private" -> {
@@ -1112,6 +1163,11 @@ internal class ConnectedScreenState(
                 action.id == "os-notifications" -> enableNotifications()
                 action.id == "logout" -> request { platform.invoke("logout") }
                 action.id.startsWith("theme:") || action.id.startsWith("locale:") -> platform.action(action.id)
+                action.id.startsWith("navigation-cache:") ->
+                    action.id.substringAfter(':').toIntOrNull()?.takeIf { it in navigationCacheLimits }?.let { limit ->
+                        platform.saveNavigationCacheLimit(limit)
+                        app.setNavigationCacheLimit(limit)
+                    }
                 action.id.startsWith("engine:") -> app.searchPreferences.save(action.id.substringAfter(':'))
                 action.id == "rename" && channel != null -> {
                     channelName = channel.text("channel_name")
@@ -1154,7 +1210,6 @@ internal class ConnectedScreenState(
             AndroidUiAction.SystemPhotos -> postFiles.pick(photos = true)
             is AndroidUiAction.SelectPhoto -> request { postFiles.add(platform.invoke("pickRecentPhoto", action.id)) }
             is AndroidUiAction.SelectTimeline -> if (action.id != home.timeline) {
-                invalidatePostNavigation()
                 home.select(action.id)
             }
             AndroidUiAction.LoadOlderPosts -> home.older()
@@ -1288,9 +1343,10 @@ internal class ConnectedScreenState(
                         is AndroidScreen.Post -> {
                             val id = screen.root.id
                             val text = replyDraft
+                            val visibility = replyVisibility(id) ?: return@request
                             if (text.isBlank()) return@request
                             app.api.request("/api/home", "POST", obj("content" to text,
-                                "visibility" to replyVisibility(id), "apub" to false, "in_reply_to" to id))
+                                "visibility" to visibility, "apub" to false, "in_reply_to" to id))
                             val sent = platform.uuid()
                             if (overlay == "post" && openedPostId == id) {
                                 replyLastSend = sent
@@ -1335,9 +1391,10 @@ internal class ConnectedScreenState(
         app.openChannelLink(target, parentId)
     }
 
-    private fun replyVisibility(id: String): String {
+    private fun replyVisibility(id: String): String? {
         val row = postDetail.map { it.nested("post").ifEmpty { it } }.firstOrNull { it.text("id") == id }
-        return when (row?.text("visibility")) {
+        return when (row?.text("visibility")?.takeIf { it.isNotBlank() }) {
+            null -> null
             "followers" -> "followers"
             "local" -> "local"
             else -> "unlisted"
@@ -1369,7 +1426,7 @@ internal class ConnectedScreenState(
         when (val previous = feedBackStack.removeLastOrNull()) {
             is FeedOrigin.Post -> {
                 openedPostId = previous.id
-                postDetail = emptyList()
+                postDetail = app.cachedHomeDetail("post:${previous.id}")
                 postDetailRevision = -1
                 replyDraft = previous.draft
                 replySelection = previous.selection
@@ -1379,7 +1436,8 @@ internal class ConnectedScreenState(
             }
             is FeedOrigin.Profile -> {
                 profile = previous.account
-                profilePosts = emptyList()
+                profileAccountLoadFailed = false
+                profilePosts = app.cachedHomeDetail("profile:${previous.account.text("id")}")
                 profilePostsRevision = -1
                 profilePostsLoadFailed = false
                 overlay = "profile"
@@ -1389,53 +1447,32 @@ internal class ConnectedScreenState(
         }
     }
 
-    fun invalidatePostNavigation() { postNavigationRequest++ }
-
     private fun openPost(id: String, focusReply: Boolean = false, notifyUnavailable: Boolean = false) {
-        val opening = ++postNavigationRequest
         val source = overlay
         if (source == "post" && openedPostId == id) {
             if (focusReply) replyFocusRequest++
             return
         }
-        val path = app.env.path
-        fun isCurrent() = opening == postNavigationRequest && source == overlay && path == app.env.path
-        request {
-            val loaded = try {
-                loadPostForNavigation(id, ::isCurrent)
-            } catch (failure: ApiException) {
-                if (failure.status !in setOf(403, 404)) throw failure
-                if (isCurrent()) discardUnavailablePost(id, notifyUnavailable)
-                return@request
-            }
-            val (revision, detail) = loaded ?: return@request
-            if (!isCurrent()) return@request
-            if (detail.isEmpty()) {
-                discardUnavailablePost(id, notifyUnavailable)
-                return@request
-            }
-            rememberFeedOrigin(source)
-            if (source == "post") feedScreenRevision++
-            replyLastSend = null
-            replyDraft = ""
-            replySelection = null
-            postLoadFailed = false
-            postDetail = detail
-            postDetailRevision = revision
-            openedPostId = id
-            replyFocusRequest = if (focusReply) replyFocusRequest + 1 else 0
-            overlay = "post"
+        val known = sequenceOf(postDetail, profilePosts, home.posts).flatten()
+            .map { it.nested("post").ifEmpty { it } }
+            .flatMap { sequenceOf(it, it.nested("parent"), it.nested("quote").nested("post")) }
+            .firstOrNull { it.text("id") == id }
+        rememberFeedOrigin(source)
+        clearPost()
+        openedPostId = id
+        notifyUnavailablePost = notifyUnavailable
+        val cached = app.cachedHomeDetail("post:$id")
+        val cachedRoot = cached.firstOrNull { it.nested("post").ifEmpty { it }.text("id") == id }
+        postDetail = if (known == null) cached else {
+            val root = cachedRoot?.let { row -> JsonObject(row.nested("post").ifEmpty { row } + known) } ?: known
+            listOf(root) + cached.filterNot { it === cachedRoot }
         }
-    }
-
-    private fun discardUnavailablePost(id: String, notifyUnavailable: Boolean) {
-        discardPost(id)
-        home.refresh(retain = true)
-        if (notifyUnavailable) app.toast = app.t("home.postUnavailable")
+        replyFocusRequest = if (focusReply) 1 else 0
+        overlay = "post"
+        feedScreenRevision++
     }
 
     fun closePost() {
-        invalidatePostNavigation()
         clearPost()
         restoreFeedOrigin()
     }

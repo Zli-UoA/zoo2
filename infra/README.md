@@ -517,6 +517,7 @@ Worker のファイル名が同じまま CSP が変わる場合、SW の Cache A
   - `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY`: R2 API トークン（S3 クレデンシャル）
   - `S3_FORCE_PATH_STYLE`: パス形式 URL の使用（既定: `true`）
   - `S3_PUBLIC_ENDPOINT`: クライアント（ブラウザ）へ返却する Presigned URL の公開エンドポイント（例: `https://attachments.zliusercontent.com`、任意）
+  - `HOME_IMAGE_LEGACY_WRITES_DRAINED` は旧版が開始した画像書き込みがすべて終了してから `true` に設定します。更新時は [Home画像のストレージ要件](../docs/activitypub.md) を参照してください。
 
 #### リバースプロキシ（Cloudflare Worker 等）による公開エンドポイントの要件
 

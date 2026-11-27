@@ -3,6 +3,8 @@ package zoo.android.ui
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Switch
@@ -21,6 +23,7 @@ internal sealed interface SettingsEntry {
     val title: String
 
     data class Destination(override val id: String, override val title: String, val value: String? = null) : SettingsEntry
+    data class Choice(override val id: String, override val title: String, val selected: Boolean) : SettingsEntry
     data class Information(override val id: String, override val title: String) : SettingsEntry
     data class Toggle(override val id: String, override val title: String, val enabled: Boolean) : SettingsEntry
 }
@@ -40,8 +43,9 @@ internal fun SettingsPage(
         verticalArrangement = Arrangement.spacedBy(24.dp),
     ) {
         for (group in groups) {
-            Column {
-                Text(
+            val choices = group.entries.any { it is SettingsEntry.Choice }
+            Column(if (choices) Modifier.selectableGroup() else Modifier) {
+                if (group.title.isNotBlank()) Text(
                     group.title,
                     Modifier.padding(bottom = 4.dp),
                     color = colors.secondary,
@@ -51,6 +55,7 @@ internal fun SettingsPage(
                 for (entry in group.entries) {
                     val action = when (entry) {
                         is SettingsEntry.Information -> Modifier
+                        is SettingsEntry.Choice -> Modifier.selectable(entry.selected, role = Role.RadioButton) { open(entry.id) }
                         is SettingsEntry.Destination -> Modifier.clickable(role = Role.Button) { open(entry.id) }
                         is SettingsEntry.Toggle -> Modifier.toggleable(entry.enabled, role = Role.Switch) { toggle(entry.id, it) }
                     }
@@ -67,6 +72,7 @@ internal fun SettingsPage(
                         }
                         when (entry) {
                             is SettingsEntry.Information -> Unit
+                            is SettingsEntry.Choice -> if (entry.selected) UiGlyph(UiIcon.Check, colors.foreground, iconSize = AndroidControlSize.inlineIcon)
                             is SettingsEntry.Destination -> UiGlyph(UiIcon.Next, colors.secondary, iconSize = AndroidControlSize.inlineIcon)
                             is SettingsEntry.Toggle -> Switch(checked = entry.enabled, onCheckedChange = null)
                         }

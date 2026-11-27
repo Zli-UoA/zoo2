@@ -188,6 +188,7 @@ fun resolveChannelLink(
     recorded: Boolean,
     records: EncryptionRecords,
     users: Map<String, Row>,
+    customEmojis: (Row) -> Set<String> = { emptySet() },
     hidesContent: (Row) -> Boolean,
 ): ChannelLinkInfo {
     val messageId = target.linkedMessageId
@@ -207,7 +208,7 @@ fun resolveChannelLink(
     if (row.text("id") != messageId || row.present("deleted_at")) {
         return ChannelLinkInfo.Unavailable(message = true)
     }
-    val linked = linkedMessage(row, shown, users, hidesContent)
+    val linked = linkedMessage(row, shown, users, customEmojis, hidesContent)
     // 暗号化かどうかが決まるまで、本文は出さない。本文を出さない種類（暗号化・App）は待たない。
     if (linked.kind == LinkedMessageKind.Text && records != EncryptionRecords.Loaded) {
         return if (records == EncryptionRecords.Unreadable) ChannelLinkInfo.Failed else ChannelLinkInfo.Loading
@@ -219,6 +220,7 @@ internal fun linkedMessage(
     row: Row,
     channel: LinkedChannel,
     users: Map<String, Row>,
+    customEmojis: (Row) -> Set<String>,
     hidesContent: (Row) -> Boolean,
 ): LinkedMessage {
     // 暗号文のある行は、チャンネルの `encrypted` がどうあっても暗号化されたメッセージとして扱う。
@@ -238,7 +240,7 @@ internal fun linkedMessage(
         authorName = authorName,
         createdAt = row.text("created_at"),
         kind = kind,
-        excerpt = if (kind == LinkedMessageKind.Text) messageExcerpt(row.text("content")) else "",
+        excerpt = if (kind == LinkedMessageKind.Text) messageExcerpt(row.text("content"), customEmojis = customEmojis(row)) else "",
         attachmentCount = attachments,
         forwarded = kind != LinkedMessageKind.Encrypted && row.array("forwarded_message_ids").isNotEmpty(),
     )

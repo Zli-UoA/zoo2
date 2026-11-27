@@ -426,6 +426,7 @@
     "tabKitchen": "Emoji Kitchen",
     "emojiLoading": "正在載入表情符號…",
     "recent": "最近使用的表情符號",
+    "accountEmojiCategory": "帳號",
     "skinTone": "膚色"
   },
   "theme": {
@@ -1810,6 +1811,12 @@
   },
   "androidUpdate": {
     "title": "應用程式更新"
+  },
+  "androidNavigationCache": {
+    "title": "頁面切換快取",
+    "description": "設定記憶體中保留的首頁、貼文詳情與個人資料項目數，以及獨立的頻道項目數。",
+    "off": "關閉",
+    "entries": "{{count}} 項"
   },
   "androidNotifications": {
     "enable": "啟用通知",

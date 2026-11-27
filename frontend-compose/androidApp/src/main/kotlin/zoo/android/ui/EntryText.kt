@@ -89,6 +89,14 @@ internal fun formatEntry(
     }
 }
 
+private fun entryEmojiCodes(formatted: AnnotatedString): List<String> =
+    formatted.getStringAnnotations(emojiTag, 0, formatted.length).map { it.item }.distinct().take(32)
+
+internal fun containsRenderedEmoji(body: String, known: Set<String>, candidates: Set<String>): Boolean {
+    val formatted = formatEntry(body, known + candidates)
+    return entryEmojiCodes(formatted).any { it in candidates }
+}
+
 /** [text] with the parts that hit [highlight]'s terms in its style. */
 internal fun AnnotatedString.Builder.appendHighlighted(text: String, highlight: EntryHighlight?) {
     if (highlight == null) {
@@ -141,7 +149,7 @@ private fun AnnotatedString.Builder.appendMfm(body: String, format: EntryFormat,
         append(body)
         return
     }
-    parseInline(body).forEach { token ->
+    parseInline(body, format.emoji).forEach { token ->
         val value = token.value
         when (token.kind) {
             "bold" -> withStyle(SpanStyle(fontWeight = AndroidWeights.emphasis)) { appendMfm(value, format, depth + 1) }
@@ -172,12 +180,9 @@ private fun AnnotatedString.Builder.appendMfm(body: String, format: EntryFormat,
                             }
                             append(short)
                         } else {
-                            // A label may contain formatting. Strip its link annotations to avoid nested links.
-                            val label = buildAnnotatedString {
-                                if (value == token.url) appendHighlighted(value, format.mark)
-                                else appendMfm(value, format.withoutLinks(), depth + 1)
-                            }
-                            append(AnnotatedString(label.text, label.spanStyles))
+                            // Keep inline emoji annotations while suppressing links inside the label.
+                            if (value == token.url) appendHighlighted(value, format.mark)
+                            else appendMfm(value, format.withoutLinks(), depth + 1)
                         }
                     }
                 }
@@ -208,7 +213,7 @@ private fun AnnotatedString.Builder.appendEffect(source: String, format: EntryFo
             else -> null
         })
         "ruby" -> {
-            val ruby = mfmRuby(effect.body)
+            val ruby = mfmRuby(effect.body, format.emoji)
             appendMfm(ruby.base, format, depth + 1)
             if (ruby.reading.isNotBlank()) withStyle(SpanStyle(fontSize = .7.em)) { append("（${ruby.reading}）") }
             return
@@ -299,7 +304,7 @@ internal fun EntryBody(
         formatEntry(body, emoji.keys, highlight, links, lookup)
     }
     val codes = remember(formatted) {
-        formatted.getStringAnnotations(emojiTag, 0, formatted.length).map { it.item }.distinct().take(32)
+        entryEmojiCodes(formatted)
     }
     val images = remember(codes, emoji, loader, cached) {
         mutableStateMapOf<String, ImageBitmap>().apply {

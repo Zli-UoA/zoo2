@@ -154,7 +154,9 @@ class AndroidSamplesTest {
             SettingsGroup("操作", listOf(SettingsEntry.Toggle("swipe", "スワイプで返信", true),
                 SettingsEntry.Toggle("haptics", "触覚フィードバック", true))),
             SettingsGroup("Zoo", listOf(SettingsEntry.Destination("general", "一般"),
-                SettingsEntry.Destination("notifications", "通知"), SettingsEntry.Destination("update", "アプリの更新"))),
+                SettingsEntry.Destination("notifications", "通知"),
+                SettingsEntry.Destination("navigation-cache", "画面遷移キャッシュ", "8 件"),
+                SettingsEntry.Destination("update", "アプリの更新"))),
             SettingsGroup("通話", listOf(SettingsEntry.Toggle("dm-calls", "DMの着信を受ける", true),
                 SettingsEntry.Destination("incoming-screen", "着信時の全画面表示を設定"))),
         )
@@ -243,6 +245,16 @@ class AndroidSamplesTest {
             "notifications" to inbox,
             "bubble" to AndroidScreen.Bubble(posts.take(2), InputState(live = true), listOf("はる", "ゆい")),
             "settings" to AndroidScreen.Settings(settings),
+            "navigation-cache" to AndroidScreen.SettingsDetail("画面遷移キャッシュ", listOf(
+                SettingsGroup("", listOf(
+                    SettingsEntry.Information("navigation-cache-info", "Home・投稿詳細・プロフィールと、チャンネルにそれぞれ適用するメモリ上の保持件数です。"),
+                    SettingsEntry.Choice("navigation-cache:0", "オフ", false),
+                    SettingsEntry.Choice("navigation-cache:4", "4 件", false),
+                    SettingsEntry.Choice("navigation-cache:8", "8 件", true),
+                    SettingsEntry.Choice("navigation-cache:16", "16 件", false),
+                )),
+            )),
+            "post-loading-replies" to AndroidScreen.Post(homePosts.first(), emptyList(), InputState(), loading = true),
             "conversation-idle" to conversation.copy(input = InputState()),
             "conversation" to conversation,
             "composer" to conversation.copy(input = InputState("確認しました。", expanded = true)),
@@ -333,13 +345,17 @@ class AndroidSamplesTest {
             }
             if (emojiPicker) {
                 val choices = remember {
-                    listOf("👍", "😊", "🎉", "❤️", "😀", "😂", "🥰", "😎", "🥳", "🙌", "👏", "👋", "✨", "🔥",
-                        "🌈", "🚀", "🌍", "🍕", "🍩", "☕", "⚽", "🎮", "🎵", "🎁", "🎂", "💡", "💯", "✅",
-                        "🐶", "🦊", "🐼", "🐻", "🐸", "🐵", "🦁", "🐯", "🐧", "🦄", "🦋", "🐙", "🌸", "🌻")
-                        .map { EmojiChoice(it, it, it) } + EmojiChoice("🐱", "🐱", "cat", keywords = "ねこ")
+                    listOf(
+                        "スマイリーと感情" to "😀 😊 😂 🥰 😎 🥳",
+                        "アクティビティ" to "🎉 🎁 ⚽ 🎮 🎈 🎊",
+                        "動物と自然" to "🐶 🦊 🐼 🐻 🐸 🐵 🦁 🐯 🐧 🦄 🦋 🐙 🌸 🌻",
+                        "飲み物・食べ物" to "🍕 🍩 ☕ 🎂",
+                    ).flatMap { (category, glyphs) ->
+                        glyphs.split(' ').map { EmojiChoice(it, it, it, category = category) }
+                    } + EmojiChoice("🐱", "🐱", "cat", keywords = "ねこ", category = "動物と自然")
                 }
                 EmojiPicker("絵文字", AndroidColors(dark), choices,
-                    custom = listOf(EmojiChoice(":party:", "", "party", "fixture-emoji")),
+                    custom = listOf(EmojiChoice(":party:", "", "party", "fixture-emoji", category = "イベント")),
                     loadKitchen = {
                         KitchenChoices(listOf(EmojiChoice("1f431", "🐱", "cat"))) {
                             listOf(EmojiChoice("kitchen:1f431_1f431", "🐱🐱", "cat duo", "fixture-emoji"))
@@ -527,12 +543,15 @@ class AndroidSamplesTest {
             ui.runOnIdle { screen = cases.first { it.first == "post-compose" }.second; dark = night }
             ui.onNodeWithContentDescription("絵文字").performClick()
             ui.onNodeWithText("🎉").assertIsDisplayed()
+            ui.onNodeWithText("スマイリーと感情").assertIsDisplayed()
+            ui.onNodeWithText("アクティビティ").assertIsDisplayed()
             capture("emoji-picker-${if (night) "dark" else "light"}", bottomDialog = true)
             ui.onNodeWithTag("emoji-search").performTextInput("cat")
             ui.onNodeWithContentDescription("cat").assertIsDisplayed()
             ui.onNodeWithText("🎉").assertDoesNotExist()
             ui.onNodeWithText("カスタム").performClick()
             ui.onNodeWithContentDescription("party").assertIsDisplayed()
+            ui.onNodeWithText("イベント").assertIsDisplayed()
             capture("emoji-picker-custom-${if (night) "dark" else "light"}", bottomDialog = true)
             ui.onNodeWithText("Emoji Kitchen").performClick()
             ui.onNodeWithContentDescription("cat").performClick()

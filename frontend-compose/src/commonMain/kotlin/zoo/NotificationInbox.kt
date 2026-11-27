@@ -1,7 +1,6 @@
 package zoo
 
-import androidx.compose.runtime.derivedStateOf
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import io.ktor.http.encodeURLPathPart
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonObject
@@ -41,12 +40,18 @@ internal fun inboxGroups(entries: List<UnifiedNotificationEntry>): Map<String, L
     }
 
 class NotificationInbox(private val session: Session) {
+    private data class ContextAvailability(val available: Boolean, val display: Row)
+    private val contextAvailability = mutableStateMapOf<String, ContextAvailability>()
+
     val loadFailed: Boolean get() = session.activityPubNotifications.error
     val nextCursor: String? get() = session.activityPubNotifications.nextCursor
 
-    fun snapshot(): List<NotificationDisplay> {
-        val users = session.repo.users.rows.value.associateBy { it.text("id") }
-        return grouped.map { (id, entries) ->
+    fun snapshot(
+        notifications: List<Row> = session.repo.notifications.rows.value,
+        people: List<Row> = session.repo.users.rows.value,
+    ): List<NotificationDisplay> {
+        val users = people.associateBy { it.text("id") }
+        return groups(notifications).map { (id, entries) ->
             val latest = entries.first()
             val item = latest.representative()
             val rows = entries.flatMap { it.channel ?: listOf(it.representative()) }
@@ -61,13 +66,17 @@ class NotificationInbox(private val session: Session) {
             val unreadIds = entries.flatMap { entry ->
                 (entry.channel ?: listOf(entry.representative())).filterNot { it.flag("is_read") }.map { it.text("id") }
             }
+            val display = item.nested("display_data")
+            val checked = contextAvailability[item.text("id")]?.takeIf { it.display == display }
+            val targetUnavailable = checked?.let { !it.available }
+                ?: ("message" in display && display.nested("message").isEmpty())
             val channelReactions = rows.filter { it.text("notification_type") == "reaction" }
             NotificationDisplay(
                 id, actors,
                 summary, item.text("content").ifBlank { item.nested("display_data").nested("message").text("content") }
                     .ifBlank { null },
                 session.platform.messageTimestamp(latest.createdAt), unreadIds.isNotEmpty(),
-                item.text("channel_id").takeIf { it.isNotBlank() && item.text("message_id").isNotBlank() }
+                item.text("channel_id").takeIf { !targetUnavailable && it.isNotBlank() && item.text("message_id").isNotBlank() }
                     ?.let { "/channels/$it?message=${item.text("message_id")}" }
                     ?: item.text("post_id").takeIf { it.isNotBlank() }?.let { "post:$it" },
                 item.text("actor_id").takeIf { noticeKind(item) == "follow_request" && item.flag("pending") && it.isNotBlank() },
@@ -86,14 +95,23 @@ class NotificationInbox(private val session: Session) {
     }
 
     suspend fun loadReactions(context: NotificationReactionContext): List<NotificationReaction> {
+        val display = session.repo.notifications.rows.value.firstOrNull { it.text("id") == context.id }
+            ?.nested("display_data")
         val response = try {
             session.api.request("/api/notifications/${context.id.encodeURLPathPart()}/context")
         } catch (cancelled: CancellationException) {
             throw cancelled
+        } catch (failure: ApiException) {
+            if (failure.status in setOf(403, 404) && display != null) recordAvailability(context.id, display, false)
+            return emptyList()
         } catch (_: Exception) {
             return emptyList()
         }
-        val emojis = (response as? JsonObject)?.array("reactions")?.rows().orEmpty()
+        val data = response as? JsonObject
+        if (display != null && data != null && "message" in data) {
+            recordAvailability(context.id, display, data.nested("message").isNotEmpty())
+        }
+        val emojis = data?.array("reactions")?.rows().orEmpty()
             .filter { it.text("user_id") in context.actorIds }
             .map { it.text("emoji") }
             .filter { it.isNotBlank() }
@@ -118,6 +136,13 @@ class NotificationInbox(private val session: Session) {
             }?.text("url")?.takeIf { it.isNotBlank() }
             NotificationReaction(emoji, image)
         }
+    }
+
+    private fun recordAvailability(id: String, display: Row, available: Boolean) {
+        if (id !in contextAvailability && contextAvailability.size >= 256) {
+            contextAvailability.remove(contextAvailability.keys.first())
+        }
+        contextAvailability[id] = ContextAvailability(available, display)
     }
 
     private fun federatedReaction(row: Row): NotificationReaction {
@@ -162,14 +187,29 @@ class NotificationInbox(private val session: Session) {
 
     fun viewed(id: String) {
         if (!session.env.visible || !session.env.focused || !session.env.online) return
-        grouped[id]?.forEach(session.notificationReads::viewed)
+        groups(session.repo.notifications.rows.value)[id]?.forEach(session.notificationReads::viewed)
     }
 
-    private val grouped by derivedStateOf {
-        val federated = session.activityPubNotifications
-        inboxGroups(unifiedNotificationFeed(
-            androidNotificationRows(session.repo.notifications.rows.value), federated.items, federated.nextCursor != null,
-        ).entries)
+    private data class Grouping(
+        val notifications: List<Row>,
+        val federated: List<Row>,
+        val hasOlder: Boolean,
+        val groups: Map<String, List<UnifiedNotificationEntry>>,
+    )
+
+    private var grouping: Grouping? = null
+
+    private fun groups(notifications: List<Row>): Map<String, List<UnifiedNotificationEntry>> {
+        val federated = session.activityPubNotifications.items
+        val hasOlder = session.activityPubNotifications.nextCursor != null
+        val previous = grouping
+        if (previous != null && previous.notifications === notifications &&
+            previous.federated === federated && previous.hasOlder == hasOlder) {
+            return previous.groups
+        }
+        val groups = inboxGroups(unifiedNotificationFeed(androidNotificationRows(notifications), federated, hasOlder).entries)
+        grouping = Grouping(notifications, federated, hasOlder, groups)
+        return groups
     }
 
 }

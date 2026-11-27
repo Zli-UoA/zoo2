@@ -97,7 +97,7 @@ internal fun NotificationPage(
             val target = item.target
             Row(
                 Modifier.fillMaxWidth()
-                    .then(if (target != null) Modifier.clickable { onOpen(target) } else Modifier)
+                    .then(if (target != null) Modifier.clickable { viewed(item.id); onOpen(target) } else Modifier)
                     .padding(vertical = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
