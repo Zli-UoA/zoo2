@@ -96,6 +96,11 @@ class TimelineImageSourcesTest {
         assertFalse(linkedExcerptNeedsWorkspaceEmoji(body, images.keys))
         assertFalse(linkedExcerptNeedsWorkspaceEmoji("`$body`", emptySet()))
         assertEquals("星:猫:", zoo.messageExcerpt(body, customEmojis = images.keys))
+
+        val adjacent = "\$[ruby **星**12:30:猫:ねこ]"
+        assertTrue(linkedExcerptNeedsWorkspaceEmoji(adjacent, emptySet()))
+        assertFalse(linkedExcerptNeedsWorkspaceEmoji(adjacent, images.keys))
+        assertEquals("星12:30:猫:", zoo.messageExcerpt(adjacent, customEmojis = images.keys))
     }
 
     @Test

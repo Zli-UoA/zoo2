@@ -226,7 +226,8 @@ private class MfmScanner(length: Int) {
                         break
                     }
                     val atom = if (token == null) atoms.matchAt(source, at) else null
-                    if (token == null && atom?.value?.startsWith(":@") != true && source[at] == ':' && customEmojis.isNotEmpty()) {
+                    val mayBeCustomEmoji = source[at] == ':' && customEmojis.isNotEmpty()
+                    if (token == null && mayBeCustomEmoji && atom?.value?.startsWith(":@") != true) {
                         val shortcode = customEmojiShortcode.matchAt(source, at)?.value
                         if (shortcode != null && shortcode in customEmojis) {
                             token = Inline(shortcode, "emoji")

@@ -440,8 +440,9 @@ internal fun ConnectedScreens(
         is AndroidScreen.Search -> screen.state.results.any { it.needsWorkspaceEmoji }
         else -> false
     }
-    LaunchedEffect(session, env.online, env.visible, pickerOpen, needsWorkspaceEmoji) {
-        if (env.online && env.visible && (pickerOpen || needsWorkspaceEmoji)) {
+    val canLoadEmoji = env.online && env.visible
+    LaunchedEffect(session, canLoadEmoji, pickerOpen, needsWorkspaceEmoji) {
+        if (canLoadEmoji && (pickerOpen || needsWorkspaceEmoji)) {
             try { session.loadWorkspaceEmojis() }
             catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { /* Keep shortcode fallbacks if the catalog is unavailable. */ }

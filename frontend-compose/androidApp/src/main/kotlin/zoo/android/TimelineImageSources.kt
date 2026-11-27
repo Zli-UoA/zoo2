@@ -107,8 +107,13 @@ internal fun hasMissingWorkspaceEmoji(body: String, emoji: Map<String, TimelineM
 internal fun linkedExcerptNeedsWorkspaceEmoji(body: String, known: Set<String>): Boolean {
     if ("\$[ruby" !in body) return false
     val candidates = findCustomEmojiShortcodes(body).filter { it !in known && isWorkspaceEmojiCandidate(it) }.toSet()
-    return candidates.isNotEmpty() &&
-        messageExcerpt(body, customEmojis = known) != messageExcerpt(body, customEmojis = known + candidates)
+    if (candidates.isEmpty()) return false
+    val excerpt = messageExcerpt(body, customEmojis = known)
+    return candidates.any { candidate ->
+        val withCandidate = messageExcerpt(body, customEmojis = known + candidate)
+        // A speculative candidate can hide a known emoji at a shared colon.
+        withCandidate.split(candidate).size > excerpt.split(candidate).size
+    }
 }
 
 private fun inlineEmoji(name: String, url: String) =
