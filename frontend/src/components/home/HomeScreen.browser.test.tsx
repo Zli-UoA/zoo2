@@ -361,6 +361,12 @@ it("deletes from the TL menu without navigating or resetting the scroll position
   approachTail();
   await waitFor(() => expect(prefetchDistances).toHaveLength(1));
   await waitFor(() => expect(screen.queryByRole("button", { name: "読み込み中…" })).toBeNull());
+  // The virtualizer applies row measurements from ResizeObserver on the next frame.
+  await act(async () => {
+    await document.fonts.ready;
+    await new Promise(requestAnimationFrame);
+    await new Promise(requestAnimationFrame);
+  });
   const visible = Array.from(root.querySelectorAll<HTMLElement>("[data-home-post]")).filter(
     (node) => {
       const rect = node.getBoundingClientRect(),
