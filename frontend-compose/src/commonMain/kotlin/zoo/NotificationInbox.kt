@@ -190,11 +190,26 @@ class NotificationInbox(private val session: Session) {
         groups(session.repo.notifications.rows.value)[id]?.forEach(session.notificationReads::viewed)
     }
 
+    private data class Grouping(
+        val notifications: List<Row>,
+        val federated: List<Row>,
+        val hasOlder: Boolean,
+        val groups: Map<String, List<UnifiedNotificationEntry>>,
+    )
+
+    private var grouping: Grouping? = null
+
     private fun groups(notifications: List<Row>): Map<String, List<UnifiedNotificationEntry>> {
-        val federated = session.activityPubNotifications
-        return inboxGroups(unifiedNotificationFeed(
-            androidNotificationRows(notifications), federated.items, federated.nextCursor != null,
-        ).entries)
+        val federated = session.activityPubNotifications.items
+        val hasOlder = session.activityPubNotifications.nextCursor != null
+        val previous = grouping
+        if (previous != null && previous.notifications === notifications &&
+            previous.federated === federated && previous.hasOlder == hasOlder) {
+            return previous.groups
+        }
+        val groups = inboxGroups(unifiedNotificationFeed(androidNotificationRows(notifications), federated, hasOlder).entries)
+        grouping = Grouping(notifications, federated, hasOlder, groups)
+        return groups
     }
 
 }
