@@ -171,6 +171,7 @@ class AttachmentLinks(private val app: Session) {
     suspend fun get(id: String, force: Boolean = false): String = getLinks(id, force).original
 
     suspend fun getLinks(id: String, force: Boolean = false): AttachmentImageLinks {
+        requests[id]?.let { return it.await().getOrThrow() }
         errors.remove(id)
         val now = timestampMillis(app.platform.now()) ?: 0L
         if (!force) cachedLinks(id, now)?.let { return it }
@@ -191,22 +192,18 @@ class AttachmentLinks(private val app: Session) {
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
+                        if (errors.size >= 200) errors.remove(errors.keys.first())
+                        errors[id] = true
+                        if (e is ApiException && e.status in setOf(401, 403, 404, 410)) {
+                            cache.remove(id)
+                            app.platform.removeAttachmentImages(id)
+                        }
                         Result.failure(e)
                     }
                 }
             }
         work.invokeOnCompletion { if (requests[id] === work) requests.remove(id) }
-        return try {
-            work.await().getOrThrow()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            if (errors.size >= 200) errors.remove(errors.keys.first())
-            errors[id] = true
-            throw e
-        } finally {
-            if (work.isCompleted && requests[id] === work) requests.remove(id)
-        }
+        return work.await().getOrThrow()
     }
 
     fun download(file: Row, force: Boolean = false) {

@@ -56,7 +56,7 @@ internal class AndroidImageCache(
     suspend fun image(url: String): ByteArray = loadPublicImage(http, url)
 
     suspend fun freshAttachmentImage(cacheKey: String): ByteArray? = withContext(Dispatchers.IO) {
-        attachments.read(cacheKey)?.takeIf { now() < it.expiresAt }?.bytes
+        attachments.read(cacheKey, freshAt = now())?.bytes
     }
 
     suspend fun removeAttachmentImages(id: String) = withContext(Dispatchers.IO) {

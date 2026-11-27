@@ -29,7 +29,7 @@ internal class AttachmentImageDiskCache(
     }
 
     @Synchronized
-    fun read(id: String): Entry? {
+    fun read(id: String, freshAt: Long? = null): Entry? {
         if (closed) return null
         val file = file(id)
         return try {
@@ -37,6 +37,7 @@ internal class AttachmentImageDiskCache(
             DataInputStream(file.inputStream().buffered()).use { input ->
                 val url = input.readUTF()
                 val expiresAt = input.readLong()
+                if (freshAt != null && expiresAt <= freshAt) return null
                 val etag = input.readUTF().ifEmpty { null }
                 val maxAge = input.readLong().takeUnless { it == Long.MIN_VALUE }
                 val httpExpiry = input.readLong().takeUnless { it == Long.MIN_VALUE }
