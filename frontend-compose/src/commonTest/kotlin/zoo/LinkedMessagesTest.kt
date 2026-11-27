@@ -12,6 +12,7 @@ import io.ktor.client.request.HttpRequestData
 import io.ktor.client.request.HttpResponseData
 import io.ktor.http.Headers
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.Url
 import io.ktor.http.headersOf
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -24,6 +25,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -367,16 +369,21 @@ class LinkedChannelTableTest {
     @Test
     fun onlyTheLinkedMessagesAreFetchedOncePerId() = runTest {
         val requests = mutableListOf<HttpRequestData>()
-        val http = HttpClient(MockEngine { request ->
-            requests += request
-            val parameters = request.url.parameters
-            val subset = parameters["subset__params"]
-            when {
-                subset != null -> respond(snapshot(if ("m2" in subset) "m2" else "m1"), headers = headers)
-                parameters["live"] == "true" -> awaitCancellation()
-                else -> respond("""[{"headers":{"control":"up-to-date"}}]""", headers = headers)
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    requests += request
+                    val parameters = request.url.parameters
+                    val subset = parameters["subset__params"]
+                    when {
+                        subset != null -> respond(snapshot(if ("m2" in subset) "m2" else "m1"), headers = headers)
+                        parameters["live"] == "true" -> awaitCancellation()
+                        else -> respond("""[{"headers":{"control":"up-to-date"}}]""", headers = headers)
+                    }
+                }
             }
-        })
+        }
         val table = LinkedChannelTable("c1", config, LinkPlatform(), http, backgroundScope, options)
         try {
             table.request("m1")
@@ -401,6 +408,114 @@ class LinkedChannelTableTest {
             assertEquals("id = $1", subsets.first().url.parameters["subset__where"])
         } finally {
             table.close()
+            http.close()
+        }
+    }
+
+    @Test
+    fun refreshReconnectsTheExistingLinkedShape() = runTest {
+        val requests = Channel<HttpRequestData>(Channel.UNLIMITED)
+        val http = HttpClient(MockEngine { request ->
+            requests.send(request)
+            if (request.url.parameters["offset"] != "now") awaitCancellation()
+            respond("""[{"headers":{"control":"up-to-date"}}]""", headers = headers)
+        })
+        val table = LinkedChannelTable("resume-linked", config, LinkPlatform(), http, backgroundScope, options)
+        try {
+            assertEquals("now", requests.receive().url.parameters["offset"])
+            assertEquals("true", requests.receive().url.parameters["live"])
+
+            table.refresh()
+
+            val refresh = requests.receive().url.parameters
+            assertEquals("handle", refresh["handle"])
+            assertEquals("0_0", refresh["offset"])
+            assertFalse(refresh["live"] == "true")
+        } finally {
+            table.close()
+            http.close()
+        }
+    }
+
+    @Test
+    fun refreshRetriesThePendingLinkedSnapshot() = runTest {
+        val subsets = Channel<Url>(Channel.UNLIMITED)
+        val cancelled = CompletableDeferred<Unit>()
+        var attempts = 0
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    val parameters = request.url.parameters
+                    when {
+                        parameters["subset__params"] != null -> {
+                            subsets.send(request.url)
+                            if (++attempts == 1) {
+                                try {
+                                    awaitCancellation()
+                                } finally {
+                                    cancelled.complete(Unit)
+                                }
+                            }
+                            assertTrue(cancelled.isCompleted)
+                            respond(snapshot("m1"), headers = headers)
+                        }
+                        parameters["live"] == "true" -> awaitCancellation()
+                        else -> respond("""[{"headers":{"control":"up-to-date"}}]""", headers = headers)
+                    }
+                }
+            }
+        }
+        val table = timedTable("resume-pending-link", http)
+        try {
+            table.request("m1")
+            val pending = subsets.receive()
+
+            table.refresh()
+
+            assertEquals(pending, subsets.receive())
+            val state = table.state.first { "m1" in it.fetched }
+            assertEquals("本文 m1", state.rows.getValue("m1").text("content"))
+            assertNull(state.failure)
+            assertEquals(2, attempts)
+        } finally {
+            table.close()
+            http.close()
+        }
+    }
+
+    @Test
+    fun reopeningTheSameLinkedShapeDoesNotWaitForAReplayedControlMessage() = runTest {
+        var subsetRequests = 0
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    val parameters = request.url.parameters
+                    when {
+                        parameters["subset__params"] != null -> {
+                            subsetRequests++
+                            respond(snapshot("m1"), headers = headers)
+                        }
+                        parameters["live"] == "true" -> awaitCancellation()
+                        else -> respond("""[{"headers":{"control":"up-to-date"}}]""", headers = headers)
+                    }
+                }
+            }
+        }
+        try {
+            repeat(2) {
+                val table = timedTable("reopened-linked", http)
+                try {
+                    table.request("m1")
+                    val state = kotlinx.coroutines.withTimeout(5.seconds) { table.state.first { "m1" in it.fetched } }
+                    assertEquals("本文 m1", state.rows.getValue("m1").text("content"))
+                } finally {
+                    table.close()
+                }
+            }
+            assertEquals(2, subsetRequests)
+        } finally {
             http.close()
         }
     }
