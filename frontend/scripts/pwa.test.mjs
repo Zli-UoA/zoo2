@@ -1409,6 +1409,44 @@ test("a failed carry-over keeps the old cache by failing install", async () => {
   assert.ok(await (await realOpen("zoo-shell-old")).match(`${ORIGIN}/manifest.webmanifest`));
 });
 
+test("an unreadable source keeps the old cache by failing install", async () => {
+  const manifest = validManifest("#ffffff");
+  const cacheContext = memoryCaches([
+    ["zoo-shell-old", `${ORIGIN}/manifest.webmanifest`, basicResponse(manifest)],
+  ]);
+  const old = await cacheContext.api.open("zoo-shell-old");
+  await old.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("1"));
+  const realOpen = cacheContext.api.open.bind(cacheContext.api);
+  cacheContext.api.open = async (name) => {
+    const cache = await realOpen(name);
+    return {
+      ...cache,
+      match: async (request) => {
+        if (name === "zoo-shell-old" && requestKey(request).includes("manifest.webmanifest"))
+          throw new Error("temporarily unavailable");
+        return cache.match(request);
+      },
+    };
+  };
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async (input) => {
+      const key = requestKey(input);
+      if (key === `${ORIGIN}/manifest.webmanifest`)
+        return basicResponse("<html>app shell</html>", {
+          headers: { "content-type": "text/html" },
+        });
+      if (key === `${ORIGIN}/offline.html`)
+        return basicResponse('<meta name="zoo-offline" content="true" />offline', {
+          headers: { "content-type": "text/html" },
+        });
+      return basicResponse(`network:${key}`);
+    },
+  });
+  await assert.rejects(dispatch(handlers, "install"), /carry over/);
+  assert.ok(await (await realOpen("zoo-shell-old")).match(`${ORIGIN}/manifest.webmanifest`));
+});
+
 test("an unreadable cache entry does not stop carry-over", async () => {
   const manifest = validManifest("#ffffff");
   const cacheContext = memoryCaches([
@@ -2215,6 +2253,24 @@ test("Range requests are fetched separately from normal requests", async () => {
   assert.equal(calls, 2);
 });
 
+test("conditional GET requests are fetched separately", async () => {
+  let calls = 0;
+  const { handlers } = worker({
+    fetch: async () => {
+      calls += 1;
+      return basicResponse(validManifest("#ffffff"), {
+        headers: { "content-type": "application/manifest+json" },
+      });
+    },
+  });
+  const base = { url: `${ORIGIN}/manifest.webmanifest`, method: "GET", mode: "cors" };
+  await Promise.all([
+    fetchThrough(handlers, { ...base, headers: { get: () => '"abc"' } }),
+    fetchThrough(handlers, base),
+  ]);
+  assert.equal(calls, 2);
+});
+
 test("an HTTP error is returned when no cached manifest exists", async () => {
   const { handlers } = worker({
     fetch: async () =>
@@ -2368,6 +2424,22 @@ test("notification destinations stay inside the app and open directly when no wi
     });
   }
   assert.deepEqual(opened, ["https://zoo.example/channels/123?message=456", "/", "/", "/"]);
+});
+
+test("a partial new cache is removed when install fails", async () => {
+  const { handlers, cacheContext } = worker({
+    fetch: async (input) => {
+      const key = requestKey(input);
+      if (key === `${ORIGIN}/` || key === `${ORIGIN}/index.html`)
+        return basicResponse('<html><script src="/assets/index-failed.js"></script></html>', {
+          headers: { "content-type": "text/html" },
+        });
+      if (key.includes("/assets/")) throw new Error("asset unavailable");
+      return basicResponse(`network:${key}`);
+    },
+  });
+  await assert.rejects(dispatch(handlers, "install"), /entry assets/);
+  assert.deepEqual(await cacheContext.api.keys(), []);
 });
 
 test("a failed shell download aborts installation instead of replacing the working cache", async () => {
