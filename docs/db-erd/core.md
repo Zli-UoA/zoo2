@@ -268,6 +268,7 @@ erDiagram
       timestamptz created_at
       bigint thumbnail_bytes
       boolean thumbnail_ready
+      boolean thumbnail_legacy_missing
       timestamptz thumbnail_check_at
     }
     home_images }o--o| users : home_images_uploader_id_fkey

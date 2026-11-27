@@ -122,11 +122,7 @@ fn schedule_thumbnail_repair(client: &aws_sdk_s3::Client, bucket: &str, original
     let original = original.to_owned();
     tokio::spawn(async move {
         let _slot = slot;
-        let _ = tokio::time::timeout(
-            Duration::from_secs(180),
-            repair_thumbnail(&client, &bucket, &original),
-        )
-        .await;
+        let _ = repair_thumbnail(&client, &bucket, &original).await;
         THUMBNAIL_REPAIRS
             .lock()
             .unwrap()
@@ -135,20 +131,17 @@ fn schedule_thumbnail_repair(client: &aws_sdk_s3::Client, bucket: &str, original
 }
 
 async fn repair_thumbnail(client: &aws_sdk_s3::Client, bucket: &str, original: &str) -> Option<()> {
-    let variant = client
-        .head_object()
-        .bucket(bucket)
-        .key(thumbnail_key(original))
-        .send()
+    let head = |key: String| async move {
+        tokio::time::timeout(
+            Duration::from_secs(15),
+            client.head_object().bucket(bucket).key(key).send(),
+        )
         .await
-        .ok()?;
-    let source = client
-        .head_object()
-        .bucket(bucket)
-        .key(original)
-        .send()
-        .await
-        .ok()?;
+        .ok()?
+        .ok()
+    };
+    let variant = head(thumbnail_key(original)).await?;
+    let source = head(original.to_owned()).await?;
     if variant
         .metadata()
         .and_then(|values| values.get("source-etag"))
@@ -244,7 +237,7 @@ async fn record_home_thumbnail(
     check_at: &str,
 ) -> Result<bool, toasty::Error> {
     let rows = toasty::sql::query(
-        "UPDATE home_images SET thumbnail_ready=$2::boolean,thumbnail_bytes=$3::bigint
+        "UPDATE home_images SET thumbnail_ready=$2::boolean,thumbnail_bytes=$3::bigint,thumbnail_legacy_missing=false
          WHERE id=$1 AND thumbnail_ready IS NULL
            AND thumbnail_check_at=$4::timestamptz
          RETURNING id",
@@ -281,49 +274,64 @@ async fn confirm_missing_thumbnail(
     let bucket = &state.config.s3.bucket;
     let original = format!("home-images/{id}");
     let key = thumbnail_key(&original);
-    let result = tokio::time::timeout(Duration::from_secs(5), async {
-        if row["reserved"] == true {
-            // The real thumbnail PUT uses the same condition. Whichever write wins is final.
-            if client
+    let result = if row["reserved"] == true {
+        // The real thumbnail PUT uses the same condition. Whichever write wins is final.
+        let marker = tokio::time::timeout(
+            Duration::from_secs(5),
+            client
                 .put_object()
                 .bucket(bucket)
                 .key(&key)
                 .if_none_match("*")
                 .body(Vec::<u8>::new().into())
-                .send()
-                .await
-                .is_ok()
-            {
-                return Some(0);
-            }
-            // A failed conditional PUT is inconclusive unless HEAD finds the winning object.
-            client
-                .head_object()
-                .bucket(bucket)
-                .key(&key)
-                .send()
-                .await
-                .ok()?
-                .content_length()
+                .send(),
+        )
+        .await;
+        if matches!(marker, Ok(Ok(_))) {
+            Some(0)
         } else {
-            // An old uploader may still be paused before acquiring its row lock. It cannot
-            // have reached the thumbnail PUT phase until it has stored the original.
-            client
-                .head_object()
-                .bucket(bucket)
-                .key(&original)
-                .send()
-                .await
-                .ok()?;
-            probe_home_thumbnail(state, id).await
+            // A failed conditional PUT is inconclusive unless HEAD finds the winning object.
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                client.head_object().bucket(bucket).key(&key).send(),
+            )
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .and_then(|object| object.content_length())
         }
-    })
-    .await
-    .ok()
-    .flatten();
+    } else {
+        // An old uploader may be paused before acquiring its row lock and saving the original.
+        let original_exists = tokio::time::timeout(
+            Duration::from_secs(5),
+            client.head_object().bucket(bucket).key(&original).send(),
+        )
+        .await;
+        if !matches!(original_exists, Ok(Ok(_))) {
+            return Ok(None);
+        }
+        tokio::time::timeout(Duration::from_secs(5), probe_home_thumbnail(state, id))
+            .await
+            .ok()
+            .flatten()
+    };
 
     let Some(bytes) = result else { return Ok(None) };
-    let recorded = record_home_thumbnail(&mut tx, id, bytes, check_at).await?;
+    let recorded = if bytes == 0 && row["reserved"] != true {
+        // Legacy PUTs were unconditional and can still finish after a 404. Release the
+        // provisional estimate, but keep the row eligible for background reconciliation.
+        !toasty::sql::query(
+            "UPDATE home_images SET thumbnail_legacy_missing=true,
+               thumbnail_check_at=statement_timestamp()+interval '30 minutes'
+             WHERE id=$1 RETURNING id",
+        )
+        .bind(id)
+        .exec(&mut tx)
+        .await?
+        .is_empty()
+    } else {
+        record_home_thumbnail(&mut tx, id, bytes, check_at).await?
+    };
     tx.commit().await?;
     Ok(recorded.then_some(bytes))
 }
@@ -424,7 +432,7 @@ async fn home_quota(tx: &mut toasty::Transaction<'_>, user: &str) -> Result<(i64
            SELECT COALESCE(sum(file_size + CASE WHEN thumbnail_ready THEN thumbnail_bytes ELSE 0 END),0) AS bytes,
                   COALESCE(sum(CASE WHEN thumbnail_ready IS NULL THEN
                        CASE WHEN thumbnail_bytes>0 THEN thumbnail_bytes
-                            WHEN home_image_can_have_thumbnail(content_type,width,height) THEN file_size
+                            WHEN NOT thumbnail_legacy_missing AND home_image_can_have_thumbnail(content_type,width,height) THEN file_size
                             ELSE 0 END ELSE 0 END),0) AS uncertain
            FROM home_images WHERE uploader_id=$1
          ), pending AS (
@@ -454,20 +462,20 @@ async fn reconcile_uploader_thumbnails(
         let rows = query(&mut tx,
             "WITH candidates AS MATERIALIZED (
                (SELECT id, file_size AS reserved FROM home_images WHERE uploader_id=$1
-                 AND thumbnail_ready IS NULL AND NOT (thumbnail_bytes>0)
+                 AND thumbnail_ready IS NULL AND NOT thumbnail_legacy_missing AND NOT (thumbnail_bytes>0)
                  AND home_image_can_have_thumbnail(content_type,width,height)
                  AND thumbnail_check_at<=now()+interval '5 minutes'
                ORDER BY thumbnail_check_at,id LIMIT 32)
                UNION ALL
                (SELECT id, thumbnail_bytes AS reserved FROM home_images WHERE uploader_id=$1
-                 AND thumbnail_ready IS NULL AND (thumbnail_bytes>0)
+                 AND thumbnail_ready IS NULL AND NOT thumbnail_legacy_missing AND (thumbnail_bytes>0)
                  AND home_image_can_have_thumbnail(content_type,width,height)
                  AND thumbnail_check_at<=now()
                ORDER BY thumbnail_check_at,id LIMIT 32)
              )
              UPDATE home_images SET thumbnail_check_at=now()+interval '10 minutes'
              WHERE id IN (SELECT h.id FROM candidates c JOIN home_images h ON h.id=c.id
-               WHERE h.thumbnail_ready IS NULL
+               WHERE h.thumbnail_ready IS NULL AND NOT h.thumbnail_legacy_missing
                  AND CASE WHEN h.thumbnail_bytes>0 THEN h.thumbnail_check_at<=now()
                    ELSE h.created_at<now()-interval '5 minutes'
                      AND h.thumbnail_check_at<=now()+interval '5 minutes' END
