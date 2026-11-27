@@ -88,13 +88,14 @@ describe("usePullToRefresh", () => {
     scrollTop = 10;
     act(() => result.current.onTouchMove(touch(400)));
     expect(result.current.pull).toBe(0);
+    scrollTop = 0;
     act(() => result.current.onTouchMove(touch(400)));
     expect(result.current.pull).toBe(0);
 
     // 再取得の完了前に開始したタッチは pulling ガードで無視される。
     scrollTop = 0;
     act(() => result.current.onTouchStart(touch(100)));
-    act(() => result.current.onTouchMove(touch(400)));
+    act(() => result.current.onTouchMove(touch(220)));
     act(() => result.current.onTouchEnd());
     expect(refresh).toHaveBeenCalledTimes(1);
     expect(result.current.pulling).toBe(true);
