@@ -37,12 +37,11 @@ BEGIN
   RETURN OLD;
 END $$;
 
--- Keep the original ordering until the indexed ordering is available.
+-- Pause the legacy cleanup until its index is ready, but keep its quota SELECT active.
 CREATE VIEW home_image_deletions AS
 SELECT id,uploader_id,file_size,created_at
 FROM home_image_deletion_queue
-WHERE (NOT legacy_write_pending AND NOT original_write_pending AND NOT thumbnail_write_pending)
-   OR (SELECT current_query() = $legacy_quota$SELECT json_build_object('bytes',(SELECT COALESCE(sum(file_size),0) FROM home_images WHERE uploader_id=$1)+(SELECT COALESCE(sum(file_size),0) FROM home_image_deletions WHERE uploader_id=$1))::text$legacy_quota$);
+WHERE (SELECT current_query() = $legacy_quota$SELECT json_build_object('bytes',(SELECT COALESCE(sum(file_size),0) FROM home_images WHERE uploader_id=$1)+(SELECT COALESCE(sum(file_size),0) FROM home_image_deletions WHERE uploader_id=$1))::text$legacy_quota$);
 
 CREATE TABLE apub_media_blurhash_queue (
   post_id text PRIMARY KEY REFERENCES apub_remote_posts(id) ON DELETE CASCADE,
