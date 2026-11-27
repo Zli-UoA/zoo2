@@ -298,6 +298,32 @@ class AndroidImageCacheTest {
         }
     }
 
+    @Test fun maxAgeTakesPrecedenceOverInvalidExpiresOnOkAndNotModified() = runBlocking {
+        Fixture().use { f ->
+            var time = 1_000L
+            f.server.enqueue(MockResponse().setHeader("Cache-Control", "private, max-age=60")
+                .setHeader("Expires", "0").setHeader("ETag", "\"thumbnail\"").setBody("thumbnail"))
+            f.server.enqueue(MockResponse().setResponseCode(304).setHeader("Expires", "0"))
+            f.server.enqueue(MockResponse().setBody("unexpected download"))
+            val key = "id:thumbnail"
+            f.cache(now = { time }).use { cache ->
+                assertEquals("thumbnail", cache.signedImage(f.url, key).decodeToString())
+            }
+            f.cache(now = { time }).use { cache ->
+                assertEquals("thumbnail", cache.signedImage(f.url, key).decodeToString())
+                assertEquals(1, f.server.requestCount)
+                time += 60_000
+                assertEquals("thumbnail", cache.signedImage(f.url, key).decodeToString())
+            }
+            f.cache(now = { time }).use { cache ->
+                assertEquals("thumbnail", cache.signedImage(f.url, key).decodeToString())
+            }
+            assertEquals(2, f.server.requestCount)
+            f.server.takeRequest()
+            assertEquals("\"thumbnail\"", f.server.takeRequest().getHeader("If-None-Match"))
+        }
+    }
+
     @Test fun signedAttachmentsSkipDiskForNoStoreNoCacheOrVary() = runBlocking {
         Fixture().use { f ->
             val policies = listOf(

@@ -118,8 +118,9 @@ internal class AndroidImageCache(
             headers[HttpHeaders.CacheControl] == null -> previous?.maxAgeMillis
             else -> null
         }
-        val expiresAt = headers[HttpHeaders.Expires]?.let { httpDate(it) ?: return null }
-            ?: previous?.httpExpiresAt
+        val expiresHeader = headers[HttpHeaders.Expires]
+        val expiresAt = if (expiresHeader == null) previous?.httpExpiresAt else httpDate(expiresHeader)
+        if (expiresHeader != null && expiresAt == null && maxAge == null) return null
         val freshness = maxAge ?: 0L.takeIf { policy.mustRevalidate && expiresAt == null }
         return Freshness(freshness, expiresAt)
     }
