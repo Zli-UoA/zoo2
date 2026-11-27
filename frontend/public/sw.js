@@ -485,10 +485,11 @@ function handleFreshAsset(request) {
   const path = new URL(request.url, self.location.origin).pathname;
   // 同じパスの同時取得を共有し、古い応答が新しい配色を上書きしないようにする。
   const pending = freshAssetWork.get(path);
-  if (pending) return pending;
+  // 取得は共有しても、respondWith へ渡す本文は要求ごとに独立させる。
+  if (pending) return pending.then((response) => response.clone());
   const work = fetchFreshAsset(request, path).finally(() => freshAssetWork.delete(path));
   freshAssetWork.set(path, work);
-  return work;
+  return work.then((response) => response.clone());
 }
 
 async function fetchFreshAsset(request, path) {

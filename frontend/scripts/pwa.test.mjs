@@ -2152,7 +2152,7 @@ test("concurrent manifest fetches share a single response", async () => {
     fetchThrough(handlers, request),
     fetchThrough(handlers, request),
   ]);
-  assert.equal(await first.clone().text(), await second.clone().text());
+  assert.equal(await first.text(), await second.text());
   assert.equal(calls, 1);
 });
 
