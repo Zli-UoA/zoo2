@@ -105,6 +105,19 @@ const TRANSPORT_HEADERS = [
   "set-cookie",
 ];
 
+async function fetchBounded(input, init = {}) {
+  if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function")
+    return await fetch(input, { ...init, signal: AbortSignal.timeout(10_000) });
+  // AbortSignal.timeout の無い Service Worker でも取得できるようにする。
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function cacheHeaders(response, validators = false) {
   const headers = new Headers(response.headers);
   if (validators) {
@@ -229,10 +242,16 @@ async function shellCacheNamesNewestFirst(except) {
   for (const name of (await caches.keys()).filter(
     (name) => name.startsWith(CACHE_PREFIX) && name !== except,
   )) {
-    const cache = await caches.open(name);
-    const meta = await cache.match(META_PATH);
-    const installedAt = meta ? Number(await meta.text()) : 0;
-    candidates.push({ name, installedAt: Number.isFinite(installedAt) ? installedAt : 0 });
+    let installedAt = 0;
+    try {
+      const cache = await caches.open(name);
+      const meta = await cache.match(META_PATH);
+      const value = meta ? Number(await meta.text()) : 0;
+      if (Number.isFinite(value)) installedAt = value;
+    } catch {
+      /* A cache whose metadata is unreadable is treated as unknown age. */
+    }
+    candidates.push({ name, installedAt });
   }
   candidates.sort((a, b) => b.installedAt - a.installedAt);
   return candidates.map((candidate) => candidate.name);
@@ -261,10 +280,9 @@ async function precacheShell() {
     SHELL.filter((path) => path !== "/" && path !== "/index.html").map(async (path) => {
       try {
         const bounded = path === "/manifest.webmanifest" || path === "/offline.html";
-        const response = await fetch(path, {
-          cache: "reload",
-          ...(bounded ? { signal: AbortSignal.timeout(10_000) } : {}),
-        });
+        const response = bounded
+          ? await fetchBounded(path, { cache: "reload" })
+          : await fetch(path, { cache: "reload" });
         if (!response.ok) return;
         // nginx の try_files が欠けたファイルを index.html で返しても保存しない。
         if (path === "/offline.html") {
@@ -444,10 +462,7 @@ async function handleFreshAsset(request) {
   let response;
   try {
     // サーバーが応答を返さない／本文が途中で止まる場合も、保存済みの版に戻れるようにする。
-    response = await fetch(request, {
-      cache: "reload",
-      signal: AbortSignal.timeout(10_000),
-    });
+    response = await fetchBounded(request, { cache: "reload" });
   } catch {
     return await cachedFreshAsset(path);
   }
@@ -487,11 +502,14 @@ async function cachedFreshAsset(path, networkResponse = null) {
       (a, b) => Number(b.current) - Number(a.current) || b.installedAt - a.installedAt,
     );
     for (const { name } of candidates) {
-      const cache = await caches.open(name);
-      const saved = await cache.match(path);
-      if (!saved) continue;
-      if (!(await isUsableFreshAsset(path, saved))) continue;
-      return saved;
+      try {
+        const cache = await caches.open(name);
+        const saved = await cache.match(path);
+        if (!(await isUsableFreshAsset(path, saved))) continue;
+        return saved;
+      } catch {
+        /* Try the next generation when one cache cannot be read. */
+      }
     }
   } catch {
     /* No usable cached copy. */

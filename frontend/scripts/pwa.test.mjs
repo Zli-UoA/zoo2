@@ -1290,6 +1290,46 @@ test("an invalid manifest in the destination is replaced by a valid older one", 
   assert.equal(await response.text(), manifest);
 });
 
+test("an unreadable cache metadata does not stop carry-over", async () => {
+  const manifest = validManifest("#ffffff");
+  const cacheContext = memoryCaches([
+    ["zoo-shell-v3-broken", `${ORIGIN}/index.html`, basicResponse("<html>old</html>")],
+    ["zoo-shell-v3-old", `${ORIGIN}/manifest.webmanifest`, basicResponse(manifest)],
+  ]);
+  const realOpen = cacheContext.api.open.bind(cacheContext.api);
+  cacheContext.api.open = async (name) => {
+    const cache = await realOpen(name);
+    if (name !== "zoo-shell-v3-broken") return cache;
+    return {
+      ...cache,
+      match: async (request) => {
+        if (requestKey(request) === `${ORIGIN}/__zoo_shell_meta__`) throw new Error("denied");
+        return cache.match(request);
+      },
+    };
+  };
+  const old = await realOpen("zoo-shell-v3-old");
+  await old.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("1"));
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async (input) => {
+      const key = requestKey(input);
+      if (key === `${ORIGIN}/manifest.webmanifest`)
+        return basicResponse("<html>app shell</html>", {
+          headers: { "content-type": "text/html" },
+        });
+      if (key === `${ORIGIN}/offline.html`)
+        return basicResponse('<meta name="zoo-offline" content="true" />offline', {
+          headers: { "content-type": "text/html" },
+        });
+      return basicResponse(`network:${key}`);
+    },
+  });
+  await dispatch(handlers, "install");
+  const cache = await realOpen("zoo-shell-v2");
+  assert.equal(await (await cache.match(`${ORIGIN}/manifest.webmanifest`)).text(), manifest);
+});
+
 test("manifest is carried over from an older shell when the newest lacks it", async () => {
   const manifest = validManifest("#ffffff");
   const cacheContext = memoryCaches([
@@ -1425,6 +1465,33 @@ test("install fetches manifest and offline page with a timeout", async () => {
   await dispatch(handlers, "install");
   for (const path of ["/manifest.webmanifest", "/offline.html"])
     assert.ok(signals.get(path) instanceof AbortSignal, `${path} should have a timeout signal`);
+});
+
+test("fresh assets are fetched when AbortSignal.timeout is unavailable", async () => {
+  const { handlers } = worker({
+    AbortSignal: class {},
+    AbortController: class {
+      constructor() {
+        this.signal = {};
+      }
+      abort() {}
+    },
+    setTimeout: () => 1,
+    clearTimeout: () => {},
+    fetch: async (input) => {
+      if (new URL(requestKey(input)).pathname === "/manifest.webmanifest")
+        return basicResponse(validManifest("#ffffff"), {
+          headers: { "content-type": "application/manifest+json" },
+        });
+      return basicResponse(`network:${requestKey(input)}`);
+    },
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+  });
+  assert.equal(await response.text(), validManifest("#ffffff"));
 });
 
 test("an aborted fresh fetch falls back to the cached manifest", async () => {
