@@ -167,6 +167,51 @@ struct RevocationTests {
         #expect(result.object?["version"]?.string == "2")
     }
 
+    @Test("失効適用中の保存失敗後は同じストアを再利用しない", arguments: [false, true])
+    func applyRevocationSaveFailure(afterRename: Bool) async throws {
+        let (device, server, unlocked, _) = try await prepared()
+        defer { device.cleanUp() }
+        let controller = E2eeRevocation(store: { device.store }, api: server, setup: device.setup, userID: user)
+        _ = try await controller.begin(scope: .deviceOnly, deletedDevices: [], unlocked: unlocked)
+        let revocation = try device.store.resumeRevocation(unlocked: unlocked)
+        let path = device.files.directory.standardizedFileURL.path
+        CryptoStore.writeFailureHooks.withLock { hooks in hooks[path] = { _, renamed in
+            if renamed == afterRename { throw CocoaError(.fileWriteUnknown) }
+        } }
+        defer { CryptoStore.writeFailureHooks.withLock { $0.removeValue(forKey: path) } }
+        #expect(throws: (any Error).self) { try device.store.applyRevocation(revocation, secretsRevision: 2) }
+        #expect(!device.store.isUsable)
+        #expect(throws: E2eeStoreError.closed) { try device.store.applyRevocation(revocation, secretsRevision: 2) }
+        CryptoStore.writeFailureHooks.withLock { $0.removeValue(forKey: path) }
+        try device.restart()
+        let resumed = try device.store.resumeRevocation(unlocked: unlocked)
+        try device.store.applyRevocation(resumed, secretsRevision: 2)
+        #expect(device.store.isUsable && device.store.secretsRevision == 2)
+    }
+
+    @Test func 失効の信頼適用が保存前に失敗してもストアを再利用しない() async throws {
+        let (device, server, unlocked, _) = try await prepared()
+        defer { device.cleanUp() }
+        let controller = E2eeRevocation(store: { device.store }, api: server, setup: device.setup, userID: user)
+        _ = try await controller.begin(scope: .deviceOnly, deletedDevices: [], unlocked: unlocked)
+        let revocation = try device.store.resumeRevocation(unlocked: unlocked)
+        let (files, _, directory) = makeFiles()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let otherUser = UUID().uuidString.lowercased()
+        let other = try #require(try CryptoStore.open(files, userID: otherUser)).store
+        defer { other.close() }
+        let url = directory.appendingPathComponent(CryptoStore.stateFile)
+        let saved = try Data(contentsOf: url)
+        #expect(throws: (any Error).self) { try other.applyRevocation(revocation, secretsRevision: 2) }
+        #expect(!other.isUsable)
+        #expect(try Data(contentsOf: url) == saved)
+        #expect(throws: E2eeStoreError.closed) { try other.applyRevocation(revocation, secretsRevision: 2) }
+        other.close()
+        let reopened = try #require(try CryptoStore.open(files, userID: otherUser)).store
+        defer { reopened.close() }
+        #expect(reopened.isUsable && reopened.secretsRevision == nil)
+    }
+
     @Test func 端末だけの失効は鍵を作り直して保存し記録を消す() async throws {
         let (device, server, unlocked, firstRecoveryKey) = try await prepared()
         defer { device.cleanUp() }

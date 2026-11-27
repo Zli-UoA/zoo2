@@ -88,7 +88,14 @@ class AndroidMessageEncryption(
                     pages += page
                     check(pages.size <= 200) { "配布先のページ数が上限を超えました" }
                     val previous = after
-                    after = (page["next_after"] as? JsonPrimitive)?.contentOrNull
+                    after = when (val cursor = page["next_after"]) {
+                        null, JsonNull -> null
+                        is JsonPrimitive -> {
+                            check(cursor.isString) { "配布先の次ページの位置が不正です" }
+                            cursor.content
+                        }
+                        else -> error("配布先の次ページの位置が不正です")
+                    }
                     check(after == null || after != previous) { "配布先のページが進みませんでした" }
                 } while (after != null)
                 if (epoch != null && epoch.toULong() >= minimum && after == null) return pages

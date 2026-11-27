@@ -263,4 +263,24 @@ struct KeyBackupTests {
         sent.server.failSecretStorageAfterFirst = true
         await #expect(throws: E2eeSetupError.secretsChanged) { _ = try await sent.sender.setup.runStartupCheck() }
     }
+
+    @Test func 起動時の取り込み中に版だけが変わった場合も状態を読み直す() async throws {
+        let server = FakeSetupServer(userID: user)
+        let device = try Device(server)
+        defer { device.cleanUp() }
+        let start = try device.setup.begin()
+        try await device.setup.completeSetup(start.session, reauth: "t")
+        var readPage = false
+        server.backupPage = { _ in
+            readPage = true
+            // 自分の鍵は同じまま、別の処理がローカルの版を更新した直後を再現する。
+            do { try device.store.saveOwnKeys(start.session, secretsRevision: server.revision + 1) }
+            catch { Issue.record(error) }
+            return #"{"sessions":[],"next":null}"#
+        }
+        let status = try await device.setup.runStartupCheck()
+        #expect(readPage)
+        #expect(status != .unlocked)
+        #expect(device.store.hasOwnKeys && device.store.secretsRevision == nil)
+    }
 }

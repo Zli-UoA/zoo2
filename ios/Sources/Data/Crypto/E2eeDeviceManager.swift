@@ -254,7 +254,13 @@ final class E2eeDeviceManager {
             continuation.finish()
             throw ZooError.invalidResponse
         }
-        defer { observer.cancel() }
+        // 別の処理で保存に失敗したときは、Shape の次の更新を待たずに開き直す。
+        let invalidations = store.invalidationEvents()
+        let invalidation = Task { @MainActor in
+            for await _ in invalidations {}
+            continuation.finish()
+        }
+        defer { observer.cancel(); invalidation.cancel() }
         // ack を送れた行は、Shape から消えるまで処理し直さない（ack より先に次の一覧が届くため）。
         var acknowledged = Set<String>()
         for await list in rows {
@@ -269,6 +275,7 @@ final class E2eeDeviceManager {
         }
         // 止められたときは、購読の終了を待たずに抜ける（defer が購読を取り消す）。
         try Task.checkCancellation()
+        guard store.isUsable else { throw E2eeStoreError.closed }
         try await observer.value
     }
 

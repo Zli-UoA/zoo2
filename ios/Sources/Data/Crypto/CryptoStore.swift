@@ -37,6 +37,42 @@ struct CryptoStoreFiles: Sendable {
         return metadata
     }
 
+    private struct EncryptionHistory: Codable {
+        let userID: String
+        let channels: [String]
+    }
+
+    var encryptionHistoryDirectory: URL { directory.appendingPathComponent("encryption-history", isDirectory: true) }
+
+    /// 初期化済みのディレクトリーに履歴がなければ、保存途中で止まったものとして扱う。
+    func loadEncryptionHistory(userID: String) throws -> Set<String> {
+        let legacy = Set(try metadata(userID: userID)?.encrypted_channels ?? [])
+        let root = encryptionHistoryDirectory
+        if FileManager.default.fileExists(atPath: root.path) {
+            let history = try JSONDecoder().decode(EncryptionHistory.self, from: Data(contentsOf: root.appendingPathComponent("channels.json")))
+            guard history.userID.lowercased() == userID.lowercased() else { throw ZooError.invalidResponse }
+            return Set(history.channels).union(legacy)
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try CryptoStore.syncDirectory(directory.deletingLastPathComponent())
+        try CryptoStore.syncDirectory(directory)
+        try saveEncryptionHistory(legacy, userID: userID)
+        return legacy
+    }
+
+    /// 旧履歴を先に無効化するため、更新が失敗しても再起動後に旧履歴を完全な履歴として使わない。
+    func saveEncryptionHistory(_ channels: Set<String>, userID: String) throws {
+        let url = encryptionHistoryDirectory.appendingPathComponent("channels.json")
+        do {
+            try FileManager.default.removeItem(at: url)
+            try CryptoStore.syncDirectory(encryptionHistoryDirectory)
+        } catch CocoaError.fileNoSuchFile {
+        } catch {
+            // 削除だけに失敗しても、置換保存で新しい履歴を残せる可能性がある。
+        }
+        try CryptoStore.writeAtomically(JSONEncoder().encode(EncryptionHistory(userID: userID, channels: channels.sorted())), to: url)
+    }
+
     /// Keychain が読めない場合も、ファイルと保存鍵の削除をそれぞれ試す。
     func removeLocalState() throws {
         guard !CryptoStore.isReserved(directory) else { throw CryptoStoreBusyError() }
@@ -61,8 +97,11 @@ struct CryptoStoreFiles: Sendable {
                 FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory)
                 if isDirectory.boolValue {
                     // 移す状態がない（初期保存に失敗して空のまま残った）ディレクトリーは、移さない。移行先の状態は、消さない。
-                    guard FileManager.default.fileExists(atPath: directory.appendingPathComponent(CryptoStore.stateFile).path) else { continue }
-                    if FileManager.default.fileExists(atPath: target.appendingPathComponent(CryptoStore.stateFile).path) {
+                    let hasState = FileManager.default.fileExists(atPath: directory.appendingPathComponent(CryptoStore.stateFile).path)
+                        || FileManager.default.fileExists(atPath: directory.appendingPathComponent("encryption-history").path)
+                    guard hasState else { continue }
+                    if FileManager.default.fileExists(atPath: target.appendingPathComponent(CryptoStore.stateFile).path)
+                        || FileManager.default.fileExists(atPath: target.appendingPathComponent("encryption-history").path) {
                         // 同じ ID の暗号ストアが両方にある（App Group を使えない間に、前の置き場へ保存した）。どちらも変えず、競合として返す
                         // （片方を開くと、もう片方にしかない受信用セッションを失う）。
                         throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: target.path])
@@ -544,7 +583,23 @@ final class CryptoStore: @unchecked Sendable {
 
     /// 閉じたストアには書かない（閉じたあとに、古いインスタンスが開き直したストアの状態を書き換えないため）。
     /// 巻き戻しに失敗して、メモリー上の状態が保存済みと食い違うおそれがあるとき、開き直すまで書き込みを拒む。
-    private var needsReopen = false
+    private var invalidationContinuation: AsyncStream<Void>.Continuation?
+
+    /// 同じストアで端末を作り直した場合も、新しい購読で保存失敗を待つ。
+    func invalidationEvents() -> AsyncStream<Void> {
+        lock.withLock {
+            let (stream, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+            if closed || needsReopen { continuation.finish() }
+            else { invalidationContinuation = continuation }
+            return stream
+        }
+    }
+
+    private var needsReopen = false {
+        didSet {
+            if needsReopen { invalidationContinuation?.finish() }
+        }
+    }
     private func ensureOpen() throws { if closed || needsReopen { throw E2eeStoreError.closed } }
 
     private func save(_ next: StoreState) throws {
@@ -930,14 +985,20 @@ final class CryptoStore: @unchecked Sendable {
     func applyRevocation(_ revocation: Revocation, secretsRevision: UInt64?) throws {
         try lock.withLock {
             try ensureOpen()
-            try revocation.applyToTrust(trust: trust)
-            var next = state
-            next.own_keys = try revocation.ownKeysPickle(account: account, storageKey: storageKey)
-            next.secrets_revision = secretsRevision
-            next.revocation = try revocation.pickle(account: account, storageKey: storageKey)
-            next.trust_store = try trust.pickle(account: account, storageKey: storageKey)
-            try save(next)
-            state = next
+            do {
+                try revocation.applyToTrust(trust: trust)
+                var next = state
+                next.own_keys = try revocation.ownKeysPickle(account: account, storageKey: storageKey)
+                next.secrets_revision = secretsRevision
+                next.revocation = try revocation.pickle(account: account, storageKey: storageKey)
+                next.trust_store = try trust.pickle(account: account, storageKey: storageKey)
+                try save(next)
+                state = next
+            } catch {
+                // FFI の適用・pickle 途中でも信頼の記録が進み得るため、保存済みの状態から再開する。
+                needsReopen = true
+                throw error
+            }
         }
     }
 
@@ -1311,6 +1372,7 @@ final class CryptoStore: @unchecked Sendable {
         lock.withLock {
             guard !closed else { return }
             closed = true
+            invalidationContinuation?.finish()
             Self.release(directory.standardizedFileURL.path, token: reservation)
         }
     }
@@ -1398,7 +1460,11 @@ final class CryptoStore: @unchecked Sendable {
         }
         try failure?(url, true)
         // 置き換えたディレクトリーのエントリーも書き出す（停電で前の状態に戻らないように）。
-        let directory = Darwin.open(url.deletingLastPathComponent().path, O_RDONLY)
+        try syncDirectory(url.deletingLastPathComponent())
+    }
+
+    static func syncDirectory(_ url: URL) throws {
+        let directory = Darwin.open(url.path, O_RDONLY)
         guard directory >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         defer { Darwin.close(directory) }
         guard fsync(directory) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }

@@ -75,7 +75,7 @@ struct CryptoStoreTests {
         #expect(unreadable.isDowngraded(channel))
     }
 
-    @Test @MainActor func 登録前に観測した暗号化チャンネルもメモリーへ残す() throws {
+    @Test @MainActor func 登録前に観測した暗号化チャンネルも再起動後に照合する() throws {
         let (files, _, directory) = makeFiles()
         defer { try? FileManager.default.removeItem(at: directory) }
         let harness = try ChatHarness()
@@ -87,6 +87,75 @@ struct CryptoStoreTests {
         controller.rememberEncryptedChannels([channel])
         channel.encrypted = false
         #expect(controller.isDowngraded(channel))
+        let restarted = E2eeController.make(api: harness.api, userID: user, files: files)
+        #expect(restarted.manager.readyStore == nil)
+        #expect(restarted.isDowngraded(channel))
+    }
+
+    @Test("履歴の保存失敗後も再起動で平文に戻さない", arguments: [false, true])
+    @MainActor func encryptionHistoryFailureBlocksPlaintext(afterRename: Bool) throws {
+        let (files, _, directory) = makeFiles()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let controller = E2eeController.make(api: harness.api, userID: user, files: files)
+        var channel = Channel(id: "c1", channel_name: "履歴", is_private: true, is_dm: false)
+        #expect(!controller.isDowngraded(channel))
+        let path = files.encryptionHistoryDirectory.standardizedFileURL.path
+        CryptoStore.writeFailureHooks.withLock { hooks in hooks[path] = { _, renamed in
+            if renamed == afterRename { throw CocoaError(.fileWriteUnknown) }
+        } }
+        defer { CryptoStore.writeFailureHooks.withLock { $0.removeValue(forKey: path) } }
+        channel.encrypted = true
+        controller.rememberEncryptedChannels([channel])
+        channel.encrypted = false
+        #expect(controller.isDowngraded(channel))
+        CryptoStore.writeFailureHooks.withLock { $0.removeValue(forKey: path) }
+        let restarted = E2eeController.make(api: harness.api, userID: user, files: files)
+        #expect(restarted.isDowngraded(channel))
+        if !afterRename {
+            let unrelated = Channel(id: "c2", channel_name: "別の履歴", is_private: true, is_dm: false)
+            #expect(restarted.isDowngraded(unrelated))
+            restarted.rememberEncryptedChannels([])
+            #expect(restarted.isDowngraded(unrelated))
+        }
+        // 完全な観測履歴が残る同じインスタンスだけは、保存をやり直せる。
+        controller.rememberEncryptedChannels([])
+        #expect(E2eeController.make(api: harness.api, userID: user, files: files).isDowngraded(channel))
+    }
+
+    @Test @MainActor func 暗号ストアの保存だけが失敗しても独立した履歴は残る() throws {
+        let (files, _, directory) = makeFiles()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try #require(try CryptoStore.open(files, userID: user)).store
+        defer { store.close() }
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        var channel = Channel(id: "c1", channel_name: "履歴", is_private: true, is_dm: false)
+        channel.encrypted = true
+        E2eeController.make(api: harness.api, userID: user, files: files).rememberEncryptedChannels([channel])
+        let blocker = directory.appendingPathComponent("state.json.tmp")
+        try FileManager.default.createDirectory(at: blocker, withIntermediateDirectories: false)
+        #expect(throws: (any Error).self) { try store.rememberEncryptedChannels([channel.id]) }
+        store.close()
+        channel.encrypted = false
+        #expect(E2eeController.make(api: harness.api, userID: user, files: files).isDowngraded(channel))
+    }
+
+    @Test func 登録前の履歴だけがある保存先も移行して競合時は残す() throws {
+        let (old, new, cleanUp) = try migrationDirectories()
+        defer { cleanUp() }
+        let source = CryptoStoreFiles(directory: old.appendingPathComponent("account"), keys: StorageKeyStore(backing: MemoryKey()))
+        _ = try source.loadEncryptionHistory(userID: user)
+        try source.saveEncryptionHistory(["c1"], userID: user)
+        try CryptoStoreFiles.migrate(from: old, to: new)
+        let target = CryptoStoreFiles(directory: new.appendingPathComponent("account"), keys: source.keys)
+        #expect(try target.loadEncryptionHistory(userID: user) == ["c1"])
+        _ = try source.loadEncryptionHistory(userID: user)
+        try source.saveEncryptionHistory(["c2"], userID: user)
+        #expect(throws: (any Error).self) { try CryptoStoreFiles.migrate(from: old, to: new) }
+        #expect(try source.loadEncryptionHistory(userID: user) == ["c2"])
+        #expect(try target.loadEncryptionHistory(userID: user) == ["c1"])
     }
 
     @Test func 保存失敗後は開き直すまで同じストアの操作を拒否する() throws {

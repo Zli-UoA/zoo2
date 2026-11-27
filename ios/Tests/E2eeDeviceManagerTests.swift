@@ -10,6 +10,7 @@ private final class FakeDeviceServer: E2eeDeviceAPI, E2eeKeysAPI {
     var counts = KeyCounts(oneTimeKeys: 0, hasUnusedFallbackKey: false)
     var listed: [String] = []
     var failUploadNotFound = 0
+    var failAckNotFound = false
     var queriedUsers: [[String]] = []
     var ackBarrier: CheckedContinuation<Void, Never>?
     var holdAck = false
@@ -31,6 +32,7 @@ private final class FakeDeviceServer: E2eeDeviceAPI, E2eeKeysAPI {
     }
 
     func ackToDevice(deviceID: String, ids: [String]) async throws {
+        if failAckNotFound { failAckNotFound = false; throw E2eeAPIError(status: 404, code: "E2EE_DEVICE_NOT_FOUND") }
         acked.append(ids)
         if holdAck { await withCheckedContinuation { ackBarrier = $0 } }
     }
@@ -111,6 +113,22 @@ struct E2eeDeviceManagerTests {
         await manager.stop()
     }
 
+    @Test func 別の処理の保存失敗はShapeの更新がなくても開き直す() async throws {
+        let server = FakeDeviceServer(), feed = ToDeviceFeed()
+        let (manager, directory) = make(server, feed)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        manager.start()
+        #expect(await eventually { manager.readyStore != nil && feed.starts == 1 })
+        guard let first = manager.readyStore else { await manager.stop(); Issue.record("ストアの準備が終わらない"); return }
+        let path = directory.standardizedFileURL.path
+        CryptoStore.writeFailureHooks.withLock { hooks in hooks[path] = { _, _ in throw CocoaError(.fileWriteUnknown) } }
+        #expect(throws: (any Error).self) { try first.rememberEncryptedChannels(["c1"]) }
+        CryptoStore.writeFailureHooks.withLock { $0.removeValue(forKey: path) }
+        #expect(await eventually { manager.readyStore != nil && manager.readyStore !== first && feed.starts >= 2 })
+        #expect(server.registered.count == 1)
+        await manager.stop()
+    }
+
     @Test func 別の端末から消された端末は一覧にないときだけ作り直して登録し直す() async throws {
         let server = FakeDeviceServer(), feed = ToDeviceFeed()
         server.failUploadNotFound = 1
@@ -124,6 +142,22 @@ struct E2eeDeviceManagerTests {
             Issue.record("device_keys がない"); return
         }
         #expect(first["device_id"] != second["device_id"])
+    }
+
+    @Test func 稼働中に端末を作り直しても再購読したShapeを処理する() async throws {
+        let server = FakeDeviceServer(), feed = ToDeviceFeed()
+        let (manager, directory) = make(server, feed)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        manager.start()
+        #expect(await eventually { manager.readyStore != nil && feed.starts == 1 })
+        let previousID = manager.readyStore?.deviceID
+        server.failAckNotFound = true
+        feed.deliver?([.init(id: "1", senderUserID: user, type: "m.dummy", content: "{}")])
+        #expect(await eventually { manager.readyStore != nil && feed.starts >= 2 && server.registered.count == 2 })
+        #expect(manager.readyStore?.deviceID != previousID)
+        feed.deliver?([.init(id: "2", senderUserID: user, type: "m.dummy", content: "{}")])
+        #expect(await eventually { server.acked.contains(["2"]) })
+        await manager.stop()
     }
 
     @Test func 行はIDの桁数と文字列の順に並べ文字列のjsonbも読む() throws {

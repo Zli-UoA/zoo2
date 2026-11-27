@@ -154,26 +154,36 @@ final class E2eeController: ConversationEncryption {
     @ObservationIgnored private var observedEncryptedChannels = Set<String>()
     @ObservationIgnored private var readEncryptionHistory = false
     @ObservationIgnored private var encryptionHistoryAvailable = false
+    @ObservationIgnored private var canPersistEncryptionHistory = false
+    @ObservationIgnored private var durableEncryptedChannels = Set<String>()
 
     private func refreshEncryptionHistory() {
-        if let store = manager.readyStore {
-            observedEncryptedChannels.formUnion(store.encryptedChannels)
-            encryptionHistoryAvailable = true
-        } else if !readEncryptionHistory, let files {
+        if !readEncryptionHistory, let files {
             readEncryptionHistory = true
             do {
-                observedEncryptedChannels.formUnion(try files.metadata(userID: userIDForStore)?.encrypted_channels ?? [])
+                durableEncryptedChannels = try files.loadEncryptionHistory(userID: userIDForStore)
+                observedEncryptedChannels.formUnion(durableEncryptedChannels)
+                canPersistEncryptionHistory = true
                 encryptionHistoryAvailable = true
             } catch {
                 encryptionHistoryAvailable = false
             }
         }
+        if let store = manager.readyStore { observedEncryptedChannels.formUnion(store.encryptedChannels) }
     }
 
-    /// 準備中や保存失敗時も、観測した暗号化チャンネルをメモリーに残す。
+    /// 鍵や端末登録の準備を待たず、観測した暗号化チャンネルを永続化する。
     func rememberEncryptedChannels(_ channels: [Channel]) {
         refreshEncryptionHistory()
         observedEncryptedChannels.formUnion(channels.filter { $0.encrypted == true }.map(\.id))
+        if let files, canPersistEncryptionHistory,
+           !encryptionHistoryAvailable || durableEncryptedChannels != observedEncryptedChannels {
+            do {
+                try files.saveEncryptionHistory(observedEncryptedChannels, userID: userIDForStore)
+                durableEncryptedChannels = observedEncryptedChannels
+                encryptionHistoryAvailable = true
+            } catch { encryptionHistoryAvailable = false }
+        }
         if let store = manager.readyStore, !observedEncryptedChannels.isEmpty {
             try? store.rememberEncryptedChannels(Array(observedEncryptedChannels))
         }
@@ -285,7 +295,7 @@ final class E2eeController: ConversationEncryption {
         await stop()
         defer { EncryptedAttachmentFiles.shared.removeAll() }
         guard let files else { return }
-        let metadata = try? files.metadata(userID: userIDForStore)
+        let metadata = try files.metadata(userID: userIDForStore)
         if let metadata, metadata.registered {
             let entry = PendingDeviceDeletion(server: serverKey, user: userIDForStore, device: metadata.device_id)
             let pending = PendingDeviceDeletions(root: files.directory.deletingLastPathComponent())

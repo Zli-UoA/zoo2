@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import Zoo
 
@@ -41,6 +42,49 @@ struct LogoutTests {
         #expect(pending.add(other))
         #expect(pending.remove(entry))
         #expect(pending.load() == [other])
+    }
+
+    @Test("登録済み端末は鍵を読めなくても削除か再試行記録を残す", arguments: [204, 500])
+    @MainActor func logoutRegisteredDeviceWithoutKey(status: Int) async throws {
+        let root = root(), key = MemoryKey()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let files = CryptoStoreFiles(directory: root.appendingPathComponent("account"), keys: StorageKeyStore(backing: key))
+        let store = try #require(try CryptoStore.open(files, userID: user)).store
+        let deviceID = store.deviceID
+        try store.markRegistered()
+        store.close()
+        let failing = CryptoStoreFiles(directory: files.directory, keys: StorageKeyStore(backing: UnreadableKey(base: key)))
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let requested = Mutex<[String]>([])
+        harness.stub { request in
+            requested.withLock { $0.append("\(request.httpMethod ?? "") \(request.url?.path ?? "")") }
+            return (status, [:], Data())
+        }
+        try await E2eeController.make(api: harness.api, userID: user, files: failing).finishLogout()
+        #expect(requested.withLock { $0 } == ["DELETE /api/e2ee/devices/\(deviceID)"])
+        #expect(PendingDeviceDeletions(root: root).load()?.map(\.device) == (status == 204 ? [] : [deviceID]))
+        #expect(!FileManager.default.fileExists(atPath: files.directory.path))
+        #expect(try key.load() == nil)
+    }
+
+    @Test("端末メタデータを確認できなければ削除情報を保持する", arguments: [false, true])
+    @MainActor func logoutPreservesUnreadableMetadata(wrongAccount: Bool) async throws {
+        let (files, key, directory) = makeFiles()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try #require(try CryptoStore.open(files, userID: user)).store
+        try store.markRegistered()
+        store.close()
+        let url = directory.appendingPathComponent(CryptoStore.stateFile)
+        let original = try Data(contentsOf: url)
+        if !wrongAccount { try Data("壊れたメタデータ".utf8).write(to: url) }
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let controller = E2eeController.make(api: harness.api, userID: wrongAccount ? UUID().uuidString : user, files: files)
+        await #expect(throws: (any Error).self) { try await controller.finishLogout() }
+        #expect(FileManager.default.fileExists(atPath: url.path))
+        #expect(try key.load() != nil)
+        if wrongAccount { #expect(try Data(contentsOf: url) == original) }
     }
 
     @Test func 削除待ちを読めないときは空として上書きしない() throws {
