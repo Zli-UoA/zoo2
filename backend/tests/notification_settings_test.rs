@@ -690,3 +690,86 @@ async fn patch_before_exit_does_not_restore_deleted_settings() -> anyhow::Result
     drop(app);
     fixture.cleanup().await
 }
+
+/// 同時 PATCH は参加行ロックの解放後に現在値を読み、古い値との同値判定で no-op にならない。
+#[tokio::test]
+async fn concurrent_patch_reads_the_value_after_locking_membership() -> anyhow::Result<()> {
+    let fixture = thread_db::ThreadDb::new().await?;
+    let mut config = fixture.config.clone();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+
+    let owner = uuid::Uuid::new_v4().to_string();
+    ok(
+        &app,
+        &owner,
+        "POST",
+        "/api/users",
+        json!({"id": owner, "user_name": owner, "display_name": owner}),
+    )
+    .await?;
+    let channel = uuid::Uuid::new_v4().to_string();
+    ok(
+        &app,
+        &owner,
+        "POST",
+        "/api/channels",
+        json!({"id": channel, "channel_name": channel, "is_private": true}),
+    )
+    .await?;
+    let path = format!("/api/channels/{channel}/notification-settings");
+
+    let (mut client, connection) =
+        tokio_postgres::connect(&fixture.config.database_url, NoTls).await?;
+    tokio::spawn(connection);
+    let holder_pid: i32 = client
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
+    let (observer, observer_connection) =
+        tokio_postgres::connect(&fixture.config.database_url, NoTls).await?;
+    tokio::spawn(observer_connection);
+
+    let tx = client.transaction().await?;
+    tx.execute(
+        "SELECT 1 FROM channel_user WHERE user_id=$1 AND channel_id=$2 FOR UPDATE",
+        &[&owner, &channel],
+    )
+    .await?;
+    // 並列端末が未コミットのまま mute に変更した状態を作る。
+    tx.execute(
+        "INSERT INTO user_channel_notification_settings(user_id,channel_id,notification_level) \
+         VALUES($1,$2,'mute') ON CONFLICT(user_id,channel_id) \
+         DO UPDATE SET notification_level=EXCLUDED.notification_level",
+        &[&owner, &channel],
+    )
+    .await?;
+
+    let patch_app = app.clone();
+    let patch_owner = owner.clone();
+    let patch_path = path.clone();
+    let patch = tokio::spawn(async move {
+        ok(
+            &patch_app,
+            &patch_owner,
+            "PATCH",
+            &patch_path,
+            json!({"level": "mentions"}),
+        )
+        .await
+    });
+    if let Err(err) = wait_until_patch_waits_on(&observer, holder_pid).await {
+        let _ = tx.rollback().await;
+        return Err(err);
+    }
+    tx.commit().await?;
+    let written = patch.await??;
+    assert_eq!(written["data"], json!({"level": "mentions"}));
+    assert!(written["txid"].is_string());
+    assert_eq!(
+        ok(&app, &owner, "GET", &path, json!({})).await?,
+        json!({"level": "mentions"})
+    );
+    Ok(())
+}
