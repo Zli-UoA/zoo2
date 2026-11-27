@@ -18,6 +18,7 @@ import io.ktor.http.Url
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
@@ -144,12 +145,6 @@ internal fun ConnectedScreens(
     }
     val visitRead = visitReadPosition ?: currentReadPosition
     val readBoundary = visitRead?.timestamp
-    val unreadId = remember(ordered, readBoundary, session.config.userId) {
-        if (readBoundary == null) null else ordered.firstOrNull {
-            it.text("parent_id").isEmpty() && it.text("user_id") != session.config.userId &&
-                (timestampMillis(it.text("created_at")) ?: Long.MIN_VALUE) > readBoundary
-        }?.text("id")
-    }
     var unreadPositioned by remember(session, channelId) { mutableStateOf(false) }
     val onUnreadPositioned = remember(session, channelId) { { unreadPositioned = true } }
     var visibleReadThrough by remember(session, channelId) { mutableStateOf<String?>(null) }
@@ -161,13 +156,35 @@ internal fun ConnectedScreens(
     val focusMessage = if (focusFailed) null
         else env.path.substringAfter("?message=", "").substringBefore('&').ifBlank { null }
     val focusRequest = focusMessage?.let { env.path.substringAfter('?') }
+    val emptyGeneration = remember { MutableStateFlow(0) }
+    val generation by (messageTable?.pageGeneration ?: emptyGeneration).collectAsState()
     val mainPage = pageStates[PageScope.Main]
-    var unreadPages by remember(session, channelId) { mutableIntStateOf(0) }
-    var unreadHistoryFailed by remember(session, channelId, env.online) { mutableStateOf(false) }
-    val oldest = mainPage?.oldest?.first?.let(::timestampMillis)
-    val needsUnreadHistory = env.online && currentThread == null && focusMessage == null &&
-        readBoundary != null && readBoundary > 0 && oldest != null && oldest > readBoundary &&
-        mainPage.hasOlder && visitRead.hasUnread && unreadPages < MAX_UNREAD_PAGES && !unreadHistoryFailed
+    var unreadPages by remember(messageTable, generation) { mutableIntStateOf(0) }
+    var unreadHistoryFailed by remember(messageTable, generation, env.online) { mutableStateOf(false) }
+    val firstUnreadInWindow = remember(ordered, readBoundary, session.config.userId) {
+        if (readBoundary == null) null else ordered.firstOrNull {
+            it.text("parent_id").isEmpty() && it.text("user_id") != session.config.userId &&
+                (timestampMillis(it.text("created_at")) ?: Long.MIN_VALUE) > readBoundary
+        }?.text("id")
+    }
+    val positionForHistory = visitRead?.let { it.copy(hasUnread = it.hasUnread || firstUnreadInWindow != null) }
+    val unreadHistoryOutsideWindow = unreadHistoryOutsideWindow(mainPage, positionForHistory)
+    val needsUnreadHistory = unreadHistoryOutsideWindow && unreadPages < MAX_UNREAD_PAGES && !unreadHistoryFailed
+    val unreadHistoryIncomplete = unreadHistoryOutsideWindow &&
+        (!needsUnreadHistory || !env.online || focusMessage != null)
+    val mainPageReady = mainPage?.loaded == true
+    val awaitingInitialRead = env.online && channel?.present("archive_at") != true &&
+        (member || membershipsLoading) && (!mainPageReady || currentReadPosition == null)
+    val unreadPositionPending = awaitingInitialRead ||
+        (env.online && currentThread == null && focusMessage == null && needsUnreadHistory)
+    val unreadId = firstUnreadInWindow.takeUnless { unreadHistoryOutsideWindow || awaitingInitialRead }
+    val localDay = platform.day(platform.now())
+    val conversationMessages = remember(messages, conversationEntries, rowsById, encrypted, unreadId, env.locale, localDay, session) {
+        withConversationDividers(
+            withEncryptionBoundary(messages.filter { it.id in conversationEntries }, rowsById, encrypted, session::t),
+            rowsById, unreadId, platform::day, session::dayLabel, session.t("messages.new"),
+        )
+    }
     val focusRow = rows.find { it.text("id") == focusMessage }
     val focusParent = focusRow?.text("parent_id")
     // Keep a deleted parent's thread readable and prevent replies to it.
@@ -485,20 +502,14 @@ internal fun ConnectedScreens(
         channel != null && currentThread != null -> AndroidScreen.OpeningConversation(
             "thread:$currentThread", session.t("threads.title"), env.online, threadLoadFailed) { threadRetry++ }
         channel != null -> AndroidScreen.Conversation(channelId.orEmpty(), channel.text("channel_name"), channel.text("description"),
-            withConversationDividers(
-                withEncryptionBoundary(messages.filter { it.id in conversationEntries }, rowsById, encrypted, session::t),
-                rowsById, unreadId, platform::day, session::dayLabel, session.t("messages.new"),
-            ), state.input(channelId.orEmpty(), canPost,
+            conversationMessages, state.input(channelId.orEmpty(), canPost,
                 users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }).copy(notices = recipientLines),
             canCall = channel.flag("is_dm") && member && !encrypted, focusMessage = focusMessage, focusRequest = focusRequest,
             loadOlder = pageStates[PageScope.Main]?.let { it.hasOlder && !it.loading } == true,
-            historyReady = !env.online || pageStates[PageScope.Main]?.loaded == true,
-            unreadPositionPending = env.online && (
-                (!session.channelReadPositionsAttempted && (member || membershipsLoading)) ||
-                    needsUnreadHistory ||
-                    (mainPage?.loading == true && mainPage.loaded == false && readBoundary != null)
-                ),
-            onUnreadPositioned = onUnreadPositioned.takeUnless { unreadPositioned },
+            historyReady = !env.online || mainPageReady,
+            unreadPositionPending = unreadPositionPending,
+            unreadHistoryIncomplete = unreadHistoryIncomplete,
+            onUnreadPositioned = onUnreadPositioned.takeIf { env.online && !unreadPositioned },
             onReadThrough = onReadThrough,
             retrySync = if (dmSyncDelayed && env.online) {
                 { session.repo.channels.refresh(); session.repo.members.refresh(); dmSyncRetry++ }
@@ -508,20 +519,20 @@ internal fun ConnectedScreens(
         else -> AndroidScreen.Channels(state.channelSections(channels, usersById, memberships))
     }
     val canLoadUnreadHistory = screen is AndroidScreen.Conversation && env.online && env.visible &&
-        focusMessage == null && visitRead?.hasUnread == true
-    LaunchedEffect(messageTable, readBoundary, canLoadUnreadHistory) {
-        if (!canLoadUnreadHistory || messageTable == null || readBoundary == null || readBoundary <= 0) return@LaunchedEffect
+        focusMessage == null && positionForHistory?.hasUnread == true
+    LaunchedEffect(messageTable, generation, readBoundary, canLoadUnreadHistory) {
+        if (!canLoadUnreadHistory || messageTable == null || readBoundary == null) return@LaunchedEffect
         while (unreadPages < MAX_UNREAD_PAGES && !unreadHistoryFailed) {
             val page = messageTable.pageStates.first { states ->
                 states[PageScope.Main]?.let { it.loaded && !it.loading } == true
             }.getValue(PageScope.Main)
-            val oldestTimestamp = page.oldest?.first?.let(::timestampMillis) ?: break
-            if (!page.hasOlder || oldestTimestamp <= readBoundary) break
+            if (!unreadHistoryOutsideWindow(page, positionForHistory)) break
             if (messageTable.loadOlder(PageScope.Main)) unreadPages++ else unreadHistoryFailed = true
         }
     }
     val readEnabled = screen is AndroidScreen.Conversation && member && env.online &&
-        env.visible && env.focused && currentReadPosition != null
+        env.visible && env.focused && currentReadPosition != null &&
+        !unreadPositionPending && !unreadHistoryOutsideWindow && mainPageReady
     LaunchedEffect(session, channelId, messageTable, readEnabled) {
         if (!readEnabled || channelId == null || messageTable == null) return@LaunchedEffect
         snapshotFlow { visibleReadThrough }

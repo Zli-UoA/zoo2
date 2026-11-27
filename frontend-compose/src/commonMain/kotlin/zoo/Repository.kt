@@ -234,6 +234,8 @@ class SyncedTable(
     private val refetching = MutableStateFlow(false)
     /** must-refetch のたびに増える。取り直し前に始めた `loadOlder` の結果を捨てるのに使う。 */
     private var refetchEpoch = 0
+    private val generation = MutableStateFlow(0)
+    val pageGeneration: StateFlow<Int> = generation.asStateFlow()
     /** 取り直しのジョブと、まだ取り直していない範囲。must-refetch が続いても、範囲を引き継ぐ。 */
     private var refetchJob: Job? = null
     private var refetchTargets = emptyList<Requested>()
@@ -368,6 +370,7 @@ class SyncedTable(
         refetchTargets = emptyList()
         requested.value = emptyList()
         pages.value = emptyMap()
+        generation.value = refetchEpoch
         return tableScope.launch {
             if (!synchronize) {
                 loading.value = false
@@ -489,6 +492,7 @@ class SyncedTable(
                                 refetchTargets = (refetchTargets + requested.value).distinctBy { it.scope to it.aroundId }
                                 requested.value = emptyList()
                                 pages.value = emptyMap()
+                                generation.value = refetchEpoch
                                 if (serverRows.value.isEmpty()) loading.value = true
                             } else {
                                 serverRows.value = emptyList()

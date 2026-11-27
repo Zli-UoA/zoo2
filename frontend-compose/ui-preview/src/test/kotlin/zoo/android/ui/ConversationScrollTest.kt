@@ -86,6 +86,38 @@ class ConversationScrollTest {
     }
 
     @Test
+    fun aRestoredConversationReportsNewMessagesAtTheEndAfterSync() {
+        val reported = mutableListOf<String>()
+        var screen by mutableStateOf<AndroidScreen>(channel)
+        ui.setContent { AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> } }
+        ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
+        ui.runOnIdle { screen = AndroidScreen.Channels(emptyList()) }
+        ui.waitForIdle()
+
+        ui.runOnIdle {
+            screen = channel.copy(
+                historyReady = false,
+                unreadPositionPending = true,
+                onUnreadPositioned = {
+                    screen = (screen as AndroidScreen.Conversation).copy(onUnreadPositioned = null)
+                },
+                onReadThrough = { id -> if (id != null) reported.add(id) },
+            )
+        }
+        ui.onNodeWithTag("timeline-entry-e40").assertExists()
+        ui.runOnIdle {
+            assertTrue(reported.isEmpty())
+            screen = (screen as AndroidScreen.Conversation).copy(
+                entries = entries + TimelineItem("e41", "はる", "同期した投稿", "12:01"),
+                historyReady = true,
+                unreadPositionPending = false,
+            )
+        }
+        ui.onNodeWithTag("timeline-entry-e41").assertIsDisplayed()
+        ui.runOnIdle { assertEquals("e41", reported.last()) }
+    }
+
+    @Test
     fun inputFollowsTheHandleBeforeReleaseInBothDirections() {
         var screen by mutableStateOf(channel.copy(input = InputState("下書き")))
         ui.setContent {

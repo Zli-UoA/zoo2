@@ -1,8 +1,11 @@
 package zoo.android
 
+import zoo.ChannelReadPosition
+import zoo.PageState
 import zoo.Row
 import zoo.android.ui.TimelineItem
 import zoo.text
+import zoo.timestampMillis
 
 /** Preserve message keys and scroll indexes when a divider appears or older history is prepended. */
 internal fun withConversationDividers(
@@ -21,4 +24,10 @@ internal fun withConversationDividers(
         previousDay = currentDay
         entry.copy(dateDivider = label, unreadDivider = unreadLabel.takeIf { entry.id == unreadId })
     }
+}
+
+internal fun unreadHistoryOutsideWindow(page: PageState?, position: ChannelReadPosition?): Boolean {
+    if (position?.hasUnread != true || page?.hasOlder != true) return false
+    val oldest = page.oldest?.first?.let(::timestampMillis) ?: return true
+    return oldest > position.timestamp
 }

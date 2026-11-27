@@ -780,6 +780,7 @@ class RepositoryTest {
             }
         try {
             step("first page") { table.rows.first { rows -> rows.any { it.text("id") == "m001" } } }
+            val initialGeneration = table.pageGeneration.value
             // must-refetch その 1: 取り直しの最初の取得が失敗して、再試行を待つ。
             invalidations.value = 1
             step("second subset request") { secondSubsetStarted.await() }
@@ -787,6 +788,7 @@ class RepositoryTest {
             invalidations.value = 1
             step("rows after the second refetch") { table.rows.first { rows -> rows.any { it.text("id") == "m010" } } }
             assertEquals(listOf("m010"), table.rows.value.map { it.text("id") })
+            assertEquals(initialGeneration + 2, table.pageGeneration.value)
             assertTrue(table.pageStates.value.getValue(PageScope.Main).loaded)
             // 取り直しが済んでいれば、loadOlder は待たずに終わる（古いジョブが解除できなくても、新しいジョブが解除する）。
             val result = step("loadOlder after the refetch") { table.loadOlder(PageScope.Main) }

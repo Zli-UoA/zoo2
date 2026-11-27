@@ -170,8 +170,6 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     var pending by mutableStateOf<Set<String>>(emptySet())
     var channelReadPositions by mutableStateOf<Map<String, ChannelReadPosition>>(emptyMap())
         private set
-    var channelReadPositionsAttempted by mutableStateOf(false)
-        private set
     private val channelReadMutex = Mutex()
 
     suspend fun markChannelRead(channelId: String, messageId: String, timestamp: Long) {
@@ -440,8 +438,6 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                     throw e
                 } catch (_: Exception) {
                     // Keep the last successful read positions while the network is unavailable.
-                } finally {
-                    channelReadPositionsAttempted = true
                 }
                 capabilities = json.parseToJsonElement(platform.invoke("capabilities")).jsonObject
                 false

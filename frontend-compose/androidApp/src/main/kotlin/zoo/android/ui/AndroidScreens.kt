@@ -136,6 +136,7 @@ internal sealed interface AndroidScreen {
         val historyReady: Boolean = true,
         val retrySync: (() -> Unit)? = null,
         val unreadPositionPending: Boolean = false,
+        val unreadHistoryIncomplete: Boolean = false,
         val onUnreadPositioned: (() -> Unit)? = null,
         val onReadThrough: ((String?) -> Unit)? = null,
     ) : AndroidScreen
@@ -388,10 +389,14 @@ private fun RenderAndroidScreen(
                     screen.retrySync?.let { retry ->
                         FeedLoadError(androidLabel("common.errors.network", "通信エラー"), colors, retry)
                     }
+                    if (screen.unreadHistoryIncomplete) {
+                        Text(androidLabel("threads.unreadTooOld", "これより古い未読は読み込まれていません"),
+                            Modifier.padding(horizontal = 16.dp, vertical = 8.dp), color = colors.secondary)
+                    }
                     TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = interaction.swipeReply, allowThreads = true, focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true, historyReady = screen.historyReady,
                         unreadPositionPending = screen.unreadPositionPending,
                         onUnreadPositioned = screen.onUnreadPositioned,
-                        onReadThrough = screen.onReadThrough.takeIf { foreground },
+                        onReadThrough = screen.onReadThrough.takeIf { foreground && !screen.unreadHistoryIncomplete },
                         topContentPadding = headerHeight, headerOverlayHeight = if (headerVisible) headerHeight else 0.dp,
                         loadEarlier = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderMessages) } } else null)
                 }
@@ -681,8 +686,8 @@ internal fun ColumnScope.TimelineWithInput(
     var anchor by rememberSaveable { mutableStateOf<String?>(null) }
     val restoredAnchor = remember { anchor }
     val restoredOffset = remember { scroll.firstVisibleItemScrollOffset }
-    var restorePending by remember { mutableStateOf(restoredAnchor != null) }
     var followEnd by rememberSaveable { mutableStateOf(false) }
+    var restorePending by remember { mutableStateOf(restoredAnchor != null && !followEnd) }
     val focusedIndex = entries.indexOfFirst { it.id == focusMessage }
     val restoredIndex = if (restorePending && !followEnd) entries.indexOfFirst { it.entryKey == restoredAnchor } else -1
     val unreadIndex = entries.indexOfFirst { it.unreadDivider != null }
@@ -726,6 +731,7 @@ internal fun ColumnScope.TimelineWithInput(
                 positioned = true
                 onUnreadPositioned?.invoke()
             }
+            seekUnread && unreadPositionPending -> Unit
             restoredIndex >= 0 -> {
                 scroll.requestScrollToItem(restoredIndex, restoredOffset)
                 restorePending = false
@@ -764,14 +770,15 @@ internal fun ColumnScope.TimelineWithInput(
             report(null)
         }
     }
-    FollowHistoryDuringIme(scroll, entries, imeInsets, input.expanded, followEnd, focusRequest,
+    val canFollowEnd by rememberUpdatedState(!unreadPositionPending && !seekUnread)
+    FollowHistoryDuringIme(scroll, entries, imeInsets, input.expanded, followEnd && canFollowEnd, focusRequest,
         focusRequest != null && openedTarget != focusRequest)
 
     // Viewport, row height and item count can all change without user scrolling.
     // Only follow those changes while the reader is at the end or has just sent a message.
     LaunchedEffect(scroll) {
         var wasScrolling = false
-        snapshotFlow { Triple(scroll.isScrollInProgress, scroll.layoutInfo, followEnd to (expanded || resizing)) }
+        snapshotFlow { Triple(scroll.isScrollInProgress, scroll.layoutInfo, (followEnd && canFollowEnd) to (expanded || resizing)) }
             .collect { (scrolling, layout, tracking) ->
                 if (tracking.second) return@collect
                 if (scrolling) {
@@ -783,7 +790,7 @@ internal fun ColumnScope.TimelineWithInput(
                         wasScrolling = false
                     }
                     if (layout.viewportSize.height > 0 && layout.totalItemsCount > 0) {
-                        if (followEnd && scroll.canScrollForward) {
+                        if (tracking.first && scroll.canScrollForward) {
                             val lastIndex = layout.totalItemsCount - 1
                             val offset = layout.visibleItemsInfo.lastOrNull()?.takeIf { it.index == lastIndex }?.size ?: 0
                             scroll.requestScrollToItem(lastIndex, offset)
