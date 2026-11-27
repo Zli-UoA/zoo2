@@ -13,7 +13,7 @@
 | 通知 | [ライト](images/android-design/rebuild/notifications-light.png) | [ダーク](images/android-design/rebuild/notifications-dark.png) |
 | Bubble | [ライト](images/android-design/rebuild/bubble-light.png) | [ダーク](images/android-design/rebuild/bubble-dark.png) |
 | 設定 | [ライト](images/android-design/rebuild/settings-light.png) | [ダーク](images/android-design/rebuild/settings-dark.png) |
-| 会話・待機中 | [ライト](images/android-design/rebuild/conversation-idle-light.png) | [ダーク](images/android-design/rebuild/conversation-idle-dark.png) |
+| 会話・待機中（日付と未読の区切り） | [ライト](images/android-design/rebuild/conversation-idle-light.png) | [ダーク](images/android-design/rebuild/conversation-idle-dark.png) |
 | 会話・入力中 | [ライト](images/android-design/rebuild/conversation-light.png) | [ダーク](images/android-design/rebuild/conversation-dark.png) |
 | 全画面入力 | [ライト](images/android-design/rebuild/composer-light.png) | [ダーク](images/android-design/rebuild/composer-dark.png) |
 | スレッド | [ライト](images/android-design/rebuild/thread-light.png) | [ダーク](images/android-design/rebuild/thread-dark.png) |
