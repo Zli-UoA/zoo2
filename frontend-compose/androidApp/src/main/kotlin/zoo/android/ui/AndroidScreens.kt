@@ -37,6 +37,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.withFrameNanos
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.CompositionLocalProvider
@@ -635,6 +636,8 @@ private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, d
     }
 }
 
+private const val ConversationEndKey = "conversation:end"
+
 @Composable
 internal fun ColumnScope.TimelineWithInput(
     entries: List<TimelineItem>,
@@ -659,6 +662,7 @@ internal fun ColumnScope.TimelineWithInput(
     imeInsets: WindowInsets = WindowInsets.ime.exclude(WindowInsets.systemBars),
 ) {
     val scroll = rememberLazyListState()
+    val endIndex = if (allowThreads) entries.size else entries.lastIndex
     val density = LocalDensity.current
     val expanded by rememberUpdatedState(input.expanded)
     var resizing by remember { mutableStateOf(false) }
@@ -727,6 +731,31 @@ internal fun ColumnScope.TimelineWithInput(
     val restoredIndex = if (restorePending && !followEnd) entries.indexOfFirst { it.entryKey == restoredAnchor } else -1
     val unreadIndex = entries.indexOfFirst { it.unreadDivider != null }
     val seekUnread = onUnreadPositioned != null
+    val focusPending = focusRequest != null && openedTarget != focusRequest
+    val shouldPositionUnread = focusMessage == null && !unreadPositionPending && unreadIndex >= 0 &&
+        (seekUnread || (!positioned && !restorePending))
+    val waitingForPosition = if (focusPending) focusedIndex < 0
+        else unreadPositionPending || (restorePending && restoredIndex < 0 && !historyReady && !shouldPositionUnread)
+
+    var firstLayoutRequested by remember { mutableStateOf(false) }
+    SideEffect {
+        if (waitingForPosition) {
+            firstLayoutRequested = false
+        } else if (entries.isNotEmpty() && !input.expanded) {
+            // Prime the list before it is measured or exposed at a different position.
+            // The effect below completes the request before enabling read reporting.
+            when {
+                focusPending && focusedIndex >= 0 -> scroll.requestScrollToItem(focusedIndex)
+                !firstLayoutRequested && shouldPositionUnread ->
+                    scroll.requestScrollToItem(unreadIndex, -with(density) { headerOverlayHeight.roundToPx() })
+                !firstLayoutRequested && restoredIndex >= 0 ->
+                    scroll.requestScrollToItem(restoredIndex, restoredOffset)
+                allowThreads && !firstLayoutRequested && (!positioned || followEnd || restorePending) ->
+                    scroll.requestScrollToItem(endIndex)
+            }
+            firstLayoutRequested = true
+        }
+    }
     LaunchedEffect(input.expanded, input.lastSend, focusRequest, focusedIndex, entries.isNotEmpty(),
         restoredIndex, historyReady, unreadPositionPending, unreadIndex, seekUnread) {
         if (seenFocusRequest != focusRequest) {
@@ -746,7 +775,7 @@ internal fun ColumnScope.TimelineWithInput(
                 restorePending = false
                 followEnd = true
                 positioned = true
-                scroll.requestScrollToItem(entries.lastIndex)
+                scroll.requestScrollToItem(endIndex)
                 onUnreadPositioned?.invoke()
             }
             focusedIndex >= 0 && openedTarget != focusRequest -> {
@@ -759,8 +788,7 @@ internal fun ColumnScope.TimelineWithInput(
                 positioned = true
                 onUnreadPositioned?.invoke()
             }
-            focusMessage == null && !unreadPositionPending && unreadIndex >= 0 &&
-                (seekUnread || (!positioned && !restorePending)) -> {
+            shouldPositionUnread -> {
                 restorePending = false
                 followEnd = false
                 scroll.scrollToItem(unreadIndex, -with(density) { headerOverlayHeight.roundToPx() })
@@ -777,10 +805,10 @@ internal fun ColumnScope.TimelineWithInput(
                 restorePending = false
                 followEnd = allowThreads
                 positioned = true
-                scroll.requestScrollToItem(if (allowThreads) entries.lastIndex else 0)
+                scroll.requestScrollToItem(if (allowThreads) endIndex else 0)
             }
             focusMessage == null && allowThreads && !positioned && !unreadPositionPending -> {
-                scroll.scrollToItem(entries.lastIndex)
+                scroll.scrollToItem(endIndex)
                 followEnd = true
                 positioned = true
             }
@@ -798,7 +826,7 @@ internal fun ColumnScope.TimelineWithInput(
         try {
             snapshotFlow {
                 val entry = latestEntry
-                val last = scroll.layoutInfo.visibleItemsInfo.lastOrNull()
+                val last = scroll.layoutInfo.visibleItemsInfo.lastOrNull { it.key != ConversationEndKey }
                 entry?.id?.takeIf { positioned && !restorePending && !scroll.canScrollForward &&
                     !scroll.isScrollInProgress && (focusRequest == null || openedTarget == focusRequest) &&
                     last?.key == entry.entryKey }
@@ -849,10 +877,14 @@ internal fun ColumnScope.TimelineWithInput(
                 .clearAndSetSemantics { hideFromAccessibility() }
             else Modifier,
         ) {
-            if (maxHeight > 0.dp && entries.isNotEmpty() && (!input.expanded || resizing)) {
+            if (maxHeight > 0.dp && waitingForPosition && !input.expanded) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = colors.accent)
+                }
+            } else if (maxHeight > 0.dp && entries.isNotEmpty() && (!input.expanded || resizing)) {
                 Timeline(entries, colors, Modifier.fillMaxSize().testTag("conversation-timeline"), dispatch, posts = posts,
                     swipeReply = swipeReply, allowThreads = allowThreads, scroll = scroll, topContentPadding = topContentPadding,
-                    headerOverlayHeight = headerOverlayHeight,
+                    headerOverlayHeight = headerOverlayHeight, endAnchor = allowThreads,
                     focusMessage = focusMessage.takeIf { jumpRequest == focusRequest },
                     focusIntensity = { jumpIntensity })
             }
@@ -957,6 +989,7 @@ private fun Timeline(
     headerOverlayHeight: Dp = 0.dp,
     focusMessage: String? = null,
     focusIntensity: () -> Float = { 0f },
+    endAnchor: Boolean = false,
 ) {
     if (entries.isEmpty() && header == null) return
     var menuId by remember { mutableStateOf<String?>(null) }
@@ -1060,6 +1093,8 @@ private fun Timeline(
                     }
                 }
             }
+            // Anchor below the last row so even a row taller than the viewport starts at the end.
+            if (endAnchor) item(ConversationEndKey) {}
         }
     }
     entries.firstOrNull { it.id == menuId }?.let { entry ->
