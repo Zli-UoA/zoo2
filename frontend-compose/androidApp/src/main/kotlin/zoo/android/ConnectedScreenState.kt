@@ -982,7 +982,12 @@ internal class ConnectedScreenState(
                     SettingsEntry.Choice("notification:mentions", "メンション", level == "mentions"),
                     SettingsEntry.Choice("notification:mute", "メンション以外を通知しない", level == "mute"),
                 )
-            } ?: listOf(SettingsEntry.Information("notification:loading", "通知設定を読み込み中"))
+            } ?: listOf(
+                SettingsEntry.Information(
+                    "notification:loading",
+                    app.t("notifications.levelLoading")
+                )
+            )
             groups += SettingsGroup("通知", notificationEntries)
         }
         return groups
