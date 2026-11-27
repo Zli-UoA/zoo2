@@ -386,6 +386,8 @@ private fun RenderAndroidScreen(
                             { dispatch(AndroidUiAction.StartCall) })
                     }
                 }) { headerHeight, headerVisible ->
+                    val visibleHeaderHeight = if (headerVisible) headerHeight else 0.dp
+                    if (screen.unreadHistoryIncomplete) Spacer(Modifier.height(visibleHeaderHeight))
                     screen.retrySync?.let { retry ->
                         FeedLoadError(androidLabel("common.errors.network", "通信エラー"), colors, retry)
                     }
@@ -397,7 +399,8 @@ private fun RenderAndroidScreen(
                         unreadPositionPending = screen.unreadPositionPending,
                         onUnreadPositioned = screen.onUnreadPositioned,
                         onReadThrough = screen.onReadThrough.takeIf { foreground && !screen.unreadHistoryIncomplete },
-                        topContentPadding = headerHeight, headerOverlayHeight = if (headerVisible) headerHeight else 0.dp,
+                        topContentPadding = if (screen.unreadHistoryIncomplete) 0.dp else headerHeight,
+                        headerOverlayHeight = if (screen.unreadHistoryIncomplete) 0.dp else visibleHeaderHeight,
                         loadEarlier = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderMessages) } } else null)
                 }
             }

@@ -118,6 +118,17 @@ class ConversationScrollTest {
     }
 
     @Test
+    fun incompleteUnreadHistoryIsShownBelowTheConversationHeader() {
+        ui.setContent {
+            AndroidScreens(channel.copy(unreadHistoryIncomplete = true), false, true, dispatch = {}) { _, _ -> }
+        }
+        val title = ui.onNodeWithText("開発")
+        val notice = ui.onNodeWithText("これより古い未読は読み込まれていません")
+        notice.assertIsDisplayed()
+        assertTrue(notice.fetchSemanticsNode().boundsInRoot.top > title.fetchSemanticsNode().boundsInRoot.bottom)
+    }
+
+    @Test
     fun inputFollowsTheHandleBeforeReleaseInBothDirections() {
         var screen by mutableStateOf(channel.copy(input = InputState("下書き")))
         ui.setContent {

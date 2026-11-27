@@ -15,6 +15,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import io.ktor.http.Url
+import java.time.ZoneId
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
@@ -167,7 +168,16 @@ internal fun ConnectedScreens(
                 (timestampMillis(it.text("created_at")) ?: Long.MIN_VALUE) > readBoundary
         }?.text("id")
     }
-    val positionForHistory = visitRead?.let { it.copy(hasUnread = it.hasUnread || firstUnreadInWindow != null) }
+    val latestOtherTimestamp = remember(ordered, session.config.userId) {
+        ordered.asSequence()
+            .filter { it.text("parent_id").isEmpty() && it.text("user_id") != session.config.userId }
+            .mapNotNull { timestampMillis(it.text("created_at")) }
+            .maxOrNull()
+    }
+    val visitHistoryPosition = visitRead?.let { it.copy(hasUnread = it.hasUnread || firstUnreadInWindow != null) }
+    val positionForHistory = if (unreadPositioned) currentReadPosition?.let { saved ->
+        saved.copy(hasUnread = saved.hasUnread || latestOtherTimestamp?.let { it > saved.timestamp } == true)
+    } else visitHistoryPosition
     val unreadHistoryOutsideWindow = unreadHistoryOutsideWindow(mainPage, positionForHistory)
     val needsUnreadHistory = unreadHistoryOutsideWindow && unreadPages < MAX_UNREAD_PAGES && !unreadHistoryFailed
     val unreadHistoryIncomplete = unreadHistoryOutsideWindow &&
@@ -177,9 +187,12 @@ internal fun ConnectedScreens(
         (member || membershipsLoading) && (!mainPageReady || currentReadPosition == null)
     val unreadPositionPending = awaitingInitialRead ||
         (env.online && currentThread == null && focusMessage == null && needsUnreadHistory)
-    val unreadId = firstUnreadInWindow.takeUnless { unreadHistoryOutsideWindow || awaitingInitialRead }
+    val unreadId = firstUnreadInWindow.takeUnless {
+        unreadHistoryOutsideWindow(mainPage, visitHistoryPosition) || awaitingInitialRead
+    }
+    val timeZone = ZoneId.systemDefault()
     val localDay = platform.day(platform.now())
-    val conversationMessages = remember(messages, conversationEntries, rowsById, encrypted, unreadId, env.locale, localDay, session) {
+    val conversationMessages = remember(messages, conversationEntries, rowsById, encrypted, unreadId, env.locale, timeZone, localDay, session) {
         withConversationDividers(
             withEncryptionBoundary(messages.filter { it.id in conversationEntries }, rowsById, encrypted, session::t),
             rowsById, unreadId, platform::day, session::dayLabel, session.t("messages.new"),
@@ -520,8 +533,8 @@ internal fun ConnectedScreens(
     }
     val canLoadUnreadHistory = screen is AndroidScreen.Conversation && env.online && env.visible &&
         focusMessage == null && positionForHistory?.hasUnread == true
-    LaunchedEffect(messageTable, generation, readBoundary, canLoadUnreadHistory) {
-        if (!canLoadUnreadHistory || messageTable == null || readBoundary == null) return@LaunchedEffect
+    LaunchedEffect(messageTable, generation, positionForHistory, canLoadUnreadHistory) {
+        if (!canLoadUnreadHistory || messageTable == null || positionForHistory == null) return@LaunchedEffect
         while (unreadPages < MAX_UNREAD_PAGES && !unreadHistoryFailed) {
             val page = messageTable.pageStates.first { states ->
                 states[PageScope.Main]?.let { it.loaded && !it.loading } == true

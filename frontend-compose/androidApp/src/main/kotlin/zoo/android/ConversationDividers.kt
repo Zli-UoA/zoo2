@@ -27,7 +27,9 @@ internal fun withConversationDividers(
 }
 
 internal fun unreadHistoryOutsideWindow(page: PageState?, position: ChannelReadPosition?): Boolean {
-    if (position?.hasUnread != true || page?.hasOlder != true) return false
+    if (position?.hasUnread != true) return false
+    if (page?.loaded != true) return true
+    if (!page.hasOlder) return false
     val oldest = page.oldest?.first?.let(::timestampMillis) ?: return true
     return oldest > position.timestamp
 }
