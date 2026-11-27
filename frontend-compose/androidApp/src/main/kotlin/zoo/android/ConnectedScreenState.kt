@@ -287,6 +287,7 @@ internal class ConnectedScreenState(
                 avatar = timelineAvatarUrl(app.config.apiBaseUrl, original, users[original.text("user_id")]),
                 postAuthor = postAuthor(original),
                 local = quoteRow.flag("local"),
+                remotePostAvailable = original.flag("remote") && original.text("id").isNotBlank(),
             )
         }
         val body = data.text("content").let { content ->
