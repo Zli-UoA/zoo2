@@ -499,6 +499,13 @@ erDiagram
     typing_presence }o--o| channels : typing_presence_channel_id_fkey
     typing_presence }o--o| messages : typing_presence_parent_id_fkey
     typing_presence }o--o| users : typing_presence_user_id_fkey
+    user_channel_notification_settings {
+      text user_id PK,FK
+      text channel_id PK,FK
+      text notification_level
+    }
+    user_channel_notification_settings }o--o| channels : user_channel_notification_settings_channel_id_fkey
+    user_channel_notification_settings }o--o| users : user_channel_notification_settings_user_id_fkey
     user_channel_pin_states {
       text user_id PK,FK
       bigint version

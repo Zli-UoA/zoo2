@@ -57,11 +57,8 @@ export function shapeAuthSource(config: AppConfig): ShapeFetchSource {
 }
 
 function shapeOptions(shape: ShapeName, config: AppConfig, options: ShapeQueryOptions = {}) {
-  // 実テーブルは channel_user でも、通知設定は列の異なる別スキーマで受け取る。
-  const schemaKey =
-    shape === "channelNotificationSettings"
-      ? "channel_notification_settings"
-      : SHAPE_META[shape].table;
+  // 実テーブルとスキーマのキーは一致する（通知設定も専用テーブルになった）。
+  const schemaKey = SHAPE_META[shape].table;
   return {
     url: resolveShapeUrl(buildShapeRequestUrl(shape, config, options), window.location.href),
     fetchClient: createShapeFetch(shapeAuthSource(config)),

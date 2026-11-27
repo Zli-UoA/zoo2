@@ -449,9 +449,15 @@ class SyncedTable(
             val path =
                 if (direct) config.electricShapeUrl
                 else endpoint(config.apiBaseUrl, "${config.shapeProxyPath}/$name")
-            // channel_users と channel_notification_settings は同じ channel_user テーブルを
-            // 異なる条件で配る。設定ごとに REST を増やさず、Shape の更新を画面へ反映する。
-            val table = if (name == "channel_users" || name == "channel_notification_settings") "channel_user" else name
+            // channel_users は channel_user、channel_notification_settings は
+            // user_channel_notification_settings をそれぞれの条件で配る。設定ごとに REST を
+            // 増やさず、Shape の更新を画面へ反映する。
+            val table =
+                when (name) {
+                    "channel_users" -> "channel_user"
+                    "channel_notification_settings" -> "user_channel_notification_settings"
+                    else -> name
+                }
             val shapeParams =
                 if (!direct) params
                 else

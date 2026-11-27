@@ -69,6 +69,13 @@ describe("shapeQueryParams", () => {
       "params[1]": "alice",
     });
     expect(() => shapeQueryParams("channelNotificationSettings", directConfig)).toThrow(/user ID/);
+    // 新しい実テーブルでも、列だけを参照する where / params はそのまま通る。
+    const params = paramsOf(
+      buildShapeRequestUrl("channelNotificationSettings", directConfig, { userId: "alice" }),
+    );
+    expect(params.get("table")).toBe("user_channel_notification_settings");
+    expect(params.get("where")).toBe("user_id = $1");
+    expect(params.get("params[1]")).toBe("alice");
   });
 
   it("routes proxy notification settings through their own path without extra params", () => {

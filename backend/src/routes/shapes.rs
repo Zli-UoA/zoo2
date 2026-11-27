@@ -749,7 +749,7 @@ async fn channel_notification_settings_shape(
     extra_params.push(("columns", CHANNEL_NOTIFICATION_SETTINGS_SHAPE_COLUMNS));
     proxy_shape(
         &state,
-        "channel_user",
+        "user_channel_notification_settings",
         Some(&where_clause),
         &extra_params,
         &raw_query,

@@ -110,13 +110,17 @@ async fn notification_settings_round_trip_and_authorization() -> anyhow::Result<
     let mut check = db.transaction().await?;
     let rows = backend::apps::query(
         &mut check,
-        "SELECT json_build_object('level', notification_level)::text \
-         FROM channel_user WHERE user_id=$1 AND channel_id=$2",
+        "SELECT json_build_object('level', s.notification_level, 'legacy', cu.notification_level)::text \
+         FROM user_channel_notification_settings s \
+         JOIN channel_user cu ON cu.user_id = s.user_id AND cu.channel_id = s.channel_id \
+         WHERE s.user_id=$1 AND s.channel_id=$2",
         &[&owner, &channel],
     )
     .await?;
     check.commit().await?;
     assert_eq!(rows[0]["level"], "all");
+    // 旧アプリが読む列には実際の設定を残さない。
+    assert_eq!(rows[0]["legacy"], "mentions");
 
     // 同値の再送は書き込まず txid: null。
     let noop = ok(&app, &owner, "PATCH", &path, json!({"level": "all"})).await?;
@@ -227,7 +231,9 @@ async fn wait_until_patch_waits_on(
     })
     .await
     .map_err(|_| {
-        anyhow::anyhow!("PATCH did not wait on the channel_user row lock held by {holder_pid}")
+        anyhow::anyhow!(
+            "PATCH did not wait on the user_channel_notification_settings row lock held by {holder_pid}"
+        )
     })?
 }
 
@@ -278,7 +284,8 @@ async fn concurrent_same_value_patch_is_a_noop() -> anyhow::Result<()> {
     tokio::spawn(observer_connection);
     let tx = client.transaction().await?;
     tx.execute(
-        "SELECT 1 FROM channel_user WHERE user_id=$1 AND channel_id=$2 FOR UPDATE",
+        "SELECT 1 FROM user_channel_notification_settings \
+         WHERE user_id=$1 AND channel_id=$2 FOR UPDATE",
         &[&owner, &channel],
     )
     .await?;
@@ -303,7 +310,8 @@ async fn concurrent_same_value_patch_is_a_noop() -> anyhow::Result<()> {
         return Err(err);
     }
     tx.execute(
-        "UPDATE channel_user SET notification_level='all' WHERE user_id=$1 AND channel_id=$2",
+        "UPDATE user_channel_notification_settings SET notification_level='all' \
+         WHERE user_id=$1 AND channel_id=$2",
         &[&owner, &channel],
     )
     .await?;
@@ -318,6 +326,115 @@ async fn concurrent_same_value_patch_is_a_noop() -> anyhow::Result<()> {
         ok(&app, &owner, "GET", &path, json!({})).await?,
         json!({"level": "all"})
     );
+
+    drop(app);
+    fixture.cleanup().await
+}
+
+/// ローリング更新中に旧バックエンドが古い列へ書いても、実際の設定は新しいテーブルにだけ入り、
+/// メンバー一覧が配る古い列には残らない。参加・退出で設定行が追随することも確認する。
+#[tokio::test]
+async fn legacy_notification_level_write_is_mirrored_and_redacted() -> anyhow::Result<()> {
+    let fixture = thread_db::ThreadDb::new().await?;
+    let mut config = fixture.config.clone();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+
+    let owner = uuid::Uuid::new_v4().to_string();
+    ok(
+        &app,
+        &owner,
+        "POST",
+        "/api/users",
+        json!({"id": owner, "user_name": owner, "display_name": owner}),
+    )
+    .await?;
+    let channel = uuid::Uuid::new_v4().to_string();
+    ok(
+        &app,
+        &owner,
+        "POST",
+        "/api/channels",
+        json!({"id": channel, "channel_name": channel, "is_private": false}),
+    )
+    .await?;
+    let path = format!("/api/channels/{channel}/notification-settings");
+    assert_eq!(
+        ok(&app, &owner, "GET", &path, json!({})).await?,
+        json!({"level": "mentions"})
+    );
+
+    // 旧バックエンドの PATCH と同じ書き込み。トリガーが設定を移し、古い列は既定値へ戻す。
+    toasty::sql::statement(
+        "UPDATE channel_user SET notification_level='mute' WHERE user_id=$1 AND channel_id=$2",
+    )
+    .bind(owner.as_str())
+    .bind(channel.as_str())
+    .exec(&mut db)
+    .await?;
+    assert_eq!(
+        ok(&app, &owner, "GET", &path, json!({})).await?,
+        json!({"level": "mute"})
+    );
+    let mut check = db.transaction().await?;
+    let rows = backend::apps::query(
+        &mut check,
+        "SELECT json_build_object('level', s.notification_level, 'legacy', cu.notification_level)::text \
+         FROM user_channel_notification_settings s \
+         JOIN channel_user cu ON cu.user_id = s.user_id AND cu.channel_id = s.channel_id \
+         WHERE s.user_id=$1 AND s.channel_id=$2",
+        &[&owner, &channel],
+    )
+    .await?;
+    check.commit().await?;
+    assert_eq!(rows[0]["level"], "mute");
+    assert_eq!(rows[0]["legacy"], "mentions");
+
+    // 退出で参加行が消えると、設定行も消える。
+    toasty::sql::statement("DELETE FROM channel_user WHERE user_id=$1 AND channel_id=$2")
+        .bind(owner.as_str())
+        .bind(channel.as_str())
+        .exec(&mut db)
+        .await?;
+    let mut check = db.transaction().await?;
+    let rows = backend::apps::query(
+        &mut check,
+        "SELECT json_build_object('n', count(*)::text)::text FROM user_channel_notification_settings \
+         WHERE user_id=$1 AND channel_id=$2",
+        &[&owner, &channel],
+    )
+    .await?;
+    check.commit().await?;
+    assert_eq!(rows[0]["n"], "0");
+
+    // 旧アプリが明示レベル付きで参加行を作っても、設定は新しいテーブルに入り、
+    // メンバー一覧が配る列は mentions のまま。
+    toasty::sql::statement(
+        "INSERT INTO channel_user(user_id,channel_id,joined_at,notification_level) \
+         VALUES ($1,$2,now(),'all')",
+    )
+    .bind(owner.as_str())
+    .bind(channel.as_str())
+    .exec(&mut db)
+    .await?;
+    assert_eq!(
+        ok(&app, &owner, "GET", &path, json!({})).await?,
+        json!({"level": "all"})
+    );
+    let mut check = db.transaction().await?;
+    let rows = backend::apps::query(
+        &mut check,
+        "SELECT json_build_object('level', s.notification_level, 'legacy', cu.notification_level)::text \
+         FROM user_channel_notification_settings s \
+         JOIN channel_user cu ON cu.user_id = s.user_id AND cu.channel_id = s.channel_id \
+         WHERE s.user_id=$1 AND s.channel_id=$2",
+        &[&owner, &channel],
+    )
+    .await?;
+    check.commit().await?;
+    assert_eq!(rows[0]["level"], "all");
+    assert_eq!(rows[0]["legacy"], "mentions");
 
     drop(app);
     fixture.cleanup().await

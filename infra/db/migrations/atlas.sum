@@ -1,4 +1,4 @@
-h1:1gLB3wIbd7ZyW9Tgum0hg19grBt9vhiX0DTFwZHOcs4=
+h1:JTSgFZIdKgeoYTVoY6UL5yLb2Zrk5D90UKpQHVGGVf0=
 20261008000000_initial.sql h1:v3rZATh+MriHOzHYMS+oLMrabKMd7J8aLKuEYdsKNfc=
 20261015110156_snake_case_and_replica_identity.sql h1:gWKFhGTel2djLDzitJiG+ufrbKEjusudna0EhabxkZU=
 20261016171538_create_user_identities.sql h1:h8btCK61sRc0EaVuiKnON59nR594VVKdLtl8nes3KKc=
@@ -126,3 +126,4 @@ h1:1gLB3wIbd7ZyW9Tgum0hg19grBt9vhiX0DTFwZHOcs4=
 20261207000000_notification_level_home_trigger.sql h1:uYbc0qfsNxSWa6QRlHvwTh8rkfgsE56NZjSePUH73hg=
 20261208000000_app_member_events_redact.sql h1:acSodHxvJVv7+p931uIV6A5kZUviEMBUT3KVrM1mgDI=
 20261208000001_apub_quote_grants.sql h1:y4EEE4DkwvT9t/2s7zdBJ3YyfLumbczKcpOexNKEvS4=
+20261208000002_user_channel_notification_settings.sql h1:8Th4At/3MepylUoH4UFW5lP9XDMXBDc+NpziOnqlQCY=

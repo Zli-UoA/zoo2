@@ -825,7 +825,7 @@ async fn test_shape_proxy_sets_private_cache_and_queryable_columns() -> anyhow::
 }
 
 /// 通知設定 Shape は認証ユーザー自身の行だけを Electric に要求する。
-/// 同じテーブルを配るメンバー一覧 Shape では設定列を配らないことも確かめる。
+/// 設定は別テーブルから配り、メンバー一覧 Shape では設定列を配らないことも確かめる。
 #[tokio::test]
 async fn test_channel_notification_settings_shape_only_sends_own_rows() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
@@ -915,7 +915,7 @@ async fn test_channel_notification_settings_shape_only_sends_own_rows() -> anyho
         assert!(
             pairs
                 .iter()
-                .any(|(k, v)| k == "table" && v == "channel_user")
+                .any(|(k, v)| k == "table" && v == "user_channel_notification_settings")
         );
         assert_eq!(
             pairs

@@ -93,13 +93,14 @@ describe("SHAPE_META", () => {
     ]);
   });
 
-  it("maps the notification settings shape to the channel_user table but its own proxy path", () => {
+  it("maps the notification settings shape to its own table and proxy path", () => {
     expect(SHAPE_META.channelNotificationSettings).toEqual({
-      table: "channel_user",
+      table: "user_channel_notification_settings",
       proxyPath: "channel_notification_settings",
     });
+    expect(CHANNEL_NOTIFICATION_SETTINGS_SCHEMA.table).toBe("user_channel_notification_settings");
     expect(CHANNEL_NOTIFICATION_SETTINGS_SCHEMA.columns.notification_level).toBe("text");
-    const row = coerceElectricRow("channel_notification_settings", {
+    const row = coerceElectricRow("user_channel_notification_settings", {
       user_id: "user-1",
       channel_id: "channel-1",
       notification_level: "all",

@@ -150,18 +150,47 @@ pub fn extract_mentions(content: &str) -> MentionTargets {
     }
 }
 
+/// チャンネルの通知設定を `channel_id` で1クエリだけ読み、user_id -> level にする。
+///
+/// `idx_user_channel_notification_settings_channel_id (channel_id, user_id)` の範囲走査で
+/// 対象チャンネルの行だけを読む。走査はそのチャンネルの設定行数 `S`（`S <= M`）までで、
+/// ユーザーごとの再問い合わせはしない。`channel_user.notification_level` は互換用の列なので読まない。
+pub(crate) async fn channel_notification_levels(
+    tx: &mut toasty::Transaction<'_>,
+    channel_id: &str,
+) -> Result<HashMap<String, String>, AppError> {
+    let rows = crate::apps::query(
+        tx,
+        "SELECT json_build_object('user_id', user_id, 'level', notification_level)::text \
+         FROM user_channel_notification_settings WHERE channel_id = $1",
+        &[channel_id],
+    )
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| {
+            let user_id = row["user_id"].as_str()?.to_owned();
+            let level = row["level"].as_str()?.to_owned();
+            Some((user_id, level))
+        })
+        .collect())
+}
+
 /// スレッドの全参加者を、通知レベルと退出日時 (`left_at`) と一緒に1回の問い合わせで読む (#620)。
 ///
 /// `thread_participants` は主キー `(thread_id, user_id)` の範囲走査でそのスレッドの P 行だけを読み、
 /// `left_at` は SQL では除かず Rust 側で判定する（親投稿者の退出確認にも同じ結果を使う）。
-/// `channel_user` は主キー `(user_id, channel_id)` を P 行まで参照する。ユーザー本体は読まない
+/// 通知レベルは `user_channel_notification_settings` を
+/// `idx_user_channel_notification_settings_channel_id` で P 行まで参照する。行が無ければ
+/// 既定値の `mentions` として扱う。ユーザー本体は読まない
 /// (bot・無効化・ゲストの除外は、ほかの通知対象とまとめて後段の1クエリで行う)。
 pub fn notification_participants_sql() -> &'static str {
     "SELECT json_build_object('user_id', tp.user_id, \
-            'level', COALESCE(cu.notification_level, 'mentions'), \
+            'level', COALESCE(s.notification_level, 'mentions'), \
             'left_at', tp.left_at)::text \
      FROM thread_participants tp \
-     LEFT JOIN channel_user cu ON cu.channel_id = $2 AND cu.user_id = tp.user_id \
+     LEFT JOIN user_channel_notification_settings s \
+       ON s.channel_id = $2 AND s.user_id = tp.user_id \
      WHERE tp.thread_id = $1"
 }
 
@@ -176,9 +205,9 @@ fn is_muted(levels: &HashMap<String, String>, user_id: &str) -> bool {
 /// [P2] 公開チャンネルでは非メンバー投稿者への返信通知も配信する。
 /// プライベートチャンネルではチャンネル非所属ユーザー (キック・退出者含む) への通知を除外する。
 ///
-/// 通知レベル (#620) は `channel_user.notification_level` による。`mute` には明示メンションだけを届け、
-/// 返信・DM・チャンネル投稿は作らない。`all` のメンバーには上位の種別が付かなければ
-/// `channel_message` を1件作る (最下位の優先度)。`mentions` は従来どおり。
+/// 通知レベル (#620) は `user_channel_notification_settings.notification_level` による。
+/// `mute` には明示メンションだけを届け、返信・DM・チャンネル投稿は作らない。`all` のメンバーには
+/// 上位の種別が付かなければ `channel_message` を1件作る (最下位の優先度)。`mentions` は従来どおり。
 ///
 /// 暗号化チャンネル (#358) では本文を解析せず、送信側が平文で付けた `explicit_mentions` だけから
 /// メンションを作る (省略時はメンションなし)。平文チャンネルでは `explicit_mentions` を使わない。
@@ -208,15 +237,22 @@ pub async fn create_message_notifications(
         (extract_mentions(&message.content), Vec::new())
     };
 
-    // チャンネル所属メンバーとその通知レベルを1回で取得 (走査は M 行、メンバーごとの再問い合わせはしない)
+    // チャンネル所属メンバーを1回で取得 (走査は M 行、メンバーごとの再問い合わせはしない)。
+    // 通知レベルは別テーブルを channel_id で1回だけ読み、メンバーごとの設定行が無ければ
+    // 既定値の mentions として扱う (ローリング更新中でも設定が読めるようにする)。
     let channel_users =
         ChannelUser::filter(ChannelUser::fields().channel_id().eq(&message.channel_id))
             .exec(tx)
             .await?;
-    let member_levels: HashMap<String, String> = channel_users
+    let mut member_levels: HashMap<String, String> = channel_users
         .into_iter()
-        .map(|cu| (cu.user_id, cu.notification_level))
+        .map(|cu| (cu.user_id, "mentions".to_owned()))
         .collect();
+    for (user_id, level) in channel_notification_levels(tx, message.channel_id.as_str()).await? {
+        if let Some(current) = member_levels.get_mut(&user_id) {
+            *current = level;
+        }
+    }
     let member_ids: HashSet<String> = member_levels.keys().cloned().collect();
 
     // スレッド参加者 (#620) を1回で読む。退出済みの行も返し、Rust 側で `left_at` を見て除く。
@@ -431,11 +467,15 @@ pub async fn create_reaction_notification(
     }
 
     let channel = Channel::get_by_id(tx, message.channel_id.as_str()).await?;
-    // メンバー判定と通知レベルを同じ主キー参照で読む。`mute` にはリアクションを届けない。
+    // メンバー判定は channel_user の主キー1回。通知レベルは設定テーブルを LEFT JOIN で1回だけ読み、
+    // 行が無ければ既定値の mentions として扱う。`mute` にはリアクションを届けない。
     let membership = crate::apps::query(
         tx,
-        "SELECT json_build_object('level', notification_level)::text \
-         FROM channel_user WHERE channel_id=$1 AND user_id=$2",
+        "SELECT json_build_object('level', COALESCE(s.notification_level, 'mentions'))::text \
+         FROM channel_user cu \
+         LEFT JOIN user_channel_notification_settings s \
+           ON s.user_id = cu.user_id AND s.channel_id = cu.channel_id \
+         WHERE cu.channel_id=$1 AND cu.user_id=$2",
         &[message.channel_id.as_str(), message.user_id.as_str()],
     )
     .await?;

@@ -395,7 +395,7 @@ async function waitForChannelUserSync(
 }
 
 /**
- * チャンネルごとの通知レベル（本人の channel_user 行だけを配信する Shape）。
+ * チャンネルごとの通知レベル（本人の user_channel_notification_settings 行だけを配信する Shape）。
  *
  * REST は `PATCH /api/channels/{id}/notification-settings` を叩き、`txid` は
  * メンバー一覧ではなく通知設定 Shape の更新で待つ。他のメンバーの行は Shape に

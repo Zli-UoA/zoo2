@@ -1,6 +1,7 @@
 //! チャンネルごとの通知設定 (#620)。
 //!
-//! 設定は `channel_user.notification_level` が正本で、本人の行だけを読み書きする。
+//! 設定は `user_channel_notification_settings` が正本で、本人の行だけを読み書きする。
+//! `channel_user.notification_level` は旧アプリ互換用の列で、実際の設定は読まない。
 //! チャンネルが存在し未削除で、自分の参加行がある場合だけ応答し、それ以外は 404
 //! (非公開チャンネルや他人の設定の存在も推測させない)。
 
@@ -62,8 +63,9 @@ fn not_found(channel_id: &str) -> AppError {
     AppError::NotFound(format!("Channel not found with id: {channel_id}"))
 }
 
-/// 参加行の通知レベルを主キー `(user_id, channel_id)` の1回の参照で読む。
-/// 削除済みチャンネルは `channels` の主キー参照を JOIN して除く。
+/// 参加を確認しつつ、設定テーブルの主キー `(user_id, channel_id)` を1回の参照で読む。
+/// 削除済みチャンネルは `channels` の主キー参照を JOIN して除く。設定行が無ければ
+/// 既定値の `mentions` を返す (ローリング更新中に移行前のメンバーが残っていても読めるようにする)。
 async fn current_level(
     tx: &mut toasty::Transaction<'_>,
     user_id: &str,
@@ -71,8 +73,11 @@ async fn current_level(
 ) -> Result<Option<String>, AppError> {
     let rows = crate::apps::query(
         tx,
-        "SELECT json_build_object('level', cu.notification_level)::text \
-         FROM channel_user cu JOIN channels c ON c.id = cu.channel_id \
+        "SELECT json_build_object('level', COALESCE(s.notification_level, 'mentions'))::text \
+         FROM channel_user cu \
+         JOIN channels c ON c.id = cu.channel_id \
+         LEFT JOIN user_channel_notification_settings s \
+           ON s.user_id = cu.user_id AND s.channel_id = cu.channel_id \
          WHERE cu.user_id = $1 AND cu.channel_id = $2 AND c.deleted_at IS NULL",
         &[user_id, channel_id],
     )
@@ -130,13 +135,16 @@ async fn update_notification_settings(
         )));
     }
 
-    // `notification_level <> $3` を付けることで、同時に同じ値へ更新されたときの
-    // 二重書き込み (WAL と Shape の refresh) を避ける。0 件なら現在値を読み直し、
-    // 同値なら txid: null の no-op、行が消えた場合だけ 404 にする。
+    // `ON CONFLICT ... WHERE notification_level <> $3` を付けることで、同時に同じ値へ更新された
+    // ときの二重書き込み (WAL と Shape の refresh) を避ける。参加時に設定行が作られていない
+    // 場合だけ INSERT する。0 件なら現在値を読み直し、同値なら txid: null の no-op、
+    // 参加行が消えた場合だけ 404 にする。
     for _ in 0..3 {
         let updated = toasty::sql::statement(
-            "UPDATE channel_user SET notification_level = $3 \
-             WHERE user_id = $1 AND channel_id = $2 AND notification_level <> $3",
+            "INSERT INTO user_channel_notification_settings (user_id, channel_id, notification_level) \
+             VALUES ($1, $2, $3) \
+             ON CONFLICT (user_id, channel_id) DO UPDATE SET notification_level = $3 \
+             WHERE user_channel_notification_settings.notification_level <> $3",
         )
         .bind(auth_user.id.as_str())
         .bind(channel_id.as_str())

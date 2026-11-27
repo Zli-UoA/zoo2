@@ -73,6 +73,74 @@ CREATE TABLE channel_user (
     ON UPDATE CASCADE ON DELETE RESTRICT
 );
 
+-- チャンネルごとの通知設定の正本 (#620)。channel_user.notification_level は旧アプリとの
+-- 互換用に残すだけで、実際の設定はここにだけ持つ。本人用の Shape / REST からのみ読み書きし、
+-- メンバー一覧から他人の設定が漏れないようにする。
+CREATE TABLE user_channel_notification_settings (
+  user_id text NOT NULL,
+  channel_id text NOT NULL,
+  notification_level text NOT NULL DEFAULT 'mentions',
+  CONSTRAINT user_channel_notification_settings_check CHECK (notification_level IN ('all', 'mentions', 'mute')),
+  CONSTRAINT user_channel_notification_settings_pkey PRIMARY KEY (user_id, channel_id),
+  CONSTRAINT user_channel_notification_settings_user_id_fkey
+    FOREIGN KEY (user_id) REFERENCES users (id)
+    ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT user_channel_notification_settings_channel_id_fkey
+    FOREIGN KEY (channel_id) REFERENCES channels (id)
+    ON UPDATE CASCADE ON DELETE CASCADE
+);
+-- 投稿時の通知先選択とスレッド参加者の JOIN は channel_id で引く。主キーは (user_id, channel_id) なので、
+-- チャンネル単位の走査を M 行に抑えるための索引。
+CREATE INDEX idx_user_channel_notification_settings_channel_id
+  ON user_channel_notification_settings (channel_id, user_id);
+
+-- メンバーシップの追加・削除に設定行を追随させる。旧アプリが channel_user に書いた通知レベルは
+-- 新しいテーブルへ写し、古い列は既定値へ戻す（ローリング更新中もメンバー一覧から実際の設定を読めない）。
+CREATE FUNCTION user_channel_notification_settings_sync() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    DELETE FROM user_channel_notification_settings
+     WHERE user_id = OLD.user_id AND channel_id = OLD.channel_id;
+    RETURN OLD;
+  END IF;
+  INSERT INTO user_channel_notification_settings (user_id, channel_id, notification_level)
+  VALUES (NEW.user_id, NEW.channel_id, 'mentions')
+  ON CONFLICT (user_id, channel_id) DO NOTHING;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE TRIGGER channel_user_notification_settings_sync
+  AFTER INSERT OR DELETE ON channel_user
+  FOR EACH ROW EXECUTE FUNCTION user_channel_notification_settings_sync();
+
+CREATE FUNCTION channel_user_notification_level_legacy() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.notification_level IS DISTINCT FROM 'mentions' THEN
+      INSERT INTO user_channel_notification_settings (user_id, channel_id, notification_level)
+      VALUES (NEW.user_id, NEW.channel_id, NEW.notification_level)
+      ON CONFLICT (user_id, channel_id) DO UPDATE SET notification_level = EXCLUDED.notification_level
+       WHERE user_channel_notification_settings.notification_level <> EXCLUDED.notification_level;
+    END IF;
+    -- 旧アプリが読む列には実際の設定を残さない。
+    NEW.notification_level := 'mentions';
+    RETURN NEW;
+  END IF;
+  IF NEW.notification_level IS DISTINCT FROM OLD.notification_level THEN
+    INSERT INTO user_channel_notification_settings (user_id, channel_id, notification_level)
+    VALUES (NEW.user_id, NEW.channel_id, NEW.notification_level)
+    ON CONFLICT (user_id, channel_id) DO UPDATE SET notification_level = EXCLUDED.notification_level
+     WHERE user_channel_notification_settings.notification_level <> EXCLUDED.notification_level;
+  END IF;
+  -- 旧アプリが読む列には実際の設定を残さない。
+  NEW.notification_level := OLD.notification_level;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE TRIGGER channel_user_notification_level_legacy
+  BEFORE INSERT OR UPDATE OF notification_level ON channel_user
+  FOR EACH ROW EXECUTE FUNCTION channel_user_notification_level_legacy();
+
 -- ユーザーが自分でチャンネルを退出した日時（退出日での並び替え用）。退出のたびに上書きし、
 -- 本人の Shape にだけ配る。チャンネルへの再参加では消さない。
 CREATE TABLE channel_leave (
@@ -2259,6 +2327,7 @@ ALTER TABLE notification_events REPLICA IDENTITY FULL;
 -- Match the existing ElectricSQL identities established by earlier migrations.
 ALTER TABLE attachments REPLICA IDENTITY FULL;
 ALTER TABLE channel_user REPLICA IDENTITY FULL;
+ALTER TABLE user_channel_notification_settings REPLICA IDENTITY FULL;
 ALTER TABLE channel_leave REPLICA IDENTITY FULL;
 ALTER TABLE channels REPLICA IDENTITY FULL;
 ALTER TABLE message_reactions REPLICA IDENTITY FULL;

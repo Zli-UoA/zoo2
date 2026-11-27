@@ -305,7 +305,9 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
     // The membership probe is an index-only scan; a vacuumed table (as in production) has no heap
     // fetches. VACUUM cannot run inside a multi-statement batch.
     client
-        .batch_execute("VACUUM (ANALYZE) channel_user")
+        .batch_execute(
+            "VACUUM (ANALYZE) channel_user; VACUUM (ANALYZE) user_channel_notification_settings",
+        )
         .await?;
 
     let output = std::env::var_os("SCALE_PLAN_DIR").map(std::path::PathBuf::from);
@@ -579,9 +581,18 @@ async fn notification_participants_sql_does_not_scan_users() -> anyhow::Result<(
     )
     .await?;
     // 半分は all、半分は mute。mute でも参加行の走査は同じで、レベルだけが返る。
+    // レベルは channel_user ではなく設定テーブルに入れる (session_replication_role=replica 中なので
+    // 参加トリガーは発火しない)。
     tx.execute(
-        "INSERT INTO channel_user(user_id,channel_id,joined_at,notification_level) \
-         SELECT user_id,$2,now(),CASE WHEN row_number() OVER (ORDER BY user_id)%2=0 \
+        "INSERT INTO channel_user(user_id,channel_id,joined_at) \
+         SELECT user_id,$2,now() \
+         FROM thread_participants WHERE thread_id=$1 AND left_at IS NULL",
+        &[&thread, &channel],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO user_channel_notification_settings(user_id,channel_id,notification_level) \
+         SELECT user_id,$2,CASE WHEN row_number() OVER (ORDER BY user_id)%2=0 \
                 THEN 'mute' ELSE 'all' END \
          FROM thread_participants WHERE thread_id=$1 AND left_at IS NULL",
         &[&thread, &channel],
@@ -618,7 +629,9 @@ async fn notification_participants_sql_does_not_scan_users() -> anyhow::Result<(
         .batch_execute("ANALYZE users; ANALYZE thread_participants")
         .await?;
     client
-        .batch_execute("VACUUM (ANALYZE) channel_user")
+        .batch_execute(
+            "VACUUM (ANALYZE) channel_user; VACUUM (ANALYZE) user_channel_notification_settings",
+        )
         .await?;
 
     let output = std::env::var_os("SCALE_PLAN_DIR").map(std::path::PathBuf::from);
@@ -692,7 +705,8 @@ async fn notification_participants_sql_does_not_scan_users() -> anyhow::Result<(
                         !(node["Node Type"] == "Seq Scan"
                             && (table == "users"
                                 || table == "thread_participants"
-                                || table == "channel_user")),
+                                || table == "channel_user"
+                                || table == "user_channel_notification_settings")),
                         "notification {mode}/{run}: Seq Scan on {table}"
                     );
                 }
@@ -707,6 +721,10 @@ async fn notification_participants_sql_does_not_scan_users() -> anyhow::Result<(
                 + plan[0]["Plan"]["Shared Read Blocks"].as_f64().unwrap_or(0.);
             let scanned_participants = relations.get("thread_participants").copied().unwrap_or(0.);
             let probed_members = relations.get("channel_user").copied().unwrap_or(0.);
+            let probed_settings = relations
+                .get("user_channel_notification_settings")
+                .copied()
+                .unwrap_or(0.);
             let read_users = relations.get("users").copied().unwrap_or(0.);
             // 並列走査では worker ごとの端数が出るため 64 行の余裕を置く。
             assert!(
@@ -716,6 +734,10 @@ async fn notification_participants_sql_does_not_scan_users() -> anyhow::Result<(
             assert!(
                 probed_members <= f64::from(p) + 1.,
                 "{mode}/{run}: {probed_members}"
+            );
+            assert!(
+                probed_settings <= f64::from(p) + 1.,
+                "{mode}/{run}: settings {probed_settings}"
             );
             assert_eq!(read_users, 0., "{mode}/{run}: users must not be read");
             assert!(
@@ -732,7 +754,7 @@ async fn notification_participants_sql_does_not_scan_users() -> anyhow::Result<(
                 "{mode}/{run}: blocks={blocks}"
             );
             eprintln!(
-                "U={users} H={history} notification/{mode}/{run} participants={scanned_participants} channel_user={probed_members} users={read_users} blocks={blocks} loops={max_loops} execution={}ms",
+                "U={users} H={history} notification/{mode}/{run} participants={scanned_participants} channel_user={probed_members} settings={probed_settings} users={read_users} blocks={blocks} loops={max_loops} execution={}ms",
                 plan[0]["Execution Time"]
             );
         }
