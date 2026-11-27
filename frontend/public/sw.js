@@ -98,8 +98,8 @@ async function findActiveShellCache(prefix = POLICY_PREFIX, fallback = true, kno
     if (installedAt >= 0 && (!latest || installedAt > latest.installedAt))
       latest = { name, installedAt };
   }
-  if (latest) return latest.name;
   if (readFailed && !fallback) return null;
+  if (latest) return latest.name;
   for (const name of names) {
     try {
       const cache = await caches.open(name);
@@ -353,19 +353,32 @@ async function precacheShell() {
       }
       let readFailed = false;
       let restored = false;
+      let best = null;
+      let bestTime = -Infinity;
       for (const source of sources) {
         try {
           const saved = await (await caches.open(source)).match(path);
           if (!(await isUsableFreshAsset(path, saved))) continue;
-          // 案内ページ自身の CSP を保持したまま、転送ヘッダーだけ除いてコピーする。
+          const modified = Date.parse(saved.headers.get("x-zoo-last-modified") || "");
+          const updatedAt = Number.isFinite(modified) ? modified : 0;
+          if (!best || updatedAt > bestTime) {
+            best = saved;
+            bestTime = updatedAt;
+          }
+        } catch {
+          // 本文が読めない場合は、旧キャッシュを消さないため記録する。
+          readFailed = true;
+        }
+      }
+      if (best) {
+        // 案内ページ自身の CSP を保持したまま、転送ヘッダーだけ除いてコピーする。
+        try {
           await cache.put(
             path,
-            path === "/manifest.webmanifest" ? saved.clone() : await sanitizedCopy(saved.clone()),
+            path === "/manifest.webmanifest" ? best.clone() : await sanitizedCopy(best.clone()),
           );
           restored = true;
-          break;
         } catch {
-          // 本文が読めない／保存できない場合は、旧キャッシュを消さないため記録する。
           readFailed = true;
         }
       }
@@ -579,8 +592,9 @@ function cachedForOnlyIfCached(request, cached) {
   const match = request.headers?.get?.("if-match");
   if (match) {
     const etag = cached.headers.get("x-zoo-etag")?.trim();
+    const strong = etag && !etag.startsWith("W/");
     const tags = parseETagList(match, false);
-    if (!tags.includes("*") && (!etag || !tags.includes(etag)))
+    if (!tags.includes("*") && (!strong || !tags.includes(etag)))
       return new Response(null, { status: 412 });
   } else {
     const unmodified = request.headers?.get?.("if-unmodified-since");
@@ -606,17 +620,24 @@ function noteFreshAssetSequence(path, sequence, etag = null) {
 
 async function writeFreshAsset(path, cache, response, sequence) {
   // 取得開始順が古い応答は、直後に届いても新しい保存版を上書きしない。
+  // ただし 304 で確認済みの版と同じ ETag なら、記録した最大の番号を維持して保存する。
   const previous = freshAssetWrites.get(path);
-  const sameVersion = previous?.etag && response.headers.get("etag") === previous.etag;
-  if (previous && previous.sequence > sequence && !sameVersion) return;
+  const incomingEtag = response.headers.get("etag");
+  const sameVersion = previous?.etag && incomingEtag === previous.etag;
+  const effective = sameVersion ? Math.max(previous.sequence, sequence) : sequence;
+  if (previous && previous.sequence > effective) return;
   const work = (previous?.promise ?? Promise.resolve())
     .catch(() => {})
     .then(() => {
       const current = freshAssetWrites.get(path);
-      if (current && current.sequence > sequence) return;
+      if (current && current.sequence > effective) return;
       return cacheResponse(cache, path, response, true);
     });
-  freshAssetWrites.set(path, { sequence, promise: work });
+  freshAssetWrites.set(path, {
+    sequence: effective,
+    etag: sameVersion ? previous.etag : incomingEtag,
+    promise: work,
+  });
   return await work;
 }
 

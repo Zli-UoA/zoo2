@@ -285,6 +285,9 @@ test("activation keeps caches when the latest shell metadata is unreadable", asy
   ]);
   await cacheContext.api.open("zoo-shell-abc123");
   await cacheContext.api.open("zoo-shell-v2");
+  await (
+    await cacheContext.api.open("zoo-shell-v2")
+  ).put(`${ORIGIN}/__zoo_shell_meta__`, new Response("1"));
   const realOpen = cacheContext.api.open.bind(cacheContext.api);
   cacheContext.api.open = async (name) => {
     const cache = await realOpen(name);
@@ -2950,6 +2953,31 @@ test("a conditional GET keeps a 304 response", async () => {
     headers: { get: (name) => (name.toLowerCase() === "if-none-match" ? '"abc"' : null) },
   });
   assert.equal(response.status, 304);
+});
+
+test("only-if-cached uses strong comparison for If-Match", async () => {
+  const cacheContext = memoryCaches([
+    [
+      "zoo-shell-v2",
+      `${ORIGIN}/manifest.webmanifest`,
+      basicResponse(validManifest("#ffffff"), { headers: { "x-zoo-etag": 'W/"abc"' } }),
+    ],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () => {
+      throw new Error("network");
+    },
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+    cache: "only-if-cached",
+    headers: { get: (name) => (name.toLowerCase() === "if-match" ? 'W/"abc"' : null) },
+  });
+  assert.equal(response.status, 412);
 });
 
 test("only-if-cached evaluates If-Match before If-None-Match", async () => {
