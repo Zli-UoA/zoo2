@@ -187,3 +187,11 @@ test('the existing merge gate subscription receives the required PR workflow res
   assert.equal(aggregateChecks([], [{ ...run, conclusion: 'failure' }], expected).state, 'failure');
   assert.equal(aggregateChecks([], [{ ...run, conclusion: 'success' }], expected).state, 'success');
 });
+
+test('dedicated OIDC and E2EE specs still get the Web type check on PRs', () => {
+  for (const path of ['e2e/oidc.spec.ts', 'e2e/e2ee.spec.ts', 'playwright.oidc.config.ts', 'playwright.e2ee.config.ts']) {
+    const change = { status: 'M', path: `frontend/${path}` };
+    assert.equal(selectPrPlans([change])['ci-frontend'].frontendBuild.check, true);
+    assert.deepEqual(workflowChanges('ci-frontend', [change], 'merge_group'), []);
+  }
+});

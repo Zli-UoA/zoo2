@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { escapePattern, readChangedCases } from './browser-test-selection.mjs';
 import { classifyTranslationChanges, isFrontendTestInput, isLightweightChange, readChanges, testBaseSha, usesSelectiveTests, workflowChanges } from './test-selection-diff.mjs';
+import { isStorybookVitestInput } from './frontend-test-selection-paths.mjs';
 import { selectSourceCases } from './vitest-test-selection.mjs';
 export { readChanges } from './test-selection-diff.mjs';
 
@@ -24,7 +25,7 @@ export function isVitestInput(path) {
 
 function isPrVitestInput(change, project) {
   if (['unit', 'browser'].includes(project) && change.path.startsWith('frontend/.storybook/') &&
-      !change.path.startsWith('frontend/.storybook/fixtures/')) return false;
+      !isStorybookVitestInput(change.path, project)) return false;
   return !isLightweightChange(change) && isFrontendTestInput(change.path) &&
     (isVitestInput(change.path) || !/^(frontend\/|infra\/)/.test(change.path));
 }

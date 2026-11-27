@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url';
 import { classifyTranslationChanges, isFrontendTestInput, isLightweightChange, readChanges, testBaseSha, usesSelectiveTests, validateChangedTranslations, workflowChanges } from './test-selection-diff.mjs';
 import { routeTestTargets, testLeg } from './backend-e2e-selection.mjs';
 import { isRelatedFrontendModule, isVitestInput } from './frontend-test-selection.mjs';
+import { isStorybookVitestInput } from './frontend-test-selection-paths.mjs';
 import { playwrightOwners } from './playwright-test-selection.mjs';
 import { PR_WORKFLOWS } from './merge-queue-changes.mjs';
 import { selectOtherJobs } from './test-selection-jobs.mjs';
@@ -131,7 +132,9 @@ function selectPullRequest(changes, full) {
       else if (test && /\.test\.ts$/.test(path)) enable(path, 'unit');
       else if (path.startsWith('frontend/.storybook/')) {
         const selected = ['vrt', 'storybook', 'catalog'];
-        if (path.startsWith('frontend/.storybook/fixtures/')) selected.push('unit', 'browser');
+        for (const project of ['unit', 'browser']) {
+          if (isStorybookVitestInput(path, project)) selected.push(project);
+        }
         enable(path, ...selected);
       } else if (/\.stories\.[^/]+$/.test(path)) {
         enable(path, 'vrt', 'storybook', 'catalog');
@@ -168,7 +171,7 @@ function selectPullRequest(changes, full) {
 }
 
 export function selectWorkflowPlan(eventName, workflow, changes, base) {
-  const relevant = workflowChanges(workflow, changes);
+  const relevant = workflowChanges(workflow, changes, eventName);
   const otherChanges = eventName === 'pull_request' && relevant?.length
     ? relevant.filter(change => !isLightweightChange(change) && isFrontendTestInput(change.path))
     : relevant;
@@ -197,7 +200,7 @@ export function selectWorkflowPlan(eventName, workflow, changes, base) {
 export function selectPrPlans(changes, base) {
   const plans = {};
   for (const workflow of PR_WORKFLOWS) {
-    if (changes?.length && !workflowChanges(workflow, changes).length) continue;
+    if (changes?.length && !workflowChanges(workflow, changes, 'pull_request').length) continue;
     const selection = selectWorkflowPlan('pull_request', workflow, changes, base);
     const { backend, frontend, frontendBuild, clients, bots } = selection;
     if (workflow === 'ci-backend' && (backend.check || (!backend.full && (backend.run || backend.emoji)))) plans[workflow] = { backend };

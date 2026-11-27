@@ -1,7 +1,8 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isAndroidFrontendOnly } from './frontend-test-selection-paths.mjs';
+import { englishCopyKeys } from "../../frontend/src/lib/i18n/translation-policy.ts";
+import { isAndroidFrontendOnly, isDedicatedPlaywrightTypecheckInput } from './frontend-test-selection-paths.mjs';
 import { pathMatcher, testWorkflowPaths } from './merge-queue-changes.mjs';
 import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -20,11 +21,12 @@ export function testBaseSha(eventName, event) {
   return typeof sha === 'string' && shaPattern.test(sha) ? sha : undefined;
 }
 
-export function workflowChanges(workflow, changes) {
+export function workflowChanges(workflow, changes, eventName) {
   if (!changes || !/^[\w-]+$/.test(workflow ?? '')) return changes;
   const source = readFileSync(new URL(`../workflows/${workflow}.yaml`, import.meta.url), 'utf8');
   const matches = pathMatcher(testWorkflowPaths(workflow, source));
-  return changes.filter(change => matches(change.path));
+  return changes.filter(({ path }) => matches(path) ||
+    (eventName === 'pull_request' && workflow === 'ci-frontend' && isDedicatedPlaywrightTypecheckInput(path)));
 }
 
 export const isFrontendLocale = path => /^frontend\/src\/lib\/i18n\/locales\/[^/]+\.json$/.test(path);
@@ -61,7 +63,7 @@ function translationEntries(value, file, key = '', entries = new Map()) {
     if (value.replace(/{{\s*-?\s*[\w.]+(?:\s*,[^{}]+)?\s*}}/g, '').match(/{{|}}/)) {
       throw new Error(`${file}: invalid interpolation in ${key}`);
     }
-    entries.set(key, [...new Set(variables.map(([, name]) => name))].sort().join(','));
+    entries.set(key, { value, variables: [...new Set(variables.map(([, name]) => name))].sort().join(',') });
     return entries;
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -77,19 +79,26 @@ function translationEntries(value, file, key = '', entries = new Map()) {
 export function translationOnlyChange(before, after, file) {
   const oldEntries = translationEntries(JSON.parse(before), file);
   const newEntries = translationEntries(JSON.parse(after), file);
-  return [...oldEntries].every(([key, variables]) => newEntries.get(key) === variables);
+  return [...oldEntries].every(([key, { variables }]) => newEntries.get(key)?.variables === variables);
 }
 
 export function validateTranslationDictionaries(dictionaries) {
-  const reference = translationEntries(JSON.parse(dictionaries['ja.json']), 'ja.json');
-  for (const [file, source] of Object.entries(dictionaries)) {
-    const entries = translationEntries(JSON.parse(source), file);
+  const parsed = Object.fromEntries(Object.entries(dictionaries).map(([file, source]) =>
+    [file, translationEntries(JSON.parse(source), file)]));
+  const reference = parsed['ja.json'];
+  const english = parsed['en.json'];
+  if (!reference || !english) throw new Error('Missing Japanese or English translation dictionary');
+  const text = entries => Object.fromEntries([...entries].map(([key, { value }]) => [key, value]));
+  const englishText = text(english);
+  for (const [file, entries] of Object.entries(parsed)) {
     for (const key of entries.keys()) {
       if (!reference.has(key)) throw new Error(`${file}: unexpected translation key ${key}`);
     }
-    for (const [key, variables] of reference) {
-      if (entries.get(key) !== variables) throw new Error(`${file}: missing key or mismatched interpolation for ${key}`);
+    for (const [key, { variables }] of reference) {
+      if (entries.get(key)?.variables !== variables) throw new Error(`${file}: missing key or mismatched interpolation for ${key}`);
     }
+    const copied = file === 'en.json' ? [] : englishCopyKeys(englishText, text(entries));
+    if (copied.length) throw new Error(`${file}: untranslated English copy at ${copied.join(', ')}`);
   }
 }
 

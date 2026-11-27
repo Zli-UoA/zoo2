@@ -287,6 +287,9 @@ test('Playwright fixture and config ownership does not widen unrelated specs', (
     change('frontend/e2e/fixtures/layout.tsx'), change('frontend/playwright.i18n.config.ts'),
   ]);
   assert.deepEqual(Object.keys(plan.frontend).filter(key => plan.frontend[key]), ['i18n', 'layout']);
+  for (const path of ['shell.tsx', 'public-profile-fixtures.ts', 'mock-api.ts']) {
+    assert.equal(selectSuites('pull_request', [change(`frontend/.storybook/${path}`)]).frontend.browser, true);
+  }
   const module = selectSuites('pull_request', [change('frontend/src/components/chat/messages/MessageList.tsx')]);
   assert.equal(module.frontend.layout, true);
   assert.equal(module.frontend.container, false);
@@ -295,6 +298,7 @@ test('Playwright fixture and config ownership does not widen unrelated specs', (
 test('shared fixtures and distribution resources select their direct consumers', () => {
   const plan = selectSuites('pull_request', [
     change('frontend/.storybook/fixtures/sample.eml'),
+    change('frontend/.storybook/fixtures.ts'),
     change('frontend/e2e/mock-idp.ts'),
     change('frontend/public/manifest.webmanifest'),
     change('frontend/src/styles.css'),
@@ -312,4 +316,15 @@ test('lightweight translations reject missing keys, changed placeholders, and em
     assert.throws(() => validateTranslationDictionaries({ ...reference, 'en.json': en }));
   }
   assert.doesNotThrow(() => validateTranslationDictionaries({ ...reference, 'en.json': '{"label":"{{count}} items"}' }));
+});
+
+test('lightweight translations use the same English-copy exceptions as the app tests', () => {
+  assert.throws(() => validateTranslationDictionaries({
+    'ja.json': '{"welcome":{"title":"Welcome to Zoo"}}',
+    'en.json': '{"welcome":{"title":"Welcome to Zoo"}}',
+  }), /untranslated English copy/);
+  assert.doesNotThrow(() => validateTranslationDictionaries({
+    'ja.json': '{"home":{"title":"Home"}}',
+    'en.json': '{"home":{"title":"Home"}}',
+  }));
 });

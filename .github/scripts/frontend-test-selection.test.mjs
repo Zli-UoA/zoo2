@@ -141,7 +141,7 @@ test('Web changes retain related Vitest selection alongside standalone Playwrigh
 });
 
 test('Storybook settings broaden VRT and Storybook without expanding unit or browser', () => {
-  const mixed = [...changes, { status: 'M', path: 'frontend/.storybook/fixtures.ts' }];
+  const mixed = [...changes, { status: 'M', path: 'frontend/.storybook/vitest.setup.ts' }];
   for (const project of ['unit', 'browser']) {
     assert.equal(selectTests('pull_request', event, mixed, project).mode, 'related');
   }
@@ -153,6 +153,8 @@ test('Storybook settings broaden VRT and Storybook without expanding unit or bro
 test('shared fixtures remain inputs to Vitest even outside src', () => {
   for (const [project, path] of [
     ['unit', 'frontend/.storybook/fixtures/sample.eml'],
+    ['unit', 'frontend/.storybook/fixtures.ts'],
+    ['browser', 'frontend/.storybook/fixtures.ts'],
     ['browser', 'frontend/.storybook/fixtures/sample.eml'],
     ['unit', 'frontend/e2e/mock-idp.ts'],
   ]) {

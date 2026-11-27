@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import { LOCALES, localeInitScript, matchLocale, readBrowserLocale, resolveLocale } from "./locale";
 import { createI18n, resources } from "./index";
+import { englishCopyKeys } from "./translation-policy";
 
 function flatten(value: object, prefix = ""): Record<string, string> {
   return Object.fromEntries(
@@ -69,33 +70,11 @@ describe("translations", () => {
     }
   });
 
-  const languageIndependentKeys = new Set([
-    "onboarding.progress", // The step counter is an interpolation-only numeric layout.
-    "catchUp.progress", // Page positions are an interpolation-only numeric layout.
-    "channels.descriptionCounter",
-    "auth.errorWithCode",
-    "reactions.chip",
-    "reactions.kitchen",
-    "bubbleChat.title",
-    "bubbleChat.navTitle",
-    "home.title", // The navigation name is explicitly Home in Japanese too.
-    "reactions.tabKitchen",
-    "webhooks.url",
-    "dms.moreNames",
-    "appConsole.events.websocket", // Protocol and Slack field names stay untranslated.
-    "appConsole.events.requestUrl",
-    "messages.typingSeparator", // Korean also separates names with a comma and a space.
-    "e2ee.deviceName.withOs", // Korean also writes the OS in half-width parentheses.
-  ]);
-
   it.each(LOCALES.filter((locale) => locale !== "en"))(
     "does not leave English UI copy in %s translations",
     (locale) => {
       const english = flatten(resources.en.translation);
-      const copiedKeys = Object.entries(flatten(resources[locale].translation))
-        // Product names and interpolation-only layouts intentionally stay the same.
-        .filter(([key, value]) => value === english[key] && !languageIndependentKeys.has(key))
-        .map(([key]) => key);
+      const copiedKeys = englishCopyKeys(english, flatten(resources[locale].translation));
       expect(copiedKeys).toEqual([]);
     },
   );
