@@ -27,6 +27,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
@@ -104,6 +105,8 @@ internal data class TimelineItem(
     /** 暗号化した添付（`attachment_id` → 本文の `attachments` の値の JSON。鍵を含むので表示と取得にだけ使う）。 */
     val encryptedFiles: Map<String, String> = emptyMap(),
     val postAuthor: zoo.Row? = null,
+    val dateDivider: String? = null,
+    val unreadDivider: String? = null,
 )
 internal data class ChannelItem(
     val id: String,
@@ -132,6 +135,10 @@ internal sealed interface AndroidScreen {
         val loadOlder: Boolean = false,
         val historyReady: Boolean = true,
         val retrySync: (() -> Unit)? = null,
+        val unreadPositionPending: Boolean = false,
+        val unreadHistoryIncomplete: Boolean = false,
+        val onUnreadPositioned: (() -> Unit)? = null,
+        val onReadThrough: ((String?) -> Unit)? = null,
     ) : AndroidScreen
     data class Thread(
         val channelName: String, val root: TimelineItem, val replies: List<TimelineItem>, val input: InputState,
@@ -379,11 +386,21 @@ private fun RenderAndroidScreen(
                             { dispatch(AndroidUiAction.StartCall) })
                     }
                 }) { headerHeight, headerVisible ->
+                    val visibleHeaderHeight = if (headerVisible) headerHeight else 0.dp
+                    if (screen.unreadHistoryIncomplete) Spacer(Modifier.height(visibleHeaderHeight))
                     screen.retrySync?.let { retry ->
                         FeedLoadError(androidLabel("common.errors.network", "通信エラー"), colors, retry)
                     }
+                    if (screen.unreadHistoryIncomplete) {
+                        Text(androidLabel("threads.unreadTooOld", "これより古い未読は読み込まれていません"),
+                            Modifier.padding(horizontal = 16.dp, vertical = 8.dp), color = colors.secondary)
+                    }
                     TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = interaction.swipeReply, allowThreads = true, focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true, historyReady = screen.historyReady,
-                        topContentPadding = headerHeight, headerOverlayHeight = if (headerVisible) headerHeight else 0.dp,
+                        unreadPositionPending = screen.unreadPositionPending,
+                        onUnreadPositioned = screen.onUnreadPositioned,
+                        onReadThrough = screen.onReadThrough.takeIf { foreground && !screen.unreadHistoryIncomplete },
+                        topContentPadding = if (screen.unreadHistoryIncomplete) 0.dp else headerHeight,
+                        headerOverlayHeight = if (screen.unreadHistoryIncomplete) 0.dp else visibleHeaderHeight,
                         loadEarlier = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderMessages) } } else null)
                 }
             }
@@ -599,7 +616,7 @@ private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, d
                         color = colors.foreground,
                         fontWeight = when {
                             channel.isUserName -> AndroidWeights.userName
-                            channel.unread -> AndroidWeights.emphasis
+                            channel.unread -> AndroidWeights.unreadChannel
                             else -> AndroidWeights.body
                         },
                         maxLines = 1,
@@ -628,9 +645,13 @@ internal fun ColumnScope.TimelineWithInput(
     loadEarlier: (() -> Unit)? = null,
     topContentPadding: Dp = 0.dp,
     headerOverlayHeight: Dp = 0.dp,
+    unreadPositionPending: Boolean = false,
+    onUnreadPositioned: (() -> Unit)? = null,
+    onReadThrough: ((String?) -> Unit)? = null,
     imeInsets: WindowInsets = WindowInsets.ime.exclude(WindowInsets.systemBars),
 ) {
     val scroll = rememberLazyListState()
+    val density = LocalDensity.current
     val expanded by rememberUpdatedState(input.expanded)
     var resizing by remember { mutableStateOf(false) }
     val overlayInput = input.expanded || resizing
@@ -668,11 +689,14 @@ internal fun ColumnScope.TimelineWithInput(
     var anchor by rememberSaveable { mutableStateOf<String?>(null) }
     val restoredAnchor = remember { anchor }
     val restoredOffset = remember { scroll.firstVisibleItemScrollOffset }
-    var restorePending by remember { mutableStateOf(restoredAnchor != null) }
     var followEnd by rememberSaveable { mutableStateOf(false) }
+    var restorePending by remember { mutableStateOf(restoredAnchor != null && !followEnd) }
     val focusedIndex = entries.indexOfFirst { it.id == focusMessage }
     val restoredIndex = if (restorePending && !followEnd) entries.indexOfFirst { it.entryKey == restoredAnchor } else -1
-    LaunchedEffect(input.expanded, input.lastSend, focusRequest, focusedIndex, entries.isNotEmpty(), restoredIndex, historyReady) {
+    val unreadIndex = entries.indexOfFirst { it.unreadDivider != null }
+    val seekUnread = onUnreadPositioned != null
+    LaunchedEffect(input.expanded, input.lastSend, focusRequest, focusedIndex, entries.isNotEmpty(),
+        restoredIndex, historyReady, unreadPositionPending, unreadIndex, seekUnread) {
         if (seenFocusRequest != focusRequest) {
             seenFocusRequest = focusRequest
             if (focusRequest != null) {
@@ -691,14 +715,27 @@ internal fun ColumnScope.TimelineWithInput(
                 followEnd = true
                 positioned = true
                 scroll.requestScrollToItem(entries.lastIndex)
+                onUnreadPositioned?.invoke()
             }
             focusedIndex >= 0 && openedTarget != focusRequest -> {
                 restorePending = false
                 followEnd = false
-                scroll.requestScrollToItem(focusedIndex)
+                // Complete the layout before the read observer can see this request as handled.
+                scroll.scrollToItem(focusedIndex)
                 openedTarget = focusRequest
                 positioned = true
+                onUnreadPositioned?.invoke()
             }
+            focusMessage == null && !unreadPositionPending && unreadIndex >= 0 &&
+                (seekUnread || (!positioned && !restorePending)) -> {
+                restorePending = false
+                followEnd = false
+                scroll.scrollToItem(unreadIndex, -with(density) { headerOverlayHeight.roundToPx() })
+                followEnd = !scroll.canScrollForward
+                positioned = true
+                onUnreadPositioned?.invoke()
+            }
+            seekUnread && unreadPositionPending -> Unit
             restoredIndex >= 0 -> {
                 scroll.requestScrollToItem(restoredIndex, restoredOffset)
                 restorePending = false
@@ -709,21 +746,43 @@ internal fun ColumnScope.TimelineWithInput(
                 positioned = true
                 scroll.requestScrollToItem(if (allowThreads) entries.lastIndex else 0)
             }
-            focusMessage == null && allowThreads && !positioned -> {
+            focusMessage == null && allowThreads && !positioned && !unreadPositionPending -> {
                 scroll.scrollToItem(entries.lastIndex)
                 followEnd = true
                 positioned = true
             }
         }
+        if (seekUnread && !unreadPositionPending && (unreadIndex < 0 || (focusRequest != null && openedTarget == focusRequest))) {
+            onUnreadPositioned()
+        }
     }
-    FollowHistoryDuringIme(scroll, entries, imeInsets, input.expanded, followEnd, focusRequest,
+    val latestEntry by rememberUpdatedState(entries.lastOrNull())
+    val reportReadThrough by rememberUpdatedState(onReadThrough)
+    val canReportRead = onReadThrough != null && historyReady && !unreadPositionPending && !seekUnread && !overlayInput
+    LaunchedEffect(scroll, canReportRead, focusRequest) {
+        if (!canReportRead) return@LaunchedEffect
+        val report = reportReadThrough ?: return@LaunchedEffect
+        try {
+            snapshotFlow {
+                val entry = latestEntry
+                val last = scroll.layoutInfo.visibleItemsInfo.lastOrNull()
+                entry?.id?.takeIf { positioned && !restorePending && !scroll.canScrollForward &&
+                    !scroll.isScrollInProgress && (focusRequest == null || openedTarget == focusRequest) &&
+                    last?.key == entry.entryKey }
+            }.collect { report(it) }
+        } finally {
+            report(null)
+        }
+    }
+    val canFollowEnd by rememberUpdatedState(!unreadPositionPending && !seekUnread)
+    FollowHistoryDuringIme(scroll, entries, imeInsets, input.expanded, followEnd && canFollowEnd, focusRequest,
         focusRequest != null && openedTarget != focusRequest)
 
     // Viewport, row height and item count can all change without user scrolling.
     // Only follow those changes while the reader is at the end or has just sent a message.
     LaunchedEffect(scroll) {
         var wasScrolling = false
-        snapshotFlow { Triple(scroll.isScrollInProgress, scroll.layoutInfo, followEnd to (expanded || resizing)) }
+        snapshotFlow { Triple(scroll.isScrollInProgress, scroll.layoutInfo, (followEnd && canFollowEnd) to (expanded || resizing)) }
             .collect { (scrolling, layout, tracking) ->
                 if (tracking.second) return@collect
                 if (scrolling) {
@@ -735,7 +794,7 @@ internal fun ColumnScope.TimelineWithInput(
                         wasScrolling = false
                     }
                     if (layout.viewportSize.height > 0 && layout.totalItemsCount > 0) {
-                        if (followEnd && scroll.canScrollForward) {
+                        if (followEnd && canFollowEnd && scroll.canScrollForward) {
                             val lastIndex = layout.totalItemsCount - 1
                             val offset = layout.visibleItemsInfo.lastOrNull()?.takeIf { it.index == lastIndex }?.size ?: 0
                             scroll.requestScrollToItem(lastIndex, offset)
@@ -875,6 +934,8 @@ private fun Timeline(
             if (header != null) item { header() }
             items(entries, key = { it.entryKey }) { entry ->
                 CompositionLocalProvider(LocalBringIntoViewSpec provides inheritedBringIntoView) {
+                    entry.dateDivider?.let { ConversationDivider(it, colors) }
+                    entry.unreadDivider?.let { ConversationDivider(it, colors, unread = true) }
                     Column(
                         Modifier.fillMaxWidth().testTag("timeline-entry-${entry.id}")
                             .then(if (posts) Modifier.combinedClickable(
@@ -1068,6 +1129,21 @@ private fun conversationGestures(open: (() -> Unit)?, menu: () -> Unit, swipeRep
                 })
             }
         }
+}
+
+@Composable
+private fun ConversationDivider(label: String, colors: AndroidColors, unread: Boolean = false) {
+    val line = if (unread) colors.unread else colors.inputBoundary
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        HorizontalDivider(Modifier.weight(1f), color = line)
+        Text(label, color = if (unread) colors.unread else colors.secondary,
+            fontSize = 12.sp, fontWeight = AndroidWeights.emphasis)
+        HorizontalDivider(if (unread) Modifier.width(24.dp) else Modifier.weight(1f), color = line)
+    }
 }
 
 /** 暗号化に切り替えた境目（Web の `MessageList` の区切り）。上は平文、下は暗号化したメッセージ。 */

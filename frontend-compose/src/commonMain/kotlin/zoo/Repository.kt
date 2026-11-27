@@ -158,11 +158,50 @@ internal fun compareNewestFirst(a: Row, b: Row): Int {
 }
 
 /** オフライン用の控えに残す行: チャンネル直下で、削除されていない最新のページ。 */
-internal fun feedCacheRows(rows: List<Row>): List<Row> =
+internal fun feedCacheRows(rows: List<Row>, limit: Int = MESSAGE_PAGE_SIZE): List<Row> =
     rows
         .filter { it.text("parent_id").isEmpty() && !it.present("deleted_at") }
         .sortedWith(::compareNewestFirst)
-        .take(MESSAGE_PAGE_SIZE)
+        .take(limit)
+
+internal data class CachedFeed(val rows: List<Row>, val page: PageState? = null) {
+    fun encode(): String = buildJsonObject {
+        put("rows", JsonArray(rows))
+        page?.let { coverage ->
+            put("has_older", coverage.hasOlder)
+            coverage.oldest?.let { (time, id) ->
+                put("oldest_time", time)
+                put("oldest_id", id)
+            }
+        }
+    }.toString()
+
+    companion object {
+        fun decode(value: JsonElement): CachedFeed {
+            if (value is JsonArray) return CachedFeed(value.map { it.jsonObject })
+            val item = value.jsonObject
+            val page = (item["has_older"] as? JsonPrimitive)?.booleanOrNull?.let { hasOlder ->
+                val time = item.text("oldest_time")
+                val id = item.text("oldest_id")
+                PageState(loaded = true, hasOlder = hasOlder,
+                    oldest = if (time.isNotEmpty() && id.isNotEmpty()) time to id else null)
+            }
+            return CachedFeed(item.getValue("rows").jsonArray.map { it.jsonObject }, page)
+        }
+    }
+}
+
+internal fun cacheFeed(rows: List<Row>, page: PageState): CachedFeed {
+    val window = feedCacheRows(rows, MESSAGE_PAGE_SIZE + 1)
+    val retained = window.take(MESSAGE_PAGE_SIZE)
+    val trimmed = retained.size < window.size
+    val retainedOldest = retained.lastOrNull()?.let { it.text("created_at") to it.text("id") }
+    // A focused-message snapshot outside the page history cannot extend its contiguous range.
+    val oldest = if (trimmed && retainedOldest != null) {
+        listOfNotNull(page.oldest, retainedOldest).maxWith(compareBy({ it.first }, { it.second }))
+    } else page.oldest
+    return CachedFeed(retained, page.copy(loading = false, hasOlder = page.hasOlder || trimmed, oldest = oldest))
+}
 
 /**
  * One Shape per resource/channel; its owner closes the HTTP stream on navigation or logout.
@@ -182,13 +221,16 @@ class SyncedTable(
     private val persist: Boolean = true,
     private val onDemand: Boolean = false,
     initialRows: List<Row> = emptyList(),
+    initialCachedPage: PageState? = null,
 ) {
     private val tableScope =
         CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
     private val serverRows = MutableStateFlow(initialRows)
     val replicatedRows: StateFlow<List<Row>> = serverRows.asStateFlow()
-    internal var navigationRows = emptyList<Row>()
+    internal var navigationFeed: CachedFeed? = null
         private set
+    private val cachedPage = MutableStateFlow(initialCachedPage)
+    val cachedMainPage: StateFlow<PageState?> = cachedPage.asStateFlow()
     private val successfulSnapshot = MutableStateFlow<List<Row>?>(null)
     /** Only committed network snapshots; cache loads, resets and failures never publish here. */
     val synchronizedRows: StateFlow<List<Row>?> = successfulSnapshot.asStateFlow()
@@ -234,11 +276,14 @@ class SyncedTable(
     private val refetching = MutableStateFlow(false)
     /** must-refetch のたびに増える。取り直し前に始めた `loadOlder` の結果を捨てるのに使う。 */
     private var refetchEpoch = 0
+    private val generation = MutableStateFlow(0)
+    val pageGeneration: StateFlow<Int> = generation.asStateFlow()
     /** 取り直しのジョブと、まだ取り直していない範囲。must-refetch が続いても、範囲を引き継ぐ。 */
     private var refetchJob: Job? = null
     private var refetchTargets = emptyList<Requested>()
     private var streamReady = CompletableDeferred<ShapeStream>()
     private var acceptNow: () -> Unit = {}
+    private var saveMainCache: () -> Unit = {}
 
     private var stream: ShapeStream? = null
     private var refreshJob: Job? = null
@@ -322,6 +367,7 @@ class SyncedTable(
                     oldest = oldest,
                 ))
             }
+            if (scope == PageScope.Main) saveMainCache()
             return true
         } catch (e: CancellationException) {
             if (epoch == refetchEpoch) pages.update { it + (scope to current) }
@@ -368,6 +414,7 @@ class SyncedTable(
         refetchTargets = emptyList()
         requested.value = emptyList()
         pages.value = emptyMap()
+        generation.value = refetchEpoch
         return tableScope.launch {
             if (!synchronize) {
                 loading.value = false
@@ -382,7 +429,14 @@ class SyncedTable(
             }
             try {
                 (if (persist && readCache && serverRows.value.isEmpty()) platform.readCache(cacheKey) else null)?.let { raw ->
-                    serverRows.value = json.parseToJsonElement(raw).jsonArray.map { it.jsonObject }
+                    val value = json.parseToJsonElement(raw)
+                    if (onDemand) {
+                        val cache = CachedFeed.decode(value)
+                        serverRows.value = cache.rows
+                        cachedPage.value = cache.page
+                    } else {
+                        serverRows.value = value.jsonArray.map { it.jsonObject }
+                    }
                     loading.value = false
                 }
             } catch (e: CancellationException) {
@@ -432,16 +486,15 @@ class SyncedTable(
             stream = source
             val materialized = Shape(source)
             val pendingTxids = mutableSetOf<String>()
-            val snapshots = Channel<List<Row>>(Channel.CONFLATED)
-            // Enqueue committed snapshots even before the writer starts, including an empty shape.
-            // Observing serverRows with drop(1) could skip an already received initial snapshot.
+            val snapshots = Channel<CachedFeed>(Channel.CONFLATED)
+            // Keep the cached rows and their verified page coverage in the same write.
             val cacheWriter = launch {
-                for (rows in snapshots) {
+                for (snapshot in snapshots) {
                     try {
                         if (persist) {
-                            val encoded = JsonArray(rows).toString()
-                            if (onDemand) navigationRows =
-                                rows.takeIf { encoded.length <= 2 * 1024 * 1024 }.orEmpty()
+                            val encoded = if (onDemand) snapshot.encode() else JsonArray(snapshot.rows).toString()
+                            if (onDemand) navigationFeed =
+                                snapshot.takeIf { encoded.length <= 2 * 1024 * 1024 }
                             platform.writeCache(cacheKey, encoded)
                         }
                     } catch (e: CancellationException) {
@@ -451,17 +504,22 @@ class SyncedTable(
                     }
                 }
             }
+            saveMainCache = {
+                if (persist) pages.value[PageScope.Main]?.takeIf { it.loaded }?.let { page ->
+                    snapshots.trySend(cacheFeed(serverRows.value, page))
+                }
+            }
             fun acceptSnapshot(rows: List<Row>) {
+                if (onDemand) cachedPage.value = null
                 serverRows.value = rows
                 error.value = null
                 loading.value = false
                 if (onDemand) {
-                    // 全行のコピーも、全行の JSON も持たない。控えは最新のページだけ。
-                    navigationRows = emptyList()
-                    snapshots.trySend(feedCacheRows(rows))
+                    navigationFeed = null
+                    saveMainCache()
                 } else {
                     successfulSnapshot.value = rows.toList()
-                    snapshots.trySend(rows.toList())
+                    snapshots.trySend(CachedFeed(rows.toList()))
                 }
             }
             acceptNow = { acceptSnapshot(materialized.currentRows) }
@@ -489,6 +547,7 @@ class SyncedTable(
                                 refetchTargets = (refetchTargets + requested.value).distinctBy { it.scope to it.aroundId }
                                 requested.value = emptyList()
                                 pages.value = emptyMap()
+                                generation.value = refetchEpoch
                                 if (serverRows.value.isEmpty()) loading.value = true
                             } else {
                                 serverRows.value = emptyList()
@@ -589,6 +648,7 @@ class SyncedTable(
             } finally {
                 ready.completeExceptionally(IllegalStateException("Shape stream closed"))
                 acceptNow = {}
+                saveMainCache = {}
                 cacheWriter.cancel()
                 unsubscribeTx()
                 materialized.close()
@@ -703,7 +763,7 @@ class Repository(
     val members = SyncedTable("channel_users", config, platform, http, scope, synchronize = synchronize)
     val notifications = SyncedTable("notifications", config, platform, http, scope, synchronize = synchronize)
     private val dynamic = mutableMapOf<Pair<String, String>, SyncedTable>()
-    private val recentMessages = linkedMapOf<String, List<Row>>()
+    private val recentMessages = linkedMapOf<String, CachedFeed>()
     var navigationCacheLimit: Int = 8
         set(value) {
             field = value.coerceIn(0, 16)
@@ -738,6 +798,7 @@ class Repository(
             "messages" ->
                 dynamic.getOrPut(name to channelId) {
                     require(channelId.isNotBlank())
+                    val cached = recentMessages.remove(channelId)
                     SyncedTable(
                         name,
                         config,
@@ -747,7 +808,8 @@ class Repository(
                         mapOf("channel_id" to channelId),
                         synchronize = synchronize,
                         onDemand = true,
-                        initialRows = recentMessages.remove(channelId).orEmpty(),
+                        initialRows = cached?.rows.orEmpty(),
+                        initialCachedPage = cached?.page,
                     )
                 }
             else -> error("Unknown Shape resource")
@@ -760,9 +822,9 @@ class Repository(
             .forEach { key ->
                 val table = dynamic.remove(key) ?: return@forEach
                 if (navigationCacheLimit > 0 && table.error.value == null && table.pageStates.value[PageScope.Main]?.loaded == true) {
-                    val rows = table.navigationRows
-                    if (rows.isNotEmpty()) {
-                        recentMessages[channelId] = rows
+                    val cached = table.navigationFeed
+                    if (cached != null && cached.rows.isNotEmpty()) {
+                        recentMessages[channelId] = cached
                         trimRecentMessages()
                     }
                 }

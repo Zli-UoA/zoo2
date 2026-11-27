@@ -123,6 +123,55 @@ class RepositoryTest {
     }
 
     @Test
+    fun channelReadUsesTheServerUnreadFlagAndSkipsOldOrHiddenMessages() = runTest {
+        val first = "2026-11-01T01:00:00Z"
+        val second = "2026-11-01T02:00:00Z"
+        val third = "2026-11-01T03:00:00Z"
+        var writes = 0
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    when (request.url.encodedPath) {
+                        "/api/channel-read-states" -> {
+                            val timestamp = listOf(first, second, third)[writes]
+                            respond("""[{"channel_id":"c1","last_read_at":"$timestamp","has_unread":${writes < 2}}]""")
+                        }
+                        "/api/channels/c1/read-state" -> {
+                            assertEquals(HttpMethod.Post, request.method)
+                            writes++
+                            val timestamp = if (writes == 1) second else third
+                            respond("""{"data":{"last_read_at":"$timestamp","has_unread":${writes == 1}}}""")
+                        }
+                        else -> respond("", HttpStatusCode.NotFound)
+                    }
+                }
+            }
+        }
+        val repo = Repository(config, FakePlatform(), http, backgroundScope, synchronize = false)
+        val app = Session(repo, backgroundScope, Environment(path = "/channels/c1"))
+        try {
+            app.start()
+            runCurrent()
+            assertTrue(app.channelReadPositions.getValue("c1").hasUnread)
+            val secondTime = checkNotNull(timestampMillis(second))
+            val thirdTime = checkNotNull(timestampMillis(third))
+            app.markChannelRead("c1", "second", secondTime)
+            app.markChannelRead("c1", "second", secondTime)
+            assertEquals(1, writes)
+            assertTrue(app.channelReadPositions.getValue("c1").hasUnread)
+
+            app.update(app.env.copy(visible = false))
+            app.markChannelRead("c1", "third", thirdTime)
+            assertEquals(1, writes)
+            app.update(app.env.copy(visible = true))
+            app.markChannelRead("c1", "third", thirdTime)
+            assertEquals(2, writes)
+            assertFalse(app.channelReadPositions.getValue("c1").hasUnread)
+        } finally { app.close() }
+    }
+
+    @Test
     fun restResolvesAuthenticationForEachRequestAndDoesNotSendSecretsInTheUrl() = runTest {
         val platform = FakePlatform()
         val tokens = mutableListOf<String?>()
@@ -630,6 +679,28 @@ class RepositoryTest {
     }
 
     @Test
+    fun messageCachePreservesConfirmedCoverageAndReadsLegacyArrays() {
+        val rows = (1..60).map { id ->
+            obj("id" to id.toString(), "created_at" to "2026-11-01T00:00:${(id - 1).toString().padStart(2, '0')}Z")
+        }
+        fun cursor(row: Row) = row.text("created_at") to row.text("id")
+        val complete = cacheFeed(rows.take(10), PageState(loaded = true, oldest = cursor(rows.first())))
+        val restored = CachedFeed.decode(json.parseToJsonElement(complete.encode()))
+        assertEquals(complete, restored)
+        assertFalse(restored.page!!.hasOlder)
+        assertNull(CachedFeed.decode(JsonArray(complete.rows)).page)
+
+        val trimmed = cacheFeed(rows, PageState(loaded = true, oldest = cursor(rows.first())))
+        assertEquals(50, trimmed.rows.size)
+        assertEquals(cursor(rows[10]), trimmed.page!!.oldest)
+        assertTrue(trimmed.page.hasOlder)
+
+        val sparse = cacheFeed(listOf(rows.first()) + rows.takeLast(10),
+            PageState(loaded = true, hasOlder = true, oldest = cursor(rows[50])))
+        assertEquals(cursor(rows[50]), sparse.page!!.oldest)
+    }
+
+    @Test
     fun newestFirstOrdersRowsOfTheSameTimeById() {
         val a = obj("id" to "a", "created_at" to "t")
         val b = obj("id" to "b", "created_at" to "t")
@@ -731,6 +802,7 @@ class RepositoryTest {
             }
         try {
             step("first page") { table.rows.first { rows -> rows.any { it.text("id") == "m001" } } }
+            val initialGeneration = table.pageGeneration.value
             // must-refetch その 1: 取り直しの最初の取得が失敗して、再試行を待つ。
             invalidations.value = 1
             step("second subset request") { secondSubsetStarted.await() }
@@ -738,6 +810,7 @@ class RepositoryTest {
             invalidations.value = 1
             step("rows after the second refetch") { table.rows.first { rows -> rows.any { it.text("id") == "m010" } } }
             assertEquals(listOf("m010"), table.rows.value.map { it.text("id") })
+            assertTrue(table.pageGeneration.value > initialGeneration)
             assertTrue(table.pageStates.value.getValue(PageScope.Main).loaded)
             // 取り直しが済んでいれば、loadOlder は待たずに終わる（古いジョブが解除できなくても、新しいジョブが解除する）。
             val result = step("loadOlder after the refetch") { table.loadOlder(PageScope.Main) }
