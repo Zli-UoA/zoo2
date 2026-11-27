@@ -278,6 +278,28 @@ test("a restarted Service Worker still finds the build-specific shell cache", as
   assert.match(await response.text(), /network:https:\/\/zoo\.example\/index\.html/);
 });
 
+test("activation keeps caches when the active shell cannot be determined", async () => {
+  const cacheContext = memoryCaches([
+    ["zoo-shell-abc123", `${ORIGIN}/index.html`, basicResponse("<html>app</html>")],
+    ["zoo-shell-v2", `${ORIGIN}/index.html`, basicResponse("<html>old</html>")],
+  ]);
+  await cacheContext.api.open("zoo-shell-abc123");
+  await cacheContext.api.open("zoo-shell-v2");
+  const realKeys = cacheContext.api.keys.bind(cacheContext.api);
+  let calls = 0;
+  cacheContext.api.keys = async () => {
+    calls += 1;
+    if (calls === 1) throw new Error("denied");
+    return realKeys();
+  };
+  const { handlers } = worker({ caches: cacheContext.api });
+  await dispatch(handlers, "activate");
+  cacheContext.api.keys = realKeys;
+  const names = await cacheContext.api.keys();
+  assert.ok(names.includes("zoo-shell-abc123"));
+  assert.ok(names.includes("zoo-shell-v2"));
+});
+
 test("activation removes older cache versions and claims clients", async () => {
   const { handlers, context, cacheContext } = worker();
   let claimed = false;
@@ -2816,6 +2838,31 @@ test("a conditional GET keeps a 304 response", async () => {
   assert.equal(response.status, 304);
 });
 
+test("only-if-cached conditional requests do not touch the network", async () => {
+  const manifest = validManifest("#000000");
+  const cacheContext = memoryCaches([
+    ["zoo-shell-v2", `${ORIGIN}/manifest.webmanifest`, basicResponse(manifest)],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  let calls = 0;
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () => {
+      calls += 1;
+      throw new Error("network");
+    },
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+    cache: "only-if-cached",
+    headers: { get: (name) => (name.toLowerCase() === "if-none-match" ? '"abc"' : null) },
+  });
+  assert.equal(await response.text(), manifest);
+  assert.equal(calls, 0);
+});
+
 test("only-if-cached requests do not touch the network", async () => {
   const manifest = validManifest("#000000");
   const cacheContext = memoryCaches([
@@ -2863,6 +2910,31 @@ test("a cached 304 includes the stored ETag", async () => {
   });
   assert.equal(response.status, 304);
   assert.equal(response.headers.get("etag"), 'W/"abc"');
+});
+
+test("the default cache is read when cache enumeration fails", async () => {
+  const manifest = validManifest("#000000");
+  const cacheContext = memoryCaches([
+    ["zoo-shell-v2", `${ORIGIN}/manifest.webmanifest`, basicResponse(manifest)],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const realKeys = cacheContext.api.keys.bind(cacheContext.api);
+  cacheContext.api.keys = async () => {
+    throw new Error("denied");
+  };
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+  });
+  assert.equal(await response.text(), manifest);
+  cacheContext.api.keys = realKeys;
 });
 
 test("an HTTP error is returned when no cached manifest exists", async () => {

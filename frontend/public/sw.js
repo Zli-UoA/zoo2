@@ -68,12 +68,12 @@ function cacheNameForIndex(html) {
  * 現在有効な app shell キャッシュを返す。install が書いたメタ情報のうち
  * 最新のものを選ぶ。メタ情報がない旧キャッシュは index.html の有無で拾う。
  */
-async function findActiveShellCache(prefix = POLICY_PREFIX) {
+async function findActiveShellCache(prefix = POLICY_PREFIX, fallback = true) {
   let names = [];
   try {
     names = (await caches.keys()).filter((name) => name.startsWith(prefix));
   } catch {
-    return prefix === POLICY_PREFIX ? DEFAULT_CACHE : null;
+    return fallback && prefix === POLICY_PREFIX ? DEFAULT_CACHE : null;
   }
   let latest = null;
   for (const name of names) {
@@ -100,7 +100,7 @@ async function findActiveShellCache(prefix = POLICY_PREFIX) {
       /* Try the next candidate. */
     }
   }
-  return prefix === POLICY_PREFIX ? DEFAULT_CACHE : null;
+  return fallback && prefix === POLICY_PREFIX ? DEFAULT_CACHE : null;
 }
 
 const TRANSPORT_HEADERS = [
@@ -644,6 +644,8 @@ function handleFreshAsset(request) {
   // 共有はクエリを含む URL 単位。保存先は pathname で共通する。
   const key = url.href;
   const sequence = ++freshAssetSequence;
+  // キャッシュだけを使う要求は、条件ヘッダーの有無にかかわらず通信しない。
+  if (request.cache === "only-if-cached") return cachedFreshAsset(path);
   // Range / 条件付き GET は部分応答・304 になり得るので、共有もキャッシュ更新もしない。
   const headers = request.headers;
   if (
@@ -657,8 +659,6 @@ function handleFreshAsset(request) {
     if (headers.get("range")) return fetchConditionalAsset(withoutRange(request), path, sequence);
     return fetchConditionalAsset(request, path, sequence);
   }
-  // キャッシュだけを使う要求はネットワークへ送らない。
-  if (request.cache === "only-if-cached") return cachedFreshAsset(path);
   // 同じ URL の同時取得を共有し、古い応答が新しい配色を上書きしないようにする。
   const pending = freshAssetWork.get(key);
   // 取得は共有しても、respondWith へ渡す本文は要求ごとに独立させる。
@@ -705,7 +705,8 @@ async function cachedFreshAsset(path, networkResponse = null) {
   try {
     names = (await caches.keys()).filter((name) => name.startsWith(CACHE_PREFIX));
   } catch {
-    /* No caches can be enumerated. */
+    // 書き込み側と同じ既定の保存先を読む。
+    names = [DEFAULT_CACHE];
   }
   const candidates = [];
   for (const name of names) {
@@ -857,8 +858,16 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
+      let names;
+      try {
+        names = await caches.keys();
+      } catch {
+        // 使用中のシェルが分からないときに削除すると、オフライン起動ができなくなる。
+        await self.clients.claim();
+        return;
+      }
       const active = await findActiveShellCache();
-      for (const name of await caches.keys()) {
+      for (const name of names) {
         const managed = name.startsWith(CACHE_PREFIX) || name.startsWith("zoo-offline-");
         if (
           (managed && name !== active) ||
