@@ -241,32 +241,21 @@ async fn record_home_thumbnail(
     db: &mut impl toasty::db::Executor,
     id: &str,
     bytes: i64,
-    check_at: Option<&str>,
-) -> Result<(), toasty::Error> {
-    toasty::sql::statement(
+    check_at: &str,
+) -> Result<bool, toasty::Error> {
+    let rows = toasty::sql::query(
         "UPDATE home_images SET thumbnail_ready=$2::boolean,thumbnail_bytes=$3::bigint
          WHERE id=$1 AND thumbnail_ready IS NULL
-           AND ($4='' OR thumbnail_check_at=NULLIF($4,'')::timestamptz)",
+           AND thumbnail_check_at=$4::timestamptz
+         RETURNING id",
     )
     .bind(id)
     .bind((bytes > 0).to_string())
     .bind(bytes.to_string())
-    .bind(check_at.unwrap_or_default())
+    .bind(check_at)
     .exec(db)
     .await?;
-    Ok(())
-}
-
-async fn reconcile_home_thumbnail(
-    state: &AppState,
-    id: &str,
-    check_at: Option<&str>,
-) -> Result<Option<i64>, AppError> {
-    let bytes = probe_home_thumbnail(state, id).await;
-    if let Some(bytes) = bytes {
-        record_home_thumbnail(&mut state.db.clone(), id, bytes, check_at).await?;
-    }
-    Ok(bytes)
+    Ok(!rows.is_empty())
 }
 
 pub(crate) fn image_assets(mime: &str, bytes: &[u8]) -> Option<(ImageMetadata, Option<Vec<u8>>)> {
@@ -510,7 +499,7 @@ async fn upload(
     let reserved = one(
         &mut tx,
         "SELECT json_build_object('thumbnail_reserved',thumbnail_ready IS NULL
-             AND thumbnail_bytes=$2::bigint AND $2::bigint>0)::text
+             AND thumbnail_bytes=$2::bigint AND $2::bigint>0,'check_at',thumbnail_check_at)::text
          FROM home_images WHERE id=$1 FOR UPDATE",
         &[&id, &thumbnail_bytes.to_string()],
     )
@@ -534,7 +523,9 @@ async fn upload(
         tx.commit().await?;
         return Err(AppError::Internal(anyhow::anyhow!("Image upload failed")));
     }
-    if reserved["thumbnail_reserved"] == true {
+    if reserved["thumbnail_reserved"] == true
+        && let Some(check_at) = reserved["check_at"].as_str()
+    {
         if store_thumbnail(
             &state.s3_client,
             &state.config.s3.bucket,
@@ -545,7 +536,7 @@ async fn upload(
         )
         .await
         {
-            record_home_thumbnail(&mut tx, &id, thumbnail_bytes as i64, None).await?;
+            record_home_thumbnail(&mut tx, &id, thumbnail_bytes as i64, check_at).await?;
         } else {
             // An ambiguous PUT can still finish. Delay the HEAD and retain the reservation.
             toasty::sql::statement(
@@ -693,7 +684,7 @@ async fn image_redirect(
     uuid::Uuid::parse_str(&id).map_err(|_| AppError::NotFound("Image".into()))?;
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    let item = one(&mut tx, "SELECT item::text FROM (SELECT json_build_object('name',name,'media_type',content_type,'storage_key','home-images/' || id,'thumbnail_ready',CASE WHEN NOT home_image_can_have_thumbnail(h.content_type,h.width,h.height) THEN false ELSE h.thumbnail_ready END,'thumbnail_probe_allowed',h.thumbnail_bytes=0 OR h.thumbnail_check_at<=now()) AS item FROM home_images h WHERE id=$1 AND EXISTS(SELECT 1 FROM home_posts p LEFT JOIN channels c ON c.id=p.channel_id WHERE p.deleted_at IS NULL AND (p.channel_id IS NULL OR NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL) AND p.media @> jsonb_build_array(jsonb_build_object('url','/api/home/images/' || h.id))) UNION ALL SELECT json_build_object('name',a.file_name,'media_type',a.content_type,'storage_key',a.storage_key,'thumbnail_ready',CASE WHEN NOT home_image_can_have_thumbnail(h.content_type,h.width,h.height) THEN false ELSE h.thumbnail_ready END,'thumbnail_probe_allowed',h.thumbnail_bytes=0 OR h.thumbnail_check_at<=now()) FROM attachments a LEFT JOIN home_images h ON h.id=substring(a.storage_key from 13) AND a.storage_key LIKE 'home-images/%' JOIN home_posts p ON p.id=a.message_id JOIN channels c ON c.id=p.channel_id WHERE a.id=$1 AND p.deleted_at IS NULL AND NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL AND a.content_type IN ('image/png','image/jpeg','image/gif','image/webp')) images LIMIT 1", &[&id]).await?;
+    let item = one(&mut tx, "SELECT item::text FROM (SELECT json_build_object('name',name,'media_type',content_type,'storage_key','home-images/' || id,'thumbnail_ready',CASE WHEN NOT home_image_can_have_thumbnail(h.content_type,h.width,h.height) THEN false ELSE h.thumbnail_ready END,'thumbnail_check_at',h.thumbnail_check_at,'thumbnail_probe_allowed',h.thumbnail_bytes=0 OR h.thumbnail_check_at<=now()) AS item FROM home_images h WHERE id=$1 AND EXISTS(SELECT 1 FROM home_posts p LEFT JOIN channels c ON c.id=p.channel_id WHERE p.deleted_at IS NULL AND (p.channel_id IS NULL OR NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL) AND p.media @> jsonb_build_array(jsonb_build_object('url','/api/home/images/' || h.id))) UNION ALL SELECT json_build_object('name',a.file_name,'media_type',a.content_type,'storage_key',a.storage_key,'thumbnail_ready',CASE WHEN NOT home_image_can_have_thumbnail(h.content_type,h.width,h.height) THEN false ELSE h.thumbnail_ready END,'thumbnail_check_at',h.thumbnail_check_at,'thumbnail_probe_allowed',h.thumbnail_bytes=0 OR h.thumbnail_check_at<=now()) FROM attachments a LEFT JOIN home_images h ON h.id=substring(a.storage_key from 13) AND a.storage_key LIKE 'home-images/%' JOIN home_posts p ON p.id=a.message_id JOIN channels c ON c.id=p.channel_id WHERE a.id=$1 AND p.deleted_at IS NULL AND NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL AND a.content_type IN ('image/png','image/jpeg','image/gif','image/webp')) images LIMIT 1", &[&id]).await?;
     let key = item["storage_key"].as_str().unwrap();
     let content_type = item["media_type"].as_str().unwrap();
     drop(tx);
@@ -707,9 +698,11 @@ async fn image_redirect(
                 } else {
                     let image_id = key.trim_start_matches("home-images/");
                     let bytes = probe_home_thumbnail(&state, image_id).await;
-                    if let Some(bytes) = bytes
+                    // Only reconciliation may release a reservation when storage reports absence.
+                    if let Some(bytes) = bytes.filter(|bytes| *bytes > 0)
+                        && let Some(check_at) = item["thumbnail_check_at"].as_str()
                         && let Err(error) =
-                            record_home_thumbnail(&mut state.db.clone(), image_id, bytes, None)
+                            record_home_thumbnail(&mut state.db.clone(), image_id, bytes, check_at)
                                 .await
                     {
                         // The object is usable even when its quota update has to be retried.
@@ -842,12 +835,15 @@ async fn reconcile_claimed_home_thumbnails(
         .map(|row| async move {
             if let (Some(id), Some(check_at)) = (row["id"].as_str(), row["check_at"].as_str()) {
                 if row["eligible"] == true {
-                    let bytes = reconcile_home_thumbnail(state, id, Some(check_at)).await?;
-                    if let (Some(reserved), Some(actual)) = (row["reserved"].as_i64(), bytes) {
+                    if let Some(actual) = probe_home_thumbnail(state, id).await
+                        && record_home_thumbnail(&mut state.db.clone(), id, actual, check_at)
+                            .await?
+                        && let Some(reserved) = row["reserved"].as_i64()
+                    {
                         return Ok::<i64, AppError>((reserved - actual).max(0));
                     }
                 } else {
-                    record_home_thumbnail(&mut state.db.clone(), id, 0, Some(check_at)).await?;
+                    record_home_thumbnail(&mut state.db.clone(), id, 0, check_at).await?;
                 }
             }
             Ok::<i64, AppError>(0)
