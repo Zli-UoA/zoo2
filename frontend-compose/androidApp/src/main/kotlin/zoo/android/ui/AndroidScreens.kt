@@ -817,7 +817,7 @@ private fun FollowHistoryDuringIme(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 private fun Timeline(
     entries: List<TimelineItem>, colors: AndroidColors, modifier: Modifier,
@@ -865,9 +865,9 @@ private fun Timeline(
                             Column(Modifier.weight(1f)) {
                                 if (posts && entry.postHeader != null) {
                                     PostHeader(entry.author, entry.postHeader, colors, openProfile)
-                                } else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text(entry.author, Modifier.weight(1f, fill = false), color = colors.foreground, fontWeight = AndroidWeights.entryAuthor, fontSize = entryTextSize, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    Text(entry.time, color = colors.secondary, fontSize = 12.sp, maxLines = 1)
+                                } else FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text(entry.author, Modifier.align(Alignment.CenterVertically), color = colors.foreground, fontWeight = AndroidWeights.entryAuthor, fontSize = entryTextSize, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text(entry.time, Modifier.align(Alignment.CenterVertically), color = colors.secondary, fontSize = 12.sp)
                                 }
                                 if (entry.marks.isNotEmpty()) EntryMarks(entry.marks, colors)
                                 entry.notice?.let {

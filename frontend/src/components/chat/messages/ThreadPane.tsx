@@ -40,26 +40,26 @@ import { useMessageJumpRequest, useMessageTargetFlash } from "./messageTarget";
 type ReplyListProps = {
   calendar: ReturnType<typeof useLocalCalendar>;
   firstReplyId: string;
+  lastReplyId: string;
   children: ReactNode;
 };
 
 type ReplyAnchor = "top" | "bottom" | { row: Element; offset: number };
 
-// 日付変更で返信の高さが変わる前に、画面の上端に見えている返信の位置を記録する。
+// 日付変更や古い返信の追加に先立って、画面上端の返信とその位置を記録する。
 class ThreadReplyList extends Component<ReplyListProps> {
   private list = createRef<HTMLDivElement>();
 
   getSnapshotBeforeUpdate(previous: ReplyListProps): ReplyAnchor | null {
-    if (
-      previous.calendar === this.props.calendar ||
-      previous.firstReplyId !== this.props.firstReplyId
-    )
-      return null;
+    const prepended =
+      previous.firstReplyId !== this.props.firstReplyId &&
+      previous.lastReplyId === this.props.lastReplyId;
+    if (previous.calendar === this.props.calendar && !prepended) return null;
     const list = this.list.current;
     const scroll = list?.parentElement;
     if (!list || !scroll) return null;
     const maxScroll = scroll.scrollHeight - scroll.clientHeight;
-    if (maxScroll > 0 && scroll.scrollTop <= 0) return "top";
+    if (!prepended && maxScroll > 0 && scroll.scrollTop <= 0) return "top";
     if (maxScroll - scroll.scrollTop <= 1) return "bottom";
     const top = scroll.getBoundingClientRect().top;
     for (const row of list.children) {
@@ -334,25 +334,7 @@ export function ThreadPane({
       return;
     }
     element.scrollTop = element.scrollHeight;
-  }, [items.length, lastReplyId, root.id, hasTargetInReplies, targetMessageId]);
-
-  // 古い返信のページが先頭に足されたときは、読んでいた位置が動かないよう、増えた高さの分だけ補正する。
-  const scrollSnapshot = useRef({ firstId: "", lastId: "", height: 0 });
-  useLayoutEffect(() => {
-    const element = scrollRef.current;
-    const previous = scrollSnapshot.current;
-    const firstId = replies[0]?.id ?? "";
-    const lastId = replies[replies.length - 1]?.id ?? "";
-    if (element) {
-      const prepended =
-        previous.firstId !== "" &&
-        firstId !== previous.firstId &&
-        lastId === previous.lastId &&
-        !atBottomRef.current;
-      if (prepended) element.scrollTop += element.scrollHeight - previous.height;
-      scrollSnapshot.current = { firstId, lastId, height: element.scrollHeight };
-    }
-  }, [replies, calendar]);
+  }, [lastReplyId, root.id, hasTargetInReplies, targetMessageId]);
 
   useLayoutEffect(() => {
     if (!targetMessageId) {
@@ -577,7 +559,6 @@ export function ThreadPane({
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2"
         onScroll={(event) => {
           const element = event.currentTarget;
-          scrollSnapshot.current.height = element.scrollHeight;
           atBottomRef.current = isNearBottom(
             element.scrollTop,
             element.scrollHeight,
@@ -611,7 +592,12 @@ export function ThreadPane({
         ) : replies.length === 0 ? (
           <p className="p-3 text-xs text-muted-foreground">{t("threads.empty")}</p>
         ) : (
-          <ThreadReplyList key={root.id} calendar={calendar} firstReplyId={replies[0].id}>
+          <ThreadReplyList
+            key={root.id}
+            calendar={calendar}
+            firstReplyId={replies[0].id}
+            lastReplyId={replies[replies.length - 1].id}
+          >
             {items.map((item) => (
               <div key={item.message.id} data-message-id={item.message.id} role="listitem">
                 <MessageRow

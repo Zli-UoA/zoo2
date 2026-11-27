@@ -5,6 +5,7 @@ import { useState } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { cdp, page } from "vite-plus/test/browser/context";
 
+import { useLocalCalendar } from "../../../hooks/useLocalDay";
 import { LocaleProvider } from "../../i18n/LocaleProvider";
 import type { FeedMessage } from "./messageFormat";
 import { ThreadPane, type ThreadPaneProps } from "./ThreadPane";
@@ -72,7 +73,7 @@ it("regroups replies when a time zone change puts midnight between them", async 
   }
 });
 
-it.each(["bottom", "middle", "top", "top-near-bottom", "exact-fit"])(
+it.each(["bottom", "middle", "top", "top-near-bottom", "exact-fit", "middle-with-older"])(
   "preserves the %s scroll position when grouped replies grow at midnight",
   async (position) => {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
@@ -82,9 +83,18 @@ it.each(["bottom", "middle", "top", "top-near-bottom", "exact-fit"])(
       const replies = Array.from({ length: 20 }, (_, i) =>
         message({ id: String(i), created_at: now.toISOString(), content: "reply " + i }),
       );
+      const withOlder = [
+        message({ id: "older", created_at: new Date(now.getTime() - 3600000).toISOString() }),
+        ...replies,
+      ];
+      function CalendarPane() {
+        const { midnight } = useLocalCalendar();
+        const loaded = position === "middle-with-older" && midnight > now.getTime();
+        return <ThreadPane {...paneProps({ replies: loaded ? withOlder : replies })} />;
+      }
       const view = render(
         <LocaleProvider>
-          <ThreadPane {...paneProps({ replies })} />
+          <CalendarPane />
         </LocaleProvider>,
       );
       const scroll = view.container.querySelector<HTMLElement>("[data-scroll-restoration-id]")!;
@@ -100,12 +110,15 @@ it.each(["bottom", "middle", "top", "top-near-bottom", "exact-fit"])(
       scroll.scrollTop = position === "bottom" ? height : 0;
       const middle = scroll.querySelector<HTMLElement>('[data-message-id="8"]')!;
       const offset = () => middle.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
-      if (position === "middle") scroll.scrollTop += offset() + 4;
+      if (position.startsWith("middle")) scroll.scrollTop += offset() + 4;
       const before = offset();
       fireEvent.scroll(scroll);
       await act(() => vi.advanceTimersByTimeAsync(1000));
       expect(scroll.scrollHeight).toBeGreaterThan(height);
-      if (position === "middle") expect(Math.abs(offset() - before)).toBeLessThanOrEqual(0.5);
+      if (position === "middle-with-older")
+        expect(scroll.querySelector('[data-message-id="older"]')).toBeInTheDocument();
+      if (position.startsWith("middle"))
+        expect(Math.abs(offset() - before)).toBeLessThanOrEqual(0.5);
       else
         expect(scroll.scrollTop).toBe(
           position === "bottom" || position === "exact-fit"

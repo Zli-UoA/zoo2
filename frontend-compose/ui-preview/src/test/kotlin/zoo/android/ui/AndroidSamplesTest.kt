@@ -750,6 +750,24 @@ class AndroidSamplesTest {
         }
         ui.onNodeWithContentDescription("「${quote.author}」のプロフィールを開く")
             .assertWidthIsAtLeast(48.dp)
+        assertEnlargedTimestampFits(timestamp)
+    }
+
+    @Test
+    @Config(qualifiers = "ja-rJP-w240dp-h760dp-xhdpi")
+    fun enlargedConversationShowsTheWholeTimestampInSplitScreen() {
+        val timestamp = "2025/12/31 23:59"
+        val entry = TimelineItem("m", "長い投稿者名".repeat(8), "本文", timestamp)
+        val screen = AndroidScreen.Conversation("dev", "開発", "", listOf(entry), InputState())
+        ui.setContent {
+            CompositionLocalProvider(LocalDensity provides Density(LocalDensity.current.density, 2f)) {
+                AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> }
+            }
+        }
+        assertEnlargedTimestampFits(timestamp)
+    }
+
+    private fun assertEnlargedTimestampFits(timestamp: String) {
         val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
         ui.onNodeWithText(timestamp, useUnmergedTree = true).assertIsDisplayed()
             .performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
