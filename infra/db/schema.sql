@@ -2346,7 +2346,8 @@ CREATE TABLE home_image_deletions (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE home_image_deletions
-  ADD COLUMN thumbnail_accounted boolean NOT NULL DEFAULT false;
+  ADD COLUMN thumbnail_accounted boolean NOT NULL DEFAULT false,
+  ADD COLUMN unconfirmed_thumbnail_bytes bigint NOT NULL DEFAULT 0;
 
 CREATE FUNCTION home_image_can_have_thumbnail(content_type text, width integer, height integer)
 RETURNS boolean LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
@@ -2363,11 +2364,15 @@ CREATE INDEX home_images_uploader_unconfirmed_thumbnail
 
 CREATE FUNCTION queue_home_image_deletion() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-  INSERT INTO home_image_deletions(id,uploader_id,file_size,thumbnail_accounted)
-  VALUES(OLD.id,OLD.uploader_id,OLD.file_size + CASE
-    WHEN OLD.thumbnail_ready IS NULL AND OLD.thumbnail_bytes=0
-      AND home_image_can_have_thumbnail(OLD.content_type,OLD.width,OLD.height) THEN OLD.file_size
-    ELSE OLD.thumbnail_bytes END,true) ON CONFLICT DO NOTHING;
+  INSERT INTO home_image_deletions(id,uploader_id,file_size,thumbnail_accounted,unconfirmed_thumbnail_bytes)
+  VALUES(OLD.id,OLD.uploader_id,
+    OLD.file_size + CASE WHEN OLD.thumbnail_ready THEN OLD.thumbnail_bytes ELSE 0 END,
+    true,
+    CASE WHEN OLD.thumbnail_ready IS NULL THEN
+      CASE WHEN OLD.thumbnail_bytes>0 THEN OLD.thumbnail_bytes
+           WHEN home_image_can_have_thumbnail(OLD.content_type,OLD.width,OLD.height) THEN OLD.file_size
+           ELSE 0 END
+      ELSE 0 END) ON CONFLICT DO NOTHING;
   RETURN OLD;
 END $$;
 CREATE TRIGGER home_image_deleted AFTER DELETE ON home_images FOR EACH ROW EXECUTE FUNCTION queue_home_image_deletion();

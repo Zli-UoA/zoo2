@@ -99,11 +99,11 @@ pub(crate) fn thumbnail_key(key: &str) -> String {
     format!("{key}.thumbnail.webp")
 }
 
-type ThumbnailRepairs = HashMap<String, Weak<Mutex<()>>>;
+type ThumbnailRepairs = HashMap<String, Weak<Mutex<bool>>>;
 static THUMBNAIL_REPAIRS: LazyLock<Mutex<ThumbnailRepairs>> =
     LazyLock::new(|| Mutex::new(ThumbnailRepairs::new()));
 
-async fn lock_thumbnail_repair(key: &str) -> OwnedMutexGuard<()> {
+async fn lock_thumbnail_repair(key: &str) -> OwnedMutexGuard<bool> {
     let lock = {
         let mut repairs = THUMBNAIL_REPAIRS.lock().await;
         repairs.retain(|_, lock| lock.strong_count() > 0);
@@ -111,7 +111,7 @@ async fn lock_thumbnail_repair(key: &str) -> OwnedMutexGuard<()> {
         if let Some(lock) = entry.upgrade() {
             lock
         } else {
-            let lock = Arc::new(Mutex::new(()));
+            let lock = Arc::new(Mutex::new(false));
             *entry = Arc::downgrade(&lock);
             lock
         }
@@ -144,10 +144,15 @@ pub(crate) async fn stored_thumbnail_key(
             .is_some_and(|values| values.contains_key("source-etag"))
     };
     if !versioned(&variant) {
-        let _repair = lock_thumbnail_repair(original).await;
+        let mut attempted = lock_thumbnail_repair(original).await;
         // Another request may have rebuilt or removed the legacy variant while we waited.
         variant = inspect().await?;
         if !versioned(&variant) {
+            if *attempted {
+                return None;
+            }
+            *attempted = true;
+            let etag = variant.e_tag()?;
             let source = client
                 .head_object()
                 .bucket(bucket)
@@ -161,7 +166,7 @@ pub(crate) async fn stored_thumbnail_key(
                 original,
                 source.content_length()?,
                 source.content_type()?,
-                variant.e_tag(),
+                Some(etag),
             )
             .await
             .ok()??;
@@ -322,15 +327,20 @@ async fn home_quota(tx: &mut toasty::Transaction<'_>, user: &str) -> Result<(i64
     query(tx,"SELECT '{}'::text FROM (SELECT pg_advisory_xact_lock(hashtextextended('home-image-upload:' || $1,0))) locked",&[user]).await?;
     let usage = one(tx,
         "WITH current AS (
-           SELECT COALESCE(sum(file_size+thumbnail_bytes),0) AS bytes,
-                  COALESCE(sum(file_size) FILTER (WHERE thumbnail_ready IS NULL AND thumbnail_bytes=0
-                       AND home_image_can_have_thumbnail(content_type,width,height)),0) AS uncertain
+           SELECT COALESCE(sum(file_size + CASE WHEN thumbnail_ready THEN thumbnail_bytes ELSE 0 END),0) AS bytes,
+                  COALESCE(sum(CASE WHEN thumbnail_ready IS NULL THEN
+                       CASE WHEN thumbnail_bytes>0 THEN thumbnail_bytes
+                            WHEN home_image_can_have_thumbnail(content_type,width,height) THEN file_size
+                            ELSE 0 END ELSE 0 END),0) AS uncertain
            FROM home_images WHERE uploader_id=$1
          ), pending AS (
-           SELECT COALESCE(sum(CASE WHEN thumbnail_accounted THEN file_size ELSE file_size*2 END),0) AS bytes
+           SELECT COALESCE(sum(file_size),0) AS bytes,
+                  COALESCE(sum(CASE WHEN thumbnail_accounted THEN unconfirmed_thumbnail_bytes
+                             ELSE file_size END),0) AS uncertain
            FROM home_image_deletions WHERE uploader_id=$1
          )
-         SELECT json_build_object('known',current.bytes+pending.bytes,'uncertain',current.uncertain)::text
+         SELECT json_build_object('known',current.bytes+pending.bytes,
+           'uncertain',current.uncertain+pending.uncertain)::text
          FROM current,pending", &[user]).await?;
     Ok((
         usage["known"].as_i64().unwrap_or(MAX_USER_BYTES),
@@ -340,22 +350,26 @@ async fn home_quota(tx: &mut toasty::Transaction<'_>, user: &str) -> Result<(i64
 
 async fn reconcile_uploader_thumbnails(state: &AppState, user: &str) -> Result<(), AppError> {
     let mut db = state.db.clone();
-    let mut tx = db.transaction().await?;
-    let rows = query(
-        &mut tx,
-        "UPDATE home_images SET thumbnail_check_at=now()+interval '10 minutes'
-         WHERE id IN (SELECT id FROM home_images WHERE uploader_id=$1
-           AND thumbnail_ready IS NULL AND thumbnail_bytes=0
-           AND home_image_can_have_thumbnail(content_type,width,height)
-           AND created_at<now()-interval '5 minutes'
-           AND thumbnail_check_at<=now()+interval '5 minutes'
-           ORDER BY file_size DESC,id LIMIT 100 FOR UPDATE SKIP LOCKED)
-         RETURNING json_build_object('id',id,'check_at',thumbnail_check_at,'eligible',true)::text",
-        &[user],
-    )
-    .await?;
-    tx.commit().await?;
-    reconcile_claimed_home_thumbnails(state, rows).await
+    for _ in 0..25 {
+        let mut tx = db.transaction().await?;
+        // Claim only the four objects that can start immediately, even if the caller times out.
+        let rows = query(&mut tx,
+            "UPDATE home_images SET thumbnail_check_at=now()+interval '10 minutes'
+             WHERE id IN (SELECT id FROM home_images WHERE uploader_id=$1
+               AND thumbnail_ready IS NULL AND thumbnail_bytes=0
+               AND home_image_can_have_thumbnail(content_type,width,height)
+               AND created_at<now()-interval '5 minutes'
+               AND thumbnail_check_at<=now()+interval '5 minutes'
+               ORDER BY file_size DESC,id LIMIT 4 FOR UPDATE SKIP LOCKED)
+             RETURNING json_build_object('id',id,'check_at',thumbnail_check_at,'eligible',true)::text",
+            &[user]).await?;
+        tx.commit().await?;
+        if rows.is_empty() {
+            break;
+        }
+        reconcile_claimed_home_thumbnails(state, rows).await?;
+    }
+    Ok(())
 }
 
 async fn upload(

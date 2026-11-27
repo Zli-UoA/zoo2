@@ -152,8 +152,10 @@ async fn complete_next_media_blurhash(state: &AppState) -> Result<bool, AppError
              RETURNING post_id,attempts,retry_image_ids
          )
          SELECT json_build_object('id',p.id,'actor_id',p.actor_id,'updated_at',p.updated_at,
-             'active',p.deleted_at IS NULL,'media',p.media,'attempts',claimed.attempts,'retry_image_ids',claimed.retry_image_ids)::text
-         FROM claimed JOIN apub_remote_posts p ON p.id=claimed.post_id",
+             'active',p.deleted_at IS NULL AND NOT a.blocked,'media',p.media,
+             'attempts',claimed.attempts,'retry_image_ids',claimed.retry_image_ids)::text
+         FROM claimed JOIN apub_remote_posts p ON p.id=claimed.post_id
+         JOIN apub_actors a ON a.id=p.actor_id",
         &[&lease],
     )
     .await?;
@@ -161,7 +163,7 @@ async fn complete_next_media_blurhash(state: &AppState) -> Result<bool, AppError
     let Some(job) = rows.first() else {
         return Ok(false);
     };
-    let post_id = string(job, "id")?;
+    let mut enriched = None;
     let mut retry = Vec::new();
     if job["active"] == true
         && let Some(items) = job["media"].as_array()
@@ -173,46 +175,101 @@ async fn complete_next_media_blurhash(state: &AppState) -> Result<bool, AppError
         )
         .await;
         retry = retry_images;
-        if changed {
-            let updated = string(job, "updated_at")?
-                .parse::<jiff::Timestamp>()
-                .map_err(internal)?;
-            store_blurhashes(
-                &mut db,
-                post_id,
-                string(job, "actor_id")?,
-                updated,
-                &job["media"].to_string(),
-                &json!(media).to_string(),
-            )
-            .await?;
-        }
+        enriched = changed.then(|| json!(media).to_string());
     }
-    if !retry.is_empty()
+    finish_media_blurhash(&mut db, job, &lease, enriched.as_deref(), &retry).await?;
+    Ok(true)
+}
+
+async fn finish_media_blurhash(
+    db: &mut toasty::Db,
+    job: &Value,
+    lease: &str,
+    enriched: Option<&str>,
+    retry: &[String],
+) -> Result<(), AppError> {
+    let post_id = string(job, "id")?;
+    let mut tx = db.transaction().await?;
+    // Inbound delivery locks the post before its queue entry. Use the same order here.
+    let versions = query(
+        &mut tx,
+        "SELECT json_build_object('actor_id',p.actor_id,'updated_at',p.updated_at,'media',p.media,
+           'active',p.deleted_at IS NULL AND NOT a.blocked)::text
+         FROM apub_remote_posts p JOIN apub_actors a ON a.id=p.actor_id
+         WHERE p.id=$1 FOR UPDATE OF p",
+        &[post_id],
+    )
+    .await?;
+    let owned = query(
+        &mut tx,
+        "SELECT '{}'::text FROM apub_media_blurhash_queue
+         WHERE post_id=$1 AND lease_id=$2 FOR UPDATE",
+        &[post_id, lease],
+    )
+    .await?;
+    if owned.is_empty() {
+        return Ok(());
+    }
+    let current = versions.first().filter(|row| row["active"] == true);
+    let same_version = current.is_some_and(|row| {
+        job["active"] == true
+            && row["actor_id"] == job["actor_id"]
+            && row["updated_at"] == job["updated_at"]
+            && row["media"] == job["media"]
+    });
+    if same_version && let Some(enriched) = enriched {
+        let updated = string(job, "updated_at")?
+            .parse::<jiff::Timestamp>()
+            .map_err(internal)?;
+        store_blurhashes(
+            &mut tx,
+            post_id,
+            string(job, "actor_id")?,
+            updated,
+            &job["media"].to_string(),
+            enriched,
+        )
+        .await?;
+    }
+    let retry_current = same_version
+        && !retry.is_empty()
         && job["attempts"]
             .as_u64()
-            .is_some_and(|attempts| attempts < 3)
-    {
+            .is_some_and(|attempts| attempts < 3);
+    let retry_new_version = !same_version
+        && current
+            .and_then(|row| row["media"].as_array())
+            .is_some_and(|media| media.iter().any(needs_media_blurhash));
+    if retry_current {
         toasty::sql::statement(
             "UPDATE apub_media_blurhash_queue SET lease_id=NULL, retry_image_ids=$3::jsonb, available_at=now()+
              CASE WHEN attempts=1 THEN interval '30 seconds' ELSE interval '2 minutes' END
              WHERE post_id=$1 AND lease_id=$2",
+        ).bind(post_id).bind(lease).bind(json!(retry).to_string()).exec(&mut tx).await?;
+    } else if retry_new_version {
+        toasty::sql::statement(
+            "UPDATE apub_media_blurhash_queue SET lease_id=NULL,retry_image_ids=NULL,attempts=0,
+             available_at=now() WHERE post_id=$1 AND lease_id=$2",
         )
-        .bind(post_id).bind(&lease).bind(json!(retry).to_string()).exec(&mut db).await?;
+        .bind(post_id)
+        .bind(lease)
+        .exec(&mut tx)
+        .await?;
     } else {
         toasty::sql::statement(
             "DELETE FROM apub_media_blurhash_queue WHERE post_id=$1 AND lease_id=$2",
         )
         .bind(post_id)
-        .bind(&lease)
-        .exec(&mut db)
+        .bind(lease)
+        .exec(&mut tx)
         .await?;
     }
-    Ok(true)
+    tx.commit().await?;
+    Ok(())
 }
 
 async fn store_blurhashes(
-    db: &mut toasty::Db,
+    db: &mut impl toasty::db::Executor,
     post_id: &str,
     actor_id: &str,
     updated: jiff::Timestamp,
@@ -855,6 +912,40 @@ mod media_proxy_tests {
         let row = one(&mut tx, "SELECT json_build_object('content',content,'media',media)::text FROM apub_remote_posts WHERE id=$1", &[&note]).await?;
         assert_eq!(row["content"], "updated");
         assert_eq!(row["media"], serde_json::from_str::<Value>(replacement)?);
+        let job = one(
+            &mut tx,
+            "SELECT json_build_object('id',id,'actor_id',actor_id,'updated_at',updated_at,
+              'media',media,'active',true,'attempts',1)::text FROM apub_remote_posts WHERE id=$1",
+            &[&note],
+        )
+        .await?;
+        tx.commit().await?;
+        toasty::sql::statement(
+            "INSERT INTO apub_media_blurhash_queue(post_id,lease_id) VALUES($1,'current-lease')",
+        )
+        .bind(note.as_str())
+        .exec(&mut db)
+        .await?;
+        let replacement_hash =
+            r#"[{"url":"https://example.test/replacement.png","blurhash":"000000"}]"#;
+        finish_media_blurhash(&mut db, &job, "expired-lease", Some(replacement_hash), &[]).await?;
+        let mut tx = db.transaction().await?;
+        let unchanged = one(&mut tx,
+            "SELECT json_build_object('media',p.media,'lease',q.lease_id)::text FROM apub_remote_posts p
+             JOIN apub_media_blurhash_queue q ON q.post_id=p.id WHERE p.id=$1", &[&note]).await?;
+        assert_eq!(unchanged["media"], job["media"]);
+        assert_eq!(unchanged["lease"], "current-lease");
+        tx.commit().await?;
+        finish_media_blurhash(&mut db, &job, "current-lease", Some(replacement_hash), &[]).await?;
+        let mut tx = db.transaction().await?;
+        let completed = one(&mut tx,
+            "SELECT json_build_object('media',p.media,'queued',q.post_id IS NOT NULL)::text FROM apub_remote_posts p
+             LEFT JOIN apub_media_blurhash_queue q ON q.post_id=p.id WHERE p.id=$1", &[&note]).await?;
+        assert_eq!(
+            completed["media"],
+            serde_json::from_str::<Value>(replacement_hash)?
+        );
+        assert_eq!(completed["queued"], false);
         Ok(())
     }
 

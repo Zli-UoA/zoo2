@@ -248,6 +248,7 @@ erDiagram
       bigint file_size
       timestamptz created_at
       boolean thumbnail_accounted
+      bigint unconfirmed_thumbnail_bytes
     }
     home_image_upload_rates {
       text user_id PK,FK
