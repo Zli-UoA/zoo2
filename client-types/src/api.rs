@@ -10,8 +10,9 @@ pub struct Me {
     pub display_name: String,
 }
 
-/// チャンネルごとの通知レベル（`channel_user.notification_level`）。
-/// 値は Shape と REST の両方で同じ文字列を使う。
+/// チャンネルごとの通知レベル（`user_channel_notification_settings.notification_level`）。
+/// `channel_user.notification_level` は旧アプリ互換列で、実際の設定は入らない。
+/// 値は Shape（`channel_notification_settings`）と REST の両方で同じ文字列を使う。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NotificationLevel {

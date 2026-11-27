@@ -435,8 +435,8 @@ export const storyChannelUsers: ChannelUserRow[] = [
 ];
 
 /**
- * 本人の通知設定だけを配信する Shape の fixture。メンバー一覧には他人の設定を置かない。
- * 既定では全チャンネル「メンションのみ」。
+ * 本人の通知設定だけを配信する Shape（`user_channel_notification_settings`）の fixture。
+ * メンバー一覧（channel_user）には設定列がない。既定では全チャンネル「メンションのみ」。
  */
 export const storyChannelNotificationSettings: ChannelNotificationSettingRow[] = storyChannels.map(
   (channel) => ({

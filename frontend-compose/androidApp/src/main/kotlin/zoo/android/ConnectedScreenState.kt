@@ -946,7 +946,7 @@ internal class ConnectedScreenState(
         }
     }
 
-    fun channelSettings(channel: Row, member: Boolean, encrypted: Boolean, notificationLevel: String): List<SettingsGroup> {
+    fun channelSettings(channel: Row, member: Boolean, encrypted: Boolean, notificationLevel: String?): List<SettingsGroup> {
         val archived = channel.present("archive_at")
         val entries = buildList {
             if (channel.text("description").isNotBlank()) add(SettingsEntry.Information("description", channel.text("description")))
@@ -973,12 +973,17 @@ internal class ConnectedScreenState(
         val groups = mutableListOf(SettingsGroup("チャンネル", entries))
         // 参加中だけ設定できる。値は channel_notification_settings の Shape の行から渡され、
         // 書き込み後も同じ行の更新で選択状態が変わる（設定ごとの REST 取得は増やさない）。
+        // 行が届く前は現在値が分からないので、誤って「メンション」が選択済みに見えないよう
+        // 選択肢を出さず「読み込み中」を示す（Web と同じ）。
         if (member && !archived) {
-            groups += SettingsGroup("通知", listOf(
-                SettingsEntry.Choice("notification:all", "すべての投稿", notificationLevel == "all"),
-                SettingsEntry.Choice("notification:mentions", "メンション", notificationLevel == "mentions"),
-                SettingsEntry.Choice("notification:mute", "メンション以外を通知しない", notificationLevel == "mute"),
-            ))
+            val notificationEntries = notificationLevel?.let { level ->
+                listOf(
+                    SettingsEntry.Choice("notification:all", "すべての投稿", level == "all"),
+                    SettingsEntry.Choice("notification:mentions", "メンション", level == "mentions"),
+                    SettingsEntry.Choice("notification:mute", "メンション以外を通知しない", level == "mute"),
+                )
+            } ?: listOf(SettingsEntry.Information("notification:loading", "通知設定を読み込み中"))
+            groups += SettingsGroup("通知", notificationEntries)
         }
         return groups
     }
@@ -1183,7 +1188,10 @@ internal class ConnectedScreenState(
                 }
                 action.id.startsWith("notification:") && channel != null -> {
                     val level = action.id.substringAfter(':')
-                    if (level in setOf("all", "mentions", "mute")) {
+                    // 設定行が届く前に現在値を確定できないので、書き込みもしない（Web と同じ）。
+                    if (level in setOf("all", "mentions", "mute") &&
+                        channelNotificationLevel(app.repo.notificationSettings.rows.value, channelId) != null
+                    ) {
                         if (!platform.env.online) {
                             // request() はオフラインだと PATCH を送らず黙って戻るので、
                             // 選択が保存されなかったことを利用者に伝える（共通の通信エラー表示）。

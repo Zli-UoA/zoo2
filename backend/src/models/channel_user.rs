@@ -13,7 +13,9 @@ pub struct ChannelUser {
     #[key]
     pub channel_id: String,
     pub joined_at: jiff::civil::DateTime,
-    /// このチャンネルの通知レベル。新規参加行は `mentions`（既存行も DEFAULT で移行済み）。
+    /// 旧アプリ互換列。実際の設定は `user_channel_notification_settings` が正本で、
+    /// この列には実際の設定を入れず常に `mentions`。旧アプリがここへ書いた値は
+    /// トリガーで正本へ移送され、この列は既定値へ戻る。
     #[serde(default = "default_notification_level")]
     #[default("mentions".to_owned())]
     pub notification_level: String,

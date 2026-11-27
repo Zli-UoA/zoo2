@@ -223,9 +223,9 @@ function channelUsersCollection(
 }
 
 /**
- * 自分が参加しているチャンネルの通知レベル。メンバー一覧（channelUsers）には
- * 他人の設定が混ざるため、本人の行だけを配信する専用 Shape を購読する。
- * proxy ではバックエンドが認証ユーザーの行だけに絞る。
+ * 自分が参加しているチャンネルの通知レベル。設定は `user_channel_notification_settings`
+ * にあり、メンバー一覧（channel_user）には設定列がない。本人の行だけを配信する
+ * 専用 Shape を購読し、proxy ではバックエンドが認証ユーザーの行だけに絞る。
  * 更新は PATCH + この Shape の txid 待ちで確定させる。
  */
 function channelNotificationSettingsCollection(

@@ -1183,7 +1183,8 @@
     {
       "file": "src/components/chat/ChannelHeader.tsx",
       "story": "src/components/chat/ChannelHeader.stories.tsx",
-      "reason": "Pinned でピン留め済みの aria-pressed、PinnedArchived でアーカイブ中のピンを解除できること、Archived でアーカイブ中の未ピンにはボタンを出さないこと、PinLimit で上限エラー時のクリックと状態維持を確認する。Notification* で本人の通知設定コレクションから読む 3 段階の現在値・同期前の読込中と選択不可・一般メンバーからの操作・PATCH の反映・暗号化チャンネルの説明・DM メニューからの導線を確認する。"
+      "checks": ["src/components/chat/ChannelHeader.browser.test.tsx"],
+      "reason": "Pinned でピン留め済みの aria-pressed、PinnedArchived でアーカイブ中のピンを解除できること、Archived でアーカイブ中の未ピンにはボタンを出さないこと、PinLimit で上限エラー時のクリックと状態維持を確認する。Notification* で本人の通知設定コレクションから読む 3 段階の現在値・同期前の読込中と選択不可・一般メンバーからの操作・PATCH の反映・暗号化チャンネルの説明・DM メニューからの導線を確認する。ラジオ選択で PATCH が送られること、保存中の二重操作が止まること、失敗時に levelError を出して選択を戻すことは ChannelHeader.browser.test.tsx で確認する。"
     },
     {
       "file": "src/components/chat/ChannelListItem.tsx",

@@ -16,10 +16,16 @@
 - 継続的な表示とトースト判定の設定は `/api/shapes/channel_notification_settings` をアカウントごとに1本購読する。実テーブルは `user_channel_notification_settings`、列は `user_id,channel_id,notification_level`、`where` は `user_id = $1` で、本人の行だけが届く。メンバー一覧の `/api/shapes/channel_users` は列を `user_id,channel_id,joined_at` に制限し、`notification_level` を一切配らない。設定が別テーブルになったため、ローリング更新中に旧バックエンドがメンバー一覧を配っても他人の設定は読めない。REST の GET/PATCH の契約は変えない。
 - `mentions` は従来どおりで、`mention` / `reply` / `dm` / `reaction` を届ける。
 - `all` はそのチャンネルの全通知を受け取る。通常投稿は `notification_type = 'channel_message'` として1件作る（新種別。`notification_events` に type の CHECK はない）。暗号化チャンネルでも本文を解析せず、Push は既存の暗号化プレースホルダを使う。
-- `mute` には明示メンション（`@user` / `@channel` / `@here` と E2EE の `explicit_mentions.user_ids`）だけを届ける。`reply` / `reaction` / `dm` / `channel_message` は作らない。未読カウントの扱いは変えない。
+- `mute` には明示メンション（`@user` / `@channel` / `@here` と E2EE の `explicit_mentions.user_ids`）だけを届ける。`reply` / `reaction` / `dm` / `channel_message` は作らない。`@channel` / `@here` は `mute` でも届く例外なので、設定画面の文言もそのことが分かるようにする（文言の変更は React 側で行う）。未読カウントの扱いは変えない。
 - `missed_call` はレベルの対象外で、従来どおり届ける。
+- 退出（`channel_user` 行の削除）で `channel_user_notification_settings_sync` トリガーが設定行も削除する。再参加すると設定行は `mentions` で作り直され、退出前の `all` / `mute` は引き継がれない。
+- APNs でも `channel_message` を通常通知（`notificationType: channel_message`）として届ける。暗号化チャンネルでは本文を解析せず既存のプレースホルダを使う。iOS アプリ側の通知レベル設定は #742 で未対応のため、iOS ではこの設定を変更できない。
+
+`channel_user.notification_level` は旧アプリ互換列で、実際の設定は入れず常に `mentions`。旧アプリがこの列へ書いた値は `channel_user_notification_level_legacy` トリガーが `user_channel_notification_settings` へ移送し、旧列は既定値へ戻す。撤去するのは、この列を読み書きする旧アプリが本番と preview の両方で配布されなくなったことを確認した後。参加・退出時の設定行の作成・削除をバックエンドの参加・退出処理へ移し、2つのトリガー（`channel_user_notification_level_legacy` と `channel_user_notification_settings_sync`）を外してから、別PRで列を削除する。列の削除は旧アプリが動いたままだと壊れるため、移行と削除を同じPRで行わない。
 
 1投稿につき1ユーザー1件に集約し、優先度は `mention > reply > dm > channel_message` の順（`entry().or_insert()`）。スレッド返信では、親投稿者に加えて `thread_participants` の `left_at IS NULL` な参加者へ `reply` を出す。公開チャンネルは非メンバーも対象にでき、非公開は `channel_user` 所属を確認する。本人・bot・`is_deactivated`・退出済みの参加者は除外し、公開チャンネルから外されたゲストにも届けない。Home 経由の投稿は、事前に読み取った `messages.parent_id`（正規化済みのルート。`collecting` 中は直接の返信先）を参加者の検索キーに使う。探索上限と実行計画の方針は [SQLの設計と性能基準](query-design.md) の「通知レベルとスレッド参加者への返信通知」を参照。
+
+運用上限: 1返信の通知先候補数 `T`（`all` 設定者 + 生存スレッド参加者 + メンション等の合計）は **10,000 以下**に保つ。返信はルート行を `FOR NO KEY UPDATE` で通知 INSERT の完了まで保持するため、`T` に比例して同じルートへの並列返信・参加・退出が待つ（T=10,000 で約2〜3秒、T=150,000 で約34〜42秒の実測）。実測値と上限の根拠は [SQLの設計と性能基準](query-design.md) の「返信のルート行ロック保持時間と並列返信の待ち」を参照。
 
 `channel_notifications` と `federated_notifications` は共通テーブルの更新可能なビューで、別の保存先ではない。チャンネルの既存DTOと連合通知のアクター・投稿表示用DTOは各ビューから取得する。Electricの通知Shapeも共通テーブルからチャンネル通知を配信し、従来の8列だけを返す。チャンネル・メッセージの削除、非公開チャンネルの所属確認、ユーザー別フィルターは引き続き適用する。React・Composeのクライアント側スキーマやUIを変更せず利用できる。
 
@@ -34,6 +40,8 @@
 ロック・バックフィル・同期トリガーの追加は単一の `DO` ブロックで実行し、Atlasの検証時に外側のトランザクションがない場合も原子的に適用する。
 
 旧 `notifications` / `apub_notifications` はローリングデプロイ中の旧アプリとの互換用に残す。両方向の行トリガーで作成・更新・削除を同じトランザクション内に反映する。内容が同じ行のUPSERTは更新しないため、相互呼び出しは収束する。旧テーブルの外部キーによる削除も共通テーブルへ反映し、連合通知の更新は既存のHomeライブ配信を継続する。旧テーブルの削除は、新実装の本番反映を確認した後の別PRで扱う。
+
+`20261208000001_apub_quote_grants.sql` は main の `20261205000002_apub_quote_grants.sql` を改番したもの。このブランチの preview DB は既に 20261208 系のマイグレーションを適用済みで、後から `20261205000002` を追加すると Atlas が out-of-order として適用を拒否するため、ファイル名を `20261208000001` に維持する。BASE 側のマイグレーションが適用済みの DB でも冪等に再実行できるよう、テーブル・インデックスは `IF NOT EXISTS`、トリガーは `DROP ... IF EXISTS` の後に作り直す形にしている。
 
 検証先は `backend/tests/notification_storage_test.rs`。通知元を跨いだ選択／全件既読、所有者・チャンネル境界、空選択・重複ID・上限、旧／新書き込みの同期、メタデータ、削除と外部キーの連鎖、Electricの配信テーブル・列・権限フィルターを確認する。既存のActivityPub・通知・通知コンテキストのAPIテストも共通保存先で実行する。
 

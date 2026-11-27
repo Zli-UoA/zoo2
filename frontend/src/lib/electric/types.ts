@@ -114,8 +114,9 @@ export type ChannelUserRow = {
 };
 
 /**
- * チャンネルごとの通知設定。メンバー一覧（channel_user）からは届かず、
- * 本人の行だけが `channelNotificationSettings` Shape で配信される。
+ * チャンネルごとの通知設定。設定の置き場は `user_channel_notification_settings` で、
+ * メンバー一覧（channel_user）には設定列がない。本人の行だけが
+ * `channelNotificationSettings` Shape で配信される。
  */
 export type ChannelNotificationSettingRow = {
   user_id: string;

@@ -12,10 +12,16 @@
 -- メンバー一覧から実際の設定が読めてしまう。先にロックすれば旧バックエンドの
 -- INSERT/UPDATE/DELETE はコミットまで待ち、書込みを取りこぼさずに移行できる。
 -- txmode none を使うと途中でロックが解放されるため使わない。
--- 運用影響: ロック保持中は channel_user への参加・退出・通知レベル更新が待たされる（SELECT は可）。
+-- ロック取得は NOWAIT で即時失敗させる。取得できなければ Atlas はこのファイルを未適用のまま
+-- トランザクションをロールバックし、書き込みが落ち着いた後の再デプロイで再試行できる。
+-- 待たせると取得待ちのロック要求が後続の参加・退出を自身の後ろに並べさせ、
+-- 移行が終わるまでメンバー操作全体が止まるため、あえて失敗を選ぶ（20261204000003 と同じ方針）。
+-- 運用影響: デプロイ時に channel_user への同時書き込みがあるとマイグレーションが失敗する。
+-- 再デプロイまで設定テーブルへの分離は遅れるが、旧バックエンドの動作は変わらない。
+-- ロックが取れた後は保持中に channel_user への参加・退出・通知レベル更新が待たされる（SELECT は可）。
 -- バックフィルは channel_user の全行を走査して新テーブルへ書くため、所属行数が多いほど
 -- 待ち時間が伸びる。移行の実行時間とロック待ちを監視する。
-LOCK TABLE channel_user IN SHARE ROW EXCLUSIVE MODE;
+LOCK TABLE channel_user IN SHARE ROW EXCLUSIVE MODE NOWAIT;
 CREATE TABLE IF NOT EXISTS "user_channel_notification_settings" (
   "user_id" text NOT NULL,
   "channel_id" text NOT NULL,
@@ -68,6 +74,7 @@ BEGIN
       ON CONFLICT (user_id, channel_id) DO UPDATE SET notification_level = EXCLUDED.notification_level
        WHERE user_channel_notification_settings.notification_level <> EXCLUDED.notification_level;
     END IF;
+    -- 旧アプリが読む列には実際の設定を残さない。
     NEW.notification_level := 'mentions';
     RETURN NEW;
   END IF;
@@ -79,6 +86,7 @@ BEGIN
   VALUES (NEW.user_id, NEW.channel_id, NEW.notification_level)
   ON CONFLICT (user_id, channel_id) DO UPDATE SET notification_level = EXCLUDED.notification_level
    WHERE user_channel_notification_settings.notification_level <> EXCLUDED.notification_level;
+  -- 旧アプリが読む列には実際の設定を残さない。
   NEW.notification_level := OLD.notification_level;
   RETURN NEW;
 END;

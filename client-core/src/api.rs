@@ -895,7 +895,9 @@ impl ApiClient {
         self.write(Method::POST, &path, None).await
     }
 
-    /// チャンネルごとの通知レベル。Shape の `channel_user.notification_level` と同じ値。
+    /// チャンネルごとの通知レベル。設定の正本は `user_channel_notification_settings` で、
+    /// Shape の `channel_notification_settings` と同じ値。
+    /// `channel_user.notification_level` は旧アプリ互換列で、実際の設定は入らない。
     pub async fn get_channel_notification_settings(
         &self,
         channel_id: &str,
