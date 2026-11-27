@@ -446,12 +446,12 @@ data class MfmRuby(val base: String, val reading: String)
 
 /** The reading is root text; spaces inside markup belong to the base. */
 fun mfmRuby(source: String, customEmojis: Set<String> = emptySet()): MfmRuby {
-    for (slice in inlineSlices(source, customEmojis)) {
-        if (slice.token.kind != "text") continue
-        val space = (slice.start until slice.end).firstOrNull { source[it].isWhitespace() } ?: continue
-        return MfmRuby(source.take(space), source.substring(space + 1).trim())
-    }
-    return MfmRuby(source, "")
+    val last = inlineSlices(source, customEmojis).lastOrNull() ?: return MfmRuby(source, "")
+    if (last.token.kind != "text") return MfmRuby(source, "")
+    val rawSpace = (last.start until last.end).firstOrNull { source[it].isWhitespace() }
+        ?: return MfmRuby(source, "")
+    val reading = last.token.value.dropWhile { !it.isWhitespace() }.trim()
+    return MfmRuby(source.take(rawSpace), reading)
 }
 
 data class MfmCodeBlock(val body: String, val language: String)

@@ -79,6 +79,15 @@ class TimelineImageSourcesTest {
     }
 
     @Test
+    fun ignoresMissingEmojiBeyondTheImageLimit() {
+        val known = (1..32).associate { index -> ":emoji$index:" to "$base/emoji/$index" }
+        val body = known.keys.joinToString(" ") + " :unknown:"
+        val resolved = timelineBodyEmojis(base, obj(), obj(), body, false, known)
+        assertFalse(hasMissingWorkspaceEmoji(body, resolved))
+        assertTrue(hasMissingWorkspaceEmoji(":unknown: $body", resolved))
+    }
+
+    @Test
     fun registeredMediaUsesTheProxyEvenWhenTheOriginalIsNotHttps() {
         val media = timelinePostMedia(base, obj(
             "url" to "http://remote.example/old.png", "media_type" to "image/png", "image_id" to imageId,

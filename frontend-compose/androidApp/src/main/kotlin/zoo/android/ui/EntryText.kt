@@ -89,9 +89,12 @@ internal fun formatEntry(
     }
 }
 
+private fun entryEmojiCodes(formatted: AnnotatedString): List<String> =
+    formatted.getStringAnnotations(emojiTag, 0, formatted.length).map { it.item }.distinct().take(32)
+
 internal fun containsRenderedEmoji(body: String, known: Set<String>, candidates: Set<String>): Boolean {
     val formatted = formatEntry(body, known + candidates)
-    return formatted.getStringAnnotations(emojiTag, 0, formatted.length).any { it.item in candidates }
+    return entryEmojiCodes(formatted).any { it in candidates }
 }
 
 /** [text] with the parts that hit [highlight]'s terms in its style. */
@@ -301,7 +304,7 @@ internal fun EntryBody(
         formatEntry(body, emoji.keys, highlight, links, lookup)
     }
     val codes = remember(formatted) {
-        formatted.getStringAnnotations(emojiTag, 0, formatted.length).map { it.item }.distinct().take(32)
+        entryEmojiCodes(formatted)
     }
     val images = remember(codes, emoji, loader, cached) {
         mutableStateMapOf<String, ImageBitmap>().apply {
