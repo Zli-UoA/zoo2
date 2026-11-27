@@ -790,7 +790,7 @@ internal fun ColumnScope.TimelineWithInput(
                         wasScrolling = false
                     }
                     if (layout.viewportSize.height > 0 && layout.totalItemsCount > 0) {
-                        if (tracking.first && scroll.canScrollForward) {
+                        if (followEnd && canFollowEnd && scroll.canScrollForward) {
                             val lastIndex = layout.totalItemsCount - 1
                             val offset = layout.visibleItemsInfo.lastOrNull()?.takeIf { it.index == lastIndex }?.size ?: 0
                             scroll.requestScrollToItem(lastIndex, offset)
