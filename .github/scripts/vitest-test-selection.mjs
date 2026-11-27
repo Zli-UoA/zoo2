@@ -109,12 +109,16 @@ export function selectSourceCases(project, selection, changes, base, { compiler,
       if (project === 'browser') return /\.browser\.test\.tsx?$/.test(path);
       return /(?<!\.browser)\.test\.ts$/.test(path);
     };
-    const virtual = new Map(), patterns = new Map();
+    const virtual = new Map(), patterns = new Map(), fullFiles = [];
     for (const path of candidates.filter(matches)) {
       const relevant = selectNodeTests([path], changes, { compiler: ts, read, exists, frontendAliases: true });
       if (!relevant.length) continue;
       const cases = caseDependencies(read(path), ts);
-      if (!cases) { log(`Case dependencies: unsupported test declarations (${path})`); return selection; }
+      if (!cases) {
+        log(`Case dependencies: unsupported test declarations; running file in full (${path})`);
+        fullFiles.push(path.slice('frontend/'.length));
+        continue;
+      }
       // All imported modules execute at file load, even if a particular case
       // does not reference their bindings. Initialization with possible side
       // effects is therefore a dependency of every case, including transitively.
@@ -127,7 +131,10 @@ export function selectSourceCases(project, selection, changes, base, { compiler,
           if (modulePath !== path && !pureModule(source, ts)) effects.add(modulePath);
         },
       });
-      if (unknown) return selection;
+      if (unknown) {
+        fullFiles.push(path.slice('frontend/'.length));
+        continue;
+      }
       cases.forEach((c, index) => {
         const entry = `${dirname(path)}/__selected_case_${index}_${virtual.size}.ts`;
         const effectImports = [...effects].map(modulePath => {
@@ -143,6 +150,6 @@ export function selectSourceCases(project, selection, changes, base, { compiler,
       read: path => virtual.has(path) ? virtual.get(path) : read(path),
       exists: path => virtual.has(path) || exists(path),
     });
-    return { ...selection, patterns: [...new Set(selected.map(path => patterns.get(path)))] };
+    return { ...selection, patterns: [...new Set(selected.map(path => patterns.get(path)))], fullFiles };
   } catch (error) { log(`Case dependencies: analysis unavailable (${error.message}); retaining file-level tests`); return selection; }
 }

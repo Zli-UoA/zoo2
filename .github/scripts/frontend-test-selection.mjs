@@ -18,11 +18,13 @@ export function isRelatedFrontendModule(path, eventName) {
 }
 
 export function isVitestInput(path) {
+  if (path === 'frontend/e2e/mock-idp.ts') return true;
   return path.startsWith('frontend/') && !/^frontend\/(e2e\/|playwright[^/]*\.config\.ts$|scripts\/(?:pwa|avatar-cache|offline-csp)\.test\.mjs$)/.test(path);
 }
 
 function isPrVitestInput(change, project) {
-  if (['unit', 'browser'].includes(project) && change.path.startsWith('frontend/.storybook/')) return false;
+  if (['unit', 'browser'].includes(project) && change.path.startsWith('frontend/.storybook/') &&
+      !change.path.startsWith('frontend/.storybook/fixtures/')) return false;
   return !isLightweightChange(change) && isFrontendTestInput(change.path) &&
     (isVitestInput(change.path) || !/^(frontend\/|infra\/)/.test(change.path));
 }
@@ -52,6 +54,7 @@ export function testArguments(project, selection) {
   if (selection.mode === 'related') args.push('related', ...selection.files);
   args.push('--project', project, '--run');
   if (selection.mode === 'related') args.push('--passWithNoTests');
+  for (const file of selection.fullFiles ?? []) args.push('--exclude', file);
   if (selection.patterns) args.push('--testNamePattern', selection.patterns.join('|') || '(?!)');
   else if (selection.titles?.length) args.push('--testNamePattern', selection.titles.map(title => `(?:^| )${escapePattern(title)}$`).join('|'));
   if (project === 'storybook') args.push('--maxWorkers=1', '--fileParallelism=false');
@@ -96,8 +99,16 @@ export function runTests({ project, eventName, event, git = execFileSync, run = 
   const selection = selectSourceCases(project, selectCaseTitles(project, selectTests(eventName, event, changes, project), changes, base, { git, compiler }), changes, base, { git, compiler, log });
   log(`Test Selection (${project}): ${selection.mode}; ${selection.reason}${selection.titles ? `; ${selection.titles.length} case titles` : ''}${selection.patterns ? `; ${selection.patterns.length} cases affected by source dependencies` : ''}`);
   // A real test failure is propagated; it is never retried as a full run.
-  const result = run('pnpm', testArguments(project, selection), { cwd: frontend, stdio: 'inherit' });
-  return result.status ?? 1;
+  const options = { cwd: frontend, stdio: 'inherit' };
+  if (!selection.fullFiles?.length || selection.patterns?.length) {
+    const result = run('pnpm', testArguments(project, selection), options);
+    if (result.status !== 0) return result.status ?? 1;
+  }
+  if (selection.fullFiles?.length) {
+    const args = [...testArguments(project, { mode: 'full' }), ...selection.fullFiles];
+    return run('pnpm', args, options).status ?? 1;
+  }
+  return 0;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

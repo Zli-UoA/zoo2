@@ -149,3 +149,13 @@ test('Storybook settings broaden VRT and Storybook without expanding unit or bro
     assert.equal(selectTests('pull_request', event, mixed, project).mode, 'full');
   }
 });
+
+test('shared fixtures remain inputs to Vitest even outside src', () => {
+  for (const [project, path] of [
+    ['unit', 'frontend/.storybook/fixtures/sample.eml'],
+    ['browser', 'frontend/.storybook/fixtures/sample.eml'],
+    ['unit', 'frontend/e2e/mock-idp.ts'],
+  ]) {
+    assert.equal(selectTests('pull_request', event, [...changes, { status: 'M', path }], project).mode, 'full');
+  }
+});

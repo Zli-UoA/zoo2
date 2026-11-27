@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { isAndroidFrontendOnly } from './frontend-test-selection-paths.mjs';
@@ -56,6 +56,7 @@ export function readChanges(base, git = execFileSync) {
 
 function translationEntries(value, file, key = '', entries = new Map()) {
   if (typeof value === 'string' && key) {
+    if (!value.trim()) throw new Error(`${file}: empty translation for ${key}`);
     const variables = [...value.matchAll(/{{\s*-?\s*([\w.]+)(?:\s*,[^{}]+)?\s*}}/g)];
     if (value.replace(/{{\s*-?\s*[\w.]+(?:\s*,[^{}]+)?\s*}}/g, '').match(/{{|}}/)) {
       throw new Error(`${file}: invalid interpolation in ${key}`);
@@ -77,6 +78,26 @@ export function translationOnlyChange(before, after, file) {
   const oldEntries = translationEntries(JSON.parse(before), file);
   const newEntries = translationEntries(JSON.parse(after), file);
   return [...oldEntries].every(([key, variables]) => newEntries.get(key) === variables);
+}
+
+export function validateTranslationDictionaries(dictionaries) {
+  const reference = translationEntries(JSON.parse(dictionaries['ja.json']), 'ja.json');
+  for (const [file, source] of Object.entries(dictionaries)) {
+    const entries = translationEntries(JSON.parse(source), file);
+    for (const key of entries.keys()) {
+      if (!reference.has(key)) throw new Error(`${file}: unexpected translation key ${key}`);
+    }
+    for (const [key, variables] of reference) {
+      if (entries.get(key) !== variables) throw new Error(`${file}: missing key or mismatched interpolation for ${key}`);
+    }
+  }
+}
+
+export function validateChangedTranslations(changes) {
+  if (!changes.some(({ path }) => isFrontendLocale(path))) return;
+  const directory = resolve(root, 'frontend/src/lib/i18n/locales');
+  const files = readdirSync(directory).filter(name => name.endsWith('.json'));
+  validateTranslationDictionaries(Object.fromEntries(files.map(file => [file, readFileSync(resolve(directory, file), 'utf8')])));
 }
 
 export function classifyTranslationChanges(base, changes, { git = execFileSync, read = readFileSync } = {}) {

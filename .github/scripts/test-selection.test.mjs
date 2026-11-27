@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { classifyTranslationChanges, translationOnlyChange } from './test-selection-diff.mjs';
+import { classifyTranslationChanges, translationOnlyChange, validateTranslationDictionaries } from './test-selection-diff.mjs';
 import { test } from 'node:test';
 import { readdirSync } from 'node:fs';
 import { selectSuites } from './test-selection.mjs';
@@ -290,4 +290,26 @@ test('Playwright fixture and config ownership does not widen unrelated specs', (
   const module = selectSuites('pull_request', [change('frontend/src/components/chat/messages/MessageList.tsx')]);
   assert.equal(module.frontend.layout, true);
   assert.equal(module.frontend.container, false);
+});
+
+test('shared fixtures and distribution resources select their direct consumers', () => {
+  const plan = selectSuites('pull_request', [
+    change('frontend/.storybook/fixtures/sample.eml'),
+    change('frontend/e2e/mock-idp.ts'),
+    change('frontend/public/manifest.webmanifest'),
+    change('frontend/src/styles.css'),
+  ]);
+  for (const suite of ['unit', 'browser', 'vrt', 'auth', 'e2ee', 'pwa', 'layout']) {
+    assert.equal(plan.frontend[suite], true, suite);
+  }
+  assert.equal(selectSuites('pull_request', [change('frontend/playwright.layout.config.ts')]).frontendBuild.check, true);
+  assert.equal(selectSuites('pull_request', [change('frontend/e2e/layout.spec.ts')]).frontendBuild.check, true);
+});
+
+test('lightweight translations reject missing keys, changed placeholders, and empty strings', () => {
+  const reference = { 'ja.json': '{"label":"{{count}} 件"}' };
+  for (const en of ['{}', '{"label":""}', '{"label":"{{total}} items"}', '{"label":"{{count}} items","other":"Extra"}']) {
+    assert.throws(() => validateTranslationDictionaries({ ...reference, 'en.json': en }));
+  }
+  assert.doesNotThrow(() => validateTranslationDictionaries({ ...reference, 'en.json': '{"label":"{{count}} items"}' }));
 });

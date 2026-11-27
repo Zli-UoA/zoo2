@@ -60,7 +60,7 @@ jobs:
             // zoo2-infra の zli-k8s-zoo2-heavy の maxRunners と同じ値にする。
             const HEAVY_RUNNERS = 2;
             // 重いジョブ（large-runs-on）を持つ workflow。merge group は Hosted 固定なので、数えない。
-            const LARGE_WORKFLOWS = ['ci-backend.yaml', 'ci-frontend.yaml'];
+            const LARGE_WORKFLOWS = ['ci-backend.yaml', 'ci-frontend.yaml', 'pr-ci.yaml'];
             // 一覧とジョブの取得の、リクエストの総数（ページを含む）。超えたら、heavy の使用状況は不明として扱う。
             const MAX_HEAVY_API_REQUESTS = 30;
             // select ジョブの timeout-minutes（3分）に収める。超えたら heavy の使用状況は不明として扱う。

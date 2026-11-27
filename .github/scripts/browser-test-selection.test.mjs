@@ -196,14 +196,17 @@ test('unit test cases can be selected from a pure app module edit', () => {
   const sources = {
     [path]: 'export function first() { return 1; }',
     'frontend/src/Second.ts': 'export function second() { return 2; }',
+    'frontend/src/fallback.test.ts': `import { first } from './First'; it.each([1])('shared %s', () => first());`,
     [spec]: `import {first} from './First';
 import {second} from './Second';
 test('first case', () => first());
 test('second case', () => second());`,
   };
   const result = selectSourceCases('unit', { mode: 'related', files: ['src/First.ts'] }, [{ path, status: 'M' }], base, {
-    compiler, files: [spec], git: () => 'export function first() { return 0; }',
+    compiler, files: [spec, 'frontend/src/fallback.test.ts'], git: () => 'export function first() { return 0; }',
     read: path => sources[path], exists: path => Object.hasOwn(sources, path),
   });
   assert.deepEqual(result.patterns, ['(?:^| )first case$']);
+  assert.deepEqual(result.fullFiles, ['src/fallback.test.ts']);
+  assert.ok(testArguments('unit', result).includes('--exclude'));
 });

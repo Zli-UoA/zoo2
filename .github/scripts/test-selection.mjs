@@ -1,6 +1,6 @@
 import { appendFileSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { classifyTranslationChanges, isFrontendTestInput, isLightweightChange, readChanges, testBaseSha, usesSelectiveTests, workflowChanges } from './test-selection-diff.mjs';
+import { classifyTranslationChanges, isFrontendTestInput, isLightweightChange, readChanges, testBaseSha, usesSelectiveTests, validateChangedTranslations, workflowChanges } from './test-selection-diff.mjs';
 import { routeTestTargets, testLeg } from './backend-e2e-selection.mjs';
 import { isRelatedFrontendModule, isVitestInput } from './frontend-test-selection.mjs';
 import { playwrightOwners } from './playwright-test-selection.mjs';
@@ -117,8 +117,11 @@ function selectPullRequest(changes, full) {
       if (path === 'infra/frontend-nginx.conf') selected.push('offline');
       enable(path, ...selected);
     } else if (Object.hasOwn(specs, path)) {
+      if (/\.tsx?$/.test(path)) frontendBuild.check = true;
       enable(path, specs[path]);
     } else if (/^frontend\/playwright[^/]*\.config\.ts$|^frontend\/e2e\//.test(path)) {
+      if (/\.tsx?$/.test(path)) frontendBuild.check = true;
+      if (path === 'frontend/e2e/mock-idp.ts') frontend.unit = true;
       const owners = playwrightOwners(path) ?? ['i18n', 'layout', 'frontend-selection', 'csp', 'oidc', 'e2ee'];
       enable(path, ...owners.map(suite => suite === 'csp' ? 'container' : suite === 'oidc' ? 'auth' : suite));
     } else if (path.startsWith('frontend/')) {
@@ -127,20 +130,23 @@ function selectPullRequest(changes, full) {
       else if (test && /\.browser\.test\.tsx?$/.test(path)) enable(path, 'browser');
       else if (test && /\.test\.ts$/.test(path)) enable(path, 'unit');
       else if (path.startsWith('frontend/.storybook/')) {
-        enable(path, 'vrt', 'storybook', 'catalog');
+        const selected = ['vrt', 'storybook', 'catalog'];
+        if (path.startsWith('frontend/.storybook/fixtures/')) selected.push('unit', 'browser');
+        enable(path, ...selected);
       } else if (/\.stories\.[^/]+$/.test(path)) {
         enable(path, 'vrt', 'storybook', 'catalog');
       } else {
         frontendBuild.build = true;
         const selected = ['unit', 'browser', 'vrt', 'storybook'];
         if (path.startsWith('frontend/src/lib/i18n/')) selected.push('i18n');
-        if (playwrightOwners(path)?.includes('layout')) selected.push('layout');
+        if (path === 'frontend/src/styles.css' || playwrightOwners(path)?.includes('layout')) selected.push('layout');
         if (/^frontend\/(public\/sw(?:-push)?\.js$|src\/(sw\/|lib\/pwa\/))/.test(path)) {
           selected.push('pwa', 'offline', 'container');
         }
         if (/^frontend\/(public\/(sw(?:-push)?\.js|icons\/(favicon-32|badge-96)\.png)$|src\/lib\/pwa\/avatar-cache\.ts$)/.test(path)) {
           selected.push('avatar');
         }
+        if (path === 'frontend/public/manifest.webmanifest' || path.startsWith('frontend/public/icons/')) selected.push('pwa');
         if (path.startsWith('frontend/src/lib/offline/')) selected.push('offline');
         if (!isVitestInput(path) || /^frontend\/(package\.json|pnpm-lock\.yaml|vite\.config\.)/.test(path)) {
           selected.push('pwa', 'avatar', 'offline', 'i18n', 'layout', 'frontend-selection', 'container', 'catalog');
@@ -152,7 +158,7 @@ function selectPullRequest(changes, full) {
     }
   }
 
-  frontendBuild.check = frontendBuild.build || frontend.unit || frontend.browser || frontend.vrt || frontend.storybook;
+  frontendBuild.check ||= frontendBuild.build || frontend.unit || frontend.browser || frontend.vrt || frontend.storybook;
   frontendBuild.wasm = frontendBuild.check || ['pwa', 'avatar', 'offline', 'i18n', 'layout', 'frontend-selection', 'catalog'].some(suite => frontend[suite]);
   backend.targets = backend.full ? [] : [...targets].sort();
   backend.legs = backend.full ? ['slack', 'core'] : [...new Set(backend.targets.map(testLeg))].sort();
@@ -217,7 +223,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   } catch {
     console.log('Test Selection: diff unavailable; running all suites');
   }
-  if (eventName === 'pull_request' && changes) changes = classifyTranslationChanges(base, changes);
+  if (eventName === 'pull_request' && changes) {
+    validateChangedTranslations(changes);
+    changes = classifyTranslationChanges(base, changes);
+  }
   const sharedPlan = process.env.TEST_PR_BATCH === 'true';
   const selection = sharedPlan ? selectPrPlans(changes, base) : selectWorkflowPlan(eventName, workflow, changes, base);
   const verify = eventName !== 'pull_request' || !changes?.length || changes.some(({ path }) =>
