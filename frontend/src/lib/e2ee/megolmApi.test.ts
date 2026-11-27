@@ -6,9 +6,9 @@ import { fetchRecipients } from "./megolmApi";
 describe("配布先の次ページの検証", () => {
   it.each([1, true, {}, []])("不正な位置 %j を最終ページとして扱わない", async (cursor) => {
     const request = vi.fn().mockResolvedValue({ membership_epoch: 1, next_after: cursor });
-    await expect(fetchRecipients({ request } as unknown as ApiClient, "channel", null)).rejects.toThrow(
-      "配布先の次ページの位置が不正です",
-    );
+    await expect(
+      fetchRecipients({ request } as unknown as ApiClient, "channel", null),
+    ).rejects.toThrow("配布先の次ページの位置が不正です");
     expect(request).toHaveBeenCalledTimes(1);
   });
 
