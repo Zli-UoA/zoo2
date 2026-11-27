@@ -74,6 +74,12 @@ interface Platform {
     suspend fun attachmentImage(url: String, cacheKey: String? = null, retry: Boolean = false): ByteArray? =
         if (retry) refreshImage(url) else image(url)
 
+    suspend fun freshAttachmentImage(cacheKey: String): ByteArray? = null
+
+    suspend fun removeAttachmentImages(id: String) {}
+
+    suspend fun allowAttachmentImages(id: String) {}
+
     suspend fun rasterizeSvg(svg: String, width: Int, height: Int): ByteArray? = null
 
     suspend fun headers(): Map<String, String>

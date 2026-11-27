@@ -4,6 +4,8 @@ import java.io.Closeable
 import java.nio.file.Files
 import kotlin.test.*
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
@@ -205,6 +207,97 @@ class AndroidImageCacheTest {
             assertNull(f.server.takeRequest().getHeader("If-None-Match"))
             repeat(2) { assertEquals("\"one\"", f.server.takeRequest().getHeader("If-None-Match")) }
             assertNull(f.server.takeRequest().getHeader("If-None-Match"))
+        }
+    }
+
+    @Test fun readsOnlyFreshAttachmentPreviewsWithoutANetworkRequest() = runBlocking {
+        Fixture().use { f ->
+            var time = 1_000L
+            repeat(2) {
+                f.server.enqueue(MockResponse().setHeader("Cache-Control", "private, max-age=60").setBody("image"))
+            }
+            f.cache(now = { time }).use { cache ->
+                cache.signedImage(f.url, "id:thumbnail")
+                cache.signedImage(f.url, "id:original")
+            }
+            f.cache(now = { time }).use { cache ->
+                assertEquals("image", cache.freshAttachmentImage("id:thumbnail")?.decodeToString())
+                time += 60_000
+                assertNull(cache.freshAttachmentImage("id:thumbnail"))
+                cache.removeAttachmentImages("id")
+                time = 1_000L
+                assertNull(cache.freshAttachmentImage("id:thumbnail"))
+                assertNull(cache.freshAttachmentImage("id:original"))
+            }
+            assertEquals(2, f.server.requestCount)
+        }
+    }
+
+    @Test fun revocationPreventsAnInFlightDownloadFromRestoringTheCachedImage() = runBlocking {
+        Fixture().use { f ->
+            val releaseResponse = CountDownLatch(1)
+            val firstRequest = AtomicBoolean(true)
+            f.server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse =
+                    if (firstRequest.getAndSet(false)) {
+                        check(releaseResponse.await(5, TimeUnit.SECONDS))
+                        MockResponse().setBody("old")
+                    } else MockResponse().setBody("new")
+            }
+            val key = "id:original"
+            f.cache().use { cache ->
+                val pending = async {
+                    assertFailsWith<ImageHttpFailure> { cache.signedImage(f.url, key) }
+                }
+                try {
+                    assertNotNull(withContext(Dispatchers.IO) { f.server.takeRequest(5, TimeUnit.SECONDS) })
+                    cache.removeAttachmentImages("id")
+                    assertNull(cache.freshAttachmentImage(key))
+                    assertEquals(403, assertFailsWith<ImageHttpFailure> { cache.signedImage(f.url, key) }.status)
+                    cache.allowAttachmentImages("id")
+                } finally {
+                    releaseResponse.countDown()
+                }
+                assertEquals(403, pending.await().status)
+                assertNull(cache.freshAttachmentImage(key))
+                assertEquals("new", cache.signedImage(f.url, key).decodeToString())
+            }
+            f.cache().use { cache ->
+                assertEquals("new", cache.freshAttachmentImage(key)?.decodeToString())
+            }
+            assertEquals(2, f.server.requestCount)
+        }
+    }
+
+    @Test fun revocationDuringACacheHitPreventsReturningTheCachedImage() = runBlocking {
+        Fixture().use { f ->
+            val pause = AtomicBoolean(false)
+            val afterReading = CountDownLatch(1)
+            val finishReading = CountDownLatch(1)
+            val key = "id:thumbnail"
+            f.server.enqueue(MockResponse().setBody("cached"))
+            f.cache(now = {
+                if (pause.get()) {
+                    afterReading.countDown()
+                    check(finishReading.await(5, TimeUnit.SECONDS))
+                }
+                1_000L
+            }).use { cache ->
+                assertEquals("cached", cache.signedImage(f.url, key).decodeToString())
+                pause.set(true)
+                val pending = async {
+                    assertFailsWith<ImageHttpFailure> { cache.signedImage(f.url, key) }
+                }
+                try {
+                    assertTrue(withContext(Dispatchers.IO) { afterReading.await(5, TimeUnit.SECONDS) })
+                    cache.removeAttachmentImages("id")
+                } finally {
+                    finishReading.countDown()
+                }
+                assertEquals(403, pending.await().status)
+                assertNull(cache.freshAttachmentImage(key))
+            }
+            assertEquals(1, f.server.requestCount)
         }
     }
 
