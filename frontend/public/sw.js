@@ -224,10 +224,21 @@ async function fetchShellIndex() {
   return null;
 }
 
+async function shellCacheNamesNewestFirst(except) {
+  const candidates = [];
+  for (const name of (await caches.keys()).filter(
+    (name) => name.startsWith(CACHE_PREFIX) && name !== except,
+  )) {
+    const cache = await caches.open(name);
+    const meta = await cache.match(META_PATH);
+    const installedAt = meta ? Number(await meta.text()) : 0;
+    candidates.push({ name, installedAt: Number.isFinite(installedAt) ? installedAt : 0 });
+  }
+  candidates.sort((a, b) => b.installedAt - a.installedAt);
+  return candidates.map((candidate) => candidate.name);
+}
+
 async function precacheShell() {
-  // 新しいキャッシュに正常な manifest / offline.html が無いときの引き継ぎ元。
-  // CSP が変わると接頭辞も変わるため、引き継ぎ元は全世代のシェルから探す。
-  const previousCache = await findActiveShellCache(CACHE_PREFIX).catch(() => null);
   const index = await fetchShellIndex();
   // Without the app shell there is nothing safe to replace; keep the old cache.
   if (!index) throw new Error("Cannot install an app shell without a fresh index");
@@ -279,31 +290,32 @@ async function precacheShell() {
   );
   // 欠けた／不正な応答で保存できなかった分は旧シェルから引き継ぐ。新しいキャッシュが
   // 選択されたあとにオフラインになっても、案内と配色設定を読めるようにする。
-  if (previousCache && previousCache !== name && (await caches.keys()).includes(previousCache)) {
-    try {
-      const previous = await caches.open(previousCache);
-      for (const path of ["/manifest.webmanifest", "/offline.html"]) {
-        if (await cache.match(path)) continue;
-        const saved = await previous.match(path);
+  try {
+    // ファイルごとに、新しい世代から順に有効なコピーを探す。
+    const sources = await shellCacheNamesNewestFirst(name);
+    for (const path of ["/manifest.webmanifest", "/offline.html"]) {
+      if (await cache.match(path)) continue;
+      for (const source of sources) {
+        const saved = await (await caches.open(source)).match(path);
         if (!saved) continue;
         // 旧 SW は本文を検証せずに保存していたため、コピーする前に確認する。
+        if (!isFreshAssetResponse(path, saved)) continue;
         if (path === "/manifest.webmanifest") {
-          if (!isFreshAssetResponse(path, saved) || !(await isFreshManifest(saved))) continue;
-        }
-        if (path === "/offline.html") {
-          if (!isFreshAssetResponse(path, saved) || !(await isOfflinePage(saved))) continue;
+          if (!(await isFreshManifest(saved))) continue;
+          await cache.put(path, saved.clone());
+        } else {
+          if (!(await isOfflinePage(saved))) continue;
           // 今回取得した index.html の CSP を案内ページにも適用する（無ければ削除）。
           await cache.put(
             path,
             await withPolicyHeaders(saved.clone(), cached.headers.get("content-security-policy")),
           );
-          continue;
         }
-        await cache.put(path, saved.clone());
+        break;
       }
-    } catch {
-      /* An unavailable old cache is not a reason to fail the install. */
     }
+  } catch {
+    /* An unavailable old cache is not a reason to fail the install. */
   }
   // 初期版の SW は案内ページを zoo-offline-v1 に持っていた。シェルに無ければ引き継ぐ。
   if (!(await cache.match("/offline.html"))) {
@@ -492,7 +504,10 @@ async function handleFreshAsset(request) {
       if (!policy?.known) return response;
       if (response.headers.get("content-security-policy") !== policy.csp) {
         const cached = await cachedFreshAsset(path);
-        return cached.type === "error" ? response : cached;
+        // 保存済みの版が無ければ、取得した本文に現行の CSP を付けて返す。
+        return cached.type === "error"
+          ? await withPolicyHeaders(response.clone(), policy.csp)
+          : cached;
       }
     }
     // 保存に失敗しても取得できた最新の応答は返す。古いキャッシュへ戻さない。
