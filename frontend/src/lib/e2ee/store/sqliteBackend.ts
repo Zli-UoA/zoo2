@@ -19,8 +19,8 @@ let sqliteReady: Promise<SQLiteAPI> | null = null;
  * 接続を閉じてもハンドルを持ち続けるので、ファイルを消したら外す。外さないと、同じ Worker で
  * 開き直したときに、消したファイルのハンドルを使って失敗する。
  *
- * wa-sqlite 2 でも `create()` の戻り値は `SQLiteVFS` 型で、`persistentFiles` と
- * `accessiblePaths` は型に現れない（TS2739）。実体のフィールドは残るのでキャストする。
+ * `create()` の戻り値は `SQLiteVFS` 型で、`persistentFiles` と `accessiblePaths` は
+ * 型に現れない（TS2739）。実体のフィールドは残るのでキャストする。
  */
 let vfsCaches: { persistentFiles: Map<string, unknown>; accessiblePaths: Set<string> } | null =
   null;

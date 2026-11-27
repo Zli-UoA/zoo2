@@ -22,8 +22,8 @@ export interface MemoryVfs extends SQLiteVFS {
 }
 
 /**
- * wa-sqlite 2 でも `src/examples/MemoryVFS.js` には宣言ファイルがなく、静的な `create()` が
- * 型に現れない（TS2339）。書き換えると実体の型が変わるため、ここだけキャストして残す。
+ * `src/examples/MemoryVFS.js` には型宣言がなく、静的な `create()` が型に現れない（TS2339）。
+ * パッケージの型を書き換えると実体の型が変わるため、ここだけキャストして残す。
  */
 export function createMemoryVfs(name: string, module: unknown): Promise<MemoryVfs> {
   return (
