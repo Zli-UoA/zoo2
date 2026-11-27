@@ -2345,6 +2345,46 @@ test("a conditional GET falls back to the cached manifest on network failure", a
   assert.equal(await response.text(), manifest);
 });
 
+test("a conditional GET keeps a cached manifest when the server returns HTML", async () => {
+  const manifest = validManifest("#000000");
+  const cacheContext = memoryCaches([
+    ["zoo-shell-v2", `${ORIGIN}/manifest.webmanifest`, basicResponse(manifest)],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () =>
+      basicResponse("<html>app shell</html>", { headers: { "content-type": "text/html" } }),
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+    headers: { get: (name) => (name.toLowerCase() === "if-none-match" ? '"abc"' : null) },
+  });
+  assert.equal(await response.text(), manifest);
+});
+
+test("If-Match does not fall back to a cached version", async () => {
+  const cacheContext = memoryCaches([
+    ["zoo-shell-v2", `${ORIGIN}/manifest.webmanifest`, basicResponse(validManifest("#ffffff"))],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+    headers: { get: (name) => (name.toLowerCase() === "if-match" ? '"abc"' : null) },
+  });
+  assert.equal(response.type, "error");
+});
+
 test("a conditional GET keeps a 412 response", async () => {
   const cacheContext = memoryCaches([
     ["zoo-shell-v2", `${ORIGIN}/manifest.webmanifest`, basicResponse(validManifest("#ffffff"))],
@@ -2534,8 +2574,11 @@ test("notification destinations stay inside the app and open directly when no wi
 test("an unreadable destination body is restored from an old cache", async () => {
   const manifest = validManifest("#ffffff");
   const cacheContext = memoryCaches([
+    ["zoo-shell-v2", `${ORIGIN}/manifest.webmanifest`, basicResponse(validManifest("#000000"))],
     ["zoo-shell-old", `${ORIGIN}/manifest.webmanifest`, basicResponse(manifest)],
   ]);
+  const destination = await cacheContext.api.open("zoo-shell-v2");
+  assert.ok(await destination.match(`${ORIGIN}/manifest.webmanifest`));
   const old = await cacheContext.api.open("zoo-shell-old");
   await old.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("1"));
   const realOpen = cacheContext.api.open.bind(cacheContext.api);

@@ -507,16 +507,32 @@ async function sanitizedCopy(saved) {
 }
 
 async function fetchConditionalAsset(request, path) {
-  // 条件付き GET は共有もキャッシュ更新もしない。304 はそのまま返し、
-  // 通信失敗や 5xx のときだけ保存済みの版を使う。
+  // 条件付き GET は共有もキャッシュ更新もしない。
+  const headers = request.headers;
+  const precondition =
+    headers?.get?.("if-match") || headers?.get?.("if-unmodified-since") ? true : false;
   try {
     const response = await fetchBounded(request, { cache: "reload" });
-    // 4xx は前提条件の失敗などを呼び出し元へ届けるため、キャッシュで上書きしない。
-    if (response.status === 304 || response.ok || response.status < 500 || response.status >= 600)
-      return response;
+    // 304 / 412 などの 4xx は呼び出し元へ届ける。キャッシュで上書きしない。
+    if (response.status === 304 || !response.ok || response.status >= 600) {
+      if (precondition && (response.status === 0 || response.status >= 500)) return response;
+      if (precondition || response.status < 500) return response;
+      const cached = await cachedFreshAsset(path);
+      return cached.type === "error" ? response : cached;
+    }
+    // 200 が返っても try_files の HTML かもしれないので本文を検証する。
+    let usable = false;
+    try {
+      usable = await isUsableFreshAsset(path, response);
+    } catch {
+      usable = false;
+    }
+    if (usable) return response;
     const cached = await cachedFreshAsset(path);
     return cached.type === "error" ? response : cached;
   } catch {
+    // If-Match などで指定された版は、保存済みの別版では代用できない。
+    if (precondition) return Response.error();
     return await cachedFreshAsset(path);
   }
 }
