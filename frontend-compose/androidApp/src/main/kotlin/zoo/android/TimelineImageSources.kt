@@ -6,6 +6,7 @@ import kotlinx.serialization.json.contentOrNull
 import zoo.Row
 import zoo.array
 import zoo.endpoint
+import zoo.findCustomEmojiShortcodes
 import zoo.flag
 import zoo.nested
 import zoo.publicUrl
@@ -56,8 +57,6 @@ internal fun workspaceEmojiImages(base: String, emojis: List<Row>): Map<String, 
     }
 }
 
-private val workspaceShortcode = Regex(":[a-z0-9_-]{1,64}:")
-
 internal fun timelineBodyEmojis(
     base: String,
     data: Row,
@@ -84,8 +83,7 @@ internal fun timelineBodyEmojis(
         }
         // A missing remote emoji must retain its shortcode rather than borrow a local image.
         if (workspace.isNotEmpty() && (!isPost || !data.flag("remote"))) {
-            for (match in workspaceShortcode.findAll(body)) {
-                val code = match.value
+            for (code in findCustomEmojiShortcodes(body)) {
                 val url = workspace[code] ?: continue
                 if (code !in this) put(code, inlineEmoji(code.trim(':'), url))
             }

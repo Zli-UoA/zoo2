@@ -25,10 +25,10 @@ class EntryTextTest {
 
     @Test
     fun linkLabelsKeepEmojiWhileCodeAndPlainRegionsKeepShortcodes() {
-        val text = formatEntry("[**:party:**](https://example.test) `:party:` <plain>:party:</plain>",
-            emoji = setOf(":party:"))
-        assertEquals(":party: :party: :party:", text.text)
-        assertEquals("https://example.test", (text.getLinkAnnotations(0, text.length).single().item as LinkAnnotation.Url).url)
+        val text = formatEntry("[**:お祝い 猫:**](https://example.test/emoji) `:お祝い 猫:` <plain>:お祝い 猫:</plain>",
+            emoji = setOf(":お祝い 猫:"))
+        assertEquals(":お祝い 猫: :お祝い 猫: :お祝い 猫:", text.text)
+        assertEquals("https://example.test/emoji", (text.getLinkAnnotations(0, text.length).single().item as LinkAnnotation.Url).url)
         val emoji = text.getStringAnnotations("zoo-entry-emoji", 0, text.length).single()
         assertEquals(0, emoji.start)
         assertEquals(7, emoji.end)

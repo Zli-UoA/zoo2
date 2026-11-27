@@ -9,6 +9,18 @@ data class Inline(val value: String, val kind: String = "text", val url: String?
 private val atoms = Regex(
     "https?://[^\\s<>]+|:@[A-Za-z0-9._-]+:|@[A-Za-z0-9._-]+(?:@[A-Za-z0-9.-]+)?|#[^\\s#.,!?:;<>]+|:[a-zA-Z0-9_+-]+:"
 )
+// Shared emoji aliases may include Unicode and spaces. Only registered candidates become tokens.
+private val customEmojiShortcode = Regex(""":[^:\p{Cc}]{1,100}:""")
+
+fun findCustomEmojiShortcodes(source: String): Sequence<String> = sequence {
+    var match = customEmojiShortcode.find(source)
+    while (match != null) {
+        yield(match.value)
+        // The closing colon of an unregistered candidate can open a registered shortcode.
+        match = customEmojiShortcode.find(source, match.range.first + 1)
+    }
+}
+
 private val functionHeader = Regex("[A-Za-z0-9_]+(?:\\.[A-Za-z0-9_=,+.\\-]+)?[ \\t\\n]")
 private val formats = listOf(
     Triple("<small>", "</small>", "small"),
@@ -25,8 +37,11 @@ private val formats = listOf(
 
 private data class InlineSlice(val token: Inline, val start: Int, val end: Int)
 
-fun parseInline(source: String): List<Inline> = inlineSlices(source).map { it.token }
-private fun inlineSlices(source: String): List<InlineSlice> = MfmScanner(source.length).inlineSlices(source)
+fun parseInline(source: String, customEmojis: Set<String> = emptySet()): List<Inline> =
+    inlineSlices(source, customEmojis).map { it.token }
+
+private fun inlineSlices(source: String, customEmojis: Set<String> = emptySet()): List<InlineSlice> =
+    MfmScanner(source.length).inlineSlices(source, customEmojis)
 fun richSegments(source: String): List<Pair<String, Boolean>> = MfmScanner(source.length).richSegments(source)
 
 /** A shared work limit bounds repeated searches as well as recursion depth. */
@@ -142,7 +157,7 @@ private class MfmScanner(length: Int) {
         ) to (urlEnd + 1)
     }
 
-    fun inlineSlices(source: String): List<InlineSlice> {
+    fun inlineSlices(source: String, customEmojis: Set<String>): List<InlineSlice> {
         val result = mutableListOf<InlineSlice>()
         var at = 0
         var pendingStart = 0
@@ -204,6 +219,13 @@ private class MfmScanner(length: Int) {
                         token = if (kind == "tada") Inline("$[tada $body]", "effect") else Inline(body, kind)
                         end = stop + close.length
                         break
+                    }
+                    if (token == null && source[at] == ':' && customEmojis.isNotEmpty()) {
+                        val shortcode = customEmojiShortcode.matchAt(source, at)?.value
+                        if (shortcode != null && shortcode in customEmojis) {
+                            token = Inline(shortcode, "emoji")
+                            end = at + shortcode.length
+                        }
                     }
                     if (token == null) {
                         val match = atoms.matchAt(source, at)

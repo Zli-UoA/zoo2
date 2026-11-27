@@ -36,17 +36,18 @@ class TimelineImageSourcesTest {
     fun bodyUsesJoinedMetadataBeforeWorkspaceNamesAndAliases() {
         val workspace = workspaceEmojiImages(base, listOf(
             obj("name" to "party", "url" to "/api/emoji-images/party",
-                "aliases" to JsonArray(listOf(JsonPrimitive("celebrate")))),
+                "aliases" to JsonArray(listOf(JsonPrimitive("celebrate"), JsonPrimitive("お祝い 猫")))),
             obj("name" to "unused", "url" to "/api/emoji-images/unused"),
         ))
         val row = obj("display_data" to obj("emojis" to obj(
             "party" to obj("url" to "/api/emoji-images/previous"),
         )))
-        val body = ":party: :celebrate: :unknown:"
+        val body = ":party: :celebrate: :お祝い 猫: :unknown:"
         val resolved = timelineBodyEmojis(base, row, obj("emojis" to obj()), body, false, workspace)
         assertEquals(mapOf(
             ":party:" to "$base/api/emoji-images/previous",
             ":celebrate:" to "$base/api/emoji-images/party",
+            ":お祝い 猫:" to "$base/api/emoji-images/party",
         ), resolved.mapValues { it.value.url })
 
         val local = timelineBodyEmojis(base, obj(), obj(), body, true, workspace)

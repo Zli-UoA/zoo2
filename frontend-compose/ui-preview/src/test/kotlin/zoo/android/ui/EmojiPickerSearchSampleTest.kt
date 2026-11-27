@@ -50,6 +50,23 @@ class EmojiPickerSearchSampleTest {
     }
 
     @Test
+    fun recentEmojiAlsoRemainsInItsCategoryAndSearchShowsItOnce() {
+        val cat = EmojiChoice("🐱", "🐱", "cat", category = "動物と自然")
+        ui.setContent {
+            EmojiPicker(
+                "絵文字", AndroidColors(false), unicode = listOf(cat), recent = listOf(cat),
+                custom = emptyList(), loadKitchen = { null }, loadImage = { null }, dismiss = {}, select = {},
+            )
+        }
+        ui.onNodeWithText("最近使った絵文字").assertIsDisplayed()
+        ui.onNodeWithText("動物と自然").assertIsDisplayed()
+        ui.onAllNodesWithContentDescription("cat").assertCountEquals(2)
+        ui.onNodeWithTag("emoji-search").performTextInput("cat")
+        ui.onAllNodesWithContentDescription("cat").assertCountEquals(1)
+        ui.onNodeWithText("最近使った絵文字").assertDoesNotExist()
+    }
+
+    @Test
     fun thePickerHandleMovesBeforeRelease() {
         ui.setContent {
             EmojiPicker(

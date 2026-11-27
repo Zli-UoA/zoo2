@@ -76,6 +76,7 @@ internal fun EmojiPicker(
     unicode: List<EmojiChoice>,
     custom: List<EmojiChoice>,
     recent: List<EmojiChoice> = emptyList(),
+    recentCategory: String = "最近使った絵文字",
     customLoading: Boolean = false,
     customError: Boolean = false,
     loadKitchen: suspend () -> KitchenChoices?,
@@ -100,12 +101,15 @@ internal fun EmojiPicker(
         }
     }
     val filtered = remember(choices, query) { rankEmojiChoices(choices, query) }
-    val sections = remember(filtered, tab, query, recentUnicode) {
-        if (query.isNotBlank() || tab == EmojiTab.Kitchen) mapOf("" to filtered)
-        else if (tab == EmojiTab.Unicode) {
-            val recentKeys = recentUnicode.mapTo(mutableSetOf()) { it.value }
-            filtered.groupBy { if (it.value in recentKeys) "最近使った絵文字" else it.category }
-        } else filtered.groupBy { it.category }
+    val sections = remember(filtered, tab, query, unicode, recentUnicode, recentCategory) {
+        when {
+            query.isNotBlank() || tab == EmojiTab.Kitchen -> listOf("" to filtered)
+            tab == EmojiTab.Unicode -> buildList {
+                if (recentUnicode.isNotEmpty()) add(recentCategory to recentUnicode)
+                addAll(unicode.groupBy { it.category }.toList())
+            }
+            else -> filtered.groupBy { it.category }.toList()
+        }
     }
     ModalBottomSheet(
         onDismissRequest = dismiss,
@@ -169,15 +173,15 @@ internal fun EmojiPicker(
             } else key(tab, first, query) {
                 LazyVerticalGrid(GridCells.Adaptive(AndroidControlSize.target), Modifier.weight(1f, fill = false),
                     contentPadding = PaddingValues(bottom = 16.dp)) {
-                    sections.forEach { (category, section) ->
+                    sections.forEachIndexed { index, (category, section) ->
                         if (category.isNotEmpty()) {
-                            item(key = "category:$category", span = { GridItemSpan(maxLineSpan) }) {
+                            item(key = "category:$index:$category", span = { GridItemSpan(maxLineSpan) }) {
                                 Text(category, Modifier.padding(top = 12.dp, bottom = 4.dp)
                                     .semantics { heading() }, color = colors.secondary,
                                     style = MaterialTheme.typography.titleSmall)
                             }
                         }
-                        items(section, key = { it.value }) { choice ->
+                        items(section, key = { "emoji:$index:${it.value}" }) { choice ->
                             TooltipBox(
                                 positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
                                 tooltip = { PlainTooltip { Text(choice.name) } },

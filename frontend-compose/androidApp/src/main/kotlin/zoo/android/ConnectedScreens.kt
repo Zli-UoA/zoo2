@@ -65,7 +65,10 @@ internal fun ConnectedScreens(
         states
     }
     val context = androidx.compose.ui.platform.LocalContext.current.applicationContext
-    val emojiCatalog = remember(context) { AndroidEmojiCatalog(context) }
+    val uncategorizedEmoji = session.t("customEmoji.uncategorized")
+    val emojiCatalog = remember(context, env.locale, uncategorizedEmoji) {
+        AndroidEmojiCatalog(context, env.locale, uncategorizedEmoji)
+    }
     // Load the session-wide fallback even when the picker is closed. The Session coalesces catalog reads.
     LaunchedEffect(session, env.online, env.visible) {
         if (env.online && env.visible) {
@@ -591,11 +594,12 @@ internal fun ConnectedScreens(
             title = if (reaction == null) "絵文字" else "リアクション",
             colors = AndroidColors(env.dark),
             unicode = unicode,
-            custom = remember(session.workspaceEmojis, session.accountProfiles, allowAccountEmoji) {
-                workspaceEmojiChoices(session.workspaceEmojis) +
-                    (if (allowAccountEmoji) accountEmojiChoices(session.accountProfiles) else emptyList())
+            custom = remember(session.workspaceEmojis, session.accountProfiles, allowAccountEmoji, env.locale) {
+                workspaceEmojiChoices(session.workspaceEmojis, uncategorizedEmoji) +
+                    (if (allowAccountEmoji) accountEmojiChoices(session.accountProfiles, session.t("reactions.accountEmojiCategory")) else emptyList())
             },
             recent = recentEmojis.toList(),
+            recentCategory = session.t("reactions.recent"),
             customLoading = session.workspaceEmojiLoading,
             customError = session.workspaceEmojiError,
             loadKitchen = emojiCatalog::kitchen,

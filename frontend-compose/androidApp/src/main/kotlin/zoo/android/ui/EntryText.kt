@@ -141,7 +141,7 @@ private fun AnnotatedString.Builder.appendMfm(body: String, format: EntryFormat,
         append(body)
         return
     }
-    parseInline(body).forEach { token ->
+    parseInline(body, format.emoji).forEach { token ->
         val value = token.value
         when (token.kind) {
             "bold" -> withStyle(SpanStyle(fontWeight = AndroidWeights.emphasis)) { appendMfm(value, format, depth + 1) }

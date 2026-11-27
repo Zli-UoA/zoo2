@@ -12,13 +12,7 @@ import zoo.obj
 
 class AndroidEmojiCatalogTest {
     @Test fun bundledCatalogsProvideUnicodeAndKitchenChoices() = runTest {
-        val catalog = AndroidEmojiCatalog { name ->
-            val directory = when (name) {
-                "data.json", "messages.json" -> "../../frontend/public/emojibase-data/ja"
-                else -> "../src/commonMain/composeResources/files"
-            }
-            File(directory, name).readText()
-        }
+        val catalog = AndroidEmojiCatalog(readAsset = ::readBundledAsset)
         val unicode = catalog.unicode()
         assertTrue(unicode.size > 1_000)
         assertEquals(unicode.size, unicode.distinctBy { it.value }.size)
@@ -36,6 +30,17 @@ class AndroidEmojiCatalogTest {
         assertEquals(combination.image, kitchen.combinations(smile).first { it.value == value }.image)
     }
 
+    @Test fun standardCategoriesFollowTheAppLocale() = runTest {
+        val catalog = AndroidEmojiCatalog("en", "Uncategorized", ::readBundledAsset)
+        assertEquals("animals & nature", catalog.unicode().single { it.glyph == "🐱" }.category)
+    }
+
+    private fun readBundledAsset(name: String): String {
+        val directory = if ('/' in name) "../../frontend/public/emojibase-data"
+            else "../src/commonMain/composeResources/files"
+        return File(directory, name).readText()
+    }
+
     @Test fun kitchenLookupNormalizesVariationSelectorsAndOrder() = runTest {
         val catalog = AndroidEmojiCatalog {
             """{"emojis":[["1f600","😀","smile"],["2764-fe0f","❤️","heart"]],"dates":["20200101"],"pairs":{"0_1":0}}"""
@@ -48,7 +53,7 @@ class AndroidEmojiCatalogTest {
     @Test fun workspaceChoicesInsertTheShortcodeAndSearchAliases() {
         val custom = workspaceEmojiChoices(listOf(obj(
             "name" to "party", "aliases" to JsonArray(listOf(JsonPrimitive("celebration"))), "category" to "events",
-        ))).single()
+        )), uncategorized = "Uncategorized").single()
         assertEquals(":party:", custom.value)
         assertEquals("events", custom.category)
         assertTrue("celebration" in custom.keywords)

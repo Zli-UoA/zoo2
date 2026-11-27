@@ -10,17 +10,29 @@ import zoo.text
 import zoo.android.ui.EmojiChoice
 import zoo.android.ui.KitchenChoices
 
-internal class AndroidEmojiCatalog(private val readAsset: (String) -> String) {
-    constructor(context: Context) : this({ name ->
+internal class AndroidEmojiCatalog(
+    locale: String = "ja",
+    private val uncategorized: String = "未分類",
+    private val readAsset: (String) -> String,
+) {
+    constructor(context: Context, locale: String, uncategorized: String) : this(locale, uncategorized, { name ->
         context.assets.open("emoji/$name").bufferedReader().use { it.readText() }
     })
 
+    // Keep the app-to-Emojibase locale mapping aligned with frontend/src/lib/emoji/locale.ts.
+    private val dataLocale = when (locale) {
+        "ja" -> "ja"
+        "ko-KR", "ko-KP" -> "ko"
+        "zh-Hans", "zh-Hant", "yue" -> "zh-hant"
+        else -> "en"
+    }
+
     private val standard by lazy {
-        val groups = read("messages.json").array("groups").associate {
+        val groups = read("$dataLocale/messages.json").array("groups").associate {
             val group = it.jsonObject
             group.text("order") to group.text("message")
         }
-        val metadata = Json.parseToJsonElement(readAsset("data.json")).jsonArray
+        val metadata = Json.parseToJsonElement(readAsset("$dataLocale/data.json")).jsonArray
             .flatMap { entry ->
                 val row = entry.jsonObject
                 (listOf(row) + row.array("skins").map { it.jsonObject }).map {
@@ -34,7 +46,7 @@ internal class AndroidEmojiCatalog(private val readAsset: (String) -> String) {
                     glyph, glyph, names.first().replace('_', ' '),
                     keywords = (names + listOfNotNull(row?.text("label")) +
                         row?.array("tags").orEmpty().map { it.jsonPrimitive.content }).joinToString(" "),
-                    category = groups[row?.text("group")] ?: "その他",
+                    category = groups[row?.text("group")] ?: uncategorized,
                 ) to (row?.text("group")?.toIntOrNull() ?: Int.MAX_VALUE)
             }.sortedBy { it.second }.map { it.first }
     }
@@ -61,17 +73,17 @@ internal class AndroidEmojiCatalog(private val readAsset: (String) -> String) {
 
 private fun String.withoutVariationSelector() = replace("\uFE0F", "")
 
-internal fun workspaceEmojiChoices(rows: List<Row>): List<EmojiChoice> = rows.mapNotNull { row ->
+internal fun workspaceEmojiChoices(rows: List<Row>, uncategorized: String): List<EmojiChoice> = rows.mapNotNull { row ->
     val name = row.text("name").trim(':').takeIf { it.isNotBlank() } ?: return@mapNotNull null
     EmojiChoice(":$name:", "", name, row.text("url").ifBlank { null },
         row.text("category") + " " + row.array("aliases").joinToString(" ") { it.jsonPrimitive.contentOrNull.orEmpty() },
-        category = row.text("category").ifBlank { "未分類" })
+        category = row.text("category").ifBlank { uncategorized })
 }
 
-internal fun accountEmojiChoices(rows: List<Row>): List<EmojiChoice> = rows.mapNotNull { row ->
+internal fun accountEmojiChoices(rows: List<Row>, category: String): List<EmojiChoice> = rows.mapNotNull { row ->
     val username = row.text("username").takeIf { it.isNotBlank() } ?: return@mapNotNull null
     val label = "@$username"
-    EmojiChoice(":$label:", "", label, row.text("avatar_url").ifBlank { null }, row.text("display_name"), category = "アカウント")
+    EmojiChoice(":$label:", "", label, row.text("avatar_url").ifBlank { null }, row.text("display_name"), category = category)
 }
 
 private fun kitchenComponentCode(value: String) =

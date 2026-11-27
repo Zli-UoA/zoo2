@@ -4,6 +4,16 @@ import kotlin.test.*
 
 class MfmParserTest {
     @Test
+    fun registeredUnicodeAliasesDoNotConsumeUnknownShortcodesOrLiterals() {
+        val alias = ":お祝い 猫:"
+        val source = "時刻: $alias :unknown: `$alias` <plain>$alias</plain>"
+        val tokens = parseInline(source, setOf(alias))
+        assertEquals(listOf(alias, ":unknown:"), tokens.filter { it.kind == "emoji" }.map { it.value })
+        assertEquals(listOf(alias, alias), tokens.filter { it.kind in setOf("code", "plain") }.map { it.value })
+        assertTrue(alias in findCustomEmojiShortcodes(source))
+    }
+
+    @Test
     fun unclosedRecursiveSearchesFinishAndPreserveTheSource() {
         for (count in listOf(30, 40, 1000)) {
             val source = "$[a [ ".repeat(count)

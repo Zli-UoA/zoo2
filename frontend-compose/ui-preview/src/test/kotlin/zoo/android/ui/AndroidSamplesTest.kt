@@ -331,12 +331,14 @@ class AndroidSamplesTest {
             }
             if (emojiPicker) {
                 val choices = remember {
-                    listOf("👍", "😊", "🎉", "❤️", "😀", "😂", "🥰", "😎", "🥳", "🙌", "👏", "👋", "✨", "🔥",
-                        "🌈", "🚀", "🌍", "🍕", "🍩", "☕", "⚽", "🎮", "🎵", "🎁", "🎂", "💡", "💯", "✅",
-                        "🐶", "🦊", "🐼", "🐻", "🐸", "🐵", "🦁", "🐯", "🐧", "🦄", "🦋", "🐙", "🌸", "🌻")
-                        .mapIndexed { index, glyph ->
-                            EmojiChoice(glyph, glyph, glyph, category = if (index < 28) "スマイリーと感情" else "動物と自然")
-                        } + EmojiChoice("🐱", "🐱", "cat", keywords = "ねこ", category = "動物と自然")
+                    listOf(
+                        "スマイリーと感情" to "😀 😊 😂 🥰 😎 🥳",
+                        "アクティビティ" to "🎉 🎁 ⚽ 🎮 🎈 🎊",
+                        "動物と自然" to "🐶 🦊 🐼 🐻 🐸 🐵 🦁 🐯 🐧 🦄 🦋 🐙 🌸 🌻",
+                        "飲み物・食べ物" to "🍕 🍩 ☕ 🎂",
+                    ).flatMap { (category, glyphs) ->
+                        glyphs.split(' ').map { EmojiChoice(it, it, it, category = category) }
+                    } + EmojiChoice("🐱", "🐱", "cat", keywords = "ねこ", category = "動物と自然")
                 }
                 EmojiPicker("絵文字", AndroidColors(dark), choices,
                     custom = listOf(EmojiChoice(":party:", "", "party", "fixture-emoji", category = "イベント")),
@@ -528,6 +530,7 @@ class AndroidSamplesTest {
             ui.onNodeWithContentDescription("絵文字").performClick()
             ui.onNodeWithText("🎉").assertIsDisplayed()
             ui.onNodeWithText("スマイリーと感情").assertIsDisplayed()
+            ui.onNodeWithText("アクティビティ").assertIsDisplayed()
             capture("emoji-picker-${if (night) "dark" else "light"}", bottomDialog = true)
             ui.onNodeWithTag("emoji-search").performTextInput("cat")
             ui.onNodeWithContentDescription("cat").assertIsDisplayed()
