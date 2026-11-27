@@ -736,13 +736,14 @@ internal fun ColumnScope.TimelineWithInput(
     val focusPending = focusRequest != null && openedTarget != focusRequest
     val shouldPositionUnread = focusMessage == null && !unreadPositionPending && unreadIndex >= 0 &&
         (seekUnread || (!positioned && !restorePending))
+    var firstLayoutRequested by remember { mutableStateOf(false) }
     val waitingForPosition = when {
         !headerMeasured -> true
         focusRequest != null -> focusPending && focusedIndex < 0
-        else -> unreadPositionPending || (restorePending && restoredIndex < 0 && !historyReady && !shouldPositionUnread)
+        else -> (unreadPositionPending && !firstLayoutRequested) ||
+            (restorePending && restoredIndex < 0 && !historyReady && !shouldPositionUnread)
     }
 
-    var firstLayoutRequested by remember { mutableStateOf(false) }
     SideEffect {
         if (waitingForPosition) {
             firstLayoutRequested = false

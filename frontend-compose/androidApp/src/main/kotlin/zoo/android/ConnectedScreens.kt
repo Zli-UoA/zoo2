@@ -550,8 +550,8 @@ internal fun ConnectedScreens(
             historyReady = !env.online || mainPageReady,
             unreadPositionPending = unreadPositionPending,
             unreadHistoryIncomplete = unreadHistoryIncomplete,
-            onUnreadPositioned = onUnreadPositioned.takeIf { env.online && !unreadPositioned },
-            onReadThrough = onReadThrough,
+            onUnreadPositioned = onUnreadPositioned.takeIf { env.online && currentReadPosition != null && !unreadPositioned },
+            onReadThrough = onReadThrough.takeIf { unreadPositioned },
             retrySync = if (dmSyncDelayed && env.online) {
                 { session.repo.channels.refresh(); session.repo.members.refresh(); dmSyncRetry++ }
             } else null)
@@ -572,7 +572,7 @@ internal fun ConnectedScreens(
         }
     }
     val readEnabled = screen is AndroidScreen.Conversation && member && env.online &&
-        env.visible && env.focused && currentReadPosition != null &&
+        env.visible && env.focused && currentReadPosition != null && unreadPositioned &&
         !unreadPositionPending && !unreadHistoryOutsideWindow && mainPageReady
     LaunchedEffect(session, channelId, messageTable, readEnabled) {
         if (!readEnabled || channelId == null || messageTable == null) return@LaunchedEffect

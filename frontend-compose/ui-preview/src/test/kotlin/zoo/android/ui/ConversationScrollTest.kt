@@ -159,6 +159,34 @@ class ConversationScrollTest {
     }
 
     @Test
+    fun recoveredReadStatePositionsTheUnreadDividerBeforeReportingRead() {
+        val reported = mutableListOf<String>()
+        val report: (String?) -> Unit = { id -> if (id != null) reported.add(id) }
+        var screen by mutableStateOf(channel)
+        val unreadEntry = entries[10].copy(unreadDivider = "新着メッセージ")
+        ui.setContent { AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> } }
+        ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
+
+        ui.runOnIdle {
+            screen = screen.copy(unreadPositionPending = true, onReadThrough = report,
+                onUnreadPositioned = { screen = screen.copy(onUnreadPositioned = null) })
+        }
+        ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
+        ui.runOnIdle {
+            assertTrue(reported.isEmpty())
+            screen = screen.copy(
+                entries = entries.toMutableList().apply { set(10, unreadEntry) },
+                unreadPositionPending = false,
+            )
+        }
+
+        ui.onNodeWithText("新着メッセージ").assertIsDisplayed()
+        ui.runOnIdle { assertTrue(reported.isEmpty()) }
+        ui.onNodeWithTag("conversation-timeline").performScrollToIndex(entries.lastIndex)
+        ui.runOnIdle { assertEquals(listOf("e40"), reported.distinct()) }
+    }
+
+    @Test
     fun openingAtTheEndAlignsTheBottomOfATallLastMessage() {
         val tall = entries.last().copy(body = (1..90).joinToString("\n") { "本文 $it" })
         ui.setContent {
