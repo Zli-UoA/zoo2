@@ -102,18 +102,7 @@ private fun channelLinkState(
             onDispose { onEmojiDemand(false) }
         }
     }
-    return channelLinkView(info, { key, args -> session.t(key, *args) }) { createdAt ->
-        channelLinkTime(createdAt, platform.now(), platform::day, platform::time)
-    }
-}
-
-/** 埋め込みに添える日時。検索結果と同じく「月/日 時:分」で、今年でなければ年も付ける。 */
-internal fun channelLinkTime(
-    createdAt: String, now: String, day: (String) -> String, time: (String) -> String,
-): String {
-    val date = day(createdAt)
-    val shown = if (date.substringBefore('/') == day(now).substringBefore('/')) date.substringAfter('/') else date
-    return listOf(shown, time(createdAt)).filter { it.isNotBlank() }.joinToString(" ")
+    return channelLinkView(info, { key, args -> session.t(key, *args) }, platform::messageTimestamp)
 }
 
 /** 行き先の状態を、画面の言葉にする（Web の `ChannelLinkEmbed`・`channelLinkLabel`）。 */

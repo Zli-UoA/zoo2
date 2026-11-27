@@ -19,10 +19,12 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import java.io.File
 import kotlinx.coroutines.CompletableDeferred
@@ -709,6 +711,140 @@ class AndroidSamplesTest {
                 AndroidUiAction.ToggleSearchFilter(SearchFilterFlag.NoBots),
                 AndroidUiAction.SelectSearchFilter(SearchFilterField.In, listOf("ops")),
             )) { actions.toString() }
+        }
+    }
+
+    @Test
+    fun homeHeaderKeepsDisplayNameVisibleBesideALongHandle() {
+        val header = PostHeaderData("@long-account-name", "2025/12/31 23:59", PostAudience.Public, null, null)
+        ui.setContent {
+            Box(Modifier.width(180.dp)) { PostHeader("葵", header, AndroidColors(false)) }
+        }
+        val name = ui.onNodeWithText("葵", useUnmergedTree = true).assertIsDisplayed().getUnclippedBoundsInRoot()
+        val time = ui.onNodeWithText(header.dateTime, useUnmergedTree = true).assertIsDisplayed().getUnclippedBoundsInRoot()
+        check(name.right > name.left && time.top >= name.bottom)
+    }
+
+    @Test
+    @Config(qualifiers = "ja-rJP-w320dp-h760dp-xhdpi")
+    fun conversationWrapsTimeOnlyWhenTheFullAuthorNeedsTheRow() {
+        val long = TimelineItem("m1", "開発チームの担当者山田", "本文", "2025/12/31 23:59")
+        val short = TimelineItem("m2", "山田", "本文", "12:00")
+        ui.setContent {
+            AndroidScreens(AndroidScreen.Conversation("dev", "開発", "", listOf(long, short), InputState()),
+                false, true, dispatch = {}) { _, _ -> }
+        }
+        for (entry in listOf(long, short)) {
+            val name = ui.onNodeWithText(entry.author, useUnmergedTree = true).assertIsDisplayed()
+            val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+            name.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
+            check(!layouts.single().isLineEllipsized(0)) { "Author was truncated: ${entry.author}" }
+            val authorBounds = name.getUnclippedBoundsInRoot()
+            val time = ui.onNodeWithText(entry.time, useUnmergedTree = true).assertIsDisplayed().getUnclippedBoundsInRoot()
+            if (entry == long) check(time.top >= authorBounds.bottom)
+            else check(time.left >= authorBounds.right && time.top < authorBounds.bottom)
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "ja-rJP-w320dp-h760dp-xhdpi")
+    fun aLongAuthorLeavesRoomForTheFullTimestamp() = checkTimestampAcrossScreens(1f)
+
+    @Test
+    @Config(qualifiers = "ja-rJP-w240dp-h760dp-xhdpi")
+    fun enlargedTimestampsFitAcrossScreens() = checkTimestampAcrossScreens(2f)
+
+    private fun checkTimestampAcrossScreens(fontScale: Float) {
+        val entry = TimelineItem("m", "とても長い表示名".repeat(12), "本文", "2025/12/31 23:59")
+        var screen by mutableStateOf<AndroidScreen>(AndroidScreen.Conversation("dev", "開発", "", listOf(entry), InputState()))
+        val url = "https://zoo.test/channels/dev?message=target"
+        val links = ChannelLinkProvider(
+            target = { link -> if (link == url) zoo.ChannelLinkTarget("dev", "target") else null },
+            view = { ChannelLinkView.Message("リンク先", entry.author, entry.time, "#開発", null, null) },
+            open = { _, _ -> },
+        )
+        ui.setContent {
+            CompositionLocalProvider(LocalChannelLinks provides links,
+                LocalDensity provides Density(LocalDensity.current.density, fontScale)) {
+                AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> }
+            }
+        }
+        fun assertTimeFits() {
+            val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+            ui.onNodeWithText(entry.time, useUnmergedTree = true).assertIsDisplayed()
+                .performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
+            val layout = layouts.single()
+            val end = layout.getLineEnd(layout.lineCount - 1, visibleEnd = true)
+            val linesFit = (0 until layout.lineCount).all { line ->
+                !layout.isLineEllipsized(line) && layout.getLineLeft(line) >= 0 && layout.getLineRight(line) <= layout.size.width
+            }
+            check(linesFit && !layout.didOverflowHeight && end == entry.time.length && (fontScale > 1f || layout.lineCount == 1)) {
+                "${screen.javaClass.simpleName}: lines=${layout.lineCount}, visibleEnd=$end/${entry.time.length}, size=${layout.size}"
+            }
+        }
+        assertTimeFits()
+        val embedded = entry.copy(time = "10:00", body = url, channelLinks = listOf(url))
+        val screens = listOf(
+            AndroidScreen.Home(listOf(entry.copy(postHeader = PostHeaderData("@name", entry.time, PostAudience.Public, null, null)))),
+            AndroidScreen.Home(listOf(entry.copy(time = "10:00", quote = TimelineQuote(
+                "https://zoo.test/post", "original", entry.author, "引用元", emptyList(), time = entry.time)))),
+            AndroidScreen.Search(SearchScreenState("本文", "本文", GlobalSearchType.All,
+                listOf(SearchResultItem("message:m", entry.author, "本文", entry.time, "開発")), loaded = true)),
+            AndroidScreen.Notifications(listOf(InboxItem("reply", listOf(InboxActor("u", entry.author)),
+                "投稿に返信しました", "本文", entry.time, true, kind = "reply", destination = "開発"))),
+            AndroidScreen.Conversation("dev", "開発", "", listOf(embedded), InputState()),
+        )
+        for (next in screens) {
+            ui.runOnIdle { screen = next }
+            ui.waitForIdle()
+            assertTimeFits()
+            if (next is AndroidScreen.Notifications && fontScale > 1f) {
+                val name = ui.onNodeWithText(entry.author, useUnmergedTree = true).getUnclippedBoundsInRoot()
+                val time = ui.onNodeWithText(entry.time, useUnmergedTree = true).getUnclippedBoundsInRoot()
+                check(time.top >= name.bottom)
+                ui.onNodeWithContentDescription("未読", useUnmergedTree = true).assertIsDisplayed()
+            }
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "ja-rJP-w320dp-h760dp-xhdpi")
+    fun enlargedQuoteWithProfileShowsTheWholeTimestamp() {
+        val timestamp = "2025/12/31 23:59"
+        val quote = TimelineQuote("https://zoo.test/post", "original", "長い投稿者名".repeat(8),
+            "引用元", emptyList(), postAuthor = zoo.obj("id" to "original-author"), time = timestamp)
+        val screen = AndroidScreen.Home(listOf(TimelineItem("post", "はる", "本文", "10:00", quote = quote)))
+        ui.setContent {
+            CompositionLocalProvider(LocalDensity provides Density(LocalDensity.current.density, 2f)) {
+                AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> }
+            }
+        }
+        ui.onNodeWithContentDescription("「${quote.author}」のプロフィールを開く")
+            .assertWidthIsAtLeast(48.dp)
+        assertEnlargedTimestampFits(timestamp)
+    }
+
+    @Test
+    @Config(qualifiers = "ja-rJP-w240dp-h760dp-xhdpi")
+    fun enlargedConversationShowsTheWholeTimestampInSplitScreen() {
+        val timestamp = "2025/12/31 23:59"
+        val entry = TimelineItem("m", "長い投稿者名".repeat(8), "本文", timestamp)
+        val screen = AndroidScreen.Conversation("dev", "開発", "", listOf(entry), InputState())
+        ui.setContent {
+            CompositionLocalProvider(LocalDensity provides Density(LocalDensity.current.density, 2f)) {
+                AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> }
+            }
+        }
+        assertEnlargedTimestampFits(timestamp)
+    }
+
+    private fun assertEnlargedTimestampFits(timestamp: String) {
+        val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+        ui.onNodeWithText(timestamp, useUnmergedTree = true).assertIsDisplayed()
+            .performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
+        val layout = layouts.single()
+        check(!layout.hasVisualOverflow && layout.getLineEnd(layout.lineCount - 1, visibleEnd = true) == timestamp.length) {
+            "timestamp clipped at 200%: lines=${layout.lineCount}, width=${layout.size.width}"
         }
     }
 
