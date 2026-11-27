@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url';
 import { classifyTranslationChanges, isFrontendTestInput, isLightweightChange, readChanges, testBaseSha, usesSelectiveTests, workflowChanges } from './test-selection-diff.mjs';
 import { routeTestTargets, testLeg } from './backend-e2e-selection.mjs';
 import { isRelatedFrontendModule, isVitestInput } from './frontend-test-selection.mjs';
+import { PR_WORKFLOWS } from './merge-queue-changes.mjs';
 import { selectOtherJobs } from './test-selection-jobs.mjs';
 import { workflowJobs, restrictWorkflow } from './workflow-test-selection.mjs';
 
@@ -157,19 +158,7 @@ function selectPullRequest(changes, full) {
   return { reason: 'PR suites selected by input', affected: Object.fromEntries(affected), frontend, frontendBuild, backend };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  let changes;
-  let base;
-  try {
-    const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
-    base = testBaseSha(process.env.GITHUB_EVENT_NAME, event);
-    if (base) changes = readChanges(base);
-  } catch {
-    console.log('Test Selection: diff unavailable; running all suites');
-  }
-  const eventName = process.env.GITHUB_EVENT_NAME;
-  const workflow = process.env.TEST_WORKFLOW;
-  if (eventName === 'pull_request' && changes) changes = classifyTranslationChanges(base, changes);
+export function selectWorkflowPlan(eventName, workflow, changes, base) {
   const relevant = workflowChanges(workflow, changes);
   const otherChanges = eventName === 'pull_request' && relevant?.length
     ? relevant.filter(change => !isLightweightChange(change) && isFrontendTestInput(change.path))
@@ -189,8 +178,49 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   selection.desktopTauri ??= { check: true, macos: true, windows: true };
   selection.backend.check ??= true;
   selection.backend.deploy ??= selection.backend.full;
+  return selection;
+}
+
+export function selectPrPlans(changes, base) {
+  const plans = {};
+  for (const workflow of PR_WORKFLOWS) {
+    if (changes?.length && !workflowChanges(workflow, changes).length) continue;
+    const selection = selectWorkflowPlan('pull_request', workflow, changes, base);
+    const { backend, frontend, frontendBuild, clients, bots } = selection;
+    if (workflow === 'ci-backend' && (backend.check || (!backend.full && (backend.run || backend.emoji)))) plans[workflow] = { backend };
+    if (workflow === 'ci-frontend' && (
+      Object.values(frontendBuild).some(Boolean) ||
+      Object.entries(frontend).some(([key, enabled]) => !['auth', 'e2ee'].includes(key) && enabled)
+    )) plans[workflow] = { frontend, frontendBuild };
+    if (workflow === 'ci-tui' && clients.tui) plans[workflow] = { clients };
+    if (workflow === 'ci-github-bot' && (bots.bot || bots.sdk)) plans[workflow] = { bots };
+  }
+  return plans;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const eventName = process.env.GITHUB_EVENT_NAME;
+  const workflow = process.env.TEST_WORKFLOW;
+  let changes;
+  let base;
+  try {
+    const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
+    base = testBaseSha(eventName, event);
+    if (base) changes = readChanges(base);
+  } catch {
+    console.log('Test Selection: diff unavailable; running all suites');
+  }
+  if (eventName === 'pull_request' && changes) changes = classifyTranslationChanges(base, changes);
+  const sharedPlan = process.env.TEST_PR_BATCH === 'true';
+  const selection = sharedPlan ? selectPrPlans(changes, base) : selectWorkflowPlan(eventName, workflow, changes, base);
+  const verify = eventName !== 'pull_request' || !changes?.length || changes.some(({ path }) =>
+    path.startsWith('.github/') || path === 'desktop/scripts/collect-lucide-icons.mjs');
+  const output = process.env.GITHUB_OUTPUT;
+  appendFileSync(output, `plan=${JSON.stringify(Object.fromEntries(Object.entries(selection).filter(([key]) => key !== 'affected')))}\nverify=${verify}\n`);
   console.log(JSON.stringify(selection, null, 2));
-  for (const key of ['frontend', 'frontendBuild', 'backend', 'clients', 'bots', 'storybookPreview', 'desktopTauri', 'androidMedia']) {
-    appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${JSON.stringify(selection[key])}\n`);
+  if (!sharedPlan) {
+    for (const key of ['frontend', 'frontendBuild', 'backend', 'clients', 'bots', 'storybookPreview', 'desktopTauri', 'androidMedia']) {
+      appendFileSync(output, `${key}=${JSON.stringify(selection[key])}\n`);
+    }
   }
 }

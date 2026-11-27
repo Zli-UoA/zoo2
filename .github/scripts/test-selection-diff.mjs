@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { isAndroidFrontendOnly } from './frontend-test-selection-paths.mjs';
-import { pathMatcher, pullRequestPaths } from './merge-queue-changes.mjs';
+import { pathMatcher, testWorkflowPaths } from './merge-queue-changes.mjs';
 import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const shaPattern = /^[a-f0-9]{40}$/;
@@ -23,7 +23,7 @@ export function testBaseSha(eventName, event) {
 export function workflowChanges(workflow, changes) {
   if (!changes || !/^[\w-]+$/.test(workflow ?? '')) return changes;
   const source = readFileSync(new URL(`../workflows/${workflow}.yaml`, import.meta.url), 'utf8');
-  const matches = pathMatcher(pullRequestPaths(source));
+  const matches = pathMatcher(testWorkflowPaths(workflow, source));
   return changes.filter(change => matches(change.path));
 }
 

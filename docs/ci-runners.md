@@ -95,11 +95,13 @@ CI Frontendの単体テスト・Vitestのbrowser・VRTプロジェクトは、PR
 
 バックエンドは `backend/tests/*_test.rs` だけの追加・編集なら、その結合テストを `cargo test --test <名前>` で選び、必要なslack/core区分のジョブだけを起動します。他の結合テストのリンクと実行、未変更の本体のClippy・単体テスト・デプロイイメージ検証を省きます。フォーマット検査は維持し、emoji_service_testの変更では専用のignoredテストも選びます。ソース・共有support・SQL fixture・マイグレーション・Cargo設定・未登録の変更があれば全件へ戻します。全件実行ではActivityPubのignored単体テストも維持します。PRで `backend-e2e-selection.mjs` に登録したルートと独立した結合テストだけを変更した場合は、ルートの結合テストと変更したテストの和集合を実行します。ルート変更時はlintと単体テストも実行します。マージキューではルートの変更に対して結合テストを全件実行します。
 
-判定workflowは自身の回帰テストが成功してから結果を返します。判定ジョブの失敗はworkflowを失敗にし、差分だけが取得できない場合は全件を選びます。import以外の依存を持つ資源は、全件へ戻す対象として `.github/scripts/frontend-test-selection.mjs` に追加します。`node --test .github/scripts/frontend-test-selection.test.mjs .github/scripts/test-selection.test.mjs` で選別と全件への切り替えを検証します。
+回帰テストを実行する場合は、その成功後に選別結果が後続ジョブで使われます。判定ジョブの失敗はworkflowを失敗にし、差分だけが取得できない場合は全件を選びます。import以外の依存を持つ資源は、全件へ戻す対象として `.github/scripts/frontend-test-selection.mjs` に追加します。`node --test .github/scripts/frontend-test-selection.test.mjs .github/scripts/test-selection.test.mjs` で選別と全件への切り替えを検証します。
 
 PR で既存の翻訳 JSON を編集するときは、選別ジョブで JSON の構造と補間変数を検査します。既存キーと補間変数を維持する変更は PR の Web アプリ検証の入力から除きます。キーの削除、補間変数の変更、翻訳ファイルの追加・削除では Web アプリ検証を実行します。Android のアプリ検証はマージキューで行います。翻訳と実装が混在する PR では実装の差分で検証を選びます。Web の README だけの変更ではアプリテストと PR 用イメージの生成を省きます。
 
 PR では変更ファイルごとに検証を選び、選んだスイートと Rust の結合テストターゲットの和集合を実行します。同じ PR に Web 実装・Playwright の spec・proxy 設定が含まれても、Vitest は Web の入力だけから関連ファイルを選びます。Storybook 設定を変更した場合は Storybook・VRT・静的カタログを選び、Service Worker の変更では PWA・オフライン CSP・コンテナを選びます。共有の DB スキーマや Rust の未分類の実装変更はバックエンドの広い検証を選び、結合テストの全件実行はマージキューで行います。分類できない共有入力や差分が取得できない場合は従来の広い検証に戻ります。
+
+PR では `pr-ci.yaml` が GitHub-hosted runner の選別ジョブを一度実行し、backend・Web・TUI・GitHub Bot 用の計画を各 workflow に渡します。対象が空の workflow は起動しません。候補のパスは各 workflow の main push と同じ一覧を使います。差分を読めない場合は全候補を残し、判定や回帰テストで失敗した場合は PR の必須 CI を失敗させます。通常の実装変更では選別スクリプト自身の回帰テストを省き、CI 設定やスクリプトを変えた場合に実行します。Storybook Preview はデプロイの成否が必須 CI に影響しないよう、独立した workflow で選別します。
 
 ## Wasm パッケージの再利用
 

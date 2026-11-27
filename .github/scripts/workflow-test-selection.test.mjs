@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
-import { pathMatcher, selectWorkflows, WORKFLOWS } from './merge-queue-changes.mjs';
-import { expectedWorkflows } from './automerge-gate.mjs';
+import { pathMatcher, PR_WORKFLOWS, selectWorkflows, WORKFLOWS } from './merge-queue-changes.mjs';
+import { aggregateChecks, expectedWorkflows } from './automerge-gate.mjs';
+import { selectPrPlans } from './test-selection.mjs';
 import { workflowChanges } from './test-selection-diff.mjs';
 import { changedSections, jobClosure, workflowJobs, restrictWorkflow } from './workflow-test-selection.mjs';
 
@@ -106,14 +107,14 @@ test('checks deferred on PRs remain wired into the merge queue gate', () => {
     const blocks = source.split(/^jobs:\n/m)[1].split(/^  (?=[\w-]+:)/m);
     for (const job of jobs) {
       const block = blocks.find(block => block.startsWith(`${job}:\n`));
-      assert.match(block, /^    if: (?:>-\n      )?github\.event_name != 'pull_request'/m, `${workflow}/${job}`);
+      assert.match(block.match(/^    if: [^\n]*(?:\n {6}[^\n]*)*/m)?.[0], /github\.event_name != 'pull_request'/, `${workflow}/${job}`);
     }
   }
 });
 
 test('PR gate and merge queue agree on platform and test ownership', () => {
   const readWorkflow = name => readFileSync(new URL(`../workflows/${name}.yaml`, import.meta.url), 'utf8');
-  const definitions = WORKFLOWS.map(name => ({ path: `${name}.yaml`, source: readWorkflow(name) }));
+  const definitions = [...WORKFLOWS, 'pr-ci'].map(name => ({ path: `${name}.yaml`, source: readWorkflow(name) }));
   const scenarios = [
     ['frontend-compose/androidApp/src/main/App.kt', ['ci-android']],
     ['crates/zoo-crypto-ffi/src/lib.rs', ['ci-android']],
@@ -132,7 +133,8 @@ test('PR gate and merge queue agree on platform and test ownership', () => {
   for (const [path, expected] of scenarios) {
     const actual = Object.entries(selectWorkflows([path], readWorkflow)).filter(([, selected]) => selected).map(([name]) => name);
     assert.deepEqual(actual.sort(), expected, path);
-    assert.deepEqual(expectedWorkflows([path], definitions).sort(), expected.map(name => `${name}.yaml`), path);
+    assert.deepEqual(expectedWorkflows([path], definitions).sort(),
+      [...expected.filter(name => !PR_WORKFLOWS.includes(name)).map(name => `${name}.yaml`), 'pr-ci.yaml'].sort(), path);
   }
   const selected = selectWorkflows(['frontend/src/lib/sip/controller.ts', 'frontend/src/android-phone/dm-media.browser.test.ts'], readWorkflow);
   assert.equal(selected['ci-frontend'], true);
@@ -153,4 +155,35 @@ test('ordered path exclusions support nested and top-level matches and re-inclus
   assert.equal(matches('frontend/src/unit.test.ts'), false);
   assert.equal(matches('frontend/keep.test.ts'), true);
   assert.equal(matches('frontend/src/unit.ts'), true);
+});
+
+test('one PR plan covers all required callers, including when the diff cannot be read', () => {
+  const workflow = name => readFileSync(new URL(`../workflows/${name}.yaml`, import.meta.url), 'utf8');
+  const orchestrator = workflow('pr-ci');
+  for (const name of PR_WORKFLOWS) {
+    assert.ok(orchestrator.includes(`uses: ./.github/workflows/${name}.yaml`), name);
+    assert.ok(orchestrator.includes(`test-plan: \${{ toJSON(fromJSON(needs.plan.outputs.plan)['${name}']) }}`), name);
+    assert.match(workflow(name), /test-selection:\n    if: inputs.test-plan == ''/, name);
+  }
+  const change = path => ({ status: 'M', path });
+  const mixed = selectPrPlans([change('frontend/src/components/Button.tsx'), change('backend/tests/apns_test.rs')]);
+  assert.deepEqual(Object.keys(mixed), ['ci-backend', 'ci-frontend']);
+  assert.deepEqual(mixed['ci-backend'].backend.targets, ['apns_test']);
+  assert.equal(mixed['ci-frontend'].frontend.container, false);
+  assert.ok(mixed['ci-frontend'].frontend.browser);
+  assert.deepEqual(selectPrPlans([change('frontend/README.md'), change('frontend-compose/androidApp/App.kt')]), {});
+  assert.deepEqual(Object.keys(selectPrPlans(undefined)), PR_WORKFLOWS);
+});
+
+test('the existing merge gate subscription receives the required PR workflow result', () => {
+  const workflow = name => readFileSync(new URL(`../workflows/${name}.yaml`, import.meta.url), 'utf8');
+  const source = workflow('pr-ci');
+  const workflowName = source.match(/^name: (.*)$/m)[1];
+  assert.match(workflow('automerge-gate'), new RegExp(`      - "${workflowName}"`));
+  const expected = expectedWorkflows([], [{ path: 'pr-ci.yaml', source }]);
+  assert.deepEqual(expected, ['pr-ci.yaml']);
+  assert.equal(aggregateChecks([], [], expected).state, 'pending');
+  const run = { id: 1, event: 'pull_request', path: '.github/workflows/pr-ci.yaml', status: 'completed', check_suite_id: 1 };
+  assert.equal(aggregateChecks([], [{ ...run, conclusion: 'failure' }], expected).state, 'failure');
+  assert.equal(aggregateChecks([], [{ ...run, conclusion: 'success' }], expected).state, 'success');
 });
