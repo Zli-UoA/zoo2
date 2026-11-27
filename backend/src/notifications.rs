@@ -13,9 +13,10 @@ use crate::{
 /// API 全体の内訳計測（docs/query-design.md）。`notify_timing` 目標の低コスト event として、
 /// 各 SQL の「往復を含む実行時間」をメッセージ ID 単位で残す。SQL の計画だけは toasty
 /// ドライバから分離できないため、ここでは往復込みの時間として記録する。
-/// subscriber が無効なら `info!` は静的なレベルチェックで終わり、挙動は変わらない。
+/// `debug!` にして既定フィルターでは出力しない。計測するときだけ `notify_timing` ターゲットの
+/// debug を有効にした subscriber を置く。無効なら静的なレベルチェックで終わり、挙動は変わらない。
 pub(crate) fn emit_timing(stage: &'static str, message_id: &str, began: Instant) {
-    tracing::info!(
+    tracing::debug!(
         target: "notify_timing",
         stage = stage,
         message_id = message_id,

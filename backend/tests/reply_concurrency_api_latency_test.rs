@@ -8,9 +8,10 @@
 //!
 //! Times the whole in-process request: router, extractors, dev auth, pool wait, all SQL round trips
 //! and the JSON response body. Reports p50 / p95 / max. HTTP network is excluded because the
-//! router runs in-process. The write path also emits `notify_timing` events at `info!` level; a
-//! layer installed for this test collects them per reply (keyed by message ID) so connection
-//! acquisition, root-row lock, each notification SQL call and COMMIT can be reported separately.
+//! router runs in-process. The write path also emits `notify_timing` events at `debug!` level; a
+//! layer installed for this test enables that target at debug and collects the events per reply
+//! (keyed by message ID and stage) so connection acquisition, root-row lock, each notification SQL
+//! call and COMMIT can be reported separately.
 //! Each per-SQL figure is a round trip including Postgres planning and execution: toasty exposes no
 //! hook that splits those two, so only a whole-`EXPLAIN` could separate `Planning Time`. A probe
 //! acquires a connection from the same pool under the same load as an independent reference. The
@@ -40,16 +41,17 @@ use std::{
 use tokio::sync::Barrier;
 use tower::ServiceExt;
 use tracing::field::{Field, Visit};
-use tracing_subscriber::{Layer, layer::Context, prelude::*};
+use tracing_subscriber::{Layer, filter::Targets, layer::Context, prelude::*};
 
 const WRITERS: usize = 8;
 const RECIPIENTS: i32 = 10_000;
 
-/// One `notify_timing` event from the reply write path, correlated by message ID.
-struct TimingEvent {
-    message_id: String,
-    stage: String,
-    elapsed_us: u64,
+/// `notify_timing` events from the reply write path, keyed by (message ID, stage) so a stage is
+/// recorded at most once per reply. Duplicates are kept separately to fail the measurement.
+#[derive(Default)]
+struct TimingEvents {
+    samples: HashMap<(String, String), u64>,
+    duplicates: Vec<(String, String)>,
 }
 
 #[derive(Default)]
@@ -86,7 +88,7 @@ impl Visit for TimingVisitor {
 }
 
 #[derive(Clone, Default)]
-struct TimingCollector(Arc<Mutex<Vec<TimingEvent>>>);
+struct TimingCollector(Arc<Mutex<TimingEvents>>);
 
 impl<S> Layer<S> for TimingCollector
 where
@@ -101,11 +103,11 @@ where
         if let (Some(message_id), Some(stage), Some(elapsed_us)) =
             (visitor.message_id, visitor.stage, visitor.elapsed_us)
         {
-            self.0.lock().unwrap().push(TimingEvent {
-                message_id,
-                stage,
-                elapsed_us,
-            });
+            let mut events = self.0.lock().unwrap();
+            let key = (message_id, stage);
+            if events.samples.insert(key.clone(), elapsed_us).is_some() {
+                events.duplicates.push(key);
+            }
         }
     }
 }
@@ -121,6 +123,28 @@ const TIMING_STAGES: [&str; 9] = [
     "notif_insert",
     "commit",
 ];
+
+/// `emit_timing` is `debug!`, so the layer must explicitly enable that target at debug.
+fn timing_subscriber(collector: TimingCollector) -> impl tracing::Subscriber {
+    let target = Targets::new().with_target("notify_timing", tracing::Level::DEBUG);
+    tracing_subscriber::registry().with(collector.with_filter(target))
+}
+
+#[test]
+fn timing_events_enable_debug_and_record_duplicate_reply_stages() {
+    let collector = TimingCollector::default();
+    tracing::subscriber::with_default(timing_subscriber(collector.clone()), || {
+        tracing::debug!(target: "notify_timing", stage = "commit", message_id = "reply-1", elapsed_us = 10u64);
+        tracing::debug!(target: "notify_timing", stage = "root_lock", message_id = "reply-1", elapsed_us = 30u64);
+        tracing::debug!(target: "notify_timing", stage = "commit", message_id = "reply-1", elapsed_us = 20u64);
+    });
+    let events = collector.0.lock().unwrap();
+    assert_eq!(events.samples.len(), 2);
+    assert_eq!(
+        events.duplicates,
+        vec![("reply-1".to_owned(), "commit".to_owned())]
+    );
+}
 
 async fn call(
     app: &Router,
@@ -307,7 +331,7 @@ async fn eight_concurrent_replies_api_latency() -> anyhow::Result<()> {
     // thread-local `with_default` on the test thread would miss events from the spawned tasks.
     // Installed after the fixture is ready, so only the measured replies are collected.
     let timing = TimingCollector::default();
-    let subscriber = tracing_subscriber::registry().with(timing.clone());
+    let subscriber = timing_subscriber(timing.clone());
     tracing::subscriber::set_global_default(subscriber)
         .map_err(|error| anyhow::anyhow!("set_global_default: {error}"))?;
 
@@ -481,40 +505,52 @@ async fn eight_concurrent_replies_api_latency() -> anyhow::Result<()> {
         "pool_acquire_probe".into(),
         summary("Pool acquire probe (same pool, 8 concurrent)", pool_samples),
     );
-    // Attribute every event to its reply by message ID. Other posts (fixture setup) are filtered
-    // out, and an incomplete set of stages for any one reply fails the measurement instead of
-    // silently mixing a partial breakdown into the percentiles.
+    // Events are keyed by (message ID, stage). A duplicate means the same stage was recorded twice
+    // for one reply, so fail before aggregating rather than counting it as another sample. Other
+    // posts (fixture setup) are filtered out; every measured reply must then have exactly the nine
+    // expected stages, one each, or the measurement fails instead of mixing a partial breakdown
+    // into the percentiles.
+    let events = timing.0.lock().unwrap();
+    anyhow::ensure!(
+        events.duplicates.is_empty(),
+        "duplicate notify_timing events: {:?}",
+        events.duplicates
+    );
     let reply_ids_all: HashSet<&str> = reply_ids.iter().flatten().map(String::as_str).collect();
     let mut stage_samples: HashMap<&'static str, Vec<f64>> = TIMING_STAGES
         .iter()
         .map(|stage| (*stage, Vec::new()))
         .collect();
     let mut stages_per_reply: HashMap<String, HashSet<&'static str>> = HashMap::new();
-    for event in timing.0.lock().unwrap().iter() {
-        if !reply_ids_all.contains(event.message_id.as_str()) {
+    for ((message_id, stage), elapsed_us) in &events.samples {
+        if !reply_ids_all.contains(message_id.as_str()) {
             continue;
         }
         let Some(stage) = TIMING_STAGES
             .iter()
-            .find(|candidate| **candidate == event.stage)
+            .find(|candidate| **candidate == stage.as_str())
         else {
             continue;
         };
         stage_samples
             .get_mut(*stage)
             .unwrap()
-            .push(event.elapsed_us as f64 / 1000.);
+            .push(*elapsed_us as f64 / 1000.);
         stages_per_reply
-            .entry(event.message_id.clone())
+            .entry(message_id.clone())
             .or_default()
             .insert(*stage);
     }
-    for stage in TIMING_STAGES {
-        let count = stage_samples[stage].len();
+    for message_id in &reply_ids_all {
+        let stages = stages_per_reply.get(*message_id);
         anyhow::ensure!(
-            count == rounds * WRITERS,
-            "{stage}: {count} events, expected {}",
-            rounds * WRITERS
+            stages.is_some_and(|stages| {
+                stages.len() == TIMING_STAGES.len()
+                    && TIMING_STAGES.iter().all(|stage| stages.contains(stage))
+            }),
+            "reply {message_id}: expected all {} stages exactly once, got {:?}",
+            TIMING_STAGES.len(),
+            stages
         );
     }
     anyhow::ensure!(
