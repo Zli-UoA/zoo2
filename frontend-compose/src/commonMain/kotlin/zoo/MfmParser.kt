@@ -33,6 +33,8 @@ fun isWorkspaceEmojiCandidate(code: String): Boolean =
     code.startsWith(':') && code.endsWith(':') && accountEmojiName(code) == null &&
         code.removeSurrounding(":").let { it.isNotEmpty() && it == it.trim() && ':' !in it }
 
+internal const val inlineEscapes = "\\`*_{}[]()#+-.!~$<>@:"
+
 private val functionHeader = Regex("[A-Za-z0-9_]+(?:\\.[A-Za-z0-9_=,+.\\-]+)?[ \\t\\n]")
 private val formats = listOf(
     Triple("<small>", "</small>", "small"),
@@ -204,7 +206,7 @@ private class MfmScanner(length: Int) {
                     token = Inline(url, "link", url, bare = true)
                     end = close + 1
                 }
-            } else if (source[at] == '\\' && at + 1 < source.length && source[at + 1] in "\\`*_{}[]()#+-.!~$<>@:") {
+            } else if (source[at] == '\\' && at + 1 < source.length && source[at + 1] in inlineEscapes) {
                 pending.append(source[at + 1])
                 at += 2
                 continue

@@ -110,6 +110,10 @@ class TimelineImageSourcesTest {
         val formattedAlias = ":**猫**:"
         assertTrue(messageExcerptNeedsWorkspaceEmoji(formattedAlias, emptySet()))
         assertFalse(messageExcerptNeedsWorkspaceEmoji(formattedAlias, setOf(formattedAlias)))
+        assertTrue(messageExcerptNeedsWorkspaceEmoji("\$[ruby 星 :猫:ねこ]", emptySet()))
+        assertTrue(messageExcerptNeedsWorkspaceEmoji(":**猫**:ok:", setOf(":ok:")))
+        assertTrue(messageExcerptNeedsWorkspaceEmoji(":猫\\*:", emptySet()))
+        assertFalse(messageExcerptNeedsWorkspaceEmoji("あ".repeat(201) + formattedAlias, emptySet()))
         assertFalse(messageExcerptNeedsWorkspaceEmoji(":unknown:", emptySet()))
     }
 
