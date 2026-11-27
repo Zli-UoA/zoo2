@@ -79,7 +79,9 @@ async function findActiveShellCache(prefix = POLICY_PREFIX, fallback = true, kno
       return fallback && prefix === POLICY_PREFIX ? DEFAULT_CACHE : null;
     }
   }
+  if (names.length === 0) return prefix === POLICY_PREFIX ? DEFAULT_CACHE : null;
   let latest = null;
+  let readFailed = false;
   for (const name of names) {
     let installedAt = -1;
     try {
@@ -90,12 +92,14 @@ async function findActiveShellCache(prefix = POLICY_PREFIX, fallback = true, kno
         if (Number.isFinite(value)) installedAt = value;
       }
     } catch {
+      readFailed = true;
       /* An unreadable cache is not the latest. */
     }
     if (installedAt >= 0 && (!latest || installedAt > latest.installedAt))
       latest = { name, installedAt };
   }
   if (latest) return latest.name;
+  if (readFailed && !fallback) return null;
   for (const name of names) {
     try {
       const cache = await caches.open(name);
@@ -571,34 +575,40 @@ function cachedForConditional(request, cached) {
 
 function cachedForOnlyIfCached(request, cached) {
   if (cached.type === "error") return cached;
-  const evaluated = cachedForConditional(request, cached);
-  if (evaluated.status === 304) return evaluated;
+  // 事前条件を先に評価する。If-Match: * は保存版があれば成立する。
   const match = request.headers?.get?.("if-match");
   if (match) {
     const etag = cached.headers.get("x-zoo-etag")?.trim();
-    if (!etag || !parseETagList(match, false).includes(etag))
+    const tags = parseETagList(match, false);
+    if (!tags.includes("*") && (!etag || !tags.includes(etag)))
+      return new Response(null, { status: 412 });
+  } else {
+    const unmodified = request.headers?.get?.("if-unmodified-since");
+    const modified = cached.headers.get("x-zoo-last-modified");
+    if (unmodified && modified && Date.parse(modified) > Date.parse(unmodified))
       return new Response(null, { status: 412 });
   }
-  const unmodified = request.headers?.get?.("if-unmodified-since");
-  const modified = cached.headers.get("x-zoo-last-modified");
-  if (unmodified && modified && Date.parse(modified) > Date.parse(unmodified))
-    return new Response(null, { status: 412 });
-  return evaluated;
+  return cachedForConditional(request, cached);
 }
 
 const freshAssetWrites = new Map();
 let freshAssetSequence = 0;
 
-function noteFreshAssetSequence(path, sequence) {
+function noteFreshAssetSequence(path, sequence, etag = null) {
   const previous = freshAssetWrites.get(path);
   if (!previous || previous.sequence < sequence)
-    freshAssetWrites.set(path, { sequence, promise: previous?.promise ?? Promise.resolve() });
+    freshAssetWrites.set(path, {
+      sequence,
+      etag,
+      promise: previous?.promise ?? Promise.resolve(),
+    });
 }
 
 async function writeFreshAsset(path, cache, response, sequence) {
   // 取得開始順が古い応答は、直後に届いても新しい保存版を上書きしない。
   const previous = freshAssetWrites.get(path);
-  if (previous && previous.sequence > sequence) return;
+  const sameVersion = previous?.etag && response.headers.get("etag") === previous.etag;
+  if (previous && previous.sequence > sequence && !sameVersion) return;
   const work = (previous?.promise ?? Promise.resolve())
     .catch(() => {})
     .then(() => {
@@ -619,7 +629,12 @@ async function fetchConditionalAsset(request, path, sequence) {
     const response = await fetchBounded(request, { cache: "reload" });
     // 304 / 412 などの 4xx は呼び出し元へ届ける。キャッシュで上書きしない。
     if (response.status === 304 || !response.ok || response.status >= 600) {
-      if (response.status === 304) noteFreshAssetSequence(path, sequence);
+      if (response.status === 304)
+        noteFreshAssetSequence(
+          path,
+          sequence,
+          response.headers.get("etag") || response.headers.get("ETag"),
+        );
       if (precondition && (response.status === 0 || response.status >= 500)) return response;
       if (precondition || response.status < 500) return response;
       const cached = cachedForConditional(request, await cachedFreshAsset(path));
@@ -755,18 +770,25 @@ async function cachedFreshAsset(path, networkResponse = null) {
     }
     candidates.push({ name, current: name.startsWith(POLICY_PREFIX), installedAt });
   }
-  candidates.sort((a, b) => Number(b.current) - Number(a.current) || b.installedAt - a.installedAt);
-  for (const { name } of candidates) {
+  let best = null;
+  let bestTime = -Infinity;
+  for (const { name, current, installedAt } of candidates) {
     try {
       const cache = await caches.open(name);
       const saved = await cache.match(path);
       if (!(await isUsableFreshAsset(path, saved))) continue;
-      return saved;
+      // シェルの世代ではなく、ファイル自体の更新時刻で最新版を選ぶ。
+      const modified = Date.parse(saved.headers.get("x-zoo-last-modified") || "");
+      const updatedAt = Number.isFinite(modified) ? modified : installedAt;
+      if (!best || updatedAt > bestTime || (updatedAt === bestTime && current)) {
+        best = saved;
+        bestTime = updatedAt;
+      }
     } catch {
       /* Try the next generation when one cache cannot be read. */
     }
   }
-  return networkResponse ?? Response.error();
+  return best || networkResponse || Response.error();
 }
 
 // Public AuthZ avatars have their own bounded cache, retained across shell upgrades.
@@ -900,7 +922,11 @@ self.addEventListener("activate", (event) => {
         await self.clients.claim();
         return;
       }
-      const active = await findActiveShellCache(POLICY_PREFIX, true, names);
+      const active = await findActiveShellCache(POLICY_PREFIX, false, names);
+      if (!active) {
+        await self.clients.claim();
+        return;
+      }
       for (const name of names) {
         const managed = name.startsWith(CACHE_PREFIX) || name.startsWith("zoo-offline-");
         if (
