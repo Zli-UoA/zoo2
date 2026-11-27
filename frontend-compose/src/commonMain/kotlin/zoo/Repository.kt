@@ -181,11 +181,14 @@ class SyncedTable(
     private val synchronize: Boolean = true,
     private val persist: Boolean = true,
     private val onDemand: Boolean = false,
+    initialRows: List<Row> = emptyList(),
 ) {
     private val tableScope =
         CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
-    private val serverRows = MutableStateFlow<List<Row>>(emptyList())
+    private val serverRows = MutableStateFlow(initialRows)
     val replicatedRows: StateFlow<List<Row>> = serverRows.asStateFlow()
+    internal var navigationRows = emptyList<Row>()
+        private set
     private val successfulSnapshot = MutableStateFlow<List<Row>?>(null)
     /** Only committed network snapshots; cache loads, resets and failures never publish here. */
     val synchronizedRows: StateFlow<List<Row>?> = successfulSnapshot.asStateFlow()
@@ -199,7 +202,7 @@ class SyncedTable(
                 }
                 merged.values.toList()
             }
-            .stateIn(tableScope, SharingStarted.Eagerly, emptyList())
+            .stateIn(tableScope, SharingStarted.Eagerly, initialRows)
     val loading = MutableStateFlow(true)
     val error = MutableStateFlow<Throwable?>(null)
     val persistenceError = MutableStateFlow(false)
@@ -378,7 +381,7 @@ class SyncedTable(
                 } catch (_: Exception) {}
             }
             try {
-                (if (persist && readCache) platform.readCache(cacheKey) else null)?.let { raw ->
+                (if (persist && readCache && serverRows.value.isEmpty()) platform.readCache(cacheKey) else null)?.let { raw ->
                     serverRows.value = json.parseToJsonElement(raw).jsonArray.map { it.jsonObject }
                     loading.value = false
                 }
@@ -435,7 +438,12 @@ class SyncedTable(
             val cacheWriter = launch {
                 for (rows in snapshots) {
                     try {
-                        if (persist) platform.writeCache(cacheKey, JsonArray(rows).toString())
+                        if (persist) {
+                            val encoded = JsonArray(rows).toString()
+                            if (onDemand) navigationRows =
+                                rows.takeIf { encoded.length <= 2 * 1024 * 1024 }.orEmpty()
+                            platform.writeCache(cacheKey, encoded)
+                        }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (_: Exception) {
@@ -694,6 +702,17 @@ class Repository(
     val members = SyncedTable("channel_users", config, platform, http, scope, synchronize = synchronize)
     val notifications = SyncedTable("notifications", config, platform, http, scope, synchronize = synchronize)
     private val dynamic = mutableMapOf<Pair<String, String>, SyncedTable>()
+    private val recentMessages = linkedMapOf<String, List<Row>>()
+    var navigationCacheLimit: Int = 8
+        set(value) {
+            field = value.coerceIn(0, 16)
+            trimRecentMessages()
+        }
+
+    private fun trimRecentMessages() {
+        while (recentMessages.size > navigationCacheLimit) recentMessages.remove(recentMessages.keys.first())
+    }
+
 
     /** Read an existing subscription without starting a channel stream for an OS notification. */
     fun cachedMessages(channelId: String): List<Row> =
@@ -727,6 +746,7 @@ class Repository(
                         mapOf("channel_id" to channelId),
                         synchronize = synchronize,
                         onDemand = true,
+                        initialRows = recentMessages.remove(channelId).orEmpty(),
                     )
                 }
             else -> error("Unknown Shape resource")
@@ -736,7 +756,17 @@ class Repository(
         dynamic.keys
             .filter { it.second == channelId }
             .toList()
-            .forEach { dynamic.remove(it)?.close() }
+            .forEach { key ->
+                val table = dynamic.remove(key) ?: return@forEach
+                if (navigationCacheLimit > 0 && table.error.value == null && table.pageStates.value[PageScope.Main]?.loaded == true) {
+                    val rows = table.navigationRows
+                    if (rows.isNotEmpty()) {
+                        recentMessages[channelId] = rows
+                        trimRecentMessages()
+                    }
+                }
+                table.close()
+            }
     }
 
     fun messages(channelId: String) = table("messages", channelId)
@@ -749,6 +779,7 @@ class Repository(
         if (linked.isInitialized()) linked.value.close()
         (listOf(channels, users, members, notifications) + dynamic.values).forEach { it.close() }
         dynamic.clear()
+        recentMessages.clear()
         http.close()
     }
 }

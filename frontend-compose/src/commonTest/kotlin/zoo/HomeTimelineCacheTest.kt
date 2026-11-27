@@ -3,6 +3,22 @@ package zoo
 import kotlin.test.*
 
 class HomeTimelineCacheTest {
+    @Test fun loweringTheLimitEvictsLeastRecentlyUsedEntriesAndZeroDisablesStorage() {
+        val cache = HomeTimelineCache()
+        val snapshot = HomeTimelineSnapshot(listOf(obj("id" to "post")), false, 0, 0, 0)
+        cache.save("home", snapshot)
+        cache.save("profile", snapshot)
+        cache.get("home")
+        cache.limit = 1
+        assertNull(cache.get("profile"))
+        assertSame(snapshot, cache.get("home"))
+        cache.limit = 0
+        cache.save("new", snapshot)
+        assertNull(cache.get("home"))
+        assertNull(cache.get("new"))
+    }
+
+
     @Test fun restoresReadingPositionAndEvictsOldDestinationsWithinItsLimits() {
         val cache = HomeTimelineCache()
         val post = obj("id" to "post")

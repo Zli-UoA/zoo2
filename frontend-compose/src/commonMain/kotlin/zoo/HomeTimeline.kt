@@ -88,6 +88,7 @@ class HomeTimeline(
 
     fun select(value: String) {
         if (timeline == value) return
+        if (posts.isNotEmpty()) save()
         timeline = value
         selectionChanged = true
         scope.launch { writeHomePreference(app, settingsKey, value) }
@@ -96,12 +97,18 @@ class HomeTimeline(
         refreshJob?.cancel()
         olderJob?.cancel()
         posts = emptyList()
+        checkedAt = 0L
+        validatedIds = emptySet()
+        pendingHead = false
+        hasMore = false
+        viewportError = false
         loading = true
         loadingOlder = false
         olderError = false
         visibleIds = emptyList()
         atTop = true
-        refresh()
+        restore()
+        refresh(retain = posts.isNotEmpty())
     }
 
     fun refresh(retain: Boolean = false, includeHead: Boolean = true) {

@@ -12,6 +12,8 @@ description: Zoo Androidの画面、Compose部品、ナビゲーション、ジ�
 - `frontend-compose/src/commonMain/kotlin/zoo/AndroidDesign.kt` の共通トークン
 - [Frontend consistency](../frontend-consistency/SKILL.md) と [Storybook coverage](../storybook-coverage/SKILL.md)
 
+画面遷移は操作直後に反映し、取得済みのデータやアカウント単位のキャッシュを初回表示に使う。不足分の取得は遷移先で進める。詳細は [画面遷移とキャッシュ](../../../docs/android-design.md#画面遷移とキャッシュ) を参照。
+
 ## 設計する
 
 1. Zoo Webの用語、コンテンツ構造、白・黒の本文面と黄色いブランド色を共有する。投稿画面の上部の光はヘッダーで終える。通知画面ではステータスバーの背面から一覧の上端まで光をつなげ、本文面の色へなだらかに戻す。ライト・ダーク・端末設定に対応する。

@@ -26,6 +26,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
@@ -138,10 +139,14 @@ internal sealed interface AndroidScreen {
         val loadOlder: Boolean = false,
         val historyReady: Boolean = true,
     ) : AndroidScreen
+    data class OpeningConversation(
+        val key: String, val title: String, val online: Boolean, val failed: Boolean = false,
+        val retry: (() -> Unit)? = null,
+    ) : AndroidScreen
     data class PostLoading(val online: Boolean, val failed: Boolean) : AndroidScreen
     data class Post(
         val root: TimelineItem, val replies: List<TimelineItem>, val input: InputState,
-        val loadFailed: Boolean = false, val online: Boolean = true,
+        val loadFailed: Boolean = false, val online: Boolean = true, val loading: Boolean = false,
     ) : AndroidScreen
     data class ChannelSettings(val channel: String, val groups: List<SettingsGroup>, val id: String = channel) : AndroidScreen
     data class SettingsDetail(val title: String, val groups: List<SettingsGroup>) : AndroidScreen
@@ -302,6 +307,7 @@ internal fun AndroidScreens(
 private fun AndroidScreen.routeKey(): String = when (this) {
     is AndroidScreen.Home -> "home:$timeline"
     is AndroidScreen.Conversation -> "channel:$id"
+    is AndroidScreen.OpeningConversation -> key
     is AndroidScreen.Thread -> "thread:${root.id}"
     is AndroidScreen.Post -> "post:${root.id}"
     is AndroidScreen.Profile -> if (postsPending && posts.isEmpty()) "profile-loading:$id" else "profile:$id"
@@ -383,6 +389,18 @@ private fun RenderAndroidScreen(
                     focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true, historyReady = screen.historyReady,
                     loadEarlier = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderMessages) } } else null)
             }
+            is AndroidScreen.OpeningConversation -> {
+                PageHeader(screen.title, colors, onBack = back)
+                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    when {
+                        !screen.online -> Text(androidLabel("offline.bannerTitle", "オフラインです"), color = colors.secondary)
+                        screen.failed -> screen.retry?.let { retry ->
+                            TextAction(androidLabel("offline.retry", "再試行"), colors, click = retry)
+                        }
+                        else -> CircularProgressIndicator(color = colors.accent)
+                    }
+                }
+            }
             is AndroidScreen.PostLoading -> {
                 PageHeader("投稿", colors, onBack = back)
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -400,6 +418,8 @@ private fun RenderAndroidScreen(
                 if (screen.loadFailed && screen.online) FeedLoadError(androidLabel("common.errors.network", "通信エラー"), colors) {
                     dispatch(AndroidUiAction.RetryPost)
                 }
+                if (screen.loading && screen.online && !screen.loadFailed)
+                    LinearProgressIndicator(Modifier.fillMaxWidth(), color = colors.accent)
                 TimelineWithInput(listOf(screen.root) + screen.replies, screen.input, colors, dispatch, posts = true, canResize = false)
             }
             is AndroidScreen.EditEntry -> {

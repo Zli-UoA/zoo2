@@ -442,6 +442,8 @@ class MainActivity : ComponentActivity() {
                 assetsBaseUrl = connection.base,
             )
             val session = Session(Repository(config, platform, http, lifetime), lifetime, platform.env)
+            session.setNavigationCacheLimit(platform.navigationCacheLimit)
+            platform.onNavigation = session::update
             // ログインしたら、E2EE の端末を登録する（#359）。失敗は表示せず、裏で試し直す。
             val e2eeApi = zoo.crypto.ZooE2eeApi(ZooApi(config, platform, http))
             val e2ee = zoo.crypto.E2eeDeviceManager(

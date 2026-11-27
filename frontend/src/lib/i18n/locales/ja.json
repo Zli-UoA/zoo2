@@ -1811,6 +1811,13 @@
   "androidUpdate": {
     "title": "アプリの更新"
   },
+  "androidNavigationCache": {
+    "title": "画面遷移キャッシュ",
+    "description": "Home・投稿詳細・プロフィールと、チャンネルにそれぞれ適用するメモリ上の保持件数です。",
+    "off": "オフ",
+    "entries": "{{count}} 件",
+    "selected": "選択中"
+  },
   "androidNotifications": {
     "enable": "通知を有効にする",
     "scope": "ログイン中に同期した新着通知を受信します。",
