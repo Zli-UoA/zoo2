@@ -6,6 +6,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
@@ -31,7 +32,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
@@ -968,19 +968,20 @@ private fun Timeline(
                 CompositionLocalProvider(LocalBringIntoViewSpec provides inheritedBringIntoView) {
                     entry.dateDivider?.let { ConversationDivider(it, colors) }
                     entry.unreadDivider?.let { ConversationDivider(it, colors, unread = true) }
-                    val shape = RoundedCornerShape(8.dp)
                     Column(
                         Modifier.fillMaxWidth().testTag("timeline-entry-${entry.id}")
-                            .then(if (entry.mentionsCurrentUser) Modifier
-                                .background(colors.suggestionSelected, shape) else Modifier)
-                            .then(if (entry.id == focusMessage) Modifier.drawBehind {
-                                val intensity = focusIntensity()
+                            .then(if (entry.mentionsCurrentUser || entry.id == focusMessage) Modifier.drawBehind {
                                 val accentWidth = 3.dp.toPx()
-                                drawRect(colors.messageTarget.copy(alpha = .15f * intensity))
                                 val start = if (layoutDirection == androidx.compose.ui.unit.LayoutDirection.Ltr) 0f
                                     else size.width - accentWidth
-                                drawRect(colors.messageTarget.copy(alpha = intensity),
-                                    topLeft = Offset(start, 0f), size = Size(accentWidth, size.height))
+                                fun highlight(color: Color, backgroundAlpha: Float, intensity: Float) {
+                                    drawRoundRect(color.copy(alpha = backgroundAlpha * intensity),
+                                        cornerRadius = CornerRadius(8.dp.toPx()))
+                                    drawRect(color.copy(alpha = intensity), topLeft = Offset(start, 0f),
+                                        size = Size(accentWidth, size.height))
+                                }
+                                if (entry.mentionsCurrentUser) highlight(colors.messageMention, .08f, 1f)
+                                if (entry.id == focusMessage) highlight(colors.messageTarget, .16f, focusIntensity())
                             } else Modifier)
                             .then(if (posts) Modifier.combinedClickable(
                                 onClick = { dispatch(AndroidUiAction.OpenPost(entry.id)) },

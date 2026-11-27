@@ -61,6 +61,7 @@ internal class AndroidColors(dark: Boolean) {
     val mentionSurface = if (dark) Color(0xff303030) else Color(0xfffff6cc)
     val mentionText = if (dark) Color(0xffe5e5e5) else Color.Black
     val suggestionSelected = if (dark) Color(0xff2e2e2e) else Color(0xfffffbe8)
+    val messageMention = Color(0xfff0b232)
     val messageTarget = if (dark) Color(0xff6ea8ff) else Color(0xff3b82f6)
     /** Search terms in results (Web's `--highlight`): a paler yellow than [accent], readable on both themes. */
     val searchHighlight = if (dark) Color(0xff5c4a00) else Color(0xffffe680)
