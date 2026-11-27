@@ -829,8 +829,22 @@ async function cachedFreshAsset(path, networkResponse = null) {
     }
   }
   const allHaveTime = entries.length > 0 && entries.every((entry) => entry.modified !== null);
+  const current = entries.filter((entry) => entry.current);
+  // 現行ポリシーの候補だけに日時が揃っていれば、日時のない旧候補に邪魔されず比較する。
+  const comparable = allHaveTime
+    ? entries
+    : current.length > 0 && current.every((entry) => entry.modified !== null)
+      ? current
+      : null;
+  if (comparable) {
+    const best = [...comparable].sort((a, b) => {
+      if (a.modified !== b.modified) return b.modified - a.modified;
+      if (a.installedAt !== b.installedAt) return b.installedAt - a.installedAt;
+      return a.name.localeCompare(b.name);
+    })[0];
+    if (best) return best.saved;
+  }
   entries.sort((a, b) => {
-    if (allHaveTime && a.modified !== b.modified) return b.modified - a.modified;
     if (a.current !== b.current) return a.current ? -1 : 1;
     if (a.installedAt !== b.installedAt) return b.installedAt - a.installedAt;
     return a.name.localeCompare(b.name);

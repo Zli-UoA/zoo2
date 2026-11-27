@@ -3312,19 +3312,19 @@ test("cached manifest selection is deterministic when Last-Modified ties", async
   const stamp = { "x-zoo-last-modified": "Wed, 21 Oct 2026 07:28:00 GMT" };
   const cacheContext = memoryCaches([
     [
-      "zoo-shell-v3-new-v2",
-      `${ORIGIN}/manifest.webmanifest`,
-      basicResponse(current, { headers: stamp }),
-    ],
-    [
-      "zoo-shell-v3-old",
+      "zoo-shell-v3-new-a",
       `${ORIGIN}/manifest.webmanifest`,
       basicResponse(validManifest("#ffffff"), { headers: stamp }),
     ],
+    [
+      "zoo-shell-v3-new-b",
+      `${ORIGIN}/manifest.webmanifest`,
+      basicResponse(current, { headers: stamp }),
+    ],
   ]);
-  const older = await cacheContext.api.open("zoo-shell-v3-old");
+  const older = await cacheContext.api.open("zoo-shell-v3-new-a");
   await older.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("3"));
-  const newer = await cacheContext.api.open("zoo-shell-v3-new-v2");
+  const newer = await cacheContext.api.open("zoo-shell-v3-new-b");
   await newer.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("4"));
   const { handlers } = worker({
     policyVersion: "new",
@@ -3363,6 +3363,49 @@ test("all candidates with Last-Modified choose the newest across policies", asyn
   await old.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("1"));
   const current = await cacheContext.api.open("zoo-shell-v3-new-v2");
   await current.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("2"));
+  const { handlers } = worker({
+    policyVersion: "new",
+    caches: cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+  });
+  assert.equal(await response.text(), newer);
+});
+
+test("a missing timestamp in an old policy does not hide a newer current manifest", async () => {
+  const newer = validManifest("#000000");
+  const cacheContext = memoryCaches([
+    ["zoo-shell-v3-old", `${ORIGIN}/manifest.webmanifest`, basicResponse(validManifest("#ffffff"))],
+    [
+      "zoo-shell-v3-new-a",
+      `${ORIGIN}/manifest.webmanifest`,
+      basicResponse(newer, {
+        headers: { "x-zoo-last-modified": "Wed, 21 Oct 2026 07:28:00 GMT" },
+      }),
+    ],
+    [
+      "zoo-shell-v3-new-b",
+      `${ORIGIN}/manifest.webmanifest`,
+      basicResponse(validManifest("#ffffff"), {
+        headers: { "x-zoo-last-modified": "Tue, 20 Oct 2026 07:28:00 GMT" },
+      }),
+    ],
+  ]);
+  for (const [name, installedAt] of [
+    ["zoo-shell-v3-old", "1"],
+    ["zoo-shell-v3-new-a", "2"],
+    ["zoo-shell-v3-new-b", "3"],
+  ]) {
+    await (
+      await cacheContext.api.open(name)
+    ).put(`${ORIGIN}/__zoo_shell_meta__`, new Response(installedAt));
+  }
   const { handlers } = worker({
     policyVersion: "new",
     caches: cacheContext.api,
