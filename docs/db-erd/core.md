@@ -249,6 +249,7 @@ erDiagram
       timestamptz created_at
       boolean thumbnail_accounted
       bigint unconfirmed_thumbnail_bytes
+      boolean legacy_write_pending
     }
     home_image_upload_rates {
       text user_id PK,FK
@@ -268,6 +269,7 @@ erDiagram
       timestamptz created_at
       bigint thumbnail_bytes
       boolean thumbnail_ready
+      boolean thumbnail_conditional_write
       timestamptz thumbnail_check_at
     }
     home_images }o--o| users : home_images_uploader_id_fkey

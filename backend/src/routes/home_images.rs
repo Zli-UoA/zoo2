@@ -576,7 +576,7 @@ async fn upload(
     let id = uuid::Uuid::new_v4().to_string();
     let key = format!("home-images/{id}");
     // Reserve durable metadata before starting S3 I/O so crashes leave a GC candidate.
-    toasty::sql::statement("INSERT INTO home_images(id,uploader_id,content_type,name,file_size,width,height,blurhash,thumbnail_bytes,thumbnail_ready) VALUES($1,$2,$3,$4,$5::bigint,$6::integer,$7::integer,$8,$9::bigint,CASE WHEN $9::bigint=0 THEN false ELSE NULL END)").bind(id.as_str()).bind(user.id.as_str()).bind(body.content_type.as_str()).bind(body.name).bind(file_size).bind(width.to_string()).bind(height.to_string()).bind(blurhash.as_str()).bind(thumbnail_bytes.to_string()).exec(&mut tx).await?;
+    toasty::sql::statement("INSERT INTO home_images(id,uploader_id,content_type,name,file_size,width,height,blurhash,thumbnail_bytes,thumbnail_ready,thumbnail_conditional_write) VALUES($1,$2,$3,$4,$5::bigint,$6::integer,$7::integer,$8,$9::bigint,CASE WHEN $9::bigint=0 THEN false ELSE NULL END,true)").bind(id.as_str()).bind(user.id.as_str()).bind(body.content_type.as_str()).bind(body.name).bind(file_size).bind(width.to_string()).bind(height.to_string()).bind(blurhash.as_str()).bind(thumbnail_bytes.to_string()).exec(&mut tx).await?;
     tx.commit().await?;
     let mut tx = db.transaction().await?;
     // Account deletion and GC must not delete the object before PUT finishes.
@@ -868,7 +868,17 @@ pub async fn collect_garbage(state: &AppState) -> Result<(), AppError> {
     .await?;
     tx.commit().await?;
     let mut tx = db.transaction().await?;
-    let removed = query(&mut tx,"SELECT json_build_object('id',id)::text FROM home_image_deletions ORDER BY created_at LIMIT 100 FOR UPDATE SKIP LOCKED",&[]).await?;
+    let deletion_candidates = if state.config.s3.home_image_legacy_writes_drained {
+        toasty::sql::statement("SET LOCAL zoo.home_image_legacy_writes_drained = 'on'")
+            .exec(&mut tx)
+            .await?;
+        "SELECT json_build_object('id',id)::text FROM home_image_deletions
+         ORDER BY created_at LIMIT 100 FOR UPDATE SKIP LOCKED"
+    } else {
+        "SELECT json_build_object('id',id)::text FROM home_image_deletions
+         WHERE NOT legacy_write_pending ORDER BY created_at LIMIT 100 FOR UPDATE SKIP LOCKED"
+    };
+    let removed = query(&mut tx, deletion_candidates, &[]).await?;
     for row in removed {
         let id = row["id"].as_str().unwrap();
         crate::storage::delete_storage_object(
