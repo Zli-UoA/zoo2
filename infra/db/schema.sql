@@ -4744,6 +4744,8 @@ CREATE TABLE apub_quote_originals (
   content text NOT NULL,
   published timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
+  superseded boolean NOT NULL DEFAULT false,
+  revision bigint NOT NULL DEFAULT 1,
   parent_id text,
   emojis jsonb NOT NULL,
   media jsonb NOT NULL
@@ -4754,7 +4756,7 @@ CREATE INDEX apub_quote_originals_actor ON apub_quote_originals(actor_id);
 CREATE TABLE apub_quote_grants (
   post_id text NOT NULL REFERENCES apub_quote_originals(id) ON DELETE CASCADE,
   user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  note_updated_at timestamptz NOT NULL,
+  note_revision bigint NOT NULL,
   PRIMARY KEY (post_id,user_id)
 );
 CREATE INDEX apub_quote_grants_user ON apub_quote_grants(user_id);

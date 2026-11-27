@@ -349,6 +349,32 @@ mod tests {
         )
         .await?;
         drop(tx);
+        let mut revised = note.clone();
+        revised["content"] = json!("Updated before Create");
+        revised["updated"] = json!("2026-01-02T01:00:00Z");
+        let early_update = json!({"id":format!("{author}/early-update"),"type":"Update","actor":author,"object":revised});
+        inbox::receive_verified(&state, &other, &actor, &early_update).await?;
+        reposts::store_quoted_note(&state, &user, &id, &note).await?;
+        let mut tx = db.transaction().await?;
+        assert!(
+            query(
+                &mut tx,
+                "SELECT '{}'::text FROM apub_remote_posts WHERE id=$1",
+                &[&id]
+            )
+            .await?
+            .is_empty()
+        );
+        assert!(!known_original(&mut tx, &user, &id).await?);
+        assert!(!known_original(&mut tx, &other, &id).await?);
+        drop(tx);
+        reposts::store_quoted_note(&state, &user, &id, &revised).await?;
+        let mut tx = db.transaction().await?;
+        decorate(&mut tx, &user, &mut rows).await?;
+        assert_eq!(rows[0]["quote"]["post"]["content"], "Updated before Create");
+        assert!(!known_original(&mut tx, &other, &id).await?);
+        drop(tx);
+
         let mut inbox_note = note.clone();
         inbox_note["content"] = json!("Delivered public copy");
         inbox_note["to"] = json!([PUBLIC]);
@@ -417,6 +443,36 @@ mod tests {
         .await?;
         assert_eq!(post["content"], "Direct reply");
         tx.rollback().await?;
+
+        let mut without_updated = note.clone();
+        without_updated["published"] = json!("2026-01-04T00:00:00Z");
+        reposts::store_quoted_note(&state, &user, &id, &without_updated).await?;
+        let mut public = without_updated.clone();
+        public["to"] = json!([PUBLIC]);
+        public["content"] = json!("Public again with the same timestamp");
+        reposts::store_public_note(&state, &user, &id, &public).await?;
+        let mut tx = db.transaction().await?;
+        assert!(
+            reposts::remote_repost_target(&mut tx, &id, true)
+                .await?
+                .is_some()
+        );
+        for recipient in [&user, &other] {
+            decorate(&mut tx, recipient, &mut rows).await?;
+            assert_eq!(rows[0]["quote"]["post"]["content"], public["content"]);
+        }
+        drop(tx);
+        // A fresh private response at that timestamp cannot revive a previous signer's grant.
+        reposts::store_quoted_note(&state, &other, &id, &without_updated).await?;
+        let mut tx = db.transaction().await?;
+        assert!(!known_original(&mut tx, &user, &id).await?);
+        decorate(&mut tx, &other, &mut rows).await?;
+        assert_eq!(
+            rows[0]["quote"]["post"]["content"],
+            without_updated["content"]
+        );
+        drop(tx);
+
         for (sql, key) in [
             ("DELETE FROM users WHERE id=$1", &user),
             ("DELETE FROM users WHERE id=$1", &other),

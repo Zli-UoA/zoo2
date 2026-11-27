@@ -258,6 +258,11 @@ pub(super) async fn receive_verified(
             } else {
                 query(&mut tx, "UPDATE apub_remote_posts SET content=$3,visibility=$4,updated_at=$5::timestamptz,parent_id=NULLIF($6,''),emojis=$7::jsonb,media=$8::jsonb,quote_uri=NULLIF($9,'') WHERE id=$1 AND actor_id=$2 AND deleted_at IS NULL AND updated_at<$5::timestamptz RETURNING json_build_object('saved',true)::text", &[post_id, actor_id, &content, visibility, &updated.to_string(), parent_id.unwrap_or(""), &json!(note_emojis).to_string(), &json!(media).to_string(), quote_uri.as_deref().unwrap_or("")]).await?
             };
+            if activity["type"] == "Update" {
+                // An Update can supersede a signed snapshot even before any Inbox Create.
+                toasty::sql::statement("UPDATE apub_quote_originals SET superseded=true,updated_at=$3::timestamptz WHERE id=$1 AND actor_id=$2 AND updated_at<$3::timestamptz")
+                    .bind(post_id).bind(actor_id).bind(updated.to_string()).exec(&mut tx).await?;
+            }
             if activity["type"] == "Create" && !parents.is_empty() && !query(&mut tx,"SELECT '{}'::text FROM apub_remote_posts WHERE id=$1 AND actor_id=$2 AND deleted_at IS NULL",&[post_id,actor_id]).await?.is_empty() {
                 interactions::notify(&mut tx, user, actor_id, id, "reply", post_id).await?;
             }
@@ -271,8 +276,16 @@ pub(super) async fn receive_verified(
             let original = object_id(&activity["object"])
                 .ok_or_else(|| AppError::BadRequest("Missing Announce object".into()))?;
             let prefix = format!("{}/api/activitypub/notes/", base_url()?);
-            let post_id = original.strip_prefix(&prefix).unwrap_or(original);
-            let target=one(&mut tx,"SELECT json_build_object('author',p.user_id,'local',true)::text FROM home_posts p WHERE p.id=$1 AND p.apub AND p.deleted_at IS NULL AND p.visibility IN ('public','unlisted') UNION ALL SELECT json_build_object('author',p.actor_id,'local',false)::text FROM apub_remote_posts p JOIN apub_actors a ON a.id=p.actor_id WHERE p.id=$1 AND p.deleted_at IS NULL AND NOT a.blocked AND p.visibility IN ('public','unlisted')",&[post_id]).await?;
+            let (post_id, target) = if let Some(post_id) = original.strip_prefix(&prefix) {
+                let target = one(&mut tx,"SELECT json_build_object('author',p.user_id,'local',true)::text FROM home_posts p WHERE p.id=$1 AND p.apub AND p.deleted_at IS NULL AND p.visibility IN ('public','unlisted')",&[post_id]).await?;
+                (post_id, target)
+            } else {
+                note_identity::lock(&mut tx, original).await?;
+                let target = reposts::remote_repost_target(&mut tx, original, false)
+                    .await?
+                    .ok_or_else(|| AppError::NotFound("Public repost target".into()))?;
+                (original, target)
+            };
             let following=query(&mut tx,"SELECT '{}'::text FROM apub_follows WHERE user_id=$1 AND actor_id=$2 AND direction='outgoing' AND accepted",&[user,actor_id]).await?;
             if following.is_empty() && !(target["local"] == true && target["author"] == user) {
                 return Err(AppError::Forbidden("Unsolicited Announce".into()));

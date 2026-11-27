@@ -104,7 +104,7 @@ erDiagram
     apub_quote_grants {
       text post_id PK,FK
       text user_id PK,FK
-      timestamptz note_updated_at
+      bigint note_revision
     }
     apub_quote_grants }o--o| apub_quote_originals : apub_quote_grants_post_id_fkey
     apub_quote_grants }o--o| users : apub_quote_grants_user_id_fkey
@@ -114,6 +114,8 @@ erDiagram
       text content
       timestamptz published
       timestamptz updated_at
+      boolean superseded
+      bigint revision
       text parent_id
       jsonb emojis
       jsonb media

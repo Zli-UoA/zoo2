@@ -16,6 +16,23 @@ pub(super) async fn recipients(
 ) -> Result<Vec<Value>, AppError> {
     query(tx,"SELECT json_build_object('id',a.id)::text FROM apub_actors a WHERE NOT a.blocked AND (a.id=$2 OR EXISTS(SELECT 1 FROM apub_follows f WHERE f.user_id=$1 AND f.actor_id=a.id AND f.direction='incoming' AND f.accepted))",&[user,direct.unwrap_or("")]).await
 }
+// The remote post and quote snapshot are each selected by their primary key.
+pub(super) async fn remote_repost_target(
+    tx: &mut toasty::Transaction<'_>,
+    id: &str,
+    require_verified: bool,
+) -> Result<Option<Value>, AppError> {
+    let rows = query(tx, r#"
+        SELECT json_build_object('author',p.actor_id,'visibility',p.visibility,'local',false)::text
+        FROM apub_remote_posts p JOIN apub_actors a ON a.id=p.actor_id
+        WHERE p.id=$1 AND p.deleted_at IS NULL AND NOT a.blocked AND p.visibility IN ('public','unlisted')
+          AND (NOT $2::boolean OR p.origin_verified)
+          AND NOT EXISTS(SELECT 1 FROM apub_quote_originals q WHERE q.id=p.id AND q.actor_id=p.actor_id
+            AND (q.updated_at>p.updated_at OR (q.updated_at=p.updated_at AND NOT q.superseded)) OFFSET 0)
+    "#, &[id, if require_verified { "true" } else { "false" }]).await?;
+    Ok(rows.into_iter().next())
+}
+
 async fn create(
     State(state): State<AppState>,
     user: AuthUser,
@@ -77,6 +94,17 @@ async fn create(
     let activity = json!({"@context":CONTEXT,"id":id,"type":"Announce","actor":local_actor,"object":object,"published":jiff::Timestamp::now().to_string(),"to":to,"cc":cc});
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
+    if target["remote"] == true {
+        note_identity::lock(&mut tx, &body.post_id).await?;
+        let current = remote_repost_target(&mut tx, &body.post_id, false).await?;
+        if !current.is_some_and(|post| {
+            post["visibility"] == target["visibility"] && post["author"] == target["author"]
+        }) {
+            return Err(AppError::BadRequest(
+                "The post is no longer available for reposting".into(),
+            ));
+        }
+    }
     query(&mut tx,"SELECT '{}'::text FROM (SELECT pg_advisory_xact_lock(hashtextextended('repost:'||$1||':'||$2,0))) locked",&[&user.id,&body.post_id]).await?;
     let inserted=query(&mut tx,"INSERT INTO apub_reposts(post_id,actor_id,user_id,activity_id,activity_json,visibility) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING RETURNING '{}'::text",&[&body.post_id,&local_actor,&user.id,&id,&activity.to_string(),visibility]).await?;
     if !inserted.is_empty() {
@@ -154,16 +182,7 @@ pub(super) async fn resolve_announce(
     if object.starts_with(&prefix) {
         return Ok(());
     }
-    let known = query(
-        &mut tx,
-        "SELECT '{}'::text FROM apub_remote_posts p WHERE id=$1 AND origin_verified AND deleted_at IS NULL
-         AND visibility IN ('public','unlisted') AND NOT EXISTS(
-           SELECT 1 FROM apub_quote_originals q WHERE q.id=p.id AND q.actor_id=p.actor_id AND q.updated_at>=p.updated_at
-         )",
-        &[object],
-    )
-    .await?;
-    if !known.is_empty() {
+    if remote_repost_target(&mut tx, object, true).await?.is_some() {
         return Ok(());
     }
     one(&mut tx,"SELECT '{}'::text FROM apub_follows WHERE user_id=$1 AND actor_id=$2 AND direction='outgoing' AND accepted",&[user,string(activity,"actor")?]).await?;
@@ -253,21 +272,24 @@ async fn store_original(
                     (p.updated_at=$4::timestamptz AND (p.visibility='followers' AND
                       (p.content,p.published,p.parent_id,p.emojis) IS DISTINCT FROM ($5,$9::timestamptz,NULLIF($8,''),$6::jsonb)))))
               ON CONFLICT(id) DO UPDATE SET content=EXCLUDED.content, published=EXCLUDED.published, updated_at=EXCLUDED.updated_at,
-                parent_id=EXCLUDED.parent_id, emojis=EXCLUDED.emojis, media=EXCLUDED.media
-              WHERE apub_quote_originals.actor_id=EXCLUDED.actor_id AND apub_quote_originals.updated_at<EXCLUDED.updated_at
-              RETURNING id,updated_at
+                parent_id=EXCLUDED.parent_id, emojis=EXCLUDED.emojis, media=EXCLUDED.media,
+                superseded=false, revision=apub_quote_originals.revision+1
+              WHERE apub_quote_originals.actor_id=EXCLUDED.actor_id AND (
+                apub_quote_originals.updated_at<EXCLUDED.updated_at OR
+                (apub_quote_originals.updated_at=EXCLUDED.updated_at AND apub_quote_originals.superseded))
+              RETURNING id,revision
             ), version AS (
-              SELECT id,updated_at FROM saved
+              SELECT id,revision FROM saved
               UNION ALL
-              SELECT q.id,q.updated_at FROM apub_quote_originals q
-              WHERE NOT EXISTS(SELECT 1 FROM saved) AND q.id=$1 AND q.actor_id=$3 AND q.updated_at=$4::timestamptz
+              SELECT q.id,q.revision FROM apub_quote_originals q
+              WHERE NOT EXISTS(SELECT 1 FROM saved) AND q.id=$1 AND q.actor_id=$3 AND NOT q.superseded AND q.updated_at=$4::timestamptz
                 AND (q.content,q.published,q.parent_id,q.emojis,q.media)
                   IS NOT DISTINCT FROM ($5,$9::timestamptz,NULLIF($8,''),$6::jsonb,$7::jsonb)
             )
-            INSERT INTO apub_quote_grants(post_id,user_id,note_updated_at)
-            SELECT id,$2,updated_at FROM version
-            ON CONFLICT(post_id,user_id) DO UPDATE SET note_updated_at=EXCLUDED.note_updated_at
-            WHERE apub_quote_grants.note_updated_at<EXCLUDED.note_updated_at
+            INSERT INTO apub_quote_grants(post_id,user_id,note_revision)
+            SELECT id,$2,revision FROM version
+            ON CONFLICT(post_id,user_id) DO UPDATE SET note_revision=EXCLUDED.note_revision
+            WHERE apub_quote_grants.note_revision<EXCLUDED.note_revision
             RETURNING '{}'::text
         "#, &[object, user, &author, &updated, &content, &emojis, &media_json, parent, &published]).await?;
     } else {
@@ -284,6 +306,9 @@ async fn store_original(
             RETURNING '{}'::text
         "#, &[object, &author, &content, visibility, &published, &updated, &emojis, &media_json, &quote, parent]).await?;
         if !saved.is_empty() {
+            // A canonical public response wins against a private snapshot with the same timestamp.
+            toasty::sql::statement("UPDATE apub_quote_originals SET superseded=true WHERE id=$1 AND actor_id=$2 AND updated_at<=$3::timestamptz AND NOT superseded")
+                .bind(object).bind(author.as_str()).bind(updated.as_str()).exec(&mut tx).await?;
             emoji::queue_media_blurhash(&mut tx, object, &media).await?;
         }
     }

@@ -5,6 +5,8 @@ CREATE TABLE "apub_quote_originals" (
   "content" text NOT NULL,
   "published" timestamptz NOT NULL,
   "updated_at" timestamptz NOT NULL,
+  "superseded" boolean NOT NULL DEFAULT false,
+  "revision" bigint NOT NULL DEFAULT 1,
   "parent_id" text NULL,
   "emojis" jsonb NOT NULL,
   "media" jsonb NOT NULL,
@@ -17,7 +19,7 @@ CREATE INDEX "apub_quote_originals_actor" ON "apub_quote_originals" ("actor_id")
 CREATE TABLE "apub_quote_grants" (
   "post_id" text NOT NULL,
   "user_id" text NOT NULL,
-  "note_updated_at" timestamptz NOT NULL,
+  "note_revision" bigint NOT NULL,
   PRIMARY KEY ("post_id", "user_id"),
   CONSTRAINT "apub_quote_grants_post_id_fkey" FOREIGN KEY ("post_id") REFERENCES "apub_quote_originals" ("id") ON UPDATE NO ACTION ON DELETE CASCADE,
   CONSTRAINT "apub_quote_grants_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "users" ("id") ON UPDATE NO ACTION ON DELETE CASCADE
