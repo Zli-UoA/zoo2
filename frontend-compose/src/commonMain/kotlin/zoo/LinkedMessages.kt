@@ -181,8 +181,6 @@ class LinkedChannelTable(
     private val values = MutableStateFlow(LinkedChannelSource.State())
     override val state: StateFlow<LinkedChannelSource.State> = values.asStateFlow()
     private val requested = mutableSetOf<String>()
-    /** 最初の up-to-date（`changes_only` では空）を受け取ったか。subset はそのあとに取る。 */
-    private val synced = MutableStateFlow(false)
     /** 受け取った up-to-date の数。 */
     private val caughtUp = MutableStateFlow(0)
     /** 待っても live が追いつかなかった時刻。追いつけば消す。 */
@@ -230,7 +228,6 @@ class LinkedChannelTable(
             kept.clear()
             generation++
             refetching = true
-            synced.value = false
             values.value = LinkedChannelSource.State(hasCiphertext = values.value.hasCiphertext)
         }
         batch.forEach(::keep)
@@ -238,7 +235,6 @@ class LinkedChannelTable(
         val ciphertext = batch.any { (it.jsonObject["value"] as? JsonObject)?.present("ciphertext") == true }
         val upToDate = batch.any { control(it) == "up-to-date" }
         if (upToDate) {
-            synced.value = true
             liveStuck = null
             caughtUp.update { it + 1 }
         }
@@ -274,7 +270,10 @@ class LinkedChannelTable(
         val startedAt = generation
         tableScope.launch {
             try {
-                combine(synced, values) { ready, current -> ready || current.failure != null }.first { it }
+                // Electric can suppress a replayed up-to-date message while updating the stream status.
+                combine(stream.status, values) { status, current ->
+                    status.isUpToDate || current.failure != null
+                }.first { it }
                 var wait = LINK_SUBSET_RETRY
                 // 取り直し（must-refetch）になったら、そちらの取得に任せる。
                 while (startedAt == generation && values.value.failure == null) {
