@@ -368,7 +368,7 @@ export const NotificationMentions: Story = {
   play: playForImplementation(async () => {
     await userEvent.click(await screen.findByRole("button", { name: "通知設定" }));
     const dialog = await screen.findByRole("dialog", { name: "チャンネルの通知設定" });
-    await expect(within(dialog).getByRole("radio", { name: /メンションのみ/ })).toBeChecked();
+    await expect(within(dialog).getByRole("radio", { name: /メンションと返信/ })).toBeChecked();
   }),
 };
 
@@ -449,6 +449,6 @@ export const NotificationDmMenuOpen: Story = {
     );
     await userEvent.click(await screen.findByRole("menuitem", { name: "通知設定" }));
     const dialog = await screen.findByRole("dialog", { name: "チャンネルの通知設定" });
-    await expect(within(dialog).getByRole("radio", { name: /メンションのみ/ })).toBeChecked();
+    await expect(within(dialog).getByRole("radio", { name: /メンションと返信/ })).toBeChecked();
   }),
 };

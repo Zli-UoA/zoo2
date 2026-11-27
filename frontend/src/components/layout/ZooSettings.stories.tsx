@@ -60,7 +60,7 @@ export const General: Story = {
 export const NotificationSettingsGuide: Story = {
   play: playForImplementation(async () => {
     await waitFor(() => expect(screen.getByRole("heading", { name: "Zoo設定" })).toBeVisible());
-    await expect(await screen.findByText("既定はメンションのみです。")).toBeVisible();
+    await expect(await screen.findByText("既定はメンションと返信などです。")).toBeVisible();
     await expect(
       await screen.findByRole("heading", { level: 3, name: "チャンネルの通知設定" }),
     ).toBeVisible();
