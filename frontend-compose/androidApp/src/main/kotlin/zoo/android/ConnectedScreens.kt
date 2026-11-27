@@ -171,8 +171,9 @@ internal fun ConnectedScreens(
     val threadReplies = rows.filter { it.text("parent_id") == currentThread }.map { it.text("id") }.toSet()
     val route = env.path.substringBefore('?')
     var focusFailed by remember(env.path) { mutableStateOf(false) }
-    val focusMessage = if (focusFailed) null
-        else env.path.substringAfter("?message=", "").substringBefore('&').ifBlank { null }
+    val focusMessage = env.path.substringAfter("?message=", "").substringBefore('&').takeIf {
+        it.isNotBlank() && !focusFailed && rowsById[it]?.present("deleted_at") != true
+    }
     val focusRequest = focusMessage?.let { env.path.substringAfter('?') }
     val emptyGeneration = remember { MutableStateFlow(0) }
     val generation by (messageTable?.pageGeneration ?: emptyGeneration).collectAsState()
@@ -219,7 +220,7 @@ internal fun ConnectedScreens(
             rowsById, unreadId, platform::day, session::dayLabel, session.t("messages.new"),
         )
     }
-    val focusRow = rows.find { it.text("id") == focusMessage }
+    val focusRow = focusMessage?.let(rowsById::get)
     val focusParent = focusRow?.text("parent_id")
     // Keep a deleted parent's thread readable and prevent replies to it.
     val deletedRoot = currentThread?.let { rowsById[it]?.present("deleted_at") } == true
