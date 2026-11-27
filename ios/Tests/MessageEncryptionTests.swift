@@ -744,6 +744,16 @@ struct ConfirmedBodyTests {
         #expect(shown.payload == original.payload)
         #expect(shown.notice == (change == "同一内容" ? original.notice : E2eeText.revisionConflict))
         #expect(controller.decrypt(second).payload == original.payload)
+        let writes = capture.requests.filter { $0.hasPrefix("PATCH api/messages/") }.count
+        if change == "同一内容" {
+            try await controller.edit(second, body: "本文の編集", mentions: EncryptedMentions())
+            #expect(capture.requests.filter { $0.hasPrefix("PATCH api/messages/") }.count == writes + 1)
+        } else {
+            await #expect(throws: MessageEncryptionError.editConflict) {
+                try await controller.edit(second, body: "本文の編集", mentions: EncryptedMentions())
+            }
+            #expect(capture.requests.filter { $0.hasPrefix("PATCH api/messages/") }.count == writes)
+        }
     }
 
     @Test func 古い版や中身の違う同じ版が届いても確認できた最新の本文を警告つきで出す() async throws {
@@ -777,6 +787,11 @@ struct ConfirmedBodyTests {
         let stale = controller.decrypt(original)
         #expect(stale.body == "直した")
         #expect(stale.notice == E2eeText.revisionStale)
+        let writes = capture.requests.filter { $0.hasPrefix("PATCH api/messages/") }.count
+        await #expect(throws: MessageEncryptionError.editConflict) {
+            try await controller.edit(original, body: "古い版からの編集", mentions: EncryptedMentions())
+        }
+        #expect(capture.requests.filter { $0.hasPrefix("PATCH api/messages/") }.count == writes)
     }
 }
 

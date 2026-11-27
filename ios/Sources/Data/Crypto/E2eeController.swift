@@ -465,7 +465,7 @@ final class E2eeController: ConversationEncryption {
 
     func edit(_ message: Message, body: String, mentions: EncryptedMentions) async throws {
         guard let row = row(message) else { throw MessageEncryptionError.editForbidden }
-        try await encryption.edit(row, body: body, mentions: mentions)
+        try await encryption.edit(row, body: body, mentions: mentions, confirmedPayload: { self.confirmed[row.id]?.result.payload })
     }
 
 }

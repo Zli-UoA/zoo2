@@ -381,11 +381,12 @@ final class MessageEncryption {
     }
 
     /// 自分の本文を編集する。元の暗号文を復号して、最新の版であることを確かめてから、次の版を送る。
-    func edit(_ row: EncryptedRow, body: String, mentions: EncryptedMentions = EncryptedMentions()) async throws {
+    func edit(_ row: EncryptedRow, body: String, mentions: EncryptedMentions = EncryptedMentions(),
+              confirmedPayload: @escaping () -> MessagePayload? = { nil }) async throws {
         guard row.revision < UInt64.max else { throw MessageEncryptionError.editConflict }
         try await serialized {
             try await self.submit(channel: row.channelID, id: row.id, parent: row.parentID, body: body,
-                                  revision: row.revision + 1, edit: row, mentions: mentions)
+                                  revision: row.revision + 1, edit: row, mentions: mentions, confirmedPayload: confirmedPayload)
         }
     }
 
@@ -404,7 +405,8 @@ final class MessageEncryption {
 
     private func submit(channel: String, id: String, parent: String?, body: String, revision: UInt64, edit: EncryptedRow?,
                         attachments newAttachments: [AttachmentInfo] = [], mentions: EncryptedMentions = EncryptedMentions(),
-                        onRecipients: ((RecipientSummary) -> Void)? = nil) async throws {
+                        onRecipients: ((RecipientSummary) -> Void)? = nil,
+                        confirmedPayload: () -> MessagePayload? = { nil }) async throws {
         let store = try currentStore()
         var minimum = latestEpochs[channel] ?? 0
         for _ in 0..<3 {
@@ -454,6 +456,9 @@ final class MessageEncryption {
                                                                        userId: store.userID, messageKind: edit.kind, epoch: edit.epoch,
                                                                        revision: revision - 1, ciphertext: edit.ciphertext))
                     guard decrypted.revision == .latest else { throw MessageEncryptionError.editConflict }
+                    // ストア再読込で版の記録が消えても、画面で確認した内容を編集で取り違えない。
+                    if let known = confirmedPayload(), known.revision >= decrypted.payload.revision,
+                       known != decrypted.payload { throw MessageEncryptionError.editConflict }
                     previous = decrypted
                 }
                 let kind = previous?.payload.content.kind ?? "message"
