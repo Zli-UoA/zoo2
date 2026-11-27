@@ -1815,8 +1815,7 @@
     "title": "画面遷移キャッシュ",
     "description": "Home・投稿詳細・プロフィールと、チャンネルにそれぞれ適用するメモリ上の保持件数です。",
     "off": "オフ",
-    "entries": "{{count}} 件",
-    "selected": "選択中"
+    "entries": "{{count}} 件"
   },
   "androidNotifications": {
     "enable": "通知を有効にする",

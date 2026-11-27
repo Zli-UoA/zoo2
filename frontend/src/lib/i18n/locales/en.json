@@ -1815,8 +1815,7 @@
     "title": "Navigation cache",
     "description": "Sets the number of entries kept in memory for Home, post details and profiles, and separately for channels.",
     "off": "Off",
-    "entries": "{{count}} entries",
-    "selected": "Selected"
+    "entries": "{{count}} entries"
   },
   "androidNotifications": {
     "enable": "Enable notifications",

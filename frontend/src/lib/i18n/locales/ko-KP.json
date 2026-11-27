@@ -1815,8 +1815,7 @@
     "title": "화면 전환 캐시",
     "description": "홈, 게시물 상세 및 프로필과 통로에 각각 적용되는 메모리 보관 항목 수입니다.",
     "off": "끔",
-    "entries": "{{count}}개",
-    "selected": "선택됨"
+    "entries": "{{count}}개"
   },
   "androidNotifications": {
     "enable": "알림 사용",

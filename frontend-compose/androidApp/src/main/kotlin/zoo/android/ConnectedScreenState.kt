@@ -970,8 +970,8 @@ internal class ConnectedScreenState(
             "navigation-cache" -> app.t("androidNavigationCache.title") to buildList<SettingsEntry> {
                 add(SettingsEntry.Information("navigation-cache-info", app.t("androidNavigationCache.description")))
                 navigationCacheLimits.forEach { limit ->
-                    add(SettingsEntry.Destination("navigation-cache:$limit", cacheLimitLabel(limit),
-                        app.t("androidNavigationCache.selected").takeIf { platform.navigationCacheLimit == limit }))
+                    add(SettingsEntry.Choice("navigation-cache:$limit", cacheLimitLabel(limit),
+                        platform.navigationCacheLimit == limit))
                 }
             }
             "search-engine" -> "検索エンジン" to searchEngines.map {
@@ -979,7 +979,8 @@ internal class ConnectedScreenState(
             }
             else -> "通知" to listOf(SettingsEntry.Destination("os-notifications", "Androidの通知設定を開く"))
         }
-        return AndroidScreen.SettingsDetail(title, listOf(SettingsGroup(title, entries)))
+        val groupTitle = if (overlay == "navigation-cache") "" else title
+        return AndroidScreen.SettingsDetail(title, listOf(SettingsGroup(groupTitle, entries)))
     }
 
     fun dispatch(action: AndroidUiAction, screen: AndroidScreen, channel: Row?, rows: List<Row>, callPeerId: String?, callPeerName: String?, enableNotifications: () -> Unit) {

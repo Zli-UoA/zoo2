@@ -40,6 +40,8 @@
 | スレッド設定 | [ライト](images/android-design/rebuild/thread-settings-light.png) | [ダーク](images/android-design/rebuild/thread-settings-dark.png) |
 | スレッド参加者 | [ライト](images/android-design/rebuild/thread-members-light.png) | [ダーク](images/android-design/rebuild/thread-members-dark.png) |
 | グループ DM 作成 | [ライト](images/android-design/rebuild/group-dm-light.png) | [ダーク](images/android-design/rebuild/group-dm-dark.png) |
+| 画面遷移キャッシュの設定 | [ライト](images/android-design/rebuild/navigation-cache-light.png) | [ダーク](images/android-design/rebuild/navigation-cache-dark.png) |
+| 返信を読み込み中の投稿詳細 | [ライト](images/android-design/rebuild/post-loading-replies-light.png) | [ダーク](images/android-design/rebuild/post-loading-replies-dark.png) |
 | メッセージ・投稿の編集 | [ライト](images/android-design/rebuild/entry-edit-light.png) | [ダーク](images/android-design/rebuild/entry-edit-dark.png) |
 | ユーザー検索 | [ライト](images/android-design/rebuild/people-search-light.png) | [ダーク](images/android-design/rebuild/people-search-dark.png) |
 | Bubble 参加者 | [ライト](images/android-design/rebuild/bubble-participants-light.png) | [ダーク](images/android-design/rebuild/bubble-participants-dark.png) |
