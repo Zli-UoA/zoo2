@@ -72,10 +72,18 @@ private fun channelLinkState(
     val message by updates.collectAsState(initial)
     val records by remember(session) { session.encryptionRecords() }
         .collectAsState(remember(session) { session.currentEncryptionRecords })
+    val workspace = remember(session, session.workspaceEmojis) {
+        workspaceEmojiImages(session.config.apiBaseUrl, session.workspaceEmojis)
+    }
     val info = resolveChannelLink(
         target, channel, directoryReady = lists.synchronized.value, message = message,
         recorded = channel != null && session.isEncryptedChannel(channel.id), records = records,
-        users = lists.users.value, hidesContent = { messageRichContent(it).hidesBody },
+        users = lists.users.value,
+        customEmojis = { linked ->
+            timelineBodyEmojis(session.config.apiBaseUrl, linked, linked, linked.text("content"),
+                isPost = false, workspace = workspace).keys
+        },
+        hidesContent = { messageRichContent(it).hidesBody },
     )
     return channelLinkView(info, { key, args -> session.t(key, *args) }) { createdAt ->
         channelLinkTime(createdAt, platform.now(), platform::day, platform::time)
