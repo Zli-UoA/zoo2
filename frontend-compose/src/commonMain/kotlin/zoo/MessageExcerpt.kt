@@ -25,8 +25,10 @@ fun messageExcerpt(
 }
 
 /** Whether knowing another custom emoji could preserve text currently lost by the excerpt parser. */
-fun messageExcerptNeedsWorkspaceEmoji(content: String, customEmojis: Set<String>): Boolean {
-    if (':' !in content) return false
+fun messageExcerptNeedsWorkspaceEmoji(
+    content: String, customEmojis: Set<String>, catalogLoaded: Boolean = false,
+): Boolean {
+    if (catalogLoaded || ':' !in content) return false
     val probe = ExcerptEmojiProbe(customEmojis)
     excerptText(content, customEmojis, probe)
     return probe.needsCatalog
@@ -51,7 +53,7 @@ private class ExcerptEmojiProbe(private val known: Set<String>) {
 
     fun inspect(
         source: String, slices: List<InlineSlice>, first: Int, match: MatchResult,
-        prefix: CharSequence, ruby: Boolean = false,
+        prefix: CharSequence, rubyBaseEnd: Int? = null, rubyPrefix: CharSequence = "",
     ) {
         if (needsCatalog || match.value in known || !isWorkspaceEmojiCandidate(match.value)) return
         val start = match.range.first
@@ -65,13 +67,11 @@ private class ExcerptEmojiProbe(private val known: Set<String>) {
         if ((start - previous - 1) % 2 != 0) return
 
         var changesText = false
-        var startsBeforeKnown = false
         for (index in first..slices.lastIndex) {
             val slice = slices[index]
             if (slice.start >= end) break
             if (slice.token.kind == "accountEmoji" || (slice.token.kind == "emoji" && slice.token.value in known)) {
                 if (slice.start <= start) return
-                startsBeforeKnown = true
             } else if (slice.token.kind !in setOf("text", "emoji")) {
                 changesText = true
             } else if (slice.token.kind == "text") {
@@ -81,25 +81,35 @@ private class ExcerptEmojiProbe(private val known: Set<String>) {
                 }
             }
         }
-        // In a time such as 12:30:猫:, an existing image owns the last colon of the time.
-        val sharesTimeSeparator = startsBeforeKnown && source.getOrNull(start - 1)?.isDigit() == true &&
-            (start + 1 until end - 1).all { source[it].isDigit() }
-        if (!changesText && (!ruby || sharesTimeSeparator)) return
-        // Recognizing an alias can move the ruby boundary back into the displayed prefix.
-        val plainPrefix = if (ruby) "" else source.subSequence(initial.start, start)
-        needsCatalog = excerptHasRoom(prefix, plainPrefix, includeEllipsisChange = ruby)
+        if (!changesText && rubyBaseEnd == null) return
+        val boundary = if (rubyBaseEnd == null) start else minOf(start, rubyBaseEnd)
+        val plainPrefix = source.subSequence(initial.start, maxOf(initial.start, boundary))
+        needsCatalog = excerptHasRoom(prefix, rubyPrefix, plainPrefix, includeEllipsisChange = rubyBaseEnd != null)
     }
 
-    fun inspectRuby(source: String, slices: List<InlineSlice>, output: CharSequence) {
+    fun inspectRuby(
+        source: String, slices: List<InlineSlice>, baseEnd: Int, output: CharSequence,
+        appendPrefixToken: StringBuilder.(Inline) -> Unit,
+    ) {
         val matches = candidates(source)
         var match = matches.nextOrNull()
+        val prefix = StringBuilder()
         for ((index, slice) in slices.withIndex()) {
             while (match != null && match.range.first < slice.end) {
-                inspect(source, slices, index, match, output, ruby = true)
+                inspect(source, slices, index, match, output, rubyBaseEnd = baseEnd, rubyPrefix = prefix)
                 if (needsCatalog) return
                 match = matches.nextOrNull()
             }
             if (match == null) break
+            if (slice.end <= baseEnd) {
+                prefix.appendPrefixToken(slice.token)
+            } else if (slice.start < baseEnd) {
+                var at = slice.start
+                while (at < baseEnd) {
+                    if (source[at] == '\\' && at + 1 < baseEnd && source[at + 1] in inlineEscapes) at++
+                    prefix.append(source[at++])
+                }
+            }
         }
     }
 }
@@ -107,7 +117,7 @@ private class ExcerptEmojiProbe(private val known: Set<String>) {
 private fun <T> Iterator<T>.nextOrNull(): T? = if (hasNext()) next() else null
 
 private fun excerptHasRoom(
-    output: CharSequence, sourcePrefix: CharSequence, includeEllipsisChange: Boolean,
+    output: CharSequence, rubyPrefix: CharSequence, sourcePrefix: CharSequence, includeEllipsisChange: Boolean,
 ): Boolean {
     var length = 0
     var space = false
@@ -126,7 +136,8 @@ private fun excerptHasRoom(
         }
         return true
     }
-    return count(output, unescape = false) && count(sourcePrefix, unescape = true) &&
+    return count(output, unescape = false) && count(rubyPrefix, unescape = false) &&
+        count(sourcePrefix, unescape = true) &&
         (length < EXCERPT_MAX_LENGTH || includeEllipsisChange)
 }
 
@@ -168,22 +179,28 @@ private fun StringBuilder.appendTokens(source: String, depth: Int, customEmojis:
             probe?.inspect(source, slices, index, match, this)
             candidate = if (probe?.needsCatalog == true) null else candidates?.nextOrNull()
         }
-        val value = token.value
-        when (token.kind) {
-            "bold", "italic", "strike", "small" -> appendTokens(value, depth + 1, customEmojis, probe)
-            "effect" -> {
-                val effect = mfmFunction(value.substring(2, value.length - 1))
-                val body = if (effect.name == "ruby") {
-                    val rubySlices = inlineSlices(effect.body, customEmojis)
-                    val ruby = mfmRuby(effect.body, rubySlices)
-                    probe?.inspectRuby(effect.body, rubySlices, this)
-                    ruby.base
-                } else effect.body
-                appendTokens(body, depth + 1, customEmojis, probe)
-            }
-            // URL の文字そのものは、そのまま出す。`[文字](URL)` は文字だけを出す。
-            "link" -> if (value == token.url) append(value) else appendTokens(value, depth + 1, customEmojis, probe)
-            else -> append(value)
+        appendToken(token, depth, customEmojis, probe)
+    }
+}
+
+private fun StringBuilder.appendToken(token: Inline, depth: Int, customEmojis: Set<String>, probe: ExcerptEmojiProbe?) {
+    val value = token.value
+    when (token.kind) {
+        "bold", "italic", "strike", "small" -> appendTokens(value, depth + 1, customEmojis, probe)
+        "effect" -> {
+            val effect = mfmFunction(value.substring(2, value.length - 1))
+            val body = if (effect.name == "ruby") {
+                val rubySlices = inlineSlices(effect.body, customEmojis)
+                val ruby = mfmRuby(effect.body, rubySlices)
+                probe?.inspectRuby(effect.body, rubySlices, ruby.base.length, this) { prefixToken ->
+                    appendToken(prefixToken, depth + 1, customEmojis, probe = null)
+                }
+                ruby.base
+            } else effect.body
+            appendTokens(body, depth + 1, customEmojis, probe)
         }
+        // URL の文字そのものは、そのまま出す。`[文字](URL)` は文字だけを出す。
+        "link" -> if (value == token.url) append(value) else appendTokens(value, depth + 1, customEmojis, probe)
+        else -> append(value)
     }
 }

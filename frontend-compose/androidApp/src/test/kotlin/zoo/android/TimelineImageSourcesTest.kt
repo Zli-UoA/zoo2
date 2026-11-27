@@ -100,7 +100,8 @@ class TimelineImageSourcesTest {
 
         val adjacent = "\$[ruby **星**12:30:猫:ねこ]"
         assertTrue(messageExcerptNeedsWorkspaceEmoji(adjacent, emptySet()))
-        assertFalse(messageExcerptNeedsWorkspaceEmoji(adjacent, images.keys))
+        assertTrue(messageExcerptNeedsWorkspaceEmoji(adjacent, images.keys))
+        assertFalse(messageExcerptNeedsWorkspaceEmoji(adjacent, images.keys, catalogLoaded = true))
         assertEquals("星12:30:猫:", zoo.messageExcerpt(adjacent, customEmojis = images.keys))
 
         assertTrue(messageExcerptNeedsWorkspaceEmoji("\$[ruby :猫:ねこ]", emptySet()))
@@ -118,6 +119,8 @@ class TimelineImageSourcesTest {
         assertTrue(messageExcerptNeedsWorkspaceEmoji("\$[ruby :猫:ok:ねこ]", setOf(":ok:")))
         assertTrue(messageExcerptNeedsWorkspaceEmoji("\\*".repeat(101) + formattedAlias, emptySet()))
         assertFalse(messageExcerptNeedsWorkspaceEmoji("あ".repeat(200) + formattedAlias, emptySet()))
+        assertFalse(messageExcerptNeedsWorkspaceEmoji("\$[ruby " + "あ".repeat(201) + " :猫:ねこ]", emptySet()))
+        assertFalse(messageExcerptNeedsWorkspaceEmoji("\$[ruby **" + "あ".repeat(201) + "** :猫:ねこ]", emptySet()))
         assertFalse(messageExcerptNeedsWorkspaceEmoji(":unknown:", emptySet()))
     }
 

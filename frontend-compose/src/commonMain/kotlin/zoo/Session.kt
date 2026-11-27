@@ -57,6 +57,8 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     }
     var workspaceEmojis by mutableStateOf<List<Row>>(emptyList())
         private set
+    var workspaceEmojiLoaded by mutableStateOf(false)
+        private set
     var workspaceEmojiLoading by mutableStateOf(false)
         private set
     var workspaceEmojiError by mutableStateOf(false)
@@ -73,6 +75,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             try {
                 workspaceEmojis = api.request("/api/emojis").rows()
                 workspaceEmojiChecked = now
+                workspaceEmojiLoaded = true
             } catch (e: CancellationException) {
                 workspaceEmojiChecked = 0L
                 throw e
