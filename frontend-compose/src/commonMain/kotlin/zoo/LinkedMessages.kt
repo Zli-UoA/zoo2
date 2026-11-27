@@ -189,6 +189,7 @@ class LinkedChannelTable(
     private var refetching = false
     /** subset の取得は 1 件ずつ。[sent] は、いまの取得で送った要求の数。 */
     private val fetching = Mutex()
+    private val subsetRequests = ShapeSubsetRequests()
     private val sent = MutableStateFlow(0)
     private val requests = http.config {
         install(createClientPlugin("ZooLinkedSubset") {
@@ -278,12 +279,14 @@ class LinkedChannelTable(
                 // 取り直し（must-refetch）になったら、そちらの取得に任せる。
                 while (startedAt == generation && values.value.failure == null) {
                     val done = fetching.withLock {
-                        sent.value = 0
                         val before = caughtUp.value
                         try {
-                            stream.requestSnapshot(
-                                SubsetParams(where = "id = \$1", params = mapOf("1" to JsonPrimitive(messageId)))
-                            )
+                            subsetRequests.request {
+                                sent.value = 0
+                                stream.requestSnapshot(
+                                    SubsetParams(where = "id = \$1", params = mapOf("1" to JsonPrimitive(messageId)))
+                                )
+                            }
                             true
                         } catch (_: SubsetYield) {
                             awaitLive(before)
@@ -323,6 +326,7 @@ class LinkedChannelTable(
     override fun refresh() {
         refreshJob?.cancel()
         refreshJob = tableScope.launch {
+            if (subsetRequests.reconnect()) return@launch
             if (stream.isPaused() || stream.error != null) return@launch
             try {
                 stream.forceDisconnectAndRefresh()

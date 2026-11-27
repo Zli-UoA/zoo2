@@ -12,6 +12,7 @@ import io.ktor.client.request.HttpRequestData
 import io.ktor.client.request.HttpResponseData
 import io.ktor.http.Headers
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.Url
 import io.ktor.http.headersOf
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -425,6 +426,53 @@ class LinkedChannelTableTest {
             assertEquals("handle", refresh["handle"])
             assertEquals("0_0", refresh["offset"])
             assertFalse(refresh["live"] == "true")
+        } finally {
+            table.close()
+            http.close()
+        }
+    }
+
+    @Test
+    fun refreshRetriesThePendingLinkedSnapshot() = runTest {
+        val subsets = Channel<Url>(Channel.UNLIMITED)
+        val cancelled = CompletableDeferred<Unit>()
+        var attempts = 0
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    val parameters = request.url.parameters
+                    when {
+                        parameters["subset__params"] != null -> {
+                            subsets.send(request.url)
+                            if (++attempts == 1) {
+                                try {
+                                    awaitCancellation()
+                                } finally {
+                                    cancelled.complete(Unit)
+                                }
+                            }
+                            assertTrue(cancelled.isCompleted)
+                            respond(snapshot("m1"), headers = headers)
+                        }
+                        parameters["live"] == "true" -> awaitCancellation()
+                        else -> respond("""[{"headers":{"control":"up-to-date"}}]""", headers = headers)
+                    }
+                }
+            }
+        }
+        val table = timedTable("resume-pending-link", http)
+        try {
+            table.request("m1")
+            val pending = subsets.receive()
+
+            table.refresh()
+
+            assertEquals(pending, subsets.receive())
+            val state = table.state.first { "m1" in it.fetched }
+            assertEquals("本文 m1", state.rows.getValue("m1").text("content"))
+            assertNull(state.failure)
+            assertEquals(2, attempts)
         } finally {
             table.close()
             http.close()

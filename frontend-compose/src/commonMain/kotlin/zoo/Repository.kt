@@ -287,6 +287,7 @@ class SyncedTable(
 
     private var stream: ShapeStream? = null
     private var refreshJob: Job? = null
+    private val subsetRequests = ShapeSubsetRequests()
     private val cacheKey =
         "zoo-compose:${if (onDemand) "v3" else "v2"}:${config.apiBaseUrl}:${config.shapeProxyPath}:${config.shapeMode}:${config.electricShapeUrl}:${config.userId}:$name:${params.entries.sortedBy { it.key }}"
     /** on-demand に移す前の、全件入りの控え（添付・リアクションの別 Shape の分も）。読まずに消す。 */
@@ -324,7 +325,7 @@ class SyncedTable(
 
     private suspend fun fetchSubset(main: Boolean, subset: SubsetParams): SubsetSnapshot {
         val source = streamReady.await()
-        val snapshot = source.requestSnapshot(subset)
+        val snapshot = subsetRequests.request { source.requestSnapshot(subset) }
         snapshotMetas.update { (it + snapshot.metadata).takeLast(32) }
         // 行は snapshot の配信の中で Shape に入っている。最初のメインのページが届いたら、画面へ反映する。
         if (main && !accepting.value) accepting.value = true
@@ -736,6 +737,8 @@ class SyncedTable(
                 worker = startSync(readCache = false)
                 return@launch
             }
+            // A subset read pauses live and resumes it when the read is retried.
+            if (reconnect && subsetRequests.reconnect()) return@launch
             if (source == null || source.isPaused() || (!reconnect && loading.value)) return@launch
             try {
                 source.forceDisconnectAndRefresh()

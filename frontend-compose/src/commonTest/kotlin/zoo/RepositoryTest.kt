@@ -651,6 +651,55 @@ class RepositoryTest {
     }
 
     @Test
+    fun foregroundRecoveryRetriesThePendingFirstMessagePage() = runTest {
+        val subsets = Channel<Url>(Channel.UNLIMITED)
+        val cancelled = CompletableDeferred<Unit>()
+        var attempts = 0
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    val parameters = request.url.parameters
+                    when {
+                        parameters["subset__where"] != null -> {
+                            subsets.send(request.url)
+                            if (++attempts == 1) {
+                                try {
+                                    awaitCancellation()
+                                } finally {
+                                    cancelled.complete(Unit)
+                                }
+                            }
+                            assertTrue(cancelled.isCompleted)
+                            respond(snapshot(listOf(message(1))), headers = protocolHeaders())
+                        }
+                        parameters["offset"] == "now" ->
+                            respond("""[{"headers":{"control":"up-to-date"}}]""", headers = protocolHeaders())
+                        else -> awaitCancellation()
+                    }
+                }
+            }
+        }
+        val table = SyncedTable("messages", config, FakePlatform(), http, backgroundScope,
+            mapOf("channel_id" to "resume-first-page"), options, onDemand = true)
+        try {
+            val pending = subsets.receive()
+            assertTrue(table.pageStates.value.getValue(PageScope.Main).loading)
+
+            table.refresh(reconnect = true)
+
+            assertEquals(pending, subsets.receive())
+            val rows = table.rows.first { it.isNotEmpty() }
+            table.pageStates.first { it[PageScope.Main]?.loaded == true }
+            assertEquals(listOf("m001"), rows.map { it.text("id") })
+            assertEquals(2, attempts)
+        } finally {
+            table.close()
+            http.close()
+        }
+    }
+
+    @Test
     fun onDemandOlderPageContinuesFromTheOldestRowAndStopsWhenItIsNotFull() = runTest {
         val platform = FakePlatform()
         val subsets = mutableListOf<Map<String, String>>()
