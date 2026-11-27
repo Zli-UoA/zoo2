@@ -156,7 +156,10 @@ pub(super) async fn resolve_announce(
     }
     let known = query(
         &mut tx,
-        "SELECT '{}'::text FROM apub_remote_posts WHERE id=$1 AND origin_verified",
+        "SELECT '{}'::text FROM apub_remote_posts p WHERE id=$1 AND origin_verified AND deleted_at IS NULL
+         AND visibility IN ('public','unlisted') AND NOT EXISTS(
+           SELECT 1 FROM apub_quote_originals q WHERE q.id=p.id AND q.actor_id=p.actor_id AND q.updated_at>=p.updated_at
+         )",
         &[object],
     )
     .await?;
@@ -224,7 +227,6 @@ async fn store_original(
     if visibility == "followers" {
         one(&mut tx, "SELECT '{}'::text FROM apub_follows WHERE user_id=$1 AND actor_id=$2 AND direction='outgoing' AND accepted", &[user, &author]).await?;
     }
-    note_identity::reconcile(&mut tx, object, &author, Some(&proof)).await?;
     emoji::remember(&mut tx, &emojis).await?;
     emoji::remember(&mut tx, &media).await?;
     let content = emoji::note_content(note)?;
@@ -237,37 +239,53 @@ async fn store_original(
         .unwrap_or_default();
     let prefix = format!("{}/api/activitypub/notes/", base_url()?);
     let parent = inbox::note_parent(note, &prefix).unwrap_or("");
-    // Equal timestamps can repair a public cache, but must preserve a private version.
-    let saved = query(&mut tx, r#"
-        INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,emojis,origin_verified,media,quote_uri,parent_id)
-        SELECT $1,$2,$3,$4,$5::timestamptz,$6::timestamptz,$7::jsonb,true,$8::jsonb,NULLIF($9,''),NULLIF($10,'')
-        WHERE NOT EXISTS(SELECT 1 FROM apub_remote_tombstones WHERE id=$1 AND actor_id=$2)
-        ON CONFLICT(id) DO UPDATE SET origin_verified=true,content=EXCLUDED.content,visibility=EXCLUDED.visibility,
-          emojis=EXCLUDED.emojis,media=EXCLUDED.media,quote_uri=EXCLUDED.quote_uri,parent_id=EXCLUDED.parent_id,updated_at=EXCLUDED.updated_at
-        WHERE apub_remote_posts.actor_id=EXCLUDED.actor_id AND apub_remote_posts.deleted_at IS NULL AND (
-          apub_remote_posts.updated_at<EXCLUDED.updated_at
-          OR (apub_remote_posts.updated_at=EXCLUDED.updated_at AND apub_remote_posts.visibility IN ('public','unlisted')))
-        RETURNING '{}'::text
-    "#, &[object, &author, &content, visibility, &published, &updated, &emojis, &media_json, &quote, parent]).await?;
-    if !saved.is_empty() {
-        emoji::queue_media_blurhash(&mut tx, object, &media).await?;
-    }
     if visibility == "followers" {
-        // Never grant access to a different payload with the same remote timestamp.
-        // The local image worker may have enriched the saved media with BlurHash.
+        note_identity::lock(&mut tx, object).await?;
+        // No Inbox row or delivery is changed by a private fetch. Equal timestamps
+        // only grant access when the signer received the exact cached payload.
         query(&mut tx, r#"
+            WITH saved AS (
+              INSERT INTO apub_quote_originals(id,actor_id,content,published,updated_at,parent_id,emojis,media)
+              SELECT $1,$3,$5,$9::timestamptz,$4::timestamptz,NULLIF($8,''),$6::jsonb,$7::jsonb
+              WHERE NOT EXISTS(SELECT 1 FROM apub_remote_tombstones WHERE id=$1 AND actor_id=$3)
+                AND NOT EXISTS(SELECT 1 FROM apub_remote_posts p WHERE p.id=$1 AND p.actor_id=$3
+                  AND (p.deleted_at IS NOT NULL OR p.updated_at>$4::timestamptz OR
+                    (p.updated_at=$4::timestamptz AND (p.visibility='followers' AND
+                      (p.content,p.published,p.parent_id,p.emojis) IS DISTINCT FROM ($5,$9::timestamptz,NULLIF($8,''),$6::jsonb)))))
+              ON CONFLICT(id) DO UPDATE SET content=EXCLUDED.content, published=EXCLUDED.published, updated_at=EXCLUDED.updated_at,
+                parent_id=EXCLUDED.parent_id, emojis=EXCLUDED.emojis, media=EXCLUDED.media
+              WHERE apub_quote_originals.actor_id=EXCLUDED.actor_id AND apub_quote_originals.updated_at<EXCLUDED.updated_at
+              RETURNING id,updated_at
+            ), version AS (
+              SELECT id,updated_at FROM saved
+              UNION ALL
+              SELECT q.id,q.updated_at FROM apub_quote_originals q
+              WHERE NOT EXISTS(SELECT 1 FROM saved) AND q.id=$1 AND q.actor_id=$3 AND q.updated_at=$4::timestamptz
+                AND (q.content,q.published,q.parent_id,q.emojis,q.media)
+                  IS NOT DISTINCT FROM ($5,$9::timestamptz,NULLIF($8,''),$6::jsonb,$7::jsonb)
+            )
             INSERT INTO apub_quote_grants(post_id,user_id,note_updated_at)
-            SELECT p.id,$2,p.updated_at FROM apub_remote_posts p
-            WHERE p.id=$1 AND p.actor_id=$3 AND p.deleted_at IS NULL AND p.visibility='followers'
-              AND p.updated_at=$4::timestamptz AND p.published=$10::timestamptz AND p.content=$5 AND p.emojis=$6::jsonb
-              AND p.quote_uri IS NOT DISTINCT FROM NULLIF($8,'')
-              AND p.parent_id IS NOT DISTINCT FROM NULLIF($9,'')
-              AND ARRAY(SELECT item - 'blurhash' FROM jsonb_array_elements(p.media) WITH ORDINALITY AS m(item,ord) ORDER BY ord)
-                = ARRAY(SELECT item - 'blurhash' FROM jsonb_array_elements($7::jsonb) WITH ORDINALITY AS m(item,ord) ORDER BY ord)
+            SELECT id,$2,updated_at FROM version
             ON CONFLICT(post_id,user_id) DO UPDATE SET note_updated_at=EXCLUDED.note_updated_at
             WHERE apub_quote_grants.note_updated_at<EXCLUDED.note_updated_at
             RETURNING '{}'::text
-        "#, &[object, user, &author, &updated, &content, &emojis, &media_json, &quote, parent, &published]).await?;
+        "#, &[object, user, &author, &updated, &content, &emojis, &media_json, parent, &published]).await?;
+    } else {
+        note_identity::reconcile(&mut tx, object, &author, Some(&proof)).await?;
+        let saved = query(&mut tx, r#"
+            INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,emojis,origin_verified,media,quote_uri,parent_id)
+            SELECT $1,$2,$3,$4,$5::timestamptz,$6::timestamptz,$7::jsonb,true,$8::jsonb,NULLIF($9,''),NULLIF($10,'')
+            WHERE NOT EXISTS(SELECT 1 FROM apub_remote_tombstones WHERE id=$1 AND actor_id=$2)
+            ON CONFLICT(id) DO UPDATE SET origin_verified=true,content=EXCLUDED.content,visibility=EXCLUDED.visibility,
+              published=EXCLUDED.published,emojis=EXCLUDED.emojis,media=EXCLUDED.media,quote_uri=EXCLUDED.quote_uri,
+              parent_id=EXCLUDED.parent_id,updated_at=EXCLUDED.updated_at
+            WHERE apub_remote_posts.actor_id=EXCLUDED.actor_id AND apub_remote_posts.deleted_at IS NULL
+              AND apub_remote_posts.updated_at<=EXCLUDED.updated_at
+            RETURNING '{}'::text
+        "#, &[object, &author, &content, visibility, &published, &updated, &emojis, &media_json, &quote, parent]).await?;
+        if !saved.is_empty() {
+            emoji::queue_media_blurhash(&mut tx, object, &media).await?;
+        }
     }
     tx.commit().await?;
     Ok(())

@@ -106,22 +106,20 @@ async fn eligible_target(
     Ok(Some(uri.to_owned()))
 }
 
+const REMOTE_QUOTE: &str = include_str!("remote_quote.sql");
+
 async fn known_original(
     tx: &mut toasty::Transaction<'_>,
     user: &str,
     uri: &str,
 ) -> Result<bool, AppError> {
-    let rows = query(
-        tx,
-        "SELECT '{}'::text WHERE EXISTS(
-          SELECT 1 FROM apub_remote_posts p WHERE p.id=$1 AND p.origin_verified AND
-          (p.deleted_at IS NOT NULL OR p.visibility IN ('public','unlisted') OR
-           EXISTS(SELECT 1 FROM apub_quote_grants WHERE post_id=p.id AND user_id=$2 AND note_updated_at=p.updated_at OFFSET 0))
-        ) OR EXISTS(SELECT 1 FROM apub_remote_tombstones WHERE id=$1)",
-        &[uri, user],
-    )
-    .await?;
-    Ok(!rows.is_empty())
+    let sql = format!(
+        "SELECT '{{}}'::text WHERE EXISTS(
+           SELECT 1 FROM (VALUES ($1::text,$2::text)) target(id,user_id)
+           CROSS JOIN LATERAL ({REMOTE_QUOTE}) original
+         ) OR EXISTS(SELECT 1 FROM apub_remote_tombstones WHERE id=$1)"
+    );
+    Ok(!query(tx, &sql, &[uri, user]).await?.is_empty())
 }
 
 async fn resolve(state: &AppState, user: &str, uri: &str) -> Result<(), AppError> {
@@ -151,7 +149,7 @@ pub(crate) async fn decorate(
         return Ok(());
     }
     let base = base_url().unwrap_or_default();
-    let quotes = query(tx, r#"WITH refs AS (
+    let sql = r#"WITH refs AS (
       SELECT p.id,p.quote_uri
       FROM (SELECT DISTINCT jsonb_array_elements_text($1::jsonb) AS id) ids
       CROSS JOIN LATERAL (
@@ -159,13 +157,9 @@ pub(crate) async fn decorate(
       ) p
     ) SELECT json_build_object('id',r.id,'uri',r.quote_uri,'local',starts_with(r.quote_uri,$2 || '/api/activitypub/notes/'),'post',COALESCE(remote.post,local.post))::text FROM refs r
     LEFT JOIN LATERAL (
-      SELECT json_build_object('id',p.id,'content',p.content,'user_name',a.user_name || '@' || split_part(a.id,'/',3),'display_name',a.display_name,'created_at',p.published,'emojis',p.emojis,'actor_emojis',a.emojis,'avatar',a.avatar,'media',p.media,'remote',true,'user_id',p.actor_id) AS post
-      FROM apub_remote_posts p JOIN apub_actors a ON a.id=p.actor_id
-      WHERE p.id=r.quote_uri AND p.origin_verified AND p.deleted_at IS NULL AND NOT a.blocked AND (
-        p.visibility IN ('public','unlisted') OR p.visibility='followers'
-        AND EXISTS(SELECT 1 FROM apub_quote_grants WHERE post_id=p.id AND user_id=$3 AND note_updated_at=p.updated_at OFFSET 0)
-        AND EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$3 AND actor_id=p.actor_id AND direction='outgoing' AND accepted OFFSET 0)
-      )
+      SELECT json_build_object('id',p.id,'content',p.content,'user_name',p.user_name || '@' || split_part(p.actor_id,'/',3),'display_name',p.display_name,'created_at',p.published,'emojis',p.emojis,'actor_emojis',p.actor_emojis,'avatar',p.avatar,'media',p.media,'remote',true,'user_id',p.actor_id) AS post
+      FROM (VALUES (r.quote_uri,$3::text)) target(id,user_id)
+      CROSS JOIN LATERAL (/* remote_quote */ LIMIT 1) p
       OFFSET 0
     ) remote ON true
     LEFT JOIN LATERAL (
@@ -173,7 +167,8 @@ pub(crate) async fn decorate(
       FROM home_posts p JOIN users u ON u.id=p.user_id LEFT JOIN apub_profiles profile ON profile.user_id=u.id LEFT JOIN channels c ON c.id=p.channel_id
       WHERE p.id=CASE WHEN starts_with(r.quote_uri,$2 || '/api/activitypub/notes/') THEN substr(r.quote_uri,length($2 || '/api/activitypub/notes/')+1) END AND p.apub AND p.deleted_at IS NULL AND p.visibility IN ('public','unlisted') AND (p.channel_id IS NULL OR NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL)
       OFFSET 0
-    ) local ON true"#, &[&json!(ids).to_string(),&base,user]).await?;
+    ) local ON true"#.replace("/* remote_quote */", REMOTE_QUOTE);
+    let quotes = query(tx, &sql, &[&json!(ids).to_string(), &base, user]).await?;
     if quotes.is_empty() {
         return Ok(());
     }
@@ -285,9 +280,24 @@ mod tests {
                 .await
                 .is_err()
         );
-        // The canonical private response can repair an unverified public cache even at the same timestamp.
-        toasty::sql::statement("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at) VALUES($1,$2,'Stale public copy','public','2026-01-02','2026-01-02')")
-            .bind(id.as_str()).bind(author.as_str()).exec(&mut db).await?;
+        // A private response older than an unverified public Inbox copy cannot promote it.
+        let stale_id = format!("{author}/notes/stale");
+        let mut stale_response = note.clone();
+        stale_response["id"] = json!(stale_id);
+        toasty::sql::statement("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at) VALUES($1,$2,'Unverified public copy','public','2026-01-01','2026-01-03')")
+            .bind(stale_id.as_str()).bind(author.as_str()).exec(&mut db).await?;
+        reposts::store_quoted_note(&state, &user, &stale_id, &stale_response).await?;
+        let mut tx = db.transaction().await?;
+        assert!(!known_original(&mut tx, &user, &stale_id).await?);
+        let stale = one(
+            &mut tx,
+            "SELECT row_to_json(p)::text FROM apub_remote_posts p WHERE id=$1",
+            &[&stale_id],
+        )
+        .await?;
+        assert_eq!(stale["origin_verified"], false);
+        assert_eq!(stale["content"], "Unverified public copy");
+        drop(tx);
         reposts::store_quoted_note(&state, &user, &id, &note).await?;
 
         toasty::sql::statement("INSERT INTO apub_follows(user_id,actor_id,direction,activity_id,accepted) VALUES($1,$2,'outgoing',$3,true)")
@@ -300,7 +310,7 @@ mod tests {
         assert!(!known_original(&mut tx, &other, &id).await?);
         let post = one(
             &mut tx,
-            "SELECT row_to_json(p)::text FROM apub_remote_posts p WHERE id=$1",
+            "SELECT row_to_json(p)::text FROM apub_quote_originals p WHERE id=$1",
             &[&id],
         )
         .await?;
@@ -339,12 +349,39 @@ mod tests {
         )
         .await?;
         drop(tx);
-        let create =
-            json!({"id":format!("{author}/create"),"type":"Create","actor":author,"object":note});
+        let mut inbox_note = note.clone();
+        inbox_note["content"] = json!("Delivered public copy");
+        inbox_note["to"] = json!([PUBLIC]);
+        let create = json!({"id":format!("{author}/create"),"type":"Create","actor":author,"object":inbox_note});
         inbox::receive_verified(&state, &other, &actor, &create).await?;
         let mut tx = db.transaction().await?;
         let delivered = one(&mut tx, "SELECT row_to_json(r)::text FROM apub_remote_recipients r WHERE post_id=$1 AND user_id=$2", &[&id,&other]).await?;
         assert_eq!(delivered["parent_id"], format!("{author}/notes/parent"));
+        drop(tx);
+        let mut fetched_update = note.clone();
+        fetched_update["content"] = json!("New private copy");
+        fetched_update["published"] = json!("2026-01-01T00:00:00Z");
+        fetched_update["updated"] = json!("2026-01-02T12:00:00Z");
+        reposts::store_quoted_note(&state, &user, &id, &fetched_update).await?;
+        let mut tx = db.transaction().await?;
+        let delivered_copy = one(
+            &mut tx,
+            "SELECT row_to_json(p)::text FROM apub_remote_posts p WHERE id=$1",
+            &[&id],
+        )
+        .await?;
+        assert_eq!(delivered_copy["content"], "Delivered public copy");
+        assert_eq!(delivered_copy["visibility"], "public");
+        decorate(&mut tx, &other, &mut rows).await?;
+        assert!(rows[0]["quote"]["post"].is_null());
+        decorate(&mut tx, &user, &mut rows).await?;
+        assert_eq!(rows[0]["quote"]["post"]["content"], "New private copy");
+        assert!(
+            rows[0]["quote"]["post"]["created_at"]
+                .as_str()
+                .unwrap()
+                .starts_with("2026-01-01")
+        );
         drop(tx);
 
         // A newer Inbox version has a narrower audience and must hide old grants.
@@ -384,7 +421,9 @@ mod tests {
             ("DELETE FROM users WHERE id=$1", &user),
             ("DELETE FROM users WHERE id=$1", &other),
             ("DELETE FROM apub_remote_posts WHERE id=$1", &quote_id),
+            ("DELETE FROM apub_remote_posts WHERE id=$1", &stale_id),
             ("DELETE FROM apub_remote_posts WHERE id=$1", &id),
+            ("DELETE FROM apub_quote_originals WHERE id=$1", &id),
             ("DELETE FROM apub_actors WHERE id=$1", &author),
         ] {
             toasty::sql::statement(sql)
@@ -409,9 +448,10 @@ mod tests {
         let note = json!({"id":id,"type":"Note","attributedTo":author,"content":"Canonical original","published":"2026-01-02T00:00:00Z","to":[PUBLIC]});
         reposts::store_public_note(&state, "unused", &id, &note).await?;
         let mut tx = db.transaction().await?;
-        let stored = one(&mut tx,"SELECT json_build_object('content',content,'verified',origin_verified)::text FROM apub_remote_posts WHERE id=$1",&[&id]).await?;
+        let stored = one(&mut tx,"SELECT json_build_object('content',content,'verified',origin_verified,'published',published::date)::text FROM apub_remote_posts WHERE id=$1",&[&id]).await?;
         assert_eq!(stored["content"], "Canonical original");
         assert_eq!(stored["verified"], true);
+        assert_eq!(stored["published"], "2026-01-02");
         drop(tx);
         let mut private = note.clone();
         private["to"] = json!([]);

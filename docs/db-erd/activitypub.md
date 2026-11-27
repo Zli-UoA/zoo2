@@ -106,8 +106,19 @@ erDiagram
       text user_id PK,FK
       timestamptz note_updated_at
     }
-    apub_quote_grants }o--o| apub_remote_posts : apub_quote_grants_post_id_fkey
+    apub_quote_grants }o--o| apub_quote_originals : apub_quote_grants_post_id_fkey
     apub_quote_grants }o--o| users : apub_quote_grants_user_id_fkey
+    apub_quote_originals {
+      text id PK
+      text actor_id FK
+      text content
+      timestamptz published
+      timestamptz updated_at
+      text parent_id
+      jsonb emojis
+      jsonb media
+    }
+    apub_quote_originals }o--o| apub_actors : apub_quote_originals_actor_id_fkey
     apub_reactions {
       text post_id PK
       text actor_id PK

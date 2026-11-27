@@ -91,15 +91,7 @@ pub(super) async fn reconcile(
         return Ok(verified);
     };
     if row["actor_id"] == actor {
-        if verified {
-            toasty::sql::statement(
-                "UPDATE apub_remote_posts SET origin_verified=true WHERE id=$1 AND actor_id=$2",
-            )
-            .bind(id)
-            .bind(actor)
-            .exec(tx)
-            .await?;
-        }
+        // The caller marks the version verified only when it saves the authenticated payload.
         return Ok(verified || row["origin_verified"] == true);
     }
     if row["origin_verified"] == true {

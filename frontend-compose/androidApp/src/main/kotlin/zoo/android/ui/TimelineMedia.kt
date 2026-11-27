@@ -181,6 +181,11 @@ internal fun TimelineQuoteCard(
             confirmButton = {
                 TextButton(onClick = { showOriginal = false }) { Text(androidLabel("common.close", "閉じる")) }
             },
+            dismissButton = {
+                TextButton(onClick = { showOriginal = false; open() }) {
+                    Text(androidLabel("home.openQuotedPost", "引用元を開く"))
+                }
+            },
         )
     }
 }

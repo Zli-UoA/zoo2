@@ -4100,7 +4100,9 @@ BEGIN
     (NEW.parent_id,NEW.actor_id,NEW.published,NEW.deleted_at IS NOT NULL,EXISTS(SELECT 1 FROM home_posts WHERE id=NEW.parent_id AND user_id=r.user_id));
   RETURN NULL;
 END $$;
-CREATE TRIGGER apub_post_recipient_order AFTER UPDATE OF actor_id,published,parent_id,deleted_at ON apub_remote_posts FOR EACH ROW EXECUTE FUNCTION sync_apub_recipient_order();
+CREATE TRIGGER apub_post_recipient_order AFTER UPDATE OF actor_id,published,parent_id,deleted_at ON apub_remote_posts FOR EACH ROW
+  WHEN ((OLD.actor_id,OLD.published,OLD.parent_id,OLD.deleted_at IS NOT NULL) IS DISTINCT FROM (NEW.actor_id,NEW.published,NEW.parent_id,NEW.deleted_at IS NOT NULL))
+  EXECUTE FUNCTION sync_apub_recipient_order();
 -- Use 1,024 lock stripes: bulk inserts cannot exhaust advisory lock memory.
 CREATE FUNCTION sync_home_reply_recipient_order() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE parent text:=COALESCE(NEW.id,OLD.id);
@@ -4735,11 +4737,26 @@ CREATE TABLE apub_media_blurhash_queue (
 );
 CREATE INDEX apub_media_blurhash_queue_available ON apub_media_blurhash_queue(available_at,post_id);
 
--- Signed quote access applies to the fetched version, independently of Inbox delivery.
+-- Keep private versions fetched for quotes outside the Inbox and notification store.
+CREATE TABLE apub_quote_originals (
+  id text PRIMARY KEY,
+  actor_id text NOT NULL REFERENCES apub_actors(id),
+  content text NOT NULL,
+  published timestamptz NOT NULL,
+  updated_at timestamptz NOT NULL,
+  parent_id text,
+  emojis jsonb NOT NULL,
+  media jsonb NOT NULL
+);
+CREATE INDEX apub_quote_originals_actor ON apub_quote_originals(actor_id);
+
+-- Signed quote access applies to the fetched version.
 CREATE TABLE apub_quote_grants (
-  post_id text NOT NULL REFERENCES apub_remote_posts(id) ON DELETE CASCADE,
+  post_id text NOT NULL REFERENCES apub_quote_originals(id) ON DELETE CASCADE,
   user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   note_updated_at timestamptz NOT NULL,
   PRIMARY KEY (post_id,user_id)
 );
 CREATE INDEX apub_quote_grants_user ON apub_quote_grants(user_id);
+CREATE TRIGGER apub_quote_grants_home_live AFTER INSERT OR UPDATE OR DELETE ON apub_quote_grants
+  FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();
