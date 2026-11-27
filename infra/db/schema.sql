@@ -2342,12 +2342,13 @@ CREATE TABLE home_image_upload_rates (
   requests integer NOT NULL DEFAULT 0,
   PRIMARY KEY(user_id,window_start)
 );
-CREATE TABLE home_image_deletion_queue (
-  id text PRIMARY KEY,
+CREATE TABLE home_image_deletions (
+  id text CONSTRAINT home_image_deletions_pkey PRIMARY KEY,
   uploader_id text NOT NULL,
   file_size bigint NOT NULL DEFAULT 0,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE home_image_deletions RENAME TO home_image_deletion_queue;
 ALTER TABLE home_image_deletion_queue
   ADD COLUMN thumbnail_accounted boolean NOT NULL DEFAULT false,
   ADD COLUMN unconfirmed_thumbnail_bytes bigint NOT NULL DEFAULT 0,
@@ -2386,11 +2387,13 @@ BEGIN
 END $$;
 CREATE TRIGGER home_image_deleted AFTER DELETE ON home_images FOR EACH ROW EXECUTE FUNCTION queue_home_image_deletion();
 
--- Older workers only see entries that can be deleted without risking a late PUT.
+-- The legacy application uses one relation for quota and row-locked cleanup.
+-- Keep pending rows visible to its quota SELECT only. Unknown queries fail closed.
 CREATE VIEW home_image_deletions AS
 SELECT id,uploader_id,file_size,created_at
 FROM home_image_deletion_queue
-WHERE NOT legacy_write_pending AND NOT original_write_pending AND NOT thumbnail_write_pending;
+WHERE (NOT legacy_write_pending AND NOT original_write_pending AND NOT thumbnail_write_pending)
+   OR current_query() = $legacy_quota$SELECT json_build_object('bytes',(SELECT COALESCE(sum(file_size),0) FROM home_images WHERE uploader_id=$1)+(SELECT COALESCE(sum(file_size),0) FROM home_image_deletions WHERE uploader_id=$1))::text$legacy_quota$;
 
 
 CREATE INDEX home_posts_live_media ON home_posts USING gin(media jsonb_path_ops) WHERE deleted_at IS NULL;
