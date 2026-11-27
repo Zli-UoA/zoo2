@@ -57,25 +57,29 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     }
     var workspaceEmojis by mutableStateOf<List<Row>>(emptyList())
         private set
-    var workspaceEmojiLoaded by mutableStateOf(false)
-        private set
     var workspaceEmojiLoading by mutableStateOf(false)
         private set
     var workspaceEmojiError by mutableStateOf(false)
         private set
-    private var workspaceEmojiChecked = 0L
+    private var workspaceEmojiChecked by mutableLongStateOf(0L)
+
+    fun workspaceEmojiCatalogIsFresh(): Boolean =
+        workspaceEmojiCatalogIsFresh(kotlin.time.Clock.System.now().toEpochMilliseconds())
+
+    private fun workspaceEmojiCatalogIsFresh(now: Long): Boolean =
+        workspaceEmojiChecked != 0L && now - workspaceEmojiChecked < 60_000
+
     private val workspaceEmojiMutex = kotlinx.coroutines.sync.Mutex()
     suspend fun loadWorkspaceEmojis(force: Boolean = false) {
         workspaceEmojiMutex.lock()
         try {
             val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
-            if (!force && workspaceEmojiChecked != 0L && now - workspaceEmojiChecked < 60_000) return
+            if (!force && workspaceEmojiCatalogIsFresh(now)) return
             workspaceEmojiLoading = true
             workspaceEmojiError = false
             try {
                 workspaceEmojis = api.request("/api/emojis").rows()
                 workspaceEmojiChecked = now
-                workspaceEmojiLoaded = true
             } catch (e: CancellationException) {
                 workspaceEmojiChecked = 0L
                 throw e

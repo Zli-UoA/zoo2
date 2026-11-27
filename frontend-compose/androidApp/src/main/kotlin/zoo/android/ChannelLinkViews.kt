@@ -85,7 +85,7 @@ private fun channelLinkState(
             val body = linked.text("content")
             val codes = timelineBodyEmojis(session.config.apiBaseUrl, linked, linked, body,
                 isPost = false, workspace = workspaceEmojis()).keys
-            needsWorkspaceEmoji = messageExcerptNeedsWorkspaceEmoji(body, codes, session.workspaceEmojiLoaded)
+            needsWorkspaceEmoji = messageExcerptNeedsWorkspaceEmoji(body, codes, session.workspaceEmojiCatalogIsFresh())
             codes
         },
         hidesContent = { messageRichContent(it).hidesBody },

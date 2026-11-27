@@ -26,9 +26,9 @@ fun messageExcerpt(
 
 /** Whether knowing another custom emoji could preserve text currently lost by the excerpt parser. */
 fun messageExcerptNeedsWorkspaceEmoji(
-    content: String, customEmojis: Set<String>, catalogLoaded: Boolean = false,
+    content: String, customEmojis: Set<String>, catalogFresh: Boolean = false,
 ): Boolean {
-    if (catalogLoaded || ':' !in content) return false
+    if (catalogFresh || ':' !in content) return false
     val probe = ExcerptEmojiProbe(customEmojis)
     excerptText(content, customEmojis, probe)
     return probe.needsCatalog
@@ -99,8 +99,10 @@ private class ExcerptEmojiProbe(private val known: Set<String>) {
             return end != baseEnd
         }
         // A candidate well before the final styled token cannot change the last reading token.
-        val previous = slices.getOrNull(slices.lastIndex - 1)
-        if (end <= (previous?.start ?: last.start)) return false
+        val lastReadingBoundary = if (last.token.kind == "text") {
+            slices.getOrNull(slices.lastIndex - 1)?.start ?: last.start
+        } else last.start
+        if (end <= lastReadingBoundary) return false
         val tail = source.substring(end)
         val tailLast = inlineSlices(tail, known).lastOrNull()
         val readingStart = if (tailLast == null || tailLast.token.kind != "text") tail.length
