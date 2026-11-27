@@ -102,6 +102,7 @@ final class E2eeRevocation {
     @ObservationIgnored private var revocation: Revocation?
     @ObservationIgnored private weak var revocationStore: CryptoStore?
     @ObservationIgnored private var slots: [String] = []
+    @ObservationIgnored private var operationInProgress = false
     @ObservationIgnored private static let uploadBatch = 1000
     @ObservationIgnored private static let backupBatch = 1000
 
@@ -139,6 +140,9 @@ final class E2eeRevocation {
 
     /// 失効を始める。署名し直す一覧を集めて暗号ストアに保存する（サーバーにはまだ何も保存しない）。
     func begin(scope: RevocationScopeChoice, deletedDevices: [String], unlocked: UnlockedSecretStorage) async throws -> RevocationSummary {
+        guard !operationInProgress else { throw RevocationError.pending }
+        operationInProgress = true
+        defer { operationInProgress = false }
         let store = try currentStore()
         if try store.revocationSummary() != nil { throw RevocationError.pending }
         let keysQuery = try await ownKeysQuery()
@@ -152,15 +156,15 @@ final class E2eeRevocation {
         let input = RevocationInput(scope: scope == .full ? .full : .deviceOnly, keysQuery: rvText(keysQuery),
                                     versions: rvText(versions), pins: pins.map(rvText),
                                     targetsQuery: rvText(targetsQuery), deletedDevices: deletedDevices)
-        revocation = nil
-        slots = []
         revocation = try store.beginRevocation(input: input, unlocked: unlocked)
+        slots = []
         revocationStore = store
         return try refreshSummary()
     }
 
     /// 止まった失効を、開け直した SSSS で続ける。全範囲を SSSS の保存の前に止めていたら `RevocationRestart` を投げる。
     func resume(unlocked: UnlockedSecretStorage) throws -> RevocationSummary {
+        guard !operationInProgress else { throw RevocationError.pending }
         let store = try currentStore()
         revocation = try store.resumeRevocation(unlocked: unlocked)
         revocationStore = store
@@ -170,14 +174,16 @@ final class E2eeRevocation {
 
     /// やり直すために、保存した失効を捨てる。
     func abandon() throws {
+        guard !operationInProgress else { throw RevocationError.pending }
+        try currentStore().clearRevocation()
         revocation = nil
         slots = []
-        try currentStore().clearRevocation()
         summary = nil
     }
 
     /// 全範囲：新しい SSSS 鍵のリカバリーキーを作る。利用者に控えてもらう。
     func newRecoveryKey() throws -> String {
+        guard !operationInProgress else { throw RevocationError.pending }
         guard let revocation else { throw RevocationError.none }
         let recovery = RecoveryKey.generate()
         let slot = try newRecoveryKeySlot(userId: userID, ssssKey: revocation.ssssKey(), recoveryKey: recovery)
@@ -187,10 +193,12 @@ final class E2eeRevocation {
 
     /// 全範囲：新しい SSSS 鍵に、この端末のパスキーのスロットを作る。
     func addPasskey(client: any PasskeyClient, rpID: String, label: String?) async throws {
+        guard !operationInProgress else { throw RevocationError.pending }
         guard let revocation else { throw RevocationError.none }
         let salt = newPrfSalt()
         let result = try await client.prfForNewSlot(rpID: rpID, salt: salt)
         guard self.revocation === revocation else { throw RevocationError.changed }
+        guard !operationInProgress else { throw RevocationError.pending }
         var slot = try rvValue(try newPasskeyKeySlot(userId: userID, ssssKey: revocation.ssssKey(), credentialId: result.credentialID,
                                                      prfSalt: salt, prfOutput: result.prfOutput))
         if case .object(var object) = slot { object["label"] = label.map(JSONValue.string); slot = .object(object) }
@@ -204,11 +212,15 @@ final class E2eeRevocation {
     /// 読み直しの不一致は `ZooCryptoError.ServerKeyMismatch`。
     @discardableResult
     func run(reauth: String?, progress: ((RevocationSummary) -> Void)? = nil) async throws -> RevocationSummary {
+        guard !operationInProgress else { throw RevocationError.pending }
+        operationInProgress = true
+        defer { operationInProgress = false }
         guard let revocation else { throw RevocationError.none }
         let store = try currentStore()
         guard revocationStore === store else { throw RevocationError.none }
         var summary = try refreshSummary()
         let id = summary.revocation_id
+        guard try store.revocationSummary()?.revocationId == id else { throw RevocationError.changed }
         func advance() throws { summary = try refreshSummary(); progress?(summary) }
         var secretsRevision: UInt64?
 

@@ -151,6 +151,8 @@ enum E2eeStoreError: Error, Equatable {
     case revocationPending
     /// 続ける失効がない。
     case noRevocation
+    /// 保存した失効が、実行中の失効から置き換わった。
+    case revocationChanged
 }
 
 /// 同じ暗号ストアを、ほかの場所が開いている。少し待って試し直す。
@@ -977,7 +979,15 @@ final class CryptoStore: @unchecked Sendable {
     func saveRevocation(_ revocation: Revocation) throws {
         try lock.withLock {
             try ensureOpen()
+            try requireCurrentRevocationLocked(revocation)
             try saveRevocationLocked(revocation)
+        }
+    }
+
+    private func requireCurrentRevocationLocked(_ revocation: Revocation) throws {
+        guard let sealed = state.revocation,
+              try peekRevocation(sealed: sealed, account: account, storageKey: storageKey).revocationId == revocation.summary().revocationId else {
+            throw E2eeStoreError.revocationChanged
         }
     }
 
@@ -1003,6 +1013,7 @@ final class CryptoStore: @unchecked Sendable {
     func applyRevocation(_ revocation: Revocation, secretsRevision: UInt64?) throws {
         try lock.withLock {
             try ensureOpen()
+            try requireCurrentRevocationLocked(revocation)
             do {
                 try revocation.applyToTrust(trust: trust)
                 var next = state

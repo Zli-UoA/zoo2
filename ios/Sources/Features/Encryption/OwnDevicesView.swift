@@ -79,12 +79,27 @@ struct OwnDevicesView: View {
     private func rename(_ device: OwnDevice) async {
         let name = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, name.count <= 100 else { error = "名前は 1〜100 文字にしてください。"; return }
-        do { try await e2ee.renameDevice(device.device_id, to: name); await load() }
+        do {
+            try await e2ee.renameDevice(device.device_id, to: name)
+            // 再取得が失敗しても、保存済みの名前を一覧に残す。
+            loadGeneration += 1
+            devices = devices.map { current in
+                guard current.id == device.id else { return current }
+                return OwnDevice(device_id: current.device_id, display_name: name,
+                                 created_at: current.created_at, last_seen_at: current.last_seen_at)
+            }
+            await load()
+        }
         catch { self.error = "名前を変更できませんでした。" }
     }
 
     private func remove(_ device: OwnDevice) async {
-        do { try await e2ee.removeDevice(device.device_id); await load() }
+        do {
+            try await e2ee.removeDevice(device.device_id)
+            loadGeneration += 1
+            devices.removeAll { $0.id == device.id }
+            await load()
+        }
         catch { self.error = "端末を削除できませんでした。" }
     }
 

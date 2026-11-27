@@ -27,6 +27,7 @@ private final class RevocationServer: E2eeRevocationAPI {
     var backupTrace: [String] = []
     var uploadedRows: [JSONValue] = []
     var uploadFailure: Int?
+    var beforeCall: ((String, String) async -> Void)?
 
     init(from server: FakeSetupServer, userID: String) async throws {
         storage = parse(try await server.secretStorage())
@@ -38,6 +39,7 @@ private final class RevocationServer: E2eeRevocationAPI {
     func call(_ path: String, method: String, query: [String: String], body: [String: JSONValue]?, reauth: String?,
               headers: [String: String]) async throws -> JSONValue {
         requests.append("\(method) \(path)")
+        await beforeCall?(path, method)
         let guardedWrite = method != "GET" && method != "DELETE" && path != "api/e2ee/keys/query"
         if guardedWrite, requireReauth, reauth == nil, path != "api/e2ee/key_backup/keys" { throw E2eeAPIError(status: 403, code: "E2EE_REAUTH_REQUIRED") }
         reauthSeen.append(reauth)
@@ -209,27 +211,62 @@ struct RevocationTests {
         #expect(device.store.isUsable && device.store.secretsRevision == 2)
     }
 
-    @Test func 失効の信頼適用が保存前に失敗してもストアを再利用しない() async throws {
+    @Test("古い失効の保存と信頼適用は現在の記録を上書きしない", arguments: [false, true])
+    func rejectsObsoleteRevocation(replace: Bool) async throws {
         let (device, server, unlocked, _) = try await prepared()
         defer { device.cleanUp() }
         let controller = E2eeRevocation(store: { device.store }, api: server, setup: device.setup, userID: user)
-        _ = try await controller.begin(scope: .deviceOnly, deletedDevices: [], unlocked: unlocked)
-        let revocation = try device.store.resumeRevocation(unlocked: unlocked)
-        let (files, _, directory) = makeFiles()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let otherUser = UUID().uuidString.lowercased()
-        let other = try #require(try CryptoStore.open(files, userID: otherUser)).store
-        defer { other.close() }
-        let url = directory.appendingPathComponent(CryptoStore.stateFile)
+        let first = try await controller.begin(scope: .deviceOnly, deletedDevices: [], unlocked: unlocked)
+        let obsolete = try device.store.resumeRevocation(unlocked: unlocked)
+        try controller.abandon()
+        if replace {
+            let second = try await controller.begin(scope: .deviceOnly, deletedDevices: [], unlocked: unlocked)
+            #expect(second.revocation_id != first.revocation_id)
+        }
+        let url = device.files.directory.appendingPathComponent(CryptoStore.stateFile)
         let saved = try Data(contentsOf: url)
-        #expect(throws: (any Error).self) { try other.applyRevocation(revocation, secretsRevision: 2) }
-        #expect(!other.isUsable)
+        #expect(throws: E2eeStoreError.revocationChanged) { try device.store.saveRevocation(obsolete) }
+        #expect(throws: E2eeStoreError.revocationChanged) { try device.store.applyRevocation(obsolete, secretsRevision: 2) }
+        #expect(device.store.isUsable && device.store.secretsRevision == 1)
         #expect(try Data(contentsOf: url) == saved)
-        #expect(throws: E2eeStoreError.closed) { try other.applyRevocation(revocation, secretsRevision: 2) }
-        other.close()
-        let reopened = try #require(try CryptoStore.open(files, userID: otherUser)).store
-        defer { reopened.close() }
-        #expect(reopened.isUsable && reopened.secretsRevision == nil)
+    }
+
+    @Test("失効の準備中と実行中は再入して記録を置き換えない", arguments: [false, true])
+    func rejectsReentrantOperations(duringBegin: Bool) async throws {
+        let (device, server, unlocked, _) = try await prepared()
+        defer { device.cleanUp() }
+        let controller = E2eeRevocation(store: { device.store }, api: server, setup: device.setup, userID: user)
+        if !duringBegin { _ = try await controller.begin(scope: .deviceOnly, deletedDevices: [], unlocked: unlocked) }
+        let waiting = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        defer { waiting.continuation.finish(); release.continuation.finish() }
+        server.beforeCall = { _, _ in
+            server.beforeCall = nil
+            waiting.continuation.yield(())
+            for await _ in release.stream { break }
+        }
+        let operation = Task {
+            defer { waiting.continuation.finish() }
+            if duringBegin { return try await controller.begin(scope: .deviceOnly, deletedDevices: [], unlocked: unlocked) }
+            return try await controller.run(reauth: "token")
+        }
+        defer { operation.cancel() }
+        var didSuspend = false
+        for await _ in waiting.stream { didSuspend = true; break }
+        try #require(didSuspend)
+        let saved = try controller.savedSummary()
+        let requests = server.requests.count
+        #expect(throws: RevocationError.pending) { try controller.abandon() }
+        #expect(throws: RevocationError.pending) { try controller.resume(unlocked: unlocked) }
+        #expect(throws: RevocationError.pending) { try controller.newRecoveryKey() }
+        await #expect(throws: RevocationError.pending) { try await controller.run(reauth: "token") }
+        await #expect(throws: RevocationError.pending) {
+            try await controller.begin(scope: .deviceOnly, deletedDevices: [], unlocked: unlocked)
+        }
+        #expect(try controller.savedSummary() == saved)
+        #expect(server.requests.count == requests)
+        release.continuation.yield(())
+        let completed = try await operation.value
+        #expect(completed.stage == (duringBegin ? "prepared" : "verified"))
     }
 
     @Test func 端末だけの失効は鍵を作り直して保存し記録を消す() async throws {

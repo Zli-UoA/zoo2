@@ -187,6 +187,7 @@ struct MessageEncryptionTests {
         let bytes = try Data(contentsOf: file)
         #expect(!String(decoding: bytes, as: UTF8.self).contains(secret))
         var state = try JSONDecoder().decode(StoreState.self, from: bytes)
+        try #require(state.pending_verifications.count == 2)
         try #require(state.pending_verifications.allSatisfy { $0.hasPrefix("v1:") })
         try receiver.store.discardVerifications([result.verifications[0]])
         #expect(receiver.store.pendingVerifications() == [result.verifications[1]])
@@ -709,6 +710,42 @@ struct MessageEncryptionTests {
 
 @MainActor
 struct ConfirmedBodyTests {
+    @Test("ストア再読込後も同じ版の異なる本文・メンション・添付を採用しない", arguments: ["本文", "メンション", "添付", "同一内容"])
+    func preservesConfirmedPayloadAfterReopen(change: String) async throws {
+        let setupServer = FakeSetupServer(userID: user)
+        let sender = try Device(setupServer)
+        defer { sender.cleanUp() }
+        let start = try sender.setup.begin()
+        try await sender.setup.completeSetup(start.session, reauth: "t")
+        let server = PreviewE2eeServer(userID: user)
+        let capture = CapturingRequests(user: user, store: { sender.store }, setupServer: setupServer)
+        let encryption = MessageEncryption(store: { sender.store }, api: capture)
+        let controller = E2eeController(
+            manager: E2eeDeviceManager(api: server, files: sender.files, userID: user, observeToDevice: { _, _ in }),
+            setup: E2eeSetup(api: server, userID: user, store: { sender.store }), encryption: encryption)
+        func message() -> Message {
+            Message(id: messageID, user_id: user, channel_id: channel, content: "", created_at: "2026-11-28T00:00:00Z",
+                    ciphertext: CiphertextText(capture.ciphertext(0)), epoch: ShapeInteger(capture.epoch(0)), revision: ShapeInteger(0))
+        }
+        try await encryption.send(channel: channel, id: messageID, parent: nil, body: "確認した本文")
+        capture.record(revision: 0)
+        let original = controller.decrypt(message())
+        try #require(original.body == "確認した本文")
+        let attachment = AttachmentInfo(attachmentId: UUID().uuidString.lowercased(), name: "資料.txt", mimetype: "text/plain",
+            size: 3, width: nil, height: nil, sensitive: false, file: encryptAttachment(plaintext: Data("abc".utf8)).file)
+        try await encryption.send(channel: channel, id: messageID, parent: nil,
+            body: change == "本文" ? "異なる本文" : "確認した本文", attachments: change == "添付" ? [attachment] : [],
+            mentions: EncryptedMentions(channel: change == "メンション"))
+        capture.record(revision: 0)
+        try sender.restart()
+        let second = message()
+        let shown = controller.decrypt(second)
+        #expect(shown.body == original.body)
+        #expect(shown.payload == original.payload)
+        #expect(shown.notice == (change == "同一内容" ? original.notice : E2eeText.revisionConflict))
+        #expect(controller.decrypt(second).payload == original.payload)
+    }
+
     @Test func 古い版や中身の違う同じ版が届いても確認できた最新の本文を警告つきで出す() async throws {
         let setupServer = FakeSetupServer(userID: user)
         let sender = try Device(setupServer)

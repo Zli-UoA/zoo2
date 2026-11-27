@@ -433,6 +433,11 @@ final class E2eeController: ConversationEncryption {
                 shown.notice = E2eeText.revisionStale
                 return shown
             }
+            if let known = confirmed[row.id], known.revision == row.revision, known.result.payload != result.payload {
+                var shown = known.result
+                shown.notice = E2eeText.revisionConflict
+                return shown
+            }
             decrypted[key] = result
             if (confirmed[row.id]?.revision ?? 0) <= row.revision || confirmed[row.id] == nil { confirmed[row.id] = (row.revision, result) }
             return result
