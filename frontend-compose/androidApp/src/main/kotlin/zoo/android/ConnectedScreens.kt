@@ -58,6 +58,9 @@ internal fun ConnectedScreens(
     val channel = syncedChannel ?: pendingDm
     val channelMembers = memberships.filter { it.text("channel_id") == channelId }
     val member = channelMembers.any { it.text("user_id") == session.config.userId }
+    LaunchedEffect(channels, memberships, pendingDm) {
+        state.clearSyncedDms(channels, memberships)
+    }
     val dmSyncPending = pendingDm != null && (syncedChannel == null || !member)
     var dmSyncDelayed by remember(channelId) { mutableStateOf(false) }
     var dmSyncRetry by remember(channelId) { mutableIntStateOf(0) }
@@ -66,7 +69,7 @@ internal fun ConnectedScreens(
         if (dmSyncPending) {
             delay(15_000)
             dmSyncDelayed = true
-        } else if (pendingDm != null) state.forgetCreatedDm(channelId)
+        }
     }
     val messageTable = if (channelId == null) null else remember(channelId) { session.repo.messages(channelId) }
     if (channelId != null) DisposableEffect(channelId) { onDispose { session.repo.releaseChannel(channelId) } }
@@ -145,10 +148,8 @@ internal fun ConnectedScreens(
     val focusRequest = focusMessage?.let { env.path.substringAfter('?') }
     val focusRow = rows.find { it.text("id") == focusMessage }
     val focusParent = focusRow?.text("parent_id")
-    // A reply opened from search or a link stays readable when its parent was deleted (as Web): the thread
-    // shows a notice in place of the parent and cannot be written to.
-    val deletedRoot = currentThread != null && focusParent == currentThread && focusRow?.present("deleted_at") == false &&
-        rows.find { it.text("id") == currentThread }?.present("deleted_at") == true
+    // Keep a deleted parent's thread readable and prevent replies to it.
+    val deletedRoot = currentThread?.let { rowsById[it]?.present("deleted_at") } == true
     LaunchedEffect(focusMessage, focusParent) {
         if (!focusParent.isNullOrBlank()) session.thread = focusParent
     }
@@ -208,7 +209,8 @@ internal fun ConnectedScreens(
         }
         // 親行は、最初のメインのページが画面に反映されるまで rows に入らない。入るのを待ってから返信を取る。
         table.rows.first { rows -> rows.any { it.text("id") == thread } }
-        table.loadOlder(PageScope.Replies(thread))
+        val replies = PageScope.Replies(thread)
+        if (table.pageStates.value[replies]?.loaded != true) table.loadOlder(replies)
     }
     val call = phone.call
     val callChannelId = call?.target ?: channelId
@@ -241,7 +243,7 @@ internal fun ConnectedScreens(
         state.feedScreenRevision, state.postReloadRequest, env.online, env.visible) {
         if (env.online && env.visible) state.reloadActivePost()
     }
-    LaunchedEffect(state.overlay, state.profile.text("id"), state.feedScreenRevision, env.online, env.visible) {
+    LaunchedEffect(state.overlay, state.profile.text("id"), state.feedScreenRevision, state.profileAccountRetry, env.online, env.visible) {
         if (env.online && env.visible) state.reloadProfileAccount()
     }
     LaunchedEffect(state.overlay, state.profile.text("id"), state.postRevision,
@@ -380,6 +382,7 @@ internal fun ConnectedScreens(
             },
             avatar = profileAvatar, originalAvailable = profileUrl != null, id = profile.text("id"),
             postsPending = state.profilePostsPending, postsLoadFailed = state.profilePostsLoadFailed, online = env.online,
+            accountLoadFailed = state.profileAccountLoadFailed,
         )
         state.overlay == "bubble-participants" -> AndroidScreen.Directory("参加者", state.query,
             bubbleParticipants.filter { it.title.contains(state.query, true) })

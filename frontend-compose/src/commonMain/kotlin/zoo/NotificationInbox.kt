@@ -101,7 +101,10 @@ class NotificationInbox(private val session: Session) {
             return emptyList()
         }
         val data = response as? JsonObject
-        if (data != null && "message" in data && data.nested("message").isEmpty()) markUnavailable(context.id)
+        if (data != null && "message" in data) {
+            if (data.nested("message").isEmpty()) markUnavailable(context.id)
+            else unavailableContexts.remove(context.id)
+        }
         val emojis = (response as? JsonObject)?.array("reactions")?.rows().orEmpty()
             .filter { it.text("user_id") in context.actorIds }
             .map { it.text("emoji") }

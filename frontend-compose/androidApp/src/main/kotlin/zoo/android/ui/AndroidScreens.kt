@@ -174,6 +174,7 @@ internal sealed interface AndroidScreen {
         val originalAvailable: Boolean = false,
         val id: String = handle ?: name,
         val postsPending: Boolean = false, val postsLoadFailed: Boolean = false, val online: Boolean = true,
+        val accountLoadFailed: Boolean = false,
     ) : AndroidScreen
     data class NewPost(val input: InputState, val recent: List<RecentPhoto>, val showPhotos: Boolean,
         val visibility: String? = null, val attached: List<RecentPhoto> = emptyList(), val federate: Boolean? = null) : AndroidScreen
@@ -200,6 +201,7 @@ internal sealed interface AndroidUiAction {
     data class OpenPost(val id: String) : AndroidUiAction
     data object RetryPost : AndroidUiAction
     data object RetryProfile : AndroidUiAction
+    data object RetryProfileAccount : AndroidUiAction
     data object RetryTimeline : AndroidUiAction
     data class OpenProfile(val author: zoo.Row) : AndroidUiAction
     data class ReplyToPost(val id: String) : AndroidUiAction
@@ -450,6 +452,11 @@ private fun RenderAndroidScreen(
                 Timeline(screen.posts, colors, Modifier.weight(1f), dispatch, posts = true, header = {
                     Column {
                         ProfileHeader(screen, colors) { dispatch(AndroidUiAction.OpenSetting("profile-follow")) }
+                        if (screen.accountLoadFailed && screen.online) {
+                            FeedLoadError(androidLabel("common.errors.network", "通信エラー"), colors) {
+                                dispatch(AndroidUiAction.RetryProfileAccount)
+                            }
+                        }
                         if (screen.postsPending) {
                             Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
                                 when {

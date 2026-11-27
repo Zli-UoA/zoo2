@@ -154,6 +154,7 @@ class HomeTimeline(
                         posts = if (retain && postId == null)
                             mergeHomeWindow(posts, head, if (complete) posts.map(::key) else if (checkedSuccessfully) check else emptyList(), checked, fetchHead && atTop || complete)
                         else head
+                        if (posts.isEmpty()) app.homeTimelines.removeEntry(cacheKey)
                         if (fetchHead && (!retain || complete || posts.size <= 50)) {
                             hasMore = !complete && postId == null && head.size == 50
                             if (!hasMore) olderError = false

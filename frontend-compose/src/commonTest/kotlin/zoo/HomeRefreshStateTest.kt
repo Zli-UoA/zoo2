@@ -15,6 +15,39 @@ import kotlinx.serialization.json.JsonArray
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class HomeRefreshStateTest {
     @Test
+    fun anAuthoritativelyEmptyTimelineDoesNotRestoreItsOldPosts() = runTest {
+        var homeResponse = """[{"id":"removed"}]"""
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    respond(if (request.url.parameters["timeline"] == "home") homeResponse else "[]")
+                }
+            }
+        }
+        val app = Session(Repository(Config("https://zoo.test", "/shapes", "alice", false),
+            TestPlatform(), http, backgroundScope, synchronize = false), backgroundScope, Environment())
+        val feed = HomeTimeline(app, backgroundScope)
+        try {
+            feed.refresh()
+            runCurrent()
+            feed.select("local")
+            runCurrent()
+
+            homeResponse = "[]"
+            feed.select("home")
+            assertEquals("removed", feed.posts.single().text("id"))
+            runCurrent()
+            assertTrue(feed.posts.isEmpty())
+
+            feed.select("local")
+            runCurrent()
+            feed.select("home")
+            assertTrue(feed.posts.isEmpty())
+        } finally { feed.close(); app.close(); http.close() }
+    }
+
+    @Test
     fun nearEndPagingResumesAfterAnIdenticalRetainedRefresh() = runTest {
         val gate = CompletableDeferred<Unit>()
         var requests = 0

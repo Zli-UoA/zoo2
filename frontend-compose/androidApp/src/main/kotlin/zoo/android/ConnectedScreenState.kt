@@ -142,8 +142,12 @@ internal class ConnectedScreenState(
 
     fun pendingDm(id: String?): Row? = pendingDms.values.firstOrNull { it.text("id") == id }
 
-    fun forgetCreatedDm(id: String?) {
-        pendingDms.entries.removeAll { it.value.text("id") == id }
+    fun clearSyncedDms(channels: List<Row>, memberships: List<Row>) {
+        if (pendingDms.isEmpty()) return
+        val joined = memberships.asSequence().filter { it.text("user_id") == app.config.userId }
+            .map { it.text("channel_id") }.toSet()
+        val synced = channels.asSequence().map { it.text("id") }.filter { it in joined }.toSet()
+        pendingDms.entries.removeAll { it.value.text("id") in synced }
     }
     var dmTargets by mutableStateOf<Set<String>>(emptySet())
         private set
@@ -165,7 +169,7 @@ internal class ConnectedScreenState(
     private val feedBackStack = ArrayDeque<FeedOrigin>()
     var postRevision by mutableIntStateOf(0)
         private set
-    private var postDetailRevision = -1
+    private var postDetailRevision by mutableIntStateOf(-1)
     val postPending: Boolean get() = postDetailRevision != postRevision
     private var notifyUnavailablePost = false
     var postReloadRequest by mutableIntStateOf(0)
@@ -192,6 +196,10 @@ internal class ConnectedScreenState(
     private var profilePostsRevision by mutableIntStateOf(0)
     val profilePostsPending: Boolean get() = profilePostsRevision != postRevision
     var profilePostsLoadFailed by mutableStateOf(false)
+        private set
+    var profileAccountLoadFailed by mutableStateOf(false)
+        private set
+    var profileAccountRetry by mutableIntStateOf(0)
         private set
     var profileReloadRequest by mutableIntStateOf(0)
         private set
@@ -580,6 +588,7 @@ internal class ConnectedScreenState(
         clearPost()
         profilePostsLoadFailed = false
         profile = person
+        profileAccountLoadFailed = false
         profilePosts = app.cachedHomeDetail("profile:$id")
         profilePostsRevision = -1
         overlay = "profile"
@@ -592,6 +601,8 @@ internal class ConnectedScreenState(
         val id = person.text("id")
         val screen = feedScreenRevision
         val followRevision = followRevisions[id]
+        fun isCurrent() = overlay == "profile" && feedScreenRevision == screen && profile.text("id") == id
+        profileAccountLoadFailed = false
         val account = try {
             app.api.request("/api/activitypub/accounts?actor=${id.encodeURLParameter()}").jsonObject
         } catch (cancelled: CancellationException) { throw cancelled }
@@ -600,16 +611,18 @@ internal class ConnectedScreenState(
                 app.removeCachedHomeDetail("profile:$id")
                 followStates.remove(id)
                 feedBackStack.removeAll { it is FeedOrigin.Profile && it.account.text("id") == id }
-                if (overlay == "profile" && feedScreenRevision == screen && profile.text("id") == id) {
+                if (isCurrent()) {
                     profile = obj()
                     profilePosts = emptyList()
                     closeProfile()
                     app.toast = app.t("common.errors.notFound")
                 }
+            } else if (isCurrent()) {
+                profileAccountLoadFailed = true
             }
             return
         }
-        if (overlay != "profile" || feedScreenRevision != screen || profile.text("id") != id) return
+        if (!isCurrent()) return
         profile = JsonObject(person + account)
         if (id !in pendingFollows && followRevisions[id] == followRevision) {
             if (!profile.flag("remote") || id == app.config.userId) followStates.remove(id)
@@ -1052,6 +1065,7 @@ internal class ConnectedScreenState(
             is AndroidUiAction.OpenPost -> openPost(action.id)
             AndroidUiAction.RetryPost -> postReloadRequest++
             AndroidUiAction.RetryProfile -> profileReloadRequest++
+            AndroidUiAction.RetryProfileAccount -> profileAccountRetry++
             AndroidUiAction.RetryTimeline -> if (home.olderError) home.older()
                 else home.refresh(retain = home.posts.isNotEmpty())
             is AndroidUiAction.OpenProfile -> openProfile(action.author)
@@ -1108,6 +1122,7 @@ internal class ConnectedScreenState(
                 action.id == "submit-dm" && dmTargets.isNotEmpty() && !saving -> request {
                     saving = true
                     try {
+                        clearSyncedDms(app.repo.channels.rows.value, app.repo.members.rows.value)
                         val selection = DmSelection(dmTargets, encryptedDm)
                         val channel = pendingDms[selection] ?: app.createDm(selection.members, selection.encrypted).also {
                             pendingDms[selection] = it
@@ -1410,6 +1425,7 @@ internal class ConnectedScreenState(
             }
             is FeedOrigin.Profile -> {
                 profile = previous.account
+                profileAccountLoadFailed = false
                 profilePosts = app.cachedHomeDetail("profile:${previous.account.text("id")}")
                 profilePostsRevision = -1
                 profilePostsLoadFailed = false
@@ -1435,8 +1451,11 @@ internal class ConnectedScreenState(
         openedPostId = id
         notifyUnavailablePost = notifyUnavailable
         val cached = app.cachedHomeDetail("post:$id")
-        postDetail = if (known == null) cached else listOf(known) +
-            cached.filterNot { it.nested("post").ifEmpty { it }.text("id") == id }
+        val cachedRoot = cached.firstOrNull { it.nested("post").ifEmpty { it }.text("id") == id }
+        postDetail = if (known == null) cached else {
+            val root = cachedRoot?.let { row -> JsonObject(row.nested("post").ifEmpty { row } + known) } ?: known
+            listOf(root) + cached.filterNot { it === cachedRoot }
+        }
         replyFocusRequest = if (focusReply) 1 else 0
         overlay = "post"
         feedScreenRevision++
