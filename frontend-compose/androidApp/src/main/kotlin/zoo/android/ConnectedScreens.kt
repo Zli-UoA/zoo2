@@ -207,9 +207,10 @@ internal fun ConnectedScreens(
         (!needsUnreadHistory || !env.online || focusMessage != null)
     val mainPageReady = mainPage?.loaded == true
     val awaitingInitialRead = env.online && channel?.present("archive_at") != true &&
-        (member || membershipsLoading) && (!mainPageReady || currentReadPosition == null)
-    val unreadPositionPending = awaitingInitialRead ||
-        (env.online && currentThread == null && focusMessage == null && needsUnreadHistory)
+        (member || membershipsLoading) && (if (currentReadPosition == null)
+            !session.channelReadPositionsChecked else !mainPageReady)
+    val unreadPositionPending = !unreadPositioned && (awaitingInitialRead ||
+        (env.online && currentThread == null && focusMessage == null && needsUnreadHistory))
     val unreadId = firstUnreadInWindow.takeUnless {
         unreadHistoryOutsideWindow(visiblePage, visitHistoryPosition) || awaitingInitialRead
     }
@@ -526,14 +527,15 @@ internal fun ConnectedScreens(
                       if (threadRoot == null) it.copy(editable = false, canReact = false, canRepost = false) else it
                   },
               rowsById, encrypted, session::t)
+          val threadFocus = focusMessage.takeIf { it == currentThread || focusParent == currentThread }
           AndroidScreen.Thread(
             channel.text("channel_name"),
             thread.first(),
             thread.drop(1),
             state.input("$channelId:$currentThread", canPost && threadRoot != null && !threadDetail.present("thread_archive_at") &&
                 (!threadDetail.flag("tracked") || threadDetail.text("membership") == "joined"),
-                users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }).copy(notices = recipientLines), focusMessage,
-            focusRequest = focusRequest,
+                users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }).copy(notices = recipientLines), threadFocus,
+            focusRequest = focusRequest.takeIf { threadFocus != null },
             loadOlder = pageStates[PageScope.Replies(currentThread.orEmpty())]?.let { it.hasOlder && !it.loading } == true,
             historyReady = !env.online || pageStates[PageScope.Replies(currentThread.orEmpty())]?.loaded == true,
           )

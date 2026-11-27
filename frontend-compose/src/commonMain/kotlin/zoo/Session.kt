@@ -168,6 +168,8 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         toastController.setHovered(serial, hovered)
 
     var pending by mutableStateOf<Set<String>>(emptySet())
+    var channelReadPositionsChecked by mutableStateOf(false)
+        private set
     var channelReadPositions by mutableStateOf<Map<String, ChannelReadPosition>>(emptyMap())
         private set
     private val channelReadMutex = Mutex()
@@ -439,6 +441,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                 } catch (_: Exception) {
                     // Keep the last successful read positions while the network is unavailable.
                 }
+                channelReadPositionsChecked = true
                 capabilities = json.parseToJsonElement(platform.invoke("capabilities")).jsonObject
                 false
             }

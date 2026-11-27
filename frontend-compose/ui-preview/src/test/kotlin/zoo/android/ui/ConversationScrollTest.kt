@@ -141,6 +141,24 @@ class ConversationScrollTest {
     }
 
     @Test
+    fun aCachedNotificationTargetStaysVisibleWhileReadStateIsPending() {
+        val reported = mutableListOf<String>()
+        var positioned = false
+        ui.setContent {
+            AndroidScreens(channel.copy(focusMessage = "e18", unreadPositionPending = true,
+                onUnreadPositioned = { positioned = true },
+                onReadThrough = { id -> if (id != null) reported.add(id) }),
+                false, true, dispatch = {}) { _, _ -> }
+        }
+
+        ui.onNodeWithTag("timeline-entry-e18").assertIsDisplayed()
+        ui.runOnIdle {
+            assertTrue(positioned)
+            assertTrue(reported.isEmpty())
+        }
+    }
+
+    @Test
     fun openingAtTheEndAlignsTheBottomOfATallLastMessage() {
         val tall = entries.last().copy(body = (1..90).joinToString("\n") { "本文 $it" })
         ui.setContent {

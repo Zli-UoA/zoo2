@@ -738,7 +738,7 @@ internal fun ColumnScope.TimelineWithInput(
         (seekUnread || (!positioned && !restorePending))
     val waitingForPosition = when {
         !headerMeasured -> true
-        focusPending -> focusedIndex < 0
+        focusRequest != null -> focusPending && focusedIndex < 0
         else -> unreadPositionPending || (restorePending && restoredIndex < 0 && !historyReady && !shouldPositionUnread)
     }
 
