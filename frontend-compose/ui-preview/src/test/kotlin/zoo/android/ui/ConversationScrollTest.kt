@@ -700,9 +700,10 @@ class ConversationScrollTest {
                 focusMessage = reply.id, focusRequest = request)
         }
         ui.onNodeWithTag("timeline-entry-reply").assertIsDisplayed()
-        ui.runOnIdle { screen = focusedChannel }
-        ui.onNodeWithTag("conversation-timeline").assertDoesNotExist()
-        ui.runOnIdle { screen = focusedChannel.copy(input = InputState(lastSend = "channel-send")) }
+        // Returning from the thread consumes the reply focus request in ConnectedScreens.
+        ui.runOnIdle { screen = channel }
+        ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
+        ui.runOnIdle { screen = channel.copy(input = InputState(lastSend = "channel-send")) }
         ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
     }
 

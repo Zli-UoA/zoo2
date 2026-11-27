@@ -405,7 +405,11 @@ internal fun ConnectedScreens(
             state.overlay == "add-member" -> state.overlay = "members"
             state.overlay != null -> state.overlay = null
             state.collapseInput(channelId, currentThread) -> Unit
-            currentThread != null -> session.thread = null
+            currentThread != null -> {
+                // A notification for a reply has no target in the channel's timeline.
+                if (focusParent == currentThread) platform.replace(route)
+                session.thread = null
+            }
             platform.back() -> Unit
             else -> {
                 background()
