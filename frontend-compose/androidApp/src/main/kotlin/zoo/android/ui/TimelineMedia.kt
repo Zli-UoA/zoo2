@@ -14,6 +14,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -93,24 +94,27 @@ internal val LocalCachedTimelineImage = staticCompositionLocalOf<(TimelineMedia)
 
 @Composable
 internal fun rememberTimelineImage(media: TimelineMedia?, revealed: Boolean = true): ImageBitmap? {
-    if (media?.attachmentId?.let(LocalAttachmentImageDenied.current) == true) return null
+    val denied = media?.attachmentId?.let(LocalAttachmentImageDenied.current) == true
     val cached = LocalCachedTimelineImage.current
     val load = LocalTimelineImage.current
     val loadWithPreview = LocalTimelineImageWithPreview.current
     val retry = LocalTimelineImageRetry.current
-    val initial = remember(media, cached) { media?.let(cached) }
+    val initial = remember(media, cached) { if (denied) null else media?.let(cached) }
     val isRevealed = rememberUpdatedState(revealed)
     return key(media, cached, load, loadWithPreview, retry) {
-        produceState(initial) {
+        var bitmap by remember { mutableStateOf(initial) }
+        LaunchedEffect(denied) { if (denied) bitmap = null }
+        LaunchedEffect(Unit) {
             if (initial == null && media != null) {
                 val prefetching = !isRevealed.value
-                value = if (loadWithPreview != null) loadWithPreview(media) { value = it } else load(media)
-                if (prefetching && value == null) {
+                bitmap = if (loadWithPreview != null) loadWithPreview(media) { bitmap = it } else load(media)
+                if (prefetching && bitmap == null && !denied) {
                     snapshotFlow { isRevealed.value }.first { it }
-                    value = retry(media)
+                    bitmap = retry(media)
                 }
             }
-        }.value
+        }
+        bitmap.takeUnless { denied }
     }
 }
 

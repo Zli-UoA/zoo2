@@ -47,6 +47,7 @@ class ImageDecodingTest {
                     deny.await()
                     respond("{}", HttpStatusCode.NotFound)
                 }
+                4 -> respond("""{"download_url":"https://storage.test/restored"}""")
                 else -> error("Unexpected attachment request")
             }
         })
@@ -62,6 +63,7 @@ class ImageDecodingTest {
             override fun time(timestamp: String) = timestamp
             override fun day(timestamp: String) = timestamp
             override suspend fun freshAttachmentImage(cacheKey: String) = byteArrayOf(1)
+            override suspend fun attachmentImage(url: String, cacheKey: String?, retry: Boolean) = byteArrayOf(2)
             override suspend fun removeAttachmentImages(id: String) { evicted.complete(id) }
             override fun imageFrames(bytes: ByteArray) = flow { emit(bitmap) }
         }
@@ -92,6 +94,10 @@ class ImageDecodingTest {
             assertNull(app.attachmentLinks.cachedLinks("photo"))
             assertTrue(app.attachmentLinks.isDenied("photo"))
             assertEquals(3, requests)
+
+            assertSame(bitmap, timelineImage(app, media, onCached = { error("A denied attachment must not be shown first") }))
+            assertFalse(app.attachmentLinks.isDenied("photo"))
+            assertEquals(4, requests)
         } finally { app.close(); http.close() }
     }
 

@@ -41,6 +41,7 @@ internal fun cachedTimelineImage(session: Session, media: TimelineMedia): ImageB
     val publicUrl = media.previewUrl ?: media.url
     if (publicUrl != null) return session.cachedImageBitmap(publicUrl)
     val id = media.attachmentId ?: return null
+    if (session.attachmentLinks.isDenied(id)) return null
     val links = session.attachmentLinks.cachedLinks(id) ?: return null
     val signedThumbnail = links.thumbnail.takeIf { media.useThumbnail }
     signedThumbnail?.let { session.cachedImageBitmap(it, signedAttachment = true, cacheKey = "$id:thumbnail") }
@@ -69,7 +70,8 @@ internal suspend fun timelineImage(
     }
     val id = media.attachmentId ?: return null
     val platform = session.platform
-    val cached = if (onCached != null && !retry && !session.attachmentLinks.isDenied(id)) {
+    val previouslyDenied = session.attachmentLinks.isDenied(id)
+    val cached = if (onCached != null && !retry && !previouslyDenied) {
         suspend fun decode(key: String): ImageBitmap? = try {
             platform.freshAttachmentImage(key)?.let { platform.imageFrames(it).first() }
         } catch (cancelled: CancellationException) {
@@ -86,7 +88,7 @@ internal suspend fun timelineImage(
     var links: AttachmentImageLinks? = null
     while (links == null) {
         try {
-            links = session.attachmentLinks.getLinks(id, force = retry || cached != null)
+            links = session.attachmentLinks.getLinks(id, force = retry || previouslyDenied || cached != null)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: Exception) {

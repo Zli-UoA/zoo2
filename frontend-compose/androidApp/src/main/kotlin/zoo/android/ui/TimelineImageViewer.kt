@@ -93,20 +93,23 @@ internal fun TimelineImagePages(
             val loadWithPreview = LocalTimelineImageWithPreview.current
             val retry = LocalTimelineImageRetry.current
             var attempt by remember(image) { mutableIntStateOf(0) }
-            val initial = remember(image, hidden, denied, attempt, cached) {
-                if (hidden || denied) null else cached(image)
-            }
-            val result by key(image, hidden, denied, attempt, cached, load, loadWithPreview, retry) {
-                produceState(ViewerImage(initial, failed = denied)) {
-                    if (!hidden && initial == null && (!denied || attempt > 0)) {
+            val result = key(image, hidden, attempt, cached, load, loadWithPreview, retry) {
+                val initial = remember { if (hidden || denied) null else cached(image) }
+                var state by remember { mutableStateOf(ViewerImage(initial)) }
+                LaunchedEffect(denied) {
+                    if (denied) state = ViewerImage(null, failed = true)
+                }
+                LaunchedEffect(Unit) {
+                    if (!hidden && initial == null) {
                         val loaded = when {
                             attempt > 0 -> retry(image)
-                            loadWithPreview != null -> loadWithPreview(image) { value = ViewerImage(it) }
+                            loadWithPreview != null -> loadWithPreview(image) { state = ViewerImage(it) }
                             else -> load(image)
                         }
-                        value = ViewerImage(loaded, failed = loaded == null)
+                        state = ViewerImage(loaded, failed = loaded == null)
                     }
                 }
+                state
             }
             val bitmap = result.bitmap.takeUnless { denied }
             val blur = rememberMediaBlurHash(image.blurhash.takeIf { bitmap == null && !denied })
@@ -123,7 +126,7 @@ internal fun TimelineImagePages(
                     }
                 }
                 if (!hidden && bitmap == null) {
-                    if (result.failed) {
+                    if (denied || result.failed) {
                         Column(Modifier.background(Color.Black.copy(alpha = 0.75f)).padding(12.dp),
                             horizontalAlignment = Alignment.CenterHorizontally) {
                             Text(androidLabel("attachments.imagePreviewFailed", "画像を読み込めませんでした"), color = Color.White)
