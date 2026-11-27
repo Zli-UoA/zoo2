@@ -10,12 +10,14 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -98,6 +100,8 @@ internal fun NotificationPage(
             Row(
                 Modifier.fillMaxWidth()
                     .then(if (target != null) Modifier.clickable { viewed(item.id); onOpen(target) } else Modifier)
+                    .background(if (item.unread) colors.suggestionSelected.copy(alpha = .5f)
+                        else Color.Transparent, RoundedCornerShape(8.dp))
                     .padding(vertical = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
@@ -150,11 +154,12 @@ internal fun NotificationPage(
                     }
                     item.detail?.let {
                         // 本文と同じく、このアプリのリンクは短くし、アプリ内で移動する。
-                        EntryBody(it, colors.foreground, entryTextSize, emptyMap(), maxLines = 3)
+                        EntryBody(it, colors.foreground, entryTextSize, emptyMap(), maxLines = 3, mentionColors = colors)
                     }
                     item.destination?.let {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            UiGlyph(if (it.startsWith("#")) UiIcon.Channels else UiIcon.Public, colors.secondary, iconSize = AndroidControlSize.metadataIcon)
+                            UiGlyph(if (it.startsWith("#") && item.kind == "mention") UiIcon.AlternateEmail
+                                else if (it.startsWith("#")) UiIcon.Channels else UiIcon.Public, colors.secondary, iconSize = AndroidControlSize.metadataIcon)
                             Text(it, color = colors.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }

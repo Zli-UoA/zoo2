@@ -1,6 +1,9 @@
 package zoo.android.ui
 
 import androidx.compose.foundation.Image
+import androidx.compose.runtime.staticCompositionLocalOf
+import zoo.Row
+import zoo.text
 import androidx.compose.foundation.text.InlineTextContent
 import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.material3.Text
@@ -67,25 +70,61 @@ internal class EntryChannelLink(val label: String?, val messageIcon: Boolean, va
  * What [formatEntry] draws besides the MFM: custom emoji, search marks, whether links can be opened, and the
  * links into this app (`channelLink` returns `null` for other URLs; `bare` tells that the URL itself was written).
  */
+internal val LocalMentionProfiles = staticCompositionLocalOf<Map<String, Row>> { emptyMap() }
+internal val LocalMentionUsernames = staticCompositionLocalOf<Set<String>> { emptySet() }
+private const val mentionAvatarTag = "mention-avatar"
+private const val renderedMentionTag = "rendered-mention"
+
 private class EntryFormat(
     val emoji: Set<String>, val mark: EntryHighlight?, val links: Boolean,
     val channelLink: ((url: String, bare: Boolean) -> EntryChannelLink?)?,
+    val mentionStyle: SpanStyle?,
+    val allowedMentions: Set<String>?,
+    val mentionProfiles: Map<String, Row>,
+    val mentionUsernames: Set<String>,
 ) {
     /** リンクのラベル用。中の URL は、リンクにせず、短くせず、行き先も取らない。 */
-    fun withoutLinks() = EntryFormat(emoji, mark, links = false, channelLink = null)
+    fun withoutLinks() = EntryFormat(emoji, mark, links = false, channelLink = null, mentionStyle = null, allowedMentions = emptySet(), mentionProfiles = emptyMap(), mentionUsernames = emptySet())
 }
 
 internal fun formatEntry(
     body: String, emoji: Set<String> = emptySet(), highlight: EntryHighlight? = null, links: Boolean = true,
+    mentionStyle: SpanStyle? = null, allowedMentions: Set<String>? = null,
+    mentionProfiles: Map<String, Row> = emptyMap(),
+    mentionUsernames: Set<String> = emptySet(),
     channelLink: ((url: String, bare: Boolean) -> EntryChannelLink?)? = null,
 ) = buildAnnotatedString {
-    val format = EntryFormat(emoji, highlight?.takeIf { it.terms.isNotEmpty() }, links, channelLink)
+    val format = EntryFormat(emoji, highlight?.takeIf { it.terms.isNotEmpty() }, links, channelLink, mentionStyle, allowedMentions, mentionProfiles, mentionUsernames)
     messageHeadingBlocks(body).forEachIndexed { index, block ->
         if (index > 0) append('\n')
         val level = block.level
         if (level == null) appendBlocks(block.content, format)
         else withStyle(SpanStyle(fontSize = (1.55f - (level - 1) * .09f).em,
             fontWeight = AndroidWeights.emphasis)) { appendMfm(block.content, format) }
+    }
+}
+
+private fun entryEmojiCodes(formatted: AnnotatedString): List<String> =
+    formatted.getStringAnnotations(emojiTag, 0, formatted.length).map { it.item }.distinct().take(32)
+
+internal fun containsRenderedEmoji(body: String, known: Set<String>, candidates: Set<String>): Boolean {
+    val formatted = formatEntry(body, known + candidates)
+    return entryEmojiCodes(formatted).any { it in candidates }
+}
+
+internal fun bodyMentionsUser(
+    body: String,
+    username: String,
+    usernames: Set<String>,
+    allowedMentions: Set<String>?,
+    emoji: Set<String>,
+): Boolean {
+    if ('@' !in body) return false
+    val targets = setOf(username, "channel", "here")
+    if (allowedMentions != null && targets.none { it in allowedMentions }) return false
+    val formatted = formatEntry(body, emoji = emoji, allowedMentions = allowedMentions, mentionUsernames = usernames)
+    return formatted.getStringAnnotations(renderedMentionTag, 0, formatted.length).any {
+        zoo.isAllowedMention(it.item, targets)
     }
 }
 
@@ -141,7 +180,7 @@ private fun AnnotatedString.Builder.appendMfm(body: String, format: EntryFormat,
         append(body)
         return
     }
-    parseInline(body).forEach { token ->
+    parseInline(body, format.emoji).forEach { token ->
         val value = token.value
         when (token.kind) {
             "bold" -> withStyle(SpanStyle(fontWeight = AndroidWeights.emphasis)) { appendMfm(value, format, depth + 1) }
@@ -172,12 +211,9 @@ private fun AnnotatedString.Builder.appendMfm(body: String, format: EntryFormat,
                             }
                             append(short)
                         } else {
-                            // A label may contain formatting. Strip its link annotations to avoid nested links.
-                            val label = buildAnnotatedString {
-                                if (value == token.url) appendHighlighted(value, format.mark)
-                                else appendMfm(value, format.withoutLinks(), depth + 1)
-                            }
-                            append(AnnotatedString(label.text, label.spanStyles))
+                            // Keep inline emoji annotations while suppressing links inside the label.
+                            if (value == token.url) appendHighlighted(value, format.mark)
+                            else appendMfm(value, format.withoutLinks(), depth + 1)
                         }
                     }
                 }
@@ -189,7 +225,33 @@ private fun AnnotatedString.Builder.appendMfm(body: String, format: EntryFormat,
                     pop()
                 } else append(value)
             }
-            "mention", "hashtag" -> withStyle(SpanStyle(fontWeight = AndroidWeights.emphasis)) { append(value) }
+            "mention" -> {
+                val allowed = format.allowedMentions
+                val rawName = value.removePrefix("@")
+                val exact = rawName in format.mentionProfiles || rawName in format.mentionUsernames || allowed?.contains(rawName) == true
+                val username = zoo.resolvedMentionName(rawName, exact)
+                val mention = "@$username"
+                if (username.isEmpty() || allowed != null && !zoo.isAllowedMention(username, allowed)) append(mention)
+                else {
+                    pushStringAnnotation(renderedMentionTag, username)
+                    withStyle(format.mentionStyle ?: SpanStyle(fontWeight = AndroidWeights.emphasis)) {
+                        val profile = format.mentionProfiles[username]
+                            ?.takeUnless { username.equals("channel", true) || username.equals("here", true) }
+                        if (profile == null) append(mention)
+                        else {
+                            val label = profile.text("display_name").ifEmpty { username }
+                            append('@')
+                            pushStringAnnotation(mentionAvatarTag, username)
+                            appendInlineContent("$mentionAvatarTag:$username", username)
+                            pop()
+                            append(" $label")
+                        }
+                    }
+                    pop()
+                }
+                append(rawName.drop(username.length))
+            }
+            "hashtag" -> withStyle(SpanStyle(fontWeight = AndroidWeights.emphasis)) { append(value) }
             else -> appendHighlighted(value, format.mark)
         }
     }
@@ -208,7 +270,7 @@ private fun AnnotatedString.Builder.appendEffect(source: String, format: EntryFo
             else -> null
         })
         "ruby" -> {
-            val ruby = mfmRuby(effect.body)
+            val ruby = mfmRuby(effect.body, format.emoji)
             appendMfm(ruby.base, format, depth + 1)
             if (ruby.reading.isNotBlank()) withStyle(SpanStyle(fontSize = .7.em)) { append("（${ruby.reading}）") }
             return
@@ -289,17 +351,21 @@ internal fun EntryBody(
     highlight: EntryHighlight? = null, lineHeight: TextUnit = TextUnit.Unspecified, links: Boolean = true,
     /** アプリ内リンクを短くして、行き先を取るか。 */
     appLinks: Boolean = true,
+    mentionColors: AndroidColors? = null, allowedMentions: Set<String>? = null,
 ) {
     val loader = LocalTimelineImage.current
     val cached = LocalCachedTimelineImage.current
+    val mentionProfiles = if (mentionColors == null) emptyMap() else LocalMentionProfiles.current
+    val mentionUsernames = if (mentionColors == null) emptySet() else LocalMentionUsernames.current
     val channelLinks = entryChannelLinks(body, links && appLinks)
-    val formatted = remember(body, emoji, highlight, links, channelLinks) {
+    val formatted = remember(body, emoji, highlight, links, channelLinks, mentionColors, allowedMentions, mentionProfiles, mentionUsernames) {
         val lookup: ((String, Boolean) -> EntryChannelLink?)? =
             channelLinks?.let { found -> { url: String, _: Boolean -> found[url] } }
-        formatEntry(body, emoji.keys, highlight, links, lookup)
+        formatEntry(body, emoji.keys, highlight, links, mentionColors?.mentionStyle(),
+            allowedMentions, mentionProfiles, mentionUsernames, channelLink = lookup)
     }
     val codes = remember(formatted) {
-        formatted.getStringAnnotations(emojiTag, 0, formatted.length).map { it.item }.distinct().take(32)
+        entryEmojiCodes(formatted)
     }
     val images = remember(codes, emoji, loader, cached) {
         mutableStateMapOf<String, ImageBitmap>().apply {
@@ -322,6 +388,22 @@ internal fun EntryBody(
     } + (channelLinkIconId to InlineTextContent(Placeholder(1.em, 1.em, PlaceholderVerticalAlign.TextCenter)) {
         UiGlyph(UiIcon.Bubble, color, iconSize)
     })
-    Text(formatted, color = color, fontSize = fontSize, lineHeight = lineHeight, inlineContent = inline, maxLines = maxLines,
+    val mentionAvatars = if (mentionColors == null) emptyMap() else {
+        formatted.getStringAnnotations(mentionAvatarTag, 0, formatted.length).associate { annotation ->
+            val username = annotation.item
+            val profile = mentionProfiles.getValue(username)
+            "$mentionAvatarTag:$username" to InlineTextContent(
+                Placeholder(1.15.em, 1.15.em, PlaceholderVerticalAlign.TextCenter)
+            ) {
+                TimelineAvatar(profile.text("display_name").ifEmpty { username },
+                    profile.text("avatar_url").ifEmpty { null }, mentionColors, iconSize * 1.15f)
+            }
+        }
+    }
+    Text(formatted, color = color, fontSize = fontSize, lineHeight = lineHeight, inlineContent = inline + mentionAvatars, maxLines = maxLines,
         overflow = TextOverflow.Ellipsis)
 }
+
+internal fun AndroidColors.mentionStyle() = SpanStyle(
+    color = mentionText, background = mentionSurface, fontWeight = AndroidWeights.label,
+)

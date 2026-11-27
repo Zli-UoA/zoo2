@@ -7,7 +7,7 @@ import { useId, useMemo, useState, type ChangeEvent, type KeyboardEvent } from "
 import { canKickChannelMember } from "../../hooks/channelPermissions";
 import { useChannelAdmin } from "../../hooks/useChannelAdmin";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
-import { useChannelMembers, useUsers, useWorkspaceAdminIds } from "../../hooks/useRealtime";
+import { useChannelMembers, useAllUsers, useWorkspaceAdminIds } from "../../hooks/useRealtime";
 import { useUnreadableMembers } from "../../hooks/useUnreadableMembers";
 import { useWriteRunner } from "../../hooks/useWriteRunner";
 import { useCollections } from "../../lib/electric/collections-context";
@@ -84,7 +84,7 @@ function ChannelMembersContent({ channel }: { channel: ChannelRow }) {
   const membersQuery = useChannelMembers(channel.id);
   // 暗号化チャンネルで、新しいメッセージを読めないメンバー（暗号化を設定していない、端末がない）。
   const unreadable = useUnreadableMembers(channel);
-  const usersQuery = useUsers();
+  const usersQuery = useAllUsers();
   const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
   const { error, setError, run } = useWriteRunner();
   const admin = useChannelAdmin(channel);

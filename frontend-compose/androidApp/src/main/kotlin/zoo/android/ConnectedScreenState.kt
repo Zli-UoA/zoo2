@@ -251,8 +251,19 @@ internal class ConnectedScreenState(
         enabled = true
     }
 
-    private val workspaceReactionIndex by derivedStateOf {
-        workspaceReactionImages(app.config.apiBaseUrl, app.workspaceEmojis)
+    var linkEmojiDemandCount by mutableIntStateOf(0)
+        private set
+
+    var linkEmojiDemandVersion by mutableLongStateOf(0L)
+        private set
+
+    fun setLinkEmojiDemand(active: Boolean) {
+        linkEmojiDemandCount += if (active) 1 else -1
+        if (active) linkEmojiDemandVersion++
+    }
+
+    val workspaceEmojiIndex by derivedStateOf {
+        workspaceEmojiImages(app.config.apiBaseUrl, app.workspaceEmojis)
     }
 
     fun entry(
@@ -276,10 +287,11 @@ internal class ConnectedScreenState(
                 uri, original.text("id").takeIf { it.isNotBlank() && !original.flag("remote") },
                 original.text("display_name").ifBlank { original.text("user_name") },
                 original.text("content"), distinctTimelineMedia(original.array("media").rows().mapNotNull(::postMedia)),
-                displayEmoji(original, original, isPost = true),
+                displayEmoji(original, original, original.text("content"), isPost = true),
                 avatar = timelineAvatarUrl(app.config.apiBaseUrl, original, users[original.text("user_id")]),
                 postAuthor = postAuthor(original),
                 local = quoteRow.flag("local"),
+                remotePostAvailable = original.flag("remote") && original.text("id").isNotBlank(),
             )
         }
         val body = data.text("content").let { content ->
@@ -289,11 +301,13 @@ internal class ConnectedScreenState(
         }
         val richContent = if (!isPost && !data.present("ciphertext")) messageRichContent(data) else EntryRichContent()
         val metadata = display.ifEmpty { data }
-        val emoji = if (allowPreview && !data.present("ciphertext")) displayEmoji(data, metadata, isPost) else emptyMap()
+        val emojiBodies = richContent.blocks.asSequence().flatMap { it.displayedText() }.toList()
+        val visibleBody = if (richContent.hidesBody) "" else body
+        val emoji = if (allowPreview && !data.present("ciphertext")) displayEmoji(data, metadata, visibleBody, isPost, emojiBodies) else emptyMap()
         val reactionEmoji = if (allowPreview && !data.present("ciphertext")) {
             val values = if (isPost) metadata.array("reactions").rows().map { it.text("reaction") }
             else reactions.map { it.text("emoji") }
-            values.associateWith { emoji[it]?.url ?: workspaceReactionIndex[it] }
+            values.associateWith { emoji[it]?.url ?: workspaceEmojiIndex[it] }
         } else emptyMap()
         val badges = if (isPost) metadata.array("reactions").rows().map {
             val value = it.text("reaction")
@@ -304,11 +318,13 @@ internal class ConnectedScreenState(
                 canToggle = timelineReactionCanToggle(value, it.flag("selected"), it.text("can_react") != "false", post = true))
         } else reactions.groupBy { it.text("emoji") }.map { (value, rows) ->
             val (label, image) = timelineReactionEmoji(app.config.apiBaseUrl, value, reactionEmoji)
-            val account = value.takeIf { it.startsWith(":@") && it.endsWith(':') }
-                ?.removePrefix(":@")?.removeSuffix(":")
-                ?.let { username -> users.values.firstOrNull { it.text("user_name") == username } }
+            val accountName = accountEmojiName(value)
+            val reactionImage = if (accountName == null) image else {
+                val account = users.values.firstOrNull { it.text("user_name") == accountName }
+                account?.let { timelineAvatarUrl(app.config.apiBaseUrl, it) }
+            }
             TimelineReaction(value, label, rows.size.toString(), rows.any { it.text("user_id") == app.config.userId },
-                image ?: account?.let { timelineAvatarUrl(app.config.apiBaseUrl, it) }, canToggle = timelineReactionCanToggle(value, selected = false, canReact = true, post = false))
+                reactionImage, canToggle = timelineReactionCanToggle(value, selected = false, canReact = true, post = false))
         }
         val fileRows = (attachments + metadata.array("attachments").rows()).distinctBy { it.text("id") }
         val attachmentMedia = if (allowPreview && !data.present("ciphertext")) fileRows.mapNotNull(::timelineAttachmentMedia)
@@ -346,6 +362,12 @@ internal class ConnectedScreenState(
             canRepost = isPost && data.text("visibility") in setOf("public", "local", "unlisted"),
             reposted = metadata.flag("reposted"), reactions = badges, attachments = files, link = url,
             richContent = richContent, channelLinks = links.channels.map { it.first },
+            needsWorkspaceEmoji = allowPreview && !data.present("ciphertext") && (
+                ((!isPost || !data.flag("remote")) && (
+                    hasMissingWorkspaceEmoji(visibleBody, emoji) || emojiBodies.any { hasMissingWorkspaceEmoji(it, emoji) } ||
+                        badges.any { it.image == null && isWorkspaceEmojiCandidate(it.value) }
+                )) || (quote != null && !original.flag("remote") && hasMissingWorkspaceEmoji(quote.body, quote.emoji))
+            ),
             emoji = emoji, attachedImageUrls = mediaUrls, avatar = timelineAvatarUrl(app.config.apiBaseUrl, data, users[data.text("user_id")]),
             entryKey = HomeTimeline.key(row).ifBlank { id }, media = media, postHeader = postHeader, quote = quote,
             postAuthor = if (isPost) postAuthor(data, name) else null,
@@ -372,22 +394,10 @@ internal class ConnectedScreenState(
             formatted = false, summaly = true)
     }
 
-    private fun displayEmoji(data: Row, metadata: Row, isPost: Boolean): Map<String, TimelineMedia> {
-        val inline = if (isPost) data.array("emojis").rows().map { it.text("name") to it }
-        else metadata.nested("emojis").ifEmpty { data.nested("display_data").nested("emojis") }
-            .mapNotNull { (name, value) -> (value as? JsonObject)?.let { name to it } }
-        return buildMap {
-            for ((name, emoji) in inline.take(256)) {
-                val safe = if (isPost) timelineEmojiUrl(app.config.apiBaseUrl, emoji)
-                else timelineImageUrl(app.config.apiBaseUrl, emoji.text("url"))
-                if (safe == null || name.isBlank()) continue
-                val media = TimelineMedia(safe, name, TimelineMediaKind.Image, url = safe, previewUrl = safe)
-                put(":${name.trim(':')}:", media)
-                emoji.array("aliases").take(32).mapNotNull { (it as? JsonPrimitive)?.content }
-                    .forEach { put(":${it.trim(':')}:", media) }
-            }
-        }
-    }
+    private fun displayEmoji(
+        data: Row, metadata: Row, body: String, isPost: Boolean, displayedBlocks: List<String> = emptyList(),
+    ): Map<String, TimelineMedia> =
+        timelineBodyEmojis(app.config.apiBaseUrl, data, metadata, body, isPost, workspaceEmojiIndex, displayedBlocks)
 
     private fun postMedia(row: Row): TimelineMedia? = timelinePostMedia(app.config.apiBaseUrl, row)
 
@@ -679,15 +689,19 @@ internal class ConnectedScreenState(
     fun input(key: String, canPost: Boolean, people: List<Row> = emptyList()): InputState {
         val draft = drafts[key] ?: InputState()
         val files = channelFiles[key]
-        val position = (draft.selection?.end ?: draft.text.length).coerceIn(0, draft.text.length)
-        val mention = Regex("(?:^|\\s)@([^\\s@]*)$").find(draft.text.take(position))?.groupValues?.get(1)
+        val mention = mentionRange(draft)
         return draft.copy(
-            mentions = if (mention == null) emptyList() else people.asSequence().map { it.text("user_name") }
-                .filter { it.isNotBlank() && it.startsWith(mention, ignoreCase = true) }.distinct().take(5).toList(),
+            mentions = zoo.completionOptions(mention, people, people.map { it.text("id") }.toSet()),
             canSend = canPost && !saving && (files == null || files.canSend(draft.text)),
             hasAttachments = files?.items?.isNotEmpty() == true,
             files = files?.items?.map { it.file.text("id") to it.name }.orEmpty(),
         )
+    }
+
+    private fun mentionRange(draft: InputState): zoo.CompletionRange? {
+        val selection = draft.selection
+        if (selection != null && !selection.collapsed) return null
+        return zoo.completionAt(draft.text, selection?.end ?: draft.text.length)?.takeIf { it.kind == "mention" }
     }
 
     suspend fun refreshPins() {
@@ -716,13 +730,17 @@ internal class ConnectedScreenState(
 
     fun channelSections(channels: List<Row>, users: Map<String, Row>, members: List<Row>): List<ChannelSection> {
         val joined = members.filter { it.text("user_id") == app.config.userId }.map { it.text("channel_id") }.toSet()
-        val active = visibleChannels(channels).filter { it.text("id") in joined && !it.present("archive_at") }
+        val active = channels.filter {
+            it.text("id") in joined && !it.present("deleted_at") && !it.present("archive_at")
+        }.sortedWith { left, right ->
+            compareLocaleText(left.text("channel_name"), right.text("channel_name"), app.env.locale)
+        }
         fun item(row: Row): ChannelItem {
             val id = row.text("id")
             val peers = members.filter { it.text("channel_id") == id && it.text("user_id") != app.config.userId }
             val userName = peers.singleOrNull()?.let { users[it.text("user_id")] }?.let(::author)
                 ?.takeIf { row.flag("is_dm") && it.isNotBlank() }
-            return ChannelItem(id, userName ?: row.text("channel_name"), id in app.unread, userName != null)
+            return ChannelItem(id, userName ?: row.text("channel_name"), app.channelReadPositions[id]?.hasUnread == true, userName != null)
         }
         val activeById = active.associateBy { it.text("id") }
         val unpinned = active.filterNot { it.text("id") in pins }
@@ -771,18 +789,21 @@ internal class ConnectedScreenState(
                 }
                 val createdAt = row.text("created_at")
                 val day = platform.day(createdAt).let { if (it.substringBefore('/') == year) it.substringAfter('/') else it }
+                // Like Web, keep the first hit within the three lines of a narrow screen.
+                val body = if (file) row.text("file_name") else focusSnippet(row.text("snippet"), searchTerms(search.query))
+                val emoji = if (file) emptyMap() else displayEmoji(row, row, body, isPost = false)
                 SearchResultItem(
                     key = globalSearchKey(row, search.type),
                     author = author(user).ifBlank { row.text("user_id") },
-                    // Like Web, keep the first hit within the three lines of a narrow screen.
-                    body = if (file) row.text("file_name") else focusSnippet(row.text("snippet"), searchTerms(search.query)),
+                    body = body,
                     time = listOf(day, platform.time(createdAt)).filter { it.isNotBlank() }.joinToString(" "),
                     destination = searchDestination(row, channel, users, members),
                     dm = isDm(row, channel),
                     inThread = row.text("parent_id").isNotEmpty(),
                     file = file,
                     fileSize = if (file) attachmentSize(row.text("file_size")) else null,
-                    emoji = if (file) emptyMap() else displayEmoji(row, row, isPost = false),
+                    emoji = emoji,
+                    needsWorkspaceEmoji = !file && hasMissingWorkspaceEmoji(body, emoji),
                     avatar = timelineAvatarUrl(app.config.apiBaseUrl, user, searchAuthor),
                     media = if (file) searchImage(row, channel) else null,
                     linkCard = link?.let { summalyCard(previewService, it) },
@@ -1056,12 +1077,9 @@ internal class ConnectedScreenState(
             }
             is AndroidUiAction.Mention -> {
                 val draft = drafts[draftKey] ?: InputState()
-                val end = (draft.selection?.end ?: draft.text.length).coerceIn(0, draft.text.length)
-                val target = draft.text.take(end).lastIndexOf('@')
-                if (target >= 0) {
-                    val mention = "@${action.name} "
-                    val text = draft.text.replaceRange(target, end, mention)
-                    drafts[draftKey] = draft.copy(text = text, selection = TextRange(target + mention.length))
+                mentionRange(draft)?.let { range ->
+                    val (text, caret) = zoo.insertCompletion(draft.text, range, action.name)
+                    drafts[draftKey] = draft.copy(text = text, selection = TextRange(caret))
                 }
             }
             AndroidUiAction.RetryNotifications -> app.activityPubNotifications.refresh()
@@ -1328,7 +1346,8 @@ internal class ConnectedScreenState(
                             val id = action.item.id.encodeURLParameter()
                             if (!post && app.isEncryptedChannel(channelId)) {
                                 val encryption = platform.messageEncryption ?: error("Encryption unavailable")
-                                encryption.edit(requireNotNull(row), editDraft)
+                                val names = app.repo.users.rows.value.map { it.text("id") to it.text("user_name") }
+                                encryption.edit(requireNotNull(row), editDraft, zoo.encryptedMentions(editDraft, names))
                             } else {
                                 if (!post) {
                                     app.requirePlaintextChannel(channelId)
