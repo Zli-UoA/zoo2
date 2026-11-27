@@ -28,7 +28,8 @@ export function englishCopyKeys(
 }
 
 export function translationVariables(value: string): string[] | null {
-  const interpolation = /{{\s*-?\s*([\w.]+)(?:\s*,[^{}]+)?\s*}}/g;
+  // Android substitutes the exact {{name}} token in shared dictionaries.
+  const interpolation = /{{(\w+)}}/g;
   if (/{{|}}/.test(value.replace(interpolation, ""))) return null;
   return [...new Set([...value.matchAll(interpolation)].map(([, name]) => name!))].sort();
 }

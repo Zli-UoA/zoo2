@@ -236,7 +236,7 @@ test('ordinary web source and test edits do not select the broad Playwright or c
 
 test('translation edits retain broader checks when keys or interpolation variables change', () => {
   const before = '{"setting":"{{count}} items"}';
-  assert.equal(translationOnlyChange(before, '{"setting":"Items: {{ count }}","added":"New"}', 'en.json'), true);
+  assert.equal(translationOnlyChange(before, '{"setting":"Items: {{count}}","added":"New"}', 'en.json'), true);
   assert.equal(translationOnlyChange(before, '{"setting":"{{total}} items"}', 'en.json'), false);
   assert.equal(translationOnlyChange(before, '{}', 'en.json'), false);
   assert.throws(() => translationOnlyChange(before, '{"setting":"{{count"}', 'en.json'), /invalid interpolation/);
@@ -315,7 +315,8 @@ test('lightweight translations reject missing keys, changed placeholders, and em
   for (const en of ['{}', '{"label":""}', '{"label":"{{total}} items"}', '{"label":"{{count}} items","other":"Extra"}']) {
     assert.throws(() => validateTranslationDictionaries({ ...reference, 'en.json': en }));
   }
-  assert.doesNotThrow(() => validateTranslationDictionaries({ ...reference, 'en.json': '{"label":"{{ count }} items"}' }));
+  assert.throws(() => validateTranslationDictionaries({ ...reference, 'en.json': '{"label":"{{ count }} items"}' }), /invalid interpolation/);
+  assert.doesNotThrow(() => validateTranslationDictionaries({ ...reference, 'en.json': '{"label":"{{count}} items"}' }));
 });
 
 test('lightweight translations use the same English-copy exceptions as the app tests', () => {
