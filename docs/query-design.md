@@ -113,11 +113,12 @@ Home検証の条件・結果・再実行方法は [home-performance.md](home-per
 再現コマンド。移行済みの使い捨て DB で、対象チャンネルの `channel_user` 行数 `M` を30万と100万に変えてそれぞれ実行する（`M` の作り方は `backend/tests/thread_participants_scale_test.rs` の fixture を参照）。既存のスケール用 DB を流用するときは、対象チャンネルの割合が高すぎて Seq Scan に切り替わらないことと、`idx_channel_user_channel_id` が存在することを確かめる。索引のない DB や割合の偏った DB の値は、上の設計の検証には使えない。`:'recipients'` は (2) ではユーザーIDの配列、(3) では通知行オブジェクトの配列を渡す。
 
 ```sh
-psql "$DATABASE_URL" -v channel_id='<対象チャンネルID>' -v recipients='[...]' <<'SQL'
+-- recipients はユーザーIDのJSON配列、rows は通知行オブジェクトのJSON配列を渡す。
+psql "$DATABASE_URL" -v channel_id='<対象チャンネルID>' -v recipients='[...]' -v rows='[...]' <<'SQL'
 \timing on
--- (1) ChannelUser::filter(channel_id)
+-- (1) ChannelUser::filter(channel_id)。channel_user に id 列は無い。
 EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
-SELECT id, user_id, channel_id, notification_level
+SELECT user_id, channel_id, joined_at, notification_level
 FROM channel_user WHERE channel_id = :'channel_id';
 
 -- (2) 一括除外: users を id IN (...) で1回だけ引く
@@ -132,7 +133,7 @@ EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
 INSERT INTO channel_notifications(id,user_id,actor_id,channel_id,message_id,notification_type,is_read,created_at)
 SELECT e->>'id', e->>'user_id', e->>'actor_id', e->>'channel_id', e->>'message_id',
        e->>'notification_type', (e->>'is_read')::boolean, (e->>'created_at')::timestamp
-FROM jsonb_array_elements(:'recipients'::jsonb) AS e;
+FROM jsonb_array_elements(:'rows'::jsonb) AS e;
 ROLLBACK;
 SQL
 ```

@@ -3,6 +3,7 @@
 use std::{
     collections::{HashMap, HashSet},
     future::Future,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -289,6 +290,8 @@ pub struct App {
     notification_level_pending: HashMap<String, NotificationLevel>,
     /// チャンネルごとに最後に選んだ通知レベル。Shape が古くてもこの値から次を計算する。
     notification_level_selected: HashMap<String, NotificationLevel>,
+    /// 同じチャンネルへの PATCH を入力順に直列化するロック。別チャンネルは互いにブロックしない。
+    notification_level_locks: HashMap<String, Arc<tokio::sync::Mutex<()>>>,
     /// チャンネルごとに既読を送った最新メッセージ。同じ位置を何度も送らない。
     marked_read: HashMap<String, String>,
     /// 開いているチャンネルで入力中のユーザー。キーはスレッドの親 (None はタイムライン)。
@@ -389,6 +392,7 @@ impl App {
             pin_version: 0,
             notification_level_pending: HashMap::new(),
             notification_level_selected: HashMap::new(),
+            notification_level_locks: HashMap::new(),
             marked_read: HashMap::new(),
             typing: HashMap::new(),
             typing_session: uuid::Uuid::new_v4().to_string(),
@@ -2605,12 +2609,20 @@ impl App {
         let next = Self::next_notification_level(previous);
         let api = self.api.clone();
         let tx = self.app_tx.clone();
+        // 連打しても入力順に PATCH が届くよう、チャンネルごとにロックを取ってから送る。
+        // ロックの取得はタスクの中で行い、キー操作を待たせない（Mutex は待ち順が公平）。
+        let lock = self
+            .notification_level_locks
+            .entry(channel_id.clone())
+            .or_default()
+            .clone();
         let label = format!("通知を {} にしました", Self::notification_level_label(next));
         self.notification_level_pending
             .insert(channel_id.clone(), next);
         self.notification_level_selected
             .insert(channel_id.clone(), next);
         self.spawn_api("通知設定の変更", async move {
+            let _guard = lock.lock().await;
             let result = api.set_channel_notification_level(&channel_id, next).await;
             let succeeded = result.is_ok();
             let _ = tx.send(AppEvent::NotificationLevelFinished {
@@ -3215,28 +3227,36 @@ mod tests {
         ));
     }
 
+    /// 今までに届いた PATCH の本文に書かれた level を、送られた順に返す。
+    async fn received_notification_level_requests(
+        server: &wiremock::MockServer,
+        channel_id: &str,
+    ) -> Vec<String> {
+        let path = format!("/api/channels/{channel_id}/notification-settings");
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| {
+                request.method == wiremock::http::Method::PATCH
+                    && request.url.path() == path.as_str()
+            })
+            .map(|request| {
+                let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+                body["level"].as_str().unwrap().to_owned()
+            })
+            .collect()
+    }
+
     /// PATCH の本文に書かれた level を、送られた順に返す。
     async fn notification_level_requests(
         server: &wiremock::MockServer,
         channel_id: &str,
         count: usize,
     ) -> Vec<String> {
-        let path = format!("/api/channels/{channel_id}/notification-settings");
         for _ in 0..100 {
-            let levels: Vec<String> = server
-                .received_requests()
-                .await
-                .unwrap()
-                .iter()
-                .filter(|request| {
-                    request.method == wiremock::http::Method::PATCH
-                        && request.url.path() == path.as_str()
-                })
-                .map(|request| {
-                    let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
-                    body["level"].as_str().unwrap().to_owned()
-                })
-                .collect();
+            let levels = received_notification_level_requests(server, channel_id).await;
             if levels.len() >= count {
                 return levels;
             }
@@ -3283,6 +3303,124 @@ mod tests {
         assert_eq!(
             notification_level_requests(&server, "c1", 3).await,
             ["mentions", "mute", "all"]
+        );
+    }
+
+    #[tokio::test]
+    async fn notification_level_burst_is_serialized_in_input_order() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{body_json, method, path},
+        };
+        let server = MockServer::start().await;
+        // 最初の PATCH の応答を遅らせる。直列化されていれば、そのあいだに次の PATCH は届かない。
+        Mock::given(method("PATCH"))
+            .and(path("/api/channels/c1/notification-settings"))
+            .and(body_json(serde_json::json!({ "level": "mentions" })))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(400))
+                    .set_body_json(serde_json::json!({
+                        "data": { "level": "mentions" },
+                        "txid": "7",
+                    })),
+            )
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        for level in ["mute", "all"] {
+            Mock::given(method("PATCH"))
+                .and(path("/api/channels/c1/notification-settings"))
+                .and(body_json(serde_json::json!({ "level": level })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "data": { "level": level },
+                    "txid": "7",
+                })))
+                .up_to_n_times(1)
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let (mut app, _rx) = api_test_app(&server.uri());
+        set_notification_level(&mut app, "c1", NotificationLevel::All);
+        app.current = Some("c1".into());
+        app.cycle_notification_level();
+        assert_eq!(
+            notification_level_requests(&server, "c1", 1).await,
+            ["mentions"]
+        );
+        // Shape を待たずに続けて選ぶ。
+        app.cycle_notification_level();
+        app.cycle_notification_level();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            received_notification_level_requests(&server, "c1").await,
+            ["mentions"]
+        );
+        assert_eq!(
+            notification_level_requests(&server, "c1", 3).await,
+            ["mentions", "mute", "all"]
+        );
+        assert_eq!(
+            app.notification_level_selected.get("c1"),
+            Some(&NotificationLevel::All)
+        );
+    }
+
+    #[tokio::test]
+    async fn notification_level_other_channels_are_not_blocked() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{body_json, method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/channels/c1/notification-settings"))
+            .and(body_json(serde_json::json!({ "level": "mentions" })))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(400))
+                    .set_body_json(serde_json::json!({
+                        "data": { "level": "mentions" },
+                        "txid": "7",
+                    })),
+            )
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/channels/c2/notification-settings"))
+            .and(body_json(serde_json::json!({ "level": "mentions" })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "level": "mentions" },
+                "txid": "7",
+            })))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (mut app, _rx) = api_test_app(&server.uri());
+        set_notification_level(&mut app, "c1", NotificationLevel::All);
+        set_notification_level(&mut app, "c2", NotificationLevel::All);
+        app.current = Some("c1".into());
+        app.cycle_notification_level();
+        assert_eq!(
+            notification_level_requests(&server, "c1", 1).await,
+            ["mentions"]
+        );
+        // c1 の応答を待つあいだも、別チャンネルの操作は進む。
+        app.current = Some("c2".into());
+        app.cycle_notification_level();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            received_notification_level_requests(&server, "c2").await,
+            ["mentions"]
+        );
+        assert_eq!(
+            notification_level_requests(&server, "c1", 1).await,
+            ["mentions"]
         );
     }
 

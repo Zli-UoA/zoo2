@@ -10,9 +10,9 @@ use leptos::{ev, html, prelude::*, task::spawn_local};
 use zoo2_client_types::{
     api::NotificationLevel,
     ipc::{
-        ChannelNotificationSettings, ChannelNotificationSettingsRequest, FocusState, IpcError,
-        LoginFailed, LoginPrompt, OpenChannel, OpenTarget, SendMessage, SendResult, SessionInfo,
-        SessionState, SetChannelNotificationLevel, ShapeBatch, ShapeFailed, UiMode, command, event,
+        ChannelNotificationSettings, FocusState, IpcError, LoginFailed, LoginPrompt, OpenChannel,
+        OpenTarget, SendMessage, SendResult, SessionInfo, SessionState,
+        SetChannelNotificationLevel, ShapeBatch, ShapeFailed, UiMode, command, event,
     },
     mfm::{self, Tone},
     rows::Message,
@@ -527,89 +527,57 @@ fn ChannelList() -> impl IntoView {
 
 /// 選択中のチャンネルの通知レベル。現在値と 3 段階の選択を出し、変更は IPC で保存する。
 ///
-/// 選択値と同値判定は本人用 Shape (`channel_notification_settings`) の行から読む。Android 等で
-/// 変えた値も `ctx.store` に届くので、コマンドの応答を待たずに表示が更新される。取得・保存は
-/// 開始ごとに世代を進め、古い応答が遅れて届いても現在の表示を壊さないようにする。
+/// 現在値と同値判定は本人用 Shape (`channel_notification_settings`) の行から読む。Android 等で
+/// 変えた値も `ctx.store` に届くので、コマンドの応答を待たずに表示が更新される。行が届くまでは
+/// 読み込み中として選択を止める（ストア既定の `mentions` を現在値として扱うと、実際が `mute` の
+/// ときに同値判定で PATCH が送られない）。保存とチャンネルの切り替えごとに世代を進め、古い応答が
+/// 遅れて届いても現在の表示を壊さないようにする。
 #[component]
 fn ChannelNotificationSettings() -> impl IntoView {
     let ctx = expect_context::<Ctx>();
     let generation = RwSignal::new(0u64);
-    let loading = RwSignal::new(false);
-    let failed = RwSignal::new(false);
     let saving = RwSignal::new(false);
 
-    // 選択値はストアの設定行から読む。Shape の更新でリアクティブに再描画される。
-    // 行がまだ届いていなければ既定の `mentions` になる (Web 版と同じ)。
-    let level = Signal::derive(move || {
+    // 選択値と同値判定はストアの設定行から読む。Shape の更新でリアクティブに再描画される。
+    // 行がまだ届いていなければ `None` なので、読み込み中として全選択肢を止める。
+    let setting = Signal::derive(move || {
         let Some(channel_id) = ctx.channel.get() else {
-            return NotificationLevel::default();
+            return None;
         };
         let Some(me) = ctx.me() else {
-            return NotificationLevel::default();
+            return None;
         };
-        ctx.store
-            .with(|store| store.notification_level(&channel_id, &me.id))
+        ctx.store.with(|store| {
+            store
+                .notification_setting(&channel_id, &me.id)
+                .map(|_| store.notification_level(&channel_id, &me.id))
+        })
     });
 
-    // 取得・保存の開始ごとに世代を進める。応答が古ければ無視できる。
+    // 保存の開始とチャンネルの切り替えごとに世代を進める。応答が古ければ無視できる。
     let next_generation = move || {
         let current = generation.get_untracked() + 1;
         generation.set(current);
         current
     };
 
-    // 表示中のチャンネルを取得する。応答の値は使わず、成否だけを見る。
-    // (値は Shape がストアに届けるので、取得は読み込み状態と再試行のためだけにある。)
-    let fetch = move || {
-        let current = next_generation();
-        let Some(channel_id) = ctx.channel.get_untracked() else {
-            loading.set(false);
-            failed.set(false);
-            return;
-        };
-        loading.set(true);
-        failed.set(false);
-        spawn_local(async move {
-            let request = ChannelNotificationSettingsRequest { channel_id };
-            let result = tauri::invoke::<ChannelNotificationSettings>(
-                command::CHANNEL_NOTIFICATION_SETTINGS,
-                serde_json::json!({ "request": request }),
-            )
-            .await;
-            // 取得中にチャンネルを替えた・再取得したときは古い応答を捨てる。
-            if generation.get_untracked() != current {
-                return;
-            }
-            loading.set(false);
-            if let Err(err) = result {
-                failed.set(true);
-                ctx.error.set(Some(err.message));
-            }
-        });
-    };
-
-    // チャンネルを切り替えたら前の状態を捨てて取り直す。同じチャンネルの再選択では
-    // ここは走らないので、失敗時は「再試行」から表示中のチャンネルを取得し直す。
+    // チャンネルを切り替えたら前の保存状態を捨て、古い保存の応答を無効化する。
+    // 行の到着は Shape がリアクティブに反映するので、ここで取得はしない。
     Effect::new(move |_| {
         ctx.channel.get();
         saving.set(false);
-        fetch();
+        next_generation();
     });
 
     let save = move |next: NotificationLevel| {
         let Some(channel_id) = ctx.channel.get_untracked() else {
             return;
         };
-        let Some(me) = ctx.me() else {
+        // 同値判定は届いた設定行の値に対して行う。行が無いときは選択自体が無効。
+        let Some(current_level) = setting.get_untracked() else {
             return;
         };
-        // 同値判定もストアの設定行から読む。
-        if saving.get_untracked()
-            || ctx
-                .store
-                .with(|store| store.notification_level(&channel_id, &me.id))
-                == next
-        {
+        if saving.get_untracked() || current_level == next {
             return;
         }
         // TUI と同じく、前の書き込みが終わるまでは次の選択を受け付けない。
@@ -633,7 +601,7 @@ fn ChannelNotificationSettings() -> impl IntoView {
             if let Err(err) = result {
                 ctx.error.set(Some(err.message));
             }
-            // 新しい値は Shape がストアに届けるので、ここでは level を触らない。
+            // 新しい値は Shape がストアに届けるので、ここでは設定行を触らない。
         });
     };
 
@@ -641,6 +609,9 @@ fn ChannelNotificationSettings() -> impl IntoView {
         <Show when=move || ctx.channel.get().is_some()>
             <section class="notification-settings">
                 <div class="b">"通知"</div>
+                <Show when=move || setting.get().is_none()>
+                    <p class="notification-help" role="status">"通知設定を読み込み中…"</p>
+                </Show>
                 <div class="row">
                     {move || {
                         NotificationLevel::ALL
@@ -660,11 +631,11 @@ fn ChannelNotificationSettings() -> impl IntoView {
                                         "通常の通知は届きません。明示的なメンションは届きます。",
                                     ),
                                 };
-                                let selected = move || level.get() == candidate;
+                                let selected = move || setting.get() == Some(candidate);
                                 view! {
                                     <button
                                         class:selected=selected
-                                        disabled=move || saving.get() || loading.get() || failed.get()
+                                        disabled=move || saving.get() || setting.get().is_none()
                                         on:click=move |_| save(candidate)
                                     >
                                         <span class="label">{label}</span>
@@ -676,10 +647,6 @@ fn ChannelNotificationSettings() -> impl IntoView {
                             .collect_view()
                     }}
                 </div>
-                <Show when=move || failed.get()>
-                    <p class="notification-help">"通知設定を取得できませんでした。"</p>
-                    <button type="button" class="retry" on:click=move |_| fetch()>"再試行"</button>
-                </Show>
             </section>
         </Show>
     }
