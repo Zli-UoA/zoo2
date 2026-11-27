@@ -75,7 +75,7 @@ class NotificationInbox(private val session: Session) {
                 id, actors,
                 summary, item.text("content").ifBlank { item.nested("display_data").nested("message").text("content") }
                     .ifBlank { null },
-                session.platform.messageTimestamp(latest.createdAt), unreadIds.isNotEmpty(),
+                session.platform.notificationTime(latest.createdAt), unreadIds.isNotEmpty(),
                 item.text("channel_id").takeIf { !targetUnavailable && it.isNotBlank() && item.text("message_id").isNotBlank() }
                     ?.let { "/channels/$it?message=${item.text("message_id")}" }
                     ?: item.text("post_id").takeIf { it.isNotBlank() }?.let { "post:$it" },

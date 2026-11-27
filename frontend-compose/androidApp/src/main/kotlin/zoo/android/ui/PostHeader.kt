@@ -11,9 +11,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
-import androidx.compose.ui.layout.Layout
-import androidx.compose.ui.unit.Constraints
-import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -53,45 +50,6 @@ internal data class PostHeaderData(
     val serverRgb: Int? = null,
 )
 
-/** Keep the full timestamp and its status icon together, leaving room for the author. */
-@Composable
-internal fun AuthorTimeHeader(
-    time: String,
-    colors: AndroidColors,
-    timeSize: TextUnit = 12.sp,
-    alignTimeToEnd: Boolean = false,
-    keepFullAuthor: Boolean = false,
-    status: (@Composable () -> Unit)? = null,
-    author: @Composable () -> Unit,
-) {
-    Layout(content = {
-        Box { author() }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(time, Modifier.weight(1f, fill = false), color = colors.secondary, fontSize = timeSize)
-            status?.invoke()
-        }
-    }) { (name, metadata), constraints ->
-        val width = constraints.maxWidth
-        val gap = 8.dp.roundToPx()
-        val loose = constraints.copy(minWidth = 0, minHeight = 0)
-        val meta = metadata.measure(loose)
-        val remaining = width - meta.width - gap
-        val stack = (keepFullAuthor || remaining < AndroidControlSize.target.roundToPx()) &&
-            remaining < name.maxIntrinsicWidth(Constraints.Infinity)
-        val label = name.measure(loose.copy(maxWidth = if (stack) width else remaining))
-        val height = if (stack) label.height + meta.height else maxOf(label.height, meta.height)
-        layout(width, height) {
-            label.placeRelative(0, if (stack) 0 else (height - label.height) / 2)
-            val x = when {
-                stack -> 0
-                alignTimeToEnd -> width - meta.width
-                else -> label.width + gap
-            }
-            meta.placeRelative(x, if (stack) label.height else (height - meta.height) / 2)
-        }
-    }
-}
-
 @Composable
 internal fun PostHeader(author: String, data: PostHeaderData, colors: AndroidColors, openProfile: (() -> Unit)? = null) {
     val profileAction = if (openProfile == null) Modifier else Modifier.clickable(
@@ -99,22 +57,23 @@ internal fun PostHeader(author: String, data: PostHeaderData, colors: AndroidCol
         role = Role.Button, onClick = openProfile,
     )
     Column(Modifier.fillMaxWidth().padding(bottom = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        AuthorTimeHeader(data.dateTime, colors, timeSize = 11.sp, alignTimeToEnd = true, status = {
-            data.audience?.let { audience ->
-                val label = if (audience == PostAudience.Followers)
-                    androidLabel("home.visibility.followers", "フォロワー限定") else audience.localizedLabel()
-                Box(Modifier.semantics { contentDescription = label }) {
-                    UiGlyph(audience.icon, colors.secondary, iconSize = AndroidControlSize.metadataIcon)
-                }
-            }
-        }) {
-            Row(profileAction, verticalAlignment = Alignment.CenterVertically,
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.weight(1f).then(profileAction), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(author, Modifier.weight(1f, fill = false), color = colors.foreground,
                     fontSize = entryTextSize, fontWeight = AndroidWeights.entryAuthor, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 data.handle?.let {
                     Text(it, Modifier.widthIn(max = 72.dp), color = colors.secondary,
                         fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            Text(data.dateTime, color = colors.secondary, fontSize = 11.sp, maxLines = 1)
+            data.audience?.let { audience ->
+                val label = if (audience == PostAudience.Followers)
+                    androidLabel("home.visibility.followers", "フォロワー限定") else audience.localizedLabel()
+                Box(Modifier.semantics { contentDescription = label }) {
+                    UiGlyph(audience.icon, colors.secondary, iconSize = AndroidControlSize.metadataIcon)
                 }
             }
         }

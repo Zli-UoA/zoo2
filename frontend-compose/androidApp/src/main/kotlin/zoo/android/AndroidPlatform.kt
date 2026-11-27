@@ -163,7 +163,6 @@ internal class AndroidPlatform(
     }
 
     fun visible(value: Boolean) {
-        if (value) calendar.refreshCalendarDay()
         env = env.copy(visible = value, reducedMotion = reducedMotion())
     }
 
@@ -195,10 +194,6 @@ internal class AndroidPlatform(
         } catch (_: Exception) {
             timestamp
         }
-
-    val calendar = AndroidMessageCalendar()
-
-    override fun messageCalendar() = calendar.value
 
     override fun time(timestamp: String) = format(timestamp, "HH:mm")
 

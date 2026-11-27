@@ -124,9 +124,10 @@ internal fun ChannelLinkCardContent(
                 Text(view.author.take(1), color = colors.secondary, fontSize = 12.sp)
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                AuthorTimeHeader(view.time, colors) {
-                    Text(view.author, color = colors.foreground, fontSize = 14.sp,
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(view.author, Modifier.weight(1f, fill = false), color = colors.foreground, fontSize = 14.sp,
                         fontWeight = AndroidWeights.entryAuthor, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(view.time, color = colors.secondary, fontSize = 12.sp, maxLines = 1)
                 }
                 Text(view.channel, color = colors.secondary, fontSize = 12.sp, maxLines = 1,
                     overflow = TextOverflow.Ellipsis)

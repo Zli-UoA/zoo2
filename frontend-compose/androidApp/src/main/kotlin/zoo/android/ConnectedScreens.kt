@@ -82,10 +82,6 @@ internal fun ConnectedScreens(
         states
     }
     val context = androidx.compose.ui.platform.LocalContext.current.applicationContext
-    DisposableEffect(platform, context) {
-        val stop = platform.calendar.observe(context)
-        onDispose { stop() }
-    }
     val uncategorizedEmoji = session.t("customEmoji.uncategorized")
     val emojiCatalog = remember(context, env.locale, uncategorizedEmoji) {
         AndroidEmojiCatalog(context, env.locale, uncategorizedEmoji)
@@ -118,7 +114,7 @@ internal fun ConnectedScreens(
         }
     }
     LaunchedEffect(state, rows) { state.forgetSearchPreviews(rows) }
-    val messageEntries = remember(ordered, usersById, encrypted, canPost, decryptedEntries, session.workspaceEmojis, env.locale, platform.calendar.value) {
+    val messageEntries = remember(ordered, usersById, encrypted, canPost, decryptedEntries, session.workspaceEmojis, env.locale) {
         ordered.map { row ->
             val decrypted = if (row.present("ciphertext"))
                 decryptedEntries[row] ?: DecryptedBody(notice = "common.loading")

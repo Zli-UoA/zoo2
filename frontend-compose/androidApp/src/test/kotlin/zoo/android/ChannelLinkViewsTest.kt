@@ -86,4 +86,12 @@ class ChannelLinkViewsTest {
         )
         assertNull(body(message.copy(excerpt = "")))
     }
+
+    @Test
+    fun theYearIsShownOnlyForOtherYears() {
+        val day: (String) -> String = { it.substringBefore(' ') }
+        val time: (String) -> String = { it.substringAfter(' ') }
+        assertEquals("11/23 16:30", channelLinkTime("2026/11/23 16:30", "2026/11/26 00:00", day, time))
+        assertEquals("2025/11/23 16:30", channelLinkTime("2025/11/23 16:30", "2026/11/26 00:00", day, time))
+    }
 }

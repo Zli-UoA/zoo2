@@ -849,7 +849,7 @@ private fun FollowHistoryDuringIme(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun Timeline(
     entries: List<TimelineItem>, colors: AndroidColors, modifier: Modifier,
@@ -897,9 +897,9 @@ private fun Timeline(
                             Column(Modifier.weight(1f)) {
                                 if (posts && entry.postHeader != null) {
                                     PostHeader(entry.author, entry.postHeader, colors, openProfile)
-                                } else AuthorTimeHeader(entry.time, colors, keepFullAuthor = true) {
-                                    Text(entry.author, color = colors.foreground, fontWeight = AndroidWeights.entryAuthor,
-                                        fontSize = entryTextSize, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                } else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text(entry.author, color = colors.foreground, fontWeight = AndroidWeights.entryAuthor, fontSize = entryTextSize)
+                                    Text(entry.time, color = colors.secondary, fontSize = 12.sp)
                                 }
                                 if (entry.marks.isNotEmpty()) EntryMarks(entry.marks, colors)
                                 entry.notice?.let {

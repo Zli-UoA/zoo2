@@ -71,7 +71,6 @@ internal data class TimelineQuote(
     val avatar: String? = null,
     val postAuthor: zoo.Row? = null,
     val local: Boolean = false,
-    val time: String? = null,
 ) {
     val canOpen: Boolean get() = postId != null || !local
 }
@@ -119,7 +118,6 @@ internal fun RepostAttribution(actor: String, colors: AndroidColors) {
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun TimelineQuoteCard(
     quote: TimelineQuote, colors: AndroidColors, open: () -> Unit, openMedia: (TimelineMedia) -> Unit,
@@ -134,13 +132,9 @@ internal fun TimelineQuoteCard(
         val quoteLink = Modifier.heightIn(min = AndroidControlSize.target)
             .clickable(role = Role.Button, onClick = open)
         val title: @Composable () -> Unit = {
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(if (quote.author.isBlank()) "引用元を開く" else "引用 · ${quote.author}",
-                    modifier = Modifier.align(Alignment.CenterVertically), maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    color = colors.secondary, fontSize = if (quote.author.isBlank()) 12.sp else entryTextSize,
-                    fontWeight = if (quote.author.isBlank()) AndroidWeights.label else AndroidWeights.entryAuthor)
-                quote.time?.let { Text(it, Modifier.align(Alignment.CenterVertically), color = colors.secondary, fontSize = 12.sp) }
-            }
+            Text(if (quote.author.isBlank()) "引用元を開く" else "引用 · ${quote.author}",
+                color = colors.secondary, fontSize = if (quote.author.isBlank()) 12.sp else entryTextSize,
+                fontWeight = if (quote.author.isBlank()) AndroidWeights.label else AndroidWeights.entryAuthor)
         }
         val body: @Composable () -> Unit = {
             if (quote.body.isNotBlank()) EntryBody(quote.body, colors.foreground, entryTextSize, quote.emoji, maxLines = 4)
