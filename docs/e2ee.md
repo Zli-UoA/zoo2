@@ -763,20 +763,29 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 - 【決定】自分の鍵（`own_keys`）、最後に解錠したときの `secrets_revision`、鍵バックアップの送信の状態（`backup_upload`。`BackupUploadState::to_json`）は、TUI と同じく暗号ストアの `state.json` に置く（`zoo.crypto.CryptoStore`）。`secrets_revision` の照合、送信の時機（解錠や初回設定を終えたとき、端末の登録と起動時の確認のあと、to-device で Megolm セッションの鍵を受け取ったとき）、今の版の検証（`BackupUploadState::accept_current_version`）、送ったあとに書き換わったセッションの扱い、409 の扱いは TUI と同じ。送信は `E2eeSetup` の中で 1 つずつ行う。暗号ストアは端末の管理（`E2eeDeviceManager`）が登録を終えたものを画面と共有する（`CryptoStore` のメソッドは同期されている）。
 - 【決定】再認証は Custom Tabs で開く認可コードフロー（PKCE の S256、`state`、`nonce`、`max_age=0`、scope は `openid profile`）で、リダイレクト先は `https://<ビルド時のホスト>/android/reauth-callback`（本番は `https://zli.chat/android/reauth-callback`）。App Links（manifest の `autoVerify` 付きの intent-filter。ホストは同じビルド時の値）で `ReauthCallbackActivity` が受け取り、`FLAG_ACTIVITY_CLEAR_TOP` と `FLAG_ACTIVITY_SINGLE_TOP` で `MainActivity` に渡す（Custom Tabs を閉じ、メモリーの鍵を持つ今の画面のまま `onNewIntent` で受け取る）。`state` が一致するものだけを受け取り、トークンエンドポイントで ID トークンに換えて、`iss`、`aud`、`exp`、`nonce` を確かめる（TUI と同じ）。待つのは 10 分までで、利用者は「ログインをやめる」で取り消せる。今のセッションのトークンは変えない。
 - 【決定】`https://zli.chat/.well-known/assetlinks.json` は、zoo2 のフロントエンドの nginx（`infra/frontend-nginx.conf`）が完全一致の `location` で返す。中身は、起動時に `infra/frontend-entrypoint.sh` が `ANDROID_APP_PACKAGE`（既定は `works.zli.zoo`）と `ANDROID_APP_CERT_SHA256`（署名証明書の SHA-256 の指紋。カンマ区切りで複数）から作る。指紋が空ならファイルを作らず 404 を返す（`index.html` を返さない）。形式が違えば起動しない。値は zoo2-infra で frontend の Deployment の環境変数に入れる。App Links でアプリに渡らなかったとき（検証の前など）は、同じ nginx が `/android/reauth-callback` に script のない案内のページ（`frontend/public/android/reauth-callback.html`。`Referrer-Policy: no-referrer`、`Cache-Control: no-store`）を返す。PWA の Service Worker は `/android/` に app shell を返さない。
-- 【決定】AuthZ の Android のクライアントには、認可コードのグラントと、リダイレクト URI `https://zli.chat/android/reauth-callback` を登録する（AuthZ#97 と同じく管理画面で行う）。あわせて、zoo2-infra の production の `backend.yaml` の `env` にある `OIDC_REAUTH_AUDIENCES` に、今の値を残したまま Android の client ID を足す PR を出す（[有効化と運用](#有効化と運用)。ID トークンの `aud` をこの一覧で確かめるため。足すまでは保存が 403 `E2EE_REAUTH_REQUIRED` になる）。リダイレクト先のホストは、接続先ではなくビルド時の `zoo.android.reauthHost`（既定は `zli.chat`）で決め、manifest の App Links（`manifestPlaceholders`）と認可リクエストの `redirect_uri`（`BuildConfig.REAUTH_HOST`）の両方に同じ値を使う。登録するまでは、本番の Android で初回設定と、初回設定の続きの保存ができない（解錠は、続きの保存がなければできる）。
+- 【決定】AuthZ の Android のクライアントには、認可コードのグラントと、リダイレクト URI `https://zli.chat/android/reauth-callback` を登録する（AuthZ#97 と同じく管理画面で行う）。あわせて、zoo2-infra の production の `backend.yaml` の `env` にある `OIDC_REAUTH_AUDIENCES` に、Android の client ID（`129d96c7c57d46729fe5ee31ff95e7fc`）を入れる（[有効化と運用](#有効化と運用)。ID トークンの `aud` をこの一覧で確かめるため。入っていなければ保存が 403 `E2EE_REAUTH_REQUIRED` になる）。2026-11-24 に、入っていることを確かめた。リダイレクト先のホストは、接続先ではなくビルド時の `zoo.android.reauthHost`（既定は `zli.chat`）で決め、manifest の App Links（`manifestPlaceholders`）と認可リクエストの `redirect_uri`（`BuildConfig.REAUTH_HOST`）の両方に同じ値を使う。登録するまでは、本番の Android で初回設定と、初回設定の続きの保存ができない（解錠は、続きの保存がなければできる）。
 - 【決定】パスキーは Credential Manager（`androidx.credentials`）の `GetPublicKeyCredentialOption` に、Web と同じ要求（`rpId` はログインに使う issuer のホスト名、`userVerification: required`、PRF の `eval` または `evalByCredential`）を JSON で渡し、`authenticationResponseJson` の `clientExtensionResults.prf.results.first` を使う（`zoo.crypto.PasskeyJson`）。結果がない、取り消された、スロットがない、関連付けがない（`SecurityError`）を分けて表示し、どれでもリカバリーキーを案内する。【未検証】RP ID `account.zli.works` のパスキーを Android アプリから使うには AuthZ#96 の `assetlinks.json` が要り、Credential Manager が PRF の結果を返すかも実機で確かめていない（[未決と未検証の一覧](#未決と未検証の一覧)）。
 - 異常系のテストは `frontend-compose` の `E2eeSetupTest`（実際の zoo-crypto の UniFFI と、API を模した状態を持つサーバー）。初回設定の保存の途中（クロス署名鍵、端末への署名、バックアップの版）で止めてアプリを開き直し、控えたリカバリーキーで同じ鍵のまま最後まで終わること、再認証なしの 403 から同じ鍵でやり直せること、別の端末で解錠して自分に署名すること、2 つの端末の同時の初回設定、応答をなくした SSSS の保存の読み直し、サーバーの鍵の不一致、解錠の前に鍵バックアップへ送らないことと今の版の検証、409 での送信の停止、仮の認証器でのパスキーの初回設定と解錠を確かめる。要求と応答の JSON、PKCE、App Links の `state` の照合、ID トークンの検査は `ReauthAndPasskeyTest`。
-- Android は、暗号化チャンネル・DM の作成、本文・返信の送受信、暗号化済み本文の編集に対応する。`AndroidMessageEncryption` が既存の `E2eeDeviceManager` の暗号ストアを共有し、`recipients` の全ページを同じ epoch で取得して、共通の `TrustStore` で配布先を判定する。TOFU ピンをサーバーに確定してから Olm で鍵を配り、Megolm で本文を暗号化する。鍵を配れない参加者、署名の警告、鍵の払い出し失敗、`undelivered` があるときは本文を送らない。利用者による除外の確認 UI はまだないので、Web での確認・再検証後に送り直す。
+- Android は、暗号化チャンネル・DM の作成、本文・返信の送受信、暗号化済み本文の編集に対応する。`AndroidMessageEncryption` が既存の `E2eeDeviceManager` の暗号ストアを共有し、`recipients` の全ページを同じ epoch で取得して、共通の `TrustStore` で配布先を判定する。TOFU ピンをサーバーに確定してから Olm で鍵を配り、Megolm で本文を暗号化する。【決定】（#361 の続き）鍵を配れない相手（暗号化を設定していない、鍵が正しくない、再検証が必要、ピンの確認中、配れない）は、Web・TUI と同じく配布先から外して本文を送り、送信欄の上に理由を出す（送信は止めない）。鍵が払い出されなかった端末と、to-device の `undelivered` の端末は、配った端末に入れず、次の送信の前に同じセッションを今のインデックスから配り直す（Web の `shareWithPendingDevices` と同じ）。鍵を配った端末が配布先から外れたら（epoch が変わらずに、再検証が必要になった、署名がなくなった、など）、その端末が持つ鍵で次の本文を読めないよう、送信用セッションを作り直す。
 - Android は作成要求の前に UUID と暗号化指定を記録し、作成応答が `encrypted=true` でなければ処理を止める。既存の DM が返る場合も、その ID を記録する。観測済みの暗号化設定もアカウント・サーバーごとに `noBackupFilesDir` へ保存し、通常キャッシュの削除や再起動で格下げを受け入れない。ログアウトでは、この記録も削除する。保存の読み書きに失敗したときは本文・添付の平文送信を止める。
+- 【決定】送信欄の上の表示（Web の `EncryptionRecipientsNotice`、#565）は、前回の判定から増えた配布先と、鍵を配れない相手と理由だけを、あるときだけ出す（配布先の数は出さない）。前回判定したメンバーは暗号ストアの `state.json` の `recipients`（チャンネルごとの `user_id` の昇順）に置き、チャンネルを切り替えても開き直しても、増えた人を出す。初めて判定したチャンネルでは出さない。`AndroidMessageEncryption.recipients` が最後の判定をチャンネルごとに持ち、画面は `InputState.notices` で入力欄の上に出す（読み上げの live region は polite）。
+- 【決定】送信の要求の平文の `mentions` は、Web の `encryptedMentions` と同じ規則で本文から作る（共通 Kotlin の `encryptedMentions`。`client-types` の `mentions::encrypted_mentions` と同じ例でテストする）。暗号化した本文にも同じ `mentions` を入れる。編集では、元の版の `mentions` と添付をそのまま入れる。
+- 【決定】暗号化した添付（#364）は、添付の下書き（`AttachmentDrafts` の `upload`）で、端末が暗号化してから `POST /api/attachments/presign`（決まった名前と暗号文の大きさだけ）と S3 への PUT を行い、本文の `attachments` に入れる値（鍵、IV、ハッシュを含む）を下書きに持つ。送信の要求には `attachment_ids` だけを入れる。受信は、復号した本文の `attachments` から名前だけを出し、タップで取得してハッシュを確かめてから復号し、アプリの非公開キャッシュに書いて端末の共有で開く（ハッシュが合わなければ「添付を復号できませんでした」）。名前と MIME は Web の `receivedAttachmentView` と同じ規則（平文の添付と同じ `attachmentType`）で確かめ、平文の添付ならサーバーが拒否する種類は取得も保存もしない（「安全のため、この種類のファイルは開けません」）。名前の双方向の制御文字は `_` に置き換える。復号した平文は文字列にせず、そのままファイルに書く（送信と同じ 50 MiB まで開ける）。プレビューと自動取得はしない。
+- 【決定】鍵バックアップへの送信（`POST /api/e2ee/key_backup/keys`）には、Web・TUI と同じくアップロードの証明（`X-Zoo-Backup-Proof`、#570）を付ける。証明は `CryptoStore.prepareBackupUpload` が、受け入れた今の版、その版の `upload_key`、暗号ストアのバックアップ鍵、`user_id` から作る（UniFFI の `BackupDecryptionKey::upload_proof`）。403 `E2EE_BACKUP_PROOF_INVALID` は 409 `E2EE_WRONG_BACKUP_VERSION` と同じく、その回の送信をやめてセッションを送信待ちに残す。`upload_key` のフィールドがあって鍵の形の文字列でなければ（`null`、数値、オブジェクトも）送らない。フィールドがない版（証明を足す前のサーバー）だけ、ヘッダーを付けずに送る。
 - Android の送信は 1 経路で直列化する。送信ごとに recipients を取得し、送信用 Megolm セッションはアプリの実行中に再利用する。epoch の変更、共通暗号基盤のメッセージ数・期間の更新条件、暗号ストアの開き直しで作り直す。送信用 Olm セッションもアプリの実行中に再利用し、鍵は配布済み端末へ再配布しない。新しい受信用セッションを保存してから本文を送るため、自分が送った本文も再起動後に読める。1 送信につき recipients のページ数、未配布端末への必要な鍵の払い出しと配布（100 端末ずつ）、本文の書き込みが必要で、新しい常設接続・ポーリングは追加しない。一度確認した epoch より古いスナップショットは受け入れず、`E2EE_STALE_EPOCH` には新しい epoch 以上のスナップショットで最大 3 回まで再暗号化して送る。通信失敗では平文に切り替えない。
-- Android の復号は表示中の行について行い、本文を Electric の同期キャッシュへ書き戻さない。暗号ストアの更新（解錠、鍵の受信、バックアップの取り込み）で再判定する。送信者・チャンネル・親・epoch・revision・リプレイを共通暗号基盤で検証し、未検証の送信者とバックアップ由来の鍵を区別して表示する。旧版と同じ版の競合では画面内の確認済み本文を保持し、送信者の検証状態と版の警告を別々に表示する。表示メタデータの更新や再復号で編集下書きを初期化しない。暗号化前の投稿には印を出して編集を禁止するが、リアクションの追加・解除は維持し、暗号化本文の URL プレビューを自動取得しない。
-- 端末一覧と失効（#362）、解錠したあとの鍵スロットの追加と削除、E2EE のリセット、暗号化した添付の送受信 UI、他ユーザーの SAS 検証、メンション通知の宛先抽出、既存チャンネルの暗号化切り替え操作は後続。添付の暗号化ヘルパーは存在するが、本文の送信経路に接続するまでは添付ボタンを無効にする。
+- Android の復号は表示中の行について行い、本文を Electric の同期キャッシュへ書き戻さない。暗号ストアの更新（解錠、鍵の受信、バックアップの取り込み）で再判定する（`MessageEncryption.changes` が変わるたびに、開いている会話の行を復号し直す）。復号できない行は、本文の代わりに Web と同じ文で理由を出す（鍵がまだ届いていない、解錠が必要、検証に失敗した、復号できなかった）。送信者・チャンネル・親・epoch・revision・リプレイを共通暗号基盤で検証し、未検証の送信者とバックアップ由来の鍵を区別して表示する。旧版と同じ版の競合では画面内の確認済み本文を保持し、送信者の検証状態と版の警告を別々に表示する。表示メタデータの更新や再復号で編集下書きを初期化しない。暗号化前の投稿は編集を禁止するが、リアクションの追加・解除は維持し、暗号化本文の URL プレビューを自動取得しない。【決定】（#564）Web と同じく、読み込んだ行のうち最初の暗号化したメッセージの前に「ここから暗号化されています」の区切りを出し、それより後ろにある暗号文のない行だけに「暗号化されていません」の印を付ける（暗号化する前の平文の行には印を付けない）。境目は、会話の画面（親のない行）とスレッドの画面（親と返信）のそれぞれで、表示する行の中で決める。epoch があるのに暗号文のない行は、正しいサーバーは作らないので、本文を出さずに「暗号化されていないため表示しません」を出す。受け取った添付は、Web の `receivedAttachmentView` と同じく、名前の双方向の制御文字を `_` にし、平文の添付ならサーバーが拒否する種類は取得も保存もしない。
+- 異常系のテストは `frontend-compose` の `EncryptedDmTest`（状態を持つ模擬サーバーと、2 人と暗号化を設定していない 1 人の実際の暗号ストア。`frontend/e2e/e2ee.spec.ts` と同じ観点）。2 人の暗号化 DM の往復と要求に平文が入らないこと、TOFU で信頼した相手が「未検証の送信者」にならないこと、鍵バックアップから取り込んだ端末で「送信者を確かめられません」になること、退出したメンバーに鍵を配らないこと、配れない相手がいても送って理由と増えた配布先を出すこと、`mentions` の平文、暗号化した添付の往復と差し替えの拒否を確かめる。アップロードの証明は `E2eeSetupTest`（模擬サーバーが JDK の X25519 と HKDF で別に計算して確かめる）、表示の規則は `EncryptedEntriesTest`。
+- 【決定】（#362）端末一覧は、設定の「暗号化」で、端末名、登録日時、最後に使った日時、`device_id` を並べ、今の自己署名鍵の署名がない端末に「未署名」を付ける（`unsignedDevices`。表示のために署名があるかだけを見る）。端末名の変更と、削除（「削除は失効ではない」と出し、失効を勧める）を行える。
+- 【決定】（#362）失効は、Web と同じ手順と同じ `zoo-crypto` の関数（UniFFI の `Revocation`）で行う（`zoo.crypto.E2eeRevocation`、画面は `RevocationSection`）。削除する端末と範囲（端末だけ、または 1〜5）を選ぶ、AuthZ のセッションとサービス接続を止めたことを確かめる、SSSS を開け直す、（1〜5 なら）新しいリカバリーキーを控える（この端末のパスキーのスロットを 1 つ足せる）、署名し直さない相手と新しい版に移せないバックアップを確かめる、再認証して実行する、の順。進み具合は暗号ストアの `state.json` の `revocation`（保存鍵で暗号化した封筒）に、保存が 1 つ済むたびに置き、「失効を続ける」で再開する。403 `E2EE_REAUTH_REQUIRED` は再認証して同じ鍵で送り直し、409 と読み直しの不一致は記録を捨ててやり直す。終わったら、新しい自己署名鍵で署名されていない自分の端末を出す。終わっていない失効があれば、ログアウトの前に警告する。「失効を続ける」は、Web と同じく解錠していなくても出す（解錠を求めるのは「失効を始める」だけ）。失効が途中で止まっているあいだは、起動時の確認で `secrets_revision` やサーバーの鍵・版が暗号ストアと違っても、別の端末の書き換えとして扱わず、記録した `secrets_revision` も消さない（SSSS を保存したあと、クロス署名鍵や版を保存する前に止まると、そうなるため）。AuthZ のセッションとトークンの失効は、Web と同じく、AuthZ の画面（issuer と同じ origin の `/settings/security` と `/settings/services`）へのリンクと手順を出して利用者に行ってもらう。
+- 【決定】（#362）他のユーザーの検証は、Web と同じ絵文字 SAS と QR コード（UniFFI の `SasVerification`。`zoo.crypto.SasController`）。to-device の `m.key.verification.*` は、`CryptoStore.processToDevice` が受信時の検証を通してから `SasController` に渡す（ルームキーとして数えない）。送信には、Megolm の鍵の配布と同じ送信用の Olm セッションを使い回す。検証が終わったら、相手の今のマスター鍵を `keys/query` で取り直して署名し、`replace: true` のピンとマスター鍵への署名を再認証して保存してから、`TrustStore.confirm_accepted_master_key` を呼ぶ。画面は、アプリのどの画面にいても前面に出るダイアログ（`VerificationHost`）で、検証は設定の「暗号化」の「他のユーザーの検証」（暗号化チャンネルを共有する相手）から始める。QR は ZXing でバイトモード・誤り訂正 M の Web と同じ形に描き、相手の QR は CameraX のカメラで読み取って `BYTE_SEGMENTS` からバイト列を取る（カメラの権限は読み取るときに求める。拒否、カメラがない、起動できないときは、絵文字か、相手に読み取ってもらう方法を案内する）。検証の状態はメモリーにだけ置き、アプリのプロセスが終わったら消える（Web の Worker と同じ）。
+- 異常系のテストは、`SasVerificationTest`（2 人の暗号ストアで、絵文字 SAS、QR、一致しない、期限切れ、`keys/query` を取れないときの保留、to-device の振り分け、解錠していないとき）、`RevocationTest`（全体と端末だけの失効、各段で止めて開き直してからの再開、403 の再認証、409 でのやり直し、別の端末の SSSS の作り直し）、`VerificationQrTest`（QR の往復）、`E2eeDevicesTest`（未署名の判定）。
+- Push の復号（#510）は [Android の Push の復号](#android-の-push-の復号510) のとおり入れた。解錠したあとの鍵スロットの追加と削除、E2EE のリセット、他のユーザーの受け入れ（再検証。下の「失効と検証の実装（#362）」のとおり、必須でない機能として Android には作らない）、既存チャンネルの暗号化切り替え操作は後続。
 
 #### iOS の初回設定と解錠（[#685](https://github.com/Zli-UoA/zoo2/issues/685)）
 
 - 【決定】iOS の手順は Android の `zoo.crypto.E2eeSetup` と同じ順（SSSS、クロス署名鍵、端末への署名、バックアップの版）で、`ios/Sources/Data/Crypto/E2eeSetup.swift` に置く。秘密（マスター鍵の秘密鍵、SSSS 鍵）は UniFFI の `SetupSession`（Rust のメモリー）にだけ置き、Swift には要求の本文（JSON）とリカバリーキーの表示だけを渡す。API は `E2eeSetupAPI`（`APIClient` が実装）。直前の再認証が要る要求は `X-Zoo-Reauth` に ID トークンを入れる。
 - 【決定】再認証（`ios/Sources/Data/Crypto/Reauth.swift`）。iOS はふだんのログインにデバイス認可グラントを使い、`max_age` を付けた ID トークンを取れないので、再認証のときだけ認可コードフロー（PKCE の S256、`max_age=0`、`state`、`nonce`、scope は `openid profile`）を `ASWebAuthenticationSession` で開く。リダイレクト URI は `works.zli.zoo:/reauth-callback`（カスタム URL スキーム）。認可コードはトークンエンドポイントで ID トークンに換え、`iss`、`aud`、`exp`（許容のずれ 60 秒）、`nonce` を確かめてから使う。今のセッションのトークンは変えない。待つ時間は 10 分。
-  - AuthZ の iOS のクライアントに、リダイレクト URI `works.zli.zoo:/reauth-callback` を登録する。zoo2-infra の `OIDC_REAUTH_AUDIENCES` に iOS のクライアント ID を足す（別リポジトリの PR）。失敗する段階は、設定ごとに違う。リダイレクト URI が AuthZ に登録されていないと、AuthZ が認可の要求を拒み、アプリは認可コードを受け取れずに、再認証の画面で止まる（保存の要求までは進まない）。URI が登録済みでも、`OIDC_REAUTH_AUDIENCES` に iOS のクライアント ID がないと、再認証には成功するが、そのあとの保存（SSSS、クロス署名鍵、版の作成）が 403 `E2EE_REAUTH_REQUIRED` になる。クライアントの `authorization_code` グラントの許可がないと、トークンエンドポイントが `unsupported_grant_type`／`unauthorized_client` を返し、アプリは「AuthZ で authorization_code グラントを許可してください」と表示する。
+  - AuthZ の iOS のクライアントに、リダイレクト URI `works.zli.zoo:/reauth-callback` を登録する。zoo2-infra の `OIDC_REAUTH_AUDIENCES` に iOS のクライアント ID を足す（別リポジトリの PR）。失敗する段階は、設定ごとに違う。リダイレクト URI が AuthZ に登録されていないと、AuthZ が認可の要求を拒み、アプリは認可コードを受け取れずに、再認証の画面で止まる（保存の要求までは進まない）。URI が登録済みでも、`OIDC_REAUTH_AUDIENCES` に iOS のクライアント ID がないと、再認証には成功するが、そのあとの SSSS・クロス署名鍵の保存が 403 `E2EE_REAUTH_REQUIRED` になる。初回のバックアップ版作成自体には再認証を要しないが、初回設定は先行する SSSS 保存で止まる。リセット・失効でバックアップ版を作り直す場合には、版の作成にも再認証が必要になる。クライアントの `authorization_code` グラントの許可がないと、トークンエンドポイントが `unsupported_grant_type`／`unauthorized_client` を返し、アプリは「AuthZ で authorization_code グラントを許可してください」と表示する。
 - 【決定】パスキー（`ios/Sources/Data/Crypto/Passkeys.swift`）。`ASAuthorizationPlatformPublicKeyCredentialProvider` の PRF 拡張（iOS 18 以上）で、Android の `PasskeyClient` と同じ 2 つの操作（スロットを足す：`allowCredentials` なしで利用者が選んだパスキーを評価する、解錠：スロットごとの `prfSalt` で評価する）を行う。RP ID は AuthZ のホスト（`account.zli.works`）で、`Zoo.entitlements` の Associated Domains に `webcredentials:account.zli.works` を足した。AuthZ の `/.well-known/apple-app-site-association` の `webcredentials` に `F82XB5KFX2.works.zli.zoo` を載せる。App ID に Associated Domains の capability を有効にする。iOS 18 未満と、PRF の結果を返さない保存先は `PasskeyError.prfUnsupported`。アサーションはどこにも送らない。
 - 【決定】iOS の鍵バックアップ（`E2eeSetup.uploadKeyBackup`・`importKeyBackup`、状態は `CryptoStore` の `backup_upload`・`imported_backup_version`）は Android と同じ手順。送信は、今の版を `BackupUploadState.accept_current_version` で検証し、`upload_key` が文字列のときだけ `X-Zoo-Backup-Proof` を付け（`upload_key` のフィールドがない旧サーバーの応答には、証明ヘッダーなしで送る要求を返す。フィールドがあるのに文字列でない `null` などは、不正な応答として送らず、送信待ちのまま残す）、送信待ちの受信用セッションを `POST /api/e2ee/key_backup/keys?version=&secrets_revision=` で送る。版の違いで拒まれたら（409）、送信待ちのまま残して次に再び試す。取り込みは、解錠のあと（起動時の確認、初回設定・解錠の保存の後）に今の版から `GET /api/e2ee/key_backup/keys` をページ（`after`）で読み、`importRows` で受信用セッションを取り込む。取り込んだセッションは送信者を確かめられないので「送信者を確かめられません」の表示になり、取り込んだ版から取ったものは送信待ちに入れない。同じ版から取り込み終えていれば、もう取り込まない。解錠していない端末は、送信も取り込みもしない。部屋の鍵が届いたときも、送信を試す（失敗しても次の機会に再び試す）。同じ版を取り込み終えたあとに、別の端末がその版へ送信待ちの受信用セッションをアップロードしても、この端末は、次の解錠か版の変更まで、それを取り込まない（端末どうしで鍵を要求する仕組みは初期版にない）。そのセッションで暗号化された過去のメッセージは、次の解錠まで読めないことを許容する。
 - 【決定】テストは Android・TUI・Web と同じく、状態を持つ模擬サーバー（`ios/Tests/E2eeSetupTests.swift`）で、SSSS を除く各保存（クロス署名鍵、端末への署名、バックアップの版）の直前で止めて開け直しても、控えたリカバリーキーで解錠して同じ鍵のまま最後まで終えること、再認証の 403、同時の初回設定（`conflict`）、別の端末での解錠と署名、`secrets_revision` の変更、パスキーの PRF での解錠を確かめる。SSSS の保存の応答をなくした場合は、読み直して続ける。実機のパスキーの保存先（iCloud キーチェーン、1Password）での確認は、実機で行う（#369）。
@@ -818,7 +827,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 - 【決定】暗号化したメッセージより後ろの平文の行には、短い「暗号化されていません」だけを出す。文字列の全体（アイコン、文、ⓘ）が 1 つのボタンで、タップすると、くわしい説明（「暗号化したメッセージより後ろにある、暗号化されていないメッセージです。…サーバーが足したか、書き換えたおそれがあります。」）をポップオーバーで出す。
 - 【決定】暗号化チャンネルの暗号文のない行は、Web（#367・#564）と同じに扱う。暗号文も `epoch` もない行は、暗号化に切り替える前の平文のメッセージとして本文をそのまま出し、編集させない（`Message.e2eeLegacy`）。最初の暗号化したメッセージ（暗号文か `epoch` のある行）より後ろの平文の行にだけ、警告「暗号化されていません」を付ける。暗号文がなく `epoch` がある行は、正しいサーバーが作れないので、本文を出さず「このメッセージは暗号化されていないため表示しません。」とする。
 - 【決定】iOS の設定の「暗号化」に「端末」を置く（解錠済みのときだけ。`OwnDevicesView`）。`GET /api/e2ee/devices` の一覧（登録が新しい順。端末名、登録日時、最後に使った日時。この端末に印）、名前の変更（`PATCH`）、ほかの端末の削除（この端末は消せない）だけを行い、「削除は失効ではない」と表示し、端末をなくした・盗まれたなどのときは、画面下の「失効する…」から失効を始められる。- 【決定】iOS の E2EE のリセット（`E2eeSetup.beginReset`・`completeReset`、`ResetView.swift`）。解錠できないとき（パスキーとリカバリーキーをすべて失った、または他人が作った SSSS があった）のために、解錠の画面の下の「リセット」から行う。注意と AuthZ の取り消しの確認、見覚えのない端末の削除（選択を確かめるまで保存しない）、新しいリカバリーキーの控え、直前の再認証のうえでの保存（SSSS を、読んだ既定の鍵と `secrets_revision` を前提に作り直し、クロス署名鍵 3 つを差し替え、今の端末に署名し、新しい鍵バックアップの版を作る）の順。前提の値が古ければ（別の端末が先にリセットした）409 で止まり、手元の鍵を捨てる。UniFFI の `SetupSession.reset_secret_storage_request`・`plan_reset`（コア `SetupSession::reset_secret_storage_request`・`plan_reset`）で作る。
-- 【決定】iOS の失効（`ios/Sources/Data/Crypto/E2eeRevocation.swift`、`RevocationView.swift`。Web の `revocationController.ts` と同じ流れ）。設定の「端末」の「失効する…」から、範囲（端末だけ／パスキー・リカバリーキーなど）と削除する端末を選び、AuthZ のセッションとトークンの取り消しを済ませたことを確かめ、パスキーかリカバリーキーで SSSS を開け直してから、端末の削除、`Revocation`（UniFFI。マスター鍵の秘密鍵と SSSS 鍵は Rust のメモリーにだけ置く）の開始、全範囲なら新しいリカバリーキーの控え、直前の再認証のうえでの保存（SSSS、クロス署名鍵、今の端末と相手のマスター鍵への署名とピン、鍵バックアップの新しい版、古い版の移行と削除、読み直しの確認）の順に行う。保存が 1 つ済むたびに進み具合を暗号ストア（`state.json` の `revocation`）に保存し、止まったら SSSS を開け直して続ける（全範囲を SSSS の保存の前に止めたら、最初からやり直す）。クロス署名鍵を保存したら、暗号ストアの自分の鍵・信頼の記録・`secrets_revision` を新しい鍵にそろえる。署名し直す相手は、ピンのある相手だけで（Web が使う、記録だけの相手は今の iOS にはない）、失効を始めてから相手がマスター鍵を作り直していたら、署名を外す。
+- 【決定】iOS の失効（`ios/Sources/Data/Crypto/E2eeRevocation.swift`、`RevocationView.swift`。Web の `revocationController.ts` と同じ流れ）。設定の「端末」の「失効する…」から、範囲（端末だけ／パスキー・リカバリーキーなど）と削除する端末を選び、AuthZ のセッションとトークンの取り消しを済ませたことを確かめ、パスキーかリカバリーキーで SSSS を開け直してから、端末の削除、`Revocation`（UniFFI。マスター鍵の秘密鍵と SSSS 鍵は Rust のメモリーにだけ置く）の開始、全範囲なら新しいリカバリーキーの控え、直前の再認証のうえでの保存（SSSS、クロス署名鍵、今の端末と相手のマスター鍵への署名とピン、鍵バックアップの新しい版、古い版の移行と削除、読み直しの確認）の順に行う。保存が 1 つ済むたびに進み具合を暗号ストア（`state.json` の `revocation`）に保存し、止まったら SSSS を開け直して続ける（全範囲を SSSS の保存の前に止めたら、最初からやり直す）。クロス署名鍵を保存したら、暗号ストアの自分の鍵・信頼の記録・`secrets_revision` を新しい鍵にそろえる。署名し直す候補には、共有ピンのある相手と、この端末の信頼記録（`TrustStore.recorded_users`）がある相手を含め、失効を始めてから相手がマスター鍵を作り直していたら、署名を外す。
 - 【決定】iOS の他のユーザーの絵文字 SAS 検証（`ios/Sources/Data/Crypto/E2eeVerification.swift`、`VerificationViews.swift`。Web の `sasController.ts` と同じ流れ）。設定の「暗号化」の「ユーザーの検証」から相手を選んで求め、相手から届いた要求は画面を出して受け入れを求める。状態機械と鍵は UniFFI の `SasVerification`（`request_sas_verification`、`from_request`、`receive`、`confirm` など）にあり、Swift は検証のメッセージを渡し、返ったメッセージを `CryptoStore.encryptVerification`（Olm。セッションがなければ `keys/claim`）で暗号化して to-device で送る。to-device の `m.key.verification.*` は、`CryptoStore.processToDevice` が受信時の検証（`verify_verification`）を通したものだけを `E2eeDeviceManager.onVerifications` に渡す（解錠していない端末は受けない）。検証が終わったら、再認証のうえで相手のマスター鍵に署名し、ピン（`replace: true`）と署名を保存してから、暗号ストアの登録待ちを外す。10 分で取りやめ、相手の `keys/query` を取れなかったメッセージは検証ごとに順を守って残して試し直す。QR による検証も入れた（Web と同じ。`QrCodeKit.swift`、`VerificationViews.swift`）。要求した側と受け入れた側は、自分の QR（`SasVerification` が作るバイト列を `CIQRCodeGenerator`、誤り訂正 M で描く）と、「相手の QR を読み取る」「絵文字で検証する」を選べる。読み取りはカメラ（`AVCaptureVideoDataOutput`。0.25 秒に 1 回）のフレームを `CIDetector` に渡し、QR の記述子（`CIQRCodeDescriptor`）の誤り訂正後のデータコードワードから、数字・英数字・バイトのセグメントを読んで、中身のバイト列をそのまま取り出す（`CIQRCodeFeature.messageString` は文字列なので、0x00 や 0xFF を含む中身を壊す。Vision の `VNDetectBarcodesRequest` はシミュレーターで使えない）。作成側は先頭の `MATRIX` を英数字モード、続きをバイトモードにするので、複数のモードを読む。検証の QR の形（先頭、版、長さ）を暗号の検証の前に確かめ、別の検証の QR や形の正しくないものは取りやめずに「今の検証の QR ではありません」と出して読み取りを続ける。鍵が違うときだけ取りやめる（`SasVerification.scan_qr_code`）。QR を読み取られた側は「相手の端末で QR を読み取りましたか」を聞き、「読み取っていない」なら `m.user` で取りやめる。カメラを使えないときは、その旨を出して絵文字を勧める。`NSCameraUsageDescription` を、この用途の説明に変えた。
 - 【決定】iOS の暗号化チャンネルの残りの機能（#685）。
   - メンション：本文の `@ユーザー名`・`@channel`・`@here` を、サーバーと同じ規則（`backend/src/notifications.rs` の `extract_mentions`。ユーザー名は語のまま、なければ末尾の句読点を外して引く）で、送る側が取り出し、平文の `mentions`（通知の宛先用。編集では付けない）と、本文の暗号文の中に入れる（`E2eeMentions.swift`）。受信側は、復号した `mentions` にある `@name` だけをメンションとして表示する。
@@ -848,7 +857,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 | --- | --- | --- | --- |
 | 409 | `E2EE_STALE_EPOCH` | 送信や編集の `epoch` が今の `membership_epoch` より小さい。または、`recipients` の続きのページの `epoch` が今の `membership_epoch` と違う | `current_epoch` |
 | 409 | `E2EE_ENCRYPTED_IMMUTABLE` | `PATCH /api/channels/{id}` でチャンネルの `encrypted` を変えようとした（false から true も、true から false も）、または暗号化チャンネルを公開にしようとした。【決定】（#367）false から true への切り替えは `POST /api/channels/{id}/encrypt` だけで行う（[既存のチャンネルの暗号化](#既存のチャンネルの暗号化)） | |
-| 409 | `E2EE_CONVERSION_BLOCKED` | 【決定】（#367）既存のチャンネルの暗号化（`POST /api/channels/{id}/encrypt`）を止めるものがある：許可のない App（Bot）か Webhook のユーザーがメンバーにいる（`apps`）、Incoming Webhook がある（`webhooks`）、1 対 1 の DM で同じ 2 人の暗号化 DM（`edm:` の名前）がすでにある（`encrypted_dm`） | `blockers`（左の名前の配列） |
+| 409 | `E2EE_CONVERSION_BLOCKED` | 【決定】（#367）既存のチャンネルの暗号化（`POST /api/channels/{id}/encrypt`）を止めるものがある：許可のない App（Bot）か Webhook のユーザーがメンバーにいる（`apps`）、Incoming Webhook がある（`webhooks`）、1 対 1 の DM で同じ 2 人の暗号化 DM（`edm:` の名前）がすでにある（`encrypted_dm`）、有効または24時間以内に削除された Channel Note がある（`channel_notes`） | `blockers`（左の名前の配列） |
 | 409 | `E2EE_LEGACY_IMMUTABLE` | 【決定】（#367）暗号化に切り替える前の平文のメッセージ（`epoch` と `ciphertext` のない行）を、切り替えたあとに編集しようとした（平文でも暗号文でも） | |
 | 409 | `E2EE_ENCRYPTED_MISMATCH` | 暗号化 DM の行が `encrypted = false` だった（不整合） | |
 | 409 | `E2EE_WRONG_BACKUP_VERSION` | 鍵バックアップの書き込み先が今の版ではない。版の作成で `expected_current_version` が今の版と違う | `current_version` |
@@ -1499,7 +1508,7 @@ ALTER TABLE messages ADD CONSTRAINT messages_ciphertext_shape
 - 一度 `encrypted = true` を見たチャンネルの ID を、暗号ストアに記録する。以後は Shape や API の値にかかわらず、そのチャンネルには暗号化して送る。
 - 記録したチャンネルで `encrypted = false` が届いたら、送信を止め、警告を出す。平文で送り直すことはしない。
 - `ciphertext` のある行を含むチャンネル、名前が `edm:` で始まるチャンネルも、`encrypted = false` が届いたら同じように扱う。
-- 担当は #361。【決定】（#361）Web は、記録を暗号ストアの `meta`（`encrypted_channel:<channel_id>`）に置き、同じチャンネルの ID を `localStorage`（チャンネルごとのキー `zoo.e2ee.encryptedChannel:<channel_id>`。タブが同時に書いても、ほかのチャンネルの記録を消さない）にも置く（暗号ストアを開いていないタブは `meta` を読めないため。ID はサーバーも知っている値なので暗号化しない）。`encrypted = true` を見たときだけでなく、`meta` の記録で暗号化と分かったときも `localStorage` に置く。判定は `MessagePane` で行う（記録がある、名前が `edm:`、`ciphertext` のある行がある、のどれかで `encrypted = false` なら、送信を止めて警告し、表示と添付の扱いは暗号化チャンネルのままにする）。判定は数行の条件なので、`crates/zoo-crypto` には置かず、Android と TUI の対応でそれぞれ同じ条件を入れる。
+- 担当は #361。【決定】（#361）Web は、記録を暗号ストアの `meta`（`encrypted_channel:<channel_id>`）に置き、同じチャンネルの ID を `localStorage`（チャンネルごとのキー `zoo.e2ee.encryptedChannel:<channel_id>`。タブが同時に書いても、ほかのチャンネルの記録を消さない）にも置く（暗号ストアを開いていないタブは `meta` を読めないため。ID はサーバーも知っている値なので暗号化しない）。`encrypted = true` を見たときだけでなく、`meta` の記録で暗号化と分かったときも `localStorage` に置く。判定は `MessagePane` で行う（記録がある、名前が `edm:`、`ciphertext` のある行がある、のどれかで `encrypted = false` なら、送信を止めて警告し、表示と添付の扱いは暗号化チャンネルのままにする）。表示の判定は `useEncryptedDisplay` にまとめ、キャッチアップとメッセージリンクの埋め込みも同じ判定を使う（埋め込みは、暗号ストアに確かめ終わるまで平文の本文を出さない。[機能ごとの扱い](#機能ごとの扱い)）。判定は数行の条件なので、`crates/zoo-crypto` には置かず、Android と TUI の対応でそれぞれ同じ条件を入れる。
 
 ## 鍵の配布先の判定
 
@@ -1679,7 +1688,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 
 ### 失効と検証の実装（#362）
 
-【決定】（#362）Web（React）の実装で決めた細部です。TUI と Compose for Android は、それぞれの #360（初回設定と解錠、再認証）のあとに、同じ `zoo-crypto` の関数で入れます（別の PR）。
+【決定】（#362）Web（React）の実装で決めた細部です。TUI と Compose for Android も、同じ `zoo-crypto` の関数で入れた。Compose Android は、端末一覧、失効、絵文字 SAS と QR を入れた（[Compose Android](#compose-android)）。TUI は、端末一覧、失効、再検証、絵文字 SAS と QR の表示、鍵スロットの管理を入れた（下の「TUI」）。
 
 - 共通部分（`crates/zoo-crypto` の `revocation.rs`）は I/O を持たず、要求の本文と、暗号ストアに置く進み具合（`RevocationState`）を返す。
   - `ResignPlan::collect` は、手順 4 の【決定】のとおり、失効を行う端末の記録のうち `confirmed_usk` がある相手のピン（記録のマスター鍵で作り直す）と、古いユーザー署名鍵で検証でき、記録と同じマスター鍵への署名だけを署名し直す。署名し直さない相手は、理由（`no_record`、`not_confirmed`、`pin_replaced`、`signature_unverified`、`master_key_mismatch`、`stale_confirmation`、`pin_pending`）を付けて失効の画面に出す。
@@ -1703,7 +1712,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
     - 確認の画面（`ReverifyDialog`）に、相手の今のマスター鍵の指紋（公開鍵の base64 を 4 文字ずつ区切ったもの）と、記録の前の鍵の指紋を出し、変わったかを示す。チャンネルの外で、相手の画面の「あなたの鍵の指紋」（同じセクションに、解錠した端末で自分のマスター鍵の指紋を出す）と読み合わせてもらう。
     - 絵文字 SAS で検証できるときは、そちらを勧め、確認の画面から SAS に切り替えられる。
     - 受け入れたら、`keys/query` で鍵を取り直し、確認の画面に出した鍵と同じときだけ `acceptMasterKey` を呼ぶ（Worker の `CryptoStore.acceptMasterKey` も、渡された鍵が見せた鍵と同じかを確かめる）。違えば何も保存せず、確かめ直すよう表示する（`reverifyKeyChanged`）。
-    - TUI と Android には、まだ他のユーザーの再検証の画面がない（TUI は下の「未決と未検証の一覧」の #362、Android は必須でない機能として作らない）。作るときは同じ規則にする。
+    - TUI は同じ規則で再検証の画面を入れた（下の「TUI」）。Android は必須でない機能として作らない。
   - 【決定】（#368）受け入れ（`TrustStore::accept_master_key`）は、記録を登録待ち（`pin_pending`）で置き換え、ピンと署名をサーバーに保存できてから `TrustStore::confirm_accepted_master_key` で外す（#488 のレビュー）。保存できないまま判定すると、サーバーにピンがなければ TOFU と同じくピンを返し直し（`replace: false` で置く）、違うマスター鍵のピンがあれば記録を戻して再検証が必要に戻る。ピンも署名もサーバーにないのに、記録だけで配らないようにするため。絵文字 SAS の署名も同じ関数を使う。
   - 20 台の上限で端末を登録できなかったとき（400 `E2EE_LIMIT_EXCEEDED`、`limit` は `devices`）は、暗号化タブの、暗号ストアを開けていない理由のすぐ下に端末の一覧を出し、`stale_devices`（30 日以上使っていない端末）を選んだ状態で、削除する端末を選んでもらう。削除したら、端末の起動の再試行で登録し直す。
 - Web の「暗号化」タブの、状態と解錠、鍵のセクション（`EncryptionSettings`）。
@@ -1711,6 +1720,29 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
   - リカバリーキーのスロットを作り直せる（新しいリカバリーキーを控えてから、同じ鍵の既存のスロットを置き換える。置き換えには再認証が要る）。リカバリーキーのスロットも削除できる（最後の 1 つはサーバーが拒否する）。スロットの削除と作り直しは失効ではないと表示する。
   - E2EE のリセットでは、今の端末以外の自分の端末を選んでもらい、選んだ端末を削除してから保存する。選択を確かめるまで保存できない（他人が作った SSSS が登録されていたときに、攻撃者の端末が残らないようにするため）。AuthZ で行う手順も同じく出す。
 - 結合テストは `backend/tests/e2ee_revocation_test.rs`（本物のサーバーに `zoo-crypto` の失効と配布先の判定を当てる）、共通部分のテストは `crates/zoo-crypto/tests/revocation.rs`、Web の手順は `frontend/src/lib/e2ee/revocationController.test.ts`（本物の wasm と、サーバーを模したもの）。
+
+#### TUI
+
+【決定】（#362）TUI の実装で決めた細部です。手順と文言は Web と Android にそろえます。
+
+- 端末と検証の画面（`D`。`tui/src/ui/devices.rs`、描画は `tui/src/ui/devices_view.rs`）に、端末一覧と失効、他のユーザーの検証（再検証、絵文字 SAS、QR の表示）、解錠の手段（鍵スロット）をまとめる。`E` の画面は初回設定と解錠だけのままにする。
+- 端末一覧は、端末名、登録日時、最後に使った日時、`device_id` を並べ、今の自己署名鍵の署名がない端末に「未署名」を付ける（表示のために署名の行があるかだけを見る。Android の `unsignedDevices` と同じ）。消すかを考えてもらう印（30 日以上使っていない、解錠しないまま 7 日以上使っていない）は Web の `deviceCleanup.ts` と同じ規則。端末名の変更と、削除（「削除は失効ではない」と表示し、失効を勧める）を行える。
+- 失効の手順は `tui/src/e2ee/revocation.rs`（Web の `revocationController.ts`、Android の `E2eeRevocation` と同じ順の要求）。暗号ストアの記録（`state.json` の `revocation`。`RevocationState::pickle` の封筒）と、クロス署名鍵を保存したあとの自分の鍵と記録のそろえ（`apply_revocation`）は `tui/src/e2ee/store/devices.rs`。画面の順は、削除する端末と範囲を選ぶ（既定は 1〜5）、AuthZ で行うことを確かめる、リカバリーキーで SSSS を開け直す、選んだ端末を削除して一覧を集める、（1〜5 なら）新しいリカバリーキーを控える、署名し直さない相手と「新しい版に移せないバックアップ」を確かめる、再認証（#360 と同じループバック）して最後まで保存する、の順。
+  - TUI はパスキーを使えないので、1〜5 で新しい SSSS 鍵に作るスロットはリカバリーキーだけ。パスキーは、失効のあと Web か Android から足すよう画面で案内する。
+  - 画面を閉じても、進み具合は暗号ストアに残る。もう一度開いて「失効を続ける」（`R`）から、リカバリーキー（1〜5 で SSSS を保存したあとなら新しいキー）で開け直して続ける。403 `E2EE_REAUTH_REQUIRED` は同じ鍵のまま再認証して続け、409 と読み直しの不一致は、記録を捨てて、範囲と削除した端末を引き継いでやり直す。終わっていない失効があれば、`zoo2-tui logout` が確かめてから消す。
+  - 再開のリカバリーキー：SSSS を保存したと記録していれば、1〜5 では新しいキー。記録の前（SSSS を書いたかどうか分からない）なら、失効を始めたときのキーを先に使い、開けなければ新しいキーを試すよう画面で案内する。
+  - やり直しでは、捨てる失効の記録を先に消さず、新しい失効の記録の保存で置き換える（`begin` の `replacing`。記録が別の失効に置き換わっていれば始めない）。始め直しの通信に失敗しても、範囲と削除した端末が残る。続きの保存では、この失効で SSSS を保存したときの `secrets_revision`（記録の値）を使い、今の値は読まない。古い版の行の一覧は、`next` が明示的な `null` のときだけ終わりとみなす。
+  - 再認証の ID トークン（`X-Zoo-Reauth`）は、HTTPS の接続先と、この機械の中で閉じるループバック（手元の開発）にだけ送る（`client-core` が送る前に止める）。その要求はリダイレクトをたどらないクライアントで送り、3xx は誤りにする。
+  - 端末を削除する前に、選んだ範囲と端末を暗号ストア（`state.json` の `revocation_intent`。秘密は含まない）に残し、失効の記録と同じ書き込みで消す。そのあいだに止まっても、`R` で同じ範囲と端末を選んだ状態から始め直せる（ログアウトの前にも確かめる）。
+  - 古い版の移行は、1 ページずつ読んで暗号化し直して送る（版全体をメモリーに持たない）。捨てた行の数は版ごとの累計で記録する。
+  - AuthZ のセッションとトークンの失効は、Web と同じく、AuthZ の「セキュリティ」と「サービス接続」の URL（issuer と同じ origin）と手順を、始める前（済ませたことを `y` で確かめる）と終えたあとに出す。
+- 他のユーザーの検証は、暗号化チャンネル（削除されていないもの）を共有する相手（Electric のチャンネルとメンバー）の判定（`TrustStore::evaluate`。初めて見た相手には TOFU のピンを置く）と、判定の警告を出す。再検証（`a`）は、確認の画面に今の鍵と前に信頼した鍵の指紋を出し、`keys/query` で取り直した鍵が見せた鍵と同じときだけ署名する（M-2。`CryptoStore::accept_master_key`）。確認の画面から絵文字 SAS に切り替えられる。
+- 絵文字 SAS は `tui/src/e2ee/verification.rs`（Web の `sasController.ts`、Android の `SasController` と同じ規則。処理と送信を 1 つずつにし、送れなかったメッセージは同じ `txn_id` と暗号文で送り直し、`keys/query` を取れなかったメッセージは順を保って試し直す）。to-device の `m.key.verification.*` は、端末の管理のタスクが受信時の検証の手順 1〜3 を通してから（`CryptoStore::process_to_device`）画面に渡す。再認証は「一致する」（QR なら「読み取った」）を押したときに始め、検証が終わったら、その ID トークンで `replace: true` のピンと署名を保存する。
+  - 届いた要求と自分から始めた検証は前面に出す。入力の途中など、ほかの画面にいるときは、キー操作を奪わないようステータス行で知らせ、`D` で開いてもらう。
+  - 【決定】検証のメッセージは、処理済みの印を保存したあと、メモリーで画面に渡す。Android のように封をして `state.json` に残すことはしない。渡す前にプロセスが止まると、その検証は続けられず、相手には 10 分で `m.timeout` の取りやめになる（鍵や記録は変わらないので、安全には影響しない）。
+- 鍵スロットは、パスキーとリカバリーキーのスロットを一覧にし、削除（直前の再認証。最後の 1 つはサーバーが拒む）と、リカバリーキーの作り直し（今のリカバリーキーで開けた SSSS 鍵で新しいスロットを作り、控えてもらってから再認証して置き換える。`key_id` はスロットを包んだ鍵）を行う。どちらも失効ではないと表示する。
+- 20 台の上限：端末の管理のタスクが 400 `E2EE_LIMIT_EXCEEDED`（`limit` が `devices`）を受けたら、`stale_devices` を画面に渡す。`D` の画面に上限を出し、`stale_devices` の端末を選んだ状態にする。削除したら、端末の管理のタスクの試し直し（間隔は最大 5 分）で登録し直す。
+- テストは `tui/tests/e2ee_devices.rs`（複数のユーザーを扱う偽のサーバーで、再認証を通した 1〜5 の失効の通し、暗号化チャンネルを抜けた相手の署名の付け直し、応答をなくしたあとの続き、新しいリカバリーキーでの再開、SSSS の保存の前に止めた失効の始め直し、2 人の TUI の絵文字 SAS と不一致）と、画面の単体テスト（`ui::devices_view`、`ui::view`）。
 
 ### 取り消せないもの
 
@@ -1836,7 +1868,7 @@ A が B に検証を求める場合です。
 - 画面は、シェルのどこにでも出るダイアログ（`SasVerificationHost`）です。検証は、設定の「暗号化」タブの他のユーザーの検証の「絵文字で検証」から始めます（鍵が変わった相手と、最初に見た鍵を信頼している相手に出す）。保存できたら、他のユーザーの検証の状態を読み直して「検証済み」にします。
 - 暗号ストアを開いているタブ（Web Locks を取ったタブ）だけが検証のメッセージを受け取り、ダイアログを出します。
 - テストは `crates/zoo-crypto/tests/verification.rs`（2 人の端末どうしで Olm を通して検証する。偽のマスター鍵、差し替えた `key`、古い要求、タイムアウト、検証のあとのマスター鍵の作り直し）と、`frontend/src/lib/e2ee/sasController.test.ts`（本物の wasm と、サーバーを模したもので、2 人が検証して「検証済み」になるまで）。
-- Compose Android と TUI は、#362 と同じく、それぞれの初回設定と解錠（#360）、端末一覧と他のユーザーの検証（#362）のあとに、同じ `zoo-crypto` の関数で入れます（別の PR。FFI には `TrustStore::confirm_accepted_master_key` だけを足した）。
+- Compose Android と TUI も、同じ `zoo-crypto` の関数で絵文字 SAS を入れた（FFI には `TrustStore::confirm_accepted_master_key` だけを足した。TUI は FFI を使わず `zoo-crypto` を直接使う）。詳しくは（[失効と検証の実装](#失効と検証の実装362)の「TUI」と [Compose Android](#compose-android)）。
 
 ### QR コードによる検証
 
@@ -1910,7 +1942,8 @@ A の QR を B が読み取る場合です（B の QR を A が読み取る場�
 
 #### TUI
 
-- TUI はまだ他のユーザーの検証（#362 の画面と、絵文字 SAS の to-device のやり取り）を持たないので、QR の表示も、絵文字 SAS と一緒に入れます（[未決と未検証の一覧](#未決と未検証の一覧)）。読み取りは持ちません。
+- 【決定】（#362）TUI はカメラを使えないので、相手の QR は読み取らず、この端末の QR を表示するだけにする。Web と同じ形（バイトモード、誤り訂正 M）の QR を `qrcodegen`（1.8.0。Rust のクレートなので、`flake.nix` の開発シェルは変えていない）で作り、上下 2 つのモジュールを 1 文字にして、白地に黒で、周りに 4 モジュールの余白を付けて描く。相手（Web か Android）が読み取ると、「読み取りましたか」を確かめる（`y` で `done` を送る）。
+- 方式を選ぶ画面には、QR と「絵文字で検証する」（`s`）だけを出す。`zoo-crypto` が送る方式（`m.qr_code.scan.v1` を含む）は変えないので、相手が QR を出して待つことがある。そのときは、利用者が絵文字を選ぶ（相手の画面にも絵文字が出る）。
 
 ## 機能ごとの扱い
 
@@ -1928,6 +1961,7 @@ A の QR を B が読み取る場合です（B の QR を A が読み取る場�
 | リアクション | 平文のまま |
 | スレッド | `parent_id` は平文のまま。暗号化したペイロードにも入れて照合する |
 | URL カード | 【決定】（#361）既定では展開しない。カードを出すとクライアントが URL を Summaly と画像プロクシに送るので、それらの運用者に URL が見えるため。メッセージごとに「リンクのプレビューを読み込む」を押したときだけ取得する（React の `MessageBody` の `previews: "manual"`）。押した状態は保存せず、表示し直すと元に戻る |
+| チャンネル・メッセージのリンク | 【決定】このアプリ自身のチャンネル・メッセージへのリンクは、チャンネルの一覧を持つ画面（アプリのシェル。暗号化チャンネルの投稿はここにだけ出る）では、Summaly にも画像プロクシにも送らず、自分のデータ（`messages` Shape）から取って埋め込むので、暗号化チャンネルの投稿でも、押さずに埋め込む（`LinkPreviews` の `manualExternal` は外部の URL だけに効く。取得は、ほかの投稿と同じく画面の近くに来てから）。リンク先が暗号化チャンネルのメッセージのときは、復号せず、本文を出さずに「このメッセージは暗号化されています」と書く（投稿者・日時・チャンネル名は本文ではないので出す）。**暗号化かどうかは、サーバーの `encrypted` だけで決めず、[暗号化の格下げを防ぐ](#暗号化の格下げを防ぐ)と同じ判定にする。** `MessagePane`・キャッチアップと同じ `useEncryptedDisplay` を使い、次のどれかに当たれば暗号化チャンネルとして扱う：(1) サーバーの `encrypted = true`、(2) `localStorage` の記録（以前に `encrypted = true` を見た。チャンネルの一覧が見たものを含む）、(3) 暗号ストアの記録（`megolmIsKnownEncrypted`。暗号ストアを開いたタブだけで、ほかのタブは (2) で判定する）、(4) 名前が `edm:` で始まる、(5) 暗号文のある行（対象の行と、**この端末が読み込み済みの同じチャンネルの行**。埋め込みのためにチャンネルの行を余計に取ることはしないので、一度も開いていないチャンネルでは対象の行しか見えない）。サーバーが `encrypted = false` を配っても、差し込まれた平文の `content` は埋め込みと短い表示に出さない。**暗号ストアに確かめ終わるまで（確かめられなかったときも）、平文の本文は出さず**、読み込み中の枠にする（10 秒たっても終わらなければ「読み込めませんでした」）。起動直後に暗号ストアを開いているところ（`notReadyReason` が `starting`）も、確かめ終わっていないとして扱う（`useEncryptedDisplay` の `holdWhileOpening`。埋め込みだけが指定し、`MessagePane` とキャッチアップはこの間を確認中にしない）。暗号ストアがいったん使えなくなって戻ったとき（端末の登録し直しなど）は、`MessagePane`・キャッチアップ・埋め込みのどれも前の答えを使わず、確かめ直すまで確認中にする。このタブで暗号ストアを開けないと分かった状態（非対応のブラウザー、ほかのタブが開いている、オフライン、起動の失敗、端末の上限、ログインしているユーザーがいない・取得できない）は、待っても答えが得られないので、(3) を除く条件で判定して表示する。暗号文の行のように本文を出さないと決まっているものは、待たずに出す。チャンネルだけを指すリンクは、チャンネルの名前と説明しか出さず、このためにそのチャンネルの `messages` を同期しないので、(5) は見ない（(1)〜(4) は同じ）。連携カード・部品の投稿も `content` を出さない。Android の埋め込みも同じ判定にする（`treatsLinkAsEncrypted`）。(2)・(3) の記録は端末の暗号化チャンネルの記録（`EncryptedChannelHistory`）で、読み終わるまで平文の本文を出さず、読めないときは「読み込めませんでした」と書く。(5) は、対象の行と、端末が読み込んでいる同じチャンネルの行（開いているチャンネルの同期済みの行と、リンク用の購読に届いた行。保持しない行も含む）を見る。Android は、リンクの表示で一度でも暗号文を見たチャンネルを、セッションの間、暗号化として扱う。リンク先のメッセージを取る要求は、そのチャンネルを開いたときと同じ経路・権限で、サーバーには、暗号化チャンネルの投稿を読んだ端末が、別のメッセージを取ったことは見える（投稿に別のメッセージへのリンクがあることは推測できるが、本文は見えない） |
 | 検索 | サーバーの検索（[search.md](search.md)）の対象外。クライアントが今読み込んで復号した範囲だけを検索する |
 | オフラインキャッシュ | 暗号文だけを保存し、復号した平文は保存しない。ログアウト時の削除は今と同じ |
 | Home/LTL への同期 | 止める（`sync_channel_home_post` の対象外。DB のトリガーで `home_post_id` を NULL に保つ） |
@@ -1945,7 +1979,7 @@ A の QR を B が読み取る場合です（B の QR を A が読み取る場�
 ### API
 
 - 【決定】`POST /api/channels/{id}/encrypt`（本文なし）。応答は `{"data": <ChannelResponse>, "txid": ...}`。`channels.encrypted` を true にし、同じトランザクションで `membership_epoch` を 1 増やす（Shape で見ていた古い epoch のまま送信の準備を進めないため）。すでに暗号化されていれば何もせずに今の行を返す（`txid` は `null`。応答をなくした再送）。
-- 【決定】判定の順：チャンネルがない、削除済み、または非公開チャンネルと DM でメンバーでない（`channel_user` の実際の行で判定する。メンバーでないワークスペースの管理者と、退出した作成者も含む）なら 404。App（Bot）のトークンは 403 `E2EE_APPS_FORBIDDEN`。公開チャンネルは 400 `E2EE_PUBLIC_FORBIDDEN`。すでに暗号化されていれば 200。設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` が false なら 403 `E2EE_DISABLED`。非公開チャンネルは、チャンネルを管理できる人（作成者かワークスペースの管理者で、メンバーであること）だけで、ほかのメンバーは 403。DM とグループ DM は、メンバーなら誰でも切り替えられる（DM には管理者がいないため）。アーカイブ済みは 400。メンバーが 200 人を超えれば 400 `E2EE_LIMIT_EXCEEDED`（`limit` は `members`）。止めるものがあれば 409 `E2EE_CONVERSION_BLOCKED`（下の「App と Webhook」と「DM」）。
+- 【決定】判定の順：チャンネルがない、削除済み、または非公開チャンネルと DM でメンバーでない（`channel_user` の実際の行で判定する。メンバーでないワークスペースの管理者と、退出した作成者も含む）なら 404。App（Bot）のトークンは 403 `E2EE_APPS_FORBIDDEN`。公開チャンネルは 400 `E2EE_PUBLIC_FORBIDDEN`。すでに暗号化されていれば 200。設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` が false なら 403 `E2EE_DISABLED`。非公開チャンネルは、チャンネルを管理できる人（作成者かワークスペースの管理者で、メンバーであること）だけで、ほかのメンバーは 403。DM とグループ DM は、メンバーなら誰でも切り替えられる（DM には管理者がいないため）。アーカイブ済みは 400。メンバーが 200 人を超えれば 400 `E2EE_LIMIT_EXCEEDED`（`limit` は `members`）。止めるものがあれば 409 `E2EE_CONVERSION_BLOCKED`（App、Webhook、DM、または有効/復元可能なChannel Notes）。
 - 【決定】直前の再認証は求めない。鍵の操作ではなく、切り替えで読めるようになる人は増えない（読める人は、今のメンバーの検証済みの端末に限られる）ため。
 - 【決定】`PATCH /api/channels/{id}` の `encrypted` は、今までどおり 409 `E2EE_ENCRYPTED_IMMUTABLE`（[暗号化チャンネル](#暗号化チャンネル357)）。
 
@@ -2005,6 +2039,11 @@ A の QR を B が読み取る場合です（B の QR を A が読み取る場�
 - 【決定】確認の画面は、開いたときのチャンネルに固定する。開いたまま表示するチャンネルが変わったら閉じる（`ChannelScreen` は `ChannelHeader` をチャンネルごとに作り直す）。確認の画面にはチャンネル名を出さないので、移動先を確かめずに戻せない形で切り替えないため。
 - 【決定】Web（React）は、非公開チャンネルの「チャンネル設定」と、DM のメニューから切り替える。確認の画面で、これからのメッセージだけを暗号化すること、これまでのメッセージは平文のまま残り編集できなくなること、Home と ActivityPub に出した投稿は取り消されないこと、Slack の取り込みと同期が止まり、App と Webhook は先に外すこと（チャンネルだけ）、元に戻せないことを示す。切り替えのあと、端末の暗号化の準備ができていなければ、送信の欄は今までどおり止まる（作成した暗号化チャンネルと同じ）。
 - 【決定】Compose Android と TUI は、暗号化チャンネルの本文の送受信に対応したが、切り替えの操作はまだ持たない（[未決と未検証の一覧](#未決と未検証の一覧)）。【決定】（#361）TUI は送受信を持ったあとも、切り替えの操作は入れず、切り替える前の行を Web と同じ区切りと警告で表示するだけにする（[暗号化チャンネルと DM の送受信の実装](#暗号化チャンネルと-dm-の送受信の実装361)）。
+
+### メッセージ転送（引用）
+
+- 【決定】暗号化チャンネル（および `edm:` の暗号化 DM）を転送元または転送先にするメッセージ転送は禁止する。暗号化チャンネル内の投稿には転送メニュー・転送先一覧・転送カードを表示しない。
+- サーバー（`POST /api/messages`）は暗号化チャンネル宛ての `forwarded_message_ids` を `E2EE_PLAINTEXT_FORBIDDEN` で拒否し、転送元・転送先検証および `POST /api/messages/forwards/resolve` は暗号化チャンネル内の元投稿をすべて除外する（存在オラクル防止）。なお App API（`POST /api/apps/v1/messages`）は宛先を問わず `forwarded_message_ids` 自体が未対応のため常に `400 Bad Request` で拒否する。DB トリガー `e2ee_reject_plaintext_messages()` も暗号化チャンネルで `forwarded_message_ids IS NOT NULL` となる INSERT/UPDATE を拒否する。
 
 ## Bot の端末
 
@@ -2271,17 +2310,35 @@ A の QR を B が読み取る場合です（B の QR を A が読み取る場�
   - `importScripts` の失敗は握りつぶさず、install を失敗させる。読めたスクリプトだけが更新の検査の対象になるので、握りつぶすと、復号できない Service Worker が `sw.js` の次の変更まで残るため（ローリング更新で、古い Pod が `/sw-push.js` に HTML を返したときなど）。失敗した install は、次の登録や更新の検査でやり直す。
   - wasm（zoo-crypto と wa-sqlite）は、install で専用のキャッシュ（`zoo-push-wasm-v1`）に保存し、Push を受けたときに初めてコンパイルする。デプロイで wasm の名前（ハッシュ）が変わっても、動いている Service Worker の `sw-push.js` が指す wasm を返せる。新しい Service Worker の activate で、今の 2 つ以外を消す。キャッシュになければ取りに行き、1 つ 8 秒で諦める。nginx は wasm も gzip で圧縮する（`infra/frontend-nginx.conf`）。
 - 本物の Service Worker での確かめは `frontend/src/sw/push.browser.test.ts`（Chromium）。
-- 【決定】（#365）Android は、まだ Push の受信（FCM）がなく、#365 の時点では暗号ストアと端末の登録（#359）もなかったので、#365 では扱わず、[#510](https://github.com/Zli-UoA/zoo2/issues/510) に分けた。Android で Push を受けるようにするときは、同じ `e2ee` を受け取り、Android の暗号ストアの受信用セッション（UniFFI の `InboundSessionStore`）で、Web と同じく書き戻さずに復号する。
+- 【決定】（#365）Android は、#365 の時点では Push の受信（FCM）も暗号ストアと端末の登録（#359）もなかったので、#365 では扱わず、[#510](https://github.com/Zli-UoA/zoo2/issues/510) に分けた（[Android の Push の復号](#android-の-push-の復号510)）。
+
+### Android の Push の復号（#510）
+
+【決定】（#510）Android の暗号化チャンネルの Push も、Web と同じく、サーバーが平文を持たないまま、受け取った端末が自分の暗号ストアで復号して本文を出します。
+
+- 送り方：FCM の data（`backend/src/push/fcm.rs`）に、Web Push と同じ `e2ee`（`recipient_id` と、zoo-crypto の `EncryptedMessage` と同じ形の `message`）を、JSON の文字列で入れる（FCM の data の値は文字列だけ）。`body` は Web と同じく「新しいメッセージ」。どれもサーバーが元から持つ値で、Push のために新しくサーバーに渡る値はない。
+  - FCM の data は、Web Push と違って RFC 8291 で暗号化しないので、Google には `e2ee` の中身（チャンネル、メッセージ、送信者の ID、epoch、Megolm の暗号文）が見える。本文は Megolm の暗号文のままで読めない。タイトル（送信者の名前）、チャンネル名、通知の種類は、平文チャンネルと同じく今までも data に入っている。
+  - 上限：data を JSON にした長さが 4096 バイトを超えるなら、`e2ee` を外して送る（Web Push の `encrypt_fitting` と同じ考え方。`fitting_message`）。外しても超えるなら送らない（今までどおり）。
+- 受け取り方（`frontend-compose` の `androidApp` の `EncryptedPush.kt`、`ZooMessagingService`）。
+  1. `binding` が今の端末の登録と一致し（今ログインしているユーザーで）、`e2ee.recipient_id` がそのユーザーと一致するときだけ復号する。`e2ee` の形が違えば復号しない（Web の `parsePushE2ee` と同じ規則）。
+  2. 暗号ストアの選び方は、ログインしたときと同じ接続先とユーザー（`CryptoStoreFiles.android`）。
+  3. 同じプロセスでアプリが暗号ストアを開いていれば、そのストアで復号する（画面の表示と同じく版の記録で照合し、古い版や同じ版で中身が違うと分かった本文は出さない）。開いていなければ、ディレクトリーの印を取るあいだに `state.json` と保存鍵を読むだけにして印を返し、読んだ写しからメモリーだけで復号する（`CryptoStore.decryptForNotification`）。写しは書き戻さず、保存鍵を開けなくても暗号ストアを作り直さない。そのため、この経路ではリプレイと古い版の検出が効かない（Web の Service Worker の写しと同じ）。
+  4. 通知の本文は、復号した `content.body` の先頭 240 文字（コードポイント）。送信者の確かさは通知には出さず、通知から開いた画面で示す。
+  5. `binding` は、本文を出す直前（`showPushNotification` の中）にもう一度確かめる。
+- 戻し方：`e2ee` がない、復号できない（暗号ストアがない、保存鍵を開けない、鍵が届いていない、照合に失敗した、宛先が今のユーザーでない）なら「新しいメッセージ」のまま出す。サーバーには何も送らない。
+- アプリが動いているあいだは、同期した通知（`AndroidNotifications`）が同じ通知を出し直す。通知の行には暗号文がないので、Push で端末が復号した本文が出ていれば、その本文を残す（通知の extras の `zoo.push.decrypted`。サーバーの data からは読まない）。
+- 異常系のテストは、`NotificationDecryptionTest`（開いているストアと写しからの復号、書き戻さないこと、鍵が届いていない・照合に失敗したときに出さないこと、保存鍵がなくても作り直さないこと）、`EncryptedPushTest`（`e2ee` の読み取り、宛先の確認、240 文字）、backend の `push::fcm` のテスト（`e2ee` を入れること、上限を超えたら外すこと）。
 
 ### iOS の通知の復号（[#685](https://github.com/Zli-UoA/zoo2/issues/685)、[#510](https://github.com/Zli-UoA/zoo2/issues/510)）
 
 【決定】（#685）iPhone の通知（APNs）は、暗号化チャンネルでも、受信した端末の通知拡張（`ios/NotificationService`）が本文を復号して出す。サーバーは平文を持たないままで、本文を作れるのは受信端末だけ。
 
 - APNs の本文に、暗号化チャンネルの通知だけ `e2ee_v1`（`{"recipient_id": "<通知の宛先>", "message": {channel_id, message_id, parent_id, user_id, message_kind, epoch, revision, ciphertext}}`）を付け、`mutable-content` を 1 にする（`backend/src/apns.rs` の `authorized_payload`、`apns/preview.rs` の `attach_e2ee`）。値は Web Push の `e2ee` と同じで、どれもサーバーが元から持つ値（暗号文は Megolm のまま）。APNs の上限（4096 バイト）を超えるなら付けず、汎用の通知（「新しいメッセージ」）のまま出す。`preview_v1`（タイトルと汎用の本文）は今までどおり。
-- 通知拡張（`ios/Shared/NotificationE2ee.swift`）は、`recipient_id` と `user_id` が一致するときだけ、App Group の `e2ee/*/state.json` のうち `user_id` が宛先のものを選び、共有の Keychain の保存鍵（項目名はディレクトリー名の暗号ストア ID）で端末アカウントと、暗号文の `sender_key`・`session_id` に当たる受信用セッションだけを開き、受信時の照合（`InboundSessionStore.decrypt`）を通して復号する。**読み取り専用**で、何も書き戻さない（`state.json` は一時ファイルから `rename` で置き換わるので、本体が動いていても、前か次の完全な状態を読む）。最新の版（`revision == latest`）の本文だけを出す。
+- 通知拡張（`ios/Shared/NotificationE2ee.swift`）は、`recipient_id`・`user_id`・現在のアカウント ID が一致するときだけ、App Group の `e2ee/*/state.json` のうち `user_id` が宛先のものを選び、共有の Keychain の保存鍵（項目名はディレクトリー名の暗号ストア ID）で端末アカウントと、暗号文の `sender_key`・`session_id` に当たる受信用セッションだけを開き、受信時の照合（`InboundSessionStore.decrypt`）を通して復号する。**読み取り専用**で、何も書き戻さない（`state.json` は一時ファイルから `rename` で置き換わるので、本体が動いていても、前か次の完全な状態を読む）。復号結果が `revision == latest` のときに本文を出す。ただし写しには版の記録を持たないため、以前に版 2 を通知したあと版 1 が届いても、古い版だと検出できず表示する場合がある。常に最新の本文であることは保証しない。
+- バックアップの取り込み中は、変更セッションだけを同期済みのページファイルへ保存する。`state.json` に取り込み済みの連番を保持し、再起動時はそれより新しい連続したページを再生する。通常の保存と取り込み完了時に集約し、古いページは再適用しない。通知拡張はページを読まず、集約前にしかないセッションの通知は汎用表示にする。
 - 本文は先頭 240 コードポイント。リアクションの通知は「リアクション: 」を前に付ける。送信者の確かさ（未検証の送信者、バックアップ由来）は通知には出さず、通知から開いた画面で示す。
-- 戻し方：`e2ee_v1` がない、宛先が今のユーザーでない、暗号ストアや保存鍵を読めない、鍵がまだ届いていない、照合に失敗した、古い版、のどれでも、プレビューのまま（「新しいメッセージ」）出す。
-- Android の FCM（#510 の Android 側）は、まだ扱わない。同じ `e2ee_v1` を FCM の `data` に付けて、Android の暗号ストアで読み取り専用に復号する（別の作業）。
+- 戻し方：`e2ee_v1` がない、宛先が今のユーザーでない、暗号ストアや保存鍵を読めない、鍵がまだ届いていない、照合に失敗した、古い版だと検出できた、のどれでも、プレビューのまま（「新しいメッセージ」）出す。
+- Android の FCM は、前節の `e2ee` ペイロードと `EncryptedPush` で復号する。iOS の `e2ee_v1` とはペイロードの名前が異なる。
 
 ### Playwright の E2E（[#363](https://github.com/Zli-UoA/zoo2/issues/363)）
 
@@ -2380,7 +2437,7 @@ A の QR を B が読み取る場合です（B の QR を A が読み取る場�
 | [#363](https://github.com/Zli-UoA/zoo2/issues/363) | Playwright の E2E テスト（仮想認証器 `hasPrf: true`） | #362 |
 | [#364](https://github.com/Zli-UoA/zoo2/issues/364) | 暗号化した添付（実装したら添付の禁止を外す） | #361 |
 | [#365](https://github.com/Zli-UoA/zoo2/issues/365) | Push 通知を Service Worker で復号する | #361 |
-| [#510](https://github.com/Zli-UoA/zoo2/issues/510) | Android の Push 通知を復号する（#365 から分けた） | #359、#365 |
+| [#510](https://github.com/Zli-UoA/zoo2/issues/510) | Android の Push 通知を復号する（#365 から分けた。[Android の Push の復号](#android-の-push-の復号510)） | #359、#365 |
 | [#366](https://github.com/Zli-UoA/zoo2/issues/366) | Bot を端末として参加させる（メンバーの許可、`e2ee:device`、`/api/apps/v1/e2ee/...`、`sdk/src/e2ee.ts`、`examples/e2ee-echo-bot`。[Bot の端末](#bot-の端末)） | #361 |
 | [#367](https://github.com/Zli-UoA/zoo2/issues/367) | 既存のプライベートチャンネルを暗号化に切り替える。Slack 取り込みの worker が、暗号化されたチャンネルへ平文を書かないようにする（【決定】worker 側の検査。[既存のチャンネルの暗号化](#既存のチャンネルの暗号化)） | #361 |
 | [#368](https://github.com/Zli-UoA/zoo2/issues/368) | 他のユーザーの絵文字 SAS 検証（共通部分と Web。Compose Android と TUI は、それぞれの #362 のあと） | #362 |
@@ -2405,8 +2462,8 @@ A の QR を B が読み取る場合です（B の QR を A が読み取る場�
 | 増えた端末に今のセッションを今のインデックスから配る（epoch を変えない端末の追加） | 【提案】 | 後続 |
 | 次の送信の前に、配り終えていない端末（払い出されなかった端末と、to-device の `undelivered` の端末）へ鍵を配り直す | 【決定】初期版の Web と TUI にある。配ったかどうかは Worker（TUI はプロセス）のメモリーにだけ置き、保存しない | #361 |
 | 鍵がまだ届いていない端末への、送信を待たない送り直し（暗号ストアの送信待ちに保存し、間隔をあけて自動で送り直す） | 未決 | 後続 |
-| Android の暗号化の送受信 | 本文・返信・編集を実装。添付の UI は後続 | #361 の続き |
-| TUI の端末一覧と失効、他のユーザーの再検証（#362） | 未決 | #362 |
+| Android の暗号化の送受信 | 本文・返信・編集・`mentions`・暗号化した添付、送信欄の上の表示（#565）、暗号化の区切りと平文の警告（#564）、鍵バックアップの証明（#570）を実装 | #361 の続き |
+| TUI の端末一覧と失効、他のユーザーの再検証（#362） | 【決定】実装した（[失効と検証の実装](#失効と検証の実装362)の「TUI」） | #362 |
 | クロス署名鍵の差し替え、SSSS の秘密とスロットの置き換え、鍵バックアップの版の作り直しに直前の再認証を求める。`max_age=0` で取り直した ID トークンの `authenticated_at` で確かめる（[クロス署名の API](#クロス署名356)） | 【決定】（実際の AuthZ での動きは AuthZ#102 の E2E で確かめた） | #356 |
 | AuthZ で、すべてのセッションとトークンを 1 回で失効し、パスキーの削除と同時にも行える機能（今は、パスキーの削除はセッションもトークンも失効しない） | 【決定】AuthZ に頼む（AuthZ#100） | #362、AuthZ#100 |
 | 本番のアクセストークンの有効期間（`accessTokenTtl`。推奨は 3600 秒）。#362 では確かめていない（実機の `expires_in` を見る） | 【未検証】 | #362 の後続 |
@@ -2425,10 +2482,10 @@ A の QR を B が読み取る場合です（B の QR を A が読み取る場�
 | Compose Android と TUI で、暗号化チャンネルに Bot を入れる許可の画面（暗号化チャンネルの送受信が先に要る） | 未決 | 後続 |
 | Bot が暗号化した添付を送受信する（Bot の presign の API と、イベントへの添付の行。#364 の上に足す） | 未決 | 後続 |
 | Bot のリプレイと版の記録を Bot の暗号ストアに保存する（Web と同じく、今はメモリーにだけ持つ） | 【提案】 | 後続 |
-| Compose Android と TUI の絵文字 SAS 検証（それぞれの #360 と #362 が先に要る。共通部分は #368 で `zoo-crypto` に入れた） | 未決 | #368 の続き |
+| Compose Android と TUI の絵文字 SAS 検証（それぞれの #360 と #362 が先に要る。共通部分は #368 で `zoo-crypto` に入れた） | Android は絵文字 SAS と QR を実装（#362）。TUI は絵文字 SAS と QR の表示を実装（#362） | #368 の続き |
 | 自分の端末どうしの SAS 検証と QR コードによる検証 | 未決（初期版は持たない。自分の端末は SSSS の解錠で検証する） | 後続 |
 | 他のユーザーの QR コードによる検証 | 【提案】Web に入れる（[QR コードによる検証](#qr-コードによる検証)） | #368 の続き |
-| TUI の QR コードの表示（読み取りは持たない） | 未決（TUI の絵文字 SAS と一緒に入れる） | #368 の続き |
+| TUI の QR コードの表示（読み取りは持たない） | 【決定】実装した（[QR コードによる検証](#qr-コードによる検証)の「TUI」） | #368 の続き |
 | 暗号ストアを開いていないタブで、届いた検証の要求を知らせる | 【提案】初期版の Web は、暗号ストアを開いたタブにだけダイアログを出す | 後続 |
 | Compose Android で、既存のチャンネルを暗号化に切り替える操作と、切り替える前のメッセージの印 | 印と編集禁止は実装済み。切り替えの操作は後続 | #367 の続き |
 | TUI で、既存のチャンネルを暗号化に切り替える操作 | 【決定】（#361）入れない。切り替える前のメッセージの印だけを出す（[暗号化チャンネルと DM の送受信の実装](#暗号化チャンネルと-dm-の送受信の実装361)） | #361 |

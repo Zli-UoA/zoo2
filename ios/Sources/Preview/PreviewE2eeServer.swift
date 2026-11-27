@@ -30,7 +30,7 @@ final class PreviewE2eeServer: E2eeSetupAPI, E2eeDeviceAPI, E2eeKeysAPI {
     init(userID: String) { self.userID = userID }
 
     func reset() {
-        defaultKeyID = nil; revision = 0; slots = []; keys = [:]; signatures = []; versions = []; failNext = []
+        defaultKeyID = nil; revision = 0; slots = []; keys = [:]; signatures = []; versions = []; failNext = []; backupRows = [:]
     }
 
     private func fail(_ op: String) throws { if failNext.remove(op) != nil { throw ZooError.invalidResponse } }
@@ -142,7 +142,7 @@ final class PreviewE2eeServer: E2eeSetupAPI, E2eeDeviceAPI, E2eeKeysAPI {
     }
 
     func backupKeys(version: String, after: String?) async throws -> String {
-        previewJSONText(.object(["sessions": .array(Array(backupRows.values)), "next": .null]))
+        previewJSONText(.object(["sessions": .array(backupRows.filter { $0.key.hasPrefix(version + "|") }.map(\.value)), "next": .null]))
     }
 
     func uploadBackupKeys(version: String, secretsRevision: UInt64, body: String, proof: String?) async throws {
@@ -156,7 +156,7 @@ final class PreviewE2eeServer: E2eeSetupAPI, E2eeDeviceAPI, E2eeKeysAPI {
         for session in sessions {
             guard case .object(let row) = session, case .string(let channel)? = row["channel_id"],
                   case .string(let sender)? = row["sender_key"], case .string(let id)? = row["session_id"] else { continue }
-            backupRows["\(channel)|\(sender)|\(id)"] = session
+            backupRows["\(version)|\(channel)|\(sender)|\(id)"] = session
         }
     }
 

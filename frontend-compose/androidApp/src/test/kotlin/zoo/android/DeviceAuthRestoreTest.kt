@@ -11,6 +11,17 @@ import kotlin.test.*
 class DeviceAuthRestoreTest {
     private val discovery = """{"issuer":"https://id.example","token_endpoint":"https://id.example/token"}"""
 
+    @Test fun restoreReportsDiscoveryFailureBeforeTokenRenewal() = runTest {
+        val http = HttpClient(MockEngine { throw java.net.UnknownHostException("test") })
+        val stages = mutableListOf<LoginStage>()
+        try {
+            assertFailsWith<java.net.UnknownHostException> {
+                DeviceAuth(http).restore("https://id.example", "client", "", "saved") { stages.add(it) }
+            }
+            assertEquals(listOf(LoginStage.Discovery), stages)
+        } finally { http.close() }
+    }
+
     @Test
     fun resumesWithoutDeviceGrantAndPersistsRotatedTokenBeforeReturningHeaders() = runTest {
         val saved = mutableListOf<String?>()

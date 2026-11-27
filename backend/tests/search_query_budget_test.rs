@@ -43,6 +43,26 @@ fn scan(node: &Value, relations: &mut std::collections::BTreeMap<String, f64>) {
     if let Some(name) = name {
         *relations.entry(name.into()).or_default() += work;
     }
+    // 結合で捨てた行と、ソートの入力（メモリ内で済んだものも）も、表の走査と同じ上限で見る。
+    let removed = node["Rows Removed by Join Filter"].as_f64().unwrap_or(0.) * loops;
+    if removed > 0. {
+        *relations.entry("join-filter-removed".into()).or_default() += removed;
+    }
+    if matches!(
+        node["Node Type"].as_str(),
+        Some("Sort" | "Incremental Sort")
+    ) {
+        let input: f64 = node["Plans"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|child| {
+                child["Actual Rows"].as_f64().unwrap_or(0.)
+                    * child["Actual Loops"].as_f64().unwrap_or(0.)
+            })
+            .sum();
+        *relations.entry("sort-input".into()).or_default() += input;
+    }
     assert!(
         !node["Sort Method"]
             .as_str()
@@ -91,6 +111,7 @@ async fn search_queries_have_bounded_work() -> anyhow::Result<()> {
     // 7 行に 1 行は削除済み。チャンネルは公開・非公開（actor は 1/5 だけ所属）・暗号化を巡回する。
     let content = "CASE WHEN i%10<3 THEN 'よろしくお願いします、です '||i WHEN i%50 IN (3,4) THEN '明日の会議の資料 '||i ELSE 'hello world message '||i END";
     let channels = PUBLIC + PRIVATE + ENCRYPTED;
+    let noise = n / 10;
     db.batch_execute(&format!(r#"
 SET session_replication_role = replica;
 INSERT INTO users(id,user_name,display_name) VALUES('{ACTOR}','search-actor','A'),('{NOISE}','search-noise','N');
@@ -102,7 +123,7 @@ SELECT 'sc-'||i,'{ACTOR}',LOCALTIMESTAMP FROM generate_series(1,{channels}) i WH
 -- 今月（R 件）。月初から 50ms 間隔なので、月の 0:17 以降に実行すれば今月に収まる。
 INSERT INTO messages(id,user_id,channel_id,content,created_at,deleted_at)
 SELECT 'r-'||lpad(i::text,8,'0'),CASE WHEN i%2=0 THEN '{ACTOR}' ELSE '{NOISE}' END,'sc-'||(1+i%{channels}),
-  CASE WHEN i=7 THEN 'とてもレア語な話' ELSE {content} END,
+  CASE WHEN i=8 THEN 'とてもレア語な話' ELSE {content} END,
   date_trunc('month',LOCALTIMESTAMP)+i*interval '50 milliseconds',
   CASE WHEN i%7=0 THEN LOCALTIMESTAMP END
 FROM generate_series(1,{R}) i;
@@ -124,6 +145,17 @@ FROM (SELECT row_number() OVER () i,* FROM messages WHERE id LIKE 'r-%' OR id LI
 INSERT INTO channel_notes(id,channel_id,title,content,created_user_id,created_at)
 SELECT 'n'||m.id,m.channel_id,'メモ '||m.i,CASE WHEN m.i%3=0 THEN '障害対応の手順 '||m.i ELSE '議事メモ '||m.i END,m.user_id,m.created_at
 FROM (SELECT row_number() OVER () i,* FROM messages WHERE id LIKE 'r-%' OR id LIKE 'h-%') m WHERE m.i%40=0;
+-- 自分が参加中の会話: actor は所属しない公開チャンネルの今月の親 200 件のスレッドに参加し、
+-- 別の 200 件でメンションの通知を受けている（どちらも規模によらず同じ）。通知は正本の notification_events。
+INSERT INTO thread_participants(thread_id,user_id)
+SELECT id,'{ACTOR}' FROM messages WHERE id LIKE 'r-%' AND deleted_at IS NULL AND channel_id IN (SELECT 'sc-'||i FROM generate_series(31,{PUBLIC}) i) ORDER BY id LIMIT 200;
+INSERT INTO notification_events(id,user_id,actor_id,channel_id,message_id,notification_type)
+SELECT 'nt-'||id,'{ACTOR}','{NOISE}',channel_id,id,'mention' FROM messages WHERE id LIKE 'r-%' AND deleted_at IS NULL AND channel_id IN (SELECT 'sc-'||i FROM generate_series(31,{PUBLIC}) i) ORDER BY id DESC LIMIT 200;
+-- メンション以外の通知（DM・リアクション・返信）は規模の 1/10 件（30 万件で 3 万、100 万件で 10 万）。
+-- メンションの部分インデックスで引くので、増えても scope-involving の走査は変わらない。
+INSERT INTO notification_events(id,user_id,actor_id,channel_id,message_id,notification_type)
+SELECT 'nn-'||m.id,'{ACTOR}','{NOISE}',m.channel_id,m.id,(ARRAY['dm','reaction','reply'])[1+m.i%3]
+FROM (SELECT row_number() OVER () i,id,channel_id FROM messages WHERE id LIKE 'h-%' LIMIT {noise}) m;
 SET session_replication_role = DEFAULT;
 "#)).await?;
     // 1 文ずつ送る（複数の文はまとめて暗黙のトランザクションになり、VACUUM が通らない）。
@@ -150,8 +182,13 @@ SET session_replication_role = DEFAULT;
         "search indexes must not keep a GIN pending list: {pending}"
     );
 
-    let scope: Value =
-        serde_json::from_str(&one(&db, &bind(SCOPE_SQL, &[ACTOR.into(), String::new()])).await?)?;
+    let scope: Value = serde_json::from_str(
+        &one(
+            &db,
+            &bind(SCOPE_SQL, &[ACTOR.into(), "[]".into(), String::new()]),
+        )
+        .await?,
+    )?;
     let ids = scope["ids"].to_string();
     let visible = scope["ids"].as_array().unwrap().len();
     assert_eq!(
@@ -190,18 +227,46 @@ SET session_replication_role = DEFAULT;
     let scope_bound = (3 * channels + 3 * visible + 64) as f64;
     queries.push((
         "scope".into(),
-        bind(SCOPE_SQL, &[ACTOR.into(), String::new()]),
+        bind(SCOPE_SQL, &[ACTOR.into(), "[]".into(), String::new()]),
         scope_bound,
     ));
     queries.push((
         "scope-guest-without-channels".into(),
-        bind(SCOPE_SQL, &[LONELY.into(), String::new()]),
+        bind(SCOPE_SQL, &[LONELY.into(), "[]".into(), String::new()]),
         (3 * channels + 64) as f64,
     ));
     queries.push((
         "scope-channel".into(),
-        bind(SCOPE_SQL, &[ACTOR.into(), "sc-1".into()]),
+        bind(
+            SCOPE_SQL,
+            &[ACTOR.into(), r#"["sc-1","sc-2"]"#.into(), String::new()],
+        ),
         64.,
+    ));
+    // 自分が参加中の会話: 所属（30 + 20）と、参加・メンションのスレッド（各 200）。
+    let involving_sql = bind(SCOPE_SQL, &[ACTOR.into(), "[]".into(), "1".into()]);
+    let involving: Value = serde_json::from_str(&one(&db, &involving_sql).await?)?;
+    let threads = involving["threads"].as_array().unwrap().len();
+    assert_eq!(threads, 400, "joined and mentioned threads");
+    assert_eq!(
+        involving["members"].as_array().unwrap().len(),
+        30 + PRIVATE / 5
+    );
+    let actor_notifications: usize = one(
+        &db,
+        &format!("SELECT count(*)::text FROM notification_events WHERE user_id = '{ACTOR}'"),
+    )
+    .await?
+    .parse()?;
+    assert_eq!(
+        actor_notifications,
+        200 + n / 10,
+        "mentions and other notifications"
+    );
+    queries.push((
+        "scope-involving".into(),
+        involving_sql,
+        scope_bound + (3 * threads) as f64,
     ));
     // 名前、種類、表、列、語、投稿者、keyset（作成日時・ID）。
     type Case<'a> = (
@@ -321,34 +386,83 @@ SET session_replication_role = DEFAULT;
         } else {
             one(&db, &hits(table, column, terms)).await?.parse()?
         };
-        let mut params = vec![
-            now.to_string(),
-            ids.clone(),
-            author.to_string(),
-            at.to_string(),
-            id.to_string(),
-            String::new(),
-            String::new(),
-            "21".into(),
-        ];
-        params.extend(terms.iter().map(|t| t.to_string()));
-        // 対象の表は「今月のヒット」の定数倍、それ以外（JOIN 先）はページの件数に比例。
-        queries.push((
-            name.to_string(),
-            bind(&month_sql(*kind, terms), &params),
-            3. * h + 64.,
-        ));
+        let authors = if author.is_empty() {
+            "[]".to_string()
+        } else {
+            json!([author]).to_string()
+        };
+        // そのまま、と、ボットを除いて自分が参加中の会話に絞ったもの（行の絞り込みが増えるだけで、
+        // 探す行は同じ GIN で決まる）。
+        // 参加スレッドが多い利用者（T = 1 万）も測る。スレッドはハッシュで照合するので、走査も時間もほぼ変わらない。
+        let many_threads = {
+            let mut list: Vec<Value> = involving["threads"].as_array().unwrap().clone();
+            list.extend((0..10_000).map(|i| Value::from(format!("t-{i}"))));
+            Value::from(list).to_string()
+        };
+        let me = involving["user_name"].as_str().unwrap().to_string();
+        for (suffix, no_bots, members, threads, ids, me) in [
+            (
+                "",
+                "",
+                String::new(),
+                "[]".to_string(),
+                ids.clone(),
+                String::new(),
+            ),
+            (
+                "-involving-no-bots",
+                "1",
+                involving["members"].to_string(),
+                involving["threads"].to_string(),
+                involving["ids"].to_string(),
+                me.clone(),
+            ),
+            (
+                "-involving-10k-threads",
+                "",
+                involving["members"].to_string(),
+                many_threads,
+                involving["ids"].to_string(),
+                me.clone(),
+            ),
+        ] {
+            let mut params = vec![
+                now.to_string(),
+                ids,
+                authors.clone(),
+                at.to_string(),
+                id.to_string(),
+                String::new(),
+                String::new(),
+                "21".into(),
+                no_bots.into(),
+                members,
+                threads,
+                me,
+            ];
+            params.extend(terms.iter().map(|t| t.to_string()));
+            // 対象の表は「今月のヒット」の定数倍、それ以外（JOIN 先）はページの件数に比例。
+            queries.push((
+                format!("{name}{suffix}"),
+                bind(&month_sql(*kind, terms), &params),
+                3. * h + 64.,
+            ));
+        }
     }
     // 履歴より前の空の月: インデックスを引くだけ。
     let mut empty = vec![
         (now - 59).to_string(),
         ids.clone(),
-        String::new(),
+        "[]".into(),
         String::new(),
         String::new(),
         String::new(),
         String::new(),
         "21".into(),
+        String::new(),
+        String::new(),
+        "[]".into(),
+        String::new(),
         "です".into(),
     ];
     queries.push((
@@ -382,12 +496,16 @@ SET session_replication_role = DEFAULT;
         let params = vec![
             now.to_string(),
             ids,
-            String::new(),
+            "[]".into(),
             String::new(),
             String::new(),
             String::new(),
             String::new(),
             "21".into(),
+            String::new(),
+            String::new(),
+            "[]".into(),
+            String::new(),
             term.into(),
         ];
         queries.push((
@@ -396,8 +514,13 @@ SET session_replication_role = DEFAULT;
             3. * h + 64.,
         ));
     }
-    let lonely: Value =
-        serde_json::from_str(&one(&db, &bind(SCOPE_SQL, &[LONELY.into(), String::new()])).await?)?;
+    let lonely: Value = serde_json::from_str(
+        &one(
+            &db,
+            &bind(SCOPE_SQL, &[LONELY.into(), "[]".into(), String::new()]),
+        )
+        .await?,
+    )?;
     assert_eq!(
         lonely["ids"],
         json!([]),
@@ -424,7 +547,7 @@ SET session_replication_role = DEFAULT;
                         // 対象の表と検索用インデックスは上限内。JOIN 先（channels など）はページの件数分。
                         for (relation, work) in &relations {
                             let limit = if relation.ends_with("_search_month")
-                                || ["messages", "attachments", "channel_notes"].contains(&relation.as_str())
+                                || ["messages", "attachments", "channel_notes", "join-filter-removed", "sort-input"].contains(&relation.as_str())
                                 || name.starts_with("scope")
                             {
                                 *bound
@@ -462,19 +585,110 @@ SET session_replication_role = DEFAULT;
     let state = backend::state::AppState::new(backend::db::init_db(&url).await?, config);
     let app = backend::routes::create_router(state);
     let api = [
-        ("api-messages", "/api/search?q=%E3%81%A7%E3%81%99"),
+        (
+            "api-messages",
+            "/api/search?type=messages&q=%E3%81%A7%E3%81%99",
+        ),
         (
             "api-messages-12-months",
-            "/api/search?q=%E5%AD%98%E5%9C%A8%E3%81%97%E3%81%AA%E3%81%84",
+            "/api/search?type=messages&q=%E5%AD%98%E5%9C%A8%E3%81%97%E3%81%AA%E3%81%84",
+        ),
+        // メッセージとファイル（クライアントの既定）。月ごとに 2 本。
+        ("api-all", "/api/search?type=all&q=%E3%81%A7%E3%81%99"),
+        (
+            "api-all-12-months",
+            "/api/search?type=all&q=%E5%AD%98%E5%9C%A8%E3%81%97%E3%81%AA%E3%81%84",
         ),
         ("api-files", "/api/search?type=files&q=pdf"),
         ("api-notes", "/api/search?type=notes&q=%E9%9A%9C%E5%AE%B3"),
+        // 自分が参加中・ボットを除く（クライアントの既定の all）。
+        (
+            "api-all-involving-no-bots",
+            "/api/search?type=all&q=%E3%81%A7%E3%81%99&involving_me=true&exclude_bots=true",
+        ),
     ];
+    let oldest_month = {
+        let m = now - 11;
+        format!("{:04}-{:02}", (m - 1) / 12, (m - 1) % 12 + 1)
+    };
+    // まれな語は、今月の削除されていない 1 行だけに当たる（0 件の計測にならない）。
+    {
+        let uri = "/api/search?q=%E3%83%AC%E3%82%A2%E8%AA%9E"; // レア語
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header("X-Dev-User", ACTOR)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await?;
+        let body: Value = serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await?)?;
+        assert_eq!(body["items"].as_array().map(Vec::len), Some(1), "{body}");
+    }
+    // リクエストごとの SQL の回数・合計バッファ・DB 時間（pg_stat_statements。CI と compose で preload する）。
+    // 統計は全体で 1 つなので、1 リクエストずつ reset して読む。
+    db.batch_execute("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+        .await?;
+    let stat = |filter: &str| {
+        format!(
+            "SELECT json_build_object('calls', COALESCE(sum(calls), 0), \
+               'blocks', COALESCE(sum(shared_blks_hit + shared_blks_read), 0), \
+               'db_ms', COALESCE(sum(total_exec_time), 0))::text \
+             FROM pg_stat_statements WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database()) \
+               AND query NOT LIKE '%pg_stat_statements%' AND ({filter})"
+        )
+    };
+    let mut api_sql = Vec::new();
+    for (name, uri) in api {
+        for _ in 0..5 {
+            db.batch_execute("SELECT pg_stat_statements_reset()")
+                .await?;
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .header("X-Dev-User", ACTOR)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await?;
+            assert_eq!(response.status(), 200, "{name}");
+            let all: Value = serde_json::from_str(&one(&db, &stat("true")).await?)?;
+            let month: Value =
+                serde_json::from_str(&one(&db, &stat("query LIKE '%likequery%'")).await?)?;
+            let scope: Value = serde_json::from_str(
+                &one(&db, &stat("query LIKE '%visible AS MATERIALIZED%'")).await?,
+            )?;
+            let months = month["calls"].as_f64().unwrap();
+            assert_eq!(scope["calls"].as_f64(), Some(1.), "{name}: scope SQL once");
+            let expected = match name {
+                // 該当なしは、ちょうど 12 か月分の SQL を流して止まる。
+                "api-messages-12-months" => Some(12.),
+                // よくある語は今月だけでページがそろう。
+                "api-messages" => Some(1.),
+                "api-all-12-months" => Some(24.),
+                "api-all" => Some(2.),
+                _ => None,
+            };
+            if let Some(expected) = expected {
+                assert_eq!(months, expected, "{name}: month SQL count");
+            }
+            assert!((1. ..=24.).contains(&months), "{name}: {months} month SQLs");
+            api_sql.push(json!({
+                "name": name, "month_sql": months, "statements": all["calls"],
+                "blocks": all["blocks"], "db_ms": all["db_ms"],
+            }));
+        }
+    }
     let api_metrics = Arc::new(Mutex::new(Vec::<Value>::new()));
     for concurrency in [1, 8] {
         let mut tasks = Vec::new();
         for _ in 0..concurrency {
-            let (app, metrics) = (app.clone(), api_metrics.clone());
+            let (app, metrics, oldest_month) =
+                (app.clone(), api_metrics.clone(), oldest_month.clone());
             tasks.push(tokio::spawn(async move {
                 for _ in 0..30 {
                     for (name, uri) in api {
@@ -482,9 +696,11 @@ SET session_replication_role = DEFAULT;
                         let response = app.clone().oneshot(Request::builder().uri(uri).header("X-Dev-User", ACTOR).body(Body::empty()).unwrap()).await.unwrap();
                         assert_eq!(response.status(), 200, "{name}");
                         let body: Value = serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap();
-                        if name == "api-messages-12-months" {
+                        if name.ends_with("-12-months") {
                             assert!(body["items"].as_array().unwrap().is_empty());
                             assert!(body["next_cursor"].is_string(), "older months remain after 12");
+                            // ちょうど 12 か月（今月から 11 か月前まで）を見て止まる。
+                            assert_eq!(body["searched_until"], json!(oldest_month), "{body}");
                         }
                         metrics.lock().unwrap().push(json!({"name": name, "concurrency": concurrency, "roundtrip_ms": start.elapsed().as_secs_f64() * 1000.}));
                     }
@@ -503,7 +719,7 @@ SET session_replication_role = DEFAULT;
         serde_json::to_vec_pretty(&json!({
             "rows": n, "recent_rows": R, "visible_channels": visible, "queries": queries.len(),
             "query_definitions": queries.iter().map(|(name, sql, bound)| json!({"name": name, "sql": sql, "bound": bound})).collect::<Vec<_>>(),
-            "samples": *metrics.lock().unwrap(), "api_samples": *api_metrics.lock().unwrap(),
+            "samples": *metrics.lock().unwrap(), "api_samples": *api_metrics.lock().unwrap(), "api_sql": api_sql,
         }))?,
     )?;
     println!(

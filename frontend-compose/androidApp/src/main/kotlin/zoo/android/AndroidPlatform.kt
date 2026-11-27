@@ -21,6 +21,8 @@ import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 import zoo.*
 
+internal val navigationCacheLimits = listOf(0, 4, 8, 16)
+
 internal class AndroidPlatform(
     private val activity: Activity,
     private val http: HttpClient,
@@ -41,9 +43,21 @@ internal class AndroidPlatform(
     override var messageEncryption: zoo.MessageEncryption? = null
     var reauthenticate: (suspend () -> String)? = null
     var passkey: zoo.crypto.UnlockMethod.Passkey? = null
+    /** ログインに使う OIDC の issuer（失効の画面の AuthZ へのリンクに使う）。 */
+    var issuer: String? = null
     var e2ee: zoo.crypto.E2eeDeviceManager? = null
 
     private val prefs = activity.getSharedPreferences("preferences", 0)
+    var navigationCacheLimit by mutableIntStateOf(prefs.getInt("navigation-cache-limit", 8).takeIf {
+        it in navigationCacheLimits
+    } ?: 8)
+        private set
+
+    fun saveNavigationCacheLimit(limit: Int) {
+        if (limit !in navigationCacheLimits) return
+        navigationCacheLimit = limit
+        prefs.edit().putInt("navigation-cache-limit", limit).apply()
+    }
     private val savedTheme = prefs.getString("theme", "system") ?: "system"
     private fun reducedMotion() = android.provider.Settings.Global.getFloat(
         activity.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f,
@@ -59,11 +73,15 @@ internal class AndroidPlatform(
     ))
         private set
 
+    var onNavigation: ((Environment) -> Unit)? = null
+
     private val history = NavigationHistory(env.path)
+    val navigationRevision: Long get() = history.revision
     private val files = java.util.concurrent.ConcurrentHashMap<String, Uri>()
     private val cacheDirectory = java.io.File(activity.cacheDir, "accounts/${hash("$base:$userId")}")
     private val cache = AccountCache(cacheDirectory)
     private val encryptionHistory = AccountCache(java.io.File(activity.noBackupFilesDir, "e2ee-channel-history/${hash("$base:$userId")}"))
+    private val mediaProxy = AndroidMediaProxy(activity, base)
     private val images = AndroidImageCache(cacheDirectory.resolve("images"))
     private val dictionaries = mutableMapOf<String, Row>()
 
@@ -91,7 +109,12 @@ internal class AndroidPlatform(
             cache.write(key, value)
         }
 
-    fun close() { images.close() }
+    override suspend fun removeCache(key: String) = withContext(Dispatchers.IO) { cache.delete(key) }
+
+    fun close() {
+        onNavigation = null
+        images.close()
+    }
 
     private suspend fun clear() = withContext(NonCancellable + Dispatchers.IO) {
         // logout closes the session scope; deletion must still finish, off the UI thread.
@@ -115,6 +138,7 @@ internal class AndroidPlatform(
 
     private fun applyNavigation(entry: NavigationHistory.Entry) {
         env = env.copy(path = entry.path, historyState = entry.state)
+        onNavigation?.invoke(env)
     }
 
     override fun replace(path: String) {
@@ -251,7 +275,14 @@ internal class AndroidPlatform(
             }
         }
 
-    override suspend fun image(url: String): ByteArray = images.image(url)
+    override suspend fun image(url: String): ByteArray =
+        mediaProxy.image(url, http, images, env.online)
+
+    override suspend fun refreshImage(url: String): ByteArray =
+        mediaProxy.image(url, http, images, env.online, bypassCache = true)
+
+    override suspend fun attachmentImage(url: String): ByteArray =
+        images.signedImage(url)
 
     override suspend fun invoke(name: String, payload: String): String =
         when (name) {
@@ -259,7 +290,9 @@ internal class AndroidPlatform(
                 val manager = e2ee
                 // 件数を数える前に to-device の処理を止める（数えたあとで増えた鍵を、確かめずに消さないため）。
                 val count = manager?.prepareLogout() ?: 0
-                if (count != 0 && !confirmUnbackedKeys(count)) {
+                // 終わっていない失効があれば、進み具合が消えることを先に確かめる（Web の `logout.revocation*`）。
+                val revocationPending = manager?.revocationPendingForLogout() == true
+                if (revocationPending && !confirmUnbackedKeys(REVOCATION_PENDING_PROMPT) || count != 0 && !confirmUnbackedKeys(count)) {
                     // 取りやめたら、to-device の処理に戻る。
                     manager?.cancelLogout()
                 } else {
@@ -305,26 +338,7 @@ internal class AndroidPlatform(
                 require(data.text("base64").length <= 24 * 1024 * 1024)
                 val bytes = android.util.Base64.decode(data.text("base64"), android.util.Base64.DEFAULT)
                 require(bytes.size <= 16 * 1024 * 1024)
-                val target = withContext(Dispatchers.IO) {
-                    val directory = java.io.File(activity.cacheDir, "preview-files").apply { mkdirs() }
-                    // Share only user-selected files, retaining at most 64 MiB in the private cache.
-                    val existing = directory.listFiles().orEmpty().sortedBy { it.lastModified() }.toMutableList()
-                    var total = existing.sumOf { it.length() }
-                    while (existing.isNotEmpty() && (total + bytes.size > 64 * 1024 * 1024 || existing.first().lastModified() < System.currentTimeMillis() - 86_400_000)) {
-                        val old = existing.removeAt(0); total -= old.length(); old.delete()
-                    }
-                    val safeName = data.text("name").substringAfterLast('/').substringAfterLast('\\').replace(Regex("[\\p{Cntrl}]"), "_").take(120).ifEmpty { "attachment" }
-                    java.io.File(directory, "${UUID.randomUUID()}-$safeName").apply { writeBytes(bytes) }
-                }
-                withContext(Dispatchers.Main) {
-                    val uri = androidx.core.content.FileProvider.getUriForFile(activity, "${activity.packageName}.preview-files", target)
-                    val share = Intent(Intent.ACTION_SEND).apply {
-                        type = data.text("type").ifEmpty { "application/octet-stream" }
-                        putExtra(Intent.EXTRA_STREAM, uri)
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    }
-                    activity.startActivity(Intent.createChooser(share, data.text("name")))
-                }
+                shareFile(bytes, data.text("name"), data.text("type"))
                 "{}"
             }
             "attachmentDownload" -> {
@@ -355,6 +369,34 @@ internal class AndroidPlatform(
             "refreshUser" -> "{}" // Profile updates are rendered by the shared users Shape.
             else -> error("Android では未対応の操作です: $name")
         }
+
+    /**
+     * 端末の非公開キャッシュにファイルを書き、共有の画面で開く（プレビューの保存と、復号した暗号化の添付。
+     * 暗号化の添付は平文を文字列にしないで、そのまま書く）。キャッシュは 64 MiB と 1 日までに保つ。
+     */
+    suspend fun shareFile(bytes: ByteArray, name: String, type: String) {
+        require(bytes.size <= 64 * 1024 * 1024)
+        val target = withContext(Dispatchers.IO) {
+            val directory = java.io.File(activity.cacheDir, "preview-files").apply { mkdirs() }
+            // Share only user-selected files, retaining at most 64 MiB in the private cache.
+            val existing = directory.listFiles().orEmpty().sortedBy { it.lastModified() }.toMutableList()
+            var total = existing.sumOf { it.length() }
+            while (existing.isNotEmpty() && (total + bytes.size > 64 * 1024 * 1024 || existing.first().lastModified() < System.currentTimeMillis() - 86_400_000)) {
+                val old = existing.removeAt(0); total -= old.length(); old.delete()
+            }
+            val safeName = sharedFileName(name.substringAfterLast('/').substringAfterLast('\\').replace(Regex("[\\p{Cntrl}]"), "_"))
+            java.io.File(directory, "${UUID.randomUUID()}-$safeName").apply { writeBytes(bytes) }
+        }
+        withContext(Dispatchers.Main) {
+            val uri = androidx.core.content.FileProvider.getUriForFile(activity, "${activity.packageName}.preview-files", target)
+            val share = Intent(Intent.ACTION_SEND).apply {
+                this.type = type.ifEmpty { "application/octet-stream" }
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            activity.startActivity(Intent.createChooser(share, name))
+        }
+    }
 
     private suspend fun registerFiles(selected: List<Uri>, mediaStoreId: String? = null): String {
         val rows =
@@ -411,3 +453,33 @@ internal class AndroidPlatform(
             }
         }
 }
+
+/**
+ * 共有のために書くファイルの名前（UUID とハイフンの 37 バイトを足して、ファイル名の上限 255 バイトに収める）。
+ * 短い名前はそのまま使い、長い名前は文字の途中で切らずに縮め、拡張子は残す。
+ */
+internal fun sharedFileName(name: String, maxBytes: Int = 255 - 37): String {
+    fun bytes(value: String) = value.toByteArray(Charsets.UTF_8).size
+    val clean = name.ifEmpty { "attachment" }
+    if (bytes(clean) <= maxBytes) return clean
+    val dot = clean.lastIndexOf('.')
+    val extension = if (dot > 0 && bytes(clean.substring(dot)) <= 32) clean.substring(dot) else ""
+    val budget = maxBytes - bytes(extension)
+    val stem = StringBuilder()
+    var used = 0
+    var index = 0
+    // 拡張子を残せないときは、縮めた末尾が新しい拡張子（`.exe` など）にならないよう、ドットを `_` にする。
+    val base = clean.substring(0, clean.length - extension.length).let { if (extension.isEmpty()) it.replace('.', '_') else it }
+    while (index < base.length) {
+        val end = base.offsetByCodePoints(index, 1)
+        val size = bytes(base.substring(index, end))
+        if (used + size > budget) break
+        stem.append(base, index, end)
+        used += size
+        index = end
+    }
+    return (stem.toString() + extension).ifEmpty { "attachment" }
+}
+
+/** ログアウトの確認で、終わっていない失効があることを知らせる（鍵の件数の代わりに渡す値）。 */
+internal const val REVOCATION_PENDING_PROMPT = Int.MIN_VALUE

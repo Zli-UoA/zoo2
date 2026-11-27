@@ -61,7 +61,12 @@ extension ChatClient {
     func attachmentData(_ attachment: MessageAttachment, channelID: String? = nil, reload: Bool = false) async throws -> Data {
         let url = try await attachmentURL(id: attachment.id)
         try Task.checkCancellation()
-        return try await attachmentData(from: url)
+        let data = try await attachmentData(from: url)
+        guard let fileID = attachment.encryptedFileID else { return data }
+        guard let plaintext = EncryptedAttachmentFiles.shared.decrypt(data, id: fileID) else {
+            throw ZooError.rejected(422, "この添付は復号できませんでした。")
+        }
+        return plaintext
     }
     func cachedWorkspace() async throws -> CachedWorkspace? { nil }
     func attachmentFile(_ attachment: MessageAttachment, channelID: String?) async throws -> AttachmentFile {

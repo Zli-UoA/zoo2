@@ -12,6 +12,7 @@ import type {
   TableRowMap,
   UserRow,
 } from "./types";
+import { asTableRow } from "./rowTypes";
 
 export type ElectricType =
   | "bool"
@@ -141,6 +142,7 @@ export const MESSAGE_SCHEMA: ShapeSchema<MessageRow> = {
     epoch: "int8",
     revision: "int4",
     message_kind: "text",
+    forwarded_message_ids: "jsonb",
   },
 };
 
@@ -281,5 +283,5 @@ export function coerceElectricRow<K extends TableName>(
       coerced[column] = coerceElectricValue(type, coerced[column]);
     }
   }
-  return coerced as unknown as TableRowMap[K];
+  return asTableRow<K>(coerced);
 }

@@ -57,19 +57,21 @@ final class E2eeKeySlots {
         try await load()
     }
 
-    /// リカバリーキーを作り直す：新しいスロットを足してから、古いリカバリーキーのスロットを消す（リカバリーキーのスロットは
-    /// 1 つだけ。古いキーでは解錠できなくなる）。返したリカバリーキーを、利用者に控えてもらう（もう表示しない）。
-    func regenerateRecovery(unlocked: UnlockedSecretStorage, reauth: () async throws -> String) async throws -> String {
-        try await load()
-        let previous = slots.filter { $0.kind == "recovery" }
+    struct PreparedRecovery: Equatable {
+        let display: String
+        fileprivate let slot: String
+    }
+
+    /// 控えたことを確認するまで、既存のリカバリーキーを使えるままにする。
+    func prepareRecovery(unlocked: UnlockedSecretStorage) throws -> PreparedRecovery {
         let recovery = RecoveryKey.generate()
         let slot = try newRecoveryKeySlot(userId: userID, ssssKey: unlocked.key(), recoveryKey: recovery)
-        try await post(slot, label: nil, reauth: reauth)
-        // 足したスロットを読み込んでから、古いスロットを消す（最後の 1 つを消さない確認に、足したものを数える）。
-        try await load()
-        for old in previous { try await remove(old, reauth: reauth) }
-        try await load()
-        return recovery.toDisplay()
+        return PreparedRecovery(display: recovery.toDisplay(), slot: slot)
+    }
+
+    /// サーバーが同じ SSSS 鍵のリカバリースロットを置き換える。成功後の一覧取得は別に行う。
+    func saveRecovery(_ prepared: PreparedRecovery, reauth: () async throws -> String) async throws {
+        try await post(prepared.slot, label: nil, reauth: reauth)
     }
 
     /// スロットを消す。最後の 1 つは消せない。

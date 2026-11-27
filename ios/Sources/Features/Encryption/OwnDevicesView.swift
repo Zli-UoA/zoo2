@@ -58,7 +58,7 @@ struct OwnDevicesView: View {
         .alert("この端末を削除しますか？", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } })) {
             Button("削除", role: .destructive) { if let device = removing { Task { await remove(device) } } }
             Button("キャンセル", role: .cancel) {}
-        } message: { Text("削除しても失効ではありません。失効は Web 版で行ってください。") }
+        } message: { Text("削除しても失効ではありません。下の「失効する」で鍵を作り直してください。") }
     }
 
     private func load() async {

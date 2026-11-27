@@ -17,6 +17,37 @@ struct CryptoStoreFiles: Sendable {
                                 keys: StorageKeyStore(backing: KeychainStorageKey(account: id)))
     }
 
+    struct Metadata: Decodable {
+        let version: Int
+        let user_id: String
+        let device_id: String
+        let registered: Bool
+        let encrypted_channels: [String]?
+    }
+
+    /// 鍵を開かずに履歴を読む。存在するが読めない状態を、新規アカウントとして扱わない。
+    func metadata(userID: String) throws -> Metadata? {
+        let data: Data
+        do { data = try Data(contentsOf: directory.appendingPathComponent(CryptoStore.stateFile)) }
+        catch CocoaError.fileReadNoSuchFile { return nil }
+        let metadata = try JSONDecoder().decode(Metadata.self, from: data)
+        guard metadata.version == CryptoStore.stateVersion, metadata.user_id.lowercased() == userID.lowercased() else {
+            throw ZooError.invalidResponse
+        }
+        return metadata
+    }
+
+    /// Keychain が読めない場合も、ファイルと保存鍵の削除をそれぞれ試す。
+    func removeLocalState() throws {
+        guard !CryptoStore.isReserved(directory) else { throw CryptoStoreBusyError() }
+        var failure: (any Error)?
+        do { try FileManager.default.removeItem(at: directory) }
+        catch CocoaError.fileNoSuchFile {}
+        catch { failure = error }
+        do { try keys.delete() } catch { if failure == nil { failure = error } }
+        if let failure { throw failure }
+    }
+
     static func storeID(server: String, userID: String) -> String {
         SHA256.hash(data: Data("\(server)\n\(userID)".utf8)).map { String(format: "%02x", $0) }.joined().prefix(32).description
     }
@@ -106,6 +137,8 @@ struct StoreState: Codable {
     var olm_sessions: [StoredOlm] = []
     /// 受信用セッション。キーは `inboundKey`。
     var inbound_sessions: [String: StoredInbound] = [:]
+    // スナップショットへ反映済みの差分番号。古いページを再適用して巻き戻さない。
+    var backup_journal_sequence: UInt64 = 0
     /// 処理を終えて、まだ ack を送れていない to-device の ID。
     var processed_to_device: [String] = []
     /// 保存鍵を失って作り直した前の端末のうち、サーバーから消せていないもの。新しい状態と一緒に保存するので、
@@ -147,6 +180,7 @@ struct StoreState: Codable {
         secrets_revision = try c.decodeIfPresent(UInt64.self, forKey: .secrets_revision)
         olm_sessions = try c.decodeIfPresent([StoredOlm].self, forKey: .olm_sessions) ?? []
         inbound_sessions = try c.decodeIfPresent([String: StoredInbound].self, forKey: .inbound_sessions) ?? [:]
+        backup_journal_sequence = try c.decodeIfPresent(UInt64.self, forKey: .backup_journal_sequence) ?? 0
         processed_to_device = try c.decodeIfPresent([String].self, forKey: .processed_to_device) ?? []
         pending_deletions = try c.decodeIfPresent([String].self, forKey: .pending_deletions) ?? []
         backup_upload = try c.decodeIfPresent(String.self, forKey: .backup_upload)
@@ -208,6 +242,8 @@ final class CryptoStore: @unchecked Sendable {
     /// 単体テスト用：そのディレクトリーの `open` が失敗して予約を外す直前（作りかけのインスタンスの `deinit` のあと）に呼ぶ。
     /// ディレクトリーごとなので、並行して動くほかのテストの `open` には呼ばれない。
     static let openFailureHooks = Mutex<[String: @Sendable () -> Void]>([:])
+    // 単体テストで rename 前後の保存障害を再現する。対象ディレクトリー以外には作用しない。
+    static let writeFailureHooks = Mutex<[String: @Sendable (URL, Bool) throws -> Void]>([:])
 
     private let directory: URL
     /// 開いたときの `user_id`。暗号ストアの持ち主は変わらないので、ロックなしで読める。
@@ -513,7 +549,19 @@ final class CryptoStore: @unchecked Sendable {
 
     private func save(_ next: StoreState) throws {
         try ensureOpen()
-        try Self.writeAtomically(JSONEncoder().encode(next), to: directory.appendingPathComponent(Self.stateFile))
+        do {
+            try Self.writeAtomically(JSONEncoder().encode(next), to: directory.appendingPathComponent(Self.stateFile))
+            // スナップショットが同期済みなら削除に失敗しても再読込時に番号で除外できる。
+            for page in (try? Self.backupPages(in: directory, deviceID: next.device_id)) ?? []
+                where page.sequence <= next.backup_journal_sequence {
+                try? FileManager.default.removeItem(at: page.url)
+            }
+        }
+        catch {
+            // rename 後の同期失敗もあり得るため、保存済みの状態を開き直すまで暗号処理を進めない。
+            needsReopen = true
+            throw error
+        }
     }
 
     /// 保存した受信用セッションを、まだなら読み込む。読み込めたときだけ読み込み済みにする。
@@ -659,7 +707,7 @@ final class CryptoStore: @unchecked Sendable {
         if decrypted.eventType()?.hasPrefix("m.key.verification.") == true {
             // 解錠していない端末は、検証を受けない（相手のクロス署名をたどれない）。
             let message = state.secrets_revision == nil ? nil : try? decrypted.verifyVerification(account: account, listedDeviceKeys: listed)
-            return .verification(newOlmSessions: created, message: message)
+            return .verification(newOlmSessions: created, message: try message.map { try verificationMessageToJson(message: $0) })
         }
         var trustResult: SenderTrust?
         if let user = decrypted.sender(), let device = decrypted.senderDevice(), state.secrets_revision != nil {
@@ -694,6 +742,19 @@ final class CryptoStore: @unchecked Sendable {
             guard !ids.isEmpty else { return }
             var next = state
             next.processed_to_device.removeAll { ids.contains($0) }
+            try save(next)
+            state = next
+        }
+    }
+
+    /// 完全な Shape に残っている ID だけを保持する。ack の応答を失っても、削除済みの印を回収できる。
+    func reconcileProcessedToDevice(present ids: Set<String>) throws {
+        try lock.withLock {
+            try ensureOpen()
+            let remaining = state.processed_to_device.filter { ids.contains($0) }
+            guard remaining != state.processed_to_device else { return }
+            var next = state
+            next.processed_to_device = remaining
             try save(next)
             state = next
         }
@@ -795,12 +856,15 @@ final class CryptoStore: @unchecked Sendable {
         }
     }
 
+    var isUsable: Bool { lock.withLock { !closed && !needsReopen } }
+    var encryptedChannels: [String] { lock.withLock { state.encrypted_channels } }
+
     func isRememberedEncrypted(_ id: String) -> Bool { lock.withLock { state.encrypted_channels.contains(id) } }
 
     // MARK: - 失効（#362）
 
-    /// 保存した失効の進み具合（秘密鍵を除く表示用の JSON。なければ `nil`）。
-    func revocationSummary() throws -> String? {
+    /// 保存した失効の進み具合（秘密鍵を除く表示用の値。なければ `nil`）。
+    func revocationSummary() throws -> ZooCrypto.RevocationSummary? {
         try lock.withLock {
             try ensureOpen()
             guard let sealed = state.revocation else { return nil }
@@ -809,7 +873,7 @@ final class CryptoStore: @unchecked Sendable {
     }
 
     /// 失効を始める。終わっていない失効があれば `E2eeStoreError.revocationPending`（黙って捨てない）。解錠した SSSS が前提。
-    func beginRevocation(input: String, unlocked: UnlockedSecretStorage) throws -> Revocation {
+    func beginRevocation(input: RevocationInput, unlocked: UnlockedSecretStorage) throws -> Revocation {
         try lock.withLock {
             try ensureOpen()
             guard state.revocation == nil else { throw E2eeStoreError.revocationPending }
@@ -820,7 +884,7 @@ final class CryptoStore: @unchecked Sendable {
                 backup = own.backupKey()
                 userSigning = own.userSigning()
             }
-            let revocation = try ZooCrypto.beginRevocation(inputJson: input, unlocked: unlocked, trust: trust,
+            let revocation = try Revocation.begin(input: input, unlocked: unlocked, trust: trust,
                                                            localBackupKey: backup, oldUserSigning: userSigning)
             try saveRevocationLocked(revocation)
             return revocation
@@ -832,7 +896,7 @@ final class CryptoStore: @unchecked Sendable {
         try lock.withLock {
             try ensureOpen()
             guard let sealed = state.revocation else { throw E2eeStoreError.noRevocation }
-            return try ZooCrypto.resumeRevocation(sealed: sealed, account: account, storageKey: storageKey, unlocked: unlocked)
+            return try Revocation.resume(sealed: sealed, account: account, storageKey: storageKey, unlocked: unlocked)
         }
     }
 
@@ -886,22 +950,22 @@ final class CryptoStore: @unchecked Sendable {
     // MARK: - 他のユーザーの検証（SAS、#368）
 
     /// `theirUserID` に検証を求める。`snapshotPages` は相手の `keys/query` の応答（JSON）。
-    func sasRequest(snapshotPages: [String], theirUserID: String, nowMs: UInt64) throws -> SasRequest {
+    func sasRequest(keysQuery: String, theirUserID: String, nowMs: UInt64) throws -> SasRequest {
         try lock.withLock {
             try ensureOpen()
             guard state.secrets_revision != nil else { throw E2eeStoreError.sendNeedsUnlock }
-            return try requestSasVerification(account: account, trust: trust, snapshotPages: snapshotPages,
+            return try requestVerification(account: account, trust: trust, keysQuery: keysQuery,
                                               theirUserId: theirUserID, nowMs: nowMs)
         }
     }
 
     /// 届いた要求から検証を作る。
-    func sasFromRequest(message: String, snapshotPages: [String], nowMs: UInt64) throws -> SasVerification {
+    func sasFromRequest(message: String, keysQuery: String, nowMs: UInt64) throws -> SasVerification {
         try lock.withLock {
             try ensureOpen()
             guard state.secrets_revision != nil else { throw E2eeStoreError.sendNeedsUnlock }
-            return try SasVerification.fromRequest(account: account, trust: trust, messageJson: message,
-                                                   snapshotPages: snapshotPages, nowMs: nowMs)
+            return try SasVerification.fromRequest(account: account, trust: trust, message: verificationMessageFromJson(stored: message),
+                                                   keysQuery: keysQuery, nowMs: nowMs)
         }
     }
 
@@ -1192,28 +1256,42 @@ final class CryptoStore: @unchecked Sendable {
     func importBackupRows(_ rows: [String]) throws -> Int {
         try lock.withLock {
             try ensureOpen()
-            guard let sealed = state.own_keys, !rows.isEmpty else { return 0 }
-            var refs: [SessionRef] = []
-            for row in rows {
-                guard case .object(let object)? = try? JSONDecoder().decode(JSONValue.self, from: Data(row.utf8)),
-                      case .string(let channel)? = object["channel_id"], case .string(let sender)? = object["sender_key"],
-                      case .string(let session)? = object["session_id"] else { continue }
-                refs.append(SessionRef(channelId: channel, senderKey: sender, sessionId: session))
+            do {
+                guard let sealed = state.own_keys, !rows.isEmpty else { return 0 }
+                var refs: [SessionRef] = []
+                for row in rows {
+                    guard case .object(let object)? = try? JSONDecoder().decode(JSONValue.self, from: Data(row.utf8)),
+                          case .string(let channel)? = object["channel_id"], case .string(let sender)? = object["sender_key"],
+                          case .string(let session)? = object["session_id"] else { continue }
+                    refs.append(SessionRef(channelId: channel, senderKey: sender, sessionId: session))
+                }
+                for ref in refs { try loadInbound(Self.inboundKey(ref)) }
+                let key = try OwnKeys.fromPickle(sealed: sealed, account: account, storageKey: storageKey).backupKey()
+                let discarded = Int(try key.importRows(store: inbound, rows: rows))
+                var changed: [String: StoredInbound] = [:]
+                for ref in refs {
+                    let storeKey = Self.inboundKey(ref)
+                    guard let pickle = try inbound.pickleSession(account: account, key: ref, storageKey: storageKey) else { continue }
+                    let existing = state.inbound_sessions[storeKey]
+                    if existing?.pickle == pickle { continue }
+                    changed[storeKey] = StoredInbound(pickle: pickle, backed_up: existing?.backed_up ?? true)
+                    loadedInbound.insert(storeKey)
+                }
+                if !changed.isEmpty {
+                    guard state.backup_journal_sequence < UInt64.max else { throw CocoaError(.fileWriteUnknown) }
+                    let sequence = state.backup_journal_sequence + 1
+                    let page = BackupPage(device_id: state.device_id, sequence: sequence, sessions: changed)
+                    let name = Self.backupPagePrefix(state.device_id) + String(format: "%020llu", sequence) + ".json"
+                    try Self.writeAtomically(JSONEncoder().encode(page), to: directory.appendingPathComponent(name))
+                    state.inbound_sessions.merge(changed) { _, new in new }
+                    state.backup_journal_sequence = sequence
+                }
+                return rows.count - discarded
+            } catch {
+                // FFI が先に進んだ可能性があるため、pickle 生成の失敗でも再読込する。
+                needsReopen = true
+                throw error
             }
-            for ref in refs { try loadInbound(Self.inboundKey(ref)) }
-            let key = try OwnKeys.fromPickle(sealed: sealed, account: account, storageKey: storageKey).backupKey()
-            let discarded = Int(try key.importRows(store: inbound, rows: rows))
-            var next = state
-            for ref in refs {
-                let storeKey = Self.inboundKey(ref)
-                guard let pickle = try inbound.pickleSession(account: account, key: ref, storageKey: storageKey) else { continue }
-                let existing = next.inbound_sessions[storeKey]
-                if existing?.pickle == pickle { continue }
-                next.inbound_sessions[storeKey] = StoredInbound(pickle: pickle, backed_up: existing?.backed_up ?? true)
-                loadedInbound.insert(storeKey)
-            }
-            if next.inbound_sessions != state.inbound_sessions { try save(next); state = next }
-            return rows.count - discarded
         }
     }
 
@@ -1262,14 +1340,49 @@ final class CryptoStore: @unchecked Sendable {
 
     private func save() throws { try save(state) }
 
+    private struct BackupPage: Codable {
+        let device_id: String
+        let sequence: UInt64
+        let sessions: [String: StoredInbound]
+    }
+
+    private static func backupPagePrefix(_ deviceID: String) -> String {
+        let digest = SHA256.hash(data: Data(deviceID.utf8)).map { String(format: "%02x", $0) }.joined()
+        return "backup-page-" + digest + "-"
+    }
+
+    private static func backupPages(in directory: URL, deviceID: String) throws -> [(sequence: UInt64, url: URL)] {
+        let prefix = backupPagePrefix(deviceID)
+        return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).compactMap { url in
+            let name = url.lastPathComponent
+            guard name.hasPrefix(prefix), name.hasSuffix(".json") else { return nil }
+            guard let sequence = UInt64(name.dropFirst(prefix.count).dropLast(5)) else { throw CocoaError(.fileReadCorruptFile) }
+            guard name == prefix + String(format: "%020llu", sequence) + ".json" else { throw CocoaError(.fileReadCorruptFile) }
+            return (sequence, url)
+        }.sorted { $0.sequence < $1.sequence }
+    }
+
     private static func readState(_ url: URL) throws -> StoreState? {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        return try JSONDecoder().decode(StoreState.self, from: Data(contentsOf: url))
+        var state = try JSONDecoder().decode(StoreState.self, from: Data(contentsOf: url))
+        for file in try backupPages(in: url.deletingLastPathComponent(), deviceID: state.device_id)
+            where file.sequence > state.backup_journal_sequence {
+            guard state.backup_journal_sequence < UInt64.max, file.sequence == state.backup_journal_sequence + 1 else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            let page = try JSONDecoder().decode(BackupPage.self, from: Data(contentsOf: file.url))
+            guard page.device_id == state.device_id, page.sequence == file.sequence else { throw CocoaError(.fileReadCorruptFile) }
+            state.inbound_sessions.merge(page.sessions) { _, new in new }
+            state.backup_journal_sequence = page.sequence
+        }
+        return state
     }
 
     /// 一時ファイルに書いて同期してから置き換える。失敗したら例外を投げる（保存できたことにして ack を送らないため）。
     /// 端末の初回解除後は通知拡張からも読めるよう、`completeUntilFirstUserAuthentication` にする。
     static func writeAtomically(_ data: Data, to url: URL) throws {
+        let failure = writeFailureHooks.withLock { $0[url.deletingLastPathComponent().standardizedFileURL.path] }
+        try failure?(url, false)
         let temporary = url.appendingPathExtension("tmp")
         try data.write(to: temporary, options: [.completeFileProtectionUntilFirstUserAuthentication])
         let handle = try FileHandle(forWritingTo: temporary)
@@ -1283,6 +1396,7 @@ final class CryptoStore: @unchecked Sendable {
             try? FileManager.default.removeItem(at: temporary)
             throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
         }
+        try failure?(url, true)
         // 置き換えたディレクトリーのエントリーも書き出す（停電で前の状態に戻らないように）。
         let directory = Darwin.open(url.deletingLastPathComponent().path, O_RDONLY)
         guard directory >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }

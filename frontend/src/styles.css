@@ -90,6 +90,10 @@ body {
   --color-brand-foreground: var(--brand-foreground);
   --color-brand-muted: var(--brand-muted);
   --color-brand-muted-foreground: var(--brand-muted-foreground);
+  --color-highlight: var(--highlight);
+  --color-highlight-foreground: var(--highlight-foreground);
+  --color-mention: var(--mention);
+  --color-message-target: var(--message-target);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -123,6 +127,13 @@ body {
   --brand-foreground: #ffffff;
   --brand-muted: #fff6cc;
   --brand-muted-foreground: #000000;
+  /* 検索語の強調（<mark>）。メンションの brand-muted より濃く、本文の文字と 4.5:1 以上。 */
+  --highlight: #ffe680;
+  --highlight-foreground: #000000;
+  /* メンションを含むメッセージ行の背景と左端のアクセント。 */
+  --mention: #f0b232;
+  /* メッセージリンクなどで開いた行の強調（背景と左端のアクセント）。 */
+  --message-target: #3b82f6;
   --border: #e5e5e5;
   --input: #d4d4d4;
   /* focus-visible:ring-ring/50 で 50% 透過されるため、白背景でも 3:1 を超えるよう暗くする。 */
@@ -165,6 +176,10 @@ body {
   --brand-foreground: #000000;
   --brand-muted: #303030;
   --brand-muted-foreground: #e5e5e5;
+  --highlight: #5c4a00;
+  --highlight-foreground: #ffffff;
+  --mention: #f0b232;
+  --message-target: #6ea8ff;
   --border: #454545;
   --input: #575757;
   --ring: #bdbdbd;
@@ -511,6 +526,74 @@ body {
   .animate-bubble-fade-out,
   .animate-bubble-pop {
     animation-duration: 0.3s !important;
+  }
+}
+
+/*
+ * メッセージリンクなどで開いた行の強調。全体で 2.5 秒。
+ *   0〜0.5 秒   : 3 回点滅する（点灯 83ms・消灯 83ms を 3 回）
+ *   0.5〜2.0 秒 : 点灯を保つ（1.5 秒）
+ *   2.0〜2.5 秒 : フェードアウトする（0.5 秒）
+ * 2.5 秒は messageTarget.ts の MESSAGE_TARGET_FLASH_MS と同じ値にする。
+ */
+@keyframes message-target-flash {
+  0%,
+  3.33% {
+    opacity: 1;
+  }
+  3.34%,
+  6.66% {
+    opacity: 0;
+  }
+  6.67%,
+  10% {
+    opacity: 1;
+  }
+  10.01%,
+  13.32% {
+    opacity: 0;
+  }
+  13.33%,
+  16.66% {
+    opacity: 1;
+  }
+  16.67%,
+  19.99% {
+    opacity: 0;
+  }
+  20%,
+  80% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* 視覚効果を減らす設定では点滅しない。2.0 秒点灯して、0.5 秒でフェードアウトする。 */
+@keyframes message-target-steady {
+  0%,
+  80% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.animate-message-target {
+  animation: message-target-flash 2500ms linear forwards;
+  pointer-events: none;
+}
+
+/*
+ * 上の `prefers-reduced-motion` の全体設定は、アニメーションをほぼ 0 秒にして強調を見えなくする。
+ * `!important` どうしでは詳細度の高いクラスが勝つので、ここで点滅だけを外して時間を保つ。
+ */
+@media (prefers-reduced-motion: reduce) {
+  .animate-message-target {
+    animation-name: message-target-steady !important;
+    animation-duration: 2500ms !important;
   }
 }
 

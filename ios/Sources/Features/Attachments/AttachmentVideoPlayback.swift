@@ -18,9 +18,16 @@ final class AttachmentVideoPlayback {
             do {
                 try Task.checkCancellation()
                 // 一覧に保持された署名URLは失効しうるため、再生する時点で取得し直す。
-                let url = try await workspace.client.attachmentURL(id: attachment.id)
-                try Task.checkCancellation()
-                try session.prepare(url: url)
+                if attachment.encryptedFileID != nil {
+                    let file = try await workspace.client.attachmentFile(attachment, channelID: channelID)
+                    try Task.checkCancellation()
+                    session.attachmentFile = file
+                    try session.prepare(url: file.url)
+                } else {
+                    let url = try await workspace.client.attachmentURL(id: attachment.id)
+                    try Task.checkCancellation()
+                    try session.prepare(url: url)
+                }
             } catch {
                 guard !Task.isCancelled else { return }
                 session.error = "この動画を再生できません。再読み込みをお試しください。"
@@ -54,6 +61,7 @@ final class AttachmentVideoSession: NSObject, @MainActor AVPlayerViewControllerD
     @ObservationIgnored var inlineOwnerID: UUID?
     private(set) var pictureInPictureActive = false
     private(set) var fullScreenActive = false
+    @ObservationIgnored var attachmentFile: AttachmentFile?
     @ObservationIgnored var loadTask: Task<Void, Never>?
     @ObservationIgnored private var itemObservation: NSKeyValueObservation?
     @ObservationIgnored private var rateObservation: NSKeyValueObservation?
@@ -138,6 +146,7 @@ final class AttachmentVideoSession: NSObject, @MainActor AVPlayerViewControllerD
         itemObservation = nil
         player.pause()
         player.replaceCurrentItem(with: nil)
+        attachmentFile = nil
         controller.player = nil
         controller.delegate = nil
         releaseAudioSession()

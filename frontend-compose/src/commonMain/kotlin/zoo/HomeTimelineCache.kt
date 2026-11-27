@@ -8,12 +8,22 @@ internal data class HomeTimelineSnapshot(
 )
 internal class HomeTimelineCache {
     private val entries = linkedMapOf<String, HomeTimelineSnapshot>()
+    var limit: Int = 8
+        set(value) {
+            field = value
+            trim()
+        }
+
+    private fun trim() {
+        while (entries.size > limit) entries.remove(entries.keys.first())
+    }
+
     fun get(key: String): HomeTimelineSnapshot? = entries.remove(key)?.also { entries[key] = it }
     fun save(key: String, value: HomeTimelineSnapshot) {
         entries.remove(key)
-        if (value.posts.size > 1000 || value.posts.sumOf { it.toString().length.toLong() * 2 } > 4 * 1024 * 1024) return
+        if (limit == 0 || value.posts.size > 1000 || value.posts.sumOf { it.toString().length.toLong() * 2 } > 4 * 1024 * 1024) return
         entries[key] = value
-        while (entries.size > 8) entries.remove(entries.keys.first())
+        trim()
     }
     fun preparePost(post: Row) {
         val id = post.text("id")
@@ -23,12 +33,39 @@ internal class HomeTimelineCache {
     }
     fun takePost(postId: String): Row? = entries.remove("post:$postId")?.posts?.singleOrNull()
     fun remove(postId: String) {
-        entries.entries.removeAll { (_, snapshot) -> snapshot.posts.any {
-            it.text("id") == postId || it.nested("parent").text("id") == postId || it.nested("quote").nested("post").text("id") == postId
-        } }
+        entries.entries.removeAll { (_, snapshot) ->
+            snapshot.posts.any { it.withoutUnavailableHomePost(postId) !== it }
+        }
     }
+    fun removeEntry(key: String) { entries.remove(key) }
+
     fun clear() = entries.clear()
 }
+
+/** Remove a post from a feed entry, including copies embedded as a parent or quote. */
+fun Row.withoutUnavailableHomePost(id: String): Row? {
+    val wrapped = nested("post")
+    val post = wrapped.ifEmpty { this }
+    if (post.text("id") == id) return null
+    val quote = post.nested("quote")
+    val parent = post.nested("parent")
+    val quotedPost = quote.nested("post")
+    val availableParent = parent.withoutUnavailableEmbeddedPost(id)
+    val availableQuote = quotedPost.withoutUnavailableEmbeddedPost(id)
+    var filtered = post
+    if (availableParent !== parent) {
+        filtered = JsonObject(if (availableParent == null) filtered - "parent" else filtered + ("parent" to availableParent))
+    }
+    if (availableQuote !== quotedPost) {
+        val remainingQuote = JsonObject(if (availableQuote == null) quote - "post" else quote + ("post" to availableQuote))
+        filtered = JsonObject(filtered + ("quote" to remainingQuote))
+    }
+    if (filtered === post) return this
+    return if (wrapped.isEmpty()) filtered else JsonObject(this + ("post" to filtered))
+}
+
+private fun Row.withoutUnavailableEmbeddedPost(id: String): Row? =
+    if (isEmpty()) this else withoutUnavailableHomePost(id)
 
 internal fun mergeHomeWindow(current: List<Row>, head: List<Row>, checkedIds: List<String>, checked: List<Row>, atTop: Boolean): List<Row> {
     val incoming = (head + checked).associateBy(HomeTimeline::key)

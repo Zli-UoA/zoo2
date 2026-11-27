@@ -157,6 +157,42 @@ final class E2eeSetup {
         self.store = store
     }
 
+    private(set) var scheduledBackup: Task<Void, Never>?
+    private var backupGeneration = UUID()
+    private var backupRequested = false
+
+    /// 送信済み本文を再投稿せず、鍵だけを最大3回送る。追加要求は処理中の送信へまとめる。
+    func scheduleKeyBackup(retryDelay: Duration = .seconds(5)) {
+        backupRequested = true
+        guard scheduledBackup == nil else { return }
+        let generation = UUID()
+        backupGeneration = generation
+        scheduledBackup = Task { [weak self] in
+            guard let self else { return }
+            defer { if self.backupGeneration == generation { self.scheduledBackup = nil } }
+            repeat {
+                self.backupRequested = false
+                for attempt in 0..<3 {
+                    do {
+                        try Task.checkCancellation()
+                        if attempt > 0 { try await Task.sleep(for: retryDelay * attempt) }
+                        _ = try await self.uploadKeyBackup()
+                        break
+                    } catch {
+                        if Task.isCancelled { return }
+                    }
+                }
+            } while self.backupRequested && !Task.isCancelled
+        }
+    }
+
+    func cancelScheduledBackup() {
+        backupGeneration = UUID()
+        scheduledBackup?.cancel()
+        scheduledBackup = nil
+        backupRequested = false
+    }
+
     /// SSSS があるか（`default_key_id` が空でない）。
     static func hasSecretStorage(_ storage: String) -> Bool {
         guard let object = try? jsonObject(storage), let id = object.string("default_key_id") else { return false }
@@ -185,6 +221,8 @@ final class E2eeSetup {
     /// 解錠済みの端末でも、最後に解錠したときの `secrets_revision` がサーバーの値と違えば、暗号ストアの鍵を
     /// 使わずに解錠し直しを求める（古い値のまま鍵バックアップに送り続けないため）。
     private func startupStatus(_ store: CryptoStore, recorded: UInt64?, storage: String) async throws -> E2eeStatus {
+        try Task.checkCancellation()
+        if store.secretsRevision != recorded { return try await loadStatus() }
         guard Self.hasSecretStorage(storage) else { return .notSetUp }
         guard store.hasOwnKeys else { return .locked(.new) }
         func mismatch() throws -> E2eeStatus {
@@ -220,10 +258,15 @@ final class E2eeSetup {
         let previous = backupChain
         let task = Task { @MainActor in
             await previous?.value
+            try Task.checkCancellation()
             return try await operation()
         }
         backupChain = Task { _ = try? await task.value }
-        return try await task.value
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     /// 起動時の確認（docs/e2ee.md の「初回設定と解錠の流れ」）。解錠済みの端末だけが、自分の端末への署名を確かめ、
@@ -247,7 +290,7 @@ final class E2eeSetup {
             ssssConflict = true
         } catch {}
         // 読み直しの失敗は、解錠済みとして返さず、そのまま投げる（古い `.unlocked` を残さない）。
-        if ssssConflict {
+        if ssssConflict || store.secretsRevision != recorded || !store.hasOwnKeys {
             do { return try await loadStatus() }
             catch is CancellationError { throw CancellationError() }
             catch { throw E2eeSetupError.secretsChanged }

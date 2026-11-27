@@ -180,7 +180,11 @@ final class MessageEncryption {
                     pages.append(page)
                     guard pages.count <= 200 else { throw MessageEncryptionError.undeliverable("配布先のページ数が上限を超えました") }
                     let previous = after
-                    after = page["next_after"]?.string
+                    switch page["next_after"] {
+                    case nil, .null: after = nil
+                    case .string(let value): after = value
+                    default: throw ZooError.invalidResponse
+                    }
                     guard after == nil || after != previous else { throw MessageEncryptionError.undeliverable("配布先のページが進みませんでした") }
                 } while after != nil
                 if let epoch, let value = UInt64(epoch), value >= minimum, after == nil { return pages }
@@ -263,7 +267,7 @@ final class MessageEncryption {
     func summary(channel: String) async throws -> RecipientSummary {
         let store = try currentStore()
         let (epoch, distribution) = try await evaluate(store, channel: channel, minimum: latestEpochs[channel] ?? 0)
-        latestEpochs[channel] = epoch
+        latestEpochs[channel] = max(latestEpochs[channel] ?? 0, epoch)
         let current = Set(distribution.users.keys).subtracting([store.userID])
         let previous = Set(store.recordedMembers(channel: channel) ?? [])
         // 記録がなければ（初めて）、増えたとは言わない。
@@ -326,6 +330,7 @@ final class MessageEncryption {
 
     /// 自分の本文を編集する。元の暗号文を復号して、最新の版であることを確かめてから、次の版を送る。
     func edit(_ row: EncryptedRow, body: String, mentions: EncryptedMentions = EncryptedMentions()) async throws {
+        guard row.revision < UInt64.max else { throw MessageEncryptionError.editConflict }
         try await serialized {
             try await self.submit(channel: row.channelID, id: row.id, parent: row.parentID, body: body,
                                   revision: row.revision + 1, edit: row, mentions: mentions)
@@ -350,8 +355,13 @@ final class MessageEncryption {
         let store = try currentStore()
         var minimum = latestEpochs[channel] ?? 0
         for _ in 0..<3 {
+            minimum = max(minimum, latestEpochs[channel] ?? 0)
             let (epoch, devices) = try await recipients(store, channel: channel, minimum: minimum)
-            latestEpochs[channel] = epoch
+            guard epoch >= (latestEpochs[channel] ?? 0) else {
+                discard(channel)
+                continue
+            }
+            latestEpochs[channel] = max(latestEpochs[channel] ?? 0, epoch)
             do {
                 let nowMs = now()
                 // 端末を作り直した（送信者の鍵が変わった）ときも、古いセッションを捨てる。受信側は古い鍵の受信用セッションしか
@@ -368,6 +378,10 @@ final class MessageEncryption {
                 let pending = devices.filter { !current.shared.contains(deviceKey($0)) }
                 try await share(store, outbound: current.session, devices: pending)
                 current.shared.formUnion(pending.map(deviceKey))
+                guard epoch >= (latestEpochs[channel] ?? 0) else {
+                    discard(channel)
+                    continue
+                }
                 // 鍵の配布の応答を待つあいだに、端末が作り直されていたら（送信者の鍵が変わった）、古い鍵で配ったセッションを
                 // 新しい鍵で暗号化しない。捨てて、配布先の取得からやり直す。
                 if current.senderKey != store.curve25519Key {
@@ -394,9 +408,11 @@ final class MessageEncryption {
                     discard(channel)
                     continue
                 }
+                let ciphertext = try JSONDecoder().decode(JSONValue.self, from: Data(encrypted.utf8))
+                guard case .object = ciphertext else { throw ZooError.invalidResponse }
                 var payload: [String: JSONValue] = [
                     "content": .string(""), "kind": .string(kind), "epoch": .number(Double(epoch)),
-                    "revision": .number(Double(revision)), "ciphertext": .string(encrypted)
+                    "revision": .number(Double(revision)), "ciphertext": ciphertext
                 ]
                 if let parent { payload["parent_id"] = .string(parent) }
                 if edit == nil {
@@ -415,7 +431,7 @@ final class MessageEncryption {
                     discard(channel)
                     guard let current = failure.currentEpoch else { throw failure }
                     minimum = max(current, epoch)
-                    latestEpochs[channel] = minimum
+                    latestEpochs[channel] = max(latestEpochs[channel] ?? 0, minimum)
                 }
             } catch {
                 // 配布や保存に失敗したセッションを使って次の本文を送らない。

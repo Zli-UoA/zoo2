@@ -132,6 +132,41 @@ struct RevocationTests {
         return (device, server, unlocked, start.recoveryKey)
     }
 
+    @Test("失効の保存失敗後は再読込した記録から再開する", arguments: [false, true])
+    func resumesDurableRevocationAfterSaveFailure(afterRename: Bool) async throws {
+        let (device, server, unlocked, recoveryKey) = try await prepared()
+        defer { device.cleanUp() }
+        let revocation = E2eeRevocation(store: { device.store }, api: server, setup: device.setup, userID: user)
+        _ = try await revocation.begin(scope: .deviceOnly, deletedDevices: [], unlocked: unlocked)
+        let path = device.files.directory.standardizedFileURL.path
+        CryptoStore.writeFailureHooks.withLock { hooks in hooks[path] = { url, renamed in
+            if url.lastPathComponent == CryptoStore.stateFile, renamed == afterRename { throw CocoaError(.fileWriteUnknown) }
+        } }
+        defer { CryptoStore.writeFailureHooks.withLock { $0.removeValue(forKey: path) } }
+        await #expect(throws: (any Error).self) { try await revocation.run(reauth: "token") }
+        #expect(!device.store.isUsable)
+        CryptoStore.writeFailureHooks.withLock { $0.removeValue(forKey: path) }
+        try device.restart()
+        let requestsBeforeRetry = server.requests.count
+        await #expect(throws: RevocationError.none) { try await revocation.run(reauth: "token") }
+        #expect(server.requests.count == requestsBeforeRetry)
+        let current = try #require(try parseSecretStorage(userId: user, response: text(.object(server.storage))))
+        _ = try revocation.resume(unlocked: current.unlockWithRecoveryKey(recoveryKey: RecoveryKey.parse(input: recoveryKey)))
+        let finished = try await revocation.run(reauth: "token")
+        #expect(finished.stage == "verified")
+        #expect(try revocation.savedSummary() == nil)
+    }
+
+    @Test("書込みAPIのtxid付き応答からdataを取り出す")
+    func unwrapsMutationEnvelope() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        harness.stub { _ in (200, [:], Data(#"{"data":{"version":"2"},"txid":null}"#.utf8)) }
+        let result = try await harness.api.call("api/e2ee/key_backup/versions", method: "POST", query: [:],
+            body: [:], reauth: nil, headers: [:])
+        #expect(result.object?["version"]?.string == "2")
+    }
+
     @Test func 端末だけの失効は鍵を作り直して保存し記録を消す() async throws {
         let (device, server, unlocked, firstRecoveryKey) = try await prepared()
         defer { device.cleanUp() }
@@ -221,6 +256,7 @@ struct RevocationTests {
         let revocation = E2eeRevocation(store: { device.store }, api: server, setup: device.setup, userID: user)
         _ = try await revocation.begin(scope: .full, deletedDevices: [], unlocked: unlocked)
         // アプリを閉じて開き直した（メモリーの秘密は消え、進み具合だけが暗号ストアにある）。
+        try device.restart()
         let reopened = E2eeRevocation(store: { device.store }, api: server, setup: device.setup, userID: user)
         #expect(try reopened.savedSummary()?.stage == "prepared")
         #expect {
@@ -246,6 +282,7 @@ struct RevocationTests {
         #expect(try revocation.savedSummary()?.stage == "secret_storage_saved")
 
         // アプリを開き直して、新しいリカバリーキーで SSSS を開け直し、続きから終える。
+        try device.restart()
         let reopened = E2eeRevocation(store: { device.store }, api: server, setup: device.setup, userID: user)
         let storage = try #require(try parseSecretStorage(userId: user, response: text(.object(server.storage))))
         let again = try storage.unlockWithRecoveryKey(recoveryKey: try RecoveryKey.parse(input: recoveryKey))
@@ -302,6 +339,10 @@ struct KeySlotsTests {
                 if failReauthOnce { failReauthOnce = false; throw E2eeAPIError(status: 403, code: "E2EE_REAUTH_REQUIRED") }
                 var slot = body ?? [:]
                 slot["created_at"] = .string("2026-11-26T00:00:00Z")
+                // 本番と同じく、同じ鍵のリカバリースロットを置き換える。
+                if slot["kind"]?.string == "recovery" {
+                    slots.removeAll { $0.object?["kind"]?.string == "recovery" && $0.object?["key_id"] == slot["key_id"] }
+                }
                 slots.append(.object(slot))
             case ("DELETE", _) where path.hasPrefix("api/e2ee/secret_storage/slots/"):
                 reauthSeen.append(reauth)
@@ -332,9 +373,15 @@ struct KeySlotsTests {
         try await slots.load()
         #expect(slots.slots.count == 1 && slots.slots[0].kind == "recovery")
 
-        let newKey = try await slots.regenerateRecovery(unlocked: unlocked, reauth: { "token" })
-        // 追加と、古いスロットの削除のどちらも、再認証つき。リカバリーキーのスロットは 1 つのまま。
-        #expect(server.reauthSeen == ["token", "token"])
+        let prepared = try slots.prepareRecovery(unlocked: unlocked)
+        #expect(server.reauthSeen.isEmpty)
+        let before = try #require(try parseSecretStorage(userId: user, response: String(decoding: try JSONEncoder().encode(server.storage), as: UTF8.self)))
+        _ = try before.unlockWithRecoveryKey(recoveryKey: try RecoveryKey.parse(input: firstKey))
+        try await slots.saveRecovery(prepared, reauth: { "token" })
+        try await slots.load()
+        let newKey = prepared.display
+        // 置き換えは再認証つきの POST だけで行い、リカバリースロットは 1 つのまま。
+        #expect(server.reauthSeen == ["token"])
         #expect(slots.slots.count == 1 && slots.slots[0].kind == "recovery")
         let storage = try #require(try parseSecretStorage(userId: user, response: String(decoding: try JSONEncoder().encode(server.storage), as: UTF8.self)))
         _ = try storage.unlockWithRecoveryKey(recoveryKey: try RecoveryKey.parse(input: newKey))
@@ -348,8 +395,10 @@ struct KeySlotsTests {
         try await slots.load()
         server.failReauthOnce = true
         var tokens = 0
-        _ = try await slots.regenerateRecovery(unlocked: unlocked, reauth: { tokens += 1; return "token\(tokens)" })
-        // 追加が足りなければ取り直して 1 回だけ行い、そのあと、古いスロットを消す（もう 1 回）。
-        #expect(server.reauthSeen == ["token1", "token2", "token3"] && slots.slots.count == 1)
+        let prepared = try slots.prepareRecovery(unlocked: unlocked)
+        try await slots.saveRecovery(prepared, reauth: { tokens += 1; return "token\(tokens)" })
+        try await slots.load()
+        // 追加の再認証が足りなければ、取り直して 1 回だけ再試行する。
+        #expect(server.reauthSeen == ["token1", "token2"] && slots.slots.count == 1)
     }
 }

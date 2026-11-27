@@ -33,12 +33,17 @@ struct NativeChatClient: ChatClient {
         }
         for channel in previous.values where channel.deleted_at == nil {
             let current = available[channel.id]
-            if current == nil || (channel.encrypted != true && current?.encrypted == true) {
+            if current == nil {
                 try sync.checkRevocationVersion(version)
-                version = try await sync.revokeChannel(channel.id, retaining: current)
+                version = try await sync.revokeChannel(channel.id)
                 try sync.checkRevocationVersion(version)
                 try sync.checkKnownChannelsRevision(knownRevision)
             }
+        }
+        for channel in channels where channel.deleted_at == nil && channel.encrypted == true {
+            version = try await sync.excludeFromCache(channel.id, version: sync.channelVersion(channel.id))
+            try sync.checkRevocationVersion(version)
+            try sync.checkKnownChannelsRevision(knownRevision)
         }
         sync.rememberChannels(channels)
         let storedRevision = sync.knownChannelsRevision
@@ -53,9 +58,13 @@ struct NativeChatClient: ChatClient {
             if let sync, let version {
                 try sync.check()
                 guard sync.channelVersion(id) == version else { throw CancellationError() }
-                if channel.deleted_at == nil, channel.encrypted != true {
+                if channel.deleted_at != nil {
+                    try await sync.revokeChannel(id)
+                } else if channel.encrypted == true {
+                    try await sync.excludeFromCache(id, version: version)
+                } else {
                     try await sync.authorizeChannel(id, version: version)
-                } else { try await sync.revokeChannel(id, retaining: channel.deleted_at == nil ? channel : nil) }
+                }
                 try sync.check()
                 sync.rememberChannels([channel])
             }
@@ -160,12 +169,17 @@ struct NativeChatClient: ChatClient {
     }
 
     func attachmentData(_ attachment: MessageAttachment, channelID: String? = nil, reload: Bool = false) async throws -> Data {
-        if EncryptedAttachmentFiles.shared.file(for: attachment.id) != nil {
+        if let fileID = attachment.encryptedFileID {
             // 暗号化した添付：暗号文を取り、ハッシュを確かめて復号する。平文はキャッシュに書かない。
+            let version = channelID.flatMap { sync?.channelVersion($0) }
+            try sync?.check()
+            if let channelID { try sync?.check(channelID: channelID, channelVersion: version) }
             let url = try await attachmentURL(id: attachment.id)
             try Task.checkCancellation()
             let ciphertext = try await attachmentData(from: url)
-            guard let data = EncryptedAttachmentFiles.shared.decrypt(ciphertext, id: attachment.id) else {
+            try sync?.check()
+            if let channelID { try sync?.check(channelID: channelID, channelVersion: version) }
+            guard let data = EncryptedAttachmentFiles.shared.decrypt(ciphertext, id: fileID) else {
                 throw ZooError.rejected(422, "この添付は復号できませんでした。")
             }
             return data
@@ -208,7 +222,7 @@ struct NativeChatClient: ChatClient {
         let version = channelID.flatMap { sync?.channelVersion($0) }
         if let channelID { try sync?.check(channelID: channelID, channelVersion: version) }
         let file: AttachmentFile
-        if EncryptedAttachmentFiles.shared.file(for: attachment.id) != nil {
+        if attachment.encryptedFileID != nil {
             file = try await AttachmentFile.write(attachmentData(attachment, channelID: channelID))
         } else if attachment.isImage || attachment.isPDF {
             file = try await AttachmentFile.write(attachmentData(attachment, channelID: channelID))

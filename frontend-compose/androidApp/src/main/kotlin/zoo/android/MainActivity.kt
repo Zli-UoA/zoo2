@@ -188,6 +188,7 @@ class MainActivity : ComponentActivity() {
         var restoreJob by remember { mutableStateOf<Job?>(null) }
         var canRestore by remember { mutableStateOf(false) }
         var restoreError by remember { mutableStateOf("") }
+        var restoreDiagnostics by remember { mutableStateOf("") }
         val current = active
         var callPresentation by remember(current) { mutableIntStateOf(0) }
         LaunchedEffect(current) {
@@ -211,9 +212,9 @@ class MainActivity : ComponentActivity() {
         }
         DisposableEffect(Unit) { onDispose { active?.close() } }
 
-        suspend fun connect(connection: LoginConnection, refresh: String?) {
+        suspend fun connect(connection: LoginConnection, refresh: String?, stage: (LoginStage) -> Unit) {
             active = openSession(
-                connection, loginStore, dark, refresh,
+                connection, loginStore, dark, refresh, stage,
                 onExpired = { expiredAuth ->
                     scope.launch {
                         val running = active
@@ -254,19 +255,24 @@ class MainActivity : ComponentActivity() {
             restoring = loginStore.hasSession
             restoreCancelRequested = false
             restoreError = ""
+            restoreDiagnostics = ""
+            val stages = mutableListOf(LoginStage.SavedSession)
             try {
                 val saved = loginStore.load()
                 canRestore = saved != null
                 if (saved == null) PushBinding(this@MainActivity).forgetAll()
-                if (saved != null) connect(saved.connection, saved.refreshToken)
+                if (saved != null) connect(saved.connection, saved.refreshToken) { stages.add(it) }
             } catch (failure: CancellationException) {
                 throw failure
             } catch (failure: LoginFailure) {
                 canRestore = loginStore.hasSession
                 restoreError = failure.message.orEmpty()
-            } catch (_: Exception) {
+                restoreDiagnostics = loginDiagnosticLog(stages, failure)
+            } catch (failure: Exception) {
                 canRestore = loginStore.hasSession
-                restoreError = "自動ログインできませんでした。ネットワークを確認して再試行してください。"
+                restoreError = loginNetworkMessage(failure, captivePortal = false)
+                    ?: "自動ログインできませんでした。ネットワークを確認して再試行してください。"
+                restoreDiagnostics = loginDiagnosticLog(stages, failure)
             } finally {
                 canRestore = loginStore.hasSession
                 restoring = false
@@ -280,11 +286,13 @@ class MainActivity : ComponentActivity() {
                     restoreCancelRequested = true
                     restoreJob?.cancel()
                 }),
-                connect = { connection ->
+                restoreDiagnostics = restoreDiagnostics,
+                connect = { connection, stage ->
+                    restoreDiagnostics = ""
                     canRestore = false
                     loginStore.clear()
                     PushBinding(this@MainActivity).forgetAll()
-                    connect(connection, null)
+                    connect(connection, null, stage)
                 },
             )
         } else {
@@ -340,13 +348,14 @@ class MainActivity : ComponentActivity() {
             unbackedKeysPrompt?.let { prompt ->
                 val args = "count" to prompt.count.toString()
                 val detail = when {
+                    prompt.count == REVOCATION_PENDING_PROMPT -> current.session.t("e2ee.logout.revocationDescription")
                     prompt.count < 0 -> current.session.t("e2ee.logout.unknownDescription")
                     prompt.count == 1 -> current.session.t("e2ee.logout.unbackedDescription_one", args)
                     else -> current.session.t("e2ee.logout.unbackedDescription_other", args)
                 }
                 AlertDialog(
                     onDismissRequest = { prompt.answer.complete(false) },
-                    title = { Text(current.session.t("e2ee.logout.unbackedTitle")) },
+                    title = { Text(current.session.t(if (prompt.count == REVOCATION_PENDING_PROMPT) "e2ee.logout.revocationTitle" else "e2ee.logout.unbackedTitle")) },
                     text = { Text(detail) },
                     confirmButton = {
                         DialogAction(current.session.t("e2ee.logout.confirm"), UiIcon.SignIn) {
@@ -368,16 +377,19 @@ class MainActivity : ComponentActivity() {
         loginStore: AndroidLoginStore,
         dark: Boolean,
         savedRefresh: String?,
+        stage: (LoginStage) -> Unit,
         onExpired: (DeviceAuth) -> Unit,
         logout: () -> Unit,
     ): RunningSession {
         connection.validate()
         val owner = loginStore.beginSession(savedRefresh?.let { SavedLogin(connection, it) })
+        val oidcRoutes = OidcNetworkRoutes()
         val http = HttpClient(OkHttp) {
             // Refresh tokens are single-use: never replay a request inside OkHttp.
             engine {
                 config {
                     retryOnConnectionFailure(false)
+                    dns(oidcRoutes)
                     followRedirects(false)
                     followSslRedirects(false)
                 }
@@ -396,13 +408,17 @@ class MainActivity : ComponentActivity() {
             },
             consumeRefresh = { loginStore.consume(owner) },
             onExpired = onExpired,
+            readDiscovery = oidcRoutes::discover,
         )
-        val reauthenticator = AndroidReauth(this, http, connection, ::launchAuthTab)
+        val reauthenticator = AndroidReauth(this, http, connection, ::launchAuthTab, oidcRoutes::discover)
         reauth = reauthenticator
         try {
-            if (savedRefresh == null)
-                auth.acceptBrowserLogin(connection, reauthenticator.signIn())
-            else auth.restore(connection.issuer, connection.client, connection.resource, savedRefresh)
+            if (savedRefresh == null) {
+                auth.acceptBrowserLogin(connection, reauthenticator.signIn(stage))
+            } else {
+                auth.restore(connection.issuer, connection.client, connection.resource, savedRefresh, stage)
+            }
+            stage(LoginStage.ZooApi)
             val authHeaders = auth.headers()
             val response = http.get(endpoint(connection.base, "/api/users/me")) {
                 headers { authHeaders.forEach { (key, value) -> append(key, value) } }
@@ -414,6 +430,7 @@ class MainActivity : ComponentActivity() {
             val me = json.parseToJsonElement(response.bodyAsText()).jsonObject
             require(me.text("id").isNotBlank())
             currentCoroutineContext().ensureActive()
+            stage(LoginStage.Session)
             val lifetime = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
             val platform = AndroidPlatform(
                 this, http, auth, connection.base, me.text("id"), logout, ::chooseFiles, recentPhotos, ::requestRecentPhotos, ::confirmUnbackedKeys,
@@ -425,6 +442,8 @@ class MainActivity : ComponentActivity() {
                 assetsBaseUrl = connection.base,
             )
             val session = Session(Repository(config, platform, http, lifetime), lifetime, platform.env)
+            session.setNavigationCacheLimit(platform.navigationCacheLimit)
+            platform.onNavigation = session::update
             // ログインしたら、E2EE の端末を登録する（#359）。失敗は表示せず、裏で試し直す。
             val e2eeApi = zoo.crypto.ZooE2eeApi(ZooApi(config, platform, http))
             val e2ee = zoo.crypto.E2eeDeviceManager(
@@ -441,9 +460,12 @@ class MainActivity : ComponentActivity() {
                 },
                 // 初回設定と解錠（#360）。解錠済みの端末は、起動時の確認と鍵バックアップへの送信も行う。
                 setupApi = e2eeApi,
+                // 他のユーザーの検証（#368）。to-device で届いた検証のメッセージを受け取る。
+                sasApi = e2eeApi,
             )
             platform.e2ee = e2ee
             platform.reauthenticate = reauthenticator::reauthenticate
+            platform.issuer = connection.issuer
             runCatching { io.ktor.http.Url(connection.issuer) }.getOrNull()
                 ?.takeIf { it.protocol == io.ktor.http.URLProtocol.HTTPS && it.host.isNotBlank() }
                 ?.let { platform.passkey = zoo.crypto.UnlockMethod.Passkey(AndroidPasskeys(this), it.host) }

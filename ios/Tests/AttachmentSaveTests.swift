@@ -80,7 +80,7 @@ struct AttachmentSaveTests {
         await #expect(throws: CancellationError.self) { try await task.value }
     }
 
-    @Test("対象会話の失効・ログアウトでは保存を止め、別会話の失効では完了する", arguments: ["対象", "ログアウト", "別会話"])
+    @Test("対象会話の失効・ログアウトでは保存を止め、別会話の失効では完了する", arguments: ["対象", "ログアウト", "別会話", "会話不明"])
     func invalidationBeforeExport(reason: String) async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
@@ -97,7 +97,7 @@ struct AttachmentSaveTests {
         let workspace = WorkspaceStore(client: harness.client, user: Person(id: "u", user_name: "user", display_name: "利用者"), recentEmojiDefaults: nil)
         defer { workspace.shutdown() }
         let state = AttachmentSaveState()
-        state.save(.files, attachment: MessageAttachment(id: attachmentID, file_name: "資料.pdf", content_type: "application/pdf"), workspace: workspace, channelID: "channel")
+        state.save(.files, attachment: MessageAttachment(id: attachmentID, file_name: "資料.pdf", content_type: "application/pdf"), workspace: workspace, channelID: reason == "会話不明" ? nil : "channel")
         let saving = try #require(state.task)
         let completion = Task { await saving.value; started.continuation.finish() }
         defer { saving.cancel(); completion.cancel(); state.dismissFileExport() }

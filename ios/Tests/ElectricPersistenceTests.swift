@@ -822,7 +822,28 @@ struct PersistentSyncIntegrationTests {
         #expect(try await client.cachedGet(path) as JSONValue == .array([]))
     }
 
-    @Test("一覧自身の失効で旧画面を消し、次の更新では許可された暗号化行も表示する", arguments: [false, true])
+    @Test("暗号化した会話の単件取得は画面の世代を変えず平文キャッシュを残さない")
+    func encryptedChannelKeepsAccessWhilePurgingCache() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let sync = try await session(harness)
+        let version = sync.channelVersion(syncChannel)
+        let key = "messages-v1:" + syncChannel
+        try await sync.store("秘密になる前の本文", key: key, channelID: syncChannel, channelVersion: version)
+        let channel = Channel(id: syncChannel, channel_name: "暗号化", is_private: true, is_dm: false, encrypted: true)
+        harness.stub { _ in (200, [:], try JSONEncoder().encode(channel)) }
+        var revoked = false
+        sync.onChannelRevoked = { _, _ in revoked = true }
+        let client = NativeChatClient(api: harness.api, sync: sync)
+        #expect(try await client.channel(id: syncChannel) == channel)
+        #expect(!revoked && !sync.isRevoked(syncChannel) && sync.channelVersion(syncChannel) == version)
+        try sync.check(channelID: syncChannel, channelVersion: version)
+        #expect(try await sync.load(key, as: String.self) == nil)
+        try await sync.store("古い応答", key: key, channelID: syncChannel, channelVersion: version)
+        #expect(try await sync.load(key, as: String.self) == nil)
+    }
+
+    @Test("削除は旧画面を閉じ、暗号化への切替は権限と画面を維持してキャッシュを消す", arguments: [false, true])
     func storesDirectoryAfterOwnRevocations(encrypted: Bool) async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
@@ -847,8 +868,9 @@ struct PersistentSyncIntegrationTests {
         workspace.addAndOpen(initial)
         sync.onChannelRevoked = { [weak workspace] id, channel in workspace?.revokeChannel(id, retaining: channel) }
         await workspace.refresh()
-        #expect(workspace.channels == expected && workspace.channelPath.isEmpty)
-        #expect(sync.isRevoked(syncChannel))
+        #expect(workspace.channels == expected)
+        #expect(workspace.channelPath.isEmpty == !encrypted)
+        #expect(sync.isRevoked(syncChannel) == !encrypted)
         #expect(try await client.cachedWorkspace()?.channels == expected)
         await workspace.refresh()
         #expect(workspace.hasLoaded && workspace.error == nil)
@@ -1245,6 +1267,47 @@ struct PersistentSyncIntegrationTests {
             try await task.value
             throw ZooError.invalidResponse
         } onCancel: { task.cancel() }
+    }
+
+    @Test("暗号化フィードは既存の平文キャッシュを読まず、新しい行も保存しない")
+    func encryptedFeedBypassesCache() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let sync = try await session(harness)
+        var cached = MessageSyncState()
+        cached.shape.handle = "h"; cached.shape.offset = "100_0"; cached.shape.isLive = true
+        _ = try cached.addSnapshot(subsetData([1]), response: syncResponse())
+        let key = "messages-v1:" + syncChannel
+        try await sync.store(cached, key: key, channelID: syncChannel)
+        let original = try #require(await sync.cache.load(key, lease: sync.lease))
+        harness.stub { request in
+            let url = try #require(request.url)
+            let components = try #require(URLComponents(string: url.absoluteString))
+            let query = try #require(components.queryItems)
+            #expect(!query.contains { $0.name == "handle" && $0.value == "h" })
+            if query.contains(where: { $0.name == "subset__where" }) {
+                let data = try subsetData([2])
+                return (200, ["electric-handle": "fresh", "electric-offset": "100_0"], data)
+            }
+            return (200, ["electric-handle": "fresh", "electric-offset": "100_0", "electric-up-to-date": "true"], Data("[]".utf8))
+        }
+        let updates = AsyncStream<MessageFeedSnapshot>.makeStream()
+        let task = Task {
+            defer { updates.continuation.finish() }
+            try await NativeChatClient(api: harness.api, sync: sync).observeMessageFeed(
+                channelID: syncChannel, request: MessageFeedRequest(encrypted: true)) { updates.continuation.yield($0) }
+        }
+        defer { task.cancel() }
+        var receivedFresh = false
+        for await snapshot in updates.stream {
+            #expect(!snapshot.fromCache)
+            #expect(snapshot.messages?.contains { $0.content == "投稿1" } != true)
+            if snapshot.messages?.contains(where: { $0.content == "投稿2" }) == true { receivedFresh = true; break }
+        }
+        if !receivedFresh { try await task.value }
+        task.cancel(); _ = await task.result
+        try #require(receivedFresh)
+        #expect(try await sync.cache.load(key, lease: sync.lease) == original)
     }
 
     @Test("最初の50件、次の50件、保存位置からの再開で全履歴を取り直さない")

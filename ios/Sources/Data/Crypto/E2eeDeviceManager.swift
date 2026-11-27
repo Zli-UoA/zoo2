@@ -119,7 +119,8 @@ extension APIClient: E2eeKeysAPI {
 @Observable @MainActor
 final class E2eeDeviceManager {
     /// 登録を終えて使える暗号ストア（初回設定と解錠の画面、送受信と共有する）。止まるときに `nil` に戻す。
-    private(set) var readyStore: CryptoStore?
+    private var registeredStore: CryptoStore?
+    var readyStore: CryptoStore? { registeredStore.flatMap { $0.isUsable ? $0 : nil } }
 
     private let api: any E2eeDeviceAPI & E2eeKeysAPI
     private let files: CryptoStoreFiles
@@ -173,7 +174,7 @@ final class E2eeDeviceManager {
         // 止めている間に別の `stop()` が終えて、新しい処理が始まっていたら、その処理の暗号ストアには触れない。
         guard loop == running else { return }
         loop = nil
-        readyStore = nil
+        registeredStore = nil
         store?.close()
         store = nil
     }
@@ -181,6 +182,7 @@ final class E2eeDeviceManager {
     /// 登録を終えて使える暗号ストアを待つ（初回設定と解錠が使う）。取り消されたら投げる。
     func waitForStore() async throws -> CryptoStore {
         while true {
+            try Task.checkCancellation()
             if let readyStore { return readyStore }
             // 止めたあとは待ち続けない（待っている鍵バックアップなども終わらせる）。
             if !started { throw CancellationError() }
@@ -199,7 +201,7 @@ final class E2eeDeviceManager {
             do { try await runOnce { connected = true } } catch {
                 if !Task.isCancelled { onError(error) }
             }
-            readyStore = nil
+            registeredStore = nil
             store?.close()
             store = nil
             if Task.isCancelled { break }
@@ -220,7 +222,7 @@ final class E2eeDeviceManager {
             do {
                 try await serve(current, connected: connected)
             } catch let candidate as DeviceGone {
-                readyStore = nil
+                registeredStore = nil
                 // 作り直した端末がすぐにまた候補になったら、間隔をあけて試し直す（同じ回で作り直し続けない）。
                 if replaced { throw candidate.failure }
                 // 誤った応答や一時的な失敗で暗号ストアの記録を失わないよう、一覧で確かめ直す。
@@ -238,7 +240,7 @@ final class E2eeDeviceManager {
         // 前の実行で、処理済みにしたが、届け先に渡せなかった検証のメッセージ（保存したもの）を、先に届ける。
         deliverVerifications(store)
         try await replenish(store, counts: try await uploadKeys(deviceID, [:], [:]))
-        readyStore = store
+        registeredStore = store
         onReady?()
         // 行の到着（同期の通知）と処理（通信を待つ）を分ける。最新の一覧だけを残す。
         let (rows, continuation) = AsyncStream<[CryptoStore.ToDeviceRow]>.makeStream(bufferingPolicy: .bufferingNewest(1))
@@ -257,6 +259,7 @@ final class E2eeDeviceManager {
         var acknowledged = Set<String>()
         for await list in rows {
             connected()
+            try store.reconcileProcessedToDevice(present: Set(list.map(\.id)))
             acknowledged.formIntersection(list.map(\.id))
             let waiting = list.filter { !acknowledged.contains($0.id) }
             if !waiting.isEmpty {

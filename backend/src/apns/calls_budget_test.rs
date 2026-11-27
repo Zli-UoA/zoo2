@@ -46,11 +46,16 @@ async fn measure(url: String, schema: String, workers: usize) -> anyhow::Result<
             let connection_ms = at.elapsed().as_secs_f64() * 1000.0;
             let mut samples = Vec::new();
             for plan_mode in ["force_custom_plan", "force_generic_plan"] {
-                client.batch_execute(&format!("SET plan_cache_mode={plan_mode}; PREPARE incoming(text,text,text) AS {CALL_PAYLOAD_SQL}; PREPARE pending(text,text) AS {PENDING_INVITATION_SQL}; PREPARE devices(text) AS SELECT * FROM apns_subscriptions WHERE user_id=$1")).await?;
+                client.batch_execute(&format!("SET plan_cache_mode={plan_mode}; PREPARE incoming(text,text,text,boolean) AS {CALL_PAYLOAD_SQL}; PREPARE pending(text,text) AS {PENDING_INVITATION_SQL}; PREPARE devices(text) AS SELECT * FROM apns_subscriptions WHERE user_id=$1")).await?;
                 for (name, execute) in [
-                    ("着信", "incoming(md5('1'),'s1','secret')"),
-                    ("解除情報不一致", "incoming(md5('1'),'s1','wrong')"),
-                    ("存在しない招待", "incoming('00000000-0000-0000-0000-000000000000','s1','secret')"),
+                    ("着信", "incoming(md5('1'),'s1','secret',false)"),
+                    // SFU が有効なときは、部屋のモードを call_rooms の主キーで 1 行だけ見る。
+                    ("着信（SFU有効）", "incoming(md5('1'),'s1','secret',true)"),
+                    // 招待 3（c3 は SFU の部屋、受信者 u2 は会員）。SFU が無効なら届き、有効なら部屋のモードで除く。
+                    ("SFUの部屋（SFU無効）", "incoming(md5('3'),'s21','secret',false)"),
+                    ("SFUの部屋（SFU有効）", "incoming(md5('3'),'s21','secret',true)"),
+                    ("解除情報不一致", "incoming(md5('1'),'s1','wrong',false)"),
+                    ("存在しない招待", "incoming('00000000-0000-0000-0000-000000000000','s1','secret',false)"),
                     ("全20登録", "devices('u1')"),
                     ("登録なし", "devices('absent')"),
                     ("招待状態", "pending(md5('1'),'u1')"),
@@ -70,7 +75,7 @@ async fn measure(url: String, schema: String, workers: usize) -> anyhow::Result<
                             let limit = if name == "全20登録" { 20.0 } else if relation == "users" { 2.0 } else { 1.0 };
                             anyhow::ensure!(*rows <= limit, "{name}: {relation}の走査上限を超過: {rows}");
                         }
-                        let expected = match name { "着信" | "招待状態" => 1.0, "全20登録" => 20.0, _ => 0.0 };
+                        let expected = match name { "着信" | "着信（SFU有効）" | "SFUの部屋（SFU無効）" | "招待状態" => 1.0, "全20登録" => 20.0, _ => 0.0 };
                         assert_eq!(plan["Actual Rows"].as_f64(), Some(expected));
                         samples.push(json!({"条件":name,"接続数":workers,"接続":worker,"回":attempt,"計画方式":plan_mode,
                             "接続ms":connection_ms,"往復ms":elapsed,"計画ms":value[0]["Planning Time"],"実行ms":value[0]["Execution Time"],
@@ -132,19 +137,24 @@ async fn run_budget(url: &str, schema: &str) -> anyhow::Result<()> {
             CREATE TABLE call_invites(id uuid PRIMARY KEY,channel_id text,inviter_id text,invitee_id text,status text,expires_at timestamptz);
             CREATE TABLE channel_user(user_id text,channel_id text,PRIMARY KEY(user_id,channel_id));
             CREATE TABLE user_event_settings(user_id text PRIMARY KEY,dnd_until timestamptz);
+            CREATE TABLE call_rooms(channel_id text PRIMARY KEY,mode text NOT NULL DEFAULT 'mesh',epoch bigint NOT NULL DEFAULT 0,track_version bigint NOT NULL DEFAULT 0);
             INSERT INTO users(id,user_name,display_name,is_deactivated,is_guest) SELECT 'u'||n,'利用者','発信者',false,false FROM generate_series(1,{total}) n;
             INSERT INTO user_identities(id,user_id,iss,sub) SELECT 'i'||n,'u'||n,'https://incoming.example.invalid','u'||n FROM generate_series(1,{total}) n;
             INSERT INTO channels SELECT 'c'||n,NULL,NULL,n%2=1,true,true FROM generate_series(1,{total}) n;
             INSERT INTO apns_subscriptions SELECT 's'||n,CASE WHEN n<=20 THEN 'u1' ELSE 'u'||(n-19) END,'token'||n,'sandbox','secret',now() FROM generate_series(1,{total}) n;
-            INSERT INTO call_invites SELECT md5(n::text)::uuid,'c'||n,'u2',CASE WHEN n=1 THEN 'u1' ELSE 'u2' END,CASE WHEN n=1 THEN 'pending' ELSE 'cancelled' END,now()+interval '1 hour' FROM generate_series(1,{total}) n;
+            INSERT INTO call_invites SELECT md5(n::text)::uuid,'c'||n,'u2',CASE WHEN n=1 THEN 'u1' ELSE 'u2' END,CASE WHEN n IN (1,3) THEN 'pending' ELSE 'cancelled' END,now()+interval '1 hour' FROM generate_series(1,{total}) n;
             INSERT INTO channel_user SELECT 'u'||n,'c'||n FROM generate_series(1,{total}) n;
+            -- 招待 3（c3、非公開の DM）の受信者 u2 も会員にする。会員でないと、部屋のモードに関係なく 0 件になる。
+            INSERT INTO channel_user VALUES ('u2','c3');
             INSERT INTO user_event_settings SELECT 'u'||n,NULL FROM generate_series(1,{total}) n;
+            -- 招待 1 の部屋（c1）は mesh、ほかは SFU（偏った分布）。
+            INSERT INTO call_rooms(channel_id,mode) SELECT 'c'||n,CASE WHEN n=1 THEN 'mesh' ELSE 'sfu' END FROM generate_series(1,{total}) n;
             ANALYZE;" )).await?;
         let mut samples = measure(url.to_owned(), schema.to_owned(), 1).await?;
         samples.extend(measure(url.to_owned(), schema.to_owned(), 8).await?);
         let api = api::measure(url, schema).await?;
         results.push(json!({"件数":total,"測定":samples,"API":api}));
-        client.batch_execute("DROP TABLE user_event_settings,channel_user,call_invites,apns_subscriptions,channels,user_identities,users").await?;
+        client.batch_execute("DROP TABLE call_rooms,user_event_settings,channel_user,call_invites,apns_subscriptions,channels,user_identities,users").await?;
     }
     for (small, large) in results[0]["測定"]
         .as_array()

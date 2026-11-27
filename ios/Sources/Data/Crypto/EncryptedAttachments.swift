@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import ZooCrypto
 
@@ -10,9 +11,12 @@ final class EncryptedAttachmentFiles: @unchecked Sendable {
     private let lock = NSLock()
     private var files: [String: String] = [:]
 
-    func register(_ id: String, file: String) {
+    func register(_ id: String, file: String) -> String {
+        let token = SHA256.hash(data: Data((id.lowercased() + "\n" + file).utf8))
+            .map { String(format: "%02x", $0) }.joined()
         lock.lock(); defer { lock.unlock() }
-        files[id.lowercased()] = file
+        files[token] = file
+        return token
     }
 
     func file(for id: String) -> String? {
@@ -35,8 +39,8 @@ final class EncryptedAttachmentFiles: @unchecked Sendable {
 extension MessageAttachment {
     /// 復号した本文の添付から、表示用の行を作る。`file` は覚えておき、開くときに復号する。
     init(decrypted info: AttachmentInfo) {
-        EncryptedAttachmentFiles.shared.register(info.attachmentId, file: info.file)
         self.init(id: info.attachmentId, file_name: info.name, content_type: info.mimetype,
-                  width: info.width.map(Int.init), height: info.height.map(Int.init), is_sensitive: info.sensitive)
+                  width: info.width.map(Int.init), height: info.height.map(Int.init), is_sensitive: info.sensitive,
+                  encryptedFileID: EncryptedAttachmentFiles.shared.register(info.attachmentId, file: info.file))
     }
 }

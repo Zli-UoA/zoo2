@@ -17,7 +17,7 @@ export function CatchUpButton() {
           : t("catchUp.title")
       }
       title={t("catchUp.title")}
-      className="relative flex size-11 items-center justify-center rounded-xl text-muted-foreground transition-colors outline-none hover:bg-accent hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 data-[status=active]:bg-brand-muted data-[status=active]:text-brand-muted-foreground"
+      className="relative flex size-10 items-center justify-center rounded-xl text-muted-foreground transition-colors outline-none hover:bg-accent hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 data-[status=active]:bg-brand-muted data-[status=active]:text-brand-muted-foreground"
     >
       <BookOpenCheckIcon className="size-5" aria-hidden="true" />
       {unreadConversationCount > 0 ? (

@@ -34,6 +34,12 @@ struct MessageAttachment: Codable, Identifiable, Hashable, Sendable {
     var width: Int? = nil
     var height: Int? = nil
     var is_sensitive: Bool? = nil
+    // 復号情報はメモリーだけで参照し、APIやキャッシュへ書き出さない。
+    var encryptedFileID: String? = nil
+
+    private enum CodingKeys: String, CodingKey {
+        case id, file_name, content_type, message_id, width, height, is_sensitive
+    }
 
     var isImage: Bool { content_type.lowercased().hasPrefix("image/") }
     var isVideo: Bool { content_type.lowercased().hasPrefix("video/") }

@@ -11,6 +11,20 @@ import kotlinx.serialization.json.*
 
 class Session(val repo: Repository, val scope: CoroutineScope, initial: Environment) {
     internal val homeTimelines = HomeTimelineCache()
+
+    fun setNavigationCacheLimit(limit: Int) {
+        homeTimelines.limit = limit.coerceIn(0, 16)
+        repo.navigationCacheLimit = limit
+    }
+
+    fun cachedHomeDetail(key: String): List<Row> =
+        homeTimelines.get("detail:$key")?.posts.orEmpty()
+
+    fun removeCachedHomeDetail(key: String) = homeTimelines.removeEntry("detail:$key")
+
+    fun cacheHomeDetail(key: String, rows: List<Row>) {
+        homeTimelines.save("detail:$key", HomeTimelineSnapshot(rows, false, 0, 0, 0))
+    }
     internal val notificationContexts = mutableMapOf<String, Row>()
     internal val accountDetails = mutableMapOf<String, Row>()
     internal val homeComposerState by lazy {
@@ -109,6 +123,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             if (
                 initial.path.startsWith("/channels/") ||
                     initial.path.startsWith("/notifications") ||
+                    isGlobalSearchPath(initial.path) ||
                     isHomePath(initial.path)
             )
                 "chat"
@@ -150,6 +165,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     private val assetClient = HttpClient()
     val assets = mutableMapOf<String, JsonElement>()
     val activityPubNotifications by lazy { ActivityPubNotificationsState(this) }
+    val globalSearch by lazy { GlobalSearchController(this) }
     internal val notificationReads = NotificationReadQueue(this)
     val previews = PreviewLoader(this)
     val attachmentLinks = AttachmentLinks(this)
@@ -191,6 +207,17 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     }
 
     fun navigate(path: String) = platform.navigate(path)
+
+    /**
+     * 本文のリンクと埋め込みカードから、アプリ内でチャンネル・メッセージへ移動する。[parentId] は、分かって
+     * いればリンク先の返信の親（そのスレッドを開く）。
+     */
+    fun openChannelLink(target: ChannelLinkTarget, parentId: String?) {
+        val next = parentId ?: target.threadId
+        // 同じチャンネル内の移動では `update` がスレッドを変えないので、ここで切り替える。
+        if (channelId == target.channelId) thread = next
+        navigate(channelLinkDestination(target, next, kotlin.time.Clock.System.now().toEpochMilliseconds()))
+    }
 
     fun openApp(id: String) {
         target = null
@@ -238,17 +265,34 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         (it.width.toLong() * it.height * 4).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     }
 
-    suspend fun image(url: String): ByteArray {
+    suspend fun image(url: String, signedAttachment: Boolean = false, cacheKey: String? = null): ByteArray {
         val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
-        return imageCache.get(resolved) {
-            platform.image(resolved) ?: assetClient.get(resolved).body()
+        return imageCache.get(imageCacheKey(url, signedAttachment, cacheKey)) {
+            val bytes = if (signedAttachment) platform.attachmentImage(resolved) else platform.image(resolved)
+            bytes ?: assetClient.get(resolved).body()
         }
     }
 
+    fun cachedImageBitmap(url: String, signedAttachment: Boolean = false, cacheKey: String? = null): androidx.compose.ui.graphics.ImageBitmap? =
+        bitmapCache.getIfPresent(imageCacheKey(url, signedAttachment, cacheKey))
+
+    private fun imageCacheKey(url: String, signedAttachment: Boolean, cacheKey: String?): String {
+        val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
+        return if (signedAttachment) "attachment:${cacheKey ?: resolved}" else resolved
+    }
+
     /** Static images use the same platform decoder as attachments and animated media. */
-    suspend fun imageBitmap(url: String): androidx.compose.ui.graphics.ImageBitmap =
-        bitmapCache.get(if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url) {
-            platform.imageFrames(image(url)).first()
+    suspend fun imageBitmap(
+        url: String, signedAttachment: Boolean = false, retry: Boolean = false, cacheKey: String? = null,
+    ): androidx.compose.ui.graphics.ImageBitmap =
+        bitmapCache.get(imageCacheKey(url, signedAttachment, cacheKey)) {
+            val bytes = if (!retry) image(url, signedAttachment, cacheKey) else {
+                val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
+                imageCache.remove(imageCacheKey(url, signedAttachment, cacheKey))
+                (if (signedAttachment) platform.attachmentImage(resolved) else platform.refreshImage(resolved))
+                    ?: assetClient.get(resolved) { header("Cache-Control", "no-cache") }.body()
+            }
+            platform.imageFrames(bytes).first()
         }
 
     fun update(next: Environment): Unit = androidx.compose.runtime.snapshots.Snapshot.withMutableSnapshot {
@@ -256,11 +300,13 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         env = next
         toastController.setVisible(next.visible)
         if (old.path.substringBefore('?') != next.path.substringBefore('?')) {
-            thread = null
+            // アプリ内のリンクで別のチャンネルのスレッドを開くときは、移動先のパスで決まる。
+            thread = linkedThread(next.path)
             pane =
                 if (
                     channelId != null ||
                         next.path.startsWith("/notifications") ||
+                        isGlobalSearchPath(next.path) ||
                         isHomePath(next.path)
                 )
                     "chat"
@@ -272,6 +318,26 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     private val encryptedChannels by lazy { EncryptedChannelHistory(platform, config) }
 
     suspend fun rememberEncryptedChannel(id: String) = encryptedChannels.remember(listOf(id))
+
+    private val encryptionRecordsLoader by lazy {
+        EncryptionRecordsLoader(scope, { encryptedChannels.loaded }, ::loadEncryptionRecords)
+    }
+
+    /** 端末の暗号化チャンネルの記録の、いまの読み込み状態。 */
+    val currentEncryptionRecords: EncryptionRecords get() = encryptionRecordsLoader.current()
+
+    /** 端末の暗号化チャンネルの記録を読み込みながら、状態を返す（本文を出す前の確認に使う）。 */
+    fun encryptionRecords(): Flow<EncryptionRecords> = encryptionRecordsLoader.states()
+
+    private suspend fun loadEncryptionRecords(): Boolean =
+        try {
+            encryptedChannels.remember()
+            true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            false
+        }
 
     suspend fun requirePlaintextChannel(id: String) {
         encryptedChannels.remember()
@@ -288,7 +354,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         return result
     }
 
-    suspend fun createDm(targets: Set<String>, encrypted: Boolean): String {
+    suspend fun createDm(targets: Set<String>, encrypted: Boolean): Row {
         val id = platform.uuid()
         if (encrypted) rememberEncryptedChannel(id)
         val result = api.request("/api/dms", "POST", buildJsonObject {
@@ -297,7 +363,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             if (encrypted) put("encrypted", true)
         })
         if (encrypted) verifyEncryptedCreation(result, id)
-        return result.jsonObject.getValue("data").jsonObject.text("id")
+        return result.jsonObject.getValue("data").jsonObject
     }
 
     private suspend fun verifyEncryptedCreation(result: JsonElement, requestedId: String) {
@@ -320,7 +386,12 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         activityPubNotifications.ensureLoaded()
         searchPreferences.ensureLoaded()
         pane =
-            if (channelId != null || env.path.startsWith("/notifications") || isHomePath(env.path))
+            if (
+                channelId != null ||
+                    env.path.startsWith("/notifications") ||
+                    isGlobalSearchPath(env.path) ||
+                    isHomePath(env.path)
+            )
                 "chat"
             else "sidebar"
         scope.launch {
@@ -380,6 +451,8 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         commandAppId: String? = null,
         attachmentIds: List<String> = emptyList(),
         sensitiveAttachmentIds: List<String> = emptyList(),
+        /** 暗号化チャンネルの添付（[uploadEncryptedAttachment] の戻り値）。平文チャンネルでは使わない。 */
+        encryptedAttachments: List<JsonObject> = emptyList(),
     ): Boolean {
         try { encryptedChannels.remember() }
         catch (failure: CancellationException) { throw failure }
@@ -395,7 +468,8 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                 return false
             }
             return try {
-                encryption.send(channel, platform.uuid(), parent, content)
+                val users = repo.users.rows.value.map { it.text("id") to it.text("user_name") }
+                encryption.send(channel, platform.uuid(), parent, content, encryptedMentions(content, users), encryptedAttachments)
                 true
             } catch (failure: CancellationException) { throw failure }
             catch (failure: Exception) {
@@ -404,6 +478,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                 false
             }
         }
+        if (encryptedAttachments.isNotEmpty()) { toast = t("common.writeError"); return false }
         val command = Regex("^/([a-zA-Z0-9_-]+)(?:\\s+([\\s\\S]*))?$").matchEntire(content.trim())
         if (command != null && attachmentIds.isEmpty()) {
             try {

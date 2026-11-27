@@ -83,8 +83,8 @@ test('Vitest executes only changed cases and propagates the actual failure', () 
 });
 
 test('Playwright selects case locations; main and helper edits retain the full suite', () => {
-  for (const [eventName, diff, selected] of [['pull_request', '@@ -4 +4 @@', true], ['pull_request', '@@ -2 +2 @@', false], ['push', '', false]]) {
-    const code = runPlaywright({ suite: 'layout', eventName, event, compiler,
+  for (const [eventName, diff, selected] of [['pull_request', '@@ -4 +4 @@', true], ['pull_request', '@@ -2 +2 @@', false], ['merge_group', '@@ -4 +4 @@', true], ['push', '', false]]) {
+    const code = runPlaywright({ suite: 'layout', eventName, event: eventName === 'merge_group' ? { merge_group: { base_sha: base } } : event, compiler,
       git: gitFor('frontend/e2e/layout.spec.ts', diff), log() {},
       run(command, args) { assert.equal(args.includes('e2e/layout.spec.ts:3'), selected); return { status: 1 }; },
     });

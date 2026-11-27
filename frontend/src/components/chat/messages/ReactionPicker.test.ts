@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act, createElement, type ReactNode } from "react";
+import { act, createElement, type ComponentProps, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -16,6 +16,9 @@ vi.mock("../../../lib/emoji/workspace", () => ({
         category: "Greetings",
         aliases: ["挨拶"],
       },
+      { name: "xkusa", url: "/api/emoji-images/x", category: "B", aliases: [] },
+      { name: "kusa", url: "/api/emoji-images/k", category: "B", aliases: [] },
+      { name: "kusaa", url: "/api/emoji-images/ka", category: "A", aliases: [] },
     ],
     loading: false,
     failed: false,
@@ -25,7 +28,9 @@ vi.mock("../../../lib/emoji/workspace", () => ({
 }));
 
 vi.mock("frimousse", async () => {
-  const { createElement: element } = await import("react");
+  const { createContext, createElement: element, useContext } = await import("react");
+  type Select = ((emoji: { emoji: string; label: string }) => void) | undefined;
+  const SelectContext = createContext<Select>(undefined);
   function Root({
     children,
     onEmojiSelect,
@@ -34,9 +39,17 @@ vi.mock("frimousse", async () => {
     onEmojiSelect?: (emoji: { emoji: string; label: string }) => void;
   }) {
     return element(
+      SelectContext.Provider,
+      { value: onEmojiSelect },
+      element("div", null, children),
+    );
+  }
+  // The grid only exists on the emoji panels, like the real frimousse viewport.
+  function Viewport({ children }: { children?: ReactNode }) {
+    const onEmojiSelect = useContext(SelectContext);
+    return element(
       "div",
       null,
-      children,
       element(
         "button",
         {
@@ -46,17 +59,22 @@ vi.mock("frimousse", async () => {
         },
         "😀",
       ),
+      children,
     );
-  }
-  function Passthrough({ children }: { children?: ReactNode }) {
-    return element("div", null, children);
   }
   return {
     defaultEmojiDataResolver: vi.fn(),
     EmojiPicker: {
       Root,
-      Search: () => null,
-      Viewport: Passthrough,
+      Search: ({ value, onChange, placeholder }: ComponentProps<"input">) =>
+        element("input", {
+          type: "search",
+          value,
+          onChange,
+          placeholder,
+          "aria-label": placeholder,
+        }),
+      Viewport,
       Loading: () => null,
       Empty: () => null,
       List: () => null,
@@ -157,12 +175,27 @@ describe("ReactionPicker", () => {
     expect(selected).toEqual([":zoo_wave:"]);
     expect(openChanges).toEqual([false]);
   });
+  it("keeps ranked order for custom emoji search even when categories alternate", async () => {
+    await click(buttonWithText("カスタム絵文字"));
+    const input = document.querySelector<HTMLInputElement>('input[aria-label="絵文字を検索"]')!;
+    await flush(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+        input,
+        "kusa",
+      );
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const shown = Array.from(
+      document.querySelectorAll('[role="region"] button[aria-label^=":"]'),
+    ).map((b) => b.getAttribute("aria-label"));
+    expect(shown.slice(0, 3)).toEqual([":kusa:", ":kusaa:", ":xkusa:"]);
+  });
   it("shows all tabs and selects an emoji while recording it as recent", async () => {
     const tabs = Array.from(document.querySelectorAll('[role="tab"]'));
     expect(tabs.map((tab) => tab.textContent)).toEqual([
       "絵文字",
-      "Emoji Kitchen",
       "カスタム絵文字",
+      "Emoji Kitchen",
     ]);
 
     await click(document.querySelector('[data-testid="mock-emoji"]')!);

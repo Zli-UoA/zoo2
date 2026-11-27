@@ -12,6 +12,18 @@ export const slackTests = [
 ];
 export const testLeg = name => slackTests.includes(name) ? 'slack' : 'core';
 
+// These routes have dedicated integration coverage. Shared routes, support code,
+// migrations and unclassified paths keep both partitions.
+export const routeTestTargets = {
+  'backend/src/routes/apns.rs': ['apns_test'],
+  'backend/src/routes/bubble_chat.rs': ['bubble_chat_test'],
+  'backend/src/routes/calls.rs': ['calls_test'],
+  'backend/src/routes/channel_pins.rs': ['channel_pins_test'],
+  'backend/src/routes/channel_webhooks.rs': ['channel_webhooks_test', 'e2ee_convert_test', 'apps_migration_test'],
+  'backend/src/routes/push.rs': ['apns_test', 'push_test'],
+  'backend/src/routes/typing.rs': ['typing_test', 'app_event_sources_test'],
+};
+
 export function cargoCommands(selection, leg, files) {
   if (!['slack', 'core'].includes(leg)) throw new Error('Invalid E2E leg');
   const targets = selection.full ? files.filter(f => f.endsWith('.rs')).map(f => f.slice(0, -3)) : selection.targets;

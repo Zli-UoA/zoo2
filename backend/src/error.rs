@@ -99,6 +99,23 @@ impl AppError {
         AppError::Database(err)
     }
 
+    /// `toasty::Error` が PostgreSQL の deadlock_detected (40P01) かどうか
+    pub fn is_deadlock_detected(err: &toasty::Error) -> bool {
+        let mut curr: Option<&(dyn std::error::Error + 'static)> = Some(err);
+        while let Some(e) = curr {
+            if e.downcast_ref::<tokio_postgres::Error>()
+                .and_then(|pg_err| pg_err.code())
+                .is_some_and(|code| *code == tokio_postgres::error::SqlState::T_R_DEADLOCK_DETECTED)
+            {
+                return true;
+            }
+            curr = e.source();
+        }
+
+        let err_str = err.to_string();
+        err_str.contains("40P01") || err_str.contains("deadlock detected")
+    }
+
     /// `toasty::Error` が UNIQUE 制約違反かどうか、および指定された制約名（オプション）に合致するか判定する
     pub fn is_unique_violation(err: &toasty::Error, constraint_name: Option<&str>) -> bool {
         let mut curr: Option<&(dyn std::error::Error + 'static)> = Some(err);

@@ -59,51 +59,51 @@ private struct SasEntryView: View {
     @State private var scanNotice: String?
     @State private var cameraUnavailable = false
 
-    private var phase: String { entry.view.phase }
+    private var phase: SasPhase { entry.view.phase }
 
     var body: some View {
         VStack(spacing: 16) {
             switch phase {
-            case "requested":
+            case .requested:
                 title("\(name) さんの承認を待っています")
                 note("相手の端末に検証の要求を送りました。相手が受け入れると、QR か絵文字で確かめられます。")
                 methodChoices
                 button("中止する", role: .cancel) { await verification.cancel(entry.id) }
-            case "incoming":
+            case .incoming:
                 title("\(name) さんが検証を求めています")
                 note("互いの画面に同じ絵文字が出るかを見比べて、相手の鍵を確かめます。対面や通話など、チャンネルの外で相手と画面を見比べられるときに受け入れてください。")
                 button("受け入れる", primary: true) { await verification.accept(entry.id) }
                 button("断る", role: .cancel) { await verification.cancel(entry.id) }
-            case "choose_method":
+            case .chooseMethod:
                 title("検証の方法を選んでください")
                 methodChoices
                 button("中止する", role: .cancel) { await verification.cancel(entry.id) }
-            case "qr_scanned":
+            case .qrScanned:
                 title("\(name) さんの確認を待っています…")
                 ProgressView()
                 button("中止する", role: .cancel) { await verification.cancel(entry.id) }
-            case "qr_confirm":
+            case .qrConfirm:
                 title("\(name) さんの端末で QR を読み取りましたか？")
                 note("読み取ったと答えると、ログインし直して本人確認をしてから、相手の鍵を検証済みとして保存します。")
                 button("読み取った", primary: true) { await verification.confirmQrScanned(entry.id) }
                 button("読み取っていない", role: .cancel) { await verification.cancel(entry.id) }
-            case "exchanging":
+            case .exchanging:
                 title("鍵を交換しています…")
                 ProgressView()
                 button("中止する", role: .cancel) { await verification.cancel(entry.id) }
-            case "compare":
+            case .compare:
                 title("\(name) さんと絵文字を見比べてください")
                 note("相手の画面に、同じ絵文字が同じ順に並んでいるかを確かめてください。「一致する」を押すと、ログインし直して本人確認をしてから、相手の鍵を検証済みとして保存します。")
                 emoji
                 button("一致する", primary: true) { await verification.confirm(entry.id) }
                 button("一致しない", role: .destructive) { await verification.mismatch(entry.id) }
-            case "confirmed":
+            case .confirmed:
                 title("相手の確認を待っています…")
                 ProgressView()
                 button("中止する", role: .cancel) { await verification.cancel(entry.id) }
-            case "done":
+            case .done:
                 done
-            case "cancelled":
+            case .cancelled:
                 title("検証を中止しました")
                 note(cancelText)
                 button("閉じる") { await verification.dismiss(entry.id) }
@@ -184,8 +184,8 @@ private struct SasEntryView: View {
     }
 
     private var cancelText: String {
-        switch entry.view.cancelCode {
-        case "m.user": entry.view.cancelledByUs ? "検証を中止しました。" : "相手が検証を中止しました。"
+        switch entry.view.cancel?.code {
+        case "m.user": (entry.view.cancel?.byUs == true) ? "検証を中止しました。" : "相手が検証を中止しました。"
         case "m.mismatched_sas": "絵文字が一致しなかったため、中止しました。"
         case "m.timeout": "時間内に終わらなかったため、中止しました。"
         default: "検証を進められませんでした。"
@@ -245,7 +245,7 @@ struct VerifyUsersView: View {
                             .buttonStyle(.bordered)
                             .accessibilityIdentifier("verify-\(person.id)")
                     }
-                    .task(id: person.id) { states[person.id] = try? await verification.state(of: person.id) }
+                    .task(id: [person.id, String(verification.trustRevision)]) { states[person.id] = try? await verification.state(of: person.id) }
                 }
             } footer: {
                 Text("相手の鍵を、QR か互いの画面の絵文字で確かめます。対面や通話など、チャンネルの外で行ってください。鍵が変わった相手には、再検証するまで、鍵を配りません。")
@@ -323,6 +323,9 @@ private struct ReverifySheet: View {
                 }
                 if let error { Section { Text(error).foregroundStyle(.red).font(.subheadline) } }
                 Section {
+                    if fingerprint == nil, error != nil {
+                        Button("指紋を再取得") { Task { await loadFingerprint() } }
+                    }
                     Button("この鍵を受け入れる", role: .destructive) { Task { await accept() } }
                         .disabled(!confirmed || fingerprint == nil)
                 }
@@ -331,10 +334,20 @@ private struct ReverifySheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("閉じる") { dismiss() } } }
             .disabled(busy)
-            .task {
-                do { fingerprint = try await verification.masterKeyFingerprint(of: person.id) }
-                catch { self.error = "相手の鍵を取得できませんでした。" }
-            }
+            .task { await loadFingerprint() }
+        }
+    }
+
+    private func loadFingerprint() async {
+        busy = true
+        confirmed = false
+        fingerprint = nil
+        defer { busy = false }
+        do {
+            fingerprint = try await verification.masterKeyFingerprint(of: person.id)
+            error = nil
+        } catch {
+            self.error = "相手の鍵を取得できませんでした。通信を確認して再取得してください。"
         }
     }
 
@@ -350,7 +363,7 @@ private struct ReverifySheet: View {
             error = "確認の画面に出した鍵から、相手の鍵が変わりました。もう一度、確かめてください。"
             self.fingerprint = nil
             confirmed = false
-            self.fingerprint = try? await verification.masterKeyFingerprint(of: person.id)
+            await loadFingerprint()
         } catch {
             self.error = "受け入れを保存できませんでした。本人確認ができなかったか、通信に失敗しました。"
         }

@@ -31,8 +31,8 @@ enum NotificationE2ee {
 
     /// 通知の `userInfo` から復号した本文。`roots` は暗号ストアの置き場の候補（`<ID>/state.json` が並ぶディレクトリー）、
     /// `loadKey` は暗号ストアの ID（ディレクトリー名）から保存鍵を読む。
-    static func body(userInfo info: [AnyHashable: Any], roots: [URL], loadKey: (String) -> Data?) -> String? {
-        guard let user = info["user_id"] as? String, UUID(uuidString: user) != nil,
+    static func body(userInfo info: [AnyHashable: Any], activeUserID: String, roots: [URL], loadKey: (String) -> Data?) -> String? {
+        guard let user = info["user_id"] as? String, let userID = UUID(uuidString: user), userID == UUID(uuidString: activeUserID),
               let e2ee = info["e2ee_v1"] as? [String: Any],
               let recipient = e2ee["recipient_id"] as? String, recipient.lowercased() == user.lowercased(),
               let row = e2ee["message"] as? [String: Any],
@@ -70,8 +70,8 @@ enum NotificationE2ee {
     }
 
     /// 通知の内容に、復号した本文を入れる。リアクションの通知は、今までどおり「リアクション: 」を前に付ける。
-    static func content(for original: UNNotificationContent, roots: [URL], loadKey: (String) -> Data?) -> UNNotificationContent {
-        guard let body = body(userInfo: original.userInfo, roots: roots, loadKey: loadKey),
+    static func content(for original: UNNotificationContent, activeUserID: String, roots: [URL], loadKey: (String) -> Data?) -> UNNotificationContent {
+        guard let body = body(userInfo: original.userInfo, activeUserID: activeUserID, roots: roots, loadKey: loadKey),
               let content = original.mutableCopy() as? UNMutableNotificationContent else { return original }
         // プレビューが「リアクション: 」を付けていたら（リアクションの通知）、復号した本文にも付ける。
         let isReaction = original.body.hasPrefix("リアクション: ")

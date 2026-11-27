@@ -33,6 +33,30 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+extension Message {
+    private enum ShapeCodingKeys: String, CodingKey { case message_kind }
+
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        user_id = try values.decode(String.self, forKey: .user_id)
+        channel_id = try values.decode(String.self, forKey: .channel_id)
+        content = try values.decode(String.self, forKey: .content)
+        created_at = try values.decode(String.self, forKey: .created_at)
+        updated_at = try values.decodeIfPresent(String.self, forKey: .updated_at)
+        deleted_at = try values.decodeIfPresent(String.self, forKey: .deleted_at)
+        parent_id = try values.decodeIfPresent(String.self, forKey: .parent_id)
+        card = try values.decodeIfPresent(String.self, forKey: .card)
+        display_data = try values.decodeIfPresent(MessageDisplayData.self, forKey: .display_data)
+        ciphertext = try values.decodeIfPresent(CiphertextText.self, forKey: .ciphertext)
+        epoch = try values.decodeIfPresent(ShapeInteger.self, forKey: .epoch)
+        revision = try values.decodeIfPresent(ShapeInteger.self, forKey: .revision)
+        let shape = try decoder.container(keyedBy: ShapeCodingKeys.self)
+        kind = try shape.decodeIfPresent(String.self, forKey: .message_kind)
+            ?? values.decodeIfPresent(String.self, forKey: .kind)
+    }
+}
+
 /// `ciphertext` の列。文字列ならそのまま、JSON のオブジェクトなら JSON の文字列にする。
 struct CiphertextText: Codable, Hashable, Sendable {
     let value: String

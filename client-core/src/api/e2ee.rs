@@ -42,8 +42,23 @@ impl ApiClient {
         body: Option<Value>,
         headers: &[(&str, &str)],
     ) -> Result<reqwest::Response> {
-        let mut request = self
-            .http
+        let reauth = headers.iter().any(|(name, _)| *name == REAUTH_HEADER);
+        if reauth && !self.reauth_transport_ok() {
+            anyhow::bail!(
+                "再認証の ID トークンは HTTPS の接続先にだけ送ります（ZOO_API_BASE_URL を https:// にしてください）"
+            );
+        }
+        // 再認証の ID トークンを付ける要求は、リダイレクトをたどらない専用のクライアントで送る（転送先の HTTP や
+        // 別の origin にトークンを渡さないため。3xx はそのまま誤りにする）。共有のクライアントの方針は変えない。
+        // 再認証の要求はまれなので、そのつど作る。
+        let http = if reauth {
+            reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()?
+        } else {
+            self.http.clone()
+        };
+        let mut request = http
             .request(method, format!("{}{path}", self.base_url))
             .header(reqwest::header::ACCEPT, "application/json")
             .timeout(Self::E2EE_TIMEOUT);
@@ -55,6 +70,24 @@ impl ApiClient {
         }
         let request = self.credentials.apply(request).await?;
         error_for_status_coded(request.send().await?).await
+    }
+
+    /// 再認証の ID トークンを送ってよい接続先か。HTTPS か、この機械の中で閉じるループバック（手元の開発）だけ。
+    /// 平文の HTTP で送ると、経路上で読み取られたトークンで、失効や鍵スロットの削除を行えてしまう。
+    fn reauth_transport_ok(&self) -> bool {
+        let Ok(url) = reqwest::Url::parse(&self.base_url) else {
+            return false;
+        };
+        match url.scheme() {
+            "https" => true,
+            "http" => match url.host() {
+                Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+                Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+                Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+                None => false,
+            },
+            _ => false,
+        }
     }
 
     /// 封筒なしの JSON を返す要求（GET と `keys/query`）。
@@ -216,6 +249,189 @@ impl ApiClient {
     }
 }
 
+/// 端末の管理、失効、他のユーザーの検証、鍵スロットの管理で使う API（docs/e2ee.md の「端末とワンタイム鍵」
+/// 「クロス署名」「Secret Storage」「鍵バックアップ」。#362、#368）。React の `revocationApi.ts` と
+/// `secretStorageApi.ts` と同じ要求。
+impl ApiClient {
+    /// `GET /api/e2ee/devices`（自分の、削除されていない端末。端末名と最後に使った日時は本人にだけ返る）。
+    pub async fn e2ee_devices(&self) -> Result<Vec<Value>> {
+        let value = self
+            .e2ee_json(Method::GET, "/api/e2ee/devices", None)
+            .await?;
+        match value {
+            Value::Array(devices) => Ok(devices),
+            _ => Err(anyhow::anyhow!("端末の一覧が配列ではありません")),
+        }
+    }
+
+    /// `PATCH /api/e2ee/devices/{device_id}`（端末名を変える）。
+    pub async fn e2ee_rename_device(&self, device_id: &str, display_name: &str) -> Result<()> {
+        let path = format!("/api/e2ee/devices/{}", urlencode(device_id));
+        self.send_e2ee(
+            Method::PATCH,
+            &path,
+            Some(json!({ "display_name": display_name })),
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// `GET /api/e2ee/tofu_pins` を `next` が `null` になるまで読む。
+    pub async fn e2ee_all_tofu_pins(&self) -> Result<Vec<Value>> {
+        let mut pins = Vec::new();
+        let mut after: Option<String> = None;
+        loop {
+            let path = match &after {
+                Some(after) => format!("/api/e2ee/tofu_pins?after={}", urlencode(after)),
+                None => "/api/e2ee/tofu_pins".to_owned(),
+            };
+            let page = self.e2ee_json(Method::GET, &path, None).await?;
+            let Some(Value::Array(rows)) = page.get("pins") else {
+                return Err(anyhow::anyhow!("ピンの一覧が配列ではありません"));
+            };
+            pins.extend(rows.iter().cloned());
+            match page.get("next").and_then(Value::as_str) {
+                Some(next) => after = Some(next.to_owned()),
+                None => return Ok(pins),
+            }
+        }
+    }
+
+    /// `POST /api/e2ee/tofu_pins`（1000 件ずつ）。`replace: true` には直前の再認証が要る。サーバーが自分で
+    /// 付ける `type` と `user_id` は、署名付きのピンから外して送る。
+    pub async fn e2ee_upload_pins(
+        &self,
+        pins: &[Value],
+        replace: bool,
+        reauth: Option<&str>,
+    ) -> Result<()> {
+        let body: Vec<Value> = pins
+            .iter()
+            .map(|pin| {
+                json!({
+                    "target_user_id": pin.get("target_user_id"),
+                    "master_key": pin.get("master_key"),
+                    "signatures": pin.get("signatures"),
+                })
+            })
+            .collect();
+        for chunk in body.chunks(UPLOAD_BATCH) {
+            self.e2ee_write(
+                "/api/e2ee/tofu_pins",
+                json!({ "pins": chunk, "replace": replace }),
+                reauth,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// 他のユーザーのマスター鍵への署名を含む `POST /api/e2ee/cross_signing/signatures`（1000 件ずつ。
+    /// 直前の再認証が要る）。
+    pub async fn e2ee_upload_signatures_with_reauth(
+        &self,
+        signatures: &[Value],
+        reauth: Option<&str>,
+    ) -> Result<()> {
+        for chunk in signatures.chunks(UPLOAD_BATCH) {
+            self.e2ee_write(
+                "/api/e2ee/cross_signing/signatures",
+                json!({ "signatures": chunk }),
+                reauth,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// `POST /api/e2ee/secret_storage/secrets`（端末だけの失効）。増やしたあとの `secrets_revision`。
+    pub async fn e2ee_put_secrets(&self, body: Value, reauth: Option<&str>) -> Result<Option<u64>> {
+        let data = self
+            .e2ee_write("/api/e2ee/secret_storage/secrets", body, reauth)
+            .await?;
+        Ok(data.get("secrets_revision").and_then(Value::as_u64))
+    }
+
+    /// `GET /api/e2ee/key_backup/versions/{version}`。消した版と、ない版は `None`。
+    pub async fn e2ee_backup_version(&self, version: &str) -> Result<Option<Value>> {
+        let path = format!("/api/e2ee/key_backup/versions/{}", urlencode(version));
+        match self.e2ee_json(Method::GET, &path, None).await {
+            Ok(value) => Ok(Some(value)),
+            Err(error) if ApiError::status_of(&error) == Some(reqwest::StatusCode::NOT_FOUND) => {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// `DELETE /api/e2ee/key_backup/versions/{version}`。すでに消えていれば（404）何もしない。今の版を
+    /// 消すときだけ再認証が要る。
+    pub async fn e2ee_delete_backup_version(
+        &self,
+        version: &str,
+        reauth: Option<&str>,
+    ) -> Result<()> {
+        let path = format!("/api/e2ee/key_backup/versions/{}", urlencode(version));
+        match self.send_e2ee(Method::DELETE, &path, None, reauth).await {
+            Ok(_) => Ok(()),
+            Err(error) if ApiError::status_of(&error) == Some(reqwest::StatusCode::NOT_FOUND) => {
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// `DELETE /api/e2ee/secret_storage/slots/{slot_id}`（最後の 1 つはサーバーが拒否する）。
+    pub async fn e2ee_delete_key_slot(&self, slot_id: &str, reauth: Option<&str>) -> Result<()> {
+        let path = format!("/api/e2ee/secret_storage/slots/{}", urlencode(slot_id));
+        self.send_e2ee(Method::DELETE, &path, None, reauth).await?;
+        Ok(())
+    }
+
+    /// `txn_id` を指定した `POST /api/e2ee/to_device`（宛先は [`TO_DEVICE_BATCH`] 端末まで）。応答が分から
+    /// なかった送信を、同じ `txn_id` と内容で送り直すため（サーバーは同じ送信端末・`txn_id`・宛先を 1 件に
+    /// まとめる）。入れられなかった宛先を返す。
+    pub async fn e2ee_send_to_device_txn(
+        &self,
+        device_id: &str,
+        txn_id: &str,
+        messages: Value,
+    ) -> Result<Vec<DeviceTarget>> {
+        let data = self
+            .e2ee_write(
+                "/api/e2ee/to_device",
+                json!({
+                    "device_id": device_id,
+                    "txn_id": txn_id,
+                    "type": "m.room.encrypted",
+                    "messages": messages,
+                }),
+                None,
+            )
+            .await?;
+        Ok(undelivered_targets(&data))
+    }
+}
+
+/// 書き込みを分けて送る件数（ピンと署名。サーバーの上限）。
+pub const UPLOAD_BATCH: usize = 1000;
+
+/// to-device の応答の `undelivered`。
+fn undelivered_targets(data: &Value) -> Vec<DeviceTarget> {
+    data.get("undelivered")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|target| {
+            Some(DeviceTarget {
+                user_id: target.get("user_id")?.as_str()?.to_owned(),
+                device_id: target.get("device_id")?.as_str()?.to_owned(),
+            })
+        })
+        .collect()
+}
+
 /// to-device の宛先の端末（キューの上限で入れなかった宛先など）。
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DeviceTarget {
@@ -355,22 +571,7 @@ impl ApiClient {
                     None,
                 )
                 .await?;
-            for target in data
-                .get("undelivered")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                if let (Some(user_id), Some(device_id)) = (
-                    target.get("user_id").and_then(Value::as_str),
-                    target.get("device_id").and_then(Value::as_str),
-                ) {
-                    undelivered.push(DeviceTarget {
-                        user_id: user_id.to_owned(),
-                        device_id: device_id.to_owned(),
-                    });
-                }
-            }
+            undelivered.extend(undelivered_targets(&data));
         }
         Ok(undelivered)
     }
@@ -433,7 +634,7 @@ fn urlencode(value: &str) -> String {
 mod tests {
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
-        matchers::{header, method, path, query_param},
+        matchers::{any, header, method, path, query_param},
     };
 
     use super::*;
@@ -445,6 +646,65 @@ mod tests {
             &server.uri(),
             Credentials::Dev("00000000-0000-0000-0000-000000000001".into()),
         )
+    }
+
+    #[tokio::test]
+    async fn reauth_requests_never_follow_redirects() {
+        // 再認証の要求にリダイレクトが返っても、転送先（別の origin）にはトークンを送らない。
+        let server = MockServer::start().await;
+        let elsewhere = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/e2ee/secret_storage/slots/slot"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("location", format!("{}/steal", elsewhere.uri())),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": {} })))
+            .expect(0)
+            .mount(&elsewhere)
+            .await;
+        let error = client(&server)
+            .e2ee_delete_key_slot("slot", Some("id-token"))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            ApiError::status_of(&error),
+            Some(reqwest::StatusCode::TEMPORARY_REDIRECT)
+        );
+        assert!(elsewhere.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn reauth_tokens_are_never_sent_over_plain_http() {
+        // 経路上で読めてしまう平文の HTTP には、再認証の ID トークンを送らない（送る前に止める）。
+        let api = ApiClient::new(
+            reqwest::Client::new(),
+            "http://zoo.example",
+            Credentials::Dev("00000000-0000-0000-0000-000000000001".into()),
+        );
+        let error = api
+            .e2ee_delete_key_slot("slot", Some("id-token"))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("HTTPS"), "{error}");
+        // HTTPS と、この機械の中で閉じるループバックには送る。
+        for (base, ok) in [
+            ("https://zoo.example", true),
+            ("http://127.0.0.1:8080", true),
+            ("http://localhost:8080", true),
+            ("http://[::1]:8080", true),
+            ("http://10.0.0.1", false),
+        ] {
+            let api = ApiClient::new(
+                reqwest::Client::new(),
+                base,
+                Credentials::Dev("00000000-0000-0000-0000-000000000001".into()),
+            );
+            assert_eq!(api.reauth_transport_ok(), ok, "{base}");
+        }
     }
 
     #[tokio::test]

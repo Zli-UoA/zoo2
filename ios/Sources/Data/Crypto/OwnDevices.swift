@@ -12,7 +12,11 @@ struct OwnDevice: Decodable, Identifiable, Equatable, Sendable {
 
     /// 一覧の並び：登録が新しい順（日時が読めないものは後ろ）。
     static func ordered(_ devices: [OwnDevice]) -> [OwnDevice] {
-        devices.sorted { ($0.created_at ?? "") > ($1.created_at ?? "") }
+        devices.enumerated().map { (index: $0.offset, device: $0.element, date: $0.element.created_at.flatMap(ZooDate.parse)) }
+            .sorted {
+                let left = $0.date ?? .distantPast, right = $1.date ?? .distantPast
+                return left == right ? $0.index < $1.index : left > right
+            }.map(\.device)
     }
 }
 
@@ -38,6 +42,7 @@ extension APIClient: E2eeOwnDevicesAPI {
     }
 
     func removeDevice(_ deviceID: String) async throws {
-        try await deleteDevice(deviceID)
+        do { try await deleteDevice(deviceID) }
+        catch let failure as E2eeAPIError where failure.status == 404 {}
     }
 }

@@ -135,6 +135,7 @@ final class WorkspaceStore {
     @ObservationIgnored var onExpiredSession: (() -> Void)?
     @ObservationIgnored private var conversations: [String: ConversationStore] = [:]
     /// 暗号化チャンネルの復号と送信、初回設定と解錠（#685）。プレビューなどでは `nil`。
+    var encryptionStorageUnavailable = false
     var e2ee: E2eeController?
     private(set) var active = true
     private var destinationGeneration = UUID()
@@ -245,7 +246,7 @@ final class WorkspaceStore {
                 let epoch = channelGeneration
                 if let cached = try await client.cachedWorkspace(), active, !hasLoaded, !Task.isCancelled,
                    channelGeneration == epoch {
-                    channels = cached.channels.filter { $0.deleted_at == nil }.sorted { $0.channel_name.localizedStandardCompare($1.channel_name) == .orderedAscending }
+                    channels = cached.channels.filter { $0.deleted_at == nil }.map { applyingDowngradeCheck($0) }.sorted { $0.channel_name.localizedStandardCompare($1.channel_name) == .orderedAscending }
                     people = Dictionary(cached.people.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
                     unread = Set(cached.readStates.filter(\.has_unread).map(\.channel_id))
                     readStateRevision = UUID()
@@ -366,6 +367,7 @@ final class WorkspaceStore {
 
     private func applyingDowngradeCheck(_ reconciled: Channel) -> Channel {
         var channel = reconciled
+        if encryptionStorageUnavailable { channel.encrypted = true; return channel }
         guard let e2ee else { return channel }
         e2ee.rememberEncryptedChannels([channel])
         if e2ee.isDowngraded(channel) {
@@ -459,6 +461,7 @@ final class WorkspaceStore {
     }
 
     func conversation(for channel: Channel) -> ConversationStore {
+        let channel = applyingDowngradeCheck(channel)
         if let existing = conversations[channel.id] { return existing }
         let store = ConversationStore(channel: channel, client: client, userID: user.id)
         store.e2ee = e2ee

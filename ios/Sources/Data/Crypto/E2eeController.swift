@@ -80,7 +80,10 @@ final class E2eeController: ConversationEncryption {
         self.manager = manager
         self.setup = setup
         self.encryption = encryption
-        manager.onReady = { [weak self] in self?.refreshStatus() }
+        manager.onReady = { [weak self] in
+            self?.rememberEncryptedChannels([])
+            self?.refreshStatus()
+        }
         manager.onKeysReceived = { [weak self] in
             guard let self else { return }
             // 新しい鍵（検証済みの鍵が、検証できなかった鍵を置き換えることがある）で、同じ行の復号の結果が変わりうるので、
@@ -108,12 +111,15 @@ final class E2eeController: ConversationEncryption {
             // 暗号文だけだが、同期の記録には残さない（`sync: nil`）。処理済みの印は暗号ストアに置く。
             try await ShapeStream(api: api, sync: nil).observe("api/shapes/e2ee_to_device", query: ["device_id": deviceID],
                                                                as: ToDeviceShapeRow.self, restoreCached: false) { rows in
-                receive(ToDeviceShapeRow.ordered(rows ?? []))
+                // 再取得開始の nil は空の完全な Shape ではないため、処理済みの印を回収しない。
+                if let rows { receive(ToDeviceShapeRow.ordered(rows)) }
             }
         }
         let manager = E2eeDeviceManager(api: api, files: files, userID: userID, observeToDevice: toDevice)
         let setup = E2eeSetup(api: api, userID: userID, store: { try await manager.waitForStore() })
-        let encryption = MessageEncryption(store: { manager.readyStore }, api: api)
+        let encryption = MessageEncryption(store: { manager.readyStore }, api: api, uploadBackup: {
+            setup.scheduleKeyBackup()
+        })
         let controller = E2eeController(manager: manager, setup: setup, encryption: encryption)
         controller.devicesAPI = api
         controller.files = files
@@ -145,16 +151,39 @@ final class E2eeController: ConversationEncryption {
     var revocationWasDropped: Bool { manager.readyStore?.revocationDropped == true }
     func acknowledgeRevocationDropped() { try? manager.readyStore?.acknowledgeRevocationDropped() }
 
-    /// 暗号化チャンネルとして見たチャンネルを記録する（暗号ストアを開けていなければ、何もしない）。
-    func rememberEncryptedChannels(_ channels: [Channel]) {
-        let ids = channels.filter { $0.encrypted == true }.map(\.id)
-        guard !ids.isEmpty, let store = manager.readyStore else { return }
-        try? store.rememberEncryptedChannels(ids)
+    @ObservationIgnored private var observedEncryptedChannels = Set<String>()
+    @ObservationIgnored private var readEncryptionHistory = false
+    @ObservationIgnored private var encryptionHistoryAvailable = false
+
+    private func refreshEncryptionHistory() {
+        if let store = manager.readyStore {
+            observedEncryptedChannels.formUnion(store.encryptedChannels)
+            encryptionHistoryAvailable = true
+        } else if !readEncryptionHistory, let files {
+            readEncryptionHistory = true
+            do {
+                observedEncryptedChannels.formUnion(try files.metadata(userID: userIDForStore)?.encrypted_channels ?? [])
+                encryptionHistoryAvailable = true
+            } catch {
+                encryptionHistoryAvailable = false
+            }
+        }
     }
 
-    /// 暗号化チャンネルだったはずなのに、サーバーが `encrypted = false` を返している（格下げ）。
+    /// 準備中や保存失敗時も、観測した暗号化チャンネルをメモリーに残す。
+    func rememberEncryptedChannels(_ channels: [Channel]) {
+        refreshEncryptionHistory()
+        observedEncryptedChannels.formUnion(channels.filter { $0.encrypted == true }.map(\.id))
+        if let store = manager.readyStore, !observedEncryptedChannels.isEmpty {
+            try? store.rememberEncryptedChannels(Array(observedEncryptedChannels))
+        }
+    }
+
+    /// ローカルの履歴を確かめられない間も、平文への切替を認めない。
     func isDowngraded(_ channel: Channel) -> Bool {
-        channel.encrypted != true && manager.readyStore?.isRememberedEncrypted(channel.id) == true
+        refreshEncryptionHistory()
+        guard channel.encrypted != true else { return false }
+        return observedEncryptedChannels.contains(channel.id) || (files != nil && !encryptionHistoryAvailable)
     }
 
     /// 待っているパスキーの要求を取り消す。
@@ -175,6 +204,7 @@ final class E2eeController: ConversationEncryption {
     @ObservationIgnored private var expireTask: Task<Void, Never>?
 
     func stop() async {
+        setup.cancelScheduledBackup()
         expireTask?.cancel()
         expireTask = nil
         await manager.stop()
@@ -251,26 +281,28 @@ final class E2eeController: ConversationEncryption {
 
     /// ログアウトする：端末をサーバーから消し（5 秒まで）、暗号ストアを消す。消せなかった端末は削除待ちに残し、同じ接続先と
     /// ユーザーの次のログインで消し直す。端末の削除にはトークンが要るので、認証情報を消す前に呼ぶ。
-    func finishLogout() async {
+    func finishLogout() async throws {
         await stop()
-        guard let files, let opened = try? CryptoStore.open(files, userID: userIDForStore, create: false) else { return }
-        let store = opened.store
-        let registered = store.isRegistered
-        let device = store.deviceID
-        if registered, let api = devicesAPI {
-            let removed = await e2eeWithTimeout(.seconds(5)) { () -> Bool? in
-                do { try await api.removeDevice(device); return true }
+        defer { EncryptedAttachmentFiles.shared.removeAll() }
+        guard let files else { return }
+        let metadata = try? files.metadata(userID: userIDForStore)
+        if let metadata, metadata.registered {
+            let entry = PendingDeviceDeletion(server: serverKey, user: userIDForStore, device: metadata.device_id)
+            let pending = PendingDeviceDeletions(root: files.directory.deletingLastPathComponent())
+            let recorded = pending.add(entry)
+            let removed = await e2eeWithTimeout(.seconds(5)) { [devicesAPI] () -> Bool? in
+                guard let api = devicesAPI else { return false }
+                do { try await api.removeDevice(metadata.device_id); return true }
                 catch let failure as E2eeAPIError where failure.status == 404 { return true }
                 catch { return false }
             }
-            if removed != true {
-                // 消せなかった（通信の失敗など）。次のログインで消し直す。書けなくても、暗号ストアは消して閉じる。
-                PendingDeviceDeletions(root: files.directory.deletingLastPathComponent())
-                    .add(PendingDeviceDeletion(server: serverKey, user: userIDForStore, device: device))
+            if removed == true { pending.remove(entry) }
+            else if !recorded {
+                // 再試行先を失わないよう、ローカル状態を残して失敗を画面へ返す。
+                throw CocoaError(.fileWriteUnknown)
             }
         }
-        do { try store.destroy(files) } catch { store.close() }
-        EncryptedAttachmentFiles.shared.removeAll()
+        try files.removeLocalState()
     }
 
     /// 前のログアウトで消せなかった、この接続先とユーザーの端末を消し直す（ログインのあと、裏で行う）。

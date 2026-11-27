@@ -13,7 +13,7 @@ struct WorkspaceView: View {
 
     /// 受けた検証の要求があり、ほかのシートを開いていなければ、検証の画面を出す。
     private func presentPendingVerification() {
-        let pending = workspace.e2ee?.verification?.entries.contains { $0.view.phase == "incoming" } ?? false
+        let pending = workspace.e2ee?.verification?.entries.contains { $0.view.phase == .incoming } ?? false
         if pending, case .none = workspace.presentedSheet { workspace.presentedSheet = .verification }
     }
 
@@ -26,7 +26,7 @@ struct WorkspaceView: View {
             }
         }
         // 相手から検証の要求が届いたら、ほかのシートを開いていなければ、検証の画面を出す。
-        .onChange(of: workspace.e2ee?.verification?.entries.filter { $0.view.phase == "incoming" }.map(\.id) ?? []) { _, _ in
+        .onChange(of: workspace.e2ee?.verification?.entries.filter { $0.view.phase == .incoming }.map(\.id) ?? []) { _, _ in
             presentPendingVerification()
         }
         // 別のシートを開いていて見送った検証の要求は、そのシートを閉じたときに出す。

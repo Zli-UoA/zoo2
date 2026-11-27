@@ -68,6 +68,7 @@ internal fun NotificationPage(
         }
     }
     val scroll = rememberLazyListState()
+    if (items.isEmpty()) return
     val visible by remember {
         derivedStateOf {
             val layout = scroll.layoutInfo
@@ -96,7 +97,7 @@ internal fun NotificationPage(
             val target = item.target
             Row(
                 Modifier.fillMaxWidth()
-                    .then(if (target != null) Modifier.clickable { onOpen(target) } else Modifier)
+                    .then(if (target != null) Modifier.clickable { viewed(item.id); onOpen(target) } else Modifier)
                     .padding(vertical = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
@@ -148,8 +149,8 @@ internal fun NotificationPage(
                         }
                     }
                     item.detail?.let {
-                        Text(formatEntry(it), color = colors.foreground, fontSize = entryTextSize,
-                            maxLines = 3, overflow = TextOverflow.Ellipsis)
+                        // 本文と同じく、このアプリのリンクは短くし、アプリ内で移動する。
+                        EntryBody(it, colors.foreground, entryTextSize, emptyMap(), maxLines = 3)
                     }
                     item.destination?.let {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -175,8 +176,11 @@ private fun InboxReaction(
     colors: AndroidColors,
     loadImage: suspend (String) -> ImageBitmap?,
 ) {
-    val bitmap by produceState<ImageBitmap?>(null, reaction.image) {
-        value = reaction.image?.let { loadImage(it) }
+    val bitmap = key(reaction.image, LocalCachedTimelineImage.current) {
+        val initial = cachedTimelineIcon(reaction.image)
+        produceState(initial) {
+            if (initial == null) value = reaction.image?.let { loadImage(it) }
+        }.value
     }
     val image = bitmap
     if (image != null) Image(image, reaction.emoji, Modifier.size(18.dp), contentScale = ContentScale.Fit)
@@ -190,8 +194,11 @@ private fun InboxAvatar(
     colors: AndroidColors,
     loadAvatar: suspend (String) -> ImageBitmap?,
 ) {
-    val bitmap by key(actor.avatar) {
-        produceState<ImageBitmap?>(null) { value = actor.avatar?.let { loadAvatar(it) } }
+    val bitmap by key(actor.avatar, LocalCachedTimelineImage.current) {
+        val initial = cachedTimelineIcon(actor.avatar)
+        produceState(initial) {
+            if (initial == null) value = actor.avatar?.let { loadAvatar(it) }
+        }
     }
     Box(Modifier.size(size).clip(CircleShape).background(colors.inputSurface)
         .semantics { contentDescription = actor.name }, contentAlignment = Alignment.Center) {

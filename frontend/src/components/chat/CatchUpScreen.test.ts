@@ -20,6 +20,11 @@ const mocks = vi.hoisted(() => ({
     unread_count_truncated: boolean;
     first_unread_at: string | null;
   }>,
+  channels: [
+    { id: "a", channel_name: "general", is_dm: false, archive_at: null as string | null },
+    { id: "b", channel_name: "random", is_dm: false, archive_at: null as string | null },
+  ],
+  pageProps: [] as Array<{ channelId: string; readOnly?: boolean }>,
 }));
 
 vi.mock("../../hooks/useUnread", () => ({
@@ -41,10 +46,7 @@ vi.mock("../../hooks/useCurrentUser", () => ({
 }));
 vi.mock("../../hooks/useRealtime", () => ({
   useActiveChannels: () => ({
-    data: [
-      { id: "a", channel_name: "general", is_dm: false },
-      { id: "b", channel_name: "random", is_dm: false },
-    ],
+    data: mocks.channels,
   }),
   useUsers: () => ({ data: [] }),
   useMessageReactions: () => ({ data: [] }),
@@ -61,12 +63,17 @@ vi.mock("../i18n/LocaleProvider", () => ({ useLocale: () => ({ locale: "ja" }) }
 vi.mock("./dm", () => ({ buildDmLabels: () => new Map() }));
 vi.mock("./CatchUpMessagePage", () => ({
   CatchUpMessagePage: ({
+    channelId,
+    readOnly,
     onBoundaryMessage,
     onRangeReady,
   }: {
+    channelId: string;
+    readOnly?: boolean;
     onBoundaryMessage: (id: string | null, at: number | null) => void;
     onRangeReady?: (ready: boolean, exhausted: boolean, boundaryTooOld: boolean) => void;
   }) => {
+    mocks.pageProps.push({ channelId, readOnly });
     useEffect(() => {
       onBoundaryMessage("latest-in-page", 1);
       onRangeReady?.(mocks.rangeReady, false, mocks.boundaryTooOld);
@@ -110,6 +117,11 @@ afterEach(() => {
   mocks.applyRead.mockReset();
   mocks.navigate.mockReset();
   mocks.unread = [];
+  mocks.channels = [
+    { id: "a", channel_name: "general", is_dm: false, archive_at: null },
+    { id: "b", channel_name: "random", is_dm: false, archive_at: null },
+  ];
+  mocks.pageProps = [];
   mocks.revision = 1;
   mocks.rangeReady = true;
   mocks.boundaryTooOld = false;
@@ -118,6 +130,7 @@ afterEach(() => {
 async function clickMarkRead() {
   const button = await screen.findByRole("button", { name: "既読にする" });
   await waitFor(() => expect(button.hasAttribute("disabled")).toBe(false));
+  button.focus();
   await act(async () => {
     fireEvent.click(button);
   });
@@ -152,6 +165,25 @@ it("does not write on open, freezes the queue and marks read only on demand", as
   expect(screen.getByText("キャッチアップ完了")).toBeTruthy();
   expect(screen.getByText("既読 1 件・未読のまま 1 件")).toBeTruthy();
   expect(mocks.post).toHaveBeenCalledTimes(1);
+});
+
+it("keeps focus on the heading when the conversation changes", async () => {
+  mocks.unread = [unreadItem("a"), unreadItem("b")];
+  mocks.get.mockResolvedValue(mocks.unread);
+  mocks.post.mockResolvedValue({ data: { channel_id: "a", has_unread: false } });
+  render(createElement(CatchUpScreen));
+  const heading = await screen.findByRole("heading", { name: "未読キャッチアップ" });
+  await waitFor(() => expect(document.activeElement).toBe(heading));
+
+  await clickMarkRead();
+  await waitFor(() => expect(document.activeElement).toBe(heading));
+
+  const keepUnread = screen.getByText("未読のまま次へ");
+  keepUnread.focus();
+  await act(async () => {
+    fireEvent.click(keepUnread);
+  });
+  await waitFor(() => expect(document.activeElement).toBe(heading));
 });
 
 it("stays on the page and shows an error when the write fails", async () => {
@@ -224,4 +256,21 @@ it("shows the empty state when the detailed response has no unread conversations
   mocks.get.mockResolvedValue([]);
   render(createElement(CatchUpScreen));
   expect(await screen.findByText("未読の会話はありません")).toBeTruthy();
+});
+
+it("passes readOnly to CatchUpMessagePage when the channel is archived", async () => {
+  mocks.unread = [unreadItem("a")];
+  mocks.get.mockResolvedValue(mocks.unread);
+  const view = render(createElement(CatchUpScreen));
+  await screen.findByText("1 / 1");
+  expect(mocks.pageProps.at(-1)).toEqual({ channelId: "a", readOnly: false });
+
+  await act(async () => {
+    mocks.channels = [
+      { id: "a", channel_name: "general", is_dm: false, archive_at: "2026-01-02T00:00:00Z" },
+      { id: "b", channel_name: "random", is_dm: false, archive_at: null },
+    ];
+    view.rerender(createElement(CatchUpScreen));
+  });
+  expect(mocks.pageProps.at(-1)).toEqual({ channelId: "a", readOnly: true });
 });

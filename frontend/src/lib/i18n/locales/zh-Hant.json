@@ -139,8 +139,7 @@
     "candidates": "成員建議",
     "usersLoading": "正在載入使用者…",
     "usersError": "無法載入使用者。",
-    "usersEmpty": "找不到符合的使用者。",
-    "back": "返回頻道"
+    "usersEmpty": "找不到符合的使用者。"
   },
   "moderation": {
     "archived": "已封存",
@@ -226,6 +225,7 @@
     "compose": "輸入訊息",
     "send": "傳送",
     "edit": "編輯",
+    "editMessage": "編輯訊息",
     "delete": "刪除",
     "more": "更多操作",
     "actions": "操作訊息",
@@ -248,7 +248,50 @@
     "copyRaw": "複製原文",
     "copied": "已複製原文",
     "copyFailed": "無法複製原文",
-    "edited": "已編輯"
+    "copyLink": "複製訊息連結",
+    "linkCopied": "已複製訊息連結",
+    "linkCopyFailed": "無法複製訊息連結",
+    "edited": "已編輯",
+    "forward": "轉寄訊息…",
+    "forwardTitle": "轉寄此訊息",
+    "forwardSearchPlaceholder": "搜尋頻道或成員",
+    "forwardDestinationLabel": "轉寄目標",
+    "forwardDestinationSelected": "已選擇 {{name}} 作為轉寄目標",
+    "forwardClearDestination": "移除 {{name}}",
+    "forwardNoDestinations": "沒有可轉寄的頻道或私訊",
+    "forwardCommentPlaceholder": "新增備註（選填）",
+    "forwardCommentLabel": "備註",
+    "forwardPreviewLabel": "轉寄訊息預覽",
+    "forwardSubmit": "轉寄",
+    "forwarding": "轉寄中…",
+    "forwarded": "已轉寄訊息",
+    "forwardedTo": "已轉寄至 {{channel}}",
+    "forwardSourceUnavailable": "原訊息不存在，或您沒有權限轉寄",
+    "forwardLoading": "正在載入轉寄的訊息",
+    "forwardDeleted": "此訊息已被刪除",
+    "forwardUnavailable": "您沒有權限檢視此訊息",
+    "forwardLoadError": "無法載入轉寄的訊息",
+    "forwardSourceChannel": "發佈於 {{channel}}",
+    "forwardSourceThread": "{{channel}} 子討論中的回覆",
+    "forwardQuoteLabel": "來自 {{author}} 的轉寄訊息",
+    "forwardAttachmentCount_one": "{{count}} 個附件",
+    "forwardAttachmentCount_other": "{{count}} 個附件",
+    "forwardNestedCompact": "此訊息中亦包含轉寄內容",
+    "forwardNestedNote": "此訊息還包含轉寄內容 · 檢視原訊息"
+  },
+  "channelLink": {
+    "inlineMessage": "{{name}}：{{channel}}",
+    "thread": "{{channel}} 中的子討論",
+    "encrypted": "此訊息已加密",
+    "messageUnavailable": "無法顯示此訊息",
+    "channelUnavailable": "無法顯示此頻道",
+    "loading": "正在載入連結內容",
+    "loadFailed": "無法載入連結內容",
+    "appMessage": "App 的訊息",
+    "attachments_one": "{{count}} 個附件",
+    "attachments_other": "{{count}} 個附件",
+    "privateChannel": "私人頻道",
+    "encryptedChannel": "加密頻道"
   },
   "attachments": {
     "recentPhotos": "最近的照片",
@@ -273,11 +316,23 @@
     "download": "下載{{name}}",
     "downloadShort": "下載",
     "downloadError": "無法下載檔案。",
+    "previewSaveUnsupported": "應用程式無法儲存此檔案。請在新分頁開啟連結後儲存。",
+    "downloadSaved": "已儲存為 {{name}}。",
+    "downloadDestinationUnsupported": "無法儲存到此位置。請選擇其他資料夾，或在設定的「下載」中變更儲存位置。",
+    "downloadTooMany": "同時儲存的數量已達上限。請等待其他下載完成後再試。",
+    "downloading": "正在下載",
+    "saving": "正在儲存…",
+    "cancelDownload": "取消下載 {{name}}",
+    "cancelDownloadShort": "取消",
     "retry": "重試",
     "sensitive": "敏感圖片",
     "markSensitive": "將圖片標記為敏感內容",
     "showSensitive": "顯示圖片",
     "hideSensitive": "隱藏圖片",
+    "showSensitiveVideo": "顯示影片",
+    "hideSensitiveVideo": "隱藏影片",
+    "openOriginal": "原始檔案",
+    "imagePreviewFailed": "無法載入圖片",
     "sensitiveShort": "敏感圖片",
     "documentSummary": "正文與儲存格的簡易預覽，格式及版面可能與原檔不同。",
     "previewLimit": "預覽超出大小、檔案數量或處理時間限制，請下載檔案查看。",
@@ -294,7 +349,8 @@
       "to": "收件者",
       "cc": "副本",
       "date": "日期"
-    }
+    },
+    "downloadDestinationUnsupportedAskEveryTimeOff": "無法儲存到此位置。請在設定的「下載」中變更儲存位置，或開啟「每次儲存時確認」。"
   },
   "threads": {
     "title": "子討論",
@@ -329,6 +385,10 @@
     "participants_other": "參與者 {{count}} 人",
     "participantsMore": "另有 {{count}} 人",
     "participantsEmpty": "沒有參與者",
+    "threadStarter": "討論串發起人",
+    "participantsSearch": "搜尋姓名",
+    "participantsFilterPartial": "僅在已載入的前 {{loaded}} 人中篩選（另有 {{count}} 人無法搜尋）。",
+    "participantsDescription": "已加入此討論串的人。",
     "joinToReply": "參與後才能回覆此討論串。",
     "reopenAndJoin": "重新開啟並參與"
   },
@@ -364,7 +424,6 @@
     "noSearchResults": "沒有符合的表情",
     "tabEmoji": "表情符號",
     "tabKitchen": "Emoji Kitchen",
-    "emojiDescription": "可以從所有表情符號中選擇。",
     "emojiLoading": "正在載入表情符號…",
     "recent": "最近使用的表情符號",
     "skinTone": "膚色"
@@ -432,7 +491,8 @@
     "unreadStatus": "未讀",
     "readStatus": "已讀",
     "actors_one": "{{actor}} 和另外 1 人",
-    "actors_other": "{{actor}} 和另外 {{count}} 人"
+    "actors_other": "{{actor}} 和另外 {{count}} 人",
+    "forwardedPreview": "轉寄了一則訊息"
   },
   "webhooks": {
     "title": "Webhook 設定",
@@ -494,6 +554,19 @@
     "desktopTitle": "通知",
     "desktopValue": "系統通知",
     "desktopDescription": "應用程式會透過系統通知提醒你被提及與收到私訊。若在系統設定中關閉了 zoo2 的通知，請在那裡也將其開啟。"
+  },
+  "downloads": {
+    "desktopTitle": "下載",
+    "desktopDescription": "附件檔案的儲存位置。可以選擇每次儲存時確認位置，或儲存到預先設定的資料夾。",
+    "askEveryTime": "每次儲存時確認",
+    "noFolder": "未選擇資料夾",
+    "chooseFolder": "選擇資料夾",
+    "resetDirectory": "清除資料夾並每次儲存時確認",
+    "olderAppValue": "應用程式預設儲存位置",
+    "olderAppDescription": "此版本的應用程式會將附件儲存到應用程式決定的位置。若要變更儲存位置，請更新應用程式。",
+    "loadError": "無法讀取儲存位置的設定。",
+    "retry": "重新載入",
+    "error": "無法變更下載設定，請再試一次。"
   },
   "mfm": {
     "suggestions": "MFM 候選",
@@ -820,6 +893,7 @@
     "deleted": "已刪除貼文",
     "newPosts": "查看新貼文（{{count}}）",
     "quotedPost": "引用的貼文",
+    "postUnavailable": "無法顯示這則貼文",
     "quoteUnavailable": "無法顯示引用的貼文",
     "openQuotedPost": "開啟引用的貼文",
     "image": "圖片",
@@ -850,6 +924,7 @@
       "unlisted": "首頁",
       "followers": "僅追蹤者"
     },
+    "followersAudience": "追蹤者",
     "audienceHint": {
       "local": "僅在 Zoo 內顯示，不傳送到其他伺服器。",
       "public": "任何人都可閱讀，並傳送給遠端追蹤者。",
@@ -883,6 +958,7 @@
     "userSearch": "搜尋使用者",
     "search": "搜尋",
     "noUsers": "找不到使用者",
+    "openAuthorProfile": "開啟 {{author}} 的個人資料",
     "userDetails": "使用者詳情",
     "joinedAt": "加入日期：{{date}}",
     "pullRefresh": "下拉重新整理",
@@ -1735,6 +1811,12 @@
   "androidUpdate": {
     "title": "應用程式更新"
   },
+  "androidNavigationCache": {
+    "title": "頁面切換快取",
+    "description": "設定記憶體中保留的首頁、貼文詳情與個人資料項目數，以及獨立的頻道項目數。",
+    "off": "關閉",
+    "entries": "{{count}} 項"
+  },
   "androidNotifications": {
     "enable": "啟用通知",
     "scope": "登入工作階段同步期間接收新通知。",
@@ -1854,6 +1936,53 @@
     "speaker": "揚聲器",
     "waiting": "正在等候來電",
     "dmCall": "通話"
+  },
+  "globalSearch": {
+    "title": "搜尋",
+    "placeholder": "搜尋訊息和檔案",
+    "kinds": {
+      "all": "全部",
+      "messages": "訊息",
+      "files": "檔案"
+    },
+    "prompt": "請輸入要搜尋的字詞。以空格分隔時，會尋找包含所有字詞的結果。",
+    "empty": "找不到結果。",
+    "emptyOlder": "截至 {{month}} 找不到結果。可以繼續搜尋更早的內容。",
+    "searchedUntil": "已搜尋至 {{month}}",
+    "searchOlder": "搜尋更早的結果",
+    "loading": "搜尋中…",
+    "loadError": "無法搜尋。",
+    "retry": "重試",
+    "tooManyTerms": "最多可以搜尋 {{max}} 個詞。請減少詞數。",
+    "termTooLong": "每個詞最多 {{max}} 個字元。請縮短該詞。",
+    "encryptedNote": "加密頻道不在搜尋範圍內。",
+    "openNav": "搜尋",
+    "inThread": "子討論回覆",
+    "filters": {
+      "label": "篩選",
+      "from": "傳送者",
+      "in": "頻道",
+      "kind": "類型",
+      "period": "日期",
+      "anytime": "不限",
+      "last7": "過去 7 天",
+      "last30": "過去 30 天",
+      "last365": "過去 1 年",
+      "custom": "指定日期",
+      "after": "開始日期",
+      "before": "結束日期",
+      "reversed": "開始日期不能晚於結束日期。",
+      "reset": "重設條件",
+      "me": "{{name}}（我）",
+      "searchPeople": "依名稱搜尋",
+      "searchChannels": "搜尋頻道",
+      "noMatches": "找不到",
+      "clearSelection": "取消選取",
+      "selectedCount": "{{label}}：{{count}} 個",
+      "max": "最多可選取 {{count}} 個",
+      "mine": "我參與的",
+      "noBots": "排除機器人"
+    }
   },
   "catchUp": {
     "navUnread_one": "{{count}} 個未讀對話待查看",

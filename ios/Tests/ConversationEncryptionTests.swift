@@ -32,14 +32,27 @@ struct ConversationEncryptionTests {
     private let channel = Channel(id: UUID().uuidString, channel_name: "秘密", is_private: true, is_dm: false, encrypted: true)
     private let userID = UUID().uuidString
 
+    @Test("Shape の message_kind と REST の kind を読み分けて暗号文の種類を保つ")
+    func decodesMessageKind() throws {
+        for key in ["message_kind", "kind"] {
+            let data = Data("""
+            {"id":"m","user_id":"u","channel_id":"c","content":"","created_at":"2026-11-27T00:00:00Z","\(key)":"emote"}
+            """.utf8)
+            let row = try JSONDecoder().decode(Message.self, from: data)
+            #expect(row.kind == "emote")
+            let restored = try JSONDecoder().decode(Message.self, from: JSONEncoder().encode(row))
+            #expect(restored.kind == "emote")
+        }
+    }
+
     private func message(_ id: String, content: String = "", ciphertext: String? = "{}", at second: Int = 0) -> Message {
         Message(id: id, user_id: userID, channel_id: channel.id, content: content,
                 created_at: "2026-11-25T09:00:0\(second)Z", ciphertext: ciphertext.map(CiphertextText.init),
                 epoch: ShapeInteger(1), revision: ShapeInteger(0))
     }
 
-    private func store(_ encryption: FakeEncryption?) -> ConversationStore {
-        let store = ConversationStore(channel: channel, client: PreviewChatClient(), userID: userID)
+    private func store(_ encryption: FakeEncryption?, client: any ChatClient = PreviewChatClient()) -> ConversationStore {
+        let store = ConversationStore(channel: channel, client: client, userID: userID)
         store.e2ee = encryption
         return store
     }
@@ -122,6 +135,30 @@ struct ConversationEncryptionTests {
         #expect(store.messages.first?.e2eeNotice == nil)
     }
 
+    @Test("保存領域を開けないときは平文と返された会話でも本文・編集・添付を送らない")
+    func unavailableStorageBlocksPlaintext() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        harness.stub { _ in Issue.record("暗号状態が不明な間に送信してはいけません"); return (500, [:], Data()) }
+        let workspace = WorkspaceStore(client: harness.client,
+            user: Person(id: userID, user_name: "test", display_name: "利用者"), recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        workspace.encryptionStorageUnavailable = true
+        var cached = channel
+        cached.encrypted = false
+        let conversation = workspace.conversation(for: cached)
+        #expect(!conversation.canPost)
+        conversation.drafts["root"] = "秘密"
+        await conversation.send()
+        #expect(conversation.drafts["root"] == "秘密")
+        #expect(await conversation.edit(plaintext("m", "秘密", at: 0), content: "変更") == false)
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".txt")
+        try Data("添付の秘密".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        await conversation.importFiles([file], parentID: nil)
+        await conversation.send()
+    }
+
     @Test("解錠していなければ送信できず、解錠すると送信できる")
     func postingFollowsUnlock() {
         let encryption = FakeEncryption()
@@ -169,7 +206,8 @@ struct ConversationEncryptionTests {
     @Test("暗号化チャンネルの添付は、暗号化して上げ、本文の暗号文に入れて送る")
     func attachmentsAreEncryptedAndSent() async throws {
         let encryption = FakeEncryption()
-        let store = store(encryption)
+        let client = PreviewChatClient()
+        let store = store(encryption, client: client)
         store.drafts["root"] = "添付つき"
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).txt")
         try Data("x".utf8).write(to: file)
@@ -180,6 +218,14 @@ struct ConversationEncryptionTests {
         let info = try #require(encryption.sentAttachments.first?.first)
         #expect(info.name == file.lastPathComponent && info.size == 1)
         #expect(!info.file.isEmpty)
+        let ciphertext = try await client.attachmentData(from: client.attachmentURL(id: info.attachmentId))
+        #expect(ciphertext != Data("x".utf8))
+        #expect(try decryptAttachment(file: info.file, ciphertext: ciphertext) == Data("x".utf8))
+        let shown = MessageAttachment(decrypted: info)
+        defer { EncryptedAttachmentFiles.shared.removeAll() }
+        #expect(try await client.attachmentData(shown) == Data("x".utf8))
+        let downloaded = try await client.attachmentFile(shown, channelID: channel.id)
+        #expect(try Data(contentsOf: downloaded.url) == Data("x".utf8))
         #expect(store.sendErrors["root"] == nil)
         #expect(store.draftAttachments["root"]?.isEmpty ?? true)
     }

@@ -1,6 +1,7 @@
 import { useLiveQuery } from "@tanstack/react-db";
 import { useNavigate } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
+import { BookOpenCheckIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useCurrentUser } from "../../hooks/useCurrentUser";
@@ -15,6 +16,7 @@ import { apiPath } from "../../lib/api/path";
 import { createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
 import { useLocale } from "../i18n/LocaleProvider";
+import { ScreenHeader } from "../layout/PaneHeader";
 import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
 import { buildDmLabels } from "./dm";
@@ -204,28 +206,24 @@ export function CatchUpScreen() {
       className="flex h-full min-h-0 flex-col bg-background"
       aria-labelledby="catch-up-title"
     >
-      <header className="flex items-center justify-between gap-3 border-b px-4 py-3">
-        <div className="min-w-0">
-          <h1
-            id="catch-up-title"
-            className="truncate text-lg font-semibold"
-            tabIndex={-1}
-            ref={headingRef}
-          >
-            {t("catchUp.title")}
-          </h1>
-          {current ? (
-            <p className="truncate text-sm text-muted-foreground">
-              {current.unread_count_truncated
-                ? t("catchUp.overCount", { count: current.unread_count })
-                : t("catchUp.count", { count: current.unread_count })}
-            </p>
-          ) : null}
-        </div>
-        <Button variant="ghost" size="sm" onClick={() => void navigate({ to: "/" })}>
-          {t("catchUp.close")}
-        </Button>
-      </header>
+      <ScreenHeader
+        icon={BookOpenCheckIcon}
+        titleId="catch-up-title"
+        titleRef={headingRef}
+        title={t("catchUp.title")}
+        description={
+          current
+            ? current.unread_count_truncated
+              ? t("catchUp.overCount", { count: current.unread_count })
+              : t("catchUp.count", { count: current.unread_count })
+            : undefined
+        }
+        actions={
+          <Button variant="ghost" size="sm" onClick={() => void navigate({ to: "/" })}>
+            {t("catchUp.close")}
+          </Button>
+        }
+      />
 
       {queue === null ? (
         loadError ? (
@@ -280,6 +278,7 @@ export function CatchUpScreen() {
               channelId={current.channel_id}
               channelName={channelById.get(current.channel_id)?.channel_name}
               encrypted={channelById.get(current.channel_id)?.encrypted}
+              readOnly={!!channelById.get(current.channel_id)?.archive_at}
               firstUnreadAt={current.first_unread_at ?? null}
               onBoundaryMessage={onBoundaryMessage}
               onRangeReady={onRangeReady}

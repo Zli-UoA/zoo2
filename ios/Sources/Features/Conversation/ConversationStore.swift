@@ -451,6 +451,7 @@ final class ConversationStore {
                         // 暗号化チャンネルとして送った行（`epoch` がある）なのに暗号文がない。正しいサーバーは作れないので、
                         // サーバーが `content` を返していても表示しない。
                         shown.content = ""
+                        shown.display_data?.attachments = []
                         shown.e2eeNotice = E2eeText.unencrypted
                     }
                     rows[id] = shown
@@ -689,6 +690,7 @@ final class ConversationStore {
     }
 
     func attachments(for message: Message) -> [MessageAttachment] {
+        if channel.encrypted == true, message.epoch != nil, message.ciphertext == nil { return [] }
         // 暗号化メッセージは、復号した結果（`display_data`）だけを使い、サーバーの添付の行は使わない。
         if message.ciphertext != nil { return message.display_data?.attachments ?? [] }
         return message.display_data?.attachments ?? fallbackAttachments[message.id] ?? []

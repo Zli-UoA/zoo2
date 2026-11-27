@@ -27,6 +27,23 @@ func makeFiles(_ key: MemoryKey = MemoryKey()) -> (CryptoStoreFiles, MemoryKey, 
 }
 
 struct CryptoStoreTests {
+    @Test func 完全な受信一覧から消えた処理済みIDだけを回収する() throws {
+        let (files, _, directory) = makeFiles()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var store = try #require(try CryptoStore.open(files, userID: user)).store
+        defer { store.close() }
+        let rows = ["1", "2"].map { CryptoStore.ToDeviceRow(id: $0, senderUserID: user, type: "m.dummy", content: "{}") }
+        _ = try store.processToDevice(rows, keysQuery: "{}")
+        store.close()
+        store = try #require(try CryptoStore.open(files, userID: user)).store
+        try store.reconcileProcessedToDevice(present: ["2"])
+        let state = try JSONDecoder().decode(StoreState.self, from: Data(contentsOf: files.directory.appendingPathComponent(CryptoStore.stateFile)))
+        #expect(state.processed_to_device == ["2"])
+        try store.reconcileProcessedToDevice(present: [])
+        let empty = try JSONDecoder().decode(StoreState.self, from: Data(contentsOf: files.directory.appendingPathComponent(CryptoStore.stateFile)))
+        #expect(empty.processed_to_device.isEmpty)
+    }
+
     @Test func 届け先に渡す前の検証メッセージは処理済みの印と同じ状態に保存され古い状態でも読める() throws {
         // 古い `state.json`（項目がない）は、空として読める。
         let old = #"{"version":1,"user_id":"u","device_id":"d","registered":true,"account":"a"}"#
@@ -38,6 +55,55 @@ struct CryptoStoreTests {
         state.pending_verifications = [#"{"type":"m.key.verification.request"}"#]
         let again = try JSONDecoder().decode(StoreState.self, from: JSONEncoder().encode(state))
         #expect(again.processed_to_device == ["row-1"] && again.pending_verifications == state.pending_verifications)
+    }
+
+    @Test @MainActor func 登録前も暗号化履歴を照合し読めない履歴では平文へ切り替えない() throws {
+        let (files, _, directory) = makeFiles()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try #require(try CryptoStore.open(files, userID: user)).store
+        try store.rememberEncryptedChannels(["c1"])
+        store.close()
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let controller = E2eeController.make(api: harness.api, userID: user, files: files)
+        let channel = Channel(id: "c1", channel_name: "履歴", is_private: true, is_dm: false)
+        #expect(controller.manager.readyStore == nil)
+        #expect(controller.isDowngraded(channel))
+        let state = directory.appendingPathComponent(CryptoStore.stateFile)
+        try Data("壊れた状態".utf8).write(to: state)
+        let unreadable = E2eeController.make(api: harness.api, userID: user, files: files)
+        #expect(unreadable.isDowngraded(channel))
+    }
+
+    @Test @MainActor func 登録前に観測した暗号化チャンネルもメモリーへ残す() throws {
+        let (files, _, directory) = makeFiles()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let controller = E2eeController.make(api: harness.api, userID: user, files: files)
+        var channel = Channel(id: "c1", channel_name: "履歴", is_private: true, is_dm: false)
+        #expect(!controller.isDowngraded(channel))
+        channel.encrypted = true
+        controller.rememberEncryptedChannels([channel])
+        channel.encrypted = false
+        #expect(controller.isDowngraded(channel))
+    }
+
+    @Test func 保存失敗後は開き直すまで同じストアの操作を拒否する() throws {
+        let (files, _, directory) = makeFiles()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try #require(try CryptoStore.open(files, userID: user)).store
+        let blocker = directory.appendingPathComponent("state.json.tmp")
+        try FileManager.default.createDirectory(at: blocker, withIntermediateDirectories: false)
+        #expect(throws: (any Error).self) { try store.rememberEncryptedChannels(["c1"]) }
+        #expect(!store.isUsable)
+        try FileManager.default.removeItem(at: blocker)
+        #expect(throws: E2eeStoreError.closed) { try store.rememberEncryptedChannels(["c1"]) }
+        store.close()
+        let reopened = try #require(try CryptoStore.open(files, userID: user)).store
+        defer { reopened.close() }
+        #expect(reopened.isUsable && !reopened.isRememberedEncrypted("c1"))
+        try reopened.rememberEncryptedChannels(["c1"])
     }
 
     @Test func 暗号化チャンネルとして見たチャンネルは開き直しても覚えている() throws {
@@ -296,7 +362,9 @@ struct CryptoStoreTests {
         let path = directory.standardizedFileURL.path
         CryptoStore.openFailureHooks.withLock {
             $0[path] = {
-                try? FileManager.default.removeItem(at: blocker)
+                CryptoStore.openFailureHooks.withLock { $0[path] = nil }
+                do { try FileManager.default.removeItem(at: blocker) }
+                catch { Issue.record("再オープンの準備に失敗した: \(error)"); return }
                 other.withLock { $0 = try? CryptoStore.open(files, userID: user)?.store }
             }
         }
@@ -423,7 +491,7 @@ struct DeviceRegistrationTests {
         let store = try await DeviceRegistration(api: api, files: files, userID: user, displayName: "iPhone（iOS）").ensureRegistered()
         defer { store.close() }
         #expect(store.isRegistered)
-        #expect(api.registered.count == 1)
+        try #require(api.registered.count == 1)
         #expect(api.registered[0]["display_name"] == .string("iPhone（iOS）"))
     }
 
@@ -434,7 +502,7 @@ struct DeviceRegistrationTests {
         let registration = DeviceRegistration(api: api, files: files, userID: user)
         try await registration.ensureRegistered().close()
         try await registration.ensureRegistered().close()
-        #expect(api.registered.count == 1)
+        try #require(api.registered.count == 1)
     }
 
     @Test func 登録に失敗したら登録済みにせず同じ鍵で送り直せる() async throws {
@@ -445,7 +513,7 @@ struct DeviceRegistrationTests {
         let registration = DeviceRegistration(api: api, files: files, userID: user)
         await #expect(throws: E2eeAPIError(status: 503, code: nil)) { try await registration.ensureRegistered() }
         try await registration.ensureRegistered().close()
-        #expect(api.registered.count == 2)
+        try #require(api.registered.count == 2)
         #expect(api.registered[0]["device_keys"] == api.registered[1]["device_keys"])
     }
 
@@ -457,7 +525,7 @@ struct DeviceRegistrationTests {
         let store = try await DeviceRegistration(api: api, files: files, userID: user).ensureRegistered()
         defer { store.close() }
         #expect(store.isRegistered)
-        #expect(api.registered.count == 2)
+        try #require(api.registered.count == 2)
         guard case .object(let first) = api.registered[0]["device_keys"], case .object(let second) = api.registered[1]["device_keys"] else {
             Issue.record("device_keys がない"); return
         }
@@ -475,7 +543,7 @@ struct DeviceRegistrationTests {
         api.listed = [peek.deviceID]
         peek.close()
         await #expect(throws: E2eeAPIError.self) { try await registration.ensureRegistered() }
-        #expect(api.registered.count == 1)
+        try #require(api.registered.count == 1)
     }
 
     @Test func 保存鍵を失ったら前の端末をサーバーから消す() async throws {

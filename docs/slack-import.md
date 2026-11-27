@@ -276,16 +276,25 @@ Android アプリでは、「Slack と連携」を押すと外部のブラウザ
 
 マイグレーション `20261109003000_create_slack_user_links.sql`、`20261109004000_index_slack_reassign.sql` を適用してください。
 
+### ロック順（`slack-link`）
+
+ZIP の取り込み・差分同期・イベントのヒント処理・直近 24 時間の再確認・付け替えは、ユーザーの解決から投稿の保存まで、ワークスペースをまたぐ 1 つの advisory lock `slack-link`（`pg_advisory_xact_lock(hashtextextended('slack-link',0))`）をトランザクションの間、保持します（`link::lock_links`）。プレースホルダの対応表（`slack_users`）を読む処理と、連携・付け替えが同じ表を書き換える処理を直列化するためです。
+
+ロックの取得順は `advisory -> users -> channels` に固定しています。連携は `slack_users` の行を先にロックしてから `users` を更新するので、取り込み側は対応表を読む前（ユーザー行をロックする前）に `slack-link` を取ります。順序を逆にすると、取り込みが `users` を持ったまま対応表を待ち、連携が対応表を持ったまま `users` を待つデッドロックになります。この順序により、連携の直後に取り込んだ投稿が、付け替え前の古いプレースホルダ ID を書き込むこともありません。
+
+`slack-link` はワークスペース単位ではなく全体で 1 つなので、複数のワークスペースを同時に取り込むと、ユーザーの解決と保存の区間で待ち合います。この競合と待ち時間はまだ計測していません（複数ワークスペースの並行取り込みは未ベンチマークです）。実際の遅延が観測された場合は、ユーザー解決の区間を分ける、安全だと確認できれば `team` 単位のロックに狭める、といった短縮を将来の最適化として検討します。現状は、デッドロックの回避と取り込みの正しさを優先しています。
+
 ## 差分同期
 
 エクスポートより後の投稿は、連携済みのユーザーのトークンで、システムが自動的に取り込みます（Zli-UoA/zoo2#292）。連携した直後と、そのあとは 5 分ごとに、対応済みのチャンネル（`slack_channels`）を同期します。`SLACK_CLIENT_ID` などの連携の設定（上の 4 つ）があるときだけ動きます。
 
 - **トークン**: 同じチャンネルは、そのワークスペースの連携済みメンバーのうち 1 人のトークンで取得します。非公開の Zoo チャンネルは、そのメンバーのトークンだけを使い、公開のチャンネルは、メンバーのトークンを先に試します。読めないトークン（チャンネルに参加していない、トークンが失効した、履歴スコープがない）は飛ばして、次のメンバーのトークンで取り直します。誰のトークンでも読めないときは、1 時間後に取り直します。
 - **カーソル**: 同期の起点は `slack_channels.last_ts` で、チャンネル単位で共有します（人数分の取得はしません）。`conversations.history` は新しい順に返すので、`last_ts` は同期が最後まで終わったときにだけ、取得した最新の投稿の `ts` まで進めます。
+- **スレッドの再Openと参加**: 差分同期・イベントで取り込む（API の最初の全履歴の同期は含めません）、直近（スレッドの自動アーカイブの期間 `THREAD_IDLE_DAYS`＝1 日から、余裕の 10 分を引いた範囲）の返信は、zoo の返信と同じライブの投稿として扱います。アーカイブ済みのスレッドを再Openし、退出済みの投稿者（連携したユーザー）を再参加させます。ただし、返信より後に zoo で退出した人は、取り込みが遅れても（429・再試行・同期の追いつき）、時計のずれで返信の時刻が DB の時刻より先でも、その返信では再参加しません。期間の端の返信は、再Openしても活動時刻がすぐ期間を外れて閉じ直されるので、履歴として入れるだけです。親の投稿者と返信者の自動参加は、これまでどおりです（連携していない人のプレースホルダは、参加者の一覧に出ません）。同じ返信の再取り込み（5 分ごとの確認や再送）は INSERT されないので、再Openも再参加もしません。Slack の返信者も、zoo の返信者と同じ参加の扱いです（未参加の人は参加して返信し、退出済みの人は退出のあとの返信で参加し直し、アーカイブ済みのスレッドへの他人の返信はスレッドを再表示します）。フラグ（`zoo.thread_live_import`）は、メッセージの INSERT 文の先頭の CTE（テーブルを読まない定数の `set_config`）で、返信ごとに決め直します。別の SQL 文・往復は増えず、同じトランザクションの次の返信には引き継がれません（差分同期のページは `ts` の昇順に入れるので、「直近の返信のあとに古い返信」の順は、現状の経路では起きません）。ZIP・API の履歴の取り込み（API の最初の全履歴の同期、`is_initial` を含む。Slack の時計が DB より進んでいて、返信の時刻が DB の時刻より先でも同じ）と、範囲より古い返信は、履歴として入れるだけで、再Openも再参加もしません（初回の全履歴や、止まっていた同期の追いつきが、古いスレッドを開き直さないため）。
 - **スレッド**: 取得した投稿のうちスレッドの親があれば、返信を `conversations.replies` で取得します。返信がまだない投稿も含め、3 日以内の親になりうる投稿（最大 20 件、新しい順）は、新しい返信がないか毎回確かめます（同期のあとで初めて返信が付いても取り込むため）。
 - **キューと再開**: チャンネルごとにキュー（`slack_channel_syncs`）の 1 行を持ち、複数台のバックエンドが、`FOR UPDATE SKIP LOCKED` とリースで 1 チャンネルを 1 台だけが進めます。1 ページ（または 1 スレッド）ごとに、書き込みと同じトランザクションで、ページのカーソルと残りのスレッドを保存するので、止まっても続きから再開します。ページのカーソルが期限切れ（`invalid_cursor`）になったときは、保存した位置を捨て、同期カーソルから取り直します。取り込みの書き込みは決定的 ID の `ON CONFLICT DO NOTHING` なので、取り直しや、ZIP の取り込みとの重なりで投稿が重複することはありません。取り込みのジョブが動いているワークスペースは、そのジョブが終わるまで同期を待ちます。
 - **429**: `Retry-After` の秒数だけ、そのチャンネルの次の実行を遅らせます（ほかのチャンネルは進みます）。途中経過は保存済みで、失敗の回数には数えません。そのほかの失敗は、30 秒から最大 1 時間まで、回数に応じて待ちを延ばして再実行します。
-- **非公開チャンネル**: 取り込み先は、対応付けた Zoo のチャンネルだけです。Slack が非公開（非公開チャンネル・DM）と答えたチャンネルが、公開の Zoo チャンネルに対応付いているときは、取り込みません（`slack_channel_syncs.last_error` に `private_slack_channel_in_public_channel` が残ります）。
+- **非公開チャンネル**: 取り込み先は、対応付けた Zoo のチャンネルだけです。Slack が非公開（非公開チャンネル・DM）と答えたチャンネルが、公開の Zoo チャンネルに対応付いているときは、取り込みません（`slack_channel_syncs.last_error` に `private_slack_channel_in_public_channel` が残ります）。履歴のページとスレッド返信のページを保存する直前にも `conversations.info` で可視性を確かめ直すため、公開チャンネルでは Slack API の呼び出しが増えます。`is_private` が明示的に `false` でない応答は非公開として扱い（fail-closed）、公開の Zoo チャンネルが対応先なら 6 時間待ってから再試行します。同期の途中で保護が失われた場合（Slack チャンネルが非公開になった、Zoo チャンネルが公開・削除された）は、保存済みの途中経過を捨てて最初からやり直し、`last_error` に `Slack sync target changed or no longer protects private channel content` を残します（`private_slack_channel_in_public_channel` とは別の状態です）。`slack_channels.channel_id` を付け替えると、ZIP の upsert が `last_ts` を NULL にし、migration `20261204000009`（`reset_slack_channel_sync_on_remap`）が `slack_channel_syncs` の途中経過を戻し、実行中のリースを解除します。旧ワーカーは投稿の変更や `last_error` の書き込みを行わず、新しい同期が変更後の取り込み先を処理します。ヒントの反映（`hints::apply`）の直前にも `conversations.info` で確かめ直し、この確認が HTTP 5xx などで一時的に失敗したときは、ヒントの試行回数（`attempts`）を消費せず、ヒントが指す返信も書かずに、同期全体の指数バックオフ（30 秒から最大 1 時間）で取り直します。
 - **ブリッジの穴埋め**: ブリッジ（#293）が取りこぼした（ダウンタイムなど）チャンネルは、`slack::sync::request_channel` で、すぐに同期できます。カーソルより後を取り直すだけなので、取り込み済みの投稿とは重複しません。
 - **イベントによる前倒し**: Slack の Events API が投稿を知らせたチャンネルは、5 分を待たずに同期します（次の節）。反映するのは、これまでどおり差分同期だけです。
 - **待ち（`not_before`）**: 429・失敗・保留（`Park`）のあとの待ちは、`slack_channel_syncs.not_before` に残します。イベントによる前倒しは、この待ちの間は行いません（429 の最中に、イベントのたびに Slack を叩き直さないためです）。
@@ -367,6 +376,38 @@ Slack の Events API は、同期については「このチャンネルを今�
 
 マイグレーション `20261124000000_slack_event_wakes.sql`（`slack_channel_wakes` と `slack_channel_syncs.not_before`・`swept_at`・`run_light`）を適用してください。適用の時点で次の実行が先になっている項目は、その日時を `not_before` に引き継ぎます（429 などの待ちの途中で適用しても、合図で前倒ししません）。
 
+## ロック順テストを実行する（`#[ignore]`）
+
+ロック順や競合を確かめるテストは、実際の DB で行ロック・advisory ロックを待ち合わせるため、通常の `cargo test` では動きません（`#[ignore]`）。使い捨ての PostgreSQL 16 を用意し、`infra/db/migrations` のマイグレーションをすべて適用してから実行します。
+
+1. テスト専用の DB を作ります。DB 名には `test` を含めます（例: `zoo_test`）。`worker.rs` のテストは `current_database()` に `test` か `rereview` を含まない DB を拒否し、`api_import.rs` のテストは `test` を要求します。
+2. `SLACK_IMPORT_TEST_DATABASE_URL` にその DB を設定します。`DATABASE_URL` ではありません。テストはこの URL の DB にだけ行を作り、終わったら消します。接続 URL に例示の `postgres` 以外の DB ロールを使う場合は、そのロールがスーパーユーザーであるか、PostgreSQL 16 の `deadlock_timeout` に `SET` 権限を持っている必要があります。`api_import.rs` と `worker.rs` のロック競合テストは競合を作る前に `SET LOCAL deadlock_timeout` を実行するため、権限がないとその設定で失敗します。
+3. 実行します。
+
+```sh
+export SLACK_IMPORT_TEST_DATABASE_URL="postgres://postgres@127.0.0.1:5432/zoo_test?sslmode=disable"
+# DB のみで動くロック順・競合のユニットテスト（S3 不要。worker.rs・api_import.rs・sync.rs・hints.rs）
+cargo test --manifest-path backend/Cargo.toml --lib slack:: -- --ignored --test-threads=1
+# ZIP 取り込みの結合テスト（RustFS / S3 が必要。S3_ENDPOINT 等を設定して実行）
+cargo test --manifest-path backend/Cargo.toml --test slack_import_test -- --ignored
+# 付け替えのユーザー行ロック順テスト（S3 不要。同じテスト専用 DB を使える）
+export SLACK_LINK_TEST_DATABASE_URL="postgres://postgres@127.0.0.1:5432/zoo_test?sslmode=disable"
+cargo test --manifest-path backend/Cargo.toml --test slack_link_test -- --ignored
+# 対応表の保存がメッセージの保存と同時にコミットされることのテスト（S3 不要。DB 名は zoo2_notes_api_slack_sync_test_ で始める）
+export SLACK_SYNC_TEST_DATABASE_URL="postgres://postgres@127.0.0.1:5432/zoo2_notes_api_slack_sync_test_local?sslmode=disable"
+cargo test --manifest-path backend/Cargo.toml --test slack_sync_test -- --ignored
+# 期限切れノートの掃除のローテーションのテスト（S3 不要。DB 名は zoo2_notes_cleanup_test_ で始める）
+export NOTES_CLEANUP_TEST_DATABASE_URL="postgres://postgres@127.0.0.1:5432/zoo2_notes_cleanup_test_local?sslmode=disable"
+cargo test --manifest-path backend/Cargo.toml --test channel_notes_test -- --ignored
+```
+
+`slack_sync_test` は `SLACK_SYNC_TEST_DATABASE_URL` の DB 名が `zoo2_notes_api_slack_sync_test_` で始まること、`channel_notes_test` の `expired_note_cleanup_*` は `NOTES_CLEANUP_TEST_DATABASE_URL` の DB 名が `zoo2_notes_cleanup_test_` で始まることを要求します（どちらも取り違えを防ぐため、専用の接頭辞の DB だけを使います）。
+
+`slack_link_test` も `current_database()` に `test` を含む DB を要求します。`reconcile_team_user_row_locks_in_sorted_order_do_not_deadlock_with_lock_membership_users` は `SLACK_LINK_TEST_DATABASE_URL` の DB を使うため、上のコマンドで `SLACK_IMPORT_TEST_DATABASE_URL` と同じ `zoo_test` を指定しても構いません。
+
+- ロック競合テストは、プールの枯渇でテスト自身が止まらないよう、`init_db_with_pool` に 2 接続以上を渡します。`DB_MAX_POOL_SIZE=1` の環境でも動くことを確かめるときは、そのまま環境変数を付けて実行します（例: `DB_MAX_POOL_SIZE=1 cargo test ...`）。
+- `slack_import_test` の `#[ignore]` テスト（`private_zip_import_stops_after_target_is_public_or_deleted` を含む）は共通フィクスチャで S3 バケットを作成・削除するため、すべて RustFS（S3 互換ストレージ。既定の接続先は `http://127.0.0.1:9000`、`S3_ENDPOINT` / `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` / `S3_REGION` で設定）が必要です。S3 を用意できない環境では、DB のみで完結する `--lib slack:: -- --ignored` だけを実行してください。テストは DB 上で直列に実行し、使った行は後片付けしますが、途中で強制終了した場合は残ることがあります。終わったら DB ごと削除してください。
+
 ## 書式の変換より前に取り込んだ投稿を直す
 
 書式（`*太字*` など）の変換を入れる前に取り込んだ投稿は、記号が変換されないまま保存されています。バックエンドのイメージに入っている `zoo_slack_reformat` が、保存済みの本文に同じ変換を 1 回だけ当てます。
@@ -393,3 +434,29 @@ kubectl -n zoo2 exec -i deploy/zoo-slack-worker -- /home/nonroot/zoo_slack_refor
 既にスレッドに属する返信は、再取り込みで本文や親を更新しない。INSERTのBEFOREトリガーはON CONFLICTより先に動くため、既存返信への不要なINSERTを先に除外し、削除済みの親を新規返信の親として検証し直さない。新規返信や親が未設定の既存行では、従来のスレッド制約と親の補完を維持する。
 
 総メッセージ数をN、取り込む日付ファイル内の投稿数をMとすると、除外判定は各投稿IDの主キー検索でO(log N)、ファイル全体ではO(M log N)。履歴やチャンネル全体を列挙しない。親の補完も主キーと既存のparent_idインデックスを使い、追加の全履歴ソートやOFFSETを導入しない。
+
+## Slack メッセージ転送（引用）の反映と過去投稿バックフィル
+
+Slack の転送・引用投稿やメッセージパーマリンク展開は `attachments` 内の `is_share: true` または `is_msg_unfurl: true` として記録される。`SlackMessage::forwarded_refs` は同一ワークスペースの参照を `channel_id` + `ts` または `/archives/<ch>/p<digits>` から抽出し（他ワークスペースは除外、最大 5 件）、`is_importable_for_team` により同一ワークスペースの参照を含むコメントなし転送投稿を新規取り込み対象とする（他ワークスペース転送のみの投稿は空投稿として取り込まず、参照を取り出せない古い・不完全な転送添付のみ従来の添付テキスト転記へフォールバックする）。なお Slack 連携は取り込み方向のみのため、Zoo 側で行った転送は Slack へ書き戻さない（`chat.postMessage` 等は呼ばない）。
+
+- **ID 解決と権限境界**: 参照先は `slack_message_map`、無ければ決定的な `slack::message_id(team, slack_channel_id, ts)` へ解決して `messages.forwarded_message_ids` に保存する。転送元チャンネルが未取り込みの場合でも本文はスナップショットせず、決定的 ID と `(team_id, slack_channel_id, ts)` を内部表 `slack_forward_targets` に予約して事前作成によるなりすまし（`409 Conflict`）を防止しつつ、閲覧時は解決 API が `unavailable` を返す（後から転送元チャンネルで正当な `ts`・チャンネルに一致する実メッセージが取り込まれればそのまま表示される）。なお他ワークスペース転送のみの親投稿など親自体が取り込み対象外でも、スレッド内の通常返信や同一ワークスペース転送返信は `conversations.replies` で取得し、親が Zoo に存在しないため親なしの通常投稿（`parent_id IS NULL`）として取り込む。
+- **既存投稿・スレッド返信の補完**: ZIP の再取り込み（`worker::insert_message`）および差分同期・イベント反映（`hints::edit`）は、既に取り込み済みの Slack 由来メッセージ（`parent_id IS NOT NULL` のスレッド返信を含む）で `forwarded_message_ids IS NULL` の行について、`updated_at` と `revision` を変えずに `forwarded_message_ids` を補完する。
+- **過去投稿バックフィル CLI (`zoo_slack_backfill_forwards`)**:
+
+```bash
+# 既定は dry-run（書き込みなし・件数集計のみ）
+kubectl -n zoo2 exec deploy/zoo-slack-worker -- /home/nonroot/zoo_slack_backfill_forwards
+# 書き込みを実行（チャンネル・再開カーソル・未処理スレッド・スレッド返信カーソル・対象 ts 下限・最大ページ数を指定可能）
+kubectl -n zoo2 exec deploy/zoo-slack-worker -- /home/nonroot/zoo_slack_backfill_forwards --apply [--channel <id>] [--cursor <slack_cursor>] [--thread-roots <ts1,ts2,...>] [--thread-cursor <slack_cursor>] [--oldest <slack_ts>] [--max-pages <N>]
+```
+
+暗号化チャンネル・削除済み・Zoo 起点（`origin = 'zoo'`）は対象外で、`updated_at`・`revision` を増やさずに欠損した `forwarded_message_ids` の補完と未取り込みだったコメントなし転送の挿入を冪等に行う。`--oldest <slack_ts>` は古い親投稿配下の新着スレッド返信を取りこぼさないよう履歴を `oldest=0` で取得したうえで適用対象（およびスレッド探索）を絞り込むオプションであり、`conversations.history` の API 呼び出し回数自体は削減しない。API 呼び出しを分割したい場合は `--channel` と `--max-pages <N>` を併用し、`--max-pages` で打ち切られた際に出力されるレポートの `truncated: true` / `resume_channels` を使って、`next_history_cursor`・`pending_thread_roots`・`next_thread_cursor` を引き継いで再開する（書き込み実行の中断時は `--apply` を引き続き指定すること。省略すると既定の dry-run になる。また `--oldest` の値は `resume_channels` に保存されないため、中断前に `--oldest` を指定した場合は再開時にも同じ `--oldest <中断時と同じ slack_ts>` を必ず指定すること）。複数ページのスレッド途中で打ち切られた場合も `next_thread_cursor` を `--thread-cursor` に渡せば次の返信ページから再開でき、Slack が前回と同じ `next_cursor` を返した場合は完了と誤認せずエラーとして停止する。
+
+```bash
+# 履歴カーソル＋スレッド両方が残っている場合の書き込み再開例
+kubectl -n zoo2 exec deploy/zoo-slack-worker -- /home/nonroot/zoo_slack_backfill_forwards --apply --channel <id> [--oldest <中断時と同じ slack_ts>] --cursor <next_history_cursor> --thread-roots <ts1,ts2,...> [--thread-cursor <next_thread_cursor>]
+# スレッドのみが残っている場合（next_history_cursor が無い場合）の書き込み再開例
+kubectl -n zoo2 exec deploy/zoo-slack-worker -- /home/nonroot/zoo_slack_backfill_forwards --apply --channel <id> [--oldest <中断時と同じ slack_ts>] --thread-roots <ts1,ts2,...> [--thread-cursor <next_thread_cursor>]
+```
+
+本コマンドは通常同期ワーカーのチャンネルリース（`slack_channel_syncs.lease_token`）を取得せず稼働中のワーカーと並行実行し得るが、決定的 ID の `ON CONFLICT` により重複投稿を作らず、既存行に対しては本文・`updated_at`・`revision` を上書きせず条件付きの補完（`forwarded_message_ids IS NULL` への設定、および親を後から取り込んだ場合の未設定 `parent_id IS NULL` 返信への親付け替え）のみを行う（ただし Slack API のレート制限 429 は共有されるため、閑散時の分割実行を推奨する）。また未対応クライアント（Android・TUI・`desktop-tauri`、#698 で対応予定）ではコメントなし転送が空行として表示されるため、`--apply` による過去分の新規挿入は #698 の反映後に実行すること。

@@ -248,7 +248,7 @@ pub fn unlock_setup_with_recovery_key(
 /// 暗号ストアに置いた自分の鍵（[`core::OwnKeys`]）。
 #[derive(uniffi::Object)]
 pub struct OwnKeys {
-    inner: core::OwnKeys,
+    pub(crate) inner: core::OwnKeys,
 }
 
 #[uniffi::export]

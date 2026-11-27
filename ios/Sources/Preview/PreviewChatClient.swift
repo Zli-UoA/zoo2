@@ -299,6 +299,10 @@ final class PreviewChatClient: ChatClient {
                          last_read_at: readPositions[channelID])
     }
     func attachmentData(from url: URL) async throws -> Data {
+        if url.host == "ui.test.invalid", url.path.hasPrefix("/encrypted/") {
+            guard let data = encryptedUploads[url.lastPathComponent] else { throw ZooError.invalidResponse }
+            return data
+        }
         if url == Bundle.main.url(forResource: "PreviewVideo", withExtension: "mp4") { return try Data(contentsOf: url) }
         if url.host == "ui.test.invalid", let image = PreviewImage.data(for: url.path) { return image }
         guard url.host == "ui.test.invalid", ["/preview.pdf", "/invalid.pdf"].contains(url.path) else {
@@ -308,6 +312,7 @@ final class PreviewChatClient: ChatClient {
     }
 
     func attachmentURL(id: String) async throws -> URL {
+        if encryptedUploads[id] != nil { return URL(string: serverURL + "/encrypted/" + id)! }
         if id == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa06" { return URL(string: serverURL + "/wide.png")! }
         if id == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa04" { return URL(string: serverURL + "/tall.png")! }
         if id == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa03" {

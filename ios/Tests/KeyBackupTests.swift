@@ -32,6 +32,23 @@ struct KeyBackupTests {
         return Sent(server: server, sender: sender, capture: capture, row: row, recoveryKey: start.recoveryKey)
     }
 
+    @Test("送信後のバックアップ失敗は鍵だけを再試行する")
+    func retriesBackupWithoutReposting() async throws {
+        let sent = try await sendOne()
+        defer { sent.sender.cleanUp() }
+        sent.server.failNext.insert("backup")
+        let encryption = MessageEncryption(store: { sent.sender.store }, api: sent.capture, uploadBackup: {
+            sent.sender.setup.scheduleKeyBackup(retryDelay: .milliseconds(1))
+        })
+        try await encryption.send(channel: channel, id: UUID().uuidString.lowercased(), parent: nil, body: "二重送信しない")
+        let requestsAfterSend = sent.capture.requests.count
+        await sent.sender.setup.scheduledBackup?.value
+        #expect(!sent.server.failNext.contains("backup"))
+        #expect(sent.server.backupRows.count == 2)
+        #expect(sent.sender.store.pendingBackupCount() == 0)
+        #expect(sent.capture.requests.count == requestsAfterSend)
+    }
+
     @Test func 送信待ちのセッションを今の版に送り送信済みにする() async throws {
         let sent = try await sendOne()
         defer { sent.sender.cleanUp() }
@@ -123,6 +140,119 @@ struct KeyBackupTests {
         // 完了を記録していないので、正常なページなら取り込める。
         sent.server.backupPage = nil
         #expect(try await receiver.setup.importKeyBackup() == 1)
+    }
+
+    @Test("バックアップは変更分だけを書き、途中から再開できる", arguments: [10, 100])
+    func incrementalBackupPages(pageCount: Int) async throws {
+        let sent = try await sendOne()
+        let receiver = try Device(sent.server)
+        defer { sent.sender.cleanUp(); receiver.cleanUp() }
+        // 空のバックアップで解錠し、ページの取り込みを個別に進める。
+        _ = try await receiver.setup.unlock(.recovery(sent.recoveryKey))
+        for n in 1..<pageCount {
+            let session = try OutboundSession(channelId: channel, epoch: 1, nowMs: UInt64(n))
+            _ = try sent.sender.store.encrypt(session, senderKey: sent.sender.store.curve25519Key,
+                message: OutgoingMessage(messageId: UUID().uuidString.lowercased(), parentId: nil, revision: 0,
+                    content: ZooCrypto.MessageContent(body: "復元対象", format: "mfm", kind: "message"),
+                    mentions: Mentions(userIds: [], channel: false, here: false), attachments: []))
+        }
+        _ = try await sent.sender.setup.uploadKeyBackup()
+        let rows = sent.server.backupRows.values.map { String(decoding: try! JSONEncoder().encode($0), as: UTF8.self) }
+        try #require(rows.count == pageCount)
+        let stateURL = receiver.files.directory.appendingPathComponent(CryptoStore.stateFile)
+        let initial = try Data(contentsOf: stateURL)
+        for (index, row) in rows.enumerated() {
+            #expect(try receiver.store.importBackupRows([row]) == 1)
+            if index == pageCount / 2 - 1 {
+                try receiver.restart()
+                #expect(receiver.store.inboundSessionCount == pageCount / 2)
+            }
+        }
+        #expect(try Data(contentsOf: stateURL) == initial)
+        let pages = try FileManager.default.contentsOfDirectory(at: receiver.files.directory, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("backup-page-") && $0.pathExtension == "json" }
+        #expect(pages.count == pageCount)
+        let sizes = try pages.map { try Data(contentsOf: $0).count }
+        #expect(try #require(sizes.max()) < 2 * #require(sizes.min()))
+        let total = sizes.reduce(0, +)
+        try receiver.store.backupImported("検証用の完了版")
+        let snapshotSize = try Data(contentsOf: stateURL).count
+        #expect(total < snapshotSize * 2)
+        print("バックアップ\(pageCount)ページ: 差分書込=\(total) bytes、最終状態=\(snapshotSize) bytes")
+        try receiver.restart()
+        #expect(receiver.store.inboundSessionCount == pageCount)
+        #expect(MessageEncryption(store: { receiver.store }, api: sent.capture).decrypt(sent.row).body == "バックアップの本文")
+    }
+
+    @Test("ページ保存の前後で失敗したストアは再読込してから再開する", arguments: [false, true])
+    func backupPageFailureRequiresReopen(afterRename: Bool) async throws {
+        let sent = try await sendOne(), receiver = try Device(sent.server)
+        defer { sent.sender.cleanUp(); receiver.cleanUp() }
+        _ = try await receiver.setup.unlock(.recovery(sent.recoveryKey))
+        _ = try await sent.sender.setup.uploadKeyBackup()
+        let row = try #require(sent.server.backupRows.values.first)
+        let text = String(decoding: try JSONEncoder().encode(row), as: UTF8.self)
+        let path = receiver.files.directory.standardizedFileURL.path
+        CryptoStore.writeFailureHooks.withLock { hooks in hooks[path] = { url, renamed in
+            if url.lastPathComponent.hasPrefix("backup-page-"), renamed == afterRename { throw CocoaError(.fileWriteUnknown) }
+        } }
+        defer { CryptoStore.writeFailureHooks.withLock { $0.removeValue(forKey: path) } }
+        #expect(throws: (any Error).self) { try receiver.store.importBackupRows([text]) }
+        #expect(!receiver.store.isUsable)
+        #expect(throws: E2eeStoreError.closed) { try receiver.store.importBackupRows([text]) }
+        CryptoStore.writeFailureHooks.withLock { $0.removeValue(forKey: path) }
+        try receiver.restart()
+        #expect(receiver.store.inboundSessionCount == (afterRename ? 1 : 0))
+        _ = try receiver.store.importBackupRows([text])
+        #expect(receiver.store.inboundSessionCount == 1)
+        try receiver.store.backupImported("再開済み")
+        try receiver.restart()
+        #expect(MessageEncryption(store: { receiver.store }, api: sent.capture).decrypt(sent.row).body == "バックアップの本文")
+    }
+
+    @Test("集約済みの古いページや別端末のページを再適用しない")
+    func ignoresCompactedAndOtherDevicePages() async throws {
+        let sent = try await sendOne(), receiver = try Device(sent.server)
+        defer { sent.sender.cleanUp(); receiver.cleanUp() }
+        _ = try await receiver.setup.unlock(.recovery(sent.recoveryKey))
+        _ = try await sent.sender.setup.uploadKeyBackup()
+        let row = try #require(sent.server.backupRows.values.first)
+        _ = try receiver.store.importBackupRows([String(decoding: try JSONEncoder().encode(row), as: UTF8.self)])
+        let page = try #require(FileManager.default.contentsOfDirectory(at: receiver.files.directory, includingPropertiesForKeys: nil)
+            .first { $0.lastPathComponent.hasPrefix("backup-page-") && $0.pathExtension == "json" })
+        try receiver.store.backupImported("集約済み")
+        // 削除失敗で残ったファイルは、壊れていても集約済みなら復号状態に戻さない。
+        try Data("壊れた旧ページ".utf8).write(to: page)
+        try receiver.restart()
+        #expect(receiver.store.inboundSessionCount == 1)
+        try receiver.store.replaceDevice()
+        try Data("別端末の旧ページ".utf8).write(to: page)
+        try receiver.restart()
+        #expect(receiver.store.inboundSessionCount == 1)
+    }
+
+    @Test("集約前のページの欠落や内容の不一致を拒否する", arguments: ["番号", "端末", "欠落"])
+    func rejectsBrokenBackupJournal(reason: String) async throws {
+        let sent = try await sendOne(), receiver = try Device(sent.server)
+        defer { sent.sender.cleanUp(); receiver.cleanUp() }
+        _ = try await receiver.setup.unlock(.recovery(sent.recoveryKey))
+        _ = try await sent.sender.setup.uploadKeyBackup()
+        let row = try #require(sent.server.backupRows.values.first)
+        let text = String(decoding: try JSONEncoder().encode(row), as: UTF8.self)
+        #expect(try receiver.store.importBackupRows([text]) == 1)
+        let page = try #require(FileManager.default.contentsOfDirectory(at: receiver.files.directory, includingPropertiesForKeys: nil)
+            .first { $0.lastPathComponent.hasPrefix("backup-page-") && $0.pathExtension == "json" })
+        receiver.store.close()
+        var value = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: page)) as? [String: Any])
+        if reason == "端末" { value["device_id"] = "別の端末" }
+        else { value["sequence"] = 2 }
+        try JSONSerialization.data(withJSONObject: value).write(to: page)
+        if reason == "欠落" {
+            let destination = page.deletingLastPathComponent().appendingPathComponent(
+                page.lastPathComponent.replacingOccurrences(of: "00000000000000000001.json", with: "00000000000000000002.json"))
+            try FileManager.default.moveItem(at: page, to: destination)
+        }
+        #expect(throws: (any Error).self) { try receiver.restart() }
     }
 
     @Test func SSSSの競合のあとの読み直しに失敗したら解錠済みを返さず投げる() async throws {

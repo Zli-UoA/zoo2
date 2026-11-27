@@ -139,8 +139,7 @@
     "candidates": "성원 후보",
     "usersLoading": "사용자를 불러오는 중…",
     "usersError": "사용자를 얻지 못했습니다.",
-    "usersEmpty": "해당하는 사용자가 없습니다.",
-    "back": "통로로 돌아가기"
+    "usersEmpty": "해당하는 사용자가 없습니다."
   },
   "moderation": {
     "archived": "보관됨",
@@ -226,6 +225,7 @@
     "compose": "통보문 보내기",
     "send": "보내기",
     "edit": "편집",
+    "editMessage": "통보문 편집",
     "delete": "삭제",
     "more": "다른 조작",
     "actions": "메시지 조작",
@@ -248,7 +248,50 @@
     "copyRaw": "원문 복사",
     "copied": "원문을 복사했습니다",
     "copyFailed": "원문을 복사하지 못했습니다",
-    "edited": "편집됨"
+    "copyLink": "통보문 주소 복사",
+    "linkCopied": "통보문 주소를 복사했습니다",
+    "linkCopyFailed": "통보문 주소를 복사하지 못했습니다",
+    "edited": "편집됨",
+    "forward": "통보문 전송…",
+    "forwardTitle": "이 통보문 전송",
+    "forwardSearchPlaceholder": "통로 또는 성원 검색",
+    "forwardDestinationLabel": "전송 대상",
+    "forwardDestinationSelected": "{{name}}을(를) 전송 대상으로 선택했습니다",
+    "forwardClearDestination": "{{name}} 선택 해제",
+    "forwardNoDestinations": "전송할 수 있는 통로나 직접 대화가 없습니다",
+    "forwardCommentPlaceholder": "설명 추가(선택)",
+    "forwardCommentLabel": "설명",
+    "forwardPreviewLabel": "전송할 통보문 미리보기",
+    "forwardSubmit": "전송",
+    "forwarding": "전송 중…",
+    "forwarded": "통보문을 전송했습니다",
+    "forwardedTo": "{{channel}}에 전송했습니다",
+    "forwardSourceUnavailable": "원본 통보문이 없거나 전송할 권한이 없습니다",
+    "forwardLoading": "전송된 통보문 불러오는 중",
+    "forwardDeleted": "이 통보문은 삭제되였습니다",
+    "forwardUnavailable": "열람 권한이 없어 이 통보문을 표시할 수 없습니다",
+    "forwardLoadError": "전송된 통보문을 불러오지 못했습니다",
+    "forwardSourceChannel": "{{channel}}의 통보문",
+    "forwardSourceThread": "{{channel}} 타래의 응답",
+    "forwardQuoteLabel": "{{author}}의 전송 통보문",
+    "forwardAttachmentCount_one": "첨부 파일 {{count}}개",
+    "forwardAttachmentCount_other": "첨부 파일 {{count}}개",
+    "forwardNestedCompact": "이 통보문에도 전송된 내용이 포함되여 있습니다",
+    "forwardNestedNote": "이 통보문에도 인용된 내용이 있습니다 · 원본 보기"
+  },
+  "channelLink": {
+    "inlineMessage": "{{name}} 님: {{channel}}",
+    "thread": "{{channel}}의 타래",
+    "encrypted": "이 통보문은 암호화되여 있습니다",
+    "messageUnavailable": "통보문을 표시할수 없습니다",
+    "channelUnavailable": "통로를 표시할수 없습니다",
+    "loading": "련결대상을 불러오는중",
+    "loadFailed": "련결대상을 불러오지 못하였습니다",
+    "appMessage": "App 통보문",
+    "attachments_one": "첨부파일 {{count}}건",
+    "attachments_other": "첨부파일 {{count}}건",
+    "privateChannel": "비공개 통로",
+    "encryptedChannel": "암호화 통로"
   },
   "attachments": {
     "recentPhotos": "최근 사진",
@@ -273,11 +316,23 @@
     "download": "{{name}} 내려받기",
     "downloadShort": "내려받기",
     "downloadError": "내려받지 못했습니다.",
+    "previewSaveUnsupported": "이 파일은 앱에서 저장할 수 없습니다. 링크를 새 탭에서 열어 저장하십시오.",
+    "downloadSaved": "{{name}}(으)로 저장했습니다.",
+    "downloadDestinationUnsupported": "이 저장 위치에는 저장할 수 없습니다. 다른 폴더를 선택하거나 설정의 \"내려받기\"에서 저장 위치를 변경하십시오.",
+    "downloadTooMany": "동시에 내려받을 수 있는 수가 넘었습니다. 다른 내려받기가 끝난 다음에 다시 시도하십시오.",
+    "downloading": "내려받는 중",
+    "saving": "저장 중…",
+    "cancelDownload": "{{name}} 내려받기 취소",
+    "cancelDownloadShort": "취소",
     "retry": "다시 시도",
     "sensitive": "민감한 화상",
     "markSensitive": "화상을 민감한 내용으로 표시",
     "showSensitive": "화상 표시",
     "hideSensitive": "화상 숨기기",
+    "showSensitiveVideo": "동영상 표시",
+    "hideSensitiveVideo": "동영상 숨기기",
+    "openOriginal": "원본 파일",
+    "imagePreviewFailed": "화상을 불러올 수 없습니다",
     "sensitiveShort": "민감한 화상",
     "documentSummary": "본문과 셀의 간단한 미리보기입니다. 서식과 배치는 원본과 다를 수 있습니다.",
     "previewLimit": "미리보기의 크기, 파일 수 또는 처리 시간 제한을 초과했습니다. 파일을 내려받아 확인하십시오.",
@@ -294,7 +349,8 @@
       "to": "받는 사람",
       "cc": "참조",
       "date": "날자"
-    }
+    },
+    "downloadDestinationUnsupportedAskEveryTimeOff": "이 저장 위치에는 저장할 수 없습니다. 설정의 \"내려받기\"에서 저장 위치를 변경하거나, \"내려받을 때마다 확인\"을 켜십시오."
   },
   "threads": {
     "title": "타래",
@@ -329,6 +385,10 @@
     "participants_other": "참가자 {{count}}명",
     "participantsMore": "그밖에 {{count}}명",
     "participantsEmpty": "참가자가 없습니다",
+    "threadStarter": "스레드 만든 사람",
+    "participantsSearch": "이름으로 검색",
+    "participantsFilterPartial": "불러온 처음 {{loaded}}명 가운데서만 검색합니다(그밖에 {{count}}명은 검색할수 없습니다).",
+    "participantsDescription": "이 스레드에 참가중인 사람입니다.",
     "joinToReply": "스레드에 참가하면 답글을 보낼 수 있습니다.",
     "reopenAndJoin": "다시 열고 참가하기"
   },
@@ -364,7 +424,6 @@
     "noSearchResults": "일치하는 그림글자가 없습니다",
     "tabEmoji": "그림글자",
     "tabKitchen": "Emoji Kitchen",
-    "emojiDescription": "모든 그림글자에서 선택할수 있습니다.",
     "emojiLoading": "그림글자를 불러오는 중…",
     "recent": "최근에 쓴 그림글자",
     "skinTone": "피부색"
@@ -432,7 +491,8 @@
     "unreadStatus": "안읽음",
     "readStatus": "읽음",
     "actors_one": "{{actor}} 님 외 1명",
-    "actors_other": "{{actor}} 님 외 {{count}}명"
+    "actors_other": "{{actor}} 님 외 {{count}}명",
+    "forwardedPreview": "통보문을 전송했습니다"
   },
   "webhooks": {
     "title": "Webhook 설정",
@@ -494,6 +554,19 @@
     "desktopTitle": "알림",
     "desktopValue": "체계 알림",
     "desktopDescription": "언급과 DM을 앱이 체계 알림으로 알려줍니다. 체계 설정에서 zoo2 알림을 꺼두었다면 그쪽도 켜주십시오."
+  },
+  "downloads": {
+    "desktopTitle": "내려받기",
+    "desktopDescription": "첨부 파일을 보관할 위치입니다. 내려받을 때마다 위치를 확인하거나, 미리 정한 폴더에 보관할 수 있습니다.",
+    "askEveryTime": "내려받을 때마다 확인",
+    "noFolder": "폴더 미선택",
+    "chooseFolder": "폴더 선택",
+    "resetDirectory": "보관 폴더를 지우고 내려받을 때마다 확인",
+    "olderAppValue": "프로그램의 기본 보관 위치",
+    "olderAppDescription": "이 판의 프로그램에서는 프로그램이 정한 위치에 보관합니다. 보관 위치를 바꾸려면 프로그램을 갱신하십시오.",
+    "loadError": "보관 위치 설정을 읽지 못했습니다.",
+    "retry": "다시 읽기",
+    "error": "보관 위치 설정을 바꾸지 못했습니다. 다시 시도해 주십시오."
   },
   "mfm": {
     "suggestions": "MFM 후보",
@@ -820,6 +893,7 @@
     "deleted": "게시물을 삭제했습니다",
     "newPosts": "새 게시물 보기 ({{count}}개)",
     "quotedPost": "인용한 게시물",
+    "postUnavailable": "게시물을 표시할수 없습니다",
     "quoteUnavailable": "인용한 게시물을 표시할 수 없습니다",
     "openQuotedPost": "인용한 게시물 열기",
     "image": "화상",
@@ -850,6 +924,7 @@
       "unlisted": "홈",
       "followers": "팔로워 한정"
     },
+    "followersAudience": "팔로워",
     "audienceHint": {
       "local": "Zoo 안에서만 표시합니다. 외부로는 전달하지 않습니다.",
       "public": "누구나 볼수 있으며 외부의 팔로워에게도 전달합니다.",
@@ -883,6 +958,7 @@
     "userSearch": "사용자 검색",
     "search": "검색",
     "noUsers": "사용자를 찾을수 없습니다",
+    "openAuthorProfile": "{{author}}의 프로필 열기",
     "userDetails": "사용자 상세",
     "joinedAt": "등록일: {{date}}",
     "pullRefresh": "당겨서 갱신",
@@ -1735,6 +1811,12 @@
   "androidUpdate": {
     "title": "앱 갱신"
   },
+  "androidNavigationCache": {
+    "title": "화면 전환 캐시",
+    "description": "홈, 게시물 상세 및 프로필과 통로에 각각 적용되는 메모리 보관 항목 수입니다.",
+    "off": "끔",
+    "entries": "{{count}}개"
+  },
   "androidNotifications": {
     "enable": "알림 사용",
     "scope": "로그인한 세션이 동기화되는 동안 새 알림을 받습니다.",
@@ -1854,6 +1936,53 @@
     "speaker": "스피커",
     "waiting": "전화 수신 대기 중",
     "dmCall": "통화"
+  },
+  "globalSearch": {
+    "title": "검색",
+    "placeholder": "통보문과 화일 검색",
+    "kinds": {
+      "all": "전체",
+      "messages": "통보문",
+      "files": "화일"
+    },
+    "prompt": "검색할 단어를 입력하십시오. 공백으로 구분하면 모든 단어를 포함한 결과를 찾습니다.",
+    "empty": "결과가 없습니다.",
+    "emptyOlder": "{{month}}까지 결과가 없습니다. 더 이전 기간을 검색할수 있습니다.",
+    "searchedUntil": "{{month}}까지 검색하였습니다",
+    "searchOlder": "이전 결과 더 검색",
+    "loading": "검색중…",
+    "loadError": "검색하지 못하였습니다.",
+    "retry": "다시 시도",
+    "tooManyTerms": "검색어는 최대 {{max}}개까지 입력할수 있습니다. 단어를 줄여주십시오.",
+    "termTooLong": "한 단어는 최대 {{max}}자까지 입력할수 있습니다. 단어를 짧게 줄여주십시오.",
+    "encryptedNote": "암호화된 통로는 검색대상에서 제외됩니다.",
+    "openNav": "검색",
+    "inThread": "타래 답글",
+    "filters": {
+      "label": "거르기",
+      "from": "보낸 사람",
+      "in": "통로",
+      "kind": "종류",
+      "period": "기간",
+      "anytime": "지정하지 않음",
+      "last7": "지난 7일",
+      "last30": "지난 30일",
+      "last365": "지난 1년",
+      "custom": "날자 지정",
+      "after": "시작날자",
+      "before": "마감날자",
+      "reversed": "시작일은 종료일과 같거나 그 이전이여야 합니다.",
+      "reset": "조건 초기화",
+      "me": "{{name}} (나)",
+      "searchPeople": "이름으로 찾기",
+      "searchChannels": "통로 이름으로 찾기",
+      "noMatches": "찾을수 없습니다",
+      "clearSelection": "선택 해제",
+      "selectedCount": "{{label}}: {{count}}개",
+      "max": "최대 {{count}}개까지 선택할수 있습니다",
+      "mine": "내가 참가중",
+      "noBots": "보트 제외"
+    }
   },
   "catchUp": {
     "navUnread_one": "안 읽은 대화 {{count}}개",

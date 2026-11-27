@@ -1,12 +1,19 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import {
   createSummalyClient,
   type SummalyClient,
   type LinkPreviewData as Preview,
 } from "../../../lib/summaly";
 import { resolvePublicConfig, type AppConfig } from "../../../lib/config";
+import { useNearViewport } from "../../../hooks/useNearViewport";
 import { useOptionalCollections } from "../../../lib/electric/collections-context";
 import { proxyImageUrl } from "../../../lib/media-proxy";
+import { Button } from "../../ui/button";
+import { ChannelLinkEmbed } from "./ChannelLinkEmbed";
+import { ChannelLink, useChannelLinkParser, useChannelLinkTarget } from "./ContentLink";
+import { useChannelDirectory } from "./MfmChannels";
+import type { ChannelLinkTarget } from "./messageLink";
 import { previewUrls } from "./linkPreviews";
 import { acquirePreview, cachedPreview, subscribePreview } from "./linkPreviewRequests";
 import { subscribePreviewEndpoints, type PreviewEndpoints } from "../../../lib/preview-endpoints";
@@ -31,6 +38,7 @@ function LinkPreview({
   const [result, setResult] = useState<{ key: string; data: Preview | null } | null>(null);
   const [failedImage, setFailedImage] = useState<string | null>(null);
   const [failedIcon, setFailedIcon] = useState<string | null>(null);
+  const channelLink = useChannelLinkTarget(url);
   useEffect(() => subscribePreview(key, (data) => setResult({ key, data })), [key]);
   useEffect(() => {
     if (!client || !active) return;
@@ -51,13 +59,10 @@ function LinkPreview({
   const src = proxyImageUrl(proxy, image);
   const iconSrc = proxyImageUrl(proxy, icon ?? null);
   if (!showFallback && !data) return null;
-  return (
-    <a
-      href={url}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="my-2 flex h-32 w-full max-w-sm overflow-hidden rounded-lg border bg-card text-sm outline-none transition-colors hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring"
-    >
+  const cardClassName =
+    "my-2 flex h-32 w-full max-w-sm overflow-hidden rounded-lg border bg-card text-sm outline-none transition-colors hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring";
+  const card = (
+    <>
       <span className="relative h-full w-24 shrink-0 bg-muted sm:w-28">
         {src && failedImage !== src ? (
           <img
@@ -89,6 +94,16 @@ function LinkPreview({
           <span className="truncate">{siteName || new URL(url).hostname}</span>
         </span>
       </span>
+    </>
+  );
+  // このアプリのチャンネル・メッセージへのリンクは、新しいタブを開かずに同じタブで移動する。
+  return channelLink ? (
+    <ChannelLink target={channelLink} className={cardClassName}>
+      {card}
+    </ChannelLink>
+  ) : (
+    <a href={url} target="_blank" rel="noopener noreferrer" className={cardClassName}>
+      {card}
     </a>
   );
 }
@@ -121,43 +136,44 @@ function ActiveLinkPreviews({ urls, config, active = true, showFallback = true }
   ));
 }
 
-/** Home and public profiles keep offscreen rows mounted; only nearby rows fetch. */
-function DeferredLinkPreviews(props: PreviewProps) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [nearby, setNearby] = useState(false);
-  const [visible, setVisible] = useState(
-    () => typeof document !== "undefined" && document.visibilityState !== "hidden",
-  );
-  useEffect(() => {
-    const update = () => setVisible(document.visibilityState !== "hidden");
-    update();
-    document.addEventListener("visibilitychange", update);
-    if (typeof IntersectionObserver === "undefined") {
-      setNearby(true);
-      return () => document.removeEventListener("visibilitychange", update);
-    }
-    // rootMargin must expand the actual scrolling pane, not only the window.
-    let root = ref.current?.parentElement ?? null;
-    while (root && root !== document.body && root !== document.documentElement) {
-      if (/(auto|scroll|overlay)/.test(getComputedStyle(root).overflowY)) break;
-      root = root.parentElement;
-    }
-    if (root === document.body || root === document.documentElement) root = null;
-    const observer = new IntersectionObserver(
-      ([entry]) => setNearby(entry?.isIntersecting ?? false),
-      { root, rootMargin: "200px 0px" },
-    );
-    if (ref.current) observer.observe(ref.current);
-    return () => {
-      observer.disconnect();
-      document.removeEventListener("visibilitychange", update);
-    };
-  }, []);
+/** Some screens keep offscreen rows mounted (Home, threads, catch-up); only nearby rows fetch. */
+function DeferredLinkPreviews({ children }: { children: (active: boolean) => ReactNode }) {
+  const [ref, active] = useNearViewport<HTMLDivElement>();
   return (
     <div ref={ref} className="min-h-px">
-      <ActiveLinkPreviews {...props} active={nearby && visible} />
+      {children(active)}
     </div>
   );
+}
+
+/**
+ * 外部の URL のカード。`manual` のときは、押したときだけ取得する（暗号化チャンネルのメッセージ。
+ * カードを出すと URL を Summaly と画像プロクシに送るため）。
+ */
+function ExternalPreviews({
+  urls,
+  content,
+  manual,
+  ...props
+}: PreviewProps & { content: string; manual: boolean }) {
+  const { t } = useTranslation();
+  // 押したときの本文にだけ許可する。編集で本文（URL）が変わったら、もう一度押すまで取得しない。
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
+  if (!urls.length) return null;
+  if (manual && loadedFor !== content) {
+    return (
+      <Button
+        type="button"
+        variant="link"
+        size="sm"
+        className="h-auto min-h-8 px-0 text-xs text-muted-foreground"
+        onClick={() => setLoadedFor(content)}
+      >
+        {t("e2ee.loadPreviews")}
+      </Button>
+    );
+  }
+  return <ActiveLinkPreviews urls={urls} {...props} />;
 }
 
 export function LinkPreviews({
@@ -165,18 +181,60 @@ export function LinkPreviews({
   excludeUrl,
   defer = false,
   showFallback = true,
+  manualExternal = false,
 }: {
   content: string;
   excludeUrl?: string;
   defer?: boolean;
   showFallback?: boolean;
+  /**
+   * 外部の URL のカードを、押したときだけ取得する（暗号化チャンネル）。このアプリのチャンネル・メッセージの
+   * リンクは、外部へ送らないので、これに関わらず表示する。
+   */
+  manualExternal?: boolean;
 }) {
   const collections = useOptionalCollections();
   // The production shell uses the collections singleton without a Provider.
   // Preview requests only need public endpoints, including on public profiles.
   const config = useMemo(() => collections?.config ?? resolvePublicConfig(), [collections?.config]);
   const urls = useMemo(() => previewUrls(content, excludeUrl), [content, excludeUrl]);
+  const directory = useChannelDirectory();
+  const parseChannelLink = useChannelLinkParser();
+  // このアプリのチャンネル・メッセージのリンクは、Summaly に送らず、自分の持つデータで埋め込みにする。
+  // チャンネルの一覧を持たない画面（公開プロフィールなど）では、今までどおり外部と同じカードにする。
+  const { embeds, externals } = useMemo(() => {
+    const embeds: { url: string; target: ChannelLinkTarget }[] = [];
+    const externals: string[] = [];
+    for (const url of urls) {
+      const target = directory ? parseChannelLink(url) : null;
+      if (target) embeds.push({ url, target });
+      else externals.push(url);
+    }
+    return { embeds, externals };
+  }, [urls, directory, parseChannelLink]);
   if (!urls.length) return null;
-  const props = { urls, config, showFallback };
-  return defer ? <DeferredLinkPreviews {...props} /> : <ActiveLinkPreviews {...props} />;
+  const render = (active: boolean) => (
+    <>
+      {directory
+        ? embeds.map(({ url, target }) => (
+            <ChannelLinkEmbed
+              key={url}
+              target={target}
+              directory={directory}
+              active={active}
+              showFallback={showFallback}
+            />
+          ))
+        : null}
+      <ExternalPreviews
+        urls={externals}
+        content={content}
+        manual={manualExternal}
+        config={config}
+        active={active}
+        showFallback={showFallback}
+      />
+    </>
+  );
+  return defer ? <DeferredLinkPreviews>{render}</DeferredLinkPreviews> : render(true);
 }

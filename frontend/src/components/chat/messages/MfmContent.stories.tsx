@@ -1,7 +1,7 @@
 import { storySurfaces } from "../../../../.storybook/story-surfaces";
 import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import { http, HttpResponse } from "msw";
-import { expect, within, waitFor } from "storybook/test";
+import { expect, userEvent, within, waitFor } from "storybook/test";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { MfmChannelsProvider } from "./MfmChannels";
 import { storyChannels } from "../../../../.storybook/fixtures";
@@ -50,12 +50,15 @@ export const AuthZAccounts: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByRole("img", { name: ":@alice:" })).toBeVisible();
+    await waitFor(async () => {
+      const images = [...canvasElement.querySelectorAll<HTMLImageElement>("img")];
+      await expect(images).toHaveLength(2);
+      for (const image of images) {
+        await expect(image.naturalWidth).toBeGreaterThan(0);
+      }
+    });
     await expect(canvas.getByText("AuthZの表示名")).toBeVisible();
-    await waitFor(() =>
-      expect(
-        canvas.getByRole("img", { name: ":@alice:" }).querySelector("img")?.naturalWidth ?? 0,
-      ).toBeGreaterThan(0),
-    );
+    await expect(canvasElement.querySelector(".sr-only")).toHaveTextContent("@alice");
     await expect(canvas.getByRole("img", { name: ":@bob:" })).toHaveTextContent("A");
     await expect(canvasElement.querySelector("code")).toHaveTextContent(":@alice: @alice");
     await expect(canvasElement).toHaveTextContent(":@unknown:");
@@ -67,6 +70,45 @@ export const InlineLinks: Story = {
       "本文の途中にhttps://example.com/docsがあります。\n[表示名のあるリンク](https://example.com)と前後の余白を確認します。",
   },
 };
+/** このアプリのチャンネル・メッセージへのリンクは同じタブで移動し、ほかの URL は新しいタブで開く。 */
+export const InAppLinks: Story = {
+  render: (args) => {
+    const { origin } = window.location;
+    return (
+      <MfmContent
+        {...args}
+        content={[
+          `メッセージ ${origin}/channels/general?message=m1`,
+          `スレッドの返信 ${origin}/channels/general?thread=root&message=m2`,
+          `チャンネル ${origin}/channels/general`,
+          "外部 https://example.com/channels/general?message=m1",
+        ].join("\n")}
+      />
+    );
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const links = within(canvasElement).getAllByRole("link");
+    await expect(links).toHaveLength(4);
+    const [message, reply, channel, external] = links as [
+      HTMLElement,
+      HTMLElement,
+      HTMLElement,
+      HTMLElement,
+    ];
+    // アプリ内のリンクは、新しいタブを開く指定を持たない。
+    for (const link of [message, reply, channel]) {
+      await expect(link.getAttribute("target")).toBeNull();
+    }
+    await expect(message.getAttribute("href")).toBe("/channels/general?message=m1");
+    await expect(reply.getAttribute("href")).toBe("/channels/general?thread=root&message=m2");
+    await expect(channel.getAttribute("href")).toBe("/channels/general");
+    await expect(external.getAttribute("target")).toBe("_blank");
+    await expect(external.getAttribute("rel")).toBe("noopener noreferrer");
+    // 押しても同じ画面のまま、ルーターが処理する。
+    await userEvent.click(message);
+    await expect(message).toBeVisible();
+  }),
+};
 export const LongUrl: Story = {
   args: { content: "URL: https://example.com/" + "long-path-segment/".repeat(24) },
   globals: { viewport: { value: "mobile" } },
@@ -76,6 +118,22 @@ export const CodeAndMath: Story = {
     content:
       "`const zoo = true`\n```ts\nconst channel = { name: 'general' };\n```\n数式: \\(x^2 + y^2\\)",
   },
+};
+/** 検索結果の強調。文字・太字・リンク・<plain> の中は強調し、コードの中は強調しない。 */
+export const SearchHighlight: Story = {
+  args: {
+    content: "会議 **会議** [会議の資料](https://example.com) <plain>**会議**</plain> `会議`",
+    highlight: ["会議"],
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const marks = [...canvasElement.querySelectorAll("mark[data-search-highlight]")];
+    await expect(marks.map((mark) => mark.textContent)).toEqual(["会議", "会議", "会議", "会議"]);
+    await expect(marks[1]!.closest("strong")).not.toBeNull();
+    await expect(marks[2]!.closest("a")).not.toBeNull();
+    // <plain> は記法を文字のまま出し、強調だけ付ける。
+    await expect(within(canvasElement).getByText(/\*\*/).querySelector("mark")).not.toBeNull();
+    await expect(canvasElement.querySelector("code mark")).toBeNull();
+  }),
 };
 export const EmojiAndFallback: Story = {
   args: { content: "😀 🎉 :smile: :unregistered_zoo_emoji:" },

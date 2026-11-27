@@ -34,6 +34,34 @@ internal class KitchenChoices(
     val combinations: (EmojiChoice) -> List<EmojiChoice>,
 )
 
+/**
+ * Keeps only the choices matching every word of [query]. With a query, ranks (lower first):
+ * 0 exact name, 1 name prefix, 2 name substring, then 3 exact / 4 prefix / 5 substring over the
+ * keywords, and 6 anything else (e.g. the glyph). Shorter names first within a rank, then the
+ * original order. An empty query keeps the original order.
+ */
+internal fun rankEmojiChoices(choices: List<EmojiChoice>, query: String): List<EmojiChoice> {
+    val words = query.trim().replace('_', ' ').split(Regex("\\s+")).filter { it.isNotEmpty() }
+    if (words.isEmpty()) return choices
+    val whole = words.joinToString(" ")
+    return choices.withIndex().mapNotNull { (index, choice) ->
+        val searchable = "${choice.name} ${choice.glyph} ${choice.keywords.replace('_', ' ')}"
+        if (!words.all { searchable.contains(it, ignoreCase = true) }) return@mapNotNull null
+        val name = choice.name.replace('_', ' ').trim(':', ' ')
+        val keywords = choice.keywords.replace('_', ' ').split(',', ' ').filter { it.isNotEmpty() }
+        val rank = when {
+            name.equals(whole, ignoreCase = true) -> 0
+            name.startsWith(whole, ignoreCase = true) -> 1
+            name.contains(whole, ignoreCase = true) -> 2
+            keywords.any { it.equals(whole, ignoreCase = true) } -> 3
+            keywords.any { it.startsWith(whole, ignoreCase = true) } -> 4
+            keywords.any { it.contains(whole, ignoreCase = true) } -> 5
+            else -> 6
+        }
+        Triple(rank, choice.name.length, index) to choice
+    }.sortedWith(compareBy({ it.first.first }, { it.first.second }, { it.first.third })).map { it.second }
+}
+
 private enum class EmojiTab(val title: String) {
     Unicode("絵文字"), Custom("カスタム"), Kitchen("Emoji Kitchen"),
 }
@@ -68,22 +96,17 @@ internal fun EmojiPicker(
             EmojiTab.Kitchen -> kitchen?.let { catalog -> first?.let(catalog.combinations) ?: catalog.components }.orEmpty()
         }
     }
-    val filtered = remember(choices, query) {
-        val words = query.trim().replace('_', ' ').split(Regex("\\s+")).filter { it.isNotEmpty() }
-        choices.filter { choice ->
-            val searchable = "${choice.name} ${choice.glyph} ${choice.keywords.replace('_', ' ')}"
-            words.all { searchable.contains(it, ignoreCase = true) }
-        }
-    }
+    val filtered = remember(choices, query) { rankEmojiChoices(choices, query) }
     ModalBottomSheet(
         onDismissRequest = dismiss,
         modifier = Modifier.semantics { paneTitle = title },
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberModalBottomSheetState(),
+        dragHandle = { BottomSheetDefaults.DragHandle(Modifier.testTag("emoji-sheet-handle")) },
         sheetMaxWidth = Dp.Unspecified,
         containerColor = colors.background,
         contentColor = colors.foreground,
     ) {
-        Column(Modifier.fillMaxWidth().heightIn(max = 520.dp).imePadding().padding(horizontal = 16.dp)) {
+        Column(Modifier.fillMaxWidth().fillMaxHeight().imePadding().padding(horizontal = 16.dp)) {
             PrimaryTabRow(
                 selectedTabIndex = tab.ordinal, containerColor = colors.background, contentColor = colors.foreground,
                 indicator = {
@@ -137,6 +160,11 @@ internal fun EmojiPicker(
                 LazyVerticalGrid(GridCells.Adaptive(AndroidControlSize.target), Modifier.weight(1f, fill = false),
                     contentPadding = PaddingValues(bottom = 16.dp)) {
                     items(filtered, key = { it.value }) { choice ->
+                        TooltipBox(
+                            positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                            tooltip = { PlainTooltip { Text(choice.name) } },
+                            state = rememberTooltipState(),
+                        ) {
                         Box(Modifier.fillMaxWidth().height(AndroidControlSize.target).clickable(role = Role.Button) {
                             if (tab == EmojiTab.Kitchen && first == null) {
                                 first = choice
@@ -150,6 +178,7 @@ internal fun EmojiPicker(
                             if (bitmap != null) Image(bitmap, null, Modifier.size(32.dp))
                             else if (choice.glyph.isNotBlank()) Text(choice.glyph, color = colors.foreground, fontSize = 22.sp)
                             else Text(choice.name, color = colors.foreground, fontSize = 10.sp, maxLines = 1)
+                        }
                         }
                     }
                 }

@@ -60,6 +60,8 @@ export interface E2eeContextValue {
   clearForLogout(): Promise<void>;
   /** 他のユーザーの絵文字 SAS 検証（#368）。暗号ストアを開いたタブで、端末の登録が済んだときだけ。 */
   sas: SasController | null;
+  /** `E2eeProvider` の外の既定値だけが持つ。この場合、暗号ストアが開くことはない。 */
+  unprovided?: true;
 }
 
 export const E2eeContext = createContext<E2eeContextValue>({
@@ -78,6 +80,7 @@ export const E2eeContext = createContext<E2eeContextValue>({
   requestSenderReverify: () => {},
   clearForLogout: async () => {},
   sas: null,
+  unprovided: true,
 });
 
 export function useE2ee(): E2eeContextValue {

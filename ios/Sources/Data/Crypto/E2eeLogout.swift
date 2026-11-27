@@ -1,16 +1,39 @@
 import Foundation
 
-/// 期限つきで待つ。期限までに終わらなければ、処理を取り消し（通信は中止される）、取り消された結果（`nil` のことが多い）を返す。
+/// 取り消しに応答しない処理でも、期限または呼び出し元の取消時に一度だけ戻る。
 @MainActor
 func e2eeWithTimeout<T: Sendable>(_ limit: Duration, _ operation: @escaping @MainActor () async -> T?) async -> T? {
-    let work = Task { @MainActor in await operation() }
-    let timer = Task { @MainActor in
-        try? await Task.sleep(for: limit)
-        work.cancel()
+    let race = E2eeDeadline<T>()
+    return await withTaskCancellationHandler {
+        await withCheckedContinuation { continuation in
+            race.continuation = continuation
+            guard !Task.isCancelled else { race.finish(nil); return }
+            race.work = Task { @MainActor in race.finish(await operation()) }
+            race.timer = Task { @MainActor in
+                do { try await Task.sleep(for: limit) } catch { return }
+                race.finish(nil)
+            }
+        }
+    } onCancel: {
+        Task { @MainActor in race.finish(nil) }
     }
-    let result = await work.value
-    timer.cancel()
-    return result
+}
+
+@MainActor
+private final class E2eeDeadline<T: Sendable> {
+    var continuation: CheckedContinuation<T?, Never>?
+    var work: Task<Void, Never>?
+    var timer: Task<Void, Never>?
+
+    func finish(_ value: T?) {
+        guard let continuation else { return }
+        self.continuation = nil
+        work?.cancel()
+        timer?.cancel()
+        work = nil
+        timer = nil
+        continuation.resume(returning: value)
+    }
 }
 
 /// ログアウトで消せなかった端末（サーバーから）。次の同じ接続先とユーザーのログインで消し直す。

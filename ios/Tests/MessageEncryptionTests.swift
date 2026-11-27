@@ -29,6 +29,8 @@ private final class FakeMessageServer: E2eeRequesting {
     var beforeToDevice: (() async throws -> Void)?
     /// 配布先を 2 ページに分ける（1 ページ目に `next_after` を付ける）。
     var pagedRecipients = false
+    var afterRecipientsSnapshot: (() async throws -> Void)?
+    var invalidNext: JSONValue?
 
     init(setup: FakeSetupServer, sender: Device, receiver: Device) { self.setup = setup; self.sender = sender; self.receiver = receiver }
 
@@ -50,6 +52,8 @@ private final class FakeMessageServer: E2eeRequesting {
         switch path {
         case "api/e2ee/channels/\(channel)/recipients":
             var page = try await snapshot()
+            if let hook = afterRecipientsSnapshot { afterRecipientsSnapshot = nil; try await hook() }
+            if let invalidNext { page["next_after"] = invalidNext }
             // 2 ページ目：同じ内容で、これ以上続かない。
             if pagedRecipients, query["after"] == nil { page["next_after"] = .string("page-2") }
             return .object(page)
@@ -64,6 +68,7 @@ private final class FakeMessageServer: E2eeRequesting {
             if omitUndelivered { return .object([:]) }
             return .object(["undelivered": .array(refuseDelivery ? [.object(["user_id": .string(user), "device_id": .string(receiver.store.deviceID)])] : [])])
         case "api/messages", "api/messages/\(messageID)":
+            guard case .object? = body?["ciphertext"] else { throw ZooError.invalidResponse }
             posts += 1
             if staleOnce && posts == 1 {
                 epoch = 2
@@ -110,11 +115,48 @@ struct MessageEncryptionTests {
     }
 
     private func row(_ server: FakeMessageServer) -> EncryptedRow {
-        var ciphertext = ""
-        if case .string(let text)? = server.accepted["ciphertext"] { ciphertext = text }
+        let ciphertext = server.accepted["ciphertext"].map(dump) ?? ""
         return EncryptedRow(channelID: channel, id: messageID, parentID: nil, userID: user, kind: "message",
                             epoch: number(server.accepted["epoch"]), revision: number(server.accepted["revision"]),
                             ciphertext: ciphertext)
+    }
+
+    @Test("配布先や鍵配布の待機中に観測した新しいepochを送信に反映する", arguments: [false, true])
+    func concurrentSummaryDoesNotRegressEpoch(duringShare: Bool) async throws {
+        let (server, sender, receiver, encryption, _) = try await makePair()
+        defer { sender.cleanUp(); receiver.cleanUp() }
+        server.staleOnce = false
+        let advance = {
+            server.epoch = 2
+            _ = try await encryption.summary(channel: channel)
+        }
+        if duringShare { server.beforeToDevice = advance }
+        else { server.afterRecipientsSnapshot = advance }
+        try await encryption.send(channel: channel, id: messageID, parent: nil, body: "新しい参加者だけへ送る")
+        #expect(server.posts == 1)
+        #expect(server.accepted["epoch"] == .number(2))
+        _ = try receiver.store.processToDevice(server.delivered, keysQuery: dump(.object(try await server.snapshot())))
+        #expect(MessageEncryption(store: { receiver.store }, api: server).decrypt(row(server)).body == "新しい参加者だけへ送る")
+    }
+
+    @Test("配布先の不正なカーソルを最終ページ扱いせず送信を止める", arguments: [JSONValue.number(1), .bool(false), .object([:])])
+    func rejectsInvalidRecipientCursor(cursor: JSONValue) async throws {
+        let (server, sender, receiver, encryption, _) = try await makePair()
+        defer { sender.cleanUp(); receiver.cleanUp() }
+        server.invalidNext = cursor
+        await #expect(throws: (any Error).self) {
+            try await encryption.send(channel: channel, id: messageID, parent: nil, body: "送らない")
+        }
+        #expect(server.posts == 0 && server.delivered.isEmpty)
+    }
+
+    @Test func 版番号の上限では編集を送らず競合として返す() async throws {
+        let (server, sender, receiver, encryption, _) = try await makePair()
+        defer { sender.cleanUp(); receiver.cleanUp() }
+        let row = EncryptedRow(channelID: channel, id: messageID, parentID: nil, userID: user, kind: "message", epoch: 1,
+            revision: UInt64.max, ciphertext: "{}")
+        await #expect(throws: MessageEncryptionError.editConflict) { try await encryption.edit(row, body: "送らない") }
+        #expect(server.requests.isEmpty)
     }
 
     @Test func 送信は平文を送らず鍵を配り受信端末が復号できる() async throws {
@@ -147,6 +189,28 @@ struct MessageEncryptionTests {
         #expect(reopened.decrypt(row(server)).body == secret)
     }
 
+    @Test func 同じ添付IDでも復号情報を取り違えず保存もしない() throws {
+        let registry = EncryptedAttachmentFiles.shared
+        defer { registry.removeAll() }
+        let first = encryptAttachment(plaintext: Data("最初の本文".utf8))
+        let second = encryptAttachment(plaintext: Data("別の本文".utf8))
+        func attachment(_ file: String) -> MessageAttachment {
+            MessageAttachment(decrypted: AttachmentInfo(attachmentId: "same", name: "資料.txt", mimetype: "text/plain",
+                size: 15, width: nil, height: nil, sensitive: false, file: file))
+        }
+        let a = attachment(first.file), b = attachment(second.file)
+        let aID = try #require(a.encryptedFileID), bID = try #require(b.encryptedFileID)
+        #expect(aID != bID)
+        #expect(registry.decrypt(first.ciphertext, id: aID) == Data("最初の本文".utf8))
+        #expect(registry.decrypt(second.ciphertext, id: bID) == Data("別の本文".utf8))
+        #expect(registry.decrypt(second.ciphertext, id: aID) == nil)
+        let encoded = try JSONEncoder().encode(a)
+        #expect(!String(decoding: encoded, as: UTF8.self).contains(aID))
+        #expect(try JSONDecoder().decode(MessageAttachment.self, from: encoded).encryptedFileID == nil)
+        registry.removeAll()
+        #expect(registry.decrypt(first.ciphertext, id: aID) == nil)
+    }
+
     @Test func 暗号化した添付は暗号文の中にだけ入り受信端末が復号できる() async throws {
         let (server, sender, receiver, encryption, _) = try await makePair()
         defer { sender.cleanUp(); receiver.cleanUp(); EncryptedAttachmentFiles.shared.removeAll() }
@@ -168,10 +232,10 @@ struct MessageEncryptionTests {
         // 表示用の行にして覚えると、暗号文から元の中身に戻せる。ハッシュが合わない暗号文は復号しない。
         let shown = MessageAttachment(decrypted: received)
         #expect(shown.content_type == "text/plain")
-        #expect(EncryptedAttachmentFiles.shared.decrypt(encrypted.ciphertext, id: shown.id) == plaintext)
+        #expect(EncryptedAttachmentFiles.shared.decrypt(encrypted.ciphertext, id: try #require(shown.encryptedFileID)) == plaintext)
         var tampered = encrypted.ciphertext
         tampered[0] ^= 1
-        #expect(EncryptedAttachmentFiles.shared.decrypt(tampered, id: shown.id) == nil)
+        #expect(EncryptedAttachmentFiles.shared.decrypt(tampered, id: try #require(shown.encryptedFileID)) == nil)
     }
 
     @Test func 通知拡張は通知の暗号文の行を暗号ストアの読み取りだけで復号する() async throws {
@@ -196,18 +260,21 @@ struct MessageEncryptionTests {
                 "message": ["channel_id": channel, "message_id": messageID, "parent_id": NSNull(), "user_id": user,
                             "message_kind": "message", "epoch": accepted.epoch, "revision": accepted.revision, "ciphertext": ciphertext]]]
         }
-        #expect(NotificationE2ee.body(userInfo: info(), roots: [root], loadKey: { _ in storageKey }) == secret)
+        #expect(NotificationE2ee.body(userInfo: info(), activeUserID: user, roots: [root], loadKey: { _ in storageKey }) == secret)
+        #expect(NotificationE2ee.body(userInfo: info(), activeUserID: UUID().uuidString, roots: [root], loadKey: { _ in
+            Issue.record("別アカウントの通知で保存鍵を読んだ"); return storageKey
+        }) == nil)
         // 読み取りだけ：状態は変わらない。
         #expect(try Data(contentsOf: root.appendingPathComponent("store/state.json")) == before)
         // 本文は 240 コードポイントまで。
-        #expect((NotificationE2ee.body(userInfo: info(), roots: [root], loadKey: { _ in storageKey }) ?? "").unicodeScalars.count <= 240)
+        #expect((NotificationE2ee.body(userInfo: info(), activeUserID: user, roots: [root], loadKey: { _ in storageKey }) ?? "").unicodeScalars.count <= 240)
         // 保存鍵が違う、宛先が違う、置き場がない、暗号文が壊れているときは、復号しない。
-        #expect(NotificationE2ee.body(userInfo: info(), roots: [root], loadKey: { _ in Data(repeating: 1, count: 32) }) == nil)
-        #expect(NotificationE2ee.body(userInfo: info(), roots: [root], loadKey: { _ in nil }) == nil)
-        #expect(NotificationE2ee.body(userInfo: info(recipient: "00000000-0000-4000-8000-0000000000ff"), roots: [root], loadKey: { _ in storageKey }) == nil)
-        #expect(NotificationE2ee.body(userInfo: info(), roots: [], loadKey: { _ in storageKey }) == nil)
-        #expect(NotificationE2ee.body(userInfo: info(ciphertext: ["sender_key": "x", "session_id": "y"]), roots: [root], loadKey: { _ in storageKey }) == nil)
-        #expect(NotificationE2ee.body(userInfo: ["user_id": user], roots: [root], loadKey: { _ in storageKey }) == nil)
+        #expect(NotificationE2ee.body(userInfo: info(), activeUserID: user, roots: [root], loadKey: { _ in Data(repeating: 1, count: 32) }) == nil)
+        #expect(NotificationE2ee.body(userInfo: info(), activeUserID: user, roots: [root], loadKey: { _ in nil }) == nil)
+        #expect(NotificationE2ee.body(userInfo: info(recipient: "00000000-0000-4000-8000-0000000000ff"), activeUserID: user, roots: [root], loadKey: { _ in storageKey }) == nil)
+        #expect(NotificationE2ee.body(userInfo: info(), activeUserID: user, roots: [], loadKey: { _ in storageKey }) == nil)
+        #expect(NotificationE2ee.body(userInfo: info(ciphertext: ["sender_key": "x", "session_id": "y"]), activeUserID: user, roots: [root], loadKey: { _ in storageKey }) == nil)
+        #expect(NotificationE2ee.body(userInfo: ["user_id": user], activeUserID: user, roots: [root], loadKey: { _ in storageKey }) == nil)
     }
 
     @Test func メンションは平文のmentionsに付けて送り編集では付けない() async throws {
@@ -289,7 +356,7 @@ struct MessageEncryptionTests {
         let newKey = sender.store.curve25519Key
         #expect(newKey != oldKey)
         #expect(server.posts == 1)
-        guard case .string(let ciphertext)? = server.accepted["ciphertext"], case .object(let envelope) = parse(ciphertext) else {
+        guard case .object(let envelope)? = server.accepted["ciphertext"] else {
             Issue.record("ciphertext がない"); return
         }
         #expect(envelope["sender_key"] == .string(newKey))
@@ -401,6 +468,7 @@ final class CapturingRequests: E2eeRequesting {
     let store: () -> CryptoStore?
     let setupServer: FakeSetupServer
     var epochValue: UInt64 = 1
+    var requests: [String] = []
     private var accepted: [String: JSONValue] = [:]
     private var recorded: [UInt64: [String: JSONValue]] = [:]
 
@@ -409,10 +477,11 @@ final class CapturingRequests: E2eeRequesting {
     }
 
     func record(revision: UInt64) { recorded[revision] = accepted }
-    func ciphertext(_ revision: UInt64) -> String { if case .string(let text)? = recorded[revision]?["ciphertext"] { text } else { "" } }
+    func ciphertext(_ revision: UInt64) -> String { recorded[revision]?["ciphertext"].map(dump) ?? "" }
     func epoch(_ revision: UInt64) -> UInt64 { if case .number(let value)? = recorded[revision]?["epoch"] { UInt64(value) } else { 0 } }
 
     func e2eeJSON(_ path: String, method: String, query: [String: String], body: [String: JSONValue]?) async throws -> JSONValue {
+        requests.append("\(method) \(path)")
         if path.hasPrefix("api/e2ee/channels/") {
             guard case .object(var page) = try JSONDecoder().decode(JSONValue.self, from: Data(try await setupServer.queryOwnKeys(userID: user).utf8)),
                   let store = store() else { return .object([:]) }

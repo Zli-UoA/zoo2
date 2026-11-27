@@ -116,7 +116,7 @@ class MfmParserTest {
     @Test
     fun upstreamBoldAndTadaShorthandsHaveTheirMfmMeaning() {
         assertEquals(listOf(Inline("bold", "bold")), parseInline("__bold__"))
-        assertEquals(listOf(Inline("https://example.test", "link", "https://example.test")),
+        assertEquals(listOf(Inline("https://example.test", "link", "https://example.test", bare = true)),
             parseInline("<https://example.test>"))
         assertEquals(listOf(Inline("$[tada emphasis]", "effect")), parseInline("***emphasis***"))
     }

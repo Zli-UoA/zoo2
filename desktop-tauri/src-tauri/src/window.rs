@@ -7,7 +7,7 @@ use tauri::{
     ipc::CapabilityBuilder,
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    webview::{NewWindowResponse, PermissionKind, PermissionResponse},
+    webview::{NewWindowResponse, PageLoadEvent, PermissionKind, PermissionResponse},
 };
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_opener::OpenerExt;
@@ -33,17 +33,29 @@ pub enum Origin {
     Other,
 }
 
+/// 同梱の画面のオリジンか。プラットフォームごとに完全一致で判定する。
+///
+/// macOS と Linux は `tauri://localhost`、Windows は `http(s)://tauri.localhost` (ポートなし)。
+/// ほかのプラットフォームのオリジンや、ポート付きのループバックは同梱として扱わない。
+/// 開発中は trunk の dev サーバー (tauri.conf.json の devUrl)。
+fn is_bundled_url(url: &Url, windows: bool) -> bool {
+    let exact_host = |host: &str| url.host_str() == Some(host) && url.port().is_none();
+    let platform = if windows {
+        matches!(url.scheme(), "http" | "https") && exact_host("tauri.localhost")
+    } else {
+        url.scheme() == "tauri" && exact_host("localhost")
+    };
+    platform
+        || (cfg!(debug_assertions) && url.origin().ascii_serialization() == "http://localhost:1420")
+}
+
 pub fn classify(url: &Url, core: &Core) -> Origin {
     classify_url(url, core.ui(), &remote_origins(core))
 }
 
 fn classify_url(url: &Url, ui: UiMode, allowed_remote_origins: &[String]) -> Origin {
     let origin = url.origin().ascii_serialization();
-    // 同梱の画面は、macOS と Linux では tauri://localhost、Windows では http(s)://tauri.localhost。
-    // 開発中は trunk の dev サーバー (tauri.conf.json の devUrl)。
-    let bundled = url.scheme() == "tauri"
-        || url.host_str() == Some("tauri.localhost")
-        || (cfg!(debug_assertions) && origin == "http://localhost:1420");
+    let bundled = is_bundled_url(url, cfg!(windows));
     if bundled {
         return Origin::Bundled;
     }
@@ -163,6 +175,13 @@ const REMOTE_COMMANDS: &[&str] = &[
     command::NOTIFICATIONS_OBSERVED,
     command::TAKE_CALL_ACCEPT,
     command::REAUTHENTICATE,
+    command::DOWNLOAD_SETTINGS,
+    command::SET_DOWNLOAD_SETTINGS,
+    command::PICK_DOWNLOAD_DIRECTORY,
+    command::DOWNLOAD_BEGIN,
+    command::DOWNLOAD_WRITE,
+    command::DOWNLOAD_FINISH,
+    command::DOWNLOAD_CANCEL,
 ];
 
 /// (b) のときだけ、リモートのオリジンに IPC を許す capability を足す。
@@ -188,6 +207,11 @@ pub fn add_remote_capability(app: &App, core: &Core) -> tauri::Result<()> {
 
 /// (b) では、ログインしたらリモートの画面へ、ログアウトしたら同梱のログイン画面へ移す。
 pub fn follow_session(app: &AppHandle, core: &Core, state: &SessionState) {
+    // ログアウトや期限切れでは画面が破棄され、React から `zoo_download_cancel` を呼べない。
+    // 書き込み中の `.part` をここで消す。
+    if matches!(state, SessionState::LoggedOut | SessionState::Failed { .. }) {
+        core.downloads().cancel_all();
+    }
     // ログアウトや期限切れでは、画面が破棄されて React の後始末が走らないことがある。
     // バッジは OS 側に残るので、ここで消す。
     if matches!(state, SessionState::LoggedOut | SessionState::Failed { .. })
@@ -224,10 +248,11 @@ pub fn create_main(app: &App, core: &Arc<Core>) -> tauri::Result<()> {
     let popup_handle = app.handle().clone();
     let popup_core = core.clone();
     let perm_core = core.clone();
+    let page_core = core.clone();
     #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
     let window = {
         let builder = WebviewWindowBuilder::new(app, MAIN, WebviewUrl::App("index.html".into()))
-            .title("zoo2")
+            .title(format!("zoo2 v{}", env!("CARGO_PKG_VERSION")))
             .inner_size(1100.0, 760.0)
             .min_inner_size(480.0, 360.0)
             .on_navigation(move |url| {
@@ -254,6 +279,13 @@ pub fn create_main(app: &App, core: &Arc<Core>) -> tauri::Result<()> {
                         PermissionResponse::Allow
                     }
                     _ => PermissionResponse::Default,
+                }
+            })
+            // 画面を読み込み直すと React の後始末が走らず、`.part` が残る。新しい画面を
+            // 読み始めた時点で、書き込み中のものをすべて中止する。
+            .on_page_load(move |_window, payload| {
+                if payload.event() == PageLoadEvent::Started {
+                    page_core.downloads().cancel_all();
                 }
             });
         #[cfg(target_os = "windows")]
@@ -443,6 +475,31 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
 }
 
 #[cfg(test)]
+mod bundled_origin_tests {
+    use super::*;
+
+    fn bundled(url: &str, windows: bool) -> bool {
+        is_bundled_url(&Url::parse(url).unwrap(), windows)
+    }
+
+    #[test]
+    fn bundled_origin_is_matched_exactly_per_platform() {
+        assert!(bundled("tauri://localhost/index.html", false));
+        assert!(bundled("http://tauri.localhost/index.html", true));
+        assert!(bundled("https://tauri.localhost/", true));
+        // 別のプラットフォームのオリジン
+        assert!(!bundled("http://tauri.localhost/", false));
+        assert!(!bundled("tauri://localhost/", true));
+        // ポート付きのループバックや、似たホスト名
+        assert!(!bundled("http://tauri.localhost:8123/x", false));
+        assert!(!bundled("http://tauri.localhost:8123/x", true));
+        assert!(!bundled("tauri://localhost:1/", false));
+        assert!(!bundled("http://evil.tauri.localhost/", true));
+        assert!(!bundled("ftp://tauri.localhost/", true));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -461,11 +518,16 @@ mod tests {
     #[test]
     fn classify_url_recognizes_bundled_remote_and_other() {
         let remote = vec!["https://zli.chat".to_string()];
-        for bundled in [
-            "tauri://localhost/index.html",
-            "http://tauri.localhost/index.html",
-            "https://tauri.localhost/index.html",
-        ] {
+        // 同梱のオリジンはプラットフォームごとに完全一致で判定する。
+        let bundled_urls: &[&str] = if cfg!(windows) {
+            &[
+                "http://tauri.localhost/index.html",
+                "https://tauri.localhost/index.html",
+            ]
+        } else {
+            &["tauri://localhost/index.html"]
+        };
+        for bundled in bundled_urls {
             let parsed = Url::parse(bundled).unwrap();
             assert_eq!(
                 classify_url(&parsed, UiMode::Remote, &remote),

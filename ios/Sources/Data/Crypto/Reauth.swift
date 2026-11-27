@@ -27,9 +27,12 @@ struct ReauthRequest: Equatable {
     static let timeout: Duration = .seconds(10 * 60)
 
     /// 32 バイトの乱数の base64url（43 文字）。PKCE の verifier（43〜128 文字の unreserved）にも使える。
-    static func randomToken() -> String {
+    static func randomToken(fill: (UnsafeMutableRawBufferPointer) -> OSStatus = {
+        SecRandomCopyBytes(kSecRandomDefault, $0.count, $0.baseAddress!)
+    }) throws -> String {
         var bytes = Data(count: 32)
-        _ = bytes.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
+        let status = bytes.withUnsafeMutableBytes(fill)
+        guard status == errSecSuccess else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
         return PasskeyCoding.base64URL(bytes)
     }
 
@@ -41,10 +44,15 @@ struct ReauthRequest: Equatable {
     /// 認可リクエストを作る。scope は `openid profile`（再認証では refresh token を作らないので `offline_access` を外す）。
     /// `resource` はふだんのログインと同じ値（空なら付けない）。
     static func create(authorizationEndpoint: String, clientID: String, resource: String,
-                       state: String = randomToken(), nonce: String = randomToken(),
-                       verifier: String = randomToken()) throws -> ReauthRequest {
-        guard var parts = URLComponents(url: try ConnectionSettings.secureURL(authorizationEndpoint),
-                                        resolvingAgainstBaseURL: false) else { throw ZooError.invalidConfiguration }
+                       state: String? = nil, nonce: String? = nil,
+                       verifier: String? = nil) throws -> ReauthRequest {
+        let state = try state ?? randomToken()
+        let nonce = try nonce ?? randomToken()
+        let verifier = try verifier ?? randomToken()
+        guard var parts = URLComponents(string: authorizationEndpoint), parts.scheme == "https",
+              parts.host != nil, parts.user == nil, parts.password == nil, parts.fragment == nil else {
+            throw ZooError.invalidConfiguration
+        }
         var items = [
             URLQueryItem(name: "response_type", value: "code"),
             URLQueryItem(name: "client_id", value: clientID),
@@ -60,7 +68,11 @@ struct ReauthRequest: Equatable {
             // 既存の AuthZ のセッションがあっても、必ずログインし直させる。
             URLQueryItem(name: "max_age", value: "0")
         ]
-        parts.queryItems = (parts.queryItems ?? []) + items
+        let existing = parts.queryItems ?? []
+        let generatedNames = Set(items.map(\.name))
+        guard Set(existing.map(\.name)).count == existing.count,
+              existing.allSatisfy({ !generatedNames.contains($0.name) }) else { throw ZooError.invalidConfiguration }
+        parts.queryItems = existing + items
         guard let url = parts.url else { throw ZooError.invalidConfiguration }
         return ReauthRequest(url: url, redirectURI: redirectURI, state: state, nonce: nonce, verifier: verifier)
     }
@@ -109,8 +121,7 @@ func validateIDToken(_ idToken: String, issuer: String, clientID: String, nonce:
           let claims = try? JSONSerialization.jsonObject(with: payload) as? [String: Any] else {
         throw invalid("ペイロードを読めません")
     }
-    func trimmed(_ value: String) -> String { value.hasSuffix("/") ? String(value.dropLast()) : value }
-    guard let iss = claims["iss"] as? String, trimmed(iss) == trimmed(issuer) else { throw invalid("iss が一致しません") }
+    guard let iss = claims["iss"] as? String, iss == issuer else { throw invalid("iss が一致しません") }
     let audience: Bool
     if let aud = claims["aud"] as? String { audience = aud == clientID }
     else if let aud = claims["aud"] as? [Any] { audience = aud.contains { ($0 as? String) == clientID } }
@@ -131,7 +142,12 @@ final class Reauthenticator: NSObject {
 
     init(auth: Authentication) { self.auth = auth }
 
+    private var authenticating = false
+
     func idToken() async throws -> String {
+        guard !authenticating else { throw ReauthError.denied("本人確認を実行中です。完了してから再試行してください。") }
+        authenticating = true
+        defer { authenticating = false }
         let discovery = try await auth.discovery()
         guard let endpoint = discovery.authorization_endpoint else {
             throw ZooError.auth("認証サーバーが再認証に対応していません。")

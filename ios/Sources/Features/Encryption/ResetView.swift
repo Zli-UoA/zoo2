@@ -112,7 +112,7 @@ struct ResetView: View {
         defer { busy = false }
         do {
             // 選んだ端末を削除してから、新しい鍵を作る（選択を確かめるまで保存しない）。
-            for id in selected { try await e2ee.removeDevice(id) }
+            for id in selected { try await e2ee.removeDevice(id); selected.remove(id) }
             let reset = try await e2ee.beginReset()
             // 新しいキーごとに、控えたかを確かめ直す（前のキーの確認を引き継がない）。
             savedKey = false

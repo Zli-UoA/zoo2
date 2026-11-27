@@ -1,6 +1,12 @@
 import { act, render, screen } from "@testing-library/react";
-import { beforeEach, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 
+import {
+  buildChannelScrollKey,
+  clearChannelMeasurementCache,
+  getChannelMeasurementCache,
+  saveChannelMeasurementCache,
+} from "../chat/messages/messageScroll";
 import type { AppConfig } from "../../lib/config";
 import type { CurrentUserState } from "../../lib/currentUser";
 import { useOfflineStatus } from "../../lib/offline/offline-context";
@@ -41,6 +47,7 @@ vi.mock("../../lib/offline/persistence", () => ({
 vi.mock("../layout/ShellSkeleton", () => ({ ShellSkeleton: () => <p>Loading</p> }));
 
 beforeEach(() => {
+  clearChannelMeasurementCache();
   mocks.state = { currentUserId: null, isLoading: true, isAdmin: false, error: null };
   mocks.online = true;
   mocks.ensureLoaded.mockReset();
@@ -52,6 +59,10 @@ beforeEach(() => {
   mocks.prepare.mockResolvedValue(undefined);
   mocks.reload.mockReset();
   mocks.reload.mockResolvedValue(false);
+});
+
+afterEach(() => {
+  clearChannelMeasurementCache();
 });
 
 it("waits for the updated document instead of opening SQLite from a stale shell", async () => {
@@ -204,11 +215,20 @@ function ClearUserData() {
   return <button onClick={() => void clearUserData().catch(() => {})}>Log out</button>;
 }
 it.each([false, true])(
-  "React logout clears only this user's Compose drafts even if OPFS deletion fails: %s",
+  "React logout clears only this user's Compose drafts and channel scroll cache even if OPFS deletion fails: %s",
   async (fails) => {
     mocks.state = { currentUserId: "user-a", isLoading: false, isAdmin: false, error: null };
     localStorage.setItem("zoo-compose:user-a:draft:private:", "private draft");
     localStorage.setItem("zoo-compose:user-ab:draft:private:", "other user's draft");
+    const scrollCacheKey = buildChannelScrollKey("ch-logout", "user-a");
+    saveChannelMeasurementCache({
+      key: scrollCacheKey,
+      containerWidth: 700,
+      viewportHeight: 500,
+      snapshotItems: [{ key: "m-0", index: 0, size: 120, start: 0, end: 120, lane: 0 }],
+      fallbackRowHeight: 64,
+    });
+    expect(getChannelMeasurementCache(scrollCacheKey)).toBeDefined();
     if (fails) mocks.remove.mockRejectedValueOnce(new Error("OPFS unavailable"));
     render(
       <OfflineProvider config={{ devUserId: null, oidc: {} } as AppConfig}>
@@ -220,5 +240,6 @@ it.each([false, true])(
     expect(mocks.remove).toHaveBeenCalledExactlyOnceWith("user-user-a");
     expect(localStorage.getItem("zoo-compose:user-a:draft:private:")).toBeNull();
     expect(localStorage.getItem("zoo-compose:user-ab:draft:private:")).toBe("other user's draft");
+    expect(getChannelMeasurementCache(scrollCacheKey)).toBeUndefined();
   },
 );

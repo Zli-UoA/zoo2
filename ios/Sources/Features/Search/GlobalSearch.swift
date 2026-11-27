@@ -118,6 +118,7 @@ final class GlobalSearchStore {
     static let timeout: Duration = .seconds(20)
 
     private let client: any ChatClient
+    private let requestTimeout: Duration
     var text = ""
     private(set) var kind: GlobalSearchKind = .all
     private(set) var filters = SearchFilters()
@@ -137,7 +138,10 @@ final class GlobalSearchStore {
     /// 続きのページでも、検索の開始時に決めた期間の境界を送る。
     @ObservationIgnored private var requestFilters = SearchRequestFilters()
 
-    init(client: any ChatClient) { self.client = client }
+    init(client: any ChatClient, timeout: Duration = GlobalSearchStore.timeout) {
+        self.client = client
+        self.requestTimeout = timeout
+    }
 
     var isSearching: Bool { phase == .loading || loadingOlder }
     var hasSubmitted: Bool { !requestedText.isEmpty }
@@ -253,7 +257,7 @@ final class GlobalSearchStore {
 
     private func fetch(request: UUID, query: String, kind: GlobalSearchKind, cursor: String?, filters: SearchRequestFilters) async {
         let timer = Task { [weak self] in
-            try? await Task.sleep(for: Self.timeout)
+            try? await Task.sleep(for: self?.requestTimeout ?? Self.timeout)
             guard !Task.isCancelled else { return }
             self?.expire(request)
         }

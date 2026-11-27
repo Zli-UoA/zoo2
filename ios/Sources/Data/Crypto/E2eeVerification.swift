@@ -99,6 +99,7 @@ struct SasEntry: Identifiable, Equatable {
 /// 暗号化して to-device で送る。処理と送信は 1 つずつ順に行う（同じ相手への `mac` と `done` の順を守る）。
 @Observable @MainActor
 final class E2eeVerification {
+    private(set) var trustRevision = 0
     /// 期限（10 分）。これより古い未処理のメッセージは捨てる。
     static let timeoutMs: UInt64 = 10 * 60 * 1000
     /// 処理に送信ユーザーの `keys/query` が要るメッセージ。
@@ -137,8 +138,8 @@ final class E2eeVerification {
         try await serial {
             let store = try self.currentStore()
             let keys = try await self.api.queryKeys(userID: userID)
-            let started = try store.sasRequest(snapshotPages: [keys], theirUserID: userID, nowMs: self.now())
-            return try await self.apply(started.verification, outgoing: started.outgoing)
+            let started = try store.sasRequest(keysQuery: keys, theirUserID: userID, nowMs: self.now())
+            return try await self.apply(started.verification, outgoing: started.outgoing, requireDelivery: true)
         }
     }
 
@@ -207,6 +208,7 @@ final class E2eeVerification {
         let accepted = try store.acceptMasterKey(userID: userID, masterKey: masterJSON)
         try await api.saveAccepted(pin: accepted.pin, signature: accepted.signature, reauth: token)
         try store.confirmAcceptedMasterKey(userID: userID, masterKey: masterJSON)
+        trustRevision += 1
         onSaved?(userID)
     }
 
@@ -249,7 +251,7 @@ final class E2eeVerification {
 
     /// 画面を閉じる。終わっていなければ取りやめてから忘れる。
     func dismiss(_ id: String) async {
-        if let entry = entries.first(where: { $0.id == id }), entry.view.phase != "done", entry.view.phase != "cancelled" {
+        if let entry = entries.first(where: { $0.id == id }), entry.view.phase != .done, entry.view.phase != .cancelled {
             await cancel(id)
         }
         live[id] = nil
@@ -264,8 +266,14 @@ final class E2eeVerification {
         _ = try? await drain()
         let nowMs = now()
         for (id, sas) in live {
+            guard live[id] === sas else { continue }
             let out = sas.expire(nowMs: nowMs)
-            if !out.isEmpty { _ = try? await serial { try await self.apply(sas, outgoing: out) } }
+            if !out.isEmpty {
+                _ = try? await serial {
+                    guard self.live[id] === sas else { return id }
+                    return try await self.apply(sas, outgoing: out)
+                }
+            }
             else { refresh(id, sas) }
         }
     }
@@ -293,14 +301,21 @@ final class E2eeVerification {
 
     /// 状態を画面に出し、送るメッセージを送る。検証が終わったら保存を始める。
     @discardableResult
-    private func apply(_ sas: SasVerification, outgoing: [VerificationOutgoing]) async throws -> String {
+    private func apply(_ sas: SasVerification, outgoing: [VerificationOutgoing], requireDelivery: Bool = false) async throws -> String {
         let view = sas.view()
         live[view.transactionId] = sas
         upsert(view)
         if !outgoing.isEmpty {
-            do { try await send(outgoing) } catch { patch(view.transactionId) { $0.error = .sendFailed } }
+            do { try await send(outgoing) } catch {
+                patch(view.transactionId) { $0.error = .sendFailed }
+                if requireDelivery {
+                    live[view.transactionId] = nil
+                    entries.removeAll { $0.id == view.transactionId }
+                    throw error
+                }
+            }
         }
-        if view.phase == "done", let entry = entries.first(where: { $0.id == view.transactionId }), entry.save == .idle {
+        if view.phase == .done, let entry = entries.first(where: { $0.id == view.transactionId }), entry.save == .idle {
             let id = view.transactionId
             Task { @MainActor in await self.save(id) }
         }
@@ -314,7 +329,7 @@ final class E2eeVerification {
             entries[index].view = view
         } else {
             entries.append(SasEntry(view: view))
-            entries.sort { $0.view.startedAtMs < $1.view.startedAtMs }
+            entries.sort { $0.view.startedAt < $1.view.startedAt }
         }
     }
 
@@ -338,7 +353,7 @@ final class E2eeVerification {
                       let sender = root["sender_user_id"]?.string,
                       self.now() &- item.receivedAt <= Self.timeoutMs else { continue }
                 if held.contains(txn) { remaining.append(item); continue }
-                var keys: [String] = []
+                var keys = "{}"
                 if Self.needsKeys.contains(type) {
                     var snapshot = cache[sender]
                     if snapshot == nil, !failed.contains(sender) {
@@ -351,7 +366,7 @@ final class E2eeVerification {
                         self.patch(txn) { $0.error = .receiveFailed }
                         continue
                     }
-                    keys = [snapshot]
+                    keys = snapshot
                 }
                 // 暗号ストアを一時的に使えないとき（ack の失敗で閉じた、開き直している）は、捨てずに残して、あとで試し直す
                 // （Olm のメッセージは、2 回は復号できない）。
@@ -362,11 +377,11 @@ final class E2eeVerification {
                 }
                 do {
                     if let sas = self.live[txn] {
-                        let out = try sas.receive(messageJson: item.message, snapshotPages: keys)
+                        let out = try sas.receive(message: verificationMessageFromJson(stored: item.message), keysQuery: keys)
                         self.patch(txn) { if $0.error == .receiveFailed { $0.error = nil } }
                         _ = try await self.apply(sas, outgoing: out)
                     } else if type == "m.key.verification.request" {
-                        let sas = try store.sasFromRequest(message: item.message, snapshotPages: keys, nowMs: self.now())
+                        let sas = try store.sasFromRequest(message: item.message, keysQuery: keys, nowMs: self.now())
                         _ = try await self.apply(sas, outgoing: [])
                     }
                 } catch {
@@ -417,7 +432,7 @@ final class E2eeVerification {
 
     /// 検証が終わった相手のマスター鍵に署名し、ピンと署名を保存する。
     private func save(_ id: String) async {
-        guard let sas = live[id], let entry = entries.first(where: { $0.id == id }), entry.view.phase == "done",
+        guard let sas = live[id], let entry = entries.first(where: { $0.id == id }), entry.view.phase == .done,
               entry.save != .saving, saving.insert(id).inserted else { return }
         defer { saving.remove(id) }
         patch(id) { $0.save = .saving }
@@ -434,6 +449,7 @@ final class E2eeVerification {
             try await api.saveAccepted(pin: accepted.pin, signature: accepted.signature, reauth: token)
             try store.confirmAcceptedMasterKey(userID: theirUser, masterKey: masterJSON)
             patch(id) { $0.save = .saved }
+            trustRevision += 1
             onSaved?(theirUser)
         } catch let failure as E2eeAPIError where failure.isReauthRequired {
             patch(id) { $0.save = .reauth }

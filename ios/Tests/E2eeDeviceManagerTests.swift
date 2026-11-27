@@ -11,6 +11,8 @@ private final class FakeDeviceServer: E2eeDeviceAPI, E2eeKeysAPI {
     var listed: [String] = []
     var failUploadNotFound = 0
     var queriedUsers: [[String]] = []
+    var ackBarrier: CheckedContinuation<Void, Never>?
+    var holdAck = false
 
     func registerDevice(_ body: [String: JSONValue]) async throws { registered.append(body) }
     func deviceIDs() async throws -> [String] { listed }
@@ -28,7 +30,10 @@ private final class FakeDeviceServer: E2eeDeviceAPI, E2eeKeysAPI {
         return #"{"device_keys":{},"signatures":[],"master_keys":{},"self_signing_keys":{},"user_signing_keys":{},"tofu_pins":{},"user_ids":[]}"#
     }
 
-    func ackToDevice(deviceID: String, ids: [String]) async throws { acked.append(ids) }
+    func ackToDevice(deviceID: String, ids: [String]) async throws {
+        acked.append(ids)
+        if holdAck { await withCheckedContinuation { ackBarrier = $0 } }
+    }
 }
 
 @MainActor
@@ -75,16 +80,21 @@ struct E2eeDeviceManagerTests {
         // 数を読む空のアップロードのあとに、足りない分を補充する（最大数と、フォールバック鍵 1 つ）。
         #expect(server.uploads.first?.oneTime == 0)
         #expect(server.uploads.contains { $0.oneTime > 0 && $0.fallback == 1 })
+        server.holdAck = true
         // 復号できない行は、捨てて ack する。
         feed.deliver?([.init(id: "5", senderUserID: user, type: "m.room.encrypted", content: #"{"algorithm":"x"}"#),
                        .init(id: "6", senderUserID: user, type: "m.dummy", content: "{}")])
         #expect(await eventually { !server.acked.isEmpty })
         #expect(server.acked.first == ["5", "6"])
         #expect(server.queriedUsers.first == [user])
+        try #require(server.ackBarrier != nil)
         // ack より先に同じ一覧が届いても、処理し直さない。
         feed.deliver?([.init(id: "5", senderUserID: user, type: "m.room.encrypted", content: "{}")])
+        server.holdAck = false
+        server.ackBarrier?.resume(); server.ackBarrier = nil
         try await Task.sleep(for: .milliseconds(100))
         #expect(server.acked.count == 1)
+        #expect(server.queriedUsers.count == 1)
         await manager.stop()
         #expect(manager.readyStore == nil)
     }

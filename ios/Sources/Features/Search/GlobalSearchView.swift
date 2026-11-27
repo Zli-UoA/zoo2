@@ -204,7 +204,7 @@ private struct GlobalSearchSnippet: View {
         MessageContentText.render(parts, images: images, emojiHeight: emojiHeight)
             .lineLimit(3)
             .tint(AppDesign.externalLink)
-            .task(id: urls) {
+            .task(id: scenePhase == .active ? urls : []) {
                 guard scenePhase == .active, !urls.isEmpty else { return }
                 await workspace.images.watch(states, policy: .stored)
             }

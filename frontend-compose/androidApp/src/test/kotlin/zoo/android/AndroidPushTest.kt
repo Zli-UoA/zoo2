@@ -45,6 +45,17 @@ class AndroidPushTest {
         "url" to "/channels/$channel?message=$message", "tag" to "zoo-$id", "notificationType" to "dm",
     )
 
+    @Test fun discardsRetiredPushImageCacheAndKeepsCurrentBindingCache() {
+        val store = PushBinding(context)
+        val binding = store.bind("https://zoo.example", user)
+        val dir = context.cacheDir.resolve("push-images/$binding").apply { mkdirs() }
+        val image = dir.resolve("image").apply { writeText("cached") }
+        assertEquals(binding, store.bind("https://zoo.example", user))
+        assertTrue(image.exists())
+        assertTrue(store.clear(binding))
+        assertFalse(dir.exists())
+    }
+
     @Test fun coldStartReceivesAndRepeatedDeliveryReplacesTheSameNotification() {
         val binding = PushBinding(context).bind("https://zoo.example", user)
         // No Activity, Session, coroutine scope or in-memory notification controller is present.
@@ -55,6 +66,34 @@ class AndroidPushTest {
         assertEquals("新しいメッセージ", notifications.single().notification.extras.getString(Notification.EXTRA_TEXT))
         assertEquals(Notification.VISIBILITY_PRIVATE, notifications.single().notification.visibility)
         assertNotNull(notifications.single().notification.contentIntent)
+    }
+
+    /** 暗号化チャンネル（#510）：端末で復号した本文を出し、同期した通知が先に出ていても、そこに反映して印を残す。 */
+    @Test fun decryptedBodiesReplaceTheGenericTextAndAreKeptForResync() {
+        val binding = PushBinding(context).bind("https://zoo.example", user)
+        showPushNotification(context, data(binding), decryptedBody = "復号した本文")
+        val shown = manager.activeNotifications.single().notification
+        assertEquals("復号した本文", shown.extras.getString(Notification.EXTRA_TEXT))
+        assertEquals("復号した本文", preservedDecryptedBody(manager, notificationTag(user, id)))
+
+        // 同期した通知（印なし）が先に出ている場合も、操作を残したまま本文を置き換える。
+        manager.cancelAll()
+        fun synced() = Notification.Builder(context, "zoo.messages").setSmallIcon(works.zli.zoo.R.drawable.ic_notification)
+            .setContentText("投稿者さんからの DM").addAction(Notification.Action.Builder(null, "既読にする", null).build()).build()
+        manager.notify(notificationTag(user, id), 0, synced())
+        showPushNotification(context, data(binding), decryptedBody = "あとで復号した本文")
+        val updated = manager.activeNotifications.single().notification
+        assertEquals("あとで復号した本文", updated.extras.getString(Notification.EXTRA_TEXT))
+        assertEquals(1, updated.actions.size)
+        // 会話形式（MessagingStyle）のまま本文だけを置き換える。
+        assertEquals(Notification.MessagingStyle::class.java.name, updated.extras.getString(Notification.EXTRA_TEMPLATE))
+        assertEquals("あとで復号した本文", preservedDecryptedBody(manager, notificationTag(user, id)))
+
+        // 復号できなければ、先に出ている通知はそのまま。
+        manager.cancelAll()
+        manager.notify(notificationTag(user, id), 0, synced())
+        showPushNotification(context, data(binding))
+        assertEquals("投稿者さんからの DM", manager.activeNotifications.single().notification.extras.getString(Notification.EXTRA_TEXT))
     }
 
     @Test fun accountSwitchAndLogoutRejectDelayedDeliveries() {
@@ -181,6 +220,17 @@ class AndroidPushTest {
         assertNotNull(displayed.getLargeIcon())
         assertEquals(setOf(posted.avatarUrl, posted.imageUrl), requested)
         assertEquals(Notification.VISIBILITY_PRIVATE, displayed.visibility)
+    }
+
+    /** 画像を待つあいだに復号した本文が反映されたら、画像の取得のあとでサーバーの本文に戻さない（#510）。 */
+    @Test fun lateMediaDoesNotRevertADecryptedBody() = runTest {
+        val binding = PushBinding(context).bind("https://zoo.example", user)
+        val posted = assertNotNull(showPushNotification(context, data(binding) + ("avatarUrl" to "https://zoo.example/avatar.png")))
+        // 同じ通知に、あとから届いた Push の復号した本文が反映された。
+        showPushNotification(context, data(binding), decryptedBody = "復号した本文")
+        enrichPushNotification(context, posted) { _, _ -> android.graphics.Bitmap.createBitmap(1, 1, android.graphics.Bitmap.Config.ARGB_8888) }
+        assertEquals("復号した本文", manager.activeNotifications.single().notification.extras.getString(Notification.EXTRA_TEXT))
+        assertEquals("復号した本文", preservedDecryptedBody(manager, notificationTag(user, id)))
     }
 
     @Test fun dismissedPushIsNotRestoredByLateMedia() = runTest {

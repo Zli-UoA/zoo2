@@ -307,29 +307,25 @@ fn revocation_full_round_trip() {
     let trust = TrustStore::new(ALICE.into()).unwrap();
     unlocked_session.record_own_keys(&trust).unwrap();
 
-    let input = json!({
-        "scope": "full",
-        "keys_query": serde_json::from_str::<Value>(&server.keys_query()).unwrap(),
-        "versions": serde_json::from_str::<Value>(&server.versions()).unwrap(),
-        "pins": [],
-        "targets_query": {},
-        "deleted_devices": [],
-    })
-    .to_string();
-    let revocation = begin_revocation(input, &unlocked, &trust, None, None).unwrap();
+    let input = RevocationInput {
+        scope: RevocationScope::Full,
+        keys_query: server.keys_query(),
+        versions: server.versions(),
+        pins: vec![],
+        targets_query: None,
+        deleted_devices: vec![],
+    };
+    let revocation = Revocation::begin(input, &unlocked, &trust, None, None).unwrap();
 
     // 暗号ストアに保存した進み具合は、秘密鍵を除いて読める。
     let sealed = revocation.pickle(&account, storage_key.clone()).unwrap();
-    let summary: Value = serde_json::from_str(
-        &peek_revocation(sealed.clone(), &account, storage_key.clone()).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(summary["scope"], "full");
-    assert_eq!(summary["stage"], "prepared");
-    assert!(summary["revocation_id"].as_str().unwrap().len() > 10);
+    let summary = peek_revocation(sealed.clone(), &account, storage_key.clone()).unwrap();
+    assert_eq!(summary.scope, RevocationScope::Full);
+    assert_eq!(summary.stage, RevocationStage::Prepared);
+    assert!(summary.revocation_id.len() > 10);
     // 全範囲は、SSSS を保存する前に止まったら、最初からやり直す。
     assert!(matches!(
-        resume_revocation(sealed, &account, storage_key.clone(), &unlocked),
+        Revocation::resume(sealed, &account, storage_key.clone(), &unlocked),
         Err(ZooCryptoError::RevocationRestart { .. })
     ));
 
@@ -342,14 +338,16 @@ fn revocation_full_round_trip() {
     .unwrap();
     let request: Value =
         serde_json::from_str(&revocation.secret_storage_request(vec![slot]).unwrap()).unwrap();
-    assert_eq!(request["key_id"], summary["key_id"]);
+    assert_eq!(request["key_id"], summary.key_id);
     revocation.secret_storage_saved(Some(2));
-    revocation.advance("secret_storage_saved".into()).unwrap();
-    assert!(revocation.advance("unknown".into()).is_err());
+    revocation.advance(RevocationStage::SecretStorageSaved);
+    assert_eq!(
+        revocation.summary().stage,
+        RevocationStage::SecretStorageSaved
+    );
     assert!(revocation.cross_signing_request().contains("master_key"));
-    let signatures: Value =
-        serde_json::from_str(&revocation.signatures(account.device_keys()).unwrap()).unwrap();
-    assert_eq!(signatures["device"]["target_user_id"], ALICE);
+    let signatures = revocation.signatures(account.device_keys()).unwrap();
+    assert_eq!(signatures.device.target_user_id, ALICE);
     assert!(revocation.backup_version_request().is_ok());
     revocation.backup_created("2".into());
 

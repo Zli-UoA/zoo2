@@ -2,9 +2,9 @@ import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { mediaPreviewKind } from "../../lib/attachments";
 import { imageAspectRatio, type ImageMetadata } from "../../lib/imageMetadata";
+import { PreviewDownloadButton } from "../desktop/PreviewDownloadButton";
 import { Button } from "./button";
 import { Dialog, DialogContent, DialogTitle } from "./dialog";
-import { ExternalLink } from "./external-link";
 import { ImagePreview } from "./image-preview";
 import { DocumentPreview } from "./document-preview";
 import { PdfPreview } from "./pdf-preview";
@@ -13,6 +13,7 @@ import { Spinner } from "./spinner";
 /** Shared display and accessible enlargement for channel, encrypted and APub media. */
 export function MediaPreview({
   src,
+  thumbnailSrc,
   name,
   contentType,
   loading,
@@ -24,9 +25,11 @@ export function MediaPreview({
   initialOpen = false,
   embedded = false,
   depth = 0,
+  saveId,
   ...metadata
 }: ImageMetadata & {
   src?: string | null;
+  thumbnailSrc?: string;
   name: string;
   contentType: string;
   loading?: boolean;
@@ -35,13 +38,26 @@ export function MediaPreview({
   onError?: () => void;
   onOpen?: () => void;
   footer?: ReactNode;
+  /** ダイアログを最初から開くか。 */
   initialOpen?: boolean;
   /** The native host already provides the preview window and close control. */
   embedded?: boolean;
   depth?: number;
+  /** カードと拡大表示で共有する保存ID。未指定時はマウント時の入力から安定IDを作る。 */
+  saveId?: string;
 }) {
   const { t } = useTranslation();
+  // マウント時に決めた ID を使い続ける。src 更新中の保存共有と、作り直し後の同一ファイル復帰を両立する。
+  // src が未確定の同名ファイル同士が衝突しないよう、src 未指定時はランダムIDを使う。
+  const [previewId] = useState(
+    () =>
+      saveId ??
+      (src
+        ? `preview:${name}:${src}`
+        : `preview:${name}:${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)}`),
+  );
   const [open, setOpen] = useState(initialOpen);
+  const [brokenThumbnail, setBrokenThumbnail] = useState<string | null>(null);
   const [brokenSrc, setBrokenSrc] = useState<string | null>(null);
   const kind = mediaPreviewKind(contentType, name);
   const error = failed || (!!src && brokenSrc === src);
@@ -49,6 +65,8 @@ export function MediaPreview({
     setBrokenSrc(src ?? null);
     onError?.();
   };
+  const downloadFooter =
+    footer ?? (src ? <PreviewDownloadButton id={previewId} name={name} src={src} /> : null);
   function renderMedia(expanded: boolean) {
     if (error)
       return (
@@ -81,19 +99,22 @@ export function MediaPreview({
       ) : (
         <Spinner label={t("attachments.loading")} className="min-h-32" />
       );
-    if (kind === "image")
+    if (kind === "image") {
+      const thumbnail =
+        !expanded && thumbnailSrc && brokenThumbnail !== thumbnailSrc ? thumbnailSrc : null;
       return (
         <ImagePreview
           {...metadata}
-          src={src}
+          src={thumbnail ?? src}
           alt={name}
           className={
             expanded ? (embedded ? "h-full w-full" : "h-[75dvh] w-full") : "w-full max-h-96"
           }
           style={expanded ? undefined : { aspectRatio: imageAspectRatio(metadata) }}
-          onError={errorHandler}
+          onError={thumbnail ? () => setBrokenThumbnail(thumbnail) : errorHandler}
         />
       );
+    }
     if (kind === "video")
       return (
         <video
@@ -207,16 +228,7 @@ export function MediaPreview({
             {t("attachments.preview", { name })}
           </Button>
         ) : null}
-        {footer ??
-          (src?.startsWith("blob:") ? (
-            <a href={src} download={name} className="text-xs text-link">
-              {t("attachments.downloadShort")}
-            </a>
-          ) : src ? (
-            <ExternalLink href={src} className="text-xs text-link">
-              {t("attachments.downloadShort")}
-            </ExternalLink>
-          ) : null)}
+        {downloadFooter}
       </div>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] gap-2 p-2 pt-12 sm:max-w-[min(96vw,80rem)]">
@@ -224,16 +236,7 @@ export function MediaPreview({
           {open ? renderMedia(true) : null}
           <div className="flex min-w-0 items-center justify-between gap-2">
             <span className="min-w-0 truncate text-xs">{name}</span>
-            {footer ??
-              (src?.startsWith("blob:") ? (
-                <a href={src} download={name} className="text-xs text-link">
-                  {t("attachments.downloadShort")}
-                </a>
-              ) : src ? (
-                <ExternalLink href={src} className="text-xs text-link">
-                  {t("attachments.downloadShort")}
-                </ExternalLink>
-              ) : null)}
+            {downloadFooter}
           </div>
         </DialogContent>
       </Dialog>

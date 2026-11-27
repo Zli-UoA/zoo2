@@ -1,10 +1,10 @@
 import { SensitiveMedia } from "../../ui/sensitive-media";
 import { MediaPreview } from "../../ui/media-preview";
 import { useTranslation } from "react-i18next";
-import { DownloadIcon, LoaderCircleIcon, PaperclipIcon } from "lucide-react";
-import { useRef, useState } from "react";
-import { toast } from "sonner";
+import { LoaderCircleIcon, PaperclipIcon } from "lucide-react";
+import { useRef } from "react";
 
+import { useDesktopSave } from "../../../hooks/useDesktopSave";
 import { AttachmentDownloadError, downloadAttachmentWithRetry } from "../../../lib/api/attachments";
 import {
   type AttachmentMetadata,
@@ -14,7 +14,7 @@ import {
 } from "../../../lib/attachments";
 import { useAttachmentUrl, type AttachmentUrlState } from "../../../hooks/useAttachments";
 import { useLocale } from "../../i18n/LocaleProvider";
-import { Button } from "../../ui/button";
+import { DownloadProgressButton } from "../../desktop/DownloadProgressButton";
 
 export function MessageAttachments({ attachments }: { attachments: AttachmentMetadata[] }) {
   if (attachments.length === 0) {
@@ -62,6 +62,7 @@ function AttachmentPreview({ attachment }: { attachment: AttachmentMetadata }) {
     <MediaPreview
       {...attachment}
       src={state.url}
+      thumbnailSrc={state.thumbnailUrl}
       name={attachment.file_name}
       contentType={attachment.content_type}
       loading={state.status === "loading"}
@@ -149,16 +150,23 @@ function AttachmentDownloadButton({
   showLabel?: boolean;
 }) {
   const { t } = useTranslation();
-  const [downloading, setDownloading] = useState(false);
-
-  async function download() {
-    if (downloading) {
-      return;
-    }
-    setDownloading(true);
-    try {
+  const {
+    state: desktopState,
+    pending,
+    download,
+    cancel,
+  } = useDesktopSave({
+    id: attachment.id,
+    fileName: attachment.file_name,
+    source: {
+      kind: "url",
+      resolveUrl: state.getFreshUrl,
+      size: Number(attachment.file_size),
+    },
+    fallback: async () => {
       await downloadAttachmentWithRetry(state.getFreshUrl, attachment.file_name);
-    } catch (error) {
+    },
+    onFailure: (error) => {
       // 失敗の理由（URL・通信・HTTP）と状態コードを、問い合わせ時に追えるように残す。
       console.error("添付のダウンロードに失敗しました", {
         attachmentId: attachment.id,
@@ -166,35 +174,22 @@ function AttachmentDownloadButton({
         status: error instanceof AttachmentDownloadError ? error.status : null,
         error,
       });
-      toast.error(
-        t("attachments.downloadError"),
-        error instanceof AttachmentDownloadError && error.reason === "http" && error.status
-          ? { description: `HTTP ${error.status}` }
-          : undefined,
-      );
-    } finally {
-      setDownloading(false);
-    }
-  }
+    },
+  });
 
-  const label = t("attachments.download", { name: attachment.file_name });
   return (
-    <Button
-      type="button"
-      variant="ghost"
-      size={showLabel ? "sm" : "icon-sm"}
-      className={showLabel ? "shrink-0 gap-1 text-xs" : "text-muted-foreground"}
-      aria-label={label}
-      title={label}
-      disabled={downloading}
-      onClick={() => void download()}
-    >
-      {downloading ? (
-        <LoaderCircleIcon className="size-4 animate-spin" aria-hidden="true" />
-      ) : (
-        <DownloadIcon className="size-4" aria-hidden="true" />
-      )}
-      {showLabel ? t("attachments.downloadShort") : null}
-    </Button>
+    <DownloadProgressButton
+      state={desktopState}
+      pending={pending}
+      showLabel={showLabel}
+      downloadLabel={t("attachments.download", { name: attachment.file_name })}
+      downloadShortLabel={t("attachments.downloadShort")}
+      cancelLabel={t("attachments.cancelDownload", { name: attachment.file_name })}
+      cancelShortLabel={t("attachments.cancelDownloadShort")}
+      finishingLabel={t("attachments.saving")}
+      progressLabel={t("attachments.downloading")}
+      onDownload={() => void download()}
+      onCancel={cancel}
+    />
   );
 }

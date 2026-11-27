@@ -10,8 +10,8 @@ enum RevocationScopeChoice: String, Equatable, CaseIterable {
     case full
 }
 
-/// 失効の画面に出す、進み具合と一覧（`Revocation.summary` の JSON。秘密鍵を含まない）。
-struct RevocationSummary: Decodable, Equatable {
+/// 失効の画面に出す、進み具合と一覧（秘密鍵を含まない）。
+struct RevocationSummary: Equatable {
     let scope: String
     let stage: String
     let deleted_devices: [String]
@@ -27,6 +27,31 @@ struct RevocationSummary: Decodable, Equatable {
     func reached(_ stage: String) -> Bool {
         (Self.order.firstIndex(of: self.stage) ?? 0) >= (Self.order.firstIndex(of: stage) ?? 0)
     }
+}
+
+extension RevocationSummary {
+    init(_ value: ZooCrypto.RevocationSummary) {
+        let stage: String
+        switch value.stage {
+        case .prepared: stage = "prepared"
+        case .secretStorageSaved: stage = "secret_storage_saved"
+        case .crossSigningSaved: stage = "cross_signing_saved"
+        case .signaturesSaved: stage = "signatures_saved"
+        case .backupCreated: stage = "backup_created"
+        case .migrated: stage = "migrated"
+        case .verified: stage = "verified"
+        }
+        self.init(scope: value.scope == .full ? "full" : "device_only", stage: stage,
+                  deleted_devices: value.deletedDevices, resigned_users: value.resignedUsers,
+                  resigned_master_keys: value.resignedMasterKeys, versions_without_key: value.versionsWithoutKey,
+                  key_id: value.keyId, new_backup_version: value.newBackupVersion,
+                  dropped_sessions: Int(clamping: value.droppedSessions), revocation_id: value.revocationId)
+    }
+}
+
+private func rvSignature(_ signature: SignatureUpload) -> JSONValue {
+    .object(["target_user_id": .string(signature.targetUserId), "target_key_id": .string(signature.targetKeyId),
+             "signer_key_id": .string(signature.signerKeyId), "signature": .string(signature.signature)])
 }
 
 enum RevocationError: Error, Equatable {
@@ -54,7 +79,7 @@ extension APIClient: E2eeRevocationAPI {
               headers: [String: String]) async throws -> JSONValue {
         let data = try await e2ee(path, method: method, query: query, body: body, reauth: reauth, headers: headers)
         guard !data.isEmpty, let value = try? JSONDecoder().decode(JSONValue.self, from: data) else { return .null }
-        if case .object(let object) = value, object.count == 1, let inner = object["data"] { return inner }
+        if case .object(let object) = value, let inner = object["data"] { return inner }
         return value
     }
 }
@@ -75,6 +100,7 @@ final class E2eeRevocation {
     @ObservationIgnored private let setup: E2eeSetup
     @ObservationIgnored private let userID: String
     @ObservationIgnored private var revocation: Revocation?
+    @ObservationIgnored private weak var revocationStore: CryptoStore?
     @ObservationIgnored private var slots: [String] = []
     @ObservationIgnored private static let uploadBatch = 1000
     @ObservationIgnored private static let backupBatch = 1000
@@ -87,14 +113,13 @@ final class E2eeRevocation {
     }
 
     private func currentStore() throws -> CryptoStore {
-        guard let store = store() else { throw E2eeStoreError.sendNeedsUnlock }
+        guard let store = store(), store.isUsable else { throw E2eeStoreError.sendNeedsUnlock }
         return store
     }
 
     /// 保存した失効の進み具合（なければ `nil`）。
     func savedSummary() throws -> RevocationSummary? {
-        guard let text = try currentStore().revocationSummary() else { return nil }
-        return try JSONDecoder().decode(RevocationSummary.self, from: Data(text.utf8))
+        try currentStore().revocationSummary().map(RevocationSummary.init)
     }
 
     // MARK: - 始める
@@ -124,19 +149,21 @@ final class E2eeRevocation {
         targets.formUnion(store.recordedUsers())
         targets.remove(userID)
         let targetsQuery = targets.isEmpty ? JSONValue.object([:]) : try await queryKeys(Array(targets))
-        let input: JSONValue = .object([
-            "scope": .string(scope.rawValue), "keys_query": keysQuery, "versions": versions,
-            "pins": .array(pins), "targets_query": targetsQuery, "deleted_devices": .array(deletedDevices.map(JSONValue.string))
-        ])
+        let input = RevocationInput(scope: scope == .full ? .full : .deviceOnly, keysQuery: rvText(keysQuery),
+                                    versions: rvText(versions), pins: pins.map(rvText),
+                                    targetsQuery: rvText(targetsQuery), deletedDevices: deletedDevices)
         revocation = nil
         slots = []
-        revocation = try store.beginRevocation(input: rvText(input), unlocked: unlocked)
+        revocation = try store.beginRevocation(input: input, unlocked: unlocked)
+        revocationStore = store
         return try refreshSummary()
     }
 
     /// 止まった失効を、開け直した SSSS で続ける。全範囲を SSSS の保存の前に止めていたら `RevocationRestart` を投げる。
     func resume(unlocked: UnlockedSecretStorage) throws -> RevocationSummary {
-        revocation = try currentStore().resumeRevocation(unlocked: unlocked)
+        let store = try currentStore()
+        revocation = try store.resumeRevocation(unlocked: unlocked)
+        revocationStore = store
         slots = []
         return try refreshSummary()
     }
@@ -178,6 +205,7 @@ final class E2eeRevocation {
     func run(reauth: String?, progress: ((RevocationSummary) -> Void)? = nil) async throws -> RevocationSummary {
         guard let revocation else { throw RevocationError.none }
         let store = try currentStore()
+        guard revocationStore === store else { throw RevocationError.none }
         var summary = try refreshSummary()
         let id = summary.revocation_id
         func advance() throws { summary = try refreshSummary(); progress?(summary) }
@@ -207,15 +235,15 @@ final class E2eeRevocation {
         if !summary.reached("cross_signing_saved") {
             let body = revocation.crossSigningRequest()
             _ = try await guarded { try await api.call("api/e2ee/cross_signing/keys", method: "POST", query: [:], body: rvObject(body), reauth: reauth, headers: [:]) }
-            try revocation.advance(stage: "cross_signing_saved")
+            revocation.advance(stage: .crossSigningSaved)
             try store.applyRevocation(revocation, secretsRevision: secretsRevision)
             try advance()
         }
 
         if !summary.reached("signatures_saved") {
             // 今の端末への自己署名は、相手のマスター鍵への署名と分けて先に送る。
-            var signatures = try rvObject(revocation.signatures(deviceKeys: store.deviceKeysJSON()))
-            try await uploadSignatures([signatures["device"] ?? .null], reauth: reauth)
+            var signatures = try revocation.signatures(deviceKeys: store.deviceKeysJSON())
+            try await uploadSignatures([rvSignature(signatures.device)], reauth: reauth)
             // 失効を始めてから相手がマスター鍵を作り直していると、その署名はサーバーが 404 で拒む。送る前に今のマスター鍵と照合し、
             // 作り直されていたら外す。
             for attempt in 0..<3 {
@@ -225,18 +253,18 @@ final class E2eeRevocation {
                     _ = try revocation.dropStaleMasterKeys(masterKeys: rvText(current.object?["master_keys"] ?? .object([:])))
                     try store.saveRevocation(revocation)
                     try advance()
-                    signatures = try rvObject(revocation.signatures(deviceKeys: store.deviceKeysJSON()))
+                    signatures = try revocation.signatures(deviceKeys: store.deviceKeysJSON())
                 }
                 do {
-                    try await uploadSignatures(signatures["master_keys"]?.array ?? [], reauth: reauth)
+                    try await uploadSignatures(signatures.masterKeys.map(rvSignature), reauth: reauth)
                     break
                 } catch let failure as E2eeAPIError where failure.status == 404 && attempt < 2 {
                     continue
                 }
             }
-            let pins = signatures["pins"]?.array ?? []
+            let pins = try signatures.pins.map(rvValue)
             if !pins.isEmpty { try await uploadPins(pins, reauth: reauth) }
-            try revocation.advance(stage: "signatures_saved")
+            revocation.advance(stage: .signaturesSaved)
             try store.saveRevocation(revocation)
             try advance()
         }
@@ -256,17 +284,17 @@ final class E2eeRevocation {
             var proof: String??
             for old in try revocation.versionsToMigrate(versions: rvText(versions)) {
                 guard let rows = try await backupRows(old.version) else { continue }
-                let result = try revocation.reencryptRows(oldKey: old.key, rows: rvText(.array(rows)))
-                revocation.recordDropped(version: old.version, dropped: UInt32(clamping: result.dropped))
+                let result = try revocation.reencryptRows(oldKey: old.key, rows: rows.map(rvText))
+                revocation.recordDropped(version: old.version, dropped: result.dropped)
                 try store.saveRevocation(revocation)
                 if proof == nil {
-                    let target = try? await api.call("api/e2ee/key_backup/versions/\(newVersion)", method: "GET", query: [:], body: nil, reauth: nil, headers: [:])
-                    if let object = target?.object, object["upload_key"] != nil, object["upload_key"]?.string == nil { throw ZooError.invalidResponse }
-                    if let uploadKey = target?.object?["upload_key"]?.string {
+                    let target = try await api.call("api/e2ee/key_backup/versions/\(newVersion)", method: "GET", query: [:], body: nil, reauth: nil, headers: [:])
+                    if let object = target.object, object["upload_key"] != nil, object["upload_key"]?.string == nil { throw ZooError.invalidResponse }
+                    if let uploadKey = target.object?["upload_key"]?.string {
                         proof = .some(try revocation.uploadProof(uploadKey: uploadKey, userId: userID, version: newVersion))
                     } else { proof = .some(nil) }
                 }
-                let migrated = try rvValue(result.rows).array ?? []
+                let migrated = try result.rows.map(rvValue)
                 var start = 0
                 while start < migrated.count {
                     let batch = Array(migrated[start..<min(start + Self.backupBatch, migrated.count)])
@@ -283,7 +311,7 @@ final class E2eeRevocation {
                 do { _ = try await api.call("api/e2ee/key_backup/versions/\(old.version)", method: "DELETE", query: [:], body: nil, reauth: nil, headers: [:]) }
                 catch let failure as E2eeAPIError where failure.status == 404 {}
             }
-            try revocation.advance(stage: "migrated")
+            revocation.advance(stage: .migrated)
             try store.saveRevocation(revocation)
             try advance()
         }
@@ -293,11 +321,11 @@ final class E2eeRevocation {
         let own = try await ownKeysQuery()
         let current = try? await api.call("api/e2ee/key_backup/versions/current", method: "GET", query: [:], body: nil, reauth: nil, headers: [:])
         try revocation.verify(secretStorage: rvText(storage), keysQuery: rvText(own), currentVersion: rvText(current ?? .object([:])))
+        guard self.revocation === revocation, try store.revocationSummary()?.revocationId == id else { throw RevocationError.changed }
         try store.clearRevocation()
         self.revocation = nil
         slots = []
         self.summary = nil
-        _ = id
         return RevocationSummary(scope: summary.scope, stage: "verified", deleted_devices: summary.deleted_devices,
                                  resigned_users: summary.resigned_users, resigned_master_keys: summary.resigned_master_keys,
                                  versions_without_key: summary.versions_without_key, key_id: summary.key_id,
@@ -320,7 +348,7 @@ final class E2eeRevocation {
 
     private func refreshSummary() throws -> RevocationSummary {
         guard let revocation else { throw RevocationError.none }
-        let value = try JSONDecoder().decode(RevocationSummary.self, from: Data(revocation.summary().utf8))
+        let value = RevocationSummary(revocation.summary())
         summary = value
         return value
     }
@@ -351,7 +379,11 @@ final class E2eeRevocation {
         repeat {
             let page = try await api.call("api/e2ee/tofu_pins", method: "GET", query: after.map { ["after": $0] } ?? [:], body: nil, reauth: nil, headers: [:])
             pins += page.object?["pins"]?.array ?? []
-            after = page.object?["next"]?.string
+            switch page.object?["next"] {
+                case nil, .null: after = nil
+                case .string(let value): after = value
+                default: throw ZooError.invalidResponse
+                }
             if let after, !seen.insert(after).inserted { throw ZooError.invalidResponse }
         } while after != nil
         return pins
@@ -368,7 +400,11 @@ final class E2eeRevocation {
                 let page = try await api.call("api/e2ee/key_backup/keys", method: "GET", query: query, body: nil, reauth: nil, headers: [:])
                 guard let sessions = page.object?["sessions"]?.array else { throw ZooError.invalidResponse }
                 rows += sessions
-                after = page.object?["next"]?.string
+                switch page.object?["next"] {
+                case nil, .null: after = nil
+                case .string(let value): after = value
+                default: throw ZooError.invalidResponse
+                }
                 if let after, !seen.insert(after).inserted { throw ZooError.invalidResponse }
             } while after != nil
         } catch let failure as E2eeAPIError where failure.status == 404 { return nil }

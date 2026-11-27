@@ -204,8 +204,9 @@ final class AppSession {
                 workspace.e2ee = controller
                 controller.start()
             } catch {
-                // 暗号化の保存領域を作れなくても、ワークスペースは開ける。暗号化チャンネルだけが使えない（作り直すと再び試す）。
-                workspace.error = "暗号化の保存領域を初期化できませんでした。暗号化チャンネルは使えません。アプリを開き直すと再び試します。"
+                // 以前の暗号化履歴も確認できないため、平文送信へ切り替えない。
+                workspace.encryptionStorageUnavailable = true
+                workspace.error = "暗号化の保存領域を初期化できませんでした。安全を確認できるまで送信できません。アプリを開き直すと再び試します。"
             }
         }
         sync.onChannelRevoked = { [weak workspace] id, channel in workspace?.revokeChannel(id, retaining: channel) }
@@ -264,7 +265,12 @@ final class AppSession {
         // 確認の持ち主が違うときは、新しいセッションの確認状態を消さない。
         guard let target = loggingOutWorkspace, target === workspace else { return }
         // 端末の削除にはトークンが要るので、認証情報を消す前に、端末を消して暗号ストアを消す。
-        await target.e2ee?.finishLogout()
+        do { try await target.e2ee?.finishLogout() }
+        catch {
+            guard target === workspace, loggingOutWorkspace === target else { return }
+            self.error = "暗号化の保存情報を削除できませんでした。もう一度ログアウトしてください。"
+            return
+        }
         guard target === workspace, loggingOutWorkspace === target else { return }
         logoutPrompt = nil
         loggingOutWorkspace = nil

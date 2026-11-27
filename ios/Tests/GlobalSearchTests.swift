@@ -29,6 +29,64 @@ struct GlobalSearchTests {
         GlobalSearchStore(client: harness.client)
     }
 
+    @Test("会話失効は取得済みの検索結果を消し、ログアウトは検索語も消す")
+    func workspaceClearsSearchResults() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        harness.stub { _ in (200, [:], Self.page([Self.messageJSON("m1")])) }
+        let workspace = WorkspaceStore(client: harness.client,
+            user: Person(id: Self.userID, user_name: "test", display_name: "利用者"), recentEmojiDefaults: nil)
+        let search = workspace.search
+        search.text = "会議"
+        search.submit()
+        await search.inflight?.value
+        try #require(search.items.count == 1)
+        workspace.revokeChannel(Self.channelID)
+        #expect(search.items.isEmpty)
+        workspace.shutdown()
+        #expect(search.text.isEmpty && search.items.isEmpty && search.phase == .idle)
+        search.submit()
+        #expect(search.inflight == nil)
+    }
+
+    @Test("検索の期限を超えたら遅い応答で結果を戻さない")
+    func searchDeadlineIgnoresLateResponse() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let release = AsyncStream<Void>.makeStream()
+        defer { release.continuation.finish() }
+        harness.stub { _ in
+            for await _ in release.stream { break }
+            return (200, [:], Self.page([Self.messageJSON("late")]))
+        }
+        #expect(GlobalSearchStore.timeout == .seconds(20))
+        let search = GlobalSearchStore(client: harness.client, timeout: .milliseconds(20))
+        search.text = "会議"; search.submit()
+        let request = search.inflight
+        for _ in 0..<100 where search.isSearching { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(search.phase == .failed("検索できませんでした。"))
+        release.continuation.finish()
+        await request?.value
+        #expect(search.items.isEmpty)
+        #expect(search.phase == .failed("検索できませんでした。"))
+    }
+
+    @Test("検索中の認証切れをワークスペースへ伝えて結果を捨てる")
+    func searchReportsExpiredSession() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        harness.stub { _ in (401, [:], Data()) }
+        let workspace = WorkspaceStore(client: harness.client,
+            user: Person(id: Self.userID, user_name: "test", display_name: "利用者"), recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        var expired = 0
+        workspace.onExpiredSession = { expired += 1 }
+        workspace.search.text = "会議"; workspace.search.submit()
+        await workspace.search.inflight?.value
+        #expect(expired == 1)
+        #expect(workspace.search.text.isEmpty && workspace.search.items.isEmpty)
+    }
+
     @Test("メッセージとファイルを読み、authorがなくても読める")
     func decodesItems() async throws {
         let harness = try ChatHarness()

@@ -5914,10 +5914,11 @@ dependencies = [
 
 [[package]]
 name = "zoo2-desktop-tauri"
-version = "0.2.12"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "jiff",
+ "libc",
  "notify-rust",
  "reqwest 0.12.28",
  "serde",

@@ -34,7 +34,7 @@ final class FakeSetupServer: E2eeSetupAPI {
     init(userID: String) { self.userID = userID }
 
     func reset() {
-        defaultKeyID = nil; revision = 0; slots = []; keys = [:]; signatures = []; versions = []; failNext = []
+        defaultKeyID = nil; revision = 0; slots = []; keys = [:]; signatures = []; versions = []; failNext = []; backupRows = [:]
     }
 
     private func fail(_ op: String) throws { if failNext.remove(op) != nil { throw Network() } }
@@ -155,13 +155,14 @@ final class FakeSetupServer: E2eeSetupAPI {
 
     func backupKeys(version: String, after: String?) async throws -> String {
         if let backupPage { return backupPage(after) }
-        return text(.object(["sessions": .array(Array(backupRows.values)), "next": .null]))
+        return text(.object(["sessions": .array(backupRows.filter { $0.key.hasPrefix(version + "|") }.map(\.value)), "next": .null]))
     }
 
     /// 取り込みのページの応答を差し替える（不正なページと、同じカーソルの繰り返しを試す）。
     var backupPage: ((String?) -> String)?
 
     func uploadBackupKeys(version: String, secretsRevision: UInt64, body: String, proof: String?) async throws {
+        try fail("backup")
         if let backupConflict { throw E2eeAPIError(status: 409, code: backupConflict) }
         guard case .object(let last)? = versions.last, last["version"] == .string(version), secretsRevision == revision else {
             throw E2eeAPIError(status: 409, code: "E2EE_WRONG_BACKUP_VERSION")
@@ -172,7 +173,7 @@ final class FakeSetupServer: E2eeSetupAPI {
         for session in sessions {
             guard case .object(let row) = session, case .string(let channel)? = row["channel_id"],
                   case .string(let sender)? = row["sender_key"], case .string(let id)? = row["session_id"] else { continue }
-            backupRows["\(channel)|\(sender)|\(id)"] = session
+            backupRows["\(version)|\(channel)|\(sender)|\(id)"] = session
         }
     }
 
@@ -428,6 +429,21 @@ struct E2eeSetupTests {
         #expect(server.defaultKeyID == theirs.session.keyId())
     }
 
+    @Test func E2EEのリセットは既定鍵が同じでも版だけ進んでいれば保存しない() async throws {
+        let server = FakeSetupServer(userID: user)
+        let device = try Device(server)
+        defer { device.cleanUp() }
+        let start = try device.setup.begin()
+        try await device.setup.completeSetup(start.session, reauth: "t")
+        let (reset, expectation) = try await device.setup.beginReset()
+        let originalKey = server.defaultKeyID
+        server.revision += 1
+        await #expect(throws: E2eeSetupError.conflict) {
+            try await device.setup.completeReset(reset.session, expectation: expectation, reauth: "t")
+        }
+        #expect(server.defaultKeyID == originalKey)
+    }
+
     @Test func 別の端末が先に初回設定をしていたら手元の鍵を捨てる() async throws {
         let server = FakeSetupServer(userID: user)
         let first = try Device(server)
@@ -597,10 +613,25 @@ struct ReauthTests {
         return "e30.\(payload).sig"
     }
 
+    @Test func 再認証用の乱数が得られなければ失敗する() {
+        #expect(throws: (any Error).self) { try ReauthRequest.randomToken(fill: { _ in -1 }) }
+    }
+
+    @Test func 認可URLの要求パラメーター重複を拒否する() throws {
+        #expect(throws: ZooError.self) {
+            try ReauthRequest.create(authorizationEndpoint: "https://id.example/authorize?client_id=native", clientID: "native", resource: "")
+        }
+        let request = try ReauthRequest.create(authorizationEndpoint: "https://id.example/authorize?tenant=zoo", clientID: "native", resource: "")
+        #expect(URLComponents(url: request.url, resolvingAgainstBaseURL: false)?.queryItems?.contains(URLQueryItem(name: "tenant", value: "zoo")) == true)
+    }
+
     @Test func IDトークンのiss_aud_exp_nonceを確かめる() throws {
         let now = Date(timeIntervalSince1970: 1_000_000)
-        let good: [String: Any] = ["iss": "https://a/", "aud": ["x", "client-1"], "exp": 1_000_100, "nonce": "n1"]
+        let good: [String: Any] = ["iss": "https://a", "aud": ["x", "client-1"], "exp": 1_000_100, "nonce": "n1"]
         try validateIDToken(token(good), issuer: "https://a", clientID: "client-1", nonce: "n1", now: now)
+        #expect(throws: ReauthError.self) {
+            try validateIDToken(token(good), issuer: "https://a/", clientID: "client-1", nonce: "n1", now: now)
+        }
         for (change, message) in [("iss", "iss"), ("aud", "aud"), ("exp", "期限"), ("nonce", "nonce")] {
             var claims = good
             claims[change] = change == "exp" ? 1_000_000 - 61 : "bad"
@@ -611,4 +642,3 @@ struct ReauthTests {
         #expect(throws: ReauthError.self) { try validateIDToken("not-a-jwt", issuer: "i", clientID: "c", nonce: "n") }
     }
 }
-

@@ -6,6 +6,17 @@ on:
     branches: [main]
     paths:
       - "frontend/**"
+      - "!frontend/src/android-phone/engine.ts"
+      - "!frontend/src/media-preview-entry.tsx"
+      - "!frontend/media-preview.html"
+      - "!frontend/vite.media-preview.config.ts"
+      - "!frontend/vite.android-phone.config.ts"
+      - "!frontend/scripts/android-phone-smoke.mjs"
+      - "!frontend/scripts/media-preview-bundle.test.mjs"
+      - "!frontend/e2e/oidc.spec.ts"
+      - "!frontend/playwright.oidc.config.ts"
+      - "!frontend/e2e/e2ee.spec.ts"
+      - "!frontend/playwright.e2ee.config.ts"
       # frontend が link: 依存で読む E2EE の wasm（@zoo/crypto-wasm）。
       - "crates/zoo-crypto/**"
       - "crates/zoo-crypto-wasm/**"
@@ -27,6 +38,17 @@ on:
   pull_request:
     paths:
       - "frontend/**"
+      - "!frontend/src/android-phone/engine.ts"
+      - "!frontend/src/media-preview-entry.tsx"
+      - "!frontend/media-preview.html"
+      - "!frontend/vite.media-preview.config.ts"
+      - "!frontend/vite.android-phone.config.ts"
+      - "!frontend/scripts/android-phone-smoke.mjs"
+      - "!frontend/scripts/media-preview-bundle.test.mjs"
+      - "!frontend/e2e/oidc.spec.ts"
+      - "!frontend/playwright.oidc.config.ts"
+      - "!frontend/e2e/e2ee.spec.ts"
+      - "!frontend/playwright.e2ee.config.ts"
       # frontend が link: 依存で読む E2EE の wasm（@zoo/crypto-wasm）。
       - "crates/zoo-crypto/**"
       - "crates/zoo-crypto-wasm/**"
@@ -62,6 +84,8 @@ jobs:
 
   runner:
     uses: ./.github/workflows/select-runner.yaml
+    with:
+      large: true
     secrets:
       runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
 
@@ -356,7 +380,7 @@ jobs:
     needs: [runner, crypto-wasm, test-selection]
     # Native type analysis needs headroom beyond kubecamp's 2GiB limit,
     # including the runner processes. Use the shared large-job selector.
-    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"zli-k8s"') }}
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"ubuntu-latest"') }}
     defaults:
       run:
         working-directory: ./frontend
@@ -396,11 +420,15 @@ jobs:
       - name: format / lint / typecheck
         run: pnpm check
 
+      # 翻訳キーの欠落・プレースホルダ不一致・動的キーの未検査箇所を検出する。
+      - name: i18n check
+        run: pnpm check:i18n
+
   build:
     if: fromJSON(needs.test-selection.outputs.frontendBuild).build
     needs: [runner, crypto-wasm, test-selection]
     # Build concurrently with check, with enough memory for bundling.
-    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"zli-k8s"') }}
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"ubuntu-latest"') }}
     defaults:
       run:
         working-directory: ./frontend
@@ -486,10 +514,11 @@ jobs:
       fromJSON(needs.test-selection.outputs.frontend).offline ||
       fromJSON(needs.test-selection.outputs.frontend).i18n ||
       fromJSON(needs.test-selection.outputs.frontend).layout ||
-      fromJSON(needs.test-selection.outputs.frontend)['frontend-selection']
+      fromJSON(needs.test-selection.outputs.frontend)['frontend-selection'] ||
+      fromJSON(needs.test-selection.outputs.frontend).catalog
     needs: [runner, crypto-wasm, test-selection]
     # Storybook exceeds the 2GiB kubecamp limit, even with a single test page.
-    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"zli-k8s"') }}
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"ubuntu-latest"') }}
     defaults:
       run:
         working-directory: ./frontend
@@ -571,9 +600,6 @@ jobs:
         if: fromJSON(needs.test-selection.outputs.frontend)['browser']
         run: node ../.github/scripts/frontend-test-selection.mjs browser
 
-      - name: APK media viewer bundle smoke test
-        run: pnpm test:media-preview-bundle
-
       - name: vrt
         if: fromJSON(needs.test-selection.outputs.frontend)['vrt']
         run: node ../.github/scripts/frontend-test-selection.mjs vrt
@@ -583,11 +609,11 @@ jobs:
         run: node ../.github/scripts/frontend-test-selection.mjs storybook
 
       - name: build storybook
-        if: fromJSON(needs.test-selection.outputs.frontend)['storybook']
+        if: fromJSON(needs.test-selection.outputs.frontend).catalog
         run: pnpm build-storybook
 
       - name: Upload Storybook static catalog
-        if: fromJSON(needs.test-selection.outputs.frontend)['storybook']
+        if: fromJSON(needs.test-selection.outputs.frontend).catalog
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: storybook-static

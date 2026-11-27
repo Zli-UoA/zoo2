@@ -14,6 +14,7 @@ use zoo2_client_core::poll::PollGate;
 use super::e2ee_chat::{
     self, ChannelEncryption, CreateForm, CreateKind, Decryptions, RowKey, Shown,
 };
+use super::global_search::{self, GlobalSearch};
 use crate::{
     api::{ApiClient, Me, ReadState, ThreadSummary, TypingUser, stale_revision},
     e2ee::{
@@ -79,6 +80,16 @@ pub enum AppEvent {
         to: String,
     },
     ThreadLeft(String),
+    /// 全文検索の 1 ページ（`generation` が今のものと違えば捨てる）。
+    SearchResults {
+        generation: u64,
+        append: bool,
+        page: crate::api::SearchPage,
+    },
+    SearchFailed {
+        generation: u64,
+        message: String,
+    },
     ReadStatesPollFinished,
     EmojiPollFinished,
     TypingPollFinished,
@@ -91,6 +102,10 @@ pub enum AppEvent {
     },
     /// 暗号化の画面の裏の処理の結果（#360）。
     Encryption(super::encryption::EncryptionEvent),
+    /// 端末と検証の画面の裏の処理の結果（#362）。
+    Devices(super::devices::DevicesEvent),
+    /// 他のユーザーの検証の知らせ（#368）。
+    Verification(crate::e2ee::verification::VerificationEvent),
     /// 暗号化したメッセージの復号の結果（メッセージ ID、行の版、結果）と、そのときの暗号ストアの
     /// 受信用セッションの数え（#361）。
     Decrypted {
@@ -142,6 +157,8 @@ pub enum SidebarItem {
     Thread {
         channel_id: String,
         id: String,
+        /// ピン留めの行の下に出すスレッドか。通常の一覧にも同じスレッドが出るので、選択位置を区別する。
+        pinned: bool,
     },
     MoreThreads {
         archived: bool,
@@ -164,9 +181,13 @@ pub enum Mode {
     },
     /// チャンネル名で絞り込む。
     Search(String),
+    /// 全文検索（状態は `App::global_search`）。
+    GlobalSearch,
     Help,
     /// 暗号化の画面（初回設定と解錠。#360）。
     Encryption,
+    /// 端末と検証の画面（端末一覧と失効、他のユーザーの検証、鍵スロット。#362）。
+    Devices,
     /// チャンネルか DM を作る（#361）。
     Create(CreateForm),
     /// 暗号化チャンネルの配布先の詳細（#361）。`scroll` 行目から出す。
@@ -237,6 +258,8 @@ pub struct App {
     /// 選択中のメッセージがペインより長いときの、メッセージ内の表示位置。
     pub inner_scroll: usize,
     pub thread: Option<ThreadView>,
+    /// 全文検索の語と結果。閉じても残し、開き直したときに続きから使う。
+    pub global_search: GlobalSearch,
     /// 直近の描画でタイムラインに出ていた最も新しいメッセージ (チャンネル, メッセージ)。
     /// 既読はここまでしか進めない。
     pub newest_shown: Option<(String, String)>,
@@ -268,6 +291,10 @@ pub struct App {
     typing_poll: PollGate,
     /// 暗号化の画面と、その裏の処理。
     pub encryption: super::encryption::Encryption,
+    /// 端末と検証の画面と、その裏の処理（#362、#368）。
+    pub devices: super::devices::Devices,
+    /// 検証の期限切れと送り直しを最後に確かめた時刻。
+    verification_tick: Option<Instant>,
     /// 暗号化したメッセージの復号の結果（#361）。
     pub decryptions: Decryptions,
     /// 暗号化チャンネルごとの、最後に判定した配布先（送信画面に出す。#361）。
@@ -303,8 +330,11 @@ impl App {
         crate::mfm::set_emoji_catalog(HashMap::new(), HashSet::new());
         let encryption =
             super::encryption::Encryption::new(api.clone(), http.clone(), app_tx.clone());
+        let devices = super::devices::Devices::new(api.clone(), http.clone(), app_tx.clone());
         let mut app = Self {
             encryption,
+            devices,
+            verification_tick: None,
             api,
             http,
             api_base_url,
@@ -329,6 +359,7 @@ impl App {
             thread_cursors: [None, None],
             thread_has_additional_pages: [false; 2],
             thread_failed_append: [None, None],
+            global_search: GlobalSearch::default(),
             current: None,
             selected: None,
             scroll: 0,
@@ -580,6 +611,8 @@ impl App {
                 self.store.account_profiles = profiles;
             }
             AppEvent::Encryption(event) => self.encryption.on_event(event),
+            AppEvent::Devices(event) => self.devices.on_event(event),
+            AppEvent::Verification(event) => self.on_verification(event),
             AppEvent::Decrypted {
                 channel_id,
                 results,
@@ -678,6 +711,7 @@ impl App {
                     selected = Some(SidebarItem::Thread {
                         channel_id: first.channel_id.clone(),
                         id: first.id.clone(),
+                        pinned: false,
                     });
                 }
                 self.thread_has_additional_pages[scope] = append || threads.len() > 100;
@@ -743,13 +777,28 @@ impl App {
                     "スレッド一覧を取得できませんでした: {message}。一覧の再試行を選んでください"
                 ));
             }
+            AppEvent::SearchResults {
+                generation,
+                append,
+                page,
+            } => self.global_search.apply(generation, append, page),
+            AppEvent::SearchFailed {
+                generation,
+                message,
+            } => self.global_search.fail(generation, message),
             AppEvent::ThreadLeft(id) => {
+                // 退出の応答を待つあいだにカーソルを動かしていても、同じ行に残す（行が消えて添字がずれるため）。
+                let selected = self.selected_sidebar_item();
                 self.active_threads.retain(|thread| thread.id != id);
                 self.archived_threads.retain(|thread| thread.id != id);
+                self.restore_sidebar_selection(selected);
                 self.threads_requested_at = [Some(Instant::now()); 2];
                 self.refresh_threads();
             }
             AppEvent::ThreadRedirected { from, to } => {
+                // 一覧にない `from` の一時の行が消える（`to` が一覧にあれば、その行が代わりになる）と、
+                // 添字がずれるので、カーソルは同じ行に残す。
+                let selected = self.selected_sidebar_item();
                 if let Some(thread) = self.thread.as_mut().filter(|t| t.root_id == from) {
                     thread.root_id = to.clone();
                     thread.selected = None;
@@ -759,8 +808,11 @@ impl App {
                 if self.target == Target::Reply(from) {
                     self.target = Target::Reply(to);
                 }
+                self.restore_sidebar_selection(selected);
             }
             AppEvent::ThreadsChanged { reopened } => {
+                // 再Openしたスレッドの行が増えて添字がずれるので、カーソルは同じ行に残す。
+                let selected = self.selected_sidebar_item();
                 if let Some(id) = reopened {
                     self.locally_reopened_threads.insert(
                         id.clone(),
@@ -772,6 +824,7 @@ impl App {
                         .insert(id.clone(), (false, Instant::now()));
                     self.ensure_active_thread(&id);
                 }
+                self.restore_sidebar_selection(selected);
                 // 書き込み前の一覧で、確定済みの状態を上書きしない。
                 self.threads_requested_at = [Some(Instant::now()); 2];
                 self.refresh_threads();
@@ -851,11 +904,65 @@ impl App {
                 Err(_) => self.known_encrypted_unreadable = true,
             }
         }
+        let mut context = context;
+        if let Some(events) = context.events.take() {
+            self.devices.attach(
+                context.oidc.clone(),
+                context.stores.clone(),
+                Some(events.device_limit),
+            );
+            // 端末の管理のタスクが受け取った検証のメッセージを、検証の処理に渡す。
+            if let Some(sas) = self.devices.sas.clone() {
+                let mut verifications = events.verifications;
+                tokio::spawn(async move {
+                    while let Some(messages) = verifications.recv().await {
+                        sas.handle_messages(messages);
+                    }
+                });
+            }
+        } else {
+            self.devices
+                .attach(context.oidc.clone(), context.stores.clone(), None);
+        }
         self.encryption.attach(context);
+    }
+
+    /// 他のユーザーの検証の知らせ。届いた要求は前面に出す。入力の途中などでは、キー操作を奪わないよう、
+    /// ステータス行で知らせて `D` で開いてもらう。
+    fn on_verification(&mut self, event: crate::e2ee::verification::VerificationEvent) {
+        let fresh = self.devices.on_verification(event);
+        if fresh && !matches!(self.mode, Mode::Normal | Mode::Devices) {
+            self.devices.sas_open = None;
+            self.notify("検証の要求が届いています（D で開く）");
+        }
+    }
+
+    /// 暗号化チャンネル（削除されていないもの）を共有する相手（Web の `useEncryptedPeers`）。
+    pub fn encrypted_peers(&self) -> Vec<String> {
+        let me = self.me.id.as_str();
+        let mut peers: Vec<String> = self
+            .store
+            .channels()
+            .into_iter()
+            .filter(|channel| channel.encrypted && self.store.is_member(&channel.id, me))
+            .flat_map(|channel| self.store.channel_members(&channel.id))
+            .map(|user| user.id.clone())
+            .filter(|id| id != me)
+            .collect();
+        peers.sort();
+        peers.dedup();
+        peers
     }
 
     pub fn on_tick(&mut self) {
         self.encryption.on_tick(self.mode == Mode::Encryption);
+        if self
+            .verification_tick
+            .is_none_or(|at| at.elapsed() >= crate::e2ee::verification::TICK_INTERVAL)
+        {
+            self.verification_tick = Some(Instant::now());
+            self.devices.on_tick();
+        }
         self.sync_known_encrypted();
         self.request_decryptions();
         if self.terminal_active {
@@ -1075,45 +1182,65 @@ impl App {
         !archived
     }
 
+    /// チャンネルの下に出すスレッドの行。通常の一覧とピン留めで、同じスレッドを同じ並びで出す。
+    /// 参加していないチャンネルは、閲覧中の1件だけを出す。
+    fn thread_rows(&self, channel_id: &str, pinned: bool) -> Vec<SidebarItem> {
+        let joined = self
+            .store
+            .channel(channel_id)
+            .is_some_and(|channel| !channel.is_dm)
+            && self.store.is_member(channel_id, &self.me.id);
+        let row = |id: &str| SidebarItem::Thread {
+            channel_id: channel_id.to_owned(),
+            id: id.to_owned(),
+            pinned,
+        };
+        let mut rows: Vec<SidebarItem> = self
+            .threads()
+            .filter(|thread| {
+                joined
+                    && thread.channel_id == channel_id
+                    && !self.thread_is_archived(channel_id, &thread.id)
+            })
+            .map(|thread| row(&thread.id))
+            .collect();
+        if self.current.as_deref() == Some(channel_id)
+            && let Some(thread) = &self.thread
+        {
+            let selected = row(&thread.root_id);
+            if !rows.contains(&selected)
+                && self.store.message(channel_id, &thread.root_id).is_some()
+                && !self.thread_is_archived(channel_id, &thread.root_id)
+                && !self.store.replies(channel_id, &thread.root_id).is_empty()
+            {
+                rows.push(selected);
+            }
+        }
+        rows
+    }
+
     pub fn sidebar_items(&self) -> Vec<SidebarItem> {
         let mut items = Vec::new();
         // ピン留めは先頭に出す。アーカイブ中は通常の一覧だけに残す（アンアーカイブで戻る）。
+        // 通常のチャンネルには、通常の一覧と同じスレッドを下に出す（DM には出さない）。
         for pin in self.store.pinned_channels() {
             let visible = self.store.channel(&pin.channel_id).is_some_and(|channel| {
                 channel.deleted_at.is_none() && channel.archive_at.is_none()
             });
             if visible {
                 items.push(SidebarItem::Pinned(pin.channel_id.clone()));
+                let is_dm = self
+                    .store
+                    .channel(&pin.channel_id)
+                    .is_some_and(|channel| channel.is_dm);
+                if !is_dm {
+                    items.extend(self.thread_rows(&pin.channel_id, true));
+                }
             }
         }
         for channel in self.store.channels() {
             items.push(SidebarItem::Channel(channel.id.clone()));
-            let joined = !channel.is_dm && self.store.is_member(&channel.id, &self.me.id);
-            for thread in self.threads().filter(|thread| {
-                joined
-                    && thread.channel_id == channel.id
-                    && !self.thread_is_archived(&channel.id, &thread.id)
-            }) {
-                items.push(SidebarItem::Thread {
-                    channel_id: channel.id.clone(),
-                    id: thread.id.clone(),
-                });
-            }
-            if self.current.as_deref() == Some(channel.id.as_str())
-                && let Some(thread) = &self.thread
-            {
-                let selected = SidebarItem::Thread {
-                    channel_id: channel.id.clone(),
-                    id: thread.root_id.clone(),
-                };
-                if !items.contains(&selected)
-                    && self.store.message(&channel.id, &thread.root_id).is_some()
-                    && !self.thread_is_archived(&channel.id, &thread.root_id)
-                    && !self.store.replies(&channel.id, &thread.root_id).is_empty()
-                {
-                    items.push(selected);
-                }
-            }
+            items.extend(self.thread_rows(&channel.id, false));
         }
         for archived in [false, true] {
             if !archived
@@ -1124,6 +1251,11 @@ impl App {
             }
         }
         items
+    }
+
+    /// カーソルがある行。一時のスレッドの行が増減する操作の前に控えて、あとで `restore_sidebar_selection` に渡す。
+    fn selected_sidebar_item(&self) -> Option<SidebarItem> {
+        self.sidebar_items().get(self.sidebar_index).cloned()
     }
 
     fn restore_sidebar_selection(&mut self, selected: Option<SidebarItem>) {
@@ -1300,6 +1432,12 @@ impl App {
             self.should_quit = true;
             return;
         }
+        // 前面に出した他のユーザーの検証は、ほかの画面より先にキーを受け取る。
+        if matches!(self.mode, Mode::Normal | Mode::Devices) && self.devices.has_open_verification()
+        {
+            self.devices.on_verification_key(key);
+            return;
+        }
         match self.mode.clone() {
             Mode::Normal => self.on_normal_key(key),
             Mode::Insert => self.on_insert_key(key),
@@ -1326,11 +1464,21 @@ impl App {
                 self.mode = Mode::Normal;
             }
             Mode::Search(query) => self.on_search_key(key, query),
+            Mode::GlobalSearch => self.on_global_search_key(key),
             Mode::React { message_id, input } => self.on_react_key(key, message_id, input),
             Mode::Help => self.mode = Mode::Normal,
             Mode::Encryption => {
                 let user_id = self.me.id.clone();
                 if !self.encryption.on_key(key, &user_id) {
+                    self.mode = Mode::Normal;
+                }
+            }
+            Mode::Devices => {
+                // 読み直し（`r`）では、同期が進んで増えた、暗号化チャンネルを共有する相手も取り直す。
+                if key.code == KeyCode::Char('r') {
+                    self.devices.set_peers(self.encrypted_peers());
+                }
+                if !self.devices.on_key(key) {
                     self.mode = Mode::Normal;
                 }
             }
@@ -1362,6 +1510,20 @@ impl App {
                 self.mode = Mode::Encryption;
                 self.encryption.open();
             }
+            KeyCode::Char('D') => {
+                self.mode = Mode::Devices;
+                let peers = self.encrypted_peers();
+                self.devices.open(peers);
+                // 知らせただけの検証の要求があれば、前面に出す。
+                if !self.devices.has_open_verification() {
+                    self.devices.sas_open = self
+                        .devices
+                        .sas_entries
+                        .iter()
+                        .find(|(_, entry)| !entry.view.finished())
+                        .map(|(txn, _)| txn.clone());
+                }
+            }
             KeyCode::Tab => self.cycle_focus(true),
             KeyCode::BackTab => self.cycle_focus(false),
             // ピン留めの並び替えは Alt+↑↓ と [ / ]。通常の選択移動より先に判定する。
@@ -1375,6 +1537,9 @@ impl App {
             KeyCode::Char('G') | KeyCode::End => self.move_selection(isize::MAX),
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.scroll_inside(true)
+            }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.mode = Mode::GlobalSearch
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.scroll_inside(false)
@@ -1401,6 +1566,7 @@ impl App {
             KeyCode::Char('J') => self.join_or_leave(true),
             KeyCode::Char('L') => self.join_or_leave(false),
             KeyCode::Char('/') => self.mode = Mode::Search(String::new()),
+            KeyCode::Char('S') => self.mode = Mode::GlobalSearch,
             KeyCode::Char('R') => self.restore_failed_draft(),
             KeyCode::Char('u') => self.reopen_thread(),
             KeyCode::Char('c') => self.mode = Mode::Create(CreateForm::channel()),
@@ -1540,8 +1706,19 @@ impl App {
             self.encryption.on_paste(text);
             return;
         }
+        if self.mode == Mode::Devices {
+            self.devices.on_paste(text);
+            return;
+        }
         if let Mode::Create(form) = &mut self.mode {
             form.input.extend(text.chars().filter(|c| !c.is_control()));
+            return;
+        }
+        if self.mode == Mode::GlobalSearch {
+            // 検索語に足すだけ。検索は Enter で行う。
+            self.global_search
+                .query
+                .extend(text.chars().filter(|c| !c.is_control()));
             return;
         }
         if self.mode != Mode::Insert {
@@ -1551,6 +1728,131 @@ impl App {
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         if self.composer.insert_str(text) {
             self.touch_typing();
+        }
+    }
+
+    fn on_global_search_key(&mut self, key: KeyEvent) {
+        match self.global_search.on_key(key) {
+            global_search::Action::None => {}
+            global_search::Action::Close => self.mode = Mode::Normal,
+            global_search::Action::Search => self.fetch_search(false),
+            global_search::Action::More => self.fetch_search(true),
+            global_search::Action::Open => {
+                if let Some(target) = self.global_search.destination() {
+                    self.mode = Mode::Normal;
+                    self.open_search_result(target);
+                }
+            }
+        }
+    }
+
+    /// 全文検索の 1 ページを取る。古い取得の結果は番号で捨てる（取り消しはしない）。
+    fn fetch_search(&mut self, append: bool) {
+        let Some((generation, query, kind, cursor)) = self.global_search.start(append) else {
+            return;
+        };
+        // `from:@名前`・`in:#チャンネル`（複数可）・`after:`・`before:`・`with:me`・`-is:bot` を絞り込みにする
+        // （名前は同期済みの一覧で引く）。
+        let parsed = global_search::parse_modifiers(&query);
+        // 日付は端末の暦の日として、その 0 時で区切る。
+        let tz = self
+            .global_search
+            .time_zone
+            .clone()
+            .unwrap_or_else(jiff::tz::TimeZone::system);
+        let midnight = |day: Option<String>| day.map(|d| global_search::local_midnight(&d, &tz));
+        let mut filters = crate::api::SearchFilters {
+            after: midnight(parsed.after),
+            before: midnight(parsed.before),
+            exclude_bots: parsed.no_bots,
+            involving_me: parsed.with_me,
+            ..Default::default()
+        };
+        for name in &parsed.from {
+            match self
+                .store
+                .users()
+                .find(|user| user.user_name.eq_ignore_ascii_case(name))
+            {
+                Some(user) => filters.user_ids.push(user.id.clone()),
+                None => {
+                    self.global_search
+                        .fail(generation, format!("@{name} という人は見つかりません"));
+                    return;
+                }
+            }
+        }
+        for name in &parsed.channels {
+            match self
+                .store
+                .channels()
+                .into_iter()
+                .find(|channel| !channel.is_dm && channel.channel_name.eq_ignore_ascii_case(name))
+            {
+                Some(channel) => filters.channel_ids.push(channel.id.clone()),
+                None => {
+                    self.global_search.fail(
+                        generation,
+                        format!("#{name} というチャンネルは見つかりません"),
+                    );
+                    return;
+                }
+            }
+        }
+        if filters.user_ids.len() > 20 || filters.channel_ids.len() > 20 {
+            self.global_search.fail(
+                generation,
+                "from: と in: は、それぞれ 20 個まで書けます".into(),
+            );
+            return;
+        }
+        if parsed.terms.is_empty() {
+            self.global_search.fail(
+                generation,
+                "絞り込みのほかに、探す語を入れてください".into(),
+            );
+            return;
+        }
+        let terms = parsed.terms;
+        let api = self.api.clone();
+        let tx = self.app_tx.clone();
+        tokio::spawn(async move {
+            let event = match api.search(kind, &terms, &filters, cursor.as_deref()).await {
+                Ok(page) => AppEvent::SearchResults {
+                    generation,
+                    append,
+                    page,
+                },
+                Err(error) => AppEvent::SearchFailed {
+                    generation,
+                    message: format!("{error:#}"),
+                },
+            };
+            let _ = tx.send(event);
+        });
+    }
+
+    /// 検索結果のメッセージを開く。スレッドの返信ならスレッドを開いてその返信を選ぶ。
+    /// 行がまだ同期されていなくても、選択は届いた時点で効く（描画時に位置を探す）。
+    fn open_search_result(&mut self, target: global_search::Destination) {
+        self.open_channel(target.channel_id);
+        match target.parent_id {
+            Some(root_id) => {
+                self.thread = Some(ThreadView {
+                    root_id,
+                    selected: Some(target.message_id),
+                    scroll: 0,
+                    inner_scroll: 0,
+                });
+                self.focus = Focus::Thread;
+                self.poll_typing();
+            }
+            None => {
+                self.selected = Some(target.message_id);
+                // 前に選んでいたメッセージの中のスクロールを持ち越さない（`move_selection` と同じ）。
+                self.inner_scroll = 0;
+                self.focus = Focus::Messages;
+            }
         }
     }
 
@@ -1805,7 +2107,7 @@ impl App {
                         .map(|channel| self.store.channel_label(channel, &self.me.id))
                         .unwrap_or_default(),
                     SidebarItem::MoreThreads { .. } => return false,
-                    SidebarItem::Thread { channel_id, id } => self
+                    SidebarItem::Thread { channel_id, id, .. } => self
                         .thread_content(channel_id, id)
                         .unwrap_or_default()
                         .to_owned(),
@@ -1857,7 +2159,13 @@ impl App {
                 else {
                     return;
                 };
-                let mut ids = vec![thread.root_id.clone()];
+                // 親が削除されて描かれないときは、候補を描いている返信だけにする（見えない親を選ばない）。
+                let mut ids: Vec<String> = self
+                    .store
+                    .message(&channel_id, &thread.root_id)
+                    .map(|root| root.id.clone())
+                    .into_iter()
+                    .collect();
                 ids.extend(
                     self.store
                         .replies(&channel_id, &thread.root_id)
@@ -1908,23 +2216,31 @@ impl App {
         };
         if let Some(root_id) = root_id {
             self.typing_poll.wake();
+            // 一覧にないスレッドを開くと、その下に一時の行が増えるので、カーソルは同じ行に残す。
+            let selected = self.selected_sidebar_item();
             self.thread = Some(ThreadView {
                 root_id,
                 selected: None,
                 scroll: 0,
                 inner_scroll: 0,
             });
+            self.restore_sidebar_selection(selected);
             self.focus = Focus::Thread;
         }
     }
 
     fn activate_sidebar(&mut self) {
-        match self.sidebar_items().get(self.sidebar_index).cloned() {
+        match self.selected_sidebar_item() {
             Some(SidebarItem::Channel(channel_id) | SidebarItem::Pinned(channel_id)) => {
+                // カーソルは `open_channel` が、押した行に残す。
                 self.open_channel(channel_id);
                 self.focus = Focus::Messages;
             }
-            Some(SidebarItem::Thread { channel_id, id }) => {
+            Some(SidebarItem::Thread {
+                channel_id,
+                id,
+                pinned,
+            }) => {
                 self.open_channel(channel_id);
                 self.thread = Some(ThreadView {
                     root_id: id.clone(),
@@ -1932,9 +2248,11 @@ impl App {
                     scroll: 0,
                     inner_scroll: 0,
                 });
+                // 開いた行（ピン留めの下か通常の一覧か）に、カーソルを残す。
                 self.restore_sidebar_selection(Some(SidebarItem::Thread {
                     channel_id: self.current.clone().unwrap_or_default(),
                     id: id.clone(),
+                    pinned,
                 }));
                 self.focus = Focus::Thread;
                 self.poll_typing();
@@ -1948,6 +2266,9 @@ impl App {
     }
 
     pub fn open_channel(&mut self, channel_id: String) {
+        // 別チャンネルの、一覧にないスレッドを閲覧中は、一時の行（ピン留めの下を含む）が出ている。
+        // チャンネルを開くとスレッドが閉じてその行が消え、添字がずれるので、カーソルは同じ行に残す。
+        let selected = self.selected_sidebar_item();
         if self.current.as_deref() != Some(channel_id.as_str()) {
             let previous: Vec<_> = self
                 .subscriptions
@@ -1985,6 +2306,7 @@ impl App {
         self.subscribe(ShapeId::Messages(channel_id.clone()));
 
         self.current = Some(channel_id);
+        self.restore_sidebar_selection(selected);
         self.poll_typing();
     }
 
@@ -2000,7 +2322,10 @@ impl App {
     /// スレッドを閉じる。返信を書きかけていたら、送り先をチャンネルに戻す。
     fn close_thread(&mut self) {
         self.typing_poll.wake();
+        // 一覧にないスレッドを閉じると、その下の一時の行が消えるので、カーソルは同じ行に残す。
+        let selected = self.selected_sidebar_item();
         self.thread = None;
+        self.restore_sidebar_selection(selected);
         self.focus = Focus::Messages;
         if matches!(self.target, Target::Reply(_)) {
             self.target = Target::Channel;
@@ -2927,6 +3252,7 @@ mod tests {
         assert!(!app.sidebar_items().contains(&SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "root".into(),
+            pinned: false,
         }));
         let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
             .await
@@ -3154,6 +3480,7 @@ mod tests {
             oidc: None,
             stores,
             crypto_root: None,
+            events: None,
         });
         app.current = Some(CHANNEL.into());
 

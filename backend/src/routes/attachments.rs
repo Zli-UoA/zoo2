@@ -35,6 +35,8 @@ pub struct PresignAttachmentResponse {
 pub struct AttachmentUrlResponse {
     pub id: String,
     pub download_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thumbnail_url: Option<String>,
     pub file_name: String,
     pub file_size: i64,
     pub content_type: String,
@@ -409,10 +411,43 @@ async fn get_attachment_url(
     )
     .await?;
 
+    use super::home_images::{THUMBNAIL_EDGE, THUMBNAIL_MIME, stored_thumbnail_key};
+    let thumbnail = if attachment
+        .width
+        .unwrap_or_default()
+        .max(attachment.height.unwrap_or_default())
+        > THUMBNAIL_EDGE as i32
+    {
+        stored_thumbnail_key(
+            &state.s3_client,
+            &state.config.s3.bucket,
+            &attachment.storage_key,
+        )
+        .await
+    } else {
+        None
+    };
+    let thumbnail_url = if let Some(thumbnail) = thumbnail {
+        generate_presigned_get_url(
+            &state.s3_client,
+            &state.config.s3.bucket,
+            &thumbnail,
+            THUMBNAIL_MIME,
+            "thumbnail.webp",
+            Duration::from_secs(state.config.s3.presigned_get_expiry_secs),
+            state.config.s3.public_endpoint.as_deref(),
+        )
+        .await
+        .ok()
+    } else {
+        None
+    };
+
     Ok(Json(ApiResponse::new(
         AttachmentUrlResponse {
             id: attachment.id,
             download_url,
+            thumbnail_url,
             file_name: attachment.file_name,
             file_size: attachment.file_size,
             content_type: attachment.content_type,

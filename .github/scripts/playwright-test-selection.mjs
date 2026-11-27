@@ -1,7 +1,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { readChanges } from './test-selection-diff.mjs';
+import { readChanges, testBaseSha, usesSelectiveTests, workflowChanges } from './test-selection-diff.mjs';
 import { readChangedCases } from './browser-test-selection.mjs';
 
 const frontend = fileURLToPath(new URL('../../frontend/', import.meta.url));
@@ -20,10 +20,13 @@ export function playwrightArguments(suite, cases) {
 export function runPlaywright({ suite, eventName, event, git = execFileSync, run = spawnSync, compiler, log = console.log }) {
   let cases;
   const path = `frontend/e2e/${suite}.spec.ts`;
-  if (eventName === 'pull_request') {
+  if (usesSelectiveTests(eventName)) {
     try {
-      const base = event?.pull_request?.base?.sha;
-      const changes = readChanges(base, git);
+      const base = testBaseSha(eventName, event);
+      const workflow = ['oidc', 'e2ee'].includes(suite)
+        ? `ci-frontend-${suite === 'oidc' ? 'auth' : 'e2ee'}-e2e`
+        : 'ci-frontend';
+      const changes = workflowChanges(workflow, readChanges(base, git));
       if (changes.length === 1 && changes[0].status === 'M' && changes[0].path === path) {
         cases = readChangedCases(base, path, { git, compiler, requireTitle: false });
       }

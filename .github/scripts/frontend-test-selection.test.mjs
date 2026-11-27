@@ -14,8 +14,8 @@ test('source and test additions or edits select tests through imports', () => {
   }
 });
 
-test('main, merge queue and manual runs always run the complete suite', () => {
-  for (const name of ['push', 'merge_group', 'workflow_dispatch', undefined]) {
+test('push and manual runs always run the complete suite', () => {
+  for (const name of ['push', 'workflow_dispatch', undefined]) {
     assert.equal(selectTests(name, event, changes).mode, 'full');
   }
 });
@@ -92,17 +92,24 @@ test('fetch failure runs all tests, and test failures or signals remain failures
 });
 
 test('main does not fetch history and a selected test failure is not retried', () => {
-  for (const eventName of ['push', 'pull_request']) {
+  for (const [eventName, payload] of [
+    ['push', event],
+    ['pull_request', event],
+    ['merge_group', { merge_group: { base_sha: base } }],
+    ['merge_group', event],
+  ]) {
+    const selective = eventName === 'pull_request' || !!payload.merge_group;
     let runs = 0;
     const code = runTests({
-      project: 'browser', eventName, event, log() {},
+      project: 'browser', eventName, event: payload, log() {},
       git(command, args) {
-        assert.equal(eventName, 'pull_request');
+        assert.ok(selective);
+        assert.ok(args.some(arg => arg === base || arg === `${base}^{commit}`));
         return args[0] === 'diff' ? 'M\0frontend/src/lib/time.ts\0' : '';
       },
       run(command, args) {
         runs++;
-        assert.equal(args.includes('related'), eventName === 'pull_request');
+        assert.equal(args.includes('related'), selective);
         return { status: 1 };
       },
     });

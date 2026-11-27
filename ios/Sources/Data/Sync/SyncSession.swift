@@ -6,6 +6,7 @@ final class SyncSession {
     let lease: SyncLease
     private(set) var active = true
     private var revokedChannels: Set<String> = []
+    private var uncachedChannels: Set<String> = []
     private var channelVersions: [String: UUID] = [:]
     private var revocationVersion = UUID()
     private var channelRevocation: Task<Void, Error>?
@@ -74,7 +75,7 @@ final class SyncSession {
     func authorizeChannel(_ id: String, version: UUID) async throws {
         try check()
         guard channelVersion(id) == version else { throw CancellationError() }
-        guard revokedChannels.contains(id) else { return }
+        guard revokedChannels.contains(id), !uncachedChannels.contains(id) else { return }
         _ = await channelRevocation?.result
         try check()
         guard channelVersion(id) == version else { throw CancellationError() }
@@ -89,13 +90,36 @@ final class SyncSession {
                                         channelVersion expectedVersion: UUID? = nil, revocationVersion: UUID? = nil) async throws {
         try check(channelID: channelID, channelVersion: expectedVersion)
         try checkRevocationVersion(revocationVersion)
+        if let channelID, uncachedChannels.contains(channelID) { return }
         let data = try await encodeSyncValue(value)
         try check(channelID: channelID, channelVersion: expectedVersion)
         try checkRevocationVersion(revocationVersion)
+        if let channelID, uncachedChannels.contains(channelID) { return }
         try await cache.store(data, resource: key, channelID: channelID, channelVersion: expectedVersion,
                               revocationVersion: revocationVersion, lease: lease)
         try check(channelID: channelID, channelVersion: expectedVersion)
         try checkRevocationVersion(revocationVersion)
+    }
+
+    /// 暗号化への切替では平文キャッシュだけを無効にし、閲覧権限と画面の世代は維持する。
+    @discardableResult
+    func excludeFromCache(_ id: String, version: UUID) async throws -> UUID {
+        try check()
+        guard channelVersion(id) == version else { throw CancellationError() }
+        if revokedChannels.remove(id) != nil { onChannelAuthorized?(id) }
+        guard uncachedChannels.insert(id).inserted else { return revocationVersion }
+        revocationVersion = UUID()
+        let previous = channelRevocation
+        let revocationVersion = revocationVersion
+        let removal = Task { [cache, lease] in
+            _ = await previous?.result
+            try await cache.revokeChannel(id, version: version, revocationVersion: revocationVersion, lease: lease)
+        }
+        channelRevocation = removal
+        // 削除失敗時も cache 側の読取・書込禁止を保ち、暗号文の表示は続ける。
+        _ = await removal.result
+        try check(channelID: id, channelVersion: version)
+        return revocationVersion
     }
 
     @discardableResult

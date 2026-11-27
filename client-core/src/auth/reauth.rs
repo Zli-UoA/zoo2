@@ -7,6 +7,10 @@
 //! 今のセッションのトークンは変えない。受け取った ID トークンは `X-Zoo-Reauth` に入れる。
 //!
 //! PKCE の code verifier と `nonce` はメモリーにだけ置く。
+//!
+//! 同じ仕組みで、ふだんのログインも開ける（[`LoopbackReauth::start_login`]）。こちらは `max_age` を付けず、
+//! `offline_access` も外さずに、トークンの一式を受け取る（RFC 8252 の推奨どおり、ブラウザーを開ける
+//! 環境では認可コード + PKCE を第一に使い、デバイス認可グラントはブラウザーを開けない環境に残す）。
 
 use std::time::Duration;
 
@@ -18,7 +22,7 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-use super::{Discovery, TokenResult, token_request};
+use super::{Discovery, TokenResponse, TokenResult, token_request};
 use crate::config::OidcConfig;
 
 /// ループバックのリダイレクト先のパス。
@@ -47,6 +51,15 @@ pub enum ReauthError {
     InvalidIdToken(String),
 }
 
+/// 同じループバックの受け口を、何のために開いたか。完了ページの文言と、スコープ・`max_age` が変わる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Purpose {
+    /// E2EE の直前の再認証。ID トークンだけを取る。
+    Reauth,
+    /// ふだんのログイン。トークンの一式を取る。
+    Login,
+}
+
 /// 待ち受けを始めた再認証。[`LoopbackReauth::url`] をブラウザーで開いてもらい、
 /// [`LoopbackReauth::finish`] で ID トークンを受け取る。
 pub struct LoopbackReauth {
@@ -56,6 +69,7 @@ pub struct LoopbackReauth {
     state: String,
     nonce: String,
     verifier: String,
+    purpose: Purpose,
 }
 
 impl std::fmt::Debug for LoopbackReauth {
@@ -93,9 +107,32 @@ fn reauth_scope(scope: &str) -> String {
     scopes.join(" ")
 }
 
+/// ログインでは `offline_access` も含めて要求する。ID トークンには `openid` が要る。
+fn login_scope(scope: &str) -> String {
+    let mut scopes: Vec<&str> = scope.split_whitespace().collect();
+    if !scopes.contains(&"openid") {
+        scopes.insert(0, "openid");
+    }
+    scopes.join(" ")
+}
+
 impl LoopbackReauth {
     /// `127.0.0.1` の空いているポートで待ち受けを始め、認可リクエストの URL を作る。
     pub async fn start(discovery: &Discovery, oidc: &OidcConfig) -> Result<Self> {
+        Self::start_with(discovery, oidc, Purpose::Reauth).await
+    }
+
+    /// ふだんのログインの認可リクエストを作る。`oidc.scope`（`offline_access` を含む）をそのまま要求し、
+    /// 既存の AuthZ のセッションがあればそれを使う（`max_age` は付けない）。
+    pub async fn start_login(discovery: &Discovery, oidc: &OidcConfig) -> Result<Self> {
+        Self::start_with(discovery, oidc, Purpose::Login).await
+    }
+
+    async fn start_with(
+        discovery: &Discovery,
+        oidc: &OidcConfig,
+        purpose: Purpose,
+    ) -> Result<Self> {
         let endpoint = discovery
             .authorization_endpoint
             .as_deref()
@@ -115,7 +152,13 @@ impl LoopbackReauth {
                 .append_pair("response_type", "code")
                 .append_pair("client_id", &oidc.client_id)
                 .append_pair("redirect_uri", &redirect_uri)
-                .append_pair("scope", &reauth_scope(&oidc.scope));
+                .append_pair(
+                    "scope",
+                    &match purpose {
+                        Purpose::Reauth => reauth_scope(&oidc.scope),
+                        Purpose::Login => login_scope(&oidc.scope),
+                    },
+                );
             if let Some(resource) = &oidc.resource {
                 query.append_pair("resource", resource);
             }
@@ -123,9 +166,11 @@ impl LoopbackReauth {
                 .append_pair("state", &state)
                 .append_pair("nonce", &nonce)
                 .append_pair("code_challenge", &code_challenge(&verifier))
-                .append_pair("code_challenge_method", "S256")
+                .append_pair("code_challenge_method", "S256");
+            if purpose == Purpose::Reauth {
                 // 既存の AuthZ のセッションがあっても、必ずログインし直させる。
-                .append_pair("max_age", "0");
+                query.append_pair("max_age", "0");
+            }
         }
         Ok(Self {
             listener,
@@ -134,6 +179,7 @@ impl LoopbackReauth {
             state,
             nonce,
             verifier,
+            purpose,
         })
     }
 
@@ -201,12 +247,61 @@ impl LoopbackReauth {
         Ok(id_token)
     }
 
+    /// [`LoopbackReauth::start_login`] で始めたログインの、認可コードを受け取り、トークンの一式に換える。
+    /// 待つのは `timeout` まで。ID トークンの iss、aud、exp、nonce を確かめてから返す。
+    pub async fn finish_login(
+        self,
+        http: &reqwest::Client,
+        discovery: &Discovery,
+        oidc: &OidcConfig,
+        timeout: Duration,
+    ) -> Result<TokenResponse> {
+        debug_assert_eq!(self.purpose, Purpose::Login);
+        let code = tokio::time::timeout(timeout, self.receive_code())
+            .await
+            .map_err(|_| ReauthError::Timeout)??;
+        let form = vec![
+            ("grant_type", "authorization_code".to_owned()),
+            ("code", code),
+            ("redirect_uri", self.redirect_uri.clone()),
+            ("code_verifier", self.verifier.clone()),
+        ];
+        let response = tokio::time::timeout(
+            REAUTH_HTTP_TIMEOUT,
+            token_request(http, discovery, oidc, form),
+        )
+        .await
+        .map_err(|_| ReauthError::Timeout)??;
+        let tokens = match response {
+            TokenResult::Ok(tokens) => tokens,
+            TokenResult::Err { error, description } => {
+                return Err(ReauthError::Denied(format!(
+                    "{error}{}",
+                    description.map(|d| format!(" ({d})")).unwrap_or_default()
+                ))
+                .into());
+            }
+        };
+        let id_token = tokens
+            .id_token
+            .as_deref()
+            .ok_or_else(|| ReauthError::InvalidIdToken("id_token がありません".into()))?;
+        validate_id_token(
+            id_token,
+            &discovery.issuer,
+            &oidc.client_id,
+            &self.nonce,
+            crate::auth::token::now(),
+        )?;
+        Ok(tokens)
+    }
+
     /// 自分の `state` のリダイレクトが来るまで接続を受ける。ほかの要求（favicon など）や、
     /// `state` が違う要求には答えるだけで、待ち続ける。
     async fn receive_code(&self) -> Result<String> {
         loop {
             let (stream, _) = self.listener.accept().await?;
-            match handle_connection(stream, &self.state).await {
+            match handle_connection(stream, &self.state, self.purpose).await {
                 Ok(Some(Callback::Code(code))) => return Ok(code),
                 Ok(Some(Callback::Error(error))) => return Err(ReauthError::Denied(error).into()),
                 // 読めない接続は捨てて待ち続ける。
@@ -227,7 +322,20 @@ const DONE_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>zoo2</tit
 const ERROR_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>zoo2</title>\
 <p>再認証できませんでした。zoo2 のアプリに戻って、表示を確かめてください。</p>";
 
-async fn handle_connection(mut stream: TcpStream, state: &str) -> Result<Option<Callback>> {
+const LOGIN_DONE_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>zoo2</title>\
+<p>ログインが終わりました。このタブを閉じて、zoo2 のアプリに戻ってください。</p>";
+const LOGIN_ERROR_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>zoo2</title>\
+<p>ログインできませんでした。zoo2 のアプリに戻って、表示を確かめてください。</p>";
+
+async fn handle_connection(
+    mut stream: TcpStream,
+    state: &str,
+    purpose: Purpose,
+) -> Result<Option<Callback>> {
+    let (done_page, error_page) = match purpose {
+        Purpose::Reauth => (DONE_PAGE, ERROR_PAGE),
+        Purpose::Login => (LOGIN_DONE_PAGE, LOGIN_ERROR_PAGE),
+    };
     let target = tokio::time::timeout(READ_TIMEOUT, read_request_target(&mut stream))
         .await
         .map_err(|_| anyhow!("要求を読めません"))??;
@@ -242,11 +350,11 @@ async fn handle_connection(mut stream: TcpStream, state: &str) -> Result<Option<
             .map(|(_, value)| value.into_owned())
     };
     if param("state").as_deref() != Some(state) {
-        respond(&mut stream, "400 Bad Request", ERROR_PAGE).await;
+        respond(&mut stream, "400 Bad Request", error_page).await;
         return Ok(None);
     }
     if let Some(error) = param("error") {
-        respond(&mut stream, "200 OK", ERROR_PAGE).await;
+        respond(&mut stream, "200 OK", error_page).await;
         let description = param("error_description")
             .map(|d| format!(" ({d})"))
             .unwrap_or_default();
@@ -254,11 +362,11 @@ async fn handle_connection(mut stream: TcpStream, state: &str) -> Result<Option<
     }
     match param("code").filter(|code| !code.is_empty()) {
         Some(code) => {
-            respond(&mut stream, "200 OK", DONE_PAGE).await;
+            respond(&mut stream, "200 OK", done_page).await;
             Ok(Some(Callback::Code(code)))
         }
         None => {
-            respond(&mut stream, "200 OK", ERROR_PAGE).await;
+            respond(&mut stream, "200 OK", error_page).await;
             Ok(Some(Callback::Error("認可コードがありません".into())))
         }
     }
@@ -487,6 +595,102 @@ mod tests {
             .unwrap();
         browser.await.unwrap();
         assert_eq!(received, token);
+    }
+
+    #[test]
+    fn login_scope_keeps_offline_access_and_adds_openid() {
+        assert_eq!(
+            login_scope("openid profile offline_access"),
+            "openid profile offline_access"
+        );
+        assert_eq!(login_scope("profile"), "openid profile");
+    }
+
+    #[tokio::test]
+    async fn login_requests_offline_access_without_max_age_and_returns_the_tokens() {
+        let server = MockServer::start().await;
+        let login = LoopbackReauth::start_login(&discovery(&server), &oidc())
+            .await
+            .unwrap();
+        let url = login.url().to_owned();
+        assert_eq!(query(&url, "scope"), "openid profile offline_access");
+        assert_eq!(query(&url, "code_challenge_method"), "S256");
+        assert_eq!(query(&url, "resource"), "https://zli.chat");
+        assert!(!url.contains("max_age"), "ログインでは再認証を強いない");
+        let nonce = query(&url, "nonce");
+        let state = query(&url, "state");
+        let token = id_token(json!({
+            "iss": ISSUER, "aud": "zoo2-tui", "exp": crate::auth::token::now() + 300, "nonce": nonce,
+        }));
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .and(body_string_contains("grant_type=authorization_code"))
+            .and(body_string_contains("code=the-code"))
+            .and(body_string_contains("code_verifier="))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "at", "token_type": "Bearer", "expires_in": 300,
+                "refresh_token": "rt", "id_token": token,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let redirect = login.redirect_uri().to_owned();
+        let browser = tokio::spawn(async move {
+            let ok = reqwest::get(format!("{redirect}?code=the-code&state={state}"))
+                .await
+                .unwrap();
+            assert_eq!(ok.status(), 200);
+            assert!(ok.text().await.unwrap().contains("ログインが終わりました"));
+        });
+        let tokens = login
+            .finish_login(
+                &reqwest::Client::new(),
+                &discovery(&server),
+                &oidc(),
+                Duration::from_secs(10),
+            )
+            .await
+            .unwrap();
+        browser.await.unwrap();
+        assert_eq!(tokens.access_token, "at");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("rt"));
+    }
+
+    #[tokio::test]
+    async fn login_rejects_an_id_token_with_a_different_nonce() {
+        let server = MockServer::start().await;
+        let login = LoopbackReauth::start_login(&discovery(&server), &oidc())
+            .await
+            .unwrap();
+        let state = query(login.url(), "state");
+        let token = id_token(json!({
+            "iss": ISSUER, "aud": "zoo2-tui", "exp": crate::auth::token::now() + 300, "nonce": "other",
+        }));
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "at", "token_type": "Bearer", "id_token": token,
+            })))
+            .mount(&server)
+            .await;
+        let redirect = login.redirect_uri().to_owned();
+        tokio::spawn(async move {
+            let _ = reqwest::get(format!("{redirect}?code=c&state={state}")).await;
+        });
+        let err = login
+            .finish_login(
+                &reqwest::Client::new(),
+                &discovery(&server),
+                &oidc(),
+                Duration::from_secs(10),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<ReauthError>(),
+            Some(ReauthError::InvalidIdToken(_))
+        ));
     }
 
     #[tokio::test]

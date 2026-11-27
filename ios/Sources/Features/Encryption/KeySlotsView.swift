@@ -6,7 +6,7 @@ struct KeySlotsView: View {
     let e2ee: E2eeController
     let slots: E2eeKeySlots
 
-    private enum Step: Equatable { case none, unlock(Action), newRecoveryKey(String) }
+    private enum Step: Equatable { case none, unlock(Action), newRecoveryKey(E2eeKeySlots.PreparedRecovery) }
     private enum Action: Equatable { case addPasskey, regenerateRecovery }
 
     @State private var step = Step.none
@@ -52,11 +52,12 @@ struct KeySlotsView: View {
                     }
                     .disabled(recoveryInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
-            case .newRecoveryKey(let key):
+            case .newRecoveryKey(let prepared):
                 Section("新しいリカバリーキー") {
-                    Text(EncryptionSetupView.grouped(key)).font(.system(.body, design: .monospaced)).textSelection(.enabled)
-                    Text("古いリカバリーキーは使えなくなりました。この画面を閉じると、新しいキーはもう表示されません。安全な場所に控えてください。").font(.footnote).foregroundStyle(.secondary)
-                    Button("控えました") { step = .none }
+                    Text(EncryptionSetupView.grouped(prepared.display)).font(.system(.body, design: .monospaced)).textSelection(.enabled)
+                    Text("新しいキーを安全な場所に控えてください。「控えたキーに切り替える」を押すと、古いリカバリーキーは使えなくなります。").font(.footnote).foregroundStyle(.secondary)
+                    Button("控えたキーに切り替える") { Task { await saveRecovery(prepared) } }
+                    Button("キャンセル", role: .cancel) { step = .none }
                 }
             }
         }
@@ -87,10 +88,23 @@ struct KeySlotsView: View {
                                            label: passkeyLabel.isEmpty ? nil : passkeyLabel, reauth: { try await e2ee.reauthenticate() })
                 step = .none
             case .regenerateRecovery:
-                step = .newRecoveryKey(try await slots.regenerateRecovery(unlocked: unlocked, reauth: { try await e2ee.reauthenticate() }))
+                step = .newRecoveryKey(try slots.prepareRecovery(unlocked: unlocked))
             }
             recoveryInput = ""
             passkeyLabel = ""
+        } catch {
+            self.error = describe(error)
+        }
+    }
+
+    private func saveRecovery(_ prepared: E2eeKeySlots.PreparedRecovery) async {
+        busy = true
+        error = nil
+        defer { busy = false }
+        do {
+            try await slots.saveRecovery(prepared, reauth: { try await e2ee.reauthenticate() })
+            step = .none
+            await reload()
         } catch {
             self.error = describe(error)
         }
