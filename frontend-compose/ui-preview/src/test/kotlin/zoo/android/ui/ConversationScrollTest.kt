@@ -38,6 +38,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import zoo.CompletionOption
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35], qualifiers = "ja-rJP-w360dp-h760dp-xhdpi")
@@ -47,6 +48,21 @@ class ConversationScrollTest {
 
     private val entries = (1..40).map { TimelineItem("e$it", "はる", "メッセージ $it", "12:00") }
     private val channel = AndroidScreen.Conversation("dev", "開発", "", entries, InputState())
+
+    @Test
+    fun mentionSuggestionShowsTheDisplayNameAndSelectsTheUsername() {
+        var chosen: String? = null
+        ui.setContent {
+            ConversationInput(
+                InputState("@ali", mentions = listOf(CompletionOption("alice", "アリス")), focusRequest = 1),
+                AndroidColors(false), textChanged = {}, onTool = {}, onMention = { chosen = it },
+            )
+        }
+
+        ui.onNodeWithText("アリス").assertIsDisplayed()
+        ui.onNodeWithText("@alice").assertIsSelected().performClick()
+        ui.runOnIdle { assertEquals("alice", chosen) }
+    }
 
     @Test
     fun reopeningAChannelShowsTheUnreadDividerAndReportsReadOnlyInTheForeground() {

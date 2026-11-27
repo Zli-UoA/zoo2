@@ -7,6 +7,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import zoo.obj
 
 class EntryTextTest {
     @Test
@@ -54,5 +55,18 @@ class EntryTextTest {
         assertEquals("Guide と https://example.test/raw", text.text)
         assertTrue(text.getLinkAnnotations(0, text.length).isEmpty())
         assertTrue(text.spanStyles.any { it.item.fontWeight == AndroidWeights.emphasis && it.start == 0 && it.end == 5 })
+    }
+
+    @Test
+    fun encryptedBodyDecoratesOnlyListedMentionsAndKeepsPunctuationOutside() {
+        val style = SpanStyle(background = Color.Yellow)
+        val result = formatEntry(
+            "@alice. @bob @HERE", mentionStyle = style, allowedMentions = setOf("alice", "here"),
+            mentionProfiles = mapOf("alice" to obj("display_name" to "Alice")),
+        )
+
+        assertEquals("@ Alice. @bob @HERE", result.text)
+        assertEquals(listOf("@ Alice", "@HERE"), result.spanStyles.filter { it.item == style }
+            .map { result.text.substring(it.start, it.end) })
     }
 }

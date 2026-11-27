@@ -86,9 +86,9 @@ private class EntryFormat(
 
 internal fun formatEntry(
     body: String, emoji: Set<String> = emptySet(), highlight: EntryHighlight? = null, links: Boolean = true,
-    channelLink: ((url: String, bare: Boolean) -> EntryChannelLink?)? = null,
     mentionStyle: SpanStyle? = null, allowedMentions: Set<String>? = null,
     mentionProfiles: Map<String, Row> = emptyMap(),
+    channelLink: ((url: String, bare: Boolean) -> EntryChannelLink?)? = null,
 ) = buildAnnotatedString {
     val format = EntryFormat(emoji, highlight?.takeIf { it.terms.isNotEmpty() }, links, channelLink, mentionStyle, allowedMentions, mentionProfiles)
     messageHeadingBlocks(body).forEachIndexed { index, block ->
@@ -332,7 +332,8 @@ internal fun EntryBody(
     val formatted = remember(body, emoji, highlight, links, channelLinks, mentionColors, allowedMentions, mentionProfiles) {
         val lookup: ((String, Boolean) -> EntryChannelLink?)? =
             channelLinks?.let { found -> { url: String, _: Boolean -> found[url] } }
-        formatEntry(body, emoji.keys, highlight, links, lookup, mentionColors?.mentionStyle(), allowedMentions, mentionProfiles)
+        formatEntry(body, emoji.keys, highlight, links, mentionColors?.mentionStyle(),
+            allowedMentions, mentionProfiles, channelLink = lookup)
     }
     val codes = remember(formatted) {
         entryEmojiCodes(formatted)
