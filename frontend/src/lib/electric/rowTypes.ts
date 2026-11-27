@@ -41,10 +41,8 @@ export function asTableRow<K extends TableName>(row: Record<string, unknown>): T
  * メッセージ行の暗号文 (Electric 行型の `MegolmCiphertext`) を wasm 側の `JsonObject` へ渡す。
  *
  * `@zoo/crypto-wasm` が wasm-bindgen 0.2.129 で生成する JSON 型は構造が近いのに代入できない。
- * live query の select 結果に含まれる値をそのまま渡すだけなので、復号対象の暗号文は変わらない。
+ * 暗号文がある行だけを呼び出し元で選別して渡す。値をそのまま渡すだけなので、復号対象の暗号文は変わらない。
  */
-export function asWasmCiphertext(
-  value: MegolmCiphertext | null | undefined,
-): EncryptedMessage["ciphertext"] {
+export function asWasmCiphertext(value: MegolmCiphertext): EncryptedMessage["ciphertext"] {
   return value as unknown as EncryptedMessage["ciphertext"];
 }

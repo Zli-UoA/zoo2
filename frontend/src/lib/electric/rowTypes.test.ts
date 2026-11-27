@@ -3,7 +3,7 @@ import { describe, expect, expectTypeOf, it } from "vite-plus/test";
 
 import { asElectricOptions, asPersistedOptions, asTableRow, asWasmCiphertext } from "./rowTypes";
 import { coerceElectricRow } from "./schema";
-import type { MessageRow, TableRowMap } from "./types";
+import type { MegolmCiphertext, MessageRow, TableRowMap } from "./types";
 
 describe("Electric 境界の型アダプタ", () => {
   it("生行をアプリの行型へ戻しても参照と値は変わらない", () => {
@@ -18,16 +18,15 @@ describe("Electric 境界の型アダプタ", () => {
   });
 
   it("値の正規化は coerceElectricRow が行い、アダプタは型だけを合わせる", () => {
-    const row = asTableRow<"messages">(
-      coerceElectricRow("messages", {
-        id: "message-1",
-        created_at: "2026-11-27 00:00:00.000",
-        revision: "2",
-        apub: "false",
-      }),
-    );
+    const row = coerceElectricRow("messages", {
+      id: "message-1",
+      created_at: "2026-11-27 00:00:00.000",
+      revision: "2",
+      apub: "false",
+    });
 
     expectTypeOf(row).toEqualTypeOf<TableRowMap["messages"]>();
+    expectTypeOf(row).not.toBeAny();
     expect(row.revision).toBe(2);
     expect(row.apub).toBe(false);
     expect(row.created_at).toBe("2026-11-27 00:00:00.000");
@@ -65,7 +64,8 @@ describe("Electric 境界の型アダプタ", () => {
     const wasm = asWasmCiphertext(ciphertext);
 
     expectTypeOf(wasm).toEqualTypeOf<EncryptedMessage["ciphertext"]>();
+    // null / undefined は暗号文ではない。引数型で弾けることを型チェックで固定する。
+    expectTypeOf(asWasmCiphertext).parameter(0).toEqualTypeOf<MegolmCiphertext>();
     expect(wasm).toBe(ciphertext);
-    expect(asWasmCiphertext(null)).toBeNull();
   });
 });
