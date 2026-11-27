@@ -323,9 +323,33 @@ async fn store_original(
             RETURNING '{}'::text
         "#, &[object, &author, &content, visibility, &published, &updated, &emojis, &media_json, &quote, parent]).await?;
         if !saved.is_empty() {
-            // A canonical public response wins against a private snapshot with the same timestamp.
-            toasty::sql::statement("UPDATE apub_quote_originals SET superseded=true,superseded_by_public=true WHERE id=$1 AND actor_id=$2 AND updated_at<=$3::timestamptz AND NOT superseded_by_public")
-                .bind(object).bind(author.as_str()).bind(updated.as_str()).exec(&mut tx).await?;
+            // The origin also establishes ownership of this id. Replace any
+            // conflicting observation without scanning its grants.
+            toasty::sql::statement(
+                r#"
+                UPDATE apub_quote_originals q
+                SET actor_id=$2, content=$3, published=$4::timestamptz, updated_at=$5::timestamptz,
+                    parent_id=NULLIF($6,''), emojis=$7::jsonb, media=$8::jsonb,
+                    superseded=true, superseded_by_public=true, revision=q.revision+1,
+                    observed_audience=CASE WHEN q.actor_id=$2 AND q.updated_at=$5::timestamptz
+                      THEN q.observed_audience END
+                WHERE q.id=$1 AND (q.actor_id<>$2 OR (
+                  q.updated_at<=$5::timestamptz AND (
+                    NOT q.superseded_by_public OR q.updated_at<$5::timestamptz
+                  )
+                ))
+            "#,
+            )
+            .bind(object)
+            .bind(author.as_str())
+            .bind(content.as_str())
+            .bind(published.as_str())
+            .bind(updated.as_str())
+            .bind(parent)
+            .bind(emojis.as_str())
+            .bind(media_json.as_str())
+            .exec(&mut tx)
+            .await?;
             emoji::queue_media_blurhash(&mut tx, object, &media).await?;
         }
     }

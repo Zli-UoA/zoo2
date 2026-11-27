@@ -629,7 +629,58 @@ mod tests {
         assert!(known_original(&mut tx, &user, &conflicting_id).await?);
         drop(tx);
 
+        let conflicting_public_id = format!("{author}/notes/conflicting-public-observation");
+        toasty::sql::statement("INSERT INTO apub_quote_originals(id,actor_id,content,published,updated_at,emojis,media,superseded,observed_audience) VALUES($1,$2,'Unverified observation','2026-01-01','2026-01-03','[]','[]',true,'direct')")
+            .bind(conflicting_public_id.as_str()).bind(conflicting_actor.as_str()).exec(&mut db).await?;
+        let mut canonical_public = note.clone();
+        canonical_public["id"] = json!(conflicting_public_id);
+        canonical_public["to"] = json!([PUBLIC]);
+        reposts::store_public_note(&state, &user, &conflicting_public_id, &canonical_public)
+            .await?;
+        toasty::sql::statement("UPDATE apub_remote_posts SET quote_uri=$2 WHERE id=$1")
+            .bind(quote_id.as_str())
+            .bind(conflicting_public_id.as_str())
+            .exec(&mut db)
+            .await?;
+        let mut tx = db.transaction().await?;
+        assert!(
+            reposts::remote_repost_target(&mut tx, &conflicting_public_id, true)
+                .await?
+                .is_some()
+        );
+        decorate(&mut tx, &other, &mut rows).await?;
+        assert_eq!(
+            rows[0]["quote"]["post"]["content"],
+            canonical_public["content"]
+        );
+        drop(tx);
+        canonical_public["to"] = json!([followers]);
+        let restrict = json!({"id":format!("{author}/restrict-conflicting-public"),"type":"Update","actor":author,"object":canonical_public});
+        inbox::receive_verified(&state, &other, &actor, &restrict).await?;
+        let mut tx = db.transaction().await?;
+        assert!(
+            reposts::remote_repost_target(&mut tx, &conflicting_public_id, false)
+                .await?
+                .is_none()
+        );
+        assert!(
+            reposts::remote_repost_target(&mut tx, &conflicting_public_id, true)
+                .await?
+                .is_none()
+        );
+        decorate(&mut tx, &other, &mut rows).await?;
+        assert!(rows[0]["quote"]["post"].is_null());
+        drop(tx);
+
         for (sql, key) in [
+            (
+                "DELETE FROM apub_quote_originals WHERE id=$1",
+                &conflicting_public_id,
+            ),
+            (
+                "DELETE FROM apub_remote_posts WHERE id=$1",
+                &conflicting_public_id,
+            ),
             (
                 "DELETE FROM apub_quote_originals WHERE id=$1",
                 &conflicting_id,
