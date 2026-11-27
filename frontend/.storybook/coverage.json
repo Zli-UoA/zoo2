@@ -1905,6 +1905,11 @@
       "file": "src/components/chat/messages/ForwardMessageDialog.tsx",
       "story": "src/components/chat/messages/ForwardMessageDialog.stories.tsx",
       "checks": ["src/components/chat/messages/ForwardMessageDialog.browser.test.tsx"]
+    },
+    {
+      "file": "src/components/chat/AppDialogHost.tsx",
+      "reason": "ダイアログを開く要求を保持する制御層。表示はAppsDialogのStory、イベント購読はブラウザーテストで確認する。",
+      "checks": ["src/components/chat/AppsDialog.browser.test.tsx"]
     }
   ]
 }

@@ -1,27 +1,8 @@
 import { chromium } from "@playwright/test";
 
 const BASE = process.env.BENCH_BASE_URL ?? "http://127.0.0.1:4173";
-const U1 = "00000000-0000-0000-0000-000000000001";
-const U2 = "00000000-0000-0000-0000-000000000002";
 const RUNS = Number(process.argv[2] ?? 5);
 const LABEL = process.argv[3] ?? "run";
-
-let compactUsers = null;
-async function compactBody(route) {
-  const res = await route.fetch();
-  if (compactUsers === null) {
-    const rows = await res.json();
-    compactUsers = JSON.stringify(
-      rows.filter((row) => row.key?.includes(U1) || row.key?.includes(U2)),
-    );
-    console.error("users rows kept:", JSON.parse(compactUsers).length);
-  }
-  return route.fulfill({
-    response: res,
-    body: compactUsers,
-    headers: { ...res.headers(), "content-length": String(Buffer.byteLength(compactUsers)) },
-  });
-}
 
 const browser = await chromium.launch({ headless: true });
 const results = [];

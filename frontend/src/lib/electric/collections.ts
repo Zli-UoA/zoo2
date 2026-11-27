@@ -139,7 +139,8 @@ function usersCollection(config: AppConfig, persistence?: PersistedCollectionPer
   const collection = createCollection(
     withPersistence(
       electricCollectionOptions<UserRow>({
-        id: "users",
+        // 旧版の全件コレクションの ID は全件用へ引き継ぐため、共有用には新しい ID を使う。
+        id: "sharedUsers",
         getKey: (row) => row.id,
         defaultIndexType: BasicIndex,
         shapeOptions: shapeOptions("users", config),
@@ -165,7 +166,8 @@ function allUsersCollection(
   return createCollection(
     withPersistence(
       electricCollectionOptions<UserRow>({
-        id: "allUsers",
+        // 旧版が全件 Shape を保存していた ID をそのまま使い、更新後の再ダウンロードを避ける。
+        id: "users",
         getKey: (row) => row.id,
         defaultIndexType: BasicIndex,
         shapeOptions: shapeOptions("allUsers", config),
