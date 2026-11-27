@@ -114,6 +114,10 @@ class TimelineImageSourcesTest {
         assertTrue(messageExcerptNeedsWorkspaceEmoji(":**猫**:ok:", setOf(":ok:")))
         assertTrue(messageExcerptNeedsWorkspaceEmoji(":猫\\*:", emptySet()))
         assertFalse(messageExcerptNeedsWorkspaceEmoji("あ".repeat(201) + formattedAlias, emptySet()))
+        assertTrue(messageExcerptNeedsWorkspaceEmoji("\$[ruby 星 " + "あ".repeat(201) + ":猫:ねこ]", emptySet()))
+        assertTrue(messageExcerptNeedsWorkspaceEmoji("\$[ruby :猫:ok:ねこ]", setOf(":ok:")))
+        assertTrue(messageExcerptNeedsWorkspaceEmoji("\\*".repeat(101) + formattedAlias, emptySet()))
+        assertFalse(messageExcerptNeedsWorkspaceEmoji("あ".repeat(200) + formattedAlias, emptySet()))
         assertFalse(messageExcerptNeedsWorkspaceEmoji(":unknown:", emptySet()))
     }
 

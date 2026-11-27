@@ -51,7 +51,7 @@ private class ExcerptEmojiProbe(private val known: Set<String>) {
 
     fun inspect(
         source: String, slices: List<InlineSlice>, first: Int, match: MatchResult,
-        prefix: CharSequence, ruby: Boolean = false, rubyPrefix: CharSequence = "",
+        prefix: CharSequence, ruby: Boolean = false,
     ) {
         if (needsCatalog || match.value in known || !isWorkspaceEmojiCandidate(match.value)) return
         val start = match.range.first
@@ -81,35 +81,41 @@ private class ExcerptEmojiProbe(private val known: Set<String>) {
                 }
             }
         }
-        // An already preserved ASCII shortcode sharing a colon with a known image need not be loaded.
-        if (!changesText && (!ruby || startsBeforeKnown)) return
-        val plainPrefix = source.subSequence(initial.start, start)
-        needsCatalog = excerptHasRoom(prefix, rubyPrefix, plainPrefix)
+        // In a time such as 12:30:猫:, an existing image owns the last colon of the time.
+        val sharesTimeSeparator = startsBeforeKnown && source.getOrNull(start - 1)?.isDigit() == true &&
+            (start + 1 until end - 1).all { source[it].isDigit() }
+        if (!changesText && (!ruby || sharesTimeSeparator)) return
+        // Recognizing an alias can move the ruby boundary back into the displayed prefix.
+        val plainPrefix = if (ruby) "" else source.subSequence(initial.start, start)
+        needsCatalog = excerptHasRoom(prefix, plainPrefix, includeEllipsisChange = ruby)
     }
 
     fun inspectRuby(source: String, slices: List<InlineSlice>, output: CharSequence) {
         val matches = candidates(source)
         var match = matches.nextOrNull()
-        val prefix = StringBuilder()
         for ((index, slice) in slices.withIndex()) {
             while (match != null && match.range.first < slice.end) {
-                inspect(source, slices, index, match, output, ruby = true, rubyPrefix = prefix)
+                inspect(source, slices, index, match, output, ruby = true)
+                if (needsCatalog) return
                 match = matches.nextOrNull()
             }
-            if (match == null || needsCatalog) break
-            // Use plain root tokens as a lower bound. Nested formatting can be shorter than its source.
-            if (slice.token.kind in setOf("text", "emoji", "accountEmoji")) prefix.append(slice.token.value)
+            if (match == null) break
         }
     }
 }
 
 private fun <T> Iterator<T>.nextOrNull(): T? = if (hasNext()) next() else null
 
-private fun excerptHasRoom(vararg parts: CharSequence): Boolean {
+private fun excerptHasRoom(
+    output: CharSequence, sourcePrefix: CharSequence, includeEllipsisChange: Boolean,
+): Boolean {
     var length = 0
     var space = false
-    for (part in parts) {
-        for (char in part) {
+    fun count(part: CharSequence, unescape: Boolean): Boolean {
+        var index = 0
+        while (index < part.length) {
+            if (unescape && part[index] == '\\' && index + 1 < part.length && part[index + 1] in inlineEscapes) index++
+            val char = part[index++]
             if (char.isWhitespace()) {
                 if (length > 0) space = true
             } else if (!char.isLowSurrogate()) {
@@ -118,8 +124,10 @@ private fun excerptHasRoom(vararg parts: CharSequence): Boolean {
                 if (++length > EXCERPT_MAX_LENGTH) return false
             }
         }
+        return true
     }
-    return true
+    return count(output, unescape = false) && count(sourcePrefix, unescape = true) &&
+        (length < EXCERPT_MAX_LENGTH || includeEllipsisChange)
 }
 
 /** ブロック（コード・中央寄せ・引用）の記法を外す。前後に空白を置いて、前後の文とつながらないようにする。 */
