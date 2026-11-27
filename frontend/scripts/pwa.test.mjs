@@ -2513,6 +2513,54 @@ test("notification destinations stay inside the app and open directly when no wi
   assert.deepEqual(opened, ["https://zoo.example/channels/123?message=456", "/", "/", "/"]);
 });
 
+test("an unreadable destination body is restored from an old cache", async () => {
+  const manifest = validManifest("#ffffff");
+  const cacheContext = memoryCaches([
+    ["zoo-shell-old", `${ORIGIN}/manifest.webmanifest`, basicResponse(manifest)],
+  ]);
+  const old = await cacheContext.api.open("zoo-shell-old");
+  await old.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("1"));
+  const realOpen = cacheContext.api.open.bind(cacheContext.api);
+  cacheContext.api.open = async (name) => {
+    const cache = await realOpen(name);
+    if (name !== "zoo-shell-v2") return cache;
+    return {
+      ...cache,
+      match: async (request) => {
+        const response = await cache.match(request);
+        if (response && requestKey(request).includes("manifest.webmanifest"))
+          return {
+            headers: response.headers,
+            clone: () => ({
+              text: async () => {
+                throw new Error("destination unreadable");
+              },
+            }),
+          };
+        return response;
+      },
+    };
+  };
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async (input) => {
+      const key = requestKey(input);
+      if (key === `${ORIGIN}/manifest.webmanifest`)
+        return basicResponse("<html>app shell</html>", {
+          headers: { "content-type": "text/html" },
+        });
+      if (key === `${ORIGIN}/offline.html`)
+        return basicResponse('<meta name="zoo-offline" content="true" />offline', {
+          headers: { "content-type": "text/html" },
+        });
+      return basicResponse(`network:${key}`);
+    },
+  });
+  await dispatch(handlers, "install");
+  const saved = await realOpen("zoo-shell-v2");
+  assert.equal(await (await saved.match(`${ORIGIN}/manifest.webmanifest`)).text(), manifest);
+});
+
 test("an unenumerable cache list keeps the old cache by failing install", async () => {
   const cacheContext = memoryCaches([
     ["zoo-shell-old", `${ORIGIN}/manifest.webmanifest`, basicResponse(validManifest("#ffffff"))],
@@ -2520,8 +2568,11 @@ test("an unenumerable cache list keeps the old cache by failing install", async 
   const old = await cacheContext.api.open("zoo-shell-old");
   await old.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("1"));
   const realKeys = cacheContext.api.keys.bind(cacheContext.api);
+  let keysCalls = 0;
   cacheContext.api.keys = async () => {
-    throw new Error("CacheStorage unavailable");
+    keysCalls += 1;
+    if (keysCalls > 1) throw new Error("CacheStorage unavailable");
+    return realKeys();
   };
   const { handlers } = worker({
     caches: cacheContext.api,

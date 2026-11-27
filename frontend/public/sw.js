@@ -316,12 +316,14 @@ async function precacheShell() {
     const sources = await shellCacheNamesNewestFirst(name);
     for (const path of ["/manifest.webmanifest", "/offline.html"]) {
       let savedHere = null;
+      let destinationUnreadable = false;
       try {
         savedHere = await cache.match(path);
+        if (await isUsableFreshAsset(path, savedHere)) continue;
       } catch {
-        /* The destination could not be read; keep searching older caches. */
+        // 保存先を読めない場合は、旧キャッシュから復元を試みる。
+        destinationUnreadable = true;
       }
-      if (await isUsableFreshAsset(path, savedHere)) continue;
       if (!sources) {
         unresolved.add(path);
         continue;
@@ -344,7 +346,13 @@ async function precacheShell() {
           readFailed = true;
         }
       }
-      if (!restored && readFailed) unresolved.add(path);
+      // 他に候補があるのに復元できなかった場合だけ未解決とする。
+      if (
+        !restored &&
+        (readFailed || destinationUnreadable) &&
+        (sources === null || sources.length > 0)
+      )
+        unresolved.add(path);
     }
     // 初期版の SW は案内ページを zoo-offline-v1 に持っていた。シェルに無ければ引き継ぐ。
     const hasOffline = await isUsableFreshAsset(
