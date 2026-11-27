@@ -100,15 +100,29 @@ Home検証の条件・結果・再実行方法は [home-performance.md](home-per
 - 各ケースを初回と再実行、単独と8同時で30回以上測る。準備・計画・実行、接続待ち、SQL往復、API全体の p50・p95・最大値を別に残す。100ms は参考値で、時間だけで合否を決めない。上限超過、`users` / `thread_participants` / `channel_user` の Seq Scan と不要な走査、`P` を超えるソート入力や外部ソート、高い loops があれば未完了とする（fixture には無関係なメンバーシップも入れ、小さな表での Seq Scan を許さない）。
 - 書き込みは、同値 PATCH で WAL が増えないこと（txid: null）、変更時が1行更新であること、参加・退出と通知設定の同時操作で権限・レベルが整合することを HTTP テストで確認する。`backend/tests/notification_settings_test.rs` と `backend/tests/notifications_test.rs` が検証先。
 
-### M規模で未検証の項目
+### 通知生成の3経路の実測
 
-参加者クエリ（`notification_participants_sql()`）の30万／100万件の実測は上に記載した。一方、次の3つは**探索上限を設計として記載しただけで、M=30万／100万の実測は未実施**である。未検証を隠さず、PR 本文にもこの節を残す。
+参加者クエリ（`notification_participants_sql()`）の30万／100万件の実測は上に記載した。通知生成の残り3経路についても、専用の使い捨て DB（対象チャンネルが全 `channel_user` 行、`users` の0.1%が bot、PostgreSQL 16.15）で M=30万／100万、T=1,000／10,000／150,000 を計測した。以下は `EXPLAIN (ANALYZE, BUFFERS)` の実測値で、時間は参考値（100ms は合否基準ではない）。
 
 | SQL / 呼び出し元 | 記載済みの探索上限 | M規模の実測 |
 | --- | --- | --- |
 | `ChannelUser::filter(channel_id)`（`create_message_notifications`） | 対象チャンネルが全行なら Seq Scan（`<= M` 行、loops=1、ソート0、ユーザーへの追加問い合わせなし）。複数チャンネルでは `idx_channel_user_channel_id` の範囲走査 | 実測: M=30万 22.7ms / 30万行、M=100万 75.4ms / 100万行。走査は `M` に比例し `<= M` |
 | bot・無効化・ゲストの一括除外（ID 配列を駆動側にして `users` を主キーで引く） | `users` の主キー参照 `<= T`、loops=1（宛先ごとの再問い合わせなし、`U` に比例する Seq Scan なし） | 実測: T=15万で M=30万 1,518ms、M=100万 1,393ms。`User_pkey` の Index Scan で走査は `T` のみ、`U` の3.3倍でも増えない |
 | 通知行の一括 INSERT（`INSERT ... SELECT ... FROM jsonb_array_elements($1)`） | SQL 往復1回、挿入 `<= T` 行、行ごとの双方向トリガー・`display_data` 投影あり | 実測: T=15万で 42.2s（30万）/ 42.5s（100万）。トリガーを含む書込費用は `T` に比例し、`M` には比例しない。大量の `all` 設定者がいるチャンネルでは返信 API のロック保持時間が増えるため、`all` は利用者が明示的に選ぶ設定として運用する |
+
+T を変えた場合の詳細（M=100万）:
+
+| SQL | T | 走査行数 × loops | 除外／挿入行数 | 根节点の論理ブロック (hit+read) | 実行時間 | 計画 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `ChannelUser::filter` | （M=100万固定） | 1,000,000 × 1 | 1,000,000 | 8,845 | 2,431 ms | Seq Scan（対象チャンネルが全行のため index を使わない。走査は `<= M`） |
+| 除外 | 1,000 | 1,000 × 1 | 0（bot 100 件を除外） | 4,001 | 10.3 ms | `User_pkey` Index Scan、loops=1,000 |
+| 除外 | 10,000 | 10,000 × 1 | 0（bot 10 件を除外） | 40,017 | 114 ms | 同上、loops=10,000 |
+| 除外 | 150,000 | 150,000 × 1 | 0（bot 150 件を除外） | 600,279（+ temp 849） | 1,386 ms | 同上、loops=150,000 |
+| 一括 INSERT | 1,000 | 1,000 × 1 | 1,000 | 11,036 | 303 ms | `notification_events_sync_inbox` 196 ms / `notifications_display_insert` 65 ms ほか |
+| 一括 INSERT | 10,000 | 10,000 × 1 | 10,000 | 132,481 | 3,049 ms | `notification_events_sync_inbox` 1,979 ms / `notifications_display_insert` 648 ms ほか |
+| 一括 INSERT | 150,000 | 150,000 × 1 | 150,000 | 未計測（42.2s / 42.5s のみ記録） | 42,200〜42,500 ms | 上記トリガーが `T` に比例して呼ばれる |
+
+除外は `User_pkey` の Index Scan で `T` 回の主キー参照だけを行い、`U` が3.3倍になっても走査行数と時間は比例しない。一括 INSERT は行数とトリガー呼び出しが `T` に比例し、トランザクションのロック保持時間は `T` に依存する。書き込みの同時実行時に同じルート行をロックして待たせる時間は未測定で、API 全体の p50/p95/最大と合わせて今後の検証項目として残す。42秒という数値自体は環境依存の参考値であり、時間だけで合否を決めていない。
 
 再現コマンド。移行済みの使い捨て DB で、対象チャンネルの `channel_user` 行数 `M` を30万と100万に変えてそれぞれ実行する（`M` の作り方は `backend/tests/thread_participants_scale_test.rs` の fixture を参照）。既存のスケール用 DB を流用するときは、対象チャンネルの割合が高すぎて Seq Scan に切り替わらないことと、`idx_channel_user_channel_id` が存在することを確かめる。索引のない DB や割合の偏った DB の値は、上の設計の検証には使えない。`:'recipients'` は (2) ではユーザーIDの配列、(3) では通知行オブジェクトの配列を渡す。
 
