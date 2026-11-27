@@ -27,8 +27,11 @@ pub(super) async fn remote_repost_target(
         FROM apub_remote_posts p JOIN apub_actors a ON a.id=p.actor_id
         WHERE p.id=$1 AND p.deleted_at IS NULL AND NOT a.blocked AND p.visibility IN ('public','unlisted')
           AND (NOT $2::boolean OR p.origin_verified)
-          AND NOT EXISTS(SELECT 1 FROM apub_quote_originals q WHERE q.id=p.id AND q.actor_id=p.actor_id
-            AND (q.updated_at>p.updated_at OR (q.updated_at=p.updated_at AND NOT q.superseded)) OFFSET 0)
+          AND NOT EXISTS(SELECT 1 FROM apub_quote_originals q WHERE q.id=p.id AND (
+              (q.actor_id<>p.actor_id AND NOT p.origin_verified)
+              OR (q.actor_id=p.actor_id AND (q.updated_at>p.updated_at
+                OR (q.updated_at=p.updated_at AND NOT q.superseded_by_public)))
+            ) OFFSET 0)
     "#, &[id, if require_verified { "true" } else { "false" }]).await?;
     Ok(rows.into_iter().next())
 }
@@ -273,7 +276,7 @@ async fn store_original(
                       (p.content,p.published,p.parent_id,p.emojis) IS DISTINCT FROM ($5,$9::timestamptz,NULLIF($8,''),$6::jsonb)))))
               ON CONFLICT(id) DO UPDATE SET content=EXCLUDED.content, published=EXCLUDED.published, updated_at=EXCLUDED.updated_at,
                 parent_id=EXCLUDED.parent_id, emojis=EXCLUDED.emojis, media=EXCLUDED.media,
-                superseded=false, revision=apub_quote_originals.revision+1
+                superseded=false, superseded_by_public=false, revision=apub_quote_originals.revision+1
               WHERE apub_quote_originals.actor_id=EXCLUDED.actor_id AND (
                 apub_quote_originals.updated_at<EXCLUDED.updated_at OR
                 (apub_quote_originals.updated_at=EXCLUDED.updated_at AND apub_quote_originals.superseded))
@@ -307,7 +310,7 @@ async fn store_original(
         "#, &[object, &author, &content, visibility, &published, &updated, &emojis, &media_json, &quote, parent]).await?;
         if !saved.is_empty() {
             // A canonical public response wins against a private snapshot with the same timestamp.
-            toasty::sql::statement("UPDATE apub_quote_originals SET superseded=true WHERE id=$1 AND actor_id=$2 AND updated_at<=$3::timestamptz AND NOT superseded")
+            toasty::sql::statement("UPDATE apub_quote_originals SET superseded=true,superseded_by_public=true WHERE id=$1 AND actor_id=$2 AND updated_at<=$3::timestamptz AND NOT superseded_by_public")
                 .bind(object).bind(author.as_str()).bind(updated.as_str()).exec(&mut tx).await?;
             emoji::queue_media_blurhash(&mut tx, object, &media).await?;
         }

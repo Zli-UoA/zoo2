@@ -260,8 +260,35 @@ pub(super) async fn receive_verified(
             };
             if activity["type"] == "Update" {
                 // An Update can supersede a signed snapshot even before any Inbox Create.
-                toasty::sql::statement("UPDATE apub_quote_originals SET superseded=true,updated_at=$3::timestamptz WHERE id=$1 AND actor_id=$2 AND updated_at<$3::timestamptz")
-                    .bind(post_id).bind(actor_id).bind(updated.to_string()).exec(&mut tx).await?;
+                let followers = string(actor, "followers_url")?;
+                let followers_audience = visibility == "followers"
+                    && (to.contains(&followers) || cc.contains(&followers));
+                toasty::sql::statement(
+                    r#"
+                    UPDATE apub_quote_originals q
+                    SET superseded=true,superseded_by_public=false,updated_at=$3::timestamptz
+                    WHERE q.id=$1 AND q.actor_id=$2 AND (
+                      q.updated_at<$3::timestamptz OR (
+                        q.updated_at=$3::timestamptz AND NOT q.superseded AND (
+                          NOT $4::boolean OR
+                          (q.content,q.published,q.parent_id,q.emojis,q.media) IS DISTINCT FROM
+                          ($5,$6::timestamptz,NULLIF($7,''),$8::jsonb,$9::jsonb)
+                        )
+                      )
+                    )
+                "#,
+                )
+                .bind(post_id)
+                .bind(actor_id)
+                .bind(updated.to_string())
+                .bind(followers_audience.to_string())
+                .bind(content.as_str())
+                .bind(published.to_string())
+                .bind(parent_id.unwrap_or(""))
+                .bind(json!(note_emojis).to_string())
+                .bind(json!(media).to_string())
+                .exec(&mut tx)
+                .await?;
             }
             if activity["type"] == "Create" && !parents.is_empty() && !query(&mut tx,"SELECT '{}'::text FROM apub_remote_posts WHERE id=$1 AND actor_id=$2 AND deleted_at IS NULL",&[post_id,actor_id]).await?.is_empty() {
                 interactions::notify(&mut tx, user, actor_id, id, "reply", post_id).await?;

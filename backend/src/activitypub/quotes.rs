@@ -349,6 +349,33 @@ mod tests {
         )
         .await?;
         drop(tx);
+        let duplicate = json!({"id":format!("{author}/unchanged-update"),"type":"Update","actor":author,"object":note});
+        inbox::receive_verified(&state, &other, &actor, &duplicate).await?;
+        let mut tx = db.transaction().await?;
+        assert!(known_original(&mut tx, &user, &id).await?);
+        drop(tx);
+
+        let mut corrected = note.clone();
+        corrected["content"] = json!("Corrected without updated");
+        let correction = json!({"id":format!("{author}/correction"),"type":"Update","actor":author,"object":corrected});
+        inbox::receive_verified(&state, &other, &actor, &correction).await?;
+        let mut tx = db.transaction().await?;
+        for recipient in [&user, &other] {
+            assert!(!known_original(&mut tx, recipient, &id).await?);
+            decorate(&mut tx, recipient, &mut rows).await?;
+            assert!(rows[0]["quote"]["post"].is_null());
+        }
+        drop(tx);
+        reposts::store_quoted_note(&state, &user, &id, &corrected).await?;
+        let mut tx = db.transaction().await?;
+        decorate(&mut tx, &user, &mut rows).await?;
+        assert_eq!(
+            rows[0]["quote"]["post"]["content"],
+            "Corrected without updated"
+        );
+        assert!(!known_original(&mut tx, &other, &id).await?);
+        drop(tx);
+
         let mut revised = note.clone();
         revised["content"] = json!("Updated before Create");
         revised["updated"] = json!("2026-01-02T01:00:00Z");

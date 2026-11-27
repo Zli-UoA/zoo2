@@ -1965,10 +1965,34 @@ async fn reposts_create_distinct_feed_entries_cursor_and_announces_but_never_pri
         .0,
         StatusCode::BAD_REQUEST
     );
+    let real_author = format!("{}/canonical-author", f.remote);
+    toasty::sql::statement("INSERT INTO apub_actors(id,inbox,followers_url,user_name,display_name,key_id,public_key) SELECT $2,inbox,followers_url,user_name,display_name,$2,public_key FROM apub_actors WHERE id=$1")
+        .bind(f.remote.as_str()).bind(real_author.as_str()).exec(&mut f.db).await?;
+    toasty::sql::statement("UPDATE apub_quote_originals SET actor_id=$2 WHERE id=$1")
+        .bind(remote_post.as_str())
+        .bind(real_author.as_str())
+        .exec(&mut f.db)
+        .await?;
+    assert_eq!(
+        request(
+            &f.app,
+            "POST",
+            Some(&f.user),
+            "/api/activitypub/reposts",
+            Some(json!({"post_id":remote_post}))
+        )
+        .await?
+        .0,
+        StatusCode::BAD_REQUEST
+    );
     let last=value(&mut f.db,"SELECT row_to_json(d)::text FROM apub_deliveries d WHERE user_id=$1 ORDER BY sequence DESC LIMIT 1",&[&f.user]).await?;
     assert_eq!(last["id"], row["id"]);
     toasty::sql::statement("DELETE FROM apub_quote_originals WHERE id=$1")
         .bind(remote_post.as_str())
+        .exec(&mut f.db)
+        .await?;
+    toasty::sql::statement("DELETE FROM apub_actors WHERE id=$1")
+        .bind(real_author.as_str())
         .exec(&mut f.db)
         .await?;
     let own = protocol_post(&f, "public", true).await?;

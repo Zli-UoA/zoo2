@@ -6,6 +6,7 @@ CREATE TABLE "apub_quote_originals" (
   "published" timestamptz NOT NULL,
   "updated_at" timestamptz NOT NULL,
   "superseded" boolean NOT NULL DEFAULT false,
+  "superseded_by_public" boolean NOT NULL DEFAULT false,
   "revision" bigint NOT NULL DEFAULT 1,
   "parent_id" text NULL,
   "emojis" jsonb NOT NULL,
