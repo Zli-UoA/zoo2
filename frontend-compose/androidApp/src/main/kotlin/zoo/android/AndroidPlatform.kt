@@ -215,6 +215,9 @@ internal class AndroidPlatform(
 
     override suspend fun image(url: String): ByteArray = images.image(url)
 
+    override suspend fun attachmentImage(id: String, url: String, refresh: Boolean): ByteArray =
+        images.attachment(id, url, refresh)
+
     override suspend fun invoke(name: String, payload: String): String =
         when (name) {
             "logout" -> {

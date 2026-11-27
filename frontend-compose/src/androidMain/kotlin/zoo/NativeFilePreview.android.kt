@@ -28,11 +28,17 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.*
 
 @Composable
-internal fun NativeImagePreview(app: Session, src: String, name: String, modifier: Modifier) {
+internal fun NativeImagePreview(
+    app: Session,
+    src: String,
+    name: String,
+    modifier: Modifier,
+    load: suspend () -> ByteArray,
+) {
     var bitmap by remember(src) { mutableStateOf<ImageBitmap?>(null) }
     var failed by remember(src) { mutableStateOf(false) }
     LaunchedEffect(src) {
-        try { app.platform.imageFrames(app.image(src)).collect { bitmap = it } }
+        try { app.platform.imageFrames(load()).collect { bitmap = it } }
         catch (error: CancellationException) { throw error }
         catch (_: Exception) { failed = true }
     }

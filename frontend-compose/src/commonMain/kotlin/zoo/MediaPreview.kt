@@ -12,6 +12,7 @@ internal expect fun MediaPreviewSurface(
     name: String,
     contentType: String,
     modifier: Modifier,
+    attachmentId: String? = null,
 )
 
 internal fun hasMediaPreview(contentType: String, name: String = ""): Boolean {

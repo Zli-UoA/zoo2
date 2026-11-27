@@ -4,6 +4,8 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.HttpTimeout
 import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import okhttp3.Cache
 import okhttp3.OkHttpClient
 
@@ -13,6 +15,7 @@ internal class AndroidImageCache(
     maxBytes: Long = 512L * 1024 * 1024,
     configure: OkHttpClient.Builder.() -> Unit = {},
 ) : java.io.Closeable {
+    private val attachments = AttachmentImageDiskCache(directory.resolveSibling("attachment-images"))
     private val disk = Cache(directory, maxBytes)
     private val client = OkHttpClient.Builder()
         .apply(configure)
@@ -32,7 +35,15 @@ internal class AndroidImageCache(
 
     suspend fun image(url: String): ByteArray = loadPublicImage(http, url)
 
+    // The caller must obtain a valid download URL before consulting the disk cache.
+    suspend fun attachment(id: String, url: String, refresh: Boolean): ByteArray = withContext(Dispatchers.IO) {
+        if (refresh) attachments.remove(id)
+        else attachments.read(id)?.let { return@withContext it }
+        loadPublicImage(http, url) { attachments.write(id, it) }
+    }
+
     override fun close() {
+        attachments.close()
         http.close()
         disk.close()
         client.connectionPool.evictAll()

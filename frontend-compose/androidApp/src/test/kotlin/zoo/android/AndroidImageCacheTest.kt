@@ -21,7 +21,7 @@ class AndroidImageCacheTest {
             start()
         }
         val url get() = server.url("/image.png").toString()
-        fun cache() = AndroidImageCache(directory) {
+        fun cache(account: String = "account") = AndroidImageCache(directory.resolve("$account/images")) {
             sslSocketFactory(clientTls.sslSocketFactory(), clientTls.trustManager)
         }
         override fun close() {
@@ -66,6 +66,36 @@ class AndroidImageCacheTest {
             }
             f.cache().use { cache -> assertEquals("first", cache.image(f.url).decodeToString()) }
             f.cache().use { cache -> assertEquals("second", cache.image(f.url).decodeToString()) }
+            assertEquals(2, f.server.requestCount)
+        }
+    }
+
+    @Test fun reusesAttachmentBytesAfterTheSignedUrlChangesAndTheClientReopens() = runBlocking {
+        Fixture().use { f ->
+            f.server.enqueue(MockResponse().setBody("attachment"))
+            f.server.enqueue(MockResponse().setBody("other account"))
+            f.server.enqueue(MockResponse().setBody("unexpected request"))
+            f.cache().use { cache ->
+                assertEquals("attachment", cache.attachment("id", "${f.url}?signature=old", false).decodeToString())
+            }
+            f.cache().use { cache ->
+                assertEquals("attachment", cache.attachment("id", "${f.url}?signature=new", false).decodeToString())
+            }
+            f.cache("other").use { cache ->
+                assertEquals("other account", cache.attachment("id", "${f.url}?signature=new", false).decodeToString())
+            }
+            assertEquals(2, f.server.requestCount)
+        }
+    }
+
+    @Test fun signedAttachmentsRespectNoStore() = runBlocking {
+        Fixture().use { f ->
+            f.server.enqueue(MockResponse().setHeader("Cache-Control", "no-store").setBody("first"))
+            f.server.enqueue(MockResponse().setBody("second"))
+            f.cache().use { cache ->
+                assertEquals("first", cache.attachment("id", "${f.url}?signature=old", false).decodeToString())
+                assertEquals("second", cache.attachment("id", "${f.url}?signature=new", false).decodeToString())
+            }
             assertEquals(2, f.server.requestCount)
         }
     }

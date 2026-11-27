@@ -251,6 +251,11 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         }
     }
 
+    internal suspend fun attachmentImage(id: String, url: String, refresh: Boolean = false): ByteArray {
+        suspend fun load(): ByteArray = platform.attachmentImage(id, url, refresh) ?: image(url)
+        return if (refresh) load() else imageCache.get("attachment:$id:$url") { load() }
+    }
+
     /** Static images use the same platform decoder as attachments and animated media. */
     suspend fun imageBitmap(url: String): androidx.compose.ui.graphics.ImageBitmap =
         bitmapCache.get(if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url) {

@@ -582,7 +582,7 @@ private fun AttachmentItem(
             url = app.attachmentLinks.get(id, attempt > 0)
             if (image) {
                 try {
-                    app.platform.imageFrames(app.image(url!!)).collect {
+                    app.platform.imageFrames(app.attachmentImage(id, url!!, refresh = attempt > 0)).collect {
                         bitmap = it
                         loading = false
                     }
@@ -590,7 +590,7 @@ private fun AttachmentItem(
                     throw e
                 } catch (_: Exception) {
                     url = app.attachmentLinks.get(id, true)
-                    app.platform.imageFrames(app.image(url!!)).collect {
+                    app.platform.imageFrames(app.attachmentImage(id, url!!, refresh = true)).collect {
                         bitmap = it
                         loading = false
                     }
@@ -680,7 +680,7 @@ private fun AttachmentPreview(app: Session, file: Row, close: () -> Unit) {
             Text(app.t("attachments.loadError"))
             Button(app.t("attachments.retry")) { attempt++ }
         } else if (url == null) Text(app.t("attachments.loading"))
-        else MediaPreviewSurface(app, url!!, file.text("file_name"), file.text("content_type"), Modifier.fillMaxWidth().weight(1f))
+        else MediaPreviewSurface(app, url!!, file.text("file_name"), file.text("content_type"), Modifier.fillMaxWidth().weight(1f), attachmentId = id)
         Button(app.t("attachments.downloadShort")) { app.attachmentLinks.download(file) }
     }
 }

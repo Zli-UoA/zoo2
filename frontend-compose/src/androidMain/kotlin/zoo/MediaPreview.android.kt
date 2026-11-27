@@ -35,9 +35,16 @@ private const val PREVIEW_ORIGIN = "https://zoo-preview.invalid"
 /** No general-purpose proxy: only the selected source and bundled assets are accessible. */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-internal actual fun MediaPreviewSurface(app: Session, src: String, name: String, contentType: String, modifier: Modifier) {
+internal actual fun MediaPreviewSurface(
+    app: Session,
+    src: String,
+    name: String,
+    contentType: String,
+    modifier: Modifier,
+    attachmentId: String?,
+) {
     val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    key(src, name, contentType, app.env.locale, dark) {
+    key(src, name, contentType, app.env.locale, dark, attachmentId) {
         val mime = contentType.substringBefore(';').trim().lowercase()
         when {
             mime.startsWith("image/") && !nativeImagePreviewSupported(mime) -> Box(modifier) {
@@ -45,7 +52,9 @@ internal actual fun MediaPreviewSurface(app: Session, src: String, name: String,
                     app.run { app.platform.invoke("attachmentDownload", obj("url" to src, "name" to name).toString()) }
                 }
             }
-            mime.startsWith("image/") -> NativeImagePreview(app, src, name, modifier)
+            mime.startsWith("image/") -> NativeImagePreview(app, src, name, modifier) {
+                if (attachmentId == null) app.image(src) else app.attachmentImage(attachmentId, src)
+            }
             mime == "application/pdf" || mime.startsWith("video/") || mime.startsWith("audio/") ->
                 NativeFilePreview(app, src, name, mime, modifier)
             else -> BundledDocumentPreview(app, src, name, contentType, dark, modifier)
