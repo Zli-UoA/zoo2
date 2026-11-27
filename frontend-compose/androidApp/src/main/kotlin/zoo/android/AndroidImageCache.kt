@@ -72,10 +72,12 @@ internal class AndroidImageCache(
                 (cacheKey.endsWith(":thumbnail") || matching.urlHash == "$resourceHash:$urlHash")
             ) return@withContext matching.bytes
             attachments.remove(cacheKey)
-            loadPublicImage(http, url, noStore = true, conditional = matching) { response, bytes ->
+            loadPublicImage(http, url, noStore = true, conditional = matching) { response, bytes, direct ->
                 val expiresAt = attachmentFreshUntil(response, now()) ?: return@loadPublicImage
-                val etag = response.headers[HttpHeaders.ETag]?.takeIf { it.length <= 1024 }
-                    ?: matching?.etag?.takeIf { response.status == HttpStatusCode.NotModified }
+                val etag = if (direct) {
+                    response.headers[HttpHeaders.ETag]?.takeIf { it.length <= 1024 }
+                        ?: matching?.etag?.takeIf { response.status == HttpStatusCode.NotModified }
+                } else null
                 attachments.write(cacheKey, AttachmentImageDiskCache.Entry("$resourceHash:$urlHash", expiresAt, etag, bytes))
             }
         }

@@ -16,7 +16,7 @@ internal suspend fun loadPublicImage(
     http: HttpClient, url: String, limit: Int = 20 * 1024 * 1024,
     cacheOnly: Boolean = false, restrictOrigin: Boolean = false, noStore: Boolean = false, revalidate: Boolean = false, bypassCache: Boolean = false,
     conditional: AttachmentImageDiskCache.Entry? = null,
-    onSignedResponse: ((HttpResponse, ByteArray) -> Unit)? = null,
+    onSignedResponse: ((HttpResponse, ByteArray, Boolean) -> Unit)? = null,
 ): ByteArray {
     var current = url
     repeat(6) { hop ->
@@ -47,7 +47,7 @@ internal suspend fun loadPublicImage(
                     readImageResponse(response, limit)
                 }
                 bytes = image
-                if (hop == 0) onSignedResponse?.invoke(response, image)
+                onSignedResponse?.invoke(response, image, hop == 0)
             }
         }
         bytes?.let { return it }

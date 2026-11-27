@@ -231,6 +231,27 @@ class AndroidImageCacheTest {
         }
     }
 
+    @Test fun cachesRedirectedThumbnailsWithoutSendingTheFinalEtagToTheEntryUrl() = runBlocking {
+        Fixture().use { f ->
+            var time = 1_000L
+            repeat(2) {
+                f.server.enqueue(MockResponse().setResponseCode(307).setHeader("Location", "/final.png"))
+                f.server.enqueue(MockResponse().setHeader("Cache-Control", "private, max-age=60")
+                    .setHeader("ETag", "\"final\"").setBody("thumbnail"))
+            }
+            f.cache(now = { time }).use { cache ->
+                val key = "id:thumbnail"
+                assertEquals("thumbnail", cache.signedImage("${f.url}?X-Amz-Signature=old", key).decodeToString())
+                assertEquals("thumbnail", cache.signedImage("${f.url}?X-Amz-Signature=new", key).decodeToString())
+                assertEquals(2, f.server.requestCount)
+                time += 60_000
+                assertEquals("thumbnail", cache.signedImage("${f.url}?X-Amz-Signature=new", key).decodeToString())
+            }
+            assertEquals(4, f.server.requestCount)
+            repeat(4) { assertNull(f.server.takeRequest().getHeader("If-None-Match")) }
+        }
+    }
+
     @Test fun signedAttachmentsSkipDiskForNoStoreNoCacheOrVary() = runBlocking {
         Fixture().use { f ->
             val policies = listOf(
