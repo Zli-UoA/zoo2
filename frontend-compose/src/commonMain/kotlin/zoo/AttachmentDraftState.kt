@@ -153,36 +153,41 @@ fun attachmentExpiry(url: String, now: Long): Long {
 fun attachmentPayload(value: JsonElement): Row =
     value.jsonObject.let { (it["data"] as? JsonObject) ?: it }
 
+data class AttachmentImageLinks(val original: String, val thumbnail: String?)
+
 class AttachmentLinks(private val app: Session) {
     val errors = mutableStateMapOf<String, Boolean>()
-    private val cache = mutableMapOf<String, Pair<String, Long>>()
-    private val requests = mutableMapOf<String, Deferred<Result<String>>>()
+    private val cache = mutableMapOf<String, Pair<AttachmentImageLinks, Long>>()
+    private val requests = mutableMapOf<String, Deferred<Result<AttachmentImageLinks>>>()
 
-    fun cachedUrl(id: String): String? =
-        cachedUrl(id, timestampMillis(app.platform.now()) ?: 0L)
+    fun cachedUrl(id: String): String? = cachedLinks(id)?.original
 
-    private fun cachedUrl(id: String, now: Long): String? =
+    fun cachedLinks(id: String): AttachmentImageLinks? =
+        cachedLinks(id, timestampMillis(app.platform.now()) ?: 0L)
+
+    private fun cachedLinks(id: String, now: Long): AttachmentImageLinks? =
         cache[id]?.takeIf { it.second - now > 5_000 }?.first
 
-    suspend fun get(id: String, force: Boolean = false): String {
+    suspend fun get(id: String, force: Boolean = false): String = getLinks(id, force).original
+
+    suspend fun getLinks(id: String, force: Boolean = false): AttachmentImageLinks {
         errors.remove(id)
         val now = timestampMillis(app.platform.now()) ?: 0L
-        if (!force) cachedUrl(id, now)?.let { return it }
+        if (!force) cachedLinks(id, now)?.let { return it }
         val work =
             requests.getOrPut(id) {
                 app.scope.async {
                     try {
-                        val url =
-                            attachmentPayload(
-                                    app.api.request(
-                                        "/api/attachments/${id.encodeURLParameter()}/url"
-                                    )
-                                )
-                                .text("download_url")
+                        val payload = attachmentPayload(
+                            app.api.request("/api/attachments/${id.encodeURLParameter()}/url")
+                        )
+                        val url = payload.text("download_url")
                         require(publicUrl(url) != null)
+                        val thumbnail = payload.text("thumbnail_url").takeIf { publicUrl(it) != null }
+                        val links = AttachmentImageLinks(url, thumbnail)
                         if (cache.size >= 200) cache.remove(cache.keys.first())
-                        cache[id] = url to attachmentExpiry(url, now)
-                        Result.success(url)
+                        cache[id] = links to attachmentExpiry(url, now)
+                        Result.success(links)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {

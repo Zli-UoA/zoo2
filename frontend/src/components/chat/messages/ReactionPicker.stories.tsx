@@ -177,9 +177,11 @@ export const SearchExactFirst: Story = {
     );
     // カーソルを載せると、登録名をツールチップで表示する。
     await userEvent.hover(within(region).getByRole("button", { name: ":kusa:" }));
-    await expect(
-      await screen.findByText(":kusa:", { selector: '[data-slot="tooltip-content"]' }),
-    ).toBeVisible();
+    await waitFor(() =>
+      expect(
+        screen.getByText(":kusa:", { selector: '[data-slot="tooltip-content"]' }),
+      ).toBeVisible(),
+    );
   }),
 };
 

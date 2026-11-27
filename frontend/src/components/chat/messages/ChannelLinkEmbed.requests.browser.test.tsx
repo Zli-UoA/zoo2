@@ -351,11 +351,12 @@ it("同期に失敗したチャンネルは、リンクを出し直しても取�
   const view = renderBodies([link(failing, "m-1")], [channel(failing)]);
   await screen.findByText("リンク先を読み込めませんでした");
   const source = view.bundle.messages(failing);
+  await waitFor(() => expect(source.status).toBe("error"));
 
-  // サーバーは回復した。リンクを消して、リンクの問い合わせが片付く（5 秒）まで待ってから、出し直す。
-  const recovered = stubFetch();
+  // 先の購読が片付いてからサーバーを回復させ、残ったコレクションで再表示を試す。
   await view.show(false);
   await waitFor(() => expect(source.subscriberCount).toBe(0), { timeout: 10_000 });
+  const recovered = stubFetch();
   await view.show(true);
   expect(await screen.findByText("リンク先を読み込めませんでした")).toBeInTheDocument();
   await new Promise((resolve) => setTimeout(resolve, 500));

@@ -173,6 +173,9 @@ export const HomePostContent = memo(function HomePostContent({
                 <MediaPreview
                   {...image}
                   src={url}
+                  thumbnailSrc={
+                    path?.startsWith("/api/home/images/") ? `${url}?thumbnail=true` : undefined
+                  }
                   name={image.name || t("home.image")}
                   contentType={image.media_type}
                   saveId={image.image_id ? `home:${image.image_id}` : `home:${url}`}

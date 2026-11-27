@@ -62,6 +62,7 @@ function AttachmentPreview({ attachment }: { attachment: AttachmentMetadata }) {
     <MediaPreview
       {...attachment}
       src={state.url}
+      thumbnailSrc={state.thumbnailUrl}
       name={attachment.file_name}
       contentType={attachment.content_type}
       loading={state.status === "loading"}

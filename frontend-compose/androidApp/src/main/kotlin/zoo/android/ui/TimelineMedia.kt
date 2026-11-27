@@ -59,6 +59,7 @@ internal data class TimelineMedia(
     val key: String, val name: String, val kind: TimelineMediaKind, val sensitive: Boolean = false,
     val url: String? = null, val attachmentId: String? = null, val previewUrl: String? = null,
     val imageAspectRatio: Float? = null, val blurhash: String? = null,
+    val thumbnailUrl: String? = null, val useThumbnail: Boolean = true,
 )
 
 internal data class TimelineQuote(
@@ -286,7 +287,8 @@ private fun MediaFrame(
     val video = media.kind == TimelineMediaKind.Video
     var revealed by remember(media.key, media.url, media.previewUrl, media.sensitive) { mutableStateOf(false) }
     val hidden = media.sensitive && !revealed
-    val bitmap = rememberTimelineImage(media.takeIf { !hidden && !video })
+    val loaded = rememberTimelineImage(media.takeUnless { video })
+    val bitmap = loaded.takeUnless { hidden }
     if (bitmap != null && onImageRatio != null) {
         SideEffect { onImageRatio(bitmap.width.toFloat() / bitmap.height) }
     }

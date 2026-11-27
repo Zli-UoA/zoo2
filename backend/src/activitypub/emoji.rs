@@ -53,6 +53,101 @@ pub(super) fn note_media(note: &Value) -> Vec<Value> {
     }
     images
 }
+fn needs_media_blurhash(item: &Value) -> bool {
+    item["image_id"].is_string() && item["blurhash"].is_null()
+}
+
+async fn fill_media_blurhashes(media: &mut [Value]) -> bool {
+    let mut images = std::collections::BTreeMap::new();
+    for item in media.iter().filter(|item| needs_media_blurhash(item)) {
+        if let (Some(id), Some(url)) = (item["image_id"].as_str(), item["url"].as_str()) {
+            images.insert(id.to_owned(), url.to_owned());
+        }
+    }
+    let hashes = futures_util::future::join_all(images.into_iter().map(|(id, url)| async move {
+        // Optional metadata must not keep an otherwise valid Note from being delivered.
+        let hash = tokio::time::timeout(Duration::from_secs(5), async {
+            let url = reqwest::Url::parse(&url).ok()?;
+            emoji_cache::get(&format!("media:{id}"), None, || load_image(url, true))
+                .await
+                .ok()?
+                .blurhash
+        })
+        .await
+        .ok()
+        .flatten();
+        (id, hash)
+    }))
+    .await
+    .into_iter()
+    .collect::<std::collections::BTreeMap<_, _>>();
+    let mut changed = false;
+    for item in media.iter_mut().filter(|item| needs_media_blurhash(item)) {
+        if let Some(hash) = item["image_id"]
+            .as_str()
+            .and_then(|id| hashes.get(id))
+            .and_then(Option::as_deref)
+        {
+            item["blurhash"] = json!(hash);
+            changed = true;
+        }
+    }
+    changed
+}
+
+pub(super) async fn enrich_stored_note(
+    state: &AppState,
+    post_id: &str,
+    actor_id: &str,
+    updated: jiff::Timestamp,
+    mut media: Vec<Value>,
+) {
+    if !media.iter().any(needs_media_blurhash) {
+        return;
+    }
+    let original = json!(media).to_string();
+    if !fill_media_blurhashes(&mut media).await {
+        return;
+    }
+    let mut db = state.db.clone();
+    if let Err(error) = store_blurhashes(
+        &mut db,
+        post_id,
+        actor_id,
+        updated,
+        &original,
+        &json!(media).to_string(),
+    )
+    .await
+    {
+        tracing::debug!(%error, "ActivityPub image BlurHash could not be saved");
+    }
+}
+
+async fn store_blurhashes(
+    db: &mut toasty::Db,
+    post_id: &str,
+    actor_id: &str,
+    updated: jiff::Timestamp,
+    original: &str,
+    enriched: &str,
+) -> Result<(), toasty::Error> {
+    // The primary key limits this write to one row. Check both the timestamp
+    // and attachment snapshot because a canonical refresh can reuse the timestamp.
+    toasty::sql::statement(
+        "UPDATE apub_remote_posts SET media=$5::jsonb WHERE id=$1 AND actor_id=$2
+         AND updated_at=$3::timestamptz AND deleted_at IS NULL AND media=$4::jsonb",
+    )
+    .bind(post_id)
+    .bind(actor_id)
+    .bind(updated.to_string())
+    .bind(original)
+    .bind(enriched)
+    .exec(db)
+    .await?;
+    Ok(())
+}
+
 pub(super) fn media(value: &Value) -> Vec<Value> {
     let values = value
         .as_array()
@@ -367,27 +462,30 @@ async fn read_image(
         }
         data.extend_from_slice(&chunk);
     }
-    if media {
+    let blurhash = if media {
         let kind = mime.clone();
         let permit = crate::routes::home_images::DECODERS
             .acquire()
             .await
             .map_err(|_| AppError::RateLimited)?;
-        let valid = tokio::task::spawn_blocking(move || {
+        let (returned_data, hash) = tokio::task::spawn_blocking(move || {
             // Keep the permit in the blocking task if the HTTP request is cancelled.
             let _permit = permit;
-            if crate::routes::home_images::valid_image(&kind, &data) {
-                Some(data)
-            } else {
-                None
-            }
+            let hash = crate::routes::home_images::image_blurhash(&kind, &data);
+            (data, hash)
         })
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
-        data = valid
-            .ok_or_else(|| AppError::BadGateway("Invalid image dimensions or pixels".into()))?;
-    }
-    Ok(emoji_cache::Image { mime, bytes: data })
+        data = returned_data;
+        Some(hash.ok_or_else(|| AppError::BadGateway("Invalid image dimensions or pixels".into()))?)
+    } else {
+        None
+    };
+    Ok(emoji_cache::Image {
+        mime,
+        bytes: data,
+        blurhash,
+    })
 }
 
 // Quote labels use the parsed serialization so Unicode formatting characters cannot
@@ -517,6 +615,80 @@ mod media_proxy_tests {
         let mut bytes = bytes.into_inner();
         bytes.resize(size.max(bytes.len()), 0);
         bytes
+    }
+
+    #[tokio::test]
+    async fn received_media_uses_generated_blurhash_only_when_missing() {
+        let image = payload(png(0), "image/png", true).await.unwrap();
+        let generated = image.blurhash.clone().unwrap();
+        assert!(valid_blurhash(&generated));
+        let original = "LEHV6nWB2yk8pyo0adR*.7kCMdnj";
+        let url = "https://example.test/received-media-blurhash.png";
+        let missing = json!({"mediaType":"image/png","url":url});
+        let mut media = note_media(&json!({"attachment":[
+            missing,
+            {"mediaType":"image/png","url":url,"blurhash":original},
+            {"mediaType":"video/mp4","url":"https://example.test/movie.mp4"},
+        ]}));
+        let key = format!("media:{}", media[0]["image_id"].as_str().unwrap());
+        emoji_cache::get(&key, None, || async { Ok(image) })
+            .await
+            .unwrap();
+
+        assert!(fill_media_blurhashes(&mut media).await);
+
+        assert_eq!(media[0]["blurhash"], generated);
+        assert_eq!(media[1]["blurhash"], original);
+        assert!(media[2]["blurhash"].is_null());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires PostgreSQL with ActivityPub tables"]
+    async fn delayed_blurhash_write_keeps_a_newer_attachment_version() -> anyhow::Result<()> {
+        let mut db = crate::db::init_db(&std::env::var("DATABASE_URL")?).await?;
+        let actor = format!("https://example.test/users/{}", uuid::Uuid::new_v4());
+        let note = format!("https://example.test/notes/{}", uuid::Uuid::new_v4());
+        let old: jiff::Timestamp = "2026-01-01T00:00:00Z".parse()?;
+        let new: jiff::Timestamp = "2026-01-02T00:00:00Z".parse()?;
+        let original = r#"[{"url":"https://example.test/photo.png"}]"#;
+        let replacement = r#"[{"url":"https://example.test/replacement.png"}]"#;
+        let enriched = r#"[{"url":"https://example.test/photo.png","blurhash":"000000"}]"#;
+        toasty::sql::statement("INSERT INTO apub_actors(id,inbox,followers_url,user_name,display_name,key_id,public_key) VALUES($1,$1,$1,'peer','Peer',$1,'test')")
+            .bind(actor.as_str()).exec(&mut db).await?;
+        toasty::sql::statement("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,media) VALUES($1,$2,'original','public',$3::timestamptz,$3::timestamptz,$4::jsonb)")
+            .bind(note.as_str()).bind(actor.as_str()).bind(old.to_string()).bind(original).exec(&mut db).await?;
+
+        // Exercise the two ways a newer delivery can replace the saved version.
+        toasty::sql::statement(
+            "UPDATE apub_remote_posts SET content='updated',updated_at=$2::timestamptz WHERE id=$1",
+        )
+        .bind(note.as_str())
+        .bind(new.to_string())
+        .exec(&mut db)
+        .await?;
+        store_blurhashes(&mut db, &note, &actor, old, original, enriched).await?;
+        let mut tx = db.transaction().await?;
+        let row = one(
+            &mut tx,
+            "SELECT json_build_object('media',media)::text FROM apub_remote_posts WHERE id=$1",
+            &[&note],
+        )
+        .await?;
+        assert_eq!(row["media"], serde_json::from_str::<Value>(original)?);
+        tx.commit().await?;
+
+        toasty::sql::statement("UPDATE apub_remote_posts SET media=$2::jsonb WHERE id=$1")
+            .bind(note.as_str())
+            .bind(replacement)
+            .exec(&mut db)
+            .await?;
+        store_blurhashes(&mut db, &note, &actor, new, original, enriched).await?;
+
+        let mut tx = db.transaction().await?;
+        let row = one(&mut tx, "SELECT json_build_object('content',content,'media',media)::text FROM apub_remote_posts WHERE id=$1", &[&note]).await?;
+        assert_eq!(row["content"], "updated");
+        assert_eq!(row["media"], serde_json::from_str::<Value>(replacement)?);
+        Ok(())
     }
 
     #[tokio::test]

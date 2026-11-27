@@ -165,6 +165,7 @@ export interface PresignAttachmentResponse {
 export type AttachmentUrlResponse = import("../imageMetadata").ImageMetadata & {
   id: string;
   download_url: string;
+  thumbnail_url?: string;
   file_name: string;
   file_size: number;
   content_type: string;

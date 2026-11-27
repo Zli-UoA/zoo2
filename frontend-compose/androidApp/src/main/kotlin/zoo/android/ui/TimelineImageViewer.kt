@@ -33,7 +33,6 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.sign
@@ -50,12 +49,11 @@ internal fun TimelineImageViewer(selection: TimelineMediaSelection, dismiss: () 
             window?.let {
                 it.setDimAmount(0f)
                 WindowCompat.getInsetsController(it, it.decorView).apply {
-                    systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                    hide(WindowInsetsCompat.Type.systemBars())
+                    show(WindowInsetsCompat.Type.systemBars())
                 }
             }
         }
-        TimelineImagePages(selection, openOriginal, dismiss)
+        Box(Modifier.fillMaxSize().safeDrawingPadding()) { TimelineImagePages(selection, openOriginal, dismiss) }
     }
 }
 
@@ -86,7 +84,8 @@ internal fun TimelineImagePages(
                 })
                 .semantics { customActions = listOf(CustomAccessibilityAction(closeLabel) { dismiss(); true }) },
         ) { index ->
-            val image = selection.items[index]
+            val item = selection.items[index]
+            val image = remember(item) { item.copy(useThumbnail = false) }
             val hidden = image.sensitive && revealed[index] != true
             val cached = LocalCachedTimelineImage.current
             val load = LocalTimelineImage.current
@@ -139,7 +138,7 @@ internal fun TimelineImagePages(
                     UiIconButton(
                         if (image.attachmentId != null) UiIcon.Download else UiIcon.External,
                         androidLabel("attachments.openOriginal", "元のファイル"), Color.White,
-                        { openOriginal(image) }, fill = Color.Black.copy(alpha = 0.65f),
+                        { openOriginal(item) }, fill = Color.Black.copy(alpha = 0.65f),
                         modifier = Modifier.align(Alignment.TopEnd).safeDrawingPadding().padding(8.dp),
                     )
                 }
