@@ -2643,6 +2643,19 @@ impl App {
             self.notify("通知設定を読み込み中です。少し待ってからもう一度押してください");
             return;
         }
+        // 未完了の操作がなければ、他端末の変更が Shape で同期済みの値を失敗時の戻り先にする。
+        if self
+            .notification_level_in_flight
+            .get(&channel_id)
+            .copied()
+            .unwrap_or(0)
+            == 0
+        {
+            self.notification_level_confirmed.insert(
+                channel_id.clone(),
+                self.store.notification_level(&channel_id, &self.me.id),
+            );
+        }
         let previous = self
             .notification_level_selected
             .get(&channel_id)
