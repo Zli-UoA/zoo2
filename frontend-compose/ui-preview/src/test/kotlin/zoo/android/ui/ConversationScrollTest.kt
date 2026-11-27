@@ -85,6 +85,21 @@ class ConversationScrollTest {
     }
 
     @Test
+    fun expandedEditorUsesTheSpaceAboveTheActions() {
+        ui.setContent {
+            ConversationInput(
+                InputState("短い下書き", expanded = true), AndroidColors(false),
+                textChanged = {}, onTool = {}, modifier = Modifier.height(360.dp),
+            )
+        }
+        ui.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.SetText))
+            .assertHeightIsAtLeast(240.dp)
+            .performTouchInput { click(Offset(center.x, height - 2f)) }
+            .assertIsFocused()
+        ui.onNodeWithContentDescription("送信").assertIsDisplayed()
+    }
+
+    @Test
     fun reopeningAChannelShowsTheUnreadDividerAndReportsReadOnlyInTheForeground() {
         val unreadEntry = entries[10].copy(dateDivider = "昨日", unreadDivider = "新着メッセージ")
         var foreground by mutableStateOf(false)

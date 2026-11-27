@@ -2,8 +2,6 @@ package zoo.android.ui
 
 
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.CornerRadius
@@ -38,6 +36,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.CompositionLocalProvider
@@ -694,21 +693,27 @@ internal fun ColumnScope.TimelineWithInput(
     }
     var openedTarget by rememberSaveable { mutableStateOf<String?>(null) }
     var jumpRequest by remember { mutableStateOf<String?>(null) }
-    val jumpIntensity = remember { Animatable(0f) }
+    var jumpIntensity by remember { mutableFloatStateOf(0f) }
     LaunchedEffect(jumpRequest, focusRequest, reducedMotion) {
-        jumpIntensity.snapTo(0f)
+        jumpIntensity = 0f
         if (focusRequest != null && jumpRequest == focusRequest) {
             if (!reducedMotion) {
                 repeat(3) {
-                    jumpIntensity.snapTo(1f)
+                    jumpIntensity = 1f
                     kotlinx.coroutines.delay(83)
-                    jumpIntensity.snapTo(0f)
+                    jumpIntensity = 0f
                     kotlinx.coroutines.delay(83)
                 }
             }
-            jumpIntensity.snapTo(1f)
+            jumpIntensity = 1f
             kotlinx.coroutines.delay(if (reducedMotion) 2000 else 1502)
-            jumpIntensity.animateTo(0f, tween(500, easing = LinearEasing))
+            // Use elapsed time so a system animation scale of zero still gets the quiet fade.
+            val fadeStart = withFrameNanos { it }
+            while (jumpIntensity > 0f) {
+                jumpIntensity = withFrameNanos { frame ->
+                    (1f - (frame - fadeStart) / 500_000_000f).coerceAtLeast(0f)
+                }
+            }
         }
     }
     var seenFocusRequest by rememberSaveable { mutableStateOf<String?>(null) }
@@ -849,7 +854,7 @@ internal fun ColumnScope.TimelineWithInput(
                     swipeReply = swipeReply, allowThreads = allowThreads, scroll = scroll, topContentPadding = topContentPadding,
                     headerOverlayHeight = headerOverlayHeight,
                     focusMessage = focusMessage.takeIf { jumpRequest == focusRequest },
-                    focusIntensity = { jumpIntensity.value })
+                    focusIntensity = { jumpIntensity })
             }
         }
         Box(Modifier.onSizeChanged { if (!overlayInput) compactInputHeight = it.height }

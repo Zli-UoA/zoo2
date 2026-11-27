@@ -44,6 +44,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.Measurable
+import androidx.compose.ui.layout.Placeable
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.CustomAccessibilityAction
@@ -257,7 +258,7 @@ internal fun ConversationInput(
                         verticalAlignment = if (adjustable) Alignment.Top else Alignment.CenterVertically,
                     ) {
                         if (!showTools && !state.live) UiIconButton(UiIcon.Attach, "添付", colors.inputText, { onTool(InputTool.Attach) })
-                        field(Modifier.weight(1f))
+                        field(Modifier.weight(1f).then(if (adjustable) Modifier.fillMaxHeight() else Modifier))
                         if (!showTools) SendAction(state, colors, onTool)
                     }
                 },
@@ -291,8 +292,8 @@ internal fun ConversationInput(
         ) { slots, constraints ->
             val (noticesSlot, suggestionsSlot, handleSlot, editorSlot, controlsSlot) = slots
             val available = constraints.copy(minWidth = 0, minHeight = 0)
-            fun List<Measurable>.measureWithin(height: Int) =
-                singleOrNull()?.measure(available.copy(maxHeight = height))
+            fun List<Measurable>.measureWithin(height: Int, fill: Boolean = false) =
+                singleOrNull()?.measure(available.copy(minHeight = if (fill) height else 0, maxHeight = height))
             fun spaceAfter(height: Int, used: Int) =
                 if (height == Constraints.Infinity) height else (height - used).coerceAtLeast(0)
 
@@ -306,11 +307,19 @@ internal fun ConversationInput(
                 if (remaining == Constraints.Infinity) 192.dp.roundToPx() else spaceAfter(remaining, editorMinimum)
             )
             remaining = spaceAfter(remaining, notices?.height ?: 0)
-            val editor = editorSlot.measureWithin(remaining)
-            remaining = spaceAfter(remaining, editor?.height ?: 0)
             val minimumSuggestionHeight = AndroidControlSize.target.roundToPx() + 8.dp.roundToPx()
-            val suggestions = if (remaining >= minimumSuggestionHeight)
-                suggestionsSlot.measureWithin(minOf(remaining, 192.dp.roundToPx())) else null
+            fun measureSuggestions(height: Int) = if (height >= minimumSuggestionHeight)
+                suggestionsSlot.measureWithin(minOf(height, 192.dp.roundToPx())) else null
+
+            val suggestions: Placeable?
+            val editor: Placeable?
+            if (adjustable) {
+                suggestions = measureSuggestions(spaceAfter(remaining, editorMinimum))
+                editor = editorSlot.measureWithin(spaceAfter(remaining, suggestions?.height ?: 0), fill = true)
+            } else {
+                editor = editorSlot.measureWithin(remaining)
+                suggestions = measureSuggestions(spaceAfter(remaining, editor?.height ?: 0))
+            }
             suggestionsVisible = suggestions != null
 
             val placed = listOfNotNull(notices, suggestions, handle, editor)
