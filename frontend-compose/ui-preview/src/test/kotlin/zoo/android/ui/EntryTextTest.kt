@@ -6,7 +6,9 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.style.TextDecoration
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Test
+import zoo.obj
 
 class EntryTextTest {
     @Test
@@ -54,5 +56,35 @@ class EntryTextTest {
         assertEquals("Guide と https://example.test/raw", text.text)
         assertTrue(text.getLinkAnnotations(0, text.length).isEmpty())
         assertTrue(text.spanStyles.any { it.item.fontWeight == AndroidWeights.emphasis && it.start == 0 && it.end == 5 })
+    }
+
+    @Test
+    fun encryptedBodyDecoratesOnlyListedMentionsAndKeepsPunctuationOutside() {
+        val style = SpanStyle(background = Color.Yellow)
+        val result = formatEntry(
+            "@alice. @bob @HERE", mentionStyle = style, allowedMentions = setOf("alice", "here"),
+            mentionProfiles = mapOf("alice" to obj("display_name" to "Alice")),
+        )
+
+        assertEquals("@alice Alice. @bob @HERE", result.text)
+        assertEquals(listOf("@alice Alice", "@HERE"), result.spanStyles.filter { it.item == style }
+            .map { result.text.substring(it.start, it.end) })
+    }
+    @Test
+    fun dottedUsernameTakesPrecedenceOverPunctuationFallback() {
+        val style = SpanStyle(background = Color.Yellow)
+        val usernames = setOf("alice", "alice.")
+        val result = formatEntry("@alice. @alice", mentionStyle = style,
+            allowedMentions = setOf("alice."), mentionUsernames = usernames)
+        val span = result.spanStyles.single { it.item == style }
+        assertEquals("@alice.", result.text.substring(span.start, span.end))
+    }
+    @Test
+    fun rowHighlightUsesOnlyRenderedAndAllowedMentions() {
+        assertFalse(bodyMentionsUser("`example: @alice`", "alice", setOf("alice"), null, emptySet()))
+        assertFalse(bodyMentionsUser("<plain>@alice</plain>", "alice", setOf("alice"), setOf("alice"), emptySet()))
+        assertFalse(bodyMentionsUser("@alice", "alice", setOf("alice"), setOf("bob"), emptySet()))
+        assertTrue(bodyMentionsUser("**@alice**", "alice", setOf("alice"), setOf("alice"), emptySet()))
+        assertTrue(bodyMentionsUser("@HERE", "alice", setOf("alice"), setOf("here"), emptySet()))
     }
 }

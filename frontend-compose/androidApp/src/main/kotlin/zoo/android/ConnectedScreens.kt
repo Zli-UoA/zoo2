@@ -101,6 +101,10 @@ internal fun ConnectedScreens(
     }
     val previewService by session.previews.summalyEndpoint.collectAsState()
     val usersById = remember(users) { users.associateBy { it.text("id") } }
+    val mentionProfiles = remember(session.accountProfiles) {
+        session.accountProfiles.associateBy { it.text("username") }
+    }
+    val mentionUsernames = remember(users) { users.map { it.text("user_name") }.toSet() }
     val posts = state.home.posts.map { state.entry(it, usersById, previewService = previewService) }
     val encrypted = channel?.let { session.isEncryptedChannel(it.text("id")) } == true
     val canPost = env.online && channel != null && member && !channel.present("archive_at")
@@ -112,7 +116,14 @@ internal fun ConnectedScreens(
         val item = state.entry(data, usersById,
             if (decrypted != null) emptyList() else displayAttachments(row),
             displayReactions(row), writable = canPost, allowPreview = !encrypted)
-        return encryptedEntry(item, row, decrypted, encrypted, session::t)
+        val allowlist = decrypted?.mentions?.let { zoo.allowedMentionNames(it, usersById) }
+        val entry = encryptedEntry(item, row, decrypted, encrypted, session::t)
+        return entry.copy(
+            allowedMentions = allowlist,
+            mentionsCurrentUser = (decrypted != null || zoo.isPlaintextBeforeEncryption(row)) &&
+                bodyMentionsUser(entry.body, usersById[session.config.userId]?.text("user_name").orEmpty(),
+                    mentionUsernames, allowlist, entry.emoji.keys),
+        )
     }
     val ordered = remember(rows) {
         rows.filterNot { it.present("deleted_at") }.sortedWith(compareBy({ it.text("created_at") }, { it.text("id") }))
@@ -581,6 +592,21 @@ internal fun ConnectedScreens(
     val reaction = state.confirmingEntry?.takeIf { it.operation == EntryOperation.React }
     val insertingEmoji = state.inputMenu == InputTool.Emoji
     val pickerOpen = insertingEmoji || reaction != null
+    val allowAccountEmoji = reaction == null || screen !is AndroidScreen.Home &&
+        screen !is AndroidScreen.Post && screen !is AndroidScreen.Profile
+    val usesAccountProfiles = when (screen) {
+        is AndroidScreen.Conversation, is AndroidScreen.Thread, is AndroidScreen.Notifications,
+        is AndroidScreen.Home, is AndroidScreen.Post, is AndroidScreen.Profile, is AndroidScreen.Bubble -> true
+        else -> pickerOpen && allowAccountEmoji
+    }
+    LaunchedEffect(session, env.online, env.visible, usesAccountProfiles) {
+        if (!env.online || !env.visible || !usesAccountProfiles) return@LaunchedEffect
+        // Share the directory with the picker and stop refreshing when this screen is hidden.
+        while (true) {
+            session.loadAccountProfiles()
+            delay(60_000)
+        }
+    }
     val needsWorkspaceEmoji = when (screen) {
         is AndroidScreen.Home -> screen.posts.any { it.needsWorkspaceEmoji }
         is AndroidScreen.Profile -> screen.posts.any { it.needsWorkspaceEmoji }
@@ -650,6 +676,8 @@ internal fun ConnectedScreens(
                     LocalKitchenReactionImage provides emojiCatalog::kitchenReaction,
                     LocalAndroidTranslation provides { key, args -> session.t(key, *args) },
                     LocalChannelLinks provides channelLinks,
+                    LocalMentionProfiles provides mentionProfiles,
+                    LocalMentionUsernames provides mentionUsernames,
                 ) {
                     AndroidScreens(screen, env.dark, env.visible && env.focused,
                         dispatch = { action ->
@@ -743,11 +771,6 @@ internal fun ConnectedScreens(
     val recentEmojis = remember(session) { mutableStateListOf<String>() }
     if (pickerOpen) {
         val unicode by produceState(emptyList<EmojiChoice>(), emojiCatalog) { value = emojiCatalog.unicode() }
-        val allowAccountEmoji = reaction == null || screen !is AndroidScreen.Home &&
-            screen !is AndroidScreen.Post && screen !is AndroidScreen.Profile
-        LaunchedEffect(session, env.online, env.visible, allowAccountEmoji) {
-            if (env.online && env.visible && allowAccountEmoji) session.loadAccountProfiles()
-        }
         val dismiss = { state.inputMenu = null; state.confirmingEntry = null }
         EmojiPicker(
             title = if (reaction == null) "絵文字" else "リアクション",

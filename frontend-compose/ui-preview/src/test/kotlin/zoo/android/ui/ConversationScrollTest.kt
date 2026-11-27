@@ -38,6 +38,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import zoo.CompletionOption
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35], qualifiers = "ja-rJP-w360dp-h760dp-xhdpi")
@@ -47,6 +48,56 @@ class ConversationScrollTest {
 
     private val entries = (1..40).map { TimelineItem("e$it", "はる", "メッセージ $it", "12:00") }
     private val channel = AndroidScreen.Conversation("dev", "開発", "", entries, InputState())
+
+    @Test
+    fun mentionSuggestionShowsTheDisplayNameAndSelectsTheUsername() {
+        var chosen: String? = null
+        ui.setContent {
+            ConversationInput(
+                InputState("@ali", mentions = listOf(CompletionOption("alice", "アリス"))),
+                AndroidColors(false), textChanged = {}, onTool = {}, onMention = { chosen = it },
+            )
+        }
+
+        ui.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.SetText)).performClick().assertIsFocused()
+        ui.onNodeWithText("アリス").assertIsDisplayed()
+        ui.onNodeWithText("@alice").assertIsSelected().performClick()
+        ui.runOnIdle { assertEquals("alice", chosen) }
+    }
+
+    @Test
+    fun hiddenMentionSuggestionsKeepTheSendActionVisibleAndDoNotConsumeEnter() {
+        var chosen: String? = null
+        ui.setContent {
+            ConversationInput(
+                InputState("first line\nsecond line\n@", notices = listOf("配布先の確認", "確認が必要な端末"),
+                    mentions = (1..8).map { CompletionOption("user$it", "User $it") }),
+                AndroidColors(false), textChanged = {}, onTool = {}, onMention = { chosen = it },
+                modifier = Modifier.height(160.dp),
+            )
+        }
+        val editor = ui.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.SetText))
+        editor.performClick().assertIsDisplayed()
+        ui.onNodeWithContentDescription("送信").assertIsDisplayed().assertIsEnabled()
+        ui.onNodeWithText("@user1").assertIsNotDisplayed()
+        editor.performKeyInput { pressKey(Key.Enter) }
+        ui.runOnIdle { assertEquals(null, chosen) }
+    }
+
+    @Test
+    fun expandedEditorUsesTheSpaceAboveTheActions() {
+        ui.setContent {
+            ConversationInput(
+                InputState("短い下書き", expanded = true), AndroidColors(false),
+                textChanged = {}, onTool = {}, modifier = Modifier.height(360.dp),
+            )
+        }
+        ui.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.SetText))
+            .assertHeightIsAtLeast(240.dp)
+            .performTouchInput { click(Offset(center.x, height - 2f)) }
+            .assertIsFocused()
+        ui.onNodeWithContentDescription("送信").assertIsDisplayed()
+    }
 
     @Test
     fun reopeningAChannelShowsTheUnreadDividerAndReportsReadOnlyInTheForeground() {

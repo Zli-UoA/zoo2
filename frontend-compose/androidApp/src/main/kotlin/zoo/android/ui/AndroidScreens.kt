@@ -2,6 +2,10 @@ package zoo.android.ui
 
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.tween
@@ -32,6 +36,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.CompositionLocalProvider
@@ -105,6 +110,8 @@ internal data class TimelineItem(
     /** 暗号化した添付（`attachment_id` → 本文の `attachments` の値の JSON。鍵を含むので表示と取得にだけ使う）。 */
     val encryptedFiles: Map<String, String> = emptyMap(),
     val postAuthor: zoo.Row? = null,
+    val allowedMentions: Set<String>? = null,
+    val mentionsCurrentUser: Boolean = false,
     val dateDivider: String? = null,
     val unreadDivider: String? = null,
 )
@@ -395,7 +402,7 @@ private fun RenderAndroidScreen(
                         Text(androidLabel("threads.unreadTooOld", "これより古い未読は読み込まれていません"),
                             Modifier.padding(horizontal = 16.dp, vertical = 8.dp), color = colors.secondary)
                     }
-                    TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = interaction.swipeReply, allowThreads = true, focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true, historyReady = screen.historyReady,
+                    TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = interaction.swipeReply, allowThreads = true, focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true, historyReady = screen.historyReady, reducedMotion = interaction.reducedMotion,
                         unreadPositionPending = screen.unreadPositionPending,
                         onUnreadPositioned = screen.onUnreadPositioned,
                         onReadThrough = screen.onReadThrough.takeIf { foreground && !screen.unreadHistoryIncomplete },
@@ -410,7 +417,7 @@ private fun RenderAndroidScreen(
                 Text("# ${screen.channelName}", Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                     color = colors.secondary, fontSize = 13.sp)
                 TimelineWithInput(listOf(screen.root) + screen.replies, screen.input, colors, dispatch,
-                    focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true, historyReady = screen.historyReady,
+                    focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true, historyReady = screen.historyReady, reducedMotion = interaction.reducedMotion,
                     loadEarlier = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderMessages) } } else null)
             }
             is AndroidScreen.OpeningConversation -> {
@@ -648,6 +655,7 @@ internal fun ColumnScope.TimelineWithInput(
     unreadPositionPending: Boolean = false,
     onUnreadPositioned: (() -> Unit)? = null,
     onReadThrough: ((String?) -> Unit)? = null,
+    reducedMotion: Boolean = false,
     imeInsets: WindowInsets = WindowInsets.ime.exclude(WindowInsets.systemBars),
 ) {
     val scroll = rememberLazyListState()
@@ -684,6 +692,30 @@ internal fun ColumnScope.TimelineWithInput(
         requestEarlier?.invoke()
     }
     var openedTarget by rememberSaveable { mutableStateOf<String?>(null) }
+    var jumpRequest by remember { mutableStateOf<String?>(null) }
+    var jumpIntensity by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(jumpRequest, focusRequest, reducedMotion) {
+        jumpIntensity = 0f
+        if (focusRequest != null && jumpRequest == focusRequest) {
+            if (!reducedMotion) {
+                repeat(3) {
+                    jumpIntensity = 1f
+                    kotlinx.coroutines.delay(83)
+                    jumpIntensity = 0f
+                    kotlinx.coroutines.delay(83)
+                }
+            }
+            jumpIntensity = 1f
+            kotlinx.coroutines.delay(if (reducedMotion) 2000 else 1502)
+            // Use elapsed time so a system animation scale of zero still gets the quiet fade.
+            val fadeStart = withFrameNanos { it }
+            while (jumpIntensity > 0f) {
+                jumpIntensity = withFrameNanos { frame ->
+                    (1f - (frame - fadeStart) / 500_000_000f).coerceAtLeast(0f)
+                }
+            }
+        }
+    }
     var seenFocusRequest by rememberSaveable { mutableStateOf<String?>(null) }
     var followedSend by rememberSaveable { mutableStateOf<String?>(null) }
     var anchor by rememberSaveable { mutableStateOf<String?>(null) }
@@ -722,6 +754,7 @@ internal fun ColumnScope.TimelineWithInput(
                 followEnd = false
                 // Complete the layout before the read observer can see this request as handled.
                 scroll.scrollToItem(focusedIndex)
+                jumpRequest = focusRequest
                 openedTarget = focusRequest
                 positioned = true
                 onUnreadPositioned?.invoke()
@@ -819,7 +852,9 @@ internal fun ColumnScope.TimelineWithInput(
             if (maxHeight > 0.dp && entries.isNotEmpty() && (!input.expanded || resizing)) {
                 Timeline(entries, colors, Modifier.fillMaxSize().testTag("conversation-timeline"), dispatch, posts = posts,
                     swipeReply = swipeReply, allowThreads = allowThreads, scroll = scroll, topContentPadding = topContentPadding,
-                    headerOverlayHeight = headerOverlayHeight)
+                    headerOverlayHeight = headerOverlayHeight,
+                    focusMessage = focusMessage.takeIf { jumpRequest == focusRequest },
+                    focusIntensity = { jumpIntensity })
             }
         }
         Box(Modifier.onSizeChanged { if (!overlayInput) compactInputHeight = it.height }
@@ -920,6 +955,8 @@ private fun Timeline(
     scroll: LazyListState = rememberLazyListState(),
     topContentPadding: Dp = 0.dp,
     headerOverlayHeight: Dp = 0.dp,
+    focusMessage: String? = null,
+    focusIntensity: () -> Float = { 0f },
 ) {
     if (entries.isEmpty() && header == null) return
     var menuId by remember { mutableStateOf<String?>(null) }
@@ -938,6 +975,19 @@ private fun Timeline(
                     entry.unreadDivider?.let { ConversationDivider(it, colors, unread = true) }
                     Column(
                         Modifier.fillMaxWidth().testTag("timeline-entry-${entry.id}")
+                            .then(if (entry.mentionsCurrentUser || entry.id == focusMessage) Modifier.drawBehind {
+                                val accentWidth = 3.dp.toPx()
+                                val start = if (layoutDirection == androidx.compose.ui.unit.LayoutDirection.Ltr) 0f
+                                    else size.width - accentWidth
+                                fun highlight(color: Color, backgroundAlpha: Float, intensity: Float) {
+                                    drawRoundRect(color.copy(alpha = backgroundAlpha * intensity),
+                                        cornerRadius = CornerRadius(8.dp.toPx()))
+                                    drawRect(color.copy(alpha = intensity), topLeft = Offset(start, 0f),
+                                        size = Size(accentWidth, size.height))
+                                }
+                                if (entry.mentionsCurrentUser) highlight(colors.messageMention, .08f, 1f)
+                                if (entry.id == focusMessage) highlight(colors.messageTarget, .16f, focusIntensity())
+                            } else Modifier)
                             .then(if (posts) Modifier.combinedClickable(
                                 onClick = { dispatch(AndroidUiAction.OpenPost(entry.id)) },
                                 onLongClick = { menuId = entry.id },
@@ -968,7 +1018,8 @@ private fun Timeline(
                                         fontSize = entryTextSize, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
                                 }
                                 if (!entry.richContent.hidesBody && entry.body.isNotBlank()) {
-                                    EntryBody(entry.body, colors.foreground, entryTextSize, entry.emoji)
+                                    EntryBody(entry.body, colors.foreground, entryTextSize, entry.emoji,
+                                        mentionColors = colors, allowedMentions = entry.allowedMentions)
                                 }
                                 EntryBlocks(entry.richContent.blocks, colors, entryTextSize, entry.emoji)
                                 entry.attachments.forEach { (id, name) ->

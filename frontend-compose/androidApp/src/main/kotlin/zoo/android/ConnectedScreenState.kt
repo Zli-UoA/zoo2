@@ -685,15 +685,19 @@ internal class ConnectedScreenState(
     fun input(key: String, canPost: Boolean, people: List<Row> = emptyList()): InputState {
         val draft = drafts[key] ?: InputState()
         val files = channelFiles[key]
-        val position = (draft.selection?.end ?: draft.text.length).coerceIn(0, draft.text.length)
-        val mention = Regex("(?:^|\\s)@([^\\s@]*)$").find(draft.text.take(position))?.groupValues?.get(1)
+        val mention = mentionRange(draft)
         return draft.copy(
-            mentions = if (mention == null) emptyList() else people.asSequence().map { it.text("user_name") }
-                .filter { it.isNotBlank() && it.startsWith(mention, ignoreCase = true) }.distinct().take(5).toList(),
+            mentions = zoo.completionOptions(mention, people, people.map { it.text("id") }.toSet()),
             canSend = canPost && !saving && (files == null || files.canSend(draft.text)),
             hasAttachments = files?.items?.isNotEmpty() == true,
             files = files?.items?.map { it.file.text("id") to it.name }.orEmpty(),
         )
+    }
+
+    private fun mentionRange(draft: InputState): zoo.CompletionRange? {
+        val selection = draft.selection
+        if (selection != null && !selection.collapsed) return null
+        return zoo.completionAt(draft.text, selection?.end ?: draft.text.length)?.takeIf { it.kind == "mention" }
     }
 
     suspend fun refreshPins() {
@@ -1059,12 +1063,9 @@ internal class ConnectedScreenState(
             }
             is AndroidUiAction.Mention -> {
                 val draft = drafts[draftKey] ?: InputState()
-                val end = (draft.selection?.end ?: draft.text.length).coerceIn(0, draft.text.length)
-                val target = draft.text.take(end).lastIndexOf('@')
-                if (target >= 0) {
-                    val mention = "@${action.name} "
-                    val text = draft.text.replaceRange(target, end, mention)
-                    drafts[draftKey] = draft.copy(text = text, selection = TextRange(target + mention.length))
+                mentionRange(draft)?.let { range ->
+                    val (text, caret) = zoo.insertCompletion(draft.text, range, action.name)
+                    drafts[draftKey] = draft.copy(text = text, selection = TextRange(caret))
                 }
             }
             AndroidUiAction.RetryNotifications -> app.activityPubNotifications.refresh()
@@ -1318,7 +1319,8 @@ internal class ConnectedScreenState(
                             val id = action.item.id.encodeURLParameter()
                             if (!post && app.isEncryptedChannel(channelId)) {
                                 val encryption = platform.messageEncryption ?: error("Encryption unavailable")
-                                encryption.edit(requireNotNull(row), editDraft)
+                                val names = app.repo.users.rows.value.map { it.text("id") to it.text("user_name") }
+                                encryption.edit(requireNotNull(row), editDraft, zoo.encryptedMentions(editDraft, names))
                             } else {
                                 if (!post) {
                                     app.requirePlaintextChannel(channelId)
