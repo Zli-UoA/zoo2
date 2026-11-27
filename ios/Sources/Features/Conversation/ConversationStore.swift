@@ -89,6 +89,7 @@ final class ConversationStore {
         case .pinPending: "鍵の確認を保存できていません"
         case .blocked: "鍵を配れません"
         case .warning: "鍵の警告があります"
+        case .deliveryFailed: "鍵を届けられませんでした"
         }
     }
 

@@ -25,6 +25,7 @@ private final class FakeMessageServer: E2eeRequesting {
     var delivered: [CryptoStore.ToDeviceRow] = []
     var accepted: [String: JSONValue] = [:]
     var refuseDelivery = false
+    var claimResponse: JSONValue?
     /// `POST /api/messages` の最初の 1 回を、epoch が進んだ 409 にする。
     var staleOnce = true
     /// `to_device` の応答に `undelivered` がない（読めない応答）。
@@ -68,6 +69,7 @@ private final class FakeMessageServer: E2eeRequesting {
             if pagedRecipients, query["after"] == nil { page["next_after"] = .string("page-2") }
             return .object(page)
         case "api/e2ee/keys/claim":
+            if let claimResponse { return claimResponse }
             let key = try #require(try receiver.store.prepareKeyUpload(oneTimeKeyCount: 0, hasUnusedFallbackKey: true)).oneTimeKeys.first!
             return .object(["one_time_keys": .object([user: .object([receiver.store.deviceID: .object([key.key: key.value])])])])
         case "api/e2ee/to_device":
@@ -112,6 +114,14 @@ private final class BrokenEpochServer: E2eeRequesting {
         guard case .object(var page) = try await base.e2eeJSON(path, method: method, query: query, body: body) else { return .object([:]) }
         page["membership_epoch"] = .number(1e20)
         return .object(page)
+    }
+}
+
+@MainActor
+private final class DeliveryRequests: E2eeRequesting {
+    var handle: (String, [String: JSONValue]?) async throws -> JSONValue = { _, _ in throw ZooError.invalidResponse }
+    func e2eeJSON(_ path: String, method: String, query: [String: String], body: [String: JSONValue]?) async throws -> JSONValue {
+        try await handle(path, body)
     }
 }
 
@@ -507,6 +517,93 @@ struct MessageEncryptionTests {
         #expect(sender.store.recordedMembers(channel: channel) == [])
         try await encryption.send(channel: channel, id: UUID().uuidString.lowercased(), parent: nil, body: "新しい投稿")
         #expect(sender.store.recordedMembers(channel: channel) == [added])
+    }
+
+    @Test("不正な鍵払い出し応答では本文を投稿しない", arguments: ["ユーザー配列", "端末配列", "端末null", "鍵ゼロ", "鍵複数", "鍵配列"])
+    func rejectsMalformedClaim(mode: String) async throws {
+        let (server, sender, receiver, encryption, _) = try await makePair()
+        defer { sender.cleanUp(); receiver.cleanUp() }
+        let badDevice: JSONValue = switch mode {
+        case "端末配列": .array([])
+        case "端末null": .null
+        case "鍵ゼロ": .object([:])
+        case "鍵複数": .object(["a": .object([:]), "b": .object([:])])
+        default: .object(["a": .array([])])
+        }
+        server.claimResponse = .object(["one_time_keys": .object([user: mode == "ユーザー配列" ? .array([]) : .object([receiver.store.deviceID: badDevice])])])
+        await #expect {
+            try await encryption.send(channel: channel, id: messageID, parent: nil, body: "投稿しない")
+        } throws: { error in
+            if case ZooError.invalidResponse = error { true } else { false }
+        }
+        #expect(server.posts == 0 && server.delivered.isEmpty)
+    }
+
+    @Test("配送結果を相手ごとに警告し、成功した端末があれば警告せず再配布で解消する", arguments: ["全端末未配送", "一部未配送", "鍵不足"])
+    func reportsDeliveryFailureBeforePost(mode: String) async throws {
+        let (_, sender, receiver, _, _) = try await makePair()
+        defer { sender.cleanUp(); receiver.cleanUp() }
+        let otherID = "00000000-0000-4000-8000-000000000099"
+        let otherServer = FakeSetupServer(userID: otherID)
+        let (files, _, directory) = makeFiles(), (secondFiles, _, secondDirectory) = makeFiles()
+        let other = try #require(try CryptoStore.open(files, userID: otherID)).store
+        let second = try #require(try CryptoStore.open(secondFiles, userID: otherID)).store
+        defer {
+            other.close(); second.close()
+            try? FileManager.default.removeItem(at: directory)
+            try? FileManager.default.removeItem(at: secondDirectory)
+        }
+        try other.markRegistered(); try second.markRegistered()
+        let setup = E2eeSetup(api: otherServer, userID: otherID, store: { other })
+        let start = try setup.begin()
+        try await setup.completeSetup(start.session, reauth: "t")
+        _ = try await E2eeSetup(api: otherServer, userID: otherID, store: { second }).unlock(.recovery(start.recoveryKey))
+        var snapshot = try #require(parse(try await sender.server.queryOwnKeys(userID: user)).object)
+        let otherKeys = try #require(parse(try await otherServer.queryOwnKeys(userID: otherID)).object)
+        for (key, item) in otherKeys {
+            if let object = item.object { snapshot[key] = .object((snapshot[key]?.object ?? [:]).merging(object) { _, new in new }) }
+            else if let array = item.array { snapshot[key] = .array((snapshot[key]?.array ?? []) + array) }
+        }
+        snapshot["membership_epoch"] = .number(1)
+        snapshot["user_ids"] = .array([.string(user), .string(otherID)])
+        snapshot["device_keys"] = .object([otherID: .object([other.deviceID: parse(other.deviceKeys()), second.deviceID: parse(second.deviceKeys())])])
+        let firstKey = try #require(try other.prepareKeyUpload(oneTimeKeyCount: 0, hasUnusedFallbackKey: true)?.oneTimeKeys.first)
+        let secondKey = try #require(try second.prepareKeyUpload(oneTimeKeyCount: 0, hasUnusedFallbackKey: true)?.oneTimeKeys.first)
+        let claims: JSONValue = .object([otherID: .object([other.deviceID: .object([firstKey.key: firstKey.value]), second.deviceID: .object([secondKey.key: secondKey.value])])])
+        let api = DeliveryRequests()
+        var fail = true, deliveryError = false, posts = 0
+        var lastSummary = MessageEncryption.RecipientSummary()
+        api.handle = { path, _ in
+            switch path {
+            case "api/e2ee/channels/\(channel)/recipients": return .object(snapshot)
+            case "api/e2ee/tofu_pins": return .object([:])
+            case "api/e2ee/keys/claim": return .object(["one_time_keys": fail && mode == "鍵不足" ? .object([otherID: .object([:])]) : claims])
+            case "api/e2ee/to_device":
+                if deliveryError { throw URLError(.notConnectedToInternet) }
+                let failed = !fail ? [] : (mode == "一部未配送" ? [other.deviceID] : [other.deviceID, second.deviceID])
+                return .object(["undelivered": .array(failed.map { .object(["user_id": .string(otherID), "device_id": .string($0)]) })])
+            case "api/messages":
+                #expect(lastSummary.undeliverable.contains { $0.userID == otherID && $0.reason == .deliveryFailed } == (fail && mode != "一部未配送"))
+                posts += 1
+                return .object([:])
+            default: throw ZooError.invalidResponse
+            }
+        }
+        let encryption = MessageEncryption(store: { sender.store }, api: api)
+        try await encryption.send(channel: channel, id: messageID, parent: nil, body: "配送結果を表示") { lastSummary = $0 }
+        #expect(posts == 1)
+        #expect(try await encryption.summary(channel: channel).undeliverable.contains { $0.reason == .deliveryFailed } == (mode != "一部未配送"))
+        fail = false
+        deliveryError = true
+        await #expect(throws: URLError.self) {
+            try await encryption.send(channel: channel, id: UUID().uuidString.lowercased(), parent: nil, body: "再配布の通信失敗") { lastSummary = $0 }
+        }
+        #expect(posts == 1)
+        #expect(try await encryption.summary(channel: channel).undeliverable.contains { $0.reason == .deliveryFailed } == (mode != "一部未配送"))
+        deliveryError = false
+        try await encryption.send(channel: channel, id: UUID().uuidString.lowercased(), parent: nil, body: "再配布") { lastSummary = $0 }
+        #expect(posts == 2 && lastSummary.undeliverable.isEmpty)
+        #expect(try await encryption.summary(channel: channel).undeliverable.isEmpty)
     }
 
     @Test func 未配送の端末は次の送信で再配布し本文の投稿は続ける() async throws {

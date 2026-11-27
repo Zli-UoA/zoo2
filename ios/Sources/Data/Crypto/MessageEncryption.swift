@@ -143,6 +143,7 @@ final class MessageEncryption {
     }
 
     private var outbound: [String: SendingSession] = [:]
+    private var deliveryFailures: [String: (owner: CryptoStore, senderKey: String, users: Set<String>)] = [:]
     private var latestEpochs: [String: UInt64] = [:]
     private var tail: Task<Void, Never>?
 
@@ -209,7 +210,7 @@ final class MessageEncryption {
 
     /// 鍵を配れない相手と、その理由（暗号化の設定がない、鍵が不正、再検証が必要、など）。
     struct Undeliverable: Equatable, Sendable {
-        enum Reason: String, Equatable, Sendable { case notSetUp, invalidKeys, needsReverification, needsUnlock, pinPending, blocked, warning }
+        enum Reason: String, Equatable, Sendable { case notSetUp, invalidKeys, needsReverification, needsUnlock, pinPending, blocked, warning, deliveryFailed }
         let userID: String
         let reason: Reason
     }
@@ -290,19 +291,25 @@ final class MessageEncryption {
         let previous = Set(store.recordedMembers(channel: channel) ?? [])
         // 記録がなければ（初めて）、増えたとは言わない。
         let added = store.recordedMembers(channel: channel) == nil ? [] : current.subtracting(previous).sorted()
-        return RecipientSummary(added: added, undeliverable: undeliverable(store, distribution))
+        var blocked = undeliverable(store, distribution)
+        if let failures = deliveryFailures[channel], failures.owner === store, failures.senderKey == store.curve25519Key {
+            for user in failures.users.intersection(distribution.users.keys).sorted() where !blocked.contains(where: { $0.userID == user }) {
+                blocked.append(Undeliverable(userID: user, reason: .deliveryFailed))
+            }
+        }
+        return RecipientSummary(added: added, undeliverable: blocked)
     }
 
     /// 自分の鍵を信頼できない場合は止め、受信者の未設定などは既存の配布先の要約に表示する。
     private func recipients(_ store: CryptoStore, channel: String, minimum: UInt64,
-                            onRecipients: ((RecipientSummary) -> Void)?) async throws -> (UInt64, [VerifiedDeviceKeys], [String]) {
+                            onRecipients: ((RecipientSummary) -> Void)?) async throws -> (UInt64, Distribution) {
         let (epoch, distribution) = try await evaluate(store, channel: channel, minimum: minimum)
         let summary = summary(store, channel: channel, distribution: distribution)
         onRecipients?(summary)
         let blocked = summary.undeliverable
         let ownFailures = blocked.filter { $0.userID == store.userID }
         guard ownFailures.isEmpty else { throw MessageEncryptionError.undeliverableUsers(ownFailures) }
-        return (epoch, distribution.devices, Array(Set(distribution.users.keys).subtracting([store.userID])))
+        return (epoch, distribution)
     }
 
     /// 配送成功を確認した端末だけを返す。通信自体の失敗や壊れた応答は送信を止める。
@@ -328,7 +335,15 @@ final class MessageEncryption {
             var messages: [String: JSONValue] = [:]
             for device in batch {
                 // 払い出されたワンタイム鍵は、1 端末につきちょうど 1 つ。
-                let single = claimed[device.userId()]?.object?[device.deviceId()]?.object.flatMap { $0.count == 1 ? $0.values.first : nil }
+                var single: JSONValue?
+                if let userKeys = claimed[device.userId()] {
+                    guard let perUser = userKeys.object else { throw ZooError.invalidResponse }
+                    if let deviceKeys = perUser[device.deviceId()] {
+                        guard let keys = deviceKeys.object, keys.count == 1,
+                              let key = keys.values.first, key.object != nil else { throw ZooError.invalidResponse }
+                        single = key
+                    }
+                }
                 guard let encrypted = try store.shareKey(device, outbound: outbound, claimed: single.map(jsonText)) else { continue }
                 var perUser = messages[device.userId()]?.object ?? [:]
                 perUser[device.deviceId()] = try JSONDecoder().decode(JSONValue.self, from: Data(encrypted.utf8))
@@ -394,7 +409,9 @@ final class MessageEncryption {
         var minimum = latestEpochs[channel] ?? 0
         for _ in 0..<3 {
             minimum = max(minimum, latestEpochs[channel] ?? 0)
-            let (epoch, devices, members) = try await recipients(store, channel: channel, minimum: minimum, onRecipients: onRecipients)
+            let (epoch, distribution) = try await recipients(store, channel: channel, minimum: minimum, onRecipients: onRecipients)
+            let devices = distribution.devices
+            let members = Array(Set(distribution.users.keys).subtracting([store.userID]))
             guard epoch >= (latestEpochs[channel] ?? 0) else {
                 discard(channel)
                 continue
@@ -417,6 +434,10 @@ final class MessageEncryption {
                 let pending = devices.filter { !current.shared.contains(deviceKey($0)) }
                 let shared = try await share(store, outbound: current.session, devices: pending)
                 current.shared.formUnion(shared)
+                let deliveredUsers = Set(devices.filter { current.shared.contains(deviceKey($0)) }.map { $0.userId() })
+                let failedUsers = Set(devices.map { $0.userId() }).subtracting(deliveredUsers).subtracting([store.userID])
+                deliveryFailures[channel] = (store, current.senderKey, failedUsers)
+                onRecipients?(summary(store, channel: channel, distribution: distribution))
                 guard epoch >= (latestEpochs[channel] ?? 0) else {
                     discard(channel)
                     continue

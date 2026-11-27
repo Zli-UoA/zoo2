@@ -224,6 +224,7 @@ struct VerifyUsersView: View {
     @State private var states: [String: E2eeVerification.UserVerificationState] = [:]
     @State private var reverifying: Person?
     @State private var failedStates: Set<String> = []
+    @State private var stateRequests: [String: UUID] = [:]
 
     private var people: [Person] {
         workspace.people.values.filter { $0.id != workspace.user.id && !$0.is_bot && !$0.is_deactivated }
@@ -271,11 +272,17 @@ struct VerifyUsersView: View {
     }
 
     private func reloadState(_ id: String) async {
+        let requestID = UUID()
+        stateRequests[id] = requestID
+        states[id] = nil
         do {
-            states[id] = try await verification.state(of: id)
+            let state = try await verification.state(of: id)
+            guard !Task.isCancelled, stateRequests[id] == requestID else { return }
+            states[id] = state
             failedStates.remove(id)
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, stateRequests[id] == requestID else { return }
+            states[id] = nil
             failedStates.insert(id)
         }
     }
