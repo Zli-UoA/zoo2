@@ -345,7 +345,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                     "chat"
                 else "sidebar"
         }
-        if (!old.online && next.online) repo.refresh()
+        if (next.online && (!old.online || (!old.visible && next.visible))) repo.refresh()
     }
 
     private val encryptedChannels by lazy { EncryptedChannelHistory(platform, config) }

@@ -22,6 +22,7 @@ import io.ktor.client.statement.*
 import io.ktor.http.*
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
+import okhttp3.ConnectionPool
 import zoo.*
 import zoo.android.phone.AndroidPhoneHost
 import zoo.android.phone.PhonePermissionRequest
@@ -303,19 +304,26 @@ class MainActivity : ComponentActivity() {
             }
             DisposableEffect(current) {
                 var disposed = false
-                val observer = LifecycleEventObserver { _, event ->
-                    if (event == Lifecycle.Event.ON_RESUME) current.push.refresh()
-                    platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+                val connectivity = getSystemService(android.net.ConnectivityManager::class.java)
+                fun updateNetworkStatus() {
+                    platform.online(hasInternet(
+                        connectivity.activeNetwork?.let(connectivity::getNetworkCapabilities),
+                    ))
                     current.session.update(platform.env)
+                }
+                val observer = LifecycleEventObserver { _, event ->
+                    if (event == Lifecycle.Event.ON_START && !platform.env.visible) {
+                        // A backgrounded app may retain sockets for a network that has already changed.
+                        current.connections.evictAll()
+                    }
+                    platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+                    updateNetworkStatus()
+                    if (event == Lifecycle.Event.ON_RESUME) current.push.refresh()
                 }
                 lifecycle.addObserver(observer)
                 platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
-                current.session.update(platform.env)
-                val connectivity = getSystemService(android.net.ConnectivityManager::class.java)
                 fun updateOnline() = runOnUiThread {
-                    if (!disposed) platform.online(hasInternet(
-                        connectivity.activeNetwork?.let(connectivity::getNetworkCapabilities),
-                    ))
+                    if (!disposed) updateNetworkStatus()
                 }
                 val callback =
                     object : android.net.ConnectivityManager.NetworkCallback() {
@@ -384,12 +392,14 @@ class MainActivity : ComponentActivity() {
         connection.validate()
         val owner = loginStore.beginSession(savedRefresh?.let { SavedLogin(connection, it) })
         val oidcRoutes = OidcNetworkRoutes()
+        val connections = ConnectionPool()
         val http = HttpClient(OkHttp) {
             // Refresh tokens are single-use: never replay a request inside OkHttp.
             engine {
                 config {
                     retryOnConnectionFailure(false)
                     dns(oidcRoutes)
+                    connectionPool(connections)
                     followRedirects(false)
                     followSslRedirects(false)
                 }
@@ -473,7 +483,7 @@ class MainActivity : ComponentActivity() {
             val logoutApi = ZooApi(config, object : Platform by platform {
                 override suspend fun headers() = auth.headersWithoutRefresh()
             }, http)
-            return RunningSession(session, platform, lifetime, http, auth, e2ee, AndroidNotifications(this, session), AndroidPushRegistration(this, session, logoutApi), AndroidPhoneHost(applicationContext, session, http, ::preparePhone)).also {
+            return RunningSession(session, platform, lifetime, http, connections, auth, e2ee, AndroidNotifications(this, session), AndroidPushRegistration(this, session, logoutApi), AndroidPhoneHost(applicationContext, session, http, ::preparePhone)).also {
                 session.start()
                 e2ee.start()
             }
@@ -492,6 +502,7 @@ private class RunningSession(
     val platform: AndroidPlatform,
     val scope: CoroutineScope,
     private val http: HttpClient,
+    val connections: ConnectionPool,
     val auth: DeviceAuth,
     private val e2ee: zoo.crypto.E2eeDeviceManager,
     val notifications: AndroidNotifications,

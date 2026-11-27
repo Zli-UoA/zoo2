@@ -7,6 +7,7 @@ import io.ktor.client.engine.mock.*
 import io.ktor.http.*
 import kotlin.test.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.*
 import kotlinx.serialization.json.*
@@ -169,6 +170,55 @@ class RepositoryTest {
             assertEquals(2, writes)
             assertFalse(app.channelReadPositions.getValue("c1").hasUnread)
         } finally { app.close() }
+    }
+
+    @Test
+    fun returningToForegroundRefreshesAnExistingShapeEvenWhenStillOnline() = runTest {
+        val requests = Channel<Url>(Channel.UNLIMITED)
+        val platform = FakePlatform()
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    if (request.url.encodedPath != "/api/shapes/channels") awaitCancellation()
+                    requests.send(request.url)
+                    if (request.url.parameters["offset"] != "-1") awaitCancellation()
+                    respond(
+                        """[{"headers":{"control":"up-to-date"}}]""",
+                        headers = headersOf(
+                            "electric-handle" to listOf("test-handle"),
+                            "electric-offset" to listOf("1_0"),
+                            "electric-cursor" to listOf("1"),
+                            "electric-schema" to listOf("{}"),
+                            "content-type" to listOf("application/json"),
+                        ),
+                    )
+                }
+            }
+        }
+        val repo = Repository(config, platform, http, backgroundScope)
+        val foreground = Environment(online = true, visible = true)
+        val app = Session(repo, backgroundScope, foreground)
+        try {
+            assertEquals("-1", requests.receive().parameters["offset"])
+            assertEquals("true", requests.receive().parameters["live"])
+
+            app.update(foreground.copy(visible = false))
+            runCurrent()
+            assertTrue(requests.tryReceive().isFailure)
+
+            app.update(foreground)
+            val resumed = requests.receive().parameters
+            assertEquals("test-handle", resumed["handle"])
+            assertEquals("1_0", resumed["offset"])
+            assertNotEquals("true", resumed["live"])
+
+            app.update(foreground)
+            runCurrent()
+            assertTrue(requests.tryReceive().isFailure)
+        } finally {
+            app.close()
+        }
     }
 
     @Test
