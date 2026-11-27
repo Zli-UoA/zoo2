@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { classifyTranslationChanges, translationOnlyChange } from './test-selection-diff.mjs';
 import { test } from 'node:test';
 import { readdirSync } from 'node:fs';
 import { selectSuites } from './test-selection.mjs';
@@ -72,30 +73,49 @@ test('Rust tests select only the required partition and special emoji job', () =
   }
 });
 
-test('code, shared helpers, fixtures, unsupported specs and selectors trigger all suites', () => {
-  for (const path of [
-    'frontend/src/lib/time.ts', 'frontend/src/components/Button.tsx',
-    'frontend/src/components/Button.stories.tsx', 'frontend/.storybook/preview.ts',
-    'frontend/src/test/browser-setup.ts', 'frontend/e2e/mock-idp.ts',
-    'frontend/e2e/smoke.spec.ts', 'frontend/playwright.config.ts',
-    'backend/src/routes/messages.rs', 'backend/tests/support/thread_db.rs',
-    'backend/tests/display_views.sql', 'backend/Cargo.lock', 'infra/db/schema.sql',
-    '.github/scripts/test-selection.mjs', '.github/workflows/select-tests.yaml',
-  ]) {
-    const plan = selectSuites('pull_request', [change('backend/tests/threads_test.rs'), change(path)]);
-    assert.equal(plan.backend.full, true, path);
-    if (path.startsWith('backend/tests/')) assert.ok(Object.values(plan.frontend).every(v => !v), path);
-    else assert.ok(Object.entries(plan.frontend).every(([key, value]) => value || (key === 'proxy' && path.startsWith('frontend/'))), path);
-  }
+test('mixed inputs select the union of their suites without widening unrelated jobs', () => {
+  const plan = selectSuites('pull_request', [
+    change('frontend/src/components/Button.tsx'),
+    change('frontend/src/lib/e2ee/setupController.ts'),
+    change('frontend/e2e/layout.spec.ts'),
+    change('infra/proxy/stg.conf'),
+    change('backend/src/routes/typing.rs'),
+    change('backend/tests/threads_test.rs'),
+  ]);
+  assert.deepEqual(Object.keys(plan.frontend).filter(key => plan.frontend[key]),
+    ['unit', 'browser', 'vrt', 'storybook', 'layout', 'proxy']);
+  assert.deepEqual(plan.backend.targets, ['app_event_sources_test', 'threads_test', 'typing_test']);
+  assert.equal(plan.backend.full, false);
+  assert.equal(plan.backend.check, true);
+  assert.equal(plan.backend.source, true);
 });
 
-test('proxy-only edits do not compile the frontend or Wasm; nginx-only edits select the container', () => {
+test('shared changes broaden only the affected test scope', () => {
+  const fixtures = selectSuites('pull_request', [
+    change('backend/tests/support/thread_db.rs'),
+    change('frontend/src/components/Button.tsx'),
+  ]);
+  assert.equal(fixtures.backend.full, true);
+  assert.equal(fixtures.frontend.browser, true);
+  assert.equal(fixtures.frontend.container, false);
+  const database = selectSuites('pull_request', [change('infra/db/schema.sql')]);
+  assert.equal(database.backend.full, true);
+  assert.ok(Object.values(database.frontend).every(value => !value));
+  const playwright = selectSuites('pull_request', [change('frontend/e2e/mock-idp.ts')]);
+  assert.equal(playwright.frontend.auth, true);
+  assert.equal(playwright.frontend.vrt, false);
+  const selector = selectSuites('pull_request', [change('.github/scripts/test-selection.mjs')]);
+  assert.equal(selector.backend.full, true);
+  assert.ok(Object.values(selector.frontend).every(Boolean));
+});
+
+test('proxy-only edits do not compile the frontend or Wasm; nginx-only edits select container and offline CSP', () => {
   const proxy = selectSuites('pull_request', [change('infra/proxy/stg.conf')]);
   assert.deepEqual(Object.keys(proxy.frontend).filter(k => proxy.frontend[k]), ['proxy']);
   assert.deepEqual(proxy.frontendBuild, { check: false, build: false, wasm: false });
   const nginx = selectSuites('pull_request', [change('infra/frontend-nginx.conf')]);
-  assert.deepEqual(Object.keys(nginx.frontend).filter(k => nginx.frontend[k]), ['container']);
-  assert.equal(nginx.frontendBuild.wasm, false);
+  assert.deepEqual(Object.keys(nginx.frontend).filter(k => nginx.frontend[k]), ['offline', 'container']);
+  assert.equal(nginx.frontendBuild.wasm, true);
   assert.equal(selectSuites('pull_request', [change('frontend/src/lib/time.test.ts')]).frontendBuild.build, false);
 });
 
@@ -187,4 +207,56 @@ test('classified backend routes select dedicated targets and independently edite
   assert.equal(selectSuites('merge_group', changes).backend.full, true);
   const shared = selectSuites('pull_request', [...changes, change('backend/src/routes/mod.rs')]);
   assert.equal(shared.backend.full, true);
+});
+
+test('Android source and translation edits do not select web application tests', () => {
+  const locale = change('frontend/src/lib/i18n/locales/ja.json');
+  const android = change('frontend-compose/androidApp/src/main/kotlin/zoo/android/Settings.kt');
+  const readme = change('frontend/README.md');
+  for (const changes of [[locale, android], [locale], [readme]]) {
+    const plan = selectSuites('pull_request', changes);
+    assert.ok(Object.values(plan.frontend).every(value => !value));
+    assert.ok(Object.values(plan.frontendBuild).every(value => !value));
+    assert.equal(plan.backend.check, false);
+  }
+});
+
+test('ordinary web source and test edits do not select the broad Playwright or container suites', () => {
+  const selection = selectSuites('pull_request', [
+    change('frontend/src/components/Button.tsx'),
+    change('frontend/src/components/Button.browser.test.tsx'),
+    change('frontend/src/lib/i18n/locales/ja.json'),
+    change('frontend-compose/androidApp/src/main/kotlin/zoo/android/Settings.kt'),
+  ]);
+  assert.deepEqual(Object.keys(selection.frontend).filter(key => selection.frontend[key]), ['unit', 'browser', 'vrt', 'storybook']);
+  assert.equal(selection.backend.check, false);
+  assert.equal(selection.frontend.catalog, false);
+  assert.equal(selectSuites('merge_group', [change('frontend/src/components/Button.tsx')]).frontend.catalog, true);
+});
+
+test('translation edits retain broader checks when keys or interpolation variables change', () => {
+  const before = '{"setting":"{{count}} items"}';
+  assert.equal(translationOnlyChange(before, '{"setting":"Items: {{ count }}","added":"New"}', 'en.json'), true);
+  assert.equal(translationOnlyChange(before, '{"setting":"{{total}} items"}', 'en.json'), false);
+  assert.equal(translationOnlyChange(before, '{}', 'en.json'), false);
+  assert.throws(() => translationOnlyChange(before, '{"setting":"{{count"}', 'en.json'), /invalid interpolation/);
+  assert.throws(() => translationOnlyChange(before, '{', 'en.json'), SyntaxError);
+
+  const [changeWithRemovedKey] = classifyTranslationChanges('a'.repeat(40), [
+    change('frontend/src/lib/i18n/locales/en.json'),
+  ], { git: () => before, read: () => '{}' });
+  assert.equal(selectSuites('pull_request', [changeWithRemovedKey]).frontend.i18n, true);
+});
+
+test('resources consumed outside the Vitest import graph keep their direct checks', () => {
+  const worker = selectSuites('pull_request', [change('frontend/public/sw.js')]);
+  for (const suite of ['pwa', 'offline', 'avatar', 'container']) assert.equal(worker.frontend[suite], true, suite);
+  assert.equal(worker.frontend.catalog, false);
+  const story = selectSuites('pull_request', [change('frontend/.storybook/fixtures.ts')]);
+  assert.equal(story.frontend.vrt, true);
+  assert.equal(story.frontend.catalog, true);
+  assert.equal(story.frontend.container, false);
+  const compose = selectSuites('pull_request', [change('infra/compose.stack.yaml')]);
+  assert.ok(compose.frontend.container && compose.frontend.proxy && compose.backend.deploy);
+  assert.ok(!compose.frontend.storybook && !compose.backend.full && !compose.backend.run);
 });

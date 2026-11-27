@@ -159,6 +159,8 @@ test('docs-only PR publishes nothing and does not read the main SHA', async () =
 });
 test('pullRequestComponents covers renames and huge diffs', () => {
   assert.deepEqual(pullRequestComponents([{filename: 'docs/a.md'}]), []);
+  assert.deepEqual(pullRequestComponents([{filename: 'frontend/README.md'}]), []);
+  assert.equal(wantsPreview([{filename: 'frontend/README.md'}]), false);
   assert.deepEqual(pullRequestComponents([{filename: 'docs/a.rs', previous_filename: 'backend/a.rs'}]), ['backend']);
   assert.equal(pullRequestComponents(Array.from({length: 3000}, () => ({filename: 'docs/a.md'}))).length, 4);
 });

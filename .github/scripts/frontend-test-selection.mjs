@@ -2,28 +2,44 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { escapePattern, readChangedCases } from './browser-test-selection.mjs';
-import { readChanges, testBaseSha, usesSelectiveTests, workflowChanges } from './test-selection-diff.mjs';
+import { classifyTranslationChanges, isFrontendTestInput, isLightweightChange, readChanges, testBaseSha, usesSelectiveTests, workflowChanges } from './test-selection-diff.mjs';
 import { selectSourceCases } from './vitest-test-selection.mjs';
 export { readChanges } from './test-selection-diff.mjs';
 
 const frontend = fileURLToPath(new URL('../../frontend/', import.meta.url));
 
-export function isRelatedFrontendModule(path) {
+export function isRelatedFrontendModule(path, eventName) {
   return /^frontend\/src\/.+\.(ts|tsx)$/.test(path) && !path.endsWith('.d.ts') &&
     (!/^frontend\/src\/(test|routes|sw)\//.test(path) || /\.vrt\.test\.tsx$/.test(path)) &&
-    !/^frontend\/src\/lib\/(i18n|pwa|e2ee|oidc)\//.test(path) &&
+    !/^frontend\/src\/lib\/(i18n|pwa|oidc)\//.test(path) &&
+    (!path.startsWith('frontend/src/lib/e2ee/') ||
+      (eventName === 'pull_request' && !/(?:worker|wasm|runtime)/i.test(path))) &&
     !/(?:^|\/)(?:routeTree\.gen|router|main)\.[^/]+$/.test(path);
 }
 
+export function isVitestInput(path) {
+  return path.startsWith('frontend/') && !/^frontend\/(e2e\/|playwright[^/]*\.config\.ts$|scripts\/(?:pwa|avatar-cache|offline-csp)\.test\.mjs$)/.test(path);
+}
+
+function isPrVitestInput(change, project) {
+  if (['unit', 'browser'].includes(project) && change.path.startsWith('frontend/.storybook/')) return false;
+  return !isLightweightChange(change) && isFrontendTestInput(change.path) &&
+    (isVitestInput(change.path) || !/^(frontend\/|infra\/)/.test(change.path));
+}
+
 // Vitest follows imports. Changes outside that graph need the complete suite.
-export function selectTests(eventName, event, changes) {
+export function selectTests(eventName, event, changes, project) {
   const full = reason => ({ mode: 'full', reason });
   if (!usesSelectiveTests(eventName)) return full('push and manual runs use the full suite');
   if (!testBaseSha(eventName, event)) return full('missing or invalid event base');
   if (!changes?.length) return full('diff unavailable or empty');
+  if (eventName === 'pull_request') {
+    changes = changes.filter(change => isPrVitestInput(change, project));
+  }
+  if (!changes.length) return full('no applicable source diff');
   for (const { status, path } of changes) {
     if (!['A', 'M'].includes(status)) return full('deleted, renamed or unrecognized change');
-    if (!isRelatedFrontendModule(path)) return full('configuration, shared setup or non-module resources changed');
+    if (!isRelatedFrontendModule(path, eventName)) return full('configuration, shared setup or non-module resources changed');
   }
   return { mode: 'related', files: changes.map(({ path }) => path.slice('frontend/'.length)), reason: 'select tests through Vitest import dependencies' };
 }
@@ -73,7 +89,11 @@ export function runTests({ project, eventName, event, git = execFileSync, run = 
       log('Test Selection: cannot read diff; running the full suite');
     }
   }
-  const selection = selectSourceCases(project, selectCaseTitles(project, selectTests(eventName, event, changes), changes, base, { git, compiler }), changes, base, { git, compiler, log });
+  if (eventName === 'pull_request' && changes) {
+    changes = classifyTranslationChanges(base, changes, { git })
+      .filter(change => isPrVitestInput(change, project));
+  }
+  const selection = selectSourceCases(project, selectCaseTitles(project, selectTests(eventName, event, changes, project), changes, base, { git, compiler }), changes, base, { git, compiler, log });
   log(`Test Selection (${project}): ${selection.mode}; ${selection.reason}${selection.titles ? `; ${selection.titles.length} case titles` : ''}${selection.patterns ? `; ${selection.patterns.length} cases affected by source dependencies` : ''}`);
   // A real test failure is propagated; it is never retried as a full run.
   const result = run('pnpm', testArguments(project, selection), { cwd: frontend, stdio: 'inherit' });

@@ -91,11 +91,15 @@ CI Frontendの単体テスト・Vitestのbrowser・VRTプロジェクトは、PR
 
 設定・依存・CSS・JSONなどの資源、型宣言、共通テスト設定、ルート、Service Worker、i18n・PWA・E2EE・OIDCなどの実行時資源に関わる変更は全件実行します。削除・名前変更、差分取得失敗、base SHA不明、空の差分でも全件に戻します。mainへのpushと手動実行ではテストケースを全件実行します。選択モードと理由はジョブログへ出し、テストそのものの失敗は再試行で隠さず、そのまま失敗にします。
 
-スイートの選択は共有workflow `select-tests.yaml` が行います。PRまたはマージキューの変更が独立したテストファイルだけなら、単体・browser・VRT、Playwrightのi18n・レイアウト・frontend選択・CSP・OIDC・E2EE、PWA・avatar-cache・offline-CSPの該当スイートの和集合だけを選びます。無関係なコンテナ・proxy検証、Storybookのテストとカタログ生成、認証・E2EEのWasm生成も省きます。i18nを単独選択した場合は、先行するoffline-CSP検証のビルドを使えないため、専用のビルドを行います。通常のフロントエンドモジュールと、その範囲内のテストだけを変更したPRでは、importの依存関係で選べるVitestの単体・ブラウザー・VRT・Storybookに絞ります。Playwright、オフライン検証、静的Storybook生成はマージキューで実行します。共通設定や実行時資源を含む差分では、通常モジュール向けの絞り込みを解除します。
+スイートの選択は共有workflow `select-tests.yaml` が行います。PRまたはマージキューの変更が独立したテストファイルだけなら、単体・browser・VRT、Playwrightのi18n・レイアウト・frontend選択・CSP・OIDC・E2EE、PWA・avatar-cache・offline-CSPの該当スイートの和集合だけを選びます。無関係なコンテナ・proxy検証、Storybookのテストとカタログ生成、認証・E2EEのWasm生成も省きます。i18nを単独選択した場合は、先行するoffline-CSP検証のビルドを使えないため、専用のビルドを行います。通常のフロントエンドモジュールと、その範囲内のテストだけを変更したPRでは、importの依存関係で選べるVitestの単体・ブラウザー・VRT・Storybookに絞ります。Playwright、オフライン検証、静的Storybook生成はマージキューで実行します。共通設定や実行時資源の変更は、その入力を使うスイートだけを追加します。
 
 バックエンドは `backend/tests/*_test.rs` だけの追加・編集なら、その結合テストを `cargo test --test <名前>` で選び、必要なslack/core区分のジョブだけを起動します。他の結合テストのリンクと実行、未変更の本体のClippy・単体テスト・デプロイイメージ検証を省きます。フォーマット検査は維持し、emoji_service_testの変更では専用のignoredテストも選びます。ソース・共有support・SQL fixture・マイグレーション・Cargo設定・未登録の変更があれば全件へ戻します。全件実行ではActivityPubのignored単体テストも維持します。PRで `backend-e2e-selection.mjs` に登録したルートと独立した結合テストだけを変更した場合は、ルートの結合テストと変更したテストの和集合を実行します。ルート変更時はlintと単体テストも実行します。マージキューではルートの変更に対して結合テストを全件実行します。
 
 判定workflowは自身の回帰テストが成功してから結果を返します。判定ジョブの失敗はworkflowを失敗にし、差分だけが取得できない場合は全件を選びます。import以外の依存を持つ資源は、全件へ戻す対象として `.github/scripts/frontend-test-selection.mjs` に追加します。`node --test .github/scripts/frontend-test-selection.test.mjs .github/scripts/test-selection.test.mjs` で選別と全件への切り替えを検証します。
+
+PR で既存の翻訳 JSON を編集するときは、選別ジョブで JSON の構造と補間変数を検査します。既存キーと補間変数を維持する変更は PR の Web アプリ検証の入力から除きます。キーの削除、補間変数の変更、翻訳ファイルの追加・削除では Web アプリ検証を実行します。Android のアプリ検証はマージキューで行います。翻訳と実装が混在する PR では実装の差分で検証を選びます。Web の README だけの変更ではアプリテストと PR 用イメージの生成を省きます。
+
+PR では変更ファイルごとに検証を選び、選んだスイートと Rust の結合テストターゲットの和集合を実行します。同じ PR に Web 実装・Playwright の spec・proxy 設定が含まれても、Vitest は Web の入力だけから関連ファイルを選びます。Storybook 設定を変更した場合は Storybook・VRT・静的カタログを選び、Service Worker の変更では PWA・オフライン CSP・コンテナを選びます。共有の DB スキーマや Rust の未分類の実装変更はバックエンドの広い検証を選び、結合テストの全件実行はマージキューで行います。分類できない共有入力や差分が取得できない場合は従来の広い検証に戻ります。
 
 ## Wasm パッケージの再利用
 

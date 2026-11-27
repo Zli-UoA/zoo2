@@ -1,5 +1,7 @@
-import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { isAndroidFrontendOnly } from './frontend-test-selection-paths.mjs';
 import { pathMatcher, pullRequestPaths } from './merge-queue-changes.mjs';
 import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -25,6 +27,17 @@ export function workflowChanges(workflow, changes) {
   return changes.filter(change => matches(change.path));
 }
 
+export const isFrontendLocale = path => /^frontend\/src\/lib\/i18n\/locales\/[^/]+\.json$/.test(path);
+
+export function isLightweightChange({ path, status }) {
+  return path === 'frontend/README.md' || (status === 'M' && isFrontendLocale(path));
+}
+
+export function isFrontendTestInput(path) {
+  return !isAndroidFrontendOnly(path) &&
+    !/^(frontend-compose\/|docs\/images\/|docs\/.+\.md$|\.agents\/|\.github\/workflows\/ci-android\.yaml$)/.test(path);
+}
+
 export function readChanges(base, git = execFileSync) {
   if (!shaPattern.test(base ?? '')) throw new Error('Invalid base SHA');
   const options = { cwd: root, encoding: 'utf8', timeout: 30000 };
@@ -39,4 +52,38 @@ export function readChanges(base, git = execFileSync) {
   const changes = [];
   for (let i = 0; i < fields.length; i += 2) changes.push({ status: fields[i], path: fields[i + 1] });
   return changes;
+}
+
+function translationEntries(value, file, key = '', entries = new Map()) {
+  if (typeof value === 'string' && key) {
+    const variables = [...value.matchAll(/{{\s*-?\s*([\w.]+)(?:\s*,[^{}]+)?\s*}}/g)];
+    if (value.replace(/{{\s*-?\s*[\w.]+(?:\s*,[^{}]+)?\s*}}/g, '').match(/{{|}}/)) {
+      throw new Error(`${file}: invalid interpolation in ${key}`);
+    }
+    entries.set(key, [...new Set(variables.map(([, name]) => name))].sort().join(','));
+    return entries;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${file}: expected translation strings or nested objects at ${key || 'root'}`);
+  }
+  for (const [name, child] of Object.entries(value)) {
+    translationEntries(child, file, key ? `${key}.${name}` : name, entries);
+  }
+  return entries;
+}
+
+// Removing a key or changing its interpolation contract can affect callers.
+export function translationOnlyChange(before, after, file) {
+  const oldEntries = translationEntries(JSON.parse(before), file);
+  const newEntries = translationEntries(JSON.parse(after), file);
+  return [...oldEntries].every(([key, variables]) => newEntries.get(key) === variables);
+}
+
+export function classifyTranslationChanges(base, changes, { git = execFileSync, read = readFileSync } = {}) {
+  return changes.map(change => {
+    if (!isFrontendLocale(change.path) || !['A', 'M'].includes(change.status)) return change;
+    const before = change.status === 'A' ? '{}' : git('git', ['show', `${base}:${change.path}`], { cwd: root, encoding: 'utf8' });
+    const after = read(resolve(root, change.path), 'utf8');
+    return translationOnlyChange(before, after, change.path) ? change : { ...change, status: 'T' };
+  });
 }
