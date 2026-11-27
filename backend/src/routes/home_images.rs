@@ -187,7 +187,7 @@ pub(crate) async fn stored_thumbnail_key(
     };
     let variant = inspect().await?;
     if original.starts_with("home-images/") {
-        return Some(thumbnail);
+        return (variant.content_length()? > 0).then_some(thumbnail);
     }
     let Some(source_etag) = variant
         .metadata()
@@ -256,6 +256,76 @@ async fn record_home_thumbnail(
     .exec(db)
     .await?;
     Ok(!rows.is_empty())
+}
+
+// Only a storage-side condition can rule out a late PUT after a client timeout.
+async fn confirm_missing_thumbnail(
+    state: &AppState,
+    id: &str,
+    check_at: &str,
+) -> Result<Option<i64>, AppError> {
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    let rows = query(
+        &mut tx,
+        "SELECT json_build_object('reserved',thumbnail_bytes>0)::text
+         FROM home_images WHERE id=$1 AND thumbnail_ready IS NULL
+           AND thumbnail_check_at=$2::timestamptz FOR UPDATE SKIP LOCKED",
+        &[id, check_at],
+    )
+    .await?;
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    let client = &state.s3_client;
+    let bucket = &state.config.s3.bucket;
+    let original = format!("home-images/{id}");
+    let key = thumbnail_key(&original);
+    let result = tokio::time::timeout(Duration::from_secs(5), async {
+        if row["reserved"] == true {
+            // The real thumbnail PUT uses the same condition. Whichever write wins is final.
+            if client
+                .put_object()
+                .bucket(bucket)
+                .key(&key)
+                .if_none_match("*")
+                .body(Vec::<u8>::new().into())
+                .send()
+                .await
+                .is_ok()
+            {
+                return Some(0);
+            }
+            // A failed conditional PUT is inconclusive unless HEAD finds the winning object.
+            client
+                .head_object()
+                .bucket(bucket)
+                .key(&key)
+                .send()
+                .await
+                .ok()?
+                .content_length()
+        } else {
+            // An old uploader may still be paused before acquiring its row lock. It cannot
+            // have reached the thumbnail PUT phase until it has stored the original.
+            client
+                .head_object()
+                .bucket(bucket)
+                .key(&original)
+                .send()
+                .await
+                .ok()?;
+            probe_home_thumbnail(state, id).await
+        }
+    })
+    .await
+    .ok()
+    .flatten();
+
+    let Some(bytes) = result else { return Ok(None) };
+    let recorded = record_home_thumbnail(&mut tx, id, bytes, check_at).await?;
+    tx.commit().await?;
+    Ok(recorded.then_some(bytes))
 }
 
 pub(crate) fn image_assets(mime: &str, bytes: &[u8]) -> Option<(ImageMetadata, Option<Vec<u8>>)> {
@@ -336,6 +406,9 @@ pub(crate) async fn store_thumbnail(
         .body(bytes.into());
     if let Some(etag) = source_etag {
         put = put.metadata("source-etag", etag);
+    }
+    if key.starts_with("home-images/") {
+        put = put.if_none_match("*");
     }
     if let Err(error) = put.send().await {
         tracing::warn!(%error, key, "Could not store image thumbnail");
@@ -835,11 +908,16 @@ async fn reconcile_claimed_home_thumbnails(
         .map(|row| async move {
             if let (Some(id), Some(check_at)) = (row["id"].as_str(), row["check_at"].as_str()) {
                 if row["eligible"] == true {
-                    if let Some(actual) = probe_home_thumbnail(state, id).await
-                        && record_home_thumbnail(&mut state.db.clone(), id, actual, check_at)
-                            .await?
-                        && let Some(reserved) = row["reserved"].as_i64()
-                    {
+                    let actual = match probe_home_thumbnail(state, id).await {
+                        Some(0) => confirm_missing_thumbnail(state, id, check_at).await?,
+                        Some(actual) => {
+                            record_home_thumbnail(&mut state.db.clone(), id, actual, check_at)
+                                .await?
+                                .then_some(actual)
+                        }
+                        None => None,
+                    };
+                    if let (Some(reserved), Some(actual)) = (row["reserved"].as_i64(), actual) {
                         return Ok::<i64, AppError>((reserved - actual).max(0));
                     }
                 } else {
