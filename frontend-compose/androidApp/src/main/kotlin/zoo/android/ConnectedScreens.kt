@@ -101,6 +101,9 @@ internal fun ConnectedScreens(
     }
     val previewService by session.previews.summalyEndpoint.collectAsState()
     val usersById = remember(users) { users.associateBy { it.text("id") } }
+    val mentionProfiles = remember(users, session.accountProfiles) {
+        users.associateBy { it.text("user_name") } + session.accountProfiles.associateBy { it.text("username") }
+    }
     val posts = state.home.posts.map { state.entry(it, usersById, previewService = previewService) }
     val encrypted = channel?.let { session.isEncryptedChannel(it.text("id")) } == true
     val canPost = env.online && channel != null && member && !channel.present("archive_at")
@@ -652,6 +655,7 @@ internal fun ConnectedScreens(
                     LocalKitchenReactionImage provides emojiCatalog::kitchenReaction,
                     LocalAndroidTranslation provides { key, args -> session.t(key, *args) },
                     LocalChannelLinks provides channelLinks,
+                    LocalMentionProfiles provides mentionProfiles,
                 ) {
                     AndroidScreens(screen, env.dark, env.visible && env.focused,
                         dispatch = { action ->

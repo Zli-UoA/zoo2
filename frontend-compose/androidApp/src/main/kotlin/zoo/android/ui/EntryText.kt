@@ -1,6 +1,9 @@
 package zoo.android.ui
 
 import androidx.compose.foundation.Image
+import androidx.compose.runtime.staticCompositionLocalOf
+import zoo.Row
+import zoo.text
 import androidx.compose.foundation.text.InlineTextContent
 import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.material3.Text
@@ -67,22 +70,27 @@ internal class EntryChannelLink(val label: String?, val messageIcon: Boolean, va
  * What [formatEntry] draws besides the MFM: custom emoji, search marks, whether links can be opened, and the
  * links into this app (`channelLink` returns `null` for other URLs; `bare` tells that the URL itself was written).
  */
+internal val LocalMentionProfiles = staticCompositionLocalOf<Map<String, Row>> { emptyMap() }
+private const val mentionAvatarTag = "mention-avatar"
+
 private class EntryFormat(
     val emoji: Set<String>, val mark: EntryHighlight?, val links: Boolean,
     val channelLink: ((url: String, bare: Boolean) -> EntryChannelLink?)?,
     val mentionStyle: SpanStyle?,
     val allowedMentions: Set<String>?,
+    val mentionProfiles: Map<String, Row>,
 ) {
     /** リンクのラベル用。中の URL は、リンクにせず、短くせず、行き先も取らない。 */
-    fun withoutLinks() = EntryFormat(emoji, mark, links = false, channelLink = null, mentionStyle = null, allowedMentions = emptySet())
+    fun withoutLinks() = EntryFormat(emoji, mark, links = false, channelLink = null, mentionStyle = null, allowedMentions = emptySet(), mentionProfiles = emptyMap())
 }
 
 internal fun formatEntry(
     body: String, emoji: Set<String> = emptySet(), highlight: EntryHighlight? = null, links: Boolean = true,
     channelLink: ((url: String, bare: Boolean) -> EntryChannelLink?)? = null,
     mentionStyle: SpanStyle? = null, allowedMentions: Set<String>? = null,
+    mentionProfiles: Map<String, Row> = emptyMap(),
 ) = buildAnnotatedString {
-    val format = EntryFormat(emoji, highlight?.takeIf { it.terms.isNotEmpty() }, links, channelLink, mentionStyle, allowedMentions)
+    val format = EntryFormat(emoji, highlight?.takeIf { it.terms.isNotEmpty() }, links, channelLink, mentionStyle, allowedMentions, mentionProfiles)
     messageHeadingBlocks(body).forEachIndexed { index, block ->
         if (index > 0) append('\n')
         val level = block.level
@@ -200,7 +208,20 @@ private fun AnnotatedString.Builder.appendMfm(body: String, format: EntryFormat,
             "mention" -> {
                 val allowed = format.allowedMentions
                 if (allowed != null && !zoo.isAllowedMention(value, allowed)) append(value)
-                else withStyle(format.mentionStyle ?: SpanStyle(fontWeight = AndroidWeights.emphasis)) { append(value) }
+                else withStyle(format.mentionStyle ?: SpanStyle(fontWeight = AndroidWeights.emphasis)) {
+                    val username = value.removePrefix("@")
+                    val profile = format.mentionProfiles[username]
+                        ?.takeUnless { username.equals("channel", true) || username.equals("here", true) }
+                    if (profile == null) append(value)
+                    else {
+                        val label = profile.text("display_name").ifEmpty { username }
+                        append('@')
+                        pushStringAnnotation(mentionAvatarTag, username)
+                        appendInlineContent("$mentionAvatarTag:$username", " ")
+                        pop()
+                        append(label)
+                    }
+                }
             }
             "hashtag" -> withStyle(SpanStyle(fontWeight = AndroidWeights.emphasis)) { append(value) }
             else -> appendHighlighted(value, format.mark)
@@ -302,15 +323,16 @@ internal fun EntryBody(
     highlight: EntryHighlight? = null, lineHeight: TextUnit = TextUnit.Unspecified, links: Boolean = true,
     /** アプリ内リンクを短くして、行き先を取るか。 */
     appLinks: Boolean = true,
-    mentionStyle: SpanStyle? = null, allowedMentions: Set<String>? = null,
+    mentionColors: AndroidColors? = null, allowedMentions: Set<String>? = null,
 ) {
     val loader = LocalTimelineImage.current
     val cached = LocalCachedTimelineImage.current
+    val mentionProfiles = if (mentionColors == null) emptyMap() else LocalMentionProfiles.current
     val channelLinks = entryChannelLinks(body, links && appLinks)
-    val formatted = remember(body, emoji, highlight, links, channelLinks, mentionStyle, allowedMentions) {
+    val formatted = remember(body, emoji, highlight, links, channelLinks, mentionColors, allowedMentions, mentionProfiles) {
         val lookup: ((String, Boolean) -> EntryChannelLink?)? =
             channelLinks?.let { found -> { url: String, _: Boolean -> found[url] } }
-        formatEntry(body, emoji.keys, highlight, links, lookup, mentionStyle, allowedMentions)
+        formatEntry(body, emoji.keys, highlight, links, lookup, mentionColors?.mentionStyle(), allowedMentions, mentionProfiles)
     }
     val codes = remember(formatted) {
         entryEmojiCodes(formatted)
@@ -336,7 +358,19 @@ internal fun EntryBody(
     } + (channelLinkIconId to InlineTextContent(Placeholder(1.em, 1.em, PlaceholderVerticalAlign.TextCenter)) {
         UiGlyph(UiIcon.Bubble, color, iconSize)
     })
-    Text(formatted, color = color, fontSize = fontSize, lineHeight = lineHeight, inlineContent = inline, maxLines = maxLines,
+    val mentionAvatars = if (mentionColors == null) emptyMap() else {
+        formatted.getStringAnnotations(mentionAvatarTag, 0, formatted.length).associate { annotation ->
+            val username = annotation.item
+            val profile = mentionProfiles.getValue(username)
+            "$mentionAvatarTag:$username" to InlineTextContent(
+                Placeholder(1.15.em, 1.15.em, PlaceholderVerticalAlign.TextCenter)
+            ) {
+                TimelineAvatar(profile.text("display_name").ifEmpty { username },
+                    profile.text("avatar_url").ifEmpty { null }, mentionColors, iconSize * 1.15f)
+            }
+        }
+    }
+    Text(formatted, color = color, fontSize = fontSize, lineHeight = lineHeight, inlineContent = inline + mentionAvatars, maxLines = maxLines,
         overflow = TextOverflow.Ellipsis)
 }
 

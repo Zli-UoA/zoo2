@@ -977,7 +977,7 @@ private fun Timeline(
                                 }
                                 if (!entry.richContent.hidesBody && entry.body.isNotBlank()) {
                                     EntryBody(entry.body, colors.foreground, entryTextSize, entry.emoji,
-                                        mentionStyle = colors.mentionStyle(), allowedMentions = entry.allowedMentions)
+                                        mentionColors = colors, allowedMentions = entry.allowedMentions)
                                 }
                                 EntryBlocks(entry.richContent.blocks, colors, entryTextSize, entry.emoji)
                                 entry.attachments.forEach { (id, name) ->

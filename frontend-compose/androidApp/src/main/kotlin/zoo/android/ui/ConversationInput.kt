@@ -4,6 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
@@ -29,6 +31,10 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.isAltPressed
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.semantics.selected
@@ -125,8 +131,13 @@ internal fun ConversationInput(
                     .border(1.dp, colors.inputBoundary, shape).padding(4.dp)
                     .verticalScroll(rememberScrollState())) {
                     options.forEachIndexed { index, option ->
+                        val bringIntoView = remember { BringIntoViewRequester() }
+                        LaunchedEffect(index == activeOption) {
+                            if (index == activeOption) bringIntoView.bringIntoView()
+                        }
                         Row(
                             Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target)
+                                .bringIntoViewRequester(bringIntoView)
                                 .clip(RoundedCornerShape(4.dp))
                                 .background(if (index == activeOption) colors.suggestionSelected else Color.Transparent)
                                 .semantics { selected = index == activeOption }
@@ -191,7 +202,9 @@ internal fun ConversationInput(
                     },
                     modifier = placement.focusRequester(focusRequester).onFocusChanged { focused = it.isFocused }
                         .onPreviewKeyEvent { event ->
-                            if (event.type != KeyEventType.KeyDown || value.composition != null || options.isEmpty()) {
+                            if (event.type != KeyEventType.KeyDown || value.composition != null || options.isEmpty() ||
+                                event.isCtrlPressed || event.isMetaPressed || event.isShiftPressed || event.isAltPressed
+                            ) {
                                 false
                             } else when (event.key) {
                                 Key.DirectionUp, Key.DirectionDown -> {

@@ -154,7 +154,7 @@ internal fun NotificationPage(
                     }
                     item.detail?.let {
                         // 本文と同じく、このアプリのリンクは短くし、アプリ内で移動する。
-                        EntryBody(it, colors.foreground, entryTextSize, emptyMap(), maxLines = 3, mentionStyle = colors.mentionStyle())
+                        EntryBody(it, colors.foreground, entryTextSize, emptyMap(), maxLines = 3, mentionColors = colors)
                     }
                     item.destination?.let {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {

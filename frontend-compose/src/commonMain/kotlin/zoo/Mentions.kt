@@ -9,7 +9,8 @@ private val mentionPunctuation = Regex("[.,!?:;。、！？]+$")
 internal expect fun normalizeMentionSearch(value: String): String
 
 fun allowedMentionNames(mentions: EncryptedMentions, users: Map<String, Row>): Set<String> =
-    mentions.userIds.mapNotNull { id -> users[id]?.text("user_name")?.takeIf(String::isNotEmpty) }.toSet() +
+    mentions.userIds.mapNotNull { id -> users[id]?.text("user_name") }
+        .filter { it.isNotEmpty() && !it.equals("channel", true) && !it.equals("here", true) }.toSet() +
         listOfNotNull("channel".takeIf { mentions.channel }, "here".takeIf { mentions.here })
 
 fun isAllowedMention(token: String, names: Set<String>): Boolean {
