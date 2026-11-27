@@ -3307,6 +3307,77 @@ test("a cached manifest without Last-Modified still prefers the current shell", 
   assert.equal(await response.text(), current);
 });
 
+test("cached manifest selection is deterministic when Last-Modified ties", async () => {
+  const current = validManifest("#000000");
+  const stamp = { "x-zoo-last-modified": "Wed, 21 Oct 2026 07:28:00 GMT" };
+  const cacheContext = memoryCaches([
+    [
+      "zoo-shell-v3-new-v2",
+      `${ORIGIN}/manifest.webmanifest`,
+      basicResponse(current, { headers: stamp }),
+    ],
+    [
+      "zoo-shell-v3-old",
+      `${ORIGIN}/manifest.webmanifest`,
+      basicResponse(validManifest("#ffffff"), { headers: stamp }),
+    ],
+  ]);
+  const older = await cacheContext.api.open("zoo-shell-v3-old");
+  await older.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("3"));
+  const newer = await cacheContext.api.open("zoo-shell-v3-new-v2");
+  await newer.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("4"));
+  const { handlers } = worker({
+    policyVersion: "new",
+    caches: cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+  });
+  assert.equal(await response.text(), current);
+});
+
+test("all candidates with Last-Modified choose the newest across policies", async () => {
+  const newer = validManifest("#000000");
+  const cacheContext = memoryCaches([
+    [
+      "zoo-shell-v3-new-v2",
+      `${ORIGIN}/manifest.webmanifest`,
+      basicResponse(validManifest("#ffffff"), {
+        headers: { "x-zoo-last-modified": "Tue, 20 Oct 2026 07:28:00 GMT" },
+      }),
+    ],
+    [
+      "zoo-shell-v3-old",
+      `${ORIGIN}/manifest.webmanifest`,
+      basicResponse(newer, {
+        headers: { "x-zoo-last-modified": "Wed, 21 Oct 2026 07:28:00 GMT" },
+      }),
+    ],
+  ]);
+  const old = await cacheContext.api.open("zoo-shell-v3-old");
+  await old.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("1"));
+  const current = await cacheContext.api.open("zoo-shell-v3-new-v2");
+  await current.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("2"));
+  const { handlers } = worker({
+    policyVersion: "new",
+    caches: cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+  });
+  assert.equal(await response.text(), newer);
+});
+
 test("an HTTP error is returned when no cached manifest exists", async () => {
   const { handlers } = worker({
     fetch: async () =>

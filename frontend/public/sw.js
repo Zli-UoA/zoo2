@@ -809,34 +809,33 @@ async function cachedFreshAsset(path, networkResponse = null) {
     }
     candidates.push({ name, current: name.startsWith(POLICY_PREFIX), installedAt });
   }
-  // 現行ポリシーのグループを優先し、各グループ内は更新日時（無ければインストール日時）で
-  // 最大のものを選ぶ。候補を集めてから決めるので列挙順に左右されない。
-  let currentBest = null;
-  let currentTime = -Infinity;
-  let otherBest = null;
-  let otherTime = -Infinity;
+  // 候補を集めてから全体に適用する優先順位で選ぶ。列挙順には依存しない。
+  const entries = [];
   for (const { name, current, installedAt } of candidates) {
     try {
       const cache = await caches.open(name);
       const saved = await cache.match(path);
       if (!(await isUsableFreshAsset(path, saved))) continue;
       const modified = Date.parse(saved.headers.get("x-zoo-last-modified") || "");
-      const updatedAt = Number.isFinite(modified) ? modified : installedAt;
-      if (current) {
-        if (!currentBest || updatedAt > currentTime) {
-          currentBest = saved;
-          currentTime = updatedAt;
-        }
-      } else if (!otherBest || updatedAt > otherTime) {
-        otherBest = saved;
-        otherTime = updatedAt;
-      }
+      entries.push({
+        name,
+        saved,
+        current,
+        installedAt,
+        modified: Number.isFinite(modified) ? modified : null,
+      });
     } catch {
       /* Try the next generation when one cache cannot be read. */
     }
   }
-  const best = currentBest || otherBest;
-  return best || networkResponse || Response.error();
+  const allHaveTime = entries.length > 0 && entries.every((entry) => entry.modified !== null);
+  entries.sort((a, b) => {
+    if (allHaveTime && a.modified !== b.modified) return b.modified - a.modified;
+    if (a.current !== b.current) return a.current ? -1 : 1;
+    if (a.installedAt !== b.installedAt) return b.installedAt - a.installedAt;
+    return a.name.localeCompare(b.name);
+  });
+  return entries[0]?.saved || networkResponse || Response.error();
 }
 
 // Public AuthZ avatars have their own bounded cache, retained across shell upgrades.
