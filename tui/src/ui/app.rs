@@ -16,7 +16,7 @@ use super::e2ee_chat::{
 };
 use super::global_search::{self, GlobalSearch};
 use crate::{
-    api::{ApiClient, Me, ReadState, ThreadSummary, TypingUser, stale_revision},
+    api::{ApiClient, Me, NotificationLevel, ReadState, ThreadSummary, TypingUser, stale_revision},
     e2ee::{
         send::{self, ChannelSender, SendContext},
         store::{Decryption, EncryptedRow, RecipientSummary},
@@ -1565,6 +1565,7 @@ impl App {
             // J はピン留め行でもチャンネル参加。並び替えは [ / ] と Alt+↑↓ に分ける。
             KeyCode::Char('J') => self.join_or_leave(true),
             KeyCode::Char('L') => self.join_or_leave(false),
+            KeyCode::Char('N') => self.cycle_notification_level(),
             KeyCode::Char('/') => self.mode = Mode::Search(String::new()),
             KeyCode::Char('S') => self.mode = Mode::GlobalSearch,
             KeyCode::Char('R') => self.restore_failed_draft(),
@@ -2531,6 +2532,41 @@ impl App {
         }
     }
 
+    fn notification_level_label(level: NotificationLevel) -> &'static str {
+        match level {
+            NotificationLevel::All => "すべての投稿",
+            NotificationLevel::Mentions => "メンション",
+            NotificationLevel::Mute => "メンション以外を通知しない",
+        }
+    }
+
+    fn next_notification_level(level: NotificationLevel) -> NotificationLevel {
+        match level {
+            NotificationLevel::All => NotificationLevel::Mentions,
+            NotificationLevel::Mentions => NotificationLevel::Mute,
+            NotificationLevel::Mute => NotificationLevel::All,
+        }
+    }
+
+    /// 開いているチャンネルの通知レベルを all → mentions → mute の順に変える。
+    /// 参加行の Shape が新しい値を届けるので、書き込みのあとに取得はしない。
+    fn cycle_notification_level(&mut self) {
+        let Some(channel_id) = self.current.clone() else {
+            return;
+        };
+        let next =
+            Self::next_notification_level(self.store.notification_level(&channel_id, &self.me.id));
+        let api = self.api.clone();
+        let tx = self.app_tx.clone();
+        let label = format!("通知を {} にしました", Self::notification_level_label(next));
+        self.spawn_api("通知設定の変更", async move {
+            api.set_channel_notification_level(&channel_id, next)
+                .await?;
+            let _ = tx.send(AppEvent::Notice(label));
+            Ok(())
+        });
+    }
+
     /// チャンネルの暗号化の扱い（docs/e2ee.md の「暗号化の格下げを防ぐ」）。一度 `encrypted = true` を
     /// 見た（暗号ストアに記録した）、名前が `edm:`、暗号文のある行がある、のどれかで `encrypted = false`
     /// なら格下げとして送信を止める。
@@ -3057,6 +3093,25 @@ mod tests {
         .into();
         let notice = send_failure_notice(&Target::Reply("root".into()), &forbidden);
         assert!(notice.contains("Only channel managers"), "{notice}");
+    }
+
+    #[test]
+    fn notification_level_cycles_and_has_labels() {
+        let level = NotificationLevel::default();
+        assert_eq!(level, NotificationLevel::Mentions);
+        assert_eq!(App::next_notification_level(level), NotificationLevel::Mute);
+        assert_eq!(
+            App::next_notification_level(NotificationLevel::Mute),
+            NotificationLevel::All
+        );
+        assert_eq!(
+            App::next_notification_level(NotificationLevel::All),
+            NotificationLevel::Mentions
+        );
+        assert_eq!(
+            App::notification_level_label(NotificationLevel::Mute),
+            "メンション以外を通知しない"
+        );
     }
 
     fn api_test_app(base: &str) -> (App, mpsc::UnboundedReceiver<AppEvent>) {

@@ -96,7 +96,12 @@ export function ChannelSidebar({
       }
       // 失敗は呼び出し側（検索ダイアログ）が受けて表示する。
       const transaction = channelUsers.insert(
-        { user_id: currentUserId, channel_id: channelId, joined_at: nowIso() },
+        {
+          user_id: currentUserId,
+          channel_id: channelId,
+          joined_at: nowIso(),
+          notification_level: "mentions",
+        },
         { metadata: { action: "join" } satisfies ChannelUserWriteMetadata },
       );
       await transaction.when("settled");

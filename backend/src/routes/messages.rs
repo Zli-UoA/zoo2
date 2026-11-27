@@ -883,6 +883,7 @@ pub(crate) async fn create_message_impl(
     }
     // スレッド親メッセージ検証
     let mut parent_author_id: Option<String> = None;
+    let mut thread_root_id: Option<String> = None;
     if let Some(ref parent_id) = payload.parent_id {
         Uuid::parse_str(parent_id).map_err(|_| {
             AppError::BadRequest(format!("parent_id is not a valid UUID: {parent_id}"))
@@ -997,6 +998,8 @@ pub(crate) async fn create_message_impl(
         }
 
         parent_author_id = Some(parent.user_id);
+        // thread_participants のキーは正規化済みのルート (#447)。ゲートの対象と同じ ID を使う。
+        thread_root_id = Some(gate_root);
     }
 
     let forwarded_ids = forwards::verify_forward_sources(
@@ -1161,6 +1164,7 @@ pub(crate) async fn create_message_impl(
             &message,
             auth_user.id.as_str(),
             parent_author_id.as_deref(),
+            thread_root_id.as_deref(),
             payload.mentions.as_ref(),
         )
         .await?

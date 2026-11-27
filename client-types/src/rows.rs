@@ -6,7 +6,7 @@ use jiff::civil::DateTime;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::shape::Row;
+use crate::{api::NotificationLevel, shape::Row};
 
 pub trait FromRow: Sized {
     fn from_row(row: &Row) -> Result<Self>;
@@ -46,6 +46,13 @@ pub struct User {
 pub struct ChannelUser {
     pub user_id: String,
     pub channel_id: String,
+    /// チャンネルごとの通知レベル。古いスキーマや未知の値では `mentions` として扱う。
+    #[serde(default = "default_notification_level")]
+    pub notification_level: String,
+}
+
+fn default_notification_level() -> String {
+    NotificationLevel::Mentions.as_str().to_string()
 }
 
 /// 自分がピン留めしたチャンネル・DM と、その並び順（`user_pinned_channels`）。
@@ -275,6 +282,12 @@ impl FromRow for ChannelUser {
         Ok(Self {
             user_id: text(row, "user_id")?,
             channel_id: text(row, "channel_id")?,
+            // 列が無い移行中のスキーマや、将来増えた値でも行全体を捨てない。
+            notification_level: opt_text(row, "notification_level")
+                .and_then(|value| {
+                    NotificationLevel::parse(&value).map(|level| level.as_str().into())
+                })
+                .unwrap_or_else(default_notification_level),
         })
     }
 }
@@ -558,6 +571,27 @@ mod tests {
         assert!(!channel.is_dm);
         assert!(!channel.is_nsfw);
         assert!(!channel.encrypted);
+    }
+
+    #[test]
+    fn channel_user_defaults_notification_level_and_ignores_unknown_values() {
+        let old = ChannelUser::from_row(&row(json!({
+            "user_id": "u1", "channel_id": "c1"
+        })))
+        .unwrap();
+        assert_eq!(old.notification_level, "mentions");
+
+        let muted = ChannelUser::from_row(&row(json!({
+            "user_id": "u1", "channel_id": "c1", "notification_level": "mute", "future": 1
+        })))
+        .unwrap();
+        assert_eq!(muted.notification_level, "mute");
+
+        let unknown = ChannelUser::from_row(&row(json!({
+            "user_id": "u1", "channel_id": "c1", "notification_level": "later"
+        })))
+        .unwrap();
+        assert_eq!(unknown.notification_level, "mentions");
     }
 
     #[test]

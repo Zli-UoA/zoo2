@@ -78,6 +78,7 @@ function formatForwardChannelLabel(
       user_id: p.id,
       channel_id: message.channel_id,
       joined_at: "",
+      notification_level: "mentions" as const,
     })),
     users: participants.map((p) => ({
       id: p.id,

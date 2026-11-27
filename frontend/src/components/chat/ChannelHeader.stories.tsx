@@ -4,7 +4,14 @@ import { http, HttpResponse } from "msw";
 import { expect, screen, userEvent, waitFor, within } from "storybook/test";
 
 import { StoryShell } from "../../../.storybook/shell";
-import { storyChannels, storyChannelUsers } from "../../../.storybook/fixtures";
+import {
+  storyChannels,
+  storyChannelUsers,
+  storyCollections,
+  storyDmChannels,
+  storyDmMembers,
+} from "../../../.storybook/fixtures";
+import type { ChannelNotificationLevel } from "../../lib/electric/types";
 import { ChannelHeader } from "./ChannelHeader";
 
 const general = storyChannels.find(
@@ -14,6 +21,16 @@ const secret = storyChannels.find((channel) => channel.id === "channel-secret")!
 const archived = storyChannels.find((channel) => channel.id === "channel-archive")!;
 const memberCount = (channelId: string) =>
   storyChannelUsers.filter((row) => row.channel_id === channelId).length;
+
+/** 現在ユーザーの channel_user 行だけを差し替えて、通知レベルの状態を作る。 */
+const notificationFixture = (level: ChannelNotificationLevel, channelId: string = general.id) => ({
+  ...storyCollections,
+  channelUsers: storyChannelUsers.map((row) =>
+    row.user_id === "user-alice" && row.channel_id === channelId
+      ? { ...row, notification_level: level }
+      : row,
+  ),
+});
 
 const meta = {
   title: "Features/Channels/Header",
@@ -333,5 +350,104 @@ export const EncryptedDm: Story = {
     await waitFor(() =>
       expect(canvasElement.querySelector("svg.lucide-lock-keyhole")).not.toBeNull(),
     );
+  }),
+};
+
+/** 現在値は channelUsers コレクションから読み、3 段階すべてをラジオで選べる。 */
+export const NotificationAll: Story = {
+  parameters: { collections: notificationFixture("all") },
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("button", { name: "通知設定" }));
+    const dialog = await screen.findByRole("dialog", { name: "チャンネルの通知設定" });
+    await expect(within(dialog).getByRole("radio", { name: /すべてのメッセージ/ })).toBeChecked();
+  }),
+};
+
+export const NotificationMentions: Story = {
+  parameters: { collections: notificationFixture("mentions") },
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("button", { name: "通知設定" }));
+    const dialog = await screen.findByRole("dialog", { name: "チャンネルの通知設定" });
+    await expect(within(dialog).getByRole("radio", { name: /メンションのみ/ })).toBeChecked();
+  }),
+};
+
+export const NotificationMute: Story = {
+  parameters: { collections: notificationFixture("mute") },
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("button", { name: "通知設定" }));
+    const dialog = await screen.findByRole("dialog", { name: "チャンネルの通知設定" });
+    await expect(within(dialog).getByRole("radio", { name: /ミュート/ })).toBeChecked();
+  }),
+};
+
+/** メニューを開いた状態。管理者でなくてもヘッダーから操作できる。 */
+export const NotificationDialogOpen: Story = {
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("button", { name: "通知設定" }));
+    const dialog = await screen.findByRole("dialog", { name: "チャンネルの通知設定" });
+    await waitFor(() => expect(within(dialog).getByRole("radiogroup")).toBeVisible());
+  }),
+};
+
+const designChannel = storyChannels.find((channel) => channel.id === "channel-design")!;
+
+/** 作成者でも管理者でもない一般メンバーにも、通知設定のボタンが出る。 */
+export const NotificationByMember: Story = {
+  parameters: { collections: notificationFixture("all", designChannel.id) },
+  args: { channel: designChannel, memberCount: memberCount(designChannel.id) },
+  play: playForImplementation(async () => {
+    await expect(await screen.findByRole("button", { name: "通知設定" })).toBeInTheDocument();
+    await expect(screen.queryByRole("button", { name: "チャンネル設定" })).not.toBeInTheDocument();
+  }),
+};
+
+/** ラジオを選ぶと channelUsers の行が楽観更新され、表示が確定する（REST の照合は書き込みテストで検証）。 */
+export const NotificationChangeToMute: Story = {
+  parameters: { collections: notificationFixture("all") },
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("button", { name: "通知設定" }));
+    const dialog = await screen.findByRole("dialog", { name: "チャンネルの通知設定" });
+    const mute = within(dialog).getByRole("radio", { name: /ミュート/ });
+    await userEvent.click(mute);
+    await waitFor(() => expect(mute).toBeChecked());
+  }),
+};
+
+const encryptedChannel = { ...secret, encrypted: true, membership_epoch: "1" };
+
+/** 暗号化チャンネルでも `all` を選べることを説明する。 */
+export const NotificationEncryptedOpen: Story = {
+  parameters: { collections: notificationFixture("all", secret.id) },
+  args: { channel: encryptedChannel, memberCount: memberCount(secret.id) },
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("button", { name: "通知設定" }));
+    const dialog = await screen.findByRole("dialog", { name: "チャンネルの通知設定" });
+    await waitFor(() =>
+      expect(within(dialog).getByRole("radio", { name: /すべてのメッセージ/ })).toBeChecked(),
+    );
+    await waitFor(() => expect(within(dialog).getByText(/「すべてのメッセージ」/)).toBeVisible());
+  }),
+};
+
+const dm = storyDmChannels[0]!;
+
+/** DM はヘッダーのメニューから同じ設定を開く。 */
+export const NotificationDmMenuOpen: Story = {
+  parameters: {
+    collections: {
+      ...storyCollections,
+      channels: storyDmChannels,
+      channelUsers: storyDmMembers,
+    },
+  },
+  args: { channel: dm, memberCount: 2 },
+  play: playForImplementation(async () => {
+    await userEvent.click(
+      await screen.findByRole("button", { name: "ダイレクトメッセージのメニュー" }),
+    );
+    await userEvent.click(await screen.findByRole("menuitem", { name: "通知設定" }));
+    const dialog = await screen.findByRole("dialog", { name: "チャンネルの通知設定" });
+    await expect(within(dialog).getByRole("radio", { name: /メンションのみ/ })).toBeChecked();
   }),
 };

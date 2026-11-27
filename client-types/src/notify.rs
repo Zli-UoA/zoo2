@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
+    api::NotificationLevel,
     rows::{FromRow, Notification},
     shape::{Batch, Change, ShapeId},
     store::Store,
@@ -48,6 +49,11 @@ impl NotifyContext {
             (Some(_), None) => true,
             (None, _) => false,
         }
+    }
+
+    /// 自分のチャンネル参加行から通知レベルを引く（Shape に無ければ既定値）。
+    pub fn notification_level(&self, store: &Store, channel_id: &str) -> NotificationLevel {
+        store.notification_level(channel_id, &self.me)
     }
 }
 
@@ -198,7 +204,11 @@ pub fn notifications_to_show(store: &Store, batch: &Batch, ctx: &NotifyContext) 
                 if known_before {
                     continue;
                 }
-                let show = !notification.is_read
+                // backend はレベルごとに通知行を作るが、古い行や遅れて届いた行でも
+                // 表示側の判断が漏れないように、ここでもレベルを見る。
+                let level = ctx.notification_level(store, &notification.channel_id);
+                let show = level.shows(&notification.notification_type)
+                    && !notification.is_read
                     && notification.actor_id != ctx.me
                     && ctx.focused_channel.as_deref() != Some(notification.channel_id.as_str());
                 by_key.insert(key, show.then_some(notification));
@@ -284,11 +294,15 @@ mod tests {
     use super::*;
 
     fn row(id: &str, actor: &str, channel: &str, is_read: bool) -> Change {
+        row_kind(id, actor, channel, is_read, "mention")
+    }
+
+    fn row_kind(id: &str, actor: &str, channel: &str, is_read: bool, kind: &str) -> Change {
         Change::Upsert {
             key: format!("\"public\".\"notification_events\"/\"{id}\""),
             row: json!({
                 "id": id, "user_id": "me", "actor_id": actor, "channel_id": channel,
-                "message_id": format!("m-{id}"), "notification_type": "mention",
+                "message_id": format!("m-{id}"), "notification_type": kind,
                 "is_read": if is_read { "true" } else { "false" },
                 "created_at": "2026-11-11 00:00:00",
                 "display_data": json!({
@@ -414,6 +428,47 @@ mod tests {
         let mut disabled = ctx();
         disabled.enabled = false;
         assert!(notifications_to_show(&store, &incoming, &disabled).is_empty());
+    }
+
+    fn membership(channel: &str, level: Option<&str>) -> Change {
+        let mut value = json!({ "user_id": "me", "channel_id": channel });
+        if let Some(level) = level {
+            value["notification_level"] = json!(level);
+        }
+        Change::Upsert {
+            key: format!("cu:{channel}"),
+            row: value.as_object().unwrap().clone(),
+        }
+    }
+
+    fn store_with_levels(levels: Vec<(&str, Option<&str>)>) -> Store {
+        let mut store = synced_store(vec![]);
+        let changes = levels
+            .into_iter()
+            .map(|(channel, level)| membership(channel, level))
+            .collect();
+        store.apply(&ShapeId::ChannelUsers, batch(false, changes));
+        store
+    }
+
+    #[test]
+    fn respects_channel_notification_levels() {
+        let store = store_with_levels(vec![("all", Some("all")), ("mute", Some("mute"))]);
+        let incoming = batch(
+            false,
+            vec![
+                row_kind("normal", "alice", "c1", false, "channel_message"),
+                row_kind("mention-in-all", "alice", "all", false, "channel_message"),
+                row_kind("reaction-in-all", "alice", "all", false, "reaction"),
+                row_kind("mention-in-mute", "alice", "mute", false, "mention"),
+                row_kind("reply-in-mute", "alice", "mute", false, "reply"),
+            ],
+        );
+        // c1 に参加行がなくても既定の mentions として、通常投稿を出さない。
+        assert_eq!(
+            ids(&notifications_to_show(&store, &incoming, &ctx())),
+            vec!["mention-in-all", "reaction-in-all", "mention-in-mute"]
+        );
     }
 
     #[test]

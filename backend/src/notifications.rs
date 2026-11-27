@@ -150,19 +150,44 @@ pub fn extract_mentions(content: &str) -> MentionTargets {
     }
 }
 
+/// スレッドの通知対象参加者を、通知レベルと一緒に1回の問い合わせで読む (#620)。
+///
+/// `thread_participants` は主キー `(thread_id, user_id)` の範囲走査でそのスレッドの P 行だけを読み、
+/// `left_at IS NOT NULL` は索引を読んだ時点で除く。`channel_user` は主キー
+/// `(user_id, channel_id)` で参加中 (P 以下) の行だけを引く。ユーザー本体は読まない
+/// (bot・無効化の除外は、ほかの通知対象とまとめて後段の1クエリで行う)。
+pub fn notification_participants_sql() -> &'static str {
+    "SELECT json_build_object('user_id', tp.user_id, \
+            'level', COALESCE(cu.notification_level, 'mentions'))::text \
+     FROM thread_participants tp \
+     LEFT JOIN channel_user cu ON cu.channel_id = $2 AND cu.user_id = tp.user_id \
+     WHERE tp.thread_id = $1 AND tp.left_at IS NULL"
+}
+
+fn is_muted(levels: &HashMap<String, String>, user_id: &str) -> bool {
+    levels.get(user_id).is_some_and(|level| level == "mute")
+}
+
 /// メッセージ作成時の通知生成
 ///
-/// 1つのメッセージ投稿に対し、同一ユーザー宛ての通知は1件に集約する (メンション > 返信 > DM)。
+/// 1つのメッセージ投稿に対し、同一ユーザー宛ての通知は1件に集約する
+/// (メンション > 返信 > DM > チャンネル投稿)。
 /// [P2] 公開チャンネルでは非メンバー投稿者への返信通知も配信する。
 /// プライベートチャンネルではチャンネル非所属ユーザー (キック・退出者含む) への通知を除外する。
 ///
+/// 通知レベル (#620) は `channel_user.notification_level` による。`mute` には明示メンションだけを届け、
+/// 返信・DM・チャンネル投稿は作らない。`all` のメンバーには上位の種別が付かなければ
+/// `channel_message` を1件作る (最下位の優先度)。`mentions` は従来どおり。
+///
 /// 暗号化チャンネル (#358) では本文を解析せず、送信側が平文で付けた `explicit_mentions` だけから
 /// メンションを作る (省略時はメンションなし)。平文チャンネルでは `explicit_mentions` を使わない。
+/// `all` でも本文は解析せず、Push は既存の暗号化プレースホルダを使う。
 pub async fn create_message_notifications(
     tx: &mut toasty::Transaction<'_>,
     message: &Message,
     actor_id: &str,
     parent_author_id: Option<&str>,
+    thread_root_id: Option<&str>,
     explicit_mentions: Option<&Mentions>,
 ) -> Result<Vec<Notification>, AppError> {
     // チャンネル情報を取得 (公開かプライベートかで通知先ポリシーを判定)
@@ -182,12 +207,16 @@ pub async fn create_message_notifications(
         (extract_mentions(&message.content), Vec::new())
     };
 
-    // チャンネル所属メンバーのIDを取得
+    // チャンネル所属メンバーとその通知レベルを1回で取得 (走査は M 行、メンバーごとの再問い合わせはしない)
     let channel_users =
         ChannelUser::filter(ChannelUser::fields().channel_id().eq(&message.channel_id))
             .exec(tx)
             .await?;
-    let member_ids: HashSet<String> = channel_users.into_iter().map(|cu| cu.user_id).collect();
+    let member_levels: HashMap<String, String> = channel_users
+        .into_iter()
+        .map(|cu| (cu.user_id, cu.notification_level))
+        .collect();
+    let member_ids: HashSet<String> = member_levels.keys().cloned().collect();
 
     // 通知対象ユーザーと通知タイプ (user_id -> notification_type)
     let mut targets_to_notify: HashMap<String, &'static str> = HashMap::new();
@@ -232,6 +261,7 @@ pub async fn create_message_notifications(
     // プライベートチャンネルの場合は channel_user 所属を確認し、キック/退出者には通知しない
     if let Some(parent_id) = parent_author_id
         && parent_id != actor_id
+        && !is_muted(&member_levels, parent_id)
     {
         let can_notify = if channel.is_private {
             member_ids.contains(parent_id)
@@ -247,11 +277,50 @@ pub async fn create_message_notifications(
         }
     }
 
+    // 3'. スレッド参加者 (#620): 参加中 (left_at IS NULL) のメンバーへ reply を出す。
+    // 退出済みの行は SQL で除く。公開チャンネルは非メンバーも可、非公開は所属を確認する。
+    // 本人・bot・無効化ユーザーは後段の共通フィルターで除く。
+    if let Some(root_id) = thread_root_id {
+        let participants = crate::apps::query(
+            tx,
+            notification_participants_sql(),
+            &[root_id, message.channel_id.as_str()],
+        )
+        .await?;
+        for participant in participants {
+            let Some(user_id) = participant["user_id"].as_str() else {
+                continue;
+            };
+            if user_id == actor_id || participant["level"] == "mute" {
+                continue;
+            }
+            if channel.is_private && !member_ids.contains(user_id) {
+                continue;
+            }
+            targets_to_notify
+                .entry(user_id.to_owned())
+                .or_insert("reply");
+        }
+    }
+
     // 通常の DM も現在の参加者全員へ通知する。メンション・返信は優先して重複させない。
+    // `mute` の参加者には届けない。
     if channel.is_dm && channel.deleted_at.is_none() {
         for member_id in &member_ids {
-            if member_id != actor_id {
+            if member_id != actor_id && !is_muted(&member_levels, member_id) {
                 targets_to_notify.entry(member_id.clone()).or_insert("dm");
+            }
+        }
+    }
+
+    // 4. `all` のメンバーには通常投稿を通知する。優先度は最下位なので、上で入った
+    // メンション・返信・DM は上書きしない。暗号化チャンネルでも本文は解析しない。
+    if channel.deleted_at.is_none() {
+        for (member_id, level) in &member_levels {
+            if level == "all" && member_id != actor_id {
+                targets_to_notify
+                    .entry(member_id.clone())
+                    .or_insert("channel_message");
             }
         }
     }
@@ -311,21 +380,17 @@ pub async fn create_reaction_notification(
     }
 
     let channel = Channel::get_by_id(tx, message.channel_id.as_str()).await?;
-    if channel.is_private {
-        let is_member = ChannelUser::filter(
-            ChannelUser::fields()
-                .channel_id()
-                .eq(&message.channel_id)
-                .and(ChannelUser::fields().user_id().eq(&message.user_id)),
-        )
-        .first()
-        .exec(tx)
-        .await?
-        .is_some();
-
-        if !is_member {
-            return Ok(None);
-        }
+    // メンバー判定と通知レベルを同じ主キー参照で読む。`mute` にはリアクションを届けない。
+    let membership = crate::apps::query(
+        tx,
+        "SELECT json_build_object('level', notification_level)::text \
+         FROM channel_user WHERE channel_id=$1 AND user_id=$2",
+        &[message.channel_id.as_str(), message.user_id.as_str()],
+    )
+    .await?;
+    let level = membership.first().and_then(|row| row["level"].as_str());
+    if level == Some("mute") || (channel.is_private && level.is_none()) {
+        return Ok(None);
     }
 
     let notification = Notification::create()

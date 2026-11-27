@@ -6,6 +6,7 @@ pub use crate::accounts::AccountProfiles;
 use std::collections::{HashMap, HashSet};
 
 use crate::{
+    api::NotificationLevel,
     rows::{
         Attachment, CallInvite, Channel, ChannelUser, FromRow, Message, Notification, Reaction,
         User, UserPinnedChannel,
@@ -23,6 +24,8 @@ pub struct Store {
     channel_keys: HashMap<String, String>,
     user_keys: HashMap<String, String>,
     channel_users: HashMap<String, ChannelUser>,
+    /// (channel_id, user_id) から Shape のキーへの索引。
+    channel_user_keys: HashMap<(String, String), String>,
     messages: HashMap<String, HashMap<String, Message>>,
     reactions: HashMap<String, HashMap<String, Reaction>>,
     attachments: HashMap<String, HashMap<String, Attachment>>,
@@ -104,6 +107,13 @@ impl Store {
         match id {
             ShapeId::Channels => self.channel_keys = index(&self.channels, |c| &c.id),
             ShapeId::Users => self.user_keys = index(&self.users, |u| &u.id),
+            ShapeId::ChannelUsers => {
+                self.channel_user_keys = self
+                    .channel_users
+                    .iter()
+                    .map(|(key, row)| ((row.channel_id.clone(), row.user_id.clone()), key.clone()))
+                    .collect();
+            }
             ShapeId::Notifications => {
                 self.notification_keys = index(&self.notifications, |n| &n.id)
             }
@@ -217,6 +227,21 @@ impl Store {
         self.channel_users
             .values()
             .any(|member| member.channel_id == channel_id && member.user_id == user_id)
+    }
+
+    /// あるユーザーのチャンネル参加行。
+    pub fn channel_user(&self, channel_id: &str, user_id: &str) -> Option<&ChannelUser> {
+        self.channel_users.get(
+            self.channel_user_keys
+                .get(&(channel_id.into(), user_id.into()))?,
+        )
+    }
+
+    /// 通知レベル。参加行がまだ届いていない・古いスキーマなら `mentions`。
+    pub fn notification_level(&self, channel_id: &str, user_id: &str) -> NotificationLevel {
+        self.channel_user(channel_id, user_id)
+            .and_then(|row| NotificationLevel::parse(&row.notification_level))
+            .unwrap_or_default()
     }
 
     /// チャンネルに参加しているユーザー一覧。
@@ -819,5 +844,40 @@ mod tests {
         );
         assert!(store.notification("n1").is_none());
         assert!(store.notification("n2").is_some());
+    }
+
+    #[test]
+    fn reads_notification_level_from_the_membership_row() {
+        let mut store = Store::default();
+        store.apply(
+            &ShapeId::ChannelUsers,
+            batch(vec![
+                upsert(
+                    "a",
+                    json!({ "user_id": "me", "channel_id": "c1", "notification_level": "all" }),
+                ),
+                upsert("b", json!({ "user_id": "me", "channel_id": "c2" })),
+                upsert(
+                    "c",
+                    json!({ "user_id": "other", "channel_id": "c1", "notification_level": "mute" }),
+                ),
+            ]),
+        );
+        assert_eq!(store.notification_level("c1", "me"), NotificationLevel::All);
+        assert_eq!(
+            store.notification_level("c2", "me"),
+            NotificationLevel::Mentions
+        );
+        assert_eq!(
+            store.notification_level("c3", "me"),
+            NotificationLevel::Mentions
+        );
+        // 同じチャンネルでも、ほかのユーザーの設定は混ぜない。
+        assert_eq!(
+            store.notification_level("c1", "other"),
+            NotificationLevel::Mute
+        );
+        assert!(store.channel_user("c1", "me").is_some());
+        assert!(store.channel_user("c9", "me").is_none());
     }
 }

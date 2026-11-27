@@ -301,13 +301,20 @@ class AndroidSamplesTest {
             "search-error" to AndroidScreen.Search(SearchScreenState("議事録", "議事録", GlobalSearchType.All, error = true)),
             "channel-edit" to AndroidScreen.EditChannel("チャンネルを作成", "開発", "", "作成", true,
                 privateChannel = true, sensitive = false, encrypted = true),
-            "channel-settings" to AndroidScreen.ChannelSettings("開発", listOf(SettingsGroup("チャンネル", listOf(
-                SettingsEntry.Information("description", "Zoo の開発と通話のテストについて相談するチャンネルです。"),
-                SettingsEntry.Destination("members", "メンバー"),
-                SettingsEntry.Destination("add-member", "メンバーを追加"),
-                SettingsEntry.Destination("rename", "名前と説明を編集"),
-                SettingsEntry.Destination("archive", "アーカイブ"),
-            )))),
+            "channel-settings" to AndroidScreen.ChannelSettings("開発", listOf(
+                SettingsGroup("チャンネル", listOf(
+                    SettingsEntry.Information("description", "Zoo の開発と通話のテストについて相談するチャンネルです。"),
+                    SettingsEntry.Destination("members", "メンバー"),
+                    SettingsEntry.Destination("add-member", "メンバーを追加"),
+                    SettingsEntry.Destination("rename", "名前と説明を編集"),
+                    SettingsEntry.Destination("archive", "アーカイブ"),
+                )),
+                SettingsGroup("通知", listOf(
+                    SettingsEntry.Choice("notification:all", "すべての投稿", false),
+                    SettingsEntry.Choice("notification:mentions", "メンション", true),
+                    SettingsEntry.Choice("notification:mute", "メンション以外を通知しない", false),
+                )),
+            )),
             "channel-members" to AndroidScreen.Directory("メンバー", "", listOf(
                 SelectionItem("haru", "はる", isUserName = true),
                 SelectionItem("yui", "ゆい", isUserName = true),

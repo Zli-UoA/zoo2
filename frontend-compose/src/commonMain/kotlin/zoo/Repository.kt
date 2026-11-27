@@ -394,6 +394,8 @@ class SyncedTable(
             val path =
                 if (direct) config.electricShapeUrl
                 else endpoint(config.apiBaseUrl, "${config.shapeProxyPath}/$name")
+            // channel_user の notification_level もこの Shape の行に含まれる。設定ごとに
+            // REST を増やさず、参加行の更新をそのまま画面へ反映する。
             val table = if (name == "channel_users") "channel_user" else name
             val shapeParams =
                 if (!direct) params

@@ -193,6 +193,7 @@ erDiagram
       text user_id PK,FK
       text channel_id PK,FK
       timestamp(3) joined_at
+      text notification_level
     }
     channel_user }o--o| channels : channel_user_channel_id_fkey
     channel_user }o--o| users : channel_user_user_id_fkey

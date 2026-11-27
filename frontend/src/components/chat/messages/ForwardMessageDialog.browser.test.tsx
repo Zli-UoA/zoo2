@@ -199,19 +199,19 @@ const CHANNELS: ChannelRow[] = [
 ];
 
 const MEMBERSHIPS: ChannelUserRow[] = [
-  { user_id: "u-me", channel_id: "ch-pub", joined_at: "" },
-  { user_id: "u-me", channel_id: "ch-priv", joined_at: "" },
-  { user_id: "u-me", channel_id: "ch-enc", joined_at: "" },
-  { user_id: "u-me", channel_id: "ch-arch", joined_at: "" },
-  { user_id: "u-me", channel_id: "ch-mgr", joined_at: "" },
-  { user_id: "u-me", channel_id: "ch-dm", joined_at: "" },
-  { user_id: "u-bob", channel_id: "ch-dm", joined_at: "" },
-  { user_id: "u-me", channel_id: "ch-gdm", joined_at: "" },
-  { user_id: "u-bob", channel_id: "ch-gdm", joined_at: "" },
-  { user_id: "u-carol", channel_id: "ch-gdm", joined_at: "" },
-  { user_id: "u-me", channel_id: "ch-gdm-2", joined_at: "" },
-  { user_id: "u-bob", channel_id: "ch-gdm-2", joined_at: "" },
-  { user_id: "u-dave", channel_id: "ch-gdm-2", joined_at: "" },
+  { user_id: "u-me", channel_id: "ch-pub", joined_at: "", notification_level: "mentions" },
+  { user_id: "u-me", channel_id: "ch-priv", joined_at: "", notification_level: "mentions" },
+  { user_id: "u-me", channel_id: "ch-enc", joined_at: "", notification_level: "mentions" },
+  { user_id: "u-me", channel_id: "ch-arch", joined_at: "", notification_level: "mentions" },
+  { user_id: "u-me", channel_id: "ch-mgr", joined_at: "", notification_level: "mentions" },
+  { user_id: "u-me", channel_id: "ch-dm", joined_at: "", notification_level: "mentions" },
+  { user_id: "u-bob", channel_id: "ch-dm", joined_at: "", notification_level: "mentions" },
+  { user_id: "u-me", channel_id: "ch-gdm", joined_at: "", notification_level: "mentions" },
+  { user_id: "u-bob", channel_id: "ch-gdm", joined_at: "", notification_level: "mentions" },
+  { user_id: "u-carol", channel_id: "ch-gdm", joined_at: "", notification_level: "mentions" },
+  { user_id: "u-me", channel_id: "ch-gdm-2", joined_at: "", notification_level: "mentions" },
+  { user_id: "u-bob", channel_id: "ch-gdm-2", joined_at: "", notification_level: "mentions" },
+  { user_id: "u-dave", channel_id: "ch-gdm-2", joined_at: "", notification_level: "mentions" },
 ];
 
 const SOURCE: ResolvedForwardMessage = {

@@ -4,6 +4,7 @@ import {
   ApiError,
   buildAuthHeaders,
   createApiClient,
+  createChannelNotificationSettingsApi,
   createChannelPinsApi,
   createConfiguredApiClient,
   unwrapEnvelope,
@@ -458,6 +459,35 @@ describe("createChannelPinsApi", () => {
         method: "PATCH",
         body: JSON.stringify({ channel_ids: ["c2", "c1"], expected_version: 7 }),
       }),
+    );
+  });
+});
+
+describe("createChannelNotificationSettingsApi", () => {
+  it("reads and updates the level on one encoded channel path", async () => {
+    const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({ level: "mentions" }));
+    const client = createApiClient({
+      baseUrl: "http://localhost:8000",
+      fetch: fetchMock,
+    });
+    const api = createChannelNotificationSettingsApi(client);
+
+    await expect(api.getChannelNotificationSettings("c 1")).resolves.toEqual({
+      level: "mentions",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8000/api/channels/c%201/notification-settings",
+      expect.objectContaining({ method: "GET" }),
+    );
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: { level: "all" }, txid: "7" }));
+    await expect(api.updateChannelNotificationSettings("c 1", "all")).resolves.toEqual({
+      data: { level: "all" },
+      txid: "7",
+    });
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "http://localhost:8000/api/channels/c%201/notification-settings",
+      expect.objectContaining({ method: "PATCH", body: JSON.stringify({ level: "all" }) }),
     );
   });
 });

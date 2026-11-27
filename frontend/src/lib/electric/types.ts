@@ -102,10 +102,14 @@ export type MessageReactionRow = {
   created_at: TimestampString;
 };
 
+/** チャンネルごとの通知レベル。`mentions` が既定。 */
+export type ChannelNotificationLevel = "all" | "mentions" | "mute";
+
 export type ChannelUserRow = {
   user_id: string;
   channel_id: string;
   joined_at: TimestampString;
+  notification_level: ChannelNotificationLevel;
 };
 
 /** 自分でチャンネルを退出した日時。本人の行だけが届く。 */

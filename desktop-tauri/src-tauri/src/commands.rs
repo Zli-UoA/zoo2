@@ -7,11 +7,13 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, State, Webview};
 use zoo2_client_types::{
+    api::ChannelNotificationSettings,
     ipc::{
-        AccessToken, DOWNLOAD_ID_HEADER, DOWNLOAD_OFFSET_HEADER, DownloadBegin, DownloadSettings,
-        DownloadSettingsUpdate, DownloadStart, ErrorCode, FocusState, InvokeAppAction, IpcError,
-        LoginMethod, LoginPrompt, NotificationSettings, ObservedNotifications, OpenChannel,
-        SendMessage, SendResult, SessionInfo, UiMode,
+        AccessToken, ChannelNotificationSettingsRequest, DOWNLOAD_ID_HEADER,
+        DOWNLOAD_OFFSET_HEADER, DownloadBegin, DownloadSettings, DownloadSettingsUpdate,
+        DownloadStart, ErrorCode, FocusState, InvokeAppAction, IpcError, LoginMethod, LoginPrompt,
+        NotificationSettings, ObservedNotifications, OpenChannel, SendMessage, SendResult,
+        SessionInfo, SetChannelNotificationLevel, UiMode,
     },
     shape::ShapeId,
 };
@@ -117,6 +119,30 @@ pub async fn zoo_set_notifications(
     require(&webview, &core, ANY)?;
     core.set_notification_settings(settings)
         .map_err(|err| IpcError::new(ErrorCode::Internal, format!("{err:#}")))
+}
+
+/// チャンネルごとの通知レベルを読む。(a)・(b) のどちらからも呼べる。
+#[tauri::command]
+pub async fn zoo_channel_notification_settings(
+    webview: Webview,
+    core: Core_<'_>,
+    request: ChannelNotificationSettingsRequest,
+) -> Result<ChannelNotificationSettings, IpcError> {
+    require(&webview, &core, ANY)?;
+    core.channel_notification_settings(&request.channel_id)
+        .await
+}
+
+/// チャンネルごとの通知レベルを変える。
+#[tauri::command]
+pub async fn zoo_set_channel_notification_level(
+    webview: Webview,
+    core: Core_<'_>,
+    request: SetChannelNotificationLevel,
+) -> Result<ChannelNotificationSettings, IpcError> {
+    require(&webview, &core, ANY)?;
+    core.set_channel_notification_level(&request.channel_id, request.level)
+        .await
 }
 
 #[tauri::command]

@@ -1,3 +1,4 @@
+import type { ChannelNotificationLevel } from "../electric/types";
 import type { TimestampString } from "../timestamps";
 
 export interface UserResponse {
@@ -52,7 +53,16 @@ export interface ChannelUserResponse {
   user_id: string;
   channel_id: string;
   joined_at: TimestampString;
+  notification_level?: ChannelNotificationLevel;
 }
+
+/** `GET /api/channels/{id}/notification-settings` の応答。 */
+export interface ChannelNotificationSettings {
+  level: ChannelNotificationLevel;
+}
+
+/** `PATCH /api/channels/{id}/notification-settings` の本文。 */
+export type UpdateChannelNotificationSettingsRequest = ChannelNotificationSettings;
 
 export interface CreateUserRequest {
   id?: string;

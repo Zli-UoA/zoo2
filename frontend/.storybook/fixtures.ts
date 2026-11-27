@@ -361,28 +361,62 @@ export const storyChannelUsers: ChannelUserRow[] = [
     user_id: "user-alice",
     channel_id: "00000000-0000-4000-8000-000000000001",
     joined_at: timestamp(1, 0),
+    notification_level: "mentions",
   },
   {
     user_id: "user-bob",
     channel_id: "00000000-0000-4000-8000-000000000001",
     joined_at: timestamp(1, 0),
+    notification_level: "mentions",
   },
   {
     user_id: "user-carol",
     channel_id: "00000000-0000-4000-8000-000000000001",
     joined_at: timestamp(1, 0),
+    notification_level: "mentions",
   },
-  { user_id: "user-alice", channel_id: "channel-design", joined_at: timestamp(1, 0) },
-  { user_id: "user-carol", channel_id: "channel-design", joined_at: timestamp(1, 0) },
-  { user_id: "user-dave", channel_id: "channel-design", joined_at: timestamp(1, 0) },
-  { user_id: "user-alice", channel_id: "channel-secret", joined_at: timestamp(1, 0) },
-  { user_id: "user-bob", channel_id: "channel-secret", joined_at: timestamp(1, 0) },
+  {
+    user_id: "user-alice",
+    channel_id: "channel-design",
+    joined_at: timestamp(1, 0),
+    notification_level: "mentions",
+  },
+  {
+    user_id: "user-carol",
+    channel_id: "channel-design",
+    joined_at: timestamp(1, 0),
+    notification_level: "mentions",
+  },
+  {
+    user_id: "user-dave",
+    channel_id: "channel-design",
+    joined_at: timestamp(1, 0),
+    notification_level: "mentions",
+  },
+  {
+    user_id: "user-alice",
+    channel_id: "channel-secret",
+    joined_at: timestamp(1, 0),
+    notification_level: "mentions",
+  },
+  {
+    user_id: "user-bob",
+    channel_id: "channel-secret",
+    joined_at: timestamp(1, 0),
+    notification_level: "mentions",
+  },
   {
     user_id: "user-admin",
     channel_id: "00000000-0000-4000-8000-000000000001",
     joined_at: timestamp(1, 0),
+    notification_level: "mentions",
   },
-  { user_id: "user-admin", channel_id: "channel-archive", joined_at: timestamp(1, 0) },
+  {
+    user_id: "user-admin",
+    channel_id: "channel-archive",
+    joined_at: timestamp(1, 0),
+    notification_level: "mentions",
+  },
 ];
 
 export const storyMessages: MessageRow[] = [
@@ -589,6 +623,7 @@ export const storyDmMembers: ChannelUserRow[] = storyDmChannels.flatMap((channel
     channel_id: channel.id,
     user_id: user.id,
     joined_at: channel.created_at,
+    notification_level: "mentions" as const,
   })),
 );
 export const storyDmNotifications: NotificationRow[] = storyDmChannels.map((channel, index) => ({

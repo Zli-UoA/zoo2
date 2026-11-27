@@ -177,6 +177,7 @@ function channelUsersCollection(
         defaultIndexType: BasicIndex,
         shapeOptions: shapeOptions("channelUsers", config),
         onInsert: writes.onInsert,
+        onUpdate: writes.onUpdate,
         onDelete: writes.onDelete,
       }),
       persistence,

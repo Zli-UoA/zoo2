@@ -77,6 +77,7 @@ const membership: ChannelUserRow = {
   user_id: "u1",
   channel_id: "c1",
   joined_at: "2026-01-01 00:00:00.000",
+  notification_level: "mentions",
 };
 
 describe("message writes", () => {
@@ -554,6 +555,92 @@ describe("channel_user writes", () => {
     currentUserId = CURRENT_USER;
     await writes.onDelete(params(collection, [deleteMutation(membership)]));
     expect(post).toHaveBeenCalledWith("/api/channels/c1/leave");
+  });
+
+  it("PATCHes the notification level and waits for the channel_user update", async () => {
+    const { client, patch } = makeClient();
+    const { collection, awaitTxId, awaitMatch } = makeCollection();
+    const writes = createChannelUserWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+
+    await writes.onUpdate(
+      params(collection, [
+        {
+          ...updateMutation(membership, { notification_level: "all" }),
+          metadata: { action: "notificationLevel" },
+        },
+      ]),
+    );
+
+    expect(patch).toHaveBeenCalledWith("/api/channels/c1/notification-settings", { level: "all" });
+    expect(awaitTxId).toHaveBeenCalledWith(Number(TXID), undefined);
+    expect(awaitMatch).not.toHaveBeenCalled();
+  });
+
+  it("matches only my row with the selected level in awaitMatch mode", async () => {
+    const { client } = makeClient();
+    const { collection, awaitMatch } = makeCollection();
+    const writes = createChannelUserWrites({
+      client,
+      txidMode: "awaitMatch",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+
+    await writes.onUpdate(
+      params(collection, [
+        {
+          ...updateMutation(membership, { notification_level: "mute" }),
+          metadata: { action: "notificationLevel" },
+        },
+      ]),
+    );
+
+    const matcher = awaitMatch.mock.calls[0][0] as (message: unknown) => boolean;
+    const message = (level: string, userId = CURRENT_USER) => ({
+      key: `${userId}:c1`,
+      headers: { operation: "update" },
+      value: { ...membership, user_id: userId, notification_level: level },
+    });
+    expect(matcher(message("mute"))).toBe(true);
+    expect(matcher(message("mentions"))).toBe(false);
+    expect(matcher(message("mute", "u2"))).toBe(false);
+    expect(matcher({ ...message("mute"), headers: { operation: "insert" } })).toBe(false);
+  });
+
+  it("refuses another member's row and unexpected updates so the optimistic state rolls back", async () => {
+    const { client, patch } = makeClient();
+    const { collection } = makeCollection();
+    const writes = createChannelUserWrites({
+      client,
+      txidMode: "skip",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+
+    await expect(
+      writes.onUpdate(
+        params(collection, [
+          {
+            ...updateMutation({ ...membership, user_id: "u2" }, { notification_level: "mute" }),
+            metadata: { action: "notificationLevel" },
+          },
+        ]),
+      ),
+    ).rejects.toThrow(/own notification settings/);
+
+    await expect(
+      writes.onUpdate(
+        params(collection, [
+          {
+            ...updateMutation(membership, { joined_at: "now" }),
+            metadata: { action: "notificationLevel" },
+          },
+        ]),
+      ),
+    ).rejects.toThrow(/Only notification_level/);
+    expect(patch).not.toHaveBeenCalled();
   });
 });
 

@@ -21,7 +21,12 @@ function user(id: string, user_name: string, display_name = ""): UserRow {
 }
 
 function member(user_id: string): ChannelUserRow {
-  return { user_id, channel_id: "channel-1", joined_at: "2026-01-02 00:00:00.000" };
+  return {
+    user_id,
+    channel_id: "channel-1",
+    joined_at: "2026-01-02 00:00:00.000",
+    notification_level: "mentions",
+  };
 }
 
 describe("userLabel", () => {

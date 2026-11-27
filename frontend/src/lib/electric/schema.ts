@@ -162,6 +162,7 @@ export const CHANNEL_USER_SCHEMA: ShapeSchema<ChannelUserRow> = {
     user_id: "text",
     channel_id: "text",
     joined_at: "timestamp",
+    notification_level: "text",
   },
 };
 

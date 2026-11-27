@@ -7,6 +7,7 @@ import {
   ArchiveIcon,
   ArchiveRestoreIcon,
   ArrowLeftIcon,
+  BellIcon,
   HashIcon,
   HeadphonesIcon,
   LockIcon,
@@ -26,9 +27,11 @@ import { useEffect, useRef, useState } from "react";
 import { useChannelAdmin } from "../../hooks/useChannelAdmin";
 import { usePinnedChannels } from "../../hooks/usePinnedChannels";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
+import { useWriteRunner } from "../../hooks/useWriteRunner";
+import { useMyChannelMemberships } from "../../hooks/useRealtime";
 import { useCall } from "../../lib/call/call-context";
 import { useCollections } from "../../lib/electric/collections-context";
-import type { ChannelRow } from "../../lib/electric/types";
+import type { ChannelNotificationLevel, ChannelRow } from "../../lib/electric/types";
 import { parseUtcTimestamp } from "../../lib/timestamps";
 import type { ChannelUserWriteMetadata } from "../../lib/electric/writes";
 import { localizeApiError } from "../../lib/i18n/apiError";
@@ -58,6 +61,19 @@ import { EncryptChannelDialog } from "./EncryptChannelDialog";
 import { isGroupDm } from "./dm";
 import { PaneHeader } from "../layout/PaneHeader";
 
+const NOTIFICATION_LEVELS = ["all", "mentions", "mute"] as const;
+// x18n の動的キーは静的な前方一致が必要（docs/i18n.md）。
+const LEVEL_LABEL_SUFFIXES = {
+  all: "All",
+  mentions: "Mentions",
+  mute: "Mute",
+} as const;
+const LEVEL_HELP_SUFFIXES = {
+  all: "AllHelp",
+  mentions: "MentionsHelp",
+  mute: "MuteHelp",
+} as const;
+
 /** チャンネルヘッダ。名前・説明・メンバー数と管理メニュー、狭幅の戻る。 */
 export function ChannelHeader({
   channel,
@@ -86,6 +102,7 @@ export function ChannelHeader({
   const [renameOpen, setRenameOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [encryptOpen, setEncryptOpen] = useState(false);
+  const [notificationOpen, setNotificationOpen] = useState(false);
   // 既存の非公開チャンネルは、管理できる人が暗号化に切り替えられる（#367）。
   const canEncrypt = canManage && channel.is_private && !channel.encrypted && !isArchived;
 
@@ -290,7 +307,20 @@ export function ChannelHeader({
             {pinned ? <PinOffIcon /> : <PinIcon />}
           </Button>
         ) : null}
-        {isDm ? <DmHeaderMenu channel={channel} /> : null}
+        {isDm ? (
+          <DmHeaderMenu channel={channel} />
+        ) : (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="size-11 md:size-8"
+            aria-label={t("notifications.settings")}
+            title={t("notifications.settings")}
+            onClick={() => setNotificationOpen(true)}
+          >
+            <BellIcon />
+          </Button>
+        )}
         {canManage ? (
           <Button
             variant="ghost"
@@ -304,6 +334,15 @@ export function ChannelHeader({
           </Button>
         ) : null}
       </div>
+
+      {!isDm ? (
+        <ChannelNotificationDialog
+          key={channel.id}
+          channel={channel}
+          open={notificationOpen}
+          onOpenChange={setNotificationOpen}
+        />
+      ) : null}
 
       {webhooksOpen && canManage ? (
         <ChannelWebhooksDialog key={channel.id} channel={channel} onOpenChange={setWebhooksOpen} />
@@ -455,6 +494,7 @@ function DmHeaderMenu({ channel }: { channel: ChannelRow }) {
   const pinPending = pins.pending.has(channel.id);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [encryptOpen, setEncryptOpen] = useState(false);
+  const [notificationOpen, setNotificationOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -508,6 +548,10 @@ function DmHeaderMenu({ channel }: { channel: ChannelRow }) {
               {t(pinned ? "channelPins.unpin" : "channelPins.pin")}
             </DropdownMenuItem>
           ) : null}
+          <DropdownMenuItem className="min-h-11" onClick={() => setNotificationOpen(true)}>
+            <BellIcon />
+            {t("notifications.settings")}
+          </DropdownMenuItem>
           {!channel.encrypted ? (
             // 既存の DM も、参加者なら暗号化に切り替えられる（#367）。
             <DropdownMenuItem className="min-h-11" onClick={() => setEncryptOpen(true)}>
@@ -529,6 +573,13 @@ function DmHeaderMenu({ channel }: { channel: ChannelRow }) {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+
+      <ChannelNotificationDialog
+        key={channel.id}
+        channel={channel}
+        open={notificationOpen}
+        onOpenChange={setNotificationOpen}
+      />
 
       {!channel.encrypted ? (
         <EncryptChannelDialog channel={channel} open={encryptOpen} onOpenChange={setEncryptOpen} />
@@ -559,6 +610,99 @@ function DmHeaderMenu({ channel }: { channel: ChannelRow }) {
         </AlertDialogContent>
       </AlertDialog>
     </>
+  );
+}
+
+/**
+ * チャンネルごとの通知レベル。管理者設定 (`canManage`) とは独立して、参加メンバーなら
+ * 誰でも開ける。現在値は channelUsers コレクションから読み、書き込みは同じ行の
+ * 楽観更新として扱う（個別の GET は画面ごとにはしない）。
+ */
+function ChannelNotificationDialog({
+  channel,
+  open,
+  onOpenChange,
+}: {
+  channel: ChannelRow;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const { channelUsers } = useCollections();
+  const { memberships } = useMyChannelMemberships();
+  const write = useWriteRunner();
+  const membership = memberships.find((row) => row.channel_id === channel.id);
+  const level: ChannelNotificationLevel = membership?.notification_level ?? "mentions";
+
+  async function select(next: ChannelNotificationLevel) {
+    if (!membership || next === level || write.isPending) {
+      return;
+    }
+    await write.run(() =>
+      channelUsers.update(
+        `${membership.user_id}:${channel.id}`,
+        { metadata: { action: "notificationLevel" } satisfies ChannelUserWriteMetadata },
+        (draft) => {
+          draft.notification_level = next;
+        },
+      ),
+    );
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{t("notifications.channelSettings")}</DialogTitle>
+          <DialogDescription>{channel.channel_name}</DialogDescription>
+        </DialogHeader>
+        {membership ? (
+          <fieldset
+            role="radiogroup"
+            aria-label={t("notifications.levelTitle")}
+            className="space-y-2"
+            disabled={write.isPending}
+          >
+            <legend className="text-sm font-medium">{t("notifications.levelTitle")}</legend>
+            {NOTIFICATION_LEVELS.map((value) => (
+              <label
+                key={value}
+                className="flex cursor-pointer items-start gap-3 rounded-lg border p-3 has-[:checked]:border-primary has-[:checked]:bg-primary/5"
+              >
+                <input
+                  type="radio"
+                  name={`notification-level-${channel.id}`}
+                  value={value}
+                  checked={level === value}
+                  onChange={() => void select(value)}
+                  className="mt-0.5 size-4 shrink-0 accent-primary"
+                />
+                <span className="min-w-0">
+                  <span className="block text-sm font-medium">
+                    {t(`notifications.level${LEVEL_LABEL_SUFFIXES[value]}`)}
+                  </span>
+                  <span className="mt-0.5 block text-xs text-muted-foreground">
+                    {t(`notifications.level${LEVEL_HELP_SUFFIXES[value]}`)}
+                  </span>
+                </span>
+              </label>
+            ))}
+          </fieldset>
+        ) : (
+          <p role="status" className="text-sm text-muted-foreground">
+            {t("notifications.notMember")}
+          </p>
+        )}
+        {membership && channel.encrypted ? (
+          <p className="text-xs text-muted-foreground">{t("notifications.levelEncryptedHint")}</p>
+        ) : null}
+        {write.error ? (
+          <p role="alert" className="text-xs text-destructive">
+            {t("notifications.levelError")} {localizeApiError(write.errorCause ?? write.error, t)}
+          </p>
+        ) : null}
+      </DialogContent>
+    </Dialog>
   );
 }
 

@@ -8,6 +8,18 @@
 - `POST /api/notifications/read-all` は両方の通知を既読にする。`channel_id` 指定時はそのチャンネルだけを更新する。両APIは既存の `data` / `txid` 形式を使う。チャンネルShapeで観測できる変更がある場合だけ `txid` を返し、連合通知だけの更新や更新なしでは `txid: null` にする。これによりクライアントが届かないチャンネル更新を待ち続けることを防ぐ。
 - 既存の単一通知・ActivityPub既読APIは互換窓口として同じ既読処理を呼ぶ。ActivityPubの窓口の全件既読はActivityPubだけを対象にする。
 
+## チャンネルごとの通知レベル（#620）
+
+`channel_user.notification_level`（`all` / `mentions` / `mute`）が設定の正本で、新規参加行と既存行は DEFAULT の `mentions` から始まる。スレッド単位の設定は設けず、チャンネルごとの設定がそのチャンネルの全通知に適用する。
+
+- `GET /api/channels/{id}/notification-settings` は `{"level":"..."}` を `Cache-Control: no-store` で返す。`PATCH` は同じ形の body を受け取り `data`/`txid` 形式で返す。チャンネルが存在し未削除で、自分自身の `channel_user` 行がある場合だけ応答し、それ以外（非メンバー・他人の設定・削除済み・不正 ID）は 404。値が不正なときは 400。同値の再送は DB を書き込まず `txid: null` にする。設定の取得に追加のポーリングや常設接続は作らない。
+- `mentions` は従来どおりで、`mention` / `reply` / `dm` / `reaction` を届ける。
+- `all` はそのチャンネルの全通知を受け取る。通常投稿は `notification_type = 'channel_message'` として1件作る（新種別。`notification_events` に type の CHECK はない）。暗号化チャンネルでも本文を解析せず、Push は既存の暗号化プレースホルダを使う。
+- `mute` には明示メンション（`@user` / `@channel` / `@here` と E2EE の `explicit_mentions.user_ids`）だけを届ける。`reply` / `reaction` / `dm` / `channel_message` は作らない。未読カウントの扱いは変えない。
+- `missed_call` はレベルの対象外で、従来どおり届ける。
+
+1投稿につき1ユーザー1件に集約し、優先度は `mention > reply > dm > channel_message` の順（`entry().or_insert()`）。スレッド返信では、親投稿者に加えて `thread_participants` の `left_at IS NULL` な参加者へ `reply` を出す。公開チャンネルは非メンバーも対象にでき、非公開は `channel_user` 所属を確認する。本人・bot・`is_deactivated`・退出済みの参加者は除外する。探索上限と実行計画の方針は [SQLの設計と性能基準](query-design.md) の「通知レベルとスレッド参加者への返信通知」を参照。
+
 `channel_notifications` と `federated_notifications` は共通テーブルの更新可能なビューで、別の保存先ではない。チャンネルの既存DTOと連合通知のアクター・投稿表示用DTOは各ビューから取得する。Electricの通知Shapeも共通テーブルからチャンネル通知を配信し、従来の8列だけを返す。チャンネル・メッセージの削除、非公開チャンネルの所属確認、ユーザー別フィルターは引き続き適用する。React・Composeのクライアント側スキーマやUIを変更せず利用できる。
 
 ## 不在着信（`missed_call`）

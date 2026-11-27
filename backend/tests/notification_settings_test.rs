@@ -1,0 +1,179 @@
+//! `GET/PATCH /api/channels/{id}/notification-settings` の契約 (#620)。
+//! 既定値、権限 (404)、保存と再取得、不正値 (400)、同値 no-op の txid、
+//! 他人の行を変更できないことを、スキーマを分けた DB で確認する。
+#[path = "support/thread_db.rs"]
+mod thread_db;
+
+use axum::{
+    Router,
+    body::{Body, to_bytes},
+    http::{HeaderMap, Request, StatusCode},
+};
+use backend::{
+    db::init_db,
+    routes::create_router,
+    state::AppState,
+};
+use serde_json::{Value, json};
+use tower::ServiceExt;
+
+async fn send(
+    app: &Router,
+    user: &str,
+    method: &str,
+    path: &str,
+    body: Value,
+) -> anyhow::Result<(StatusCode, HeaderMap, Value)> {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(path)
+                .header("X-Dev-User", user)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))?,
+        )
+        .await?;
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = to_bytes(response.into_body(), 1024 * 1024).await?;
+    Ok((status, headers, serde_json::from_slice(&bytes)?))
+}
+
+async fn ok(
+    app: &Router,
+    user: &str,
+    method: &str,
+    path: &str,
+    body: Value,
+) -> anyhow::Result<Value> {
+    let (status, _, value) = send(app, user, method, path, body).await?;
+    anyhow::ensure!(status.is_success(), "{method} {path}: {status} {value}");
+    Ok(value)
+}
+
+#[tokio::test]
+async fn notification_settings_round_trip_and_authorization() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    let fixture = thread_db::ThreadDb::new().await?;
+    let mut config = fixture.config.clone();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+
+    let owner = uuid::Uuid::new_v4().to_string();
+    let member = uuid::Uuid::new_v4().to_string();
+    let outsider = uuid::Uuid::new_v4().to_string();
+    for user in [&owner, &member, &outsider] {
+        ok(
+            &app,
+            user,
+            "POST",
+            "/api/users",
+            json!({"id": user, "user_name": user, "display_name": user}),
+        )
+        .await?;
+    }
+    let channel = uuid::Uuid::new_v4().to_string();
+    ok(
+        &app,
+        &owner,
+        "POST",
+        "/api/channels",
+        json!({"id": channel, "channel_name": channel, "is_private": true}),
+    )
+    .await?;
+    // 非公開チャンネルなので直接 join はできず、作成者が追加する。
+    ok(
+        &app,
+        &owner,
+        "POST",
+        &format!("/api/channels/{channel}/users"),
+        json!({"user_id": member}),
+    )
+    .await?;
+
+    let path = format!("/api/channels/{channel}/notification-settings");
+
+    // 既定値は mentions。読み取りは no-store。
+    let (status, headers, value) = send(&app, &owner, "GET", &path, json!({})).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["cache-control"], "no-store");
+    assert_eq!(value, json!({"level": "mentions"}));
+
+    // 保存して再取得。書き込みは data/txid 形式で、 Shape 変更があるので txid が入る。
+    let written = ok(
+        &app,
+        &owner,
+        "PATCH",
+        &path,
+        json!({"level": "all"}),
+    )
+    .await?;
+    assert_eq!(written["data"], json!({"level": "all"}));
+    assert!(written["txid"].is_string());
+    assert_eq!(
+        ok(&app, &owner, "GET", &path, json!({})).await?,
+        json!({"level": "all"})
+    );
+    let mut check = db.transaction().await?;
+    let rows = backend::apps::query(
+        &mut check,
+        "SELECT json_build_object('level', notification_level)::text \
+         FROM channel_user WHERE user_id=$1 AND channel_id=$2",
+        &[&owner, &channel],
+    )
+    .await?;
+    check.commit().await?;
+    assert_eq!(rows[0]["level"], "all");
+
+    // 同値の再送は書き込まず txid: null。
+    let noop = ok(&app, &owner, "PATCH", &path, json!({"level": "all"})).await?;
+    assert_eq!(noop["data"], json!({"level": "all"}));
+    assert!(noop["txid"].is_null());
+
+    // 不正値は 400 で、DB は変わらない。
+    let (status, _, _) = send(&app, &owner, "PATCH", &path, json!({"level": "loud"})).await?;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        ok(&app, &owner, "GET", &path, json!({})).await?,
+        json!({"level": "all"})
+    );
+
+    // 別のメンバーの設定は自分のものだけ変更でき、他人の行は変わらない。
+    assert_eq!(
+        ok(&app, &member, "GET", &path, json!({})).await?,
+        json!({"level": "mentions"})
+    );
+    let member_written = ok(&app, &member, "PATCH", &path, json!({"level": "mute"})).await?;
+    assert_eq!(member_written["data"], json!({"level": "mute"}));
+    assert!(member_written["txid"].is_string());
+    assert_eq!(
+        ok(&app, &owner, "GET", &path, json!({})).await?,
+        json!({"level": "all"})
+    );
+
+    // 非メンバー・存在しないチャンネル・不正 ID はすべて 404。
+    for (user, path) in [
+        (&outsider, path.clone()),
+        (&owner, format!("/api/channels/{}/notification-settings", uuid::Uuid::new_v4())),
+        (&owner, "/api/channels/not-a-uuid/notification-settings".to_owned()),
+    ] {
+        for method in ["GET", "PATCH"] {
+            let (status, _, _) = send(&app, user, method, &path, json!({"level": "mute"})).await?;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path}");
+        }
+    }
+
+    // 削除済みチャンネルも 404。
+    toasty::sql::statement("UPDATE channels SET deleted_at = now() WHERE id = $1")
+        .bind(channel.as_str())
+        .exec(&mut db)
+        .await?;
+    let (status, _, _) = send(&app, &owner, "GET", &path, json!({})).await?;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    drop(app);
+    fixture.cleanup().await
+}

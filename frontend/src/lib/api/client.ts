@@ -10,13 +10,15 @@ import {
   type UnauthorizedHandler,
 } from "../auth";
 import { joinUrl, type AppConfig } from "../config";
+import type { ChannelNotificationLevel } from "../electric/types";
 import type {
+  ChannelNotificationSettings,
   ChannelPinsResponse,
   PinChannelResult,
   ReorderChannelPinsResult,
   UnpinChannelResult,
 } from "./types";
-import { assertSafeApiPath } from "./path";
+import { apiPath, assertSafeApiPath } from "./path";
 import { normalizeRouteGroup, reportApiError } from "../telemetry/capture";
 import { runWithHttpSpan } from "../telemetry/tracer";
 
@@ -336,5 +338,25 @@ export function createChannelPinsApi(client: ApiClient) {
         channel_ids: channelIds,
         expected_version: expectedVersion,
       }),
+  };
+}
+
+/**
+ * チャンネルごとの通知レベル。
+ *
+ * 表示値は `channelUsers` コレクションから読むため、画面ごとに GET はしない。
+ * GET はコレクションにない場合の個別確認と API テスト用に置く。
+ */
+export function createChannelNotificationSettingsApi(client: ApiClient) {
+  return {
+    getChannelNotificationSettings: (channelId: string) =>
+      client.get<ChannelNotificationSettings>(
+        apiPath`/api/channels/${channelId}/notification-settings`,
+      ),
+    updateChannelNotificationSettings: (channelId: string, level: ChannelNotificationLevel) =>
+      client.patch<ChannelNotificationSettings>(
+        apiPath`/api/channels/${channelId}/notification-settings`,
+        { level },
+      ),
   };
 }

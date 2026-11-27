@@ -1164,6 +1164,48 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
         );
     }
 
+    /// `channel_message` は既存の通知ペイロードの union (`notificationType`) を変更せず、
+    /// 暗号化チャンネルでは既存の「新しいメッセージ」プレースホルダを使う (#620)。
+    #[test]
+    fn channel_message_uses_the_existing_payload_shape() {
+        use serde_json::json;
+        let now = crate::models::now_utc_millis();
+        let actor: User = serde_json::from_value(json!({
+            "id":"actor", "user_name":"alice", "display_name":"Alice", "is_bot":false,
+            "created_at":now, "updated_at":null
+        }))
+        .unwrap();
+        let mut channel: Channel = serde_json::from_value(json!({
+            "id":"channel", "channel_name":"general", "description":null, "created_user_id":"actor",
+            "is_private":false, "is_nsfw":false, "is_dm":false, "created_at":now, "updated_at":null,
+            "archive_at":null, "deleted_at":null
+        }))
+        .unwrap();
+        let message: Message = serde_json::from_value(json!({
+            "id":"message", "user_id":"actor", "channel_id":"channel", "content":"こんにちは",
+            "card":null, "created_at":now, "updated_at":null, "deleted_at":null, "parent_id":null
+        }))
+        .unwrap();
+        let notification: Notification = serde_json::from_value(json!({
+            "id":"notification", "user_id":"recipient", "actor_id":"actor", "channel_id":"channel",
+            "message_id":"message", "notification_type":"channel_message", "is_read":false, "created_at":now
+        }))
+        .unwrap();
+        channel.encrypted = true;
+        let encrypted = notification_payload(&notification, &actor, &channel, Some(&message), false);
+        let value = serde_json::to_value(&encrypted).unwrap();
+        assert_eq!(value["notificationType"], "channel_message");
+        assert_eq!(value["body"], ENCRYPTED_MESSAGE_BODY);
+        assert_eq!(value["url"], "/channels/channel?message=message");
+        channel.encrypted = false;
+        let plain = notification_payload(&notification, &actor, &channel, Some(&message), false);
+        assert_eq!(plain.body, "こんにちは");
+        assert_eq!(
+            serde_json::to_value(plain).unwrap()["notificationType"],
+            "channel_message"
+        );
+    }
+
     fn encrypted_payload(ciphertext_len: usize) -> NotificationPayload {
         NotificationPayload {
             title: "Alice · #secret".into(),

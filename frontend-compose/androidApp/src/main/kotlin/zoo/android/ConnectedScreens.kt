@@ -414,7 +414,10 @@ internal fun ConnectedScreens(
             encrypted = state.channelEncrypted.takeIf { state.overlay == "create" && state.channelPrivate },
         )
         state.overlay in setOf("channel-settings", "archive", "unarchive") && channel != null -> AndroidScreen.ChannelSettings(
-            channel.text("channel_name"), state.channelSettings(channel, member, encrypted), channel.text("id"))
+            channel.text("channel_name"),
+            state.channelSettings(channel, member, encrypted,
+                channelMembers.firstOrNull { it.text("user_id") == session.config.userId }?.notificationLevel() ?: "mentions"),
+            channel.text("id"))
         state.overlay == "new-post" -> AndroidScreen.NewPost(
             InputState(state.postDraft, canSend = env.online && !state.saving && state.postFiles.canSend(state.postDraft), selection = state.postSelection),
             state.recent, state.photosOpen, state.postVisibility,

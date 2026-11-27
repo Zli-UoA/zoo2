@@ -97,7 +97,17 @@
         "Encrypted",
         "Pinned",
         "PinnedArchived",
-        "PinLimit"
+        "PinLimit",
+        "PrivateEncryptSetting",
+        "EncryptedDm",
+        "NotificationAll",
+        "NotificationMentions",
+        "NotificationMute",
+        "NotificationDialogOpen",
+        "NotificationByMember",
+        "NotificationChangeToMute",
+        "NotificationEncryptedOpen",
+        "NotificationDmMenuOpen"
       ]
     },
     {
@@ -609,6 +619,7 @@
         "EncryptionMobile",
         "LegacyDevicesLink",
         "General",
+        "NotificationSettingsGuide",
         "Apps",
         "AppsMobile",
         "Management",
@@ -1171,7 +1182,7 @@
     {
       "file": "src/components/chat/ChannelHeader.tsx",
       "story": "src/components/chat/ChannelHeader.stories.tsx",
-      "reason": "Pinned でピン留め済みの aria-pressed、PinnedArchived でアーカイブ中のピンを解除できること、Archived でアーカイブ中の未ピンにはボタンを出さないこと、PinLimit で上限エラー時のクリックと状態維持を確認する。"
+      "reason": "Pinned でピン留め済みの aria-pressed、PinnedArchived でアーカイブ中のピンを解除できること、Archived でアーカイブ中の未ピンにはボタンを出さないこと、PinLimit で上限エラー時のクリックと状態維持を確認する。Notification* で 3 段階の現在値・一般メンバーからの操作・PATCH の反映・暗号化チャンネルの説明・DM メニューからの導線を確認する。"
     },
     {
       "file": "src/components/chat/ChannelListItem.tsx",

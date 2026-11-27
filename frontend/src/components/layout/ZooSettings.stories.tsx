@@ -56,6 +56,18 @@ export const General: Story = {
     await expect(screen.getByRole("combobox", { name: "プッシュ通知" })).toBeDisabled();
   }),
 };
+/** 通知の既定と、チャンネルごとの設定への導線を一般タブで確認する。 */
+export const NotificationSettingsGuide: Story = {
+  play: playForImplementation(async () => {
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Zoo設定" })).toBeVisible());
+    await expect(await screen.findByText("既定はメンションのみです。")).toBeVisible();
+    await expect(
+      await screen.findByRole("heading", { level: 3, name: "チャンネルの通知設定" }),
+    ).toBeVisible();
+    await expect(await screen.findByRole("button", { name: "チャンネルを開く" })).toBeVisible();
+  }),
+};
+
 /** OIDC ログイン中は、一般タブにログアウトが出る（左レールにはない）。 */
 export const GeneralWithLogout: Story = {
   parameters: {

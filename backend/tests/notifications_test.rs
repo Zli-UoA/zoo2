@@ -1,4 +1,5 @@
 use axum::{
+    Router,
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
@@ -708,5 +709,286 @@ async fn test_notifications_skip_deactivated_users() -> anyhow::Result<()> {
         count(placeholder.clone(), placeholder_message.clone()).await?,
         0
     );
+    Ok(())
+}
+
+// ---- #620: チャンネルごとの通知レベル ----
+
+async fn post_json(
+    app: &Router,
+    user: &str,
+    method: &str,
+    uri: &str,
+    payload: Value,
+) -> anyhow::Result<(StatusCode, Value)> {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header("X-Dev-User", user)
+                .body(Body::from(payload.to_string()))?,
+        )
+        .await?;
+    let status = resp.status();
+    let bytes = to_bytes(resp.into_body(), 1024 * 1024).await?;
+    Ok((status, serde_json::from_slice(&bytes)?))
+}
+
+async fn create_user(app: &Router, name: &str) -> anyhow::Result<String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let (status, _) = post_json(
+        app,
+        &id,
+        "POST",
+        "/api/users",
+        json!({"id": id, "user_name": name, "display_name": name}),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    Ok(id)
+}
+
+async fn new_channel(app: &Router, owner: &str) -> anyhow::Result<String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let (status, _) = post_json(
+        app,
+        owner,
+        "POST",
+        "/api/channels",
+        json!({"id": id, "channel_name": id, "is_private": false}),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    Ok(id)
+}
+
+async fn join_channel(app: &Router, user: &str, channel: &str) -> anyhow::Result<()> {
+    let (status, _) = post_json(
+        &app,
+        user,
+        "POST",
+        &format!("/api/channels/{channel}/join"),
+        json!({}),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    Ok(())
+}
+
+async fn set_level(app: &Router, user: &str, channel: &str, level: &str) -> anyhow::Result<()> {
+    let (status, _) = post_json(
+        &app,
+        user,
+        "PATCH",
+        &format!("/api/channels/{channel}/notification-settings"),
+        json!({"level": level}),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    Ok(())
+}
+
+async fn send_message(
+    app: &Router,
+    user: &str,
+    channel: &str,
+    id: &str,
+    content: &str,
+    parent: Option<&str>,
+) -> anyhow::Result<()> {
+    let mut payload = json!({"id": id, "channel_id": channel, "content": content});
+    if let Some(parent) = parent {
+        payload["parent_id"] = json!(parent);
+    }
+    let (status, _) = post_json(app, user, "POST", "/api/messages", payload).await?;
+    assert_eq!(status, StatusCode::OK);
+    Ok(())
+}
+
+async fn notice_types(
+    db: &mut toasty::Db,
+    user: &str,
+    message: &str,
+) -> anyhow::Result<Vec<String>> {
+    Ok(Notification::filter(
+        Notification::fields()
+            .user_id()
+            .eq(user)
+            .and(Notification::fields().message_id().eq(message)),
+    )
+    .exec(db)
+    .await?
+    .into_iter()
+    .map(|n| n.notification_type)
+    .collect())
+}
+
+#[tokio::test]
+async fn test_notification_levels_all_mentions_mute() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+
+    let sender = create_user(&app, &format!("sender-{}", uuid::Uuid::new_v4().simple())).await?;
+    let all = create_user(&app, &format!("all-{}", uuid::Uuid::new_v4().simple())).await?;
+    let mentions = create_user(&app, &format!("mentions-{}", uuid::Uuid::new_v4().simple())).await?;
+    let mute_name = format!("mute-{}", uuid::Uuid::new_v4().simple());
+    let mute = create_user(&app, &mute_name).await?;
+    let all_mentioned_name = format!("allm-{}", uuid::Uuid::new_v4().simple());
+    let all_mentioned = create_user(&app, &all_mentioned_name).await?;
+    let channel = new_channel(&app, &sender).await?;
+    for user in [&all, &mentions, &mute, &all_mentioned] {
+        join_channel(&app, user, &channel).await?;
+    }
+    set_level(&app, &all, &channel, "all").await?;
+    set_level(&app, &mute, &channel, "mute").await?;
+    set_level(&app, &all_mentioned, &channel, "all").await?;
+
+    // 通常投稿: all だけに channel_message。mentions / mute には何も届かない。
+    let plain = uuid::Uuid::new_v4().to_string();
+    send_message(&app, &sender, &channel, &plain, "一般投稿", None).await?;
+    let mut check_db = db.clone();
+    assert_eq!(notice_types(&mut check_db, &all, &plain).await?, ["channel_message"]);
+    assert!(notice_types(&mut check_db, &mentions, &plain).await?.is_empty());
+    assert!(notice_types(&mut check_db, &mute, &plain).await?.is_empty());
+    assert_eq!(
+        notice_types(&mut check_db, &all_mentioned, &plain).await?,
+        ["channel_message"]
+    );
+    assert!(notice_types(&mut check_db, &sender, &plain).await?.is_empty());
+
+    // 明示メンション: mute も含めて届き、all では channel_message より優先される。
+    let mentioned = uuid::Uuid::new_v4().to_string();
+    send_message(
+        &app,
+        &sender,
+        &channel,
+        &mentioned,
+        &format!("@{mute_name} と @{all_mentioned_name} を見て"),
+        None,
+    )
+    .await?;
+    // 明示メンションは mute にも届く。all でもメンションが channel_message より優先される。
+    assert_eq!(notice_types(&mut check_db, &mute, &mentioned).await?, ["mention"]);
+    assert_eq!(
+        notice_types(&mut check_db, &all_mentioned, &mentioned).await?,
+        ["mention"]
+    );
+    assert_eq!(
+        notice_types(&mut check_db, &all, &mentioned).await?,
+        ["channel_message"]
+    );
+    assert!(notice_types(&mut check_db, &mentions, &mentioned)
+        .await?
+        .is_empty());
+
+    // リアクション: mute の投稿者には届かない。all / mentions には従来どおり届く。
+    let reaction_target = uuid::Uuid::new_v4().to_string();
+    send_message(&app, &mute, &channel, &reaction_target, "リアクション対象", None).await?;
+    let (status, _) = post_json(
+        &app,
+        &sender,
+        "POST",
+        &format!("/api/messages/{reaction_target}/reactions"),
+        json!({"emoji": "👍"}),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert!(notice_types(&mut check_db, &mute, &reaction_target)
+        .await?
+        .is_empty());
+
+    let mentions_msg = uuid::Uuid::new_v4().to_string();
+    send_message(&app, &mentions, &channel, &mentions_msg, "返信対象", None).await?;
+    let (status, _) = post_json(
+        &app,
+        &sender,
+        "POST",
+        &format!("/api/messages/{mentions_msg}/reactions"),
+        json!({"emoji": "🎉"}),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        notice_types(&mut check_db, &mentions, &mentions_msg).await?,
+        ["reaction"]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_notification_levels_thread_participants_and_left_thread() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+
+    let author = create_user(&app, &format!("author-{}", uuid::Uuid::new_v4().simple())).await?;
+    let sender = create_user(&app, &format!("replyer-{}", uuid::Uuid::new_v4().simple())).await?;
+    let all = create_user(&app, &format!("tall-{}", uuid::Uuid::new_v4().simple())).await?;
+    let mentions = create_user(&app, &format!("tmentions-{}", uuid::Uuid::new_v4().simple())).await?;
+    let mute = create_user(&app, &format!("tmute-{}", uuid::Uuid::new_v4().simple())).await?;
+    let left = create_user(&app, &format!("tleft-{}", uuid::Uuid::new_v4().simple())).await?;
+    let channel = new_channel(&app, &author).await?;
+    for user in [&sender, &all, &mentions, &mute, &left] {
+        join_channel(&app, user, &channel).await?;
+    }
+    set_level(&app, &all, &channel, "all").await?;
+    set_level(&app, &mute, &channel, "mute").await?;
+    // 退出済み参加者は default の mentions にして、返信が届かないことを確認する。
+    // (all の参加者にはチャンネル投稿として channel_message が届くのが正しい挙動。)
+
+    let root = uuid::Uuid::new_v4().to_string();
+    send_message(&app, &author, &channel, &root, "スレッドの親", None).await?;
+    for user in [&sender, &all, &mentions, &mute, &left] {
+        let (status, _) = post_json(
+            &app,
+            user,
+            "POST",
+            &format!("/api/threads/{root}/join"),
+            json!({}),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let (status, _) = post_json(
+        &app,
+        &left,
+        "POST",
+        &format!("/api/threads/{root}/leave"),
+        json!({}),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+
+    let reply = uuid::Uuid::new_v4().to_string();
+    send_message(
+        &app,
+        &sender,
+        &channel,
+        &reply,
+        "参加者への返信",
+        Some(&root),
+    )
+    .await?;
+    let mut check_db = db.clone();
+    // 親投稿者・参加中の all / mentions には reply。mute と退出済みには届かない。
+    assert_eq!(notice_types(&mut check_db, &author, &reply).await?, ["reply"]);
+    assert_eq!(notice_types(&mut check_db, &all, &reply).await?, ["reply"]);
+    assert_eq!(
+        notice_types(&mut check_db, &mentions, &reply).await?,
+        ["reply"]
+    );
+    assert!(notice_types(&mut check_db, &mute, &reply).await?.is_empty());
+    assert!(notice_types(&mut check_db, &left, &reply).await?.is_empty());
+    assert!(notice_types(&mut check_db, &sender, &reply).await?.is_empty());
     Ok(())
 }

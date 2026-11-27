@@ -921,31 +921,41 @@ internal class ConnectedScreenState(
         }
     }
 
-    fun channelSettings(channel: Row, member: Boolean, encrypted: Boolean): List<SettingsGroup> {
+    fun channelSettings(channel: Row, member: Boolean, encrypted: Boolean, notificationLevel: String): List<SettingsGroup> {
+        val archived = channel.present("archive_at")
         val entries = buildList {
             if (channel.text("description").isNotBlank()) add(SettingsEntry.Information("description", channel.text("description")))
             if (encrypted) add(SettingsEntry.Information("encrypted", "暗号化チャンネル"))
             add(SettingsEntry.Destination("members", "メンバー"))
-            if (member && !channel.present("archive_at")) {
+            if (member && !archived) {
                 val pinned = channel.text("id") in pins
                 add(SettingsEntry.Destination(if (pinned) "unpin" else "pin", if (pinned) "ピン留めを解除" else "ピン留め"))
             }
             if (canEditMembers(channel)) add(SettingsEntry.Destination("add-member", "メンバーを追加"))
             if (canManage(channel, app.config.userId, app.config.isAdmin) && !channel.flag("is_dm")) {
-                val archived = channel.present("archive_at")
                 add(SettingsEntry.Destination(if (archived) "unarchive" else "archive",
                     if (archived) "アーカイブを解除" else "アーカイブ"))
             }
             if (canManage(channel, app.config.userId, app.config.isAdmin) &&
-                !channel.present("archive_at") && !channel.flag("is_dm")) {
+                !archived && !channel.flag("is_dm")) {
                 add(SettingsEntry.Destination("rename", "名前と説明を編集"))
             }
-            if (!channel.flag("is_dm") && !channel.present("archive_at")) {
+            if (!channel.flag("is_dm") && !archived) {
                 if (member) add(SettingsEntry.Destination("leave", "退出"))
                 else if (!channel.flag("is_private")) add(SettingsEntry.Destination("join", "参加"))
             }
         }
-        return listOf(SettingsGroup("チャンネル", entries))
+        val groups = mutableListOf(SettingsGroup("チャンネル", entries))
+        // 参加中だけ設定できる。値は channel_user の Shape の行から渡され、書き込み後も
+        // 同じ行の更新で選択状態が変わる（設定ごとの REST 取得は増やさない）。
+        if (member && !archived) {
+            groups += SettingsGroup("通知", listOf(
+                SettingsEntry.Choice("notification:all", "すべての投稿", notificationLevel == "all"),
+                SettingsEntry.Choice("notification:mentions", "メンション", notificationLevel == "mentions"),
+                SettingsEntry.Choice("notification:mute", "メンション以外を通知しない", notificationLevel == "mute"),
+            ))
+        }
+        return groups
     }
 
     fun settings(env: Environment, incomingSettingsAvailable: Boolean): List<SettingsGroup> = listOf(
@@ -1148,6 +1158,14 @@ internal class ConnectedScreenState(
                     if (action.id == "pin") app.api.request("/api/channel-pins", "POST", obj("channel_id" to channelId))
                     else app.api.request("/api/channel-pins/${channelId.encodeURLParameter()}", "DELETE")
                     refreshPins()
+                }
+                action.id.startsWith("notification:") && channel != null -> {
+                    val level = action.id.substringAfter(':')
+                    if (level in setOf("all", "mentions", "mute")) request {
+                        app.api.request(
+                            "/api/channels/${channelId.encodeURLParameter()}/notification-settings",
+                            "PATCH", obj("level" to level))
+                    }
                 }
                 action.id == "os-notifications" -> enableNotifications()
                 action.id == "logout" -> request { platform.invoke("logout") }

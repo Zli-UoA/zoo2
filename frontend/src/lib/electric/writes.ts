@@ -5,7 +5,11 @@ import type {
   UpdateMutationFnParams,
 } from "@tanstack/react-db";
 
-import { createChannelPinsApi, type ApiClient } from "../api/client";
+import {
+  createChannelNotificationSettingsApi,
+  createChannelPinsApi,
+  type ApiClient,
+} from "../api/client";
 import type {
   AddChannelUserRequest,
   CreateChannelRequest,
@@ -18,6 +22,7 @@ import type { TxidMode } from "../config";
 import { changeMessageMatcher, syncTxid } from "./txid";
 import { THREADS_CHANGED, THREAD_REPLY_REDIRECTED, type ThreadReplyRedirect } from "./threads";
 import type {
+  ChannelNotificationLevel,
   ChannelRow,
   ChannelUserRow,
   MessageReactionRow,
@@ -70,6 +75,11 @@ type ChannelUserInsertParams = InsertMutationFnParams<
   string | number,
   ElectricCollectionUtils<ChannelUserRow>
 >;
+type ChannelUserUpdateParams = UpdateMutationFnParams<
+  ChannelUserRow,
+  string | number,
+  ElectricCollectionUtils<ChannelUserRow>
+>;
 type ChannelUserDeleteParams = DeleteMutationFnParams<
   ChannelUserRow,
   string | number,
@@ -84,7 +94,8 @@ type ChannelUserDeleteParams = DeleteMutationFnParams<
 export type ChannelUserWriteMetadata =
   | { action: "join" }
   | { action: "add"; user_id: string }
-  | { action: "leave" };
+  | { action: "leave" }
+  | { action: "notificationLevel" };
 
 function readChannelUserMetadata(metadata: unknown): ChannelUserWriteMetadata {
   if (metadata && typeof metadata === "object" && "action" in metadata) {
@@ -334,6 +345,31 @@ export function createChannelUserWrites({ client, txidMode, getCurrentUserId }: 
     }
   }
 
+  /**
+   * 通知レベルの変更。channel_user の更新はこれだけなので、それ以外の変更は
+   * サーバーに送らず楽観状態を戻す。自分の行だけを書き込める点は leave と同じ。
+   */
+  async function onUpdate({ transaction, collection }: ChannelUserUpdateParams): Promise<void> {
+    const api = createChannelNotificationSettingsApi(client);
+    for (const mutation of transaction.mutations) {
+      const row = mutation.modified;
+      const changes = mutation.changes as Partial<ChannelUserRow>;
+      const metadata = readChannelUserMetadata(mutation.metadata);
+      if (metadata.action !== "notificationLevel" || !("notification_level" in changes)) {
+        throw new Error("Only notification_level can be updated on channel_user");
+      }
+      if (!getCurrentUserId() || row.user_id !== getCurrentUserId()) {
+        throw new Error("Only your own notification settings can be changed");
+      }
+      const level = changes.notification_level;
+      if (level !== "all" && level !== "mentions" && level !== "mute") {
+        throw new Error(`Invalid notification level: ${String(level)}`);
+      }
+      const { txid } = await api.updateChannelNotificationSettings(row.channel_id, level);
+      await waitForChannelUserSync("update", row, collection.utils, txid, txidMode, level);
+    }
+  }
+
   async function onDelete({ transaction, collection }: ChannelUserDeleteParams): Promise<void> {
     for (const mutation of transaction.mutations) {
       const row = mutation.original;
@@ -351,15 +387,16 @@ export function createChannelUserWrites({ client, txidMode, getCurrentUserId }: 
     }
   }
 
-  return { onInsert, onDelete };
+  return { onInsert, onUpdate, onDelete };
 }
 
 async function waitForChannelUserSync(
-  operation: "insert" | "delete",
+  operation: "insert" | "update" | "delete",
   row: ChannelUserRow,
   target: ElectricCollectionUtils<ChannelUserRow>,
   txid: string | null,
   txidMode: TxidMode,
+  level?: ChannelNotificationLevel,
 ): Promise<void> {
   await syncTxid({
     mode: txidMode,
@@ -367,7 +404,10 @@ async function waitForChannelUserSync(
     target,
     match: changeMessageMatcher<ChannelUserRow>(
       operation,
-      (value) => value.user_id === row.user_id && value.channel_id === row.channel_id,
+      (value) =>
+        value.user_id === row.user_id &&
+        value.channel_id === row.channel_id &&
+        (level === undefined || value.notification_level === level),
     ),
   });
 }

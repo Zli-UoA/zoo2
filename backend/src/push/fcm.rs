@@ -208,6 +208,8 @@ pub(super) fn accepts_notification(endpoint: &str, kind: &str) -> bool {
         "call_invite" | "call_invite_end" => {
             endpoint.ends_with(DM_CALLS_SUFFIX) && registration(endpoint).is_some()
         }
+        // `all` 設定で届く通常投稿 (#620)。ほかの通常通知と同じく、通常の購読へ送る。
+        "channel_message" => true,
         _ => true,
     }
 }
@@ -335,6 +337,7 @@ mod tests {
             assert!(!accepts_notification("fcm:invalid:dm-calls", kind));
         }
         assert!(accepts_notification(&endpoint, "mention"));
+        assert!(accepts_notification(&endpoint, "channel_message"));
         assert!(!accepts_notification(&opted_in, "missed_call"));
     }
 
