@@ -16,8 +16,9 @@ internal suspend fun loadPublicImage(
     http: HttpClient, url: String, limit: Int = 20 * 1024 * 1024,
     cacheOnly: Boolean = false, restrictOrigin: Boolean = false, noStore: Boolean = false, revalidate: Boolean = false, bypassCache: Boolean = false,
     conditional: AttachmentImageDiskCache.Entry? = null,
-    onSignedResponse: ((HttpResponse, ByteArray, Boolean) -> Unit)? = null,
+    onSignedResponse: ((HttpResponse, ByteArray, List<HttpResponse>) -> Unit)? = null,
 ): ByteArray {
+    val redirects = onSignedResponse?.let { mutableListOf<HttpResponse>() }
     var current = url
     repeat(6) { hop ->
         val destination = Url(current)
@@ -34,6 +35,7 @@ internal suspend fun loadPublicImage(
             }
         }.execute { response ->
             if (response.status.value in setOf(301, 302, 303, 307, 308)) {
+                redirects?.add(response)
                 val location = response.headers[HttpHeaders.Location] ?: error("Missing image redirect")
                 current = current.toHttpUrl().resolve(location)?.toString() ?: error("Invalid image redirect")
             } else {
@@ -47,7 +49,7 @@ internal suspend fun loadPublicImage(
                     readImageResponse(response, limit)
                 }
                 bytes = image
-                onSignedResponse?.invoke(response, image, hop == 0)
+                onSignedResponse?.invoke(response, image, redirects.orEmpty())
             }
         }
         bytes?.let { return it }

@@ -12,7 +12,15 @@ internal class AttachmentImageDiskCache(
     private val maxBytes: Long = 128L * 1024 * 1024,
     private val maxEntries: Int = 512,
 ) {
-    data class Entry(val urlHash: String, val expiresAt: Long, val etag: String?, val bytes: ByteArray)
+    data class Freshness(val maxAgeMillis: Long?, val httpExpiresAt: Long?)
+
+    data class Entry(
+        val urlHash: String,
+        val expiresAt: Long,
+        val etag: String?,
+        val freshness: Freshness,
+        val bytes: ByteArray,
+    )
 
     private var closed = false
 
@@ -30,7 +38,9 @@ internal class AttachmentImageDiskCache(
                 val url = input.readUTF()
                 val expiresAt = input.readLong()
                 val etag = input.readUTF().ifEmpty { null }
-                Entry(url, expiresAt, etag, input.readBytes())
+                val maxAge = input.readLong().takeUnless { it == Long.MIN_VALUE }
+                val httpExpiry = input.readLong().takeUnless { it == Long.MIN_VALUE }
+                Entry(url, expiresAt, etag, Freshness(maxAge, httpExpiry), input.readBytes())
             }.also { file.setLastModified(System.currentTimeMillis()) }
         } catch (_: IOException) {
             null
@@ -44,6 +54,8 @@ internal class AttachmentImageDiskCache(
             output.writeUTF(entry.urlHash)
             output.writeLong(entry.expiresAt)
             output.writeUTF(entry.etag.orEmpty())
+            output.writeLong(entry.freshness.maxAgeMillis ?: Long.MIN_VALUE)
+            output.writeLong(entry.freshness.httpExpiresAt ?: Long.MIN_VALUE)
         }
         val sizeOnDisk = metadata.size().toLong() + entry.bytes.size
         if (closed || sizeOnDisk > maxBytes) return

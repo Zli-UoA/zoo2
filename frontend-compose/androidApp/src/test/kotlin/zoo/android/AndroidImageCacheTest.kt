@@ -235,7 +235,8 @@ class AndroidImageCacheTest {
         Fixture().use { f ->
             var time = 1_000L
             repeat(2) {
-                f.server.enqueue(MockResponse().setResponseCode(307).setHeader("Location", "/final.png"))
+                f.server.enqueue(MockResponse().setResponseCode(307).setHeader("Location", "/final.png")
+                    .setHeader("Cache-Control", "private, max-age=30"))
                 f.server.enqueue(MockResponse().setHeader("Cache-Control", "private, max-age=60")
                     .setHeader("ETag", "\"final\"").setBody("thumbnail"))
             }
@@ -244,11 +245,56 @@ class AndroidImageCacheTest {
                 assertEquals("thumbnail", cache.signedImage("${f.url}?X-Amz-Signature=old", key).decodeToString())
                 assertEquals("thumbnail", cache.signedImage("${f.url}?X-Amz-Signature=new", key).decodeToString())
                 assertEquals(2, f.server.requestCount)
-                time += 60_000
+                time += 30_000
                 assertEquals("thumbnail", cache.signedImage("${f.url}?X-Amz-Signature=new", key).decodeToString())
             }
             assertEquals(4, f.server.requestCount)
             repeat(4) { assertNull(f.server.takeRequest().getHeader("If-None-Match")) }
+        }
+    }
+
+    @Test fun doesNotReuseTheFinalImageWhenARedirectCannotBeCached() = runBlocking {
+        Fixture().use { f ->
+            val conditions = listOf("Cache-Control" to "no-store", "Vary" to "*")
+            f.cache().use { cache ->
+                for ((name, value) in conditions) {
+                    val key = "$name:thumbnail"
+                    for (target in listOf("first", "second")) {
+                        f.server.enqueue(MockResponse().setResponseCode(307)
+                            .setHeader("Location", "/$target.png").setHeader(name, value))
+                        f.server.enqueue(MockResponse().setHeader("Cache-Control", "private, max-age=300").setBody(target))
+                        assertEquals(target, cache.signedImage(f.url, key).decodeToString())
+                    }
+                }
+            }
+            assertEquals(8, f.server.requestCount)
+        }
+    }
+
+    @Test fun retainsFreshnessAndValidatorAcrossFailureAndHeaderlessNotModified() = runBlocking {
+        Fixture().use { f ->
+            var time = 1_000L
+            f.server.enqueue(MockResponse().setHeader("Cache-Control", "private, max-age=300")
+                .setHeader("ETag", "\"thumbnail\"").setBody("thumbnail"))
+            f.server.enqueue(MockResponse().setResponseCode(503))
+            f.server.enqueue(MockResponse().setResponseCode(304))
+            f.server.enqueue(MockResponse().setBody("unexpected"))
+            val key = "id:thumbnail"
+            f.cache(now = { time }).use { cache ->
+                assertEquals("thumbnail", cache.signedImage(f.url, key).decodeToString())
+                time += 300_000
+                assertEquals(503, assertFailsWith<ImageHttpFailure> { cache.signedImage(f.url, key) }.status)
+            }
+            f.cache(now = { time }).use { cache ->
+                assertEquals("thumbnail", cache.signedImage(f.url, key).decodeToString())
+            }
+            f.cache(now = { time }).use { cache ->
+                time += 299_999
+                assertEquals("thumbnail", cache.signedImage(f.url, key).decodeToString())
+            }
+            assertEquals(3, f.server.requestCount)
+            assertNull(f.server.takeRequest().getHeader("If-None-Match"))
+            repeat(2) { assertEquals("\"thumbnail\"", f.server.takeRequest().getHeader("If-None-Match")) }
         }
     }
 
