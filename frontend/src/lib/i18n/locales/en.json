@@ -511,7 +511,7 @@
     "levelMentions": "Mentions and replies (default)",
     "levelMentionsHelp": "Get notified about mentions, replies, DMs and reactions.",
     "levelMute": "Mute",
-    "levelMuteHelp": "No regular notifications. Explicit mentions still reach you.",
+    "levelMuteHelp": "No regular notifications. Mentions of you and @channel / @here still reach you.",
     "levelEncryptedHint": "You can choose “All messages” even in encrypted channels.",
     "levelError": "Could not update the notification setting."
   },

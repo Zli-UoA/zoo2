@@ -814,7 +814,7 @@ fn ChannelNotificationSettings() -> impl IntoView {
                                     ),
                                     NotificationLevel::Mute => (
                                         "ミュート",
-                                        "通常の通知は届きません。明示的なメンションは届きます。",
+                                        "通常の通知は届きません。あなたへのメンションと @channel / @here は届きます。",
                                     ),
                                 };
                                 let selected = move || setting.get() == Some(candidate);

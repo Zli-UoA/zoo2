@@ -511,7 +511,7 @@
     "levelMentions": "提及同回覆（預設）",
     "levelMentionsHelp": "有人提到你、回覆、私訊或者畀 reaction 先通知。",
     "levelMute": "靜音",
-    "levelMuteHelp": "唔收一般通知，明確提及仍然會送到。",
+    "levelMuteHelp": "唔收一般通知，提到你或者 @channel / @here 仍然會送到。",
     "levelEncryptedHint": "加密頻道都揀到「所有訊息」。",
     "levelError": "改唔到通知設定。"
   },

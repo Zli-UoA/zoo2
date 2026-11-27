@@ -511,7 +511,7 @@
     "levelMentions": "提及和回复（默认）",
     "levelMentionsHelp": "有人提及你、回复你、发私信或回应时通知。",
     "levelMute": "免打扰",
-    "levelMuteHelp": "不接收普通通知，明确提及仍会送达。",
+    "levelMuteHelp": "不接收普通通知，提及你或 @channel / @here 仍会送达。",
     "levelEncryptedHint": "加密频道也可以选择“所有消息”。",
     "levelError": "无法更改通知设置。"
   },

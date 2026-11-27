@@ -511,7 +511,7 @@
     "levelMentions": "メンションと返信（既定）",
     "levelMentionsHelp": "あなたへのメンション、返信、DM、リアクションを通知します。",
     "levelMute": "ミュート",
-    "levelMuteHelp": "通常の通知は届きません。明示的なメンションは届きます。",
+    "levelMuteHelp": "通常の通知は届きません。あなたへのメンションと @channel / @here は届きます。",
     "levelEncryptedHint": "暗号化チャンネルでも「すべてのメッセージ」を選べます。",
     "levelError": "通知設定を変更できませんでした。"
   },
