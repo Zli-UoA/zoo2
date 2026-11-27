@@ -1404,6 +1404,41 @@ test("a failed legacy carry-over keeps the old cache by failing install", async 
   assert.ok(await (await realOpen("zoo-offline-v1")).match(`${ORIGIN}/offline.html`));
 });
 
+test("carry-over keeps a newer copy already saved in the destination cache", async () => {
+  const updated = validManifest("#000000");
+  const cacheContext = memoryCaches([
+    [
+      "zoo-shell-v2",
+      `${ORIGIN}/manifest.webmanifest`,
+      basicResponse(updated, {
+        headers: { "x-zoo-last-modified": "Wed, 21 Oct 2026 07:28:00 GMT" },
+      }),
+    ],
+    ["zoo-shell-abc123", `${ORIGIN}/manifest.webmanifest`, basicResponse(validManifest("#ffffff"))],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const older = await cacheContext.api.open("zoo-shell-abc123");
+  await older.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("1"));
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async (input) => {
+      const key = requestKey(input);
+      if (key === `${ORIGIN}/manifest.webmanifest`)
+        return basicResponse("<html>app shell</html>", {
+          headers: { "content-type": "text/html" },
+        });
+      if (key === `${ORIGIN}/offline.html`)
+        return basicResponse('<meta name="zoo-offline" content="true" />offline', {
+          headers: { "content-type": "text/html" },
+        });
+      return basicResponse(`network:${key}`);
+    },
+  });
+  await dispatch(handlers, "install");
+  const cache = await cacheContext.api.open("zoo-shell-v2");
+  assert.equal(await (await cache.match(`${ORIGIN}/manifest.webmanifest`)).text(), updated);
+});
+
 test("an unreadable cache metadata does not stop carry-over", async () => {
   const manifest = validManifest("#ffffff");
   const cacheContext = memoryCaches([
@@ -3184,6 +3219,37 @@ test("cached manifest prefers the current generation over an older install time"
   const current = validManifest("#000000");
   const cacheContext = memoryCaches([
     ["zoo-shell-v3-old", `${ORIGIN}/manifest.webmanifest`, basicResponse(validManifest("#ffffff"))],
+    ["zoo-shell-v3-new-v2", `${ORIGIN}/manifest.webmanifest`, basicResponse(current)],
+  ]);
+  const old = await cacheContext.api.open("zoo-shell-v3-old");
+  await old.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("3"));
+  const newer = await cacheContext.api.open("zoo-shell-v3-new-v2");
+  await newer.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("1"));
+  const { handlers } = worker({
+    policyVersion: "new",
+    caches: cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+  });
+  assert.equal(await response.text(), current);
+});
+
+test("a cached manifest without Last-Modified still prefers the current shell", async () => {
+  const current = validManifest("#000000");
+  const cacheContext = memoryCaches([
+    [
+      "zoo-shell-v3-old",
+      `${ORIGIN}/manifest.webmanifest`,
+      basicResponse(validManifest("#ffffff"), {
+        headers: { "x-zoo-last-modified": "Wed, 21 Oct 2015 07:28:00 GMT" },
+      }),
+    ],
     ["zoo-shell-v3-new-v2", `${ORIGIN}/manifest.webmanifest`, basicResponse(current)],
   ]);
   const old = await cacheContext.api.open("zoo-shell-v3-old");

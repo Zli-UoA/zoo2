@@ -340,22 +340,24 @@ async function precacheShell() {
     for (const path of ["/manifest.webmanifest", "/offline.html"]) {
       let savedHere = null;
       let destinationUnreadable = false;
+      let hereUsable = false;
       try {
         savedHere = await cache.match(path);
-        if (await isUsableFreshAsset(path, savedHere)) continue;
+        hereUsable = await isUsableFreshAsset(path, savedHere);
       } catch {
         // 保存先を読めない場合は、旧キャッシュから復元を試みる。
         destinationUnreadable = true;
       }
       if (!sources) {
-        unresolved.add(path);
+        if (!hereUsable) unresolved.add(path);
         continue;
       }
       let readFailed = false;
-      let restored = false;
-      let best = null;
-      let bestTime = -Infinity;
-      let bestHasTime = false;
+      let restored = hereUsable;
+      let best = hereUsable ? savedHere : null;
+      let bestTime = best ? Date.parse(best.headers.get("x-zoo-last-modified") || "") : -Infinity;
+      let bestHasTime = Number.isFinite(bestTime);
+      let bestFromHere = hereUsable;
       for (const source of sources) {
         try {
           const saved = await (await caches.open(source)).match(path);
@@ -368,13 +370,14 @@ async function precacheShell() {
             best = saved;
             bestTime = hasTime ? modified : -Infinity;
             bestHasTime = hasTime;
+            bestFromHere = false;
           }
         } catch {
           // 本文が読めない場合は、旧キャッシュを消さないため記録する。
           readFailed = true;
         }
       }
-      if (best) {
+      if (best && !bestFromHere) {
         // 案内ページ自身の CSP を保持したまま、転送ヘッダーだけ除いてコピーする。
         try {
           await cache.put(
@@ -803,6 +806,7 @@ async function cachedFreshAsset(path, networkResponse = null) {
   }
   let best = null;
   let bestTime = -Infinity;
+  let bestInstalled = -Infinity;
   let bestHasTime = false;
   let bestCurrent = false;
   for (const { name, current, installedAt } of candidates) {
@@ -810,21 +814,20 @@ async function cachedFreshAsset(path, networkResponse = null) {
       const cache = await caches.open(name);
       const saved = await cache.match(path);
       if (!(await isUsableFreshAsset(path, saved))) continue;
-      // 更新日時が取れるコピー同士はその時刻で比較する。日時が無いものは現行シェルを優先し、
-      // 日時付きのコピーがあればそちらを選ぶ（既定キャッシュへの更新を取りこぼさない）。
       const modified = Date.parse(saved.headers.get("x-zoo-last-modified") || "");
       const hasTime = Number.isFinite(modified);
-      const updatedAt = hasTime ? modified : installedAt;
+      // 両方に更新日時があり値が違う場合だけ時刻で比較する。
+      // それ以外は現行ポリシー→シェルのインストール日時で決め、列挙順に左右されないようにする。
+      const comparable = hasTime && bestHasTime && modified !== bestTime;
       const better =
         !best ||
-        (hasTime && !bestHasTime) ||
-        (hasTime && bestHasTime && modified > bestTime) ||
-        (!hasTime &&
-          !bestHasTime &&
-          (current > bestCurrent || (current === bestCurrent && installedAt > bestTime)));
+        (comparable
+          ? modified > bestTime
+          : current > bestCurrent || (current === bestCurrent && installedAt > bestInstalled));
       if (better) {
         best = saved;
-        bestTime = updatedAt;
+        bestTime = hasTime ? modified : -Infinity;
+        bestInstalled = installedAt;
         bestHasTime = hasTime;
         bestCurrent = current;
       }
