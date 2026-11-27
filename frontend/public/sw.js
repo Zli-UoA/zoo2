@@ -269,15 +269,6 @@ async function precacheShell() {
         // nginx の try_files が欠けたファイルを index.html で返しても保存しない。
         if (path === "/offline.html") {
           if (!isFreshAssetResponse(path, response) || !(await isOfflinePage(response))) return;
-          // 同時に保存した index.html の CSP を案内ページにも適用する。
-          await cache.put(
-            path,
-            await withPolicyHeaders(
-              response.clone(),
-              cached.headers.get("content-security-policy"),
-            ),
-          );
-          return;
         }
         if (path === "/manifest.webmanifest") {
           if (!isFreshAssetResponse(path, response) || !(await isFreshManifest(response))) return;
@@ -294,18 +285,15 @@ async function precacheShell() {
     // ファイルごとに、新しい世代から順に有効なコピーを探す。
     const sources = await shellCacheNamesNewestFirst(name);
     for (const path of ["/manifest.webmanifest", "/offline.html"]) {
-      if (await cache.match(path)) continue;
+      // 保存先に無効なコピーが残っていても、有効な旧版で置き換える。
+      if (await isUsableFreshAsset(path, await cache.match(path))) continue;
       for (const source of sources) {
         const saved = await (await caches.open(source)).match(path);
-        if (!saved) continue;
-        // 旧 SW は本文を検証せずに保存していたため、コピーする前に確認する。
-        if (!isFreshAssetResponse(path, saved)) continue;
+        if (!(await isUsableFreshAsset(path, saved))) continue;
         if (path === "/manifest.webmanifest") {
-          if (!(await isFreshManifest(saved))) continue;
           await cache.put(path, saved.clone());
         } else {
-          if (!(await isOfflinePage(saved))) continue;
-          // 今回取得した index.html の CSP を案内ページにも適用する（無ければ削除）。
+          // 旧版の CSP を現行シェルのポリシーに合わせる（無ければ削除）。
           await cache.put(
             path,
             await withPolicyHeaders(saved.clone(), cached.headers.get("content-security-policy")),
@@ -318,11 +306,11 @@ async function precacheShell() {
     /* An unavailable old cache is not a reason to fail the install. */
   }
   // 初期版の SW は案内ページを zoo-offline-v1 に持っていた。シェルに無ければ引き継ぐ。
-  if (!(await cache.match("/offline.html"))) {
+  if (!(await isUsableFreshAsset("/offline.html", await cache.match("/offline.html")))) {
     try {
       const legacy = await caches.open("zoo-offline-v1");
       const saved = await legacy.match("/offline.html");
-      if (saved && isFreshAssetResponse("/offline.html", saved) && (await isOfflinePage(saved))) {
+      if (await isUsableFreshAsset("/offline.html", saved)) {
         await cache.put(
           "/offline.html",
           await withPolicyHeaders(saved.clone(), cached.headers.get("content-security-policy")),
@@ -441,6 +429,15 @@ async function isOfflinePage(response) {
   }
 }
 
+async function isUsableFreshAsset(path, response) {
+  if (!response) return false;
+  return (
+    isFreshAssetResponse(path, response) &&
+    (path !== "/manifest.webmanifest" || (await isFreshManifest(response))) &&
+    (path !== "/offline.html" || (await isOfflinePage(response)))
+  );
+}
+
 async function currentShellPolicy() {
   const candidates = [];
   for (const name of (await caches.keys()).filter((name) => name.startsWith(POLICY_PREFIX))) {
@@ -484,32 +481,10 @@ async function handleFreshAsset(request) {
   } catch {
     return await cachedFreshAsset(path);
   }
-  const acceptable =
-    response.ok &&
-    isFreshAssetResponse(path, response) &&
-    (path !== "/manifest.webmanifest" || (await isFreshManifest(response))) &&
-    (path !== "/offline.html" || (await isOfflinePage(response)));
+  const acceptable = response.ok && (await isUsableFreshAsset(path, response));
   if (acceptable) {
     if (response.type !== "basic") return response;
-    if (path === "/offline.html") {
-      // 混在配信で古い CSP の案内が来ても、現行シェルのキャッシュは上書きしない。
-      // Cache API の照会に失敗した場合は取得済みの応答を返すことを優先する。
-      let policy = null;
-      try {
-        policy = await currentShellPolicy();
-      } catch {
-        // CSP を確認できない場合は保存せず、取得済みの応答だけを返す。
-        return response;
-      }
-      if (!policy?.known) return response;
-      if (response.headers.get("content-security-policy") !== policy.csp) {
-        const cached = await cachedFreshAsset(path);
-        // 保存済みの版が無ければ、取得した本文に現行の CSP を付けて返す。
-        return cached.type === "error"
-          ? await withPolicyHeaders(response.clone(), policy.csp)
-          : cached;
-      }
-    }
+    // 取得した案内ページ自身の CSP を保持するため、シェルの CSP では上書きしない。
     // 保存に失敗しても取得できた最新の応答は返す。古いキャッシュへ戻さない。
     const fresh = response.clone();
     try {
@@ -545,12 +520,7 @@ async function cachedFreshAsset(path, networkResponse = null) {
       const cache = await caches.open(name);
       const saved = await cache.match(path);
       if (!saved) continue;
-      if (
-        !isFreshAssetResponse(path, saved) ||
-        (path === "/manifest.webmanifest" && !(await isFreshManifest(saved))) ||
-        (path === "/offline.html" && !(await isOfflinePage(saved)))
-      )
-        continue;
+      if (!(await isUsableFreshAsset(path, saved))) continue;
       if (path !== "/offline.html") return saved;
       // 同じキャッシュでも背景更新で index.html の CSP だけが変わることがある。
       let policy;
