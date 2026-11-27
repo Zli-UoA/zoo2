@@ -231,6 +231,13 @@ internal class ConnectedScreenState(
         enabled = true
     }
 
+    var linkEmojiDemandCount by mutableIntStateOf(0)
+        private set
+
+    fun setLinkEmojiDemand(active: Boolean) {
+        linkEmojiDemandCount += if (active) 1 else -1
+    }
+
     val workspaceEmojiIndex by derivedStateOf {
         workspaceEmojiImages(app.config.apiBaseUrl, app.workspaceEmojis)
     }

@@ -1,6 +1,7 @@
 package zoo.android
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
@@ -28,13 +29,13 @@ import zoo.text
 @Composable
 internal fun rememberChannelLinks(
     session: Session, platform: AndroidPlatform, workspaceEmojis: () -> Map<String, String>,
-    open: (ChannelLinkTarget, String?) -> Unit,
+    onEmojiDemand: (Boolean) -> Unit, open: (ChannelLinkTarget, String?) -> Unit,
 ): ChannelLinkProvider {
     // 一覧の購読と索引は、リンクごとに作らず、画面で 1 つだけ持つ。値を読むのは各リンクの表示だけ。
     val channels = session.repo.channels.rows.collectAsState()
     val synchronized = session.repo.channels.synchronizedRows.collectAsState()
     val users = session.repo.users.rows.collectAsState()
-    return remember(session, platform, workspaceEmojis, open, channels, synchronized, users) {
+    return remember(session, platform, workspaceEmojis, onEmojiDemand, open, channels, synchronized, users) {
         val lists = ChannelLinkLists(
             channels = derivedStateOf { channels.value.associateBy { it.text("id") } },
             synchronized = derivedStateOf { synchronized.value != null },
@@ -42,7 +43,7 @@ internal fun rememberChannelLinks(
         )
         ChannelLinkProvider(
             target = { url -> parseChannelLink(url, session.config.apiBaseUrl) },
-            view = { target -> channelLinkState(session, platform, lists, target, workspaceEmojis) },
+            view = { target -> channelLinkState(session, platform, lists, target, workspaceEmojis, onEmojiDemand) },
             open = open,
         )
     }
@@ -58,7 +59,7 @@ private class ChannelLinkLists(
 @Composable
 private fun channelLinkState(
     session: Session, platform: AndroidPlatform, lists: ChannelLinkLists, target: ChannelLinkTarget,
-    workspaceEmojis: () -> Map<String, String>,
+    workspaceEmojis: () -> Map<String, String>, onEmojiDemand: (Boolean) -> Unit,
 ): ChannelLinkView {
     val row = lists.channels.value[target.channelId]
     val channel = remember(row, target.channelId) { linkedChannel(listOfNotNull(row), target.channelId) }
@@ -74,16 +75,26 @@ private fun channelLinkState(
     val message by updates.collectAsState(initial)
     val records by remember(session) { session.encryptionRecords() }
         .collectAsState(remember(session) { session.currentEncryptionRecords })
+    var needsWorkspaceEmoji = false
     val info = resolveChannelLink(
         target, channel, directoryReady = lists.synchronized.value, message = message,
         recorded = channel != null && session.isEncryptedChannel(channel.id), records = records,
         users = lists.users.value,
         customEmojis = { linked ->
-            timelineBodyEmojis(session.config.apiBaseUrl, linked, linked, linked.text("content"),
+            val body = linked.text("content")
+            val codes = timelineBodyEmojis(session.config.apiBaseUrl, linked, linked, body,
                 isPost = false, workspace = workspaceEmojis()).keys
+            needsWorkspaceEmoji = linkedExcerptNeedsWorkspaceEmoji(body, codes)
+            codes
         },
         hidesContent = { messageRichContent(it).hidesBody },
     )
+    if (info is ChannelLinkInfo.Message && needsWorkspaceEmoji) {
+        DisposableEffect(onEmojiDemand) {
+            onEmojiDemand(true)
+            onDispose { onEmojiDemand(false) }
+        }
+    }
     return channelLinkView(info, { key, args -> session.t(key, *args) }) { createdAt ->
         channelLinkTime(createdAt, platform.now(), platform::day, platform::time)
     }

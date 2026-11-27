@@ -9,6 +9,7 @@ import zoo.array
 import zoo.endpoint
 import zoo.findCustomEmojiShortcodes
 import zoo.flag
+import zoo.messageExcerpt
 import zoo.nested
 import zoo.publicUrl
 import zoo.rows
@@ -101,6 +102,13 @@ internal fun isWorkspaceEmojiCandidate(code: String): Boolean =
 internal fun hasMissingWorkspaceEmoji(body: String, emoji: Map<String, TimelineMedia>): Boolean {
     val candidates = findCustomEmojiShortcodes(body).filter { it !in emoji && isWorkspaceEmojiCandidate(it) }.toSet()
     return candidates.isNotEmpty() && containsRenderedEmoji(body, emoji.keys, candidates)
+}
+
+internal fun linkedExcerptNeedsWorkspaceEmoji(body: String, known: Set<String>): Boolean {
+    if ("\$[ruby" !in body) return false
+    val candidates = findCustomEmojiShortcodes(body).filter { it !in known && isWorkspaceEmojiCandidate(it) }.toSet()
+    return candidates.isNotEmpty() &&
+        messageExcerpt(body, customEmojis = known) != messageExcerpt(body, customEmojis = known + candidates)
 }
 
 private fun inlineEmoji(name: String, url: String) =

@@ -88,6 +88,17 @@ class TimelineImageSourcesTest {
     }
 
     @Test
+    fun linkExcerptRequestsTheCatalogOnlyWhileTheRubyBaseNeedsIt() {
+        val code = ":猫:"
+        val body = "\$[ruby **星**:猫:ねこ]"
+        assertTrue(linkedExcerptNeedsWorkspaceEmoji(body, emptySet()))
+        val images = timelineBodyEmojis(base, obj(), obj(), body, false, mapOf(code to "$base/emoji/cat"))
+        assertFalse(linkedExcerptNeedsWorkspaceEmoji(body, images.keys))
+        assertFalse(linkedExcerptNeedsWorkspaceEmoji("`$body`", emptySet()))
+        assertEquals("星:猫:", zoo.messageExcerpt(body, customEmojis = images.keys))
+    }
+
+    @Test
     fun registeredMediaUsesTheProxyEvenWhenTheOriginalIsNotHttps() {
         val media = timelinePostMedia(base, obj(
             "url" to "http://remote.example/old.png", "media_type" to "image/png", "image_id" to imageId,

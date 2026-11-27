@@ -45,7 +45,7 @@ internal fun ConnectedScreens(
     val pageState = key(session.config.apiBaseUrl, session.config.userId) { rememberSaveableStateHolder() }
     DisposableEffect(state) { onDispose { state.close() } }
     val openChannelLink = remember(state) { { target: ChannelLinkTarget, parent: String? -> state.openChannelLink(target, parent) } }
-    val channelLinks = rememberChannelLinks(session, platform, state::workspaceEmojiIndex, openChannelLink)
+    val channelLinks = rememberChannelLinks(session, platform, state::workspaceEmojiIndex, state::setLinkEmojiDemand, openChannelLink)
     val env = platform.env
     val channels by session.repo.channels.rows.collectAsState()
     val users by session.repo.users.rows.collectAsState()
@@ -430,7 +430,7 @@ internal fun ConnectedScreens(
     val reaction = state.confirmingEntry?.takeIf { it.operation == EntryOperation.React }
     val insertingEmoji = state.inputMenu == InputTool.Emoji
     val pickerOpen = insertingEmoji || reaction != null
-    val needsWorkspaceEmoji = when (screen) {
+    val needsWorkspaceEmoji = state.linkEmojiDemandCount > 0 || when (screen) {
         is AndroidScreen.Home -> screen.posts.any { it.needsWorkspaceEmoji }
         is AndroidScreen.Profile -> screen.posts.any { it.needsWorkspaceEmoji }
         is AndroidScreen.Post -> screen.root.needsWorkspaceEmoji || screen.replies.any { it.needsWorkspaceEmoji }
