@@ -234,8 +234,12 @@ internal class ConnectedScreenState(
     var linkEmojiDemandCount by mutableIntStateOf(0)
         private set
 
+    var linkEmojiDemandVersion by mutableLongStateOf(0L)
+        private set
+
     fun setLinkEmojiDemand(active: Boolean) {
         linkEmojiDemandCount += if (active) 1 else -1
+        if (active) linkEmojiDemandVersion++
     }
 
     val workspaceEmojiIndex by derivedStateOf {

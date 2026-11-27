@@ -430,7 +430,7 @@ internal fun ConnectedScreens(
     val reaction = state.confirmingEntry?.takeIf { it.operation == EntryOperation.React }
     val insertingEmoji = state.inputMenu == InputTool.Emoji
     val pickerOpen = insertingEmoji || reaction != null
-    val needsWorkspaceEmoji = state.linkEmojiDemandCount > 0 || when (screen) {
+    val needsWorkspaceEmoji = when (screen) {
         is AndroidScreen.Home -> screen.posts.any { it.needsWorkspaceEmoji }
         is AndroidScreen.Profile -> screen.posts.any { it.needsWorkspaceEmoji }
         is AndroidScreen.Post -> screen.root.needsWorkspaceEmoji || screen.replies.any { it.needsWorkspaceEmoji }
@@ -441,11 +441,15 @@ internal fun ConnectedScreens(
         else -> false
     }
     val canLoadEmoji = env.online && env.visible
-    LaunchedEffect(session, canLoadEmoji, pickerOpen, needsWorkspaceEmoji) {
-        if (canLoadEmoji && (pickerOpen || needsWorkspaceEmoji)) {
-            try { session.loadWorkspaceEmojis() }
-            catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { /* Keep shortcode fallbacks if the catalog is unavailable. */ }
+    val screenEmojiDemand by rememberUpdatedState(pickerOpen || needsWorkspaceEmoji)
+    LaunchedEffect(session, state, canLoadEmoji) {
+        if (!canLoadEmoji) return@LaunchedEffect
+        snapshotFlow { screenEmojiDemand to state.linkEmojiDemandVersion }.collect { (demand, _) ->
+            if (demand || state.linkEmojiDemandCount > 0) {
+                try { session.loadWorkspaceEmojis() }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { /* Keep shortcode fallbacks if the catalog is unavailable. */ }
+            }
         }
     }
     val instanceHosts = when (screen) {

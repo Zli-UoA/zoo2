@@ -83,9 +83,15 @@ private fun channelLinkState(
         users = lists.users.value,
         customEmojis = { linked ->
             val body = linked.text("content")
+            val workspace = workspaceEmojis()
             val codes = timelineBodyEmojis(session.config.apiBaseUrl, linked, linked, body,
-                isPost = false, workspace = workspaceEmojis()).keys
-            needsWorkspaceEmoji = messageExcerptNeedsWorkspaceEmoji(body, codes, session.workspaceEmojiCatalogIsFresh())
+                isPost = false, workspace = workspace).keys
+            if (!session.workspaceEmojiCatalogIsFresh()) {
+                val attachedCodes = if (workspace.isEmpty()) codes else
+                    timelineBodyEmojis(session.config.apiBaseUrl, linked, linked, body,
+                        isPost = false, workspace = emptyMap()).keys
+                needsWorkspaceEmoji = messageExcerptNeedsWorkspaceEmoji(body, attachedCodes)
+            }
             codes
         },
         hidesContent = { messageRichContent(it).hidesBody },
