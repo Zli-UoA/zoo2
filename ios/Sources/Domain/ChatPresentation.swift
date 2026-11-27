@@ -120,7 +120,7 @@ enum MentionInput {
         let avatarURL: URL?
         var id: String { username }
     }
-    private static let pattern = try! NSRegularExpression(pattern: #"(?:^|[\s(\[{<（「『\"'。、])@([\p{L}\p{M}\p{N}._-]*)$"#)
+    private static let pattern = try! NSRegularExpression(pattern: #"(?:^|[\s(\[{<（「『\"'。、])@([\p{L}\p{M}\p{N}._-]*)\z"#)
     private static let code = try! NSRegularExpression(pattern: #"(?s)```.*?(?:```|$)|`[^`\n]*(?:`|$)"#)
 
     static func query(in text: String, caret: String.Index) -> Query? {

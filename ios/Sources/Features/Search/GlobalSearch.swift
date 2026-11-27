@@ -1,4 +1,9 @@
 import Foundation
+
+@MainActor
+protocol GlobalSearchClient {
+    func search(q: String, type: GlobalSearchKind, cursor: String?, limit: Int, filters: SearchRequestFilters) async throws -> SearchPage
+}
 import Observation
 
 enum GlobalSearchKind: String, CaseIterable, Identifiable, Sendable {
@@ -117,7 +122,7 @@ final class GlobalSearchStore {
     static let pageLimit = 20
     static let timeout: Duration = .seconds(20)
 
-    private let client: any ChatClient
+    private let client: any GlobalSearchClient
     private let requestTimeout: Duration
     var text = ""
     private(set) var kind: GlobalSearchKind = .all
@@ -138,7 +143,7 @@ final class GlobalSearchStore {
     /// 続きのページでも、検索の開始時に決めた期間の境界を送る。
     @ObservationIgnored private var requestFilters = SearchRequestFilters()
 
-    init(client: any ChatClient, timeout: Duration = GlobalSearchStore.timeout) {
+    init(client: any GlobalSearchClient, timeout: Duration = GlobalSearchStore.timeout) {
         self.client = client
         self.requestTimeout = timeout
     }

@@ -190,6 +190,7 @@ final class E2eeRevocation {
         guard let revocation else { throw RevocationError.none }
         let salt = newPrfSalt()
         let result = try await client.prfForNewSlot(rpID: rpID, salt: salt)
+        guard self.revocation === revocation else { throw RevocationError.changed }
         var slot = try rvValue(try newPasskeyKeySlot(userId: userID, ssssKey: revocation.ssssKey(), credentialId: result.credentialID,
                                                      prfSalt: salt, prfOutput: result.prfOutput))
         if case .object(var object) = slot { object["label"] = label.map(JSONValue.string); slot = .object(object) }
@@ -374,6 +375,7 @@ final class E2eeRevocation {
             let chunk = Array(users[start..<min(start + 50, users.count)])
             start += 50
             let response = try await api.call("api/e2ee/keys/query", method: "POST", query: [:], body: ["user_ids": .array(chunk.map(JSONValue.string))], reauth: nil, headers: [:])
+            guard response.object != nil else { throw ZooError.invalidResponse }
             if case .object(let keys)? = response.object?["master_keys"] { master.merge(keys) { _, new in new } }
             if case .array(let rows)? = response.object?["signatures"] { signatures += rows }
         }

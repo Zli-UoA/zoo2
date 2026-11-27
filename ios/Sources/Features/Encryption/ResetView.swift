@@ -36,7 +36,13 @@ struct ResetView: View {
                     Section { Button("閉じる") { dismiss() } }
                 case .failed(let message):
                     Section("リセットできませんでした") { Text(message) }
-                    Section { Button("最初からやり直す") { savedKey = false; devicesChecked = false; phase = .warning } }
+                    Section {
+                        if savedKey {
+                            Text("保存が済んでいる場合は、画面を閉じて「リカバリーキーで解錠」から、控えた新しいキーでリセットを続けられます。最初からやり直すと、そのキーが使えなくなる場合があります。")
+                            Button("閉じて控えたキーで解錠する") { dismiss() }
+                        }
+                        Button("最初からやり直す", role: .destructive) { savedKey = false; devicesChecked = false; phase = .warning }
+                    }
                 }
             }
             .navigationTitle("E2EE のリセット")
@@ -113,11 +119,16 @@ struct ResetView: View {
         do {
             // 選んだ端末を削除してから、新しい鍵を作る（選択を確かめるまで保存しない）。
             for id in selected { try await e2ee.removeDevice(id); selected.remove(id) }
+        } catch {
+            phase = .failed("端末を削除できませんでした。通信を確かめて、もう一度試してください。")
+            return
+        }
+        do {
             let reset = try await e2ee.beginReset()
             // 新しいキーごとに、控えたかを確かめ直す（前のキーの確認を引き継がない）。
             savedKey = false
             phase = .key(reset)
-        } catch { phase = .failed("端末を削除できませんでした。通信を確かめて、もう一度試してください。") }
+        } catch { phase = .failed("新しいリカバリーキーを準備できませんでした。通信を確かめて、もう一度試してください。") }
     }
 
     private func run(_ reset: ResetHandle) async {

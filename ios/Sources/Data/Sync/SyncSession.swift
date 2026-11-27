@@ -75,11 +75,11 @@ final class SyncSession {
     func authorizeChannel(_ id: String, version: UUID) async throws {
         try check()
         guard channelVersion(id) == version else { throw CancellationError() }
-        guard revokedChannels.contains(id), !uncachedChannels.contains(id) else { return }
+        guard revokedChannels.contains(id) else { return }
         _ = await channelRevocation?.result
         try check()
         guard channelVersion(id) == version else { throw CancellationError() }
-        try await cache.authorizeChannel(id, version: version, lease: lease)
+        if !uncachedChannels.contains(id) { try await cache.authorizeChannel(id, version: version, lease: lease) }
         try check()
         guard channelVersion(id) == version else { throw CancellationError() }
         revokedChannels.remove(id)
@@ -106,7 +106,6 @@ final class SyncSession {
     func excludeFromCache(_ id: String, version: UUID) async throws -> UUID {
         try check()
         guard channelVersion(id) == version else { throw CancellationError() }
-        if revokedChannels.remove(id) != nil { onChannelAuthorized?(id) }
         guard uncachedChannels.insert(id).inserted else { return revocationVersion }
         revocationVersion = UUID()
         let previous = channelRevocation
@@ -118,7 +117,8 @@ final class SyncSession {
         channelRevocation = removal
         // 削除失敗時も cache 側の読取・書込禁止を保ち、暗号文の表示は続ける。
         _ = await removal.result
-        try check(channelID: id, channelVersion: version)
+        try check()
+        guard channelVersion(id) == version else { throw CancellationError() }
         return revocationVersion
     }
 

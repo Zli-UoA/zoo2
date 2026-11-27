@@ -405,7 +405,10 @@ fn reset_replaces_secret_storage_and_keys() {
     // 初回設定の要求は、前提の値が空のまま。
     let first_request: Value =
         serde_json::from_str(&reset.session.secret_storage_request().unwrap()).unwrap();
-    assert!(first_request["expected_default_key_id"].is_null());
+    assert_eq!(
+        first_request.get("expected_default_key_id"),
+        Some(&Value::Null)
+    );
 
     // クロス署名鍵は 3 つとも差し替え（サーバーの今の鍵が前提）、新しい版を作る（今の版が前提）。
     let plan = reset
@@ -417,7 +420,19 @@ fn reset_replaces_secret_storage_and_keys() {
         )
         .unwrap();
     let cross: Value = serde_json::from_str(&plan.cross_signing.unwrap()).unwrap();
-    assert!(cross["expected_keys"]["master"].is_string());
+    for (expected, field) in [
+        ("master", "master_key"),
+        ("self_signing", "self_signing_key"),
+        ("user_signing", "user_signing_key"),
+    ] {
+        let old = server.keys[field]["keys"]
+            .as_object()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap();
+        assert_eq!(&cross["expected_keys"][expected], old);
+    }
     assert!(plan.device_signature.is_some());
     let version: Value = serde_json::from_str(&plan.backup_version.unwrap()).unwrap();
     assert_eq!(version["expected_current_version"], "1");

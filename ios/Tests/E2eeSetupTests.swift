@@ -78,7 +78,7 @@ final class FakeSetupServer: E2eeSetupAPI {
         if let current = defaultKeyID {
             // E2EE のリセット：サーバーの今の既定の鍵と版が前提のときだけ、作り直す（鍵スロットも置き換える）。
             guard case .string(let expected) = body["expected_default_key_id"], expected == current,
-                  case .number(let expectedRevision)? = body["expected_secrets_revision"], UInt64(expectedRevision) == revision else {
+                  case .number(let expectedRevision)? = body["expected_secrets_revision"], UInt64(exactly: expectedRevision) == revision else {
                 throw E2eeAPIError(status: 409, code: "E2EE_SSSS_CONFLICT")
             }
             slots = []
@@ -146,8 +146,13 @@ final class FakeSetupServer: E2eeSetupAPI {
     var backupProofs: [String?] = []
     var backupUploads: [Int] = []
     var backupConflict: String?
+    var beforeCurrentBackup: (() async throws -> Void)?
+    var beforeBackupUpload: (() async throws -> Void)?
+    var currentBackupReads = 0
 
     func currentBackupVersion() async throws -> String? {
+        currentBackupReads += 1
+        try await beforeCurrentBackup?()
         guard case .object(var version)? = versions.last else { return nil }
         if let uploadKey { version["upload_key"] = uploadKey }
         return text(.object(version))
@@ -162,6 +167,7 @@ final class FakeSetupServer: E2eeSetupAPI {
     var backupPage: ((String?) -> String)?
 
     func uploadBackupKeys(version: String, secretsRevision: UInt64, body: String, proof: String?) async throws {
+        try await beforeBackupUpload?()
         try fail("backup")
         if let backupConflict { throw E2eeAPIError(status: 409, code: backupConflict) }
         guard case .object(let last)? = versions.last, last["version"] == .string(version), secretsRevision == revision else {
@@ -602,6 +608,9 @@ struct ReauthTests {
         #expect(ReauthCallback.parse(URL(string: "works.zli.zoo:/reauth-callback?code=abc&state=s1")!, request: request) == .code("abc"))
         #expect(ReauthCallback.parse(URL(string: "works.zli.zoo:/reauth-callback?code=abc&state=other")!, request: request) == nil)
         #expect(ReauthCallback.parse(URL(string: "works.zli.zoo:/elsewhere?code=abc&state=s1")!, request: request) == nil)
+        for uri in ["works.zli.zoo:/reauth-callback/", "works.zli.zoo://other/reauth-callback", "works.zli.zoo:/reauth%2Dcallback"] {
+            #expect(ReauthCallback.parse(URL(string: uri + "?code=abc&state=s1")!, request: request) == nil)
+        }
         #expect(ReauthCallback.parse(URL(string: "works.zli.zoo:/reauth-callback?error=access_denied&state=s1")!, request: request)
             == .error("access_denied"))
         #expect(ReauthCallback.parse(URL(string: "works.zli.zoo:/reauth-callback?state=s1")!, request: request)

@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import CryptoKit
 import Testing
 import UserNotifications
@@ -19,6 +20,7 @@ private final class FakeMessageServer: E2eeRequesting {
     let receiver: Device
     var epoch: UInt64 = 1
     var posts = 0
+    var failPost = false
     var requests: [String] = []
     var delivered: [CryptoStore.ToDeviceRow] = []
     var accepted: [String: JSONValue] = [:]
@@ -79,6 +81,7 @@ private final class FakeMessageServer: E2eeRequesting {
             guard case .object? = body?["ciphertext"] else { throw ZooError.invalidResponse }
             posts += 1
             postedBodies.append(body ?? [:])
+            if failPost { throw URLError(.notConnectedToInternet) }
             if requireThreadJoin && !threadJoined { throw E2eeAPIError(status: 403, code: "THREAD_JOIN_REQUIRED") }
             if staleOnce && posts == 1 {
                 epoch = 2
@@ -138,6 +141,62 @@ struct MessageEncryptionTests {
                             ciphertext: ciphertext)
     }
 
+    @Test("検証キューは認証付きで保存し、未保存の行を配信せず再起動で回復する", arguments: [false, true])
+    func verificationQueueIsAuthenticated(afterRename: Bool) async throws {
+        let (server, sender, receiver, _, _) = try await makePair()
+        defer { sender.cleanUp(); receiver.cleanUp() }
+        let recipient = try verifyDeviceKeys(deviceKeys: receiver.store.deviceKeys(), userId: user, deviceId: receiver.store.deviceID)
+        let keys = try #require(try receiver.store.prepareKeyUpload(oneTimeKeyCount: 0, hasUnusedFallbackKey: true))
+        let claimed = dump(try #require(keys.oneTimeKeys.values.first))
+        let secret = "検証用の共有秘密・保存時に平文にしない"
+        let rows = try (1...2).map { index in
+            let content = dump(.object(["transaction_id": .string("txn-\(index)"), "secret": .string(secret)]))
+            let encrypted = try #require(try sender.store.encryptVerification(recipient, eventType: "m.key.verification.start",
+                                                                              content: content, claimed: claimed))
+            return CryptoStore.ToDeviceRow(id: String(index), senderUserID: user, type: "m.room.encrypted", content: encrypted)
+        }
+        let query = dump(.object(try await server.snapshot()))
+        let path = receiver.files.directory.standardizedFileURL.path
+        let writes = Synchronization.Mutex(0)
+        CryptoStore.writeFailureHooks.withLock { hooks in hooks[path] = { url, renamed in
+            if url.lastPathComponent == CryptoStore.stateFile, renamed == afterRename {
+                if writes.withLock({ $0 += 1; return $0 }) == 2 { throw CocoaError(.fileWriteUnknown) }
+            }
+        } }
+        defer { CryptoStore.writeFailureHooks.withLock { $0.removeValue(forKey: path) } }
+        #expect(throws: (any Error).self) { try receiver.store.processToDevice(rows, keysQuery: query) }
+        #expect(receiver.store.pendingVerifications().count == 1)
+        #expect(!receiver.store.isUsable)
+        CryptoStore.writeFailureHooks.withLock { $0.removeValue(forKey: path) }
+        try receiver.restart()
+        #expect(receiver.store.pendingVerifications().count == (afterRename ? 2 : 1))
+        let result = try receiver.store.processToDevice(rows, keysQuery: query)
+        try #require(result.verifications.count == 2)
+        #expect(result.verifications.allSatisfy { $0.contains(secret) })
+        let file = receiver.files.directory.appendingPathComponent(CryptoStore.stateFile)
+        let bytes = try Data(contentsOf: file)
+        #expect(!String(decoding: bytes, as: UTF8.self).contains(secret))
+        var state = try JSONDecoder().decode(StoreState.self, from: bytes)
+        try #require(state.pending_verifications.allSatisfy { $0.hasPrefix("v1:") })
+        try receiver.store.discardVerifications([result.verifications[0]])
+        #expect(receiver.store.pendingVerifications() == [result.verifications[1]])
+        // 旧平文、改竄、別端末・別アカウントの封筒を認証済みとして扱わない。
+        let storageKey = try #require(try receiver.files.keys.loadExisting())
+        var tampered = try #require(Data(base64Encoded: String(state.pending_verifications[0].dropFirst(3))))
+        tampered[tampered.count - 1] ^= 1
+        state.pending_verifications = [result.verifications[0], "v1:" + tampered.base64EncodedString()]
+        for (account, device) in [("別アカウント", state.device_id), (state.user_id, "別端末")] {
+            let aad = Data("zoo2-ios.pending-verification.v1\n\(account)\n\(device)".utf8)
+            let box = try AES.GCM.seal(Data(result.verifications[0].utf8), using: SymmetricKey(data: storageKey), authenticating: aad)
+            state.pending_verifications.append("v1:" + (try #require(box.combined)).base64EncodedString())
+        }
+        receiver.store.close()
+        try JSONEncoder().encode(state).write(to: file)
+        try receiver.restart()
+        #expect(receiver.store.pendingVerifications().isEmpty)
+        #expect(try JSONDecoder().decode(StoreState.self, from: Data(contentsOf: file)).pending_verifications.isEmpty)
+    }
+
     @Test func epochが同じでも配布先から外れた端末へ後続の本文を漏らさない() async throws {
         let (server, sender, receiver, encryption, _) = try await makePair()
         defer { sender.cleanUp(); receiver.cleanUp() }
@@ -148,8 +207,10 @@ struct MessageEncryptionTests {
         let reader = MessageEncryption(store: { receiver.store }, api: server)
         #expect(reader.decrypt(previous).body == "最初の本文")
         server.omitReceiver = true
+        let previousDeliveries = server.delivered.count
         try await encryption.send(channel: channel, id: UUID().uuidString.lowercased(), parent: nil, body: "除外後の本文")
         let next = row(server)
+        #expect(server.delivered.count == previousDeliveries)
         #expect(next.epoch == previous.epoch)
         #expect(parse(next.ciphertext).object?["session_id"] != parse(previous.ciphertext).object?["session_id"])
         #expect(reader.decrypt(next).notice == E2eeText.keyMissing)
@@ -183,7 +244,7 @@ struct MessageEncryptionTests {
         let parent = UUID().uuidString.lowercased()
         if canParticipate {
             try await encryption.send(channel: channel, id: messageID, parent: parent, body: "再参加後の返信")
-            #expect(server.threadJoined && server.posts == 2)
+            try #require(server.threadJoined && server.posts == 2 && server.postedBodies.count == 2)
             #expect(server.postedBodies[0] == server.postedBodies[1])
         } else {
             await #expect(throws: E2eeAPIError.self) { try await encryption.send(channel: channel, id: messageID, parent: parent, body: "送らない返信") }
@@ -311,7 +372,8 @@ struct MessageEncryptionTests {
     @Test func 通知拡張は通知の暗号文の行を暗号ストアの読み取りだけで復号する() async throws {
         let (server, sender, receiver, encryption, _) = try await makePair()
         defer { sender.cleanUp(); receiver.cleanUp() }
-        let secret = "通知の本文"
+        let secret = String(repeating: "通知🌏e\u{301}", count: 80)
+        let previewText = String(String.UnicodeScalarView(secret.unicodeScalars.prefix(240)))
         try await encryption.send(channel: channel, id: messageID, parent: nil, body: secret)
         _ = try receiver.store.processToDevice(server.delivered, keysQuery: dump(.object(try await server.snapshot())))
         // 通知拡張が読む App Group の置き場に、受信端末の暗号ストアを写す（拡張は読み取りだけ）。
@@ -330,7 +392,7 @@ struct MessageEncryptionTests {
                 "message": ["channel_id": channel, "message_id": messageID, "parent_id": NSNull(), "user_id": user,
                             "message_kind": "message", "epoch": accepted.epoch, "revision": accepted.revision, "ciphertext": ciphertext]]]
         }
-        #expect(NotificationE2ee.body(userInfo: info(), activeUserID: user, roots: [root], loadKey: { _ in storageKey }) == secret)
+        #expect(NotificationE2ee.body(userInfo: info(), activeUserID: user, roots: [root], loadKey: { _ in storageKey }) == previewText)
         let notice = UUID().uuidString.lowercased()
         let previewKey = NotificationPreviewKey(userID: user, secret: "通知テスト用のダミー")
         let original = UNMutableNotificationContent()
@@ -340,7 +402,7 @@ struct MessageEncryptionTests {
         let aad = Data(["zoo-preview-v1", user, notice, channel, messageID].joined(separator: "|").utf8)
         let plaintext = try JSONEncoder().encode(["title": "Zoo", "body": "新しいメッセージ", "notificationType": "dm"])
         original.userInfo["preview_v1"] = try AES.GCM.seal(plaintext, using: SymmetricKey(data: previewKey.key), authenticating: aad).combined?.base64EncodedString()
-        #expect(NotificationE2ee.content(for: original, previewKey: previewKey, roots: [root], loadKey: { _ in storageKey }).body == secret)
+        #expect(NotificationE2ee.content(for: original, previewKey: previewKey, roots: [root], loadKey: { _ in storageKey }).body == previewText)
         let newKey = NotificationPreviewKey(userID: user, secret: "再登録後のテスト用ダミー")
         var reads = 0
         #expect(NotificationE2ee.content(for: original, previewKey: newKey, roots: [root], loadKey: { _ in reads += 1; return storageKey }).body == original.body)
@@ -357,7 +419,7 @@ struct MessageEncryptionTests {
         // 読み取りだけ：状態は変わらない。
         #expect(try Data(contentsOf: root.appendingPathComponent("store/state.json")) == before)
         // 本文は 240 コードポイントまで。
-        #expect((NotificationE2ee.body(userInfo: info(), activeUserID: user, roots: [root], loadKey: { _ in storageKey }) ?? "").unicodeScalars.count <= 240)
+        #expect(NotificationE2ee.body(userInfo: info(), activeUserID: user, roots: [root], loadKey: { _ in storageKey }) == previewText)
         // 保存鍵が違う、宛先が違う、置き場がない、暗号文が壊れているときは、復号しない。
         #expect(NotificationE2ee.body(userInfo: info(), activeUserID: user, roots: [root], loadKey: { _ in Data(repeating: 1, count: 32) }) == nil)
         #expect(NotificationE2ee.body(userInfo: info(), activeUserID: user, roots: [root], loadKey: { _ in nil }) == nil)
@@ -379,6 +441,10 @@ struct MessageEncryptionTests {
         _ = try receiver.store.processToDevice(server.delivered, keysQuery: dump(.object(try await server.snapshot())))
         let decrypted = MessageEncryption(store: { receiver.store }, api: server).decrypt(row(server))
         #expect(decrypted.payload?.mentions.userIds == mentions.userIDs && decrypted.payload?.mentions.channel == true)
+        try await encryption.edit(row(server), body: "@alice 編集", mentions: mentions)
+        #expect(server.accepted["mentions"] == nil)
+        let edited = MessageEncryption(store: { receiver.store }, api: server).decrypt(row(server))
+        #expect(edited.payload?.mentions.userIds == mentions.userIDs && edited.payload?.mentions.channel == true)
     }
 
     @Test func 送信できると配布先を記録し自分だけの会話では要約は空のまま() async throws {
@@ -420,15 +486,43 @@ struct MessageEncryptionTests {
         #expect(reader.decrypt(original).revision == .stale)
     }
 
-    @Test func 鍵を配れなかったら本文を送らない() async throws {
+    @Test("送信失敗と編集では前回送信の配布先を更新しない")
+    func recordsMembersOnlyAfterNewPost() async throws {
+        let (server, sender, receiver, encryption, _) = try await makePair()
+        defer { sender.cleanUp(); receiver.cleanUp() }
+        server.staleOnce = false
+        try await encryption.send(channel: channel, id: messageID, parent: nil, body: "送信済み")
+        let original = row(server)
+        #expect(sender.store.recordedMembers(channel: channel) == [])
+        let added = UUID().uuidString.lowercased()
+        server.unconfiguredUser = added
+        server.failPost = true
+        await #expect(throws: URLError.self) {
+            try await encryption.send(channel: channel, id: UUID().uuidString.lowercased(), parent: nil, body: "送信失敗")
+        }
+        #expect(sender.store.recordedMembers(channel: channel) == [])
+        #expect(try await encryption.summary(channel: channel).added == [added])
+        server.failPost = false
+        try await encryption.edit(original, body: "編集")
+        #expect(sender.store.recordedMembers(channel: channel) == [])
+        try await encryption.send(channel: channel, id: UUID().uuidString.lowercased(), parent: nil, body: "新しい投稿")
+        #expect(sender.store.recordedMembers(channel: channel) == [added])
+    }
+
+    @Test func 未配送の端末は次の送信で再配布し本文の投稿は続ける() async throws {
         let (server, sender, receiver, encryption, _) = try await makePair()
         defer { sender.cleanUp(); receiver.cleanUp() }
         server.refuseDelivery = true
         server.staleOnce = false
-        await #expect(throws: MessageEncryptionError.self) {
-            try await encryption.send(channel: channel, id: messageID, parent: nil, body: "x")
-        }
-        #expect(server.posts == 0)
+        try await encryption.send(channel: channel, id: messageID, parent: nil, body: "x")
+        #expect(server.posts == 1)
+        let attempts = server.delivered.count
+        server.refuseDelivery = false
+        try await encryption.send(channel: channel, id: UUID().uuidString.lowercased(), parent: nil, body: "再配布")
+        #expect(server.posts == 2 && server.delivered.count > attempts)
+        let confirmed = server.delivered.count
+        try await encryption.send(channel: channel, id: UUID().uuidString.lowercased(), parent: nil, body: "配布済み")
+        #expect(server.posts == 3 && server.delivered.count == confirmed)
     }
 
     @Test func 鍵を配るあいだに端末が作り直されたら古い鍵のセッションで暗号化しない() async throws {
@@ -545,6 +639,7 @@ struct ConfirmedBodyTests {
         capture.record(revision: 1)
         // 新しい版を読んだあと、古い版が届いても、新しい版の本文を警告つきで出す。
         #expect(controller.decrypt(message(1)).body == "直した")
+        try sender.restart()
         let stale = controller.decrypt(original)
         #expect(stale.body == "直した")
         #expect(stale.notice == E2eeText.revisionStale)

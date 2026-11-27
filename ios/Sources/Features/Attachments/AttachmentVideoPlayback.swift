@@ -71,6 +71,7 @@ final class AttachmentVideoSession: NSObject, @MainActor AVPlayerViewControllerD
     @ObservationIgnored private let deactivateAudio: @MainActor () -> Void
     @ObservationIgnored private var restorationID = UUID()
     @ObservationIgnored private var restorationTask: Task<Void, Never>?
+    @ObservationIgnored private var restorationDeadline: Task<Void, Never>?
     @ObservationIgnored private var restorationCompletion: ((Bool) -> Void)?
     @ObservationIgnored private var restoringPictureInPicture = false
     @ObservationIgnored private let restore: @MainActor () async -> Bool
@@ -201,21 +202,25 @@ final class AttachmentVideoSession: NSObject, @MainActor AVPlayerViewControllerD
             completeRestoration(true)
             return
         }
+        restorationDeadline = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(5)) } catch { return }
+            guard let self, restorationID == request else { return }
+            completeRestoration(false)
+        }
         restorationTask = Task { [weak self] in
             guard let self, restorationID == request else { return }
             let restored = await restore()
             guard restorationID == request else { return }
             guard restored, !Task.isCancelled else { completeRestoration(false); return }
             if inlineVisible, controller.view.window != nil { completeRestoration(true); return }
-            // 削除済みのメッセージなど、再表示できない場合もPiPの復帰処理を完了させる。
-            do { try await Task.sleep(for: .seconds(5)) } catch { return }
-            guard restorationID == request else { return }
-            completeRestoration(false)
+            // 画面の再表示または独立した期限の到来で完了する。
         }
     }
 
     private func completeRestoration(_ restored: Bool) {
         restorationID = UUID()
+        restorationDeadline?.cancel()
+        restorationDeadline = nil
         restorationTask?.cancel()
         restorationTask = nil
         let completion = restorationCompletion
@@ -248,7 +253,7 @@ final class AttachmentVideoSession: NSObject, @MainActor AVPlayerViewControllerD
         }
     }
 
-    deinit { loadTask?.cancel(); restorationTask?.cancel() }
+    deinit { loadTask?.cancel(); restorationTask?.cancel(); restorationDeadline?.cancel() }
 }
 
 enum AttachmentVideoThumbnail {

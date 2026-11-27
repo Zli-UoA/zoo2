@@ -84,7 +84,7 @@ struct ConversationView: View {
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { navigationContentWidth = $0 }
         // 暗号化チャンネルは、開いたとき、鍵が届いたとき、解錠したときに、配布先の要約を読み直す。
-        .task(id: "\(store.channel.id)|\(workspace.e2ee?.revision ?? 0)|\(workspace.e2ee?.isReady == true)") {
+        .task(id: "\(store.channel.id)|\(store.channel.encrypted == true)|\(store.sending.isEmpty)|\(workspace.e2ee?.revision ?? 0)|\(workspace.e2ee?.isReady == true)") {
             await store.refreshRecipientSummary()
         }
         .background(AppDesign.background.ignoresSafeArea())

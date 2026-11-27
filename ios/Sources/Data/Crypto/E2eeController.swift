@@ -146,7 +146,8 @@ final class E2eeController: ConversationEncryption {
     func renameDevice(_ id: String, to name: String) async throws { try await devicesAPI?.renameDevice(id, to: name) }
     /// 別の端末を削除する（この端末は消さない）。
     func removeDevice(_ id: String) async throws {
-        guard id.lowercased() != currentDeviceID?.lowercased() else { return }
+        guard let currentDeviceID else { throw E2eeStoreError.closed }
+        guard id.lowercased() != currentDeviceID.lowercased() else { return }
         try await devicesAPI?.removeDevice(id)
     }
 
@@ -427,6 +428,11 @@ final class E2eeController: ConversationEncryption {
         }
         let result = encryption.decrypt(row)
         if result.body != nil {
+            if let known = confirmed[row.id], known.revision > row.revision {
+                var shown = known.result
+                shown.notice = E2eeText.revisionStale
+                return shown
+            }
             decrypted[key] = result
             if (confirmed[row.id]?.revision ?? 0) <= row.revision || confirmed[row.id] == nil { confirmed[row.id] = (row.revision, result) }
             return result

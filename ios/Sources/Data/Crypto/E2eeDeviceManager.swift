@@ -73,7 +73,7 @@ extension APIClient: E2eeKeysAPI {
             let chunk = Array(userIDs[start..<min(start + 50, userIDs.count)])
             start += 50
             guard case .object(let response) = try await e2eeJSON("api/e2ee/keys/query", method: "POST",
-                                                                  body: ["user_ids": .array(chunk.map(JSONValue.string))]) else { continue }
+                                                                  body: ["user_ids": .array(chunk.map(JSONValue.string))]) else { throw ZooError.invalidResponse }
             for field in ["master_keys", "self_signing_keys", "user_signing_keys", "tofu_pins"] {
                 var previous: [String: JSONValue] = [:]
                 if case .object(let existing)? = snapshot[field] { previous = existing }
@@ -294,8 +294,8 @@ final class E2eeDeviceManager {
     /// 失敗したら、メッセージはそのまま残り、あとでもう一度届く（届け先が重複を捨てる）。
     private func deliverVerifications(_ store: CryptoStore) {
         let pending = store.pendingVerifications()
-        guard !pending.isEmpty else { return }
-        onVerifications?(pending)
+        guard !pending.isEmpty, let onVerifications else { return }
+        onVerifications(pending)
         try? store.discardVerifications(pending)
     }
 

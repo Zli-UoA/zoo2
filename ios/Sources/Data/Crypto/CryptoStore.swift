@@ -74,15 +74,12 @@ struct CryptoStoreFiles: Sendable {
         try CryptoStore.writeAtomically(JSONEncoder().encode(EncryptionHistory(userID: userID, channels: channels.sorted())), to: url)
     }
 
-    /// Keychain が読めない場合も、ファイルと保存鍵の削除をそれぞれ試す。
+    /// ファイルを消せなかったときは、再試行で復元できるよう保存鍵を残す。
     func removeLocalState() throws {
         guard !CryptoStore.isReserved(directory) else { throw CryptoStoreBusyError() }
-        var failure: (any Error)?
         do { try FileManager.default.removeItem(at: directory) }
         catch CocoaError.fileNoSuchFile {}
-        catch { failure = error }
-        do { try keys.delete() } catch { if failure == nil { failure = error } }
-        if let failure { throw failure }
+        try keys.delete()
     }
 
     static func storeID(server: String, userID: String) -> String {
@@ -375,8 +372,15 @@ final class CryptoStore: @unchecked Sendable {
                         ?? TrustStore(userId: stored.user_id)
                     let olm = OlmSessionStore()
                     for session in stored.olm_sessions { _ = try olm.restoreSession(account: account, pickle: session.pickle, storageKey: key) }
-                    return Opened(store: CryptoStore(directory: files.directory, storageKey: key, account: account, trust: trust,
-                                                     olmSessions: olm, state: stored, reservation: reservation))
+                    let store = CryptoStore(directory: files.directory, storageKey: key, account: account, trust: trust,
+                                            olmSessions: olm, state: stored, reservation: reservation)
+                    var authenticated = stored
+                    authenticated.pending_verifications.removeAll { store.openVerification($0) == nil }
+                    if authenticated.pending_verifications != stored.pending_verifications {
+                        try store.save(authenticated)
+                        store.state = authenticated
+                    }
+                    return Opened(store: store)
                 }
             }
             // 保存鍵がなければ、どの値も読めない。作り直して、新しい端末として登録し直す。前の端末の ID は、
@@ -457,6 +461,7 @@ final class CryptoStore: @unchecked Sendable {
             // （開けない、壊れたものは捨てる）。
             nextState.olm_sessions = []
             nextState.processed_to_device = []
+            nextState.pending_verifications = []
             let opener = InboundSessionStore()
             var resealed: [String: StoredInbound] = [:]
             for (key, stored) in state.inbound_sessions {
@@ -666,46 +671,37 @@ final class CryptoStore: @unchecked Sendable {
         try lock.withLock {
             try ensureOpen()
             var processed: [String] = [], roomKeys = 0, dropped = 0, newOlm = 0, verified = 0
-            let query = (try? JSONDecoder().decode(JSONValue.self, from: Data(keysQuery.utf8))) ?? .null
-            // 前の処理で印を付けた行（ack の前に失敗した）。保存の同期が済んだとは限らないので、返す前に保存し直す。
-            var unsaved = false
+            let query = try JSONDecoder().decode(JSONValue.self, from: Data(keysQuery.utf8))
+            guard case .object = query else { throw ZooError.invalidResponse }
             for row in rows {
-                if state.processed_to_device.contains(row.id) {
-                    unsaved = true
-                } else {
-                    if row.type == "m.room.encrypted" {
-                        // 途中で失敗したら、進めた Olm 状態をメモリーから戻す（処理済みの印なしで、あとの保存に入れない。
-                        // 入れると、行が再配信されたとき、進みすぎたセッションで復号できず、鍵を失う）。
-                        let snapshot = state
-                        let outcome: Encrypted
-                        do { outcome = try processEncrypted(row, query: query, keysQuery: keysQuery) }
-                        catch {
-                            do { try rollbackLive(to: snapshot) } catch { needsReopen = true }
-                            throw error
-                        }
-                        switch outcome {
-                        case .dropped: dropped += 1
-                        case .verification(let created, let message):
-                            newOlm += created
-                            // 処理済みの印と同じ書き込みで保存する（下の `save`）。
-                            if let message { state.pending_verifications.append(message) } else { dropped += 1 }
-                        case .decrypted(let created, let roomKey, let rejected, let isVerified):
-                            newOlm += created
-                            if roomKey { roomKeys += 1 } else if rejected { dropped += 1 }
-                            if roomKey && isVerified { verified += 1 }
-                        }
-                    } else {
-                        dropped += 1
+                if !state.processed_to_device.contains(row.id) {
+                    let snapshot = state
+                    do {
+                        if row.type == "m.room.encrypted" {
+                            switch try processEncrypted(row, query: query, keysQuery: keysQuery) {
+                            case .dropped: dropped += 1
+                            case .verification(let created, let message):
+                                newOlm += created
+                                if let message { state.pending_verifications.append(try sealVerification(message)) }
+                                else { dropped += 1 }
+                            case .decrypted(let created, let roomKey, let rejected, let isVerified):
+                                newOlm += created
+                                if roomKey { roomKeys += 1 } else if rejected { dropped += 1 }
+                                if roomKey && isVerified { verified += 1 }
+                            }
+                        } else { dropped += 1 }
+                        state.processed_to_device.append(row.id)
+                        try save(state)
+                    } catch {
+                        // 未保存の検証メッセージも戻し、保存済みの行だけを受信側へ渡す。
+                        do { try rollbackLive(to: snapshot) } catch { needsReopen = true; state = snapshot }
+                        throw error
                     }
-                    state.processed_to_device.append(row.id)
-                    try save(state)
-                    unsaved = false
                 }
                 processed.append(row.id)
             }
-            if unsaved { try save(state) }
             return ToDeviceResult(processed: processed, roomKeys: roomKeys, dropped: dropped, newOlmSessions: newOlm,
-                                  verifiedRoomKeys: verified, verifications: state.pending_verifications)
+                                  verifiedRoomKeys: verified, verifications: state.pending_verifications.compactMap(openVerification))
         }
     }
 
@@ -852,7 +848,26 @@ final class CryptoStore: @unchecked Sendable {
     }
 
     /// まだ届け先に渡していない検証のメッセージ（保存した一覧。取り出すだけで、消さない）。
-    func pendingVerifications() -> [String] { lock.withLock { state.pending_verifications } }
+    func pendingVerifications() -> [String] {
+        lock.withLock { state.pending_verifications.compactMap(openVerification) }
+    }
+
+    private var verificationContext: Data {
+        Data("zoo2-ios.pending-verification.v1\n\(state.user_id)\n\(state.device_id)".utf8)
+    }
+
+    private func sealVerification(_ message: String) throws -> String {
+        let sealed = try AES.GCM.seal(Data(message.utf8), using: SymmetricKey(data: storageKey), authenticating: verificationContext)
+        guard let data = sealed.combined else { throw ZooError.invalidResponse }
+        return "v1:" + data.base64EncodedString()
+    }
+
+    private func openVerification(_ sealed: String) -> String? {
+        guard sealed.hasPrefix("v1:"), let data = Data(base64Encoded: String(sealed.dropFirst(3))),
+              let box = try? AES.GCM.SealedBox(combined: data),
+              let plaintext = try? AES.GCM.open(box, using: SymmetricKey(data: storageKey), authenticating: verificationContext) else { return nil }
+        return String(data: plaintext, encoding: .utf8)
+    }
 
     /// 届け先に渡したメッセージを、保存した一覧から外す。届けたあとに呼ぶ（外す保存に失敗しても、メッセージは失わず、あとで
     /// もう一度届く。届け先が重複を捨てる）。
@@ -860,7 +875,9 @@ final class CryptoStore: @unchecked Sendable {
         try lock.withLock {
             try ensureOpen()
             var remaining = state.pending_verifications
-            for message in delivered { if let index = remaining.firstIndex(of: message) { remaining.remove(at: index) } }
+            for message in delivered {
+                if let index = remaining.firstIndex(where: { openVerification($0) == message }) { remaining.remove(at: index) }
+            }
             guard remaining != state.pending_verifications else { return }
             var next = state
             next.pending_verifications = remaining
@@ -1329,13 +1346,12 @@ final class CryptoStore: @unchecked Sendable {
                 }
                 for ref in refs { try loadInbound(Self.inboundKey(ref)) }
                 let key = try OwnKeys.fromPickle(sealed: sealed, account: account, storageKey: storageKey).backupKey()
-                let discarded = Int(try key.importRows(store: inbound, rows: rows))
+                let imported = try key.importRowsWithChanges(store: inbound, rows: rows)
                 var changed: [String: StoredInbound] = [:]
-                for ref in refs {
+                for ref in imported.changed {
                     let storeKey = Self.inboundKey(ref)
                     guard let pickle = try inbound.pickleSession(account: account, key: ref, storageKey: storageKey) else { continue }
                     let existing = state.inbound_sessions[storeKey]
-                    if existing?.pickle == pickle { continue }
                     changed[storeKey] = StoredInbound(pickle: pickle, backed_up: existing?.backed_up ?? true)
                     loadedInbound.insert(storeKey)
                 }
@@ -1348,7 +1364,7 @@ final class CryptoStore: @unchecked Sendable {
                     state.inbound_sessions.merge(changed) { _, new in new }
                     state.backup_journal_sequence = sequence
                 }
-                return rows.count - discarded
+                return rows.count - Int(imported.discarded)
             } catch {
                 // FFI が先に進んだ可能性があるため、pickle 生成の失敗でも再読込する。
                 needsReopen = true

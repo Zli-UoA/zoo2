@@ -27,6 +27,25 @@ func makeFiles(_ key: MemoryKey = MemoryKey()) -> (CryptoStoreFiles, MemoryKey, 
 }
 
 struct CryptoStoreTests {
+    @Test func 暗号ストアのファイルを消せなかったら保存鍵を維持する() throws {
+        let (files, key, directory) = makeFiles()
+        let store = try #require(try CryptoStore.open(files, userID: user)).store
+        let deviceID = store.deviceID
+        store.close()
+        let originalKey = try #require(try key.load())
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+        #expect(throws: (any Error).self) { try files.removeLocalState() }
+        #expect(try key.load() == originalKey)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        let reopened = try #require(try CryptoStore.open(files, userID: user)).store
+        defer { reopened.close() }
+        #expect(reopened.deviceID == deviceID)
+    }
+
     @Test func 完全な受信一覧から消えた処理済みIDだけを回収する() throws {
         let (files, _, directory) = makeFiles()
         defer { try? FileManager.default.removeItem(at: directory) }

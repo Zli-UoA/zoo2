@@ -4,6 +4,20 @@ import Testing
 @testable import Zoo
 
 @MainActor
+private final class DelayedSearchClient: GlobalSearchClient {
+    let page: SearchPage
+    var response: CheckedContinuation<Void, Never>?
+    var returned = false
+    init(page: SearchPage) { self.page = page }
+    func release() { response?.resume(); response = nil }
+    func search(q: String, type: GlobalSearchKind, cursor: String?, limit: Int, filters: SearchRequestFilters) async throws -> SearchPage {
+        await withCheckedContinuation { response = $0 }
+        returned = true
+        return page
+    }
+}
+
+@MainActor
 @Suite("全文検索")
 struct GlobalSearchTests {
     nonisolated private static let channelID = "11111111-1111-4111-8111-111111111111"
@@ -51,22 +65,19 @@ struct GlobalSearchTests {
 
     @Test("検索の期限を超えたら遅い応答で結果を戻さない")
     func searchDeadlineIgnoresLateResponse() async throws {
-        let harness = try ChatHarness()
-        defer { harness.close() }
-        let release = AsyncStream<Void>.makeStream()
-        defer { release.continuation.finish() }
-        harness.stub { _ in
-            for await _ in release.stream { break }
-            return (200, [:], Self.page([Self.messageJSON("late")]))
-        }
+        let page = try JSONDecoder().decode(SearchPage.self, from: Self.page([Self.messageJSON("late")]))
+        let client = DelayedSearchClient(page: page)
+        defer { client.release() }
         #expect(GlobalSearchStore.timeout == .seconds(20))
-        let search = GlobalSearchStore(client: harness.client, timeout: .milliseconds(20))
+        let search = GlobalSearchStore(client: client, timeout: .milliseconds(20))
         search.text = "会議"; search.submit()
         let request = search.inflight
         for _ in 0..<100 where search.isSearching { try await Task.sleep(for: .milliseconds(10)) }
+        try #require(client.response != nil)
         #expect(search.phase == .failed("検索できませんでした。"))
-        release.continuation.finish()
+        client.release()
         await request?.value
+        #expect(client.returned)
         #expect(search.items.isEmpty)
         #expect(search.phase == .failed("検索できませんでした。"))
     }
@@ -97,7 +108,7 @@ struct GlobalSearchTests {
         search.submit()
         await search.inflight?.value
         #expect(search.phase == .loaded)
-        #expect(search.items.map(\.rowID) == ["message-m1", "message-m2", "file-att-1"])
+        try #require(search.items.map(\.rowID) == ["message-m1", "message-m2", "file-att-1"])
         #expect(search.items[0].author == nil)
         #expect(search.items[1].destination == SearchDestination(channelID: Self.channelID, messageID: "m2", parentID: Self.parentID))
         let file = search.items[2]
@@ -124,7 +135,7 @@ struct GlobalSearchTests {
         search.loadOlder()
         await search.inflight?.value
         let sent = requests.withLock { $0 }
-        #expect(sent.count == 2)
+        try #require(sent.count == 2)
         #expect(sent[0]["type"] == "all" && sent[0]["q"] == "会議 資料" && sent[0]["cursor"] == nil && sent[0]["limit"] == "20")
         #expect(sent[1]["cursor"] == cursor)
         search.select(.files)
@@ -162,8 +173,11 @@ struct GlobalSearchTests {
         defer { harness.close() }
         let gate = AsyncStream<Void>.makeStream()
         let started = AsyncStream<String>.makeStream()
+        let begun = Mutex<Set<String>>([])
+        defer { gate.continuation.finish(); started.continuation.finish() }
         harness.stub { request in
             let q = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "q" }?.value
+            begun.withLock { _ = $0.insert(q ?? "") }
             started.continuation.yield(q ?? "")
             if q == "old" {
                 for await _ in gate.stream { break }
@@ -176,11 +190,14 @@ struct GlobalSearchTests {
         search.text = "old"
         search.submit()
         let stale = search.inflight
+        Task { await stale?.value; if !begun.withLock({ $0.contains("old") }) { started.continuation.finish() } }
         // 旧い要求が通信を始めてから、語を変える。
-        #expect(await iterator.next() == "old")
+        try #require(await iterator.next() == "old")
         search.text = "new"
         search.submit()
-        #expect(await iterator.next() == "new")
+        let fresh = search.inflight
+        Task { await fresh?.value; if !begun.withLock({ $0.contains("new") }) { started.continuation.finish() } }
+        try #require(await iterator.next() == "new")
         await search.inflight?.value
         gate.continuation.yield(())
         await stale?.value
@@ -221,7 +238,8 @@ struct GlobalSearchTests {
         #expect(GlobalSearchQuery.validate("a A a b") == .success("a b"))
         #expect(GlobalSearchQuery.validate("a b c d e f") == .failure(.tooManyTerms))
         #expect(GlobalSearchQuery.validate("a a a a a a b") == .success("a b"))
-        #expect(GlobalSearchQuery.validate(String(repeating: "あ", count: 100)) != nil)
+        let term = String(repeating: "あ", count: 100)
+        #expect(GlobalSearchQuery.validate(term) == .success(term))
         #expect(GlobalSearchQuery.validate(String(repeating: "あ", count: 101)) == .failure(.termTooLong))
         #expect(GlobalSearchQuery.validate("🇯🇵" + String(repeating: "x", count: 98)) == .success("🇯🇵" + String(repeating: "x", count: 98)))
     }
@@ -340,6 +358,7 @@ struct GlobalSearchTests {
         defer { harness.close() }
         let gate = AsyncStream<Void>.makeStream()
         let started = AsyncStream<Void>.makeStream()
+        defer { gate.continuation.finish(); started.continuation.finish() }
         harness.stub { _ in
             started.continuation.yield(())
             for await _ in gate.stream { break }
@@ -348,6 +367,8 @@ struct GlobalSearchTests {
         let search = store(harness)
         search.text = "a"
         search.submit()
+        let request = search.inflight
+        Task { await request?.value; started.continuation.finish() }
         var iterator = started.stream.makeAsyncIterator()
         // 通信が始まってから、権限を失う。
         try #require(await iterator.next() != nil)
@@ -380,6 +401,7 @@ struct GlobalSearchTests {
         let bytes = try JSONEncoder().encode(channel)
         let gate = AsyncStream<Void>.makeStream()
         let started = AsyncStream<Void>.makeStream()
+        defer { gate.continuation.finish(); started.continuation.finish() }
         harness.stub { _ in
             started.continuation.yield(())
             for await _ in gate.stream { break }
@@ -387,7 +409,9 @@ struct GlobalSearchTests {
         }
         let workspace = WorkspaceStore(client: harness.client, user: Person(id: Self.userID, user_name: "you", display_name: "あなた"))
         workspace.selectedTab = .search
-        let open = Task { await workspace.openSearchResultInTab(SearchDestination(channelID: Self.channelID, messageID: Self.replyID, parentID: nil)) }
+        let open = Task {
+            defer { started.continuation.finish() }
+            return await workspace.openSearchResultInTab(SearchDestination(channelID: Self.channelID, messageID: Self.replyID, parentID: nil)) }
         var iterator = started.stream.makeAsyncIterator()
         try #require(await iterator.next() != nil)
         workspace.selectedTab = .profile

@@ -10,6 +10,7 @@ final class EncryptedAttachmentFiles: @unchecked Sendable {
 
     private let lock = NSLock()
     private var files: [String: String] = [:]
+    private var generation = UUID()
 
     func register(_ id: String, file: String) -> String {
         let token = SHA256.hash(data: Data((id.lowercased() + "\n" + file).utf8))
@@ -27,12 +28,18 @@ final class EncryptedAttachmentFiles: @unchecked Sendable {
     func removeAll() {
         lock.lock(); defer { lock.unlock() }
         files = [:]
+        generation = UUID()
     }
 
     /// 暗号文を復号する。ハッシュが合わない、長さが違うなどは `nil`（復号できなかったものとして扱う）。
     func decrypt(_ ciphertext: Data, id: String) -> Data? {
-        guard let file = file(for: id) else { return nil }
-        return try? decryptAttachment(file: file, ciphertext: ciphertext)
+        lock.lock()
+        let file = files[id.lowercased()], version = generation
+        lock.unlock()
+        guard let file, let plaintext = try? decryptAttachment(file: file, ciphertext: ciphertext) else { return nil }
+        lock.lock(); defer { lock.unlock() }
+        guard generation == version, files[id.lowercased()] == file else { return nil }
+        return plaintext
     }
 }
 

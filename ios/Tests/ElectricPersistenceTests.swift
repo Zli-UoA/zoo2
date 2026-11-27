@@ -340,14 +340,16 @@ struct ElectricProtocolTests {
         #expect(state.offset == "103_0")
     }
 
-    @Test("条件配列のないタグも追加と削除を反映する")
-    func appliesSimpleTags() throws {
+    @Test("条件配列のないタグも追加と削除を反映する", arguments: [false, true])
+    func appliesSimpleTags(update: Bool) throws {
         var state = ShapeState()
         let rows = Data(#"[{"key":"k","value":{"id":"k"},"headers":{"operation":"insert","tags":["a/","b/"]}},{"key":"k","value":{"id":"k"},"headers":{"operation":"update","tags":["c/"],"removed_tags":["a/"]}},{"headers":{"event":"move-out","patterns":[{"pos":0,"value":"b"}]}},{"headers":{"control":"up-to-date"}}]"#.utf8)
         _ = try state.apply(rows, response: syncResponse(), as: JSONValue.self)
         #expect(state.visibility["k"]?.tags == ["c/"])
         #expect(state.rows["k"] != nil)
-        let move = Data(#"[{"headers":{"event":"move-out","patterns":[{"pos":0,"value":"c"}]}},{"headers":{"control":"up-to-date"}}]"#.utf8)
+        let move = Data((update
+            ? #"[{"key":"k","value":{"id":"k"},"headers":{"operation":"update","removed_tags":["c/"]}},{"headers":{"control":"up-to-date"}}]"#
+            : #"[{"headers":{"event":"move-out","patterns":[{"pos":0,"value":"c"}]}},{"headers":{"control":"up-to-date"}}]"#).utf8)
         _ = try state.apply(move, response: syncResponse(offset: "101_0"), as: JSONValue.self)
         #expect(state.rows.isEmpty)
     }
@@ -1068,10 +1070,37 @@ struct PersistentSyncIntegrationTests {
                      "value": try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(row))])
         }
         harness.stub { request in
+            if request.url?.path == "/api/channels" { return (200, [:], try JSONEncoder().encode(rows)) }
             #expect(request.url?.path == "/api/shapes/channels")
             return (200, ["electric-handle": "caught-up", "electric-offset": "2_0", "electric-up-to-date": "true"], try JSONEncoder().encode(events))
         }
         #expect(Set(try await client.channels().map(\.id)) == Set(rows.map(\.id)))
+    }
+
+    @Test("遅れた暗号化Shapeでは失効を解除せず、単件RESTの再認可だけで復帰する")
+    func encryptedShapeDoesNotAuthorizeRevokedChannel() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let sync = try await session(harness)
+        let client = NativeChatClient(api: harness.api, sync: sync)
+        let channel = Channel(id: syncChannel, channel_name: "失効済み", is_private: true, is_dm: false, encrypted: true)
+        _ = try await sync.revokeChannel(syncChannel)
+        var authorizations = 0
+        sync.onChannelAuthorized = { _ in authorizations += 1 }
+        _ = try await sync.excludeFromCache(syncChannel, version: sync.channelVersion(syncChannel))
+        #expect(sync.isRevoked(syncChannel) && authorizations == 0)
+        let event = JSONValue.object(["key": .string(syncChannel), "headers": .object(["operation": .string("insert")]),
+            "value": try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(channel))])
+        harness.stub { request in
+            if request.url?.path == "/api/channels" { return (200, [:], Data("[]".utf8)) }
+            return (200, ["electric-handle": "old", "electric-offset": "1_0", "electric-up-to-date": "true"], try JSONEncoder().encode([event]))
+        }
+        #expect(try await client.channels().isEmpty)
+        #expect(sync.isRevoked(syncChannel) && authorizations == 0)
+        harness.stub { _ in (200, [:], try JSONEncoder().encode(channel)) }
+        #expect(try await client.channel(id: syncChannel) == channel)
+        #expect(!sync.isRevoked(syncChannel) && authorizations == 1)
+        #expect(try await sync.cache.load("channel-rest:api/channels/" + syncChannel, lease: sync.lease) == nil)
     }
 
     @Test("正本一覧の照合中に失効した会話を成功応答で復活させない")
@@ -1298,13 +1327,15 @@ struct PersistentSyncIntegrationTests {
                 channelID: syncChannel, request: MessageFeedRequest(encrypted: true)) { updates.continuation.yield($0) }
         }
         defer { task.cancel() }
-        var receivedFresh = false
-        for await snapshot in updates.stream {
-            #expect(!snapshot.fromCache)
-            #expect(snapshot.messages?.contains { $0.content == "投稿1" } != true)
-            if snapshot.messages?.contains(where: { $0.content == "投稿2" }) == true { receivedFresh = true; break }
-        }
-        if !receivedFresh { try await task.value }
+        let receivedFresh = try await withTaskCancellationHandler {
+            for await snapshot in updates.stream {
+                #expect(!snapshot.fromCache)
+                #expect(snapshot.messages?.contains { $0.content == "投稿1" } != true)
+                if snapshot.messages?.contains(where: { $0.content == "投稿2" }) == true { return true }
+            }
+            try await task.value
+            return false
+        } onCancel: { task.cancel() }
         task.cancel(); _ = await task.result
         try #require(receivedFresh)
         #expect(try await sync.cache.load(key, lease: sync.lease) == original)

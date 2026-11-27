@@ -196,9 +196,9 @@ final class WorkspaceStore {
         do {
             async let channelResult = client.channels()
             async let peopleResult = client.people()
-            async let readResult = client.readStates()
-            let (channels, people, fetchedStates) = try await (channelResult, peopleResult, readResult)
-            var states = fetchedStates
+            let (channels, people) = try await (channelResult, peopleResult)
+            // 一覧のキャッシュ除外が終わった世代で既読状態を取得する。
+            var states = try await client.readStates()
             try Task.checkCancellation()
             guard active, channelGeneration == epoch else { return }
             // 取得中に既読位置が変わると応答の前後を判定できないため、更新後の状態を再取得する。
@@ -208,6 +208,9 @@ final class WorkspaceStore {
                 try Task.checkCancellation()
                 guard active, channelGeneration == epoch else { return }
             }
+            let removedIDs = Set(self.channels.map(\.id)).union(conversations.keys)
+                .subtracting(channels.filter { $0.deleted_at == nil }.map(\.id))
+            for id in removedIDs { channelRevocationGenerations[id] = UUID() }
             self.channels = channels.filter { $0.deleted_at == nil }.map { reconcileChannel($0, confirmsWrite: true) }.sorted {
                 $0.channel_name.localizedStandardCompare($1.channel_name) == .orderedAscending
             }
@@ -597,9 +600,11 @@ final class WorkspaceStore {
         }
         defer { updatingChannels.remove(channel.id) }
         channelGeneration = UUID()
+        let accessVersion = channelRevocationGenerations[channel.id]
         let written = try await write()
         try Task.checkCancellation()
-        guard active, written.id == channel.id, let index = channels.firstIndex(where: { $0.id == channel.id }),
+        guard active, channelRevocationGenerations[channel.id] == accessVersion,
+              written.id == channel.id, let index = channels.firstIndex(where: { $0.id == channel.id }),
               conversations[channel.id]?.blocked != true else { throw CancellationError() }
         if let currentDate = channels[index].updated_at.flatMap(ZooDate.parse),
            let responseDate = written.updated_at.flatMap(ZooDate.parse), currentDate > responseDate { return }
@@ -615,6 +620,7 @@ final class WorkspaceStore {
     func openThread(_ parentID: String, in store: ConversationStore, focusComposer: Bool) {
         guard active, path.last == .channel(store.channel.id), !store.blocked,
               store.message(id: parentID) != nil else { return }
+        destinationGeneration = UUID()
         let route = ChatRoute.thread(channelID: store.channel.id, parentID: parentID, focusComposer: focusComposer)
         if store.channel.is_dm { dmPath.append(route) }
         else { channelPath.append(route) }
@@ -631,6 +637,7 @@ final class WorkspaceStore {
               !channel.is_dm else { return }
         let store = conversation(for: channel)
         guard !store.blocked else { report(ZooError.rejected(403, "この会話を閲覧できません。")); return }
+        destinationGeneration = UUID()
         store.prepareForThread(parentID)
         channelPath = [.channel(channel.id), .thread(channelID: channel.id, parentID: parentID, focusComposer: false)]
     }

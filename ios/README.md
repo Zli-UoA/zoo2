@@ -164,7 +164,7 @@ DMの送信・通話は1対1が対象です。無効なメンバー・bot・自�
 
 ## 開発手順
 
-macOSにXcodeとXcodeGenを用意し、Xcodeで `ios/Zoo.xcodeproj` を開きます。
+macOSにXcode、XcodeGen、およびflakesを有効にしたNixを用意し、Xcodeで `ios/Zoo.xcodeproj` を開きます。
 プロジェクトは `ios/project.yml` から生成します。以下はリポジトリのルートから実行する手順です。
 
 ```sh

@@ -32,6 +32,48 @@ struct KeyBackupTests {
         return Sent(server: server, sender: sender, capture: capture, row: row, recoveryKey: start.recoveryKey)
     }
 
+    @Test("解錠後のバックアップ中に端末が変わったら解錠成功にしない", arguments: [false, true])
+    func unlockRequiresStableDevice(close: Bool) async throws {
+        let sent = try await sendOne(), receiver = try Device(sent.server)
+        defer { sent.sender.cleanUp(); receiver.cleanUp() }
+        var changed = false
+        sent.server.beforeCurrentBackup = {
+            if receiver.store.hasOwnKeys, !changed {
+                changed = true
+                if close { receiver.store.close() } else { try receiver.store.replaceDevice() }
+            }
+        }
+        var waitedForInvalidStore = false
+        let setup = E2eeSetup(api: sent.server, userID: user, store: {
+            if !receiver.store.isUsable {
+                waitedForInvalidStore = true
+                throw CancellationError()
+            }
+            return receiver.store
+        })
+        await #expect(throws: E2eeSetupError.secretsChanged) {
+            try await setup.unlock(.recovery(sent.recoveryKey))
+        }
+        #expect(changed && !waitedForInvalidStore)
+    }
+
+    @Test("バックアップ版の競合後は現在版を読み直して再試行する")
+    func scheduledBackupRetriesVersionConflict() async throws {
+        let sent = try await sendOne()
+        defer { sent.sender.cleanUp() }
+        let before = sent.server.currentBackupReads
+        var attempts = 0
+        sent.server.beforeBackupUpload = {
+            attempts += 1
+            if attempts == 1 { throw E2eeAPIError(status: 409, code: "E2EE_WRONG_BACKUP_VERSION") }
+        }
+        sent.sender.setup.scheduleKeyBackup(retryDelay: .zero)
+        defer { sent.sender.setup.cancelScheduledBackup() }
+        for _ in 0..<100 where sent.server.backupRows.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(attempts == 2 && !sent.server.backupRows.isEmpty)
+        #expect(sent.server.currentBackupReads >= before + 2)
+    }
+
     @Test("送信後のバックアップ失敗は鍵だけを再試行する")
     func retriesBackupWithoutReposting() async throws {
         let sent = try await sendOne()
@@ -140,6 +182,29 @@ struct KeyBackupTests {
         // 完了を記録していないので、正常なページなら取り込める。
         sent.server.backupPage = nil
         #expect(try await receiver.setup.importKeyBackup() == 1)
+    }
+
+    @Test("型が壊れたバックアップ行だけを除外し、同じページでは差分を再保存しない")
+    func ignoresMalformedRowsAndUnchangedPages() async throws {
+        let sent = try await sendOne(), receiver = try Device(sent.server)
+        defer { sent.sender.cleanUp(); receiver.cleanUp() }
+        _ = try await receiver.setup.unlock(.recovery(sent.recoveryKey))
+        _ = try await sent.sender.setup.uploadKeyBackup()
+        let row = try #require(sent.server.backupRows.values.first)
+        let text = String(decoding: try JSONEncoder().encode(row), as: UTF8.self)
+        func pages() throws -> [String] {
+            try FileManager.default.contentsOfDirectory(atPath: receiver.files.directory.path)
+                .filter { $0.hasPrefix("backup-page-") }.sorted()
+        }
+        #expect(try receiver.store.importBackupRows(["{}", text, "壊れたJSON"]) == 1)
+        #expect(receiver.store.isUsable && receiver.store.inboundSessionCount == 1)
+        let written = try pages()
+        try #require(written.count == 1)
+        #expect(try receiver.store.importBackupRows([text, text]) == 2)
+        #expect(try pages() == written)
+        try receiver.restart()
+        #expect(try receiver.store.importBackupRows([text]) == 1)
+        #expect(try pages() == written)
     }
 
     @Test("バックアップは変更分だけを書き、途中から再開できる", arguments: [10, 100])

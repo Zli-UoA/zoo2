@@ -248,7 +248,10 @@ final class PreviewChatClient: ChatClient {
         receive(callInvitations)
         for await invitations in stream { receive(invitations) }
     }
-    func answerCallInvitation(id: String, accept: Bool) async throws {}
+    func answerCallInvitation(id: String, accept: Bool) async throws {
+        callInvitations.removeAll { $0.id == id }
+        callInvitationsChanged?.yield(callInvitations)
+    }
     func isCallInvitationPending(id: String) async throws -> Bool {
         callInvitations.contains { $0.id == id && $0.status == "pending" }
     }

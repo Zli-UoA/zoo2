@@ -45,6 +45,7 @@ struct LogoutTests {
                 registered.withLock { $0 = !lateRegistration }
                 throw URLError(.networkConnectionLost)
             }
+            #expect(request.httpMethod == "DELETE")
             deletes.withLock { $0.append(request.url!.lastPathComponent) }
             let found = registered.withLock { value in let found = value; value = false; return found }
             return (found ? 200 : 404, [:], Data("{}".utf8))
@@ -143,13 +144,22 @@ struct LogoutTests {
     @Test @MainActor func 取消に応答しない処理を期限後まで待たず遅い結果も無視する() async {
         var held: CheckedContinuation<Bool?, Never>?
         let started = ContinuousClock.now
+        var releasedByWatchdog = false
+        let watchdog = Task { @MainActor in
+            do { try await Task.sleep(for: .seconds(1)) } catch { return }
+            releasedByWatchdog = true
+            held?.resume(returning: true)
+            held = nil
+        }
+        defer { watchdog.cancel(); held?.resume(returning: true) }
         let result = await e2eeWithTimeout(.milliseconds(30)) {
             await withCheckedContinuation { held = $0 }
         }
-        #expect(result == nil)
+        #expect(result == nil && !releasedByWatchdog)
         #expect(started.duration(to: .now) < .seconds(1))
         #expect(held != nil)
         held?.resume(returning: true)
+        held = nil
         await Task.yield()
     }
 

@@ -87,6 +87,7 @@ struct KeySlotsView: View {
                 try await slots.addPasskey(unlocked: unlocked, client: e2ee.passkeys, rpID: e2ee.rpID,
                                            label: passkeyLabel.isEmpty ? nil : passkeyLabel, reauth: { try await e2ee.reauthenticate() })
                 step = .none
+                await reload()
             case .regenerateRecovery:
                 step = .newRecoveryKey(try slots.prepareRecovery(unlocked: unlocked))
             }
@@ -114,13 +115,18 @@ struct KeySlotsView: View {
         busy = true
         error = nil
         defer { busy = false }
-        do { try await slots.remove(slot, reauth: { try await e2ee.reauthenticate() }) }
+        do {
+            try await slots.remove(slot, reauth: { try await e2ee.reauthenticate() })
+            removing = nil
+            await reload()
+        }
         catch { self.error = describe(error) }
     }
 
     private func describe(_ error: any Error) -> String {
         switch error {
         case KeySlotError.lastSlot: "最後の 1 つは削除できません。"
+        case PasskeyError.prfUnsupported: "このパスキーは暗号化の解錠に対応していません。別のパスキーかリカバリーキーを使ってください。"
         case PasskeyError.cancelled: "パスキーの操作を取りやめました。"
         case ZooCryptoError.KeySlotUnlock: "リカバリーキーまたはパスキーが違います。"
         case is ReauthError: "本人確認ができませんでした。もう一度試してください。"

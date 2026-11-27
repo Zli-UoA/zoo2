@@ -143,6 +143,7 @@ struct ShapeState: Codable, Sendable, Equatable {
                 row.merge(value) { _, new in new }
                 next.rows[key] = row
                 next.recordTags(event.headers, key: key)
+                if next.visibility[key]?.visible == false { next.removeRow(key) }
             case "delete": next.removeRow(key)
             default: throw ZooError.invalidResponse
             }

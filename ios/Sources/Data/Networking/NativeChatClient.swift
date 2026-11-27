@@ -19,12 +19,14 @@ struct NativeChatClient: ChatClient {
         previous.merge(sync.knownChannels) { _, current in current }
         var available = Dictionary(channels.filter { $0.deleted_at == nil }.map { ($0.id, $0) },
                                    uniquingKeysWith: { _, new in new })
-        if previous.values.contains(where: { channel in
+        var verifiedAccess = false
+        if channels.contains(where: { sync.isRevoked($0.id) }) || previous.values.contains(where: { channel in
             channel.deleted_at == nil && (available[channel.id] == nil
                 || (channel.encrypted != true && available[channel.id]?.encrypted == true))
         }) {
             // ElectricはRESTより遅れるため、失効候補がある場合だけ正本一覧を一度照合する。
             channels = try await api.get("api/channels")
+            verifiedAccess = true
             try sync.check()
             try sync.checkRevocationVersion(version)
             try sync.checkKnownChannelsRevision(knownRevision)
@@ -45,6 +47,15 @@ struct NativeChatClient: ChatClient {
             try sync.checkRevocationVersion(version)
             try sync.checkKnownChannelsRevision(knownRevision)
         }
+        if verifiedAccess {
+            for channel in channels where channel.deleted_at == nil {
+                try sync.checkRevocationVersion(version)
+                try sync.checkKnownChannelsRevision(knownRevision)
+                try await sync.authorizeChannel(channel.id, version: sync.channelVersion(channel.id))
+                try sync.checkRevocationVersion(version)
+                try sync.checkKnownChannelsRevision(knownRevision)
+            }
+        }
         sync.rememberChannels(channels)
         let storedRevision = sync.knownChannelsRevision
         try await sync.storeRecovery(channels, key: "workspace:channels", revocationVersion: version)
@@ -62,6 +73,7 @@ struct NativeChatClient: ChatClient {
                     try await sync.revokeChannel(id)
                 } else if channel.encrypted == true {
                     try await sync.excludeFromCache(id, version: version)
+                    try await sync.authorizeChannel(id, version: version)
                 } else {
                     try await sync.authorizeChannel(id, version: version)
                 }

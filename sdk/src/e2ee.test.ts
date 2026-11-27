@@ -25,7 +25,7 @@ test("配布先の不正な次ページ位置で鍵やメッセージを送ら�
     const bot = await openBot(zoo, app);
     try {
       const channel = zoo.channel([zoo.botUserId]);
-      await assert.rejects(bot.sendMessage(channel, "送らない本文"));
+      await assert.rejects(bot.sendMessage(channel, "送らない本文"), /配布先の次ページの位置が不正です/);
       assert.equal(zoo.messages.length, 0);
       assert.equal(zoo.toDevice.length, 0);
     } finally {

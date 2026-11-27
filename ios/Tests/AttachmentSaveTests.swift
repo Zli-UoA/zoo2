@@ -21,6 +21,7 @@ struct AttachmentSaveTests {
                 return (200, [:], Data("{\"data\":{\"download_url\":\"https://storage.test.invalid/file?signature=\(count)\"}}".utf8))
             }
             #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+            #expect(request.url?.host == "storage.test.invalid" && request.url?.path == "/file")
             #expect(request.url?.query == "signature=\(signatures.withLock { $0 })")
             return (200, [:], original)
         }

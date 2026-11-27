@@ -1,13 +1,12 @@
 import Foundation
 
 @MainActor
-protocol ChatClient: InboxClient, CallClient, TypingClient {
+protocol ChatClient: InboxClient, CallClient, TypingClient, GlobalSearchClient {
     var accountProfileURL: URL? { get }
     func publicProfile() async throws -> PublicProfile
     func updatePublicProfile(name: String, summary: String) async throws -> PublicProfile
     func channels() async throws -> [Channel]
     func joinedThreads(before: String?, through: String?) async throws -> ChannelThreadPage
-    func search(q: String, type: GlobalSearchKind, cursor: String?, limit: Int, filters: SearchRequestFilters) async throws -> SearchPage
     func channel(id: String) async throws -> Channel
     func people() async throws -> [Person]
     func person(id: String) async throws -> Person

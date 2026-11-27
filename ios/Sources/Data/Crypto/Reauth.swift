@@ -97,10 +97,10 @@ enum ReauthCallback: Equatable {
     /// リダイレクトで受け取った URL を読む。リダイレクト先でないか、`state` が違えば `nil`（受け取らない。
     /// ほかのアプリが同じ URL でこのアプリを開いても、`state` を知らなければ何もできない）。
     static func parse(_ url: URL, request: ReauthRequest) -> ReauthCallback? {
-        guard let expected = URL(string: request.redirectURI),
-              url.scheme == expected.scheme, url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-                == expected.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
-              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else { return nil }
+        guard var callback = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let items = callback.queryItems else { return nil }
+        callback.query = nil
+        guard callback.string == request.redirectURI else { return nil }
         func value(_ name: String) -> String? { items.first(where: { $0.name == name })?.value }
         guard value("state") == request.state else { return nil }
         if let error = value("error") {

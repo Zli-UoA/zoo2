@@ -287,8 +287,14 @@ struct RevocationTests {
         try await MessageEncryption(store: { device.store }, api: capture).send(
             channel: UUID().uuidString.lowercased(), id: UUID().uuidString.lowercased(), parent: nil, body: "移行する本文")
         _ = try await device.setup.uploadKeyBackup()
-        let row = try #require(device.server.backupRows.values.first)
-        server.backupPages = ["first": [row], "second": [row]]
+        try await MessageEncryption(store: { device.store }, api: capture).send(
+            channel: UUID().uuidString.lowercased(), id: UUID().uuidString.lowercased(), parent: nil, body: "別セッションの本文")
+        _ = try await device.setup.uploadKeyBackup()
+        let rows = Array(device.server.backupRows.values)
+        try #require(rows.count == 2)
+        let sessionIDs = Set(rows.compactMap { $0.object?["session_id"]?.string })
+        try #require(sessionIDs.count == 2)
+        server.backupPages = ["first": [rows[0]], "second": [rows[1]]]
         let controller = E2eeRevocation(store: { device.store }, api: server, setup: device.setup, userID: user)
         _ = try await controller.begin(scope: .deviceOnly, deletedDevices: [], unlocked: unlocked)
         server.uploadFailure = failedStatus
@@ -300,6 +306,7 @@ struct RevocationTests {
         #expect(try await controller.run(reauth: "token").stage == "verified")
         #expect(server.backupTrace == ["get:first", "post", "get:second", "post", "delete:1"])
         #expect(server.uploadedRows.count == 2 && server.deleted == ["1"])
+        #expect(Set(server.uploadedRows.compactMap { $0.object?["session_id"]?.string }) == sessionIDs)
     }
 
     @Test func 全範囲の失効は新しいSSSS鍵とマスター鍵を作り直し古いリカバリーキーを使えなくする() async throws {

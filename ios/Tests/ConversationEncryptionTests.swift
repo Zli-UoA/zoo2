@@ -87,29 +87,31 @@ struct ConversationEncryptionTests {
         #expect(store.recipientWarning == "自分の鍵を確認できないため、送信できません")
     }
 
-    @Test("送信前に始めた古い配布先の取得は、送信に使った判定を上書きしない")
-    func staleRecipientSummaryCannotReplaceSendDecision() async throws {
+    @Test("送信前に始めた古い配布先の取得は、送信に使った判定を上書きしない", arguments: [false, true])
+    func staleRecipientSummaryCannotReplaceSendDecision(afterPost: Bool) async throws {
         let encryption = FakeEncryption()
         let store = store(encryption)
         var held: CheckedContinuation<MessageEncryption.RecipientSummary?, Never>?
+        func release() { held?.resume(returning: .init()); held = nil }
+        defer { release() }
         encryption.loadSummary = { await withCheckedContinuation { held = $0 } }
         let refreshing = Task { await store.refreshRecipientSummary() }
         for _ in 0..<200 where held == nil { await Task.yield() }
-        let response = try #require(held)
+        try #require(held != nil)
         let missing = MessageEncryption.Undeliverable(userID: UUID().uuidString, reason: .notSetUp)
         encryption.summary = .init(undeliverable: [missing])
         encryption.beforePost = {
-            response.resume(returning: .init())
-            await refreshing.value
+            if !afterPost { release(); await refreshing.value }
             #expect(store.recipientSummary?.undeliverable == [missing])
             var backgroundRead = false
             encryption.loadSummary = { backgroundRead = true; return nil }
             await store.refreshRecipientSummary()
             #expect(!backgroundRead)
-            #expect(store.recipientSummary?.undeliverable == [missing])
         }
         store.drafts["root"] = "設定済みの相手へ"
         await store.send()
+        release()
+        await refreshing.value
         #expect(store.recipientSummary?.undeliverable == [missing])
     }
 
@@ -257,6 +259,30 @@ struct ConversationEncryptionTests {
         await store.send()
         #expect(store.drafts["root"] == "あとで")
         #expect(store.sendErrors["root"]?.contains(E2eeText.sendStaleEpoch) == true)
+    }
+
+    @Test("送信中の鍵更新後に添付が失敗したら、古い配布先の警告を破棄する")
+    func uploadFailureClearsOldSummary() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let encryption = FakeEncryption()
+        encryption.summary = .init(added: ["古い配布先"])
+        let store = store(encryption, client: harness.client)
+        await store.refreshRecipientSummary()
+        try #require(store.recipientSummary != nil)
+        harness.stub { _ in
+            await MainActor.run { encryption.revision += 1 }
+            await store.refreshRecipientSummary()
+            throw URLError(.notConnectedToInternet)
+        }
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).txt")
+        try Data("送信途中の添付".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        await store.importFiles([file], parentID: nil)
+        store.drafts["root"] = "添付つき"
+        await store.send()
+        #expect(encryption.revision > 0 && encryption.sent.isEmpty)
+        #expect(store.sendErrors["root"] != nil && store.recipientSummary == nil)
     }
 
     @Test("暗号化チャンネルの添付は、暗号化して上げ、本文の暗号文に入れて送る")

@@ -262,6 +262,7 @@ final class ConversationStore {
         guard !sending.contains(key), !importingAttachments.contains(key) else { return }
         draftAttachments[key]?.removeAll { $0.id == id }
         uploadedAttachmentIDs[id] = nil
+        encryptedUploads[id] = nil
         sendErrors[key] = nil
     }
 
@@ -342,6 +343,7 @@ final class ConversationStore {
                         self.syncError = nil
                         delay = 2
                     } else {
+                        self.remoteMessages = []
                         self.messages = []
                         self.loading = true
                     }
@@ -528,6 +530,7 @@ final class ConversationStore {
         pendingSends[key] = pending
         sending.insert(key)
         sendErrors[key] = nil
+        var recipientsResolved = false
         defer { if epoch == accessGeneration { sending.remove(key); uploadStatus[key] = nil } }
         do {
             if channel.encrypted == true {
@@ -562,6 +565,7 @@ final class ConversationStore {
                 try await e2ee.send(channelID: channel.id, id: pending.id, parentID: parentID, body: content, attachments: infos,
                                     mentions: encryptedMentions(content)) { [weak self] summary in
                     guard let self, active, !blocked, epoch == accessGeneration else { return }
+                    recipientsResolved = true
                     recipientSummaryGeneration += 1
                     recipientSummary = summary.isEmpty ? nil : summary
                 }
@@ -618,6 +622,10 @@ final class ConversationStore {
         } catch {
             guard active, epoch == accessGeneration, !Task.isCancelled, !(error is CancellationError) else { return }
             if case ZooError.expiredSession = error { onExpiredSession?(); return }
+            if channel.encrypted == true, !recipientsResolved {
+                recipientSummaryGeneration += 1
+                recipientSummary = nil
+            }
             sendErrors[key] = "送信できませんでした。本文と添付を保持しています。\(describe(error))"
         }
     }

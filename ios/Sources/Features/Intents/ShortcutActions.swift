@@ -140,7 +140,9 @@ struct ShortcutActions {
         guard workspace.calls.channel == nil, workspace.systemCalls?.isManagingCall != true else {
             throw ZooError.auth("別の通話や着信を終了してから、もう一度お試しください。")
         }
+        let generations = workspace.channelRevocationGenerations
         let channel = try await directMessage(to: recipient)
+        guard workspace.isChannelAccessCurrent(channel.id, since: generations) else { throw CancellationError() }
         workspace.addAndOpen(channel)
         try await workspace.calls.startAndWait(channel: channel, requiresLiveActivity: requiresLiveActivity)
         try check()

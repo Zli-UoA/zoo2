@@ -29,7 +29,7 @@ struct OwnDevicesView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     .swipeActions {
-                        if !current { Button("削除", role: .destructive) { removing = device } }
+                        if !current, e2ee.currentDeviceID != nil { Button("削除", role: .destructive) { removing = device } }
                         Button("名前") { draftName = device.display_name ?? ""; renaming = device }
                     }
                     .accessibilityElement(children: .combine)

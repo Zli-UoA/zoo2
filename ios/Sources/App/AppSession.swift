@@ -246,6 +246,7 @@ final class AppSession {
     func beginLogout() async {
         guard let workspace, let e2ee = workspace.e2ee else { logout(); return }
         // 確認を出しているあいだにセッションが終わったり、別のセッションになったりしたら、古い確認では何もしない。
+        error = nil
         loggingOutWorkspace = workspace
         let count = await e2ee.prepareLogout()
         guard self.workspace === workspace else { return }
@@ -268,6 +269,7 @@ final class AppSession {
         do { try await target.e2ee?.finishLogout() }
         catch {
             guard target === workspace, loggingOutWorkspace === target else { return }
+            logoutPrompt = nil
             self.error = "暗号化の保存情報を削除できませんでした。もう一度ログアウトしてください。"
             return
         }

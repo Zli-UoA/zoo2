@@ -54,7 +54,6 @@ final class E2eeKeySlots {
         let slot = try newPasskeyKeySlot(userId: userID, ssssKey: unlocked.key(), credentialId: result.credentialID,
                                          prfSalt: salt, prfOutput: result.prfOutput)
         try await post(slot, label: label, reauth: reauth)
-        try await load()
     }
 
     struct PreparedRecovery: Equatable {
@@ -83,7 +82,6 @@ final class E2eeKeySlots {
             }
             _ = try await self.api.call("api/e2ee/secret_storage/slots/\(encoded)", method: "DELETE", query: [:], body: nil, reauth: token, headers: [:])
         }
-        try await load()
     }
 
     private func post(_ slot: String, label: String?, reauth: () async throws -> String) async throws {

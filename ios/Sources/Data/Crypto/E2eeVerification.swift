@@ -144,7 +144,8 @@ final class E2eeVerification {
     }
 
     /// to-device で届いた検証のメッセージ（受信時の検証を通った JSON。`E2eeDeviceManager.onVerifications`）。
-    func handle(_ messages: [String]) {
+    @discardableResult
+    func handle(_ messages: [String]) -> Task<Void, Never> {
         let received = now()
         for message in messages {
             // 同じメッセージが、もう一度届いても（届け先に渡したあとの保存の失敗など）、1 回だけ処理する。
@@ -152,7 +153,7 @@ final class E2eeVerification {
             if handled.count > 2000 { handled = [message] }
             inbox.append((message, received))
         }
-        Task { @MainActor in try? await self.drain() }
+        return Task { @MainActor in _ = try? await self.drain() }
     }
 
     // MARK: - 相手の検証状態と再検証
@@ -199,11 +200,11 @@ final class E2eeVerification {
     /// 直前の再認証つきでピンと署名を保存する。違えば `ZooError.invalidResponse`（何も保存しない）。
     func reverify(_ userID: String, expectedFingerprint: String) async throws {
         let store = try currentStore()
+        let token = try await reauthenticate()
         let keys = try await api.queryKeys(userID: userID)
         guard let master = try Self.masterKey(in: keys, user: userID), Self.fingerprint(master) == expectedFingerprint else {
             throw ZooError.invalidResponse
         }
-        let token = try await reauthenticate()
         let masterJSON = sasJSONText(master)
         let accepted = try store.acceptMasterKey(userID: userID, masterKey: masterJSON)
         try await api.saveAccepted(pin: accepted.pin, signature: accepted.signature, reauth: token)
@@ -308,9 +309,8 @@ final class E2eeVerification {
         if !outgoing.isEmpty {
             do { try await send(outgoing) } catch {
                 patch(view.transactionId) { $0.error = .sendFailed }
-                if requireDelivery {
-                    live[view.transactionId] = nil
-                    entries.removeAll { $0.id == view.transactionId }
+                if requireDelivery, !(error is DeliveryError) {
+                    // 応答が失われた場合も相手には届き得るので、後からの応答を処理できる状態を残す。
                     throw error
                 }
             }
@@ -378,7 +378,7 @@ final class E2eeVerification {
                 do {
                     if let sas = self.live[txn] {
                         let out = try sas.receive(message: verificationMessageFromJson(stored: item.message), keysQuery: keys)
-                        self.patch(txn) { if $0.error == .receiveFailed { $0.error = nil } }
+                        self.patch(txn) { $0.error = nil }
                         _ = try await self.apply(sas, outgoing: out)
                     } else if type == "m.key.verification.request" {
                         let sas = try store.sasFromRequest(message: item.message, keysQuery: keys, nowMs: self.now())
@@ -397,6 +397,8 @@ final class E2eeVerification {
     private func send(_ outgoing: [VerificationOutgoing]) async throws {
         for out in outgoing { try await sendOne(out) }
     }
+
+    private enum DeliveryError: Error { case partial }
 
     private func sendOne(_ out: VerificationOutgoing) async throws {
         let store = try currentStore()
@@ -426,8 +428,18 @@ final class E2eeVerification {
             }
             for (user, devices) in try await api.claim(claim) { claimed[user] = devices.object ?? [:] }
         }
-        if !messages.isEmpty { undelivered += try await api.sendToDevice(deviceID: store.deviceID, messages: messages) }
-        if undelivered > 0 { throw ZooError.invalidResponse }
+        var delivered = 0
+        if !messages.isEmpty {
+            let attempted = messages.values.reduce(0) { $0 + ($1.object?.count ?? 0) }
+            let failed = try await api.sendToDevice(deviceID: store.deviceID, messages: messages)
+            guard (0...attempted).contains(failed) else { throw ZooError.invalidResponse }
+            undelivered += failed
+            delivered = attempted - failed
+        }
+        if undelivered > 0 {
+            if out.eventType == "m.key.verification.request", delivered > 0 { throw DeliveryError.partial }
+            throw ZooError.invalidResponse
+        }
     }
 
     /// 検証が終わった相手のマスター鍵に署名し、ピンと署名を保存する。

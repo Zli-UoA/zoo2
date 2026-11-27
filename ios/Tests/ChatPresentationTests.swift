@@ -77,7 +77,7 @@ struct ChatPresentationTests {
         let query = try #require(MentionInput.query(in: text, caret: caret))
         #expect(query.text == "sak")
         #expect(String(text[query.range]) == "@sakura")
-        for value in ["mail@sa", "`@sa", "```\n@sa", "https://example.org/@sa"] {
+        for value in ["mail@sa", "`@sa", "```\n@sa", "https://example.org/@sa", "@al\n", "@al\r\n"] {
             #expect(MentionInput.query(in: value, caret: value.endIndex) == nil)
         }
         let fullwidth = "@ｓａ"

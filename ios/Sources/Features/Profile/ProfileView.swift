@@ -211,6 +211,7 @@ private struct ProfileSettingsView: View {
                 }
             }
             Section {
+                if let error = session.error { Text(error).foregroundStyle(.red) }
                 Button("ログアウト", role: .destructive) { confirmingLogout = true }
                     .accessibilityIdentifier("logout")
                     .confirmationDialog("ログアウトしますか？", isPresented: $confirmingLogout, titleVisibility: .visible) {

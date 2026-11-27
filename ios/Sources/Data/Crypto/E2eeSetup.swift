@@ -176,7 +176,8 @@ final class E2eeSetup {
                     do {
                         try Task.checkCancellation()
                         if attempt > 0 { try await Task.sleep(for: retryDelay * attempt) }
-                        _ = try await self.uploadKeyBackup()
+                        let result = try await self.uploadKeyBackup()
+                        if case .conflict("E2EE_WRONG_BACKUP_VERSION") = result { continue }
                         break
                     } catch {
                         if Task.isCancelled { return }
@@ -481,8 +482,10 @@ final class E2eeSetup {
             if failure.isSsssConflict { throw E2eeSetupError.conflict }
             throw Self.mapReauth(failure)
         }
-        try await store().saveOwnKeys(session, secretsRevision: secretsRevision)
-        if reset { try await store().setResetKeyID(nil) }
+        let unlockedStore = try await store()
+        try unlockedStore.saveOwnKeys(session, secretsRevision: secretsRevision)
+        let unlockedRevision = unlockedStore.secretsRevision
+        if reset { try unlockedStore.setResetKeyID(nil) }
         // 解錠した（または初回設定を終えた）ので、手元のセッションを今の版に送り、過去のセッションを取り込む。
         // 失敗しても解錠は済んでいる（取り込みは、次の起動時の確認で続きを行う）。
         var ssssConflict = false
@@ -495,7 +498,15 @@ final class E2eeSetup {
         } catch let failure as E2eeAPIError where failure.code == "E2EE_SSSS_CONFLICT" {
             ssssConflict = true
         } catch {}
-        if ssssConflict { throw E2eeSetupError.secretsChanged }
+        guard !ssssConflict, unlockedStore.isUsable,
+              unlockedStore.secretsRevision == unlockedRevision, unlockedStore.hasOwnKeys else {
+            throw E2eeSetupError.secretsChanged
+        }
+        let current = try await store()
+        guard current === unlockedStore, current.isUsable,
+              current.secretsRevision == unlockedRevision, current.hasOwnKeys else {
+            throw E2eeSetupError.secretsChanged
+        }
     }
 
     /// 解錠した鍵が、リセットの途中で止まっていた新しい SSSS 鍵か。

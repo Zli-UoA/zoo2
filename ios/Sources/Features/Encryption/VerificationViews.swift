@@ -47,7 +47,10 @@ struct VerificationSheet: View {
         }
     }
 
-    private func name(_ userID: String) -> String { workspace.people[userID]?.name ?? "相手" }
+    private func name(_ userID: String) -> String {
+        guard let person = workspace.people[userID] else { return userID }
+        return "\(person.name)（@\(person.user_name)）"
+    }
 }
 
 private struct SasEntryView: View {
@@ -220,6 +223,7 @@ struct VerifyUsersView: View {
     @State private var error: String?
     @State private var states: [String: E2eeVerification.UserVerificationState] = [:]
     @State private var reverifying: Person?
+    @State private var failedStates: Set<String> = []
 
     private var people: [Person] {
         workspace.people.values.filter { $0.id != workspace.user.id && !$0.is_bot && !$0.is_deactivated }
@@ -234,6 +238,11 @@ struct VerifyUsersView: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(person.name)
+                            Text("@\(person.user_name)").font(.caption).foregroundStyle(.secondary)
+                            if failedStates.contains(person.id) {
+                                Text("検証状態を取得できませんでした").font(.caption).foregroundStyle(.red)
+                                Button("再読み込み") { Task { await reloadState(person.id) } }
+                            }
                             if let state = states[person.id] { Label(label(state), systemImage: symbol(state)).font(.caption).foregroundStyle(color(state)) }
                         }
                         Spacer()
@@ -245,7 +254,7 @@ struct VerifyUsersView: View {
                             .buttonStyle(.bordered)
                             .accessibilityIdentifier("verify-\(person.id)")
                     }
-                    .task(id: [person.id, String(verification.trustRevision)]) { states[person.id] = try? await verification.state(of: person.id) }
+                    .task(id: [person.id, String(verification.trustRevision)]) { await reloadState(person.id) }
                 }
             } footer: {
                 Text("相手の鍵を、QR か互いの画面の絵文字で確かめます。対面や通話など、チャンネルの外で行ってください。鍵が変わった相手には、再検証するまで、鍵を配りません。")
@@ -256,8 +265,18 @@ struct VerifyUsersView: View {
         .sheet(item: $reverifying) { person in
             ReverifySheet(person: person, verification: verification) {
                 states[person.id] = nil
-                Task { states[person.id] = try? await verification.state(of: person.id) }
+                Task { await reloadState(person.id) }
             }
+        }
+    }
+
+    private func reloadState(_ id: String) async {
+        do {
+            states[id] = try await verification.state(of: id)
+            failedStates.remove(id)
+        } catch {
+            guard !Task.isCancelled else { return }
+            failedStates.insert(id)
         }
     }
 
@@ -314,7 +333,7 @@ private struct ReverifySheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("\(person.name) さんの鍵が変わりました") {
+                Section("\(person.name)（@\(person.user_name)）さんの鍵が変わりました") {
                     Text("本人が鍵を作り直した場合のほか、アカウントが乗っ取られた可能性もあります。チャンネルの外（対面や通話）で、本人に次の鍵の指紋を読み上げて確かめてください。")
                         .font(.footnote).foregroundStyle(.secondary)
                     if let fingerprint { Text(fingerprint).font(.system(.body, design: .monospaced)).textSelection(.enabled) }

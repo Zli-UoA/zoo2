@@ -7,6 +7,7 @@ private final class FakeDeviceServer: E2eeDeviceAPI, E2eeKeysAPI {
     var registered: [[String: JSONValue]] = []
     var uploads: [(oneTime: Int, fallback: Int)] = []
     var acked: [[String]] = []
+    var ackedDevices: [(String, [String])] = []
     var counts = KeyCounts(oneTimeKeys: 0, hasUnusedFallbackKey: false)
     var listed: [String] = []
     var failUploadNotFound = 0
@@ -34,6 +35,7 @@ private final class FakeDeviceServer: E2eeDeviceAPI, E2eeKeysAPI {
     func ackToDevice(deviceID: String, ids: [String]) async throws {
         if failAckNotFound { failAckNotFound = false; throw E2eeAPIError(status: 404, code: "E2EE_DEVICE_NOT_FOUND") }
         acked.append(ids)
+        ackedDevices.append((deviceID, ids))
         if holdAck { await withCheckedContinuation { ackBarrier = $0 } }
     }
 }
@@ -154,9 +156,10 @@ struct E2eeDeviceManagerTests {
         server.failAckNotFound = true
         feed.deliver?([.init(id: "1", senderUserID: user, type: "m.dummy", content: "{}")])
         #expect(await eventually { manager.readyStore != nil && feed.starts >= 2 && server.registered.count == 2 })
-        #expect(manager.readyStore?.deviceID != previousID)
+        let replacementID = try #require(manager.readyStore?.deviceID)
+        #expect(replacementID != previousID)
         feed.deliver?([.init(id: "2", senderUserID: user, type: "m.dummy", content: "{}")])
-        #expect(await eventually { server.acked.contains(["2"]) })
+        #expect(await eventually { server.ackedDevices.contains { $0.0 == replacementID && $0.1 == ["2"] } })
         await manager.stop()
     }
 

@@ -120,7 +120,7 @@ private func jsonText(_ value: JSONValue) -> String { String(decoding: try! JSON
 /// `AndroidMessageEncryption`、Web と同じ recipients・TOFU・Olm/Megolm を使い、暗号文だけをサーバーに渡す。
 ///
 /// 送信は 1 つずつ。配布先は `membership_epoch` で確かめ、`E2EE_STALE_EPOCH`（409）のときは、そのセッションを捨てて
-/// 新しい epoch でセッションを作り直す（3 回まで）。配れなかった鍵のセッションで本文を送らない。
+/// 新しい epoch でセッションを作り直す（3 回まで）。未配送の端末は、次の送信前に鍵の配布を再試行する。
 @MainActor
 final class MessageEncryption {
     private let store: () -> CryptoStore?
@@ -295,20 +295,19 @@ final class MessageEncryption {
 
     /// 自分の鍵を信頼できない場合は止め、受信者の未設定などは既存の配布先の要約に表示する。
     private func recipients(_ store: CryptoStore, channel: String, minimum: UInt64,
-                            onRecipients: ((RecipientSummary) -> Void)?) async throws -> (UInt64, [VerifiedDeviceKeys]) {
+                            onRecipients: ((RecipientSummary) -> Void)?) async throws -> (UInt64, [VerifiedDeviceKeys], [String]) {
         let (epoch, distribution) = try await evaluate(store, channel: channel, minimum: minimum)
         let summary = summary(store, channel: channel, distribution: distribution)
         onRecipients?(summary)
         let blocked = summary.undeliverable
         let ownFailures = blocked.filter { $0.userID == store.userID }
         guard ownFailures.isEmpty else { throw MessageEncryptionError.undeliverableUsers(ownFailures) }
-        // 送れるので、配布先を記録する（次の「前回から増えた配布先」の基準）。
-        try? store.recordMembers(channel: channel, users: Array(Set(distribution.users.keys).subtracting([store.userID])))
-        return (epoch, distribution.devices)
+        return (epoch, distribution.devices, Array(Set(distribution.users.keys).subtracting([store.userID])))
     }
 
-    /// セッションの鍵を、受信端末に Olm で配る。配れなかった端末があれば投げる。
-    private func share(_ store: CryptoStore, outbound: OutboundSession, devices: [VerifiedDeviceKeys]) async throws {
+    /// 配送成功を確認した端末だけを返す。通信自体の失敗や壊れた応答は送信を止める。
+    private func share(_ store: CryptoStore, outbound: OutboundSession, devices: [VerifiedDeviceKeys]) async throws -> Set<String> {
+        var shared = Set<String>()
         var start = 0
         while start < devices.count {
             let batch = Array(devices[start..<min(start + 100, devices.count)])
@@ -320,27 +319,41 @@ final class MessageEncryption {
                 perUser[device.deviceId()] = .string("signed_curve25519")
                 claim[device.userId()] = .object(perUser)
             }
-            let claimed = needs.isEmpty ? [:] : (try await request("api/e2ee/keys/claim", method: "POST",
-                                                                   body: ["one_time_keys": .object(claim)]))["one_time_keys"]?.object ?? [:]
+            var claimed: [String: JSONValue] = [:]
+            if !needs.isEmpty {
+                let response = try await request("api/e2ee/keys/claim", method: "POST", body: ["one_time_keys": .object(claim)])
+                guard let keys = response["one_time_keys"]?.object else { throw ZooError.invalidResponse }
+                claimed = keys
+            }
             var messages: [String: JSONValue] = [:]
             for device in batch {
                 // 払い出されたワンタイム鍵は、1 端末につきちょうど 1 つ。
                 let single = claimed[device.userId()]?.object?[device.deviceId()]?.object.flatMap { $0.count == 1 ? $0.values.first : nil }
-                guard let encrypted = try store.shareKey(device, outbound: outbound, claimed: single.map(jsonText)) else {
-                    throw MessageEncryptionError.undeliverable("受信端末の鍵を取得できませんでした")
-                }
+                guard let encrypted = try store.shareKey(device, outbound: outbound, claimed: single.map(jsonText)) else { continue }
                 var perUser = messages[device.userId()]?.object ?? [:]
                 perUser[device.deviceId()] = try JSONDecoder().decode(JSONValue.self, from: Data(encrypted.utf8))
                 messages[device.userId()] = .object(perUser)
             }
+            guard !messages.isEmpty else { continue }
             let sent = try await request("api/e2ee/to_device", method: "POST", body: [
                 "device_id": .string(store.deviceID), "txn_id": .string(makeID()),
                 "type": .string("m.room.encrypted"), "messages": .object(messages)
             ])
             // 応答は `{"undelivered": [...]}`（なければ空の配列）。読めない応答は、配れたと確かめられないので、本文を送らない。
             guard let undelivered = sent["undelivered"]?.array else { throw MessageEncryptionError.undeliverable("鍵の配布の結果を確かめられませんでした") }
-            guard undelivered.isEmpty else { throw MessageEncryptionError.undeliverable("受信端末に鍵を配れませんでした") }
+            var failed = Set<String>()
+            for row in undelivered {
+                guard let user = row.object?["user_id"]?.string, let device = row.object?["device_id"]?.string,
+                      messages[user]?.object?[device] != nil else {
+                    throw ZooError.invalidResponse
+                }
+                failed.insert("\(user)|\(device)")
+            }
+            for device in batch where messages[device.userId()]?.object?[device.deviceId()] != nil {
+                if !failed.contains("\(device.userId())|\(device.deviceId())") { shared.insert(deviceKey(device)) }
+            }
         }
+        return shared
     }
 
     /// 新しい本文を送る。
@@ -381,7 +394,7 @@ final class MessageEncryption {
         var minimum = latestEpochs[channel] ?? 0
         for _ in 0..<3 {
             minimum = max(minimum, latestEpochs[channel] ?? 0)
-            let (epoch, devices) = try await recipients(store, channel: channel, minimum: minimum, onRecipients: onRecipients)
+            let (epoch, devices, members) = try await recipients(store, channel: channel, minimum: minimum, onRecipients: onRecipients)
             guard epoch >= (latestEpochs[channel] ?? 0) else {
                 discard(channel)
                 continue
@@ -402,8 +415,8 @@ final class MessageEncryption {
                     outbound[channel] = current
                 }
                 let pending = devices.filter { !current.shared.contains(deviceKey($0)) }
-                try await share(store, outbound: current.session, devices: pending)
-                current.shared.formUnion(pending.map(deviceKey))
+                let shared = try await share(store, outbound: current.session, devices: pending)
+                current.shared.formUnion(shared)
                 guard epoch >= (latestEpochs[channel] ?? 0) else {
                     discard(channel)
                     continue
@@ -458,6 +471,7 @@ final class MessageEncryption {
                         // 再参加後も同じ ID と暗号文を一度だけ送る。
                         _ = try await request("api/messages", method: "POST", body: payload)
                     }
+                    if edit == nil { try? store.recordMembers(channel: channel, users: members) }
                     return
                 } catch let failure as E2eeAPIError where failure.code == "E2EE_STALE_EPOCH" {
                     discard(channel)

@@ -10,6 +10,7 @@ private final class StubVerificationAPI: E2eeVerificationAPI {
     var claims: [String: JSONValue] = [:]
     var beforeSend: (() async throws -> Void)?
     var sends = 0
+    var undelivered = 0
     func queryKeys(userID: String) async throws -> String { queries += 1; return snapshot }
     func queryKeys(userIDs: [String]) async throws -> String { queries += 1; return snapshot }
     func registerPin(_ pin: String) async throws -> Bool { true }
@@ -17,15 +18,15 @@ private final class StubVerificationAPI: E2eeVerificationAPI {
     func sendToDevice(deviceID: String, messages: [String: JSONValue]) async throws -> Int {
         sends += 1
         try await beforeSend?()
-        return 0
+        return undelivered
     }
     func saveAccepted(pin: String, signature: SignatureUpload, reauth: String) async throws {}
 }
 
 @MainActor
 struct VerificationTests {
-    @Test("検証要求の初回配信に失敗したら成功として残さない")
-    func requestFailureRemovesEntry() async throws {
+    @Test("検証要求の一部未配送や応答消失でも、後からの応答を処理できる状態を保つ", arguments: ["応答消失", "一部未配送", "全件未配送"])
+    func requestFailureRetainsEntry(mode: String) async throws {
         let mineServer = FakeSetupServer(userID: user), mine = try Device(mineServer)
         defer { mine.cleanUp() }
         let start = try mine.setup.begin()
@@ -39,6 +40,11 @@ struct VerificationTests {
         let setup = E2eeSetup(api: server, userID: otherID, store: { other })
         let otherStart = try setup.begin()
         try await setup.completeSetup(otherStart.session, reauth: "t")
+        let (secondFiles, _, secondDirectory) = makeFiles()
+        let second = try #require(try CryptoStore.open(secondFiles, userID: otherID)).store
+        defer { second.close(); try? FileManager.default.removeItem(at: secondDirectory) }
+        try second.markRegistered()
+        _ = try await E2eeSetup(api: server, userID: otherID, store: { second }).unlock(.recovery(otherStart.recoveryKey))
         func value(_ text: String) throws -> JSONValue { try JSONDecoder().decode(JSONValue.self, from: Data(text.utf8)) }
         var snapshot = try #require(value(try await mineServer.queryOwnKeys(userID: user)).object)
         let otherKeys = try #require(value(try await server.queryOwnKeys(userID: otherID)).object)
@@ -46,21 +52,26 @@ struct VerificationTests {
             if let object = item.object { snapshot[key] = .object((snapshot[key]?.object ?? [:]).merging(object) { _, new in new }) }
             else if let array = item.array { snapshot[key] = .array((snapshot[key]?.array ?? []) + array) }
         }
-        snapshot["device_keys"] = .object([otherID: .object([other.deviceID: try value(other.deviceKeys())])])
+        snapshot["device_keys"] = .object([otherID: .object([other.deviceID: try value(other.deviceKeys()), second.deviceID: try value(second.deviceKeys())])])
         snapshot["user_ids"] = .array([.string(user), .string(otherID)])
         let api = StubVerificationAPI()
         api.snapshot = String(decoding: try JSONEncoder().encode(JSONValue.object(snapshot)), as: UTF8.self)
         let keys = try #require(try other.prepareKeyUpload(oneTimeKeyCount: 0, hasUnusedFallbackKey: true))
         let first = try #require(keys.oneTimeKeys.first)
-        api.claims = [otherID: .object([other.deviceID: .object([first.key: first.value])])]
-        api.beforeSend = { throw URLError(.notConnectedToInternet) }
+        let secondKeys = try #require(try second.prepareKeyUpload(oneTimeKeyCount: 0, hasUnusedFallbackKey: true))
+        let secondKey = try #require(secondKeys.oneTimeKeys.first)
+        api.claims = [otherID: .object([other.deviceID: .object([first.key: first.value]), second.deviceID: .object([secondKey.key: secondKey.value])])]
+        if mode == "応答消失" { api.beforeSend = { throw URLError(.networkConnectionLost) } }
+        else { api.undelivered = mode == "一部未配送" ? 1 : 2 }
         let verification = E2eeVerification(store: { mine.store }, api: api)
-        await #expect(throws: (any Error).self) { try await verification.request(userID: otherID) }
+        if mode == "一部未配送" { _ = try await verification.request(userID: otherID) }
+        else { await #expect(throws: (any Error).self) { try await verification.request(userID: otherID) } }
         #expect(api.sends == 1)
-        #expect(verification.entries.isEmpty)
+        #expect(verification.entries.count == 1 && verification.entries.first?.error == .sendFailed)
         api.beforeSend = nil
+        api.undelivered = 0
         _ = try await verification.request(userID: otherID)
-        #expect(api.sends == 2 && verification.entries.count == 1)
+        #expect(api.sends == 2 && verification.entries.count == 2)
     }
 
     @Test func 絵文字の表は番号0から63の64個で重複しない() {
@@ -82,17 +93,14 @@ struct VerificationTests {
         let api = StubVerificationAPI()
         let verification = E2eeVerification(store: { nil }, api: api)
         let message = #"{"sender_user_id":"u","sender_device":{},"type":"m.key.verification.request","content":{"transaction_id":"t"}}"#
-        verification.handle([message])
-        try await Task.sleep(for: .milliseconds(200))
+        await verification.handle([message]).value
         #expect(verification.entries.isEmpty)
         // 暗号ストアを使えないあいだは、捨てずに残す（Olm のメッセージは、2 回は復号できない）。形が壊れたものは、捨てる。
         #expect(verification.pendingMessageCount == 1)
         // 同じメッセージがもう一度届いても、重複して残さない。
-        verification.handle([message])
-        try await Task.sleep(for: .milliseconds(100))
+        await verification.handle([message]).value
         #expect(verification.pendingMessageCount == 1)
-        verification.handle(["壊れたメッセージ"])
-        try await Task.sleep(for: .milliseconds(200))
+        await verification.handle(["壊れたメッセージ"]).value
         #expect(verification.pendingMessageCount == 1)
     }
 }
