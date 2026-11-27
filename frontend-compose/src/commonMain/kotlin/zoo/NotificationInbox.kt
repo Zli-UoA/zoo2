@@ -1,6 +1,7 @@
 package zoo
 
 import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.getValue
 import io.ktor.http.encodeURLPathPart
 import kotlinx.coroutines.CancellationException
@@ -41,6 +42,8 @@ internal fun inboxGroups(entries: List<UnifiedNotificationEntry>): Map<String, L
     }
 
 class NotificationInbox(private val session: Session) {
+    private val unavailableContexts = mutableStateMapOf<String, Unit>()
+
     val loadFailed: Boolean get() = session.activityPubNotifications.error
     val nextCursor: String? get() = session.activityPubNotifications.nextCursor
 
@@ -61,13 +64,16 @@ class NotificationInbox(private val session: Session) {
             val unreadIds = entries.flatMap { entry ->
                 (entry.channel ?: listOf(entry.representative())).filterNot { it.flag("is_read") }.map { it.text("id") }
             }
+            val display = item.nested("display_data")
+            val targetUnavailable = item.text("id") in unavailableContexts ||
+                ("message" in display && display.nested("message").isEmpty())
             val channelReactions = rows.filter { it.text("notification_type") == "reaction" }
             NotificationDisplay(
                 id, actors,
                 summary, item.text("content").ifBlank { item.nested("display_data").nested("message").text("content") }
                     .ifBlank { null },
                 session.platform.notificationTime(latest.createdAt), unreadIds.isNotEmpty(),
-                item.text("channel_id").takeIf { it.isNotBlank() && item.text("message_id").isNotBlank() }
+                item.text("channel_id").takeIf { !targetUnavailable && it.isNotBlank() && item.text("message_id").isNotBlank() }
                     ?.let { "/channels/$it?message=${item.text("message_id")}" }
                     ?: item.text("post_id").takeIf { it.isNotBlank() }?.let { "post:$it" },
                 item.text("actor_id").takeIf { noticeKind(item) == "follow_request" && item.flag("pending") && it.isNotBlank() },
@@ -90,9 +96,12 @@ class NotificationInbox(private val session: Session) {
             session.api.request("/api/notifications/${context.id.encodeURLPathPart()}/context")
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (_: Exception) {
+        } catch (failure: Exception) {
+            if (failure is ApiException && failure.status in setOf(403, 404)) markUnavailable(context.id)
             return emptyList()
         }
+        val data = response as? JsonObject
+        if (data != null && "message" in data && data.nested("message").isEmpty()) markUnavailable(context.id)
         val emojis = (response as? JsonObject)?.array("reactions")?.rows().orEmpty()
             .filter { it.text("user_id") in context.actorIds }
             .map { it.text("emoji") }
@@ -118,6 +127,11 @@ class NotificationInbox(private val session: Session) {
             }?.text("url")?.takeIf { it.isNotBlank() }
             NotificationReaction(emoji, image)
         }
+    }
+
+    private fun markUnavailable(id: String) {
+        if (unavailableContexts.size >= 256) unavailableContexts.remove(unavailableContexts.keys.first())
+        unavailableContexts[id] = Unit
     }
 
     private fun federatedReaction(row: Row): NotificationReaction {

@@ -20,6 +20,8 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     fun cachedHomeDetail(key: String): List<Row> =
         homeTimelines.get("detail:$key")?.posts.orEmpty()
 
+    fun removeCachedHomeDetail(key: String) = homeTimelines.removeEntry("detail:$key")
+
     fun cacheHomeDetail(key: String, rows: List<Row>) {
         homeTimelines.save("detail:$key", HomeTimelineSnapshot(rows, false, 0, 0, 0))
     }

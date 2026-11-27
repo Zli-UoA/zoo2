@@ -37,6 +37,8 @@ internal class HomeTimelineCache {
             snapshot.posts.any { it.withoutUnavailableHomePost(postId) !== it }
         }
     }
+    fun removeEntry(key: String) { entries.remove(key) }
+
     fun clear() = entries.clear()
 }
 

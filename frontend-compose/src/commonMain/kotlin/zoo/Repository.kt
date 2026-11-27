@@ -457,6 +457,7 @@ class SyncedTable(
                 loading.value = false
                 if (onDemand) {
                     // 全行のコピーも、全行の JSON も持たない。控えは最新のページだけ。
+                    navigationRows = emptyList()
                     snapshots.trySend(feedCacheRows(rows))
                 } else {
                     successfulSnapshot.value = rows.toList()

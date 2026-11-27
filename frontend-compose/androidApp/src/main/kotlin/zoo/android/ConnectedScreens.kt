@@ -54,15 +54,20 @@ internal fun ConnectedScreens(
     val channelId = session.channelId
     val channelsLoading by session.repo.channels.loading.collectAsState()
     val syncedChannel = channels.find { it.text("id") == channelId }
-    val pendingDm = state.createdDm?.takeIf { it.text("id") == channelId }
+    val pendingDm = state.pendingDm(channelId)
     val channel = syncedChannel ?: pendingDm
-    LaunchedEffect(state.createdDm, syncedChannel) {
-        val id = state.createdDm?.text("id") ?: return@LaunchedEffect
-        if (syncedChannel?.text("id") != id) delay(15_000)
-        state.forgetCreatedDm(id)
-    }
     val channelMembers = memberships.filter { it.text("channel_id") == channelId }
     val member = channelMembers.any { it.text("user_id") == session.config.userId }
+    val dmSyncPending = pendingDm != null && (syncedChannel == null || !member)
+    var dmSyncDelayed by remember(channelId) { mutableStateOf(false) }
+    var dmSyncRetry by remember(channelId) { mutableIntStateOf(0) }
+    LaunchedEffect(channelId, dmSyncPending, dmSyncRetry) {
+        dmSyncDelayed = false
+        if (dmSyncPending) {
+            delay(15_000)
+            dmSyncDelayed = true
+        } else if (pendingDm != null) state.forgetCreatedDm(channelId)
+    }
     val messageTable = if (channelId == null) null else remember(channelId) { session.repo.messages(channelId) }
     if (channelId != null) DisposableEffect(channelId) { onDispose { session.repo.releaseChannel(channelId) } }
     val rows = if (messageTable == null) emptyList() else {
@@ -419,7 +424,7 @@ internal fun ConnectedScreens(
         state.overlay == "post" && state.postDetail.isNotEmpty() -> {
             val entries = state.postDetail.map { state.entry(it, usersById, previewService = previewService) }
             val root = entries.firstOrNull { it.id == state.openedPostId } ?: entries.first()
-            AndroidScreen.Post(root, entries.filter { it.id != root.id }, InputState(state.replyDraft, canSend = env.online && !state.saving,
+            AndroidScreen.Post(root, entries.filter { it.id != root.id }, InputState(state.replyDraft, canSend = env.online && !state.saving && root.postHeader?.audience != null,
                 selection = state.replySelection, focusRequest = state.replyFocusRequest, lastSend = state.replyLastSend),
                 loadFailed = state.postLoadFailed, online = env.online, loading = state.postPending)
         }
@@ -459,7 +464,10 @@ internal fun ConnectedScreens(
                 users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }).copy(notices = recipientLines),
             canCall = channel.flag("is_dm") && member && !encrypted, focusMessage = focusMessage, focusRequest = focusRequest,
             loadOlder = pageStates[PageScope.Main]?.let { it.hasOlder && !it.loading } == true,
-            historyReady = !env.online || pageStates[PageScope.Main]?.loaded == true)
+            historyReady = !env.online || pageStates[PageScope.Main]?.loaded == true,
+            retrySync = if (dmSyncDelayed && env.online) {
+                { session.repo.channels.refresh(); session.repo.members.refresh(); dmSyncRetry++ }
+            } else null)
         channelId != null && channelsLoading -> AndroidScreen.OpeningConversation(
             "channel:$channelId", session.t("common.loading"), env.online)
         else -> AndroidScreen.Channels(state.channelSections(channels, usersById, memberships))

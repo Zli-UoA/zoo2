@@ -137,8 +137,14 @@ internal class ConnectedScreenState(
     var inputMenu by mutableStateOf<InputTool?>(null)
     var memberToRemove by mutableStateOf<SelectionItem?>(null)
     private var pins by mutableStateOf<List<String>>(emptyList())
-    var createdDm by mutableStateOf<Row?>(null)
-        private set
+    private data class DmSelection(val members: Set<String>, val encrypted: Boolean)
+    private val pendingDms = mutableStateMapOf<DmSelection, Row>()
+
+    fun pendingDm(id: String?): Row? = pendingDms.values.firstOrNull { it.text("id") == id }
+
+    fun forgetCreatedDm(id: String?) {
+        pendingDms.entries.removeAll { it.value.text("id") == id }
+    }
     var dmTargets by mutableStateOf<Set<String>>(emptySet())
         private set
     var encryptedDm by mutableStateOf(false)
@@ -482,8 +488,14 @@ internal class ConnectedScreenState(
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (_: Exception) {
-            if (isCurrent()) profilePostsLoadFailed = true
+        } catch (failure: Exception) {
+            if (isCurrent()) {
+                if (failure is ApiException && failure.status in setOf(403, 404)) {
+                    app.removeCachedHomeDetail("profile:$id")
+                    profilePosts = emptyList()
+                }
+                profilePostsLoadFailed = true
+            }
         }
     }
 
@@ -583,7 +595,20 @@ internal class ConnectedScreenState(
         val account = try {
             app.api.request("/api/activitypub/accounts?actor=${id.encodeURLParameter()}").jsonObject
         } catch (cancelled: CancellationException) { throw cancelled }
-        catch (_: Exception) { return }
+        catch (failure: Exception) {
+            if (failure is ApiException && failure.status in setOf(403, 404)) {
+                app.removeCachedHomeDetail("profile:$id")
+                followStates.remove(id)
+                feedBackStack.removeAll { it is FeedOrigin.Profile && it.account.text("id") == id }
+                if (overlay == "profile" && feedScreenRevision == screen && profile.text("id") == id) {
+                    profile = obj()
+                    profilePosts = emptyList()
+                    closeProfile()
+                    app.toast = app.t("common.errors.notFound")
+                }
+            }
+            return
+        }
         if (overlay != "profile" || feedScreenRevision != screen || profile.text("id") != id) return
         profile = JsonObject(person + account)
         if (id !in pendingFollows && followRevisions[id] == followRevision) {
@@ -1082,8 +1107,10 @@ internal class ConnectedScreenState(
                 action.id == "submit-dm" && dmTargets.isNotEmpty() && !saving -> request {
                     saving = true
                     try {
-                        val channel = app.createDm(dmTargets, encryptedDm)
-                        createdDm = channel
+                        val selection = DmSelection(dmTargets, encryptedDm)
+                        val channel = pendingDms[selection] ?: app.createDm(selection.members, selection.encrypted).also {
+                            pendingDms[selection] = it
+                        }
                         overlay = null
                         platform.navigate("/channels/${channel.text("id").encodeURLParameter()}")
                     } finally { saving = false }
@@ -1289,9 +1316,10 @@ internal class ConnectedScreenState(
                         is AndroidScreen.Post -> {
                             val id = screen.root.id
                             val text = replyDraft
+                            val visibility = replyVisibility(id) ?: return@request
                             if (text.isBlank()) return@request
                             app.api.request("/api/home", "POST", obj("content" to text,
-                                "visibility" to replyVisibility(id), "apub" to false, "in_reply_to" to id))
+                                "visibility" to visibility, "apub" to false, "in_reply_to" to id))
                             val sent = platform.uuid()
                             if (overlay == "post" && openedPostId == id) {
                                 replyLastSend = sent
@@ -1336,9 +1364,10 @@ internal class ConnectedScreenState(
         app.openChannelLink(target, parentId)
     }
 
-    private fun replyVisibility(id: String): String {
+    private fun replyVisibility(id: String): String? {
         val row = postDetail.map { it.nested("post").ifEmpty { it } }.firstOrNull { it.text("id") == id }
-        return when (row?.text("visibility")) {
+        return when (row?.text("visibility")?.takeIf { it.isNotBlank() }) {
+            null -> null
             "followers" -> "followers"
             "local" -> "local"
             else -> "unlisted"
@@ -1410,10 +1439,6 @@ internal class ConnectedScreenState(
         replyFocusRequest = if (focusReply) 1 else 0
         overlay = "post"
         feedScreenRevision++
-    }
-
-    fun forgetCreatedDm(id: String?) {
-        if (createdDm?.text("id") == id) createdDm = null
     }
 
     fun closePost() {

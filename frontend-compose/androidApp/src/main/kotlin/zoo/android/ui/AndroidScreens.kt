@@ -130,6 +130,7 @@ internal sealed interface AndroidScreen {
         /** 古いページが残っていて、いま取れる。 */
         val loadOlder: Boolean = false,
         val historyReady: Boolean = true,
+        val retrySync: (() -> Unit)? = null,
     ) : AndroidScreen
     data class Thread(
         val channelName: String, val root: TimelineItem, val replies: List<TimelineItem>, val input: InputState,
@@ -375,6 +376,9 @@ private fun RenderAndroidScreen(
                             { dispatch(AndroidUiAction.StartCall) })
                     }
                 }) { headerHeight, headerVisible ->
+                    screen.retrySync?.let { retry ->
+                        FeedLoadError(androidLabel("common.errors.network", "通信エラー"), colors, retry)
+                    }
                     TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = interaction.swipeReply, allowThreads = true, focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true, historyReady = screen.historyReady,
                         topContentPadding = headerHeight, headerOverlayHeight = if (headerVisible) headerHeight else 0.dp,
                         loadEarlier = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderMessages) } } else null)
@@ -988,7 +992,8 @@ private fun PostActions(
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         UiIconButton(UiIcon.Bubble, "返信", colors.secondary,
-            { dispatch(AndroidUiAction.ReplyToPost(entry.id)) }, iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
+            { dispatch(AndroidUiAction.ReplyToPost(entry.id)) }, enabled = entry.postHeader?.audience != null,
+            iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
         UiIconButton(UiIcon.Repost, if (entry.reposted) "再投稿を取り消す" else "再投稿",
             if (entry.reposted) colors.foreground else colors.secondary.copy(alpha = if (entry.canRepost) 1f else .38f),
             { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Repost)) },
