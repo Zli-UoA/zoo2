@@ -61,9 +61,9 @@ try {
     ],
     ["sample.odt", "application/vnd.oasis.opendocument.text", "OpenDocument preview"],
     ["sample.zip", "application/zip", "readme.txt"],
-    ["media.pdf", "application/pdf", "1 / 12"],
-    ["cjk.pdf", "application/pdf", "1 / 1"],
-    ["jpx.pdf", "application/pdf", "1 / 1"],
+    ["media.pdf", "application/pdf", "/ 12"],
+    ["cjk.pdf", "application/pdf", "/ 1"],
+    ["jpx.pdf", "application/pdf", "/ 1"],
   ];
   for (const [name, type, expected] of cases) {
     source = { name, type };
@@ -125,9 +125,36 @@ try {
       assert.equal(Buffer.from(saved[2], "base64").toString(), "Archive text");
     }
     if (name === "media.pdf") {
+      const pageInput = page.getByRole("textbox", { name: "ページ番号" });
+      await page.waitForFunction(
+        () =>
+          document.querySelector('input[aria-label="ページ番号"]')?.value === "1" &&
+          !document.querySelector('input[aria-label="ページ番号"]')?.disabled,
+      );
       await page.getByRole("button", { name: "次のページ" }).click();
-      await page.getByText("2 / 12").waitFor();
-      await page.waitForFunction(() => document.querySelector("canvas")?.width > 300);
+      await page.waitForFunction(
+        () => document.querySelector('input[aria-label="ページ番号"]')?.value === "2",
+      );
+      await page.waitForFunction(
+        () => document.querySelector('[data-pdf-page="2"] canvas')?.width > 300,
+      );
+      await pageInput.fill("10");
+      await pageInput.press("Enter");
+      await page.waitForFunction(() => {
+        const input = document.querySelector('input[aria-label="ページ番号"]');
+        const canvas = document.querySelector('[data-pdf-page="10"] canvas');
+        return input?.value === "10" && canvas?.width > 300;
+      });
+      await page.evaluate(() => {
+        const region = document.querySelector('[role="region"][aria-label="PDFページ一覧"]');
+        const page5 = document.querySelector('[data-pdf-page="5"]');
+        region.scrollTop = page5.offsetTop;
+      });
+      await page.waitForFunction(() => {
+        const input = document.querySelector('input[aria-label="ページ番号"]');
+        const canvas = document.querySelector('[data-pdf-page="5"] canvas');
+        return input?.value === "5" && canvas?.width > 300;
+      });
       assert.equal(sourceReads, 1, "page changes must reuse the loaded PDF");
     }
     if (name === "cjk.pdf" || name === "jpx.pdf") {

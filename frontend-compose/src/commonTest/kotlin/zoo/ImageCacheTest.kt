@@ -48,9 +48,12 @@ class ImageCacheTest {
         data class Frame(val pixels: Int)
         val cache = AssetCache<Frame>(backgroundScope, maxBytes = 16, maxEntries = 10) { it.pixels * 4 }
         var decodes = 0
+        assertNull(cache.getIfPresent("emoji"))
         val frame = cache.get("emoji") { decodes++; Frame(2) }
+        assertSame(frame, cache.getIfPresent("emoji"))
         assertSame(frame, cache.get("emoji") { error("Decode should be reused") })
         cache.get("avatar") { Frame(3) }
+        assertNull(cache.getIfPresent("emoji"))
         cache.get("emoji") { decodes++; Frame(2) }
         assertEquals(2, decodes, "Decoded bitmap memory must enforce the LRU budget")
         cache.close()

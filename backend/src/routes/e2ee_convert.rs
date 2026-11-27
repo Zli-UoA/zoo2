@@ -188,12 +188,17 @@ async fn try_encrypt(
                AND NOT EXISTS (SELECT 1 FROM e2ee_bot_grants g
                  WHERE g.channel_id = cu.channel_id AND g.bot_user_id = cu.user_id)),
            'webhooks', EXISTS (SELECT 1 FROM channel_webhooks WHERE channel_id = $1),
-           'encrypted_dm', $2 <> '' AND EXISTS (SELECT 1 FROM channels WHERE channel_name = $2))::text",
+           'encrypted_dm', $2 <> '' AND EXISTS (SELECT 1 FROM channels WHERE channel_name = $2),
+           'channel_notes', (EXISTS (SELECT 1 FROM channel_notes
+             WHERE channel_id = $1 AND deleted_at IS NULL)
+             OR EXISTS (SELECT 1 FROM channel_notes
+               WHERE channel_id = $1
+                 AND deleted_at >= (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours')))::text",
         &[id, renamed.as_deref().unwrap_or("")],
     )
     .await?
     .unwrap_or_default();
-    for blocker in ["apps", "webhooks", "encrypted_dm"] {
+    for blocker in ["apps", "webhooks", "encrypted_dm", "channel_notes"] {
         if found[blocker] == true {
             blockers.push(blocker);
         }
@@ -253,10 +258,19 @@ fn remove_orphan_objects(state: &AppState, keys: Vec<String>) {
             if round == 1 {
                 tokio::time::sleep(wait).await;
             }
-            for key in &keys {
-                if let Err(e) = client.delete_object().bucket(&bucket).key(key).send().await {
+            for key in keys
+                .iter()
+                .flat_map(|key| [super::home_images::thumbnail_key(key), key.clone()])
+            {
+                if let Err(e) = client
+                    .delete_object()
+                    .bucket(&bucket)
+                    .key(&key)
+                    .send()
+                    .await
+                {
                     tracing::warn!(
-                        key,
+                        %key,
                         "Failed to remove an unattached attachment of an encrypted channel: {e}"
                     );
                 }

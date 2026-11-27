@@ -16,6 +16,22 @@ export function canManageChannel({ isAdmin, isCreator }: ManagePermissionInput):
   return isAdmin || isCreator;
 }
 
+export interface PostPermissionInput extends ManagePermissionInput {
+  postingPolicy?: "members" | "managers";
+}
+
+/**
+ * チャンネルに投稿できるか（バックエンドの `apps::events::posting` に合わせる）。
+ * `managers` のチャンネルは、作成者とワークスペース管理者だけ。閲覧には影響しない。
+ */
+export function canPostInChannel({
+  postingPolicy,
+  isAdmin,
+  isCreator,
+}: PostPermissionInput): boolean {
+  return postingPolicy !== "managers" || canManageChannel({ isAdmin, isCreator });
+}
+
 export interface AddMemberPermissionInput extends ManagePermissionInput {
   isPrivate: boolean;
   isMember: boolean;

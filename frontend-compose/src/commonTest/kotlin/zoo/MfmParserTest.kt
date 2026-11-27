@@ -4,6 +4,28 @@ import kotlin.test.*
 
 class MfmParserTest {
     @Test
+    fun registeredAliasAfterATimeLeavesTheOpeningColonIntact() {
+        val alias = ":お祝い 猫:"
+        assertEquals(
+            listOf(Inline("12:30"), Inline(alias, "emoji")),
+            parseInline("12:30$alias", setOf(alias)),
+        )
+        assertEquals(Inline(":@alice:", "accountEmoji"), parseInline(":@alice:", setOf(":@alice:")).single())
+        assertEquals(MfmRuby(alias, "ねこ"), mfmRuby("$alias ねこ", setOf(alias)))
+        assertEquals(MfmRuby(":猫:顔", "えがお"), mfmRuby(":猫:顔 えがお", setOf(":猫:")))
+    }
+
+    @Test
+    fun registeredUnicodeAliasesDoNotConsumeUnknownShortcodesOrLiterals() {
+        val alias = ":お祝い 猫:"
+        val source = "時刻: $alias :unknown: `$alias` <plain>$alias</plain>"
+        val tokens = parseInline(source, setOf(alias))
+        assertEquals(listOf(alias, ":unknown:"), tokens.filter { it.kind == "emoji" }.map { it.value })
+        assertEquals(listOf(alias, alias), tokens.filter { it.kind in setOf("code", "plain") }.map { it.value })
+        assertTrue(alias in findCustomEmojiShortcodes(source))
+    }
+
+    @Test
     fun unclosedRecursiveSearchesFinishAndPreserveTheSource() {
         for (count in listOf(30, 40, 1000)) {
             val source = "$[a [ ".repeat(count)
@@ -116,7 +138,7 @@ class MfmParserTest {
     @Test
     fun upstreamBoldAndTadaShorthandsHaveTheirMfmMeaning() {
         assertEquals(listOf(Inline("bold", "bold")), parseInline("__bold__"))
-        assertEquals(listOf(Inline("https://example.test", "link", "https://example.test")),
+        assertEquals(listOf(Inline("https://example.test", "link", "https://example.test", bare = true)),
             parseInline("<https://example.test>"))
         assertEquals(listOf(Inline("$[tada emphasis]", "effect")), parseInline("***emphasis***"))
     }

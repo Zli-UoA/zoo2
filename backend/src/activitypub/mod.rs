@@ -4,7 +4,9 @@ pub(crate) mod client_ip;
 mod emoji;
 pub(crate) mod emoji_cache;
 mod inbox;
+mod instance_colors;
 pub(crate) mod interactions;
+mod kitchen;
 mod note_identity;
 mod profile;
 mod public_profile;
@@ -149,7 +151,13 @@ pub fn note_value(post: &Value) -> Result<Value, AppError> {
         }
         note["tag"] = json!([{"type":"Mention","href":recipient,"name":recipient}]);
     }
-    if let Some(emojis) = post["emojis"].as_array() {
+    let mut emojis = post["emojis"].as_array().cloned().unwrap_or_default();
+    for kitchen in kitchen::content_emojis(string(post, "content")?) {
+        if !emojis.iter().any(|e| e["name"] == kitchen["name"]) {
+            emojis.push(kitchen);
+        }
+    }
+    if post["emojis"].is_array() || !emojis.is_empty() {
         let tags = note
             .as_object_mut()
             .unwrap()
@@ -371,8 +379,17 @@ pub(crate) async fn remember_display_emojis(
     Ok(())
 }
 pub async fn worker(state: AppState) {
+    if base_url().is_err() {
+        return;
+    }
+    let blurhash_workers =
+        futures_util::future::join_all((0..4).map(|_| emoji::blurhash_worker(&state)));
+    tokio::join!(delivery_worker(&state), blurhash_workers);
+}
+
+async fn delivery_worker(state: &AppState) {
     loop {
-        match deliver_next(&state).await {
+        match deliver_next(state).await {
             Ok(true) => {}
             Ok(false) => tokio::time::sleep(Duration::from_secs(2)).await,
             Err(e) => {

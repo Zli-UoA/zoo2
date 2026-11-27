@@ -5,12 +5,13 @@ import type { UserRow } from "../../../lib/electric/types";
 import type { RecipientSummary, UndeliverableReason } from "../../../lib/e2ee/store/megolm";
 import { userLabel } from "../memberCandidates";
 
-const REASON_KEYS = {
-  notSetUp: "e2ee.undeliverable.notSetUp",
-  invalidKeys: "e2ee.undeliverable.invalidKeys",
-  needsReverification: "e2ee.undeliverable.needsReverification",
-  pinPending: "e2ee.undeliverable.pinPending",
-  blocked: "e2ee.undeliverable.blocked",
+// 辞書のキーは `e2ee.undeliverable.` + 接尾辞。x18n が前方一致で追えるようにする。
+const REASON_SUFFIXES = {
+  notSetUp: "notSetUp",
+  invalidKeys: "invalidKeys",
+  needsReverification: "needsReverification",
+  pinPending: "pinPending",
+  blocked: "blocked",
 } as const satisfies Record<UndeliverableReason, string>;
 
 /**
@@ -55,7 +56,9 @@ export function EncryptionRecipientsNotice({
           <ul className="ml-5 list-disc">
             {summary.undeliverable.map((entry) => (
               <li key={entry.userId}>
-                {t(REASON_KEYS[entry.reason], { name: name(entry.userId) })}
+                {t(`e2ee.undeliverable.${REASON_SUFFIXES[entry.reason]}`, {
+                  name: name(entry.userId),
+                })}
               </li>
             ))}
           </ul>

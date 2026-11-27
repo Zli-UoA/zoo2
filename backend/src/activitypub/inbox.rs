@@ -232,10 +232,6 @@ pub(super) async fn receive_verified(
             }
             let content = emoji::note_content(object)?;
             let quote_uri = emoji::note_quote_uri(object).map(|url| url.to_string());
-            let media = emoji::note_media(object);
-            emoji::remember(&mut tx, &media).await?;
-            let note_emojis = emoji::tags(&object["tag"]);
-            emoji::remember(&mut tx, &note_emojis).await?;
             let published = object["published"]
                 .as_str()
                 .unwrap_or("")
@@ -250,15 +246,22 @@ pub(super) async fn receive_verified(
             if updated > jiff::Timestamp::now() + jiff::SignedDuration::from_secs(300) {
                 return Err(AppError::BadRequest("Future note timestamp".into()));
             }
+            let media = emoji::note_media(object);
+            emoji::remember(&mut tx, &media).await?;
+            let note_emojis = emoji::tags(&object["tag"]);
+            emoji::remember(&mut tx, &note_emojis).await?;
             let origin_verified =
                 note_identity::reconcile(&mut tx, post_id, actor_id, origin_proof.as_ref()).await?;
-            if activity["type"] == "Create" || origin_proof.is_some() {
-                toasty::sql::statement("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,parent_id,emojis,origin_verified,media,quote_uri) SELECT $1,$2,$3,$4,$5::timestamptz,$6::timestamptz,NULLIF($7,''),$8::jsonb,$9::boolean,$10::jsonb,NULLIF($11,'') WHERE NOT EXISTS(SELECT 1 FROM apub_remote_tombstones WHERE id=$1 AND actor_id=$2) ON CONFLICT(id) DO UPDATE SET origin_verified=apub_remote_posts.origin_verified OR EXCLUDED.origin_verified WHERE apub_remote_posts.actor_id=EXCLUDED.actor_id").bind(post_id).bind(actor_id).bind(content).bind(visibility).bind(published.to_string()).bind(updated.to_string()).bind(parent_id.unwrap_or("")).bind(json!(note_emojis).to_string()).bind(origin_verified.to_string()).bind(json!(media).to_string()).bind(quote_uri.as_deref().unwrap_or("")).exec(&mut tx).await?;
+            let write = if activity["type"] == "Create" || origin_proof.is_some() {
+                query(&mut tx, "INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,parent_id,emojis,origin_verified,media,quote_uri) SELECT $1,$2,$3,$4,$5::timestamptz,$6::timestamptz,NULLIF($7,''),$8::jsonb,$9::boolean,$10::jsonb,NULLIF($11,'') WHERE NOT EXISTS(SELECT 1 FROM apub_remote_tombstones WHERE id=$1 AND actor_id=$2) ON CONFLICT(id) DO UPDATE SET origin_verified=apub_remote_posts.origin_verified OR EXCLUDED.origin_verified WHERE apub_remote_posts.actor_id=EXCLUDED.actor_id RETURNING json_build_object('saved',xmax=0)::text", &[post_id, actor_id, &content, visibility, &published.to_string(), &updated.to_string(), parent_id.unwrap_or(""), &json!(note_emojis).to_string(), &origin_verified.to_string(), &json!(media).to_string(), quote_uri.as_deref().unwrap_or("")]).await?
             } else {
-                toasty::sql::statement("UPDATE apub_remote_posts SET content=$3,visibility=$4,updated_at=$5::timestamptz,parent_id=NULLIF($6,''),emojis=$7::jsonb,media=$8::jsonb,quote_uri=NULLIF($9,'') WHERE id=$1 AND actor_id=$2 AND deleted_at IS NULL AND updated_at<$5::timestamptz").bind(post_id).bind(actor_id).bind(content).bind(visibility).bind(updated.to_string()).bind(parent_id.unwrap_or("")).bind(json!(note_emojis).to_string()).bind(json!(media).to_string()).bind(quote_uri.as_deref().unwrap_or("")).exec(&mut tx).await?;
-            }
+                query(&mut tx, "UPDATE apub_remote_posts SET content=$3,visibility=$4,updated_at=$5::timestamptz,parent_id=NULLIF($6,''),emojis=$7::jsonb,media=$8::jsonb,quote_uri=NULLIF($9,'') WHERE id=$1 AND actor_id=$2 AND deleted_at IS NULL AND updated_at<$5::timestamptz RETURNING json_build_object('saved',true)::text", &[post_id, actor_id, &content, visibility, &updated.to_string(), parent_id.unwrap_or(""), &json!(note_emojis).to_string(), &json!(media).to_string(), quote_uri.as_deref().unwrap_or("")]).await?
+            };
             if activity["type"] == "Create" && !parents.is_empty() && !query(&mut tx,"SELECT '{}'::text FROM apub_remote_posts WHERE id=$1 AND actor_id=$2 AND deleted_at IS NULL",&[post_id,actor_id]).await?.is_empty() {
                 interactions::notify(&mut tx, user, actor_id, id, "reply", post_id).await?;
+            }
+            if write.first().is_some_and(|row| row["saved"] == true) {
+                emoji::queue_media_blurhash(&mut tx, post_id, &media).await?;
             }
             // Per-recipient inboxes preserve audience isolation, even for followers-only notes.
             toasty::sql::statement("INSERT INTO apub_remote_recipients(post_id,user_id) SELECT id,$2 FROM apub_remote_posts WHERE id=$1 AND actor_id=$3 ON CONFLICT DO NOTHING").bind(post_id).bind(user).bind(actor_id).exec(&mut tx).await?;

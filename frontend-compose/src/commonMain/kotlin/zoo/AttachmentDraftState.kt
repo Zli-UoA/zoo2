@@ -1,0 +1,448 @@
+@file:OptIn(kotlin.io.encoding.ExperimentalEncodingApi::class)
+
+package zoo
+
+import androidx.compose.runtime.*
+import androidx.compose.ui.graphics.ImageBitmap
+import io.ktor.http.*
+import kotlin.io.encoding.Base64
+import kotlin.math.round
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.collect
+import kotlinx.serialization.json.*
+
+const val MAX_ATTACHMENTS = 10
+const val MAX_ATTACHMENT_BYTES = 50L * 1024 * 1024
+val imageTypes = listOf("image/png", "image/jpeg", "image/webp", "image/gif")
+
+private fun clampCodePoints(value: String, max: Int): String {
+    var index = 0
+    var count = 0
+    while (index < value.length && count++ < max) {
+        val ch = value[index++]
+        if (ch.isHighSurrogate() && index < value.length && value[index].isLowSurrogate()) index++
+    }
+    return value.take(index)
+}
+
+private val attachmentExtensions =
+    mapOf(
+        "png" to "image/png",
+        "jpg" to "image/jpeg",
+        "jpeg" to "image/jpeg",
+        "webp" to "image/webp",
+        "gif" to "image/gif",
+        "avif" to "image/avif",
+        "eml" to "message/rfc822",
+        "msg" to "application/vnd.ms-outlook",
+        "odt" to "application/vnd.oasis.opendocument.text",
+        "ods" to "application/vnd.oasis.opendocument.spreadsheet",
+        "odp" to "application/vnd.oasis.opendocument.presentation",
+        "yaml" to "text/yaml",
+        "yml" to "text/yaml",
+        "ics" to "text/calendar",
+        "vcf" to "text/vcard",
+        "pdf" to "application/pdf",
+        "txt" to "text/plain",
+        "md" to "text/markdown",
+        "csv" to "text/csv",
+        "json" to "application/json",
+        "xml" to "application/xml",
+        "zip" to "application/zip",
+        "gz" to "application/gzip",
+        "tar" to "application/x-tar",
+        "7z" to "application/x-7z-compressed",
+        "rar" to "application/vnd.rar",
+        "doc" to "application/msword",
+        "docx" to "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls" to "application/vnd.ms-excel",
+        "xlsx" to "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt" to "application/vnd.ms-powerpoint",
+        "pptx" to "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "mp3" to "audio/mpeg",
+        "m4a" to "audio/mp4",
+        "wav" to "audio/wav",
+        "ogg" to "audio/ogg",
+        "flac" to "audio/flac",
+        "mp4" to "video/mp4",
+        "webm" to "video/webm",
+        "mov" to "video/quicktime",
+    )
+private val forbiddenAttachmentExtensions =
+    setOf("exe", "com", "scr", "msi", "dll", "so", "dylib", "bat", "cmd", "sh")
+private val forbiddenAttachmentTypes =
+    setOf(
+        "application/x-msdownload",
+        "application/x-executable",
+        "application/x-dosexec",
+        "application/x-msdos-program",
+        "application/x-sharedlib",
+        "application/x-batch",
+        "application/x-sh",
+    )
+
+fun attachmentType(name: String, declared: String): String? {
+    // サーバーの `is_disallowed_extension` と同じく、末尾のドットと空白を除いてから拡張子を見る
+    // （`malware.exe. ` を実行形式として扱う）。
+    val extension = name.trimEnd { it == '.' || it.isWhitespace() }.substringAfterLast('.').lowercase()
+    if (extension in forbiddenAttachmentExtensions) return null
+    val mime = declared.substringBefore(';').trim().lowercase()
+    if (
+        mime in setOf("application/octet-stream", "binary/octet-stream") ||
+            !Regex("^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$").matches(mime)
+    )
+        return attachmentExtensions[extension] ?: "application/octet-stream"
+    return mime.takeUnless { it in forbiddenAttachmentTypes }
+}
+
+fun attachmentRejection(file: Row, count: Int): String? =
+    when {
+        count >= MAX_ATTACHMENTS -> "tooMany"
+        (file.text("size").toLongOrNull() ?: 0) <= 0 -> "empty"
+        (file.text("size").toLongOrNull() ?: 0) > MAX_ATTACHMENT_BYTES -> "tooLarge"
+        attachmentType(file.text("name"), file.text("type")) == null -> "unsupported"
+        else -> null
+    }
+
+fun attachmentName(name: String, type: String, fallback: String): String {
+    val mime = type.substringBefore(';').trim().lowercase()
+    val extension =
+        attachmentExtensions.entries.firstOrNull { it.value == mime }?.key
+            ?: mime.substringAfter('/', "").replace(Regex("[^a-z0-9]+"), "").take(12).ifEmpty {
+                "bin"
+            }
+    val cleaned =
+        clampCodePoints(
+            name.map { if (it.code < 32 || it.code == 127) '_' else it }.joinToString("").trim(),
+            255,
+        )
+    if (cleaned.isEmpty()) return "attachment-$fallback.$extension"
+    if (Regex("\\.[^./\\\\]+$").containsMatchIn(cleaned)) return cleaned
+    return "${clampCodePoints(cleaned, 254 - extension.length)}.$extension"
+}
+
+fun attachmentSize(value: String): String {
+    var size = value.toDoubleOrNull()?.takeIf { it.isFinite() && it >= 0 } ?: return "—"
+    val units = listOf("B", "KB", "MB", "GB")
+    var unit = 0
+    while (size >= 1024 && unit < units.lastIndex) {
+        size /= 1024
+        unit++
+    }
+    val number =
+        if (unit == 0) size.toLong().toString()
+        else (round(size * 10) / 10).toString().removeSuffix(".0")
+    return "$number ${units[unit]}"
+}
+
+fun attachmentExpiry(url: String, now: Long): Long {
+    val params = publicUrl(url)?.parameters ?: return now + 240000
+    val seconds =
+        params["X-Amz-Expires"]?.toDoubleOrNull()?.takeIf { it.isFinite() && it > 0 }
+            ?: return now + 240000
+    val issued =
+        params["X-Amz-Date"]
+            ?.replace(
+                Regex("^(\\d{4})(\\d{2})(\\d{2})T(\\d{2})(\\d{2})(\\d{2})Z$"),
+                "$1-$2-$3T$4:$5:$6Z",
+            )
+            ?.let(::timestampMillis) ?: now
+    return issued + (seconds * 1000).toLong()
+}
+
+fun attachmentPayload(value: JsonElement): Row =
+    value.jsonObject.let { (it["data"] as? JsonObject) ?: it }
+
+data class AttachmentImageLinks(val original: String, val thumbnail: String?)
+
+class AttachmentLinks(private val app: Session) {
+    val errors = mutableStateMapOf<String, Boolean>()
+    private val cache = mutableMapOf<String, Pair<AttachmentImageLinks, Long>>()
+    private val requests = mutableMapOf<String, Deferred<Result<AttachmentImageLinks>>>()
+
+    fun cachedUrl(id: String): String? = cachedLinks(id)?.original
+
+    fun cachedLinks(id: String): AttachmentImageLinks? =
+        cachedLinks(id, timestampMillis(app.platform.now()) ?: 0L)
+
+    private fun cachedLinks(id: String, now: Long): AttachmentImageLinks? =
+        cache[id]?.takeIf { it.second - now > 5_000 }?.first
+
+    suspend fun get(id: String, force: Boolean = false): String = getLinks(id, force).original
+
+    suspend fun getLinks(id: String, force: Boolean = false): AttachmentImageLinks {
+        errors.remove(id)
+        val now = timestampMillis(app.platform.now()) ?: 0L
+        if (!force) cachedLinks(id, now)?.let { return it }
+        val work =
+            requests.getOrPut(id) {
+                app.scope.async {
+                    try {
+                        val payload = attachmentPayload(
+                            app.api.request("/api/attachments/${id.encodeURLParameter()}/url")
+                        )
+                        val url = payload.text("download_url")
+                        require(publicUrl(url) != null)
+                        val thumbnail = payload.text("thumbnail_url").takeIf { publicUrl(it) != null }
+                        val links = AttachmentImageLinks(url, thumbnail)
+                        if (cache.size >= 200) cache.remove(cache.keys.first())
+                        cache[id] = links to attachmentExpiry(url, now)
+                        Result.success(links)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Result.failure(e)
+                    }
+                }
+            }
+        work.invokeOnCompletion { if (requests[id] === work) requests.remove(id) }
+        return try {
+            work.await().getOrThrow()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (errors.size >= 200) errors.remove(errors.keys.first())
+            errors[id] = true
+            throw e
+        } finally {
+            if (work.isCompleted && requests[id] === work) requests.remove(id)
+        }
+    }
+
+    fun download(file: Row, force: Boolean = false) {
+        app.run {
+            try {
+                app.platform.invoke(
+                    "attachmentDownload",
+                    obj("url" to get(file.text("id"), force = force), "name" to file.text("file_name")).toString(),
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                app.toast = app.t("attachments.downloadError")
+            }
+        }
+    }
+}
+
+class AttachmentDraft(val file: Row, val name: String, val type: String) {
+    var sensitive by mutableStateOf(false)
+    var uploaded by mutableStateOf<Row?>(null)
+    var bitmap by mutableStateOf<ImageBitmap?>(null)
+    var previewJob: Job? = null
+}
+
+class AttachmentDrafts(
+    private val app: Session,
+    val channel: String,
+    parentScope: CoroutineScope,
+    private val upload: (suspend (Row) -> Row)? = null,
+) {
+    private val job = SupervisorJob(parentScope.coroutineContext[Job])
+    private val scope = CoroutineScope(parentScope.coroutineContext + job)
+    val owner = app.platform.uuid()
+    val items = mutableStateListOf<AttachmentDraft>()
+    private val owned = mutableMapOf<String, AttachmentDraft>()
+    private var submissions = 0
+    private var closeRequested = false
+    var error by mutableStateOf<String?>(null)
+    var enabled = false
+    var acceptFiles = true
+    var acceptedTypes: List<String>? = null
+    var onDiscard: ((Row) -> Unit)? = null
+    var maximumBytes = MAX_ATTACHMENT_BYTES
+    private var bounds: Row = JsonObject(emptyMap())
+
+    fun updateBounds(left: Float, top: Float, width: Float, height: Float) {
+        val next = obj("left" to left, "top" to top, "width" to width, "height" to height)
+        if (bounds != next) {
+            bounds = next
+            bind()
+        }
+    }
+
+    fun bind() =
+        app.platform.fileTarget(
+            owner,
+            buildJsonObject {
+                    put("enabled", enabled && acceptFiles)
+                    put("bounds", bounds)
+                }
+                .toString(),
+            ::add,
+        )
+
+    fun add(raw: String): Boolean {
+        val data = json.parseToJsonElement(raw).jsonObject
+        val candidates = (data["files"] as? JsonArray)?.map { it.jsonObject }.orEmpty()
+        val seen = mutableSetOf<String>()
+        var batchError: String? = null
+        var handled = data.text("origin") != "paste" && candidates.isNotEmpty()
+        candidates.forEach { file ->
+            val key = "${file.text("name")}:${file.text("size")}:${file.text("type")}"
+            val mime = attachmentType(file.text("name"), file.text("type"))
+            if (
+                !enabled ||
+                    !acceptFiles ||
+                    data.text("origin") == "paste" && (mime == null || !seen.add(key))
+            ) {
+                app.platform.action("fileRelease:${file.text("id")}")
+                return@forEach
+            }
+            handled = true
+            val rejected = attachmentRejection(file, items.size)
+                ?: if (acceptedTypes?.let { mime !in it } == true) "unsupported"
+                else if ((file.text("size").toLongOrNull() ?: 0) > maximumBytes) "tooLarge" else null
+            if (rejected != null) {
+                if (batchError == null)
+                    batchError =
+                        app.t(
+                            "attachments.$rejected",
+                            "max" to if (rejected == "tooMany") "10" else "50",
+                        )
+                app.platform.action("fileRelease:${file.text("id")}")
+                return@forEach
+            }
+            val draft =
+                AttachmentDraft(
+                    file,
+                    attachmentName(
+                        file.text("name"),
+                        mime!!,
+                        "${timestampMillis(app.platform.now())}-${app.platform.uuid().take(6)}",
+                    ),
+                    mime,
+                )
+            items += draft
+            owned[file.text("id")] = draft
+            if (mime in imageTypes)
+                draft.previewJob =
+                    scope.launch {
+                        try {
+                            val bytes =
+                                Base64.decode(app.platform.invoke("fileRead", file.text("id")))
+                            app.platform.imageFrames(bytes).collect { draft.bitmap = it }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Exception) {}
+                    }
+            scope.launch {
+                try {
+                    if (upload != null) {
+                        val result = upload(file)
+                        if (draft in items) draft.uploaded = result else onDiscard?.invoke(result)
+                    } else {
+                        app.requirePlaintextChannel(channel)
+                        val presign =
+                            attachmentPayload(
+                                app.api.request(
+                                    "/api/attachments/presign",
+                                    "POST",
+                                    buildJsonObject {
+                                        put("channel_id", channel)
+                                        put("file_name", draft.name)
+                                        put("file_size", file.text("size").toLong())
+                                        put("content_type", mime)
+                                    },
+                                )
+                            )
+                        if (draft !in items) return@launch
+                        require(presign.text("attachment_id").isNotEmpty())
+                        app.platform.invoke(
+                            "filePut",
+                            obj(
+                                    "id" to file.text("id"),
+                                    "url" to presign.text("upload_url"),
+                                    "type" to mime,
+                                )
+                                .toString(),
+                        )
+                        if (draft in items)
+                            draft.uploaded = obj("id" to presign.text("attachment_id"))
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    if (draft in items) {
+                        remove(draft)
+                        error = app.t("attachments.uploadError")
+                    }
+                }
+            }
+        }
+        if (handled) error = batchError
+        return handled
+    }
+
+    private var picking = false
+
+    fun pick(photos: Boolean = false) {
+        if (picking || !enabled) return
+        picking = true
+        scope.launch {
+            try {
+                add(app.platform.invoke(
+                    "pickFiles",
+                    buildJsonObject {
+                        put("owner", owner)
+                        put("accept", acceptedTypes?.joinToString(",").orEmpty())
+                        put("multiple", true)
+                        put("photos", photos)
+                    }.toString(),
+                ))
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (_: Exception) {
+                error = app.t("attachments.uploadError")
+            } finally {
+                picking = false
+            }
+        }
+    }
+
+    fun remove(item: AttachmentDraft) {
+        item.uploaded?.let { onDiscard?.invoke(it) }
+        items.remove(item)
+        release(listOf(item))
+    }
+
+    fun release(values: List<AttachmentDraft>) {
+        values.forEach {
+            it.previewJob?.cancel()
+            it.bitmap = null
+            owned.remove(it.file.text("id"))
+            app.platform.action("fileRelease:${it.file.text("id")}")
+        }
+    }
+
+    /** Keep uploaded files owned until an in-flight post finishes, even if its editor is removed. */
+    internal fun retainForSubmission(): () -> Unit {
+        check(!closeRequested)
+        submissions++
+        var released = false
+        return {
+            if (!released) {
+                released = true
+                submissions--
+                if (closeRequested && submissions == 0) discardOwned()
+            }
+        }
+    }
+
+    fun close() {
+        if (closeRequested) return
+        closeRequested = true
+        job.cancel()
+        app.platform.forgetFileTarget(owner)
+        if (submissions == 0) discardOwned()
+    }
+
+    private fun discardOwned() {
+        owned.values.toList().forEach { it.uploaded?.let { uploaded -> onDiscard?.invoke(uploaded) } }
+        release(owned.values.toList())
+        items.clear()
+    }
+
+    fun canSend(value: String) =
+        enabled && items.none { it.uploaded == null } && (value.isNotBlank() || items.isNotEmpty())
+}

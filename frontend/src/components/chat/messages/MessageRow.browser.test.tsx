@@ -1,12 +1,61 @@
 import "../../../styles.css";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
-import { describe, expect, it, vi } from "vite-plus/test";
-import { page } from "vite-plus/test/browser/context";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { cdp, page } from "vite-plus/test/browser/context";
 
 import { LocaleProvider } from "../../i18n/LocaleProvider";
+import { RECENT_EMOJIS_STORAGE_KEY } from "../../../lib/emoji/recents";
+
+vi.mock("../../../hooks/useAttachments", () => ({
+  useAttachmentUrl: () => ({
+    url: "/media/image.png",
+    status: "ready",
+    expiresAt: null,
+    reload: () => {},
+    getFreshUrl: () => Promise.resolve("/media/image.png"),
+  }),
+}));
+
+vi.mock("../../ui/media-preview", async () => {
+  const { useState } = await import("react");
+  const { createPortal } = await import("react-dom");
+  return {
+    MediaPreview: () => {
+      const [open, setOpen] = useState(false);
+      return (
+        <div>
+          <button type="button" onClick={() => setOpen(true)}>
+            プレビューを開く
+          </button>
+          {open ? createPortal(<div>プレビュー内</div>, document.body) : null}
+        </div>
+      );
+    },
+  };
+});
+
+vi.mock("../../../lib/emoji/workspace", () => ({
+  useWorkspaceEmojis: () => ({
+    emojis: [
+      {
+        name: "party-parrot",
+        url: "/api/emoji-images/party-parrot",
+        aliases: [],
+        category: "custom",
+      },
+    ],
+    imageUrl: (url: string) => url,
+    loading: false,
+    failed: false,
+    retry: () => {},
+  }),
+}));
 import { MessageRow, type MessageRowProps } from "./MessageRow";
+import { MESSAGE_TARGET_FLASH_MS } from "./messageTarget";
+import { enableAnimations } from "../../../test/browser-setup";
+import { MentionUserNamesContext } from "../../../lib/e2ee/messageDecryption";
 import type { MessageItem } from "./messageGrouping";
 
 function buildItem(overrides: Partial<MessageItem["message"]> = {}): MessageItem {
@@ -28,6 +77,30 @@ function buildItem(overrides: Partial<MessageItem["message"]> = {}): MessageItem
 }
 
 function noop() {}
+
+function expectHitArea(button: HTMLElement) {
+  expect(button.className).toContain("[@media(hover:none)]:min-h-11");
+  expect(button.className).toContain("[@media(hover:none)]:min-w-11");
+}
+
+/** CSS の `(hover: hover)` を無効にしてタッチ端末のメディアクエリを実際に効かせる。 */
+async function emulateTouch() {
+  await cdp().send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+}
+
+function tapTouch(element: Element) {
+  fireEvent.pointerDown(element, { pointerType: "touch", clientX: 10, clientY: 10 });
+  fireEvent.click(element, { clientX: 10, clientY: 10 });
+}
+
+function expectChipHitArea(button: HTMLElement) {
+  expect(button.className).toContain("[@media(hover:none)]:after:absolute");
+  expect(button.className).toContain("relative");
+}
+
+afterEach(async () => {
+  await cdp().send("Emulation.setTouchEmulationEnabled", { enabled: false });
+});
 
 function renderRow(item: MessageItem, isOwn = false, props: Partial<MessageRowProps> = {}) {
   const element = (overrides: Partial<MessageRowProps>) => (
@@ -59,6 +132,55 @@ function renderRow(item: MessageItem, isOwn = false, props: Partial<MessageRowPr
 }
 
 describe("MessageRow", () => {
+  it("keeps touch hit areas on the primary message actions", async () => {
+    await page.viewport(390, 844);
+    renderRow(buildItem(), false, {
+      reactions: [
+        { emoji: "👍", count: 1, ownId: null, userIds: ["u1"], userNames: { u1: "Alice" } },
+      ],
+      canReact: true,
+      replyCount: 1,
+      onOpenThread: () => {},
+    });
+    // アイコンの見た目は変えず、(hover: none) のときだけ 44×44px の当たり判定を足す。
+    expectChipHitArea(screen.getByRole("button", { name: "1 件の返信（スレッドを開く）" }));
+    expectHitArea(screen.getByRole("button", { name: "スレッドを開く" }));
+    for (const button of screen.getAllByRole("button", { name: "リアクションを追加" })) {
+      expectHitArea(button);
+    }
+    expectHitArea(screen.getByRole("button", { name: "その他の操作" }));
+  });
+
+  it("measures touch targets in a real (hover: none) environment", async () => {
+    await page.viewport(390, 844);
+    await emulateTouch();
+    renderRow(buildItem(), true, {
+      canReact: true,
+      canDelete: true,
+      replyCount: 1,
+      onOpenThread: () => {},
+    });
+
+    // 返信チップは見た目の高さを保ったまま、疑似要素だけで当たり判定を広げる。
+    const chip = screen.getByRole("button", { name: "1 件の返信（スレッドを開く）" });
+    expect(chip.getBoundingClientRect().height).toBeLessThan(30);
+    expect(parseFloat(getComputedStyle(chip, "::after").height)).toBeGreaterThanOrEqual(44);
+
+    // タッチでは本文タップでシートが開き、操作はシート内のボタンから行う。
+    tapTouch(screen.getByText("hello"));
+    const sheet = await screen.findByRole("dialog", { name: "メッセージを操作" });
+
+    for (const name of ["リアクションを追加", "スレッドを開く", "メッセージを編集", "削除"]) {
+      const item = within(sheet).getByRole("button", { name });
+      // シートは出現アニメーションで一時的に scale されるため、落ち着くまで待つ。
+      await waitFor(() => {
+        const { width, height } = item.getBoundingClientRect();
+        expect(width).toBeGreaterThanOrEqual(44);
+        expect(height).toBeGreaterThanOrEqual(44);
+      });
+    }
+  });
+
   it("closes the list when its last reaction disappears and stays closed if it returns", async () => {
     await page.viewport(390, 844);
     const reaction = {
@@ -292,29 +414,26 @@ describe("MessageRow", () => {
     },
   );
 
-  it("opens the menu on a touch hold and adds the first reaction", async () => {
+  it("opens the action sheet on a tap and adds the first reaction", async () => {
     const onPickReaction = vi.fn();
-    const { container } = renderRow(buildItem(), false, { canReact: true, onPickReaction });
-    const row = container.querySelector("div.group\\/row")!;
-    fireEvent.pointerDown(row, { pointerType: "touch", isPrimary: true, clientX: 20, clientY: 20 });
-    await waitFor(() =>
-      expect(screen.getByRole("menuitem", { name: "リアクションを追加" })).toBeTruthy(),
-    );
-    await userEvent.click(screen.getByRole("menuitem", { name: "リアクションを追加" }));
+    renderRow(buildItem(), false, { canReact: true, onPickReaction });
+    tapTouch(screen.getByText("hello"));
+    const sheet = await screen.findByRole("dialog", { name: "メッセージを操作" });
+    await userEvent.click(within(sheet).getByRole("button", { name: "リアクションを追加" }));
     expect(onPickReaction).toHaveBeenCalledOnce();
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull(),
+    );
   });
 
-  it("opens App message actions from the touch hold menu", async () => {
+  it("opens App message actions from the tap action sheet", async () => {
     const opened = vi.fn();
     window.addEventListener("zoo:message-actions", opened);
     try {
-      const { container } = renderRow(buildItem());
-      const row = container.querySelector("div.group\\/row")!;
-      fireEvent.pointerDown(row, { pointerType: "touch", isPrimary: true });
-      await waitFor(() =>
-        expect(screen.getByRole("menuitem", { name: "Appでメッセージを操作" })).toBeTruthy(),
-      );
-      await userEvent.click(screen.getByRole("menuitem", { name: "Appでメッセージを操作" }));
+      renderRow(buildItem());
+      tapTouch(screen.getByText("hello"));
+      const sheet = await screen.findByRole("dialog", { name: "メッセージを操作" });
+      await userEvent.click(within(sheet).getByRole("button", { name: "Appでメッセージを操作" }));
       expect(opened).toHaveBeenCalledOnce();
       expect((opened.mock.calls[0]![0] as CustomEvent<string>).detail).toBe("message-1");
     } finally {
@@ -322,70 +441,114 @@ describe("MessageRow", () => {
     }
   });
 
-  it("cancels a touch hold when scrolling", async () => {
-    const { container } = renderRow(buildItem());
-    const row = container.querySelector("div.group\\/row")!;
-    fireEvent.pointerDown(row, { pointerType: "touch", isPrimary: true, clientX: 20, clientY: 20 });
-    fireEvent.pointerMove(row, { pointerType: "touch", clientX: 20, clientY: 50 });
-    await new Promise((resolve) => setTimeout(resolve, 550));
-    expect(screen.queryByRole("menu")).toBeNull();
-  });
-
-  for (const cancel of ["pointerCancel", "touchCancel"] as const) {
-    it(`clears a completed hold after ${cancel} so a subsequent reaction tap works`, async () => {
-      const onReaction = vi.fn();
-      const { container } = renderRow(buildItem(), false, {
-        canReact: true,
-        onReaction,
-        reactions: [{ emoji: "👍", count: 1, ownId: null }],
-      });
-      const row = container.querySelector("div.group\\/row")!;
-      fireEvent.pointerDown(row, { pointerType: "touch", isPrimary: true });
-      await waitFor(() => expect(screen.getByRole("menu")).toBeTruthy());
-      fireEvent[cancel](row);
-      // pointercancel の後に touchend が届かなくても抑止状態を残さない。
-      expect(fireEvent.touchEnd(row)).toBe(true);
-      await userEvent.keyboard("{Escape}");
-      await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
-      const reaction = screen.getByRole("button", { name: "👍 1 件" });
-      fireEvent.pointerDown(reaction, { pointerType: "touch", isPrimary: true });
-      expect(fireEvent.touchEnd(reaction)).toBe(true);
-      await userEvent.click(reaction);
-      expect(onReaction).toHaveBeenCalledWith("👍");
-    });
-  }
-
-  it("preserves native context menus on links while using body holds for actions", async () => {
-    const { container } = renderRow(buildItem({ content: "hello https://example.com" }));
-    const row = container.querySelector("div.group\\/row")!;
+  it("does not open the sheet when a link is tapped", () => {
+    renderRow(buildItem({ content: "hello https://example.com" }));
     const link = screen.getByRole("link", { name: "example.com" });
-    expect(fireEvent.contextMenu(row)).toBe(true);
-    fireEvent.pointerDown(row, { pointerType: "touch", isPrimary: true });
-    expect(fireEvent.contextMenu(row)).toBe(false);
-    expect(fireEvent.contextMenu(link)).toBe(true);
-    await waitFor(() => expect(screen.getByRole("menu")).toBeTruthy());
-    expect(fireEvent.contextMenu(row)).toBe(false);
-    expect(fireEvent.contextMenu(link)).toBe(true);
-    fireEvent.pointerCancel(row);
-  });
-
-  it("suppresses the native menu immediately after the hold timer before React commits", () => {
-    const { container } = renderRow(buildItem({ content: "hello https://example.com" }));
-    const row = container.querySelector("div.group\\/row")!;
-    const link = screen.getByRole("link", { name: "example.com" });
-    vi.useFakeTimers();
+    let preventedByApp: boolean | null = null;
+    // 外部リンク（target="_blank"）の既定動作で新規タブが開くと、テスト用タブが背景へ回り
+    // 後続のブラウザーテストで rAF やタイマーが抑制されるため、ナビゲーションだけを止める。
+    const preventNavigation = (event: MouseEvent) => {
+      preventedByApp = event.defaultPrevented;
+      event.preventDefault();
+    };
+    document.addEventListener("click", preventNavigation);
     try {
-      fireEvent.pointerDown(row, { pointerType: "touch", isPrimary: true });
-      act(() => {
-        vi.advanceTimersByTime(500);
-        // state の反映前、タイマーはクリア済みでも本文の標準メニューを抑止する。
-        expect(screen.queryByRole("menu")).toBeNull();
-        expect(fireEvent.contextMenu(row)).toBe(false);
-        expect(fireEvent.contextMenu(link)).toBe(true);
-      });
+      tapTouch(link);
+      expect(preventedByApp).toBe(false);
+      expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull();
     } finally {
-      vi.useRealTimers();
+      document.removeEventListener("click", preventNavigation);
     }
+  });
+
+  it("does not open the sheet on a mouse click", async () => {
+    renderRow(buildItem());
+    await userEvent.click(screen.getByText("hello"));
+    expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull();
+  });
+
+  it("does not open the sheet when an existing menu item is tapped", async () => {
+    const onStartEdit = vi.fn();
+    renderRow(buildItem(), true, { onStartEdit });
+    screen.getByRole("button", { name: "その他の操作" }).focus();
+    await userEvent.keyboard("{Enter}");
+    const item = screen.getByRole("menuitem", { name: "メッセージを編集" });
+    // タッチの pointerDown の後に項目をactivateしても、操作シートは開かない。
+    fireEvent.pointerDown(item, { pointerType: "touch", clientX: 10, clientY: 10 });
+    await userEvent.click(item);
+    expect(onStartEdit).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull();
+  });
+
+  it("shows recent reactions of all kinds in the touch sheet", async () => {
+    localStorage.setItem(
+      RECENT_EMOJIS_STORAGE_KEY,
+      JSON.stringify([
+        "🎉",
+        ":party-parrot:",
+        "kitchen:1f431_1f600",
+        `apub:${"a".repeat(64)}::remote:`,
+      ]),
+    );
+    try {
+      renderRow(buildItem(), false, { canReact: true });
+      tapTouch(screen.getByText("hello"));
+      const sheet = await screen.findByRole("dialog", { name: "メッセージを操作" });
+      const group = within(sheet).getByRole("group", { name: "最近使った絵文字" });
+      expect(within(group).getByRole("button", { name: "🎉" })).toBeTruthy();
+      expect(within(group).getByRole("button", { name: ":party-parrot:" })).toBeTruthy();
+      expect(within(group).getByRole("button", { name: "🐱 + 😀" })).toBeTruthy();
+      // 画像付きリアクションはチャット API で扱えないので出さない。
+      expect(within(group).queryByRole("button", { name: ":remote:" })).toBeNull();
+
+      // 先頭以外を選ぶと、その値が先頭へ移動し既存の順序が保たれることを検証する。
+      await userEvent.click(within(group).getByRole("button", { name: ":party-parrot:" }));
+      expect(JSON.parse(localStorage.getItem(RECENT_EMOJIS_STORAGE_KEY)!)).toEqual([
+        ":party-parrot:",
+        "🎉",
+        "kitchen:1f431_1f600",
+        `apub:${"a".repeat(64)}::remote:`,
+      ]);
+    } finally {
+      localStorage.removeItem(RECENT_EMOJIS_STORAGE_KEY);
+    }
+  });
+
+  it("does not open the sheet while the message is being edited", () => {
+    const { container } = renderRow(buildItem(), false, { isEditing: true });
+    tapTouch(container.querySelector("div.group\\/row")!);
+    expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull();
+  });
+
+  it("does not open the sheet when a blurred span is tapped to reveal it", async () => {
+    const { container } = renderRow(buildItem({ content: "$[blur secret]" }));
+    const blur = container.querySelector(".mfm-blur");
+    expect(blur).not.toBeNull();
+    tapTouch(blur!);
+    expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull();
+  });
+
+  it("does not open the sheet when tapping inside a portaled preview", async () => {
+    renderRow(buildItem(), false, {
+      attachments: [
+        {
+          id: "attachment-1",
+          file_name: "image.png",
+          content_type: "image/png",
+        } as never,
+      ],
+    });
+    await userEvent.click(screen.getByRole("button", { name: "プレビューを開く" }));
+    // タッチでポータル内をタップする。contains チェックがないと裏のシートが開いてしまう。
+    tapTouch(screen.getByText("プレビュー内"));
+    expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull();
+  });
+
+  it("leaves the native context menu available for text selection", () => {
+    const { container } = renderRow(buildItem({ content: "hello https://example.com" }));
+    const row = container.querySelector("div.group\\/row")!;
+    expect(fireEvent.contextMenu(row)).toBe(true);
+    expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull();
   });
 
   it("offers the long-press menu as a keyboard fallback", async () => {
@@ -395,7 +558,7 @@ describe("MessageRow", () => {
     trigger.focus();
     expect(document.activeElement).toBe(trigger);
     await userEvent.keyboard("{Enter}");
-    const edit = screen.getByRole("menuitem", { name: "編集" });
+    const edit = screen.getByRole("menuitem", { name: "メッセージを編集" });
     edit.focus();
     await userEvent.keyboard("{Enter}");
     expect(onStartEdit).toHaveBeenCalledOnce();
@@ -481,7 +644,7 @@ describe("MessageRow", () => {
   it("groups the overflow menu and quick actions within one toolbar", () => {
     renderRow(buildItem(), true);
     const toolbar = document.querySelector("[data-message-toolbar]")!;
-    expect(toolbar.contains(screen.getByLabelText("編集"))).toBe(true);
+    expect(toolbar.contains(screen.getByLabelText("メッセージを編集"))).toBe(true);
     expect(toolbar.contains(screen.getByLabelText("その他の操作"))).toBe(true);
     expect(getComputedStyle(toolbar).pointerEvents).toBe("none");
     screen.getByLabelText("その他の操作").focus();
@@ -493,7 +656,7 @@ describe("MessageRow", () => {
     renderRow(buildItem(), false, { canDelete: true, onRequestDelete });
     screen.getByRole("button", { name: "その他の操作" }).focus();
     await userEvent.keyboard("{Enter}");
-    expect(screen.queryByRole("menuitem", { name: "編集" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "メッセージを編集" })).toBeNull();
     await userEvent.click(screen.getByRole("menuitem", { name: "削除" }));
     expect(onRequestDelete).toHaveBeenCalledOnce();
   });
@@ -583,6 +746,321 @@ describe("copy original message", () => {
   });
 });
 
+describe("copy message link", () => {
+  const channel_id = "channel-1";
+  async function openMenu() {
+    screen.getByRole("button", { name: "その他の操作" }).focus();
+    await userEvent.keyboard("{Enter}");
+  }
+
+  it("copies a link to a top-level message from the menu", async () => {
+    const copy = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+    const success = vi.spyOn(toast, "success").mockReturnValue("link-success");
+    try {
+      renderRow(buildItem({ channel_id }));
+      await openMenu();
+      await userEvent.click(screen.getByRole("menuitem", { name: "メッセージリンクをコピー" }));
+      await waitFor(() =>
+        expect(copy).toHaveBeenCalledWith(
+          `${window.location.origin}/channels/channel-1?message=message-1`,
+        ),
+      );
+      expect(copy).toHaveBeenCalledOnce();
+      await waitFor(() => expect(success).toHaveBeenCalledWith("メッセージリンクをコピーしました"));
+    } finally {
+      copy.mockRestore();
+      success.mockRestore();
+    }
+  });
+
+  it("links a thread reply together with the thread it belongs to", async () => {
+    const copy = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+    const success = vi.spyOn(toast, "success").mockReturnValue("link-success");
+    try {
+      renderRow(buildItem({ channel_id, parent_id: "thread-root" }));
+      await openMenu();
+      await userEvent.click(screen.getByRole("menuitem", { name: "メッセージリンクをコピー" }));
+      await waitFor(() =>
+        expect(copy).toHaveBeenCalledWith(
+          `${window.location.origin}/channels/channel-1?thread=thread-root&message=message-1`,
+        ),
+      );
+    } finally {
+      copy.mockRestore();
+      success.mockRestore();
+    }
+  });
+
+  it("sits next to the original-text copy and does not copy the body", async () => {
+    const copy = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+    const success = vi.spyOn(toast, "success").mockReturnValue("link-success");
+    try {
+      renderRow(buildItem({ channel_id, content: "secret body" }));
+      await openMenu();
+      const names = screen.getAllByRole("menuitem").map((item) => item.textContent);
+      expect(names.indexOf("メッセージリンクをコピー")).toBe(names.indexOf("原文をコピー") + 1);
+      await userEvent.click(screen.getByRole("menuitem", { name: "メッセージリンクをコピー" }));
+      await waitFor(() => expect(copy).toHaveBeenCalledOnce());
+      expect(copy.mock.calls[0]![0]).not.toContain("secret body");
+    } finally {
+      copy.mockRestore();
+      success.mockRestore();
+    }
+  });
+
+  it("copies the same link from the touch action sheet", async () => {
+    const copy = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+    const success = vi.spyOn(toast, "success").mockReturnValue("link-success");
+    try {
+      renderRow(buildItem({ channel_id }));
+      tapTouch(screen.getByText("hello"));
+      const sheet = await screen.findByRole("dialog", { name: "メッセージを操作" });
+      await userEvent.click(
+        within(sheet).getByRole("button", { name: "メッセージリンクをコピー" }),
+      );
+      await waitFor(() =>
+        expect(copy).toHaveBeenCalledWith(
+          `${window.location.origin}/channels/channel-1?message=message-1`,
+        ),
+      );
+      await waitFor(() => expect(success).toHaveBeenCalledWith("メッセージリンクをコピーしました"));
+      await waitFor(() =>
+        expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull(),
+      );
+    } finally {
+      copy.mockRestore();
+      success.mockRestore();
+    }
+  });
+
+  it("reports a denied clipboard write without reporting success", async () => {
+    const copy = vi
+      .spyOn(navigator.clipboard, "writeText")
+      .mockRejectedValue(new DOMException("Denied", "NotAllowedError"));
+    const error = vi.spyOn(toast, "error").mockReturnValue("link-error");
+    const success = vi.spyOn(toast, "success").mockReturnValue("link-success");
+    try {
+      renderRow(buildItem({ channel_id }));
+      await openMenu();
+      await userEvent.click(screen.getByRole("menuitem", { name: "メッセージリンクをコピー" }));
+      await waitFor(() =>
+        expect(error).toHaveBeenCalledWith("メッセージリンクをコピーできませんでした"),
+      );
+      expect(success).not.toHaveBeenCalled();
+    } finally {
+      copy.mockRestore();
+      error.mockRestore();
+      success.mockRestore();
+    }
+  });
+
+  it("hides the action when the row does not know its channel", async () => {
+    renderRow(buildItem());
+    await openMenu();
+    expect(screen.getByRole("menuitem", { name: "原文をコピー" })).toBeVisible();
+    expect(screen.queryByRole("menuitem", { name: "メッセージリンクをコピー" })).toBeNull();
+  });
+});
+
+/** 「…」メニューと操作シートに並ぶ項目。出る条件がそろったときの順序。 */
+const MENU_LABELS = [
+  "リアクションを追加",
+  "スレッドを開く",
+  "メッセージを編集",
+  "原文をコピー",
+  "メッセージリンクをコピー",
+  "Appでメッセージを操作",
+  "削除",
+] as const;
+
+describe("link target highlight", () => {
+  const overlay = () => document.querySelector<HTMLElement>("[data-message-target-highlight]");
+
+  /** 重ね層のアニメーションを止めて、指定した時刻（ms）の不透明度を読む。実時間を待たない。 */
+  async function opacityAt(element: HTMLElement, ms: number) {
+    await waitFor(() => expect(element.getAnimations()).toHaveLength(1));
+    const animation = element.getAnimations()[0]!;
+    animation.pause();
+    animation.currentTime = ms;
+    return Number(getComputedStyle(element).opacity);
+  }
+
+  // テスト全体の「アニメーション停止」を外して、実際のアニメーションを検証する。
+  let restoreAnimations = () => {};
+  beforeEach(() => {
+    restoreAnimations = enableAnimations();
+  });
+  afterEach(async () => {
+    restoreAnimations();
+    await cdp().send("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-reduced-motion", value: "no-preference" }],
+    });
+  });
+
+  it("shows nothing unless a run is given", () => {
+    renderRow(buildItem());
+    expect(overlay()).toBeNull();
+  });
+
+  it("blinks three times in 0.5s, stays lit for 1.5s, then fades out in 0.5s", async () => {
+    renderRow(buildItem(), false, { highlightRun: 1 });
+    const element = overlay()!;
+    await waitFor(() => expect(element.getAnimations()).toHaveLength(1));
+    const timing = element.getAnimations()[0]!.effect!.getTiming();
+    // 全体は 2.5 秒。JS の MESSAGE_TARGET_FLASH_MS と同じ値。
+    expect(timing.duration).toBe(MESSAGE_TARGET_FLASH_MS);
+
+    // 0〜0.5 秒: 点灯・消灯を 3 回（点灯 83ms・消灯 83ms）。
+    for (const [ms, opacity] of [
+      [40, 1],
+      [120, 0],
+      [200, 1],
+      [290, 0],
+      [370, 1],
+      [450, 0],
+    ] as const) {
+      expect(await opacityAt(element, ms)).toBe(opacity);
+    }
+    // 0.5〜2.0 秒: 点灯を保つ。
+    for (const ms of [520, 1000, 1990]) expect(await opacityAt(element, ms)).toBe(1);
+    // 2.0〜2.5 秒: フェードアウトして、最後は消える。
+    const fading = await opacityAt(element, 2250);
+    expect(fading).toBeGreaterThan(0.3);
+    expect(fading).toBeLessThan(0.7);
+    expect(await opacityAt(element, 2500)).toBe(0);
+  });
+
+  it("restarts from the beginning each time the run changes", async () => {
+    const { update } = renderRow(buildItem(), false, { highlightRun: 1 });
+    const first = overlay()!;
+    expect(await opacityAt(first, 1500)).toBe(1);
+    update({ highlightRun: 2 });
+    await waitFor(() => expect(overlay()).not.toBe(first));
+    const second = overlay()!;
+    await waitFor(() => expect(second.getAnimations()).toHaveLength(1));
+    expect(Number(second.getAnimations()[0]!.currentTime)).toBeLessThan(500);
+    expect(second.getAnimations()[0]!.playState).toBe("running");
+  });
+
+  it("is a blue layer over the mention highlight, which stays after it fades out", async () => {
+    render(
+      <MentionUserNamesContext.Provider value={new Map([["user-viewer", "amesyu"]])}>
+        <LocaleProvider>
+          <MessageRow
+            item={buildItem({ user_id: "user-viewer", content: "@amesyu 確認をお願いします。" })}
+            isOwn
+            mentionUserId="user-viewer"
+            highlightRun={1}
+            isEditing={false}
+            editingText=""
+            onEditingTextChange={noop}
+            onStartEdit={noop}
+            onCancelEdit={noop}
+            onSaveEdit={noop}
+            onRequestDelete={noop}
+            reactions={[]}
+            kitchenCatalog={null}
+            canReact={false}
+            onReaction={noop}
+            onPickReaction={noop}
+          />
+        </LocaleProvider>
+      </MentionUserNamesContext.Provider>,
+    );
+    const element = overlay()!;
+    const row = element.closest<HTMLElement>(".group\\/row")!;
+    // メンションの強調と同じ領域に重なり、同じ形式（背景と左端の 3px のアクセント）を持つ。
+    expect(row.className).toContain("bg-mention/[0.08]");
+    expect(element.parentElement).toBe(row);
+    expect(getComputedStyle(element, "::before").width).toBe("3px");
+    expect(getComputedStyle(element).backgroundColor).not.toBe(
+      getComputedStyle(row).backgroundColor,
+    );
+    expect(
+      getComputedStyle(document.documentElement).getPropertyValue("--message-target").trim(),
+    ).toBe("#3b82f6");
+    // 点滅の間もメンションの強調はそのまま残り、フェードアウトのあとはメンションだけになる。
+    expect(await opacityAt(element, 120)).toBe(0);
+    expect(row.className).toContain("bg-mention/[0.08]");
+    expect(await opacityAt(element, 2500)).toBe(0);
+    expect(row.className).toContain("bg-mention/[0.08]");
+  });
+
+  it("does not blink under reduced motion, but still stays lit for 2s and fades out in 0.5s", async () => {
+    await cdp().send("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+    });
+    renderRow(buildItem(), false, { highlightRun: 1 });
+    const element = overlay()!;
+    await waitFor(() => expect(element.getAnimations()).toHaveLength(1));
+    // サイト全体の「ほぼ 0 秒」の設定に負けず、2.5 秒を保つ。
+    expect(getComputedStyle(element).animationName).toBe("message-target-steady");
+    expect(element.getAnimations()[0]!.effect!.getTiming().duration).toBe(MESSAGE_TARGET_FLASH_MS);
+    for (const ms of [40, 120, 450, 1000, 1990]) expect(await opacityAt(element, ms)).toBe(1);
+    const fading = await opacityAt(element, 2250);
+    expect(fading).toBeGreaterThan(0.3);
+    expect(fading).toBeLessThan(0.7);
+    expect(await opacityAt(element, 2500)).toBe(0);
+  });
+});
+
+describe("more menu order", () => {
+  async function menuLabels() {
+    screen.getByRole("button", { name: "その他の操作" }).focus();
+    await userEvent.keyboard("{Enter}");
+    await screen.findByRole("menu");
+    return screen.getAllByRole("menuitem").map((menuItem) => menuItem.textContent);
+  }
+
+  it("lists reaction, thread, edit, copy, link, App and delete in that order", async () => {
+    renderRow(buildItem({ channel_id: "channel-1" }), true, {
+      canReact: true,
+      canDelete: true,
+      onOpenThread: () => {},
+    });
+    expect(await menuLabels()).toEqual([...MENU_LABELS]);
+  });
+
+  /** 操作シートの項目名を、画面上の並びのまま取る（最近使った絵文字と閉じるボタンは除く）。 */
+  async function sheetLabels() {
+    tapTouch(screen.getByText("hello"));
+    const sheet = await screen.findByRole("dialog", { name: "メッセージを操作" });
+    const known = new Set<string>(MENU_LABELS);
+    return within(sheet)
+      .getAllByRole("button")
+      .map((button) => button.textContent?.trim() ?? "")
+      .filter((label) => known.has(label));
+  }
+
+  it("lists the same items in the same order in the touch action sheet", async () => {
+    renderRow(buildItem({ channel_id: "channel-1" }), true, {
+      canReact: true,
+      canDelete: true,
+      onOpenThread: () => {},
+    });
+    expect(await sheetLabels()).toEqual([...MENU_LABELS]);
+  });
+
+  it("keeps the touch action sheet order when items the viewer cannot use are left out", async () => {
+    renderRow(buildItem({ channel_id: "channel-1" }));
+    expect(await sheetLabels()).toEqual([
+      "原文をコピー",
+      "メッセージリンクをコピー",
+      "Appでメッセージを操作",
+    ]);
+  });
+
+  it("keeps the order when items the viewer cannot use are left out", async () => {
+    renderRow(buildItem({ channel_id: "channel-1" }));
+    expect(await menuLabels()).toEqual([
+      "リアクションを追加",
+      "原文をコピー",
+      "メッセージリンクをコピー",
+      "Appでメッセージを操作",
+    ]);
+  });
+});
+
 it.each([null, "thread-root"])(
   "places an edited marker after the final inline link (parent=%s)",
   async (parent_id) => {
@@ -619,4 +1097,59 @@ it("shows the last edit time when the marker receives keyboard focus", async () 
   await userEvent.keyboard("{Tab}");
   expect(screen.getByRole("img", { name: "編集済み" })).toHaveFocus();
   expect((await screen.findByRole("tooltip")).textContent).toContain("編集済み");
+});
+
+describe("message forwarding UI in MessageRow", () => {
+  it("places Forward below Open thread and above Edit message in desktop menu and touch sheet", async () => {
+    const onForward = vi.fn();
+    renderRow(buildItem({ channel_id: "channel-1" }), true, {
+      canReact: true,
+      canDelete: true,
+      onOpenThread: () => {},
+      onForward,
+    });
+
+    const expectedWithForward = [
+      "リアクションを追加",
+      "スレッドを開く",
+      "メッセージを転送…",
+      "メッセージを編集",
+      "原文をコピー",
+      "メッセージリンクをコピー",
+      "Appでメッセージを操作",
+      "削除",
+    ];
+
+    screen.getByRole("button", { name: "その他の操作" }).focus();
+    await userEvent.keyboard("{Enter}");
+    await screen.findByRole("menu");
+    const menuItems = screen.getAllByRole("menuitem").map((el) => el.textContent);
+    expect(menuItems).toEqual(expectedWithForward);
+
+    await userEvent.click(screen.getByRole("menuitem", { name: "メッセージを転送…" }));
+    expect(onForward).toHaveBeenCalledTimes(1);
+
+    tapTouch(screen.getByText("hello"));
+    const sheet = await screen.findByRole("dialog", { name: "メッセージを操作" });
+    const known = new Set(expectedWithForward);
+    const sheetButtons = within(sheet)
+      .getAllByRole("button")
+      .map((b) => b.textContent?.trim() ?? "")
+      .filter((label) => known.has(label));
+    expect(sheetButtons).toEqual(expectedWithForward);
+  });
+
+  it("allows saving empty text while editing a message with forwarded_message_ids", async () => {
+    const onSaveEdit = vi.fn();
+    renderRow(buildItem({ content: "", forwarded_message_ids: ["fwd-1"] }), true, {
+      isEditing: true,
+      editingText: "",
+      onSaveEdit,
+    });
+
+    const saveBtn = screen.getByRole("button", { name: "保存" });
+    expect(saveBtn).toBeEnabled();
+    await userEvent.click(saveBtn);
+    expect(onSaveEdit).toHaveBeenCalledTimes(1);
+  });
 });

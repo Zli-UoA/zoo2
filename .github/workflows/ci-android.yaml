@@ -24,8 +24,11 @@ on:
       - "frontend/src/lib/call/**"
       - "frontend/vite.android-phone.config.ts"
       - "frontend/scripts/android-phone-smoke.mjs"
+      - "frontend/scripts/media-preview-bundle.test.mjs"
+      - "frontend/.storybook/fixtures/**"
       - "frontend/src/lib/i18n/locales/**"
       - "frontend/public/icons/**"
+      - "frontend/public/emojibase-data/**"
       # zoo-crypto の UniFFI バインディング（#353）。APK に .so を入れ、単体テストでも使う。
       - "crates/zoo-crypto/**"
       - "crates/zoo-crypto-ffi/**"
@@ -57,8 +60,11 @@ on:
       - "frontend/src/lib/call/**"
       - "frontend/vite.android-phone.config.ts"
       - "frontend/scripts/android-phone-smoke.mjs"
+      - "frontend/scripts/media-preview-bundle.test.mjs"
+      - "frontend/.storybook/fixtures/**"
       - "frontend/src/lib/i18n/locales/**"
       - "frontend/public/icons/**"
+      - "frontend/public/emojibase-data/**"
       # zoo-crypto の UniFFI バインディング（#353）。APK に .so を入れ、単体テストでも使う。
       - "crates/zoo-crypto/**"
       - "crates/zoo-crypto-ffi/**"
@@ -74,7 +80,14 @@ concurrency:
   group: ci-android-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
+  test-selection:
+    if: github.event_name != 'pull_request'
+    uses: ./.github/workflows/select-tests.yaml
+    with:
+      workflow: ci-android
   android:
+    if: github.event_name != 'pull_request'
+    needs: test-selection
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -99,7 +112,7 @@ jobs:
           cmdline-tools-version: 13114758
           # NDK は zoo-crypto のバインディング（crates/zoo-crypto-ffi）を cargo-ndk でビルドするのに使う。
           # 版は flake.nix の androidNdkVersion と同じ。
-          packages: platform-tools platforms;android-35 build-tools;35.0.0 ndk;29.0.14206865
+          packages: platform-tools platforms;android-35 platforms;android-36 build-tools;35.0.0 ndk;29.0.14206865
           log-accepted-android-sdk-licenses: false
       - name: Use the Android NDK
         run: echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
@@ -153,7 +166,13 @@ jobs:
         run: cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked
       - name: Build, test and lint Android
         working-directory: frontend-compose
-        run: ./gradlew --no-daemon -Pzoo.android=true testDebugUnitTest :assembleDebugAndroidTest :androidApp:testDebugUnitTest :androidApp:assembleDebug :androidApp:lintDebug
+        run: ./gradlew --no-daemon -Pzoo.android=true -Pzoo.uiPreview=true testDebugUnitTest :assembleDebugAndroidTest :androidApp:testDebugUnitTest :androidApp:assembleDebug :androidApp:lintDebug :ui-preview:testDebugUnitTest
+      - name: Install Chromium for the APK media viewer test
+        if: needs.test-selection.outputs.androidMedia == 'true'
+        run: pnpm --dir frontend exec playwright install --with-deps chromium
+      - name: APK media viewer bundle smoke test
+        if: needs.test-selection.outputs.androidMedia == 'true'
+        run: node frontend/scripts/media-preview-bundle.test.mjs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: zoo-android-debug
@@ -165,7 +184,8 @@ jobs:
           name: zoo-android-test-reports
           path: |
             frontend-compose/build/reports/tests/
-            frontend-compose/build/reports/ui/
+            frontend-compose/ui-preview/build/reports/tests/
+            frontend-compose/ui-preview/build/reports/android-ui/
             frontend-compose/androidApp/build/reports/tests/
 
   publish-main:
@@ -203,7 +223,7 @@ jobs:
           cmdline-tools-version: 13114758
           # NDK は zoo-crypto のバインディング（crates/zoo-crypto-ffi）を cargo-ndk でビルドするのに使う。
           # 版は flake.nix の androidNdkVersion と同じ。
-          packages: platform-tools platforms;android-35 build-tools;35.0.0 ndk;29.0.14206865
+          packages: platform-tools platforms;android-35 platforms;android-36 build-tools;35.0.0 ndk;29.0.14206865
           log-accepted-android-sdk-licenses: false
       - name: Use the Android NDK
         run: echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
@@ -289,7 +309,7 @@ jobs:
           if [ "$latest" != "$GITHUB_SHA" ]; then
             # push の paths と同じ一覧。Android に関係しない新しいコミット (TUI など) はビルドを起動しないので、
             # それだけが後から入ったときは、このビルドが最新の Android と同じ内容として公開する。
-            paths=(frontend-compose frontend/src/android-phone frontend/src/lib/sip frontend/src/lib/call frontend/vite.android-phone.config.ts frontend/scripts/android-phone-smoke.mjs frontend/src/components/ui frontend/src/components/i18n frontend/src/lib/documents frontend/src/lib/i18n frontend/src/lib/attachments.ts frontend/src/lib/imageMetadata.ts frontend/src/styles.css frontend/src/media-preview-entry.tsx frontend/media-preview.html frontend/vite.media-preview.config.ts frontend/build frontend/package.json frontend/pnpm-lock.yaml frontend/tsconfig.json frontend/public/icons crates/zoo-crypto crates/zoo-crypto-ffi rust-toolchain.toml .github/workflows/ci-android.yaml '.github/scripts/android-update-manifest*.py')
+            paths=(frontend-compose frontend/src/android-phone frontend/src/lib/sip frontend/src/lib/call frontend/vite.android-phone.config.ts frontend/scripts/android-phone-smoke.mjs frontend/src/components/ui frontend/src/components/i18n frontend/src/lib/documents frontend/src/lib/i18n frontend/src/lib/attachments.ts frontend/src/lib/imageMetadata.ts frontend/src/styles.css frontend/src/media-preview-entry.tsx frontend/media-preview.html frontend/vite.media-preview.config.ts frontend/build frontend/package.json frontend/pnpm-lock.yaml frontend/tsconfig.json frontend/public/icons frontend/public/emojibase-data crates/zoo-crypto crates/zoo-crypto-ffi rust-toolchain.toml .github/workflows/ci-android.yaml '.github/scripts/android-update-manifest*.py')
             git fetch --quiet origin "$latest"
             if ! git diff --quiet "$GITHUB_SHA" "$latest" -- "${paths[@]}"; then
               echo "A newer main commit changes Android; skip this older build."

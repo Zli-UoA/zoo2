@@ -1,4 +1,6 @@
+mod calls;
 mod preview;
+pub(crate) use calls::dispatch_call_invites;
 
 use crate::{
     error::AppError,
@@ -14,6 +16,27 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::Mutex;
+
+#[derive(Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PushKind {
+    #[default]
+    Alert,
+    Voip,
+}
+
+impl PushKind {
+    pub fn registration_id(self, environment: &str, token: &str) -> String {
+        let prefix = if self == Self::Voip { "voip:" } else { "" };
+        digest(&format!("{prefix}{environment}:{token}"))
+    }
+}
+
+pub fn is_voip(subscription: &ApnsSubscription) -> bool {
+    // 既存端末のIDと解除能力を維持し、VoIPは用途を含むIDで区別する。
+    subscription.id
+        == PushKind::Voip.registration_id(&subscription.environment, &subscription.device_token)
+}
 
 pub struct ApnsConfig {
     team_id: String,
@@ -243,6 +266,9 @@ async fn deliver(
     .exec(db)
     .await?;
     for subscription in subscriptions {
+        if is_voip(&subscription) {
+            continue;
+        }
         let Some((_, config)) = configs
             .iter()
             .find(|(name, _)| *name == subscription.environment)
@@ -407,6 +433,11 @@ pub(crate) async fn test_device(
     subscription: &ApnsSubscription,
     test_id: &str,
 ) -> Result<(), AppError> {
+    if is_voip(subscription) {
+        return Err(AppError::BadRequest(
+            "通話用トークンにはテスト通知を送れません".into(),
+        ));
+    }
     let config = ApnsConfig::from_env(&subscription.environment)?
         .ok_or_else(|| AppError::ServiceUnavailable("端末の通知環境が設定されていません".into()))?;
     let client = client()?;

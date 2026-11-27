@@ -10,5 +10,7 @@
 services:
   frontend:
     build:
+      args:
+        ZOO_BUILD_SHA: ${GITHUB_SHA:-}
       cache_from:
         - type=gha,scope=ci-compose-frontend

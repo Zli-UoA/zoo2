@@ -12,7 +12,14 @@ function componentKey(value: string): string | null {
   const hex = /^[\da-f]+(?:-[\da-f]+)*$/i.test(value)
     ? value.toLowerCase().split("-")
     : Array.from(value, (character) => character.codePointAt(0)!.toString(16));
-  if (hex.length === 0 || hex.some((part) => Number.parseInt(part, 16) > 0x10ffff)) return null;
+  if (
+    hex.length === 0 ||
+    hex.some((part) => {
+      const point = Number.parseInt(part, 16);
+      return point > 0x10ffff || (point >= 0xd800 && point <= 0xdfff);
+    })
+  )
+    return null;
   return hex
     .filter((part) => part !== "fe0f")
     .map((part) => Number.parseInt(part, 16).toString(16))
@@ -36,6 +43,19 @@ export function reactionKey(value: string): string {
 
 export function kitchenValue(left: string, right: string): string {
   return `kitchen:${[left, right].sort().join("_")}`;
+}
+
+/** MFM-compatible shortcode, also understood by federated Emoji tags. */
+export function kitchenShortcode(value: string): string {
+  const parts = kitchenParts(value);
+  return parts ? `:kitchen_${parts.sort().join("_")}:` : value;
+}
+
+export function kitchenFromShortcode(name: string): string | null {
+  const match = /^kitchen_([a-f0-9]+(?:-[a-f0-9]+)*)_([a-f0-9]+(?:-[a-f0-9]+)*)$/.exec(name);
+  if (!match) return null;
+  const value = `kitchen:${match[1]}_${match[2]}`;
+  return kitchenParts(value) ? reactionKey(value) : null;
 }
 
 export function kitchenLabel(value: string): string {

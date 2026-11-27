@@ -1,6 +1,6 @@
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderValue, header},
     middleware,
     response::Response,
@@ -22,6 +22,17 @@ use crate::{
 #[derive(Deserialize)]
 pub struct MarkReadRequest {
     message_id: String,
+}
+
+#[derive(Deserialize)]
+pub struct DetailsQuery {
+    details: Option<String>,
+}
+
+impl DetailsQuery {
+    fn requested(&self) -> bool {
+        matches!(self.details.as_deref(), Some("1" | "true"))
+    }
 }
 
 pub fn router() -> Router<AppState> {
@@ -70,27 +81,96 @@ async fn authorize(
     Ok(())
 }
 
+/// Unread authors inspected per channel when the catch-up screen asks for details.
+pub const UNREAD_AUTHOR_LIMIT: i64 = 100;
+/// Root messages counted per unread author. One extra row signals "1000+".
+pub const UNREAD_PER_AUTHOR_SCAN: i64 = 1_001;
+/// Authors probed for the conversation's oldest unread message. Each probe is
+/// one bounded index lookup, independent of the author limit used for counts.
+pub const FIRST_UNREAD_AUTHOR_LIMIT: i64 = 1_000;
+/// Largest exact unread count reported by the API.
+pub const UNREAD_COUNT_MAX: i64 = 1_000;
+
 /// The production SQL is shared with bounded-work regression tests.
+///
+/// `details = false` only uses the author watermarks and never scans messages;
+/// the 10-second sidebar poll and the mark-read response use that form. The
+/// catch-up screen asks for `details = true` once when it opens the queue.
 #[doc(hidden)]
-pub fn states_sql(single: bool) -> String {
+pub fn states_sql(single: bool, details: bool) -> String {
     let scope = match single {
         true => "c.id = $2".to_string(),
         false => {
-            "EXISTS (SELECT 1 FROM channel_user cu WHERE cu.channel_id = c.id AND cu.user_id = $1)"
+            // Archived channels are read-only, so their leftover unread never belongs in the
+            // sidebar or the catch-up queue. The single-channel form stays available for them.
+            "c.archive_at IS NULL AND EXISTS (SELECT 1 FROM channel_user cu WHERE cu.channel_id = c.id AND cu.user_id = $1)"
                 .to_string()
         }
     };
+    let (detail_fields, detail_join) = if details {
+        (
+            format!(
+                r#",'unread_count', LEAST(COALESCE(u.n, 0), {UNREAD_COUNT_MAX}),
+        'unread_count_truncated', COALESCE(u.n, 0) > {UNREAD_COUNT_MAX}
+            OR COALESCE(u.extra_authors, 0) > 0,
+        'first_unread_at', f.first_at"#
+            ),
+            format!(
+                r#"LEFT JOIN LATERAL (
+            SELECT COALESCE(sum(per_author.n) FILTER (WHERE per_author.rn <= {UNREAD_AUTHOR_LIMIT}), 0)::int AS n,
+                   count(*) FILTER (WHERE per_author.rn > {UNREAD_AUTHOR_LIMIT})::int AS extra_authors
+            FROM (
+                SELECT a.user_id,
+                    row_number() OVER (ORDER BY a.latest_at DESC, a.user_id DESC) AS rn,
+                    (SELECT count(*)::int FROM (
+                        SELECT 1 FROM messages m
+                        WHERE m.channel_id = a.channel_id AND m.user_id = a.user_id
+                          AND m.parent_id IS NULL AND m.deleted_at IS NULL
+                          AND m.created_at > COALESCE(r.last_read_at, '-infinity'::timestamp)
+                        LIMIT {UNREAD_PER_AUTHOR_SCAN}
+                    ) counted) AS n
+                FROM channel_message_authors a
+                WHERE a.channel_id = c.id AND a.user_id <> $1
+                  AND a.latest_at > COALESCE(r.last_read_at, '-infinity'::timestamp)
+                ORDER BY a.latest_at DESC, a.user_id DESC LIMIT {UNREAD_AUTHOR_LIMIT} + 1
+            ) per_author
+        ) u ON h.has_unread
+        LEFT JOIN LATERAL (
+            SELECT min(firsts.at) AS first_at
+            FROM (
+                SELECT (
+                    SELECT m.created_at FROM messages m
+                    WHERE m.channel_id = a.channel_id AND m.user_id = a.user_id
+                      AND m.parent_id IS NULL AND m.deleted_at IS NULL
+                      AND m.created_at > COALESCE(r.last_read_at, '-infinity'::timestamp)
+                    ORDER BY m.created_at LIMIT 1
+                ) AS at
+                FROM channel_message_authors a
+                WHERE a.channel_id = c.id AND a.user_id <> $1
+                  AND a.latest_at > COALESCE(r.last_read_at, '-infinity'::timestamp)
+                ORDER BY a.latest_at DESC, a.user_id DESC LIMIT {FIRST_UNREAD_AUTHOR_LIMIT}
+            ) firsts
+        ) f ON h.has_unread"#
+            ),
+        )
+    } else {
+        (String::new(), String::new())
+    };
     format!(
-        "SELECT json_build_object(
+        r#"SELECT json_build_object(
         'channel_id', c.id, 'last_read_at', r.last_read_at,
-        'has_unread', EXISTS (SELECT 1 FROM (
-            SELECT a.user_id FROM channel_message_authors a WHERE a.channel_id=c.id
-              AND a.latest_at>COALESCE(r.last_read_at,'-infinity'::timestamp)
-            ORDER BY a.latest_at DESC,a.user_id DESC LIMIT 2
-        ) latest WHERE latest.user_id<>$1)
+        'has_unread', h.has_unread{detail_fields}
         )::text FROM channels c LEFT JOIN channel_read_states r
         ON r.channel_id = c.id AND r.user_id = $1
-        WHERE c.deleted_at IS NULL AND {scope}"
+        LEFT JOIN LATERAL (
+            SELECT EXISTS (SELECT 1 FROM (
+                SELECT a.user_id FROM channel_message_authors a WHERE a.channel_id=c.id
+                  AND a.latest_at>COALESCE(r.last_read_at,'-infinity'::timestamp)
+                ORDER BY a.latest_at DESC,a.user_id DESC LIMIT 2
+            ) latest WHERE latest.user_id<>$1) AS has_unread
+        ) h ON true
+        {detail_join}
+        WHERE c.deleted_at IS NULL AND {scope}"#
     )
 }
 
@@ -98,8 +178,9 @@ async fn states(
     tx: &mut toasty::Transaction<'_>,
     actor: &str,
     channel: Option<&str>,
+    details: bool,
 ) -> Result<Vec<Value>, AppError> {
-    let sql = states_sql(channel.is_some());
+    let sql = states_sql(channel.is_some(), details);
     let mut query = toasty::sql::query(sql).bind(actor);
     if let Some(id) = channel {
         query = query.bind(id);
@@ -119,10 +200,13 @@ async fn states(
 async fn list(
     State(state): State<AppState>,
     actor: AuthUser,
+    Query(query): Query<DetailsQuery>,
 ) -> Result<Json<Vec<Value>>, AppError> {
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    Ok(Json(states(&mut tx, &actor.id, None).await?))
+    Ok(Json(
+        states(&mut tx, &actor.id, None, query.requested()).await?,
+    ))
 }
 
 async fn show(
@@ -133,7 +217,7 @@ async fn show(
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     authorize(&mut tx, &actor.id, &channel_id).await?;
-    let state = states(&mut tx, &actor.id, Some(&channel_id))
+    let state = states(&mut tx, &actor.id, Some(&channel_id), false)
         .await?
         .pop()
         .ok_or_else(|| AppError::NotFound("Channel not found".into()))?;
@@ -168,7 +252,7 @@ async fn mark_read(
         .bind(message.created_at.to_string())
         .exec(&mut tx)
         .await?;
-    let result = states(&mut tx, &actor.id, Some(&channel_id))
+    let result = states(&mut tx, &actor.id, Some(&channel_id), false)
         .await?
         .pop()
         .ok_or_else(|| AppError::NotFound("Channel not found".into()))?;

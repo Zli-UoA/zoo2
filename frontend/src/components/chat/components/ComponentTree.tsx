@@ -22,8 +22,8 @@ import { Select } from "../../ui/select";
 import { SensitiveMedia } from "../../ui/sensitive-media";
 import { Textarea } from "../../ui/textarea";
 import { MfmContent } from "../messages/MfmContent";
-import { proxyImageUrl } from "../messages/linkPreviews";
-import { subscribePreviewEndpoints } from "../messages/linkPreviewEndpoints";
+import { proxyImageUrl } from "../../../lib/media-proxy";
+import { subscribePreviewEndpoints } from "../../../lib/preview-endpoints";
 import {
   T,
   accentColor,
@@ -413,6 +413,7 @@ function Node({ c }: { c: Component }): ReactNode {
         </div>
       );
     case T.TaskCard:
+      // 部品の JSON は型上共通フィールドしか見えないが Task の形で届く（アプリ内の JSON 境界）。
       return <TaskRow task={c as unknown as Task} />;
     case T.Thumbnail:
       return (

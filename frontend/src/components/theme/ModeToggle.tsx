@@ -6,10 +6,10 @@ import { useTheme } from "./ThemeProvider";
 import { isTheme, type Theme } from "./theme";
 
 const OPTIONS = [
-  { value: "light", label: "theme.light", icon: SunIcon },
-  { value: "dark", label: "theme.dark", icon: MoonIcon },
-  { value: "system", label: "theme.system", icon: MonitorIcon },
-] as const satisfies readonly { value: Theme; label: string; icon: typeof SunIcon }[];
+  { value: "light", icon: SunIcon },
+  { value: "dark", icon: MoonIcon },
+  { value: "system", icon: MonitorIcon },
+] as const satisfies readonly { value: Theme; icon: typeof SunIcon }[];
 
 /** Icon-only, single-choice theme selection with arrow-key navigation. */
 export function ModeToggle() {
@@ -24,14 +24,23 @@ export function ModeToggle() {
           if (isTheme(value)) setTheme(value);
         }}
       >
-        {OPTIONS.map(({ value, label, icon: Icon }) => (
-          <Tooltip key={value}>
-            <TooltipTrigger render={<ButtonGroupItem value={value} aria-label={t(label)} />}>
-              <Icon aria-hidden="true" />
-            </TooltipTrigger>
-            <TooltipContent>{t(label)}</TooltipContent>
-          </Tooltip>
-        ))}
+        {OPTIONS.map(({ value, icon: Icon }) => {
+          // 前方一致にすると未使用の theme.* まで検査できなくなるので、キーをリテラルで書く。
+          const label =
+            value === "light"
+              ? t("theme.light")
+              : value === "dark"
+                ? t("theme.dark")
+                : t("theme.system");
+          return (
+            <Tooltip key={value}>
+              <TooltipTrigger render={<ButtonGroupItem value={value} aria-label={label} />}>
+                <Icon aria-hidden="true" />
+              </TooltipTrigger>
+              <TooltipContent>{label}</TooltipContent>
+            </Tooltip>
+          );
+        })}
       </ButtonGroup>
     </TooltipProvider>
   );

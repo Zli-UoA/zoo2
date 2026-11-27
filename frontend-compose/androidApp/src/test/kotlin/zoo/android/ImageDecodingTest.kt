@@ -41,7 +41,11 @@ class ImageDecodingTest {
             override fun translate(key: String, args: Map<String, String>) = key
             override fun time(timestamp: String) = timestamp
             override fun day(timestamp: String) = timestamp
-            override suspend fun image(url: String): ByteArray { requested += url; return bytes }
+            override suspend fun image(url: String): ByteArray {
+                requested += url
+                return if (url.endsWith("/broken")) byteArrayOf(1, 2, 3) else bytes
+            }
+            override suspend fun refreshImage(url: String): ByteArray = bytes
             override fun imageFrames(bytes: ByteArray) = flow {
                 decodes++
                 emit(decodeOrientedBitmap(bytes).asImageBitmap())
@@ -61,6 +65,12 @@ class ImageDecodingTest {
             }
             assertEquals(3, decodes)
             assertEquals(listOf("https://media.test/preview", "https://media.test/icon", "https://media.test/avatar"), requested)
+            val broken = "https://media.test/broken"
+            assertFailsWith<IllegalArgumentException> { app.imageBitmap(broken) }
+            assertFailsWith<IllegalArgumentException> { app.imageBitmap(broken) }
+            assertEquals(1, requested.count { it == broken })
+            assertEquals(2048, app.imageBitmap(broken, retry = true).width)
+            assertEquals(2048, app.cachedImageBitmap(broken)?.width)
         } finally { app.close() }
     }
 

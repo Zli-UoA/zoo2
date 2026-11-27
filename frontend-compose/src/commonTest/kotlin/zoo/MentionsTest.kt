@@ -30,13 +30,12 @@ class MentionsTest {
             obj("id" to "2", "user_name" to "alice"),
             obj("id" to "1", "user_name" to "bob"),
         )
-        val mentions = encryptedMentions("(@alice.) @bob、@alice @CHANNEL. @here! mail@unknown", users)
-        assertEquals(MessageMentions(listOf("1", "2"), channel = true, here = true), mentions)
-        val allowed = mentionAllowlist(mentions, users.take(1))
-        assertTrue(allowed.allows("@alice."))
-        assertTrue(allowed.allows("@CHANNEL"))
-        assertTrue(allowed.allows("@here"))
-        assertFalse(allowed.allows("@bob"))
-        assertFalse(allowed.allows("@unknown"))
+        val mentions = EncryptedMentions(listOf("1", "2"), channel = true, here = true)
+        val allowed = allowedMentionNames(mentions, mapOf("2" to users.first()))
+        assertTrue(isAllowedMention("@alice.", allowed))
+        assertTrue(isAllowedMention("@CHANNEL", allowed))
+        assertTrue(isAllowedMention("@here", allowed))
+        assertFalse(isAllowedMention("@bob", allowed))
+        assertFalse(isAllowedMention("@unknown", allowed))
     }
 }

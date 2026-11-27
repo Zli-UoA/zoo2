@@ -32,7 +32,7 @@ use serde_json::Value;
 use super::{
     crypto,
     export::{SlackMessage, SlackUser},
-    worker::{Context, FilePolicy, insert_message, suppress_app_events},
+    worker::{Context, FilePolicy, insert_message, resolve_message_users, suppress_app_events},
 };
 use crate::{apps::query, error::AppError, state::AppState};
 
@@ -231,6 +231,14 @@ pub(super) enum SyncError {
     NoAccess(String),
     InvalidCursor,
     LeaseLost,
+    /// 取り込み先 (`slack_channels.channel_id`) が変わった。保存済みの途中経過は、新しい取り込み先には使えない
+    TargetChanged,
+    /// 取り込み先が、非公開の Slack チャンネルの内容を保護しなくなった (公開・削除済み)。
+    /// ヒントは消費せず、同期もその場で止める
+    PrivateTargetViolation,
+    /// ヒントの反映前に確かめる `conversations.info` が一時的な失敗 (HTTP 5xx など) で終わった。
+    /// ヒントは消費せず、同期は指数バックオフでやり直す
+    PrivacyCheckFailed(String),
     Failed(String),
 }
 
@@ -242,6 +250,12 @@ impl From<AppError> for SyncError {
 
 /// キューから 1 チャンネルを取り、進められるところまで進める。取ったら true
 pub async fn run_once(s: &AppState) -> Result<bool, AppError> {
+    run_once_for_team(s, "").await
+}
+
+/// Process one queued channel, optionally limited to a single workspace.
+/// An empty team preserves the worker's normal global queue behavior.
+pub async fn run_once_for_team(s: &AppState, team: &str) -> Result<bool, AppError> {
     let Some(key) = s
         .config
         .slack
@@ -251,7 +265,7 @@ pub async fn run_once(s: &AppState) -> Result<bool, AppError> {
     else {
         return Ok(false);
     };
-    let Some(task) = claim(s).await? else {
+    let Some(task) = claim(s, team).await? else {
         return Ok(false);
     };
     let result = sync_channel(s, &key, &task).await;
@@ -270,9 +284,25 @@ pub async fn run_once(s: &AppState) -> Result<bool, AppError> {
         }
         Err(SyncError::InvalidCursor) => {
             // ページのカーソルが期限切れ。保存済みの位置を捨てて、カーソルの続きから取り直す (取り込みは冪等)
-            reset_run(s, &task).await?;
+            reset_run(s, &task, "invalid_cursor").await?;
         }
-        Err(SyncError::Failed(error)) => {
+        Err(SyncError::TargetChanged) => {
+            // 対応先が変わった。古い対応先のページ位置や取り込みの途中経過は、新しい対応先には使えない
+            tracing::info!(team = %task.team_id, channel = %task.slack_channel_id, "Slack sync target changed; resetting the interrupted run");
+            reset_run(s, &task, "Slack sync target changed or no longer exists").await?;
+        }
+        Err(SyncError::PrivateTargetViolation) => {
+            // 対応先が、非公開の Slack チャンネルの内容を保護しなくなった。保存済みの途中経過ごと捨てて、
+            // 新しい同期としてやり直す (ヒントは消費しない)
+            tracing::info!(team = %task.team_id, channel = %task.slack_channel_id, "Slack sync target no longer protects private channel content; resetting the interrupted run");
+            reset_run(
+                s,
+                &task,
+                "Slack sync target changed or no longer protects private channel content",
+            )
+            .await?;
+        }
+        Err(SyncError::Failed(error) | SyncError::PrivacyCheckFailed(error)) => {
             tracing::warn!(team = %task.team_id, channel = %task.slack_channel_id, %error, "Slack sync failed");
             let secs = (30u64 << task.attempts.clamp(0, 7) as u32).min(3600);
             release(s, &task, secs, Some(&error), true).await?;
@@ -288,7 +318,7 @@ pub async fn run_once(s: &AppState) -> Result<bool, AppError> {
 /// 期限の来たほかのチャンネルを止めないため。続きは、これまでどおり期限の順)。
 /// SQL variants are exposed for the bounded-work integration tests.
 #[doc(hidden)]
-pub fn claim_sql(wake: bool) -> String {
+pub fn claim_sql(wake: bool, team: bool) -> String {
     let (from, readiness) = if wake {
         (
             "slack_channel_wakes w JOIN slack_channel_syncs t ON t.team_id=w.team_id AND t.slack_channel_id=w.slack_channel_id",
@@ -299,13 +329,18 @@ pub fn claim_sql(wake: bool) -> String {
     } else {
         ("slack_channel_syncs t", "t.available_at<=now()".into())
     };
+    // チーム指定と全体で条件を分ける。`$2='' OR t.team_id=$2` の 1 文にすると、
+    // prepared statement が generic plan に切り替わったときにチーム用 index を選べず、
+    // 指定チームに候補がない場合に他チームの期限到来行を先頭から走査する。
+    let team_filter = if team { "t.team_id=$2" } else { "$2=''" };
     include_str!("claim.sql")
         .replace("/* candidate_from */", from)
+        .replace("/* team_filter */", team_filter)
         .replace("/* readiness */", &readiness)
         .replace("{LEASE_SQL}", LEASE_SQL)
 }
 
-async fn claim(s: &AppState) -> Result<Option<Task>, AppError> {
+async fn claim(s: &AppState, team: &str) -> Result<Option<Task>, AppError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     let token = uuid::Uuid::new_v4().to_string();
@@ -313,7 +348,7 @@ async fn claim(s: &AppState) -> Result<Option<Task>, AppError> {
     // 取り込みが一度も終わっていないチャンネル (カーソルがない) は、全履歴を取らないよう同期しない
     let mut rows = Vec::new();
     for wake in [true, false] {
-        rows = query(&mut tx, &claim_sql(wake), &[&token]).await?;
+        rows = query(&mut tx, &claim_sql(wake, !team.is_empty()), &[&token, team]).await?;
         if !rows.is_empty() {
             break;
         }
@@ -371,17 +406,17 @@ async fn release(
     Ok(())
 }
 
-async fn reset_run(s: &AppState, task: &Task) -> Result<(), AppError> {
+async fn reset_run(s: &AppState, task: &Task, reason: &str) -> Result<(), AppError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     query(
         &mut tx,
         "UPDATE slack_channel_syncs SET running=false,phase='history',run_oldest=NULL,run_max_ts=NULL,\
          page_cursor=NULL,pending_threads='[]',lease_until=NULL,lease_token=NULL,available_at=now(),\
-         swept_at=NULL,run_light=false,last_error='invalid_cursor',updated_at=now() \
+         swept_at=NULL,run_light=false,last_error=$4,updated_at=now() \
          WHERE team_id=$1 AND slack_channel_id=$2 AND lease_token=$3 \
          RETURNING json_build_object('ok',true)::text",
-        &[&task.team_id, &task.slack_channel_id, &task.token],
+        &[&task.team_id, &task.slack_channel_id, &task.token, reason],
     )
     .await?;
     tx.commit().await?;
@@ -403,12 +438,11 @@ pub(super) struct Slack {
 }
 
 impl Slack {
-    /// 1 人のトークンだけで Slack を呼ぶ (ユーザーが自分で始める取り込み用)
-    pub(super) fn single(
-        s: &AppState,
+    /// 全リンク済みトークンで Slack クライアントを組み立てる
+    pub(super) fn from_tokens(
+        base: String,
         key: [u8; 32],
-        user: &str,
-        enc: &str,
+        tokens: Vec<(String, String)>,
     ) -> Result<Self, AppError> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
@@ -417,11 +451,25 @@ impl Slack {
             .map_err(|e| AppError::Internal(e.into()))?;
         Ok(Self {
             client,
-            base: s.config.slack.api_base_url.clone(),
+            base,
             key,
-            tokens: vec![(user.to_string(), enc.to_string())],
+            tokens,
             index: 0,
         })
+    }
+
+    /// 1 人のトークンだけで Slack を呼ぶ (ユーザーが自分で始める取り込み用)
+    pub(super) fn single(
+        s: &AppState,
+        key: [u8; 32],
+        user: &str,
+        enc: &str,
+    ) -> Result<Self, AppError> {
+        Self::from_tokens(
+            s.config.slack.api_base_url.clone(),
+            key,
+            vec![(user.to_string(), enc.to_string())],
+        )
     }
 
     /// 今使っているトークンの位置。`NoAccess` で全トークンを試し切ると、位置が末尾まで進み、後続の呼び出しが
@@ -555,14 +603,10 @@ fn first_oldest(task: &Task) -> String {
     }
 }
 
-/// スレッドの親になれる投稿か。入退室・トピック変更などのシステム通知は、スレッドにできない
-/// (`conversations.replies` が `thread_not_found` になる) ので、候補から外す
-fn threadable(message: &SlackMessage) -> bool {
-    message.is_importable()
-        && message
-            .subtype
-            .as_deref()
-            .is_none_or(|t| !(t.starts_with("channel_") || t.starts_with("group_")))
+/// スレッドの親になれる投稿か。親投稿自身の取り込み可否とは独立して判定し、
+/// 入退室・トピック変更などのシステム通知だけは `conversations.replies` 対象から外す。
+pub(super) fn threadable(message: &SlackMessage) -> bool {
+    message.is_thread_root_candidate()
 }
 
 fn now_secs() -> u64 {
@@ -591,8 +635,13 @@ struct Progress {
     light: bool,
 }
 
-async fn load_tokens(s: &AppState, task: &Task) -> Result<Vec<(String, String)>, AppError> {
-    let mut db = s.db.clone();
+pub(super) async fn load_channel_tokens(
+    db: &mut toasty::Db,
+    team_id: &str,
+    channel_id: &str,
+    private: bool,
+    preferred_user_id: Option<&str>,
+) -> Result<Vec<(String, String)>, AppError> {
     let mut tx = db.transaction().await?;
     // 非公開の zoo チャンネルは、そのメンバーのトークンだけを使う。公開なら、メンバーを先にして、ほかの人も使う。
     // 前回読めたトークンを先に試す
@@ -605,10 +654,10 @@ async fn load_tokens(s: &AppState, task: &Task) -> Result<Vec<(String, String)>,
          EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=$2 AND cu.user_id=l.user_id) DESC,\
          l.updated_at DESC,l.user_id",
         &[
-            &task.team_id,
-            &task.channel_id,
-            if task.private { "true" } else { "false" },
-            task.token_user_id.as_deref().unwrap_or(""),
+            team_id,
+            channel_id,
+            if private { "true" } else { "false" },
+            preferred_user_id.unwrap_or(""),
         ],
     )
     .await?;
@@ -624,6 +673,18 @@ async fn load_tokens(s: &AppState, task: &Task) -> Result<Vec<(String, String)>,
         })
         .collect();
     Ok(tokens)
+}
+
+async fn load_tokens(s: &AppState, task: &Task) -> Result<Vec<(String, String)>, AppError> {
+    let mut db = s.db.clone();
+    load_channel_tokens(
+        &mut db,
+        &task.team_id,
+        &task.channel_id,
+        task.private,
+        task.token_user_id.as_deref(),
+    )
+    .await
 }
 
 async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step, SyncError> {
@@ -659,16 +720,8 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
 
     // 再開のときも、毎回確かめる。保存した途中経過のあとで、取り込み先が公開に変わっていることがある。
     // 非公開の Slack チャンネルの履歴を、公開の zoo チャンネルに入れない
-    let info = slack
-        .get(
-            "conversations.info",
-            &[("channel", task.slack_channel_id.as_str())],
-        )
-        .await?;
-    let channel = &info["channel"];
-    let slack_private = ["is_private", "is_im", "is_mpim", "is_group"]
-        .iter()
-        .any(|k| channel[*k] == true);
+    let mut slack_private = false;
+    refresh_slack_privacy(&mut slack, &task.slack_channel_id, &mut slack_private).await?;
     if slack_private && !task.private {
         return Ok(Step::Park(
             6 * 3600,
@@ -704,6 +757,7 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
         team: task.team_id.clone(),
         users: HashMap::new(),
         profiles: HashMap::new(),
+        fallback_names: HashMap::new(),
         channel_names: HashMap::new(),
         files: FilePolicy::new(s),
         app_id: s.config.slack.app_id.clone(),
@@ -740,6 +794,7 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
             task.team_id.as_str(),
             task.slack_channel_id.as_str(),
             task.channel_id.as_str(),
+            &mut slack_private,
             task.token.as_str(),
             &mut db,
         )
@@ -754,6 +809,7 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
             task.team_id.as_str(),
             task.slack_channel_id.as_str(),
             task.channel_id.as_str(),
+            &mut slack_private,
             task.token.as_str(),
             &mut db,
         )
@@ -776,6 +832,9 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
                 params.push(("cursor", cursor));
             }
             let page = slack.get("conversations.history", &params).await?;
+            // ページを取った時点で公開だった Slack チャンネルが、保存の前に非公開へ変わることがある。
+            // ページは可視性を運ばないので、保存の前に確かめる
+            refresh_slack_privacy(&mut slack, &task.slack_channel_id, &mut slack_private).await?;
             let messages = parse_messages(&page);
             let horizon = now_secs().saturating_sub(THREAD_WINDOW_SECS);
             for message in &messages {
@@ -868,7 +927,16 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
                     }
                 }
             }
-            store(&mut slack, &mut ctx, task, &progress, &messages, &mut db).await?;
+            store(
+                &mut slack,
+                &mut ctx,
+                task,
+                slack_private,
+                &progress,
+                &messages,
+                &mut db,
+            )
+            .await?;
         } else {
             let Some(thread) = progress.pending.first().cloned() else {
                 return finish(s, task, &progress).await;
@@ -888,11 +956,22 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
                 Err(SyncError::Failed(e)) if e.ends_with("thread_not_found") => {
                     progress.pending.remove(0);
                     progress.cursor = None;
-                    store(&mut slack, &mut ctx, task, &progress, &[], &mut db).await?;
+                    store(
+                        &mut slack,
+                        &mut ctx,
+                        task,
+                        slack_private,
+                        &progress,
+                        &[],
+                        &mut db,
+                    )
+                    .await?;
                     continue;
                 }
                 Err(e) => return Err(e),
             };
+            // 履歴と同じく、保存の前に、ページを取った時点の可視性ではなく今の可視性を確かめる
+            refresh_slack_privacy(&mut slack, &task.slack_channel_id, &mut slack_private).await?;
             let messages = parse_messages(&page);
             let next = page["response_metadata"]["next_cursor"]
                 .as_str()
@@ -903,7 +982,16 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
             if !more {
                 progress.pending.remove(0);
             }
-            store(&mut slack, &mut ctx, task, &progress, &messages, &mut db).await?;
+            store(
+                &mut slack,
+                &mut ctx,
+                task,
+                slack_private,
+                &progress,
+                &messages,
+                &mut db,
+            )
+            .await?;
         }
     }
     if progress.phase == "threads" && progress.pending.is_empty() {
@@ -912,22 +1000,133 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
     Ok(Step::More)
 }
 
+/// ZIP 再マッピング等で `slack_channels` の対応先が変わっていないか、`FOR SHARE` で固定して確かめる。
+pub(super) async fn ensure_target_unchanged(
+    tx: &mut toasty::Transaction<'_>,
+    team: &str,
+    slack_channel: &str,
+    zoo_channel: &str,
+) -> Result<(), SyncError> {
+    let mapping = query(
+        tx,
+        "SELECT json_build_object('valid',channel_id=$3)::text FROM slack_channels \
+         WHERE team_id=$1 AND slack_channel_id=$2 FOR SHARE",
+        &[team, slack_channel, zoo_channel],
+    )
+    .await?;
+    if mapping.first().is_none_or(|row| row["valid"] != true) {
+        return Err(SyncError::TargetChanged);
+    }
+    Ok(())
+}
+
+/// `conversations.info` の `channel` が非公開か (IM・MPIM を含む) を判定する。
+///
+/// Fail closed: `is_private` が明示的に `false` で、かつ非公開・DM のフラグがどれも `true` でない
+/// ときだけ公開とみなす。`is_private` がない応答や、形の違う応答は非公開として扱い、非公開の
+/// Slack チャンネルの内容を公開の取り込み先へ書かない。
+pub(super) fn channel_is_private(channel: &Value) -> bool {
+    channel.get("is_private").and_then(Value::as_bool) != Some(false)
+        || ["is_im", "is_mpim", "is_group"]
+            .iter()
+            .any(|k| channel[*k] == true)
+}
+
+/// Slack のチャンネルが今も非公開か (IM・MPIM を含む) を `conversations.info` で確かめ、非公開なら
+/// `slack_private` を立てる。同期の途中で公開から非公開に変わった Slack チャンネルの内容を、公開の
+/// 取り込み先へ書かないために、ページを取ったあと (保存の前) に呼ぶ。すでに非公開と分かっていれば呼ばない。
+pub(super) async fn refresh_slack_privacy(
+    slack: &mut Slack,
+    slack_channel: &str,
+    slack_private: &mut bool,
+) -> Result<(), SyncError> {
+    if *slack_private {
+        return Ok(());
+    }
+    let info = slack
+        .get("conversations.info", &[("channel", slack_channel)])
+        .await?;
+    *slack_private |= channel_is_private(&info["channel"]);
+    Ok(())
+}
+
+/// 取り込み先のチャンネルが、削除されておらず、非公開の Slack チャンネルの内容を保護しているか
+/// (非公開の Slack チャンネルは、非公開の zoo チャンネルにしか入れない) を `FOR SHARE` で固定して確かめる。
+/// 対応表 (`slack_channels`) は、先に `ensure_target_unchanged` で固定しておく。
+pub(super) async fn ensure_private_target(
+    tx: &mut toasty::Transaction<'_>,
+    zoo_channel: &str,
+    slack_private: bool,
+) -> Result<(), SyncError> {
+    let target = query(
+        tx,
+        "SELECT json_build_object('valid',deleted_at IS NULL AND (NOT $2::boolean OR is_private))::text \
+         FROM channels WHERE id=$1 FOR SHARE",
+        &[zoo_channel, if slack_private { "true" } else { "false" }],
+    )
+    .await?;
+    if target.first().is_none_or(|row| row["valid"] != true) {
+        return Err(SyncError::PrivateTargetViolation);
+    }
+    Ok(())
+}
+
 /// 1 ページ分の投稿と途中経過を、同じトランザクションで保存する
+///
+/// ## メッセージ由来の名前を使わない (TOCTOU 対策)
+///
+/// `conversations.history` / `conversations.replies` のページは、ページを取った時点の
+/// チャンネルの可視性 (公開・非公開) を返さない。`conversations.info` を同期の最初に 1 回
+/// (またはページごとに) 確かめても、「ページを取る時点」と「保存する時点」の間にチャンネルが
+/// 非公開へ切り替わる競合が残る (`ensure_private_target` は保存のトランザクション内で
+/// 確かめるので、それより前のページ取得は保護できない)。そこで差分同期では、
+/// `username`・`bot_profile.name` といったメッセージ由来の fallback 名を
+/// **一切**プレースホルダのワークスペース全体の表示名 (`users.display_name`) に使わない
+/// (`resolve_message_users` に `true` を渡して抑制する)。名前は `lookup_profiles` の
+/// `users.info` (ワークスペース全体の Slack プロフィール) だけで補い、引けなければ
+/// Slack ID の既定の名前のままにする。
 async fn store(
     slack: &mut Slack,
     ctx: &mut Context,
     task: &Task,
+    slack_private: bool,
     progress: &Progress,
     messages: &[SlackMessage],
     db: &mut toasty::Db,
 ) -> Result<(), SyncError> {
     // 投稿者の名前を調べる (トランザクションの外で行う。調べられなくても、Slack の ID の名前で作る)
     lookup_profiles(db, slack, ctx, messages).await?;
-    let mut importable: Vec<&SlackMessage> =
-        messages.iter().filter(|m| m.is_importable()).collect();
+    let mut importable: Vec<&SlackMessage> = messages
+        .iter()
+        .filter(|m| m.is_importable_for_team(Some(&task.team_id)))
+        .collect();
     importable.sort_by_key(|m| ts_key(&m.ts));
     let mut tx = db.transaction().await.map_err(AppError::from)?;
     suppress_app_events(&mut tx).await?;
+    // ZIP remapping takes this same Slack-channel lock before changing slack_channels.
+    // Take it before resolving users, then pin the mapping row before any channel row so
+    // the order stays advisory -> users -> mapping -> channel through message commit.
+    super::worker::lock_zip_target_advisory(&mut tx, &task.team_id, &task.slack_channel_id).await?;
+    // 空のページ (スレッドの `thread_not_found` での保存など) では誰も解決しない。
+    // `resolve_message_users` はワークスペース全体の `slack-link` ロックを取るので、
+    // 何も取り込まない保存のために全域のロックを取らない。
+    if !importable.is_empty() {
+        // 差分同期は、メッセージ由来の fallback 名をワークスペース全体の表示名に
+        // 使わない (上のドキュメントコメントどおり、ページは可視性を運ばない)。
+        resolve_message_users(&mut tx, ctx, &task.slack_channel_id, true, &importable).await?;
+        // 保存のトランザクションで 1 回だけ、削除済みの親への返信を許可する
+        // (このあとの投稿ループの `insert_message` が、返信の挿入と既存返信の
+        // スレッドへの再接続の両方を行う)。
+        super::worker::allow_deleted_thread_parent(&mut tx).await?;
+    }
+    ensure_target_unchanged(
+        &mut tx,
+        &task.team_id,
+        &task.slack_channel_id,
+        &task.channel_id,
+    )
+    .await?;
+
     let pending = serde_json::to_string(&progress.pending).unwrap_or_else(|_| "[]".into());
     let saved = query(
         &mut tx,
@@ -958,7 +1157,12 @@ async fn store(
     }
     // 同期の途中で取り込み先が暗号化に切り替わったら (#367)、平文を入れずに止める。次に取ったときに休ませる
     super::worker::ensure_plaintext_allowed(&mut tx, &task.channel_id).await?;
-    // 同じ区間をほかのトランザクションが同時に取り込んでも、決定的 ID で重複しない
+    // Recheck channel deletion and privacy after taking the channel lock. The
+    // mapping row is already pinned above through this transaction's commit.
+    ensure_private_target(&mut tx, &task.channel_id, slack_private).await?;
+    // 同じ区間をほかのトランザクションが同時に取り込んでも、決定的 ID で重複しない。
+    // API の最初の全履歴の同期 (`is_initial`) は履歴なので、直近の返信でも、再Openも再参加もしない
+    let live_replies = !is_initial(task);
     for message in importable {
         insert_message(
             &mut tx,
@@ -966,6 +1170,7 @@ async fn store(
             &task.slack_channel_id,
             &task.channel_id,
             "",
+            live_replies,
             message,
         )
         .await?;
@@ -983,7 +1188,10 @@ pub(super) async fn lookup_profiles(
 ) -> Result<(), SyncError> {
     let mut wanted: Vec<String> = Vec::new();
     let mut seen = HashSet::new();
-    for message in messages.iter().filter(|m| m.is_importable()) {
+    for message in messages
+        .iter()
+        .filter(|m| m.is_importable_for_team(Some(&ctx.team)))
+    {
         let authors = message.author().map(str::to_string).into_iter();
         let mentions = super::convert::mentioned_users(&message.text).into_iter();
         for id in authors.chain(mentions) {
@@ -1041,6 +1249,16 @@ pub(super) async fn lookup_profiles(
 async fn finish(s: &AppState, task: &Task, progress: &Progress) -> Result<Step, SyncError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await.map_err(AppError::from)?;
+    // store と同じ順序で、カーソル更新の間も対応先を固定する。store の commit 後に
+    // ZIP 再マッピングが起きても、古い task の max_ts で新しい対応先の cursor を進めない。
+    super::worker::lock_zip_target_advisory(&mut tx, &task.team_id, &task.slack_channel_id).await?;
+    ensure_target_unchanged(
+        &mut tx,
+        &task.team_id,
+        &task.slack_channel_id,
+        &task.channel_id,
+    )
+    .await?;
     // 新しい投稿があったときだけ、カーソルを進める (逆戻りはしない)。軽い同期 (監視中のスレッドの返信を取っていない)
     // は進めない。進めると、次の全部取り直しが、スレッドの返信を新しいカーソルから取るので、その前に付いた返信が
     // 範囲から外れる。履歴の取り直しは、決定的 ID で重複しない
@@ -1129,6 +1347,440 @@ async fn finish(s: &AppState, task: &Task, progress: &Progress) -> Result<Step, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[ignore = "requires an explicitly configured disposable SLACK_IMPORT_TEST_DATABASE_URL"]
+    #[tokio::test]
+    async fn api_sync_serializes_with_channel_encryption() -> anyhow::Result<()> {
+        dotenvy::dotenv().ok();
+        dotenvy::from_filename("../.env").ok();
+        let database_url = std::env::var("SLACK_IMPORT_TEST_DATABASE_URL")?;
+        let (guard, driver) = tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+        tokio::spawn(driver);
+        let database: String = guard
+            .query_one("SELECT current_database()", &[])
+            .await?
+            .get(0);
+        anyhow::ensure!(database.contains("test"), "refusing non-test database");
+        let db = crate::db::init_db(&database_url).await?;
+        let team = format!("TSYNC{}", uuid::Uuid::new_v4().simple());
+        let slack_channel = format!("CSYNC{}", uuid::Uuid::new_v4().simple());
+        let slack_user = format!("USYNC{}", uuid::Uuid::new_v4().simple());
+        let user_id = uuid::Uuid::new_v4().to_string();
+        let channel_id = uuid::Uuid::new_v4().to_string();
+        let username = format!("sync_{}", uuid::Uuid::new_v4().simple());
+        let result: anyhow::Result<()> = async {
+        {
+            let mut setup_db = db.clone();
+            let mut tx = setup_db.transaction().await?;
+            for (sql, params) in [
+                (
+                    "INSERT INTO users(id,user_name,display_name) VALUES($1,$2,'Before sync')",
+                    vec![user_id.as_str(), username.as_str()],
+                ),
+                (
+                    "INSERT INTO channels(id,channel_name,created_user_id,is_private,is_dm) VALUES($1,$2,$3,true,false)",
+                    vec![channel_id.as_str(), username.as_str(), user_id.as_str()],
+                ),
+                (
+                    "INSERT INTO slack_users(team_id,slack_user_id,user_id,linked,name,real_name) VALUES($1,$2,$3,false,$2,'')",
+                    vec![team.as_str(), slack_user.as_str(), user_id.as_str()],
+                ),
+                (
+                    "INSERT INTO slack_channels(team_id,slack_channel_id,channel_id,last_ts) VALUES($1,$2,$3,'0')",
+                    vec![team.as_str(), slack_channel.as_str(), channel_id.as_str()],
+                ),
+                (
+                    "INSERT INTO slack_channel_syncs(team_id,slack_channel_id,lease_token) VALUES($1,$2,$3)",
+                    vec![team.as_str(), slack_channel.as_str(), "sync-test-lease"],
+                ),
+            ] {
+                let mut statement = toasty::sql::statement(sql);
+                for value in params {
+                    statement = statement.bind(value);
+                }
+                statement.exec(&mut tx).await?;
+            }
+            tx.commit().await?;
+        }
+
+        // Reproduce the former profile-refresh/link inversion directly in
+        // PostgreSQL so the regression records its 40P01 trigger condition.
+        let (sync_connection, sync_driver) =
+            tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+        tokio::spawn(sync_driver);
+        let sync_pid: i32 = sync_connection
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await?
+            .get(0);
+        let (sync_user_locked_tx, sync_user_locked_rx) = tokio::sync::oneshot::channel();
+        let (sync_try_slack_tx, sync_try_slack_rx) = tokio::sync::oneshot::channel();
+        let sync_team = team.clone();
+        let sync_slack_user = slack_user.clone();
+        let sync_user = user_id.clone();
+        let baseline_profile = tokio::spawn(async move {
+            let mut connection = sync_connection;
+            let tx = connection.transaction().await?;
+            tx.query_one("SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE", &[&sync_user])
+                .await?;
+            let _ = sync_user_locked_tx.send(());
+            sync_try_slack_rx
+                .await
+                .map_err(|_| anyhow::anyhow!("profile update signal dropped"))?;
+            let result = tx
+                .execute(
+                    "UPDATE slack_users SET name='sync-profile' WHERE team_id=$1 AND slack_user_id=$2",
+                    &[&sync_team, &sync_slack_user],
+                )
+                .await;
+            if result.is_ok() {
+                tx.commit().await?;
+            }
+            result.map(|_| ()).map_err(anyhow::Error::from)
+        });
+        sync_user_locked_rx.await?;
+
+        let (link_connection, link_driver) =
+            tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+        tokio::spawn(link_driver);
+        let link_pid: i32 = link_connection
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await?
+            .get(0);
+        let (link_row_locked_tx, link_row_locked_rx) = tokio::sync::oneshot::channel();
+        let (link_try_user_tx, link_try_user_rx) = tokio::sync::oneshot::channel();
+        let link_team = team.clone();
+        let link_slack_user = slack_user.clone();
+        let link_user = user_id.clone();
+        let baseline_link = tokio::spawn(async move {
+            let mut connection = link_connection;
+            let tx = connection.transaction().await?;
+            tx.query_one(
+                "SELECT pg_advisory_xact_lock(hashtextextended('slack-link',0))",
+                &[],
+            )
+            .await?;
+            tx.query_one(
+                "SELECT team_id FROM slack_users WHERE team_id=$1 AND slack_user_id=$2 FOR UPDATE",
+                &[&link_team, &link_slack_user],
+            )
+            .await?;
+            let _ = link_row_locked_tx.send(());
+            link_try_user_rx
+                .await
+                .map_err(|_| anyhow::anyhow!("link update signal dropped"))?;
+            let result = tx
+                .execute("UPDATE users SET display_name='Linked' WHERE id=$1", &[&link_user])
+                .await;
+            if result.is_ok() {
+                tx.commit().await?;
+            }
+            result.map(|_| ()).map_err(anyhow::Error::from)
+        });
+        link_row_locked_rx.await?;
+        let _ = sync_try_slack_tx.send(());
+        let (observer, observer_driver) =
+            tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+        tokio::spawn(observer_driver);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let waiting: bool = observer
+                    .query_one(
+                        "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock' AND $2=ANY(pg_blocking_pids(pid)))",
+                        &[&sync_pid, &link_pid],
+                    )
+                    .await?
+                    .get(0);
+                if waiting {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Ok::<(), tokio_postgres::Error>(())
+        })
+        .await??;
+        let _ = link_try_user_tx.send(());
+        let (profile_result, link_result) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(baseline_profile, baseline_link)
+        })
+        .await?;
+        let profile_result = profile_result?;
+        let link_result = link_result?;
+        anyhow::ensure!(
+            [&profile_result, &link_result].iter().any(|result| result
+                .as_ref()
+                .err()
+                .and_then(|error| error.downcast_ref::<tokio_postgres::Error>())
+                .and_then(tokio_postgres::Error::code)
+                .is_some_and(|code| code.code() == "40P01")),
+            "the former users->slack_users / slack_users->users order should reach PostgreSQL 40P01: {profile_result:?}, {link_result:?}"
+        );
+
+        // Show the real wait cycle from the former order: API sync held the
+        // channel KEY SHARE lock before updating the profile, while conversion
+        // held the user row and requested FOR UPDATE on the same channel.
+        let (sync_connection, sync_driver) =
+            tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+        tokio::spawn(sync_driver);
+        let baseline_channel = channel_id.clone();
+        let baseline_sync_user = user_id.clone();
+        let (sync_locked_tx, sync_locked_rx) = tokio::sync::oneshot::channel();
+        let (convert_user_locked_tx, convert_user_locked_rx) = tokio::sync::oneshot::channel();
+        let baseline_sync = tokio::spawn(async move {
+            let mut connection = sync_connection;
+            let tx = connection.transaction().await?;
+            tx.query_one(
+                "SELECT id FROM channels WHERE id=$1 FOR KEY SHARE",
+                &[&baseline_channel],
+            )
+            .await?;
+            let _ = sync_locked_tx.send(());
+            convert_user_locked_rx
+                .await
+                .map_err(|_| anyhow::anyhow!("conversion user-lock signal dropped"))?;
+            let result = tx
+                .execute(
+                    "UPDATE users SET display_name='Old sync order' WHERE id=$1",
+                    &[&baseline_sync_user],
+                )
+                .await;
+            if result.is_ok() {
+                tx.commit().await?;
+            }
+            result.map(|_| ()).map_err(anyhow::Error::from)
+        });
+        sync_locked_rx.await?;
+        let (convert_connection, convert_driver) =
+            tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+        tokio::spawn(convert_driver);
+        let baseline_convert_user = user_id.clone();
+        let baseline_convert_channel = channel_id.clone();
+        let convert = tokio::spawn(async move {
+            let mut connection = convert_connection;
+            let tx = connection.transaction().await?;
+            tx.query_one(
+                "SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE",
+                &[&baseline_convert_user],
+            )
+            .await?;
+            let _ = convert_user_locked_tx.send(());
+            let result = tx
+                .query_one(
+                    "SELECT id FROM channels WHERE id=$1 FOR UPDATE",
+                    &[&baseline_convert_channel],
+                )
+                .await;
+            if result.is_ok() {
+                tx.commit().await?;
+            }
+            result.map(|_| ()).map_err(anyhow::Error::from)
+        });
+        let old_order_results = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(baseline_sync, convert)
+        })
+        .await?;
+        let errors = [old_order_results.0?.err(), old_order_results.1?.err()];
+        anyhow::ensure!(
+            errors
+                .iter()
+                .flatten()
+                .any(|error| {
+                    let chain = format!("{error:#}");
+                    chain.contains("40P01") || chain.contains("deadlock detected")
+                }),
+            "the former sync channel->user order should reach PostgreSQL 40P01: {errors:?}"
+        );
+
+        // The real store path resolves and locks message users first. Conversion
+        // can then lock the channel and commit encryption; sync must recheck and
+        // reject the plaintext write after it obtains the user row.
+        let (convert_connection, convert_driver) =
+            tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+        tokio::spawn(convert_driver);
+        let convert_user = user_id.clone();
+        let convert_channel = channel_id.clone();
+        let (user_locked_tx, user_locked_rx) = tokio::sync::oneshot::channel();
+        let (finish_convert_tx, finish_convert_rx) = tokio::sync::oneshot::channel();
+        let convert = tokio::spawn(async move {
+            let mut connection = convert_connection;
+            let tx = connection.transaction().await?;
+            tx.query_one(
+                "SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE",
+                &[&convert_user],
+            )
+            .await?;
+            let _ = user_locked_tx.send(());
+            finish_convert_rx
+                .await
+                .map_err(|_| anyhow::anyhow!("conversion release dropped"))?;
+            tx.query_one(
+                "SELECT id FROM channels WHERE id=$1 FOR UPDATE",
+                &[&convert_channel],
+            )
+            .await?;
+            tx.execute(
+                "UPDATE channels SET encrypted=true WHERE id=$1",
+                &[&convert_channel],
+            )
+            .await?;
+            tx.commit().await?;
+            Ok::<(), anyhow::Error>(())
+        });
+        user_locked_rx.await?;
+        let message: SlackMessage = serde_json::from_value(serde_json::json!({
+            "ts":"1710000000.000001", "user":slack_user, "text":"sync plaintext"
+        }))?;
+        let mut ctx = Context {
+            team: team.clone(),
+            users: HashMap::new(),
+            profiles: HashMap::from([(
+                slack_user.clone(),
+                serde_json::from_value(serde_json::json!({
+                    "id":slack_user, "name":"sync-user", "real_name":"Sync User",
+                    "profile":{"display_name":"Updated by sync"}
+                }))?,
+            )]),
+            fallback_names: HashMap::new(),
+            channel_names: HashMap::new(),
+            files: FilePolicy {
+                token: false,
+                max_size: 0,
+                base_url: String::new(),
+            },
+            app_id: None,
+        };
+        let mut slack = Slack {
+            client: reqwest::Client::new(),
+            base: "http://127.0.0.1:9".into(),
+            key: [0; 32],
+            tokens: vec![(user_id.clone(), "unused".into())],
+            index: 0,
+        };
+        let task = Task {
+            team_id: team.clone(),
+            slack_channel_id: slack_channel.clone(),
+            channel_id: channel_id.clone(),
+            private: true,
+            deleted: false,
+            encrypted: false,
+            last_ts: Some("0".into()),
+            synced: false,
+            token: "sync-test-lease".into(),
+            attempts: 0,
+            running: true,
+            phase: "history".into(),
+            run_oldest: Some("0".into()),
+            run_max_ts: None,
+            page_cursor: None,
+            pending_threads: "[]".into(),
+            known_threads: "[]".into(),
+            token_user_id: Some(user_id.clone()),
+            swept_recent: false,
+            run_light: false,
+            recheck_due: false,
+        };
+        let progress = Progress {
+            phase: "history".into(),
+            oldest: "0".into(),
+            max_ts: Some(message.ts.clone()),
+            cursor: None,
+            pending: Vec::new(),
+            known: Vec::new(),
+            swept_now: false,
+            light: false,
+        };
+        let (store_tx, store_rx) = tokio::sync::oneshot::channel();
+        let store_db = db.clone();
+        let store_task = task;
+        let store_progress = progress;
+        let (store_started_tx, store_started_rx) = tokio::sync::oneshot::channel();
+        let store = tokio::spawn(async move {
+            let mut store_db = store_db;
+            let _ = store_started_tx.send(());
+            let result = store(
+                &mut slack,
+                &mut ctx,
+                &store_task,
+                true,
+                &store_progress,
+                &[message],
+                &mut store_db,
+            )
+            .await;
+            let mapped = match result {
+                Ok(()) => Ok(()),
+                Err(SyncError::Failed(message)) => Err(message),
+                Err(SyncError::RateLimited(secs)) => Err(format!("RateLimited({secs})")),
+                Err(SyncError::NoAccess(message)) => Err(format!("NoAccess({message})")),
+                Err(SyncError::InvalidCursor) => Err("InvalidCursor".into()),
+                Err(SyncError::LeaseLost) => Err("LeaseLost".into()),
+                Err(SyncError::TargetChanged) => Err("TargetChanged".into()),
+                Err(SyncError::PrivateTargetViolation) => Err("PrivateTargetViolation".into()),
+                Err(SyncError::PrivacyCheckFailed(message)) => {
+                    Err(format!("PrivacyCheckFailed({message})"))
+                }
+            };
+            let _ = store_tx.send(mapped);
+            Ok::<(), anyhow::Error>(())
+        });
+        store_started_rx.await?;
+        tokio::task::yield_now().await;
+        let _ = finish_convert_tx.send(());
+        let store_result = tokio::time::timeout(Duration::from_secs(5), store_rx).await??;
+        anyhow::ensure!(
+            matches!(store_result, Err(ref message) if message.contains("E2EE_PLAINTEXT_FORBIDDEN")),
+            "sync should reject the channel after encryption with E2EE_PLAINTEXT_FORBIDDEN, got {store_result:?}"
+        );
+        tokio::time::timeout(Duration::from_secs(5), convert).await???;
+        tokio::time::timeout(Duration::from_secs(5), store).await???;
+
+        let mut verify_db = db.clone();
+        let mut verify = verify_db.transaction().await?;
+        let rows = query(&mut verify, "SELECT json_build_object('encrypted',c.encrypted,'messages',(SELECT count(*) FROM messages WHERE channel_id=c.id))::text FROM channels c WHERE id=$1", &[&channel_id]).await?;
+        verify.commit().await?;
+        anyhow::ensure!(
+            rows.len() == 1 && rows[0]["encrypted"] == true && rows[0]["messages"] == 0,
+            "sync inserted plaintext after encryption: {rows:?}"
+        );
+
+        Ok(())
+        }
+        .await;
+        let cleanup_result: anyhow::Result<()> = async {
+            let mut cleanup_db = db.clone();
+            let mut cleanup = cleanup_db.transaction().await?;
+            crate::slack::worker::exec(
+                &mut cleanup,
+                "DELETE FROM messages WHERE channel_id=$1",
+                &[&channel_id],
+            )
+            .await?;
+            crate::slack::worker::exec(
+                &mut cleanup,
+                "DELETE FROM slack_channels WHERE team_id=$1",
+                &[&team],
+            )
+            .await?;
+            crate::slack::worker::exec(
+                &mut cleanup,
+                "DELETE FROM slack_users WHERE team_id=$1",
+                &[&team],
+            )
+            .await?;
+            crate::slack::worker::exec(
+                &mut cleanup,
+                "DELETE FROM channels WHERE id=$1",
+                &[&channel_id],
+            )
+            .await?;
+            crate::slack::worker::exec(&mut cleanup, "DELETE FROM users WHERE id=$1", &[&user_id])
+                .await?;
+            cleanup.commit().await?;
+            Ok(())
+        }
+        .await;
+        cleanup_result?;
+        result
+    }
 
     #[test]
     fn compares_timestamps_numerically() {

@@ -283,7 +283,7 @@ async function handleNavigation(request, event) {
   const spaRoute =
     url.pathname === "/" ||
     url.pathname === "/index.html" ||
-    /^\/(?:channels|home|settings|notifications|bubble|apps|apps-authorize|realtime|public\/users)(?:\/|$)/.test(
+    /^\/(?:channels|home|settings|notifications|catch-up|bubble|apps|apps-authorize|realtime|public\/users)(?:\/|$)/.test(
       url.pathname,
     );
   const cache = await caches.open(await findActiveShellCache());

@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { DocumentPreviewData, DocumentResponse, PreviewFile } from "../../lib/documents/types";
+import { PreviewDownloadButton } from "../desktop/PreviewDownloadButton";
 import { Button } from "./button";
 import { Spinner } from "./spinner";
 
@@ -110,7 +111,6 @@ function ContainedFile({
   file: PreviewFile;
   renderFile?: (file: PreviewFile, url: string) => ReactNode;
 }) {
-  const { t } = useTranslation();
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
     // URLs exist only in the mounted viewer and are revoked on close/account changes.
@@ -126,9 +126,7 @@ function ContainedFile({
         <span className="break-all text-sm">{file.name}</span>
       )}
       {url && !renderFile ? (
-        <a href={url} download={file.name} className="ml-2 text-xs text-link">
-          {t("attachments.downloadShort")}
-        </a>
+        <PreviewDownloadButton name={file.name} src={url} className="ml-2 text-xs text-link" />
       ) : null}
     </div>
   );

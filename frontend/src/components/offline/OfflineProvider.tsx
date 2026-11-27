@@ -23,6 +23,7 @@ import {
   resolveOfflineNamespace,
 } from "../../lib/offline/identity";
 import { useOnlineStatus } from "../../lib/offline/online";
+import { clearChannelMeasurementCache } from "../chat/messages/messageScroll";
 import { blockFeedCache, enableFeedCache } from "../../lib/offline/feedCache";
 import {
   OfflineContext,
@@ -179,6 +180,7 @@ export function OfflineProvider({
     markOfflineDeletionPending(namespace);
     // 画面が残っていても、予約済みの控えの保存が、消した DB を作り直さないようにする。
     blockFeedCache(namespace);
+    clearChannelMeasurementCache();
     await removeOfflineDatabase(namespace);
     clearPendingOfflineDeletion();
   }, [config.devUserId, currentUserId, namespace]);

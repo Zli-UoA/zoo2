@@ -147,6 +147,7 @@ export function fixture(overrides: Partial<Config> = {}, database?: Store) {
       labels: { nodes: [] },
     } as Json,
     readRequests: [] as Json[],
+    pulls: null as Json[] | null,
     extra: undefined as undefined | ((url: URL, init: RequestInit) => Response | undefined),
   };
   const fetcher: typeof fetch = async (input, options) => {
@@ -215,7 +216,7 @@ export function fixture(overrides: Partial<Config> = {}, database?: Store) {
     if (p === "/repos/acme/project/deployments/11") return Response.json(remote.deployment);
     if (p === "/repos/acme/project/deployments/11/statuses")
       return Response.json([remote.deploymentState]);
-    if (p === "/repos/acme/project/pulls") return Response.json(page === 1 ? [remote.pr] : []);
+    if (p === "/repos/acme/project/pulls") return Response.json(page === 1 ? (remote.pulls ?? [remote.pr]) : []);
     if (/\/commits\/[a-f0-9]+$/.test(p))
       return Response.json({ commit: { message: "Commit message" }, author: { login: "alice" } });
     if (p.startsWith("/repos/acme/project/releases/tags/"))

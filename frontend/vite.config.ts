@@ -1,5 +1,6 @@
 import { pdfAssets } from "./build/pdf-assets";
 import { defineConfig, lazyPlugins, type Plugin } from "vite-plus";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { devtools } from "@tanstack/devtools-vite";
@@ -129,7 +130,13 @@ const config = defineConfig({
           browser: {
             enabled: true,
             headless: true,
-            provider: playwright({ launchOptions: { executablePath: process.env.CHROME_BIN } }),
+            // Linux の chromium-headless-shell はアニメーション停止時に rAF が停滞することがあるため、
+            // CHROME_BIN 未指定時はフル Chromium（channel: "chromium"）を使う。
+            provider: playwright({
+              launchOptions: process.env.CHROME_BIN
+                ? { executablePath: process.env.CHROME_BIN }
+                : { channel: "chromium" },
+            }),
             instances: [{ browser: "chromium" }],
           },
         },
@@ -167,7 +174,15 @@ const config = defineConfig({
       {
         extends: true,
         plugins: [storybookTest({ configDir: path.join(dirname, ".storybook") })],
-        optimizeDeps: { include: ["@testing-library/react"] },
+        resolve: {
+          alias: {
+            // The addon imports this pnpm-scoped dependency after stories have started.
+            "axe-core": createRequire(import.meta.resolve("@storybook/addon-a11y")).resolve(
+              "axe-core",
+            ),
+          },
+        },
+        optimizeDeps: { include: ["@testing-library/react", "axe-core"] },
         test: {
           name: "storybook",
           setupFiles: ["./.storybook/vitest.setup.ts"],

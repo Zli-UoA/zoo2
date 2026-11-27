@@ -17,16 +17,21 @@
 //!   確かめてから、`(message_id, user_id, emoji)` の 1 行だけを消す。`users` が一部しか返らないとき
 //!   (`count` のほうが多い) は `reactions.get` (`full=true`) で確かめ、確かめられなければ消さない。
 
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use serde_json::Value;
 
 use super::{
-    convert::{mrkdwn_to_mfm_legacy, reaction_emoji},
+    convert::{mentioned_users, mrkdwn_to_mfm_legacy, reaction_emoji},
     export::{SlackMessage, SlackReaction},
     sync::{Slack, SyncError, lookup_profiles, parse_messages},
     worker::{
-        Context, insert_message, insert_reactions, mapped, render_message, suppress_app_events,
+        Context, allow_deleted_thread_parent, insert_message, insert_reactions,
+        lock_zip_target_advisory, mapped, message_fallback_name, render_message, resolve_users,
+        suppress_app_events,
     },
 };
 use crate::{apps::query, error::AppError};
@@ -51,12 +56,14 @@ fn text(row: &Value, key: &str) -> String {
     row[key].as_str().unwrap_or_default().to_string()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn process(
     slack: &mut Slack,
     ctx: &mut Context,
     team: &str,
     slack_channel: &str,
     zoo_channel: &str,
+    slack_private: &mut bool,
     lease_token: &str,
     db: &mut toasty::Db,
 ) -> Result<(), SyncError> {
@@ -108,6 +115,7 @@ pub(super) async fn process(
             team,
             slack_channel,
             zoo_channel,
+            slack_private,
             lease_token,
             ts,
             &group,
@@ -119,9 +127,16 @@ pub(super) async fn process(
         }
         match applied {
             Ok(()) => {}
-            // 待つか、トークンが使えないか、リースを失ったときは、ここで止める (ヒントは残る)
+            // 待つか、トークンが使えないか、リースを失ったか、対応先が変わったときは、
+            // ここで止める (ヒントは残る)。対応先の変更は残りのヒントにも影響するため、
+            // 続けて試行して attempts を増やしたり、Slack API を無駄に呼んだりしない。
             Err(
-                e @ (SyncError::RateLimited(_) | SyncError::NoAccess(_) | SyncError::LeaseLost),
+                e @ (SyncError::RateLimited(_)
+                | SyncError::NoAccess(_)
+                | SyncError::LeaseLost
+                | SyncError::TargetChanged
+                | SyncError::PrivateTargetViolation
+                | SyncError::PrivacyCheckFailed(_)),
             ) => {
                 return Err(e);
             }
@@ -245,6 +260,7 @@ async fn apply(
     team: &str,
     slack_channel: &str,
     zoo_channel: &str,
+    slack_private: &mut bool,
     lease_token: &str,
     ts: &str,
     group: &[&Row],
@@ -327,14 +343,47 @@ async fn apply(
             }
         }
     }
+    super::sync::refresh_slack_privacy(slack, slack_channel, slack_private)
+        .await
+        .map_err(|error| match error {
+            // `conversations.info` の一時的な失敗 (HTTP 5xx など) で、ヒントの
+            // 試行回数を消費しない。呼び出し側は指数バックオフで同期をやり直す
+            SyncError::Failed(message) => SyncError::PrivacyCheckFailed(message),
+            other => other,
+        })?;
     if let Some(message) = &message
-        && message.is_importable()
+        && message.is_importable_for_team(Some(team))
     {
         lookup_profiles(db, slack, ctx, std::slice::from_ref(message)).await?;
     }
 
     let mut tx = db.transaction().await.map_err(AppError::from)?;
     suppress_app_events(&mut tx).await?;
+    // sync::store / recheck と同じロック順 (advisory -> users -> slack_channels -> slack_channel_syncs -> channels) を保つ。
+    // ensure_plaintext_allowed (channels FOR KEY SHARE) のあとで ctx.user / ensure_user が users を更新・挿入すると、
+    // 暗号化変換 (users -> channels FOR UPDATE) とロック順が逆転してデッドロックする。
+    lock_zip_target_advisory(&mut tx, team, slack_channel).await?;
+    if let Some(message) = &message {
+        let pre_state = load_message_state(&mut tx, team, slack_channel, zoo_channel, ts).await?;
+        let (slack_ids, _fallbacks) = collect_apply_users(
+            team,
+            ctx.app_id.as_deref(),
+            message,
+            full_reactions.as_deref(),
+            &pre_state,
+            has("reply"),
+            has("changed"),
+            has("reaction"),
+        );
+        // `hints::fetch_message` fetches via `conversations.history`/`conversations.replies`,
+        // which do not carry channel visibility at fetch time. `slack_private` comes from
+        // `conversations.info` at sync start, so a channel privatized before the fetch could
+        // leak a private `username`/`bot_profile.name` into workspace-wide `users.display_name`.
+        // Suppress message-derived fallbacks here just like `sync::store` does.
+        let empty_fallbacks = HashMap::new();
+        resolve_users(&mut tx, ctx, &slack_ids, &empty_fallbacks).await?;
+    }
+    super::sync::ensure_target_unchanged(&mut tx, team, slack_channel, zoo_channel).await?;
     // 長くかかっても、リースを持ち続ける。失っていたら (別の台が同期を始めた) 何も書かない
     let leased = query(
         &mut tx,
@@ -349,22 +398,42 @@ async fn apply(
     }
     // 同期の途中で取り込み先が暗号化に切り替わったら (#367)、平文を書かない。次の同期は、暗号化チャンネルを取らない
     super::worker::ensure_plaintext_allowed(&mut tx, zoo_channel).await?;
-    // `slack_message_map` に行があれば、その Zoo のメッセージを使う。Zoo で作った投稿 (`zoo`) は Zoo が正なので、
-    // Slack での編集・削除は反映しない。Slack からのリアクションと返信は、その投稿に付ける
-    let (id, zoo_origin, zoo_mapped) = match mapped(&mut tx, team, slack_channel, ts).await? {
-        Some((id, origin)) => (id, origin == "zoo", true),
-        None => (super::message_id(team, slack_channel, ts), false, false),
-    };
-    let existing = query(
-        &mut tx,
-        "SELECT json_build_object('deleted',deleted_at IS NOT NULL,'content',content,'card',COALESCE(card,''),'components',COALESCE(components,''))::text \
-         FROM messages WHERE id=$1 AND channel_id=$2 \
-         AND ($3='' OR created_at=(to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3))",
-        &[&id, zoo_channel, if zoo_mapped || !super::is_valid_ts(ts) { "" } else { ts }],
-    )
-    .await?
-    .into_iter()
-    .next();
+    // 同期の途中で取り込み先が公開に変わったり、Slack チャンネルが非公開に変わったりしたら、非公開の Slack チャンネルの内容を公開の取り込み先に書かない
+    super::sync::ensure_private_target(&mut tx, zoo_channel, *slack_private).await?;
+    // 保存のトランザクションで 1 回だけ、削除済みの親への返信を許可する。このあとの
+    // `insert_message` が、範囲外のスレッドの返信の挿入と、既存返信のスレッドへの再接続の
+    // 両方を行う (`zoo.slack_import` の設定はトランザクションの終わりで自動的に戻る)。
+    allow_deleted_thread_parent(&mut tx).await?;
+    let MessageState {
+        id,
+        zoo_origin,
+        existing,
+    } = load_message_state(&mut tx, team, slack_channel, zoo_channel, ts).await?;
+    if let Some(message) = &message {
+        let state = MessageState {
+            id: id.clone(),
+            zoo_origin,
+            existing: existing.clone(),
+        };
+        let (required_users, _) = collect_apply_users(
+            team,
+            ctx.app_id.as_deref(),
+            message,
+            full_reactions.as_deref(),
+            &state,
+            has("reply"),
+            has("changed"),
+            has("reaction"),
+        );
+        if let Some(missing) = required_users
+            .iter()
+            .find(|id| !ctx.users.contains_key(*id))
+        {
+            return Err(SyncError::Failed(format!(
+                "Slack hint user {missing} was not pre-resolved before locking channel {zoo_channel}"
+            )));
+        }
+    }
     // 残すヒント (API がまだ返している削除、確かめられなかったリアクションの削除)
     let mut keep: Vec<&Row> = Vec::new();
     match (&message, &existing) {
@@ -388,7 +457,7 @@ async fn apply(
             }
             match existing {
                 None => {
-                    if has("reply") && message.is_importable() {
+                    if has("reply") && message.is_importable_for_team(Some(team)) {
                         // `users` が省略されていたら、取り直した完全なリアクションの一覧で入れる
                         let full = full_reactions.as_ref().map(|reactions| SlackMessage {
                             reactions: reactions.clone(),
@@ -400,6 +469,7 @@ async fn apply(
                             slack_channel,
                             zoo_channel,
                             "",
+                            true,
                             full.as_ref().unwrap_or(message),
                         )
                         .await?;
@@ -407,7 +477,7 @@ async fn apply(
                 }
                 Some(row) if row["deleted"] == true => {}
                 Some(row) => {
-                    if has("changed") && !zoo_origin && message.is_importable() {
+                    if has("changed") && !zoo_origin && message.is_importable_for_team(Some(team)) {
                         edit(&mut tx, ctx, &id, message, row).await?;
                     }
                     if has("reaction") || has("changed") {
@@ -479,6 +549,112 @@ async fn apply(
     Ok(())
 }
 
+struct MessageState {
+    id: String,
+    zoo_origin: bool,
+    existing: Option<Value>,
+}
+
+async fn load_message_state(
+    tx: &mut toasty::Transaction<'_>,
+    team: &str,
+    slack_channel: &str,
+    zoo_channel: &str,
+    ts: &str,
+) -> Result<MessageState, AppError> {
+    // `slack_message_map` に行があれば、その Zoo のメッセージを使う。Zoo で作った投稿 (`zoo`) は Zoo が正なので、
+    // Slack での編集・削除は反映しない。Slack からのリアクションと返信は、その投稿に付ける
+    let (id, zoo_origin, zoo_mapped) = match mapped(tx, team, slack_channel, ts).await? {
+        Some((id, origin)) => (id, origin == "zoo", true),
+        None => (super::message_id(team, slack_channel, ts), false, false),
+    };
+    let existing = query(
+        tx,
+        "SELECT json_build_object('deleted',deleted_at IS NOT NULL,'content',content,'card',COALESCE(card,''),'components',COALESCE(components,''),'forwarded_message_ids',forwarded_message_ids)::text \
+         FROM messages WHERE id=$1 AND channel_id=$2 \
+         AND ($3='' OR created_at=(to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3))",
+        &[
+            &id,
+            zoo_channel,
+            if zoo_mapped || !super::is_valid_ts(ts) {
+                ""
+            } else {
+                ts
+            },
+        ],
+    )
+    .await?
+    .into_iter()
+    .next();
+    Ok(MessageState {
+        id,
+        zoo_origin,
+        existing,
+    })
+}
+
+fn collect_apply_users(
+    team: &str,
+    app_id: Option<&str>,
+    message: &SlackMessage,
+    full_reactions: Option<&[SlackReaction]>,
+    state: &MessageState,
+    has_reply: bool,
+    has_changed: bool,
+    has_reaction: bool,
+) -> (Vec<String>, HashMap<String, String>) {
+    let mut members = Vec::new();
+    let mut fallbacks: HashMap<String, String> = HashMap::new();
+    let reactions = full_reactions.unwrap_or(&message.reactions);
+    match &state.existing {
+        None => {
+            let app_origin = app_id.is_some() && message.app_id.as_deref() == app_id;
+            if has_reply
+                && message.is_importable_for_team(Some(team))
+                && !app_origin
+                && !state.zoo_origin
+            {
+                let author = message.author().unwrap_or_default();
+                members.push(author.to_string());
+                if let Some((_, name)) = message_fallback_name(message) {
+                    fallbacks.insert(author.to_string(), name.to_string());
+                }
+                members.extend(mentioned_users(&message.text));
+                for reaction in reactions {
+                    if reaction_emoji(&reaction.name).is_some() {
+                        members.extend(reaction.users.iter().cloned());
+                    }
+                }
+            }
+        }
+        Some(row) if row["deleted"] == true => {}
+        Some(_) => {
+            if has_changed && !state.zoo_origin && message.is_importable_for_team(Some(team)) {
+                // edit() は edited か bot_id のない投稿では誰も解決せずに戻り、進む
+                // ときは render_message が本文のメンション先を解決する。投稿者は
+                // 既存メッセージの書き込み (edit と insert_reactions) では解決しない。
+                // recheck の collect_chunk_users と同じ集合にする。
+                let edited = message
+                    .edited
+                    .as_ref()
+                    .map(|e| e.ts.as_str())
+                    .filter(|ts| super::is_valid_ts(ts));
+                if edited.is_some() || message.bot_id.is_some() {
+                    members.extend(mentioned_users(&message.text));
+                }
+            }
+            if has_reaction || has_changed {
+                for reaction in reactions {
+                    if reaction_emoji(&reaction.name).is_some() {
+                        members.extend(reaction.users.iter().cloned());
+                    }
+                }
+            }
+        }
+    }
+    (members, fallbacks)
+}
+
 pub(super) async fn exec_delete(
     tx: &mut toasty::Transaction<'_>,
     id: &str,
@@ -509,8 +685,34 @@ pub(super) async fn edit(
         .as_ref()
         .map(|e| e.ts.as_str())
         .filter(|ts| super::is_valid_ts(ts));
-    // 人の投稿は、編集の日時があるものだけ。bot の投稿 (`chat.update` には `edited` が付かない) は、表示内容が違うとき
+    let forwarded_ids = super::worker::resolve_forwarded_ids(tx, &ctx.team, message, true).await?;
+    let forwarded_json = if forwarded_ids.is_empty() {
+        String::new()
+    } else {
+        serde_json::to_string(&forwarded_ids).map_err(|err| AppError::Internal(err.into()))?
+    };
+    let stored_forwards: Vec<String> = stored
+        .get("forwarded_message_ids")
+        .and_then(|v| serde_json::from_value::<Option<Vec<String>>>(v.clone()).ok())
+        .flatten()
+        .unwrap_or_default();
+    let forwards_missing_backfill = stored
+        .get("forwarded_message_ids")
+        .is_none_or(|v| v.is_null())
+        && !forwarded_ids.is_empty();
+    // 人の投稿は、編集の日時があるものだけ。ただし既存の取り込み済み行やリンク展開で
+    // forwarded_message_ids だけが未設定なら、updated_at / revision を変えずに補完する。
     if edited.is_none() && message.bot_id.is_none() {
+        if forwards_missing_backfill {
+            query(
+                tx,
+                "UPDATE messages SET forwarded_message_ids=$2::jsonb \
+                 WHERE id=$1 AND deleted_at IS NULL AND forwarded_message_ids IS NULL \
+                 RETURNING json_build_object('ok',true)::text",
+                &[id, &forwarded_json],
+            )
+            .await?;
+        }
         return Ok(());
     }
     let rendered = render_message(tx, ctx, message).await?;
@@ -518,12 +720,13 @@ pub(super) async fn edit(
     // 本文の違いが書式の変換だけなら書き換えない (内容は同じなのに、「編集済み」の印が付くため)
     let formatting_only = edited.is_none()
         && stored["content"].as_str() == Some(mrkdwn_to_mfm_legacy(&message.text, &*ctx).as_str());
-    let same = (stored["content"].as_str() == Some(rendered.content.as_str()) || formatting_only)
-        && stored["components"].as_str().unwrap_or_default() == rendered.components;
+    let content_and_components_same =
+        (stored["content"].as_str() == Some(rendered.content.as_str()) || formatting_only)
+            && stored["components"].as_str().unwrap_or_default() == rendered.components;
     // 部品の導入前に `card` で取り込んだ行 (バックフィル後も `card` は残る) は、保存した部品が旧カードから作られて
     // いて、attachments から作り直した部品とは形式が違う。形式の違いだけで「編集済み」にしないよう、
     // 当時の変換で作り直した本文と `card` を、保存したものとバイト単位で比べる
-    let same = same || {
+    let content_and_components_same = content_and_components_same || {
         let card = stored["card"].as_str().unwrap_or_default();
         !card.is_empty() && {
             let (content, legacy) = super::legacy_card::render(message, &*ctx);
@@ -535,19 +738,44 @@ pub(super) async fn edit(
             legacy == card && stored["content"].as_str() == Some(content)
         }
     };
-    if same {
-        return Ok(());
+    if content_and_components_same {
+        if stored_forwards == forwarded_ids {
+            return Ok(());
+        }
+        if forwards_missing_backfill {
+            query(
+                tx,
+                "UPDATE messages SET forwarded_message_ids=$2::jsonb \
+                 WHERE id=$1 AND deleted_at IS NULL AND forwarded_message_ids IS NULL \
+                 AND ($3='' OR updated_at IS NULL OR updated_at<=(to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3)) \
+                 RETURNING json_build_object('ok',true)::text",
+                &[id, &forwarded_json, edited.unwrap_or_default()],
+            )
+            .await?;
+            return Ok(());
+        }
+        // `edited` のない bot 投稿では、古い Slack 応答で転送参照が空に見えただけで
+        // 既に保存済みの転送参照を消したり revision / updated_at を進めない。
+        if edited.is_none() && forwarded_ids.is_empty() {
+            return Ok(());
+        }
     }
     let updated = query(
         tx,
-        "UPDATE messages SET content=$2,components=NULLIF($3,''),card=NULL,\
+        "UPDATE messages SET content=$2,components=NULLIF($3,''),card=NULL,forwarded_message_ids=NULLIF($5,'')::jsonb,\
          updated_at=CASE WHEN $4='' THEN (now() AT TIME ZONE 'UTC')::timestamp(3) \
            ELSE (to_timestamp($4::numeric) AT TIME ZONE 'UTC')::timestamp(3) END,\
          revision=revision+1 \
          WHERE id=$1 AND deleted_at IS NULL \
          AND ($4='' OR updated_at IS NULL OR updated_at<(to_timestamp($4::numeric) AT TIME ZONE 'UTC')::timestamp(3)) \
          RETURNING json_build_object('ok',true)::text",
-        &[id, &rendered.content, &rendered.components, edited.unwrap_or_default()],
+        &[
+            id,
+            &rendered.content,
+            &rendered.components,
+            edited.unwrap_or_default(),
+            &forwarded_json,
+        ],
     )
     .await?;
     if updated.is_empty() {
@@ -570,4 +798,410 @@ pub(super) async fn edit(
         .await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn parse_message(value: Value) -> SlackMessage {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn collect_apply_users_matches_write_branches() {
+        let missing = MessageState {
+            id: "m1".into(),
+            zoo_origin: false,
+            existing: None,
+        };
+        let reply = parse_message(json!({
+            "ts": "1700000001.000100",
+            "user": "UB",
+            "username": "Fallback Name",
+            "text": "hello <@UC>",
+            "reactions": [{"name": "thumbsup", "users": ["U_TRUNCATED"], "count": 2}]
+        }));
+        let full = vec![SlackReaction {
+            name: "thumbsup".into(),
+            users: vec!["U_TRUNCATED".into(), "UD".into()],
+            count: Some(2),
+        }];
+        let (ids, fallbacks) = collect_apply_users(
+            "T1",
+            None,
+            &reply,
+            Some(&full),
+            &missing,
+            true,
+            false,
+            false,
+        );
+        assert_eq!(ids, vec!["UB", "UC", "U_TRUNCATED", "UD"]);
+        assert_eq!(
+            fallbacks.get("UB").map(String::as_str),
+            Some("Fallback Name")
+        );
+
+        // Non-reply hints on a missing message do not resolve users.
+        let (ignored_ids, _) =
+            collect_apply_users("T1", None, &reply, Some(&full), &missing, false, true, true);
+        assert!(ignored_ids.is_empty());
+
+        // App-origin replies are ignored by insert_message.
+        let app_msg = parse_message(json!({
+            "ts": "1700000001.000200",
+            "user": "UB",
+            "app_id": "A1",
+            "text": "from bridge <@UC>"
+        }));
+        let (app_ids, _) = collect_apply_users(
+            "T1",
+            Some("A1"),
+            &app_msg,
+            None,
+            &missing,
+            true,
+            false,
+            false,
+        );
+        assert!(app_ids.is_empty());
+
+        // Existing non-deleted message: human edit without edited.ts skips mentions,
+        // while reactions still pre-resolve.
+        let present = MessageState {
+            id: "m2".into(),
+            zoo_origin: false,
+            existing: Some(json!({"deleted": false, "content": "old", "card": ""})),
+        };
+        let unfurl = parse_message(json!({
+            "ts": "1700000001.000300",
+            "user": "UA",
+            "text": "unfurl <@UNOT_USED>",
+            "reactions": [{"name": "thumbsup", "users": ["UR"], "count": 1}]
+        }));
+        let (unfurl_ids, _) =
+            collect_apply_users("T1", None, &unfurl, None, &present, false, true, false);
+        assert_eq!(unfurl_ids, vec!["UR"]);
+
+        // zoo_origin skips edit mentions but still pre-resolves reaction users.
+        let zoo_present = MessageState {
+            id: "m3".into(),
+            zoo_origin: true,
+            existing: Some(json!({"deleted": false, "content": "from zoo", "card": ""})),
+        };
+        let zoo_msg = parse_message(json!({
+            "ts": "1700000001.000400",
+            "user": "UA",
+            "text": "edited <@USKIP>",
+            "edited": {"user": "UA", "ts": "1700000002.000000"},
+            "reactions": [{"name": "heart", "users": ["UZ"], "count": 1}]
+        }));
+        let (zoo_ids, _) =
+            collect_apply_users("T1", None, &zoo_msg, None, &zoo_present, false, true, true);
+        assert_eq!(zoo_ids, vec!["UZ"]);
+
+        // Deleted messages never pre-resolve users.
+        let deleted = MessageState {
+            id: "m4".into(),
+            zoo_origin: false,
+            existing: Some(json!({"deleted": true, "content": "", "card": ""})),
+        };
+        let (deleted_ids, _) = collect_apply_users(
+            "T1",
+            None,
+            &zoo_msg,
+            Some(&full),
+            &deleted,
+            true,
+            true,
+            true,
+        );
+        assert!(deleted_ids.is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires SLACK_IMPORT_TEST_DATABASE_URL"]
+    async fn hints_process_evicts_preresolved_users_from_context_when_apply_fails()
+    -> anyhow::Result<()> {
+        let database_url = std::env::var("SLACK_IMPORT_TEST_DATABASE_URL")?;
+        let mut config = crate::config::Config::from_env();
+        config.database_url = database_url;
+        let mut db = crate::db::init_db(&config.database_url).await?;
+
+        let mock = wiremock::MockServer::start().await;
+        config.slack.api_base_url = mock.uri();
+        let state = crate::state::AppState::new(db.clone(), config);
+
+        let team = format!("THNT{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+        let owner = uuid::Uuid::new_v4().to_string();
+        let channel = uuid::Uuid::new_v4().to_string();
+        let parent_ts = "1700000000.000100";
+        let reply_ts = "1700000010.000200";
+        let lease_token = uuid::Uuid::new_v4().to_string();
+        let key = [7u8; 32];
+        let enc = super::super::crypto::encrypt(&key, "xoxp-test")?;
+
+        {
+            let mut tx = db.transaction().await?;
+            query(
+                &mut tx,
+                "INSERT INTO users(id,user_name,display_name) VALUES($1,$2,'Owner') RETURNING json_build_object('ok',true)::text",
+                &[&owner, &format!("owner_{}", uuid::Uuid::new_v4().simple())],
+            )
+            .await?;
+            query(
+                &mut tx,
+                "INSERT INTO channels(id,channel_name,created_user_id,is_private,is_dm,encrypted) \
+                 VALUES($1,$2,$3,true,false,true) RETURNING json_build_object('ok',true)::text",
+                &[
+                    &channel,
+                    &format!("enc_{}", uuid::Uuid::new_v4().simple()),
+                    &owner,
+                ],
+            )
+            .await?;
+            query(
+                &mut tx,
+                "INSERT INTO slack_channels(team_id,slack_channel_id,channel_id) VALUES($1,'C1',$2) \
+                 RETURNING json_build_object('ok',true)::text",
+                &[&team, &channel],
+            )
+            .await?;
+            query(
+                &mut tx,
+                "INSERT INTO slack_channel_syncs(team_id,slack_channel_id,lease_token,lease_until) \
+                 VALUES($1,'C1',$2,now()+interval '5 minutes') RETURNING json_build_object('ok',true)::text",
+                &[&team, &lease_token],
+            )
+            .await?;
+            query(
+                &mut tx,
+                "INSERT INTO slack_message_hints(team_id,slack_channel_id,message_ts,kind,slack_user_id,reaction,thread_ts) \
+                 VALUES($1,'C1',$2,'reply','UB','',$3) RETURNING json_build_object('ok',true)::text",
+                &[&team, reply_ts, parent_ts],
+            )
+            .await?;
+            tx.commit().await?;
+        }
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/conversations.replies"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
+                "ok": true,
+                "messages": [{
+                    "type": "message",
+                    "ts": reply_ts,
+                    "thread_ts": parent_ts,
+                    "user": "UB",
+                    "username": "Fallback Reply",
+                    "text": "blocked by encryption"
+                }],
+                "has_more": false
+            })))
+            .mount(&mock)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/users.info"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(json!({"ok": false, "error": "user_not_found"})),
+            )
+            .mount(&mock)
+            .await;
+
+        // `apply` は失敗してもキャッシュを掃除しない (`process` が掃除する)。なので `apply` を
+        // 直接呼ぶと、暗号化の拒否が起きた時点で `UB` が事前解決済み (`ctx.users` にある) かを
+        // 観測できる。ここが `true` でなければ、あとの `process` の掃除の検証は空振りになる。
+        let mut slack = Slack::single(&state, key, &owner, &enc)?;
+        let mut ctx = Context {
+            team: team.clone(),
+            users: HashMap::from([(
+                "UA".to_string(),
+                super::super::worker::ZooUser {
+                    id: owner.clone(),
+                    user_name: "owner".to_string(),
+                },
+            )]),
+            profiles: HashMap::new(),
+            fallback_names: HashMap::new(),
+            channel_names: HashMap::new(),
+            files: super::super::worker::FilePolicy {
+                token: false,
+                max_size: 0,
+                base_url: String::new(),
+            },
+            app_id: None,
+        };
+        let group_rows = query(
+            &mut db.transaction().await?,
+            "SELECT json_build_object('ts',message_ts,'kind',kind,'user',slack_user_id,'reaction',reaction,\
+             'thread_ts',thread_ts,'updated_at',updated_at)::text FROM slack_message_hints WHERE team_id=$1",
+            &[&team],
+        )
+        .await?;
+        let group: Vec<Row> = group_rows
+            .iter()
+            .map(|r| Row {
+                ts: text(r, "ts"),
+                kind: text(r, "kind"),
+                user: text(r, "user"),
+                reaction: text(r, "reaction"),
+                thread_ts: text(r, "thread_ts"),
+                updated_at: text(r, "updated_at"),
+            })
+            .collect();
+        let group_refs: Vec<&Row> = group.iter().collect();
+        let mut slack_private = true;
+        let applied = apply(
+            &mut slack,
+            &mut ctx,
+            &team,
+            "C1",
+            &channel,
+            &mut slack_private,
+            &lease_token,
+            reply_ts,
+            &group_refs,
+            &mut db,
+        )
+        .await;
+        match &applied {
+            Err(SyncError::Failed(error)) => anyhow::ensure!(
+                error.contains("E2EE_PLAINTEXT_FORBIDDEN"),
+                "apply must fail with the encryption refusal, got {error:?}"
+            ),
+            Err(SyncError::NoAccess(error)) => {
+                anyhow::bail!("apply failed before the refusal with NoAccess: {error}")
+            }
+            Err(SyncError::RateLimited(secs)) => {
+                anyhow::bail!("apply failed before the refusal with RateLimited({secs})")
+            }
+            Err(SyncError::InvalidCursor) => {
+                anyhow::bail!("apply failed before the refusal with InvalidCursor")
+            }
+            Err(SyncError::LeaseLost) => anyhow::bail!("apply lost its lease before the refusal"),
+            Err(SyncError::TargetChanged) => {
+                anyhow::bail!("apply failed before the refusal with TargetChanged")
+            }
+            Err(SyncError::PrivateTargetViolation) => {
+                anyhow::bail!("apply failed before the refusal with PrivateTargetViolation")
+            }
+            Err(SyncError::PrivacyCheckFailed(error)) => {
+                anyhow::bail!("apply failed before the refusal with PrivacyCheckFailed: {error}")
+            }
+            Ok(()) => anyhow::bail!("apply unexpectedly succeeded against an encrypted channel"),
+        }
+        assert!(
+            ctx.users.contains_key("UB"),
+            "the reply author UB must be pre-resolved before the encryption refusal; \
+             otherwise the later eviction assertions pass vacuously"
+        );
+        let placeholders = query(
+            &mut db.transaction().await?,
+            "SELECT json_build_object('n',count(*))::text FROM slack_users WHERE team_id=$1 AND slack_user_id='UB'",
+            &[&team],
+        )
+        .await?;
+        assert_eq!(
+            placeholders[0]["n"], 0,
+            "the refused apply must roll the pre-resolved placeholder back"
+        );
+
+        // `process` は、失敗した `apply` の中で作った利用者をキャッシュから外し、DB にも残さない。
+        let mut ctx = Context {
+            team: team.clone(),
+            users: HashMap::from([(
+                "UA".to_string(),
+                super::super::worker::ZooUser {
+                    id: owner.clone(),
+                    user_name: "owner".to_string(),
+                },
+            )]),
+            profiles: HashMap::new(),
+            fallback_names: HashMap::new(),
+            channel_names: HashMap::new(),
+            files: super::super::worker::FilePolicy {
+                token: false,
+                max_size: 0,
+                base_url: String::new(),
+            },
+            app_id: None,
+        };
+
+        let mut slack_private = true;
+        process(
+            &mut slack,
+            &mut ctx,
+            &team,
+            "C1",
+            &channel,
+            &mut slack_private,
+            &lease_token,
+            &mut db,
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("hints::process returned SyncError"))?;
+
+        assert!(ctx.users.contains_key("UA"));
+        assert!(
+            !ctx.users.contains_key("UB"),
+            "failed apply must evict pre-resolved placeholder UB from ctx.users"
+        );
+        let mut tx = db.transaction().await?;
+        let placeholders = query(
+            &mut tx,
+            "SELECT json_build_object('n',count(*))::text FROM slack_users WHERE team_id=$1 AND slack_user_id='UB'",
+            &[&team],
+        )
+        .await?;
+        assert_eq!(
+            placeholders[0]["n"], 0,
+            "failed apply must not leave the pre-resolved placeholder in the database"
+        );
+        let attempts = query(
+            &mut tx,
+            "SELECT json_build_object('attempts',attempts)::text FROM slack_message_hints WHERE team_id=$1",
+            &[&team],
+        )
+        .await?;
+        assert_eq!(
+            attempts[0]["attempts"], 1,
+            "the refused apply must bump the hint for a later retry"
+        );
+        query(
+            &mut tx,
+            "DELETE FROM slack_message_hints WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",
+            &[&team],
+        )
+        .await?;
+        query(
+            &mut tx,
+            "DELETE FROM slack_channel_syncs WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",
+            &[&team],
+        )
+        .await?;
+        query(
+            &mut tx,
+            "DELETE FROM slack_channels WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",
+            &[&team],
+        )
+        .await?;
+        query(
+            &mut tx,
+            "DELETE FROM channels WHERE id=$1 RETURNING json_build_object('ok',true)::text",
+            &[&channel],
+        )
+        .await?;
+        query(
+            &mut tx,
+            "DELETE FROM users WHERE id=$1 RETURNING json_build_object('ok',true)::text",
+            &[&owner],
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
 }

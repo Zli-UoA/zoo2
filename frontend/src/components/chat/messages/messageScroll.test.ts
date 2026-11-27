@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { classifyScrollChange, isNearBottom, shouldStickToBottom, snapshot } from "./messageScroll";
+import {
+  classifyScrollChange,
+  isNearBottom,
+  resolveScrollBehavior,
+  shouldStickToBottom,
+  snapshot,
+} from "./messageScroll";
 
 describe("snapshot", () => {
   it("returns nulls for an empty list", () => {
@@ -82,5 +88,17 @@ describe("isNearBottom", () => {
     expect(isNearBottom(1000, 1400, 400)).toBe(true);
     expect(isNearBottom(900, 1400, 400)).toBe(false);
     expect(isNearBottom(900, 1400, 400, 120)).toBe(true);
+  });
+});
+
+describe("resolveScrollBehavior", () => {
+  it("keeps smooth scrolling when reduced motion is off", () => {
+    expect(resolveScrollBehavior("smooth", false)).toBe("smooth");
+    expect(resolveScrollBehavior("auto", false)).toBe("auto");
+  });
+
+  it("forces instant scrolling when reduced motion is on", () => {
+    expect(resolveScrollBehavior("smooth", true)).toBe("auto");
+    expect(resolveScrollBehavior("auto", true)).toBe("auto");
   });
 });

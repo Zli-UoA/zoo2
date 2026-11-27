@@ -1,19 +1,14 @@
 package zoo
 
+import android.icu.text.BreakIterator
 import android.icu.text.Collator
 import android.icu.util.ULocale
-import androidx.compose.ui.text.PlatformTextStyle
 import okhttp3.*
 
 internal actual fun normalizeMentionSearch(value: String): String =
     java.text.Normalizer.normalize(value, java.text.Normalizer.Form.NFKC).lowercase()
 
-internal actual fun nativeSelectedText(): String = ""
-
 internal actual fun nativeAbsoluteUrl(url: String): String = url
-
-internal actual fun webTextStyle(): PlatformTextStyle =
-    PlatformTextStyle(includeFontPadding = false)
 
 actual fun compareLocaleText(
     left: String,
@@ -68,4 +63,13 @@ internal actual fun connectHomeSocket(
         client.dispatcher.executorService.shutdown()
         client.connectionPool.evictAll()
     }
+}
+
+
+actual fun takeGraphemes(text: String, count: Int): String {
+    val characters = BreakIterator.getCharacterInstance().apply { setText(text) }
+    repeat(count) {
+        if (characters.next() == BreakIterator.DONE) return text
+    }
+    return text.substring(0, characters.current())
 }

@@ -41,7 +41,12 @@ export function groupNotifications(rows: readonly NotificationRow[]): Notificati
 
 export function quotePreview(content: string): string {
   const characters = Array.from(content);
-  return characters.length > 280 ? `${characters.slice(0, 280).join("")}…` : content;
+  if (characters.length <= 280) return content;
+  const head = characters.slice(0, 280).join("");
+  // 途中で切った <plain> は、閉じて、後ろの文字列が MFM として解釈されないようにする。
+  const open = head.lastIndexOf("<plain>");
+  const unclosed = open > head.lastIndexOf("</plain>");
+  return `${unclosed ? `${head}</plain>` : head}…`;
 }
 
 export function notificationReactionGroups(

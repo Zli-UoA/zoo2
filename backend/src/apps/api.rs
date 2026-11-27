@@ -90,6 +90,11 @@ async fn create_message(
     if body.metadata.is_some() {
         p.require("metadata:write")?;
     }
+    if body.forwarded_message_ids.is_some() {
+        return Err(AppError::BadRequest(
+            "forwarded_message_ids is not supported by the App API".into(),
+        ));
+    }
     // A supplied UUID is the idempotency key; never return another author's write.
     if let Some(id) = &body.id {
         let mut db = state.db.clone();
@@ -105,6 +110,7 @@ async fn create_message(
             body.broadcast,
             body.metadata.as_ref(),
             &att_ids,
+            &[],
         )
         .await?
         {

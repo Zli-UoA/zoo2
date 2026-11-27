@@ -3,6 +3,23 @@ package zoo
 import kotlin.test.*
 
 class UnifiedNotificationsTest {
+    @Test
+    fun inboxGroupsByPostAndActivityKind() {
+        val notices = listOf(
+            UnifiedNotificationEntry("reply", "4", item = obj("id" to "r", "kind" to "reply",
+                "post_id" to "reply", "target_post_id" to "root")),
+            UnifiedNotificationEntry("reaction", "3", channel = listOf(obj("id" to "a",
+                "notification_type" to "reaction", "message_id" to "root"))),
+            UnifiedNotificationEntry("remote-like", "2", item = obj("id" to "c", "kind" to "like", "post_id" to "root")),
+            UnifiedNotificationEntry("repost", "1", item = obj("id" to "p", "kind" to "repost", "post_id" to "root")),
+            UnifiedNotificationEntry("follow", "0", item = obj("id" to "f", "kind" to "follow_request")),
+        )
+        val groups = inboxGroups(notices)
+        assertEquals(listOf("post-group:reply:root", "post-group:like:root", "post-group:repost:root", "follow"),
+            groups.keys.toList())
+        assertEquals(listOf("reaction", "remote-like"), groups.getValue("post-group:like:root").map { it.key })
+    }
+
     private fun local(id: String, time: String, read: Boolean = false): Row = obj("id" to id, "user_id" to "me", "actor_id" to "alice", "channel_id" to "channel", "message_id" to "message", "notification_type" to "reaction", "is_read" to read, "created_at" to time)
     private fun remote(id: String, time: String, actor: String = "https://peer/alice", read: Boolean = false): Row = obj("id" to id, "actor_id" to actor, "post_id" to "message", "kind" to "like", "is_read" to read, "created_at" to time)
 
@@ -30,5 +47,20 @@ class UnifiedNotificationsTest {
         val federated = listOf(remote("remote", "2026-10-24T00:00:00Z"))
         assertEquals(listOf("activitypub:remote"), unifiedNotificationFeed(rows, federated, true).entries.map { it.key })
         assertEquals(2, unifiedNotificationFeed(rows, federated, false).entries.size)
+    }
+
+    @Test fun notificationThumbnailsExcludeSensitiveAndEncryptedContent() {
+        val publicPhoto = obj("id" to "public", "content_type" to "image/jpeg")
+        val sensitive = obj("id" to "sensitive", "content_type" to "image/jpeg", "is_sensitive" to true)
+        val message = obj("id" to "message", "display_data" to obj(
+            "attachments" to kotlinx.serialization.json.JsonArray(listOf(sensitive, publicPhoto)),
+        ))
+        assertEquals(publicPhoto, notificationPreviewImage(message))
+        assertNull(notificationCachedMessage(obj("encrypted" to true), "message", listOf(message)))
+        val encrypted = kotlinx.serialization.json.JsonObject(message + ("ciphertext" to obj()))
+        assertNull(notificationCachedMessage(obj(), "message", listOf(encrypted)))
+        val deleted = kotlinx.serialization.json.JsonObject(message + ("deleted_at" to kotlinx.serialization.json.JsonPrimitive("2026-11-21")))
+        assertNull(notificationCachedMessage(obj(), "message", listOf(deleted)))
+        assertEquals(message, notificationCachedMessage(obj(), "message", listOf(message)))
     }
 }

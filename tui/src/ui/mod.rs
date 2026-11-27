@@ -1,6 +1,9 @@
 mod app;
+mod devices;
+mod devices_view;
 mod e2ee_chat;
 pub mod encryption;
+mod global_search;
 mod timeline;
 mod view;
 
@@ -320,6 +323,7 @@ impl StartupRecovery {
                 ),
                 frame.area(),
             );
+            view::scrub_buffer(frame.buffer_mut());
         })?;
         Ok(())
     }

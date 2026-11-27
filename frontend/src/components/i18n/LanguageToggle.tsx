@@ -16,6 +16,9 @@ import {
 } from "../ui/dropdown-menu";
 import { useLocale } from "./LocaleProvider";
 
+// タッチ端末ではアイコンの見た目を変えずにヒットエリアだけを 44×44px へ広げる。
+const touchHitArea = "[@media(hover:none)]:min-h-11 [@media(hover:none)]:min-w-11";
+
 export function LanguageToggle({ presentation = "icon" }: { presentation?: "icon" | "select" }) {
   const { t } = useTranslation();
   const { locale, setLocale } = useLocale();
@@ -39,7 +42,14 @@ export function LanguageToggle({ presentation = "icon" }: { presentation?: "icon
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
-        render={<Button variant="ghost" size="icon" aria-label={t("language.switch")} />}
+        render={
+          <Button
+            variant="ghost"
+            size="icon"
+            className={touchHitArea}
+            aria-label={t("language.switch")}
+          />
+        }
       >
         <LanguagesIcon aria-hidden="true" />
       </DropdownMenuTrigger>

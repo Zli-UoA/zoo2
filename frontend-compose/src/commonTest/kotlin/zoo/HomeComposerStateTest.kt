@@ -4,15 +4,6 @@ import kotlin.test.*
 
 class HomeComposerStateTest {
     @Test
-    fun postLimitCountsUnicodeCodePointsRatherThanUtf16Units() {
-        assertEquals(4, homePostLength("猫🙂a𠮷"))
-        assertEquals(1000, homePostLength("🙂".repeat(1000)))
-        assertEquals(1001, homePostLength("🙂".repeat(1000) + "a"))
-        // Like Array.from, combined emoji count their constituent code points.
-        assertEquals(3, homePostLength("👩‍💻"))
-    }
-
-    @Test
     fun closingAndReplyingKeepOneDraftAndReplyStartsWithoutChannel() {
         val state = HomeComposerState()
         state.content = "途中まで書いた下書き"

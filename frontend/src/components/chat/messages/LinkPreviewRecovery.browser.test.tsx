@@ -6,7 +6,8 @@ import { LinkPreviews } from "./LinkPreviews.tsx";
 const config = { ...DEFAULT_CONFIG, summalyUrl: "", mediaProxyUrl: "" };
 const api = vi.hoisted(() => ({ get: vi.fn() }));
 vi.mock("../../../lib/summaly", () => ({ createSummalyClient: () => api }));
-vi.mock("../../../lib/electric/collections-context", () => ({
+vi.mock("../../../lib/electric/collections-context", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../lib/electric/collections-context")>()),
   useOptionalCollections: () => ({ config }),
 }));
 afterEach(() => {
