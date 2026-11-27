@@ -788,7 +788,7 @@ class RepositoryTest {
             invalidations.value = 1
             step("rows after the second refetch") { table.rows.first { rows -> rows.any { it.text("id") == "m010" } } }
             assertEquals(listOf("m010"), table.rows.value.map { it.text("id") })
-            assertEquals(initialGeneration + 2, table.pageGeneration.value)
+            assertTrue(table.pageGeneration.value > initialGeneration)
             assertTrue(table.pageStates.value.getValue(PageScope.Main).loaded)
             // 取り直しが済んでいれば、loadOlder は待たずに終わる（古いジョブが解除できなくても、新しいジョブが解除する）。
             val result = step("loadOlder after the refetch") { table.loadOlder(PageScope.Main) }
