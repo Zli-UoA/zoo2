@@ -2331,7 +2331,6 @@ ALTER TABLE home_images ADD COLUMN created_at timestamptz NOT NULL DEFAULT now()
 ALTER TABLE home_images
   ADD COLUMN thumbnail_bytes bigint NOT NULL DEFAULT 0,
   ADD COLUMN thumbnail_ready boolean,
-  ADD COLUMN thumbnail_legacy_missing boolean NOT NULL DEFAULT false,
   ADD COLUMN thumbnail_check_at timestamptz NOT NULL DEFAULT (now()+interval '5 minutes');
 CREATE INDEX home_images_uploader_created ON home_images(uploader_id,created_at);
 CREATE TABLE home_image_upload_rates (
@@ -2360,7 +2359,7 @@ CREATE INDEX home_images_unconfirmed_thumbnail ON home_images(thumbnail_check_at
   WHERE thumbnail_ready IS NULL;
 CREATE INDEX home_images_uploader_unconfirmed_thumbnail
   ON home_images(uploader_id,(thumbnail_bytes>0),thumbnail_check_at,id)
-  WHERE thumbnail_ready IS NULL AND NOT thumbnail_legacy_missing
+  WHERE thumbnail_ready IS NULL
     AND home_image_can_have_thumbnail(content_type,width,height);
 
 CREATE FUNCTION queue_home_image_deletion() RETURNS trigger LANGUAGE plpgsql AS $$

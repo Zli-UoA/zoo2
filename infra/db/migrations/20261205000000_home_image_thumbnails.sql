@@ -1,7 +1,6 @@
 ALTER TABLE home_images
   ADD COLUMN thumbnail_bytes bigint NOT NULL DEFAULT 0,
   ADD COLUMN thumbnail_ready boolean,
-  ADD COLUMN thumbnail_legacy_missing boolean NOT NULL DEFAULT false,
   ADD COLUMN thumbnail_check_at timestamptz NOT NULL DEFAULT (now()+interval '5 minutes');
 
 ALTER TABLE home_image_deletions
