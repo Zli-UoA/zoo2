@@ -24,6 +24,7 @@ on:
       - "rust-toolchain.toml"
       - ".github/scripts/*test-selection*.mjs"
       - ".github/scripts/backend-e2e-selection.mjs"
+      - ".github/scripts/rust-test-selection/**"
       - ".github/workflows/select-tests.yaml"
       - ".github/workflows/ci-backend.yaml"
       - ".github/workflows/select-runner.yaml"
@@ -89,6 +90,9 @@ jobs:
           # Not shared with oidc-e2e (backend-debug): cache keys are immutable, and
           # its build-only save would keep clippy and test artifacts out of this one.
           shared-key: backend-check
+      - name: Rust test selector regression tests
+        if: fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').backend.verifyCaseSelector
+        run: cargo test --locked --manifest-path ../.github/scripts/rust-test-selection/Cargo.toml
       - name: format check
         run: cargo fmt --check
       - name: lint check

@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url';
 import { classifyTranslationChanges, isFrontendTestInput, isLightweightChange, readChanges, testBaseSha, usesSelectiveTests, workflowChanges } from './test-selection-diff.mjs';
 import { routeTestTargets, testLeg } from './backend-e2e-selection.mjs';
 import { isRelatedFrontendModule, isVitestInput } from './frontend-test-selection.mjs';
+import { playwrightOwners } from './playwright-test-selection.mjs';
 import { PR_WORKFLOWS } from './merge-queue-changes.mjs';
 import { selectOtherJobs } from './test-selection-jobs.mjs';
 import { workflowJobs, restrictWorkflow } from './workflow-test-selection.mjs';
@@ -118,7 +119,8 @@ function selectPullRequest(changes, full) {
     } else if (Object.hasOwn(specs, path)) {
       enable(path, specs[path]);
     } else if (/^frontend\/playwright[^/]*\.config\.ts$|^frontend\/e2e\//.test(path)) {
-      enable(path, 'i18n', 'layout', 'frontend-selection', 'container', 'auth', 'e2ee');
+      const owners = playwrightOwners(path) ?? ['i18n', 'layout', 'frontend-selection', 'csp', 'oidc', 'e2ee'];
+      enable(path, ...owners.map(suite => suite === 'csp' ? 'container' : suite === 'oidc' ? 'auth' : suite));
     } else if (path.startsWith('frontend/')) {
       const test = edit && isRelatedFrontendModule(path, 'pull_request');
       if (test && /\.vrt\.test\.tsx$/.test(path)) enable(path, 'vrt');
@@ -132,6 +134,7 @@ function selectPullRequest(changes, full) {
         frontendBuild.build = true;
         const selected = ['unit', 'browser', 'vrt', 'storybook'];
         if (path.startsWith('frontend/src/lib/i18n/')) selected.push('i18n');
+        if (playwrightOwners(path)?.includes('layout')) selected.push('layout');
         if (/^frontend\/(public\/sw(?:-push)?\.js$|src\/(sw\/|lib\/pwa\/))/.test(path)) {
           selected.push('pwa', 'offline', 'container');
         }
@@ -176,6 +179,10 @@ export function selectWorkflowPlan(eventName, workflow, changes, base) {
     path === '.github/workflows/ci-android.yaml' ||
     (path.startsWith('frontend/') && !/^(?:frontend\/src\/(?:android-phone|lib\/(?:sip|call))\/|frontend\/vite\.android-phone\.config\.ts$|frontend\/scripts\/android-phone-smoke\.mjs$)/.test(path)));
   selection.desktopTauri ??= { check: true, macos: true, windows: true };
+  if (relevant?.some(({ path }) => path.startsWith('.github/scripts/rust-test-selection/'))) {
+    selection.backend.verifyCaseSelector = true;
+    selection.backend.check = true;
+  }
   selection.backend.check ??= true;
   selection.backend.deploy ??= selection.backend.full;
   return selection;

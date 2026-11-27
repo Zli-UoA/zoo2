@@ -93,7 +93,7 @@ export function caseDependencies(source, ts) {
 }
 
 export function selectSourceCases(project, selection, changes, base, { compiler, git = execFileSync, read = path => readFileSync(resolve(root, path), 'utf8'), exists = path => statSync(resolve(root, path), { throwIfNoEntry: false })?.isFile() ?? false, files, log = () => {} } = {}) {
-  if (!['browser', 'vrt'].includes(project) || selection.mode !== 'related' || !changes?.every(c => c.status === 'M' && /^frontend\/src\/.+\.tsx?$/.test(c.path) && !/\.test\.tsx?$/.test(c.path))) return selection;
+  if (!['unit', 'browser', 'vrt'].includes(project) || selection.mode !== 'related' || !changes?.every(c => c.status === 'M' && /^frontend\/src\/.+\.tsx?$/.test(c.path) && !/\.test\.tsx?$/.test(c.path))) return selection;
   try {
     const ts = compiler ?? loadTypeScript();
     for (const { path } of changes) {
@@ -104,7 +104,11 @@ export function selectSourceCases(project, selection, changes, base, { compiler,
     }
     const candidates = files ?? readdirSync(resolve(root, 'frontend/src'), { recursive: true, withFileTypes: true })
       .filter(entry => entry.isFile()).map(entry => relative(root, resolve(entry.parentPath, entry.name)).replaceAll('\\', '/'));
-    const matches = path => project === 'vrt' ? /\.vrt\.test\.tsx$/.test(path) : /\.browser\.test\.tsx?$/.test(path);
+    const matches = path => {
+      if (project === 'vrt') return /\.vrt\.test\.tsx$/.test(path);
+      if (project === 'browser') return /\.browser\.test\.tsx?$/.test(path);
+      return /(?<!\.browser)\.test\.ts$/.test(path);
+    };
     const virtual = new Map(), patterns = new Map();
     for (const path of candidates.filter(matches)) {
       const relevant = selectNodeTests([path], changes, { compiler: ts, read, exists, frontendAliases: true });

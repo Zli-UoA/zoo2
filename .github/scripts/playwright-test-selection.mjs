@@ -10,6 +10,28 @@ export const playwrightSuites = {
   csp: 'csp', oidc: 'oidc', e2ee: 'e2ee',
 };
 
+// Each entry owns an isolated fixture, server configuration, or spec. Paths
+// with no declared owner are shared and keep the complete candidate suite.
+const suiteInputs = {
+  'frontend/e2e/fixtures/layout.html': ['layout'],
+  'frontend/e2e/fixtures/layout.tsx': ['layout'],
+  'frontend/e2e/fixtures/message-content.ts': ['layout'],
+  'frontend/e2e/layout.vite.config.ts': ['layout'],
+  'frontend/e2e/frontend-api.mjs': ['frontend-selection'],
+  'frontend/e2e/mock-idp-server.ts': ['oidc', 'e2ee'],
+  'frontend/e2e/mock-idp.ts': ['oidc', 'e2ee'],
+  'frontend/src/components/chat/messages/MessageList.tsx': ['layout'],
+  'frontend/src/components/chat/messages/Composer.tsx': ['layout'],
+  'frontend/src/components/layout/useVisualViewport.ts': ['layout'],
+};
+
+export function playwrightOwners(path) {
+  const match = /^frontend\/(?:e2e\/([\w-]+)\.spec\.ts|playwright\.([\w-]+)\.config\.ts)$/.exec(path);
+  const suite = match?.[1] ?? match?.[2];
+  if (suite && Object.hasOwn(playwrightSuites, suite)) return [suite];
+  return Object.hasOwn(suiteInputs, path) ? suiteInputs[path] : undefined;
+}
+
 export function playwrightArguments(suite, cases) {
   if (!Object.hasOwn(playwrightSuites, suite)) throw new Error('Unsupported Playwright suite');
   const args = ['exec', 'playwright', 'test', '--config', `playwright.${playwrightSuites[suite]}.config.ts`];
@@ -26,7 +48,13 @@ export function runPlaywright({ suite, eventName, event, git = execFileSync, run
       const workflow = ['oidc', 'e2ee'].includes(suite)
         ? `ci-frontend-${suite === 'oidc' ? 'auth' : 'e2ee'}-e2e`
         : 'ci-frontend';
-      const changes = workflowChanges(workflow, readChanges(base, git));
+      const changes = workflowChanges(workflow, readChanges(base, git)).filter(({ path }) => {
+        // Other standalone Playwright inputs cannot affect this spec. App
+        // modules and unclassified resources still widen case selection.
+        if (!/^frontend\/(?:e2e\/|playwright\.)/.test(path)) return true;
+        const owners = playwrightOwners(path);
+        return !owners || owners.includes(suite);
+      });
       if (changes.length === 1 && changes[0].status === 'M' && changes[0].path === path) {
         cases = readChangedCases(base, path, { git, compiler, requireTitle: false });
       }

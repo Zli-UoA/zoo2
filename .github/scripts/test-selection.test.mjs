@@ -3,7 +3,7 @@ import { classifyTranslationChanges, translationOnlyChange } from './test-select
 import { test } from 'node:test';
 import { readdirSync } from 'node:fs';
 import { selectSuites } from './test-selection.mjs';
-import { cargoCommands, routeTestTargets, slackTests } from './backend-e2e-selection.mjs';
+import { cargoCommands, routeTestTargets, rustCaseFilters, slackTests } from './backend-e2e-selection.mjs';
 import { selectOtherJobs } from './test-selection-jobs.mjs';
 
 const change = path => ({ status: 'M', path });
@@ -259,4 +259,35 @@ test('resources consumed outside the Vitest import graph keep their direct check
   const compose = selectSuites('pull_request', [change('infra/compose.stack.yaml')]);
   assert.ok(compose.frontend.container && compose.frontend.proxy && compose.backend.deploy);
   assert.ok(!compose.frontend.storybook && !compose.backend.full && !compose.backend.run);
+});
+
+test('Rust case filters run exact names and fall back independently per binary', () => {
+  const selection = { full: false, targets: ['threads_test', 'typing_test'] };
+  const changes = [change('backend/tests/threads_test.rs'), change('backend/tests/typing_test.rs')];
+  const input = {
+    selection, leg: 'core', base: 'a'.repeat(40), changes,
+    git: (command, args) => args[1].split(':')[1],
+    run: (command, args, options) => ({
+      status: 0,
+      stdout: options.input.includes('threads_test') ? 'first\nsecond\n' : '',
+    }),
+    log() {},
+  };
+  const filters = rustCaseFilters(input);
+  assert.deepEqual(cargoCommands(selection, 'core', [], filters), [
+    ['test', '--test', 'typing_test'],
+    ['test', '--test', 'threads_test', '--', '--exact', 'first', 'second'],
+  ]);
+  assert.deepEqual(rustCaseFilters({ ...input, changes: [...changes, change('backend/src/routes/typing.rs')] }), {});
+  assert.deepEqual(rustCaseFilters({ ...input, run: () => ({ status: 1 }) }), {});
+});
+
+test('Playwright fixture and config ownership does not widen unrelated specs', () => {
+  const plan = selectSuites('pull_request', [
+    change('frontend/e2e/fixtures/layout.tsx'), change('frontend/playwright.i18n.config.ts'),
+  ]);
+  assert.deepEqual(Object.keys(plan.frontend).filter(key => plan.frontend[key]), ['i18n', 'layout']);
+  const module = selectSuites('pull_request', [change('frontend/src/components/chat/messages/MessageList.tsx')]);
+  assert.equal(module.frontend.layout, true);
+  assert.equal(module.frontend.container, false);
 });

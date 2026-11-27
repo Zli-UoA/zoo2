@@ -175,3 +175,35 @@ test('first', () => {
     assert.equal(selectSourceCases('vrt', related, [{ status: 'M', path }], base, options).patterns, undefined);
   }
 });
+
+test('independent Playwright spec and fixture edits keep case-level selection', () => {
+  const git = (command, args) => args.includes('--name-status')
+    ? 'M\0frontend/e2e/layout.spec.ts\0M\0frontend/e2e/frontend-api.mjs\0M\0frontend/e2e/i18n.spec.ts\0'
+    : gitFor('frontend/e2e/layout.spec.ts')(command, args);
+  const code = runPlaywright({
+    suite: 'layout', eventName: 'pull_request', event, compiler, git, log() {},
+    run(command, args) {
+      assert.ok(args.includes('e2e/layout.spec.ts:3'));
+      return { status: 0 };
+    },
+  });
+  assert.equal(code, 0);
+});
+
+test('unit test cases can be selected from a pure app module edit', () => {
+  const path = 'frontend/src/First.ts';
+  const spec = 'frontend/src/example.test.ts';
+  const sources = {
+    [path]: 'export function first() { return 1; }',
+    'frontend/src/Second.ts': 'export function second() { return 2; }',
+    [spec]: `import {first} from './First';
+import {second} from './Second';
+test('first case', () => first());
+test('second case', () => second());`,
+  };
+  const result = selectSourceCases('unit', { mode: 'related', files: ['src/First.ts'] }, [{ path, status: 'M' }], base, {
+    compiler, files: [spec], git: () => 'export function first() { return 0; }',
+    read: path => sources[path], exists: path => Object.hasOwn(sources, path),
+  });
+  assert.deepEqual(result.patterns, ['(?:^| )first case$']);
+});
