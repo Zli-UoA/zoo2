@@ -20,10 +20,13 @@ use std::collections::{HashMap, HashSet};
 use serde_json::Value;
 
 use super::{
+    convert::{mentioned_users, reaction_emoji},
     export::SlackMessage,
     hints::{edit, exec_delete},
     sync::{Slack, SyncError, lookup_profiles, parse_messages},
-    worker::{Context, insert_reactions, suppress_app_events},
+    worker::{
+        Context, insert_reactions, lock_zip_target_advisory, resolve_users, suppress_app_events,
+    },
 };
 use crate::{apps::query, error::AppError};
 
@@ -44,12 +47,14 @@ fn now_secs() -> u64 {
 /// もう一度試す (`rechecked_at` を、30 分の間隔の 5 分前にする)。ただし 429 は、`Retry-After` を守るため、そのまま返し、
 /// 再確認は、待ちより 5 分あとに回す (待ちのあとに、通常の同期が先に行える)
 /// (この回の通常の同期は、待ちのあと)。リースを失ったときも、そのまま返す
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run(
     slack: &mut Slack,
     ctx: &mut Context,
     team: &str,
     slack_channel: &str,
     zoo_channel: &str,
+    slack_private: &mut bool,
     lease_token: &str,
     db: &mut toasty::Db,
 ) -> Result<(), SyncError> {
@@ -62,6 +67,7 @@ pub(super) async fn run(
         team,
         slack_channel,
         zoo_channel,
+        slack_private,
         lease_token,
         db,
     )
@@ -73,6 +79,9 @@ pub(super) async fn run(
             let reason = match &error {
                 SyncError::RateLimited(secs) => format!("rate limited ({secs}s)"),
                 SyncError::NoAccess(e) | SyncError::Failed(e) => e.clone(),
+                SyncError::PrivacyCheckFailed(e) => format!("privacy check failed: {e}"),
+                SyncError::TargetChanged => "target changed".to_string(),
+                SyncError::PrivateTargetViolation => "private target violation".to_string(),
                 _ => "invalid cursor".to_string(),
             };
             tracing::warn!(team, channel = slack_channel, %reason, "Slack recheck failed; the sync goes on");
@@ -99,19 +108,23 @@ pub(super) async fn run(
             // `conversations.history` が 429 になるので、`Retry-After` を守って、この回を終える
             // (再確認は、上で 5 分後に回したので、待ちのあとの通常の同期は、再確認に妨げられない)
             match error {
-                SyncError::RateLimited(_) => Err(error),
+                SyncError::RateLimited(_)
+                | SyncError::TargetChanged
+                | SyncError::PrivateTargetViolation => Err(error),
                 _ => Ok(()),
             }
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_inner(
     slack: &mut Slack,
     ctx: &mut Context,
     team: &str,
     slack_channel: &str,
     zoo_channel: &str,
+    slack_private: &mut bool,
     lease_token: &str,
     db: &mut toasty::Db,
 ) -> Result<(), SyncError> {
@@ -152,6 +165,9 @@ async fn run_inner(
             None => break,
         }
     }
+    // 履歴のページは、ページを取った時点の可視性を運ばない。保存 (apply_chunk) と削除の前に、
+    // Slack のチャンネルが今も非公開かを確かめ、公開の取り込み先へ書かない
+    super::sync::refresh_slack_privacy(slack, slack_channel, slack_private).await?;
     let importable: Vec<SlackMessage> = messages
         .iter()
         .filter(|m| m.is_importable_for_team(Some(team)))
@@ -165,6 +181,7 @@ async fn run_inner(
             team,
             slack_channel,
             zoo_channel,
+            *slack_private,
             lease_token,
             chunk,
             db,
@@ -174,8 +191,26 @@ async fn run_inner(
 
     let mut tx = db.transaction().await.map_err(AppError::from)?;
     suppress_app_events(&mut tx).await?;
+    // apply_chunk / hints::apply と同じロック順 (advisory -> slack_channels -> slack_channel_syncs -> channels) を保つ。
+    lock_zip_target_advisory(&mut tx, team, slack_channel).await?;
+    super::sync::ensure_target_unchanged(&mut tx, team, slack_channel, zoo_channel).await?;
+    let done = query(
+        &mut tx,
+        "UPDATE slack_channel_syncs SET rechecked_at=now(),lease_until=now()+interval '5 minutes' \
+         WHERE team_id=$1 AND slack_channel_id=$2 AND lease_token=$3 \
+         RETURNING json_build_object('ok',true)::text",
+        &[team, slack_channel, lease_token],
+    )
+    .await?;
+    if done.is_empty() {
+        return Err(SyncError::LeaseLost);
+    }
     // 最後の `apply_chunk` のあとに暗号化へ切り替わっていたら (#367)、Slack にない投稿の削除もしない
     super::worker::ensure_plaintext_allowed(&mut tx, zoo_channel).await?;
+    // 履歴が空で `apply_chunk` が 1 度も走らなかったときも、削除の前に取り込み先の可視性を確かめる。
+    // claim の時点では非公開だった Slack チャンネルの内容を、公開へ変わった取り込み先の確認なしに
+    // 消したり書いたりしない (apply_chunk と同じ拒否条件)。
+    super::sync::ensure_private_target(&mut tx, zoo_channel, *slack_private).await?;
     if complete && intact {
         let present: HashSet<&str> = messages.iter().map(|m| m.ts.as_str()).collect();
         let candidates = query(
@@ -207,51 +242,28 @@ async fn run_inner(
             }
         }
     }
-    let done = query(
-        &mut tx,
-        "UPDATE slack_channel_syncs SET rechecked_at=now(),lease_until=now()+interval '5 minutes' \
-         WHERE team_id=$1 AND slack_channel_id=$2 AND lease_token=$3 \
-         RETURNING json_build_object('ok',true)::text",
-        &[team, slack_channel, lease_token],
-    )
-    .await?;
-    if done.is_empty() {
-        return Err(SyncError::LeaseLost);
-    }
     tx.commit().await.map_err(AppError::from)?;
     Ok(())
 }
 
-/// 取り直した投稿のうち、すでに Zoo にあるものに、編集・リアクションの追加・tombstone の削除を反映する
-async fn apply_chunk(
-    ctx: &mut Context,
+struct ChunkState {
+    mapped: HashMap<String, (String, bool)>,
+    ids: Vec<String>,
+    rows: HashMap<String, Value>,
+}
+
+async fn load_chunk_state(
+    tx: &mut toasty::Transaction<'_>,
     team: &str,
     slack_channel: &str,
     zoo_channel: &str,
-    lease_token: &str,
     chunk: &[SlackMessage],
-    db: &mut toasty::Db,
-) -> Result<(), SyncError> {
-    let mut tx = db.transaction().await.map_err(AppError::from)?;
-    suppress_app_events(&mut tx).await?;
-    let leased = query(
-        &mut tx,
-        "UPDATE slack_channel_syncs SET lease_until=now()+interval '5 minutes' \
-         WHERE team_id=$1 AND slack_channel_id=$2 AND lease_token=$3 \
-         RETURNING json_build_object('ok',true)::text",
-        &[team, slack_channel, lease_token],
-    )
-    .await?;
-    if leased.is_empty() {
-        return Err(SyncError::LeaseLost);
-    }
-    // 同期の途中で取り込み先が暗号化に切り替わったら (#367)、平文を書かない。次の同期は、暗号化チャンネルを取らない
-    super::worker::ensure_plaintext_allowed(&mut tx, zoo_channel).await?;
-    // `slack_message_map` にある投稿は、その Zoo の ID を使う。Zoo で作った投稿 (`zoo`) は、編集・削除を反映しない
+) -> Result<ChunkState, AppError> {
+    // `slack_message_map` に行があれば、その Zoo のメッセージを使う。Zoo で作った投稿 (`zoo`) は、編集・削除を反映しない
     let tss: Vec<&str> = chunk.iter().map(|m| m.ts.as_str()).collect();
     let mut mapped: HashMap<String, (String, bool)> = HashMap::new();
     for row in query(
-        &mut tx,
+        tx,
         "SELECT json_build_object('ts',ts,'id',message_id,'origin',origin)::text FROM slack_message_map \
          WHERE team_id=$1 AND slack_channel_id=$2 AND ts IN (SELECT jsonb_array_elements_text($3::jsonb))",
         &[team, slack_channel, &serde_json::json!(tss).to_string()],
@@ -285,7 +297,7 @@ async fn apply_chunk(
         })
         .collect();
     for row in query(
-        &mut tx,
+        tx,
         "SELECT json_build_object('id',m.id,'content',m.content,'card',COALESCE(m.card,''),'components',COALESCE(m.components,''),'forwarded_message_ids',m.forwarded_message_ids,'deleted',m.deleted_at IS NOT NULL)::text \
          FROM messages m JOIN jsonb_to_recordset($1::jsonb) AS x(id text,ts text) ON x.id=m.id \
          WHERE m.channel_id=$2 \
@@ -298,12 +310,91 @@ async fn apply_chunk(
             rows.insert(id.to_string(), row.clone());
         }
     }
-    for (message, id) in chunk.iter().zip(&ids) {
+    Ok(ChunkState { mapped, ids, rows })
+}
+
+fn collect_chunk_users(team: &str, chunk: &[SlackMessage], state: &ChunkState) -> Vec<String> {
+    let mut members = Vec::new();
+    for (message, id) in chunk.iter().zip(&state.ids) {
+        if state.rows.get(id).is_none_or(|r| r["deleted"] == true) {
+            continue;
+        }
+        if message.subtype.as_deref() == Some("tombstone")
+            || !message.is_importable_for_team(Some(team))
+        {
+            continue;
+        }
+        let zoo_origin = state.mapped.get(&message.ts).is_some_and(|(_, zoo)| *zoo);
+        if !zoo_origin {
+            let edited = message
+                .edited
+                .as_ref()
+                .map(|e| e.ts.as_str())
+                .filter(|ts| super::is_valid_ts(ts));
+            if edited.is_some() || message.bot_id.is_some() {
+                members.extend(mentioned_users(&message.text));
+            }
+        }
+        for reaction in &message.reactions {
+            if reaction_emoji(&reaction.name).is_some() {
+                members.extend(reaction.users.iter().cloned());
+            }
+        }
+    }
+    members
+}
+
+/// 取り直した投稿のうち、すでに Zoo にあるものに、編集・リアクションの追加・tombstone の削除を反映する
+#[allow(clippy::too_many_arguments)]
+async fn apply_chunk(
+    ctx: &mut Context,
+    team: &str,
+    slack_channel: &str,
+    zoo_channel: &str,
+    slack_private: bool,
+    lease_token: &str,
+    chunk: &[SlackMessage],
+    db: &mut toasty::Db,
+) -> Result<(), SyncError> {
+    let mut tx = db.transaction().await.map_err(AppError::from)?;
+    suppress_app_events(&mut tx).await?;
+    // sync::store / hints::apply と同じロック順 (advisory -> users -> slack_channels -> slack_channel_syncs -> channels) を保つ。
+    lock_zip_target_advisory(&mut tx, team, slack_channel).await?;
+    let pre_state = load_chunk_state(&mut tx, team, slack_channel, zoo_channel, chunk).await?;
+    let slack_ids = collect_chunk_users(team, chunk, &pre_state);
+    resolve_users(&mut tx, ctx, &slack_ids, &HashMap::new()).await?;
+    super::sync::ensure_target_unchanged(&mut tx, team, slack_channel, zoo_channel).await?;
+    let leased = query(
+        &mut tx,
+        "UPDATE slack_channel_syncs SET lease_until=now()+interval '5 minutes' \
+         WHERE team_id=$1 AND slack_channel_id=$2 AND lease_token=$3 \
+         RETURNING json_build_object('ok',true)::text",
+        &[team, slack_channel, lease_token],
+    )
+    .await?;
+    if leased.is_empty() {
+        return Err(SyncError::LeaseLost);
+    }
+    // 同期の途中で取り込み先が暗号化に切り替わったら (#367)、平文を書かない。次の同期は、暗号化チャンネルを取らない
+    super::worker::ensure_plaintext_allowed(&mut tx, zoo_channel).await?;
+    // 同期の途中で取り込み先が公開に変わったら、非公開の Slack チャンネルの内容を書かない
+    super::sync::ensure_private_target(&mut tx, zoo_channel, slack_private).await?;
+    let state = load_chunk_state(&mut tx, team, slack_channel, zoo_channel, chunk).await?;
+    let required_users = collect_chunk_users(team, chunk, &state);
+    if let Some(missing) = required_users
+        .iter()
+        .find(|id| !ctx.users.contains_key(*id))
+    {
+        return Err(SyncError::Failed(format!(
+            "Slack recheck user {missing} was not pre-resolved before locking channel {zoo_channel}"
+        )));
+    }
+    for (message, id) in chunk.iter().zip(&state.ids) {
         // Zoo にない投稿は作らない。消えた投稿は、そのまま
-        let Some(stored) = rows.get(id).filter(|r| r["deleted"] != true) else {
+        let Some(stored) = state.rows.get(id).filter(|r| r["deleted"] != true) else {
             continue;
         };
-        let zoo_origin = mapped.get(&message.ts).is_some_and(|(_, zoo)| *zoo);
+        let zoo_origin = state.mapped.get(&message.ts).is_some_and(|(_, zoo)| *zoo);
         if message.subtype.as_deref() == Some("tombstone") {
             if !zoo_origin {
                 exec_delete(&mut tx, id, zoo_channel).await?;

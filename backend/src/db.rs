@@ -1,9 +1,28 @@
 use crate::models::{
-    Attachment, Channel, ChannelUser, ChannelWebhook, Message, MessageReaction, Notification, Role,
-    User, UserIdentity, UserRole,
+    Attachment, Channel, ChannelNote, ChannelUser, ChannelWebhook, Message, MessageReaction,
+    Notification, Role, User, UserIdentity, UserRole,
 };
 
 pub async fn init_db(database_url: &str) -> Result<toasty::Db, toasty::Error> {
+    init_db_with_pool(database_url, configured_max_pool_size()).await
+}
+
+/// 環境変数 `DB_MAX_POOL_SIZE` から決めた接続プールの上限。
+///
+/// 競合テストは `init_db_with_pool` にこの値以上を渡し、環境の設定で
+/// 同時接続が足りなくならないようにする。
+pub fn configured_max_pool_size() -> usize {
+    max_pool_size(std::env::var("DB_MAX_POOL_SIZE").ok())
+}
+
+/// Create a pool with an explicit size. Integration tests use this when they
+/// hold one connection with a blocked transaction while concurrent API requests
+/// need their own: the environment's `DB_MAX_POOL_SIZE` must not decide whether
+/// the test can run.
+pub async fn init_db_with_pool(
+    database_url: &str,
+    pool_size: usize,
+) -> Result<toasty::Db, toasty::Error> {
     tracing::info!("Connecting to PostgreSQL via Toasty ORM...");
 
     let mut builder = toasty::Db::builder();
@@ -12,6 +31,7 @@ pub async fn init_db(database_url: &str) -> Result<toasty::Db, toasty::Error> {
         UserIdentity,
         Channel,
         ChannelWebhook,
+        ChannelNote,
         Message,
         MessageReaction,
         Notification,
@@ -23,7 +43,7 @@ pub async fn init_db(database_url: &str) -> Result<toasty::Db, toasty::Error> {
         UserRole,
         Attachment
     ));
-    builder.max_pool_size(max_pool_size(std::env::var("DB_MAX_POOL_SIZE").ok()));
+    builder.max_pool_size(pool_size.max(1));
     let db = builder.connect(database_url).await?;
 
     tracing::info!("Successfully connected to PostgreSQL database");
