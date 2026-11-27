@@ -112,7 +112,10 @@ async function fetchBounded(input, init = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10_000);
   try {
-    return await fetch(input, { ...init, signal: controller.signal });
+    const response = await fetch(input, { ...init, signal: controller.signal });
+    // fetch() はヘッダー受信で解決するため、本文を読み切るまで期限を維持する。
+    await response.clone().arrayBuffer();
+    return response;
   } finally {
     clearTimeout(timer);
   }
@@ -485,34 +488,36 @@ async function handleFreshAsset(request) {
 }
 
 async function cachedFreshAsset(path, networkResponse = null) {
+  // 現行のポリシーのキャッシュを優先する。案内ページ自身の CSP はそのまま返す。
+  let names = [];
   try {
-    // 現行のポリシーのキャッシュを優先する。案内ページ自身の CSP はそのまま返す。
-    const candidates = [];
-    for (const name of (await caches.keys()).filter((name) => name.startsWith(CACHE_PREFIX))) {
+    names = (await caches.keys()).filter((name) => name.startsWith(CACHE_PREFIX));
+  } catch {
+    /* No caches can be enumerated. */
+  }
+  const candidates = [];
+  for (const name of names) {
+    let installedAt = 0;
+    try {
       const cache = await caches.open(name);
       const meta = await cache.match(META_PATH);
-      const installedAt = meta ? Number(await meta.text()) : 0;
-      candidates.push({
-        name,
-        current: name.startsWith(POLICY_PREFIX),
-        installedAt: Number.isFinite(installedAt) ? installedAt : 0,
-      });
+      const value = meta ? Number(await meta.text()) : 0;
+      if (Number.isFinite(value)) installedAt = value;
+    } catch {
+      /* An unreadable cache has an unknown age. */
     }
-    candidates.sort(
-      (a, b) => Number(b.current) - Number(a.current) || b.installedAt - a.installedAt,
-    );
-    for (const { name } of candidates) {
-      try {
-        const cache = await caches.open(name);
-        const saved = await cache.match(path);
-        if (!(await isUsableFreshAsset(path, saved))) continue;
-        return saved;
-      } catch {
-        /* Try the next generation when one cache cannot be read. */
-      }
+    candidates.push({ name, current: name.startsWith(POLICY_PREFIX), installedAt });
+  }
+  candidates.sort((a, b) => Number(b.current) - Number(a.current) || b.installedAt - a.installedAt);
+  for (const { name } of candidates) {
+    try {
+      const cache = await caches.open(name);
+      const saved = await cache.match(path);
+      if (!(await isUsableFreshAsset(path, saved))) continue;
+      return saved;
+    } catch {
+      /* Try the next generation when one cache cannot be read. */
     }
-  } catch {
-    /* No usable cached copy. */
   }
   return networkResponse ?? Response.error();
 }

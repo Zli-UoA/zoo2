@@ -1494,6 +1494,39 @@ test("fresh assets are fetched when AbortSignal.timeout is unavailable", async (
   assert.equal(await response.text(), validManifest("#ffffff"));
 });
 
+test("a stalled response body falls back to the cached manifest", async () => {
+  const manifest = validManifest("#000000");
+  const cacheContext = memoryCaches([
+    ["zoo-shell-v2", `${ORIGIN}/manifest.webmanifest`, basicResponse(manifest)],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    AbortSignal: class {},
+    AbortController: class {
+      constructor() {
+        this.signal = {};
+      }
+      abort() {}
+    },
+    setTimeout: () => 1,
+    clearTimeout: () => {},
+    fetch: async () => {
+      const response = basicResponse("unavailable", { status: 503 });
+      response.clone = () => {
+        throw new Error("stalled body");
+      };
+      return response;
+    },
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+  });
+  assert.equal(await response.text(), manifest);
+});
+
 test("an aborted fresh fetch falls back to the cached manifest", async () => {
   const manifest = validManifest("#000000");
   const cacheContext = memoryCaches([
@@ -1965,6 +1998,40 @@ test("cached offline page keeps its own CSP", async () => {
   const response = await fetchThrough(handlers, navigation(`${ORIGIN}/offline.html`));
   assert.match(await response.text(), /offline/);
   assert.equal(response.headers.get("content-security-policy"), "old-policy");
+});
+
+test("an unreadable cached metadata does not stop the offline fallback", async () => {
+  const manifest = validManifest("#000000");
+  const cacheContext = memoryCaches([
+    ["zoo-shell-v3-broken", `${ORIGIN}/index.html`, basicResponse("<html>app</html>")],
+    ["zoo-shell-v3-old", `${ORIGIN}/manifest.webmanifest`, basicResponse(manifest)],
+  ]);
+  const realOpen = cacheContext.api.open.bind(cacheContext.api);
+  cacheContext.api.open = async (name) => {
+    const cache = await realOpen(name);
+    if (name !== "zoo-shell-v3-broken") return cache;
+    return {
+      ...cache,
+      match: async (request) => {
+        if (requestKey(request) === `${ORIGIN}/__zoo_shell_meta__`) throw new Error("denied");
+        return cache.match(request);
+      },
+    };
+  };
+  await realOpen("zoo-shell-v3-broken");
+  await realOpen("zoo-shell-v3-old");
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+  });
+  assert.equal(await response.text(), manifest);
 });
 
 test("an HTTP error is returned when no cached manifest exists", async () => {
