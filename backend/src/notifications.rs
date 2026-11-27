@@ -380,6 +380,20 @@ pub async fn create_message_notifications(
         }
     }
 
+    // 上限は除外前の候補数 T で判定する。除外後に数えると、無効化ユーザー等が
+    // 候補に含まれていた事実が隠れ、運用者が監視したい負荷を見逃すため。
+    let candidate_targets = targets_to_notify.len();
+    if candidate_targets > MAX_NOTIFICATION_TARGETS {
+        tracing::warn!(
+            target: "notifications",
+            channel_id = %message.channel_id,
+            message_id = %message.id,
+            targets = candidate_targets,
+            limit = MAX_NOTIFICATION_TARGETS,
+            "notification targets exceed the operational limit"
+        );
+    }
+
     // Apps receive events rather than human inbox notifications.
     // 無効化済みのユーザー (Slack から取り込んだ未連携のプレースホルダなど) にも通知しない。
     // [P1] ゲストは公開チャンネルでも現在の channel_user 所属が必須。退出・キックされた
@@ -398,19 +412,6 @@ pub async fn create_message_notifications(
                 targets_to_notify.remove(id);
             }
         }
-    }
-
-    // 運用上限を超える宛先が出た場合は記録だけ残す (配信は止めない)。
-    // 同じスレッドへの同時返信が重なると、ルート行のロック保持が累積するため。
-    if targets_to_notify.len() > MAX_NOTIFICATION_TARGETS {
-        tracing::warn!(
-            target: "notifications",
-            channel_id = %message.channel_id,
-            message_id = %message.id,
-            targets = targets_to_notify.len(),
-            limit = MAX_NOTIFICATION_TARGETS,
-            "notification targets exceed the operational limit"
-        );
     }
 
     // 宛先が数千人でも SQL 往復を1回にするため、ID は Rust で生成してまとめて INSERT する。
