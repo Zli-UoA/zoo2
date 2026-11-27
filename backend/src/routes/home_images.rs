@@ -130,6 +130,7 @@ pub(crate) async fn stored_thumbnail_key(
             original,
             source.content_length()?,
             source.content_type()?,
+            variant.e_tag(),
         )
         .await
         .ok()??;
@@ -328,7 +329,7 @@ async fn upload(
     let thumbnail_bytes = thumbnail.as_ref().map_or(0, Vec::len);
     let mut tx = db.transaction().await?;
     query(&mut tx,"SELECT '{}'::text FROM (SELECT pg_advisory_xact_lock(hashtextextended('home-image-upload:' || $1,0))) locked",&[&user.id]).await?;
-    let usage = one(&mut tx,"SELECT json_build_object('bytes',(SELECT COALESCE(sum(file_size + CASE WHEN thumbnail_ready IS NULL AND thumbnail_bytes=0 THEN file_size ELSE thumbnail_bytes END),0) FROM home_images WHERE uploader_id=$1)+(SELECT COALESCE(sum(file_size),0) FROM home_image_deletions WHERE uploader_id=$1))::text",&[&user.id]).await?;
+    let usage = one(&mut tx,"SELECT json_build_object('bytes',(SELECT COALESCE(sum(file_size + CASE WHEN thumbnail_ready IS NULL AND thumbnail_bytes=0 THEN file_size ELSE thumbnail_bytes END),0) FROM home_images WHERE uploader_id=$1)+(SELECT COALESCE(sum(CASE WHEN thumbnail_accounted THEN file_size ELSE file_size * 2 END),0) FROM home_image_deletions WHERE uploader_id=$1))::text",&[&user.id]).await?;
     if usage["bytes"].as_i64().unwrap_or(MAX_USER_BYTES) + (bytes.len() + thumbnail_bytes) as i64
         > MAX_USER_BYTES
     {
@@ -558,7 +559,7 @@ async fn image_redirect(
     )
     .await?;
     Ok((
-        [(header::CACHE_CONTROL, IMAGE_CACHE_CONTROL)],
+        [(header::CACHE_CONTROL, "private, no-cache")],
         axum::response::Redirect::temporary(&url),
     ))
 }
@@ -641,9 +642,11 @@ async fn reconcile_home_thumbnails(state: &AppState) -> Result<(), AppError> {
     let mut tx = db.transaction().await?;
     let rows = query(
         &mut tx,
-        "SELECT json_build_object('id',id)::text FROM home_images
-         WHERE thumbnail_ready IS NULL AND created_at < now()-interval '5 minutes'
-         ORDER BY created_at,id LIMIT 100",
+        "UPDATE home_images SET thumbnail_check_at=now()+interval '10 minutes'
+         WHERE id IN (SELECT id FROM home_images WHERE thumbnail_ready IS NULL
+           AND thumbnail_check_at<=now() ORDER BY thumbnail_check_at,id LIMIT 100
+           FOR UPDATE SKIP LOCKED)
+         RETURNING json_build_object('id',id)::text",
         &[],
     )
     .await?;

@@ -57,7 +57,7 @@ fn needs_media_blurhash(item: &Value) -> bool {
     item["image_id"].is_string() && item["blurhash"].is_null()
 }
 
-async fn fill_media_blurhashes(media: &mut [Value]) -> bool {
+async fn fill_media_blurhashes(media: &mut [Value]) -> (bool, bool) {
     let mut images = std::collections::BTreeMap::new();
     for item in media.iter().filter(|item| needs_media_blurhash(item)) {
         if let (Some(id), Some(url)) = (item["image_id"].as_str(), item["url"].as_str()) {
@@ -67,15 +67,22 @@ async fn fill_media_blurhashes(media: &mut [Value]) -> bool {
     let hashes = futures_util::future::join_all(images.into_iter().map(|(id, url)| async move {
         // Optional metadata must not keep an otherwise valid Note from being delivered.
         let hash = tokio::time::timeout(Duration::from_secs(5), async {
-            let url = reqwest::Url::parse(&url).ok()?;
-            emoji_cache::get(&format!("media:{id}"), None, || load_image(url, true))
-                .await
-                .ok()?
-                .blurhash
+            let Ok(url) = reqwest::Url::parse(&url) else {
+                return Ok(None);
+            };
+            match emoji_cache::get(&format!("media:{id}"), None, || load_image(url, true)).await {
+                Ok(image) => Ok(image.blurhash),
+                Err(
+                    AppError::RateLimited
+                    | AppError::BadGateway(_)
+                    | AppError::ServiceUnavailable(_)
+                    | AppError::Internal(_),
+                ) => Err(()),
+                Err(_) => Ok(None),
+            }
         })
         .await
-        .ok()
-        .flatten();
+        .unwrap_or(Err(()));
         (id, hash)
     }))
     .await
@@ -86,13 +93,14 @@ async fn fill_media_blurhashes(media: &mut [Value]) -> bool {
         if let Some(hash) = item["image_id"]
             .as_str()
             .and_then(|id| hashes.get(id))
+            .and_then(|result| result.as_ref().ok())
             .and_then(Option::as_deref)
         {
             item["blurhash"] = json!(hash);
             changed = true;
         }
     }
-    changed
+    (changed, hashes.values().any(Result::is_err))
 }
 
 pub(super) async fn queue_media_blurhash(
@@ -103,7 +111,7 @@ pub(super) async fn queue_media_blurhash(
     if media.iter().any(needs_media_blurhash) {
         toasty::sql::statement(
             "INSERT INTO apub_media_blurhash_queue(post_id) VALUES($1)
-             ON CONFLICT(post_id) DO UPDATE SET available_at=now(), lease_id=NULL",
+             ON CONFLICT(post_id) DO UPDATE SET available_at=now(), lease_id=NULL, attempts=0",
         )
         .bind(post_id)
         .exec(tx)
@@ -132,13 +140,13 @@ async fn complete_next_media_blurhash(state: &AppState) -> Result<bool, AppError
     let rows = query(
         &mut tx,
         "WITH claimed AS (
-             UPDATE apub_media_blurhash_queue SET available_at=now()+interval '30 seconds', lease_id=$1
+             UPDATE apub_media_blurhash_queue SET available_at=now()+interval '30 seconds', lease_id=$1, attempts=attempts+1
              WHERE post_id=(SELECT post_id FROM apub_media_blurhash_queue WHERE available_at<=now()
                ORDER BY available_at,post_id LIMIT 1 FOR UPDATE SKIP LOCKED)
-             RETURNING post_id
+             RETURNING post_id,attempts
          )
          SELECT json_build_object('id',p.id,'actor_id',p.actor_id,'updated_at',p.updated_at,
-             'active',p.deleted_at IS NULL,'media',p.media)::text
+             'active',p.deleted_at IS NULL,'media',p.media,'attempts',claimed.attempts)::text
          FROM claimed JOIN apub_remote_posts p ON p.id=claimed.post_id",
         &[&lease],
     )
@@ -148,11 +156,14 @@ async fn complete_next_media_blurhash(state: &AppState) -> Result<bool, AppError
         return Ok(false);
     };
     let post_id = string(job, "id")?;
+    let mut retry = false;
     if job["active"] == true
         && let Some(items) = job["media"].as_array()
     {
         let mut media = items.clone();
-        if fill_media_blurhashes(&mut media).await {
+        let (changed, retry_images) = fill_media_blurhashes(&mut media).await;
+        retry = retry_images;
+        if changed {
             let updated = string(job, "updated_at")?
                 .parse::<jiff::Timestamp>()
                 .map_err(internal)?;
@@ -167,13 +178,22 @@ async fn complete_next_media_blurhash(state: &AppState) -> Result<bool, AppError
             .await?;
         }
     }
-    toasty::sql::statement(
-        "DELETE FROM apub_media_blurhash_queue WHERE post_id=$1 AND lease_id=$2",
-    )
-    .bind(post_id)
-    .bind(lease)
-    .exec(&mut db)
-    .await?;
+    let finish = if retry
+        && job["attempts"]
+            .as_u64()
+            .is_some_and(|attempts| attempts < 3)
+    {
+        "UPDATE apub_media_blurhash_queue SET lease_id=NULL, available_at=now()+
+         CASE WHEN attempts=1 THEN interval '30 seconds' ELSE interval '2 minutes' END
+         WHERE post_id=$1 AND lease_id=$2"
+    } else {
+        "DELETE FROM apub_media_blurhash_queue WHERE post_id=$1 AND lease_id=$2"
+    };
+    toasty::sql::statement(finish)
+        .bind(post_id)
+        .bind(lease)
+        .exec(&mut db)
+        .await?;
     Ok(true)
 }
 
@@ -481,12 +501,28 @@ async fn load_image(url: reqwest::Url, media: bool) -> Result<emoji_cache::Image
     read_image(response, media).await
 }
 
+fn unavailable_image(message: &str) -> AppError {
+    AppError::Coded {
+        status: axum::http::StatusCode::BAD_GATEWAY,
+        code: "unsupported_federated_image",
+        message: message.to_owned(),
+        extra: Default::default(),
+    }
+}
+
 async fn read_image(
     mut response: reqwest::Response,
     media: bool,
 ) -> Result<emoji_cache::Image, AppError> {
-    if !response.status().is_success() {
-        return Err(AppError::BadGateway("Emoji image unavailable".into()));
+    let status = response.status();
+    if !status.is_success() {
+        return Err(
+            if status.is_server_error() || matches!(status.as_u16(), 408 | 429) {
+                AppError::BadGateway("Emoji image unavailable".into())
+            } else {
+                unavailable_image("Emoji image unavailable")
+            },
+        );
     }
     let mime = response
         .headers()
@@ -501,7 +537,7 @@ async fn read_image(
         mime.as_str(),
         "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/avif" | "image/svg+xml"
     ) {
-        return Err(AppError::BadGateway("Unsupported emoji image".into()));
+        return Err(unavailable_image("Unsupported emoji image"));
     }
     let mut data = vec![];
     while let Some(chunk) = response
@@ -511,7 +547,7 @@ async fn read_image(
     {
         // Emoji retain their 2 MiB limit; photos use 8 MiB. The shared cache is 32 MiB.
         if data.len() + chunk.len() > (if media { 8 } else { 2 }) * 1024 * 1024 {
-            return Err(AppError::BadGateway("Emoji image too large".into()));
+            return Err(unavailable_image("Emoji image too large"));
         }
         data.extend_from_slice(&chunk);
     }
@@ -530,7 +566,7 @@ async fn read_image(
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
         data = returned_data;
-        Some(hash.ok_or_else(|| AppError::BadGateway("Invalid image dimensions or pixels".into()))?)
+        Some(hash.ok_or_else(|| unavailable_image("Invalid image dimensions or pixels"))?)
     } else {
         None
     };
@@ -660,6 +696,34 @@ mod media_proxy_tests {
         read_image(response, media).await
     }
 
+    #[tokio::test]
+    async fn only_temporary_upstream_failures_are_retryable() {
+        let upstream = wiremock::MockServer::start().await;
+        for status in [404, 429, 503] {
+            wiremock::Mock::given(wiremock::matchers::path(format!("/{status}")))
+                .respond_with(wiremock::ResponseTemplate::new(status))
+                .mount(&upstream)
+                .await;
+            let response = reqwest::get(format!("{}/{status}", upstream.uri()))
+                .await
+                .unwrap();
+            assert_eq!(
+                matches!(
+                    read_image(response, true).await,
+                    Err(AppError::BadGateway(_))
+                ),
+                status != 404,
+            );
+        }
+        assert!(matches!(
+            payload(vec![], "video/mp4", true).await,
+            Err(AppError::Coded {
+                code: "unsupported_federated_image",
+                ..
+            })
+        ));
+    }
+
     fn png(size: usize) -> Vec<u8> {
         let mut bytes = std::io::Cursor::new(Vec::new());
         image::DynamicImage::new_rgb8(2, 2)
@@ -688,7 +752,7 @@ mod media_proxy_tests {
             .await
             .unwrap();
 
-        assert!(fill_media_blurhashes(&mut media).await);
+        assert_eq!(fill_media_blurhashes(&mut media).await, (true, false));
 
         assert_eq!(media[0]["blurhash"], generated);
         assert_eq!(media[1]["blurhash"], original);

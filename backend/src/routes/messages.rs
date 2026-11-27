@@ -783,6 +783,7 @@ pub(crate) async fn create_message_impl(
                     &att.storage_key,
                     att.file_size,
                     &att.content_type,
+                    None,
                 )
                 .await?
             };

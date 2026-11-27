@@ -379,6 +379,9 @@ pub(crate) async fn remember_display_emojis(
     Ok(())
 }
 pub async fn worker(state: AppState) {
+    if base_url().is_err() {
+        return;
+    }
     let blurhash_workers =
         futures_util::future::join_all((0..4).map(|_| emoji::blurhash_worker(&state)));
     tokio::join!(delivery_worker(&state), blurhash_workers);

@@ -65,6 +65,7 @@ pub(crate) async fn uploaded_image_metadata(
     key: &str,
     expected_size: i64,
     content_type: &str,
+    legacy_thumbnail_etag: Option<&str>,
 ) -> Result<Option<crate::routes::home_images::ImageMetadata>, AppError> {
     let mime = content_type
         .split(';')
@@ -129,20 +130,36 @@ pub(crate) async fn uploaded_image_metadata(
     })
     .await
     {
-        Ok(Some((metadata, thumbnail))) => {
-            if let Some(etag) = source_etag.as_deref() {
-                crate::routes::home_images::store_thumbnail(
-                    client,
-                    bucket,
-                    key,
-                    thumbnail,
-                    Some(etag),
-                )
-                .await;
+        Ok(assets) => {
+            let (metadata, thumbnail) = assets.map_or((None, None), |(metadata, thumbnail)| {
+                (Some(metadata), thumbnail)
+            });
+            if let Some(bytes) = thumbnail {
+                if let Some(etag) = source_etag.as_deref() {
+                    crate::routes::home_images::store_thumbnail(
+                        client,
+                        bucket,
+                        key,
+                        Some(bytes),
+                        Some(etag),
+                    )
+                    .await;
+                }
+            } else if let Some(legacy_etag) = legacy_thumbnail_etag {
+                // The decoded original cannot produce a thumbnail. Retire only the stale object we read.
+                if let Err(error) = client
+                    .delete_object()
+                    .bucket(bucket)
+                    .key(crate::routes::home_images::thumbnail_key(key))
+                    .if_match(legacy_etag)
+                    .send()
+                    .await
+                {
+                    tracing::debug!(%error, key, "Could not remove obsolete attachment thumbnail");
+                }
             }
-            Ok(Some(metadata))
+            Ok(metadata)
         }
-        Ok(None) => Ok(None),
         Err(error) => {
             tracing::warn!(%error, key, "Skipping optional image metadata: decoder task failed");
             Ok(None)

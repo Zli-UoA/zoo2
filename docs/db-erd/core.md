@@ -247,6 +247,7 @@ erDiagram
       text uploader_id
       bigint file_size
       timestamptz created_at
+      boolean thumbnail_accounted
     }
     home_image_upload_rates {
       text user_id PK,FK
@@ -266,6 +267,7 @@ erDiagram
       timestamptz created_at
       bigint thumbnail_bytes
       boolean thumbnail_ready
+      timestamptz thumbnail_check_at
     }
     home_images }o--o| users : home_images_uploader_id_fkey
     home_posts {
