@@ -214,6 +214,14 @@ export function selectPrPlans(changes, base) {
   return plans;
 }
 
+export function shouldVerifySelector(eventName, changes) {
+  return eventName !== 'pull_request' || !changes?.length || changes.some(({ path }) =>
+    path.startsWith('.github/') || [
+      'desktop/scripts/collect-lucide-icons.mjs',
+      'frontend/src/lib/i18n/translation-policy.ts',
+    ].includes(path));
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const eventName = process.env.GITHUB_EVENT_NAME;
   const workflow = process.env.TEST_WORKFLOW;
@@ -232,8 +240,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   }
   const sharedPlan = process.env.TEST_PR_BATCH === 'true';
   const selection = sharedPlan ? selectPrPlans(changes, base) : selectWorkflowPlan(eventName, workflow, changes, base);
-  const verify = eventName !== 'pull_request' || !changes?.length || changes.some(({ path }) =>
-    path.startsWith('.github/') || path === 'desktop/scripts/collect-lucide-icons.mjs');
+  const verify = shouldVerifySelector(eventName, changes);
   const output = process.env.GITHUB_OUTPUT;
   appendFileSync(output, `plan=${JSON.stringify(Object.fromEntries(Object.entries(selection).filter(([key]) => key !== 'affected')))}\nverify=${verify}\n`);
   console.log(JSON.stringify(selection, null, 2));

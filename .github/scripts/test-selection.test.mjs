@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { classifyTranslationChanges, translationOnlyChange, validateTranslationDictionaries } from './test-selection-diff.mjs';
 import { test } from 'node:test';
 import { readdirSync } from 'node:fs';
-import { selectSuites } from './test-selection.mjs';
+import { selectSuites, shouldVerifySelector } from './test-selection.mjs';
 import { cargoCommands, routeTestTargets, rustCaseFilters, slackTests } from './backend-e2e-selection.mjs';
 import { selectOtherJobs } from './test-selection-jobs.mjs';
 
@@ -327,4 +327,9 @@ test('lightweight translations use the same English-copy exceptions as the app t
     'ja.json': '{"home":{"title":"Home"}}',
     'en.json': '{"home":{"title":"Home"}}',
   }));
+});
+
+test('changes to the shared translation policy validate the CI selection rules', () => {
+  assert.equal(shouldVerifySelector('pull_request', [change('frontend/src/lib/i18n/translation-policy.ts')]), true);
+  assert.equal(shouldVerifySelector('pull_request', [change('frontend/src/lib/i18n/locales/ja.json')]), false);
 });

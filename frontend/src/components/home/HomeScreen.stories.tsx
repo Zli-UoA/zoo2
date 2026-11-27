@@ -11,6 +11,7 @@ import {
 } from "@tanstack/react-router";
 import { Button } from "../ui/button";
 import { DEFAULT_CONFIG } from "../../lib/config";
+import { resources } from "../../lib/i18n";
 import { DEFAULT_CURRENT_USER_ID, storyCollections } from "../../../.storybook/fixtures";
 import {
   HOME_POST_SETTINGS_PREFIX,
@@ -2427,7 +2428,7 @@ export const DeleteFailure: Story = {
     await userEvent.click(await screen.findByRole("menuitem", { name: "投稿を削除" }));
     const dialog = await screen.findByRole("alertdialog");
     await userEvent.click(within(dialog).getByRole("button", { name: "投稿を削除" }));
-    const error = await within(dialog).findByText("削除できませんでした。もう一度お試しください。");
+    const error = await within(dialog).findByText(resources.ja.translation.home.deleteError);
     await expect(error).toBeVisible();
     await expect(error).toHaveAttribute("role", "alert");
     await expect(canvas.getByText(/Homeから最初の公開投稿です/)).toBeVisible();
