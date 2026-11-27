@@ -287,6 +287,7 @@ internal class ConnectedScreenState(
                 avatar = timelineAvatarUrl(app.config.apiBaseUrl, original, users[original.text("user_id")]),
                 postAuthor = postAuthor(original),
                 local = quoteRow.flag("local"),
+                remotePostAvailable = original.flag("remote") && original.text("id").isNotBlank(),
             )
         }
         val body = data.text("content").let { content ->
@@ -721,13 +722,17 @@ internal class ConnectedScreenState(
 
     fun channelSections(channels: List<Row>, users: Map<String, Row>, members: List<Row>): List<ChannelSection> {
         val joined = members.filter { it.text("user_id") == app.config.userId }.map { it.text("channel_id") }.toSet()
-        val active = visibleChannels(channels).filter { it.text("id") in joined && !it.present("archive_at") }
+        val active = channels.filter {
+            it.text("id") in joined && !it.present("deleted_at") && !it.present("archive_at")
+        }.sortedWith { left, right ->
+            compareLocaleText(left.text("channel_name"), right.text("channel_name"), app.env.locale)
+        }
         fun item(row: Row): ChannelItem {
             val id = row.text("id")
             val peers = members.filter { it.text("channel_id") == id && it.text("user_id") != app.config.userId }
             val userName = peers.singleOrNull()?.let { users[it.text("user_id")] }?.let(::author)
                 ?.takeIf { row.flag("is_dm") && it.isNotBlank() }
-            return ChannelItem(id, userName ?: row.text("channel_name"), id in app.unread, userName != null)
+            return ChannelItem(id, userName ?: row.text("channel_name"), app.channelReadPositions[id]?.hasUnread == true, userName != null)
         }
         val activeById = active.associateBy { it.text("id") }
         val unpinned = active.filterNot { it.text("id") in pins }

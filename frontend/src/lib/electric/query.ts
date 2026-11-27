@@ -28,6 +28,12 @@ export function shapeQueryParams(
   options: ShapeQueryOptions = {},
 ): ShapeQueryParams {
   if (config.shapeMode === "proxy") {
+    if (shape === "users") {
+      return { scope: "shared" };
+    }
+    if (shape === "allUsers") {
+      return {};
+    }
     if (
       (shape === "messages" ||
         shape === "messageReactions" ||

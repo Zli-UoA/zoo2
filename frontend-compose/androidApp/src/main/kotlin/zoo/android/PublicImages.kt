@@ -4,6 +4,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.request.prepareGet
 import io.ktor.client.request.header
 import io.ktor.http.*
+import io.ktor.client.statement.HttpResponse
 import okhttp3.HttpUrl.Companion.toHttpUrl
 
 /** The API client disables redirects; public images may legitimately use a CDN redirect. */
@@ -14,14 +15,18 @@ internal class ImageCacheMiss : IllegalStateException("Image is not in the disk 
 internal suspend fun loadPublicImage(
     http: HttpClient, url: String, limit: Int = 20 * 1024 * 1024,
     cacheOnly: Boolean = false, restrictOrigin: Boolean = false, noStore: Boolean = false, revalidate: Boolean = false, bypassCache: Boolean = false,
+    conditional: AttachmentImageDiskCache.Entry? = null,
+    onSignedResponse: ((HttpResponse, ByteArray, List<HttpResponse>) -> Unit)? = null,
 ): ByteArray {
+    val redirects = onSignedResponse?.let { mutableListOf<HttpResponse>() }
     var current = url
-    repeat(6) {
+    repeat(6) { hop ->
         val destination = Url(current)
         require(destination.protocol == URLProtocol.HTTPS)
         require(!restrictOrigin || sameImageOrigin(Url(url), destination)) { "Image proxy redirected outside its origin" }
         var bytes: ByteArray? = null
         http.prepareGet(current) {
+            if (hop == 0) conditional?.etag?.let { header(HttpHeaders.IfNoneMatch, it) }
             when {
                 noStore -> header(HttpHeaders.CacheControl, "no-store, no-cache")
                 bypassCache -> header(HttpHeaders.CacheControl, "no-cache")
@@ -30,14 +35,21 @@ internal suspend fun loadPublicImage(
             }
         }.execute { response ->
             if (response.status.value in setOf(301, 302, 303, 307, 308)) {
+                redirects?.add(response)
                 val location = response.headers[HttpHeaders.Location] ?: error("Missing image redirect")
                 current = current.toHttpUrl().resolve(location)?.toString() ?: error("Invalid image redirect")
             } else {
-                if (response.status.value !in 200..299) {
-                    if (cacheOnly) throw ImageCacheMiss()
-                    throw ImageHttpFailure(response.status.value)
+                val image = if (hop == 0 && response.status == HttpStatusCode.NotModified && conditional?.etag != null) {
+                    conditional.bytes
+                } else {
+                    if (response.status.value !in 200..299) {
+                        if (cacheOnly) throw ImageCacheMiss()
+                        throw ImageHttpFailure(response.status.value)
+                    }
+                    readImageResponse(response, limit)
                 }
-                bytes = readImageResponse(response, limit)
+                bytes = image
+                onSignedResponse?.invoke(response, image, redirects.orEmpty())
             }
         }
         bytes?.let { return it }

@@ -5,9 +5,18 @@ import io.ktor.client.*
 import io.ktor.client.call.*
 import io.ktor.client.request.*
 import io.ktor.http.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.*
+
+data class ChannelReadPosition(val timestamp: Long, val hasUnread: Boolean)
+
+private fun Row.channelReadPosition() = ChannelReadPosition(
+    timestampMillis(text("last_read_at")) ?: Long.MIN_VALUE,
+    flag("has_unread"),
+)
 
 class Session(val repo: Repository, val scope: CoroutineScope, initial: Environment) {
     internal val homeTimelines = HomeTimelineCache()
@@ -159,7 +168,24 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         toastController.setHovered(serial, hovered)
 
     var pending by mutableStateOf<Set<String>>(emptySet())
-    var unread by mutableStateOf<Set<String>>(emptySet())
+    var channelReadPositions by mutableStateOf<Map<String, ChannelReadPosition>>(emptyMap())
+        private set
+    private val channelReadMutex = Mutex()
+
+    suspend fun markChannelRead(channelId: String, messageId: String, timestamp: Long) {
+        channelReadMutex.withLock {
+            val saved = channelReadPositions[channelId] ?: return@withLock
+            if (timestamp <= saved.timestamp || !env.online || !env.visible || !env.focused ||
+                this.channelId != channelId || thread != null
+            ) return@withLock
+            val result = api.request(
+                "/api/channels/${channelId.encodeURLPathPart()}/read-state",
+                "POST",
+                obj("message_id" to messageId),
+            ).jsonObject.getValue("data").jsonObject.channelReadPosition()
+            channelReadPositions = channelReadPositions + (channelId to result)
+        }
+    }
     var admins by mutableStateOf<Set<String>>(emptySet())
     var searchEngine by mutableStateOf("google")
     private val preferenceState = lazy { SearchPreferencesController(this, scope) }
@@ -275,7 +301,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     suspend fun image(url: String, signedAttachment: Boolean = false, cacheKey: String? = null): ByteArray {
         val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
         return imageCache.get(imageCacheKey(url, signedAttachment, cacheKey)) {
-            val bytes = if (signedAttachment) platform.attachmentImage(resolved) else platform.image(resolved)
+            val bytes = if (signedAttachment) platform.attachmentImage(resolved, cacheKey) else platform.image(resolved)
             bytes ?: assetClient.get(resolved).body()
         }
     }
@@ -285,7 +311,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
 
     private fun imageCacheKey(url: String, signedAttachment: Boolean, cacheKey: String?): String {
         val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
-        return if (signedAttachment) "attachment:${cacheKey ?: resolved}" else resolved
+        return if (signedAttachment) "attachment:${cacheKey.orEmpty()}:$resolved" else resolved
     }
 
     /** Static images use the same platform decoder as attachments and animated media. */
@@ -296,7 +322,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             val bytes = if (!retry) image(url, signedAttachment, cacheKey) else {
                 val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
                 imageCache.remove(imageCacheKey(url, signedAttachment, cacheKey))
-                (if (signedAttachment) platform.attachmentImage(resolved) else platform.refreshImage(resolved))
+                (if (signedAttachment) platform.attachmentImage(resolved, cacheKey, retry = true) else platform.refreshImage(resolved))
                     ?: assetClient.get(resolved) { header("Cache-Control", "no-cache") }.body()
             }
             platform.imageFrames(bytes).first()
@@ -402,22 +428,19 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                 "chat"
             else "sidebar"
         scope.launch {
-            while (isActive) {
-                if (env.online && env.visible) {
-                    try {
-                        unread =
-                            api.request("/api/channel-read-states")
-                                .rows()
-                                .filter { it.flag("has_unread") }
-                                .map { it.text("channel_id") }
-                                .toSet()
-                        capabilities =
-                            json.parseToJsonElement(platform.invoke("capabilities")).jsonObject
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (_: Exception) {}
+            pollWhileVisible(snapshotFlow { env.online && env.visible }, interval = 10_000) {
+                try {
+                    channelReadMutex.withLock {
+                        channelReadPositions = api.request("/api/channel-read-states").rows()
+                            .associate { it.text("channel_id") to it.channelReadPosition() }
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    // Keep the last successful read positions while the network is unavailable.
                 }
-                delay(10_000)
+                capabilities = json.parseToJsonElement(platform.invoke("capabilities")).jsonObject
+                false
             }
         }
         scope.launch {

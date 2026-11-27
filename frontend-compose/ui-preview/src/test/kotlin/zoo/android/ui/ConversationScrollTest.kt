@@ -49,6 +49,104 @@ class ConversationScrollTest {
     private val channel = AndroidScreen.Conversation("dev", "開発", "", entries, InputState())
 
     @Test
+    fun reopeningAChannelShowsTheUnreadDividerAndReportsReadOnlyInTheForeground() {
+        val unreadEntry = entries[10].copy(dateDivider = "昨日", unreadDivider = "新着メッセージ")
+        var foreground by mutableStateOf(false)
+        var screen by mutableStateOf<AndroidScreen>(channel)
+        val written = mutableListOf<String>()
+        ui.setContent { AndroidScreens(screen, false, foreground, dispatch = {}) { _, _ -> } }
+        ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
+        ui.runOnIdle { screen = AndroidScreen.Channels(emptyList()) }
+        ui.waitForIdle()
+
+        ui.runOnIdle {
+            screen = channel.copy(
+                entries = entries.toMutableList().apply { set(10, unreadEntry) },
+                unreadPositionPending = true,
+                onUnreadPositioned = {
+                    screen = (screen as AndroidScreen.Conversation).copy(onUnreadPositioned = null)
+                },
+                onReadThrough = { id -> if (id != null) written += id },
+            )
+        }
+        ui.runOnIdle {
+            screen = (screen as AndroidScreen.Conversation).copy(unreadPositionPending = false)
+        }
+        ui.onNodeWithText("昨日").assertIsDisplayed()
+        ui.onNodeWithText("新着メッセージ").assertIsDisplayed()
+        ui.runOnIdle { assertTrue(written.isEmpty()) }
+        ui.onNodeWithTag("conversation-timeline").performScrollToIndex(entries.lastIndex)
+        ui.runOnIdle {
+            assertTrue(written.isEmpty())
+            foreground = true
+        }
+        ui.runOnIdle { assertEquals(listOf(entries.last().id), written) }
+        ui.onNodeWithTag("conversation-timeline").performScrollToIndex(10)
+        ui.onNodeWithText("新着メッセージ").assertIsDisplayed()
+    }
+
+    @Test
+    fun aRestoredConversationReportsNewMessagesAtTheEndAfterSync() {
+        val reported = mutableListOf<String>()
+        var screen by mutableStateOf<AndroidScreen>(channel)
+        ui.setContent { AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> } }
+        ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
+        ui.runOnIdle { screen = AndroidScreen.Channels(emptyList()) }
+        ui.waitForIdle()
+
+        ui.runOnIdle {
+            screen = channel.copy(
+                historyReady = false,
+                unreadPositionPending = true,
+                onUnreadPositioned = {
+                    screen = (screen as AndroidScreen.Conversation).copy(onUnreadPositioned = null)
+                },
+                onReadThrough = { id -> if (id != null) reported.add(id) },
+            )
+        }
+        ui.onNodeWithTag("timeline-entry-e40").assertExists()
+        ui.runOnIdle {
+            assertTrue(reported.isEmpty())
+            screen = (screen as AndroidScreen.Conversation).copy(
+                entries = entries + TimelineItem("e41", "はる", "同期した投稿", "12:01"),
+                historyReady = true,
+                unreadPositionPending = false,
+            )
+        }
+        ui.onNodeWithTag("timeline-entry-e41").assertIsDisplayed()
+        ui.runOnIdle { assertEquals("e41", reported.last()) }
+    }
+
+    @Test
+    fun focusingAnOlderMessageDoesNotReportThePreviousEndLayout() {
+        val reported = mutableListOf<String>()
+        var foreground by mutableStateOf(false)
+        var screen by mutableStateOf(channel.copy(onReadThrough = { id -> if (id != null) reported.add(id) }))
+        ui.setContent { AndroidScreens(screen, false, foreground, dispatch = {}) { _, _ -> } }
+        ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
+
+        ui.runOnIdle {
+            screen = screen.copy(focusMessage = "e3", focusRequest = "open-e3")
+            foreground = true
+        }
+        ui.onNodeWithTag("timeline-entry-e4").assertIsDisplayed()
+        ui.runOnIdle { assertTrue(reported.isEmpty()) }
+        ui.onNodeWithTag("conversation-timeline").performScrollToIndex(entries.lastIndex)
+        ui.runOnIdle { assertEquals("e40", reported.last()) }
+    }
+
+    @Test
+    fun incompleteUnreadHistoryIsShownBelowTheConversationHeader() {
+        ui.setContent {
+            AndroidScreens(channel.copy(unreadHistoryIncomplete = true), false, true, dispatch = {}) { _, _ -> }
+        }
+        val title = ui.onNodeWithText("開発")
+        val notice = ui.onNodeWithText("これより古い未読は読み込まれていません")
+        notice.assertIsDisplayed()
+        assertTrue(notice.fetchSemanticsNode().boundsInRoot.top > title.fetchSemanticsNode().boundsInRoot.bottom)
+    }
+
+    @Test
     fun inputFollowsTheHandleBeforeReleaseInBothDirections() {
         var screen by mutableStateOf(channel.copy(input = InputState("下書き")))
         ui.setContent {
