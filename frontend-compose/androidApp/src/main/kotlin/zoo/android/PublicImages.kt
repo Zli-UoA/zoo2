@@ -4,8 +4,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.request.prepareGet
 import io.ktor.client.request.header
 import io.ktor.http.*
-import okhttp3.CacheControl
-import okhttp3.Headers
+import io.ktor.client.statement.HttpResponse
 import okhttp3.HttpUrl.Companion.toHttpUrl
 
 /** The API client disables redirects; public images may legitimately use a CDN redirect. */
@@ -16,15 +15,17 @@ internal class ImageCacheMiss : IllegalStateException("Image is not in the disk 
 internal suspend fun loadPublicImage(
     http: HttpClient, url: String, limit: Int = 20 * 1024 * 1024,
     cacheOnly: Boolean = false, restrictOrigin: Boolean = false, noStore: Boolean = false, revalidate: Boolean = false, bypassCache: Boolean = false,
-    onCacheable: ((ByteArray) -> Unit)? = null,
+    conditional: AttachmentImageDiskCache.Entry? = null,
+    onSignedResponse: ((HttpResponse, ByteArray) -> Unit)? = null,
 ): ByteArray {
     var current = url
-    repeat(6) {
+    repeat(6) { hop ->
         val destination = Url(current)
         require(destination.protocol == URLProtocol.HTTPS)
         require(!restrictOrigin || sameImageOrigin(Url(url), destination)) { "Image proxy redirected outside its origin" }
         var bytes: ByteArray? = null
         http.prepareGet(current) {
+            if (hop == 0) conditional?.etag?.let { header(HttpHeaders.IfNoneMatch, it) }
             when {
                 noStore -> header(HttpHeaders.CacheControl, "no-store, no-cache")
                 bypassCache -> header(HttpHeaders.CacheControl, "no-cache")
@@ -36,24 +37,17 @@ internal suspend fun loadPublicImage(
                 val location = response.headers[HttpHeaders.Location] ?: error("Missing image redirect")
                 current = current.toHttpUrl().resolve(location)?.toString() ?: error("Invalid image redirect")
             } else {
-                if (response.status.value !in 200..299) {
-                    if (cacheOnly) throw ImageCacheMiss()
-                    throw ImageHttpFailure(response.status.value)
-                }
-                bytes = readImageResponse(response, limit).also { image ->
-                    if (onCacheable != null) {
-                        val policy = CacheControl.parse(Headers.Builder().apply {
-                            for (name in listOf(HttpHeaders.CacheControl, HttpHeaders.Pragma)) {
-                                response.headers.getAll(name).orEmpty().forEach { add(name, it) }
-                            }
-                        }.build())
-                        // The attachment body cache has no HTTP freshness or validator metadata.
-                        if (!policy.noStore && !policy.noCache && !policy.mustRevalidate &&
-                            policy.maxAgeSeconds == -1 && policy.sMaxAgeSeconds == -1 &&
-                            response.headers[HttpHeaders.Expires] == null
-                        ) onCacheable(image)
+                val image = if (hop == 0 && response.status == HttpStatusCode.NotModified && conditional?.etag != null) {
+                    conditional.bytes
+                } else {
+                    if (response.status.value !in 200..299) {
+                        if (cacheOnly) throw ImageCacheMiss()
+                        throw ImageHttpFailure(response.status.value)
                     }
+                    readImageResponse(response, limit)
                 }
+                bytes = image
+                if (hop == 0) onSignedResponse?.invoke(response, image)
             }
         }
         bytes?.let { return it }

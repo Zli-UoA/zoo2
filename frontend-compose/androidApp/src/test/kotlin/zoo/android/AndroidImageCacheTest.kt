@@ -30,7 +30,11 @@ class AndroidImageCacheTest {
             start()
         }
         val url get() = server.url("/image.png").toString()
-        fun cache(account: String = "account", configure: OkHttpClient.Builder.() -> Unit = {}) = AndroidImageCache(directory.resolve("$account/images")) {
+        fun cache(
+            account: String = "account",
+            now: () -> Long = System::currentTimeMillis,
+            configure: OkHttpClient.Builder.() -> Unit = {},
+        ) = AndroidImageCache(directory.resolve("$account/images"), now = now) {
             sslSocketFactory(clientTls.sslSocketFactory(), clientTls.trustManager)
             configure()
         }
@@ -112,7 +116,7 @@ class AndroidImageCacheTest {
 
     @Test fun reusesCachedRedirectAndSignedImageAfterReopeningClient() = runBlocking {
         Fixture().use { f ->
-            val signed = f.server.url("/original?signature=one").toString()
+            val signed = f.server.url("/original?X-Amz-Signature=one").toString()
             f.server.enqueue(MockResponse().setResponseCode(307)
                 .setHeader("Location", signed)
                 .setHeader("Cache-Control", "private, max-age=300"))
@@ -180,41 +184,72 @@ class AndroidImageCacheTest {
     }
 
 
-    @Test fun reusesAttachmentBytesAfterTheSignedUrlChangesAndTheClientReopens() = runBlocking {
+    @Test fun revalidatesAnOriginalWhenTheSignedUrlChanges() = runBlocking {
         Fixture().use { f ->
-            f.server.enqueue(MockResponse().setBody("attachment"))
+            f.server.enqueue(MockResponse().setHeader("ETag", "\"one\"").setBody("original"))
+            f.server.enqueue(MockResponse().setResponseCode(304))
+            f.server.enqueue(MockResponse().setHeader("ETag", "\"two\"").setBody("replacement"))
             f.server.enqueue(MockResponse().setBody("other account"))
-            f.server.enqueue(MockResponse().setBody("unexpected request"))
+            val key = "id:original"
             f.cache().use { cache ->
-                assertEquals("attachment", cache.signedImage("${f.url}?signature=old", "id:original").decodeToString())
+                assertEquals("original", cache.signedImage("${f.url}?X-Amz-Signature=old", key).decodeToString())
             }
             f.cache().use { cache ->
-                assertEquals("attachment", cache.signedImage("${f.url}?signature=new", "id:original").decodeToString())
+                assertEquals("original", cache.signedImage("${f.url}?X-Amz-Signature=new", key).decodeToString())
+                assertEquals("replacement", cache.signedImage("${f.url}?X-Amz-Signature=newer", key).decodeToString())
             }
             f.cache(account = "other").use { cache ->
-                assertEquals("other account", cache.signedImage("${f.url}?signature=new", "id:original").decodeToString())
+                assertEquals("other account", cache.signedImage("${f.url}?X-Amz-Signature=newer", key).decodeToString())
             }
-            assertEquals(2, f.server.requestCount)
+            assertEquals(4, f.server.requestCount)
+            assertNull(f.server.takeRequest().getHeader("If-None-Match"))
+            repeat(2) { assertEquals("\"one\"", f.server.takeRequest().getHeader("If-None-Match")) }
+            assertNull(f.server.takeRequest().getHeader("If-None-Match"))
         }
     }
 
-    @Test fun signedAttachmentsSkipDiskWhenResponsesRequireFreshnessChecks() = runBlocking {
+    @Test fun reusesAThumbnailAcrossClientRestartsUntilItExpires() = runBlocking {
+        Fixture().use { f ->
+            var time = 1_000L
+            f.server.enqueue(MockResponse().setHeader("Cache-Control", "private, max-age=300")
+                .setHeader("ETag", "\"thumbnail\"").setHeader("Age", "30").setBody("thumbnail"))
+            f.server.enqueue(MockResponse().setBody("updated"))
+            val key = "id:thumbnail"
+            f.cache(now = { time }).use { cache ->
+                assertEquals("thumbnail", cache.signedImage("${f.url}?X-Amz-Signature=old", key).decodeToString())
+            }
+            f.cache(now = { time }).use { cache ->
+                time += 269_999
+                assertEquals("thumbnail", cache.signedImage("${f.url}?X-Amz-Signature=new", key).decodeToString())
+                assertEquals(1, f.server.requestCount)
+                time++
+                assertEquals("updated", cache.signedImage("${f.url}?X-Amz-Signature=new", key).decodeToString())
+            }
+            assertEquals(2, f.server.requestCount)
+            f.server.takeRequest()
+            assertEquals("\"thumbnail\"", f.server.takeRequest().getHeader("If-None-Match"))
+        }
+    }
+
+    @Test fun signedAttachmentsSkipDiskForNoStoreNoCacheOrVary() = runBlocking {
         Fixture().use { f ->
             val policies = listOf(
                 "Cache-Control" to "no-store",
                 "Cache-Control" to "no-cache",
-                "Cache-Control" to "max-age=60",
-                "Cache-Control" to "must-revalidate",
-                "Expires" to "Fri, 01 Jan 2100 00:00:00 GMT",
+                "Vary" to "*",
+                "Vary" to "Accept",
             )
             f.cache().use { cache ->
                 for ((index, header) in policies.withIndex()) {
                     val (name, value) = header
-                    val key = "$index:original"
-                    f.server.enqueue(MockResponse().setHeader(name, value).setBody("first"))
+                    val key = "$index:thumbnail"
+                    f.server.enqueue(MockResponse().setHeader(name, value)
+                        .setHeader("ETag", "\"variant\"").setBody("first"))
                     f.server.enqueue(MockResponse().setBody("second"))
-                    assertEquals("first", cache.signedImage("${f.url}?signature=old", key).decodeToString())
-                    assertEquals("second", cache.signedImage("${f.url}?signature=new", key).decodeToString())
+                    assertEquals("first", cache.signedImage("${f.url}?X-Amz-Signature=old", key).decodeToString())
+                    assertEquals("second", cache.signedImage("${f.url}?X-Amz-Signature=new", key).decodeToString())
+                    assertNull(f.server.takeRequest().getHeader("If-None-Match"))
+                    assertNull(f.server.takeRequest().getHeader("If-None-Match"))
                 }
             }
             assertEquals(policies.size * 2, f.server.requestCount)

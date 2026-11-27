@@ -3,10 +3,17 @@ package zoo.android
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.statement.HttpResponse
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.fromHttpToGmtDate
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.Cache
+import okhttp3.CacheControl
+import okhttp3.Headers
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 
@@ -15,9 +22,10 @@ internal class AndroidImageCache(
     directory: File,
     maxBytes: Long = 512L * 1024 * 1024,
     private val timeoutMillis: Long = 120_000,
+    private val now: () -> Long = System::currentTimeMillis,
     configure: OkHttpClient.Builder.() -> Unit = {},
 ) : java.io.Closeable {
-    private val attachments = AttachmentImageDiskCache(directory.resolveSibling("${directory.name}-attachment-bodies"))
+    private val attachments = AttachmentImageDiskCache(directory.resolveSibling("${directory.name}-attachment-bodies-v2"))
     private val disk = Cache(directory, maxBytes)
     private val client = OkHttpClient.Builder()
         .apply(configure)
@@ -50,10 +58,51 @@ internal class AndroidImageCache(
     suspend fun signedImage(url: String, cacheKey: String? = null, retry: Boolean = false): ByteArray {
         if (cacheKey == null) return loadPublicImage(http, url, noStore = true)
         return withContext(Dispatchers.IO) {
-            if (retry) attachments.remove(cacheKey)
-            else attachments.read(cacheKey)?.let { return@withContext it }
-            loadPublicImage(http, url, noStore = true) { attachments.write(cacheKey, it) }
+            val urlHash = AttachmentImageDiskCache.digest(url)
+            val signedUrl = url.toHttpUrl()
+            val resource = signedUrl.newBuilder().fragment(null).apply {
+                signedUrl.queryParameterNames
+                    .filter { it.startsWith("X-Amz-", ignoreCase = true) }
+                    .forEach { removeAllQueryParameters(it) }
+            }.build()
+            val resourceHash = AttachmentImageDiskCache.digest(resource.toString())
+            val stored = if (retry) null else attachments.read(cacheKey)
+            val matching = stored?.takeIf { it.urlHash.startsWith("$resourceHash:") }
+            if (matching != null && now() < matching.expiresAt &&
+                (cacheKey.endsWith(":thumbnail") || matching.urlHash == "$resourceHash:$urlHash")
+            ) return@withContext matching.bytes
+            attachments.remove(cacheKey)
+            loadPublicImage(http, url, noStore = true, conditional = matching) { response, bytes ->
+                val expiresAt = attachmentFreshUntil(response, now()) ?: return@loadPublicImage
+                val etag = response.headers[HttpHeaders.ETag]?.takeIf { it.length <= 1024 }
+                    ?: matching?.etag?.takeIf { response.status == HttpStatusCode.NotModified }
+                attachments.write(cacheKey, AttachmentImageDiskCache.Entry("$resourceHash:$urlHash", expiresAt, etag, bytes))
+            }
         }
+    }
+
+    private fun attachmentFreshUntil(response: HttpResponse, receivedAt: Long): Long? {
+        val headers = response.headers
+        val policy = CacheControl.parse(Headers.Builder().apply {
+            for (name in listOf(HttpHeaders.CacheControl, HttpHeaders.Pragma)) {
+                headers.getAll(name).orEmpty().forEach { add(name, it) }
+            }
+        }.build())
+        if (policy.noStore || policy.noCache || headers[HttpHeaders.Vary] != null) return null
+        fun date(name: String): Long? =
+            headers[name]?.let { runCatching { it.fromHttpToGmtDate().timestamp }.getOrNull() }
+        val serverDate = date(HttpHeaders.Date) ?: receivedAt
+        val lifetime = when {
+            policy.maxAgeSeconds >= 0 -> policy.maxAgeSeconds * 1000L
+            headers[HttpHeaders.Expires] != null -> (date(HttpHeaders.Expires) ?: return null) - serverDate
+            policy.mustRevalidate || response.status == HttpStatusCode.NotModified -> 0L
+            else -> 300_000L
+        }
+        val age = maxOf(
+            (receivedAt - serverDate).coerceAtLeast(0),
+            (headers[HttpHeaders.Age]?.toLongOrNull() ?: 0L).coerceIn(0, Int.MAX_VALUE.toLong()) * 1000L,
+        )
+        return receivedAt + (lifetime - age).coerceIn(0, 300_000L)
     }
 
     suspend fun imageIfCached(request: ImageRequest, limit: Int): ByteArray? =

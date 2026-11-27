@@ -285,7 +285,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
 
     private fun imageCacheKey(url: String, signedAttachment: Boolean, cacheKey: String?): String {
         val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
-        return if (signedAttachment) "attachment:${cacheKey ?: resolved}" else resolved
+        return if (signedAttachment) "attachment:${cacheKey.orEmpty()}:$resolved" else resolved
     }
 
     /** Static images use the same platform decoder as attachments and animated media. */
