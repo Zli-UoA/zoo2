@@ -2324,6 +2324,40 @@ test("conditional GET requests are fetched separately", async () => {
   assert.equal(calls, 2);
 });
 
+test("a conditional GET falls back to the cached manifest on network failure", async () => {
+  const manifest = validManifest("#000000");
+  const cacheContext = memoryCaches([
+    ["zoo-shell-v2", `${ORIGIN}/manifest.webmanifest`, basicResponse(manifest)],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+    headers: { get: (name) => (name.toLowerCase() === "if-none-match" ? '"abc"' : null) },
+  });
+  assert.equal(await response.text(), manifest);
+});
+
+test("a conditional GET keeps a 304 response", async () => {
+  const { handlers } = worker({
+    fetch: async () => new Response(null, { status: 304 }),
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+    headers: { get: (name) => (name.toLowerCase() === "if-none-match" ? '"abc"' : null) },
+  });
+  assert.equal(response.status, 304);
+});
+
 test("an HTTP error is returned when no cached manifest exists", async () => {
   const { handlers } = worker({
     fetch: async () =>

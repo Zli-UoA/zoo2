@@ -498,6 +498,19 @@ async function sanitizedCopy(saved) {
   });
 }
 
+async function fetchConditionalAsset(request, path) {
+  // 条件付き GET は共有もキャッシュ更新もしない。304 はそのまま返し、
+  // 通信失敗や 5xx のときだけ保存済みの版を使う。
+  try {
+    const response = await fetchBounded(request, { cache: "reload" });
+    if (response.status === 304 || response.ok) return response;
+    const cached = await cachedFreshAsset(path);
+    return cached.type === "error" ? response : cached;
+  } catch {
+    return await cachedFreshAsset(path);
+  }
+}
+
 const freshAssetWork = new Map();
 
 function handleFreshAsset(request) {
@@ -510,8 +523,10 @@ function handleFreshAsset(request) {
     headers?.get("if-modified-since") ||
     headers?.get("if-match") ||
     headers?.get("if-unmodified-since")
-  )
-    return fetch(request, { cache: "reload" });
+  ) {
+    if (headers.get("range")) return fetch(request, { cache: "reload" });
+    return fetchConditionalAsset(request, path);
+  }
   // 同じパスの同時取得を共有し、古い応答が新しい配色を上書きしないようにする。
   const pending = freshAssetWork.get(path);
   // 取得は共有しても、respondWith へ渡す本文は要求ごとに独立させる。
