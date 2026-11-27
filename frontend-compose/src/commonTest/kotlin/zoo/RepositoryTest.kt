@@ -123,6 +123,55 @@ class RepositoryTest {
     }
 
     @Test
+    fun channelReadUsesTheServerUnreadFlagAndSkipsOldOrHiddenMessages() = runTest {
+        val first = "2026-11-01T01:00:00Z"
+        val second = "2026-11-01T02:00:00Z"
+        val third = "2026-11-01T03:00:00Z"
+        var writes = 0
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    when (request.url.encodedPath) {
+                        "/api/channel-read-states" -> {
+                            val timestamp = listOf(first, second, third)[writes]
+                            respond("""[{"channel_id":"c1","last_read_at":"$timestamp","has_unread":${writes < 2}}]""")
+                        }
+                        "/api/channels/c1/read-state" -> {
+                            assertEquals(HttpMethod.Post, request.method)
+                            writes++
+                            val timestamp = if (writes == 1) second else third
+                            respond("""{"data":{"last_read_at":"$timestamp","has_unread":${writes == 1}}}""")
+                        }
+                        else -> respond("", HttpStatusCode.NotFound)
+                    }
+                }
+            }
+        }
+        val repo = Repository(config, FakePlatform(), http, backgroundScope, synchronize = false)
+        val app = Session(repo, backgroundScope, Environment(path = "/channels/c1"))
+        try {
+            app.start()
+            runCurrent()
+            assertTrue(app.channelReadPositions.getValue("c1").hasUnread)
+            val secondTime = checkNotNull(timestampMillis(second))
+            val thirdTime = checkNotNull(timestampMillis(third))
+            app.markChannelRead("c1", "second", secondTime)
+            app.markChannelRead("c1", "second", secondTime)
+            assertEquals(1, writes)
+            assertTrue(app.channelReadPositions.getValue("c1").hasUnread)
+
+            app.update(app.env.copy(visible = false))
+            app.markChannelRead("c1", "third", thirdTime)
+            assertEquals(1, writes)
+            app.update(app.env.copy(visible = true))
+            app.markChannelRead("c1", "third", thirdTime)
+            assertEquals(2, writes)
+            assertFalse(app.channelReadPositions.getValue("c1").hasUnread)
+        } finally { app.close() }
+    }
+
+    @Test
     fun restResolvesAuthenticationForEachRequestAndDoesNotSendSecretsInTheUrl() = runTest {
         val platform = FakePlatform()
         val tokens = mutableListOf<String?>()

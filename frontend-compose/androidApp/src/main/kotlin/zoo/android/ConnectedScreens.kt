@@ -53,6 +53,7 @@ internal fun ConnectedScreens(
     val channels by session.repo.channels.rows.collectAsState()
     val users by session.repo.users.rows.collectAsState()
     val memberships by session.repo.members.rows.collectAsState()
+    val membershipsLoading by session.repo.members.loading.collectAsState()
     val channelId = session.channelId
     val channelsLoading by session.repo.channels.loading.collectAsState()
     val syncedChannel = channels.find { it.text("id") == channelId }
@@ -139,13 +140,16 @@ internal fun ConnectedScreens(
     LaunchedEffect(channelId, currentReadPosition) {
         if (visitReadPosition == null) visitReadPosition = currentReadPosition
     }
-    val readBoundary = (visitReadPosition ?: currentReadPosition)?.timestamp
+    val visitRead = visitReadPosition ?: currentReadPosition
+    val readBoundary = visitRead?.timestamp
     val unreadId = remember(ordered, readBoundary, session.config.userId) {
         if (readBoundary == null) null else ordered.firstOrNull {
             it.text("parent_id").isEmpty() && it.text("user_id") != session.config.userId &&
                 (timestampMillis(it.text("created_at")) ?: Long.MIN_VALUE) > readBoundary
         }?.text("id")
     }
+    var unreadPositioned by remember(session, channelId) { mutableStateOf(false) }
+    val onUnreadPositioned = remember(session, channelId) { { unreadPositioned = true } }
     var visibleReadThrough by remember(session, channelId) { mutableStateOf<String?>(null) }
     val onReadThrough = remember(session, channelId) { { id: String? -> visibleReadThrough = id } }
     val threadRoot = messages.find { it.id == currentThread }
@@ -161,7 +165,7 @@ internal fun ConnectedScreens(
     val oldest = mainPage?.oldest?.first?.let(::timestampMillis)
     val needsUnreadHistory = env.online && currentThread == null && focusMessage == null &&
         readBoundary != null && readBoundary > 0 && oldest != null && oldest > readBoundary &&
-        mainPage?.hasOlder == true && unreadPages < MAX_UNREAD_PAGES && !unreadHistoryFailed
+        mainPage?.hasOlder == true && visitRead?.hasUnread == true && unreadPages < MAX_UNREAD_PAGES && !unreadHistoryFailed
     val focusRow = rows.find { it.text("id") == focusMessage }
     val focusParent = focusRow?.text("parent_id")
     // Keep a deleted parent's thread readable and prevent replies to it.
@@ -488,9 +492,11 @@ internal fun ConnectedScreens(
             loadOlder = pageStates[PageScope.Main]?.let { it.hasOlder && !it.loading } == true,
             historyReady = !env.online || pageStates[PageScope.Main]?.loaded == true,
             unreadPositionPending = env.online && (
-                (member && !session.channelReadPositionsAttempted) || needsUnreadHistory ||
-                    (member && mainPage?.loading == true && mainPage.loaded == false && readBoundary != null)
+                (!session.channelReadPositionsAttempted && (member || membershipsLoading)) ||
+                    needsUnreadHistory ||
+                    (mainPage?.loading == true && mainPage.loaded == false && readBoundary != null)
                 ),
+            onUnreadPositioned = onUnreadPositioned.takeUnless { unreadPositioned },
             onReadThrough = onReadThrough,
             retrySync = if (dmSyncDelayed && env.online) {
                 { session.repo.channels.refresh(); session.repo.members.refresh(); dmSyncRetry++ }
@@ -499,7 +505,8 @@ internal fun ConnectedScreens(
             "channel:$channelId", session.t("common.loading"), env.online)
         else -> AndroidScreen.Channels(state.channelSections(channels, usersById, memberships))
     }
-    val canLoadUnreadHistory = screen is AndroidScreen.Conversation && env.online && env.visible && focusMessage == null
+    val canLoadUnreadHistory = screen is AndroidScreen.Conversation && env.online && env.visible &&
+        focusMessage == null && visitRead?.hasUnread == true
     LaunchedEffect(messageTable, readBoundary, canLoadUnreadHistory) {
         if (!canLoadUnreadHistory || messageTable == null || readBoundary == null || readBoundary <= 0) return@LaunchedEffect
         while (unreadPages < MAX_UNREAD_PAGES && !unreadHistoryFailed) {

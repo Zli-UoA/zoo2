@@ -49,18 +49,29 @@ class ConversationScrollTest {
     private val channel = AndroidScreen.Conversation("dev", "開発", "", entries, InputState())
 
     @Test
-    fun opensAtTheUnreadDividerAndReportsReadOnlyAtTheEndInTheForeground() {
+    fun reopeningAChannelShowsTheUnreadDividerAndReportsReadOnlyInTheForeground() {
         val unreadEntry = entries[10].copy(dateDivider = "昨日", unreadDivider = "新着メッセージ")
         var foreground by mutableStateOf(false)
-        var screen by mutableStateOf(channel.copy(
-            entries = entries.toMutableList().apply { set(10, unreadEntry) },
-            unreadPositionPending = true,
-        ))
+        var screen by mutableStateOf<AndroidScreen>(channel)
         val written = mutableListOf<String>()
-        screen = screen.copy(onReadThrough = { id -> if (id != null) written += id })
         ui.setContent { AndroidScreens(screen, false, foreground, dispatch = {}) { _, _ -> } }
-        ui.runOnIdle { screen = screen.copy(unreadPositionPending = false) }
+        ui.onNodeWithTag("timeline-entry-e40").assertIsDisplayed()
+        ui.runOnIdle { screen = AndroidScreen.Channels(emptyList()) }
+        ui.waitForIdle()
 
+        ui.runOnIdle {
+            screen = channel.copy(
+                entries = entries.toMutableList().apply { set(10, unreadEntry) },
+                unreadPositionPending = true,
+                onUnreadPositioned = {
+                    screen = (screen as AndroidScreen.Conversation).copy(onUnreadPositioned = null)
+                },
+                onReadThrough = { id -> if (id != null) written += id },
+            )
+        }
+        ui.runOnIdle {
+            screen = (screen as AndroidScreen.Conversation).copy(unreadPositionPending = false)
+        }
         ui.onNodeWithText("昨日").assertIsDisplayed()
         ui.onNodeWithText("新着メッセージ").assertIsDisplayed()
         ui.runOnIdle { assertTrue(written.isEmpty()) }

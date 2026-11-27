@@ -136,6 +136,7 @@ internal sealed interface AndroidScreen {
         val historyReady: Boolean = true,
         val retrySync: (() -> Unit)? = null,
         val unreadPositionPending: Boolean = false,
+        val onUnreadPositioned: (() -> Unit)? = null,
         val onReadThrough: ((String?) -> Unit)? = null,
     ) : AndroidScreen
     data class Thread(
@@ -389,6 +390,7 @@ private fun RenderAndroidScreen(
                     }
                     TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = interaction.swipeReply, allowThreads = true, focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true, historyReady = screen.historyReady,
                         unreadPositionPending = screen.unreadPositionPending,
+                        onUnreadPositioned = screen.onUnreadPositioned,
                         onReadThrough = screen.onReadThrough.takeIf { foreground },
                         topContentPadding = headerHeight, headerOverlayHeight = if (headerVisible) headerHeight else 0.dp,
                         loadEarlier = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderMessages) } } else null)
@@ -636,6 +638,7 @@ internal fun ColumnScope.TimelineWithInput(
     topContentPadding: Dp = 0.dp,
     headerOverlayHeight: Dp = 0.dp,
     unreadPositionPending: Boolean = false,
+    onUnreadPositioned: (() -> Unit)? = null,
     onReadThrough: ((String?) -> Unit)? = null,
     imeInsets: WindowInsets = WindowInsets.ime.exclude(WindowInsets.systemBars),
 ) {
@@ -683,8 +686,9 @@ internal fun ColumnScope.TimelineWithInput(
     val focusedIndex = entries.indexOfFirst { it.id == focusMessage }
     val restoredIndex = if (restorePending && !followEnd) entries.indexOfFirst { it.entryKey == restoredAnchor } else -1
     val unreadIndex = entries.indexOfFirst { it.unreadDivider != null }
+    val seekUnread = onUnreadPositioned != null
     LaunchedEffect(input.expanded, input.lastSend, focusRequest, focusedIndex, entries.isNotEmpty(),
-        restoredIndex, historyReady, unreadPositionPending, unreadIndex) {
+        restoredIndex, historyReady, unreadPositionPending, unreadIndex, seekUnread) {
         if (seenFocusRequest != focusRequest) {
             seenFocusRequest = focusRequest
             if (focusRequest != null) {
@@ -703,6 +707,7 @@ internal fun ColumnScope.TimelineWithInput(
                 followEnd = true
                 positioned = true
                 scroll.requestScrollToItem(entries.lastIndex)
+                onUnreadPositioned?.invoke()
             }
             focusedIndex >= 0 && openedTarget != focusRequest -> {
                 restorePending = false
@@ -710,6 +715,15 @@ internal fun ColumnScope.TimelineWithInput(
                 scroll.requestScrollToItem(focusedIndex)
                 openedTarget = focusRequest
                 positioned = true
+                onUnreadPositioned?.invoke()
+            }
+            seekUnread && focusMessage == null && !unreadPositionPending && unreadIndex >= 0 -> {
+                restorePending = false
+                followEnd = false
+                scroll.scrollToItem(unreadIndex, -with(density) { headerOverlayHeight.roundToPx() })
+                followEnd = !scroll.canScrollForward
+                positioned = true
+                onUnreadPositioned?.invoke()
             }
             restoredIndex >= 0 -> {
                 scroll.requestScrollToItem(restoredIndex, restoredOffset)
@@ -731,11 +745,14 @@ internal fun ColumnScope.TimelineWithInput(
                 positioned = true
             }
         }
+        if (seekUnread && !unreadPositionPending && (unreadIndex < 0 || (focusRequest != null && openedTarget == focusRequest))) {
+            onUnreadPositioned?.invoke()
+        }
     }
     val latestEntry by rememberUpdatedState(entries.lastOrNull())
     val reportReadThrough by rememberUpdatedState(onReadThrough)
-    val canReportRead = onReadThrough != null && historyReady && !unreadPositionPending && !overlayInput
-    LaunchedEffect(scroll, canReportRead) {
+    val canReportRead = onReadThrough != null && historyReady && !unreadPositionPending && !seekUnread && !overlayInput
+    LaunchedEffect(scroll, canReportRead, focusRequest) {
         if (!canReportRead) return@LaunchedEffect
         val report = reportReadThrough ?: return@LaunchedEffect
         try {
