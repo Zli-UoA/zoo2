@@ -19,20 +19,18 @@ vi.mock("./AppsDialog", () => ({
   },
 }));
 
-it("opens the app dialog for zoo:open-app and zoo:message-actions", async () => {
-  render(<AppDialogHost />);
+it.each([
+  ["zoo:open-app", "app-1", { appId: "app-1", messageId: undefined }],
+  ["zoo:message-actions", "message-1", { appId: undefined, messageId: "message-1" }],
+] as const)("opens the dialog from %s", async (eventName, detail, expected) => {
+  dialog.props = [];
+  const { unmount } = render(<AppDialogHost />);
   expect(screen.queryByTestId("app-dialog")).toBeNull();
 
-  window.dispatchEvent(new CustomEvent("zoo:open-app", { detail: "app-1" }));
-  await waitFor(() => expect(screen.getByTestId("app-dialog")).toHaveTextContent("dialog:app-1"));
-
-  window.dispatchEvent(new CustomEvent("zoo:message-actions", { detail: "message-1" }));
+  window.dispatchEvent(new CustomEvent(eventName, { detail }));
   await waitFor(() =>
-    expect(screen.getByTestId("app-dialog")).toHaveTextContent("dialog:message-1"),
+    expect(screen.getByTestId("app-dialog")).toHaveTextContent(`dialog:${detail}`),
   );
-
-  expect(dialog.props).toEqual([
-    { appId: "app-1", messageId: undefined },
-    { appId: undefined, messageId: "message-1" },
-  ]);
+  expect(dialog.props).toEqual([expected]);
+  unmount();
 });
