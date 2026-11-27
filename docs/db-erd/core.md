@@ -242,7 +242,7 @@ erDiagram
       integer attempts
       timestamptz retry_at
     }
-    home_image_deletions {
+    home_image_deletion_queue {
       text id PK
       text uploader_id
       bigint file_size
@@ -250,6 +250,8 @@ erDiagram
       boolean thumbnail_accounted
       bigint unconfirmed_thumbnail_bytes
       boolean legacy_write_pending
+      boolean original_write_pending
+      boolean thumbnail_write_pending
     }
     home_image_upload_rates {
       text user_id PK,FK
@@ -270,6 +272,8 @@ erDiagram
       bigint thumbnail_bytes
       boolean thumbnail_ready
       boolean thumbnail_conditional_write
+      boolean original_write_confirmed
+      boolean thumbnail_write_pending
       timestamptz thumbnail_check_at
     }
     home_images }o--o| users : home_images_uploader_id_fkey

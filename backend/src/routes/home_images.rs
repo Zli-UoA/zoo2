@@ -418,14 +418,26 @@ pub(crate) async fn store_thumbnail(
     if let Some(etag) = source_etag {
         put = put.metadata("source-etag", etag);
     }
-    if key.starts_with("home-images/") {
-        put = put.if_none_match("*");
-    }
-    if let Err(error) = put.send().await {
+    let result = if key.starts_with("home-images/") {
+        put.if_none_match("*")
+            .customize()
+            .config_override(home_image_put_config())
+            .send()
+            .await
+    } else {
+        put.send().await
+    };
+    if let Err(error) = result {
         tracing::warn!(%error, key, "Could not store image thumbnail");
         return false;
     }
     true
+}
+
+// A successful single-attempt PUT cannot leave an earlier SDK retry in flight.
+fn home_image_put_config() -> aws_sdk_s3::config::Builder {
+    aws_sdk_s3::config::Builder::new()
+        .retry_config(aws_sdk_s3::config::retry::RetryConfig::standard().with_max_attempts(1))
 }
 
 async fn home_quota(tx: &mut toasty::Transaction<'_>, user: &str) -> Result<(i64, i64), AppError> {
@@ -442,7 +454,7 @@ async fn home_quota(tx: &mut toasty::Transaction<'_>, user: &str) -> Result<(i64
            SELECT COALESCE(sum(file_size),0) AS bytes,
                   COALESCE(sum(CASE WHEN thumbnail_accounted THEN unconfirmed_thumbnail_bytes
                              ELSE file_size END),0) AS uncertain
-           FROM home_image_deletions WHERE uploader_id=$1
+           FROM home_image_deletion_queue WHERE uploader_id=$1
          )
          SELECT json_build_object('known',current.bytes+pending.bytes,
            'uncertain',current.uncertain+pending.uncertain)::text
@@ -576,7 +588,7 @@ async fn upload(
     let id = uuid::Uuid::new_v4().to_string();
     let key = format!("home-images/{id}");
     // Reserve durable metadata before starting S3 I/O so crashes leave a GC candidate.
-    toasty::sql::statement("INSERT INTO home_images(id,uploader_id,content_type,name,file_size,width,height,blurhash,thumbnail_bytes,thumbnail_ready,thumbnail_conditional_write) VALUES($1,$2,$3,$4,$5::bigint,$6::integer,$7::integer,$8,$9::bigint,CASE WHEN $9::bigint=0 THEN false ELSE NULL END,true)").bind(id.as_str()).bind(user.id.as_str()).bind(body.content_type.as_str()).bind(body.name).bind(file_size).bind(width.to_string()).bind(height.to_string()).bind(blurhash.as_str()).bind(thumbnail_bytes.to_string()).exec(&mut tx).await?;
+    toasty::sql::statement("INSERT INTO home_images(id,uploader_id,content_type,name,file_size,width,height,blurhash,thumbnail_bytes,thumbnail_ready,thumbnail_conditional_write,thumbnail_write_pending) VALUES($1,$2,$3,$4,$5::bigint,$6::integer,$7::integer,$8,$9::bigint,CASE WHEN $9::bigint=0 THEN false ELSE NULL END,true,$9::bigint>0)").bind(id.as_str()).bind(user.id.as_str()).bind(body.content_type.as_str()).bind(body.name).bind(file_size).bind(width.to_string()).bind(height.to_string()).bind(blurhash.as_str()).bind(thumbnail_bytes.to_string()).exec(&mut tx).await?;
     tx.commit().await?;
     let mut tx = db.transaction().await?;
     // Account deletion and GC must not delete the object before PUT finishes.
@@ -595,7 +607,10 @@ async fn upload(
         .key(&key)
         .content_type(&body.content_type)
         .cache_control(IMAGE_CACHE_CONTROL)
+        .if_none_match("*")
         .body(bytes.into())
+        .customize()
+        .config_override(home_image_put_config())
         .send()
         .await;
     if uploaded.is_err() {
@@ -607,6 +622,10 @@ async fn upload(
         tx.commit().await?;
         return Err(AppError::Internal(anyhow::anyhow!("Image upload failed")));
     }
+    toasty::sql::statement("UPDATE home_images SET original_write_confirmed=true WHERE id=$1")
+        .bind(id.as_str())
+        .exec(&mut tx)
+        .await?;
     if reserved["thumbnail_reserved"] == true
         && let Some(check_at) = reserved["check_at"].as_str()
     {
@@ -621,6 +640,12 @@ async fn upload(
         .await
         {
             record_home_thumbnail(&mut tx, &id, thumbnail_bytes as i64, check_at).await?;
+            toasty::sql::statement(
+                "UPDATE home_images SET thumbnail_write_pending=false WHERE id=$1",
+            )
+            .bind(id.as_str())
+            .exec(&mut tx)
+            .await?;
         } else {
             // An ambiguous PUT can still finish. Delay the HEAD and retain the reservation.
             toasty::sql::statement(
@@ -869,31 +894,31 @@ pub async fn collect_garbage(state: &AppState) -> Result<(), AppError> {
     tx.commit().await?;
     let mut tx = db.transaction().await?;
     let deletion_candidates = if state.config.s3.home_image_legacy_writes_drained {
-        toasty::sql::statement("SET LOCAL zoo.home_image_legacy_writes_drained = 'on'")
-            .exec(&mut tx)
-            .await?;
-        "SELECT json_build_object('id',id)::text FROM home_image_deletions
-         ORDER BY created_at LIMIT 100 FOR UPDATE SKIP LOCKED"
+        ""
     } else {
-        "SELECT json_build_object('id',id)::text FROM home_image_deletions
-         WHERE NOT legacy_write_pending ORDER BY created_at LIMIT 100 FOR UPDATE SKIP LOCKED"
+        "WHERE NOT legacy_write_pending"
     };
-    let removed = query(&mut tx, deletion_candidates, &[]).await?;
+    let removed = query(
+        &mut tx,
+        &format!(
+            "SELECT json_build_object('id',id,'original_pending',original_write_pending,
+                  'thumbnail_pending',thumbnail_write_pending)::text FROM home_image_deletion_queue
+                  {deletion_candidates} ORDER BY created_at LIMIT 100 FOR UPDATE SKIP LOCKED"
+        ),
+        &[],
+    )
+    .await?;
     for row in removed {
         let id = row["id"].as_str().unwrap();
-        crate::storage::delete_storage_object(
-            &state.s3_client,
-            &state.config.s3.bucket,
-            &thumbnail_key(&format!("home-images/{id}")),
+        let key = format!("home-images/{id}");
+        remove_home_image_object(
+            state,
+            &thumbnail_key(&key),
+            row["thumbnail_pending"] == true,
         )
         .await?;
-        crate::storage::delete_storage_object(
-            &state.s3_client,
-            &state.config.s3.bucket,
-            &format!("home-images/{id}"),
-        )
-        .await?;
-        toasty::sql::statement("DELETE FROM home_image_deletions WHERE id=$1")
+        remove_home_image_object(state, &key, row["original_pending"] == true).await?;
+        toasty::sql::statement("DELETE FROM home_image_deletion_queue WHERE id=$1")
             .bind(id)
             .exec(&mut tx)
             .await?;
@@ -901,6 +926,29 @@ pub async fn collect_garbage(state: &AppState) -> Result<(), AppError> {
     tx.commit().await?;
     Ok(())
 }
+async fn remove_home_image_object(
+    state: &AppState,
+    key: &str,
+    write_pending: bool,
+) -> Result<(), AppError> {
+    let client = &state.s3_client;
+    let bucket = &state.config.s3.bucket;
+    if write_pending {
+        // An in-flight conditional PUT can recreate a deleted key. The original UUID
+        // is never reused. Keep an empty object so all delayed writes remain blocked.
+        client
+            .put_object()
+            .bucket(bucket)
+            .key(key)
+            .body(Vec::<u8>::new().into())
+            .send()
+            .await
+            .map_err(|error| AppError::Internal(error.into()))?;
+        return Ok(());
+    }
+    crate::storage::delete_storage_object(client, bucket, key).await
+}
+
 async fn reconcile_home_thumbnails(state: &AppState) -> Result<(), AppError> {
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
