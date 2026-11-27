@@ -277,14 +277,23 @@ pub(super) async fn receive_verified(
                 };
                 toasty::sql::statement(
                     r#"
+                    WITH inbox_match AS MATERIALIZED (
+                      SELECT (p.visibility,p.content,p.published,p.parent_id,p.emojis)
+                          IS NOT DISTINCT FROM ($4,$5,$6::timestamptz,NULLIF($7,''),$8::jsonb)
+                        AND ARRAY(SELECT item - 'blurhash' FROM jsonb_array_elements(p.media) WITH ORDINALITY AS m(item,ord) ORDER BY ord)
+                          = ARRAY(SELECT item - 'blurhash' FROM jsonb_array_elements($9::jsonb) WITH ORDINALITY AS m(item,ord) ORDER BY ord)
+                        AS matches
+                      FROM apub_remote_posts p
+                      WHERE p.id=$1 AND p.actor_id=$2 AND p.deleted_at IS NULL AND p.updated_at=$3::timestamptz
+                    )
                     INSERT INTO apub_quote_originals AS q
                       (id,actor_id,content,published,updated_at,parent_id,emojis,media,superseded,observed_audience)
                     SELECT $1,$2,$5,$6::timestamptz,$3::timestamptz,NULLIF($7,''),$8::jsonb,$9::jsonb,true,$4
-                    WHERE EXISTS(SELECT 1 FROM apub_quote_originals WHERE id=$1 AND actor_id=$2)
-                       OR ($4 IN ('followers','direct') AND EXISTS(
-                         SELECT 1 FROM apub_remote_posts p WHERE p.id=$1 AND p.actor_id=$2
-                           AND p.deleted_at IS NULL AND p.visibility IN ('public','unlisted') AND p.updated_at=$3::timestamptz
-                       ))
+                    WHERE NOT EXISTS(SELECT 1 FROM apub_remote_posts p WHERE p.id=$1 AND p.actor_id=$2
+                          AND (p.deleted_at IS NOT NULL OR p.updated_at>$3::timestamptz))
+                      AND NOT EXISTS(SELECT 1 FROM apub_remote_tombstones WHERE id=$1 AND actor_id=$2)
+                      AND (EXISTS(SELECT 1 FROM apub_quote_originals WHERE id=$1 AND actor_id=$2)
+                        OR NOT EXISTS(SELECT 1 FROM inbox_match WHERE matches))
                     ON CONFLICT(id) DO UPDATE SET
                       superseded=true,superseded_by_public=false,updated_at=EXCLUDED.updated_at,
                       content=EXCLUDED.content,published=EXCLUDED.published,parent_id=EXCLUDED.parent_id,
@@ -292,11 +301,13 @@ pub(super) async fn receive_verified(
                     WHERE q.actor_id=EXCLUDED.actor_id AND (
                       q.updated_at<EXCLUDED.updated_at OR (
                         q.updated_at=EXCLUDED.updated_at AND (
-                          EXCLUDED.observed_audience IS DISTINCT FROM
-                            COALESCE(q.observed_audience,CASE WHEN NOT q.superseded THEN 'followers' END)
-                          OR (q.content,q.published,q.parent_id,q.emojis,q.media) IS DISTINCT FROM
-                            (EXCLUDED.content,EXCLUDED.published,EXCLUDED.parent_id,EXCLUDED.emojis,EXCLUDED.media)
-                        ) AND (NOT q.superseded_by_public OR EXCLUDED.observed_audience IN ('followers','direct'))
+                          (q.superseded_by_public AND NOT EXISTS(SELECT 1 FROM inbox_match WHERE matches))
+                          OR (NOT q.superseded_by_public AND (
+                            EXCLUDED.observed_audience IS DISTINCT FROM COALESCE(q.observed_audience,'followers')
+                            OR (q.content,q.published,q.parent_id,q.emojis,q.media) IS DISTINCT FROM
+                              (EXCLUDED.content,EXCLUDED.published,EXCLUDED.parent_id,EXCLUDED.emojis,EXCLUDED.media)
+                          ))
+                        )
                       )
                     )
                 "#,

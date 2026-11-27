@@ -281,14 +281,15 @@ async fn store_original(
                     (p.updated_at=$4::timestamptz AND p.visibility='followers'
                       AND NOT EXISTS(SELECT 1 FROM observation WHERE matches) AND
                       (p.content,p.published,p.parent_id,p.emojis) IS DISTINCT FROM ($5,$9::timestamptz,NULLIF($8,''),$6::jsonb))))
-              ON CONFLICT(id) DO UPDATE SET content=EXCLUDED.content, published=EXCLUDED.published, updated_at=EXCLUDED.updated_at,
+              ON CONFLICT(id) DO UPDATE SET actor_id=EXCLUDED.actor_id,content=EXCLUDED.content,
+                published=EXCLUDED.published,updated_at=EXCLUDED.updated_at,
                 parent_id=EXCLUDED.parent_id, emojis=EXCLUDED.emojis, media=EXCLUDED.media,
                 superseded=false, superseded_by_public=false, revision=apub_quote_originals.revision+1,
-                observed_audience=CASE WHEN apub_quote_originals.updated_at=EXCLUDED.updated_at
-                  THEN apub_quote_originals.observed_audience END
-              WHERE apub_quote_originals.actor_id=EXCLUDED.actor_id AND (
+                observed_audience=CASE WHEN apub_quote_originals.actor_id=EXCLUDED.actor_id
+                  AND apub_quote_originals.updated_at=EXCLUDED.updated_at THEN apub_quote_originals.observed_audience END
+              WHERE apub_quote_originals.actor_id<>EXCLUDED.actor_id OR
                 apub_quote_originals.updated_at<EXCLUDED.updated_at OR
-                (apub_quote_originals.updated_at=EXCLUDED.updated_at AND apub_quote_originals.superseded))
+                (apub_quote_originals.updated_at=EXCLUDED.updated_at AND apub_quote_originals.superseded)
               RETURNING id,revision
             ), version AS (
               SELECT id,revision FROM saved

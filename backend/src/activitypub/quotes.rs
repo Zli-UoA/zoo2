@@ -489,6 +489,28 @@ mod tests {
             assert_eq!(rows[0]["quote"]["post"]["content"], public["content"]);
         }
         drop(tx);
+        let mut revised_public = public.clone();
+        revised_public["content"] = json!("Corrected public copy");
+        let public_update = json!({"id":format!("{author}/public-correction"),"type":"Update","actor":author,"object":revised_public});
+        inbox::receive_verified(&state, &other, &actor, &public_update).await?;
+        reposts::store_public_note(&state, &user, &id, &public).await?;
+        let mut tx = db.transaction().await?;
+        assert!(!known_original(&mut tx, &other, &id).await?);
+        assert!(
+            reposts::remote_repost_target(&mut tx, &id, false)
+                .await?
+                .is_none()
+        );
+        drop(tx);
+        reposts::store_public_note(&state, &user, &id, &revised_public).await?;
+        let mut tx = db.transaction().await?;
+        decorate(&mut tx, &other, &mut rows).await?;
+        assert_eq!(
+            rows[0]["quote"]["post"]["content"],
+            revised_public["content"]
+        );
+        drop(tx);
+
         let restricted_again = json!({"id":format!("{author}/restricted-again"),"type":"Update","actor":author,"object":without_updated});
         inbox::receive_verified(&state, &other, &actor, &restricted_again).await?;
         // An older public GET completing after the restrictive Update cannot publish it again.
@@ -538,7 +560,19 @@ mod tests {
         delivered_note["id"] = json!(delivered_id);
         let delivered_create = json!({"id":format!("{author}/deliver-private"),"type":"Create","actor":author,"object":delivered_note});
         inbox::receive_verified(&state, &other, &actor, &delivered_create).await?;
+        // The first quote lookup may occur after an equal-time Inbox correction.
+        let mut before_first_fetch = delivered_note.clone();
+        before_first_fetch["content"] = json!("Corrected before first fetch");
+        let first_correction = json!({"id":format!("{author}/correct-before-fetch"),"type":"Update","actor":author,"object":before_first_fetch});
+        inbox::receive_verified(&state, &other, &actor, &first_correction).await?;
         reposts::store_quoted_note(&state, &user, &delivered_id, &delivered_note).await?;
+        let mut tx = db.transaction().await?;
+        assert!(!known_original(&mut tx, &user, &delivered_id).await?);
+        drop(tx);
+        reposts::store_quoted_note(&state, &user, &delivered_id, &before_first_fetch).await?;
+        let mut tx = db.transaction().await?;
+        assert!(known_original(&mut tx, &user, &delivered_id).await?);
+        drop(tx);
         toasty::sql::statement("UPDATE apub_remote_posts SET quote_uri=$2 WHERE id=$1")
             .bind(quote_id.as_str())
             .bind(delivered_id.as_str())
@@ -568,7 +602,41 @@ mod tests {
         assert_eq!(delivered_copy["content"], delivered_note["content"]);
         drop(tx);
 
+        let narrowed_id = format!("{author}/notes/narrowed-before-fetch");
+        let mut originally_followers = note.clone();
+        originally_followers["id"] = json!(narrowed_id);
+        let create = json!({"id":format!("{author}/create-before-narrow"),"type":"Create","actor":author,"object":originally_followers});
+        inbox::receive_verified(&state, &other, &actor, &create).await?;
+        let mut narrow = originally_followers.clone();
+        narrow["to"] = json!([actor_id(&other)?]);
+        let update = json!({"id":format!("{author}/narrow-before-fetch"),"type":"Update","actor":author,"to":[followers],"object":narrow});
+        inbox::receive_verified(&state, &other, &actor, &update).await?;
+        reposts::store_quoted_note(&state, &user, &narrowed_id, &originally_followers).await?;
+        let mut tx = db.transaction().await?;
+        assert!(!known_original(&mut tx, &user, &narrowed_id).await?);
+        drop(tx);
+
+        let conflicting_actor = format!("{author}/other-actor");
+        let conflicting_id = format!("{author}/notes/conflicting-observation");
+        toasty::sql::statement("INSERT INTO apub_actors(id,inbox,followers_url,user_name,display_name,key_id,public_key) VALUES($1,$1,$1,'peer','Peer',$1,'cached')")
+            .bind(conflicting_actor.as_str()).exec(&mut db).await?;
+        toasty::sql::statement("INSERT INTO apub_quote_originals(id,actor_id,content,published,updated_at,emojis,media,superseded,observed_audience) VALUES($1,$2,'Unverified observation','2026-01-01','2026-01-03','[]','[]',true,'direct')")
+            .bind(conflicting_id.as_str()).bind(conflicting_actor.as_str()).exec(&mut db).await?;
+        let mut canonical = note.clone();
+        canonical["id"] = json!(conflicting_id);
+        reposts::store_quoted_note(&state, &user, &conflicting_id, &canonical).await?;
+        let mut tx = db.transaction().await?;
+        assert!(known_original(&mut tx, &user, &conflicting_id).await?);
+        drop(tx);
+
         for (sql, key) in [
+            (
+                "DELETE FROM apub_quote_originals WHERE id=$1",
+                &conflicting_id,
+            ),
+            ("DELETE FROM apub_actors WHERE id=$1", &conflicting_actor),
+            ("DELETE FROM apub_quote_originals WHERE id=$1", &narrowed_id),
+            ("DELETE FROM apub_remote_posts WHERE id=$1", &narrowed_id),
             (
                 "DELETE FROM apub_quote_originals WHERE id=$1",
                 &delivered_id,
