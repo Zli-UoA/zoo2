@@ -73,6 +73,7 @@ internal class EntryChannelLink(val label: String?, val messageIcon: Boolean, va
 internal val LocalMentionProfiles = staticCompositionLocalOf<Map<String, Row>> { emptyMap() }
 internal val LocalMentionUsernames = staticCompositionLocalOf<Set<String>> { emptySet() }
 private const val mentionAvatarTag = "mention-avatar"
+private const val renderedMentionTag = "rendered-mention"
 
 private class EntryFormat(
     val emoji: Set<String>, val mark: EntryHighlight?, val links: Boolean,
@@ -109,6 +110,22 @@ private fun entryEmojiCodes(formatted: AnnotatedString): List<String> =
 internal fun containsRenderedEmoji(body: String, known: Set<String>, candidates: Set<String>): Boolean {
     val formatted = formatEntry(body, known + candidates)
     return entryEmojiCodes(formatted).any { it in candidates }
+}
+
+internal fun bodyMentionsUser(
+    body: String,
+    username: String,
+    usernames: Set<String>,
+    allowedMentions: Set<String>?,
+    emoji: Set<String>,
+): Boolean {
+    if ('@' !in body) return false
+    val targets = setOf(username, "channel", "here")
+    if (allowedMentions != null && targets.none { it in allowedMentions }) return false
+    val formatted = formatEntry(body, emoji = emoji, allowedMentions = allowedMentions, mentionUsernames = usernames)
+    return formatted.getStringAnnotations(renderedMentionTag, 0, formatted.length).any {
+        zoo.isAllowedMention(it.item, targets)
+    }
 }
 
 /** [text] with the parts that hit [highlight]'s terms in its style. */
@@ -215,18 +232,22 @@ private fun AnnotatedString.Builder.appendMfm(body: String, format: EntryFormat,
                 val username = zoo.resolvedMentionName(rawName, exact)
                 val mention = "@$username"
                 if (username.isEmpty() || allowed != null && !zoo.isAllowedMention(username, allowed)) append(mention)
-                else withStyle(format.mentionStyle ?: SpanStyle(fontWeight = AndroidWeights.emphasis)) {
-                    val profile = format.mentionProfiles[username]
-                        ?.takeUnless { username.equals("channel", true) || username.equals("here", true) }
-                    if (profile == null) append(mention)
-                    else {
-                        val label = profile.text("display_name").ifEmpty { username }
-                        append('@')
-                        pushStringAnnotation(mentionAvatarTag, username)
-                        appendInlineContent("$mentionAvatarTag:$username", username)
-                        pop()
-                        append(" $label")
+                else {
+                    pushStringAnnotation(renderedMentionTag, username)
+                    withStyle(format.mentionStyle ?: SpanStyle(fontWeight = AndroidWeights.emphasis)) {
+                        val profile = format.mentionProfiles[username]
+                            ?.takeUnless { username.equals("channel", true) || username.equals("here", true) }
+                        if (profile == null) append(mention)
+                        else {
+                            val label = profile.text("display_name").ifEmpty { username }
+                            append('@')
+                            pushStringAnnotation(mentionAvatarTag, username)
+                            appendInlineContent("$mentionAvatarTag:$username", username)
+                            pop()
+                            append(" $label")
+                        }
                     }
+                    pop()
                 }
                 append(rawName.drop(username.length))
             }

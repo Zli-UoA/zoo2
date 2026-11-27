@@ -116,14 +116,13 @@ internal fun ConnectedScreens(
         val item = state.entry(data, usersById,
             if (decrypted != null) emptyList() else displayAttachments(row),
             displayReactions(row), writable = canPost, allowPreview = !encrypted)
-        return encryptedEntry(item, row, decrypted, encrypted, session::t).copy(
-            allowedMentions = decrypted?.mentions?.let { zoo.allowedMentionNames(it, usersById) },
-            mentionsCurrentUser = if (decrypted != null) decrypted.mentions.let {
-                it.channel || it.here || session.config.userId in it.userIds
-            } else if (zoo.isPlaintextBeforeEncryption(row)) {
-                zoo.messageMentionsUser(item.body,
-                    usersById[session.config.userId]?.text("user_name").orEmpty(), mentionUsernames)
-            } else false,
+        val allowlist = decrypted?.mentions?.let { zoo.allowedMentionNames(it, usersById) }
+        val entry = encryptedEntry(item, row, decrypted, encrypted, session::t)
+        return entry.copy(
+            allowedMentions = allowlist,
+            mentionsCurrentUser = (decrypted != null || zoo.isPlaintextBeforeEncryption(row)) &&
+                bodyMentionsUser(entry.body, usersById[session.config.userId]?.text("user_name").orEmpty(),
+                    mentionUsernames, allowlist, entry.emoji.keys),
         )
     }
     val ordered = remember(rows) {

@@ -6,6 +6,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.style.TextDecoration
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Test
 import zoo.obj
 
@@ -77,5 +78,13 @@ class EntryTextTest {
             allowedMentions = setOf("alice."), mentionUsernames = usernames)
         val span = result.spanStyles.single { it.item == style }
         assertEquals("@alice.", result.text.substring(span.start, span.end))
+    }
+    @Test
+    fun rowHighlightUsesOnlyRenderedAndAllowedMentions() {
+        assertFalse(bodyMentionsUser("`example: @alice`", "alice", setOf("alice"), null, emptySet()))
+        assertFalse(bodyMentionsUser("<plain>@alice</plain>", "alice", setOf("alice"), setOf("alice"), emptySet()))
+        assertFalse(bodyMentionsUser("@alice", "alice", setOf("alice"), setOf("bob"), emptySet()))
+        assertTrue(bodyMentionsUser("**@alice**", "alice", setOf("alice"), setOf("alice"), emptySet()))
+        assertTrue(bodyMentionsUser("@HERE", "alice", setOf("alice"), setOf("here"), emptySet()))
     }
 }

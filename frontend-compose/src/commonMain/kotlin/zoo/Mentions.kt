@@ -24,12 +24,3 @@ fun resolvedMentionName(rawName: String, exactMatch: Boolean): String {
 fun isAllowedMention(username: String, names: Set<String>): Boolean =
     if (username.equals("channel", true) || username.equals("here", true)) username.lowercase() in names
     else username in names
-
-private val messageMentionPattern = Regex("(?:^|$mentionBoundary)@($mentionName)")
-
-fun messageMentionsUser(body: String, username: String, usernames: Set<String>): Boolean =
-    messageMentionPattern.findAll(body).any { match ->
-        val raw = match.groupValues[1]
-        val name = resolvedMentionName(raw, raw in usernames)
-        name.equals("channel", true) || name.equals("here", true) || username.isNotEmpty() && username == name
-    }

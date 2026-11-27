@@ -66,16 +66,22 @@ class ConversationScrollTest {
     }
 
     @Test
-    fun mentionSuggestionsPreserveTheEditorAndSendActionInAShortViewport() {
+    fun hiddenMentionSuggestionsKeepTheSendActionVisibleAndDoNotConsumeEnter() {
+        var chosen: String? = null
         ui.setContent {
             ConversationInput(
-                InputState("@", mentions = (1..8).map { CompletionOption("user$it", "User $it") }),
-                AndroidColors(false), textChanged = {}, onTool = {}, modifier = Modifier.height(160.dp),
+                InputState("first line\nsecond line\n@", notices = listOf("配布先の確認", "確認が必要な端末"),
+                    mentions = (1..8).map { CompletionOption("user$it", "User $it") }),
+                AndroidColors(false), textChanged = {}, onTool = {}, onMention = { chosen = it },
+                modifier = Modifier.height(160.dp),
             )
         }
         val editor = ui.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.SetText))
         editor.performClick().assertIsDisplayed()
         ui.onNodeWithContentDescription("送信").assertIsDisplayed().assertIsEnabled()
+        ui.onNodeWithText("@user1").assertIsNotDisplayed()
+        editor.performKeyInput { pressKey(Key.Enter) }
+        ui.runOnIdle { assertEquals(null, chosen) }
     }
 
     @Test

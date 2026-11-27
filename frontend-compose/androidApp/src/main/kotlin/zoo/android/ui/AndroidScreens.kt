@@ -2,6 +2,11 @@ package zoo.android.ui
 
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.tween
@@ -10,7 +15,6 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -399,7 +403,7 @@ private fun RenderAndroidScreen(
                         Text(androidLabel("threads.unreadTooOld", "これより古い未読は読み込まれていません"),
                             Modifier.padding(horizontal = 16.dp, vertical = 8.dp), color = colors.secondary)
                     }
-                    TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = interaction.swipeReply, allowThreads = true, focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true, historyReady = screen.historyReady,
+                    TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = interaction.swipeReply, allowThreads = true, focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true, historyReady = screen.historyReady, reducedMotion = interaction.reducedMotion,
                         unreadPositionPending = screen.unreadPositionPending,
                         onUnreadPositioned = screen.onUnreadPositioned,
                         onReadThrough = screen.onReadThrough.takeIf { foreground && !screen.unreadHistoryIncomplete },
@@ -414,7 +418,7 @@ private fun RenderAndroidScreen(
                 Text("# ${screen.channelName}", Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                     color = colors.secondary, fontSize = 13.sp)
                 TimelineWithInput(listOf(screen.root) + screen.replies, screen.input, colors, dispatch,
-                    focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true, historyReady = screen.historyReady,
+                    focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true, historyReady = screen.historyReady, reducedMotion = interaction.reducedMotion,
                     loadEarlier = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderMessages) } } else null)
             }
             is AndroidScreen.OpeningConversation -> {
@@ -652,6 +656,7 @@ internal fun ColumnScope.TimelineWithInput(
     unreadPositionPending: Boolean = false,
     onUnreadPositioned: (() -> Unit)? = null,
     onReadThrough: ((String?) -> Unit)? = null,
+    reducedMotion: Boolean = false,
     imeInsets: WindowInsets = WindowInsets.ime.exclude(WindowInsets.systemBars),
 ) {
     val scroll = rememberLazyListState()
@@ -688,15 +693,22 @@ internal fun ColumnScope.TimelineWithInput(
         requestEarlier?.invoke()
     }
     var openedTarget by rememberSaveable { mutableStateOf<String?>(null) }
-    var highlightedRequest by rememberSaveable { mutableStateOf<String?>(null) }
-    var jumpHighlight by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(openedTarget, focusRequest) {
-        jumpHighlight = null
-        if (focusRequest != null && openedTarget == focusRequest && highlightedRequest != focusRequest) {
-            highlightedRequest = focusRequest
-            jumpHighlight = focusMessage
-            kotlinx.coroutines.delay(2500)
-            jumpHighlight = null
+    var jumpRequest by remember { mutableStateOf<String?>(null) }
+    val jumpIntensity = remember { Animatable(0f) }
+    LaunchedEffect(jumpRequest, focusRequest, reducedMotion) {
+        jumpIntensity.snapTo(0f)
+        if (focusRequest != null && jumpRequest == focusRequest) {
+            if (!reducedMotion) {
+                repeat(3) {
+                    jumpIntensity.snapTo(1f)
+                    kotlinx.coroutines.delay(83)
+                    jumpIntensity.snapTo(0f)
+                    kotlinx.coroutines.delay(83)
+                }
+            }
+            jumpIntensity.snapTo(1f)
+            kotlinx.coroutines.delay(if (reducedMotion) 2000 else 1502)
+            jumpIntensity.animateTo(0f, tween(500, easing = LinearEasing))
         }
     }
     var seenFocusRequest by rememberSaveable { mutableStateOf<String?>(null) }
@@ -737,6 +749,7 @@ internal fun ColumnScope.TimelineWithInput(
                 followEnd = false
                 // Complete the layout before the read observer can see this request as handled.
                 scroll.scrollToItem(focusedIndex)
+                jumpRequest = focusRequest
                 openedTarget = focusRequest
                 positioned = true
                 onUnreadPositioned?.invoke()
@@ -834,7 +847,9 @@ internal fun ColumnScope.TimelineWithInput(
             if (maxHeight > 0.dp && entries.isNotEmpty() && (!input.expanded || resizing)) {
                 Timeline(entries, colors, Modifier.fillMaxSize().testTag("conversation-timeline"), dispatch, posts = posts,
                     swipeReply = swipeReply, allowThreads = allowThreads, scroll = scroll, topContentPadding = topContentPadding,
-                    headerOverlayHeight = headerOverlayHeight, focusMessage = jumpHighlight)
+                    headerOverlayHeight = headerOverlayHeight,
+                    focusMessage = focusMessage.takeIf { jumpRequest == focusRequest },
+                    focusIntensity = { jumpIntensity.value })
             }
         }
         Box(Modifier.onSizeChanged { if (!overlayInput) compactInputHeight = it.height }
@@ -936,6 +951,7 @@ private fun Timeline(
     topContentPadding: Dp = 0.dp,
     headerOverlayHeight: Dp = 0.dp,
     focusMessage: String? = null,
+    focusIntensity: () -> Float = { 0f },
 ) {
     if (entries.isEmpty() && header == null) return
     var menuId by remember { mutableStateOf<String?>(null) }
@@ -957,9 +973,15 @@ private fun Timeline(
                         Modifier.fillMaxWidth().testTag("timeline-entry-${entry.id}")
                             .then(if (entry.mentionsCurrentUser) Modifier
                                 .background(colors.suggestionSelected, shape) else Modifier)
-                            .then(if (entry.id == focusMessage) Modifier
-                                .background(colors.mentionSurface.copy(alpha = .4f), shape)
-                                .border(1.dp, colors.mentionOutline, shape) else Modifier)
+                            .then(if (entry.id == focusMessage) Modifier.drawBehind {
+                                val intensity = focusIntensity()
+                                val accentWidth = 3.dp.toPx()
+                                drawRect(colors.messageTarget.copy(alpha = .15f * intensity))
+                                val start = if (layoutDirection == androidx.compose.ui.unit.LayoutDirection.Ltr) 0f
+                                    else size.width - accentWidth
+                                drawRect(colors.messageTarget.copy(alpha = intensity),
+                                    topLeft = Offset(start, 0f), size = Size(accentWidth, size.height))
+                            } else Modifier)
                             .then(if (posts) Modifier.combinedClickable(
                                 onClick = { dispatch(AndroidUiAction.OpenPost(entry.id)) },
                                 onLongClick = { menuId = entry.id },
