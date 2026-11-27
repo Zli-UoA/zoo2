@@ -12,6 +12,7 @@ import { OFFLINE_SCHEMA_VERSION } from "../offline/schema";
 import { createShapeFetch, type ShapeFetchSource } from "./headers";
 import { MESSAGE_INDEX_COMPARE_OPTIONS } from "./messageOrder";
 import { buildShapeRequestUrl, resolveShapeUrl, type ShapeQueryOptions } from "./query";
+import { asElectricOptions, asPersistedOptions } from "./rowTypes";
 import { SHAPE_META, coerceElectricRow, type ShapeName } from "./schema";
 import type {
   AttachmentRow,
@@ -98,17 +99,21 @@ function withPersistence<
     return options;
   }
   // 永続化ラッパーは型に schema / utils を足すが、アプリ側の公開型は
-  // 従来の Electric コレクションのまま扱う。
-  return persistedCollectionOptions({
-    ...options,
-    getKey,
-    persistence,
-    schemaVersion: OFFLINE_SCHEMA_VERSION,
-    // `initialRender` は eager の同期でだけ使える (on-demand では、永続化の設定がエラーにする)。
-    ...(networkFirst
-      ? { initialRender: { strategy: "network-first", networkTimeoutMs: 2_000 } }
-      : {}),
-  } as unknown as Parameters<typeof persistedCollectionOptions>[0]) as unknown as TOptions;
+  // 従来の Electric コレクションのまま扱う。境界キャストは rowTypes.ts に集約する。
+  return asElectricOptions<TOptions>(
+    persistedCollectionOptions(
+      asPersistedOptions({
+        ...options,
+        getKey,
+        persistence,
+        schemaVersion: OFFLINE_SCHEMA_VERSION,
+        // `initialRender` は eager の同期でだけ使える (on-demand では、永続化の設定がエラーにする)。
+        ...(networkFirst
+          ? { initialRender: { strategy: "network-first", networkTimeoutMs: 2_000 } }
+          : {}),
+      }),
+    ),
+  );
 }
 
 function channelsCollection(
