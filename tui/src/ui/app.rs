@@ -141,13 +141,11 @@ pub enum AppEvent {
         requested_encryption: bool,
         encrypted: bool,
     },
-    /// 通知レベルの変更が終わった。失敗したときは、それ以降の操作がなければ選んだ値を戻す。
+    /// 通知レベルの変更が終わった。失敗したときは、最後に確定した値まで戻す。
     NotificationLevelFinished {
         channel_id: String,
         /// 送信した値。
         level: NotificationLevel,
-        /// 送信前に選ばれていた値。
-        previous: NotificationLevel,
         succeeded: bool,
     },
 }
@@ -288,8 +286,13 @@ pub struct App {
     pub pin_version: i64,
     /// チャンネルごとに送信中の通知レベル。別チャンネルの操作では消さない。
     notification_level_pending: HashMap<String, NotificationLevel>,
+    /// チャンネルごとの未完了の PATCH の数。0 になってはじめて Shape を正本に戻せる。
+    notification_level_in_flight: HashMap<String, usize>,
     /// チャンネルごとに最後に選んだ通知レベル。Shape が古くてもこの値から次を計算する。
     notification_level_selected: HashMap<String, NotificationLevel>,
+    /// チャンネルごとに最後に確定した通知レベル（成功した値、初期値は Store の値）。
+    /// 連続で失敗しても未保存の値を戻り先にしないため、ここを正本にする。
+    notification_level_confirmed: HashMap<String, NotificationLevel>,
     /// 同じチャンネルへの PATCH を入力順に直列化するロック。別チャンネルは互いにブロックしない。
     notification_level_locks: HashMap<String, Arc<tokio::sync::Mutex<()>>>,
     /// チャンネルごとに既読を送った最新メッセージ。同じ位置を何度も送らない。
@@ -391,7 +394,9 @@ impl App {
             unread: HashSet::new(),
             pin_version: 0,
             notification_level_pending: HashMap::new(),
+            notification_level_in_flight: HashMap::new(),
             notification_level_selected: HashMap::new(),
+            notification_level_confirmed: HashMap::new(),
             notification_level_locks: HashMap::new(),
             marked_read: HashMap::new(),
             typing: HashMap::new(),
@@ -539,12 +544,16 @@ impl App {
                 let is_notification_settings = matches!(id, ShapeId::ChannelNotificationSettings);
                 self.store.apply(&id, batch);
                 if is_notification_settings {
-                    // Shape が選んだ値まで届いたら上書きをやめて store を正本に戻す。
-                    // 古い値のあいだは選んだ値を保ち、同じ値の再送を防ぐ。
+                    // 未完了の PATCH がある間は Store が一致しても選択値を消さない。
+                    // 連打で選んだ値が Store の古い値に戻ると、一致を理由に解除され、
+                    // あとから反映された値を基準に次の値を送ってしまうため。
                     let store = &self.store;
+                    let me_id = &self.me.id;
+                    let in_flight = &self.notification_level_in_flight;
                     self.notification_level_selected
                         .retain(|channel_id, level| {
-                            store.notification_level(channel_id, &self.me.id) != *level
+                            in_flight.contains_key(channel_id)
+                                || store.notification_level(channel_id, me_id) != *level
                         });
                 }
                 if is_channels {
@@ -865,17 +874,40 @@ impl App {
             AppEvent::NotificationLevelFinished {
                 channel_id,
                 level,
-                previous,
                 succeeded,
             } => {
                 if self.notification_level_pending.get(&channel_id) == Some(&level) {
                     self.notification_level_pending.remove(&channel_id);
                 }
-                if !succeeded && self.notification_level_selected.get(&channel_id) == Some(&level) {
-                    // 失敗した値のあとに別の操作がなければ、選んだ値を書き込み前へ戻す。
-                    // 後の操作がある場合はその値のままにして、次の計算が実際の設定からずれないようにする。
+                if let Some(count) = self.notification_level_in_flight.get_mut(&channel_id) {
+                    if *count <= 1 {
+                        self.notification_level_in_flight.remove(&channel_id);
+                    } else {
+                        *count -= 1;
+                    }
+                }
+                if succeeded {
+                    // 成功した値だけがサーバーに保存された。Shape が遅れていても失敗時の戻り先はこれ。
+                    self.notification_level_confirmed
+                        .insert(channel_id.clone(), level);
+                } else if self.notification_level_selected.get(&channel_id) == Some(&level) {
+                    // 失敗した値のあとに別の操作がなければ、最後に確定した値へ戻す。
+                    // 途中の未保存の値を戻すと、連続失敗のあと実際の設定からずれてしまう。
+                    let confirmed = self
+                        .notification_level_confirmed
+                        .get(&channel_id)
+                        .copied()
+                        .unwrap_or_else(|| self.store.notification_level(&channel_id, &self.me.id));
                     self.notification_level_selected
-                        .insert(channel_id, previous);
+                        .insert(channel_id.clone(), confirmed);
+                }
+                // すべての PATCH が終わったら、Store と一致する選択値を解除する。
+                // Shape が先に届いて解除できなかった場合でもここで正本に戻せる。
+                if !self.notification_level_in_flight.contains_key(&channel_id)
+                    && self.notification_level_selected.get(&channel_id)
+                        == Some(&self.store.notification_level(&channel_id, &self.me.id))
+                {
+                    self.notification_level_selected.remove(&channel_id);
                 }
             }
             AppEvent::Notice(message) => self.notify(message),
@@ -2601,12 +2633,28 @@ impl App {
         let Some(channel_id) = self.current.clone() else {
             return;
         };
+        // 自分の設定行が届いていないと store は既定値を返すだけなので、実際の設定から
+        // 循環できない。行が届くまで操作を止め、誤った値を送らないようにする。
+        if self
+            .store
+            .notification_setting(&channel_id, &self.me.id)
+            .is_none()
+        {
+            self.notify("通知設定を読み込み中です。少し待ってからもう一度押してください");
+            return;
+        }
         let previous = self
             .notification_level_selected
             .get(&channel_id)
             .copied()
             .unwrap_or_else(|| self.store.notification_level(&channel_id, &self.me.id));
         let next = Self::next_notification_level(previous);
+        // 初期値は Store の値（届いている設定行）。以降は成功した値だけを確定値にする。
+        if !self.notification_level_confirmed.contains_key(&channel_id) {
+            let initial = self.store.notification_level(&channel_id, &self.me.id);
+            self.notification_level_confirmed
+                .insert(channel_id.clone(), initial);
+        }
         let api = self.api.clone();
         let tx = self.app_tx.clone();
         // 連打しても入力順に PATCH が届くよう、チャンネルごとにロックを取ってから送る。
@@ -2617,6 +2665,10 @@ impl App {
             .or_default()
             .clone();
         let label = format!("通知を {} にしました", Self::notification_level_label(next));
+        *self
+            .notification_level_in_flight
+            .entry(channel_id.clone())
+            .or_default() += 1;
         self.notification_level_pending
             .insert(channel_id.clone(), next);
         self.notification_level_selected
@@ -2628,7 +2680,6 @@ impl App {
             let _ = tx.send(AppEvent::NotificationLevelFinished {
                 channel_id: channel_id.clone(),
                 level: next,
-                previous,
                 succeeded,
             });
             result?;
@@ -3207,14 +3258,23 @@ mod tests {
     }
 
     fn set_notification_level(app: &mut App, channel_id: &str, level: NotificationLevel) {
+        set_notification_level_for(app, channel_id, "u1", level);
+    }
+
+    fn set_notification_level_for(
+        app: &mut App,
+        channel_id: &str,
+        user_id: &str,
+        level: NotificationLevel,
+    ) {
         app.on_shape(ShapeEvent::Batch(
             ShapeId::ChannelNotificationSettings,
             Batch {
                 reset: false,
                 changes: vec![electric::Change::Upsert {
-                    key: format!("{channel_id}:u1"),
+                    key: format!("{channel_id}:{user_id}"),
                     row: serde_json::json!({
-                        "user_id": "u1",
+                        "user_id": user_id,
                         "channel_id": channel_id,
                         "notification_level": level.as_str(),
                     })
@@ -3511,8 +3571,16 @@ mod tests {
             app.on_app_event(event);
         }
         assert!(app.notification_level_pending.is_empty());
+        // 確定値 All まで戻る。Store と一致した時点で選択値は消えても、基準は All のまま。
         assert_eq!(
-            app.notification_level_selected.get("c1"),
+            app.notification_level_selected
+                .get("c1")
+                .copied()
+                .unwrap_or_else(|| app.store.notification_level("c1", "u1")),
+            NotificationLevel::All
+        );
+        assert_eq!(
+            app.notification_level_confirmed.get("c1"),
             Some(&NotificationLevel::All)
         );
         assert!(
@@ -3556,7 +3624,7 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let (mut app, _rx) = api_test_app(&server.uri());
+        let (mut app, mut rx) = api_test_app(&server.uri());
         set_notification_level(&mut app, "c1", NotificationLevel::All);
         app.current = Some("c1".into());
         app.cycle_notification_level();
@@ -3564,13 +3632,20 @@ mod tests {
             app.notification_level_selected.get("c1"),
             Some(&NotificationLevel::Mentions)
         );
-        // 古い Shape が届いても上書きを保つ。
+        // PATCH が残っているあいだは、Store が一致しても古い Shape で上書きを消さない。
         set_notification_level(&mut app, "c1", NotificationLevel::All);
         assert_eq!(
             app.notification_level_selected.get("c1"),
             Some(&NotificationLevel::Mentions)
         );
-        // 選んだ値が届いたら store を正本に戻す。
+        for _ in 0..2 {
+            let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            app.on_app_event(event);
+        }
+        // すべての PATCH が終わり、選んだ値が届いたら store を正本に戻す。
         set_notification_level(&mut app, "c1", NotificationLevel::Mentions);
         assert!(!app.notification_level_selected.contains_key("c1"));
         app.cycle_notification_level();
@@ -3578,6 +3653,160 @@ mod tests {
             notification_level_requests(&server, "c1", 2).await,
             ["mentions", "mute"]
         );
+    }
+
+    #[tokio::test]
+    async fn notification_level_stale_shape_keeps_selection_until_patches_finish() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{body_json, method, path},
+        };
+        let server = MockServer::start().await;
+        for level in ["mentions", "mute", "all"] {
+            Mock::given(method("PATCH"))
+                .and(path("/api/channels/c1/notification-settings"))
+                .and(body_json(serde_json::json!({ "level": level })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "data": { "level": level },
+                    "txid": "7",
+                })))
+                .up_to_n_times(1)
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let (mut app, mut rx) = api_test_app(&server.uri());
+        set_notification_level(&mut app, "c1", NotificationLevel::All);
+        app.current = Some("c1".into());
+        app.cycle_notification_level();
+        app.cycle_notification_level();
+        app.cycle_notification_level();
+        assert_eq!(
+            app.notification_level_selected.get("c1"),
+            Some(&NotificationLevel::All)
+        );
+        // 連打で All に戻った直後、Store がまだ All のときに古い Shape が届いても解除しない。
+        set_notification_level(&mut app, "c1", NotificationLevel::All);
+        assert_eq!(
+            app.notification_level_selected.get("c1"),
+            Some(&NotificationLevel::All)
+        );
+        // PATCH の反映で Store が Mentions になっても、選択値は All のまま。
+        set_notification_level(&mut app, "c1", NotificationLevel::Mentions);
+        assert_eq!(
+            app.notification_level_selected.get("c1"),
+            Some(&NotificationLevel::All)
+        );
+        for _ in 0..6 {
+            let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            app.on_app_event(event);
+        }
+        assert!(app.notification_level_in_flight.is_empty());
+        // すべての PATCH が終わり、Store が All に追いついたので選択値を解除する。
+        set_notification_level(&mut app, "c1", NotificationLevel::All);
+        assert!(!app.notification_level_selected.contains_key("c1"));
+        // 4 回目は Mentions を送る（Mentions 基準だと Mute になってしまう）。
+        app.cycle_notification_level();
+        assert_eq!(
+            notification_level_requests(&server, "c1", 4).await,
+            ["mentions", "mute", "all", "mentions"]
+        );
+    }
+
+    #[tokio::test]
+    async fn notification_level_consecutive_failures_keep_the_confirmed_value() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/channels/c1/notification-settings"))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_json(serde_json::json!({ "error": "NG" })),
+            )
+            .mount(&server)
+            .await;
+        let (mut app, mut rx) = api_test_app(&server.uri());
+        set_notification_level(&mut app, "c1", NotificationLevel::All);
+        app.current = Some("c1".into());
+        // All を確定値にしたまま、Mentions と Mute を続けて要求して両方失敗させる。
+        app.cycle_notification_level();
+        app.cycle_notification_level();
+        assert_eq!(
+            notification_level_requests(&server, "c1", 2).await,
+            ["mentions", "mute"]
+        );
+        for _ in 0..4 {
+            let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            app.on_app_event(event);
+        }
+        assert!(app.notification_level_pending.is_empty());
+        assert!(app.notification_level_in_flight.is_empty());
+        assert_eq!(
+            app.notification_level_confirmed.get("c1"),
+            Some(&NotificationLevel::All)
+        );
+        assert_eq!(
+            app.notification_level_selected
+                .get("c1")
+                .copied()
+                .unwrap_or_else(|| app.store.notification_level("c1", "u1")),
+            NotificationLevel::All
+        );
+        // 連続失敗のあとの操作は、実際に残っている All から Mentions を送る。
+        app.cycle_notification_level();
+        assert_eq!(
+            notification_level_requests(&server, "c1", 3).await,
+            ["mentions", "mute", "mentions"]
+        );
+    }
+
+    #[tokio::test]
+    async fn notification_level_waits_for_the_users_own_setting_row() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/channels/c1/notification-settings"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "level": "mentions" },
+                "txid": "7",
+            })))
+            .mount(&server)
+            .await;
+        let (mut app, _rx) = api_test_app(&server.uri());
+        app.current = Some("c1".into());
+        // 設定行が届いていないと既定値から計算してしまうので、何も送らない。
+        app.cycle_notification_level();
+        assert!(
+            app.notice
+                .as_ref()
+                .is_some_and(|(message, _)| message.contains("通知設定を読み込み中"))
+        );
+        assert!(app.notification_level_pending.is_empty());
+        // 他人の設定行だけではまだ始めない。
+        set_notification_level_for(&mut app, "c1", "u2", NotificationLevel::All);
+        app.cycle_notification_level();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            received_notification_level_requests(&server, "c1")
+                .await
+                .is_empty()
+        );
+        // 自分の行が届いたら、実際の Mute から All へ循環する。
+        // 行がないと既定の Mentions から Mute を送ってしまう。
+        set_notification_level(&mut app, "c1", NotificationLevel::Mute);
+        app.cycle_notification_level();
+        assert_eq!(notification_level_requests(&server, "c1", 1).await, ["all"]);
     }
 
     #[tokio::test]

@@ -124,28 +124,55 @@ T を変えた場合の詳細（M=100万）:
 
 除外は `User_pkey` の Index Scan で `T` 回の主キー参照だけを行い、`U` が3.3倍になっても走査行数と時間は比例しない。一括 INSERT は行数とトリガー呼び出しが `T` に比例し、トランザクションのロック保持時間は `T` に依存する。書き込みの同時実行時に同じルート行をロックして待たせる時間は未測定で、API 全体の p50/p95/最大と合わせて今後の検証項目として残す。42秒という数値自体は環境依存の参考値であり、時間だけで合否を決めていない。
 
-再現コマンド。移行済みの使い捨て DB で、対象チャンネルの `channel_user` 行数 `M` を30万と100万に変えてそれぞれ実行する（`M` の作り方は `backend/tests/thread_participants_scale_test.rs` の fixture を参照）。既存のスケール用 DB を流用するときは、対象チャンネルの割合が高すぎて Seq Scan に切り替わらないことと、`idx_channel_user_channel_id` が存在することを確かめる。索引のない DB や割合の偏った DB の値は、上の設計の検証には使えない。`:'recipients'` は (2) ではユーザーIDの配列、(3) では通知行オブジェクトの配列を渡す。
+再現コマンド。移行済みの使い捨て DB で、対象チャンネルの `channel_user` 行数 `M` を30万と100万に変えてそれぞれ実行する（`M` の作り方は `backend/tests/thread_participants_scale_test.rs` の fixture を参照）。既存のスケール用 DB を流用するときは、対象チャンネルの割合が高すぎて Seq Scan に切り替わらないことと、`idx_channel_user_channel_id` が存在することを確かめる。索引のない DB や割合の偏った DB の値は、上の設計の検証には使えない。`:'recipients'` は (2) のユーザーID配列、`:'rows'` は (3) の通知行オブジェクト配列で、どちらも件数は固定せず `:t` に従う。
+
+大きな JSON を `-v recipients='…'` / `-v rows='…'` で渡さないこと。Linux の 1 引数の上限（`MAX_ARG_STRLEN`、通常 128 KiB）を超えると psql 自体が起動しない。T=15万の配列はユーザーIDだけでも約 7.8 MB になる。コマンドラインに渡すのは短い変数（`tag`・`channel_id`・`message_id`・`t`）だけにし、JSON は psql 起動後に `generate_series` から組み立てて `\gset` で変数に格納する。アプリから取得した実データを使うときは、JSON をファイルへ書き出して psql 内で `\set` に読ませる（この場合も `-v` には渡さない）。
+
+```
+\set recipients `cat /path/to/recipients.json`
+\set rows `cat /path/to/rows.json`
+```
+
+fixture のユーザーIDは `<UUIDタグ>-u-<9桁ゼロ埋め>`（例 `99e9dcf4-362c-4ece-8d1b-ebb0cdaa241e-u-000000001`）。`tag` に対象 fixture の UUID 接頭辞、`channel_id` に全 `channel_user` 行を持つチャンネル（fixture では `<tag>-noise-channel`）、`message_id` にそのチャンネルの既存メッセージ、`t` に T を入れる。
 
 ```sh
--- recipients はユーザーIDのJSON配列、rows は通知行オブジェクトのJSON配列を渡す。
-psql "$DATABASE_URL" -v channel_id='<対象チャンネルID>' -v recipients='[...]' -v rows='[...]' <<'SQL'
+psql "$DATABASE_URL" \
+  -v tag='<fixture の UUID 接頭辞>' \
+  -v channel_id='<全 channel_user 行を持つチャンネルID>' \
+  -v message_id='<そのチャンネルの既存メッセージID>' \
+  -v t=150000 <<'SQL'
 \timing on
+-- (2) の入力配列。ID 形式は <tag>-u-<9桁ゼロ埋め>、件数は :t に従う。
+SELECT jsonb_agg(:'tag' || '-u-' || lpad(g::text, 9, '0') ORDER BY g) AS recipients
+FROM generate_series(1, :t) g \gset
+
 -- (1) ChannelUser::filter(channel_id)。channel_user に id 列は無い。
 EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
 SELECT user_id, channel_id, joined_at, notification_level
 FROM channel_user WHERE channel_id = :'channel_id';
 
--- (2) 一括除外: ID 配列を駆動側にし、users は主キーで T 回だけ引く
+-- (2) 一括除外: 指定された recipients 配列を駆動側にし、users は主キーで T 回だけ引く
 EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
-WITH recipients AS (
-  SELECT jsonb_agg('u-'||g) AS ids FROM generate_series(1, 150000) g
-)
 SELECT u.id, u.is_guest, u.is_bot, u.is_deactivated
-FROM jsonb_array_elements_text((SELECT ids FROM recipients)) AS ids(id)
+FROM jsonb_array_elements_text(:'recipients'::jsonb) AS ids(id)
 JOIN users u ON u.id = ids.id
 WHERE u.is_bot OR u.is_deactivated OR u.is_guest;
 
--- (3) 一括 INSERT: 実際に書くため、ロールバックして計測する
+-- (3) の入力配列。本番の $1 と同じ通知行オブジェクトを :t 件組み立てる。
+SELECT jsonb_agg(jsonb_build_object(
+  'id', :'tag' || '-notification-' || lpad(g::text, 9, '0'),
+  'user_id', :'tag' || '-u-' || lpad(g::text, 9, '0'),
+  'actor_id', :'tag' || '-owner',
+  'channel_id', :'channel_id',
+  'message_id', :'message_id',
+  'notification_type', 'channel_message',
+  'is_read', false,
+  'created_at', '2025-01-01 00:00:00'
+) ORDER BY g) AS rows
+FROM generate_series(1, :t) g \gset
+
+-- (3) 一括 INSERT: 実際に書くため、ロールバックして計測する。
+-- jsonb_array_elements(:'rows'::jsonb) は本番の jsonb_array_elements($1) と同じ計画形になる。
 BEGIN;
 EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
 INSERT INTO channel_notifications(id,user_id,actor_id,channel_id,message_id,notification_type,is_read,created_at)

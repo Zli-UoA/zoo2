@@ -6,6 +6,14 @@
 mod components;
 mod tauri;
 
+use std::{
+    cell::RefCell,
+    collections::{HashMap, VecDeque},
+    future::poll_fn,
+    rc::Rc,
+    task::{Poll, Waker},
+};
+
 use leptos::{ev, html, prelude::*, task::spawn_local};
 use zoo2_client_types::{
     api::NotificationLevel,
@@ -25,6 +33,80 @@ fn main() {
     leptos::mount::mount_to_body(App);
 }
 
+/// WebView は単一スレッドなので、TUI の `tokio::sync::Mutex` の代わりに待ち順にロックを渡す
+/// 非同期 Mutex を使う。ロック待ちはタスクの中で行い、クリックやキー操作を待たせない。
+#[derive(Clone, Default)]
+struct AsyncMutex {
+    inner: Rc<RefCell<MutexInner>>,
+}
+
+#[derive(Default)]
+struct MutexInner {
+    locked: bool,
+    /// 解放したロックを渡す相手。新しい操作が割り込んで順番が入れ替わらないようにする。
+    next_owner: Option<Waker>,
+    waiters: VecDeque<Waker>,
+}
+
+impl AsyncMutex {
+    async fn lock(&self) -> MutexGuard {
+        poll_fn(|cx| {
+            let mut inner = self.inner.borrow_mut();
+            if !inner.locked {
+                inner.locked = true;
+                return Poll::Ready(MutexGuard {
+                    inner: Rc::clone(&self.inner),
+                });
+            }
+            if inner
+                .next_owner
+                .as_ref()
+                .is_some_and(|owner| owner.will_wake(cx.waker()))
+            {
+                // 前の所有者から渡されたぶんは `locked` を true のまま受け取る。
+                inner.next_owner = None;
+                return Poll::Ready(MutexGuard {
+                    inner: Rc::clone(&self.inner),
+                });
+            }
+            if !inner
+                .waiters
+                .iter()
+                .any(|waiter| waiter.will_wake(cx.waker()))
+            {
+                inner.waiters.push_back(cx.waker().clone());
+            }
+            Poll::Pending
+        })
+        .await
+    }
+}
+
+struct MutexGuard {
+    inner: Rc<RefCell<MutexInner>>,
+}
+
+impl Drop for MutexGuard {
+    fn drop(&mut self) {
+        let next = {
+            let mut inner = self.inner.borrow_mut();
+            match inner.waiters.pop_front() {
+                Some(waiter) => {
+                    inner.next_owner = Some(waiter.clone());
+                    Some(waiter)
+                }
+                None => {
+                    inner.locked = false;
+                    None
+                }
+            }
+        };
+        if let Some(waiter) = next {
+            waiter.wake();
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Ctx {
     session: RwSignal<Option<SessionInfo>>,
@@ -35,6 +117,13 @@ struct Ctx {
     profile_checked: RwSignal<f64>,
     generation: RwSignal<u64>,
     starting: RwSignal<bool>,
+    /// 同じチャンネルへの PATCH を送信順に直列化するロック。コンポーネントが再生成されても
+    /// 失われないよう、アプリ全体の状態に置く（TUI の `notification_level_locks` と同じ方針）。
+    notification_locks: StoredValue<HashMap<String, AsyncMutex>, LocalStorage>,
+    /// チャンネルごとに最後に選んだ値。Shape がこの値に追いつくまで表示と同値判定に使う。
+    notification_saved: RwSignal<HashMap<String, NotificationLevel>, LocalStorage>,
+    /// 保存中のチャンネル。別チャンネルに移っても保存中であることを保つ。
+    notification_pending: RwSignal<HashMap<String, NotificationLevel>, LocalStorage>,
 }
 
 impl Ctx {
@@ -76,6 +165,9 @@ impl Ctx {
             self.profile_checked.set(0.0);
             self.store.set(Store::default());
             self.channel.set(None);
+            // 別のアカウントで同じチャンネルを開いても、前の選択値を表示しない。
+            self.notification_saved.set(HashMap::new());
+            self.notification_pending.set(HashMap::new());
         }
     }
 
@@ -149,6 +241,9 @@ fn App() -> impl IntoView {
         profile_checked: RwSignal::new(0.0),
         generation: RwSignal::new(0),
         starting: RwSignal::new(false),
+        notification_locks: StoredValue::new_local(HashMap::new()),
+        notification_saved: RwSignal::new_local(HashMap::new()),
+        notification_pending: RwSignal::new_local(HashMap::new()),
     };
     provide_context(ctx);
     if let Ok(timer) = set_interval_with_handle(
@@ -163,8 +258,29 @@ fn App() -> impl IntoView {
     spawn_local(async move {
         // SHAPE を先に購読する。SESSION の Ready で呼ぶ `zoo_resync` の行を取りこぼさないため。
         tauri::listen(event::SHAPE, move |batch: ShapeBatch| {
+            let settings_changed = batch.shape == ShapeId::ChannelNotificationSettings;
             ctx.store
                 .update(|store| store.apply(&batch.shape, batch.batch));
+            if settings_changed {
+                // Shape が選んだ値まで届いたら上書きをやめて store を正本に戻す。
+                // 古い値のあいだは選んだ値を保ち、同じ値の再送を防ぐ (TUI と同じ)。
+                let me = ctx
+                    .session
+                    .get_untracked()
+                    .and_then(|info| match info.state {
+                        SessionState::Ready { me } => Some(me.id),
+                        _ => None,
+                    });
+                if let Some(me) = me {
+                    ctx.store.with(|store| {
+                        ctx.notification_saved.update(|saved| {
+                            saved.retain(|channel_id, level| {
+                                store.notification_level(channel_id, &me) != *level
+                            });
+                        });
+                    });
+                }
+            }
         })
         .await;
         tauri::listen(event::SESSION, move |info: SessionInfo| {
@@ -530,62 +646,64 @@ fn ChannelList() -> impl IntoView {
 /// 現在値と同値判定は本人用 Shape (`channel_notification_settings`) の行から読む。Android 等で
 /// 変えた値も `ctx.store` に届くので、コマンドの応答を待たずに表示が更新される。行が届くまでは
 /// 読み込み中として選択を止める（ストア既定の `mentions` を現在値として扱うと、実際が `mute` の
-/// ときに同値判定で PATCH が送られない）。保存とチャンネルの切り替えごとに世代を進め、古い応答が
-/// 遅れて届いても現在の表示を壊さないようにする。
+/// ときに同値判定で PATCH が送られない）。
+///
+/// 保存した値は Shape が追いつくまで保ち、表示と同値判定に使う。Shape が届く前に別の値を選んでも
+/// 古い値との同値判定で PATCH が省略されないようにするため。同じチャンネルへの PATCH は
+/// アプリ全体のロックで送信順に直列化し、別チャンネルは並列で送る（TUI と同じ方針）。
 #[component]
 fn ChannelNotificationSettings() -> impl IntoView {
     let ctx = expect_context::<Ctx>();
-    let generation = RwSignal::new(0u64);
-    let saving = RwSignal::new(false);
 
-    // 選択値と同値判定はストアの設定行から読む。Shape の更新でリアクティブに再描画される。
-    // 行がまだ届いていなければ `None` なので、読み込み中として全選択肢を止める。
+    // 選択値と同値判定は Shape の設定行と保存済み値から読む。行がまだ届いていなければ `None` なので、
+    // 読み込み中として全選択肢を止める。
     let setting = Signal::derive(move || {
-        let Some(channel_id) = ctx.channel.get() else {
-            return None;
-        };
-        let Some(me) = ctx.me() else {
-            return None;
-        };
+        let channel_id = ctx.channel.get()?;
+        let me = ctx.me()?;
         ctx.store.with(|store| {
-            store
-                .notification_setting(&channel_id, &me.id)
-                .map(|_| store.notification_level(&channel_id, &me.id))
+            store.notification_setting(&channel_id, &me.id).map(|_| {
+                ctx.notification_saved
+                    .with(|saved| saved.get(&channel_id).copied())
+                    .unwrap_or_else(|| store.notification_level(&channel_id, &me.id))
+            })
         })
     });
 
-    // 保存の開始とチャンネルの切り替えごとに世代を進める。応答が古ければ無視できる。
-    let next_generation = move || {
-        let current = generation.get_untracked() + 1;
-        generation.set(current);
-        current
-    };
-
-    // チャンネルを切り替えたら前の保存状態を捨て、古い保存の応答を無効化する。
-    // 行の到着は Shape がリアクティブに反映するので、ここで取得はしない。
-    Effect::new(move |_| {
-        ctx.channel.get();
-        saving.set(false);
-        next_generation();
+    let saving = Signal::derive(move || {
+        let Some(channel_id) = ctx.channel.get() else {
+            return false;
+        };
+        ctx.notification_pending
+            .with(|pending| pending.contains_key(&channel_id))
     });
 
     let save = move |next: NotificationLevel| {
         let Some(channel_id) = ctx.channel.get_untracked() else {
             return;
         };
-        // 同値判定は届いた設定行の値に対して行う。行が無いときは選択自体が無効。
-        let Some(current_level) = setting.get_untracked() else {
+        // 同値判定は Shape が古くても最後に選んだ値に対して行う。行が無いときは選択自体が無効。
+        let Some(previous) = setting.get_untracked() else {
             return;
         };
-        if saving.get_untracked() || current_level == next {
+        if previous == next {
             return;
         }
-        // TUI と同じく、前の書き込みが終わるまでは次の選択を受け付けない。
-        let current = next_generation();
-        saving.set(true);
+        // クリックを待たせず、タスクの中でチャンネルごとのロックを取る (Mutex は待ち順が公平)。
+        let mut lock = None;
+        ctx.notification_locks.update_value(|locks| {
+            lock = Some(locks.entry(channel_id.clone()).or_default().clone());
+        });
+        let lock = lock.expect("通知設定のロックを取得できませんでした");
+        ctx.notification_saved.update(|saved| {
+            saved.insert(channel_id.clone(), next);
+        });
+        ctx.notification_pending.update(|pending| {
+            pending.insert(channel_id.clone(), next);
+        });
         spawn_local(async move {
+            let _guard = lock.lock().await;
             let request = SetChannelNotificationLevel {
-                channel_id,
+                channel_id: channel_id.clone(),
                 level: next,
             };
             let result = tauri::invoke::<ChannelNotificationSettings>(
@@ -593,15 +711,30 @@ fn ChannelNotificationSettings() -> impl IntoView {
                 serde_json::json!({ "request": request }),
             )
             .await;
-            // 保存中にチャンネルを替えたら、古い保存の終了で状態を戻さない。
-            if generation.get_untracked() != current {
-                return;
+            let succeeded = result.is_ok();
+            // 後の操作がなければ保存中を解除する。ロック待ちの操作があるときは残す。
+            if ctx
+                .notification_pending
+                .with(|pending| pending.get(&channel_id) == Some(&next))
+            {
+                ctx.notification_pending.update(|pending| {
+                    pending.remove(&channel_id);
+                });
             }
-            saving.set(false);
+            // 失敗した値がまだ選ばれていなければ、書き込み前の値に戻す。後の操作があればそのままにする。
+            if !succeeded
+                && ctx
+                    .notification_saved
+                    .with(|saved| saved.get(&channel_id) == Some(&next))
+            {
+                ctx.notification_saved.update(|saved| {
+                    saved.insert(channel_id.clone(), previous);
+                });
+            }
             if let Err(err) = result {
                 ctx.error.set(Some(err.message));
             }
-            // 新しい値は Shape がストアに届けるので、ここでは設定行を触らない。
+            // 成功した値は Shape が届くまで保持し、届いたら App の SHAPE 処理が解除する。
         });
     };
 
