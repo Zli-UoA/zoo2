@@ -68,6 +68,16 @@ class AndroidPushTest {
         assertNotNull(notifications.single().notification.contentIntent)
     }
 
+    /** `all` の通常投稿は `channel_message` で届くので、他の投稿と同じく通知を出す。 */
+    @Test fun channelMessagePushIsShown() {
+        val binding = PushBinding(context).bind("https://zoo.example", user)
+        showPushNotification(context, data(binding) + ("notificationType" to "channel_message"))
+        val notifications = manager.activeNotifications
+        assertEquals(1, notifications.size)
+        assertEquals(notificationTag(user, id), notifications.single().tag)
+        assertEquals("新しいメッセージ", notifications.single().notification.extras.getString(Notification.EXTRA_TEXT))
+    }
+
     /** 暗号化チャンネル（#510）：端末で復号した本文を出し、同期した通知が先に出ていても、そこに反映して印を残す。 */
     @Test fun decryptedBodiesReplaceTheGenericTextAndAreKeptForResync() {
         val binding = PushBinding(context).bind("https://zoo.example", user)

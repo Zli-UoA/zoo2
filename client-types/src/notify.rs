@@ -206,11 +206,11 @@ pub fn notifications_to_show(store: &Store, batch: &Batch, ctx: &NotifyContext) 
                 }
                 // backend はレベルごとに通知行を作るが、古い行や遅れて届いた行でも
                 // 表示側の判断が漏れないように、ここでもレベルを見る。
-                // `channel_message` は `all` の参加者にだけ作られる。ChannelUsers Shape が
-                // Notifications より遅れて届くと参加行がまだなく、既定の `mentions` で
-                // トーストを落としてしまう。参加行が未到着のときは落とさずに表示する。
+                // `channel_message` は `all` の参加者にだけ作られる。通知設定 Shape が
+                // Notifications より遅れて届くと設定行がまだなく、既定の `mentions` で
+                // トーストを落としてしまう。設定行が未到着のときは落とさずに表示する。
                 let membership_known = store
-                    .channel_user(&notification.channel_id, &ctx.me)
+                    .notification_setting(&notification.channel_id, &ctx.me)
                     .is_some();
                 let level = ctx.notification_level(store, &notification.channel_id);
                 let level_allows =
@@ -442,13 +442,13 @@ mod tests {
         assert!(notifications_to_show(&store, &incoming, &disabled).is_empty());
     }
 
-    fn membership(channel: &str, level: Option<&str>) -> Change {
+    fn notification_setting(channel: &str, level: Option<&str>) -> Change {
         let mut value = json!({ "user_id": "me", "channel_id": channel });
         if let Some(level) = level {
             value["notification_level"] = json!(level);
         }
         Change::Upsert {
-            key: format!("cu:{channel}"),
+            key: format!("ns:{channel}"),
             row: value.as_object().unwrap().clone(),
         }
     }
@@ -457,9 +457,9 @@ mod tests {
         let mut store = synced_store(vec![]);
         let changes = levels
             .into_iter()
-            .map(|(channel, level)| membership(channel, level))
+            .map(|(channel, level)| notification_setting(channel, level))
             .collect();
-        store.apply(&ShapeId::ChannelUsers, batch(false, changes));
+        store.apply(&ShapeId::ChannelNotificationSettings, batch(false, changes));
         store
     }
 
@@ -476,7 +476,7 @@ mod tests {
                 row_kind("reply-in-mute", "alice", "mute", false, "reply"),
             ],
         );
-        // 参加行が届く前の channel_message は落とさない。参加行があるチャンネルでは
+        // 設定行が届く前の channel_message は落とさない。設定行があるチャンネルでは
         // レベルどおりに判定し、mute の返信は出さない。
         assert_eq!(
             ids(&notifications_to_show(&store, &incoming, &ctx())),

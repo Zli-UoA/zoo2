@@ -6,10 +6,12 @@ import { expect, screen, userEvent, waitFor, within } from "storybook/test";
 import { StoryShell } from "../../../.storybook/shell";
 import {
   storyChannels,
+  storyChannelNotificationSettings,
   storyChannelUsers,
   storyCollections,
   storyDmChannels,
   storyDmMembers,
+  storyDmNotificationSettings,
 } from "../../../.storybook/fixtures";
 import type { ChannelNotificationLevel } from "../../lib/electric/types";
 import { ChannelHeader } from "./ChannelHeader";
@@ -22,13 +24,11 @@ const archived = storyChannels.find((channel) => channel.id === "channel-archive
 const memberCount = (channelId: string) =>
   storyChannelUsers.filter((row) => row.channel_id === channelId).length;
 
-/** 現在ユーザーの channel_user 行だけを差し替えて、通知レベルの状態を作る。 */
+/** 現在ユーザーの通知設定行だけを差し替えて、通知レベルの状態を作る。 */
 const notificationFixture = (level: ChannelNotificationLevel, channelId: string = general.id) => ({
   ...storyCollections,
-  channelUsers: storyChannelUsers.map((row) =>
-    row.user_id === "user-alice" && row.channel_id === channelId
-      ? { ...row, notification_level: level }
-      : row,
+  channelNotificationSettings: storyChannelNotificationSettings.map((row) =>
+    row.channel_id === channelId ? { ...row, notification_level: level } : row,
   ),
 });
 
@@ -353,7 +353,7 @@ export const EncryptedDm: Story = {
   }),
 };
 
-/** 現在値は channelUsers コレクションから読み、3 段階すべてをラジオで選べる。 */
+/** 現在値は本人の通知設定コレクションから読み、3 段階すべてをラジオで選べる。 */
 export const NotificationAll: Story = {
   parameters: { collections: notificationFixture("all") },
   play: playForImplementation(async () => {
@@ -402,7 +402,7 @@ export const NotificationByMember: Story = {
   }),
 };
 
-/** ラジオを選ぶと channelUsers の行が楽観更新され、表示が確定する（REST の照合は書き込みテストで検証）。 */
+/** ラジオを選ぶと通知設定の行が楽観更新され、表示が確定する（REST の照合は書き込みテストで検証）。 */
 export const NotificationChangeToMute: Story = {
   parameters: { collections: notificationFixture("all") },
   play: playForImplementation(async () => {
@@ -439,6 +439,7 @@ export const NotificationDmMenuOpen: Story = {
       ...storyCollections,
       channels: storyDmChannels,
       channelUsers: storyDmMembers,
+      channelNotificationSettings: storyDmNotificationSettings,
     },
   },
   args: { channel: dm, memberCount: 2 },

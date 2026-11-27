@@ -61,6 +61,22 @@ describe("shapeQueryParams", () => {
     expect(shapeQueryParams("userPinnedChannels", proxyConfig, { userId: "user-1" })).toEqual({});
   });
 
+  it("scopes channel notification settings to the current user in direct mode", () => {
+    expect(
+      shapeQueryParams("channelNotificationSettings", directConfig, { userId: "alice" }),
+    ).toEqual({
+      where: "user_id = $1",
+      "params[1]": "alice",
+    });
+    expect(() => shapeQueryParams("channelNotificationSettings", directConfig)).toThrow(/user ID/);
+  });
+
+  it("routes proxy notification settings through their own path without extra params", () => {
+    expect(
+      buildShapeRequestUrl("channelNotificationSettings", proxyConfig, { userId: "alice" }),
+    ).toBe("http://localhost:8000/api/shapes/channel_notification_settings");
+  });
+
   it("adds no filter for whole-table shapes", () => {
     expect(shapeQueryParams("channels", directConfig, { channelId: "ignored" })).toEqual({});
     expect(shapeQueryParams("users", proxyConfig, { channelId: "ignored" })).toEqual({});

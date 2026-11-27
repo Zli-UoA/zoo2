@@ -76,18 +76,18 @@ Home検証の条件・結果・再実行方法は [home-performance.md](home-per
 
 ### 実装前に決めた探索上限
 
-変数: `M` = チャンネルの `channel_user` 行数、`A` = そのうち `notification_level='all'` の行数、`P` = 対象スレッドの `thread_participants` 全行数（退出済みを含む）、`L` = そのうち `left_at IS NULL` の行数（`L <= P`）、`T` = 1投稿の通知先候補数（`T <= M + P`）、`U` = `users` の総行数、`H` = 無関係な `thread_participants` 行数、`C` = 本文の `@username` 候補数。
+変数: `M` = チャンネルの `channel_user` 行数、`A` = そのうち `notification_level='all'` の行数、`P` = 対象スレッドの `thread_participants` 全行数（退出済みを含む）、`L` = そのうち `left_at IS NULL` の行数（`L <= P`。SQL では除外せず Rust 側で判定する）、`T` = 1投稿の通知先候補数（`T <= M + P`）、`U` = `users` の総行数、`H` = 無関係な `thread_participants` 行数、`C` = 本文の `@username` 候補数。
 
 | SQL / 呼び出し元 | 回数 | 索引と計算量 | 最悪の探索上限 |
 | --- | --- | --- | --- |
 | `ChannelUser::filter(channel_id)`（`backend/src/notifications.rs` の `create_message_notifications`） | 投稿1件につき1回 | `idx_channel_user_channel_id (channel_id, user_id)` の範囲走査。`M` 行を読み、レベルを Rust の `HashMap` に1回で集める | 走査 `<= M`、追加のユーザー問い合わせなし、ソート0、loops=1 |
-| `notification_participants_sql()`（同ファイル。スレッド返信のときだけ） | 返信1件につき1回 | `thread_participants` の主キー `(thread_id, user_id)` を範囲走査し `left_at` をふるう。`channel_user` は主キー `(user_id, channel_id)` を生存行だけ参照。`users` は読まない。マージ結合を選ぶ場合は `user_id` で並べ替える | `thread_participants` 走査 `<= P + 64`（除外行を含む。並列 worker の端数）、`channel_user` 主キー参照 `<= L`（fixture では `L` 件だけが対象チャンネルに所属し、残りは無関係なメンバーシップ）、`users` 0行、ソート入力 `<= L`（外部ソートなし）、`channel_user` 側の Actual Loops `<= L`、hit+read `<= 2P + 10L + 1024`（索引の段数の余裕）|
-| bot・無効化ユーザーの一括除外（同ファイル） | 候補が空でなければ1回 | `users` を `id IN (...)` で引く。ユーザーごとの問い合わせはしない（N+1なし） | `users` 参照 `<= T`、`loops=1` |
+| `notification_participants_sql()`（同ファイル。スレッド返信のときだけ） | 返信1件につき1回 | `thread_participants` の主キー `(thread_id, user_id)` を範囲走査し、退出済みの行も `left_at` と一緒に返す（親投稿者の退出判定に再利用）。`channel_user` は主キー `(user_id, channel_id)` を返却行すべてについて参照。`users` は読まない。マージ結合を選ぶ場合は `user_id` で並べ替える | `thread_participants` 走査 `<= P + 64`（並列 worker の端数）、`channel_user` 主キー参照 `<= P`（fixture では `L` 件だけが対象チャンネルに所属し、残りは無関係なメンバーシップ）、`users` 0行、ソート入力 `<= P`（外部ソートなし）、`channel_user` 側の Actual Loops `<= P + 1`、hit+read `<= 2P + 10P + 1024`（索引の段数の余裕）|
+| bot・無効化・特権のないゲストの一括除外（同ファイル） | 候補が空でなければ1回 | `users` を `id IN (...)` で引く。ユーザーごとの問い合わせはしない（N+1なし）。`is_bot` / `is_deactivated` / `is_guest` を同じ行で取得し、bot・無効化は常に、ゲストは現在の `channel_user` に居ない場合だけ除く | `users` 参照 `<= T`、`loops=1` |
 | リアクションのメンバー・レベル判定（`create_reaction_notification`） | リアクション1件につき1回 | `channel_user` の主キー1回で所属とレベルを同時に読む | 走査1行、`loops=1` |
 | `current_level()`（`backend/src/routes/notification_settings.rs`） | GET/PATCH 1回につき1回 | `channel_user` の主キーと `channels` の主キーを JOIN。`deleted_at IS NULL` を同時に判定 | 各1行、`loops=1`、ソート0 |
-| PATCH の UPDATE（同ファイル） | 値が変わるときだけ1回 | `channel_user` の主キー1行。同値 no-op では発行しない | 更新1行、`txid` は変更時のみ |
+| PATCH の UPDATE（同ファイル） | 値が変わるときは1回、同時更新の競合時は最大3回 | `channel_user` の主キー1行。`AND notification_level <> $3` で同値の二重更新を避け、0件なら現在値を読み直す | 更新1行（競合時は0行＋読み直し最大3回）、`txid` は変更時のみ |
 
-通知行の INSERT は `T` 行まで（1ユーザー1件。`mention > reply > dm > channel_message` の順に `entry().or_insert()` して集約）。`missed_call` と未読カウントの処理は変更しない。`all` の判定に本文の解析は使わず、暗号化チャンネルでは既存の暗号化プレースホルダをそのまま送る。
+通知行の INSERT は `T` 行まで（1ユーザー1件。`mention > reply > dm > channel_message` の順に `entry().or_insert()` して集約）。ID は Rust で生成し、`jsonb_array_elements` を使う1回の `INSERT ... SELECT` でまとめて書く（SQL 往復は1回）。双方向トリガーと `display_data` 投影は `FOR EACH ROW` なので行ごとに動く。`missed_call` と未読カウントの処理は変更しない。`all` の判定に本文の解析は使わず、暗号化チャンネルでは既存の暗号化プレースホルダをそのまま送る。
 
 `M`・`P` はチャンネル／スレッドの人数で、`U`・`H` や投稿履歴の総量とは独立に上限を置く。`@username` の照合だけは従来どおり `C` 回の主キー参照（`C` は本文長に依存）で、今回の変更では増やさない。
 
@@ -96,23 +96,23 @@ Home検証の条件・結果・再実行方法は [home-performance.md](home-per
 ### 検証条件と再現方法
 
 - `SCALE_USERS=300000` と `1000000`、`SCALE_HISTORY`（省略時は `SCALE_USERS`）で `backend/tests/thread_participants_scale_test.rs` の `notification_participants_sql_does_not_scan_users` を実行する。移行済みの使い捨て DB で、`cargo test --manifest-path backend/Cargo.toml --test thread_participants_scale_test notification_participants_sql_does_not_scan_users -- --ignored --nocapture`。`SCALE_PLAN_DIR` に custom / generic の実行計画を保存する。
-- 参加者 `P=10,000`（うち退出 500）、生存 `L=9,500`、`notification_level` は all / mute に半分ずつ、無関係な参加行 `H` を `SCALE_HISTORY` 件作る。`U` と `H` を30万→100万→（必要なら300万）に変えても、`P` と `L` が同じなら走査行数と hit+read が比例しないことを確かめる。全員退出・空のスレッドも既存ケースで測る。
-- 各ケースを初回と再実行、単独と8同時で30回以上測る。準備・計画・実行、接続待ち、SQL往復、API全体の p50・p95・最大値を別に残す。100ms は参考値で、時間だけで合否を決めない。上限超過、`users` / `thread_participants` / `channel_user` の Seq Scan と不要な走査、`L` を超えるソート入力や外部ソート、高い loops があれば未完了とする（fixture には無関係なメンバーシップも入れ、小さな表での Seq Scan を許さない）。
+- 参加者 `P=10,000`（うち退出 500）、生存 `L=9,500`、`notification_level` は all / mute に半分ずつ、無関係な参加行 `H` を `SCALE_HISTORY` 件作る。`U` と `H` を30万→100万→（必要なら300万）に変えても、`P` が同じなら走査行数と hit+read が比例しないことを確かめる。SQL は退出済みも返すため、返却行数は `P`、`channel_user` 参照とソート入力の上限も `L` ではなく `P` になる。全員退出・空のスレッドも既存ケースで測る。
+- 各ケースを初回と再実行、単独と8同時で30回以上測る。準備・計画・実行、接続待ち、SQL往復、API全体の p50・p95・最大値を別に残す。100ms は参考値で、時間だけで合否を決めない。上限超過、`users` / `thread_participants` / `channel_user` の Seq Scan と不要な走査、`P` を超えるソート入力や外部ソート、高い loops があれば未完了とする（fixture には無関係なメンバーシップも入れ、小さな表での Seq Scan を許さない）。
 - 書き込みは、同値 PATCH で WAL が増えないこと（txid: null）、変更時が1行更新であること、参加・退出と通知設定の同時操作で権限・レベルが整合することを HTTP テストで確認する。`backend/tests/notification_settings_test.rs` と `backend/tests/notifications_test.rs` が検証先。
 
 ### PR 本文用のメモ（クエリ設計・実行計画・探索上限・計測条件）
 
-- 用途・識別子・回数: チャンネル投稿の通知先選択（`notifications.rs::create_message_notifications`、投稿1回につき `channel_user` 走査1・参加者1・bot除外1・INSERT 最大 `T`）、スレッド返信の参加者通知（`notification_participants_sql()`、返信1回につき1）、リアクション判定（`create_reaction_notification`、1回）、設定の GET/PATCH（`notification_settings.rs`、1〜2回）。
-- 入力変数と上限: 上の表のとおり。走査 `<= M` + `<= P`、参照 `<= L`、`<= T`、返却通知 `<= T`、再帰0、参加者クエリのソート入力 `<= L`（外部ソートなし）。
+- 用途・識別子・回数: チャンネル投稿の通知先選択（`notifications.rs::create_message_notifications`、投稿1回につき `channel_user` 走査1・参加者1・除外判定1・INSERT 最大 `T` を1回）、スレッド返信の参加者通知（`notification_participants_sql()`、返信1回につき1）、リアクション判定（`create_reaction_notification`、1回）、設定の GET/PATCH（`notification_settings.rs`、1〜2回、競合時は読み直し追加）。
+- 入力変数と上限: 上の表のとおり。走査 `<= M` + `<= P`、参照 `<= P`、`<= T`、返却通知 `<= T`、再帰0、参加者クエリのソート入力 `<= P`（外部ソートなし）。
 - 索引と書き込み影響: 新規索引なし。`idx_channel_user_channel_id` と2つの主キーを使用。`notification_level` の DEFAULT は既存行を移行済みにし、同値 UPDATE を避ける。
 - fixture・環境・再現コマンド: 前節のとおり。DB の版・CPU・メモリ・JIT・統計・キャッシュ状態と `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` の出力を PR に添付する。
-- **測定結果（SQL のみ）:** PostgreSQL 16.15（Docker、同一ホスト、JIT off、最適化なしビルド）の使い捨て DB で `notification_participants_sql_does_not_scan_users` を実行した。`SCALE_USERS` / `SCALE_HISTORY` を30万と100万に変え、`P=10,000`（うち退出500）、`L=9,500`、対象チャンネル以外の `channel_user` を `SCALE_USERS` 行置いた。下の表の ms は SQL の往復を含む（API 全体ではない）。`users` の走査0、Seq Scan なし、外部ソートなし、上限内の走査・ブロックを custom / generic の両方で確認した。実行計画と JSON の計測値は `SCALE_PLAN_DIR` に保存した（`notification-custom-first.json` など）。
+- **測定結果（SQL のみ）:** PostgreSQL 16.15（Docker、同一ホスト、JIT off、最適化なしビルド）の使い捨て DB で `notification_participants_sql_does_not_scan_users` を実行した。`SCALE_USERS` / `SCALE_HISTORY` を30万と100万に変え、`P=10,000`（うち退出500）、`L=9,500`、対象チャンネル以外の `channel_user` を `SCALE_USERS` 行置いた。退出済みも返すよう SQL を変えたため再計測し、下の表にその結果を載せる。ms は SQL の往復を含む（API 全体ではない）。`users` の走査0、Seq Scan なし、外部ソートなし、上限内の走査・ブロックを custom / generic の両方で確認した。実行計画と JSON の計測値は `SCALE_PLAN_DIR` に保存した（`notification-custom-first.json` など）。
 
-| `users` / 無関係な参加行 | 走査行数 (参加 / `channel_user`) | hit+read (custom / generic) | 単独 p50/p95/最大 (ms) | 8同時 p50/p95/最大 (ms) | 合否 |
-| --- | --- | --- | --- | --- | --- |
-| 30万 / 30万 | 10,002 / 10,000（custom / generic） / 9,500 | 47,888 / 57,712 | 37.3 / 39.0 / 39.4 | 56.8 / 113.9 / 236.0 | 合格（上限 10,064 / 9,500 / 116,088 以内） |
-| 100万 / 100万 | 10,002 / 10,000（custom / generic） / 9,500 | 47,858 / 57,683 | 39.9 / 42.1 / 42.3 | 55.5 / 120.5 / 127.9 | 合格（同上） |
+| `users` / 無関係な参加行 | 参加走査 (custom / generic) | `channel_user` 参照 (custom / generic) | hit+read (custom / generic) | 単独 p50/p95/最大 (ms) | 8同時 p50/p95/最大 (ms) | 合否 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 30万 / 30万 | 10,000 / 10,000 | 9,500 / 10,000 | 700 / 59,716 | 9.9 / 11.0 / 11.4 | 60.2 / 65.9 / 70.9 | 合格（上限 参加 10,064 / `channel_user` 10,001 / ブロック 120,024 以内） |
+| 100万 / 100万 | 10,000 / 10,000 | 9,500 / 10,000 | 703 / 59,720 | 9.6 / 9.7 / 9.9 | 57.7 / 61.4 / 69.3 | 合格（同上） |
 
-参加行の走査は並列 worker の端数（+2）以外は `P` で、`channel_user` の参照は `L` で頭打ち。PostgreSQL 16 では上位ノードのブロック数に子ノードの使用量が含まれるため、根节点の `Shared Hit Blocks` + `Shared Read Blocks` だけを 1 回数えた（走査ノードと `Sort` ノードの両方で足すと二重計上になる。レビュー指摘で修正し、上表は再計測値）。`U` を30万→100万に3.3倍にしても、`thread_participants` の走査は約10,000行で変わらず、無関係な参加履歴 `H` は読んでいない。初回と再実行の差は計測誤差の範囲。100ms は参考値で、8同時の最大236 ms は時間だけの合否判定に使わない。
+参加行の走査は `P` で頭打ち。SQL が `left_at` で絞らなくなったため、`channel_user` の参照は generic plan で `P` まで増えたが、上限 `P + 1` の内側にある。PostgreSQL 16 では上位ノードのブロック数に子ノードの使用量が含まれるため、根节点の `Shared Hit Blocks` + `Shared Read Blocks` だけを 1 回数えた（走査ノードと `Sort` ノードの両方で足すと二重計上になる）。`U` を30万→100万に3.3倍にしても、`thread_participants` の走査は約10,000行で変わらず、無関係な参加履歴 `H` は読んでいない。初回と再実行の差は計測誤差の範囲。100ms は参考値で、8同時の最大70.9 ms は時間だけの合否判定に使わない。
 
 - **未検証の残り:** API 全体（ルーター・接続待ち・JSON・ロック待ち）の p50/p95/最大、参加・退出と設定変更の同時実行時のロック待ち・デッドロック、本番 PostgreSQL 16.15 の実データでの `P` 分布。E2E 全体（`make test-e2e`）は未実行だが、対象のバックエンド統合テスト（`notification_settings_test` / `notifications_test` / `notification_storage_test` / `shape_proxy_test`）はローカルの Docker DB で通っている。ER 図は `infra/db/erd.sh` で再生成し、`erd.sh --check` も通っている。

@@ -950,8 +950,8 @@ internal class ConnectedScreenState(
             }
         }
         val groups = mutableListOf(SettingsGroup("チャンネル", entries))
-        // 参加中だけ設定できる。値は channel_user の Shape の行から渡され、書き込み後も
-        // 同じ行の更新で選択状態が変わる（設定ごとの REST 取得は増やさない）。
+        // 参加中だけ設定できる。値は channel_notification_settings の Shape の行から渡され、
+        // 書き込み後も同じ行の更新で選択状態が変わる（設定ごとの REST 取得は増やさない）。
         if (member && !archived) {
             groups += SettingsGroup("通知", listOf(
                 SettingsEntry.Choice("notification:all", "すべての投稿", notificationLevel == "all"),

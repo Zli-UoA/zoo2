@@ -8,8 +8,8 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     api::NotificationLevel,
     rows::{
-        Attachment, CallInvite, Channel, ChannelUser, FromRow, Message, Notification, Reaction,
-        User, UserPinnedChannel,
+        Attachment, CallInvite, Channel, ChannelNotificationSettingRow, ChannelUser, FromRow,
+        Message, Notification, Reaction, User, UserPinnedChannel,
     },
     shape::{Batch, Change, ShapeId},
 };
@@ -26,6 +26,10 @@ pub struct Store {
     channel_users: HashMap<String, ChannelUser>,
     /// (channel_id, user_id) から Shape のキーへの索引。
     channel_user_keys: HashMap<(String, String), String>,
+    /// 自分の通知設定だけを配る Shape。他人の設定は届かない。
+    notification_settings: HashMap<String, ChannelNotificationSettingRow>,
+    /// (channel_id, user_id) から Shape のキーへの索引。
+    notification_setting_keys: HashMap<(String, String), String>,
     messages: HashMap<String, HashMap<String, Message>>,
     reactions: HashMap<String, HashMap<String, Reaction>>,
     attachments: HashMap<String, HashMap<String, Attachment>>,
@@ -62,6 +66,12 @@ impl Store {
             ShapeId::Users => apply_rows(&mut self.users, batch.reset, batch.changes, &mut invalid),
             ShapeId::ChannelUsers => apply_rows(
                 &mut self.channel_users,
+                batch.reset,
+                batch.changes,
+                &mut invalid,
+            ),
+            ShapeId::ChannelNotificationSettings => apply_rows(
+                &mut self.notification_settings,
                 batch.reset,
                 batch.changes,
                 &mut invalid,
@@ -110,6 +120,13 @@ impl Store {
             ShapeId::ChannelUsers => {
                 self.channel_user_keys = self
                     .channel_users
+                    .iter()
+                    .map(|(key, row)| ((row.channel_id.clone(), row.user_id.clone()), key.clone()))
+                    .collect();
+            }
+            ShapeId::ChannelNotificationSettings => {
+                self.notification_setting_keys = self
+                    .notification_settings
                     .iter()
                     .map(|(key, row)| ((row.channel_id.clone(), row.user_id.clone()), key.clone()))
                     .collect();
@@ -237,9 +254,21 @@ impl Store {
         )
     }
 
-    /// 通知レベル。参加行がまだ届いていない・古いスキーマなら `mentions`。
+    /// 通知設定の行。メンバー一覧には設定列を配らないので、ここだけから設定を読む。
+    pub fn notification_setting(
+        &self,
+        channel_id: &str,
+        user_id: &str,
+    ) -> Option<&ChannelNotificationSettingRow> {
+        self.notification_settings.get(
+            self.notification_setting_keys
+                .get(&(channel_id.into(), user_id.into()))?,
+        )
+    }
+
+    /// 通知レベル。設定行がまだ届いていない・古いスキーマなら `mentions`。
     pub fn notification_level(&self, channel_id: &str, user_id: &str) -> NotificationLevel {
-        self.channel_user(channel_id, user_id)
+        self.notification_setting(channel_id, user_id)
             .and_then(|row| NotificationLevel::parse(&row.notification_level))
             .unwrap_or_default()
     }
@@ -847,20 +876,27 @@ mod tests {
     }
 
     #[test]
-    fn reads_notification_level_from_the_membership_row() {
+    fn reads_notification_level_from_the_own_settings_shape() {
         let mut store = Store::default();
+        // メンバー一覧に設定列が混ざっても読まない。正本は本人だけの Shape の行。
         store.apply(
             &ShapeId::ChannelUsers,
             batch(vec![
                 upsert(
                     "a",
+                    json!({ "user_id": "me", "channel_id": "c1", "notification_level": "mute" }),
+                ),
+                upsert("b", json!({ "user_id": "other", "channel_id": "c1" })),
+            ]),
+        );
+        store.apply(
+            &ShapeId::ChannelNotificationSettings,
+            batch(vec![
+                upsert(
+                    "s1",
                     json!({ "user_id": "me", "channel_id": "c1", "notification_level": "all" }),
                 ),
-                upsert("b", json!({ "user_id": "me", "channel_id": "c2" })),
-                upsert(
-                    "c",
-                    json!({ "user_id": "other", "channel_id": "c1", "notification_level": "mute" }),
-                ),
+                upsert("s2", json!({ "user_id": "me", "channel_id": "c2" })),
             ]),
         );
         assert_eq!(store.notification_level("c1", "me"), NotificationLevel::All);
@@ -872,12 +908,14 @@ mod tests {
             store.notification_level("c3", "me"),
             NotificationLevel::Mentions
         );
-        // 同じチャンネルでも、ほかのユーザーの設定は混ぜない。
+        // 他人の設定は Shape が配らないので、メンバー行からも読まない。
         assert_eq!(
             store.notification_level("c1", "other"),
-            NotificationLevel::Mute
+            NotificationLevel::Mentions
         );
         assert!(store.channel_user("c1", "me").is_some());
         assert!(store.channel_user("c9", "me").is_none());
+        assert!(store.notification_setting("c1", "me").is_some());
+        assert!(store.notification_setting("c1", "other").is_none());
     }
 }

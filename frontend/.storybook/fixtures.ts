@@ -6,6 +6,7 @@ import type {
   AttachmentRow,
   ChannelRow,
   ChannelLeaveRow,
+  ChannelNotificationSettingRow,
   ChannelUserRow,
   MessageReactionRow,
   MessageRow,
@@ -20,6 +21,7 @@ export interface StoryCollectionsInput {
   users?: UserRow[];
   channels?: ChannelRow[];
   channelUsers?: ChannelUserRow[];
+  channelNotificationSettings?: ChannelNotificationSettingRow[];
   channelLeaves?: ChannelLeaveRow[];
   callInvites?: CallInviteRow[];
   messages?: MessageRow[];
@@ -134,6 +136,11 @@ export function createStoryCollections(input: StoryCollectionsInput = {}): Colle
 
   const notificationsByUser = groupBy(input.notifications ?? [], (row) => row.user_id);
   const notificationCache = new Map<string, ReturnType<typeof createStoryNotificationCollection>>();
+  const settingsByUser = groupBy(input.channelNotificationSettings ?? [], (row) => row.user_id);
+  const notificationSettingsCache = new Map<
+    string,
+    ReturnType<typeof createStoryNotificationSettingsCollection>
+  >();
   const callInviteCache = new Map<string, ReturnType<typeof rowsCollection<CallInviteRow>>>();
   for (const userId of new Set((input.notifications ?? []).map((row) => row.user_id))) {
     notificationCache.set(
@@ -147,6 +154,14 @@ export function createStoryCollections(input: StoryCollectionsInput = {}): Colle
     channels,
     users,
     channelUsers,
+    channelNotificationSettings: (userId: string) => {
+      let collection = notificationSettingsCache.get(userId);
+      if (!collection) {
+        collection = createStoryNotificationSettingsCollection(settingsByUser.get(userId) ?? []);
+        notificationSettingsCache.set(userId, collection);
+      }
+      return collection as unknown as ReturnType<CollectionsBundle["channelNotificationSettings"]>;
+    },
     // ユーザーごとに同じコレクションを返す（`useCallInvites` が購読する）。
     callInvites: (userId: string) => {
       let collection = callInviteCache.get(userId);
@@ -219,6 +234,14 @@ function createStoryReactionCollection(rows: MessageReactionRow[]) {
 
 function createStoryNotificationCollection(rows: NotificationRow[]) {
   return rowsCollection<NotificationRow>("notifications", (row) => row.id, rows);
+}
+
+function createStoryNotificationSettingsCollection(rows: ChannelNotificationSettingRow[]) {
+  return rowsCollection<ChannelNotificationSettingRow>(
+    "channelNotificationSettings",
+    (row) => `${row.user_id}:${row.channel_id}`,
+    rows,
+  );
 }
 
 function createStoryChannelLeaveCollection(rows: ChannelLeaveRow[]) {
@@ -361,63 +384,65 @@ export const storyChannelUsers: ChannelUserRow[] = [
     user_id: "user-alice",
     channel_id: "00000000-0000-4000-8000-000000000001",
     joined_at: timestamp(1, 0),
-    notification_level: "mentions",
   },
   {
     user_id: "user-bob",
     channel_id: "00000000-0000-4000-8000-000000000001",
     joined_at: timestamp(1, 0),
-    notification_level: "mentions",
   },
   {
     user_id: "user-carol",
     channel_id: "00000000-0000-4000-8000-000000000001",
     joined_at: timestamp(1, 0),
-    notification_level: "mentions",
   },
   {
     user_id: "user-alice",
     channel_id: "channel-design",
     joined_at: timestamp(1, 0),
-    notification_level: "mentions",
   },
   {
     user_id: "user-carol",
     channel_id: "channel-design",
     joined_at: timestamp(1, 0),
-    notification_level: "mentions",
   },
   {
     user_id: "user-dave",
     channel_id: "channel-design",
     joined_at: timestamp(1, 0),
-    notification_level: "mentions",
   },
   {
     user_id: "user-alice",
     channel_id: "channel-secret",
     joined_at: timestamp(1, 0),
-    notification_level: "mentions",
   },
   {
     user_id: "user-bob",
     channel_id: "channel-secret",
     joined_at: timestamp(1, 0),
-    notification_level: "mentions",
   },
   {
     user_id: "user-admin",
     channel_id: "00000000-0000-4000-8000-000000000001",
     joined_at: timestamp(1, 0),
-    notification_level: "mentions",
   },
   {
     user_id: "user-admin",
     channel_id: "channel-archive",
     joined_at: timestamp(1, 0),
-    notification_level: "mentions",
   },
 ];
+
+/**
+ * 本人の通知設定だけを配信する Shape の fixture。メンバー一覧には他人の設定を置かない。
+ * 既定では全チャンネル「メンションのみ」。
+ */
+export const storyChannelNotificationSettings: ChannelNotificationSettingRow[] = storyChannels.map(
+  (channel) => ({
+    user_id: "user-alice",
+    channel_id: channel.id,
+    notification_level: "mentions",
+  }),
+);
 
 export const storyMessages: MessageRow[] = [
   {
@@ -596,6 +621,7 @@ export const storyCollections = {
   users: storyUsers,
   channels: storyChannels,
   channelUsers: storyChannelUsers,
+  channelNotificationSettings: storyChannelNotificationSettings,
   messages: storyMessages,
   reactions: storyReactions,
   notifications: storyNotifications,
@@ -623,8 +649,14 @@ export const storyDmMembers: ChannelUserRow[] = storyDmChannels.flatMap((channel
     channel_id: channel.id,
     user_id: user.id,
     joined_at: channel.created_at,
-    notification_level: "mentions" as const,
   })),
+);
+export const storyDmNotificationSettings: ChannelNotificationSettingRow[] = storyDmChannels.map(
+  (channel) => ({
+    user_id: "user-alice",
+    channel_id: channel.id,
+    notification_level: "mentions",
+  }),
 );
 export const storyDmNotifications: NotificationRow[] = storyDmChannels.map((channel, index) => ({
   ...storyNotifications[0],

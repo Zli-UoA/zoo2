@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   ATTACHMENT_SCHEMA,
   CHANNEL_LEAVE_SCHEMA,
+  CHANNEL_NOTIFICATION_SETTINGS_SCHEMA,
   CHANNEL_USER_SCHEMA,
   MESSAGE_REACTION_SCHEMA,
   SHAPE_META,
@@ -85,14 +86,22 @@ describe("SHAPE_META", () => {
       table: "channel_user",
       proxyPath: "channel_users",
     });
-    expect(CHANNEL_USER_SCHEMA.columns.notification_level).toBe("text");
+    expect(Object.keys(CHANNEL_USER_SCHEMA.columns)).toEqual([
+      "user_id",
+      "channel_id",
+      "joined_at",
+    ]);
   });
 
-  it("keeps the channel notification level as text through coercion", () => {
-    const row = coerceElectricRow("channel_user", {
+  it("maps the notification settings shape to the channel_user table but its own proxy path", () => {
+    expect(SHAPE_META.channelNotificationSettings).toEqual({
+      table: "channel_user",
+      proxyPath: "channel_notification_settings",
+    });
+    expect(CHANNEL_NOTIFICATION_SETTINGS_SCHEMA.columns.notification_level).toBe("text");
+    const row = coerceElectricRow("channel_notification_settings", {
       user_id: "user-1",
       channel_id: "channel-1",
-      joined_at: "2026-11-16 00:00:00.000",
       notification_level: "all",
     });
     expect(row.notification_level).toBe("all");

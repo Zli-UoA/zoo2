@@ -8,9 +8,11 @@ mod tauri;
 
 use leptos::{ev, html, prelude::*, task::spawn_local};
 use zoo2_client_types::{
+    api::NotificationLevel,
     ipc::{
-        FocusState, IpcError, LoginFailed, LoginPrompt, OpenChannel, OpenTarget, SendMessage,
-        SendResult, SessionInfo, SessionState, ShapeBatch, ShapeFailed, UiMode, command, event,
+        ChannelNotificationSettings, ChannelNotificationSettingsRequest, FocusState, IpcError,
+        LoginFailed, LoginPrompt, OpenChannel, OpenTarget, SendMessage, SendResult, SessionInfo,
+        SessionState, SetChannelNotificationLevel, ShapeBatch, ShapeFailed, UiMode, command, event,
     },
     mfm::{self, Tone},
     rows::Message,
@@ -470,6 +472,7 @@ fn Main() -> impl IntoView {
                     <button class="link" on:click=logout>"ログアウト"</button>
                 </header>
                 <ChannelList />
+                <ChannelNotificationSettings />
             </nav>
             <main class="channel">
                 {move || match ctx.channel.get() {
@@ -519,6 +522,111 @@ fn ChannelList() -> impl IntoView {
                 }
             </For>
         </ul>
+    }
+}
+
+/// 選択中のチャンネルの通知レベル。現在値と 3 段階の選択を出し、変更は IPC で保存する。
+///
+/// 設定の Shape は Rust 側が購読して届くが、画面を待たせないため表示と保存後の値は
+/// コマンドの応答を使う。古いアプリにはコマンドがないので、そのときはエラーを出すだけ。
+#[component]
+fn ChannelNotificationSettings() -> impl IntoView {
+    let ctx = expect_context::<Ctx>();
+    let level = RwSignal::new(None::<NotificationLevel>);
+    let saving = RwSignal::new(false);
+
+    // チャンネルを切り替えたら現在値を取り直す。古いチャンネルの値は残さない。
+    Effect::new(move |_| {
+        let Some(channel_id) = ctx.channel.get() else {
+            level.set(None);
+            return;
+        };
+        level.set(None);
+        let request = ChannelNotificationSettingsRequest {
+            channel_id: channel_id.clone(),
+        };
+        spawn_local(async move {
+            match tauri::invoke::<ChannelNotificationSettings>(
+                command::CHANNEL_NOTIFICATION_SETTINGS,
+                serde_json::json!({ "request": request }),
+            )
+            .await
+            {
+                // 返事が遅れても、別のチャンネルの値を表示しない。
+                Ok(settings)
+                    if ctx.channel.get_untracked().as_deref() == Some(channel_id.as_str()) =>
+                {
+                    level.set(Some(settings.level))
+                }
+                Ok(_) => {}
+                Err(err) => ctx.error.set(Some(err.message)),
+            }
+        });
+    });
+
+    let save = move |next: NotificationLevel| {
+        let Some(channel_id) = ctx.channel.get_untracked() else {
+            return;
+        };
+        // TUI と同じく、前の書き込みが終わるまでは次の選択を受け付けない。
+        if saving.get_untracked() || level.get_untracked() == Some(next) {
+            return;
+        }
+        saving.set(true);
+        spawn_local(async move {
+            let request = SetChannelNotificationLevel {
+                channel_id: channel_id.clone(),
+                level: next,
+            };
+            let result = tauri::invoke::<ChannelNotificationSettings>(
+                command::SET_CHANNEL_NOTIFICATION_LEVEL,
+                serde_json::json!({ "request": request }),
+            )
+            .await;
+            saving.set(false);
+            match result {
+                Ok(settings)
+                    if ctx.channel.get_untracked().as_deref() == Some(channel_id.as_str()) =>
+                {
+                    level.set(Some(settings.level))
+                }
+                Ok(_) => {}
+                Err(err) => ctx.error.set(Some(err.message)),
+            }
+        });
+    };
+
+    view! {
+        <Show when=move || ctx.channel.get().is_some()>
+            <section class="notification-settings">
+                <div class="b">"通知"</div>
+                <div class="row">
+                    {move || {
+                        NotificationLevel::ALL
+                            .into_iter()
+                            .map(|candidate| {
+                                let label = match candidate {
+                                    NotificationLevel::All => "すべての投稿",
+                                    NotificationLevel::Mentions => "メンション",
+                                    NotificationLevel::Mute => "メンション以外を通知しない",
+                                };
+                                let selected = move || level.get() == Some(candidate);
+                                view! {
+                                    <button
+                                        class:selected=selected
+                                        disabled=move || saving.get() || level.get().is_none()
+                                        on:click=move |_| save(candidate)
+                                    >
+                                        {label}
+                                    </button>
+                                }
+                                .into_any()
+                            })
+                            .collect_view()
+                    }}
+                </div>
+            </section>
+        </Show>
     }
 }
 

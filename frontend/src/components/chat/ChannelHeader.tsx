@@ -23,6 +23,7 @@ import {
   UsersIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { eq, useLiveQuery } from "@tanstack/react-db";
 
 import { useChannelAdmin } from "../../hooks/useChannelAdmin";
 import { usePinnedChannels } from "../../hooks/usePinnedChannels";
@@ -33,7 +34,10 @@ import { useCall } from "../../lib/call/call-context";
 import { useCollections } from "../../lib/electric/collections-context";
 import type { ChannelNotificationLevel, ChannelRow } from "../../lib/electric/types";
 import { parseUtcTimestamp } from "../../lib/timestamps";
-import type { ChannelUserWriteMetadata } from "../../lib/electric/writes";
+import type {
+  ChannelNotificationSettingsWriteMetadata,
+  ChannelUserWriteMetadata,
+} from "../../lib/electric/writes";
 import { localizeApiError } from "../../lib/i18n/apiError";
 import { useShell } from "../layout/shell-context";
 import {
@@ -615,8 +619,8 @@ function DmHeaderMenu({ channel }: { channel: ChannelRow }) {
 
 /**
  * チャンネルごとの通知レベル。管理者設定 (`canManage`) とは独立して、参加メンバーなら
- * 誰でも開ける。現在値は channelUsers コレクションから読み、書き込みは同じ行の
- * 楽観更新として扱う（個別の GET は画面ごとにはしない）。
+ * 誰でも開ける。現在値は本人の行だけが届く channelNotificationSettings コレクションから
+ * 読み、書き込みもその行の楽観更新として扱う（個別の GET は画面ごとにはしない）。
  */
 function ChannelNotificationDialog({
   channel,
@@ -628,20 +632,32 @@ function ChannelNotificationDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const { t } = useTranslation();
-  const { channelUsers } = useCollections();
+  const { channelNotificationSettings } = useCollections();
+  const { currentUserId } = useCurrentUser();
   const { memberships } = useMyChannelMemberships();
   const write = useWriteRunner();
   const membership = memberships.find((row) => row.channel_id === channel.id);
-  const level: ChannelNotificationLevel = membership?.notification_level ?? "mentions";
+  const settings = currentUserId ? channelNotificationSettings(currentUserId) : null;
+  const settingsQuery = useLiveQuery((q) =>
+    settings
+      ? q.from({ settings }).where(({ settings }) => eq(settings.channel_id, channel.id))
+      : undefined,
+  );
+  const setting = settingsQuery.data?.[0];
+  const level: ChannelNotificationLevel = setting?.notification_level ?? "mentions";
 
   async function select(next: ChannelNotificationLevel) {
-    if (!membership || next === level || write.isPending) {
+    if (!currentUserId || !membership || next === level || write.isPending) {
       return;
     }
     await write.run(() =>
-      channelUsers.update(
-        `${membership.user_id}:${channel.id}`,
-        { metadata: { action: "notificationLevel" } satisfies ChannelUserWriteMetadata },
+      channelNotificationSettings(currentUserId).update(
+        `${currentUserId}:${channel.id}`,
+        {
+          metadata: {
+            action: "notificationLevel",
+          } satisfies ChannelNotificationSettingsWriteMetadata,
+        },
         (draft) => {
           draft.notification_level = next;
         },

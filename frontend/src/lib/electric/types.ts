@@ -10,7 +10,9 @@ export type TableName =
   | "call_invites"
   | "notifications"
   | "attachments"
-  | "user_pinned_channels";
+  | "user_pinned_channels"
+  /** 通知設定だけを配信する論理テーブル。実テーブルは `channel_user`。 */
+  | "channel_notification_settings";
 
 export type UserRow = {
   id: string;
@@ -109,6 +111,15 @@ export type ChannelUserRow = {
   user_id: string;
   channel_id: string;
   joined_at: TimestampString;
+};
+
+/**
+ * チャンネルごとの通知設定。メンバー一覧（channel_user）からは届かず、
+ * 本人の行だけが `channelNotificationSettings` Shape で配信される。
+ */
+export type ChannelNotificationSettingRow = {
+  user_id: string;
+  channel_id: string;
   notification_level: ChannelNotificationLevel;
 };
 
@@ -210,6 +221,7 @@ export type TableRowMap = {
   messages: MessageRow;
   message_reactions: MessageReactionRow;
   channel_user: ChannelUserRow;
+  channel_notification_settings: ChannelNotificationSettingRow;
   channel_leave: ChannelLeaveRow;
   call_invites: CallInviteRow;
   attachments: AttachmentRow;

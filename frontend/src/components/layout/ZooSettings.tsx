@@ -250,7 +250,7 @@ export function ZooSettings() {
 
 /**
  * 通知レベルはチャンネルごとにヘッダーから変更する。設定画面からは、その画面へ
- * 移動する導線だけを出す（値は channelUsers コレクションから読み、ここでは取得しない）。
+ * 移動する導線だけを出す（値は本人の通知設定コレクションから読み、ここでは取得しない）。
  */
 function ChannelNotificationGuide() {
   const { t } = useTranslation();

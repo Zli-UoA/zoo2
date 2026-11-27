@@ -54,6 +54,7 @@ const pinsApi = vi.hoisted(() => ({
 // `userPinnedChannels` は同じ関数を返し続ける。毎回新しい関数を返すと、実際の
 // `usePinnedChannels` がコレクションの変更とみなして状態を取り直してしまう。
 const pinCollection = vi.hoisted(() => ({ factory: () => ({}) }));
+const notificationSettingsCollection = vi.hoisted(() => ({ factory: () => ({}) }));
 const adminState = vi.hoisted(() => ({ isArchived: false }));
 vi.mock("@tanstack/react-db", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-db")>()),
@@ -79,6 +80,7 @@ vi.mock("../../lib/electric/collections-context", async (importOriginal) => ({
   useCollections: () => ({
     config: { ...DEFAULT_CONFIG, txidMode: "awaitTxId" },
     userPinnedChannels: pinCollection.factory,
+    channelNotificationSettings: notificationSettingsCollection.factory,
     channels: {
       utils: {
         // Shape の反映がいつまでも届かない（待ちが失敗する）場合。
@@ -112,6 +114,11 @@ vi.mock("../../hooks/useChannelAdmin", () => ({
 }));
 
 vi.mock("../../hooks/useRealtime", () => ({
+  useMyChannelMemberships: () => ({
+    memberships: [],
+    allMemberships: [],
+    joinedChannelIds: new Set(),
+  }),
   useMessageFeed: () => ({
     data: [
       {

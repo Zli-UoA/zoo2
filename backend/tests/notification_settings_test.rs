@@ -11,6 +11,7 @@ use axum::{
 };
 use backend::{db::init_db, routes::create_router, state::AppState};
 use serde_json::{Value, json};
+use tokio_postgres::NoTls;
 use tower::ServiceExt;
 
 async fn send(
@@ -171,6 +172,108 @@ async fn notification_settings_round_trip_and_authorization() -> anyhow::Result<
         .await?;
     let (status, _, _) = send(&app, &owner, "GET", &path, json!({})).await?;
     assert_eq!(status, StatusCode::NOT_FOUND);
+
+    drop(app);
+    fixture.cleanup().await
+}
+
+/// channel_user の Home refresh トリガーは membership を変える列だけに絞られ、
+/// notification_level の UPDATE では発火しない (文レベルの UPDATE OF 条件)。
+#[tokio::test]
+async fn notification_level_update_does_not_fire_home_refresh_trigger() -> anyhow::Result<()> {
+    let fixture = thread_db::ThreadDb::new().await?;
+    let (client, connection) = tokio_postgres::connect(&fixture.config.database_url, NoTls).await?;
+    tokio::spawn(connection);
+    let rows = client
+        .query(
+            "SELECT pg_get_triggerdef(oid)::text FROM pg_trigger \
+             WHERE tgrelid='channel_user'::regclass AND tgname='channel_user_home_live'",
+            &[],
+        )
+        .await?;
+    assert_eq!(rows.len(), 1);
+    let definition: &str = rows[0].get(0);
+    assert!(
+        definition.contains("UPDATE OF user_id, channel_id, joined_at"),
+        "{definition}"
+    );
+    assert!(!definition.contains("OR UPDATE ON"), "{definition}");
+    fixture.cleanup().await
+}
+
+/// 同時に同じ値へ PATCH されたとき、片方は UPDATE が0件になり txid: null の no-op になる。
+/// 行ロックで UPDATE を待たせ、その間に別トランザクションで同じ値を確定させる。
+#[tokio::test]
+async fn concurrent_same_value_patch_is_a_noop() -> anyhow::Result<()> {
+    let fixture = thread_db::ThreadDb::new().await?;
+    let mut config = fixture.config.clone();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+
+    let owner = uuid::Uuid::new_v4().to_string();
+    ok(
+        &app,
+        &owner,
+        "POST",
+        "/api/users",
+        json!({"id": owner, "user_name": owner, "display_name": owner}),
+    )
+    .await?;
+    let channel = uuid::Uuid::new_v4().to_string();
+    ok(
+        &app,
+        &owner,
+        "POST",
+        "/api/channels",
+        json!({"id": channel, "channel_name": channel, "is_private": true}),
+    )
+    .await?;
+    let path = format!("/api/channels/{channel}/notification-settings");
+    assert_eq!(
+        ok(&app, &owner, "GET", &path, json!({})).await?,
+        json!({"level": "mentions"})
+    );
+
+    let (mut client, connection) =
+        tokio_postgres::connect(&fixture.config.database_url, NoTls).await?;
+    tokio::spawn(connection);
+    let tx = client.transaction().await?;
+    tx.execute(
+        "SELECT 1 FROM channel_user WHERE user_id=$1 AND channel_id=$2 FOR UPDATE",
+        &[&owner, &channel],
+    )
+    .await?;
+
+    let patch_app = app.clone();
+    let patch_owner = owner.clone();
+    let patch_path = path.clone();
+    let patch = tokio::spawn(async move {
+        ok(
+            &patch_app,
+            &patch_owner,
+            "PATCH",
+            &patch_path,
+            json!({"level": "all"}),
+        )
+        .await
+    });
+    // PATCH が古い値を読み、UPDATE で行ロックを待つところまで進ませる。
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    tx.execute(
+        "UPDATE channel_user SET notification_level='all' WHERE user_id=$1 AND channel_id=$2",
+        &[&owner, &channel],
+    )
+    .await?;
+    tx.commit().await?;
+
+    let result = patch.await??;
+    assert_eq!(result["data"], json!({"level": "all"}));
+    assert!(result["txid"].is_null());
+    assert_eq!(
+        ok(&app, &owner, "GET", &path, json!({})).await?,
+        json!({"level": "all"})
+    );
 
     drop(app);
     fixture.cleanup().await

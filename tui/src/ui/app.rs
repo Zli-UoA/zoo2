@@ -406,6 +406,7 @@ impl App {
             ShapeId::Channels,
             ShapeId::Users,
             ShapeId::ChannelUsers,
+            ShapeId::ChannelNotificationSettings,
             ShapeId::UserPinnedChannels,
         ] {
             app.subscribe(id);
@@ -2561,7 +2562,7 @@ impl App {
     }
 
     /// 開いているチャンネルの通知レベルを all → mentions → mute の順に変える。
-    /// 参加行の Shape が新しい値を届けるので、書き込みのあとに取得はしない。
+    /// 通知設定の Shape が新しい値を届けるので、書き込みのあとに取得はしない。
     /// Shape が古いあいだに N を連打すると同じ値が送信されるので、前の書き込みが終わるまで待つ。
     fn cycle_notification_level(&mut self) {
         let Some(channel_id) = self.current.clone() else {

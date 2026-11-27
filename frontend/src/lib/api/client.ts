@@ -344,7 +344,7 @@ export function createChannelPinsApi(client: ApiClient) {
 /**
  * チャンネルごとの通知レベル。
  *
- * 表示値は `channelUsers` コレクションから読むため、画面ごとに GET はしない。
+ * 表示値は `channelNotificationSettings` コレクションから読むため、画面ごとに GET はしない。
  * GET はコレクションにない場合の個別確認と API テスト用に置く。
  */
 export function createChannelNotificationSettingsApi(client: ApiClient) {

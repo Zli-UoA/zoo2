@@ -130,27 +130,49 @@ async fn update_notification_settings(
         )));
     }
 
-    let updated = toasty::sql::statement(
-        "UPDATE channel_user SET notification_level = $3 \
-         WHERE user_id = $1 AND channel_id = $2",
-    )
-    .bind(auth_user.id.as_str())
-    .bind(channel_id.as_str())
-    .bind(payload.level.as_str())
-    .exec(&mut tx)
-    .await?;
-    if updated == 0 {
-        let _ = tx.rollback().await;
-        return Err(not_found(&channel_id));
+    // `notification_level <> $3` を付けることで、同時に同じ値へ更新されたときの
+    // 二重書き込み (WAL と Shape の refresh) を避ける。0 件なら現在値を読み直し、
+    // 同値なら txid: null の no-op、行が消えた場合だけ 404 にする。
+    for _ in 0..3 {
+        let updated = toasty::sql::statement(
+            "UPDATE channel_user SET notification_level = $3 \
+             WHERE user_id = $1 AND channel_id = $2 AND notification_level <> $3",
+        )
+        .bind(auth_user.id.as_str())
+        .bind(channel_id.as_str())
+        .bind(payload.level.as_str())
+        .exec(&mut tx)
+        .await?;
+        if updated > 0 {
+            let txid = get_current_txid(&mut tx).await?;
+            tx.commit().await?;
+            return Ok(Json(ApiResponse::new(
+                NotificationSettingsResponse {
+                    level: payload.level,
+                },
+                txid,
+            )));
+        }
+        match current_level(&mut tx, &auth_user.id, &channel_id).await? {
+            Some(level) if level == payload.level => {
+                let _ = tx.rollback().await;
+                return Ok(Json(ApiResponse::new(
+                    NotificationSettingsResponse { level },
+                    None,
+                )));
+            }
+            None => {
+                let _ = tx.rollback().await;
+                return Err(not_found(&channel_id));
+            }
+            // ほかの値へ変わったなら、もう一度だけ更新を試みる。
+            Some(_) => {}
+        }
     }
-    let txid = get_current_txid(&mut tx).await?;
-    tx.commit().await?;
-    Ok(Json(ApiResponse::new(
-        NotificationSettingsResponse {
-            level: payload.level,
-        },
-        txid,
-    )))
+    let _ = tx.rollback().await;
+    Err(AppError::Conflict(
+        "Notification level was changed concurrently".into(),
+    ))
 }
 
 #[cfg(test)]

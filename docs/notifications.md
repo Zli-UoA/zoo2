@@ -13,6 +13,7 @@
 `channel_user.notification_level`（`all` / `mentions` / `mute`）が設定の正本で、新規参加行と既存行は DEFAULT の `mentions` から始まる。スレッド単位の設定は設けず、チャンネルごとの設定がそのチャンネルの全通知に適用する。
 
 - `GET /api/channels/{id}/notification-settings` は `{"level":"..."}` を `Cache-Control: no-store` で返す。`PATCH` は同じ形の body を受け取り `data`/`txid` 形式で返す。チャンネルが存在し未削除で、自分自身の `channel_user` 行がある場合だけ応答し、それ以外（非メンバー・他人の設定・削除済み・不正 ID）は 404。値が不正なときは 400。同値の再送は DB を書き込まず `txid: null` にする。設定の取得に追加のポーリングや常設接続は作らない。
+- 継続的な表示とトースト判定の設定は `/api/shapes/channel_notification_settings` をアカウントごとに1本購読する。実テーブルは `channel_user`、列は `user_id,channel_id,notification_level`、`where` は `user_id = $1` で、本人の行だけが届く。メンバー一覧の `/api/shapes/channel_users` は列を `user_id,channel_id,joined_at` に制限し、`notification_level` を一切配らない。これによりメンバー一覧から他人の通知設定を読めないようにする。REST の GET/PATCH の契約は変えない。
 - `mentions` は従来どおりで、`mention` / `reply` / `dm` / `reaction` を届ける。
 - `all` はそのチャンネルの全通知を受け取る。通常投稿は `notification_type = 'channel_message'` として1件作る（新種別。`notification_events` に type の CHECK はない）。暗号化チャンネルでも本文を解析せず、Push は既存の暗号化プレースホルダを使う。
 - `mute` には明示メンション（`@user` / `@channel` / `@here` と E2EE の `explicit_mentions.user_ids`）だけを届ける。`reply` / `reaction` / `dm` / `channel_message` は作らない。未読カウントの扱いは変えない。

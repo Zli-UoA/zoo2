@@ -541,7 +541,6 @@ export function MessagePane({
             user_id: currentUserId,
             channel_id: channelId,
             joined_at: nowIso(),
-            notification_level: "mentions",
           },
           { metadata: { action: "join" } satisfies ChannelUserWriteMetadata },
         ),

@@ -80,7 +80,6 @@ export const UnreadAndArchived: Story = {
           user_id: "user-alice",
           channel_id: "channel-archive",
           joined_at: "2026-01-01 00:00:00.000",
-          notification_level: "mentions",
         },
       ],
     },

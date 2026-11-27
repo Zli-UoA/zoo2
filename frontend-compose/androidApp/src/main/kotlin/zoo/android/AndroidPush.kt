@@ -412,7 +412,7 @@ internal fun showPushNotification(context: Context, data: Map<String, String>, d
         val base = store.base(binding) ?: return@synchronized null
         val path = pushDestination(data["url"]) ?: return@synchronized null
         val kind = data["notificationType"]
-        if (kind !in setOf("mention", "dm", "reply", "reaction")) return@synchronized null
+        if (kind !in setOf("mention", "dm", "reply", "reaction", "channel_message")) return@synchronized null
         val id = data["tag"]?.removePrefix("zoo-")?.takeIf(::isCanonicalUuid) ?: return@synchronized null
         val tag = notificationTag(user, id)
         val manager = context.getSystemService(NotificationManager::class.java)

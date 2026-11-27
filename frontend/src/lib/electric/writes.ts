@@ -22,7 +22,7 @@ import type { TxidMode } from "../config";
 import { changeMessageMatcher, syncTxid } from "./txid";
 import { THREADS_CHANGED, THREAD_REPLY_REDIRECTED, type ThreadReplyRedirect } from "./threads";
 import type {
-  ChannelNotificationLevel,
+  ChannelNotificationSettingRow,
   ChannelRow,
   ChannelUserRow,
   MessageReactionRow,
@@ -75,15 +75,15 @@ type ChannelUserInsertParams = InsertMutationFnParams<
   string | number,
   ElectricCollectionUtils<ChannelUserRow>
 >;
-type ChannelUserUpdateParams = UpdateMutationFnParams<
-  ChannelUserRow,
-  string | number,
-  ElectricCollectionUtils<ChannelUserRow>
->;
 type ChannelUserDeleteParams = DeleteMutationFnParams<
   ChannelUserRow,
   string | number,
   ElectricCollectionUtils<ChannelUserRow>
+>;
+type NotificationSettingsUpdateParams = UpdateMutationFnParams<
+  ChannelNotificationSettingRow,
+  string | number,
+  ElectricCollectionUtils<ChannelNotificationSettingRow>
 >;
 
 /**
@@ -94,14 +94,25 @@ type ChannelUserDeleteParams = DeleteMutationFnParams<
 export type ChannelUserWriteMetadata =
   | { action: "join" }
   | { action: "add"; user_id: string }
-  | { action: "leave" }
-  | { action: "notificationLevel" };
+  | { action: "leave" };
 
 function readChannelUserMetadata(metadata: unknown): ChannelUserWriteMetadata {
   if (metadata && typeof metadata === "object" && "action" in metadata) {
     return metadata as ChannelUserWriteMetadata;
   }
   return { action: "join" };
+}
+
+/** 通知設定 Shape の楽観更新種別。自分の行の通知レベルだけを書き換える。 */
+export type ChannelNotificationSettingsWriteMetadata = { action: "notificationLevel" };
+
+function readNotificationSettingsMetadata(
+  metadata: unknown,
+): ChannelNotificationSettingsWriteMetadata {
+  if (metadata && typeof metadata === "object" && "action" in metadata) {
+    return metadata as ChannelNotificationSettingsWriteMetadata;
+  }
+  return { action: "notificationLevel" };
 }
 
 export interface MessageWriteMetadata {
@@ -345,31 +356,6 @@ export function createChannelUserWrites({ client, txidMode, getCurrentUserId }: 
     }
   }
 
-  /**
-   * 通知レベルの変更。channel_user の更新はこれだけなので、それ以外の変更は
-   * サーバーに送らず楽観状態を戻す。自分の行だけを書き込める点は leave と同じ。
-   */
-  async function onUpdate({ transaction, collection }: ChannelUserUpdateParams): Promise<void> {
-    const api = createChannelNotificationSettingsApi(client);
-    for (const mutation of transaction.mutations) {
-      const row = mutation.modified;
-      const changes = mutation.changes as Partial<ChannelUserRow>;
-      const metadata = readChannelUserMetadata(mutation.metadata);
-      if (metadata.action !== "notificationLevel" || !("notification_level" in changes)) {
-        throw new Error("Only notification_level can be updated on channel_user");
-      }
-      if (!getCurrentUserId() || row.user_id !== getCurrentUserId()) {
-        throw new Error("Only your own notification settings can be changed");
-      }
-      const level = changes.notification_level;
-      if (level !== "all" && level !== "mentions" && level !== "mute") {
-        throw new Error(`Invalid notification level: ${String(level)}`);
-      }
-      const { txid } = await api.updateChannelNotificationSettings(row.channel_id, level);
-      await waitForChannelUserSync("update", row, collection.utils, txid, txidMode, level);
-    }
-  }
-
   async function onDelete({ transaction, collection }: ChannelUserDeleteParams): Promise<void> {
     for (const mutation of transaction.mutations) {
       const row = mutation.original;
@@ -387,16 +373,15 @@ export function createChannelUserWrites({ client, txidMode, getCurrentUserId }: 
     }
   }
 
-  return { onInsert, onUpdate, onDelete };
+  return { onInsert, onDelete };
 }
 
 async function waitForChannelUserSync(
-  operation: "insert" | "update" | "delete",
+  operation: "insert" | "delete",
   row: ChannelUserRow,
   target: ElectricCollectionUtils<ChannelUserRow>,
   txid: string | null,
   txidMode: TxidMode,
-  level?: ChannelNotificationLevel,
 ): Promise<void> {
   await syncTxid({
     mode: txidMode,
@@ -404,12 +389,59 @@ async function waitForChannelUserSync(
     target,
     match: changeMessageMatcher<ChannelUserRow>(
       operation,
-      (value) =>
-        value.user_id === row.user_id &&
-        value.channel_id === row.channel_id &&
-        (level === undefined || value.notification_level === level),
+      (value) => value.user_id === row.user_id && value.channel_id === row.channel_id,
     ),
   });
+}
+
+/**
+ * チャンネルごとの通知レベル（本人の channel_user 行だけを配信する Shape）。
+ *
+ * REST は `PATCH /api/channels/{id}/notification-settings` を叩き、`txid` は
+ * メンバー一覧ではなく通知設定 Shape の更新で待つ。他のメンバーの行は Shape に
+ * 届かないため、書き込み前に認証ユーザーとの一致を確認して楽観状態を戻す。
+ */
+export function createChannelNotificationSettingsWrites({
+  client,
+  txidMode,
+  getCurrentUserId,
+}: WriteDependencies) {
+  async function onUpdate({
+    transaction,
+    collection,
+  }: NotificationSettingsUpdateParams): Promise<void> {
+    const api = createChannelNotificationSettingsApi(client);
+    for (const mutation of transaction.mutations) {
+      const row = mutation.modified;
+      const changes = mutation.changes as Partial<ChannelNotificationSettingRow>;
+      const metadata = readNotificationSettingsMetadata(mutation.metadata);
+      if (metadata.action !== "notificationLevel" || !("notification_level" in changes)) {
+        throw new Error("Only notification_level can be updated on notification settings");
+      }
+      const currentUserId = getCurrentUserId();
+      if (!currentUserId || row.user_id !== currentUserId) {
+        throw new Error("Only your own notification settings can be changed");
+      }
+      const level = changes.notification_level;
+      if (level !== "all" && level !== "mentions" && level !== "mute") {
+        throw new Error(`Invalid notification level: ${String(level)}`);
+      }
+      const { txid } = await api.updateChannelNotificationSettings(row.channel_id, level);
+      await syncTxid({
+        mode: txidMode,
+        txid,
+        target: collection.utils,
+        match: changeMessageMatcher<ChannelNotificationSettingRow>(
+          "update",
+          (value) =>
+            value.user_id === row.user_id &&
+            value.channel_id === row.channel_id &&
+            value.notification_level === level,
+        ),
+      });
+    }
+  }
+  return { onUpdate };
 }
 
 /** リアクションの追加・解除。REST の正規化後の値で同期を照合する。 */

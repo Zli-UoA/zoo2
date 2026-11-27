@@ -1031,6 +1031,223 @@ async fn test_notification_levels_thread_participants_and_left_thread() -> anyho
     Ok(())
 }
 
+/// 公開チャンネルから外されたゲストには返信本文を届けない。参加中のゲストと、
+/// 非メンバーの一般ユーザー (公開チャンネルの既存の挙動) には届ける。
+#[tokio::test]
+async fn test_public_channel_reply_skips_removed_guest() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+
+    let author = create_user(&app, &format!("ga-{}", uuid::Uuid::new_v4().simple())).await?;
+    let guest_in = create_user(&app, &format!("gi-{}", uuid::Uuid::new_v4().simple())).await?;
+    let guest_out = create_user(&app, &format!("go-{}", uuid::Uuid::new_v4().simple())).await?;
+    let outsider = create_user(&app, &format!("go2-{}", uuid::Uuid::new_v4().simple())).await?;
+    let actor = create_user(&app, &format!("ga2-{}", uuid::Uuid::new_v4().simple())).await?;
+    let channel = new_channel(&app, &author).await?;
+    for user in [&guest_in, &guest_out, &actor] {
+        join_channel(&app, user, &channel).await?;
+    }
+    for user in [&guest_in, &guest_out] {
+        let mut check_db = db.clone();
+        let mut tx = check_db.transaction().await?;
+        toasty::sql::statement("UPDATE users SET guest_kind='multi' WHERE id=$1")
+            .bind(user.as_str())
+            .exec(&mut tx)
+            .await?;
+        tx.commit().await?;
+    }
+
+    let removed_root = uuid::Uuid::new_v4().to_string();
+    send_message(
+        &app,
+        &guest_out,
+        &channel,
+        &removed_root,
+        "退出するゲストの投稿",
+        None,
+    )
+    .await?;
+    let (status, _) = post_json(
+        &app,
+        &guest_out,
+        "POST",
+        &format!("/api/channels/{channel}/leave"),
+        json!({}),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+
+    let guest_root = uuid::Uuid::new_v4().to_string();
+    send_message(
+        &app,
+        &guest_in,
+        &channel,
+        &guest_root,
+        "参加中のゲスト",
+        None,
+    )
+    .await?;
+    let outsider_root = uuid::Uuid::new_v4().to_string();
+    send_message(
+        &app,
+        &outsider,
+        &channel,
+        &outsider_root,
+        "非メンバーの投稿",
+        None,
+    )
+    .await?;
+    for root in [&removed_root, &guest_root, &outsider_root] {
+        let (status, _) = post_json(
+            &app,
+            &actor,
+            "POST",
+            &format!("/api/threads/{root}/join"),
+            json!({}),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    for (root, recipient, expected) in [
+        (&removed_root, &guest_out, false),
+        (&guest_root, &guest_in, true),
+        (&outsider_root, &outsider, true),
+    ] {
+        let reply = uuid::Uuid::new_v4().to_string();
+        send_message(
+            &app,
+            &actor,
+            &channel,
+            &reply,
+            "公開チャンネルの返信",
+            Some(root),
+        )
+        .await?;
+        let mut check_db = db.clone();
+        let types = notice_types(&mut check_db, recipient, &reply).await?;
+        assert_eq!(types.is_empty(), !expected, "recipient={recipient}");
+    }
+    Ok(())
+}
+
+/// 親投稿者がスレッドから退出済みなら reply を出さない。参加中の参加者には届ける。
+#[tokio::test]
+async fn test_reply_does_not_reach_parent_author_who_left_thread() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+
+    let author = create_user(&app, &format!("la-{}", uuid::Uuid::new_v4().simple())).await?;
+    let stayer = create_user(&app, &format!("ls-{}", uuid::Uuid::new_v4().simple())).await?;
+    let actor = create_user(&app, &format!("lr-{}", uuid::Uuid::new_v4().simple())).await?;
+    let channel = new_channel(&app, &author).await?;
+    for user in [&stayer, &actor] {
+        join_channel(&app, user, &channel).await?;
+    }
+
+    let root = uuid::Uuid::new_v4().to_string();
+    send_message(&app, &author, &channel, &root, "親投稿", None).await?;
+    for user in [&author, &stayer, &actor] {
+        let (status, _) = post_json(
+            &app,
+            user,
+            "POST",
+            &format!("/api/threads/{root}/join"),
+            json!({}),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let (status, _) = post_json(
+        &app,
+        &author,
+        "POST",
+        &format!("/api/threads/{root}/leave"),
+        json!({}),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+
+    let reply = uuid::Uuid::new_v4().to_string();
+    send_message(
+        &app,
+        &actor,
+        &channel,
+        &reply,
+        "退出後への返信",
+        Some(&root),
+    )
+    .await?;
+    let mut check_db = db.clone();
+    assert!(
+        notice_types(&mut check_db, &author, &reply)
+            .await?
+            .is_empty()
+    );
+    assert_eq!(
+        notice_types(&mut check_db, &stayer, &reply).await?,
+        ["reply"]
+    );
+    Ok(())
+}
+
+/// 1回の INSERT で作った通知も、共通 inbox・legacy 投影・display_data が行ごとに埋まる。
+#[tokio::test]
+async fn test_bulk_notification_insert_projects_display_data_for_every_recipient()
+-> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+
+    let author = create_user(&app, &format!("ba-{}", uuid::Uuid::new_v4().simple())).await?;
+    let channel = new_channel(&app, &author).await?;
+    let mut recipients = Vec::new();
+    for _ in 0..12 {
+        let user = create_user(&app, &format!("br-{}", uuid::Uuid::new_v4().simple())).await?;
+        join_channel(&app, &user, &channel).await?;
+        set_level(&app, &user, &channel, "all").await?;
+        recipients.push(user);
+    }
+
+    let message = uuid::Uuid::new_v4().to_string();
+    send_message(&app, &author, &channel, &message, "一括通知", None).await?;
+    let mut check_db = db.clone();
+    let mut tx = check_db.transaction().await?;
+    let rows = backend::apps::query(
+        &mut tx,
+        "SELECT json_build_object('user_id', n.user_id, 'type', n.notification_type, \
+                'message_id', n.display_data->'message'->>'id', \
+                'actor_id', n.display_data->'actor'->>'id', \
+                'legacy', EXISTS(SELECT 1 FROM notifications l WHERE l.id=n.id), \
+                'view', EXISTS(SELECT 1 FROM channel_notifications v WHERE v.id=n.id))::text \
+         FROM notification_events n WHERE n.message_id=$1 ORDER BY n.user_id",
+        &[&message],
+    )
+    .await?;
+    tx.commit().await?;
+    assert_eq!(rows.len(), recipients.len());
+    for row in rows {
+        assert!(recipients.contains(&row["user_id"].as_str().unwrap().to_string()));
+        assert_eq!(row["type"], "channel_message");
+        assert_eq!(row["message_id"], message);
+        assert_eq!(row["actor_id"], author);
+        assert_eq!(row["legacy"], true);
+        assert_eq!(row["view"], true);
+    }
+    Ok(())
+}
+
 /// Home の「返信への返信」でも、スレッドのルートに紐づく参加者へ reply が届く (#620)。
 #[tokio::test]
 async fn test_home_reply_to_reply_notifies_thread_participants() -> anyhow::Result<()> {

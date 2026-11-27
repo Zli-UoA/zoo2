@@ -1,6 +1,7 @@
 import type {
   AttachmentRow,
   ChannelLeaveRow,
+  ChannelNotificationSettingRow,
   ChannelRow,
   ChannelUserRow,
   MessageReactionRow,
@@ -43,6 +44,7 @@ export type ShapeName =
   | "messageReactions"
   | "users"
   | "channelUsers"
+  | "channelNotificationSettings"
   | "channelLeaves"
   | "notifications"
   | "callInvites"
@@ -61,6 +63,11 @@ export const SHAPE_META: Record<ShapeName, ShapeMeta> = {
   messageReactions: { table: "message_reactions", proxyPath: "message_reactions" },
   users: { table: "users", proxyPath: "users" },
   channelUsers: { table: "channel_user", proxyPath: "channel_users" },
+  // 実テーブルは channel_user だが、自分の通知設定だけを配信する別の Shape を使う。
+  channelNotificationSettings: {
+    table: "channel_user",
+    proxyPath: "channel_notification_settings",
+  },
   channelLeaves: { table: "channel_leave", proxyPath: "channel_leaves" },
   callInvites: { table: "call_invites", proxyPath: "call_invites" },
   attachments: { table: "attachments", proxyPath: "attachments" },
@@ -162,6 +169,15 @@ export const CHANNEL_USER_SCHEMA: ShapeSchema<ChannelUserRow> = {
     user_id: "text",
     channel_id: "text",
     joined_at: "timestamp",
+  },
+};
+
+/** 本人の channel_user 行の通知レベルだけを配信する Shape の列定義。 */
+export const CHANNEL_NOTIFICATION_SETTINGS_SCHEMA: ShapeSchema<ChannelNotificationSettingRow> = {
+  table: "channel_user",
+  columns: {
+    user_id: "text",
+    channel_id: "text",
     notification_level: "text",
   },
 };
@@ -240,6 +256,7 @@ export const SHAPE_SCHEMAS: { [K in TableName]: ShapeSchema<TableRowMap[K]> } = 
   messages: MESSAGE_SCHEMA,
   message_reactions: MESSAGE_REACTION_SCHEMA,
   channel_user: CHANNEL_USER_SCHEMA,
+  channel_notification_settings: CHANNEL_NOTIFICATION_SETTINGS_SCHEMA,
   channel_leave: CHANNEL_LEAVE_SCHEMA,
   call_invites: CALL_INVITE_SCHEMA,
   attachments: ATTACHMENT_SCHEMA,

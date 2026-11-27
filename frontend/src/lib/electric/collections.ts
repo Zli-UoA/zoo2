@@ -18,6 +18,7 @@ import type {
   ChannelRow,
   CallInviteRow,
   ChannelLeaveRow,
+  ChannelNotificationSettingRow,
   ChannelUserRow,
   MessageReactionRow,
   MessageRow,
@@ -26,6 +27,7 @@ import type {
   UserRow,
 } from "./types";
 import {
+  createChannelNotificationSettingsWrites,
   createChannelUserWrites,
   createChannelWrites,
   createMessageWrites,
@@ -54,7 +56,11 @@ export function shapeAuthSource(config: AppConfig): ShapeFetchSource {
 }
 
 function shapeOptions(shape: ShapeName, config: AppConfig, options: ShapeQueryOptions = {}) {
-  const table = SHAPE_META[shape].table;
+  // 実テーブルは channel_user でも、通知設定は列の異なる別スキーマで受け取る。
+  const schemaKey =
+    shape === "channelNotificationSettings"
+      ? "channel_notification_settings"
+      : SHAPE_META[shape].table;
   return {
     url: resolveShapeUrl(buildShapeRequestUrl(shape, config, options), window.location.href),
     fetchClient: createShapeFetch(shapeAuthSource(config)),
@@ -64,7 +70,7 @@ function shapeOptions(shape: ShapeName, config: AppConfig, options: ShapeQueryOp
     // Electric は integer を文字列、boolean を "true" / "false" で配信する。
     // そのままだと `"false"` が truthy になるなど型が崩れるため、Shape ごとの
     // スキーマで行を正規化してから TanStack DB に渡す。
-    transformer: (row: Record<string, unknown>) => coerceElectricRow(table, row),
+    transformer: (row: Record<string, unknown>) => coerceElectricRow(schemaKey, row),
   };
 }
 
@@ -72,6 +78,7 @@ type PersistentRow =
   | ChannelRow
   | UserRow
   | ChannelUserRow
+  | ChannelNotificationSettingRow
   | MessageRow
   | NotificationRow
   | UserPinnedChannelRow;
@@ -177,7 +184,6 @@ function channelUsersCollection(
         defaultIndexType: BasicIndex,
         shapeOptions: shapeOptions("channelUsers", config),
         onInsert: writes.onInsert,
-        onUpdate: writes.onUpdate,
         onDelete: writes.onDelete,
       }),
       persistence,
@@ -185,6 +191,36 @@ function channelUsersCollection(
     ),
   );
   // channel_id 単位に絞り込む `useChannelMembers` の述語に合わせて索引を張る。
+  collection.createIndex((row) => row.channel_id);
+  return collection;
+}
+
+/**
+ * 自分が参加しているチャンネルの通知レベル。メンバー一覧（channelUsers）には
+ * 他人の設定が混ざるため、本人の行だけを配信する専用 Shape を購読する。
+ * proxy ではバックエンドが認証ユーザーの行だけに絞る。
+ * 更新は PATCH + この Shape の txid 待ちで確定させる。
+ */
+function channelNotificationSettingsCollection(
+  userId: string,
+  config: AppConfig,
+  dependencies: WriteDependencies,
+  persistence?: PersistedCollectionPersistence | null,
+) {
+  const writes = createChannelNotificationSettingsWrites(dependencies);
+  const collection = createCollection(
+    withPersistence(
+      electricCollectionOptions<ChannelNotificationSettingRow>({
+        id: `channel_notification_settings:${userId}`,
+        getKey: (row) => `${row.user_id}:${row.channel_id}`,
+        defaultIndexType: BasicIndex,
+        shapeOptions: shapeOptions("channelNotificationSettings", config, { userId }),
+        onUpdate: writes.onUpdate,
+      }),
+      persistence,
+      (row: ChannelNotificationSettingRow) => `${row.user_id}:${row.channel_id}`,
+    ),
+  );
   collection.createIndex((row) => row.channel_id);
   return collection;
 }
@@ -345,6 +381,9 @@ export type NotificationsCollection = ReturnType<typeof notificationsCollection>
 export type ChannelsCollection = ReturnType<typeof channelsCollection>;
 export type UsersCollection = ReturnType<typeof usersCollection>;
 export type ChannelUsersCollection = ReturnType<typeof channelUsersCollection>;
+export type ChannelNotificationSettingsCollection = ReturnType<
+  typeof channelNotificationSettingsCollection
+>;
 export type ChannelLeavesCollection = ReturnType<typeof channelLeavesCollection>;
 export type UserPinnedChannelsCollection = ReturnType<typeof userPinnedChannelsCollection>;
 export type CallInvitesCollection = ReturnType<typeof callInvitesCollection>;
@@ -362,6 +401,8 @@ export interface CollectionsBundle {
   channels: ChannelsCollection;
   users: UsersCollection;
   channelUsers: ChannelUsersCollection;
+  /** 自分のチャンネル通知設定。ユーザー単位で生成しキャッシュする。 */
+  channelNotificationSettings: (userId: string) => ChannelNotificationSettingsCollection;
   /** 自分の退出日。ユーザー単位で生成しキャッシュする。 */
   channelLeaves: (userId: string) => ChannelLeavesCollection;
   /** 自分がピン留めしたチャンネル。ユーザー単位で生成しキャッシュする。 */
@@ -424,6 +465,7 @@ export function getCollections(
   }
 
   const notificationCache = new Map<string, NotificationsCollection>();
+  const notificationSettingsCache = new Map<string, ChannelNotificationSettingsCollection>();
   const channelLeaveCache = new Map<string, ChannelLeavesCollection>();
   const userPinnedChannelCache = new Map<string, UserPinnedChannelsCollection>();
   const callInviteCache = new Map<string, CallInvitesCollection>();
@@ -454,6 +496,19 @@ export function getCollections(
     channels: channelsCollection(resolved, dependencies, persistence),
     users: usersCollection(resolved, persistence),
     channelUsers: channelUsersCollection(resolved, dependencies, persistence),
+    channelNotificationSettings: (userId) => {
+      let collection = notificationSettingsCache.get(userId);
+      if (!collection) {
+        collection = channelNotificationSettingsCollection(
+          userId,
+          resolved,
+          dependencies,
+          persistence,
+        );
+        notificationSettingsCache.set(userId, collection);
+      }
+      return collection;
+    },
     channelLeaves: (userId) => {
       let collection = channelLeaveCache.get(userId);
       if (!collection) {

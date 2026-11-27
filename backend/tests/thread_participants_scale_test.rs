@@ -513,10 +513,11 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// #620 のスレッド返信通知の参加者SQL。P = そのスレッドの参加行、L = 未退出の参加行。
-/// 探索上限: `thread_participants` 走査 <= P、`channel_user` 主キー参照 <= L、
-/// `users` 走査 0、マージ結合のソート入力 <= L（ディスク退避なし）、
-/// 論理ブロック <= 2P + BLOCKS_PER_KEY*L + 1024（索引の段数と計画の差の余裕）。
+/// #620 のスレッド返信通知の参加者SQL。P = そのスレッドの参加行（退出済みを含む）、
+/// L = 未退出の参加行。SQL は退出済みも `left_at` と一緒に返し、Rust 側で除外する。
+/// 探索上限: `thread_participants` 走査 <= P、`channel_user` 主キー参照 <= P、
+/// `users` 走査 0、マージ結合のソート入力 <= P（ディスク退避なし）、
+/// 論理ブロック <= 2P + BLOCKS_PER_KEY*P + 1024（索引の段数と計画の差の余裕）。
 /// 無関係な参加行 H を10倍にしても探索量が増えないことを、30万/100万件で比較する。
 #[tokio::test]
 #[ignore = "inserts 300k/1m users"]
@@ -628,16 +629,26 @@ async fn notification_participants_sql_does_not_scan_users() -> anyhow::Result<(
     let literal = sql
         .replace("$1", &quoted(&thread))
         .replace("$2", &quoted(&channel));
-    // 結果の確認: 未退出 L 行だけが返り、レベルが all / mute で埋まっている。
+    // 結果の確認: 退出済みを含む P 行が返り、そのうち L 行だけ left_at が NULL。
     let result = client.simple_query(&literal).await?;
     let values: Vec<Value> = rows(&result)
         .into_iter()
         .map(|row| serde_json::from_str(row))
         .collect::<Result<_, _>>()?;
-    assert_eq!(values.len() as i32, live);
+    assert_eq!(values.len() as i32, p);
+    assert_eq!(
+        values.iter().filter(|v| !v["left_at"].is_null()).count() as i32,
+        left
+    );
+    assert_eq!(
+        values.iter().filter(|v| v["left_at"].is_null()).count() as i32,
+        live
+    );
+    // 退出済みは対象チャンネルの channel_user を持たないので 'mentions' になる。
     assert!(
         values
             .iter()
+            .filter(|v| v["left_at"].is_null())
             .all(|v| v["level"] == "all" || v["level"] == "mute")
     );
 
@@ -703,21 +714,21 @@ async fn notification_participants_sql_does_not_scan_users() -> anyhow::Result<(
                 "{mode}/{run}: {scanned_participants}"
             );
             assert!(
-                probed_members <= f64::from(live),
+                probed_members <= f64::from(p) + 1.,
                 "{mode}/{run}: {probed_members}"
             );
             assert_eq!(read_users, 0., "{mode}/{run}: users must not be read");
             assert!(
-                sort_input <= f64::from(live),
+                sort_input <= f64::from(p),
                 "{mode}/{run}: sort input {sort_input}"
             );
             assert!(!external_sort, "{mode}/{run}: external sort");
             assert!(
-                max_loops <= f64::from(live) + 1.,
+                max_loops <= f64::from(p) + 1.,
                 "{mode}/{run}: loops={max_loops}"
             );
             assert!(
-                blocks <= 2. * f64::from(p) + BLOCKS_PER_KEY * f64::from(live) + 1024.,
+                blocks <= 2. * f64::from(p) + BLOCKS_PER_KEY * f64::from(p) + 1024.,
                 "{mode}/{run}: blocks={blocks}"
             );
             eprintln!(

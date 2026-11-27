@@ -458,6 +458,7 @@ impl Core {
                 ShapeId::Channels,
                 ShapeId::Users,
                 ShapeId::ChannelUsers,
+                ShapeId::ChannelNotificationSettings,
                 ShapeId::Notifications,
             ]);
         }

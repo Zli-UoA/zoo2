@@ -394,9 +394,9 @@ class SyncedTable(
             val path =
                 if (direct) config.electricShapeUrl
                 else endpoint(config.apiBaseUrl, "${config.shapeProxyPath}/$name")
-            // channel_user の notification_level もこの Shape の行に含まれる。設定ごとに
-            // REST を増やさず、参加行の更新をそのまま画面へ反映する。
-            val table = if (name == "channel_users") "channel_user" else name
+            // channel_users と channel_notification_settings は同じ channel_user テーブルを
+            // 異なる条件で配る。設定ごとに REST を増やさず、Shape の更新を画面へ反映する。
+            val table = if (name == "channel_users" || name == "channel_notification_settings") "channel_user" else name
             val shapeParams =
                 if (!direct) params
                 else
@@ -411,7 +411,7 @@ class SyncedTable(
                             )
                             put("params[1]", channelId)
                         }
-                        if (name == "notifications") {
+                        if (name == "notifications" || name == "channel_notification_settings") {
                             put("where", "user_id = $1")
                             put("params[1]", config.userId)
                         }
@@ -703,6 +703,7 @@ class Repository(
     val channels = SyncedTable("channels", config, platform, http, scope, synchronize = synchronize)
     val users = SyncedTable("users", config, platform, http, scope, synchronize = synchronize)
     val members = SyncedTable("channel_users", config, platform, http, scope, synchronize = synchronize)
+    val notificationSettings = SyncedTable("channel_notification_settings", config, platform, http, scope, synchronize = synchronize)
     val notifications = SyncedTable("notifications", config, platform, http, scope, synchronize = synchronize)
     private val dynamic = mutableMapOf<Pair<String, String>, SyncedTable>()
     private val recentMessages = linkedMapOf<String, List<Row>>()
@@ -736,6 +737,7 @@ class Repository(
             "channels" -> channels
             "users" -> users
             "channel_users" -> members
+            "channel_notification_settings" -> notificationSettings
             "notifications" -> notifications
             "messages" ->
                 dynamic.getOrPut(name to channelId) {

@@ -17,9 +17,13 @@ fun Row.present(key: String): Boolean =
 fun rowKey(row: Row): String =
     row.text("id").ifEmpty { "${row.text("user_id")}:${row.text("channel_id")}" }
 
-/** 参加行 (channel_user) の通知レベル。列のない古い行や未知の値は既定の mentions として扱う。 */
+/** 通知設定 Shape (`channel_notification_settings`) の 1 行。本人の行だけが届く。 */
 fun Row.notificationLevel(): String =
     text("notification_level").takeIf { it in setOf("all", "mentions", "mute") } ?: "mentions"
+
+/** チャンネルの通知レベル。設定行がまだ届いていなければ既定の mentions として扱う。 */
+fun channelNotificationLevel(settings: List<Row>, channelId: String): String =
+    settings.firstOrNull { it.text("channel_id") == channelId }?.notificationLevel() ?: "mentions"
 
 fun author(row: Row): String =
     row.text("display_name").ifEmpty { row.text("user_name") }.ifEmpty { row.text("user_id") }

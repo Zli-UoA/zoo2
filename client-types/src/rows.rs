@@ -46,7 +46,16 @@ pub struct User {
 pub struct ChannelUser {
     pub user_id: String,
     pub channel_id: String,
-    /// チャンネルごとの通知レベル。古いスキーマや未知の値では `mentions` として扱う。
+}
+
+/// 自分自身のチャンネルごとの通知設定（`channel_notification_settings` Shape）。
+///
+/// メンバー一覧には設定の列を配らないため、設定はこの行からのみ読む。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChannelNotificationSettingRow {
+    pub user_id: String,
+    pub channel_id: String,
+    /// 未知の値や列が無い移行中のスキーマでは `mentions` として扱う。
     #[serde(default = "default_notification_level")]
     pub notification_level: String,
 }
@@ -278,6 +287,15 @@ impl FromRow for UserPinnedChannel {
 }
 
 impl FromRow for ChannelUser {
+    fn from_row(row: &Row) -> Result<Self> {
+        Ok(Self {
+            user_id: text(row, "user_id")?,
+            channel_id: text(row, "channel_id")?,
+        })
+    }
+}
+
+impl FromRow for ChannelNotificationSettingRow {
     fn from_row(row: &Row) -> Result<Self> {
         Ok(Self {
             user_id: text(row, "user_id")?,
@@ -574,20 +592,30 @@ mod tests {
     }
 
     #[test]
-    fn channel_user_defaults_notification_level_and_ignores_unknown_values() {
-        let old = ChannelUser::from_row(&row(json!({
+    fn channel_user_ignores_unknown_columns() {
+        let member = ChannelUser::from_row(&row(json!({
+            "user_id": "u1", "channel_id": "c1", "joined_at": "2026-11-01 00:00:00"
+        })))
+        .unwrap();
+        assert_eq!(member.user_id, "u1");
+        assert_eq!(member.channel_id, "c1");
+    }
+
+    #[test]
+    fn notification_setting_defaults_level_and_ignores_unknown_values() {
+        let old = ChannelNotificationSettingRow::from_row(&row(json!({
             "user_id": "u1", "channel_id": "c1"
         })))
         .unwrap();
         assert_eq!(old.notification_level, "mentions");
 
-        let muted = ChannelUser::from_row(&row(json!({
+        let muted = ChannelNotificationSettingRow::from_row(&row(json!({
             "user_id": "u1", "channel_id": "c1", "notification_level": "mute", "future": 1
         })))
         .unwrap();
         assert_eq!(muted.notification_level, "mute");
 
-        let unknown = ChannelUser::from_row(&row(json!({
+        let unknown = ChannelNotificationSettingRow::from_row(&row(json!({
             "user_id": "u1", "channel_id": "c1", "notification_level": "later"
         })))
         .unwrap();

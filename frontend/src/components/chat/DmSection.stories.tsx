@@ -71,7 +71,6 @@ export const Group: Story = {
       channel_id: dm.id,
       user_id: user.id,
       joined_at: dm.created_at,
-      notification_level: "mentions" as const,
     })),
   },
 };

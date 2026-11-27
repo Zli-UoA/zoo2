@@ -3445,8 +3445,9 @@ mod tests {
             app.subscriptions
                 .contains_key(&ShapeId::Messages("c2".into()))
         );
-        // Channels / Users / ChannelUsers / UserPinnedChannels / 開いているチャンネルの Messages。
-        assert_eq!(app.subscriptions.len(), 5);
+        // Channels / Users / ChannelUsers / ChannelNotificationSettings / UserPinnedChannels /
+        // 開いているチャンネルの Messages。
+        assert_eq!(app.subscriptions.len(), 6);
         app.on_terminal_event(Event::FocusLost);
         assert!(app.typing.is_empty());
         app.on_tick();
