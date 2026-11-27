@@ -253,10 +253,19 @@ fn remove_orphan_objects(state: &AppState, keys: Vec<String>) {
             if round == 1 {
                 tokio::time::sleep(wait).await;
             }
-            for key in &keys {
-                if let Err(e) = client.delete_object().bucket(&bucket).key(key).send().await {
+            for key in keys
+                .iter()
+                .flat_map(|key| [super::home_images::thumbnail_key(key), key.clone()])
+            {
+                if let Err(e) = client
+                    .delete_object()
+                    .bucket(&bucket)
+                    .key(&key)
+                    .send()
+                    .await
+                {
                     tracing::warn!(
-                        key,
+                        %key,
                         "Failed to remove an unattached attachment of an encrypted channel: {e}"
                     );
                 }

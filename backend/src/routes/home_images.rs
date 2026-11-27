@@ -7,7 +7,8 @@ use crate::{
 };
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
+    http::header,
     routing::{get, post},
 };
 use base64::Engine;
@@ -33,8 +34,9 @@ const MAX_USER_BYTES: i64 = 1024 * 1024 * 1024;
 pub(crate) static DECODERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 /// Bound decoded pixels as well as compressed bytes; preserve animated originals.
-pub(crate) fn valid_image(mime: &str, bytes: &[u8]) -> bool {
-    decode_image(mime, bytes).is_some()
+pub(crate) fn image_blurhash(mime: &str, bytes: &[u8]) -> Option<String> {
+    let (image, orientation) = decode_image(mime, bytes)?;
+    encode_blurhash(&image, orientation)
 }
 
 fn decode_image(
@@ -83,7 +85,31 @@ pub(crate) struct ImageMetadata {
     pub blurhash: String,
 }
 
-pub(crate) fn image_metadata(mime: &str, bytes: &[u8]) -> Option<ImageMetadata> {
+pub(crate) const THUMBNAIL_EDGE: u32 = 768;
+pub(crate) const THUMBNAIL_MIME: &str = "image/webp";
+const IMAGE_CACHE_CONTROL: &str = "private, max-age=300";
+
+pub(crate) fn thumbnail_key(key: &str) -> String {
+    format!("{key}.thumbnail.webp")
+}
+
+pub(crate) async fn stored_thumbnail_key(
+    client: &aws_sdk_s3::Client,
+    bucket: &str,
+    original: &str,
+) -> Option<String> {
+    let thumbnail = thumbnail_key(original);
+    client
+        .head_object()
+        .bucket(bucket)
+        .key(&thumbnail)
+        .send()
+        .await
+        .ok()?;
+    Some(thumbnail)
+}
+
+pub(crate) fn image_assets(mime: &str, bytes: &[u8]) -> Option<(ImageMetadata, Option<Vec<u8>>)> {
     use image::metadata::Orientation;
     let (image, orientation) = decode_image(mime, bytes)?;
     let (width, height) = match orientation {
@@ -93,16 +119,61 @@ pub(crate) fn image_metadata(mime: &str, bytes: &[u8]) -> Option<ImageMetadata> 
         | Orientation::Rotate270FlipH => (image.height(), image.width()),
         _ => (image.width(), image.height()),
     };
-    // Only transform the tiny preview; rotating the full raster duplicates up to 80 MB.
+    let metadata = ImageMetadata {
+        width,
+        height,
+        blurhash: encode_blurhash(&image, orientation)?,
+    };
+    let thumbnail = (width.max(height) > THUMBNAIL_EDGE)
+        .then(|| {
+            let mut thumbnail = image.resize(
+                THUMBNAIL_EDGE,
+                THUMBNAIL_EDGE,
+                image::imageops::FilterType::Triangle,
+            );
+            thumbnail.apply_orientation(orientation);
+            let mut output = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgba8(thumbnail.to_rgba8())
+                .write_to(&mut output, image::ImageFormat::WebP)
+                .ok()?;
+            let encoded = output.into_inner();
+            (encoded.len() < bytes.len()).then_some(encoded)
+        })
+        .flatten();
+    Some((metadata, thumbnail))
+}
+
+fn encode_blurhash(
+    image: &image::DynamicImage,
+    orientation: image::metadata::Orientation,
+) -> Option<String> {
+    // Rotate the tiny preview to avoid an extra allocation of the full raster.
     let mut preview = image.thumbnail(64, 64);
     preview.apply_orientation(orientation);
     let preview = preview.to_rgba8();
-    Some(ImageMetadata {
-        width,
-        height,
-        blurhash: blurhash::encode(4, 3, preview.width(), preview.height(), preview.as_raw())
-            .ok()?,
-    })
+    blurhash::encode(4, 3, preview.width(), preview.height(), preview.as_raw()).ok()
+}
+
+pub(crate) async fn store_thumbnail(
+    client: &aws_sdk_s3::Client,
+    bucket: &str,
+    key: &str,
+    bytes: Option<Vec<u8>>,
+) {
+    if let Some(bytes) = bytes {
+        if let Err(error) = client
+            .put_object()
+            .bucket(bucket)
+            .key(thumbnail_key(key))
+            .content_type(THUMBNAIL_MIME)
+            .cache_control(IMAGE_CACHE_CONTROL)
+            .body(bytes.into())
+            .send()
+            .await
+        {
+            tracing::warn!(%error, key, "Could not store image thumbnail");
+        }
+    }
 }
 
 async fn upload(
@@ -130,10 +201,16 @@ async fn upload(
         return Err(AppError::BadRequest("Expected an image up to 8 MiB".into()));
     }
     let mime = body.content_type.clone();
-    let (bytes, width, height, blurhash) = tokio::task::spawn_blocking(move || {
+    let (bytes, width, height, blurhash, thumbnail) = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        if let Some(metadata) = image_metadata(&mime, &bytes) {
-            Ok((bytes, metadata.width, metadata.height, metadata.blurhash))
+        if let Some((metadata, thumbnail)) = image_assets(&mime, &bytes) {
+            Ok((
+                bytes,
+                metadata.width,
+                metadata.height,
+                metadata.blurhash,
+                thumbnail,
+            ))
         } else {
             Err(AppError::BadRequest(
                 "Invalid image format, dimensions or pixel count".into(),
@@ -170,6 +247,7 @@ async fn upload(
         .bucket(&state.config.s3.bucket)
         .key(&key)
         .content_type(&body.content_type)
+        .cache_control(IMAGE_CACHE_CONTROL)
         .body(bytes.into())
         .send()
         .await;
@@ -182,6 +260,7 @@ async fn upload(
         tx.commit().await?;
         return Err(AppError::Internal(anyhow::anyhow!("Image upload failed")));
     }
+    store_thumbnail(&state.s3_client, &state.config.s3.bucket, &key, thumbnail).await;
     tx.commit().await?;
     Ok(Json(
         json!({"id":id,"width":width,"height":height,"blurhash":blurhash}),
@@ -293,26 +372,47 @@ pub(crate) async fn decorate(
     }
     Ok(())
 }
+#[derive(Deserialize)]
+struct ImageVariant {
+    #[serde(default)]
+    thumbnail: bool,
+}
+
 // Unguessable URLs are bearer capabilities, as required for remote image consumers.
 async fn image(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<axum::response::Redirect, AppError> {
+    Query(variant): Query<ImageVariant>,
+) -> Result<impl axum::response::IntoResponse, AppError> {
     uuid::Uuid::parse_str(&id).map_err(|_| AppError::NotFound("Image".into()))?;
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     let item = one(&mut tx, "SELECT item::text FROM (SELECT json_build_object('name',name,'media_type',content_type,'storage_key','home-images/' || id) AS item FROM home_images h WHERE id=$1 AND EXISTS(SELECT 1 FROM home_posts p LEFT JOIN channels c ON c.id=p.channel_id WHERE p.deleted_at IS NULL AND (p.channel_id IS NULL OR NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL) AND p.media @> jsonb_build_array(jsonb_build_object('url','/api/home/images/' || h.id))) UNION ALL SELECT json_build_object('name',a.file_name,'media_type',a.content_type,'storage_key',a.storage_key) FROM attachments a JOIN home_posts p ON p.id=a.message_id JOIN channels c ON c.id=p.channel_id WHERE a.id=$1 AND p.deleted_at IS NULL AND NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL AND a.content_type IN ('image/png','image/jpeg','image/gif','image/webp')) images LIMIT 1", &[&id]).await?;
+    let key = item["storage_key"].as_str().unwrap();
+    let content_type = item["media_type"].as_str().unwrap();
+    drop(tx);
+    let thumbnail = if variant.thumbnail {
+        stored_thumbnail_key(&state.s3_client, &state.config.s3.bucket, key).await
+    } else {
+        None
+    };
+    let (key, content_type) = thumbnail
+        .as_deref()
+        .map_or((key, content_type), |key| (key, THUMBNAIL_MIME));
     let url = crate::storage::generate_presigned_get_url(
         &state.s3_client,
         &state.config.s3.bucket,
-        item["storage_key"].as_str().unwrap(),
-        item["media_type"].as_str().unwrap(),
+        key,
+        content_type,
         item["name"].as_str().unwrap(),
         std::time::Duration::from_secs(900),
         state.config.s3.public_endpoint.as_deref(),
     )
     .await?;
-    Ok(axum::response::Redirect::temporary(&url))
+    Ok((
+        [(header::CACHE_CONTROL, IMAGE_CACHE_CONTROL)],
+        axum::response::Redirect::temporary(&url),
+    ))
 }
 /// Locks serialize publishing, explicit discard and garbage collection.
 async fn referenced(tx: &mut toasty::Transaction<'_>, id: &str) -> Result<bool, AppError> {
@@ -370,6 +470,12 @@ pub async fn collect_garbage(state: &AppState) -> Result<(), AppError> {
         crate::storage::delete_storage_object(
             &state.s3_client,
             &state.config.s3.bucket,
+            &thumbnail_key(&format!("home-images/{id}")),
+        )
+        .await?;
+        crate::storage::delete_storage_object(
+            &state.s3_client,
+            &state.config.s3.bucket,
             &format!("home-images/{id}"),
         )
         .await?;
@@ -393,6 +499,28 @@ pub async fn worker(state: AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn list_thumbnail_is_smaller_and_preserves_aspect_ratio() {
+        let mut value = 1_u32;
+        let raster = image::RgbImage::from_fn(1536, 768, |_, _| {
+            value ^= value << 13;
+            value ^= value >> 17;
+            value ^= value << 5;
+            image::Rgb([value as u8, (value >> 8) as u8, (value >> 16) as u8])
+        });
+        let mut original = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(raster)
+            .write_to(&mut original, image::ImageFormat::Png)
+            .unwrap();
+        let (metadata, thumbnail) = image_assets("image/png", original.get_ref()).unwrap();
+        let thumbnail = thumbnail.unwrap();
+        assert_eq!((metadata.width, metadata.height), (1536, 768));
+        assert!(thumbnail.len() < original.get_ref().len());
+        let thumbnail =
+            image::load_from_memory_with_format(&thumbnail, image::ImageFormat::WebP).unwrap();
+        assert_eq!((thumbnail.width(), thumbnail.height()), (768, 384));
+    }
+
     #[test]
     fn metadata_matches_exif_orientation_and_preview_colors() {
         let raster = image::RgbImage::from_fn(80, 40, |x, _| {
@@ -418,7 +546,7 @@ mod tests {
             bytes.extend_from_slice(&jpeg.get_ref()[2..]);
             let (decoded, _) = decode_image("image/jpeg", &bytes).unwrap();
             assert_eq!((decoded.width(), decoded.height()), (80, 40));
-            let metadata = image_metadata("image/jpeg", &bytes).unwrap();
+            let metadata = image_assets("image/jpeg", &bytes).unwrap().0;
             assert_eq!((metadata.width, metadata.height), (40, 80));
             let pixels = blurhash::decode(&metadata.blurhash, 8, 16, 1.0).unwrap();
             let top = (2 * 8 + 4) * 4;
@@ -434,14 +562,14 @@ mod tests {
         image::DynamicImage::new_rgb8(2, 2)
             .write_to(&mut bytes, image::ImageFormat::Png)
             .unwrap();
-        assert!(valid_image("image/png", bytes.get_ref()));
-        assert!(!valid_image("image/jpeg", bytes.get_ref()));
-        assert!(!valid_image("image/png", b"\x89PNG\r\n\x1a\n"));
-        assert!(!valid_image("image/svg+xml", b"<svg/>"));
+        assert!(image_blurhash("image/png", bytes.get_ref()).is_some());
+        assert!(image_blurhash("image/jpeg", bytes.get_ref()).is_none());
+        assert!(image_blurhash("image/png", b"\x89PNG\r\n\x1a\n").is_none());
+        assert!(image_blurhash("image/svg+xml", b"<svg/>").is_none());
         let mut oversized = std::io::Cursor::new(Vec::new());
         image::DynamicImage::new_luma8(8193, 1)
             .write_to(&mut oversized, image::ImageFormat::Png)
             .unwrap();
-        assert!(!valid_image("image/png", oversized.get_ref()));
+        assert!(image_blurhash("image/png", oversized.get_ref()).is_none());
     }
 }

@@ -124,11 +124,15 @@ pub(crate) async fn uploaded_image_metadata(
     match tokio::task::spawn_blocking(move || {
         let _download_permit = download_permit;
         let _permit = permit;
-        crate::routes::home_images::image_metadata(&mime, &bytes)
+        crate::routes::home_images::image_assets(&mime, &bytes)
     })
     .await
     {
-        Ok(metadata) => Ok(metadata),
+        Ok(Some((metadata, thumbnail))) => {
+            crate::routes::home_images::store_thumbnail(client, bucket, key, thumbnail).await;
+            Ok(Some(metadata))
+        }
+        Ok(None) => Ok(None),
         Err(error) => {
             tracing::warn!(%error, key, "Skipping optional image metadata: decoder task failed");
             Ok(None)

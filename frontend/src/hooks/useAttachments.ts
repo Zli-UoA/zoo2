@@ -23,6 +23,7 @@ type AttachmentUrlStatus = "loading" | "ready" | "error";
 
 export interface AttachmentUrlState {
   url: string | null;
+  thumbnailUrl?: string;
   status: AttachmentUrlStatus;
   expiresAt: number | null;
   reload: () => void;
@@ -75,13 +76,15 @@ export function useAttachmentUrl(attachmentId: string): AttachmentUrlState {
   const cached = cachedAttachmentUrl(config, attachmentId);
   const [status, setStatus] = useState<AttachmentUrlStatus>(cached ? "ready" : "loading");
   const [url, setUrl] = useState<string | null>(cached?.url ?? null);
+  const [thumbnailUrl, setThumbnailUrl] = useState(cached?.thumbnailUrl);
   const [expiresAt, setExpiresAt] = useState<number | null>(cached?.expiresAt ?? null);
   const requestId = useRef(0);
   // 再試行の判定には、クリック時点のクロージャではなく、その時点で表示している URL の期限を使う。
   const visible = useRef({ url: cached?.url ?? null, expiresAt: cached?.expiresAt ?? null });
-  const show = useCallback((nextUrl: string | null, nextExpiresAt: number | null) => {
+  const show = useCallback((nextUrl: string | null, nextExpiresAt: number | null, nextThumbnail?: string) => {
     visible.current = { url: nextUrl, expiresAt: nextExpiresAt };
     setUrl(nextUrl);
+    setThumbnailUrl(nextThumbnail);
     setExpiresAt(nextExpiresAt);
   }, []);
   // 表示中の URL が実際の期限前で、まだ取得に使えるか。更新マージンは含めない。
@@ -97,7 +100,7 @@ export function useAttachmentUrl(attachmentId: string): AttachmentUrlState {
     async (useCache: boolean): Promise<string | null> => {
       const cachedEntry = cachedAttachmentUrl(config, attachmentId);
       if (useCache && cachedEntry && !shouldRefreshAttachmentUrl(cachedEntry.expiresAt)) {
-        show(cachedEntry.url, cachedEntry.expiresAt);
+        show(cachedEntry.url, cachedEntry.expiresAt, cachedEntry.thumbnailUrl);
         setStatus("ready");
         return cachedEntry.url;
       }
@@ -106,7 +109,7 @@ export function useAttachmentUrl(attachmentId: string): AttachmentUrlState {
       try {
         const value = await requestAttachmentUrl(client, config, attachmentId);
         if (current !== requestId.current) return null;
-        show(value.url, value.expiresAt);
+        show(value.url, value.expiresAt, value.thumbnailUrl);
         setStatus("ready");
         return value.url;
       } catch {
@@ -147,7 +150,7 @@ export function useAttachmentUrl(attachmentId: string): AttachmentUrlState {
         const cachedEntry = cachedAttachmentUrl(config, attachmentId);
         if (cachedEntry && !shouldRefreshAttachmentUrl(cachedEntry.expiresAt)) {
           if (current === requestId.current) {
-            show(cachedEntry.url, cachedEntry.expiresAt);
+            show(cachedEntry.url, cachedEntry.expiresAt, cachedEntry.thumbnailUrl);
             setStatus("ready");
           }
           return cachedEntry.url;
@@ -160,7 +163,7 @@ export function useAttachmentUrl(attachmentId: string): AttachmentUrlState {
       try {
         const value = await requestAttachmentUrl(client, config, attachmentId);
         if (current === requestId.current) {
-          show(value.url, value.expiresAt);
+          show(value.url, value.expiresAt, value.thumbnailUrl);
           setStatus("ready");
         }
         return value.url;
@@ -181,5 +184,5 @@ export function useAttachmentUrl(attachmentId: string): AttachmentUrlState {
     [attachmentId, client, config, hasUsableUrl, show],
   );
 
-  return { url, status, expiresAt, reload, getFreshUrl };
+  return { url, thumbnailUrl, status, expiresAt, reload, getFreshUrl };
 }

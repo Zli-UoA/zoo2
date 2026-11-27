@@ -53,6 +53,45 @@ pub(super) fn note_media(note: &Value) -> Vec<Value> {
     }
     images
 }
+pub(super) fn needs_media_blurhash(item: &Value) -> bool {
+    item["image_id"].is_string() && item["blurhash"].is_null()
+}
+
+pub(super) async fn fill_media_blurhashes(media: &mut [Value]) {
+    let mut images = std::collections::BTreeMap::new();
+    for item in media.iter().filter(|item| needs_media_blurhash(item)) {
+        if let (Some(id), Some(url)) = (item["image_id"].as_str(), item["url"].as_str()) {
+            images.insert(id.to_owned(), url.to_owned());
+        }
+    }
+    let hashes = futures_util::future::join_all(images.into_iter().map(|(id, url)| async move {
+        // Optional metadata must not keep an otherwise valid Note from being delivered.
+        let hash = tokio::time::timeout(Duration::from_secs(5), async {
+            let url = reqwest::Url::parse(&url).ok()?;
+            emoji_cache::get(&format!("media:{id}"), None, || load_image(url, true))
+                .await
+                .ok()?
+                .blurhash
+        })
+        .await
+        .ok()
+        .flatten();
+        (id, hash)
+    }))
+    .await
+    .into_iter()
+    .collect::<std::collections::BTreeMap<_, _>>();
+    for item in media.iter_mut().filter(|item| needs_media_blurhash(item)) {
+        if let Some(hash) = item["image_id"]
+            .as_str()
+            .and_then(|id| hashes.get(id))
+            .and_then(Option::as_deref)
+        {
+            item["blurhash"] = json!(hash);
+        }
+    }
+}
+
 pub(super) fn media(value: &Value) -> Vec<Value> {
     let values = value
         .as_array()
@@ -367,27 +406,30 @@ async fn read_image(
         }
         data.extend_from_slice(&chunk);
     }
-    if media {
+    let blurhash = if media {
         let kind = mime.clone();
         let permit = crate::routes::home_images::DECODERS
             .acquire()
             .await
             .map_err(|_| AppError::RateLimited)?;
-        let valid = tokio::task::spawn_blocking(move || {
+        let (returned_data, hash) = tokio::task::spawn_blocking(move || {
             // Keep the permit in the blocking task if the HTTP request is cancelled.
             let _permit = permit;
-            if crate::routes::home_images::valid_image(&kind, &data) {
-                Some(data)
-            } else {
-                None
-            }
+            let hash = crate::routes::home_images::image_blurhash(&kind, &data);
+            (data, hash)
         })
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
-        data = valid
-            .ok_or_else(|| AppError::BadGateway("Invalid image dimensions or pixels".into()))?;
-    }
-    Ok(emoji_cache::Image { mime, bytes: data })
+        data = returned_data;
+        Some(hash.ok_or_else(|| AppError::BadGateway("Invalid image dimensions or pixels".into()))?)
+    } else {
+        None
+    };
+    Ok(emoji_cache::Image {
+        mime,
+        bytes: data,
+        blurhash,
+    })
 }
 
 // Quote labels use the parsed serialization so Unicode formatting characters cannot
@@ -517,6 +559,31 @@ mod media_proxy_tests {
         let mut bytes = bytes.into_inner();
         bytes.resize(size.max(bytes.len()), 0);
         bytes
+    }
+
+    #[tokio::test]
+    async fn received_media_uses_generated_blurhash_only_when_missing() {
+        let image = payload(png(0), "image/png", true).await.unwrap();
+        let generated = image.blurhash.clone().unwrap();
+        assert!(valid_blurhash(&generated));
+        let original = "LEHV6nWB2yk8pyo0adR*.7kCMdnj";
+        let url = "https://example.test/received-media-blurhash.png";
+        let missing = json!({"mediaType":"image/png","url":url});
+        let mut media = note_media(&json!({"attachment":[
+            missing,
+            {"mediaType":"image/png","url":url,"blurhash":original},
+            {"mediaType":"video/mp4","url":"https://example.test/movie.mp4"},
+        ]}));
+        let key = format!("media:{}", media[0]["image_id"].as_str().unwrap());
+        emoji_cache::get(&key, None, || async { Ok(image) })
+            .await
+            .unwrap();
+
+        fill_media_blurhashes(&mut media).await;
+
+        assert_eq!(media[0]["blurhash"], generated);
+        assert_eq!(media[1]["blurhash"], original);
+        assert!(media[2]["blurhash"].is_null());
     }
 
     #[tokio::test]

@@ -110,6 +110,20 @@ class AndroidImageCacheTest {
         }
     }
 
+    @Test fun reusesCachedRedirectAndSignedImageAfterReopeningClient() = runBlocking {
+        Fixture().use { f ->
+            val signed = f.server.url("/original?signature=one").toString()
+            f.server.enqueue(MockResponse().setResponseCode(307)
+                .setHeader("Location", signed)
+                .setHeader("Cache-Control", "private, max-age=300"))
+            f.server.enqueue(MockResponse().setHeader("Cache-Control", "private, max-age=300").setBody("cached"))
+            f.server.enqueue(MockResponse().setBody("unexpected network request"))
+            f.cache().use { assertEquals("cached", it.image(f.url).decodeToString()) }
+            f.cache().use { assertEquals("cached", it.image(f.url).decodeToString()) }
+            assertEquals(2, f.server.requestCount)
+        }
+    }
+
     @Test fun doesNotPersistNoStoreResponses() = runBlocking {
         Fixture().use { f ->
             for (body in listOf("first", "second")) {

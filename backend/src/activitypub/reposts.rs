@@ -189,7 +189,8 @@ pub(super) async fn store_public_note(
     remote_actor(state, Some(user), &author, false).await?;
     let proof = note_identity::Proof::from_note(note, object)?;
     let emojis = emoji::tags(&note["tag"]);
-    let media = emoji::note_media(note);
+    let mut media = emoji::note_media(note);
+    emoji::fill_media_blurhashes(&mut media).await;
     let mut tx = db.transaction().await?;
     note_identity::reconcile(&mut tx, object, &author, Some(&proof)).await?;
     emoji::remember(&mut tx, &emojis).await?;

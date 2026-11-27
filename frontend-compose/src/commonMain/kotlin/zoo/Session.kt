@@ -251,30 +251,30 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         (it.width.toLong() * it.height * 4).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     }
 
-    suspend fun image(url: String, signedAttachment: Boolean = false): ByteArray {
+    suspend fun image(url: String, signedAttachment: Boolean = false, cacheKey: String? = null): ByteArray {
         val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
-        return imageCache.get(if (signedAttachment) "attachment:$resolved" else resolved) {
+        return imageCache.get(imageCacheKey(url, signedAttachment, cacheKey)) {
             val bytes = if (signedAttachment) platform.attachmentImage(resolved) else platform.image(resolved)
             bytes ?: assetClient.get(resolved).body()
         }
     }
 
-    fun cachedImageBitmap(url: String, signedAttachment: Boolean = false): androidx.compose.ui.graphics.ImageBitmap? =
-        bitmapCache.getIfPresent(imageCacheKey(url, signedAttachment))
+    fun cachedImageBitmap(url: String, signedAttachment: Boolean = false, cacheKey: String? = null): androidx.compose.ui.graphics.ImageBitmap? =
+        bitmapCache.getIfPresent(imageCacheKey(url, signedAttachment, cacheKey))
 
-    private fun imageCacheKey(url: String, signedAttachment: Boolean): String {
+    private fun imageCacheKey(url: String, signedAttachment: Boolean, cacheKey: String?): String {
         val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
-        return if (signedAttachment) "attachment:$resolved" else resolved
+        return if (signedAttachment) "attachment:${cacheKey ?: resolved}" else resolved
     }
 
     /** Static images use the same platform decoder as attachments and animated media. */
     suspend fun imageBitmap(
-        url: String, signedAttachment: Boolean = false, retry: Boolean = false,
+        url: String, signedAttachment: Boolean = false, retry: Boolean = false, cacheKey: String? = null,
     ): androidx.compose.ui.graphics.ImageBitmap =
-        bitmapCache.get(imageCacheKey(url, signedAttachment)) {
-            val bytes = if (!retry) image(url, signedAttachment) else {
+        bitmapCache.get(imageCacheKey(url, signedAttachment, cacheKey)) {
+            val bytes = if (!retry) image(url, signedAttachment, cacheKey) else {
                 val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
-                imageCache.remove(imageCacheKey(url, signedAttachment))
+                imageCache.remove(imageCacheKey(url, signedAttachment, cacheKey))
                 (if (signedAttachment) platform.attachmentImage(resolved) else platform.refreshImage(resolved))
                     ?: assetClient.get(resolved) { header("Cache-Control", "no-cache") }.body()
             }

@@ -11,6 +11,7 @@ use std::{
 pub(crate) struct Image {
     pub mime: String,
     pub bytes: Vec<u8>,
+    pub blurhash: Option<String>,
 }
 #[derive(Clone)]
 struct Entry {
@@ -156,6 +157,7 @@ mod tests {
             Ok(Image {
                 mime: "image/png".into(),
                 bytes: vec![0],
+                blurhash: None,
             }),
             now,
         );
@@ -198,6 +200,7 @@ mod tests {
                 Ok(Image {
                     mime: "image/png".into(),
                     bytes: vec![0; 2 * 1024 * 1024],
+                    blurhash: None,
                 }),
                 now,
             );
@@ -222,6 +225,7 @@ mod tests {
                     Ok(Image {
                         mime: "image/png".into(),
                         bytes: vec![7],
+                        blurhash: None,
                     })
                 }
             })

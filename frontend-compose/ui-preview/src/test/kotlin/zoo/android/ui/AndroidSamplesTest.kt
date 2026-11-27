@@ -74,7 +74,7 @@ class AndroidSamplesTest {
         val following = ui.onNodeWithText("後続の投稿")
         val before = following.getUnclippedBoundsInRoot()
         ui.onNodeWithContentDescription("写真").assertDoesNotExist()
-        ui.runOnIdle { assertEquals(0, loads) }
+        ui.runOnIdle { assertEquals(1, loads) }
         ui.onNodeWithContentDescription("画像を表示").performClick()
         ui.onNodeWithContentDescription("写真").assertExists()
         val hide = ui.onNodeWithContentDescription("画像を隠す")

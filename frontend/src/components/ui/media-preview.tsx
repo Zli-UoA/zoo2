@@ -13,6 +13,7 @@ import { Spinner } from "./spinner";
 /** Shared display and accessible enlargement for channel, encrypted and APub media. */
 export function MediaPreview({
   src,
+  thumbnailSrc,
   name,
   contentType,
   loading,
@@ -28,6 +29,7 @@ export function MediaPreview({
   ...metadata
 }: ImageMetadata & {
   src?: string | null;
+  thumbnailSrc?: string;
   name: string;
   contentType: string;
   loading?: boolean;
@@ -55,6 +57,7 @@ export function MediaPreview({
         : `preview:${name}:${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)}`),
   );
   const [open, setOpen] = useState(initialOpen);
+  const [brokenThumbnail, setBrokenThumbnail] = useState<string | null>(null);
   const [brokenSrc, setBrokenSrc] = useState<string | null>(null);
   const kind = mediaPreviewKind(contentType, name);
   const error = failed || (!!src && brokenSrc === src);
@@ -96,19 +99,22 @@ export function MediaPreview({
       ) : (
         <Spinner label={t("attachments.loading")} className="min-h-32" />
       );
-    if (kind === "image")
+    if (kind === "image") {
+      const thumbnail =
+        !expanded && thumbnailSrc && brokenThumbnail !== thumbnailSrc ? thumbnailSrc : null;
       return (
         <ImagePreview
           {...metadata}
-          src={src}
+          src={thumbnail ?? src}
           alt={name}
           className={
             expanded ? (embedded ? "h-full w-full" : "h-[75dvh] w-full") : "w-full max-h-96"
           }
           style={expanded ? undefined : { aspectRatio: imageAspectRatio(metadata) }}
-          onError={errorHandler}
+          onError={thumbnail ? () => setBrokenThumbnail(thumbnail) : errorHandler}
         />
       );
+    }
     if (kind === "video")
       return (
         <video

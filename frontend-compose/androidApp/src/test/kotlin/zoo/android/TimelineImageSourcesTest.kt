@@ -41,6 +41,15 @@ class TimelineImageSourcesTest {
     }
 
     @Test
+    fun localPostMediaKeepsAnOriginalAndASeparateThumbnail() {
+        val path = "/api/home/images/abc-123"
+        val media = timelinePostMedia(base, obj("url" to path, "media_type" to "image/png"))
+        assertEquals("$base$path", media?.url)
+        assertEquals("$base$path?thumbnail=true", media?.thumbnailUrl)
+        assertNull(media?.previewUrl)
+    }
+
+    @Test
     fun postAndChannelImagesUseStoredDimensions() {
         val hash = "LEHV6nWB2yk8pyo0adR*.7kCMdnj"
         val post = timelinePostMedia(base, obj(

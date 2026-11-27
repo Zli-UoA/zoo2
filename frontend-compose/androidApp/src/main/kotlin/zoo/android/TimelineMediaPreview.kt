@@ -32,19 +32,42 @@ internal suspend fun timelineMediaUrl(session: Session, media: TimelineMedia): S
     media.url ?: session.attachmentLinks.get(requireNotNull(media.attachmentId))
 
 internal fun cachedTimelineImage(session: Session, media: TimelineMedia): ImageBitmap? {
+    val thumbnail = media.thumbnailUrl.takeIf { media.useThumbnail }
+    thumbnail?.let { session.cachedImageBitmap(it) }?.let { return it }
     val publicUrl = media.previewUrl ?: media.url
     if (publicUrl != null) return session.cachedImageBitmap(publicUrl)
-    val signedUrl = media.attachmentId?.let(session.attachmentLinks::cachedUrl) ?: return null
-    return session.cachedImageBitmap(signedUrl, signedAttachment = true)
+    val id = media.attachmentId ?: return null
+    val links = session.attachmentLinks.cachedLinks(id) ?: return null
+    val signedThumbnail = links.thumbnail.takeIf { media.useThumbnail }
+    signedThumbnail?.let { session.cachedImageBitmap(it, signedAttachment = true, cacheKey = "$id:thumbnail") }
+        ?.let { return it }
+    return session.cachedImageBitmap(links.original, signedAttachment = true, cacheKey = "$id:original")
 }
 
-internal suspend fun timelineImage(session: Session, media: TimelineMedia, retry: Boolean = false): ImageBitmap? = try {
-    val usesSignedUrl = media.previewUrl == null && media.url == null && media.attachmentId != null
-    session.imageBitmap(media.previewUrl ?: timelineMediaUrl(session, media), signedAttachment = usesSignedUrl, retry = retry)
-} catch (cancelled: CancellationException) {
-    throw cancelled
-} catch (_: Exception) {
-    null
+internal suspend fun timelineImage(session: Session, media: TimelineMedia, retry: Boolean = false): ImageBitmap? {
+    suspend fun load(url: String, cacheKey: String? = null): ImageBitmap? = try {
+        session.imageBitmap(url, signedAttachment = cacheKey != null, retry = retry, cacheKey = cacheKey)
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Exception) {
+        null
+    }
+
+    val publicUrl = media.previewUrl ?: media.url
+    if (publicUrl != null) {
+        if (media.useThumbnail) media.thumbnailUrl?.let { load(it) }?.let { return it }
+        return load(publicUrl)
+    }
+    val id = media.attachmentId ?: return null
+    val links = try {
+        session.attachmentLinks.getLinks(id, force = retry)
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Exception) {
+        return null
+    }
+    if (media.useThumbnail) links.thumbnail?.let { load(it, "$id:thumbnail") }?.let { return it }
+    return load(links.original, "$id:original")
 }
 
 @Composable
