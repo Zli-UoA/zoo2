@@ -2091,6 +2091,30 @@ test("a Range response with an unreadable body falls back to the cached manifest
   assert.equal(await response.text(), manifest);
 });
 
+test("a Range request for the offline page ignores an HTML fallback", async () => {
+  const offline = '<meta name="zoo-offline" content="true" />offline';
+  const cacheContext = memoryCaches([
+    [
+      "zoo-shell-v2",
+      `${ORIGIN}/offline.html`,
+      basicResponse(offline, { headers: { "content-type": "text/html" } }),
+    ],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () =>
+      basicResponse("<html>app shell</html>", { headers: { "content-type": "text/html" } }),
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/offline.html`,
+    method: "GET",
+    mode: "cors",
+    headers: { get: (name) => (name.toLowerCase() === "range" ? "bytes=0-10" : null) },
+  });
+  assert.equal(await response.text(), offline);
+});
+
 test("a Range request uses the cached manifest on a server error", async () => {
   const manifest = validManifest("#000000");
   const cacheContext = memoryCaches([
@@ -2132,6 +2156,44 @@ test("If-None-Match with a matching ETag returns 304 from the cache", async () =
     headers: { get: (name) => (name.toLowerCase() === "if-none-match" ? '"abc"' : null) },
   });
   assert.equal(response.status, 304);
+});
+
+test("If-None-Match takes priority over If-Modified-Since", async () => {
+  const manifest = validManifest("#ffffff");
+  const cacheContext = memoryCaches([
+    [
+      "zoo-shell-v2",
+      `${ORIGIN}/manifest.webmanifest`,
+      basicResponse(manifest, {
+        headers: {
+          "x-zoo-etag": '"current"',
+          "x-zoo-last-modified": "Wed, 21 Oct 2015 07:28:00 GMT",
+        },
+      }),
+    ],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+    headers: {
+      get: (name) => {
+        const key = name.toLowerCase();
+        if (key === "if-none-match") return '"old"';
+        if (key === "if-modified-since") return "Thu, 22 Oct 2015 07:28:00 GMT";
+        return null;
+      },
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), manifest);
 });
 
 test("If-None-Match uses a weak ETag comparison against the cached manifest", async () => {

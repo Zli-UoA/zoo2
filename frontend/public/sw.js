@@ -509,12 +509,15 @@ async function sanitizedCopy(saved) {
 function cachedForConditional(request, cached) {
   if (cached.type === "error") return cached;
   const value = request.headers?.get?.("if-none-match");
-  if (!value) return cached;
-  const tags = value.split(",").map((part) => part.replace(/^W\//, "").trim());
-  const etag = cached.headers.get("x-zoo-etag")?.replace(/^W\//, "");
-  // If-None-Match: * はどの版にも一致する。ETag は弱い比較で照合する。
-  if (tags.includes("*") || (etag && tags.includes(etag)))
-    return new Response(null, { status: 304 });
+  if (value) {
+    // 前後の空白を除いてから W/ を処理する。ETag が指定されたらこれで判定を終える。
+    const tags = value.split(",").map((part) => part.trim().replace(/^W\//, ""));
+    const etag = cached.headers.get("x-zoo-etag")?.trim().replace(/^W\//, "");
+    // If-None-Match: * はどの版にも一致する。ETag は弱い比較で照合する。
+    if (tags.includes("*") || (etag && tags.includes(etag)))
+      return new Response(null, { status: 304 });
+    return cached;
+  }
   const since = request.headers?.get?.("if-modified-since");
   const modified = cached.headers.get("x-zoo-last-modified");
   if (since && modified && Date.parse(modified) <= Date.parse(since))
@@ -629,6 +632,21 @@ async function fetchRangeAsset(request, path, precondition, _sequence) {
   }
 }
 
+function withoutRange(request) {
+  if (typeof Request !== "undefined" && request instanceof Request) {
+    const headers = new Headers(request.headers);
+    headers.delete("range");
+    return new Request(request, { headers });
+  }
+  const headers = request.headers;
+  return {
+    ...request,
+    headers: {
+      get: (name) => (name.toLowerCase() === "range" ? null : (headers?.get?.(name) ?? null)),
+    },
+  };
+}
+
 const freshAssetWork = new Map();
 
 function handleFreshAsset(request) {
@@ -643,13 +661,17 @@ function handleFreshAsset(request) {
     headers?.get("if-match") ||
     headers?.get("if-unmodified-since")
   ) {
-    if (headers.get("range"))
+    if (headers.get("range")) {
+      // 案内ページの部分応答は try_files の HTML を見分けられないので全文を検証する。
+      if (path === "/offline.html")
+        return fetchConditionalAsset(withoutRange(request), path, sequence);
       return fetchRangeAsset(
         request,
         path,
         Boolean(headers.get("if-match") || headers.get("if-unmodified-since")),
         sequence,
       );
+    }
     return fetchConditionalAsset(request, path, sequence);
   }
   // 同じパスの同時取得を共有し、古い応答が新しい配色を上書きしないようにする。
