@@ -105,7 +105,6 @@ internal fun hasMissingWorkspaceEmoji(body: String, emoji: Map<String, TimelineM
 }
 
 internal fun linkedExcerptNeedsWorkspaceEmoji(body: String, known: Set<String>): Boolean {
-    if ("\$[ruby" !in body) return false
     val candidates = findCustomEmojiShortcodes(body).filter { it !in known && isWorkspaceEmojiCandidate(it) }.toSet()
     if (candidates.isEmpty()) return false
     val excerpt = messageExcerpt(body, customEmojis = known)

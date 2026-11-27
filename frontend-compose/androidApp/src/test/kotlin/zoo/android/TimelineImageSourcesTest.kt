@@ -88,7 +88,7 @@ class TimelineImageSourcesTest {
     }
 
     @Test
-    fun linkExcerptRequestsTheCatalogOnlyWhileTheRubyBaseNeedsIt() {
+    fun linkExcerptRequestsTheCatalogWhenAnUnknownAliasChangesTheSummary() {
         val code = ":猫:"
         val body = "\$[ruby **星**:猫:ねこ]"
         assertTrue(linkedExcerptNeedsWorkspaceEmoji(body, emptySet()))
@@ -101,6 +101,11 @@ class TimelineImageSourcesTest {
         assertTrue(linkedExcerptNeedsWorkspaceEmoji(adjacent, emptySet()))
         assertFalse(linkedExcerptNeedsWorkspaceEmoji(adjacent, images.keys))
         assertEquals("星12:30:猫:", zoo.messageExcerpt(adjacent, customEmojis = images.keys))
+
+        val formattedAlias = ":**猫**:"
+        assertTrue(linkedExcerptNeedsWorkspaceEmoji(formattedAlias, emptySet()))
+        assertFalse(linkedExcerptNeedsWorkspaceEmoji(formattedAlias, setOf(formattedAlias)))
+        assertFalse(linkedExcerptNeedsWorkspaceEmoji(":unknown:", emptySet()))
     }
 
     @Test
