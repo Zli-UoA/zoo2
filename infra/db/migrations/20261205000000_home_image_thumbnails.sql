@@ -38,12 +38,17 @@ BEGIN
 END $$;
 
 -- The legacy application uses one relation for quota and row-locked cleanup.
--- Keep pending rows visible to its quota SELECT only. Unknown queries fail closed.
+-- The exact quota SELECT can include pending rows. Cleanup scans only finite dates,
+-- using the same indexed expression for its upper bound and ORDER BY.
 CREATE VIEW home_image_deletions AS
-SELECT id,uploader_id,file_size,created_at
+SELECT id,uploader_id,file_size,
+       CASE WHEN legacy_write_pending OR original_write_pending OR thumbnail_write_pending
+            THEN 'infinity'::timestamptz ELSE created_at END AS created_at
 FROM home_image_deletion_queue
-WHERE (NOT legacy_write_pending AND NOT original_write_pending AND NOT thumbnail_write_pending)
-   OR current_query() = $legacy_quota$SELECT json_build_object('bytes',(SELECT COALESCE(sum(file_size),0) FROM home_images WHERE uploader_id=$1)+(SELECT COALESCE(sum(file_size),0) FROM home_image_deletions WHERE uploader_id=$1))::text$legacy_quota$;
+WHERE (CASE WHEN legacy_write_pending OR original_write_pending OR thumbnail_write_pending
+            THEN 'infinity'::timestamptz ELSE created_at END) <= (SELECT CASE
+        WHEN current_query() = $legacy_quota$SELECT json_build_object('bytes',(SELECT COALESCE(sum(file_size),0) FROM home_images WHERE uploader_id=$1)+(SELECT COALESCE(sum(file_size),0) FROM home_image_deletions WHERE uploader_id=$1))::text$legacy_quota$
+        THEN 'infinity'::timestamptz ELSE TIMESTAMPTZ '294276-12-31 23:59:59.999999+00' END);
 
 CREATE TABLE apub_media_blurhash_queue (
   post_id text PRIMARY KEY REFERENCES apub_remote_posts(id) ON DELETE CASCADE,
