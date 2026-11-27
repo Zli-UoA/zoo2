@@ -54,8 +54,6 @@ export function ChannelScreen({
   const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
   const channelsQuery = useActiveChannels();
   const usersQuery = useUsers();
-  // ヘッダーの人数はメンバー一覧と同じ全ユーザーで判定する（共有外の無効化メンバーも差し引く）。
-  const allUsersQuery = useAllUsers();
   const channels = channelsQuery.data ?? [];
   const channel = useMemo(
     () => channels.find((candidate) => candidate.id === channelId) ?? null,
@@ -63,6 +61,10 @@ export function ChannelScreen({
   );
   // 権限判定（閲覧可否・参加状態・保留中）は `useChannelAccess` に集約する。
   const access = useChannelAccess(channel);
+  // 参加中・DM では共有ユーザーで足りる。未参加の公開チャンネルだけ人数判定に全件を使う。
+  const needsAllUsers = !!channel && !channel.is_dm && !channel.is_private && !access.isMember;
+  const allUsersQuery = useAllUsers(needsAllUsers);
+  const countUsers = needsAllUsers ? (allUsersQuery.data ?? []) : (usersQuery.data ?? []);
   const dm = useMemo(() => {
     if (!channel?.is_dm) {
       return null;
@@ -129,7 +131,7 @@ export function ChannelScreen({
             : access.canRead
               ? access.isLoading
                 ? null
-                : withoutDeactivatedMembers(access.members, allUsersQuery.data ?? []).length
+                : withoutDeactivatedMembers(access.members, countUsers).length
               : undefined
         }
       />

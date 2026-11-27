@@ -465,6 +465,10 @@ export function getCollections(
     txidMode: resolved.txidMode,
     getCurrentUserId: () => currentUserStore.getState().currentUserId,
   };
+  // direct モードでは全件 Shape を1つだけ作り、users / allUsers の両方から使う。
+  const users = usersCollection(resolved, persistence);
+  const allUsers =
+    resolved.shapeMode === "direct" ? users : allUsersCollection(resolved, persistence);
   const bundle: CollectionsBundle = {
     config: resolved,
     persistence,
@@ -478,12 +482,8 @@ export function getCollections(
       return collection;
     },
     channels: channelsCollection(resolved, dependencies, persistence),
-    users: usersCollection(resolved, persistence),
-    // direct モードでは両者とも同じ全件 Shape。二重購読と別IDの永続化を避ける。
-    allUsers:
-      resolved.shapeMode === "direct"
-        ? usersCollection(resolved, persistence)
-        : allUsersCollection(resolved, persistence),
+    users,
+    allUsers,
     channelUsers: channelUsersCollection(resolved, dependencies, persistence),
     channelLeaves: (userId) => {
       let collection = channelLeaveCache.get(userId);

@@ -1909,7 +1909,7 @@
     {
       "file": "src/components/chat/AppDialogHost.tsx",
       "reason": "ダイアログを開く要求を保持する制御層。表示はAppsDialogのStory、イベント購読はブラウザーテストで確認する。",
-      "checks": ["src/components/chat/AppsDialog.browser.test.tsx"]
+      "checks": ["src/components/chat/AppDialogHost.browser.test.tsx"]
     }
   ]
 }
