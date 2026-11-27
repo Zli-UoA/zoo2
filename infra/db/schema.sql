@@ -4734,3 +4734,12 @@ CREATE TABLE apub_media_blurhash_queue (
   image_retry_counts jsonb
 );
 CREATE INDEX apub_media_blurhash_queue_available ON apub_media_blurhash_queue(available_at,post_id);
+
+-- Signed quote access applies to the fetched version, independently of Inbox delivery.
+CREATE TABLE apub_quote_grants (
+  post_id text NOT NULL REFERENCES apub_remote_posts(id) ON DELETE CASCADE,
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  note_updated_at timestamptz NOT NULL,
+  PRIMARY KEY (post_id,user_id)
+);
+CREATE INDEX apub_quote_grants_user ON apub_quote_grants(user_id);

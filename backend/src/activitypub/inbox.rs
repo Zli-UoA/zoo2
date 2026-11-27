@@ -67,7 +67,11 @@ pub(super) async fn verify_and_store_actor(
 fn object_id(v: &Value) -> Option<&str> {
     v.as_str().or_else(|| v["id"].as_str())
 }
-fn audience<'a>(v: &'a Value, key: &str) -> Vec<&'a str> {
+pub(super) fn note_parent<'a>(note: &'a Value, local_note_prefix: &str) -> Option<&'a str> {
+    object_id(&note["inReplyTo"]).map(|uri| uri.strip_prefix(local_note_prefix).unwrap_or(uri))
+}
+
+pub(super) fn audience<'a>(v: &'a Value, key: &str) -> Vec<&'a str> {
     match &v[key] {
         Value::String(s) => vec![s],
         Value::Array(a) => a.iter().filter_map(Value::as_str).collect(),
@@ -186,11 +190,8 @@ pub(super) async fn receive_verified(
             {
                 return Err(AppError::BadRequest("Invalid note attribution".into()));
             }
-            let parent_uri = object["inReplyTo"]
-                .as_str()
-                .or_else(|| object["inReplyTo"]["id"].as_str());
             let prefix = format!("{}/api/activitypub/notes/", base_url()?);
-            let parent_id = parent_uri.map(|uri| uri.strip_prefix(&prefix).unwrap_or(uri));
+            let parent_id = note_parent(object, &prefix);
             let parents = if let Some(parent) = parent_id {
                 query(&mut tx,"SELECT row_to_json(p)::text FROM home_posts p WHERE p.id=$1 AND p.user_id=$2 AND p.apub AND p.deleted_at IS NULL AND (p.visibility IN ('public','unlisted') OR p.reply_actor=$3 OR EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$2 AND actor_id=$3 AND direction='incoming' AND accepted))",&[parent,user,actor_id]).await?
             } else {

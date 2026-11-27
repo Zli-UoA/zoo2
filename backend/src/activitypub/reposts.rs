@@ -184,27 +184,107 @@ pub(super) async fn store_public_note(
     object: &str,
     note: &Value,
 ) -> Result<(), AppError> {
+    store_original(state, user, object, note, false).await
+}
+
+pub(super) async fn store_quoted_note(
+    state: &AppState,
+    user: &str,
+    object: &str,
+    note: &Value,
+) -> Result<(), AppError> {
+    store_original(state, user, object, note, true).await
+}
+
+async fn store_original(
+    state: &AppState,
+    user: &str,
+    object: &str,
+    note: &Value,
+    allow_followers: bool,
+) -> Result<(), AppError> {
+    let (author, visibility, published, updated) =
+        validate_original(note, object, allow_followers)?;
+    let actor = remote_actor(state, Some(user), &author, false).await?;
+    if visibility == "followers" {
+        let followers = string(&actor, "followers_url")?;
+        if followers.is_empty()
+            || !["to", "cc"]
+                .iter()
+                .any(|key| inbox::audience(note, key).contains(&followers))
+        {
+            return Err(AppError::Forbidden("Unsupported quote audience".into()));
+        }
+    }
     let mut db = state.db.clone();
-    let (author, visibility, published, updated) = validate_public_note(note, object)?;
-    remote_actor(state, Some(user), &author, false).await?;
     let proof = note_identity::Proof::from_note(note, object)?;
     let emojis = emoji::tags(&note["tag"]);
     let media = emoji::note_media(note);
     let mut tx = db.transaction().await?;
+    if visibility == "followers" {
+        one(&mut tx, "SELECT '{}'::text FROM apub_follows WHERE user_id=$1 AND actor_id=$2 AND direction='outgoing' AND accepted", &[user, &author]).await?;
+    }
     note_identity::reconcile(&mut tx, object, &author, Some(&proof)).await?;
     emoji::remember(&mut tx, &emojis).await?;
     emoji::remember(&mut tx, &media).await?;
-    let saved = query(&mut tx, "INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,emojis,origin_verified,media,quote_uri) SELECT $1,$2,$3,$4,$5::timestamptz,$6::timestamptz,$7::jsonb,true,$8::jsonb,NULLIF($9,'') WHERE NOT EXISTS(SELECT 1 FROM apub_remote_tombstones WHERE id=$1 AND actor_id=$2) ON CONFLICT(id) DO UPDATE SET origin_verified=true,content=EXCLUDED.content,visibility=EXCLUDED.visibility,emojis=EXCLUDED.emojis,media=EXCLUDED.media,quote_uri=EXCLUDED.quote_uri,updated_at=EXCLUDED.updated_at WHERE apub_remote_posts.actor_id=EXCLUDED.actor_id AND apub_remote_posts.deleted_at IS NULL AND apub_remote_posts.updated_at<=EXCLUDED.updated_at RETURNING '{}'::text", &[object, &author, &emoji::note_content(note)?, visibility, &published.to_string(), &updated.to_string(), &json!(emojis).to_string(), &json!(media).to_string(), &emoji::note_quote_uri(note).map(|url| url.to_string()).unwrap_or_default()]).await?;
+    let content = emoji::note_content(note)?;
+    let published = published.to_string();
+    let updated = updated.to_string();
+    let emojis = json!(emojis).to_string();
+    let media_json = json!(media).to_string();
+    let quote = emoji::note_quote_uri(note)
+        .map(|url| url.to_string())
+        .unwrap_or_default();
+    let prefix = format!("{}/api/activitypub/notes/", base_url()?);
+    let parent = inbox::note_parent(note, &prefix).unwrap_or("");
+    // Equal timestamps can repair a public cache, but must preserve a private version.
+    let saved = query(&mut tx, r#"
+        INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,emojis,origin_verified,media,quote_uri,parent_id)
+        SELECT $1,$2,$3,$4,$5::timestamptz,$6::timestamptz,$7::jsonb,true,$8::jsonb,NULLIF($9,''),NULLIF($10,'')
+        WHERE NOT EXISTS(SELECT 1 FROM apub_remote_tombstones WHERE id=$1 AND actor_id=$2)
+        ON CONFLICT(id) DO UPDATE SET origin_verified=true,content=EXCLUDED.content,visibility=EXCLUDED.visibility,
+          emojis=EXCLUDED.emojis,media=EXCLUDED.media,quote_uri=EXCLUDED.quote_uri,parent_id=EXCLUDED.parent_id,updated_at=EXCLUDED.updated_at
+        WHERE apub_remote_posts.actor_id=EXCLUDED.actor_id AND apub_remote_posts.deleted_at IS NULL AND (
+          apub_remote_posts.updated_at<EXCLUDED.updated_at
+          OR (apub_remote_posts.updated_at=EXCLUDED.updated_at AND apub_remote_posts.visibility IN ('public','unlisted')))
+        RETURNING '{}'::text
+    "#, &[object, &author, &content, visibility, &published, &updated, &emojis, &media_json, &quote, parent]).await?;
     if !saved.is_empty() {
         emoji::queue_media_blurhash(&mut tx, object, &media).await?;
+    }
+    if visibility == "followers" {
+        // Never grant access to a different payload with the same remote timestamp.
+        // The local image worker may have enriched the saved media with BlurHash.
+        query(&mut tx, r#"
+            INSERT INTO apub_quote_grants(post_id,user_id,note_updated_at)
+            SELECT p.id,$2,p.updated_at FROM apub_remote_posts p
+            WHERE p.id=$1 AND p.actor_id=$3 AND p.deleted_at IS NULL AND p.visibility='followers'
+              AND p.updated_at=$4::timestamptz AND p.published=$10::timestamptz AND p.content=$5 AND p.emojis=$6::jsonb
+              AND p.quote_uri IS NOT DISTINCT FROM NULLIF($8,'')
+              AND p.parent_id IS NOT DISTINCT FROM NULLIF($9,'')
+              AND ARRAY(SELECT item - 'blurhash' FROM jsonb_array_elements(p.media) WITH ORDINALITY AS m(item,ord) ORDER BY ord)
+                = ARRAY(SELECT item - 'blurhash' FROM jsonb_array_elements($7::jsonb) WITH ORDINALITY AS m(item,ord) ORDER BY ord)
+            ON CONFLICT(post_id,user_id) DO UPDATE SET note_updated_at=EXCLUDED.note_updated_at
+            WHERE apub_quote_grants.note_updated_at<EXCLUDED.note_updated_at
+            RETURNING '{}'::text
+        "#, &[object, user, &author, &updated, &content, &emojis, &media_json, &quote, parent, &published]).await?;
     }
     tx.commit().await?;
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn validate_public_note(
     note: &Value,
     object: &str,
+) -> Result<(String, &'static str, jiff::Timestamp, jiff::Timestamp), AppError> {
+    validate_original(note, object, false)
+}
+
+fn validate_original(
+    note: &Value,
+    object: &str,
+    allow_followers: bool,
 ) -> Result<(String, &'static str, jiff::Timestamp, jiff::Timestamp), AppError> {
     let author = string(note, "attributedTo")?;
     if note["id"] != object || note["type"] != "Note" || !same_origin(object, author) {
@@ -213,16 +293,13 @@ pub(super) fn validate_public_note(
         ));
     }
     emoji::note_content(note)?;
-    let has = |key: &str| {
-        note[key].as_str() == Some(PUBLIC)
-            || note[key]
-                .as_array()
-                .is_some_and(|values| values.iter().any(|v| v == PUBLIC))
-    };
-    let visibility = if has("to") {
+    let visibility = if inbox::audience(note, "to").contains(&PUBLIC) {
         "public"
-    } else if has("cc") {
+    } else if inbox::audience(note, "cc").contains(&PUBLIC) {
         "unlisted"
+    } else if allow_followers {
+        // Confirm the actual followers collection and accepted follow before caching.
+        "followers"
     } else {
         return Err(AppError::BadRequest(
             "Private objects cannot be announced".into(),

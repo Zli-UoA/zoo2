@@ -101,6 +101,13 @@ erDiagram
       text display_name
     }
     apub_profiles |o--o| users : apub_profiles_user_id_fkey
+    apub_quote_grants {
+      text post_id PK,FK
+      text user_id PK,FK
+      timestamptz note_updated_at
+    }
+    apub_quote_grants }o--o| apub_remote_posts : apub_quote_grants_post_id_fkey
+    apub_quote_grants }o--o| users : apub_quote_grants_user_id_fkey
     apub_reactions {
       text post_id PK
       text actor_id PK
