@@ -17,14 +17,21 @@ private val atoms = Regex(
 // Shared emoji aliases may include Unicode and spaces. Only registered candidates become tokens.
 private val customEmojiShortcode = Regex(""":[^:\p{Cc}]{1,100}:""")
 
-fun findCustomEmojiShortcodes(source: String): Sequence<String> = sequence {
+fun findCustomEmojiShortcodes(source: String): Sequence<String> =
+    customEmojiMatches(source).map { it.value }
+
+internal fun customEmojiMatches(source: String): Sequence<MatchResult> = sequence {
     var match = customEmojiShortcode.find(source)
     while (match != null) {
-        yield(match.value)
+        yield(match)
         // The closing colon of an unregistered candidate can open a registered shortcode.
         match = customEmojiShortcode.find(source, match.range.first + 1)
     }
 }
+
+fun isWorkspaceEmojiCandidate(code: String): Boolean =
+    code.startsWith(':') && code.endsWith(':') && accountEmojiName(code) == null &&
+        code.removeSurrounding(":").let { it.isNotEmpty() && it == it.trim() && ':' !in it }
 
 private val functionHeader = Regex("[A-Za-z0-9_]+(?:\\.[A-Za-z0-9_=,+.\\-]+)?[ \\t\\n]")
 private val formats = listOf(
@@ -40,12 +47,12 @@ private val formats = listOf(
     Triple("_", "_", "italic"),
 )
 
-private data class InlineSlice(val token: Inline, val start: Int, val end: Int)
+internal data class InlineSlice(val token: Inline, val start: Int, val end: Int)
 
 fun parseInline(source: String, customEmojis: Set<String> = emptySet()): List<Inline> =
     inlineSlices(source, customEmojis).map { it.token }
 
-private fun inlineSlices(source: String, customEmojis: Set<String> = emptySet()): List<InlineSlice> =
+internal fun inlineSlices(source: String, customEmojis: Set<String> = emptySet()): List<InlineSlice> =
     MfmScanner(source.length).inlineSlices(source, customEmojis)
 fun richSegments(source: String): List<Pair<String, Boolean>> = MfmScanner(source.length).richSegments(source)
 
@@ -446,8 +453,10 @@ internal fun linkDestinationEnd(text: String, start: Int, step: () -> Boolean): 
 data class MfmRuby(val base: String, val reading: String)
 
 /** The reading is root text; spaces inside markup belong to the base. */
-fun mfmRuby(source: String, customEmojis: Set<String> = emptySet()): MfmRuby {
-    val slices = inlineSlices(source, customEmojis)
+fun mfmRuby(source: String, customEmojis: Set<String> = emptySet()): MfmRuby =
+    mfmRuby(source, inlineSlices(source, customEmojis))
+
+internal fun mfmRuby(source: String, slices: List<InlineSlice>): MfmRuby {
     val last = slices.lastOrNull() ?: return MfmRuby(source, "")
     if (last.token.kind != "text") return MfmRuby(source, "")
     val rawSpace = (last.start until last.end).firstOrNull { source[it].isWhitespace() }

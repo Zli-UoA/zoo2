@@ -4,12 +4,11 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import zoo.Row
-import zoo.accountEmojiName
 import zoo.array
 import zoo.endpoint
 import zoo.findCustomEmojiShortcodes
 import zoo.flag
-import zoo.messageExcerpt
+import zoo.isWorkspaceEmojiCandidate
 import zoo.nested
 import zoo.publicUrl
 import zoo.rows
@@ -95,24 +94,9 @@ internal fun timelineBodyEmojis(
     }
 }
 
-internal fun isWorkspaceEmojiCandidate(code: String): Boolean =
-    code.startsWith(':') && code.endsWith(':') && accountEmojiName(code) == null &&
-        code.removeSurrounding(":").let { it.isNotEmpty() && it == it.trim() && ':' !in it }
-
 internal fun hasMissingWorkspaceEmoji(body: String, emoji: Map<String, TimelineMedia>): Boolean {
     val candidates = findCustomEmojiShortcodes(body).filter { it !in emoji && isWorkspaceEmojiCandidate(it) }.toSet()
     return candidates.isNotEmpty() && containsRenderedEmoji(body, emoji.keys, candidates)
-}
-
-internal fun linkedExcerptNeedsWorkspaceEmoji(body: String, known: Set<String>): Boolean {
-    val candidates = findCustomEmojiShortcodes(body).filter { it !in known && isWorkspaceEmojiCandidate(it) }.toSet()
-    if (candidates.isEmpty()) return false
-    val excerpt = messageExcerpt(body, customEmojis = known)
-    return candidates.any { candidate ->
-        val withCandidate = messageExcerpt(body, customEmojis = known + candidate)
-        // A speculative candidate can hide a known emoji at a shared colon.
-        withCandidate.split(candidate).size > excerpt.split(candidate).size
-    }
 }
 
 private fun inlineEmoji(name: String, url: String) =

@@ -12,6 +12,7 @@ import zoo.android.ui.EntryContentText
 import zoo.android.ui.displayedText
 import zoo.android.ui.TimelineMedia
 import zoo.android.ui.TimelineMediaKind
+import zoo.messageExcerptNeedsWorkspaceEmoji
 import zoo.obj
 
 class TimelineImageSourcesTest {
@@ -91,21 +92,25 @@ class TimelineImageSourcesTest {
     fun linkExcerptRequestsTheCatalogWhenAnUnknownAliasChangesTheSummary() {
         val code = ":猫:"
         val body = "\$[ruby **星**:猫:ねこ]"
-        assertTrue(linkedExcerptNeedsWorkspaceEmoji(body, emptySet()))
+        assertTrue(messageExcerptNeedsWorkspaceEmoji(body, emptySet()))
         val images = timelineBodyEmojis(base, obj(), obj(), body, false, mapOf(code to "$base/emoji/cat"))
-        assertFalse(linkedExcerptNeedsWorkspaceEmoji(body, images.keys))
-        assertFalse(linkedExcerptNeedsWorkspaceEmoji("`$body`", emptySet()))
+        assertFalse(messageExcerptNeedsWorkspaceEmoji(body, images.keys))
+        assertFalse(messageExcerptNeedsWorkspaceEmoji("`$body`", emptySet()))
         assertEquals("星:猫:", zoo.messageExcerpt(body, customEmojis = images.keys))
 
         val adjacent = "\$[ruby **星**12:30:猫:ねこ]"
-        assertTrue(linkedExcerptNeedsWorkspaceEmoji(adjacent, emptySet()))
-        assertFalse(linkedExcerptNeedsWorkspaceEmoji(adjacent, images.keys))
+        assertTrue(messageExcerptNeedsWorkspaceEmoji(adjacent, emptySet()))
+        assertFalse(messageExcerptNeedsWorkspaceEmoji(adjacent, images.keys))
         assertEquals("星12:30:猫:", zoo.messageExcerpt(adjacent, customEmojis = images.keys))
 
+        assertTrue(messageExcerptNeedsWorkspaceEmoji("\$[ruby :猫:ねこ]", emptySet()))
+        assertFalse(messageExcerptNeedsWorkspaceEmoji("\$[ruby :猫:ねこ]", images.keys))
+        assertFalse(messageExcerptNeedsWorkspaceEmoji((1..100).joinToString(" ") { ":e$it:" }, emptySet()))
+
         val formattedAlias = ":**猫**:"
-        assertTrue(linkedExcerptNeedsWorkspaceEmoji(formattedAlias, emptySet()))
-        assertFalse(linkedExcerptNeedsWorkspaceEmoji(formattedAlias, setOf(formattedAlias)))
-        assertFalse(linkedExcerptNeedsWorkspaceEmoji(":unknown:", emptySet()))
+        assertTrue(messageExcerptNeedsWorkspaceEmoji(formattedAlias, emptySet()))
+        assertFalse(messageExcerptNeedsWorkspaceEmoji(formattedAlias, setOf(formattedAlias)))
+        assertFalse(messageExcerptNeedsWorkspaceEmoji(":unknown:", emptySet()))
     }
 
     @Test

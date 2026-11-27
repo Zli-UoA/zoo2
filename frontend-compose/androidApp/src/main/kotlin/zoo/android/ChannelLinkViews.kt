@@ -21,6 +21,7 @@ import zoo.android.ui.ChannelLinkProvider
 import zoo.android.ui.ChannelLinkView
 import zoo.android.ui.UiIcon
 import zoo.linkedChannel
+import zoo.messageExcerptNeedsWorkspaceEmoji
 import zoo.parseChannelLink
 import zoo.resolveChannelLink
 import zoo.text
@@ -84,7 +85,7 @@ private fun channelLinkState(
             val body = linked.text("content")
             val codes = timelineBodyEmojis(session.config.apiBaseUrl, linked, linked, body,
                 isPost = false, workspace = workspaceEmojis()).keys
-            needsWorkspaceEmoji = linkedExcerptNeedsWorkspaceEmoji(body, codes)
+            needsWorkspaceEmoji = messageExcerptNeedsWorkspaceEmoji(body, codes)
             codes
         },
         hidesContent = { messageRichContent(it).hidesBody },
