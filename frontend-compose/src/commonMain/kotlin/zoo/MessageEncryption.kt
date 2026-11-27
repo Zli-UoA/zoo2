@@ -31,7 +31,7 @@ interface MessageEncryption {
         attachments: List<JsonObject> = emptyList(),
     )
 
-    suspend fun edit(message: Row, body: String)
+    suspend fun edit(message: Row, body: String, mentions: EncryptedMentions? = null)
     suspend fun decrypt(message: Row): DecryptedBody
 }
 

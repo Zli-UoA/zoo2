@@ -13,7 +13,7 @@
 | 通知 | [ライト](images/android-design/rebuild/notifications-light.png) | [ダーク](images/android-design/rebuild/notifications-dark.png) |
 | Bubble | [ライト](images/android-design/rebuild/bubble-light.png) | [ダーク](images/android-design/rebuild/bubble-dark.png) |
 | 設定 | [ライト](images/android-design/rebuild/settings-light.png) | [ダーク](images/android-design/rebuild/settings-dark.png) |
-| 会話・待機中 | [ライト](images/android-design/rebuild/conversation-idle-light.png) | [ダーク](images/android-design/rebuild/conversation-idle-dark.png) |
+| 会話・待機中（日付と未読の区切り） | [ライト](images/android-design/rebuild/conversation-idle-light.png) | [ダーク](images/android-design/rebuild/conversation-idle-dark.png) |
 | 会話・入力中 | [ライト](images/android-design/rebuild/conversation-light.png) | [ダーク](images/android-design/rebuild/conversation-dark.png) |
 | 全画面入力 | [ライト](images/android-design/rebuild/composer-light.png) | [ダーク](images/android-design/rebuild/composer-dark.png) |
 | スレッド | [ライト](images/android-design/rebuild/thread-light.png) | [ダーク](images/android-design/rebuild/thread-dark.png) |
@@ -51,7 +51,7 @@
 | 全文検索・古い月が残る | [ライト](images/android-design/rebuild/search-older-light.png) | [ダーク](images/android-design/rebuild/search-older-dark.png) |
 | 全文検索・エラー | [ライト](images/android-design/rebuild/search-error-light.png) | [ダーク](images/android-design/rebuild/search-error-dark.png) |
 
-絵文字ピッカーは画面下部に開き、つまみを上にドラッグすると全画面へ広がる。画面幅に応じて列数を変える。720dp幅の表示では14列になる。[ワイド表示（1440×1520px）](images/android-design/rebuild/emoji-picker-wide-light.png)
+絵文字ピッカーは画面下部に開き、つまみを上にドラッグすると全画面へ広がる。標準絵文字は種類別、カスタム絵文字は登録カテゴリ別に並べる。検索時は一致する絵文字を関連度順に表示する。画面幅に応じて列数を変える。720dp幅の表示では14列になる。[ワイド表示（1440×1520px）](images/android-design/rebuild/emoji-picker-wide-light.png)
 
 ```sh
 cd frontend-compose

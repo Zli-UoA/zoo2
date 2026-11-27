@@ -2,6 +2,10 @@ package zoo.android.ui
 
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.tween
@@ -27,10 +31,12 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.CompositionLocalProvider
@@ -92,6 +98,7 @@ internal data class TimelineItem(
     /** 本文に書いた、このアプリのチャンネル・メッセージへのリンク（埋め込みカードを出す。外部には送らない）。 */
     val channelLinks: List<String> = emptyList(),
     val emoji: Map<String, TimelineMedia> = emptyMap(),
+    val needsWorkspaceEmoji: Boolean = false,
     val avatar: String? = null,
     val attachedImageUrls: Set<String> = emptySet(),
     /** 復号できなかった理由（docs/e2ee.md の「受信時の検証」）。本文の代わりに出す。 */
@@ -103,6 +110,10 @@ internal data class TimelineItem(
     /** 暗号化した添付（`attachment_id` → 本文の `attachments` の値の JSON。鍵を含むので表示と取得にだけ使う）。 */
     val encryptedFiles: Map<String, String> = emptyMap(),
     val postAuthor: zoo.Row? = null,
+    val allowedMentions: Set<String>? = null,
+    val mentionsCurrentUser: Boolean = false,
+    val dateDivider: String? = null,
+    val unreadDivider: String? = null,
 )
 internal data class ChannelItem(
     val id: String,
@@ -131,6 +142,10 @@ internal sealed interface AndroidScreen {
         val loadOlder: Boolean = false,
         val historyReady: Boolean = true,
         val retrySync: (() -> Unit)? = null,
+        val unreadPositionPending: Boolean = false,
+        val unreadHistoryIncomplete: Boolean = false,
+        val onUnreadPositioned: (() -> Unit)? = null,
+        val onReadThrough: ((String?) -> Unit)? = null,
     ) : AndroidScreen
     data class Thread(
         val channelName: String, val root: TimelineItem, val replies: List<TimelineItem>, val input: InputState,
@@ -378,11 +393,21 @@ private fun RenderAndroidScreen(
                             { dispatch(AndroidUiAction.StartCall) })
                     }
                 }) { headerHeight, headerVisible ->
+                    val visibleHeaderHeight = if (headerVisible) headerHeight else 0.dp
+                    if (screen.unreadHistoryIncomplete) Spacer(Modifier.height(visibleHeaderHeight))
                     screen.retrySync?.let { retry ->
                         FeedLoadError(androidLabel("common.errors.network", "通信エラー"), colors, retry)
                     }
-                    TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = interaction.swipeReply, allowThreads = true, focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true, historyReady = screen.historyReady,
-                        topContentPadding = headerHeight, headerOverlayHeight = if (headerVisible) headerHeight else 0.dp,
+                    if (screen.unreadHistoryIncomplete) {
+                        Text(androidLabel("threads.unreadTooOld", "これより古い未読は読み込まれていません"),
+                            Modifier.padding(horizontal = 16.dp, vertical = 8.dp), color = colors.secondary)
+                    }
+                    TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = interaction.swipeReply, allowThreads = true, focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true, historyReady = screen.historyReady, reducedMotion = interaction.reducedMotion,
+                        unreadPositionPending = screen.unreadPositionPending,
+                        onUnreadPositioned = screen.onUnreadPositioned,
+                        onReadThrough = screen.onReadThrough.takeIf { foreground && !screen.unreadHistoryIncomplete },
+                        topContentPadding = if (screen.unreadHistoryIncomplete) 0.dp else headerHeight,
+                        headerOverlayHeight = if (screen.unreadHistoryIncomplete) 0.dp else visibleHeaderHeight,
                         loadEarlier = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderMessages) } } else null)
                 }
             }
@@ -392,7 +417,7 @@ private fun RenderAndroidScreen(
                 Text("# ${screen.channelName}", Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                     color = colors.secondary, fontSize = 13.sp)
                 TimelineWithInput(listOf(screen.root) + screen.replies, screen.input, colors, dispatch,
-                    focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true, historyReady = screen.historyReady,
+                    focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true, historyReady = screen.historyReady, reducedMotion = interaction.reducedMotion,
                     loadEarlier = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderMessages) } } else null)
             }
             is AndroidScreen.OpeningConversation -> {
@@ -598,7 +623,7 @@ private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, d
                         color = colors.foreground,
                         fontWeight = when {
                             channel.isUserName -> AndroidWeights.userName
-                            channel.unread -> AndroidWeights.emphasis
+                            channel.unread -> AndroidWeights.unreadChannel
                             else -> AndroidWeights.body
                         },
                         maxLines = 1,
@@ -627,9 +652,14 @@ internal fun ColumnScope.TimelineWithInput(
     loadEarlier: (() -> Unit)? = null,
     topContentPadding: Dp = 0.dp,
     headerOverlayHeight: Dp = 0.dp,
+    unreadPositionPending: Boolean = false,
+    onUnreadPositioned: (() -> Unit)? = null,
+    onReadThrough: ((String?) -> Unit)? = null,
+    reducedMotion: Boolean = false,
     imeInsets: WindowInsets = WindowInsets.ime.exclude(WindowInsets.systemBars),
 ) {
     val scroll = rememberLazyListState()
+    val density = LocalDensity.current
     val expanded by rememberUpdatedState(input.expanded)
     var resizing by remember { mutableStateOf(false) }
     val overlayInput = input.expanded || resizing
@@ -662,16 +692,43 @@ internal fun ColumnScope.TimelineWithInput(
         requestEarlier?.invoke()
     }
     var openedTarget by rememberSaveable { mutableStateOf<String?>(null) }
+    var jumpRequest by remember { mutableStateOf<String?>(null) }
+    var jumpIntensity by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(jumpRequest, focusRequest, reducedMotion) {
+        jumpIntensity = 0f
+        if (focusRequest != null && jumpRequest == focusRequest) {
+            if (!reducedMotion) {
+                repeat(3) {
+                    jumpIntensity = 1f
+                    kotlinx.coroutines.delay(83)
+                    jumpIntensity = 0f
+                    kotlinx.coroutines.delay(83)
+                }
+            }
+            jumpIntensity = 1f
+            kotlinx.coroutines.delay(if (reducedMotion) 2000 else 1502)
+            // Use elapsed time so a system animation scale of zero still gets the quiet fade.
+            val fadeStart = withFrameNanos { it }
+            while (jumpIntensity > 0f) {
+                jumpIntensity = withFrameNanos { frame ->
+                    (1f - (frame - fadeStart) / 500_000_000f).coerceAtLeast(0f)
+                }
+            }
+        }
+    }
     var seenFocusRequest by rememberSaveable { mutableStateOf<String?>(null) }
     var followedSend by rememberSaveable { mutableStateOf<String?>(null) }
     var anchor by rememberSaveable { mutableStateOf<String?>(null) }
     val restoredAnchor = remember { anchor }
     val restoredOffset = remember { scroll.firstVisibleItemScrollOffset }
-    var restorePending by remember { mutableStateOf(restoredAnchor != null) }
     var followEnd by rememberSaveable { mutableStateOf(false) }
+    var restorePending by remember { mutableStateOf(restoredAnchor != null && !followEnd) }
     val focusedIndex = entries.indexOfFirst { it.id == focusMessage }
     val restoredIndex = if (restorePending && !followEnd) entries.indexOfFirst { it.entryKey == restoredAnchor } else -1
-    LaunchedEffect(input.expanded, input.lastSend, focusRequest, focusedIndex, entries.isNotEmpty(), restoredIndex, historyReady) {
+    val unreadIndex = entries.indexOfFirst { it.unreadDivider != null }
+    val seekUnread = onUnreadPositioned != null
+    LaunchedEffect(input.expanded, input.lastSend, focusRequest, focusedIndex, entries.isNotEmpty(),
+        restoredIndex, historyReady, unreadPositionPending, unreadIndex, seekUnread) {
         if (seenFocusRequest != focusRequest) {
             seenFocusRequest = focusRequest
             if (focusRequest != null) {
@@ -690,14 +747,28 @@ internal fun ColumnScope.TimelineWithInput(
                 followEnd = true
                 positioned = true
                 scroll.requestScrollToItem(entries.lastIndex)
+                onUnreadPositioned?.invoke()
             }
             focusedIndex >= 0 && openedTarget != focusRequest -> {
                 restorePending = false
                 followEnd = false
-                scroll.requestScrollToItem(focusedIndex)
+                // Complete the layout before the read observer can see this request as handled.
+                scroll.scrollToItem(focusedIndex)
+                jumpRequest = focusRequest
                 openedTarget = focusRequest
                 positioned = true
+                onUnreadPositioned?.invoke()
             }
+            focusMessage == null && !unreadPositionPending && unreadIndex >= 0 &&
+                (seekUnread || (!positioned && !restorePending)) -> {
+                restorePending = false
+                followEnd = false
+                scroll.scrollToItem(unreadIndex, -with(density) { headerOverlayHeight.roundToPx() })
+                followEnd = !scroll.canScrollForward
+                positioned = true
+                onUnreadPositioned?.invoke()
+            }
+            seekUnread && unreadPositionPending -> Unit
             restoredIndex >= 0 -> {
                 scroll.requestScrollToItem(restoredIndex, restoredOffset)
                 restorePending = false
@@ -708,21 +779,43 @@ internal fun ColumnScope.TimelineWithInput(
                 positioned = true
                 scroll.requestScrollToItem(if (allowThreads) entries.lastIndex else 0)
             }
-            focusMessage == null && allowThreads && !positioned -> {
+            focusMessage == null && allowThreads && !positioned && !unreadPositionPending -> {
                 scroll.scrollToItem(entries.lastIndex)
                 followEnd = true
                 positioned = true
             }
         }
+        if (seekUnread && !unreadPositionPending && (unreadIndex < 0 || (focusRequest != null && openedTarget == focusRequest))) {
+            onUnreadPositioned()
+        }
     }
-    FollowHistoryDuringIme(scroll, entries, imeInsets, input.expanded, followEnd, focusRequest,
+    val latestEntry by rememberUpdatedState(entries.lastOrNull())
+    val reportReadThrough by rememberUpdatedState(onReadThrough)
+    val canReportRead = onReadThrough != null && historyReady && !unreadPositionPending && !seekUnread && !overlayInput
+    LaunchedEffect(scroll, canReportRead, focusRequest) {
+        if (!canReportRead) return@LaunchedEffect
+        val report = reportReadThrough ?: return@LaunchedEffect
+        try {
+            snapshotFlow {
+                val entry = latestEntry
+                val last = scroll.layoutInfo.visibleItemsInfo.lastOrNull()
+                entry?.id?.takeIf { positioned && !restorePending && !scroll.canScrollForward &&
+                    !scroll.isScrollInProgress && (focusRequest == null || openedTarget == focusRequest) &&
+                    last?.key == entry.entryKey }
+            }.collect { report(it) }
+        } finally {
+            report(null)
+        }
+    }
+    val canFollowEnd by rememberUpdatedState(!unreadPositionPending && !seekUnread)
+    FollowHistoryDuringIme(scroll, entries, imeInsets, input.expanded, followEnd && canFollowEnd, focusRequest,
         focusRequest != null && openedTarget != focusRequest)
 
     // Viewport, row height and item count can all change without user scrolling.
     // Only follow those changes while the reader is at the end or has just sent a message.
     LaunchedEffect(scroll) {
         var wasScrolling = false
-        snapshotFlow { Triple(scroll.isScrollInProgress, scroll.layoutInfo, followEnd to (expanded || resizing)) }
+        snapshotFlow { Triple(scroll.isScrollInProgress, scroll.layoutInfo, (followEnd && canFollowEnd) to (expanded || resizing)) }
             .collect { (scrolling, layout, tracking) ->
                 if (tracking.second) return@collect
                 if (scrolling) {
@@ -734,7 +827,7 @@ internal fun ColumnScope.TimelineWithInput(
                         wasScrolling = false
                     }
                     if (layout.viewportSize.height > 0 && layout.totalItemsCount > 0) {
-                        if (followEnd && scroll.canScrollForward) {
+                        if (followEnd && canFollowEnd && scroll.canScrollForward) {
                             val lastIndex = layout.totalItemsCount - 1
                             val offset = layout.visibleItemsInfo.lastOrNull()?.takeIf { it.index == lastIndex }?.size ?: 0
                             scroll.requestScrollToItem(lastIndex, offset)
@@ -759,7 +852,9 @@ internal fun ColumnScope.TimelineWithInput(
             if (maxHeight > 0.dp && entries.isNotEmpty() && (!input.expanded || resizing)) {
                 Timeline(entries, colors, Modifier.fillMaxSize().testTag("conversation-timeline"), dispatch, posts = posts,
                     swipeReply = swipeReply, allowThreads = allowThreads, scroll = scroll, topContentPadding = topContentPadding,
-                    headerOverlayHeight = headerOverlayHeight)
+                    headerOverlayHeight = headerOverlayHeight,
+                    focusMessage = focusMessage.takeIf { jumpRequest == focusRequest },
+                    focusIntensity = { jumpIntensity })
             }
         }
         Box(Modifier.onSizeChanged { if (!overlayInput) compactInputHeight = it.height }
@@ -860,6 +955,8 @@ private fun Timeline(
     scroll: LazyListState = rememberLazyListState(),
     topContentPadding: Dp = 0.dp,
     headerOverlayHeight: Dp = 0.dp,
+    focusMessage: String? = null,
+    focusIntensity: () -> Float = { 0f },
 ) {
     if (entries.isEmpty() && header == null) return
     var menuId by remember { mutableStateOf<String?>(null) }
@@ -874,8 +971,23 @@ private fun Timeline(
             if (header != null) item { header() }
             items(entries, key = { it.entryKey }) { entry ->
                 CompositionLocalProvider(LocalBringIntoViewSpec provides inheritedBringIntoView) {
+                    entry.dateDivider?.let { ConversationDivider(it, colors) }
+                    entry.unreadDivider?.let { ConversationDivider(it, colors, unread = true) }
                     Column(
                         Modifier.fillMaxWidth().testTag("timeline-entry-${entry.id}")
+                            .then(if (entry.mentionsCurrentUser || entry.id == focusMessage) Modifier.drawBehind {
+                                val accentWidth = 3.dp.toPx()
+                                val start = if (layoutDirection == androidx.compose.ui.unit.LayoutDirection.Ltr) 0f
+                                    else size.width - accentWidth
+                                fun highlight(color: Color, backgroundAlpha: Float, intensity: Float) {
+                                    drawRoundRect(color.copy(alpha = backgroundAlpha * intensity),
+                                        cornerRadius = CornerRadius(8.dp.toPx()))
+                                    drawRect(color.copy(alpha = intensity), topLeft = Offset(start, 0f),
+                                        size = Size(accentWidth, size.height))
+                                }
+                                if (entry.mentionsCurrentUser) highlight(colors.messageMention, .08f, 1f)
+                                if (entry.id == focusMessage) highlight(colors.messageTarget, .16f, focusIntensity())
+                            } else Modifier)
                             .then(if (posts) Modifier.combinedClickable(
                                 onClick = { dispatch(AndroidUiAction.OpenPost(entry.id)) },
                                 onLongClick = { menuId = entry.id },
@@ -906,7 +1018,8 @@ private fun Timeline(
                                         fontSize = entryTextSize, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
                                 }
                                 if (!entry.richContent.hidesBody && entry.body.isNotBlank()) {
-                                    EntryBody(entry.body, colors.foreground, entryTextSize, entry.emoji)
+                                    EntryBody(entry.body, colors.foreground, entryTextSize, entry.emoji,
+                                        mentionColors = colors, allowedMentions = entry.allowedMentions)
                                 }
                                 EntryBlocks(entry.richContent.blocks, colors, entryTextSize, entry.emoji)
                                 entry.attachments.forEach { (id, name) ->
@@ -1067,6 +1180,21 @@ private fun conversationGestures(open: (() -> Unit)?, menu: () -> Unit, swipeRep
                 })
             }
         }
+}
+
+@Composable
+private fun ConversationDivider(label: String, colors: AndroidColors, unread: Boolean = false) {
+    val line = if (unread) colors.unread else colors.inputBoundary
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        HorizontalDivider(Modifier.weight(1f), color = line)
+        Text(label, color = if (unread) colors.unread else colors.secondary,
+            fontSize = 12.sp, fontWeight = AndroidWeights.emphasis)
+        HorizontalDivider(if (unread) Modifier.width(24.dp) else Modifier.weight(1f), color = line)
+    }
 }
 
 /** 暗号化に切り替えた境目（Web の `MessageList` の区切り）。上は平文、下は暗号化したメッセージ。 */

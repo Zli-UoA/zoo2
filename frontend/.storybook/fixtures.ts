@@ -88,6 +88,7 @@ export function createStoryCollections(input: StoryCollectionsInput = {}): Colle
 
   const channels = rowsCollection<ChannelRow>("channels", (row) => row.id, input.channels ?? []);
   const users = rowsCollection<UserRow>("users", (row) => row.id, input.users ?? []);
+  const allUsers = rowsCollection<UserRow>("allUsers", (row) => row.id, input.users ?? []);
   const channelUsers = rowsCollection<ChannelUserRow>(
     "channelUsers",
     (row) => `${row.user_id}:${row.channel_id}`,
@@ -153,6 +154,7 @@ export function createStoryCollections(input: StoryCollectionsInput = {}): Colle
     config,
     channels,
     users,
+    allUsers,
     channelUsers,
     channelNotificationSettings: (userId: string) => {
       let collection = notificationSettingsCache.get(userId);

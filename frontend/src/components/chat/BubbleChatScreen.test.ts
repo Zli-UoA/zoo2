@@ -32,7 +32,7 @@ vi.mock("../../hooks/useCurrentUser", () => ({
 }));
 
 vi.mock("../../hooks/useRealtime", () => ({
-  useUsers: () => ({
+  useAllUsers: () => ({
     data: [
       {
         id: "user-me",

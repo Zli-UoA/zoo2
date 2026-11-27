@@ -13,7 +13,7 @@ import { useTranslation } from "react-i18next";
 
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
 import { useGlobalSearch } from "../../../hooks/useGlobalSearch";
-import { useActiveChannels, useUsers } from "../../../hooks/useRealtime";
+import { useActiveChannels, useAllUsers } from "../../../hooks/useRealtime";
 import { useCollections } from "../../../lib/electric/collections-context";
 import type { ChannelUserRow } from "../../../lib/electric/types";
 import { ScreenHeader } from "../../layout/PaneHeader";
@@ -88,7 +88,7 @@ export function SearchScreen() {
   const search = useGlobalSearch(queryProblem ? "" : query, kind, filters);
   const terms = useMemo(() => searchTerms(query), [query]);
   const { currentUserId } = useCurrentUser();
-  const usersQuery = useUsers();
+  const usersQuery = useAllUsers();
   const users = useMemo(
     () => new Map((usersQuery.data ?? []).map((row) => [row.id, row])),
     [usersQuery.data],

@@ -22,6 +22,8 @@ import type { FeedMessage } from "./messages/messageFormat";
 
 /** How many pages back we look for the unread divider before leaving it to scrolling. */
 const MAX_UNREAD_PAGES = 5;
+/** 未読の範囲を少ない往復で覆うため、通常の投稿一覧より大きいページを使う。 */
+const CATCHUP_PAGE_SIZE = 150;
 
 /**
  * One conversation's unread history, rendered with the ordinary message list
@@ -47,7 +49,7 @@ export function CatchUpMessagePage({
   loadOlderRef?: MutableRefObject<(() => void) | null>;
 }) {
   const { t } = useTranslation();
-  const feed = useMessageFeed(channelId);
+  const feed = useMessageFeed(channelId, { pageSize: CATCHUP_PAGE_SIZE });
   const { currentUserId } = useCurrentUser();
   const messages = feed.data as FeedMessage[];
   const usersQuery = useUsers();

@@ -33,6 +33,8 @@ import {
   buildChannelScrollKey,
   classifyScrollChange,
   computeInitialScrollPlan,
+  findVisibleMessageAnchor,
+  getAnchorScrollDelta,
   getChannelMeasurementCache,
   getChannelMeasurementCacheGeneration,
   isNearBottom,
@@ -43,6 +45,12 @@ import {
   snapshot,
   type ScrollSnapshot,
 } from "./messageScroll";
+import {
+  decideUnreadLoad,
+  isUnreadCovered,
+  resolveUnreadBoundaryId,
+} from "./messageUnreadBoundary";
+import { useLoadingTimeout } from "./useLoadingTimeout";
 import { useMediaQuery } from "../../layout/useMediaQuery";
 
 const ESTIMATED_ROW_HEIGHT = 64;
@@ -50,10 +58,6 @@ const DEFAULT_VIEWPORT_HEIGHT = 600;
 const SKELETON_ROWS = [0, 1, 2, 3, 4, 5];
 /** 上端からこの距離まで来たら、過去のメッセージを読み足す。 */
 const LOAD_OLDER_THRESHOLD = 64;
-/** 未読の区切りを置くために、既読位置まで読み足すページ数の上限。 */
-const MAX_UNREAD_PAGES = 20;
-/** Shape が無言で止まったときにスケルトン無限表示を避けるための上限。 */
-const LOADING_TIMEOUT_MS = 8_000;
 /** 初回位置合わせが非同期レイアウト計測で収束するまでの待機フレーム上限。 */
 const MAX_SETTLE_FRAMES = 5;
 /** バックグラウンドタブ等で rAF が止まった場合のフォールバック表示時間。 */
@@ -139,20 +143,6 @@ function MessageState({
       {action}
     </div>
   );
-}
-
-/** 読み込みが長時間終わらないときだけ true にする。 */
-function useLoadingTimeout(active: boolean, timeoutMs = LOADING_TIMEOUT_MS): boolean {
-  const [timedOut, setTimedOut] = useState(false);
-  useEffect(() => {
-    if (!active) {
-      setTimedOut(false);
-      return;
-    }
-    const timer = setTimeout(() => setTimedOut(true), timeoutMs);
-    return () => clearTimeout(timer);
-  }, [active, timeoutMs]);
-  return active && timedOut;
 }
 
 type MessageItem = ReturnType<typeof buildMessageItems>[number];
@@ -247,12 +237,12 @@ export function MessageList({
   }, [hasOlder, isLoadingOlder, onLoadOlder]);
   // 読み取り専用画面では既読 API の代わりに渡された境界を使う。
   // 既読位置の取得に失敗しても保存済みのメッセージは残し、区切りだけを出さない。
-  const boundaryId =
-    unreadBoundaryId !== undefined
-      ? unreadBoundaryId
-      : readStateLoading || readStateError
-        ? null
-        : firstUnreadId;
+  const boundaryId = resolveUnreadBoundaryId(
+    unreadBoundaryId,
+    firstUnreadId,
+    readStateLoading,
+    readStateError,
+  );
   const items = useMemo(
     () => buildMessageItems(messages, undefined, boundaryId),
     [messages, boundaryId],
@@ -273,16 +263,21 @@ export function MessageList({
   // 未読が多すぎるときのために、読み足す回数には上限がある。
   useEffect(() => {
     if (readBoundary === null || readBoundary <= 0 || messages.length === 0) return;
-    const oldest = parseUtcTimestamp(messages[0]!.created_at).getTime();
-    if (!Number.isFinite(oldest) || oldest <= readBoundary) return;
-    if (!hasOlder || isLoadingOlder || !onLoadOlder) return;
-    if (unreadPagesRef.current >= MAX_UNREAD_PAGES) {
+    const decision = decideUnreadLoad({
+      readBoundary,
+      oldestCreatedAt: parseUtcTimestamp(messages[0]!.created_at).getTime(),
+      hasOlder,
+      isLoadingOlder,
+      canLoadOlder: Boolean(onLoadOlder),
+      loadedPages: unreadPagesRef.current,
+    });
+    if (decision === "load") {
+      unreadPagesRef.current += 1;
+      onLoadOlder?.();
+    } else if (decision === "too-old") {
       // 上限までに、既読位置まで届かなかった。未読の先頭は、読み込んでいない範囲にある。
       toast.info(t("threads.unreadTooOld"), { id: "unread-too-old" });
-      return;
     }
-    unreadPagesRef.current += 1;
-    onLoadOlder();
   }, [readBoundary, messages, hasOlder, isLoadingOlder, onLoadOlder, t]);
 
   const stalled = useLoadingTimeout(
@@ -565,14 +560,8 @@ function MessageScrollViewport({
   const captureScrollAnchor = useCallback(() => {
     const element = scrollRef.current;
     if (!element || restoringAnchorRef.current || settlingRef.current) return;
-    const viewport = element.getBoundingClientRect();
-    for (const row of element.querySelectorAll<HTMLElement>("[data-message-id]")) {
-      const bounds = row.getBoundingClientRect();
-      if (bounds.bottom > viewport.top && bounds.top < viewport.bottom) {
-        scrollAnchorRef.current = { id: row.dataset.messageId!, offset: bounds.top - viewport.top };
-        break;
-      }
-    }
+    const anchor = findVisibleMessageAnchor(element);
+    if (anchor) scrollAnchorRef.current = anchor;
   }, []);
 
   const alignIndexSync = useCallback(
@@ -666,13 +655,12 @@ function MessageScrollViewport({
   }, [captureScrollAnchor, editingId, markRead, readStatePending, messages.length, loadOlder]);
 
   const oldestCreatedAt = messages[0] ? parseUtcTimestamp(messages[0].created_at).getTime() : NaN;
-  const unreadCovered =
-    lastRead === null ||
-    lastRead <= 0 ||
-    !Number.isFinite(oldestCreatedAt) ||
-    oldestCreatedAt <= lastRead ||
-    !hasOlder ||
-    unreadPagesRef.current >= MAX_UNREAD_PAGES;
+  const unreadCovered = isUnreadCovered({
+    lastRead,
+    oldestCreatedAt,
+    hasOlder,
+    loadedPages: unreadPagesRef.current,
+  });
 
   const latestMountDepsRef = useRef({
     items,
@@ -1064,8 +1052,11 @@ function MessageScrollViewport({
             (entry) => entry.dataset.messageId === anchor.id,
           );
           if (row) {
-            const delta =
-              row.getBoundingClientRect().top - element.getBoundingClientRect().top - anchor.offset;
+            const delta = getAnchorScrollDelta(
+              row.getBoundingClientRect().top,
+              element.getBoundingClientRect().top,
+              anchor.offset,
+            );
             if (Math.abs(delta) > 1) {
               stableFrames = 0;
               const previousTop = element.scrollTop;
