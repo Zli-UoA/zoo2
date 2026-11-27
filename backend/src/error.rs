@@ -116,6 +116,22 @@ impl AppError {
         err_str.contains("40P01") || err_str.contains("deadlock detected")
     }
 
+    /// `toasty::Error` が PostgreSQL の lock_not_available (55P03) かどうか。
+    /// 返信のルート行ロック待ちに `SET LOCAL lock_timeout` を設けたときの早期失敗に使う。
+    pub fn is_lock_timeout(err: &toasty::Error) -> bool {
+        let mut curr: Option<&(dyn std::error::Error + 'static)> = Some(err);
+        while let Some(e) = curr {
+            if e.downcast_ref::<tokio_postgres::Error>()
+                .and_then(|pg_err| pg_err.code())
+                .is_some_and(|code| *code == tokio_postgres::error::SqlState::LOCK_NOT_AVAILABLE)
+            {
+                return true;
+            }
+            curr = e.source();
+        }
+        err.to_string().contains("55P03") || err.to_string().contains("lock not available")
+    }
+
     /// `toasty::Error` が UNIQUE 制約違反かどうか、および指定された制約名（オプション）に合致するか判定する
     pub fn is_unique_violation(err: &toasty::Error, constraint_name: Option<&str>) -> bool {
         let mut curr: Option<&(dyn std::error::Error + 'static)> = Some(err);

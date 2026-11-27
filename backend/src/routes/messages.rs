@@ -483,6 +483,17 @@ pub fn reply_participation_sql() -> &'static str {
     "SELECT json_build_object('tracked',(SELECT true FROM thread_participants WHERE thread_id=$1 ORDER BY user_id LIMIT 1) IS NOT NULL,'joined',EXISTS(SELECT 1 FROM thread_participants WHERE thread_id=$1 AND user_id=$2 AND left_at IS NULL))::text"
 }
 
+/// 返信のルート行ロック待ちがタイムアウトしたときは、接続を握ったまま待ち続けず 503 で返す。
+fn reply_lock_error(err: AppError) -> AppError {
+    if let AppError::Database(ref db_err) = err
+        && AppError::is_lock_timeout(db_err)
+    {
+        AppError::ServiceUnavailable("The thread is busy; retry shortly".into())
+    } else {
+        err
+    }
+}
+
 pub(crate) async fn create_message_impl(
     state: AppState,
     auth_user: AuthUser,
@@ -930,13 +941,19 @@ pub(crate) async fn create_message_impl(
         // The target is the one join/leave act on (the requested ID until a staged migration has
         // moved the thread), and the row is locked as a leave does, so a leave and a reply serialize.
         // Lock order matches thread_operation: the canonical root first, then the join target.
+        // 同じルートへの同時返信が増えると、ロック待ちの間も DB 接続を占有し続ける。
+        // プール枯渇が API 全体に広がらないよう、待ちに上限を設けて早めに 503 を返す。
+        toasty::sql::statement("SET LOCAL lock_timeout = '5s'")
+            .exec(&mut tx)
+            .await?;
         let root_lock_began = Instant::now();
         crate::apps::query(
             &mut tx,
             "SELECT '{}'::text FROM messages WHERE id=thread_root($1) FOR NO KEY UPDATE",
             &[parent_id.as_str()],
         )
-        .await?;
+        .await
+        .map_err(reply_lock_error)?;
         let gate = crate::apps::one(&mut tx,
             "SELECT json_build_object('id',CASE WHEN (SELECT phase FROM thread_rollout WHERE id)='collecting' OR ((SELECT phase FROM thread_rollout WHERE id)='normalizing' AND NOT EXISTS(SELECT 1 FROM thread_migration_completed done WHERE done.thread_id=thread_root($1))) THEN $1 ELSE thread_root($1) END)::text",
             &[parent_id.as_str()]).await?;
@@ -946,7 +963,8 @@ pub(crate) async fn create_message_impl(
             "SELECT '{}'::text FROM messages WHERE id=$1 FOR NO KEY UPDATE",
             &[gate_root.as_str()],
         )
-        .await?;
+        .await
+        .map_err(reply_lock_error)?;
         crate::notifications::emit_timing("root_lock", &id, root_lock_began);
         let participation = crate::apps::one(
             &mut tx,
