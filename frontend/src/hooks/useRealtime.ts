@@ -332,6 +332,8 @@ export interface ChannelAccess {
    * 揃うまで保留する。解決前に「非公開です」を出すのを避ける。
    */
   isMembershipPending: boolean;
+  /** 本人IDとメンバー購読の初回同期が揃うまで参加判定を保留するか。 */
+  isSyncing: boolean;
   /** メンバー購読の失敗。 */
   isError: boolean;
 }
@@ -373,6 +375,7 @@ export function useChannelAccess(channel: ChannelRow | null): ChannelAccess {
     isMembershipPending:
       !!channel?.is_private &&
       (currentUserLoading || (!isMember && membersQuery.isInitialSyncLoading)),
+    isSyncing: currentUserLoading || membersQuery.isInitialSyncLoading,
     isError: membersQuery.isError,
   };
 }
