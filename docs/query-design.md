@@ -205,6 +205,38 @@ SQL
 
 測定する項目は (1)(2)(3) とも、`Node Type` と `Index Name`、`Actual Rows × Actual Loops`、`Rows Removed by Filter`、`Sort Method`、根节点の `Shared Hit Blocks + Shared Read Blocks`、`Execution Time` である。(1) は `M` の増加に伴って走査が増えるのが設計どおりで、`<= M` と1往復を超えないことを確認する。(2)(3) は `T` が同じなら `M` を3.3倍にしても走査行数・ブロック数・往復数が増えず、`users` の Seq Scan が出ないことを確認する。初回／再実行、単独／8同時を各30回以上測り、p50・p95・最大値と準備・SQL往復・API全体の時間を分けて残す。一括 INSERT は `EXPLAIN ANALYZE` にトリガー内の計画が出ないため、行ごとのトリガーと投影の費用は入れ子の計画または論理バッファの増加で別に確認する（「性能検証の合否」6 と同じ）。
 
+### マイグレーション実行中の同時書き込みとロック待ち（20261208000002）
+
+- 目的: バックフィル前の `LOCK TABLE channel_user IN SHARE ROW EXCLUSIVE MODE`（`infra/db/migrations/20261208000002_user_channel_notification_settings.sql`）が30万／100万件で書き込みをどう待たせるか、コミット後に値が残るかを検証する。`atlas:txmode none` だと途中でロックが解放されるため、`psql -1`（単一トランザクション）で実行する。
+- 環境・fixture: `zoo2-pg-scale` の PostgreSQL 16 使い捨て DB（`zoo_lock_300k` / `zoo_lock_1m`）。移行前のスキーマをテンプレートに、`channel_user` を 300,000 / 1,000,000 行（1チャンネル）、うち半数を旧列 `notification_level='all'`、残りを既定値 `'mentions'` にする。同時書き込み対象の `u-1` は `'mentions'` のまま置く。
+- 再現手順:
+
+  ```sh
+  # 1) 移行側: LOCK を COMMIT まで保持するため -1 で実行する
+  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -1 \
+    -f infra/db/migrations/20261208000002_user_channel_notification_settings.sql
+
+  # 2) 約1秒後に別セッションから旧列へ書き込む（statement_timeout はハング防止のみ）
+  psql "$DATABASE_URL" -c "SET statement_timeout='300s'; \
+    UPDATE channel_user SET notification_level='all' \
+     WHERE user_id='u-1' AND channel_id='c-target';"
+
+  # 3) 待ちの間、第三のセッションで観測する
+  SELECT pid, state, wait_event_type, wait_event FROM pg_stat_activity WHERE datname = 'zoo_lock_300k';
+  SELECT pid, mode, granted FROM pg_locks WHERE relation = 'channel_user'::regclass;
+  ```
+
+  観測では移行セッションが `ShareRowExclusiveLock granted=true`、書き込みセッションが `RowExclusiveLock granted=false` で `wait_event_type=Lock` / `wait_event=relation` になった。`SHARE ROW EXCLUSIVE` は `ACCESS SHARE` と両立するため、`SELECT` は止まらない。
+- 実測（`\timing` は SQL 往復を含む参考値。100ms は合否基準ではない）:
+
+| `channel_user` 行数 | バックフィル INSERT | 旧列の既定値化 UPDATE | 移行トランザクション全体 | 同時 UPDATE の待ち | 観測された待ち |
+| --- | --- | --- | --- | --- | --- |
+| 300,000（既定値外 150,000） | 3,815 ms / 300,000 行 | 2,374 ms / 150,000 行 | 8.006 s | 5,201 ms | `Lock` / `relation` |
+| 1,000,000（既定値外 500,000） | 12,403 ms / 1,000,000 行 | 5,351 ms / 500,000 行 | 17.842 s | 16,789 ms | `Lock` / `relation` |
+
+  待ち時間は移行がコミットするまでの時間にほぼ一致する（書き込みはバックフィルと後続の既定値化が終わるまで待つ）。行数が3.3倍になると全行を処理する移行時間が伸びるため待ちも長くなるが、時間だけで合否を決めず、待ちの有無とコミット後の値で判定する。
+- コミット後のデータ: 両規模とも設定テーブルは `channel_user` と同数（300,000 / 1,000,000 行）、対象行は `user_channel_notification_settings.notification_level='all'`、旧列は `'mentions'`、旧列の既定値外は 0 行、値移送トリガー `channel_user_notification_level_legacy` が存在する。書き込みはロック解放後に再開され、移送トリガーが値を正本へ写すため、**書き込みはバックフィル完了まで待つが、値は失われない**（旧列には実際の設定を残さない）。`statement_timeout` は待ちを隠すためではなく、ハング時の波及を抑えるために設定した。
+
 ### PR 本文用のメモ（クエリ設計・実行計画・探索上限・計測条件）
 
 - 用途・識別子・回数: チャンネル投稿の通知先選択（`notifications.rs::create_message_notifications`、投稿1回につき `channel_user` 走査1・設定テーブル走査1・参加者1・除外判定1・INSERT 最大 `T` を1回）、スレッド返信の参加者通知（`notification_participants_sql()`、返信1回につき1）、リアクション判定（`create_reaction_notification`、1回）、設定の GET/PATCH（`notification_settings.rs`、1〜2回、競合時は読み直し追加）。
@@ -218,6 +250,18 @@ SQL
 | 30万 / 30万 | 10,000 / 10,000 | 9,500 / 10,000 | 700 / 59,716 | 9.9 / 11.0 / 11.4 | 60.2 / 65.9 / 70.9 | 合格（上限 参加 10,064 / レベル参照 10,001 / ブロック 121,024 以内） |
 | 100万 / 100万 | 10,000 / 10,000 | 9,500 / 10,000 | 703 / 59,720 | 9.6 / 9.7 / 9.9 | 57.7 / 61.4 / 69.3 | 合格（同上） |
 
-参加行の走査は `P` で頭打ち。SQL が `left_at` で絞らなくなったため、レベル参照（計測時は `channel_user`、現在は `user_channel_notification_settings`）は generic plan で `P` まで増えたが、上限 `P + 1` の内側にある。現在のクエリは同じ主キー参照を設定テーブルの `idx_user_channel_notification_settings_channel_id` で行うので、探索上限は変わらない（再計測は未実施）。PostgreSQL 16 では上位ノードのブロック数に子ノードの使用量が含まれるため、根节点の `Shared Hit Blocks` + `Shared Read Blocks` だけを 1 回数えた（走査ノードと `Sort` ノードの両方で足すと二重計上になる）。ブロック上限は `2P + BLOCKS_PER_KEY * P + 1024`（`BLOCKS_PER_KEY=10`、P=10,000 で 121,024）で、上の表の値と同じ式である。`U` を30万→100万に3.3倍にしても、`thread_participants` の走査は約10,000行で変わらず、無関係な参加履歴 `H` は読んでいない。初回と再実行の差は計測誤差の範囲。100ms は参考値で、8同時の最大70.9 ms は時間だけの合否判定に使わない。
+参加行の走査は `P` で頭打ち。SQL が `left_at` で絞らなくなったため、レベル参照（計測時は `channel_user`、現在は `user_channel_notification_settings`）は generic plan で `P` まで増えたが、上限 `P + 1` の内側にある。現在のクエリは同じ主キー参照を設定テーブルの `idx_user_channel_notification_settings_channel_id` で行うので、探索上限は変わらない。設定テーブル分離後の再計測値は下の「設定テーブル分離後の再計測」に記載する。PostgreSQL 16 では上位ノードのブロック数に子ノードの使用量が含まれるため、根节点の `Shared Hit Blocks` + `Shared Read Blocks` だけを 1 回数えた（走査ノードと `Sort` ノードの両方で足すと二重計上になる）。ブロック上限は `2P + BLOCKS_PER_KEY * P + 1024`（`BLOCKS_PER_KEY=10`、P=10,000 で 121,024）で、上の表の値と同じ式である。`U` を30万→100万に3.3倍にしても、`thread_participants` の走査は約10,000行で変わらず、無関係な参加履歴 `H` は読んでいない。初回と再実行の差は計測誤差の範囲。100ms は参考値で、8同時の最大70.9 ms は時間だけの合否判定に使わない。
+
+#### 設定テーブル分離後の再計測（P 固定・30万／100万）
+
+- 再現: 移行済みの使い捨て DB で `backend/tests/thread_participants_scale_test.rs` の `notification_participants_sql_does_not_scan_users` を実行する。`SCALE_USERS`（`users` と、無関係な `channel_user` / `user_channel_notification_settings` の件数）を 300,000 と 1,000,000 に変え、`SCALE_HISTORY` は既定の `SCALE_USERS` を使う。`P=10,000`（うち退出 500、生存 9,500）は両規模で同じ。`SCALE_PLAN_DIR` に custom / generic の `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` を保存する。
+- 実測（設定テーブル側の走査は `probed_settings`、ブロックは根节点の hit+read。ms は参考値）:
+
+| `users` / 無関係な設定行 | `probed_settings` custom / generic | hit+read custom / generic | 上限 | 合否 |
+| --- | --- | --- | --- | --- |
+| 300,000 / 300,000 | 9,500 / 10,000 | 761 / 49,845 | 走査 `P+1 = 10,001`、ブロック `121,024` | 合格 |
+| 1,000,000 / 1,000,000 | 9,500 / 10,000 | 787 / 59,697 | 同上 | 合格 |
+
+- 考察: 設定テーブルは `idx_user_channel_notification_settings_channel_id` で返却行だけを参照し、無関係な `channel_user` / 設定行 `SCALE_USERS` 件は走査しない。`probed_settings` は生存 9,500 件（custom）／参加者全員 10,000 件（generic）で、上限 `P+1` の内側にある。`U` を3.3倍にしてもブロック数は custom 761→787、generic 49,845→59,697 と索引の段数に応じた差にとどまり、`U` に比例して増えない。`thread_participants` の走査・ソート入力、`users` 0行、loops の上限も同じ実行で検証済み。
 
 - **未検証の残り:** API 全体（ルーター・接続待ち・JSON・ロック待ち）の p50/p95/最大、参加・退出と設定変更の同時実行時のロック待ち・デッドロック、本番 PostgreSQL 16.15 の実データでの `P` 分布。E2E 全体（`make test-e2e`）は未実行だが、対象のバックエンド統合テスト（`notification_settings_test` / `notifications_test` / `notification_storage_test` / `shape_proxy_test`）はローカルの Docker DB で通っている。ER 図は `infra/db/erd.sh` で再生成し、`erd.sh --check` も通っている。

@@ -3483,10 +3483,14 @@ mod tests {
             .and(body_json(serde_json::json!({ "level": "mentions" })))
             .respond_with(move |_: &Request| {
                 let _ = c1_arrived_tx.send(());
-                let _ = held_c1
+                // 解放通知を待たずに応答を返すと、全チャンネルで同じロックを取る
+                // 実装でも c2 の到着を確認できてしまう。タイムアウト・切断は
+                // 無視せず、理由の分かる失敗として扱う。
+                held_c1
                     .lock()
                     .unwrap()
-                    .recv_timeout(Duration::from_secs(10));
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("c1 の PATCH が解放されずにタイムアウト、または解放側が切断された");
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "data": { "level": "mentions" },
                     "txid": "7",
