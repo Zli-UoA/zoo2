@@ -105,10 +105,6 @@ internal fun ConnectedScreens(
         session.accountProfiles.associateBy { it.text("username") }
     }
     val mentionUsernames = remember(users) { users.map { it.text("user_name") }.toSet() }
-    val displaysMessages = channel != null || env.path.substringBefore('?') == "/notifications"
-    LaunchedEffect(session, env.online, env.visible, displaysMessages) {
-        if (env.online && env.visible && displaysMessages) session.loadAccountProfiles()
-    }
     val posts = state.home.posts.map { state.entry(it, usersById, previewService = previewService) }
     val encrypted = channel?.let { session.isEncryptedChannel(it.text("id")) } == true
     val canPost = env.online && channel != null && member && !channel.present("archive_at")
@@ -597,6 +593,21 @@ internal fun ConnectedScreens(
     val reaction = state.confirmingEntry?.takeIf { it.operation == EntryOperation.React }
     val insertingEmoji = state.inputMenu == InputTool.Emoji
     val pickerOpen = insertingEmoji || reaction != null
+    val allowAccountEmoji = reaction == null || screen !is AndroidScreen.Home &&
+        screen !is AndroidScreen.Post && screen !is AndroidScreen.Profile
+    val usesAccountProfiles = when (screen) {
+        is AndroidScreen.Conversation, is AndroidScreen.Thread, is AndroidScreen.Notifications,
+        is AndroidScreen.Home, is AndroidScreen.Post, is AndroidScreen.Profile, is AndroidScreen.Bubble -> true
+        else -> pickerOpen && allowAccountEmoji
+    }
+    LaunchedEffect(session, env.online, env.visible, usesAccountProfiles) {
+        if (!env.online || !env.visible || !usesAccountProfiles) return@LaunchedEffect
+        // Share the directory with the picker and stop refreshing when this screen is hidden.
+        while (true) {
+            session.loadAccountProfiles()
+            delay(60_000)
+        }
+    }
     val needsWorkspaceEmoji = when (screen) {
         is AndroidScreen.Home -> screen.posts.any { it.needsWorkspaceEmoji }
         is AndroidScreen.Profile -> screen.posts.any { it.needsWorkspaceEmoji }
@@ -761,11 +772,6 @@ internal fun ConnectedScreens(
     val recentEmojis = remember(session) { mutableStateListOf<String>() }
     if (pickerOpen) {
         val unicode by produceState(emptyList<EmojiChoice>(), emojiCatalog) { value = emojiCatalog.unicode() }
-        val allowAccountEmoji = reaction == null || screen !is AndroidScreen.Home &&
-            screen !is AndroidScreen.Post && screen !is AndroidScreen.Profile
-        LaunchedEffect(session, env.online, env.visible, allowAccountEmoji) {
-            if (env.online && env.visible && allowAccountEmoji) session.loadAccountProfiles()
-        }
         val dismiss = { state.inputMenu = null; state.confirmingEntry = null }
         EmojiPicker(
             title = if (reaction == null) "絵文字" else "リアクション",
