@@ -11,27 +11,27 @@ Zoo2 のフロントエンド。TanStack Start（React 19）+ Vite+ + Tailwind C
 ### データフロー
 
 - 読み取り: `@tanstack/electric-db-collection` で Electric Shape を購読し、`@tanstack/react-db` の `useLiveQuery` で表示します。`src/lib/electric/collections.ts` が `channels` / `users` / `channel_user` / `messages` のコレクションを持ち、`messages` は `channel_id` 単位で生成してキャッシュします。ShapeStream はブラウザ API に依存するため、モジュール直下では作らず client コンポーネント / フックから `getCollections()` を呼びます（SSR では購読しません）。`src/hooks/useRealtime.ts` がチャンネル一覧・メッセージ・メンバー・ユーザーを購読します。
-- Shape クエリ: `src/lib/electric/query.ts` が `buildShapeUrl()` に渡すクエリを組み立てます。`direct` では Electric の subset プロトコル（`where` + `params[1]`）、`proxy` では `channel_id` を渡します（`table` は direct では `buildShapeUrl()`、proxy ではバックエンドが付与）。`messages` / `channel_users` はクエリで `channel_id` を渡します。
+- Shape クエリ: `src/lib/electric/query.ts` が `buildShapeUrl()` に渡すクエリを組み立てます。`direct` では Electric の subset プロトコル（`where` + `params[1]`）、`proxy` では `channel_id` を渡します（`table` は direct では `buildShapeUrl()`、proxy ではバックエンドが付与）。`messages` は `channel_id` 付きのコレクションをチャンネルごとに購読しますが、`channelUsers` は `channel_id` なしの1本の Shape だけを購読し、`useChannelMembers()` が行を `channel_id` で絞り込みます（`query.ts` の `channelUsers` + `channelId` 分岐は将来チャンネル単位で購読するとき用で、現状は未使用）。
 - 行の正規化: integer は文字列で届く前提で `coerceElectricRow()` が `Number()` 変換します（`int8` / `numeric` は精度のため文字列のまま）。timestamp は Shape が `2026-10-15 14:32:44.183`（空白区切り）、REST が `T` 区切りの文字列で、どちらも UTC の naive 値です。`normalizeUtcTimestamp()` / `parseUtcTimestamp()` で UTC の ISO 文字列・`Date` に正規化できます。ShapeStream の `transformer` でも integer を number、boolean の `"true"` / `"false"` を真偽値へ変換し、`"false"` が truthy になるのを防ぎます。
 - 書き込み: すべて REST で行い、`src/lib/electric/writes.ts` のコレクションごとの `onInsert` / `onUpdate` / `onDelete` から呼びます。失敗時は throw して TanStack DB に楽観状態をロールバックさせます。
   - messages: 送信 `POST /api/messages`、編集 `PATCH /api/messages/{id}`、論理削除 `DELETE /api/messages/{id}`。
   - channels: 作成 `POST /api/channels`、更新 `PATCH /api/channels/{id}`。
-  - channel_user: 参加 `POST /api/channels/{id}/join`、メンバー追加 `POST /api/channels/{id}/users`、退出 `POST /api/channels/{id}/leave`。`/leave` は認証ユーザー自身の行しか消せないため、現在のユーザー（`config.devUserId`）以外の行の削除は throw して楽観状態を戻します（メンバー削除 API ができるまでの暫定）。
-  - 論理削除は Electric 上では `update`（`deleted_at` の更新）として流れます。そのため楽観更新も `update(deleted_at)` に揃え、`delete→insert` の再出現（ちらつき）を避けています。コレクションは全行を持ち、`messageFeedQuery` が `deleted_at` を除外します。投稿者名は非正規化せず `users` Shape を結合して表示します。
+  - channel_user: 参加 `POST /api/channels/{id}/join`、メンバー追加 `POST /api/channels/{id}/users`、本人の退出 `POST /api/channels/{id}/leave`。`/leave` は認証ユーザー自身だけを外す API なので、コレクションの `delete` では `getCurrentUserId()`（dev / OIDC のどちらでも解決した現在ユーザー。`config.devUserId` の固定値ではない）と行の `user_id` を照合し、自分以外なら throw して楽観状態を戻します。他人を外す管理操作は別に `DELETE /api/channels/{id}/users/{user_id}`（`useChannelAdmin().kickMember()`）を使います。
+  - 論理削除は Electric 上では `update`（`deleted_at` の更新）として流れます。そのため楽観更新も `update(deleted_at)` に揃え、`delete→insert` の再出現（ちらつき）を避けています。`messageFeedQuery` が `deleted_at` を除外します。`messages` コレクションは `syncMode: "on-demand"` で全行を同期せず、`useMessageFeed()` が新しい方から `MESSAGE_PAGE_SIZE`（50）件ずつ取り、`loadOlder()` で古い方へ範囲を広げます。未取得の古い履歴は表示に含まれない前提で読んでください。投稿者名は非正規化せず、`messageFeedQuery` が `display_data.author` の名前・アイコンなどを優先し、旧キャッシュや楽観更新の行だけ `users` Shape で補います（`src/lib/electric/messageFeed.ts`）。
 - 確定（`txid`）: `src/lib/electric/txid.ts` の `syncTxid()` と `changeMessageMatcher()` が REST の `{ data, txid }` から数値化した `txid` を `collection.utils.awaitTxId()` に渡します（EDC の `Txid` は number）。`VITE_TXID_MODE` で `awaitTxId`（既定）/ `awaitMatch`（operation と行 id で照合）/ `skip`（待機しない）を切り替えられます。`awaitTxId` は対象コレクションが live query で購読されている必要があります（画面に出しておく）。未購読だとタイムアウトします。
   - `awaitTxId` / `awaitMatch` がタイムアウトしても楽観状態はロールバックされ、UI には操作失敗と出ますが、サーバ側の書き込みは成功しているため少し遅れて Electric から同じ行が届き表示は戻ります。「同期待ち」と「失敗」を分けた表示は今後の課題です。
   - channel_user の書き込みは channel_user コレクションで `txid` を待ちます。proxy の channels Shape はバックエンドがメンバーシップで絞るため、参加/退出（join/leave）に応じて channels 側の行が move-in / move-out します。move-in / move-out 自体は同じトランザクションの `txid` で配信されますが、書き込みハンドラが待つのは channel_user コレクションの `txid` です（チャンネル一覧は続けて更新されます）。
 - バックエンドとの境界:
   - 読み取りは `proxy` では `VITE_API_BASE_URL` + `VITE_SHAPE_PROXY_PATH`（既定 `/api/shapes`）を購読します。バックエンドが `table` / `where` を確定し、サーバ側で `ELECTRIC_SECRET` を付けて Electric へ転送します。
-  - 認可: バックエンドの channels Shape は `is_private = false OR id IN (SELECT channel_id FROM channel_user WHERE user_id = ...)` でメンバーシップに絞ります。未参加の非公開チャンネルは Shape・メッセージのどちらも届きません（存在隠蔽のため 404）。参加/退出で channels 側の行が move-in / move-out します。
+  - 認可: 一般ユーザーの channels Shape は `is_private = false OR id IN (SELECT channel_id FROM channel_user WHERE user_id = ...)` で絞り、公開チャンネルは未参加でも一覧に出ます。未参加の非公開チャンネルは Shape・メッセージのどちらも届きません（存在隠蔽のため 404）。参加/退出で channels 側の行が move-in / move-out します。ゲストは `channels_shape` で参加済みのチャンネルだけに絞られ、未参加の公開チャンネルは一覧に出ず、メッセージ Shape の要求も 404 になります（`backend/src/routes/shapes.rs`）。
   - `channel_users` のサブクエリ経路（`electric#3143`）: Electric 1.8.1 を `ELECTRIC_FEATURE_FLAGS=allow_subqueries` で動かしており、`WHERE ... IN (SELECT ... WHERE user_id = $1)` の形がそのまま通ることを実測しました（`params[1]` により move-in / move-out も配信）。`$1` をリテラルへ埋め込む回避策は不要でした。
   - ShapeStream 用 fetch（`src/lib/electric/headers.ts`）は REST と同じ `Bearer` / `X-Dev-User` を「値があるときだけ」付与します。常時付与すると開発時の Electric 直結で `authorization` が CORS の preflight に弾かれるためです。`direct` は Electric の CORS が `X-Dev-User` / `Authorization` を許可しないため認証ヘッダを付けません（`collections.ts` の `shapeAuthSource`）。
-  - CORS はバックエンドが `CORS_ALLOWED_ORIGINS` の許可オリジンに限定し（`ENVIRONMENT=production` 以外で未設定なら `http://localhost:5173`, `http://127.0.0.1:5173`、本番で未設定なら空）、メソッドとヘッダも既知のもの（ヘッダは `Authorization`、`X-Dev-User`、`Content-Type`、`Accept`、E2EE の直前の再認証の `X-Zoo-Reauth`）だけを許可しつつ `electric-*` を公開します。
-- 画面: ルート `/` は `src/routes/index.tsx` → `src/components/ChannelDirectory.tsx`、ルート `/channels/$channelId` は `src/routes/channels/$channelId.tsx` → `src/components/chat/messages/MessagePane.tsx` で一覧・作成・参加/退出・送信・編集・論理削除・投稿者表示を組みます。`src/hooks/useWriteRunner.ts` が `collection.insert()` などの楽観更新トランザクションを `when("settled")` まで待ち、失敗を UI のエラーメッセージにまとめます。`/realtime` は検証 UI から上記の実ルートへ移行済みで、現在は接続モード（Shape / txid / 開発ユーザー）を表示する最小画面（`src/components/SyncStatus.tsx`）です。
-  - 編集・削除は自分のメッセージにのみ表示します（バックエンドは投稿者のみ許可するため）。
+  - CORS はバックエンドが `CORS_ALLOWED_ORIGINS` の許可オリジンに限定し（`ENVIRONMENT=production` 以外で未設定なら `http://localhost:5173`, `http://127.0.0.1:5173`、本番で未設定なら空）、メソッドとヘッダも既知のもの（ヘッダは `Authorization`、`X-Dev-User`、`Content-Type`、`Accept`、E2EE の直前の再認証の `X-Zoo-Reauth`、鍵バックアップの証明の `X-Zoo-Backup-Proof`、トレース伝播の `traceparent` / `tracestate`）だけを許可しつつ `electric-*` を公開します（実際の許可一覧は `backend/src/routes/mod.rs`）。
+- 画面: ルート `/` は `src/routes/_shell.index.tsx` → `src/components/chat/WelcomePanel.tsx`（チャンネル未選択のメイン面）で、チャンネル一覧・作成・参加/退出は `src/components/chat/ChannelSidebar.tsx` と `ChannelMembersDialog.tsx` にあります。ルート `/channels/$channelId` は `src/routes/_shell.channels.$channelId.tsx` → `src/components/chat/ChannelScreen.tsx` → `src/components/chat/messages/MessagePane.tsx` で送信・編集・論理削除・投稿者表示を組みます。`src/hooks/useWriteRunner.ts` が `collection.insert()` などの楽観更新トランザクションを `when("settled")` まで待ち、失敗を UI のエラーメッセージにまとめます。`/realtime` は検証 UI から上記の実ルートへ移行済みで、現在は接続モード（Shape / txid / 開発ユーザー）を表示する最小画面（`src/components/SyncStatus.tsx`）です。
+  - 編集は自分のメッセージにのみ表示します。削除は通常チャンネルでは投稿者本人に加えてチャンネル作成者とワークスペース管理者にも表示し、DM は投稿者本人だけです（`canModerate` は `!channel.is_dm && canManageChannel`。バックエンドの `can_delete_message` と一致します）。
   - 非公開チャンネルは参加者だけに説明・メンバー・メッセージを表示します。`proxy` の Shape はバックエンドが認可で絞るため未参加者には届きませんが、UI 側でも `isMember` で隠します。`direct` は認可せず全件配信するため UI 側のガードだけが頼りです。`/channels/$channelId` を URL 直開きしても未参加ならメッセージは出しません。説明はチャンネルのヘッダーに表示し、メンバーのダイアログには出しません。
-  - メンバー追加フォームはバックエンドの `add_channel_user` と同じ条件（作成者は常に、非公開は作成者のみ、公開は作成者またはメンバー）でのみ表示します。重複メンバーの追加は UI 側で弾き、現在のユーザー以外の退出は書き込みハンドラが throw してロールバックします。メンバー読み込み中は重複判定が効かないため参加/追加ボタンを無効化します。
-  - `ChannelMemberPanel` はチャンネルごとに置きますが、`channel_user` の Shape は `getCollections()` が 1 本だけ作り、パネルはそのコレクションを購読します。`users` は全パネルで同一クエリのため TanStack DB 内部でプール共有されます。同じ channel の `useChannelMembers`（画面とパネル）もプールされ共有されるため、購読はチャンネル数に対して増えません。
+  - メンバー追加フォームはバックエンドの `add_channel_user` と同じ条件（管理者または作成者は常に、非公開チャンネルは作成者または管理者のみ、公開チャンネルは作成者・管理者またはメンバー）でのみ表示します。他人を外す kick は `DELETE /api/channels/{id}/users/{user_id}` で、通常チャンネルの作成者またはワークスペース管理者だけに許可され（DM は不可、作成者と管理者は除外できない）、本人の `/leave` とは別の操作です。重複メンバーの追加は UI 側で弾き、コレクションの `delete` で自分以外の行を `/leave` に送ると書き込みハンドラが throw してロールバックします。メンバー読み込み中は重複判定が効かないため参加/追加ボタンを無効化します。
+  - メンバー操作は `ChannelMembersDialog`（`src/components/chat/ChannelMembersDialog.tsx`）にまとめています。`channel_user` の Shape は `getCollections()` が `channel_id` なしの1本だけ作り、ダイアログはそのコレクションを購読します。`users` は同一クエリのため TanStack DB 内部でプール共有されます。同じ channel の `useChannelMembers`（画面とダイアログ）もプールされ共有されるため、購読はチャンネル数に対して増えません。
 
 ### 設定と接続先
 
@@ -42,7 +42,7 @@ Zoo2 のフロントエンド。TanStack Start（React 19）+ Vite+ + Tailwind C
 
 ### 認証
 
-開発時は `X-Dev-User`、OIDC を有効にしたときは Authorization Code + PKCE (S256) で認証します。`VITE_OIDC_ISSUER` と `VITE_OIDC_CLIENT_ID` を設定すると OIDC が有効になり、未設定なら従来どおり `X-Dev-User` の dev 経路で動きます。REST と Shape の両方で同じヘッダを受け付け、バックエンドは `DEV_AUTH_ENABLED=true` のときだけ `X-Dev-User` を受け付け、それ以外は 403 です。
+開発時は `X-Dev-User`、OIDC を有効にしたときは Authorization Code + PKCE (S256) で認証します。`VITE_OIDC_ISSUER` と `VITE_OIDC_CLIENT_ID` を設定すると OIDC が有効になり、未設定なら従来どおり `X-Dev-User` の dev 経路で動きます。REST と Shape の両方で同じヘッダを受け付け、バックエンドは `DEV_AUTH_ENABLED=true` のときだけ `X-Dev-User` を受け付けます。`DEV_AUTH_ENABLED=false` で `Authorization` が無い場合は 401（`Authorization header is required`）で、`X-Dev-User` だけでは dev 経路にフォールバックしません（`backend/src/auth.rs`）。
 
 AuthZ の public client には redirect URI（既定 `${origin}/auth/callback`）を登録し、`frontend/.env` に次を設定します。
 
@@ -73,11 +73,11 @@ AuthZ側の許可を先に追加し、続いてWebの設定・ビルド・配備
 
 ### オフライン永続化
 
-画面データは Electric コレクションをユーザー単位の OPFS SQLite DB に永続化します。
+画面データは Electric コレクションをユーザー単位の OPFS SQLite DB に永続化します。オフライン再読み込みでは、シェルは Service Worker がキャッシュした `/index.html` または `/` を使い、どちらも見つからない場合だけ `/offline.html` にフォールバックします。本文のメッセージは `useMessageFeed()` が、on-demand コレクションでは保存済み行を直接使えないため、チャンネル直下の最新ページを IndexedDB の控えから復元します。シェルと本文で復元元が異なります。
 
 - `src/components/offline/OfflineProvider.tsx` が起動時に名前空間を決めて DB を開き、その DB を使うコレクションを `CollectionsProvider` 経由で子へ渡します。dev / preview は固定ユーザー、OIDC は解決済みの現在ユーザー、解決前やオフラインは最後に使ったユーザーの名前空間を使います（`src/lib/offline/identity.ts`）。オンラインで本人を確認できない場合は前ユーザーのキャッシュを開きません。
 - DB は `@tanstack/browser-db-sqlite-persistence` の wa-sqlite + OPFS で、ユーザーごとに物理的に分けます（ファイル名は `zoo-offline-` 接頭辞と名前空間のハッシュ。wa-sqlite の OPFS VFS は長いファイル名で開けないため id をそのまま使いません）。スキーマ不一致時は `sync-present-reset` で同期します。OPFS / Web Worker が使えない環境ではメモリのみにフォールバックし、アプリは起動します。
-- Service Worker（`public/sw.js`）がアプリシェルと遅延チャンク・フォント・OPFS worker をキャッシュし、オフライン時は `public/offline.html` へフォールバックします。新しい配備のシェル更新は起動時に一度だけ確認し、入力中のフォームを消さないようにしています。
+- Service Worker（`public/sw.js`）がアプリシェルと遅延チャンク・フォント・OPFS worker をキャッシュします。オフライン再読み込みでは `/index.html` → `/` の順にキャッシュ済みのシェルを探し、両方なければ `public/offline.html` へフォールバックします（`public/sw.js` の `handleNavigation()` と `refreshNavigation()`）。新しい配備のシェル更新は起動時に一度だけ確認し、入力中のフォームを消さないようにしています。
 - ログアウト時はそのユーザーの DB（`-journal` / `-wal` を含む）と IndexedDB の控えを削除します。削除に失敗しても次回起動で再試行し、別ユーザーのキャッシュを開かないようにします。
 - `pnpm test:e2e:offline` がオフライン再読み込み後のシェルとメッセージ復元、ユーザーごとの DB 分離を確認します。永続化の制御層は Storybook の監査対象外で、`src/components/offline/OfflineProvider.browser.test.tsx` で確認します。
 
