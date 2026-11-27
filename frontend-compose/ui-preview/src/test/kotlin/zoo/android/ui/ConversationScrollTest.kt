@@ -54,11 +54,12 @@ class ConversationScrollTest {
         var chosen: String? = null
         ui.setContent {
             ConversationInput(
-                InputState("@ali", mentions = listOf(CompletionOption("alice", "アリス")), focusRequest = 1),
+                InputState("@ali", mentions = listOf(CompletionOption("alice", "アリス"))),
                 AndroidColors(false), textChanged = {}, onTool = {}, onMention = { chosen = it },
             )
         }
 
+        ui.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.SetText)).performClick().assertIsFocused()
         ui.onNodeWithText("アリス").assertIsDisplayed()
         ui.onNodeWithText("@alice").assertIsSelected().performClick()
         ui.runOnIdle { assertEquals("alice", chosen) }
