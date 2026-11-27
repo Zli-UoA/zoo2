@@ -340,19 +340,25 @@ async function precacheShell() {
   } catch {
     /* An unavailable old cache is not a reason to fail the install. */
   }
-  if (carryOverFailed) throw new Error("Cannot carry over a cached app asset");
   // 初期版の SW は案内ページを zoo-offline-v1 に持っていた。シェルに無ければ引き継ぐ。
   // 保存先の確認自体が失敗しても install は完了させる。
   try {
     if (!(await isUsableFreshAsset("/offline.html", await cache.match("/offline.html")))) {
       const legacy = await caches.open("zoo-offline-v1");
       const saved = await legacy.match("/offline.html");
-      if (await isUsableFreshAsset("/offline.html", saved))
-        await cache.put("/offline.html", await sanitizedCopy(saved.clone()));
+      if (await isUsableFreshAsset("/offline.html", saved)) {
+        try {
+          await cache.put("/offline.html", await sanitizedCopy(saved.clone()));
+        } catch {
+          // 有効なコピーを見つけたのに保存できないなら、旧キャッシュを残す。
+          carryOverFailed = true;
+        }
+      }
     }
   } catch {
     /* An unavailable legacy cache is not a reason to fail the install. */
   }
+  if (carryOverFailed) throw new Error("Cannot carry over a cached app asset");
   // Write the marker last so a partially precached cache is not selected.
   await cache.put(META_PATH, new Response(String(Date.now())));
 }
@@ -483,6 +489,8 @@ const freshAssetWork = new Map();
 
 function handleFreshAsset(request) {
   const path = new URL(request.url, self.location.origin).pathname;
+  // Range 取得は部分応答なので、共有もキャッシュ更新もしない。
+  if (request.headers?.get("range")) return fetch(request, { cache: "reload" });
   // 同じパスの同時取得を共有し、古い応答が新しい配色を上書きしないようにする。
   const pending = freshAssetWork.get(path);
   // 取得は共有しても、respondWith へ渡す本文は要求ごとに独立させる。

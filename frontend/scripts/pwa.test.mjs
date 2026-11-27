@@ -1290,6 +1290,47 @@ test("an invalid manifest in the destination is replaced by a valid older one", 
   assert.equal(await response.text(), manifest);
 });
 
+test("a failed legacy carry-over keeps the old cache by failing install", async () => {
+  const legacy = '<meta name="zoo-offline" content="true" />offline';
+  const cacheContext = memoryCaches([
+    [
+      "zoo-offline-v1",
+      `${ORIGIN}/offline.html`,
+      basicResponse(legacy, { headers: { "content-type": "text/html" } }),
+    ],
+  ]);
+  await cacheContext.api.open("zoo-offline-v1");
+  const realOpen = cacheContext.api.open.bind(cacheContext.api);
+  cacheContext.api.open = async (name) => {
+    const cache = await realOpen(name);
+    return {
+      ...cache,
+      put: async (request, response) => {
+        if (name === "zoo-shell-v2" && requestKey(request).includes("offline.html"))
+          throw new Error("denied");
+        return cache.put(request, response);
+      },
+    };
+  };
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async (input) => {
+      const key = requestKey(input);
+      if (key === `${ORIGIN}/offline.html`)
+        return basicResponse("<html>app shell</html>", {
+          headers: { "content-type": "text/html" },
+        });
+      if (key === `${ORIGIN}/manifest.webmanifest`)
+        return basicResponse(validManifest("#ffffff"), {
+          headers: { "content-type": "application/manifest+json" },
+        });
+      return basicResponse(`network:${key}`);
+    },
+  });
+  await assert.rejects(dispatch(handlers, "install"), /carry over/);
+  assert.ok(await (await realOpen("zoo-offline-v1")).match(`${ORIGIN}/offline.html`));
+});
+
 test("an unreadable cache metadata does not stop carry-over", async () => {
   const manifest = validManifest("#ffffff");
   const cacheContext = memoryCaches([
@@ -2154,6 +2195,24 @@ test("concurrent manifest fetches share a single response", async () => {
   ]);
   assert.equal(await first.text(), await second.text());
   assert.equal(calls, 1);
+});
+
+test("Range requests are fetched separately from normal requests", async () => {
+  let calls = 0;
+  const { handlers } = worker({
+    fetch: async () => {
+      calls += 1;
+      return basicResponse(validManifest("#ffffff"), {
+        headers: { "content-type": "application/manifest+json" },
+      });
+    },
+  });
+  const base = { url: `${ORIGIN}/manifest.webmanifest`, method: "GET", mode: "cors" };
+  await Promise.all([
+    fetchThrough(handlers, { ...base, headers: { get: () => "bytes=0-10" } }),
+    fetchThrough(handlers, base),
+  ]);
+  assert.equal(calls, 2);
 });
 
 test("an HTTP error is returned when no cached manifest exists", async () => {
