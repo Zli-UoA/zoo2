@@ -69,6 +69,7 @@ Home検証の条件・結果・再実行方法は [home-performance.md](home-per
 - **繰り返し処理**：APIのN+1だけでなく、実行計画の高いloops値も確認する。同じリアクション・リポストの複数回集計、同一の親プレビューのJSON生成、ツリー情報の相関サブクエリを、ページ単位の集計・再利用・JOINへ置き換える。権限条件は共通化して維持する。[data-n-plus-one](https://github.com/supabase/agent-skills/blob/main/skills/supabase-postgres-best-practices/references/data-n-plus-one.md)
 - **汎用実行計画**：リテラルを埋めたEXPLAINだけでなく、パラメーター付きSQLのcustom／generic planも調べる。特にPL/pgSQLのバッチで「初回カーソルはNULL OR 範囲条件」とすると、generic planでは範囲探索を使えず、毎回先頭から走査することがある。初回と以降を別SQLにし、強制generic planでも深いページの走査量を検証する。[conn-prepared-statements](https://github.com/supabase/agent-skills/blob/main/skills/supabase-postgres-best-practices/references/conn-prepared-statements.md)
 - **ロック**：トランザクションを小さく保ち、外部通信を挟まない。複数ロックは実際の資源キーの同じ順序で取得する。ハッシュ化したadvisory lockなら、ハッシュ化前の名前順と実際のロック順を混同しない。[lock-short-transactions](https://github.com/supabase/agent-skills/blob/main/skills/supabase-postgres-best-practices/references/lock-short-transactions.md) / [lock-deadlock-prevention](https://github.com/supabase/agent-skills/blob/main/skills/supabase-postgres-best-practices/references/lock-deadlock-prevention.md)
+- **マイグレーションのロック分離**：既存行の検証を伴う `CHECK` は `ADD COLUMN` と `ADD CONSTRAINT ... NOT VALID` に分け、`VALIDATE CONSTRAINT` を `atlas:txmode none` の別トランザクションで実行して ACCESS EXCLUSIVE の保持時間を短くする（`20261206000000` / `20261206000001`）。
 - **接続と計測**：プール上限はレプリカ・ワーカー・常設LISTEN接続の合計で見積もる。接続先がtransaction poolingならprepared statementへの対応も確認する。Index Only Scanを期待する場合はheap fetchとvisibility map、統計・VACUUMの状態も確認し、INCLUDEを無条件に追加しない。[query-covering-indexes](https://github.com/supabase/agent-skills/blob/main/skills/supabase-postgres-best-practices/references/query-covering-indexes.md) / [monitor-explain-analyze](https://github.com/supabase/agent-skills/blob/main/skills/supabase-postgres-best-practices/references/monitor-explain-analyze.md)
 
 ## 通知レベルとスレッド参加者への返信通知（#620）
@@ -109,9 +110,9 @@ Home検証の条件・結果・再実行方法は [home-performance.md](home-per
 
 | `users` / 無関係な参加行 | 走査行数 (参加 / `channel_user`) | hit+read (custom / generic) | 単独 p50/p95/最大 (ms) | 8同時 p50/p95/最大 (ms) | 合否 |
 | --- | --- | --- | --- | --- | --- |
-| 30万 / 30万 | 10,000 / 9,500 | 770 / 57,671 | 8.9 / 10.4 / 10.4 | 55.1 / 60.1 / 64.2 | 合格（上限 10,064 / 9,500 / 116,088 以内） |
-| 100万 / 100万 | 10,002 / 9,500 | 47,845 / 57,670 | 40.5 / 42.0 / 42.2 | 60.0 / 113.1 / 249.2 | 合格（同上） |
+| 30万 / 30万 | 10,002 / 10,000（custom / generic） / 9,500 | 47,888 / 57,712 | 37.3 / 39.0 / 39.4 | 56.8 / 113.9 / 236.0 | 合格（上限 10,064 / 9,500 / 116,088 以内） |
+| 100万 / 100万 | 10,002 / 10,000（custom / generic） / 9,500 | 47,858 / 57,683 | 39.9 / 42.1 / 42.3 | 55.5 / 120.5 / 127.9 | 合格（同上） |
 
-参加行の走査は並列 worker の端数（+2）以外は `P` で、`channel_user` の参照は `L` で頭打ち。計画は30万では custom がハッシュ結合、generic が主キー参照のネステッドループを選び、100万では両方とも並列のネステッドループだった。`U` を30万→100万に3.3倍にしても、`thread_participants` の走査は10,000行で変わらず、無関係な参加履歴 `H` は読んでいない。ブロック数の増え方は計画の選択と索引の段数の差によるもので、初回と再実行の差は計測誤差の範囲（例: 30万 custom 7.8→7.2 ms）。100ms は参考値で、8同時の最大249 ms は時間だけの合否判定に使わない。
+参加行の走査は並列 worker の端数（+2）以外は `P` で、`channel_user` の参照は `L` で頭打ち。PostgreSQL 16 では上位ノードのブロック数に子ノードの使用量が含まれるため、根节点の `Shared Hit Blocks` + `Shared Read Blocks` だけを 1 回数えた（走査ノードと `Sort` ノードの両方で足すと二重計上になる。レビュー指摘で修正し、上表は再計測値）。`U` を30万→100万に3.3倍にしても、`thread_participants` の走査は約10,000行で変わらず、無関係な参加履歴 `H` は読んでいない。初回と再実行の差は計測誤差の範囲。100ms は参考値で、8同時の最大236 ms は時間だけの合否判定に使わない。
 
 - **未検証の残り:** API 全体（ルーター・接続待ち・JSON・ロック待ち）の p50/p95/最大、参加・退出と設定変更の同時実行時のロック待ち・デッドロック、本番 PostgreSQL 16.15 の実データでの `P` 分布。E2E 全体（`make test-e2e`）は未実行だが、対象のバックエンド統合テスト（`notification_settings_test` / `notifications_test` / `notification_storage_test` / `shape_proxy_test`）はローカルの Docker DB で通っている。ER 図は `infra/db/erd.sh` で再生成し、`erd.sh --check` も通っている。

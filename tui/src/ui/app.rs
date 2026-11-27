@@ -140,6 +140,10 @@ pub enum AppEvent {
         requested_encryption: bool,
         encrypted: bool,
     },
+    /// 通知レベルの変更が終わった（成功・失敗どちらでも次の操作を受け付ける）。
+    NotificationLevelFinished {
+        channel_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -276,6 +280,8 @@ pub struct App {
     pub unread: HashSet<String>,
     /// ピン留めの並びの版。書き込みのたびに更新し、409 のときは取り直す。
     pub pin_version: i64,
+    /// 通知レベルを変更中のチャンネル。Shape の反映を待つあいだは同じチャンネルの操作を止める。
+    notification_level_pending: Option<String>,
     /// チャンネルごとに既読を送った最新メッセージ。同じ位置を何度も送らない。
     marked_read: HashMap<String, String>,
     /// 開いているチャンネルで入力中のユーザー。キーはスレッドの親 (None はタイムライン)。
@@ -374,6 +380,7 @@ impl App {
             should_quit: false,
             unread: HashSet::new(),
             pin_version: 0,
+            notification_level_pending: None,
             marked_read: HashMap::new(),
             typing: HashMap::new(),
             typing_session: uuid::Uuid::new_v4().to_string(),
@@ -831,6 +838,11 @@ impl App {
             }
             AppEvent::EmojiCatalog { shortcodes, custom } => {
                 crate::mfm::set_emoji_catalog(shortcodes, custom)
+            }
+            AppEvent::NotificationLevelFinished { channel_id } => {
+                if self.notification_level_pending.as_deref() == Some(channel_id.as_str()) {
+                    self.notification_level_pending = None;
+                }
             }
             AppEvent::Notice(message) => self.notify(message),
             AppEvent::RestoreDraft {
@@ -2550,18 +2562,27 @@ impl App {
 
     /// 開いているチャンネルの通知レベルを all → mentions → mute の順に変える。
     /// 参加行の Shape が新しい値を届けるので、書き込みのあとに取得はしない。
+    /// Shape が古いあいだに N を連打すると同じ値が送信されるので、前の書き込みが終わるまで待つ。
     fn cycle_notification_level(&mut self) {
         let Some(channel_id) = self.current.clone() else {
             return;
         };
+        if self.notification_level_pending.as_deref() == Some(channel_id.as_str()) {
+            self.notify("通知設定の更新中です");
+            return;
+        }
         let next =
             Self::next_notification_level(self.store.notification_level(&channel_id, &self.me.id));
         let api = self.api.clone();
         let tx = self.app_tx.clone();
         let label = format!("通知を {} にしました", Self::notification_level_label(next));
+        self.notification_level_pending = Some(channel_id.clone());
         self.spawn_api("通知設定の変更", async move {
-            api.set_channel_notification_level(&channel_id, next)
-                .await?;
+            let result = api.set_channel_notification_level(&channel_id, next).await;
+            let _ = tx.send(AppEvent::NotificationLevelFinished {
+                channel_id: channel_id.clone(),
+            });
+            result?;
             let _ = tx.send(AppEvent::Notice(label));
             Ok(())
         });
@@ -3134,6 +3155,80 @@ mod tests {
             app_tx,
         );
         (app, app_rx)
+    }
+
+    #[tokio::test]
+    async fn notification_level_cycle_waits_for_the_previous_write() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{body_json, method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/channels/c1/notification-settings"))
+            .and(body_json(serde_json::json!({ "level": "mute" })))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(50))
+                    .set_body_json(serde_json::json!({
+                        "data": { "level": "mute" },
+                        "txid": "7",
+                    })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (mut app, mut rx) = api_test_app(&server.uri());
+        app.current = Some("c1".into());
+        app.cycle_notification_level();
+        assert_eq!(app.notification_level_pending.as_deref(), Some("c1"));
+        app.cycle_notification_level();
+        assert!(
+            app.notice
+                .as_ref()
+                .is_some_and(|(message, _)| message.contains("更新中"))
+        );
+        let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        app.on_app_event(event);
+        assert!(app.notification_level_pending.is_none());
+    }
+
+    #[tokio::test]
+    async fn notification_level_pending_is_cleared_on_failure() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/channels/c1/notification-settings"))
+            .respond_with(
+                ResponseTemplate::new(500)
+                    .set_delay(Duration::from_millis(50))
+                    .set_body_json(serde_json::json!({ "error": "Internal Server Error" })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (mut app, mut rx) = api_test_app(&server.uri());
+        app.current = Some("c1".into());
+        app.cycle_notification_level();
+        for _ in 0..2 {
+            let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            app.on_app_event(event);
+        }
+        assert!(app.notification_level_pending.is_none());
+        assert!(
+            app.notice
+                .as_ref()
+                .is_some_and(|(message, _)| message.contains("通知設定の変更に失敗しました"))
+        );
     }
 
     #[tokio::test]

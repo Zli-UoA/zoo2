@@ -266,12 +266,25 @@ async fn create(
     }
     let notifications = if body.channel_id.is_some() {
         let message = crate::models::Message::get_by_id(&mut tx, id.as_str()).await?;
+        // thread_participants はスレッドのルート投稿 ID をキーにする (#620)。
+        // 返信先が返信投稿の場合もあるので、通知関数へ渡す前にルートを求める。
+        let mut thread_root = None;
+        if let Some(parent_id) = parent.as_ref().and_then(|p| p["id"].as_str()) {
+            thread_root = one(
+                &mut tx,
+                "SELECT json_build_object('id',home_thread_root($1))::text",
+                &[parent_id],
+            )
+            .await?["id"]
+                .as_str()
+                .map(str::to_owned);
+        }
         crate::notifications::create_message_notifications(
             &mut tx,
             &message,
             &user.id,
             reply_user,
-            parent.as_ref().and_then(|p| p["id"].as_str()),
+            thread_root.as_deref(),
             None,
         )
         .await?

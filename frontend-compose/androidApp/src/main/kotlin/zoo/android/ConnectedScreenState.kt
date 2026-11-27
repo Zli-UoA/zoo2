@@ -6,6 +6,8 @@ import androidx.compose.runtime.*
 import io.ktor.http.encodeURLParameter
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -232,6 +234,8 @@ internal class ConnectedScreenState(
     var channelEncrypted by mutableStateOf(false)
         private set
     var postVisibility by mutableStateOf("unlisted")
+    /** Serializes notification-level PATCHes per channel so the last selection is saved last. */
+    private val notificationLevelLocks = mutableMapOf<String, Mutex>()
     private val drafts = mutableStateMapOf<String, InputState>()
 
     fun collapseInput(channelId: String?, threadId: String?): Boolean {
@@ -1161,10 +1165,15 @@ internal class ConnectedScreenState(
                 }
                 action.id.startsWith("notification:") && channel != null -> {
                     val level = action.id.substringAfter(':')
-                    if (level in setOf("all", "mentions", "mute")) request {
-                        app.api.request(
-                            "/api/channels/${channelId.encodeURLParameter()}/notification-settings",
-                            "PATCH", obj("level" to level))
+                    if (level in setOf("all", "mentions", "mute")) {
+                        val lock = notificationLevelLocks.getOrPut(channelId) { Mutex() }
+                        request {
+                            lock.withLock {
+                                app.api.request(
+                                    "/api/channels/${channelId.encodeURLParameter()}/notification-settings",
+                                    "PATCH", obj("level" to level))
+                            }
+                        }
                     }
                 }
                 action.id == "os-notifications" -> enableNotifications()

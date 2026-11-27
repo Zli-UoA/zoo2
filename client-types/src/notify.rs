@@ -206,8 +206,20 @@ pub fn notifications_to_show(store: &Store, batch: &Batch, ctx: &NotifyContext) 
                 }
                 // backend はレベルごとに通知行を作るが、古い行や遅れて届いた行でも
                 // 表示側の判断が漏れないように、ここでもレベルを見る。
+                // `channel_message` は `all` の参加者にだけ作られる。ChannelUsers Shape が
+                // Notifications より遅れて届くと参加行がまだなく、既定の `mentions` で
+                // トーストを落としてしまう。参加行が未到着のときは落とさずに表示する。
+                let membership_known = store
+                    .channel_user(&notification.channel_id, &ctx.me)
+                    .is_some();
                 let level = ctx.notification_level(store, &notification.channel_id);
-                let show = level.shows(&notification.notification_type)
+                let level_allows =
+                    if !membership_known && notification.notification_type == "channel_message" {
+                        true
+                    } else {
+                        level.shows(&notification.notification_type)
+                    };
+                let show = level_allows
                     && !notification.is_read
                     && notification.actor_id != ctx.me
                     && ctx.focused_channel.as_deref() != Some(notification.channel_id.as_str());
@@ -464,10 +476,16 @@ mod tests {
                 row_kind("reply-in-mute", "alice", "mute", false, "reply"),
             ],
         );
-        // c1 に参加行がなくても既定の mentions として、通常投稿を出さない。
+        // 参加行が届く前の channel_message は落とさない。参加行があるチャンネルでは
+        // レベルどおりに判定し、mute の返信は出さない。
         assert_eq!(
             ids(&notifications_to_show(&store, &incoming, &ctx())),
-            vec!["mention-in-all", "reaction-in-all", "mention-in-mute"]
+            vec![
+                "normal",
+                "mention-in-all",
+                "reaction-in-all",
+                "mention-in-mute"
+            ]
         );
     }
 

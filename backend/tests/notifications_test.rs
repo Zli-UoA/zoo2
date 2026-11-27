@@ -1030,3 +1030,79 @@ async fn test_notification_levels_thread_participants_and_left_thread() -> anyho
     );
     Ok(())
 }
+
+/// Home の「返信への返信」でも、スレッドのルートに紐づく参加者へ reply が届く (#620)。
+#[tokio::test]
+async fn test_home_reply_to_reply_notifies_thread_participants() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+
+    let author = create_user(&app, &format!("hroot-{}", uuid::Uuid::new_v4().simple())).await?;
+    let participant =
+        create_user(&app, &format!("hpart-{}", uuid::Uuid::new_v4().simple())).await?;
+    let target_author =
+        create_user(&app, &format!("htarget-{}", uuid::Uuid::new_v4().simple())).await?;
+    let actor = create_user(&app, &format!("hactor-{}", uuid::Uuid::new_v4().simple())).await?;
+    let channel = new_channel(&app, &author).await?;
+    for user in [&participant, &target_author, &actor] {
+        join_channel(&app, user, &channel).await?;
+    }
+
+    let (status, root) = post_json(
+        &app,
+        &author,
+        "POST",
+        "/api/home",
+        json!({"channel_id": channel, "content": "ルート"}),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let root_id = root["id"].as_str().unwrap().to_string();
+
+    let (status, _) = post_json(
+        &app,
+        &participant,
+        "POST",
+        "/api/home",
+        json!({"in_reply_to": root_id, "content": "参加"}),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, target_reply) = post_json(
+        &app,
+        &target_author,
+        "POST",
+        "/api/home",
+        json!({"in_reply_to": root_id, "content": "返信先"}),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let target_reply_id = target_reply["id"].as_str().unwrap().to_string();
+
+    let (status, nested) = post_json(
+        &app,
+        &actor,
+        "POST",
+        "/api/home",
+        json!({"in_reply_to": target_reply_id, "content": "返信への返信"}),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let nested_id = nested["id"].as_str().unwrap().to_string();
+
+    let mut check_db = db.clone();
+    // 直接の返信先だけでなく、ルートに参加している別のメンバーにも届く。
+    assert_eq!(
+        notice_types(&mut check_db, &target_author, &nested_id).await?,
+        ["reply"]
+    );
+    assert_eq!(
+        notice_types(&mut check_db, &participant, &nested_id).await?,
+        ["reply"]
+    );
+    Ok(())
+}

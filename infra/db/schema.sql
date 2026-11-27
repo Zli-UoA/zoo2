@@ -62,7 +62,8 @@ CREATE TABLE channel_user (
   user_id text NOT NULL,
   channel_id text NOT NULL,
   joined_at timestamp(3) NOT NULL,
-  notification_level text NOT NULL DEFAULT 'mentions' CHECK (notification_level IN ('all', 'mentions', 'mute')),
+  notification_level text NOT NULL DEFAULT 'mentions',
+  CONSTRAINT channel_user_notification_level_check CHECK (notification_level IN ('all', 'mentions', 'mute')),
   CONSTRAINT "ChannelUser_pkey" PRIMARY KEY (user_id, channel_id),
   CONSTRAINT channel_user_user_id_fkey
     FOREIGN KEY (user_id) REFERENCES users (id)

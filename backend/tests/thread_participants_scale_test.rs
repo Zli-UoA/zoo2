@@ -669,7 +669,6 @@ async fn notification_participants_sql_does_not_scan_users() -> anyhow::Result<(
             let mut max_loops = 0_f64;
             let mut sort_input = 0_f64;
             let mut external_sort = false;
-            let mut blocks = 0_f64;
             walk(&plan[0]["Plan"], &mut |node| {
                 let loops = node["Actual Loops"].as_f64().unwrap_or(0.);
                 max_loops = max_loops.max(loops);
@@ -678,9 +677,6 @@ async fn notification_participants_sql_does_not_scan_users() -> anyhow::Result<(
                     * loops;
                 if let Some(table) = node["Relation Name"].as_str() {
                     *relations.entry(table.into()).or_default() += n;
-                    // Gather / Join ノードは子の合計を持つので、表を読むノードだけで数える。
-                    blocks += node["Shared Hit Blocks"].as_f64().unwrap_or(0.)
-                        + node["Shared Read Blocks"].as_f64().unwrap_or(0.);
                     assert!(
                         !(node["Node Type"] == "Seq Scan"
                             && (table == "users"
@@ -692,10 +688,12 @@ async fn notification_participants_sql_does_not_scan_users() -> anyhow::Result<(
                 if node["Node Type"] == "Sort" {
                     sort_input += node["Actual Rows"].as_f64().unwrap_or(0.) * loops;
                     external_sort |= node["Sort Method"] == "external merge";
-                    blocks += node["Shared Hit Blocks"].as_f64().unwrap_or(0.)
-                        + node["Shared Read Blocks"].as_f64().unwrap_or(0.);
                 }
             });
+            // PostgreSQL 16 では上位ノードのブロック数に子ノードの使用量が含まれるため、
+            // 根节点の値だけを数える（子ノードで足すと同じブロックを二重に数える）。
+            let blocks = plan[0]["Plan"]["Shared Hit Blocks"].as_f64().unwrap_or(0.)
+                + plan[0]["Plan"]["Shared Read Blocks"].as_f64().unwrap_or(0.);
             let scanned_participants = relations.get("thread_participants").copied().unwrap_or(0.);
             let probed_members = relations.get("channel_user").copied().unwrap_or(0.);
             let read_users = relations.get("users").copied().unwrap_or(0.);
