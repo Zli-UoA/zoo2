@@ -475,6 +475,7 @@ internal fun ConnectedScreens(
             } else {
                 CompositionLocalProvider(
                     LocalTimelineImage provides remember(session) { { media -> timelineImage(session, media) } },
+                    LocalTimelineImageRetry provides remember(session) { { media -> timelineImage(session, media, retry = true) } },
                     LocalCachedTimelineImage provides remember(session) { { media -> cachedTimelineImage(session, media) } },
                     LocalKitchenReactionImage provides emojiCatalog::kitchenReaction,
                     LocalAndroidTranslation provides { key, args -> session.t(key, *args) },

@@ -379,8 +379,14 @@ pub(crate) async fn remember_display_emojis(
     Ok(())
 }
 pub async fn worker(state: AppState) {
+    let blurhash_workers =
+        futures_util::future::join_all((0..4).map(|_| emoji::blurhash_worker(&state)));
+    tokio::join!(delivery_worker(&state), blurhash_workers);
+}
+
+async fn delivery_worker(state: &AppState) {
     loop {
-        match deliver_next(&state).await {
+        match deliver_next(state).await {
             Ok(true) => {}
             Ok(false) => tokio::time::sleep(Duration::from_secs(2)).await,
             Err(e) => {

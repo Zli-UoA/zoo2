@@ -1,10 +1,22 @@
 ALTER TABLE home_images
   ADD COLUMN thumbnail_bytes bigint NOT NULL DEFAULT 0,
-  ADD COLUMN thumbnail_ready boolean NOT NULL DEFAULT false;
+  ADD COLUMN thumbnail_ready boolean;
+
+CREATE INDEX home_images_unconfirmed_thumbnail ON home_images(created_at,id)
+  WHERE thumbnail_ready IS NULL;
 
 CREATE OR REPLACE FUNCTION queue_home_image_deletion() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   INSERT INTO home_image_deletions(id,uploader_id,file_size)
-  VALUES(OLD.id,OLD.uploader_id,OLD.file_size + OLD.thumbnail_bytes) ON CONFLICT DO NOTHING;
+  VALUES(OLD.id,OLD.uploader_id,OLD.file_size + CASE
+    WHEN OLD.thumbnail_ready IS NULL AND OLD.thumbnail_bytes=0 THEN OLD.file_size
+    ELSE OLD.thumbnail_bytes END) ON CONFLICT DO NOTHING;
   RETURN OLD;
 END $$;
+
+CREATE TABLE apub_media_blurhash_queue (
+  post_id text PRIMARY KEY REFERENCES apub_remote_posts(id) ON DELETE CASCADE,
+  available_at timestamptz NOT NULL DEFAULT now(),
+  lease_id text
+);
+CREATE INDEX apub_media_blurhash_queue_available ON apub_media_blurhash_queue(available_at,post_id);

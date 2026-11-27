@@ -95,67 +95,86 @@ async fn fill_media_blurhashes(media: &mut [Value]) -> bool {
     changed
 }
 
-static MEDIA_BLURHASH_QUEUE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(64);
-static MEDIA_BLURHASH_WORKERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
-
-pub(super) fn schedule_media_blurhash(
-    state: &AppState,
+pub(super) async fn queue_media_blurhash(
+    tx: &mut toasty::Transaction<'_>,
     post_id: &str,
-    actor_id: &str,
-    updated: jiff::Timestamp,
-    mut media: Vec<Value>,
-) {
-    if !media.iter().any(needs_media_blurhash) {
-        return;
+    media: &[Value],
+) -> Result<(), AppError> {
+    if media.iter().any(needs_media_blurhash) {
+        toasty::sql::statement(
+            "INSERT INTO apub_media_blurhash_queue(post_id) VALUES($1)
+             ON CONFLICT(post_id) DO UPDATE SET available_at=now(), lease_id=NULL",
+        )
+        .bind(post_id)
+        .exec(tx)
+        .await?;
     }
-    let Ok(slot) = MEDIA_BLURHASH_QUEUE.try_acquire() else {
-        tracing::debug!("ActivityPub image BlurHash queue is full");
-        return;
-    };
-    let mut db = state.db.clone();
-    let post_id = post_id.to_owned();
-    let actor_id = actor_id.to_owned();
-    tokio::spawn(async move {
-        let _slot = slot;
-        let Ok(_worker) = MEDIA_BLURHASH_WORKERS.acquire().await else {
-            return;
-        };
-        let original = json!(media).to_string();
-        let current = async {
-            let mut tx = db.transaction().await?;
-            query(
-                &mut tx,
-                "SELECT '{}'::text FROM apub_remote_posts WHERE id=$1 AND actor_id=$2
-                 AND updated_at=$3::timestamptz AND deleted_at IS NULL AND media=$4::jsonb",
-                &[&post_id, &actor_id, &updated.to_string(), &original],
-            )
-            .await
-        }
-        .await;
-        match current {
-            Ok(rows) if !rows.is_empty() => {}
-            Ok(_) => return,
+    Ok(())
+}
+
+pub(super) async fn blurhash_worker(state: &AppState) {
+    loop {
+        match complete_next_media_blurhash(state).await {
+            Ok(true) => {}
+            Ok(false) => tokio::time::sleep(Duration::from_secs(2)).await,
             Err(error) => {
-                tracing::debug!(%error, "ActivityPub image version could not be checked");
-                return;
+                tracing::warn!(%error, "ActivityPub image BlurHash worker failed");
+                tokio::time::sleep(Duration::from_secs(5)).await;
             }
         }
-        if !fill_media_blurhashes(&mut media).await {
-            return;
+    }
+}
+
+async fn complete_next_media_blurhash(state: &AppState) -> Result<bool, AppError> {
+    let mut db = state.db.clone();
+    let lease = uuid::Uuid::new_v4().to_string();
+    let mut tx = db.transaction().await?;
+    let rows = query(
+        &mut tx,
+        "WITH claimed AS (
+             UPDATE apub_media_blurhash_queue SET available_at=now()+interval '30 seconds', lease_id=$1
+             WHERE post_id=(SELECT post_id FROM apub_media_blurhash_queue WHERE available_at<=now()
+               ORDER BY available_at,post_id LIMIT 1 FOR UPDATE SKIP LOCKED)
+             RETURNING post_id
+         )
+         SELECT json_build_object('id',p.id,'actor_id',p.actor_id,'updated_at',p.updated_at,
+             'active',p.deleted_at IS NULL,'media',p.media)::text
+         FROM claimed JOIN apub_remote_posts p ON p.id=claimed.post_id",
+        &[&lease],
+    )
+    .await?;
+    tx.commit().await?;
+    let Some(job) = rows.first() else {
+        return Ok(false);
+    };
+    let post_id = string(job, "id")?;
+    if job["active"] == true
+        && let Some(items) = job["media"].as_array()
+    {
+        let mut media = items.clone();
+        if fill_media_blurhashes(&mut media).await {
+            let updated = string(job, "updated_at")?
+                .parse::<jiff::Timestamp>()
+                .map_err(internal)?;
+            store_blurhashes(
+                &mut db,
+                post_id,
+                string(job, "actor_id")?,
+                updated,
+                &job["media"].to_string(),
+                &json!(media).to_string(),
+            )
+            .await?;
         }
-        if let Err(error) = store_blurhashes(
-            &mut db,
-            &post_id,
-            &actor_id,
-            updated,
-            &original,
-            &json!(media).to_string(),
-        )
-        .await
-        {
-            tracing::debug!(%error, "ActivityPub image BlurHash could not be saved");
-        }
-    });
+    }
+    toasty::sql::statement(
+        "DELETE FROM apub_media_blurhash_queue WHERE post_id=$1 AND lease_id=$2",
+    )
+    .bind(post_id)
+    .bind(lease)
+    .exec(&mut db)
+    .await?;
+    Ok(true)
 }
 
 async fn store_blurhashes(

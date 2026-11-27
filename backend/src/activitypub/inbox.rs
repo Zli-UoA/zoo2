@@ -94,7 +94,6 @@ pub(super) async fn receive_verified(
     if inserted.is_empty() {
         return Ok(());
     }
-    let mut media_completion = None;
     match string(activity, "type")? {
         "Follow" => {
             if object_id(&activity["object"]) != Some(local.as_str()) {
@@ -262,7 +261,7 @@ pub(super) async fn receive_verified(
                 interactions::notify(&mut tx, user, actor_id, id, "reply", post_id).await?;
             }
             if write.first().is_some_and(|row| row["saved"] == true) {
-                media_completion = Some((post_id, updated, media));
+                emoji::queue_media_blurhash(&mut tx, post_id, &media).await?;
             }
             // Per-recipient inboxes preserve audience isolation, even for followers-only notes.
             toasty::sql::statement("INSERT INTO apub_remote_recipients(post_id,user_id) SELECT id,$2 FROM apub_remote_posts WHERE id=$1 AND actor_id=$3 ON CONFLICT DO NOTHING").bind(post_id).bind(user).bind(actor_id).exec(&mut tx).await?;
@@ -326,10 +325,5 @@ pub(super) async fn receive_verified(
         _ => {}
     }
     tx.commit().await?;
-    // A concurrent Update may arrive during image I/O. Commit the Note and receipt
-    // first so that Update finds the row, then only supplement the saved version.
-    if let Some((post_id, updated, media)) = media_completion {
-        emoji::schedule_media_blurhash(state, post_id, actor_id, updated, media);
-    }
     Ok(())
 }

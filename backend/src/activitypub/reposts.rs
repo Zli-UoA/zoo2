@@ -195,10 +195,10 @@ pub(super) async fn store_public_note(
     emoji::remember(&mut tx, &emojis).await?;
     emoji::remember(&mut tx, &media).await?;
     let saved = query(&mut tx, "INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,emojis,origin_verified,media,quote_uri) SELECT $1,$2,$3,$4,$5::timestamptz,$6::timestamptz,$7::jsonb,true,$8::jsonb,NULLIF($9,'') WHERE NOT EXISTS(SELECT 1 FROM apub_remote_tombstones WHERE id=$1 AND actor_id=$2) ON CONFLICT(id) DO UPDATE SET origin_verified=true,content=EXCLUDED.content,visibility=EXCLUDED.visibility,emojis=EXCLUDED.emojis,media=EXCLUDED.media,quote_uri=EXCLUDED.quote_uri,updated_at=EXCLUDED.updated_at WHERE apub_remote_posts.actor_id=EXCLUDED.actor_id AND apub_remote_posts.deleted_at IS NULL AND apub_remote_posts.updated_at<=EXCLUDED.updated_at RETURNING '{}'::text", &[object, &author, &emoji::note_content(note)?, visibility, &published.to_string(), &updated.to_string(), &json!(emojis).to_string(), &json!(media).to_string(), &emoji::note_quote_uri(note).map(|url| url.to_string()).unwrap_or_default()]).await?;
-    tx.commit().await?;
     if !saved.is_empty() {
-        emoji::schedule_media_blurhash(state, object, &author, updated, media);
+        emoji::queue_media_blurhash(&mut tx, object, &media).await?;
     }
+    tx.commit().await?;
     Ok(())
 }
 
