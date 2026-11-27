@@ -94,19 +94,23 @@ class NotificationInbox(private val session: Session) {
     }
 
     suspend fun loadReactions(context: NotificationReactionContext): List<NotificationReaction> {
+        val display = session.repo.notifications.rows.value.firstOrNull { it.text("id") == context.id }
+            ?.nested("display_data")
         val response = try {
             session.api.request("/api/notifications/${context.id.encodeURLPathPart()}/context")
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (failure: Exception) {
-            if (failure is ApiException && failure.status in setOf(403, 404)) recordAvailability(context.id, false)
+        } catch (failure: ApiException) {
+            if (failure.status in setOf(403, 404) && display != null) recordAvailability(context.id, display, false)
+            return emptyList()
+        } catch (_: Exception) {
             return emptyList()
         }
         val data = response as? JsonObject
-        if (data != null && "message" in data) {
-            recordAvailability(context.id, data.nested("message").isNotEmpty())
+        if (display != null && data != null && "message" in data) {
+            recordAvailability(context.id, display, data.nested("message").isNotEmpty())
         }
-        val emojis = (response as? JsonObject)?.array("reactions")?.rows().orEmpty()
+        val emojis = data?.array("reactions")?.rows().orEmpty()
             .filter { it.text("user_id") in context.actorIds }
             .map { it.text("emoji") }
             .filter { it.isNotBlank() }
@@ -133,12 +137,11 @@ class NotificationInbox(private val session: Session) {
         }
     }
 
-    private fun recordAvailability(id: String, available: Boolean) {
-        val notification = session.repo.notifications.rows.value.firstOrNull { it.text("id") == id } ?: return
+    private fun recordAvailability(id: String, display: Row, available: Boolean) {
         if (id !in contextAvailability && contextAvailability.size >= 256) {
             contextAvailability.remove(contextAvailability.keys.first())
         }
-        contextAvailability[id] = ContextAvailability(available, notification.nested("display_data"))
+        contextAvailability[id] = ContextAvailability(available, display)
     }
 
     private fun federatedReaction(row: Row): NotificationReaction {

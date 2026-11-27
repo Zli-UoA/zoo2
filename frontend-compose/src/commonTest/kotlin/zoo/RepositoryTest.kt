@@ -46,6 +46,47 @@ private class FakePlatform : Platform {
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class RepositoryTest {
+    @Test
+    fun freshNotificationContextRestoresLinkDespiteAnEmptyCachedPreview() = runTest {
+        val pendingWrite = CompletableDeferred<Unit>()
+        var contextResponse = """{"message":{"id":"message"},"reactions":[]}"""
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    if (request.url.encodedPath.endsWith("/context")) respond(contextResponse)
+                    else {
+                        pendingWrite.await()
+                        respond("{}")
+                    }
+                }
+            }
+        }
+        val repo = Repository(Config("https://zoo.test", "/shapes", "me", false),
+            FakePlatform(), http, backgroundScope, synchronize = false)
+        val app = Session(repo, backgroundScope, Environment())
+        try {
+            backgroundScope.launch {
+                repo.notifications.write(repo.api, "/pending-notification", "POST", row = obj(
+                    "id" to "notice", "user_id" to "me", "actor_id" to "alice",
+                    "channel_id" to "channel", "message_id" to "message", "notification_type" to "reaction",
+                    "created_at" to "2026-11-01T00:00:00Z", "display_data" to obj("message" to null),
+                ))
+            }
+            runCurrent()
+            val inbox = NotificationInbox(app)
+            val item = inbox.snapshot().single()
+            assertNull(item.target)
+            val context = assertNotNull(item.reactionContext)
+            inbox.loadReactions(context)
+            assertEquals("/channels/channel?message=message", inbox.snapshot().single().target)
+
+            contextResponse = """{"message":null,"reactions":[]}"""
+            inbox.loadReactions(context)
+            assertNull(inbox.snapshot().single().target)
+        } finally { app.close() }
+    }
+
     private val config = Config("https://zoo.test", "/api/shapes", "alice", false)
     private val options =
         ShapeStreamOptions(
