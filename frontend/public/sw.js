@@ -304,6 +304,8 @@ async function precacheShell() {
   );
   // 欠けた／不正な応答で保存できなかった分は旧シェルから引き継ぐ。新しいキャッシュが
   // 選択されたあとにオフラインになっても、案内と配色設定を読めるようにする。
+  // 有効なコピーを見つけたのに保存できなければ、旧キャッシュを残すため install を失敗させる。
+  let carryOverFailed = false;
   try {
     // ファイルごとに、新しい世代から順に有効なコピーを探す。
     const sources = await shellCacheNamesNewestFirst(name);
@@ -321,10 +323,14 @@ async function precacheShell() {
           const saved = await (await caches.open(source)).match(path);
           if (!(await isUsableFreshAsset(path, saved))) continue;
           // 案内ページ自身の CSP を保持したまま、転送ヘッダーだけ除いてコピーする。
-          await cache.put(
-            path,
-            path === "/manifest.webmanifest" ? saved.clone() : await sanitizedCopy(saved.clone()),
-          );
+          try {
+            await cache.put(
+              path,
+              path === "/manifest.webmanifest" ? saved.clone() : await sanitizedCopy(saved.clone()),
+            );
+          } catch {
+            carryOverFailed = true;
+          }
           break;
         } catch {
           /* Try the next generation when one cache cannot be read. */
@@ -334,6 +340,7 @@ async function precacheShell() {
   } catch {
     /* An unavailable old cache is not a reason to fail the install. */
   }
+  if (carryOverFailed) throw new Error("Cannot carry over a cached app asset");
   // 初期版の SW は案内ページを zoo-offline-v1 に持っていた。シェルに無ければ引き継ぐ。
   // 保存先の確認自体が失敗しても install は完了させる。
   try {
@@ -472,8 +479,19 @@ async function sanitizedCopy(saved) {
   });
 }
 
-async function handleFreshAsset(request) {
+const freshAssetWork = new Map();
+
+function handleFreshAsset(request) {
   const path = new URL(request.url, self.location.origin).pathname;
+  // 同じパスの同時取得を共有し、古い応答が新しい配色を上書きしないようにする。
+  const pending = freshAssetWork.get(path);
+  if (pending) return pending;
+  const work = fetchFreshAsset(request, path).finally(() => freshAssetWork.delete(path));
+  freshAssetWork.set(path, work);
+  return work;
+}
+
+async function fetchFreshAsset(request, path) {
   let response;
   try {
     // サーバーが応答を返さない／本文が途中で止まる場合も、保存済みの版に戻れるようにする。

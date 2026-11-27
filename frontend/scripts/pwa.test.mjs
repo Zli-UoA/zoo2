@@ -1330,6 +1330,44 @@ test("an unreadable cache metadata does not stop carry-over", async () => {
   assert.equal(await (await cache.match(`${ORIGIN}/manifest.webmanifest`)).text(), manifest);
 });
 
+test("a failed carry-over keeps the old cache by failing install", async () => {
+  const manifest = validManifest("#ffffff");
+  const cacheContext = memoryCaches([
+    ["zoo-shell-old", `${ORIGIN}/manifest.webmanifest`, basicResponse(manifest)],
+  ]);
+  const old = await cacheContext.api.open("zoo-shell-old");
+  await old.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("1"));
+  const realOpen = cacheContext.api.open.bind(cacheContext.api);
+  cacheContext.api.open = async (name) => {
+    const cache = await realOpen(name);
+    return {
+      ...cache,
+      put: async (request, response) => {
+        if (name === "zoo-shell-v2" && requestKey(request).includes("manifest.webmanifest"))
+          throw new Error("denied");
+        return cache.put(request, response);
+      },
+    };
+  };
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async (input) => {
+      const key = requestKey(input);
+      if (key === `${ORIGIN}/manifest.webmanifest`)
+        return basicResponse("<html>app shell</html>", {
+          headers: { "content-type": "text/html" },
+        });
+      if (key === `${ORIGIN}/offline.html`)
+        return basicResponse('<meta name="zoo-offline" content="true" />offline', {
+          headers: { "content-type": "text/html" },
+        });
+      return basicResponse(`network:${key}`);
+    },
+  });
+  await assert.rejects(dispatch(handlers, "install"), /carry over/);
+  assert.ok(await (await realOpen("zoo-shell-old")).match(`${ORIGIN}/manifest.webmanifest`));
+});
+
 test("an unreadable cache entry does not stop carry-over", async () => {
   const manifest = validManifest("#ffffff");
   const cacheContext = memoryCaches([
@@ -2093,6 +2131,29 @@ test("an unreadable cached metadata does not stop the offline fallback", async (
     mode: "cors",
   });
   assert.equal(await response.text(), manifest);
+});
+
+test("concurrent manifest fetches share a single response", async () => {
+  let calls = 0;
+  const { handlers } = worker({
+    fetch: async () => {
+      calls += 1;
+      return basicResponse(validManifest(calls === 1 ? "#ffffff" : "#000000"), {
+        headers: { "content-type": "application/manifest+json" },
+      });
+    },
+  });
+  const request = {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+  };
+  const [first, second] = await Promise.all([
+    fetchThrough(handlers, request),
+    fetchThrough(handlers, request),
+  ]);
+  assert.equal(await first.clone().text(), await second.clone().text());
+  assert.equal(calls, 1);
 });
 
 test("an HTTP error is returned when no cached manifest exists", async () => {
