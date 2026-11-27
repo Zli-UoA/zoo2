@@ -1964,6 +1964,27 @@ test("a fetched offline page overwrites the current cache with its own CSP", asy
   assert.equal(saved.headers.get("content-security-policy"), "old-policy");
 });
 
+test("a Range request falls back to the full cached manifest offline", async () => {
+  const manifest = validManifest("#000000");
+  const cacheContext = memoryCaches([
+    ["zoo-shell-v2", `${ORIGIN}/manifest.webmanifest`, basicResponse(manifest)],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+    headers: { get: (name) => (name.toLowerCase() === "range" ? "bytes=0-10" : null) },
+  });
+  assert.equal(await response.text(), manifest);
+});
+
 test("a queried offline.html is cached and read under its pathname", async () => {
   let html = '<html><meta name="zoo-offline" content="true" />old</html>';
   const { handlers, cacheContext } = worker({
@@ -2363,6 +2384,39 @@ test("a conditional GET keeps a cached manifest when the server returns HTML", a
     headers: { get: (name) => (name.toLowerCase() === "if-none-match" ? '"abc"' : null) },
   });
   assert.equal(await response.text(), manifest);
+});
+
+test("If-Match with an unusable body does not use a cached version", async () => {
+  const cacheContext = memoryCaches([
+    ["zoo-shell-v2", `${ORIGIN}/manifest.webmanifest`, basicResponse(validManifest("#ffffff"))],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () =>
+      basicResponse("<html>app shell</html>", { headers: { "content-type": "text/html" } }),
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+    headers: { get: (name) => (name.toLowerCase() === "if-match" ? '"abc"' : null) },
+  });
+  assert.equal(response.type, "error");
+});
+
+test("a conditional GET does not return an HTML fallback without a cached manifest", async () => {
+  const { handlers } = worker({
+    fetch: async () =>
+      basicResponse("<html>app shell</html>", { headers: { "content-type": "text/html" } }),
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+    headers: { get: (name) => (name.toLowerCase() === "if-none-match" ? '"abc"' : null) },
+  });
+  assert.equal(response.type, "error");
 });
 
 test("If-Match does not fall back to a cached version", async () => {

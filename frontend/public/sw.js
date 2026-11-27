@@ -528,11 +528,21 @@ async function fetchConditionalAsset(request, path) {
       usable = false;
     }
     if (usable) return response;
-    const cached = await cachedFreshAsset(path);
-    return cached.type === "error" ? response : cached;
+    // HTML フォールバックなどは manifest として届けない。
+    if (precondition) return Response.error();
+    return await cachedFreshAsset(path);
   } catch {
     // If-Match などで指定された版は、保存済みの別版では代用できない。
     if (precondition) return Response.error();
+    return await cachedFreshAsset(path);
+  }
+}
+
+async function fetchRangeAsset(request, path) {
+  // 部分応答は共有もキャッシュ更新もしないが、取得期限とオフライン代替は適用する。
+  try {
+    return await fetchBounded(request, { cache: "reload" });
+  } catch {
     return await cachedFreshAsset(path);
   }
 }
@@ -550,7 +560,7 @@ function handleFreshAsset(request) {
     headers?.get("if-match") ||
     headers?.get("if-unmodified-since")
   ) {
-    if (headers.get("range")) return fetch(request, { cache: "reload" });
+    if (headers.get("range")) return fetchRangeAsset(request, path);
     return fetchConditionalAsset(request, path);
   }
   // 同じパスの同時取得を共有し、古い応答が新しい配色を上書きしないようにする。
