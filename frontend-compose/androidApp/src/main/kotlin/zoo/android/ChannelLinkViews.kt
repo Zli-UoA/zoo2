@@ -97,7 +97,7 @@ private fun channelLinkState(
         hidesContent = { messageRichContent(it).hidesBody },
     )
     if (info is ChannelLinkInfo.Message && needsWorkspaceEmoji) {
-        DisposableEffect(onEmojiDemand) {
+        DisposableEffect(onEmojiDemand, target) {
             onEmojiDemand(true)
             onDispose { onEmojiDemand(false) }
         }

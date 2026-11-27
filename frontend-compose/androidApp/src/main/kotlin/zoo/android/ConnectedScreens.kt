@@ -441,11 +441,12 @@ internal fun ConnectedScreens(
         else -> false
     }
     val canLoadEmoji = env.online && env.visible
-    val screenEmojiDemand by rememberUpdatedState(pickerOpen || needsWorkspaceEmoji)
+    val pickerEmojiDemand by rememberUpdatedState(pickerOpen)
+    val entryEmojiDemand by rememberUpdatedState(needsWorkspaceEmoji)
     LaunchedEffect(session, state, canLoadEmoji) {
         if (!canLoadEmoji) return@LaunchedEffect
-        snapshotFlow { screenEmojiDemand to state.linkEmojiDemandVersion }.collect { (demand, _) ->
-            if (demand || state.linkEmojiDemandCount > 0) {
+        snapshotFlow { Triple(pickerEmojiDemand, entryEmojiDemand, state.linkEmojiDemandVersion) }.collect { (picker, entries, _) ->
+            if (picker || entries || state.linkEmojiDemandCount > 0) {
                 try { session.loadWorkspaceEmojis() }
                 catch (cancelled: CancellationException) { throw cancelled }
                 catch (_: Exception) { /* Keep shortcode fallbacks if the catalog is unavailable. */ }
