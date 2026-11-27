@@ -20,7 +20,7 @@ internal class ConnectedScreenState(
     private val phone: PhoneController,
 ) {
     val home = HomeTimeline(app, app.scope)
-    val inbox = NotificationInboxBinding(zoo.NotificationInbox(app))
+    val inbox = NotificationInboxBinding(app)
     private val instanceColors = mutableStateMapOf<String, Int?>()
 
     suspend fun loadInstanceColors(hosts: List<String>) {

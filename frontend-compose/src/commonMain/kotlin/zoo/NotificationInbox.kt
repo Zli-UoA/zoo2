@@ -1,8 +1,6 @@
 package zoo
 
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableStateMapOf
-import androidx.compose.runtime.getValue
 import io.ktor.http.encodeURLPathPart
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonObject
@@ -48,9 +46,12 @@ class NotificationInbox(private val session: Session) {
     val loadFailed: Boolean get() = session.activityPubNotifications.error
     val nextCursor: String? get() = session.activityPubNotifications.nextCursor
 
-    fun snapshot(): List<NotificationDisplay> {
-        val users = session.repo.users.rows.value.associateBy { it.text("id") }
-        return grouped.map { (id, entries) ->
+    fun snapshot(
+        notifications: List<Row> = session.repo.notifications.rows.value,
+        people: List<Row> = session.repo.users.rows.value,
+    ): List<NotificationDisplay> {
+        val users = people.associateBy { it.text("id") }
+        return groups(notifications).map { (id, entries) ->
             val latest = entries.first()
             val item = latest.representative()
             val rows = entries.flatMap { it.channel ?: listOf(it.representative()) }
@@ -186,13 +187,13 @@ class NotificationInbox(private val session: Session) {
 
     fun viewed(id: String) {
         if (!session.env.visible || !session.env.focused || !session.env.online) return
-        grouped[id]?.forEach(session.notificationReads::viewed)
+        groups(session.repo.notifications.rows.value)[id]?.forEach(session.notificationReads::viewed)
     }
 
-    private val grouped by derivedStateOf {
+    private fun groups(notifications: List<Row>): Map<String, List<UnifiedNotificationEntry>> {
         val federated = session.activityPubNotifications
-        inboxGroups(unifiedNotificationFeed(
-            androidNotificationRows(session.repo.notifications.rows.value), federated.items, federated.nextCursor != null,
+        return inboxGroups(unifiedNotificationFeed(
+            androidNotificationRows(notifications), federated.items, federated.nextCursor != null,
         ).entries)
     }
 

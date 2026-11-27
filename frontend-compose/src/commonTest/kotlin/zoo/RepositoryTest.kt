@@ -84,6 +84,12 @@ class RepositoryTest {
             contextResponse = """{"message":null,"reactions":[]}"""
             inbox.loadReactions(context)
             assertNull(inbox.snapshot().single().target)
+
+            pendingWrite.complete(Unit)
+            runCurrent()
+            assertTrue(inbox.snapshot().isEmpty(), "A row removed by sync must not remain in the inbox")
+            inbox.loadReactions(context)
+            assertTrue(inbox.snapshot().isEmpty())
         } finally { app.close() }
     }
 
