@@ -53,12 +53,24 @@ final class ConversationStore {
     @ObservationIgnored var displayName: (String) -> String = { $0 }
     /// 送信欄の上に出す、配布先の要約（暗号化チャンネルで、気付いてほしいことがあるときだけ）。
     private(set) var recipientSummary: MessageEncryption.RecipientSummary?
+    @ObservationIgnored private var recipientSummaryGeneration = 0
 
-    /// 配布先の要約を読み直す（会話を開いたとき、鍵が届いたとき、送信のあと）。
+    var recipientWarning: String {
+        recipientSummary?.undeliverable.contains { $0.userID == userID } == true
+            ? "自分の鍵を確認できないため、送信できません"
+            : "次の相手には届きません。ほかの配布先には送信されます"
+    }
+
+    /// 配布先の要約を読み直す（会話を開いたとき、鍵が届いたとき）。
     func refreshRecipientSummary() async {
-        guard channel.encrypted == true, let e2ee, e2ee.isReady else { recipientSummary = nil; return }
-        let summary = await e2ee.recipientSummary(channelID: channel.id)
-        recipientSummary = (summary?.isEmpty ?? true) ? nil : summary
+        guard sending.isEmpty, !Task.isCancelled else { return }
+        recipientSummaryGeneration += 1
+        let generation = recipientSummaryGeneration, epoch = accessGeneration
+        guard active, !blocked, channel.encrypted == true, let e2ee, e2ee.isReady else { recipientSummary = nil; return }
+        guard let summary = await e2ee.recipientSummary(channelID: channel.id) else { return }
+        guard active, !blocked, sending.isEmpty, !Task.isCancelled,
+              epoch == accessGeneration, generation == recipientSummaryGeneration else { return }
+        recipientSummary = summary.isEmpty ? nil : summary
     }
 
     /// 鍵を配れない相手を、名前と理由で説明する。
@@ -547,8 +559,12 @@ final class ConversationStore {
                 }
                 uploadStatus[key] = attachments.isEmpty ? nil : "メッセージを送信中…"
                 pendingSends[key]?.messageAttempted = true
-                try await e2ee.send(channelID: channel.id, id: pending.id, parentID: parentID, body: content, attachments: infos, mentions: encryptedMentions(content))
-                Task { await refreshRecipientSummary() }
+                try await e2ee.send(channelID: channel.id, id: pending.id, parentID: parentID, body: content, attachments: infos,
+                                    mentions: encryptedMentions(content)) { [weak self] summary in
+                    guard let self, active, !blocked, epoch == accessGeneration else { return }
+                    recipientSummaryGeneration += 1
+                    recipientSummary = summary.isEmpty ? nil : summary
+                }
                 try Task.checkCancellation()
                 guard active, !blocked, epoch == accessGeneration else { return }
                 pendingSends[key] = nil

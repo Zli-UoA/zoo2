@@ -42,7 +42,6 @@ extension APIClient: E2eeOwnDevicesAPI {
     }
 
     func removeDevice(_ deviceID: String) async throws {
-        do { try await deleteDevice(deviceID) }
-        catch let failure as E2eeAPIError where failure.status == 404 {}
+        try await deleteDevice(deviceID)
     }
 }

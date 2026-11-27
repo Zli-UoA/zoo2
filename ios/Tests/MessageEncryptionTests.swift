@@ -159,9 +159,16 @@ struct MessageEncryptionTests {
         let (server, sender, receiver, encryption, _) = try await makePair()
         defer { sender.cleanUp(); receiver.cleanUp() }
         let missing = UUID().uuidString.lowercased()
+        #expect(try await encryption.summary(channel: channel).undeliverable.isEmpty)
         server.unconfiguredUser = missing
-        #expect(try await encryption.summary(channel: channel).undeliverable.contains { $0.userID == missing && $0.reason == .notSetUp })
-        try await encryption.send(channel: channel, id: messageID, parent: nil, body: "設定済みの相手へ")
+        server.staleOnce = false
+        var notified = false
+        try await encryption.send(channel: channel, id: messageID, parent: nil, body: "設定済みの相手へ") { summary in
+            #expect(server.posts == 0)
+            #expect(summary.undeliverable.contains { $0.userID == missing && $0.reason == .notSetUp })
+            notified = true
+        }
+        #expect(notified)
         _ = try receiver.store.processToDevice(server.delivered, keysQuery: dump(.object(try await server.snapshot())))
         #expect(MessageEncryption(store: { receiver.store }, api: server).decrypt(row(server)).body == "設定済みの相手へ")
     }

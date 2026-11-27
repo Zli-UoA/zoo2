@@ -11,6 +11,33 @@ struct Channel: Codable, Identifiable, Hashable, Sendable {
     var encrypted: Bool?
     var created_user_id: String? = nil
     var updated_at: String? = nil
+    // 送信を止めるための合成値を、サーバーで観測した暗号化履歴へ混ぜない。
+    var encryptionIsLocalOverride = false
+
+    var withoutEncryptionOverride: Channel {
+        var original = self
+        if encryptionIsLocalOverride { original.encrypted = false }
+        original.encryptionIsLocalOverride = false
+        return original
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, channel_name, description, is_private, is_dm, archive_at, deleted_at, encrypted, created_user_id, updated_at
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encode(channel_name, forKey: .channel_name)
+        try values.encodeIfPresent(description, forKey: .description)
+        try values.encode(is_private, forKey: .is_private)
+        try values.encode(is_dm, forKey: .is_dm)
+        try values.encodeIfPresent(archive_at, forKey: .archive_at)
+        try values.encodeIfPresent(deleted_at, forKey: .deleted_at)
+        try values.encodeIfPresent(withoutEncryptionOverride.encrypted, forKey: .encrypted)
+        try values.encodeIfPresent(created_user_id, forKey: .created_user_id)
+        try values.encodeIfPresent(updated_at, forKey: .updated_at)
+    }
 
     var canPost: Bool { archive_at == nil && deleted_at == nil && encrypted != true }
     var canCall: Bool { archive_at == nil && deleted_at == nil }

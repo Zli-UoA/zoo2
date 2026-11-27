@@ -282,6 +282,10 @@ final class MessageEncryption {
         let store = try currentStore()
         let (epoch, distribution) = try await evaluate(store, channel: channel, minimum: latestEpochs[channel] ?? 0)
         latestEpochs[channel] = max(latestEpochs[channel] ?? 0, epoch)
+        return summary(store, channel: channel, distribution: distribution)
+    }
+
+    private func summary(_ store: CryptoStore, channel: String, distribution: Distribution) -> RecipientSummary {
         let current = Set(distribution.users.keys).subtracting([store.userID])
         let previous = Set(store.recordedMembers(channel: channel) ?? [])
         // 記録がなければ（初めて）、増えたとは言わない。
@@ -290,9 +294,12 @@ final class MessageEncryption {
     }
 
     /// 自分の鍵を信頼できない場合は止め、受信者の未設定などは既存の配布先の要約に表示する。
-    private func recipients(_ store: CryptoStore, channel: String, minimum: UInt64) async throws -> (UInt64, [VerifiedDeviceKeys]) {
+    private func recipients(_ store: CryptoStore, channel: String, minimum: UInt64,
+                            onRecipients: ((RecipientSummary) -> Void)?) async throws -> (UInt64, [VerifiedDeviceKeys]) {
         let (epoch, distribution) = try await evaluate(store, channel: channel, minimum: minimum)
-        let blocked = undeliverable(store, distribution)
+        let summary = summary(store, channel: channel, distribution: distribution)
+        onRecipients?(summary)
+        let blocked = summary.undeliverable
         let ownFailures = blocked.filter { $0.userID == store.userID }
         guard ownFailures.isEmpty else { throw MessageEncryptionError.undeliverableUsers(ownFailures) }
         // 送れるので、配布先を記録する（次の「前回から増えた配布先」の基準）。
@@ -337,9 +344,11 @@ final class MessageEncryption {
     }
 
     /// 新しい本文を送る。
-    func send(channel: String, id: String, parent: String?, body: String, attachments: [AttachmentInfo] = [], mentions: EncryptedMentions = EncryptedMentions()) async throws {
+    func send(channel: String, id: String, parent: String?, body: String, attachments: [AttachmentInfo] = [], mentions: EncryptedMentions = EncryptedMentions(),
+              onRecipients: ((RecipientSummary) -> Void)? = nil) async throws {
         try await serialized {
-            try await self.submit(channel: channel, id: id, parent: parent, body: body, revision: 0, edit: nil, attachments: attachments, mentions: mentions)
+            try await self.submit(channel: channel, id: id, parent: parent, body: body, revision: 0, edit: nil, attachments: attachments,
+                                  mentions: mentions, onRecipients: onRecipients)
         }
     }
 
@@ -366,12 +375,13 @@ final class MessageEncryption {
     }
 
     private func submit(channel: String, id: String, parent: String?, body: String, revision: UInt64, edit: EncryptedRow?,
-                        attachments newAttachments: [AttachmentInfo] = [], mentions: EncryptedMentions = EncryptedMentions()) async throws {
+                        attachments newAttachments: [AttachmentInfo] = [], mentions: EncryptedMentions = EncryptedMentions(),
+                        onRecipients: ((RecipientSummary) -> Void)? = nil) async throws {
         let store = try currentStore()
         var minimum = latestEpochs[channel] ?? 0
         for _ in 0..<3 {
             minimum = max(minimum, latestEpochs[channel] ?? 0)
-            let (epoch, devices) = try await recipients(store, channel: channel, minimum: minimum)
+            let (epoch, devices) = try await recipients(store, channel: channel, minimum: minimum, onRecipients: onRecipients)
             guard epoch >= (latestEpochs[channel] ?? 0) else {
                 discard(channel)
                 continue

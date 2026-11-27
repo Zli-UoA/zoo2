@@ -136,7 +136,12 @@ final class WorkspaceStore {
     @ObservationIgnored private var conversations: [String: ConversationStore] = [:]
     /// 暗号化チャンネルの復号と送信、初回設定と解錠（#685）。プレビューなどでは `nil`。
     var encryptionStorageUnavailable = false
-    var e2ee: E2eeController?
+    var e2ee: E2eeController? {
+        didSet {
+            oldValue?.onEncryptionHistoryReloaded = nil
+            e2ee?.onEncryptionHistoryReloaded = { [weak self] in self?.refreshEncryptionPolicy() }
+        }
+    }
     private(set) var active = true
     private var destinationGeneration = UUID()
     private var channelGeneration = UUID()
@@ -366,15 +371,32 @@ final class WorkspaceStore {
     }
 
     func applyingDowngradeCheck(_ reconciled: Channel) -> Channel {
-        var channel = reconciled
-        if encryptionStorageUnavailable { channel.encrypted = true; return channel }
+        var channel = reconciled.withoutEncryptionOverride
+        if encryptionStorageUnavailable {
+            if channel.encrypted != true {
+                channel.encrypted = true
+                channel.encryptionIsLocalOverride = true
+            }
+            return channel
+        }
         guard let e2ee else { return channel }
         e2ee.rememberEncryptedChannels([channel])
         if e2ee.isDowngraded(channel) {
             downgradedChannelIDs.insert(channel.id)
             channel.encrypted = true
+            channel.encryptionIsLocalOverride = true
+        } else {
+            downgradedChannelIDs.remove(channel.id)
         }
         return channel
+    }
+
+    private func refreshEncryptionPolicy() {
+        guard active else { return }
+        channels = channels.map { applyingDowngradeCheck($0) }
+        for conversation in conversations.values {
+            conversation.update(applyingDowngradeCheck(conversation.channel))
+        }
     }
 
     private func reconcileChannelCore(_ incoming: Channel, confirmsWrite: Bool = false) -> Channel {

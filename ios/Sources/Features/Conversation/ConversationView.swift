@@ -48,7 +48,7 @@ struct ConversationView: View {
                                   systemImage: "person.badge.plus").font(.caption)
                         }
                         if !summary.undeliverable.isEmpty {
-                            Label("鍵を配れない相手がいます（送れません）", systemImage: "exclamationmark.shield").font(.caption.bold())
+                            Label(store.recipientWarning, systemImage: "exclamationmark.shield").font(.caption.bold())
                             ForEach(summary.undeliverable, id: \.userID) { entry in
                                 Text("・\(store.displayName(entry.userID))：\(ConversationStore.reasonText(entry.reason))").font(.caption)
                             }

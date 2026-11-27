@@ -16,17 +16,59 @@ struct LogoutTests {
     }
 
     @Test @MainActor func 保存鍵の読み取りが失敗してもログアウトで状態と鍵を削除する() async throws {
-        let (files, key, directory) = makeFiles()
+        let directory = root(), key = MemoryKey()
+        let files = CryptoStoreFiles(directory: directory.appendingPathComponent("account"), keys: StorageKeyStore(backing: key))
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = try #require(try CryptoStore.open(files, userID: user)).store
         store.close()
-        let failing = CryptoStoreFiles(directory: directory, keys: StorageKeyStore(backing: UnreadableKey(base: key)))
+        let failing = CryptoStoreFiles(directory: files.directory, keys: StorageKeyStore(backing: UnreadableKey(base: key)))
         let harness = try ChatHarness()
         defer { harness.close() }
+        harness.stub { _ in (404, [:], Data()) }
         let controller = E2eeController.make(api: harness.api, userID: user, files: failing)
         try await controller.finishLogout()
-        #expect(!FileManager.default.fileExists(atPath: directory.path))
+        #expect(!FileManager.default.fileExists(atPath: files.directory.path))
         #expect(try key.load() == nil)
+    }
+
+    @Test("登録の応答消失後も端末を削除し、404後に届いた登録は次のログインで削除する", arguments: [false, true])
+    @MainActor func logoutAfterLostRegistration(lateRegistration: Bool) async throws {
+        let directory = root(), key = MemoryKey()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let files = CryptoStoreFiles(directory: directory.appendingPathComponent("account"), keys: StorageKeyStore(backing: key))
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let registered = Mutex(false)
+        let deletes = Mutex<[String]>([])
+        harness.stub { request in
+            if request.httpMethod == "POST" {
+                registered.withLock { $0 = !lateRegistration }
+                throw URLError(.networkConnectionLost)
+            }
+            deletes.withLock { $0.append(request.url!.lastPathComponent) }
+            let found = registered.withLock { value in let found = value; value = false; return found }
+            return (found ? 200 : 404, [:], Data("{}".utf8))
+        }
+        await #expect(throws: (any Error).self) {
+            try await DeviceRegistration(api: harness.api, files: files, userID: user).ensureRegistered().close()
+        }
+        let metadata = try #require(try files.metadata(userID: user))
+        #expect(!metadata.registered)
+        let controller = E2eeController.make(api: harness.api, userID: user, files: files)
+        try await controller.finishLogout()
+        #expect(!FileManager.default.fileExists(atPath: files.directory.path))
+        let pending = PendingDeviceDeletions(root: directory)
+        if lateRegistration {
+            #expect(pending.load()?.map(\.device) == [metadata.device_id])
+            await controller.retryPendingDeviceDeletions()
+            #expect(pending.load()?.map(\.device) == [metadata.device_id])
+            registered.withLock { $0 = true }
+            let restarted = E2eeController.make(api: harness.api, userID: user, files: files)
+            await restarted.retryPendingDeviceDeletions()
+        }
+        #expect(pending.load() == [])
+        #expect(!registered.withLock { $0 })
+        #expect(deletes.withLock { $0 } == Array(repeating: metadata.device_id, count: lateRegistration ? 3 : 1))
     }
 
     @Test func 削除待ちは追加と取り消しができ重複しない() {
@@ -121,6 +163,7 @@ struct LogoutTests {
         store.close()
         try key.delete()
         store = try #require(try CryptoStore.open(files, userID: user)).store
+        let newID = store.deviceID
         #expect(!store.isRegistered && store.pendingDeviceDeletions == [oldID])
         store.close()
         let harness = try ChatHarness()
@@ -131,8 +174,8 @@ struct LogoutTests {
             return (500, [:], Data())
         }
         try await E2eeController.make(api: harness.api, userID: user, files: files).finishLogout()
-        #expect(requested.withLock { $0 } == ["/api/e2ee/devices/\(oldID)"])
-        #expect(PendingDeviceDeletions(root: root).load()?.map(\.device) == [oldID])
+        #expect(Set(requested.withLock { $0 }) == Set([oldID, newID].map { "/api/e2ee/devices/\($0)" }))
+        #expect(Set(PendingDeviceDeletions(root: root).load()?.map(\.device) ?? []) == Set([oldID, newID]))
         #expect(!FileManager.default.fileExists(atPath: files.directory.path))
     }
 

@@ -15,7 +15,10 @@ private final class FakeEncryption: ConversationEncryption {
     var failSend = false
 
     func decrypt(_ message: Message) -> DecryptedBody { bodies[message.id] ?? DecryptedBody(notice: E2eeText.keyMissing) }
-    func send(channelID: String, id: String, parentID: String?, body: String, attachments: [AttachmentInfo], mentions: EncryptedMentions) async throws {
+    func send(channelID: String, id: String, parentID: String?, body: String, attachments: [AttachmentInfo], mentions: EncryptedMentions,
+              onRecipients: @escaping (MessageEncryption.RecipientSummary) -> Void) async throws {
+        onRecipients(summary ?? MessageEncryption.RecipientSummary())
+        await beforePost?()
         sentMentions.append(mentions)
         if failSend { throw MessageEncryptionError.sendStaleEpoch }
         sent.append((channelID, id, parentID, body))
@@ -23,7 +26,12 @@ private final class FakeEncryption: ConversationEncryption {
     }
     func edit(_ message: Message, body: String, mentions: EncryptedMentions) async throws { edited.append((message.id, body)) }
     var summary: MessageEncryption.RecipientSummary?
-    func recipientSummary(channelID: String) async -> MessageEncryption.RecipientSummary? { summary }
+    var beforePost: (() async -> Void)?
+    var loadSummary: (() async -> MessageEncryption.RecipientSummary?)?
+    func recipientSummary(channelID: String) async -> MessageEncryption.RecipientSummary? {
+        if let loadSummary { return await loadSummary() }
+        return summary
+    }
 }
 
 @MainActor
@@ -55,6 +63,54 @@ struct ConversationEncryptionTests {
         let store = ConversationStore(channel: channel, client: client, userID: userID)
         store.e2ee = encryption
         return store
+    }
+
+    @Test("送信時の配布先を投稿前に表示し、相手への未配布と自分の送信不可を区別する")
+    func updatesRecipientsBeforePost() async {
+        let encryption = FakeEncryption()
+        let store = store(encryption)
+        await store.refreshRecipientSummary()
+        #expect(store.recipientSummary == nil)
+        let missing = MessageEncryption.Undeliverable(userID: UUID().uuidString, reason: .notSetUp)
+        encryption.summary = .init(undeliverable: [missing])
+        var checked = false
+        encryption.beforePost = {
+            #expect(store.recipientSummary?.undeliverable == [missing])
+            #expect(store.recipientWarning.contains("ほかの配布先には送信されます"))
+            checked = true
+        }
+        store.drafts["root"] = "設定済みの相手へ"
+        await store.send()
+        #expect(checked && encryption.sent.count == 1)
+        encryption.summary = .init(undeliverable: [.init(userID: userID, reason: .needsUnlock)])
+        await store.refreshRecipientSummary()
+        #expect(store.recipientWarning == "自分の鍵を確認できないため、送信できません")
+    }
+
+    @Test("送信前に始めた古い配布先の取得は、送信に使った判定を上書きしない")
+    func staleRecipientSummaryCannotReplaceSendDecision() async throws {
+        let encryption = FakeEncryption()
+        let store = store(encryption)
+        var held: CheckedContinuation<MessageEncryption.RecipientSummary?, Never>?
+        encryption.loadSummary = { await withCheckedContinuation { held = $0 } }
+        let refreshing = Task { await store.refreshRecipientSummary() }
+        for _ in 0..<200 where held == nil { await Task.yield() }
+        let response = try #require(held)
+        let missing = MessageEncryption.Undeliverable(userID: UUID().uuidString, reason: .notSetUp)
+        encryption.summary = .init(undeliverable: [missing])
+        encryption.beforePost = {
+            response.resume(returning: .init())
+            await refreshing.value
+            #expect(store.recipientSummary?.undeliverable == [missing])
+            var backgroundRead = false
+            encryption.loadSummary = { backgroundRead = true; return nil }
+            await store.refreshRecipientSummary()
+            #expect(!backgroundRead)
+            #expect(store.recipientSummary?.undeliverable == [missing])
+        }
+        store.drafts["root"] = "設定済みの相手へ"
+        await store.send()
+        #expect(store.recipientSummary?.undeliverable == [missing])
     }
 
     @Test("復号した本文を表示し、鍵がないものと暗号化されていないものには理由を出す")

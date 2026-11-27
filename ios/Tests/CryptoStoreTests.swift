@@ -92,6 +92,55 @@ struct CryptoStoreTests {
         #expect(restarted.isDowngraded(channel))
     }
 
+    @Test("履歴の再読で既存の平文会話を復旧し、欠損のままなら停止を続ける", arguments: [false, true])
+    @MainActor func reloadsEncryptionHistory(restored: Bool) throws {
+        let (files, _, directory) = makeFiles()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        _ = try files.loadEncryptionHistory(userID: user)
+        let history = files.encryptionHistoryDirectory.appendingPathComponent("channels.json")
+        let saved = try Data(contentsOf: history)
+        try FileManager.default.removeItem(at: history)
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let controller = E2eeController.make(api: harness.api, userID: user, files: files)
+        let workspace = WorkspaceStore(client: harness.client, user: Person(id: user, user_name: "you", display_name: "あなた"), recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        workspace.e2ee = controller
+        let plain = Channel(id: "plain", channel_name: "平文", is_private: true, is_dm: false)
+        let guarded = workspace.applyingDowngradeCheck(plain)
+        #expect(guarded.encrypted == true && guarded.encryptionIsLocalOverride)
+        workspace.addAndOpen(guarded)
+        let conversation = workspace.conversation(for: guarded)
+        #expect(!conversation.canPost && conversation.isDowngraded())
+        controller.rememberEncryptedChannels([guarded])
+        let encoded = try JSONEncoder().encode(guarded)
+        let decoded = try JSONDecoder().decode(Channel.self, from: encoded)
+        #expect(decoded.encrypted == false && !decoded.encryptionIsLocalOverride)
+        var encrypted = Channel(id: "encrypted", channel_name: "暗号化", is_private: true, is_dm: false, encrypted: true)
+        workspace.encryptionStorageUnavailable = true
+        let unavailable = workspace.applyingDowngradeCheck(encrypted)
+        #expect(!unavailable.encryptionIsLocalOverride)
+        #expect(try JSONDecoder().decode(Channel.self, from: JSONEncoder().encode(unavailable)).encrypted == true)
+        workspace.encryptionStorageUnavailable = false
+        controller.rememberEncryptedChannels([encrypted])
+        encrypted.encrypted = false
+        let protected = workspace.conversation(for: workspace.applyingDowngradeCheck(encrypted))
+        if restored { try saved.write(to: history) }
+        controller.manager.onReady?()
+        #expect(conversation.canPost == restored)
+        #expect(conversation.isDowngraded() == !restored)
+        #expect(workspace.channels.first?.encryptionIsLocalOverride == !restored)
+        #expect(protected.isDowngraded())
+        #expect(!protected.canPost)
+        if restored {
+            #expect(try files.loadEncryptionHistory(userID: user) == ["encrypted"])
+            #expect(!controller.isDowngraded(plain))
+        } else {
+            #expect(!FileManager.default.fileExists(atPath: history.path))
+            #expect(controller.isDowngraded(plain))
+        }
+    }
+
     @Test("履歴の保存失敗後も再起動で平文に戻さない", arguments: [false, true])
     @MainActor func encryptionHistoryFailureBlocksPlaintext(afterRename: Bool) throws {
         let (files, _, directory) = makeFiles()

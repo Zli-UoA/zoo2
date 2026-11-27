@@ -10,7 +10,8 @@ protocol ConversationEncryption: AnyObject {
     /// 復号の結果が変わりうる（鍵が届いた、解錠した）たびに増える。
     var revision: Int { get }
     func decrypt(_ message: Message) -> DecryptedBody
-    func send(channelID: String, id: String, parentID: String?, body: String, attachments: [AttachmentInfo], mentions: EncryptedMentions) async throws
+    func send(channelID: String, id: String, parentID: String?, body: String, attachments: [AttachmentInfo], mentions: EncryptedMentions,
+              onRecipients: @escaping (MessageEncryption.RecipientSummary) -> Void) async throws
     func edit(_ message: Message, body: String, mentions: EncryptedMentions) async throws
     /// 送る前の、配布先の要約（前回から増えた配布先と、鍵を配れない相手）。確かめられなければ `nil`。
     func recipientSummary(channelID: String) async -> MessageEncryption.RecipientSummary?
@@ -81,7 +82,9 @@ final class E2eeController: ConversationEncryption {
         self.setup = setup
         self.encryption = encryption
         manager.onReady = { [weak self] in
+            self?.refreshEncryptionHistory(retry: true)
             self?.rememberEncryptedChannels([])
+            self?.onEncryptionHistoryReloaded?()
             self?.refreshStatus()
         }
         manager.onKeysReceived = { [weak self] in
@@ -156,9 +159,10 @@ final class E2eeController: ConversationEncryption {
     @ObservationIgnored private var encryptionHistoryAvailable = false
     @ObservationIgnored private var canPersistEncryptionHistory = false
     @ObservationIgnored private var durableEncryptedChannels = Set<String>()
+    @ObservationIgnored var onEncryptionHistoryReloaded: (() -> Void)?
 
-    private func refreshEncryptionHistory() {
-        if !readEncryptionHistory, let files {
+    private func refreshEncryptionHistory(retry: Bool = false) {
+        if (!readEncryptionHistory || (retry && !canPersistEncryptionHistory)), let files {
             readEncryptionHistory = true
             do {
                 durableEncryptedChannels = try files.loadEncryptionHistory(userID: userIDForStore)
@@ -175,7 +179,7 @@ final class E2eeController: ConversationEncryption {
     /// 鍵や端末登録の準備を待たず、観測した暗号化チャンネルを永続化する。
     func rememberEncryptedChannels(_ channels: [Channel]) {
         refreshEncryptionHistory()
-        observedEncryptedChannels.formUnion(channels.filter { $0.encrypted == true }.map(\.id))
+        observedEncryptedChannels.formUnion(channels.filter { $0.encrypted == true && !$0.encryptionIsLocalOverride }.map(\.id))
         if let files, canPersistEncryptionHistory,
            !encryptionHistoryAvailable || durableEncryptedChannels != observedEncryptedChannels {
             do {
@@ -192,7 +196,7 @@ final class E2eeController: ConversationEncryption {
     /// ローカルの履歴を確かめられない間も、平文への切替を認めない。
     func isDowngraded(_ channel: Channel) -> Bool {
         refreshEncryptionHistory()
-        guard channel.encrypted != true else { return false }
+        guard channel.encrypted != true || channel.encryptionIsLocalOverride else { return false }
         return observedEncryptedChannels.contains(channel.id) || (files != nil && !encryptionHistoryAvailable)
     }
 
@@ -297,7 +301,8 @@ final class E2eeController: ConversationEncryption {
         guard let files else { return }
         let metadata = try files.metadata(userID: userIDForStore)
         if let metadata {
-            let devices = Set((metadata.pending_deletions ?? []) + (metadata.registered ? [metadata.device_id] : [])).sorted()
+            // 登録の応答だけを失った端末も、サーバーに残っている可能性がある。
+            let devices = Set((metadata.pending_deletions ?? []) + [metadata.device_id]).sorted()
             let pending = PendingDeviceDeletions(root: files.directory.deletingLastPathComponent())
             let entries = devices.map { PendingDeviceDeletion(server: serverKey, user: userIDForStore, device: $0) }
             var unrecorded = Set(entries.filter { !pending.add($0) }.map(\.device))
@@ -306,7 +311,6 @@ final class E2eeController: ConversationEncryption {
                 for entry in entries {
                     if Task.isCancelled { return false }
                     do { try await api.removeDevice(entry.device) }
-                    catch let failure as E2eeAPIError where failure.status == 404 {}
                     catch { continue }
                     unrecorded.remove(entry.device)
                     pending.remove(entry)
@@ -322,13 +326,13 @@ final class E2eeController: ConversationEncryption {
     }
 
     /// 前のログアウトで消せなかった、この接続先とユーザーの端末を消し直す（ログインのあと、裏で行う）。
+    /// 削除済みIDには成功が返る。404は遅延した登録がまだ届いていない可能性があるので残す。
     func retryPendingDeviceDeletions() async {
         guard let files, let api = devicesAPI else { return }
         let pending = PendingDeviceDeletions(root: files.directory.deletingLastPathComponent())
         for entry in pending.load() ?? [] where entry.server == serverKey && entry.user == userIDForStore {
             let done = await e2eeWithTimeout(.seconds(5)) { () -> Bool? in
                 do { try await api.removeDevice(entry.device); return true }
-                catch let failure as E2eeAPIError where failure.status == 404 { return true }
                 catch { return false }
             }
             if done == true { pending.remove(entry) }
@@ -437,8 +441,10 @@ final class E2eeController: ConversationEncryption {
         return result
     }
 
-    func send(channelID: String, id: String, parentID: String?, body: String, attachments: [AttachmentInfo], mentions: EncryptedMentions) async throws {
-        try await encryption.send(channel: channelID, id: id, parent: parentID, body: body, attachments: attachments, mentions: mentions)
+    func send(channelID: String, id: String, parentID: String?, body: String, attachments: [AttachmentInfo], mentions: EncryptedMentions,
+              onRecipients: @escaping (MessageEncryption.RecipientSummary) -> Void) async throws {
+        try await encryption.send(channel: channelID, id: id, parent: parentID, body: body, attachments: attachments,
+                                  mentions: mentions, onRecipients: onRecipients)
     }
 
     func recipientSummary(channelID: String) async -> MessageEncryption.RecipientSummary? {
