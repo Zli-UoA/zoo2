@@ -369,16 +369,21 @@ class LinkedChannelTableTest {
     @Test
     fun onlyTheLinkedMessagesAreFetchedOncePerId() = runTest {
         val requests = mutableListOf<HttpRequestData>()
-        val http = HttpClient(MockEngine { request ->
-            requests += request
-            val parameters = request.url.parameters
-            val subset = parameters["subset__params"]
-            when {
-                subset != null -> respond(snapshot(if ("m2" in subset) "m2" else "m1"), headers = headers)
-                parameters["live"] == "true" -> awaitCancellation()
-                else -> respond("""[{"headers":{"control":"up-to-date"}}]""", headers = headers)
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    requests += request
+                    val parameters = request.url.parameters
+                    val subset = parameters["subset__params"]
+                    when {
+                        subset != null -> respond(snapshot(if ("m2" in subset) "m2" else "m1"), headers = headers)
+                        parameters["live"] == "true" -> awaitCancellation()
+                        else -> respond("""[{"headers":{"control":"up-to-date"}}]""", headers = headers)
+                    }
+                }
             }
-        })
+        }
         val table = LinkedChannelTable("c1", config, LinkPlatform(), http, backgroundScope, options)
         try {
             table.request("m1")
