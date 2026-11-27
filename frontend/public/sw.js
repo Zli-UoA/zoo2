@@ -355,15 +355,19 @@ async function precacheShell() {
       let restored = false;
       let best = null;
       let bestTime = -Infinity;
+      let bestHasTime = false;
       for (const source of sources) {
         try {
           const saved = await (await caches.open(source)).match(path);
           if (!(await isUsableFreshAsset(path, saved))) continue;
           const modified = Date.parse(saved.headers.get("x-zoo-last-modified") || "");
-          const updatedAt = Number.isFinite(modified) ? modified : 0;
-          if (!best || updatedAt > bestTime) {
+          const hasTime = Number.isFinite(modified);
+          // 両方に更新日時があるときだけ比較し、片方に無ければ新しい世代（一覧の順）を採る。
+          const better = !best || (hasTime && bestHasTime && modified > bestTime);
+          if (better) {
             best = saved;
-            bestTime = updatedAt;
+            bestTime = hasTime ? modified : -Infinity;
+            bestHasTime = hasTime;
           }
         } catch {
           // 本文が読めない場合は、旧キャッシュを消さないため記録する。
@@ -611,11 +615,7 @@ let freshAssetSequence = 0;
 function noteFreshAssetSequence(path, sequence, etag = null) {
   const previous = freshAssetWrites.get(path);
   if (!previous || previous.sequence < sequence)
-    freshAssetWrites.set(path, {
-      sequence,
-      etag,
-      promise: previous?.promise ?? Promise.resolve(),
-    });
+    freshAssetWrites.set(path, { sequence, etag, promise: previous?.promise ?? Promise.resolve() });
 }
 
 async function writeFreshAsset(path, cache, response, sequence) {
@@ -801,28 +801,31 @@ async function cachedFreshAsset(path, networkResponse = null) {
     }
     candidates.push({ name, current: name.startsWith(POLICY_PREFIX), installedAt });
   }
-  // まず使用中のシェルに有効な保存版があれば、それを採用する。
-  try {
-    const active = await findActiveShellCache();
-    const saved = await (await caches.open(active)).match(path);
-    if (await isUsableFreshAsset(path, saved)) return saved;
-  } catch {
-    /* Try the other generations below. */
-  }
   let best = null;
   let bestTime = -Infinity;
+  let bestHasTime = false;
   let bestCurrent = false;
   for (const { name, current, installedAt } of candidates) {
     try {
       const cache = await caches.open(name);
       const saved = await cache.match(path);
       if (!(await isUsableFreshAsset(path, saved))) continue;
-      // 現行シェルの保存版を優先する。世代をまたぐときは同じ種類の日時で比較する。
+      // 更新日時が取れるコピー同士はその時刻で比較する。日時が無いものは現行シェルを優先し、
+      // 日時付きのコピーがあればそちらを選ぶ（既定キャッシュへの更新を取りこぼさない）。
       const modified = Date.parse(saved.headers.get("x-zoo-last-modified") || "");
-      const updatedAt = Number.isFinite(modified) ? modified : installedAt;
-      if (!best || current > bestCurrent || (current === bestCurrent && updatedAt > bestTime)) {
+      const hasTime = Number.isFinite(modified);
+      const updatedAt = hasTime ? modified : installedAt;
+      const better =
+        !best ||
+        (hasTime && !bestHasTime) ||
+        (hasTime && bestHasTime && modified > bestTime) ||
+        (!hasTime &&
+          !bestHasTime &&
+          (current > bestCurrent || (current === bestCurrent && installedAt > bestTime)));
+      if (better) {
         best = saved;
         bestTime = updatedAt;
+        bestHasTime = hasTime;
         bestCurrent = current;
       }
     } catch {

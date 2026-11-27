@@ -307,7 +307,7 @@ test("activation keeps caches when the latest shell metadata is unreadable", asy
   assert.ok(names.includes("zoo-shell-v2"));
 });
 
-test("activation keeps caches when a later enumeration fails", async () => {
+test("activation enumerates caches once and removes older generations", async () => {
   const cacheContext = memoryCaches([
     ["zoo-shell-abc123", `${ORIGIN}/index.html`, basicResponse("<html>app</html>")],
     ["zoo-shell-v2", `${ORIGIN}/index.html`, basicResponse("<html>old</html>")],
@@ -318,14 +318,15 @@ test("activation keeps caches when a later enumeration fails", async () => {
   let calls = 0;
   cacheContext.api.keys = async () => {
     calls += 1;
-    if (calls === 2) throw new Error("denied");
     return realKeys();
   };
   const { handlers } = worker({ caches: cacheContext.api });
   await dispatch(handlers, "activate");
   cacheContext.api.keys = realKeys;
+  assert.equal(calls, 1);
   const names = await cacheContext.api.keys();
   assert.ok(names.includes("zoo-shell-abc123"));
+  assert.ok(!names.includes("zoo-shell-v2"));
 });
 
 test("activation keeps caches when the active shell cannot be determined", async () => {
