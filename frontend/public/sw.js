@@ -69,21 +69,36 @@ function cacheNameForIndex(html) {
  * 最新のものを選ぶ。メタ情報がない旧キャッシュは index.html の有無で拾う。
  */
 async function findActiveShellCache(prefix = POLICY_PREFIX) {
-  const names = (await caches.keys()).filter((name) => name.startsWith(prefix));
+  let names = [];
+  try {
+    names = (await caches.keys()).filter((name) => name.startsWith(prefix));
+  } catch {
+    return prefix === POLICY_PREFIX ? DEFAULT_CACHE : null;
+  }
   let latest = null;
   for (const name of names) {
-    const cache = await caches.open(name);
-    const meta = await cache.match(META_PATH);
-    if (!meta) continue;
-    const installedAt = Number(await meta.text());
-    if (Number.isFinite(installedAt) && (!latest || installedAt > latest.installedAt)) {
-      latest = { name, installedAt };
+    let installedAt = -1;
+    try {
+      const cache = await caches.open(name);
+      const meta = await cache.match(META_PATH);
+      if (meta) {
+        const value = Number(await meta.text());
+        if (Number.isFinite(value)) installedAt = value;
+      }
+    } catch {
+      /* An unreadable cache is not the latest. */
     }
+    if (installedAt >= 0 && (!latest || installedAt > latest.installedAt))
+      latest = { name, installedAt };
   }
   if (latest) return latest.name;
   for (const name of names) {
-    const cache = await caches.open(name);
-    if (await cache.match("/index.html")) return name;
+    try {
+      const cache = await caches.open(name);
+      if (await cache.match("/index.html")) return name;
+    } catch {
+      /* Try the next candidate. */
+    }
   }
   return prefix === POLICY_PREFIX ? DEFAULT_CACHE : null;
 }
@@ -506,6 +521,13 @@ async function sanitizedCopy(saved) {
   });
 }
 
+function notModified(cached) {
+  const headers = new Headers();
+  const etag = cached.headers.get("x-zoo-etag");
+  if (etag) headers.set("ETag", etag);
+  return new Response(null, { status: 304, headers });
+}
+
 function cachedForConditional(request, cached) {
   if (cached.type === "error") return cached;
   const value = request.headers?.get?.("if-none-match");
@@ -529,14 +551,12 @@ function cachedForConditional(request, cached) {
     tags.push(current.trim().replace(/^W\//, ""));
     const etag = cached.headers.get("x-zoo-etag")?.trim().replace(/^W\//, "");
     // If-None-Match: * はどの版にも一致する。ETag は弱い比較で照合する。
-    if (tags.includes("*") || (etag && tags.includes(etag)))
-      return new Response(null, { status: 304 });
+    if (tags.includes("*") || (etag && tags.includes(etag))) return notModified(cached);
     return cached;
   }
   const since = request.headers?.get?.("if-modified-since");
   const modified = cached.headers.get("x-zoo-last-modified");
-  if (since && modified && Date.parse(modified) <= Date.parse(since))
-    return new Response(null, { status: 304 });
+  if (since && modified && Date.parse(modified) <= Date.parse(since)) return notModified(cached);
   return cached;
 }
 
@@ -601,52 +621,6 @@ async function fetchConditionalAsset(request, path, sequence) {
   }
 }
 
-async function fetchRangeAsset(request, path, precondition, _sequence) {
-  // 部分応答は共有もキャッシュ更新もしないが、取得期限とオフライン代替は適用する。
-  try {
-    const response = await fetchBounded(request, { cache: "reload" });
-    // 206 は本文を期限内に読み切ってから返す。途中で止まったら保存版へ戻る。
-    if (response.status === 206) {
-      if (!isFreshAssetResponse(path, response)) {
-        if (precondition) return Response.error();
-        return cachedForConditional(request, await cachedFreshAsset(path));
-      }
-      try {
-        await response.clone().arrayBuffer();
-      } catch {
-        if (precondition) return Response.error();
-        return cachedForConditional(request, await cachedFreshAsset(path));
-      }
-      return response;
-    }
-    // 304 / 416 / その他の 4xx はそのまま返す。
-    if (
-      response.status === 304 ||
-      response.status === 416 ||
-      (response.status >= 400 && response.status < 500)
-    )
-      return response;
-    if (response.status >= 500) {
-      if (precondition) return response;
-      const cached = cachedForConditional(request, await cachedFreshAsset(path));
-      return cached.type === "error" ? response : cached;
-    }
-    // Range が無視され全文が返った場合は本文を検証する。
-    let usable = false;
-    try {
-      usable = await isUsableFreshAsset(path, response);
-    } catch {
-      usable = false;
-    }
-    if (usable) return response;
-    if (precondition) return Response.error();
-    return cachedForConditional(request, await cachedFreshAsset(path));
-  } catch {
-    if (precondition) return Response.error();
-    return cachedForConditional(request, await cachedFreshAsset(path));
-  }
-}
-
 function withoutRange(request) {
   if (typeof Request !== "undefined" && request instanceof Request) {
     const headers = new Headers(request.headers);
@@ -679,19 +653,12 @@ function handleFreshAsset(request) {
     headers?.get("if-match") ||
     headers?.get("if-unmodified-since")
   ) {
-    if (headers.get("range")) {
-      // 案内ページの部分応答は try_files の HTML を見分けられないので全文を検証する。
-      if (path === "/offline.html")
-        return fetchConditionalAsset(withoutRange(request), path, sequence);
-      return fetchRangeAsset(
-        request,
-        path,
-        Boolean(headers.get("if-match") || headers.get("if-unmodified-since")),
-        sequence,
-      );
-    }
+    // 部分応答では try_files の HTML を判別できないため、Range を外して全文を検証する。
+    if (headers.get("range")) return fetchConditionalAsset(withoutRange(request), path, sequence);
     return fetchConditionalAsset(request, path, sequence);
   }
+  // キャッシュだけを使う要求はネットワークへ送らない。
+  if (request.cache === "only-if-cached") return cachedFreshAsset(path);
   // 同じ URL の同時取得を共有し、古い応答が新しい配色を上書きしないようにする。
   const pending = freshAssetWork.get(key);
   // 取得は共有しても、respondWith へ渡す本文は要求ごとに独立させる。

@@ -1824,7 +1824,7 @@ test("install preserves the fetched offline page's CSP", async () => {
   );
 });
 
-test("a failed cache lookup still returns the fetched offline page", async () => {
+test("a failed cache enumeration still saves the fetched offline page", async () => {
   const cacheContext = memoryCaches([
     [
       "zoo-shell-v2",
@@ -1851,7 +1851,7 @@ test("a failed cache lookup still returns the fetched offline page", async () =>
   const response = await fetchThrough(handlers, navigation(`${ORIGIN}/offline.html`));
   assert.match(await response.text(), /fresh/);
   const cache = await cacheContext.api.open("zoo-shell-v2");
-  assert.match(await (await cache.match(`${ORIGIN}/offline.html`)).text(), /saved/);
+  assert.match(await (await cache.match(`${ORIGIN}/offline.html`)).text(), /fresh/);
 });
 
 test("an offline page is cached with its own CSP when the current policy is unknown", async () => {
@@ -2814,6 +2814,55 @@ test("a conditional GET keeps a 304 response", async () => {
     headers: { get: (name) => (name.toLowerCase() === "if-none-match" ? '"abc"' : null) },
   });
   assert.equal(response.status, 304);
+});
+
+test("only-if-cached requests do not touch the network", async () => {
+  const manifest = validManifest("#000000");
+  const cacheContext = memoryCaches([
+    ["zoo-shell-v2", `${ORIGIN}/manifest.webmanifest`, basicResponse(manifest)],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  let calls = 0;
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () => {
+      calls += 1;
+      throw new Error("network");
+    },
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+    cache: "only-if-cached",
+  });
+  assert.equal(await response.text(), manifest);
+  assert.equal(calls, 0);
+});
+
+test("a cached 304 includes the stored ETag", async () => {
+  const cacheContext = memoryCaches([
+    [
+      "zoo-shell-v2",
+      `${ORIGIN}/manifest.webmanifest`,
+      basicResponse(validManifest("#ffffff"), { headers: { "x-zoo-etag": 'W/"abc"' } }),
+    ],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+    headers: { get: (name) => (name.toLowerCase() === "if-none-match" ? '"abc"' : null) },
+  });
+  assert.equal(response.status, 304);
+  assert.equal(response.headers.get("etag"), 'W/"abc"');
 });
 
 test("an HTTP error is returned when no cached manifest exists", async () => {
