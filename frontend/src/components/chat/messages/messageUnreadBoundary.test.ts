@@ -36,9 +36,10 @@ describe("isUnreadCovered", () => {
     expect(covered({ oldestCreatedAt: 900, lastRead: 1_000 })).toBe(true);
   });
 
-  it("時刻が読めないときや、これ以上古いページが無いときも読み込み済みとみなす", () => {
+  it("時刻が読めないときや、既読位置に届く前にページが尽きても読み込み済みとみなす", () => {
     expect(covered({ oldestCreatedAt: Number.NaN })).toBe(true);
-    expect(covered({ hasOlder: false, oldestCreatedAt: 100 })).toBe(true);
+    // 既定の oldestCreatedAt(1_100) は lastRead(1_000) より新しいため、!hasOlder だけを検証できる。
+    expect(covered({ hasOlder: false })).toBe(true);
   });
 
   it("上限まで読み足しても届かないときは読み込み済みとみなす", () => {

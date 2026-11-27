@@ -81,21 +81,35 @@ describe("usePullToRefresh", () => {
     act(() => result.current.onTouchMove(touch(140, 2)));
     expect(result.current.pull).toBe(0);
 
-    scrollTop = 10;
+    // 先頭で開始した後にスクロールすると取消され、以降の移動は反映されない。
     act(() => result.current.onTouchStart(touch(100)));
+    act(() => result.current.onTouchMove(touch(220)));
+    expect(result.current.pull).toBe(60);
+    scrollTop = 10;
+    act(() => result.current.onTouchMove(touch(400)));
+    expect(result.current.pull).toBe(0);
     act(() => result.current.onTouchMove(touch(400)));
     expect(result.current.pull).toBe(0);
 
+    // 再取得の完了前に開始したタッチは pulling ガードで無視される。
     scrollTop = 0;
     act(() => result.current.onTouchStart(touch(100)));
-    act(() => result.current.onTouchMove(touch(220)));
-    act(() => result.current.onTouchEnd());
     act(() => result.current.onTouchMove(touch(400)));
-    expect(result.current.pull).toBe(60);
+    act(() => result.current.onTouchEnd());
     expect(refresh).toHaveBeenCalledTimes(1);
+    expect(result.current.pulling).toBe(true);
+    act(() => result.current.onTouchCancel()); // 表示だけ戻し、再取得は継続中
+    act(() => result.current.onTouchStart(touch(100)));
+    act(() => result.current.onTouchMove(touch(400)));
+    expect(result.current.pull).toBe(0);
+    act(() => result.current.onTouchEnd());
+    expect(refresh).toHaveBeenCalledTimes(1);
+
     await act(async () => {
       resolve();
     });
+    expect(result.current.pulling).toBe(false);
+    expect(result.current.pull).toBe(0);
   });
 
   it("touchcancel は再取得せずに表示を戻す", () => {
