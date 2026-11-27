@@ -266,25 +266,15 @@ async fn create(
     }
     let notifications = if body.channel_id.is_some() {
         let message = crate::models::Message::get_by_id(&mut tx, id.as_str()).await?;
-        // thread_participants はスレッドのルート投稿 ID をキーにする (#620)。
-        // 返信先が返信投稿の場合もあるので、通知関数へ渡す前にルートを求める。
-        let mut thread_root = None;
-        if let Some(parent_id) = parent.as_ref().and_then(|p| p["id"].as_str()) {
-            thread_root = one(
-                &mut tx,
-                "SELECT json_build_object('id',home_thread_root($1))::text",
-                &[parent_id],
-            )
-            .await?["id"]
-                .as_str()
-                .map(str::to_owned);
-        }
+        // thread_participants は正規化された親 (通常はルート) の ID をキーにする (#620)。
+        // トリガーが書き込んだ message.parent_id をそのまま使う。collecting フェーズでは
+        // 正規化されず直接の返信先になるため、home_thread_root で辿ると参加行と一致しない。
         crate::notifications::create_message_notifications(
             &mut tx,
             &message,
             &user.id,
             reply_user,
-            thread_root.as_deref(),
+            message.parent_id.as_deref(),
             None,
         )
         .await?

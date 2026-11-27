@@ -1255,7 +1255,21 @@ async fn test_home_reply_to_reply_notifies_thread_participants() -> anyhow::Resu
     dotenvy::from_filename("../.env").ok();
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
-    let db = init_db(&config.database_url).await?;
+    let mut db = init_db(&config.database_url).await?;
+    // このケースは正規化済みのルートで参加者を引くため、フェーズを明示的に ready にする。
+    // (collecting では直接の返信先が参加キーになり、入れ子の返信は別スレッドとして扱われる)
+    let mut phase_tx = db.transaction().await?;
+    let phases = backend::apps::query(
+        &mut phase_tx,
+        "SELECT json_build_object('phase',phase)::text FROM thread_rollout",
+        &[],
+    )
+    .await?;
+    let previous_phase = phases[0]["phase"].as_str().unwrap().to_owned();
+    phase_tx.commit().await?;
+    toasty::sql::statement("UPDATE thread_rollout SET phase='ready'")
+        .exec(&mut db)
+        .await?;
     let app = create_router(AppState::new(db.clone(), config));
 
     let author = create_user(&app, &format!("hroot-{}", uuid::Uuid::new_v4().simple())).await?;
@@ -1321,5 +1335,9 @@ async fn test_home_reply_to_reply_notifies_thread_participants() -> anyhow::Resu
         notice_types(&mut check_db, &participant, &nested_id).await?,
         ["reply"]
     );
+    toasty::sql::statement("UPDATE thread_rollout SET phase=$1")
+        .bind(previous_phase.as_str())
+        .exec(&mut db)
+        .await?;
     Ok(())
 }

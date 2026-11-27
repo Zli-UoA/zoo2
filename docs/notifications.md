@@ -19,7 +19,7 @@
 - `mute` には明示メンション（`@user` / `@channel` / `@here` と E2EE の `explicit_mentions.user_ids`）だけを届ける。`reply` / `reaction` / `dm` / `channel_message` は作らない。未読カウントの扱いは変えない。
 - `missed_call` はレベルの対象外で、従来どおり届ける。
 
-1投稿につき1ユーザー1件に集約し、優先度は `mention > reply > dm > channel_message` の順（`entry().or_insert()`）。スレッド返信では、親投稿者に加えて `thread_participants` の `left_at IS NULL` な参加者へ `reply` を出す。公開チャンネルは非メンバーも対象にでき、非公開は `channel_user` 所属を確認する。本人・bot・`is_deactivated`・退出済みの参加者は除外する。探索上限と実行計画の方針は [SQLの設計と性能基準](query-design.md) の「通知レベルとスレッド参加者への返信通知」を参照。
+1投稿につき1ユーザー1件に集約し、優先度は `mention > reply > dm > channel_message` の順（`entry().or_insert()`）。スレッド返信では、親投稿者に加えて `thread_participants` の `left_at IS NULL` な参加者へ `reply` を出す。公開チャンネルは非メンバーも対象にでき、非公開は `channel_user` 所属を確認する。本人・bot・`is_deactivated`・退出済みの参加者は除外し、公開チャンネルから外されたゲストにも届けない。Home 経由の投稿は、事前に読み取った `messages.parent_id`（正規化済みのルート。`collecting` 中は直接の返信先）を参加者の検索キーに使う。探索上限と実行計画の方針は [SQLの設計と性能基準](query-design.md) の「通知レベルとスレッド参加者への返信通知」を参照。
 
 `channel_notifications` と `federated_notifications` は共通テーブルの更新可能なビューで、別の保存先ではない。チャンネルの既存DTOと連合通知のアクター・投稿表示用DTOは各ビューから取得する。Electricの通知Shapeも共通テーブルからチャンネル通知を配信し、従来の8列だけを返す。チャンネル・メッセージの削除、非公開チャンネルの所属確認、ユーザー別フィルターは引き続き適用する。React・Composeのクライアント側スキーマやUIを変更せず利用できる。
 
