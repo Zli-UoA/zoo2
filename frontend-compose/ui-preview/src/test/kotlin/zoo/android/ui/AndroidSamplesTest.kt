@@ -152,7 +152,9 @@ class AndroidSamplesTest {
             SettingsGroup("操作", listOf(SettingsEntry.Toggle("swipe", "スワイプで返信", true),
                 SettingsEntry.Toggle("haptics", "触覚フィードバック", true))),
             SettingsGroup("Zoo", listOf(SettingsEntry.Destination("general", "一般"),
-                SettingsEntry.Destination("notifications", "通知"), SettingsEntry.Destination("update", "アプリの更新"))),
+                SettingsEntry.Destination("notifications", "通知"),
+                SettingsEntry.Destination("navigation-cache", "画面遷移キャッシュ", "8 件"),
+                SettingsEntry.Destination("update", "アプリの更新"))),
             SettingsGroup("通話", listOf(SettingsEntry.Toggle("dm-calls", "DMの着信を受ける", true),
                 SettingsEntry.Destination("incoming-screen", "着信時の全画面表示を設定"))),
         )
@@ -241,6 +243,16 @@ class AndroidSamplesTest {
             "notifications" to inbox,
             "bubble" to AndroidScreen.Bubble(posts.take(2), InputState(live = true), listOf("はる", "ゆい")),
             "settings" to AndroidScreen.Settings(settings),
+            "navigation-cache" to AndroidScreen.SettingsDetail("画面遷移キャッシュ", listOf(
+                SettingsGroup("", listOf(
+                    SettingsEntry.Information("navigation-cache-info", "Home・投稿詳細・プロフィールと、チャンネルにそれぞれ適用するメモリ上の保持件数です。"),
+                    SettingsEntry.Choice("navigation-cache:0", "オフ", false),
+                    SettingsEntry.Choice("navigation-cache:4", "4 件", false),
+                    SettingsEntry.Choice("navigation-cache:8", "8 件", true),
+                    SettingsEntry.Choice("navigation-cache:16", "16 件", false),
+                )),
+            )),
+            "post-loading-replies" to AndroidScreen.Post(homePosts.first(), emptyList(), InputState(), loading = true),
             "conversation-idle" to conversation.copy(input = InputState()),
             "conversation" to conversation,
             "composer" to conversation.copy(input = InputState("確認しました。", expanded = true)),

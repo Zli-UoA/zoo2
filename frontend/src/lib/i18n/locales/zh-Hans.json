@@ -1811,6 +1811,12 @@
   "androidUpdate": {
     "title": "应用更新"
   },
+  "androidNavigationCache": {
+    "title": "页面切换缓存",
+    "description": "设置在内存中保留的首页、帖子详情和个人资料条目数，以及单独的频道条目数。",
+    "off": "关闭",
+    "entries": "{{count}} 项"
+  },
   "androidNotifications": {
     "enable": "启用通知",
     "scope": "登录会话同步期间接收新通知。",

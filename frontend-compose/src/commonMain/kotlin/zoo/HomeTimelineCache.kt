@@ -8,12 +8,22 @@ internal data class HomeTimelineSnapshot(
 )
 internal class HomeTimelineCache {
     private val entries = linkedMapOf<String, HomeTimelineSnapshot>()
+    var limit: Int = 8
+        set(value) {
+            field = value
+            trim()
+        }
+
+    private fun trim() {
+        while (entries.size > limit) entries.remove(entries.keys.first())
+    }
+
     fun get(key: String): HomeTimelineSnapshot? = entries.remove(key)?.also { entries[key] = it }
     fun save(key: String, value: HomeTimelineSnapshot) {
         entries.remove(key)
-        if (value.posts.size > 1000 || value.posts.sumOf { it.toString().length.toLong() * 2 } > 4 * 1024 * 1024) return
+        if (limit == 0 || value.posts.size > 1000 || value.posts.sumOf { it.toString().length.toLong() * 2 } > 4 * 1024 * 1024) return
         entries[key] = value
-        while (entries.size > 8) entries.remove(entries.keys.first())
+        trim()
     }
     fun preparePost(post: Row) {
         val id = post.text("id")
@@ -27,6 +37,8 @@ internal class HomeTimelineCache {
             snapshot.posts.any { it.withoutUnavailableHomePost(postId) !== it }
         }
     }
+    fun removeEntry(key: String) { entries.remove(key) }
+
     fun clear() = entries.clear()
 }
 

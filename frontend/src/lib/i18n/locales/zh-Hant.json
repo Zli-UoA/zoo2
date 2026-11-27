@@ -1811,6 +1811,12 @@
   "androidUpdate": {
     "title": "應用程式更新"
   },
+  "androidNavigationCache": {
+    "title": "頁面切換快取",
+    "description": "設定記憶體中保留的首頁、貼文詳情與個人資料項目數，以及獨立的頻道項目數。",
+    "off": "關閉",
+    "entries": "{{count}} 項"
+  },
   "androidNotifications": {
     "enable": "啟用通知",
     "scope": "登入工作階段同步期間接收新通知。",

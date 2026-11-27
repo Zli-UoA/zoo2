@@ -21,6 +21,8 @@ import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 import zoo.*
 
+internal val navigationCacheLimits = listOf(0, 4, 8, 16)
+
 internal class AndroidPlatform(
     private val activity: Activity,
     private val http: HttpClient,
@@ -46,6 +48,16 @@ internal class AndroidPlatform(
     var e2ee: zoo.crypto.E2eeDeviceManager? = null
 
     private val prefs = activity.getSharedPreferences("preferences", 0)
+    var navigationCacheLimit by mutableIntStateOf(prefs.getInt("navigation-cache-limit", 8).takeIf {
+        it in navigationCacheLimits
+    } ?: 8)
+        private set
+
+    fun saveNavigationCacheLimit(limit: Int) {
+        if (limit !in navigationCacheLimits) return
+        navigationCacheLimit = limit
+        prefs.edit().putInt("navigation-cache-limit", limit).apply()
+    }
     private val savedTheme = prefs.getString("theme", "system") ?: "system"
     private fun reducedMotion() = android.provider.Settings.Global.getFloat(
         activity.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f,
@@ -60,6 +72,8 @@ internal class AndroidPlatform(
         operationHaptics = prefs.getBoolean("operation-haptics", true),
     ))
         private set
+
+    var onNavigation: ((Environment) -> Unit)? = null
 
     private val history = NavigationHistory(env.path)
     val navigationRevision: Long get() = history.revision
@@ -97,7 +111,10 @@ internal class AndroidPlatform(
 
     override suspend fun removeCache(key: String) = withContext(Dispatchers.IO) { cache.delete(key) }
 
-    fun close() { images.close() }
+    fun close() {
+        onNavigation = null
+        images.close()
+    }
 
     private suspend fun clear() = withContext(NonCancellable + Dispatchers.IO) {
         // logout closes the session scope; deletion must still finish, off the UI thread.
@@ -121,6 +138,7 @@ internal class AndroidPlatform(
 
     private fun applyNavigation(entry: NavigationHistory.Entry) {
         env = env.copy(path = entry.path, historyState = entry.state)
+        onNavigation?.invoke(env)
     }
 
     override fun replace(path: String) {
