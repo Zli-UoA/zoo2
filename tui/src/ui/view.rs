@@ -383,17 +383,22 @@ fn draw_global_search(frame: &mut Frame, app: &App) {
             Some(channel) if channel.is_dm => app.store.channel_label(channel, &app.me.id),
             _ => format!("#{}", item.channel_name),
         };
+        let marker = Span::styled(if selected { "▶ " } else { "  " }, accent);
+        let time = global_search::result_time(&item.created_at, &now);
+        let metadata = search_result_metadata(
+            &time,
+            item.parent_id.is_some(),
+            inner,
+            marker.width(),
+            &place,
+        );
         let mut head = vec![
-            Span::styled(if selected { "▶ " } else { "  " }, accent),
+            marker,
             Span::styled(place, if selected { accent } else { Style::new() }),
         ];
-        let destination_width = head.iter().map(Span::width).sum::<usize>();
         if let Some(author) = &item.author {
             head.push(Span::styled(format!("  {author}"), DIM));
         }
-        let time = global_search::result_time(&item.created_at, &now);
-        let metadata =
-            search_result_metadata(&time, item.parent_id.is_some(), inner, destination_width);
         let reserved = metadata.as_ref().map_or(0, Span::width);
         head = truncate_spans(head, inner.saturating_sub(reserved));
         head.extend(metadata);
@@ -427,10 +432,17 @@ fn search_result_metadata(
     time: &str,
     reply: bool,
     width: usize,
-    destination_width: usize,
+    marker_width: usize,
+    place: &str,
 ) -> Option<Span<'static>> {
+    use unicode_segmentation::UnicodeSegmentation;
     use unicode_width::UnicodeWidthStr;
-    let available = width.saturating_sub(destination_width.min(5));
+    let (prefix_width, name) = place.strip_prefix('#').map_or((0, place), |name| (1, name));
+    let first = name.graphemes(true).next().unwrap_or("");
+    let place_width = place.width();
+    let destination_width = marker_width + place_width;
+    let minimum_place = place_width.min(prefix_width + first.width() + "…".width());
+    let available = width.saturating_sub(marker_width + minimum_place);
     let date = time.split_once(' ').map(|(date, _)| date);
     let labels: &[&str] = if reply {
         &[" スレッドの返信", " 返信"]
@@ -3105,7 +3117,7 @@ mod tests {
         ] {
             for (stamp, expected) in [("2025/11/21 09:00", year), ("11/21 09:00", same_year)] {
                 assert_eq!(
-                    search_result_metadata(stamp, false, width, 4)
+                    search_result_metadata(stamp, false, width, 2, "#a")
                         .unwrap()
                         .content,
                     expected
@@ -3167,6 +3179,13 @@ mod tests {
         app.global_search.items[0].parent_id = None;
         let exact = render_sized(&mut app, 23, 40);
         assert!(exact.contains(&format!("▶ #a {timestamp}")), "{exact}");
+        app.global_search.items[0].channel_name = "開発".into();
+        let wide_name = render_sized(&mut app, 24, 40);
+        let heading = wide_name.lines().find(|line| line.contains("▶ #")).unwrap();
+        assert!(
+            heading.contains("#開") && heading.contains(&timestamp[..10]),
+            "{wide_name}"
+        );
         assert!(screen.contains("Esc"), "{screen}");
     }
 

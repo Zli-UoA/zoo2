@@ -19,10 +19,12 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import java.io.File
 import kotlinx.coroutines.CompletableDeferred
@@ -731,6 +733,29 @@ class AndroidSamplesTest {
             ui.runOnIdle { screen = next }
             ui.waitForIdle()
             assertTimeFits()
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "ja-rJP-w320dp-h760dp-xhdpi")
+    fun enlargedQuoteWithProfileShowsTheWholeTimestamp() {
+        val timestamp = "2025/12/31 23:59"
+        val quote = TimelineQuote("https://zoo.test/post", "original", "長い投稿者名".repeat(8),
+            "引用元", emptyList(), postAuthor = zoo.obj("id" to "original-author"), time = timestamp)
+        val screen = AndroidScreen.Home(listOf(TimelineItem("post", "はる", "本文", "10:00", quote = quote)))
+        ui.setContent {
+            CompositionLocalProvider(LocalDensity provides Density(LocalDensity.current.density, 2f)) {
+                AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> }
+            }
+        }
+        ui.onNodeWithContentDescription("「${quote.author}」のプロフィールを開く")
+            .assertWidthIsAtLeast(48.dp)
+        val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+        ui.onNodeWithText(timestamp, useUnmergedTree = true).assertIsDisplayed()
+            .performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
+        val layout = layouts.single()
+        check(!layout.hasVisualOverflow && layout.getLineEnd(layout.lineCount - 1, visibleEnd = true) == timestamp.length) {
+            "timestamp clipped at 200%: lines=${layout.lineCount}, width=${layout.size.width}"
         }
     }
 
