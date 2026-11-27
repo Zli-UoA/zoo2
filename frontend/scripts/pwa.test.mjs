@@ -2012,6 +2012,33 @@ test("a Range request with If-Match does not use a cached version offline", asyn
   assert.equal(response.type, "error");
 });
 
+test("a Range response with an unreadable body falls back to the cached manifest", async () => {
+  const manifest = validManifest("#000000");
+  const cacheContext = memoryCaches([
+    ["zoo-shell-v2", `${ORIGIN}/manifest.webmanifest`, basicResponse(manifest)],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () => {
+      const response = new Response("partial", { status: 206 });
+      response.clone = () => ({
+        arrayBuffer: async () => {
+          throw new Error("body stalled");
+        },
+      });
+      return response;
+    },
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+    headers: { get: (name) => (name.toLowerCase() === "range" ? "bytes=0-10" : null) },
+  });
+  assert.equal(await response.text(), manifest);
+});
+
 test("a Range request uses the cached manifest on a server error", async () => {
   const manifest = validManifest("#000000");
   const cacheContext = memoryCaches([
@@ -2029,6 +2056,30 @@ test("a Range request uses the cached manifest on a server error", async () => {
     headers: { get: (name) => (name.toLowerCase() === "range" ? "bytes=0-10" : null) },
   });
   assert.equal(await response.text(), manifest);
+});
+
+test("If-None-Match with a matching ETag returns 304 from the cache", async () => {
+  const cacheContext = memoryCaches([
+    [
+      "zoo-shell-v2",
+      `${ORIGIN}/manifest.webmanifest`,
+      basicResponse(validManifest("#ffffff"), { headers: { "x-zoo-etag": '"abc"' } }),
+    ],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+    headers: { get: (name) => (name.toLowerCase() === "if-none-match" ? '"abc"' : null) },
+  });
+  assert.equal(response.status, 304);
 });
 
 test("If-None-Match: * returns 304 from a cached manifest", async () => {

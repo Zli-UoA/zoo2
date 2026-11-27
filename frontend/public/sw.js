@@ -508,11 +508,24 @@ async function sanitizedCopy(saved) {
 
 function cachedForConditional(request, cached) {
   if (cached.type === "error") return cached;
-  // If-None-Match: * はどの版にも一致するため、保存版を 200 で返してはならない。
   const value = request.headers?.get?.("if-none-match");
-  if (value && value.split(",").some((part) => part.trim() === "*"))
+  if (!value) return cached;
+  const tags = value.split(",").map((part) => part.trim());
+  const etag = cached.headers.get("x-zoo-etag");
+  // If-None-Match: * はどの版にも一致する。保存版と ETag が一致しても 304。
+  if (tags.includes("*") || (etag && tags.includes(etag)))
     return new Response(null, { status: 304 });
   return cached;
+}
+
+const freshAssetWrites = new Map();
+
+async function writeFreshAsset(path, cache, response) {
+  // 通常 GET と条件付き GET の取得は分けても、同じキーへの書き込みは直列化する。
+  const previous = freshAssetWrites.get(path) || Promise.resolve();
+  const work = previous.catch(() => {}).then(() => cacheResponse(cache, path, response, true));
+  freshAssetWrites.set(path, work);
+  return await work;
 }
 
 async function fetchConditionalAsset(request, path) {
@@ -542,7 +555,7 @@ async function fetchConditionalAsset(request, path) {
       const fresh = response.clone();
       try {
         const cache = await caches.open(await findActiveShellCache());
-        await cacheResponse(cache, path, response);
+        await writeFreshAsset(path, cache, response);
       } catch {
         /* Storage failure: still serve the fetched response. */
       }
@@ -562,9 +575,18 @@ async function fetchRangeAsset(request, path, precondition) {
   // 部分応答は共有もキャッシュ更新もしないが、取得期限とオフライン代替は適用する。
   try {
     const response = await fetchBounded(request, { cache: "reload" });
-    // 206 / 304 / 416 / その他の 4xx はそのまま返す。
+    // 206 は本文を期限内に読み切ってから返す。途中で止まったら保存版へ戻る。
+    if (response.status === 206) {
+      try {
+        await response.clone().arrayBuffer();
+      } catch {
+        if (precondition) return Response.error();
+        return cachedForConditional(request, await cachedFreshAsset(path));
+      }
+      return response;
+    }
+    // 304 / 416 / その他の 4xx はそのまま返す。
     if (
-      response.status === 206 ||
       response.status === 304 ||
       response.status === 416 ||
       (response.status >= 400 && response.status < 500)
@@ -643,7 +665,7 @@ async function fetchFreshAsset(request, path) {
     try {
       const cache = await caches.open(await findActiveShellCache());
       // クエリ付きで開いても同じ案内／manifest を使うため、pathname をキーにする。
-      await cacheResponse(cache, path, response);
+      await writeFreshAsset(path, cache, response);
     } catch {
       /* Storage quota or Cache API failure: still serve the fresh response. */
     }
