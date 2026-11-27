@@ -865,7 +865,7 @@ private fun Timeline(
                             Column(Modifier.weight(1f)) {
                                 if (posts && entry.postHeader != null) {
                                     PostHeader(entry.author, entry.postHeader, colors, openProfile)
-                                } else AuthorTimeHeader(entry.time, colors) {
+                                } else AuthorTimeHeader(entry.time, colors, keepFullAuthor = true) {
                                     Text(entry.author, color = colors.foreground, fontWeight = AndroidWeights.entryAuthor,
                                         fontSize = entryTextSize, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 }

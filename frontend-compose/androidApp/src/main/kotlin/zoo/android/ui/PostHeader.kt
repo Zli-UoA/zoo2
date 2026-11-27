@@ -60,6 +60,7 @@ internal fun AuthorTimeHeader(
     colors: AndroidColors,
     timeSize: TextUnit = 12.sp,
     alignTimeToEnd: Boolean = false,
+    keepFullAuthor: Boolean = false,
     status: (@Composable () -> Unit)? = null,
     author: @Composable () -> Unit,
 ) {
@@ -75,7 +76,8 @@ internal fun AuthorTimeHeader(
         val loose = constraints.copy(minWidth = 0, minHeight = 0)
         val meta = metadata.measure(loose)
         val remaining = width - meta.width - gap
-        val stack = remaining < AndroidControlSize.target.roundToPx() && remaining < name.maxIntrinsicWidth(Constraints.Infinity)
+        val stack = (keepFullAuthor || remaining < AndroidControlSize.target.roundToPx()) &&
+            remaining < name.maxIntrinsicWidth(Constraints.Infinity)
         val label = name.measure(loose.copy(maxWidth = if (stack) width else remaining))
         val height = if (stack) label.height + meta.height else maxOf(label.height, meta.height)
         layout(width, height) {

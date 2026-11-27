@@ -691,6 +691,27 @@ class AndroidSamplesTest {
 
     @Test
     @Config(qualifiers = "ja-rJP-w320dp-h760dp-xhdpi")
+    fun conversationWrapsTimeOnlyWhenTheFullAuthorNeedsTheRow() {
+        val long = TimelineItem("m1", "開発チームの担当者山田", "本文", "2025/12/31 23:59")
+        val short = TimelineItem("m2", "山田", "本文", "12:00")
+        ui.setContent {
+            AndroidScreens(AndroidScreen.Conversation("dev", "開発", "", listOf(long, short), InputState()),
+                false, true, dispatch = {}) { _, _ -> }
+        }
+        for (entry in listOf(long, short)) {
+            val name = ui.onNodeWithText(entry.author, useUnmergedTree = true).assertIsDisplayed()
+            val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+            name.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
+            check(!layouts.single().isLineEllipsized(0)) { "Author was truncated: ${entry.author}" }
+            val authorBounds = name.getUnclippedBoundsInRoot()
+            val time = ui.onNodeWithText(entry.time, useUnmergedTree = true).assertIsDisplayed().getUnclippedBoundsInRoot()
+            if (entry == long) check(time.top >= authorBounds.bottom)
+            else check(time.left >= authorBounds.right && time.top < authorBounds.bottom)
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "ja-rJP-w320dp-h760dp-xhdpi")
     fun aLongAuthorLeavesRoomForTheFullTimestamp() = checkTimestampAcrossScreens(1f)
 
     @Test
