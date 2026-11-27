@@ -75,6 +75,13 @@ erDiagram
       text public_key
     }
     apub_keys |o--o| users : apub_keys_user_id_fkey
+    apub_media_blurhash_queue {
+      text post_id PK,FK
+      timestamptz available_at
+      text lease_id
+      jsonb image_retry_counts
+    }
+    apub_media_blurhash_queue |o--o| apub_remote_posts : apub_media_blurhash_queue_post_id_fkey
     apub_notifications {
       text id PK
       text user_id FK

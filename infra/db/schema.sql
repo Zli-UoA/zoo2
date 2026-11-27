@@ -2328,6 +2328,13 @@ ALTER TABLE home_posts ADD COLUMN media jsonb NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE apub_remote_posts ADD COLUMN media jsonb NOT NULL DEFAULT '[]'::jsonb;
 
 ALTER TABLE home_images ADD COLUMN created_at timestamptz NOT NULL DEFAULT now();
+ALTER TABLE home_images
+  ADD COLUMN thumbnail_bytes bigint NOT NULL DEFAULT 0,
+  ADD COLUMN thumbnail_ready boolean,
+  ADD COLUMN thumbnail_conditional_write boolean NOT NULL DEFAULT false,
+  ADD COLUMN original_write_confirmed boolean NOT NULL DEFAULT false,
+  ADD COLUMN thumbnail_write_pending boolean NOT NULL DEFAULT false,
+  ADD COLUMN thumbnail_check_at timestamptz NOT NULL DEFAULT (now()+interval '5 minutes');
 CREATE INDEX home_images_uploader_created ON home_images(uploader_id,created_at);
 CREATE TABLE home_image_upload_rates (
   user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -2336,23 +2343,74 @@ CREATE TABLE home_image_upload_rates (
   PRIMARY KEY(user_id,window_start)
 );
 CREATE TABLE home_image_deletions (
-  id text PRIMARY KEY,
+  id text CONSTRAINT home_image_deletions_pkey PRIMARY KEY,
   uploader_id text NOT NULL,
   file_size bigint NOT NULL DEFAULT 0,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE home_image_deletions RENAME TO home_image_deletion_queue;
+ALTER TABLE home_image_deletion_queue
+  ADD COLUMN thumbnail_accounted boolean NOT NULL DEFAULT false,
+  ADD COLUMN unconfirmed_thumbnail_bytes bigint NOT NULL DEFAULT 0,
+  ADD COLUMN legacy_write_pending boolean NOT NULL DEFAULT true,
+  ADD COLUMN original_write_pending boolean NOT NULL DEFAULT false,
+  ADD COLUMN thumbnail_write_pending boolean NOT NULL DEFAULT false;
+
+CREATE FUNCTION home_image_can_have_thumbnail(content_type text, width integer, height integer)
+RETURNS boolean LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+  SELECT content_type IN ('image/png','image/jpeg','image/webp')
+    AND (width IS NULL OR height IS NULL OR GREATEST(width,height)>768)
+$$;
+
+CREATE INDEX home_images_unconfirmed_thumbnail ON home_images(thumbnail_check_at,id)
+  WHERE thumbnail_ready IS NULL;
+CREATE INDEX home_images_uploader_unconfirmed_thumbnail
+  ON home_images(uploader_id,(thumbnail_bytes>0),thumbnail_check_at,id)
+  WHERE thumbnail_ready IS NULL
+    AND home_image_can_have_thumbnail(content_type,width,height);
+
 CREATE FUNCTION queue_home_image_deletion() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-  INSERT INTO home_image_deletions(id,uploader_id,file_size) VALUES(OLD.id,OLD.uploader_id,OLD.file_size) ON CONFLICT DO NOTHING;
+  INSERT INTO home_image_deletion_queue(id,uploader_id,file_size,thumbnail_accounted,unconfirmed_thumbnail_bytes,legacy_write_pending,original_write_pending,thumbnail_write_pending)
+  VALUES(OLD.id,OLD.uploader_id,
+    OLD.file_size + CASE WHEN OLD.thumbnail_ready THEN OLD.thumbnail_bytes ELSE 0 END,
+    true,
+    CASE WHEN OLD.thumbnail_ready IS NULL THEN
+      CASE WHEN OLD.thumbnail_bytes>0 THEN OLD.thumbnail_bytes
+           WHEN home_image_can_have_thumbnail(OLD.content_type,OLD.width,OLD.height) THEN OLD.file_size
+           ELSE 0 END
+      ELSE 0 END,
+    NOT OLD.thumbnail_conditional_write,
+    OLD.thumbnail_conditional_write AND NOT OLD.original_write_confirmed,
+    OLD.thumbnail_write_pending) ON CONFLICT DO NOTHING;
   RETURN OLD;
 END $$;
 CREATE TRIGGER home_image_deleted AFTER DELETE ON home_images FOR EACH ROW EXECUTE FUNCTION queue_home_image_deletion();
 
+-- The legacy application uses one relation for quota and row-locked cleanup.
+-- The exact quota SELECT can include pending rows. Cleanup scans only finite dates,
+-- using the same indexed expression for its upper bound and ORDER BY.
+CREATE VIEW home_image_deletions AS
+SELECT id,uploader_id,file_size,
+       CASE WHEN legacy_write_pending OR original_write_pending OR thumbnail_write_pending
+            THEN 'infinity'::timestamptz ELSE created_at END AS created_at
+FROM home_image_deletion_queue
+WHERE (CASE WHEN legacy_write_pending OR original_write_pending OR thumbnail_write_pending
+            THEN 'infinity'::timestamptz ELSE created_at END) <= (SELECT CASE
+        WHEN current_query() = $legacy_quota$SELECT json_build_object('bytes',(SELECT COALESCE(sum(file_size),0) FROM home_images WHERE uploader_id=$1)+(SELECT COALESCE(sum(file_size),0) FROM home_image_deletions WHERE uploader_id=$1))::text$legacy_quota$
+        THEN 'infinity'::timestamptz ELSE TIMESTAMPTZ '294276-12-31 23:59:59.999999+00' END);
+
+
 CREATE INDEX home_posts_live_media ON home_posts USING gin(media jsonb_path_ops) WHERE deleted_at IS NULL;
 CREATE INDEX attachments_storage_key ON attachments(storage_key);
 CREATE INDEX home_images_created ON home_images(created_at);
-CREATE INDEX home_image_deletions_uploader ON home_image_deletions(uploader_id);
-CREATE INDEX home_image_deletions_created ON home_image_deletions(created_at);
+CREATE INDEX home_image_deletions_uploader ON home_image_deletion_queue(uploader_id);
+CREATE INDEX home_image_deletions_created ON home_image_deletion_queue(created_at);
+CREATE INDEX home_image_deletions_current_created ON home_image_deletion_queue(created_at)
+  WHERE NOT legacy_write_pending;
+CREATE INDEX home_image_deletions_legacy_gc_created ON home_image_deletion_queue
+  ((CASE WHEN legacy_write_pending OR original_write_pending OR thumbnail_write_pending
+            THEN 'infinity'::timestamptz ELSE created_at END));
 -- Shared service read projection; management and ownership remain in the emoji service.
 CREATE TABLE shared_emoji_source(id text PRIMARY KEY CHECK (id='workspace'),url text);
 CREATE TABLE shared_emojis(
@@ -4668,3 +4726,11 @@ CREATE TRIGGER reset_slack_channel_sync_on_remap
 AFTER UPDATE OF channel_id ON slack_channels
 FOR EACH ROW WHEN (OLD.channel_id IS DISTINCT FROM NEW.channel_id)
 EXECUTE FUNCTION reset_slack_channel_sync_on_remap();
+
+CREATE TABLE apub_media_blurhash_queue (
+  post_id text PRIMARY KEY REFERENCES apub_remote_posts(id) ON DELETE CASCADE,
+  available_at timestamptz NOT NULL DEFAULT now(),
+  lease_id text,
+  image_retry_counts jsonb
+);
+CREATE INDEX apub_media_blurhash_queue_available ON apub_media_blurhash_queue(available_at,post_id);

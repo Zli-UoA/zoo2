@@ -116,6 +116,7 @@ services:
       S3_SECRET_ACCESS_KEY:
       S3_FORCE_PATH_STYLE:
       S3_PUBLIC_ENDPOINT:
+      HOME_IMAGE_LEGACY_WRITES_DRAINED:
       # Slack エクスポートの取り込み (docs/slack-import.md)
       SLACK_IMPORT_MAX_ZIP_SIZE:
       SLACK_IMPORT_BOT_TOKEN:

@@ -58,6 +58,19 @@ pub async fn verify_uploaded_object(
 // Keep compressed buffers bounded without occupying the Home decoder slots during S3 I/O.
 static IMAGE_DOWNLOADS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
+async fn image_storage_step<T>(
+    repair: bool,
+    step: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    if repair {
+        tokio::time::timeout(std::time::Duration::from_secs(15), step)
+            .await
+            .ok()
+    } else {
+        Some(step.await)
+    }
+}
+
 /// Read bounded image bytes before entering the message transaction. Other files keep HEAD-only validation.
 pub(crate) async fn uploaded_image_metadata(
     client: &Client,
@@ -65,6 +78,7 @@ pub(crate) async fn uploaded_image_metadata(
     key: &str,
     expected_size: i64,
     content_type: &str,
+    legacy_thumbnail_etag: Option<&str>,
 ) -> Result<Option<crate::routes::home_images::ImageMetadata>, AppError> {
     let mime = content_type
         .split(';')
@@ -81,11 +95,16 @@ pub(crate) async fn uploaded_image_metadata(
     {
         return Ok(None);
     }
-    let download_permit = IMAGE_DOWNLOADS
-        .acquire()
+    let repair = legacy_thumbnail_etag.is_some();
+    let download_permit = image_storage_step(repair, IMAGE_DOWNLOADS.acquire())
         .await
+        .ok_or(AppError::RateLimited)?
         .map_err(|_| AppError::RateLimited)?;
-    let object = match client.get_object().bucket(bucket).key(key).send().await {
+    let get = client.get_object().bucket(bucket).key(key).send();
+    let Some(object) = image_storage_step(repair, get).await else {
+        return Ok(None);
+    };
+    let object = match object {
         Ok(object) => object,
         Err(error) => {
             tracing::warn!(%error, key, "Skipping optional image metadata: S3 GET failed");
@@ -98,10 +117,24 @@ pub(crate) async fn uploaded_image_metadata(
     {
         return Err(AppError::BadGateway("Attachment image size changed".into()));
     }
+    let source_etag = object.e_tag().map(str::to_owned);
     let mut body = object.body;
     let mut bytes = Vec::new();
     loop {
-        let chunk = match body.try_next().await {
+        let next = image_storage_step(repair, async {
+            loop {
+                match body.try_next().await {
+                    Ok(Some(bytes)) if bytes.is_empty() => continue,
+                    result => break result,
+                }
+            }
+        })
+        .await;
+        let Some(next) = next else {
+            tracing::debug!(key, "Attachment thumbnail repair transfer stalled");
+            return Ok(None);
+        };
+        let chunk = match next {
             Ok(Some(chunk)) => chunk,
             Ok(None) => break,
             Err(error) => {
@@ -117,9 +150,9 @@ pub(crate) async fn uploaded_image_metadata(
     if bytes.len() != expected_size as usize {
         return Err(AppError::BadGateway("Attachment image size changed".into()));
     }
-    let permit = crate::routes::home_images::DECODERS
-        .acquire()
+    let permit = image_storage_step(repair, crate::routes::home_images::DECODERS.acquire())
         .await
+        .ok_or(AppError::RateLimited)?
         .map_err(|_| AppError::RateLimited)?;
     match tokio::task::spawn_blocking(move || {
         let _download_permit = download_permit;
@@ -128,11 +161,39 @@ pub(crate) async fn uploaded_image_metadata(
     })
     .await
     {
-        Ok(Some((metadata, thumbnail))) => {
-            crate::routes::home_images::store_thumbnail(client, bucket, key, thumbnail).await;
-            Ok(Some(metadata))
+        Ok(assets) => {
+            let (metadata, thumbnail) = assets.map_or((None, None), |(metadata, thumbnail)| {
+                (Some(metadata), thumbnail)
+            });
+            if let Some(bytes) = thumbnail {
+                if let Some(etag) = source_etag.as_deref() {
+                    image_storage_step(
+                        repair,
+                        crate::routes::home_images::store_thumbnail(
+                            client,
+                            bucket,
+                            key,
+                            Some(bytes),
+                            Some(etag),
+                            legacy_thumbnail_etag,
+                        ),
+                    )
+                    .await;
+                }
+            } else if let Some(legacy_etag) = legacy_thumbnail_etag {
+                // The decoded original cannot produce a thumbnail. Retire only the stale object we read.
+                let delete = client
+                    .delete_object()
+                    .bucket(bucket)
+                    .key(crate::routes::home_images::thumbnail_key(key))
+                    .if_match(legacy_etag)
+                    .send();
+                if let Some(Err(error)) = image_storage_step(repair, delete).await {
+                    tracing::debug!(%error, key, "Could not remove obsolete attachment thumbnail");
+                }
+            }
+            Ok(metadata)
         }
-        Ok(None) => Ok(None),
         Err(error) => {
             tracing::warn!(%error, key, "Skipping optional image metadata: decoder task failed");
             Ok(None)

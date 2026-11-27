@@ -9,11 +9,17 @@ use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, Query, State},
     http::header,
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use base64::Engine;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::{
+    collections::HashMap,
+    sync::{LazyLock, Mutex},
+    time::{Duration, Instant},
+};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -93,20 +99,244 @@ pub(crate) fn thumbnail_key(key: &str) -> String {
     format!("{key}.thumbnail.webp")
 }
 
+// None denotes an active repair. Completed attempts have a bounded cooldown.
+static THUMBNAIL_REPAIRS: LazyLock<Mutex<HashMap<String, Option<Instant>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static THUMBNAIL_REPAIR_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+
+fn schedule_thumbnail_repair(client: &aws_sdk_s3::Client, bucket: &str, original: &str) {
+    let Ok(slot) = THUMBNAIL_REPAIR_SLOTS.try_acquire() else {
+        return;
+    };
+    {
+        let mut repairs = THUMBNAIL_REPAIRS.lock().unwrap();
+        let now = Instant::now();
+        repairs.retain(|_, retry_at| retry_at.is_none_or(|retry_at| retry_at > now));
+        if repairs.contains_key(original) || repairs.len() >= 1024 {
+            return;
+        }
+        repairs.insert(original.to_owned(), None);
+    }
+    let client = client.clone();
+    let bucket = bucket.to_owned();
+    let original = original.to_owned();
+    tokio::spawn(async move {
+        let _slot = slot;
+        let _ = repair_thumbnail(&client, &bucket, &original).await;
+        THUMBNAIL_REPAIRS
+            .lock()
+            .unwrap()
+            .insert(original, Some(Instant::now() + Duration::from_secs(60)));
+    });
+}
+
+async fn repair_thumbnail(client: &aws_sdk_s3::Client, bucket: &str, original: &str) -> Option<()> {
+    let head = |key: String| async move {
+        tokio::time::timeout(
+            Duration::from_secs(15),
+            client.head_object().bucket(bucket).key(key).send(),
+        )
+        .await
+        .ok()?
+        .ok()
+    };
+    let variant = head(thumbnail_key(original)).await?;
+    let source = head(original.to_owned()).await?;
+    if variant
+        .metadata()
+        .and_then(|values| values.get("source-etag"))
+        .map(String::as_str)
+        .is_some_and(|etag| source.e_tag() == Some(etag))
+    {
+        return Some(());
+    }
+    crate::storage::verify::uploaded_image_metadata(
+        client,
+        bucket,
+        original,
+        source.content_length()?,
+        source.content_type()?,
+        Some(variant.e_tag()?),
+    )
+    .await
+    .ok()?;
+    Some(())
+}
+
 pub(crate) async fn stored_thumbnail_key(
     client: &aws_sdk_s3::Client,
     bucket: &str,
     original: &str,
 ) -> Option<String> {
     let thumbnail = thumbnail_key(original);
-    client
+    let inspect = || async {
+        client
+            .head_object()
+            .bucket(bucket)
+            .key(&thumbnail)
+            .send()
+            .await
+            .ok()
+    };
+    let variant = inspect().await?;
+    if original.starts_with("home-images/") {
+        return (variant.content_length()? > 0).then_some(thumbnail);
+    }
+    let Some(source_etag) = variant
+        .metadata()
+        .and_then(|values| values.get("source-etag"))
+    else {
+        schedule_thumbnail_repair(client, bucket, original);
+        return None;
+    };
+    match client
         .head_object()
         .bucket(bucket)
-        .key(&thumbnail)
+        .key(original)
+        .if_match(source_etag)
         .send()
         .await
-        .ok()?;
-    Some(thumbnail)
+    {
+        Ok(_) => Some(thumbnail),
+        Err(error) => {
+            if error
+                .raw_response()
+                .is_some_and(|response| response.status().as_u16() == 412)
+            {
+                schedule_thumbnail_repair(client, bucket, original);
+            }
+            None
+        }
+    }
+}
+
+/// None means S3 could not confirm the object's state. Keep its reservation until reconciliation.
+async fn probe_home_thumbnail(state: &AppState, id: &str) -> Option<i64> {
+    let key = thumbnail_key(&format!("home-images/{id}"));
+    match state
+        .s3_client
+        .head_object()
+        .bucket(&state.config.s3.bucket)
+        .key(&key)
+        .send()
+        .await
+    {
+        Ok(object) => object.content_length(),
+        Err(error) if error.as_service_error().is_some_and(|e| e.is_not_found()) => Some(0),
+        Err(error) => {
+            tracing::debug!(%error, %key, "Could not reconcile image thumbnail");
+            None
+        }
+    }
+}
+
+async fn record_home_thumbnail(
+    db: &mut impl toasty::db::Executor,
+    id: &str,
+    bytes: i64,
+    check_at: &str,
+) -> Result<bool, toasty::Error> {
+    let rows = toasty::sql::query(
+        "UPDATE home_images SET thumbnail_ready=$2::boolean,thumbnail_bytes=$3::bigint
+         WHERE id=$1 AND thumbnail_ready IS NULL
+           AND thumbnail_check_at=$4::timestamptz
+         RETURNING id",
+    )
+    .bind(id)
+    .bind((bytes > 0).to_string())
+    .bind(bytes.to_string())
+    .bind(check_at)
+    .exec(db)
+    .await?;
+    Ok(!rows.is_empty())
+}
+
+// Only a storage-side condition can rule out a late PUT after a client timeout.
+async fn confirm_missing_thumbnail(
+    state: &AppState,
+    id: &str,
+    check_at: &str,
+) -> Result<Option<i64>, AppError> {
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    let rows = query(
+        &mut tx,
+        "SELECT json_build_object('reserved',thumbnail_bytes>0)::text
+         FROM home_images WHERE id=$1 AND thumbnail_ready IS NULL
+           AND thumbnail_check_at=$2::timestamptz FOR UPDATE SKIP LOCKED",
+        &[id, check_at],
+    )
+    .await?;
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    let client = &state.s3_client;
+    let bucket = &state.config.s3.bucket;
+    let original = format!("home-images/{id}");
+    let key = thumbnail_key(&original);
+    let legacy = row["reserved"] != true;
+    if legacy {
+        // A paused old uploader may still be about to write the original.
+        let original_exists = tokio::time::timeout(
+            Duration::from_secs(5),
+            client.head_object().bucket(bucket).key(&original).send(),
+        )
+        .await;
+        if !matches!(original_exists, Ok(Ok(_))) {
+            return Ok(None);
+        }
+    }
+    let allow_legacy_finalization = state.config.s3.home_image_legacy_writes_drained;
+    let result = if legacy && !allow_legacy_finalization {
+        tokio::time::timeout(Duration::from_secs(5), probe_home_thumbnail(state, id))
+            .await
+            .ok()
+            .flatten()
+    } else {
+        // The real thumbnail PUT uses the same condition. Whichever write wins is final.
+        let marker = tokio::time::timeout(
+            Duration::from_secs(5),
+            client
+                .put_object()
+                .bucket(bucket)
+                .key(&key)
+                .if_none_match("*")
+                .body(Vec::<u8>::new().into())
+                .send(),
+        )
+        .await;
+        if matches!(marker, Ok(Ok(_))) {
+            Some(0)
+        } else {
+            // A failed conditional PUT is inconclusive unless HEAD finds the winning object.
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                client.head_object().bucket(bucket).key(&key).send(),
+            )
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .and_then(|object| object.content_length())
+        }
+    };
+
+    let Some(bytes) = result else { return Ok(None) };
+    if bytes == 0 && legacy && !allow_legacy_finalization {
+        // A legacy PUT was unconditional. Retain its quota reservation until
+        // operators confirm that previous-version storage writes have drained.
+        toasty::sql::query(
+            "UPDATE home_images SET thumbnail_check_at=statement_timestamp()+interval '30 minutes'
+             WHERE id=$1",
+        )
+        .bind(id)
+        .exec(&mut tx)
+        .await?;
+        tx.commit().await?;
+        return Ok(None);
+    }
+    let recorded = record_home_thumbnail(&mut tx, id, bytes, check_at).await?;
+    tx.commit().await?;
+    Ok(recorded.then_some(bytes))
 }
 
 pub(crate) fn image_assets(mime: &str, bytes: &[u8]) -> Option<(ImageMetadata, Option<Vec<u8>>)> {
@@ -173,20 +403,110 @@ pub(crate) async fn store_thumbnail(
     bucket: &str,
     key: &str,
     bytes: Option<Vec<u8>>,
-) {
-    let Some(bytes) = bytes else { return };
-    if let Err(error) = client
+    source_etag: Option<&str>,
+    match_etag: Option<&str>,
+) -> bool {
+    let Some(bytes) = bytes else { return false };
+    let mut put = client
         .put_object()
         .bucket(bucket)
         .key(thumbnail_key(key))
         .content_type(THUMBNAIL_MIME)
         .cache_control(IMAGE_CACHE_CONTROL)
-        .body(bytes.into())
-        .send()
-        .await
-    {
-        tracing::warn!(%error, key, "Could not store image thumbnail");
+        .set_if_match(match_etag.map(str::to_owned))
+        .body(bytes.into());
+    if let Some(etag) = source_etag {
+        put = put.metadata("source-etag", etag);
     }
+    let result = if key.starts_with("home-images/") {
+        put.if_none_match("*")
+            .customize()
+            .config_override(home_image_put_config())
+            .send()
+            .await
+    } else {
+        put.send().await
+    };
+    if let Err(error) = result {
+        tracing::warn!(%error, key, "Could not store image thumbnail");
+        return false;
+    }
+    true
+}
+
+// A successful single-attempt PUT cannot leave an earlier SDK retry in flight.
+fn home_image_put_config() -> aws_sdk_s3::config::Builder {
+    aws_sdk_s3::config::Builder::new()
+        .retry_config(aws_sdk_s3::config::retry::RetryConfig::standard().with_max_attempts(1))
+}
+
+async fn home_quota(tx: &mut toasty::Transaction<'_>, user: &str) -> Result<(i64, i64), AppError> {
+    query(tx,"SELECT '{}'::text FROM (SELECT pg_advisory_xact_lock(hashtextextended('home-image-upload:' || $1,0))) locked",&[user]).await?;
+    let usage = one(tx,
+        "WITH current AS (
+           SELECT COALESCE(sum(file_size + CASE WHEN thumbnail_ready THEN thumbnail_bytes ELSE 0 END),0) AS bytes,
+                  COALESCE(sum(CASE WHEN thumbnail_ready IS NULL THEN
+                       CASE WHEN thumbnail_bytes>0 THEN thumbnail_bytes
+                            WHEN home_image_can_have_thumbnail(content_type,width,height) THEN file_size
+                            ELSE 0 END ELSE 0 END),0) AS uncertain
+           FROM home_images WHERE uploader_id=$1
+         ), pending AS (
+           SELECT COALESCE(sum(file_size),0) AS bytes,
+                  COALESCE(sum(CASE WHEN thumbnail_accounted THEN unconfirmed_thumbnail_bytes
+                             ELSE file_size END),0) AS uncertain
+           FROM home_image_deletion_queue WHERE uploader_id=$1
+         )
+         SELECT json_build_object('known',current.bytes+pending.bytes,
+           'uncertain',current.uncertain+pending.uncertain)::text
+         FROM current,pending", &[user]).await?;
+    Ok((
+        usage["known"].as_i64().unwrap_or(MAX_USER_BYTES),
+        usage["uncertain"].as_i64().unwrap_or(0),
+    ))
+}
+
+async fn reconcile_uploader_thumbnails(
+    state: &AppState,
+    user: &str,
+    mut needed: i64,
+) -> Result<(), AppError> {
+    let mut db = state.db.clone();
+    for _ in 0..25 {
+        let mut tx = db.transaction().await?;
+        // Claim only the four objects that can start immediately, even if the caller times out.
+        let rows = query(&mut tx,
+            "WITH candidates AS MATERIALIZED (
+               (SELECT id, file_size AS reserved FROM home_images WHERE uploader_id=$1
+                 AND thumbnail_ready IS NULL AND NOT (thumbnail_bytes>0)
+                 AND home_image_can_have_thumbnail(content_type,width,height)
+                 AND thumbnail_check_at<=now()+interval '5 minutes'
+               ORDER BY thumbnail_check_at,id LIMIT 32)
+               UNION ALL
+               (SELECT id, thumbnail_bytes AS reserved FROM home_images WHERE uploader_id=$1
+                 AND thumbnail_ready IS NULL AND (thumbnail_bytes>0)
+                 AND home_image_can_have_thumbnail(content_type,width,height)
+                 AND thumbnail_check_at<=now()
+               ORDER BY thumbnail_check_at,id LIMIT 32)
+             )
+             UPDATE home_images SET thumbnail_check_at=now()+interval '10 minutes'
+             WHERE id IN (SELECT h.id FROM candidates c JOIN home_images h ON h.id=c.id
+               WHERE h.thumbnail_ready IS NULL
+                 AND CASE WHEN h.thumbnail_bytes>0 THEN h.thumbnail_check_at<=now()
+                   ELSE h.created_at<now()-interval '5 minutes'
+                     AND h.thumbnail_check_at<=now()+interval '5 minutes' END
+               ORDER BY c.reserved DESC,h.id LIMIT 4 FOR UPDATE OF h SKIP LOCKED)
+             RETURNING json_build_object('id',id,'check_at',thumbnail_check_at,'eligible',true,'reserved',CASE WHEN thumbnail_bytes>0 THEN thumbnail_bytes ELSE file_size END)::text",
+            &[user]).await?;
+        tx.commit().await?;
+        if rows.is_empty() {
+            break;
+        }
+        needed -= reconcile_claimed_home_thumbnails(state, rows).await?;
+        if needed <= 0 {
+            break;
+        }
+    }
+    Ok(())
 }
 
 async fn upload(
@@ -232,26 +552,52 @@ async fn upload(
     })
     .await
     .map_err(|e| AppError::Internal(e.into()))??;
+    let thumbnail_bytes = thumbnail.as_ref().map_or(0, Vec::len);
+    let required = (bytes.len() + thumbnail_bytes) as i64;
     let mut tx = db.transaction().await?;
-    query(&mut tx,"SELECT '{}'::text FROM (SELECT pg_advisory_xact_lock(hashtextextended('home-image-upload:' || $1,0))) locked",&[&user.id]).await?;
-    let usage = one(&mut tx,"SELECT json_build_object('bytes',(SELECT COALESCE(sum(file_size),0) FROM home_images WHERE uploader_id=$1)+(SELECT COALESCE(sum(file_size),0) FROM home_image_deletions WHERE uploader_id=$1))::text",&[&user.id]).await?;
-    if usage["bytes"].as_i64().unwrap_or(MAX_USER_BYTES) + bytes.len() as i64 > MAX_USER_BYTES {
+    let (mut known, mut uncertain) = home_quota(&mut tx, &user.id).await?;
+    if known + required <= MAX_USER_BYTES && known + uncertain + required > MAX_USER_BYTES {
+        tx.commit().await?;
+        // Do not hold the uploader lock or a transaction during object-store I/O.
+        if let Ok(result) = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            reconcile_uploader_thumbnails(
+                &state,
+                &user.id,
+                known + uncertain + required - MAX_USER_BYTES,
+            ),
+        )
+        .await
+        {
+            result?;
+        }
+        tx = db.transaction().await?;
+        (known, uncertain) = home_quota(&mut tx, &user.id).await?;
+    }
+    if known + required > MAX_USER_BYTES {
         return Err(AppError::BadRequest(
             "Home image storage limit is 1 GiB per user".into(),
+        ));
+    }
+    if known + uncertain + required > MAX_USER_BYTES {
+        return Err(AppError::ServiceUnavailable(
+            "Home image storage is being checked; retry the upload shortly".into(),
         ));
     }
     let file_size = bytes.len().to_string();
     let id = uuid::Uuid::new_v4().to_string();
     let key = format!("home-images/{id}");
     // Reserve durable metadata before starting S3 I/O so crashes leave a GC candidate.
-    toasty::sql::statement("INSERT INTO home_images(id,uploader_id,content_type,name,file_size,width,height,blurhash) VALUES($1,$2,$3,$4,$5::bigint,$6::integer,$7::integer,$8)").bind(id.as_str()).bind(user.id.as_str()).bind(body.content_type.as_str()).bind(body.name).bind(file_size).bind(width.to_string()).bind(height.to_string()).bind(blurhash.as_str()).exec(&mut tx).await?;
+    toasty::sql::statement("INSERT INTO home_images(id,uploader_id,content_type,name,file_size,width,height,blurhash,thumbnail_bytes,thumbnail_ready,thumbnail_conditional_write,thumbnail_write_pending) VALUES($1,$2,$3,$4,$5::bigint,$6::integer,$7::integer,$8,$9::bigint,CASE WHEN $9::bigint=0 THEN false ELSE NULL END,true,$9::bigint>0)").bind(id.as_str()).bind(user.id.as_str()).bind(body.content_type.as_str()).bind(body.name).bind(file_size).bind(width.to_string()).bind(height.to_string()).bind(blurhash.as_str()).bind(thumbnail_bytes.to_string()).exec(&mut tx).await?;
     tx.commit().await?;
     let mut tx = db.transaction().await?;
     // Account deletion and GC must not delete the object before PUT finishes.
-    one(
+    let reserved = one(
         &mut tx,
-        "SELECT '{}'::text FROM home_images WHERE id=$1 FOR UPDATE",
-        &[&id],
+        "SELECT json_build_object('thumbnail_reserved',thumbnail_ready IS NULL
+             AND thumbnail_bytes=$2::bigint AND $2::bigint>0,'check_at',thumbnail_check_at)::text
+         FROM home_images WHERE id=$1 FOR UPDATE",
+        &[&id, &thumbnail_bytes.to_string()],
     )
     .await?;
     let uploaded = state
@@ -261,7 +607,10 @@ async fn upload(
         .key(&key)
         .content_type(&body.content_type)
         .cache_control(IMAGE_CACHE_CONTROL)
+        .if_none_match("*")
         .body(bytes.into())
+        .customize()
+        .config_override(home_image_put_config())
         .send()
         .await;
     if uploaded.is_err() {
@@ -273,7 +622,40 @@ async fn upload(
         tx.commit().await?;
         return Err(AppError::Internal(anyhow::anyhow!("Image upload failed")));
     }
-    store_thumbnail(&state.s3_client, &state.config.s3.bucket, &key, thumbnail).await;
+    toasty::sql::statement("UPDATE home_images SET original_write_confirmed=true WHERE id=$1")
+        .bind(id.as_str())
+        .exec(&mut tx)
+        .await?;
+    if reserved["thumbnail_reserved"] == true
+        && let Some(check_at) = reserved["check_at"].as_str()
+    {
+        if store_thumbnail(
+            &state.s3_client,
+            &state.config.s3.bucket,
+            &key,
+            thumbnail,
+            None,
+            None,
+        )
+        .await
+        {
+            record_home_thumbnail(&mut tx, &id, thumbnail_bytes as i64, check_at).await?;
+            toasty::sql::statement(
+                "UPDATE home_images SET thumbnail_write_pending=false WHERE id=$1",
+            )
+            .bind(id.as_str())
+            .exec(&mut tx)
+            .await?;
+        } else {
+            // An ambiguous PUT can still finish. Delay the HEAD and retain the reservation.
+            toasty::sql::statement(
+                "UPDATE home_images SET thumbnail_check_at=statement_timestamp()+interval '5 minutes' WHERE id=$1",
+            )
+            .bind(id.as_str())
+            .exec(&mut tx)
+            .await?;
+        }
+    }
     tx.commit().await?;
     Ok(Json(
         json!({"id":id,"width":width,"height":height,"blurhash":blurhash}),
@@ -396,16 +778,50 @@ async fn image(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Query(variant): Query<ImageVariant>,
-) -> Result<impl axum::response::IntoResponse, AppError> {
+) -> Response {
+    match image_redirect(state, id, variant).await {
+        Ok(redirect) => redirect.into_response(),
+        Err(error) => ([(header::CACHE_CONTROL, "no-store")], error).into_response(),
+    }
+}
+
+async fn image_redirect(
+    state: AppState,
+    id: String,
+    variant: ImageVariant,
+) -> Result<impl IntoResponse, AppError> {
     uuid::Uuid::parse_str(&id).map_err(|_| AppError::NotFound("Image".into()))?;
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    let item = one(&mut tx, "SELECT item::text FROM (SELECT json_build_object('name',name,'media_type',content_type,'storage_key','home-images/' || id) AS item FROM home_images h WHERE id=$1 AND EXISTS(SELECT 1 FROM home_posts p LEFT JOIN channels c ON c.id=p.channel_id WHERE p.deleted_at IS NULL AND (p.channel_id IS NULL OR NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL) AND p.media @> jsonb_build_array(jsonb_build_object('url','/api/home/images/' || h.id))) UNION ALL SELECT json_build_object('name',a.file_name,'media_type',a.content_type,'storage_key',a.storage_key) FROM attachments a JOIN home_posts p ON p.id=a.message_id JOIN channels c ON c.id=p.channel_id WHERE a.id=$1 AND p.deleted_at IS NULL AND NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL AND a.content_type IN ('image/png','image/jpeg','image/gif','image/webp')) images LIMIT 1", &[&id]).await?;
+    let item = one(&mut tx, "SELECT item::text FROM (SELECT json_build_object('name',name,'media_type',content_type,'storage_key','home-images/' || id,'thumbnail_ready',CASE WHEN NOT home_image_can_have_thumbnail(h.content_type,h.width,h.height) THEN false ELSE h.thumbnail_ready END,'thumbnail_check_at',h.thumbnail_check_at,'thumbnail_probe_allowed',h.thumbnail_bytes=0 OR h.thumbnail_check_at<=now()) AS item FROM home_images h WHERE id=$1 AND EXISTS(SELECT 1 FROM home_posts p LEFT JOIN channels c ON c.id=p.channel_id WHERE p.deleted_at IS NULL AND (p.channel_id IS NULL OR NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL) AND p.media @> jsonb_build_array(jsonb_build_object('url','/api/home/images/' || h.id))) UNION ALL SELECT json_build_object('name',a.file_name,'media_type',a.content_type,'storage_key',a.storage_key,'thumbnail_ready',CASE WHEN NOT home_image_can_have_thumbnail(h.content_type,h.width,h.height) THEN false ELSE h.thumbnail_ready END,'thumbnail_check_at',h.thumbnail_check_at,'thumbnail_probe_allowed',h.thumbnail_bytes=0 OR h.thumbnail_check_at<=now()) FROM attachments a LEFT JOIN home_images h ON h.id=substring(a.storage_key from 13) AND a.storage_key LIKE 'home-images/%' JOIN home_posts p ON p.id=a.message_id JOIN channels c ON c.id=p.channel_id WHERE a.id=$1 AND p.deleted_at IS NULL AND NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL AND a.content_type IN ('image/png','image/jpeg','image/gif','image/webp')) images LIMIT 1", &[&id]).await?;
     let key = item["storage_key"].as_str().unwrap();
     let content_type = item["media_type"].as_str().unwrap();
     drop(tx);
     let thumbnail = if variant.thumbnail {
-        stored_thumbnail_key(&state.s3_client, &state.config.s3.bucket, key).await
+        match item["thumbnail_ready"].as_bool() {
+            Some(true) => Some(thumbnail_key(key)),
+            Some(false) => None,
+            None if key.starts_with("home-images/") => {
+                if item["thumbnail_probe_allowed"] == false {
+                    None
+                } else {
+                    let image_id = key.trim_start_matches("home-images/");
+                    let bytes = probe_home_thumbnail(&state, image_id).await;
+                    // Only reconciliation may release a reservation when storage reports absence.
+                    if let Some(bytes) = bytes.filter(|bytes| *bytes > 0)
+                        && let Some(check_at) = item["thumbnail_check_at"].as_str()
+                        && let Err(error) =
+                            record_home_thumbnail(&mut state.db.clone(), image_id, bytes, check_at)
+                                .await
+                    {
+                        // The object is usable even when its quota update has to be retried.
+                        tracing::warn!(%error, image_id, "Could not record thumbnail size");
+                    }
+                    bytes.filter(|bytes| *bytes > 0).map(|_| thumbnail_key(key))
+                }
+            }
+            None => stored_thumbnail_key(&state.s3_client, &state.config.s3.bucket, key).await,
+        }
     } else {
         None
     };
@@ -423,7 +839,7 @@ async fn image(
     )
     .await?;
     Ok((
-        [(header::CACHE_CONTROL, IMAGE_CACHE_CONTROL)],
+        [(header::CACHE_CONTROL, "private, no-cache")],
         axum::response::Redirect::temporary(&url),
     ))
 }
@@ -477,22 +893,32 @@ pub async fn collect_garbage(state: &AppState) -> Result<(), AppError> {
     .await?;
     tx.commit().await?;
     let mut tx = db.transaction().await?;
-    let removed = query(&mut tx,"SELECT json_build_object('id',id)::text FROM home_image_deletions ORDER BY created_at LIMIT 100 FOR UPDATE SKIP LOCKED",&[]).await?;
+    let deletion_candidates = if state.config.s3.home_image_legacy_writes_drained {
+        ""
+    } else {
+        "WHERE NOT legacy_write_pending"
+    };
+    let removed = query(
+        &mut tx,
+        &format!(
+            "SELECT json_build_object('id',id,'original_pending',original_write_pending,
+                  'thumbnail_pending',thumbnail_write_pending)::text FROM home_image_deletion_queue
+                  {deletion_candidates} ORDER BY created_at LIMIT 100 FOR UPDATE SKIP LOCKED"
+        ),
+        &[],
+    )
+    .await?;
     for row in removed {
         let id = row["id"].as_str().unwrap();
-        crate::storage::delete_storage_object(
-            &state.s3_client,
-            &state.config.s3.bucket,
-            &thumbnail_key(&format!("home-images/{id}")),
+        let key = format!("home-images/{id}");
+        remove_home_image_object(
+            state,
+            &thumbnail_key(&key),
+            row["thumbnail_pending"] == true,
         )
         .await?;
-        crate::storage::delete_storage_object(
-            &state.s3_client,
-            &state.config.s3.bucket,
-            &format!("home-images/{id}"),
-        )
-        .await?;
-        toasty::sql::statement("DELETE FROM home_image_deletions WHERE id=$1")
+        remove_home_image_object(state, &key, row["original_pending"] == true).await?;
+        toasty::sql::statement("DELETE FROM home_image_deletion_queue WHERE id=$1")
             .bind(id)
             .exec(&mut tx)
             .await?;
@@ -500,12 +926,89 @@ pub async fn collect_garbage(state: &AppState) -> Result<(), AppError> {
     tx.commit().await?;
     Ok(())
 }
+async fn remove_home_image_object(
+    state: &AppState,
+    key: &str,
+    write_pending: bool,
+) -> Result<(), AppError> {
+    let client = &state.s3_client;
+    let bucket = &state.config.s3.bucket;
+    if write_pending {
+        // An in-flight conditional PUT can recreate a deleted key. The original UUID
+        // is never reused. Keep an empty object so all delayed writes remain blocked.
+        client
+            .put_object()
+            .bucket(bucket)
+            .key(key)
+            .body(Vec::<u8>::new().into())
+            .send()
+            .await
+            .map_err(|error| AppError::Internal(error.into()))?;
+        return Ok(());
+    }
+    crate::storage::delete_storage_object(client, bucket, key).await
+}
+
+async fn reconcile_home_thumbnails(state: &AppState) -> Result<(), AppError> {
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    let rows = query(
+        &mut tx,
+        "UPDATE home_images SET thumbnail_check_at=now()+interval '10 minutes'
+         WHERE id IN (SELECT id FROM home_images WHERE thumbnail_ready IS NULL
+           AND thumbnail_check_at<=now() ORDER BY thumbnail_check_at,id LIMIT 100
+           FOR UPDATE SKIP LOCKED)
+         RETURNING json_build_object('id',id,'check_at',thumbnail_check_at,
+           'eligible',home_image_can_have_thumbnail(content_type,width,height))::text",
+        &[],
+    )
+    .await?;
+    tx.commit().await?;
+    reconcile_claimed_home_thumbnails(state, rows).await?;
+    Ok(())
+}
+
+async fn reconcile_claimed_home_thumbnails(
+    state: &AppState,
+    rows: Vec<Value>,
+) -> Result<i64, AppError> {
+    use futures_util::{StreamExt, TryStreamExt};
+    futures_util::stream::iter(rows)
+        .map(|row| async move {
+            if let (Some(id), Some(check_at)) = (row["id"].as_str(), row["check_at"].as_str()) {
+                if row["eligible"] == true {
+                    let actual = match probe_home_thumbnail(state, id).await {
+                        Some(0) => confirm_missing_thumbnail(state, id, check_at).await?,
+                        Some(actual) => {
+                            record_home_thumbnail(&mut state.db.clone(), id, actual, check_at)
+                                .await?
+                                .then_some(actual)
+                        }
+                        None => None,
+                    };
+                    if let (Some(reserved), Some(actual)) = (row["reserved"].as_i64(), actual) {
+                        return Ok::<i64, AppError>((reserved - actual).max(0));
+                    }
+                } else {
+                    record_home_thumbnail(&mut state.db.clone(), id, 0, check_at).await?;
+                }
+            }
+            Ok::<i64, AppError>(0)
+        })
+        .buffer_unordered(4)
+        .try_fold(0, |released, bytes| async move { Ok(released + bytes) })
+        .await
+}
+
 pub async fn worker(state: AppState) {
     let mut timer = tokio::time::interval(std::time::Duration::from_secs(60));
     loop {
         timer.tick().await;
         if let Err(error) = collect_garbage(&state).await {
             tracing::warn!(%error,"Home image cleanup failed; queued objects will be retried");
+        }
+        if let Err(error) = reconcile_home_thumbnails(&state).await {
+            tracing::warn!(%error, "Home image thumbnail reconciliation failed");
         }
     }
 }

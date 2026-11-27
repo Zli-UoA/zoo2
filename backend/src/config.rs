@@ -70,6 +70,7 @@ pub struct S3Config {
     pub access_key_id: String,
     pub secret_access_key: String,
     pub force_path_style: bool,
+    pub home_image_legacy_writes_drained: bool,
     pub presigned_put_expiry_secs: u64,
     pub presigned_get_expiry_secs: u64,
     pub max_file_size: u64,
@@ -85,6 +86,10 @@ impl fmt::Debug for S3Config {
             .field("access_key_id", &"[REDACTED]")
             .field("secret_access_key", &"[REDACTED]")
             .field("force_path_style", &self.force_path_style)
+            .field(
+                "home_image_legacy_writes_drained",
+                &self.home_image_legacy_writes_drained,
+            )
             .field("presigned_put_expiry_secs", &self.presigned_put_expiry_secs)
             .field("presigned_get_expiry_secs", &self.presigned_get_expiry_secs)
             .field("max_file_size", &self.max_file_size)
@@ -509,6 +514,9 @@ impl Config {
             access_key_id: s3_access_key_id,
             secret_access_key: s3_secret_access_key,
             force_path_style: s3_force_path_style,
+            home_image_legacy_writes_drained: parse_bool_flag(
+                env::var("HOME_IMAGE_LEGACY_WRITES_DRAINED").ok().as_deref(),
+            ),
             presigned_put_expiry_secs,
             presigned_get_expiry_secs,
             max_file_size,
@@ -760,6 +768,7 @@ mod tests {
             access_key_id: "prod_key_id".to_string(),
             secret_access_key: "super_secret_s3_key".to_string(),
             force_path_style: false,
+            home_image_legacy_writes_drained: false,
             presigned_put_expiry_secs: 900,
             presigned_get_expiry_secs: 300,
             max_file_size: 52428800,

@@ -174,6 +174,7 @@ mod tests {
             access_key_id: "test_key".to_string(),
             secret_access_key: "test_secret".to_string(),
             force_path_style: true,
+            home_image_legacy_writes_drained: false,
             presigned_put_expiry_secs: 900,
             presigned_get_expiry_secs: 300,
             max_file_size: 52428800,
