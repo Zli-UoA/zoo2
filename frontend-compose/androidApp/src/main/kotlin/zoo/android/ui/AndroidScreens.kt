@@ -27,6 +27,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
@@ -104,6 +105,8 @@ internal data class TimelineItem(
     /** 暗号化した添付（`attachment_id` → 本文の `attachments` の値の JSON。鍵を含むので表示と取得にだけ使う）。 */
     val encryptedFiles: Map<String, String> = emptyMap(),
     val postAuthor: zoo.Row? = null,
+    val dateDivider: String? = null,
+    val unreadDivider: String? = null,
 )
 internal data class ChannelItem(
     val id: String,
@@ -132,6 +135,8 @@ internal sealed interface AndroidScreen {
         val loadOlder: Boolean = false,
         val historyReady: Boolean = true,
         val retrySync: (() -> Unit)? = null,
+        val unreadPositionPending: Boolean = false,
+        val onReadThrough: ((String?) -> Unit)? = null,
     ) : AndroidScreen
     data class Thread(
         val channelName: String, val root: TimelineItem, val replies: List<TimelineItem>, val input: InputState,
@@ -383,6 +388,8 @@ private fun RenderAndroidScreen(
                         FeedLoadError(androidLabel("common.errors.network", "通信エラー"), colors, retry)
                     }
                     TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = interaction.swipeReply, allowThreads = true, focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true, historyReady = screen.historyReady,
+                        unreadPositionPending = screen.unreadPositionPending,
+                        onReadThrough = screen.onReadThrough.takeIf { foreground },
                         topContentPadding = headerHeight, headerOverlayHeight = if (headerVisible) headerHeight else 0.dp,
                         loadEarlier = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderMessages) } } else null)
                 }
@@ -599,7 +606,7 @@ private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, d
                         color = colors.foreground,
                         fontWeight = when {
                             channel.isUserName -> AndroidWeights.userName
-                            channel.unread -> AndroidWeights.emphasis
+                            channel.unread -> AndroidWeights.unreadChannel
                             else -> AndroidWeights.body
                         },
                         maxLines = 1,
@@ -628,9 +635,12 @@ internal fun ColumnScope.TimelineWithInput(
     loadEarlier: (() -> Unit)? = null,
     topContentPadding: Dp = 0.dp,
     headerOverlayHeight: Dp = 0.dp,
+    unreadPositionPending: Boolean = false,
+    onReadThrough: ((String?) -> Unit)? = null,
     imeInsets: WindowInsets = WindowInsets.ime.exclude(WindowInsets.systemBars),
 ) {
     val scroll = rememberLazyListState()
+    val density = LocalDensity.current
     val expanded by rememberUpdatedState(input.expanded)
     var resizing by remember { mutableStateOf(false) }
     val overlayInput = input.expanded || resizing
@@ -672,7 +682,9 @@ internal fun ColumnScope.TimelineWithInput(
     var followEnd by rememberSaveable { mutableStateOf(false) }
     val focusedIndex = entries.indexOfFirst { it.id == focusMessage }
     val restoredIndex = if (restorePending && !followEnd) entries.indexOfFirst { it.entryKey == restoredAnchor } else -1
-    LaunchedEffect(input.expanded, input.lastSend, focusRequest, focusedIndex, entries.isNotEmpty(), restoredIndex, historyReady) {
+    val unreadIndex = entries.indexOfFirst { it.unreadDivider != null }
+    LaunchedEffect(input.expanded, input.lastSend, focusRequest, focusedIndex, entries.isNotEmpty(),
+        restoredIndex, historyReady, unreadPositionPending, unreadIndex) {
         if (seenFocusRequest != focusRequest) {
             seenFocusRequest = focusRequest
             if (focusRequest != null) {
@@ -709,11 +721,33 @@ internal fun ColumnScope.TimelineWithInput(
                 positioned = true
                 scroll.requestScrollToItem(if (allowThreads) entries.lastIndex else 0)
             }
-            focusMessage == null && allowThreads && !positioned -> {
-                scroll.scrollToItem(entries.lastIndex)
-                followEnd = true
+            focusMessage == null && allowThreads && !positioned && !unreadPositionPending -> {
+                if (unreadIndex >= 0) {
+                    scroll.scrollToItem(unreadIndex, -with(density) { headerOverlayHeight.roundToPx() })
+                } else {
+                    scroll.scrollToItem(entries.lastIndex)
+                }
+                followEnd = unreadIndex < 0 || !scroll.canScrollForward
                 positioned = true
             }
+        }
+    }
+    val latestEntry by rememberUpdatedState(entries.lastOrNull())
+    val reportReadThrough by rememberUpdatedState(onReadThrough)
+    val canReportRead = onReadThrough != null && historyReady && !unreadPositionPending && !overlayInput
+    LaunchedEffect(scroll, canReportRead) {
+        if (!canReportRead) return@LaunchedEffect
+        val report = reportReadThrough ?: return@LaunchedEffect
+        try {
+            snapshotFlow {
+                val entry = latestEntry
+                val last = scroll.layoutInfo.visibleItemsInfo.lastOrNull()
+                entry?.id?.takeIf { positioned && !restorePending && !scroll.canScrollForward &&
+                    !scroll.isScrollInProgress && (focusRequest == null || openedTarget == focusRequest) &&
+                    last?.key == entry.entryKey }
+            }.collect { report(it) }
+        } finally {
+            report(null)
         }
     }
     FollowHistoryDuringIme(scroll, entries, imeInsets, input.expanded, followEnd, focusRequest,
@@ -875,6 +909,8 @@ private fun Timeline(
             if (header != null) item { header() }
             items(entries, key = { it.entryKey }) { entry ->
                 CompositionLocalProvider(LocalBringIntoViewSpec provides inheritedBringIntoView) {
+                    entry.dateDivider?.let { ConversationDivider(it, colors) }
+                    entry.unreadDivider?.let { ConversationDivider(it, colors, unread = true) }
                     Column(
                         Modifier.fillMaxWidth().testTag("timeline-entry-${entry.id}")
                             .then(if (posts) Modifier.combinedClickable(
@@ -1068,6 +1104,21 @@ private fun conversationGestures(open: (() -> Unit)?, menu: () -> Unit, swipeRep
                 })
             }
         }
+}
+
+@Composable
+private fun ConversationDivider(label: String, colors: AndroidColors, unread: Boolean = false) {
+    val line = if (unread) colors.unread else colors.inputBoundary
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        HorizontalDivider(Modifier.weight(1f), color = line)
+        Text(label, color = if (unread) colors.unread else colors.secondary,
+            fontSize = 12.sp, fontWeight = AndroidWeights.emphasis)
+        HorizontalDivider(if (unread) Modifier.width(24.dp) else Modifier.weight(1f), color = line)
+    }
 }
 
 /** 暗号化に切り替えた境目（Web の `MessageList` の区切り）。上は平文、下は暗号化したメッセージ。 */

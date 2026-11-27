@@ -17,6 +17,7 @@ import androidx.compose.ui.unit.dp
 import io.ktor.http.Url
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
@@ -30,6 +31,7 @@ import zoo.android.phone.rememberCallImage
 /** 窓の外の対象まで古い方へ広げる、1 ページずつの読み込みの上限。 */
 private const val MAX_FOCUS_PAGES = 20
 private const val MAX_FOCUS_FAILURES = 3
+private const val MAX_UNREAD_PAGES = 20
 
 @Composable
 internal fun ConnectedScreens(
@@ -132,6 +134,20 @@ internal fun ConnectedScreens(
     var threadRetry by remember(channelId, currentThread) { mutableIntStateOf(0) }
     val threadDetail = state.threadDetails.takeIf { it.text("id") == currentThread } ?: obj()
     val conversationEntries = rows.filter { it.text("parent_id").isEmpty() }.map { it.text("id") }.toSet()
+    val currentReadPosition = session.channelReadPositions[channelId]
+    var visitReadPosition by remember(session, channelId) { mutableStateOf<ChannelReadPosition?>(null) }
+    LaunchedEffect(channelId, currentReadPosition) {
+        if (visitReadPosition == null) visitReadPosition = currentReadPosition
+    }
+    val readBoundary = (visitReadPosition ?: currentReadPosition)?.timestamp
+    val unreadId = remember(ordered, readBoundary, session.config.userId) {
+        if (readBoundary == null) null else ordered.firstOrNull {
+            it.text("parent_id").isEmpty() && it.text("user_id") != session.config.userId &&
+                (timestampMillis(it.text("created_at")) ?: Long.MIN_VALUE) > readBoundary
+        }?.text("id")
+    }
+    var visibleReadThrough by remember(session, channelId) { mutableStateOf<String?>(null) }
+    val onReadThrough = remember(session, channelId) { { id: String? -> visibleReadThrough = id } }
     val threadRoot = messages.find { it.id == currentThread }
     val threadReplies = rows.filter { it.text("parent_id") == currentThread }.map { it.text("id") }.toSet()
     val route = env.path.substringBefore('?')
@@ -139,6 +155,13 @@ internal fun ConnectedScreens(
     val focusMessage = if (focusFailed) null
         else env.path.substringAfter("?message=", "").substringBefore('&').ifBlank { null }
     val focusRequest = focusMessage?.let { env.path.substringAfter('?') }
+    val mainPage = pageStates[PageScope.Main]
+    var unreadPages by remember(session, channelId) { mutableIntStateOf(0) }
+    var unreadHistoryFailed by remember(session, channelId, env.online) { mutableStateOf(false) }
+    val oldest = mainPage?.oldest?.first?.let(::timestampMillis)
+    val needsUnreadHistory = env.online && currentThread == null && focusMessage == null &&
+        readBoundary != null && readBoundary > 0 && oldest != null && oldest > readBoundary &&
+        mainPage?.hasOlder == true && unreadPages < MAX_UNREAD_PAGES && !unreadHistoryFailed
     val focusRow = rows.find { it.text("id") == focusMessage }
     val focusParent = focusRow?.text("parent_id")
     // Keep a deleted parent's thread readable and prevent replies to it.
@@ -456,17 +479,56 @@ internal fun ConnectedScreens(
         channel != null && currentThread != null -> AndroidScreen.OpeningConversation(
             "thread:$currentThread", session.t("threads.title"), env.online, threadLoadFailed) { threadRetry++ }
         channel != null -> AndroidScreen.Conversation(channelId.orEmpty(), channel.text("channel_name"), channel.text("description"),
-            withEncryptionBoundary(messages.filter { it.id in conversationEntries }, rowsById, encrypted, session::t), state.input(channelId.orEmpty(), canPost,
+            withConversationDividers(
+                withEncryptionBoundary(messages.filter { it.id in conversationEntries }, rowsById, encrypted, session::t),
+                rowsById, unreadId, platform::day, session::dayLabel, session.t("messages.new"),
+            ), state.input(channelId.orEmpty(), canPost,
                 users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }).copy(notices = recipientLines),
             canCall = channel.flag("is_dm") && member && !encrypted, focusMessage = focusMessage, focusRequest = focusRequest,
             loadOlder = pageStates[PageScope.Main]?.let { it.hasOlder && !it.loading } == true,
             historyReady = !env.online || pageStates[PageScope.Main]?.loaded == true,
+            unreadPositionPending = env.online && (
+                (member && !session.channelReadPositionsAttempted) || needsUnreadHistory ||
+                    (member && mainPage?.loading == true && mainPage.loaded == false && readBoundary != null)
+                ),
+            onReadThrough = onReadThrough,
             retrySync = if (dmSyncDelayed && env.online) {
                 { session.repo.channels.refresh(); session.repo.members.refresh(); dmSyncRetry++ }
             } else null)
         channelId != null && channelsLoading -> AndroidScreen.OpeningConversation(
             "channel:$channelId", session.t("common.loading"), env.online)
         else -> AndroidScreen.Channels(state.channelSections(channels, usersById, memberships))
+    }
+    val canLoadUnreadHistory = screen is AndroidScreen.Conversation && env.online && env.visible && focusMessage == null
+    LaunchedEffect(messageTable, readBoundary, canLoadUnreadHistory) {
+        if (!canLoadUnreadHistory || messageTable == null || readBoundary == null || readBoundary <= 0) return@LaunchedEffect
+        while (unreadPages < MAX_UNREAD_PAGES && !unreadHistoryFailed) {
+            val page = messageTable.pageStates.first { states ->
+                states[PageScope.Main]?.let { it.loaded && !it.loading } == true
+            }.getValue(PageScope.Main)
+            val oldestTimestamp = page.oldest?.first?.let(::timestampMillis) ?: break
+            if (!page.hasOlder || oldestTimestamp <= readBoundary) break
+            if (messageTable.loadOlder(PageScope.Main)) unreadPages++ else unreadHistoryFailed = true
+        }
+    }
+    val readEnabled = screen is AndroidScreen.Conversation && member && env.online &&
+        env.visible && env.focused && currentReadPosition != null
+    val latestRowsById by rememberUpdatedState(rowsById)
+    LaunchedEffect(session, channelId, readEnabled) {
+        if (!readEnabled || channelId == null) return@LaunchedEffect
+        snapshotFlow { visibleReadThrough }.collect { id ->
+            if (id == null) return@collect
+            val row = latestRowsById[id] ?: return@collect
+            if (row.present("deleted_at") || row.present("parent_id")) return@collect
+            val timestamp = timestampMillis(row.text("created_at")) ?: return@collect
+            try {
+                session.markChannelRead(channelId, id, timestamp)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Keep the last saved position. Reaching the end again or returning to the screen retries.
+            }
+        }
     }
     val reaction = state.confirmingEntry?.takeIf { it.operation == EntryOperation.React }
     val insertingEmoji = state.inputMenu == InputTool.Emoji

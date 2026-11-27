@@ -49,6 +49,32 @@ class ConversationScrollTest {
     private val channel = AndroidScreen.Conversation("dev", "開発", "", entries, InputState())
 
     @Test
+    fun opensAtTheUnreadDividerAndReportsReadOnlyAtTheEndInTheForeground() {
+        val unreadEntry = entries[10].copy(dateDivider = "昨日", unreadDivider = "新着メッセージ")
+        var foreground by mutableStateOf(false)
+        var screen by mutableStateOf(channel.copy(
+            entries = entries.toMutableList().apply { set(10, unreadEntry) },
+            unreadPositionPending = true,
+        ))
+        val written = mutableListOf<String>()
+        screen = screen.copy(onReadThrough = { id -> if (id != null) written += id })
+        ui.setContent { AndroidScreens(screen, false, foreground, dispatch = {}) { _, _ -> } }
+        ui.runOnIdle { screen = screen.copy(unreadPositionPending = false) }
+
+        ui.onNodeWithText("昨日").assertIsDisplayed()
+        ui.onNodeWithText("新着メッセージ").assertIsDisplayed()
+        ui.runOnIdle { assertTrue(written.isEmpty()) }
+        ui.onNodeWithTag("conversation-timeline").performScrollToIndex(entries.lastIndex)
+        ui.runOnIdle {
+            assertTrue(written.isEmpty())
+            foreground = true
+        }
+        ui.runOnIdle { assertEquals(listOf(entries.last().id), written) }
+        ui.onNodeWithTag("conversation-timeline").performScrollToIndex(10)
+        ui.onNodeWithText("新着メッセージ").assertIsDisplayed()
+    }
+
+    @Test
     fun inputFollowsTheHandleBeforeReleaseInBothDirections() {
         var screen by mutableStateOf(channel.copy(input = InputState("下書き")))
         ui.setContent {

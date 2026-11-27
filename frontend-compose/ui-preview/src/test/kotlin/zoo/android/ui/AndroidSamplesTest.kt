@@ -175,7 +175,13 @@ class AndroidSamplesTest {
                 followActor = "https://example.test/rin", followActivity = "https://example.test/follow", kind = "follow_request"),
         ))
         val conversation = AndroidScreen.Conversation("dev", "開発", "Zoo の開発と通話のテストについて相談するチャンネルです。",
-            posts, InputState("確認しました。"))
+            posts.mapIndexed { index, post ->
+                when (index) {
+                    0 -> post.copy(dateDivider = "昨日")
+                    1 -> post.copy(dateDivider = "今日", unreadDivider = "新着メッセージ")
+                    else -> post
+                }
+            }, InputState("確認しました。"))
         val avatar = Bitmap.createBitmap(128, 128, Bitmap.Config.ARGB_8888).apply {
             eraseColor(0xffd6e9df.toInt())
             val canvas = Canvas(this)
