@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import { LOCALES, localeInitScript, matchLocale, readBrowserLocale, resolveLocale } from "./locale";
 import { createI18n, resources } from "./index";
-import { englishCopyKeys } from "./translation-policy";
+import { englishCopyKeys, translationVariables } from "./translation-policy";
 
 function flatten(value: object, prefix = ""): Record<string, string> {
   return Object.fromEntries(
@@ -66,7 +66,9 @@ describe("translations", () => {
     expect(Object.keys(target).sort()).toEqual(Object.keys(source).sort());
     for (const [key, value] of Object.entries(target)) {
       expect(value.trim(), key).not.toBe("");
-      expect(value.match(/{{\w+}}/g) ?? [], key).toEqual(source[key].match(/{{\w+}}/g) ?? []);
+      const variables = translationVariables(value);
+      expect(variables, key).not.toBeNull();
+      expect(variables, key).toEqual(translationVariables(source[key]));
     }
   });
 

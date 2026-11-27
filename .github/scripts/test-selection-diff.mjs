@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { englishCopyKeys } from "../../frontend/src/lib/i18n/translation-policy.ts";
+import { englishCopyKeys, translationVariables } from "../../frontend/src/lib/i18n/translation-policy.ts";
 import { isAndroidFrontendOnly, isDedicatedPlaywrightTypecheckInput } from './frontend-test-selection-paths.mjs';
 import { pathMatcher, testWorkflowPaths } from './merge-queue-changes.mjs';
 import { fileURLToPath } from 'node:url';
@@ -59,11 +59,9 @@ export function readChanges(base, git = execFileSync) {
 function translationEntries(value, file, key = '', entries = new Map()) {
   if (typeof value === 'string' && key) {
     if (!value.trim()) throw new Error(`${file}: empty translation for ${key}`);
-    const variables = [...value.matchAll(/{{\s*-?\s*([\w.]+)(?:\s*,[^{}]+)?\s*}}/g)];
-    if (value.replace(/{{\s*-?\s*[\w.]+(?:\s*,[^{}]+)?\s*}}/g, '').match(/{{|}}/)) {
-      throw new Error(`${file}: invalid interpolation in ${key}`);
-    }
-    entries.set(key, { value, variables: [...new Set(variables.map(([, name]) => name))].sort().join(',') });
+    const variables = translationVariables(value);
+    if (!variables) throw new Error(`${file}: invalid interpolation in ${key}`);
+    entries.set(key, { value, variables: variables.join(',') });
     return entries;
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) {

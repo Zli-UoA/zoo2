@@ -28,6 +28,17 @@ export function caseDependencies(source, ts) {
   if (ast.parseDiagnostics.length || /\b(?:test\.describe|describe)\.(?:serial|sequential|configure)\s*\(/.test(source)) return null;
   const imports = new Map(), declarations = new Map(), shared = [], cases = [];
   let aliasedRunner = false;
+  function registerBinding(name, declaration) {
+    if (ts.isIdentifier(name)) {
+      const list = declarations.get(name.text) ?? [];
+      list.push(declaration);
+      declarations.set(name.text, list);
+    } else {
+      for (const element of name.elements) {
+        if (ts.isBindingElement(element)) registerBinding(element.name, declaration);
+      }
+    }
+  }
   function collect(node) {
     if (ts.isExpressionStatement(node) && !ts.isCallExpression(node.expression)) shared.push({ node });
     if (ts.isIfStatement(node) || ts.isSwitchStatement(node) || ts.isWhileStatement(node) || ts.isDoStatement(node)) shared.push({ node: node.expression });
@@ -64,9 +75,8 @@ export function caseDependencies(source, ts) {
       if (/^(test|it)[.(]/.test(callee) && !/^(test\.describe)(\.(only|skip))?$/.test(callee) && node.arguments.some(a => ts.isArrowFunction(a) || ts.isFunctionExpression(a))) { cases.push({ unsupported: true }); return; }
       if (!/^(test\.describe|describe)(\.(only|skip))?$/.test(callee)) shared.push({ node });
     }
-    if ((ts.isFunctionDeclaration(node) || ts.isVariableDeclaration(node) || ts.isClassDeclaration(node)) && node.name && ts.isIdentifier(node.name)) {
-      const list = declarations.get(node.name.text) ?? [];
-      list.push(node); declarations.set(node.name.text, list);
+    if ((ts.isFunctionDeclaration(node) || ts.isVariableDeclaration(node) || ts.isClassDeclaration(node)) && node.name) {
+      registerBinding(node.name, node);
       if (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) return;
       if (ts.isVariableDeclaration(node) && node.initializer && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) return;
     }

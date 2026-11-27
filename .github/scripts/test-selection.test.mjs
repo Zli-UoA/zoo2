@@ -315,7 +315,7 @@ test('lightweight translations reject missing keys, changed placeholders, and em
   for (const en of ['{}', '{"label":""}', '{"label":"{{total}} items"}', '{"label":"{{count}} items","other":"Extra"}']) {
     assert.throws(() => validateTranslationDictionaries({ ...reference, 'en.json': en }));
   }
-  assert.doesNotThrow(() => validateTranslationDictionaries({ ...reference, 'en.json': '{"label":"{{count}} items"}' }));
+  assert.doesNotThrow(() => validateTranslationDictionaries({ ...reference, 'en.json': '{"label":"{{ count }} items"}' }));
 });
 
 test('lightweight translations use the same English-copy exceptions as the app tests', () => {

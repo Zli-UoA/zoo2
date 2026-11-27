@@ -26,3 +26,9 @@ export function englishCopyKeys(
     .filter(([key, value]) => value === english[key] && !languageIndependentKeys.has(key))
     .map(([key]) => key);
 }
+
+export function translationVariables(value: string): string[] | null {
+  const interpolation = /{{\s*-?\s*([\w.]+)(?:\s*,[^{}]+)?\s*}}/g;
+  if (/{{|}}/.test(value.replace(interpolation, ""))) return null;
+  return [...new Set([...value.matchAll(interpolation)].map(([, name]) => name!))].sort();
+}

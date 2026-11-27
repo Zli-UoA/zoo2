@@ -210,3 +210,15 @@ test('second case', () => second());`,
   assert.deepEqual(result.fullFiles, ['src/fallback.test.ts']);
   assert.ok(testArguments('unit', result).includes('--exclude'));
 });
+
+test('case dependencies trace nested destructured aliases back to imports', () => {
+  const source = `
+    import { first } from './First';
+    import { second } from './Second';
+    const { run: [fn] } = { run: [first] };
+    const { other: { execute } } = { other: { execute: second } };
+    test('affected', () => expect(fn()).toBe(1));
+    test('independent', () => expect(execute()).toBe(2));
+  `;
+  assert.deepEqual(caseDependencies(source, compiler)?.map(testCase => testCase.modules), [['./First'], ['./Second']]);
+});
