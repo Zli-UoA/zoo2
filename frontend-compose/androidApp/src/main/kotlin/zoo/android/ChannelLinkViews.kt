@@ -27,13 +27,14 @@ import zoo.text
 /** 本文のアプリ内リンクを、行き先の状態を購読して表示する [ChannelLinkProvider]。 */
 @Composable
 internal fun rememberChannelLinks(
-    session: Session, platform: AndroidPlatform, open: (ChannelLinkTarget, String?) -> Unit,
+    session: Session, platform: AndroidPlatform, workspaceEmojis: () -> Map<String, String>,
+    open: (ChannelLinkTarget, String?) -> Unit,
 ): ChannelLinkProvider {
     // 一覧の購読と索引は、リンクごとに作らず、画面で 1 つだけ持つ。値を読むのは各リンクの表示だけ。
     val channels = session.repo.channels.rows.collectAsState()
     val synchronized = session.repo.channels.synchronizedRows.collectAsState()
     val users = session.repo.users.rows.collectAsState()
-    return remember(session, platform, open, channels, synchronized, users) {
+    return remember(session, platform, workspaceEmojis, open, channels, synchronized, users) {
         val lists = ChannelLinkLists(
             channels = derivedStateOf { channels.value.associateBy { it.text("id") } },
             synchronized = derivedStateOf { synchronized.value != null },
@@ -41,7 +42,7 @@ internal fun rememberChannelLinks(
         )
         ChannelLinkProvider(
             target = { url -> parseChannelLink(url, session.config.apiBaseUrl) },
-            view = { target -> channelLinkState(session, platform, lists, target) },
+            view = { target -> channelLinkState(session, platform, lists, target, workspaceEmojis) },
             open = open,
         )
     }
@@ -57,6 +58,7 @@ private class ChannelLinkLists(
 @Composable
 private fun channelLinkState(
     session: Session, platform: AndroidPlatform, lists: ChannelLinkLists, target: ChannelLinkTarget,
+    workspaceEmojis: () -> Map<String, String>,
 ): ChannelLinkView {
     val row = lists.channels.value[target.channelId]
     val channel = remember(row, target.channelId) { linkedChannel(listOfNotNull(row), target.channelId) }
@@ -72,16 +74,13 @@ private fun channelLinkState(
     val message by updates.collectAsState(initial)
     val records by remember(session) { session.encryptionRecords() }
         .collectAsState(remember(session) { session.currentEncryptionRecords })
-    val workspace = remember(session, session.workspaceEmojis) {
-        workspaceEmojiImages(session.config.apiBaseUrl, session.workspaceEmojis)
-    }
     val info = resolveChannelLink(
         target, channel, directoryReady = lists.synchronized.value, message = message,
         recorded = channel != null && session.isEncryptedChannel(channel.id), records = records,
         users = lists.users.value,
         customEmojis = { linked ->
             timelineBodyEmojis(session.config.apiBaseUrl, linked, linked, linked.text("content"),
-                isPost = false, workspace = workspace).keys
+                isPost = false, workspace = workspaceEmojis()).keys
         },
         hidesContent = { messageRichContent(it).hidesBody },
     )

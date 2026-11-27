@@ -45,7 +45,7 @@ internal fun ConnectedScreens(
     val pageState = key(session.config.apiBaseUrl, session.config.userId) { rememberSaveableStateHolder() }
     DisposableEffect(state) { onDispose { state.close() } }
     val openChannelLink = remember(state) { { target: ChannelLinkTarget, parent: String? -> state.openChannelLink(target, parent) } }
-    val channelLinks = rememberChannelLinks(session, platform, openChannelLink)
+    val channelLinks = rememberChannelLinks(session, platform, state::workspaceEmojiIndex, openChannelLink)
     val env = platform.env
     val channels by session.repo.channels.rows.collectAsState()
     val users by session.repo.users.rows.collectAsState()

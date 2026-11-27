@@ -231,7 +231,7 @@ internal class ConnectedScreenState(
         enabled = true
     }
 
-    private val workspaceEmojiIndex by derivedStateOf {
+    val workspaceEmojiIndex by derivedStateOf {
         workspaceEmojiImages(app.config.apiBaseUrl, app.workspaceEmojis)
     }
 
