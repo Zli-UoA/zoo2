@@ -287,7 +287,6 @@ class SyncedTable(
 
     private var stream: ShapeStream? = null
     private var refreshJob: Job? = null
-    private val subsetRequests = ShapeSubsetRequests()
     private val cacheKey =
         "zoo-compose:${if (onDemand) "v3" else "v2"}:${config.apiBaseUrl}:${config.shapeProxyPath}:${config.shapeMode}:${config.electricShapeUrl}:${config.userId}:$name:${params.entries.sortedBy { it.key }}"
     /** on-demand に移す前の、全件入りの控え（添付・リアクションの別 Shape の分も）。読まずに消す。 */
@@ -325,7 +324,7 @@ class SyncedTable(
 
     private suspend fun fetchSubset(main: Boolean, subset: SubsetParams): SubsetSnapshot {
         val source = streamReady.await()
-        val snapshot = subsetRequests.request { source.requestSnapshot(subset) }
+        val snapshot = source.requestSnapshot(subset)
         snapshotMetas.update { (it + snapshot.metadata).takeLast(32) }
         // 行は snapshot の配信の中で Shape に入っている。最初のメインのページが届いたら、画面へ反映する。
         if (main && !accepting.value) accepting.value = true
@@ -724,11 +723,9 @@ class SyncedTable(
         tableScope.cancel()
     }
 
-    fun refresh(reconnect: Boolean = false) {
-        val previous = refreshJob
-        if (!reconnect && previous?.isActive == true) return
+    fun refresh() {
+        if (refreshJob?.isActive == true) return
         refreshJob = tableScope.launch {
-            if (reconnect) previous?.cancelAndJoin()
             val source = stream
             if (synchronize && (source?.error != null || !worker.isActive)) {
                 // A terminal Electric4k runner cannot be restarted by forceDisconnectAndRefresh.
@@ -739,9 +736,7 @@ class SyncedTable(
                 worker = startSync(readCache = false)
                 return@launch
             }
-            // A subset read pauses live and resumes it when the read is retried.
-            if (reconnect && subsetRequests.reconnect()) return@launch
-            if (source == null || source.isPaused() || (!reconnect && loading.value)) return@launch
+            if (source == null || source.isPaused() || loading.value) return@launch
             try {
                 source.forceDisconnectAndRefresh()
             } catch (e: CancellationException) {
@@ -843,9 +838,8 @@ class Repository(
 
     fun messages(channelId: String) = table("messages", channelId)
 
-    fun refresh(reconnect: Boolean = false) {
-        (listOf(channels, users, members, notificationSettings, notifications) + dynamic.values).forEach { it.refresh(reconnect) }
-        if (reconnect && linked.isInitialized()) linked.value.refresh()
+    fun refresh() {
+        (listOf(channels, users, members, notificationSettings, notifications) + dynamic.values).forEach { it.refresh() }
     }
 
     fun close() {

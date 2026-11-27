@@ -181,10 +181,6 @@ internal class AndroidPhoneHost(
         if (enabled) inviteEvaluation.update { it + 1 }
     }
 
-    fun refreshInvites() {
-        inviteTable?.refresh(reconnect = true)
-    }
-
     private fun updateInviteSubscription() {
         if (!controller.dmWaiting && ringback == null) {
             invites?.cancel(); invites = null; inviteTable?.close(); inviteTable = null

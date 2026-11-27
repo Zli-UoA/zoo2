@@ -15,13 +15,12 @@ import androidx.compose.runtime.*
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import io.ktor.client.*
+import io.ktor.client.engine.okhttp.*
 import io.ktor.client.plugins.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.serialization.json.*
 import zoo.*
 import zoo.android.phone.AndroidPhoneHost
@@ -304,29 +303,19 @@ class MainActivity : ComponentActivity() {
             }
             DisposableEffect(current) {
                 var disposed = false
-                val connectivity = getSystemService(android.net.ConnectivityManager::class.java)
-                fun updateNetworkStatus(returning: Boolean = false) {
-                    val wasOnline = platform.env.online
-                    platform.online(hasInternet(
-                        connectivity.activeNetwork?.let(connectivity::getNetworkCapabilities),
-                    ))
-                    current.session.update(platform.env)
-                    if (platform.env.online && (returning || !wasOnline)) {
-                        current.shapeReconnects.update { it + 1 }
-                        current.phone.refreshInvites()
-                    }
-                }
                 val observer = LifecycleEventObserver { _, event ->
-                    val returning = event == Lifecycle.Event.ON_START && !platform.env.visible
-                    if (returning) current.transport.reconnect()
-                    platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
-                    updateNetworkStatus(returning)
                     if (event == Lifecycle.Event.ON_RESUME) current.push.refresh()
+                    platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+                    current.session.update(platform.env)
                 }
                 lifecycle.addObserver(observer)
                 platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+                current.session.update(platform.env)
+                val connectivity = getSystemService(android.net.ConnectivityManager::class.java)
                 fun updateOnline() = runOnUiThread {
-                    if (!disposed) updateNetworkStatus()
+                    if (!disposed) platform.online(hasInternet(
+                        connectivity.activeNetwork?.let(connectivity::getNetworkCapabilities),
+                    ))
                 }
                 val callback =
                     object : android.net.ConnectivityManager.NetworkCallback() {
@@ -395,16 +384,16 @@ class MainActivity : ComponentActivity() {
         connection.validate()
         val owner = loginStore.beginSession(savedRefresh?.let { SavedLogin(connection, it) })
         val oidcRoutes = OidcNetworkRoutes()
-        val transport = SessionHttpEngine {
+        val http = HttpClient(OkHttp) {
             // Refresh tokens are single-use: never replay a request inside OkHttp.
-            config {
-                retryOnConnectionFailure(false)
-                dns(oidcRoutes)
-                followRedirects(false)
-                followSslRedirects(false)
+            engine {
+                config {
+                    retryOnConnectionFailure(false)
+                    dns(oidcRoutes)
+                    followRedirects(false)
+                    followSslRedirects(false)
+                }
             }
-        }
-        val http = HttpClient(transport) {
             followRedirects = false
             install(HttpTimeout) {
                 requestTimeoutMillis = 120_000
@@ -456,7 +445,6 @@ class MainActivity : ComponentActivity() {
             session.setNavigationCacheLimit(platform.navigationCacheLimit)
             platform.onNavigation = session::update
             // ログインしたら、E2EE の端末を登録する（#359）。失敗は表示せず、裏で試し直す。
-            val shapeReconnects = MutableStateFlow(0L)
             val e2eeApi = zoo.crypto.ZooE2eeApi(ZooApi(config, platform, http))
             val e2ee = zoo.crypto.E2eeDeviceManager(
                 api = e2eeApi,
@@ -465,7 +453,7 @@ class MainActivity : ComponentActivity() {
                 displayName = e2eeDisplayName(),
                 files = zoo.crypto.CryptoStoreFiles.android(this, connection.base, me.text("id")),
                 pending = zoo.crypto.PendingDeviceDeletions.android(this),
-                toDevice = { deviceId -> zoo.crypto.toDeviceShape(config, platform, http, deviceId, shapeReconnects) },
+                toDevice = { deviceId -> zoo.crypto.toDeviceShape(config, platform, http, deviceId) },
                 scope = lifetime,
                 onError = { failure ->
                     android.util.Log.w("ZooE2ee", "E2EE の端末の処理に失敗しました: ${failure::class.simpleName}: ${failure.message}")
@@ -485,7 +473,7 @@ class MainActivity : ComponentActivity() {
             val logoutApi = ZooApi(config, object : Platform by platform {
                 override suspend fun headers() = auth.headersWithoutRefresh()
             }, http)
-            return RunningSession(session, platform, lifetime, http, transport, shapeReconnects, auth, e2ee, AndroidNotifications(this, session), AndroidPushRegistration(this, session, logoutApi), AndroidPhoneHost(applicationContext, session, http, ::preparePhone)).also {
+            return RunningSession(session, platform, lifetime, http, auth, e2ee, AndroidNotifications(this, session), AndroidPushRegistration(this, session, logoutApi), AndroidPhoneHost(applicationContext, session, http, ::preparePhone)).also {
                 session.start()
                 e2ee.start()
             }
@@ -493,7 +481,6 @@ class MainActivity : ComponentActivity() {
             if (reauth === reauthenticator) reauth = null
             auth.close()
             http.close()
-            transport.close()
             throw failure
         }
     }
@@ -505,8 +492,6 @@ private class RunningSession(
     val platform: AndroidPlatform,
     val scope: CoroutineScope,
     private val http: HttpClient,
-    val transport: SessionHttpEngine,
-    val shapeReconnects: MutableStateFlow<Long>,
     val auth: DeviceAuth,
     private val e2ee: zoo.crypto.E2eeDeviceManager,
     val notifications: AndroidNotifications,
@@ -530,7 +515,6 @@ private class RunningSession(
         scope.cancel()
         platform.close()
         http.close()
-        transport.close()
     }
 }
 

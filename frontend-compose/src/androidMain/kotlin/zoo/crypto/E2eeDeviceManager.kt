@@ -30,8 +30,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.conflate
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -381,15 +379,8 @@ class ZooE2eeApi(private val api: ZooApi) : E2eeApi, E2eeRevocationApi, SasApi {
  * 残っている行の一覧（ID の昇順）の流れにする。サーバーは ack で行を消すので、Shape には未処理の
  * メッセージだけが残る。永続化はしない（処理済みの印は暗号ストアに置く）。
  */
-fun toDeviceShape(
-    config: Config,
-    platform: Platform,
-    http: HttpClient,
-    deviceId: String,
-    reconnects: StateFlow<Long>? = null,
-): Flow<List<ToDeviceRow>> =
+fun toDeviceShape(config: Config, platform: Platform, http: HttpClient, deviceId: String): Flow<List<ToDeviceRow>> =
     callbackFlow {
-        val initialReconnect = reconnects?.value
         val client =
             ShapeClient(
                 endpoint(config.apiBaseUrl, "${config.shapeProxyPath}/e2ee_to_device"),
@@ -407,17 +398,6 @@ fun toDeviceShape(
         launch {
             emit(shape.awaitRows())
             shape.error?.let { close(it) }
-        }
-        launch {
-            reconnects?.filter { it != initialReconnect }?.collectLatest {
-                try {
-                    stream.forceDisconnectAndRefresh()
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (failure: Exception) {
-                    close(failure)
-                }
-            }
         }
         awaitClose {
             unsubscribe()
