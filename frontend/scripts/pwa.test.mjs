@@ -1410,6 +1410,7 @@ test("an unreadable cache metadata does not stop carry-over", async () => {
     ["zoo-shell-v3-old", `${ORIGIN}/manifest.webmanifest`, basicResponse(manifest)],
   ]);
   const realOpen = cacheContext.api.open.bind(cacheContext.api);
+  await realOpen("zoo-shell-v3-broken");
   cacheContext.api.open = async (name) => {
     const cache = await realOpen(name);
     if (name !== "zoo-shell-v3-broken") return cache;
@@ -2116,6 +2117,41 @@ test("a 304 with the same ETag allows the matching full response to be saved", a
   await older;
   const cache = await cacheContext.api.open("zoo-shell-v2");
   assert.equal(await (await cache.match(`${ORIGIN}/manifest.webmanifest`)).text(), updated);
+});
+
+test("a 304 during a body read prevents the stale manifest from being saved", async () => {
+  const cacheContext = memoryCaches();
+  let releaseBody;
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async (input) => {
+      const tag = input.headers?.get?.("if-none-match");
+      if (tag === '"old"') {
+        const response = basicResponse(validManifest("#ffffff"), {
+          headers: { "content-type": "application/manifest+json", ETag: '"old"' },
+        });
+        const original = response.arrayBuffer.bind(response);
+        response.arrayBuffer = () =>
+          new Promise((resolve) => {
+            releaseBody = () => original().then(resolve);
+          });
+        return response;
+      }
+      return new Response(null, { status: 304, headers: { ETag: '"new"' } });
+    },
+  });
+  const base = { url: `${ORIGIN}/manifest.webmanifest`, method: "GET", mode: "cors" };
+  const conditional = (tag) => ({
+    ...base,
+    headers: { get: (name) => (name.toLowerCase() === "if-none-match" ? tag : null) },
+  });
+  const older = fetchThrough(handlers, conditional('"old"'));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await fetchThrough(handlers, conditional('"new"'));
+  releaseBody();
+  await older;
+  const cache = await cacheContext.api.open("zoo-shell-v2");
+  assert.equal(await cache.match(`${ORIGIN}/manifest.webmanifest`), undefined);
 });
 
 test("a 304 prevents an earlier pending response from overwriting the cache", async () => {
@@ -3135,6 +3171,31 @@ test("the default cache is read when cache enumeration fails", async () => {
   });
   assert.equal(await response.text(), manifest);
   cacheContext.api.keys = realKeys;
+});
+
+test("cached manifest prefers the current generation over an older install time", async () => {
+  const current = validManifest("#000000");
+  const cacheContext = memoryCaches([
+    ["zoo-shell-v3-old", `${ORIGIN}/manifest.webmanifest`, basicResponse(validManifest("#ffffff"))],
+    ["zoo-shell-v3-new-v2", `${ORIGIN}/manifest.webmanifest`, basicResponse(current)],
+  ]);
+  const old = await cacheContext.api.open("zoo-shell-v3-old");
+  await old.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("3"));
+  const newer = await cacheContext.api.open("zoo-shell-v3-new-v2");
+  await newer.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("1"));
+  const { handlers } = worker({
+    policyVersion: "new",
+    caches: cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+  });
+  assert.equal(await response.text(), current);
 });
 
 test("an HTTP error is returned when no cached manifest exists", async () => {

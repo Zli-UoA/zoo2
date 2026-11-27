@@ -628,10 +628,20 @@ async function writeFreshAsset(path, cache, response, sequence) {
   if (previous && previous.sequence > effective) return;
   const work = (previous?.promise ?? Promise.resolve())
     .catch(() => {})
-    .then(() => {
+    .then(async () => {
       const current = freshAssetWrites.get(path);
       if (current && current.sequence > effective) return;
-      return cacheResponse(cache, path, response, true);
+      const body = await response.arrayBuffer();
+      // 本文を読んでいる間に 304 が届くことがあるので、保存直前に再度確認する。
+      const latest = freshAssetWrites.get(path);
+      if (latest && latest.sequence > effective) return;
+      const sanitized = new Response(body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: cacheHeaders(response, true),
+      });
+      await cache.put(path, sanitized.clone());
+      return sanitized;
     });
   freshAssetWrites.set(path, {
     sequence: effective,
@@ -793,17 +803,19 @@ async function cachedFreshAsset(path, networkResponse = null) {
   }
   let best = null;
   let bestTime = -Infinity;
+  let bestCurrent = false;
   for (const { name, current, installedAt } of candidates) {
     try {
       const cache = await caches.open(name);
       const saved = await cache.match(path);
       if (!(await isUsableFreshAsset(path, saved))) continue;
-      // シェルの世代ではなく、ファイル自体の更新時刻で最新版を選ぶ。
+      // 現行シェルの保存版を優先する。世代をまたぐときは同じ種類の日時で比較する。
       const modified = Date.parse(saved.headers.get("x-zoo-last-modified") || "");
       const updatedAt = Number.isFinite(modified) ? modified : installedAt;
-      if (!best || updatedAt > bestTime || (updatedAt === bestTime && current)) {
+      if (!best || current > bestCurrent || (current === bestCurrent && updatedAt > bestTime)) {
         best = saved;
         bestTime = updatedAt;
+        bestCurrent = current;
       }
     } catch {
       /* Try the next generation when one cache cannot be read. */
