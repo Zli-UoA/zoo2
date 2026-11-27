@@ -16,10 +16,10 @@ use base64::Engine;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
-    sync::{Arc, LazyLock, Weak},
+    collections::HashSet,
+    sync::{LazyLock, Mutex},
+    time::Duration,
 };
-use tokio::sync::{Mutex, OwnedMutexGuard};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -99,24 +99,67 @@ pub(crate) fn thumbnail_key(key: &str) -> String {
     format!("{key}.thumbnail.webp")
 }
 
-type ThumbnailRepairs = HashMap<String, Weak<Mutex<bool>>>;
-static THUMBNAIL_REPAIRS: LazyLock<Mutex<ThumbnailRepairs>> =
-    LazyLock::new(|| Mutex::new(ThumbnailRepairs::new()));
+static THUMBNAIL_REPAIRS: LazyLock<Mutex<HashSet<String>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+static THUMBNAIL_REPAIR_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
-async fn lock_thumbnail_repair(key: &str) -> OwnedMutexGuard<bool> {
-    let lock = {
-        let mut repairs = THUMBNAIL_REPAIRS.lock().await;
-        repairs.retain(|_, lock| lock.strong_count() > 0);
-        let entry = repairs.entry(key.to_owned()).or_default();
-        if let Some(lock) = entry.upgrade() {
-            lock
-        } else {
-            let lock = Arc::new(Mutex::new(false));
-            *entry = Arc::downgrade(&lock);
-            lock
-        }
+fn schedule_thumbnail_repair(client: &aws_sdk_s3::Client, bucket: &str, original: &str) {
+    let Ok(slot) = THUMBNAIL_REPAIR_SLOTS.try_acquire() else {
+        return;
     };
-    lock.lock_owned().await
+    if !THUMBNAIL_REPAIRS
+        .lock()
+        .unwrap()
+        .insert(original.to_owned())
+    {
+        return;
+    }
+    let client = client.clone();
+    let bucket = bucket.to_owned();
+    let original = original.to_owned();
+    tokio::spawn(async move {
+        let _slot = slot;
+        let _ = tokio::time::timeout(
+            Duration::from_secs(20),
+            repair_thumbnail(&client, &bucket, &original),
+        )
+        .await;
+        THUMBNAIL_REPAIRS.lock().unwrap().remove(&original);
+    });
+}
+
+async fn repair_thumbnail(client: &aws_sdk_s3::Client, bucket: &str, original: &str) -> Option<()> {
+    let variant = client
+        .head_object()
+        .bucket(bucket)
+        .key(thumbnail_key(original))
+        .send()
+        .await
+        .ok()?;
+    if variant
+        .metadata()
+        .is_some_and(|values| values.contains_key("source-etag"))
+    {
+        return Some(());
+    }
+    let source = client
+        .head_object()
+        .bucket(bucket)
+        .key(original)
+        .send()
+        .await
+        .ok()?;
+    crate::storage::verify::uploaded_image_metadata(
+        client,
+        bucket,
+        original,
+        source.content_length()?,
+        source.content_type()?,
+        Some(variant.e_tag()?),
+    )
+    .await
+    .ok()?;
+    Some(())
 }
 
 pub(crate) async fn stored_thumbnail_key(
@@ -134,46 +177,17 @@ pub(crate) async fn stored_thumbnail_key(
             .await
             .ok()
     };
-    let mut variant = inspect().await?;
+    let variant = inspect().await?;
     if original.starts_with("home-images/") {
         return Some(thumbnail);
     }
-    let versioned = |metadata: &aws_sdk_s3::operation::head_object::HeadObjectOutput| {
-        metadata
-            .metadata()
-            .is_some_and(|values| values.contains_key("source-etag"))
+    let Some(source_etag) = variant
+        .metadata()
+        .and_then(|values| values.get("source-etag"))
+    else {
+        schedule_thumbnail_repair(client, bucket, original);
+        return None;
     };
-    if !versioned(&variant) {
-        let mut attempted = lock_thumbnail_repair(original).await;
-        // Another request may have rebuilt or removed the legacy variant while we waited.
-        variant = inspect().await?;
-        if !versioned(&variant) {
-            if *attempted {
-                return None;
-            }
-            *attempted = true;
-            let etag = variant.e_tag()?;
-            let source = client
-                .head_object()
-                .bucket(bucket)
-                .key(original)
-                .send()
-                .await
-                .ok()?;
-            crate::storage::verify::uploaded_image_metadata(
-                client,
-                bucket,
-                original,
-                source.content_length()?,
-                source.content_type()?,
-                Some(etag),
-            )
-            .await
-            .ok()??;
-            variant = inspect().await?;
-        }
-    }
-    let source_etag = variant.metadata()?.get("source-etag")?;
     client
         .head_object()
         .bucket(bucket)
@@ -348,7 +362,11 @@ async fn home_quota(tx: &mut toasty::Transaction<'_>, user: &str) -> Result<(i64
     ))
 }
 
-async fn reconcile_uploader_thumbnails(state: &AppState, user: &str) -> Result<(), AppError> {
+async fn reconcile_uploader_thumbnails(
+    state: &AppState,
+    user: &str,
+    mut needed: i64,
+) -> Result<(), AppError> {
     let mut db = state.db.clone();
     for _ in 0..25 {
         let mut tx = db.transaction().await?;
@@ -361,13 +379,16 @@ async fn reconcile_uploader_thumbnails(state: &AppState, user: &str) -> Result<(
                AND created_at<now()-interval '5 minutes'
                AND thumbnail_check_at<=now()+interval '5 minutes'
                ORDER BY file_size DESC,id LIMIT 4 FOR UPDATE SKIP LOCKED)
-             RETURNING json_build_object('id',id,'check_at',thumbnail_check_at,'eligible',true)::text",
+             RETURNING json_build_object('id',id,'check_at',thumbnail_check_at,'eligible',true,'reserved',file_size)::text",
             &[user]).await?;
         tx.commit().await?;
         if rows.is_empty() {
             break;
         }
-        reconcile_claimed_home_thumbnails(state, rows).await?;
+        needed -= reconcile_claimed_home_thumbnails(state, rows).await?;
+        if needed <= 0 {
+            break;
+        }
     }
     Ok(())
 }
@@ -424,7 +445,11 @@ async fn upload(
         // Do not hold the uploader lock or a transaction during object-store I/O.
         if let Ok(result) = tokio::time::timeout(
             std::time::Duration::from_secs(8),
-            reconcile_uploader_thumbnails(&state, &user.id),
+            reconcile_uploader_thumbnails(
+                &state,
+                &user.id,
+                known + uncertain + required - MAX_USER_BYTES,
+            ),
         )
         .await
         {
@@ -767,29 +792,32 @@ async fn reconcile_home_thumbnails(state: &AppState) -> Result<(), AppError> {
     )
     .await?;
     tx.commit().await?;
-    reconcile_claimed_home_thumbnails(state, rows).await
+    reconcile_claimed_home_thumbnails(state, rows).await?;
+    Ok(())
 }
 
 async fn reconcile_claimed_home_thumbnails(
     state: &AppState,
     rows: Vec<Value>,
-) -> Result<(), AppError> {
+) -> Result<i64, AppError> {
     use futures_util::{StreamExt, TryStreamExt};
     futures_util::stream::iter(rows)
         .map(|row| async move {
             if let (Some(id), Some(check_at)) = (row["id"].as_str(), row["check_at"].as_str()) {
                 if row["eligible"] == true {
-                    reconcile_home_thumbnail(state, id, Some(check_at)).await?;
+                    let bytes = reconcile_home_thumbnail(state, id, Some(check_at)).await?;
+                    if let (Some(reserved), Some(actual)) = (row["reserved"].as_i64(), bytes) {
+                        return Ok::<i64, AppError>((reserved - actual).max(0));
+                    }
                 } else {
                     record_home_thumbnail(&mut state.db.clone(), id, 0, Some(check_at)).await?;
                 }
             }
-            Ok::<(), AppError>(())
+            Ok::<i64, AppError>(0)
         })
         .buffer_unordered(4)
-        .try_collect::<Vec<_>>()
-        .await?;
-    Ok(())
+        .try_fold(0, |released, bytes| async move { Ok(released + bytes) })
+        .await
 }
 
 pub async fn worker(state: AppState) {

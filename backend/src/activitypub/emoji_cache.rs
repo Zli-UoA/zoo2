@@ -109,6 +109,19 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<Image, AppError>>,
 {
+    get_with_wait(id, client, Duration::from_secs(15), fetch).await
+}
+
+pub(super) async fn get_with_wait<F, Fut>(
+    id: &str,
+    client: Option<IpAddr>,
+    wait: Duration,
+    fetch: F,
+) -> Result<Image, AppError>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<Image, AppError>>,
+{
     {
         let mut cache = CACHE.lock().unwrap();
         if let Some(value) = cache.cached(id, Instant::now()) {
@@ -118,7 +131,7 @@ where
             return Err(AppError::RateLimited);
         }
     }
-    let _permit = tokio::time::timeout(Duration::from_secs(15), FETCHES.acquire())
+    let _permit = tokio::time::timeout(wait, FETCHES.acquire())
         .await
         .map_err(|_| AppError::RateLimited)?
         .map_err(|_| AppError::RateLimited)?;

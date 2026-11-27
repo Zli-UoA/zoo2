@@ -57,7 +57,16 @@ fn needs_media_blurhash(item: &Value) -> bool {
     item["image_id"].is_string() && item["blurhash"].is_null()
 }
 
-async fn fill_media_blurhashes(media: &mut [Value], only: Option<&[Value]>) -> (bool, Vec<String>) {
+#[derive(Clone, Copy)]
+enum ImageRetry {
+    Capacity,
+    Upstream,
+}
+
+async fn fill_media_blurhashes(
+    media: &mut [Value],
+    only: Option<&[Value]>,
+) -> (bool, Vec<String>, bool) {
     let mut images = std::collections::BTreeMap::new();
     for item in media.iter().filter(|item| needs_media_blurhash(item)) {
         if let (Some(id), Some(url)) = (item["image_id"].as_str(), item["url"].as_str())
@@ -67,24 +76,31 @@ async fn fill_media_blurhashes(media: &mut [Value], only: Option<&[Value]>) -> (
         }
     }
     let hashes = futures_util::future::join_all(images.into_iter().map(|(id, url)| async move {
-        // Optional metadata must not keep an otherwise valid Note from being delivered.
-        let hash = tokio::time::timeout(Duration::from_secs(5), async {
-            let Ok(url) = reqwest::Url::parse(&url) else {
-                return Ok(None);
-            };
-            match emoji_cache::get(&format!("media:{id}"), None, || load_image(url, true)).await {
+        let hash = if let Ok(url) = reqwest::Url::parse(&url) {
+            match emoji_cache::get_with_wait(
+                &format!("media:{id}"),
+                None,
+                Duration::from_secs(1),
+                || async {
+                    tokio::time::timeout(Duration::from_secs(5), load_image(url, true))
+                        .await
+                        .map_err(|_| AppError::BadGateway("Emoji image request timed out".into()))?
+                },
+            )
+            .await
+            {
                 Ok(image) => Ok(image.blurhash),
+                Err(AppError::RateLimited) => Err(ImageRetry::Capacity),
                 Err(
-                    AppError::RateLimited
-                    | AppError::BadGateway(_)
+                    AppError::BadGateway(_)
                     | AppError::ServiceUnavailable(_)
                     | AppError::Internal(_),
-                ) => Err(()),
+                ) => Err(ImageRetry::Upstream),
                 Err(_) => Ok(None),
             }
-        })
-        .await
-        .unwrap_or(Err(()));
+        } else {
+            Ok(None)
+        };
         (id, hash)
     }))
     .await
@@ -102,11 +118,14 @@ async fn fill_media_blurhashes(media: &mut [Value], only: Option<&[Value]>) -> (
             changed = true;
         }
     }
+    let limited = hashes
+        .values()
+        .any(|value| matches!(value, Err(ImageRetry::Capacity)));
     let retry = hashes
         .into_iter()
         .filter_map(|(id, result)| result.is_err().then_some(id))
         .collect();
-    (changed, retry)
+    (changed, retry, limited)
 }
 
 pub(super) async fn queue_media_blurhash(
@@ -165,19 +184,21 @@ async fn complete_next_media_blurhash(state: &AppState) -> Result<bool, AppError
     };
     let mut enriched = None;
     let mut retry = Vec::new();
+    let mut limited = false;
     if job["active"] == true
         && let Some(items) = job["media"].as_array()
     {
         let mut media = items.clone();
-        let (changed, retry_images) = fill_media_blurhashes(
+        let (changed, retry_images, waits_for_capacity) = fill_media_blurhashes(
             &mut media,
             job["retry_image_ids"].as_array().map(Vec::as_slice),
         )
         .await;
         retry = retry_images;
+        limited = waits_for_capacity;
         enriched = changed.then(|| json!(media).to_string());
     }
-    finish_media_blurhash(&mut db, job, &lease, enriched.as_deref(), &retry).await?;
+    finish_media_blurhash(&mut db, job, &lease, enriched.as_deref(), &retry, limited).await?;
     Ok(true)
 }
 
@@ -187,6 +208,7 @@ async fn finish_media_blurhash(
     lease: &str,
     enriched: Option<&str>,
     retry: &[String],
+    limited: bool,
 ) -> Result<(), AppError> {
     let post_id = string(job, "id")?;
     let mut tx = db.transaction().await?;
@@ -233,19 +255,28 @@ async fn finish_media_blurhash(
     }
     let retry_current = same_version
         && !retry.is_empty()
-        && job["attempts"]
-            .as_u64()
-            .is_some_and(|attempts| attempts < 3);
+        && (limited
+            || job["attempts"]
+                .as_u64()
+                .is_some_and(|attempts| attempts < 3));
     let retry_new_version = !same_version
         && current
             .and_then(|row| row["media"].as_array())
             .is_some_and(|media| media.iter().any(needs_media_blurhash));
     if retry_current {
         toasty::sql::statement(
-            "UPDATE apub_media_blurhash_queue SET lease_id=NULL, retry_image_ids=$3::jsonb, available_at=now()+
-             CASE WHEN attempts=1 THEN interval '30 seconds' ELSE interval '2 minutes' END
+            "UPDATE apub_media_blurhash_queue SET lease_id=NULL, retry_image_ids=$3::jsonb,
+             attempts=attempts-CASE WHEN $4::boolean THEN 1 ELSE 0 END,
+             available_at=now()+CASE WHEN $4::boolean THEN interval '60 seconds'
+               WHEN attempts=1 THEN interval '30 seconds' ELSE interval '2 minutes' END
              WHERE post_id=$1 AND lease_id=$2",
-        ).bind(post_id).bind(lease).bind(json!(retry).to_string()).exec(&mut tx).await?;
+        )
+        .bind(post_id)
+        .bind(lease)
+        .bind(json!(retry).to_string())
+        .bind(limited.to_string())
+        .exec(&mut tx)
+        .await?;
     } else if retry_new_version {
         toasty::sql::statement(
             "UPDATE apub_media_blurhash_queue SET lease_id=NULL,retry_image_ids=NULL,attempts=0,
@@ -831,7 +862,7 @@ mod media_proxy_tests {
 
         assert_eq!(
             fill_media_blurhashes(&mut media, None).await,
-            (true, Vec::new())
+            (true, Vec::new(), false)
         );
 
         assert_eq!(media[0]["blurhash"], generated);
@@ -858,11 +889,24 @@ mod media_proxy_tests {
 
         assert_eq!(
             fill_media_blurhashes(&mut media, None).await,
-            (false, vec![temporary])
+            (false, vec![temporary], false)
         );
         assert_eq!(
             fill_media_blurhashes(&mut media, Some(&[json!(permanent)])).await,
-            (false, Vec::new())
+            (false, Vec::new(), false)
+        );
+
+        let mut rate_limited = note_media(&json!({"attachment": [
+            {"mediaType":"image/png","url":"https://example.test/limited-blurhash.png"},
+        ]}));
+        let limited_id = rate_limited[0]["image_id"].as_str().unwrap().to_owned();
+        let _ = emoji_cache::get(&format!("media:{limited_id}"), None, || async {
+            Err(AppError::RateLimited)
+        })
+        .await;
+        assert_eq!(
+            fill_media_blurhashes(&mut rate_limited, None).await,
+            (false, vec![limited_id], true)
         );
     }
 
@@ -928,7 +972,15 @@ mod media_proxy_tests {
         .await?;
         let replacement_hash =
             r#"[{"url":"https://example.test/replacement.png","blurhash":"000000"}]"#;
-        finish_media_blurhash(&mut db, &job, "expired-lease", Some(replacement_hash), &[]).await?;
+        finish_media_blurhash(
+            &mut db,
+            &job,
+            "expired-lease",
+            Some(replacement_hash),
+            &[],
+            false,
+        )
+        .await?;
         let mut tx = db.transaction().await?;
         let unchanged = one(&mut tx,
             "SELECT json_build_object('media',p.media,'lease',q.lease_id)::text FROM apub_remote_posts p
@@ -936,7 +988,15 @@ mod media_proxy_tests {
         assert_eq!(unchanged["media"], job["media"]);
         assert_eq!(unchanged["lease"], "current-lease");
         tx.commit().await?;
-        finish_media_blurhash(&mut db, &job, "current-lease", Some(replacement_hash), &[]).await?;
+        finish_media_blurhash(
+            &mut db,
+            &job,
+            "current-lease",
+            Some(replacement_hash),
+            &[],
+            false,
+        )
+        .await?;
         let mut tx = db.transaction().await?;
         let completed = one(&mut tx,
             "SELECT json_build_object('media',p.media,'queued',q.post_id IS NOT NULL)::text FROM apub_remote_posts p
@@ -946,6 +1006,38 @@ mod media_proxy_tests {
             serde_json::from_str::<Value>(replacement_hash)?
         );
         assert_eq!(completed["queued"], false);
+        let mut limited_job = job.clone();
+        limited_job["media"] = completed["media"].clone();
+        limited_job["attempts"] = json!(3);
+        tx.commit().await?;
+        toasty::sql::statement(
+            "INSERT INTO apub_media_blurhash_queue(post_id,lease_id,attempts)
+             VALUES($1,'limited-lease',3)",
+        )
+        .bind(note.as_str())
+        .exec(&mut db)
+        .await?;
+        finish_media_blurhash(
+            &mut db,
+            &limited_job,
+            "limited-lease",
+            None,
+            &["limited-image".into()],
+            true,
+        )
+        .await?;
+        let mut tx = db.transaction().await?;
+        let deferred = one(
+            &mut tx,
+            "SELECT json_build_object('attempts',attempts,'retry',retry_image_ids,
+              'deferred',lease_id IS NULL AND available_at>now())::text
+             FROM apub_media_blurhash_queue WHERE post_id=$1",
+            &[&note],
+        )
+        .await?;
+        assert_eq!(deferred["attempts"], 2);
+        assert_eq!(deferred["retry"], json!(["limited-image"]));
+        assert_eq!(deferred["deferred"], true);
         Ok(())
     }
 
