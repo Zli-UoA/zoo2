@@ -290,15 +290,11 @@ async function precacheShell() {
       for (const source of sources) {
         const saved = await (await caches.open(source)).match(path);
         if (!(await isUsableFreshAsset(path, saved))) continue;
-        if (path === "/manifest.webmanifest") {
-          await cache.put(path, saved.clone());
-        } else {
-          // 旧版の CSP を現行シェルのポリシーに合わせる（無ければ削除）。
-          await cache.put(
-            path,
-            await withPolicyHeaders(saved.clone(), cached.headers.get("content-security-policy")),
-          );
-        }
+        // 案内ページ自身の CSP を保持したまま、転送ヘッダーだけ除いてコピーする。
+        await cache.put(
+          path,
+          path === "/manifest.webmanifest" ? saved.clone() : await sanitizedCopy(saved.clone()),
+        );
         break;
       }
     }
@@ -306,19 +302,16 @@ async function precacheShell() {
     /* An unavailable old cache is not a reason to fail the install. */
   }
   // 初期版の SW は案内ページを zoo-offline-v1 に持っていた。シェルに無ければ引き継ぐ。
-  if (!(await isUsableFreshAsset("/offline.html", await cache.match("/offline.html")))) {
-    try {
+  // 保存先の確認自体が失敗しても install は完了させる。
+  try {
+    if (!(await isUsableFreshAsset("/offline.html", await cache.match("/offline.html")))) {
       const legacy = await caches.open("zoo-offline-v1");
       const saved = await legacy.match("/offline.html");
-      if (await isUsableFreshAsset("/offline.html", saved)) {
-        await cache.put(
-          "/offline.html",
-          await withPolicyHeaders(saved.clone(), cached.headers.get("content-security-policy")),
-        );
-      }
-    } catch {
-      /* An unavailable legacy cache is not a reason to fail the install. */
+      if (await isUsableFreshAsset("/offline.html", saved))
+        await cache.put("/offline.html", await sanitizedCopy(saved.clone()));
     }
+  } catch {
+    /* An unavailable legacy cache is not a reason to fail the install. */
   }
   // Write the marker last so a partially precached cache is not selected.
   await cache.put(META_PATH, new Response(String(Date.now())));
@@ -438,34 +431,11 @@ async function isUsableFreshAsset(path, response) {
   );
 }
 
-async function currentShellPolicy() {
-  const candidates = [];
-  for (const name of (await caches.keys()).filter((name) => name.startsWith(POLICY_PREFIX))) {
-    const cache = await caches.open(name);
-    const meta = await cache.match(META_PATH);
-    const installedAt = meta ? Number(await meta.text()) : 0;
-    candidates.push({
-      name,
-      installedAt: Number.isFinite(installedAt) ? installedAt : 0,
-    });
-  }
-  candidates.sort((a, b) => b.installedAt - a.installedAt);
-  for (const { name } of candidates) {
-    const cache = await caches.open(name);
-    const shell = (await cache.match("/index.html")) || (await cache.match("/"));
-    if (shell) return { known: true, csp: shell.headers.get("content-security-policy") };
-  }
-  return { known: false, csp: null };
-}
-
-async function withPolicyHeaders(saved, csp) {
-  const headers = cacheHeaders(saved);
-  if (csp) headers.set("content-security-policy", csp);
-  else headers.delete("content-security-policy");
+async function sanitizedCopy(saved) {
   return new Response(await saved.arrayBuffer(), {
     status: saved.status,
     statusText: saved.statusText,
-    headers,
+    headers: cacheHeaders(saved),
   });
 }
 
@@ -501,7 +471,7 @@ async function handleFreshAsset(request) {
 
 async function cachedFreshAsset(path, networkResponse = null) {
   try {
-    // 現行のポリシーのキャッシュを優先する。別世代から補う場合は現行の CSP を適用する。
+    // 現行のポリシーのキャッシュを優先する。案内ページ自身の CSP はそのまま返す。
     const candidates = [];
     for (const name of (await caches.keys()).filter((name) => name.startsWith(CACHE_PREFIX))) {
       const cache = await caches.open(name);
@@ -516,27 +486,12 @@ async function cachedFreshAsset(path, networkResponse = null) {
     candidates.sort(
       (a, b) => Number(b.current) - Number(a.current) || b.installedAt - a.installedAt,
     );
-    for (const { name, current } of candidates) {
+    for (const { name } of candidates) {
       const cache = await caches.open(name);
       const saved = await cache.match(path);
       if (!saved) continue;
       if (!(await isUsableFreshAsset(path, saved))) continue;
-      if (path !== "/offline.html") return saved;
-      // 同じキャッシュでも背景更新で index.html の CSP だけが変わることがある。
-      let policy;
-      try {
-        policy = await currentShellPolicy();
-      } catch {
-        if (current) return saved;
-        continue;
-      }
-      if (!policy.known) {
-        if (current) return saved;
-        continue;
-      }
-      if (saved.headers.get("content-security-policy") === policy.csp) return saved;
-      // 現行の CSP を付ける（現行にヘッダーが無ければ削除）。
-      return await withPolicyHeaders(saved.clone(), policy.csp);
+      return saved;
     }
   } catch {
     /* No usable cached copy. */
