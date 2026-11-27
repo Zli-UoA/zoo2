@@ -91,6 +91,29 @@ export function isNearBottom(
   return scrollHeight - scrollTop - clientHeight <= threshold;
 }
 
+/** スクロール復元の基準にする行の id と、ビューポート上端からの距離。 */
+export interface ScrollAnchor {
+  id: string;
+  offset: number;
+}
+
+/** いま表示されている最初の行をアンカーとして記録する。見つからなければ null。 */
+export function findVisibleMessageAnchor(element: HTMLElement): ScrollAnchor | null {
+  const viewport = element.getBoundingClientRect();
+  for (const row of element.querySelectorAll<HTMLElement>("[data-message-id]")) {
+    const bounds = row.getBoundingClientRect();
+    if (bounds.bottom > viewport.top && bounds.top < viewport.bottom) {
+      return { id: row.dataset.messageId!, offset: bounds.top - viewport.top };
+    }
+  }
+  return null;
+}
+
+/** アンカー行の現在位置を記録時の位置へ戻すために必要な scrollTop の移動量。 */
+export function getAnchorScrollDelta(rowTop: number, viewportTop: number, offset: number): number {
+  return rowTop - viewportTop - offset;
+}
+
 const MAX_CHANNEL_SCROLL_CACHE = 32;
 const MAX_CACHED_ROW_SIZES = 200;
 const MIN_ESTIMATED_ROW_HEIGHT = 40;
