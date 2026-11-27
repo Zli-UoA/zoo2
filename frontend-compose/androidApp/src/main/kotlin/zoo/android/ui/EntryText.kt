@@ -212,10 +212,9 @@ private fun AnnotatedString.Builder.appendMfm(body: String, format: EntryFormat,
                 val allowed = format.allowedMentions
                 val rawName = value.removePrefix("@")
                 val exact = rawName in format.mentionProfiles || rawName in format.mentionUsernames || allowed?.contains(rawName) == true
-                val username = if (exact || '@' in rawName) rawName else rawName.trimEnd('.')
+                val username = zoo.resolvedMentionName(rawName, exact)
                 val mention = "@$username"
-                val target = if (username.equals("channel", true) || username.equals("here", true)) username.lowercase() else username
-                if (username.isEmpty() || allowed != null && target !in allowed) append(mention)
+                if (username.isEmpty() || allowed != null && !zoo.isAllowedMention(username, allowed)) append(mention)
                 else withStyle(format.mentionStyle ?: SpanStyle(fontWeight = AndroidWeights.emphasis)) {
                     val profile = format.mentionProfiles[username]
                         ?.takeUnless { username.equals("channel", true) || username.equals("here", true) }

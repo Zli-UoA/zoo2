@@ -66,6 +66,19 @@ class ConversationScrollTest {
     }
 
     @Test
+    fun mentionSuggestionsPreserveTheEditorAndSendActionInAShortViewport() {
+        ui.setContent {
+            ConversationInput(
+                InputState("@", mentions = (1..8).map { CompletionOption("user$it", "User $it") }),
+                AndroidColors(false), textChanged = {}, onTool = {}, modifier = Modifier.height(160.dp),
+            )
+        }
+        val editor = ui.onNode(SemanticsMatcher.keyIsDefined(SemanticsActions.SetText))
+        editor.performClick().assertIsDisplayed()
+        ui.onNodeWithContentDescription("送信").assertIsDisplayed().assertIsEnabled()
+    }
+
+    @Test
     fun reopeningAChannelShowsTheUnreadDividerAndReportsReadOnlyInTheForeground() {
         val unreadEntry = entries[10].copy(dateDivider = "昨日", unreadDivider = "新着メッセージ")
         var foreground by mutableStateOf(false)

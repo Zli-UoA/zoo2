@@ -111,6 +111,7 @@ internal fun ConversationInput(
             if (maxTravel > 0.dp) minOf(AndroidControlSize.inputExpandThreshold, maxTravel)
             else AndroidControlSize.inputExpandThreshold,
         )
+        val availableHeight = height ?: maxHeight
         Column(Modifier.fillMaxWidth()
             .then(if (height != null) Modifier.height(height) else Modifier)
             .onSizeChanged {
@@ -128,7 +129,7 @@ internal fun ConversationInput(
             val reservedHeight = editorMinimum + AndroidControlSize.target + AndroidControlSize.inputEdgeInset +
                 (if (canResize && (!hideIdleHandle || showTools)) AndroidControlSize.inputHandleHeight else 0.dp) +
                 (if (state.files.isNotEmpty()) AndroidControlSize.target else 0.dp)
-            val optionsHeight = (maxHeight - reservedHeight).coerceIn(0.dp, 192.dp)
+            val optionsHeight = (availableHeight - reservedHeight).coerceIn(0.dp, 192.dp)
             if (options.isNotEmpty() && optionsHeight >= AndroidControlSize.target) {
                 val shape = RoundedCornerShape(8.dp)
                 Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp)

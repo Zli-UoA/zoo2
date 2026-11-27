@@ -32,10 +32,10 @@ class MentionsTest {
         )
         val mentions = EncryptedMentions(listOf("1", "2"), channel = true, here = true)
         val allowed = allowedMentionNames(mentions, mapOf("2" to users.first()))
-        assertTrue(isAllowedMention("@alice.", allowed))
-        assertTrue(isAllowedMention("@CHANNEL", allowed))
-        assertTrue(isAllowedMention("@here", allowed))
-        assertFalse(isAllowedMention("@bob", allowed))
-        assertFalse(isAllowedMention("@unknown", allowed))
+        assertTrue(isAllowedMention("alice", allowed))
+        assertTrue(isAllowedMention("CHANNEL", allowed))
+        assertTrue(isAllowedMention("here", allowed))
+        assertFalse(isAllowedMention("bob", allowed))
+        assertFalse(isAllowedMention("unknown", allowed))
     }
 }

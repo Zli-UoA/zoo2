@@ -260,10 +260,7 @@ private class MfmScanner(length: Int) {
                             val overlapsRegistered = kind == "emoji" && customEmojis.isNotEmpty() &&
                                 customEmojiShortcode.matchAt(source, match.range.last)?.value in customEmojis
                             if (!overlapsRegistered && (kind !in setOf("mention", "hashtag") || boundary)) {
-                                val trimmed = when {
-                                    kind == "link" -> leadingUrl(value)
-                                    else -> value
-                                }
+                                val trimmed = if (kind == "link") leadingUrl(value) else value
                                 if (trimmed != null) {
                                     token = Inline(trimmed, kind, trimmed.takeIf { kind == "link" }, kind == "link")
                                     end = at + trimmed.length
