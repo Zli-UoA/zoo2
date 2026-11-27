@@ -23,6 +23,36 @@ internal class AttachmentImageDiskCache(
     )
 
     private var closed = false
+    private val blockedKeys = mutableSetOf<String>()
+    private val activeLoads = mutableMapOf<String, MutableSet<Any>>()
+
+    @Synchronized
+    fun beginLoad(key: String): Any? {
+        if (closed || key in blockedKeys) return null
+        return Any().also { activeLoads.getOrPut(key) { mutableSetOf() }.add(it) }
+    }
+
+    @Synchronized
+    fun endLoad(key: String, token: Any) {
+        val loads = activeLoads[key] ?: return
+        if (loads.remove(token) && loads.isEmpty()) activeLoads.remove(key)
+    }
+
+    @Synchronized
+    fun isCurrent(key: String, token: Any): Boolean = activeLoads[key]?.contains(token) == true
+
+    @Synchronized
+    fun revoke(key: String) {
+        if (closed) return
+        blockedKeys.add(key)
+        activeLoads.remove(key)
+        file(key).delete()
+    }
+
+    @Synchronized
+    fun allow(key: String) {
+        blockedKeys.remove(key)
+    }
 
     private fun file(id: String): File {
         return directory.resolve(digest(id))
@@ -30,7 +60,7 @@ internal class AttachmentImageDiskCache(
 
     @Synchronized
     fun read(id: String, freshAt: Long? = null): Entry? {
-        if (closed) return null
+        if (closed || id in blockedKeys) return null
         val file = file(id)
         return try {
             if (!file.isFile || file.length() > maxBytes) return null
@@ -49,7 +79,8 @@ internal class AttachmentImageDiskCache(
     }
 
     @Synchronized
-    fun write(id: String, entry: Entry) {
+    fun write(id: String, token: Any, entry: Entry) {
+        if (!isCurrent(id, token)) return
         val metadata = java.io.ByteArrayOutputStream()
         DataOutputStream(metadata).use { output ->
             output.writeUTF(entry.urlHash)
@@ -89,8 +120,8 @@ internal class AttachmentImageDiskCache(
     }
 
     @Synchronized
-    fun remove(id: String) {
-        if (!closed) file(id).delete()
+    fun remove(id: String, token: Any) {
+        if (isCurrent(id, token)) file(id).delete()
     }
 
     companion object {
@@ -101,5 +132,7 @@ internal class AttachmentImageDiskCache(
     @Synchronized
     fun close() {
         closed = true
+        activeLoads.clear()
+        blockedKeys.clear()
     }
 }

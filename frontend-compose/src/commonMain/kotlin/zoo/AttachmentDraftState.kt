@@ -189,6 +189,7 @@ class AttachmentLinks(private val app: Session) {
                         require(publicUrl(url) != null)
                         val thumbnail = payload.text("thumbnail_url").takeIf { publicUrl(it) != null }
                         val links = AttachmentImageLinks(url, thumbnail)
+                        app.platform.allowAttachmentImages(id)
                         if (cache.size >= 200) cache.remove(cache.keys.first())
                         cache[id] = links to attachmentExpiry(url, now)
                         denied.remove(id)

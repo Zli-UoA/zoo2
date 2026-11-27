@@ -2,6 +2,12 @@ package zoo.android
 
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.os.Looper
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.asAndroidBitmap
@@ -17,13 +23,20 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.runTest
 import zoo.*
+import zoo.android.ui.LocalAttachmentImageDenied
+import zoo.android.ui.LocalCachedTimelineImage
+import zoo.android.ui.LocalTimelineImage
+import zoo.android.ui.rememberTimelineImage
 import zoo.android.ui.TimelineMedia
 import zoo.android.ui.TimelineMediaKind
 import java.io.ByteArrayOutputStream
+import java.time.Duration
 import kotlin.test.*
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
@@ -31,6 +44,48 @@ import org.robolectric.annotation.GraphicsMode
 @Config(sdk = [26, 28], manifest = Config.NONE)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class ImageDecodingTest {
+    @Test
+    fun visibleTimelineImageReloadsWhenAnotherScreenRestoresAccess() {
+        val original = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888).asImageBitmap()
+        val restored = Bitmap.createBitmap(3, 3, Bitmap.Config.ARGB_8888).asImageBitmap()
+        val denied = mutableStateOf(false)
+        val media = TimelineMedia("photo", "Photo", TimelineMediaKind.Image, attachmentId = "photo")
+        var observed: androidx.compose.ui.graphics.ImageBitmap? = null
+        var requests = 0
+        val controller = Robolectric.buildActivity(ComponentActivity::class.java)
+        controller.get().setTheme(android.R.style.Theme_Material_Light_NoActionBar)
+        val activity = controller.setup().get()
+        val looper = shadowOf(Looper.getMainLooper())
+        fun render() = looper.idleFor(Duration.ofMillis(100))
+        try {
+            activity.setContent {
+                CompositionLocalProvider(
+                    LocalAttachmentImageDenied provides { denied.value },
+                    LocalCachedTimelineImage provides { original },
+                    LocalTimelineImage provides { requests++; restored },
+                ) {
+                    val bitmap = rememberTimelineImage(media)
+                    SideEffect { observed = bitmap }
+                }
+            }
+            render()
+            assertSame(original, observed)
+            denied.value = true
+            Snapshot.sendApplyNotifications()
+            render()
+            assertNull(observed)
+            assertEquals(0, requests)
+
+            denied.value = false
+            Snapshot.sendApplyNotifications()
+            render()
+            assertSame(restored, observed)
+            assertEquals(1, requests)
+        } finally {
+            controller.pause().stop().destroy()
+        }
+    }
+
     @Test
     fun cachedAttachmentRechecksOnReconnectAndEvictsEvenAfterTheViewerLeaves() = runTest {
         val bitmap = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888).asImageBitmap()

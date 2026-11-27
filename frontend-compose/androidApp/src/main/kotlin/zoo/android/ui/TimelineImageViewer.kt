@@ -33,6 +33,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import kotlinx.coroutines.flow.collectLatest
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.sign
@@ -87,23 +88,31 @@ internal fun TimelineImagePages(
             val item = selection.items[index]
             val image = remember(item) { item.copy(useThumbnail = false) }
             val hidden = image.sensitive && revealed[index] != true
-            val denied = image.attachmentId?.let(LocalAttachmentImageDenied.current) == true
+            val isDenied = LocalAttachmentImageDenied.current
+            val denied = image.attachmentId?.let(isDenied) == true
             val cached = LocalCachedTimelineImage.current
             val load = LocalTimelineImage.current
             val loadWithPreview = LocalTimelineImageWithPreview.current
             val retry = LocalTimelineImageRetry.current
             var attempt by remember(image) { mutableIntStateOf(0) }
-            val result = key(image, hidden, attempt, cached, load, loadWithPreview, retry) {
+            val result = key(image, hidden, attempt, cached, load, loadWithPreview, retry, isDenied) {
                 val initial = remember { if (hidden || denied) null else cached(image) }
                 var state by remember { mutableStateOf(ViewerImage(initial)) }
-                LaunchedEffect(denied) {
-                    if (denied) state = ViewerImage(null, failed = true)
-                }
                 LaunchedEffect(Unit) {
-                    if (!hidden && initial == null) {
+                    if (hidden) return@LaunchedEffect
+                    var first = true
+                    snapshotFlow { image.attachmentId?.let(isDenied) == true }.collectLatest { blocked ->
+                        val opening = first
+                        first = false
+                        if (blocked && !opening) {
+                            state = ViewerImage(null, failed = true)
+                            return@collectLatest
+                        }
+                        if (opening && initial != null) return@collectLatest
+
                         val loaded = when {
-                            attempt > 0 -> retry(image)
-                            loadWithPreview != null -> loadWithPreview(image) { state = ViewerImage(it) }
+                            opening && attempt > 0 -> retry(image)
+                            opening && loadWithPreview != null -> loadWithPreview(image) { state = ViewerImage(it) }
                             else -> load(image)
                         }
                         state = ViewerImage(loaded, failed = loaded == null)

@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import zoo.ChannelLinkTarget
 import kotlinx.coroutines.withContext
@@ -94,21 +95,33 @@ internal val LocalCachedTimelineImage = staticCompositionLocalOf<(TimelineMedia)
 
 @Composable
 internal fun rememberTimelineImage(media: TimelineMedia?, revealed: Boolean = true): ImageBitmap? {
-    val denied = media?.attachmentId?.let(LocalAttachmentImageDenied.current) == true
+    val isDenied = LocalAttachmentImageDenied.current
+    val denied = media?.attachmentId?.let(isDenied) == true
     val cached = LocalCachedTimelineImage.current
     val load = LocalTimelineImage.current
     val loadWithPreview = LocalTimelineImageWithPreview.current
     val retry = LocalTimelineImageRetry.current
     val initial = remember(media, cached) { if (denied) null else media?.let(cached) }
     val isRevealed = rememberUpdatedState(revealed)
-    return key(media, cached, load, loadWithPreview, retry) {
+    return key(media, cached, load, loadWithPreview, retry, isDenied) {
         var bitmap by remember { mutableStateOf(initial) }
-        LaunchedEffect(denied) { if (denied) bitmap = null }
         LaunchedEffect(Unit) {
-            if (initial == null && media != null) {
+            if (media == null) return@LaunchedEffect
+            var first = true
+            snapshotFlow { media.attachmentId?.let(isDenied) == true }.collectLatest { blocked ->
+                val opening = first
+                first = false
+                if (blocked && !opening) {
+                    bitmap = null
+                    return@collectLatest
+                }
+                if (opening && initial != null) return@collectLatest
+
                 val prefetching = !isRevealed.value
-                bitmap = if (loadWithPreview != null) loadWithPreview(media) { bitmap = it } else load(media)
-                if (prefetching && bitmap == null && !denied) {
+                bitmap = if (opening && loadWithPreview != null) {
+                    loadWithPreview(media) { bitmap = it }
+                } else load(media)
+                if (prefetching && bitmap == null && !blocked) {
                     snapshotFlow { isRevealed.value }.first { it }
                     bitmap = retry(media)
                 }

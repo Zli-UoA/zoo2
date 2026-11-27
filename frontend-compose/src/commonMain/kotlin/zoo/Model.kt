@@ -78,6 +78,8 @@ interface Platform {
 
     suspend fun removeAttachmentImages(id: String) {}
 
+    suspend fun allowAttachmentImages(id: String) {}
+
     suspend fun rasterizeSvg(svg: String, width: Int, height: Int): ByteArray? = null
 
     suspend fun headers(): Map<String, String>

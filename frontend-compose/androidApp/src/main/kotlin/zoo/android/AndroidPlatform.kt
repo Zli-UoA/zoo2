@@ -286,6 +286,8 @@ internal class AndroidPlatform(
 
     override suspend fun removeAttachmentImages(id: String) = images.removeAttachmentImages(id)
 
+    override suspend fun allowAttachmentImages(id: String) = images.allowAttachmentImages(id)
+
     override suspend fun attachmentImage(url: String, cacheKey: String?, retry: Boolean): ByteArray =
         images.signedImage(url, cacheKey, retry)
 

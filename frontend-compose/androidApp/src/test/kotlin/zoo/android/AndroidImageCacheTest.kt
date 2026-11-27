@@ -231,6 +231,31 @@ class AndroidImageCacheTest {
         }
     }
 
+    @Test fun revocationPreventsAnInFlightDownloadFromRestoringTheCachedImage() = runBlocking {
+        Fixture().use { f ->
+            f.server.enqueue(MockResponse().setBodyDelay(1, TimeUnit.SECONDS).setBody("old"))
+            f.server.enqueue(MockResponse().setBody("new"))
+            val key = "id:original"
+            f.cache().use { cache ->
+                val pending = async {
+                    assertFailsWith<ImageHttpFailure> { cache.signedImage(f.url, key) }
+                }
+                assertNotNull(withContext(Dispatchers.IO) { f.server.takeRequest(5, TimeUnit.SECONDS) })
+                cache.removeAttachmentImages("id")
+                assertNull(cache.freshAttachmentImage(key))
+                assertEquals(403, assertFailsWith<ImageHttpFailure> { cache.signedImage(f.url, key) }.status)
+                cache.allowAttachmentImages("id")
+                assertEquals(403, pending.await().status)
+                assertNull(cache.freshAttachmentImage(key))
+                assertEquals("new", cache.signedImage(f.url, key).decodeToString())
+            }
+            f.cache().use { cache ->
+                assertEquals("new", cache.freshAttachmentImage(key)?.decodeToString())
+            }
+            assertEquals(2, f.server.requestCount)
+        }
+    }
+
     @Test fun reusesAThumbnailAcrossClientRestartsUntilItExpires() = runBlocking {
         Fixture().use { f ->
             var time = 1_000L
