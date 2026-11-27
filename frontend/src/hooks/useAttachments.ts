@@ -81,12 +81,15 @@ export function useAttachmentUrl(attachmentId: string): AttachmentUrlState {
   const requestId = useRef(0);
   // 再試行の判定には、クリック時点のクロージャではなく、その時点で表示している URL の期限を使う。
   const visible = useRef({ url: cached?.url ?? null, expiresAt: cached?.expiresAt ?? null });
-  const show = useCallback((nextUrl: string | null, nextExpiresAt: number | null, nextThumbnail?: string) => {
-    visible.current = { url: nextUrl, expiresAt: nextExpiresAt };
-    setUrl(nextUrl);
-    setThumbnailUrl(nextThumbnail);
-    setExpiresAt(nextExpiresAt);
-  }, []);
+  const show = useCallback(
+    (nextUrl: string | null, nextExpiresAt: number | null, nextThumbnail?: string) => {
+      visible.current = { url: nextUrl, expiresAt: nextExpiresAt };
+      setUrl(nextUrl);
+      setThumbnailUrl(nextThumbnail);
+      setExpiresAt(nextExpiresAt);
+    },
+    [],
+  );
   // 表示中の URL が実際の期限前で、まだ取得に使えるか。更新マージンは含めない。
   const hasUsableUrl = useCallback(
     () =>
