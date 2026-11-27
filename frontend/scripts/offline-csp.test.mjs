@@ -103,16 +103,16 @@ async function registerAndControl(page, legacy = false) {
         page.evaluate(async () => {
           const describe = (worker) =>
             worker ? { scriptURL: worker.scriptURL, state: worker.state } : null;
+          const registrations = await navigator.serviceWorker.getRegistrations();
+          const controller = navigator.serviceWorker.controller;
           return {
-            controller: describe(navigator.serviceWorker.controller),
-            registrations: (await navigator.serviceWorker.getRegistrations()).map(
-              (registration) => ({
-                installing: describe(registration.installing),
-                waiting: describe(registration.waiting),
-                active: describe(registration.active),
-                controlled: navigator.serviceWorker.controller === registration.active,
-              }),
-            ),
+            controller: describe(controller),
+            registrations: registrations.map((registration) => ({
+              installing: describe(registration.installing),
+              waiting: describe(registration.waiting),
+              active: describe(registration.active),
+              controlled: controller !== null && controller === registration.active,
+            })),
           };
         }),
         new Promise((_, reject) => {

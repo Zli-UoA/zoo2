@@ -604,6 +604,7 @@ struct MessageEncryptionTests {
         #expect(posts == 1)
         #expect(try await encryption.summary(channel: channel).undeliverable.contains { $0.reason == .deliveryFailed } == (mode != "一部未配送"))
         deliveryError = false
+        deliveries.removeAll()
         try await encryption.send(channel: channel, id: UUID().uuidString.lowercased(), parent: nil, body: "再配布") { lastSummary = $0 }
         #expect(posts == 2 && lastSummary.undeliverable.isEmpty)
         let lastDelivery = try #require(deliveries.last?["messages"]?.object?[otherID]?.object)
