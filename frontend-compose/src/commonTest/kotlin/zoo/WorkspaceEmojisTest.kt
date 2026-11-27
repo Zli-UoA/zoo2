@@ -106,6 +106,20 @@ class WorkspaceEmojisTest {
     }
 
     @Test
+    fun emptyCatalogIsFreshOnlyUntilTheSessionCacheExpires() = runTest {
+        val session = app { request ->
+            if (request.url.encodedPath != "/api/emojis") awaitCancellation()
+            respond("[]", headers = headersOf(HttpHeaders.ContentType, "application/json"))
+        }
+        assertFalse(session.workspaceEmojiCatalogIsFresh())
+        session.loadWorkspaceEmojis()
+        assertTrue(session.workspaceEmojiCatalogIsFresh())
+        assertFalse(session.workspaceEmojiCatalogIsFresh(
+            kotlin.time.Clock.System.now().toEpochMilliseconds() + 60_000,
+        ))
+    }
+
+    @Test
     fun explicitRetryDoesNotWaitAfterAnError() = runTest {
         var requests = 0
         val session = app { request ->

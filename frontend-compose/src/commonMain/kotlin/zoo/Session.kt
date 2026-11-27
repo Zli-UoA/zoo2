@@ -66,7 +66,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     fun workspaceEmojiCatalogIsFresh(): Boolean =
         workspaceEmojiCatalogIsFresh(kotlin.time.Clock.System.now().toEpochMilliseconds())
 
-    private fun workspaceEmojiCatalogIsFresh(now: Long): Boolean =
+    internal fun workspaceEmojiCatalogIsFresh(now: Long): Boolean =
         workspaceEmojiChecked != 0L && now - workspaceEmojiChecked < 60_000
 
     private val workspaceEmojiMutex = kotlinx.coroutines.sync.Mutex()
