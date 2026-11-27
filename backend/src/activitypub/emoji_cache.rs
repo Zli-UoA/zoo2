@@ -109,13 +109,14 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<Image, AppError>>,
 {
-    get_with_wait(id, client, Duration::from_secs(15), fetch).await
+    get_with_limits(id, client, Duration::from_secs(15), None, fetch).await
 }
 
-pub(super) async fn get_with_wait<F, Fut>(
+pub(super) async fn get_with_limits<F, Fut>(
     id: &str,
     client: Option<IpAddr>,
     wait: Duration,
+    fetch_deadline: Option<Duration>,
     fetch: F,
 ) -> Result<Image, AppError>
 where
@@ -138,7 +139,15 @@ where
     if let Some(value) = CACHE.lock().unwrap().cached(id, Instant::now()) {
         return result(value);
     }
-    let value = fetch().await.map_err(|error| match error {
+    // A worker deadline is shorter than the public proxy's deadline. Do not cache it.
+    let fetched = if let Some(deadline) = fetch_deadline {
+        tokio::time::timeout(deadline, fetch())
+            .await
+            .map_err(|_| AppError::BadGateway("Emoji image request timed out".into()))?
+    } else {
+        fetch().await
+    };
+    let value = fetched.map_err(|error| match error {
         AppError::BadRequest(_) | AppError::Forbidden(_) => Failure::BadRequest,
         AppError::NotFound(_) => Failure::NotFound,
         AppError::Coded {
@@ -257,6 +266,30 @@ mod tests {
             .await;
             assert_eq!(first.is_ok(), second.is_ok());
         }
+    }
+
+    #[tokio::test]
+    async fn worker_deadline_does_not_cache_a_public_image_failure() {
+        let id = uuid::Uuid::new_v4().to_string();
+        let expired = get_with_limits(
+            &id,
+            None,
+            Duration::from_secs(1),
+            Some(Duration::ZERO),
+            std::future::pending,
+        )
+        .await;
+        assert!(matches!(expired, Err(AppError::BadGateway(_))));
+        let public = get(&id, None, || async {
+            Ok(Image {
+                mime: "image/png".into(),
+                bytes: vec![7],
+                blurhash: None,
+            })
+        })
+        .await
+        .unwrap();
+        assert_eq!(public.bytes, [7]);
     }
 }
 

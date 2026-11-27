@@ -31,7 +31,6 @@ CREATE TABLE apub_media_blurhash_queue (
   post_id text PRIMARY KEY REFERENCES apub_remote_posts(id) ON DELETE CASCADE,
   available_at timestamptz NOT NULL DEFAULT now(),
   lease_id text,
-  attempts integer NOT NULL DEFAULT 0,
-  retry_image_ids jsonb
+  image_retry_counts jsonb
 );
 CREATE INDEX apub_media_blurhash_queue_available ON apub_media_blurhash_queue(available_at,post_id);

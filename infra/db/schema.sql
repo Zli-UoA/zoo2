@@ -2358,7 +2358,7 @@ $$;
 CREATE INDEX home_images_unconfirmed_thumbnail ON home_images(thumbnail_check_at,id)
   WHERE thumbnail_ready IS NULL;
 CREATE INDEX home_images_uploader_unconfirmed_thumbnail
-  ON home_images(uploader_id,file_size DESC,id)
+  ON home_images(uploader_id,thumbnail_check_at,id)
   WHERE thumbnail_ready IS NULL AND thumbnail_bytes=0
     AND home_image_can_have_thumbnail(content_type,width,height);
 
@@ -4702,7 +4702,6 @@ CREATE TABLE apub_media_blurhash_queue (
   post_id text PRIMARY KEY REFERENCES apub_remote_posts(id) ON DELETE CASCADE,
   available_at timestamptz NOT NULL DEFAULT now(),
   lease_id text,
-  attempts integer NOT NULL DEFAULT 0,
-  retry_image_ids jsonb
+  image_retry_counts jsonb
 );
 CREATE INDEX apub_media_blurhash_queue_available ON apub_media_blurhash_queue(available_at,post_id);

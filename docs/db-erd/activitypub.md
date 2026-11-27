@@ -79,8 +79,7 @@ erDiagram
       text post_id PK,FK
       timestamptz available_at
       text lease_id
-      integer attempts
-      jsonb retry_image_ids
+      jsonb image_retry_counts
     }
     apub_media_blurhash_queue |o--o| apub_remote_posts : apub_media_blurhash_queue_post_id_fkey
     apub_notifications {

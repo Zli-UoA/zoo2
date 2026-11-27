@@ -136,12 +136,6 @@ async fn repair_thumbnail(client: &aws_sdk_s3::Client, bucket: &str, original: &
         .send()
         .await
         .ok()?;
-    if variant
-        .metadata()
-        .is_some_and(|values| values.contains_key("source-etag"))
-    {
-        return Some(());
-    }
     let source = client
         .head_object()
         .bucket(bucket)
@@ -149,6 +143,14 @@ async fn repair_thumbnail(client: &aws_sdk_s3::Client, bucket: &str, original: &
         .send()
         .await
         .ok()?;
+    if variant
+        .metadata()
+        .and_then(|values| values.get("source-etag"))
+        .map(String::as_str)
+        .is_some_and(|etag| source.e_tag() == Some(etag))
+    {
+        return Some(());
+    }
     crate::storage::verify::uploaded_image_metadata(
         client,
         bucket,
@@ -188,15 +190,25 @@ pub(crate) async fn stored_thumbnail_key(
         schedule_thumbnail_repair(client, bucket, original);
         return None;
     };
-    client
+    match client
         .head_object()
         .bucket(bucket)
         .key(original)
         .if_match(source_etag)
         .send()
         .await
-        .ok()?;
-    Some(thumbnail)
+    {
+        Ok(_) => Some(thumbnail),
+        Err(error) => {
+            if error
+                .raw_response()
+                .is_some_and(|response| response.status().as_u16() == 412)
+            {
+                schedule_thumbnail_repair(client, bucket, original);
+            }
+            None
+        }
+    }
 }
 
 /// None means S3 could not confirm the object's state. Keep its reservation until reconciliation.
@@ -372,13 +384,19 @@ async fn reconcile_uploader_thumbnails(
         let mut tx = db.transaction().await?;
         // Claim only the four objects that can start immediately, even if the caller times out.
         let rows = query(&mut tx,
-            "UPDATE home_images SET thumbnail_check_at=now()+interval '10 minutes'
-             WHERE id IN (SELECT id FROM home_images WHERE uploader_id=$1
-               AND thumbnail_ready IS NULL AND thumbnail_bytes=0
-               AND home_image_can_have_thumbnail(content_type,width,height)
-               AND created_at<now()-interval '5 minutes'
-               AND thumbnail_check_at<=now()+interval '5 minutes'
-               ORDER BY file_size DESC,id LIMIT 4 FOR UPDATE SKIP LOCKED)
+            "WITH candidates AS MATERIALIZED (
+               SELECT id,file_size FROM home_images WHERE uploader_id=$1
+                 AND thumbnail_ready IS NULL AND thumbnail_bytes=0
+                 AND home_image_can_have_thumbnail(content_type,width,height)
+                 AND thumbnail_check_at<=now()+interval '5 minutes'
+               ORDER BY thumbnail_check_at,id LIMIT 32
+             )
+             UPDATE home_images SET thumbnail_check_at=now()+interval '10 minutes'
+             WHERE id IN (SELECT h.id FROM candidates c JOIN home_images h ON h.id=c.id
+               WHERE h.thumbnail_ready IS NULL AND h.thumbnail_bytes=0
+                 AND h.created_at<now()-interval '5 minutes'
+                 AND h.thumbnail_check_at<=now()+interval '5 minutes'
+               ORDER BY c.file_size DESC,h.id LIMIT 4 FOR UPDATE OF h SKIP LOCKED)
              RETURNING json_build_object('id',id,'check_at',thumbnail_check_at,'eligible',true,'reserved',file_size)::text",
             &[user]).await?;
         tx.commit().await?;
@@ -675,10 +693,16 @@ async fn image_redirect(
                     None
                 } else {
                     let image_id = key.trim_start_matches("home-images/");
-                    reconcile_home_thumbnail(&state, image_id, None)
-                        .await?
-                        .filter(|bytes| *bytes > 0)
-                        .map(|_| thumbnail_key(key))
+                    let bytes = probe_home_thumbnail(&state, image_id).await;
+                    if let Some(bytes) = bytes
+                        && let Err(error) =
+                            record_home_thumbnail(&mut state.db.clone(), image_id, bytes, None)
+                                .await
+                    {
+                        // The object is usable even when its quota update has to be retried.
+                        tracing::warn!(%error, image_id, "Could not record thumbnail size");
+                    }
+                    bytes.filter(|bytes| *bytes > 0).map(|_| thumbnail_key(key))
                 }
             }
             None => stored_thumbnail_key(&state.s3_client, &state.config.s3.bucket, key).await,
