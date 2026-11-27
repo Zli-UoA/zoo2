@@ -368,22 +368,33 @@ class LinkedChannelTableTest {
     @Test
     fun onlyTheLinkedMessagesAreFetchedOncePerId() = runTest {
         val requests = mutableListOf<HttpRequestData>()
-        val http = HttpClient(MockEngine { request ->
-            requests += request
-            val parameters = request.url.parameters
-            val subset = parameters["subset__params"]
-            when {
-                subset != null -> respond(snapshot(if ("m2" in subset) "m2" else "m1"), headers = headers)
-                parameters["live"] == "true" -> awaitCancellation()
-                else -> respond("""[{"headers":{"control":"up-to-date"}}]""", headers = headers)
+        var cursor = 1
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    requests += request
+                    val parameters = request.url.parameters
+                    val subset = parameters["subset__params"]
+                    val next = Headers.build {
+                        appendAll(headers)
+                        set("electric-cursor", "${cursor++}")
+                    }
+                    when {
+                        subset != null -> respond(snapshot(if ("m2" in subset) "m2" else "m1"), headers = next)
+                        parameters["live"] == "true" -> awaitCancellation()
+                        else -> respond("""[{"headers":{"control":"up-to-date"}}]""", headers = next)
+                    }
+                }
             }
-        })
-        val table = LinkedChannelTable("c1", config, LinkPlatform(), http, backgroundScope, options)
+        }
+        val table = timedTable("c1", http)
         try {
             table.request("m1")
             table.request("m1")
             table.request("m2")
-            val state = table.state.first { it.fetched.size == 2 }
+            val state = kotlinx.coroutines.withTimeoutOrNull(5.seconds) { table.state.first { it.fetched.size == 2 } }
+                ?: error("state=${table.state.value}; requests=${requests.map { it.url }}")
             assertEquals("本文 m1", state.rows.getValue("m1").text("content"))
             val subsets = requests.filter { it.url.parameters["subset__where"] != null }
             assertEquals(2, subsets.size)
