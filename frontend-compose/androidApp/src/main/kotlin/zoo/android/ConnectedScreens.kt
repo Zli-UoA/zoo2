@@ -649,6 +649,7 @@ internal fun ConnectedScreens(
                         { media, onCached -> timelineImage(session, media, onCached = onCached) }
                     },
                     LocalTimelineImageRetry provides remember(session) { { media -> timelineImage(session, media, retry = true) } },
+                    LocalAttachmentImageDenied provides remember(session) { session.attachmentLinks::isDenied },
                     LocalCachedTimelineImage provides remember(session) { { media -> cachedTimelineImage(session, media) } },
                     LocalKitchenReactionImage provides emojiCatalog::kitchenReaction,
                     LocalAndroidTranslation provides { key, args -> session.t(key, *args) },
@@ -727,6 +728,7 @@ internal fun ConnectedScreens(
                         { media, onCached -> timelineImage(session, media, onCached = onCached) }
                     },
                     LocalTimelineImageRetry provides remember(session) { { image -> timelineImage(session, image, retry = true) } },
+                    LocalAttachmentImageDenied provides remember(session) { session.attachmentLinks::isDenied },
                     LocalCachedTimelineImage provides remember(session) { { image -> cachedTimelineImage(session, image) } },
                     LocalAndroidTranslation provides { key, args -> session.t(key, *args) },
                 ) {

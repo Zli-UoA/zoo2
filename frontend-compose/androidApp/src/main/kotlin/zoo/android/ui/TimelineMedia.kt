@@ -87,10 +87,13 @@ internal val LocalTimelineImage = staticCompositionLocalOf<suspend (TimelineMedi
 internal val LocalTimelineImageWithPreview =
     staticCompositionLocalOf<(suspend (TimelineMedia, (ImageBitmap) -> Unit) -> ImageBitmap?)?> { null }
 
+internal val LocalAttachmentImageDenied = staticCompositionLocalOf<(String) -> Boolean> { { false } }
+
 internal val LocalCachedTimelineImage = staticCompositionLocalOf<(TimelineMedia) -> ImageBitmap?> { { null } }
 
 @Composable
 internal fun rememberTimelineImage(media: TimelineMedia?, revealed: Boolean = true): ImageBitmap? {
+    if (media?.attachmentId?.let(LocalAttachmentImageDenied.current) == true) return null
     val cached = LocalCachedTimelineImage.current
     val load = LocalTimelineImage.current
     val loadWithPreview = LocalTimelineImageWithPreview.current
@@ -338,7 +341,8 @@ private fun MediaFrame(
     if (bitmap != null && onImageRatio != null) {
         SideEffect { onImageRatio(bitmap.width.toFloat() / bitmap.height) }
     }
-    val placeholder = rememberMediaBlurHash(media.blurhash.takeIf { bitmap == null })
+    val denied = media.attachmentId?.let(LocalAttachmentImageDenied.current) == true
+    val placeholder = rememberMediaBlurHash(media.blurhash.takeIf { bitmap == null && !denied })
     val showLabel = if (video) androidLabel("attachments.showSensitiveVideo", "動画を表示") else androidLabel("attachments.showSensitive", "画像を表示")
     val hideLabel = if (video) androidLabel("attachments.hideSensitiveVideo", "動画を隠す") else androidLabel("attachments.hideSensitive", "画像を隠す")
     val playLabel = androidLabel("attachments.play", "再生")

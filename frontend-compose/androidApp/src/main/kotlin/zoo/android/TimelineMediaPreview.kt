@@ -24,6 +24,7 @@ import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.*
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import zoo.ApiException
@@ -68,7 +69,7 @@ internal suspend fun timelineImage(
     }
     val id = media.attachmentId ?: return null
     val platform = session.platform
-    val cached = if (onCached != null && !retry) {
+    val cached = if (onCached != null && !retry && !session.attachmentLinks.isDenied(id)) {
         suspend fun decode(key: String): ImageBitmap? = try {
             platform.freshAttachmentImage(key)?.let { platform.imageFrames(it).first() }
         } catch (cancelled: CancellationException) {
@@ -79,7 +80,9 @@ internal suspend fun timelineImage(
         val thumbnail = if (media.useThumbnail) decode("$id:thumbnail") else null
         (thumbnail ?: decode("$id:original"))?.also(onCached)
     } else null
-    if (cached != null) snapshotFlow { session.env.online }.first { it }
+    fun canConfirm(): Boolean = session.env.online && session.env.visible
+    if (cached != null) snapshotFlow { canConfirm() }.first { it }
+    var retryDelay = 5_000L
     var links: AttachmentImageLinks? = null
     while (links == null) {
         try {
@@ -88,8 +91,9 @@ internal suspend fun timelineImage(
             throw cancelled
         } catch (failure: Exception) {
             if (cached == null || !failure.isTemporaryImageFailure()) return null
-            snapshotFlow { session.env.online }.first { !it }
-            snapshotFlow { session.env.online }.first { it }
+            withTimeoutOrNull(retryDelay) { snapshotFlow { canConfirm() }.first { !it } }
+            snapshotFlow { canConfirm() }.first { it }
+            retryDelay = (retryDelay * 2).coerceAtMost(60_000L)
         }
     }
 

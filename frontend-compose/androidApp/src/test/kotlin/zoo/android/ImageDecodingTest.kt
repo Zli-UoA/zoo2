@@ -41,7 +41,8 @@ class ImageDecodingTest {
         val http = HttpClient(MockEngine {
             when (++requests) {
                 1 -> respond("""{"download_url":"https://storage.test/photo"}""")
-                2 -> {
+                2 -> respond("{}", HttpStatusCode.ServiceUnavailable)
+                3 -> {
                     started.complete(Unit)
                     deny.await()
                     respond("{}", HttpStatusCode.NotFound)
@@ -80,6 +81,7 @@ class ImageDecodingTest {
             app.env = app.env.copy(online = true)
             Snapshot.sendApplyNotifications()
             started.await()
+            assertTrue(testScheduler.currentTime >= 5_000)
             val otherViewer = async(start = CoroutineStart.UNDISPATCHED) {
                 runCatching { app.attachmentLinks.getLinks("photo", force = true) }
             }
@@ -88,7 +90,8 @@ class ImageDecodingTest {
             deny.complete(Unit)
             assertEquals("photo", evicted.await())
             assertNull(app.attachmentLinks.cachedLinks("photo"))
-            assertEquals(2, requests)
+            assertTrue(app.attachmentLinks.isDenied("photo"))
+            assertEquals(3, requests)
         } finally { app.close(); http.close() }
     }
 

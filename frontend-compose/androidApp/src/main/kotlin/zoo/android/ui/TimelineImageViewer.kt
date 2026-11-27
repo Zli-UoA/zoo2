@@ -87,15 +87,18 @@ internal fun TimelineImagePages(
             val item = selection.items[index]
             val image = remember(item) { item.copy(useThumbnail = false) }
             val hidden = image.sensitive && revealed[index] != true
+            val denied = image.attachmentId?.let(LocalAttachmentImageDenied.current) == true
             val cached = LocalCachedTimelineImage.current
             val load = LocalTimelineImage.current
             val loadWithPreview = LocalTimelineImageWithPreview.current
             val retry = LocalTimelineImageRetry.current
             var attempt by remember(image) { mutableIntStateOf(0) }
-            val initial = remember(image, hidden, attempt, cached) { if (hidden) null else cached(image) }
-            val result by key(image, hidden, attempt, cached, load, loadWithPreview, retry) {
-                produceState(ViewerImage(initial)) {
-                    if (!hidden && initial == null) {
+            val initial = remember(image, hidden, denied, attempt, cached) {
+                if (hidden || denied) null else cached(image)
+            }
+            val result by key(image, hidden, denied, attempt, cached, load, loadWithPreview, retry) {
+                produceState(ViewerImage(initial, failed = denied)) {
+                    if (!hidden && initial == null && (!denied || attempt > 0)) {
                         val loaded = when {
                             attempt > 0 -> retry(image)
                             loadWithPreview != null -> loadWithPreview(image) { value = ViewerImage(it) }
@@ -105,8 +108,8 @@ internal fun TimelineImagePages(
                     }
                 }
             }
-            val bitmap = result.bitmap
-            val blur = rememberMediaBlurHash(image.blurhash.takeIf { bitmap == null })
+            val bitmap = result.bitmap.takeUnless { denied }
+            val blur = rememberMediaBlurHash(image.blurhash.takeIf { bitmap == null && !denied })
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 if (bitmap != null) {
                     Image(bitmap, image.name, Modifier.fillMaxSize().testTag("viewer-image-$index"), contentScale = ContentScale.Fit)
