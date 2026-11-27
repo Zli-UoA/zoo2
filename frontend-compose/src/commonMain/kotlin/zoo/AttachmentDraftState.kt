@@ -164,7 +164,7 @@ class AttachmentLinks(private val app: Session) {
 
     fun isDenied(id: String): Boolean = denied[id] == true
 
-    internal fun accessVersion(id: String): Long = accessVersions[id] ?: 0L
+    fun accessVersion(id: String): Long = accessVersions[id] ?: 0L
 
     fun cachedUrl(id: String): String? = cachedLinks(id)?.original
 

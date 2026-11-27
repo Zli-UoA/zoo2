@@ -161,6 +161,7 @@ class ImageDecodingTest {
         val oldBitmap = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888).asImageBitmap()
         val newBitmap = Bitmap.createBitmap(3, 3, Bitmap.Config.ARGB_8888).asImageBitmap()
         val decoding = CompletableDeferred<Unit>()
+        val previewDecoding = CompletableDeferred<Unit>()
         val finishDecoding = CompletableDeferred<Unit>()
         val url = "https://storage.test/photo"
         var requests = 0
@@ -182,11 +183,16 @@ class ImageDecodingTest {
             override fun translate(key: String, args: Map<String, String>) = key
             override fun time(timestamp: String) = timestamp
             override fun day(timestamp: String) = timestamp
+            override suspend fun freshAttachmentImage(cacheKey: String) = byteArrayOf(9)
             override suspend fun attachmentImage(url: String, cacheKey: String?, retry: Boolean) =
                 byteArrayOf((++downloads).toByte())
             override fun imageFrames(bytes: ByteArray) = flow {
                 if (bytes[0] == 1.toByte()) {
                     decoding.complete(Unit)
+                    finishDecoding.await()
+                    emit(oldBitmap)
+                } else if (bytes[0] == 9.toByte()) {
+                    previewDecoding.complete(Unit)
                     finishDecoding.await()
                     emit(oldBitmap)
                 } else emit(newBitmap)
@@ -202,12 +208,18 @@ class ImageDecodingTest {
             val pending = async {
                 assertFailsWith<ApiException> { app.imageBitmap(url, signedAttachment = true, cacheKey = key) }
             }
+            val preview = async {
+                timelineImage(app, TimelineMedia("photo", "Photo", TimelineMediaKind.Image, attachmentId = "photo", useThumbnail = false),
+                    onCached = { error("A preview decoded before revocation must not be displayed") })
+            }
             decoding.await()
+            previewDecoding.await()
             assertEquals(404, assertFailsWith<ApiException> { app.attachmentLinks.getLinks("photo", force = true) }.status)
             app.attachmentLinks.getLinks("photo", force = true)
             finishDecoding.complete(Unit)
             assertEquals(403, pending.await().status)
-            assertNull(app.cachedImageBitmap(url, signedAttachment = true, cacheKey = key))
+            assertSame(newBitmap, preview.await())
+            assertSame(newBitmap, app.cachedImageBitmap(url, signedAttachment = true, cacheKey = key))
             assertSame(newBitmap, app.imageBitmap(url, signedAttachment = true, cacheKey = key))
             assertEquals(2, downloads)
         } finally { app.close(); http.close() }

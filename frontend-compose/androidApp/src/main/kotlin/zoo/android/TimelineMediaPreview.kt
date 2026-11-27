@@ -70,7 +70,10 @@ internal suspend fun timelineImage(
     }
     val id = media.attachmentId ?: return null
     val platform = session.platform
-    val previouslyDenied = session.attachmentLinks.isDenied(id)
+    val access = session.attachmentLinks
+    val previouslyDenied = access.isDenied(id)
+    val previewVersion = access.accessVersion(id)
+    fun canUseCached(): Boolean = !access.isDenied(id) && access.accessVersion(id) == previewVersion
     val cached = if (onCached != null && !retry && !previouslyDenied) {
         suspend fun decode(key: String): ImageBitmap? = try {
             platform.freshAttachmentImage(key)?.let { platform.imageFrames(it).first() }
@@ -80,7 +83,7 @@ internal suspend fun timelineImage(
             null
         }
         val thumbnail = if (media.useThumbnail) decode("$id:thumbnail") else null
-        (thumbnail ?: decode("$id:original"))?.also(onCached)
+        (thumbnail ?: decode("$id:original"))?.takeIf { canUseCached() }?.also(onCached)
     } else null
     fun canConfirm(): Boolean = session.env.online && session.env.visible
     if (cached != null) snapshotFlow { canConfirm() }.first { it }
@@ -92,7 +95,7 @@ internal suspend fun timelineImage(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: Exception) {
-            if (cached == null || !failure.isTemporaryImageFailure()) return null
+            if (cached == null || !canUseCached() || !failure.isTemporaryImageFailure()) return null
             withTimeoutOrNull(retryDelay) { snapshotFlow { canConfirm() }.first { !it } }
             snapshotFlow { canConfirm() }.first { it }
             retryDelay = (retryDelay * 2).coerceAtMost(60_000L)
@@ -119,8 +122,8 @@ internal suspend fun timelineImage(
         throw cancelled
     } catch (failure: Exception) {
         cached.takeIf {
-            failure.isTemporaryImageFailure() ||
-                (failure !is ImageHttpFailure && thumbnailFailure?.isTemporaryImageFailure() == true)
+            canUseCached() && (failure.isTemporaryImageFailure() ||
+                (failure !is ImageHttpFailure && thumbnailFailure?.isTemporaryImageFailure() == true))
         }
     }
 }

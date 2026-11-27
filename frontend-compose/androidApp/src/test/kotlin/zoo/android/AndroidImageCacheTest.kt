@@ -235,18 +235,29 @@ class AndroidImageCacheTest {
 
     @Test fun revocationPreventsAnInFlightDownloadFromRestoringTheCachedImage() = runBlocking {
         Fixture().use { f ->
-            f.server.enqueue(MockResponse().setBodyDelay(1, TimeUnit.SECONDS).setBody("old"))
-            f.server.enqueue(MockResponse().setBody("new"))
+            val releaseResponse = CountDownLatch(1)
+            val firstRequest = AtomicBoolean(true)
+            f.server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse =
+                    if (firstRequest.getAndSet(false)) {
+                        check(releaseResponse.await(5, TimeUnit.SECONDS))
+                        MockResponse().setBody("old")
+                    } else MockResponse().setBody("new")
+            }
             val key = "id:original"
             f.cache().use { cache ->
                 val pending = async {
                     assertFailsWith<ImageHttpFailure> { cache.signedImage(f.url, key) }
                 }
-                assertNotNull(withContext(Dispatchers.IO) { f.server.takeRequest(5, TimeUnit.SECONDS) })
-                cache.removeAttachmentImages("id")
-                assertNull(cache.freshAttachmentImage(key))
-                assertEquals(403, assertFailsWith<ImageHttpFailure> { cache.signedImage(f.url, key) }.status)
-                cache.allowAttachmentImages("id")
+                try {
+                    assertNotNull(withContext(Dispatchers.IO) { f.server.takeRequest(5, TimeUnit.SECONDS) })
+                    cache.removeAttachmentImages("id")
+                    assertNull(cache.freshAttachmentImage(key))
+                    assertEquals(403, assertFailsWith<ImageHttpFailure> { cache.signedImage(f.url, key) }.status)
+                    cache.allowAttachmentImages("id")
+                } finally {
+                    releaseResponse.countDown()
+                }
                 assertEquals(403, pending.await().status)
                 assertNull(cache.freshAttachmentImage(key))
                 assertEquals("new", cache.signedImage(f.url, key).decodeToString())
