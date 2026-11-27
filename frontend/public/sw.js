@@ -302,7 +302,7 @@ async function precacheShell() {
           if (path === "/manifest.webmanifest") {
             if (!isFreshAssetResponse(path, response) || !(await isFreshManifest(response))) return;
           }
-          await cacheResponse(cache, path, response);
+          await cacheResponse(cache, path, response, bounded);
         } catch {
           /* Offline installs fall back to the runtime cache. */
         }
@@ -510,25 +510,37 @@ function cachedForConditional(request, cached) {
   if (cached.type === "error") return cached;
   const value = request.headers?.get?.("if-none-match");
   if (!value) return cached;
-  const tags = value.split(",").map((part) => part.trim());
-  const etag = cached.headers.get("x-zoo-etag");
-  // If-None-Match: * はどの版にも一致する。保存版と ETag が一致しても 304。
+  const tags = value.split(",").map((part) => part.replace(/^W\//, "").trim());
+  const etag = cached.headers.get("x-zoo-etag")?.replace(/^W\//, "");
+  // If-None-Match: * はどの版にも一致する。ETag は弱い比較で照合する。
   if (tags.includes("*") || (etag && tags.includes(etag)))
+    return new Response(null, { status: 304 });
+  const since = request.headers?.get?.("if-modified-since");
+  const modified = cached.headers.get("x-zoo-last-modified");
+  if (since && modified && Date.parse(modified) <= Date.parse(since))
     return new Response(null, { status: 304 });
   return cached;
 }
 
 const freshAssetWrites = new Map();
+let freshAssetSequence = 0;
 
-async function writeFreshAsset(path, cache, response) {
-  // 通常 GET と条件付き GET の取得は分けても、同じキーへの書き込みは直列化する。
-  const previous = freshAssetWrites.get(path) || Promise.resolve();
-  const work = previous.catch(() => {}).then(() => cacheResponse(cache, path, response, true));
-  freshAssetWrites.set(path, work);
+async function writeFreshAsset(path, cache, response, sequence) {
+  // 取得開始順が古い応答は、直後に届いても新しい保存版を上書きしない。
+  const previous = freshAssetWrites.get(path);
+  if (previous && previous.sequence > sequence) return;
+  const work = (previous?.promise ?? Promise.resolve())
+    .catch(() => {})
+    .then(() => {
+      const current = freshAssetWrites.get(path);
+      if (current && current.sequence > sequence) return;
+      return cacheResponse(cache, path, response, true);
+    });
+  freshAssetWrites.set(path, { sequence, promise: work });
   return await work;
 }
 
-async function fetchConditionalAsset(request, path) {
+async function fetchConditionalAsset(request, path, sequence) {
   // 条件付き GET は共有もキャッシュ更新もしない。
   const headers = request.headers;
   const precondition =
@@ -555,7 +567,7 @@ async function fetchConditionalAsset(request, path) {
       const fresh = response.clone();
       try {
         const cache = await caches.open(await findActiveShellCache());
-        await writeFreshAsset(path, cache, response);
+        await writeFreshAsset(path, cache, response, sequence);
       } catch {
         /* Storage failure: still serve the fetched response. */
       }
@@ -571,12 +583,16 @@ async function fetchConditionalAsset(request, path) {
   }
 }
 
-async function fetchRangeAsset(request, path, precondition) {
+async function fetchRangeAsset(request, path, precondition, _sequence) {
   // 部分応答は共有もキャッシュ更新もしないが、取得期限とオフライン代替は適用する。
   try {
     const response = await fetchBounded(request, { cache: "reload" });
     // 206 は本文を期限内に読み切ってから返す。途中で止まったら保存版へ戻る。
     if (response.status === 206) {
+      if (!isFreshAssetResponse(path, response)) {
+        if (precondition) return Response.error();
+        return cachedForConditional(request, await cachedFreshAsset(path));
+      }
       try {
         await response.clone().arrayBuffer();
       } catch {
@@ -617,6 +633,7 @@ const freshAssetWork = new Map();
 
 function handleFreshAsset(request) {
   const path = new URL(request.url, self.location.origin).pathname;
+  const sequence = ++freshAssetSequence;
   // Range / 条件付き GET は部分応答・304 になり得るので、共有もキャッシュ更新もしない。
   const headers = request.headers;
   if (
@@ -631,19 +648,20 @@ function handleFreshAsset(request) {
         request,
         path,
         Boolean(headers.get("if-match") || headers.get("if-unmodified-since")),
+        sequence,
       );
-    return fetchConditionalAsset(request, path);
+    return fetchConditionalAsset(request, path, sequence);
   }
   // 同じパスの同時取得を共有し、古い応答が新しい配色を上書きしないようにする。
   const pending = freshAssetWork.get(path);
   // 取得は共有しても、respondWith へ渡す本文は要求ごとに独立させる。
   if (pending) return pending.then((response) => response.clone());
-  const work = fetchFreshAsset(request, path).finally(() => freshAssetWork.delete(path));
+  const work = fetchFreshAsset(request, path, sequence).finally(() => freshAssetWork.delete(path));
   freshAssetWork.set(path, work);
   return work.then((response) => response.clone());
 }
 
-async function fetchFreshAsset(request, path) {
+async function fetchFreshAsset(request, path, sequence) {
   let response;
   try {
     // サーバーが応答を返さない／本文が途中で止まる場合も、保存済みの版に戻れるようにする。
@@ -665,7 +683,7 @@ async function fetchFreshAsset(request, path) {
     try {
       const cache = await caches.open(await findActiveShellCache());
       // クエリ付きで開いても同じ案内／manifest を使うため、pathname をキーにする。
-      await writeFreshAsset(path, cache, response);
+      await writeFreshAsset(path, cache, response, sequence);
     } catch {
       /* Storage quota or Cache API failure: still serve the fresh response. */
     }

@@ -2012,6 +2012,58 @@ test("a Range request with If-Match does not use a cached version offline", asyn
   assert.equal(response.type, "error");
 });
 
+test("a late older response does not overwrite the cached manifest", async () => {
+  const cacheContext = memoryCaches();
+  let releaseOld;
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async (input) => {
+      const tag = input.headers?.get?.("if-none-match");
+      const response = () =>
+        basicResponse(validManifest(tag === '"old"' ? "#ffffff" : "#000000"), {
+          headers: { "content-type": "application/manifest+json" },
+        });
+      if (tag === '"old"')
+        return new Promise((resolve) => {
+          releaseOld = () => resolve(response());
+        });
+      return response();
+    },
+  });
+  const base = { url: `${ORIGIN}/manifest.webmanifest`, method: "GET", mode: "cors" };
+  const conditional = (tag) => ({
+    ...base,
+    headers: { get: (name) => (name.toLowerCase() === "if-none-match" ? tag : null) },
+  });
+  const older = fetchThrough(handlers, conditional('"old"'));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await fetchThrough(handlers, conditional('"new"'));
+  releaseOld();
+  await older;
+  const cache = await cacheContext.api.open("zoo-shell-v2");
+  assert.match(await (await cache.match(`${ORIGIN}/manifest.webmanifest`)).text(), /#000000/);
+});
+
+test("a Range response with an HTML content type falls back to the cached manifest", async () => {
+  const manifest = validManifest("#000000");
+  const cacheContext = memoryCaches([
+    ["zoo-shell-v2", `${ORIGIN}/manifest.webmanifest`, basicResponse(manifest)],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () =>
+      basicResponse("<html>app</html>", { status: 206, headers: { "content-type": "text/html" } }),
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+    headers: { get: (name) => (name.toLowerCase() === "range" ? "bytes=0-10" : null) },
+  });
+  assert.equal(await response.text(), manifest);
+});
+
 test("a Range response with an unreadable body falls back to the cached manifest", async () => {
   const manifest = validManifest("#000000");
   const cacheContext = memoryCaches([
@@ -2078,6 +2130,30 @@ test("If-None-Match with a matching ETag returns 304 from the cache", async () =
     method: "GET",
     mode: "cors",
     headers: { get: (name) => (name.toLowerCase() === "if-none-match" ? '"abc"' : null) },
+  });
+  assert.equal(response.status, 304);
+});
+
+test("If-None-Match uses a weak ETag comparison against the cached manifest", async () => {
+  const cacheContext = memoryCaches([
+    [
+      "zoo-shell-v2",
+      `${ORIGIN}/manifest.webmanifest`,
+      basicResponse(validManifest("#ffffff"), { headers: { "x-zoo-etag": '"abc"' } }),
+    ],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+    headers: { get: (name) => (name.toLowerCase() === "if-none-match" ? 'W/"abc"' : null) },
   });
   assert.equal(response.status, 304);
 });
