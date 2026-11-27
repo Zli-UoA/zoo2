@@ -361,11 +361,20 @@ it("deletes from the TL menu without navigating or resetting the scroll position
   approachTail();
   await waitFor(() => expect(prefetchDistances).toHaveLength(1));
   await waitFor(() => expect(screen.queryByRole("button", { name: "読み込み中…" })).toBeNull());
-  // The virtualizer applies row measurements from ResizeObserver on the next frame.
-  await act(async () => {
-    await document.fonts.ready;
-    await new Promise(requestAnimationFrame);
-    await new Promise(requestAnimationFrame);
+  await document.fonts.ready;
+  const measureRows = () =>
+    Array.from(root.querySelectorAll<HTMLElement>("[data-home-post]"), (node) => {
+      const { top, bottom } = node.getBoundingClientRect();
+      return { id: node.dataset.homePost, top, bottom };
+    });
+  // ResizeObserver updates can move the rows after the older-page load finishes.
+  await waitFor(async () => {
+    const rowsBeforeFrame = measureRows();
+    expect(rowsBeforeFrame.length).toBeGreaterThan(1);
+    await act(async () => {
+      await new Promise(requestAnimationFrame);
+    });
+    expect(measureRows()).toEqual(rowsBeforeFrame);
   });
   const visible = Array.from(root.querySelectorAll<HTMLElement>("[data-home-post]")).filter(
     (node) => {
