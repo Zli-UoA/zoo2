@@ -275,6 +275,7 @@ struct VerifyUsersView: View {
         let requestID = UUID()
         stateRequests[id] = requestID
         states[id] = nil
+        failedStates.remove(id)
         do {
             let state = try await verification.state(of: id)
             guard !Task.isCancelled, stateRequests[id] == requestID else { return }

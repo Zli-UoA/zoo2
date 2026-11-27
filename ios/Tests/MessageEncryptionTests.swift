@@ -574,12 +574,14 @@ struct MessageEncryptionTests {
         let api = DeliveryRequests()
         var fail = true, deliveryError = false, posts = 0
         var lastSummary = MessageEncryption.RecipientSummary()
-        api.handle = { path, _ in
+        var deliveries: [[String: JSONValue]] = []
+        api.handle = { path, body in
             switch path {
             case "api/e2ee/channels/\(channel)/recipients": return .object(snapshot)
             case "api/e2ee/tofu_pins": return .object([:])
             case "api/e2ee/keys/claim": return .object(["one_time_keys": fail && mode == "鍵不足" ? .object([otherID: .object([:])]) : claims])
             case "api/e2ee/to_device":
+                deliveries.append(body ?? [:])
                 if deliveryError { throw URLError(.notConnectedToInternet) }
                 let failed = !fail ? [] : (mode == "一部未配送" ? [other.deviceID] : [other.deviceID, second.deviceID])
                 return .object(["undelivered": .array(failed.map { .object(["user_id": .string(otherID), "device_id": .string($0)]) })])
@@ -604,6 +606,8 @@ struct MessageEncryptionTests {
         deliveryError = false
         try await encryption.send(channel: channel, id: UUID().uuidString.lowercased(), parent: nil, body: "再配布") { lastSummary = $0 }
         #expect(posts == 2 && lastSummary.undeliverable.isEmpty)
+        let lastDelivery = try #require(deliveries.last?["messages"]?.object?[otherID]?.object)
+        #expect(Set(lastDelivery.keys) == Set([other.deviceID, second.deviceID]))
         #expect(try await encryption.summary(channel: channel).undeliverable.isEmpty)
     }
 

@@ -59,6 +59,8 @@ struct ConversationEncryptionTests {
         }
         workspace.e2ee = E2eeController.make(api: harness.api, userID: userID, files: files)
         let initial = workspace.conversation(for: target)
+        try #require(initial.isDowngraded() == (mode == "格下げ"))
+        try #require(initial.channel.encrypted == (mode != "平文"))
         let changed = Mutex(false)
         withObservationTracking {
             _ = workspace.conversation(for: target)
