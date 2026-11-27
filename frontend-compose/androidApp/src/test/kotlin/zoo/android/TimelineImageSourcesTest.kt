@@ -59,6 +59,18 @@ class TimelineImageSourcesTest {
     }
 
     @Test
+    fun displayedBlocksCanResolveAnAliasAbsentFromTheFallbackBody() {
+        val code = ":お祝い 猫:"
+        val url = "$base/api/emoji-images/party"
+        val resolved = timelineBodyEmojis(base, obj(), obj(), "Fallback text", false,
+            workspace = mapOf(code to url), displayedBlocks = listOf("Hello $code"))
+        assertEquals(url, resolved[code]?.url)
+        assertTrue(hasMissingWorkspaceEmoji("Hello $code", emptyMap()))
+        assertFalse(hasMissingWorkspaceEmoji("Hello $code", resolved))
+        assertFalse(hasMissingWorkspaceEmoji("Hello : :@alice:", emptyMap()))
+    }
+
+    @Test
     fun registeredMediaUsesTheProxyEvenWhenTheOriginalIsNotHttps() {
         val media = timelinePostMedia(base, obj(
             "url" to "http://remote.example/old.png", "media_type" to "image/png", "image_id" to imageId,

@@ -75,7 +75,7 @@ internal fun EmojiPicker(
     colors: AndroidColors,
     unicode: List<EmojiChoice>,
     custom: List<EmojiChoice>,
-    recent: List<EmojiChoice> = emptyList(),
+    recent: List<String> = emptyList(),
     recentCategory: String = "最近使った絵文字",
     customLoading: Boolean = false,
     customError: Boolean = false,
@@ -91,7 +91,10 @@ internal fun EmojiPicker(
     LaunchedEffect(tab) {
         if (tab == EmojiTab.Kitchen && kitchen == null) kitchen = loadKitchen()
     }
-    val recentUnicode = remember(recent) { recent.filter { it.image == null && it.glyph.isNotBlank() } }
+    val recentUnicode = remember(recent, unicode) {
+        val catalog = unicode.associateBy { it.value }
+        recent.mapNotNull(catalog::get)
+    }
     val choices = remember(tab, unicode, custom, recentUnicode, kitchen, first) {
         when (tab) {
             EmojiTab.Unicode -> (recentUnicode + unicode)

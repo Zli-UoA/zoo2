@@ -205,7 +205,7 @@ private fun AnnotatedString.Builder.appendEffect(source: String, format: EntryFo
             else -> null
         })
         "ruby" -> {
-            val ruby = mfmRuby(effect.body)
+            val ruby = mfmRuby(effect.body, format.emoji)
             appendMfm(ruby.base, format, depth + 1)
             if (ruby.reading.isNotBlank()) withStyle(SpanStyle(fontSize = .7.em)) { append("（${ruby.reading}）") }
             return

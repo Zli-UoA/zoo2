@@ -64,6 +64,7 @@ internal fun timelineBodyEmojis(
     body: String,
     isPost: Boolean,
     workspace: Map<String, String>,
+    displayedBlocks: List<String> = emptyList(),
 ): Map<String, TimelineMedia> {
     val attached = if (isPost) data.array("emojis").rows().map { it.text("name") to it }
     else (data.nested("display_data").nested("emojis") + metadata.nested("emojis"))
@@ -83,13 +84,20 @@ internal fun timelineBodyEmojis(
         }
         // A missing remote emoji must retain its shortcode rather than borrow a local image.
         if (workspace.isNotEmpty() && (!isPost || !data.flag("remote"))) {
-            for (code in findCustomEmojiShortcodes(body)) {
+            for (code in (sequenceOf(body) + displayedBlocks.asSequence()).flatMap(::findCustomEmojiShortcodes)) {
                 val url = workspace[code] ?: continue
                 if (code !in this) put(code, inlineEmoji(code.trim(':'), url))
             }
         }
     }
 }
+
+internal fun isWorkspaceEmojiCandidate(code: String): Boolean =
+    code.startsWith(':') && code.endsWith(':') && !code.startsWith(":@") &&
+        code.removeSurrounding(":").let { it.isNotEmpty() && it == it.trim() && ':' !in it }
+
+internal fun hasMissingWorkspaceEmoji(body: String, emoji: Map<String, TimelineMedia>): Boolean =
+    findCustomEmojiShortcodes(body).any { it !in emoji && isWorkspaceEmojiCandidate(it) }
 
 private fun inlineEmoji(name: String, url: String) =
     TimelineMedia(url, name, TimelineMediaKind.Image, url = url, previewUrl = url)

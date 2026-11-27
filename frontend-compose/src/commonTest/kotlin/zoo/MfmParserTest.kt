@@ -4,6 +4,17 @@ import kotlin.test.*
 
 class MfmParserTest {
     @Test
+    fun registeredAliasAfterATimeLeavesTheOpeningColonIntact() {
+        val alias = ":お祝い 猫:"
+        assertEquals(
+            listOf(Inline("12:30"), Inline(alias, "emoji")),
+            parseInline("12:30$alias", setOf(alias)),
+        )
+        assertEquals(Inline(":@alice:", "accountEmoji"), parseInline(":@alice:", setOf(":@alice:")).single())
+        assertEquals(MfmRuby(alias, "ねこ"), mfmRuby("$alias ねこ", setOf(alias)))
+    }
+
+    @Test
     fun registeredUnicodeAliasesDoNotConsumeUnknownShortcodesOrLiterals() {
         val alias = ":お祝い 猫:"
         val source = "時刻: $alias :unknown: `$alias` <plain>$alias</plain>"

@@ -69,14 +69,6 @@ internal fun ConnectedScreens(
     val emojiCatalog = remember(context, env.locale, uncategorizedEmoji) {
         AndroidEmojiCatalog(context, env.locale, uncategorizedEmoji)
     }
-    // Load the session-wide fallback even when the picker is closed. The Session coalesces catalog reads.
-    LaunchedEffect(session, env.online, env.visible) {
-        if (env.online && env.visible) {
-            try { session.loadWorkspaceEmojis() }
-            catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { /* Keep shortcode fallbacks if the catalog is unavailable. */ }
-        }
-    }
     val previewService by session.previews.summalyEndpoint.collectAsState()
     val usersById = remember(users) { users.associateBy { it.text("id") } }
     val posts = state.home.posts.map { state.entry(it, usersById, previewService = previewService) }
@@ -435,6 +427,26 @@ internal fun ConnectedScreens(
             historyReady = !env.online || pageStates[PageScope.Main]?.loaded == true)
         else -> AndroidScreen.Channels(state.channelSections(channels, usersById, memberships))
     }
+    val reaction = state.confirmingEntry?.takeIf { it.operation == EntryOperation.React }
+    val insertingEmoji = state.inputMenu == InputTool.Emoji
+    val pickerOpen = insertingEmoji || reaction != null
+    val needsWorkspaceEmoji = when (screen) {
+        is AndroidScreen.Home -> screen.posts.any { it.needsWorkspaceEmoji }
+        is AndroidScreen.Profile -> screen.posts.any { it.needsWorkspaceEmoji }
+        is AndroidScreen.Post -> screen.root.needsWorkspaceEmoji || screen.replies.any { it.needsWorkspaceEmoji }
+        is AndroidScreen.Thread -> screen.root.needsWorkspaceEmoji || screen.replies.any { it.needsWorkspaceEmoji }
+        is AndroidScreen.Conversation -> screen.entries.any { it.needsWorkspaceEmoji }
+        is AndroidScreen.Bubble -> screen.entries.any { it.needsWorkspaceEmoji }
+        is AndroidScreen.Search -> screen.state.results.any { it.needsWorkspaceEmoji }
+        else -> false
+    }
+    LaunchedEffect(session, env.online, env.visible, pickerOpen, needsWorkspaceEmoji) {
+        if (env.online && env.visible && (pickerOpen || needsWorkspaceEmoji)) {
+            try { session.loadWorkspaceEmojis() }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { /* Keep shortcode fallbacks if the catalog is unavailable. */ }
+        }
+    }
     val instanceHosts = when (screen) {
         is AndroidScreen.Home -> screen.posts
         is AndroidScreen.Profile -> screen.posts
@@ -570,24 +582,13 @@ internal fun ConnectedScreens(
             confirmButton = { TextButton(onClick = phone::clearError) { Text(session.t("common.close")) } },
         )
     }
-    val reaction = state.confirmingEntry?.takeIf { it.operation == EntryOperation.React }
-    val insertingEmoji = state.inputMenu == InputTool.Emoji
-    val recentEmojis = remember(session) { mutableStateListOf<EmojiChoice>() }
-    if (insertingEmoji || reaction != null) {
+    val recentEmojis = remember(session) { mutableStateListOf<String>() }
+    if (pickerOpen) {
         val unicode by produceState(emptyList<EmojiChoice>(), emojiCatalog) { value = emojiCatalog.unicode() }
         val allowAccountEmoji = reaction == null || screen !is AndroidScreen.Home &&
             screen !is AndroidScreen.Post && screen !is AndroidScreen.Profile
         LaunchedEffect(session, env.online, env.visible, allowAccountEmoji) {
-            if (env.online && env.visible) {
-                if (allowAccountEmoji) launch { session.loadAccountProfiles() }
-                try {
-                    session.loadWorkspaceEmojis()
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (_: Exception) {
-                    // The bundled Unicode list remains available when the workspace catalog fails.
-                }
-            }
+            if (env.online && env.visible && allowAccountEmoji) session.loadAccountProfiles()
         }
         val dismiss = { state.inputMenu = null; state.confirmingEntry = null }
         EmojiPicker(
@@ -610,9 +611,11 @@ internal fun ConnectedScreens(
             },
             dismiss = dismiss,
         ) { choice ->
-            recentEmojis.removeAll { it.value == choice.value }
-            recentEmojis.add(0, choice)
-            if (recentEmojis.size > 24) recentEmojis.removeAt(recentEmojis.lastIndex)
+            if (choice.image == null && choice.glyph.isNotBlank()) {
+                recentEmojis.remove(choice.value)
+                recentEmojis.add(0, choice.value)
+                if (recentEmojis.size > 24) recentEmojis.removeAt(recentEmojis.lastIndex)
+            }
             if (reaction != null) {
                 dismiss()
                 state.dispatch(reaction.copy(value = choice.value), screen, channel, rows, dmPeer, null, enableNotifications)

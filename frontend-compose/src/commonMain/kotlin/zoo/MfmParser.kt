@@ -220,7 +220,8 @@ private class MfmScanner(length: Int) {
                         end = stop + close.length
                         break
                     }
-                    if (token == null && source[at] == ':' && customEmojis.isNotEmpty()) {
+                    val atom = if (token == null) atoms.matchAt(source, at) else null
+                    if (token == null && atom?.value?.startsWith(":@") != true && source[at] == ':' && customEmojis.isNotEmpty()) {
                         val shortcode = customEmojiShortcode.matchAt(source, at)?.value
                         if (shortcode != null && shortcode in customEmojis) {
                             token = Inline(shortcode, "emoji")
@@ -228,7 +229,7 @@ private class MfmScanner(length: Int) {
                         }
                     }
                     if (token == null) {
-                        val match = atoms.matchAt(source, at)
+                        val match = atom
                         if (match != null) {
                             val value = match.value
                             val kind = when {
@@ -241,7 +242,9 @@ private class MfmScanner(length: Int) {
                             val boundary = source.getOrNull(at - 1)?.let {
                                 !it.isLetterOrDigit() && it !in "_/@"
                             } != false
-                            if (kind !in setOf("mention", "hashtag") || boundary) {
+                            val overlapsRegistered = kind == "emoji" && customEmojis.isNotEmpty() &&
+                                customEmojiShortcode.matchAt(source, match.range.last)?.value in customEmojis
+                            if (!overlapsRegistered && (kind !in setOf("mention", "hashtag") || boundary)) {
                                 val trimmed = if (kind == "link") leadingUrl(value) else value
                                 if (trimmed != null) {
                                     token = Inline(trimmed, kind, trimmed.takeIf { kind == "link" }, kind == "link")
@@ -437,8 +440,8 @@ internal fun linkDestinationEnd(text: String, start: Int, step: () -> Boolean): 
 data class MfmRuby(val base: String, val reading: String)
 
 /** The reading is root text; spaces inside markup belong to the base. */
-fun mfmRuby(source: String): MfmRuby {
-    val slices = inlineSlices(source)
+fun mfmRuby(source: String, customEmojis: Set<String> = emptySet()): MfmRuby {
+    val slices = inlineSlices(source, customEmojis)
     val last = slices.lastOrNull() ?: return MfmRuby(source, "")
     if (last.token.kind != "text") return MfmRuby(source, "")
     if (slices.size == 1) {

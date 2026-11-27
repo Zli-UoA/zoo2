@@ -35,7 +35,7 @@ internal class AndroidEmojiCatalog(
         val metadata = Json.parseToJsonElement(readAsset("$dataLocale/data.json")).jsonArray
             .flatMap { entry ->
                 val row = entry.jsonObject
-                (listOf(row) + row.array("skins").map { it.jsonObject }).map {
+                (listOf(row) + (row["skins"] as? JsonArray).orEmpty().map { it.jsonObject }).map {
                     it.text("emoji").withoutVariationSelector() to row
                 }
             }.toMap()

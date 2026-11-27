@@ -269,7 +269,9 @@ internal class ConnectedScreenState(
         }
         val richContent = if (!isPost && !data.present("ciphertext")) messageRichContent(data) else EntryRichContent()
         val metadata = display.ifEmpty { data }
-        val emoji = if (allowPreview && !data.present("ciphertext")) displayEmoji(data, metadata, body, isPost) else emptyMap()
+        val emojiBodies = richContent.blocks.filterIsInstance<EntryContentText>().map { it.body }
+        val visibleBody = if (richContent.hidesBody) "" else body
+        val emoji = if (allowPreview && !data.present("ciphertext")) displayEmoji(data, metadata, visibleBody, isPost, emojiBodies) else emptyMap()
         val reactionEmoji = if (allowPreview && !data.present("ciphertext")) {
             val values = if (isPost) metadata.array("reactions").rows().map { it.text("reaction") }
             else reactions.map { it.text("emoji") }
@@ -326,6 +328,12 @@ internal class ConnectedScreenState(
             canRepost = isPost && data.text("visibility") in setOf("public", "local", "unlisted"),
             reposted = metadata.flag("reposted"), reactions = badges, attachments = files, link = url,
             richContent = richContent, channelLinks = links.channels.map { it.first },
+            needsWorkspaceEmoji = allowPreview && !data.present("ciphertext") && (
+                ((!isPost || !data.flag("remote")) && (
+                    hasMissingWorkspaceEmoji(visibleBody, emoji) || emojiBodies.any { hasMissingWorkspaceEmoji(it, emoji) } ||
+                        badges.any { it.image == null && isWorkspaceEmojiCandidate(it.value) }
+                )) || (quote != null && !original.flag("remote") && hasMissingWorkspaceEmoji(quote.body, quote.emoji))
+            ),
             emoji = emoji, attachedImageUrls = mediaUrls, avatar = timelineAvatarUrl(app.config.apiBaseUrl, data, users[data.text("user_id")]),
             entryKey = HomeTimeline.key(row).ifBlank { id }, media = media, postHeader = postHeader, quote = quote,
             postAuthor = if (isPost) postAuthor(data, name) else null,
@@ -352,8 +360,10 @@ internal class ConnectedScreenState(
             formatted = false, summaly = true)
     }
 
-    private fun displayEmoji(data: Row, metadata: Row, body: String, isPost: Boolean): Map<String, TimelineMedia> =
-        timelineBodyEmojis(app.config.apiBaseUrl, data, metadata, body, isPost, workspaceEmojiIndex)
+    private fun displayEmoji(
+        data: Row, metadata: Row, body: String, isPost: Boolean, displayedBlocks: List<String> = emptyList(),
+    ): Map<String, TimelineMedia> =
+        timelineBodyEmojis(app.config.apiBaseUrl, data, metadata, body, isPost, workspaceEmojiIndex, displayedBlocks)
 
     private fun postMedia(row: Row): TimelineMedia? = timelinePostMedia(app.config.apiBaseUrl, row)
 
@@ -732,6 +742,7 @@ internal class ConnectedScreenState(
                 val day = platform.day(createdAt).let { if (it.substringBefore('/') == year) it.substringAfter('/') else it }
                 // Like Web, keep the first hit within the three lines of a narrow screen.
                 val body = if (file) row.text("file_name") else focusSnippet(row.text("snippet"), searchTerms(search.query))
+                val emoji = if (file) emptyMap() else displayEmoji(row, row, body, isPost = false)
                 SearchResultItem(
                     key = globalSearchKey(row, search.type),
                     author = author(user).ifBlank { row.text("user_id") },
@@ -742,7 +753,8 @@ internal class ConnectedScreenState(
                     inThread = row.text("parent_id").isNotEmpty(),
                     file = file,
                     fileSize = if (file) attachmentSize(row.text("file_size")) else null,
-                    emoji = if (file) emptyMap() else displayEmoji(row, row, body, isPost = false),
+                    emoji = emoji,
+                    needsWorkspaceEmoji = !file && hasMissingWorkspaceEmoji(body, emoji),
                     avatar = timelineAvatarUrl(app.config.apiBaseUrl, user, searchAuthor),
                     media = if (file) searchImage(row, channel) else null,
                     linkCard = link?.let { summalyCard(previewService, it) },
