@@ -116,6 +116,7 @@ erDiagram
       timestamptz updated_at
       boolean superseded
       boolean superseded_by_public
+      text observed_audience
       bigint revision
       text parent_id
       jsonb emojis

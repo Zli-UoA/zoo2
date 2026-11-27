@@ -259,21 +259,44 @@ pub(super) async fn receive_verified(
                 query(&mut tx, "UPDATE apub_remote_posts SET content=$3,visibility=$4,updated_at=$5::timestamptz,parent_id=NULLIF($6,''),emojis=$7::jsonb,media=$8::jsonb,quote_uri=NULLIF($9,'') WHERE id=$1 AND actor_id=$2 AND deleted_at IS NULL AND updated_at<$5::timestamptz RETURNING json_build_object('saved',true)::text", &[post_id, actor_id, &content, visibility, &updated.to_string(), parent_id.unwrap_or(""), &json!(note_emojis).to_string(), &json!(media).to_string(), quote_uri.as_deref().unwrap_or("")]).await?
             };
             if activity["type"] == "Update" {
-                // An Update can supersede a signed snapshot even before any Inbox Create.
+                // The activity envelope can reach former recipients. The Note
+                // itself is authoritative for quote access and republication.
+                let note_to = audience(object, "to");
+                let note_cc = audience(object, "cc");
                 let followers = string(actor, "followers_url")?;
-                let followers_audience = visibility == "followers"
-                    && (to.contains(&followers) || cc.contains(&followers));
+                let note_audience = if note_to.contains(&PUBLIC) {
+                    "public"
+                } else if note_cc.contains(&PUBLIC) {
+                    "unlisted"
+                } else if !followers.is_empty()
+                    && (note_to.contains(&followers) || note_cc.contains(&followers))
+                {
+                    "followers"
+                } else {
+                    "direct"
+                };
                 toasty::sql::statement(
                     r#"
-                    UPDATE apub_quote_originals q
-                    SET superseded=true,superseded_by_public=false,updated_at=$3::timestamptz
-                    WHERE q.id=$1 AND q.actor_id=$2 AND (
-                      q.updated_at<$3::timestamptz OR (
-                        q.updated_at=$3::timestamptz AND NOT q.superseded AND (
-                          NOT $4::boolean OR
-                          (q.content,q.published,q.parent_id,q.emojis,q.media) IS DISTINCT FROM
-                          ($5,$6::timestamptz,NULLIF($7,''),$8::jsonb,$9::jsonb)
-                        )
+                    INSERT INTO apub_quote_originals AS q
+                      (id,actor_id,content,published,updated_at,parent_id,emojis,media,superseded,observed_audience)
+                    SELECT $1,$2,$5,$6::timestamptz,$3::timestamptz,NULLIF($7,''),$8::jsonb,$9::jsonb,true,$4
+                    WHERE EXISTS(SELECT 1 FROM apub_quote_originals WHERE id=$1 AND actor_id=$2)
+                       OR ($4 IN ('followers','direct') AND EXISTS(
+                         SELECT 1 FROM apub_remote_posts p WHERE p.id=$1 AND p.actor_id=$2
+                           AND p.deleted_at IS NULL AND p.visibility IN ('public','unlisted') AND p.updated_at=$3::timestamptz
+                       ))
+                    ON CONFLICT(id) DO UPDATE SET
+                      superseded=true,superseded_by_public=false,updated_at=EXCLUDED.updated_at,
+                      content=EXCLUDED.content,published=EXCLUDED.published,parent_id=EXCLUDED.parent_id,
+                      emojis=EXCLUDED.emojis,media=EXCLUDED.media,observed_audience=EXCLUDED.observed_audience
+                    WHERE q.actor_id=EXCLUDED.actor_id AND (
+                      q.updated_at<EXCLUDED.updated_at OR (
+                        q.updated_at=EXCLUDED.updated_at AND (
+                          EXCLUDED.observed_audience IS DISTINCT FROM
+                            COALESCE(q.observed_audience,CASE WHEN NOT q.superseded THEN 'followers' END)
+                          OR (q.content,q.published,q.parent_id,q.emojis,q.media) IS DISTINCT FROM
+                            (EXCLUDED.content,EXCLUDED.published,EXCLUDED.parent_id,EXCLUDED.emojis,EXCLUDED.media)
+                        ) AND (NOT q.superseded_by_public OR EXCLUDED.observed_audience IN ('followers','direct'))
                       )
                     )
                 "#,
@@ -281,7 +304,7 @@ pub(super) async fn receive_verified(
                 .bind(post_id)
                 .bind(actor_id)
                 .bind(updated.to_string())
-                .bind(followers_audience.to_string())
+                .bind(note_audience)
                 .bind(content.as_str())
                 .bind(published.to_string())
                 .bind(parent_id.unwrap_or(""))

@@ -489,6 +489,22 @@ mod tests {
             assert_eq!(rows[0]["quote"]["post"]["content"], public["content"]);
         }
         drop(tx);
+        let restricted_again = json!({"id":format!("{author}/restricted-again"),"type":"Update","actor":author,"object":without_updated});
+        inbox::receive_verified(&state, &other, &actor, &restricted_again).await?;
+        // An older public GET completing after the restrictive Update cannot publish it again.
+        reposts::store_public_note(&state, &user, &id, &public).await?;
+        let mut tx = db.transaction().await?;
+        assert!(
+            reposts::remote_repost_target(&mut tx, &id, false)
+                .await?
+                .is_none()
+        );
+        for recipient in [&user, &other] {
+            decorate(&mut tx, recipient, &mut rows).await?;
+            assert!(rows[0]["quote"]["post"].is_null());
+        }
+        drop(tx);
+
         // A fresh private response at that timestamp cannot revive a previous signer's grant.
         reposts::store_quoted_note(&state, &other, &id, &without_updated).await?;
         let mut tx = db.transaction().await?;
@@ -500,7 +516,64 @@ mod tests {
         );
         drop(tx);
 
+        // Only the Note's audience authorizes quotes, even if the envelope reaches former followers.
+        let mut narrower = without_updated.clone();
+        narrower["to"] = json!([actor_id(&other)?]);
+        let envelope = json!({"id":format!("{author}/narrower"),"type":"Update","actor":author,"to":[followers],"object":narrower});
+        inbox::receive_verified(&state, &other, &actor, &envelope).await?;
+        reposts::store_quoted_note(&state, &user, &id, &without_updated).await?;
+        let mut tx = db.transaction().await?;
+        assert!(!known_original(&mut tx, &user, &id).await?);
+        assert!(!known_original(&mut tx, &other, &id).await?);
+        assert!(
+            reposts::remote_repost_target(&mut tx, &id, false)
+                .await?
+                .is_none()
+        );
+        drop(tx);
+
+        // A signed correction to a delivered private Note must beat the old Inbox payload.
+        let delivered_id = format!("{author}/notes/delivered");
+        let mut delivered_note = note.clone();
+        delivered_note["id"] = json!(delivered_id);
+        let delivered_create = json!({"id":format!("{author}/deliver-private"),"type":"Create","actor":author,"object":delivered_note});
+        inbox::receive_verified(&state, &other, &actor, &delivered_create).await?;
+        reposts::store_quoted_note(&state, &user, &delivered_id, &delivered_note).await?;
+        toasty::sql::statement("UPDATE apub_remote_posts SET quote_uri=$2 WHERE id=$1")
+            .bind(quote_id.as_str())
+            .bind(delivered_id.as_str())
+            .exec(&mut db)
+            .await?;
+        let mut delivered_correction = delivered_note.clone();
+        delivered_correction["content"] = json!("Corrected delivered private Note");
+        let delivered_update = json!({"id":format!("{author}/correct-delivered"),"type":"Update","actor":author,"object":delivered_correction});
+        inbox::receive_verified(&state, &other, &actor, &delivered_update).await?;
+        reposts::store_quoted_note(&state, &user, &delivered_id, &delivered_note).await?;
+        let mut tx = db.transaction().await?;
+        assert!(!known_original(&mut tx, &user, &delivered_id).await?);
+        drop(tx);
+        reposts::store_quoted_note(&state, &user, &delivered_id, &delivered_correction).await?;
+        let mut tx = db.transaction().await?;
+        decorate(&mut tx, &user, &mut rows).await?;
+        assert_eq!(
+            rows[0]["quote"]["post"]["content"],
+            delivered_correction["content"]
+        );
+        let delivered_copy = one(
+            &mut tx,
+            "SELECT json_build_object('content',content)::text FROM apub_remote_posts WHERE id=$1",
+            &[&delivered_id],
+        )
+        .await?;
+        assert_eq!(delivered_copy["content"], delivered_note["content"]);
+        drop(tx);
+
         for (sql, key) in [
+            (
+                "DELETE FROM apub_quote_originals WHERE id=$1",
+                &delivered_id,
+            ),
+            ("DELETE FROM apub_remote_posts WHERE id=$1", &delivered_id),
             ("DELETE FROM users WHERE id=$1", &user),
             ("DELETE FROM users WHERE id=$1", &other),
             ("DELETE FROM apub_remote_posts WHERE id=$1", &quote_id),

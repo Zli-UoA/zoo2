@@ -21,7 +21,7 @@ FROM (
     AND NOT EXISTS(SELECT 1 FROM apub_remote_posts p WHERE p.id=q.id AND (
       (p.actor_id<>q.actor_id AND p.origin_verified) OR (p.actor_id=q.actor_id AND (
         p.deleted_at IS NOT NULL OR p.updated_at>q.updated_at OR
-        (p.updated_at=q.updated_at AND p.visibility='followers' AND (
+        (p.updated_at=q.updated_at AND p.visibility='followers' AND q.observed_audience IS NULL AND (
           (p.content,p.published,p.parent_id,p.emojis) IS DISTINCT FROM (q.content,q.published,q.parent_id,q.emojis) OR
           ARRAY(SELECT item - 'blurhash' FROM jsonb_array_elements(p.media) WITH ORDINALITY AS m(item,ord) ORDER BY ord)
             <> ARRAY(SELECT item - 'blurhash' FROM jsonb_array_elements(q.media) WITH ORDINALITY AS m(item,ord) ORDER BY ord)

@@ -266,17 +266,26 @@ async fn store_original(
         // No Inbox row or delivery is changed by a private fetch. Equal timestamps
         // only grant access when the signer received the exact cached payload.
         query(&mut tx, r#"
-            WITH saved AS (
+            WITH observation AS MATERIALIZED (
+              SELECT (q.observed_audience,q.content,q.published,q.parent_id,q.emojis,q.media)
+                IS NOT DISTINCT FROM ('followers'::text,$5,$9::timestamptz,NULLIF($8,''),$6::jsonb,$7::jsonb) AS matches
+              FROM apub_quote_originals q
+              WHERE q.id=$1 AND q.actor_id=$3 AND q.updated_at=$4::timestamptz AND q.observed_audience IS NOT NULL
+            ), saved AS (
               INSERT INTO apub_quote_originals(id,actor_id,content,published,updated_at,parent_id,emojis,media)
               SELECT $1,$3,$5,$9::timestamptz,$4::timestamptz,NULLIF($8,''),$6::jsonb,$7::jsonb
               WHERE NOT EXISTS(SELECT 1 FROM apub_remote_tombstones WHERE id=$1 AND actor_id=$3)
+                AND NOT EXISTS(SELECT 1 FROM observation WHERE NOT matches)
                 AND NOT EXISTS(SELECT 1 FROM apub_remote_posts p WHERE p.id=$1 AND p.actor_id=$3
                   AND (p.deleted_at IS NOT NULL OR p.updated_at>$4::timestamptz OR
-                    (p.updated_at=$4::timestamptz AND (p.visibility='followers' AND
-                      (p.content,p.published,p.parent_id,p.emojis) IS DISTINCT FROM ($5,$9::timestamptz,NULLIF($8,''),$6::jsonb)))))
+                    (p.updated_at=$4::timestamptz AND p.visibility='followers'
+                      AND NOT EXISTS(SELECT 1 FROM observation WHERE matches) AND
+                      (p.content,p.published,p.parent_id,p.emojis) IS DISTINCT FROM ($5,$9::timestamptz,NULLIF($8,''),$6::jsonb))))
               ON CONFLICT(id) DO UPDATE SET content=EXCLUDED.content, published=EXCLUDED.published, updated_at=EXCLUDED.updated_at,
                 parent_id=EXCLUDED.parent_id, emojis=EXCLUDED.emojis, media=EXCLUDED.media,
-                superseded=false, superseded_by_public=false, revision=apub_quote_originals.revision+1
+                superseded=false, superseded_by_public=false, revision=apub_quote_originals.revision+1,
+                observed_audience=CASE WHEN apub_quote_originals.updated_at=EXCLUDED.updated_at
+                  THEN apub_quote_originals.observed_audience END
               WHERE apub_quote_originals.actor_id=EXCLUDED.actor_id AND (
                 apub_quote_originals.updated_at<EXCLUDED.updated_at OR
                 (apub_quote_originals.updated_at=EXCLUDED.updated_at AND apub_quote_originals.superseded))
@@ -301,6 +310,10 @@ async fn store_original(
             INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,emojis,origin_verified,media,quote_uri,parent_id)
             SELECT $1,$2,$3,$4,$5::timestamptz,$6::timestamptz,$7::jsonb,true,$8::jsonb,NULLIF($9,''),NULLIF($10,'')
             WHERE NOT EXISTS(SELECT 1 FROM apub_remote_tombstones WHERE id=$1 AND actor_id=$2)
+              AND NOT EXISTS(SELECT 1 FROM apub_quote_originals q WHERE q.id=$1 AND q.actor_id=$2
+                AND (q.updated_at>$6::timestamptz OR (q.updated_at=$6::timestamptz AND q.observed_audience IS NOT NULL
+                  AND (q.observed_audience,q.content,q.published,q.parent_id,q.emojis,q.media)
+                    IS DISTINCT FROM ($4,$3,$5::timestamptz,NULLIF($10,''),$7::jsonb,$8::jsonb))))
             ON CONFLICT(id) DO UPDATE SET origin_verified=true,content=EXCLUDED.content,visibility=EXCLUDED.visibility,
               published=EXCLUDED.published,emojis=EXCLUDED.emojis,media=EXCLUDED.media,quote_uri=EXCLUDED.quote_uri,
               parent_id=EXCLUDED.parent_id,updated_at=EXCLUDED.updated_at
