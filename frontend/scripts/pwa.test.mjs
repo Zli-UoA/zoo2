@@ -2196,6 +2196,30 @@ test("If-None-Match takes priority over If-Modified-Since", async () => {
   assert.equal(await response.text(), manifest);
 });
 
+test("If-None-Match parses commas inside quoted ETags", async () => {
+  const cacheContext = memoryCaches([
+    [
+      "zoo-shell-v2",
+      `${ORIGIN}/manifest.webmanifest`,
+      basicResponse(validManifest("#ffffff"), { headers: { "x-zoo-etag": '"v1,ja"' } }),
+    ],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+    headers: { get: (name) => (name.toLowerCase() === "if-none-match" ? '"v1,ja"' : null) },
+  });
+  assert.equal(response.status, 304);
+});
+
 test("If-None-Match uses a weak ETag comparison against the cached manifest", async () => {
   const cacheContext = memoryCaches([
     [
@@ -2536,6 +2560,31 @@ test("an unreadable cached metadata does not stop the offline fallback", async (
     mode: "cors",
   });
   assert.equal(await response.text(), manifest);
+});
+
+test("manifest requests with different queries are not shared", async () => {
+  let calls = 0;
+  const { handlers } = worker({
+    fetch: async (input) => {
+      calls += 1;
+      return basicResponse(validManifest(input.url?.includes("v=1") ? "#ffffff" : "#000000"), {
+        headers: { "content-type": "application/manifest+json" },
+      });
+    },
+  });
+  await Promise.all([
+    fetchThrough(handlers, {
+      url: `${ORIGIN}/manifest.webmanifest?v=1`,
+      method: "GET",
+      mode: "cors",
+    }),
+    fetchThrough(handlers, {
+      url: `${ORIGIN}/manifest.webmanifest?v=2`,
+      method: "GET",
+      mode: "cors",
+    }),
+  ]);
+  assert.equal(calls, 2);
 });
 
 test("concurrent manifest fetches share a single response", async () => {

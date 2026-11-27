@@ -411,7 +411,7 @@ async function refreshNavigation(request, background = false) {
     return (
       (await cache.match("/index.html")) ||
       (await cache.match("/")) ||
-      (await cache.match("/offline.html")) ||
+      (await cachedFreshAsset("/offline.html")) ||
       Response.error()
     );
   }
@@ -511,7 +511,22 @@ function cachedForConditional(request, cached) {
   const value = request.headers?.get?.("if-none-match");
   if (value) {
     // 前後の空白を除いてから W/ を処理する。ETag が指定されたらこれで判定を終える。
-    const tags = value.split(",").map((part) => part.trim().replace(/^W\//, ""));
+    // 引用符内のカンマは区切りとして扱わない。
+    const tags = [];
+    let current = "";
+    let quoted = false;
+    for (const character of value) {
+      if (character === '"') {
+        quoted = !quoted;
+        current += character;
+      } else if (character === "," && !quoted) {
+        tags.push(current.trim().replace(/^W\//, ""));
+        current = "";
+      } else {
+        current += character;
+      }
+    }
+    tags.push(current.trim().replace(/^W\//, ""));
     const etag = cached.headers.get("x-zoo-etag")?.trim().replace(/^W\//, "");
     // If-None-Match: * はどの版にも一致する。ETag は弱い比較で照合する。
     if (tags.includes("*") || (etag && tags.includes(etag)))
@@ -650,7 +665,10 @@ function withoutRange(request) {
 const freshAssetWork = new Map();
 
 function handleFreshAsset(request) {
-  const path = new URL(request.url, self.location.origin).pathname;
+  const url = new URL(request.url, self.location.origin);
+  const path = url.pathname;
+  // 共有はクエリを含む URL 単位。保存先は pathname で共通する。
+  const key = url.href;
   const sequence = ++freshAssetSequence;
   // Range / 条件付き GET は部分応答・304 になり得るので、共有もキャッシュ更新もしない。
   const headers = request.headers;
@@ -674,12 +692,12 @@ function handleFreshAsset(request) {
     }
     return fetchConditionalAsset(request, path, sequence);
   }
-  // 同じパスの同時取得を共有し、古い応答が新しい配色を上書きしないようにする。
-  const pending = freshAssetWork.get(path);
+  // 同じ URL の同時取得を共有し、古い応答が新しい配色を上書きしないようにする。
+  const pending = freshAssetWork.get(key);
   // 取得は共有しても、respondWith へ渡す本文は要求ごとに独立させる。
   if (pending) return pending.then((response) => response.clone());
-  const work = fetchFreshAsset(request, path, sequence).finally(() => freshAssetWork.delete(path));
-  freshAssetWork.set(path, work);
+  const work = fetchFreshAsset(request, path, sequence).finally(() => freshAssetWork.delete(key));
+  freshAssetWork.set(key, work);
   return work.then((response) => response.clone());
 }
 
