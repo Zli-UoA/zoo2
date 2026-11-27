@@ -506,6 +506,15 @@ async function sanitizedCopy(saved) {
   });
 }
 
+function cachedForConditional(request, cached) {
+  if (cached.type === "error") return cached;
+  // If-None-Match: * はどの版にも一致するため、保存版を 200 で返してはならない。
+  const value = request.headers?.get?.("if-none-match");
+  if (value && value.split(",").some((part) => part.trim() === "*"))
+    return new Response(null, { status: 304 });
+  return cached;
+}
+
 async function fetchConditionalAsset(request, path) {
   // 条件付き GET は共有もキャッシュ更新もしない。
   const headers = request.headers;
@@ -517,7 +526,7 @@ async function fetchConditionalAsset(request, path) {
     if (response.status === 304 || !response.ok || response.status >= 600) {
       if (precondition && (response.status === 0 || response.status >= 500)) return response;
       if (precondition || response.status < 500) return response;
-      const cached = await cachedFreshAsset(path);
+      const cached = cachedForConditional(request, await cachedFreshAsset(path));
       return cached.type === "error" ? response : cached;
     }
     // 200 が返っても try_files の HTML かもしれないので本文を検証する。
@@ -530,20 +539,43 @@ async function fetchConditionalAsset(request, path) {
     if (usable) return response;
     // HTML フォールバックなどは manifest として届けない。
     if (precondition) return Response.error();
-    return await cachedFreshAsset(path);
+    return cachedForConditional(request, await cachedFreshAsset(path));
   } catch {
     // If-Match などで指定された版は、保存済みの別版では代用できない。
     if (precondition) return Response.error();
-    return await cachedFreshAsset(path);
+    return cachedForConditional(request, await cachedFreshAsset(path));
   }
 }
 
-async function fetchRangeAsset(request, path) {
+async function fetchRangeAsset(request, path, precondition) {
   // 部分応答は共有もキャッシュ更新もしないが、取得期限とオフライン代替は適用する。
   try {
-    return await fetchBounded(request, { cache: "reload" });
+    const response = await fetchBounded(request, { cache: "reload" });
+    // 206 / 416 / その他の 4xx はそのまま返す。
+    if (
+      response.status === 206 ||
+      response.status === 416 ||
+      (response.status >= 400 && response.status < 500)
+    )
+      return response;
+    if (response.status >= 500) {
+      if (precondition) return response;
+      const cached = cachedForConditional(request, await cachedFreshAsset(path));
+      return cached.type === "error" ? response : cached;
+    }
+    // Range が無視され全文が返った場合は本文を検証する。
+    let usable = false;
+    try {
+      usable = await isUsableFreshAsset(path, response);
+    } catch {
+      usable = false;
+    }
+    if (usable) return response;
+    if (precondition) return Response.error();
+    return cachedForConditional(request, await cachedFreshAsset(path));
   } catch {
-    return await cachedFreshAsset(path);
+    if (precondition) return Response.error();
+    return cachedForConditional(request, await cachedFreshAsset(path));
   }
 }
 
@@ -560,7 +592,12 @@ function handleFreshAsset(request) {
     headers?.get("if-match") ||
     headers?.get("if-unmodified-since")
   ) {
-    if (headers.get("range")) return fetchRangeAsset(request, path);
+    if (headers.get("range"))
+      return fetchRangeAsset(
+        request,
+        path,
+        Boolean(headers.get("if-match") || headers.get("if-unmodified-since")),
+      );
     return fetchConditionalAsset(request, path);
   }
   // 同じパスの同時取得を共有し、古い応答が新しい配色を上書きしないようにする。

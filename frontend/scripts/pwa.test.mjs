@@ -1985,6 +1985,72 @@ test("a Range request falls back to the full cached manifest offline", async () 
   assert.equal(await response.text(), manifest);
 });
 
+test("a Range request with If-Match does not use a cached version offline", async () => {
+  const cacheContext = memoryCaches([
+    ["zoo-shell-v2", `${ORIGIN}/manifest.webmanifest`, basicResponse(validManifest("#ffffff"))],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+    headers: {
+      get: (name) =>
+        name.toLowerCase() === "range"
+          ? "bytes=0-10"
+          : name.toLowerCase() === "if-match"
+            ? '"abc"'
+            : null,
+    },
+  });
+  assert.equal(response.type, "error");
+});
+
+test("a Range request uses the cached manifest on a server error", async () => {
+  const manifest = validManifest("#000000");
+  const cacheContext = memoryCaches([
+    ["zoo-shell-v2", `${ORIGIN}/manifest.webmanifest`, basicResponse(manifest)],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () => new Response("unavailable", { status: 503 }),
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+    headers: { get: (name) => (name.toLowerCase() === "range" ? "bytes=0-10" : null) },
+  });
+  assert.equal(await response.text(), manifest);
+});
+
+test("If-None-Match: * returns 304 from a cached manifest", async () => {
+  const cacheContext = memoryCaches([
+    ["zoo-shell-v2", `${ORIGIN}/manifest.webmanifest`, basicResponse(validManifest("#ffffff"))],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+    headers: { get: (name) => (name.toLowerCase() === "if-none-match" ? "*" : null) },
+  });
+  assert.equal(response.status, 304);
+});
+
 test("a queried offline.html is cached and read under its pathname", async () => {
   let html = '<html><meta name="zoo-offline" content="true" />old</html>';
   const { handlers, cacheContext } = worker({
