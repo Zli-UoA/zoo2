@@ -329,7 +329,7 @@ struct NativeChatClient: ChatClient {
             // 投稿権限がないチャンネルなど、参加不足以外の 403 は `threadJoinRequired` にならず、参加せずに失敗する
             // （判定は `code` を優先し、`code` のない応答だけ本文で見る。`HTTPTransport.check`）。
             do {
-                guard let parentID, try await rejoinThread(messageID: parentID) else {
+                guard let parentID, try await api.rejoinThread(messageID: parentID) else {
                     throw ZooError.rejected(403, message)
                 }
             } catch {
@@ -345,22 +345,6 @@ struct NativeChatClient: ChatClient {
                 throw ZooError.rejected(403, message)
             }
         }
-    }
-
-    /// 参加が必要なスレッドへ参加する。参加できる状態でなければ false を返す。
-    private func rejoinThread(messageID: String) async throws -> Bool {
-        let path = "api/threads/\(try segment(messageID))"
-        // 参加状態（`membership`・`can_participate`・`thread_archive_at`）だけが要る。参加者の一覧（人数に比例する
-        // 読み取り）は要らないので、3つの呼び出しすべてで省く（サーバーは `participants=none` を受け付ける）。
-        let lean = ["participants": "none"]
-        // GET に本文を付けると URLSession が拒否するため、`write` ではなく本文なしの `data` で取得する。
-        let status = try JSONDecoder().decode(Envelope<ThreadMembership>.self, from: await api.data(path, query: lean)).data
-        guard status.can_participate else { return false }
-        if status.thread_archive_at != nil {
-            _ = try await api.data("\(path)/unarchive", method: "POST", query: lean)
-        }
-        if status.membership != "joined" { _ = try await api.data("\(path)/join", method: "POST", query: lean) }
-        return true
     }
 
     func edit(id: String, content: String) async throws -> Message {

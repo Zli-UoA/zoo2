@@ -296,18 +296,24 @@ final class E2eeController: ConversationEncryption {
         defer { EncryptedAttachmentFiles.shared.removeAll() }
         guard let files else { return }
         let metadata = try files.metadata(userID: userIDForStore)
-        if let metadata, metadata.registered {
-            let entry = PendingDeviceDeletion(server: serverKey, user: userIDForStore, device: metadata.device_id)
+        if let metadata {
+            let devices = Set((metadata.pending_deletions ?? []) + (metadata.registered ? [metadata.device_id] : [])).sorted()
             let pending = PendingDeviceDeletions(root: files.directory.deletingLastPathComponent())
-            let recorded = pending.add(entry)
-            let removed = await e2eeWithTimeout(.seconds(5)) { [devicesAPI] () -> Bool? in
+            let entries = devices.map { PendingDeviceDeletion(server: serverKey, user: userIDForStore, device: $0) }
+            var unrecorded = Set(entries.filter { !pending.add($0) }.map(\.device))
+            _ = await e2eeWithTimeout(.seconds(5)) { [devicesAPI] () -> Bool? in
                 guard let api = devicesAPI else { return false }
-                do { try await api.removeDevice(metadata.device_id); return true }
-                catch let failure as E2eeAPIError where failure.status == 404 { return true }
-                catch { return false }
+                for entry in entries {
+                    if Task.isCancelled { return false }
+                    do { try await api.removeDevice(entry.device) }
+                    catch let failure as E2eeAPIError where failure.status == 404 {}
+                    catch { continue }
+                    unrecorded.remove(entry.device)
+                    pending.remove(entry)
+                }
+                return true
             }
-            if removed == true { pending.remove(entry) }
-            else if !recorded {
+            if !unrecorded.isEmpty {
                 // 再試行先を失わないよう、ローカル状態を残して失敗を画面へ返す。
                 throw CocoaError(.fileWriteUnknown)
             }

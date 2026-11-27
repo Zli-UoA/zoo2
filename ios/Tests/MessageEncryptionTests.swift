@@ -1,5 +1,7 @@
 import Foundation
+import CryptoKit
 import Testing
+import UserNotifications
 import ZooCrypto
 @testable import Zoo
 
@@ -31,15 +33,21 @@ private final class FakeMessageServer: E2eeRequesting {
     var pagedRecipients = false
     var afterRecipientsSnapshot: (() async throws -> Void)?
     var invalidNext: JSONValue?
+    var omitReceiver = false
+    var unconfiguredUser: String?
+    var requireThreadJoin = false
+    var threadJoined = false
+    var threadCanParticipate = true
+    var postedBodies: [[String: JSONValue]] = []
 
     init(setup: FakeSetupServer, sender: Device, receiver: Device) { self.setup = setup; self.sender = sender; self.receiver = receiver }
 
     func snapshot() async throws -> [String: JSONValue] {
         guard case .object(var root) = parse(try await setup.queryOwnKeys(userID: user)) else { fatalError() }
-        root["user_ids"] = .array([.string(user)])
+        root["user_ids"] = .array(([user] + (unconfiguredUser.map { [$0] } ?? [])).map(JSONValue.string))
         root["membership_epoch"] = .number(Double(epoch))
         var devices: [String: JSONValue] = [:]
-        for device in [sender, receiver] { devices[device.store.deviceID] = parse(device.store.deviceKeys()) }
+        for device in omitReceiver ? [sender] : [sender, receiver] { devices[device.store.deviceID] = parse(device.store.deviceKeys()) }
         root["device_keys"] = .object([user: .object(devices)])
         return root
     }
@@ -70,6 +78,8 @@ private final class FakeMessageServer: E2eeRequesting {
         case "api/messages", "api/messages/\(messageID)":
             guard case .object? = body?["ciphertext"] else { throw ZooError.invalidResponse }
             posts += 1
+            postedBodies.append(body ?? [:])
+            if requireThreadJoin && !threadJoined { throw E2eeAPIError(status: 403, code: "THREAD_JOIN_REQUIRED") }
             if staleOnce && posts == 1 {
                 epoch = 2
                 throw E2eeAPIError(status: 409, code: "E2EE_STALE_EPOCH", currentEpoch: 2)
@@ -77,6 +87,13 @@ private final class FakeMessageServer: E2eeRequesting {
             accepted = body ?? [:]
             return .object([:])
         default:
+            if path.hasPrefix("api/threads/") {
+                #expect(query["participants"] == "none")
+                if path.hasSuffix("/join") { threadJoined = true; return .object([:]) }
+                if path.hasSuffix("/unarchive") { return .object([:]) }
+                return .object(["membership": .string("left"), "can_participate": .bool(threadCanParticipate),
+                                "thread_archive_at": .string("2026-11-27T00:00:00Z")])
+            }
             fatalError("Unexpected request: \(path)")
         }
     }
@@ -116,9 +133,55 @@ struct MessageEncryptionTests {
 
     private func row(_ server: FakeMessageServer) -> EncryptedRow {
         let ciphertext = server.accepted["ciphertext"].map(dump) ?? ""
-        return EncryptedRow(channelID: channel, id: messageID, parentID: nil, userID: user, kind: "message",
+        return EncryptedRow(channelID: channel, id: server.accepted["id"]?.string ?? messageID, parentID: server.accepted["parent_id"]?.string, userID: user, kind: "message",
                             epoch: number(server.accepted["epoch"]), revision: number(server.accepted["revision"]),
                             ciphertext: ciphertext)
+    }
+
+    @Test func epochが同じでも配布先から外れた端末へ後続の本文を漏らさない() async throws {
+        let (server, sender, receiver, encryption, _) = try await makePair()
+        defer { sender.cleanUp(); receiver.cleanUp() }
+        server.staleOnce = false
+        try await encryption.send(channel: channel, id: messageID, parent: nil, body: "最初の本文")
+        _ = try receiver.store.processToDevice(server.delivered, keysQuery: dump(.object(try await server.snapshot())))
+        let previous = row(server)
+        let reader = MessageEncryption(store: { receiver.store }, api: server)
+        #expect(reader.decrypt(previous).body == "最初の本文")
+        server.omitReceiver = true
+        try await encryption.send(channel: channel, id: UUID().uuidString.lowercased(), parent: nil, body: "除外後の本文")
+        let next = row(server)
+        #expect(next.epoch == previous.epoch)
+        #expect(parse(next.ciphertext).object?["session_id"] != parse(previous.ciphertext).object?["session_id"])
+        #expect(reader.decrypt(next).notice == E2eeText.keyMissing)
+    }
+
+    @Test func 暗号化未設定の相手は要約に残し配布可能な端末へ送信する() async throws {
+        let (server, sender, receiver, encryption, _) = try await makePair()
+        defer { sender.cleanUp(); receiver.cleanUp() }
+        let missing = UUID().uuidString.lowercased()
+        server.unconfiguredUser = missing
+        #expect(try await encryption.summary(channel: channel).undeliverable.contains { $0.userID == missing && $0.reason == .notSetUp })
+        try await encryption.send(channel: channel, id: messageID, parent: nil, body: "設定済みの相手へ")
+        _ = try receiver.store.processToDevice(server.delivered, keysQuery: dump(.object(try await server.snapshot())))
+        #expect(MessageEncryption(store: { receiver.store }, api: server).decrypt(row(server)).body == "設定済みの相手へ")
+    }
+
+    @Test("暗号化返信は再参加して同じ暗号文を一度だけ再送する", arguments: [false, true])
+    func rejoinsEncryptedThread(canParticipate: Bool) async throws {
+        let (server, sender, receiver, encryption, _) = try await makePair()
+        defer { sender.cleanUp(); receiver.cleanUp() }
+        server.staleOnce = false
+        server.requireThreadJoin = true
+        server.threadCanParticipate = canParticipate
+        let parent = UUID().uuidString.lowercased()
+        if canParticipate {
+            try await encryption.send(channel: channel, id: messageID, parent: parent, body: "再参加後の返信")
+            #expect(server.threadJoined && server.posts == 2)
+            #expect(server.postedBodies[0] == server.postedBodies[1])
+        } else {
+            await #expect(throws: E2eeAPIError.self) { try await encryption.send(channel: channel, id: messageID, parent: parent, body: "送らない返信") }
+            #expect(!server.threadJoined && server.posts == 1)
+        }
     }
 
     @Test("配布先や鍵配布の待機中に観測した新しいepochを送信に反映する", arguments: [false, true])
@@ -255,12 +318,32 @@ struct MessageEncryptionTests {
         let accepted = row(server)
         let cipherObject = try JSONSerialization.jsonObject(with: Data(accepted.ciphertext.utf8))
         func info(user: String = user, recipient: String = user, ciphertext: Any = cipherObject) -> [AnyHashable: Any] {
-            ["user_id": user, "e2ee_v1": [
+            ["user_id": user, "channel_id": channel, "message_id": messageID, "e2ee_v1": [
                 "recipient_id": recipient,
                 "message": ["channel_id": channel, "message_id": messageID, "parent_id": NSNull(), "user_id": user,
                             "message_kind": "message", "epoch": accepted.epoch, "revision": accepted.revision, "ciphertext": ciphertext]]]
         }
         #expect(NotificationE2ee.body(userInfo: info(), activeUserID: user, roots: [root], loadKey: { _ in storageKey }) == secret)
+        let notice = UUID().uuidString.lowercased()
+        let previewKey = NotificationPreviewKey(userID: user, secret: "通知テスト用のダミー")
+        let original = UNMutableNotificationContent()
+        original.body = "新しい通知があります"
+        original.userInfo = info()
+        original.userInfo["notification_id"] = notice
+        let aad = Data(["zoo-preview-v1", user, notice, channel, messageID].joined(separator: "|").utf8)
+        let plaintext = try JSONEncoder().encode(["title": "Zoo", "body": "新しいメッセージ", "notificationType": "dm"])
+        original.userInfo["preview_v1"] = try AES.GCM.seal(plaintext, using: SymmetricKey(data: previewKey.key), authenticating: aad).combined?.base64EncodedString()
+        #expect(NotificationE2ee.content(for: original, previewKey: previewKey, roots: [root], loadKey: { _ in storageKey }).body == secret)
+        let newKey = NotificationPreviewKey(userID: user, secret: "再登録後のテスト用ダミー")
+        var reads = 0
+        #expect(NotificationE2ee.content(for: original, previewKey: newKey, roots: [root], loadKey: { _ in reads += 1; return storageKey }).body == original.body)
+        #expect(reads == 0)
+        var mismatch = info()
+        mismatch["channel_id"] = UUID().uuidString.lowercased()
+        #expect(NotificationE2ee.body(userInfo: mismatch, activeUserID: user, roots: [root], loadKey: { _ in storageKey }) == nil)
+        mismatch = info()
+        mismatch["message_id"] = UUID().uuidString.lowercased()
+        #expect(NotificationE2ee.body(userInfo: mismatch, activeUserID: user, roots: [root], loadKey: { _ in storageKey }) == nil)
         #expect(NotificationE2ee.body(userInfo: info(), activeUserID: UUID().uuidString, roots: [root], loadKey: { _ in
             Issue.record("別アカウントの通知で保存鍵を読んだ"); return storageKey
         }) == nil)

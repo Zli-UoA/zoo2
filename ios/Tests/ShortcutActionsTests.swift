@@ -193,7 +193,7 @@ struct ShortcutActionsTests {
     }
 
     @Test("別アカウント・無効な宛先・編集不可の会話・空本文には送信しない",
-          arguments: ["account", "inactive", "bot", "encrypted", "archived", "deleted", "empty", "long"])
+          arguments: ["account", "inactive", "bot", "encrypted", "downgrade", "unreadableHistory", "unavailableHistory", "archived", "deleted", "empty", "long"])
     func preventsInvalidSend(kind: String) async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
@@ -216,6 +216,16 @@ struct ShortcutActionsTests {
         }
         let workspace = WorkspaceStore(client: harness.client, user: user, recentEmojiDefaults: nil)
         defer { workspace.shutdown() }
+        let (files, _, directory) = makeFiles()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        if kind == "downgrade" || kind == "unreadableHistory" {
+            let store = try #require(try CryptoStore.open(files, userID: user.id)).store
+            try store.rememberEncryptedChannels([channel.id])
+            store.close()
+            if kind == "unreadableHistory" { try Data("壊れた履歴".utf8).write(to: directory.appendingPathComponent(CryptoStore.stateFile)) }
+            workspace.e2ee = E2eeController.make(api: harness.api, userID: user.id, files: files)
+        }
+        if kind == "unavailableHistory" { workspace.encryptionStorageUnavailable = true }
         var target = recipient(workspace)
         if kind == "account" { target = .init(id: "別アカウント", personID: target.personID, name: target.name, username: target.username) }
         let content = kind == "empty" ? " \n" : kind == "long" ? String(repeating: "あ", count: 40_001) : "本文"

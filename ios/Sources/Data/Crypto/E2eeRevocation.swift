@@ -220,7 +220,7 @@ final class E2eeRevocation {
             } catch RevocationError.conflict(let code) where code == "E2EE_SSSS_CONFLICT" {
                 // 応答をなくして送り直したか、別の端末が先に書いた。読み直して、自分の書き込みが済んでいれば続ける。
                 let current = try await api.call("api/e2ee/secret_storage", method: "GET", query: [:], body: nil, reauth: nil, headers: [:])
-                guard summary.scope == "full", current.object?["default_key_id"]?.string == summary.key_id else { throw RevocationError.conflict(code) }
+                guard try revocation.secretStorageMatches(secretStorage: rvText(current)) else { throw RevocationError.conflict(code) }
                 secretsRevision = current.object?["secrets_revision"]?.uint
             }
             revocation.secretStorageSaved(secretsRevision: secretsRevision)
@@ -283,30 +283,38 @@ final class E2eeRevocation {
             let versions = try await api.call("api/e2ee/key_backup/versions", method: "GET", query: [:], body: nil, reauth: nil, headers: [:])
             var proof: String??
             for old in try revocation.versionsToMigrate(versions: rvText(versions)) {
-                guard let rows = try await backupRows(old.version) else { continue }
-                let result = try revocation.reencryptRows(oldKey: old.key, rows: rows.map(rvText))
-                revocation.recordDropped(version: old.version, dropped: result.dropped)
-                try store.saveRevocation(revocation)
-                if proof == nil {
-                    let target = try await api.call("api/e2ee/key_backup/versions/\(newVersion)", method: "GET", query: [:], body: nil, reauth: nil, headers: [:])
-                    if let object = target.object, object["upload_key"] != nil, object["upload_key"]?.string == nil { throw ZooError.invalidResponse }
-                    if let uploadKey = target.object?["upload_key"]?.string {
-                        proof = .some(try revocation.uploadProof(uploadKey: uploadKey, userId: userID, version: newVersion))
-                    } else { proof = .some(nil) }
-                }
-                let migrated = try result.rows.map(rvValue)
-                var start = 0
-                while start < migrated.count {
-                    let batch = Array(migrated[start..<min(start + Self.backupBatch, migrated.count)])
-                    start += Self.backupBatch
-                    var headers: [String: String] = [:]
-                    if let value = proof ?? nil { headers["X-Zoo-Backup-Proof"] = value }
-                    _ = try await guarded {
-                        try await api.call("api/e2ee/key_backup/keys", method: "POST",
-                                           query: ["version": newVersion, "secrets_revision": String(secretsRevision ?? 0)],
-                                           body: ["sessions": .array(batch)], reauth: nil, headers: headers)
+                var dropped: UInt64 = 0
+                let found = try await forEachBackupPage(old.version) { rows in
+                    let encoded = rows.map(rvText)
+                    let result = try await Task.detached(priority: .userInitiated) {
+                        try revocation.reencryptRows(oldKey: old.key, rows: encoded)
+                    }.value
+                    try Task.checkCancellation()
+                    dropped += result.dropped
+                    if proof == nil {
+                        let target = try await api.call("api/e2ee/key_backup/versions/\(newVersion)", method: "GET", query: [:], body: nil, reauth: nil, headers: [:])
+                        if let object = target.object, object["upload_key"] != nil, object["upload_key"]?.string == nil { throw ZooError.invalidResponse }
+                        if let uploadKey = target.object?["upload_key"]?.string {
+                            proof = .some(try revocation.uploadProof(uploadKey: uploadKey, userId: userID, version: newVersion))
+                        } else { proof = .some(nil) }
                     }
+                    let migrated = try result.rows.map(rvValue)
+                    var start = 0
+                    while start < migrated.count {
+                        let batch = Array(migrated[start..<min(start + Self.backupBatch, migrated.count)])
+                        start += Self.backupBatch
+                        var headers: [String: String] = [:]
+                        if let value = proof ?? nil { headers["X-Zoo-Backup-Proof"] = value }
+                        _ = try await guarded {
+                            try await api.call("api/e2ee/key_backup/keys", method: "POST",
+                                               query: ["version": newVersion, "secrets_revision": String(secretsRevision ?? 0)],
+                                               body: ["sessions": .array(batch)], reauth: nil, headers: headers)
+                        }
+                    }
+                    revocation.recordDropped(version: old.version, dropped: dropped)
+                    try store.saveRevocation(revocation)
                 }
+                guard found else { continue }
                 // 今の版ではないので、再認証は要らない。消えていれば（404）何もしない。
                 do { _ = try await api.call("api/e2ee/key_backup/versions/\(old.version)", method: "DELETE", query: [:], body: nil, reauth: nil, headers: [:]) }
                 catch let failure as E2eeAPIError where failure.status == 404 {}
@@ -389,26 +397,26 @@ final class E2eeRevocation {
         return pins
     }
 
-    private func backupRows(_ version: String) async throws -> [JSONValue]? {
-        var rows: [JSONValue] = []
+    private func forEachBackupPage(_ version: String, consume: ([JSONValue]) async throws -> Void) async throws -> Bool {
         var after: String?
         var seen = Set<String>()
-        do {
-            repeat {
-                var query = ["version": version]
-                if let after { query["after"] = after }
-                let page = try await api.call("api/e2ee/key_backup/keys", method: "GET", query: query, body: nil, reauth: nil, headers: [:])
-                guard let sessions = page.object?["sessions"]?.array else { throw ZooError.invalidResponse }
-                rows += sessions
-                switch page.object?["next"] {
-                case nil, .null: after = nil
-                case .string(let value): after = value
-                default: throw ZooError.invalidResponse
-                }
-                if let after, !seen.insert(after).inserted { throw ZooError.invalidResponse }
-            } while after != nil
-        } catch let failure as E2eeAPIError where failure.status == 404 { return nil }
-        return rows
+        repeat {
+            try Task.checkCancellation()
+            var query = ["version": version]
+            if let after { query["after"] = after }
+            let page: JSONValue
+            do { page = try await api.call("api/e2ee/key_backup/keys", method: "GET", query: query, body: nil, reauth: nil, headers: [:]) }
+            catch let failure as E2eeAPIError where failure.status == 404 { return false }
+            guard let sessions = page.object?["sessions"]?.array, sessions.count <= Self.backupBatch else { throw ZooError.invalidResponse }
+            switch page.object?["next"] {
+            case nil, .null: after = nil
+            case .string(let value): after = value
+            default: throw ZooError.invalidResponse
+            }
+            if let after, !seen.insert(after).inserted { throw ZooError.invalidResponse }
+            try await consume(sessions)
+        } while after != nil
+        return true
     }
 
     private func uploadSignatures(_ signatures: [JSONValue], reauth: String?) async throws {

@@ -28,12 +28,12 @@ final class NotificationService: UNNotificationServiceExtension {
 
         let keys = NotificationPreviewKeyStore()
         let key = try? keys.load()
-        var content = NotificationPreview.content(for: fallback, key: key)
+        var content = fallback
         // 暗号化チャンネルの通知は、暗号文の行（`e2ee_v1`）から、この端末の暗号ストアで本文を復号する。
         // 復号できなければ、プレビューのまま（「新しいメッセージ」）。
         let storageKey = Self.storageKey
         if let key {
-            content = NotificationE2ee.content(for: content, activeUserID: key.userID, roots: NotificationE2ee.roots(), loadKey: storageKey)
+            content = NotificationE2ee.content(for: fallback, previewKey: key, roots: NotificationE2ee.roots(), loadKey: storageKey)
         }
         // 再照合中も期限切れの汎用通知を渡せるよう、配信権をまだ取り出さない。
         let valid = key != nil && (try? keys.load()) == key

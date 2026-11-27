@@ -84,6 +84,18 @@ extension E2eeRequesting {
     func e2eeJSON(_ path: String, method: String, body: [String: JSONValue]?) async throws -> JSONValue {
         try await e2eeJSON(path, method: method, query: [:], body: body)
     }
+
+    /// 平文・暗号文とも、参加者の一覧を取らずに再参加の条件を確かめる。
+    func rejoinThread(messageID: String) async throws -> Bool {
+        guard UUID(uuidString: messageID) != nil else { throw ZooError.invalidResponse }
+        let path = "api/threads/\(messageID)", lean = ["participants": "none"]
+        let value = try await e2eeJSON(path, method: "GET", query: lean, body: nil)
+        let status = try JSONDecoder().decode(ThreadMembership.self, from: JSONEncoder().encode(value))
+        guard status.can_participate else { return false }
+        if status.thread_archive_at != nil { _ = try await e2eeJSON("\(path)/unarchive", method: "POST", query: lean, body: nil) }
+        if status.membership != "joined" { _ = try await e2eeJSON("\(path)/join", method: "POST", query: lean, body: nil) }
+        return true
+    }
 }
 
 extension APIClient: E2eeRequesting {
@@ -259,7 +271,9 @@ final class MessageEncryption {
             }
         }
         // 利用者に関わる警告（自分のマスター鍵の変更など）は、ユーザーに結び付かないので、自分の分として出す。
-        if !distribution.warnings.isEmpty, result.isEmpty { result.append(Undeliverable(userID: store.userID, reason: .warning)) }
+        if !distribution.warnings.isEmpty, !result.contains(where: { $0.userID == store.userID }) {
+            result.append(Undeliverable(userID: store.userID, reason: .warning))
+        }
         return result
     }
 
@@ -275,11 +289,12 @@ final class MessageEncryption {
         return RecipientSummary(added: added, undeliverable: undeliverable(store, distribution))
     }
 
-    /// 配布先の端末。鍵を配れない参加者がいれば、黙って除外せずに、送らない（Web での再検証のあとで、再び試せる）。
+    /// 自分の鍵を信頼できない場合は止め、受信者の未設定などは既存の配布先の要約に表示する。
     private func recipients(_ store: CryptoStore, channel: String, minimum: UInt64) async throws -> (UInt64, [VerifiedDeviceKeys]) {
         let (epoch, distribution) = try await evaluate(store, channel: channel, minimum: minimum)
         let blocked = undeliverable(store, distribution)
-        guard blocked.isEmpty else { throw MessageEncryptionError.undeliverableUsers(blocked) }
+        let ownFailures = blocked.filter { $0.userID == store.userID }
+        guard ownFailures.isEmpty else { throw MessageEncryptionError.undeliverableUsers(ownFailures) }
         // 送れるので、配布先を記録する（次の「前回から増えた配布先」の基準）。
         try? store.recordMembers(channel: channel, users: Array(Set(distribution.users.keys).subtracting([store.userID])))
         return (epoch, distribution.devices)
@@ -367,6 +382,7 @@ final class MessageEncryption {
                 // 端末を作り直した（送信者の鍵が変わった）ときも、古いセッションを捨てる。受信側は古い鍵の受信用セッションしか
                 // 持たず、`shared` も古い端末の分なので、新しい鍵を配り直せるようにする。
                 if let cached = outbound[channel], cached.owner !== store || cached.senderKey != store.curve25519Key
+                    || !cached.shared.isSubset(of: Set(devices.map(deviceKey)))
                     || cached.session.needsRotation(nowMs: nowMs, currentEpoch: epoch) {
                     discard(channel)
                 }
@@ -425,7 +441,13 @@ final class MessageEncryption {
                                                    "channel": .bool(mentions.channel), "here": .bool(mentions.here)])
                 }
                 do {
-                    _ = try await request(edit == nil ? "api/messages" : "api/messages/\(id)", method: edit == nil ? "POST" : "PATCH", body: payload)
+                    do {
+                        _ = try await request(edit == nil ? "api/messages" : "api/messages/\(id)", method: edit == nil ? "POST" : "PATCH", body: payload)
+                    } catch let failure as E2eeAPIError where failure.status == 403 && failure.code == "THREAD_JOIN_REQUIRED" {
+                        guard edit == nil, let parent, try await api.rejoinThread(messageID: parent) else { throw failure }
+                        // 再参加後も同じ ID と暗号文を一度だけ送る。
+                        _ = try await request("api/messages", method: "POST", body: payload)
+                    }
                     return
                 } catch let failure as E2eeAPIError where failure.code == "E2EE_STALE_EPOCH" {
                     discard(channel)

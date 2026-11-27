@@ -53,6 +53,8 @@ struct ShapeState: Codable, Sendable, Equatable {
     var visibility: [String: ShapeRowVisibility] = [:]
     private var cacheBuster: String?
 
+    init(offset: String = "-1") { self.offset = offset }
+
     var query: [String: String] {
         var result = ["offset": offset]
         result["handle"] = handle

@@ -23,6 +23,7 @@ struct CryptoStoreFiles: Sendable {
         let device_id: String
         let registered: Bool
         let encrypted_channels: [String]?
+        let pending_deletions: [String]?
     }
 
     /// 鍵を開かずに履歴を読む。存在するが読めない状態を、新規アカウントとして扱わない。

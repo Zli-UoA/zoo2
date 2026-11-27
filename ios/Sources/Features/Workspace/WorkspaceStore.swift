@@ -365,7 +365,7 @@ final class WorkspaceStore {
         applyingDowngradeCheck(reconcileChannelCore(incoming, confirmsWrite: confirmsWrite))
     }
 
-    private func applyingDowngradeCheck(_ reconciled: Channel) -> Channel {
+    func applyingDowngradeCheck(_ reconciled: Channel) -> Channel {
         var channel = reconciled
         if encryptionStorageUnavailable { channel.encrypted = true; return channel }
         guard let e2ee else { return channel }

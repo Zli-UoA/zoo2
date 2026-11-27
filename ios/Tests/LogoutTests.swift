@@ -111,6 +111,31 @@ struct LogoutTests {
         await Task.yield()
     }
 
+    @Test @MainActor func 新端末が未登録でも削除待ちの旧端末をログアウト後へ引き継ぐ() async throws {
+        let root = root(), key = MemoryKey()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let files = CryptoStoreFiles(directory: root.appendingPathComponent("account"), keys: StorageKeyStore(backing: key))
+        var store = try #require(try CryptoStore.open(files, userID: user)).store
+        let oldID = store.deviceID
+        try store.markRegistered()
+        store.close()
+        try key.delete()
+        store = try #require(try CryptoStore.open(files, userID: user)).store
+        #expect(!store.isRegistered && store.pendingDeviceDeletions == [oldID])
+        store.close()
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let requested = Mutex<[String]>([])
+        harness.stub { request in
+            requested.withLock { $0.append(request.url?.path ?? "") }
+            return (500, [:], Data())
+        }
+        try await E2eeController.make(api: harness.api, userID: user, files: files).finishLogout()
+        #expect(requested.withLock { $0 } == ["/api/e2ee/devices/\(oldID)"])
+        #expect(PendingDeviceDeletions(root: root).load()?.map(\.device) == [oldID])
+        #expect(!FileManager.default.fileExists(atPath: files.directory.path))
+    }
+
     @Test @MainActor func 期限までに終わらない処理は取り消して待たない() async {
         let started = Date()
         let result = await e2eeWithTimeout(.milliseconds(50)) { () -> Bool? in

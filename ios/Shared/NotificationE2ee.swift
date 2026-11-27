@@ -37,6 +37,8 @@ enum NotificationE2ee {
               let recipient = e2ee["recipient_id"] as? String, recipient.lowercased() == user.lowercased(),
               let row = e2ee["message"] as? [String: Any],
               let channelID = row["channel_id"] as? String, let messageID = row["message_id"] as? String,
+              let noticeChannel = info["channel_id"] as? String, noticeChannel == channelID,
+              let noticeMessage = info["message_id"] as? String, noticeMessage == messageID,
               let sender = row["user_id"] as? String, let kind = row["message_kind"] as? String,
               let epoch = (row["epoch"] as? NSNumber)?.uint64Value, let revision = (row["revision"] as? NSNumber)?.uint64Value,
               let ciphertext = row["ciphertext"], JSONSerialization.isValidJSONObject(ciphertext),
@@ -70,11 +72,13 @@ enum NotificationE2ee {
     }
 
     /// 通知の内容に、復号した本文を入れる。リアクションの通知は、今までどおり「リアクション: 」を前に付ける。
-    static func content(for original: UNNotificationContent, activeUserID: String, roots: [URL], loadKey: (String) -> Data?) -> UNNotificationContent {
-        guard let body = body(userInfo: original.userInfo, activeUserID: activeUserID, roots: roots, loadKey: loadKey),
-              let content = original.mutableCopy() as? UNMutableNotificationContent else { return original }
+    static func content(for original: UNNotificationContent, previewKey: NotificationPreviewKey, roots: [URL], loadKey: (String) -> Data?) -> UNNotificationContent {
+        let preview = NotificationPreview.content(for: original, key: previewKey)
+        guard preview.userInfo[NotificationPreview.renderedKey] as? Bool == true,
+              let body = body(userInfo: preview.userInfo, activeUserID: previewKey.userID, roots: roots, loadKey: loadKey),
+              let content = preview.mutableCopy() as? UNMutableNotificationContent else { return preview }
         // プレビューが「リアクション: 」を付けていたら（リアクションの通知）、復号した本文にも付ける。
-        let isReaction = original.body.hasPrefix("リアクション: ")
+        let isReaction = preview.body.hasPrefix("リアクション: ")
         content.body = isReaction ? "リアクション: " + body : body
         return content
     }

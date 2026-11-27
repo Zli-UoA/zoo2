@@ -22,6 +22,11 @@ private final class RevocationServer: E2eeRevocationAPI {
     var requireReauth = true
     /// 次の 1 回だけ、このパスの要求を通信エラーにする（途中で止めて再開するテスト）。
     var failOnce: String?
+    var loseStorageResponse = false
+    var backupPages: [String: [JSONValue]] = [:]
+    var backupTrace: [String] = []
+    var uploadedRows: [JSONValue] = []
+    var uploadFailure: Int?
 
     init(from server: FakeSetupServer, userID: String) async throws {
         storage = parse(try await server.secretStorage())
@@ -55,9 +60,13 @@ private final class RevocationServer: E2eeRevocationAPI {
             storage = ["default_key_id": keyID, "keys": .object([keyID.string ?? "": body?["key"] ?? .null]),
                        "secrets": .object(secrets), "secrets_revision": .number(Double(revision)),
                        "slots": body?["slots"] ?? .array([])]
+            if loseStorageResponse { loseStorageResponse = false; throw URLError(.networkConnectionLost) }
             return .object(["secrets_revision": .number(Double(revision))])
         case ("GET", "api/e2ee/secret_storage"): return .object(storage)
         case ("POST", "api/e2ee/secret_storage/secrets"):
+            guard body?["expected_secrets_revision"]?.uint == storage["secrets_revision"]?.uint else {
+                throw E2eeAPIError(status: 409, code: "E2EE_SSSS_CONFLICT")
+            }
             let revision = (storage["secrets_revision"]?.uint ?? 0) + 1
             var secrets = storage["secrets"]?.object ?? [:]
             for (name, secret) in body?["secrets"]?.object ?? [:] {
@@ -67,6 +76,7 @@ private final class RevocationServer: E2eeRevocationAPI {
             }
             storage["secrets"] = .object(secrets)
             storage["secrets_revision"] = .number(Double(revision))
+            if loseStorageResponse { loseStorageResponse = false; throw URLError(.networkConnectionLost) }
             return .object(["secrets_revision": .number(Double(revision))])
         case ("POST", "api/e2ee/cross_signing/keys"):
             for (field, target) in [("master_key", "master_keys"), ("self_signing_key", "self_signing_keys"), ("user_signing_key", "user_signing_keys")] {
@@ -95,10 +105,20 @@ private final class RevocationServer: E2eeRevocationAPI {
             guard let current = versions.last(where: { $0.object?["deleted"] != .bool(true) }) else { throw E2eeAPIError(status: 404, code: nil) }
             return current
         case ("GET", "api/e2ee/tofu_pins"): return .object(["pins": .array([]), "next": .null])
-        case ("GET", "api/e2ee/key_backup/keys"): return .object(["sessions": .array([]), "next": .null])
+        case ("GET", "api/e2ee/key_backup/keys"):
+            let cursor = query["after"] ?? "first"
+            backupTrace.append("get:\(cursor)")
+            let rows = backupPages[cursor] ?? []
+            return .object(["sessions": .array(rows), "next": cursor == "first" && backupPages["second"] != nil ? .string("second") : .null])
+        case ("POST", "api/e2ee/key_backup/keys"):
+            backupTrace.append("post")
+            if let uploadFailure { throw E2eeAPIError(status: uploadFailure, code: nil) }
+            uploadedRows += body?["sessions"]?.array ?? []
+            return .null
         default:
             if method == "DELETE", path.hasPrefix("api/e2ee/key_backup/versions/") {
                 let version = String(path.dropFirst("api/e2ee/key_backup/versions/".count))
+                backupTrace.append("delete:\(version)")
                 deleted.append(version)
                 versions = versions.map { value in
                     guard case .object(var object) = value, object["version"]?.string == version else { return value }
@@ -241,6 +261,45 @@ struct RevocationTests {
         #expect(server.requests.contains("POST api/e2ee/cross_signing/signatures"))
         // 暗号ストアの自分の鍵は、保存した新しい鍵にそろい、新しい SSSS の版を覚えている。
         #expect(device.store.secretsRevision == 2)
+    }
+
+    @Test func 端末だけの失効は保存応答を失っても再起動後に同じ書込みから再開する() async throws {
+        let (device, server, unlocked, recoveryKey) = try await prepared()
+        defer { device.cleanUp() }
+        let controller = E2eeRevocation(store: { device.store }, api: server, setup: device.setup, userID: user)
+        _ = try await controller.begin(scope: .deviceOnly, deletedDevices: [], unlocked: unlocked)
+        server.loseStorageResponse = true
+        await #expect(throws: URLError.self) { try await controller.run(reauth: "token") }
+        #expect(server.storage["secrets_revision"]?.uint == 2)
+        try device.restart()
+        let current = try #require(try parseSecretStorage(userId: user, response: text(.object(server.storage))))
+        let retry = E2eeRevocation(store: { device.store }, api: server, setup: device.setup, userID: user)
+        _ = try retry.resume(unlocked: current.unlockWithRecoveryKey(recoveryKey: RecoveryKey.parse(input: recoveryKey)))
+        #expect(try await retry.run(reauth: "token").stage == "verified")
+        #expect(server.storage["secrets_revision"]?.uint == 2)
+    }
+
+    @Test("旧バックアップはページの送信成功後に次ページを読み最後に削除する", arguments: [404, 500])
+    func migratesBackupPageByPage(failedStatus: Int) async throws {
+        let (device, server, unlocked, _) = try await prepared()
+        defer { device.cleanUp() }
+        let capture = CapturingRequests(user: user, store: { device.store }, setupServer: device.server)
+        try await MessageEncryption(store: { device.store }, api: capture).send(
+            channel: UUID().uuidString.lowercased(), id: UUID().uuidString.lowercased(), parent: nil, body: "移行する本文")
+        _ = try await device.setup.uploadKeyBackup()
+        let row = try #require(device.server.backupRows.values.first)
+        server.backupPages = ["first": [row], "second": [row]]
+        let controller = E2eeRevocation(store: { device.store }, api: server, setup: device.setup, userID: user)
+        _ = try await controller.begin(scope: .deviceOnly, deletedDevices: [], unlocked: unlocked)
+        server.uploadFailure = failedStatus
+        await #expect(throws: E2eeAPIError.self) { try await controller.run(reauth: "token") }
+        #expect(server.backupTrace == ["get:first", "post"])
+        #expect(server.deleted.isEmpty && server.uploadedRows.isEmpty)
+        server.uploadFailure = nil
+        server.backupTrace = []
+        #expect(try await controller.run(reauth: "token").stage == "verified")
+        #expect(server.backupTrace == ["get:first", "post", "get:second", "post", "delete:1"])
+        #expect(server.uploadedRows.count == 2 && server.deleted == ["1"])
     }
 
     @Test func 全範囲の失効は新しいSSSS鍵とマスター鍵を作り直し古いリカバリーキーを使えなくする() async throws {

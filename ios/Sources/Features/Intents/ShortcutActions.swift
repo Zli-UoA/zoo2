@@ -89,7 +89,7 @@ struct ShortcutActions {
     func send(_ content: String, to recipient: ShortcutRecipient) async throws -> Message {
         try Self.validateMessage(content)
         let generations = workspace.channelRevocationGenerations
-        let channel = try await directMessage(to: recipient)
+        let channel = workspace.applyingDowngradeCheck(try await directMessage(to: recipient))
         guard workspace.isChannelAccessCurrent(channel.id, since: generations) else { throw CancellationError() }
         guard channel.canPost else { throw ZooError.auth("暗号化された会話にはSiriから送信できません。") }
         let message: Message
