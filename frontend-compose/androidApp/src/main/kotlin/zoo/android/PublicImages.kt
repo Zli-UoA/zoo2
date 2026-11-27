@@ -47,7 +47,11 @@ internal suspend fun loadPublicImage(
                                 response.headers.getAll(name).orEmpty().forEach { add(name, it) }
                             }
                         }.build())
-                        if (!policy.noStore && !policy.noCache && policy.maxAgeSeconds != 0) onCacheable(image)
+                        // The attachment body cache has no HTTP freshness or validator metadata.
+                        if (!policy.noStore && !policy.noCache && !policy.mustRevalidate &&
+                            policy.maxAgeSeconds == -1 && policy.sMaxAgeSeconds == -1 &&
+                            response.headers[HttpHeaders.Expires] == null
+                        ) onCacheable(image)
                     }
                 }
             }

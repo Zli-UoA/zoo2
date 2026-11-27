@@ -198,15 +198,26 @@ class AndroidImageCacheTest {
         }
     }
 
-    @Test fun signedAttachmentsRespectNoStore() = runBlocking {
+    @Test fun signedAttachmentsSkipDiskWhenResponsesRequireFreshnessChecks() = runBlocking {
         Fixture().use { f ->
-            f.server.enqueue(MockResponse().setHeader("Cache-Control", "no-store").setBody("first"))
-            f.server.enqueue(MockResponse().setBody("second"))
+            val policies = listOf(
+                "Cache-Control" to "no-store",
+                "Cache-Control" to "no-cache",
+                "Cache-Control" to "max-age=60",
+                "Cache-Control" to "must-revalidate",
+                "Expires" to "Fri, 01 Jan 2100 00:00:00 GMT",
+            )
             f.cache().use { cache ->
-                assertEquals("first", cache.signedImage("${f.url}?signature=old", "id:original").decodeToString())
-                assertEquals("second", cache.signedImage("${f.url}?signature=new", "id:original").decodeToString())
+                for ((index, header) in policies.withIndex()) {
+                    val (name, value) = header
+                    val key = "$index:original"
+                    f.server.enqueue(MockResponse().setHeader(name, value).setBody("first"))
+                    f.server.enqueue(MockResponse().setBody("second"))
+                    assertEquals("first", cache.signedImage("${f.url}?signature=old", key).decodeToString())
+                    assertEquals("second", cache.signedImage("${f.url}?signature=new", key).decodeToString())
+                }
             }
-            assertEquals(2, f.server.requestCount)
+            assertEquals(policies.size * 2, f.server.requestCount)
         }
     }
 }
