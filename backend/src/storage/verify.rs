@@ -98,6 +98,7 @@ pub(crate) async fn uploaded_image_metadata(
     {
         return Err(AppError::BadGateway("Attachment image size changed".into()));
     }
+    let source_etag = object.e_tag().map(str::to_owned);
     let mut body = object.body;
     let mut bytes = Vec::new();
     loop {
@@ -129,7 +130,16 @@ pub(crate) async fn uploaded_image_metadata(
     .await
     {
         Ok(Some((metadata, thumbnail))) => {
-            crate::routes::home_images::store_thumbnail(client, bucket, key, thumbnail).await;
+            if let Some(etag) = source_etag.as_deref() {
+                crate::routes::home_images::store_thumbnail(
+                    client,
+                    bucket,
+                    key,
+                    thumbnail,
+                    Some(etag),
+                )
+                .await;
+            }
             Ok(Some(metadata))
         }
         Ok(None) => Ok(None),

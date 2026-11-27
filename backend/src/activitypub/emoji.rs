@@ -95,7 +95,10 @@ async fn fill_media_blurhashes(media: &mut [Value]) -> bool {
     changed
 }
 
-pub(super) async fn enrich_stored_note(
+static MEDIA_BLURHASH_QUEUE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(64);
+static MEDIA_BLURHASH_WORKERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+
+pub(super) fn schedule_media_blurhash(
     state: &AppState,
     post_id: &str,
     actor_id: &str,
@@ -105,23 +108,54 @@ pub(super) async fn enrich_stored_note(
     if !media.iter().any(needs_media_blurhash) {
         return;
     }
-    let original = json!(media).to_string();
-    if !fill_media_blurhashes(&mut media).await {
+    let Ok(slot) = MEDIA_BLURHASH_QUEUE.try_acquire() else {
+        tracing::debug!("ActivityPub image BlurHash queue is full");
         return;
-    }
+    };
     let mut db = state.db.clone();
-    if let Err(error) = store_blurhashes(
-        &mut db,
-        post_id,
-        actor_id,
-        updated,
-        &original,
-        &json!(media).to_string(),
-    )
-    .await
-    {
-        tracing::debug!(%error, "ActivityPub image BlurHash could not be saved");
-    }
+    let post_id = post_id.to_owned();
+    let actor_id = actor_id.to_owned();
+    tokio::spawn(async move {
+        let _slot = slot;
+        let Ok(_worker) = MEDIA_BLURHASH_WORKERS.acquire().await else {
+            return;
+        };
+        let original = json!(media).to_string();
+        let current = async {
+            let mut tx = db.transaction().await?;
+            query(
+                &mut tx,
+                "SELECT '{}'::text FROM apub_remote_posts WHERE id=$1 AND actor_id=$2
+                 AND updated_at=$3::timestamptz AND deleted_at IS NULL AND media=$4::jsonb",
+                &[&post_id, &actor_id, &updated.to_string(), &original],
+            )
+            .await
+        }
+        .await;
+        match current {
+            Ok(rows) if !rows.is_empty() => {}
+            Ok(_) => return,
+            Err(error) => {
+                tracing::debug!(%error, "ActivityPub image version could not be checked");
+                return;
+            }
+        }
+        if !fill_media_blurhashes(&mut media).await {
+            return;
+        }
+        if let Err(error) = store_blurhashes(
+            &mut db,
+            &post_id,
+            &actor_id,
+            updated,
+            &original,
+            &json!(media).to_string(),
+        )
+        .await
+        {
+            tracing::debug!(%error, "ActivityPub image BlurHash could not be saved");
+        }
+    });
 }
 
 async fn store_blurhashes(

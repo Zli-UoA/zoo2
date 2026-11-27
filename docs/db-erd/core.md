@@ -169,10 +169,6 @@ erDiagram
     }
     channel_notes }o--o| channels : channel_notes_channel_id_fkey
     channel_notes }o--o| users : channel_notes_created_user_id_fkey
-    channel_notes_cleanup_cursor {
-      boolean id PK
-      text last_channel_id
-    }
     channel_pins {
       text channel_id PK,FK
       text item_type PK
@@ -264,6 +260,8 @@ erDiagram
       integer height
       text blurhash
       timestamptz created_at
+      bigint thumbnail_bytes
+      boolean thumbnail_ready
     }
     home_images }o--o| users : home_images_uploader_id_fkey
     home_posts {

@@ -99,13 +99,24 @@ pub(crate) async fn stored_thumbnail_key(
     original: &str,
 ) -> Option<String> {
     let thumbnail = thumbnail_key(original);
-    client
+    let variant = client
         .head_object()
         .bucket(bucket)
         .key(&thumbnail)
         .send()
         .await
         .ok()?;
+    if !original.starts_with("home-images/") {
+        let source_etag = variant.metadata()?.get("source-etag")?;
+        client
+            .head_object()
+            .bucket(bucket)
+            .key(original)
+            .if_match(source_etag)
+            .send()
+            .await
+            .ok()?;
+    }
     Some(thumbnail)
 }
 
@@ -173,20 +184,24 @@ pub(crate) async fn store_thumbnail(
     bucket: &str,
     key: &str,
     bytes: Option<Vec<u8>>,
-) {
-    let Some(bytes) = bytes else { return };
-    if let Err(error) = client
+    source_etag: Option<&str>,
+) -> bool {
+    let Some(bytes) = bytes else { return false };
+    let mut put = client
         .put_object()
         .bucket(bucket)
         .key(thumbnail_key(key))
         .content_type(THUMBNAIL_MIME)
         .cache_control(IMAGE_CACHE_CONTROL)
-        .body(bytes.into())
-        .send()
-        .await
-    {
-        tracing::warn!(%error, key, "Could not store image thumbnail");
+        .body(bytes.into());
+    if let Some(etag) = source_etag {
+        put = put.metadata("source-etag", etag);
     }
+    if let Err(error) = put.send().await {
+        tracing::warn!(%error, key, "Could not store image thumbnail");
+        return false;
+    }
+    true
 }
 
 async fn upload(
@@ -232,10 +247,13 @@ async fn upload(
     })
     .await
     .map_err(|e| AppError::Internal(e.into()))??;
+    let thumbnail_bytes = thumbnail.as_ref().map_or(0, Vec::len);
     let mut tx = db.transaction().await?;
     query(&mut tx,"SELECT '{}'::text FROM (SELECT pg_advisory_xact_lock(hashtextextended('home-image-upload:' || $1,0))) locked",&[&user.id]).await?;
-    let usage = one(&mut tx,"SELECT json_build_object('bytes',(SELECT COALESCE(sum(file_size),0) FROM home_images WHERE uploader_id=$1)+(SELECT COALESCE(sum(file_size),0) FROM home_image_deletions WHERE uploader_id=$1))::text",&[&user.id]).await?;
-    if usage["bytes"].as_i64().unwrap_or(MAX_USER_BYTES) + bytes.len() as i64 > MAX_USER_BYTES {
+    let usage = one(&mut tx,"SELECT json_build_object('bytes',(SELECT COALESCE(sum(file_size + thumbnail_bytes),0) FROM home_images WHERE uploader_id=$1)+(SELECT COALESCE(sum(file_size),0) FROM home_image_deletions WHERE uploader_id=$1))::text",&[&user.id]).await?;
+    if usage["bytes"].as_i64().unwrap_or(MAX_USER_BYTES) + (bytes.len() + thumbnail_bytes) as i64
+        > MAX_USER_BYTES
+    {
         return Err(AppError::BadRequest(
             "Home image storage limit is 1 GiB per user".into(),
         ));
@@ -244,7 +262,7 @@ async fn upload(
     let id = uuid::Uuid::new_v4().to_string();
     let key = format!("home-images/{id}");
     // Reserve durable metadata before starting S3 I/O so crashes leave a GC candidate.
-    toasty::sql::statement("INSERT INTO home_images(id,uploader_id,content_type,name,file_size,width,height,blurhash) VALUES($1,$2,$3,$4,$5::bigint,$6::integer,$7::integer,$8)").bind(id.as_str()).bind(user.id.as_str()).bind(body.content_type.as_str()).bind(body.name).bind(file_size).bind(width.to_string()).bind(height.to_string()).bind(blurhash.as_str()).exec(&mut tx).await?;
+    toasty::sql::statement("INSERT INTO home_images(id,uploader_id,content_type,name,file_size,width,height,blurhash,thumbnail_bytes) VALUES($1,$2,$3,$4,$5::bigint,$6::integer,$7::integer,$8,$9::bigint)").bind(id.as_str()).bind(user.id.as_str()).bind(body.content_type.as_str()).bind(body.name).bind(file_size).bind(width.to_string()).bind(height.to_string()).bind(blurhash.as_str()).bind(thumbnail_bytes.to_string()).exec(&mut tx).await?;
     tx.commit().await?;
     let mut tx = db.transaction().await?;
     // Account deletion and GC must not delete the object before PUT finishes.
@@ -273,7 +291,20 @@ async fn upload(
         tx.commit().await?;
         return Err(AppError::Internal(anyhow::anyhow!("Image upload failed")));
     }
-    store_thumbnail(&state.s3_client, &state.config.s3.bucket, &key, thumbnail).await;
+    if store_thumbnail(
+        &state.s3_client,
+        &state.config.s3.bucket,
+        &key,
+        thumbnail,
+        None,
+    )
+    .await
+    {
+        toasty::sql::statement("UPDATE home_images SET thumbnail_ready=true WHERE id=$1")
+            .bind(id.as_str())
+            .exec(&mut tx)
+            .await?;
+    }
     tx.commit().await?;
     Ok(Json(
         json!({"id":id,"width":width,"height":height,"blurhash":blurhash}),
@@ -400,12 +431,16 @@ async fn image(
     uuid::Uuid::parse_str(&id).map_err(|_| AppError::NotFound("Image".into()))?;
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    let item = one(&mut tx, "SELECT item::text FROM (SELECT json_build_object('name',name,'media_type',content_type,'storage_key','home-images/' || id) AS item FROM home_images h WHERE id=$1 AND EXISTS(SELECT 1 FROM home_posts p LEFT JOIN channels c ON c.id=p.channel_id WHERE p.deleted_at IS NULL AND (p.channel_id IS NULL OR NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL) AND p.media @> jsonb_build_array(jsonb_build_object('url','/api/home/images/' || h.id))) UNION ALL SELECT json_build_object('name',a.file_name,'media_type',a.content_type,'storage_key',a.storage_key) FROM attachments a JOIN home_posts p ON p.id=a.message_id JOIN channels c ON c.id=p.channel_id WHERE a.id=$1 AND p.deleted_at IS NULL AND NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL AND a.content_type IN ('image/png','image/jpeg','image/gif','image/webp')) images LIMIT 1", &[&id]).await?;
+    let item = one(&mut tx, "SELECT item::text FROM (SELECT json_build_object('name',name,'media_type',content_type,'storage_key','home-images/' || id,'thumbnail_ready',h.thumbnail_ready) AS item FROM home_images h WHERE id=$1 AND EXISTS(SELECT 1 FROM home_posts p LEFT JOIN channels c ON c.id=p.channel_id WHERE p.deleted_at IS NULL AND (p.channel_id IS NULL OR NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL) AND p.media @> jsonb_build_array(jsonb_build_object('url','/api/home/images/' || h.id))) UNION ALL SELECT json_build_object('name',a.file_name,'media_type',a.content_type,'storage_key',a.storage_key,'thumbnail_ready',h.thumbnail_ready) FROM attachments a LEFT JOIN home_images h ON h.id=substring(a.storage_key from 13) AND a.storage_key LIKE 'home-images/%' JOIN home_posts p ON p.id=a.message_id JOIN channels c ON c.id=p.channel_id WHERE a.id=$1 AND p.deleted_at IS NULL AND NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL AND a.content_type IN ('image/png','image/jpeg','image/gif','image/webp')) images LIMIT 1", &[&id]).await?;
     let key = item["storage_key"].as_str().unwrap();
     let content_type = item["media_type"].as_str().unwrap();
     drop(tx);
     let thumbnail = if variant.thumbnail {
-        stored_thumbnail_key(&state.s3_client, &state.config.s3.bucket, key).await
+        match item["thumbnail_ready"].as_bool() {
+            Some(true) => Some(thumbnail_key(key)),
+            Some(false) => None,
+            None => stored_thumbnail_key(&state.s3_client, &state.config.s3.bucket, key).await,
+        }
     } else {
         None
     };

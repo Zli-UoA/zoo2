@@ -7,6 +7,12 @@ http:
       entryPoints: [web]
       middlewares: [app-private-response, strip-dev-headers]
       service: backend
+    home-images:
+      rule: 'Method(`GET`) && PathRegexp(`^/api/home/images/[^/]+$`)'
+      priority: 150
+      entryPoints: [web]
+      middlewares: [strip-dev-headers]
+      service: backend
     api:
       rule: 'Path(`/api`) || PathPrefix(`/api/`) || Path(`/.well-known/webfinger`)'
       priority: 100
