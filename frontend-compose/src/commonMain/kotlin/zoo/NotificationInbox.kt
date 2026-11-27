@@ -42,7 +42,8 @@ internal fun inboxGroups(entries: List<UnifiedNotificationEntry>): Map<String, L
     }
 
 class NotificationInbox(private val session: Session) {
-    private val unavailableContexts = mutableStateMapOf<String, Unit>()
+    private data class ContextAvailability(val available: Boolean, val display: Row)
+    private val contextAvailability = mutableStateMapOf<String, ContextAvailability>()
 
     val loadFailed: Boolean get() = session.activityPubNotifications.error
     val nextCursor: String? get() = session.activityPubNotifications.nextCursor
@@ -65,8 +66,9 @@ class NotificationInbox(private val session: Session) {
                 (entry.channel ?: listOf(entry.representative())).filterNot { it.flag("is_read") }.map { it.text("id") }
             }
             val display = item.nested("display_data")
-            val targetUnavailable = item.text("id") in unavailableContexts ||
-                ("message" in display && display.nested("message").isEmpty())
+            val checked = contextAvailability[item.text("id")]?.takeIf { it.display == display }
+            val targetUnavailable = checked?.let { !it.available }
+                ?: ("message" in display && display.nested("message").isEmpty())
             val channelReactions = rows.filter { it.text("notification_type") == "reaction" }
             NotificationDisplay(
                 id, actors,
@@ -97,13 +99,12 @@ class NotificationInbox(private val session: Session) {
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: Exception) {
-            if (failure is ApiException && failure.status in setOf(403, 404)) markUnavailable(context.id)
+            if (failure is ApiException && failure.status in setOf(403, 404)) recordAvailability(context.id, false)
             return emptyList()
         }
         val data = response as? JsonObject
         if (data != null && "message" in data) {
-            if (data.nested("message").isEmpty()) markUnavailable(context.id)
-            else unavailableContexts.remove(context.id)
+            recordAvailability(context.id, data.nested("message").isNotEmpty())
         }
         val emojis = (response as? JsonObject)?.array("reactions")?.rows().orEmpty()
             .filter { it.text("user_id") in context.actorIds }
@@ -132,9 +133,12 @@ class NotificationInbox(private val session: Session) {
         }
     }
 
-    private fun markUnavailable(id: String) {
-        if (unavailableContexts.size >= 256) unavailableContexts.remove(unavailableContexts.keys.first())
-        unavailableContexts[id] = Unit
+    private fun recordAvailability(id: String, available: Boolean) {
+        val notification = session.repo.notifications.rows.value.firstOrNull { it.text("id") == id } ?: return
+        if (id !in contextAvailability && contextAvailability.size >= 256) {
+            contextAvailability.remove(contextAvailability.keys.first())
+        }
+        contextAvailability[id] = ContextAvailability(available, notification.nested("display_data"))
     }
 
     private fun federatedReaction(row: Row): NotificationReaction {

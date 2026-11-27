@@ -121,7 +121,7 @@ internal fun ConnectedScreens(
         }
     }
     LaunchedEffect(state, rows) { state.forgetSearchPreviews(rows) }
-    val messageEntries = remember(ordered, usersById, encrypted, canPost, decryptedEntries, session.workspaceEmojis) {
+    val messageEntries = remember(ordered, usersById, encrypted, canPost, decryptedEntries, session.workspaceEmojis, env.locale) {
         ordered.map { row ->
             val decrypted = if (row.present("ciphertext"))
                 decryptedEntries[row] ?: DecryptedBody(notice = "common.loading")
