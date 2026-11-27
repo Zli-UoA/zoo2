@@ -4,6 +4,8 @@ import java.io.Closeable
 import java.nio.file.Files
 import kotlin.test.*
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
@@ -253,6 +255,38 @@ class AndroidImageCacheTest {
                 assertEquals("new", cache.freshAttachmentImage(key)?.decodeToString())
             }
             assertEquals(2, f.server.requestCount)
+        }
+    }
+
+    @Test fun revocationDuringACacheHitPreventsReturningTheCachedImage() = runBlocking {
+        Fixture().use { f ->
+            val pause = AtomicBoolean(false)
+            val afterReading = CountDownLatch(1)
+            val finishReading = CountDownLatch(1)
+            val key = "id:thumbnail"
+            f.server.enqueue(MockResponse().setBody("cached"))
+            f.cache(now = {
+                if (pause.get()) {
+                    afterReading.countDown()
+                    check(finishReading.await(5, TimeUnit.SECONDS))
+                }
+                1_000L
+            }).use { cache ->
+                assertEquals("cached", cache.signedImage(f.url, key).decodeToString())
+                pause.set(true)
+                val pending = async {
+                    assertFailsWith<ImageHttpFailure> { cache.signedImage(f.url, key) }
+                }
+                try {
+                    assertTrue(withContext(Dispatchers.IO) { afterReading.await(5, TimeUnit.SECONDS) })
+                    cache.removeAttachmentImages("id")
+                } finally {
+                    finishReading.countDown()
+                }
+                assertEquals(403, pending.await().status)
+                assertNull(cache.freshAttachmentImage(key))
+            }
+            assertEquals(1, f.server.requestCount)
         }
     }
 

@@ -87,7 +87,10 @@ internal class AndroidImageCache(
                 val matching = stored?.takeIf { it.urlHash.startsWith("$resourceHash:") }
                 if (matching != null && now() < matching.expiresAt &&
                     (cacheKey.endsWith(":thumbnail") || matching.urlHash == "$resourceHash:$urlHash")
-                ) return@withContext matching.bytes
+                ) {
+                    if (!attachments.isCurrent(cacheKey, token)) throw ImageHttpFailure(403)
+                    return@withContext matching.bytes
+                }
                 if (retry) attachments.remove(cacheKey, token)
                 val image = try {
                     loadPublicImage(http, url, noStore = true, conditional = matching) { response, bytes, redirects ->
