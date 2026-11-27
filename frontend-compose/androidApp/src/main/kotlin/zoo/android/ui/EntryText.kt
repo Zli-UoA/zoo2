@@ -71,6 +71,7 @@ internal class EntryChannelLink(val label: String?, val messageIcon: Boolean, va
  * links into this app (`channelLink` returns `null` for other URLs; `bare` tells that the URL itself was written).
  */
 internal val LocalMentionProfiles = staticCompositionLocalOf<Map<String, Row>> { emptyMap() }
+internal val LocalMentionUsernames = staticCompositionLocalOf<Set<String>> { emptySet() }
 private const val mentionAvatarTag = "mention-avatar"
 
 private class EntryFormat(
@@ -79,18 +80,20 @@ private class EntryFormat(
     val mentionStyle: SpanStyle?,
     val allowedMentions: Set<String>?,
     val mentionProfiles: Map<String, Row>,
+    val mentionUsernames: Set<String>,
 ) {
     /** リンクのラベル用。中の URL は、リンクにせず、短くせず、行き先も取らない。 */
-    fun withoutLinks() = EntryFormat(emoji, mark, links = false, channelLink = null, mentionStyle = null, allowedMentions = emptySet(), mentionProfiles = emptyMap())
+    fun withoutLinks() = EntryFormat(emoji, mark, links = false, channelLink = null, mentionStyle = null, allowedMentions = emptySet(), mentionProfiles = emptyMap(), mentionUsernames = emptySet())
 }
 
 internal fun formatEntry(
     body: String, emoji: Set<String> = emptySet(), highlight: EntryHighlight? = null, links: Boolean = true,
     mentionStyle: SpanStyle? = null, allowedMentions: Set<String>? = null,
     mentionProfiles: Map<String, Row> = emptyMap(),
+    mentionUsernames: Set<String> = emptySet(),
     channelLink: ((url: String, bare: Boolean) -> EntryChannelLink?)? = null,
 ) = buildAnnotatedString {
-    val format = EntryFormat(emoji, highlight?.takeIf { it.terms.isNotEmpty() }, links, channelLink, mentionStyle, allowedMentions, mentionProfiles)
+    val format = EntryFormat(emoji, highlight?.takeIf { it.terms.isNotEmpty() }, links, channelLink, mentionStyle, allowedMentions, mentionProfiles, mentionUsernames)
     messageHeadingBlocks(body).forEachIndexed { index, block ->
         if (index > 0) append('\n')
         val level = block.level
@@ -207,21 +210,26 @@ private fun AnnotatedString.Builder.appendMfm(body: String, format: EntryFormat,
             }
             "mention" -> {
                 val allowed = format.allowedMentions
-                if (allowed != null && !zoo.isAllowedMention(value, allowed)) append(value)
+                val rawName = value.removePrefix("@")
+                val exact = rawName in format.mentionProfiles || rawName in format.mentionUsernames || allowed?.contains(rawName) == true
+                val username = if (exact || '@' in rawName) rawName else rawName.trimEnd('.')
+                val mention = "@$username"
+                val target = if (username.equals("channel", true) || username.equals("here", true)) username.lowercase() else username
+                if (username.isEmpty() || allowed != null && target !in allowed) append(mention)
                 else withStyle(format.mentionStyle ?: SpanStyle(fontWeight = AndroidWeights.emphasis)) {
-                    val username = value.removePrefix("@")
                     val profile = format.mentionProfiles[username]
                         ?.takeUnless { username.equals("channel", true) || username.equals("here", true) }
-                    if (profile == null) append(value)
+                    if (profile == null) append(mention)
                     else {
                         val label = profile.text("display_name").ifEmpty { username }
                         append('@')
                         pushStringAnnotation(mentionAvatarTag, username)
-                        appendInlineContent("$mentionAvatarTag:$username", " ")
+                        appendInlineContent("$mentionAvatarTag:$username", username)
                         pop()
-                        append(label)
+                        append(" $label")
                     }
                 }
+                append(rawName.drop(username.length))
             }
             "hashtag" -> withStyle(SpanStyle(fontWeight = AndroidWeights.emphasis)) { append(value) }
             else -> appendHighlighted(value, format.mark)
@@ -328,12 +336,13 @@ internal fun EntryBody(
     val loader = LocalTimelineImage.current
     val cached = LocalCachedTimelineImage.current
     val mentionProfiles = if (mentionColors == null) emptyMap() else LocalMentionProfiles.current
+    val mentionUsernames = if (mentionColors == null) emptySet() else LocalMentionUsernames.current
     val channelLinks = entryChannelLinks(body, links && appLinks)
-    val formatted = remember(body, emoji, highlight, links, channelLinks, mentionColors, allowedMentions, mentionProfiles) {
+    val formatted = remember(body, emoji, highlight, links, channelLinks, mentionColors, allowedMentions, mentionProfiles, mentionUsernames) {
         val lookup: ((String, Boolean) -> EntryChannelLink?)? =
             channelLinks?.let { found -> { url: String, _: Boolean -> found[url] } }
         formatEntry(body, emoji.keys, highlight, links, mentionColors?.mentionStyle(),
-            allowedMentions, mentionProfiles, channelLink = lookup)
+            allowedMentions, mentionProfiles, mentionUsernames, channelLink = lookup)
     }
     val codes = remember(formatted) {
         entryEmojiCodes(formatted)

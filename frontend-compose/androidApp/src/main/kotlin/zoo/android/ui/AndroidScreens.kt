@@ -108,6 +108,7 @@ internal data class TimelineItem(
     val encryptedFiles: Map<String, String> = emptyMap(),
     val postAuthor: zoo.Row? = null,
     val allowedMentions: Set<String>? = null,
+    val mentionsCurrentUser: Boolean = false,
     val dateDivider: String? = null,
     val unreadDivider: String? = null,
 )
@@ -687,6 +688,17 @@ internal fun ColumnScope.TimelineWithInput(
         requestEarlier?.invoke()
     }
     var openedTarget by rememberSaveable { mutableStateOf<String?>(null) }
+    var highlightedRequest by rememberSaveable { mutableStateOf<String?>(null) }
+    var jumpHighlight by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(openedTarget, focusRequest) {
+        jumpHighlight = null
+        if (focusRequest != null && openedTarget == focusRequest && highlightedRequest != focusRequest) {
+            highlightedRequest = focusRequest
+            jumpHighlight = focusMessage
+            kotlinx.coroutines.delay(2500)
+            jumpHighlight = null
+        }
+    }
     var seenFocusRequest by rememberSaveable { mutableStateOf<String?>(null) }
     var followedSend by rememberSaveable { mutableStateOf<String?>(null) }
     var anchor by rememberSaveable { mutableStateOf<String?>(null) }
@@ -822,7 +834,7 @@ internal fun ColumnScope.TimelineWithInput(
             if (maxHeight > 0.dp && entries.isNotEmpty() && (!input.expanded || resizing)) {
                 Timeline(entries, colors, Modifier.fillMaxSize().testTag("conversation-timeline"), dispatch, posts = posts,
                     swipeReply = swipeReply, allowThreads = allowThreads, scroll = scroll, topContentPadding = topContentPadding,
-                    headerOverlayHeight = headerOverlayHeight, focusMessage = focusMessage)
+                    headerOverlayHeight = headerOverlayHeight, focusMessage = jumpHighlight)
             }
         }
         Box(Modifier.onSizeChanged { if (!overlayInput) compactInputHeight = it.height }
@@ -943,6 +955,8 @@ private fun Timeline(
                     val shape = RoundedCornerShape(8.dp)
                     Column(
                         Modifier.fillMaxWidth().testTag("timeline-entry-${entry.id}")
+                            .then(if (entry.mentionsCurrentUser) Modifier
+                                .background(colors.suggestionSelected, shape) else Modifier)
                             .then(if (entry.id == focusMessage) Modifier
                                 .background(colors.mentionSurface.copy(alpha = .4f), shape)
                                 .border(1.dp, colors.mentionOutline, shape) else Modifier)

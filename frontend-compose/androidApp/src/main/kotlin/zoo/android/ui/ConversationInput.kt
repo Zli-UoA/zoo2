@@ -124,10 +124,15 @@ internal fun ConversationInput(
                     state.notices.forEach { Text(it, color = colors.inputHint, fontSize = 12.sp) }
                 }
             }
-            if (options.isNotEmpty()) {
+            val editorMinimum = (23.dp * density.fontScale + 16.dp).coerceAtLeast(AndroidControlSize.target)
+            val reservedHeight = editorMinimum + AndroidControlSize.target + AndroidControlSize.inputEdgeInset +
+                (if (canResize && (!hideIdleHandle || showTools)) AndroidControlSize.inputHandleHeight else 0.dp) +
+                (if (state.files.isNotEmpty()) AndroidControlSize.target else 0.dp)
+            val optionsHeight = (maxHeight - reservedHeight).coerceIn(0.dp, 192.dp)
+            if (options.isNotEmpty() && optionsHeight >= AndroidControlSize.target) {
                 val shape = RoundedCornerShape(8.dp)
                 Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp)
-                    .heightIn(max = 192.dp).clip(shape).background(colors.quietSurface)
+                    .heightIn(max = optionsHeight).clip(shape).background(colors.quietSurface)
                     .border(1.dp, colors.inputBoundary, shape).padding(4.dp)
                     .verticalScroll(rememberScrollState())) {
                     options.forEachIndexed { index, option ->

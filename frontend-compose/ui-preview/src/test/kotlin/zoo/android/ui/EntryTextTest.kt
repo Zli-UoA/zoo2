@@ -65,8 +65,17 @@ class EntryTextTest {
             mentionProfiles = mapOf("alice" to obj("display_name" to "Alice")),
         )
 
-        assertEquals("@ Alice. @bob @HERE", result.text)
-        assertEquals(listOf("@ Alice", "@HERE"), result.spanStyles.filter { it.item == style }
+        assertEquals("@alice Alice. @bob @HERE", result.text)
+        assertEquals(listOf("@alice Alice", "@HERE"), result.spanStyles.filter { it.item == style }
             .map { result.text.substring(it.start, it.end) })
+    }
+    @Test
+    fun dottedUsernameTakesPrecedenceOverPunctuationFallback() {
+        val style = SpanStyle(background = Color.Yellow)
+        val usernames = setOf("alice", "alice.")
+        val result = formatEntry("@alice. @alice", mentionStyle = style,
+            allowedMentions = setOf("alice."), mentionUsernames = usernames)
+        val span = result.spanStyles.single { it.item == style }
+        assertEquals("@alice.", result.text.substring(span.start, span.end))
     }
 }

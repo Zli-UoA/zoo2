@@ -262,8 +262,6 @@ private class MfmScanner(length: Int) {
                             if (!overlapsRegistered && (kind !in setOf("mention", "hashtag") || boundary)) {
                                 val trimmed = when {
                                     kind == "link" -> leadingUrl(value)
-                                    kind == "mention" && value.count { it == '@' } == 1 ->
-                                        value.trimEnd('.').takeIf { it.length > 1 }
                                     else -> value
                                 }
                                 if (trimmed != null) {

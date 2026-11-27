@@ -100,7 +100,7 @@ internal fun NotificationPage(
             Row(
                 Modifier.fillMaxWidth()
                     .then(if (target != null) Modifier.clickable { viewed(item.id); onOpen(target) } else Modifier)
-                    .background(if (item.unread && item.kind == "mention") colors.suggestionSelected.copy(alpha = .5f)
+                    .background(if (item.unread) colors.suggestionSelected.copy(alpha = .5f)
                         else Color.Transparent, RoundedCornerShape(8.dp))
                     .padding(vertical = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),

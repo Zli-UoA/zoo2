@@ -101,8 +101,13 @@ internal fun ConnectedScreens(
     }
     val previewService by session.previews.summalyEndpoint.collectAsState()
     val usersById = remember(users) { users.associateBy { it.text("id") } }
-    val mentionProfiles = remember(users, session.accountProfiles) {
-        users.associateBy { it.text("user_name") } + session.accountProfiles.associateBy { it.text("username") }
+    val mentionProfiles = remember(session.accountProfiles) {
+        session.accountProfiles.associateBy { it.text("username") }
+    }
+    val mentionUsernames = remember(users) { users.map { it.text("user_name") }.toSet() }
+    val displaysMessages = channel != null || env.path.substringBefore('?') == "/notifications"
+    LaunchedEffect(session, env.online, env.visible, displaysMessages) {
+        if (env.online && env.visible && displaysMessages) session.loadAccountProfiles()
     }
     val posts = state.home.posts.map { state.entry(it, usersById, previewService = previewService) }
     val encrypted = channel?.let { session.isEncryptedChannel(it.text("id")) } == true
@@ -117,6 +122,12 @@ internal fun ConnectedScreens(
             displayReactions(row), writable = canPost, allowPreview = !encrypted)
         return encryptedEntry(item, row, decrypted, encrypted, session::t).copy(
             allowedMentions = decrypted?.mentions?.let { zoo.allowedMentionNames(it, usersById) },
+            mentionsCurrentUser = if (decrypted != null) decrypted.mentions.let {
+                it.channel || it.here || session.config.userId in it.userIds
+            } else if (zoo.isPlaintextBeforeEncryption(row)) {
+                zoo.messageMentionsUser(item.body,
+                    usersById[session.config.userId]?.text("user_name").orEmpty(), mentionUsernames)
+            } else false,
         )
     }
     val ordered = remember(rows) {
@@ -656,6 +667,7 @@ internal fun ConnectedScreens(
                     LocalAndroidTranslation provides { key, args -> session.t(key, *args) },
                     LocalChannelLinks provides channelLinks,
                     LocalMentionProfiles provides mentionProfiles,
+                    LocalMentionUsernames provides mentionUsernames,
                 ) {
                     AndroidScreens(screen, env.dark, env.visible && env.focused,
                         dispatch = { action ->

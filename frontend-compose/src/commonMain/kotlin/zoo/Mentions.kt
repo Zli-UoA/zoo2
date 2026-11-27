@@ -22,3 +22,13 @@ fun isAllowedMention(token: String, names: Set<String>): Boolean {
         else -> raw in names || trimmed in names
     }
 }
+
+
+private val messageMentionPattern = Regex("(?:^|$mentionBoundary)@($mentionName)")
+
+fun messageMentionsUser(body: String, username: String, usernames: Set<String>): Boolean =
+    messageMentionPattern.findAll(body).any { match ->
+        val raw = match.groupValues[1]
+        val name = if (raw in usernames) raw else raw.trimEnd('.')
+        name.equals("channel", true) || name.equals("here", true) || username.isNotEmpty() && username == name
+    }
