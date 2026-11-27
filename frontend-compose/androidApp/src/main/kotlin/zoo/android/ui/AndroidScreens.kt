@@ -865,9 +865,9 @@ private fun Timeline(
                             Column(Modifier.weight(1f)) {
                                 if (posts && entry.postHeader != null) {
                                     PostHeader(entry.author, entry.postHeader, colors, openProfile)
-                                } else FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text(entry.author, Modifier.align(Alignment.CenterVertically), color = colors.foreground, fontWeight = AndroidWeights.entryAuthor, fontSize = entryTextSize, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    Text(entry.time, Modifier.align(Alignment.CenterVertically), color = colors.secondary, fontSize = 12.sp)
+                                } else AuthorTimeHeader(entry.time, colors) {
+                                    Text(entry.author, color = colors.foreground, fontWeight = AndroidWeights.entryAuthor,
+                                        fontSize = entryTextSize, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 }
                                 if (entry.marks.isNotEmpty()) EntryMarks(entry.marks, colors)
                                 entry.notice?.let {

@@ -113,16 +113,16 @@ internal fun NotificationPage(
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                     Column {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            val author = item.actors.firstOrNull()?.name.orEmpty()
-                            Text(if (item.actors.size > 1) "$author ほか" else author, Modifier.weight(1f),
-                                color = colors.foreground, fontWeight = AndroidWeights.entryAuthor, fontSize = entryTextSize, maxLines = 1,
-                                overflow = TextOverflow.Ellipsis)
-                            Text(item.time, color = colors.secondary, fontSize = 12.sp, maxLines = 1)
+                        AuthorTimeHeader(item.time, colors, alignTimeToEnd = true, status = {
                             if (item.unread) Box(
                                 Modifier.size(8.dp).background(colors.accent, CircleShape).border(1.dp, colors.secondary, CircleShape)
                                     .semantics { contentDescription = "未読" },
                             )
+                        }) {
+                            val author = item.actors.firstOrNull()?.name.orEmpty()
+                            Text(if (item.actors.size > 1) "$author ほか" else author,
+                                color = colors.foreground, fontWeight = AndroidWeights.entryAuthor, fontSize = entryTextSize, maxLines = 1,
+                                overflow = TextOverflow.Ellipsis)
                         }
                         val channelReactions by key(item.reactionContext) {
                             produceState(emptyList<InboxReactionEmoji>(), foreground && item.id in visible) {

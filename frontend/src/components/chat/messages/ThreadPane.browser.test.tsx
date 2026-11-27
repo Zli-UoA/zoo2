@@ -87,10 +87,14 @@ it.each(["bottom", "middle", "top", "top-near-bottom", "exact-fit", "middle-with
         message({ id: "older", created_at: new Date(now.getTime() - 3600000).toISOString() }),
         ...replies,
       ];
-      function CalendarPane() {
+      function CalendarPane({ newReply = false }: { newReply?: boolean }) {
         const { midnight } = useLocalCalendar();
         const loaded = position === "middle-with-older" && midnight > now.getTime();
-        return <ThreadPane {...paneProps({ replies: loaded ? withOlder : replies })} />;
+        const history = loaded ? withOlder : replies;
+        const updated = newReply
+          ? [...history, message({ id: "new", created_at: new Date().toISOString() })]
+          : history;
+        return <ThreadPane {...paneProps({ replies: updated })} />;
       }
       const view = render(
         <LocaleProvider>
@@ -117,14 +121,21 @@ it.each(["bottom", "middle", "top", "top-near-bottom", "exact-fit", "middle-with
       expect(scroll.scrollHeight).toBeGreaterThan(height);
       if (position === "middle-with-older")
         expect(scroll.querySelector('[data-message-id="older"]')).toBeInTheDocument();
-      if (position.startsWith("middle"))
-        expect(Math.abs(offset() - before)).toBeLessThanOrEqual(0.5);
-      else
-        expect(scroll.scrollTop).toBe(
-          position === "bottom" || position === "exact-fit"
-            ? scroll.scrollHeight - scroll.clientHeight
-            : 0,
-        );
+      function expectReadingPosition() {
+        if (position.startsWith("middle"))
+          expect(Math.abs(offset() - before)).toBeLessThanOrEqual(0.5);
+        else if (position === "bottom" || position === "exact-fit")
+          expect(scroll.scrollTop).toBe(scroll.scrollHeight - scroll.clientHeight);
+        else expect(scroll.scrollTop).toBe(0);
+      }
+      expectReadingPosition();
+      view.rerender(
+        <LocaleProvider>
+          <CalendarPane newReply />
+        </LocaleProvider>,
+      );
+      expect(scroll.querySelector('[data-message-id="new"]')).toBeInTheDocument();
+      expectReadingPosition();
       view.unmount();
     } finally {
       vi.useRealTimers();

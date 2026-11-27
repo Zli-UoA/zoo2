@@ -691,7 +691,13 @@ class AndroidSamplesTest {
 
     @Test
     @Config(qualifiers = "ja-rJP-w320dp-h760dp-xhdpi")
-    fun aLongAuthorLeavesRoomForTheFullTimestamp() {
+    fun aLongAuthorLeavesRoomForTheFullTimestamp() = checkTimestampAcrossScreens(1f)
+
+    @Test
+    @Config(qualifiers = "ja-rJP-w240dp-h760dp-xhdpi")
+    fun enlargedTimestampsFitAcrossScreens() = checkTimestampAcrossScreens(2f)
+
+    private fun checkTimestampAcrossScreens(fontScale: Float) {
         val entry = TimelineItem("m", "とても長い表示名".repeat(12), "本文", "2025/12/31 23:59")
         var screen by mutableStateOf<AndroidScreen>(AndroidScreen.Conversation("dev", "開発", "", listOf(entry), InputState()))
         val url = "https://zoo.test/channels/dev?message=target"
@@ -701,7 +707,8 @@ class AndroidSamplesTest {
             open = { _, _ -> },
         )
         ui.setContent {
-            CompositionLocalProvider(LocalChannelLinks provides links) {
+            CompositionLocalProvider(LocalChannelLinks provides links,
+                LocalDensity provides Density(LocalDensity.current.density, fontScale)) {
                 AndroidScreens(screen, false, true, dispatch = {}) { _, _ -> }
             }
         }
@@ -710,11 +717,12 @@ class AndroidSamplesTest {
             ui.onNodeWithText(entry.time, useUnmergedTree = true).assertIsDisplayed()
                 .performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
             val layout = layouts.single()
-            val end = layout.getLineEnd(0, visibleEnd = true)
-            val left = layout.getLineLeft(0)
-            val right = layout.getLineRight(0)
-            check(layout.lineCount == 1 && end == entry.time.length && left >= 0 && right <= layout.size.width) {
-                "${screen.javaClass.simpleName}: lines=${layout.lineCount}, visibleEnd=$end/${entry.time.length}, left=$left, right=$right, width=${layout.size.width}"
+            val end = layout.getLineEnd(layout.lineCount - 1, visibleEnd = true)
+            val linesFit = (0 until layout.lineCount).all { line ->
+                !layout.isLineEllipsized(line) && layout.getLineLeft(line) >= 0 && layout.getLineRight(line) <= layout.size.width
+            }
+            check(linesFit && !layout.didOverflowHeight && end == entry.time.length && (fontScale > 1f || layout.lineCount == 1)) {
+                "${screen.javaClass.simpleName}: lines=${layout.lineCount}, visibleEnd=$end/${entry.time.length}, size=${layout.size}"
             }
         }
         assertTimeFits()
@@ -733,6 +741,12 @@ class AndroidSamplesTest {
             ui.runOnIdle { screen = next }
             ui.waitForIdle()
             assertTimeFits()
+            if (next is AndroidScreen.Notifications && fontScale > 1f) {
+                val name = ui.onNodeWithText(entry.author, useUnmergedTree = true).getUnclippedBoundsInRoot()
+                val time = ui.onNodeWithText(entry.time, useUnmergedTree = true).getUnclippedBoundsInRoot()
+                check(time.top >= name.bottom)
+                ui.onNodeWithContentDescription("未読", useUnmergedTree = true).assertIsDisplayed()
+            }
         }
     }
 

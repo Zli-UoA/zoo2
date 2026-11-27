@@ -39,6 +39,7 @@ import { useMessageJumpRequest, useMessageTargetFlash } from "./messageTarget";
 
 type ReplyListProps = {
   calendar: ReturnType<typeof useLocalCalendar>;
+  onPositionChange: (scroll: HTMLElement) => void;
   firstReplyId: string;
   lastReplyId: string;
   children: ReactNode;
@@ -74,11 +75,11 @@ class ThreadReplyList extends Component<ReplyListProps> {
     if (!scroll || !anchor) return;
     if (anchor === "top" || anchor === "bottom") {
       scroll.scrollTop = anchor === "top" ? 0 : scroll.scrollHeight;
-      return;
+    } else if (scroll.contains(anchor.row)) {
+      const offset = anchor.row.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
+      scroll.scrollTop += offset - anchor.offset;
     }
-    if (!scroll.contains(anchor.row)) return;
-    const offset = anchor.row.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
-    scroll.scrollTop += offset - anchor.offset;
+    this.props.onPositionChange(scroll);
   }
 
   render() {
@@ -307,6 +308,13 @@ export function ThreadPane({
     targetMessageId && replies.some((reply) => reply.id === targetMessageId),
   );
   const atBottomRef = useRef(!hasTargetInReplies);
+  function updateBottomPosition(element: HTMLElement) {
+    atBottomRef.current = isNearBottom(
+      element.scrollTop,
+      element.scrollHeight,
+      element.clientHeight,
+    );
+  }
   const scrolledTarget = useRef<string | undefined>(undefined);
   // 表示中の対象の返信へのリンクをもう一度押したとき。URL が変わらないので、スクロール済みの印を消して、
   // 下の効果をもう一度走らせる。対象の行へスクロールしたときには、強調（点滅 → 点灯 → フェードアウト）を再生する。
@@ -559,11 +567,7 @@ export function ThreadPane({
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2"
         onScroll={(event) => {
           const element = event.currentTarget;
-          atBottomRef.current = isNearBottom(
-            element.scrollTop,
-            element.scrollHeight,
-            element.clientHeight,
-          );
+          updateBottomPosition(element);
           if (element.scrollTop <= 48 && hasOlder && !isLoadingOlder) {
             onLoadOlder?.();
           }
@@ -595,6 +599,7 @@ export function ThreadPane({
           <ThreadReplyList
             key={root.id}
             calendar={calendar}
+            onPositionChange={updateBottomPosition}
             firstReplyId={replies[0].id}
             lastReplyId={replies[replies.length - 1].id}
           >

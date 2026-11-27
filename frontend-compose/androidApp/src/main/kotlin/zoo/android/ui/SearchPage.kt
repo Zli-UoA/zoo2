@@ -215,10 +215,9 @@ private fun SearchResult(
     ) {
         TimelineAvatar(item.author, item.avatar, colors)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(item.author, Modifier.weight(1f, fill = false), color = colors.foreground,
+            AuthorTimeHeader(item.time, colors) {
+                Text(item.author, color = colors.foreground,
                     fontWeight = AndroidWeights.entryAuthor, fontSize = entryTextSize, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(item.time, color = colors.secondary, fontSize = 12.sp, maxLines = 1)
             }
             if (item.file) Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 UiGlyph(UiIcon.Attach, colors.secondary, iconSize = AndroidControlSize.inlineIcon)
