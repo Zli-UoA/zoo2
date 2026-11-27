@@ -235,7 +235,7 @@ pub fn webhooks_forbidden() -> AppError {
 
 /// 既存のチャンネルを暗号化に切り替えられない理由がある（#367）。`blockers` は `apps`（許可のない App（Bot）
 /// か Webhook のユーザーがメンバーにいる）、`webhooks`（Incoming Webhook がある）、`encrypted_dm`（同じ 2 人の
-/// 暗号化 DM がすでにある）。
+/// 暗号化 DM がすでにある）、`channel_notes`（有効または復元可能なChannel Notesがある）。
 pub fn conversion_blocked(blockers: &[&str]) -> AppError {
     coded(
         StatusCode::CONFLICT,
@@ -370,8 +370,9 @@ pub async fn bump_user_epochs(
 }
 
 /// 暗号化チャンネルへのメンバーの追加で、追加する人ごとにメンバー単位の advisory lock
-/// `(3, hashtext(user_id))` を `user_id` の昇順に取る。チャンネルの行より前に取る。単一チャンネルゲストは、
-/// その前に `users` の行を `FOR UPDATE` で取る。
+/// `(3, hashtext(user_id))` を `user_id` の昇順に取る。チャンネルの行より前に取る。
+/// guest_kind がこの処理中に変わって INSERT トリガーが users を後からロックしないよう、
+/// 全メンバーの users 行を先に `FOR NO KEY UPDATE` で固定する。
 ///
 /// 端末の削除などでの一括の増加（`e2ee_bump_membership_epochs`）も、参加先を読む前に同じロックを取る。
 /// これで、一括の増加が参加先を確定してからコミットするまでに新しい所属が確定せず、追加された
@@ -383,18 +384,10 @@ pub async fn lock_members(
     let mut ids: Vec<&str> = user_ids.to_vec();
     ids.sort_unstable();
     ids.dedup();
-    // `users` の行はメンバー単位のロックより前（e2ee.rs のロックの順）。`channel_user` の INSERT で
-    // トリガー `app_guest_membership_rules` が単一チャンネルゲストの行を `FOR UPDATE` でロックするので、
-    // 同じ行を先に取る。後で取ると、無効化（`users` の UPDATE のあとに一括の増加でこのロックを待つ）と
-    // 逆の順になり、デッドロックする。
-    for &id in &ids {
-        first(
-            tx,
-            "SELECT '{}'::text FROM users WHERE id = $1 AND guest_kind = 'single' FOR UPDATE",
-            &[id],
-        )
-        .await?;
-    }
+    // Membership inserts and guest_kind changes both lock the users row. Take every user row
+    // before member advisory locks so an insert never waits for users after holding an advisory
+    // lock. This also keeps deactivation's users → device/member advisory → channels order.
+    lock_membership_users(tx, &ids).await?;
     for id in ids {
         first(
             tx,
@@ -402,6 +395,44 @@ pub async fn lock_members(
             &[id],
         )
         .await?;
+    }
+    Ok(())
+}
+
+/// Lock all users whose channel memberships will be inserted, in stable ID order.
+/// The database trigger takes the same row lock as a final guard for direct SQL paths.
+pub async fn lock_membership_users(
+    tx: &mut toasty::Transaction<'_>,
+    user_ids: &[&str],
+) -> Result<(), AppError> {
+    let mut ids: Vec<&str> = user_ids.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    for id in ids {
+        first(
+            tx,
+            "SELECT '{}'::text FROM users WHERE id = $1 FOR NO KEY UPDATE",
+            &[id],
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// users 行をロックしたあとの無効化の再確認。認証時の検査（`active_user`）とは別
+/// トランザクションのため、ロック待ちの間に無効化が確定した場合にここで 403 にする。
+/// 無効化は users 行の UPDATE なので、`lock_membership_users` / `lock_members` が取った
+/// 行ロックと直列になる（ゲスト再確認と同じタイミングで同じ行を読む）。
+pub(crate) async fn ensure_actor_not_deactivated(
+    tx: &mut toasty::Transaction<'_>,
+    auth_user_id: &str,
+) -> Result<(), AppError> {
+    let rows = toasty::sql::query("SELECT id FROM users WHERE id = $1 AND NOT is_deactivated")
+        .bind(auth_user_id)
+        .exec(&mut *tx)
+        .await?;
+    if rows.is_empty() {
+        return Err(AppError::Forbidden("Account is deactivated".into()));
     }
     Ok(())
 }

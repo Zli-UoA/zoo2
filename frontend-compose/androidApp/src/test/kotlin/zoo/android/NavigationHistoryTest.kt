@@ -33,6 +33,16 @@ class NavigationHistoryTest {
     }
 
     @Test
+    fun returningToTheSameSearchHasADifferentNavigationRevision() {
+        val history = NavigationHistory("/search?q=photo")
+        val requestRevision = history.revision
+        history.navigate("/channels/one")
+        history.back()
+        assertEquals("/search?q=photo", history.current.path)
+        assertNotEquals(requestRevision, history.revision)
+    }
+
+    @Test
     fun newEntryCannotSupplyItsOwnHistoryIndex() {
         val history = NavigationHistory()
         history.navigate("/channels/one", obj("__TSR_index" to 100))

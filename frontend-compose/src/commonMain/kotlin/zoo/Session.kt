@@ -251,21 +251,35 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         (it.width.toLong() * it.height * 4).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     }
 
-    suspend fun image(url: String, signedAttachment: Boolean = false): ByteArray {
+    suspend fun image(url: String, signedAttachment: Boolean = false, cacheKey: String? = null): ByteArray {
         val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
-        return imageCache.get(if (signedAttachment) "attachment:$resolved" else resolved) {
+        return imageCache.get(imageCacheKey(url, signedAttachment, cacheKey)) {
             val bytes = if (signedAttachment) platform.attachmentImage(resolved) else platform.image(resolved)
             bytes ?: assetClient.get(resolved).body()
         }
     }
 
-    /** Static images use the same platform decoder as attachments and animated media. */
-    suspend fun imageBitmap(url: String, signedAttachment: Boolean = false): androidx.compose.ui.graphics.ImageBitmap {
+    fun cachedImageBitmap(url: String, signedAttachment: Boolean = false, cacheKey: String? = null): androidx.compose.ui.graphics.ImageBitmap? =
+        bitmapCache.getIfPresent(imageCacheKey(url, signedAttachment, cacheKey))
+
+    private fun imageCacheKey(url: String, signedAttachment: Boolean, cacheKey: String?): String {
         val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
-        return bitmapCache.get(if (signedAttachment) "attachment:$resolved" else resolved) {
-            platform.imageFrames(image(resolved, signedAttachment)).first()
-        }
+        return if (signedAttachment) "attachment:${cacheKey ?: resolved}" else resolved
     }
+
+    /** Static images use the same platform decoder as attachments and animated media. */
+    suspend fun imageBitmap(
+        url: String, signedAttachment: Boolean = false, retry: Boolean = false, cacheKey: String? = null,
+    ): androidx.compose.ui.graphics.ImageBitmap =
+        bitmapCache.get(imageCacheKey(url, signedAttachment, cacheKey)) {
+            val bytes = if (!retry) image(url, signedAttachment, cacheKey) else {
+                val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
+                imageCache.remove(imageCacheKey(url, signedAttachment, cacheKey))
+                (if (signedAttachment) platform.attachmentImage(resolved) else platform.refreshImage(resolved))
+                    ?: assetClient.get(resolved) { header("Cache-Control", "no-cache") }.body()
+            }
+            platform.imageFrames(bytes).first()
+        }
 
     fun update(next: Environment): Unit = androidx.compose.runtime.snapshots.Snapshot.withMutableSnapshot {
         val old = env

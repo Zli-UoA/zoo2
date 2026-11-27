@@ -70,6 +70,7 @@ interface Platform {
 
     suspend fun image(url: String): ByteArray? = null
 
+    suspend fun refreshImage(url: String): ByteArray? = image(url)
     suspend fun attachmentImage(url: String): ByteArray? = image(url)
 
     suspend fun rasterizeSvg(svg: String, width: Int, height: Int): ByteArray? = null

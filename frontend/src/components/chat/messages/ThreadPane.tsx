@@ -43,7 +43,7 @@ type ReplyListProps = {
   children: ReactNode;
 };
 
-type ReplyAnchor = { row: Element; offset: number };
+type ReplyAnchor = "top" | "bottom" | { row: Element; offset: number };
 
 // 日付変更で返信の高さが変わる前に、画面の上端に見えている返信の位置を記録する。
 class ThreadReplyList extends Component<ReplyListProps> {
@@ -57,13 +57,10 @@ class ThreadReplyList extends Component<ReplyListProps> {
       return null;
     const list = this.list.current;
     const scroll = list?.parentElement;
-    if (
-      !list ||
-      !scroll ||
-      scroll.scrollTop === 0 ||
-      isNearBottom(scroll.scrollTop, scroll.scrollHeight, scroll.clientHeight)
-    )
-      return null;
+    if (!list || !scroll) return null;
+    const maxScroll = scroll.scrollHeight - scroll.clientHeight;
+    if (maxScroll > 0 && scroll.scrollTop <= 0) return "top";
+    if (maxScroll - scroll.scrollTop <= 1) return "bottom";
     const top = scroll.getBoundingClientRect().top;
     for (const row of list.children) {
       const bounds = row.getBoundingClientRect();
@@ -74,7 +71,12 @@ class ThreadReplyList extends Component<ReplyListProps> {
 
   componentDidUpdate(_previous: ReplyListProps, _state: unknown, anchor: ReplyAnchor | null) {
     const scroll = this.list.current?.parentElement;
-    if (!scroll || !anchor || !scroll.contains(anchor.row)) return;
+    if (!scroll || !anchor) return;
+    if (anchor === "top" || anchor === "bottom") {
+      scroll.scrollTop = anchor === "top" ? 0 : scroll.scrollHeight;
+      return;
+    }
+    if (!scroll.contains(anchor.row)) return;
     const offset = anchor.row.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
     scroll.scrollTop += offset - anchor.offset;
   }
@@ -332,7 +334,7 @@ export function ThreadPane({
       return;
     }
     element.scrollTop = element.scrollHeight;
-  }, [calendar, items.length, lastReplyId, root.id, hasTargetInReplies, targetMessageId]);
+  }, [items.length, lastReplyId, root.id, hasTargetInReplies, targetMessageId]);
 
   // 古い返信のページが先頭に足されたときは、読んでいた位置が動かないよう、増えた高さの分だけ補正する。
   const scrollSnapshot = useRef({ firstId: "", lastId: "", height: 0 });

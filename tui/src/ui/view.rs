@@ -431,24 +431,13 @@ fn search_result_metadata(
 ) -> Option<Span<'static>> {
     use unicode_width::UnicodeWidthStr;
     let available = width.saturating_sub(destination_width.min(5));
-    let month_day_time = time
-        .split_once('/')
-        .and_then(|(_, rest)| rest.contains('/').then_some(rest));
-    let full_date = time.split_once(' ').map(|(date, _)| date);
-    let short_date = month_day_time
-        .unwrap_or(time)
-        .split_once(' ')
-        .map(|(date, _)| date);
+    let date = time.split_once(' ').map(|(date, _)| date);
     let labels: &[&str] = if reply {
         &[" スレッドの返信", " 返信"]
     } else {
         &[""]
     };
-    for stamp in std::iter::once(time)
-        .chain(month_day_time)
-        .chain(full_date)
-        .chain(short_date)
-    {
+    for stamp in std::iter::once(time).chain(date) {
         for &label in labels {
             let budget = if label == " スレッドの返信" {
                 width.saturating_sub(destination_width)
@@ -3108,6 +3097,23 @@ mod tests {
         assert_eq!(tail_width("あいうえお", 5), "…えお");
     }
 
+    #[test]
+    fn compact_search_dates_only_omit_the_year_for_this_year() {
+        for (width, year, same_year) in [
+            (15, " 2025/11/21", " 11/21"),
+            (16, " 2025/11/21", " 11/21 09:00"),
+        ] {
+            for (stamp, expected) in [("2025/11/21 09:00", year), ("11/21 09:00", same_year)] {
+                assert_eq!(
+                    search_result_metadata(stamp, false, width, 4)
+                        .unwrap()
+                        .content,
+                    expected
+                );
+            }
+        }
+    }
+
     #[tokio::test]
     async fn global_search_keeps_the_help_line_on_a_small_terminal() {
         let mut app = app();
@@ -3148,7 +3154,7 @@ mod tests {
         let narrow = render_sized(&mut app, 20, 40);
         let selected = narrow.lines().find(|line| line.contains("▶ #g")).unwrap();
         assert!(
-            selected.contains(&timestamp[5..10]) && selected.contains("返信"),
+            !selected.contains(&timestamp[5..10]) && selected.contains("返信"),
             "{narrow}"
         );
         app.global_search.items[0].channel_name = "a".into();

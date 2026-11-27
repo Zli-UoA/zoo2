@@ -9,7 +9,7 @@ on:
         default: ""
     outputs:
       frontend:
-        description: Frontend test suites selected from the complete PR diff
+        description: Frontend test suites selected from the complete PR or merge group diff
         value: ${{ jobs.select.outputs.frontend }}
       backend:
         description: Backend integration test targets and partitions
@@ -26,6 +26,9 @@ on:
       storybookPreview:
         description: Whether Storybook build inputs changed
         value: ${{ jobs.select.outputs.storybookPreview }}
+      androidMedia:
+        description: Whether to run the APK media viewer smoke test
+        value: ${{ jobs.select.outputs.androidMedia }}
       desktopTauri:
         description: Tauri platform jobs to validate
         value: ${{ jobs.select.outputs.desktopTauri }}
@@ -43,11 +46,12 @@ jobs:
       clients: ${{ steps.select.outputs.clients }}
       frontendBuild: ${{ steps.select.outputs.frontendBuild }}
       desktopTauri: ${{ steps.select.outputs.desktopTauri }}
+      androidMedia: ${{ steps.select.outputs.androidMedia }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-          # A PR merge commit normally has the event base as its first parent.
+          # PR and merge group bases may already be present in a shallow checkout.
           fetch-depth: 2
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:

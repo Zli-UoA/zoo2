@@ -6,6 +6,8 @@ pub use apns_revocation::ApnsRevocation;
 pub mod apns_subscription;
 pub use apns_subscription::ApnsSubscription;
 pub mod channel;
+pub mod channel_note;
+pub use channel_note::ChannelNote;
 pub mod channel_user;
 pub mod message;
 pub mod message_reaction;

@@ -1,7 +1,7 @@
 package zoo.android.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -20,10 +20,16 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.liveRegion
@@ -54,6 +60,7 @@ internal fun ConversationInput(
     onRemoveFile: (String) -> Unit = {},
     hideIdleHandle: Boolean = false,
     canResize: Boolean = true,
+    onResizeChanged: (Boolean) -> Unit = {},
 ) {
     var fieldValue by remember { mutableStateOf(TextFieldValue(state.text, state.selection ?: TextRange(state.text.length))) }
     val value = if (fieldValue.text == state.text && (state.selection == null || fieldValue.selection == state.selection)) {
@@ -70,6 +77,7 @@ internal fun ConversationInput(
     val showTools = full || focused || state.text.isNotEmpty()
     val density = LocalDensity.current
     val expand by rememberUpdatedState { onTool(InputTool.Expand) }
+    val resizeChanged by rememberUpdatedState(onResizeChanged)
     BoxWithConstraints(modifier.fillMaxWidth(), contentAlignment = Alignment.BottomCenter) {
         val minimum = maxOf(compactHeight, AndroidControlSize.target * 2 + AndroidControlSize.inputHandleHeight)
             .coerceAtMost(maxHeight)
@@ -109,16 +117,37 @@ internal fun ConversationInput(
             if (canResize && (!hideIdleHandle || showTools)) Box(
                 Modifier.fillMaxWidth().height(AndroidControlSize.inputHandleHeight)
                     .pointerInput(full) {
-                        detectVerticalDragGestures(
-                            onDragCancel = { dragDistance = 0.dp },
-                            onDragEnd = {
-                                val distance = if (full) -dragDistance else dragDistance
-                                if (distance >= dragThreshold) expand()
-                                dragDistance = 0.dp
-                            },
-                        ) { _, delta -> dragDistance -= delta.toDp() }
-                    }.clickable(role = Role.Button, onClick = expand)
-                    .semantics { contentDescription = if (full) "入力欄を縮める" else "入力欄を広げる" },
+                        fun resetDrag() {
+                            dragDistance = 0.dp
+                            resizeChanged(false)
+                        }
+                        try {
+                            detectVerticalDragGestures(
+                                onDragStart = { resizeChanged(true) },
+                                onDragCancel = ::resetDrag,
+                                onDragEnd = {
+                                    val distance = if (full) -dragDistance else dragDistance
+                                    if (distance >= dragThreshold) expand()
+                                    resetDrag()
+                                },
+                            ) { _, delta -> dragDistance -= delta.toDp() }
+                        } finally {
+                            resetDrag()
+                        }
+                    }.onKeyEvent { event ->
+                        val activatesHandle = when (event.key) {
+                            Key.Enter, Key.NumPadEnter, Key.DirectionCenter, Key.Spacebar -> true
+                            else -> false
+                        }
+                        if (event.type == KeyEventType.KeyUp && activatesHandle) {
+                            expand()
+                            true
+                        } else false
+                    }.focusable().semantics {
+                        val action = if (full) "入力欄を縮める" else "入力欄を広げる"
+                        contentDescription = action
+                        customActions = listOf(CustomAccessibilityAction(action) { expand(); true })
+                    },
                 contentAlignment = Alignment.Center,
             ) {
                 Box(Modifier.size(28.dp, 3.dp).background(colors.inputHint, CircleShape))

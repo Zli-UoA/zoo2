@@ -58,17 +58,17 @@ internal class AndroidMediaProxy(context: Context, private val base: String, pri
 
     suspend fun image(
         source: String, http: HttpClient, cache: AndroidImageCache,
-        online: Boolean = true, limit: Int = 20 * 1024 * 1024, push: Boolean = false,
+        online: Boolean = true, limit: Int = 20 * 1024 * 1024, push: Boolean = false, bypassCache: Boolean = false,
     ): ByteArray {
         val cachedRoute = imageRequest(base, source, prefs.getString(base, "").orEmpty())
-        if (cachedRoute != null) cache.imageIfCached(cachedRoute, limit)?.let { return it }
+        if (!bypassCache && cachedRoute != null) cache.imageIfCached(cachedRoute, limit)?.let { return it }
         val route = if (push) {
             withTimeoutOrNull(750) { request(source, http, online, timeoutMillis = 700) }
                 ?: requireNotNull(cachedRoute) { "Image proxy lookup timed out" }
         } else request(source, http, online)
-        if (route != cachedRoute) cache.imageIfCached(route, limit)?.let { return it }
-        if (!route.proxied) return cache.download(route, limit)
-        return downloadProxyImage(push) { cache.download(route, limit) }
+        if (!bypassCache && route != cachedRoute) cache.imageIfCached(route, limit)?.let { return it }
+        if (!route.proxied) return cache.download(route, limit, bypassCache)
+        return downloadProxyImage(push) { cache.download(route, limit, bypassCache) }
     }
 
     internal suspend fun request(source: String, http: HttpClient, online: Boolean, timeoutMillis: Long = 5_000): ImageRequest {

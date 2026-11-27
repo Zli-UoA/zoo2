@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readdirSync } from 'node:fs';
 import { selectSuites } from './test-selection.mjs';
-import { cargoCommands, slackTests } from './backend-e2e-selection.mjs';
+import { cargoCommands, routeTestTargets, slackTests } from './backend-e2e-selection.mjs';
 import { selectOtherJobs } from './test-selection-jobs.mjs';
 
 const change = path => ({ status: 'M', path });
@@ -46,6 +46,20 @@ test('multiple test edits select their union, including backend partitions', () 
   assert.deepEqual(plan.backend.targets, ['slack_link_test', 'threads_test']);
   assert.deepEqual(plan.backend.legs, ['core', 'slack']);
   assert.equal(plan.backend.full, false);
+});
+
+test('merge groups select the union across queued changes', () => {
+  const changes = [
+    change('frontend/e2e/layout.spec.ts'),
+    change('backend/tests/threads_test.rs'),
+  ];
+  const plan = selectSuites('merge_group', changes);
+  assert.deepEqual(Object.keys(plan.frontend).filter(suite => plan.frontend[suite]), ['layout']);
+  assert.deepEqual(plan.backend.targets, ['threads_test']);
+  assert.deepEqual(plan.backend.legs, ['core']);
+  assert.equal(plan.backend.full, false);
+  assert.deepEqual(selectOtherJobs('merge_group', changes).clients, { tui: false });
+  assert.equal(selectSuites('merge_group', [...changes, change('infra/db/schema.sql')]).backend.full, true);
 });
 
 test('Rust tests select only the required partition and special emoji job', () => {
@@ -105,6 +119,13 @@ test('Rust clients follow package path dependencies and Bot changes do not trigg
   assert.equal(selectOtherJobs('pull_request', [change('backend/src/main.rs')]).storybookPreview, false);
 });
 
+test('shared component schema versions verify TUI', () => {
+  const changes = [change('crates/zoo-components/src/lib.rs')];
+  assert.deepEqual(selectOtherJobs('pull_request', changes).clients, { tui: true });
+  assert.deepEqual(selectOtherJobs('merge_group', changes).clients, { tui: true });
+  assert.equal(selectOtherJobs('pull_request', [change('frontend/src/android-phone/engine.ts')]).storybookPreview, false);
+});
+
 test('main, unknown configuration, deletions and missing diffs retain all cross-package jobs', () => {
   for (const [event, changes] of [['push', [change('tui/src/main.rs')]], ['pull_request', undefined], ['pull_request', [{ status: 'D', path: 'tui/src/main.rs' }]], ['pull_request', [change('.github/scripts/test-selection-jobs.mjs')]]]) {
     const plan = selectOtherJobs(event, changes);
@@ -113,18 +134,20 @@ test('main, unknown configuration, deletions and missing diffs retain all cross-
   }
 });
 
-test('main, queue, manual, deletions and missing diff always run all suites', () => {
-  for (const name of ['push', 'merge_group', 'workflow_dispatch', undefined]) {
+test('push, manual, deletions and missing diff always run all suites', () => {
+  for (const name of ['push', 'workflow_dispatch', undefined]) {
     assert.equal(selectSuites(name, [change('frontend/e2e/oidc.spec.ts')]).backend.full, true);
   }
   for (const changes of [undefined, [], [{ status: 'D', path: 'backend/tests/threads_test.rs' }], [{ status: 'R100', path: 'backend/tests/threads_test.rs' }]]) {
-    assert.equal(selectSuites('pull_request', changes).backend.full, true);
+    for (const name of ['pull_request', 'merge_group']) assert.equal(selectSuites(name, changes).backend.full, true);
   }
 });
 
 test('full Rust partitions cover every current test once and retain ignored ActivityPub checks', () => {
   const files = readdirSync(new URL('../../backend/tests/', import.meta.url));
-  for (const name of slackTests) assert.ok(files.includes(`${name}.rs`), name);
+  for (const name of [...slackTests, ...Object.values(routeTestTargets).flat()]) {
+    assert.ok(files.includes(`${name}.rs`), name);
+  }
   const commands = ['slack', 'core'].map(leg => cargoCommands({ full: true }, leg, files));
   const targets = commands.flatMap(c => c[0].filter((_, i) => i > 0 && i % 2 === 0));
   assert.deepEqual(targets.sort(), files.filter(f => f.endsWith('.rs')).map(f => f.slice(0, -3)).sort());
@@ -137,4 +160,31 @@ test('empty selected Rust partitions never invoke a bare cargo test, invalid tar
   assert.throws(() => cargoCommands({ full: true }, 'core', []));
   assert.throws(() => cargoCommands({ full: false, targets: ['--help'] }, 'core', []));
   assert.throws(() => cargoCommands({ full: false, targets: [] }, 'wrong', []));
+});
+
+test('ordinary React modules use related projects on PRs and full coverage in the queue', () => {
+  const changes = [change('frontend/src/components/Button.tsx')];
+  const pr = selectSuites('pull_request', changes);
+  assert.deepEqual(Object.keys(pr.frontend).filter(key => pr.frontend[key]), ['unit', 'browser', 'vrt', 'storybook']);
+  assert.equal(pr.backend.check, false);
+  const withTest = [...changes, change('frontend/src/components/Button.browser.test.tsx')];
+  assert.deepEqual(selectSuites('pull_request', withTest).frontend, pr.frontend);
+  assert.equal(selectSuites('merge_group', changes).frontend.catalog, true);
+  assert.equal(selectSuites('pull_request', [...changes, change('frontend/vite.config.ts')]).frontend.catalog, true);
+});
+
+test('classified backend routes select dedicated targets and independently edited tests', () => {
+  const changes = [
+    change('backend/src/routes/apns.rs'),
+    change('backend/src/routes/typing.rs'),
+    change('backend/tests/channel_pins_test.rs'),
+  ];
+  const { backend } = selectSuites('pull_request', changes);
+  assert.equal(backend.source, true);
+  assert.equal(backend.full, false);
+  assert.deepEqual(backend.legs, ['core', 'slack']);
+  assert.deepEqual(backend.targets, ['apns_test', 'app_event_sources_test', 'channel_pins_test', 'typing_test']);
+  assert.equal(selectSuites('merge_group', changes).backend.full, true);
+  const shared = selectSuites('pull_request', [...changes, change('backend/src/routes/mod.rs')]);
+  assert.equal(shared.backend.full, true);
 });

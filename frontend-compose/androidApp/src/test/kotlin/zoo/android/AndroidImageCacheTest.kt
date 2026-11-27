@@ -3,9 +3,18 @@ package zoo.android
 import java.io.Closeable
 import java.nio.file.Files
 import kotlin.test.*
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import okhttp3.Dispatcher
+import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.SocketPolicy
 import okhttp3.tls.HandshakeCertificates
 import okhttp3.tls.HeldCertificate
 
@@ -21,12 +30,34 @@ class AndroidImageCacheTest {
             start()
         }
         val url get() = server.url("/image.png").toString()
-        fun cache() = AndroidImageCache(directory) {
+        fun cache(configure: OkHttpClient.Builder.() -> Unit = {}) = AndroidImageCache(directory) {
             sslSocketFactory(clientTls.sslSocketFactory(), clientTls.trustManager)
+            configure()
         }
         override fun close() {
             server.shutdown()
             directory.deleteRecursively()
+        }
+    }
+
+    @Test fun cachedImageDoesNotWaitForABusyNetworkDispatcher() = runBlocking {
+        Fixture().use { fixture ->
+            fixture.cache { dispatcher(Dispatcher().apply { maxRequests = 1 }) }.use { cache ->
+                val cached = ImageRequest(fixture.url)
+                fixture.server.enqueue(MockResponse().setHeader("Cache-Control", "public, max-age=3600").setBody("cached"))
+                cache.download(cached, 1024)
+                assertNotNull(fixture.server.takeRequest(5, TimeUnit.SECONDS))
+                fixture.server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+                val pending = async { cache.download(ImageRequest(fixture.server.url("/slow.png").toString()), 1024) }
+                try {
+                    assertNotNull(withContext(Dispatchers.IO) { fixture.server.takeRequest(5, TimeUnit.SECONDS) })
+                    val image = withTimeout(5_000) { cache.imageIfCached(cached, 1024) }
+                    assertEquals("cached", image?.decodeToString())
+                    assertEquals(2, fixture.server.requestCount)
+                } finally {
+                    pending.cancelAndJoin()
+                }
+            }
         }
     }
 
@@ -44,6 +75,26 @@ class AndroidImageCacheTest {
         }
     }
 
+    @Test fun retryDoesNotSendTheCachedValidatorOrReuseTheBrokenBody() = runBlocking {
+        Fixture().use { fixture ->
+            fixture.server.enqueue(MockResponse().setHeader("Cache-Control", "public, max-age=3600")
+                .setHeader("ETag", "\"v1\"").setBody("broken"))
+            fixture.server.enqueue(MockResponse().setHeader("Cache-Control", "public, max-age=3600")
+                .setHeader("ETag", "\"v1\"").setBody("repaired"))
+            fixture.cache().use { cache ->
+                val request = ImageRequest(fixture.url)
+                assertEquals("broken", cache.imageFromCacheFirst(request).decodeToString())
+                assertEquals("repaired", cache.download(request, 1024, bypassCache = true).decodeToString())
+                assertEquals("repaired", cache.imageFromCacheFirst(request).decodeToString())
+                assertEquals(2, fixture.server.requestCount)
+                assertNotNull(fixture.server.takeRequest(5, TimeUnit.SECONDS))
+                val retry = assertNotNull(fixture.server.takeRequest(5, TimeUnit.SECONDS))
+                assertNull(retry.getHeader("If-None-Match"))
+                assertEquals("no-cache", retry.getHeader("Cache-Control"))
+            }
+        }
+    }
+
     @Test fun cacheFirstRevalidatesNoCacheImagesWithTheirEtag() = runBlocking {
         Fixture().use { f ->
             f.server.enqueue(MockResponse().setHeader("Cache-Control", "public, no-cache")
@@ -56,6 +107,20 @@ class AndroidImageCacheTest {
             assertEquals(2, f.server.requestCount)
             f.server.takeRequest()
             assertEquals("\"v1\"", f.server.takeRequest().getHeader("If-None-Match"))
+        }
+    }
+
+    @Test fun reusesCachedRedirectAndSignedImageAfterReopeningClient() = runBlocking {
+        Fixture().use { f ->
+            val signed = f.server.url("/original?signature=one").toString()
+            f.server.enqueue(MockResponse().setResponseCode(307)
+                .setHeader("Location", signed)
+                .setHeader("Cache-Control", "private, max-age=300"))
+            f.server.enqueue(MockResponse().setHeader("Cache-Control", "private, max-age=300").setBody("cached"))
+            f.server.enqueue(MockResponse().setBody("unexpected network request"))
+            f.cache().use { assertEquals("cached", it.image(f.url).decodeToString()) }
+            f.cache().use { assertEquals("cached", it.image(f.url).decodeToString()) }
+            assertEquals(2, f.server.requestCount)
         }
     }
 

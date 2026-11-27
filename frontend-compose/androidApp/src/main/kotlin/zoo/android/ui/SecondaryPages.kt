@@ -268,20 +268,18 @@ private fun PostAudienceButton(visibility: String, colors: AndroidColors, dispat
     val audience = PostAudience.fromApi(visibility) ?: return
     var expanded by remember { mutableStateOf(false) }
     Box {
-        UiIconButton(audience.icon, "公開範囲：${audience.label}", colors.foreground, { expanded = true })
+        UiIconButton(audience.icon, "${androidLabel("home.audience", "公開範囲")}：${audience.localizedLabel()}", colors.foreground, { expanded = true })
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, containerColor = colors.background) {
-            val options = listOf("public", "unlisted", "followers", "local")
-            for (id in options) {
-                val option = requireNotNull(PostAudience.fromApi(id))
+            for (option in PostAudience.composerOptions) {
                 DropdownMenuItem(
-                    text = { Text(option.label, color = colors.foreground) },
+                    text = { Text(option.localizedLabel(), color = colors.foreground) },
                     leadingIcon = { UiGlyph(option.icon, colors.secondary, AndroidControlSize.inlineIcon) },
-                    trailingIcon = if (id == visibility) {
+                    trailingIcon = if (option == audience) {
                         { UiGlyph(UiIcon.Check, colors.foreground, AndroidControlSize.inlineIcon) }
                     } else null,
                     onClick = {
                         expanded = false
-                        dispatch(AndroidUiAction.SelectPostVisibility(id))
+                        dispatch(AndroidUiAction.SelectPostVisibility(option.apiValue))
                     },
                 )
             }

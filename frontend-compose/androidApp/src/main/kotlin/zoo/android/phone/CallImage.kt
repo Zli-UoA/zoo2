@@ -10,8 +10,9 @@ import zoo.Session
 
 @Composable
 internal fun rememberCallImage(session: Session?, url: String?): ImageBitmap? = key(session, url) {
-    val image by produceState<ImageBitmap?>(null) {
-        if (session != null && !url.isNullOrBlank()) {
+    val initial = if (session != null && !url.isNullOrBlank()) session.cachedImageBitmap(url) else null
+    val image by produceState(initial) {
+        if (initial == null && session != null && !url.isNullOrBlank()) {
             value = try {
                 session.imageBitmap(url)
             } catch (cancelled: CancellationException) {

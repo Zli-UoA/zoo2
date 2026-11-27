@@ -587,6 +587,50 @@ async fn apps_and_webhooks_block_encryption() {
     );
 }
 
+#[tokio::test]
+async fn active_and_restorable_notes_block_encryption_but_expired_notes_do_not() {
+    let env = env().await;
+    let alice = env.user().await;
+    let channel = env.channel(&alice, true, &[]).await;
+    let note_id = Uuid::new_v4().to_string();
+    env.exec(
+        "INSERT INTO channel_notes (id, channel_id, title, content, created_user_id) VALUES ($1, $2, 'plain', 'body', $3)",
+        &[&note_id, &channel, &alice],
+    )
+    .await
+    .unwrap();
+
+    let (status, body) = env.encrypt(&channel, &alice).await;
+    assert_eq!(
+        (status, code(&body)),
+        (StatusCode::CONFLICT, "E2EE_CONVERSION_BLOCKED"),
+        "{body}"
+    );
+    assert_eq!(body["blockers"], json!(["channel_notes"]));
+
+    env.exec(
+        "UPDATE channel_notes SET deleted_at = (statement_timestamp() AT TIME ZONE 'UTC') - interval '23 hours' WHERE id = $1",
+        &[&note_id],
+    )
+    .await
+    .unwrap();
+    let (status, body) = env.encrypt(&channel, &alice).await;
+    assert_eq!(
+        (status, code(&body)),
+        (StatusCode::CONFLICT, "E2EE_CONVERSION_BLOCKED"),
+        "{body}"
+    );
+    assert_eq!(body["blockers"], json!(["channel_notes"]));
+
+    env.exec(
+        "UPDATE channel_notes SET deleted_at = (statement_timestamp() AT TIME ZONE 'UTC') - interval '25 hours' WHERE id = $1",
+        &[&note_id],
+    )
+    .await
+    .unwrap();
+    assert_eq!(env.encrypt(&channel, &alice).await.0, StatusCode::OK);
+}
+
 async fn wait_for_lock(env: &Env, pattern: &str) {
     for _ in 0..100 {
         let waiting = env

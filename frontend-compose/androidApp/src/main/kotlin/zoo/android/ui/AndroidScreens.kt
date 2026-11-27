@@ -8,12 +8,16 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.gestures.BringIntoViewSpec
+import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
@@ -23,6 +27,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -35,6 +40,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.SaveableStateHolder
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -42,12 +48,18 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.hideFromAccessibility
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
@@ -56,6 +68,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
@@ -87,6 +101,7 @@ internal data class TimelineItem(
     val divider: String? = null,
     /** 暗号化した添付（`attachment_id` → 本文の `attachments` の値の JSON。鍵を含むので表示と取得にだけ使う）。 */
     val encryptedFiles: Map<String, String> = emptyMap(),
+    val postAuthor: zoo.Row? = null,
 )
 internal data class ChannelItem(
     val id: String,
@@ -97,7 +112,10 @@ internal data class ChannelItem(
 internal data class ChannelSection(val label: String, val channels: List<ChannelItem>)
 
 internal sealed interface AndroidScreen {
-    data class Home(val posts: List<TimelineItem>, val timeline: String? = null, val loadOlder: Boolean = false) : AndroidScreen
+    data class Home(
+        val posts: List<TimelineItem>, val timeline: String? = null, val loadOlder: Boolean = false,
+        val loadFailed: Boolean = false, val loading: Boolean = false, val online: Boolean = true,
+    ) : AndroidScreen
     data class Channels(val sections: List<ChannelSection>) : AndroidScreen
     data class Notifications(val items: List<InboxItem>, val nextCursor: String? = null, val loadFailed: Boolean = false) : AndroidScreen
     data class Bubble(val entries: List<TimelineItem>, val input: InputState, val participants: List<String> = emptyList()) : AndroidScreen
@@ -110,6 +128,7 @@ internal sealed interface AndroidScreen {
         val focusRequest: String? = focusMessage,
         /** 古いページが残っていて、いま取れる。 */
         val loadOlder: Boolean = false,
+        val historyReady: Boolean = true,
     ) : AndroidScreen
     data class Thread(
         val channelName: String, val root: TimelineItem, val replies: List<TimelineItem>, val input: InputState,
@@ -117,8 +136,13 @@ internal sealed interface AndroidScreen {
         /** Changes on each request to show [focusMessage] (a search result opened again), unlike the id. */
         val focusRequest: String? = focusMessage,
         val loadOlder: Boolean = false,
+        val historyReady: Boolean = true,
     ) : AndroidScreen
-    data class Post(val root: TimelineItem, val replies: List<TimelineItem>, val input: InputState) : AndroidScreen
+    data class PostLoading(val online: Boolean, val failed: Boolean) : AndroidScreen
+    data class Post(
+        val root: TimelineItem, val replies: List<TimelineItem>, val input: InputState,
+        val loadFailed: Boolean = false, val online: Boolean = true,
+    ) : AndroidScreen
     data class ChannelSettings(val channel: String, val groups: List<SettingsGroup>, val id: String = channel) : AndroidScreen
     data class SettingsDetail(val title: String, val groups: List<SettingsGroup>) : AndroidScreen
     data class EditChannel(
@@ -134,6 +158,7 @@ internal sealed interface AndroidScreen {
     data class Directory(
         val title: String, val query: String, val results: List<SelectionItem>,
         val submit: String? = null, val canSubmit: Boolean = false, val encryption: Boolean? = null,
+        val scopeId: String? = null,
     ) : AndroidScreen
     data class EditEntry(val input: InputState) : AndroidScreen
     data class Search(val state: SearchScreenState) : AndroidScreen
@@ -142,6 +167,7 @@ internal sealed interface AndroidScreen {
         val handle: String? = null, val avatar: ImageBitmap? = null,
         val originalAvailable: Boolean = false,
         val id: String = handle ?: name,
+        val postsPending: Boolean = false, val postsLoadFailed: Boolean = false, val online: Boolean = true,
     ) : AndroidScreen
     data class NewPost(val input: InputState, val recent: List<RecentPhoto>, val showPhotos: Boolean,
         val visibility: String? = null, val attached: List<RecentPhoto> = emptyList(), val federate: Boolean? = null) : AndroidScreen
@@ -157,7 +183,7 @@ internal sealed interface AndroidUiAction {
     data class OpenNotification(val path: String) : AndroidUiAction
     data object RetryNotifications : AndroidUiAction
     data object LoadMoreNotifications : AndroidUiAction
-    data class ActOnEntry(val item: TimelineItem, val operation: EntryOperation, val value: String = "", val reactionImageId: String? = null) : AndroidUiAction
+    data class ActOnEntry(val item: TimelineItem, val operation: EntryOperation, val value: String = "", val reactionImageId: String? = null, val quotedMedia: Boolean = false) : AndroidUiAction
     data class RespondFollow(val actor: String, val activity: String, val accept: Boolean) : AndroidUiAction
     data class RemoveFile(val id: String) : AndroidUiAction
     data class SelectInput(val range: TextRange) : AndroidUiAction
@@ -166,6 +192,10 @@ internal sealed interface AndroidUiAction {
     data class OpenChannel(val id: String) : AndroidUiAction
     data class OpenChannelSettings(val id: String) : AndroidUiAction
     data class OpenPost(val id: String) : AndroidUiAction
+    data object RetryPost : AndroidUiAction
+    data object RetryProfile : AndroidUiAction
+    data object RetryTimeline : AndroidUiAction
+    data class OpenProfile(val author: zoo.Row) : AndroidUiAction
     data class ReplyToPost(val id: String) : AndroidUiAction
     data class OpenThread(val id: String) : AndroidUiAction
     data class OpenSetting(val id: String) : AndroidUiAction
@@ -179,6 +209,7 @@ internal sealed interface AndroidUiAction {
     data class SelectSearchFilter(val field: SearchFilterField, val ids: List<String>) : AndroidUiAction
     data class ToggleSearchFilter(val flag: SearchFilterFlag) : AndroidUiAction
     data class OpenSearchResult(val key: String) : AndroidUiAction
+    data class OpenSearchMedia(val key: String, val revealedSensitive: Boolean = false) : AndroidUiAction
     data object LoadOlderResults : AndroidUiAction
     data object RetrySearch : AndroidUiAction
     data class ChannelNameChanged(val name: String) : AndroidUiAction
@@ -232,6 +263,16 @@ internal fun AndroidScreens(
     photo: @Composable (RecentPhoto, Modifier) -> Unit,
 ) {
     val systemHaptics = LocalHapticFeedback.current
+    pageState.SaveableStateProvider("screen-history") {
+        var recentRoutes by rememberSaveable { mutableStateOf(arrayListOf<String>()) }
+        val route = screen.routeKey()
+        LaunchedEffect(pageState, route) {
+            val updated = recentRoutes.filterNot { it == route } + route
+            val retained = updated.takeLast(32)
+            updated.dropLast(retained.size).forEach(pageState::removeState)
+            recentRoutes = ArrayList(retained)
+        }
+    }
     CompositionLocalProvider(LocalHapticFeedback provides if (interaction.haptics) systemHaptics else SilentHaptics) {
         AnimatedContent(
             targetState = screen,
@@ -263,10 +304,10 @@ private fun AndroidScreen.routeKey(): String = when (this) {
     is AndroidScreen.Conversation -> "channel:$id"
     is AndroidScreen.Thread -> "thread:${root.id}"
     is AndroidScreen.Post -> "post:${root.id}"
-    is AndroidScreen.Profile -> "profile:$id"
+    is AndroidScreen.Profile -> if (postsPending && posts.isEmpty()) "profile-loading:$id" else "profile:$id"
     is AndroidScreen.ChannelSettings -> "channel-settings:$id"
     is AndroidScreen.SettingsDetail -> "settings-detail:$title"
-    is AndroidScreen.Directory -> "directory:$title"
+    is AndroidScreen.Directory -> "directory:$title:${scopeId.orEmpty()}"
     else -> this::class.simpleName.orEmpty()
 }
 
@@ -316,7 +357,7 @@ private fun RenderAndroidScreen(
                     color = colors.secondary, fontSize = 13.sp)
                 // 入力途中の URL で行き先を取得しないよう、Bubble（Web と同じく素の表示）ではアプリ内リンクを扱わない。
                 CompositionLocalProvider(LocalChannelLinks provides null) {
-                    TimelineWithInput(screen.entries, screen.input, colors, dispatch)
+                    TimelineWithInput(screen.entries, screen.input, colors, dispatch, canResize = false)
                 }
             }
             is AndroidScreen.Settings -> SettingsPage(screen.groups, colors, openSetting, toggle)
@@ -327,8 +368,9 @@ private fun RenderAndroidScreen(
                         if (screen.canCall) UiIconButton(UiIcon.Phone, "通話を開始", colors.foreground,
                             { dispatch(AndroidUiAction.StartCall) })
                     }
-                }) {
-                    TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = interaction.swipeReply, allowThreads = true, focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true,
+                }) { headerHeight, headerVisible ->
+                    TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = interaction.swipeReply, allowThreads = true, focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true, historyReady = screen.historyReady,
+                        topContentPadding = headerHeight, headerOverlayHeight = if (headerVisible) headerHeight else 0.dp,
                         loadEarlier = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderMessages) } } else null)
                 }
             }
@@ -338,12 +380,27 @@ private fun RenderAndroidScreen(
                 Text("# ${screen.channelName}", Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                     color = colors.secondary, fontSize = 13.sp)
                 TimelineWithInput(listOf(screen.root) + screen.replies, screen.input, colors, dispatch,
-                    focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true,
+                    focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true, historyReady = screen.historyReady,
                     loadEarlier = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderMessages) } } else null)
+            }
+            is AndroidScreen.PostLoading -> {
+                PageHeader("投稿", colors, onBack = back)
+                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    when {
+                        !screen.online -> Text(androidLabel("offline.bannerTitle", "オフラインです"), color = colors.secondary)
+                        screen.failed -> TextAction(androidLabel("offline.retry", "再試行"), colors) {
+                            dispatch(AndroidUiAction.RetryPost)
+                        }
+                        else -> CircularProgressIndicator(color = colors.accent)
+                    }
+                }
             }
             is AndroidScreen.Post -> {
                 PageHeader("投稿", colors, onBack = back)
-                TimelineWithInput(listOf(screen.root) + screen.replies, screen.input, colors, dispatch, posts = true)
+                if (screen.loadFailed && screen.online) FeedLoadError(androidLabel("common.errors.network", "通信エラー"), colors) {
+                    dispatch(AndroidUiAction.RetryPost)
+                }
+                TimelineWithInput(listOf(screen.root) + screen.replies, screen.input, colors, dispatch, posts = true, canResize = false)
             }
             is AndroidScreen.EditEntry -> {
                 PageHeader("編集", colors, onBack = back)
@@ -367,7 +424,20 @@ private fun RenderAndroidScreen(
                         { dispatch(AndroidUiAction.OpenSetting("profile-original")) })
                 }
                 Timeline(screen.posts, colors, Modifier.weight(1f), dispatch, posts = true, header = {
-                    ProfileHeader(screen, colors) { dispatch(AndroidUiAction.OpenSetting("profile-follow")) }
+                    Column {
+                        ProfileHeader(screen, colors) { dispatch(AndroidUiAction.OpenSetting("profile-follow")) }
+                        if (screen.postsPending) {
+                            Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
+                                when {
+                                    !screen.online -> Text(androidLabel("offline.bannerTitle", "オフラインです"), color = colors.secondary)
+                                    screen.postsLoadFailed -> TextAction(androidLabel("offline.retry", "再試行"), colors) {
+                                        dispatch(AndroidUiAction.RetryProfile)
+                                    }
+                                    else -> CircularProgressIndicator(color = colors.accent)
+                                }
+                            }
+                        }
+                    }
                 })
             }
             is AndroidScreen.NewPost -> NewPostPage(screen, colors, dispatch, photo)
@@ -388,28 +458,57 @@ private fun RenderAndroidScreen(
 
 @Composable
 private fun HomePage(screen: AndroidScreen.Home, colors: AndroidColors, dispatch: (AndroidUiAction) -> Unit) {
-    CollapsingHeader(header = {
-        Column {
+    CollapsingHeader(forceVisible = screen.posts.isEmpty(), header = {
+        Column(Modifier.background(colors.background)) {
             PageHeader(androidLabel("home.title", "ホーム"), colors) {
                 UiIconButton(UiIcon.Search, "ユーザーを検索", colors.foreground,
                     { dispatch(AndroidUiAction.OpenSetting("people")) })
             }
             if (screen.timeline != null) Row(Modifier.fillMaxWidth()) {
-                for ((id, title) in listOf("home" to "フォロー中", "local" to "ローカル", "social" to "連合")) {
-                    TextAction(title, colors, style = if (id == screen.timeline) TextActionStyle.Neutral else TextActionStyle.Plain,
+                for ((id, title) in listOf("home" to "ホーム", "local" to "ローカル", "social" to "ソーシャル")) {
+                    TextAction(androidLabel("home.timelineLabels.$id", title), colors, style = if (id == screen.timeline) TextActionStyle.Neutral else TextActionStyle.Plain,
                         modifier = Modifier.weight(1f)) { dispatch(AndroidUiAction.SelectTimeline(id)) }
                 }
             }
         }
-    }) {
+    }) { headerHeight, headerVisible ->
         Box(Modifier.fillMaxSize()) {
-            Timeline(screen.posts, colors, Modifier.fillMaxSize(), dispatch, posts = true,
-                loadOlder = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderPosts) } } else null)
+            Timeline(
+                screen.posts, colors, Modifier.fillMaxSize(), dispatch, posts = true,
+                topContentPadding = headerHeight,
+                headerOverlayHeight = if (headerVisible) headerHeight else 0.dp,
+                loadOlder = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderPosts) } } else null,
+                header = if (screen.posts.isNotEmpty() && screen.loadFailed && screen.online) {
+                    { TimelineLoadError(colors) { dispatch(AndroidUiAction.RetryTimeline) } }
+                } else null,
+            )
+            if (screen.posts.isEmpty()) {
+                Column(Modifier.align(Alignment.Center).padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    when {
+                        !screen.online -> Text(androidLabel("offline.bannerTitle", "オフラインです"), color = colors.secondary)
+                        screen.loading -> CircularProgressIndicator(color = colors.accent)
+                        screen.loadFailed -> TimelineLoadError(colors) { dispatch(AndroidUiAction.RetryTimeline) }
+                    }
+                }
+            }
             Box(Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
                 UiIconButton(UiIcon.Create, "新しい投稿", Color.Black,
                     action = { dispatch(AndroidUiAction.ComposePost) }, fill = colors.accent)
             }
         }
+    }
+}
+
+@Composable
+private fun TimelineLoadError(colors: AndroidColors, retry: () -> Unit) {
+    FeedLoadError(androidLabel("home.loadError", "タイムラインを取得できませんでした。"), colors, retry)
+}
+
+@Composable
+private fun FeedLoadError(message: String, colors: AndroidColors, retry: () -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(message, color = colors.secondary)
+        TextAction(androidLabel("offline.retry", "再試行"), colors, click = retry)
     }
 }
 
@@ -438,8 +537,8 @@ private fun ChannelMenuButton(colors: AndroidColors, dispatch: (AndroidUiAction)
 private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, dispatch: (AndroidUiAction) -> Unit) {
     PageHeader(androidLabel("channels.title", "チャンネル"), colors) { ChannelMenuButton(colors, dispatch) }
     val scroll = rememberLazyListState()
-    if (screen.sections.isEmpty()) return
-    LazyColumn(state = scroll, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
+    val visibleScroll = if (screen.sections.any { it.channels.isNotEmpty() }) scroll else rememberLazyListState()
+    LazyColumn(state = visibleScroll, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
         screen.sections.forEach { section ->
             item {
                 Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -481,7 +580,7 @@ private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, d
 }
 
 @Composable
-private fun ColumnScope.TimelineWithInput(
+internal fun ColumnScope.TimelineWithInput(
     entries: List<TimelineItem>,
     input: InputState,
     colors: AndroidColors,
@@ -492,9 +591,18 @@ private fun ColumnScope.TimelineWithInput(
     focusRequest: String? = focusMessage,
     posts: Boolean = false,
     hideIdleHandle: Boolean = false,
+    canResize: Boolean = true,
+    historyReady: Boolean = true,
     loadEarlier: (() -> Unit)? = null,
+    topContentPadding: Dp = 0.dp,
+    headerOverlayHeight: Dp = 0.dp,
+    imeInsets: WindowInsets = WindowInsets.ime.exclude(WindowInsets.systemBars),
 ) {
     val scroll = rememberLazyListState()
+    val expanded by rememberUpdatedState(input.expanded)
+    var resizing by remember { mutableStateOf(false) }
+    val overlayInput = input.expanded || resizing
+    var compactInputHeight by remember { mutableIntStateOf(0) }
     var positioned by rememberSaveable { mutableStateOf(false) }
     // スレッドは、親が先頭にあるので、最初から先頭に見える。利用者がスクロールするまでは、古い返信を読まない。
     var drags by remember { mutableIntStateOf(0) }
@@ -523,6 +631,7 @@ private fun ColumnScope.TimelineWithInput(
         requestEarlier?.invoke()
     }
     var openedTarget by rememberSaveable { mutableStateOf<String?>(null) }
+    var seenFocusRequest by rememberSaveable { mutableStateOf<String?>(null) }
     var followedSend by rememberSaveable { mutableStateOf<String?>(null) }
     var anchor by rememberSaveable { mutableStateOf<String?>(null) }
     val restoredAnchor = remember { anchor }
@@ -531,21 +640,30 @@ private fun ColumnScope.TimelineWithInput(
     var followEnd by rememberSaveable { mutableStateOf(false) }
     val focusedIndex = entries.indexOfFirst { it.id == focusMessage }
     val restoredIndex = if (restorePending && !followEnd) entries.indexOfFirst { it.entryKey == restoredAnchor } else -1
-    LaunchedEffect(input.expanded, input.lastSend, focusRequest, focusedIndex, entries.isNotEmpty(), restoredIndex) {
+    LaunchedEffect(input.expanded, input.lastSend, focusRequest, focusedIndex, entries.isNotEmpty(), restoredIndex, historyReady) {
+        if (seenFocusRequest != focusRequest) {
+            seenFocusRequest = focusRequest
+            if (focusRequest != null) {
+                followedSend = input.lastSend
+                followEnd = false
+            } else {
+                openedTarget = null
+            }
+        }
         if (input.expanded || entries.isEmpty()) return@LaunchedEffect
         when {
             input.lastSend != null && input.lastSend != followedSend -> {
                 followedSend = input.lastSend
-                restorePending = false
                 openedTarget = focusRequest
+                restorePending = false
                 followEnd = true
                 positioned = true
                 scroll.requestScrollToItem(entries.lastIndex)
             }
             focusedIndex >= 0 && openedTarget != focusRequest -> {
-                scroll.requestScrollToItem(focusedIndex)
                 restorePending = false
                 followEnd = false
+                scroll.requestScrollToItem(focusedIndex)
                 openedTarget = focusRequest
                 positioned = true
             }
@@ -553,23 +671,29 @@ private fun ColumnScope.TimelineWithInput(
                 scroll.requestScrollToItem(restoredIndex, restoredOffset)
                 restorePending = false
             }
+            restorePending && !followEnd && historyReady -> {
+                restorePending = false
+                followEnd = allowThreads
+                positioned = true
+                scroll.requestScrollToItem(if (allowThreads) entries.lastIndex else 0)
+            }
             focusMessage == null && allowThreads && !positioned -> {
                 scroll.scrollToItem(entries.lastIndex)
                 followEnd = true
                 positioned = true
             }
         }
-        if (focusMessage == null) openedTarget = null
     }
+    FollowHistoryDuringIme(scroll, entries, imeInsets, input.expanded, followEnd, focusRequest,
+        focusRequest != null && openedTarget != focusRequest)
+
     // Viewport, row height and item count can all change without user scrolling.
     // Only follow those changes while the reader is at the end or has just sent a message.
     LaunchedEffect(scroll) {
         var wasScrolling = false
-        var previousLayout = scroll.layoutInfo
-        snapshotFlow { Triple(scroll.isScrollInProgress, scroll.layoutInfo, followEnd) }
-            .collect { (scrolling, layout, _) ->
-                val remeasured = layout !== previousLayout
-                previousLayout = layout
+        snapshotFlow { Triple(scroll.isScrollInProgress, scroll.layoutInfo, followEnd to (expanded || resizing)) }
+            .collect { (scrolling, layout, tracking) ->
+                if (tracking.second) return@collect
                 if (scrolling) {
                     wasScrolling = true
                     restorePending = false
@@ -579,7 +703,6 @@ private fun ColumnScope.TimelineWithInput(
                         wasScrolling = false
                     }
                     if (layout.viewportSize.height > 0 && layout.totalItemsCount > 0) {
-                        if (remeasured && !scroll.canScrollForward && !restorePending) followEnd = true
                         if (followEnd && scroll.canScrollForward) {
                             val lastIndex = layout.totalItemsCount - 1
                             val offset = layout.visibleItemsInfo.lastOrNull()?.takeIf { it.index == lastIndex }?.size ?: 0
@@ -592,20 +715,109 @@ private fun ColumnScope.TimelineWithInput(
             }
     }
 
-    BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
-        if (maxHeight > 0.dp && entries.isNotEmpty()) {
-            Timeline(entries, colors, Modifier.fillMaxSize().testTag("conversation-timeline"), dispatch, posts = posts,
-                swipeReply = swipeReply, allowThreads = allowThreads, scroll = scroll)
+    // During the gesture the editor covers the list. Its compact height still
+    // determines the list viewport, so changing the editor height cannot scroll it.
+    Layout(modifier = Modifier.weight(1f).fillMaxWidth(), content = {
+        BoxWithConstraints(
+            if (input.expanded) Modifier
+                .focusProperties { onEnter = { cancelFocusChange() } }
+                .focusGroup()
+                .clearAndSetSemantics { hideFromAccessibility() }
+            else Modifier,
+        ) {
+            if (maxHeight > 0.dp && entries.isNotEmpty() && (!input.expanded || resizing)) {
+                Timeline(entries, colors, Modifier.fillMaxSize().testTag("conversation-timeline"), dispatch, posts = posts,
+                    swipeReply = swipeReply, allowThreads = allowThreads, scroll = scroll, topContentPadding = topContentPadding,
+                    headerOverlayHeight = headerOverlayHeight)
+            }
+        }
+        Box(Modifier.onSizeChanged { if (!overlayInput) compactInputHeight = it.height }
+            .then(if (input.expanded) Modifier.pointerInput(Unit) { detectTapGestures {} } else Modifier)) {
+            ConversationInput(input, colors, { dispatch(AndroidUiAction.TextChanged(it)) },
+                { dispatch(AndroidUiAction.UseInputTool(it)) },
+                onMention = { dispatch(AndroidUiAction.Mention(it)) },
+                onSelection = { dispatch(AndroidUiAction.SelectInput(it)) },
+                onRemoveFile = { dispatch(AndroidUiAction.RemoveFile(it)) },
+                hideIdleHandle = hideIdleHandle, canResize = canResize,
+                onResizeChanged = { resizing = it })
+        }
+    }) { children, constraints ->
+        val editor = children[1].measure(
+            constraints.copy(minHeight = 0, maxHeight = (constraints.maxHeight - headerOverlayHeight.roundToPx()).coerceAtLeast(0)),
+        )
+        val reserved = if (overlayInput) compactInputHeight else editor.height
+        val list = children[0].measure(Constraints.fixed(constraints.maxWidth, (constraints.maxHeight - reserved).coerceAtLeast(0)))
+        layout(constraints.maxWidth, constraints.maxHeight) {
+            list.placeRelative(0, 0)
+            editor.placeRelative(0, constraints.maxHeight - editor.height)
         }
     }
-    ConversationInput(input, colors, { dispatch(AndroidUiAction.TextChanged(it)) },
-        { dispatch(AndroidUiAction.UseInputTool(it)) },
-        onMention = { dispatch(AndroidUiAction.Mention(it)) },
-        onSelection = { dispatch(AndroidUiAction.SelectInput(it)) },
-        onRemoveFile = { dispatch(AndroidUiAction.RemoveFile(it)) },
-        hideIdleHandle = hideIdleHandle)
 }
 
+private data class ImeHistoryAnchor(val itemKey: String, val index: Int, val offset: Int, val inset: Int)
+
+private val ImeHistoryAnchorSaver = listSaver<ImeHistoryAnchor?, Any>(
+    save = { anchor -> anchor?.let { listOf(it.itemKey, it.index, it.offset, it.inset) }.orEmpty() },
+    restore = { fields -> ImeHistoryAnchor(fields[0] as String, fields[1] as Int, fields[2] as Int, fields[3] as Int) },
+)
+
+@Composable
+private fun FollowHistoryDuringIme(
+    scroll: LazyListState,
+    entries: List<TimelineItem>,
+    imeInsets: WindowInsets,
+    expanded: Boolean,
+    followEnd: Boolean,
+    focusRequest: String?,
+    focusPending: Boolean,
+) {
+    val density = LocalDensity.current
+    val insets by rememberUpdatedState(imeInsets)
+    val currentEntries by rememberUpdatedState(entries)
+    val editorExpanded by rememberUpdatedState(expanded)
+    val followingEnd by rememberUpdatedState(followEnd)
+    var anchor by rememberSaveable(focusRequest, stateSaver = ImeHistoryAnchorSaver) {
+        mutableStateOf<ImeHistoryAnchor?>(null)
+    }
+    LaunchedEffect(scroll, density, focusRequest, focusPending) {
+        if (focusPending) {
+            anchor = null
+            return@LaunchedEffect
+        }
+        var previousInset = insets.getBottom(density)
+        snapshotFlow {
+            Triple(insets.getBottom(density), scroll.isScrollInProgress, editorExpanded) to
+                scroll.layoutInfo.viewportSize.height
+        }.collect { (ime, viewportHeight) ->
+            val (inset, scrolling, fullEditor) = ime
+            val opening = inset > previousInset
+            val originalInset = previousInset
+            previousInset = inset
+            if (scrolling || followingEnd) {
+                anchor = null
+                return@collect
+            }
+            if (anchor == null && opening && (fullEditor || viewportHeight > 0)) {
+                val index = scroll.firstVisibleItemIndex
+                val key = scroll.layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }?.key as? String
+                if (key != null) {
+                    anchor = ImeHistoryAnchor(key, index, scroll.firstVisibleItemScrollOffset, originalInset)
+                }
+            }
+            if (fullEditor || viewportHeight <= 0) return@collect
+            val current = anchor ?: return@collect
+            val index = if (currentEntries.getOrNull(current.index)?.entryKey == current.itemKey) current.index
+                else currentEntries.indexOfFirst { it.entryKey == current.itemKey }
+            if (index >= 0) {
+                // Use an absolute position so LazyColumn's own end clamp cannot be counted twice.
+                scroll.requestScrollToItem(index, current.offset + (inset - current.inset).coerceAtLeast(0))
+            }
+            if (index < 0 || inset <= current.inset) anchor = null
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun Timeline(
     entries: List<TimelineItem>, colors: AndroidColors, modifier: Modifier,
@@ -615,82 +827,92 @@ private fun Timeline(
     loadOlder: (() -> Unit)? = null,
     header: (@Composable () -> Unit)? = null,
     scroll: LazyListState = rememberLazyListState(),
+    topContentPadding: Dp = 0.dp,
+    headerOverlayHeight: Dp = 0.dp,
 ) {
     if (entries.isEmpty() && header == null) return
     var menuId by remember { mutableStateOf<String?>(null) }
-    val lastVisible = scroll.layoutInfo.visibleItemsInfo.lastOrNull()?.index
+    val lastVisible = scroll.layoutInfo.visibleItemsInfo.lastOrNull()?.key
+    val lastEntry = entries.lastOrNull()?.entryKey
     val requestOlder by rememberUpdatedState(loadOlder)
-    LaunchedEffect(lastVisible, entries.size, loadOlder != null) {
-        if (entries.isNotEmpty() && lastVisible == entries.lastIndex) requestOlder?.invoke()
+    LaunchedEffect(lastVisible, lastEntry, loadOlder != null) {
+        if (lastEntry != null && lastVisible == lastEntry) requestOlder?.invoke()
     }
-    LazyColumn(modifier, state = scroll, contentPadding = PaddingValues(horizontal = 16.dp)) {
-        if (header != null) item { header() }
-        items(entries, key = { it.entryKey }) { entry ->
-            Column(
-                Modifier.fillMaxWidth().testTag("timeline-entry-${entry.id}")
-                    .then(if (posts) Modifier.combinedClickable(
-                        onClick = { dispatch(AndroidUiAction.OpenPost(entry.id)) },
-                        onLongClick = { menuId = entry.id },
-                    ) else conversationGestures(
-                        open = if (allowThreads) ({ dispatch(AndroidUiAction.OpenThread(entry.id)) }) else null,
-                        menu = { menuId = entry.id },
-                        swipeReply = swipeReply,
-                    ))
-                    .padding(top = 12.dp, bottom = if (posts) 4.dp else 12.dp),
-            ) {
-                entry.divider?.let { EncryptionDivider(it, colors) }
-                entry.repostedBy?.let { RepostAttribution(it, colors) }
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    TimelineAvatar(entry.author, entry.avatar, colors)
-                    Column(Modifier.weight(1f)) {
-                        if (posts && entry.postHeader != null) {
-                            PostHeader(entry.author, entry.postHeader, colors)
-                        } else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(entry.author, Modifier.weight(1f, fill = false), color = colors.foreground, fontWeight = AndroidWeights.entryAuthor,
-                                fontSize = entryTextSize, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(entry.time, color = colors.secondary, fontSize = 12.sp, maxLines = 1)
+    WithHeaderBringIntoView(headerOverlayHeight) { inheritedBringIntoView ->
+        LazyColumn(modifier, state = scroll, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = topContentPadding)) {
+            if (header != null) item { header() }
+            items(entries, key = { it.entryKey }) { entry ->
+                CompositionLocalProvider(LocalBringIntoViewSpec provides inheritedBringIntoView) {
+                    Column(
+                        Modifier.fillMaxWidth().testTag("timeline-entry-${entry.id}")
+                            .then(if (posts) Modifier.combinedClickable(
+                                onClick = { dispatch(AndroidUiAction.OpenPost(entry.id)) },
+                                onLongClick = { menuId = entry.id },
+                            ) else conversationGestures(
+                                open = if (allowThreads) ({ dispatch(AndroidUiAction.OpenThread(entry.id)) }) else null,
+                                menu = { menuId = entry.id },
+                                swipeReply = swipeReply,
+                            ))
+                            .padding(top = 12.dp, bottom = if (posts) 4.dp else 12.dp),
+                    ) {
+                        entry.divider?.let { EncryptionDivider(it, colors) }
+                        entry.repostedBy?.let { RepostAttribution(it, colors) }
+                        val openProfile = entry.postAuthor.takeIf { posts }?.let { author ->
+                            { dispatch(AndroidUiAction.OpenProfile(author)) }
                         }
-                        if (entry.marks.isNotEmpty()) EntryMarks(entry.marks, colors)
-                        entry.notice?.let {
-                            Text(it, Modifier.testTag("entry-notice-${entry.id}"), color = colors.secondary,
-                                fontSize = entryTextSize, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
-                        }
-                        if (!entry.richContent.hidesBody && entry.body.isNotBlank()) {
-                            EntryBody(entry.body, colors.foreground, entryTextSize, entry.emoji)
-                        }
-                        EntryBlocks(entry.richContent.blocks, colors, entryTextSize, entry.emoji)
-                        entry.attachments.forEach { (id, name) ->
-                            Text(name, Modifier.clickable { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Attachment, id)) }
-                                .heightIn(min = 48.dp).padding(vertical = 12.dp), color = colors.foreground)
-                        }
-                        entry.media.forEach { media ->
-                            TimelineMediaTile(media, colors) {
-                                dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Media, media.key))
-                            }
-                        }
-                        entry.quote?.let { quote ->
-                            TimelineQuoteCard(quote, colors,
-                                open = { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Quote)) },
-                                openMedia = { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Media, it.key)) })
-                        }
-                        entry.channelLinks.forEach { url -> ChannelLinkCard(url, colors, menu = { menuId = entry.id }) }
-                        EntryCards(listOfNotNull(entry.linkCard), colors)
-                        entry.link?.takeIf { entry.linkCard == null }?.let { url ->
-                            Text(url,
-                                Modifier.clickable { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Link, url)) }
-                                    .heightIn(min = 48.dp).padding(vertical = 12.dp),
-                                color = colors.secondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        }
-                        if (entry.reactions.isNotEmpty()) {
-                            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                entry.reactions.forEach { reaction ->
-                                    TimelineReactionChip(reaction, colors) {
-                                        dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.React, reaction.value, reaction.imageId))
+                        Row(horizontalArrangement = Arrangement.spacedBy(if (openProfile == null) 12.dp else 0.dp)) {
+                            TimelineAvatar(entry.author, entry.avatar, colors, openProfile = openProfile)
+                            Column(Modifier.weight(1f)) {
+                                if (posts && entry.postHeader != null) {
+                                    PostHeader(entry.author, entry.postHeader, colors, openProfile)
+                                } else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text(entry.author, Modifier.weight(1f, fill = false), color = colors.foreground, fontWeight = AndroidWeights.entryAuthor, fontSize = entryTextSize, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text(entry.time, color = colors.secondary, fontSize = 12.sp, maxLines = 1)
+                                }
+                                if (entry.marks.isNotEmpty()) EntryMarks(entry.marks, colors)
+                                entry.notice?.let {
+                                    Text(it, Modifier.testTag("entry-notice-${entry.id}"), color = colors.secondary,
+                                        fontSize = entryTextSize, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+                                }
+                                if (!entry.richContent.hidesBody && entry.body.isNotBlank()) {
+                                    EntryBody(entry.body, colors.foreground, entryTextSize, entry.emoji)
+                                }
+                                EntryBlocks(entry.richContent.blocks, colors, entryTextSize, entry.emoji)
+                                entry.attachments.forEach { (id, name) ->
+                                    Text(name, Modifier.clickable { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Attachment, id)) }
+                                        .heightIn(min = 48.dp).padding(vertical = 12.dp), color = colors.foreground)
+                                }
+                                TimelineMediaGroup(entry.media, colors, apub = posts) { media ->
+                                    dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Media, media.key))
+                                }
+                                entry.quote?.let { quote ->
+                                    TimelineQuoteCard(quote, colors,
+                                        open = { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Quote)) },
+                                        openProfile = quote.postAuthor.takeIf { posts }?.let { author ->
+                                            { dispatch(AndroidUiAction.OpenProfile(author)) }
+                                        },
+                                        openMedia = { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Media, it.key, quotedMedia = true)) })
+                                }
+                                entry.channelLinks.forEach { url -> ChannelLinkCard(url, colors, menu = { menuId = entry.id }) }
+                                EntryCards(listOfNotNull(entry.linkCard), colors)
+                                entry.link?.takeIf { entry.linkCard == null }?.let { url ->
+                                    Text(url,
+                                        Modifier.clickable { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Link, url)) }
+                                            .heightIn(min = 48.dp).padding(vertical = 12.dp),
+                                        color = colors.secondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                }
+                                if (entry.reactions.isNotEmpty()) {
+                                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        entry.reactions.forEach { reaction ->
+                                            TimelineReactionChip(reaction, colors) {
+                                                dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.React, reaction.value, reaction.imageId))
+                                            }
+                                        }
                                     }
                                 }
+                                if (posts) PostActions(entry, colors, dispatch, onMore = { menuId = entry.id })
                             }
                         }
-                        if (posts) PostActions(entry, colors, dispatch, onMore = { menuId = entry.id })
                     }
                 }
             }
@@ -712,6 +934,25 @@ private fun Timeline(
             }) else null,
         )
     }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+internal fun WithHeaderBringIntoView(headerOverlayHeight: Dp, content: @Composable (BringIntoViewSpec) -> Unit) {
+    val inheritedBringIntoView = LocalBringIntoViewSpec.current
+    val overlayPixels = with(LocalDensity.current) { headerOverlayHeight.toPx() }
+    val bringIntoView = remember(inheritedBringIntoView, overlayPixels) {
+        object : BringIntoViewSpec by inheritedBringIntoView {
+            override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float {
+                val covered = overlayPixels.coerceAtMost(containerSize)
+                if (offset >= 0 && offset < covered && size >= containerSize - covered) {
+                    return offset - covered
+                }
+                return inheritedBringIntoView.calculateScrollDistance(offset - covered, size, containerSize - covered)
+            }
+        }
+    }
+    CompositionLocalProvider(LocalBringIntoViewSpec provides bringIntoView) { content(inheritedBringIntoView) }
 }
 
 @Composable

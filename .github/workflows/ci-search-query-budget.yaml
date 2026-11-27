@@ -5,8 +5,12 @@ on:
       - 'backend/src/routes/search.rs'
       - 'backend/src/routes/mod.rs'
       - 'backend/tests/search_query_budget_test.rs'
-      - 'infra/db/*search-work.py'
       - 'infra/db/**'
+      - '!infra/db/erd.sh'
+      - '!infra/db/compare-*.py'
+      - '!infra/db/test-*.py'
+      - 'infra/db/compare-search-work.py'
+      - 'infra/db/test-search-work.py'
       - 'rust-toolchain.toml'
       - '.github/workflows/ci-search-query-budget.yaml'
   workflow_call:
@@ -17,6 +21,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   query-budget:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:

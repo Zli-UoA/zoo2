@@ -1,6 +1,7 @@
 package zoo.android.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -11,28 +12,31 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-internal enum class PostAudience(val icon: UiIcon, val label: String) {
-    Public(UiIcon.Public, "公開"),
-    Unlisted(UiIcon.Unlisted, "未収載"),
-    Followers(UiIcon.Followers, "フォロワー限定"),
-    Local(UiIcon.Home, "ローカル"),
-    Direct(UiIcon.Lock, "宛先限定");
+internal enum class PostAudience(val apiValue: String, val icon: UiIcon, val label: String) {
+    Public("public", UiIcon.Public, "パブリック"),
+    Unlisted("unlisted", UiIcon.Home, "ホーム"),
+    Followers("followers", UiIcon.Lock, "フォロワー"),
+    Local("local", UiIcon.CloudOff, "ローカルのみ"),
+    Direct("direct", UiIcon.Lock, "宛先限定");
+
+    @Composable
+    fun localizedLabel(): String = when (this) {
+        Followers -> androidLabel("home.followersAudience", label)
+        Direct -> label
+        else -> androidLabel("home.visibility.$apiValue", label)
+    }
 
     companion object {
-        fun fromApi(visibility: String): PostAudience? = when (visibility) {
-            "public" -> Public
-            "unlisted" -> Unlisted
-            "followers" -> Followers
-            "local" -> Local
-            "direct" -> Direct
-            else -> null
-        }
+        val composerOptions = listOf(Public, Unlisted, Followers)
+
+        fun fromApi(visibility: String): PostAudience? = entries.firstOrNull { it.apiValue == visibility }
     }
 }
 
@@ -47,11 +51,15 @@ internal data class PostHeaderData(
 )
 
 @Composable
-internal fun PostHeader(author: String, data: PostHeaderData, colors: AndroidColors) {
+internal fun PostHeader(author: String, data: PostHeaderData, colors: AndroidColors, openProfile: (() -> Unit)? = null) {
+    val profileAction = if (openProfile == null) Modifier else Modifier.clickable(
+        onClickLabel = androidLabel("home.openAuthorProfile", "「${author}」のプロフィールを開く", "author" to author),
+        role = Role.Button, onClick = openProfile,
+    )
     Column(Modifier.fillMaxWidth().padding(bottom = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically,
+            Row(Modifier.weight(1f).then(profileAction), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(author, Modifier.weight(1f, fill = false), color = colors.foreground,
                     fontSize = entryTextSize, fontWeight = AndroidWeights.entryAuthor, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -62,7 +70,9 @@ internal fun PostHeader(author: String, data: PostHeaderData, colors: AndroidCol
             }
             Text(data.dateTime, color = colors.secondary, fontSize = 11.sp, maxLines = 1)
             data.audience?.let { audience ->
-                Box(Modifier.semantics { contentDescription = audience.label }) {
+                val label = if (audience == PostAudience.Followers)
+                    androidLabel("home.visibility.followers", "フォロワー限定") else audience.localizedLabel()
+                Box(Modifier.semantics { contentDescription = label }) {
                     UiGlyph(audience.icon, colors.secondary, iconSize = AndroidControlSize.metadataIcon)
                 }
             }

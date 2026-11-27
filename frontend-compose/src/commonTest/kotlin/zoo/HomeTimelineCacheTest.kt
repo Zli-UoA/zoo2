@@ -40,4 +40,24 @@ class HomeTimelineCacheTest {
         cache.clear()
         assertNull(cache.takePost("remote/post"))
     }
+    @Test fun removesAnUnavailableQuoteFromWrappedEntriesAndCachedSnapshots() {
+        val invisible = obj("id" to "hidden", "content" to "old body", "media" to "old media")
+        val embeddedQuote = obj("uri" to "https://social.test/hidden", "post" to invisible)
+        val entry = obj("entry_id" to "repost", "post" to obj("id" to "visible", "content" to "comment",
+            "parent" to obj("id" to "parent", "quote" to embeddedQuote), "quote" to embeddedQuote))
+        val result = assertNotNull(entry.withoutUnavailableHomePost("hidden"))
+        assertEquals("repost", result.text("entry_id"))
+        assertEquals("comment", result.nested("post").text("content"))
+        val quote = result.nested("post").nested("quote")
+        assertEquals("https://social.test/hidden", quote.text("uri"))
+        assertTrue(quote.nested("post").isEmpty())
+        val parent = result.nested("post").nested("parent")
+        assertEquals("parent", parent.text("id"))
+        assertTrue(parent.nested("quote").nested("post").isEmpty())
+        assertNull(invisible.withoutUnavailableHomePost("hidden"))
+        val cache = HomeTimelineCache()
+        cache.save("home", HomeTimelineSnapshot(listOf(entry), false, 0, 0, 1))
+        cache.remove("hidden")
+        assertNull(cache.get("home"))
+    }
 }

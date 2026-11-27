@@ -3,6 +3,8 @@ package zoo.android.ui
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -10,11 +12,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.produceState
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -39,6 +39,7 @@ internal data class EntryCard(
     val fields: List<EntryCardField> = emptyList(),
     val image: TimelineMedia? = null,
     val formatted: Boolean = true,
+    val summaly: Boolean = false,
 ) : EntryContentBlock
 
 internal data class EntryRichContent(
@@ -72,14 +73,13 @@ internal fun EntryCards(cards: List<EntryCard>, colors: AndroidColors) {
     if (cards.isEmpty()) return
     Column(Modifier.padding(vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         cards.forEach { card ->
-            Column(
+            if (card.summaly) SummalyCard(card, colors)
+            else Column(
                 Modifier.fillMaxWidth().background(colors.inputSurface, RoundedCornerShape(12.dp)).padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 card.image?.let { media ->
-                    val load = LocalTimelineImage.current
-                    val bitmap by produceState<ImageBitmap?>(null, media, load) { value = load(media) }
-                    bitmap?.let {
+                    rememberTimelineImage(media)?.let {
                         Image(it, contentDescription = null, Modifier.fillMaxWidth().heightIn(max = 128.dp),
                             contentScale = ContentScale.Crop)
                     }
@@ -98,6 +98,26 @@ internal fun EntryCards(cards: List<EntryCard>, colors: AndroidColors) {
                     Text(value, color = colors.foreground, fontSize = 14.sp)
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun SummalyCard(card: EntryCard, colors: AndroidColors) {
+    Column(Modifier.fillMaxWidth()) {
+        card.image?.let { media ->
+            val bitmap = rememberTimelineImage(media)
+            Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(colors.inputSurface)) {
+                bitmap?.let { Image(it, null, Modifier.matchParentSize(), contentScale = ContentScale.Crop) }
+            }
+        }
+        if (card.caption.isNotBlank()) {
+            Text(card.caption, color = colors.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Text(entryLabel(card.title, card.url), color = colors.foreground, fontSize = 15.sp,
+            fontWeight = AndroidWeights.emphasis, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (card.description.isNotBlank()) {
+            Text(card.description, color = colors.foreground, fontSize = 14.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
         }
     }
 }

@@ -7,12 +7,15 @@ import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -22,6 +25,8 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
 import java.io.File
+import kotlinx.coroutines.CompletableDeferred
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -36,6 +41,97 @@ import zoo.GlobalSearchType
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class AndroidSamplesTest {
     @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
+
+    @Test
+    fun sensitiveVideoRevealsThePlayActionWithoutStartingPlayback() {
+        var opens = 0
+        ui.setContent {
+            TimelineMediaTile(TimelineMedia("video", "動画", TimelineMediaKind.Video, sensitive = true), AndroidColors(false)) {
+                opens++
+            }
+        }
+        ui.onNodeWithContentDescription("再生").assertDoesNotExist()
+        ui.onNodeWithContentDescription("動画を表示").performClick()
+        ui.runOnIdle { assertEquals(0, opens) }
+        ui.onNodeWithContentDescription("再生").performClick()
+        ui.runOnIdle { assertEquals(1, opens) }
+    }
+
+    @Test
+    fun sensitiveImageCanBeRevealedAndHiddenInPlace() {
+        val media = TimelineMedia("photo", "写真", TimelineMediaKind.Image, sensitive = true,
+            imageAspectRatio = 2f, blurhash = "LEHV6nWB2yk8pyo0adR*.7kCMdnj")
+        val bitmap = Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888).asImageBitmap()
+        var loads = 0
+        ui.setContent {
+            CompositionLocalProvider(LocalTimelineImage provides { loads++; bitmap }) {
+                Column(Modifier.width(240.dp)) {
+                    TimelineMediaTile(media, AndroidColors(false)) { error("Eye button must not open the image viewer") }
+                    Text("後続の投稿")
+                }
+            }
+        }
+        val following = ui.onNodeWithText("後続の投稿")
+        val before = following.getUnclippedBoundsInRoot()
+        ui.onNodeWithContentDescription("写真").assertDoesNotExist()
+        ui.runOnIdle { assertEquals(1, loads) }
+        ui.onNodeWithContentDescription("画像を表示").performClick()
+        ui.onNodeWithContentDescription("写真").assertExists()
+        val hide = ui.onNodeWithContentDescription("画像を隠す")
+        val imageBounds = ui.onNodeWithContentDescription("写真").getUnclippedBoundsInRoot()
+        val hideBounds = hide.getUnclippedBoundsInRoot()
+        org.junit.Assert.assertTrue(hideBounds.left > imageBounds.left + 120.dp)
+        org.junit.Assert.assertTrue(hideBounds.top < imageBounds.top + 12.dp)
+        hide.performClick()
+        ui.onNodeWithContentDescription("写真").assertDoesNotExist()
+        ui.onNodeWithContentDescription("画像を表示").assertExists()
+        assertEquals(before, following.getUnclippedBoundsInRoot())
+        ui.runOnIdle { assertEquals(1, loads) }
+    }
+
+    @Test
+    fun imagePreviewReservesItsStoredAspectRatioBeforeDecoding() {
+        val media = TimelineMedia("photo", "写真", TimelineMediaKind.Image, imageAspectRatio = 2f,
+            blurhash = "LEHV6nWB2yk8pyo0adR*.7kCMdnj")
+        // The decoder can return a different size from the stored source metadata.
+        val bitmap = Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888).asImageBitmap()
+        val decoded = CompletableDeferred<ImageBitmap>()
+        ui.setContent {
+            CompositionLocalProvider(LocalTimelineImage provides { decoded.await() }) {
+                Column(Modifier.width(240.dp)) {
+                    TimelineMediaTile(media, AndroidColors(false)) {}
+                    Text("後続の投稿")
+                }
+            }
+        }
+        val blurhash = ui.onNodeWithTag("media-blurhash", useUnmergedTree = true)
+        ui.waitUntil(timeoutMillis = 5_000) {
+            ui.onAllNodesWithTag("media-blurhash", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
+        }
+        blurhash.assertHeightIsEqualTo(120.dp)
+        val following = ui.onNodeWithText("後続の投稿")
+        val before = following.getUnclippedBoundsInRoot()
+        decoded.complete(bitmap)
+        ui.waitUntil(timeoutMillis = 5_000) {
+            ui.onAllNodesWithTag("media-blurhash", useUnmergedTree = true).fetchSemanticsNodes().isEmpty()
+        }
+        ui.onNodeWithContentDescription("写真").assertHeightIsEqualTo(120.dp)
+        assertEquals(before, following.getUnclippedBoundsInRoot())
+    }
+
+    @Test
+    fun cachedAvatarIsComposedWithoutRunningTheLoader() {
+        val bitmap = Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888).asImageBitmap()
+        ui.setContent {
+            CompositionLocalProvider(
+                LocalCachedTimelineImage provides { if (it.url == "https://example.test/avatar") bitmap else null },
+                LocalTimelineImage provides { error("Decoded avatar should be displayed from memory") },
+            ) {
+                TimelineAvatar("はる", "https://example.test/avatar", AndroidColors(false))
+            }
+        }
+        ui.onNodeWithTag("timeline-avatar").assertExists()
+    }
 
     @Test
     fun capturesScreensAndSendsNotificationReadOnlyInForeground() {
@@ -95,8 +191,10 @@ class AndroidSamplesTest {
         }.asImageBitmap()
         val illustratedPost = homePosts.first().copy(
             repostedBy = "みずき",
-            quote = TimelineQuote("https://example.test/notes/42", null, "なぎ", "引用元の投稿を共有します。", emptyList()),
-            media = listOf(TimelineMedia("post-image", "投稿画像", TimelineMediaKind.Image),
+            postAuthor = zoo.obj("id" to "haru"),
+            quote = TimelineQuote("https://example.test/notes/42", null, "なぎ", "引用元の投稿を共有します。", emptyList(),
+                postAuthor = zoo.obj("id" to "nagi")),
+            media = listOf(TimelineMedia("post-image", "投稿画像", TimelineMediaKind.Image, imageAspectRatio = 16f / 9f),
                 TimelineMedia("post-video", "投稿動画", TimelineMediaKind.Video, sensitive = true)),
         )
         val illustratedMessage = posts.first().copy(media = listOf(
@@ -298,7 +396,6 @@ class AndroidSamplesTest {
                     val author = ui.onNodeWithText("@haru", useUnmergedTree = true).getUnclippedBoundsInRoot()
                     check(repost.left < author.left && repost.bottom <= author.top)
                     ui.onNodeWithText("引用 · なぎ").assertIsDisplayed().performClick()
-                    ui.onNodeWithText("センシティブな動画を開く").assertIsDisplayed().performClick()
                     ui.onNodeWithContentDescription("投稿画像").assertIsDisplayed()
                 }
                 if (name == "channel-media") {
@@ -313,7 +410,8 @@ class AndroidSamplesTest {
                     val dateBounds = ui.onNodeWithText("11/21 12:05", useUnmergedTree = true).getUnclippedBoundsInRoot()
                     val serverBounds = ui.onNodeWithText("misskey.io", useUnmergedTree = true).getUnclippedBoundsInRoot()
                     check(nameBounds.right < dateBounds.left && serverBounds.top > dateBounds.top)
-                    ui.onNodeWithContentDescription("公開", useUnmergedTree = true).assertIsDisplayed()
+                    ui.onNodeWithContentDescription("パブリック", useUnmergedTree = true).assertIsDisplayed()
+                    ui.onNodeWithContentDescription("ローカルのみ", useUnmergedTree = true).assertIsDisplayed()
                     val channelBounds = ui.onNodeWithText("#開発", useUnmergedTree = true)
                         .assertIsDisplayed().getUnclippedBoundsInRoot()
                     check(channelBounds.bottom - channelBounds.top == serverBounds.bottom - serverBounds.top)
@@ -386,7 +484,7 @@ class AndroidSamplesTest {
                     ui.onNodeWithText("フォロー").assertHasClickAction()
                 }
                 if (name == "post-compose") {
-                    val audience = ui.onNodeWithContentDescription("公開範囲：公開").assertHasClickAction()
+                    val audience = ui.onNodeWithContentDescription("公開範囲：パブリック").assertHasClickAction()
                     val federation = ui.onNodeWithContentDescription("ActivityPub で配信").assertIsOn()
                     check(audience.getUnclippedBoundsInRoot().top == federation.getUnclippedBoundsInRoot().top)
                     val toolbar = ui.onNodeWithTag("post-actions").getUnclippedBoundsInRoot()
@@ -398,7 +496,7 @@ class AndroidSamplesTest {
                     ) { "Expected an 8dp inset around the post actions: $post / $photos / $toolbar" }
                 }
                 if (name == "post-compose-federation-off") {
-                    ui.onNodeWithContentDescription("公開範囲：未収載").assertIsDisplayed()
+                    ui.onNodeWithContentDescription("公開範囲：ホーム").assertIsDisplayed()
                     ui.onNodeWithContentDescription("ActivityPub で配信").assertIsOff()
                 }
                 if (name == "call") {
@@ -441,11 +539,12 @@ class AndroidSamplesTest {
             ui.onNodeWithContentDescription("cat duo").performClick()
         }
         ui.runOnIdle { screen = cases.first { it.first == "post-compose" }.second }
-        ui.onNodeWithContentDescription("公開範囲：公開").performClick()
-        for (audience in listOf("公開", "未収載", "フォロワー限定", "ローカル")) {
+        ui.onNodeWithContentDescription("公開範囲：パブリック").performClick()
+        for (audience in listOf("パブリック", "ホーム", "フォロワー")) {
             ui.onNodeWithText(audience).assertIsDisplayed()
         }
-        ui.onNodeWithText("未収載").performClick()
+        ui.onNodeWithText("ローカルのみ").assertDoesNotExist()
+        ui.onNodeWithText("ホーム").performClick()
         ui.onNodeWithContentDescription("ActivityPub で配信").performClick()
         ui.runOnIdle {
             check(actions.takeLast(2) == listOf(
@@ -690,6 +789,140 @@ class AndroidSamplesTest {
         capture("post-menu-light", withSheet = true)
         ui.runOnIdle { dark = true }
         capture("post-menu-dark", withSheet = true)
+    }
+
+    @Test
+    fun homeTabsAndAuthorAvatarsDispatchTheirOwnActions() {
+        val author = zoo.obj("id" to "haru")
+        val quotedAuthor = zoo.obj("id" to "https://social.example/users/yui")
+        val post = TimelineItem("post", "はる", "投稿本文", "12:05", postAuthor = author,
+            postHeader = PostHeaderData("@haru", "12:05", PostAudience.Public, null, null),
+            quote = TimelineQuote("https://social.example/posts/1", null, "ゆい", "引用本文", emptyList(),
+                postAuthor = quotedAuthor))
+        val actions = mutableListOf<AndroidUiAction>()
+        ui.setContent {
+            AndroidScreens(AndroidScreen.Home(listOf(post), timeline = "home"), false, true,
+                dispatch = { actions.add(it) }, language = "ja") { _, _ -> }
+        }
+        ui.onNodeWithText("ローカル").performClick()
+        ui.onNodeWithText("ソーシャル").performClick()
+        for (authorName in listOf("はる", "ゆい")) {
+            ui.onNodeWithContentDescription("「${authorName}」のプロフィールを開く")
+                .assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
+                .performTouchInput { click(center.copy(x = width - 1f)) }
+        }
+        for (name in listOf("はる", "@haru")) {
+            ui.onNodeWithText(name, useUnmergedTree = true).performTouchInput { click() }
+        }
+        ui.onNodeWithText("引用本文", useUnmergedTree = true).performTouchInput { click() }
+        ui.onNodeWithText("投稿本文", useUnmergedTree = true).performTouchInput { click() }
+        ui.runOnIdle {
+            check(actions == listOf(
+                AndroidUiAction.SelectTimeline("local"), AndroidUiAction.SelectTimeline("social"),
+                AndroidUiAction.OpenProfile(author), AndroidUiAction.OpenProfile(quotedAuthor),
+                AndroidUiAction.OpenProfile(author), AndroidUiAction.OpenProfile(author),
+                AndroidUiAction.ActOnEntry(post, EntryOperation.Quote), AndroidUiAction.OpenPost(post.id),
+            )) { actions.toString() }
+        }
+    }
+
+    @Test
+    fun closingAnAuthorProfileRestoresTheHomeAndPostTimelinePositions() {
+        val posts = (0..40).map { index ->
+            TimelineItem("post-$index", "投稿者 $index", "投稿 $index", "12:05",
+                postAuthor = zoo.obj("id" to "author-$index"))
+        }
+        val home = AndroidScreen.Home(posts, timeline = "local")
+        val thread = AndroidScreen.Post(posts.first(), posts.drop(1), InputState())
+        var previous: AndroidScreen = home
+        var screen by mutableStateOf<AndroidScreen>(home)
+        ui.setContent {
+            AndroidScreens(screen, false, true, dispatch = { action ->
+                when (action) {
+                    is AndroidUiAction.OpenProfile -> screen = AndroidScreen.Profile("投稿者 24", "", emptyList())
+                    AndroidUiAction.Back -> screen = previous
+                    else -> Unit
+                }
+            }, language = "ja") { _, _ -> }
+        }
+        for (surface in listOf(home, thread)) {
+            ui.runOnIdle { previous = surface; screen = surface }
+            ui.onNode(hasScrollAction() and hasAnyDescendant(hasTestTag("timeline-entry-post-0")))
+                .performScrollToIndex(24)
+            ui.onNodeWithContentDescription("「投稿者 24」のプロフィールを開く").performClick()
+            ui.onNodeWithContentDescription("戻る").performClick()
+            ui.onNodeWithTag("timeline-entry-post-24").assertIsDisplayed()
+            ui.onNodeWithTag("timeline-entry-post-0").assertDoesNotExist()
+        }
+    }
+
+    @Test
+    fun profileKeepsItsScrollPositionWhileThePostsAreRevalidated() {
+        val posts = (0..40).map { index -> TimelineItem("post-$index", "はる", "投稿 $index", "12:05") }
+        val profile = AndroidScreen.Profile("はる", "", posts, id = "haru")
+        val loading = profile.copy(posts = emptyList(), postsPending = true, online = false)
+        var screen by mutableStateOf<AndroidScreen>(profile)
+        ui.setContent {
+            AndroidScreens(screen, false, true, dispatch = { action ->
+                when (action) {
+                    is AndroidUiAction.OpenPost -> screen = AndroidScreen.Post(posts[24], emptyList(), InputState())
+                    AndroidUiAction.Back -> screen = loading
+                    else -> Unit
+                }
+            }, language = "ja") { _, _ -> }
+        }
+
+        ui.onNode(hasScrollAction()).performScrollToIndex(25)
+        ui.onNodeWithTag("timeline-entry-post-24").performClick()
+        ui.onNodeWithContentDescription("戻る").performClick()
+        ui.onNodeWithText("オフラインです").assertIsDisplayed()
+        ui.onNodeWithTag("timeline-entry-post-24").assertDoesNotExist()
+        ui.runOnIdle { screen = profile }
+        ui.onNodeWithTag("timeline-entry-post-24").assertIsDisplayed()
+        ui.onNodeWithTag("timeline-entry-post-0").assertDoesNotExist()
+    }
+
+    @Test
+    fun profileRefreshFailureShowsRetryInsteadOfAnEmptyFeed() {
+        val actions = mutableListOf<AndroidUiAction>()
+        ui.setContent {
+            AndroidScreens(AndroidScreen.Profile("はる", "", emptyList(), postsPending = true, postsLoadFailed = true),
+                false, true, dispatch = { actions.add(it) }, language = "ja") { _, _ -> }
+        }
+        ui.onNodeWithText("表示できる投稿はありません").assertDoesNotExist()
+        ui.onNodeWithText("再試行").assertIsDisplayed().performClick()
+        ui.runOnIdle { check(actions == listOf(AndroidUiAction.RetryProfile)) }
+    }
+
+    @Test
+    fun feedsOfferRetryWithoutRemovingLoadedPosts() {
+        val actions = mutableListOf<AndroidUiAction>()
+        val post = TimelineItem("post", "はる", "取得済みの本文", "12:05")
+        var screen by mutableStateOf<AndroidScreen>(AndroidScreen.Home(emptyList(), timeline = "home", loadFailed = true))
+        ui.setContent {
+            AndroidScreens(screen, false, true, dispatch = { actions.add(it) }, language = "ja") { _, _ -> }
+        }
+        ui.onNodeWithText("タイムラインを取得できませんでした。").assertIsDisplayed()
+        ui.onNodeWithText("再試行").assertIsDisplayed().performClick()
+        ui.runOnIdle { screen = AndroidScreen.Home(listOf(post), timeline = "home", loadFailed = true) }
+        ui.onNodeWithText("取得済みの本文").assertIsDisplayed()
+        ui.onNodeWithText("再試行").performClick()
+        ui.runOnIdle { screen = AndroidScreen.Post(post, emptyList(), InputState(), loadFailed = true) }
+        ui.onNodeWithText("取得済みの本文").assertIsDisplayed()
+        ui.onNodeWithText("再試行").performClick()
+        ui.runOnIdle {
+            check(actions == listOf(AndroidUiAction.RetryTimeline, AndroidUiAction.RetryTimeline, AndroidUiAction.RetryPost))
+        }
+    }
+
+    @Test
+    fun unavailableLocalQuoteHasNoExternalLink() {
+        ui.setContent {
+            TimelineQuoteCard(TimelineQuote("https://zoo.example/home/posts/removed", null, "", "", emptyList(), local = true),
+                AndroidColors(false), open = { error("Unavailable quote was opened") }, openMedia = {})
+        }
+        ui.onNodeWithText("引用元の投稿を表示できません").assertIsDisplayed().assertHasNoClickAction()
+        ui.onNodeWithText("引用元を開く").assertDoesNotExist()
     }
 
     @Test

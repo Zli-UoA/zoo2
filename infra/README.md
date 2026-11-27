@@ -102,11 +102,13 @@ make migrate
 make migrate-status
 ```
 
-migrationファイルの整合性を検証するには次を実行します。
+migrationファイルの構成と`atlas.sum`の整合性を検証するには次を実行します。
 
 ```bash
 make migrate-validate
 ```
+
+`make migrate-validate`はチェックサム等の整合性のみを検証し、SQLの再生検証は行いません。SQLの再生と`infra/db/schema.sql`との一致はCI、ローカルでは`make migrate-diff`のdev DB再生で確認できます。
 
 スキーマを変更するときは`infra/db/schema.sql`を編集し、名前を指定してmigrationを生成します。
 
@@ -174,7 +176,192 @@ POSTGRES_PASSWORD=staging-test-password \
 
 - **初期状態の DB**: `atlas_schema_revisions` が無い空の DB に対しては、初回の `migrate` 起動で全マイグレーションが順番に適用されます。
 - **Atlas を介さず手動作成された既存 DB（baseline）**: もし `atlas_schema_revisions` が無いまま手動でテーブルだけ作成されている場合は、そのままでは初回マイグレーションが既存テーブルと衝突して停止します。一度だけ `--baseline <適用済みバージョン>`（例: `20261015110156`）を付けて `atlas migrate apply` を実行するか、ステージングで不要なデータであればボリュームを初期化してから再起動してください。
-- **失敗時の確認・復旧**: マイグレーションが途中で失敗すると、後続の `electric` / `backend` は起動せず（fail-closed）、該当バージョンが dirty 状態になることがあります。その場合は `docker compose --project-directory . -f infra/compose.stack.yaml run --rm migrate migrate status --config file:///db/atlas.hcl --env local` で状態を確認し、原因解消後に再実行してください。
+- **失敗時の確認・復旧**: マイグレーションが失敗すると、後続の `electric` / `backend` は起動しません（fail-closed）。まず次のコマンドで Atlas の適用状態と PostgreSQL のエラーを確認します。`migrate` は `restart: "no"` なので、原因解消後はサービスを作り直して明示的に再実行します。
+
+  ```bash
+  docker compose --project-directory . -f infra/compose.stack.yaml \
+    run --rm migrate migrate status --config file:///db/atlas.hcl --env local
+  docker compose --project-directory . -f infra/compose.stack.yaml \
+    logs --no-color migrate
+  ```
+
+  `20261204000002_channel_notes_expiry_index.sql` の `CREATE INDEX CONCURRENTLY` が失敗した場合、PostgreSQL が `idx_channel_notes_expired` を `indisvalid = false` の無効なインデックスとして残すことがあります。この migration は `-- atlas:txmode none` で文ごとに進むため、Atlas の再実行は失敗した `CREATE INDEX` から始まり、先行する `DROP INDEX` は実行されません。次のすべてを確認してから、対象インデックスだけを削除してください。
+
+  1. `migrate status` とログで停止箇所が `20261204000002` の `CREATE INDEX CONCURRENTLY` であることを確認する。別の Atlas apply が動作中なら先に止まるのを待つ。
+  2. 対象DBで次の照会を行い、`public.idx_channel_notes_expired` が存在し、`table_name` が `channel_notes` であることを確認する。ステージング Compose ではDBコンテナ内の `psql` を開きます。別スキーマ、別名、別テーブル、または対象 migration 以外の失敗なら削除しない。`indisvalid` は真偽どちらもあり得る (下記 3 を参照)。
+
+     ```bash
+     docker compose --project-directory . -f infra/compose.stack.yaml \
+       exec postgres sh -c 'exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1'
+     ```
+
+     ```sql
+     SELECT ns.nspname AS schema_name, idx.relname AS index_name,
+            tbl.relname AS table_name, pi.indisvalid, pi.indisready
+     FROM pg_index AS pi
+     JOIN pg_class AS idx ON idx.oid = pi.indexrelid
+     JOIN pg_namespace AS ns ON ns.oid = idx.relnamespace
+     JOIN pg_class AS tbl ON tbl.oid = pi.indrelid
+     WHERE ns.nspname = 'public'
+       AND idx.relname = 'idx_channel_notes_expired';
+     ```
+
+  3. 行の `indisvalid` で分岐する。いずれの場合も、他の apply が動いていないことと、`atlas migrate status` で `20261204000002` が完全適用済みではないことを先に確認する。この migration は `-- atlas:txmode none` なので、`DROP INDEX` の後に `CREATE INDEX CONCURRENTLY` が失敗すると `atlas_schema_revisions` に部分適用の記録が残り、status は「未記録 (pending)」ではなく部分適用として表示される。status が次に実行する文として対象の `CREATE INDEX CONCURRENTLY` を示すことを、ログの停止箇所と合わせて確かめる。
+     - `indisvalid = false` (INVALID): `CREATE INDEX CONCURRENTLY` が中断・キャンセルされた場合。無効なインデックスは再実行の妨げになるため削除する。
+     - `indisvalid = true` (有効): `CREATE INDEX` 自体は完了したが、文ごとに進むこの migration で Atlas が記録の前に停止した場合 (コンテナの強制終了など)。この場合、再実行は同名インデックスの作成で失敗するため、有効でも同じく削除する。`atlas migrate status` が `20261204000002` を完全に適用済みと報告するなら、そのインデックスは完了した migration の成果物なので削除しない。
+
+     `CONCURRENTLY` はトランザクション外で実行する必要があるため、削除も `DROP INDEX CONCURRENTLY` を使う。
+
+     ```sql
+     DROP INDEX CONCURRENTLY public.idx_channel_notes_expired;
+     ```
+
+  4. 再度照会して対象が存在しないことを確認し、migration コンテナを作り直して Atlas を再実行する。適用が完了したら通常の Compose 起動を行う。Atlas の再実行が失敗したまま後続サービスを起動しないように、2 つのコマンドは `&&` でつなぐ。
+
+     ```bash
+     docker compose --project-directory . -f infra/compose.stack.yaml \
+       up --force-recreate --exit-code-from migrate migrate && \
+     docker compose --project-directory . -f infra/compose.stack.yaml up -d --wait
+     ```
+
+  `20261204000008_slack_sync_claim_team_index.sql` の
+  `CREATE INDEX CONCURRENTLY slack_channel_syncs_team_due_order` が失敗した場合も同じ流れで
+  復旧します。この migration は `-- atlas:txmode none` のため、`CREATE` の完了後に Atlas が
+  停止したときは有効 (`indisvalid = true`) なインデックスが残り、再実行は同名エラーで失敗します。
+  中断・キャンセル時は `indisvalid = false` の INVALID インデックスが残ります。どちらも、
+  停止箇所がこの `CREATE INDEX CONCURRENTLY` であることを `migrate status` とログで確認してから、
+  次の照会で対象を確認します。
+
+  ```sql
+  SELECT ns.nspname AS schema_name, idx.relname AS index_name,
+         tbl.relname AS table_name, pi.indisvalid, pi.indisready
+  FROM pg_index AS pi
+  JOIN pg_class AS idx ON idx.oid = pi.indexrelid
+  JOIN pg_namespace AS ns ON ns.oid = idx.relnamespace
+  JOIN pg_class AS tbl ON tbl.oid = pi.indrelid
+  WHERE ns.nspname = 'public'
+    AND idx.relname = 'slack_channel_syncs_team_due_order';
+  ```
+
+  `table_name = 'slack_channel_syncs'` の行があり、`atlas migrate status` で
+  `20261204000008` が完全適用済みではなく、次に実行する文として対象の
+  `CREATE INDEX CONCURRENTLY` が示される場合、`indisvalid` の真偽にかかわらず、
+  他の apply が動いていない状態で次を実行してから Atlas を再実行します。
+  この migration も `-- atlas:txmode none` なので、先行する文の後に失敗すると
+  `atlas_schema_revisions` に部分適用の記録が残り、status は「未記録 (pending)」ではなく
+  部分適用として表示されます。`20261204000008` を完全に適用済みと報告する場合は、
+  そのインデックスは完了した migration の成果物なので削除しないでください。
+  `DROP INDEX CONCURRENTLY` は名前で削除するため、有効なインデックスにも同じ手順が使えます。
+  `IF NOT EXISTS` で再試行すると INVALID インデックスが残ったまま成功するため、使わないでください。
+
+  ```sql
+  DROP INDEX CONCURRENTLY public.slack_channel_syncs_team_due_order;
+  ```
+
+  `55P03` は `NOWAIT` のテーブルロックが取れなかった一時競合（`lock_not_available`）です。`20261204000003_e2ee_channel_notes.sql` はファイル単位のトランザクションなので失敗時にロックと migration 内の変更はロールバックされます。writer がトランザクションを終えたことを確認し、上記の Compose 再実行で再適用してください。自動再試行は設定していません。
+
+### Slack ゲスト所属トリガーの適用順序
+
+`20261204000001_guest_membership_no_key_update.sql` は、条件付き single ゲスト検査の
+`users` ロックを `FOR NO KEY UPDATE` に弱めた `app_guest_membership_rules()` を適用します。
+`FOR UPDATE` は `channel_user` 挿入が外部キー検証で取る `users` 行の KEY SHARE とも競合するため、
+協調書き込み経路による同じユーザーへの所属挿入まで止め得ました。常時 `users` をロックする版は
+`infra/db/deferred-migrations/20261204000010_guest_membership_lock_order.sql`
+に置いています。旧バックエンドの `lock_members` は、single 以外のゲストでは `users` を先にロックせず
+advisory lock を取る経路があるため、旧インスタンスが動いている間にこの関数を適用すると
+「暗号化チャンネルへの所属追加」と「ユーザー無効化」が並行して PostgreSQL のデッドロック
+(SQLSTATE 40P01) になり得ます。
+
+段階デプロイ中は、旧版の平文 1 対 1 DM 復帰（`channels` を KEY SHARE でロックしてから所属挿入で `users` をロック）と、新版の暗号化（`lock_members` で先に `users` をロックしてから `channels` をロック）が同じゲスト行を取り合うと、PostgreSQL がどちらかを `40P01` で中止することがあります。特に `single` ゲストの平文 1 対 1 DM を並行して作成・復帰すると、このデッドロックが一時的に発生し得ます。データは壊れません。新バックエンドは 1 対 1 DM のトランザクションで `40P01` を検出すると、そのトランザクションを破棄して 1 回だけ再試行します。一方、旧バックエンドが処理した要求はロールアウトが完了するまで一時的に失敗することがあるため、クライアントの再試行に任せてください。切り替え作業中にこの中止が頻発する場合は、旧版の復帰が終わるまで暗号化の切り替えを一時停止してください。
+
+通常の `migrate-deploy` / `compose.stack` は `infra/db/migrations` だけをコピー・適用するため、
+この関数は適用されません。先に新バックエンド（`lock_membership_users` で users を先にロックする）へ
+切り替え、旧インスタンスの終了を確認してから、deferred migration を適用してください。
+
+適用には、canonical と共通の `atlas_schema_revisions` を使わず、deferred 専用の
+リビジョン表に記録します。共有表に `20261204000010` が記録されると、将来の canonical
+migration が同じ版番号を使ったときに適用済みと判定されたり checksum 不一致で止まったりする
+ためです。
+
+標準の `compose.stack` では `DATABASE_URL` は `migrate` サービスに設定され、
+PostgreSQL のポートはホストに公開されません。また `migrate` イメージには
+`infra/db/deferred-migrations` も含まれません。ステージング Compose では、旧インスタンスの
+停止を確認した後、DB と同じネットワーク上の使い捨てコンテナで、ホストの deferred
+ディレクトリを読み取り専用でマウントして適用します。リポジトリのルートで、既存の
+ステージングと同じ Compose プロジェクト・環境変数を使って実行してください。
+
+```bash
+docker compose --project-directory . -f infra/compose.stack.yaml run --rm --no-deps \
+    -v "$(pwd)/infra/db/deferred-migrations:/deferred-migrations:ro" \
+    --entrypoint /bin/sh migrate -ec \
+    'exec /usr/local/bin/atlas migrate apply --dir file:///deferred-migrations \
+      --url "${DATABASE_URL:?DATABASE_URL is required}" \
+      --revisions-schema atlas_schema_revisions_deferred \
+      --allow-dirty'
+```
+
+この適用後、canonical migrations へ戻す follow-up では、deferred migration を同じ番号のまま
+移動せず、統合時点の `infra/db/migrations` の最新版より新しい版番号を持つ**新しい**ファイルと
+して同じ `CREATE OR REPLACE FUNCTION` を追加し、`atlas.sum` を再生成します。`20261204000010`
+を再利用すると、その後に追加された canonical migration より前の版番号になり、Atlas の既定の
+`linear` モードが追加順違反として拒否します。この関数は `CREATE OR REPLACE` で冪等なため、
+canonical 側での再適用は安全です。移行が済んだら `atlas_schema_revisions_deferred` スキーマも
+削除できます。
+
+follow-up ファイルは、適用済み DB の履歴を壊さないために次の条件をすべて満たすこと。
+
+1. **未適用 DB では 1 回だけ適用、適用済み DB では安全な no-op になること。**
+   ファイルの中身は deferred 版と同じ `CREATE OR REPLACE FUNCTION` (同じ関数定義) で、
+   版番号だけ canonical の最新版より後に振る。`CREATE OR REPLACE` は既存の定義を同じ内容で
+   上書きするため、deferred migration を適用済みの DB では実質的な変更なしに
+   canonical 側の適用記録だけが追加され、未適用の DB では関数が 1 回適用される。
+   適用記録を進めるために Atlas は 1 文でも実行する必要があるため、コメントだけの空ファイルにはしない。
+2. **適用済み DB の `atlas_schema_revisions_deferred` の `20261204000010` 記録を
+   削除・無効化しないこと。** follow-up の追加や再ハッシュでこのリビジョン表を触らない。
+   全環境で canonical 版の適用が記録されるまで `atlas_schema_revisions_deferred` はそのまま残し、
+   収束を確認してからスキーマごと削除する (その時点で再適用の痕跡としては不要になる)。
+   削除を先に行うと、canonical 版の適用がまだの環境で deferred 版の適用状態が分からなくなる。
+3. **適用済みと未適用の両方の使い捨て DB で検証すること。** (a) deferred migration を
+   `--revisions-schema atlas_schema_revisions_deferred --allow-dirty` で適用した DB と
+   (b) 何も適用していない空の DB の両方に canonical follow-up を適用し、
+   それぞれで `atlas migrate apply` が成功すること、`pg_get_functiondef` の結果が
+   `infra/db/schema.sql` と一致すること、`migrate status` が follow-up を適用済みとして
+   報告すること、(a) では `atlas_schema_revisions_deferred.atlas_schema_revisions` に
+   `20261204000010` が記録されたまま残ることを確認する。
+
+  `55000` は `object_not_in_prerequisite_state` で、同 migration の preflight が暗号化済みチャンネル内の有効または24時間以内に復元可能な平文ノートを検出した場合のデータ状態エラーです。`55P03` と異なり、待機や単純な再実行では解消しません。API の `E2EE_CONVERSION_BLOCKED` と同じ条件を確認し、データを保持したまま、ノートの解決後に Atlas を再実行してください。これらのエラーに対して migration 履歴の手動編集やDBボリューム初期化は行わないでください。
+
+  `55000` を解消する手順は次のとおりです。対象は読み取り専用の照会で特定します。`deleted_at IS NULL` が有効ノート、それ以外は復元期限内の削除済みノートです。
+
+  ```sql
+  SELECT c.id AS channel_id, n.id AS note_id, n.version, n.title,
+         left(n.content, 200) AS content_head,
+         n.deleted_at IS NULL AS active
+  FROM channel_notes n JOIN channels c ON c.id = n.channel_id
+  WHERE c.encrypted
+    AND (n.deleted_at IS NULL
+         OR n.deleted_at >= (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours')
+  ORDER BY c.id, n.deleted_at NULLS FIRST, n.id;
+  ```
+
+  1. 上の照会結果を `\copy (… ) TO 'blocked-notes.tsv'` などで退避し、内容を確認・保存します。ノートは平文のため、暗号化済みチャンネルには移せません。
+  2. 退避を確認したノートを削除します。可能なら対象チャンネルの参加者が API の `DELETE /api/channels/{channel_id}/notes/{note_id}` を使ってください。直接 SQL で行う場合は、ノートロック契約に従い、同じトランザクションで最初の関連読み取りより前にチャンネルの advisory lock を取り、続けて `channels` を `FOR SHARE` でロックしてから `channel_notes` を更新・削除します。
+
+     ```sql
+     BEGIN;
+     SELECT '{}'::text FROM pg_advisory_xact_lock(
+       hashtextextended('channel-notes:' || '<channel_id>', 0));
+     SELECT 1 FROM channels WHERE id = '<channel_id>' FOR SHARE;
+     DELETE FROM channel_notes
+      WHERE id = '<note_id>' AND channel_id = '<channel_id>'
+        AND version = <backed-up-version>;
+     COMMIT;
+     ```
+
+     `<backed-up-version>` には、手順1の照会で退避したときの `n.version` を指定する。退避後に別のセッションが同じノートを更新していると `DELETE` の対象から外れるため、削除件数が 1 でなければ `ROLLBACK` して手順1から退避し直す。件数を確認せずに `COMMIT` しない。
+
+  3. 同じ照会を再実行して 0 行になることを確認します。有効・復元可能のどちらも残っていても Atlas は同じ `55000` で停止します。
+  4. `docker compose ... up --force-recreate --exit-code-from migrate migrate` で Atlas を再実行します。削除済みノートの物理削除は既存の定期処理が行うため、手動での掃除は不要です。
 
 フロントは TanStack Start の SPA モードでビルドした静的ファイル（`dist/client`）を `nginxinc/nginx-unprivileged:1.30.6-alpine` で配信します。コンテナ内は非 root ユーザーで `3000` 番ポートを待ち受けます。設定は `infra/frontend-nginx.conf` です。未知のパスは `/index.html` にフォールバックしますが、`/assets/` 配下の存在しないファイルは 404 を返します（デプロイ後に古いタブが削除済みの chunk を読み込んだとき、HTML を返さないため）。`/assets/` のハッシュ付きファイルは `immutable` で長期キャッシュし、`index.html` は `no-cache` で毎回再検証させます。あわせて `X-Content-Type-Options: nosniff`・`Referrer-Policy: strict-origin-when-cross-origin`・`X-Frame-Options: DENY` と `Content-Security-Policy` を付与します。CSP は `infra/frontend-nginx.conf` をテンプレートとして起動時に envsubst し、ビルド成果物の `index.html` に含まれるインライン script の SHA-256（`infra/csp-hashes.mjs` がビルド時に生成）を `script-src` に、`connect-src` には同一オリジンと `CSP_CONNECT_SRC` を設定します（詳細は下記「CSP」）。フロント・プロキシ・マイグレーションのイメージ名は `FRONTEND_IMAGE`・`PROXY_IMAGE`・`MIGRATE_IMAGE` で変更できます。フロントのヘルスチェックは `/` の HTTP 200、プロキシは内部専用の ping エンドポイントを確認します。
 

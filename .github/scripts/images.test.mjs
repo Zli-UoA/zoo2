@@ -162,6 +162,15 @@ test('pullRequestComponents covers renames and huge diffs', () => {
   assert.deepEqual(pullRequestComponents([{filename: 'docs/a.rs', previous_filename: 'backend/a.rs'}]), ['backend']);
   assert.equal(pullRequestComponents(Array.from({length: 3000}, () => ({filename: 'docs/a.md'}))).length, 4);
 });
+test('Android-only inputs, test files and DB measurement tooling do not build app images', () => {
+  const paths = ['frontend/src/android-phone/engine.ts', 'frontend/vite.media-preview.config.ts',
+    'frontend/scripts/media-preview-bundle.test.mjs', 'infra/db/compare-phone-work.py', 'infra/db/erd.sh',
+    'frontend/e2e/oidc.spec.ts', 'frontend/src/components/Button.browser.test.tsx', 'backend/tests/apns_test.rs'];
+  assert.deepEqual(changedComponents(paths), []);
+  assert.equal(wantsPreview(paths.map(filename => ({ filename }))), false);
+  assert.deepEqual(changedComponents([...paths, 'frontend/src/lib/sip/controller.ts', 'infra/db/schema.sql']), ['frontend', 'migrate']);
+});
+
 test('wantsPreview needs a frontend change', () => {
   for (const filename of ['frontend/src/main.tsx', 'infra/Dockerfile-frontend-deploy', 'infra/frontend-nginx.conf', 'infra/csp-hashes.mjs', 'infra/frontend-entrypoint.sh']) {
     assert.equal(wantsPreview([{filename}]), true, filename);

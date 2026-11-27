@@ -998,6 +998,7 @@
       "states": [
         "Loading",
         "Image",
+        "Thumbnail",
         "PDF",
         "MultiPagePDF",
         "Video",

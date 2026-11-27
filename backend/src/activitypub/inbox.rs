@@ -94,6 +94,7 @@ pub(super) async fn receive_verified(
     if inserted.is_empty() {
         return Ok(());
     }
+    let mut media_completion = None;
     match string(activity, "type")? {
         "Follow" => {
             if object_id(&activity["object"]) != Some(local.as_str()) {
@@ -232,10 +233,6 @@ pub(super) async fn receive_verified(
             }
             let content = emoji::note_content(object)?;
             let quote_uri = emoji::note_quote_uri(object).map(|url| url.to_string());
-            let media = emoji::note_media(object);
-            emoji::remember(&mut tx, &media).await?;
-            let note_emojis = emoji::tags(&object["tag"]);
-            emoji::remember(&mut tx, &note_emojis).await?;
             let published = object["published"]
                 .as_str()
                 .unwrap_or("")
@@ -250,6 +247,10 @@ pub(super) async fn receive_verified(
             if updated > jiff::Timestamp::now() + jiff::SignedDuration::from_secs(300) {
                 return Err(AppError::BadRequest("Future note timestamp".into()));
             }
+            let media = emoji::note_media(object);
+            emoji::remember(&mut tx, &media).await?;
+            let note_emojis = emoji::tags(&object["tag"]);
+            emoji::remember(&mut tx, &note_emojis).await?;
             let origin_verified =
                 note_identity::reconcile(&mut tx, post_id, actor_id, origin_proof.as_ref()).await?;
             if activity["type"] == "Create" || origin_proof.is_some() {
@@ -260,6 +261,7 @@ pub(super) async fn receive_verified(
             if activity["type"] == "Create" && !parents.is_empty() && !query(&mut tx,"SELECT '{}'::text FROM apub_remote_posts WHERE id=$1 AND actor_id=$2 AND deleted_at IS NULL",&[post_id,actor_id]).await?.is_empty() {
                 interactions::notify(&mut tx, user, actor_id, id, "reply", post_id).await?;
             }
+            media_completion = Some((post_id, updated, media));
             // Per-recipient inboxes preserve audience isolation, even for followers-only notes.
             toasty::sql::statement("INSERT INTO apub_remote_recipients(post_id,user_id) SELECT id,$2 FROM apub_remote_posts WHERE id=$1 AND actor_id=$3 ON CONFLICT DO NOTHING").bind(post_id).bind(user).bind(actor_id).exec(&mut tx).await?;
         }
@@ -322,5 +324,10 @@ pub(super) async fn receive_verified(
         _ => {}
     }
     tx.commit().await?;
+    // A concurrent Update may arrive during image I/O. Commit the Note and receipt
+    // first so that Update finds the row, then only supplement the saved version.
+    if let Some((post_id, updated, media)) = media_completion {
+        emoji::enrich_stored_note(state, post_id, actor_id, updated, media).await;
+    }
     Ok(())
 }

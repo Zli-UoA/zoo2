@@ -72,7 +72,7 @@ it("regroups replies when a time zone change puts midnight between them", async 
   }
 });
 
-it.each(["bottom", "middle", "top"])(
+it.each(["bottom", "middle", "top", "top-near-bottom", "exact-fit"])(
   "preserves the %s scroll position when grouped replies grow at midnight",
   async (position) => {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
@@ -91,6 +91,12 @@ it.each(["bottom", "middle", "top"])(
       scroll.style.cssText = "height: 180px; flex: none; overflow-anchor: none";
       const height = scroll.scrollHeight;
       expect(height).toBeGreaterThan(scroll.clientHeight);
+      if (position === "top-near-bottom" || position === "exact-fit") {
+        scroll.style.height = height - (position === "top-near-bottom" ? 30 : 0) + "px";
+        expect(scroll.scrollHeight - scroll.clientHeight).toBe(
+          position === "top-near-bottom" ? 30 : 0,
+        );
+      }
       scroll.scrollTop = position === "bottom" ? height : 0;
       const middle = scroll.querySelector<HTMLElement>('[data-message-id="8"]')!;
       const offset = () => middle.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
@@ -102,7 +108,9 @@ it.each(["bottom", "middle", "top"])(
       if (position === "middle") expect(Math.abs(offset() - before)).toBeLessThanOrEqual(0.5);
       else
         expect(scroll.scrollTop).toBe(
-          position === "bottom" ? scroll.scrollHeight - scroll.clientHeight : 0,
+          position === "bottom" || position === "exact-fit"
+            ? scroll.scrollHeight - scroll.clientHeight
+            : 0,
         );
       view.unmount();
     } finally {
