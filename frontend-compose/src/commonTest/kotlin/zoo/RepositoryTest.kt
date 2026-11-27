@@ -679,6 +679,28 @@ class RepositoryTest {
     }
 
     @Test
+    fun messageCachePreservesConfirmedCoverageAndReadsLegacyArrays() {
+        val rows = (1..60).map { id ->
+            obj("id" to id.toString(), "created_at" to "2026-11-01T00:00:${(id - 1).toString().padStart(2, '0')}Z")
+        }
+        fun cursor(row: Row) = row.text("created_at") to row.text("id")
+        val complete = cacheFeed(rows.take(10), PageState(loaded = true, oldest = cursor(rows.first())))
+        val restored = CachedFeed.decode(json.parseToJsonElement(complete.encode()))
+        assertEquals(complete, restored)
+        assertFalse(restored.page!!.hasOlder)
+        assertNull(CachedFeed.decode(JsonArray(complete.rows)).page)
+
+        val trimmed = cacheFeed(rows, PageState(loaded = true, oldest = cursor(rows.first())))
+        assertEquals(50, trimmed.rows.size)
+        assertEquals(cursor(rows[10]), trimmed.page!!.oldest)
+        assertTrue(trimmed.page.hasOlder)
+
+        val sparse = cacheFeed(listOf(rows.first()) + rows.takeLast(10),
+            PageState(loaded = true, hasOlder = true, oldest = cursor(rows[50])))
+        assertEquals(cursor(rows[50]), sparse.page!!.oldest)
+    }
+
+    @Test
     fun newestFirstOrdersRowsOfTheSameTimeById() {
         val a = obj("id" to "a", "created_at" to "t")
         val b = obj("id" to "b", "created_at" to "t")

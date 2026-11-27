@@ -1,6 +1,11 @@
 package zoo.android
 
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import androidx.activity.compose.BackHandler
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -160,6 +165,11 @@ internal fun ConnectedScreens(
     val emptyGeneration = remember { MutableStateFlow(0) }
     val generation by (messageTable?.pageGeneration ?: emptyGeneration).collectAsState()
     val mainPage = pageStates[PageScope.Main]
+    val cachedMainPage = if (messageTable == null) null else {
+        val cached by messageTable.cachedMainPage.collectAsState()
+        cached
+    }
+    val visiblePage = if (env.online || mainPage?.loaded == true) mainPage else cachedMainPage
     var unreadPages by remember(messageTable, generation) { mutableIntStateOf(0) }
     var unreadHistoryFailed by remember(messageTable, generation, env.online) { mutableStateOf(false) }
     val firstUnreadInWindow = remember(ordered, readBoundary, session.config.userId) {
@@ -178,7 +188,7 @@ internal fun ConnectedScreens(
     val positionForHistory = if (unreadPositioned) currentReadPosition?.let { saved ->
         saved.copy(hasUnread = saved.hasUnread || latestOtherTimestamp?.let { it > saved.timestamp } == true)
     } else visitHistoryPosition
-    val unreadHistoryOutsideWindow = unreadHistoryOutsideWindow(mainPage, positionForHistory)
+    val unreadHistoryOutsideWindow = unreadHistoryOutsideWindow(visiblePage, positionForHistory)
     val needsUnreadHistory = unreadHistoryOutsideWindow && unreadPages < MAX_UNREAD_PAGES && !unreadHistoryFailed
     val unreadHistoryIncomplete = unreadHistoryOutsideWindow &&
         (!needsUnreadHistory || !env.online || focusMessage != null)
@@ -188,9 +198,9 @@ internal fun ConnectedScreens(
     val unreadPositionPending = awaitingInitialRead ||
         (env.online && currentThread == null && focusMessage == null && needsUnreadHistory)
     val unreadId = firstUnreadInWindow.takeUnless {
-        unreadHistoryOutsideWindow(mainPage, visitHistoryPosition) || awaitingInitialRead
+        unreadHistoryOutsideWindow(visiblePage, visitHistoryPosition) || awaitingInitialRead
     }
-    val timeZone = ZoneId.systemDefault()
+    val timeZone by rememberConversationTimeZone(context)
     val localDay = platform.day(platform.now())
     val conversationMessages = remember(messages, conversationEntries, rowsById, encrypted, unreadId, env.locale, timeZone, localDay, session) {
         withConversationDividers(
@@ -534,7 +544,7 @@ internal fun ConnectedScreens(
     val canLoadUnreadHistory = screen is AndroidScreen.Conversation && env.online && env.visible &&
         focusMessage == null && positionForHistory?.hasUnread == true
     LaunchedEffect(messageTable, generation, positionForHistory, canLoadUnreadHistory) {
-        if (!canLoadUnreadHistory || messageTable == null || positionForHistory == null) return@LaunchedEffect
+        if (!canLoadUnreadHistory || messageTable == null) return@LaunchedEffect
         while (unreadPages < MAX_UNREAD_PAGES && !unreadHistoryFailed) {
             val page = messageTable.pageStates.first { states ->
                 states[PageScope.Main]?.let { it.loaded && !it.loading } == true
@@ -812,3 +822,18 @@ internal fun ConnectedScreens(
         )
     }
 }
+
+
+@Composable
+private fun rememberConversationTimeZone(context: Context): State<ZoneId> =
+    produceState(ZoneId.systemDefault(), context) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if (intent.action == Intent.ACTION_TIMEZONE_CHANGED) value = ZoneId.systemDefault()
+            }
+        }
+        ContextCompat.registerReceiver(context, receiver, IntentFilter(Intent.ACTION_TIMEZONE_CHANGED),
+            ContextCompat.RECEIVER_NOT_EXPORTED)
+        value = ZoneId.systemDefault()
+        awaitDispose { context.unregisterReceiver(receiver) }
+    }
