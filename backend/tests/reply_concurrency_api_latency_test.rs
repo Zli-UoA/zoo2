@@ -1,10 +1,20 @@
 //! Measurement only: `POST /api/messages` replies, 8 clients at a time, to one thread root whose
-//! channel has ~10,000 `all` notification recipients. Times the whole in-process request: router,
-//! extractors, dev auth, pool wait, all SQL round trips and the JSON response body. It reports
-//! p50 / p95 / max; it asserts only that every reply succeeds. The SQL-layer numbers in
-//! `docs/query-design.md` (lock wait, INSERT + COMMIT) are a subset of this request: they do not
-//! include the member/setting reads, the message writes or the response. The build is unoptimized
-//! and the database is local, so these are not production numbers.
+//! channel has exactly 10,000 `all` notification recipients. All eight writers are joined thread
+//! participants, so without `mute` every reply would add the other seven writers as `reply`
+//! targets (T=10,007). They are set to `mute` before the measured rounds: each reply then notifies
+//! exactly 10,000 users (1 `reply` to the parent author + 9,999 `channel_message`). The row count
+//! per reply is verified with SQL after every round, outside the measured interval, before the
+//! notification tables are truncated.
+//!
+//! Times the whole in-process request: router, extractors, dev auth, pool wait, all SQL round trips
+//! and the JSON response body. Reports p50 / p95 / max. HTTP network is excluded because the
+//! router runs in-process. A probe acquires a connection from the same pool under the same load to
+//! time pool wait separately. SQL planning/execution time and individual SQL round trips are not
+//! measured separately: the router owns the pool and the toasty driver emits no per-query
+//! start/finish hooks, so splitting them would require production code changes. The SQL-layer
+//! numbers in `docs/query-design.md` (lock wait, INSERT + COMMIT) are a subset of this request:
+//! they do not include the member/setting reads, the message writes or the response. The build is
+//! unoptimized and the database is local, so these are not production numbers.
 //!
 //! Run (a database whose role may `SET session_replication_role`; the test makes its own schema):
 //! `DATABASE_URL=postgres://… ACTIVITYPUB_BASE_URL=https://zoo.test cargo test --manifest-path
@@ -73,7 +83,7 @@ fn summary(label: &str, mut samples: Vec<f64>) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-#[ignore = "inserts 10k recipients and 240 replies; measurement only"]
+#[ignore = "inserts 10k recipients and up to 240 replies; measurement only"]
 async fn eight_concurrent_replies_api_latency() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     let rounds: usize = std::env::var("REPLY_LATENCY_ROUNDS")
@@ -84,7 +94,7 @@ async fn eight_concurrent_replies_api_latency() -> anyhow::Result<()> {
     let fixture = thread_db::ThreadDb::new().await?;
     let config = fixture.config.clone();
     let db = init_db(&config.database_url).await?;
-    let app = create_router(AppState::new(db, config.clone()));
+    let app = create_router(AppState::new(db.clone(), config.clone()));
     let tag = uuid::Uuid::new_v4().simple().to_string();
     let owner = uuid::Uuid::new_v4().to_string();
     let writers: Vec<String> = (0..WRITERS)
@@ -140,6 +150,19 @@ async fn eight_concurrent_replies_api_latency() -> anyhow::Result<()> {
         )
         .await?;
     }
+    // All eight writers are live participants. Without `mute` a reply would add the other seven
+    // writers as `reply` targets on top of the 10,000 `all` members (T=10,007). Mute them first so
+    // the measured fan-out is exactly 10,000, then confirm the settings were actually stored.
+    for writer in &writers {
+        ok(
+            &app,
+            writer,
+            "PATCH",
+            &format!("/api/channels/{channel}/notification-settings"),
+            json!({"level": "mute"}),
+        )
+        .await?;
+    }
 
     // The channel's `all` recipients: one `users` row, one membership and one settings row each.
     // Replica role skips the per-row app/display triggers of the fixture; the notification INSERT
@@ -186,23 +209,48 @@ async fn eight_concurrent_replies_api_latency() -> anyhow::Result<()> {
         .await?
         .get(0);
     assert_eq!(targets, i64::from(RECIPIENTS));
+    let muted: i64 = admin
+        .query_one(
+            "SELECT count(*)::bigint FROM user_channel_notification_settings \
+             WHERE channel_id=$1 AND notification_level='mute' AND user_id=ANY($2::text[])",
+            &[&channel, &writers],
+        )
+        .await?
+        .get(0);
+    assert_eq!(muted, i64::try_from(WRITERS)?);
     let prepare_ms = prepared.elapsed().as_secs_f64() * 1000.;
     eprintln!("T={targets} prepare_ms={prepare_ms:.1} rounds={rounds}");
 
-    // A barrier per round keeps exactly WRITERS replies in flight; truncate only after everyone
-    // has answered, as the SQL-layer measurement did.
+    // A barrier per round keeps exactly WRITERS replies and one pool-acquire probe in flight;
+    // truncate only after everyone has answered, as the SQL-layer measurement did.
     let starts: Vec<_> = (0..rounds)
-        .map(|_| Arc::new(Barrier::new(WRITERS + 1)))
+        .map(|_| Arc::new(Barrier::new(WRITERS + 2)))
         .collect();
     let ends: Vec<_> = (0..rounds)
-        .map(|_| Arc::new(Barrier::new(WRITERS + 1)))
+        .map(|_| Arc::new(Barrier::new(WRITERS + 2)))
         .collect();
+    // Message IDs are generated before the timed section so the SQL check after each round can
+    // count the notifications produced by each individual reply.
+    let reply_ids: Arc<Vec<Vec<String>>> = Arc::new(
+        (0..rounds)
+            .map(|_| {
+                (0..WRITERS)
+                    .map(|_| uuid::Uuid::new_v4().to_string())
+                    .collect()
+            })
+            .collect(),
+    );
     let (error_tx, mut error_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let mut clients = Vec::new();
     for (index, writer) in writers.iter().enumerate() {
         let (app, writer, root, channel) =
             (app.clone(), writer.clone(), root.clone(), channel.clone());
-        let (starts, ends, error_tx) = (starts.clone(), ends.clone(), error_tx.clone());
+        let (reply_ids, starts, ends, error_tx) = (
+            reply_ids.clone(),
+            starts.clone(),
+            ends.clone(),
+            error_tx.clone(),
+        );
         clients.push(tokio::spawn(async move {
             let mut samples = Vec::new();
             for round in 0..rounds {
@@ -211,7 +259,7 @@ async fn eight_concurrent_replies_api_latency() -> anyhow::Result<()> {
                     .map_err(|_| anyhow::anyhow!("start barrier timed out"))?;
                 let outcome = async {
                     let body = json!({
-                        "id": uuid::Uuid::new_v4().to_string(),
+                        "id": reply_ids[round][index].clone(),
                         "channel_id": channel,
                         "parent_id": root,
                         "content": format!("reply {round} from {index}"),
@@ -249,6 +297,33 @@ async fn eight_concurrent_replies_api_latency() -> anyhow::Result<()> {
             anyhow::Ok(samples)
         }));
     }
+    // Same-pool probe: one acquisition per round under the same eight concurrent replies. This is
+    // not the router's own acquisition (toasty owns the pool inside AppState), so it is only a
+    // reference value for pool wait; it cannot be attributed to a particular request.
+    let probe_db = db.clone();
+    let (probe_starts, probe_ends, probe_errors) = (starts.clone(), ends.clone(), error_tx.clone());
+    let probe = tokio::spawn(async move {
+        let mut samples = Vec::new();
+        for round in 0..rounds {
+            tokio::time::timeout(Duration::from_secs(600), probe_starts[round].wait())
+                .await
+                .map_err(|_| anyhow::anyhow!("probe start barrier timed out"))?;
+            let began = Instant::now();
+            match probe_db.connection().await {
+                Ok(connection) => {
+                    samples.push(began.elapsed().as_secs_f64() * 1000.);
+                    drop(connection);
+                }
+                Err(error) => {
+                    let _ = probe_errors.send(format!("pool probe {round}: {error:#}"));
+                }
+            }
+            tokio::time::timeout(Duration::from_secs(600), probe_ends[round].wait())
+                .await
+                .map_err(|_| anyhow::anyhow!("probe end barrier timed out"))?;
+        }
+        anyhow::Ok(samples)
+    });
     drop(error_tx);
     for round in 0..rounds {
         tokio::time::timeout(Duration::from_secs(600), starts[round].wait())
@@ -260,6 +335,36 @@ async fn eight_concurrent_replies_api_latency() -> anyhow::Result<()> {
         if let Ok(error) = error_rx.try_recv() {
             anyhow::bail!("{error}");
         }
+        // Outside the measured interval: every reply must have produced exactly 10,000 rows —
+        // one `reply` to the parent author and 9,999 `channel_message` to the `all` members. If a
+        // writer had been left as a live participant it would be 10,007 instead.
+        let counts = admin
+            .query(
+                "SELECT message_id, count(*)::bigint, \
+                        count(*) FILTER (WHERE notification_type='reply')::bigint, \
+                        count(*) FILTER (WHERE notification_type='channel_message')::bigint \
+                 FROM channel_notifications WHERE message_id = ANY($1::text[]) \
+                 GROUP BY message_id",
+                &[&reply_ids[round]],
+            )
+            .await?;
+        anyhow::ensure!(
+            counts.len() == WRITERS,
+            "round {round}: found {} of {WRITERS} replied messages",
+            counts.len()
+        );
+        for row in &counts {
+            let message_id: &str = row.get(0);
+            let total: i64 = row.get(1);
+            let replies: i64 = row.get(2);
+            let messages: i64 = row.get(3);
+            anyhow::ensure!(
+                total == i64::from(RECIPIENTS)
+                    && replies == 1
+                    && messages == i64::from(RECIPIENTS) - 1,
+                "round {round} reply {message_id}: total={total} reply={replies} channel_message={messages}"
+            );
+        }
         admin
             .batch_execute(
                 "TRUNCATE notification_events, notifications, apub_notifications, display_refresh_queue",
@@ -270,11 +375,21 @@ async fn eight_concurrent_replies_api_latency() -> anyhow::Result<()> {
     for client in clients {
         samples.extend(client.await??);
     }
+    let pool_samples = probe.await??;
     let mut report = serde_json::Map::new();
     report.insert("prepare_ms".into(), json!(prepare_ms));
+    report.insert("t".into(), json!(targets));
+    report.insert(
+        "notifications_per_reply".into(),
+        json!(i64::from(RECIPIENTS)),
+    );
     report.insert(
         "api_total".into(),
         summary("POST reply API total (8 concurrent)", samples),
+    );
+    report.insert(
+        "pool_acquire_probe".into(),
+        summary("Pool acquire probe (same pool, 8 concurrent)", pool_samples),
     );
     eprintln!("REPLY_LATENCY_JSON {}", Value::Object(report));
     fixture.cleanup().await?;
