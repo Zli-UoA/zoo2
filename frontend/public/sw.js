@@ -511,7 +511,9 @@ async function fetchConditionalAsset(request, path) {
   // 通信失敗や 5xx のときだけ保存済みの版を使う。
   try {
     const response = await fetchBounded(request, { cache: "reload" });
-    if (response.status === 304 || response.ok) return response;
+    // 4xx は前提条件の失敗などを呼び出し元へ届けるため、キャッシュで上書きしない。
+    if (response.status === 304 || response.ok || response.status < 500 || response.status >= 600)
+      return response;
     const cached = await cachedFreshAsset(path);
     return cached.type === "error" ? response : cached;
   } catch {

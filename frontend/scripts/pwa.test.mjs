@@ -2345,6 +2345,24 @@ test("a conditional GET falls back to the cached manifest on network failure", a
   assert.equal(await response.text(), manifest);
 });
 
+test("a conditional GET keeps a 412 response", async () => {
+  const cacheContext = memoryCaches([
+    ["zoo-shell-v2", `${ORIGIN}/manifest.webmanifest`, basicResponse(validManifest("#ffffff"))],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () => new Response(null, { status: 412 }),
+  });
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}/manifest.webmanifest`,
+    method: "GET",
+    mode: "cors",
+    headers: { get: (name) => (name.toLowerCase() === "if-match" ? '"other"' : null) },
+  });
+  assert.equal(response.status, 412);
+});
+
 test("a conditional GET keeps a 304 response", async () => {
   const { handlers } = worker({
     fetch: async () => new Response(null, { status: 304 }),
