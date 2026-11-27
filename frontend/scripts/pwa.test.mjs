@@ -1330,6 +1330,48 @@ test("an unreadable cache metadata does not stop carry-over", async () => {
   assert.equal(await (await cache.match(`${ORIGIN}/manifest.webmanifest`)).text(), manifest);
 });
 
+test("an unreadable cache entry does not stop carry-over", async () => {
+  const manifest = validManifest("#ffffff");
+  const cacheContext = memoryCaches([
+    ["zoo-shell-v3-broken", `${ORIGIN}/index.html`, basicResponse("<html>old</html>")],
+    ["zoo-shell-v3-old", `${ORIGIN}/manifest.webmanifest`, basicResponse(manifest)],
+  ]);
+  const realOpen = cacheContext.api.open.bind(cacheContext.api);
+  cacheContext.api.open = async (name) => {
+    const cache = await realOpen(name);
+    if (name !== "zoo-shell-v3-broken") return cache;
+    return {
+      ...cache,
+      match: async (request) => {
+        if (requestKey(request).includes("manifest.webmanifest")) throw new Error("denied");
+        return cache.match(request);
+      },
+    };
+  };
+  const broken = await realOpen("zoo-shell-v3-broken");
+  await broken.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("2"));
+  const old = await realOpen("zoo-shell-v3-old");
+  await old.put(`${ORIGIN}/__zoo_shell_meta__`, new Response("1"));
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async (input) => {
+      const key = requestKey(input);
+      if (key === `${ORIGIN}/manifest.webmanifest`)
+        return basicResponse("<html>app shell</html>", {
+          headers: { "content-type": "text/html" },
+        });
+      if (key === `${ORIGIN}/offline.html`)
+        return basicResponse('<meta name="zoo-offline" content="true" />offline', {
+          headers: { "content-type": "text/html" },
+        });
+      return basicResponse(`network:${key}`);
+    },
+  });
+  await dispatch(handlers, "install");
+  const cache = await realOpen("zoo-shell-v2");
+  assert.equal(await (await cache.match(`${ORIGIN}/manifest.webmanifest`)).text(), manifest);
+});
+
 test("manifest is carried over from an older shell when the newest lacks it", async () => {
   const manifest = validManifest("#ffffff");
   const cacheContext = memoryCaches([
@@ -1500,30 +1542,49 @@ test("a stalled response body falls back to the cached manifest", async () => {
     ["zoo-shell-v2", `${ORIGIN}/manifest.webmanifest`, basicResponse(manifest)],
   ]);
   await cacheContext.api.open("zoo-shell-v2");
+  let fireTimer;
   const { handlers } = worker({
     caches: cacheContext.api,
     AbortSignal: class {},
     AbortController: class {
       constructor() {
-        this.signal = {};
+        this.listeners = [];
+        this.signal = {
+          addEventListener: (type, listener) => this.listeners.push(listener),
+        };
       }
-      abort() {}
+      abort() {
+        for (const listener of this.listeners) listener();
+      }
     },
-    setTimeout: () => 1,
+    setTimeout: (callback) => {
+      fireTimer = callback;
+      return 1;
+    },
     clearTimeout: () => {},
-    fetch: async () => {
-      const response = basicResponse("unavailable", { status: 503 });
-      response.clone = () => {
-        throw new Error("stalled body");
-      };
+    fetch: async (input, init) => {
+      const response = basicResponse("unavailable", {
+        headers: { "content-type": "application/manifest+json" },
+      });
+      response.clone = () => ({
+        arrayBuffer: () =>
+          new Promise((resolve, reject) => {
+            init.signal.addEventListener("abort", () => reject(new Error("timeout")), {
+              once: true,
+            });
+          }),
+      });
       return response;
     },
   });
-  const response = await fetchThrough(handlers, {
+  const pending = fetchThrough(handlers, {
     url: `${ORIGIN}/manifest.webmanifest`,
     method: "GET",
     mode: "cors",
   });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  fireTimer();
+  const response = await pending;
   assert.equal(await response.text(), manifest);
 });
 

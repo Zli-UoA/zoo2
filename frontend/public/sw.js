@@ -113,6 +113,8 @@ async function fetchBounded(input, init = {}) {
   const timer = setTimeout(() => controller.abort(), 10_000);
   try {
     const response = await fetch(input, { ...init, signal: controller.signal });
+    // HTTP エラーはヘッダー受信時点で呼び出し元へ渡す（本文の停止を待たない）。
+    if (!response.ok) return response;
     // fetch() はヘッダー受信で解決するため、本文を読み切るまで期限を維持する。
     await response.clone().arrayBuffer();
     return response;
@@ -307,16 +309,26 @@ async function precacheShell() {
     const sources = await shellCacheNamesNewestFirst(name);
     for (const path of ["/manifest.webmanifest", "/offline.html"]) {
       // 保存先に無効なコピーが残っていても、有効な旧版で置き換える。
-      if (await isUsableFreshAsset(path, await cache.match(path))) continue;
+      let savedHere = null;
+      try {
+        savedHere = await cache.match(path);
+      } catch {
+        /* The destination could not be read; keep searching older caches. */
+      }
+      if (await isUsableFreshAsset(path, savedHere)) continue;
       for (const source of sources) {
-        const saved = await (await caches.open(source)).match(path);
-        if (!(await isUsableFreshAsset(path, saved))) continue;
-        // 案内ページ自身の CSP を保持したまま、転送ヘッダーだけ除いてコピーする。
-        await cache.put(
-          path,
-          path === "/manifest.webmanifest" ? saved.clone() : await sanitizedCopy(saved.clone()),
-        );
-        break;
+        try {
+          const saved = await (await caches.open(source)).match(path);
+          if (!(await isUsableFreshAsset(path, saved))) continue;
+          // 案内ページ自身の CSP を保持したまま、転送ヘッダーだけ除いてコピーする。
+          await cache.put(
+            path,
+            path === "/manifest.webmanifest" ? saved.clone() : await sanitizedCopy(saved.clone()),
+          );
+          break;
+        } catch {
+          /* Try the next generation when one cache cannot be read. */
+        }
       }
     }
   } catch {
