@@ -124,7 +124,7 @@ pub(crate) fn image_assets(mime: &str, bytes: &[u8]) -> Option<(ImageMetadata, O
         height,
         blurhash: encode_blurhash(&image, orientation)?,
     };
-    let thumbnail = (width.max(height) > THUMBNAIL_EDGE)
+    let thumbnail = (width.max(height) > THUMBNAIL_EDGE && supports_static_thumbnail(mime, bytes))
         .then(|| {
             let mut thumbnail = image.resize(
                 THUMBNAIL_EDGE,
@@ -141,6 +141,20 @@ pub(crate) fn image_assets(mime: &str, bytes: &[u8]) -> Option<(ImageMetadata, O
         })
         .flatten();
     Some((metadata, thumbnail))
+}
+
+fn supports_static_thumbnail(mime: &str, bytes: &[u8]) -> bool {
+    let source = std::io::Cursor::new(bytes);
+    match mime {
+        "image/jpeg" => true,
+        "image/png" => image::codecs::png::PngDecoder::new(source)
+            .and_then(|decoder| decoder.is_apng())
+            .is_ok_and(|animated| !animated),
+        "image/webp" => image::codecs::webp::WebPDecoder::new(source)
+            .is_ok_and(|decoder| !decoder.has_animation()),
+        // Keep the original GIF so every frame stays available in the timeline.
+        _ => false,
+    }
 }
 
 fn encode_blurhash(
@@ -160,19 +174,18 @@ pub(crate) async fn store_thumbnail(
     key: &str,
     bytes: Option<Vec<u8>>,
 ) {
-    if let Some(bytes) = bytes {
-        if let Err(error) = client
-            .put_object()
-            .bucket(bucket)
-            .key(thumbnail_key(key))
-            .content_type(THUMBNAIL_MIME)
-            .cache_control(IMAGE_CACHE_CONTROL)
-            .body(bytes.into())
-            .send()
-            .await
-        {
-            tracing::warn!(%error, key, "Could not store image thumbnail");
-        }
+    let Some(bytes) = bytes else { return };
+    if let Err(error) = client
+        .put_object()
+        .bucket(bucket)
+        .key(thumbnail_key(key))
+        .content_type(THUMBNAIL_MIME)
+        .cache_control(IMAGE_CACHE_CONTROL)
+        .body(bytes.into())
+        .send()
+        .await
+    {
+        tracing::warn!(%error, key, "Could not store image thumbnail");
     }
 }
 
@@ -519,6 +532,22 @@ mod tests {
         let thumbnail =
             image::load_from_memory_with_format(&thumbnail, image::ImageFormat::WebP).unwrap();
         assert_eq!((thumbnail.width(), thumbnail.height()), (768, 384));
+    }
+
+    #[test]
+    fn animated_gif_keeps_its_original_for_the_timeline() {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
+            for color in [[255, 0, 0, 255], [0, 0, 255, 255]] {
+                let frame = image::RgbaImage::from_pixel(800, 40, image::Rgba(color));
+                encoder.encode_frame(image::Frame::new(frame)).unwrap();
+            }
+        }
+        let (metadata, thumbnail) = image_assets("image/gif", &bytes).unwrap();
+        assert_eq!((metadata.width, metadata.height), (800, 40));
+        assert!(!metadata.blurhash.is_empty());
+        assert!(thumbnail.is_none());
     }
 
     #[test]

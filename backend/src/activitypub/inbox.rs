@@ -82,31 +82,6 @@ pub(super) async fn receive_verified(
     activity: &Value,
 ) -> Result<(), AppError> {
     let origin_proof = note_identity::proof_for_activity(state, user, activity).await?;
-    if let Some(mut media) =
-        apply_verified(state, user, actor, activity, origin_proof.as_ref(), None).await?
-    {
-        emoji::fill_media_blurhashes(&mut media).await;
-        apply_verified(
-            state,
-            user,
-            actor,
-            activity,
-            origin_proof.as_ref(),
-            Some(media),
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-async fn apply_verified(
-    state: &AppState,
-    user: &str,
-    actor: &Value,
-    activity: &Value,
-    origin_proof: Option<&note_identity::Proof>,
-    prepared_media: Option<Vec<Value>>,
-) -> Result<Option<Vec<Value>>, AppError> {
     let actor_id = string(actor, "id")?;
     let local = super::actor_id(user)?;
     let id = string(activity, "id")?;
@@ -117,8 +92,9 @@ async fn apply_verified(
     // The receipt and all effects commit together. Replays cannot repeat delivery or resurrect posts.
     let inserted=query(&mut tx,"INSERT INTO apub_inbox_receipts(id,actor_id,user_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING '{}'::text",&[id,actor_id,user]).await?;
     if inserted.is_empty() {
-        return Ok(None);
+        return Ok(());
     }
+    let mut media_completion = None;
     match string(activity, "type")? {
         "Follow" => {
             if object_id(&activity["object"]) != Some(local.as_str()) {
@@ -271,24 +247,12 @@ async fn apply_verified(
             if updated > jiff::Timestamp::now() + jiff::SignedDuration::from_secs(300) {
                 return Err(AppError::BadRequest("Future note timestamp".into()));
             }
-            let media = match prepared_media {
-                Some(media) => media,
-                None => {
-                    let media = emoji::note_media(object);
-                    if media.iter().any(emoji::needs_media_blurhash) {
-                        // Release the receipt and actor lock before opening remote image URLs.
-                        // Recheck authorization and receipt deduplication in the final transaction.
-                        tx.rollback().await?;
-                        return Ok(Some(media));
-                    }
-                    media
-                }
-            };
+            let media = emoji::note_media(object);
             emoji::remember(&mut tx, &media).await?;
             let note_emojis = emoji::tags(&object["tag"]);
             emoji::remember(&mut tx, &note_emojis).await?;
             let origin_verified =
-                note_identity::reconcile(&mut tx, post_id, actor_id, origin_proof).await?;
+                note_identity::reconcile(&mut tx, post_id, actor_id, origin_proof.as_ref()).await?;
             if activity["type"] == "Create" || origin_proof.is_some() {
                 toasty::sql::statement("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,parent_id,emojis,origin_verified,media,quote_uri) SELECT $1,$2,$3,$4,$5::timestamptz,$6::timestamptz,NULLIF($7,''),$8::jsonb,$9::boolean,$10::jsonb,NULLIF($11,'') WHERE NOT EXISTS(SELECT 1 FROM apub_remote_tombstones WHERE id=$1 AND actor_id=$2) ON CONFLICT(id) DO UPDATE SET origin_verified=apub_remote_posts.origin_verified OR EXCLUDED.origin_verified WHERE apub_remote_posts.actor_id=EXCLUDED.actor_id").bind(post_id).bind(actor_id).bind(content).bind(visibility).bind(published.to_string()).bind(updated.to_string()).bind(parent_id.unwrap_or("")).bind(json!(note_emojis).to_string()).bind(origin_verified.to_string()).bind(json!(media).to_string()).bind(quote_uri.as_deref().unwrap_or("")).exec(&mut tx).await?;
             } else {
@@ -297,6 +261,7 @@ async fn apply_verified(
             if activity["type"] == "Create" && !parents.is_empty() && !query(&mut tx,"SELECT '{}'::text FROM apub_remote_posts WHERE id=$1 AND actor_id=$2 AND deleted_at IS NULL",&[post_id,actor_id]).await?.is_empty() {
                 interactions::notify(&mut tx, user, actor_id, id, "reply", post_id).await?;
             }
+            media_completion = Some((post_id, updated, media));
             // Per-recipient inboxes preserve audience isolation, even for followers-only notes.
             toasty::sql::statement("INSERT INTO apub_remote_recipients(post_id,user_id) SELECT id,$2 FROM apub_remote_posts WHERE id=$1 AND actor_id=$3 ON CONFLICT DO NOTHING").bind(post_id).bind(user).bind(actor_id).exec(&mut tx).await?;
         }
@@ -359,5 +324,10 @@ async fn apply_verified(
         _ => {}
     }
     tx.commit().await?;
-    Ok(None)
+    // A concurrent Update may arrive during image I/O. Commit the Note and receipt
+    // first so that Update finds the row, then only supplement the saved version.
+    if let Some((post_id, updated, media)) = media_completion {
+        emoji::enrich_stored_note(state, post_id, actor_id, updated, media).await;
+    }
+    Ok(())
 }
