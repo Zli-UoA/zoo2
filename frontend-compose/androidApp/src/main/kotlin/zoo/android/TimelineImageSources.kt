@@ -4,6 +4,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import zoo.Row
+import zoo.accountEmojiName
 import zoo.array
 import zoo.endpoint
 import zoo.findCustomEmojiShortcodes
@@ -15,6 +16,7 @@ import zoo.text
 import zoo.android.ui.TimelineMedia
 import zoo.android.ui.TimelineMediaKind
 import zoo.android.ui.timelineMediaKind
+import zoo.android.ui.containsRenderedEmoji
 
 private val imageIdPattern = Regex("[a-f0-9]{64}")
 private val remoteReactionPattern = Regex("apub:([a-f0-9]{64}):(:[A-Za-z0-9_+-]+:)")
@@ -93,11 +95,13 @@ internal fun timelineBodyEmojis(
 }
 
 internal fun isWorkspaceEmojiCandidate(code: String): Boolean =
-    code.startsWith(':') && code.endsWith(':') && !code.startsWith(":@") &&
+    code.startsWith(':') && code.endsWith(':') && accountEmojiName(code) == null &&
         code.removeSurrounding(":").let { it.isNotEmpty() && it == it.trim() && ':' !in it }
 
-internal fun hasMissingWorkspaceEmoji(body: String, emoji: Map<String, TimelineMedia>): Boolean =
-    findCustomEmojiShortcodes(body).any { it !in emoji && isWorkspaceEmojiCandidate(it) }
+internal fun hasMissingWorkspaceEmoji(body: String, emoji: Map<String, TimelineMedia>): Boolean {
+    val candidates = findCustomEmojiShortcodes(body).filter { it !in emoji && isWorkspaceEmojiCandidate(it) }.toSet()
+    return candidates.isNotEmpty() && containsRenderedEmoji(body, emoji.keys, candidates)
+}
 
 private fun inlineEmoji(name: String, url: String) =
     TimelineMedia(url, name, TimelineMediaKind.Image, url = url, previewUrl = url)

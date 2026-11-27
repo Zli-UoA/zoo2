@@ -6,8 +6,13 @@ package zoo
  */
 data class Inline(val value: String, val kind: String = "text", val url: String? = null, val bare: Boolean = false)
 
+private const val accountEmojiPattern = ":@([A-Za-z0-9._-]+):"
+private val accountEmoji = Regex(accountEmojiPattern)
+
+fun accountEmojiName(code: String): String? = accountEmoji.matchEntire(code)?.groupValues?.get(1)
+
 private val atoms = Regex(
-    "https?://[^\\s<>]+|:@[A-Za-z0-9._-]+:|@[A-Za-z0-9._-]+(?:@[A-Za-z0-9.-]+)?|#[^\\s#.,!?:;<>]+|:[a-zA-Z0-9_+-]+:"
+    "https?://[^\\s<>]+|$accountEmojiPattern|@[A-Za-z0-9._-]+(?:@[A-Za-z0-9.-]+)?|#[^\\s#.,!?:;<>]+|:[a-zA-Z0-9_+-]+:"
 )
 // Shared emoji aliases may include Unicode and spaces. Only registered candidates become tokens.
 private val customEmojiShortcode = Regex(""":[^:\p{Cc}]{1,100}:""")
@@ -441,15 +446,12 @@ data class MfmRuby(val base: String, val reading: String)
 
 /** The reading is root text; spaces inside markup belong to the base. */
 fun mfmRuby(source: String, customEmojis: Set<String> = emptySet()): MfmRuby {
-    val slices = inlineSlices(source, customEmojis)
-    val last = slices.lastOrNull() ?: return MfmRuby(source, "")
-    if (last.token.kind != "text") return MfmRuby(source, "")
-    if (slices.size == 1) {
-        val separator = source.indexOfFirst { it.isWhitespace() }
-        return if (separator < 0) MfmRuby(source, "")
-        else MfmRuby(source.take(separator), source.substring(separator + 1).trim())
+    for (slice in inlineSlices(source, customEmojis)) {
+        if (slice.token.kind != "text") continue
+        val space = (slice.start until slice.end).firstOrNull { source[it].isWhitespace() } ?: continue
+        return MfmRuby(source.take(space), source.substring(space + 1).trim())
     }
-    return MfmRuby(source.take(last.start).trimEnd(), last.token.value.trim())
+    return MfmRuby(source, "")
 }
 
 data class MfmCodeBlock(val body: String, val language: String)

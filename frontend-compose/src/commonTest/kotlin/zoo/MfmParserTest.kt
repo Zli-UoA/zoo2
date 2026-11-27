@@ -12,6 +12,7 @@ class MfmParserTest {
         )
         assertEquals(Inline(":@alice:", "accountEmoji"), parseInline(":@alice:", setOf(":@alice:")).single())
         assertEquals(MfmRuby(alias, "ねこ"), mfmRuby("$alias ねこ", setOf(alias)))
+        assertEquals(MfmRuby(":猫:顔", "えがお"), mfmRuby(":猫:顔 えがお", setOf(":猫:")))
     }
 
     @Test

@@ -89,6 +89,11 @@ internal fun formatEntry(
     }
 }
 
+internal fun containsRenderedEmoji(body: String, known: Set<String>, candidates: Set<String>): Boolean {
+    val formatted = formatEntry(body, known + candidates)
+    return formatted.getStringAnnotations(emojiTag, 0, formatted.length).any { it.item in candidates }
+}
+
 /** [text] with the parts that hit [highlight]'s terms in its style. */
 internal fun AnnotatedString.Builder.appendHighlighted(text: String, highlight: EntryHighlight?) {
     if (highlight == null) {

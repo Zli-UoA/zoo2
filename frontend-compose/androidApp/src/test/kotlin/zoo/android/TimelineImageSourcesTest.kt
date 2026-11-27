@@ -7,6 +7,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import zoo.android.ui.EntryContentPanel
+import zoo.android.ui.EntryContentText
+import zoo.android.ui.displayedText
 import zoo.android.ui.TimelineMedia
 import zoo.android.ui.TimelineMediaKind
 import zoo.obj
@@ -63,11 +66,16 @@ class TimelineImageSourcesTest {
         val code = ":お祝い 猫:"
         val url = "$base/api/emoji-images/party"
         val resolved = timelineBodyEmojis(base, obj(), obj(), "Fallback text", false,
-            workspace = mapOf(code to url), displayedBlocks = listOf("Hello $code"))
+            workspace = mapOf(code to url),
+            displayedBlocks = EntryContentPanel(listOf(EntryContentPanel(listOf(EntryContentText("Hello $code")))))
+                .displayedText().toList())
         assertEquals(url, resolved[code]?.url)
         assertTrue(hasMissingWorkspaceEmoji("Hello $code", emptyMap()))
         assertFalse(hasMissingWorkspaceEmoji("Hello $code", resolved))
         assertFalse(hasMissingWorkspaceEmoji("Hello : :@alice:", emptyMap()))
+        assertTrue(hasMissingWorkspaceEmoji(":@お祝い:", emptyMap()))
+        assertFalse(hasMissingWorkspaceEmoji("`:example:` <plain>:example:</plain>", emptyMap()))
+        assertFalse(hasMissingWorkspaceEmoji("```txt\n:example:\n```", emptyMap()))
     }
 
     @Test

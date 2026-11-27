@@ -269,7 +269,7 @@ internal class ConnectedScreenState(
         }
         val richContent = if (!isPost && !data.present("ciphertext")) messageRichContent(data) else EntryRichContent()
         val metadata = display.ifEmpty { data }
-        val emojiBodies = richContent.blocks.filterIsInstance<EntryContentText>().map { it.body }
+        val emojiBodies = richContent.blocks.asSequence().flatMap { it.displayedText() }.toList()
         val visibleBody = if (richContent.hidesBody) "" else body
         val emoji = if (allowPreview && !data.present("ciphertext")) displayEmoji(data, metadata, visibleBody, isPost, emojiBodies) else emptyMap()
         val reactionEmoji = if (allowPreview && !data.present("ciphertext")) {
@@ -286,11 +286,13 @@ internal class ConnectedScreenState(
                 canToggle = timelineReactionCanToggle(value, it.flag("selected"), it.text("can_react") != "false", post = true))
         } else reactions.groupBy { it.text("emoji") }.map { (value, rows) ->
             val (label, image) = timelineReactionEmoji(app.config.apiBaseUrl, value, reactionEmoji)
-            val account = value.takeIf { it.startsWith(":@") && it.endsWith(':') }
-                ?.removePrefix(":@")?.removeSuffix(":")
-                ?.let { username -> users.values.firstOrNull { it.text("user_name") == username } }
+            val accountName = accountEmojiName(value)
+            val reactionImage = if (accountName == null) image else {
+                val account = users.values.firstOrNull { it.text("user_name") == accountName }
+                account?.let { timelineAvatarUrl(app.config.apiBaseUrl, it) }
+            }
             TimelineReaction(value, label, rows.size.toString(), rows.any { it.text("user_id") == app.config.userId },
-                image ?: account?.let { timelineAvatarUrl(app.config.apiBaseUrl, it) }, canToggle = timelineReactionCanToggle(value, selected = false, canReact = true, post = false))
+                reactionImage, canToggle = timelineReactionCanToggle(value, selected = false, canReact = true, post = false))
         }
         val fileRows = (attachments + metadata.array("attachments").rows()).distinctBy { it.text("id") }
         val attachmentMedia = if (allowPreview && !data.present("ciphertext")) fileRows.mapNotNull(::timelineAttachmentMedia)
