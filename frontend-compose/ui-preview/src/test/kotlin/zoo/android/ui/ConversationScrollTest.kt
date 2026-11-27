@@ -145,7 +145,7 @@ class ConversationScrollTest {
         val reported = mutableListOf<String>()
         var positioned = false
         ui.setContent {
-            AndroidScreens(channel.copy(focusMessage = "e18", unreadPositionPending = true,
+            AndroidScreens(channel.copy(focusMessage = "e18", focusRequest = "open-e18", unreadPositionPending = true,
                 onUnreadPositioned = { positioned = true },
                 onReadThrough = { id -> if (id != null) reported.add(id) }),
                 false, true, dispatch = {}) { _, _ -> }
