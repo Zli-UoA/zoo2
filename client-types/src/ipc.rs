@@ -19,9 +19,12 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    api::Me,
+    api::{Me, NotificationLevel},
     shape::{Batch, ShapeId},
 };
+
+/// WebView 側も同じ型で通知レベルを読む。
+pub use crate::api::ChannelNotificationSettings;
 
 /// 互換を崩す変更をしたら上げる。(b) の Web 側は [`SessionInfo::protocol`] を見て、
 /// 知らない版なら IPC を使わずに通常の Web として動く。
@@ -50,6 +53,11 @@ pub mod command {
     pub const NOTIFICATION_SETTINGS: &str = "zoo_notification_settings";
     /// `{ settings: NotificationSettings }`。OS の通知を出すかどうかを変えて、保存する。
     pub const SET_NOTIFICATIONS: &str = "zoo_set_notifications";
+    /// `{ channel_id: String }`。[`super::ChannelNotificationSettings`] を返す。
+    /// 古い版のアプリにはないので、呼べなかったらレベルを出さない (`PROTOCOL_VERSION` は上げない)。
+    pub const CHANNEL_NOTIFICATION_SETTINGS: &str = "zoo_channel_notification_settings";
+    /// [`super::SetChannelNotificationLevel`]。変更後の [`super::ChannelNotificationSettings`] を返す。
+    pub const SET_CHANNEL_NOTIFICATION_LEVEL: &str = "zoo_set_channel_notification_level";
 
     // (a) Leptos だけ
     /// [`super::OpenChannel`]。そのチャンネルのメッセージの Shape に購読を切り替える。
@@ -212,6 +220,19 @@ impl Default for NotificationSettings {
     fn default() -> Self {
         Self { enabled: true }
     }
+}
+
+/// [`command::CHANNEL_NOTIFICATION_SETTINGS`] の引数。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelNotificationSettingsRequest {
+    pub channel_id: String,
+}
+
+/// [`command::SET_CHANNEL_NOTIFICATION_LEVEL`] の引数。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetChannelNotificationLevel {
+    pub channel_id: String,
+    pub level: NotificationLevel,
 }
 
 /// 添付を保存するときの、デスクトップ版の設定。
@@ -531,6 +552,25 @@ mod tests {
     }
 
     #[test]
+    fn channel_notification_settings_json_is_stable() {
+        assert_eq!(
+            serde_json::to_value(SetChannelNotificationLevel {
+                channel_id: "c1".into(),
+                level: NotificationLevel::Mute,
+            })
+            .unwrap(),
+            json!({ "channel_id": "c1", "level": "mute" })
+        );
+        assert_eq!(
+            serde_json::from_value::<ChannelNotificationSettings>(json!({ "level": "all" }))
+                .unwrap(),
+            ChannelNotificationSettings {
+                level: NotificationLevel::All
+            }
+        );
+    }
+
+    #[test]
     fn login_prompt_is_tagged_and_the_method_defaults_to_browser() {
         let browser = LoginPrompt::Browser(BrowserLogin {
             url: "https://issuer/authorize?x=1".into(),
@@ -568,6 +608,8 @@ mod tests {
             command::LOGOUT,
             command::SET_FOCUS,
             command::SET_BADGE,
+            command::CHANNEL_NOTIFICATION_SETTINGS,
+            command::SET_CHANNEL_NOTIFICATION_LEVEL,
             command::OPEN_CHANNEL,
             command::RESYNC,
             command::SEND_MESSAGE,

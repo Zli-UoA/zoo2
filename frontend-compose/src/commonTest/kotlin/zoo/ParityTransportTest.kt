@@ -97,7 +97,7 @@ class ParityTransportTest {
                 if (fail) error("e2ee.sendNeedsUnlock")
                 sent = body
             }
-            override suspend fun edit(message: Row, body: String) = error("Unexpected edit")
+            override suspend fun edit(message: Row, body: String, mentions: EncryptedMentions?) = error("Unexpected edit")
             override suspend fun decrypt(message: Row) = error("Unexpected decrypt")
         }
         val http = HttpClient(MockEngine { request ->
@@ -133,7 +133,7 @@ class ParityTransportTest {
                 encryptedWrites += parent
                 throw ApiException(403, json.parseToJsonElement(refusal).jsonObject)
             }
-            override suspend fun edit(message: Row, body: String) = error("Unexpected edit")
+            override suspend fun edit(message: Row, body: String, mentions: EncryptedMentions?) = error("Unexpected edit")
             override suspend fun decrypt(message: Row) = error("Unexpected decrypt")
         }
         val http = HttpClient(MockEngine { request ->

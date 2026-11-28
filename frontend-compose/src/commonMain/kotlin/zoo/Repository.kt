@@ -287,6 +287,7 @@ class SyncedTable(
 
     private var stream: ShapeStream? = null
     private var refreshJob: Job? = null
+    private val subsetRequests = ShapeSubsetRequests()
     private val cacheKey =
         "zoo-compose:${if (onDemand) "v3" else "v2"}:${config.apiBaseUrl}:${config.shapeProxyPath}:${config.shapeMode}:${config.electricShapeUrl}:${config.userId}:$name:${params.entries.sortedBy { it.key }}"
     /** on-demand に移す前の、全件入りの控え（添付・リアクションの別 Shape の分も）。読まずに消す。 */
@@ -322,12 +323,11 @@ class SyncedTable(
         )
     }
 
-    private suspend fun fetchSubset(main: Boolean, subset: SubsetParams): SubsetSnapshot {
+    private suspend fun fetchSubset(subset: SubsetParams): SubsetSnapshot {
         val source = streamReady.await()
-        val snapshot = source.requestSnapshot(subset)
+        val snapshot = subsetRequests.request { source.requestSnapshot(subset) }
         snapshotMetas.update { (it + snapshot.metadata).takeLast(32) }
         // 行は snapshot の配信の中で Shape に入っている。最初のメインのページが届いたら、画面へ反映する。
-        if (main && !accepting.value) accepting.value = true
         if (accepting.value) acceptNow()
         return snapshot
     }
@@ -354,7 +354,7 @@ class SyncedTable(
         pages.update { it + (scope to current.copy(loading = true)) }
         val epoch = refetchEpoch
         try {
-            val snapshot = fetchSubset(scope == PageScope.Main, pageSubset(scope, current.oldest))
+            val snapshot = fetchSubset(pageSubset(scope, current.oldest))
             // 取り直しが始まった: 範囲の状態は取り直しが作り直す。この結果では進めない。
             if (epoch != refetchEpoch) return false
             val values = snapshot.data.mapNotNull { it.jsonObject["value"] as? JsonObject }
@@ -367,7 +367,11 @@ class SyncedTable(
                     oldest = oldest,
                 ))
             }
-            if (scope == PageScope.Main) saveMainCache()
+            if (scope == PageScope.Main) {
+                accepting.value = true
+                acceptNow()
+                saveMainCache()
+            }
             return true
         } catch (e: CancellationException) {
             if (epoch == refetchEpoch) pages.update { it + (scope to current) }
@@ -389,7 +393,7 @@ class SyncedTable(
                     limit = 1,
                     orderBy = "created_at DESC, id DESC",
                 )
-            Result.success(fetchSubset(false, subset).data.isNotEmpty())
+            Result.success(fetchSubset(subset).data.isNotEmpty())
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -448,7 +452,15 @@ class SyncedTable(
             val path =
                 if (direct) config.electricShapeUrl
                 else endpoint(config.apiBaseUrl, "${config.shapeProxyPath}/$name")
-            val table = if (name == "channel_users") "channel_user" else name
+            // channel_users は channel_user、channel_notification_settings は
+            // user_channel_notification_settings をそれぞれの条件で配る。設定ごとに REST を
+            // 増やさず、Shape の更新を画面へ反映する。
+            val table =
+                when (name) {
+                    "channel_users" -> "channel_user"
+                    "channel_notification_settings" -> "user_channel_notification_settings"
+                    else -> name
+                }
             val shapeParams =
                 if (!direct) params
                 else
@@ -463,7 +475,7 @@ class SyncedTable(
                             )
                             put("params[1]", channelId)
                         }
-                        if (name == "notifications") {
+                        if (name == "notifications" || name == "channel_notification_settings") {
                             put("where", "user_id = $1")
                             put("params[1]", config.userId)
                         }
@@ -486,6 +498,10 @@ class SyncedTable(
             stream = source
             val materialized = Shape(source)
             val pendingTxids = mutableSetOf<String>()
+            fun acceptTxids() {
+                seenTxids.value = (seenTxids.value.toList() + pendingTxids).takeLast(512).toSet()
+                pendingTxids.clear()
+            }
             val snapshots = Channel<CachedFeed>(Channel.CONFLATED)
             // Keep the cached rows and their verified page coverage in the same write.
             val cacheWriter = launch {
@@ -534,14 +550,14 @@ class SyncedTable(
                             batch.any { it.jsonObject["headers"]?.jsonObject?.containsKey("operation") == true }
                         if (batch.any { control(it) == "must-refetch" }) {
                             pendingTxids.clear()
+                            refetchEpoch++
+                            refetchPending = true
                             if (onDemand) {
                                 // 表示中の行は、取り直した範囲で置き換わるまで残す。
                                 accepting.value = false
-                                refetchPending = true
                                 refetching.value = true
                                 // 先に世代を進めてから、進行中の取り直しを止める。止めたジョブの結果は、範囲にも
                                 // `refetching` にも触れない。まだ取っていない範囲は、次の取り直しへ引き継ぐ。
-                                refetchEpoch++
                                 refetchJob?.cancel()
                                 refetchJob = null
                                 refetchTargets = (refetchTargets + requested.value).distinctBy { it.scope to it.aroundId }
@@ -563,49 +579,11 @@ class SyncedTable(
                             }
                         pendingTxids.addAll(txids)
                         if (onDemand) {
-                            if (upToDate && refetchPending) {
-                                refetchPending = false
-                                val targets = (refetchTargets + requested.value).distinctBy { it.scope to it.aroundId }
-                                refetchTargets = targets
-                                requested.value = emptyList()
-                                pages.value = emptyMap()
-                                val epoch = refetchEpoch
-                                refetchJob =
-                                    launch {
-                                        var attempt = 0
-                                        // 取り直しが済むまで、`loadOlder` は何もしない。失敗したら、成功するまで
-                                        // 間隔を空けて（最大 10 秒）やり直す。画面を離れる・ログアウト・次の
-                                        // must-refetch で取り消される。
-                                        suspend fun retry(block: suspend () -> Boolean) {
-                                            while (!block()) {
-                                                attempt++
-                                                delay(minOf(1_000L * attempt, 10_000L))
-                                            }
-                                        }
-                                        val scopes = (targets.mapNotNull { it.scope } + PageScope.Main).distinct()
-                                        scopes.forEach { scope -> retry { loadPage(scope) } }
-                                        // 対象行は、通信の失敗だけやり直す（行がなくなっていた場合は、そのまま終える）。
-                                        targets.mapNotNull { it.aroundId }.forEach { id ->
-                                            retry { fetchAround(id).isSuccess }
-                                        }
-                                        // 取り消しは協調的なので、世代も確かめる。次の取り直しが始まっていたら、解除しない。
-                                        if (epoch == refetchEpoch) {
-                                            refetchTargets = emptyList()
-                                            refetching.value = false
-                                        }
-                                    }
-                            }
                             if (accepting.value && (changed || upToDate)) acceptSnapshot(materialized.currentRows)
-                            if (upToDate || (accepting.value && changed)) {
-                                seenTxids.value =
-                                    (seenTxids.value.toList() + pendingTxids).takeLast(512).toSet()
-                                pendingTxids.clear()
-                            }
+                            if (upToDate || (accepting.value && changed)) acceptTxids()
                         } else if (materialized.isUpToDate) {
                             acceptSnapshot(materialized.currentRows)
-                            seenTxids.value =
-                                (seenTxids.value.toList() + pendingTxids).takeLast(512).toSet()
-                            pendingTxids.clear()
+                            acceptTxids()
                         }
                     },
                     {
@@ -622,6 +600,62 @@ class SyncedTable(
                     acceptSnapshot(change.rows)
                 }
             }
+            // Catch-up can complete with HTTP 204 or a replayed control message.
+            // Electric updates the stream status in both cases without delivering an up-to-date batch.
+            val refetchWatcher = launch {
+                source.status.collect {
+                    val status = source.status.value
+                    if (!refetchPending || !status.isUpToDate || status.paused) return@collect
+                    if (!onDemand) {
+                        val epoch = refetchEpoch
+                        val rows = try {
+                            materialized.awaitRows()
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) {
+                            return@collect // The stream and materializer subscribers report the failure.
+                        }
+                        if (epoch == refetchEpoch) {
+                            refetchPending = false
+                            if (!materialized.isUpToDate) {
+                                acceptSnapshot(rows)
+                                acceptTxids()
+                            }
+                        }
+                        return@collect
+                    }
+                    refetchPending = false
+                    val targets = (refetchTargets + requested.value).distinctBy { it.scope to it.aroundId }
+                    refetchTargets = targets
+                    requested.value = emptyList()
+                    pages.value = emptyMap()
+                    val epoch = refetchEpoch
+                    refetchJob =
+                        launch {
+                            var attempt = 0
+                            // 取り直しが済むまで、`loadOlder` は何もしない。失敗したら、成功するまで
+                            // 間隔を空けて（最大 10 秒）やり直す。画面を離れる・ログアウト・次の
+                            // must-refetch で取り消される。
+                            suspend fun retry(block: suspend () -> Boolean) {
+                                while (!block()) {
+                                    attempt++
+                                    delay(minOf(1_000L * attempt, 10_000L))
+                                }
+                            }
+                            val scopes = (targets.mapNotNull { it.scope } + PageScope.Main).distinct()
+                            scopes.forEach { scope -> retry { loadPage(scope) } }
+                            // 対象行は、通信の失敗だけやり直す（行がなくなっていた場合は、そのまま終える）。
+                            targets.mapNotNull { it.aroundId }.forEach { id ->
+                                retry { fetchAround(id).isSuccess }
+                            }
+                            // 取り消しは協調的なので、世代も確かめる。次の取り直しが始まっていたら、解除しない。
+                            if (epoch == refetchEpoch) {
+                                refetchTargets = emptyList()
+                                refetching.value = false
+                            }
+                        }
+                }
+            }
             try {
                 materialized.awaitRows()
                 if (onDemand) {
@@ -631,7 +665,8 @@ class SyncedTable(
                     launch {
                         var attempt = 0
                         while (pages.value[PageScope.Main]?.loaded != true) {
-                            if (loadOlder(PageScope.Main)) break
+                            refetching.first { !it }
+                            if (pages.value[PageScope.Main]?.loaded == true || loadPage(PageScope.Main)) break
                             attempt++
                             delay(minOf(1_000L * attempt, 10_000L))
                         }
@@ -650,6 +685,7 @@ class SyncedTable(
                 acceptNow = {}
                 saveMainCache = {}
                 cacheWriter.cancel()
+                refetchWatcher.cancel()
                 unsubscribeTx()
                 materialized.close()
                 source.close()
@@ -665,6 +701,7 @@ class SyncedTable(
         body: JsonElement? = null,
         row: Row? = null,
         key: String? = row?.let(::rowKey),
+        onAccepted: (() -> Unit)? = null,
     ): JsonElement {
         // changes_only は購読を始めた時点より前の変更を送らない。最初のページが反映されるまで待つ。
         // 待った後で、キーの保留を検査してから登録する（間に中断点を置かない）。
@@ -673,6 +710,11 @@ class SyncedTable(
         if (key != null) optimistic.update { it + (key to row) }
         try {
             val result = api.request(path, method, body)
+            // Android renders a server-acknowledged row until replicatedRows confirms its ID.
+            if (onAccepted != null) {
+                onAccepted()
+                return result
+            }
             val txid = (result as? JsonObject)?.get("txid")?.jsonPrimitive?.contentOrNull
             if (txid == null && config.txidMode != "awaitMatch") return result
             if (txid != null && config.txidMode == "awaitTxId") {
@@ -721,9 +763,11 @@ class SyncedTable(
         tableScope.cancel()
     }
 
-    fun refresh() {
-        if (refreshJob?.isActive == true) return
+    fun refresh(reconnect: Boolean = false) {
+        val previous = refreshJob
+        if (!reconnect && previous?.isActive == true) return
         refreshJob = tableScope.launch {
+            if (reconnect) previous?.cancelAndJoin()
             val source = stream
             if (synchronize && (source?.error != null || !worker.isActive)) {
                 // A terminal Electric4k runner cannot be restarted by forceDisconnectAndRefresh.
@@ -734,7 +778,9 @@ class SyncedTable(
                 worker = startSync(readCache = false)
                 return@launch
             }
-            if (source == null || source.isPaused() || loading.value) return@launch
+            // A subset read pauses live and resumes it when the read is retried.
+            if (reconnect && subsetRequests.reconnect()) return@launch
+            if (source == null || source.isPaused() || (!reconnect && loading.value)) return@launch
             try {
                 source.forceDisconnectAndRefresh()
             } catch (e: CancellationException) {
@@ -761,6 +807,7 @@ class Repository(
     val channels = SyncedTable("channels", config, platform, http, scope, synchronize = synchronize)
     val users = SyncedTable("users", config, platform, http, scope, synchronize = synchronize)
     val members = SyncedTable("channel_users", config, platform, http, scope, synchronize = synchronize)
+    val notificationSettings = SyncedTable("channel_notification_settings", config, platform, http, scope, synchronize = synchronize)
     val notifications = SyncedTable("notifications", config, platform, http, scope, synchronize = synchronize)
     private val dynamic = mutableMapOf<Pair<String, String>, SyncedTable>()
     private val recentMessages = linkedMapOf<String, CachedFeed>()
@@ -794,6 +841,7 @@ class Repository(
             "channels" -> channels
             "users" -> users
             "channel_users" -> members
+            "channel_notification_settings" -> notificationSettings
             "notifications" -> notifications
             "messages" ->
                 dynamic.getOrPut(name to channelId) {
@@ -834,13 +882,14 @@ class Repository(
 
     fun messages(channelId: String) = table("messages", channelId)
 
-    fun refresh() {
-        (listOf(channels, users, members, notifications) + dynamic.values).forEach { it.refresh() }
+    fun refresh(reconnect: Boolean = false) {
+        (listOf(channels, users, members, notificationSettings, notifications) + dynamic.values).forEach { it.refresh(reconnect) }
+        if (reconnect && linked.isInitialized()) linked.value.refresh()
     }
 
     fun close() {
         if (linked.isInitialized()) linked.value.close()
-        (listOf(channels, users, members, notifications) + dynamic.values).forEach { it.close() }
+        (listOf(channels, users, members, notificationSettings, notifications) + dynamic.values).forEach { it.close() }
         dynamic.clear()
         recentMessages.clear()
         http.close()

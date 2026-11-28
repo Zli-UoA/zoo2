@@ -68,7 +68,7 @@ internal fun PostHeader(author: String, data: PostHeaderData, colors: AndroidCol
                         fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
-            Text(data.dateTime, color = colors.secondary, fontSize = 11.sp, maxLines = 1)
+            Text(data.dateTime, color = colors.secondary, fontSize = metadataTextSize, maxLines = 1)
             data.audience?.let { audience ->
                 val label = if (audience == PostAudience.Followers)
                     androidLabel("home.visibility.followers", "フォロワー限定") else audience.localizedLabel()

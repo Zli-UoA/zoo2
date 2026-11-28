@@ -40,9 +40,13 @@ internal data class ImageRequest(val url: String, val proxied: Boolean = false)
 internal fun sameImageOrigin(left: Url, right: Url) =
     left.protocol == right.protocol && left.host == right.host && left.port == right.port
 
-internal fun imageRequest(base: String, source: String, proxy: String): ImageRequest? {
+internal fun normalizedImageSource(base: String, source: String): Url? {
     if (source.startsWith("//")) return null
-    val url = publicUrl(if (source.startsWith('/')) endpoint(base, source) else source) ?: return null
+    return publicUrl(if (source.startsWith('/')) endpoint(base, source) else source)
+}
+
+internal fun imageRequest(base: String, source: String, proxy: String): ImageRequest? {
+    val url = normalizedImageSource(base, source) ?: return null
     if (url.protocol.name == "https" && publicUrl(base)?.let { sameImageOrigin(it, url) } == true) return ImageRequest(url.toString())
     val proxyEndpoint = if (proxy.startsWith('/') && !proxy.startsWith("//")) endpoint(base, proxy) else proxy
     return proxyImageUrl(proxyEndpoint, url.toString())
@@ -60,15 +64,15 @@ internal class AndroidMediaProxy(context: Context, private val base: String, pri
         source: String, http: HttpClient, cache: AndroidImageCache,
         online: Boolean = true, limit: Int = 20 * 1024 * 1024, push: Boolean = false, bypassCache: Boolean = false,
     ): ByteArray {
+        val cacheSource = normalizedImageSource(base, source)?.toString() ?: error("Invalid image URL")
+        if (!bypassCache) cache.cachedPublicImage(cacheSource, limit)?.let { return it }
         val cachedRoute = imageRequest(base, source, prefs.getString(base, "").orEmpty())
-        if (!bypassCache && cachedRoute != null) cache.imageIfCached(cachedRoute, limit)?.let { return it }
         val route = if (push) {
             withTimeoutOrNull(750) { request(source, http, online, timeoutMillis = 700) }
                 ?: requireNotNull(cachedRoute) { "Image proxy lookup timed out" }
         } else request(source, http, online)
-        if (!bypassCache && route != cachedRoute) cache.imageIfCached(route, limit)?.let { return it }
-        if (!route.proxied) return cache.download(route, limit, bypassCache)
-        return downloadProxyImage(push) { cache.download(route, limit, bypassCache) }
+        if (!route.proxied) return cache.download(route, limit, bypassCache, cacheSource)
+        return downloadProxyImage(push) { cache.download(route, limit, bypassCache, cacheSource) }
     }
 
     internal suspend fun request(source: String, http: HttpClient, online: Boolean, timeoutMillis: Long = 5_000): ImageRequest {

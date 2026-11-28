@@ -15,6 +15,7 @@ export function MediaPreview({
   src,
   thumbnailSrc,
   name,
+  alt,
   contentType,
   loading,
   failed,
@@ -31,6 +32,7 @@ export function MediaPreview({
   src?: string | null;
   thumbnailSrc?: string;
   name: string;
+  alt?: string;
   contentType: string;
   loading?: boolean;
   failed?: boolean;
@@ -91,7 +93,7 @@ export function MediaPreview({
         <div role="status" aria-label={t("attachments.loading")} aria-busy="true">
           <ImagePreview
             {...metadata}
-            alt={name}
+            alt={alt || name}
             className="w-full max-h-96"
             style={{ aspectRatio: imageAspectRatio(metadata) }}
           />
@@ -106,7 +108,7 @@ export function MediaPreview({
         <ImagePreview
           {...metadata}
           src={thumbnail ?? src}
-          alt={name}
+          alt={alt || name}
           className={
             expanded ? (embedded ? "h-full w-full" : "h-[75dvh] w-full") : "w-full max-h-96"
           }

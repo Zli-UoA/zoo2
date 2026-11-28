@@ -28,11 +28,7 @@ fun isMessageId(value: String): Boolean = messageIdPattern.matches(value)
  * 別の origin、別のパス、ユーザー情報の付いた URL は `null`（外部のリンクとして扱う）。
  */
 fun parseChannelLink(url: String, appBaseUrl: String): ChannelLinkTarget? {
-    val link = publicUrl(url) ?: return null
-    val app = publicUrl(appBaseUrl) ?: return null
-    if (link.protocol.name != app.protocol.name || !link.host.equals(app.host, ignoreCase = true) ||
-        link.port != app.port
-    ) return null
+    val link = sameOriginLink(url, appBaseUrl) ?: return null
     val match = channelLinkPath.find(link.encodedPath) ?: return null
     return try {
         ChannelLinkTarget(
@@ -43,6 +39,25 @@ fun parseChannelLink(url: String, appBaseUrl: String): ChannelLinkTarget? {
     } catch (_: Exception) {
         null
     }
+}
+
+private fun sameOriginLink(url: String, appBaseUrl: String): Url? {
+    val link = publicUrl(url) ?: return null
+    val app = publicUrl(appBaseUrl) ?: return null
+    if (link.protocol.name != app.protocol.name || !link.host.equals(app.host, ignoreCase = true) ||
+        link.port != app.port
+    ) return null
+    return link
+}
+
+private val postLinkPath = Regex("^/(?:home/posts|api/activitypub/notes)/([^/]+)/?$")
+
+fun localPostLink(url: String, appBaseUrl: String): String? {
+    val path = sameOriginLink(url, appBaseUrl)?.encodedPath ?: return null
+    val segment = postLinkPath.matchEntire(path)?.groupValues?.get(1) ?: return null
+    val id = runCatching { segment.decodeURLPart() }.getOrNull() ?: return null
+    if (id.isBlank() || id == "." || id == ".." || id.any { it.isISOControl() }) return null
+    return id.takeIf { '/' !in it || path.startsWith("/home/posts/") && publicUrl(it) != null }
 }
 
 /**
@@ -80,7 +95,7 @@ fun fetchedLinks(embedded: List<ChannelLinkTarget>, bare: List<ChannelLinkTarget
         .toSet()
 
 /** 投稿の下に出すリンク。`channels` はこのアプリのリンク、`external` はそれ以外の最初の URL。 */
-data class MessageLinks(val channels: List<Pair<String, ChannelLinkTarget>>, val external: String?)
+data class MessageLinks(val channels: List<Pair<String, ChannelLinkTarget>>, val external: String?, val posts: List<Pair<String, String>> = emptyList())
 
 /**
  * 投稿の下に出すリンクを、このアプリのリンク（埋め込み。Summaly に送らない）と外部の URL に分ける。
@@ -90,13 +105,18 @@ fun messageLinks(
     body: String, appBaseUrl: String, excludeUrl: String? = null, attached: Set<String> = emptySet(),
 ): MessageLinks {
     val channels = mutableListOf<Pair<String, ChannelLinkTarget>>()
+    val posts = mutableListOf<Pair<String, String>>()
     var external: String? = null
     for (url in previewUrls(body, excludeUrl)) {
         val target = parseChannelLink(url, appBaseUrl)
-        if (target != null) channels += url to target
-        else if (external == null && url !in attached) external = url
+        val post = localPostLink(url, appBaseUrl)
+        when {
+            target != null -> channels += url to target
+            post != null -> posts += url to post
+            external == null && url !in attached -> external = url
+        }
     }
-    return MessageLinks(channels, external)
+    return MessageLinks(channels, external, posts.distinctBy { it.second })
 }
 
 /** 埋め込みカードと短いリンクに使う、リンク先のチャンネル。 */

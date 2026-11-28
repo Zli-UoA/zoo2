@@ -1,6 +1,9 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { pathMatcher, pullRequestPaths } from './merge-queue-changes.mjs';
+import { englishCopyKeys, translationVariables } from "../../frontend/src/lib/i18n/translation-policy.ts";
+import { isAndroidFrontendOnly, isDedicatedPlaywrightTypecheckInput } from './frontend-test-selection-paths.mjs';
+import { pathMatcher, testWorkflowPaths } from './merge-queue-changes.mjs';
 import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const shaPattern = /^[a-f0-9]{40}$/;
@@ -18,11 +21,23 @@ export function testBaseSha(eventName, event) {
   return typeof sha === 'string' && shaPattern.test(sha) ? sha : undefined;
 }
 
-export function workflowChanges(workflow, changes) {
+export function workflowChanges(workflow, changes, eventName) {
   if (!changes || !/^[\w-]+$/.test(workflow ?? '')) return changes;
   const source = readFileSync(new URL(`../workflows/${workflow}.yaml`, import.meta.url), 'utf8');
-  const matches = pathMatcher(pullRequestPaths(source));
-  return changes.filter(change => matches(change.path));
+  const matches = pathMatcher(testWorkflowPaths(workflow, source, eventName));
+  return changes.filter(({ path }) => matches(path) ||
+    (eventName === 'pull_request' && workflow === 'ci-frontend' && isDedicatedPlaywrightTypecheckInput(path)));
+}
+
+export const isFrontendLocale = path => /^frontend\/src\/lib\/i18n\/locales\/[^/]+\.json$/.test(path);
+
+export function isLightweightChange({ path, status, translationText }) {
+  return path === 'frontend/README.md' || (status === 'M' && isFrontendLocale(path) && !translationText);
+}
+
+export function isFrontendTestInput(path) {
+  return !isAndroidFrontendOnly(path) &&
+    !/^(frontend-compose\/|docs\/images\/|docs\/.+\.md$|\.agents\/|\.github\/workflows\/ci-android\.yaml$)/.test(path);
 }
 
 export function readChanges(base, git = execFileSync) {
@@ -39,4 +54,72 @@ export function readChanges(base, git = execFileSync) {
   const changes = [];
   for (let i = 0; i < fields.length; i += 2) changes.push({ status: fields[i], path: fields[i + 1] });
   return changes;
+}
+
+function translationEntries(value, file, key = '', entries = new Map()) {
+  if (typeof value === 'string' && key) {
+    if (!value.trim()) throw new Error(`${file}: empty translation for ${key}`);
+    const variables = translationVariables(value);
+    if (!variables) throw new Error(`${file}: invalid interpolation in ${key}`);
+    entries.set(key, { value, variables: variables.join(',') });
+    return entries;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${file}: expected translation strings or nested objects at ${key || 'root'}`);
+  }
+  for (const [name, child] of Object.entries(value)) {
+    translationEntries(child, file, key ? `${key}.${name}` : name, entries);
+  }
+  return entries;
+}
+
+// Removing a key or changing its interpolation contract can affect callers.
+export function translationOnlyChange(before, after, file) {
+  const oldEntries = translationEntries(JSON.parse(before), file);
+  const newEntries = translationEntries(JSON.parse(after), file);
+  return [...oldEntries].every(([key, { variables }]) => newEntries.get(key)?.variables === variables);
+}
+
+export function validateTranslationDictionaries(dictionaries) {
+  const parsed = Object.fromEntries(Object.entries(dictionaries).map(([file, source]) =>
+    [file, translationEntries(JSON.parse(source), file)]));
+  const reference = parsed['ja.json'];
+  const english = parsed['en.json'];
+  if (!reference || !english) throw new Error('Missing Japanese or English translation dictionary');
+  const text = entries => Object.fromEntries([...entries].map(([key, { value }]) => [key, value]));
+  const englishText = text(english);
+  for (const [file, entries] of Object.entries(parsed)) {
+    for (const key of entries.keys()) {
+      if (!reference.has(key)) throw new Error(`${file}: unexpected translation key ${key}`);
+    }
+    for (const [key, { variables }] of reference) {
+      if (entries.get(key)?.variables !== variables) throw new Error(`${file}: missing key or mismatched interpolation for ${key}`);
+    }
+    const copied = file === 'en.json' ? [] : englishCopyKeys(englishText, text(entries));
+    if (copied.length) throw new Error(`${file}: untranslated English copy at ${copied.join(', ')}`);
+  }
+}
+
+export function validateChangedTranslations(changes) {
+  if (!changes.some(({ path }) => isFrontendLocale(path))) return;
+  const directory = resolve(root, 'frontend/src/lib/i18n/locales');
+  const files = readdirSync(directory).filter(name => name.endsWith('.json'));
+  validateTranslationDictionaries(Object.fromEntries(files.map(file => [file, readFileSync(resolve(directory, file), 'utf8')])));
+}
+
+export function classifyTranslationChanges(base, changes, { git = execFileSync, read = readFileSync } = {}) {
+  return changes.map(change => {
+    if (!isFrontendLocale(change.path) || !['A', 'M'].includes(change.status)) return change;
+    const before = change.status === 'A' ? '{}' : git('git', ['show', `${base}:${change.path}`], { cwd: root, encoding: 'utf8' });
+    const after = read(resolve(root, change.path), 'utf8');
+    if (!translationOnlyChange(before, after, change.path)) return { ...change, status: 'T' };
+    const oldEntries = translationEntries(JSON.parse(before), change.path);
+    const newEntries = translationEntries(JSON.parse(after), change.path);
+    const variants = /_(?:zero|one|two|few|many|other)$/;
+    const existingMessages = new Set([...oldEntries.keys()].map(key => key.replace(variants, '')));
+    const translationText = [...oldEntries].some(([key, { value }]) => value !== newEntries.get(key).value) ||
+      [...newEntries.keys()].some(key => !oldEntries.has(key) && variants.test(key) &&
+        existingMessages.has(key.replace(variants, '')));
+    return { ...change, translationText };
+  });
 }

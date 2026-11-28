@@ -33,6 +33,7 @@ const fixture = vi.hoisted(() => ({
     updated_at: string;
   }>,
   pinError: null as string | null,
+  pinsLoading: false,
   activeCalls: new Map<string, number>(),
   pinChannel: vi.fn(),
   unpinChannel: vi.fn(),
@@ -143,7 +144,7 @@ function mockedPinnedChannels() {
     available: true,
     pins: fixture.pins,
     version: 0,
-    loading: false,
+    loading: fixture.pinsLoading,
     pending: new Set<string>(),
     error: fixture.pinError,
     announcement: "",
@@ -165,6 +166,7 @@ beforeEach(() => {
   fixture.users = [];
   fixture.pins = [];
   fixture.pinError = null;
+  fixture.pinsLoading = false;
   fixture.activeCalls = new Map();
   fixture.pinChannel.mockReset().mockResolvedValue(undefined);
   fixture.unpinChannel.mockReset().mockResolvedValue(undefined);
@@ -181,6 +183,43 @@ beforeEach(() => {
   }));
   vi.mocked(usePinnedChannels).mockReset();
   vi.mocked(usePinnedChannels).mockImplementation(mockedPinnedChannels);
+});
+
+it.each([true, false])("ピン留めと通常の一覧を同時に表示する（ピンあり: %s）", (hasPins) => {
+  fixture.memberships = [{ user_id: "me", channel_id: "general" }];
+  fixture.pinsLoading = true;
+  const view = () => (
+    <LocaleProvider>
+      <ChannelSidebar channels={[generalChannel]} loading={false} error={false} />
+    </LocaleProvider>
+  );
+  const { container, rerender } = render(view());
+  expect(container.querySelector('[data-slot="skeleton"]')).not.toBeNull();
+  expect(screen.queryByRole("link", { name: /general/ })).toBeNull();
+  expect(screen.getByRole("button", { name: "チャンネルを探す" }).hasAttribute("disabled")).toBe(
+    false,
+  );
+
+  fixture.pins = hasPins ? [pinRow("general", 0)] : [];
+  fixture.pinsLoading = false;
+  rerender(view());
+  expect(container.querySelector('[data-slot="skeleton"]')).toBeNull();
+  expect(screen.getAllByRole("link", { name: /general/ })).toHaveLength(hasPins ? 2 : 1);
+  expect(screen.queryByRole("button", { name: /ピン留め/ }) !== null).toBe(hasPins);
+});
+
+it("通常の一覧が読み込み中なら保存済みのピンも先に表示しない", () => {
+  fixture.memberships = [{ user_id: "me", channel_id: "general" }];
+  fixture.pins = [pinRow("general", 0)];
+  const view = (loading: boolean) => (
+    <LocaleProvider>
+      <ChannelSidebar channels={[generalChannel]} loading={loading} error={false} />
+    </LocaleProvider>
+  );
+  const { rerender } = render(view(true));
+  expect(screen.queryByRole("link", { name: /general/ })).toBeNull();
+  rerender(view(false));
+  expect(screen.getAllByRole("link", { name: /general/ })).toHaveLength(2);
 });
 
 it("waits for the current user's membership even when other users are cached", () => {

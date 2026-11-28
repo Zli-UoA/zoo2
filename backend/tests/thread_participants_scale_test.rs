@@ -303,9 +303,13 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
         .batch_execute("ANALYZE users; ANALYZE thread_participants; ANALYZE messages")
         .await?;
     // The membership probe is an index-only scan; a vacuumed table (as in production) has no heap
-    // fetches. VACUUM cannot run inside a multi-statement batch.
+    // fetches. VACUUM cannot run inside a multi-statement batch (PostgreSQL wraps several
+    // statements in one implicit transaction), so run each one on its own.
     client
         .batch_execute("VACUUM (ANALYZE) channel_user")
+        .await?;
+    client
+        .batch_execute("VACUUM (ANALYZE) user_channel_notification_settings")
         .await?;
 
     let output = std::env::var_os("SCALE_PLAN_DIR").map(std::path::PathBuf::from);
@@ -509,6 +513,317 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
     );
     if let Some(dir) = &output {
         std::fs::write(dir.join("work.json"), serde_json::to_vec_pretty(&metrics)?)?;
+    }
+    Ok(())
+}
+
+/// #620 のスレッド返信通知の参加者SQL。P = そのスレッドの参加行（退出済みを含む）、
+/// L = 未退出の参加行。SQL は退出済みも `left_at` と一緒に返し、Rust 側で除外する。
+/// 探索上限: `thread_participants` 走査 <= P、`channel_user` 主キー参照 <= P、
+/// `users` 走査 0、マージ結合のソート入力 <= P（ディスク退避なし）、
+/// 論理ブロック <= 2P + BLOCKS_PER_KEY*P + 1024（索引の段数と計画の差の余裕）。
+/// 無関係な参加行 H を10倍にしても探索量が増えないことを、30万/100万件で比較する。
+#[tokio::test]
+#[ignore = "inserts 300k/1m users"]
+async fn notification_participants_sql_does_not_scan_users() -> anyhow::Result<()> {
+    use backend::notifications::notification_participants_sql;
+
+    let users: i32 = std::env::var("SCALE_USERS")
+        .unwrap_or_else(|_| "300000".into())
+        .parse()?;
+    assert!(users >= 300000);
+    let history: i32 = std::env::var("SCALE_HISTORY")
+        .map(|v| v.parse())
+        .unwrap_or(Ok(users))?;
+    assert!(history >= 300000);
+    let url = Config::from_env().database_url;
+    let (mut client, connection) = tokio_postgres::connect(&url, NoTls).await?;
+    tokio::spawn(connection);
+    client
+        .batch_execute("SET jit=off; SET statement_timeout='300s'")
+        .await?;
+    let tag = uuid::Uuid::new_v4().to_string();
+    let channel = format!("{tag}-channel");
+    let noise_channel = format!("{tag}-noise-channel");
+    let owner = format!("{tag}-owner");
+    let thread = format!("{tag}-thread");
+    let (p, left) = (10_000_i32, 500_i32);
+    let live = p - left;
+    let tx = client.transaction().await?;
+    tx.execute(
+        "INSERT INTO users(id,user_name,display_name) VALUES($1::text,$1::text,$1::text)",
+        &[&owner],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1::text,$1::text,$2,false)",
+        &[&channel, &owner],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO messages(id,user_id,channel_id,content,created_at) VALUES($1,$2,$3,'root','2025-01-01')",
+        &[&thread, &owner, &channel],
+    )
+    .await?;
+    tx.batch_execute("SET LOCAL session_replication_role=replica")
+        .await?;
+    tx.execute(
+        "INSERT INTO users(id,user_name,display_name) SELECT $1||'-u-'||lpad(n::text,9,'0'),$1||'-u-'||lpad(n::text,9,'0'),'U' FROM generate_series(1,$2::integer)n",
+        &[&tag, &users],
+    )
+    .await?;
+    let stride = spread::stride(users);
+    tx.execute(
+        "INSERT INTO thread_participants(thread_id,user_id,joined_at,left_at) \
+         SELECT $1,$2||'-u-'||lpad((1+(n::bigint*$5::bigint)%($3::integer)::bigint)::text,9,'0'), \
+                timestamp '2025-01-01'+n*interval '1 second', \
+                CASE WHEN n<=$4::integer THEN timestamp '2025-02-01' END \
+         FROM generate_series(1,$6::integer)n",
+        &[&thread, &tag, &users, &left, &stride, &p],
+    )
+    .await?;
+    // 半分は all、半分は mute。mute でも参加行の走査は同じで、レベルだけが返る。
+    // レベルは channel_user ではなく設定テーブルに入れる (session_replication_role=replica 中なので
+    // 参加トリガーは発火しない)。
+    tx.execute(
+        "INSERT INTO channel_user(user_id,channel_id,joined_at) \
+         SELECT user_id,$2,now() \
+         FROM thread_participants WHERE thread_id=$1 AND left_at IS NULL",
+        &[&thread, &channel],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO user_channel_notification_settings(user_id,channel_id,notification_level) \
+         SELECT user_id,$2,CASE WHEN row_number() OVER (ORDER BY user_id)%2=0 \
+                THEN 'mute' ELSE 'all' END \
+         FROM thread_participants WHERE thread_id=$1 AND left_at IS NULL",
+        &[&thread, &channel],
+    )
+    .await?;
+    let threads = history / 30;
+    let history_rows = threads * 30;
+    tx.execute(
+        "INSERT INTO thread_participants(thread_id,user_id) \
+         SELECT $1||'-noise-'||(n%($2::integer/30)), \
+                $1||'-u-'||lpad((1+((n%($2::integer/30))*37+(n/($2::integer/30))*1013)%$3::integer)::text,9,'0') \
+         FROM generate_series(1,$4::integer)n",
+        &[&tag, &history, &users, &history_rows],
+    )
+    .await?;
+    // 実際の channel_user は全ユーザー分ある。小さなdummy表だとプランナが Seq Scan を選ぶため、
+    // 無関係なメンバーシップも置いて主キー参照を使う計画を検証する。
+    tx.execute(
+        "INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1::text,$1::text,$2,false)",
+        &[&noise_channel, &owner],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO channel_user(user_id,channel_id,joined_at) \
+         SELECT $1||'-u-'||lpad(n::text,9,'0'),$2::text,now() FROM generate_series(1,$3::integer)n \
+         ON CONFLICT DO NOTHING",
+        &[&tag, &noise_channel, &users],
+    )
+    .await?;
+    // 無関係な設定行も同じだけ置く。無関係な channel_user を投入している間は
+    // session_replication_role=replica でトリガーが無効なので、設定行は自動で作られない。
+    // 30万/100万で設定テーブルの走査量を比較できるように、対象外チャンネルの設定行を
+    // SCALE_USERS 件追加する。クエリは (channel_id,user_id) の索引で P 行だけを参照し、
+    // これら無関係行は読まない (probed_settings <= P の検証が規模に効くようにする)。
+    tx.execute(
+        "INSERT INTO user_channel_notification_settings(user_id,channel_id,notification_level) \
+         SELECT $1||'-u-'||lpad(n::text,9,'0'),$2::text,'mentions' \
+         FROM generate_series(1,$3::integer)n \
+         ON CONFLICT DO NOTHING",
+        &[&tag, &noise_channel, &users],
+    )
+    .await?;
+    tx.batch_execute("SET LOCAL session_replication_role=origin")
+        .await?;
+    tx.commit().await?;
+    client
+        .batch_execute("ANALYZE users; ANALYZE thread_participants")
+        .await?;
+    // VACUUM cannot run inside a multi-statement batch (PostgreSQL wraps several statements in one
+    // implicit transaction), so run each one on its own.
+    client
+        .batch_execute("VACUUM (ANALYZE) channel_user")
+        .await?;
+    client
+        .batch_execute("VACUUM (ANALYZE) user_channel_notification_settings")
+        .await?;
+
+    let output = std::env::var_os("SCALE_PLAN_DIR").map(std::path::PathBuf::from);
+    if let Some(dir) = &output {
+        std::fs::create_dir_all(dir)?;
+    }
+    let sql = notification_participants_sql();
+    let literal = sql
+        .replace("$1", &quoted(&thread))
+        .replace("$2", &quoted(&channel));
+    // 結果の確認: 退出済みを含む P 行が返り、そのうち L 行だけ left_at が NULL。
+    let result = client.simple_query(&literal).await?;
+    let values: Vec<Value> = rows(&result)
+        .into_iter()
+        .map(|row| serde_json::from_str(row))
+        .collect::<Result<_, _>>()?;
+    assert_eq!(values.len() as i32, p);
+    assert_eq!(
+        values.iter().filter(|v| !v["left_at"].is_null()).count() as i32,
+        left
+    );
+    assert_eq!(
+        values.iter().filter(|v| v["left_at"].is_null()).count() as i32,
+        live
+    );
+    // 退出済みは対象チャンネルの channel_user を持たないので 'mentions' になる。
+    assert!(
+        values
+            .iter()
+            .filter(|v| v["left_at"].is_null())
+            .all(|v| v["level"] == "all" || v["level"] == "mute")
+    );
+
+    for (mode, statement) in [
+        ("custom", literal.clone()),
+        (
+            "generic",
+            format!(
+                "EXECUTE notification_participants({},{})",
+                quoted(&thread),
+                quoted(&channel)
+            ),
+        ),
+    ] {
+        if mode == "generic" {
+            client
+                .batch_execute(&format!("PREPARE notification_participants(text,text) AS {sql}; SET plan_cache_mode=force_generic_plan"))
+                .await?;
+        }
+        for run in ["first", "rerun"] {
+            let raw = client
+                .simple_query(&format!(
+                    "EXPLAIN(ANALYZE,BUFFERS,TIMING OFF,FORMAT JSON) {statement}"
+                ))
+                .await?;
+            let plan: Value = serde_json::from_str(rows(&raw)[0])?;
+            save_plan(&output, &format!("notification-{mode}-{run}.json"), &plan)?;
+            let mut relations = std::collections::BTreeMap::<String, f64>::new();
+            let mut max_loops = 0_f64;
+            let mut sort_input = 0_f64;
+            let mut external_sort = false;
+            walk(&plan[0]["Plan"], &mut |node| {
+                let loops = node["Actual Loops"].as_f64().unwrap_or(0.);
+                max_loops = max_loops.max(loops);
+                let n = (node["Actual Rows"].as_f64().unwrap_or(0.)
+                    + node["Rows Removed by Filter"].as_f64().unwrap_or(0.))
+                    * loops;
+                if let Some(table) = node["Relation Name"].as_str() {
+                    *relations.entry(table.into()).or_default() += n;
+                    assert!(
+                        !(node["Node Type"] == "Seq Scan"
+                            && (table == "users"
+                                || table == "thread_participants"
+                                || table == "channel_user"
+                                || table == "user_channel_notification_settings")),
+                        "notification {mode}/{run}: Seq Scan on {table}"
+                    );
+                }
+                if node["Node Type"] == "Sort" {
+                    sort_input += node["Actual Rows"].as_f64().unwrap_or(0.) * loops;
+                    external_sort |= node["Sort Method"] == "external merge";
+                }
+            });
+            // PostgreSQL 16 では上位ノードのブロック数に子ノードの使用量が含まれるため、
+            // 根节点の値だけを数える（子ノードで足すと同じブロックを二重に数える）。
+            let blocks = plan[0]["Plan"]["Shared Hit Blocks"].as_f64().unwrap_or(0.)
+                + plan[0]["Plan"]["Shared Read Blocks"].as_f64().unwrap_or(0.);
+            let scanned_participants = relations.get("thread_participants").copied().unwrap_or(0.);
+            let probed_members = relations.get("channel_user").copied().unwrap_or(0.);
+            let probed_settings = relations
+                .get("user_channel_notification_settings")
+                .copied()
+                .unwrap_or(0.);
+            let read_users = relations.get("users").copied().unwrap_or(0.);
+            // 並列走査では worker ごとの端数が出るため 64 行の余裕を置く。
+            assert!(
+                scanned_participants <= f64::from(p) + 64.,
+                "{mode}/{run}: {scanned_participants}"
+            );
+            assert!(
+                probed_members <= f64::from(p) + 1.,
+                "{mode}/{run}: {probed_members}"
+            );
+            assert!(
+                probed_settings <= f64::from(p) + 1.,
+                "{mode}/{run}: settings {probed_settings}"
+            );
+            assert_eq!(read_users, 0., "{mode}/{run}: users must not be read");
+            assert!(
+                sort_input <= f64::from(p),
+                "{mode}/{run}: sort input {sort_input}"
+            );
+            assert!(!external_sort, "{mode}/{run}: external sort");
+            assert!(
+                max_loops <= f64::from(p) + 1.,
+                "{mode}/{run}: loops={max_loops}"
+            );
+            assert!(
+                blocks <= 2. * f64::from(p) + BLOCKS_PER_KEY * f64::from(p) + 1024.,
+                "{mode}/{run}: blocks={blocks}"
+            );
+            eprintln!(
+                "U={users} H={history} notification/{mode}/{run} participants={scanned_participants} channel_user={probed_members} settings={probed_settings} users={read_users} blocks={blocks} loops={max_loops} execution={}ms",
+                plan[0]["Execution Time"]
+            );
+        }
+    }
+    client
+        .batch_execute("DEALLOCATE ALL; RESET plan_cache_mode")
+        .await?;
+
+    // 単独30回と8同時30回（初回を捨てず、SQL往復と接続待ちを含む）。
+    let timings = |mut samples: Vec<f64>| {
+        samples.sort_by(|a, b| a.total_cmp(b));
+        json!({"p50":samples[samples.len()/2],"p95":samples[samples.len()*95/100],"max":samples[samples.len()-1]})
+    };
+    let mut single = Vec::new();
+    for _ in 0..30 {
+        let started = std::time::Instant::now();
+        client.simple_query(&literal).await?;
+        single.push(started.elapsed().as_secs_f64() * 1000.);
+    }
+    let mut tasks = Vec::new();
+    for _ in 0..8 {
+        let url = url.clone();
+        let statement = literal.clone();
+        tasks.push(tokio::spawn(async move {
+            let (client, connection) = tokio_postgres::connect(&url, NoTls).await?;
+            tokio::spawn(connection);
+            let mut samples = Vec::new();
+            for _ in 0..30 {
+                let started = std::time::Instant::now();
+                client.simple_query(&statement).await?;
+                samples.push(started.elapsed().as_secs_f64() * 1000.);
+            }
+            anyhow::Ok(samples)
+        }));
+    }
+    let mut concurrent = Vec::new();
+    for task in tasks {
+        concurrent.extend(task.await??);
+    }
+    eprintln!(
+        "U={users} H={history} notification single_ms={} concurrent8_ms={}",
+        timings(single.clone()),
+        timings(concurrent.clone())
+    );
+    if let Some(dir) = &output {
+        std::fs::write(
+            dir.join("notification-work.json"),
+            serde_json::to_vec_pretty(&json!({
+                "single": timings(single), "concurrent8": timings(concurrent)
+            }))?,
+        )?;
     }
     Ok(())
 }

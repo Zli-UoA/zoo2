@@ -47,6 +47,14 @@ describe("localizeApiError", () => {
     ).toBe("操作が競合しました。最新の状態を確認してもう一度お試しください。");
   });
 
+  it("explains a busy thread instead of showing the generic server error", () => {
+    const busy = new ApiError(503, "Request failed", { code: "THREAD_BUSY" });
+    expect(localizeApiError(busy, ja)).toBe(
+      "スレッドが混み合っています。しばらく待ってからもう一度お試しください。",
+    );
+    expect(localizeApiError(busy, en)).toBe("This thread is busy. Wait a moment and try again.");
+  });
+
   it.each([
     [400, "入力内容を確認してください。"],
     [401, "ログインの有効期限が切れました。もう一度ログインしてください。"],

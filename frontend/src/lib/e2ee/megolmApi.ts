@@ -67,7 +67,10 @@ export async function fetchRecipients(
         const pageEpoch = page.membership_epoch;
         epoch ??=
           typeof pageEpoch === "number" || typeof pageEpoch === "string" ? String(pageEpoch) : "0";
-        after = typeof page.next_after === "string" ? page.next_after : null;
+        if (page.next_after != null && typeof page.next_after !== "string") {
+          throw new Error("配布先の次ページの位置が不正です");
+        }
+        after = page.next_after ?? null;
       } while (after !== null);
     } catch (error) {
       if (staleEpoch(error) !== null) continue;

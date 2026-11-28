@@ -647,19 +647,38 @@ impl SetupSession {
     /// 初回設定の `POST /api/e2ee/secret_storage/keys` の本文（`expected_default_key_id: null`）。
     /// 解錠で取り出した鍵では作らない（[`CryptoError::InvalidSecretStorage`]）。
     pub fn secret_storage_request(&self) -> Result<Value, CryptoError> {
+        self.reset_secret_storage_request(None, None)
+    }
+
+    /// E2EE のリセットの `POST /api/e2ee/secret_storage/keys` の本文。前提の値は、`GET /api/e2ee/secret_storage` で
+    /// 読んだ既定の鍵の ID と `secrets_revision`（初回設定は両方 `None`）。
+    pub fn reset_secret_storage_request(
+        &self,
+        expected_default_key_id: Option<&str>,
+        expected_secrets_revision: Option<u64>,
+    ) -> Result<Value, CryptoError> {
         if !self.created {
             return Err(CryptoError::InvalidSecretStorage(
                 "初回設定を始めていません".into(),
             ));
         }
         self.ssss.keys_request(&SecretStorageKeysRequest {
-            expected_default_key_id: None,
-            expected_secrets_revision: None,
+            expected_default_key_id,
+            expected_secrets_revision,
             cross_signing: &self.secrets.cross_signing,
             backup_key: &self.secrets.backup_key,
             previous_backup_keys: &[],
             slots: &self.slots,
         })
+    }
+
+    /// E2EE のリセットで、サーバーの今の鍵と版を新しく作った鍵に差し替える要求を作る（[`plan_reset`]）。
+    pub fn plan_reset(
+        &self,
+        server: &ServerKeyState,
+        device_keys: &Value,
+    ) -> Result<ResumePlan, CryptoError> {
+        plan_reset(&self.secrets, server, device_keys)
     }
 
     /// サーバーの状態と比べ、続きに送る要求を決める（[`plan_resume`]）。

@@ -9,9 +9,12 @@ import androidx.core.content.ContextCompat
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
@@ -50,10 +53,25 @@ internal fun ConnectedScreens(
     phone: PhoneController,
     enableNotifications: () -> Unit,
     background: () -> Unit,
+    settingsVersion: Int = 0,
+    incoming: IncomingShare? = null,
+    finishShare: () -> Unit = {},
     callPresentation: Int = 0,
     openIncomingSettings: (() -> Unit)? = null,
     openPictureInPicture: ((String) -> Unit)? = null,
 ) {
+    val activityContext = androidx.compose.ui.platform.LocalContext.current
+    val manager = remember(activityContext) { activityContext.getSystemService(android.app.NotificationManager::class.java) }
+    val notificationOptions = remember(settingsVersion, manager) {
+        listOf(SettingsEntry.Destination("os-notifications", "アプリの通知", if (manager.areNotificationsEnabled()) "許可" else "停止中")) +
+            manager.notificationChannels.filterNot { it.id == "sample" }.map { channel ->
+                SettingsEntry.Destination("os-channel/" + channel.id, channel.name.toString(),
+                    if (channel.importance == android.app.NotificationManager.IMPORTANCE_NONE) "停止中" else "有効")
+            }
+    }
+    val fullScreenAllowed = remember(settingsVersion, manager) {
+        if (android.os.Build.VERSION.SDK_INT >= 34) manager.canUseFullScreenIntent() else null
+    }
     val state = remember(session) { ConnectedScreenState(session, platform, phone) }
     val pageState = key(session.config.apiBaseUrl, session.config.userId) { rememberSaveableStateHolder() }
     DisposableEffect(state) { onDispose { state.close() } }
@@ -63,6 +81,7 @@ internal fun ConnectedScreens(
     val channels by session.repo.channels.rows.collectAsState()
     val users by session.repo.users.rows.collectAsState()
     val memberships by session.repo.members.rows.collectAsState()
+    val notificationSettings by session.repo.notificationSettings.rows.collectAsState()
     val membershipsLoading by session.repo.members.loading.collectAsState()
     val channelId = session.channelId
     val channelsLoading by session.repo.channels.loading.collectAsState()
@@ -85,6 +104,9 @@ internal fun ConnectedScreens(
         }
     }
     val messageTable = if (channelId == null) null else remember(channelId) { session.repo.messages(channelId) }
+    LaunchedEffect(messageTable) {
+        messageTable?.replicatedRows?.collect(state::reconcileOutgoing)
+    }
     if (channelId != null) DisposableEffect(channelId) { onDispose { session.repo.releaseChannel(channelId) } }
     val rows = if (messageTable == null) emptyList() else {
         val messages by messageTable.rows.collectAsState()
@@ -101,6 +123,49 @@ internal fun ConnectedScreens(
     }
     val previewService by session.previews.summalyEndpoint.collectAsState()
     val usersById = remember(users) { users.associateBy { it.text("id") } }
+    if (incoming != null) key(incoming, session) {
+        val scope = rememberCoroutineScope()
+        var busy by remember { mutableStateOf(false) }
+        var error by remember { mutableStateOf<String?>(null) }
+        val destinations = state.channelSections(channels, usersById, memberships)
+        val resolver = androidx.compose.ui.platform.LocalContext.current.contentResolver
+        ShareDestinationSheet(incoming.text, incoming.images.size, destinations, AndroidColors(env.dark), busy, error, finishShare, preview = {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                itemsIndexed(incoming.images, key = { _, uri -> uri.toString() }) { index, uri ->
+                    val thumbnail by produceState<ImageBitmap?>(null, uri) {
+                        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            try { resolver.shareThumbnail(uri)?.asImageBitmap() }
+                            catch (e: CancellationException) { throw e }
+                            catch (_: Exception) { null }
+                        }
+                    }
+                    val label = "画像 ${index + 1}"
+                    Box(Modifier.size(64.dp), contentAlignment = Alignment.Center) {
+                        val bitmap = thumbnail
+                        if (bitmap == null) Text(label, color = AndroidColors(env.dark).secondary)
+                        else Image(bitmap, label, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                    }
+                }
+            }
+        }) { dest ->
+            if (!busy) {
+                busy = true
+                scope.launch {
+                    try {
+                        error = state.receiveShare(incoming, dest)
+                        if (error == null) finishShare()
+                    } catch (e: CancellationException) { throw e }
+                    catch (_: Exception) { error = "共有内容を開けませんでした" }
+                    finally { busy = false }
+                }
+            }
+        }
+    }
+
+    val mentionProfiles = remember(session.accountProfiles) {
+        session.accountProfiles.associateBy { it.text("username") }
+    }
+    val mentionUsernames = remember(users) { users.map { it.text("user_name") }.toSet() }
     val posts = state.home.posts.map { state.entry(it, usersById, previewService = previewService) }
     val encrypted = channel?.let { session.isEncryptedChannel(it.text("id")) } == true
     val canPost = env.online && channel != null && member && !channel.present("archive_at")
@@ -112,7 +177,14 @@ internal fun ConnectedScreens(
         val item = state.entry(data, usersById,
             if (decrypted != null) emptyList() else displayAttachments(row),
             displayReactions(row), writable = canPost, allowPreview = !encrypted)
-        return encryptedEntry(item, row, decrypted, encrypted, session::t)
+        val allowlist = decrypted?.mentions?.let { zoo.allowedMentionNames(it, usersById) }
+        val entry = encryptedEntry(item, row, decrypted, encrypted, session::t)
+        return entry.copy(
+            allowedMentions = allowlist,
+            mentionsCurrentUser = (decrypted != null || zoo.isPlaintextBeforeEncryption(row)) &&
+                bodyMentionsUser(entry.body, usersById[session.config.userId]?.text("user_name").orEmpty(),
+                    mentionUsernames, allowlist, entry.emoji.keys),
+        )
     }
     val ordered = remember(rows) {
         rows.filterNot { it.present("deleted_at") }.sortedWith(compareBy({ it.text("created_at") }, { it.text("id") }))
@@ -138,12 +210,17 @@ internal fun ConnectedScreens(
     val messages = messageEntries.map { state.withLinkCard(it, previewService) }
     val rowsById = remember(rows) { rows.associateBy { it.text("id") } }
     val recipientNotices by (encryption?.recipients ?: remember { kotlinx.coroutines.flow.MutableStateFlow(emptyMap()) }).collectAsState()
-    val recipientLines = if (!encrypted || channelId == null) emptyList() else recipientNoticeLines(recipientNotices[channelId],
+    val encryptionLines = if (!encrypted || channelId == null) emptyList() else recipientNoticeLines(recipientNotices[channelId],
         { id -> usersById[id]?.let(::author)?.ifBlank { null } ?: id }) { key, args -> session.t(key, *args) }
     val currentThread = session.thread
     var threadLoadFailed by remember(channelId, currentThread) { mutableStateOf(false) }
     var threadRetry by remember(channelId, currentThread) { mutableIntStateOf(0) }
     val threadDetail = state.threadDetails.takeIf { it.text("id") == currentThread } ?: obj()
+    val recipientLines = encryptionLines + listOfNotNull(when {
+        channel?.present("archive_at") == true -> "アーカイブ済み。履歴を閲覧できます。"
+        currentThread != null && threadDetail.present("thread_archive_at") -> "このスレッドはアーカイブ済みです。"
+        else -> null
+    })
     val conversationEntries = rows.filter { it.text("parent_id").isEmpty() }.map { it.text("id") }.toSet()
     val currentReadPosition = session.channelReadPositions[channelId]
     var visitReadPosition by remember(session, channelId) { mutableStateOf<ChannelReadPosition?>(null) }
@@ -160,8 +237,9 @@ internal fun ConnectedScreens(
     val threadReplies = rows.filter { it.text("parent_id") == currentThread }.map { it.text("id") }.toSet()
     val route = env.path.substringBefore('?')
     var focusFailed by remember(env.path) { mutableStateOf(false) }
-    val focusMessage = if (focusFailed) null
-        else env.path.substringAfter("?message=", "").substringBefore('&').ifBlank { null }
+    val focusMessage = env.path.substringAfter("?message=", "").substringBefore('&').takeIf {
+        it.isNotBlank() && !focusFailed && rowsById[it]?.present("deleted_at") != true
+    }
     val focusRequest = focusMessage?.let { env.path.substringAfter('?') }
     val emptyGeneration = remember { MutableStateFlow(0) }
     val generation by (messageTable?.pageGeneration ?: emptyGeneration).collectAsState()
@@ -195,20 +273,25 @@ internal fun ConnectedScreens(
         (!needsUnreadHistory || !env.online || focusMessage != null)
     val mainPageReady = mainPage?.loaded == true
     val awaitingInitialRead = env.online && channel?.present("archive_at") != true &&
-        (member || membershipsLoading) && (!mainPageReady || currentReadPosition == null)
-    val unreadPositionPending = awaitingInitialRead ||
-        (env.online && currentThread == null && focusMessage == null && needsUnreadHistory)
+        (member || membershipsLoading) && (if (currentReadPosition == null)
+            !session.channelReadPositionsChecked else !mainPageReady)
+    val unreadPositionPending = !unreadPositioned && (awaitingInitialRead ||
+        (env.online && currentThread == null && focusMessage == null && needsUnreadHistory))
     val unreadId = firstUnreadInWindow.takeUnless {
         unreadHistoryOutsideWindow(visiblePage, visitHistoryPosition) || awaitingInitialRead
     }
     val localDay by rememberConversationDay(context)
-    val conversationMessages = remember(messages, conversationEntries, rowsById, encrypted, unreadId, env.locale, localDay, session) {
+    val conversationWindow = remember(messages, conversationEntries, rowsById, encrypted, session) {
+        withEncryptionBoundary(messages.filter { it.id in conversationEntries }, rowsById, encrypted, session::t)
+    }
+    val conversationWithOutgoing = if (channelId != null && currentThread == null)
+        state.withOutgoing(channelId, conversationWindow) else conversationWindow
+    val conversationMessages = remember(conversationWithOutgoing, unreadId, env.locale, localDay, session) {
         withConversationDividers(
-            withEncryptionBoundary(messages.filter { it.id in conversationEntries }, rowsById, encrypted, session::t),
-            rowsById, unreadId, platform::day, session::dayLabel, session.t("messages.new"),
+            conversationWithOutgoing, unreadId, platform::day, session::dayLabel, session.t("messages.new"),
         )
     }
-    val focusRow = rows.find { it.text("id") == focusMessage }
+    val focusRow = focusMessage?.let(rowsById::get)
     val focusParent = focusRow?.text("parent_id")
     // Keep a deleted parent's thread readable and prevent replies to it.
     val deletedRoot = currentThread?.let { rowsById[it]?.present("deleted_at") } == true
@@ -332,17 +415,14 @@ internal fun ConnectedScreens(
     }
     LaunchedEffect(state.overlay, env.online) {
         if (state.overlay == "search-engine" && env.online) session.searchPreferences.ensureLoaded()
-        if (state.overlay == "new-post" && env.online) try { state.loadFederation() }
-        catch (cancelled: CancellationException) { throw cancelled }
-        catch (_: Exception) { }
     }
     LaunchedEffect(route, env.online, env.visible) {
         if (route == "/bubble" && env.online && env.visible) state.bubble.run()
     }
     LaunchedEffect(route, env.visible, env.online) {
-        if (route == "/home" && env.online && env.visible) {
+        if (route == "/home" && env.visible) {
             state.home.restoreSelection()
-            if (state.home.needsRefresh()) state.home.refresh(retain = true)
+            if (env.online && state.home.needsRefresh()) state.home.refresh(retain = true)
         }
         if (route == "/notifications" && env.online && env.visible) session.activityPubNotifications.ensureLoaded()
     }
@@ -394,7 +474,11 @@ internal fun ConnectedScreens(
             state.overlay == "add-member" -> state.overlay = "members"
             state.overlay != null -> state.overlay = null
             state.collapseInput(channelId, currentThread) -> Unit
-            currentThread != null -> session.thread = null
+            currentThread != null -> {
+                // A notification for a reply has no target in the channel's timeline.
+                if (focusParent == currentThread) platform.replace(route)
+                session.thread = null
+            }
             platform.back() -> Unit
             else -> {
                 background()
@@ -444,7 +528,7 @@ internal fun ConnectedScreens(
             },
             avatar = profileAvatar, originalAvailable = profileUrl != null, id = profile.text("id"),
             postsPending = state.profilePostsPending, postsLoadFailed = state.profilePostsLoadFailed, online = env.online,
-            accountLoadFailed = state.profileAccountLoadFailed,
+            accountLoadFailed = state.profileAccountLoadFailed, followBusy = state.followBusy,
         )
         state.overlay == "bubble-participants" -> AndroidScreen.Directory("参加者", state.query,
             bubbleParticipants.filter { it.title.contains(state.query, true) })
@@ -454,53 +538,68 @@ internal fun ConnectedScreens(
                 .map { SelectionItem(it.text("id"), it.text("channel_name"), it.text("description")) })
         state.overlay == "dm" -> AndroidScreen.Directory("ダイレクトメッセージを作成", state.query,
             users.filter { it.text("id") != session.config.userId && author(it).contains(state.query, ignoreCase = true) }
-                .map { SelectionItem(it.text("id"), author(it), isUserName = true, selected = it.text("id") in state.dmTargets) },
+                .map { SelectionItem(it.text("id"), author(it), it.text("user_name"), isUserName = true, selected = it.text("id") in state.dmTargets) },
             "開始", env.online && !state.saving && state.dmTargets.isNotEmpty(), state.encryptedDm)
         state.overlay == "thread-settings" && currentThread != null ->
             AndroidScreen.SettingsDetail("スレッド設定", state.threadSettings(currentThread, canPost, member))
         state.overlay == "thread-members" -> AndroidScreen.Directory("スレッドの参加者", state.query,
             state.threadDetails.array("participants").rows().filter { author(it).contains(state.query, true) }
-                .map { SelectionItem(it.text("id"), author(it), isUserName = true) }, scopeId = currentThread)
-        state.overlay == "add-member" -> AndroidScreen.Directory("メンバーを追加", state.query,
-            users.filter { u -> channelMembers.none { it.text("user_id") == u.text("id") } && author(u).contains(state.query, true) }
-                .map { SelectionItem(it.text("id"), author(it), isUserName = true) }, scopeId = channelId)
+                .map { SelectionItem(it.text("id"), author(it), it.text("user_name"), isUserName = true) }, scopeId = currentThread)
+        state.overlay == "add-member" -> {
+            val existing = channelMembers.mapTo(mutableSetOf()) { it.text("user_id") }
+            val canInvite = channel != null && state.canEditMembers(channel)
+            AndroidScreen.Directory("メンバーを追加", state.query, users.filter {
+                author(it).contains(state.query, true) || it.text("user_name").contains(state.query, true)
+            }.map { user ->
+                val id = user.text("id")
+                SelectionItem(id, author(user), user.text("user_name"), isUserName = true, unavailable = when {
+                    id in existing -> "参加済み"
+                    !canInvite -> "招待権限なし"
+                    else -> null
+                })
+            }.sortedBy { it.unavailable != null }, scopeId = channelId)
+        }
         state.overlay == "members" -> AndroidScreen.Directory("メンバー", state.query,
             users.filter { u -> channelMembers.any { it.text("user_id") == u.text("id") } && author(u).contains(state.query, true) }
-                .map { SelectionItem(it.text("id"), author(it), isUserName = true) }, scopeId = channelId)
+                .map { SelectionItem(it.text("id"), author(it), it.text("user_name"), isUserName = true) }, scopeId = channelId)
         state.overlay == "create" || state.overlay == "rename" -> AndroidScreen.EditChannel(
             if (state.overlay == "create") "チャンネルを作成" else "チャンネルを編集",
             state.channelName, state.channelDescription, if (state.overlay == "create") "作成" else "保存",
             env.online && state.channelName.isNotBlank() && !state.saving,
             privateChannel = state.channelPrivate.takeUnless { state.overlay == "rename" && encrypted },
+            saveError = state.channelSaveError,
             sensitive = state.channelSensitive,
             encrypted = state.channelEncrypted.takeIf { state.overlay == "create" && state.channelPrivate },
         )
         state.overlay in setOf("channel-settings", "archive", "unarchive") && channel != null -> AndroidScreen.ChannelSettings(
-            channel.text("channel_name"), state.channelSettings(channel, member, encrypted), channel.text("id"))
+            channel.text("channel_name"),
+            state.channelSettings(channel, member, encrypted,
+                channelNotificationLevel(notificationSettings, channel.text("id"))),
+            channel.text("id"))
         state.overlay == "new-post" -> AndroidScreen.NewPost(
             InputState(state.postDraft, canSend = env.online && !state.saving && state.postFiles.canSend(state.postDraft), selection = state.postSelection),
             state.recent, state.photosOpen, state.postVisibility,
-            state.postFiles.items.map { RecentPhoto(it.file.text("id"), it.name) },
-            state.federatePost.takeIf { state.federationAvailable },
+            state.postFiles.items.map { RecentPhoto(it.file.text("id"), it.name, it.failed, it.description, it.sensitive) },
+            state.federatePost.takeIf { state.federationAvailable }, quoting = state.quoteDraft,
         )
         state.overlay == "edit-entry" -> AndroidScreen.EditEntry(
             InputState(state.editDraft, expanded = true, canSend = env.online && !state.saving && state.editDraft.isNotBlank(),
-                selection = state.editSelection))
+                selection = state.editSelection, characterLimit = 40_000), original = state.editing?.item?.body)
         state.overlay == "post" && state.postDetail.isNotEmpty() -> {
             val entries = state.postDetail.map { state.entry(it, usersById, previewService = previewService) }
             val root = entries.firstOrNull { it.id == state.openedPostId } ?: entries.first()
             AndroidScreen.Post(root, entries.filter { it.id != root.id }, InputState(state.replyDraft, canSend = env.online && !state.saving && root.postHeader?.audience != null,
-                selection = state.replySelection, focusRequest = state.replyFocusRequest, lastSend = state.replyLastSend),
+                characterLimit = 1000, selection = state.replySelection, focusRequest = state.replyFocusRequest, lastSend = state.replyLastSend),
                 loadFailed = state.postLoadFailed, online = env.online, loading = state.postPending)
         }
         state.overlay == "post" -> AndroidScreen.PostLoading(env.online, state.postLoadFailed)
-        state.overlay in setOf("theme", "language", "notifications", "search-engine", "navigation-cache") -> state.settingsDetail(env)
+        state.overlay in setOf("theme", "language", "notifications", "search-engine", "navigation-cache", "attachment-cache") -> state.settingsDetail(env, notificationOptions)
         searching -> state.searchScreen(usersById, channels, memberships, previewService)
-        route == "/home" -> AndroidScreen.Home(posts, state.home.timeline, state.home.canLoadOlder,
-            loadFailed = state.home.error || state.home.olderError, loading = state.home.loading || state.home.updating, online = env.online)
-        route == "/notifications" -> state.inbox.screen()
-        route == "/bubble" -> AndroidScreen.Bubble(bubbles.map { state.entry(it, usersById) }, InputState(bubbleDraft, live = true), bubbleParticipants.map { it.title })
-        route == "/settings" -> AndroidScreen.Settings(state.settings(env, openIncomingSettings != null))
+        route == "/home" -> AndroidScreen.Home(state.withOutgoing("/home", posts, newestFirst = true), state.home.timeline, state.home.canLoadOlder,
+            showingSavedHead = state.home.showingSavedHead, loadFailed = state.home.error || state.home.olderError, loading = state.home.loading || state.home.updating, online = env.online)
+        route == "/notifications" -> state.inbox.screen(state.followResponses)
+        route == "/bubble" -> AndroidScreen.Bubble(bubbles.map { state.entry(it, usersById) }, InputState(bubbleDraft, live = true, characterLimit = 1000), bubbleParticipants.map { it.title })
+        route == "/settings" -> AndroidScreen.Settings(state.settings(env, fullScreenAllowed))
         channel != null && (threadRoot != null || deletedRoot) -> {
           // 暗号化の境目は、スレッドの画面に出す親と返信の中で決める。
           val thread = withEncryptionBoundary(
@@ -510,14 +609,15 @@ internal fun ConnectedScreens(
                       if (threadRoot == null) it.copy(editable = false, canReact = false, canRepost = false) else it
                   },
               rowsById, encrypted, session::t)
+          val threadFocus = focusMessage.takeIf { it == currentThread || focusParent == currentThread }
           AndroidScreen.Thread(
             channel.text("channel_name"),
             thread.first(),
-            thread.drop(1),
+            state.withOutgoing("$channelId:$currentThread", thread.drop(1)),
             state.input("$channelId:$currentThread", canPost && threadRoot != null && !threadDetail.present("thread_archive_at") &&
                 (!threadDetail.flag("tracked") || threadDetail.text("membership") == "joined"),
-                users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }).copy(notices = recipientLines), focusMessage,
-            focusRequest = focusRequest,
+                users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }).copy(notices = recipientLines), threadFocus,
+            focusRequest = focusRequest.takeIf { threadFocus != null },
             loadOlder = pageStates[PageScope.Replies(currentThread.orEmpty())]?.let { it.hasOlder && !it.loading } == true,
             historyReady = !env.online || pageStates[PageScope.Replies(currentThread.orEmpty())]?.loaded == true,
           )
@@ -532,14 +632,29 @@ internal fun ConnectedScreens(
             historyReady = !env.online || mainPageReady,
             unreadPositionPending = unreadPositionPending,
             unreadHistoryIncomplete = unreadHistoryIncomplete,
-            onUnreadPositioned = onUnreadPositioned.takeIf { env.online && !unreadPositioned },
-            onReadThrough = onReadThrough,
+            onUnreadPositioned = onUnreadPositioned.takeIf { env.online && currentReadPosition != null && !unreadPositioned },
+            onReadThrough = onReadThrough.takeIf { unreadPositioned },
             retrySync = if (dmSyncDelayed && env.online) {
                 { session.repo.channels.refresh(); session.repo.members.refresh(); dmSyncRetry++ }
             } else null)
         channelId != null && channelsLoading -> AndroidScreen.OpeningConversation(
             "channel:$channelId", session.t("common.loading"), env.online)
         else -> AndroidScreen.Channels(state.channelSections(channels, usersById, memberships))
+    }
+    val typingEnabled = env.visible && env.focused && canPost && (screen is AndroidScreen.Conversation ||
+        (screen is AndroidScreen.Thread && threadRoot != null && !threadDetail.present("thread_archive_at") &&
+            (!threadDetail.flag("tracked") || threadDetail.text("membership") == "joined")))
+    val typing = remember(session, channelId, currentThread, typingEnabled) {
+        if (typingEnabled && channelId != null) ChannelTyping(session, channelId, currentThread) else null
+    }
+    DisposableEffect(typing) { onDispose { typing?.close() } }
+    LaunchedEffect(typing) { typing?.poll() }
+    val typingLabel = typing?.label.orEmpty()
+    val visibleScreen = when {
+        typingLabel.isBlank() -> screen
+        screen is AndroidScreen.Conversation -> screen.copy(input = screen.input.copy(notices = screen.input.notices + typingLabel))
+        screen is AndroidScreen.Thread -> screen.copy(input = screen.input.copy(notices = screen.input.notices + typingLabel))
+        else -> screen
     }
     val canLoadUnreadHistory = screen is AndroidScreen.Conversation && env.online && env.visible &&
         focusMessage == null && positionForHistory?.hasUnread == true
@@ -554,7 +669,7 @@ internal fun ConnectedScreens(
         }
     }
     val readEnabled = screen is AndroidScreen.Conversation && member && env.online &&
-        env.visible && env.focused && currentReadPosition != null &&
+        env.visible && env.focused && currentReadPosition != null && unreadPositioned &&
         !unreadPositionPending && !unreadHistoryOutsideWindow && mainPageReady
     LaunchedEffect(session, channelId, messageTable, readEnabled) {
         if (!readEnabled || channelId == null || messageTable == null) return@LaunchedEffect
@@ -581,6 +696,21 @@ internal fun ConnectedScreens(
     val reaction = state.confirmingEntry?.takeIf { it.operation == EntryOperation.React }
     val insertingEmoji = state.inputMenu == InputTool.Emoji
     val pickerOpen = insertingEmoji || reaction != null
+    val allowAccountEmoji = reaction == null || screen !is AndroidScreen.Home &&
+        screen !is AndroidScreen.Post && screen !is AndroidScreen.Profile
+    val usesAccountProfiles = when (screen) {
+        is AndroidScreen.Conversation, is AndroidScreen.Thread, is AndroidScreen.Notifications,
+        is AndroidScreen.Home, is AndroidScreen.Post, is AndroidScreen.Profile, is AndroidScreen.Bubble -> true
+        else -> pickerOpen && allowAccountEmoji
+    }
+    LaunchedEffect(session, env.online, env.visible, usesAccountProfiles) {
+        if (!env.online || !env.visible || !usesAccountProfiles) return@LaunchedEffect
+        // Share the directory with the picker and stop refreshing when this screen is hidden.
+        while (true) {
+            session.loadAccountProfiles()
+            delay(60_000)
+        }
+    }
     val needsWorkspaceEmoji = when (screen) {
         is AndroidScreen.Home -> screen.posts.any { it.needsWorkspaceEmoji }
         is AndroidScreen.Profile -> screen.posts.any { it.needsWorkspaceEmoji }
@@ -628,6 +758,7 @@ internal fun ConnectedScreens(
             for (url in previewLinks) session.previews.load(previewService, url)
         }
     }
+    val linkedPosts = rememberPostPreviews(session, env.visible && env.online, platform.navigationCacheLimit)
     val compactCall = callScreen?.takeIf { !showFullCall }
     Column(Modifier.fillMaxSize().then(if (compactCall != null) Modifier.statusBarsPadding() else Modifier)) {
         if (compactCall != null) {
@@ -645,18 +776,34 @@ internal fun ConnectedScreens(
             } else {
                 CompositionLocalProvider(
                     LocalTimelineImage provides remember(session) { { media -> timelineImage(session, media) } },
+                    LocalTimelineImageWithPreview provides remember(session) {
+                        { media, onCached -> timelineImage(session, media, onCached = onCached) }
+                    },
                     LocalTimelineImageRetry provides remember(session) { { media -> timelineImage(session, media, retry = true) } },
+                    LocalAttachmentImageDenied provides remember(session) { session.attachmentLinks::isDenied },
                     LocalCachedTimelineImage provides remember(session) { { media -> cachedTimelineImage(session, media) } },
                     LocalKitchenReactionImage provides emojiCatalog::kitchenReaction,
                     LocalAndroidTranslation provides { key, args -> session.t(key, *args) },
                     LocalChannelLinks provides channelLinks,
+                    LocalPostPreviews provides linkedPosts,
+                    LocalMentionProfiles provides mentionProfiles,
+                    LocalMentionUsernames provides mentionUsernames,
                 ) {
-                    AndroidScreens(screen, env.dark, env.visible && env.focused,
+                    AndroidScreens(visibleScreen, env.dark, env.visible && env.focused,
                         dispatch = { action ->
+                            if (action is AndroidUiAction.TextChanged) typing?.edit(action.text.isNotBlank())
+                            if (action == AndroidUiAction.UseInputTool(InputTool.Send)) typing?.edit(false)
                             when {
                                 action == AndroidUiAction.Back -> back()
                                 action == AndroidUiAction.MinimizeCall -> minimized = true
                                 action == AndroidUiAction.FloatCall -> call?.let { openPictureInPicture?.invoke(it.id) }
+                                action is AndroidUiAction.OpenSetting && action.id.startsWith("os-channel/") -> {
+                                    val settings = Intent(android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                                        .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+                                        .putExtra(android.provider.Settings.EXTRA_CHANNEL_ID, action.id.substringAfter('/'))
+                                    try { activityContext.startActivity(settings) }
+                                    catch (_: android.content.ActivityNotFoundException) { enableNotifications() }
+                                }
                                 action == AndroidUiAction.OpenSetting("incoming-screen") -> openIncomingSettings?.invoke()
                                 action is AndroidUiAction.SelectResult && state.overlay == "members" && channel != null &&
                                     state.canEditMembers(channel) && action.id != session.config.userId -> {
@@ -720,7 +867,11 @@ internal fun ConnectedScreens(
             if (media.kind == TimelineMediaKind.Image) {
                 CompositionLocalProvider(
                     LocalTimelineImage provides remember(session) { { image -> timelineImage(session, image) } },
+                    LocalTimelineImageWithPreview provides remember(session) {
+                        { media, onCached -> timelineImage(session, media, onCached = onCached) }
+                    },
                     LocalTimelineImageRetry provides remember(session) { { image -> timelineImage(session, image, retry = true) } },
+                    LocalAttachmentImageDenied provides remember(session) { session.attachmentLinks::isDenied },
                     LocalCachedTimelineImage provides remember(session) { { image -> cachedTimelineImage(session, image) } },
                     LocalAndroidTranslation provides { key, args -> session.t(key, *args) },
                 ) {
@@ -737,17 +888,12 @@ internal fun ConnectedScreens(
         AlertDialog(
             onDismissRequest = phone::clearError,
             title = { Text(session.t("androidPhone.callError")) },
-            confirmButton = { TextButton(onClick = phone::clearError) { Text(session.t("common.close")) } },
+            confirmButton = { DialogAction(session.t("common.close"), UiIcon.Close, click = phone::clearError) },
         )
     }
     val recentEmojis = remember(session) { mutableStateListOf<String>() }
     if (pickerOpen) {
         val unicode by produceState(emptyList<EmojiChoice>(), emojiCatalog) { value = emojiCatalog.unicode() }
-        val allowAccountEmoji = reaction == null || screen !is AndroidScreen.Home &&
-            screen !is AndroidScreen.Post && screen !is AndroidScreen.Profile
-        LaunchedEffect(session, env.online, env.visible, allowAccountEmoji) {
-            if (env.online && env.visible && allowAccountEmoji) session.loadAccountProfiles()
-        }
         val dismiss = { state.inputMenu = null; state.confirmingEntry = null }
         EmojiPicker(
             title = if (reaction == null) "絵文字" else "リアクション",
@@ -761,6 +907,7 @@ internal fun ConnectedScreens(
             recentCategory = session.t("reactions.recent"),
             customLoading = session.workspaceEmojiLoading,
             customError = session.workspaceEmojiError,
+            retryCustom = { session.scope.launch { session.loadWorkspaceEmojis(force = true) } },
             loadKitchen = emojiCatalog::kitchen,
             loadImage = { url ->
                 try { timelineImageUrl(session.config.apiBaseUrl, url)?.let { session.imageBitmap(it) } }
@@ -789,17 +936,35 @@ internal fun ConnectedScreens(
         }
     }
     state.confirmingEntry?.takeIf { it.operation == EntryOperation.Delete }?.let { action ->
+        val status = state.operationStatus(action)
+        val sending = status == EntryOperationStatus.Sending
         AlertDialog(
-            onDismissRequest = { state.confirmingEntry = null },
+            onDismissRequest = { if (!sending) state.confirmingEntry = null },
             title = { Text("削除しますか？") },
-            text = { Text(action.item.body, maxLines = 3) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(action.item.body, maxLines = 3)
+                    when (status) {
+                        EntryOperationStatus.Sending -> Text("削除中…")
+                        EntryOperationStatus.Offline -> Text("接続してから再試行してください")
+                        EntryOperationStatus.Denied -> Text("この投稿を削除する権限がありません")
+                        EntryOperationStatus.Failed -> Text("削除できませんでした。再試行できます")
+                        null -> Unit
+                    }
+                }
+            },
             confirmButton = {
-                DialogAction("削除", UiIcon.Delete) {
+                DialogAction("削除", UiIcon.Delete, enabled = !sending) {
                     state.confirmDelete(screen is AndroidScreen.Home || screen is AndroidScreen.Post || screen is AndroidScreen.Profile)
                 }
             },
-            dismissButton = { DialogAction("キャンセル", UiIcon.Close) { state.confirmingEntry = null } },
+            dismissButton = { DialogAction("キャンセル", UiIcon.Close, enabled = !sending) { state.confirmingEntry = null } },
         )
+    }
+    state.attachmentAction?.let { action ->
+        val file = action.item.attachments.firstOrNull { it.first == action.value }
+        val size = action.item.attachmentSizes[action.value]?.takeIf { it.toLongOrNull() != null }?.let(::attachmentSize)
+        AttachmentExportDialog(file?.second ?: "添付ファイル", size, { state.attachmentAction = null }, state::exportAttachment)
     }
     state.memberToRemove?.let { user ->
         AlertDialog(
@@ -808,6 +973,16 @@ internal fun ConnectedScreens(
             text = { Text(user.title) },
             confirmButton = { DialogAction("削除", UiIcon.Delete) { channel?.let { state.removeMember(it, user.id) } } },
             dismissButton = { DialogAction("キャンセル", UiIcon.Close) { state.memberToRemove = null } },
+        )
+    }
+    state.leaveTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { state.leaveTarget = null },
+            title = { Text(if (target.second == null) "チャンネルから退出" else "スレッドから退出") },
+            text = { Text(if (target.second == null) "「${channel?.text("channel_name").orEmpty()}」が参加中の一覧から外れます。"
+                else "このスレッドの通知を終了します。チャンネルには引き続き参加します。") },
+            confirmButton = { DialogAction("退出", UiIcon.Back) { state.leave(channelId, currentThread) } },
+            dismissButton = { DialogAction("キャンセル", UiIcon.Close) { state.leaveTarget = null } },
         )
     }
     val archive = state.overlay?.takeIf { it == "archive" || it == "unarchive" }

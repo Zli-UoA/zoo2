@@ -11,6 +11,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.vector.PathParser
@@ -22,12 +25,13 @@ import androidx.compose.ui.unit.dp
 
 internal object AndroidControlSize {
     val target = 48.dp
+    val timelineAvatar = 36.dp
     val inputEdgeInset = 4.dp
     val inputHandleHeight = 24.dp
     val inputExpandThreshold = 72.dp
     val postActionInset = 8.dp
     val postToolbarHeight = 36.dp
-    val postToolbarIcon = 14.dp
+    val postToolbarIcon = 20.dp
     val icon = 24.dp
     val inlineIcon = 16.dp
     val metadataIcon = 12.dp
@@ -39,7 +43,14 @@ internal object AndroidControlSize {
 
 // Google Material Design Icons (Outlined, 24px), Apache-2.0.
 // Source and license are bundled in assets/licenses/material-design-icons.txt.
-internal enum class UiIcon(val pathData: String) {
+internal enum class UiIcon(val pathData: String, val outlined: Boolean = false) {
+    // Original Zoo post actions share a rounded stroke on a 24-unit grid.
+    Share("M8 11l8-5 M8 13l8 5 M7.5 12a2.5 2.5 0 1 1-5 0 2.5 2.5 0 1 1 5 0 M20.5 5a2.5 2.5 0 1 1-5 0 2.5 2.5 0 1 1 5 0 M20.5 19a2.5 2.5 0 1 1-5 0 2.5 2.5 0 1 1 5 0", true),
+    Reply("M18.5 4.5H8.7C5.2 4.5 3 6.8 3 10v2.7c0 2.4 1.5 4.5 4 5.1v3l4.6-2.8h5.9c2.5 0 4-2.2 4-4.7V9c0-2.5-1.3-4.5-3-4.5Z", true),
+    Repost("M2.5 9l4-4 4 4 M6.5 5.5v9c0 2.3 1.3 3.5 3.6 3.5h2 M21.5 15l-4 4-4-4 M17.5 18.5v-9c0-2.3-1.3-3.5-3.6-3.5h-2", true),
+    AddReaction("M13.4 4.2a8.1 8.1 0 1 0 5.8 7.9 M7.6 10.4h.2 M12.8 10.4h.2 M7.8 14.2c1.6 2.2 4.1 2.2 5.7 0 M18.9 2.2v6 M15.9 5.2h6", true),
+    More("M4.4 12h.5 M11.8 12h.5 M19.2 12h.5", true),
+    QuoteRenote("M6.5 4.5h11c2.2 0 3.5 1.5 3.5 3.5v6c0 2.2-1.3 3.5-3.5 3.5h-6L7 21v-3.5h-.5C4.3 17.5 3 16 3 14V8c0-2 1.3-3.5 3.5-3.5Z M9.8 8.5q-2 1.2-1.6 3.5h1.4 M15.5 8.5q-2 1.2-1.6 3.5h1.4", true),
     Back("M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"),
     Next("M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6-6-6z"),
     Home("M12 5.69l5 4.5V18h-2v-6H9v6H7v-7.81l5-4.5M12 3L2 12h3v8h6v-6h2v6h6v-8h3L12 3z"),
@@ -60,8 +71,6 @@ internal enum class UiIcon(val pathData: String) {
     Delete("M16 9v10H8V9h8m-1.5-6h-5l-1 1H5v2h14V4h-3.5l-1-1zM18 7H6v12c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7z"),
     Minimize("M6 19h12v2H6z"),
     Float("M3 5h18v14H3zM5 7v10h14V7zM11 10h7v6h-7z"),
-    More("M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"),
-    Repost("M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"),
     Search("M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"),
     External("M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"),
     Mic("M12,14c1.66,0,3-1.34,3-3V5c0-1.66-1.34-3-3-3S9,3.34,9,5v6C9,12.66,10.34,14,12,14z M17,11c0,2.76-2.24,5-5,5s-5-2.24-5-5H5c0,3.53,2.61,6.43,6,6.92V21h2v-3.08c3.39-0.49,6-3.39,6-6.92H17z"),
@@ -122,7 +131,9 @@ internal fun UiGlyph(icon: UiIcon, color: Color, iconSize: Dp = AndroidControlSi
     val path = remember(icon) { PathParser().parsePathString(icon.pathData).toPath() }
     Canvas(Modifier.size(iconSize)) {
         scale(size.width / 24f, size.height / 24f, pivot = Offset.Zero) {
-            drawPath(path, color)
+            if (icon.outlined) {
+                drawPath(path, color, style = Stroke(width = 1.9f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+            } else drawPath(path, color)
         }
     }
 }

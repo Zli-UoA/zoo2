@@ -17,6 +17,7 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CoroutineScope
@@ -78,6 +79,7 @@ class EncryptedDmTest {
     /** 模擬サーバーの状態（チャンネルのメンバー、端末、to-device の受信箱、メッセージ、ピン、添付）。 */
     private val members = sortedSetOf(ALICE, BOB)
     private var epoch = 1
+    private var recipientCursor: JsonElement? = null
     private val devices = mutableMapOf<String, MutableList<Device>>()
     private val inbox = mutableMapOf<String, MutableList<ToDeviceRow>>()
     private val messages = mutableListOf<JsonObject>()
@@ -159,7 +161,8 @@ class EncryptedDmTest {
             when {
                 path == "/api/e2ee/channels/$channel/recipients" -> {
                     if (caller !in members) return@MockEngine respond("""{"code":"NOT_FOUND"}""", HttpStatusCode.NotFound)
-                    snapshot(caller)
+                    val page = snapshot(caller)
+                    recipientCursor?.let { JsonObject(page + ("next_after" to it)) } ?: page
                 }
                 path == "/api/e2ee/tofu_pins" -> {
                     body.getValue("pins").jsonArray.forEach { pin ->
@@ -266,6 +269,18 @@ class EncryptedDmTest {
         assertTrue(inbox.keys.none { it.startsWith("$BOB|") })
         assertEquals("e2ee.undecryptable.keyMissing", bob.decrypt(afterLeave).notice)
         assertEquals("SECRET-AFTER-LEAVE", aliceSecond.decrypt(afterLeave).body)
+    }
+
+    @Test
+    fun 不正な次ページ位置では鍵とメッセージを送らない() = runBlocking<Unit> {
+        val (alice, _) = device(ALICE, "alice-1")
+        device(BOB, "bob-1")
+        for (cursor in listOf(JsonPrimitive(1), JsonPrimitive(true), JsonObject(emptyMap()), JsonArray(emptyList()))) {
+            recipientCursor = cursor
+            assertFailsWith<IllegalStateException> { sendAndDeliver(alice, "送らない本文") }
+            assertTrue(messages.isEmpty())
+            assertTrue(inbox.values.all { it.isEmpty() })
+        }
     }
 
     @Test

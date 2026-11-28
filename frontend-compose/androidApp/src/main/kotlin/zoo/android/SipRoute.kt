@@ -6,7 +6,6 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -60,7 +59,15 @@ private fun dialNumber(value: String) = Regex("\\+?[0-9]{1,32}").matches(value)
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun SipRoute(app: Session, controller: PhoneController, users: List<Row>, back: () -> Unit) {
-    LaunchedEffect(controller) { if (!controller.loaded) controller.refresh() }
+    val online = app.env.online
+    var refreshStarted by remember(controller, online) { mutableStateOf(false) }
+    LaunchedEffect(controller, online) {
+        if (online) {
+            controller.refresh(force = true)
+            refreshStarted = true
+        }
+    }
+    val canManageLines = refreshStarted && !controller.loading && !controller.loadError && !controller.writing
     var draft by remember { mutableStateOf<PhoneDraft?>(null) }
     var editingId by remember { mutableStateOf<String?>(null) }
     var deleting by remember { mutableStateOf<Row?>(null) }
@@ -69,12 +76,12 @@ internal fun SipRoute(app: Session, controller: PhoneController, users: List<Row
     AndroidShell(null, app.env.dark, {}, app.env.locale) { colors ->
         PageHeader(app.t("sip.title"), colors, onBack = back) {
             UiIconButton(UiIcon.Refresh, app.t("sip.refresh"), colors.foreground,
-                { controller.refresh() }, enabled = !controller.loading)
+                { controller.refresh() }, enabled = online && !controller.loading)
             if (controller.enabled) UiIconButton(UiIcon.Add, app.t("sip.addLine"), colors.foreground,
                 {
                     editingId = null
                     draft = PhoneDraft()
-                }, enabled = !controller.writing)
+                }, enabled = canManageLines)
         }
         Column(
             Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(16.dp),
@@ -89,7 +96,7 @@ internal fun SipRoute(app: Session, controller: PhoneController, users: List<Row
             if (controller.registration.lineId != null) {
                 val status = if (controller.registration.status == "ready") "ready" else "connecting"
                 Text(app.t("sip.status.$status"), color = colors.foreground)
-                SipField(number, app.t("sip.number"), 33, true, KeyboardType.Phone) { number = it }
+                SipField(colors, number, app.t("sip.number"), 33, true, KeyboardType.Phone) { number = it }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextAction(app.t("sip.dial"), colors, canDial && dialNumber(number), icon = UiIcon.Phone) {
                         controller.dialSip(number)
@@ -108,11 +115,11 @@ internal fun SipRoute(app: Session, controller: PhoneController, users: List<Row
                         controller.connectSip(id)
                     }
                     if (line.flag("can_manage")) {
-                        TextAction(app.t("sip.edit"), colors, !controller.writing, TextActionStyle.Plain, icon = UiIcon.Format) {
+                        TextAction(app.t("sip.edit"), colors, canManageLines, TextActionStyle.Plain, icon = UiIcon.Format) {
                             editingId = id
                             draft = PhoneDraft(line)
                         }
-                        TextAction(app.t("sip.delete"), colors, !controller.writing, TextActionStyle.Plain, icon = UiIcon.Delete) {
+                        TextAction(app.t("sip.delete"), colors, canManageLines, TextActionStyle.Plain, icon = UiIcon.Delete) {
                             deleting = line
                         }
                     }
@@ -132,7 +139,7 @@ internal fun SipRoute(app: Session, controller: PhoneController, users: List<Row
                 val editable = !controller.writing
                 Text(app.t(if (editingId == null) "sip.addLine" else "sip.edit"), color = colors.foreground,
                     fontSize = 18.sp, fontWeight = AndroidWeights.emphasis)
-                SipField(editor.name, app.t("sip.name"), 100, editable) { editor.name = it }
+                SipField(colors, editor.name, app.t("sip.name"), 100, editable) { editor.name = it }
                 if (app.config.isAdmin || editor.shared) {
                     SipToggle(app.t("sip.shared"), editor.shared,
                         editable && editingId == null && app.config.isAdmin, colors) {
@@ -140,10 +147,10 @@ internal fun SipRoute(app: Session, controller: PhoneController, users: List<Row
                         editor.members.clear()
                     }
                 }
-                SipField(editor.number, app.t("sip.phone_number"), 33, editable, KeyboardType.Phone) { editor.number = it }
-                SipField(editor.domain, app.t("sip.sip_domain"), 128, editable) { editor.domain = it }
-                SipField(editor.username, app.t("sip.username"), 128, editable) { editor.username = it }
-                SipField(editor.password, app.t(if (editingId == null) "sip.password" else "sip.keepPassword"),
+                SipField(colors, editor.number, app.t("sip.phone_number"), 33, editable, KeyboardType.Phone) { editor.number = it }
+                SipField(colors, editor.domain, app.t("sip.sip_domain"), 128, editable) { editor.domain = it }
+                SipField(colors, editor.username, app.t("sip.username"), 128, editable) { editor.username = it }
+                SipField(colors, editor.password, app.t(if (editingId == null) "sip.password" else "sip.keepPassword"),
                     1024, editable, KeyboardType.Password) { editor.password = it }
                 if (editor.shared) {
                     Text(app.t("sip.membersHelp"), color = colors.secondary)
@@ -160,10 +167,10 @@ internal fun SipRoute(app: Session, controller: PhoneController, users: List<Row
                 }
                 Text(app.t("sip.phonesHelp"), color = colors.secondary)
                 editor.phones.toList().forEachIndexed { index, contact ->
-                    SipField(contact.text("name"), app.t("sip.phoneName"), 100, editable) {
+                    SipField(colors, contact.text("name"), app.t("sip.phoneName"), 100, editable) {
                         editor.phones[index] = JsonObject(editor.phones[index] + obj("name" to it))
                     }
-                    SipField(contact.text("extension"), app.t("sip.extension"), 33, editable, KeyboardType.Phone) {
+                    SipField(colors, contact.text("extension"), app.t("sip.extension"), 33, editable, KeyboardType.Phone) {
                         editor.phones[index] = JsonObject(editor.phones[index] + obj("extension" to it))
                     }
                     TextAction(app.t("sip.removePhone"), colors, editable, TextActionStyle.Plain, icon = UiIcon.Delete) {
@@ -198,12 +205,12 @@ internal fun SipRoute(app: Session, controller: PhoneController, users: List<Row
                     }
                 },
                 confirmButton = {
-                    TextAction(app.t("sip.delete"), colors, !controller.writing, icon = UiIcon.Delete) {
+                    DialogAction(app.t("sip.delete"), UiIcon.Delete, enabled = !controller.writing) {
                         controller.remove(line.text("id")) { deleting = null }
                     }
                 },
                 dismissButton = {
-                    TextAction(app.t("sip.cancel"), colors, !controller.writing, TextActionStyle.Plain) { deleting = null }
+                    DialogAction(app.t("sip.cancel"), UiIcon.Close, enabled = !controller.writing) { deleting = null }
                 },
             )
         }
@@ -212,15 +219,14 @@ internal fun SipRoute(app: Session, controller: PhoneController, users: List<Row
 
 @Composable
 private fun SipField(
+    colors: AndroidColors,
     value: String, label: String, limit: Int, enabled: Boolean,
     keyboard: KeyboardType = KeyboardType.Text, change: (String) -> Unit,
 ) {
-    OutlinedTextField(
-        value, { if (it.length <= limit) change(it) }, Modifier.fillMaxWidth(),
-        enabled = enabled, label = { Text(label) }, singleLine = true,
-        keyboardOptions = KeyboardOptions(keyboardType = keyboard),
-        visualTransformation = if (keyboard == KeyboardType.Password) PasswordVisualTransformation() else VisualTransformation.None,
-    )
+    LabeledField(label, value, colors, enabled = enabled, keyboard = KeyboardOptions(keyboardType = keyboard),
+        transformation = if (keyboard == KeyboardType.Password) PasswordVisualTransformation() else VisualTransformation.None) {
+        if (it.length <= limit) change(it)
+    }
 }
 
 @Composable

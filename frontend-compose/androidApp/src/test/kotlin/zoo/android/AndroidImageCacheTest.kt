@@ -4,6 +4,8 @@ import java.io.Closeable
 import java.nio.file.Files
 import kotlin.test.*
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
@@ -32,9 +34,8 @@ class AndroidImageCacheTest {
         val url get() = server.url("/image.png").toString()
         fun cache(
             account: String = "account",
-            now: () -> Long = System::currentTimeMillis,
             configure: OkHttpClient.Builder.() -> Unit = {},
-        ) = AndroidImageCache(directory.resolve("$account/images"), now = now) {
+        ) = AndroidImageCache(directory.resolve("$account/images")) {
             sslSocketFactory(clientTls.sslSocketFactory(), clientTls.trustManager)
             configure()
         }
@@ -55,7 +56,7 @@ class AndroidImageCacheTest {
                 val pending = async { cache.download(ImageRequest(fixture.server.url("/slow.png").toString()), 1024) }
                 try {
                     assertNotNull(withContext(Dispatchers.IO) { fixture.server.takeRequest(5, TimeUnit.SECONDS) })
-                    val image = withTimeout(5_000) { cache.imageIfCached(cached, 1024) }
+                    val image = withTimeout(5_000) { cache.cachedPublicImage(cached.url, 1024) }
                     assertEquals("cached", image?.decodeToString())
                     assertEquals(2, fixture.server.requestCount)
                 } finally {
@@ -70,47 +71,12 @@ class AndroidImageCacheTest {
             f.server.enqueue(MockResponse().setHeader("Cache-Control", "public, max-age=3600").setBody("cached"))
             f.server.enqueue(MockResponse().setBody("unexpected network request"))
             f.cache().use { cache ->
-                assertEquals("cached", cache.image(f.url).decodeToString())
-                assertEquals("cached", cache.image(f.url).decodeToString())
+                assertEquals("cached", cache.download(ImageRequest(f.url), 1024).decodeToString())
+                assertEquals("cached", cache.download(ImageRequest(f.url), 1024).decodeToString())
             }
-            f.cache().use { cache -> assertEquals("cached", cache.image(f.url).decodeToString()) }
+            f.cache().use { cache -> assertEquals("cached", cache.download(ImageRequest(f.url), 1024).decodeToString()) }
             assertEquals(1, f.server.requestCount)
             assertNull(f.server.takeRequest().getHeader("Authorization"))
-        }
-    }
-
-    @Test fun retryDoesNotSendTheCachedValidatorOrReuseTheBrokenBody() = runBlocking {
-        Fixture().use { fixture ->
-            fixture.server.enqueue(MockResponse().setHeader("Cache-Control", "public, max-age=3600")
-                .setHeader("ETag", "\"v1\"").setBody("broken"))
-            fixture.server.enqueue(MockResponse().setHeader("Cache-Control", "public, max-age=3600")
-                .setHeader("ETag", "\"v1\"").setBody("repaired"))
-            fixture.cache().use { cache ->
-                val request = ImageRequest(fixture.url)
-                assertEquals("broken", cache.imageFromCacheFirst(request).decodeToString())
-                assertEquals("repaired", cache.download(request, 1024, bypassCache = true).decodeToString())
-                assertEquals("repaired", cache.imageFromCacheFirst(request).decodeToString())
-                assertEquals(2, fixture.server.requestCount)
-                assertNotNull(fixture.server.takeRequest(5, TimeUnit.SECONDS))
-                val retry = assertNotNull(fixture.server.takeRequest(5, TimeUnit.SECONDS))
-                assertNull(retry.getHeader("If-None-Match"))
-                assertEquals("no-cache", retry.getHeader("Cache-Control"))
-            }
-        }
-    }
-
-    @Test fun cacheFirstRevalidatesNoCacheImagesWithTheirEtag() = runBlocking {
-        Fixture().use { f ->
-            f.server.enqueue(MockResponse().setHeader("Cache-Control", "public, no-cache")
-                .setHeader("ETag", "\"v1\"").setBody("original"))
-            f.server.enqueue(MockResponse().setResponseCode(304).setHeader("Cache-Control", "public, max-age=3600"))
-            f.cache().use { cache ->
-                assertEquals("original", cache.imageFromCacheFirst(ImageRequest(f.url)).decodeToString())
-                assertEquals("original", cache.imageFromCacheFirst(ImageRequest(f.url)).decodeToString())
-            }
-            assertEquals(2, f.server.requestCount)
-            f.server.takeRequest()
-            assertEquals("\"v1\"", f.server.takeRequest().getHeader("If-None-Match"))
         }
     }
 
@@ -122,40 +88,18 @@ class AndroidImageCacheTest {
                 .setHeader("Cache-Control", "private, max-age=300"))
             f.server.enqueue(MockResponse().setHeader("Cache-Control", "private, max-age=300").setBody("cached"))
             f.server.enqueue(MockResponse().setBody("unexpected network request"))
-            f.cache().use { assertEquals("cached", it.image(f.url).decodeToString()) }
-            f.cache().use { assertEquals("cached", it.image(f.url).decodeToString()) }
+            f.cache().use { assertEquals("cached", it.download(ImageRequest(f.url), 1024).decodeToString()) }
+            f.cache().use { assertEquals("cached", it.download(ImageRequest(f.url), 1024).decodeToString()) }
             assertEquals(2, f.server.requestCount)
         }
     }
 
-    @Test fun doesNotPersistNoStoreResponses() = runBlocking {
-        Fixture().use { f ->
-            for (body in listOf("first", "second")) {
-                f.server.enqueue(MockResponse().setHeader("Cache-Control", "no-store").setBody(body))
-            }
-            f.cache().use { cache -> assertEquals("first", cache.image(f.url).decodeToString()) }
-            f.cache().use { cache -> assertEquals("second", cache.image(f.url).decodeToString()) }
-            assertEquals(2, f.server.requestCount)
-        }
-    }
     @Test fun cacheFirstDisplaysPreviouslyStoredImagesWithoutRevalidation() = runBlocking {
         Fixture().use { f ->
             f.server.enqueue(MockResponse().setHeader("Cache-Control", "public, max-age=0").setBody("photo"))
-            f.cache().use { cache -> assertEquals("photo", cache.imageFromCacheFirst(ImageRequest(f.url)).decodeToString()) }
-            f.cache().use { cache -> assertEquals("photo", cache.imageFromCacheFirst(ImageRequest(f.url)).decodeToString()) }
+            f.cache().use { cache -> assertEquals("photo", cache.download(ImageRequest(f.url), 1024).decodeToString()) }
+            f.cache().use { cache -> assertEquals("photo", cache.download(ImageRequest(f.url), 1024).decodeToString()) }
             assertEquals(1, f.server.requestCount)
-        }
-    }
-
-    @Test fun cacheFirstStillHonorsNoStore() = runBlocking {
-        Fixture().use { f ->
-            f.server.enqueue(MockResponse().setHeader("Cache-Control", "no-store").setBody("first"))
-            f.server.enqueue(MockResponse().setHeader("Cache-Control", "no-store").setBody("second"))
-            f.cache().use { cache ->
-                assertEquals("first", cache.imageFromCacheFirst(ImageRequest(f.url)).decodeToString())
-                assertEquals("second", cache.imageFromCacheFirst(ImageRequest(f.url)).decodeToString())
-            }
-            assertEquals(2, f.server.requestCount)
         }
     }
 
@@ -164,188 +108,174 @@ class AndroidImageCacheTest {
             f.server.enqueue(MockResponse().setResponseCode(404).setHeader("Cache-Control", "public, max-age=600"))
             f.server.enqueue(MockResponse().setBody("recovered"))
             f.cache().use { cache ->
-                assertFailsWith<ImageHttpFailure> { cache.image(f.url) }
-                assertEquals("recovered", cache.imageFromCacheFirst(ImageRequest(f.url)).decodeToString())
+                assertFailsWith<ImageHttpFailure> { cache.download(ImageRequest(f.url), 1024) }
+                assertEquals("recovered", cache.download(ImageRequest(f.url), 1024).decodeToString())
                 assertEquals(2, f.server.requestCount)
             }
         }
     }
 
-    @Test fun signedImagesAreNotStoredOnDisk() = runBlocking {
+    @Test fun failedCapacityCleanupCanBeRetriedWithTheSameSize() = runBlocking {
         Fixture().use { f ->
-            repeat(2) { f.server.enqueue(MockResponse().setHeader("Cache-Control", "public, max-age=600").setBody("photo")) }
+            val cachePath = f.directory.resolve("account/images-attachment-bodies-v3")
+            assertTrue(requireNotNull(cachePath.parentFile).mkdirs())
+            cachePath.writeText("unreadable as a directory")
             f.cache().use { cache ->
-                cache.signedImage(f.url)
-                assertNull(cache.imageIfCached(ImageRequest(f.url), 1024))
-                cache.signedImage(f.url)
+                assertFalse(cache.resizeAttachmentCache(0))
+                assertTrue(cachePath.delete())
+                assertTrue(cache.resizeAttachmentCache(0))
             }
-            repeat(2) { assertTrue(f.server.takeRequest().getHeader("Cache-Control").orEmpty().contains("no-store")) }
         }
     }
 
-
-    @Test fun revalidatesAnOriginalWhenTheSignedUrlChanges() = runBlocking {
+    @Test fun revocationPreventsAnInFlightDownloadFromRestoringTheCachedImage() = runBlocking {
         Fixture().use { f ->
-            f.server.enqueue(MockResponse().setHeader("ETag", "\"one\"").setBody("original"))
-            f.server.enqueue(MockResponse().setResponseCode(304))
-            f.server.enqueue(MockResponse().setHeader("ETag", "\"two\"").setBody("replacement"))
-            f.server.enqueue(MockResponse().setBody("other account"))
+            val releaseResponse = CountDownLatch(1)
+            val firstRequest = AtomicBoolean(true)
+            f.server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse =
+                    if (firstRequest.getAndSet(false)) {
+                        check(releaseResponse.await(5, TimeUnit.SECONDS))
+                        MockResponse().setBody("old")
+                    } else MockResponse().setBody("new")
+            }
             val key = "id:original"
             f.cache().use { cache ->
-                assertEquals("original", cache.signedImage("${f.url}?X-Amz-Signature=old", key).decodeToString())
+                val pending = async {
+                    assertFailsWith<ImageHttpFailure> { cache.signedImage(f.url, key) }
+                }
+                try {
+                    assertNotNull(withContext(Dispatchers.IO) { f.server.takeRequest(5, TimeUnit.SECONDS) })
+                    cache.removeAttachmentImages("id")
+                    assertNull(cache.cachedAttachmentPreview(key))
+                    assertEquals(403, assertFailsWith<ImageHttpFailure> { cache.signedImage(f.url, key) }.status)
+                    cache.allowAttachmentImages("id")
+                } finally {
+                    releaseResponse.countDown()
+                }
+                assertEquals(403, pending.await().status)
+                assertNull(cache.cachedAttachmentPreview(key))
+                assertEquals("new", cache.signedImage(f.url, key).decodeToString())
             }
             f.cache().use { cache ->
-                assertEquals("original", cache.signedImage("${f.url}?X-Amz-Signature=new", key).decodeToString())
-                assertEquals("replacement", cache.signedImage("${f.url}?X-Amz-Signature=newer", key).decodeToString())
-            }
-            f.cache(account = "other").use { cache ->
-                assertEquals("other account", cache.signedImage("${f.url}?X-Amz-Signature=newer", key).decodeToString())
-            }
-            assertEquals(4, f.server.requestCount)
-            assertNull(f.server.takeRequest().getHeader("If-None-Match"))
-            repeat(2) { assertEquals("\"one\"", f.server.takeRequest().getHeader("If-None-Match")) }
-            assertNull(f.server.takeRequest().getHeader("If-None-Match"))
-        }
-    }
-
-    @Test fun reusesAThumbnailAcrossClientRestartsUntilItExpires() = runBlocking {
-        Fixture().use { f ->
-            var time = 1_000L
-            f.server.enqueue(MockResponse().setHeader("Cache-Control", "private, max-age=300")
-                .setHeader("ETag", "\"thumbnail\"").setHeader("Age", "30").setBody("thumbnail"))
-            f.server.enqueue(MockResponse().setBody("updated"))
-            val key = "id:thumbnail"
-            f.cache(now = { time }).use { cache ->
-                assertEquals("thumbnail", cache.signedImage("${f.url}?X-Amz-Signature=old", key).decodeToString())
-            }
-            f.cache(now = { time }).use { cache ->
-                time += 269_999
-                assertEquals("thumbnail", cache.signedImage("${f.url}?X-Amz-Signature=new", key).decodeToString())
-                assertEquals(1, f.server.requestCount)
-                time++
-                assertEquals("updated", cache.signedImage("${f.url}?X-Amz-Signature=new", key).decodeToString())
+                assertEquals("new", cache.cachedAttachmentPreview(key)?.decodeToString())
             }
             assertEquals(2, f.server.requestCount)
-            f.server.takeRequest()
-            assertEquals("\"thumbnail\"", f.server.takeRequest().getHeader("If-None-Match"))
         }
     }
 
-    @Test fun cachesRedirectedThumbnailsWithoutSendingTheFinalEtagToTheEntryUrl() = runBlocking {
-        Fixture().use { f ->
-            var time = 1_000L
-            repeat(2) {
-                f.server.enqueue(MockResponse().setResponseCode(307).setHeader("Location", "/final.png")
-                    .setHeader("Cache-Control", "private, max-age=30"))
-                f.server.enqueue(MockResponse().setHeader("Cache-Control", "private, max-age=60")
-                    .setHeader("ETag", "\"final\"").setBody("thumbnail"))
-            }
-            f.cache(now = { time }).use { cache ->
-                val key = "id:thumbnail"
-                assertEquals("thumbnail", cache.signedImage("${f.url}?X-Amz-Signature=old", key).decodeToString())
-                assertEquals("thumbnail", cache.signedImage("${f.url}?X-Amz-Signature=new", key).decodeToString())
-                assertEquals(2, f.server.requestCount)
-                time += 30_000
-                assertEquals("thumbnail", cache.signedImage("${f.url}?X-Amz-Signature=new", key).decodeToString())
-            }
-            assertEquals(4, f.server.requestCount)
-            repeat(4) { assertNull(f.server.takeRequest().getHeader("If-None-Match")) }
-        }
-    }
 
-    @Test fun doesNotReuseTheFinalImageWhenARedirectCannotBeCached() = runBlocking {
+    @Test fun usesSameCapacityForSignedAndPublicImagesAcrossClients() = runBlocking {
         Fixture().use { f ->
-            val conditions = listOf("Cache-Control" to "no-store", "Vary" to "*")
-            f.cache().use { cache ->
-                for ((name, value) in conditions) {
-                    val key = "$name:thumbnail"
-                    for (target in listOf("first", "second")) {
-                        f.server.enqueue(MockResponse().setResponseCode(307)
-                            .setHeader("Location", "/$target.png").setHeader(name, value))
-                        f.server.enqueue(MockResponse().setHeader("Cache-Control", "private, max-age=300").setBody(target))
-                        assertEquals(target, cache.signedImage(f.url, key).decodeToString())
-                    }
+            val image = "x".repeat(512)
+            f.server.enqueue(MockResponse().setHeader("Cache-Control", "no-store").setBody(image))
+            f.server.enqueue(MockResponse().setHeader("Cache-Control", "no-cache, must-revalidate")
+                .setHeader("Age", "10000000").setHeader("Vary", "*").setBody(image))
+            f.cache().use { foreground ->
+                f.cache().use { push ->
+                    foreground.signedImage("${f.url}?token=old", "id:original")
+                    push.download(ImageRequest(f.url), 1024)
+                    assertEquals(image, push.cachedAttachmentPreview("id:original")?.decodeToString())
+                    assertEquals(image, foreground.cachedPublicImage(f.url, 1024)?.decodeToString())
+                    assertTrue(push.resizeAttachmentCache(1000))
+                    assertNull(foreground.cachedAttachmentPreview("id:original"))
+                    assertTrue(foreground.resizeAttachmentCache(0))
+                    assertNull(push.cachedPublicImage(f.url, 1024))
                 }
             }
-            assertEquals(8, f.server.requestCount)
+            assertEquals(2, f.server.requestCount)
         }
     }
 
-    @Test fun retainsFreshnessAndValidatorAcrossFailureAndHeaderlessNotModified() = runBlocking {
+    @Test fun signedImagesSurviveRestartAndSignedUrlRotation() = runBlocking {
         Fixture().use { f ->
-            var time = 1_000L
-            f.server.enqueue(MockResponse().setHeader("Cache-Control", "private, max-age=300")
-                .setHeader("ETag", "\"thumbnail\"").setBody("thumbnail"))
+            val key = "id:thumbnail"
+            f.server.enqueue(MockResponse().setHeader("Cache-Control", "no-store, must-revalidate")
+                .setHeader("Vary", "*").setBody("cached"))
+            f.cache().use { it.signedImage("${f.url}?token=old", key) }
+            f.cache().use {
+                assertEquals("cached", it.cachedAttachmentPreview(key)?.decodeToString())
+                assertEquals("cached", it.signedImage("${f.url}?token=new", key).decodeToString())
+            }
+            assertEquals(1, f.server.requestCount)
+        }
+    }
+
+    @Test fun explicitRefreshUsesValidatorsOnlyAtTheMatchingRedirectDestination() = runBlocking {
+        Fixture().use { f ->
+            val lastModified = "Wed, 21 Oct 2015 07:28:00 GMT"
+            repeat(2) { attempt ->
+                f.server.enqueue(MockResponse().setResponseCode(307).setHeader("Location", "/final"))
+                f.server.enqueue(if (attempt == 0) MockResponse().setBody("cached")
+                    .setHeader("Cache-Control", "no-store").setHeader("Last-Modified", lastModified)
+                else MockResponse().setResponseCode(304))
+            }
+            val route = ImageRequest(f.url, proxied = true)
+            val source = "https://example.org/emoji.png"
+            f.cache().use { it.download(route, 1024, source = source) }
+            f.cache().use {
+                assertEquals("cached", it.cachedPublicImage(source, 1024)?.decodeToString())
+                assertEquals("cached", it.download(route, 1024, bypassCache = true, source = source).decodeToString())
+            }
+            assertEquals(4, f.server.requestCount)
+            repeat(3) { assertNull(f.server.takeRequest().getHeader("If-Modified-Since")) }
+            assertEquals(lastModified, f.server.takeRequest().getHeader("If-Modified-Since"))
+        }
+    }
+
+    @Test fun etagRefreshReusesBodyAfterANetworkFailure() = runBlocking {
+        Fixture().use { f ->
+            f.server.enqueue(MockResponse().setHeader("ETag", "\"v1\"").setBody("cached"))
             f.server.enqueue(MockResponse().setResponseCode(503))
             f.server.enqueue(MockResponse().setResponseCode(304))
-            f.server.enqueue(MockResponse().setBody("unexpected"))
-            val key = "id:thumbnail"
-            f.cache(now = { time }).use { cache ->
-                assertEquals("thumbnail", cache.signedImage(f.url, key).decodeToString())
-                time += 300_000
-                assertEquals(503, assertFailsWith<ImageHttpFailure> { cache.signedImage(f.url, key) }.status)
-            }
-            f.cache(now = { time }).use { cache ->
-                assertEquals("thumbnail", cache.signedImage(f.url, key).decodeToString())
-            }
-            f.cache(now = { time }).use { cache ->
-                time += 299_999
-                assertEquals("thumbnail", cache.signedImage(f.url, key).decodeToString())
+            val key = "id:original"
+            f.cache().use {
+                it.signedImage("${f.url}?X-Amz-Signature=first", key)
+                assertFailsWith<ImageHttpFailure> { it.signedImage(f.url, key, retry = true) }
+                assertEquals("cached", it.signedImage(f.url, key).decodeToString())
+                assertEquals("cached", it.signedImage("${f.url}?X-Amz-Signature=second", key, retry = true).decodeToString())
             }
             assertEquals(3, f.server.requestCount)
             assertNull(f.server.takeRequest().getHeader("If-None-Match"))
-            repeat(2) { assertEquals("\"thumbnail\"", f.server.takeRequest().getHeader("If-None-Match")) }
+            repeat(2) { assertEquals("\"v1\"", f.server.takeRequest().getHeader("If-None-Match")) }
         }
     }
 
-    @Test fun maxAgeTakesPrecedenceOverInvalidExpiresOnOkAndNotModified() = runBlocking {
+    @Test fun discardingAnUndecodableBodyRemovesItsValidator() = runBlocking {
         Fixture().use { f ->
-            var time = 1_000L
-            f.server.enqueue(MockResponse().setHeader("Cache-Control", "private, max-age=60")
-                .setHeader("Expires", "0").setHeader("ETag", "\"thumbnail\"").setBody("thumbnail"))
-            f.server.enqueue(MockResponse().setResponseCode(304).setHeader("Expires", "0"))
-            f.server.enqueue(MockResponse().setBody("unexpected download"))
-            val key = "id:thumbnail"
-            f.cache(now = { time }).use { cache ->
-                assertEquals("thumbnail", cache.signedImage(f.url, key).decodeToString())
-            }
-            f.cache(now = { time }).use { cache ->
-                assertEquals("thumbnail", cache.signedImage(f.url, key).decodeToString())
-                assertEquals(1, f.server.requestCount)
-                time += 60_000
-                assertEquals("thumbnail", cache.signedImage(f.url, key).decodeToString())
-            }
-            f.cache(now = { time }).use { cache ->
-                assertEquals("thumbnail", cache.signedImage(f.url, key).decodeToString())
-            }
-            assertEquals(2, f.server.requestCount)
-            f.server.takeRequest()
-            assertEquals("\"thumbnail\"", f.server.takeRequest().getHeader("If-None-Match"))
-        }
-    }
-
-    @Test fun signedAttachmentsSkipDiskForNoStoreNoCacheOrVary() = runBlocking {
-        Fixture().use { f ->
-            val policies = listOf(
-                "Cache-Control" to "no-store",
-                "Cache-Control" to "no-cache",
-                "Vary" to "*",
-                "Vary" to "Accept",
-            )
+            f.server.enqueue(MockResponse().setHeader("ETag", "broken").setBody("invalid"))
+            f.server.enqueue(MockResponse().setBody("replacement"))
             f.cache().use { cache ->
-                for ((index, header) in policies.withIndex()) {
-                    val (name, value) = header
-                    val key = "$index:thumbnail"
-                    f.server.enqueue(MockResponse().setHeader(name, value)
-                        .setHeader("ETag", "\"variant\"").setBody("first"))
-                    f.server.enqueue(MockResponse().setBody("second"))
-                    assertEquals("first", cache.signedImage("${f.url}?X-Amz-Signature=old", key).decodeToString())
-                    assertEquals("second", cache.signedImage("${f.url}?X-Amz-Signature=new", key).decodeToString())
-                    assertNull(f.server.takeRequest().getHeader("If-None-Match"))
-                    assertNull(f.server.takeRequest().getHeader("If-None-Match"))
-                }
+                val route = ImageRequest(f.url)
+                val bytes = cache.download(route, 1024)
+                cache.discardUndecodableImage(f.url, null, bytes)
+                assertEquals("replacement", cache.download(route, 1024, bypassCache = true).decodeToString())
             }
-            assertEquals(policies.size * 2, f.server.requestCount)
+            f.server.takeRequest()
+            assertNull(f.server.takeRequest().getHeader("If-None-Match"))
+        }
+    }
+
+    @Test fun retainsLegacyAttachmentBodyWithAnExpiredDeadline() = runBlocking {
+        Fixture().use { f ->
+            val key = "legacy:thumbnail"
+            val legacy = f.directory.resolve("legacy/images")
+            val directory = legacy.resolveSibling("images-attachment-bodies-v3")
+            assertTrue(directory.mkdirs())
+            val file = directory.resolve(AttachmentImageDiskCache.digest(key))
+            java.io.DataOutputStream(file.outputStream()).use {
+                it.writeUTF("http:fresh:old-hash")
+                it.writeLong(0)
+                it.writeLong(0)
+                it.writeUTF("")
+                it.writeLong(Long.MIN_VALUE)
+                it.writeLong(Long.MIN_VALUE)
+                it.writeBytes("old image")
+            }
+            AndroidImageCache(f.directory.resolve("account/images"), legacyDirectory = legacy).use {
+                assertEquals("old image", it.cachedAttachmentPreview(key)?.decodeToString())
+                assertFalse(file.exists())
+            }
         }
     }
 }

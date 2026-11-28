@@ -1,0 +1,1 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"><application><activity android:name="zoo.android.SystemSurfaceSampleActivity" android:exported="true" android:permission="android.permission.DUMP"/></application></manifest>

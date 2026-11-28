@@ -1,15 +1,21 @@
 package zoo.android.ui
 
+import androidx.compose.ui.semantics.selected
+import androidx.compose.foundation.border
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -29,7 +35,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.testTag
@@ -39,6 +44,7 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import zoo.ChannelLinkTarget
 import kotlinx.coroutines.withContext
@@ -62,7 +68,8 @@ internal data class TimelineMedia(
     val key: String, val name: String, val kind: TimelineMediaKind, val sensitive: Boolean = false,
     val url: String? = null, val attachmentId: String? = null, val previewUrl: String? = null,
     val imageAspectRatio: Float? = null, val blurhash: String? = null,
-    val thumbnailUrl: String? = null, val useThumbnail: Boolean = true,
+    val thumbnailUrl: String? = null, val useThumbnail: Boolean = true, val description: String? = null,
+    val localImage: ImageBitmap? = null,
 )
 
 internal data class TimelineQuote(
@@ -71,6 +78,8 @@ internal data class TimelineQuote(
     val avatar: String? = null,
     val postAuthor: zoo.Row? = null,
     val local: Boolean = false,
+    val remotePostAvailable: Boolean = false,
+    val handle: String? = null,
 ) {
     val canOpen: Boolean get() = postId != null || !local
 }
@@ -79,26 +88,49 @@ internal val LocalKitchenReactionImage = staticCompositionLocalOf<suspend (Strin
 
 internal val LocalTimelineImage = staticCompositionLocalOf<suspend (TimelineMedia) -> ImageBitmap?> { { null } }
 
+internal val LocalTimelineImageWithPreview =
+    staticCompositionLocalOf<(suspend (TimelineMedia, (ImageBitmap) -> Unit) -> ImageBitmap?)?> { null }
+
+internal val LocalAttachmentImageDenied = staticCompositionLocalOf<(String) -> Boolean> { { false } }
+
 internal val LocalCachedTimelineImage = staticCompositionLocalOf<(TimelineMedia) -> ImageBitmap?> { { null } }
 
 @Composable
 internal fun rememberTimelineImage(media: TimelineMedia?, revealed: Boolean = true): ImageBitmap? {
+    media?.localImage?.let { return it.takeIf { revealed } }
+    val isDenied = LocalAttachmentImageDenied.current
+    val denied = media?.attachmentId?.let(isDenied) == true
     val cached = LocalCachedTimelineImage.current
     val load = LocalTimelineImage.current
+    val loadWithPreview = LocalTimelineImageWithPreview.current
     val retry = LocalTimelineImageRetry.current
-    val initial = remember(media, cached) { media?.let(cached) }
+    val initial = remember(media, cached) { if (denied) null else media?.let(cached) }
     val isRevealed = rememberUpdatedState(revealed)
-    return key(media, cached, load, retry) {
-        produceState(initial) {
-            if (initial == null && media != null) {
+    return key(media, cached, load, loadWithPreview, retry, isDenied) {
+        var bitmap by remember { mutableStateOf(initial) }
+        LaunchedEffect(Unit) {
+            if (media == null) return@LaunchedEffect
+            var first = true
+            snapshotFlow { media.attachmentId?.let(isDenied) == true }.collectLatest { blocked ->
+                val opening = first
+                first = false
+                if (blocked && !opening) {
+                    bitmap = null
+                    return@collectLatest
+                }
+                if (opening && initial != null && media.attachmentId == null) return@collectLatest
+
                 val prefetching = !isRevealed.value
-                value = load(media)
-                if (prefetching && value == null) {
+                bitmap = if (opening && loadWithPreview != null) {
+                    loadWithPreview(media) { bitmap = it }
+                } else load(media)
+                if (prefetching && bitmap == null && !blocked) {
                     snapshotFlow { isRevealed.value }.first { it }
-                    value = retry(media)
+                    bitmap = retry(media)
                 }
             }
-        }.value
+        }
+        bitmap.takeUnless { denied }
     }
 }
 
@@ -109,12 +141,23 @@ internal fun timelineMediaKind(mimeType: String): TimelineMediaKind? = when (mim
 }
 
 @Composable
-internal fun RepostAttribution(actor: String, colors: AndroidColors) {
-    Row(Modifier.padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        UiGlyph(UiIcon.Repost, colors.secondary, AndroidControlSize.metadataIcon)
-        Text("${actor}さんが再投稿", color = colors.secondary, fontSize = 12.sp,
-            maxLines = 1, overflow = TextOverflow.Ellipsis)
+internal fun RepostAttribution(actor: String, avatar: String?, colors: AndroidColors) {
+    Row(Modifier.fillMaxWidth().padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        UiGlyph(UiIcon.Repost, colors.renote, 16.dp)
+        val bitmap = timelineIcon(avatar)
+        Box(Modifier.size(18.dp).clip(CircleShape).background(colors.renote.copy(alpha = .12f)),
+            contentAlignment = Alignment.Center) {
+            if (bitmap == null) UiGlyph(UiIcon.Person, colors.renote, 14.dp)
+            else Image(bitmap, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        }
+        val label = androidx.compose.ui.text.buildAnnotatedString {
+            pushStyle(androidx.compose.ui.text.SpanStyle(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold))
+            append(actor)
+            pop()
+            append("さんがリノート")
+        }
+        Text(label, color = colors.renote, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -123,40 +166,67 @@ internal fun TimelineQuoteCard(
     quote: TimelineQuote, colors: AndroidColors, open: () -> Unit, openMedia: (TimelineMedia) -> Unit,
     openProfile: (() -> Unit)? = null,
 ) {
-    Column(Modifier.fillMaxWidth().padding(top = 6.dp).clip(RoundedCornerShape(8.dp))
-        .background(colors.inputSurface).padding(horizontal = 10.dp, vertical = 6.dp)) {
+    var showOriginal by remember(quote.uri, quote.remotePostAvailable) { mutableStateOf(false) }
+    val shape = RoundedCornerShape(12.dp)
+    Column(Modifier.fillMaxWidth().padding(top = 6.dp).clip(shape).background(colors.background)
+        .border(1.dp, colors.inputBoundary, shape).padding(horizontal = 12.dp, vertical = 8.dp)) {
         if (!quote.canOpen) {
-            Text(androidLabel("home.quoteUnavailable", "引用元の投稿を表示できません"), color = colors.secondary)
+            Text(androidLabel("home.embeddedPostUnavailable", "この投稿は表示できません"), color = colors.secondary)
             return@Column
         }
         val quoteLink = Modifier.heightIn(min = AndroidControlSize.target)
-            .clickable(role = Role.Button, onClick = open)
-        val title: @Composable () -> Unit = {
-            Text(if (quote.author.isBlank()) "引用元を開く" else "引用 · ${quote.author}",
-                color = colors.secondary, fontSize = if (quote.author.isBlank()) 12.sp else entryTextSize,
-                fontWeight = if (quote.author.isBlank()) AndroidWeights.label else AndroidWeights.entryAuthor)
-        }
-        val body: @Composable () -> Unit = {
-            if (quote.body.isNotBlank()) EntryBody(quote.body, colors.foreground, entryTextSize, quote.emoji, maxLines = 4)
-        }
-        if (openProfile != null) {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                TimelineAvatar(quote.author, quote.avatar, colors, 20.dp, openProfile, Alignment.CenterStart)
-                Column(Modifier.weight(1f).then(quoteLink), verticalArrangement = Arrangement.Center) {
-                    title()
-                    body()
+            .clickable(role = Role.Button) { if (quote.remotePostAvailable) showOriginal = true else open() }
+        Column(Modifier.fillMaxWidth().then(quoteLink), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                val nameWidth = if (quote.handle == null) maxWidth else maxWidth * .46f
+                val profileAction = if (openProfile == null) Modifier else Modifier
+                    .clickable(role = Role.Button, onClick = openProfile)
+                    .semantics { contentDescription = "「${quote.author}」のプロフィールを開く" }
+                Row(Modifier.fillMaxWidth().then(profileAction).heightIn(min = 28.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (quote.author.isNotBlank()) Box(Modifier.testTag("quote-avatar")) {
+                        TimelineAvatar(quote.author, quote.avatar, colors, 20.dp)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(quote.author.ifBlank { android.net.Uri.parse(quote.uri).host ?: "投稿を開く" },
+                            Modifier.widthIn(max = nameWidth).alignByBaseline(), color = colors.foreground,
+                            fontSize = entryTextSize, fontWeight = AndroidWeights.entryAuthor,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        quote.handle?.let { handle ->
+                            Text(handle, Modifier.alignByBaseline(), color = colors.secondary, fontSize = 12.sp,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
                 }
             }
-        } else {
-            Column(Modifier.fillMaxWidth().then(quoteLink), verticalArrangement = Arrangement.Center) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (quote.author.isNotBlank()) TimelineAvatar(quote.author, quote.avatar, colors, 20.dp)
-                    title()
-                }
-                body()
-            }
+            if (quote.body.isNotBlank()) EntryBody(quote.body, colors.foreground, entryTextSize, quote.emoji, mentionColors = colors, maxLines = 4)
         }
         TimelineMediaGroup(quote.media, colors, apub = true, open = openMedia)
+    }
+    if (showOriginal) {
+        AlertDialog(
+            onDismissRequest = { showOriginal = false },
+            title = { Text(quote.author.ifBlank { android.net.Uri.parse(quote.uri).host.orEmpty() }) },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    android.net.Uri.parse(quote.uri).host?.let { Text(it) }
+                    EntryBody(quote.body, colors.foreground, entryTextSize, quote.emoji, mentionColors = colors)
+                    TimelineMediaGroup(quote.media, colors, apub = true) { media ->
+                        showOriginal = false
+                        openMedia(media)
+                    }
+                }
+            },
+            confirmButton = {
+                DialogAction(androidLabel("common.close", "閉じる"), UiIcon.Close) { showOriginal = false }
+            },
+            dismissButton = {
+                DialogAction("投稿を開く", UiIcon.External) {
+                    showOriginal = false
+                    open()
+                }
+            },
+        )
     }
 }
 
@@ -304,7 +374,8 @@ private fun MediaFrame(
     if (bitmap != null && onImageRatio != null) {
         SideEffect { onImageRatio(bitmap.width.toFloat() / bitmap.height) }
     }
-    val placeholder = rememberMediaBlurHash(media.blurhash.takeIf { bitmap == null })
+    val denied = media.attachmentId?.let(LocalAttachmentImageDenied.current) == true
+    val placeholder = rememberMediaBlurHash(media.blurhash.takeIf { bitmap == null && !denied })
     val showLabel = if (video) androidLabel("attachments.showSensitiveVideo", "動画を表示") else androidLabel("attachments.showSensitive", "画像を表示")
     val hideLabel = if (video) androidLabel("attachments.hideSensitiveVideo", "動画を隠す") else androidLabel("attachments.hideSensitive", "画像を隠す")
     val playLabel = androidLabel("attachments.play", "再生")
@@ -314,8 +385,8 @@ private fun MediaFrame(
             onClick = { if (hidden) revealed = true else open() },
         ), contentAlignment = Alignment.Center) {
             when {
-                bitmap != null -> Image(bitmap, media.name, Modifier.matchParentSize(), alignment = imageAlignment, contentScale = contentScale)
-                placeholder != null -> Image(placeholder, media.name.takeUnless { hidden }, Modifier.matchParentSize().testTag("media-blurhash"),
+                bitmap != null -> Image(bitmap, media.description ?: media.name, Modifier.matchParentSize(), alignment = imageAlignment, contentScale = contentScale)
+                placeholder != null -> Image(placeholder, (media.description ?: media.name).takeUnless { hidden }, Modifier.matchParentSize().testTag("media-blurhash"),
                     contentScale = ContentScale.FillBounds)
                 hidden && !showSensitiveToggle -> Text(showLabel, color = colors.foreground, fontSize = 14.sp)
                 !hidden && !video -> Text(media.name, Modifier.padding(horizontal = 10.dp), color = colors.foreground,
@@ -364,15 +435,13 @@ private fun timelineIcon(url: String?): ImageBitmap? =
 
 @Composable
 internal fun TimelineAvatar(
-    author: String, url: String?, colors: AndroidColors, size: Dp = 36.dp, openProfile: (() -> Unit)? = null,
+    author: String, url: String?, colors: AndroidColors, size: Dp = AndroidControlSize.timelineAvatar, openProfile: (() -> Unit)? = null,
     avatarAlignment: Alignment = Alignment.TopStart,
 ) {
     val image = timelineIcon(url)
     val imageContent: @Composable () -> Unit = {
-        Box(Modifier.size(size).clip(CircleShape).background(colors.background), contentAlignment = Alignment.Center) {
-            if (image == null) Text(author.take(1), Modifier.clearAndSetSemantics {}, color = colors.secondary, fontSize = 13.sp)
-            else Image(image, contentDescription = null, Modifier.matchParentSize().testTag("timeline-avatar"), contentScale = ContentScale.Crop)
-        }
+        UserAvatar(author, image, Modifier.size(size).then(if (image == null) Modifier else Modifier.testTag("timeline-avatar")),
+            colors.background, colors.secondary, 13.sp)
     }
     if (openProfile == null) imageContent()
     else {
@@ -385,6 +454,37 @@ internal fun TimelineAvatar(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun TimelineReactions(entry: TimelineItem, colors: AndroidColors, showAdd: Boolean, dispatch: (AndroidUiAction) -> Unit) {
+    val sending = entry.operationStatus[EntryOperation.React] == EntryOperationStatus.Sending
+    FlowRow(
+        Modifier.fillMaxWidth().padding(top = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        entry.reactions.forEach { reaction ->
+            TimelineReactionChip(reaction.copy(canToggle = entry.canReact && !sending && reaction.canToggle), colors) {
+                dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.React, reaction.value, reaction.imageId))
+            }
+        }
+        if (showAdd && entry.canReact) {
+            val label = androidLabel("home.addReaction", "リアクションを追加")
+            Box(
+                Modifier.size(width = 38.dp, height = 32.dp).clip(ReactionShape)
+                    .border(1.dp, colors.inputBoundary, ReactionShape)
+                    .clickable(enabled = !sending, role = Role.Button) { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.React)) }
+                    .semantics { contentDescription = label },
+                contentAlignment = Alignment.Center,
+            ) {
+                UiGlyph(UiIcon.AddReaction, colors.foreground, 20.dp)
+            }
+        }
+    }
+}
+
+private val ReactionShape = RoundedCornerShape(9.dp)
+
 @Composable
 internal fun TimelineReactionChip(reaction: TimelineReaction, colors: AndroidColors, toggle: () -> Unit) {
     val kitchen = LocalKitchenReactionImage.current
@@ -395,14 +495,17 @@ internal fun TimelineReactionChip(reaction: TimelineReaction, colors: AndroidCol
     } else reaction.image
     val image = timelineIcon(url)
     Row(
-        Modifier.alpha(if (reaction.canToggle) 1f else 0.55f).heightIn(min = AndroidControlSize.target)
-            .background(if (reaction.selected) colors.headerLight else colors.background, CircleShape)
-            .clickable(enabled = reaction.canToggle, role = Role.Button, onClick = toggle).padding(horizontal = 10.dp, vertical = 12.dp),
+        Modifier.alpha(if (reaction.canToggle) 1f else 0.55f).heightIn(min = 32.dp)
+            .clip(ReactionShape)
+            .background(if (reaction.selected) colors.headerLight else colors.inputSurface)
+            .border(1.dp, if (reaction.selected) colors.reactionSelectedBoundary else colors.inputBoundary, ReactionShape)
+            .semantics { selected = reaction.selected }
+            .clickable(enabled = reaction.canToggle, role = Role.Button, onClick = toggle).padding(horizontal = 10.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        if (image == null) Text(reaction.label, color = colors.foreground)
+        if (image == null) Text(reaction.label, color = colors.foreground, fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 112.dp))
         else Image(image, contentDescription = reaction.label, Modifier.size(18.dp), contentScale = ContentScale.Fit)
-        Text(reaction.count, color = colors.foreground)
+        Text(reaction.count, color = colors.foreground, fontSize = 13.sp, fontWeight = AndroidWeights.emphasis)
     }
 }

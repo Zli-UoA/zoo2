@@ -42,13 +42,17 @@ internal class AndroidEmojiCatalog(
         read("shortcodes.json").entries.groupBy({ it.value.jsonPrimitive.content }, { it.key })
             .map { (glyph, names) ->
                 val row = metadata[glyph.withoutVariationSelector()]
-                EmojiChoice(
+                val choice = EmojiChoice(
                     glyph, glyph, names.first().replace('_', ' '),
-                    keywords = (names + listOfNotNull(row?.text("label")) +
+                    localizedName = row?.text("label").orEmpty(),
+                    keywords = (names +
                         row?.array("tags").orEmpty().map { it.jsonPrimitive.content }).joinToString(" "),
                     category = groups[row?.text("group")] ?: uncategorized,
-                ) to (row?.text("group")?.toIntOrNull() ?: Int.MAX_VALUE)
-            }.sortedBy { it.second }.map { it.first }
+                )
+                val group = row?.text("group")?.toIntOrNull() ?: Int.MAX_VALUE
+                val order = row?.text("order")?.toIntOrNull() ?: Int.MAX_VALUE
+                Triple(group, order, choice)
+            }.sortedWith(compareBy({ it.first }, { it.second })).map { it.third }
     }
     private val kitchen by lazy { parseKitchen(read("emoji-kitchen.json")) }
 

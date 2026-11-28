@@ -12,7 +12,7 @@ import { useState } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 
 import { resolveConfig } from "../../../lib/config";
-import { getCollections } from "../../../lib/electric/collections";
+import { forgetCollections, getCollections } from "../../../lib/electric/collections";
 import { CollectionsProvider } from "../../../lib/electric/collections-context";
 import type { ChannelRow } from "../../../lib/electric/types";
 import { LOCALE_STORAGE_KEY } from "../../../lib/i18n/locale";
@@ -153,11 +153,27 @@ function stubFetch(options: { snapshotStatus?: number; messagesStatus?: number }
 }
 
 let namespace = 0;
+const disposeFixtures: (() => Promise<void>)[] = [];
 function renderBodies(contents: string[], visible: ChannelRow[]) {
   const bundle = getCollections(
     resolveConfig({ DEV: true, VITE_SHAPE_MODE: "proxy", VITE_DEV_USER_ID: "u1" }),
     { namespace: `channel-link-requests-${(namespace += 1)}`, persistence: null },
   );
+  const collections = new Set<{ cleanup(): Promise<void> }>([
+    bundle.channels,
+    bundle.users,
+    bundle.channelUsers,
+  ]);
+  const messages = bundle.messages;
+  bundle.messages = (id) => {
+    const collection = messages(id);
+    collections.add(collection);
+    return collection;
+  };
+  disposeFixtures.push(async () => {
+    await Promise.all([...collections].map((collection) => collection.cleanup()));
+    forgetCollections(bundle.namespace);
+  });
   const root = createRootRoute({ component: Outlet });
   const control: { setShown: (shown: boolean) => void } = { setShown: () => {} };
   function Bodies() {
@@ -190,9 +206,15 @@ function renderBodies(contents: string[], visible: ChannelRow[]) {
 
 const link = (id: string, message: string) => `${origin}/channels/${id}?message=${message}`;
 
-beforeEach(() => localStorage.setItem(LOCALE_STORAGE_KEY, "ja"));
-afterEach(() => {
+async function cleanupFixtures() {
   cleanup();
+  // 画面を消すだけでは5分間残る同期・再試行が、次のfetchモックへ流れ込むため。
+  await Promise.all(disposeFixtures.splice(0).map((dispose) => dispose()));
+}
+
+beforeEach(() => localStorage.setItem(LOCALE_STORAGE_KEY, "ja"));
+afterEach(async () => {
+  await cleanupFixtures();
   vi.unstubAllGlobals();
   localStorage.removeItem(LOCALE_STORAGE_KEY);
 });
@@ -211,7 +233,7 @@ async function snapshotCount(contents: string[], visible: ChannelRow[], expected
   }
   // 遅れて出る要求も数える。
   await new Promise((resolve) => setTimeout(resolve, 300));
-  cleanup();
+  await cleanupFixtures();
   vi.unstubAllGlobals();
   return Object.assign(recorded.snapshots, {
     // 行を取る要求ではない、チャンネルの変更を受け取るための要求（Shape の購読）。
@@ -360,7 +382,7 @@ it("同期に失敗したチャンネルは、リンクを出し直しても取�
   await view.show(true);
   expect(await screen.findByText("リンク先を読み込めませんでした")).toBeInTheDocument();
   await new Promise((resolve) => setTimeout(resolve, 500));
-  expect(recovered.messages).toHaveLength(0);
+  expect(recovered.messages.map((params) => params.toString())).toHaveLength(0);
   expect(source.status).toBe("error");
 
   // 使う表示がなくなって 5 分（TanStack DB の既定の `gcTime`）たつと、ライブラリが `messages` を片付ける。

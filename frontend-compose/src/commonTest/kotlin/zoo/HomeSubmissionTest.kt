@@ -43,6 +43,18 @@ class HomeSubmissionTest {
     }
 
     @Test
+    fun sharedImagesAreValidatedTogetherBeforeChangingExistingDraft() = runTest {
+        val fixture = Fixture(backgroundScope)
+        try {
+            fixture.images.maximumBytes = 8L * 1024 * 1024
+            val result = fixture.images.addShare("""{"origin":"pick","files":[{"id":"small","name":"a.jpg","type":"image/jpeg","size":"20"},{"id":"big","name":"b.jpg","type":"image/jpeg","size":"8388609"}]}""")
+            assertEquals("b.jpg: attachments.tooLarge", result)
+            assertEquals(listOf("fileRelease:small", "fileRelease:big"), fixture.files.released)
+            assertEquals(listOf("notes.txt"), fixture.images.items.map { it.name })
+        } finally { fixture.close() }
+    }
+
+    @Test
     fun leavingTheEditorDoesNotCancelOrDuplicateAnAcceptedSubmission() = runTest {
         val fixture = Fixture(backgroundScope)
         val response = CompletableDeferred<Unit>()

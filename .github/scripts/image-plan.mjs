@@ -57,17 +57,18 @@ function componentFile(c, f) {
 }
 
 const fileNames = files => files.flatMap(f => [f.filename, f.previous_filename].filter(Boolean));
+const previewInputs = files => fileNames(files).filter(path => path !== 'frontend/README.md');
 
 // listFiles が返す PR 全体の差分から、ビルドが必要なコンポーネントを返す。
 // GitHub の変更ファイル一覧は3000件で打ち切られる。変更を見落とさないよう、3000件以上ならすべてビルドする。
 export function pullRequestComponents(files) {
-  return files.length >= 3000 ? components : changedComponents(fileNames(files));
+  return files.length >= 3000 ? components : changedComponents(previewInputs(files));
 }
 
 // Preview label ワークフローが使う。Preview は画面を確かめるためのものなので、frontend 自身の変更がある PR だけに付ける。
 // backend・migrate だけ、またはビルド用の共有ファイルだけの変更では付けない。3000件以上は見落としを避けて付ける。
 export function wantsPreview(files) {
-  return files.length >= 3000 || fileNames(files).some(f => componentFile('frontend', f));
+  return files.length >= 3000 || previewInputs(files).some(f => componentFile('frontend', f));
 }
 
 // push 前の head が、すでに Preview の対象だったか。Compare API の差分から判定する。

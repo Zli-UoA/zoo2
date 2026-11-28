@@ -62,6 +62,8 @@ CREATE TABLE channel_user (
   user_id text NOT NULL,
   channel_id text NOT NULL,
   joined_at timestamp(3) NOT NULL,
+  notification_level text NOT NULL DEFAULT 'mentions',
+  CONSTRAINT channel_user_notification_level_check CHECK (notification_level IN ('all', 'mentions', 'mute')),
   CONSTRAINT "ChannelUser_pkey" PRIMARY KEY (user_id, channel_id),
   CONSTRAINT channel_user_user_id_fkey
     FOREIGN KEY (user_id) REFERENCES users (id)
@@ -70,6 +72,76 @@ CREATE TABLE channel_user (
     FOREIGN KEY (channel_id) REFERENCES channels (id)
     ON UPDATE CASCADE ON DELETE RESTRICT
 );
+
+-- チャンネルごとの通知設定の正本 (#620)。channel_user.notification_level は旧アプリとの
+-- 互換用に残すだけで、実際の設定はここにだけ持つ。本人用の Shape / REST からのみ読み書きし、
+-- メンバー一覧から他人の設定が漏れないようにする。
+CREATE TABLE user_channel_notification_settings (
+  user_id text NOT NULL,
+  channel_id text NOT NULL,
+  notification_level text NOT NULL DEFAULT 'mentions',
+  CONSTRAINT user_channel_notification_settings_check CHECK (notification_level IN ('all', 'mentions', 'mute')),
+  CONSTRAINT user_channel_notification_settings_pkey PRIMARY KEY (user_id, channel_id),
+  CONSTRAINT user_channel_notification_settings_user_id_fkey
+    FOREIGN KEY (user_id) REFERENCES users (id)
+    ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT user_channel_notification_settings_channel_id_fkey
+    FOREIGN KEY (channel_id) REFERENCES channels (id)
+    ON UPDATE CASCADE ON DELETE CASCADE
+);
+-- 投稿時の通知先選択とスレッド参加者の JOIN は channel_id で引く。主キーは (user_id, channel_id) なので、
+-- チャンネル単位の走査を M 行に抑えるための索引。
+CREATE INDEX idx_user_channel_notification_settings_channel_id
+  ON user_channel_notification_settings (channel_id, user_id);
+
+-- メンバーシップの追加・削除に設定行を追随させる。旧アプリが channel_user に書いた通知レベルは
+-- 新しいテーブルへ写し、古い列は既定値へ戻す（ローリング更新中もメンバー一覧から実際の設定を読めない）。
+CREATE FUNCTION user_channel_notification_settings_sync() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    DELETE FROM user_channel_notification_settings
+     WHERE user_id = OLD.user_id AND channel_id = OLD.channel_id;
+    RETURN OLD;
+  END IF;
+  INSERT INTO user_channel_notification_settings (user_id, channel_id, notification_level)
+  VALUES (NEW.user_id, NEW.channel_id, 'mentions')
+  ON CONFLICT (user_id, channel_id) DO NOTHING;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE TRIGGER channel_user_notification_settings_sync
+  AFTER INSERT OR DELETE ON channel_user
+  FOR EACH ROW EXECUTE FUNCTION user_channel_notification_settings_sync();
+
+CREATE FUNCTION channel_user_notification_level_legacy() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.notification_level IS DISTINCT FROM 'mentions' THEN
+      INSERT INTO user_channel_notification_settings (user_id, channel_id, notification_level)
+      VALUES (NEW.user_id, NEW.channel_id, NEW.notification_level)
+      ON CONFLICT (user_id, channel_id) DO UPDATE SET notification_level = EXCLUDED.notification_level
+       WHERE user_channel_notification_settings.notification_level <> EXCLUDED.notification_level;
+    END IF;
+    -- 旧アプリが読む列には実際の設定を残さない。
+    NEW.notification_level := 'mentions';
+    RETURN NEW;
+  END IF;
+  -- UPDATE OF notification_level で発火したときは、旧列が既定値の mentions に戻されているため
+  -- OLD と NEW が同じでも指定値を正本へ反映する。旧値との比較で判定すると、旧アプリが
+  -- 現在の mentions をそのまま書いたときに正本の all/mute が更新されない。
+  -- 同値更新の抑止は正本側の ON CONFLICT ... WHERE で行う。
+  INSERT INTO user_channel_notification_settings (user_id, channel_id, notification_level)
+  VALUES (NEW.user_id, NEW.channel_id, NEW.notification_level)
+  ON CONFLICT (user_id, channel_id) DO UPDATE SET notification_level = EXCLUDED.notification_level
+   WHERE user_channel_notification_settings.notification_level <> EXCLUDED.notification_level;
+  -- 旧アプリが読む列には実際の設定を残さない。
+  NEW.notification_level := OLD.notification_level;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE TRIGGER channel_user_notification_level_legacy
+  BEFORE INSERT OR UPDATE OF notification_level ON channel_user
+  FOR EACH ROW EXECUTE FUNCTION channel_user_notification_level_legacy();
 
 -- ユーザーが自分でチャンネルを退出した日時（退出日での並び替え用）。退出のたびに上書きし、
 -- 本人の Shape にだけ配る。チャンネルへの再参加では消さない。
@@ -1316,7 +1388,8 @@ BEGIN
 END $$;
 
 CREATE OR REPLACE FUNCTION app_member_events_v2() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE row_data jsonb:=CASE WHEN TG_OP='DELETE' THEN to_jsonb(OLD) ELSE to_jsonb(NEW) END;
+DECLARE src jsonb:=CASE WHEN TG_OP='DELETE' THEN to_jsonb(OLD) ELSE to_jsonb(NEW) END;
+DECLARE row_data jsonb:=jsonb_build_object('user_id',src->>'user_id','channel_id',src->>'channel_id','joined_at',src->>'joined_at');
 BEGIN
  PERFORM app_emit(CASE WHEN TG_OP='DELETE' THEN 'member.left' ELSE 'member.joined' END,row_data,row_data->>'user_id',row_data->>'channel_id',NULL,NULL,CASE WHEN TG_OP='DELETE' THEN row_data->>'user_id' END);
  RETURN CASE WHEN TG_OP='DELETE' THEN OLD ELSE NEW END;
@@ -1782,7 +1855,9 @@ CREATE TRIGGER apub_remote_recipients_home_live AFTER INSERT OR UPDATE OR DELETE
 CREATE TRIGGER apub_follows_home_live AFTER INSERT OR UPDATE OR DELETE ON apub_follows FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();
 CREATE TRIGGER apub_actors_home_live AFTER INSERT OR UPDATE OR DELETE ON apub_actors FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();
 CREATE TRIGGER channels_home_live AFTER INSERT OR UPDATE OR DELETE ON channels FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();
-CREATE TRIGGER channel_user_home_live AFTER INSERT OR UPDATE OR DELETE ON channel_user FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();
+-- notification_level は Home の表示に影響しない。設定変更で全員の Home を refresh しないよう、
+-- UPDATE は Home の内容を変える列だけに絞る (文レベルトリガーなので SET 句で判定する)。
+CREATE TRIGGER channel_user_home_live AFTER INSERT OR UPDATE OF user_id, channel_id, joined_at OR DELETE ON channel_user FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();
 CREATE TRIGGER users_home_live AFTER INSERT OR DELETE ON users FOR EACH ROW EXECUTE FUNCTION notify_home_timeline();
 CREATE TRIGGER users_update_home_live AFTER UPDATE ON users FOR EACH ROW WHEN (OLD.* IS DISTINCT FROM NEW.*) EXECUTE FUNCTION notify_home_timeline();
 CREATE TRIGGER user_role_home_live AFTER INSERT OR UPDATE OR DELETE ON user_role FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();
@@ -2254,6 +2329,7 @@ ALTER TABLE notification_events REPLICA IDENTITY FULL;
 -- Match the existing ElectricSQL identities established by earlier migrations.
 ALTER TABLE attachments REPLICA IDENTITY FULL;
 ALTER TABLE channel_user REPLICA IDENTITY FULL;
+ALTER TABLE user_channel_notification_settings REPLICA IDENTITY FULL;
 ALTER TABLE channel_leave REPLICA IDENTITY FULL;
 ALTER TABLE channels REPLICA IDENTITY FULL;
 ALTER TABLE message_reactions REPLICA IDENTITY FULL;
@@ -4100,7 +4176,9 @@ BEGIN
     (NEW.parent_id,NEW.actor_id,NEW.published,NEW.deleted_at IS NOT NULL,EXISTS(SELECT 1 FROM home_posts WHERE id=NEW.parent_id AND user_id=r.user_id));
   RETURN NULL;
 END $$;
-CREATE TRIGGER apub_post_recipient_order AFTER UPDATE OF actor_id,published,parent_id,deleted_at ON apub_remote_posts FOR EACH ROW EXECUTE FUNCTION sync_apub_recipient_order();
+CREATE TRIGGER apub_post_recipient_order AFTER UPDATE OF actor_id,published,parent_id,deleted_at ON apub_remote_posts FOR EACH ROW
+  WHEN ((OLD.actor_id,OLD.published,OLD.parent_id,OLD.deleted_at IS NOT NULL) IS DISTINCT FROM (NEW.actor_id,NEW.published,NEW.parent_id,NEW.deleted_at IS NOT NULL))
+  EXECUTE FUNCTION sync_apub_recipient_order();
 -- Use 1,024 lock stripes: bulk inserts cannot exhaust advisory lock memory.
 CREATE FUNCTION sync_home_reply_recipient_order() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE parent text:=COALESCE(NEW.id,OLD.id);
@@ -4734,3 +4812,33 @@ CREATE TABLE apub_media_blurhash_queue (
   image_retry_counts jsonb
 );
 CREATE INDEX apub_media_blurhash_queue_available ON apub_media_blurhash_queue(available_at,post_id);
+
+-- Keep private versions fetched for quotes outside the Inbox and notification store.
+CREATE TABLE apub_quote_originals (
+  id text PRIMARY KEY,
+  actor_id text NOT NULL REFERENCES apub_actors(id),
+  content text NOT NULL,
+  published timestamptz NOT NULL,
+  updated_at timestamptz NOT NULL,
+  superseded boolean NOT NULL DEFAULT false,
+  superseded_by_public boolean NOT NULL DEFAULT false,
+  observed_audience text,
+  revision bigint NOT NULL DEFAULT 1,
+  parent_id text,
+  emojis jsonb NOT NULL,
+  media jsonb NOT NULL
+);
+CREATE INDEX apub_quote_originals_actor ON apub_quote_originals(actor_id);
+
+-- Signed quote access applies to the fetched version.
+CREATE TABLE apub_quote_grants (
+  post_id text NOT NULL REFERENCES apub_quote_originals(id) ON DELETE CASCADE,
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  note_revision bigint NOT NULL,
+  PRIMARY KEY (post_id,user_id)
+);
+CREATE INDEX apub_quote_grants_user ON apub_quote_grants(user_id);
+CREATE TRIGGER apub_quote_grants_home_live AFTER INSERT OR UPDATE OR DELETE ON apub_quote_grants
+  FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();
+
+ALTER TABLE home_posts ADD COLUMN quote_uri text;

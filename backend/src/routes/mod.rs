@@ -22,6 +22,7 @@ pub mod home;
 pub mod home_images;
 pub mod home_live;
 pub mod messages;
+pub mod notification_settings;
 pub mod notifications;
 pub mod pbx;
 pub mod phone_sessions;
@@ -109,6 +110,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(channel_pins::router())
         .merge(users::router())
         .merge(channels::router())
+        .merge(notification_settings::router())
         .merge(dms::router())
         .merge(e2ee::router())
         .merge(e2ee_channels::router())

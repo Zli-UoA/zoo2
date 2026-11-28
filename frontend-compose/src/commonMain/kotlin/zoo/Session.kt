@@ -20,8 +20,27 @@ private fun Row.channelReadPosition() = ChannelReadPosition(
 
 class Session(val repo: Repository, val scope: CoroutineScope, initial: Environment) {
     internal val homeTimelines = HomeTimelineCache()
+    internal val startupTimeline = StartupTimeline(repo.platform)
+
+    internal fun clearStartupTimeline() {
+        val version = startupTimeline.invalidate()
+        scope.launch { startupTimeline.replace(version, "", emptyList()) }
+    }
+
+    var navigationCacheRevision by mutableIntStateOf(0)
+        private set
+
+    fun clearNavigationCache() {
+        homeTimelines.clear()
+        clearStartupTimeline()
+        val limit = repo.navigationCacheLimit
+        repo.navigationCacheLimit = 0
+        repo.navigationCacheLimit = limit
+        navigationCacheRevision++
+    }
 
     fun setNavigationCacheLimit(limit: Int) {
+        if (limit == 0) clearStartupTimeline()
         homeTimelines.limit = limit.coerceIn(0, 16)
         repo.navigationCacheLimit = limit
     }
@@ -48,6 +67,20 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
 
     val config
         get() = repo.config
+
+    var activityPubAvailable by mutableStateOf<Boolean?>(null)
+        private set
+
+    private suspend fun loadActivityPubAvailability() {
+        if (!env.online || activityPubAvailable != null) return
+        activityPubAvailable = try {
+            (api.request("/api/activitypub/status") as Row).flag("enabled")
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
+        }
+    }
 
     var standardShortcodes by mutableStateOf<Row?>(null)
         private set
@@ -168,6 +201,8 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         toastController.setHovered(serial, hovered)
 
     var pending by mutableStateOf<Set<String>>(emptySet())
+    var channelReadPositionsChecked by mutableStateOf(false)
+        private set
     var channelReadPositions by mutableStateOf<Map<String, ChannelReadPosition>>(emptyMap())
         private set
     private val channelReadMutex = Mutex()
@@ -300,35 +335,94 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
 
     suspend fun image(url: String, signedAttachment: Boolean = false, cacheKey: String? = null): ByteArray {
         val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
-        return imageCache.get(imageCacheKey(url, signedAttachment, cacheKey)) {
-            val bytes = if (signedAttachment) platform.attachmentImage(resolved, cacheKey) else platform.image(resolved)
-            bytes ?: assetClient.get(resolved).body()
+        val key = imageCacheKey(url, signedAttachment, cacheKey)
+        requireCurrentImageAccess(url, signedAttachment, cacheKey, key)
+        val bytes = imageCache.get(key) {
+            val image = if (signedAttachment) platform.attachmentImage(resolved, cacheKey) else platform.image(resolved)
+            val loaded = image ?: assetClient.get(resolved).body<ByteArray>()
+            requireCurrentImageAccess(url, signedAttachment, cacheKey, key)
+            loaded
+        }
+        requireCurrentImageAccess(url, signedAttachment, cacheKey, key)
+        return bytes
+    }
+
+    fun cachedImageBitmap(url: String, signedAttachment: Boolean = false, cacheKey: String? = null): androidx.compose.ui.graphics.ImageBitmap? {
+        if (signedAttachment && cacheKey != null && attachmentLinks.isDenied(cacheKey.substringBeforeLast(':'))) return null
+        val key = imageCacheKey(url, signedAttachment, cacheKey)
+        return bitmapCache.getIfPresent(key)
+            ?: cacheKey?.takeIf { signedAttachment }?.let { bitmapCache.getIfPresent("preview:$key") }
+    }
+
+    private class AttachmentPreviewMiss : Exception()
+
+    suspend fun cachedAttachmentBitmap(cacheKey: String): androidx.compose.ui.graphics.ImageBitmap? {
+        cachedImageBitmap("", signedAttachment = true, cacheKey = cacheKey)?.let { return it }
+        val key = imageCacheKey("", true, cacheKey)
+        return try {
+            val bitmap = bitmapCache.get("preview:$key") {
+                requireCurrentImageAccess("", true, cacheKey, key)
+                val bytes = platform.cachedAttachmentPreview(cacheKey) ?: throw AttachmentPreviewMiss()
+                decodeImage("", cacheKey, bytes)
+            }
+            requireCurrentImageAccess("", true, cacheKey, key)
+            bitmap
+        } catch (_: AttachmentPreviewMiss) {
+            null
         }
     }
 
-    fun cachedImageBitmap(url: String, signedAttachment: Boolean = false, cacheKey: String? = null): androidx.compose.ui.graphics.ImageBitmap? =
-        bitmapCache.getIfPresent(imageCacheKey(url, signedAttachment, cacheKey))
+    private suspend fun decodeImage(url: String, attachmentKey: String?, bytes: ByteArray): androidx.compose.ui.graphics.ImageBitmap =
+        try {
+            platform.imageFrames(bytes).first()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            platform.discardUndecodableImage(url, attachmentKey, bytes)
+            throw failure
+        }
 
     private fun imageCacheKey(url: String, signedAttachment: Boolean, cacheKey: String?): String {
         val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
-        return if (signedAttachment) "attachment:${cacheKey.orEmpty()}:$resolved" else resolved
+        if (!signedAttachment) return resolved
+        val version = cacheKey?.let { attachmentLinks.accessVersion(it.substringBeforeLast(':')) } ?: 0L
+        return if (cacheKey == null) "attachment:$resolved" else "attachment:$version:$cacheKey"
+    }
+
+    private fun requireCurrentImageAccess(url: String, signedAttachment: Boolean, cacheKey: String?, key: String) {
+        if (!signedAttachment || cacheKey == null) return
+        if (attachmentLinks.isDenied(cacheKey.substringBeforeLast(':')) || key != imageCacheKey(url, true, cacheKey)) {
+            throw ApiException(403)
+        }
     }
 
     /** Static images use the same platform decoder as attachments and animated media. */
     suspend fun imageBitmap(
         url: String, signedAttachment: Boolean = false, retry: Boolean = false, cacheKey: String? = null,
-    ): androidx.compose.ui.graphics.ImageBitmap =
-        bitmapCache.get(imageCacheKey(url, signedAttachment, cacheKey)) {
+    ): androidx.compose.ui.graphics.ImageBitmap {
+        val key = imageCacheKey(url, signedAttachment, cacheKey)
+        requireCurrentImageAccess(url, signedAttachment, cacheKey, key)
+        val bitmap = bitmapCache.get(key) {
+            requireCurrentImageAccess(url, signedAttachment, cacheKey, key)
             val bytes = if (!retry) image(url, signedAttachment, cacheKey) else {
                 val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
-                imageCache.remove(imageCacheKey(url, signedAttachment, cacheKey))
+                imageCache.remove(key)
                 (if (signedAttachment) platform.attachmentImage(resolved, cacheKey, retry = true) else platform.refreshImage(resolved))
                     ?: assetClient.get(resolved) { header("Cache-Control", "no-cache") }.body()
             }
-            platform.imageFrames(bytes).first()
+            val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
+            val decoded = decodeImage(resolved, cacheKey.takeIf { signedAttachment }, bytes)
+            requireCurrentImageAccess(url, signedAttachment, cacheKey, key)
+            decoded
         }
+        requireCurrentImageAccess(url, signedAttachment, cacheKey, key)
+        return bitmap
+    }
 
-    fun update(next: Environment): Unit = androidx.compose.runtime.snapshots.Snapshot.withMutableSnapshot {
+    internal var networkRevision by mutableIntStateOf(0)
+        private set
+
+    fun update(next: Environment, networkChanged: Boolean = false): Unit = androidx.compose.runtime.snapshots.Snapshot.withMutableSnapshot {
         val old = env
         env = next
         toastController.setVisible(next.visible)
@@ -345,7 +439,10 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                     "chat"
                 else "sidebar"
         }
-        if (!old.online && next.online) repo.refresh()
+        if (next.online && (networkChanged || !old.online || (!old.visible && next.visible))) {
+            networkRevision++
+            repo.refresh(reconnect = true)
+        }
     }
 
     private val encryptedChannels by lazy { EncryptedChannelHistory(platform, config) }
@@ -407,8 +504,19 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         check(row.flag("encrypted")) { "e2ee.downgraded" }
     }
 
-    fun start() {
+    suspend fun start() {
         if (isPublicProfilePath(env.path)) return
+        val initialActivityPubRead = CompletableDeferred<Unit>()
+        scope.launch {
+            snapshotFlow { env.online to env.visible }.first { (online, visible) ->
+                if (online && (!initialActivityPubRead.isCompleted || visible)) {
+                    loadActivityPubAvailability()
+                }
+                initialActivityPubRead.complete(Unit)
+                activityPubAvailable != null
+            }
+        }
+        withTimeoutOrNull(3_000) { initialActivityPubRead.await() }
         scope.launch {
             repo.channels.rows.collect { rows ->
                 try { encryptedChannels.remember(rows.filter { it.flag("encrypted") }.map { it.text("id") }) }
@@ -428,7 +536,11 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                 "chat"
             else "sidebar"
         scope.launch {
-            pollWhileVisible(snapshotFlow { env.online && env.visible }, interval = 10_000) {
+            pollWhileVisible(
+                snapshotFlow { env.online && env.visible },
+                interval = 10_000,
+                onTimeout = { channelReadPositionsChecked = true },
+            ) {
                 try {
                     channelReadMutex.withLock {
                         channelReadPositions = api.request("/api/channel-read-states").rows()
@@ -439,6 +551,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                 } catch (_: Exception) {
                     // Keep the last successful read positions while the network is unavailable.
                 }
+                channelReadPositionsChecked = true
                 capabilities = json.parseToJsonElement(platform.invoke("capabilities")).jsonObject
                 false
             }
@@ -483,6 +596,8 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         sensitiveAttachmentIds: List<String> = emptyList(),
         /** 暗号化チャンネルの添付（[uploadEncryptedAttachment] の戻り値）。平文チャンネルでは使わない。 */
         encryptedAttachments: List<JsonObject> = emptyList(),
+        messageId: String = platform.uuid(),
+        onAccepted: (() -> Unit)? = null,
     ): Boolean {
         try { encryptedChannels.remember() }
         catch (failure: CancellationException) { throw failure }
@@ -499,7 +614,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             }
             return try {
                 val users = repo.users.rows.value.map { it.text("id") to it.text("user_name") }
-                encryption.send(channel, platform.uuid(), parent, content, encryptedMentions(content, users), encryptedAttachments)
+                encryption.send(channel, messageId, parent, content, encryptedMentions(content, users), encryptedAttachments)
                 true
             } catch (failure: CancellationException) { throw failure }
             catch (failure: Exception) {
@@ -538,7 +653,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                 }
             }
         }
-        val id = platform.uuid()
+        val id = messageId
         val row = buildJsonObject {
             put("id", id)
             put("channel_id", channel)
@@ -559,7 +674,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             if (sensitiveAttachmentIds.isNotEmpty()) put("sensitive_attachment_ids", JsonArray(sensitiveAttachmentIds.map(::JsonPrimitive)))
         }
         return try {
-            val result = repo.messages(channel).write(api, "/api/messages", "POST", body, row)
+            val result = repo.messages(channel).write(api, "/api/messages", "POST", body, row, onAccepted = onAccepted)
             // 移行中、未移行の子スレッドへの返信はサーバーで最上位の親へ正規化される。
             // 開いているスレッドを確定した親へ移し、送った返信が画面から外れないようにする。
             val resolved = ((result as? JsonObject)?.get("data") as? JsonObject)

@@ -333,6 +333,7 @@
     "hideSensitiveVideo": "동영상 숨기기",
     "openOriginal": "원본 파일",
     "imagePreviewFailed": "이미지를 불러오지 못했습니다",
+    "altText": "이미지 설명",
     "sensitiveShort": "민감한 이미지",
     "documentSummary": "본문과 셀의 간단한 미리보기입니다. 서식과 배치는 원본과 다를 수 있습니다.",
     "previewLimit": "미리보기의 크기, 파일 수 또는 처리 시간 제한을 초과했습니다. 파일을 다운로드해 확인하세요.",
@@ -390,7 +391,10 @@
     "participantsFilterPartial": "불러온 처음 {{loaded}}명 중에서만 검색합니다(외 {{count}}명은 검색할 수 없습니다).",
     "participantsDescription": "이 스레드에 참여 중인 사람입니다.",
     "joinToReply": "스레드에 참여하면 답글을 보낼 수 있습니다.",
-    "reopenAndJoin": "다시 열고 참여하기"
+    "reopenAndJoin": "다시 열고 참여하기",
+    "errors": {
+      "busy": "스레드가 바쁩니다. 잠시 후 다시 시도해 주세요."
+    }
   },
   "reactions": {
     "showUsers": "{{emoji}} 반응을 남긴 사용자 보기",
@@ -476,6 +480,9 @@
     "readError": "알림을 읽음으로 표시하지 못했습니다",
     "mention": "{{actor}} 님이 회원님을 멘션했습니다",
     "reply": "{{actor}} 님이 답글을 남겼습니다",
+    "channelMessage": "{{actor}} 님이 메시지를 보냈습니다",
+    "channel_message": "{{actor}} 님이 메시지를 보냈습니다",
+    "channelMessageContext": "채널 메시지",
     "reaction": "{{actor}} 님이 반응을 남겼습니다",
     "openMessage": "메시지 열기",
     "unavailable": "채널을 사용할 수 없습니다",
@@ -493,7 +500,24 @@
     "readStatus": "읽음",
     "actors_one": "{{actor}} 님 외 1명",
     "actors_other": "{{actor}} 님 외 {{count}}명",
-    "forwardedPreview": "메시지를 전달했습니다"
+    "forwardedPreview": "메시지를 전달했습니다",
+    "settings": "알림 설정",
+    "settingsDefault": "기본값은 멘션과 답글 알림입니다.",
+    "settingsHint": "채널별 알림 수준은 채널 헤더 또는 다이렉트 메시지 메뉴에서 변경할 수 있습니다.",
+    "channelSettings": "채널 알림 설정",
+    "openChannel": "채널 열기",
+    "noChannel": "참여 중인 채널이 없습니다.",
+    "notMember": "이 채널에 참여하지 않아 알림 설정을 변경할 수 없습니다.",
+    "levelTitle": "알림 수준",
+    "levelLoading": "알림 설정을 불러오는 중…",
+    "levelAll": "모든 메시지",
+    "levelAllHelp": "일반 게시물도 알립니다. 암호화된 채널에서도 선택할 수 있습니다.",
+    "levelMentions": "멘션과 답글 (기본값)",
+    "levelMentionsHelp": "회원님을 멘션하거나 답글·DM·리액션을 남기면 알립니다.",
+    "levelMute": "알림 끄기",
+    "levelMuteHelp": "일반 알림은 받지 않습니다. 회원님을 멘션하거나 @channel·@here를 사용하면 알립니다.",
+    "levelEncryptedHint": "암호화된 채널에서도 '모든 메시지'를 선택할 수 있습니다.",
+    "levelError": "알림 설정을 변경하지 못했습니다."
   },
   "webhooks": {
     "title": "Webhook 설정",
@@ -1811,6 +1835,10 @@
   },
   "androidUpdate": {
     "title": "앱 업데이트"
+  },
+  "androidAttachmentCache": {
+    "title": "이미지 캐시",
+    "description": "이 계정의 이미지를 기기에 저장합니다. 한도를 낮추면 가장 오래 사용하지 않은 이미지부터 삭제합니다. 끄면 저장된 이미지가 삭제됩니다."
   },
   "androidNavigationCache": {
     "title": "화면 전환 캐시",
