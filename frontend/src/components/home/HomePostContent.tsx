@@ -124,6 +124,7 @@ export const HomePostContent = memo(function HomePostContent({
   attachments = [],
   quote,
   previewLinks = true,
+  excludePreviewUrl,
 }: {
   content: string;
   emojis?: CustomEmoji[];
@@ -131,6 +132,7 @@ export const HomePostContent = memo(function HomePostContent({
   attachments?: AttachmentMetadata[];
   quote?: HomeQuote | null;
   previewLinks?: boolean;
+  excludePreviewUrl?: string;
 }) {
   const { t } = useTranslation();
   const apiBaseUrl =
@@ -150,7 +152,12 @@ export const HomePostContent = memo(function HomePostContent({
     <div className="mfm-body mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">
       {body.trim() ? <ActivityPubContent text={body} emojis={emojis} /> : null}
       {previewLinks ? (
-        <LinkPreviews content={body} excludeUrl={quote?.uri} defer showFallback={false} />
+        <LinkPreviews
+          content={body}
+          excludeUrl={quote?.uri ?? excludePreviewUrl}
+          defer
+          showFallback={false}
+        />
       ) : null}
       {quote ? <QuoteCard quote={quote} /> : null}
       <MessageAttachments attachments={attachments} />

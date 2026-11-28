@@ -18,6 +18,7 @@ export interface PublicProfileData {
   posts: {
     id: string;
     content: string;
+    quote_uri?: string | null;
     created_at: string;
     media?: import("../home/HomePostContent").HomeMedia[];
     emojis?: import("../home/ActivityPubEmoji").CustomEmoji[];
@@ -145,7 +146,12 @@ export function PublicProfile({ userId, before }: { userId: string; before?: str
                       {new Date(post.created_at).toLocaleString(i18n.language)}
                     </time>
                   </a>
-                  <HomePostContent content={post.content} emojis={post.emojis} media={post.media} />
+                  <HomePostContent
+                    content={post.content}
+                    excludePreviewUrl={post.quote_uri ?? undefined}
+                    emojis={post.emojis}
+                    media={post.media}
+                  />
                 </article>
               ))}
               {!data.posts.length ? (
