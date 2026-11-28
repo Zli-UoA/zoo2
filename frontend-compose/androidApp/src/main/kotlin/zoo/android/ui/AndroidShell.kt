@@ -69,6 +69,8 @@ internal class AndroidColors(dark: Boolean) {
 }
 
 internal val entryTextSize = 16.sp
+internal val entryLineHeight = 24.sp
+internal val metadataTextSize = 12.sp
 
 internal object AndroidWeights {
     val body = FontWeight.Normal

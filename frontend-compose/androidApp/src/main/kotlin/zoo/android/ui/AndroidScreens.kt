@@ -1051,7 +1051,7 @@ private fun Timeline(
                                     PostHeader(entry.author, entry.postHeader, colors, openProfile)
                                 } else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     Text(entry.author, color = colors.foreground, fontWeight = AndroidWeights.entryAuthor, fontSize = entryTextSize)
-                                    Text(entry.time, color = colors.secondary, fontSize = 12.sp)
+                                    Text(entry.time, color = colors.secondary, fontSize = metadataTextSize)
                                 }
                                 if (entry.marks.isNotEmpty()) EntryMarks(entry.marks, colors)
                                 entry.notice?.let {

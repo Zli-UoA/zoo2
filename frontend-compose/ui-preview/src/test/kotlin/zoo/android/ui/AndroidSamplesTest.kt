@@ -24,6 +24,11 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.material3.RadioButton
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.unit.sp
 import java.io.File
 import kotlinx.coroutines.CompletableDeferred
 import org.junit.Assert.assertEquals
@@ -969,6 +974,32 @@ class AndroidSamplesTest {
             SearchFilterOption("random", "雑談", mark = SearchFilterMark.Channel),
         ),
     )
+
+    @Test
+    @Config(sdk = [35], qualifiers = "ja-rJP-w320dp-h640dp-xhdpi")
+    fun narrowScreenWithEnlargedTypeOffersRecovery() {
+        var retries = 0
+        var screen by mutableStateOf<AndroidScreen>(
+            AndroidScreen.OpeningConversation("dev", "開発", online = true, failed = true) { retries++ }
+        )
+        ui.setContent {
+            val density = androidx.compose.ui.platform.LocalDensity.current
+            CompositionLocalProvider(
+                androidx.compose.ui.platform.LocalDensity provides androidx.compose.ui.unit.Density(density.density, 1.8f)
+            ) {
+                AndroidScreens(screen, dark = false, foreground = true, dispatch = {}, language = "ja") { _, _ -> }
+            }
+        }
+        ui.waitForIdle()
+        capture("opening-conversation-error-large")
+        ui.onAllNodes(hasClickAction() and hasText("再試行", substring = true)).onFirst().performClick()
+        ui.runOnIdle {
+            assertEquals(1, retries)
+            screen = AndroidScreen.PostLoading(online = false, failed = true)
+        }
+        ui.waitForIdle()
+        capture("post-offline-large")
+    }
 
     private fun capture(name: String, withSheet: Boolean = false, bottomDialog: Boolean = false) {
         ui.runOnIdle {

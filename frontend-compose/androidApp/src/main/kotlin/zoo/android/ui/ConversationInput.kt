@@ -149,13 +149,13 @@ internal fun ConversationInput(
                         }
                     }
                     .padding(horizontal = 12.dp, vertical = 8.dp),
-                textStyle = LocalTextStyle.current.copy(color = colors.inputText, fontSize = 16.sp, lineHeight = 23.sp),
+                textStyle = LocalTextStyle.current.copy(color = colors.inputText, fontSize = entryTextSize, lineHeight = entryLineHeight),
                 cursorBrush = SolidColor(colors.inputText),
                 minLines = 1,
                 maxLines = if (adjustable) Int.MAX_VALUE else if (showTools) 6 else 1,
                 decorationBox = { inner ->
                     Box {
-                        if (state.text.isEmpty()) Text(if (state.live) "入力内容を共有" else "メッセージを送信", color = colors.inputHint, fontSize = 16.sp)
+                        if (state.text.isEmpty()) Text(if (state.live) "入力中の内容を参加者に共有" else "メッセージを送信", color = colors.inputHint, fontSize = 16.sp)
                         inner()
                     }
                 },

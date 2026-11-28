@@ -348,7 +348,7 @@ private data class ChannelLinkState(
 @Composable
 internal fun EntryBody(
     body: String, color: Color, fontSize: TextUnit, emoji: Map<String, TimelineMedia>, maxLines: Int = Int.MAX_VALUE,
-    highlight: EntryHighlight? = null, lineHeight: TextUnit = TextUnit.Unspecified, links: Boolean = true,
+    highlight: EntryHighlight? = null, lineHeight: TextUnit = entryLineHeight, links: Boolean = true,
     /** アプリ内リンクを短くして、行き先を取るか。 */
     appLinks: Boolean = true,
     mentionColors: AndroidColors? = null, allowedMentions: Set<String>? = null,
