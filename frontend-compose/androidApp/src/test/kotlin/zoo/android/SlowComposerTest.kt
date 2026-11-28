@@ -103,7 +103,11 @@ class SlowComposerTest {
             state.postDraft = "三件目を編集中"
             runCurrent()
             assertEquals(listOf("一件目"), writes)
-            assertEquals(listOf("一件目", "二件目"), state.withOutgoing("/home", emptyList()).map { it.body })
+            val pending = state.withOutgoing("/home", emptyList())
+            assertEquals(listOf("一件目", "二件目"), pending.map { it.body })
+            assertTrue(pending.all {
+                it.delivery == EntryDelivery.Sending && it.authorId == "me" && it.time.isNotBlank() && it.postHeader != null
+            })
             held.complete(Unit)
             runCurrent()
             assertEquals(listOf("一件目", "二件目"), writes)

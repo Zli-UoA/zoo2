@@ -5,6 +5,8 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -76,6 +78,11 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.withSaveLayer
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
@@ -122,10 +129,14 @@ internal data class TimelineItem(
     val dateDivider: String? = null,
     val unreadDivider: String? = null,
     val canQuoteRenote: Boolean = false,
-    val delivery: String? = null,
+    val delivery: EntryDelivery? = null,
     val recoverDraft: (() -> Unit)? = null,
     val operationStatus: Map<EntryOperation, EntryOperationStatus> = emptyMap(),
+    val continuesGroup: Boolean = false,
+    val authorId: String = "",
+    val createdAt: String = "",
 )
+internal enum class EntryDelivery { Sending, AwaitingSync, Failed }
 internal enum class EntryOperationStatus { Sending, Offline, Denied, Failed }
 
 internal data class ChannelItem(
@@ -1044,21 +1055,20 @@ private fun Timeline(
         LazyColumn(modifier, state = scroll, contentPadding = PaddingValues(top = topContentPadding)) {
             if (header != null) item { header() }
             items(entries, key = { it.entryKey }) { entry ->
-                if (entry.delivery != null) {
-                    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
-                        Text(entry.body, color = colors.foreground, fontSize = entryTextSize)
-                        Text(entry.delivery, color = colors.secondary, fontSize = 12.sp)
-                        entry.recoverDraft?.let { restore ->
-                            TextAction("下書きに戻す", colors, icon = UiIcon.Create, click = restore)
-                        }
-                    }
-                    return@items
-                }
                 CompositionLocalProvider(LocalBringIntoViewSpec provides inheritedBringIntoView) {
+                    val continuesGroup = allowThreads && entry.continuesGroup
+                    val confirmed = entry.delivery == null
+                    val showAddReaction = confirmed && !posts && !allowThreads && entry.canReact
                     entry.dateDivider?.let { ConversationDivider(it, colors) }
                     entry.unreadDivider?.let { ConversationDivider(it, colors, unread = true) }
                     Column(
                         Modifier.fillMaxWidth().testTag("timeline-entry-${entry.id}")
+                            .then(when (entry.delivery) {
+                                EntryDelivery.Sending, EntryDelivery.AwaitingSync -> Modifier.semantics {
+                                    stateDescription = "送信中"
+                                }
+                                else -> Modifier
+                            })
                             .then(if (entry.mentionsCurrentUser || entry.id == focusMessage) Modifier.drawBehind {
                                 val accentWidth = 3.dp.toPx()
                                 val start = if (layoutDirection == androidx.compose.ui.unit.LayoutDirection.Ltr) 0f
@@ -1069,7 +1079,7 @@ private fun Timeline(
                                 val stripe = if (entry.mentionsCurrentUser) colors.messageMention else colors.messageTarget.copy(alpha = focus)
                                 drawRect(stripe, topLeft = Offset(start, 0f), size = Size(accentWidth, size.height))
                             } else Modifier)
-                            .then(if (posts) Modifier.combinedClickable(
+                            .then(if (!confirmed) Modifier else if (posts) Modifier.combinedClickable(
                                 onClick = { dispatch(AndroidUiAction.OpenPost(entry.id)) },
                                 onLongClick = { menuId = entry.id },
                             ) else conversationGestures(
@@ -1077,19 +1087,33 @@ private fun Timeline(
                                 menu = { menuId = entry.id },
                                 swipeReply = swipeReply,
                             ))
-                            .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = if (posts) 4.dp else 12.dp),
+                            .padding(start = 16.dp, end = 16.dp, top = if (continuesGroup) 4.dp else 12.dp,
+                                bottom = if (posts || continuesGroup) 4.dp else 12.dp),
                     ) {
                         entry.divider?.let { EncryptionDivider(it, colors) }
                         entry.repostedBy?.let { RepostAttribution(it, entry.reposterAvatar, colors) }
                         val openProfile = entry.postAuthor.takeIf { posts }?.let { author ->
                             { dispatch(AndroidUiAction.OpenProfile(author)) }
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(if (openProfile == null) 12.dp else 0.dp)) {
-                            TimelineAvatar(entry.author, entry.avatar, colors, openProfile = openProfile)
+                        Row(
+                            modifier = if (confirmed) Modifier else Modifier.drawWithCache {
+                                val paint = Paint().apply {
+                                    alpha = .62f
+                                    colorFilter = ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(0f) })
+                                }
+                                val bounds = Rect(Offset.Zero, size)
+                                onDrawWithContent {
+                                    drawIntoCanvas { canvas -> canvas.withSaveLayer(bounds, paint) { drawContent() } }
+                                }
+                            },
+                            horizontalArrangement = Arrangement.spacedBy(if (openProfile == null) 12.dp else 0.dp),
+                        ) {
+                            if (continuesGroup) Spacer(Modifier.width(AndroidControlSize.timelineAvatar))
+                            else TimelineAvatar(entry.author, entry.avatar, colors, openProfile = openProfile)
                             Column(Modifier.weight(1f)) {
                                 if (posts && entry.postHeader != null) {
                                     PostHeader(entry.author, entry.postHeader, colors, openProfile)
-                                } else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                } else if (!continuesGroup) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     Text(entry.author, color = colors.foreground, fontWeight = AndroidWeights.entryAuthor, fontSize = entryTextSize)
                                     Text(entry.time, color = colors.secondary, fontSize = metadataTextSize)
                                 }
@@ -1104,21 +1128,25 @@ private fun Timeline(
                                 }
                                 EntryBlocks(entry.richContent.blocks, colors, entryTextSize, entry.emoji)
                                 entry.attachments.forEach { (id, name) ->
-                                    Text(name, Modifier.clickable { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Attachment, id)) }
+                                    Text(name, Modifier.clickable(enabled = confirmed) { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Attachment, id)) }
                                         .heightIn(min = 48.dp).padding(vertical = 12.dp), color = colors.foreground)
                                 }
                                 TimelineMediaGroup(entry.media, colors, apub = posts) { media ->
-                                    dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Media, media.key))
+                                    if (confirmed) dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Media, media.key))
                                 }
                                 entry.quote?.let { quote ->
                                     TimelineQuoteCard(quote, colors,
-                                        open = { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Quote)) },
+                                        open = { if (confirmed) dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Quote)) },
                                         openProfile = quote.postAuthor.takeIf { posts }?.let { author ->
                                             { dispatch(AndroidUiAction.OpenProfile(author)) }
                                         },
-                                        openMedia = { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Media, it.key, quotedMedia = true)) })
+                                        openMedia = {
+                                            if (confirmed) dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Media, it.key, quotedMedia = true))
+                                        })
                                 }
-                                entry.channelLinks.forEach { url -> ChannelLinkCard(url, colors, menu = { menuId = entry.id }) }
+                                entry.channelLinks.forEach { url ->
+                                    ChannelLinkCard(url, colors, menu = { if (confirmed) menuId = entry.id })
+                                }
                                 entry.postLinks.forEach { (url, id) ->
                                     PostLinkCard(url, id, colors) { dispatch(AndroidUiAction.OpenPost(id)) }
                                 }
@@ -1131,8 +1159,8 @@ private fun Timeline(
                                             .heightIn(min = 48.dp).padding(vertical = 12.dp),
                                         color = colors.secondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
                                 }
-                                if (entry.reactions.isNotEmpty() || (!posts && entry.canReact)) {
-                                    TimelineReactions(entry, colors, showAdd = !posts, dispatch = dispatch)
+                                if (entry.reactions.isNotEmpty() || showAddReaction) {
+                                    TimelineReactions(entry, colors, showAdd = showAddReaction, dispatch = dispatch)
                                 }
                                 if (posts) PostActions(entry, colors, dispatch, onMore = { menuId = entry.id })
                                 entry.operationStatus.forEach { (operation, status) ->
@@ -1150,6 +1178,13 @@ private fun Timeline(
                                     Text(label, color = colors.secondary, fontSize = 13.sp,
                                         modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
                                 }
+                            }
+                        }
+                        if (entry.delivery == EntryDelivery.Failed) {
+                            Text("送信を確認できませんでした", color = colors.secondary, fontSize = metadataTextSize,
+                                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+                            entry.recoverDraft?.let { restore ->
+                                TextAction("下書きに戻す", colors, icon = UiIcon.Create, click = restore)
                             }
                         }
                     }
@@ -1216,7 +1251,7 @@ private fun PostActions(
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         UiIconButton(UiIcon.Reply, "返信", colors.secondary,
-            { dispatch(AndroidUiAction.ReplyToPost(entry.id)) }, enabled = entry.postHeader?.audience != null,
+            { dispatch(AndroidUiAction.ReplyToPost(entry.id)) }, enabled = entry.delivery == null && entry.postHeader?.audience != null,
             iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
         UiIconButton(UiIcon.Repost, if (entry.reposted) "リノートを取り消す" else "リノート",
             if (entry.reposted) colors.renote else colors.secondary.copy(alpha = if (entry.canRepost) 1f else .38f),
@@ -1226,7 +1261,8 @@ private fun PostActions(
             colors.secondary.copy(alpha = if (entry.canReact) 1f else .38f),
             { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.React)) },
             enabled = entry.canReact && entry.operationStatus[EntryOperation.React] != EntryOperationStatus.Sending, iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
-        UiIconButton(UiIcon.More, "その他の投稿操作", colors.secondary, onMore, iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
+        UiIconButton(UiIcon.More, "その他の投稿操作", colors.secondary, onMore, enabled = entry.delivery == null,
+            iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
     }
 }
 

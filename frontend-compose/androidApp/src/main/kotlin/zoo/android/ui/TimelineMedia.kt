@@ -69,6 +69,7 @@ internal data class TimelineMedia(
     val url: String? = null, val attachmentId: String? = null, val previewUrl: String? = null,
     val imageAspectRatio: Float? = null, val blurhash: String? = null,
     val thumbnailUrl: String? = null, val useThumbnail: Boolean = true, val description: String? = null,
+    val localImage: ImageBitmap? = null,
 )
 
 internal data class TimelineQuote(
@@ -96,6 +97,7 @@ internal val LocalCachedTimelineImage = staticCompositionLocalOf<(TimelineMedia)
 
 @Composable
 internal fun rememberTimelineImage(media: TimelineMedia?, revealed: Boolean = true): ImageBitmap? {
+    media?.localImage?.let { return it.takeIf { revealed } }
     val isDenied = LocalAttachmentImageDenied.current
     val denied = media?.attachmentId?.let(isDenied) == true
     val cached = LocalCachedTimelineImage.current
@@ -433,7 +435,7 @@ private fun timelineIcon(url: String?): ImageBitmap? =
 
 @Composable
 internal fun TimelineAvatar(
-    author: String, url: String?, colors: AndroidColors, size: Dp = 36.dp, openProfile: (() -> Unit)? = null,
+    author: String, url: String?, colors: AndroidColors, size: Dp = AndroidControlSize.timelineAvatar, openProfile: (() -> Unit)? = null,
     avatarAlignment: Alignment = Alignment.TopStart,
 ) {
     val image = timelineIcon(url)

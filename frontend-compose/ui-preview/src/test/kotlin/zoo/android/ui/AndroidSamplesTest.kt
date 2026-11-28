@@ -262,7 +262,10 @@ class AndroidSamplesTest {
         val cases = listOf(
             "quote-renote" to AndroidScreen.NewPost(InputState("当日が楽しみです。"), emptyList(), false, "unlisted",
                 quoting = illustratedPost),
-            "sending-home" to AndroidScreen.Home(listOf(TimelineItem("pending", "", "次の展示も楽しみです。", "", delivery = "送信中…")) + homePosts),
+            "sending-home" to AndroidScreen.Home(listOf(homePosts.first().copy(
+                id = "pending", entryKey = "pending", body = "次の展示も楽しみです。", delivery = EntryDelivery.Sending,
+                canReact = false, canRepost = false,
+            )) + homePosts),
             "mention-channel" to conversation.copy(entries = listOf(
                 posts[0].copy(body = "@mizuki 明日の受付をお願いします。", mentionsCurrentUser = true),
                 posts[1].copy(body = "@here 会場は10時に開きます。"),
@@ -1144,6 +1147,7 @@ class AndroidSamplesTest {
         var dark by mutableStateOf(false)
         var selected by mutableStateOf(false)
         var hasReactions by mutableStateOf(true)
+        var sendingFollowUp by mutableStateOf(false)
         var openPicker = 0
         ui.setContent {
             val post = TimelineItem(
@@ -1155,14 +1159,21 @@ class AndroidSamplesTest {
                     TimelineReaction("🎉", "🎉", "2", false),
                 ),
             )
-            val screen = if (channel) AndroidScreen.Conversation("dev", "開発", "", listOf(post), InputState(""))
+            val followUp = TimelineItem("follow-up", "はる", "入口でお待ちしています。", "12:07",
+                canReact = !sendingFollowUp, continuesGroup = true, delivery = EntryDelivery.Sending.takeIf { sendingFollowUp })
+            val screen = if (channel) AndroidScreen.Conversation("dev", "開発", "", listOf(post, followUp), InputState(""))
                 else AndroidScreen.Home(listOf(post))
             AndroidScreens(screen, dark, foreground = true, dispatch = { action ->
                 if (action is AndroidUiAction.ActOnEntry && action.operation == EntryOperation.React) {
-                    check(action.item.id == post.id)
                     when (action.value) {
-                        "👏" -> selected = !selected
-                        "" -> openPicker++
+                        "👏" -> {
+                            check(action.item.id == post.id)
+                            selected = !selected
+                        }
+                        "" -> {
+                            check(action.item.id == if (channel) followUp.id else post.id)
+                            openPicker++
+                        }
                         else -> error("Unexpected reaction")
                     }
                 }
@@ -1197,6 +1208,21 @@ class AndroidSamplesTest {
                     ui.onNodeWithContentDescription("リアクションを追加").performClick()
                     ui.runOnIdle { hasReactions = true }
                     assertEquals(emptyPositions, positions())
+                } else {
+                    ui.onNodeWithText("はる").assertIsDisplayed()
+                    ui.onNodeWithText("12:05").assertIsDisplayed()
+                    ui.onNodeWithText("12:07").assertDoesNotExist()
+                    val firstBody = ui.onNodeWithText("展示の準備ができました。明日は10時からです。", useUnmergedTree = true)
+                    val nextBody = ui.onNodeWithText("入口でお待ちしています。", useUnmergedTree = true)
+                    assertEquals(firstBody.getUnclippedBoundsInRoot().left, nextBody.getUnclippedBoundsInRoot().left)
+                    ui.onNodeWithContentDescription("リアクションを追加").assertDoesNotExist()
+                    val postedBounds = nextBody.getUnclippedBoundsInRoot()
+                    ui.runOnIdle { sendingFollowUp = true }
+                    assertEquals(postedBounds, nextBody.getUnclippedBoundsInRoot())
+                    ui.onNodeWithTag("timeline-entry-follow-up")
+                        .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "送信中"))
+                    capture("sending-channel-${if (night) "dark" else "light"}")
+                    ui.runOnIdle { sendingFollowUp = false }
                 }
                 chip.assertIsNotSelected().assertTextContains("3")
                 snapshot("before")
@@ -1205,7 +1231,13 @@ class AndroidSamplesTest {
                 snapshot("after")
                 chip.performClick()
                 chip.assertIsNotSelected().assertTextContains("3")
-                ui.onNodeWithContentDescription("リアクションを追加").performClick()
+                if (room) {
+                    ui.onNodeWithTag("timeline-entry-follow-up").performTouchInput { longClick() }
+                    capture("channel-reaction-menu-${if (night) "dark" else "light"}", withSheet = true)
+                    ui.onNodeWithText("リアクション").performClick()
+                } else {
+                    ui.onNodeWithContentDescription("リアクションを追加").performClick()
+                }
             }
         }
         ui.runOnIdle { assertEquals(6, openPicker) }
