@@ -62,6 +62,28 @@ final class ChannelNotificationUITests: XCTestCase {
         expectValue("ミュート（メンションを除く）", in: picker)
     }
 
+    func testUnjoinedSearchResultHidesNotificationSettings() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting-workspace", "--uitesting-unjoined-search"]
+        app.launch()
+        let tab = app.tabBars.buttons["検索"]
+        XCTAssertTrue(tab.waitForExistence(timeout: 10))
+        tab.tap()
+        let search = app.searchFields.firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.tap()
+        search.typeText("meeting\n")
+        let result = app.buttons["global-search-result-message-preview-m1"]
+        XCTAssertTrue(result.waitForExistence(timeout: 5))
+        result.tap()
+        XCTAssertTrue(app.navigationBars["雑談"].waitForExistence(timeout: 5))
+        app.buttons["channel-details"].tap()
+        XCTAssertTrue(app.navigationBars["チャンネル詳細"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["channel-notification-level"].exists)
+        XCTAssertFalse(app.staticTexts["この会話の通知"].exists)
+    }
+
     private func expectValue(_ title: String, in picker: XCUIElement) {
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", title), object: picker)
         XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 5), .completed)

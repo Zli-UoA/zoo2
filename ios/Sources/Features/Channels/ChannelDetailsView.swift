@@ -42,7 +42,7 @@ struct ChannelDetailsView: View {
                         Label(error, systemImage: "exclamationmark.circle").foregroundStyle(.red)
                     }
                 }
-                if channel.deleted_at == nil {
+                if channel.deleted_at == nil, workspace.joinedChannelIDs.contains(channel.id) {
                     Section {
                         if let level = notifications.level(for: channel.id) {
                             Picker("通知", selection: Binding(get: { notifications.level(for: channel.id) ?? level }, set: { value in
@@ -67,7 +67,7 @@ struct ChannelDetailsView: View {
                     } header: {
                         Text("この会話の通知")
                     } footer: {
-                        Text("既定ではメンション・参加中スレッドの返信・DM・リアクションを通知します。ミュート中も、自分宛てやチャンネル全体への明示メンションと不在着信は届きます。暗号化された会話でもすべてのメッセージを選べますが、本文は通知に含まれません。")
+                        Text("既定ではメンション・参加中スレッドの返信・DM・リアクションを通知します。ミュート中も、自分宛てやチャンネル全体への明示メンションと不在着信は届きます。暗号化された会話でもすべてのメッセージを選べます。端末で復号できる場合は通知に本文が表示されます。")
                     }
                     .task { await notifications.load(channel.id) }
                 }
