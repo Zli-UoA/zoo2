@@ -32,6 +32,7 @@
 
 - フロントエンドの実装・修正・リファクタリングでは `.agents/skills/frontend-consistency/SKILL.md` に従う。
 - mainの取り込みでフロントエンドを調整するときも、既存の共通UI・機能部品・処理を優先し、新機能と既存の表示・操作方針を両立させる。
+- React の変更後は `pnpm --dir frontend check` を実行し、`@shadcn/lint` の違反を直す。ルールの例外を増やす場合は、既存部品の variant やテーマトークンでは表現できない理由を PR に書く（方針は `frontend/README.md` の「デザインシステムの lint」）。
 
 # Android のデザイン
 

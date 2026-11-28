@@ -188,6 +188,24 @@ pnpm sync:emojibase
 
 - ユニットテスト（vitest / `src/**/*.test.ts`）… 数値・真偽値の文字列変換（`schema.test.ts`）、timestamp 正規化（`timestamps.test.ts`）、設定解決（`config.test.ts`）、REST アダプタ `{ data, txid }` の注入と剥がし・エラー化（`api/client.test.ts`）、`txid` ハンドシェイク（`txid.test.ts` / `writes.test.ts`）、Shape の URL / ヘッダ / live query（`electric/*.test.ts`）。
 - CI … `.github/workflows/ci-frontend.yaml`。`frontend/**` の変更（`main` への push / PR）で `pnpm check`・`pnpm build`・`pnpm test` を実行します（バックエンドの CI とは別ワークフロー）。
+
+### デザインシステムの lint（`@shadcn/lint`）
+
+`pnpm check`（または `pnpm lint`）は、Oxlint 経由で `@shadcn/lint` の 6 ルールも実行します。設定は `vite.config.ts` の `lint` ブロックにあります。
+
+| ルール | 目的 |
+| --- | --- |
+| `shadcn/no-restyle` | `className` で UI コンポーネントの色・形を上書きしない |
+| `shadcn/no-raw-colors` | テーマに宣言した色トークンを使う |
+| `shadcn/no-arbitrary-values` | 任意値よりテーマのスケールを使う |
+
+ほかに `no-inline-styles` / `no-unknown-classes` / `require-static-classes` も有効です。エラーには「何を使うべきか」が表示されます。
+
+- 色は `src/styles.css` の `@theme` に宣言したトークン（`brand` / `mention` / `success` / `warning` / `destructive` など）を使う。状態色は既存の意味を保つこと。
+- `Button` の色・形は `variant`（例: `success-solid` / `destructive`）と `shape="circle"`、`size` で表現する。呼び出し側で `className` を足さない。
+- 呼び出し側が責任を持つ項目（例: `Input` のタイポグラフィ、`DialogContent` の余白）は `no-restyle` の `contracts` で許可しています。新しい contract や `allow` を増やすときは、デザイン上の根拠を PR 本文に書く。
+- `src/components/ui/**` はコンポーネント自身が内部スタイルを所有するため、`no-restyle` / `no-arbitrary-values` / `require-static-classes` は対象外です（`no-raw-colors` などは有効）。
+- テスト・Story のハーネス（`*.stories.tsx` / `*.browser.test.tsx` / `src/test/vrt/**` / `e2e/**`）も一部ルールを対象外にしています。
 - スモーク（Playwright / `e2e/smoke.spec.ts`）… 起動 → チャンネル作成 → メッセージ送信 → Electric 反映までを実ブラウザで確認します。`pnpm test` には含めず `pnpm test:e2e` で明示実行します。前提として DB + Electric + バックエンドが必要です。
 
 ```bash
