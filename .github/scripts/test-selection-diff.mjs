@@ -24,7 +24,7 @@ export function testBaseSha(eventName, event) {
 export function workflowChanges(workflow, changes, eventName) {
   if (!changes || !/^[\w-]+$/.test(workflow ?? '')) return changes;
   const source = readFileSync(new URL(`../workflows/${workflow}.yaml`, import.meta.url), 'utf8');
-  const matches = pathMatcher(testWorkflowPaths(workflow, source));
+  const matches = pathMatcher(testWorkflowPaths(workflow, source, eventName));
   return changes.filter(({ path }) => matches(path) ||
     (eventName === 'pull_request' && workflow === 'ci-frontend' && isDedicatedPlaywrightTypecheckInput(path)));
 }

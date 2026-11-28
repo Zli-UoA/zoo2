@@ -211,4 +211,7 @@ test('visible translation changes reach dedicated E2E jobs before merge', () => 
   assert.equal(selectWorkflowPlan('pull_request', 'ci-frontend-auth-e2e', [change]).frontend.auth, true);
   assert.equal(selectWorkflowPlan('pull_request', 'ci-frontend-e2ee-e2e', [change]).frontend.e2ee, true);
   assert.equal(selectWorkflowPlan('pull_request', 'ci-frontend-e2ee-e2e', [{ ...change, translationText: false }]).frontend.e2ee, false);
+  assert.deepEqual(workflowChanges('ci-frontend-e2ee-e2e', [change], 'merge_group'), []);
+  const readWorkflow = name => readFileSync(new URL(`../workflows/${name}.yaml`, import.meta.url), 'utf8');
+  assert.equal(selectWorkflows([change.path], readWorkflow)['ci-frontend-e2ee-e2e'], false);
 });

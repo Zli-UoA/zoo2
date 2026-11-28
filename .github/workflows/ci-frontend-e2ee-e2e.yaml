@@ -2,14 +2,13 @@ name: CI Frontend E2EE E2E
 # E2EE の通し確認（#363。frontend/e2e/e2ee.spec.ts）。
 # 1 回に数分かかるので、E2EE の経路（暗号、鍵の API、暗号化した DM の送受信と表示、ログインと再認証、
 # Shape、DB のスキーマ）と、テストの仕組みを変えたときだけ実行する。パスの一覧はこのファイルにだけ書き、
-# マージキュー（.github/scripts/merge-queue-changes.mjs）も同じ一覧を読む。
+# マージキューは push の対象パスを使う。辞書の文言変更は PR で検証する。
 on:
   # merge-queue.yaml がマージキューで呼び出す。
   workflow_call:
   push:
     branches: [main]
     paths:
-      - "frontend/src/lib/i18n/locales/**"
       - "frontend/src/lib/e2ee/**"
       - "frontend/src/components/e2ee/**"
       - "frontend/src/hooks/useMessageDecryptions.ts"

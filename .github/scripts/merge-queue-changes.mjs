@@ -35,8 +35,10 @@ export function pathMatcher(patterns) {
     regex.test(path) ? !exclude : included, rules.length === 0);
 }
 
-export function testWorkflowPaths(workflow, source) {
-  return pullRequestPaths(source, PR_WORKFLOWS.includes(workflow) ? 'push' : 'pull_request');
+export function testWorkflowPaths(workflow, source, eventName) {
+  const usePush = PR_WORKFLOWS.includes(workflow) ||
+    (workflow === 'ci-frontend-e2ee-e2e' && eventName !== 'pull_request');
+  return pullRequestPaths(source, usePush ? 'push' : 'pull_request');
 }
 
 export function selectWorkflows(changed, readWorkflow) {

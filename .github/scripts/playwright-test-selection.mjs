@@ -48,7 +48,7 @@ export function runPlaywright({ suite, eventName, event, git = execFileSync, run
       const workflow = ['oidc', 'e2ee'].includes(suite)
         ? `ci-frontend-${suite === 'oidc' ? 'auth' : 'e2ee'}-e2e`
         : 'ci-frontend';
-      const changes = workflowChanges(workflow, readChanges(base, git)).filter(({ path }) => {
+      const changes = workflowChanges(workflow, readChanges(base, git), eventName).filter(({ path }) => {
         // Other standalone Playwright inputs cannot affect this spec. App
         // modules and unclassified resources still widen case selection.
         if (!/^frontend\/(?:e2e\/|playwright\.)/.test(path)) return true;
