@@ -9,6 +9,8 @@ import zoo.*
 @OptIn(ExperimentalCoroutinesApi::class)
 class PhoneControllerTest {
     private class Fixture(val scope: CoroutineScope) {
+        private val scheduler = checkNotNull(scope.coroutineContext[TestCoroutineScheduler])
+        val heartbeatSentAt = mutableListOf<Long>()
         val requests = mutableListOf<String>()
         val commands = mutableListOf<String>()
         val payloads = mutableListOf<Row>()
@@ -44,6 +46,7 @@ class PhoneControllerTest {
                 path.endsWith("/authorize") -> { check(authorize); obj("data" to obj("revision" to revision)) }
                 path.endsWith("/accept") -> pendingAccept?.await() ?: obj("ok" to true, "channel_id" to "dm")
                 path.endsWith("/call/heartbeat") -> {
+                    heartbeatSentAt.add(scheduler.currentTime)
                     heartbeatStatus?.let { throw ApiException(it) }
                     if (heartbeatTimeouts > 0) { heartbeatTimeouts--; delay(20_000) }
                     delay(heartbeatDelay)
@@ -76,7 +79,7 @@ class PhoneControllerTest {
             override fun incoming(call: PhoneCall) { native.add("incoming:${call.kind}") }
             override fun ended(id: String) { native.add("end:$id") }
             override fun speaker(id: String, enabled: Boolean) { native.add("speaker:$enabled") }
-        }, prepare = { check(permission) }, waiting = { native.add("waiting:$it") }, uuid = { "id-${++number}" })
+        }, prepare = { check(permission) }, waiting = { native.add("waiting:$it") }, uuid = { "id-${++number}" }, heartbeatClock = scheduler.timeSource)
         fun invitation() = obj("id" to "invite", "channel_id" to "dm", "invitee_id" to "alice", "inviter_name" to "Bob", "status" to "pending", "expires_at" to "2030-01-01T00:00:30Z")
     }
     @Test fun registrationDoesNotPlaceANativeCallAndExplicitDialRechecksMembership() = runTest {
@@ -323,7 +326,22 @@ class PhoneControllerTest {
         f.streamEvent!!("room_state", obj()); f.events.getValue("dm")("connected", obj())
         f.heartbeatDelay = 6_000
         advanceTimeBy(48_001); runCurrent()
-        assertEquals(3, f.requests.count { it.endsWith("/call/heartbeat") })
+        assertEquals(listOf(10_000L, 20_000L, 30_000L, 40_000L), f.heartbeatSentAt)
+        assertEquals("active", f.controller.call?.status)
+        assertFalse(f.controller.error)
+        f.controller.close()
+    }
+    @Test fun delayedHeartbeatResponseDoesNotPushRetryPastTheLease() = runTest {
+        val f = Fixture(backgroundScope); f.controller.callDm("dm", "Bob"); runCurrent()
+        f.streamEvent!!("room_state", obj()); f.events.getValue("dm")("connected", obj())
+        f.heartbeatDelay = 4_500
+        advanceTimeBy(14_501); runCurrent()
+        assertEquals(listOf(10_000L), f.heartbeatSentAt)
+
+        f.heartbeatDelay = 0
+        f.heartbeatTimeouts = 1
+        advanceTimeBy(21_500); runCurrent()
+        assertEquals(listOf(10_000L, 20_000L, 36_000L), f.heartbeatSentAt)
         assertEquals("active", f.controller.call?.status)
         assertFalse(f.controller.error)
         f.controller.close()
