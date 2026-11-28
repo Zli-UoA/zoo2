@@ -76,6 +76,7 @@
 | 検索条件を適用 | [ライト](images/android-design/rebuild/search-filtered-light.png) | [ダーク](images/android-design/rebuild/search-filtered-dark.png) |
 | ホームで送信中 | [ライト](images/android-design/rebuild/sending-home-light.png) | [ダーク](images/android-design/rebuild/sending-home-dark.png) |
 | チャンネルで連投を送信中 | [ライト](images/android-design/rebuild/sending-channel-light.png) | [ダーク](images/android-design/rebuild/sending-channel-dark.png) |
+| チャンネルの編集済み投稿 | [ライト](images/android-design/rebuild/edited-channel-light.png) | [ダーク](images/android-design/rebuild/edited-channel-dark.png) |
 | 共有内容と送信先 | [ライト](images/android-design/rebuild/share-destination-light.png) | [ダーク](images/android-design/rebuild/share-destination-dark.png) |
 | 共有先200件 | [一覧](images/android-design/rebuild/share-many-destinations.png) · [末尾](images/android-design/rebuild/share-list-end.png) · [同名のDMを検索](images/android-design/rebuild/share-destination-results.png) | |
 | 共有された投稿へのリンク | [ライト](images/android-design/rebuild/shared-post-link-light.png) | [ダーク](images/android-design/rebuild/shared-post-link-dark.png) |

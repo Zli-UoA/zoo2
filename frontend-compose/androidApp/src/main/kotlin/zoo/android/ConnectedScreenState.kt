@@ -404,7 +404,7 @@ internal class ConnectedScreenState(
             reposterAvatar = timelineAvatarUrl(app.config.apiBaseUrl, obj("avatar_url" to data["reposter_avatar_url"],
                 "avatar" to data["reposter_avatar"]), users[data.text("reposter_actor").removePrefix("local:")]),
             repostedBy = data.text("reposted_by").ifBlank { data.text("reposter_actor") }.ifBlank { null },
-            authorId = data.text("user_id"), createdAt = createdAt,
+            authorId = data.text("user_id"), createdAt = createdAt, edited = !isPost && data.present("updated_at"),
         ), previewService)
     }
 

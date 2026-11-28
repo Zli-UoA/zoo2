@@ -135,6 +135,7 @@ internal data class TimelineItem(
     val continuesGroup: Boolean = false,
     val authorId: String = "",
     val createdAt: String = "",
+    val edited: Boolean = false,
 )
 internal enum class EntryDelivery { Sending, AwaitingSync, Failed }
 internal enum class EntryOperationStatus { Sending, Offline, Denied, Failed }
@@ -1057,6 +1058,7 @@ private fun Timeline(
             items(entries, key = { it.entryKey }) { entry ->
                 CompositionLocalProvider(LocalBringIntoViewSpec provides inheritedBringIntoView) {
                     val continuesGroup = allowThreads && entry.continuesGroup
+                    val edited = allowThreads && entry.edited
                     val confirmed = entry.delivery == null
                     val showAddReaction = confirmed && !posts && !allowThreads && entry.canReact
                     entry.dateDivider?.let { ConversationDivider(it, colors) }
@@ -1113,9 +1115,22 @@ private fun Timeline(
                             Column(Modifier.weight(1f)) {
                                 if (posts && entry.postHeader != null) {
                                     PostHeader(entry.author, entry.postHeader, colors, openProfile)
-                                } else if (!continuesGroup) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text(entry.author, color = colors.foreground, fontWeight = AndroidWeights.entryAuthor, fontSize = entryTextSize)
-                                    Text(entry.time, color = colors.secondary, fontSize = metadataTextSize)
+                                } else if (!continuesGroup || edited) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    if (!continuesGroup) {
+                                        Text(entry.author, color = colors.foreground, fontWeight = AndroidWeights.entryAuthor, fontSize = entryTextSize)
+                                    }
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Text(entry.time, color = colors.secondary, fontSize = metadataTextSize)
+                                        if (edited) {
+                                            val label = androidLabel("messages.edited", "編集済み")
+                                            Box(Modifier.semantics { contentDescription = label }) {
+                                                UiGlyph(UiIcon.Create, colors.secondary, AndroidControlSize.metadataIcon)
+                                            }
+                                        }
+                                    }
                                 }
                                 if (entry.marks.isNotEmpty()) EntryMarks(entry.marks, colors)
                                 entry.notice?.let {

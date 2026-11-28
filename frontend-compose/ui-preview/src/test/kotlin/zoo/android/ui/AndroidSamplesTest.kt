@@ -1148,6 +1148,7 @@ class AndroidSamplesTest {
         var selected by mutableStateOf(false)
         var hasReactions by mutableStateOf(true)
         var sendingFollowUp by mutableStateOf(false)
+        var editedFollowUp by mutableStateOf(false)
         var openPicker = 0
         ui.setContent {
             val post = TimelineItem(
@@ -1160,7 +1161,8 @@ class AndroidSamplesTest {
                 ),
             )
             val followUp = TimelineItem("follow-up", "はる", "入口でお待ちしています。", "12:07",
-                canReact = !sendingFollowUp, continuesGroup = true, delivery = EntryDelivery.Sending.takeIf { sendingFollowUp })
+                canReact = !sendingFollowUp, continuesGroup = true, delivery = EntryDelivery.Sending.takeIf { sendingFollowUp },
+                edited = editedFollowUp)
             val screen = if (channel) AndroidScreen.Conversation("dev", "開発", "", listOf(post, followUp), InputState(""))
                 else AndroidScreen.Home(listOf(post))
             AndroidScreens(screen, dark, foreground = true, dispatch = { action ->
@@ -1222,7 +1224,16 @@ class AndroidSamplesTest {
                     ui.onNodeWithTag("timeline-entry-follow-up")
                         .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "送信中"))
                     capture("sending-channel-${if (night) "dark" else "light"}")
-                    ui.runOnIdle { sendingFollowUp = false }
+                    ui.runOnIdle {
+                        sendingFollowUp = false
+                        editedFollowUp = true
+                    }
+                    val time = ui.onNodeWithText("12:07").getUnclippedBoundsInRoot()
+                    val pencil = ui.onNodeWithContentDescription("編集済み").getUnclippedBoundsInRoot()
+                    check(pencil.left >= time.right)
+                    ui.onNodeWithText("はる").assertIsDisplayed()
+                    capture("edited-channel-${if (night) "dark" else "light"}")
+                    ui.runOnIdle { editedFollowUp = false }
                 }
                 chip.assertIsNotSelected().assertTextContains("3")
                 snapshot("before")
