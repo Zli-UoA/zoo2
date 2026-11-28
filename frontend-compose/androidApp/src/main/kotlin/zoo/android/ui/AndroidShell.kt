@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.ui.platform.testTag
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ProvideTextStyle
@@ -85,6 +86,10 @@ internal fun AndroidShell(
     dark: Boolean,
     onSelect: (TopPage) -> Unit,
     language: String? = null,
+    /** 幅の広い画面のナビゲーションレールで選択中にする項目（子画面では親のトップ）。 */
+    section: TopPage? = selected,
+    /** 幅の広い画面でナビゲーションレールを出すか（全画面のプレビューなどでは出さない）。 */
+    allowRail: Boolean = true,
     screen: @Composable ColumnScope.(AndroidColors) -> Unit,
 ) {
     val colors = AndroidColors(dark)
@@ -116,11 +121,17 @@ internal fun AndroidShell(
             fontFamily = FontFamily.SansSerif,
             localeList = LocaleList(locale),
         )) {
-            Column(Modifier.fillMaxSize()
+            BoxWithConstraints(Modifier.fillMaxSize()) {
+            // 幅の広い画面（タブレット・開いた折りたたみ端末）では、下部のナビゲーションの代わりに左のレールを
+            // 常に出す（iPad の左の列と同じ）。子画面でも親のトップを選択中にする。
+            val rail = allowRail && maxWidth >= AndroidLayout.railMinWidth
+            Row(Modifier.fillMaxSize()
                 .then(if (background != null) Modifier.background(background) else Modifier.background(colors.background))
                 .safeDrawingPadding()) {
+              if (rail) NavigationRailColumn(section, colors, onSelect)
+              Column(Modifier.weight(1f).fillMaxHeight()) {
                 Column(Modifier.weight(1f).fillMaxWidth()) { screen(colors) }
-                if (selected != null) {
+                if (selected != null && !rail) {
                     Row(Modifier.fillMaxWidth().background(colors.quietSurface).selectableGroup()) {
                         for (page in TopPage.entries) {
                             val active = page == selected
@@ -145,6 +156,47 @@ internal fun AndroidShell(
                         }
                     }
                 }
+              }
+            }
+            }
+        }
+    }
+}
+
+/** 幅の広い画面の基準（Material のウィンドウサイズクラスの medium と expanded）。 */
+internal object AndroidLayout {
+    /** これ以上の幅で、下部のナビゲーションを左のレールにする。 */
+    val railMinWidth = 600.dp
+    /** レールを除いた幅がこれ以上で、チャンネル一覧と会話を並べる（ウィンドウ幅 840dp − レール 80dp）。 */
+    val listDetailMinWidth = 760.dp
+    val railWidth = 80.dp
+    val listPaneWidth = 320.dp
+}
+
+@Composable
+private fun NavigationRailColumn(section: TopPage?, colors: AndroidColors, onSelect: (TopPage) -> Unit) {
+    Column(
+        Modifier.width(AndroidLayout.railWidth).fillMaxHeight().background(colors.quietSurface)
+            .padding(vertical = 12.dp).selectableGroup().testTag("navigation-rail"),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        ZooBadge(colors, Modifier.padding(bottom = 12.dp).size(32.dp))
+        for (page in TopPage.entries) {
+            val active = page == section
+            Column(
+                Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.navigationHeight)
+                    .selectable(active, role = Role.Tab) { onSelect(page) },
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Box(
+                    Modifier.background(if (active) colors.headerLight else Color.Transparent, CircleShape)
+                        .size(width = AndroidControlSize.target, height = AndroidControlSize.navigationIndicatorHeight),
+                    contentAlignment = Alignment.Center,
+                ) { UiGlyph(page.icon, if (active) colors.foreground else colors.secondary) }
+                Text(androidLabel(page.translationKey, page.title), color = if (active) colors.foreground else colors.secondary,
+                    fontSize = 11.sp, fontWeight = if (active) AndroidWeights.label else AndroidWeights.body, maxLines = 1)
             }
         }
     }

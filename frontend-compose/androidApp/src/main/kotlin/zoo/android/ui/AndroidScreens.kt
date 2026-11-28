@@ -30,6 +30,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
@@ -72,6 +73,7 @@ import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
@@ -132,7 +134,11 @@ internal sealed interface AndroidScreen {
         val posts: List<TimelineItem>, val timeline: String? = null, val loadOlder: Boolean = false,
         val loadFailed: Boolean = false, val loading: Boolean = false, val online: Boolean = true,
     ) : AndroidScreen
-    data class Channels(val sections: List<ChannelSection>, val moreThreads: Boolean = false) : AndroidScreen
+    data class Channels(
+        val sections: List<ChannelSection>, val moreThreads: Boolean = false,
+        /** 横に並べた会話で開いているチャンネル・スレッド（一覧で選択中にする）。 */
+        val selected: String? = null,
+    ) : AndroidScreen
     data class Notifications(val items: List<InboxItem>, val nextCursor: String? = null, val loadFailed: Boolean = false) : AndroidScreen
     data class Bubble(val entries: List<TimelineItem>, val input: InputState, val participants: List<String> = emptyList()) : AndroidScreen
     data class Settings(val groups: List<SettingsGroup>) : AndroidScreen
@@ -300,6 +306,8 @@ internal fun AndroidScreens(
     loadNotificationAvatar: suspend (String) -> ImageBitmap? = { null },
     loadNotificationReactions: suspend (InboxReactionContext) -> List<InboxReactionEmoji> = { emptyList() },
     pageState: SaveableStateHolder = rememberSaveableStateHolder(),
+    /** 幅の広い画面で、会話の横に並べるチャンネル一覧。 */
+    sidebar: AndroidScreen.Channels? = null,
     photo: @Composable (RecentPhoto, Modifier) -> Unit,
 ) {
     val systemHaptics = LocalHapticFeedback.current
@@ -333,7 +341,7 @@ internal fun AndroidScreens(
         ) { visibleScreen ->
             pageState.SaveableStateProvider(visibleScreen.routeKey()) {
                 RenderAndroidScreen(visibleScreen, dark, foreground && visibleScreen == screen,
-                    dispatch, language, interaction, remoteAudioLevel, loadNotificationAvatar, loadNotificationReactions, photo)
+                    dispatch, language, interaction, remoteAudioLevel, loadNotificationAvatar, loadNotificationReactions, photo, sidebar)
             }
         }
     }
@@ -364,6 +372,7 @@ private fun RenderAndroidScreen(
     loadNotificationAvatar: suspend (String) -> ImageBitmap?,
     loadNotificationReactions: suspend (InboxReactionContext) -> List<InboxReactionEmoji>,
     photo: @Composable (RecentPhoto, Modifier) -> Unit,
+    sidebar: AndroidScreen.Channels? = null,
 ) {
     val top = when (screen) {
         is AndroidScreen.Home -> TopPage.Home
@@ -377,7 +386,21 @@ private fun RenderAndroidScreen(
     val back = { dispatch(AndroidUiAction.Back) }
     val openSetting = { id: String -> dispatch(AndroidUiAction.OpenSetting(id)) }
     val toggle = { id: String, value: Boolean -> dispatch(AndroidUiAction.Toggle(id, value)) }
-    AndroidShell(top, dark, { dispatch(AndroidUiAction.Navigate(it)) }, language) { colors ->
+    val section = top ?: when (screen) {
+        is AndroidScreen.Conversation, is AndroidScreen.Thread, is AndroidScreen.OpeningConversation,
+        is AndroidScreen.ChannelSettings, is AndroidScreen.EditChannel, is AndroidScreen.Directory -> TopPage.Channels
+        is AndroidScreen.Post, is AndroidScreen.Profile, is AndroidScreen.NewPost, is AndroidScreen.PostLoading -> TopPage.Home
+        is AndroidScreen.SettingsDetail -> TopPage.Settings
+        else -> null
+    }
+    // 会話・スレッドを開いているとき（と、チャンネル一覧そのもの）だけ、一覧を横に並べる。
+    val list = sidebar?.takeIf {
+        screen is AndroidScreen.Channels || screen is AndroidScreen.Conversation || screen is AndroidScreen.Thread ||
+            screen is AndroidScreen.OpeningConversation
+    }
+    AndroidShell(top, dark, { dispatch(AndroidUiAction.Navigate(it)) }, language, section = section,
+        allowRail = screen !is AndroidScreen.Call && screen !is AndroidScreen.SignIn) { colors ->
+      ListDetail(list, screen is AndroidScreen.Channels, colors, dispatch) {
         when (screen) {
             is AndroidScreen.Home -> HomePage(screen, colors, dispatch)
             is AndroidScreen.Channels -> ChannelPage(screen, colors, dispatch)
@@ -527,6 +550,36 @@ private fun RenderAndroidScreen(
             is AndroidScreen.Call -> CallPage(screen, colors, foreground && !interaction.reducedMotion,
                 remoteAudioLevel, dispatch)
         }
+      }
+    }
+}
+
+/**
+ * 幅の広い画面では、チャンネル一覧を左に、開いている会話を右に並べる（iPad の分割表示と同じ）。
+ * 一覧そのもの（[listOnly]）を開いているときは、右に案内を出す。狭い画面では [content] だけを出す。
+ */
+@Composable
+private fun ColumnScope.ListDetail(
+    list: AndroidScreen.Channels?, listOnly: Boolean, colors: AndroidColors, dispatch: (AndroidUiAction) -> Unit,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    if (list == null) { content(); return }
+    BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+        if (maxWidth < AndroidLayout.listDetailMinWidth) {
+            Column(Modifier.fillMaxSize()) { content() }
+            return@BoxWithConstraints
+        }
+        Row(Modifier.fillMaxSize()) {
+            Column(Modifier.width(AndroidLayout.listPaneWidth).fillMaxHeight().testTag("channel-list-pane")) {
+                ChannelPage(list, colors, dispatch)
+            }
+            Box(Modifier.width(1.dp).fillMaxHeight().background(colors.inputBoundary))
+            Column(Modifier.weight(1f).fillMaxHeight()) {
+                if (listOnly) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(androidLabel("channels.selectPrompt", "チャンネルを選んでください"), color = colors.secondary)
+                } else content()
+            }
+        }
     }
 }
 
@@ -627,10 +680,15 @@ private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, d
                 }
             }
             section.channels.forEach { channel -> item(key = channel.id) {
+                val current = channel.id == screen.selected
                 Row(
                     Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target)
+                        .then(if (current) Modifier.background(colors.headerLight, RoundedCornerShape(10.dp)) else Modifier)
                         .clickable(role = Role.Button) { dispatch(AndroidUiAction.OpenChannel(channel.id)) }
-                        .semantics { if (channel.unread) stateDescription = "未読" },
+                        .semantics {
+                            if (channel.unread) stateDescription = "未読"
+                            selected = current
+                        },
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -650,7 +708,7 @@ private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, d
                 }
             }
             items(channel.threads, key = { "thread:${it.id}" }) { thread ->
-                ChannelThreadRow(channel.id, thread, colors, dispatch)
+                ChannelThreadRow(channel.id, thread, colors, dispatch, current = thread.id == screen.selected)
             }
             }
         }
@@ -665,13 +723,16 @@ private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, d
 
 /** チャンネルの下に字下げして並べる、参加中のスレッド（Web のサイドバーと iOS のチャンネル一覧と同じ）。 */
 @Composable
-private fun ChannelThreadRow(channelId: String, thread: ChannelThreadItem, colors: AndroidColors, dispatch: (AndroidUiAction) -> Unit) {
+private fun ChannelThreadRow(
+    channelId: String, thread: ChannelThreadItem, colors: AndroidColors, dispatch: (AndroidUiAction) -> Unit, current: Boolean = false,
+) {
     val label = androidLabel("threads.sidebarOpen", "スレッドを開く: ${thread.title}（${thread.replies} 件の返信）",
         "title" to thread.title, "count" to thread.replies.toString())
     Row(
         Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target)
+            .then(if (current) Modifier.background(colors.headerLight, RoundedCornerShape(10.dp)) else Modifier)
             .clickable(role = Role.Button) { dispatch(AndroidUiAction.OpenChannelThread(channelId, thread.id)) }
-            .semantics(mergeDescendants = true) { contentDescription = label }
+            .semantics(mergeDescendants = true) { contentDescription = label; selected = current }
             .padding(start = AndroidControlSize.inlineIcon + 10.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,

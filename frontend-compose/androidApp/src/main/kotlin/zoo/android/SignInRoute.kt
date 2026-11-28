@@ -85,7 +85,7 @@ internal fun SignInRoute(
             }
         }
     }
-    AndroidShell(null, dark, {}) { colors ->
+    AndroidShell(null, dark, {}, allowRail = false) { colors ->
         if (editing && !restoring && !busy) {
             PageHeader("接続先の設定", colors, onBack = { editing = false })
             Column(Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(16.dp),

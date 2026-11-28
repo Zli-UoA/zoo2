@@ -66,7 +66,7 @@ internal fun SipRoute(app: Session, controller: PhoneController, users: List<Row
     var deleting by remember { mutableStateOf<Row?>(null) }
     var number by remember { mutableStateOf("") }
     val canDial = controller.registration.status == "ready" && controller.call == null && !controller.busy
-    AndroidShell(null, app.env.dark, {}, app.env.locale) { colors ->
+    AndroidShell(null, app.env.dark, {}, app.env.locale, allowRail = false) { colors ->
         PageHeader(app.t("sip.title"), colors, onBack = back) {
             UiIconButton(UiIcon.Refresh, app.t("sip.refresh"), colors.foreground,
                 { controller.refresh() }, enabled = !controller.loading)

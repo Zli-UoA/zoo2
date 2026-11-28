@@ -44,7 +44,7 @@ internal fun DocumentViewer(
     dismiss: () -> Unit,
 ) {
     Dialog(onDismissRequest = dismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
-        AndroidShell(null, dark, {}) { colors ->
+        AndroidShell(null, dark, {}, allowRail = false) { colors ->
             PageHeader(name, colors, onBack = dismiss) {
                 UiIconButton(UiIcon.Download, androidLabel("attachments.downloadShort", "ダウンロード"), colors.foreground, save,
                     modifier = Modifier.testTag("document-save"))
@@ -85,9 +85,9 @@ private fun DocumentPages(
         }
         Text("${list.firstVisibleItemIndex + 1} / $count",
             Modifier.align(Alignment.BottomCenter).padding(16.dp)
-                .background(colors.background.copy(alpha = 0.85f), CircleShape)
+                .background(colors.foreground.copy(alpha = 0.8f), CircleShape)
                 .padding(horizontal = 12.dp, vertical = 4.dp).testTag("document-page-number"),
-            color = colors.foreground, fontSize = 13.sp)
+            color = colors.background, fontSize = 13.sp)
     }
 }
 

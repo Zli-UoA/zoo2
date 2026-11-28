@@ -102,7 +102,7 @@ internal fun EncryptionRoute(
             if (withTimeoutOrNull(30_000) { reload(); true } != true) failure = true
         }
     }
-    AndroidShell(null, platform.env.dark, {}, platform.env.locale) { colors ->
+    AndroidShell(null, platform.env.dark, {}, platform.env.locale, allowRail = false) { colors ->
         PageHeader("エンドツーエンド暗号化", colors, onBack = back)
         Column(Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)) {

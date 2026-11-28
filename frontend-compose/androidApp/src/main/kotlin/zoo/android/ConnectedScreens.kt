@@ -585,8 +585,16 @@ internal fun ConnectedScreens(
             "channel:$channelId", session.t("common.loading"), env.online)
         else -> AndroidScreen.Channels(state.channelSections(channels, usersById, memberships), state.joinedThreads.hasMore)
     }
+    // 幅の広い画面では、会話・スレッドの横にもチャンネル一覧を出す（AndroidScreens の ListDetail が幅で決める）。
+    val wideWindow = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp.dp >= ListDetailWindowWidth
+    val listBeside = wideWindow && (screen is AndroidScreen.Conversation || screen is AndroidScreen.Thread ||
+        screen is AndroidScreen.OpeningConversation)
+    val sidebar = if (listBeside || (wideWindow && screen is AndroidScreen.Channels)) AndroidScreen.Channels(
+        state.channelSections(channels, usersById, memberships), state.joinedThreads.hasMore,
+        selected = currentThread ?: channelId,
+    ) else null
     // 参加中のスレッド。チャンネル一覧を表示している間だけ、開いたときと 60 秒ごとに取り直す（iOS と同じ）。
-    val showingChannels = screen is AndroidScreen.Channels && env.online && env.visible
+    val showingChannels = (screen is AndroidScreen.Channels || listBeside) && env.online && env.visible
     LaunchedEffect(state, showingChannels) {
         while (showingChannels) {
             state.joinedThreads.refresh()
@@ -750,7 +758,7 @@ internal fun ConnectedScreens(
                                 else -> state.dispatch(action, screen, channel, rows, dmPeer, usersById[dmPeer]?.let(::author), enableNotifications)
                             }
                         },
-                        language = env.locale, interaction = state.interaction.snapshot(), pageState = pageState,
+                        language = env.locale, interaction = state.interaction.snapshot(), pageState = pageState, sidebar = sidebar,
                         remoteAudioLevel = { phone.remoteAudioLevel },
                         loadNotificationReactions = state.inbox::loadReactions,
                         loadNotificationAvatar = { url ->
@@ -915,6 +923,9 @@ internal fun ConnectedScreens(
 
 
 private const val MAX_RECENT_EMOJIS = 24
+
+/** チャンネル一覧と会話を並べる画面の幅（AndroidLayout の基準とレールの幅の和）。 */
+private val ListDetailWindowWidth = AndroidLayout.listDetailMinWidth + AndroidLayout.railWidth
 
 private fun currentConversationDay(): Pair<ZoneId, LocalDate> {
     val zone = ZoneId.systemDefault()
