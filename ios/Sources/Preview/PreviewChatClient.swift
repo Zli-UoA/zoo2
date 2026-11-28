@@ -385,7 +385,12 @@ final class PreviewChatClient: ChatClient {
         return URL(string: serverURL + "/stamp.png")!
     }
 
-    func channels() async throws -> [Channel] { allChannels }
+    func channels() async throws -> [Channel] {
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-directory-loading") {
+            try await Task.sleep(for: .seconds(86_400))
+        }
+        return allChannels
+    }
     func joinedThreads(before: String?, through: String?) async throws -> ChannelThreadPage {
         let replies = Dictionary(grouping: allMessages.filter { $0.parent_id != nil && $0.deleted_at == nil }, by: \.parent_id)
         let rows = allMessages.compactMap { message -> ChannelThreadSummary? in

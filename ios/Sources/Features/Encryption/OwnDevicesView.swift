@@ -35,7 +35,9 @@ struct OwnDevicesView: View {
                     .accessibilityElement(children: .combine)
                     .accessibilityIdentifier("own-device-\(device.device_id)")
                 }
-                if loading && devices.isEmpty { ProgressView() }
+                if loading && devices.isEmpty {
+                    ProgressView("端末を読み込み中…").frame(maxWidth: .infinity)
+                }
             } footer: {
                 Text("端末を削除しても、その端末の鍵が使えなくなるだけで、失効ではありません。端末をなくした、盗まれたなどの場合は、下の「失効する」で鍵を作り直してください。")
             }

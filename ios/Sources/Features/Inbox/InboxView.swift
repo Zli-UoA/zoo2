@@ -17,12 +17,8 @@ struct InboxView: View {
                         .font(.subheadline)
                         .padding(AppDesign.horizontalInset)
                 }
-                if store.entries.isEmpty {
-                    if store.loading {
-                        ProgressView("通知を読み込み中…").frame(maxWidth: .infinity).padding(.vertical, 48)
-                    } else if store.error == nil {
-                        ContentUnavailableView("通知はありません", systemImage: "bell")
-                    }
+                if store.entries.isEmpty && !store.loading && store.error == nil {
+                    ContentUnavailableView("通知はありません", systemImage: "bell")
                 }
                 ForEach(store.entries) { entry in
                     VStack(spacing: 0) {
@@ -49,6 +45,11 @@ struct InboxView: View {
         .scrollContentBackground(.hidden)
         .contentMargins(.top, AppDesign.spacing, for: .scrollContent)
         .background(AppDesign.background.ignoresSafeArea())
+        .overlay {
+            if store.entries.isEmpty && store.loading {
+                ProgressView("通知を読み込み中…")
+            }
+        }
         .navigationTitle("通知")
         .navigationBarTitleDisplayMode(.large)
         .accessibilityIdentifier("inbox-list")

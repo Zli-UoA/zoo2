@@ -1078,6 +1078,29 @@ final class ZooUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["login"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["login"].isEnabled)
+        let viewport = app.scrollViews["login-screen"]
+        let heading = app.staticTexts["ようこそ Zoo へ"]
+        let login = app.buttons["login"]
+        XCTAssertEqual(heading.frame.midX, viewport.frame.midX, accuracy: 2)
+        XCTAssertEqual(login.frame.midX, viewport.frame.midX, accuracy: 2)
+        XCTAssertGreaterThan(heading.frame.minY, viewport.frame.minY + viewport.frame.height / 4)
+        XCTAssertLessThan(login.frame.maxY, viewport.frame.maxY - viewport.frame.height / 4)
+        capture(app, name: "中央に配置したログイン画面")
+    }
+
+    @MainActor
+    func testDirectoryLoadingIsCentered() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "タブとナビゲーションの間の中央配置を確認する")
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting-workspace", "--uitesting-directory-loading"]
+        app.launch()
+        let indicator = app.descendants(matching: .any)["directory-loading"].firstMatch
+        XCTAssertTrue(indicator.waitForExistence(timeout: 5))
+        let top = app.navigationBars.firstMatch.frame.maxY
+        let bottom = app.tabBars.firstMatch.frame.minY
+        XCTAssertEqual(indicator.frame.midX, app.frame.midX, accuracy: 2)
+        XCTAssertEqual(indicator.frame.midY, (top + bottom) / 2, accuracy: 2)
+        capture(app, name: "中央に配置した一覧の読み込み表示")
     }
 
     @MainActor

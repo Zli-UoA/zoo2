@@ -50,24 +50,26 @@ struct EncryptionSetupView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 24) {
-                    switch e2ee.status {
-                    case .starting: starting
-                    case .unlocked: unlocked
-                    case .locked(let reason): locked(reason)
-                    case .notSetUp:
-                        switch phase {
-                        case .intro: intro
-                        case .recovery(let start, let passkey): recovery(start, passkey: passkey)
+            GeometryReader { geometry in
+                ScrollView {
+                    VStack(spacing: 24) {
+                        switch e2ee.status {
+                        case .starting: starting
+                        case .unlocked: unlocked
+                        case .locked(let reason): locked(reason)
+                        case .notSetUp:
+                            switch phase {
+                            case .intro: intro
+                            case .recovery(let start, let passkey): recovery(start, passkey: passkey)
+                            }
                         }
+                        if let error = error ?? e2ee.statusError { ErrorCard(message: error) }
                     }
-                    if let error = error ?? e2ee.statusError { ErrorCard(message: error) }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 24)
+                    .frame(maxWidth: 520)
+                    .frame(maxWidth: .infinity, minHeight: e2ee.status == .starting ? geometry.size.height : nil)
                 }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 24)
-                .frame(maxWidth: 520)
-                .frame(maxWidth: .infinity)
             }
             .background(AppDesign.background.ignoresSafeArea())
             .navigationTitle("暗号化")

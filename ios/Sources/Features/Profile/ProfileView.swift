@@ -48,7 +48,7 @@ struct ProfileView: View {
                     Button("公開プロフィールを編集") { workspace.presentedSheet = .profile }
                         .accessibilityIdentifier("profile-edit")
                 } else if loadError == nil {
-                    ProgressView("読み込み中…")
+                    ProgressView("読み込み中…").frame(maxWidth: .infinity)
                 }
                 if let loadError {
                     Text(loadError).foregroundStyle(.red)

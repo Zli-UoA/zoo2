@@ -56,7 +56,7 @@ struct ChannelDetailsView: View {
                             .accessibilityValue(notifications.level(for: channel.id)?.title ?? level.title)
                             .disabled(notifications.loading.contains(channel.id) || notifications.saving.contains(channel.id))
                         } else if notifications.errors[channel.id] == nil {
-                            ProgressView("通知設定を読み込み中…")
+                            ProgressView("通知設定を読み込み中…").frame(maxWidth: .infinity)
                         }
                         if notifications.saving.contains(channel.id) { ProgressView("保存中…") }
                         if let error = notifications.errors[channel.id] {
@@ -93,7 +93,7 @@ struct ChannelDetailsView: View {
                     } else if let members = workspace.channelMembers[channel.id] {
                         Text("\(members.count)人").foregroundStyle(.secondary)
                         ForEach(members) { PersonRow(person: $0) }
-                    } else { ProgressView("メンバーを読み込み中…") }
+                    } else { ProgressView("メンバーを読み込み中…").frame(maxWidth: .infinity) }
                 }
             }
             .navigationTitle("チャンネル詳細").navigationBarTitleDisplayMode(.inline)
