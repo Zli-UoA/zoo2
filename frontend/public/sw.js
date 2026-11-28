@@ -47,8 +47,6 @@ function isPrivatePath(pathname) {
   );
 }
 
-// manifest はここから外して素通しにする。旧 SW がキャッシュを返す経路も
-// SHELL からの削除と sw.js の更新（install）で解消される。
 async function isOfflinePage(response) {
   try {
     return (await response.clone().text()).includes('name="zoo-offline"');
@@ -57,6 +55,8 @@ async function isOfflinePage(response) {
   }
 }
 
+// manifest はここから外して素通しにする。旧 SW がキャッシュを返す経路も
+// SHELL からの削除と sw.js の更新（install）で解消される。
 function isCacheableAsset(url) {
   return (
     CACHEABLE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix)) ||

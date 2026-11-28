@@ -280,6 +280,52 @@ test("a server error returns the cached offline page", async () => {
   assert.equal(await response.text(), saved);
 });
 
+test("a failed cache write still returns the fetched offline page", async () => {
+  const updated = '<meta name="zoo-offline" content="true" />new';
+  const cacheContext = memoryCaches([
+    [
+      "zoo-shell-v2",
+      `${ORIGIN}/offline.html`,
+      basicResponse('<meta name="zoo-offline" content="true" />old', {
+        headers: { "content-type": "text/html" },
+      }),
+    ],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const realOpen = cacheContext.api.open.bind(cacheContext.api);
+  cacheContext.api.open = async (name) => {
+    const cache = await realOpen(name);
+    return {
+      ...cache,
+      put: async (request, response) => {
+        if (requestKey(request) === `${ORIGIN}/offline.html`) throw new Error("QuotaExceeded");
+        return cache.put(request, response);
+      },
+    };
+  };
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () => basicResponse(updated, { headers: { "content-type": "text/html" } }),
+  });
+  const response = await fetchThrough(handlers, navigation(`${ORIGIN}/offline.html`));
+  assert.equal(await response.text(), updated);
+});
+
+test("install does not save a non-offline response as the offline page", async () => {
+  const { handlers, cacheContext } = worker({
+    fetch: async (input) => {
+      if (requestKey(input) === `${ORIGIN}/offline.html`)
+        return basicResponse("<html>app shell</html>", {
+          headers: { "content-type": "text/html" },
+        });
+      return basicResponse(`network:${requestKey(input)}`);
+    },
+  });
+  await dispatch(handlers, "install");
+  const cache = await cacheContext.api.open("zoo-shell-v2");
+  assert.equal(await cache.match(`${ORIGIN}/offline.html`), undefined);
+});
+
 test("install precaches the hashed assets referenced by the app shell", async () => {
   const { handlers, cacheContext } = worker({
     fetch: async (input) => {
