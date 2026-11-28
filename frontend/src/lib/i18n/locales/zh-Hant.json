@@ -315,6 +315,7 @@
     "open": "開啟{{name}}",
     "download": "下載{{name}}",
     "downloadShort": "下載",
+    "share": "分享",
     "downloadError": "無法下載檔案。",
     "previewSaveUnsupported": "應用程式無法儲存此檔案。請在新分頁開啟連結後儲存。",
     "downloadSaved": "已儲存為 {{name}}。",

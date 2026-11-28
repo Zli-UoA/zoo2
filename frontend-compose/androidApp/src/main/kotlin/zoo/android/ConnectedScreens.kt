@@ -351,6 +351,7 @@ internal fun ConnectedScreens(
         }
     }
     LaunchedEffect(state.overlay, env.online) {
+        if (state.overlay == "public-profile" && env.online && state.publicProfile == null) state.loadPublicProfile()
         if (state.overlay == "search-engine" && env.online) session.searchPreferences.ensureLoaded()
         if (state.overlay == "new-post" && env.online) try { state.loadFederation() }
         catch (cancelled: CancellationException) { throw cancelled }
@@ -401,6 +402,8 @@ internal fun ConnectedScreens(
     fun back() {
         when {
             state.mediaPreview != null -> state.mediaPreview = null
+            state.documentPreview != null -> state.documentPreview = null
+            state.decryptedFile != null -> state.decryptedFile = null
             showFullCall -> background()
             sipRoute && state.overlay == null -> {
                 platform.navigate("/settings")
@@ -459,6 +462,10 @@ internal fun ConnectedScreens(
     // スレッドに返信できるか（アーカイブ済み・親が削除済み・参加が必要で未参加なら返信できない）。入力欄と入力中の通知で共有する。
     val canReplyInThread = canPost && threadRoot != null && !threadDetail.present("thread_archive_at") &&
         (!threadDetail.flag("tracked") || threadDetail.text("membership") == "joined")
+    // チャンネル一覧は、チャンネル・メンバー・未読・ピン・スレッドが変わったときだけ作り直す（下書きの入力では作り直さない）。
+    val channelSections by remember(state, channels, usersById, memberships) {
+        derivedStateOf { state.channelSections(channels, usersById, memberships) }
+    }
     val screen = when {
         showFullCall -> checkNotNull(callScreen)
         state.overlay == "people" -> AndroidScreen.Directory("ユーザーを検索", state.query,
@@ -494,6 +501,20 @@ internal fun ConnectedScreens(
         state.overlay == "members" -> AndroidScreen.Directory("メンバー", state.query,
             users.filter { u -> channelMembers.any { it.text("user_id") == u.text("id") } && author(u).contains(state.query, true) }
                 .map { SelectionItem(it.text("id"), author(it), isUserName = true) }, scopeId = channelId)
+        state.overlay == "public-profile" -> AndroidScreen.EditChannel(
+            session.t("activitypubSettings.editProfile"), state.channelName, state.channelDescription, "保存",
+            env.online && state.publicProfile != null && !state.saving && state.publicProfileValid(),
+            nameLabel = session.t("activitypubSettings.displayName"),
+            descriptionLabel = session.t("activitypubSettings.bio"),
+            nameHint = state.publicProfile?.text("default_display_name")?.ifBlank { null },
+            description2 = session.t("activitypubSettings.description") + "\n" + session.t("activitypubSettings.nameHint"),
+            loading = state.publicProfile == null && !state.publicProfileFailed,
+            notice = when {
+                state.publicProfileSaved -> session.t("activitypubSettings.saved")
+                state.publicProfileFailed -> session.t("common.writeError")
+                else -> null
+            },
+        )
         state.overlay == "create" || state.overlay == "rename" -> AndroidScreen.EditChannel(
             if (state.overlay == "create") "チャンネルを作成" else "チャンネルを編集",
             state.channelName, state.channelDescription, if (state.overlay == "create") "作成" else "保存",
@@ -569,11 +590,19 @@ internal fun ConnectedScreens(
             } else null)
         channelId != null && channelsLoading -> AndroidScreen.OpeningConversation(
             "channel:$channelId", session.t("common.loading"), env.online)
-        else -> AndroidScreen.Channels(state.channelSections(channels, usersById, memberships), state.joinedThreads.hasMore,
+        else -> AndroidScreen.Channels(channelSections, state.joinedThreads.hasMore,
             threadsFailed = state.joinedThreads.error)
     }
+    // 幅の広い画面では、会話・スレッドの横にもチャンネル一覧を出す（AndroidScreens の ListDetail が幅で決める）。
+    val wideWindow = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp.dp >= ListDetailWindowWidth
+    val listBeside = wideWindow && (screen is AndroidScreen.Conversation || screen is AndroidScreen.Thread ||
+        screen is AndroidScreen.OpeningConversation)
+    val sidebar = if (listBeside || (wideWindow && screen is AndroidScreen.Channels)) AndroidScreen.Channels(
+        channelSections, state.joinedThreads.hasMore,
+        selected = currentThread ?: channelId, threadsFailed = state.joinedThreads.error,
+    ) else null
     // 参加中のスレッド。チャンネル一覧を表示している間だけ、開いたときと 60 秒ごとに取り直す（iOS と同じ）。
-    val showingChannels = screen is AndroidScreen.Channels && env.online && env.visible
+    val showingChannels = (screen is AndroidScreen.Channels || listBeside) && env.online && env.visible
     LaunchedEffect(state, showingChannels) {
         while (showingChannels) {
             state.joinedThreads.refresh()
@@ -737,7 +766,7 @@ internal fun ConnectedScreens(
                                 else -> state.dispatch(action, screen, channel, rows, dmPeer, usersById[dmPeer]?.let(::author), enableNotifications)
                             }
                         },
-                        language = env.locale, interaction = state.interaction.snapshot(), pageState = pageState,
+                        language = env.locale, interaction = state.interaction.snapshot(), pageState = pageState, sidebar = sidebar,
                         remoteAudioLevel = { phone.remoteAudioLevel },
                         loadNotificationReactions = state.inbox::loadReactions,
                         loadNotificationAvatar = { url ->
@@ -808,6 +837,13 @@ internal fun ConnectedScreens(
                 }
             }
         }
+    }
+    state.documentPreview?.takeIf { env.visible && !showFullCall }?.let { source ->
+        key(source) { DocumentPreview(session, platform, source, env.dark) { state.documentPreview = null } }
+    }
+    state.decryptedFile?.takeIf { env.visible }?.let { file ->
+        DecryptedFileDialog(file.name, { session.t(it) }, save = { state.saveDecryptedFile(share = false) },
+            share = { state.saveDecryptedFile(share = true) }, dismiss = { state.decryptedFile = null })
     }
     if (phone.error) {
         AlertDialog(
@@ -899,6 +935,9 @@ internal fun ConnectedScreens(
 
 
 private const val MAX_RECENT_EMOJIS = 24
+
+/** チャンネル一覧と会話を並べる画面の幅（AndroidLayout の基準とレールの幅の和）。 */
+private val ListDetailWindowWidth = AndroidLayout.listDetailMinWidth + AndroidLayout.railWidth
 
 private fun currentConversationDay(): Pair<ZoneId, LocalDate> {
     val zone = ZoneId.systemDefault()

@@ -119,7 +119,26 @@ internal class ConnectedScreenState(
                 return@launch
             }
             try {
-                platform.shareFile(bytes, view.name.ifBlank { "attachment" }, view.mimetype)
+                val name = view.name.ifBlank { "attachment" }
+                // PDF はアプリ内で開く（iOS と同じ）。保存はプレビューの保存ボタンから行う。
+                if (isPdfAttachment(name) || view.mimetype == "application/pdf") documentPreview = DocumentSource.Decrypted(bytes, name)
+                else decryptedFile = DecryptedFile(bytes, name, view.mimetype)
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { app.toast = app.t("attachments.downloadError") }
+        }
+    }
+
+    /** 復号した PDF 以外の添付。「ダウンロード」に保存するか、共有で別のアプリに渡すかを選ぶ。 */
+    class DecryptedFile(val bytes: ByteArray, val name: String, val type: String)
+    var decryptedFile by mutableStateOf<DecryptedFile?>(null)
+
+    fun saveDecryptedFile(share: Boolean) {
+        val file = decryptedFile ?: return
+        decryptedFile = null
+        app.scope.launch {
+            try {
+                if (share) platform.shareFile(file.bytes, file.name, file.type)
+                else platform.saveToDownloads(file.bytes, file.name, file.type)
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { app.toast = app.t("attachments.downloadError") }
         }
@@ -159,6 +178,8 @@ internal class ConnectedScreenState(
     var editing by mutableStateOf<AndroidUiAction.ActOnEntry?>(null)
         private set
     var mediaPreview by mutableStateOf<TimelineMediaSelection?>(null)
+    /** アプリ内で開いている PDF。 */
+    var documentPreview by mutableStateOf<DocumentSource?>(null)
     var confirmingEntry by mutableStateOf<AndroidUiAction.ActOnEntry?>(null)
     private var editingPost = false
     private var returnOverlay: String? = null
@@ -239,6 +260,35 @@ internal class ConnectedScreenState(
     var channelEncrypted by mutableStateOf(false)
         private set
     var postVisibility by mutableStateOf("unlisted")
+    /** 自分の公開プロフィール（`GET /api/activitypub/profile`）。読み込むまでは null。 */
+    var publicProfile by mutableStateOf<Row?>(null)
+        private set
+    var publicProfileFailed by mutableStateOf(false)
+        private set
+    var publicProfileSaved by mutableStateOf(false)
+        private set
+
+    /** 公開プロフィールの編集を開いたときに読む。編集中の欄は、読み込んだ値で始める。 */
+    suspend fun loadPublicProfile() {
+        publicProfileFailed = false
+        try {
+            val profile = app.api.request("/api/activitypub/profile").jsonObject
+            publicProfile = profile
+            channelName = profile.text("display_name")
+            channelDescription = profile.text("summary")
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            publicProfileFailed = true
+        }
+    }
+
+    /** Web の設定と同じ上限（表示名 100 文字、自己紹介 1000 文字）と、制御文字を含まないこと。 */
+    fun publicProfileValid(): Boolean {
+        val name = channelName.trim()
+        return name.codePointCount() <= 100 && name.none { it.isISOControl() } &&
+            channelDescription.codePointCount() <= 1000 && '\u0000' !in channelDescription
+    }
     /** Serializes notification-level PATCHes per channel so the last selection is saved last. */
     private val notificationLevelLocks = mutableMapOf<String, Mutex>()
     private val drafts = mutableStateMapOf<String, InputState>()
@@ -356,6 +406,8 @@ internal class ConnectedScreenState(
         else emptyList()
         val previewIds = attachmentMedia.mapNotNull { it.attachmentId }.toSet()
         val files = fileRows.filterNot { it.text("id") in previewIds }.map { it.text("id") to it.text("file_name") }
+        val pdfFiles = fileRows.filter { it.text("content_type").substringBefore(';').trim().equals("application/pdf", true) }
+            .mapTo(mutableSetOf()) { it.text("id") }
         val postMedia = data.array("media").rows().mapNotNull(::postMedia)
         // A channel-linked post exposes its attachments through both representations.
         val media = selectTimelineMedia(postMedia, attachmentMedia, isPost && fileRows.isNotEmpty())
@@ -385,7 +437,7 @@ internal class ConnectedScreenState(
             editable = (writable || isPost) && data.text("user_id") == app.config.userId && !data.flag("remote"),
             canReact = writable || isPost,
             canRepost = isPost && data.text("visibility") in setOf("public", "local", "unlisted"),
-            reposted = metadata.flag("reposted"), reactions = badges, attachments = files, link = url,
+            reposted = metadata.flag("reposted"), reactions = badges, attachments = files, pdfAttachments = pdfFiles, link = url,
             richContent = richContent, channelLinks = links.channels.map { it.first },
             needsWorkspaceEmoji = allowPreview && !data.present("ciphertext") && (
                 ((!isPost || !data.flag("remote")) && (
@@ -465,8 +517,10 @@ internal class ConnectedScreenState(
             EntryOperation.Attachment -> {
                 val info = action.item.encryptedFiles[action.value]
                 if (info != null) openEncryptedAttachment(info)
-                else action.item.attachments.firstOrNull { it.first == action.value }?.let {
-                    app.attachmentLinks.download(obj("id" to it.first, "file_name" to it.second))
+                else action.item.attachments.firstOrNull { it.first == action.value }?.let { (id, name) ->
+                    // 署名付き URL で取る添付は平文（チャンネルを暗号化する前の履歴も含む）。名前か content_type で PDF と分かれば開く。
+                    if (isPdfAttachment(name) || id in action.item.pdfAttachments) documentPreview = DocumentSource.Signed(id, name)
+                    else app.attachmentLinks.download(obj("id" to id, "file_name" to name))
                 }
             }
             EntryOperation.Link -> if (!encrypted && publicUrl(action.value) != null) platform.action("open:${action.value}")
@@ -760,6 +814,7 @@ internal class ConnectedScreenState(
     fun channelSections(channels: List<Row>, users: Map<String, Row>, members: List<Row>): List<ChannelSection> {
         val joined = members.filter { it.text("user_id") == app.config.userId }.map { it.text("channel_id") }.toSet()
         val threads = joinedThreads.byChannel()
+        val peersByChannel = members.filter { it.text("user_id") != app.config.userId }.groupBy { it.text("channel_id") }
         val active = channels.filter {
             it.text("id") in joined && !it.present("deleted_at") && !it.present("archive_at")
         }.sortedWith { left, right ->
@@ -767,7 +822,7 @@ internal class ConnectedScreenState(
         }
         fun item(row: Row): ChannelItem {
             val id = row.text("id")
-            val peers = members.filter { it.text("channel_id") == id && it.text("user_id") != app.config.userId }
+            val peers = peersByChannel[id].orEmpty()
             val userName = peers.singleOrNull()?.let { users[it.text("user_id")] }?.let(::author)
                 ?.takeIf { row.flag("is_dm") && it.isNotBlank() }
             return ChannelItem(id, userName ?: row.text("channel_name"), app.channelReadPositions[id]?.hasUnread == true, userName != null,
@@ -1030,6 +1085,12 @@ internal class ConnectedScreenState(
     }
 
     fun settings(env: Environment, incomingSettingsAvailable: Boolean): List<SettingsGroup> = listOf(
+        // 自分のプロフィール（iOS のプロフィールタブ）。名前とアイコンは認証基盤の設定で変える。
+        SettingsGroup("プロフィール", buildList {
+            add(SettingsEntry.Destination("public-profile", app.t("activitypubSettings.editProfile")))
+            if (platform.issuer != null) add(SettingsEntry.Destination("account-profile", "名前・アイコンを編集"))
+            add(SettingsEntry.Destination("public-page", "公開ページを見る"))
+        }),
         SettingsGroup("外観", listOf(SettingsEntry.Destination("theme", "テーマ", env.theme),
             SettingsEntry.Destination("language", "言語", env.locale))),
         SettingsGroup("操作", listOf(SettingsEntry.Toggle("swipe", "スワイプで返信", env.swipeReply),
@@ -1113,7 +1174,12 @@ internal class ConnectedScreenState(
                     TopPage.Settings -> "/settings"
                 })
             }
-            is AndroidUiAction.OpenChannel -> { overlay = null; platform.navigate("/channels/${action.id.encodeURLParameter()}") }
+            is AndroidUiAction.OpenChannel -> {
+                overlay = null
+                platform.navigate("/channels/${action.id.encodeURLParameter()}")
+                // 分割表示で開いているスレッドの親を選んだときは、パスが変わらないのでスレッドを明示的に閉じる。
+                if (action.id == channelId) app.thread = null
+            }
             is AndroidUiAction.OpenChannelSettings -> if (action.id == channelId) overlay = "channel-settings"
             is AndroidUiAction.OpenThread -> if (channel != null) app.thread = action.id
             is AndroidUiAction.OpenNotification -> {
@@ -1284,6 +1350,18 @@ internal class ConnectedScreenState(
                         }
                     }
                 }
+                action.id == "public-profile" -> {
+                    publicProfile = null
+                    publicProfileSaved = false
+                    channelName = ""
+                    channelDescription = ""
+                    overlay = "public-profile"
+                }
+                action.id == "account-profile" -> platform.issuer?.let { issuer ->
+                    accountProfileUrl(issuer)?.let { platform.action("open:$it") }
+                }
+                action.id == "public-page" ->
+                    platform.action("open:${endpoint(app.config.apiBaseUrl, "/public/users/${app.config.userId.encodeURLParameter()}")}")
                 action.id == "os-notifications" -> enableNotifications()
                 action.id == "logout" -> request { platform.invoke("logout") }
                 action.id.startsWith("theme:") || action.id.startsWith("locale:") -> platform.action(action.id)
@@ -1313,9 +1391,29 @@ internal class ConnectedScreenState(
                 }
                 else -> { query = ""; overlay = action.id }
             }
-            is AndroidUiAction.ChannelNameChanged -> channelName = action.name
-            is AndroidUiAction.ChannelDescriptionChanged -> channelDescription = action.description
-            AndroidUiAction.SubmitChannel -> if (!saving) request {
+            is AndroidUiAction.ChannelNameChanged -> { channelName = action.name; publicProfileSaved = false }
+            is AndroidUiAction.ChannelDescriptionChanged -> { channelDescription = action.description; publicProfileSaved = false }
+            AndroidUiAction.SubmitChannel -> if (overlay == "public-profile") {
+                if (!saving && publicProfile != null && publicProfileValid()) request {
+                    saving = true
+                    publicProfileFailed = false
+                    try {
+                        val sentName = channelName
+                        val sentSummary = channelDescription
+                        val saved = app.api.request("/api/activitypub/profile", "PUT",
+                            obj("display_name" to sentName, "summary" to sentSummary)).jsonObject
+                        publicProfile = saved
+                        // 応答を待つ間に書き足した欄は、そのまま残す（保存済みとは出さない）。
+                        val unchanged = channelName == sentName && channelDescription == sentSummary
+                        if (channelName == sentName) channelName = saved.text("display_name")
+                        if (channelDescription == sentSummary) channelDescription = saved.text("summary")
+                        publicProfileSaved = unchanged
+                    } catch (failure: Exception) {
+                        if (failure is CancellationException) throw failure
+                        publicProfileFailed = true
+                    } finally { saving = false }
+                }
+            } else if (!saving) request {
                 saving = true
                 try {
                     val payload = obj("channel_name" to channelName.trim(), "description" to channelDescription,
@@ -1648,3 +1746,11 @@ internal class ConnectedScreenState(
         channelFiles.values.forEach { it.close() }
     }
 }
+
+/** 認証サーバーのアカウント設定（Web の `accountProfileUrl`）。issuer のパスは使わず、同じオリジンの `/settings/profile` を開く。 */
+internal fun accountProfileUrl(issuer: String): String? = runCatching {
+    val uri = java.net.URI(issuer.trim())
+    val scheme = uri.scheme?.lowercase()?.takeIf { it == "https" || it == "http" } ?: return null
+    val authority = uri.rawAuthority?.takeIf { it.isNotBlank() } ?: return null
+    "$scheme://$authority/settings/profile"
+}.getOrNull()?.let(::publicUrl)?.toString()
