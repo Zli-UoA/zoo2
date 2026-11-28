@@ -178,6 +178,33 @@ describe("createApiClient", () => {
     await expect(client.get("/api/secrets")).rejects.toBeInstanceOf(ApiError);
   });
 
+  it("keeps the Retry-After header on ApiError in seconds", async () => {
+    const fetchMock = vi.fn<FetchLike>(
+      async () =>
+        new Response(JSON.stringify({ error: "busy", code: "THREAD_BUSY", retry_after: 5 }), {
+          status: 503,
+          headers: { "Retry-After": "5" },
+        }),
+    );
+    const client = createApiClient({ baseUrl: "http://localhost:8000", fetch: fetchMock });
+
+    await expect(client.post("/api/messages", { id: "m1" })).rejects.toMatchObject({
+      status: 503,
+      retryAfter: 5,
+      path: "/api/messages",
+      method: "POST",
+    });
+  });
+
+  it("leaves retryAfter null when the error has no Retry-After header", async () => {
+    const fetchMock = vi.fn<FetchLike>(
+      async () => new Response(JSON.stringify({ error: "boom" }), { status: 500 }),
+    );
+    const client = createApiClient({ baseUrl: "http://localhost:8000", fetch: fetchMock });
+
+    await expect(client.get("/api/boom")).rejects.toMatchObject({ retryAfter: null });
+  });
+
   it("routes 401 responses to the default unauthorized handler", async () => {
     const handler = vi.fn();
     setUnauthorizedHandler(handler);

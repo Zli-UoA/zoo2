@@ -206,9 +206,11 @@ impl IntoResponse for AppError {
             body.insert("error".into(), message.into());
             body.insert("code".into(), code.into());
             let mut response = (status, Json(serde_json::Value::Object(body))).into_response();
-            if status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::SERVICE_UNAVAILABLE
-            {
-                let value = retry_after.unwrap_or(5).to_string();
+            // retry_after は必要な経路だけが明示する。429 は既存どおり既定60秒。
+            let retry_after =
+                retry_after.or_else(|| (status == StatusCode::TOO_MANY_REQUESTS).then_some(60));
+            if let Some(value) = retry_after {
+                let value = value.to_string();
                 if let Ok(value) = axum::http::HeaderValue::from_str(&value) {
                     response.headers_mut().insert("retry-after", value);
                 }
@@ -259,11 +261,6 @@ impl IntoResponse for AppError {
             response
                 .headers_mut()
                 .insert("retry-after", axum::http::HeaderValue::from_static("60"));
-        }
-        if status == StatusCode::SERVICE_UNAVAILABLE {
-            response
-                .headers_mut()
-                .insert("retry-after", axum::http::HeaderValue::from_static("5"));
         }
         response
     }

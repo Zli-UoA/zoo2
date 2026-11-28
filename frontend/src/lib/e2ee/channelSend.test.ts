@@ -182,6 +182,68 @@ describe("sendEncryptedMessage", () => {
       expect(JSON.stringify(call.body ?? null)).not.toContain("secret hello");
   });
 
+  it("503 THREAD_BUSY の返信は、同じ id と暗号文で待ってから再送する", async () => {
+    const { worker, ops } = fakeWorker();
+    const busy = new ApiError(
+      503,
+      "busy",
+      { error: "busy", code: "THREAD_BUSY", retry_after: 5 },
+      { path: "/api/messages", method: "POST" },
+      5,
+    );
+    const { client, calls } = fakeClient([busy, null], [3]);
+    const delays: number[] = [];
+    await sendEncryptedMessage(
+      {
+        ...deps(worker, client),
+        replyRetryDelay: async (ms) => {
+          delays.push(ms);
+        },
+      },
+      {
+        channelId: CHANNEL,
+        shapeEpoch: "3",
+        messageId: "m1",
+        parentId: "root",
+        body: "secret reply",
+        mentions: NO_MENTIONS,
+      },
+    );
+    const posts = calls.filter((call) => call.path === "/api/messages");
+    expect(posts).toHaveLength(2);
+    expect(posts[0]!.body).toEqual(posts[1]!.body);
+    expect(posts[0]!.body).toMatchObject({ id: "m1", parent_id: "root" });
+    // 503 では再暗号化しない（再送でも id も暗号文も同じ）。
+    expect(ops.filter((op) => op.op === "megolmEncrypt")).toHaveLength(1);
+    expect(delays).toEqual([5000]);
+  });
+
+  it("503 THREAD_BUSY が続く返信は上限で失敗させる", async () => {
+    const { worker } = fakeWorker();
+    const busy = new ApiError(
+      503,
+      "busy",
+      { error: "busy", code: "THREAD_BUSY", retry_after: 5 },
+      { path: "/api/messages", method: "POST" },
+      5,
+    );
+    const { client, calls } = fakeClient([busy, busy, busy], [3]);
+    await expect(
+      sendEncryptedMessage(
+        { ...deps(worker, client), replyRetryDelay: async () => undefined },
+        {
+          channelId: CHANNEL,
+          shapeEpoch: "3",
+          messageId: "m1",
+          parentId: "root",
+          body: "secret reply",
+          mentions: NO_MENTIONS,
+        },
+      ),
+    ).rejects.toBe(busy);
+    expect(calls.filter((call) => call.path === "/api/messages")).toHaveLength(3);
+  });
+
   it("同じ epoch なら、2 通目は配り直さずに送る", async () => {
     const { worker } = fakeWorker();
     const { client, calls } = fakeClient([null, null], [3]);

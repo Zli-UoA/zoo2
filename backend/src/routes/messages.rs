@@ -488,7 +488,16 @@ fn reply_lock_error(err: AppError) -> AppError {
     if let AppError::Database(ref db_err) = err
         && (AppError::is_lock_timeout(db_err) || AppError::is_statement_timeout(db_err))
     {
-        AppError::ServiceUnavailable("The thread is busy; retry shortly".into())
+        // 返信のルート行ロック競合だけ 5 秒後の再送を案内する。
+        AppError::Coded {
+            status: axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            code: "THREAD_BUSY",
+            message: "The thread is busy; retry shortly".into(),
+            extra: serde_json::json!({"retry_after": 5})
+                .as_object()
+                .unwrap()
+                .clone(),
+        }
     } else {
         err
     }

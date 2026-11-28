@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { createApiClient, type ApiClient } from "../api/client";
+import { ApiError, createApiClient, type ApiClient } from "../api/client";
 import { THREADS_CHANGED, THREAD_REPLY_REDIRECTED } from "./threads";
 import type {
   ChannelNotificationSettingRow,
@@ -22,9 +22,12 @@ const TXID = "4242";
 const CURRENT_USER = "u1";
 
 function makeClient() {
-  const post = vi.fn(async () => ({ data: {}, txid: TXID }));
-  const patch = vi.fn(async () => ({ data: {}, txid: TXID }));
-  const del = vi.fn(async () => ({ data: {}, txid: TXID }));
+  const post = vi.fn(async (_path?: string, _body?: unknown, _options?: unknown) => ({
+    data: {},
+    txid: TXID,
+  }));
+  const patch = vi.fn(async (_path?: string, _body?: unknown) => ({ data: {}, txid: TXID }));
+  const del = vi.fn(async (_path?: string, _options?: unknown) => ({ data: {}, txid: TXID }));
   return { client: { post, patch, delete: del } as unknown as ApiClient, post, patch, del };
 }
 
@@ -130,6 +133,61 @@ describe("message writes", () => {
       content: "hello",
       parent_id: "m1",
     });
+  });
+
+  it("reposts a busy reply with the same id and body, then completes", async () => {
+    const { client, post } = makeClient();
+    const busy = new ApiError(
+      503,
+      "busy",
+      { error: "busy", code: "THREAD_BUSY", retry_after: 5 },
+      { path: "/api/messages", method: "POST" },
+      5,
+    );
+    post.mockRejectedValueOnce(busy).mockResolvedValueOnce({ data: {}, txid: TXID });
+    const delays: number[] = [];
+    const writes = createMessageWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => CURRENT_USER,
+      replyRetryDelay: async (ms) => {
+        delays.push(ms);
+      },
+    });
+    const { collection, awaitTxId } = makeCollection();
+    const reply = { ...message, id: "m2", parent_id: "m1" };
+    const body = { id: "m2", channel_id: "c1", content: "hello", parent_id: "m1" };
+
+    await writes.onInsert(params(collection, [insertMutation(reply)]));
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(post).toHaveBeenNthCalledWith(1, "/api/messages", body);
+    expect(post).toHaveBeenNthCalledWith(2, "/api/messages", body);
+    expect(delays).toEqual([5000]);
+    expect(awaitTxId).toHaveBeenCalledWith(Number(TXID), undefined);
+  });
+
+  it("gives up after the retry limit and propagates the 503 to the error display", async () => {
+    const { client, post } = makeClient();
+    const busy = new ApiError(
+      503,
+      "busy",
+      { error: "busy", code: "THREAD_BUSY", retry_after: 5 },
+      { path: "/api/messages", method: "POST" },
+      5,
+    );
+    post.mockRejectedValue(busy);
+    const writes = createMessageWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => CURRENT_USER,
+      replyRetryDelay: async () => undefined,
+    });
+    const { collection } = makeCollection();
+    const reply = { ...message, id: "m2", parent_id: "m1" };
+
+    await expect(writes.onInsert(params(collection, [insertMutation(reply)]))).rejects.toBe(busy);
+    expect(post).toHaveBeenCalledTimes(3);
   });
 
   it("sends attachment_ids from insert metadata", async () => {

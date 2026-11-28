@@ -10,6 +10,7 @@ import {
   createChannelPinsApi,
   type ApiClient,
 } from "../api/client";
+import { postThreadReply } from "../api/threadReply";
 import type {
   AddChannelUserRequest,
   CreateChannelRequest,
@@ -41,6 +42,8 @@ export interface WriteDependencies {
    * 削除ハンドラで本人確認に使う（解決前は null なので拒否される）。
    */
   getCurrentUserId: () => string | null;
+  /** 503 `THREAD_BUSY` の再送で待つ関数。既定は `setTimeout`（テストで差し替える）。 */
+  replyRetryDelay?: (ms: number) => Promise<void>;
 }
 
 type MessageInsertParams = InsertMutationFnParams<
@@ -153,7 +156,7 @@ function readMessageMetadata(metadata: unknown): MessageWriteMetadata {
  * Electric が流す operation は `delete` ではなく `update` になる。楽観更新も
  * `update` に揃えることで、delete→insert の再出現（ちらつき）を避ける。
  */
-export function createMessageWrites({ client, txidMode }: WriteDependencies) {
+export function createMessageWrites({ client, txidMode, replyRetryDelay }: WriteDependencies) {
   async function onInsert({ transaction, collection }: MessageInsertParams): Promise<void> {
     for (const mutation of transaction.mutations) {
       const row = mutation.modified;
@@ -179,7 +182,10 @@ export function createMessageWrites({ client, txidMode }: WriteDependencies) {
       } else if (row.forwarded_message_ids?.length) {
         body.forwarded_message_ids = row.forwarded_message_ids;
       }
-      const { data, txid } = await client.post<MessageRow>("/api/messages", body);
+      // 返信だけ 503 THREAD_BUSY の対象。同じ body（同じ id・本文）で上限まで再送する。
+      const { data, txid } = row.parent_id
+        ? await postThreadReply<MessageRow>(client, body, { delay: replyRetryDelay })
+        : await client.post<MessageRow>("/api/messages", body);
       if (row.parent_id && data?.parent_id && data.parent_id !== row.parent_id) {
         // 未移行の子スレッドからの返信は最上位へ正規化される。表示先も追従させる。
         window.dispatchEvent(

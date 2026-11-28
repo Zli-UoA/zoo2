@@ -40,15 +40,34 @@ export class ApiError extends Error {
   readonly path: string | null;
   /** 失敗したリクエストの HTTP メソッド。 */
   readonly method: string | null;
+  /** 応答の `Retry-After` ヘッダー（秒）。読めない場合は `null`。 */
+  readonly retryAfter: number | null;
 
-  constructor(status: number, message: string, body?: unknown, request?: ApiErrorRequest) {
+  constructor(
+    status: number,
+    message: string,
+    body?: unknown,
+    request?: ApiErrorRequest,
+    retryAfter: number | null = null,
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.body = body;
     this.path = request?.path ?? null;
     this.method = request?.method ?? null;
+    this.retryAfter = retryAfter;
   }
+}
+
+/** `Retry-After` は秒数（推奨）と HTTP 日時の両方で来るので、秒数に正規化する。 */
+function parseRetryAfter(value: string | null): number | null {
+  if (value === null) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds;
+  const date = Date.parse(value);
+  if (!Number.isNaN(date)) return Math.max(0, Math.ceil((date - Date.now()) / 1000));
+  return null;
 }
 
 export function isApiEnvelope(value: unknown): value is ApiEnvelope<unknown> {
@@ -264,6 +283,7 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
         `Request to ${path} failed with status ${response.status}`,
         body,
         { path, method },
+        parseRetryAfter(response.headers.get("Retry-After")),
       );
     }
     if (
