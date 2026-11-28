@@ -280,9 +280,12 @@ internal fun ConversationInput(
                     Column(Modifier.fillMaxWidth()) {
                         if (state.files.isNotEmpty()) {
                             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp)
-                                .horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(if (state.sensitiveFiles != null) 20.dp else 8.dp)) {
                                 state.files.forEach { (id, name) ->
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                    // 目のボタンは名前の左に詰めて置き、添付どうしの間を広げて、どの添付の指定か分かるようにする。
+                                    Row(verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy((-8).dp)) {
                                         state.sensitiveFiles?.let { sensitive ->
                                             val hidden = id in sensitive
                                             UiIconButton(if (hidden) UiIcon.EyeOff else UiIcon.Eye,
