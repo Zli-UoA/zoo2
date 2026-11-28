@@ -149,7 +149,15 @@ test("legacy empty Web Push still displays a generic alert", async () => {
 });
 
 test("install precaches the app shell so offline navigation can start the SPA", async () => {
-  const { handlers, cacheContext } = worker();
+  const { handlers, cacheContext } = worker({
+    fetch: async (input) => {
+      if (requestKey(input) === `${ORIGIN}/offline.html`)
+        return basicResponse('<meta name="zoo-offline" content="true" />offline', {
+          headers: { "content-type": "text/html" },
+        });
+      return basicResponse(`network:${requestKey(input)}`);
+    },
+  });
   await dispatch(handlers, "install");
   const shell = cacheContext.storeFor("zoo-shell-v2");
   for (const path of [
@@ -249,9 +257,27 @@ test("an index.html fallback does not overwrite the cached offline page", async 
       basicResponse("<html>app shell</html>", { headers: { "content-type": "text/html" } }),
   });
   const response = await fetchThrough(handlers, navigation(`${ORIGIN}/offline.html`));
-  assert.match(await response.text(), /app shell/);
+  assert.equal(await response.text(), saved);
   const cache = await cacheContext.api.open("zoo-shell-v2");
   assert.equal(await (await cache.match(`${ORIGIN}/offline.html`)).text(), saved);
+});
+
+test("a server error returns the cached offline page", async () => {
+  const saved = '<meta name="zoo-offline" content="true" />saved';
+  const cacheContext = memoryCaches([
+    [
+      "zoo-shell-v2",
+      `${ORIGIN}/offline.html`,
+      basicResponse(saved, { headers: { "content-type": "text/html" } }),
+    ],
+  ]);
+  await cacheContext.api.open("zoo-shell-v2");
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async () => new Response("error", { status: 503 }),
+  });
+  const response = await fetchThrough(handlers, navigation(`${ORIGIN}/offline.html`));
+  assert.equal(await response.text(), saved);
 });
 
 test("install precaches the hashed assets referenced by the app shell", async () => {
@@ -362,9 +388,12 @@ test("activation removes older cache versions and claims clients", async () => {
 });
 
 test("offline navigation falls back to the cached app shell, then offline.html", async () => {
+  const offline = '<meta name="zoo-offline" content="true" />offline';
   const { handlers, cacheContext } = worker({
     fetch: async (input) => {
       if (requestKey(input).includes("/channels/")) throw new Error("offline");
+      if (requestKey(input) === `${ORIGIN}/offline.html`)
+        return basicResponse(offline, { headers: { "content-type": "text/html" } });
       return basicResponse(`network:${requestKey(input)}`);
     },
   });
@@ -374,7 +403,7 @@ test("offline navigation falls back to the cached app shell, then offline.html",
   shell.delete(`${ORIGIN}/index.html`);
   shell.delete(`${ORIGIN}/`);
   let response = await fetchThrough(handlers, navigation(`${ORIGIN}/channels/123`));
-  assert.equal(await response.text(), "network:https://zoo.example/offline.html");
+  assert.equal(await response.text(), offline);
 
   shell.set(
     `${ORIGIN}/index.html`,

@@ -49,6 +49,14 @@ function isPrivatePath(pathname) {
 
 // manifest はここから外して素通しにする。旧 SW がキャッシュを返す経路も
 // SHELL からの削除と sw.js の更新（install）で解消される。
+async function isOfflinePage(response) {
+  try {
+    return (await response.clone().text()).includes('name="zoo-offline"');
+  } catch {
+    return false;
+  }
+}
+
 function isCacheableAsset(url) {
   return (
     CACHEABLE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix)) ||
@@ -239,7 +247,8 @@ async function precacheShell() {
     SHELL.filter((path) => path !== "/" && path !== "/index.html").map(async (path) => {
       try {
         const response = await fetch(path, { cache: "reload" });
-        if (response.ok) await cacheResponse(cache, path, response);
+        if (response.ok && (path !== "/offline.html" || (await isOfflinePage(response))))
+          await cacheResponse(cache, path, response);
       } catch {
         /* Offline installs fall back to the runtime cache. */
       }
@@ -523,13 +532,15 @@ async function handleOfflinePage(request) {
   } catch {
     return (await cache.match("/offline.html")) || Response.error();
   }
-  // try_files で index.html が返っても案内ページとしては保存しない。
-  if (response.ok && (await response.clone().text()).includes('name="zoo-offline"')) {
-    try {
-      await cacheResponse(cache, "/offline.html", response.clone());
-    } catch {
-      /* 保存できなくても、取得した応答は返す。 */
-    }
+  // try_files で index.html が返るなど、案内として読めない応答は保存済みの版を優先する。
+  if (!response.ok || !(await isOfflinePage(response))) {
+    const saved = await cache.match("/offline.html");
+    return saved || response;
+  }
+  try {
+    await cacheResponse(cache, "/offline.html", response.clone());
+  } catch {
+    /* 保存できなくても、取得した応答は返す。 */
   }
   return response;
 }
