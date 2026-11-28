@@ -536,8 +536,13 @@ class MainActivity : ComponentActivity() {
                 override suspend fun headers() = auth.headersWithoutRefresh()
             }, http)
             return RunningSession(session, platform, lifetime, http, transport, shapeReconnects, auth, e2ee, AndroidNotifications(this, session), AndroidPushRegistration(this, session, logoutApi), AndroidPhoneHost(applicationContext, session, http, ::preparePhone)).also {
-                session.start()
-                e2ee.start()
+                try {
+                    session.start()
+                    e2ee.start()
+                } catch (failure: Throwable) {
+                    it.close()
+                    throw failure
+                }
             }
         } catch (failure: Throwable) {
             if (reauth === reauthenticator) reauth = null

@@ -415,9 +415,6 @@ internal fun ConnectedScreens(
     }
     LaunchedEffect(state.overlay, env.online) {
         if (state.overlay == "search-engine" && env.online) session.searchPreferences.ensureLoaded()
-        if (state.overlay == "new-post" && env.online) try { state.loadFederation() }
-        catch (cancelled: CancellationException) { throw cancelled }
-        catch (_: Exception) { }
     }
     LaunchedEffect(route, env.online, env.visible) {
         if (route == "/bubble" && env.online && env.visible) state.bubble.run()

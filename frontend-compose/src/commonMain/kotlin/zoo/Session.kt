@@ -68,6 +68,20 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     val config
         get() = repo.config
 
+    var activityPubAvailable by mutableStateOf<Boolean?>(null)
+        private set
+
+    private suspend fun loadActivityPubAvailability() {
+        if (!env.online || activityPubAvailable != null) return
+        activityPubAvailable = try {
+            (api.request("/api/activitypub/status") as Row).flag("enabled")
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     var standardShortcodes by mutableStateOf<Row?>(null)
         private set
     private var standardChecked = 0L
@@ -490,8 +504,19 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         check(row.flag("encrypted")) { "e2ee.downgraded" }
     }
 
-    fun start() {
+    suspend fun start() {
         if (isPublicProfilePath(env.path)) return
+        val initialActivityPubRead = CompletableDeferred<Unit>()
+        scope.launch {
+            snapshotFlow { env.online to env.visible }.first { (online, visible) ->
+                if (online && (!initialActivityPubRead.isCompleted || visible)) {
+                    loadActivityPubAvailability()
+                }
+                initialActivityPubRead.complete(Unit)
+                activityPubAvailable != null
+            }
+        }
+        withTimeoutOrNull(3_000) { initialActivityPubRead.await() }
         scope.launch {
             repo.channels.rows.collect { rows ->
                 try { encryptedChannels.remember(rows.filter { it.flag("encrypted") }.map { it.text("id") }) }

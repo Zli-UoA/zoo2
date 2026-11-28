@@ -232,8 +232,6 @@ internal class AndroidPushRegistration(
     private val binding = store.bind(app.repo.config.apiBaseUrl, app.repo.config.userId)
     private val updates = Channel<Unit>(Channel.CONFLATED)
     private var closed = false
-    private var projectId: String? = null
-    private var supportsDmCalls = false
     private val registration = PushSubscriptionRegistration(store, app.config.apiBaseUrl, app.config.userId, binding) { method, endpoint ->
         app.api.request("/api/push/subscriptions", method,
             if (method == "POST") obj("transport" to "fcm", "endpoint" to endpoint) else obj("endpoint" to endpoint))
@@ -246,20 +244,21 @@ internal class AndroidPushRegistration(
         }
     }
     private val worker = app.scope.launch {
+        var pushConfig: Row? = null
         for (ignored in updates) {
             try {
-                if (!app.env.online || !notificationsAllowed(context)) continue
+                if (!app.env.online) continue
+                val config = pushConfig ?: app.api.request("/api/push/config") as? Row ?: continue
+                val projectId = config.text("fcmProjectId")
+                if (projectId.isEmpty()) continue
+                pushConfig = config
+                if (!notificationsAllowed(context)) continue
                 val firebase = FirebaseApp.initializeApp(context) ?: continue
-                if (projectId == null) {
-                    val config = app.api.request("/api/push/config") as? Row ?: continue
-                    projectId = config.text("fcmProjectId").takeIf { it.isNotEmpty() }
-                    supportsDmCalls = config.flag("fcmDmCalls")
-                }
-                if (projectId == null || projectId != firebase.options.projectId) continue
+                if (projectId != firebase.options.projectId) continue
                 val messaging = FirebaseMessaging.getInstance()
                 messaging.isAutoInitEnabled = true
                 val token = messaging.token.awaitPushTask()
-                registration.refresh(token, supportsDmCalls)
+                registration.refresh(token, config.flag("fcmDmCalls"))
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {

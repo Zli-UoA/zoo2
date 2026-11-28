@@ -126,6 +126,53 @@ class RepositoryTest {
     }
 
     @Test
+    fun startupReadsActivityPubAvailabilityOncePerSession() = runTest {
+        var requests = 0
+        val cases = listOf(true to 0L, false to 0L, true to 4_000L)
+        for ((expected, responseDelay) in cases) {
+            val http = HttpClient(MockEngine) {
+                engine {
+                    dispatcher = StandardTestDispatcher(testScheduler)
+                    addHandler { request ->
+                        when (request.url.encodedPath) {
+                            "/api/activitypub/status" -> {
+                                requests++
+                                delay(responseDelay)
+                                respond("""{"enabled":$expected}""")
+                            }
+                            else -> respond("{}", HttpStatusCode.NotFound)
+                        }
+                    }
+                }
+            }
+            val lifetime = CoroutineScope(backgroundScope.coroutineContext + SupervisorJob(backgroundScope.coroutineContext[Job]))
+            val repo = Repository(config, FakePlatform(), http, lifetime, synchronize = false)
+            val app = Session(repo, lifetime, Environment())
+            try {
+                assertNull(app.activityPubAvailable)
+                val startedAt = currentTime
+                app.start()
+                if (responseDelay > 0) {
+                    assertEquals(3_000L, currentTime - startedAt)
+                    assertNull(app.activityPubAvailable)
+                    advanceTimeBy(responseDelay - 3_000L)
+                    runCurrent()
+                }
+                assertEquals(expected, app.activityPubAvailable)
+                runCurrent()
+                app.update(app.env.copy(visible = false))
+                runCurrent()
+                app.update(app.env.copy(visible = true))
+                runCurrent()
+            } finally {
+                app.close()
+                lifetime.cancel()
+            }
+        }
+        assertEquals(cases.size, requests)
+    }
+
+    @Test
     fun channelReadUsesTheServerUnreadFlagAndSkipsOldOrHiddenMessages() = runTest {
         val first = "2026-11-01T01:00:00Z"
         val second = "2026-11-01T02:00:00Z"
