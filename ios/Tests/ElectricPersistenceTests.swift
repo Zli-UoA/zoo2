@@ -6,6 +6,24 @@ import Testing
 private let syncUser = Person(id: "33333333-3333-4333-8333-333333333333", user_name: "sakura", display_name: "さくら")
 private let syncChannel = "11111111-1111-4111-8111-111111111111"
 
+private final class FaultingCacheRevocations: CacheRevocationStorage {
+    let base: KeychainCacheRevocations
+    let failures = Mutex((read: false, write: false))
+    init(url: URL) { base = KeychainCacheRevocations(namespace: url.appendingPathExtension("permissions").path) }
+    func contains(_ scope: String) throws -> Bool {
+        if failures.withLock({ $0.read }) { throw CocoaError(.fileReadNoPermission) }
+        return try base.contains(scope)
+    }
+    func revoke(_ scope: String) throws {
+        if failures.withLock({ $0.write }) { throw CocoaError(.fileWriteNoPermission) }
+        try base.revoke(scope)
+    }
+    func allow(_ scope: String) throws {
+        if failures.withLock({ $0.write }) { throw CocoaError(.fileWriteNoPermission) }
+        try base.allow(scope)
+    }
+}
+
 private func syncResponse(offset: String = "100_0", status: Int = 200) throws -> HTTPURLResponse {
     try #require(HTTPURLResponse(url: URL(string: "https://api.test.invalid/api/shapes/messages")!, statusCode: status,
                                 httpVersion: nil, headerFields: ["electric-handle": "h", "electric-offset": offset]))
@@ -32,6 +50,161 @@ private func subsetData(_ numbers: [Int], parent: String? = nil) throws -> Data 
 
 @Suite("SwiftDataの同期キャッシュ", .timeLimit(.minutes(1)))
 struct SyncCacheTests {
+    @Test("コンテナの移設後も、論理名で記録した失効を維持する")
+    func revocationSurvivesContainerMove() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let original = folder.appendingPathComponent("original")
+        let moved = folder.appendingPathComponent("moved")
+        try FileManager.default.createDirectory(at: original, withIntermediateDirectories: true)
+        let url = original.appendingPathComponent("test.store")
+        let revocations = KeychainCacheRevocations(namespace: "move-test-" + UUID().uuidString)
+        let fails = Mutex(false)
+        let cache = try await SyncCache.open(url: url, beforeDelete: {
+            if fails.withLock({ $0 }) { throw CocoaError(.fileWriteOutOfSpace) }
+        }, revocations: revocations)
+        let lease = try await cache.activate(connection: "connection", user: syncUser)
+        try await cache.store(Data("失効前".utf8), resource: "messages", channelID: syncChannel, lease: lease)
+        let directory = try #require(FileManager.default.contentsOfDirectory(
+            at: url.appendingPathExtension("permissions"), includingPropertiesForKeys: nil).first)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path) }
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+        fails.withLock { $0 = true }
+        await #expect(throws: (any Error).self) { try await cache.revokeChannel(syncChannel, lease: lease) }
+        try FileManager.default.copyItem(at: original, to: moved)
+        let restarted = try await SyncCache.open(url: moved.appendingPathComponent("test.store"), revocations: revocations)
+        let next = try await restarted.activate(connection: "connection", user: syncUser)
+        #expect(try await restarted.load("messages", lease: next) == nil)
+        // 移設先の読取り専用ディレクトリも、テスト終了時に削除できるよう戻す。
+        let movedPermission = moved.appendingPathComponent("test.store.permissions").appendingPathComponent(directory.lastPathComponent)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: movedPermission.path)
+    }
+
+    @Test("Keychainの失効確認ができない間は、保存済み許可だけで復元しない")
+    func unreadableRevocationsBlockRestoration() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = folder.appendingPathComponent("test.store")
+        let revocations = FaultingCacheRevocations(url: url)
+        let cache = try await SyncCache.open(url: url, revocations: revocations)
+        let lease = try await cache.activate(connection: "connection", user: syncUser)
+        try await cache.store(Data("保存済み".utf8), resource: "messages", channelID: syncChannel, lease: lease)
+        let attachmentScope = "attachment-files:" + syncChannel
+        try await cache.store(Data("添付の保存先".utf8), resource: attachmentScope, channelID: syncChannel, lease: lease)
+        let notifications = "snapshot:api/shapes/notifications"
+        try await cache.store(Data("以前の通知".utf8), resource: notifications, lease: lease)
+        revocations.failures.withLock { $0.read = true }
+        #expect(try await cache.load("messages", lease: lease) == nil)
+        for resource in ["messages", "read-state"] {
+            await #expect(throws: CocoaError.self) {
+                try await cache.store(Data("新しい値".utf8), resource: resource, channelID: syncChannel, lease: lease)
+            }
+        }
+        await #expect(throws: CocoaError.self) {
+            try await cache.store(Data("新しい通知".utf8), resource: notifications, lease: lease)
+        }
+        await #expect(throws: CocoaError.self) { try await cache.profile(connection: "connection") }
+        await #expect(throws: CocoaError.self) { try await cache.activate(connection: "connection", user: syncUser) }
+        revocations.failures.withLock { $0.read = false }
+        #expect(try await cache.load("messages", lease: lease) == Data("保存済み".utf8))
+        #expect(try await cache.load(attachmentScope, lease: lease) == Data("添付の保存先".utf8))
+        #expect(try await cache.load("read-state", lease: lease) == nil)
+        #expect(try await cache.load(notifications, lease: lease) == Data("以前の通知".utf8))
+        let reopened = try await SyncCache.open(url: url)
+        let restored = try await reopened.activate(connection: "connection", user: syncUser)
+        #expect(try await reopened.load("messages", lease: restored) == Data("保存済み".utf8))
+        #expect(try await reopened.load(attachmentScope, lease: restored) == Data("添付の保存先".utf8))
+    }
+
+    @Test("Keychainの削除だけが失敗しても、失効記録のないアカウントは起動できる")
+    func activationWithoutRevocationDoesNotDeleteKeychainItems() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = folder.appendingPathComponent("test.store")
+        let revocations = FaultingCacheRevocations(url: url)
+        let cache = try await SyncCache.open(url: url, revocations: revocations)
+        let lease = try await cache.activate(connection: "connection", user: syncUser)
+        try await cache.store(Data("保存済み".utf8), resource: "messages", channelID: syncChannel, lease: lease)
+        revocations.failures.withLock { $0.write = true }
+        let reopened = try await SyncCache.open(url: url, revocations: revocations)
+        let restored = try await reopened.activate(connection: "connection", user: syncUser)
+        #expect(try await reopened.load("messages", lease: restored) == Data("保存済み".utf8))
+        // 実際に失効済みなら、解除できるまでは起動を拒否する。
+        try revocations.base.revoke(lease.account + "|account")
+        await #expect(throws: CocoaError.self) { try await reopened.activate(connection: "connection", user: syncUser) }
+        revocations.failures.withLock { $0.write = false }
+        let recovered = try await reopened.activate(connection: "connection", user: syncUser)
+        #expect(try await reopened.load("messages", lease: recovered) == nil)
+    }
+
+    @Test("全保存先の同時失敗は再起動後を保証できず、復旧後に失効を再試行する")
+    func allRevocationStoresFail() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = folder.appendingPathComponent("test.store")
+        let revocations = FaultingCacheRevocations(url: url)
+        let fails = Mutex(false)
+        let cache = try await SyncCache.open(url: url, beforeDelete: {
+            if fails.withLock({ $0 }) { throw CocoaError(.fileWriteOutOfSpace) }
+        }, revocations: revocations)
+        let lease = try await cache.activate(connection: "connection", user: syncUser)
+        try await cache.store(Data("失効前".utf8), resource: "messages", channelID: syncChannel, lease: lease)
+        let directory = try #require(FileManager.default.contentsOfDirectory(
+            at: url.appendingPathExtension("permissions"), includingPropertiesForKeys: nil).first)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path) }
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+        fails.withLock { $0 = true }
+        revocations.failures.withLock { $0.write = true }
+        await #expect(throws: (any Error).self) { try await cache.revokeChannel(syncChannel, lease: lease) }
+        #expect(try await cache.load("messages", lease: lease) == nil)
+        let restarted = try await SyncCache.open(url: url)
+        let next = try await restarted.activate(connection: "connection", user: syncUser)
+        #expect(try await restarted.load("messages", lease: next) == Data("失効前".utf8))
+        revocations.failures.withLock { $0.write = false }
+        fails.withLock { $0 = false }
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        try await cache.revokeChannel(syncChannel, lease: lease)
+        let recovered = try await SyncCache.open(url: url)
+        let recoveredLease = try await recovered.activate(connection: "connection", user: syncUser)
+        #expect(try await recovered.load("messages", lease: recoveredLease) == nil)
+    }
+
+    @Test("ログアウト時に許可とDBを消せなくても、再起動後のプロフィールと旧会話を復元しない")
+    func accountRevocationSurvivesDeletionFailures() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = folder.appendingPathComponent("test.store")
+        let fails = Mutex(false)
+        let cache = try await SyncCache.open(url: url, beforeDelete: {
+            if fails.withLock({ $0 }) { throw CocoaError(.fileWriteOutOfSpace) }
+        })
+        let lease = try await cache.activate(connection: "connection", user: syncUser)
+        try await cache.store(Data("以前の会話".utf8), resource: "messages", channelID: syncChannel, lease: lease)
+        let directory = try #require(FileManager.default.contentsOfDirectory(
+            at: url.appendingPathExtension("permissions"), includingPropertiesForKeys: nil).first)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path) }
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+        fails.withLock { $0 = true }
+        await #expect(throws: (any Error).self) { try await cache.revoke(lease) }
+        let restarted = try await SyncCache.open(url: url, beforeDelete: {
+            if fails.withLock({ $0 }) { throw CocoaError(.fileWriteOutOfSpace) }
+        })
+        #expect(try await restarted.profile(connection: "connection") == nil)
+        await #expect(throws: (any Error).self) { try await restarted.activate(connection: "connection", user: syncUser) }
+        fails.withLock { $0 = false }
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        let next = try await restarted.activate(connection: "connection", user: syncUser)
+        #expect(try await restarted.load("messages", lease: next) == nil)
+        try await restarted.store(Data("新しい会話".utf8), resource: "messages", channelID: syncChannel, lease: next)
+        let offline = try await SyncCache.open(url: url)
+        let restored = try await offline.activate(connection: "connection", user: syncUser)
+        #expect(try await offline.load("messages", lease: restored) == Data("新しい会話".utf8))
+    }
+
     @Test("取消済みの古い復元は現在のアカウントとキャッシュを変更しない")
     func cancelledActivationPreservesCurrentAccount() async throws {
         let cache = try await SyncCache.open(inMemory: true)
@@ -206,15 +379,6 @@ struct SyncCacheTests {
 
         let reopened = try await SyncCache.open(url: url)
         let next = try await reopened.activate(connection: "connection", user: syncUser)
-        if failsDeletion && failsPermissionRemoval {
-            // 両方の永続操作が拒否された場合、再起動へ失効を伝えられない制約を隠さない。
-            for key in ["messages", "reactions"] + notifications {
-                #expect(try await reopened.load(key, lease: next) == Data("失効前".utf8))
-            }
-            let version = UUID()
-            try await reopened.revokeChannel(syncChannel, version: version, lease: next)
-            try await reopened.authorizeChannel(syncChannel, version: version, lease: next)
-        }
         for key in ["messages", "reactions"] + notifications { #expect(try await reopened.load(key, lease: next) == nil) }
         #expect(try await reopened.load("other", lease: next) == Data("別の会話".utf8))
         try await reopened.store(Data("再取得後".utf8), resource: "messages", channelID: syncChannel, lease: next)

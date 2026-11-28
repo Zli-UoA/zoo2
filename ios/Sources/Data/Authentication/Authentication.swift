@@ -46,7 +46,10 @@ enum TokenVault {
         guard status == errSecSuccess, let item = result as? [String: Any], let data = item[kSecValueData as String] as? Data else {
             throw ZooError.auth("保存したログイン情報を読み取れませんでした。端末のロックを解除して再度お試しください。")
         }
-        let token = try JSONDecoder().decode(TokenSet.self, from: data)
+        guard let token = try JSONDecoder().decode(TokenSet?.self, from: data) else {
+            try delete(account, deleteItem: deleteItem)
+            return nil
+        }
         // 既存の保存項目も移行し、通話中に画面をロックしても更新トークンを保存できるようにする。
         if item[kSecAttrAccessible as String] as? String != kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String {
             try save(token, account: account)
@@ -69,18 +72,23 @@ enum TokenVault {
     }
 
     static func delete(_ account: String, deleteItem: (CFDictionary) -> OSStatus = SecItemDelete,
+                       updateItem: (CFDictionary, CFDictionary) -> OSStatus = SecItemUpdate,
+                       writeMarker: (URL) throws -> Void = {
+                           try FileManager.default.createDirectory(at: $0.deletingLastPathComponent(), withIntermediateDirectories: true)
+                           try Data().write(to: $0, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+                       },
                        removeMarker: (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }) throws {
         let marker = logoutMarker(account)
         var markerError: Error?
-        do {
-            try FileManager.default.createDirectory(at: marker.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try Data().write(to: marker, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-        } catch { markerError = error }
+        do { try writeMarker(marker) } catch { markerError = error }
+        // ファイル保存と削除が同時に失敗しても、既存項目を無効化できれば旧セッションを復元しない。
+        let invalidation = updateItem(query(account) as CFDictionary,
+                                      [kSecValueData as String: Data("null".utf8)] as CFDictionary)
         // 終了直後に再起動しても旧トークンを復元せず、削除できるまで再試行する。
         let status = deleteItem(query(account) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
-            if markerError != nil {
-                throw ZooError.auth("ログイン情報の削除とログアウト状態の保存に失敗しました。端末を再起動せず、空き容量とロック状態を確認して再度お試しください。")
+            if markerError != nil && invalidation != errSecSuccess && invalidation != errSecItemNotFound {
+                throw ZooError.auth("ログイン情報の無効化・削除とログアウト状態の保存がすべて失敗しました。再起動後に以前のログイン状態が戻る可能性があります。端末を再起動せず、空き容量とロック状態を確認して再度お試しください。")
             }
             throw ZooError.auth("ログイン情報を削除できませんでした。端末のロックを解除し、再度ログアウトまたはログインしてください。")
         }
@@ -119,14 +127,17 @@ final class Authentication {
     private(set) var refreshWaiterCount = 0
     private var pendingTokens: TokenSet?
     private let saveToken: (TokenSet, String) throws -> Void
+    private let deleteToken: (String) throws -> Void
     private var generation = UUID()
     var sessionID: UUID { generation }
 
     init(settings: ConnectionSettings, transport: HTTPTransport = HTTPTransport(),
-         saveToken: @escaping (TokenSet, String) throws -> Void = { try TokenVault.save($0, account: $1) }) {
+         saveToken: @escaping (TokenSet, String) throws -> Void = { try TokenVault.save($0, account: $1) },
+         deleteToken: @escaping (String) throws -> Void = { try TokenVault.delete($0) }) {
         self.settings = settings
         self.transport = transport
         self.saveToken = saveToken
+        self.deleteToken = deleteToken
     }
 
     private func sessionTokens() throws -> TokenSet? {
@@ -380,6 +391,6 @@ final class Authentication {
         pendingTokens = nil
         tokens = nil
         loadedTokens = true
-        try TokenVault.delete(settings.storageKey)
+        try deleteToken(settings.storageKey)
     }
 }

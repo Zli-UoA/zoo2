@@ -115,6 +115,41 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
 @MainActor
 @Suite("通話中の認証情報保存")
 struct TokenVaultTests {
+    @Test("記録保存とKeychain削除の同時失敗でも、無効化更新が成功すれば再起動後に復元しない",
+          arguments: [false, true], [false, true])
+    func logoutAcrossStorageFailures(failsMarker: Bool, failsUpdate: Bool) throws {
+        let account = "logout-failures-" + UUID().uuidString
+        defer { try? TokenVault.delete(account) }
+        let token = TokenSet(access: "old-access", refresh: "old-refresh", expires: .now.addingTimeInterval(3600))
+        try TokenVault.save(token, account: account)
+        do {
+            try TokenVault.delete(account, deleteItem: { _ in errSecInteractionNotAllowed },
+                                  updateItem: { query, values in
+                                      failsUpdate ? errSecInteractionNotAllowed : SecItemUpdate(query, values)
+                                  }, writeMarker: { url in
+                                      if failsMarker { throw CocoaError(.fileWriteOutOfSpace) }
+                                      try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                                      try Data().write(to: url, options: .atomic)
+                                  })
+            Issue.record("削除失敗を成功と扱いました。")
+        } catch ZooError.auth(let message) {
+            #expect(message.contains("再起動後に以前のログイン状態が戻る可能性") == (failsMarker && failsUpdate))
+        }
+        if failsMarker && failsUpdate {
+            // 全保存操作が拒否された場合は、再起動後の復元を保証できない。
+            #expect(try TokenVault.load(account)?.access == token.access)
+        } else {
+            #expect(throws: ZooError.self) {
+                _ = try TokenVault.load(account, deleteItem: { _ in errSecInteractionNotAllowed })
+            }
+            #expect(try TokenVault.load(account) == nil)
+            #expect(try TokenVault.load(account) == nil)
+        }
+        try TokenVault.delete(account)
+        try TokenVault.save(TokenSet(access: "new-access", refresh: nil, expires: token.expires), account: account)
+        #expect(try TokenVault.load(account)?.access == "new-access")
+    }
+
     @Test("認証情報の削除後に記録削除だけが失敗した場合は案内を表示し、復旧後に再ログインできる")
     func failedMarkerRemovalReportsRecovery() throws {
         let account = "marker-test-" + UUID().uuidString
