@@ -6,7 +6,38 @@ struct MessageFeedRequest: Equatable, Sendable {
     var focusID: String? = nil
     /// 暗号化チャンネル。復号した本文は保存しない。暗号文の行もオフラインの記録に残さない（#685）。
     var encrypted = false
+    var memory: MessageFeedMemory? = nil
     var key: String { parentID ?? "root" }
+}
+
+/// 表示中の暗号化履歴だけを保持し、追加取得で既読のページを取り直さない。
+@MainActor final class MessageFeedMemory: Equatable {
+    private var channelID: String?
+    private var version: UUID?
+    private var state: MessageSyncState?
+    private var reader = UUID()
+
+    nonisolated static func == (lhs: MessageFeedMemory, rhs: MessageFeedMemory) -> Bool { lhs === rhs }
+
+    func begin(channelID: String, version: UUID) -> (UUID, MessageSyncState?) {
+        if self.channelID != channelID || self.version != version { reset() }
+        self.channelID = channelID
+        self.version = version
+        reader = UUID()
+        return (reader, state)
+    }
+
+    func store(_ state: MessageSyncState, reader: UUID) throws {
+        guard self.reader == reader else { throw CancellationError() }
+        self.state = state
+    }
+
+    func reset() {
+        state = nil
+        channelID = nil
+        version = nil
+        reader = UUID()
+    }
 }
 
 struct MessageFeedSnapshot: Sendable {
@@ -160,13 +191,20 @@ struct MessageSync {
 
     func observe(_ request: MessageFeedRequest, receive: @MainActor (MessageFeedSnapshot) -> Void) async throws {
         let version = sync.channelVersion(channelID)
-        // 暗号化チャンネルは、前回の記録を読まず、保存もしない（平文だった頃の行を表示に戻さない）。
-        let restored = request.encrypted ? nil : try await sync.load(key, as: MessageSyncState.self)
+        try sync.check(channelID: channelID, channelVersion: version)
+        let memory = request.encrypted ? request.memory : nil
+        let (reader, retained) = memory?.begin(channelID: channelID, version: version) ?? (UUID(), nil)
+        // 暗号化履歴は表示中のメモリーだけを使い、以前の平文キャッシュは読まない。
+        let restored = request.encrypted ? retained : try await sync.load(key, as: MessageSyncState.self)
         var state = restored ?? MessageSyncState()
         var savedState = restored
         @MainActor func persist(_ value: MessageSyncState) async throws {
             try sync.check(channelID: channelID, channelVersion: version)
-            guard !request.encrypted, savedState != value else { return }
+            if request.encrypted {
+                try memory?.store(value, reader: reader)
+                return
+            }
+            guard savedState != value else { return }
             try await sync.store(value, key: key, channelID: channelID, channelVersion: version)
             savedState = value
         }

@@ -20,6 +20,7 @@ actor SyncCache {
     private var permissionsDirectory: URL?
     static let revocationResources = ["shape:api/shapes/notifications", "snapshot:api/shapes/notifications",
                                       "shape:api/shapes/channels", "snapshot:api/shapes/channels", "workspace:channels",
+                                      "shape:api/shapes/user_pinned_channels", "snapshot:api/shapes/user_pinned_channels",
                                       "rest:api/channel-read-states", "rest:api/channel-pins"]
     private var beforeSave: (@Sendable () throws -> Void)?
     private var beforeDelete: (@Sendable () throws -> Void)?
@@ -110,6 +111,15 @@ actor SyncCache {
     func profile(connection: String) throws -> Person? {
         let rows = try modelContext.fetch(FetchDescriptor<CachedSyncAccount>(predicate: #Predicate { $0.connection == connection }))
         return try rows.first.map { try JSONDecoder().decode(Person.self, from: $0.profile) }
+    }
+
+    func updateProfile(_ user: Person, lease: SyncLease) throws {
+        try check(lease)
+        let account = lease.account
+        guard let row = try modelContext.fetch(FetchDescriptor<CachedSyncAccount>(predicate: #Predicate { $0.account == account })).first,
+              account == row.connection + ":" + user.id else { throw CancellationError() }
+        row.profile = try JSONEncoder().encode(user)
+        try save()
     }
 
     func activate(connection: String, user: Person) throws -> SyncLease {

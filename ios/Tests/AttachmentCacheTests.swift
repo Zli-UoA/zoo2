@@ -85,6 +85,66 @@ struct AttachmentCacheTests {
         #expect(image ? restoredState.image != nil : restoredState.pdfThumbnail != nil)
     }
 
+    @Test("暗号化に切り替えた会話の過去の画像とPDFは保存せず毎回取得する", arguments: [false, true])
+    func oldAttachmentsInEncryptedChannel(image: Bool) async throws {
+        let folder = try directory()
+        defer { withExtendedLifetime(folder) {} }
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let cache = try await SyncCache.open(inMemory: true, attachmentDirectory: folder.url)
+        let sync = try await session(cache, harness: harness)
+        let client = NativeChatClient(api: harness.api, sync: sync)
+        let attachment = image ? MessageAttachment(id: pdf.id, file_name: "画像.png", content_type: "image/png") : pdf
+        let data = image ? try #require(PreviewImage.data(for: "/tall.png")) : PreviewPDF.data
+        let requests = Mutex(0)
+        stub(harness, data: data) { requests.withLock { $0 += 1 } }
+        #expect(try await client.attachmentData(attachment, channelID: channelID) == data)
+        try #require(files(folder.url).count == 1)
+        let version = sync.channelVersion(channelID)
+        try await sync.excludeFromCache(channelID, version: version)
+        #expect(files(folder.url).isEmpty)
+        #expect(!sync.isRevoked(channelID) && sync.channelVersion(channelID) == version)
+        #expect(try await client.attachmentData(attachment, channelID: channelID) == data)
+        #expect(try await client.attachmentData(attachment, channelID: channelID) == data)
+        #expect(requests.withLock { $0 } == 6)
+        #expect(files(folder.url).isEmpty)
+        try await sync.revokeChannel(channelID)
+        await #expect(throws: CancellationError.self) { _ = try await client.attachmentData(attachment, channelID: channelID) }
+        #expect(requests.withLock { $0 } == 6)
+    }
+
+    @Test("取得途中で暗号化しても閲覧を続け、到着した平文を保存しない")
+    func encryptionDuringDownload() async throws {
+        let folder = try directory()
+        defer { withExtendedLifetime(folder) {} }
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let cache = try await SyncCache.open(inMemory: true, attachmentDirectory: folder.url)
+        let sync = try await session(cache, harness: harness)
+        let client = NativeChatClient(api: harness.api, sync: sync)
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish() }
+        harness.stub { request in
+            if request.url?.host == "api.test.invalid" {
+                return (200, [:], Data(#"{"data":{"download_url":"https://storage.test.invalid/file"}}"#.utf8))
+            }
+            started.continuation.yield(())
+            for await _ in release.stream { break }
+            return (200, [:], PreviewPDF.data)
+        }
+        let pending = Task {
+            defer { started.continuation.finish() }
+            return try await client.attachmentData(pdf, channelID: channelID)
+        }
+        defer { pending.cancel() }
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        try await sync.excludeFromCache(channelID, version: sync.channelVersion(channelID))
+        release.continuation.finish()
+        #expect(try await pending.value == PreviewPDF.data)
+        #expect(files(folder.url).isEmpty)
+    }
+
     @Test("容量上限を超えると最後に参照した時刻が古いファイルから削除する")
     func evictsLeastRecentlyUsed() throws {
         let folder = try directory()

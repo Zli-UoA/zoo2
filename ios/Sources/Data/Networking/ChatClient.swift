@@ -11,6 +11,7 @@ protocol ChatClient: InboxClient, CallClient, TypingClient, GlobalSearchClient {
     func people() async throws -> [Person]
     func person(id: String) async throws -> Person
     func channelPins() async throws -> ChannelPins
+    func observeChannelPinChanges(receive: @MainActor () -> Void) async throws
     func setChannelPinned(id: String, pinned: Bool, expectedVersion: Int64) async throws -> ChannelPins
     func members(channelID: String) async throws -> [ChannelMembership]
     func readState(channelID: String, allowCached: Bool) async throws -> ChannelReadState

@@ -187,6 +187,65 @@ struct ChatPresentationAPITests {
         #expect(workspace.pinnedChannelIDs == ["other", id])
     }
 
+    @Test("ピンは本人のShapeを1本購読し、空の更新でRESTを繰り返さず別端末の変更を反映する",
+          .timeLimit(.minutes(1)), arguments: [false, true])
+    func livePins(stringPosition: Bool) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let workspace = WorkspaceStore(client: harness.client, user: Person(id: "you", user_name: "you", display_name: "あなた"), recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        let id = channel.id
+        let shapes = Mutex(0), lists = Mutex(0)
+        let checkpoints = AsyncStream<Int>.makeStream(), release = AsyncStream<Void>.makeStream()
+        defer { checkpoints.continuation.finish(); release.continuation.finish() }
+        harness.stub { request in
+            if request.url?.path == "/api/channel-pins" {
+                let count = lists.withLock { $0 += 1; return $0 }
+                let pins = count == 1 ? "[]" : "[{\"channel_id\":\"\(id)\",\"position\":0}]"
+                return (200, [:], Data("{\"pins\":\(pins),\"version\":\(count)}".utf8))
+            }
+            #expect(request.url?.path == "/api/shapes/user_pinned_channels")
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            #expect(!query.contains { $0.name == "channel_id" })
+            let count = shapes.withLock { $0 += 1; return $0 }
+            if count >= 3 {
+                checkpoints.continuation.yield(count)
+                if count == 3 { for await _ in release.stream { break } }
+                else { try await Task.sleep(for: .seconds(60)) }
+            }
+            let position = stringPosition ? "\"0\"" : "0"
+            let body = count == 3
+                ? "[{\"key\":\"pin\",\"headers\":{\"operation\":\"insert\"},\"value\":{\"channel_id\":\"\(id)\",\"position\":\(position)}}]"
+                : "[]"
+            return (200, ["electric-handle": "pins", "electric-offset": "\(count)_0", "electric-up-to-date": "true"], Data(body.utf8))
+        }
+        let task = Task {
+            defer { checkpoints.continuation.finish() }
+            await workspace.runPins()
+        }
+        defer { task.cancel() }
+        var iterator = checkpoints.stream.makeAsyncIterator()
+        try #require(await iterator.next() == 3)
+        #expect(lists.withLock { $0 } == 1)
+        #expect(workspace.pinnedChannelIDs.isEmpty)
+        release.continuation.finish()
+        try #require(await iterator.next() == 4)
+        #expect(lists.withLock { $0 } == 2)
+        #expect(workspace.pinnedChannelIDs == [id])
+        #expect(workspace.pinsError == nil)
+        task.cancel()
+        await task.value
+        #expect(shapes.withLock { $0 } == 4)
+        #expect(lists.withLock { $0 } == 2)
+    }
+
+    @Test("ピンの不正な位置を0として受け入れない", arguments: ["null", "true", "1.5", "\"1.5\"", "\"9223372036854775808\"", "\"unknown\""])
+    func rejectsInvalidPinPosition(_ position: String) {
+        #expect(throws: (any Error).self) {
+            _ = try JSONDecoder().decode(ChannelPin.self, from: Data("{\"channel_id\":\"c\",\"position\":\(position)}".utf8))
+        }
+    }
+
     @Test("ピン保存失敗は確定済みの一覧を保ち、再操作できる", arguments: [400, 404, 409, 500])
     func pinFailure(status: Int) async throws {
         let harness = try ChatHarness()

@@ -93,6 +93,8 @@ struct SyncCacheTests {
         let other = try await cache.activate(connection: "connection", user: Person(id: "other", user_name: "other", display_name: "別のユーザー"))
         #expect(try await cache.load("messages", lease: other) == nil)
         await #expect(throws: CancellationError.self) { try await cache.store(Data(), resource: "messages", lease: old) }
+        await #expect(throws: CancellationError.self) { try await cache.updateProfile(syncUser, lease: old) }
+        #expect(try await cache.profile(connection: "connection")?.id == "other")
         try await cache.revoke(other)
         #expect(try await cache.profile(connection: "connection") == nil)
         await #expect(throws: CancellationError.self) { try await cache.load("messages", lease: other) }
@@ -111,6 +113,7 @@ struct SyncCacheTests {
         let lease = try await cache.activate(connection: "connection", user: syncUser)
         let resources = ["shape:api/shapes/notifications", "snapshot:api/shapes/notifications",
                          "shape:api/shapes/channels", "snapshot:api/shapes/channels", "workspace:channels",
+                         "shape:api/shapes/user_pinned_channels", "snapshot:api/shapes/user_pinned_channels",
                          "rest:api/channel-read-states", "rest:api/channel-pins"]
         for resource in resources { try await cache.store(Data("失効前の通知".utf8), resource: resource, lease: lease) }
         let readStateKey = "channel-rest:api/channels/" + syncChannel + "/read-state"
@@ -1341,8 +1344,8 @@ struct PersistentSyncIntegrationTests {
         #expect(try await sync.cache.load(key, lease: sync.lease) == original)
     }
 
-    @Test("最初の50件、次の50件、保存位置からの再開で全履歴を取り直さない")
-    func pagesAndResumption() async throws {
+    @Test("最初の50件、次の50件、保存位置からの再開で全履歴を取り直さない", arguments: [false, true])
+    func pagesAndResumption(encrypted: Bool) async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
         let sync = try await session(harness)
@@ -1366,13 +1369,46 @@ struct PersistentSyncIntegrationTests {
             return (200, ["electric-handle": "h", "electric-offset": "100_0", "electric-up-to-date": "true"], Data("[]".utf8))
         }
         let client = NativeChatClient(api: harness.api, sync: sync)
-        #expect(try await feed(client, request: MessageFeedRequest()).messages?.count == 50)
-        #expect(try await feed(client, request: MessageFeedRequest(limit: 100)).messages?.count == 100)
-        #expect(try await feed(client, request: MessageFeedRequest(limit: 100)).messages?.count == 100)
+        let memory = MessageFeedMemory()
+        #expect(try await feed(client, request: MessageFeedRequest(encrypted: encrypted, memory: memory)).messages?.count == 50)
+        #expect(try await feed(client, request: MessageFeedRequest(limit: 100, encrypted: encrypted, memory: memory)).messages?.count == 100)
+        #expect(try await feed(client, request: MessageFeedRequest(limit: 100, encrypted: encrypted, memory: memory)).messages?.count == 100)
         let values = requests.withLock { $0 }
         #expect(values.filter { $0["subset__where"] != nil }.count == 2)
         #expect(values.filter { $0["offset"] == "now" }.count == 1)
         #expect(!values.contains { $0["offset"] == "-1" })
+        if encrypted { #expect(try await sync.cache.load("messages-v1:" + syncChannel, lease: sync.lease) == nil) }
+    }
+
+    @Test("暗号化履歴500件は10回の追加取得で読み、表示の破棄後は最初の50件から再開する")
+    func encryptedHistoryUsesOnlyNewPages() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let sync = try await session(harness)
+        let subsets = Mutex(0)
+        harness.stub { request in
+            let query = Dictionary((URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? [])
+                .map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { _, new in new })
+            if query["subset__where"] != nil {
+                subsets.withLock { $0 += 1 }
+                let parameters = try JSONDecoder().decode([String: String].self, from: Data((query["subset__params"] ?? "{}").utf8))
+                let last = parameters["2"].flatMap { Int($0.suffix(12)) } ?? 501
+                return (200, ["electric-handle": "h", "electric-offset": "100_0"], try subsetData(Array((last - 50)..<last)))
+            }
+            return (200, ["electric-handle": "h", "electric-offset": "100_0", "electric-up-to-date": "true"], Data("[]".utf8))
+        }
+        let client = NativeChatClient(api: harness.api, sync: sync)
+        let memory = MessageFeedMemory()
+        for page in 1...10 {
+            let snapshot = try await feed(client, request: MessageFeedRequest(limit: page * 50, encrypted: true, memory: memory))
+            #expect(snapshot.messages?.count == page * 50)
+            #expect(subsets.withLock { $0 } == page)
+        }
+        #expect(try await sync.cache.load("messages-v1:" + syncChannel, lease: sync.lease) == nil)
+        memory.reset()
+        let reopened = try await feed(client, request: MessageFeedRequest(encrypted: true, memory: memory))
+        #expect(reopened.messages?.count == 50)
+        #expect(subsets.withLock { $0 } == 11)
     }
 
     @Test("保存済みの100件に続く50件を要求し、オフライン・重複・別スレッドの追加取得を止める")
@@ -1458,6 +1494,44 @@ struct PersistentSyncIntegrationTests {
         #expect(store.historyRevision == 1)
         #expect(!store.loadingOlder)
         #expect(subsets.withLock { $0 } == 1)
+    }
+
+    @Test("同じアカウントの復元でも現在の管理権限とプロフィールを保存する", arguments: [false, true])
+    func restoredProfileReflectsCurrentUser(wasAdmin: Bool) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let cache = try await SyncCache.open(inMemory: true)
+        let connection = SyncCache.connectionKey(harness.api.settings)
+        var previous = syncUser
+        previous.is_admin = wasAdmin
+        _ = try await cache.activate(connection: connection, user: previous)
+        var latest = previous
+        latest.is_admin = !wasAdmin
+        latest.display_name = "現在の表示名"
+        let response = try JSONEncoder().encode(latest)
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish() }
+        harness.stub { request in
+            #expect(request.url?.path == "/api/users/me")
+            started.continuation.yield(())
+            for await _ in release.stream { break }
+            return (200, [:], response)
+        }
+        let app = AppSession(settings: harness.api.settings, transport: harness.api.transport,
+            notificationStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys(), syncCache: cache)
+        defer { app.logout() }
+        let pending = Task { await app.resume(); started.continuation.finish() }
+        defer { pending.cancel() }
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        let restored = try #require(app.workspace)
+        try #require(restored.user.is_admin == wasAdmin)
+        release.continuation.finish()
+        await pending.value
+        #expect(app.workspace === restored)
+        #expect(restored.user == latest)
+        #expect(try await cache.profile(connection: connection) == latest)
+        #expect(app.error == nil)
     }
 
     @Test("保存したログイン状態があれば通信なしでワークスペースを復元する")

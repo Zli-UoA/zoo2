@@ -26,6 +26,7 @@ final class ConversationStore {
     private(set) var historyRevision = 0
     private var pendingHistoryKey: String?
     private var feedRequest = MessageFeedRequest()
+    @ObservationIgnored private let feedMemory = MessageFeedMemory()
     private var pageLimits: [String: Int] = [:]
     private var morePages: [String: Bool] = [:]
     private(set) var sending: Set<String> = []
@@ -303,13 +304,17 @@ final class ConversationStore {
             messages = []; remoteMessages = []; localWrites = [:]
         }
         // 暗号化に変わったら、暗号化チャンネルとして読み直す（平文の行は消した）。
-        if channel.encrypted != previouslyEncrypted, supportsEncryption { syncRequest = UUID() }
+        if channel.encrypted != previouslyEncrypted {
+            feedMemory.reset()
+            if supportsEncryption { syncRequest = UUID() }
+        }
     }
 
     /// 今の購読の要求（`run` が `encrypted` を足して渡すので、同じ条件で比べる）。
     private var currentFeedRequest: MessageFeedRequest {
         var request = feedRequest
         request.encrypted = channel.encrypted == true
+        request.memory = feedMemory
         return request
     }
 
@@ -324,8 +329,7 @@ final class ConversationStore {
         while active, !Task.isCancelled, epoch == streamGeneration {
             do {
                 var writesAtStart = reactionWrites
-                var request = feedRequest
-                request.encrypted = channel.encrypted == true
+                let request = currentFeedRequest
                 try await client.observeMessageFeed(channelID: channel.id, request: request) { update in
                     guard self.active, !Task.isCancelled, self.streamGeneration == epoch else { return }
                     self.showingCachedMessages = update.fromCache
@@ -394,6 +398,7 @@ final class ConversationStore {
     }
 
     private func revokeAccess() {
+        feedMemory.reset()
         typing.stop()
         onAccessRevoked?()
         accessGeneration = UUID()
@@ -750,6 +755,7 @@ final class ConversationStore {
     }
 
     func shutdown() {
+        feedMemory.reset()
         active = false
         typing.stop()
         onAccessRevoked?()

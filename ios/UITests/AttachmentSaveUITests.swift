@@ -2,6 +2,25 @@ import XCTest
 
 final class AttachmentSaveUITests: XCTestCase {
     @MainActor
+    func testDocumentOpensWithOriginalNameAndCanReopen() {
+        let app = openConversation("--uitesting-document")
+        let open = app.buttons["添付を開く"]
+        XCTAssertTrue(open.waitForExistence(timeout: 5))
+        for _ in 0..<2 {
+            open.tap()
+            // Quick Lookのタイトルは拡張子を省く。
+            let preview = app.navigationBars["確認用"]
+            XCTAssertTrue(preview.waitForExistence(timeout: 10), app.debugDescription)
+            XCTAssertTrue(app.staticTexts["動物園"].waitForExistence(timeout: 5))
+            let close = app.buttons.matching(NSPredicate(format: "label IN %@", ["Done", "完了", "Close", "閉じる"])).firstMatch
+            XCTAssertTrue(close.waitForExistence(timeout: 5), app.debugDescription)
+            close.tap()
+            XCTAssertTrue(preview.waitForNonExistence(timeout: 5))
+            XCTAssertTrue(open.isHittable)
+        }
+    }
+
+    @MainActor
     func testImageLongPressSavesToPhotos() {
         let app = openConversation("--uitesting-tall-image")
         save(app.buttons["画像を拡大：縦長画像.png"], in: app)

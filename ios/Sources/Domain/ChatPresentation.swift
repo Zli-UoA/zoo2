@@ -16,9 +16,20 @@ struct MessageScrollState: Equatable {
     }
 }
 
-struct ChannelPin: Codable, Sendable {
+struct ChannelPin: Codable, Sendable, Equatable {
     let channel_id: String
     let position: Int64
+}
+
+extension ChannelPin {
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        channel_id = try values.decode(String.self, forKey: .channel_id)
+        if let number = try? values.decode(Int64.self, forKey: .position) { position = number; return }
+        // Electricの整数列は文字列、RESTの並び順は数値で届く。
+        guard let number = Int64(try values.decode(String.self, forKey: .position)) else { throw ZooError.invalidResponse }
+        position = number
+    }
 }
 
 struct ChannelPins: Codable, Sendable {

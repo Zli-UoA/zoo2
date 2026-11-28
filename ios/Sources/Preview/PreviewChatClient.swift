@@ -68,6 +68,7 @@ final class PreviewChatClient: ChatClient {
     private var memberships: [ChannelMembership] = []
     private var callInvitations: [CallInvitation] = []
     private var callInvitationsChanged: AsyncStream<[CallInvitation]>.Continuation?
+    private var pinsChanged: AsyncStream<Void>.Continuation?
     private var failNextCallInvite = ProcessInfo.processInfo.arguments.contains("--uitesting-call-invite-failure")
     private var allChannels: [Channel] = [
         Channel(id: channelID, channel_name: "一般", description: "日々の話題やお知らせを共有しましょう。", is_private: false, is_dm: false),
@@ -158,6 +159,10 @@ final class PreviewChatClient: ChatClient {
             allMessages[0].display_data?.attachments = [MessageAttachment(id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa03",
                 file_name: "確認資料.pdf", content_type: "application/pdf",
                 is_sensitive: ProcessInfo.processInfo.arguments.contains("--uitesting-sensitive-pdf"))]
+        }
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-document") {
+            allMessages[0].display_data?.attachments = [MessageAttachment(id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa07",
+                file_name: "確認用.csv", content_type: "text/csv")]
         }
         if ProcessInfo.processInfo.arguments.contains("--uitesting-thread-directory") {
             allMessages.append(Message(id: "77777777-7777-4777-8777-777777777777", user_id: currentUser.id,
@@ -276,6 +281,17 @@ final class PreviewChatClient: ChatClient {
     func channelPins() async throws -> ChannelPins {
         pins
     }
+    func observeChannelPinChanges(receive: @MainActor () -> Void) async throws {
+        let changes = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        pinsChanged = changes.continuation
+        defer { changes.continuation.finish(); pinsChanged = nil }
+        receive()
+        for await _ in changes.stream {
+            try Task.checkCancellation()
+            receive()
+        }
+        throw CancellationError()
+    }
     func setChannelPinned(id: String, pinned: Bool, expectedVersion: Int64) async throws -> ChannelPins {
         if failNextPin {
             failNextPin = false
@@ -285,6 +301,7 @@ final class PreviewChatClient: ChatClient {
         var rows = pins.pins.filter { $0.channel_id != id }
         if pinned { rows.append(ChannelPin(channel_id: id, position: (rows.map(\.position).max() ?? -1) + 1)) }
         pins = ChannelPins(pins: rows, version: pins.version + 1)
+        pinsChanged?.yield(())
         return pins
     }
     func members(channelID: String) async throws -> [ChannelMembership] {
@@ -308,6 +325,7 @@ final class PreviewChatClient: ChatClient {
         }
         if url == Bundle.main.url(forResource: "PreviewVideo", withExtension: "mp4") { return try Data(contentsOf: url) }
         if url.host == "ui.test.invalid", let image = PreviewImage.data(for: url.path) { return image }
+        if url.host == "ui.test.invalid", url.path == "/preview.csv" { return Data("名前,件数\n動物園,3\n".utf8) }
         guard url.host == "ui.test.invalid", ["/preview.pdf", "/invalid.pdf"].contains(url.path) else {
             throw ZooError.invalidResponse
         }
@@ -315,6 +333,7 @@ final class PreviewChatClient: ChatClient {
     }
 
     func attachmentURL(id: String) async throws -> URL {
+        if id == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa07" { return URL(string: serverURL + "/preview.csv")! }
         if encryptedUploads[id] != nil { return URL(string: serverURL + "/encrypted/" + id)! }
         if id == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa06" { return URL(string: serverURL + "/wide.png")! }
         if id == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa04" { return URL(string: serverURL + "/tall.png")! }

@@ -14,6 +14,7 @@ final class SyncSession {
     private(set) var knownChannelsRevision = UUID()
     var onChannelRevoked: (@MainActor (String, Channel?) -> Void)?
     var onChannelAuthorized: (@MainActor (String) -> Void)?
+    var onChannelEncrypted: (@MainActor (String) -> Void)?
 
     init(cache: SyncCache, lease: SyncLease) { self.cache = cache; self.lease = lease }
 
@@ -53,6 +54,32 @@ final class SyncSession {
     }
 
     func isRevoked(_ id: String) -> Bool { revokedChannels.contains(id) }
+
+    func loadAttachment(_ attachment: MessageAttachment, channelID: String, version: UUID, reload: Bool) async throws -> Data? {
+        try check(channelID: channelID, channelVersion: version)
+        guard !uncachedChannels.contains(channelID) else { return nil }
+        do {
+            let data = try await cache.loadAttachment(attachment, channelID: channelID, version: version, reload: reload, lease: lease)
+            try check(channelID: channelID, channelVersion: version)
+            return uncachedChannels.contains(channelID) ? nil : data
+        } catch {
+            try check(channelID: channelID, channelVersion: version)
+            guard uncachedChannels.contains(channelID) else { throw error }
+            return nil
+        }
+    }
+
+    func storeAttachment(_ data: Data, attachment: MessageAttachment, channelID: String, version: UUID) async throws {
+        try check(channelID: channelID, channelVersion: version)
+        guard !uncachedChannels.contains(channelID) else { return }
+        do {
+            try await cache.storeAttachment(data, attachment: attachment, channelID: channelID, version: version, lease: lease)
+        } catch {
+            try check(channelID: channelID, channelVersion: version)
+            guard uncachedChannels.contains(channelID) else { throw error }
+        }
+        try check(channelID: channelID, channelVersion: version)
+    }
 
     func rememberChannels(_ channels: [Channel]) {
         for channel in channels { knownChannels[channel.id] = channel.deleted_at == nil ? channel : nil }
@@ -107,6 +134,7 @@ final class SyncSession {
         try check()
         guard channelVersion(id) == version else { throw CancellationError() }
         guard uncachedChannels.insert(id).inserted else { return revocationVersion }
+        onChannelEncrypted?(id)
         revocationVersion = UUID()
         let previous = channelRevocation
         let revocationVersion = revocationVersion
@@ -162,6 +190,7 @@ final class SyncSession {
         active = false
         onChannelRevoked = nil
         onChannelAuthorized = nil
+        onChannelEncrypted = nil
         knownChannels = [:]
         return Task { try await cache.revoke(lease) }
     }

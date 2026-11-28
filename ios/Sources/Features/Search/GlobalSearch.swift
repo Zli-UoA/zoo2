@@ -140,6 +140,7 @@ final class GlobalSearchStore {
     @ObservationIgnored private var active = true
     @ObservationIgnored private var requestedText = ""
     @ObservationIgnored private var revokedChannelIDs: Set<String> = []
+    @ObservationIgnored private var encryptedChannelIDs: Set<String> = []
     /// 続きのページでも、検索の開始時に決めた期間の境界を送る。
     @ObservationIgnored private var requestFilters = SearchRequestFilters()
 
@@ -199,6 +200,12 @@ final class GlobalSearchStore {
     func revokeChannel(_ id: String) {
         // 権限を失う前に送った取得の応答が後から届いても、そのチャンネルの結果を戻さない。
         revokedChannelIDs.insert(id)
+        items.removeAll { $0.channel_id == id }
+    }
+
+    func excludeEncryptedChannel(_ id: String) {
+        // 暗号化前の平文は、検索条件を変えても表示に戻さない。
+        encryptedChannelIDs.insert(id)
         items.removeAll { $0.channel_id == id }
     }
 
@@ -272,7 +279,10 @@ final class GlobalSearchStore {
             guard requestID == request, !Task.isCancelled else { return }
             if let next = page.next_cursor, next == cursor { throw ZooError.invalidResponse }
             var seen = Set(items.map(\.rowID))
-            items += page.items.filter { !revokedChannelIDs.contains($0.channel_id) && seen.insert($0.rowID).inserted }
+            items += page.items.filter {
+                !revokedChannelIDs.contains($0.channel_id) && !encryptedChannelIDs.contains($0.channel_id)
+                    && seen.insert($0.rowID).inserted
+            }
             nextCursor = page.next_cursor
             searchedUntil = page.searched_until ?? searchedUntil
             loadingOlder = false

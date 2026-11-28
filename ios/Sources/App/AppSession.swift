@@ -157,6 +157,11 @@ final class AppSession {
             guard generation == epoch else { return }
             if userID != user.id || workspace == nil {
                 try await installWorkspace(user, cache: syncCache, epoch: epoch)
+            } else if let workspace, let syncSession {
+                workspace.updateCurrentUser(user)
+                try await syncCache.updateProfile(user, lease: syncSession.lease)
+                try Task.checkCancellation()
+                guard generation == epoch else { return }
             }
             validatedSession = true
             if !Self.isUITesting { ZooShortcuts.updateAppShortcutParameters() }
@@ -211,6 +216,7 @@ final class AppSession {
         }
         sync.onChannelRevoked = { [weak workspace] id, channel in workspace?.revokeChannel(id, retaining: channel) }
         sync.onChannelAuthorized = { [weak workspace] id in workspace?.calls.authorizeChannel(id) }
+        sync.onChannelEncrypted = { [weak workspace] id in workspace?.search.excludeEncryptedChannel(id) }
         workspace.onExpiredSession = { [weak self, weak workspace] in
             guard let self, let workspace, self.workspace === workspace else { return }
             logout()

@@ -107,6 +107,9 @@ struct WorkspaceView: View {
             if scenePhase == .active { await workspace.run() }
         }
         .task(id: scenePhase) {
+            if scenePhase == .active { await workspace.runPins() }
+        }
+        .task(id: scenePhase) {
             if scenePhase == .active { await workspace.inbox.run() }
         }
     }

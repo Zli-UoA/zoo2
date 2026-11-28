@@ -54,7 +54,7 @@ enum ChatRoute: Hashable {
 
 @Observable @MainActor
 final class WorkspaceStore {
-    let user: Person
+    private(set) var user: Person
     let client: any ChatClient
     let inbox: InboxStore
     let threads: ChannelThreads
@@ -180,6 +180,11 @@ final class WorkspaceStore {
         return directMessagePeer(for: channel)?.name ?? "ダイレクトメッセージ"
     }
 
+    func updateCurrentUser(_ current: Person) {
+        guard active, current.id == user.id, current != user else { return }
+        user = current
+    }
+
     func directMessagePeer(for channel: Channel) -> Person? {
         guard channel.is_dm, !channel.channel_name.hasPrefix("dm:group:") else { return nil }
         let ids = channel.channel_name.split(separator: ":").dropFirst().map(String.init).filter { $0 != user.id }
@@ -267,8 +272,39 @@ final class WorkspaceStore {
         }
         while active, !Task.isCancelled {
             await refresh()
-            await loadPins()
             do { try await Task.sleep(for: .seconds(30)) } catch { return }
+        }
+    }
+
+    func runPins() async {
+        var delay = 2
+        while active, !Task.isCancelled {
+            let changes = AsyncThrowingStream<Void, Error>.makeStream(bufferingPolicy: .bufferingNewest(1))
+            let subscription = Task {
+                do {
+                    try await client.observeChannelPinChanges { changes.continuation.yield(()) }
+                    changes.continuation.finish(throwing: ZooError.invalidResponse)
+                } catch { changes.continuation.finish(throwing: error) }
+            }
+            do {
+                defer { subscription.cancel() }
+                for try await _ in changes.stream {
+                    try Task.checkCancellation()
+                    guard active else { return }
+                    try await fetchPins()
+                    delay = 2
+                }
+                return
+            } catch {
+                guard active, !Task.isCancelled else { return }
+                if case ZooError.expiredSession = error { report(error); return }
+                // 接続できない間は保存済みの一覧を使い、購読の再接続時に版も確認する。
+                await loadPins()
+                guard active, !Task.isCancelled else { return }
+                pinsError = "ピン留めの更新を取得できません。接続を確認して再試行しています。"
+                do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+                delay = min(delay * 2, 30)
+            }
         }
     }
 
@@ -305,15 +341,20 @@ final class WorkspaceStore {
         guard active else { return }
         let epoch = revocationGeneration
         do {
-            let result = try await client.channelPins()
-            try Task.checkCancellation()
-            guard active, revocationGeneration == epoch else { return }
-            applyPins(result)
+            try await fetchPins()
         } catch {
             guard active, revocationGeneration == epoch, !Task.isCancelled else { return }
             if case ZooError.expiredSession = error { report(error) }
             else { pinsError = "ピン留めを取得できませんでした。" }
         }
+    }
+
+    private func fetchPins() async throws {
+        let epoch = revocationGeneration
+        let result = try await client.channelPins()
+        try Task.checkCancellation()
+        guard active, revocationGeneration == epoch else { throw CancellationError() }
+        applyPins(result)
     }
 
     private func applyPins(_ result: ChannelPins) {

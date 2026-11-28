@@ -1,3 +1,4 @@
+import QuickLook
 import SwiftUI
 
 struct MessageAttachmentsView: View {
@@ -82,8 +83,8 @@ private struct AttachmentView: View {
     let isVisible: Bool
     let imageGallery: [AttachmentRenderState]
     let imageWidthInset: CGFloat
-    @Environment(\.openURL) private var openURL
     @State private var opening = false
+    @State private var openedFile: DownloadedAttachment?
     @State private var fullScreenExpanded = false
 
     private var hidden: Bool { attachment.is_sensitive == true && !state.revealed }
@@ -149,16 +150,20 @@ private struct AttachmentView: View {
             guard opening else { return }
             defer { opening = false }
             do {
-                // 表示状態の保持中に署名URLが失効するため、外部で開く直前に取得する。
-                let url = try await workspace.client.attachmentURL(id: attachment.id)
+                let generations = workspace.channelRevocationGenerations
+                let file = try await DownloadedAttachment.download(attachment, client: workspace.client, channelID: channelID)
                 try Task.checkCancellation()
-                openURL(url)
+                guard workspace.isChannelAccessCurrent(channelID, since: generations) else { return }
+                openedFile = file
             } catch {
                 guard !Task.isCancelled else { return }
                 state.error = "添付を開けませんでした。"
                 if case ZooError.expiredSession = error { workspace.report(error) }
             }
         }
+        .quickLookPreview(Binding(get: { openedFile?.url }, set: { if $0 == nil { openedFile = nil } }))
+        .onChange(of: workspace.active) { _, active in if !active { openedFile = nil } }
+        .onChange(of: workspace.channelRevocationGenerations[channelID]) { _, _ in openedFile = nil }
         .fullScreenCover(isPresented: $fullScreenExpanded) {
             AttachmentPreview(attachments: isInGallery ? imageGallery : [state], selectedID: attachment.id,
                               workspace: workspace, channelID: channelID)

@@ -1,11 +1,47 @@
 import Foundation
 import Synchronization
 import Testing
+import ZooCrypto
 @testable import Zoo
 
 @MainActor @Suite("添付の保存", .timeLimit(.minutes(1)))
 struct AttachmentSaveTests {
     private let attachmentID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa03"
+
+    @Test("暗号化した一般添付を検証し、正常な本文だけを元のファイル名で開く", arguments: [false, true])
+    func encryptedDocument(corrupt: Bool) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let data = Data("名前,件数\n動物園,3\n".utf8)
+        let encrypted = ZooCrypto.encryptAttachment(plaintext: data)
+        let ciphertext: Data = {
+            var value = encrypted.ciphertext
+            if corrupt { value[0] ^= 1 }
+            return value
+        }()
+        let attachment = MessageAttachment(decrypted: AttachmentInfo(attachmentId: UUID().uuidString,
+            name: "report.csv", mimetype: "text/csv", size: UInt64(data.count), width: nil, height: nil,
+            sensitive: false, file: encrypted.file))
+        let key = try #require(attachment.encryptedFileID)
+        harness.stub { request in
+            if request.url?.host == "api.test.invalid" {
+                return (200, [:], Data(#"{"data":{"download_url":"https://storage.test.invalid/encrypted.bin"}}"#.utf8))
+            }
+            #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+            return (200, [:], ciphertext)
+        }
+        if corrupt {
+            await #expect(throws: (any Error).self) {
+                _ = try await DownloadedAttachment.download(attachment, client: harness.client)
+            }
+            return
+        }
+        let file = try await DownloadedAttachment.download(attachment, client: harness.client)
+        #expect(file.url.isFileURL)
+        #expect(file.url.lastPathComponent == "report.csv")
+        #expect(try Data(contentsOf: file.url) == data)
+        #expect(EncryptedAttachmentFiles.shared.decrypt(encrypted.ciphertext, id: key) == data)
+    }
 
     @Test("保存ごとに署名を更新し、認証トークンを渡さずに元データを保存する")
     func downloadOriginal() async throws {

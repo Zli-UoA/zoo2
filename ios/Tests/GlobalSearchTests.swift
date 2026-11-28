@@ -63,6 +63,63 @@ struct GlobalSearchTests {
         #expect(search.inflight == nil)
     }
 
+    @Test("暗号化を観測した会話は検索済みと遅い応答から除外し、会話画面は維持する", arguments: [false, true])
+    func encryptionRemovesSearchResults(pending: Bool) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let user = Person(id: Self.userID, user_name: "test", display_name: "利用者")
+        let cache = try await SyncCache.open(inMemory: true)
+        _ = try await cache.activate(connection: SyncCache.connectionKey(harness.api.settings), user: user)
+        let channel = Channel(id: Self.channelID, channel_name: "検索対象", is_private: false, is_dm: false)
+        var encrypted = channel
+        encrypted.encrypted = true
+        let channelData = try JSONEncoder().encode(encrypted)
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish() }
+        harness.stub { request in
+            if request.url?.path == "/api/users/me" { return (200, [:], try JSONEncoder().encode(user)) }
+            if request.url?.path == "/api/channels/" + Self.channelID { return (200, [:], channelData) }
+            #expect(request.url?.path == "/api/search")
+            if URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.contains(where: { $0.name == "cursor" }) == true {
+                started.continuation.yield(())
+                for await _ in release.stream { break }
+                return (200, [:], Self.page([Self.messageJSON("late")]))
+            }
+            return (200, [:], Self.page([Self.messageJSON("first"), Self.fileJSON], next: "older"))
+        }
+        let app = AppSession(settings: harness.api.settings, transport: harness.api.transport,
+            notificationStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys(), syncCache: cache)
+        defer { app.logout() }
+        await app.resume()
+        let workspace = try #require(app.workspace)
+        let client = try #require(workspace.client as? NativeChatClient)
+        workspace.addAndOpen(channel)
+        let search = workspace.search
+        search.text = "会議"; search.submit()
+        await search.inflight?.value
+        try #require(search.items.count == 2)
+        var request: Task<Void, Never>?
+        if pending {
+            search.loadOlder()
+            request = try #require(search.inflight)
+            let completion = Task { await request?.value; started.continuation.finish() }
+            defer { completion.cancel() }
+            var iterator = started.stream.makeAsyncIterator()
+            try #require(await iterator.next() != nil)
+        }
+        defer { request?.cancel() }
+        _ = try await client.channel(id: Self.channelID)
+        #expect(search.items.isEmpty)
+        #expect(workspace.channelPath == [.channel(Self.channelID)])
+        #expect(client.sync?.isRevoked(Self.channelID) == false)
+        release.continuation.finish()
+        await request?.value
+        #expect(search.items.isEmpty)
+        search.submit()
+        await search.inflight?.value
+        #expect(search.items.isEmpty)
+    }
+
     @Test("検索の期限を超えたら遅い応答で結果を戻さない")
     func searchDeadlineIgnoresLateResponse() async throws {
         let page = try JSONDecoder().decode(SearchPage.self, from: Self.page([Self.messageJSON("late")]))

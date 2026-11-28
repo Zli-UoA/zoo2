@@ -147,6 +147,16 @@ struct NativeChatClient: ChatClient {
     }
 
     func channelPins() async throws -> ChannelPins { try await cachedGet("api/channel-pins") }
+    func observeChannelPinChanges(receive: @MainActor () -> Void) async throws {
+        var previous: [ChannelPin]?
+        try await shapes.observe("api/shapes/user_pinned_channels", query: [:], as: ChannelPin.self) { rows in
+            guard let rows else { previous = nil; return }
+            let current = rows.sorted { $0.channel_id < $1.channel_id }
+            guard current != previous else { return }
+            previous = current
+            receive()
+        }
+    }
     func setChannelPinned(id: String, pinned: Bool, expectedVersion: Int64) async throws -> ChannelPins {
         let id = try segment(id)
         if pinned {
@@ -209,8 +219,7 @@ struct NativeChatClient: ChatClient {
         _ = try segment(channelID)
         let version = sync.channelVersion(channelID)
         try sync.check(channelID: channelID, channelVersion: version)
-        let cached = try await sync.cache.loadAttachment(attachment, channelID: channelID, version: version,
-                                                        reload: reload, lease: sync.lease)
+        let cached = try await sync.loadAttachment(attachment, channelID: channelID, version: version, reload: reload)
         try sync.check(channelID: channelID, channelVersion: version)
         if let cached { return cached }
         let url: URL
@@ -218,14 +227,14 @@ struct NativeChatClient: ChatClient {
         catch {
             try sync.check(channelID: channelID, channelVersion: version)
             if case ZooError.rejected(let status, _) = error, status == 403 || status == 404 {
-                _ = try await sync.cache.loadAttachment(attachment, channelID: channelID, version: version, reload: true, lease: sync.lease)
+                _ = try await sync.loadAttachment(attachment, channelID: channelID, version: version, reload: true)
             }
             throw error
         }
         try sync.check(channelID: channelID, channelVersion: version)
         let data = try await attachmentData(from: url)
         try sync.check(channelID: channelID, channelVersion: version)
-        try await sync.cache.storeAttachment(data, attachment: attachment, channelID: channelID, version: version, lease: sync.lease)
+        try await sync.storeAttachment(data, attachment: attachment, channelID: channelID, version: version)
         try sync.check(channelID: channelID, channelVersion: version)
         return data
     }
