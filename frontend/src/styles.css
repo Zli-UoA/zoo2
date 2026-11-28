@@ -96,6 +96,9 @@ body {
   --color-message-target: var(--message-target);
   --color-success: var(--success);
   --color-success-hover: var(--success-hover);
+  --color-success-solid: var(--success-solid);
+  --color-success-solid-hover: var(--success-solid-hover);
+  --color-success-solid-foreground: var(--success-solid-foreground);
   --color-warning: var(--warning);
   --color-warning-strong: var(--warning-strong);
   --color-destructive-foreground: #ffffff;
@@ -145,6 +148,10 @@ body {
   /* 通話状態・検証状態など、成功と警告を表す状態色。 */
   --success: #059669;
   --success-hover: #047857;
+  /* 白文字でも 4.5:1 以上になる塗り用の背景と前景。 */
+  --success-solid: #047857;
+  --success-solid-hover: #065f46;
+  --success-solid-foreground: #ffffff;
   --warning: #d97706;
   --warning-strong: #92400e;
   --border: #e5e5e5;
@@ -195,6 +202,10 @@ body {
   --message-target: #6ea8ff;
   --success: #34d399;
   --success-hover: #10b981;
+  /* 明るい背景には濃い前景を組み合わせる（コントラスト 7.6:1）。 */
+  --success-solid: #34d399;
+  --success-solid-hover: #10b981;
+  --success-solid-foreground: #052e2b;
   --warning: #fbbf24;
   --warning-strong: #fcd34d;
   --border: #454545;

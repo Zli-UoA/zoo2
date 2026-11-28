@@ -376,9 +376,9 @@ export function HomeComposer({
           showCloseButton={false}
           initialFocus={isDesktop ? inputRef : false}
           className={cn(
-            "flex flex-col gap-0 overflow-hidden p-0 max-md:top-0 max-md:h-dvh max-md:animate-none sm:max-w-xl",
+            "flex flex-col gap-0 overflow-hidden p-0 max-md:top-0 max-md:h-dvh max-md:animate-none md:max-w-xl",
             !isDesktop &&
-              "top-0 left-0 w-full max-w-none h-dvh max-h-none translate-none transform-none rounded-none animate-none",
+              "top-0 left-0 w-full h-dvh max-h-none max-w-none sm:max-w-none translate-none transform-none rounded-none animate-none",
           )}
         >
           <form
