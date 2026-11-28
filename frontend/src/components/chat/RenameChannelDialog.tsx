@@ -14,7 +14,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../ui/dialog";
-import { inputClassName } from "../ui/input-styles";
 import { Textarea } from "../ui/textarea";
 import { channelDescriptionLength, MAX_CHANNEL_DESCRIPTION_LENGTH } from "./channelDescription";
 
@@ -89,7 +88,6 @@ export function RenameChannelDialog({
         </DialogHeader>
         <form autoComplete="off" className="flex flex-col gap-3" onSubmit={submit}>
           <Input
-            className={inputClassName()}
             aria-label={t("channels.newName")}
             aria-describedby="rename-channel-help"
             placeholder={t("channels.newName")}

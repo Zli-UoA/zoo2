@@ -123,7 +123,7 @@ export function SearchResultRow({
                 {authorName}
               </p>
               {isBot ? (
-                <span className="rounded bg-muted px-1 text-[10px] font-medium text-muted-foreground">
+                <span className="rounded bg-muted px-1 text-2xs font-medium text-muted-foreground">
                   APP
                 </span>
               ) : null}
@@ -170,7 +170,7 @@ export function SearchResultRow({
               </span>
             </Link>
             {item.parent_id ? (
-              <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
+              <span className="rounded bg-muted px-1.5 py-0.5 text-micro font-medium text-muted-foreground">
                 {t("globalSearch.inThread")}
               </span>
             ) : null}

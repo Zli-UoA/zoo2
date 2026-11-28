@@ -51,7 +51,7 @@ export function AuthorIdentity({ message }: { message: FeedMessage }) {
         <span className="truncate text-sm font-semibold">{label}</span>
       )}
       {message.is_bot ? (
-        <span className="rounded bg-muted px-1 py-0.5 text-[9px] font-semibold text-muted-foreground">
+        <span className="rounded bg-muted px-1 py-0.5 text-3xs font-semibold text-muted-foreground">
           APP
         </span>
       ) : null}

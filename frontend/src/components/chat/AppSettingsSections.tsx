@@ -3,7 +3,6 @@ import { useId } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../ui/button";
 import { SettingsSection } from "../ui/control-panel";
-import { inputClassName } from "../ui/input-styles";
 
 export function AppPermissions({ scopes = [] }: { scopes?: string[] }) {
   const { t } = useTranslation();
@@ -31,7 +30,7 @@ export function AppCredentials({ value, onError }: { value: string; onError: () 
       <div className="flex gap-2">
         <Input
           id={inputId}
-          className={`${inputClassName()} min-w-0 flex-1 font-mono`}
+          className="min-w-0 flex-1 font-mono"
           type="password"
           readOnly
           value={value}

@@ -16,7 +16,6 @@ import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useShell } from "../layout/shell-context";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
-import { inputClassName } from "../ui/input-styles";
 import { AppPermissions } from "./AppSettingsSections";
 import { AppConnections } from "./AppConnections";
 import { AppBlocks } from "./AppBlocks";
@@ -309,7 +308,7 @@ function UserAppsDialog({
               aria-hidden="true"
             />
             <Input
-              className={`${inputClassName()} w-full pl-8`}
+              className="w-full pl-8"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder={t("apps.ui.search")}
@@ -505,7 +504,6 @@ function UserAppsDialog({
                         <label className="flex flex-1 flex-col gap-1 text-sm">
                           /{command} {t("apps.commandArguments")}
                           <Input
-                            className={inputClassName()}
                             value={commandArguments[command] ?? ""}
                             maxLength={4000}
                             onChange={(e) =>

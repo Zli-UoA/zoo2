@@ -45,12 +45,12 @@ export function MemberRow({
       </span>
       {badge}
       {creatorTag ? (
-        <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
+        <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-2xs text-muted-foreground">
           {creatorTag}
         </span>
       ) : null}
       {isMe ? (
-        <span className="shrink-0 rounded bg-brand-muted px-1.5 py-0.5 text-[0.65rem] text-brand-muted-foreground">
+        <span className="shrink-0 rounded bg-brand-muted px-1.5 py-0.5 text-2xs text-brand-muted-foreground">
           {t("members.you")}
         </span>
       ) : null}
