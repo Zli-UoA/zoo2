@@ -46,6 +46,7 @@ enum PasskeyCoding {
 final class SystemPasskeyClient: NSObject, PasskeyClient {
     private var continuation: CheckedContinuation<ASAuthorization, any Error>?
     private var controller: ASAuthorizationController?
+    private var requestID: UUID?
 
     func prfForNewSlot(rpID: String, salt: Data) async throws -> PasskeyResult {
         // 利用者が選んだパスキーで PRF を評価する（`allowCredentials` は空）。
@@ -60,6 +61,7 @@ final class SystemPasskeyClient: NSObject, PasskeyClient {
             allowed.append(id)
             perCredential[id] = .saltInput1(slot.prfSalt)
         }
+        guard !allowed.isEmpty else { throw PasskeyError.noSlot }
         return try await assert(rpID: rpID, allowed: allowed, input: .perCredentialInputValues(perCredential))
     }
 
@@ -100,18 +102,30 @@ final class SystemPasskeyClient: NSObject, PasskeyClient {
         continuation?.resume(with: result)
         continuation = nil
         controller = nil
+        requestID = nil
     }
 
     private func perform(_ request: ASAuthorizationRequest) async throws -> ASAuthorization {
         // 前の要求が応答しないまま残っていても、新しい要求は始められる（前のものは取り消す）。
+        try Task.checkCancellation()
         cancel()
-        return try await withCheckedThrowingContinuation { continuation in
-            self.continuation = continuation
-            let controller = ASAuthorizationController(authorizationRequests: [request])
-            controller.delegate = self
-            controller.presentationContextProvider = self
-            self.controller = controller
-            controller.performRequests()
+        let id = UUID()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                guard !Task.isCancelled else { continuation.resume(throwing: CancellationError()); return }
+                self.requestID = id
+                self.continuation = continuation
+                let controller = ASAuthorizationController(authorizationRequests: [request])
+                controller.delegate = self
+                controller.presentationContextProvider = self
+                self.controller = controller
+                controller.performRequests()
+            }
+        } onCancel: {
+            Task { @MainActor in
+                guard self.requestID == id else { return }
+                self.cancel()
+            }
         }
     }
 }

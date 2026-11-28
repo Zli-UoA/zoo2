@@ -110,8 +110,7 @@ enum TokenVault {
 struct Discovery: Decodable, Sendable {
     let issuer: String
     let token_endpoint: String
-    let device_authorization_endpoint: String?
-    /// 再認証（E2EE の直前の再認証。認可コードフロー）に使う。
+    /// ログインと暗号化の再認証に使う。
     let authorization_endpoint: String?
 }
 
@@ -175,88 +174,38 @@ final class Authentication {
         return discovery
     }
 
-    func login(clock: some Clock<Duration> = ContinuousClock(),
-               show: (DeviceAuthorizationPrompt) -> Void) async throws {
+    /// AuthZ の認証画面でパスキーを使い、認可コードを PKCE でトークンに換える。
+    func login(authorize: ((ReauthRequest) async throws -> ReauthCallback)? = nil) async throws {
         try Task.checkCancellation()
         try settings.validate()
-        // 手動ログインの開始後に、以前の更新処理が保存情報を上書きしないようにする。
+        // 以前の更新処理や取り消したログインが、新しい認証情報を上書きしないようにする。
         try logout()
         let epoch = generation
         let discovery = try await discovery()
         try checkLogin(epoch)
-        guard let endpoint = discovery.device_authorization_endpoint else {
-            throw ZooError.auth("認証サーバーがデバイスコード認証に対応していません。")
+        guard let endpoint = discovery.authorization_endpoint else {
+            throw ZooError.auth("認証サーバーが認可コードによるログインに対応していません。")
         }
-        var fields = ["client_id": settings.clientID, "scope": settings.scope]
-        if !settings.resource.isEmpty { fields["resource"] = settings.resource }
-        let (data, response) = try await postForm(endpoint: endpoint, fields: fields)
-        let received = clock.now
+        let request = try ReauthRequest.create(authorizationEndpoint: endpoint, clientID: settings.clientID,
+                                               resource: settings.resource, forceReauth: false, scope: settings.scope)
+        let callback: ReauthCallback
+        if let authorize { callback = try await authorize(request) }
+        else { callback = try await Reauthenticator(auth: self).open(request) }
         try checkLogin(epoch)
-        guard (200..<300).contains(response.statusCode) else {
-            throw deviceLoginError(data, status: response.statusCode)
+        let code: String
+        switch callback {
+        case .code(let value): code = value
+        case .error: throw ZooError.auth("ログインが拒否されました。もう一度ログインしてください。")
         }
-        let grant = try JSONDecoder().decode(DeviceAuthorizationResponse.self, from: data)
-        let prompt = try grant.prompt(issuer: settings.issuer)
-        let deadline = received.advanced(by: .seconds(grant.expires_in))
-        guard clock.now < deadline else { throw ZooError.auth("確認コードの期限が切れました。ログインし直してください。") }
-        show(prompt)
-        var interval = Duration.seconds(grant.interval ?? 5)
-        var tokenFields = ["grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                           "client_id": settings.clientID, "device_code": grant.device_code]
-        if !settings.resource.isEmpty { tokenFields["resource"] = settings.resource }
-        while true {
-            try checkLogin(epoch)
-            try await clock.sleep(until: min(clock.now.advanced(by: interval), deadline), tolerance: nil)
-            try checkLogin(epoch)
-            guard clock.now < deadline else {
-                throw ZooError.auth("確認コードの期限が切れました。ログインし直してください。")
-            }
-            let remaining = clock.now.duration(to: deadline).components
-            let remainingSeconds = Double(remaining.seconds) + Double(remaining.attoseconds) / 1e18
-            let timeout = min(30, remainingSeconds)
-            let result: (Data, HTTPURLResponse)
-            do {
-                result = try await postForm(endpoint: discovery.token_endpoint, fields: tokenFields, timeout: timeout)
-            } catch let error as URLError where error.code == .timedOut {
-                // RFC 8628 に従い、タイムアウトが続く間は問い合わせ間隔を広げる。
-                interval *= 2
-                continue
-            }
-            try checkLogin(epoch)
-            let (tokenData, tokenResponse) = result
-            if tokenResponse.statusCode == 429 {
-                // 承認待ち中のレート制限でも、サーバーの待機指定とコードの期限を守る。
-                interval = max(interval * 2, interval + .seconds(5))
-                if let retryAfter = tokenResponse.value(forHTTPHeaderField: "Retry-After") {
-                    let seconds: TimeInterval?
-                    if let delta = TimeInterval(retryAfter), delta.isFinite, delta >= 0 {
-                        seconds = delta
-                    } else {
-                        let formatter = DateFormatter()
-                        formatter.locale = Locale(identifier: "en_US_POSIX")
-                        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-                        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
-                        seconds = formatter.date(from: retryAfter)?.timeIntervalSinceNow
-                    }
-                    if let seconds, seconds.isFinite, seconds > 0 {
-                        interval = max(interval, .seconds(min(seconds, remainingSeconds)))
-                    }
-                }
-                continue
-            }
-            if tokenResponse.statusCode == 400,
-               let failure = try? JSONDecoder().decode(OAuthFailure.self, from: tokenData) {
-                if failure.error == "authorization_pending" { continue }
-                if failure.error == "slow_down" { interval += .seconds(5); continue }
-            }
-            guard (200..<300).contains(tokenResponse.statusCode) else {
-                throw deviceLoginError(tokenData, status: tokenResponse.statusCode)
-            }
-            let fresh = try decodeToken(tokenData, previousRefresh: nil)
-            try TokenVault.save(fresh, account: settings.storageKey)
-            tokens = fresh
-            return
-        }
+        let data = try await authorizationCode(code, verifier: request.verifier, redirectURI: request.redirectURI,
+                                               discovery: discovery)
+        try checkLogin(epoch)
+        struct Response: Decodable { let id_token: String }
+        let idToken = try JSONDecoder().decode(Response.self, from: data).id_token
+        try validateIDToken(idToken, issuer: discovery.issuer, clientID: settings.clientID, nonce: request.nonce)
+        let fresh = try decodeToken(data, previousRefresh: nil)
+        try saveToken(fresh, settings.storageKey)
+        tokens = fresh
     }
 
     private func checkLogin(_ epoch: UUID) throws {
@@ -266,30 +215,16 @@ final class Authentication {
 
     private struct OAuthFailure: Decodable { let error: String }
 
-    private func deviceLoginError(_ data: Data, status: Int) -> ZooError {
+    private func oauthError(_ data: Data, status: Int) -> ZooError {
         let code = (try? JSONDecoder().decode(OAuthFailure.self, from: data))?.error
         let message = switch code {
-        case "access_denied": "ログインが拒否されました。必要な場合はもう一度ログインしてください。"
-        case "expired_token": "確認コードの期限が切れました。ログインし直してください。"
-        case "unauthorized_client", "unsupported_grant_type": "AuthZ で iOS 用クライアントのデバイスコード認証を許可してください。"
+        case "access_denied": "ログインが拒否されました。もう一度ログインしてください。"
+        case "unsupported_grant_type", "unauthorized_client": "AuthZ で iOS 用クライアントの認可コードと refresh_token のグラントを許可してください。"
         case "invalid_client": "iOS 用クライアント ID と、公開クライアントが有効であることを確認してください。"
-        case "invalid_scope": "AuthZ で openid・profile・offline_access の利用を許可してください。"
+        case "invalid_scope": "AuthZ で iOS 用クライアントの openid・profile・offline_access の利用を許可してください。"
         case "invalid_target": "AuthZ で iOS 用クライアントに Zoo API へのアクセスを許可してください。"
-        default: "デバイス認証に失敗しました（HTTP \(status)）。ログインし直してください。"
-        }
-        return .auth(message)
-    }
-
-    /// 再認証（認可コードフロー）の失敗。デバイスコード認証の文言は使わない。今のログインは、無効にならない。
-    private func reauthError(_ data: Data, status: Int) -> ZooError {
-        let code = (try? JSONDecoder().decode(OAuthFailure.self, from: data))?.error
-        let message = switch code {
-        case "unsupported_grant_type", "unauthorized_client": "AuthZ で iOS 用クライアントの認可コード（authorization_code）グラントを許可してください。"
-        case "invalid_client": "iOS 用クライアント ID と、公開クライアントが有効であることを確認してください。"
-        case "invalid_scope": "AuthZ で iOS 用クライアントの openid・profile の利用を許可してください。"
-        case "invalid_target": "AuthZ で iOS 用クライアントに Zoo API へのアクセスを許可してください。"
-        case "invalid_grant": "再認証のコードを受け付けられませんでした（使用済み、期限切れ、または確認値の不一致）。もう一度再認証してください。"
-        default: "再認証に失敗しました（HTTP \(status)）。もう一度お試しください。ログイン中の状態は変わりません。"
+        case "invalid_grant": "認証のコードを受け付けられませんでした。もう一度認証してください。"
+        default: "認証に失敗しました（HTTP \(status)）。もう一度お試しください。"
         }
         return .auth(message)
     }
@@ -305,18 +240,27 @@ final class Authentication {
 
     /// 再認証の認可コードを、トークンエンドポイントで ID トークンに換える（E2EE の直前の再認証。#685）。
     /// 今のセッションのトークンは変えない。
-    func exchangeReauthCode(_ code: String, verifier: String, redirectURI: String) async throws -> String {
+    func exchangeReauthCode(_ code: String, verifier: String, redirectURI: String,
+                            discovery supplied: Discovery? = nil) async throws -> String {
         struct Response: Decodable { let id_token: String? }
-        let discovery = try await discovery()
-        let (data, response) = try await postForm(endpoint: discovery.token_endpoint, fields: [
-            "grant_type": "authorization_code", "code": code, "code_verifier": verifier,
-            "redirect_uri": redirectURI, "client_id": settings.clientID
-        ])
-        guard (200..<300).contains(response.statusCode) else { throw reauthError(data, status: response.statusCode) }
+        let discovery: Discovery
+        if let supplied { discovery = supplied }
+        else { discovery = try await self.discovery() }
+        let data = try await authorizationCode(code, verifier: verifier, redirectURI: redirectURI, discovery: discovery)
         guard let token = try? JSONDecoder().decode(Response.self, from: data).id_token, !token.isEmpty else {
             throw ZooError.invalidResponse
         }
         return token
+    }
+
+    private func authorizationCode(_ code: String, verifier: String, redirectURI: String,
+                                   discovery: Discovery) async throws -> Data {
+        var fields = ["grant_type": "authorization_code", "code": code, "code_verifier": verifier,
+                      "redirect_uri": redirectURI, "client_id": settings.clientID]
+        if !settings.resource.isEmpty { fields["resource"] = settings.resource }
+        let (data, response) = try await postForm(endpoint: discovery.token_endpoint, fields: fields)
+        guard (200..<300).contains(response.statusCode) else { throw oauthError(data, status: response.statusCode) }
+        return data
     }
 
     private func exchangeToken(endpoint: String, fields: [String: String], previousRefresh: String?) async throws -> TokenSet {
@@ -326,7 +270,7 @@ final class Authentication {
             throw ZooError.expiredSession
         }
         guard (200..<300).contains(response.statusCode) else {
-            throw deviceLoginError(data, status: response.statusCode)
+            throw oauthError(data, status: response.statusCode)
         }
         return try decodeToken(data, previousRefresh: previousRefresh)
     }

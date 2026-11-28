@@ -5,10 +5,52 @@ VoIP通知の契約は、同日に確認したZooバックエンドの
 [`a5c40e28`の着信仕様](https://github.com/Zli-UoA/zoo2/blob/a5c40e289f99983287596b00e36bffc491d791c6/docs/ios-incoming-calls.md)と照合しています。
 以下の過去の配備・受信記録は、その日時の結果です。今回の文書更新で本番配信を再検証したものではありません。
 
-## 実装済みの範囲と未検証事項
+## パスキーによるログインと暗号メッセージ
 
-デバイスコード認証（RFC 8628）、確認コードと Safari 認証画面、APNs の登録・解除、
-プロバイダートークンの署名、ネイティブのアラート通知は実装済みです。
+2026-11-28の変更で、通常ログインを認可コード＋PKCE（S256）に統一します。
+「パスキーでログイン」から `ASWebAuthenticationSession` で AuthZ を開き、AuthZ に登録済みの
+パスキーで認証します。アプリで確認コードを表示したり、承認待ちをポーリングしたりしません。
+認証方式の選択は AuthZ が管理し、アプリはパスキーだけに制限する独自のパラメーターを送りません。
+通常ログインは `openid profile offline_access` と `prompt=consent`、暗号鍵の変更直前の
+再認証は `openid profile` と `max_age=0` を使います。
+state・nonce・PKCE の照合、取消・タイムアウト、ログアウト後の遅延応答を検査し、
+更新トークンは既存の Keychain に保存します。
+
+暗号メッセージは、設定の「暗号化」でログイン用と同じ AuthZ のパスキーを鍵スロットへ追加し、
+同じパスキーの PRF で秘密鍵の保管領域を解錠します。ログインしただけで暗号鍵は解錠しません。
+PRF の出力は端末内だけで使い、認証のアサーションや復号用の鍵を AuthZ に送りません。
+PRF に対応しない保存先ではリカバリーキーを使います。
+
+本番で有効にするために必要な設定は次のとおりです。
+
+- AuthZ の iOS 公開クライアントで `authorization_code` と `refresh_token` を許可し、
+  `works.zli.zoo:/reauth-callback` をリダイレクト URI に登録する。
+- App ID `F82XB5KFX2.works.zli.zoo` の Associated Domains を有効にする。
+  アプリの `Zoo.entitlements` は `webcredentials:account.zli.works` を指定済み。
+- AuthZ の `https://account.zli.works/.well-known/apple-app-site-association` を認証不要の
+  HTTP 200・JSON で配信し、`webcredentials.apps` に `F82XB5KFX2.works.zli.zoo` を含める。
+- 暗号鍵を変更する再認証のため、zoo2-infra の `OIDC_REAUTH_AUDIENCES` に iOS クライアント ID を含める。
+  インフラ設定は zoo2-infra の PR で管理する。
+
+2026-11-28の読み取り確認では、AuthZ の AASA URL は HTTP 303 で `/login` へ転送されました。
+AuthZ の main（`63f7f237`）にも AASA のルートがなく、middleware の公開文書一覧にも含まれていません。
+この状態ではネイティブの暗号鍵解錠に必要なドメイン関連付けを確認できません。
+同日の未認証の認可要求では、iOS クライアントの `works.zli.zoo:/reauth-callback` は
+`invalid_redirect` として拒否され、既存の `https://zli.chat/ios/oauth/callback` は
+`login_required` を返しました。現在のアプリのコールバックは本番登録の追加が必要です。
+また、zoo2-infra の main（`ef87e551`）の `backend.yaml` にある
+`OIDC_REAUTH_AUDIENCES` には iOS クライアント ID がありません。
+これは Git 上の設定の確認であり、稼働中 Deployment の値は未確認です。
+クライアントのローカル検証と、AuthZ の設定反映後の実機検証は区別します。
+本番の認可コードログイン、パスキーの PRF、別端末での暗号メッセージの復号は実機での確認が必要です。
+
+参考: [Apple の認証ブラウザー](https://developer.apple.com/documentation/authenticationservices/aswebauthenticationsession)、
+[パスキーの PRF](https://developer.apple.com/documentation/authenticationservices/asauthorizationpublickeycredentialprfassertioninput-swift.struct)。
+
+## 実装済みの範囲と過去の検証記録
+
+APNs の登録・解除、プロバイダートークンの署名、ネイティブのアラート通知は実装済みです。
+以下のデバイスコード認証の記録は、パスキー対応前の版で確認した結果です。
 クライアントにはPushKitによるVoIP通知の登録・解除と、CallKitへの着信報告も実装しています。
 バックエンドのVoIP配信実装と、Apple経由の実機着信が確認できていることは分けて扱います。
 2026-11-12 に、iOS 26.5 シミュレーターから本番 AuthZ のデバイス認証と Zoo API のユーザー情報取得に成功しました。
@@ -19,7 +61,7 @@ VoIP通知の契約は、同日に確認したZooバックエンドの
 AuthZ は動的なクライアント登録を無効にしており、登録には管理者セッションが必要です。
 通常の AuthZ ユーザーや公開ソースへのアクセス権だけでは登録できません。
 
-Apple の App ID では Push Notifications が有効になっています。以前有効にした Associated Domains は、この版のログインでは使いません。
+Apple の App ID では Push Notifications が有効になっています。Associated Domains は暗号鍵のパスキー解錠に使います。
 サンドボックス用・本番用のトピック限定 APNs キーは、アカウント所有者の承認を得て作成済みです。
 リポジトリ外のローカル領域に、所有者だけがアクセスできる権限で保存しています。
 専用の公開 OAuth クライアントは登録済みで、クライアント ID
@@ -33,9 +75,8 @@ Apple の App ID では Push Notifications が有効になっています。以�
 
 ## AuthZ 管理者への引き継ぎ
 
-iOS 専用の公開 OAuth クライアントは登録済みです。デバイスコード方式では次の設定が必要です。
-管理画面で「Zoo for iOS」の「デバイスコードによるログイン」が許可されていることを確認してください。
-未許可の場合は、管理者が許可するまでアプリに設定エラーが表示されます。
+iOS 専用の公開 OAuth クライアントは登録済みです。
+認可コード方式には上の「パスキーによるログインと暗号メッセージ」の設定が必要です。
 2026-11-12 に、所有者の承認を得て本番のデバイスコード認証を許可しました。
 
 | 項目 | 値 |
@@ -43,8 +84,8 @@ iOS 専用の公開 OAuth クライアントは登録済みです。デバイス
 | 表示名 | Zoo for iOS |
 | クライアント種別 | 公開クライアント。クライアントシークレットなし |
 | デバイスコードによるログイン | 許可 |
-| グラント種別 | `urn:ietf:params:oauth:grant-type:device_code`、`refresh_token` |
-| リダイレクト URI・PKCE | この方式では使用しない |
+| グラント種別 | `authorization_code`、`refresh_token`。旧版向けのデバイスコード設定も維持 |
+| リダイレクト URI・PKCE | `works.zli.zoo:/reauth-callback`、S256 |
 | トークンエンドポイントの認証方式 | `none` |
 | 許可スコープ | `openid profile offline_access` |
 | 関連付けるリソース / audience | `https://zli.chat/api` |
@@ -53,19 +94,17 @@ iOS 専用の公開 OAuth クライアントは登録済みです。デバイス
 公開クライアント ID はアプリの既定値に含まれます。
 ネイティブ部分は、固定した信頼済みの本番オリジンを使用します。
 クライアントシークレットをアプリに追加しないでください。
-デバイスコード認証と必要なスコープ・APIが許可された公開クライアントは、Androidなどと共用できます。
-iOS 専用クライアントは必須ではなく、このアプリでは既存の専用IDを維持して設定変更や失効の影響を分離しています。
-Discovery の `issuer` が設定値と一致することを検証し、トークンとデバイス認可のエンドポイントには HTTPS を要求します。
-確認画面は AuthZ と同じオリジンに限ります。端末用コードとトークンをURLやログへ書き出しません。
-承認後のトークンは既存と同じ Keychain に保存し、再起動時の復元・更新に使用します。
-旧版を利用している端末のため、既存の認可コード方式の設定やリダイレクトURIを削除する必要はありません。
+iOS 専用クライアント ID を維持し、設定変更や失効の影響を分離します。
+Discovery の `issuer` が設定値と一致することを検証し、認可・トークンのエンドポイントには HTTPS を要求します。
+認可コードとトークンをログへ書き出しません。承認後のトークンは既存と同じ Keychain に保存します。
+旧版を利用している端末のため、デバイスコード方式や既存のリダイレクト URI は削除しません。
 
 ## Apple アカウントとアプリの設定
 
 Team ID は `F82XB5KFX2`、バンドル識別子は `works.zli.zoo` です。
 この明示的な App ID で Push Notifications を有効にし、チーム用の署名・プロビジョニング設定を用意してください。
-アプリのエンタイトルメントから Associated Domains を外しています。
-デバイスコード認証には AASA の配信や、`/ios/oauth/callback` へのルーティングは不要です。
+アプリの Associated Domains と AuthZ 側の AASA をそろえてください。
+現在のコールバックはカスタムスキームのため、`/ios/oauth/callback` へのルーティングは使いません。
 既存のサーバールートを廃止する場合は、HTTPS コールバックを使う旧版への影響を別途確認してください。
 
 APNsトークンの署名鍵はサンドボックス用と本番用で分けます。

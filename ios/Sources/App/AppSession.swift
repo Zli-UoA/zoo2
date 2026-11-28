@@ -10,7 +10,6 @@ final class AppSession {
     private(set) var waitingForCacheCleanup = false
     var restoring: Bool { connection?.interactive == false }
     private(set) var isStarting = true
-    private(set) var deviceAuthorization: DeviceAuthorizationPrompt?
     var error: String?
     private var displayedNotificationWarning: String?
     let notifications: NotificationController
@@ -117,7 +116,6 @@ final class AppSession {
         error = nil
         defer {
             if generation == epoch {
-                deviceAuthorization = nil
                 connection = nil
             }
         }
@@ -151,8 +149,7 @@ final class AppSession {
             }
             if interactive {
                 try await syncCache.forget(connection: SyncCache.connectionKey(api.settings))
-                try await authentication.login { prompt in deviceAuthorization = prompt }
-                deviceAuthorization = nil
+                try await authentication.login()
             } else if workspace == nil, try authentication.hasSession,
                       let saved = try await syncCache.profile(connection: SyncCache.connectionKey(api.settings)) {
                 try await installWorkspace(saved, cache: syncCache, epoch: epoch)
@@ -255,7 +252,6 @@ final class AppSession {
         connection?.task.cancel()
         connection = nil
         waitingForCacheCleanup = false
-        deviceAuthorization = nil
         error = nil
     }
 
