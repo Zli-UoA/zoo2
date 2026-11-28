@@ -2,6 +2,8 @@ package zoo.android.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -24,6 +26,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
+private enum class ShareScope(val label: String) { All("すべて"), Channels("チャンネル"), Direct("DM") }
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ShareDestinationSheet(
@@ -33,9 +37,15 @@ internal fun ShareDestinationSheet(
     var query by rememberSaveable { mutableStateOf("") }
     val searchable = sections.sumOf { it.channels.size } > 6
     val term = query.trim().takeIf { searchable }.orEmpty()
-    val matches = remember(sections, term) {
+    val hasBothTypes = searchable && sections.any { it.channels.any(ChannelItem::direct) } &&
+        sections.any { section -> section.channels.any { !it.direct } }
+    var selectedScope by rememberSaveable { mutableStateOf(ShareScope.All) }
+    val scope = if (hasBothTypes) selectedScope else ShareScope.All
+    val showHome = scope == ShareScope.All && "ホーム".contains(term)
+    val matches = remember(sections, term, scope) {
         sections.map { section -> section.copy(channels = section.channels.filter {
-            it.title.contains(term, ignoreCase = true) || it.handle?.contains(term, ignoreCase = true) == true
+            (scope == ShareScope.All || it.direct == (scope == ShareScope.Direct)) &&
+                (it.title.contains(term, ignoreCase = true) || it.handle?.contains(term, ignoreCase = true) == true)
         }) }.filter { it.channels.isNotEmpty() }
     }
     val list = rememberLazyListState()
@@ -86,11 +96,25 @@ internal fun ShareDestinationSheet(
                             list.requestScrollToItem(1)
                         }, iconSize = 16.dp, modifier = Modifier.size(32.dp))
                     }
+                    if (hasBothTypes) Row(Modifier.selectableGroup().padding(horizontal = 20.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        ShareScope.entries.forEach { option ->
+                            val selected = scope == option
+                            Box(Modifier.selectable(selected, role = Role.Tab) {
+                                selectedScope = option
+                                list.requestScrollToItem(1)
+                            }.heightIn(min = 40.dp), contentAlignment = Alignment.Center) {
+                                Text(option.label, Modifier.background(if (selected) colors.headerLight else colors.background, CircleShape)
+                                    .padding(horizontal = 12.dp, vertical = 3.dp), color = if (selected) colors.foreground else colors.secondary,
+                                    fontSize = 14.sp, fontWeight = if (selected) AndroidWeights.emphasis else androidx.compose.ui.text.font.FontWeight.Normal)
+                            }
+                        }
+                    }
                     error?.let { Text(it, Modifier.padding(horizontal = 20.dp), color = colors.unread, fontSize = 14.sp) }
                     ProgressStrip(busy, colors.foreground)
                 }
             }
-            if ("ホーム".contains(term)) item("home") {
+            if (showHome) item("home") {
                 ShareTarget("ホーム", UiIcon.Home, colors, busy) { select(null) }
             }
             for (section in matches) {
@@ -99,7 +123,7 @@ internal fun ShareDestinationSheet(
                     ShareTarget(it.title, if (it.direct) UiIcon.Person else UiIcon.Channels, colors, busy, it.handle) { select(it.id) }
                 }
             }
-            if (term.isNotEmpty() && matches.isEmpty() && !"ホーム".contains(term))
+            if (term.isNotEmpty() && matches.isEmpty() && !showHome)
                 item { Text("共有先が見つかりません", Modifier.padding(horizontal = 20.dp, vertical = 12.dp), color = colors.secondary) }
         }
     }
