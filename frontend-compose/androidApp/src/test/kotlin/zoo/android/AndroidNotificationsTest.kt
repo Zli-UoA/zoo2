@@ -24,7 +24,7 @@ import zoo.*
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26, 35], manifest = Config.NONE)
+@Config(sdk = [26, 35])
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class AndroidNotificationsTest {
     private class Fixture(scope: CoroutineScope, avatarDispatcher: CoroutineDispatcher = Dispatchers.Default) {
@@ -122,6 +122,37 @@ class AndroidNotificationsTest {
             }
             clearNotifications(f.activity, "me")
             assertTrue(f.rows().isEmpty())
+        } finally { store.clear(binding); f.close() }
+    }
+
+    @Test fun activityDisposalRemovesAttachmentPictureAndPreservesNotificationBodyAndTap() = runTest {
+        val f = Fixture(backgroundScope)
+        val store = PushBinding(f.activity)
+        val binding = store.bind("https://zoo.test", "me")
+        try {
+            val id = java.util.UUID.randomUUID().toString()
+            val channel = java.util.UUID.randomUUID().toString()
+            val message = java.util.UUID.randomUUID().toString()
+            val noticeRow = row(id, channel).toMutableMap().apply {
+                put("message_id", kotlinx.serialization.json.JsonPrimitive(message))
+            }
+            f.notifications.update(listOf(kotlinx.serialization.json.JsonObject(noticeRow)))
+            val notice = f.rows().single()
+            val withPicture = Notification.Builder.recoverBuilder(f.activity, notice.notification)
+                .setContentText("saved body")
+                .setStyle(Notification.BigPictureStyle().bigPicture(Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888)))
+                .build()
+            f.manager.notify(notice.tag, notice.id, withPicture)
+            assertTrue(f.rows().single().notification.extras.containsKey(Notification.EXTRA_PICTURE))
+
+            f.notifications.close(preserveNotifications = true)
+
+            val detached = f.rows().single().notification
+            assertFalse(detached.extras.containsKey(Notification.EXTRA_PICTURE))
+            assertEquals("saved body", detached.extras.getCharSequence(Notification.EXTRA_TEXT).toString())
+            val open = shadowOf(detached.contentIntent).savedIntent
+            assertEquals("/channels/$channel?message=$message", open.getStringExtra("path"))
+            assertEquals(binding, open.getStringExtra("binding"))
         } finally { store.clear(binding); f.close() }
     }
 

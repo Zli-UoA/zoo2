@@ -2,19 +2,13 @@ package zoo.android
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -223,11 +217,7 @@ internal fun RevocationSection(
                 platform.passkey?.let { passkey ->
                     TextAction(t("e2ee.unlockWithPasskey"), colors, can, icon = UiIcon.Key) { open(passkey) }
                 }
-                Text(t("e2ee.recoveryKeyInput"), color = colors.foreground)
-                BasicTextField(recovery, { recovery = it }, Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                    enabled = can, singleLine = true, visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
-                    textStyle = TextStyle(color = colors.foreground, fontSize = 16.sp), cursorBrush = SolidColor(colors.foreground))
+                RecoveryKeyField(t("e2ee.recoveryKeyInput"), recovery, can, colors) { recovery = it }
                 TextAction(t("e2ee.unlockWithRecoveryKey"), colors, can && recovery.isNotBlank(), icon = UiIcon.Key) {
                     open(UnlockMethod.Recovery(recovery))
                 }

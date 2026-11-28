@@ -35,6 +35,7 @@ internal fun UpdateSettings(context: Context, dark: Boolean, language: String, b
     val prefs = remember { UpdatePreferences(context) }
     var enabled by remember { mutableStateOf(prefs.enabled) }
     var status by remember { mutableStateOf(prefs.status) }
+    var running by remember { mutableStateOf(Shizuku.pingBinder()) }
     var ready by remember { mutableStateOf(shizukuReady()) }
     var granting by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
@@ -46,9 +47,10 @@ internal fun UpdateSettings(context: Context, dark: Boolean, language: String, b
                 enabled = prefs.enabled
                 status = prefs.status
             }
-        val received = Shizuku.OnBinderReceivedListener { ready = shizukuReady() }
+        val received = Shizuku.OnBinderReceivedListener { running = true; ready = shizukuReady(); error = "" }
         val dead =
             Shizuku.OnBinderDeadListener {
+                running = false
                 ready = false
                 granting = false
             }
@@ -80,11 +82,11 @@ internal fun UpdateSettings(context: Context, dark: Boolean, language: String, b
             Text("バージョン ${BuildConfig.VERSION_NAME}", color = colors.secondary, fontSize = 13.sp)
             Text("自動更新は Wi-Fi などの従量制でない接続で確認します。インストールが終わると Zoo が開き直ります。",
                 color = colors.foreground)
-            Text(if (ready) "Shizuku の使用を許可済み" else "Shizuku の起動と使用許可が必要です",
+            Text(when { ready -> "Shizuku の使用を許可済み"; running -> "Shizuku の使用許可が必要です"; else -> "Shizuku のサービスが停止しています" },
                 color = colors.secondary)
             if (BuildConfig.DEBUG) Text("自動更新は署名付きの配布版で利用できます。", color = colors.secondary)
             if (!ready && !BuildConfig.DEBUG) {
-                TextAction("Shizuku の使用を許可", colors, icon = UiIcon.Key, enabled = !granting) {
+                TextAction("Shizuku の使用を許可", colors, icon = UiIcon.Key, enabled = running && !granting) {
                     error = ""
                     try {
                         check(Shizuku.pingBinder() && !Shizuku.isPreV11())

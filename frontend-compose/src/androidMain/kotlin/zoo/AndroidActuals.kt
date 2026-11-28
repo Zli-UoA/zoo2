@@ -5,6 +5,9 @@ import android.icu.text.Collator
 import android.icu.util.ULocale
 import okhttp3.*
 
+internal actual fun normalizeMentionSearch(value: String): String =
+    java.text.Normalizer.normalize(value, java.text.Normalizer.Form.NFKC).lowercase()
+
 internal actual fun nativeAbsoluteUrl(url: String): String = url
 
 actual fun compareLocaleText(

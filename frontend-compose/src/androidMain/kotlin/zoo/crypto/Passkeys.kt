@@ -21,8 +21,10 @@ import zoo.crypto.ffi.PasskeySlot
  * - アサーションはどこにも送らない。目的は PRF 出力だけ。
  */
 enum class PasskeyError {
-    /** 利用者が取り消した、または使えるパスキーがなかった。 */
+    /** 利用者が操作を取り消した。 */
     CANCELLED,
+
+    NO_CREDENTIAL,
 
     /** 認証器か Credential Manager が PRF に対応していない（PRF の結果がない）。 */
     PRF_UNSUPPORTED,

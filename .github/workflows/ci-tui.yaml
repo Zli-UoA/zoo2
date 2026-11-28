@@ -2,20 +2,11 @@ name: CI TUI
 on:
   # merge-queue.yaml がマージキューで呼び出す。
   workflow_call:
+    inputs:
+      test-plan:
+        type: string
+        default: ""
   workflow_dispatch:
-  pull_request:
-    paths:
-      - "client-core/**"
-      - "client-types/**"
-      - "crates/zoo-components/**"
-      - "tui/**"
-      # TUI は E2EE の暗号コアを path で依存する（#359）。
-      - "crates/zoo-crypto/**"
-      - "rust-toolchain.toml"
-      - ".github/workflows/select-tests.yaml"
-      - ".github/scripts/*test-selection*.mjs"
-      - ".github/workflows/ci-tui.yaml"
-      - ".github/workflows/select-runner.yaml"
   push:
     branches: [main]
     paths:
@@ -40,6 +31,7 @@ concurrency:
 # TUI は DB や Electric を使わないので、Docker 不要の実行先で fmt・clippy・テストをまとめて行います。
 jobs:
   test-selection:
+    if: inputs.test-plan == ''
     uses: ./.github/workflows/select-tests.yaml
     with:
       workflow: ci-tui
@@ -50,7 +42,10 @@ jobs:
       runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
 
   check:
-    if: fromJSON(needs.test-selection.outputs.clients).tui
+    if: >-
+      !cancelled() && needs.runner.result == 'success' &&
+      (inputs.test-plan != '' || needs.test-selection.result == 'success') &&
+      (fromJSON(inputs.test-plan || needs.test-selection.outputs.plan || '{}').clients.tui)
     needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
     timeout-minutes: 20

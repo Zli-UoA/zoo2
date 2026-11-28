@@ -19,6 +19,9 @@ export type ShapeQueryParams = Record<string, string | number>;
  *
  * なお `channelUsers` を `channelId` 付きで呼ぶ経路は現状未使用（コレクションは
  * 全件購読）。チャンネル単位で購読する場合に使えるよう汎用化してある。
+ * `channelNotificationSettings` は本人の行だけを購読するため、proxy では
+ * 追加パラメータを送らず（バックエンドが認証ユーザーで絞る）、direct では
+ * `userPinnedChannels` と同じ `user_id = $1` を使う。
  *
  * いずれも `deleted_at` の除外はクエリ側（live query）で行う。
  */
@@ -57,8 +60,8 @@ export function shapeQueryParams(
       "params[1]": options.userId,
     };
   }
-  if (shape === "userPinnedChannels") {
-    if (!options.userId) throw new Error("Channel pin shapes require a user ID");
+  if (shape === "userPinnedChannels" || shape === "channelNotificationSettings") {
+    if (!options.userId) throw new Error("Channel settings shapes require a user ID");
     return { where: "user_id = $1", "params[1]": options.userId };
   }
   if (shape === "notifications") {

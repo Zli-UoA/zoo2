@@ -8,6 +8,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import zoo.android.ui.rankEmojiChoices
 import zoo.obj
 
 class AndroidEmojiCatalogTest {
@@ -33,6 +34,13 @@ class AndroidEmojiCatalogTest {
     @Test fun standardCategoriesFollowTheAppLocale() = runTest {
         val catalog = AndroidEmojiCatalog("en", "Uncategorized", ::readBundledAsset)
         assertEquals("animals & nature", catalog.unicode().single { it.glyph == "🐱" }.category)
+    }
+
+    @Test fun japaneseNameMatchRanksBeforeTagMatch() = runTest {
+        val catalog = AndroidEmojiCatalog("ja", "未分類", ::readBundledAsset)
+        val candidates = catalog.unicode().filter { it.glyph in setOf("😵", "🥴") }
+        assertEquals(listOf("🥴", "😵"), candidates.map { it.glyph })
+        assertEquals(listOf("😵", "🥴"), rankEmojiChoices(candidates, "めまい").map { it.glyph })
     }
 
     private fun readBundledAsset(name: String): String {

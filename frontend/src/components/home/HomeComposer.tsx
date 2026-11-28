@@ -57,6 +57,7 @@ function isPostingForbidden(body: unknown): boolean {
 
 export interface HomePostInput {
   image_ids?: string[];
+  image_descriptions?: Record<string, string>;
   sensitive?: boolean;
   sensitive_image_ids?: string[];
   content: string;
@@ -100,7 +101,7 @@ export function HomeComposer({
       .catch(() => {});
   };
   const [images, setImages] = useState<
-    { file: File; preview: string; id?: string; is_sensitive?: boolean }[]
+    { file: File; preview: string; id?: string; description?: string; is_sensitive?: boolean }[]
   >([]);
   const imagesRef = useRef(images);
   imagesRef.current = images;
@@ -276,6 +277,11 @@ export function HomeComposer({
         ...(images.length
           ? {
               image_ids: images.map((image) => image.id!),
+              image_descriptions: Object.fromEntries(
+                images.flatMap((image) =>
+                  image.description?.trim() ? [[image.id!, image.description]] : [],
+                ),
+              ),
               sensitive_image_ids: images
                 .filter((image) => image.is_sensitive)
                 .map((image) => image.id!),
@@ -599,8 +605,23 @@ export function HomeComposer({
                     <li key={image.preview} className="relative flex w-24 flex-col gap-1">
                       <img
                         src={image.preview}
-                        alt={image.file.name}
+                        alt={image.description || image.file.name}
                         className="size-24 rounded object-cover"
+                      />
+                      <Input
+                        aria-label={`${image.file.name}: ${t("attachments.altText")}`}
+                        placeholder={t("attachments.altText")}
+                        value={image.description ?? ""}
+                        disabled={sending}
+                        onChange={(event) => {
+                          const description = event.target.value;
+                          if (Array.from(description).length <= 1000)
+                            setImages((current) =>
+                              current.map((item) =>
+                                item.preview === image.preview ? { ...item, description } : item,
+                              ),
+                            );
+                        }}
                       />
                       <label className="flex items-center gap-1 text-[11px]">
                         <Input

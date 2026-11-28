@@ -22,7 +22,9 @@ pub struct ApiClient {
     typing_write: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
-pub use zoo2_client_types::api::Me;
+pub use zoo2_client_types::api::{
+    ChannelNotificationSettings, ChannelNotificationSettingsUpdate, Me, NotificationLevel,
+};
 
 /// `GET /api/channel-read-states` の1件。
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -893,6 +895,34 @@ impl ApiClient {
         self.write(Method::POST, &path, None).await
     }
 
+    /// チャンネルごとの通知レベル。設定の正本は `user_channel_notification_settings` で、
+    /// Shape の `channel_notification_settings` と同じ値。
+    /// `channel_user.notification_level` は旧アプリ互換列で、実際の設定は入らない。
+    pub async fn get_channel_notification_settings(
+        &self,
+        channel_id: &str,
+    ) -> Result<ChannelNotificationSettings> {
+        let path = format!(
+            "/api/channels/{}/notification-settings",
+            segment(channel_id)
+        );
+        self.get(&path).await
+    }
+
+    /// 通知レベルを変え、シェイプで反映を待つための txid を返す。
+    pub async fn set_channel_notification_level(
+        &self,
+        channel_id: &str,
+        level: NotificationLevel,
+    ) -> Result<Option<String>> {
+        let path = format!(
+            "/api/channels/{}/notification-settings",
+            segment(channel_id)
+        );
+        let body = serde_json::to_value(ChannelNotificationSettingsUpdate { level })?;
+        self.write(Method::PATCH, &path, Some(body)).await
+    }
+
     /// 自分のピン留めと、並びの版。
     pub async fn channel_pins(&self) -> Result<ChannelPins> {
         self.get("/api/channel-pins").await
@@ -1325,6 +1355,44 @@ mod tests {
                 unread_count_truncated: false,
                 first_unread_at: Some("2026-01-01T00:00:00Z".into()),
             }]
+        );
+    }
+
+    #[tokio::test]
+    async fn reads_and_changes_channel_notification_level() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/channels/c1/notification-settings"))
+            .and(header("X-Dev-User", "u1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "level": "mentions" })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/channels/c1/notification-settings"))
+            .and(body_json(json!({ "level": "mute" })))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "data": { "level": "mute" }, "txid": "7" })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let api = client(&server);
+        assert_eq!(
+            api.get_channel_notification_settings("c1")
+                .await
+                .unwrap()
+                .level,
+            NotificationLevel::Mentions
+        );
+        assert_eq!(
+            api.set_channel_notification_level("c1", NotificationLevel::Mute)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("7")
         );
     }
 

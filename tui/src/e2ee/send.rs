@@ -121,10 +121,11 @@ pub async fn fetch_recipients(
                             .to_string(),
                     );
                 }
-                after = page
-                    .get("next_after")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
+                after = match page.get("next_after") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(value)) => Some(value.clone()),
+                    _ => anyhow::bail!("配布先の次ページの位置が不正です"),
+                };
                 pages.push(page);
                 if after.is_none() {
                     return Ok(());

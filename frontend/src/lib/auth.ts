@@ -31,6 +31,30 @@ export function getAuthRequestGeneration(): number {
   return authRequestGeneration;
 }
 
+/** 既存のカウンタをまとめた認証世代のスナップショット。新しい認証状態は持たない。 */
+export interface AuthGenerations {
+  authSessionGeneration: number;
+  authRequestGeneration: number;
+  tokenProviderGeneration: number;
+}
+
+/** 現在の認証世代。リトライ開始前に取り、待機後の変化を判定する。 */
+export function currentAuthGenerations(): AuthGenerations {
+  return {
+    authSessionGeneration: getAuthSessionGeneration(),
+    authRequestGeneration: getAuthRequestGeneration(),
+    tokenProviderGeneration: getTokenProviderGeneration(),
+  };
+}
+
+export function authGenerationsChanged(before: AuthGenerations, after: AuthGenerations): boolean {
+  return (
+    before.authSessionGeneration !== after.authSessionGeneration ||
+    before.authRequestGeneration !== after.authRequestGeneration ||
+    before.tokenProviderGeneration !== after.tokenProviderGeneration
+  );
+}
+
 export function subscribeAuthSessionEnded(listener: AuthSessionEndListener): () => void {
   authSessionEndListeners.add(listener);
   return () => authSessionEndListeners.delete(listener);

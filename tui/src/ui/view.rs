@@ -1032,6 +1032,7 @@ const HELP: &[(&str, &str)] = &[
     ("p", "ピン留め / 解除"),
     ("[ / ] / Alt+↑↓", "ピン留めを上 / 下へ (ピン留め選択中)"),
     ("J / L", "チャンネル・スレッドに参加 / 退出"),
+    ("N", "通知レベルを変更 (すべて / メンション / ミュート)"),
     ("/", "チャンネル・スレッドを検索"),
     ("S / Ctrl+F", "メッセージ・ファイルを全文検索"),
     ("u", "選択中のスレッドを再開"),
@@ -3538,8 +3539,9 @@ mod tests {
             app.subscriptions
                 .contains_key(&ShapeId::Messages("c2".into()))
         );
-        // Channels / Users / ChannelUsers / UserPinnedChannels / 開いているチャンネルの Messages。
-        assert_eq!(app.subscriptions.len(), 5);
+        // Channels / Users / ChannelUsers / ChannelNotificationSettings / UserPinnedChannels /
+        // 開いているチャンネルの Messages。
+        assert_eq!(app.subscriptions.len(), 6);
         app.on_terminal_event(Event::FocusLost);
         assert!(app.typing.is_empty());
         app.on_tick();

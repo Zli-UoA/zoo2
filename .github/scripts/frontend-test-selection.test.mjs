@@ -117,3 +117,47 @@ test('main does not fetch history and a selected test failure is not retried', (
     assert.equal(runs, 1);
   }
 });
+
+test('unrelated Android and translation changes do not widen Vitest dependency selection', () => {
+  const selected = selectTests('pull_request', event, [
+    ...changes,
+    { status: 'M', path: 'frontend/src/lib/i18n/locales/ja.json' },
+    { status: 'M', path: 'frontend-compose/androidApp/src/main/kotlin/zoo/android/Settings.kt' },
+    { status: 'M', path: 'frontend/README.md' },
+  ]);
+  assert.equal(selected.mode, 'related');
+  assert.deepEqual(selected.files, ['src/lib/time.ts']);
+});
+
+test('Web changes retain related Vitest selection alongside standalone Playwright and proxy inputs', () => {
+  const selected = selectTests('pull_request', event, [
+    ...changes,
+    { status: 'M', path: 'frontend/src/lib/e2ee/setupController.ts' },
+    { status: 'M', path: 'frontend/e2e/layout.spec.ts' },
+    { status: 'M', path: 'infra/proxy/routes.yaml' },
+  ]);
+  assert.equal(selected.mode, 'related');
+  assert.deepEqual(selected.files, ['src/lib/time.ts', 'src/lib/e2ee/setupController.ts']);
+});
+
+test('Storybook settings broaden VRT and Storybook without expanding unit or browser', () => {
+  const mixed = [...changes, { status: 'M', path: 'frontend/.storybook/vitest.setup.ts' }];
+  for (const project of ['unit', 'browser']) {
+    assert.equal(selectTests('pull_request', event, mixed, project).mode, 'related');
+  }
+  for (const project of ['vrt', 'storybook']) {
+    assert.equal(selectTests('pull_request', event, mixed, project).mode, 'full');
+  }
+});
+
+test('shared fixtures remain inputs to Vitest even outside src', () => {
+  for (const [project, path] of [
+    ['unit', 'frontend/.storybook/fixtures/sample.eml'],
+    ['unit', 'frontend/.storybook/fixtures.ts'],
+    ['browser', 'frontend/.storybook/fixtures.ts'],
+    ['browser', 'frontend/.storybook/fixtures/sample.eml'],
+    ['unit', 'frontend/e2e/mock-idp.ts'],
+  ]) {
+    assert.equal(selectTests('pull_request', event, [...changes, { status: 'M', path }], project).mode, 'full');
+  }
+});

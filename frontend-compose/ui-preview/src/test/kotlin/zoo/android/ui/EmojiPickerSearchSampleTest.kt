@@ -67,6 +67,34 @@ class EmojiPickerSearchSampleTest {
     }
 
     @Test
+    fun unicodeSearchKeepsCategoryOrderAndRanksNameMatchesFirst() {
+        val faces = "スマイリーと感情"
+        val animals = "動物と自然"
+        val choices = listOf(
+            EmojiChoice("😀", "😀", "grinning", category = faces),
+            EmojiChoice("🐦‍🔥", "🐦‍🔥", "phoenix", keywords = "red fire bird rebirth rising rare", category = animals),
+            EmojiChoice("🦍", "🦍", "gorilla", category = animals),
+            EmojiChoice("🦏", "🦏", "rhinoceros", category = animals),
+        )
+        ui.setContent {
+            EmojiPicker(
+                "絵文字", AndroidColors(false), unicode = choices, custom = emptyList(),
+                loadKitchen = { null }, loadImage = { null }, dismiss = {}, select = {},
+            )
+        }
+        ui.onNodeWithTag("emoji-search").performTextInput("r")
+        ui.onNodeWithText(faces).assertIsDisplayed()
+        ui.onNodeWithText(animals).assertIsDisplayed()
+        val names = choices.map { it.name }.toSet()
+        val order = ui.onAllNodes(hasClickAction()).fetchSemanticsNodes().mapNotNull { node ->
+            if (SemanticsProperties.ContentDescription in node.config) {
+                node.config[SemanticsProperties.ContentDescription].firstOrNull()
+            } else null
+        }.filter { it in names }
+        assertEquals(listOf("grinning", "rhinoceros", "gorilla", "phoenix"), order)
+    }
+
+    @Test
     fun thePickerHandleMovesBeforeRelease() {
         ui.setContent {
             EmojiPicker(
@@ -83,6 +111,7 @@ class EmojiPickerSearchSampleTest {
     }
 
     private fun capture(name: String) {
+        ui.recordControlBounds(name)
         ui.runOnIdle {
             val view = ui.activity.findViewById<View>(android.R.id.content)
             val bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)

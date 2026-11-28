@@ -110,6 +110,11 @@ crypto-ffi-check:
 crypto-ffi-android:
 	cd crates/zoo-crypto-ffi && cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -P 26 build --locked --release --lib
 
+# iOS 向けの XCFramework と Swift のバインディング（#685）。macOS と Xcode が要る。
+.PHONY: crypto-ffi-ios
+crypto-ffi-ios:
+	nix develop .#ios -c ios/Scripts/build-crypto-xcframework.sh
+
 # ローカル監視スタック (Prometheus / Loki / Alloy / Grafana / Tempo)
 .PHONY: observability-up observability-up-traces observability-down observability-reset observability-logs
 observability-up:

@@ -1,6 +1,9 @@
 package zoo
 
-import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.*
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /** Account-owned navigation cache. Bounded like the Web timeline cache; never shared across sessions. */
 internal data class HomeTimelineSnapshot(
@@ -79,5 +82,42 @@ internal fun mergeHomeWindow(current: List<Row>, head: List<Row>, checkedIds: Li
         val key = HomeTimeline.key(row)
         if (key in known && key !in incoming) null
         else (incoming[key] ?: row).let { next -> old[key]?.takeIf { it == next } ?: next }
+    }
+}
+
+/** AccountCache supplies account isolation and atomic writes. Keep one recent head for cold startup. */
+internal class StartupTimeline(private val platform: Platform) {
+    private val key = "home-startup-v1"
+    private val lock = Mutex()
+    private var revision = 0
+
+    suspend fun read(timeline: String): List<Row> = lock.withLock {
+        val raw = try { platform.readCache(key) } catch (e: CancellationException) { throw e }
+            catch (_: Exception) { null }
+        if (raw == null || raw.length > 96_000) return@withLock emptyList()
+        val record = runCatching { json.parseToJsonElement(raw).objectOrEmpty() }.getOrNull() ?: return@withLock emptyList()
+        val savedAt = record.text("time").toLongOrNull() ?: return@withLock emptyList()
+        val age = kotlin.time.Clock.System.now().toEpochMilliseconds() - savedAt
+        if (record.text("timeline") == timeline && age in 0..300_000) record.array("posts").rows().take(12)
+        else emptyList()
+    }
+
+    fun invalidate(): Int = ++revision
+    suspend fun replace(version: Int, timeline: String, head: List<Row>) = lock.withLock {
+        if (version != revision) return@withLock
+        // Only keep openly visible, non-sensitive standalone posts. Private embedded content
+        // and URLs belonging to quotes or parent posts must never enter this startup cache.
+        val rows = head.take(12).takeWhile { entry ->
+            val post = entry.nested("post").ifEmpty { entry }
+            post.text("visibility") == "public" && !post.flag("sensitive") &&
+                !post.present("parent") && !post.present("quote") && !post.present("ciphertext") &&
+                post.array("media").rows().none { it.flag("is_sensitive") }
+        }
+        val value = obj("timeline" to timeline, "time" to kotlin.time.Clock.System.now().toEpochMilliseconds(),
+            "posts" to JsonArray(rows)).toString()
+        try {
+            if (rows.isEmpty() || value.length > 96_000) platform.removeCache(key) else platform.writeCache(key, value)
+        } catch (e: CancellationException) { throw e }
+        catch (_: Exception) { /* Rendering the fetched head does not depend on disk space. */ }
     }
 }

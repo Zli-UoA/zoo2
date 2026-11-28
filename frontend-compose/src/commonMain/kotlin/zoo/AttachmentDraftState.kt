@@ -159,6 +159,12 @@ class AttachmentLinks(private val app: Session) {
     val errors = mutableStateMapOf<String, Boolean>()
     private val cache = mutableMapOf<String, Pair<AttachmentImageLinks, Long>>()
     private val requests = mutableMapOf<String, Deferred<Result<AttachmentImageLinks>>>()
+    private val denied = mutableStateMapOf<String, Boolean>()
+    private val accessVersions = mutableStateMapOf<String, Long>()
+
+    fun isDenied(id: String): Boolean = denied[id] == true
+
+    fun accessVersion(id: String): Long = accessVersions[id] ?: 0L
 
     fun cachedUrl(id: String): String? = cachedLinks(id)?.original
 
@@ -171,6 +177,7 @@ class AttachmentLinks(private val app: Session) {
     suspend fun get(id: String, force: Boolean = false): String = getLinks(id, force).original
 
     suspend fun getLinks(id: String, force: Boolean = false): AttachmentImageLinks {
+        requests[id]?.let { return it.await().getOrThrow() }
         errors.remove(id)
         val now = timestampMillis(app.platform.now()) ?: 0L
         if (!force) cachedLinks(id, now)?.let { return it }
@@ -185,28 +192,29 @@ class AttachmentLinks(private val app: Session) {
                         require(publicUrl(url) != null)
                         val thumbnail = payload.text("thumbnail_url").takeIf { publicUrl(it) != null }
                         val links = AttachmentImageLinks(url, thumbnail)
+                        app.platform.allowAttachmentImages(id)
                         if (cache.size >= 200) cache.remove(cache.keys.first())
                         cache[id] = links to attachmentExpiry(url, now)
+                        denied.remove(id)
                         Result.success(links)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
+                        if (errors.size >= 200) errors.remove(errors.keys.first())
+                        errors[id] = true
+                        if (e is ApiException && e.status in setOf(401, 403, 404, 410)) {
+                            if (denied.size >= 512) denied.remove(denied.keys.first())
+                            denied[id] = true
+                            accessVersions[id] = accessVersion(id) + 1
+                            cache.remove(id)
+                            app.platform.removeAttachmentImages(id)
+                        }
                         Result.failure(e)
                     }
                 }
             }
         work.invokeOnCompletion { if (requests[id] === work) requests.remove(id) }
-        return try {
-            work.await().getOrThrow()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            if (errors.size >= 200) errors.remove(errors.keys.first())
-            errors[id] = true
-            throw e
-        } finally {
-            if (work.isCompleted && requests[id] === work) requests.remove(id)
-        }
+        return work.await().getOrThrow()
     }
 
     fun download(file: Row, force: Boolean = false) {
@@ -226,9 +234,12 @@ class AttachmentLinks(private val app: Session) {
 }
 
 class AttachmentDraft(val file: Row, val name: String, val type: String) {
+    var description by mutableStateOf("")
     var sensitive by mutableStateOf(false)
     var uploaded by mutableStateOf<Row?>(null)
     var bitmap by mutableStateOf<ImageBitmap?>(null)
+    var failed by mutableStateOf(false)
+        internal set
     var previewJob: Job? = null
 }
 
@@ -272,6 +283,29 @@ class AttachmentDrafts(
             ::add,
         )
 
+    private fun rejection(file: Row, count: Int): String? =
+        attachmentRejection(file, count)
+            ?: if (acceptedTypes?.let { attachmentType(file.text("name"), file.text("type")) !in it } == true) "unsupported"
+            else if ((file.text("size").toLongOrNull() ?: 0) > maximumBytes) "tooLarge" else null
+
+    private fun rejectionLabel(reason: String) = app.t("attachments.$reason",
+        "max" to if (reason == "tooMany") MAX_ATTACHMENTS.toString() else (maximumBytes / (1024 * 1024)).toString())
+
+    /** Validate the complete incoming share before changing the destination draft. */
+    fun addShare(raw: String): String? {
+        val files = json.parseToJsonElement(raw).jsonObject.array("files").rows()
+        val errors = files.mapIndexedNotNull { index, file ->
+            val reason = rejection(file, items.size + index) ?: return@mapIndexedNotNull null
+            "${file.text("name")}: ${rejectionLabel(reason)}"
+        }
+        if (errors.isNotEmpty()) {
+            files.forEach { app.platform.action("fileRelease:${it.text("id")}") }
+            return errors.joinToString("\n")
+        }
+        add(raw)
+        return null
+    }
+
     fun add(raw: String): Boolean {
         val data = json.parseToJsonElement(raw).jsonObject
         val candidates = (data["files"] as? JsonArray)?.map { it.jsonObject }.orEmpty()
@@ -290,16 +324,9 @@ class AttachmentDrafts(
                 return@forEach
             }
             handled = true
-            val rejected = attachmentRejection(file, items.size)
-                ?: if (acceptedTypes?.let { mime !in it } == true) "unsupported"
-                else if ((file.text("size").toLongOrNull() ?: 0) > maximumBytes) "tooLarge" else null
+            val rejected = rejection(file, items.size)
             if (rejected != null) {
-                if (batchError == null)
-                    batchError =
-                        app.t(
-                            "attachments.$rejected",
-                            "max" to if (rejected == "tooMany") "10" else "50",
-                        )
+                if (batchError == null) batchError = rejectionLabel(rejected)
                 app.platform.action("fileRelease:${file.text("id")}")
                 return@forEach
             }
@@ -326,52 +353,64 @@ class AttachmentDrafts(
                             throw e
                         } catch (_: Exception) {}
                     }
-            scope.launch {
-                try {
-                    if (upload != null) {
-                        val result = upload(file)
-                        if (draft in items) draft.uploaded = result else onDiscard?.invoke(result)
-                    } else {
-                        app.requirePlaintextChannel(channel)
-                        val presign =
-                            attachmentPayload(
-                                app.api.request(
-                                    "/api/attachments/presign",
-                                    "POST",
-                                    buildJsonObject {
-                                        put("channel_id", channel)
-                                        put("file_name", draft.name)
-                                        put("file_size", file.text("size").toLong())
-                                        put("content_type", mime)
-                                    },
-                                )
-                            )
-                        if (draft !in items) return@launch
-                        require(presign.text("attachment_id").isNotEmpty())
-                        app.platform.invoke(
-                            "filePut",
-                            obj(
-                                    "id" to file.text("id"),
-                                    "url" to presign.text("upload_url"),
-                                    "type" to mime,
-                                )
-                                .toString(),
-                        )
-                        if (draft in items)
-                            draft.uploaded = obj("id" to presign.text("attachment_id"))
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    if (draft in items) {
-                        remove(draft)
-                        error = app.t("attachments.uploadError")
-                    }
-                }
-            }
+            startUpload(draft)
         }
         if (handled) error = batchError
         return handled
+    }
+
+    fun retry(id: String) {
+        val draft = items.firstOrNull { it.file.text("id") == id && it.failed } ?: return
+        draft.failed = false
+        startUpload(draft)
+    }
+
+    private fun startUpload(draft: AttachmentDraft) {
+        val file = draft.file
+        val mime = draft.type
+        scope.launch {
+            try {
+                if (upload != null) {
+                    val result = upload(file)
+                    if (draft in items) draft.uploaded = result else onDiscard?.invoke(result)
+                } else {
+                    app.requirePlaintextChannel(channel)
+                    val presign =
+                        attachmentPayload(
+                            app.api.request(
+                                "/api/attachments/presign",
+                                "POST",
+                                buildJsonObject {
+                                    put("channel_id", channel)
+                                    put("file_name", draft.name)
+                                    put("file_size", file.text("size").toLong())
+                                    put("content_type", mime)
+                                },
+                            )
+                        )
+                    if (draft !in items) return@launch
+                    require(presign.text("attachment_id").isNotEmpty())
+                    app.platform.invoke(
+                        "filePut",
+                        obj(
+                                "id" to file.text("id"),
+                                "url" to presign.text("upload_url"),
+                                "type" to mime,
+                            )
+                            .toString(),
+                    )
+                    if (draft in items)
+                        draft.uploaded = obj("id" to presign.text("attachment_id"))
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                if (draft in items) {
+                    draft.failed = true
+                    error = app.t("attachments.uploadError")
+                }
+            }
+        }
     }
 
     private var picking = false
@@ -416,7 +455,7 @@ class AttachmentDrafts(
     }
 
     /** Keep uploaded files owned until an in-flight post finishes, even if its editor is removed. */
-    internal fun retainForSubmission(): () -> Unit {
+    fun retainForSubmission(): () -> Unit {
         check(!closeRequested)
         submissions++
         var released = false

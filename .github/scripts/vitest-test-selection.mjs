@@ -28,6 +28,17 @@ export function caseDependencies(source, ts) {
   if (ast.parseDiagnostics.length || /\b(?:test\.describe|describe)\.(?:serial|sequential|configure)\s*\(/.test(source)) return null;
   const imports = new Map(), declarations = new Map(), shared = [], cases = [];
   let aliasedRunner = false;
+  function registerBinding(name, declaration) {
+    if (ts.isIdentifier(name)) {
+      const list = declarations.get(name.text) ?? [];
+      list.push(declaration);
+      declarations.set(name.text, list);
+    } else {
+      for (const element of name.elements) {
+        if (ts.isBindingElement(element)) registerBinding(element.name, declaration);
+      }
+    }
+  }
   function collect(node) {
     if (ts.isExpressionStatement(node) && !ts.isCallExpression(node.expression)) shared.push({ node });
     if (ts.isIfStatement(node) || ts.isSwitchStatement(node) || ts.isWhileStatement(node) || ts.isDoStatement(node)) shared.push({ node: node.expression });
@@ -64,9 +75,8 @@ export function caseDependencies(source, ts) {
       if (/^(test|it)[.(]/.test(callee) && !/^(test\.describe)(\.(only|skip))?$/.test(callee) && node.arguments.some(a => ts.isArrowFunction(a) || ts.isFunctionExpression(a))) { cases.push({ unsupported: true }); return; }
       if (!/^(test\.describe|describe)(\.(only|skip))?$/.test(callee)) shared.push({ node });
     }
-    if ((ts.isFunctionDeclaration(node) || ts.isVariableDeclaration(node) || ts.isClassDeclaration(node)) && node.name && ts.isIdentifier(node.name)) {
-      const list = declarations.get(node.name.text) ?? [];
-      list.push(node); declarations.set(node.name.text, list);
+    if ((ts.isFunctionDeclaration(node) || ts.isVariableDeclaration(node) || ts.isClassDeclaration(node)) && node.name) {
+      registerBinding(node.name, node);
       if (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) return;
       if (ts.isVariableDeclaration(node) && node.initializer && (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) return;
     }
@@ -74,12 +84,21 @@ export function caseDependencies(source, ts) {
   }
   collect(ast);
   if (aliasedRunner || !cases.length || cases.some(c => c.unsupported)) return null;
-  return cases.map(c => {
+  let unknownImport = false;
+  const dependencies = cases.map(c => {
     const modules = new Set(shared.flatMap(s => s.module ? [s.module] : []));
     const visited = new Set();
     function references(node) {
       if (visited.has(node)) return;
       visited.add(node);
+      if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+        const specifier = node.arguments[0];
+        if (specifier && (ts.isStringLiteral(specifier) || ts.isNoSubstitutionTemplateLiteral(specifier))) {
+          modules.add(specifier.text);
+        } else {
+          unknownImport = true;
+        }
+      }
       if (ts.isIdentifier(node)) {
         if (imports.has(node.text)) modules.add(imports.get(node.text));
         for (const declaration of declarations.get(node.text) ?? []) references(declaration);
@@ -90,10 +109,11 @@ export function caseDependencies(source, ts) {
     for (const item of shared) if (item.node) references(item.node);
     return { pattern: c.pattern, modules: [...modules] };
   });
+  return unknownImport ? null : dependencies;
 }
 
 export function selectSourceCases(project, selection, changes, base, { compiler, git = execFileSync, read = path => readFileSync(resolve(root, path), 'utf8'), exists = path => statSync(resolve(root, path), { throwIfNoEntry: false })?.isFile() ?? false, files, log = () => {} } = {}) {
-  if (!['browser', 'vrt'].includes(project) || selection.mode !== 'related' || !changes?.every(c => c.status === 'M' && /^frontend\/src\/.+\.tsx?$/.test(c.path) && !/\.test\.tsx?$/.test(c.path))) return selection;
+  if (!['unit', 'browser', 'vrt'].includes(project) || selection.mode !== 'related' || !changes?.every(c => c.status === 'M' && /^frontend\/src\/.+\.tsx?$/.test(c.path) && !/\.test\.tsx?$/.test(c.path))) return selection;
   try {
     const ts = compiler ?? loadTypeScript();
     for (const { path } of changes) {
@@ -104,13 +124,21 @@ export function selectSourceCases(project, selection, changes, base, { compiler,
     }
     const candidates = files ?? readdirSync(resolve(root, 'frontend/src'), { recursive: true, withFileTypes: true })
       .filter(entry => entry.isFile()).map(entry => relative(root, resolve(entry.parentPath, entry.name)).replaceAll('\\', '/'));
-    const matches = path => project === 'vrt' ? /\.vrt\.test\.tsx$/.test(path) : /\.browser\.test\.tsx?$/.test(path);
-    const virtual = new Map(), patterns = new Map();
+    const matches = path => {
+      if (project === 'vrt') return /\.vrt\.test\.tsx$/.test(path);
+      if (project === 'browser') return /\.browser\.test\.tsx?$/.test(path);
+      return /(?<!\.browser)\.test\.ts$/.test(path);
+    };
+    const virtual = new Map(), patterns = new Map(), fullFiles = [];
     for (const path of candidates.filter(matches)) {
       const relevant = selectNodeTests([path], changes, { compiler: ts, read, exists, frontendAliases: true });
       if (!relevant.length) continue;
       const cases = caseDependencies(read(path), ts);
-      if (!cases) { log(`Case dependencies: unsupported test declarations (${path})`); return selection; }
+      if (!cases) {
+        log(`Case dependencies: unsupported test declarations; running file in full (${path})`);
+        fullFiles.push(path.slice('frontend/'.length));
+        continue;
+      }
       // All imported modules execute at file load, even if a particular case
       // does not reference their bindings. Initialization with possible side
       // effects is therefore a dependency of every case, including transitively.
@@ -123,7 +151,10 @@ export function selectSourceCases(project, selection, changes, base, { compiler,
           if (modulePath !== path && !pureModule(source, ts)) effects.add(modulePath);
         },
       });
-      if (unknown) return selection;
+      if (unknown) {
+        fullFiles.push(path.slice('frontend/'.length));
+        continue;
+      }
       cases.forEach((c, index) => {
         const entry = `${dirname(path)}/__selected_case_${index}_${virtual.size}.ts`;
         const effectImports = [...effects].map(modulePath => {
@@ -139,6 +170,6 @@ export function selectSourceCases(project, selection, changes, base, { compiler,
       read: path => virtual.has(path) ? virtual.get(path) : read(path),
       exists: path => virtual.has(path) || exists(path),
     });
-    return { ...selection, patterns: [...new Set(selected.map(path => patterns.get(path)))] };
+    return { ...selection, patterns: [...new Set(selected.map(path => patterns.get(path)))], fullFiles };
   } catch (error) { log(`Case dependencies: analysis unavailable (${error.message}); retaining file-level tests`); return selection; }
 }

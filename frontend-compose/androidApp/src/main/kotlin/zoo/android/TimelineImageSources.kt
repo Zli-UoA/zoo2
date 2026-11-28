@@ -133,7 +133,7 @@ internal fun timelinePostMedia(base: String, row: Row): TimelineMedia? {
     val url = original ?: preview ?: return null
     val thumbnail = if (local && kind == TimelineMediaKind.Image) "$url?thumbnail=true" else null
     val name = row.text("name").ifBlank { if (kind == TimelineMediaKind.Video) "動画" else "画像" }
-    return TimelineMedia(url, name, kind, row.flag("is_sensitive"), url = url, previewUrl = preview, thumbnailUrl = thumbnail, imageAspectRatio = row.imageAspectRatio(kind), blurhash = row.text("blurhash").ifBlank { null })
+    return TimelineMedia(url, name, kind, row.flag("is_sensitive"), description = row.text("description").ifBlank { null }, url = url, previewUrl = preview, thumbnailUrl = thumbnail, imageAspectRatio = row.imageAspectRatio(kind), blurhash = row.text("blurhash").ifBlank { null })
 }
 
 internal fun selectTimelineMedia(post: List<TimelineMedia>, attachments: List<TimelineMedia>, preferAttachments: Boolean) =

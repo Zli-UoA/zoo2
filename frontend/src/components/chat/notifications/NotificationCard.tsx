@@ -13,6 +13,7 @@ import { useTranslation } from "react-i18next";
 import {
   SmilePlusIcon,
   MessageCircleIcon,
+  MessageSquareIcon,
   AtSignIcon,
   UserRoundIcon,
   UsersIcon,
@@ -115,6 +116,7 @@ export function NotificationCard({
   const actor = name(group.actorIds[0]!);
   // 不在着信にはメッセージがない。チャンネルへのリンクだけを出す。
   const isMissedCall = notification.notification_type === "missed_call";
+  const isChannelMessage = notification.notification_type === "channel_message";
   const label =
     isReaction && group.actorIds.length > 1
       ? t("notifications.reactionGroup", { actor, count: group.actorIds.length - 1 })
@@ -123,20 +125,24 @@ export function NotificationCard({
             ? "notifications.reaction"
             : isMissedCall
               ? "notifications.missedCall"
-              : notification.notification_type === "mention"
-                ? "notifications.mention"
-                : notification.notification_type === "dm"
-                  ? "notifications.dm"
-                  : "notifications.reply",
+              : isChannelMessage
+                ? "notifications.channelMessage"
+                : notification.notification_type === "mention"
+                  ? "notifications.mention"
+                  : notification.notification_type === "dm"
+                    ? "notifications.dm"
+                    : "notifications.reply",
           { actor },
         );
   const Icon = isReaction
     ? SmilePlusIcon
     : isMissedCall
       ? PhoneMissedIcon
-      : notification.notification_type === "mention"
-        ? AtSignIcon
-        : MessageCircleIcon;
+      : isChannelMessage
+        ? MessageSquareIcon
+        : notification.notification_type === "mention"
+          ? AtSignIcon
+          : MessageCircleIcon;
   const canOpen = Boolean(channel && (message || isMissedCall));
 
   const channelLabel = channel?.is_dm
@@ -160,11 +166,13 @@ export function NotificationCard({
       ? "notifications.reactionContext"
       : isMissedCall
         ? "notifications.missedCallContext"
-        : notification.notification_type === "mention"
-          ? "notifications.mentionContext"
-          : notification.notification_type === "dm"
-            ? "notifications.dmContext"
-            : "notifications.replyContext",
+        : isChannelMessage
+          ? "notifications.channelMessageContext"
+          : notification.notification_type === "mention"
+            ? "notifications.mentionContext"
+            : notification.notification_type === "dm"
+              ? "notifications.dmContext"
+              : "notifications.replyContext",
   );
   const actorSummary =
     group.actorIds.length > 1

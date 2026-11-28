@@ -1,0 +1,262 @@
+import Foundation
+import Synchronization
+
+struct ConnectionSettings: Codable, Equatable, Sendable {
+    var server = "https://zli.chat"
+    var issuer = "https://account.zli.works/api/auth"
+    var clientID = "UPPfdYapcgiBgnfZIoGvFuJMAEIhXQOV"
+    var resource = "https://zli.chat/api"
+    var scope = "openid profile offline_access"
+
+    static func secureURL(_ raw: String) throws -> URL {
+        guard let url = URL(string: raw), url.scheme == "https", url.host != nil,
+              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil else {
+            throw ZooError.invalidConfiguration
+        }
+        return url
+    }
+
+    func validate() throws {
+        _ = try Self.secureURL(server)
+        _ = try Self.secureURL(issuer)
+        guard !clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ZooError.auth("管理者が登録した iOS 用 OAuth クライアント ID を設定してください。")
+        }
+    }
+
+    var storageKey: String { "\(server)|\(issuer)|\(clientID)|\(resource)|\(scope)" }
+}
+
+final class NoRedirects: NSObject, URLSessionTaskDelegate, Sendable {
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+        // リダイレクト先へトークンを転送しない。
+        completionHandler(nil)
+    }
+}
+
+// 本文の取得に失敗しても、認証・権限の判定に使うヘッダーと元の原因を保持する。
+final class IncompleteHTTPResponse: HTTPURLResponse, @unchecked Sendable {
+    let bodyReadError: any Error
+
+    init?(response: HTTPURLResponse, error: any Error) {
+        guard let url = response.url else { return nil }
+        bodyReadError = error
+        let headers = response.allHeaderFields.reduce(into: [String: String]()) { result, item in
+            if let key = item.key as? String, let value = item.value as? String { result[key] = value }
+        }
+        super.init(url: url, statusCode: response.statusCode, httpVersion: nil, headerFields: headers)
+    }
+
+    required init?(coder: NSCoder) { return nil }
+}
+
+// 受信チャンクごとに上限を確認し、応答本文でメモリーを使い切らない。
+private final class BoundedHTTPBody: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private struct State {
+        var response: HTTPURLResponse?
+        var data = Data()
+        var error: (any Error)?
+    }
+    private let state = Mutex(State())
+    private let maximumBytes: Int
+    private let completion: @Sendable (Result<(Data, HTTPURLResponse), any Error>) -> Void
+
+    init(maximumBytes: Int, completion: @escaping @Sendable (Result<(Data, HTTPURLResponse), any Error>) -> Void) {
+        self.maximumBytes = maximumBytes
+        self.completion = completion
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void) {
+        guard let response = response as? HTTPURLResponse else {
+            state.withLock { $0.error = ZooError.invalidResponse }
+            completionHandler(.cancel)
+            return
+        }
+        state.withLock { $0.response = response }
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        let exceeded = state.withLock { state in
+            let success = state.response.map { (200..<300).contains($0.statusCode) } == true
+            let limit = success ? maximumBytes : min(maximumBytes, 64 * 1024)
+            let remaining = max(0, limit - state.data.count)
+            state.data.append(data.prefix(remaining))
+            if data.count > remaining { state.error = URLError(.dataLengthExceedsMaximum); return true }
+            return false
+        }
+        if exceeded { dataTask.cancel() }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
+        let result: Result<(Data, HTTPURLResponse), any Error> = state.withLock { state in
+            let failure = state.error ?? error
+            if let failure {
+                if let response = state.response, !(200..<300).contains(response.statusCode),
+                   (failure as? URLError)?.code != .cancelled,
+                   let incomplete = IncompleteHTTPResponse(response: response, error: failure) {
+                    return .success((state.data, incomplete))
+                }
+                return .failure(failure)
+            }
+            guard let response = state.response else { return .failure(ZooError.invalidResponse) }
+            return .success((state.data, response))
+        }
+        completion(result)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
+                    completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
+}
+
+final class HTTPTransport: Sendable {
+    let session: URLSession
+    private let maximumResponseBytes: Int
+
+    init(session: URLSession? = nil, maximumResponseBytes: Int = 64 * 1024 * 1024) {
+        self.maximumResponseBytes = max(1, maximumResponseBytes)
+        let config = URLSessionConfiguration.ephemeral
+        config.urlCache = nil
+        config.httpMaximumConnectionsPerHost = 12
+        config.timeoutIntervalForRequest = 75
+        self.session = session ?? URLSession(configuration: config, delegate: NoRedirects(), delegateQueue: nil)
+    }
+
+    func send(_ request: URLRequest, timeout: Duration? = nil) async throws -> (Data, HTTPURLResponse) {
+        if let timeout {
+            // URLRequest のタイムアウトは受信のたびに延びるため、通信全体の期限を別に設ける。
+            return try await withThrowingTaskGroup(of: (Data, HTTPURLResponse).self) { group in
+                group.addTask { try await self.send(request) }
+                group.addTask {
+                    try await Task.sleep(for: timeout)
+                    throw URLError(.timedOut)
+                }
+                defer { group.cancelAll() }
+                guard let result = try await group.next() else { throw CancellationError() }
+                return result
+            }
+        }
+        let state = Mutex((task: Optional<URLSessionDataTask>.none, cancelled: false))
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            let result: (Data, HTTPURLResponse) = try await withCheckedThrowingContinuation { continuation in
+                let receiver = BoundedHTTPBody(maximumBytes: maximumResponseBytes) { result in
+                    state.withLock { $0.task = nil }
+                    continuation.resume(with: result)
+                }
+                let task = session.dataTask(with: request)
+                task.delegate = receiver
+                let cancelled = state.withLock {
+                    $0.task = task
+                    return $0.cancelled
+                }
+                if cancelled { task.cancel() }
+                task.resume()
+            }
+            try Task.checkCancellation()
+            return result
+        } onCancel: {
+            let task = state.withLock {
+                $0.cancelled = true
+                return $0.task
+            }
+            task?.cancel()
+        }
+    }
+
+    @concurrent
+    func download(_ request: URLRequest) async throws -> (AttachmentFile, HTTPURLResponse) {
+        let (temporary, response) = try await session.download(for: request, delegate: NoRedirects())
+        let downloaded = AttachmentFile(url: temporary)
+        try Task.checkCancellation()
+        guard let response = response as? HTTPURLResponse else { throw ZooError.invalidResponse }
+        let file = AttachmentFile(url: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString))
+        try FileManager.default.moveItem(at: downloaded.url, to: file.url)
+        try Task.checkCancellation()
+        return (file, response)
+    }
+
+    static func check(_ data: Data, _ response: HTTPURLResponse) throws {
+        if response.statusCode == 401 { throw ZooError.expiredSession }
+        guard (200..<300).contains(response.statusCode) else {
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let fullMessage = json?["message"] as? String ?? json?["error"] as? String ?? ""
+            let message = String(fullMessage.prefix(240))
+            if response.statusCode == 403,
+               ZooError.requiresThreadJoin(code: json?["code"] as? String, message: fullMessage) {
+                throw ZooError.threadJoinRequired(message)
+            }
+            throw ZooError.rejected(response.statusCode, message)
+        }
+    }
+
+    func upload(_ request: URLRequest, from file: URL) async throws {
+        let (_, response) = try await session.upload(for: request, fromFile: file)
+        guard let response = response as? HTTPURLResponse else { throw ZooError.invalidResponse }
+        // ストレージの署名切れは、アプリのログイン期限切れとは別に再試行する。
+        guard (200..<300).contains(response.statusCode) else {
+            throw ZooError.rejected(response.statusCode, "ファイルをアップロードできませんでした。")
+        }
+    }
+}
+
+@MainActor
+final class APIClient {
+    let settings: ConnectionSettings
+    let auth: Authentication
+    let transport: HTTPTransport
+
+    init(settings: ConnectionSettings, auth: Authentication, transport: HTTPTransport = HTTPTransport()) {
+        self.settings = settings
+        self.auth = auth
+        self.transport = transport
+    }
+
+    func request(_ path: String, method: String = "GET", query: [String: String] = [:],
+                 body: [String: JSONValue]? = nil) async throws -> URLRequest {
+        let base = try ConnectionSettings.secureURL(settings.server)
+        guard var parts = URLComponents(url: base.appendingPathComponent(path), resolvingAgainstBaseURL: false) else {
+            throw ZooError.invalidConfiguration
+        }
+        if !query.isEmpty {
+            parts.queryItems = query.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) }
+            // フォーム形式のクエリで「+」を空白として解釈させない。
+            parts.percentEncodedQuery = parts.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
+        }
+        guard let url = parts.url else { throw ZooError.invalidConfiguration }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.setValue("Bearer \(try await auth.accessToken())", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let body {
+            request.httpBody = try JSONEncoder().encode(body)
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+        return request
+    }
+
+    func data(_ path: String, method: String = "GET", query: [String: String] = [:],
+              body: [String: JSONValue]? = nil) async throws -> Data {
+        let request = try await request(path, method: method, query: query, body: body)
+        let (data, response) = try await transport.send(request)
+        try HTTPTransport.check(data, response)
+        return data
+    }
+
+    func get<T: Decodable & Sendable>(_ path: String) async throws -> T {
+        try JSONDecoder().decode(T.self, from: await data(path))
+    }
+
+    func write<T: Decodable & Sendable>(_ path: String, method: String = "POST",
+                                       query: [String: String] = [:], body: [String: JSONValue] = [:]) async throws -> T {
+        let bytes = try await data(path, method: method, query: query, body: body)
+        return try JSONDecoder().decode(Envelope<T>.self, from: bytes).data
+    }
+}

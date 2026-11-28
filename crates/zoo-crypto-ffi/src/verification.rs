@@ -9,6 +9,8 @@
 
 use std::sync::{Arc, Mutex};
 
+use serde_json::{Value, json};
+
 use zoo_crypto as core;
 
 use crate::{
@@ -51,6 +53,95 @@ impl VerificationMessage {
             content: parse_json("content", &self.content)?,
         })
     }
+}
+
+/// 受信時の検証を通った検証のメッセージの JSON（`sender_user_id`、`sender_device`、`type`、`content`）を読む。
+fn message(json: &str) -> Result<core::VerificationMessage> {
+    let value = parse_json("message", json)?;
+    let text = |name: &str| -> Result<String> {
+        value
+            .get(name)
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| ZooCryptoError::InvalidPayload {
+                reason: format!("message.{name} がありません"),
+            })
+    };
+    let device =
+        value
+            .get("sender_device")
+            .cloned()
+            .ok_or_else(|| ZooCryptoError::InvalidPayload {
+                reason: "message.sender_device がありません".into(),
+            })?;
+    let sender_device = serde_json::from_value::<DeviceKeysJson>(device)
+        .map_err(|e| ZooCryptoError::InvalidPayload {
+            reason: format!("sender_device が正しくありません: {e}"),
+        })?
+        .into_core()?;
+    Ok(core::VerificationMessage {
+        sender_user_id: text("sender_user_id")?,
+        sender_device,
+        event_type: text("type")?,
+        content: value.get("content").cloned().unwrap_or(Value::Null),
+    })
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DeviceKeysJson {
+    user_id: String,
+    device_id: String,
+    algorithms: Vec<String>,
+    curve25519: String,
+    ed25519: String,
+}
+
+impl DeviceKeysJson {
+    fn into_core(self) -> Result<core::DeviceKeys> {
+        Ok(core::DeviceKeys {
+            user_id: self.user_id,
+            device_id: self.device_id,
+            algorithms: self.algorithms,
+            curve25519: core::Curve25519PublicKey::from_base64(&self.curve25519).map_err(|e| {
+                ZooCryptoError::InvalidPayload {
+                    reason: format!("curve25519 が正しくありません: {e}"),
+                }
+            })?,
+            ed25519: crate::ed25519_from_base64(&self.ed25519)?,
+        })
+    }
+}
+
+/// 暗号化したローカルストアに、検証済みの受信メッセージを保存する。
+#[uniffi::export]
+pub fn verification_message_to_json(message: VerificationMessage) -> Result<String> {
+    let m = message.to_core()?;
+    let device = &m.sender_device;
+    Ok(json!({
+        "sender_user_id": m.sender_user_id,
+        "sender_device": {
+            "user_id": device.user_id,
+            "device_id": device.device_id,
+            "algorithms": device.algorithms,
+            "curve25519": device.curve25519.to_base64(),
+            "ed25519": device.ed25519.to_base64(),
+        },
+        "type": m.event_type,
+        "content": m.content,
+    })
+    .to_string())
+}
+
+/// 認証済みのローカル暗号ストアから読み戻す。ネットワーク入力は先に Olm の検証を通す。
+#[uniffi::export]
+pub fn verification_message_from_json(stored: String) -> Result<VerificationMessage> {
+    let m = message(&stored)?;
+    Ok(VerificationMessage {
+        sender_user_id: m.sender_user_id,
+        sender_device: device(m.sender_device),
+        event_type: m.event_type,
+        content: m.content.to_string(),
+    })
 }
 
 /// 送るメッセージ（[`core::VerificationOutgoing`]）。`devices` のそれぞれに

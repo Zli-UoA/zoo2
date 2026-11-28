@@ -197,6 +197,17 @@ impl TrustStore {
         lock(&self.inner).own_master_key().map(str::to_owned)
     }
 
+    /// 記録がある相手（自分を除く。失効で署名し直す候補を集めるのに使う）。
+    pub fn recorded_users(&self) -> Vec<String> {
+        let inner = lock(&self.inner);
+        let own = inner.user_id().to_owned();
+        inner
+            .records()
+            .map(|(user, _)| user.clone())
+            .filter(|user| *user != own)
+            .collect()
+    }
+
     pub fn user_signing_key_history(&self) -> Vec<String> {
         lock(&self.inner).user_signing_key_history().to_vec()
     }

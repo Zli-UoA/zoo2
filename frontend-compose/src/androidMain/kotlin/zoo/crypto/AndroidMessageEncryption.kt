@@ -88,7 +88,14 @@ class AndroidMessageEncryption(
                     pages += page
                     check(pages.size <= 200) { "配布先のページ数が上限を超えました" }
                     val previous = after
-                    after = (page["next_after"] as? JsonPrimitive)?.contentOrNull
+                    after = when (val cursor = page["next_after"]) {
+                        null, JsonNull -> null
+                        is JsonPrimitive -> {
+                            check(cursor.isString) { "配布先の次ページの位置が不正です" }
+                            cursor.content
+                        }
+                        else -> error("配布先の次ページの位置が不正です")
+                    }
                     check(after == null || after != previous) { "配布先のページが進みませんでした" }
                 } while (after != null)
                 if (epoch != null && epoch.toULong() >= minimum && after == null) return pages
@@ -194,18 +201,18 @@ class AndroidMessageEncryption(
         mentions: EncryptedMentions, attachments: List<JsonObject>,
     ) = submit(channel, id, parent, body, 0uL, false, mentions = mentions, newAttachments = attachments)
 
-    override suspend fun edit(message: Row, body: String) {
+    override suspend fun edit(message: Row, body: String, mentions: EncryptedMentions?) {
         check(message["ciphertext"] != null && message["ciphertext"] != JsonNull) { "e2ee.legacy.editForbidden" }
         submit(message.text("channel_id"), message.text("id"), message.text("parent_id").ifEmpty { null },
             body, message.text("revision").toULong() + 1uL, true, message.text("epoch").toULong(),
             message["ciphertext"].let { if (it is JsonPrimitive && it.isString) it.content else it.toString() },
-            message.text("kind").ifEmpty { "message" })
+            message.text("kind").ifEmpty { "message" }, mentions = mentions)
     }
 
     private suspend fun submit(
         channel: String, id: String, parent: String?, body: String, revision: ULong, edit: Boolean,
         editEpoch: ULong? = null, editCiphertext: String? = null, editKind: String = "message",
-        mentions: EncryptedMentions = EncryptedMentions(), newAttachments: List<JsonObject> = emptyList(),
+        mentions: EncryptedMentions? = null, newAttachments: List<JsonObject> = emptyList(),
     ) {
         sending.withLock {
             val store = store()
@@ -231,10 +238,10 @@ class AndroidMessageEncryption(
                                 revision - 1uL, editCiphertext!!)).also { check(it.revision == RevisionStatus.Latest) { "e2ee.editConflict" } }
                         } else null
                         val kind = previous?.payload?.content?.kind ?: "message"
-                        // 編集では、元の版の添付（鍵を含む）と mentions をそのまま入れる（Web の `editEncryptedMessage`）。
+                        // 編集時は添付を引き継ぎ、本文とメンション情報を同じ版に入れる。
                         val attachments = previous?.payload?.attachments ?: newAttachments.map(::attachmentInfo)
-                        val payloadMentions = previous?.payload?.mentions
-                            ?: Mentions(mentions.userIds, mentions.channel, mentions.here)
+                        val payloadMentions = mentions?.let { Mentions(it.userIds, it.channel, it.here) }
+                            ?: previous?.payload?.mentions ?: Mentions(emptyList(), false, false)
                         val encrypted = crypto { store.encrypt(session, OutgoingMessage(id, parent, revision,
                             MessageContent(body, "mfm", kind), payloadMentions, attachments)) }
                         try {
@@ -247,8 +254,8 @@ class AndroidMessageEncryption(
                                 put("ciphertext", encrypted)
                                 parent?.let { put("parent_id", it) }
                                 if (!edit) put("mentions", buildJsonObject {
-                                    put("user_ids", JsonArray(mentions.userIds.map(::JsonPrimitive)))
-                                    put("channel", mentions.channel); put("here", mentions.here)
+                                    put("user_ids", JsonArray(payloadMentions.userIds.map(::JsonPrimitive)))
+                                    put("channel", payloadMentions.channel); put("here", payloadMentions.here)
                                 })
                                 if (!edit && attachments.isNotEmpty()) {
                                     put("attachment_ids", JsonArray(attachments.map { JsonPrimitive(it.attachmentId) }))

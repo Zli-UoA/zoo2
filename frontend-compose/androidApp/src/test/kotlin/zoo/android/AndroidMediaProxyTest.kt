@@ -100,7 +100,7 @@ class AndroidMediaProxyTest {
                 fixture.server.enqueue(MockResponse().setHeader("Cache-Control", "public, max-age=3600").setBody("cached"))
                 fixture.server.enqueue(MockResponse().setBody("unexpected download"))
                 fixture.cache().use { cache ->
-                    cache.download(route, 1024)
+                    cache.download(route, 1024, source = source)
                     val proxy = AndroidMediaProxy(context, base) { 86_400_001 }
                     assertEquals("cached", proxy.image(source, http, cache, push = true).decodeToString())
                 }
@@ -127,7 +127,7 @@ class AndroidMediaProxyTest {
                     prefs.edit().remove(base).apply()
                     val freshProxy = AndroidMediaProxy(context, base) { 86_400_001 }
                     val failure = assertFailsWith<IllegalArgumentException> {
-                        freshProxy.image(source, http, cache, push = true)
+                        freshProxy.image("https://remote.test/uncached.png", http, cache, push = true)
                     }
                     assertEquals("Image proxy lookup timed out", failure.message)
                 }

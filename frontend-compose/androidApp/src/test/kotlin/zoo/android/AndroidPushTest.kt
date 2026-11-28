@@ -22,6 +22,7 @@ import zoo.android.phone.DmCallPushAnswer
 import zoo.android.phone.IncomingCallActivity
 import zoo.android.phone.incomingCallerInitials
 import zoo.android.phone.phoneDictionaryLocale
+import zoo.obj
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33])
@@ -45,13 +46,13 @@ class AndroidPushTest {
         "url" to "/channels/$channel?message=$message", "tag" to "zoo-$id", "notificationType" to "dm",
     )
 
-    @Test fun discardsRetiredPushImageCacheAndKeepsCurrentBindingCache() {
+    @Test fun discardsLegacyPushImageCacheOnBindingReuse() {
         val store = PushBinding(context)
         val binding = store.bind("https://zoo.example", user)
         val dir = context.cacheDir.resolve("push-images/$binding").apply { mkdirs() }
         val image = dir.resolve("image").apply { writeText("cached") }
         assertEquals(binding, store.bind("https://zoo.example", user))
-        assertTrue(image.exists())
+        assertFalse(image.exists())
         assertTrue(store.clear(binding))
         assertFalse(dir.exists())
     }
@@ -66,6 +67,37 @@ class AndroidPushTest {
         assertEquals("新しいメッセージ", notifications.single().notification.extras.getString(Notification.EXTRA_TEXT))
         assertEquals(Notification.VISIBILITY_PRIVATE, notifications.single().notification.visibility)
         assertNotNull(notifications.single().notification.contentIntent)
+    }
+
+    /** `all` の通常投稿は `channel_message` で届くので、他の投稿と同じく通知を出す。 */
+    @Test fun channelMessagePushIsShown() {
+        val binding = PushBinding(context).bind("https://zoo.example", user)
+        showPushNotification(context, data(binding) + ("notificationType" to "channel_message"))
+        val notifications = manager.activeNotifications
+        assertEquals(1, notifications.size)
+        assertEquals(notificationTag(user, id), notifications.single().tag)
+        assertEquals("新しいメッセージ", notifications.single().notification.extras.getString(Notification.EXTRA_TEXT))
+    }
+
+    /** 古い辞書に `notifications.channel_message` が無くても、キー名を出さず既存の文言へ落とす。 */
+    @Test fun channelMessageBodyFallsBackWhenTheDictionaryKeyIsMissing() {
+        val row = obj(
+            "notification_type" to "channel_message",
+            "display_data" to obj("actor" to obj("display_name" to "投稿者"), "message" to obj()),
+        )
+        // translateDictionary と同じく、未定義のキーはキー名を返す。
+        assertEquals("投稿者 さんがメッセージを投稿しました", notificationBody(row) { key, actor ->
+            when (key) {
+                "notifications.channelMessage" -> "{{actor}} さんがメッセージを投稿しました".replace("{{actor}}", actor)
+                else -> key
+            }
+        })
+        // 新しいキーが辞書にあれば、そちらを優先する。
+        assertEquals("新しいキー", notificationBody(row) { key, _ ->
+            if (key == "notifications.channel_message") "新しいキー" else key
+        })
+        // 既存のキーも無いときは、キー名ではなく一般的な本文を出す。
+        assertEquals("新しいメッセージ", notificationBody(row) { key, _ -> key })
     }
 
     /** 暗号化チャンネル（#510）：端末で復号した本文を出し、同期した通知が先に出ていても、そこに反映して印を残す。 */

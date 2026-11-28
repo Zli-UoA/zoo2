@@ -33,6 +33,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import kotlinx.coroutines.flow.collectLatest
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.sign
@@ -87,21 +88,40 @@ internal fun TimelineImagePages(
             val item = selection.items[index]
             val image = remember(item) { item.copy(useThumbnail = false) }
             val hidden = image.sensitive && revealed[index] != true
+            val isDenied = LocalAttachmentImageDenied.current
+            val denied = image.attachmentId?.let(isDenied) == true
             val cached = LocalCachedTimelineImage.current
             val load = LocalTimelineImage.current
+            val loadWithPreview = LocalTimelineImageWithPreview.current
             val retry = LocalTimelineImageRetry.current
             var attempt by remember(image) { mutableIntStateOf(0) }
-            val initial = remember(image, hidden, attempt, cached) { if (hidden) null else cached(image) }
-            val result by key(image, hidden, attempt, cached, load, retry) {
-                produceState(ViewerImage(initial)) {
-                    if (!hidden && initial == null) {
-                        val loaded = if (attempt == 0) load(image) else retry(image)
-                        value = ViewerImage(loaded, failed = loaded == null)
+            val result = key(image, hidden, attempt, cached, load, loadWithPreview, retry, isDenied) {
+                val initial = remember { if (hidden || denied) null else cached(image) }
+                var state by remember { mutableStateOf(ViewerImage(initial)) }
+                LaunchedEffect(Unit) {
+                    if (hidden) return@LaunchedEffect
+                    var first = true
+                    snapshotFlow { image.attachmentId?.let(isDenied) == true }.collectLatest { blocked ->
+                        val opening = first
+                        first = false
+                        if (blocked && !opening) {
+                            state = ViewerImage(null, failed = true)
+                            return@collectLatest
+                        }
+                        if (opening && initial != null && image.attachmentId == null) return@collectLatest
+
+                        val loaded = when {
+                            opening && attempt > 0 -> retry(image)
+                            opening && loadWithPreview != null -> loadWithPreview(image) { state = ViewerImage(it) }
+                            else -> load(image)
+                        }
+                        state = ViewerImage(loaded, failed = loaded == null)
                     }
                 }
+                state
             }
-            val bitmap = result.bitmap
-            val blur = rememberMediaBlurHash(image.blurhash.takeIf { bitmap == null })
+            val bitmap = result.bitmap.takeUnless { denied }
+            val blur = rememberMediaBlurHash(image.blurhash.takeIf { bitmap == null && !denied })
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 if (bitmap != null) {
                     Image(bitmap, image.name, Modifier.fillMaxSize().testTag("viewer-image-$index"), contentScale = ContentScale.Fit)
@@ -115,7 +135,7 @@ internal fun TimelineImagePages(
                     }
                 }
                 if (!hidden && bitmap == null) {
-                    if (result.failed) {
+                    if (denied || result.failed) {
                         Column(Modifier.background(Color.Black.copy(alpha = 0.75f)).padding(12.dp),
                             horizontalAlignment = Alignment.CenterHorizontally) {
                             Text(androidLabel("attachments.imagePreviewFailed", "画像を読み込めませんでした"), color = Color.White)
