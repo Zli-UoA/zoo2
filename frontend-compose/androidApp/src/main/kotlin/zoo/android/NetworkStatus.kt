@@ -15,14 +15,28 @@ internal fun hasInternet(capabilities: NetworkCapabilities?): Boolean =
     capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
 
 /** Android can keep the default network while changing whether this app may use it. */
-internal class DefaultNetworkCallback(private val refresh: () -> Unit) : ConnectivityManager.NetworkCallback() {
-    override fun onAvailable(network: Network) = refresh()
+internal class DefaultNetworkCallback(private val refresh: (unblockedNetwork: Network?) -> Unit) : ConnectivityManager.NetworkCallback() {
+    private var blockedNetwork: Network? = null
 
-    override fun onLost(network: Network) = refresh()
+    override fun onAvailable(network: Network) {
+        // A newly reported default has its own initial blocked-status notification.
+        blockedNetwork = null
+        refresh(null)
+    }
 
-    override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) = refresh()
+    override fun onLost(network: Network) {
+        if (blockedNetwork == network) blockedNetwork = null
+        refresh(null)
+    }
 
-    override fun onBlockedStatusChanged(network: Network, blocked: Boolean) = refresh()
+    override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) = refresh(null)
+
+    override fun onBlockedStatusChanged(network: Network, blocked: Boolean) {
+        val unblocked = !blocked && blockedNetwork == network
+        if (blocked) blockedNetwork = network
+        if (unblocked) blockedNetwork = null
+        refresh(network.takeIf { unblocked })
+    }
 }
 
 internal fun ConnectivityManager.activeInternetNetwork(): Network? =

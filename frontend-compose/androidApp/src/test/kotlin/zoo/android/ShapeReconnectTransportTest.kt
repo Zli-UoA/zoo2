@@ -5,6 +5,7 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpTimeout
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
@@ -39,6 +40,7 @@ class ShapeReconnectTransportTest {
         val snapshots = AtomicInteger()
         val oldLive = CompletableDeferred<Unit>()
         val newLive = CompletableDeferred<Unit>()
+        val requests = CopyOnWriteArrayList<String>()
         fun response(handle: String) = MockResponse()
             .setHeader("content-type", "application/json")
             .setHeader("electric-handle", handle)
@@ -50,6 +52,7 @@ class ShapeReconnectTransportTest {
             server.dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
                     val url = checkNotNull(request.requestUrl)
+                    requests += url.encodedQuery.orEmpty()
                     if (url.encodedPath != "/api/shapes/messages") return MockResponse().setResponseCode(404)
                     val handle = url.queryParameter("handle")
                     if (url.queryParameter("subset__where") != null) {
@@ -126,7 +129,7 @@ class ShapeReconnectTransportTest {
                     assertTrue(table.error.value == null)
                 }
             } catch (timeout: TimeoutCancellationException) {
-                fail("Timed out waiting for $phase (snapshots=${snapshots.get()}, error=${table.error.value})", timeout)
+                fail("Timed out waiting for $phase (snapshots=${snapshots.get()}, error=${table.error.value}, requests=$requests)", timeout)
             } finally {
                 unbind()
                 table.close()
