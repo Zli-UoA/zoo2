@@ -970,6 +970,177 @@ class RepositoryTest {
     }
 
     @Test
+    fun invalidationBeforeTheFirstPageDoesNotFetchAnExtraPage() = runTest {
+        var subsetCalls = 0
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    val parameters = request.url.parameters
+                    when {
+                        parameters["handle"] == null ->
+                            respond("[]", HttpStatusCode.Conflict, headersOf("electric-handle", "new"))
+                        parameters["subset__where"] != null -> {
+                            subsetCalls++
+                            respond(snapshot((1..50).reversed().map(::message)), headers = protocolHeaders("new"))
+                        }
+                        parameters["live"] == "true" -> awaitCancellation()
+                        else -> respond("", HttpStatusCode.NoContent, protocolHeaders("new"))
+                    }
+                }
+            }
+        }
+        val table = SyncedTable("messages", config, FakePlatform(), http, backgroundScope,
+            mapOf("channel_id" to "invalidated-before-first-page"), options, onDemand = true)
+        try {
+            runCurrent()
+            assertEquals(1, subsetCalls)
+            assertEquals(50, table.rows.value.size)
+            assertTrue(table.pageStates.value.getValue(PageScope.Main).hasOlder)
+        } finally {
+            table.close()
+            http.close()
+        }
+    }
+
+    @Test
+    fun foregroundRecoveryPublishesSharedRowsWhenElectricSuppressesACachedControlMessage() = runTest {
+        var invalidate = false
+        val liveUpdate = CompletableDeferred<Unit>()
+        var sentUpdate = false
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    if (request.url.encodedPath != "/api/shapes/channels") awaitCancellation()
+                    val parameters = request.url.parameters
+                    val handle = parameters["handle"]
+                    when {
+                        parameters["live"] == "true" -> {
+                            if (handle != "new" || sentUpdate) awaitCancellation()
+                            liveUpdate.await()
+                            sentUpdate = true
+                            respond(
+                                """[{"key":"live-channel","value":{"id":"live-channel"},"headers":{"operation":"insert"}},{"headers":{"control":"up-to-date"}}]""",
+                                headers = protocolHeaders("new", cursor = "live-cursor"),
+                            )
+                        }
+                        invalidate && handle == "old" -> {
+                            invalidate = false
+                            respond("[]", HttpStatusCode.Conflict, headersOf("electric-handle", "new"))
+                        }
+                        else -> {
+                            val id = if (handle == "new") "new-channel" else "old-channel"
+                            respond(
+                                """[{"key":"$id","value":{"id":"$id"},"headers":{"operation":"insert"}},{"headers":{"control":"up-to-date"}}]""",
+                                headers = protocolHeaders(handle ?: "old", cursor = "same-cursor"),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        val repo = Repository(config.copy(apiBaseUrl = "https://resume-shared.zoo.test"), FakePlatform(), http, backgroundScope)
+        val foreground = Environment(online = true, visible = true)
+        val app = Session(repo, backgroundScope, foreground)
+        try {
+            runCurrent()
+            assertEquals("old-channel", repo.channels.rows.value.single().text("id"))
+
+            app.update(foreground.copy(visible = false))
+            invalidate = true
+            app.update(foreground)
+            runCurrent()
+
+            assertEquals(listOf("new-channel"), repo.channels.rows.value.map { it.text("id") })
+            assertFalse(repo.channels.loading.value)
+
+            liveUpdate.complete(Unit)
+            runCurrent()
+            assertEquals(setOf("new-channel", "live-channel"), repo.channels.rows.value.map { it.text("id") }.toSet())
+        } finally {
+            app.close()
+        }
+    }
+
+    @Test
+    fun foregroundRecoveryRefetchesWhenElectricSuppressesAReplayedControlMessage() =
+        assertForegroundRecoveryAfterInvalidation("resume-replayed-cursor", HttpStatusCode.OK)
+
+    @Test
+    fun foregroundRecoveryRefetchesWhenElectricCatchesUpWithNoContent() =
+        assertForegroundRecoveryAfterInvalidation("resume-no-content", HttpStatusCode.NoContent)
+
+    private fun assertForegroundRecoveryAfterInvalidation(channelId: String, catchUpStatus: HttpStatusCode) = runTest {
+        var invalidate = false
+        var subsetCalls = 0
+        var activeReplacementLiveCalls = 0
+        var maximumReplacementLiveCalls = 0
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    if (request.url.encodedPath != "/api/shapes/messages") awaitCancellation()
+                    val parameters = request.url.parameters
+                    assertEquals(channelId, parameters["channel_id"])
+                    val handle = parameters["handle"]
+                    val live = parameters["live"] == "true"
+                    val ready = """[{"headers":{"control":"up-to-date"}}]"""
+                    when {
+                        parameters["subset__where"] != null -> {
+                            subsetCalls++
+                            assertEquals("50", parameters["subset__limit"])
+                            assertEquals(if (subsetCalls == 1) "old" else "new", handle)
+                            val index = if (subsetCalls == 1) 1 else 2
+                            respond(snapshot(listOf(message(index))), headers = protocolHeaders(handle!!, "${index}_0"))
+                        }
+                        live -> {
+                            if (handle != "new") awaitCancellation()
+                            activeReplacementLiveCalls++
+                            maximumReplacementLiveCalls = maxOf(maximumReplacementLiveCalls, activeReplacementLiveCalls)
+                            try {
+                                awaitCancellation()
+                            } finally {
+                                activeReplacementLiveCalls--
+                            }
+                        }
+                        invalidate && handle == "old" -> {
+                            invalidate = false
+                            respond("[]", HttpStatusCode.Conflict, headersOf("electric-handle", "new"))
+                        }
+                        handle == "new" ->
+                            respond(if (catchUpStatus == HttpStatusCode.NoContent) "" else ready,
+                                catchUpStatus, protocolHeaders("new", "2_0", "same-cursor"))
+                        else -> respond(ready, headers = protocolHeaders("old", cursor = "same-cursor"))
+                    }
+                }
+            }
+        }
+        val repository = Repository(config, FakePlatform(), http, backgroundScope)
+        val foreground = Environment(online = true, visible = true)
+        val app = Session(repository, backgroundScope, foreground)
+        val table = repository.messages(channelId)
+        try {
+            runCurrent()
+            assertEquals(1, subsetCalls)
+            assertEquals(listOf("m001"), table.rows.value.map { it.text("id") })
+
+            app.update(foreground.copy(visible = false))
+            invalidate = true
+            app.update(foreground)
+            runCurrent()
+
+            assertEquals(2, subsetCalls, "A caught-up replacement Shape must reload the first page")
+            assertEquals(listOf("m002"), table.rows.value.map { it.text("id") })
+            assertTrue(table.pageStates.value.getValue(PageScope.Main).loaded)
+            assertEquals(1, activeReplacementLiveCalls)
+            assertEquals(1, maximumReplacementLiveCalls)
+        } finally {
+            app.close()
+        }
+    }
+
+    @Test
     fun onDemandConsecutiveMustRefetchCancelsTheOldRefetchAndPagingResumes() = runTest {
         val platform = FakePlatform()
         var subsetCalls = 0
