@@ -15,5 +15,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 jiff = { version = "0.2", default-features = false, features = ["std", "serde"] }
 emojis = "0.6"
+# 本文のチャンネル・メッセージのリンクの解析（`links`）。
+url = "2"
+percent-encoding = "2"
 # メッセージ部品（Discord Components V2 形式）のモデル。backend と同じ定義を使う。
 zoo-components = { path = "../crates/zoo-components" }

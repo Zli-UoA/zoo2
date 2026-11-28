@@ -416,6 +416,8 @@ mod tests {
             epoch,
             revision,
             message_kind: None,
+            app_blocks: None,
+            forwarded_message_ids: None,
         }
     }
 

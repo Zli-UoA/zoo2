@@ -1,3 +1,4 @@
+mod linked;
 pub mod shape;
 
 use std::time::Duration;
@@ -5,6 +6,7 @@ use std::time::Duration;
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::http::{Credentials, HttpError};
+pub use linked::{LinkedEvent, has_ciphertext, spawn_linked};
 pub use shape::ShapeStream;
 pub use zoo2_client_types::rows;
 pub use zoo2_client_types::shape::{Batch, Change, Replica, Row, ShapeId};

@@ -11,8 +11,12 @@ use ratatui::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
+use zoo2_client_core::links::{LinkTarget, replaces_content};
 
-use super::e2ee_chat::{Decryptions, Shown};
+use super::{
+    e2ee_chat::{Decryptions, Shown},
+    links::{BodyLinks, LinkView},
+};
 use crate::{
     e2ee::store::SenderTrust,
     electric::rows::Message,
@@ -23,14 +27,18 @@ use crate::{
 const INDENT: usize = 2;
 const SELECTED: Style = Style::new().bg(Color::Rgb(40, 44, 52));
 const MARKER: Style = Style::new().fg(Color::Cyan);
-const DIM: Style = Style::new().fg(Color::DarkGray);
+pub(super) const DIM: Style = Style::new().fg(Color::DarkGray);
 const MINE: Style = Style::new().fg(Color::Cyan).bg(Color::Rgb(24, 48, 56));
 const WARN: Style = Style::new().fg(Color::Yellow);
+/// リンクの埋め込みの左に付ける線。
+const EMBED_BAR: &str = "┃ ";
 
 pub struct Timeline {
     pub lines: Vec<Line<'static>>,
     /// メッセージ id と、それが占める行の範囲。
     pub ranges: Vec<(String, Range<usize>)>,
+    /// アプリ内リンクのあるメッセージの id と、その行き先。
+    pub links: Vec<(String, Vec<LinkTarget>)>,
 }
 
 impl Timeline {
@@ -59,6 +67,8 @@ pub struct Context<'a> {
     pub reply_counts: Option<&'a HashMap<String, usize>>,
     /// メッセージ ID ごとのリアクション。`Store::reaction_groups_by_message` で描画前に1回だけ作る。
     pub reactions: &'a HashMap<String, Vec<ReactionGroup>>,
+    /// 本文のアプリ内リンクの表示（docs/mfm.md の「チャンネル・メッセージのリンクの表示」）。
+    pub links: Option<&'a dyn Fn(&str) -> BodyLinks>,
 }
 
 pub fn build(messages: &[&Message], ctx: &Context, width: u16) -> Timeline {
@@ -66,6 +76,7 @@ pub fn build(messages: &[&Message], ctx: &Context, width: u16) -> Timeline {
     let mut timeline = Timeline {
         lines: Vec::new(),
         ranges: Vec::new(),
+        links: Vec::new(),
     };
     let mut last_date = None;
     // 暗号化チャンネルで、読み込んだうちの暗号化したメッセージを見たか（#367）。
@@ -102,10 +113,20 @@ pub fn build(messages: &[&Message], ctx: &Context, width: u16) -> Timeline {
 
         let start = timeline.lines.len();
         let selected = ctx.selected == Some(message.id.as_str());
-        for line in message_lines(message, created.as_ref(), ctx, unencrypted_after_encrypted) {
+        let (lines, targets) = message_lines(
+            message,
+            created.as_ref(),
+            ctx,
+            unencrypted_after_encrypted,
+            width - INDENT,
+        );
+        for line in lines {
             for wrapped in wrap(line, width - INDENT) {
                 timeline.lines.push(gutter(wrapped, selected));
             }
+        }
+        if !targets.is_empty() {
+            timeline.links.push((message.id.clone(), targets));
         }
         timeline
             .ranges
@@ -119,7 +140,8 @@ fn message_lines(
     created: Option<&Zoned>,
     ctx: &Context,
     unencrypted_after_encrypted: bool,
-) -> Vec<Line<'static>> {
+    width: usize,
+) -> (Vec<Line<'static>>, Vec<LinkTarget>) {
     let time = created
         .map(|zoned| zoned.strftime("%H:%M").to_string())
         .unwrap_or_default();
@@ -157,6 +179,7 @@ fn message_lines(
     }
 
     let mut lines = vec![Line::from(header)];
+    let mut links = BodyLinks::default();
     match shown {
         Shown::Plain | Shown::BeforeEncryption => {
             // メッセージ部品は文字にして出す。本文を隠すフラグがあれば、本文は部品の代わりの文字なので
@@ -174,10 +197,15 @@ fn message_lines(
                 }
                 None => message.content.clone(),
             };
-            lines.extend(mfm::render_with_accounts(
+            // 本文の代わりにカードや部品を描く投稿では、`content` のリンクを扱わない（Web と同じ）。
+            if let Some(resolve) = ctx.links.filter(|_| !replaces_content(message)) {
+                links = resolve(&message.content);
+            }
+            lines.extend(mfm::render_linked(
                 &text,
                 Some(ctx.me_name),
                 &ctx.store.account_profiles,
+                &links.inline,
             ));
             // ボタン・select・入力欄は文字にならない（ボタンだけの部品では何も出ない）ので、Web 版で操作できることを示す
             if doc
@@ -195,10 +223,15 @@ fn message_lines(
             let mentions_me = d.mentions.user_ids.iter().any(|id| id == ctx.me_id)
                 || d.mentions.channel
                 || d.mentions.here;
-            lines.extend(mfm::render_with_accounts(
+            // アプリ内リンクは自分のデータから埋め込むので、暗号化チャンネルの投稿でも出す。
+            if let Some(resolve) = ctx.links {
+                links = resolve(&d.body);
+            }
+            lines.extend(mfm::render_linked(
                 &d.body,
                 mentions_me.then_some(ctx.me_name),
                 &ctx.store.account_profiles,
+                &links.inline,
             ));
             for attachment in &d.attachments {
                 lines.push(Line::styled(
@@ -216,6 +249,14 @@ fn message_lines(
         Shown::Undecryptable(reason) => {
             lines.push(Line::styled(format!("🔒 {}", reason.describe()), DIM));
         }
+    }
+
+    for (index, embed) in links.embeds.iter().enumerate() {
+        // 続く埋め込みが 1 つに見えないよう、間を空ける。
+        if index > 0 {
+            lines.push(Line::from(""));
+        }
+        lines.extend(embed_lines(embed, width));
     }
 
     let reactions = ctx
@@ -242,7 +283,58 @@ fn message_lines(
             Style::new().fg(Color::Cyan),
         )));
     }
+    (lines, links.targets)
+}
+
+/// リンクの埋め込みを、左の線を付けて幅に収めた行にする。本文は決まった行数で切って `…` を付ける。
+fn embed_lines(view: &LinkView, width: usize) -> Vec<Line<'static>> {
+    let inner = width
+        .saturating_sub(UnicodeWidthStr::width(EMBED_BAR))
+        .max(2);
+    let mut lines: Vec<Line<'static>> = view
+        .header
+        .iter()
+        .flat_map(|line| wrap(line.clone(), inner))
+        .collect();
+    if let Some(body) = &view.body {
+        let mut wrapped = wrap(body.clone(), inner);
+        if wrapped.len() > view.body_lines {
+            wrapped.truncate(view.body_lines);
+            if let Some(last) = wrapped.pop() {
+                wrapped.push(with_ellipsis(last, inner));
+            }
+        }
+        lines.extend(wrapped);
+    }
     lines
+        .into_iter()
+        .map(|line| {
+            let mut spans = vec![Span::styled(EMBED_BAR, MARKER)];
+            spans.extend(line.spans);
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// 末尾に `…` を付けて、合わせて `width` に収まる書記素だけを残す。
+fn with_ellipsis(line: Line<'static>, width: usize) -> Line<'static> {
+    const ELLIPSIS: &str = "…";
+    let mut room = width.saturating_sub(ELLIPSIS.width());
+    let mut spans = Vec::new();
+    'spans: for span in line.spans {
+        let mut kept = String::new();
+        for grapheme in span.content.graphemes(true) {
+            if grapheme.width() > room {
+                spans.push(Span::styled(kept, span.style));
+                break 'spans;
+            }
+            room -= grapheme.width();
+            kept.push_str(grapheme);
+        }
+        spans.push(Span::styled(kept, span.style));
+    }
+    spans.push(Span::styled(ELLIPSIS, DIM));
+    Line::from(spans).style(line.style)
 }
 
 /// Emoji Kitchen の合成絵文字 (`kitchen:<a>_<b>`) は画像なので、元の2つを並べて示す。
@@ -358,6 +450,21 @@ mod tests {
     }
 
     #[test]
+    fn truncated_embeds_stay_within_the_width() {
+        let view = LinkView {
+            body: Some(Line::from("あいうえおかきくけこ")),
+            body_lines: 3,
+            ..Default::default()
+        };
+        for width in 4..10 {
+            let lines = embed_lines(&view, width);
+            assert_eq!(lines.len(), 3, "{width}");
+            assert!(lines.iter().all(|line| line.width() <= width), "{width}");
+            assert!(lines[2].to_string().ends_with('…'), "{width}");
+        }
+    }
+
+    #[test]
     fn wraps_by_display_width() {
         let line = Line::from(vec![Span::raw("ab"), Span::styled("あいう", DIM)]);
         let wrapped: Vec<String> = wrap(line, 4).iter().map(|l| l.to_string()).collect();
@@ -412,6 +519,7 @@ mod tests {
             selected: Some("m2"),
             reply_counts: Some(&counts),
             reactions: &HashMap::new(),
+            links: None,
         };
         let timeline = build(&messages, &ctx, 40);
 
@@ -455,6 +563,7 @@ mod tests {
             selected: None,
             reply_counts: None,
             reactions: &HashMap::new(),
+            links: None,
         };
         let timeline = build(&messages, &ctx, 60);
         // ボタンだけの部品は文字にならないので、Web 版で操作できることを示す
@@ -507,6 +616,7 @@ mod tests {
             selected: None,
             reply_counts: None,
             reactions: &HashMap::new(),
+            links: None,
         };
         let text: Vec<String> = build(&messages, &ctx, 80)
             .lines
@@ -565,6 +675,7 @@ mod tests {
                 selected: None,
                 reply_counts: None,
                 reactions: &HashMap::new(),
+                links: None,
             };
             build(&messages, &ctx, 80)
                 .lines

@@ -42,6 +42,18 @@ pub async fn discover(http: &reqwest::Client, issuer: &str) -> Result<Discovery>
             discovery.issuer
         );
     }
+    // 認可コードやトークンを送る先も、平文の HTTP は使わない。
+    let endpoints = [
+        Some(&discovery.token_endpoint),
+        discovery.authorization_endpoint.as_ref(),
+        discovery.device_authorization_endpoint.as_ref(),
+        discovery.revocation_endpoint.as_ref(),
+    ];
+    if let Some(endpoint) = endpoints.into_iter().flatten().find(|endpoint| {
+        !url::Url::parse(endpoint).is_ok_and(|url| crate::config::is_secure_transport(&url))
+    }) {
+        bail!("OIDC の接続先が HTTPS ではありません: {endpoint}");
+    }
     Ok(discovery)
 }
 
@@ -113,6 +125,26 @@ mod tests {
     };
 
     use super::*;
+
+    #[tokio::test]
+    async fn rejects_endpoints_over_plain_http() {
+        let server = MockServer::start().await;
+        let issuer = format!("{}/api/auth", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/api/auth/.well-known/openid-configuration"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "issuer": issuer,
+                "token_endpoint": format!("{}/token", server.uri()),
+                "revocation_endpoint": "http://account.example/revoke"
+            })))
+            .mount(&server)
+            .await;
+
+        let err = discover(&reqwest::Client::new(), &issuer)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("HTTPS ではありません"), "{err}");
+    }
 
     #[tokio::test]
     async fn rejects_mismatched_issuer() {

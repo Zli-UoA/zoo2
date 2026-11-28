@@ -4,6 +4,7 @@ mod devices_view;
 mod e2ee_chat;
 pub mod encryption;
 mod global_search;
+mod links;
 mod timeline;
 mod view;
 
@@ -72,6 +73,8 @@ pub async fn run(
         if let Err(err) = terminal.draw(|frame| view::draw(frame, &mut app)) {
             break Err(err.into());
         }
+        // 描画で画面の近くに出たリンク先を取得する。
+        app.sync_links();
         tokio::select! {
             event = events.next() => match event {
                 Some(Ok(event)) => app.on_terminal_event(event),

@@ -17,13 +17,34 @@ pub fn render_with_accounts(
     me: Option<&str>,
     profiles: &zoo2_client_core::store::AccountProfiles,
 ) -> Vec<Line<'static>> {
+    render_linked(content, me, profiles, &Default::default())
+}
+
+/// [`render_with_accounts`] のうえで、URL の文字そのものを書いたリンクを `short` の短い表示にする
+/// （キーは URL。`[文字](URL)` の文字は書き換えない）。
+pub fn render_linked(
+    content: &str,
+    me: Option<&str>,
+    profiles: &zoo2_client_core::store::AccountProfiles,
+    short: &std::collections::HashMap<String, String>,
+) -> Vec<Line<'static>> {
     core_mfm::parse_with_accounts(content, me, profiles)
         .into_iter()
         .map(|line| {
             Line::from(
                 line.spans
                     .into_iter()
-                    .map(|span| Span::styled(span.content, to_ratatui_style(span.style)))
+                    .map(|span| {
+                        let label = span
+                            .href
+                            .as_ref()
+                            .filter(|_| span.bare)
+                            .and_then(|href| short.get(href));
+                        Span::styled(
+                            label.cloned().unwrap_or(span.content),
+                            to_ratatui_style(span.style),
+                        )
+                    })
                     .collect::<Vec<_>>(),
             )
         })

@@ -110,6 +110,12 @@ pub struct Message {
     /// `message` か `emote`（`messages.message_kind`）。古いスキーマでは `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_kind: Option<String>,
+    /// App のブロック（JSON）。本文の代わりにカードを描く投稿かの判定に使う。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_blocks: Option<String>,
+    /// 転送（引用）したメッセージの ID の配列。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forwarded_message_ids: Option<Value>,
 }
 
 impl Message {
@@ -331,6 +337,8 @@ impl FromRow for Message {
             epoch: opt_unsigned(row, "epoch")?,
             revision: opt_unsigned(row, "revision")?.unwrap_or(0),
             message_kind: opt_text(row, "message_kind"),
+            app_blocks: opt_text(row, "app_blocks"),
+            forwarded_message_ids: opt_json(row, "forwarded_message_ids")?,
         })
     }
 }

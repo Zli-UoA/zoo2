@@ -70,7 +70,7 @@ async fn default_channels() -> Result<()> {
         bail!("使い方: zoo2-tui default-channels [--set [ID ...]]");
     }
     let config = Config::load()?;
-    let http = reqwest::Client::new();
+    let http = zoo2_client_core::http::client();
     let credentials = credentials(&config, &http).await?;
     let api = ApiClient::new(http, &config.api_base_url, credentials);
     let settings = if args.is_empty() {
@@ -103,7 +103,7 @@ async fn credentials(config: &Config, http: &reqwest::Client) -> Result<Credenti
 
 async fn run() -> Result<()> {
     let config = Config::load()?;
-    let http = reqwest::Client::new();
+    let http = zoo2_client_core::http::client();
     let credentials = match &config.auth {
         AuthConfig::Dev { user_id } => Credentials::Dev(user_id.clone()),
         AuthConfig::Oidc(oidc) => {
@@ -176,7 +176,7 @@ async fn run() -> Result<()> {
 async fn login() -> Result<()> {
     let config = Config::load()?;
     let oidc = oidc_config(&config)?;
-    let http = reqwest::Client::new();
+    let http = zoo2_client_core::http::client();
     let discovery = auth::discover(&http, &oidc.issuer).await?;
     let authorization = device::start(&http, &discovery, oidc).await?;
 
@@ -220,7 +220,7 @@ async fn login() -> Result<()> {
 
 async fn logout() -> Result<()> {
     let config = Config::load()?;
-    let http = reqwest::Client::new();
+    let http = zoo2_client_core::http::client();
     // dev モードでも、run で作った暗号ストアと端末は消す。トークンの失効はない。
     if let AuthConfig::Dev { user_id } = &config.auth {
         let credentials = Credentials::Dev(user_id.clone());

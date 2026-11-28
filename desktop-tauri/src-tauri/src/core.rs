@@ -206,7 +206,7 @@ impl Core {
             app,
             ui,
             config: config.map_err(|err| format!("{err:#}")),
-            http: reqwest::Client::new(),
+            http: zoo2_client_core::http::client(),
             no_redirect_http: build_no_redirect_http_client(),
             browser_launch: Arc::new(BrowserLaunchGate::default()),
             notifications: std::sync::Mutex::new(load_notification_settings()),

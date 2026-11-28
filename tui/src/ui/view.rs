@@ -1,6 +1,8 @@
 //! 画面の描画。左にチャンネル一覧、中央にタイムライン、右にスレッド (開いたときだけ)、
 //! 下に入力欄と状態表示を置く。
 
+use std::{collections::HashMap, time::Instant};
+
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -14,12 +16,14 @@ use super::{
     e2ee_chat::{self, ChannelEncryption, CreateForm, CreateKind},
     encryption::Screen,
     global_search,
-    timeline::{self, Context},
+    links::DrawCache,
+    timeline::{self, Context, Timeline},
 };
 use crate::api::SearchKind;
 use crate::e2ee::reauth;
 use crate::e2ee::setup::{E2eeStatus, LockReason};
 use crate::electric::ShapeId;
+use zoo2_client_core::links::LinkTarget;
 use zoo2_client_core::text::sanitize_display;
 
 const ACCENT: Color = Color::Cyan;
@@ -28,6 +32,9 @@ const DIM: Style = Style::new().fg(Color::DarkGray);
 const HIGHLIGHT: Style = Style::new().fg(Color::Black).bg(Color::Yellow);
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    // 画面の近くに出ているリンク先は、描くたびに集め直す。
+    app.links.visible.clear();
+    app.parsed_links.next_frame();
     let composer_height = (app.composer.lines().len() as u16).clamp(1, 6) + 2;
     // 長い表示（増えた配布先、配れない相手）は、タイムラインと同じ折り返し（表示幅で切る）で自分で
     // 折り返し、その行数を高さにする（画面の半分まで）。`Paragraph` の語ごとの折り返しでは、行数が
@@ -87,6 +94,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             draw_recipients(frame, app, scroll);
         }
         Mode::GlobalSearch => draw_global_search(frame, app),
+        Mode::Links { targets, index } => {
+            // 一覧に出した行き先は取得する（本文ごとの取得の上限を超えたリンクも分かるように）。
+            let shown = draw_links(frame, app, targets, *index);
+            app.links.visible.extend(shown);
+        }
         _ => {}
     }
     // 他のユーザーの検証は、どの画面にいても前面に出す。
@@ -734,6 +746,9 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         .store
         .reaction_groups_by_message(&channel_id, &app.me.id);
     let encrypted = app.channel_encryption(&channel_id).treat_as_encrypted();
+    let now = Instant::now();
+    let cache = DrawCache::default();
+    let body_links = |body: &str| app.body_links(body, now, &cache);
     let ctx = Context {
         store: &app.store,
         me_name: &app.me.user_name,
@@ -745,6 +760,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         selected: app.selected.as_deref(),
         reply_counts: Some(&counts),
         reactions: &reactions,
+        links: Some(&body_links),
     };
     let built = timeline::build(&messages, &ctx, inner.width);
     let height = usize::from(inner.height);
@@ -753,12 +769,15 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         // 未選択なら最新を表示し続ける。
         None => (built.lines.len().saturating_sub(height), 0),
     };
+    let near = near_links(app, &built, scroll, height);
+    app.links.visible.extend(near);
     app.scroll = scroll;
     app.inner_scroll = inner_scroll;
-    // 全文検索の画面、端末と検証の画面、検証のダイアログが覆っている間は、背後のタイムラインを読んだことに
-    // しない（既読を進めない）。
+    // 全文検索の画面、端末と検証の画面、検証のダイアログ、リンクを選ぶ画面が覆っている間は、背後の
+    // タイムラインを読んだことにしない（既読を進めない）。
     if app.mode != Mode::GlobalSearch
         && app.mode != Mode::Devices
+        && !matches!(app.mode, Mode::Links { .. })
         && !app.devices.has_open_verification()
     {
         app.newest_shown = built
@@ -769,6 +788,74 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     let visible: Vec<Line> = built.lines.into_iter().skip(scroll).take(height).collect();
     frame.render_widget(Paragraph::new(visible), inner);
+}
+
+/// 表示範囲と、その前後の半画面にあるメッセージの、取得が要るリンク先。
+fn near_links(app: &App, built: &Timeline, scroll: usize, height: usize) -> Vec<super::links::Key> {
+    let near = scroll.saturating_sub(height / 2)..scroll + height + height / 2;
+    let ranges: HashMap<&str, &std::ops::Range<usize>> = built
+        .ranges
+        .iter()
+        .map(|(id, range)| (id.as_str(), range))
+        .collect();
+    built
+        .links
+        .iter()
+        .filter(|(id, _)| {
+            ranges
+                .get(id.as_str())
+                .is_some_and(|range| range.start < near.end && range.end > near.start)
+        })
+        .flat_map(|(_, targets)| targets)
+        .filter_map(|target| app.link_key(target))
+        .collect()
+}
+
+/// 選択中のメッセージにリンクがいくつもあるとき、開くものを選ぶ。返すのは、出した候補の取得が要る
+/// リンク先。
+fn draw_links(
+    frame: &mut Frame,
+    app: &App,
+    targets: &[LinkTarget],
+    index: usize,
+) -> Vec<super::links::Key> {
+    let now = Instant::now();
+    let cache = DrawCache::default();
+    // 画面に収まらないときは、選んでいる候補が見える範囲だけを出す（枠と操作の案内の分を空ける）。
+    // 候補は 1 行にする。
+    let room = usize::from(frame.area().height).saturating_sub(4).max(1);
+    let width = usize::from(frame.area().width.min(POPUP_WIDTH).saturating_sub(2));
+    let first = index.saturating_sub(room - 1);
+    let mut lines: Vec<Line<'static>> = targets
+        .iter()
+        .enumerate()
+        .skip(first)
+        .take(room)
+        .map(|(i, target)| {
+            let view = app.link_view(target, now, &cache);
+            let label = view
+                .inline
+                .or_else(|| view.header.first().map(|line| line.to_string()))
+                .unwrap_or_default();
+            let marker = if i == index { "▶ " } else { "  " };
+            let style = if i == index {
+                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)
+            } else {
+                Style::new()
+            };
+            let line = Line::styled(format!("{marker}{}. {label}", i + 1), style);
+            timeline::wrap(line, width).swap_remove(0)
+        })
+        .collect();
+    lines.push(Line::from(""));
+    lines.push(Line::styled("j k: 選ぶ / Enter: 開く / Esc: 閉じる", DIM));
+    draw_popup(frame, "リンクを開く", lines);
+    targets
+        .iter()
+        .skip(first)
+        .take(room)
+        .filter_map(|target| app.link_key(target))
+        .collect()
 }
 
 fn draw_thread(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -838,6 +925,9 @@ fn draw_thread(frame: &mut Frame, app: &mut App, area: Rect) {
         .flatten();
     let mut reply_counts = app.store.reply_counts(&channel_id);
     reply_counts.remove(&thread.root_id);
+    let now = Instant::now();
+    let cache = DrawCache::default();
+    let body_links = |body: &str| app.body_links(body, now, &cache);
     let ctx = Context {
         store: &app.store,
         me_name: &app.me.user_name,
@@ -848,6 +938,7 @@ fn draw_thread(frame: &mut Frame, app: &mut App, area: Rect) {
         selected: thread.selected.as_deref(),
         reply_counts: Some(&reply_counts),
         reactions: &reactions,
+        links: Some(&body_links),
     };
     let built = timeline::build(&messages, &ctx, inner.width);
     let height = usize::from(inner.height);
@@ -856,6 +947,8 @@ fn draw_thread(frame: &mut Frame, app: &mut App, area: Rect) {
         Some(range) => timeline::scroll_to(thread.scroll, range, height, thread.inner_scroll),
         None => (built.lines.len().saturating_sub(height), 0),
     };
+    let near = near_links(app, &built, scroll, height);
+    app.links.visible.extend(near);
     if let Some(thread) = app.thread.as_mut() {
         thread.scroll = scroll;
         thread.inner_scroll = inner_scroll;
@@ -982,6 +1075,7 @@ const HELP: &[(&str, &str)] = &[
     ("Ctrl+D / Ctrl+U", "長いメッセージの中を下 / 上へ"),
     ("Enter", "チャンネルを開く / スレッドを開く"),
     ("Esc", "選択を外す / スレッドを閉じる"),
+    ("o", "選択中のメッセージのリンクを開く"),
     ("i", "書く (スレッドでは返信)"),
     ("e", "自分のメッセージを編集"),
     ("d", "自分のメッセージを削除"),
@@ -1231,8 +1325,10 @@ fn popup_rows(lines: &[Line<'_>], width: u16) -> usize {
         .sum()
 }
 
+const POPUP_WIDTH: u16 = 56;
+
 fn draw_popup(frame: &mut Frame, title: &str, lines: Vec<Line<'static>>) {
-    draw_popup_sized(frame, title, lines, 56);
+    draw_popup_sized(frame, title, lines, POPUP_WIDTH);
 }
 
 fn draw_popup_sized(frame: &mut Frame, title: &str, lines: Vec<Line<'static>>, width: u16) {
@@ -1265,12 +1361,17 @@ mod tests {
     use unicode_width::UnicodeWidthStr;
 
     use super::*;
+    use crate::ui::links::LOAD_TIMEOUT;
     use crate::{
         api::{ApiClient, Me, ReadState, ThreadSummary, TypingUser},
-        electric::{Batch, Change, ShapeEvent},
+        electric::{Batch, Change, LinkedEvent, ShapeEvent},
         http::Credentials,
-        ui::{app::AppEvent, encryption::EncryptionEvent},
+        ui::{
+            app::{AppEvent, REPLY_DRAFT_KEEPS_PLACE},
+            encryption::EncryptionEvent,
+        },
     };
+    use zoo2_client_core::links::LinkState;
 
     fn batch(rows: Vec<(&str, Value)>) -> Batch {
         Batch {
@@ -1391,6 +1492,747 @@ mod tests {
 
     fn press(app: &mut App, code: KeyCode) {
         app.on_terminal_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    }
+
+    /// c1 を開き、`content` のメッセージ `l1` を足して選ぶ。接続先は [`app`] の `http://127.0.0.1:9`。
+    fn app_with_link(content: &str) -> App {
+        let mut app = app();
+        app.open_channel("c1".into());
+        // 開き直しで消えた行を入れ直す。
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![
+                (
+                    "m1",
+                    json!({ "id": "m1", "user_id": "u2", "channel_id": "c1",
+                            "content": "親の本文", "created_at": "2026-11-01 03:00:00" }),
+                ),
+                (
+                    "r1",
+                    json!({ "id": "r1", "user_id": "u1", "channel_id": "c1", "content": "返信です",
+                            "created_at": "2026-11-01 03:01:00", "parent_id": "m1" }),
+                ),
+                (
+                    "l1",
+                    json!({ "id": "l1", "user_id": "u1", "channel_id": "c1", "content": content,
+                            "created_at": "2026-11-01 03:05:00" }),
+                ),
+            ]),
+        ));
+        app.focus = Focus::Messages;
+        app.selected = Some("l1".into());
+        app
+    }
+
+    fn linked_row(app: &mut App, content: &str, extra: Value) {
+        let mut row = json!({ "id": "s1", "user_id": "u2", "channel_id": "c2", "content": content,
+                              "created_at": "2026-11-01 02:00:00" });
+        row.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        deliver(
+            app,
+            LinkedEvent::Rows {
+                channel_id: "c2".into(),
+                rows: vec![("s1".into(), Some(row.as_object().unwrap().clone()))],
+            },
+        );
+    }
+
+    /// リンク先の取得の結果を、そのチャンネルの購読から届ける。購読がなければ始める。
+    fn deliver(app: &mut App, event: LinkedEvent) {
+        let channel_id = event.channel_id().to_owned();
+        if app.links.generation(&channel_id).is_none() {
+            app.links.visible = vec![(channel_id.clone(), "start".into())];
+            app.sync_links();
+        }
+        let generation = app.links.generation(&channel_id).expect("購読を始める");
+        app.on_app_event(AppEvent::Linked(generation, event));
+    }
+
+    const SECRET_LINK: &str = "http://127.0.0.1:9/channels/c2?message=s1";
+
+    #[tokio::test]
+    async fn links_to_other_channels_are_fetched_shortened_and_embedded() {
+        let mut app = app_with_link(&format!("見て {SECRET_LINK}"));
+        let screen = render(&mut app);
+        assert!(screen.contains("┃ リンク先を読み込み中…"), "{screen}");
+        assert!(screen.contains(SECRET_LINK), "{screen}");
+        // 画面に出ているリンク先だけを取得する。
+        assert_eq!(app.links.visible, [("c2".to_owned(), "s1".to_owned())]);
+        app.sync_links();
+
+        linked_row(&mut app, "**秘密**の話", json!({}));
+        let screen = render(&mut app);
+        assert!(screen.contains("見て 💬 Bobさん: #secret"), "{screen}");
+        assert!(!screen.contains(SECRET_LINK), "{screen}");
+        assert!(screen.contains("┃ #secret"), "{screen}");
+        assert!(screen.contains("┃ 秘密の話"), "{screen}");
+
+        // 開くと、そのチャンネルのメッセージを選ぶ。
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.current.as_deref(), Some("c2"));
+        assert_eq!(app.selected.as_deref(), Some("s1"));
+        assert!(app.thread.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_link_after_a_plain_block_is_shortened() {
+        let plain = "http://127.0.0.1:9/channels/c2?message=literal";
+        let mut app = app_with_link(&format!("<plain>\n```\n{plain}\n</plain>\n{SECRET_LINK}"));
+        linked_row(&mut app, "秘密の話", json!({}));
+        let screen = render(&mut app);
+        assert!(screen.contains("💬 Bobさん: #secret"), "{screen}");
+        assert!(!screen.contains(SECRET_LINK), "{screen}");
+        // `<plain>` の中は文字のまま出し、リンクにしない。
+        assert!(screen.contains(plain), "{screen}");
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.mode, Mode::Normal, "開けるリンクは 1 つ");
+        assert_eq!(app.selected.as_deref(), Some("s1"));
+    }
+
+    #[tokio::test]
+    async fn encrypted_and_app_messages_do_not_show_content() {
+        let mut app = app_with_link(SECRET_LINK);
+        linked_row(&mut app, "平文の差し込み", json!({ "ciphertext": "{}" }));
+        let screen = render(&mut app);
+        assert!(
+            screen.contains("このメッセージは暗号化されています"),
+            "{screen}"
+        );
+        assert!(!screen.contains("平文の差し込み"), "{screen}");
+
+        let mut app = app_with_link(SECRET_LINK);
+        linked_row(
+            &mut app,
+            "通知の本文",
+            json!({ "card": r#"{"title":"通知"}"# }),
+        );
+        let screen = render(&mut app);
+        assert!(screen.contains("┃ Appのメッセージ"), "{screen}");
+        assert!(!screen.contains("通知の本文"), "{screen}");
+    }
+
+    #[tokio::test]
+    async fn unlisted_destinations_are_not_revealed_or_opened() {
+        let link = "http://127.0.0.1:9/channels/hidden?message=s1";
+        let mut app = app_with_link(link);
+        let screen = render(&mut app);
+        assert!(screen.contains("┃ メッセージを表示できません"), "{screen}");
+        assert!(screen.contains(link), "{screen}");
+        assert!(app.links.visible.is_empty());
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.current.as_deref(), Some("c1"));
+        assert!(screen.contains(link));
+        assert_eq!(
+            app.notice.as_ref().map(|(text, _)| text.as_str()),
+            Some("メッセージを表示できません")
+        );
+    }
+
+    #[tokio::test]
+    async fn links_in_the_open_channel_use_its_rows_and_open_threads() {
+        let reply = "http://127.0.0.1:9/channels/c1?thread=m1&message=r1";
+        let mut app = app_with_link(reply);
+        let screen = render(&mut app);
+        assert!(screen.contains("💬 Aliceさん: #general"), "{screen}");
+        assert!(screen.contains("┃ #general 内のスレッド"), "{screen}");
+        assert!(app.links.visible.is_empty(), "同期済みの行は取り直さない");
+        press(&mut app, KeyCode::Char('o'));
+        let thread = app.thread.as_ref().expect("スレッドを開く");
+        assert_eq!(thread.root_id, "m1");
+        assert_eq!(thread.selected.as_deref(), Some("r1"));
+        assert_eq!(app.focus, Focus::Thread);
+    }
+
+    #[tokio::test]
+    async fn a_message_with_several_links_asks_which_to_open() {
+        let mut app = app_with_link(&format!(
+            "http://127.0.0.1:9/channels/c1?message=m1 [秘密](http://127.0.0.1:9/channels/c2) と {SECRET_LINK}"
+        ));
+        press(&mut app, KeyCode::Char('o'));
+        let screen = render(&mut app);
+        assert!(screen.contains("リンクを開く"), "{screen}");
+        assert!(screen.contains("2. #secret"), "{screen}");
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.current.as_deref(), Some("c2"));
+    }
+
+    #[tokio::test]
+    async fn missing_messages_are_not_opened() {
+        let mut app = app_with_link(SECRET_LINK);
+        deliver(
+            &mut app,
+            LinkedEvent::Rows {
+                channel_id: "c2".into(),
+                rows: vec![("s1".into(), None)],
+            },
+        );
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.current.as_deref(), Some("c1"));
+        assert_eq!(app.selected.as_deref(), Some("l1"));
+        assert_eq!(
+            app.notice.as_ref().map(|(text, _)| text.as_str()),
+            Some("メッセージを表示できません")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pending_link_does_not_replace_where_the_user_went_next() {
+        let rows = || {
+            batch(vec![
+                (
+                    "m2",
+                    json!({ "id": "m2", "user_id": "u2", "channel_id": "c2", "content": "親",
+                            "created_at": "2026-11-01 01:00:00" }),
+                ),
+                (
+                    "s1",
+                    json!({ "id": "s1", "user_id": "u2", "channel_id": "c2", "content": "返信",
+                            "created_at": "2026-11-01 02:00:00", "parent_id": "m2" }),
+                ),
+            ])
+        };
+        let arrive =
+            |app: &mut App| app.on_shape(ShapeEvent::Batch(ShapeId::Messages("c2".into()), rows()));
+        // 返信と分からないうちに開くと、行が届いた時点でスレッドを開く。
+        let mut app = app_with_link(SECRET_LINK);
+        press(&mut app, KeyCode::Char('o'));
+        arrive(&mut app);
+        assert_eq!(app.thread.as_ref().unwrap().root_id, "m2");
+
+        // その前に自分でスレッドを開いて閉じたら、移動しない。
+        let mut app = app_with_link(SECRET_LINK);
+        press(&mut app, KeyCode::Char('o'));
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Esc);
+        arrive(&mut app);
+        assert!(app.thread.is_none());
+    }
+
+    #[tokio::test]
+    async fn the_link_chooser_scrolls_to_the_selection() {
+        let content: String = (1..=24)
+            .map(|n| format!("http://127.0.0.1:9/channels/c2?message=n{n} "))
+            .collect();
+        let mut app = app_with_link(&content);
+        press(&mut app, KeyCode::Char('o'));
+        assert!(render(&mut app).contains("▶ 1. "));
+        for _ in 0..22 {
+            press(&mut app, KeyCode::Char('j'));
+        }
+        let screen = render(&mut app);
+        assert!(screen.contains("▶ 23. "), "{screen}");
+        assert!(screen.contains("Esc: 閉じる"), "{screen}");
+    }
+
+    #[tokio::test]
+    async fn the_chooser_fetches_links_beyond_the_per_message_limit() {
+        let content: String = (1..=5)
+            .map(|n| format!("http://127.0.0.1:9/channels/c2?message=n{n} "))
+            .collect();
+        let mut app = app_with_link(&content);
+        render(&mut app);
+        assert_eq!(app.links.visible.len(), 3);
+        press(&mut app, KeyCode::Char('o'));
+        render(&mut app);
+        assert_eq!(app.links.visible.len(), 3 + 5);
+        deliver(
+            &mut app,
+            LinkedEvent::Rows {
+                channel_id: "c2".into(),
+                rows: vec![("n5".into(), None)],
+            },
+        );
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Char('j'));
+        }
+        assert!(render(&mut app).contains("5. メッセージを表示できません"));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.current.as_deref(), Some("c1"));
+        assert_eq!(
+            app.notice.as_ref().map(|(text, _)| text.as_str()),
+            Some("メッセージを表示できません")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_chooser_fetches_every_row_it_shows() {
+        let content: String = (1..=30)
+            .map(|n| format!("http://127.0.0.1:9/channels/c2?message=n{n} "))
+            .collect();
+        let mut app = app_with_link(&content);
+        press(&mut app, KeyCode::Char('o'));
+        let screen = render_sized(&mut app, 100, 50);
+        assert!(screen.contains("30. "), "{screen}");
+        assert_eq!(app.links.visible.len(), 3 + 30);
+    }
+
+    #[tokio::test]
+    async fn a_missing_reply_is_reported_in_the_thread() {
+        let mut app = app_with_link("http://127.0.0.1:9/channels/c2?thread=m2&message=gone");
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(
+            app.thread.as_ref().unwrap().selected.as_deref(),
+            Some("gone")
+        );
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c2".into()),
+            batch(vec![(
+                "m2",
+                json!({ "id": "m2", "user_id": "u2", "channel_id": "c2", "content": "親",
+                        "created_at": "2026-11-01 01:00:00" }),
+            )]),
+        ));
+        assert_eq!(app.thread.as_ref().unwrap().selected, None);
+        assert_eq!(
+            app.notice.as_ref().map(|(text, _)| text.as_str()),
+            Some("メッセージを表示できません")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reply_opens_its_real_thread_once_known() {
+        // `?thread=` が実際の親と違っていても、行が届いたら実際の親のスレッドを開く。
+        let mut app = app_with_link("http://127.0.0.1:9/channels/c2?thread=other&message=s1");
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.thread.as_ref().unwrap().root_id, "other");
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c2".into()),
+            batch(vec![
+                (
+                    "m2",
+                    json!({ "id": "m2", "user_id": "u2", "channel_id": "c2", "content": "親",
+                            "created_at": "2026-11-01 01:00:00" }),
+                ),
+                (
+                    "s1",
+                    json!({ "id": "s1", "user_id": "u2", "channel_id": "c2", "content": "返信",
+                            "created_at": "2026-11-01 02:00:00", "parent_id": "m2" }),
+                ),
+            ]),
+        ));
+        let thread = app.thread.as_ref().unwrap();
+        assert_eq!(thread.root_id, "m2");
+        assert_eq!(thread.selected.as_deref(), Some("s1"));
+    }
+
+    /// c2 の `s1`（`m2` への返信）と、ルート投稿の `m2`・`other` を届ける。
+    fn arrive_in_c2(app: &mut App) {
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c2".into()),
+            batch(vec![
+                (
+                    "m2",
+                    json!({ "id": "m2", "user_id": "u2", "channel_id": "c2", "content": "親",
+                            "created_at": "2026-11-01 01:00:00" }),
+                ),
+                (
+                    "other",
+                    json!({ "id": "other", "user_id": "u2", "channel_id": "c2", "content": "別の親",
+                            "created_at": "2026-11-01 01:30:00" }),
+                ),
+                (
+                    "s1",
+                    json!({ "id": "s1", "user_id": "u2", "channel_id": "c2", "content": "返信",
+                            "created_at": "2026-11-01 02:00:00", "parent_id": "m2" }),
+                ),
+            ]),
+        ));
+    }
+
+    const WRONG_THREAD_LINK: &str = "http://127.0.0.1:9/channels/c2?thread=other&message=s1";
+
+    fn notice(app: &App) -> Option<&str> {
+        app.notice.as_ref().map(|(text, _)| text.as_str())
+    }
+
+    #[tokio::test]
+    async fn replies_wait_until_the_linked_thread_is_confirmed() {
+        let mut app = app_with_link(WRONG_THREAD_LINK);
+        press(&mut app, KeyCode::Char('o'));
+        // 実際の親が分かるまでは、返信を書き始めない。
+        press(&mut app, KeyCode::Char('i'));
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(
+            notice(&app),
+            Some("リンク先を確認しています。少し待ってから返信してください")
+        );
+        arrive_in_c2(&mut app);
+        press(&mut app, KeyCode::Char('i'));
+        assert_eq!(app.mode, Mode::Insert);
+        assert_eq!(app.target, Target::Reply("m2".into()));
+    }
+
+    #[tokio::test]
+    async fn a_reply_being_written_keeps_its_thread() {
+        let mut app = app_with_link(WRONG_THREAD_LINK);
+        press(&mut app, KeyCode::Char('o'));
+        // 書きかけの返信（送れずに戻したものなど）の送り先は、あとから分かった行き先に切り替えない。
+        app.target = Target::Reply("other".into());
+        app.mode = Mode::Insert;
+        arrive_in_c2(&mut app);
+        assert_eq!(app.thread.as_ref().unwrap().root_id, "other");
+        assert_eq!(app.target, Target::Reply("other".into()));
+        assert_eq!(
+            notice(&app),
+            Some("入力中の本文があるため、リンク先へは切り替えていません")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_root_message_link_ignores_the_thread_parameter() {
+        let link = "http://127.0.0.1:9/channels/c2?thread=other&message=m2";
+        // 行が分かる前は `?thread=` のスレッドを開き、ルート投稿と分かったらタイムラインで選ぶ。
+        let mut app = app_with_link(link);
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.thread.as_ref().unwrap().root_id, "other");
+        arrive_in_c2(&mut app);
+        assert!(app.thread.is_none());
+        assert_eq!(app.selected.as_deref(), Some("m2"));
+        assert_eq!(app.focus, Focus::Messages);
+        // 行が分かっていれば、はじめからタイムラインで選ぶ。
+        let mut app = app_with_link(link);
+        deliver(
+            &mut app,
+            LinkedEvent::Rows {
+                channel_id: "c2".into(),
+                rows: vec![(
+                    "m2".into(),
+                    json!({ "id": "m2", "user_id": "u2", "channel_id": "c2", "content": "親",
+                            "created_at": "2026-11-01 01:00:00" })
+                    .as_object()
+                    .cloned(),
+                )],
+            },
+        );
+        press(&mut app, KeyCode::Char('o'));
+        assert!(app.thread.is_none());
+        assert_eq!(app.selected.as_deref(), Some("m2"));
+    }
+
+    #[tokio::test]
+    async fn a_remembered_row_is_checked_again_after_opening() {
+        let mut app = app_with_link(SECRET_LINK);
+        linked_row(&mut app, "覚えている本文", json!({}));
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.selected.as_deref(), Some("s1"));
+        // 覚えている間に削除されていたら、行がそろった時点で知らせる。
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c2".into()),
+            batch(Vec::new()),
+        ));
+        assert_eq!(app.selected, None);
+        assert_eq!(notice(&app), Some("メッセージを表示できません"));
+    }
+
+    #[tokio::test]
+    async fn a_link_is_checked_again_when_the_channel_is_resubscribed() {
+        let mut app = app_with_link("http://127.0.0.1:9/channels/c1?message=m1");
+        // c1 の購読が止まっていて、開くと取り直す。
+        let stopped = tokio::spawn(async {});
+        while !stopped.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        app.subscriptions
+            .insert(ShapeId::Messages("c1".into()), stopped);
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.selected.as_deref(), Some("m1"));
+        // 取り直したら、削除されていた。
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(Vec::new()),
+        ));
+        assert_eq!(app.selected, None);
+        assert_eq!(notice(&app), Some("メッセージを表示できません"));
+    }
+
+    #[tokio::test]
+    async fn the_link_chooser_does_not_mark_the_timeline_as_read() {
+        let mut app = app_with_link(&format!(
+            "http://127.0.0.1:9/channels/c1?message=m1 {SECRET_LINK}"
+        ));
+        press(&mut app, KeyCode::Char('o'));
+        assert!(matches!(app.mode, Mode::Links { .. }));
+        app.newest_shown = None;
+        render(&mut app);
+        assert_eq!(app.newest_shown, None, "the popup covers the timeline");
+        press(&mut app, KeyCode::Esc);
+        render(&mut app);
+        assert!(app.newest_shown.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_link_that_turns_out_to_be_missing_is_reported() {
+        let mut app = app_with_link(SECRET_LINK);
+        // 取得の前に開き、行がそろってから、ないと分かる。
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.selected.as_deref(), Some("s1"));
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c2".into()),
+            batch(Vec::new()),
+        ));
+        assert_eq!(app.selected, None);
+        assert_eq!(
+            app.notice.as_ref().map(|(text, _)| text.as_str()),
+            Some("メッセージを表示できません")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unconfirmed_thread_is_not_written_to_wherever_the_cursor_is() {
+        let mut app = app_with_link(WRONG_THREAD_LINK);
+        press(&mut app, KeyCode::Char('o'));
+        // 行が届く前にカーソルを動かすと、選択はなくなる。
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.thread.as_ref().unwrap().selected, None);
+        press(&mut app, KeyCode::Char('i'));
+        assert_eq!(app.mode, Mode::Normal);
+        // 参加・退出・再開も、仮の親には要求しない。
+        for key in ['J', 'L', 'u'] {
+            app.notice = None;
+            press(&mut app, KeyCode::Char(key));
+            assert_eq!(
+                notice(&app),
+                Some("リンク先を確認しています。少し待ってから操作してください"),
+                "{key}"
+            );
+        }
+        // 同じチャンネルをサイドバーから選び直しても、確かめるまでは書き込まない。
+        app.sidebar_index = app
+            .sidebar_items()
+            .iter()
+            .position(|item| *item == SidebarItem::Channel("c2".into()))
+            .unwrap();
+        app.focus = Focus::Sidebar;
+        press(&mut app, KeyCode::Enter);
+        app.focus = Focus::Thread;
+        press(&mut app, KeyCode::Char('i'));
+        assert_eq!(app.mode, Mode::Normal);
+        // 戻した下書きも、仮のスレッドには送らない。
+        app.target = Target::Reply("other".into());
+        app.mode = Mode::Insert;
+        press(&mut app, KeyCode::Char('x'));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.composer.lines(), ["x"]);
+        press(&mut app, KeyCode::Esc);
+        app.composer = Default::default();
+        // 実際の親が分かれば、そのスレッドに切り替えて返信できる。
+        arrive_in_c2(&mut app);
+        let thread = app.thread.as_ref().unwrap();
+        assert_eq!(thread.root_id, "m2");
+        assert_eq!(thread.selected.as_deref(), Some("s1"));
+        press(&mut app, KeyCode::Char('i'));
+        assert_eq!(app.target, Target::Reply("m2".into()));
+        assert_eq!(app.mode, Mode::Insert);
+    }
+
+    #[tokio::test]
+    async fn a_reply_draft_is_not_moved_by_following_a_link() {
+        let links = [
+            "http://127.0.0.1:9/channels/c1?message=m1",
+            "http://127.0.0.1:9/channels/c1?thread=l1",
+            "http://127.0.0.1:9/channels/c1",
+            "http://127.0.0.1:9/channels/c2",
+            SECRET_LINK,
+        ];
+        for link in links {
+            let mut app = app_with_link(link);
+            // `m1` のスレッドで返信を書きかけて、リンクを開く。
+            app.selected = Some("m1".into());
+            press(&mut app, KeyCode::Enter);
+            press(&mut app, KeyCode::Char('i'));
+            press(&mut app, KeyCode::Char('x'));
+            press(&mut app, KeyCode::Esc);
+            app.focus = Focus::Messages;
+            app.selected = Some("l1".into());
+            press(&mut app, KeyCode::Char('o'));
+            assert_eq!(app.current.as_deref(), Some("c1"), "{link}");
+            assert_eq!(app.thread.as_ref().unwrap().root_id, "m1", "{link}");
+            assert_eq!(app.target, Target::Reply("m1".into()), "{link}");
+            assert_eq!(notice(&app), Some(REPLY_DRAFT_KEEPS_PLACE), "{link}");
+            assert_eq!(app.focus, Focus::Messages, "{link}");
+        }
+        // 同じスレッドの返信へは移れる。
+        let mut app = app_with_link("http://127.0.0.1:9/channels/c1?thread=m1&message=r1");
+        app.selected = Some("m1".into());
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Char('x'));
+        press(&mut app, KeyCode::Esc);
+        app.focus = Focus::Messages;
+        app.selected = Some("l1".into());
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.thread.as_ref().unwrap().selected.as_deref(), Some("r1"));
+        assert_eq!(app.target, Target::Reply("m1".into()));
+    }
+
+    #[tokio::test]
+    async fn a_stopped_sync_releases_the_unconfirmed_thread() {
+        let mut app = app_with_link(WRONG_THREAD_LINK);
+        press(&mut app, KeyCode::Char('o'));
+        app.on_shape(ShapeEvent::Failed(
+            ShapeId::Messages("c2".into()),
+            "403".into(),
+        ));
+        assert!(app.thread.is_none());
+        assert_eq!(app.focus, Focus::Messages);
+        assert!(
+            notice(&app).is_some_and(|text| text.ends_with("開き直してください")),
+            "{:?}",
+            notice(&app)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_thread_that_does_not_exist_is_closed_even_while_writing() {
+        let mut app = app_with_link("http://127.0.0.1:9/channels/c2?thread=nothing&message=s1");
+        press(&mut app, KeyCode::Char('o'));
+        // チャンネルへの投稿を書いている間に、行がそろう。
+        app.focus = Focus::Messages;
+        press(&mut app, KeyCode::Char('i'));
+        arrive_in_c2(&mut app);
+        assert!(app.thread.is_none());
+        assert_eq!(app.mode, Mode::Insert);
+        assert_eq!(app.target, Target::Channel);
+    }
+
+    #[tokio::test]
+    async fn closing_a_bogus_thread_does_not_move_another_reply() {
+        let mut app = app_with_link("http://127.0.0.1:9/channels/c2?thread=nothing&message=s1");
+        press(&mut app, KeyCode::Char('o'));
+        // 別のスレッドへの返信の書きかけがあれば、閉じて送り先を変えない。
+        app.target = Target::Reply("other".into());
+        app.composer.insert_str("書きかけ");
+        arrive_in_c2(&mut app);
+        assert_eq!(app.thread.as_ref().unwrap().root_id, "nothing");
+        assert_eq!(app.target, Target::Reply("other".into()));
+    }
+
+    #[tokio::test]
+    async fn links_waiting_for_the_main_sync_time_out_and_stop() {
+        let mut app = app();
+        app.open_channel("c2".into());
+        let shape = ShapeId::Messages("c2".into());
+        let rows = |up_to_date: bool, reset: bool| {
+            let mut rows = batch(vec![(
+                "m2",
+                json!({ "id": "m2", "user_id": "u2", "channel_id": "c2",
+                        "content": "http://127.0.0.1:9/channels/c2?message=later",
+                        "created_at": "2026-11-01 01:00:00" }),
+            )]);
+            rows.up_to_date = up_to_date;
+            rows.reset = reset;
+            rows
+        };
+        let target = LinkTarget {
+            channel_id: "c2".into(),
+            message_id: Some("later".into()),
+            thread_id: None,
+        };
+        let state = |app: &App, after: std::time::Duration| match app.link_state(
+            &target,
+            std::time::Instant::now() + after,
+            &DrawCache::default(),
+        ) {
+            LinkState::Loading => "loading",
+            LinkState::Failed => "failed",
+            LinkState::Unavailable { .. } => "unavailable",
+            _ => "shown",
+        };
+        let now = std::time::Duration::ZERO;
+        // リンク元の投稿だけが届いて、同期がそろわない。
+        app.on_shape(ShapeEvent::Batch(shape.clone(), rows(false, false)));
+        assert_eq!(state(&app, now), "loading");
+        assert_eq!(state(&app, LOAD_TIMEOUT), "failed");
+        assert!(app.links.visible.is_empty(), "追加の取得はしない");
+        // そろったあとの取り直しは、そこから待ち直す。
+        app.on_shape(ShapeEvent::Batch(shape.clone(), rows(true, false)));
+        assert_eq!(state(&app, now), "unavailable");
+        let gap = std::time::Duration::from_millis(200);
+        std::thread::sleep(gap);
+        app.on_shape(ShapeEvent::Batch(shape.clone(), rows(false, true)));
+        assert_eq!(state(&app, LOAD_TIMEOUT - gap / 2), "loading");
+        assert_eq!(state(&app, LOAD_TIMEOUT), "failed");
+        // 同期が停止したら、すぐに読み込めなかったものとする。
+        app.on_shape(ShapeEvent::Failed(shape, "403".into()));
+        assert_eq!(state(&app, now), "failed");
+    }
+
+    #[tokio::test]
+    async fn a_stopped_main_sync_hides_the_rows_it_delivered() {
+        let mut app = app_with_link("http://127.0.0.1:9/channels/c1?message=m1");
+        assert!(render(&mut app).contains("┃ 親の本文"));
+        let shape = ShapeId::Messages("c1".into());
+        app.on_shape(ShapeEvent::Failed(shape.clone(), "403".into()));
+        let screen = render(&mut app);
+        assert!(
+            screen.contains("┃ リンク先を読み込めませんでした"),
+            "{screen}"
+        );
+        assert!(!screen.contains("┃ 親の本文"), "{screen}");
+        assert!(!screen.contains("💬 Bobさん"), "{screen}");
+        // 届いていない行も、見られないとは決めない。
+        let missing = LinkTarget {
+            channel_id: "c1".into(),
+            message_id: Some("none".into()),
+            thread_id: None,
+        };
+        assert_eq!(
+            app.link_state(&missing, std::time::Instant::now(), &DrawCache::default()),
+            LinkState::Failed
+        );
+        // 開き直した購読の行が届けば、また出す。
+        app.on_shape(ShapeEvent::Batch(shape, batch(Vec::new())));
+        assert!(render(&mut app).contains("┃ 親の本文"));
+    }
+
+    #[tokio::test]
+    async fn ciphertext_seen_by_a_link_subscription_hides_and_blocks_plaintext() {
+        let mut app = app_with_link(SECRET_LINK);
+        linked_row(&mut app, "平文の差し込み", json!({}));
+        assert!(render(&mut app).contains("┃ 平文の差し込み"));
+        // 同じチャンネルの、ほかの行に暗号文が届いた。
+        deliver(
+            &mut app,
+            LinkedEvent::Ciphertext {
+                channel_id: "c2".into(),
+            },
+        );
+        let screen = render(&mut app);
+        assert!(!screen.contains("平文の差し込み"), "{screen}");
+        assert!(
+            screen.contains("このメッセージは暗号化されています"),
+            "{screen}"
+        );
+        // 開いて、本同期に暗号文が届く前でも、平文では送らない。
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.current.as_deref(), Some("c2"));
+        arrive_in_c2(&mut app);
+        assert_eq!(app.channel_encryption("c2"), ChannelEncryption::Downgraded);
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Char('x'));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.composer.lines(), ["x"]);
+        assert_eq!(notice(&app), Some(e2ee_chat::DOWNGRADED));
+    }
+
+    #[tokio::test]
+    async fn opening_a_channel_hands_its_links_over_to_the_main_sync() {
+        let mut app = app_with_link(SECRET_LINK);
+        linked_row(&mut app, "覚えている本文", json!({}));
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.links.generation("c2"), None, "購読を閉じる");
+        arrive_in_c2(&mut app);
+        // 本同期がそろったら覚えた結果は使わず、離れたあとは取り直す。
+        app.open_channel("c1".into());
+        assert_eq!(
+            app.links
+                .fetch(&("c2".into(), "s1".into()), std::time::Instant::now()),
+            zoo2_client_core::links::LinkedFetch::Loading { stalled: false }
+        );
     }
 
     fn sas_view(phase: zoo_crypto::SasPhase) -> crate::e2ee::verification::SasView {
