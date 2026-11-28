@@ -4,6 +4,8 @@ import androidx.compose.runtime.*
 import io.ktor.http.encodeURLPathPart
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 import zoo.*
 
 /** No credentials are stored in UI state, saved state, notification extras or caches. */
@@ -31,6 +33,7 @@ class PhoneController(
     private val prepare: suspend () -> Unit,
     private val waiting: (Boolean) -> Unit,
     private val uuid: () -> String,
+    private val heartbeatClock: TimeSource = TimeSource.Monotonic,
 ) {
     private val lifetime = SupervisorJob(parent.coroutineContext[Job])
     private val scope = CoroutineScope(parent.coroutineContext + lifetime)
@@ -239,14 +242,14 @@ class PhoneController(
                 if (!accepted.flag("ok") || accepted.text("channel_id") != next.target) error("Invalid invitation")
                 if (epoch == callEpoch) {
                     inviteExpiry?.cancel(); invite = null; answeringInvite = null
-                    call = call?.copy(status = "dialing"); joinDm(next, epoch)
+                    call = call?.copy(status = "connecting"); joinDm(next, epoch)
                 }
             }
         }
     }
     private fun joinDm(next: PhoneCall, epoch: Int) {
         val session = uuid(); sessionId = session
-        setupExpiry = scope.launch { delay(45_000); if (epoch == callEpoch && call?.status == "dialing") hangup() }
+        setupExpiry = scope.launch { delay(45_000); if (epoch == callEpoch && call?.status != "active") hangup() }
         callJob = scope.launch {
             val early = mutableListOf<Pair<String, Row>>()
             try {
@@ -257,6 +260,7 @@ class PhoneController(
                         early.add(event to value); return@stream
                     }
                     if (event == "room_state" && dm == null) {
+                        val presenceStarted = heartbeatClock.markNow()
                         val engine = media("dm") { type, payload ->
                             if (epoch == callEpoch) when (type) {
                                 "connected" -> { setupExpiry?.cancel(); call = call?.copy(status = "active") }
@@ -270,12 +274,7 @@ class PhoneController(
                         dm = engine
                         engine.command("rtc.start", obj("session_id" to session, "ice_servers" to (value["ice_servers"] ?: JsonArray(emptyList())),
                             "peer_user_id" to next.peerUserId))
-                        heartbeat = scope.launch {
-                            try { while (isActive && epoch == callEpoch) { delay(10_000); api("/api/channels/${next.target.encodeURLPathPart()}/call/heartbeat", "POST", obj("session_id" to session)) } }
-                            catch (timeout: TimeoutCancellationException) { if (epoch == callEpoch) { hangup(); error = true } }
-                            catch (cancel: CancellationException) { throw cancel }
-                            catch (_: Exception) { if (epoch == callEpoch) { hangup(); error = true } }
-                        }
+                        heartbeat = scope.launch { maintainDmPresence(next.target, session, epoch, presenceStarted) }
                     }
                     dm?.command("rtc.event", obj("event" to event, "data" to value))
                     for ((name, pending) in early) dm?.command("rtc.event", obj("event" to name, "data" to pending))
@@ -285,6 +284,43 @@ class PhoneController(
             } catch (timeout: TimeoutCancellationException) { if (epoch == callEpoch) { hangup(); error = true } }
             catch (cancel: CancellationException) { throw cancel }
             catch (_: Exception) { if (epoch == callEpoch) { hangup(); error = true } }
+        }
+    }
+    private suspend fun maintainDmPresence(channel: String, session: String, epoch: Int, presenceStarted: TimeMark) {
+        val path = "/api/channels/${channel.encodeURLPathPart()}/call/heartbeat"
+        val body = obj("session_id" to session)
+        var lastRenewal = presenceStarted
+        try {
+            while (epoch == callEpoch) {
+                val elapsed = lastRenewal.elapsedNow().inWholeMilliseconds
+                // Count response latency against the 30-second lease and reserve one second for delivery.
+                withTimeout(29_000 - elapsed) {
+                    delay(10_000 - elapsed)
+                    for (attempt in 1..3) {
+                        val sent = heartbeatClock.markNow()
+                        try {
+                            withTimeout(if (attempt == 1) 15_000 else 5_000) { request(path, "POST", body) }
+                            lastRenewal = sent
+                            break
+                        } catch (timeout: TimeoutCancellationException) {
+                            if (attempt == 3) throw timeout
+                        } catch (cancel: CancellationException) {
+                            throw cancel
+                        } catch (failure: Exception) {
+                            val status = (failure as? ApiException)?.status
+                            val permanent = status != null && status < 500 && status != 408 && status != 429
+                            if (permanent || attempt == 3) throw failure
+                        }
+                        delay(1_000)
+                    }
+                }
+            }
+        } catch (_: TimeoutCancellationException) {
+            if (epoch == callEpoch) { hangup(); error = true }
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (_: Exception) {
+            if (epoch == callEpoch) { hangup(); error = true }
         }
     }
     private fun signal(channel: String, session: String, epoch: Int, payload: Row) {
@@ -326,7 +362,7 @@ class PhoneController(
         if (busy || !lifetime.isActive) return
         busy = true; error = false
         scope.launch {
-            try { block() }
+            try { if (epoch == callEpoch) block() }
             catch (timeout: TimeoutCancellationException) { if (epoch == callEpoch) { if (fatal) hangup(); error = true } }
             catch (cancel: CancellationException) { throw cancel }
             catch (_: Exception) { if (epoch == callEpoch) { val sipCall = call?.kind == "sip"; if (fatal) { hangup(); if (sipCall) disconnectSip() }; error = true } }
