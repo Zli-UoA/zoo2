@@ -13,7 +13,6 @@ import androidx.compose.material3.*
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
 import io.ktor.client.*
 import io.ktor.client.plugins.*
 import io.ktor.client.request.*
@@ -356,18 +355,23 @@ class MainActivity : ComponentActivity() {
                     network = nextNetwork
                     if (returning || networkChanged) current.transport.reconnect()
                     platform.online(nextNetwork != null)
-                    current.session.update(platform.env, networkChanged = networkChanged)
+                    current.session.update(platform.env, reconnect = returning || networkChanged)
                     if (nextNetwork != null && (returning || networkChanged || !wasOnline)) {
                         current.shapeReconnects.update { it + 1 }
                         current.phone.refreshInvites()
                     }
                 }
-                val observer = LifecycleEventObserver { _, event ->
-                    val returning = event == Lifecycle.Event.ON_START && !platform.env.visible
-                    platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
-                    updateNetworkStatus(returning)
-                    if (event == Lifecycle.Event.ON_RESUME) { notificationSettingsVersion++; current.push.refresh() }
-                }
+                val observer = NetworkLifecycleObserver(
+                    isVisible = { platform.env.visible },
+                    update = { visible, returning ->
+                        platform.visible(visible)
+                        updateNetworkStatus(returning)
+                    },
+                    onResume = {
+                        notificationSettingsVersion++
+                        current.push.refresh()
+                    },
+                )
                 lifecycle.addObserver(observer)
                 val callback = DefaultNetworkCallback {
                     runOnUiThread {

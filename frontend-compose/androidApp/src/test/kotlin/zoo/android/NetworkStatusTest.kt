@@ -3,6 +3,9 @@ package zoo.android
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
 import org.robolectric.RuntimeEnvironment
 import kotlin.test.*
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -19,6 +22,36 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [26, 35], manifest = Config.NONE)
 class NetworkStatusTest {
+    @Test
+    fun switchingAppsReconnectsOnTheFirstResumeEvenIfTheActivityNeverStopped() {
+        val activity = object : LifecycleOwner {
+            override val lifecycle = LifecycleRegistry.createUnsafe(this)
+        }
+        val lifecycle = activity.lifecycle
+        lifecycle.currentState = Lifecycle.State.RESUMED
+        var visible = true
+        val reconnects = mutableListOf<Lifecycle.State>()
+        lifecycle.addObserver(NetworkLifecycleObserver(
+            isVisible = { visible },
+            update = { nowVisible, returning ->
+                visible = nowVisible
+                if (returning) reconnects += lifecycle.currentState
+            },
+            onResume = {},
+        ))
+        assertTrue(reconnects.isEmpty(), "Installing the observer must not restart active connections")
+
+        lifecycle.currentState = Lifecycle.State.STARTED
+        assertTrue(visible)
+        lifecycle.currentState = Lifecycle.State.RESUMED
+        assertEquals(listOf(Lifecycle.State.RESUMED), reconnects)
+
+        lifecycle.currentState = Lifecycle.State.CREATED
+        assertFalse(visible)
+        lifecycle.currentState = Lifecycle.State.RESUMED
+        assertEquals(listOf(Lifecycle.State.RESUMED, Lifecycle.State.RESUMED), reconnects)
+    }
+
     @Test
     @Config(sdk = [28, 35], manifest = Config.NONE)
     @OptIn(ExperimentalCoroutinesApi::class)

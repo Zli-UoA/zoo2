@@ -1,5 +1,8 @@
 package zoo.android
 
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpTimeout
 import java.util.concurrent.atomic.AtomicBoolean
@@ -87,6 +90,23 @@ class ShapeReconnectTransportTest {
                 "messages", Config(server.url("/").toString().trimEnd('/'), "/api/shapes", "alice", false),
                 platform, http, this, mapOf("channel_id" to "test-channel"), persist = false, onDemand = true,
             )
+            val activity = object : LifecycleOwner {
+                override val lifecycle = LifecycleRegistry.createUnsafe(this)
+            }
+            val lifecycle = activity.lifecycle
+            lifecycle.currentState = Lifecycle.State.RESUMED
+            var visible = true
+            lifecycle.addObserver(NetworkLifecycleObserver(
+                isVisible = { visible },
+                update = { nowVisible, returning ->
+                    visible = nowVisible
+                    if (returning) {
+                        engine.reconnect()
+                        table.refresh(reconnect = true)
+                    }
+                },
+                onResume = {},
+            ))
             var phase = "first page"
             try {
                 withTimeout(10_000) {
@@ -94,9 +114,10 @@ class ShapeReconnectTransportTest {
                     phase = "original live request"
                     oldLive.await()
 
+                    lifecycle.currentState = Lifecycle.State.STARTED
+                    assertTrue(visible)
                     invalidate.set(true)
-                    engine.reconnect()
-                    table.refresh(reconnect = true)
+                    lifecycle.currentState = Lifecycle.State.RESUMED
 
                     phase = "replacement page"
                     val recovered = table.rows.first { rows -> rows.any { it.text("id") == "new-row" } }

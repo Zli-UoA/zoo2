@@ -281,7 +281,7 @@ class RepositoryTest {
     @Test
     fun replacingTheDefaultNetworkRefreshesShapesEvenWhenStillOnline() =
         assertShapeReconnect("https://network-change.zoo.test") { app, foreground ->
-            app.update(foreground, networkChanged = true)
+            app.update(foreground, reconnect = true)
         }
 
     @Test
@@ -302,7 +302,7 @@ class RepositoryTest {
             runCurrent()
             assertEquals(listOf("connect"), events)
 
-            app.update(foreground, networkChanged = true)
+            app.update(foreground, reconnect = true)
             Snapshot.sendApplyNotifications()
             runCurrent()
             assertEquals(listOf("connect", "disconnect", "connect"), events)
