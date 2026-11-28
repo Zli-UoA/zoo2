@@ -184,9 +184,15 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         receiveLaunchIntent(intent)
-        UpdatePreferences(this).confirmInstalledUpdate(works.zli.zoo.BuildConfig.VERSION_CODE.toLong(), works.zli.zoo.BuildConfig.VERSION_NAME)
-        if (UpdatePreferences(this).enabled) UpdateScheduler.configure(this, true)
         setContent { AndroidApp() }
+        // A first draw is queued before any update bookkeeping opens disk-backed stores.
+        window.decorView.postOnAnimation {
+            window.decorView.post {
+                val updates = UpdatePreferences(this)
+                updates.confirmInstalledUpdate(works.zli.zoo.BuildConfig.VERSION_CODE.toLong(), works.zli.zoo.BuildConfig.VERSION_NAME)
+                if (updates.enabled) UpdateScheduler.configure(this, true)
+            }
+        }
     }
 
     private fun receiveLaunchIntent(intent: Intent) {
@@ -212,7 +218,8 @@ class MainActivity : ComponentActivity() {
         val dark = isSystemInDarkTheme()
         val loginStore = remember { AndroidLoginStore(this) }
         val scope = rememberCoroutineScope()
-        var restoring by remember { mutableStateOf(loginStore.hasSession) }
+        var restoring by remember { mutableStateOf(true) }
+        var restorationStage by remember { mutableStateOf(LoginStage.SavedSession) }
         var restoreCancelRequested by remember { mutableStateOf(false) }
         var restoreAttempt by remember { mutableIntStateOf(0) }
         var restoreJob by remember { mutableStateOf<Job?>(null) }
@@ -282,16 +289,17 @@ class MainActivity : ComponentActivity() {
 
         LaunchedEffect(restoreAttempt) {
             restoreJob = currentCoroutineContext()[Job]
-            restoring = loginStore.hasSession
+            restoring = true
+            restorationStage = LoginStage.SavedSession
             restoreCancelRequested = false
             restoreError = ""
             restoreDiagnostics = ""
             val stages = mutableListOf(LoginStage.SavedSession)
             try {
-                val saved = loginStore.load()
+                val saved = withContext(Dispatchers.IO) { loginStore.load() }
                 canRestore = saved != null
                 if (saved == null) PushBinding(this@MainActivity).forgetAll()
-                if (saved != null) connect(saved.connection, saved.refreshToken) { stages.add(it) }
+                if (saved != null) connect(saved.connection, saved.refreshToken) { stage -> stages.add(stage); restorationStage = stage }
             } catch (failure: CancellationException) {
                 throw failure
             } catch (failure: LoginFailure) {
@@ -310,7 +318,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         if (current == null) {
-            SignInRoute(dark, restoring, restoreError,
+            SignInRoute(dark, restoring, restoreError, restorationStage = restorationStage,
                 retry = if (canRestore && !restoring) ({ restoreAttempt++ }) else null,
                 cancelRestore = if (restoreCancelRequested) null else ({
                     restoreCancelRequested = true
@@ -426,7 +434,7 @@ class MainActivity : ComponentActivity() {
         logout: () -> Unit,
     ): RunningSession {
         connection.validate()
-        val owner = loginStore.beginSession(savedRefresh?.let { SavedLogin(connection, it) })
+        val owner = withContext(Dispatchers.IO) { loginStore.beginSession(savedRefresh?.let { SavedLogin(connection, it) }) }
         val oidcRoutes = OidcNetworkRoutes()
         val transport = SessionHttpEngine {
             // Refresh tokens are single-use: never replay a request inside OkHttp.

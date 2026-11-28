@@ -32,9 +32,14 @@ internal fun SignInRoute(
     error: String,
     retry: (() -> Unit)?,
     cancelRestore: (() -> Unit)?,
+    restorationStage: LoginStage = LoginStage.SavedSession,
     restoreDiagnostics: String,
     connect: suspend (LoginConnection, (LoginStage) -> Unit) -> Unit,
 ) {
+    if (restoring) {
+        RestorationPage(dark, restorationStage.label, cancelRestore)
+        return
+    }
     val context = LocalContext.current
     val preferences = remember(context) { context.getSharedPreferences("connection", Context.MODE_PRIVATE) }
     var server by rememberSaveable { mutableStateOf(preferences.getString("base", "https://zli.chat").orEmpty()) }
@@ -86,7 +91,7 @@ internal fun SignInRoute(
         }
     }
     AndroidShell(null, dark, {}) { colors ->
-        if (editing && !restoring && !busy) {
+        if (editing && !busy) {
             PageHeader("接続先の設定", colors, onBack = { editing = false })
             Column(Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -100,16 +105,12 @@ internal fun SignInRoute(
                 TextAction(if (signInError == wifiSignInMessage) "それでも試す" else "ログイン", colors, icon = UiIcon.SignIn, enabled = client.isNotBlank(), click = submit)
             }
         } else {
-            val pending = restoring || busy
+            val pending = busy
             val description = if (pending) "" else signInError.ifBlank { error }.ifBlank {
                 "ブラウザーで認証を完了すると、Zooに戻ります。"
             }
             BrandPage("Zoo", description, colors, loading = pending) {
-                if (restoring) {
-                    TextAction("ログイン画面を開く", colors, icon = UiIcon.SignIn, enabled = cancelRestore != null, style = TextActionStyle.Plain) {
-                        cancelRestore?.invoke()
-                    }
-                } else if (busy) {
+                if (busy) {
                     TextAction("キャンセル", colors, icon = UiIcon.Close, style = TextActionStyle.Plain) { loginJob?.cancel() }
                 } else {
                     if (diagnostics.isNotBlank()) TextAction("診断ログを見る", colors, icon = UiIcon.Document,

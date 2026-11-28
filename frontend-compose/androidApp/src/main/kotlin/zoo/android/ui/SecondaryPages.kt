@@ -203,6 +203,28 @@ internal fun NewPostPage(
     }
 }
 
+/** Paint immediately; show the current operation only when restoration outlasts a short startup. */
+@Composable
+internal fun RestorationPage(dark: Boolean, stage: String, cancel: (() -> Unit)?) {
+    var showProgress by androidx.compose.runtime.remember { mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(400)
+        showProgress = true
+    }
+    AndroidShell(null, dark, {}) { colors ->
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                ZooBadge(colors, Modifier.size(72.dp))
+                if (showProgress) {
+                    Text(stage, color = colors.secondary, fontSize = 14.sp)
+                    if (cancel != null) TextAction("キャンセル", colors, style = TextActionStyle.Plain, click = cancel)
+                }
+            }
+        }
+    }
+}
+
 @Composable
 internal fun BrandPage(
     title: String, detail: String, colors: AndroidColors, loading: Boolean = false,
