@@ -20,6 +20,12 @@ struct NotificationPreviewKey: Codable, Equatable, Sendable {
 
 struct NotificationPreviewKeyStore {
     var account = "current"
+    var authorizationDirectory: URL? = FileManager.default.containerURL(
+        forSecurityApplicationGroupIdentifier: "group.works.zli.zoo")?.appendingPathComponent("notification-preview")
+    var writeAuthorization: @Sendable (Data, URL) throws -> Void = { data, url in
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+    }
     var updateItem: @Sendable (CFDictionary, CFDictionary) -> OSStatus = { SecItemUpdate($0, $1) }
     var deleteItem: @Sendable (CFDictionary) -> OSStatus = { SecItemDelete($0) }
     private func query() throws -> [String: Any] {
@@ -37,6 +43,18 @@ struct NotificationPreviewKeyStore {
         NSError(domain: NSOSStatusErrorDomain, code: Int(status))
     }
 
+    private func authorizationURL() throws -> URL {
+        guard let authorizationDirectory else { throw error(errSecMissingEntitlement) }
+        let name = SHA256.hash(data: Data(account.utf8)).map { String(format: "%02x", $0) }.joined()
+        return authorizationDirectory.appendingPathComponent(name)
+    }
+
+    private func authorization(_ key: NotificationPreviewKey) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        return Data(SHA256.hash(data: try encoder.encode(key)))
+    }
+
     func load() throws -> NotificationPreviewKey? {
         var request = try query()
         request[kSecReturnData as String] = true
@@ -45,16 +63,30 @@ struct NotificationPreviewKeyStore {
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess else { throw error(status) }
         guard let data = result as? Data else { throw error(errSecDecode) }
-        return try JSONDecoder().decode(NotificationPreviewKey?.self, from: data)
+        guard let key = try JSONDecoder().decode(NotificationPreviewKey?.self, from: data) else { return nil }
+        // Keychain が復旧しても、アプリが失効させた鍵や旧版の未承認の鍵は拡張へ返さない。
+        let allowed: Data
+        do { allowed = try Data(contentsOf: authorizationURL()) }
+        catch let error as CocoaError where error.code == .fileReadNoSuchFile { return nil }
+        return try allowed == authorization(key) ? key : nil
     }
 
     func save(_ key: NotificationPreviewKey?) throws {
         let query = try query()
         guard let key else {
+            var authorizationFailed = false
+            do { try writeAuthorization(Data(), authorizationURL()) }
+            catch { authorizationFailed = true }
             // 削除だけが失敗しても復号を止めるため、先に同じ共有項目を鍵なしへ更新する。
-            _ = updateItem(query as CFDictionary, [kSecValueData as String: Data("null".utf8)] as CFDictionary)
+            let invalidation = updateItem(query as CFDictionary, [kSecValueData as String: Data("null".utf8)] as CFDictionary)
             let status = deleteItem(query as CFDictionary)
-            guard status == errSecSuccess || status == errSecItemNotFound else { throw error(status) }
+            guard status == errSecSuccess || status == errSecItemNotFound else {
+                if authorizationFailed && invalidation != errSecSuccess && invalidation != errSecItemNotFound {
+                    throw NSError(domain: NSOSStatusErrorDomain, code: Int(status), userInfo: [NSLocalizedDescriptionKey:
+                        "通知の無効化記録・鍵の無効化・鍵の削除がすべて失敗しました。再起動後や遅れて届く通知に以前の本文が表示される可能性があります。端末のロック解除と空き容量の確認後に再試行してください。"])
+                }
+                throw error(status)
+            }
             return
         }
         let attributes: [String: Any] = [
@@ -66,6 +98,7 @@ struct NotificationPreviewKeyStore {
             status = SecItemAdd(query.merging(attributes) { _, new in new } as CFDictionary, nil)
         }
         guard status == errSecSuccess else { throw error(status) }
+        try writeAuthorization(authorization(key), authorizationURL())
     }
 }
 

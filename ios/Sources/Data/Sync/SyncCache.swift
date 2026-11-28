@@ -18,6 +18,7 @@ actor SyncCache {
     private var memoryPermissions: Set<String> = []
     private var revokedPermissions: Set<String> = []
     private var permissionsDirectory: URL?
+    private var revocations: (any CacheRevocationStorage)?
     static let revocationResources = ["shape:api/shapes/notifications", "snapshot:api/shapes/notifications",
                                       "shape:api/shapes/channels", "snapshot:api/shapes/channels", "workspace:channels",
                                       "shape:api/shapes/user_pinned_channels", "snapshot:api/shapes/user_pinned_channels",
@@ -28,7 +29,8 @@ actor SyncCache {
 
     @concurrent static func open(inMemory: Bool = false, url: URL? = nil, attachmentDirectory: URL? = nil,
                                 beforeSave: (@Sendable () throws -> Void)? = nil,
-                                beforeDelete: (@Sendable () throws -> Void)? = nil) async throws -> SyncCache {
+                                beforeDelete: (@Sendable () throws -> Void)? = nil,
+                                revocations: (any CacheRevocationStorage)? = nil) async throws -> SyncCache {
         let schema = Schema([CachedSyncRecord.self, CachedSyncAccount.self])
         let configuration: ModelConfiguration
         if let url {
@@ -38,8 +40,12 @@ actor SyncCache {
                                                isStoredInMemoryOnly: inMemory, cloudKitDatabase: .none)
         }
         let cache = try SyncCache(modelContainer: ModelContainer(for: schema, configurations: configuration))
+        // 本番のコンテナ絶対パスはアプリ更新で変わるため、Keychain では固定の論理名を使う。
+        // 明示 URL の独立ストアは、テストなどで同じ利用者の記録が混ざらないよう分ける。
+        let namespace = url.map { $0.appendingPathExtension("permissions").path } ?? "ElectricCache-v1"
         await cache.configurePermissions(inMemory && url == nil ? nil : configuration.url.appendingPathExtension("permissions"),
-                                         beforeSave: beforeSave, beforeDelete: beforeDelete)
+                                         beforeSave: beforeSave, beforeDelete: beforeDelete,
+                                         revocations: revocations ?? (inMemory && url == nil ? nil : KeychainCacheRevocations(namespace: namespace)))
         let directory = attachmentDirectory ?? url.map { $0.appendingPathExtension("attachments") }
             ?? (inMemory ? nil : URL.cachesDirectory.appendingPathComponent("ZooAttachments-v1"))
         await cache.configureAttachments(directory)
@@ -47,8 +53,9 @@ actor SyncCache {
     }
 
     private func configurePermissions(_ directory: URL?, beforeSave: (@Sendable () throws -> Void)?,
-                                      beforeDelete: (@Sendable () throws -> Void)?) {
+                                      beforeDelete: (@Sendable () throws -> Void)?, revocations: (any CacheRevocationStorage)?) {
         permissionsDirectory = directory
+        self.revocations = revocations
         self.beforeSave = beforeSave
         self.beforeDelete = beforeDelete
     }
@@ -66,6 +73,8 @@ actor SyncCache {
     private func hasPermission(_ scope: String, account: String) -> Bool {
         let key = account + "|" + scope
         guard !revokedPermissions.contains(key) else { return false }
+        // Keychain の確認ができない間も、古い許可ファイルだけで復元しない。
+        if let revocations, (try? revocations.contains(key)) != false { return false }
         guard let url = permissionURL(scope, account: account) else { return memoryPermissions.contains(key) }
         return (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
     }
@@ -77,6 +86,7 @@ actor SyncCache {
             try Data().write(to: url, options: .atomic)
         }
         let key = account + "|" + scope
+        try revocations?.allow(key)
         memoryPermissions.insert(key)
         revokedPermissions.remove(key)
     }
@@ -85,9 +95,14 @@ actor SyncCache {
         let key = account + "|" + scope
         revokedPermissions.insert(key)
         memoryPermissions.remove(key)
-        guard let url = permissionURL(scope, account: account) else { return }
-        do { try FileManager.default.removeItem(at: url) }
-        catch CocoaError.fileNoSuchFile { }
+        var failure: (any Error)?
+        do { try revocations?.revoke(key) } catch { failure = error }
+        if let url = permissionURL(scope, account: account) {
+            do { try FileManager.default.removeItem(at: url) }
+            catch CocoaError.fileNoSuchFile { }
+            catch { if failure == nil { failure = error } }
+        }
+        if let failure { throw failure }
     }
 
     private func permissionScopes(resource: String, channelID: String?) -> [String] {
@@ -110,7 +125,9 @@ actor SyncCache {
 
     func profile(connection: String) throws -> Person? {
         let rows = try modelContext.fetch(FetchDescriptor<CachedSyncAccount>(predicate: #Predicate { $0.connection == connection }))
-        return try rows.first.map { try JSONDecoder().decode(Person.self, from: $0.profile) }
+        guard let row = rows.first else { return nil }
+        if let revocations, try revocations.contains(row.account + "|account") { return nil }
+        return try JSONDecoder().decode(Person.self, from: row.profile)
     }
 
     func updateProfile(_ user: Person, lease: SyncLease) throws {
@@ -126,6 +143,10 @@ actor SyncCache {
         // 取り消された復元が、後続ログインのleaseや保存済みアカウントを変更しない。
         try Task.checkCancellation()
         let account = connection + ":" + user.id
+        if let revocations, try revocations.contains(account + "|account") {
+            // ログアウト時の DB 削除が失敗した場合は、再ログインでも古い行を引き継がない。
+            try deleteRecords(account: account)
+        }
         let data = try JSONEncoder().encode(user)
         let rows = try modelContext.fetch(FetchDescriptor<CachedSyncAccount>(predicate: #Predicate { $0.connection == connection }))
         if let row = rows.first {
@@ -139,6 +160,7 @@ actor SyncCache {
             modelContext.insert(CachedSyncAccount(connection: connection, account: account, profile: data))
         }
         try save()
+        try revocations?.allow(account + "|account")
         let lease = SyncLease(account: account, generation: UUID())
         leases[account] = lease.generation
         channelVersions = channelVersions.filter { !$0.key.hasPrefix(account + ":") }
@@ -149,6 +171,7 @@ actor SyncCache {
 
     func load(_ resource: String, lease: SyncLease) throws -> Data? {
         try check(lease)
+        if let revocations, (try? revocations.contains(lease.account + "|account")) != false { return nil }
         let id = lease.account + "|" + resource
         guard let row = try modelContext.fetch(FetchDescriptor<CachedSyncRecord>(predicate: #Predicate { $0.id == id })).first else { return nil }
         if let channelID = row.channelID, blockedChannels.contains(lease.account + ":" + channelID) { return nil }
@@ -301,11 +324,14 @@ actor SyncCache {
     }
 
     private func deleteRecords(account: String) throws {
+        // アカウント全体の削除でも、許可ディレクトリと DB の同時失敗に備える。
+        try? revocations?.revoke(account + "|account")
         try? attachmentFiles?.remove(account: account)
         if let directory = permissionDirectory(account: account) { try? FileManager.default.removeItem(at: directory) }
         memoryPermissions = memoryPermissions.filter { !$0.hasPrefix(account + "|") }
         revokedPermissions = revokedPermissions.filter { !$0.hasPrefix(account + "|") }
         recordVersions = recordVersions.filter { !$0.key.hasPrefix(account + "|") }
+        try beforeDelete?()
         try modelContext.delete(model: CachedSyncRecord.self, where: #Predicate { $0.account == account })
         channelVersions = channelVersions.filter { !$0.key.hasPrefix(account + ":") }
         blockedChannels = blockedChannels.filter { !$0.hasPrefix(account + ":") }

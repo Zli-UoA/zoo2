@@ -58,7 +58,7 @@ struct NotificationPreviewTests {
         #expect(rendered.userInfo[NotificationPreview.renderedKey] == nil)
     }
 
-    @Test("無効化更新か鍵削除が成功すれば旧鍵を返さず、同時失敗は既知の制約として残る", arguments: [(false, true), (true, false), (true, true)])
+    @Test("無効化更新と鍵削除が同時に失敗しても、共有記録で遅延通知の復号を止める", arguments: [(false, true), (true, false), (true, true)])
     func invalidationAndDeletion(failures: (Bool, Bool)) throws {
         let live = NotificationPreviewKeyStore(account: "preview-test-" + UUID().uuidString)
         defer { try? live.save(nil) }
@@ -70,7 +70,51 @@ struct NotificationPreviewTests {
             try failing.save(nil)
             #expect(!failures.1)
         } catch { #expect(failures.1) }
-        #expect(try live.load() == (failures.0 && failures.1 ? key : nil))
+        #expect(try live.load() == nil)
+        let delayed = NotificationPreview.content(for: content(reaction), key: try live.load())
+        #expect(delayed.body == content(reaction).body)
+        #expect(delayed.userInfo[NotificationPreview.renderedKey] == nil)
+        // 障害が続く拡張の再生成と、復旧後の再登録をそれぞれ確認する。
+        #expect(try failing.load() == nil)
+        try live.save(nil)
+        let replacement = NotificationPreviewKey(userID: userID, secret: String(repeating: "cd", count: 32))
+        try live.save(replacement)
+        #expect(try live.load() == replacement)
+        #expect(NotificationPreview.content(for: content(reaction), key: try live.load()).body == content(reaction).body)
+    }
+
+    @Test("共有記録も含む全操作の失敗は案内し、復旧後の無効化を再試行する")
+    func allInvalidationsFail() throws {
+        let live = NotificationPreviewKeyStore(account: "preview-test-" + UUID().uuidString)
+        defer { try? live.save(nil) }
+        try live.save(key)
+        var failing = live
+        failing.writeAuthorization = { _, _ in throw CocoaError(.fileWriteOutOfSpace) }
+        failing.updateItem = { _, _ in errSecInteractionNotAllowed }
+        failing.deleteItem = { _ in errSecInteractionNotAllowed }
+        do {
+            try failing.save(nil)
+            Issue.record("同時失敗を通知しませんでした。")
+        } catch { #expect(error.localizedDescription.contains("以前の本文が表示される可能性")) }
+        #expect(try live.load() == key)
+        try live.save(nil)
+        #expect(try live.load() == nil)
+    }
+
+    @Test("共有記録が欠ける旧鍵や記録を読めない状態では本文を表示しない")
+    func requiresSharedAuthorization() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let live = NotificationPreviewKeyStore(account: "preview-test-" + UUID().uuidString, authorizationDirectory: directory)
+        defer { try? live.save(nil); try? FileManager.default.removeItem(at: directory) }
+        try live.save(key)
+        #expect(try live.load() == key)
+        try FileManager.default.removeItem(at: directory)
+        #expect(try live.load() == nil)
+        try Data().write(to: directory)
+        #expect(throws: (any Error).self) { try live.load() }
+        try FileManager.default.removeItem(at: directory)
+        try live.save(key)
+        #expect(try live.load() == key)
     }
 
     @Test("端末登録の復号鍵とリアクション表示が共通ベクトルに一致する")
