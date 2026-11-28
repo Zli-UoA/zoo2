@@ -124,6 +124,17 @@ final class PreviewChatClient: ChatClient {
         if ProcessInfo.processInfo.arguments.contains("--uitesting-mfm-plain-link") {
             allMessages[0].content = serverURL + "/channels/55555555-5555-4555-8555-555555555555"
         }
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-message-target") {
+            let reply = ProcessInfo.processInfo.arguments.contains("--uitesting-message-target-thread")
+            let replyID = "77777777-7777-4777-8777-777777777777"
+            let destination = reply ? "thread=\(Self.messageID)&message=\(replyID)" : "message=66666666-6666-4666-8666-666666666666"
+            allMessages[0].content = "[投稿へ移動](\(serverURL)/channels/\(Self.channelID)?\(destination))"
+            allMessages[1].content = "リンク先のメッセージ"
+            if reply {
+                allMessages.append(Message(id: replyID, user_id: colleague.id, channel_id: Self.channelID,
+                                           content: "リンク先の返信", created_at: "2026-11-18T09:02:00Z", parent_id: Self.messageID))
+            }
+        }
 
         if ProcessInfo.processInfo.arguments.contains("--uitesting-e2ee") {
             // 暗号化チャンネル：鍵がまだ届いていない暗号文の行と、平文の行（表示しない）。

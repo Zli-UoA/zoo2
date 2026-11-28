@@ -9,6 +9,7 @@ enum AppDesign {
     static let navigationTint = adaptiveColor(light: 0x424242, dark: 0xD9D9D9)
     static let link = adaptiveColor(light: 0x1D4ED8, dark: 0x8AB4FF)
     static let externalLink = Color(uiColor: .link)
+    static let messageTarget = primary
     // 背景・カード・選択状態に明度差をつけ、真っ黒の強い対比を和らげる。
     static let background = Color("AppBackground")
     static let surface = adaptiveColor(light: .secondarySystemBackground, dark: 0x242427)

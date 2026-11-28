@@ -68,6 +68,8 @@ struct MessageList: View {
     @State private var preservesFocusedPosition = false
     @State private var userScrolling = false
     @State private var viewport = MessageViewport()
+    @State private var targetHighlight: MessageTargetHighlight?
+    @State private var hasAppeared = false
 
     private var positionKey: String {
         "\(messages.last?.id ?? "")|\(readStateLoaded)|\(store.loading)|\(scrollTarget.map { id in messages.contains { $0.id == id } } ?? false)"
@@ -81,6 +83,24 @@ struct MessageList: View {
     }
 
     private var scrollTarget: String? { isVisible ? store.focusedMessageID : nil }
+    private var canHighlightTarget: Bool { hasAppeared && isVisible && scenePhase == .active && store.active && !store.blocked }
+
+    private func positionFocusedMessage(_ id: String) {
+        let followsLatest = store.followsFocusedMessageToLatest
+        preservesFocusedPosition = !followsLatest
+        followsLatestIntent = followsLatest
+        positionedInitialMessages = true
+        scrollPosition.scrollTo(id: id, anchor: followsLatest ? .bottom : .center)
+        targetHighlight = followsLatest ? nil : MessageTargetHighlight(messageID: id)
+        startTargetHighlightIfVisible()
+        store.focusedMessageID = nil
+    }
+
+    private func startTargetHighlightIfVisible() {
+        guard canHighlightTarget, var highlight = targetHighlight, highlight.startedAt == nil else { return }
+        highlight.startIfVisible(frame: viewport.frames[highlight.messageID], viewport: viewport.bounds)
+        if highlight.startedAt != nil { targetHighlight = highlight }
+    }
 
     private var selectedMessage: Message? {
         guard case .messageActions(let sheet) = workspace.presentedSheet,
@@ -170,6 +190,7 @@ struct MessageList: View {
                         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
                             viewport.frames[message.id] = frame
                             updateHistoryAnchor()
+                            startTargetHighlightIfVisible()
                         }
                         .id(message.id)
                     }
@@ -188,6 +209,7 @@ struct MessageList: View {
             // このフレームはすでにナビゲーションと入力欄の安全領域を除いている。
             viewport.bounds = $0
             updateHistoryAnchor()
+            startTargetHighlightIfVisible()
         }
         .scrollDismissesKeyboard(.interactively)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidChangeFrameNotification)) { _ in
@@ -256,7 +278,10 @@ struct MessageList: View {
                 }
             }
         }
-        .onChange(of: messageIDs) { _, ids in renderCache.updateMessages(ids) }
+        .onChange(of: messageIDs) { _, ids in
+            renderCache.updateMessages(ids)
+            if let highlight = targetHighlight, !ids.contains(highlight.messageID) { targetHighlight = nil }
+        }
         .onChange(of: store.historyRevision) { _, revision in
             guard let pending = viewport.pendingRevision, pending != revision else { return }
             if isVisible, let anchor = viewport.pendingAnchor, messageIDs.contains(anchor.id) {
@@ -277,12 +302,7 @@ struct MessageList: View {
         .onChange(of: positionKey, initial: true) { _, _ in
             guard isVisible, !messages.isEmpty, !store.loading, parentID != nil || readStateLoaded else { return }
             if let focused = scrollTarget, messages.contains(where: { $0.id == focused }) {
-                let followsLatest = store.followsFocusedMessageToLatest
-                preservesFocusedPosition = !followsLatest
-                followsLatestIntent = followsLatest
-                positionedInitialMessages = true
-                scrollPosition.scrollTo(id: focused, anchor: followsLatest ? .bottom : .center)
-                store.focusedMessageID = nil
+                positionFocusedMessage(focused)
             } else if !preservesFocusedPosition && (!positionedInitialMessages || followingLatest) {
                 followsLatestIntent = true
                 let openingReplyComposer = !positionedInitialMessages && focusComposerOnAppear
@@ -301,13 +321,25 @@ struct MessageList: View {
         .onChange(of: scrollTarget, initial: true) { _, id in
             if id != nil { viewport.pendingRevision = nil; viewport.pendingAnchor = nil }
             if let id, id == scrollTarget, messages.contains(where: { $0.id == id }) {
-                let followsLatest = store.followsFocusedMessageToLatest
-                preservesFocusedPosition = !followsLatest
-                followsLatestIntent = followsLatest
-                positionedInitialMessages = true
-                scrollPosition.scrollTo(id: id, anchor: followsLatest ? .bottom : .center)
-                store.focusedMessageID = nil
+                positionFocusedMessage(id)
             }
+        }
+        .task(id: targetHighlight) {
+            guard let highlight = targetHighlight, let startedAt = highlight.startedAt else { return }
+            let remaining = max(0, MessageTargetHighlight.duration - Date.now.timeIntervalSince(startedAt))
+            do { try await Task.sleep(for: .seconds(remaining)) } catch { return }
+            if targetHighlight?.generation == highlight.generation { targetHighlight = nil }
+        }
+        .onChange(of: canHighlightTarget) { _, allowed in
+            if !allowed { targetHighlight = nil }
+            else { startTargetHighlightIfVisible() }
+        }
+        .background {
+            ThreadAppearanceObserver {
+                hasAppeared = true
+                startTargetHighlightIfVisible()
+            }
+            .frame(width: 0, height: 0)
         }
         .overlay(alignment: .center) {
             if store.loading && messages.isEmpty {
@@ -324,6 +356,7 @@ struct MessageList: View {
                     followsLatestIntent = true
                     preservesFocusedPosition = false
                     store.focusedMessageID = nil
+                    targetHighlight = nil
                     // 長文の遅延計測中に行の高さと位置がアニメーションして重なるのを避ける。
                     scrollPosition.scrollTo(id: last.id, anchor: .bottom)
                 } label: {
@@ -335,6 +368,8 @@ struct MessageList: View {
             }
         }
         .onDisappear {
+            hasAppeared = false
+            targetHighlight = nil
             renderCache.cancelLoads()
             viewport.pendingRevision = nil
             viewport.pendingAnchor = nil
@@ -522,10 +557,15 @@ struct MessageList: View {
         .padding(.horizontal, horizontalPadding).padding(.vertical, AppDesign.spacing)
         .background {
             // 余白でだけ長押しを受け取り、添付やスタンプ固有の操作を優先する。
-            (store.focusedMessageID == message.id ? AppDesign.selectionBackground : .clear)
+            Color.clear
                 .contentShape(Rectangle())
                 .onLongPressGesture(perform: showActions, onPressingChanged: pressingChanged)
                 .accessibilityHidden(true)
+        }
+        .background {
+            if let highlight = targetHighlight, highlight.messageID == message.id, highlight.startedAt != nil {
+                MessageTargetGlow(highlight: highlight)
+            }
         }
         .contentShape(Rectangle())
         .modifier(MessagePressFeedback(isEnabled: hasActions(for: message), isPressing: pressingMessageID == message.id))
