@@ -209,6 +209,7 @@ internal sealed interface AndroidUiAction {
     data class ActOnEntry(val item: TimelineItem, val operation: EntryOperation, val value: String = "", val reactionImageId: String? = null, val quotedMedia: Boolean = false) : AndroidUiAction
     data class RespondFollow(val actor: String, val activity: String, val accept: Boolean) : AndroidUiAction
     data class RemoveFile(val id: String) : AndroidUiAction
+    data class ToggleFileSensitive(val id: String) : AndroidUiAction
     data class SelectInput(val range: TextRange) : AndroidUiAction
     data class Mention(val name: String) : AndroidUiAction
     data class ViewedNotification(val id: String) : AndroidUiAction
@@ -904,6 +905,7 @@ internal fun ColumnScope.TimelineWithInput(
                 onMention = { dispatch(AndroidUiAction.Mention(it)) },
                 onSelection = { dispatch(AndroidUiAction.SelectInput(it)) },
                 onRemoveFile = { dispatch(AndroidUiAction.RemoveFile(it)) },
+                onToggleFileSensitive = { dispatch(AndroidUiAction.ToggleFileSensitive(it)) },
                 hideIdleHandle = hideIdleHandle, canResize = canResize,
                 onResizeChanged = { resizing = it })
         }

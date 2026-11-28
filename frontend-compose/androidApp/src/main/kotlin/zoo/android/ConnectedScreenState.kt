@@ -220,6 +220,10 @@ internal class ConnectedScreenState(
     var postDraft by mutableStateOf("")
     var replyDraft by mutableStateOf("")
     val bubble = BubbleController(app)
+    val typing = TypingPresence({ path, method, body -> app.api.request(path, method, body) }, platform.uuid())
+
+    /** [typing] に渡す、会話・スレッドの下書きの本文（スナップショットの読み取り）。 */
+    fun draftText(key: String): String = draft(key).text
     var photosOpen by mutableStateOf(false)
     var recent by mutableStateOf<List<RecentPhoto>>(emptyList())
     var postDetail by mutableStateOf<List<Row>>(emptyList())
@@ -238,10 +242,22 @@ internal class ConnectedScreenState(
     private val notificationLevelLocks = mutableMapOf<String, Mutex>()
     private val drafts = mutableStateMapOf<String, InputState>()
 
+    /**
+     * 会話とスレッドの下書き。本文だけを端末（アカウント単位の保存先）にも残し、アプリを閉じても戻せるようにする
+     * （iOS と同じ）。まだ触っていない会話は、保存した本文から始める。送信すると消す。
+     */
+    private fun draft(key: String): InputState = drafts[key] ?: InputState(text = platform.readDraft(key))
+
+    private fun putDraft(key: String, value: InputState) {
+        val previous = draft(key).text
+        drafts[key] = value
+        if (value.text != previous) platform.writeDraft(key, value.text)
+    }
+
     fun collapseInput(channelId: String?, threadId: String?): Boolean {
         val key = channelId?.let { it + (threadId?.let { ":$it" } ?: "") } ?: return false
-        val draft = drafts[key]?.takeIf { it.expanded } ?: return false
-        drafts[key] = draft.copy(expanded = false)
+        val draft = draft(key).takeIf { it.expanded } ?: return false
+        putDraft(key, draft.copy(expanded = false))
         return true
     }
 
@@ -687,7 +703,7 @@ internal class ConnectedScreenState(
     }
 
     fun input(key: String, canPost: Boolean, people: List<Row> = emptyList()): InputState {
-        val draft = drafts[key] ?: InputState()
+        val draft = draft(key)
         val files = channelFiles[key]
         val mention = mentionRange(draft)
         return draft.copy(
@@ -695,6 +711,9 @@ internal class ConnectedScreenState(
             canSend = canPost && !saving && (files == null || files.canSend(draft.text)),
             hasAttachments = files?.items?.isNotEmpty() == true,
             files = files?.items?.map { it.file.text("id") to it.name }.orEmpty(),
+            // 暗号化チャンネルの添付は、本文に入れて暗号化するので、添付ごとのセンシティブ指定を送れない。
+            sensitiveFiles = if (key in encryptedFileKeys) null
+                else files?.items?.filter { it.sensitive }?.map { it.file.text("id") }.orEmpty().toSet(),
         )
     }
 
@@ -1094,18 +1113,21 @@ internal class ConnectedScreenState(
                 is AndroidScreen.NewPost -> postSelection = action.range
                 is AndroidScreen.Post -> replySelection = action.range
                 is AndroidScreen.Conversation, is AndroidScreen.Thread ->
-                    drafts[draftKey] = (drafts[draftKey] ?: InputState()).copy(selection = action.range)
+                    putDraft(draftKey, draft(draftKey).copy(selection = action.range))
                 else -> Unit
             }
             is AndroidUiAction.RemoveFile -> {
                 val attachments = if (screen is AndroidScreen.NewPost) postFiles else channelFiles[draftKey]
                 attachments?.items?.firstOrNull { it.file.text("id") == action.id }?.let { attachments.remove(it) }
             }
+            is AndroidUiAction.ToggleFileSensitive -> if (draftKey !in encryptedFileKeys) {
+                channelFiles[draftKey]?.items?.firstOrNull { it.file.text("id") == action.id }?.let { it.sensitive = !it.sensitive }
+            }
             is AndroidUiAction.Mention -> {
-                val draft = drafts[draftKey] ?: InputState()
+                val draft = draft(draftKey)
                 mentionRange(draft)?.let { range ->
                     val (text, caret) = zoo.insertCompletion(draft.text, range, action.name)
-                    drafts[draftKey] = draft.copy(text = text, selection = TextRange(caret))
+                    putDraft(draftKey, draft.copy(text = text, selection = TextRange(caret)))
                 }
             }
             AndroidUiAction.RetryNotifications -> app.activityPubNotifications.refresh()
@@ -1117,7 +1139,7 @@ internal class ConnectedScreenState(
                 is AndroidScreen.NewPost -> postDraft = action.text
                 is AndroidScreen.Post -> replyDraft = action.text
                 is AndroidScreen.Bubble -> bubble.edit(action.text)
-                else -> drafts[draftKey] = (drafts[draftKey] ?: InputState()).copy(text = action.text)
+                else -> putDraft(draftKey, draft(draftKey).copy(text = action.text))
             }
             is AndroidUiAction.UseInputTool -> inputTool(action.tool, screen, channelId, draftKey, rows)
             is AndroidUiAction.OpenPost -> openPost(action.id)
@@ -1318,7 +1340,7 @@ internal class ConnectedScreenState(
             is AndroidScreen.EditEntry -> InputState(editDraft, selection = editSelection)
             is AndroidScreen.NewPost -> InputState(postDraft, selection = postSelection)
             is AndroidScreen.Post -> InputState(replyDraft, selection = replySelection)
-            else -> drafts[key] ?: InputState()
+            else -> draft(key)
         }
         val start = (draft.selection?.min ?: draft.text.length).coerceIn(0, draft.text.length)
         val end = (draft.selection?.max ?: draft.text.length).coerceIn(start, draft.text.length)
@@ -1337,7 +1359,7 @@ internal class ConnectedScreenState(
             is AndroidScreen.EditEntry -> { editDraft = text; editSelection = cursor }
             is AndroidScreen.NewPost -> { postDraft = text; postSelection = cursor }
             is AndroidScreen.Post -> { replyDraft = text; replySelection = cursor }
-            else -> drafts[key] = draft.copy(text = text, selection = cursor)
+            else -> putDraft(key, draft.copy(text = text, selection = cursor))
         }
         inputMenu = null
     }
@@ -1346,8 +1368,8 @@ internal class ConnectedScreenState(
         when (tool) {
             InputTool.Expand -> when (screen) {
                 is AndroidScreen.Conversation, is AndroidScreen.Thread -> {
-                    val draft = drafts[key] ?: InputState()
-                    drafts[key] = draft.copy(expanded = !draft.expanded)
+                    val draft = draft(key)
+                    putDraft(key, draft.copy(expanded = !draft.expanded))
                 }
                 else -> Unit
             }
@@ -1439,16 +1461,19 @@ internal class ConnectedScreenState(
                         }
                         is AndroidScreen.Conversation, is AndroidScreen.Thread -> {
                             val files = channelFiles[key]
-                            val draft = drafts[key] ?: InputState()
+                            val draft = draft(key)
                             val sent = files?.items?.toList().orEmpty()
                             val uploaded = sent.mapNotNull { it.uploaded }
                             // 暗号化チャンネルの添付は、暗号化して上げたときの本文の `attachments` の値を渡す。
                             val encryptedFiles = uploaded.mapNotNull { it["encrypted"] as? JsonObject }
                             val ids = uploaded.filter { it["encrypted"] == null }.map { it.text("id") }
+                            val sensitiveIds = sent.filter { it.sensitive }.mapNotNull { it.uploaded }
+                                .filter { it["encrypted"] == null }.map { it.text("id") }
                             if (uploaded.size == sent.size && app.send(
-                                channelId, draft.text, app.thread, attachmentIds = ids, encryptedAttachments = encryptedFiles,
+                                channelId, draft.text, app.thread, attachmentIds = ids, sensitiveAttachmentIds = sensitiveIds,
+                                encryptedAttachments = encryptedFiles,
                             )) {
-                                drafts[key] = InputState(lastSend = platform.uuid())
+                                putDraft(key, InputState(lastSend = platform.uuid()))
                                 files?.items?.clear()
                                 files?.release(sent)
                             }

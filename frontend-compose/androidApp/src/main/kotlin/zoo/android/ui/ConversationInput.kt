@@ -64,6 +64,10 @@ internal data class InputState(val text: String = "", val expanded: Boolean = fa
     /** 暗号化チャンネルの送信画面の表示（増えた配布先と、鍵を配れない相手。#565）。何もなければ空。 */
     val notices: List<String> = emptyList(),
     val lastSend: String? = null,
+    /** 「○○が入力中…」。誰も入力していなければ null。 */
+    val typing: String? = null,
+    /** センシティブにした添付の ID。添付ごとに指定できない場面（暗号化チャンネルなど）では null。 */
+    val sensitiveFiles: Set<String>? = null,
 )
 internal enum class InputTool { Attach, Format, Emoji, Send, Expand }
 
@@ -77,6 +81,7 @@ internal fun ConversationInput(
     onMention: (String) -> Unit = {},
     onSelection: (TextRange) -> Unit = {},
     onRemoveFile: (String) -> Unit = {},
+    onToggleFileSensitive: (String) -> Unit = {},
     hideIdleHandle: Boolean = false,
     canResize: Boolean = true,
     onResizeChanged: (Boolean) -> Unit = {},
@@ -170,11 +175,20 @@ internal fun ConversationInput(
             .background(colors.inputSurface).padding(bottom = AndroidControlSize.inputEdgeInset),
             contents = listOf(
                 {
-                    if (state.notices.isNotEmpty()) {
-                        Column(Modifier.fillMaxWidth().testTag("encryption-recipients").verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp)
-                            .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
-                            verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            state.notices.forEach { Text(it, color = colors.inputHint, fontSize = 12.sp) }
+                    if (state.notices.isNotEmpty() || state.typing != null) Column(Modifier.fillMaxWidth()) {
+                        if (state.notices.isNotEmpty()) {
+                            Column(Modifier.fillMaxWidth().testTag("encryption-recipients").verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp)
+                                .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
+                                verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                state.notices.forEach { Text(it, color = colors.inputHint, fontSize = 12.sp) }
+                            }
+                        }
+                        state.typing?.let { typing ->
+                            Text(typing, Modifier.fillMaxWidth().testTag("typing-indicator")
+                                .padding(horizontal = 16.dp).padding(top = 6.dp)
+                                .semantics { liveRegion = LiveRegionMode.Polite },
+                                color = colors.inputHint, fontSize = 12.sp, maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                         }
                     }
                 },
@@ -268,7 +282,16 @@ internal fun ConversationInput(
                             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp)
                                 .horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 state.files.forEach { (id, name) ->
-                                    TextAction(name, colors, icon = UiIcon.Close, style = TextActionStyle.Neutral) { onRemoveFile(id) }
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        state.sensitiveFiles?.let { sensitive ->
+                                            val hidden = id in sensitive
+                                            UiIconButton(if (hidden) UiIcon.EyeOff else UiIcon.Eye,
+                                                if (hidden) "「$name」のセンシティブ指定を外す" else "「$name」をセンシティブにする",
+                                                if (hidden) colors.foreground else colors.inputHint, { onToggleFileSensitive(id) },
+                                                modifier = Modifier.testTag("file-sensitive"))
+                                        }
+                                        TextAction(name, colors, icon = UiIcon.Close, style = TextActionStyle.Neutral) { onRemoveFile(id) }
+                                    }
                                 }
                             }
                         }
