@@ -1155,6 +1155,9 @@ internal class ConnectedScreenState(
                     drafts[draftKey] = (drafts[draftKey] ?: InputState()).copy(selection = action.range)
                 else -> Unit
             }
+            is AndroidUiAction.SetPhotoSensitive -> if (screen is AndroidScreen.NewPost) {
+                postFiles.items.find { it.file.text("id") == action.id }?.sensitive = action.sensitive
+            }
             is AndroidUiAction.DescribePhoto -> if (screen is AndroidScreen.NewPost && action.description.codePointCount(0, action.description.length) <= 1000) {
                 postFiles.items.find { it.file.text("id") == action.id }?.description = action.description
             }
@@ -1487,6 +1490,7 @@ internal class ConnectedScreenState(
                                 draft.uploaded?.text("id")?.takeIf { draft.description.isNotBlank() }?.let { it to JsonPrimitive(draft.description) }
                             }.toMap()
                             app.api.request("/api/home", "POST", obj("content" to text, "image_descriptions" to JsonObject(descriptions),
+                                "sensitive_image_ids" to JsonArray(sent.filter { it.sensitive }.mapNotNull { it.uploaded?.get("id") }),
                                 "apub" to (federatePost && federationAvailable), "visibility" to postVisibility, "image_ids" to JsonArray(ids.map(::JsonPrimitive))))
                             val sentIds = sent.map { it.file.text("id") }.toSet()
                             postFiles.items.removeAll { it.file.text("id") in sentIds }

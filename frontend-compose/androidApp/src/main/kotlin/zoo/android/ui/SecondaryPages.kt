@@ -51,7 +51,7 @@ internal data class SelectionItem(
     val selected: Boolean? = null,
     val unavailable: String? = null,
 )
-internal data class RecentPhoto(val id: String, val label: String, val failed: Boolean = false, val description: String = "")
+internal data class RecentPhoto(val id: String, val label: String, val failed: Boolean = false, val description: String = "", val sensitive: Boolean = false)
 
 @Composable
 internal fun DirectoryPage(
@@ -174,7 +174,14 @@ internal fun NewPostPage(
         ) {
             items(screen.attached, key = { it.id }) { item ->
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    photo(item, Modifier.size(72.dp).clip(RoundedCornerShape(10.dp)))
+                    Box {
+                        photo(item, Modifier.size(72.dp).clip(RoundedCornerShape(10.dp)))
+                        UiIconButton(if (item.sensitive) UiIcon.EyeOff else UiIcon.Eye,
+                            if (item.sensitive) "センシティブ指定を解除" else "センシティブに指定",
+                            colors.foreground, { dispatch(AndroidUiAction.SetPhotoSensitive(item.id, !item.sensitive)) },
+                            iconSize = 16.dp, modifier = Modifier.align(Alignment.TopEnd).size(32.dp)
+                                .background(colors.background, CircleShape))
+                    }
                     TextAction("説明", colors, style = TextActionStyle.Plain) { describing = item.id }
                     if (item.failed) TextAction("再試行", colors, icon = UiIcon.Refresh) { dispatch(AndroidUiAction.RetryFile(item.id)) }
                     TextAction("削除", colors, icon = UiIcon.Delete, style = TextActionStyle.Plain) { dispatch(AndroidUiAction.RemoveFile(item.id)) }
