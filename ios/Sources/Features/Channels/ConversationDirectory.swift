@@ -18,7 +18,8 @@ struct ConversationDirectory: View {
     private var canReopenChannel: Bool { !isSidebar && !directMessages && workspace.resumableChannel != nil }
 
     private var visible: [Channel] {
-        workspace.channels.filter {
+        guard workspace.pinsReady else { return [] }
+        return workspace.channels.filter {
             $0.is_dm == directMessages && $0.archive_at == nil && (workspace.joinedChannelIDs.contains($0.id) || workspace.pinnedChannelIDs.contains($0.id)) &&
             (!unreadOnly || workspace.unread.contains($0.id)) &&
             (search.isEmpty || workspace.name(for: $0).localizedStandardContains(search) ||
@@ -32,7 +33,7 @@ struct ConversationDirectory: View {
                 Label(error, systemImage: "wifi.exclamationmark")
             }
             let channels = visible
-            if channels.isEmpty && workspace.hasLoaded {
+            if channels.isEmpty && workspace.directoryReady {
                 Group {
                     if !search.isEmpty { ContentUnavailableView.search(text: search) }
                     else if unreadOnly { ContentUnavailableView("未読の会話はありません", systemImage: "checkmark.circle") }
@@ -65,7 +66,7 @@ struct ConversationDirectory: View {
             }
         }
         .overlay {
-            if !workspace.hasLoaded && (workspace.loading || workspace.error == nil) {
+            if workspace.directoryLoading {
                 ProgressView("読み込み中…")
                     .accessibilityIdentifier("directory-loading")
             }

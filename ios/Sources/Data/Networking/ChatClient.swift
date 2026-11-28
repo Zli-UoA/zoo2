@@ -53,6 +53,7 @@ struct CachedWorkspace: Sendable {
     let channels: [Channel]
     let people: [Person]
     let readStates: [ChannelReadState]
+    var pins: ChannelPins? = nil
 }
 
 extension ChatClient {

@@ -78,7 +78,7 @@ struct SiriMessageHandlerTests {
         for await _ in firstEvent.stream { break }
         #expect(notified)
         #expect(workspace.people[user.id] == user)
-        #expect(!workspace.hasLoaded)
+        #expect(!workspace.hasLoaded && !workspace.directoryReady)
         #expect(workspace.channels.isEmpty && workspace.joinedChannelIDs.isEmpty)
         run.cancel()
         await run.value
