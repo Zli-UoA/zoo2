@@ -755,7 +755,7 @@ internal fun ConnectedScreens(
             for (url in previewLinks) session.previews.load(previewService, url)
         }
     }
-    val linkedPosts = rememberPostPreviews(session, env.visible && env.online)
+    val linkedPosts = rememberPostPreviews(session, env.visible && env.online, platform.navigationCacheLimit)
     val compactCall = callScreen?.takeIf { !showFullCall }
     Column(Modifier.fillMaxSize().then(if (compactCall != null) Modifier.statusBarsPadding() else Modifier)) {
         if (compactCall != null) {

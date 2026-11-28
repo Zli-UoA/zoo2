@@ -7,6 +7,28 @@ import zoo.*
 import zoo.android.ui.PostPreview
 
 class LinkedPostPreviewsTest {
+    @Test fun onlyRecentPublicResultsSurviveScrollAndForegroundChanges() = runTest {
+        var now = 100L
+        var reads = 0
+        val source = LinkedPostPreviews({ ids ->
+            reads++
+            ids.map { id -> obj("id" to id, "content" to id, "visibility" to if (id == "private") "followers" else "public") }
+        }, "https://zoo.test", 1, { now })
+        suspend fun show(id: String) { source.watch(id); source.refresh(setOf(id), false); source.release(id) }
+        show("one"); show("one")
+        assertEquals(1, reads)
+        show("private"); show("private")
+        assertEquals(3, reads)
+        show("two"); show("one")
+        assertEquals(5, reads)
+        now += 30_001
+        show("one")
+        assertEquals(6, reads)
+        source.suspendDisplay()
+        show("one")
+        assertEquals(7, reads)
+    }
+
     @Test fun sharesResultsAndDropsTheBodyWhenTheReaderLosesAccess() = runTest {
         var allowed = true
         val requests = mutableListOf<List<String>>()
