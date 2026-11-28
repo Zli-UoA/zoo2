@@ -87,6 +87,10 @@ shared-post-link-light, typing-channel-dark, typing-channel-light, os-notificati
 
 ![共有先のライトとダーク](./share-sheet.png)
 
+チャンネル120件とDM80件の共有先。左から一覧の先頭、末尾、同名の相手をIDで絞り込んだ状態。
+
+![多数の共有先と検索](./share-many.png)
+
 ![元投稿と外部記事と投稿リンク](./post-cards.png)
 
 ![ホームのリアクションが0件・既存・選択済みの状態](./home-toolbar.png)
@@ -141,4 +145,4 @@ API 35のエミュレーターで、同じホームのCompose画面をライト�
 
 ![投稿操作の変更前後](post-controls-before-after.png)
 
-[149状態のCompose操作領域（dp）](control-bounds.tsv)。無効な操作、同じ操作の繰り返し、シート背後の画面も含む。座標は各Composeルート内の値。
+[152状態のCompose操作領域（dp）](control-bounds.tsv)。無効な操作、同じ操作の繰り返し、シート背後の画面も含む。座標は各Composeルート内の値。
