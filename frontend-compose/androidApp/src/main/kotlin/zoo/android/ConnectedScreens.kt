@@ -675,8 +675,9 @@ internal fun ConnectedScreens(
         screen is AndroidScreen.Thread -> screen.copy(input = screen.input.copy(notices = screen.input.notices + typingLabel))
         else -> screen
     }
-    LaunchedEffect(messageTable, generation, positionForHistory, canLoadUnreadHistory) {
-        if (screen !is AndroidScreen.Conversation || !canLoadUnreadHistory || messageTable == null) return@LaunchedEffect
+    val loadUnreadOnConversation = screen is AndroidScreen.Conversation && canLoadUnreadHistory
+    LaunchedEffect(messageTable, generation, positionForHistory, loadUnreadOnConversation) {
+        if (!loadUnreadOnConversation || messageTable == null) return@LaunchedEffect
         while (unreadPages < MAX_UNREAD_PAGES && !unreadHistoryFailed) {
             val page = messageTable.pageStates.first { states ->
                 states[PageScope.Main]?.let { it.loaded && !it.loading } == true
