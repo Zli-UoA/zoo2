@@ -7,6 +7,19 @@ import zoo.*
 import zoo.android.ui.PostPreview
 
 class LinkedPostPreviewsTest {
+    @Test fun oversizedFederatedIdDoesNotBlockOtherPreviews() = runTest {
+        val oversized = "https://remote.test/" + "猫".repeat(700)
+        val source = LinkedPostPreviews({ ids ->
+            assertEquals(listOf("local"), ids)
+            listOf(obj("id" to "local", "content" to "本文"))
+        }, "https://zoo.test")
+        source.watch(oversized)
+        source.watch("local")
+        source.refresh(setOf(oversized, "local"), false)
+        assertEquals(PostPreview.Unavailable, source.read(oversized))
+        assertEquals("本文", (source.read("local") as PostPreview.Loaded).body)
+    }
+
     @Test fun onlyRecentPublicResultsSurviveScrollAndForegroundChanges() = runTest {
         var now = 100L
         var reads = 0

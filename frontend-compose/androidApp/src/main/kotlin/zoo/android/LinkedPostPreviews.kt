@@ -73,7 +73,9 @@ internal class LinkedPostPreviews(private val fetch: suspend (List<String>) -> L
 
     internal suspend fun refresh(ids: Set<String>, invalidate: Boolean, version: Int = revision) {
         val pending = if (invalidate) ids else ids - previews.keys
-        for (batch in pending.chunked(100)) {
+        val (requestable, oversized) = pending.partition { it.encodeToByteArray().size <= 2048 }
+        oversized.filter(references::containsKey).forEach { previews[it] = PostPreview.Unavailable }
+        for (batch in requestable.chunked(100)) {
             try {
                 val results = fetch(batch).map { it.nested("post").ifEmpty { it } }.associateBy { it.text("id") }
                 for (id in batch) {
