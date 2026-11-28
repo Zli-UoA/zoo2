@@ -36,6 +36,7 @@ internal suspend fun pollWhileVisible(
     changes: Flow<Unit> = emptyFlow(),
     interval: Long,
     maximum: Long = interval,
+    onTimeout: () -> Unit = {},
     load: suspend () -> Boolean,
 ) = coroutineScope {
     val pending = Channel<Unit>(Channel.CONFLATED)
@@ -50,6 +51,7 @@ internal suspend fun pollWhileVisible(
                     val active = try {
                         withTimeout(10000) { load() }
                     } catch (_: TimeoutCancellationException) {
+                        onTimeout()
                         false
                     } catch (e: CancellationException) {
                         throw e

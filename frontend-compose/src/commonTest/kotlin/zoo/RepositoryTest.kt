@@ -175,6 +175,55 @@ class RepositoryTest {
     }
 
     @Test
+    fun timedOutReadPositionsStopBlockingTheConversationAfterForegroundRecovery() = runTest {
+        var reads = 0
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    if (request.url.encodedPath != "/api/channel-read-states") {
+                        respond("", HttpStatusCode.NotFound)
+                    } else {
+                        if (++reads <= 2) awaitCancellation()
+                        respond("""[{"channel_id":"c1","has_unread":false}]""")
+                    }
+                }
+            }
+        }
+        val repo = Repository(config, FakePlatform(), http, backgroundScope, synchronize = false)
+        val foreground = Environment(path = "/channels/c1", visible = true, online = true)
+        val app = Session(repo, backgroundScope, foreground)
+        try {
+            app.start()
+            runCurrent()
+            assertEquals(1, reads)
+            assertFalse(app.channelReadPositionsChecked)
+
+            app.update(foreground.copy(visible = false))
+            Snapshot.sendApplyNotifications()
+            advanceTimeBy(20_000)
+            assertEquals(1, reads)
+            assertFalse(app.channelReadPositionsChecked)
+
+            app.update(foreground)
+            Snapshot.sendApplyNotifications()
+            runCurrent()
+            assertEquals(2, reads)
+            advanceTimeBy(10_000)
+            runCurrent()
+            assertTrue(app.channelReadPositionsChecked)
+            assertTrue(app.channelReadPositions.isEmpty())
+
+            advanceTimeBy(10_000)
+            runCurrent()
+            assertEquals(3, reads)
+            assertTrue("c1" in app.channelReadPositions)
+        } finally {
+            app.close()
+        }
+    }
+
+    @Test
     fun returningToForegroundRefreshesAnExistingShapeEvenWhenStillOnline() =
         assertShapeReconnect("https://foreground.zoo.test") { app, foreground ->
             app.update(foreground.copy(visible = false))
