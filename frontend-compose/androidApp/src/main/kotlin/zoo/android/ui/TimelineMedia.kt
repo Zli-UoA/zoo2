@@ -155,18 +155,22 @@ internal fun TimelineQuoteCard(
     openProfile: (() -> Unit)? = null,
 ) {
     var showOriginal by remember(quote.uri, quote.remotePostAvailable) { mutableStateOf(false) }
-    Column(Modifier.fillMaxWidth().padding(top = 6.dp).clip(RoundedCornerShape(8.dp))
-        .background(colors.inputSurface).padding(horizontal = 10.dp, vertical = 6.dp)) {
+    val shape = RoundedCornerShape(12.dp)
+    Column(Modifier.fillMaxWidth().padding(top = 6.dp).clip(shape).background(colors.background)
+        .border(1.dp, colors.inputBoundary, shape).padding(horizontal = 12.dp, vertical = 8.dp)) {
         if (!quote.canOpen) {
-            Text(androidLabel("home.quoteUnavailable", "引用元の投稿を表示できません"), color = colors.secondary)
+            Text(androidLabel("home.embeddedPostUnavailable", "この投稿は表示できません"), color = colors.secondary)
             return@Column
         }
         val quoteLink = Modifier.heightIn(min = AndroidControlSize.target)
             .clickable(role = Role.Button) { if (quote.remotePostAvailable) showOriginal = true else open() }
         val title: @Composable () -> Unit = {
-            Text(if (quote.author.isBlank()) "引用元を開く" else "引用 · ${quote.author}",
-                color = colors.secondary, fontSize = if (quote.author.isBlank()) 12.sp else entryTextSize,
+            Text(quote.author.ifBlank { android.net.Uri.parse(quote.uri).host ?: "投稿を開く" },
+                color = colors.foreground, fontSize = if (quote.author.isBlank()) 12.sp else entryTextSize,
                 fontWeight = if (quote.author.isBlank()) AndroidWeights.label else AndroidWeights.entryAuthor)
+            if (quote.author.isNotBlank()) android.net.Uri.parse(quote.uri).host?.let { host ->
+                Text(host, color = colors.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
         }
         val body: @Composable () -> Unit = {
             if (quote.body.isNotBlank()) EntryBody(quote.body, colors.foreground, entryTextSize, quote.emoji, maxLines = 4)
@@ -193,10 +197,10 @@ internal fun TimelineQuoteCard(
     if (showOriginal) {
         AlertDialog(
             onDismissRequest = { showOriginal = false },
-            title = { Text(androidLabel("home.quotedPost", "引用元の投稿")) },
+            title = { Text(quote.author.ifBlank { android.net.Uri.parse(quote.uri).host.orEmpty() }) },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
-                    if (quote.author.isNotBlank()) Text(quote.author)
+                    android.net.Uri.parse(quote.uri).host?.let { Text(it) }
                     EntryBody(quote.body, colors.foreground, entryTextSize, quote.emoji)
                     TimelineMediaGroup(quote.media, colors, apub = true) { media ->
                         showOriginal = false
@@ -209,7 +213,7 @@ internal fun TimelineQuoteCard(
             },
             dismissButton = {
                 TextButton(onClick = { showOriginal = false; open() }) {
-                    Text(androidLabel("home.openQuotedPost", "引用元を開く"))
+                    Text("投稿を開く")
                 }
             },
         )

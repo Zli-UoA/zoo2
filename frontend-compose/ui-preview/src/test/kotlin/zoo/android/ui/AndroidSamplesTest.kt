@@ -205,7 +205,7 @@ class AndroidSamplesTest {
         val illustratedPost = homePosts.first().copy(
             repostedBy = "みずき",
             postAuthor = zoo.obj("id" to "haru"),
-            quote = TimelineQuote("https://example.test/notes/42", null, "なぎ", "引用元の投稿を共有します。", emptyList(),
+            quote = TimelineQuote("https://example.test/notes/42", null, "なぎ", "チケットは当日も受付で購入できます。", emptyList(),
                 postAuthor = zoo.obj("id" to "nagi")),
             media = listOf(TimelineMedia("post-image", "投稿画像", TimelineMediaKind.Image, imageAspectRatio = 16f / 9f),
                 TimelineMedia("post-video", "投稿動画", TimelineMediaKind.Video, sensitive = true)),
@@ -431,7 +431,7 @@ class AndroidSamplesTest {
                         .assertIsDisplayed().getUnclippedBoundsInRoot()
                     val author = ui.onNodeWithText("@haru", useUnmergedTree = true).getUnclippedBoundsInRoot()
                     check(repost.left < author.left && repost.bottom <= author.top)
-                    ui.onNodeWithText("引用 · なぎ").assertIsDisplayed().performClick()
+                    ui.onNodeWithText("なぎ").assertIsDisplayed().performClick()
                     ui.onNodeWithContentDescription("投稿画像").assertIsDisplayed()
                 }
                 if (name == "channel-media") {
@@ -917,7 +917,7 @@ class AndroidSamplesTest {
             TimelineQuoteCard(TimelineQuote("https://zoo.example/home/posts/removed", null, "", "", emptyList(), local = true),
                 AndroidColors(false), open = { error("Unavailable quote was opened") }, openMedia = {})
         }
-        ui.onNodeWithText("引用元の投稿を表示できません").assertIsDisplayed().assertHasNoClickAction()
+        ui.onNodeWithText("この投稿は表示できません").assertIsDisplayed().assertHasNoClickAction()
         ui.onNodeWithText("引用元を開く").assertDoesNotExist()
     }
 
