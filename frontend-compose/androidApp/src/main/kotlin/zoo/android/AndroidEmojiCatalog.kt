@@ -60,7 +60,9 @@ internal class AndroidEmojiCatalog(
 
     suspend fun kitchen(): KitchenChoices = withContext(Dispatchers.IO) { kitchen }
 
-    suspend fun kitchenReaction(value: String): String? {
+    suspend fun kitchenReaction(value: String): String? = kitchenChoice(value)?.image
+
+    suspend fun kitchenChoice(value: String): EmojiChoice? {
         if (!value.startsWith("kitchen:")) return null
         val parts = value.removePrefix("kitchen:").split('_')
         if (parts.size != 2) return null
@@ -69,7 +71,7 @@ internal class AndroidEmojiCatalog(
         val key = "kitchen:" + normalized.joinToString("_")
         val catalog = kitchen()
         val component = catalog.components.firstOrNull { kitchenComponentCode(it.value) == first } ?: return null
-        return catalog.combinations(component).firstOrNull { it.value == key }?.image
+        return catalog.combinations(component).firstOrNull { it.value == key }
     }
 
     private fun read(name: String): JsonObject = Json.parseToJsonElement(readAsset(name)).jsonObject

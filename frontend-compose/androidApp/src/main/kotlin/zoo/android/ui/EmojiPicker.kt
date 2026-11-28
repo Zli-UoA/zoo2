@@ -75,6 +75,7 @@ internal fun EmojiPicker(
     unicode: List<EmojiChoice>,
     custom: List<EmojiChoice>,
     recent: List<String> = emptyList(),
+    recentKitchen: List<EmojiChoice> = emptyList(),
     recentCategory: String = "最近使った絵文字",
     customLoading: Boolean = false,
     customError: Boolean = false,
@@ -97,20 +98,20 @@ internal fun EmojiPicker(
             kitchenFailed = kitchen == null
         }
     }
-    val recentUnicode = remember(recent, unicode) {
-        val catalog = unicode.associateBy { it.value }
+    val recentChoices = remember(recent, unicode, custom, recentKitchen) {
+        val catalog = (unicode + custom + recentKitchen).associateBy { it.value }
         recent.mapNotNull(catalog::get)
     }
-    val choices = remember(tab, unicode, custom, recentUnicode, kitchen, first) {
+    val choices = remember(tab, unicode, custom, recentChoices, kitchen, first, query) {
         when (tab) {
-            EmojiTab.Unicode -> (recentUnicode + unicode)
+            EmojiTab.Unicode -> ((if (query.isBlank()) recentChoices else emptyList()) + unicode)
                 .distinctBy { it.value }
             EmojiTab.Custom -> custom
             EmojiTab.Kitchen -> kitchen?.let { catalog -> first?.let(catalog.combinations) ?: catalog.components }.orEmpty()
         }
     }
     val filtered = remember(choices, query) { rankEmojiChoices(choices, query) }
-    val sections = remember(filtered, tab, query, unicode, recentUnicode, recentCategory) {
+    val sections = remember(filtered, tab, query, unicode, recentChoices, recentCategory) {
         when {
             tab == EmojiTab.Unicode && query.isNotBlank() -> {
                 val matchesByCategory = filtered.groupBy { it.category }
@@ -120,7 +121,7 @@ internal fun EmojiPicker(
             }
             query.isNotBlank() || tab == EmojiTab.Kitchen -> listOf("" to filtered)
             tab == EmojiTab.Unicode -> buildList {
-                if (recentUnicode.isNotEmpty()) add(recentCategory to recentUnicode)
+                if (recentChoices.isNotEmpty()) add(recentCategory to recentChoices)
                 addAll(unicode.groupBy { it.category }.toList())
             }
             else -> filtered.groupBy { it.category }.toList()
