@@ -10,65 +10,77 @@ channel-add-member-light, channel-edit-dark, channel-edit-light, channel-link-da
 
 ![channel-add-member-light, channel-edit-dark, channel-edit-light, channel-link-dark, channel-link-light, channel-media-dark](./screens-02.png)
 
-channel-media-light, channel-save-error-dark, channel-save-error-light, channel-settings-dark, channel-settings-light, chat-attachment-retry-dark
+channel-media-light, channel-save-error-dark, channel-save-error-light, channel-settings-dark, channel-settings-light, channels-dark
 
-![channel-media-light, channel-save-error-dark, channel-save-error-light, channel-settings-dark, channel-settings-light, chat-attachment-retry-dark](./screens-03.png)
+![channel-media-light, channel-save-error-dark, channel-save-error-light, channel-settings-dark, channel-settings-light, channels-dark](./screens-03.png)
 
-chat-attachment-retry-light, composer-limit-dark, composer-limit-light, conversation-dark, conversation-light, edit-original-dark
+channels-light, chat-attachment-retry-dark, chat-attachment-retry-light, composer-limit-dark, composer-limit-light, conversation-dark
 
-![chat-attachment-retry-light, composer-limit-dark, composer-limit-light, conversation-dark, conversation-light, edit-original-dark](./screens-04.png)
+![channels-light, chat-attachment-retry-dark, chat-attachment-retry-light, composer-limit-dark, composer-limit-light, conversation-dark](./screens-04.png)
 
-edit-original-light, embedded-post-dark, embedded-post-light, emoji-picker-custom-dark, emoji-picker-custom-light, emoji-picker-dark
+conversation-idle-dark, conversation-idle-light, conversation-light, edit-original-dark, edit-original-light, embedded-post-dark
 
-![edit-original-light, embedded-post-dark, embedded-post-light, emoji-picker-custom-dark, emoji-picker-custom-light, emoji-picker-dark](./screens-05.png)
+![conversation-idle-dark, conversation-idle-light, conversation-light, edit-original-dark, edit-original-light, embedded-post-dark](./screens-05.png)
 
-emoji-picker-kitchen-dark, emoji-picker-kitchen-light, emoji-picker-light, emoji-picker-search-exact-first, emoji-picker-wide-light, follow-response-dark
+embedded-post-light, emoji-picker-custom-dark, emoji-picker-custom-light, emoji-picker-dark, emoji-picker-kitchen-dark, emoji-picker-kitchen-light
 
-![emoji-picker-kitchen-dark, emoji-picker-kitchen-light, emoji-picker-light, emoji-picker-search-exact-first, emoji-picker-wide-light, follow-response-dark](./screens-06.png)
+![embedded-post-light, emoji-picker-custom-dark, emoji-picker-custom-light, emoji-picker-dark, emoji-picker-kitchen-dark, emoji-picker-kitchen-light](./screens-06.png)
 
-follow-response-light, home-dark, home-light, home-media-dark, home-media-light, home-rich-dark
+emoji-picker-light, emoji-picker-search-exact-first, emoji-picker-wide-light, follow-response-dark, follow-response-light, home-dark
 
-![follow-response-light, home-dark, home-light, home-media-dark, home-media-light, home-rich-dark](./screens-07.png)
+![emoji-picker-light, emoji-picker-search-exact-first, emoji-picker-wide-light, follow-response-dark, follow-response-light, home-dark](./screens-07.png)
 
-home-rich-light, image-description-dark, image-description-light, message-menu-dark, message-menu-light, notifications-dark
+home-light, home-media-dark, home-media-light, home-rich-dark, home-rich-light, image-description-dark
 
-![home-rich-light, image-description-dark, image-description-light, message-menu-dark, message-menu-light, notifications-dark](./screens-08.png)
+![home-light, home-media-dark, home-media-light, home-rich-dark, home-rich-light, image-description-dark](./screens-08.png)
 
-notifications-history-error-dark, notifications-history-error-light, notifications-light, opening-conversation-error-large, post-attachment-retry-dark, post-attachment-retry-light
+image-description-light, login-dark, login-light, login-restoring-dark, login-restoring-light, message-menu-dark
 
-![notifications-history-error-dark, notifications-history-error-light, notifications-light, opening-conversation-error-large, post-attachment-retry-dark, post-attachment-retry-light](./screens-09.png)
+![image-description-light, login-dark, login-light, login-restoring-dark, login-restoring-light, message-menu-dark](./screens-09.png)
 
-post-compose-federation-off-dark, post-compose-federation-off-light, post-dark, post-light, post-loading-replies-dark, post-loading-replies-light
+message-menu-light, navigation-cache-dark, navigation-cache-light, notifications-dark, notifications-history-error-dark, notifications-history-error-light
 
-![post-compose-federation-off-dark, post-compose-federation-off-light, post-dark, post-light, post-loading-replies-dark, post-loading-replies-light](./screens-10.png)
+![message-menu-light, navigation-cache-dark, navigation-cache-light, notifications-dark, notifications-history-error-dark, notifications-history-error-light](./screens-10.png)
 
-post-menu-dark, post-menu-light, post-offline-large, profile-dark, profile-follow-pending-dark, profile-follow-pending-light
+notifications-light, opening-conversation-error-large, post-attachment-retry-dark, post-attachment-retry-light, post-compose-federation-off-dark, post-compose-federation-off-light
 
-![post-menu-dark, post-menu-light, post-offline-large, profile-dark, profile-follow-pending-dark, profile-follow-pending-light](./screens-11.png)
+![notifications-light, opening-conversation-error-large, post-attachment-retry-dark, post-attachment-retry-light, post-compose-federation-off-dark, post-compose-federation-off-light](./screens-11.png)
 
-profile-light, reaction-channel-dark-after, reaction-channel-dark-before, reaction-channel-light-after, reaction-channel-light-before, reaction-home-dark-after
+post-dark, post-light, post-loading-replies-dark, post-loading-replies-light, post-menu-dark, post-menu-light
 
-![profile-light, reaction-channel-dark-after, reaction-channel-dark-before, reaction-channel-light-after, reaction-channel-light-before, reaction-home-dark-after](./screens-12.png)
+![post-dark, post-light, post-loading-replies-dark, post-loading-replies-light, post-menu-dark, post-menu-light](./screens-12.png)
+
+post-offline-large, profile-dark, profile-follow-pending-dark, profile-follow-pending-light, profile-light, quote-renote-dark
+
+![post-offline-large, profile-dark, profile-follow-pending-dark, profile-follow-pending-light, profile-light, quote-renote-dark](./screens-13.png)
+
+quote-renote-light, reaction-channel-dark-after, reaction-channel-dark-before, reaction-channel-light-after, reaction-channel-light-before, reaction-home-dark-after
+
+![quote-renote-light, reaction-channel-dark-after, reaction-channel-dark-before, reaction-channel-light-after, reaction-channel-light-before, reaction-home-dark-after](./screens-14.png)
 
 reaction-home-dark-before, reaction-home-dark-empty, reaction-home-light-after, reaction-home-light-before, reaction-home-light-empty, reaction-offline-dark
 
-![reaction-home-dark-before, reaction-home-dark-empty, reaction-home-light-after, reaction-home-light-before, reaction-home-light-empty, reaction-offline-dark](./screens-13.png)
+![reaction-home-dark-before, reaction-home-dark-empty, reaction-home-light-after, reaction-home-light-before, reaction-home-light-empty, reaction-offline-dark](./screens-15.png)
 
-reaction-offline-light, repost-pending-dark, repost-pending-light, search-dark, search-files-dark, search-files-light
+reaction-offline-light, repost-pending-dark, repost-pending-light, search-dark, search-error-dark, search-error-light
 
-![reaction-offline-light, repost-pending-dark, repost-pending-light, search-dark, search-files-dark, search-files-light](./screens-14.png)
+![reaction-offline-light, repost-pending-dark, repost-pending-light, search-dark, search-error-dark, search-error-light](./screens-16.png)
 
-search-filter-sheet-dark, search-filter-sheet-light, search-filtered-dark, search-filtered-light, search-light, settings-dark
+search-files-dark, search-files-light, search-filter-sheet-dark, search-filter-sheet-light, search-filtered-dark, search-filtered-light
 
-![search-filter-sheet-dark, search-filter-sheet-light, search-filtered-dark, search-filtered-light, search-light, settings-dark](./screens-15.png)
+![search-files-dark, search-files-light, search-filter-sheet-dark, search-filter-sheet-light, search-filtered-dark, search-filtered-light](./screens-17.png)
 
-settings-light, share-destination-dark, share-destination-light, shared-post-link-dark, shared-post-link-light, os-notifications
+search-light, search-older-dark, search-older-light, search-prompt-dark, search-prompt-light, sending-home-dark
 
-![settings-light, share-destination-dark, share-destination-light, shared-post-link-dark, shared-post-link-light, os-notifications](./screens-16.png)
+![search-light, search-older-dark, search-older-light, search-prompt-dark, search-prompt-light, sending-home-dark](./screens-18.png)
 
-os-share
+sending-home-light, settings-dark, settings-light, share-destination-dark, share-destination-light, shared-post-link-dark
 
-![os-share](./screens-17.png)
+![sending-home-light, settings-dark, settings-light, share-destination-dark, share-destination-light, shared-post-link-dark](./screens-19.png)
+
+shared-post-link-light, typing-channel-dark, typing-channel-light, os-notifications, os-share
+
+![shared-post-link-light, typing-channel-dark, typing-channel-light, os-notifications, os-share](./screens-20.png)
 
 
 ## 操作の比較
@@ -81,6 +93,30 @@ os-share
 
 ![設定を開いて戻るまでのComposeのフレーム](./navigation.gif)
 
-[調査と操作の全122項目](operations.md)
+## リノートと引用リノート
 
-![添付画像の説明・再投稿の反映待ち・参加済みの招待候補](post-actions-and-invites.png)
+![リノート行と引用をライト・ダークで比較し、引用リノートを作成](renote-and-quote.png)
+
+名前は太字、アイコンと文字はライトで #007747、ダークで #52D9A1。リノートした人の写真は元の色で円形に表示する。引用ヘッダーの表示名とアカウントIDはベースラインを揃え、アバターと本文を同じ左端から始める。
+
+![添付の再試行を投稿とチャンネルで比較](draft-attachments.png)
+
+![Webのグループ化と代表絵文字を使う通知一覧](inbox-appearance.png)
+
+![送信待ちの本文と相手が入力しているチャンネル](sending-and-typing.png)
+
+[操作の一覧](operations.md)
+
+## 比較したAndroid APK
+
+- Slack 26.11.40.0 の外部共有プレビューでは、正方形の画像に対して右上に media_cancel を配置する。APK内の external_media_upload_holder.xml で上下左右の制約とリソースIDを照合した。中央の video_icon は動画用。Zooの中央の再試行ボタンは失敗した画像を直接操作するための配置。
+- X 12.46.1-prod.01 のDEXには返信・リポスト・ハートのアウトラインアイコンへの参照があり、文字列テーブルには quote_tweet がある。Zooでは通常のリノートと、コメントを書く引用リノートを同じ入口から選択する。緑の色値はZooの背景に合わせたもの。
+- Discord 355.10 Stable のリソースではリアクション背景に既定・参加済みと各テーマの組があり、ic_reaction_icon_16dp と add_reaction がある。Zooの操作アイコンやロゴには他社の画像を使っていない。
+
+## キャッシュと再表示
+
+[Tusky 29.0の配布APK](https://github.com/tuskyapp/Tusky/releases/tag/v29.0) のDEXにある HomeTimelineEntity の主キーは投稿IDとアカウントIDの組で、タイムラインデータをアカウント単位で削除するSQLもある。Slackの文字列には Reset cache と対象の画像・ファイル・データの説明、Xのリソースには settings_manage_storage_clear_network_cache_title がある。
+
+Zooではホームの先頭から安全に再表示できる公開投稿を最大12件、5分間保持する。起動時に表示できる場合もサーバーに最新状態を問い合わせる。スクロールで画面外に出た公開投稿リンクのプレビューは最大30秒、通常は8件まで保持する。どちらもZoo側で選んだ値。設定の「画面キャッシュを消去」はホームと開いた画面の保存内容を対象にし、編集中の下書きと保持件数の設定を保つ。
+
+![画面キャッシュ設定のライトとダーク](cache-settings.png)
