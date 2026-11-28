@@ -43,6 +43,7 @@ internal class AndroidPlatform(
      * 端末の削除」）。`count` が負なら数えられなかった。ログアウトしてよければ真を返す。
      */
     private val confirmUnbackedKeys: suspend (count: Int) -> Boolean,
+    val saveFile: suspend (ByteArray, String, String) -> Unit,
 ) : Platform {
     /** E2EE の端末（#359）。ログインしたあとに設定する。 */
     override var messageEncryption: zoo.MessageEncryption? = null
@@ -251,7 +252,10 @@ internal class AndroidPlatform(
             name == "haptic:threshold" && env.operationHaptics ->
                 activity.window.decorView.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
             name == "toggleSwipeReply" -> updateInteraction("swipe-reply", !env.swipeReply)
-            name == "toggleOperationHaptics" -> updateInteraction("operation-haptics", !env.operationHaptics)
+            name == "toggleOperationHaptics" -> {
+                updateInteraction("operation-haptics", !env.operationHaptics)
+                if (env.operationHaptics) activity.window.decorView.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
+            }
             name.startsWith("open:") -> open(name.removePrefix("open:"))
             name.startsWith("theme:") -> {
                 val theme = name.removePrefix("theme:")
@@ -426,16 +430,12 @@ internal class AndroidPlatform(
         }
         withContext(Dispatchers.Main) {
             val uri = androidx.core.content.FileProvider.getUriForFile(activity, "${activity.packageName}.preview-files", target)
-            val share = Intent(Intent.ACTION_SEND).apply {
-                this.type = type.ifEmpty { "application/octet-stream" }
-                putExtra(Intent.EXTRA_STREAM, uri)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
+            val share = fileShareIntent(activity.contentResolver, uri, name, type)
             activity.startActivity(Intent.createChooser(share, name))
         }
     }
 
-    private suspend fun registerFiles(selected: List<Uri>, mediaStoreId: String? = null): String {
+    internal suspend fun registerFiles(selected: List<Uri>, mediaStoreId: String? = null): String {
         val rows =
             withContext(Dispatchers.IO) {
                 selected.map { uri ->
@@ -520,3 +520,13 @@ internal fun sharedFileName(name: String, maxBytes: Int = 255 - 37): String {
 
 /** ログアウトの確認で、終わっていない失効があることを知らせる（鍵の件数の代わりに渡す値）。 */
 internal const val REVOCATION_PENDING_PROMPT = Int.MIN_VALUE
+
+
+internal fun fileShareIntent(resolver: android.content.ContentResolver, uri: Uri, name: String, mime: String): Intent =
+    Intent(Intent.ACTION_SEND).apply {
+        type = mime.ifEmpty { "application/octet-stream" }
+        putExtra(Intent.EXTRA_STREAM, uri)
+        putExtra(Intent.EXTRA_TITLE, name)
+        clipData = android.content.ClipData.newUri(resolver, name, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }

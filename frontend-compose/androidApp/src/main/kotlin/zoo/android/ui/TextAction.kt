@@ -45,7 +45,7 @@ internal fun TextAction(
     Row(
         modifier.heightIn(min = AndroidControlSize.target).clip(CircleShape).background(fill)
             .clickable(enabled = enabled, role = Role.Button, onClick = click)
-            .padding(horizontal = AndroidControlSize.textInset, vertical = AndroidControlSize.textVerticalInset),
+            .padding(horizontal = if (icon == null) AndroidControlSize.textInset else 16.dp, vertical = AndroidControlSize.textVerticalInset),
         horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {

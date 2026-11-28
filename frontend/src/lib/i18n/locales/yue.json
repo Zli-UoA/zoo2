@@ -333,6 +333,7 @@
     "hideSensitiveVideo": "隱藏影片",
     "openOriginal": "原始檔案",
     "imagePreviewFailed": "無法載入圖片",
+    "altText": "圖片說明",
     "sensitiveShort": "敏感圖片",
     "documentSummary": "內文同儲存格嘅簡單預覽，格式同版面可能同原檔唔同。",
     "previewLimit": "預覽超出大小、檔案數量或處理時間限制，請下載檔案查看。",

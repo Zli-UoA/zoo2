@@ -1,6 +1,8 @@
 package zoo.android.ui
 
 
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Size
@@ -42,7 +44,6 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableFloatStateOf
@@ -55,6 +56,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.hapticfeedback.HapticFeedback
@@ -73,6 +76,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.TextRange
@@ -83,7 +87,7 @@ import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
 import androidx.compose.ui.unit.sp
 
-internal enum class EntryOperation { Edit, Delete, React, Repost, Attachment, Link, Media, Quote }
+internal enum class EntryOperation { Edit, Delete, React, Repost, QuoteRenote, Attachment, Link, Media, Quote }
 
 internal data class TimelineItem(
     val id: String, val author: String, val body: String, val time: String,
@@ -91,13 +95,15 @@ internal data class TimelineItem(
     val reposted: Boolean = false, val reactions: List<TimelineReaction> = emptyList(),
     val attachments: List<Pair<String, String>> = emptyList(), val link: String? = null,
     val entryKey: String = id,
+    val attachmentSizes: Map<String, String> = emptyMap(),
     val media: List<TimelineMedia> = emptyList(),
-    val quote: TimelineQuote? = null, val repostedBy: String? = null,
+    val quote: TimelineQuote? = null, val repostedBy: String? = null, val reposterAvatar: String? = null,
     val postHeader: PostHeaderData? = null,
     val richContent: EntryRichContent = EntryRichContent(),
     val linkCard: EntryCard? = null,
     /** 本文に書いた、このアプリのチャンネル・メッセージへのリンク（埋め込みカードを出す。外部には送らない）。 */
     val channelLinks: List<String> = emptyList(),
+    val postLinks: List<Pair<String, String>> = emptyList(),
     val emoji: Map<String, TimelineMedia> = emptyMap(),
     val needsWorkspaceEmoji: Boolean = false,
     val avatar: String? = null,
@@ -115,22 +121,30 @@ internal data class TimelineItem(
     val mentionsCurrentUser: Boolean = false,
     val dateDivider: String? = null,
     val unreadDivider: String? = null,
+    val canQuoteRenote: Boolean = false,
+    val delivery: String? = null,
+    val recoverDraft: (() -> Unit)? = null,
+    val operationStatus: Map<EntryOperation, EntryOperationStatus> = emptyMap(),
 )
+internal enum class EntryOperationStatus { Sending, Offline, Denied, Failed }
+
 internal data class ChannelItem(
     val id: String,
     val title: String,
     val unread: Boolean = false,
     val isUserName: Boolean = false,
+    val direct: Boolean = false,
+    val handle: String? = null,
 )
 internal data class ChannelSection(val label: String, val channels: List<ChannelItem>)
 
 internal sealed interface AndroidScreen {
     data class Home(
         val posts: List<TimelineItem>, val timeline: String? = null, val loadOlder: Boolean = false,
-        val loadFailed: Boolean = false, val loading: Boolean = false, val online: Boolean = true,
+        val loadFailed: Boolean = false, val loading: Boolean = false, val online: Boolean = true, val showingSavedHead: Boolean = false,
     ) : AndroidScreen
     data class Channels(val sections: List<ChannelSection>) : AndroidScreen
-    data class Notifications(val items: List<InboxItem>, val nextCursor: String? = null, val loadFailed: Boolean = false) : AndroidScreen
+    data class Notifications(val items: List<InboxItem>, val nextCursor: String? = null, val loadFailed: Boolean = false, val appendFailed: Boolean = false) : AndroidScreen
     data class Bubble(val entries: List<TimelineItem>, val input: InputState, val participants: List<String> = emptyList()) : AndroidScreen
     data class Settings(val groups: List<SettingsGroup>) : AndroidScreen
     data class Conversation(
@@ -174,6 +188,7 @@ internal sealed interface AndroidScreen {
         val submitLabel: String,
         val canSubmit: Boolean,
         val privateChannel: Boolean? = null,
+        val saveError: String? = null,
         val sensitive: Boolean? = null,
         val encrypted: Boolean? = null,
     ) : AndroidScreen
@@ -182,7 +197,7 @@ internal sealed interface AndroidScreen {
         val submit: String? = null, val canSubmit: Boolean = false, val encryption: Boolean? = null,
         val scopeId: String? = null,
     ) : AndroidScreen
-    data class EditEntry(val input: InputState) : AndroidScreen
+    data class EditEntry(val input: InputState, val original: String? = null) : AndroidScreen
     data class Search(val state: SearchScreenState) : AndroidScreen
     data class Profile(
         val name: String, val bio: String, val posts: List<TimelineItem>, val follow: String? = null,
@@ -190,10 +205,10 @@ internal sealed interface AndroidScreen {
         val originalAvailable: Boolean = false,
         val id: String = handle ?: name,
         val postsPending: Boolean = false, val postsLoadFailed: Boolean = false, val online: Boolean = true,
-        val accountLoadFailed: Boolean = false,
+        val accountLoadFailed: Boolean = false, val followBusy: Boolean = false,
     ) : AndroidScreen
     data class NewPost(val input: InputState, val recent: List<RecentPhoto>, val showPhotos: Boolean,
-        val visibility: String? = null, val attached: List<RecentPhoto> = emptyList(), val federate: Boolean? = null) : AndroidScreen
+        val visibility: String? = null, val attached: List<RecentPhoto> = emptyList(), val federate: Boolean? = null, val quoting: TimelineItem? = null) : AndroidScreen
     data class SignIn(val restoring: Boolean) : AndroidScreen
     data class Call(val caller: String, val incoming: Boolean, val active: Boolean = false,
         val muted: Boolean = false, val speaker: Boolean = false, val avatar: ImageBitmap? = null,
@@ -208,6 +223,9 @@ internal sealed interface AndroidUiAction {
     data object LoadMoreNotifications : AndroidUiAction
     data class ActOnEntry(val item: TimelineItem, val operation: EntryOperation, val value: String = "", val reactionImageId: String? = null, val quotedMedia: Boolean = false) : AndroidUiAction
     data class RespondFollow(val actor: String, val activity: String, val accept: Boolean) : AndroidUiAction
+    data class RetryFile(val id: String) : AndroidUiAction
+    data class SetPhotoSensitive(val id: String, val sensitive: Boolean) : AndroidUiAction
+    data class DescribePhoto(val id: String, val description: String) : AndroidUiAction
     data class RemoveFile(val id: String) : AndroidUiAction
     data class SelectInput(val range: TextRange) : AndroidUiAction
     data class Mention(val name: String) : AndroidUiAction
@@ -248,6 +266,7 @@ internal sealed interface AndroidUiAction {
     data object Answer : AndroidUiAction
     data object HangUp : AndroidUiAction
     data object Browse : AndroidUiAction
+    data object RemoveQuote : AndroidUiAction
     data object ComposePost : AndroidUiAction
     data object CreateChannel : AndroidUiAction
     data object CreateDm : AndroidUiAction
@@ -286,6 +305,7 @@ internal fun AndroidScreens(
     pageState: SaveableStateHolder = rememberSaveableStateHolder(),
     photo: @Composable (RecentPhoto, Modifier) -> Unit,
 ) {
+    val layoutDirection = androidx.compose.ui.platform.LocalLayoutDirection.current
     val systemHaptics = LocalHapticFeedback.current
     pageState.SaveableStateProvider("screen-history") {
         var recentRoutes by rememberSaveable { mutableStateOf(arrayListOf<String>()) }
@@ -298,29 +318,44 @@ internal fun AndroidScreens(
         }
     }
     CompositionLocalProvider(LocalHapticFeedback provides if (interaction.haptics) systemHaptics else SilentHaptics) {
-        AnimatedContent(
-            targetState = screen,
-            contentKey = { it.routeKey() },
-            transitionSpec = {
-                val opening = initialState is AndroidScreen.Conversation && targetState is AndroidScreen.Thread
-                val closing = initialState is AndroidScreen.Thread && targetState is AndroidScreen.Conversation
-                when {
-                    interaction.reducedMotion -> EnterTransition.None togetherWith ExitTransition.None
-                    opening -> slideInHorizontally(tween(240)) { it } togetherWith
-                        slideOutHorizontally(tween(240)) { -it / 4 }
-                    closing -> slideInHorizontally(tween(240)) { -it / 4 } togetherWith
-                        slideOutHorizontally(tween(240)) { it }
-                    else -> EnterTransition.None togetherWith ExitTransition.None
-                }
-            },
-            label = "Android screen",
-        ) { visibleScreen ->
+        val render: @Composable (AndroidScreen) -> Unit = { visibleScreen ->
             pageState.SaveableStateProvider(visibleScreen.routeKey()) {
                 RenderAndroidScreen(visibleScreen, dark, foreground && visibleScreen == screen,
                     dispatch, language, interaction, remoteAudioLevel, loadNotificationAvatar, loadNotificationReactions, photo)
             }
         }
+        if (interaction.reducedMotion) render(screen) else AnimatedContent(
+            targetState = screen,
+            contentKey = { it.routeKey() },
+            transitionSpec = {
+                val direction = if (layoutDirection == androidx.compose.ui.unit.LayoutDirection.Ltr) 1 else -1
+                val opening = targetState.isDetailOf(initialState)
+                val closing = initialState.isDetailOf(targetState)
+                val tabs = initialState.isTopLevel() && targetState.isTopLevel() && initialState::class != targetState::class
+                when {
+                    opening -> (fadeIn(tween(160)) + slideInHorizontally(tween(200)) { direction * it / 7 }) togetherWith fadeOut(tween(100))
+                    closing -> fadeIn(tween(160)) togetherWith (fadeOut(tween(140)) + slideOutHorizontally(tween(180)) { direction * it / 7 })
+                    tabs -> fadeIn(tween(110)) togetherWith fadeOut(tween(90))
+                    else -> EnterTransition.None togetherWith ExitTransition.None
+                }
+            },
+            label = "Android screen",
+        ) { render(it) }
     }
+}
+
+private fun AndroidScreen.isTopLevel() = this is AndroidScreen.Home || this is AndroidScreen.Channels ||
+    this is AndroidScreen.Notifications || this is AndroidScreen.Search || this is AndroidScreen.Bubble || this is AndroidScreen.Settings
+
+private fun AndroidScreen.isDetailOf(parent: AndroidScreen): Boolean = when (this) {
+    is AndroidScreen.Conversation -> parent is AndroidScreen.Channels
+    is AndroidScreen.Thread -> parent is AndroidScreen.Conversation
+    is AndroidScreen.ChannelSettings -> parent is AndroidScreen.Conversation
+    is AndroidScreen.EditChannel -> parent is AndroidScreen.ChannelSettings || parent is AndroidScreen.Channels
+    is AndroidScreen.SettingsDetail -> parent is AndroidScreen.Settings || parent is AndroidScreen.ChannelSettings
+    is AndroidScreen.Post -> parent is AndroidScreen.Home || parent is AndroidScreen.Conversation || parent is AndroidScreen.Profile
+    is AndroidScreen.NewPost, is AndroidScreen.Profile -> parent is AndroidScreen.Home
+    else -> false
 }
 
 private fun AndroidScreen.routeKey(): String = when (this) {
@@ -361,7 +396,8 @@ private fun RenderAndroidScreen(
     val back = { dispatch(AndroidUiAction.Back) }
     val openSetting = { id: String -> dispatch(AndroidUiAction.OpenSetting(id)) }
     val toggle = { id: String, value: Boolean -> dispatch(AndroidUiAction.Toggle(id, value)) }
-    AndroidShell(top, dark, { dispatch(AndroidUiAction.Navigate(it)) }, language) { colors ->
+    AndroidShell(top, dark, { dispatch(AndroidUiAction.Navigate(it)) }, language,
+        tintedHeader = screen !is AndroidScreen.Profile && screen !is AndroidScreen.Call) { colors ->
         when (screen) {
             is AndroidScreen.Home -> HomePage(screen, colors, dispatch)
             is AndroidScreen.Channels -> ChannelPage(screen, colors, dispatch)
@@ -370,7 +406,7 @@ private fun RenderAndroidScreen(
                 onViewed = { dispatch(AndroidUiAction.ViewedNotification(it)) },
                 onOpen = { dispatch(AndroidUiAction.OpenNotification(it)) },
                 loadMore = { dispatch(AndroidUiAction.LoadMoreNotifications) },
-                loadFailed = screen.loadFailed, retry = { dispatch(AndroidUiAction.RetryNotifications) },
+                appendFailed = screen.appendFailed, loadFailed = screen.loadFailed, retry = { dispatch(AndroidUiAction.RetryNotifications) },
                 respond = { actor, activity, accept -> dispatch(AndroidUiAction.RespondFollow(actor, activity, accept)) },
             )
             is AndroidScreen.Bubble -> {
@@ -425,25 +461,13 @@ private fun RenderAndroidScreen(
             is AndroidScreen.OpeningConversation -> {
                 PageHeader(screen.title, colors, onBack = back)
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    when {
-                        !screen.online -> Text(androidLabel("offline.bannerTitle", "オフラインです"), color = colors.secondary)
-                        screen.failed -> screen.retry?.let { retry ->
-                            TextAction(androidLabel("offline.retry", "再試行"), colors, click = retry)
-                        }
-                        else -> CircularProgressIndicator(color = colors.accent)
-                    }
+                    LoadingStatus(screen.online, screen.failed, colors, screen.retry)
                 }
             }
             is AndroidScreen.PostLoading -> {
                 PageHeader("投稿", colors, onBack = back)
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    when {
-                        !screen.online -> Text(androidLabel("offline.bannerTitle", "オフラインです"), color = colors.secondary)
-                        screen.failed -> TextAction(androidLabel("offline.retry", "再試行"), colors) {
-                            dispatch(AndroidUiAction.RetryPost)
-                        }
-                        else -> CircularProgressIndicator(color = colors.accent)
-                    }
+                    LoadingStatus(screen.online, screen.failed, colors, { dispatch(AndroidUiAction.RetryPost) })
                 }
             }
             is AndroidScreen.Post -> {
@@ -451,12 +475,17 @@ private fun RenderAndroidScreen(
                 if (screen.loadFailed && screen.online) FeedLoadError(androidLabel("common.errors.network", "通信エラー"), colors) {
                     dispatch(AndroidUiAction.RetryPost)
                 }
-                if (screen.loading && screen.online && !screen.loadFailed)
-                    LinearProgressIndicator(Modifier.fillMaxWidth(), color = colors.accent)
+                ProgressStrip(screen.loading && screen.online && !screen.loadFailed, colors.accent)
                 TimelineWithInput(listOf(screen.root) + screen.replies, screen.input, colors, dispatch, posts = true, canResize = false)
             }
             is AndroidScreen.EditEntry -> {
                 PageHeader("編集", colors, onBack = back)
+                screen.original?.takeIf { it != screen.input.text }?.let {
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                        Text("編集前", color = colors.secondary, fontSize = 12.sp)
+                        Text(it, color = colors.secondary, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    }
+                }
                 ConversationInput(screen.input, colors, { dispatch(AndroidUiAction.TextChanged(it)) },
                     { dispatch(AndroidUiAction.UseInputTool(it)) }, Modifier.weight(1f),
                     onSelection = { dispatch(AndroidUiAction.SelectInput(it)) }, canResize = false)
@@ -486,13 +515,7 @@ private fun RenderAndroidScreen(
                         }
                         if (screen.postsPending) {
                             Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
-                                when {
-                                    !screen.online -> Text(androidLabel("offline.bannerTitle", "オフラインです"), color = colors.secondary)
-                                    screen.postsLoadFailed -> TextAction(androidLabel("offline.retry", "再試行"), colors) {
-                                        dispatch(AndroidUiAction.RetryProfile)
-                                    }
-                                    else -> CircularProgressIndicator(color = colors.accent)
-                                }
+                                LoadingStatus(screen.online, screen.postsLoadFailed, colors, { dispatch(AndroidUiAction.RetryProfile) })
                             }
                         }
                     }
@@ -522,10 +545,9 @@ private fun HomePage(screen: AndroidScreen.Home, colors: AndroidColors, dispatch
                 UiIconButton(UiIcon.Search, "ユーザーを検索", colors.foreground,
                     { dispatch(AndroidUiAction.OpenSetting("people")) })
             }
-            if (screen.timeline != null) Row(Modifier.fillMaxWidth()) {
+            if (screen.timeline != null) Row(Modifier.fillMaxWidth().selectableGroup()) {
                 for ((id, title) in listOf("home" to "ホーム", "local" to "ローカル", "social" to "ソーシャル")) {
-                    TextAction(androidLabel("home.timelineLabels.$id", title), colors, style = if (id == screen.timeline) TextActionStyle.Neutral else TextActionStyle.Plain,
-                        modifier = Modifier.weight(1f)) { dispatch(AndroidUiAction.SelectTimeline(id)) }
+                    ScopeTab(androidLabel("home.timelineLabels.$id", title), id == screen.timeline, colors, Modifier.weight(1f)) { dispatch(AndroidUiAction.SelectTimeline(id)) }
                 }
             }
         }
@@ -538,6 +560,8 @@ private fun HomePage(screen: AndroidScreen.Home, colors: AndroidColors, dispatch
                 loadOlder = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderPosts) } } else null,
                 header = if (screen.posts.isNotEmpty() && screen.loadFailed && screen.online) {
                     { TimelineLoadError(colors) { dispatch(AndroidUiAction.RetryTimeline) } }
+                } else if (screen.showingSavedHead) {
+                    { Text("前回の表示", Modifier.padding(horizontal = 16.dp, vertical = 4.dp), color = colors.secondary, fontSize = 12.sp) }
                 } else null,
             )
             if (screen.posts.isEmpty()) {
@@ -554,6 +578,15 @@ private fun HomePage(screen: AndroidScreen.Home, colors: AndroidColors, dispatch
                     action = { dispatch(AndroidUiAction.ComposePost) }, fill = colors.accent)
             }
         }
+    }
+}
+
+@Composable
+private fun LoadingStatus(online: Boolean, failed: Boolean, colors: AndroidColors, retry: (() -> Unit)?) {
+    when {
+        !online -> Text(androidLabel("offline.bannerTitle", "オフラインです"), color = colors.secondary)
+        failed -> retry?.let { TextAction(androidLabel("offline.retry", "再試行"), colors, click = it) }
+        else -> CircularProgressIndicator(color = colors.accent)
     }
 }
 
@@ -581,11 +614,10 @@ private fun ChannelMenuButton(colors: AndroidColors, dispatch: (AndroidUiAction)
                 Triple("チャンネルを探す", UiIcon.Search, AndroidUiAction.Browse),
                 Triple("チャンネルを作成", UiIcon.Add, AndroidUiAction.CreateChannel),
             ).forEach { (label, icon, action) ->
-                DropdownMenuItem(
-                    text = { Text(label, color = colors.foreground) },
-                    leadingIcon = { UiGlyph(icon, colors.secondary, AndroidControlSize.inlineIcon) },
-                    onClick = { expanded = false; dispatch(action) },
-                )
+                MenuOption(label, colors, icon) {
+                    expanded = false
+                    dispatch(action)
+                }
             }
         }
     }
@@ -596,10 +628,10 @@ private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, d
     PageHeader(androidLabel("channels.title", "チャンネル"), colors) { ChannelMenuButton(colors, dispatch) }
     val scroll = rememberLazyListState()
     val visibleScroll = if (screen.sections.any { it.channels.isNotEmpty() }) scroll else rememberLazyListState()
-    LazyColumn(state = visibleScroll, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
+    LazyColumn(state = visibleScroll, contentPadding = PaddingValues(vertical = 8.dp)) {
         screen.sections.forEach { section ->
             item {
-                Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(section.label, Modifier.weight(1f), color = colors.secondary, fontSize = 13.sp,
                         fontWeight = AndroidWeights.label)
                     val dm = section.label == "ダイレクトメッセージ"
@@ -614,7 +646,7 @@ private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, d
                 Row(
                     Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target)
                         .clickable(role = Role.Button) { dispatch(AndroidUiAction.OpenChannel(channel.id)) }
-                        .semantics { if (channel.unread) stateDescription = "未読" },
+                        .semantics { if (channel.unread) stateDescription = "未読" }.padding(horizontal = 16.dp),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -903,6 +935,7 @@ internal fun ColumnScope.TimelineWithInput(
                 { dispatch(AndroidUiAction.UseInputTool(it)) },
                 onMention = { dispatch(AndroidUiAction.Mention(it)) },
                 onSelection = { dispatch(AndroidUiAction.SelectInput(it)) },
+                onRetryFile = { dispatch(AndroidUiAction.RetryFile(it)) },
                 onRemoveFile = { dispatch(AndroidUiAction.RemoveFile(it)) },
                 hideIdleHandle = hideIdleHandle, canResize = canResize,
                 onResizeChanged = { resizing = it })
@@ -1008,9 +1041,19 @@ private fun Timeline(
         if (lastEntry != null && lastVisible == lastEntry) requestOlder?.invoke()
     }
     WithHeaderBringIntoView(headerOverlayHeight) { inheritedBringIntoView ->
-        LazyColumn(modifier, state = scroll, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = topContentPadding)) {
+        LazyColumn(modifier, state = scroll, contentPadding = PaddingValues(top = topContentPadding)) {
             if (header != null) item { header() }
             items(entries, key = { it.entryKey }) { entry ->
+                if (entry.delivery != null) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+                        Text(entry.body, color = colors.foreground, fontSize = entryTextSize)
+                        Text(entry.delivery, color = colors.secondary, fontSize = 12.sp)
+                        entry.recoverDraft?.let { restore ->
+                            TextAction("下書きに戻す", colors, icon = UiIcon.Create, click = restore)
+                        }
+                    }
+                    return@items
+                }
                 CompositionLocalProvider(LocalBringIntoViewSpec provides inheritedBringIntoView) {
                     entry.dateDivider?.let { ConversationDivider(it, colors) }
                     entry.unreadDivider?.let { ConversationDivider(it, colors, unread = true) }
@@ -1020,14 +1063,11 @@ private fun Timeline(
                                 val accentWidth = 3.dp.toPx()
                                 val start = if (layoutDirection == androidx.compose.ui.unit.LayoutDirection.Ltr) 0f
                                     else size.width - accentWidth
-                                fun highlight(color: Color, backgroundAlpha: Float, intensity: Float) {
-                                    drawRoundRect(color.copy(alpha = backgroundAlpha * intensity),
-                                        cornerRadius = CornerRadius(8.dp.toPx()))
-                                    drawRect(color.copy(alpha = intensity), topLeft = Offset(start, 0f),
-                                        size = Size(accentWidth, size.height))
-                                }
-                                if (entry.mentionsCurrentUser) highlight(colors.messageMention, .08f, 1f)
-                                if (entry.id == focusMessage) highlight(colors.messageTarget, .16f, focusIntensity())
+                                val focus = if (entry.id == focusMessage) focusIntensity() else 0f
+                                if (focus > 0f) drawRoundRect(colors.messageTarget.copy(alpha = .16f * focus),
+                                    cornerRadius = CornerRadius(8.dp.toPx()))
+                                val stripe = if (entry.mentionsCurrentUser) colors.messageMention else colors.messageTarget.copy(alpha = focus)
+                                drawRect(stripe, topLeft = Offset(start, 0f), size = Size(accentWidth, size.height))
                             } else Modifier)
                             .then(if (posts) Modifier.combinedClickable(
                                 onClick = { dispatch(AndroidUiAction.OpenPost(entry.id)) },
@@ -1037,10 +1077,10 @@ private fun Timeline(
                                 menu = { menuId = entry.id },
                                 swipeReply = swipeReply,
                             ))
-                            .padding(top = 12.dp, bottom = if (posts) 4.dp else 12.dp),
+                            .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = if (posts) 4.dp else 12.dp),
                     ) {
                         entry.divider?.let { EncryptionDivider(it, colors) }
-                        entry.repostedBy?.let { RepostAttribution(it, colors) }
+                        entry.repostedBy?.let { RepostAttribution(it, entry.reposterAvatar, colors) }
                         val openProfile = entry.postAuthor.takeIf { posts }?.let { author ->
                             { dispatch(AndroidUiAction.OpenProfile(author)) }
                         }
@@ -1051,7 +1091,7 @@ private fun Timeline(
                                     PostHeader(entry.author, entry.postHeader, colors, openProfile)
                                 } else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     Text(entry.author, color = colors.foreground, fontWeight = AndroidWeights.entryAuthor, fontSize = entryTextSize)
-                                    Text(entry.time, color = colors.secondary, fontSize = 12.sp)
+                                    Text(entry.time, color = colors.secondary, fontSize = metadataTextSize)
                                 }
                                 if (entry.marks.isNotEmpty()) EntryMarks(entry.marks, colors)
                                 entry.notice?.let {
@@ -1079,23 +1119,37 @@ private fun Timeline(
                                         openMedia = { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Media, it.key, quotedMedia = true)) })
                                 }
                                 entry.channelLinks.forEach { url -> ChannelLinkCard(url, colors, menu = { menuId = entry.id }) }
-                                EntryCards(listOfNotNull(entry.linkCard), colors)
+                                entry.postLinks.forEach { (url, id) ->
+                                    PostLinkCard(url, id, colors) { dispatch(AndroidUiAction.OpenPost(id)) }
+                                }
+                                EntryCards(listOfNotNull(entry.linkCard), colors) { url ->
+                                    dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Link, url))
+                                }
                                 entry.link?.takeIf { entry.linkCard == null }?.let { url ->
                                     Text(url,
                                         Modifier.clickable { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Link, url)) }
                                             .heightIn(min = 48.dp).padding(vertical = 12.dp),
                                         color = colors.secondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
                                 }
-                                if (entry.reactions.isNotEmpty()) {
-                                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        entry.reactions.forEach { reaction ->
-                                            TimelineReactionChip(reaction, colors) {
-                                                dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.React, reaction.value, reaction.imageId))
-                                            }
-                                        }
-                                    }
+                                if (entry.reactions.isNotEmpty() || (!posts && entry.canReact)) {
+                                    TimelineReactions(entry, colors, showAdd = !posts, dispatch = dispatch)
                                 }
                                 if (posts) PostActions(entry, colors, dispatch, onMore = { menuId = entry.id })
+                                entry.operationStatus.forEach { (operation, status) ->
+                                    val name = when (operation) {
+                                        EntryOperation.React -> "リアクション"
+                                        EntryOperation.Delete -> "削除"
+                                        else -> "リノート"
+                                    }
+                                    val label = when (status) {
+                                        EntryOperationStatus.Sending -> "${name}を反映中…"
+                                        EntryOperationStatus.Offline -> "${name}を変更するには接続してください"
+                                        EntryOperationStatus.Denied -> "${name}の権限がありません"
+                                        EntryOperationStatus.Failed -> "${name}に失敗しました"
+                                    }
+                                    Text(label, color = colors.secondary, fontSize = 13.sp,
+                                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+                                }
                             }
                         }
                     }
@@ -1149,23 +1203,67 @@ private fun PostActions(
     dispatch: (AndroidUiAction) -> Unit,
     onMore: () -> Unit,
 ) {
-    val actionWidth = Modifier.width(AndroidControlSize.postToolbarIcon)
+    var choosingRenote by remember(entry.id) { mutableStateOf(false) }
+    if (choosingRenote) {
+        RenoteSheet(entry, colors, dismiss = { choosingRenote = false }) { operation ->
+            choosingRenote = false
+            dispatch(AndroidUiAction.ActOnEntry(entry, operation))
+        }
+    }
+    val actionWidth = Modifier.width(AndroidControlSize.postToolbarHeight)
     Row(
         Modifier.fillMaxWidth().height(AndroidControlSize.postToolbarHeight),
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        UiIconButton(UiIcon.Bubble, "返信", colors.secondary,
+        UiIconButton(UiIcon.Reply, "返信", colors.secondary,
             { dispatch(AndroidUiAction.ReplyToPost(entry.id)) }, enabled = entry.postHeader?.audience != null,
             iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
-        UiIconButton(UiIcon.Repost, if (entry.reposted) "再投稿を取り消す" else "再投稿",
-            if (entry.reposted) colors.foreground else colors.secondary.copy(alpha = if (entry.canRepost) 1f else .38f),
-            { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Repost)) },
-            enabled = entry.canRepost, iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
-        UiIconButton(UiIcon.Emoji, "リアクションを追加",
+        UiIconButton(UiIcon.Repost, if (entry.reposted) "リノートを取り消す" else "リノート",
+            if (entry.reposted) colors.renote else colors.secondary.copy(alpha = if (entry.canRepost) 1f else .38f),
+            { if (entry.canQuoteRenote) choosingRenote = true else dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Repost)) },
+            enabled = entry.canRepost && entry.operationStatus[EntryOperation.Repost] != EntryOperationStatus.Sending, iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
+        UiIconButton(UiIcon.AddReaction, "リアクションを追加",
             colors.secondary.copy(alpha = if (entry.canReact) 1f else .38f),
             { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.React)) },
-            enabled = entry.canReact, iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
+            enabled = entry.canReact && entry.operationStatus[EntryOperation.React] != EntryOperationStatus.Sending, iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
         UiIconButton(UiIcon.More, "その他の投稿操作", colors.secondary, onMore, iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
+    }
+}
+
+@Composable
+internal fun swipeReplyGesture(open: (() -> Unit)?): Modifier {
+    if (open == null) return Modifier
+    val currentOpen by rememberUpdatedState(open)
+    val haptics = LocalHapticFeedback.current
+    var drag by remember { mutableFloatStateOf(0f) }
+    return Modifier.offset { IntOffset(drag.roundToInt(), 0) }.pointerInput(haptics) {
+        val threshold = 64.dp.toPx()
+        val maxDrag = 96.dp.toPx()
+        val edge = 8.dp.toPx()
+        var reached = false
+        var allowed = false
+        detectHorizontalDragGestures(
+            onDragStart = { start ->
+                drag = 0f
+                reached = false
+                allowed = start.x in edge..(size.width - edge)
+            },
+            onDragCancel = { drag = 0f },
+            onDragEnd = {
+                val openThread = drag <= -threshold
+                drag = 0f
+                if (openThread) currentOpen()
+            },
+        ) { change, dx ->
+            if (allowed) {
+                change.consume()
+                drag = (drag + dx).coerceIn(-maxDrag, 0f)
+                if (!reached && drag <= -threshold) {
+                    reached = true
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                }
+            }
+        }
     }
 }
 
@@ -1174,43 +1272,13 @@ private fun conversationGestures(open: (() -> Unit)?, menu: () -> Unit, swipeRep
     val currentOpen by rememberUpdatedState(open)
     val currentMenu by rememberUpdatedState(menu)
     val haptics = LocalHapticFeedback.current
-    var drag by remember { mutableFloatStateOf(0f) }
-    return Modifier.offset { IntOffset(drag.roundToInt(), 0) }
+    return swipeReplyGesture(if (swipeReply) open else null)
         .pointerInput(haptics) {
             detectTapGestures(onLongPress = {
                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                 currentMenu()
             })
         }
-        .then(if (!swipeReply || open == null) Modifier else Modifier.pointerInput(haptics) {
-            val threshold = 64.dp.toPx()
-            val maxDrag = 96.dp.toPx()
-            val edge = 8.dp.toPx()
-            var reached = false
-            var allowed = false
-            detectHorizontalDragGestures(
-                onDragStart = { start ->
-                    drag = 0f
-                    reached = false
-                    allowed = start.x in edge..(size.width - edge)
-                },
-                onDragCancel = { drag = 0f },
-                onDragEnd = {
-                    val openThread = drag <= -threshold
-                    drag = 0f
-                    if (openThread) currentOpen?.invoke()
-                },
-            ) { change, dx ->
-                if (allowed) {
-                    change.consume()
-                    drag = (drag + dx).coerceIn(-maxDrag, 0f)
-                    if (!reached && drag <= -threshold) {
-                        reached = true
-                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                    }
-                }
-            }
-        })
         .semantics {
             customActions = buildList {
                 if (open != null) add(CustomAccessibilityAction("スレッドを開く") {
@@ -1273,5 +1341,14 @@ private fun EntryMarks(marks: List<String>, colors: AndroidColors) {
                 Text(mark, color = colors.secondary, fontSize = 12.sp)
             }
         }
+    }
+}
+
+
+/** Retain the same boundary while a refresh starts or finishes. */
+@Composable
+internal fun ProgressStrip(active: Boolean, color: androidx.compose.ui.graphics.Color) {
+    Box(Modifier.fillMaxWidth().height(4.dp)) {
+        if (active) LinearProgressIndicator(Modifier.fillMaxSize(), color = color)
     }
 }

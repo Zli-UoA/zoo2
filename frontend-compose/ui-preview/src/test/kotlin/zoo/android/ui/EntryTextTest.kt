@@ -66,8 +66,8 @@ class EntryTextTest {
             mentionProfiles = mapOf("alice" to obj("display_name" to "Alice")),
         )
 
-        assertEquals("@alice Alice. @bob @HERE", result.text)
-        assertEquals(listOf("@alice Alice", "@HERE"), result.spanStyles.filter { it.item == style }
+        assertEquals("\u202F\uFFFC\u202FAlice\u202F. @bob \u202F@HERE\u202F", result.text)
+        assertEquals(listOf("\uFFFC\u202FAlice", "@HERE"), result.spanStyles.filter { it.item == style }
             .map { result.text.substring(it.start, it.end) })
     }
     @Test
@@ -79,6 +79,12 @@ class EntryTextTest {
         val span = result.spanStyles.single { it.item == style }
         assertEquals("@alice.", result.text.substring(span.start, span.end))
     }
+    @Test
+    fun mentionDisplayPreservesLiteralAtSignsAndRemoteHosts() {
+        val result = formatEntry("@nagi@social.example と desk@example.test と `@nagi`")
+        assertEquals("@nagi@social.example と desk@example.test と @nagi", result.text)
+    }
+
     @Test
     fun rowHighlightUsesOnlyRenderedAndAllowedMentions() {
         assertFalse(bodyMentionsUser("`example: @alice`", "alice", setOf("alice"), null, emptySet()))

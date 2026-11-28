@@ -12,6 +12,9 @@ import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
@@ -28,6 +31,8 @@ import androidx.compose.ui.text.intl.Locale
 import androidx.compose.ui.text.intl.LocaleList
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+
+internal val LocalHeaderVisibility = staticCompositionLocalOf<(Boolean) -> Unit> { {} }
 
 internal val LocalAndroidTranslation = staticCompositionLocalOf<(String, Array<out Pair<String, String>>) -> String> {
     { key, _ -> key }
@@ -56,12 +61,13 @@ internal class AndroidColors(dark: Boolean) {
     val inputText = if (dark) Color(0xfff5f5f5) else Color(0xff202020)
     val inputHint = if (dark) Color(0xffa6a6a6) else Color(0xff616161)
     val inputBoundary = if (dark) Color(0xff363636) else Color(0xffdedede)
+    val reactionSelectedBoundary = if (dark) Color(0xffffd45a) else Color(0xff806100)
+    val renote = if (dark) Color(0xff52d9a1) else Color(0xff007747)
     val unread = if (dark) Color(0xffff9494) else Color(0xffb91c1c)
     val accent = Color(0xffffd400)
-    val mentionSurface = if (dark) Color(0xff303030) else Color(0xfffff6cc)
-    val mentionText = if (dark) Color(0xffe5e5e5) else Color.Black
+    val mentionBackground = if (dark) Color(0xff303030) else Color(0xfffff6cc)
     val suggestionSelected = if (dark) Color(0xff2e2e2e) else Color(0xfffffbe8)
-    val messageMention = Color(0xfff0b232)
+    val messageMention = if (dark) Color(0xffffc033) else Color(0xffac6100)
     val messageTarget = if (dark) Color(0xff6ea8ff) else Color(0xff3b82f6)
     /** Search terms in results (Web's `--highlight`): a paler yellow than [accent], readable on both themes. */
     val searchHighlight = if (dark) Color(0xff5c4a00) else Color(0xffffe680)
@@ -69,6 +75,8 @@ internal class AndroidColors(dark: Boolean) {
 }
 
 internal val entryTextSize = 16.sp
+internal val entryLineHeight = 24.sp
+internal val metadataTextSize = 12.sp
 
 internal object AndroidWeights {
     val body = FontWeight.Normal
@@ -85,9 +93,12 @@ internal fun AndroidShell(
     dark: Boolean,
     onSelect: (TopPage) -> Unit,
     language: String? = null,
+    tintedHeader: Boolean = true,
     screen: @Composable ColumnScope.(AndroidColors) -> Unit,
 ) {
     val colors = AndroidColors(dark)
+    val headerVisible = remember { mutableStateOf(true) }
+    val reportHeader = remember { { visible: Boolean -> headerVisible.value = visible } }
     val background = if (selected == TopPage.Notifications) {
         val statusBar = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
         val fadeHeight = with(LocalDensity.current) { (statusBar + 144.dp).toPx() }
@@ -118,8 +129,16 @@ internal fun AndroidShell(
         )) {
             Column(Modifier.fillMaxSize()
                 .then(if (background != null) Modifier.background(background) else Modifier.background(colors.background))
-                .safeDrawingPadding()) {
-                Column(Modifier.weight(1f).fillMaxWidth()) { screen(colors) }
+            ) {
+                Spacer(Modifier.fillMaxWidth().windowInsetsTopHeight(WindowInsets.safeDrawing)
+                    .then(if (background == null) Modifier.background(
+                        if (tintedHeader && headerVisible.value) colors.headerLight else colors.background
+                    ) else Modifier))
+                Column(Modifier.fillMaxSize().consumeWindowInsets(WindowInsets.safeDrawing.only(WindowInsetsSides.Top)).windowInsetsPadding(WindowInsets.safeDrawing.only(
+                    WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))) {
+                CompositionLocalProvider(LocalHeaderVisibility provides reportHeader) {
+                    Column(Modifier.weight(1f).fillMaxWidth()) { screen(colors) }
+                }
                 if (selected != null) {
                     Row(Modifier.fillMaxWidth().background(colors.quietSurface).selectableGroup()) {
                         for (page in TopPage.entries) {
@@ -144,6 +163,7 @@ internal fun AndroidShell(
                             }
                         }
                     }
+                }
                 }
             }
         }
@@ -195,11 +215,8 @@ internal fun PageHeader(
 
 @Composable
 internal fun ZooBadge(colors: AndroidColors, modifier: Modifier = Modifier) {
-    Canvas(modifier) {
-        drawCircle(colors.accent)
-        drawOval(Color.Black, Offset(size.width * .28f, size.height * .43f), Size(size.width * .46f, size.height * .40f))
-        for ((x, y) in listOf(.29f to .37f, .50f to .27f, .71f to .37f)) {
-            drawCircle(Color.Black, size.width * .105f, Offset(size.width * x, size.height * y))
-        }
-    }
+    androidx.compose.foundation.Image(
+        androidx.compose.ui.res.painterResource(works.zli.zoo.shared.R.drawable.zoo_mark), null,
+        modifier.background(androidx.compose.ui.res.colorResource(works.zli.zoo.shared.R.color.zoo_brand_yellow), CircleShape),
+    )
 }

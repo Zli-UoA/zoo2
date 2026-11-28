@@ -17,7 +17,7 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -49,8 +49,26 @@ internal data class SelectionItem(
     val detail: String? = null,
     val isUserName: Boolean = false,
     val selected: Boolean? = null,
+    val unavailable: String? = null,
 )
-internal data class RecentPhoto(val id: String, val label: String)
+@Composable
+internal fun DraftAttachment(name: String, failed: Boolean, colors: AndroidColors,
+    retry: () -> Unit, remove: () -> Unit, preview: @Composable (Modifier) -> Unit) {
+    Box(Modifier.size(96.dp).clip(RoundedCornerShape(10.dp)).background(colors.inputSurface)) {
+        preview(Modifier.fillMaxSize())
+        if (failed) {
+            Box(Modifier.matchParentSize().background(Color.Black.copy(alpha = 0.38f)))
+            UiIconButton(UiIcon.Refresh, "${name}のアップロードを再試行", Color.White, retry,
+                fill = Color.Black.copy(alpha = 0.76f), iconSize = 22.dp,
+                modifier = Modifier.align(Alignment.Center).offset(x = (-16).dp).size(40.dp))
+        }
+        UiIconButton(UiIcon.Close, "${name}を添付から外す", Color.White, remove,
+            fill = Color.Black.copy(alpha = 0.76f), iconSize = 16.dp,
+            modifier = Modifier.align(Alignment.TopEnd).padding(3.dp).size(26.dp))
+    }
+}
+
+internal data class RecentPhoto(val id: String, val label: String, val failed: Boolean = false, val description: String = "", val sensitive: Boolean = false)
 
 @Composable
 internal fun DirectoryPage(
@@ -59,45 +77,27 @@ internal fun DirectoryPage(
     submit: String?, canSubmit: Boolean, encryption: Boolean?, onSubmit: () -> Unit, onEncryption: () -> Unit,
 ) {
     PageHeader(title, colors, onBack = back)
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
-        BasicTextField(
-            query, search, modifier = Modifier.fillMaxWidth().background(colors.inputSurface, CircleShape).padding(14.dp),
-            singleLine = true, textStyle = LocalTextStyle.current.copy(color = colors.inputText, fontSize = 16.sp),
-            cursorBrush = SolidColor(colors.inputText),
-            decorationBox = { field ->
-                Box {
-                    if (query.isEmpty()) Text("検索", color = colors.inputHint)
-                    field()
-                }
-            },
-        )
+    Column(Modifier.fillMaxSize().padding(vertical = 16.dp)) {
+        SearchInput(query, search, "検索", colors, Modifier.padding(horizontal = 16.dp))
         LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(vertical = 8.dp)) {
             items(results, key = { it.id }) { item ->
-                Row(
-                    Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target)
-                        .clickable(role = Role.Button) { select(item.id) },
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f).padding(vertical = 8.dp)) {
-                        Text(item.title, color = colors.foreground, fontSize = 16.sp,
-                            fontWeight = if (item.isUserName) AndroidWeights.userName else AndroidWeights.body)
-                        item.detail?.let { Text(it, color = colors.secondary, fontSize = 13.sp) }
-                    }
+                LabeledRow(item.title, item.detail, colors, Modifier.clickable(enabled = item.unavailable == null, role = Role.Button) { select(item.id) },
+                    titleWeight = if (item.isUserName) AndroidWeights.userName else AndroidWeights.body) {
                     val selected = item.selected
-                    if (selected == null) UiGlyph(UiIcon.Next, colors.secondary, iconSize = AndroidControlSize.inlineIcon)
+                    if (item.unavailable != null) Text(item.unavailable, color = colors.secondary, fontSize = 13.sp)
+                    else if (selected == null) UiGlyph(UiIcon.Next, colors.secondary, iconSize = AndroidControlSize.inlineIcon)
                     else androidx.compose.material3.Checkbox(selected, onCheckedChange = null)
                 }
             }
         }
         if (encryption != null) {
-            Row(Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target).clickable(onClick = onEncryption),
+            Row(Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target).clickable(onClick = onEncryption).padding(horizontal = 16.dp),
                 verticalAlignment = Alignment.CenterVertically) {
                 Text("エンドツーエンド暗号化", Modifier.weight(1f), color = colors.foreground)
                 androidx.compose.material3.Switch(encryption, onCheckedChange = null)
             }
         }
-        if (submit != null) Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+        if (submit != null) Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp), contentAlignment = Alignment.CenterEnd) {
             TextAction(submit, colors, canSubmit, icon = UiIcon.Bubble, click = onSubmit)
         }
     }
@@ -110,7 +110,8 @@ internal fun NewPostPage(
     photo: @Composable (RecentPhoto, Modifier) -> Unit,
 ) {
     val input = screen.input
-    PageHeader("新しい投稿", colors, onBack = { dispatch(AndroidUiAction.Back) }) {
+    var describing by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
+    PageHeader(if (screen.quoting != null) "引用リノート" else "新しい投稿", colors, onBack = { dispatch(AndroidUiAction.Back) }) {
         screen.visibility?.let { PostAudienceButton(it, colors, dispatch) }
         screen.federate?.let { enabled ->
             FederationButton(enabled, colors) { dispatch(AndroidUiAction.OpenSetting("toggle-federation")) }
@@ -132,11 +133,26 @@ internal fun NewPostPage(
             cursorBrush = SolidColor(colors.inputText),
             decorationBox = { field ->
                 Box {
-                    if (input.text.isEmpty()) Text("いま何してる？", color = colors.inputHint)
+                    if (input.text.isEmpty()) Text(if (screen.quoting == null) "いま何してる？" else "コメントを追加", color = colors.inputHint)
                     field()
                 }
             },
         )
+        screen.quoting?.let { entry ->
+            Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 12.dp)
+                .testTag("composer-quote").background(colors.inputSurface, RoundedCornerShape(12.dp))
+                .padding(start = 12.dp, end = 8.dp, top = 4.dp, bottom = 10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    TimelineAvatar(entry.author, entry.avatar, colors, 20.dp)
+                    Text(entry.author, Modifier.weight(1f), color = colors.foreground, fontWeight = AndroidWeights.entryAuthor,
+                        maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                    UiIconButton(UiIcon.Close, "引用元を外す", colors.secondary, { dispatch(AndroidUiAction.RemoveQuote) },
+                        iconSize = 16.dp, modifier = Modifier.size(32.dp))
+                }
+                EntryBody(entry.body, colors.foreground, entryTextSize, entry.emoji, maxLines = 3, mentionColors = colors)
+            }
+        }
+        CharacterCount(input.text, 1000, colors)
         if (screen.showPhotos) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("最近の写真", Modifier.weight(1f), color = colors.secondary, fontSize = 13.sp)
@@ -159,10 +175,32 @@ internal fun NewPostPage(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             items(screen.attached, key = { it.id }) { item ->
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    photo(item, Modifier.size(72.dp).clip(RoundedCornerShape(10.dp)))
-                    TextAction("削除", colors, icon = UiIcon.Delete, style = TextActionStyle.Plain) { dispatch(AndroidUiAction.RemoveFile(item.id)) }
+                Column {
+                    DraftAttachment(item.label, item.failed, colors,
+                        retry = { dispatch(AndroidUiAction.RetryFile(item.id)) },
+                        remove = { dispatch(AndroidUiAction.RemoveFile(item.id)) }) { modifier ->
+                        photo(item, modifier)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        UiIconButton(UiIcon.Create, "${item.label}の説明を編集", colors.secondary,
+                            { describing = item.id }, iconSize = 18.dp, modifier = Modifier.size(44.dp, 36.dp))
+                        UiIconButton(if (item.sensitive) UiIcon.EyeOff else UiIcon.Eye,
+                            item.label + if (item.sensitive) "のセンシティブ指定を解除" else "をセンシティブに指定",
+                            colors.secondary, { dispatch(AndroidUiAction.SetPhotoSensitive(item.id, !item.sensitive)) },
+                            iconSize = 18.dp, modifier = Modifier.size(44.dp, 36.dp))
+                    }
                 }
+            }
+        }
+        screen.attached.firstOrNull { it.id == describing }?.let { item ->
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.weight(1f)) {
+                    LabeledField("画像の説明 · ${item.label}", item.description, colors, singleLine = false) { text ->
+                        if (text.codePointCount(0, text.length) <= 1000) dispatch(AndroidUiAction.DescribePhoto(item.id, text))
+                    }
+                }
+                TextAction("完了", colors, style = TextActionStyle.Plain) { describing = null }
             }
         }
         Row(
@@ -173,8 +211,30 @@ internal fun NewPostPage(
             UiIconButton(UiIcon.Attach, "写真", colors.inputText, { dispatch(AndroidUiAction.UseInputTool(InputTool.Attach)) })
             UiIconButton(UiIcon.Emoji, "絵文字", colors.inputText, { dispatch(AndroidUiAction.UseInputTool(InputTool.Emoji)) })
             Spacer(Modifier.weight(1f))
-            val enabled = input.canSend && (input.text.isNotBlank() || screen.attached.isNotEmpty())
+            val enabled = input.canSend && input.text.codePointCount(0, input.text.length) <= 1000 && (input.text.isNotBlank() || screen.attached.isNotEmpty())
             TextAction("投稿", colors, enabled, icon = UiIcon.Send) { dispatch(AndroidUiAction.UseInputTool(InputTool.Send)) }
+        }
+    }
+}
+
+/** Paint immediately; show the current operation only when restoration outlasts a short startup. */
+@Composable
+internal fun RestorationPage(dark: Boolean, stage: String, cancel: (() -> Unit)?) {
+    var showProgress by androidx.compose.runtime.remember { mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(400)
+        showProgress = true
+    }
+    AndroidShell(null, dark, {}, tintedHeader = false) { colors ->
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                ZooBadge(colors, Modifier.size(72.dp))
+                if (showProgress) {
+                    Text(stage, color = colors.secondary, fontSize = 14.sp)
+                    if (cancel != null) TextAction("キャンセル", colors, style = TextActionStyle.Plain, click = cancel)
+                }
+            }
         }
     }
 }
@@ -213,12 +273,13 @@ internal fun ChannelEditorPage(
 ) {
     PageHeader(screen.title, colors, onBack = { dispatch(AndroidUiAction.Back) })
     Column(Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        ChannelField("チャンネル名", screen.name, colors, singleLine = true) {
+        LabeledField("チャンネル名", screen.name, colors, singleLine = true) {
             dispatch(AndroidUiAction.ChannelNameChanged(it))
         }
-        ChannelField("説明", screen.description, colors, singleLine = false) {
+        LabeledField("説明", screen.description, colors, singleLine = false) {
             dispatch(AndroidUiAction.ChannelDescriptionChanged(it))
         }
+        screen.saveError?.let { Text(it, color = colors.unread, fontSize = 14.sp) }
         val options = listOf(
             Triple("channel-private", "非公開", screen.privateChannel),
             Triple("channel-encrypted", "エンドツーエンド暗号化", screen.encrypted),
@@ -233,6 +294,10 @@ internal fun ChannelEditorPage(
                 Text(label, Modifier.weight(1f), color = colors.foreground)
                 androidx.compose.material3.Switch(selection, onCheckedChange = null)
             }
+            if (id == "channel-encrypted" && screen.privateChannel != null && screen.submitLabel == "作成") {
+                Text(if (selection == true) "公開に切り替えると暗号化は解除されます。" else "暗号化を利用するにはチャンネルを非公開にします。",
+                    color = colors.secondary, fontSize = 13.sp)
+            }
         }
         Spacer(Modifier.weight(1f))
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
@@ -243,45 +308,19 @@ internal fun ChannelEditorPage(
 }
 
 @Composable
-private fun ChannelField(
-    label: String,
-    value: String,
-    colors: AndroidColors,
-    singleLine: Boolean,
-    change: (String) -> Unit,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(label, color = colors.secondary, fontSize = 13.sp)
-        BasicTextField(
-            value, change,
-            Modifier.fillMaxWidth().background(colors.inputSurface, RoundedCornerShape(10.dp)).padding(12.dp),
-            singleLine = singleLine, minLines = if (singleLine) 1 else 3,
-            textStyle = LocalTextStyle.current.copy(color = colors.inputText, fontSize = 16.sp),
-            cursorBrush = SolidColor(colors.inputText),
-        )
-    }
-}
-
-
-@Composable
 private fun PostAudienceButton(visibility: String, colors: AndroidColors, dispatch: (AndroidUiAction) -> Unit) {
     val audience = PostAudience.fromApi(visibility) ?: return
     var expanded by remember { mutableStateOf(false) }
     Box {
         UiIconButton(audience.icon, "${androidLabel("home.audience", "公開範囲")}：${audience.localizedLabel()}", colors.foreground, { expanded = true })
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, containerColor = colors.background) {
-            for (option in PostAudience.composerOptions) {
-                DropdownMenuItem(
-                    text = { Text(option.localizedLabel(), color = colors.foreground) },
-                    leadingIcon = { UiGlyph(option.icon, colors.secondary, AndroidControlSize.inlineIcon) },
-                    trailingIcon = if (option == audience) {
-                        { UiGlyph(UiIcon.Check, colors.foreground, AndroidControlSize.inlineIcon) }
-                    } else null,
-                    onClick = {
+            Column(Modifier.selectableGroup()) {
+                for (option in PostAudience.composerOptions) {
+                    MenuOption(option.localizedLabel(), colors, option.icon, chosen = option == audience) {
                         expanded = false
                         dispatch(AndroidUiAction.SelectPostVisibility(option.apiValue))
-                    },
-                )
+                    }
+                }
             }
         }
     }
@@ -309,4 +348,12 @@ private fun FederationButton(enabled: Boolean, colors: AndroidColors, onToggle: 
             }
         }
     }
+}
+
+@Composable
+internal fun AttachmentExportDialog(name: String, size: String?, cancel: () -> Unit, export: (Boolean) -> Unit) {
+    androidx.compose.material3.AlertDialog(onDismissRequest = cancel, title = { Text(name) },
+        text = { if (size != null) Text(size) },
+        confirmButton = { DialogAction("保存", UiIcon.Save) { export(false) } },
+        dismissButton = { DialogAction("共有", UiIcon.Share) { export(true) } })
 }

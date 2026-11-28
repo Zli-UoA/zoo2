@@ -295,7 +295,11 @@ internal class AndroidPushRegistration(
     }
 
     fun open(intent: Intent, dismissed: (String) -> Unit = {}): Boolean {
-        if (intent.action != OPEN_ACTION || !store.matches(intent.getStringExtra("binding"), app.repo.config.userId)) return false
+        if (intent.action != OPEN_ACTION) return false
+        if (!store.matches(intent.getStringExtra("binding"), app.repo.config.userId)) {
+            app.toast = "この通知を受け取ったときのログイン情報が変わりました。通知一覧を確認してください"
+            return true
+        }
         val path = pushDestination(intent.getStringExtra("path")) ?: return false
         app.navigate(path)
         intent.getStringExtra("tag")?.takeIf { it.startsWith("zoo:${app.config.userId}:") }?.let {
@@ -442,11 +446,9 @@ internal fun showPushNotification(context: Context, data: Map<String, String>, d
             } catch (_: SecurityException) { }
             return@synchronized null
         }
-        val channel = when (kind) { "reaction" -> "reactions"; "dm" -> "messages"; else -> "mentions" }
-        if (manager.getNotificationChannel("zoo.$channel") == null) {
-            manager.createNotificationChannel(NotificationChannel("zoo.$channel", "Zoo",
-                if (channel == "reactions") NotificationManager.IMPORTANCE_DEFAULT else NotificationManager.IMPORTANCE_HIGH))
-        }
+        val delivery = deliveryChannel(kind.orEmpty())
+        val channel = delivery.id
+        delivery.register(context, manager)
         val intent = store.openIntent(user, id, path) ?: return@synchronized null
         val body = decryptedBody ?: data["body"].orEmpty().take(2000)
         val timestamp = System.currentTimeMillis()
@@ -477,7 +479,7 @@ internal fun showPushNotification(context: Context, data: Map<String, String>, d
                 })
                 .setContentIntent(PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
                 .setAutoCancel(true).setOnlyAlertOnce(true).setVisibility(Notification.VISIBILITY_PRIVATE)
-                .setCategory(Notification.CATEGORY_MESSAGE).build()
+                .setCategory(if (kind == "reaction") Notification.CATEGORY_SOCIAL else Notification.CATEGORY_MESSAGE).build()
         }
         try {
             manager.notify(tag, 0, posted.build(null, null))

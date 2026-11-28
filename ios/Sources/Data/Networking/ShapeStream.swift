@@ -204,11 +204,16 @@ struct ShapeStream {
     }
 
     func observe<T: Decodable & Sendable>(_ path: String, query: [String: String], as type: T.Type,
-                                          restoreCached: Bool = true, receive: @MainActor ([T]?) -> Void) async throws {
+                                          restoreCached: Bool = true,
+                                          transactions: (@MainActor (Set<UInt64>, Bool) -> Void)? = nil,
+                                          receive: @MainActor ([T]?) -> Void) async throws {
         let key = cacheKey(path, query: query, prefix: "shape:")
         let version = query["channel_id"].flatMap { sync?.channelVersion($0) }
         let revocationVersion = sync?.revocationVersion(for: path)
         var state = try await sync?.load(key, as: ShapeState.self) ?? ShapeState()
+        // 再開した購読も、最初の最新化が済んだ状態を正本として渡す。
+        var freshSnapshot = true
+        var transactionIDs: Set<UInt64> = []
         if state.isLive && restoreCached {
             let rows = try await decodeShapeRows(state.rows, as: type)
             try sync?.check(channelID: query["channel_id"], channelVersion: version)
@@ -233,8 +238,20 @@ struct ShapeStream {
                         }
                         try sync?.checkRevocationVersion(revocationVersion)
                         state = result.state
-                        if let snapshot = result.values { receive(snapshot) }
-                        else if state.offset == "-1" { receive(nil) }
+                        if transactions != nil, response.statusCode != 409, !data.isEmpty {
+                            let events = try JSONDecoder().decode([ShapeEvent].self, from: data)
+                            transactionIDs.formUnion(events.flatMap { $0.headers.txids ?? [] }.map { UInt64(UInt32(truncatingIfNeeded: $0)) })
+                        }
+                        if let snapshot = result.values {
+                            transactions?(transactionIDs, freshSnapshot)
+                            receive(snapshot)
+                            transactionIDs = []
+                            freshSnapshot = false
+                        } else if state.offset == "-1" {
+                            freshSnapshot = true
+                            transactionIDs = []
+                            receive(nil)
+                        }
                     }
                     if case .longPolling = transportResult { sseFailures = 3 }
                 } catch where useSSE && isSSETransportFailure(error) && !Task.isCancelled {

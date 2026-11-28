@@ -58,12 +58,16 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import zoo.codePointCount
 
 internal data class InputState(val text: String = "", val expanded: Boolean = false, val canSend: Boolean = true, val hasAttachments: Boolean = false, val mentions: List<zoo.CompletionOption> = emptyList(),
     val selection: TextRange? = null, val files: List<Pair<String, String>> = emptyList(), val live: Boolean = false, val focusRequest: Int = 0,
     /** 暗号化チャンネルの送信画面の表示（増えた配布先と、鍵を配れない相手。#565）。何もなければ空。 */
     val notices: List<String> = emptyList(),
     val lastSend: String? = null,
+    val thumbnails: Map<String, androidx.compose.ui.graphics.ImageBitmap> = emptyMap(),
+    val failedFiles: Set<String> = emptySet(),
+    val characterLimit: Int = 40_000,
 )
 internal enum class InputTool { Attach, Format, Emoji, Send, Expand }
 
@@ -76,6 +80,7 @@ internal fun ConversationInput(
     modifier: Modifier = Modifier,
     onMention: (String) -> Unit = {},
     onSelection: (TextRange) -> Unit = {},
+    onRetryFile: (String) -> Unit = {},
     onRemoveFile: (String) -> Unit = {},
     hideIdleHandle: Boolean = false,
     canResize: Boolean = true,
@@ -92,7 +97,7 @@ internal fun ConversationInput(
     var focused by remember { mutableStateOf(false) }
     var dismissed by remember(state.text, state.selection) { mutableStateOf(false) }
     var selectedOption by remember(state.text, state.selection) { mutableIntStateOf(0) }
-    val options = state.mentions.takeIf { focused && !dismissed }.orEmpty()
+    val options = state.mentions.takeIf { focused && !dismissed && value.composition == null }.orEmpty()
     val activeOption = selectedOption.coerceAtMost(options.lastIndex.coerceAtLeast(0))
     var suggestionsVisible by remember { mutableStateOf(false) }
     val full = state.expanded
@@ -149,13 +154,13 @@ internal fun ConversationInput(
                         }
                     }
                     .padding(horizontal = 12.dp, vertical = 8.dp),
-                textStyle = LocalTextStyle.current.copy(color = colors.inputText, fontSize = 16.sp, lineHeight = 23.sp),
+                textStyle = LocalTextStyle.current.copy(color = colors.inputText, fontSize = entryTextSize, lineHeight = entryLineHeight),
                 cursorBrush = SolidColor(colors.inputText),
                 minLines = 1,
                 maxLines = if (adjustable) Int.MAX_VALUE else if (showTools) 6 else 1,
                 decorationBox = { inner ->
                     Box {
-                        if (state.text.isEmpty()) Text(if (state.live) "入力内容を共有" else "メッセージを送信", color = colors.inputHint, fontSize = 16.sp)
+                        if (state.text.isEmpty()) Text(if (state.live) "入力中の内容を参加者に共有" else "メッセージを送信", color = colors.inputHint, fontSize = 16.sp)
                         inner()
                     }
                 },
@@ -204,8 +209,10 @@ internal fun ConversationInput(
                                 ) {
                                     Text("@${option.name}", color = colors.foreground, fontSize = 14.sp,
                                         fontFamily = FontFamily.Monospace)
-                                    Text(option.label, color = colors.secondary, fontSize = 14.sp, maxLines = 1,
-                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                                    if (option.label.isNotBlank() && option.label.removePrefix("@") != option.name) {
+                                        Text(option.label, color = colors.secondary, fontSize = 14.sp, maxLines = 1,
+                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                                    }
                                 }
                             }
                         }
@@ -264,11 +271,21 @@ internal fun ConversationInput(
                 },
                 {
                     Column(Modifier.fillMaxWidth()) {
+                        CharacterCount(state.text, state.characterLimit, colors)
                         if (state.files.isNotEmpty()) {
                             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp)
                                 .horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 state.files.forEach { (id, name) ->
-                                    TextAction(name, colors, icon = UiIcon.Close, style = TextActionStyle.Neutral) { onRemoveFile(id) }
+                                    DraftAttachment(name, id in state.failedFiles, colors, { onRetryFile(id) }, { onRemoveFile(id) }) { modifier ->
+                                        val bitmap = state.thumbnails[id]
+                                        if (bitmap != null) androidx.compose.foundation.Image(bitmap, name, modifier,
+                                            contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                                        else Column(modifier.padding(6.dp), verticalArrangement = Arrangement.Bottom) {
+                                            UiGlyph(UiIcon.Document, colors.secondary, iconSize = 20.dp)
+                                            Text(name, color = colors.inputText, fontSize = 12.sp, maxLines = 1,
+                                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -279,8 +296,8 @@ internal fun ConversationInput(
                             ) {
                                 if (!state.live) {
                                     UiIconButton(UiIcon.Attach, "添付", colors.inputText, { onTool(InputTool.Attach) })
-                                    UiIconButton(UiIcon.Format, "書式", colors.inputText, { onTool(InputTool.Format) })
-                                    UiIconButton(UiIcon.Emoji, "絵文字", colors.inputText, { onTool(InputTool.Emoji) })
+                                    UiIconButton(UiIcon.Format, "書式", colors.inputText, { onTool(InputTool.Format) }, enabled = value.composition == null)
+                                    UiIconButton(UiIcon.Emoji, "絵文字", colors.inputText, { onTool(InputTool.Emoji) }, enabled = value.composition == null)
                                 }
                                 Spacer(Modifier.weight(1f))
                                 SendAction(state, colors, onTool)
@@ -339,7 +356,7 @@ internal fun ConversationInput(
 
 @Composable
 private fun SendAction(state: InputState, colors: AndroidColors, onTool: (InputTool) -> Unit) {
-    val enabled = (state.text.isNotBlank() || state.hasAttachments) && state.canSend
+    val enabled = (state.text.isNotBlank() || state.hasAttachments) && state.canSend && (state.live || state.text.codePointCount() <= state.characterLimit)
     UiIconButton(
         if (state.live) UiIcon.Delete else UiIcon.Send,
         if (state.live) "入力を消去" else "送信", if (enabled) Color.Black else colors.inputHint,
@@ -365,4 +382,12 @@ internal fun FormattingDialog(onDismiss: () -> Unit, onSelect: (String) -> Unit)
         },
         confirmButton = {},
     )
+}
+
+@Composable
+internal fun CharacterCount(text: String, limit: Int, colors: AndroidColors) {
+    if (text.length < limit - 100) return
+    val remaining = limit - text.codePointCount()
+    if (remaining <= 100) Text(if (remaining < 0) "${-remaining}文字超過" else "残り${remaining}文字",
+        Modifier.padding(horizontal = 12.dp), color = if (remaining < 0) colors.unread else colors.secondary, fontSize = 12.sp)
 }

@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -120,9 +119,7 @@ internal fun ChannelLinkCardContent(
             }
         }
         is ChannelLinkView.Message -> Row(pressable, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Box(Modifier.size(24.dp).background(colors.background, CircleShape), contentAlignment = Alignment.Center) {
-                Text(view.author.take(1), color = colors.secondary, fontSize = 12.sp)
-            }
+            UserAvatar(view.author, null, Modifier.size(24.dp), colors.background, colors.secondary, 12.sp)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(view.author, Modifier.weight(1f, fill = false), color = colors.foreground, fontSize = 14.sp,

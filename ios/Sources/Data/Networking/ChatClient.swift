@@ -14,6 +14,9 @@ protocol ChatClient: InboxClient, CallClient, TypingClient, GlobalSearchClient {
     func observeChannelPinChanges(receive: @MainActor () -> Void) async throws
     func setChannelPinned(id: String, pinned: Bool, expectedVersion: Int64) async throws -> ChannelPins
     func members(channelID: String) async throws -> [ChannelMembership]
+    func channelNotificationSettings(id: String) async throws -> ChannelNotificationSettings
+    func setChannelNotificationSettings(id: String, level: ChannelNotificationLevel) async throws -> Envelope<ChannelNotificationSettings>
+    func observeChannelNotificationSettings(receive: @MainActor (ChannelNotificationSnapshot) -> Void) async throws
     func readState(channelID: String, allowCached: Bool) async throws -> ChannelReadState
     func attachmentURL(id: String) async throws -> URL
     func attachmentData(from url: URL) async throws -> Data

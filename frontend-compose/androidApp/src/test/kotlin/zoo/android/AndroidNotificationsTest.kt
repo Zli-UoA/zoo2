@@ -24,7 +24,7 @@ import zoo.*
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [26, 35], manifest = Config.NONE)
+@Config(sdk = [26, 35])
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class AndroidNotificationsTest {
     private class Fixture(scope: CoroutineScope, avatarDispatcher: CoroutineDispatcher = Dispatchers.Default) {
