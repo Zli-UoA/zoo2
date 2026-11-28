@@ -49,7 +49,7 @@ const WRITERS: usize = 8;
 const RECIPIENTS: i32 = 10_000;
 
 /// A reply either committed or was rejected with 503 while waiting for the thread-root lock
-/// (`lock_timeout`). Both are timed, but only committed replies have notifications and stage
+/// (`statement_timeout`). Both are timed, but only committed replies have notifications and stage
 /// events to aggregate.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ReplyKind {
@@ -631,75 +631,79 @@ async fn eight_concurrent_replies_api_latency() -> anyhow::Result<()> {
     // posts (fixture setup) and 503 replies are filtered out; every committed reply must then have
     // exactly the nine expected stages, one each, or the measurement fails instead of mixing a
     // partial breakdown into the percentiles.
-    let events = timing.0.lock().unwrap();
-    anyhow::ensure!(
-        events.duplicates.is_empty(),
-        "duplicate notify_timing events: {:?}",
-        events.duplicates
-    );
-    let ok_ids: HashSet<&str> = outcomes
-        .iter()
-        .filter(|outcome| outcome.kind == ReplyKind::Ok)
-        .map(|outcome| reply_ids[outcome.round][outcome.index].as_str())
-        .collect();
-    let mut stage_samples: HashMap<&'static str, Vec<f64>> = TIMING_STAGES
-        .iter()
-        .map(|stage| (*stage, Vec::new()))
-        .collect();
-    let mut stages_per_reply: HashMap<String, HashSet<&'static str>> = HashMap::new();
-    for ((message_id, stage), elapsed_us) in &events.samples {
-        if !ok_ids.contains(message_id.as_str()) {
-            continue;
-        }
-        let Some(stage) = TIMING_STAGES
-            .iter()
-            .find(|candidate| **candidate == stage.as_str())
-        else {
-            continue;
-        };
-        stage_samples
-            .get_mut(*stage)
-            .unwrap()
-            .push(*elapsed_us as f64 / 1000.);
-        stages_per_reply
-            .entry(message_id.clone())
-            .or_default()
-            .insert(*stage);
-    }
-    for message_id in &ok_ids {
-        let stages = stages_per_reply.get(*message_id);
+    {
+        let events = timing.0.lock().unwrap();
         anyhow::ensure!(
-            stages.is_some_and(|stages| {
-                stages.len() == TIMING_STAGES.len()
-                    && TIMING_STAGES.iter().all(|stage| stages.contains(stage))
-            }),
-            "reply {message_id}: expected all {} stages exactly once, got {:?}",
-            TIMING_STAGES.len(),
-            stages
+            events.duplicates.is_empty(),
+            "duplicate notify_timing events: {:?}",
+            events.duplicates
         );
-    }
-    anyhow::ensure!(
-        stages_per_reply.len() == ok_count,
-        "timings for {} committed replies, expected {}",
-        stages_per_reply.len(),
-        ok_count
-    );
-    if ok_count > 0 {
-        let mut breakdown = serde_json::Map::new();
-        for stage in TIMING_STAGES {
-            breakdown.insert(
-                stage.into(),
-                summary(
-                    &format!("{stage} (round trip incl. execution, 8 concurrent)"),
-                    stage_samples.remove(stage).unwrap(),
-                ),
+        let ok_ids: HashSet<&str> = outcomes
+            .iter()
+            .filter(|outcome| outcome.kind == ReplyKind::Ok)
+            .map(|outcome| reply_ids[outcome.round][outcome.index].as_str())
+            .collect();
+        let mut stage_samples: HashMap<&'static str, Vec<f64>> = TIMING_STAGES
+            .iter()
+            .map(|stage| (*stage, Vec::new()))
+            .collect();
+        let mut stages_per_reply: HashMap<String, HashSet<&'static str>> = HashMap::new();
+        for ((message_id, stage), elapsed_us) in &events.samples {
+            if !ok_ids.contains(message_id.as_str()) {
+                continue;
+            }
+            let Some(stage) = TIMING_STAGES
+                .iter()
+                .find(|candidate| **candidate == stage.as_str())
+            else {
+                continue;
+            };
+            stage_samples
+                .get_mut(*stage)
+                .unwrap()
+                .push(*elapsed_us as f64 / 1000.);
+            stages_per_reply
+                .entry(message_id.clone())
+                .or_default()
+                .insert(*stage);
+        }
+        for message_id in &ok_ids {
+            let stages = stages_per_reply.get(*message_id);
+            anyhow::ensure!(
+                stages.is_some_and(|stages| {
+                    stages.len() == TIMING_STAGES.len()
+                        && TIMING_STAGES.iter().all(|stage| stages.contains(stage))
+                }),
+                "reply {message_id}: expected all {} stages exactly once, got {:?}",
+                TIMING_STAGES.len(),
+                stages
             );
         }
-        report.insert("api_stage_ms".into(), Value::Object(breakdown));
-    } else {
-        eprintln!("no committed replies; skipping api_stage_ms");
-        report.insert("api_stage_ms".into(), Value::Null);
+        anyhow::ensure!(
+            stages_per_reply.len() == ok_count,
+            "timings for {} committed replies, expected {}",
+            stages_per_reply.len(),
+            ok_count
+        );
+        if ok_count > 0 {
+            let mut breakdown = serde_json::Map::new();
+            for stage in TIMING_STAGES {
+                breakdown.insert(
+                    stage.into(),
+                    summary(
+                        &format!("{stage} (round trip incl. execution, 8 concurrent)"),
+                        stage_samples.remove(stage).unwrap(),
+                    ),
+                );
+            }
+            report.insert("api_stage_ms".into(), Value::Object(breakdown));
+        } else {
+            eprintln!("no committed replies; skipping api_stage_ms");
+            report.insert("api_stage_ms".into(), Value::Null);
+        }
     }
+    // The guard's scope ends before `cleanup().await`, so this async test holds no lock across an
+    // await point.
     eprintln!("REPLY_LATENCY_JSON {}", Value::Object(report));
     fixture.cleanup().await?;
     Ok(())

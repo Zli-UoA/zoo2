@@ -486,7 +486,7 @@ pub fn reply_participation_sql() -> &'static str {
 /// 返信のルート行ロック待ちがタイムアウトしたときは、接続を握ったまま待ち続けず 503 で返す。
 fn reply_lock_error(err: AppError) -> AppError {
     if let AppError::Database(ref db_err) = err
-        && AppError::is_lock_timeout(db_err)
+        && (AppError::is_lock_timeout(db_err) || AppError::is_statement_timeout(db_err))
     {
         AppError::ServiceUnavailable("The thread is busy; retry shortly".into())
     } else {
@@ -942,8 +942,10 @@ pub(crate) async fn create_message_impl(
         // moved the thread), and the row is locked as a leave does, so a leave and a reply serialize.
         // Lock order matches thread_operation: the canonical root first, then the join target.
         // 同じルートへの同時返信が増えると、ロック待ちの間も DB 接続を占有し続ける。
-        // プール枯渇が API 全体に広がらないよう、待ちに上限を設けて早めに 503 を返す。
-        toasty::sql::statement("SET LOCAL lock_timeout = '5s'")
+        // lock_timeout は待ちを「1回のロック取得」単位でしか計時しないため、連鎖する
+        // 同時返信では待ち全体が 5 秒を超えても打ち切られない。statement_timeout で
+        // 取得文全体を制限し、プール枯渇が API 全体に広がらないようにする。
+        toasty::sql::statement("SET LOCAL statement_timeout = '5s'")
             .exec(&mut tx)
             .await?;
         let root_lock_began = Instant::now();
@@ -965,9 +967,9 @@ pub(crate) async fn create_message_impl(
         )
         .await
         .map_err(reply_lock_error)?;
-        // ルート行を確保したら lock_timeout を戻す。以降の添付 UPDATE などが
+        // ルート行を確保したら statement_timeout を戻す。以降の添付 UPDATE などが
         // 同じ5秒で打ち切られて 500 になるのを防ぐ (503 はロック待ちだけの扱い)。
-        toasty::sql::statement("SET LOCAL lock_timeout = DEFAULT")
+        toasty::sql::statement("SET LOCAL statement_timeout = DEFAULT")
             .exec(&mut tx)
             .await?;
         crate::notifications::emit_timing("root_lock", &id, root_lock_began);
