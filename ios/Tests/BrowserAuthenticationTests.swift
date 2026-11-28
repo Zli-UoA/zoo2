@@ -66,6 +66,7 @@ struct BrowserAuthenticationTests {
                 let items = try #require(URLComponents(url: request.url, resolvingAgainstBaseURL: false)?.queryItems)
                 #expect(items.contains(URLQueryItem(name: "scope", value: "openid profile offline_access")))
                 #expect(items.contains(URLQueryItem(name: "prompt", value: "consent")))
+                #expect(items.contains(URLQueryItem(name: "redirect_uri", value: "https://account.zli.works/ios/oauth/callback")))
                 #expect(!items.contains { $0.name == "max_age" })
                 #expect(request.state.count == 43 && request.nonce.count == 43 && request.verifier.count == 43)
                 return .code("test+code&value")

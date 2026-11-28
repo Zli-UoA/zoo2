@@ -5,7 +5,7 @@ import UIKit
 
 /// ログインと暗号化操作の再認証で共有する OIDC 認可コード要求。
 /// PKCE の verifier、state、nonce はメモリーにだけ保持する。
-/// AuthZ の iOS クライアントには `works.zli.zoo:/reauth-callback` を登録する。
+/// AuthZ の iOS クライアントには関連付け済みドメインの HTTPS コールバックを登録する。
 struct ReauthRequest: Equatable {
     /// 認可リクエストの URL。
     let url: URL
@@ -14,8 +14,9 @@ struct ReauthRequest: Equatable {
     let nonce: String
     let verifier: String
 
-    static let callbackScheme = "works.zli.zoo"
-    static let redirectURI = "works.zli.zoo:/reauth-callback"
+    static let callbackHost = "account.zli.works"
+    static let callbackPath = "/ios/oauth/callback"
+    static let redirectURI = "https://\(callbackHost)\(callbackPath)"
     /// 利用者がログインし直すのを待つ時間（Web、TUI、Android と同じ 10 分）。
     static let timeout: Duration = .seconds(10 * 60)
 
@@ -180,7 +181,9 @@ final class Reauthenticator: NSObject {
             try await withCheckedThrowingContinuation { continuation in
                 guard !Task.isCancelled else { continuation.resume(throwing: CancellationError()); return }
                 pending = (id, continuation)
-                let browser = ASWebAuthenticationSession(url: request.url, callbackURLScheme: ReauthRequest.callbackScheme) { [weak self] url, error in
+                // webcredentials の関連付けで呼出元アプリを確かめ、同じスキームを名乗る別アプリへの発行を防ぐ。
+                let browser = ASWebAuthenticationSession(url: request.url,
+                    callback: .https(host: ReauthRequest.callbackHost, path: ReauthRequest.callbackPath)) { [weak self] url, error in
                     Task { @MainActor in
                         guard let self else { return }
                         if let error {
