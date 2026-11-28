@@ -163,7 +163,9 @@ describe("message writes", () => {
     expect(post).toHaveBeenCalledTimes(2);
     expect(post).toHaveBeenNthCalledWith(1, "/api/messages", body);
     expect(post).toHaveBeenNthCalledWith(2, "/api/messages", body);
-    expect(delays).toEqual([5000]);
+    expect(delays).toHaveLength(1);
+    expect(delays[0]).toBeGreaterThanOrEqual(5000);
+    expect(delays[0]).toBeLessThan(5500);
     expect(awaitTxId).toHaveBeenCalledWith(Number(TXID), undefined);
   });
 

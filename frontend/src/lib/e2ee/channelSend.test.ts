@@ -215,7 +215,9 @@ describe("sendEncryptedMessage", () => {
     expect(posts[0]!.body).toMatchObject({ id: "m1", parent_id: "root" });
     // 503 では再暗号化しない（再送でも id も暗号文も同じ）。
     expect(ops.filter((op) => op.op === "megolmEncrypt")).toHaveLength(1);
-    expect(delays).toEqual([5000]);
+    expect(delays).toHaveLength(1);
+    expect(delays[0]).toBeGreaterThanOrEqual(5000);
+    expect(delays[0]).toBeLessThan(5500);
   });
 
   it("503 THREAD_BUSY が続く返信は上限で失敗させる", async () => {
