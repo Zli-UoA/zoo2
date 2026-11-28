@@ -498,6 +498,10 @@ class SyncedTable(
             stream = source
             val materialized = Shape(source)
             val pendingTxids = mutableSetOf<String>()
+            fun acceptTxids() {
+                seenTxids.value = (seenTxids.value.toList() + pendingTxids).takeLast(512).toSet()
+                pendingTxids.clear()
+            }
             val snapshots = Channel<CachedFeed>(Channel.CONFLATED)
             // Keep the cached rows and their verified page coverage in the same write.
             val cacheWriter = launch {
@@ -546,14 +550,14 @@ class SyncedTable(
                             batch.any { it.jsonObject["headers"]?.jsonObject?.containsKey("operation") == true }
                         if (batch.any { control(it) == "must-refetch" }) {
                             pendingTxids.clear()
+                            refetchEpoch++
+                            refetchPending = true
                             if (onDemand) {
                                 // 表示中の行は、取り直した範囲で置き換わるまで残す。
                                 accepting.value = false
-                                refetchPending = true
                                 refetching.value = true
                                 // 先に世代を進めてから、進行中の取り直しを止める。止めたジョブの結果は、範囲にも
                                 // `refetching` にも触れない。まだ取っていない範囲は、次の取り直しへ引き継ぐ。
-                                refetchEpoch++
                                 refetchJob?.cancel()
                                 refetchJob = null
                                 refetchTargets = (refetchTargets + requested.value).distinctBy { it.scope to it.aroundId }
@@ -575,49 +579,11 @@ class SyncedTable(
                             }
                         pendingTxids.addAll(txids)
                         if (onDemand) {
-                            if (upToDate && refetchPending) {
-                                refetchPending = false
-                                val targets = (refetchTargets + requested.value).distinctBy { it.scope to it.aroundId }
-                                refetchTargets = targets
-                                requested.value = emptyList()
-                                pages.value = emptyMap()
-                                val epoch = refetchEpoch
-                                refetchJob =
-                                    launch {
-                                        var attempt = 0
-                                        // 取り直しが済むまで、`loadOlder` は何もしない。失敗したら、成功するまで
-                                        // 間隔を空けて（最大 10 秒）やり直す。画面を離れる・ログアウト・次の
-                                        // must-refetch で取り消される。
-                                        suspend fun retry(block: suspend () -> Boolean) {
-                                            while (!block()) {
-                                                attempt++
-                                                delay(minOf(1_000L * attempt, 10_000L))
-                                            }
-                                        }
-                                        val scopes = (targets.mapNotNull { it.scope } + PageScope.Main).distinct()
-                                        scopes.forEach { scope -> retry { loadPage(scope) } }
-                                        // 対象行は、通信の失敗だけやり直す（行がなくなっていた場合は、そのまま終える）。
-                                        targets.mapNotNull { it.aroundId }.forEach { id ->
-                                            retry { fetchAround(id).isSuccess }
-                                        }
-                                        // 取り消しは協調的なので、世代も確かめる。次の取り直しが始まっていたら、解除しない。
-                                        if (epoch == refetchEpoch) {
-                                            refetchTargets = emptyList()
-                                            refetching.value = false
-                                        }
-                                    }
-                            }
                             if (accepting.value && (changed || upToDate)) acceptSnapshot(materialized.currentRows)
-                            if (upToDate || (accepting.value && changed)) {
-                                seenTxids.value =
-                                    (seenTxids.value.toList() + pendingTxids).takeLast(512).toSet()
-                                pendingTxids.clear()
-                            }
+                            if (upToDate || (accepting.value && changed)) acceptTxids()
                         } else if (materialized.isUpToDate) {
                             acceptSnapshot(materialized.currentRows)
-                            seenTxids.value =
-                                (seenTxids.value.toList() + pendingTxids).takeLast(512).toSet()
-                            pendingTxids.clear()
+                            acceptTxids()
                         }
                     },
                     {
@@ -634,6 +600,62 @@ class SyncedTable(
                     acceptSnapshot(change.rows)
                 }
             }
+            // Catch-up can complete with HTTP 204 or a replayed control message.
+            // Electric updates the stream status in both cases without delivering an up-to-date batch.
+            val refetchWatcher = launch {
+                source.status.collect {
+                    val status = source.status.value
+                    if (!refetchPending || !status.isUpToDate || status.paused) return@collect
+                    if (!onDemand) {
+                        val epoch = refetchEpoch
+                        val rows = try {
+                            materialized.awaitRows()
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) {
+                            return@collect // The stream and materializer subscribers report the failure.
+                        }
+                        if (epoch == refetchEpoch) {
+                            refetchPending = false
+                            if (!materialized.isUpToDate) {
+                                acceptSnapshot(rows)
+                                acceptTxids()
+                            }
+                        }
+                        return@collect
+                    }
+                    refetchPending = false
+                    val targets = (refetchTargets + requested.value).distinctBy { it.scope to it.aroundId }
+                    refetchTargets = targets
+                    requested.value = emptyList()
+                    pages.value = emptyMap()
+                    val epoch = refetchEpoch
+                    refetchJob =
+                        launch {
+                            var attempt = 0
+                            // 取り直しが済むまで、`loadOlder` は何もしない。失敗したら、成功するまで
+                            // 間隔を空けて（最大 10 秒）やり直す。画面を離れる・ログアウト・次の
+                            // must-refetch で取り消される。
+                            suspend fun retry(block: suspend () -> Boolean) {
+                                while (!block()) {
+                                    attempt++
+                                    delay(minOf(1_000L * attempt, 10_000L))
+                                }
+                            }
+                            val scopes = (targets.mapNotNull { it.scope } + PageScope.Main).distinct()
+                            scopes.forEach { scope -> retry { loadPage(scope) } }
+                            // 対象行は、通信の失敗だけやり直す（行がなくなっていた場合は、そのまま終える）。
+                            targets.mapNotNull { it.aroundId }.forEach { id ->
+                                retry { fetchAround(id).isSuccess }
+                            }
+                            // 取り消しは協調的なので、世代も確かめる。次の取り直しが始まっていたら、解除しない。
+                            if (epoch == refetchEpoch) {
+                                refetchTargets = emptyList()
+                                refetching.value = false
+                            }
+                        }
+                }
+            }
             try {
                 materialized.awaitRows()
                 if (onDemand) {
@@ -643,7 +665,8 @@ class SyncedTable(
                     launch {
                         var attempt = 0
                         while (pages.value[PageScope.Main]?.loaded != true) {
-                            if (loadOlder(PageScope.Main)) break
+                            refetching.first { !it }
+                            if (pages.value[PageScope.Main]?.loaded == true || loadPage(PageScope.Main)) break
                             attempt++
                             delay(minOf(1_000L * attempt, 10_000L))
                         }
@@ -662,6 +685,7 @@ class SyncedTable(
                 acceptNow = {}
                 saveMainCache = {}
                 cacheWriter.cancel()
+                refetchWatcher.cancel()
                 unsubscribeTx()
                 materialized.close()
                 source.close()
