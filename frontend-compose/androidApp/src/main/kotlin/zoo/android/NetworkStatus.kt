@@ -18,7 +18,11 @@ internal fun hasInternet(capabilities: NetworkCapabilities?): Boolean =
 internal class DefaultNetworkCallback(private val refresh: (unblockedNetwork: Network?) -> Unit) : ConnectivityManager.NetworkCallback() {
     private var blockedNetwork: Network? = null
 
-    override fun onAvailable(network: Network) = refresh(null)
+    override fun onAvailable(network: Network) {
+        // A newly reported default has its own initial blocked-status notification.
+        blockedNetwork = null
+        refresh(null)
+    }
 
     override fun onLost(network: Network) {
         if (blockedNetwork == network) blockedNetwork = null

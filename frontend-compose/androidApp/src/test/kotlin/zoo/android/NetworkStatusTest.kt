@@ -18,6 +18,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowNetwork
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [26, 35], manifest = Config.NONE)
@@ -135,6 +136,12 @@ class NetworkStatusTest {
 
         callback.onBlockedStatusChanged(network, true)
         callback.onLost(network)
+        callback.onBlockedStatusChanged(network, false)
+        assertEquals(listOf(network), reconnects)
+
+        callback.onBlockedStatusChanged(network, true)
+        callback.onAvailable(ShadowNetwork.newInstance(100))
+        callback.onAvailable(network)
         callback.onBlockedStatusChanged(network, false)
         assertEquals(listOf(network), reconnects)
     }
