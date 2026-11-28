@@ -14,7 +14,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -217,11 +216,12 @@ internal fun TimelineQuoteCard(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showOriginal = false }) { Text(androidLabel("common.close", "閉じる")) }
+                DialogAction(androidLabel("common.close", "閉じる"), UiIcon.Close) { showOriginal = false }
             },
             dismissButton = {
-                TextButton(onClick = { showOriginal = false; open() }) {
-                    Text("投稿を開く")
+                DialogAction("投稿を開く", UiIcon.External) {
+                    showOriginal = false
+                    open()
                 }
             },
         )

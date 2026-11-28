@@ -44,6 +44,7 @@ internal object AndroidControlSize {
 // Source and license are bundled in assets/licenses/material-design-icons.txt.
 internal enum class UiIcon(val pathData: String, val outlined: Boolean = false) {
     // Original Zoo post actions share a rounded stroke on a 24-unit grid.
+    Share("M8 11l8-5 M8 13l8 5 M7.5 12a2.5 2.5 0 1 1-5 0 2.5 2.5 0 1 1 5 0 M20.5 5a2.5 2.5 0 1 1-5 0 2.5 2.5 0 1 1 5 0 M20.5 19a2.5 2.5 0 1 1-5 0 2.5 2.5 0 1 1 5 0", true),
     Reply("M18.5 4.5H8.7C5.2 4.5 3 6.8 3 10v2.7c0 2.4 1.5 4.5 4 5.1v3l4.6-2.8h5.9c2.5 0 4-2.2 4-4.7V9c0-2.5-1.3-4.5-3-4.5Z", true),
     Repost("M2.5 9l4-4 4 4 M6.5 5.5v9c0 2.3 1.3 3.5 3.6 3.5h2 M21.5 15l-4 4-4-4 M17.5 18.5v-9c0-2.3-1.3-3.5-3.6-3.5h-2", true),
     AddReaction("M13.4 4.2a8.1 8.1 0 1 0 5.8 7.9 M7.6 10.4h.2 M12.8 10.4h.2 M7.8 14.2c1.6 2.2 4.1 2.2 5.7 0 M18.9 2.2v6 M15.9 5.2h6", true),
