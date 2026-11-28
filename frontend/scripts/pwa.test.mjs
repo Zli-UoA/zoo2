@@ -178,7 +178,9 @@ test("manifest is fetched from the network instead of the old shell cache", asyn
   const { handlers } = worker({
     caches: cacheContext.api,
     fetch: async () =>
-      basicResponse(updated, { headers: { "content-type": "application/manifest+json" } }),
+      basicResponse('{"background_color":"#000000"}', {
+        headers: { "content-type": "application/manifest+json" },
+      }),
   });
   // キャッシュから返さず、ブラウザーの通常のネットワーク取得に任せる。
   const response = await fetchThrough(handlers, {
