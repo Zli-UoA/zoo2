@@ -446,7 +446,7 @@ internal fun showPushNotification(context: Context, data: Map<String, String>, d
             } catch (_: SecurityException) { }
             return@synchronized null
         }
-        val delivery = deliveryChannel(kind)
+        val delivery = deliveryChannel(kind.orEmpty())
         val channel = delivery.id
         delivery.register(context, manager)
         val intent = store.openIntent(user, id, path) ?: return@synchronized null

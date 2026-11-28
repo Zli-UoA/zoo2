@@ -121,6 +121,8 @@ internal data class TimelineItem(
     val mentionsCurrentUser: Boolean = false,
     val dateDivider: String? = null,
     val unreadDivider: String? = null,
+    val delivery: String? = null,
+    val recoverDraft: (() -> Unit)? = null,
     val operationStatus: Map<EntryOperation, EntryOperationStatus> = emptyMap(),
 )
 internal enum class EntryOperationStatus { Sending, Offline, Denied, Failed }
@@ -1047,9 +1049,19 @@ private fun Timeline(
         if (lastEntry != null && lastVisible == lastEntry) requestOlder?.invoke()
     }
     WithHeaderBringIntoView(headerOverlayHeight) { inheritedBringIntoView ->
-        LazyColumn(modifier, state = scroll, contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = topContentPadding)) {
+        LazyColumn(modifier, state = scroll, contentPadding = PaddingValues(top = topContentPadding)) {
             if (header != null) item { header() }
             items(entries, key = { it.entryKey }) { entry ->
+                if (entry.delivery != null) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+                        Text(entry.body, color = colors.foreground, fontSize = entryTextSize)
+                        Text(entry.delivery, color = colors.secondary, fontSize = 12.sp)
+                        entry.recoverDraft?.let { restore ->
+                            TextAction("下書きに戻す", colors, icon = UiIcon.Create, click = restore)
+                        }
+                    }
+                    return@items
+                }
                 CompositionLocalProvider(LocalBringIntoViewSpec provides inheritedBringIntoView) {
                     entry.dateDivider?.let { ConversationDivider(it, colors) }
                     entry.unreadDivider?.let { ConversationDivider(it, colors, unread = true) }
@@ -1076,7 +1088,7 @@ private fun Timeline(
                                 menu = { menuId = entry.id },
                                 swipeReply = swipeReply,
                             ))
-                            .padding(top = 12.dp, bottom = if (posts) 4.dp else 12.dp),
+                            .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = if (posts) 4.dp else 12.dp),
                     ) {
                         entry.divider?.let { EncryptionDivider(it, colors) }
                         entry.repostedBy?.let { RepostAttribution(it, colors) }

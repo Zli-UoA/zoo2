@@ -592,7 +592,7 @@ internal fun ConnectedScreens(
         state.overlay == "post" -> AndroidScreen.PostLoading(env.online, state.postLoadFailed)
         state.overlay in setOf("theme", "language", "notifications", "search-engine", "navigation-cache") -> state.settingsDetail(env, notificationOptions)
         searching -> state.searchScreen(usersById, channels, memberships, previewService)
-        route == "/home" -> AndroidScreen.Home(posts, state.home.timeline, state.home.canLoadOlder,
+        route == "/home" -> AndroidScreen.Home(state.withOutgoing("/home", posts, newestFirst = true), state.home.timeline, state.home.canLoadOlder,
             showingSavedHead = state.home.showingSavedHead, loadFailed = state.home.error || state.home.olderError, loading = state.home.loading || state.home.updating, online = env.online)
         route == "/notifications" -> state.inbox.screen(state.followResponses)
         route == "/bubble" -> AndroidScreen.Bubble(bubbles.map { state.entry(it, usersById) }, InputState(bubbleDraft, live = true, characterLimit = 1000), bubbleParticipants.map { it.title })
@@ -610,7 +610,7 @@ internal fun ConnectedScreens(
           AndroidScreen.Thread(
             channel.text("channel_name"),
             thread.first(),
-            thread.drop(1),
+            state.withOutgoing("$channelId:$currentThread", thread.drop(1)),
             state.input("$channelId:$currentThread", canPost && threadRoot != null && !threadDetail.present("thread_archive_at") &&
                 (!threadDetail.flag("tracked") || threadDetail.text("membership") == "joined"),
                 users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }).copy(notices = recipientLines), threadFocus,
@@ -622,7 +622,7 @@ internal fun ConnectedScreens(
         channel != null && currentThread != null -> AndroidScreen.OpeningConversation(
             "thread:$currentThread", session.t("threads.title"), env.online, threadLoadFailed) { threadRetry++ }
         channel != null -> AndroidScreen.Conversation(channelId.orEmpty(), channel.text("channel_name"), channel.text("description"),
-            conversationMessages, state.input(channelId.orEmpty(), canPost,
+            state.withOutgoing(channelId.orEmpty(), conversationMessages), state.input(channelId.orEmpty(), canPost,
                 users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }).copy(notices = recipientLines),
             canCall = channel.flag("is_dm") && member && !encrypted, focusMessage = focusMessage, focusRequest = focusRequest,
             loadOlder = pageStates[PageScope.Main]?.let { it.hasOlder && !it.loading } == true,

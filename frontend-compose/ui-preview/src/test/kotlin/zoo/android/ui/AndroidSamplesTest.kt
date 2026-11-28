@@ -389,7 +389,8 @@ class AndroidSamplesTest {
                         screen = channelSettings
                     }
                 }, language = "ja", remoteAudioLevel = { .4f }, loadNotificationAvatar = { if (it == "fixture-emoji") reactionEmoji else avatar }) { item, modifier ->
-                    Box(modifier.background(Color.Gray), contentAlignment = Alignment.Center) { Text(item.label) }
+                    if (item.id == "poster") androidx.compose.foundation.Image(gallery, item.label, modifier)
+                    else Box(modifier.background(Color.Gray), contentAlignment = Alignment.Center) { Text(item.label) }
                 }
             }
             if (emojiPicker) {
@@ -452,9 +453,9 @@ class AndroidSamplesTest {
                     ui.onNodeWithText("未読").assertDoesNotExist()
                     ui.onNodeWithText("リアクション · 2件").assertIsDisplayed()
                     ui.onNodeWithText("🎉").assertIsDisplayed()
-                    ui.onNodeWithContentDescription(":star:").assertIsDisplayed()
+                    ui.onNodeWithContentDescription(":star:").assertDoesNotExist()
                     ui.onNodeWithContentDescription("みずき", useUnmergedTree = true).assertIsDisplayed()
-                    ui.onNodeWithContentDescription("なぎ", useUnmergedTree = true).assertIsDisplayed()
+                    ui.onNodeWithText("みずき ほか1人").assertIsDisplayed()
                     ui.onAllNodesWithContentDescription("未読", useUnmergedTree = true).assertCountEquals(2)
                 }
                 if (name == "home-media") {

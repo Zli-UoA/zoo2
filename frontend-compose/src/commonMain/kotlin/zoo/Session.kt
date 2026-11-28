@@ -528,6 +528,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         sensitiveAttachmentIds: List<String> = emptyList(),
         /** 暗号化チャンネルの添付（[uploadEncryptedAttachment] の戻り値）。平文チャンネルでは使わない。 */
         encryptedAttachments: List<JsonObject> = emptyList(),
+        messageId: String = platform.uuid(),
     ): Boolean {
         try { encryptedChannels.remember() }
         catch (failure: CancellationException) { throw failure }
@@ -544,7 +545,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             }
             return try {
                 val users = repo.users.rows.value.map { it.text("id") to it.text("user_name") }
-                encryption.send(channel, platform.uuid(), parent, content, encryptedMentions(content, users), encryptedAttachments)
+                encryption.send(channel, messageId, parent, content, encryptedMentions(content, users), encryptedAttachments)
                 true
             } catch (failure: CancellationException) { throw failure }
             catch (failure: Exception) {
@@ -583,7 +584,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                 }
             }
         }
-        val id = platform.uuid()
+        val id = messageId
         val row = buildJsonObject {
             put("id", id)
             put("channel_id", channel)

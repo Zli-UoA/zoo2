@@ -1427,7 +1427,88 @@ internal class ConnectedScreenState(
         inputMenu = null
     }
 
+    private data class Outgoing(val destination: String, val entry: TimelineItem)
+    private val outgoing = mutableStateListOf<Outgoing>()
+    private val sendLocks = mutableMapOf<String, Mutex>()
+
+    fun withOutgoing(key: String, entries: List<TimelineItem>, newestFirst: Boolean = false): List<TimelineItem> {
+        val pending = outgoing.filter { it.destination == key }.map { it.entry }
+        if (pending.isEmpty()) return entries
+        val ids = pending.map { it.id }.toSet()
+        val confirmed = entries.filterNot { it.id in ids }
+        return if (newestFirst) pending.asReversed() + confirmed else confirmed + pending
+    }
+
+    private fun queueSend(homePost: Boolean, channelId: String, key: String) {
+        if (!platform.env.online) return
+        val destination = if (homePost) "/home" else key
+        val files = if (homePost) postFiles else channelFiles[key]
+        val text = if (homePost) postDraft else drafts[key]?.text.orEmpty()
+        if (files?.canSend(text) == false || (text.isBlank() && files?.items.isNullOrEmpty())) return
+        val sent = files?.items.orEmpty().toList()
+        val uploaded = sent.map { requireNotNull(it.uploaded) }
+        val parent = app.thread
+        val visibility = postVisibility
+        val federate = federatePost && federationAvailable
+        val id = platform.uuid()
+        val entry = TimelineItem(id, "", listOf(text, sent.joinToString("、") { it.name })
+            .filter { it.isNotBlank() }.joinToString("\n"), "", delivery = "送信中…")
+        val pending = Outgoing(destination, entry)
+        outgoing.add(pending)
+        files?.items?.clear()
+        if (homePost) {
+            postDraft = ""
+            postSelection = null
+            overlay = null
+        } else drafts[key] = InputState(lastSend = id)
+        val lock = sendLocks.getOrPut(destination) { Mutex() }
+        app.scope.launch {
+            try {
+                lock.withLock {
+                    if (homePost) {
+                        val descriptions = sent.mapNotNull { item ->
+                            item.description.takeIf { it.isNotBlank() }?.let { item.uploaded!!.text("id") to JsonPrimitive(it) }
+                        }.toMap()
+                        app.api.request("/api/home", "POST", obj("content" to text, "visibility" to visibility,
+                            "image_ids" to JsonArray(uploaded.map { JsonPrimitive(it.text("id")) }),
+                            "image_descriptions" to JsonObject(descriptions), "apub" to federate,
+                            "sensitive_image_ids" to JsonArray(sent.filter { it.sensitive }.mapNotNull { it.uploaded?.get("id") })))
+                        home.refresh(retain = true)
+                    } else check(app.send(channelId, text, parent,
+                        attachmentIds = uploaded.filter { it["encrypted"] == null }.map { it.text("id") },
+                        encryptedAttachments = uploaded.mapNotNull { it["encrypted"] as? JsonObject }, messageId = id))
+                }
+                files?.release(sent)
+                outgoing.remove(pending)
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) {
+                val index = outgoing.indexOf(pending)
+                if (index >= 0) outgoing[index] = pending.copy(entry = entry.copy(delivery = "送信を確認できませんでした",
+                    recoverDraft = {
+                        val current = if (homePost) postDraft else drafts[key]?.text.orEmpty()
+                        if (current.isNotEmpty() || !files?.items.isNullOrEmpty()) app.toast = "編集中の下書きを先に送信してください"
+                        else {
+                            if (homePost) {
+                                postDraft = text
+                                postVisibility = visibility
+                                federatePost = federate
+                                overlay = "new-post"
+                            } else drafts[key] = InputState(text)
+                            files?.items?.addAll(sent)
+                            outgoing.removeAll { it.entry.id == id }
+                        }
+                    }))
+            } finally {
+                if (outgoing.none { it.destination == destination && it.entry.delivery == "送信中…" }) sendLocks.remove(destination)
+            }
+        }
+    }
+
     private fun inputTool(tool: InputTool, screen: AndroidScreen, channelId: String, key: String, rows: List<Row>) {
+        if (tool == InputTool.Send && (screen is AndroidScreen.NewPost || screen is AndroidScreen.Conversation || screen is AndroidScreen.Thread)) {
+            queueSend(screen is AndroidScreen.NewPost, channelId, key)
+            return
+        }
         when (tool) {
             InputTool.Expand -> when (screen) {
                 is AndroidScreen.Conversation, is AndroidScreen.Thread -> {
@@ -1484,27 +1565,6 @@ internal class ConnectedScreenState(
                             finishEditing()
                             if (post) refreshPost()
                         }
-                        is AndroidScreen.NewPost -> {
-                            val sent = postFiles.items.toList()
-                            val text = postDraft
-                            val ids = sent.mapNotNull { it.uploaded?.text("id") }
-                            if (!postFiles.canSend(postDraft)) return@request
-                            val descriptions = sent.mapNotNull { draft ->
-                                draft.uploaded?.text("id")?.takeIf { draft.description.isNotBlank() }?.let { it to JsonPrimitive(draft.description) }
-                            }.toMap()
-                            app.api.request("/api/home", "POST", obj("content" to text, "image_descriptions" to JsonObject(descriptions),
-                                "sensitive_image_ids" to JsonArray(sent.filter { it.sensitive }.mapNotNull { it.uploaded?.get("id") }),
-                                "apub" to (federatePost && federationAvailable), "visibility" to postVisibility, "image_ids" to JsonArray(ids.map(::JsonPrimitive))))
-                            val sentIds = sent.map { it.file.text("id") }.toSet()
-                            postFiles.items.removeAll { it.file.text("id") in sentIds }
-                            postFiles.release(sent)
-                            if (postDraft == text) {
-                                postDraft = ""
-                                postSelection = null
-                            }
-                            if (overlay == "new-post" && postFiles.items.isEmpty() && postDraft.isBlank()) overlay = null
-                            home.refresh(retain = true)
-                        }
                         is AndroidScreen.Post -> {
                             val id = screen.root.id
                             val text = replyDraft
@@ -1525,22 +1585,6 @@ internal class ConnectedScreenState(
                                 else saved.copy(lastSend = sent)
                             }
                             refreshPost()
-                        }
-                        is AndroidScreen.Conversation, is AndroidScreen.Thread -> {
-                            val files = channelFiles[key]
-                            val draft = drafts[key] ?: InputState()
-                            val sent = files?.items?.toList().orEmpty()
-                            val uploaded = sent.mapNotNull { it.uploaded }
-                            // 暗号化チャンネルの添付は、暗号化して上げたときの本文の `attachments` の値を渡す。
-                            val encryptedFiles = uploaded.mapNotNull { it["encrypted"] as? JsonObject }
-                            val ids = uploaded.filter { it["encrypted"] == null }.map { it.text("id") }
-                            if (uploaded.size == sent.size && app.send(
-                                channelId, draft.text, app.thread, attachmentIds = ids, encryptedAttachments = encryptedFiles,
-                            )) {
-                                drafts[key] = InputState(lastSend = platform.uuid())
-                                files?.items?.clear()
-                                files?.release(sent)
-                            }
                         }
                         else -> Unit
                     }
